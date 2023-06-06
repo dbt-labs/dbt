@@ -95,6 +95,14 @@
       'view' as type
     from pg_views
     where schemaname ilike '{{ schema_relation.schema }}'
+    union all
+    select
+      '{{ schema_relation.database }}' as database,
+      matviewname as name,
+      schemaname as schema,
+      'materialized_view' as type
+    from pg_matviews
+    where schemaname ilike '{{ schema_relation.schema }}'
   {% endcall %}
   {{ return(load_result('list_relations_without_caching').table) }}
 {% endmacro %}
@@ -209,3 +217,34 @@
 {% macro postgres__copy_grants() %}
     {{ return(False) }}
 {% endmacro %}
+
+
+{% macro postgres__get_show_indexes_sql(relation) %}
+    select
+        i.relname                                   as name,
+        m.amname                                    as method,
+        ix.indisunique                              as "unique",
+        array_to_string(array_agg(a.attname), ',')  as column_names
+    from pg_index ix
+    join pg_class i
+        on i.oid = ix.indexrelid
+    join pg_am m
+        on m.oid=i.relam
+    join pg_class t
+        on t.oid = ix.indrelid
+    join pg_namespace n
+        on n.oid = t.relnamespace
+    join pg_attribute a
+        on a.attrelid = t.oid
+        and a.attnum = ANY(ix.indkey)
+    where t.relname = '{{ relation.identifier }}'
+      and n.nspname = '{{ relation.schema }}'
+      and t.relkind in ('r', 'm')
+    group by 1, 2, 3
+    order by 1, 2, 3
+{% endmacro %}
+
+
+{%- macro postgres__get_drop_index_sql(relation, index_name) -%}
+    drop index if exists "{{ index_name }}"
+{%- endmacro -%}

@@ -10,7 +10,7 @@
 
   {%- set grant_config = config.get('grants') -%}
   {%- set agate_table = load_agate_table() -%}
-  -- grab current tables grants config for comparision later on
+  -- grab current tables grants config for comparison later on
 
   {%- do store_result('agate_table', response='OK', agate_table=agate_table) -%}
 

@@ -1,6 +1,7 @@
 from datetime import datetime
 from dataclasses import dataclass
 from typing import Optional, Set, List, Any
+
 from dbt.adapters.base.meta import available
 from dbt.adapters.base.impl import AdapterConfig, ConstraintSupport
 from dbt.adapters.sql import SQLAdapter

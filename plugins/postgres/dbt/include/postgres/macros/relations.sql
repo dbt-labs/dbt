@@ -42,7 +42,7 @@
             referenced_class.kind
         from relation
         join class as referenced_class on relation.class=referenced_class.id
-        where referenced_class.kind in ('r', 'v')
+        where referenced_class.kind in ('r', 'v', 'm')
     ),
     relationships as (
         select

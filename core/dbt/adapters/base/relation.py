@@ -2,6 +2,10 @@ from collections.abc import Hashable
 from dataclasses import dataclass, field
 from typing import Optional, TypeVar, Any, Type, Dict, Iterator, Tuple, Set
 
+from dbt.adapters.relation_configs import (
+    RelationConfigChangeCollection,
+    RelationResults,
+)
 from dbt.contracts.graph.nodes import SourceDefinition, ManifestNode, ResultNode, ParsedNode
 from dbt.contracts.relation import (
     RelationType,
@@ -14,6 +18,7 @@ from dbt.contracts.relation import (
 from dbt.exceptions import (
     ApproximateMatchError,
     DbtInternalError,
+    DbtRuntimeError,
     MultipleDatabasesNotAllowedError,
 )
 from dbt.node_types import NodeType
@@ -286,6 +291,43 @@ class BaseRelation(FakeAPIObject, Hashable):
         )
         return cls.from_dict(kwargs)
 
+    def get_relation_config_change_collection(
+        self,
+        relation_results: RelationResults,
+        runtime_config,  # RuntimeConfigObject
+    ) -> Optional[RelationConfigChangeCollection]:
+        """
+        Determine the relation config changes between an existing deployment and the new deployment.
+
+        This could be overridden in the event that there is a adapter-specific materialization; however,
+        it's recommended that the relation type-specific methods are overridden in all other scenarios.
+        In the former scenario, the overridden method should still call to `super()` to catch all commonly
+        supported materializations.
+
+        Args:
+            relation_results: the description of the existing deployment according to the database
+            runtime_config: the description of the new deployment according to the user's config
+
+        Returns: a set of changes to be made on the relation; this would be None if there are no changes
+        """
+        relation_type = runtime_config.model.config.get("materialized", RelationType.default())
+        if relation_type == RelationType.MaterializedView:
+            return self.get_materialized_view_config_change_collection(
+                relation_results, runtime_config
+            )
+        raise DbtRuntimeError(
+            f"Config changes have not been configured for relation type {relation_type}."
+        )
+
+    def get_materialized_view_config_change_collection(
+        self,
+        relation_results: RelationResults,
+        runtime_config,  # RuntimeConfigObject
+    ) -> Optional[RelationConfigChangeCollection]:
+        raise NotImplementedError(
+            "Materialized view config changes have not been configured for this adapter."
+        )
+
     def __repr__(self) -> str:
         return "<{} {}>".format(self.__class__.__name__, self.render())
 
@@ -328,6 +370,10 @@ class BaseRelation(FakeAPIObject, Hashable):
     def is_view(self) -> bool:
         return self.type == RelationType.View
 
+    @property
+    def is_materialized_view(self) -> bool:
+        return self.type == RelationType.MaterializedView
+
     @classproperty
     def Table(cls) -> str:
         return str(RelationType.Table)
@@ -343,6 +389,10 @@ class BaseRelation(FakeAPIObject, Hashable):
     @classproperty
     def External(cls) -> str:
         return str(RelationType.External)
+
+    @classproperty
+    def MaterializedView(cls) -> str:
+        return str(RelationType.MaterializedView)
 
     @classproperty
     def get_relation_type(cls) -> Type[RelationType]:

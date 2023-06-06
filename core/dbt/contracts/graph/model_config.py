@@ -2,15 +2,17 @@ from dataclasses import field, Field, dataclass
 from enum import Enum
 from itertools import chain
 from typing import Any, List, Optional, Dict, Union, Type, TypeVar, Callable
+
 from dbt.dataclass_schema import (
     dbtClassMixin,
     ValidationError,
     register_pattern,
+    StrEnum,
 )
 from dbt.contracts.graph.unparsed import AdditionalPropertiesAllowed, Docs
 from dbt.contracts.graph.utils import validate_color
-from dbt.exceptions import DbtInternalError, CompilationError
 from dbt.contracts.util import Replaceable, list_str
+from dbt.exceptions import DbtInternalError, CompilationError
 from dbt import hooks
 from dbt.node_types import NodeType
 
@@ -189,6 +191,16 @@ class Severity(str):
 register_pattern(Severity, insensitive_patterns("warn", "error"))
 
 
+class OnConfigurationChangeOption(StrEnum):
+    Apply = "apply"
+    Continue = "continue"
+    Fail = "fail"
+
+    @classmethod
+    def default(cls) -> "OnConfigurationChangeOption":
+        return cls.Apply
+
+
 @dataclass
 class ContractConfig(dbtClassMixin, Replaceable):
     enforced: bool = False
@@ -287,11 +299,17 @@ class BaseConfig(AdditionalPropertiesAllowed, Replaceable):
                     return False
         return True
 
-    # This is used in 'add_config_call' to created the combined config_call_dict.
+    # This is used in 'add_config_call' to create the combined config_call_dict.
     # 'meta' moved here from node
     mergebehavior = {
         "append": ["pre-hook", "pre_hook", "post-hook", "post_hook", "tags"],
-        "update": ["quoting", "column_types", "meta", "docs", "contract"],
+        "update": [
+            "quoting",
+            "column_types",
+            "meta",
+            "docs",
+            "contract",
+        ],
         "dict_key_append": ["grants"],
     }
 
@@ -445,6 +463,9 @@ class NodeConfig(NodeAndTestConfig):
     # sometimes getting the Union order wrong, causing serialization failures.
     unique_key: Union[str, List[str], None] = None
     on_schema_change: Optional[str] = "ignore"
+    on_configuration_change: OnConfigurationChangeOption = field(
+        default_factory=OnConfigurationChangeOption.default
+    )
     grants: Dict[str, Any] = field(
         default_factory=dict, metadata=MergeBehavior.DictKeyAppend.meta()
     )

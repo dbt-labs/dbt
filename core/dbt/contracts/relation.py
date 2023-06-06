@@ -17,8 +17,12 @@ class RelationType(StrEnum):
     Table = "table"
     View = "view"
     CTE = "cte"
-    MaterializedView = "materializedview"
+    MaterializedView = "materialized_view"
     External = "external"
+
+    @classmethod
+    def default(cls) -> "RelationType":
+        return cls.View
 
 
 class ComponentName(StrEnum):

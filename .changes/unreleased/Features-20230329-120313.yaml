@@ -1,0 +1,6 @@
+kind: Features
+body: Add support for materialized views
+time: 2023-03-29T12:03:13.862041-04:00
+custom:
+  Author: mikealfare McKnight-42
+  Issue: "6911"
