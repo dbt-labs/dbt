@@ -1,6 +1,6 @@
 from collections.abc import Hashable
 from dataclasses import dataclass, field
-from typing import Optional, TypeVar, Any, Type, Dict, Iterator, Tuple, Set
+from typing import Optional, TypeVar, Any, Type, Dict, Iterator, Tuple
 
 from dbt.contracts.graph.nodes import SourceDefinition, ManifestNode, ResultNode, ParsedNode
 from dbt.contracts.relation import (
@@ -169,7 +169,6 @@ class BaseRelation(FakeAPIObject, Hashable):
         return self.include(identifier=False).replace_path(identifier=None)
 
     def _render_iterator(self) -> Iterator[Tuple[Optional[ComponentName], Optional[str]]]:
-
         for key in ComponentName:
             path_part: Optional[str] = None
             if self.include_policy.get_part(key):
@@ -423,7 +422,7 @@ class InformationSchema(BaseRelation):
         yield None, self.information_schema_view
 
 
-class SchemaSearchMap(Dict[InformationSchema, Set[Optional[str]]]):
+class SchemaSearchMap(dict):
     """A utility class to keep track of what information_schema tables to
     search for what schemas. The schema values are all lowercased to avoid
     duplication.
