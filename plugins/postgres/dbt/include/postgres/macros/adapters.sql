@@ -11,6 +11,9 @@
   {%- endif %} table {{ relation }}
   {% set contract_config = config.get('contract') %}
   {% if contract_config.enforced %}
+    {%- if contract_config.inferred and not defer_relation -%}
+      {{ exceptions.raise_compiler_error("Contract cannot be inferred without a --defer relation")}}
+    {%- endif -%}
     {{ get_assert_columns_equivalent(sql) }}
     {{ get_table_columns_and_constraints() }} ;
     insert into {{ relation }} (

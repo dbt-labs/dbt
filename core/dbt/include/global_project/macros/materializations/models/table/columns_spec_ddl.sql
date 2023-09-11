@@ -8,8 +8,22 @@
 
 {% macro table_columns_and_constraints() %}
   {# loop through user_provided_columns to create DDL with data types and constraints #}
+    {%- if defer_relation and config.get('contract').inferred -%}
+      {% set prod_columns = get_column_schema_from_query(get_empty_subquery_sql("select * from " ~ defer_relation)) %}
+      {% set raw_columns = {} %}
+      {% for column in prod_columns -%}
+        {# TODO: reconsider this mutating operation, could be done with an additional warehouse call #}
+        {%- if column.name not in model['columns'] -%}
+          {% do model['columns'].update(
+            {column.name: {'name': column.name, 'data_type': column.data_type, 'description': '', 'constraints': [], 'tags': [], 'meta': {}}}
+            ) %}
+          {%- endif -%}
+      {% endfor -%}
+    {%- endif -%}
+
     {%- set raw_column_constraints = adapter.render_raw_columns_constraints(raw_columns=model['columns']) -%}
     {%- set raw_model_constraints = adapter.render_raw_model_constraints(raw_constraints=model['constraints']) -%}
+
     (
     {% for c in raw_column_constraints -%}
       {{ c }}{{ "," if not loop.last or raw_model_constraints }}
@@ -36,7 +50,8 @@
 
   {#-- First ensure the user has defined 'columns' in yaml specification --#}
   {%- set user_defined_columns = model['columns'] -%}
-  {%- if not user_defined_columns -%}
+
+  {%- if not user_defined_columns and not config.get('contract').inferred -%}
       {{ exceptions.raise_contract_error([], []) }}
   {%- endif -%}
 
@@ -44,7 +59,21 @@
   {%- set sql_file_provided_columns = get_column_schema_from_query(sql, config.get('sql_header', none)) -%}
   {#--Obtain the column schema provided by the schema file by generating an 'empty schema' query from the model's columns. #}
   {%- set schema_file_provided_columns = get_column_schema_from_query(get_empty_schema_sql(user_defined_columns)) -%}
+  {%- if defer_relation and config.get('contract').inferred -%}
+      {% set prod_columns = get_column_schema_from_query(get_empty_subquery_sql("select * from " ~ defer_relation)) %}
 
+      {% set provided_column_dict = {} %}
+      {%- for provided_column in  schema_file_provided_columns-%}
+        {%- do provided_column_dict.update({provided_column.name: provided_column}) %}
+      {%- endfor -%}
+
+      {#-- Add any inferred columns not provided to full list of provided columns #}
+      {%- for prod_colum in prod_columns -%}
+        {%- if prod_colum.name not in provided_column_dict -%}
+          {% do schema_file_provided_columns.append(prod_colum) -%}
+        {%- endif -%}
+      {%- endfor -%}
+  {%- endif -%}
   {#-- create dictionaries with name and formatted data type and strings for exception #}
   {%- set sql_columns = format_columns(sql_file_provided_columns) -%}
   {%- set yaml_columns = format_columns(schema_file_provided_columns)  -%}

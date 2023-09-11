@@ -849,7 +849,7 @@ class ModelPatchParser(NodePatchParser[UnparsedModelUpdate]):
             )
 
         errors = []
-        if not model_node.columns:
+        if not model_node.columns and not model_node.config.contract.inferred:
             errors.append(
                 "Constraints must be defined in a `yml` schema configuration file like `schema.yml`."
             )

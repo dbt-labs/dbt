@@ -1382,7 +1382,8 @@ class ModelContext(ProviderContext):
         if self.model.language == ModelLanguage.sql:  # type: ignore[union-attr]
             # If the model is deferred and the adapter doesn't support zero-copy cloning, then select * from the prod
             # relation
-            if getattr(self.model, "defer_relation", None):
+            # TODO: avoid routing on args.which if possible
+            if getattr(self.model, "defer_relation", None) and self.config.args.which == "clone":
                 # TODO https://github.com/dbt-labs/dbt-core/issues/7976
                 return f"select * from {self.model.defer_relation.relation_name or str(self.defer_relation)}"  # type: ignore[union-attr]
             elif getattr(self.model, "extra_ctes_injected", None):

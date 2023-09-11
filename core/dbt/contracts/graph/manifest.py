@@ -1265,6 +1265,11 @@ class Manifest(MacroMethods, DataClassMessagePackMixin, dbtClassMixin):
             ):
                 merged.add(unique_id)
                 self.nodes[unique_id] = node.replace(deferred=True)
+            elif current and (node.resource_type in refables and not node.is_ephemeral):
+                defer_relation = DeferRelation(
+                    node.database, node.schema, node.alias, node.relation_name
+                )
+                self.nodes[unique_id] = current.replace(defer_relation=defer_relation)
 
         # Rebuild the flat_graph, which powers the 'graph' context variable,
         # now that we've deferred some nodes
