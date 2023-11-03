@@ -6,6 +6,7 @@ from dbt.adapters.base.relation import BaseRelation
 from dbt.contracts.graph.model_config import OnConfigurationChangeOption
 from dbt.contracts.relation import RelationType
 from dbt.tests.util import (
+    UtilityMethodNotImplementedError,
     assert_message_in_logs,
     get_model_file,
     run_dbt,
@@ -45,10 +46,7 @@ class MaterializedViewChanges:
         """
         Check the starting state; this should align with `files.MY_MATERIALIZED_VIEW`.
         """
-        raise NotImplementedError(
-            "To use this test, please implement `check_start_state`,"
-            " inherited from `MaterializedViewsChanges`."
-        )
+        raise UtilityMethodNotImplementedError("MaterializedViewsChanges", "check_start_state")
 
     @staticmethod
     def change_config_via_alter(project, materialized_view):
@@ -65,10 +63,8 @@ class MaterializedViewChanges:
         """
         Verify that the changes in `change_config_via_alter` were applied.
         """
-        raise NotImplementedError(
-            "To use this test, please implement `change_config_via_alter` and"
-            " `check_state_alter_change_is_applied`,"
-            " inherited from `MaterializedViewsChanges`."
+        raise UtilityMethodNotImplementedError(
+            "MaterializedViewsChanges", "change_config_via_alter"
         )
 
     @staticmethod
@@ -87,17 +83,13 @@ class MaterializedViewChanges:
         Verify that the changes in `change_config_via_replace` were applied.
         This is independent of `check_state_alter_change_is_applied`.
         """
-        raise NotImplementedError(
-            "To use this test, please implement `change_config_via_replace` and"
-            " `check_state_replace_change_is_applied`,"
-            " inherited from `MaterializedViewsChanges`."
+        raise UtilityMethodNotImplementedError(
+            "MaterializedViewsChanges", "change_config_via_replace"
         )
 
     @staticmethod
     def query_relation_type(project, relation: BaseRelation) -> Optional[str]:
-        raise NotImplementedError(
-            "To use this test, please implement `query_relation_type`, inherited from `MaterializedViewsChanges`."
-        )
+        raise UtilityMethodNotImplementedError("MaterializedViewsChanges", "query_relation_type")
 
     """
     Configure these if needed
@@ -151,6 +143,16 @@ class MaterializedViewChanges:
         assert self.query_relation_type(project, my_materialized_view) == "materialized_view"
         assert_message_in_logs(f"Applying ALTER to: {my_materialized_view}", logs, False)
         assert_message_in_logs(f"Applying REPLACE to: {my_materialized_view}", logs)
+
+    def test_no_alter_and_no_replace_occurs_with_no_changes(self, project, my_materialized_view):
+        # no changes were made to the model
+        _, logs = run_dbt_and_capture(
+            ["--debug", "run", "--models", my_materialized_view.identifier]
+        )
+        # no changes were submitted to the database
+        assert self.query_relation_type(project, my_materialized_view) == "materialized_view"
+        assert_message_in_logs(f"Applying ALTER to: {my_materialized_view}", logs, False)
+        assert_message_in_logs(f"Applying REPLACE to: {my_materialized_view}", logs, False)
 
 
 class MaterializedViewChangesApplyMixin:

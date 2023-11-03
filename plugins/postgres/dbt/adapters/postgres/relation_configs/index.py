@@ -1,5 +1,5 @@
 from dataclasses import dataclass, field
-from typing import Set, FrozenSet
+from typing import Any, Dict, FrozenSet, Set
 
 import agate
 from dbt.dataclass_schema import StrEnum
@@ -60,7 +60,7 @@ class PostgresIndexConfig(RelationConfigBase, RelationConfigValidationMixin):
         }
 
     @classmethod
-    def from_dict(cls, config_dict) -> "PostgresIndexConfig":
+    def from_dict(cls, config_dict: Dict[str, Any]) -> "PostgresIndexConfig":
         # TODO: include the QuotePolicy instead of defaulting to lower()
         kwargs_dict = {
             "name": config_dict.get("name"),
@@ -74,7 +74,7 @@ class PostgresIndexConfig(RelationConfigBase, RelationConfigValidationMixin):
         return index
 
     @classmethod
-    def parse_model_node(cls, model_node_entry: dict) -> dict:
+    def parse_node(cls, model_node_entry: Dict[str, Any]) -> Dict[str, Any]:
         config_dict = {
             "column_names": set(model_node_entry.get("columns", set())),
             "unique": model_node_entry.get("unique"),
@@ -83,7 +83,7 @@ class PostgresIndexConfig(RelationConfigBase, RelationConfigValidationMixin):
         return config_dict
 
     @classmethod
-    def parse_relation_results(cls, relation_results_entry: agate.Row) -> dict:
+    def parse_relation_results(cls, relation_results_entry: agate.Row) -> Dict[str, Any]:
         config_dict = {
             "name": relation_results_entry.get("name"),
             "column_names": set(relation_results_entry.get("column_names", "").split(",")),
@@ -93,7 +93,7 @@ class PostgresIndexConfig(RelationConfigBase, RelationConfigValidationMixin):
         return config_dict
 
     @property
-    def as_node_config(self) -> dict:
+    def as_node_config(self) -> Dict[str, Any]:
         """
         Returns: a dictionary that can be passed into `get_create_index_sql()`
         """

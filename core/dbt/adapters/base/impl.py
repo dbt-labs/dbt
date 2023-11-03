@@ -22,6 +22,7 @@ from typing import (
 )
 
 from dbt.adapters.capability import Capability, CapabilityDict
+from dbt.adapters.relation_configs import RelationConfigFactory
 from dbt.contracts.graph.nodes import ColumnLevelConstraint, ConstraintType, ModelLevelConstraint
 
 import agate
@@ -246,6 +247,18 @@ class BaseAdapter(metaclass=AdapterMeta):
         self.cache = RelationsCache()
         self.connections = self.ConnectionManager(config)
         self._macro_manifest_lazy: Optional[MacroManifest] = None
+        self.relation_config_factory = self._relation_config_factory()
+
+    def _relation_config_factory(self) -> RelationConfigFactory:
+        """
+        This sets the default relation config factory in the init.
+        If you need to adjust the default settings, override this
+        returning an instance with the settings specific to your adapter.
+
+        See `dbt.adapters.relation_configs.factory.RelationConfigFactory`
+        for more information regarding these settings.
+        """
+        return RelationConfigFactory()
 
     ###
     # Methods that pass through to the connection manager

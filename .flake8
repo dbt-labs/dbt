@@ -10,3 +10,5 @@ ignore =
     E741
     E501 # long line checking is done in black
 exclude = test/
+per-file-ignores =
+    */__init__.py: F401

@@ -14,6 +14,7 @@ from typing import (
 )
 from typing_extensions import Protocol
 
+from dbt.adapters.base import BaseAdapter
 from dbt.adapters.base.column import Column
 from dbt.adapters.factory import get_adapter, get_adapter_package_names, get_adapter_type_names
 from dbt.clients import agate_helper
@@ -107,7 +108,7 @@ class BaseDatabaseWrapper:
     via a relation proxy.
     """
 
-    def __init__(self, adapter, namespace: MacroNamespace):
+    def __init__(self, adapter: BaseAdapter, namespace: MacroNamespace):
         self._adapter = adapter
         self.Relation = RelationProxy(adapter)
         self._namespace = namespace
@@ -124,6 +125,10 @@ class BaseDatabaseWrapper:
 
     def commit(self):
         return self._adapter.commit_if_has_connection()
+
+    @property
+    def relation_config_factory(self):
+        return self._adapter.relation_config_factory
 
     def _get_adapter_macro_prefixes(self) -> List[str]:
         # order matters for dispatch:

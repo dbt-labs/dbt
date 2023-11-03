@@ -1,0 +1,6 @@
+kind: Features
+body: Optimize refreshing materialized views when autorefreshed
+time: 2023-10-12T12:29:17.705373-04:00
+custom:
+  Author: mikealfare
+  Issue: "6911"

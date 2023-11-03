@@ -631,3 +631,11 @@ def get_model_file(project, relation: BaseRelation) -> str:
 
 def set_model_file(project, relation: BaseRelation, model_sql: str):
     write_file(model_sql, project.project_root, "models", f"{relation.name}.sql")
+
+
+class UtilityMethodNotImplementedError(NotImplementedError):
+    def __int__(self, class_name: str, method_name: str, additional_message: Optional[str] = None):
+        message = f"To use this test, please implement `{class_name}`.`{method_name}`."
+        if additional_message:
+            message += f" {additional_message}"
+        super().__init__(message)

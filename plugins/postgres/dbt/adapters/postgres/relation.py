@@ -59,9 +59,7 @@ class PostgresRelation(BaseRelation):
         existing_materialized_view = PostgresMaterializedViewConfig.from_relation_results(
             relation_results
         )
-        new_materialized_view = PostgresMaterializedViewConfig.from_model_node(
-            runtime_config.model
-        )
+        new_materialized_view = PostgresMaterializedViewConfig.from_node(runtime_config.model)
 
         config_change_collection.indexes = self._get_index_config_changes(
             existing_materialized_view.indexes, new_materialized_view.indexes

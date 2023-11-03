@@ -65,7 +65,15 @@
         {% set configuration_changes = get_materialized_view_configuration_changes(existing_relation, config) %}
 
         {% if configuration_changes is none %}
-            {% set build_sql = refresh_materialized_view(target_relation) %}
+            {% set relation_config = adapter.relation_config_factory.make_from_node(config.model) %}
+            {% if relation_config.auto_refresh %}
+                {% set build_sql = '' %}
+                {{ exceptions.warn(
+                    "No configuration changes were identified on: `" ~ target_relation ~ "`. Continuing."
+                ) }}
+            {% else %}
+                {% set build_sql = refresh_materialized_view(target_relation) %}
+            {% endif %}
 
         {% elif on_configuration_change == 'apply' %}
             {% set build_sql = get_alter_materialized_view_as_sql(target_relation, configuration_changes, sql, existing_relation, backup_relation, intermediate_relation) %}
