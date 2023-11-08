@@ -108,13 +108,28 @@ def _catalog_filter_schemas(manifest: Manifest) -> Callable[[agate.Row], bool]:
     schemas = frozenset((d.lower(), s.lower()) for d, s in manifest.get_used_schemas())
 
     def test(row: agate.Row) -> bool:
-        table_database = _expect_row_value("table_database", row)
-        table_schema = _expect_row_value("table_schema", row)
-        # the schema may be present but None, which is not an error and should
-        # be filtered out
-        if table_schema is None:
+        if "table_database" in row.keys():
+            table_database = _expect_row_value("table_database", row)
+        else:
+            table_database = None
+
+        if "table_schema" in row.keys():
+            table_schema = _expect_row_value("table_schema", row)
+            # the schema may be present but None, which is not an error and should
+            # be filtered out
+            if table_schema is None:
+                return False
+        else:
+            table_schema = None
+
+        if table_database and table_schema:
+            return (table_database.lower(), table_schema.lower()) in schemas
+        elif table_schema:
+            return table_schema in {s for _, s in schemas}
+        elif table_database:
+            return table_database in {d for d, _ in schemas}
+        else:
             return False
-        return (table_database.lower(), table_schema.lower()) in schemas
 
     return test
 
@@ -1192,12 +1207,21 @@ class BaseAdapter(metaclass=AdapterMeta):
             }
 
             def in_map(row: agate.Row):
-                d = _expect_row_value("table_database", row)
-                s = _expect_row_value("table_schema", row)
+                if "table_database" in row.keys():
+                    d = _expect_row_value("table_database", row)
+                    d = d.casefold() if d is not None else None
+                else:
+                    d = None
+
+                if "table_schema" in row.keys():
+                    s = _expect_row_value("table_schema", row)
+                    s = s.casefold() if s is not None else None
+                else:
+                    s = None
+
                 i = _expect_row_value("table_name", row)
-                d = d.casefold() if d is not None else None
-                s = s.casefold() if s is not None else None
                 i = i.casefold() if i is not None else None
+
                 return (d, s, i) in relation_map
 
             catalogs = catalogs.where(in_map)
