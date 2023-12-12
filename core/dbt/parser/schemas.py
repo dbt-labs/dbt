@@ -139,6 +139,10 @@ class SchemaParser(SimpleParser[YamlBlock, ModelNode]):
             self.root_project, self.project.project_name, self.schema_yaml_vars
         )
 
+    def parse_from_dict(self):
+        # unnecessary method required by parser base class
+        pass
+
     @classmethod
     def get_compiled_path(cls, block: FileBlock) -> str:
         # should this raise an error?
@@ -555,8 +559,8 @@ class NodePatchParser(PatchParser[NodeTarget, ParsedNodePatch], Generic[NodeTarg
             constraints=block.target.constraints,
             deprecation_date=deprecation_date,
         )
-        assert isinstance(self.yaml.file, SchemaSourceFile)
-        source_file: SchemaSourceFile = self.yaml.file
+        # This used to assert SchemaSourceFile, but removed to support yaml frontmatter
+        source_file = self.yaml.file
         if patch.yaml_key in ["models", "seeds", "snapshots"]:
             unique_id = self.manifest.ref_lookup.get_unique_id(
                 patch.name, self.project.project_name, None
@@ -601,10 +605,12 @@ class NodePatchParser(PatchParser[NodeTarget, ParsedNodePatch], Generic[NodeTarg
                     raise ParsingError(msg)
 
                 # all nodes in the disabled dict have the same unique_id so just grab the first one
-                # to append with the unique id
-                source_file.append_patch(patch.yaml_key, found_nodes[0].unique_id)
+                # to append with the uniqe id
+                if isinstance(source_file, SchemaSourceFile):
+                    source_file.append_patch(patch.yaml_key, found_nodes[0].unique_id)
                 for node in found_nodes:
-                    node.patch_path = source_file.file_id
+                    if isinstance(source_file, SchemaSourceFile):
+                        node.patch_path = source_file.file_id
                     # re-calculate the node config with the patch config.  Always do this
                     # for the case when no config is set to ensure the default of true gets captured
                     if patch.config:
@@ -624,11 +630,23 @@ class NodePatchParser(PatchParser[NodeTarget, ParsedNodePatch], Generic[NodeTarg
         # patches can't be overwritten
         node = self.manifest.nodes.get(unique_id)
         if node:
-            if node.patch_path:
-                package_name, existing_file_path = node.patch_path.split("://")
+            # If patch_path is set, then a schema file has already been processed for this node.
+            # If the node has a yaml_config_dict and THIS invocation of the schema parser is from
+            # a different file, then this is a schema file duplicate of config already done in the model
+            # via yaml frontmatter.
+            if node.patch_path or (
+                hasattr(node, "yaml_config_dict")
+                and node.yaml_config_dict
+                and node.file_id != source_file.file_id
+            ):
+                if node.patch_path:
+                    _, existing_file_path = node.patch_path.split("://")
+                else:  # yaml frontmatter
+                    existing_file_path = node.original_file_path
                 raise DuplicatePatchPathError(patch, existing_file_path)
 
-            source_file.append_patch(patch.yaml_key, node.unique_id)
+            if isinstance(source_file, SchemaSourceFile):
+                source_file.append_patch(patch.yaml_key, node.unique_id)
             # re-calculate the node config with the patch config.  Always do this
             # for the case when no config is set to ensure the default of true gets captured
             if patch.config:

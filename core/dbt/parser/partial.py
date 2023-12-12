@@ -306,7 +306,8 @@ class PartialParsing:
         if self.already_scheduled_for_parsing(old_source_file):
             return
 
-        # These files only have one node except for snapshots
+        # These files only have one node except for snapshots and
+        # model files with yaml frontmatter
         unique_ids = []
         if old_source_file.nodes:
             unique_ids = old_source_file.nodes
@@ -333,8 +334,9 @@ class PartialParsing:
             return
 
         # look at patch_path in model node to see if we need
-        # to reapply a patch from a schema_file.
-        if node.patch_path:
+        # to reapply a patch from a schema_file (skipping nodes with
+        # a patch_path that indicates yaml frontmatter patch).
+        if node.patch_path and node.patch_path != node.file_id:
             file_id = node.patch_path
             # it might be changed...  then what?
             if file_id not in self.file_diff["deleted"] and file_id in self.saved_files:

@@ -57,6 +57,8 @@ from argparse import Namespace
 
 set_from_args(Namespace(WARN_ERROR=False), None)
 
+dbt.flags.set_from_args(Namespace(SEND_ANONYMOUS_USAGE_STATS=False, MACRO_DEBUGGING=False), None)
+
 
 def get_abs_os_path(unix_path):
     return normalize(os.path.abspath(unix_path))
@@ -505,6 +507,7 @@ class SchemaParserModelsTest(SchemaParserTest):
             refs=[],
             sources=[],
             patch_path=None,
+            yaml_config_dict={},
         )
         nodes = {my_model_node.unique_id: my_model_node}
         macros = {m.unique_id: m for m in generate_name_macros("root")}

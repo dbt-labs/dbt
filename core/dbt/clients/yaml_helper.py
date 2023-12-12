@@ -1,5 +1,6 @@
+import re
 import dbt.exceptions
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Tuple
 import yaml
 
 # the C version is faster, but it doesn't always exist
@@ -8,6 +9,9 @@ try:
 except ImportError:
     from yaml import Loader, SafeLoader, Dumper  # type: ignore  # noqa: F401
 
+FRONTMATTER_CHECK = ["---\n", "---\r\n"]
+FRONTMATTER_DELIMITER = re.compile(r"^---", re.MULTILINE)
+NON_WHITESPACE = re.compile(r"\S")
 
 YAML_ERROR_MESSAGE = """
 Syntax error near line {line_number}
@@ -61,3 +65,42 @@ def load_yaml_text(contents, path=None):
             error = str(e)
 
         raise dbt.exceptions.DbtValidationError(error)
+
+
+def split_yaml_frontmatter(content: str) -> Tuple[Optional[str], str]:
+    """Splits `content` into raw YAML frontmatter (as a raw string) and everything else proceeding.
+
+    Frontmatter is defined as a block of YAML appearing between two `---` tokens in an otherwise non-YAML document.
+    The frontmatter must be placed at the beginning of the file: anything other than whitespace preceding the first `---`
+    will cause the frontmatter block to be ignored, with a warning.
+    """
+    parts = FRONTMATTER_DELIMITER.split(content, 2)
+    if len(parts) != 3:
+        # Zero or one `---` token, so return the original string
+        return None, content
+    elif NON_WHITESPACE.search(parts[0]) is not None:
+        # No frontmatter section or non-whitespace preceding the first `---`, so skip frontmatter
+        return None, content
+
+    frontmatter_content, after_footer = parts[1:]
+    return frontmatter_content, after_footer
+
+
+def parse_yaml_frontmatter(frontmatter_content: str, original_content: str):
+    try:
+        parsed_yaml = safe_load(frontmatter_content)
+    except (yaml.scanner.ScannerError, yaml.YAMLError) as e:
+        if hasattr(e, "problem_mark"):
+            error = contextualized_yaml_error(original_content, e)
+        else:
+            error = str(e)
+        error = f"Error parsing YAML frontmatter:  {error}"
+        raise dbt.exceptions.DbtValidationError(error)
+
+    return parsed_yaml
+
+
+def has_yaml_frontmatter(content: str) -> bool:
+    """Check first line for yaml frontmatter"""
+
+    return content.startswith(FRONTMATTER_CHECK[0]) or content.startswith(FRONTMATTER_CHECK[1])

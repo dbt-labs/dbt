@@ -223,6 +223,7 @@ def basic_compiled_dict():
         "unrendered_config": {},
         "config_call_dict": {},
         "access": "protected",
+        "yaml_config_dict": {},
         "constraints": [],
     }
 

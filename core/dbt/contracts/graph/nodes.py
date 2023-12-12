@@ -577,6 +577,7 @@ class HookNode(CompiledNode):
 class ModelNode(CompiledNode):
     resource_type: Literal[NodeType.Model]
     access: AccessType = AccessType.Protected
+    yaml_config_dict: Dict[str, Any] = field(default_factory=dict)
     config: ModelConfig = field(default_factory=ModelConfig)
     constraints: List[ModelLevelConstraint] = field(default_factory=list)
     version: Optional[NodeVersion] = None
@@ -1057,6 +1058,19 @@ class GenericTestNode(TestShouldStoreFailures, CompiledNode, HasTestMetadata):
     @property
     def test_node_type(self):
         return "generic"
+
+    def write_node(self, target_path: str, subdirectory: str, payload: str):
+        # If this test came from yaml frontmatter, it will try to write to a directory
+        # with the same name as the model file, which won't work. So change the
+        # directory to model file name + .yaml.
+        file_path = self.original_file_path
+        if file_path.endswith(".sql") or file_path.endswith(".py"):
+            file_path = file_path + ".yaml"
+        path = os.path.join(file_path, self.path)
+        full_path = os.path.join(target_path, subdirectory, self.package_name, path)
+
+        write_file(full_path, payload)
+        return full_path
 
 
 # ====================================

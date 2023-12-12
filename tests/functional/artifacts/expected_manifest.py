@@ -340,6 +340,7 @@ def expected_seeded_manifest(project, model_database=None, quote_model=False):
                 "checksum": checksum_file(model_sql_path),
                 "unrendered_config": unrendered_model_config,
                 "access": "protected",
+                "yaml_config_dict": {},
                 "version": None,
                 "latest_version": None,
             },
@@ -433,6 +434,7 @@ def expected_seeded_manifest(project, model_database=None, quote_model=False):
                 "checksum": checksum_file(second_model_sql_path),
                 "unrendered_config": unrendered_second_config,
                 "access": "protected",
+                "yaml_config_dict": {},
                 "version": None,
                 "latest_version": None,
             },
@@ -957,6 +959,7 @@ def expected_references_manifest(project):
                 "checksum": checksum_file(ephemeral_copy_path),
                 "unrendered_config": get_unrendered_model_config(materialized="ephemeral"),
                 "access": "protected",
+                "yaml_config_dict": {},
                 "version": None,
                 "latest_version": None,
                 "constraints": [],
@@ -1026,6 +1029,7 @@ def expected_references_manifest(project):
                     materialized="table", group="test_group"
                 ),
                 "access": "protected",
+                "yaml_config_dict": {},
                 "version": None,
                 "latest_version": None,
                 "constraints": [],
@@ -1091,6 +1095,7 @@ def expected_references_manifest(project):
                 "checksum": checksum_file(view_summary_path),
                 "unrendered_config": get_unrendered_model_config(materialized="view"),
                 "access": "protected",
+                "yaml_config_dict": {},
                 "version": None,
                 "latest_version": None,
                 "constraints": [],
@@ -1548,6 +1553,7 @@ def expected_versions_manifest(project):
                 "access": "protected",
                 "version": 1,
                 "latest_version": 2,
+                "yaml_config_dict": {},
             },
             "model.test.versioned_model.v2": {
                 "alias": "versioned_model_v2",
@@ -1616,6 +1622,7 @@ def expected_versions_manifest(project):
                 "access": "protected",
                 "version": 2,
                 "latest_version": 2,
+                "yaml_config_dict": {},
             },
             "model.test.ref_versioned_model": {
                 "alias": "ref_versioned_model",
@@ -1673,6 +1680,7 @@ def expected_versions_manifest(project):
                 "access": "protected",
                 "version": None,
                 "latest_version": None,
+                "yaml_config_dict": {},
             },
             "test.test.unique_versioned_model_v1_first_name.6138195dec": {
                 "alias": "unique_versioned_model_v1_first_name",

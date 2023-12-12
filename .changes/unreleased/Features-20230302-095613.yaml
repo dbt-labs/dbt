@@ -1,0 +1,6 @@
+kind: Features
+body: Support embedded yaml frontmatter in model nodes
+time: 2023-03-02T09:56:13.106933-05:00
+custom:
+  Author: gshank
+  Issue: "7099"

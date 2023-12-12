@@ -87,6 +87,7 @@ REQUIRED_PARSED_NODE_KEYS = frozenset(
         "relation_name",
         "contract",
         "access",
+        "yaml_config_dict",
         "version",
         "latest_version",
         "constraints",
