@@ -1,7 +1,7 @@
 import dbt.tracking
 from dbt.common.invocation import reset_invocation_id
 from dbt.version import installed as installed_version
-from dbt.adapters.factory import adapter_management, register_adapter, get_adapter
+from dbt.clients.adapter import adapter_management, register_adapter, get_adapter
 from dbt.flags import set_flags, get_flag_dict
 from dbt.cli.exceptions import (
     ExceptionExit,

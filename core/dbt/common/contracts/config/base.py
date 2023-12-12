@@ -145,7 +145,7 @@ class BaseConfig(AdditionalPropertiesAllowed, Replaceable):
         it, and return a new config with the updated values
         """
         # sadly, this is a circular import
-        from dbt.adapters.factory import get_config_class_by_name
+        from dbt.clients.adapter import get_config_class_by_name
 
         dct = self.to_dict(omit_none=False)
 

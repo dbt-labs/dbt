@@ -153,7 +153,7 @@ class Profile(HasCredentials):
         profile: Dict[str, Any], profile_name: str, target_name: str
     ) -> Credentials:
         # avoid an import cycle
-        from dbt.adapters.factory import load_plugin
+        from dbt.clients.adapter import load_plugin
 
         # credentials carry their 'type' in their actual type, not their
         # attributes. We do want this in order to pick our Credentials class.

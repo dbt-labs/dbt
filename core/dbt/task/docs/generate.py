@@ -12,7 +12,7 @@ from dbt.clients.system import load_file_contents
 from dbt.task.docs import DOCS_INDEX_FILE_PATH
 from dbt.task.compile import CompileTask
 
-from dbt.adapters.factory import get_adapter
+from dbt.clients.adapter import get_adapter
 from dbt.contracts.graph.nodes import ResultNode
 from dbt.contracts.graph.manifest import Manifest
 from dbt.contracts.results import (

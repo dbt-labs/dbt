@@ -10,6 +10,8 @@ from unittest import TestCase
 
 import agate
 import pytest
+
+import dbt.clients.adapter.client
 from dbt.common.dataclass_schema import ValidationError
 from dbt.config.project import PartialProject
 
@@ -107,18 +109,17 @@ def config_from_parts_or_dicts(project, profile, packages=None, selectors=None, 
 
 
 def inject_plugin(plugin):
-    from dbt.adapters.factory import FACTORY
+    from dbt.clients.adapter.client import _FACTORY
 
     key = plugin.adapter.type()
-    FACTORY.plugins[key] = plugin
+    _FACTORY.plugins[key] = plugin
 
 
 def inject_plugin_for(config):
     # from dbt.adapters.postgres import Plugin, PostgresAdapter
-    from dbt.adapters.factory import FACTORY
 
-    FACTORY.load_plugin(config.credentials.type)
-    adapter = FACTORY.get_adapter(config)
+    dbt.clients.adapter.client.load_plugin(config.credentials.type)
+    adapter = dbt.clients.adapter.client.get_adapter(config)
     return adapter
 
 
@@ -127,18 +128,18 @@ def inject_adapter(value, plugin):
     artisanal adapter will be available from get_adapter() as if dbt loaded it.
     """
     inject_plugin(plugin)
-    from dbt.adapters.factory import FACTORY
+    from dbt.clients.adapter.client import _FACTORY
 
     key = value.type()
-    FACTORY.adapters[key] = value
+    _FACTORY.adapters[key] = value
 
 
 def clear_plugin(plugin):
-    from dbt.adapters.factory import FACTORY
+    from dbt.clients.adapter.client import _FACTORY
 
     key = plugin.adapter.type()
-    FACTORY.plugins.pop(key, None)
-    FACTORY.adapters.pop(key, None)
+    _FACTORY.plugins.pop(key, None)
+    _FACTORY.adapters.pop(key, None)
 
 
 class ContractTestCase(TestCase):

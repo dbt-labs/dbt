@@ -7,7 +7,7 @@ from unittest import mock
 import pytest
 
 from dbt.adapters import postgres
-from dbt.adapters import factory
+from dbt.clients.adapter import client
 from dbt.clients.jinja import MacroStack
 from dbt.contracts.graph.nodes import (
     ModelNode,
@@ -368,7 +368,7 @@ def get_adapter():
 
 @pytest.fixture
 def get_include_paths():
-    with mock.patch.object(factory, "get_include_paths") as patch:
+    with mock.patch.object(client, "get_include_paths") as patch:
         patch.return_value = []
         yield patch
 

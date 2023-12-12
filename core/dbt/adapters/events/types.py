@@ -272,17 +272,7 @@ class CacheDumpGraph(DebugLevel):
         return f"dump {self.before_after} {self.action} : {self.dump}"
 
 
-# Skipping E032, E033, E034
-
-
-class AdapterRegistered(InfoLevel):
-    def code(self) -> str:
-        return "E034"
-
-    def message(self) -> str:
-        return f"Registered adapter: {self.adapter_name}{self.adapter_version}"
-
-
+# Skipping E032, E033
 class AdapterImportError(InfoLevel):
     def code(self) -> str:
         return "E035"

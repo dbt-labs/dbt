@@ -44,7 +44,7 @@ class ManifestContext(ConfiguredContext):
 
     def _get_namespace_builder(self) -> MacroNamespaceBuilder:
         # avoid an import loop
-        from dbt.adapters.factory import get_adapter_package_names
+        from dbt.clients.adapter import get_adapter_package_names
 
         internal_packages: List[str] = get_adapter_package_names(self.config.credentials.type)
         return MacroNamespaceBuilder(

@@ -7,12 +7,13 @@ from multiprocessing.dummy import Pool as ThreadPool
 from pathlib import Path
 from typing import AbstractSet, Optional, Dict, List, Set, Tuple, Iterable
 
+import dbt.clients.adapter.client
 import dbt.common.utils.formatting
 import dbt.exceptions
 import dbt.tracking
 import dbt.utils
 from dbt.adapters.base import BaseRelation
-from dbt.adapters.factory import get_adapter
+from dbt.clients.adapter import get_adapter
 from dbt.contracts.graph.manifest import WritableManifest
 from dbt.contracts.graph.nodes import ResultNode
 from dbt.contracts.results import (
@@ -446,7 +447,7 @@ class GraphRunnableTask(ConfiguredTask):
             res = self.execute_nodes()
             self.after_run(adapter, res)
         finally:
-            adapter.cleanup_connections()
+            dbt.clients.adapter.client.cleanup_connections()
             elapsed = time.time() - self.started_at
             self.print_results_line(self.node_results, elapsed)
             result = self.get_result(

@@ -11,7 +11,7 @@ from dbt.context.providers import (
     generate_parser_model_context,
     generate_generate_name_macro_context,
 )
-from dbt.adapters.factory import get_adapter  # noqa: F401
+from dbt.clients.adapter import get_adapter  # noqa: F401
 from dbt.clients.jinja import get_rendered
 from dbt.config import Project, RuntimeConfig
 from dbt.context.context_config import ContextConfig

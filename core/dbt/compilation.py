@@ -9,7 +9,7 @@ from typing import List, Dict, Any, Tuple, Optional
 
 from dbt.common.invocation import get_invocation_id
 from dbt.flags import get_flags
-from dbt.adapters.factory import get_adapter
+from dbt.clients.adapter import get_adapter
 from dbt.clients import jinja
 from dbt.clients.system import make_directory
 from dbt.context.providers import generate_runtime_model_context

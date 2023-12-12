@@ -15,7 +15,7 @@ from typing import (
     Type,
 )
 
-from dbt.adapters.factory import get_include_paths, get_relation_class_by_name
+from dbt.clients.adapter import get_include_paths, get_relation_class_by_name
 from dbt.adapters.contracts.connection import AdapterRequiredConfig, Credentials, HasCredentials
 from dbt.adapters.contracts.relation import ComponentName
 from dbt.flags import get_flags

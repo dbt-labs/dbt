@@ -1,28 +1,30 @@
-import threading
-import traceback
-from contextlib import contextmanager
 from importlib import import_module
+
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set, Type
 
-from dbt.adapters.base.plugin import AdapterPlugin
-from dbt.adapters.protocol import AdapterConfig, AdapterProtocol, RelationProtocol
-from dbt.adapters.contracts.connection import AdapterRequiredConfig, Credentials
+from typing import Dict, Type, Any, Optional, List, Set
+
+import threading
+
+from dbt.adapters.base import AdapterPlugin
+from dbt.adapters.contracts.connection import Credentials, AdapterRequiredConfig
+from dbt.adapters.include.global_project import (
+    PROJECT_NAME as GLOBAL_PROJECT_NAME,
+    PACKAGE_PATH as GLOBAL_PROJECT_PATH,
+)
+from dbt.adapters import load_adapter
+from dbt.adapters.protocol import RelationProtocol, AdapterConfig, AdapterProtocol
 from dbt.common.events.functions import fire_event
-from dbt.adapters.events.types import AdapterImportError, PluginLoadError, AdapterRegistered
-from dbt.common.exceptions import DbtInternalError, DbtRuntimeError
-from dbt.adapters.include.global_project import PACKAGE_PATH as GLOBAL_PROJECT_PATH
-from dbt.adapters.include.global_project import PROJECT_NAME as GLOBAL_PROJECT_NAME
+from dbt.common.exceptions import DbtRuntimeError, DbtInternalError
 from dbt.common.semver import VersionSpecifier
+from dbt.events.types import AdapterRegistered
 from dbt.mp_context import get_mp_context
-
-Adapter = AdapterProtocol
 
 
 class AdapterContainer:
     def __init__(self) -> None:
         self.lock = threading.Lock()
-        self.adapters: Dict[str, Adapter] = {}
+        self.adapters: Dict[str, AdapterProtocol] = {}
         self.plugins: Dict[str, AdapterPlugin] = {}
         # map package names to their include paths
         self.packages: Dict[str, Path] = {
@@ -38,7 +40,7 @@ class AdapterContainer:
         message = f"Invalid adapter type {name}! Must be one of {names}"
         raise DbtRuntimeError(message)
 
-    def get_adapter_class_by_name(self, name: str) -> Type[Adapter]:
+    def get_adapter_class_by_name(self, name: str) -> Type[AdapterProtocol]:
         plugin = self.get_plugin_by_name(name)
         return plugin.adapter
 
@@ -54,20 +56,8 @@ class AdapterContainer:
         # this doesn't need a lock: in the worst case we'll overwrite packages
         # and adapter_type entries with the same value, as they're all
         # singletons
-        try:
-            # mypy doesn't think modules have any attributes.
-            mod: Any = import_module("." + name, "dbt.adapters")
-        except ModuleNotFoundError as exc:
-            # if we failed to import the target module in particular, inform
-            # the user about it via a runtime error
-            if exc.name == "dbt.adapters." + name:
-                fire_event(AdapterImportError(exc=str(exc)))
-                raise DbtRuntimeError(f"Could not find adapter type {name}!")
-            # otherwise, the error had to have come from some underlying
-            # library. Log the stack trace.
+        mod: Any = load_adapter.get_adapter_by_name(name)
 
-            fire_event(PluginLoadError(exc_info=traceback.format_exc()))
-            raise
         plugin: AdapterPlugin = mod.Plugin
         plugin_type = plugin.adapter.type()
 
@@ -103,10 +93,10 @@ class AdapterContainer:
                 # this shouldn't really happen...
                 return
 
-            adapter: Adapter = adapter_type(config, get_mp_context())  # type: ignore
+            adapter: AdapterProtocol = adapter_type(config, get_mp_context())  # type: ignore
             self.adapters[adapter_name] = adapter
 
-    def lookup_adapter(self, adapter_name: str) -> Adapter:
+    def lookup_adapter(self, adapter_name: str) -> AdapterProtocol:
         return self.adapters[adapter_name]
 
     def reset_adapters(self):
@@ -168,71 +158,3 @@ class AdapterContainer:
 
     def get_adapter_constraint_support(self, name: Optional[str]) -> List[str]:
         return self.lookup_adapter(name).CONSTRAINT_SUPPORT  # type: ignore
-
-
-FACTORY: AdapterContainer = AdapterContainer()
-
-
-def register_adapter(config: AdapterRequiredConfig) -> None:
-    FACTORY.register_adapter(config)
-
-
-def get_adapter(config: AdapterRequiredConfig):
-    return FACTORY.lookup_adapter(config.credentials.type)
-
-
-def get_adapter_by_type(adapter_type):
-    return FACTORY.lookup_adapter(adapter_type)
-
-
-def reset_adapters():
-    """Clear the adapters. This is useful for tests, which change configs."""
-    FACTORY.reset_adapters()
-
-
-def cleanup_connections():
-    """Only clean up the adapter connections list without resetting the actual
-    adapters.
-    """
-    FACTORY.cleanup_connections()
-
-
-def get_adapter_class_by_name(name: str) -> Type[AdapterProtocol]:
-    return FACTORY.get_adapter_class_by_name(name)
-
-
-def get_config_class_by_name(name: str) -> Type[AdapterConfig]:
-    return FACTORY.get_config_class_by_name(name)
-
-
-def get_relation_class_by_name(name: str) -> Type[RelationProtocol]:
-    return FACTORY.get_relation_class_by_name(name)
-
-
-def load_plugin(name: str) -> Type[Credentials]:
-    return FACTORY.load_plugin(name)
-
-
-def get_include_paths(name: Optional[str]) -> List[Path]:
-    return FACTORY.get_include_paths(name)
-
-
-def get_adapter_package_names(name: Optional[str]) -> List[str]:
-    return FACTORY.get_adapter_package_names(name)
-
-
-def get_adapter_type_names(name: Optional[str]) -> List[str]:
-    return FACTORY.get_adapter_type_names(name)
-
-
-def get_adapter_constraint_support(name: Optional[str]) -> List[str]:
-    return FACTORY.get_adapter_constraint_support(name)
-
-
-@contextmanager
-def adapter_management():
-    reset_adapters()
-    try:
-        yield
-    finally:
-        cleanup_connections()

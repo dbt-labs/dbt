@@ -678,7 +678,7 @@ class ModelNode(CompiledNode):
             contract_enforced_disabled = True
 
         # TODO: this avoid the circular imports but isn't ideal
-        from dbt.adapters.factory import get_adapter_constraint_support
+        from dbt.clients.adapter import get_adapter_constraint_support
         from dbt.adapters.base import ConstraintSupport
 
         constraint_support = get_adapter_constraint_support(adapter_type)

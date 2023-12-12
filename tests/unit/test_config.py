@@ -16,7 +16,7 @@ from dbt.constants import DEPENDENCIES_FILE_NAME, PACKAGES_FILE_NAME
 import dbt.exceptions
 import dbt.tracking
 from dbt import flags
-from dbt.adapters.factory import load_plugin
+from dbt.clients.adapter import load_plugin
 from dbt.adapters.postgres import PostgresCredentials
 from dbt.adapters.contracts.connection import QueryComment, DEFAULT_QUERY_COMMENT
 from dbt.contracts.project import PackageConfig, LocalPackage, GitPackage

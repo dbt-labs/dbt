@@ -18,6 +18,19 @@ message CoreEventInfo {
     string category = 10;
 }
 
+// E - Adapter related events
+// E034
+message AdapterRegistered {
+    string adapter_name = 1;
+    string adapter_version = 2;
+}
+
+message AdapterRegisteredMsg {
+    CoreEventInfo info = 1;
+    AdapterRegistered data = 2;
+}
+
+
 // D - Deprecation
 
 // D001

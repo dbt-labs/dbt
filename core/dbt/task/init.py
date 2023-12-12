@@ -14,7 +14,7 @@ from dbt.config.profile import read_profile
 from dbt.common.exceptions import DbtRuntimeError
 from dbt.flags import get_flags
 from dbt.version import _get_adapter_plugin_names
-from dbt.adapters.factory import load_plugin, get_include_paths
+from dbt.clients.adapter import load_plugin, get_include_paths
 
 from dbt.contracts.util import Identifier as ProjectName
 

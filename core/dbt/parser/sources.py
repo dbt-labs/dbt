@@ -3,7 +3,7 @@ from pathlib import Path
 from typing import Iterable, Dict, Optional, Set, Any, List
 
 from dbt.adapters.capability import Capability
-from dbt.adapters.factory import get_adapter
+from dbt.clients.adapter import get_adapter
 from dbt.config import RuntimeConfig
 from dbt.context.context_config import (
     BaseContextConfigGenerator,

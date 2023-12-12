@@ -138,6 +138,8 @@ sample_values = [
     types.InvalidProfileTemplateYAML(),
     types.ProjectNameAlreadyExists(name=""),
     types.ProjectCreated(project_name=""),
+    # E - Adapter Events ======================
+    core_types.AdapterRegistered(adapter_name="dbt-awesome", adapter_version="1.2.3"),
     # D - Deprecations ======================
     core_types.PackageRedirectDeprecation(old_name="", new_name=""),
     core_types.PackageInstallPathDeprecation(),
@@ -156,7 +158,6 @@ sample_values = [
     adapter_types.AdapterEventInfo(),
     adapter_types.AdapterEventWarning(),
     adapter_types.AdapterEventError(),
-    adapter_types.AdapterRegistered(adapter_name="dbt-awesome", adapter_version="1.2.3"),
     adapter_types.NewConnection(conn_type="", conn_name=""),
     adapter_types.ConnectionReused(conn_name=""),
     adapter_types.ConnectionLeftOpenInCleanup(conn_name=""),

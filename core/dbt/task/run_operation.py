@@ -6,7 +6,7 @@ from datetime import datetime
 import agate
 
 import dbt.common.exceptions
-from dbt.adapters.factory import get_adapter
+from dbt.clients.adapter import get_adapter
 from dbt.contracts.files import FileHash
 from dbt.contracts.graph.nodes import HookNode
 from dbt.contracts.results import RunResultsArtifact, RunResult, RunStatus, TimingInfo

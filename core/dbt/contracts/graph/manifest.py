@@ -745,7 +745,7 @@ class MacroMethods:
     ) -> CandidateList:
         """Find macros by their name."""
         # avoid an import cycle
-        from dbt.adapters.factory import get_adapter_package_names
+        from dbt.clients.adapter import get_adapter_package_names
 
         candidates: CandidateList = CandidateList()
         packages = set(get_adapter_package_names(self.metadata.adapter_type))
@@ -876,7 +876,7 @@ class Manifest(MacroMethods, DataClassMessagePackMixin, dbtClassMixin):
     def _get_parent_adapter_types(self, adapter_type: str) -> List[str]:
         # This is duplicated logic from core/dbt/context/providers.py
         # Ideally this would instead be incorporating actual dispatch logic
-        from dbt.adapters.factory import get_adapter_type_names
+        from dbt.clients.adapter import get_adapter_type_names
 
         # order matters for dispatch:
         #  1. current adapter

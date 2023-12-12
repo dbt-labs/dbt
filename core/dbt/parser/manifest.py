@@ -31,7 +31,7 @@ import dbt.tracking
 import dbt.utils
 from dbt.flags import get_flags
 
-from dbt.adapters.factory import (
+from dbt.clients.adapter import (
     get_adapter,
     get_relation_class_by_name,
     get_adapter_package_names,
@@ -1627,7 +1627,7 @@ def _process_metric_node(
             metric.type_params.input_measures.extend(target_metric.type_params.input_measures)
             metric.depends_on.add_node(target_metric.unique_id)
     else:
-        assert_values_exhausted(metric.type)
+        assert_values_exhausted(metric.type)  # type: ignore[arg-type]
 
 
 def _process_metrics_for_node(

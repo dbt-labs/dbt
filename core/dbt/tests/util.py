@@ -7,8 +7,8 @@ import warnings
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 from contextlib import contextmanager
-from dbt.adapters.factory import Adapter
 
+from dbt.adapters.protocol import AdapterProtocol
 from dbt.cli.main import dbtRunner
 from dbt.logger import log_manager
 from dbt.contracts.graph.manifest import Manifest
@@ -427,7 +427,7 @@ def check_relation_has_expected_schema(adapter, relation_name, expected_schema: 
 #    adapter.get_rows_different_sql
 #    adapter.execute
 def check_relations_equal_with_relations(
-    adapter: Adapter, relations: List, compare_snapshot_cols=False
+    adapter: AdapterProtocol, relations: List, compare_snapshot_cols=False
 ):
     with get_connection(adapter):
         basis, compares = relations[0], relations[1:]

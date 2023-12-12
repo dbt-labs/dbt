@@ -18,7 +18,7 @@ from dbt.common.events.types import (
 import dbt.clients.system
 import dbt.exceptions
 import dbt.common.exceptions
-from dbt.adapters.factory import get_adapter, register_adapter
+from dbt.clients.adapter import get_adapter, register_adapter
 from dbt.config import PartialProject, Project, Profile
 from dbt.config.renderer import DbtProjectYamlRenderer, ProfileRenderer
 from dbt.contracts.results import RunStatus

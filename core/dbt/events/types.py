@@ -1,5 +1,23 @@
-from dbt.events.base_types import WarnLevel
+from dbt.events.base_types import WarnLevel, InfoLevel
 from dbt.common.ui import warning_tag, line_wrap_message
+
+
+# =======================================================
+# E Adapter Events
+# =======================================================
+
+
+class AdapterRegistered(InfoLevel):
+    """
+    This event signifies that an adapter has been registered with dbt-core.
+    While it is about an adapter it specifically signifies a point in the dbt runner's workflow
+    """
+
+    def code(self) -> str:
+        return "E034"
+
+    def message(self) -> str:
+        return f"Registered adapter: {self.adapter_name}{self.adapter_version}"
 
 
 # =======================================================

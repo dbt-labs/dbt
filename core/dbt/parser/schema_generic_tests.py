@@ -29,7 +29,7 @@ from dbt.exceptions import SchemaConfigError, CompilationError, ParsingError, Te
 from dbt.contracts.files import FileHash
 from dbt.utils import md5, get_pseudo_test_path
 from dbt.clients.jinja import get_rendered, add_rendered_test_kwargs
-from dbt.adapters.factory import get_adapter, get_adapter_package_names
+from dbt.clients.adapter import get_adapter, get_adapter_package_names
 from dbt.node_types import NodeType
 from dbt.context.macro_resolver import MacroResolver
 
