@@ -1,9 +1,13 @@
+import datetime
+import json
+import os
+import pprint
+import time
+import traceback
 from copy import deepcopy
 from dataclasses import dataclass
 from dataclasses import field
-import datetime
-import os
-import traceback
+from itertools import chain
 from typing import (
     Dict,
     Optional,
@@ -16,50 +20,20 @@ from typing import (
     Tuple,
     Set,
 )
-from itertools import chain
-import time
 
-from dbt.contracts.graph.semantic_manifest import SemanticManifest
-from dbt.events.base_types import EventLevel
-import json
-import pprint
 import msgpack
+from dbt_semantic_interfaces.enum_extension import assert_values_exhausted
+from dbt_semantic_interfaces.type_enums import MetricType
 
 import dbt.exceptions
 import dbt.tracking
 import dbt.utils
-from dbt.flags import get_flags
-
+from dbt import plugins
 from dbt.adapters.factory import (
     get_adapter,
     get_relation_class_by_name,
     get_adapter_package_names,
 )
-from dbt.constants import (
-    MANIFEST_FILE_NAME,
-    PARTIAL_PARSE_FILE_NAME,
-    SEMANTIC_MANIFEST_FILE_NAME,
-)
-from dbt.helper_types import PathSet
-from dbt.events.functions import fire_event, get_invocation_id, warn_or_error
-from dbt.events.types import (
-    PartialParsingErrorProcessingFile,
-    PartialParsingError,
-    ParsePerfInfoPath,
-    PartialParsingSkipParsing,
-    UnableToPartialParse,
-    PartialParsingNotEnabled,
-    ParsedFileLoadFailed,
-    InvalidDisabledTargetInTestNode,
-    NodeNotFoundOrDisabled,
-    StateCheckVarsHash,
-    Note,
-    DeprecatedModel,
-    DeprecatedReference,
-    UpcomingReferenceDeprecation,
-)
-from dbt.logger import DbtProcessState
-from dbt.node_types import NodeType, AccessType
 from dbt.clients.jinja import get_rendered, MacroStack
 from dbt.clients.jinja_static import statically_extract_macro_calls
 from dbt.clients.system import (
@@ -69,19 +43,16 @@ from dbt.clients.system import (
     write_file,
 )
 from dbt.config import Project, RuntimeConfig
+from dbt.constants import (
+    MANIFEST_FILE_NAME,
+    PARTIAL_PARSE_FILE_NAME,
+    SEMANTIC_MANIFEST_FILE_NAME,
+)
+from dbt.context.configured import generate_macro_context
 from dbt.context.docs import generate_runtime_docs_context
 from dbt.context.macro_resolver import MacroResolver, TestMacroNamespace
-from dbt.context.configured import generate_macro_context
 from dbt.context.providers import ParseProvider
 from dbt.contracts.files import FileHash, ParseFileType, SchemaSourceFile
-from dbt.parser.read_files import (
-    ReadFilesFromFileSystem,
-    load_source_file,
-    FileDiff,
-    ReadFilesFromDiff,
-    ReadFiles,
-)
-from dbt.parser.partial import PartialParsing, special_override_macros
 from dbt.contracts.graph.manifest import (
     Manifest,
     Disabled,
@@ -102,33 +73,59 @@ from dbt.contracts.graph.nodes import (
     ModelNode,
     NodeRelation,
 )
+from dbt.contracts.graph.semantic_manifest import SemanticManifest
 from dbt.contracts.graph.unparsed import NodeVersion
 from dbt.contracts.util import Writable
+from dbt.dataclass_schema import StrEnum, dbtClassMixin
+from dbt.events.base_types import EventLevel
+from dbt.events.functions import fire_event, get_invocation_id, warn_or_error
+from dbt.events.types import (
+    PartialParsingErrorProcessingFile,
+    PartialParsingError,
+    ParsePerfInfoPath,
+    PartialParsingSkipParsing,
+    UnableToPartialParse,
+    PartialParsingNotEnabled,
+    ParsedFileLoadFailed,
+    InvalidDisabledTargetInTestNode,
+    NodeNotFoundOrDisabled,
+    StateCheckVarsHash,
+    Note,
+    DeprecatedModel,
+    DeprecatedReference,
+    UpcomingReferenceDeprecation,
+)
 from dbt.exceptions import (
     TargetNotFoundError,
     AmbiguousAliasError,
     InvalidAccessTypeError,
 )
-from dbt.parser.base import Parser
+from dbt.flags import get_flags
+from dbt.helper_types import PathSet
+from dbt.logger import DbtProcessState
+from dbt.node_types import NodeType, AccessType
 from dbt.parser.analysis import AnalysisParser
-from dbt.parser.generic_test import GenericTestParser
-from dbt.parser.singular_test import SingularTestParser
+from dbt.parser.base import Parser
 from dbt.parser.docs import DocumentationParser
+from dbt.parser.generic_test import GenericTestParser
 from dbt.parser.hooks import HookParser
 from dbt.parser.macros import MacroParser
 from dbt.parser.models import ModelParser
+from dbt.parser.partial import PartialParsing, special_override_macros
+from dbt.parser.read_files import (
+    ReadFilesFromFileSystem,
+    load_source_file,
+    FileDiff,
+    ReadFilesFromDiff,
+    ReadFiles,
+)
 from dbt.parser.schemas import SchemaParser
 from dbt.parser.search import FileBlock
 from dbt.parser.seeds import SeedParser
+from dbt.parser.singular_test import SingularTestParser
 from dbt.parser.snapshots import SnapshotParser
 from dbt.parser.sources import SourcePatcher
 from dbt.version import __version__
-
-from dbt.dataclass_schema import StrEnum, dbtClassMixin
-from dbt import plugins
-
-from dbt_semantic_interfaces.enum_extension import assert_values_exhausted
-from dbt_semantic_interfaces.type_enums import MetricType
 
 PARSING_STATE = DbtProcessState("parsing")
 PERF_INFO_FILE_NAME = "perf_info.json"
@@ -267,6 +264,8 @@ class ManifestLoader:
         # This is a saved manifest from a previous run that's used for partial parsing
         self.saved_manifest: Optional[Manifest] = self.read_manifest_for_partial_parse()
 
+        self.skip_parsing = False
+
     # This is the method that builds a complete manifest. We sometimes
     # use an abbreviated process in tests.
     @classmethod
@@ -333,15 +332,214 @@ class ManifestLoader:
 
         return manifest
 
+    def load_macros_and_tests(
+        self,
+        project_parser_files: Dict[str, Dict[str, List[str]]],
+        orig_project_parser_files: Dict[str, Dict[str, List[str]]],
+    ) -> None:
+        """
+        Load Macros and tests
+        We need to parse the macros first, so they're resolvable when
+        the other files are loaded.  Also need to parse tests, specifically
+        generic tests
+        """
+        start_load_macros = time.perf_counter()
+        self.load_and_parse_macros(project_parser_files)
+
+        # If we're partially parsing check that certain macros have not been changed
+        if self.partially_parsing and self.skip_partial_parsing_because_of_macros():
+            fire_event(
+                UnableToPartialParse(
+                    reason="change detected to override macro. Starting full parse."
+                )
+            )
+
+            # Get new Manifest with original file records and move over the macros
+            self.manifest = self.new_manifest  # contains newly read files
+            project_parser_files = orig_project_parser_files
+            self.partially_parsing = False
+            self.load_and_parse_macros(project_parser_files)
+
+        self._perf_info.load_macros_elapsed = time.perf_counter() - start_load_macros
+
+        # Now that the macros are parsed, parse the rest of the files.
+        # This is currently done on a per project basis.
+        start_parse_projects = time.perf_counter()
+
+        # Load the rest of the files except for schema yaml files
+        parser_types: List[Type[Parser]] = [
+            ModelParser,
+            SnapshotParser,
+            AnalysisParser,
+            SingularTestParser,
+            SeedParser,
+            DocumentationParser,
+            HookParser,
+        ]
+        for project in self.all_projects.values():
+            if project.project_name not in project_parser_files:
+                continue
+            self.parse_project(project, project_parser_files[project.project_name], parser_types)
+
+        # Now that we've loaded most of the nodes (except for schema tests, sources, metrics)
+        # load up the Lookup objects to resolve them by name, so the SourceFiles store
+        # the unique_id instead of the name. Sources are loaded from yaml files, so
+        # aren't in place yet
+        self.manifest.rebuild_ref_lookup()
+        self.manifest.rebuild_doc_lookup()
+        self.manifest.rebuild_disabled_lookup()
+
+        # Load yaml files
+        parser_types = [SchemaParser]  # type: ignore
+        for project in self.all_projects.values():
+            if project.project_name not in project_parser_files:
+                continue
+            self.parse_project(project, project_parser_files[project.project_name], parser_types)
+
+        self.cleanup_disabled()
+
+        self._perf_info.parse_project_elapsed = time.perf_counter() - start_parse_projects
+
+        # patch_sources converts the UnparsedSourceDefinitions in the
+        # Manifest.sources to SourceDefinition via 'patch_source'
+        # in SourcePatcher
+        start_patch = time.perf_counter()
+        patcher = SourcePatcher(self.root_project, self.manifest)
+        patcher.construct_sources()
+        self.manifest.sources = patcher.sources
+        self._perf_info.patch_sources_elapsed = time.perf_counter() - start_patch
+
+        # We need to rebuild disabled in order to include disabled sources
+        self.manifest.rebuild_disabled_lookup()
+
+        # copy the selectors from the root_project to the manifest
+        self.manifest.selectors = self.root_project.manifest_selectors
+
+        # inject any available external nodes
+        self.manifest.build_parent_and_child_maps()
+        external_nodes_modified = self.inject_external_nodes()
+        if external_nodes_modified:
+            self.manifest.rebuild_ref_lookup()
+
+        # update the refs, sources, docs and metrics depends_on.nodes
+        # These check the created_at time on the nodes to
+        # determine whether they need processing.
+        start_process = time.perf_counter()
+        self.process_sources(self.root_project.project_name)
+        self.process_refs(self.root_project.project_name, self.root_project.dependencies)
+        self.process_docs(self.root_project)
+        self.process_metrics(self.root_project)
+        self.process_saved_queries(self.root_project)
+        self.check_valid_group_config()
+        self.check_valid_access_property()
+
+        semantic_manifest = SemanticManifest(self.manifest)
+        if not semantic_manifest.validate():
+            raise dbt.exceptions.ParsingError("Semantic Manifest validation failed.")
+
+        # update tracking data
+        self._perf_info.process_manifest_elapsed = time.perf_counter() - start_process
+        self._perf_info.static_analysis_parsed_path_count = (
+            self.manifest._parsing_info.static_analysis_parsed_path_count
+        )
+        self._perf_info.static_analysis_path_count = (
+            self.manifest._parsing_info.static_analysis_path_count
+        )
+
     # This is where the main action happens
     def load(self) -> Manifest:
-        start_read_files = time.perf_counter()
+        file_reader = self.get_file_reader()
+        self.manifest.files = file_reader.files
+        project_parser_files = orig_project_parser_files = file_reader.project_parser_files
 
-        # This updates the "files" dictionary in self.manifest, and creates
-        # the partial_parser_files dictionary (see read_files.py),
-        # which is a dictionary of projects to a dictionary
-        # of parsers to lists of file strings. The file strings are
-        # used to get the SourceFiles from the manifest files.
+        if self.saved_manifest is not None:
+            project_parser_files = self.rebuild_manifest_pp(project_parser_files)
+
+        if self.skip_parsing:
+            fire_event(PartialParsingSkipParsing())
+        else:
+            self.load_macros_and_tests(project_parser_files, orig_project_parser_files)
+
+        self.load_external_nodes()
+        self.check_for_model_deprecations()
+
+        return self.manifest
+
+    def rebuild_manifest_pp(
+        self, project_parser_files: Dict[str, Dict[str, List[str]]]
+    ) -> Dict[str, Dict[str, List[str]]]:
+        assert self.saved_manifest is not None
+        self.partial_parser = PartialParsing(self.saved_manifest, self.manifest.files)
+        self.skip_parsing = self.partial_parser.skip_parsing()
+        if self.skip_parsing:
+            # nothing changed, so we don't need to generate project_parser_files
+            self.manifest = self.saved_manifest
+        else:
+            # create child_map and parent_map
+            self.saved_manifest.build_parent_and_child_maps()
+            # create group_map
+            self.saved_manifest.build_group_map()
+            # files are different, we need to create a new set of
+            # project_parser_files.
+            try:
+                project_parser_files = self.partial_parser.get_parsing_files()
+                self.partially_parsing = True
+                self.manifest = self.saved_manifest
+            except Exception as exc:
+                # pp_files should still be the full set and manifest is new manifest,
+                # since get_parsing_files failed
+                fire_event(
+                    UnableToPartialParse(reason="an error occurred. Switching to full reparse.")
+                )
+
+                # Get traceback info
+                tb_info = traceback.format_exc()
+                formatted_lines = tb_info.splitlines()
+                (_, line, method) = formatted_lines[-3].split(", ")
+                exc_info = {
+                    "traceback": tb_info,
+                    "exception": formatted_lines[-1],
+                    "code": formatted_lines[-2],
+                    "location": f"{line} {method}",
+                }
+
+                # get file info for local logs
+                parse_file_type: str = ""
+                file_id = self.partial_parser.processing_file
+                if file_id:
+                    source_file = None
+                    if file_id in self.saved_manifest.files:
+                        source_file = self.saved_manifest.files[file_id]
+                    elif file_id in self.manifest.files:
+                        source_file = self.manifest.files[file_id]
+                    if source_file:
+                        parse_file_type = source_file.parse_file_type
+                        fire_event(PartialParsingErrorProcessingFile(file=file_id))
+                exc_info["parse_file_type"] = parse_file_type
+                fire_event(PartialParsingError(exc_info=exc_info))
+
+                # Send event
+                if dbt.tracking.active_user is not None:
+                    exc_info["full_reparse_reason"] = ReparseReason.exception
+                    dbt.tracking.track_partial_parser(exc_info)
+
+                if os.environ.get("DBT_PP_TEST"):
+                    raise exc
+            finally:
+                self.manifest._parsing_info = self.manifest._parsing_info or ParsingInfo()
+
+        return project_parser_files
+
+    def get_file_reader(self) -> ReadFiles:
+        """
+        This updates the "files" dictionary in self.manifest, and creates
+        the partial_parser_files dictionary (see read_files.py),
+        which is a dictionary of projects to a dictionary
+        of parsers to lists of file strings. The file strings are
+        used to get the SourceFiles from the manifest files.
+        """
+        start_time = time.perf_counter()
+
         saved_files = self.saved_manifest.files if self.saved_manifest else {}
         file_reader: Optional[ReadFiles] = None
         if self.file_diff:
@@ -361,214 +559,26 @@ class ManifestLoader:
                 saved_files=saved_files,
             )
 
-        # Set the files in the manifest and save the project_parser_files
         file_reader.read_files()
-        self.manifest.files = file_reader.files
-        project_parser_files = orig_project_parser_files = file_reader.project_parser_files
-        self._perf_info.path_count = len(self.manifest.files)
-        self._perf_info.read_files_elapsed = time.perf_counter() - start_read_files
+        self._perf_info.path_count = len(file_reader.files)
+        self._perf_info.read_files_elapsed = time.perf_counter() - start_time
 
-        skip_parsing = False
-        if self.saved_manifest is not None:
-            self.partial_parser = PartialParsing(self.saved_manifest, self.manifest.files)
-            skip_parsing = self.partial_parser.skip_parsing()
-            if skip_parsing:
-                # nothing changed, so we don't need to generate project_parser_files
-                self.manifest = self.saved_manifest
-            else:
-                # create child_map and parent_map
-                self.saved_manifest.build_parent_and_child_maps()
-                # create group_map
-                self.saved_manifest.build_group_map()
-                # files are different, we need to create a new set of
-                # project_parser_files.
-                try:
-                    project_parser_files = self.partial_parser.get_parsing_files()
-                    self.partially_parsing = True
-                    self.manifest = self.saved_manifest
-                except Exception as exc:
-                    # pp_files should still be the full set and manifest is new manifest,
-                    # since get_parsing_files failed
-                    fire_event(
-                        UnableToPartialParse(
-                            reason="an error occurred. Switching to full reparse."
-                        )
-                    )
+        return file_reader
 
-                    # Get traceback info
-                    tb_info = traceback.format_exc()
-                    formatted_lines = tb_info.splitlines()
-                    (_, line, method) = formatted_lines[-3].split(", ")
-                    exc_info = {
-                        "traceback": tb_info,
-                        "exception": formatted_lines[-1],
-                        "code": formatted_lines[-2],
-                        "location": f"{line} {method}",
-                    }
-
-                    # get file info for local logs
-                    parse_file_type: str = ""
-                    file_id = self.partial_parser.processing_file
-                    if file_id:
-                        source_file = None
-                        if file_id in self.saved_manifest.files:
-                            source_file = self.saved_manifest.files[file_id]
-                        elif file_id in self.manifest.files:
-                            source_file = self.manifest.files[file_id]
-                        if source_file:
-                            parse_file_type = source_file.parse_file_type
-                            fire_event(PartialParsingErrorProcessingFile(file=file_id))
-                    exc_info["parse_file_type"] = parse_file_type
-                    fire_event(PartialParsingError(exc_info=exc_info))
-
-                    # Send event
-                    if dbt.tracking.active_user is not None:
-                        exc_info["full_reparse_reason"] = ReparseReason.exception
-                        dbt.tracking.track_partial_parser(exc_info)
-
-                    if os.environ.get("DBT_PP_TEST"):
-                        raise exc
-
-        if self.manifest._parsing_info is None:
-            self.manifest._parsing_info = ParsingInfo()
-
-        if skip_parsing:
-            fire_event(PartialParsingSkipParsing())
-        else:
-            # Load Macros and tests
-            # We need to parse the macros first, so they're resolvable when
-            # the other files are loaded.  Also need to parse tests, specifically
-            # generic tests
-            start_load_macros = time.perf_counter()
-            self.load_and_parse_macros(project_parser_files)
-
-            # If we're partially parsing check that certain macros have not been changed
-            if self.partially_parsing and self.skip_partial_parsing_because_of_macros():
-                fire_event(
-                    UnableToPartialParse(
-                        reason="change detected to override macro. Starting full parse."
-                    )
-                )
-
-                # Get new Manifest with original file records and move over the macros
-                self.manifest = self.new_manifest  # contains newly read files
-                project_parser_files = orig_project_parser_files
-                self.partially_parsing = False
-                self.load_and_parse_macros(project_parser_files)
-
-            self._perf_info.load_macros_elapsed = time.perf_counter() - start_load_macros
-
-            # Now that the macros are parsed, parse the rest of the files.
-            # This is currently done on a per project basis.
-            start_parse_projects = time.perf_counter()
-
-            # Load the rest of the files except for schema yaml files
-            parser_types: List[Type[Parser]] = [
-                ModelParser,
-                SnapshotParser,
-                AnalysisParser,
-                SingularTestParser,
-                SeedParser,
-                DocumentationParser,
-                HookParser,
-            ]
-            for project in self.all_projects.values():
-                if project.project_name not in project_parser_files:
-                    continue
-                self.parse_project(
-                    project, project_parser_files[project.project_name], parser_types
-                )
-
-            # Now that we've loaded most of the nodes (except for schema tests, sources, metrics)
-            # load up the Lookup objects to resolve them by name, so the SourceFiles store
-            # the unique_id instead of the name. Sources are loaded from yaml files, so
-            # aren't in place yet
-            self.manifest.rebuild_ref_lookup()
-            self.manifest.rebuild_doc_lookup()
-            self.manifest.rebuild_disabled_lookup()
-
-            # Load yaml files
-            parser_types = [SchemaParser]  # type: ignore
-            for project in self.all_projects.values():
-                if project.project_name not in project_parser_files:
-                    continue
-                self.parse_project(
-                    project, project_parser_files[project.project_name], parser_types
-                )
-
-            self.cleanup_disabled()
-
-            self._perf_info.parse_project_elapsed = time.perf_counter() - start_parse_projects
-
-            # patch_sources converts the UnparsedSourceDefinitions in the
-            # Manifest.sources to SourceDefinition via 'patch_source'
-            # in SourcePatcher
-            start_patch = time.perf_counter()
-            patcher = SourcePatcher(self.root_project, self.manifest)
-            patcher.construct_sources()
-            self.manifest.sources = patcher.sources
-            self._perf_info.patch_sources_elapsed = time.perf_counter() - start_patch
-
-            # We need to rebuild disabled in order to include disabled sources
-            self.manifest.rebuild_disabled_lookup()
-
-            # copy the selectors from the root_project to the manifest
-            self.manifest.selectors = self.root_project.manifest_selectors
-
-            # inject any available external nodes
-            self.manifest.build_parent_and_child_maps()
-            external_nodes_modified = self.inject_external_nodes()
-            if external_nodes_modified:
-                self.manifest.rebuild_ref_lookup()
-
-            # update the refs, sources, docs and metrics depends_on.nodes
-            # These check the created_at time on the nodes to
-            # determine whether they need processing.
-            start_process = time.perf_counter()
-            self.process_sources(self.root_project.project_name)
-            self.process_refs(self.root_project.project_name, self.root_project.dependencies)
-            self.process_docs(self.root_project)
-            self.process_metrics(self.root_project)
-            self.process_saved_queries(self.root_project)
-            self.check_valid_group_config()
-            self.check_valid_access_property()
-
-            semantic_manifest = SemanticManifest(self.manifest)
-            if not semantic_manifest.validate():
-                raise dbt.exceptions.ParsingError("Semantic Manifest validation failed.")
-
-            # update tracking data
-            self._perf_info.process_manifest_elapsed = time.perf_counter() - start_process
-            self._perf_info.static_analysis_parsed_path_count = (
-                self.manifest._parsing_info.static_analysis_parsed_path_count
-            )
-            self._perf_info.static_analysis_path_count = (
-                self.manifest._parsing_info.static_analysis_path_count
-            )
-
+    def load_external_nodes(self):
         # Inject any available external nodes, reprocess refs if changes to the manifest were made.
-        external_nodes_modified = False
-        if skip_parsing:
-            # If we didn't skip parsing, this will have already run because it must run
-            # before process_refs. If we did skip parsing, then it's possible that only
-            # external nodes have changed and we need to run this to capture that.
-            self.manifest.build_parent_and_child_maps()
-            external_nodes_modified = self.inject_external_nodes()
-            if external_nodes_modified:
-                self.manifest.rebuild_ref_lookup()
-                self.process_refs(
-                    self.root_project.project_name,
-                    self.root_project.dependencies,
-                )
-                # parent and child maps will be rebuilt by write_manifest
-
-        if not skip_parsing or external_nodes_modified:
+        self.manifest.build_parent_and_child_maps()
+        external_nodes_modified = self.inject_external_nodes()
+        if external_nodes_modified:
+            self.manifest.rebuild_ref_lookup()
+            self.process_refs(
+                self.root_project.project_name,
+                self.root_project.dependencies,
+            )
+            # parent and child maps will be rebuilt by write_manifest
+        if not self.skip_parsing or external_nodes_modified:
             # write out the fully parsed manifest
             self.write_manifest_for_partial_parse()
-
-        self.check_for_model_deprecations()
-
-        return self.manifest
 
     def check_for_model_deprecations(self):
         for node in self.manifest.nodes.values():
@@ -587,7 +597,7 @@ class ManifestLoader:
 
                 resolved_refs = self.manifest.resolve_refs(node, self.root_project.project_name)
                 resolved_model_refs = [r for r in resolved_refs if isinstance(r, ModelNode)]
-                node.depends_on
+
                 for resolved_ref in resolved_model_refs:
                     if resolved_ref.deprecation_date:
 

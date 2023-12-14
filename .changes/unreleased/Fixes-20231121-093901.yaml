@@ -1,0 +1,6 @@
+kind: Fixes
+body: Refactor ManifestLoader.load
+time: 2023-11-21T09:39:01.957936Z
+custom:
+  Author: aranke
+  Issue: "8618"
