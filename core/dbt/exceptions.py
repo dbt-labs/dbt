@@ -729,20 +729,6 @@ class OperationError(CompilationError):
         return msg
 
 
-class SymbolicLinkError(CompilationError):
-    def __init__(self) -> None:
-        super().__init__(msg=self.get_message())
-
-    def get_message(self) -> str:
-        msg = (
-            "dbt encountered an error when attempting to create a symbolic link. "
-            "If this error persists, please create an issue at: \n\n"
-            "https://github.com/dbt-labs/dbt-core"
-        )
-
-        return msg
-
-
 # context level exceptions
 class ZipStrictWrongTypeError(CompilationError):
     def __init__(self, exc) -> None:

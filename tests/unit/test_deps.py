@@ -216,7 +216,7 @@ class TestGitPackage(unittest.TestCase):
         self.assertEqual(git_pinned_package_dict, {"git": "git_unrendered", "revision": "0.0.1"})
 
     @mock.patch("shutil.copytree")
-    @mock.patch("dbt.deps.local.system.make_symlink")
+    @mock.patch("os.symlink")
     @mock.patch("dbt.deps.local.LocalPinnedPackage.get_installation_path")
     @mock.patch("dbt.deps.local.LocalPinnedPackage.resolve_path")
     def test_deps_install(

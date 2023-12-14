@@ -147,21 +147,6 @@ def make_file(path: str, contents: str = "", overwrite: bool = False) -> bool:
     return False
 
 
-def make_symlink(source: str, link_path: str) -> None:
-    """
-    Create a symlink at `link_path` referring to `source`.
-    """
-    if not supports_symlinks():
-        # TODO: why not import these at top?
-        raise dbt.exceptions.SymbolicLinkError()
-
-    os.symlink(source, link_path)
-
-
-def supports_symlinks() -> bool:
-    return getattr(os, "symlink", None) is not None
-
-
 def write_file(path: str, contents: str = "") -> bool:
     path = convert_path(path)
     try:
