@@ -468,7 +468,6 @@ class TestInitOutsideOfProject(TestInitOutsideOfProjectBase):
         manager.attach_mock(mock_prompt, "prompt")
         manager.attach_mock(mock_confirm, "confirm")
         manager.prompt.side_effect = [
-            project_name,
             1,
             "localhost",
             5432,
@@ -479,11 +478,13 @@ class TestInitOutsideOfProject(TestInitOutsideOfProjectBase):
             4,
         ]
         mock_get_adapter.return_value = [project.adapter.type()]
-        run_dbt(["init"])
+        Path(project_name).mkdir()
+        os.chdir(project_name)
+        new_project_root = str(Path.cwd())
+        run_dbt(["init", "--project-dir", new_project_root])
 
         manager.assert_has_calls(
             [
-                call.prompt("Enter a name for your project (letters, digits, underscore)"),
                 call.prompt(
                     "Which database would you like to use?\n[1] postgres\n\n(Don't see the one you want? https://docs.getdbt.com/docs/available-adapters)\n\nEnter a number",
                     type=click.INT,
@@ -595,30 +596,6 @@ models:
             )
 
 
-class TestInitInvalidProjectNameCLI(TestInitOutsideOfProjectBase):
-    @mock.patch("dbt.task.init._get_adapter_plugin_names")
-    @mock.patch("click.confirm")
-    @mock.patch("click.prompt")
-    def test_init_invalid_project_name_cli(
-        self, mock_prompt, mock_confirm, mock_get_adapter, project_name, project
-    ):
-        manager = Mock()
-        manager.attach_mock(mock_prompt, "prompt")
-        manager.attach_mock(mock_confirm, "confirm")
-
-        invalid_name = "name-with-hyphen"
-        valid_name = project_name
-        manager.prompt.side_effect = [valid_name]
-        mock_get_adapter.return_value = [project.adapter.type()]
-
-        run_dbt(["init", invalid_name, "--skip-profile-setup"])
-        manager.assert_has_calls(
-            [
-                call.prompt("Enter a name for your project (letters, digits, underscore)"),
-            ]
-        )
-
-
 class TestInitInvalidProjectNamePrompt(TestInitOutsideOfProjectBase):
     @mock.patch("dbt.task.init._get_adapter_plugin_names")
     @mock.patch("click.confirm")
@@ -630,18 +607,22 @@ class TestInitInvalidProjectNamePrompt(TestInitOutsideOfProjectBase):
         manager.attach_mock(mock_prompt, "prompt")
         manager.attach_mock(mock_confirm, "confirm")
 
-        invalid_name = "name-with-hyphen"
-        valid_name = project_name
-        manager.prompt.side_effect = [invalid_name, valid_name]
+        project_name = "name-with-hyphen"
+        manager.prompt.side_effect = []
         mock_get_adapter.return_value = [project.adapter.type()]
+        Path(project_name).mkdir()
+        os.chdir(project_name)
+        new_project_root = str(Path.cwd())
 
-        run_dbt(["init", "--skip-profile-setup"])
-        manager.assert_has_calls(
-            [
-                call.prompt("Enter a name for your project (letters, digits, underscore)"),
-                call.prompt("Enter a name for your project (letters, digits, underscore)"),
-            ]
-        )
+        with pytest.raises(DbtRuntimeError) as error:
+            run_dbt(
+                ["init", "--skip-profile-setup", "--project-dir", new_project_root],
+                expect_pass=False,
+            )
+            assert (
+                '"is not a valid project name.\nEnter a name for your project (letters, digits, underscore)"'
+                in str(error)
+            )
 
 
 class TestInitProvidedProjectNameAndSkipProfileSetup(TestInitOutsideOfProjectBase):
@@ -667,50 +648,10 @@ class TestInitProvidedProjectNameAndSkipProfileSetup(TestInitOutsideOfProjectBas
         mock_get.return_value = [project.adapter.type()]
 
         # provide project name through the init command
-        run_dbt(["init", project_name, "--skip-profile-setup"])
-        assert len(manager.mock_calls) == 0
-
-        with open(os.path.join(project.project_root, project_name, "dbt_project.yml"), "r") as f:
-            assert (
-                f.read()
-                == f"""
-# Name your project! Project names should contain only lowercase characters
-# and underscores. A good package name should reflect your organization's
-# name or the intended use of these models
-name: '{project_name}'
-version: '1.0.0'
-config-version: 2
-
-# This setting configures which "profile" dbt uses for this project.
-profile: '{project_name}'
-
-# These configurations specify where dbt should look for different types of files.
-# The `model-paths` config, for example, states that models in this project can be
-# found in the "models/" directory. You probably won't need to change these!
-model-paths: ["models"]
-analysis-paths: ["analyses"]
-test-paths: ["tests"]
-seed-paths: ["seeds"]
-macro-paths: ["macros"]
-snapshot-paths: ["snapshots"]
-
-clean-targets:         # directories to be removed by `dbt clean`
-  - "target"
-  - "dbt_packages"
-
-
-# Configuring models
-# Full documentation: https://docs.getdbt.com/docs/configuring-models
-
-# In this example config, we tell dbt to build all models in the example/
-# directory as views. These settings can be overridden in the individual model
-# files using the `{{{{ config(...) }}}}` macro.
-models:
-  {project_name}:
-    # Config indicated by + and applies to all files under models/example/
-    example:
-      +materialized: view
-"""
+        with pytest.raises(DbtRuntimeError) as error:
+            run_dbt(["init", project_name, "--skip-profile-setup"], expect_pass=False)
+            assert "directory not empty; eg: mkdir project_name; cd project_name; dbt init" in str(
+                error
             )
 
 
@@ -740,17 +681,12 @@ class TestInitOutsideOfProjectWithSpecifiedProfile(TestInitOutsideOfProjectBase)
     ):
         manager = Mock()
         manager.attach_mock(mock_prompt, "prompt")
-        manager.prompt.side_effect = [
-            project_name,
-        ]
+        manager.prompt.side_effect = []
         mock_get_adapter.return_value = [project.adapter.type()]
-        run_dbt(["init", "--profile", "test"])
-
-        manager.assert_has_calls(
-            [
-                call.prompt("Enter a name for your project (letters, digits, underscore)"),
-            ]
-        )
+        Path(project_name).mkdir()
+        os.chdir(project_name)
+        new_project_root = str(Path.cwd())
+        run_dbt(["init", "--profile", "test", "--project-dir", new_project_root])
 
         # profiles.yml is NOT overwritten, so assert that the text matches that of the
         # original fixture
@@ -809,20 +745,18 @@ class TestInitOutsideOfProjectSpecifyingInvalidProfile(TestInitOutsideOfProjectB
     ):
         manager = Mock()
         manager.attach_mock(mock_prompt, "prompt")
-        manager.prompt.side_effect = [
-            project_name,
-        ]
+        manager.prompt.side_effect = []
         mock_get_adapter.return_value = [project.adapter.type()]
+        Path(project_name).mkdir()
+        os.chdir(project_name)
+        new_project_root = str(Path.cwd())
 
         with pytest.raises(DbtRuntimeError) as error:
-            run_dbt(["init", "--profile", "invalid"], expect_pass=False)
+            run_dbt(
+                ["init", "--profile", "invalid", "--project-dir", new_project_root],
+                expect_pass=False,
+            )
             assert "Could not find profile named invalid" in str(error)
-
-        manager.assert_has_calls(
-            [
-                call.prompt("Enter a name for your project (letters, digits, underscore)"),
-            ]
-        )
 
 
 class TestInitOutsideOfProjectSpecifyingProfileNoProfilesYml(TestInitOutsideOfProjectBase):
@@ -833,10 +767,11 @@ class TestInitOutsideOfProjectSpecifyingProfileNoProfilesYml(TestInitOutsideOfPr
     ):
         manager = Mock()
         manager.attach_mock(mock_prompt, "prompt")
-        manager.prompt.side_effect = [
-            project_name,
-        ]
+        manager.prompt.side_effect = []
         mock_get_adapter.return_value = [project.adapter.type()]
+        Path(project_name).mkdir()
+        os.chdir(project_name)
+        new_project_root = str(Path.cwd())
 
         # Override responses on specific files, default to 'real world' if not overriden
         original_isfile = os.path.isfile
@@ -847,11 +782,8 @@ class TestInitOutsideOfProjectSpecifyingProfileNoProfilesYml(TestInitOutsideOfPr
             ),
         ):
             with pytest.raises(DbtRuntimeError) as error:
-                run_dbt(["init", "--profile", "test"], expect_pass=False)
+                run_dbt(
+                    ["init", "--profile", "test", "--project-dir", new_project_root],
+                    expect_pass=False,
+                )
                 assert "Could not find profile named invalid" in str(error)
-
-        manager.assert_has_calls(
-            [
-                call.prompt("Enter a name for your project (letters, digits, underscore)"),
-            ]
-        )

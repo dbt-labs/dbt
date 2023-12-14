@@ -1,0 +1,6 @@
+kind: Features
+body: dbt init create project in current dir.
+time: 2023-12-11T09:44:18.757427706+08:00
+custom:
+  Author: lllong33
+  Issue: "8216"
