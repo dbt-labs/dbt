@@ -44,8 +44,9 @@ from dbt.contracts.graph.nodes import (
     UnpatchedSourceDefinition,
     UnitTestDefinition,
     UnitTestFileFixture,
+    UnpatchedUnitTestDefinition,
 )
-from dbt.contracts.graph.unparsed import SourcePatch, NodeVersion, UnparsedVersion
+from dbt.contracts.graph.unparsed import SourcePatch, NodeVersion, UnparsedVersion, UnitTestPatch
 from dbt.contracts.graph.manifest_upgrade import upgrade_manifest_json
 from dbt.contracts.files import (
     SourceFile,
@@ -167,6 +168,39 @@ class SourceLookup(dbtClassMixin):
                 f"Source {unique_id} found in cache but not found in manifest"
             )
         return manifest.sources[unique_id]
+
+
+class UnitTestLookup(dbtClassMixin):
+    def __init__(self, manifest: "Manifest") -> None:
+        self.storage: Dict[str, Dict[PackageName, UniqueID]] = {}
+        self.populate(manifest)
+
+    def get_unique_id(self, search_name, package: Optional[PackageName]):
+        return find_unique_id_for_package(self.storage, search_name, package)
+
+    def find(self, search_name, package: Optional[PackageName], manifest: "Manifest"):
+        unique_id = self.get_unique_id(search_name, package)
+        if unique_id is not None:
+            return self.perform_lookup(unique_id, manifest)
+        return None
+
+    def add_unit_test(self, unit_test: UnitTestDefinition):
+        if unit_test.search_name not in self.storage:
+            self.storage[unit_test.search_name] = {}
+
+        self.storage[unit_test.search_name][unit_test.package_name] = unit_test.unique_id
+
+    def populate(self, manifest):
+        for unit_test in manifest.unit_tests.values():
+            if hasattr(unit_test, "unit_test"):
+                self.add_unit_test(unit_test)
+
+    def perform_lookup(self, unique_id: UniqueID, manifest: "Manifest") -> UnitTestDefinition:
+        if unique_id not in manifest.unit_tests:
+            raise dbt.exceptions.DbtInternalError(
+                f"Unit test {unique_id} found in cache but not found in manifest"
+            )
+        return manifest.unit_tests[unique_id]
 
 
 class RefableLookup(dbtClassMixin):
@@ -675,6 +709,8 @@ MaybeParsedSource = Optional[
     ]
 ]
 
+MaybeParsedUnitTest = Optional[UnitTestDefinition]
+
 
 MaybeNonSource = Optional[Union[ManifestNode, Disabled[ManifestNode]]]
 
@@ -810,6 +846,7 @@ class Manifest(MacroMethods, DataClassMessagePackMixin, dbtClassMixin):
     env_vars: MutableMapping[str, str] = field(default_factory=dict)
     semantic_models: MutableMapping[str, SemanticModel] = field(default_factory=dict)
     unit_tests: MutableMapping[str, UnitTestDefinition] = field(default_factory=dict)
+    unit_test_patches: MutableMapping[str, UnitTestPatch] = field(default_factory=dict)
     saved_queries: MutableMapping[str, SavedQuery] = field(default_factory=dict)
     fixtures: MutableMapping[str, UnitTestFileFixture] = field(default_factory=dict)
 
@@ -817,6 +854,9 @@ class Manifest(MacroMethods, DataClassMessagePackMixin, dbtClassMixin):
         default=None, metadata={"serialize": lambda x: None, "deserialize": lambda x: None}
     )
     _source_lookup: Optional[SourceLookup] = field(
+        default=None, metadata={"serialize": lambda x: None, "deserialize": lambda x: None}
+    )
+    _unit_test_lookup: Optional[UnitTestLookup] = field(
         default=None, metadata={"serialize": lambda x: None, "deserialize": lambda x: None}
     )
     _ref_lookup: Optional[RefableLookup] = field(
@@ -1092,6 +1132,15 @@ class Manifest(MacroMethods, DataClassMessagePackMixin, dbtClassMixin):
         self._source_lookup = SourceLookup(self)
 
     @property
+    def unit_test_lookup(self) -> UnitTestLookup:
+        if self._unit_test_lookup is None:
+            self._unit_test_lookup = UnitTestLookup(self)
+        return self._unit_test_lookup
+
+    def rebuild_unit_test_lookup(self):
+        self._unit_test_lookup = UnitTestLookup(self)
+
+    @property
     def ref_lookup(self) -> RefableLookup:
         if self._ref_lookup is None:
             self._ref_lookup = RefableLookup(self)
@@ -1187,6 +1236,22 @@ class Manifest(MacroMethods, DataClassMessagePackMixin, dbtClassMixin):
 
         if disabled:
             return Disabled(disabled[0])
+        return None
+
+    def resolve_unit_tests(
+        self,
+        unit_test_name: str,
+        current_project: str,
+        node_package: str,
+    ) -> MaybeParsedUnitTest:
+        candidates = _packages_to_search(current_project, node_package)
+
+        unit_test: Optional[UnitTestDefinition] = None
+
+        for pkg in candidates:
+            unit_test = self.unit_test_lookup.find(unit_test_name, pkg, self)
+            if unit_test is not None:
+                return unit_test
         return None
 
     # Called by dbt.parser.manifest._resolve_sources_for_exposure
@@ -1434,7 +1499,7 @@ class Manifest(MacroMethods, DataClassMessagePackMixin, dbtClassMixin):
     def add_source(self, source_file: SchemaSourceFile, source: UnpatchedSourceDefinition):
         # sources can't be overwritten!
         _check_duplicates(source, self.sources)
-        self.sources[source.unique_id] = source  # type: ignore
+        self.sources[source.unique_id] = source  # type: ignore[assignment]
         source_file.sources.append(source.unique_id)
 
     def add_node_nofile(self, node: ManifestNode):
@@ -1513,10 +1578,9 @@ class Manifest(MacroMethods, DataClassMessagePackMixin, dbtClassMixin):
         self.semantic_models[semantic_model.unique_id] = semantic_model
         source_file.semantic_models.append(semantic_model.unique_id)
 
-    def add_unit_test(self, source_file: SchemaSourceFile, unit_test: UnitTestDefinition):
-        if unit_test.unique_id in self.unit_tests:
-            raise DuplicateResourceNameError(unit_test, self.unit_tests[unit_test.unique_id])
-        self.unit_tests[unit_test.unique_id] = unit_test
+    def add_unit_test(self, source_file: SchemaSourceFile, unit_test: UnpatchedUnitTestDefinition):
+        _check_duplicates(unit_test, self.unit_tests)
+        self.unit_tests[unit_test.unique_id] = unit_test  # type: ignore[assignment]
         source_file.unit_tests.append(unit_test.unique_id)
 
     def add_fixture(self, source_file: FixtureSourceFile, fixture: UnitTestFileFixture):
@@ -1558,6 +1622,7 @@ class Manifest(MacroMethods, DataClassMessagePackMixin, dbtClassMixin):
             self.env_vars,
             self.semantic_models,
             self.unit_tests,
+            self.unit_test_patches,
             self.saved_queries,
             self._doc_lookup,
             self._source_lookup,

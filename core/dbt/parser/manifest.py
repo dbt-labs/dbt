@@ -107,6 +107,7 @@ from dbt.contracts.graph.nodes import (
     ResultNode,
     ModelNode,
     NodeRelation,
+    UnitTestDefinition,
 )
 from dbt.contracts.graph.unparsed import NodeVersion
 from dbt.artifacts.base import Writable
@@ -129,6 +130,7 @@ from dbt.parser.search import FileBlock
 from dbt.parser.seeds import SeedParser
 from dbt.parser.snapshots import SnapshotParser
 from dbt.parser.sources import SourcePatcher
+from dbt.parser.unit_tests import UnitTestPatcher
 from dbt.version import __version__
 
 from dbt_common.dataclass_schema import StrEnum, dbtClassMixin
@@ -223,6 +225,7 @@ class ManifestLoaderInfo(dbtClassMixin, Writable):
     load_macros_elapsed: Optional[float] = None
     parse_project_elapsed: Optional[float] = None
     patch_sources_elapsed: Optional[float] = None
+    patch_unit_tests_elapsed: Optional[float] = None
     process_manifest_elapsed: Optional[float] = None
     load_all_elapsed: Optional[float] = None
     projects: List[ProjectLoaderInfo] = field(default_factory=list)
@@ -516,6 +519,15 @@ class ManifestLoader:
             self.manifest.sources = patcher.sources
             self._perf_info.patch_sources_elapsed = time.perf_counter() - start_patch
 
+            # patch_unit_tests converts the UnparsedUnitTestDefinitions in the
+            # manifest.unit_tests to UnitTestDefinitions via 'patch_unit_test'
+            # in UnitTestPatcher
+            start_patch = time.perf_counter()
+            unit_test_patcher = UnitTestPatcher(self.root_project, self.manifest)
+            unit_test_patcher.construct_unit_tests()
+            self.manifest.unit_tests = unit_test_patcher.unit_tests
+            self._perf_info.patch_unit_tests_elapsed = time.perf_counter() - start_patch
+
             # We need to rebuild disabled in order to include disabled sources
             self.manifest.rebuild_disabled_lookup()
 
@@ -533,6 +545,7 @@ class ManifestLoader:
             # determine whether they need processing.
             start_process = time.perf_counter()
             self.process_sources(self.root_project.project_name)
+            self.process_unit_tests(self.root_project.project_name)
             self.process_refs(self.root_project.project_name, self.root_project.dependencies)
             self.process_docs(self.root_project)
             self.process_metrics(self.root_project)
@@ -1067,6 +1080,7 @@ class ManifestLoader:
                 "load_macros_elapsed": self._perf_info.load_macros_elapsed,
                 "parse_project_elapsed": self._perf_info.parse_project_elapsed,
                 "patch_sources_elapsed": self._perf_info.patch_sources_elapsed,
+                "patch_unit_tests_elapsed": self._perf_info.patch_unit_tests_elapsed,
                 "process_manifest_elapsed": (self._perf_info.process_manifest_elapsed),
                 "load_all_elapsed": self._perf_info.load_all_elapsed,
                 "is_partial_parse_enabled": (self._perf_info.is_partial_parse_enabled),
@@ -1226,6 +1240,18 @@ class ManifestLoader:
             if exposure.created_at < self.started_at:
                 continue
             _process_sources_for_exposure(self.manifest, current_project, exposure)
+
+    # Loops through all nodes, for each element in
+    # 'unit_test' array finds the node and updates the
+    # 'depends_on.nodes' array with the unique id
+    def process_unit_tests(self, current_project: str):
+        for node in self.manifest.nodes.values():
+            if node.resource_type == NodeType.Unit:
+                continue
+            assert not isinstance(node, UnitTestDefinition)
+            if node.created_at < self.started_at:
+                continue
+            _process_unit_tests_for_node(self.manifest, current_project, node)
 
     def cleanup_disabled(self):
         # make sure the nodes are in the manifest.nodes or the disabled dict,
@@ -1754,7 +1780,7 @@ def _process_sources_for_node(manifest: Manifest, current_project: str, node: Ma
         )
 
         if target_source is None or isinstance(target_source, Disabled):
-            # this folows the same pattern as refs
+            # this follows the same pattern as refs
             node.config.enabled = False
             invalid_target_fail_unless_test(
                 node=node,
@@ -1765,6 +1791,28 @@ def _process_sources_for_node(manifest: Manifest, current_project: str, node: Ma
             continue
         target_source_id = target_source.unique_id
         node.depends_on.add_node(target_source_id)
+
+
+def _process_unit_tests_for_node(manifest: Manifest, current_project: str, node: ManifestNode):
+
+    if not isinstance(node, ModelNode):
+        return
+
+    target_unit_test: Optional[UnitTestDefinition] = None
+    for unit_test_name in node.unit_tests:
+        # TODO: loop through tests and build all the versioned nodes...
+        target_unit_test = manifest.resolve_unit_tests(
+            unit_test_name,
+            current_project,
+            node.package_name,
+        )
+
+        if target_unit_test is None:
+            # this folows the same pattern as refs
+            node.config.enabled = False
+            continue
+
+        node.depends_on.add_node(target_unit_test.unique_id)
 
 
 # This is called in task.rpc.sql_commands when a "dynamic" node is

@@ -44,6 +44,7 @@ from dbt.contracts.graph.unparsed import (
     UnitTestOverrides,
     UnitTestInputFixture,
     UnitTestOutputFixture,
+    UnitTestNodeVersion,
 )
 from dbt.contracts.graph.node_args import ModelNodeArgs
 from dbt.contracts.graph.semantic_layer_common import WhereFilterIntersection
@@ -488,6 +489,7 @@ class CompiledNode(ParsedNode):
     refs: List[RefArgs] = field(default_factory=list)
     sources: List[List[str]] = field(default_factory=list)
     metrics: List[List[str]] = field(default_factory=list)
+    unit_tests: List[str] = field(default_factory=list)
     depends_on: DependsOn = field(default_factory=DependsOn)
     compiled_path: Optional[str] = None
     compiled: bool = False
@@ -1039,6 +1041,26 @@ class GenericTestNode(TestShouldStoreFailures, CompiledNode, HasTestMetadata):
         return "generic"
 
 
+# ====================================
+# Unit Test node
+# ====================================
+
+
+@dataclass
+class UnpatchedUnitTestDefinition(BaseNode):
+    name: str
+    model: str  # name of the model being unit tested
+    given: Sequence[UnitTestInputFixture]
+    expect: UnitTestOutputFixture
+    fqn: List[str]
+    description: str = ""
+    config: Dict[str, Any] = field(default_factory=dict)
+    resource_type: Literal[NodeType.Unit]
+    versions: Optional[UnitTestNodeVersion] = None
+    overrides: Optional[UnitTestOverrides] = None
+    patch_path: Optional[str] = None
+
+
 @dataclass
 class UnitTestSourceDefinition(ModelNode):
     source_name: str = "undefined"
@@ -1068,11 +1090,16 @@ class UnitTestDefinitionMandatory:
 @dataclass
 class UnitTestDefinition(NodeInfoMixin, GraphNode, UnitTestDefinitionMandatory):
     description: str = ""
-    overrides: Optional[UnitTestOverrides] = None
     depends_on: DependsOn = field(default_factory=DependsOn)
     config: UnitTestConfig = field(default_factory=UnitTestConfig)
+    versions: List[NodeVersion] = field(default_factory=list)
+    overrides: Optional[UnitTestOverrides] = None
     checksum: Optional[str] = None
     schema: Optional[str] = None
+
+    @property
+    def unit_tests(self):
+        return []
 
     @property
     def build_path(self):
@@ -1095,7 +1122,7 @@ class UnitTestDefinition(NodeInfoMixin, GraphNode, UnitTestDefinitionMandatory):
 
     def build_unit_test_checksum(self):
         # everything except 'description'
-        data = f"{self.model}-{self.given}-{self.expect}-{self.overrides}"
+        data = f"{self.model}-{self.versions}-{self.given}-{self.expect}-{self.overrides}"
 
         # include underlying fixture data
         for input in self.given:

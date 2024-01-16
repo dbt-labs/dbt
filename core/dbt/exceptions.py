@@ -887,8 +887,9 @@ class TargetNotFoundError(CompilationError):
         return msg
 
 
-class DuplicateSourcePatchNameError(CompilationError):
-    def __init__(self, patch_1, patch_2):
+class DuplicatePatchNameError(CompilationError):
+    def __init__(self, node_type, patch_1, patch_2):
+        self.node_type = node_type
         self.patch_1 = patch_1
         self.patch_2 = patch_2
         super().__init__(msg=self.get_message())
@@ -899,11 +900,11 @@ class DuplicateSourcePatchNameError(CompilationError):
             self.patch_1.path,
             self.patch_2.path,
             name,
-            "sources",
+            self.node_type.pluralize(),
         )
         msg = (
-            f"dbt found two schema.yml entries for the same source named "
-            f"{self.patch_1.name} in package {self.patch_1.overrides}. Sources may only be "
+            f"dbt found two schema.yml entries for the same {self.node_type} named "
+            f"{self.patch_1.name} in package {self.patch_1.overrides}. {self.node_type.pluralize()} may only be "
             f"overridden a single time. To fix this, {fix}"
         )
         return msg

@@ -14,7 +14,7 @@ from fixtures import (
     my_model_b_sql,
     test_my_model_simple_fixture_yml,
     test_my_model_fixture_csv,
-    test_my_model_b_fixture_csv as test_my_model_fixture_csv_modified,
+    test_my_model_b_fixture_csv,
 )
 
 
@@ -64,7 +64,7 @@ class TestUnitTestStateModified(UnitTestState):
 
         # change underlying fixture file
         write_file(
-            test_my_model_fixture_csv_modified,
+            test_my_model_b_fixture_csv,
             project.project_root,
             "tests",
             "fixtures",

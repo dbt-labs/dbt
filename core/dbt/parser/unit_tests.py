@@ -1,6 +1,6 @@
 from csv import DictReader
 from pathlib import Path
-from typing import List, Set, Dict, Any
+from typing import List, Set, Dict, Any, Optional, Type, TypeVar
 import os
 from io import StringIO
 import csv
@@ -9,21 +9,37 @@ from dbt_extractor import py_extract_from_source, ExtractionError  # type: ignor
 
 from dbt import utils
 from dbt.config import RuntimeConfig
-from dbt.context.context_config import ContextConfig
+from dbt.context.context_config import (
+    ContextConfig,
+    BaseContextConfigGenerator,
+    ContextConfigGenerator,
+    UnrenderedConfigGenerator,
+)
 from dbt.context.providers import generate_parse_exposure, get_rendered
 from dbt.contracts.files import FileHash
 from dbt.contracts.graph.manifest import Manifest
-from dbt.contracts.graph.model_config import UnitTestNodeConfig, ModelConfig
+from dbt.contracts.graph.model_config import UnitTestNodeConfig, ModelConfig, UnitTestConfig
 from dbt.contracts.graph.nodes import (
     ModelNode,
     UnitTestNode,
     UnitTestDefinition,
     DependsOn,
-    UnitTestConfig,
     UnitTestSourceDefinition,
+    UnpatchedUnitTestDefinition,
 )
-from dbt.contracts.graph.unparsed import UnparsedUnitTest, UnitTestFormat
-from dbt.exceptions import ParsingError, InvalidUnitTestGivenInput
+from dbt.contracts.graph.unparsed import (
+    UnparsedUnitTest,
+    UnitTestFormat,
+    UnitTestNodeVersion,
+    UnitTestPatch,
+    NodeVersion,
+)
+from dbt.common.dataclass_schema import dbtClassMixin
+from dbt.exceptions import (
+    ParsingError,
+    InvalidUnitTestGivenInput,
+    DbtInternalError,
+)
 from dbt.graph import UniqueId
 from dbt.node_types import NodeType
 from dbt.parser.schemas import (
@@ -51,24 +67,26 @@ class UnitTestManifestLoader:
             if unique_id in self.manifest.unit_tests:
                 unit_test_case: UnitTestDefinition = self.manifest.unit_tests[unique_id]
                 self.parse_unit_test_case(unit_test_case)
+
         return self.unit_test_manifest
 
-    def parse_unit_test_case(self, test_case: UnitTestDefinition):
+    def parse_unit_test_case(self, test_case: UnitTestDefinition, version: Optional[str] = None):
         # Create unit test node based on the node being tested
-        tested_node = self.manifest.ref_lookup.perform_lookup(
-            f"model.{test_case.package_name}.{test_case.model}", self.manifest
+        unique_id = self.manifest.ref_lookup.get_unique_id(
+            key=test_case.model, package=test_case.package_name, version=version
         )
+        tested_node = self.manifest.ref_lookup.perform_lookup(unique_id, self.manifest)
         assert isinstance(tested_node, ModelNode)
 
         # Create UnitTestNode based on model being tested. Since selection has
         # already been done, we don't have to care about fields that are necessary
         # for selection.
-        # Note: no depends_on, that's added later using input nodes
         name = f"{test_case.model}__{test_case.name}"
         unit_test_node = UnitTestNode(
             name=name,
             resource_type=NodeType.Unit,
             package_name=test_case.package_name,
+            depends_on=test_case.depends_on,
             path=get_pseudo_test_path(name, test_case.original_file_path),
             original_file_path=test_case.original_file_path,
             unique_id=test_case.unique_id,
@@ -154,6 +172,7 @@ class UnitTestManifestLoader:
                     source_name=original_input_node.source_name,  # needed for source lookup
                 )
                 # Sources need to go in the sources dictionary in order to create the right lookup
+                # TODO: i think this should be model_name.version
                 self.unit_test_manifest.sources[input_node.unique_id] = input_node  # type: ignore
 
             # Both ModelNode and UnitTestSourceDefinition need to go in nodes dictionary
@@ -216,79 +235,69 @@ class UnitTestManifestLoader:
         return original_input_node
 
 
+T = TypeVar("T", bound=dbtClassMixin)
+
+
 class UnitTestParser(YamlReader):
     def __init__(self, schema_parser: SchemaParser, yaml: YamlBlock) -> None:
         super().__init__(schema_parser, yaml, "unit_tests")
         self.schema_parser = schema_parser
         self.yaml = yaml
 
+    def _target_from_dict(self, cls: Type[T], data: Dict[str, Any]) -> T:
+        path = self.yaml.path.original_file_path
+        try:
+            cls.validate(data)
+            return cls.from_dict(data)
+        except (ValidationError, JSONValidationError) as exc:
+            raise YamlParseDictError(path, self.key, data, exc)
+
+    # This should create the UnparseUnitTest object.  Then it should be turned into and UnpatchedUnitTest
     def parse(self) -> ParseResult:
         for data in self.get_key_dicts():
-            unit_test = self._get_unit_test(data)
-            tested_model_node = self._find_tested_model_node(unit_test)
-            unit_test_case_unique_id = (
-                f"{NodeType.Unit}.{self.project.project_name}.{unit_test.model}.{unit_test.name}"
-            )
-            unit_test_fqn = self._build_fqn(
-                self.project.project_name,
-                self.yaml.path.original_file_path,
-                unit_test.model,
-                unit_test.name,
-            )
-            unit_test_config = self._build_unit_test_config(unit_test_fqn, unit_test.config)
-
-            unit_test_definition = UnitTestDefinition(
-                name=unit_test.name,
-                model=unit_test.model,
-                resource_type=NodeType.Unit,
-                package_name=self.project.project_name,
-                path=self.yaml.path.relative_path,
-                original_file_path=self.yaml.path.original_file_path,
-                unique_id=unit_test_case_unique_id,
-                given=unit_test.given,
-                expect=unit_test.expect,
-                description=unit_test.description,
-                overrides=unit_test.overrides,
-                depends_on=DependsOn(nodes=[tested_model_node.unique_id]),
-                fqn=unit_test_fqn,
-                config=unit_test_config,
-                schema=tested_model_node.schema,
-            )
-
-            # Check that format and type of rows matches for each given input,
-            # convert rows to a list of dictionaries, and add the unique_id of
-            # the unit_test_definition to the fixture source_file for partial parsing.
-            self._validate_and_normalize_given(unit_test_definition)
-            self._validate_and_normalize_expect(unit_test_definition)
-
-            # for calculating state:modified
-            unit_test_definition.build_unit_test_checksum()
-            self.manifest.add_unit_test(self.yaml.file, unit_test_definition)
+            unit_test = self._target_from_dict(UnparsedUnitTest, data)
+            self.add_unit_test_definition(unit_test)
 
         return ParseResult()
 
-    def _get_unit_test(self, data: Dict[str, Any]) -> UnparsedUnitTest:
-        try:
-            UnparsedUnitTest.validate(data)
-            return UnparsedUnitTest.from_dict(data)
-        except (ValidationError, JSONValidationError) as exc:
-            raise YamlParseDictError(self.yaml.path, self.key, data, exc)
-
-    def _find_tested_model_node(self, unit_test: UnparsedUnitTest) -> ModelNode:
-        package_name = self.project.project_name
-        model_name_split = unit_test.model.split()
-        model_name = model_name_split[0]
-        model_version = model_name_split[1] if len(model_name_split) == 2 else None
-
-        tested_node = self.manifest.ref_lookup.find(
-            model_name, package_name, model_version, self.manifest
+    def add_unit_test_definition(self, unit_test: UnparsedUnitTest) -> None:
+        unit_test_case_unique_id = (
+            f"{NodeType.Unit}.{self.project.project_name}.{unit_test.model}.{unit_test.name}"
         )
-        if not tested_node:
-            raise ParsingError(
-                f"Unable to find model '{package_name}.{unit_test.model}' for unit tests in {self.yaml.path.original_file_path}"
-            )
+        unit_test_fqn = self._build_fqn(
+            self.project.project_name,
+            self.yaml.path.original_file_path,
+            unit_test.model,
+            unit_test.name,
+        )
+        # unit_test_config = self._build_unit_test_config(unit_test_fqn, unit_test.config)
 
-        return tested_node
+        unit_test_definition = UnpatchedUnitTestDefinition(
+            name=unit_test.name,
+            package_name=self.project.project_name,
+            path=self.yaml.path.relative_path,
+            original_file_path=self.yaml.path.original_file_path,
+            unique_id=unit_test_case_unique_id,
+            resource_type=NodeType.Unit,
+            fqn=unit_test_fqn,
+            model=unit_test.model,
+            given=unit_test.given,
+            expect=unit_test.expect,
+            versions=unit_test.versions,
+            description=unit_test.description,
+            overrides=unit_test.overrides,
+            config=unit_test.config,
+        )
+
+        # Check that format and type of rows matches for each given input,
+        # convert rows to a list of dictionaries, and add the unique_id of
+        # the unit_test_definition to the fixture source_file for partial parsing.
+        self._validate_and_normalize_given(unit_test_definition)
+        self._validate_and_normalize_expect(unit_test_definition)
+
+        # # for calculating state:modified
+        # unit_test_definition.build_unit_test_checksum()
+        self.manifest.add_unit_test(self.yaml.file, unit_test_definition)
 
     def _build_unit_test_config(
         self, unit_test_fqn: List[str], config_dict: Dict[str, Any]
@@ -396,3 +405,223 @@ class UnitTestParser(YamlReader):
                 rows.append(row)
 
         return rows
+
+
+# unit tests are patched because we need to support model versions but we can't know
+# what versions of a model exist until after we parse the schma files for the models
+class UnitTestPatcher:
+    def __init__(
+        self,
+        root_project: RuntimeConfig,
+        manifest: Manifest,
+    ) -> None:
+        self.root_project = root_project
+        self.manifest = manifest
+        self.patches_used: Dict[str, Set[str]] = {}
+        self.unit_tests: Dict[str, UnitTestDefinition] = {}
+
+    # This method calls the 'parse_unit_test' method which takes
+    # the UnpatchedUnitTestDefinitions in the manifest and combines them
+    # with what we know about versioned models to generate appropriate
+    # unit tests
+    def construct_unit_tests(self) -> None:
+        for unique_id, unpatched in self.manifest.unit_tests.items():
+            if isinstance(unpatched, UnitTestDefinition):
+                # In partial parsing, there will be UnitTestDefinition
+                # which must be retained.
+                self.unit_tests[unique_id] = unpatched
+                continue
+            # returns None if there is no patch
+            patch = self.get_patch_for(unpatched)
+
+            # returns unpatched if there is no patch
+            patched = self.patch_unit_test(unpatched, patch)
+
+            # Convert UnpatchedUnitTestDefinition to a list of UnitTestDefinition based on model versions
+            version_list = self.get_unit_test_versions(
+                model_name=patched.model, versions=patched.versions
+            )
+            parsed_unit_test = self.build_unit_test_definition(
+                unit_test=patched, versions=version_list
+            )
+            self.unit_tests[parsed_unit_test.unique_id] = self.build_unit_test_definition(
+                unit_test=patched, versions=version_list
+            )
+
+    def patch_unit_test(
+        self,
+        unpatched: UnpatchedUnitTestDefinition,
+        patch: Optional[UnitTestPatch],
+    ) -> UnpatchedUnitTestDefinition:
+
+        # This skips patching if no patch exists because of the
+        # performance overhead of converting to and from dicts
+        if patch is None:
+            return unpatched
+
+        unit_test_dct = unpatched.to_dict(omit_none=True)
+        patch_path: Optional[Path] = None
+
+        if patch is not None:
+            unit_test_dct.update(patch.to_patch_dict())
+            patch_path = patch.path
+
+        unit_test = UnparsedUnitTest.from_dict(unit_test_dct)
+        return unpatched.replace(unit_test=unit_test, patch_path=patch_path)
+
+    def _find_tested_model_node(
+        self, unit_test: UnpatchedUnitTestDefinition, versions: List[NodeVersion]
+    ) -> List[ModelNode]:  # TODO: also source node?
+        package_name = unit_test.package_name
+        # TODO: does this work when `define_id` is used in the yaml?
+        model_name_split = unit_test.model.split()
+        model_name = model_name_split[0]
+        tested_nodes = []
+        if not versions:
+            tested_nodes = [
+                self.manifest.ref_lookup.find(
+                    key=model_name, package=package_name, version=None, manifest=self.manifest
+                )
+            ]
+        for version in versions:
+            tested_nodes.append(
+                self.manifest.ref_lookup.find(
+                    key=model_name, package=package_name, version=version, manifest=self.manifest
+                )
+            )
+        if not tested_nodes:
+            raise ParsingError(
+                f"Unable to find model '{package_name}.{unit_test.model}' for unit tests in {unit_test.original_file_path}"
+            )
+
+        return tested_nodes
+
+    def build_unit_test_definition(
+        self, unit_test: UnpatchedUnitTestDefinition, versions: List[NodeVersion]
+    ) -> UnitTestDefinition:
+
+        config = self._generate_unit_test_config(
+            target=unit_test,
+            rendered=True,
+        )
+
+        unit_test_config = config.finalize_and_validate()
+
+        if not isinstance(config, UnitTestConfig):
+            raise DbtInternalError(
+                f"Calculated a {type(config)} for a unit test, but expected a UnitTestConfig"
+            )
+
+        tested_model_nodes = self._find_tested_model_node(unit_test, versions=versions)
+        tested_model_unique_ids = [node.unique_id for node in tested_model_nodes]
+        schema = tested_model_nodes[0].schema
+        unit_test_case_unique_id = (
+            f"{NodeType.Unit}.{unit_test.package_name}.{unit_test.model}.{unit_test.name}"
+        )
+        # unit_test_model_name = f"{unit_test.model}.v{version}" if version else unit_test.model
+        unit_test_model_name = unit_test.model
+        unit_test_fqn = self._build_fqn(
+            unit_test.package_name,
+            unit_test.original_file_path,
+            unit_test_model_name,
+            unit_test.name,
+        )
+
+        parsed_unit_test = UnitTestDefinition(
+            name=unit_test.name,
+            model=unit_test_model_name,
+            resource_type=NodeType.Unit,
+            package_name=unit_test.package_name,
+            path=unit_test.path,
+            original_file_path=unit_test.original_file_path,
+            unique_id=unit_test_case_unique_id,
+            versions=versions,
+            given=unit_test.given,
+            expect=unit_test.expect,
+            description=unit_test.description,
+            overrides=unit_test.overrides,
+            depends_on=DependsOn(nodes=tested_model_unique_ids),
+            fqn=unit_test_fqn,
+            config=unit_test_config,
+            schema=schema,
+        )
+
+        # for calculating state:modified
+        parsed_unit_test.build_unit_test_checksum()
+
+        # relation name is added after instantiation because the adapter does
+        # not provide the relation name for a UnpatchedSourceDefinition object
+        return parsed_unit_test
+
+    def _build_fqn(self, package_name, original_file_path, model_name, test_name):
+        # This code comes from "get_fqn" and "get_fqn_prefix" in the base parser.
+        # We need to get the directories underneath the model-path.
+        path = Path(original_file_path)
+        relative_path = str(path.relative_to(*path.parts[:1]))
+        no_ext = os.path.splitext(relative_path)[0]
+        fqn = [package_name]
+        fqn.extend(utils.split_path(no_ext)[:-1])
+        fqn.append(model_name)
+        fqn.append(test_name)
+        return fqn
+
+    def get_unit_test_versions(
+        self, model_name: str, versions: Optional[UnitTestNodeVersion]
+    ) -> List[Optional[NodeVersion]]:
+        version_list = []
+        if versions is None:
+            for node in self.manifest.nodes.values():
+                # only model nodes have unit tests
+                if isinstance(node, ModelNode) and node.is_versioned:
+                    if node.name == model_name:
+                        version_list.append(node.version)
+        elif versions.exclude is not None:
+            for node in self.manifest.nodes.values():
+                # only model nodes have unit tests
+                if isinstance(node, ModelNode) and node.is_versioned:
+                    if node.name == model_name:
+                        # no version has been specified and this version is not explicitly excluded
+                        if node.version not in versions.exclude:
+                            version_list.append(node.version)
+        # versions were explicitly included
+        else:
+            for i in versions.include:  # type: ignore[union-attr]
+                # todo: does this actually need reformatting?
+                version_list.append(i)
+
+        return version_list
+
+    def get_patch_for(
+        self,
+        unpatched: UnpatchedUnitTestDefinition,
+    ) -> Optional[UnitTestPatch]:
+        if isinstance(unpatched, UnitTestDefinition):
+            return None
+        key = unpatched.name
+        patch: Optional[UnitTestPatch] = self.manifest.unit_test_patches.get(key)
+        if patch is None:
+            return None
+        if key not in self.patches_used:
+            # mark the key as used
+            self.patches_used[key] = set()
+        return patch
+
+    def _generate_unit_test_config(self, target: UnpatchedUnitTestDefinition, rendered: bool):
+        generator: BaseContextConfigGenerator
+        if rendered:
+            generator = ContextConfigGenerator(self.root_project)
+        else:
+            generator = UnrenderedConfigGenerator(self.root_project)
+
+        # configs with precendence set
+        precedence_configs = dict()
+        precedence_configs.update(target.config)
+
+        return generator.calculate_node_config(
+            config_call_dict={},
+            fqn=target.fqn,
+            resource_type=NodeType.Unit,
+            project_name=target.package_name,
+            base=False,
+            patch_config_dict=precedence_configs,
+        )

@@ -142,6 +142,7 @@ class HasConfig:
 
 
 NodeVersion = Union[str, float]
+UnitTestModelVersion: Dict[str, List[NodeVersion]]
 
 
 @dataclass
@@ -818,11 +819,50 @@ class UnitTestOverrides(dbtClassMixin):
 
 
 @dataclass
+class UnitTestNodeVersion(dbtClassMixin):
+    include: Optional[List[NodeVersion]] = None
+    exclude: Optional[List[NodeVersion]] = None
+
+
+@dataclass
 class UnparsedUnitTest(dbtClassMixin):
     name: str
     model: str  # name of the model being unit tested
     given: Sequence[UnitTestInputFixture]
     expect: UnitTestOutputFixture
     description: str = ""
+    versions: Optional[UnitTestNodeVersion] = None
     overrides: Optional[UnitTestOverrides] = None
     config: Dict[str, Any] = field(default_factory=dict)
+
+    @classmethod
+    def validate(cls, data):
+        super(UnparsedUnitTest, cls).validate(data)
+        if data.get("version", None):
+            if data["version"].get("include") and data["version"].get("exclude"):
+                raise ValidationError("Unit tests can not both include and exclude versions.")
+
+
+@dataclass
+class UnitTestPatch(dbtClassMixin, Replaceable):
+    name: str
+    model: str
+    given: Sequence[UnitTestInputFixture]
+    expect: UnitTestOutputFixture
+    path: Path = field(
+        metadata=dict(description="The path to the patch-defining yml file"),
+    )
+    config: Dict[str, Any] = field(default_factory=dict)
+    overrides: Optional[UnitTestOverrides] = None
+    versions: Optional[UnitTestNodeVersion] = None
+    description: Optional[str] = None
+    schema: Optional[str] = None
+
+    def to_patch_dict(self) -> Dict[str, Any]:
+        dct = self.to_dict(omit_none=True)
+        remove_keys = ("name", "overrides", "path")
+        for key in remove_keys:
+            if key in dct:
+                del dct[key]
+
+        return dct

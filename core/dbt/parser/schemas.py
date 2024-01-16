@@ -34,7 +34,7 @@ from dbt.contracts.graph.unparsed import (
 from dbt.exceptions import (
     DuplicateMacroPatchNameError,
     DuplicatePatchPathError,
-    DuplicateSourcePatchNameError,
+    DuplicatePatchNameError,
     JSONValidationError,
     DbtInternalError,
     ParsingError,
@@ -380,7 +380,9 @@ class SourceParser(YamlReader):
                 # source patches must be unique
                 key = (patch.overrides, patch.name)
                 if key in self.manifest.source_patches:
-                    raise DuplicateSourcePatchNameError(patch, self.manifest.source_patches[key])
+                    raise DuplicatePatchNameError(
+                        NodeType.Source, patch, self.manifest.source_patches[key]
+                    )
                 self.manifest.source_patches[key] = patch
                 source_file.source_patches.append(key)
             else:

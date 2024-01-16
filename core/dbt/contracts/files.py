@@ -239,6 +239,8 @@ class SchemaSourceFile(BaseSourceFile):
     ndp: List[str] = field(default_factory=list)
     semantic_models: List[str] = field(default_factory=list)
     unit_tests: List[str] = field(default_factory=list)
+    # any unit_test patches in this file by unit_test unique_id.
+    utp: List[str] = field(default_factory=list)
     saved_queries: List[str] = field(default_factory=list)
     # any macro patches in this file by macro unique_id.
     mcp: Dict[str, str] = field(default_factory=dict)
@@ -265,6 +267,10 @@ class SchemaSourceFile(BaseSourceFile):
     @property
     def source_patches(self):
         return self.sop
+
+    @property
+    def unit_test_patches(self):
+        return self.utp
 
     def __post_serialize__(self, dct):
         dct = super().__post_serialize__(dct)
