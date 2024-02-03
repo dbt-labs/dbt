@@ -1,0 +1,6 @@
+kind: Fixes
+body: Support materialized views in get_columns_in_relation
+time: 2024-01-23T19:13:39.538476-07:00
+custom:
+  Author: dbeatty10
+  Issue: "9419"
