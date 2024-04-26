@@ -1,7 +1,7 @@
 import os
 import json
 import pytest
-from datetime import datetime, timedelta
+from datetime import timezone, datetime, timedelta
 import yaml
 
 import dbt.version
@@ -25,7 +25,7 @@ class SuccessfulSourceFreshnessTest(BaseSourcesTest):
     def setUp(self, project):
         self.run_dbt_with_vars(project, ["seed"])
         pytest._id = 101
-        pytest.freshness_start_time = datetime.utcnow()
+        pytest.freshness_start_time = datetime.now(timezone.utc).replace(tzinfo=None)
         # this is the db initial value
         pytest.last_inserted_time = "2016-09-19T14:45:51+00:00"
 
@@ -36,7 +36,7 @@ class SuccessfulSourceFreshnessTest(BaseSourcesTest):
         del os.environ["DBT_ENV_CUSTOM_ENV_key"]
 
     def _set_updated_at_to(self, project, delta):
-        insert_time = datetime.utcnow() + delta
+        insert_time = datetime.now(timezone.utc).replace(tzinfo=None) + delta
         timestr = insert_time.strftime("%Y-%m-%d %H:%M:%S")
         # favorite_color,id,first_name,email,ip_address,updated_at
         insert_id = pytest._id
@@ -65,7 +65,7 @@ class SuccessfulSourceFreshnessTest(BaseSourcesTest):
     def assertBetween(self, timestr, start, end=None):
         datefmt = "%Y-%m-%dT%H:%M:%S.%fZ"
         if end is None:
-            end = datetime.utcnow()
+            end = datetime.now(timezone.utc).replace(tzinfo=None)
 
         parsed = datetime.strptime(timestr, datefmt)
 

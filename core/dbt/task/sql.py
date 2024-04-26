@@ -1,5 +1,5 @@
 from abc import abstractmethod
-from datetime import datetime
+from datetime import timezone, datetime
 from typing import Generic, TypeVar
 import traceback
 
@@ -68,7 +68,7 @@ class SqlCompileRunner(GenericSqlRunner[RemoteCompileResult]):
             node=compiled_node,
             timing=[],  # this will get added later
             logs=[],
-            generated_at=datetime.utcnow(),
+            generated_at=datetime.now(timezone.utc).replace(tzinfo=None),
         )
 
     def from_run_result(self, result, start_time, timing_info) -> RemoteCompileResult:
@@ -78,7 +78,7 @@ class SqlCompileRunner(GenericSqlRunner[RemoteCompileResult]):
             node=result.node,
             timing=timing_info,
             logs=[],
-            generated_at=datetime.utcnow(),
+            generated_at=datetime.now(timezone.utc).replace(tzinfo=None),
         )
 
 
@@ -98,7 +98,7 @@ class SqlExecuteRunner(GenericSqlRunner[RemoteRunResult]):
             table=table,
             timing=[],
             logs=[],
-            generated_at=datetime.utcnow(),
+            generated_at=datetime.now(timezone.utc).replace(tzinfo=None),
         )
 
     def from_run_result(self, result, start_time, timing_info) -> RemoteRunResult:
@@ -109,5 +109,5 @@ class SqlExecuteRunner(GenericSqlRunner[RemoteRunResult]):
             table=result.table,
             timing=timing_info,
             logs=[],
-            generated_at=datetime.utcnow(),
+            generated_at=datetime.now(timezone.utc).replace(tzinfo=None),
         )

@@ -4,7 +4,7 @@ from dbt_common.utils import cast_to_str, cast_to_int
 from dbt_common.dataclass_schema import dbtClassMixin, StrEnum
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import timezone, datetime
 from typing import Any, Callable, Dict, List, Optional, Sequence, Union
 
 
@@ -15,10 +15,10 @@ class TimingInfo(dbtClassMixin):
     completed_at: Optional[datetime] = None
 
     def begin(self):
-        self.started_at = datetime.utcnow()
+        self.started_at = datetime.now(timezone.utc).replace(tzinfo=None)
 
     def end(self):
-        self.completed_at = datetime.utcnow()
+        self.completed_at = datetime.now(timezone.utc).replace(tzinfo=None)
 
     def to_msg_dict(self):
         msg_dict = {"name": self.name}

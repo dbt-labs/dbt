@@ -34,7 +34,7 @@ class RemoteCompileResultMixin(RemoteResult):
 @dataclass
 @schema_version("remote-compile-result", 1)
 class RemoteCompileResult(RemoteCompileResultMixin):
-    generated_at: datetime = field(default_factory=datetime.utcnow)
+    generated_at: datetime = field(default_factory=datetime.now)
 
     @property
     def error(self):
@@ -46,7 +46,7 @@ class RemoteCompileResult(RemoteCompileResultMixin):
 class RemoteExecutionResult(ExecutionResult, RemoteResult):
     results: Sequence[RunResult]
     args: Dict[str, Any] = field(default_factory=dict)
-    generated_at: datetime = field(default_factory=datetime.utcnow)
+    generated_at: datetime = field(default_factory=datetime.now)
 
     def write(self, path: str):
         writable = RunResultsArtifact.from_execution_results(
@@ -82,4 +82,4 @@ class ResultTable(dbtClassMixin):
 @schema_version("remote-run-result", 1)
 class RemoteRunResult(RemoteCompileResultMixin):
     table: ResultTable
-    generated_at: datetime = field(default_factory=datetime.utcnow)
+    generated_at: datetime = field(default_factory=datetime.now)

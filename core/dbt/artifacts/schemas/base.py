@@ -56,7 +56,7 @@ class Readable:
 class BaseArtifactMetadata(dbtClassMixin):
     dbt_schema_version: str
     dbt_version: str = __version__
-    generated_at: datetime = dataclasses.field(default_factory=datetime.utcnow)
+    generated_at: datetime = dataclasses.field(default_factory=datetime.now)
     invocation_id: Optional[str] = dataclasses.field(default_factory=get_invocation_id)
     env: Dict[str, str] = dataclasses.field(default_factory=get_metadata_vars)
 

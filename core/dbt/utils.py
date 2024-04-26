@@ -1,11 +1,11 @@
 import collections
-import datetime
 import decimal
 import functools
 import itertools
 import jinja2
 import json
 import os
+from datetime import timezone, datetime, date, time
 from pathlib import PosixPath, WindowsPath
 
 from dbt_common.utils import md5
@@ -144,7 +144,7 @@ def add_ephemeral_model_prefix(s: str) -> str:
 def timestring() -> str:
     """Get the current datetime as an RFC 3339-compliant string"""
     # isoformat doesn't include the mandatory trailing 'Z' for UTC.
-    return datetime.datetime.utcnow().isoformat() + "Z"
+    return datetime.now(timezone.utc).replace(tzinfo=None).isoformat() + "Z"
 
 
 def humanize_execution_time(execution_time: int) -> str:
@@ -163,7 +163,7 @@ class JSONEncoder(json.JSONEncoder):
     def default(self, obj):
         if isinstance(obj, DECIMALS):
             return float(obj)
-        elif isinstance(obj, (datetime.datetime, datetime.date, datetime.time)):
+        elif isinstance(obj, (datetime, date, time)):
             return obj.isoformat()
         elif isinstance(obj, jinja2.Undefined):
             return ""

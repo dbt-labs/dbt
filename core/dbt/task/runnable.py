@@ -2,7 +2,7 @@ import os
 import time
 from abc import abstractmethod
 from concurrent.futures import as_completed
-from datetime import datetime
+from datetime import timezone, datetime
 from multiprocessing.dummy import Pool as ThreadPool
 from pathlib import Path
 from typing import AbstractSet, Optional, Dict, List, Set, Tuple, Iterable
@@ -208,7 +208,8 @@ class GraphRunnableTask(ConfiguredTask):
             startctx = TimestampNamed("node_started_at")
             index = self.index_offset(runner.node_index)
             runner.node.update_event_status(
-                started_at=datetime.utcnow().isoformat(), node_status=RunningStatus.Started
+                started_at=datetime.now(timezone.utc).replace(tzinfo=None).isoformat(),
+                node_status=RunningStatus.Started,
             )
             extended_metadata = ModelMetadata(runner.node, index)
 
@@ -422,7 +423,7 @@ class GraphRunnableTask(ConfiguredTask):
             run_result = self.get_result(
                 results=self.node_results,
                 elapsed_time=time.time() - self.started_at,
-                generated_at=datetime.utcnow(),
+                generated_at=datetime.now(timezone.utc).replace(tzinfo=None),
             )
 
             if self.args.write_json and hasattr(run_result, "write"):
@@ -500,7 +501,9 @@ class GraphRunnableTask(ConfiguredTask):
             elapsed = time.time() - self.started_at
             self.print_results_line(self.node_results, elapsed)
             result = self.get_result(
-                results=self.node_results, elapsed_time=elapsed, generated_at=datetime.utcnow()
+                results=self.node_results,
+                elapsed_time=elapsed,
+                generated_at=datetime.now(timezone.utc).replace(tzinfo=None),
             )
 
         return result
@@ -525,7 +528,7 @@ class GraphRunnableTask(ConfiguredTask):
                 warn_or_error(NothingToDo())
                 result = self.get_result(
                     results=[],
-                    generated_at=datetime.utcnow(),
+                    generated_at=datetime.now(timezone.utc).replace(tzinfo=None),
                     elapsed_time=0.0,
                 )
             else:

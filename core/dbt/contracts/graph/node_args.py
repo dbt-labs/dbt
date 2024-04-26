@@ -18,7 +18,7 @@ class ModelNodeArgs:
     latest_version: Optional[NodeVersion] = None
     deprecation_date: Optional[datetime] = None
     access: Optional[str] = AccessType.Protected.value
-    generated_at: datetime = field(default_factory=datetime.utcnow)
+    generated_at: datetime = field(default_factory=datetime.now)
     depends_on_nodes: List[str] = field(default_factory=list)
     enabled: bool = True
 

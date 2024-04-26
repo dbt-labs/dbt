@@ -4,7 +4,7 @@ import time
 import traceback
 from abc import ABCMeta, abstractmethod
 from contextlib import nullcontext
-from datetime import datetime
+from datetime import timezone, datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
 
@@ -220,7 +220,8 @@ class BaseRunner(metaclass=ABCMeta):
 
         result = self.safe_run(manifest)
         self.node.update_event_status(
-            node_status=result.status, finished_at=datetime.utcnow().isoformat()
+            node_status=result.status,
+            finished_at=datetime.now(timezone.utc).replace(tzinfo=None).isoformat(),
         )
 
         if not self.node.is_ephemeral_model:

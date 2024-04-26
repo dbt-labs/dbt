@@ -11,7 +11,7 @@ from .printer import (
     print_run_end_messages,
     get_counts,
 )
-from datetime import datetime
+from datetime import timezone, datetime
 from dbt import tracking
 from dbt import utils
 from dbt.adapters.base import BaseRelation
@@ -369,7 +369,8 @@ class RunTask(CompileTask):
             # log_contextvars
             with log_contextvars(node_info=hook.node_info):
                 hook.update_event_status(
-                    started_at=datetime.utcnow().isoformat(), node_status=RunningStatus.Started
+                    started_at=datetime.now(timezone.utc).replace(tzinfo=None).isoformat(),
+                    node_status=RunningStatus.Started,
                 )
                 sql = self.get_hook_sql(adapter, hook, idx, num_hooks, extra_context)
 
@@ -394,7 +395,9 @@ class RunTask(CompileTask):
                             status = "OK"
 
                     self.ran_hooks.append(hook)
-                    hook.update_event_status(finished_at=datetime.utcnow().isoformat())
+                    hook.update_event_status(
+                        finished_at=datetime.now(timezone.utc).replace(tzinfo=None).isoformat()
+                    )
                     with finishctx, DbtModelState({"node_status": "passed"}):
                         hook.update_event_status(node_status=RunStatus.Success)
                         fire_event(

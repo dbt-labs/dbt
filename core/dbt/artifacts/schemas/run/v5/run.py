@@ -93,7 +93,7 @@ class RunExecutionResult(
 ):
     results: Sequence[RunResult]
     args: Dict[str, Any] = field(default_factory=dict)
-    generated_at: datetime = field(default_factory=datetime.utcnow)
+    generated_at: datetime = field(default_factory=datetime.now)
 
     def write(self, path: str):
         writable = RunResultsArtifact.from_execution_results(

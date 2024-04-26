@@ -1,0 +1,6 @@
+kind: Fixes
+body: datetime.datetime.utcnow() is deprecated as of Python 3.12
+time: 2024-03-29T22:36:53.504295426+01:00
+custom:
+  Author: slothkong
+  Issue: "9791"

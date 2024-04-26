@@ -1,7 +1,7 @@
 import os
 import shutil
 from dataclasses import replace
-from datetime import datetime
+from datetime import timezone, datetime
 from typing import Dict, List, Any, Optional, Tuple, Set, Iterable
 import agate
 from itertools import chain
@@ -226,7 +226,7 @@ class GenerateTask(CompileTask):
                 return CatalogArtifact.from_results(
                     nodes={},
                     sources={},
-                    generated_at=datetime.utcnow(),
+                    generated_at=datetime.now(timezone.utc).replace(tzinfo=None),
                     errors=None,
                     compile_results=compile_results,
                 )
@@ -306,7 +306,7 @@ class GenerateTask(CompileTask):
         results = self.get_catalog_results(
             nodes=nodes,
             sources=sources,
-            generated_at=datetime.utcnow(),
+            generated_at=datetime.now(timezone.utc).replace(tzinfo=None),
             compile_results=compile_results,
             errors=errors,
         )

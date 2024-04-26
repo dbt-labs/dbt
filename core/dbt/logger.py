@@ -7,7 +7,7 @@ import sys
 import time
 import warnings
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import timezone, datetime
 from typing import Optional, List, ContextManager, Callable, Dict, Any, Set
 
 import logbook
@@ -295,7 +295,7 @@ class TimestampNamed(logbook.Processor):
 
     def process(self, record):
         super().process(record)
-        record.extra[self.name] = datetime.utcnow().isoformat()
+        record.extra[self.name] = datetime.now(timezone.utc).replace(tzinfo=None).isoformat()
 
 
 class ScrubSecrets(logbook.Processor):

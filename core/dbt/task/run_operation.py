@@ -1,7 +1,7 @@
 import os
 import threading
 import traceback
-from datetime import datetime
+from datetime import timezone, datetime
 from typing import TYPE_CHECKING
 
 import dbt_common.exceptions
@@ -51,7 +51,7 @@ class RunOperationTask(ConfiguredTask):
         return res
 
     def run(self) -> RunResultsArtifact:
-        start = datetime.utcnow()
+        start = datetime.now(timezone.utc).replace(tzinfo=None)
         self.compile_manifest()
 
         success = True
@@ -69,7 +69,7 @@ class RunOperationTask(ConfiguredTask):
             fire_event(LogDebugStackTrace(exc_info=traceback.format_exc()))
             success = False
 
-        end = datetime.utcnow()
+        end = datetime.now(timezone.utc).replace(tzinfo=None)
 
         macro = (
             self.manifest.find_macro_by_name(macro_name, self.config.project_name, package_name)

@@ -5,7 +5,7 @@ import shutil
 import yaml
 import json
 import warnings
-from datetime import datetime
+from datetime import timezone, datetime
 from typing import Any, Dict, List, Optional
 from contextlib import contextmanager
 from dbt.adapters.factory import Adapter
@@ -287,7 +287,7 @@ def check_result_nodes_by_unique_id(results, unique_ids):
 def check_datetime_between(timestr, start, end=None):
     datefmt = "%Y-%m-%dT%H:%M:%S.%fZ"
     if end is None:
-        end = datetime.utcnow()
+        end = datetime.now(timezone.utc).replace(tzinfo=None)
     parsed = datetime.strptime(timestr, datefmt)
     assert start <= parsed
     assert end >= parsed
