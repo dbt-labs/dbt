@@ -1,6 +1,6 @@
 import pytest
-
-from dbt.tests.util import run_dbt, get_manifest
+from dbt.exceptions import DuplicateResourceNameError
+from dbt.tests.util import run_dbt, get_manifest, write_file
 from tests.functional.exposures.fixtures import (
     models_sql,
     second_model_sql,
@@ -9,6 +9,7 @@ from tests.functional.exposures.fixtures import (
     metrics_schema_yml,
     semantic_models_schema_yml,
     metricflow_time_spine_sql,
+    duplicate_exposure_yml,
 )
 
 
@@ -46,3 +47,33 @@ class TestBasicExposures:
             "metric.test.metric",
         ]
         assert sorted(exposure_depends_on) == sorted(expected_exposure_depends_on)
+
+    def test_duplicate_name(self, project):
+        results = run_dbt(["run"])
+        assert len(results) == 3
+
+        # add a duplicate exposure and run without partial parsing, expect DuplicateResourceNameError
+        write_file(
+            simple_exposure_yml + duplicate_exposure_yml,
+            project.project_root,
+            "models",
+            "exposure.yml",
+        )
+        with pytest.raises(DuplicateResourceNameError):
+            run_dbt(["run", "--no-partial-parse"])
+
+        # remove duplicate exposure and rerun, expect success
+        write_file(simple_exposure_yml, project.project_root, "models", "exposure.yml")
+        run_dbt(["run"])
+        assert len(results) == 3
+
+        # add back the duplicate exposure and try running with partial parsing
+        # right now this doesnt raise an error but probably should
+        write_file(
+            simple_exposure_yml + duplicate_exposure_yml,
+            project.project_root,
+            "models",
+            "exposure.yml",
+        )
+        with pytest.raises(DuplicateResourceNameError):
+            run_dbt(["run"])

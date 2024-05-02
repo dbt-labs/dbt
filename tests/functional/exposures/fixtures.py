@@ -159,3 +159,14 @@ exposures:
     owner:
       email: something@example.com
 """
+
+duplicate_exposure_yml = """
+  - name: simple_exposure
+    type: dashboard
+    config:
+      enabled: True
+    depends_on:
+      - ref('model')
+    owner:
+      email: something@example.com
+"""
