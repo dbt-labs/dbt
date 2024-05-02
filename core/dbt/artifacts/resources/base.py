@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 from dbt_common.dataclass_schema import dbtClassMixin
 from typing import List, Optional
 import hashlib
@@ -14,6 +14,21 @@ class BaseResource(dbtClassMixin):
     path: str
     original_file_path: str
     unique_id: str
+
+    @classmethod
+    def __pre_deserialize__(cls, data):
+        data = super().__pre_deserialize__(data)
+
+        # Support deserializing additional fields in BaseResource for forward
+        # compatibility within a major version
+        for f in fields(cls):
+            # missing fields with defaults are acceptable
+            if f.name not in data and f.default:
+                data[f.name] = f.default
+            # missing optional fields are acceptable
+            elif f.name not in data and f.init is False:
+                data[f.name] = None
+        return data
 
 
 @dataclass

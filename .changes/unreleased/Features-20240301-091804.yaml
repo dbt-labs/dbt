@@ -1,0 +1,6 @@
+kind: Features
+body: Allow adding new fields and removing optional fields to BaseResource subclasses without creating new versions of artifacts
+time: 2024-03-01T09:18:04.696662-06:00
+custom:
+  Author: emmyoop
+  Issue: "9615"
