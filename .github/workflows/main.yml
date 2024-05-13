@@ -202,7 +202,7 @@ jobs:
           tox --version
 
       - name: Run tests
-        run: tox -- --ddtrace
+        run: tox -- --ddtrace --ddtrace-patch-all
         env:
           PYTEST_ADDOPTS: ${{ format('--splits {0} --group {1}', env.PYTHON_INTEGRATION_TEST_WORKERS, matrix.split-group) }}
 
