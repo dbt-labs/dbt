@@ -3,7 +3,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Literal, Optional, Union
 
 from dbt.artifacts.resources.base import GraphResource
-from dbt.artifacts.resources.types import NodeType
+from dbt.artifacts.resources.types import AccessType, NodeType
 from dbt.artifacts.resources.v1.components import (
     ColumnInfo,
     FreshnessThreshold,
@@ -71,3 +71,5 @@ class SourceDefinition(ParsedSourceMandatory):
     unrendered_config: Dict[str, Any] = field(default_factory=dict)
     relation_name: Optional[str] = None
     created_at: float = field(default_factory=lambda: time.time())
+    access: AccessType = AccessType.Protected
+    group: Optional[str] = None

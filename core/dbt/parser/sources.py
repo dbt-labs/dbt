@@ -6,6 +6,7 @@ from typing import Any, Dict, Iterable, List, Optional, Set
 from dbt.adapters.capability import Capability
 from dbt.adapters.factory import get_adapter
 from dbt.artifacts.resources import FreshnessThreshold, SourceConfig, Time
+from dbt.artifacts.resources.types import AccessType
 from dbt.config import RuntimeConfig
 from dbt.context.context_config import (
     BaseContextConfigGenerator,
@@ -26,6 +27,7 @@ from dbt.contracts.graph.unparsed import (
     UnparsedSourceTableDefinition,
 )
 from dbt.events.types import FreshnessConfigProblem, UnusedTables
+from dbt.exceptions import InvalidAccessTypeError
 from dbt.node_types import NodeType
 from dbt.parser.common import ParserRef
 from dbt.parser.schema_generic_tests import SchemaGenericTestParser
@@ -127,6 +129,19 @@ class SourcePatcher:
         unique_id = target.unique_id
         description = table.description or ""
         source_description = source.description or ""
+        group = source.group or None
+        access = AccessType.Protected
+        # make sure sources are not public and are a valid access type
+        if source.access:
+            if (
+                not AccessType.is_valid(source.access)
+                or AccessType(source.access) == AccessType.Public
+            ):
+                raise InvalidAccessTypeError(
+                    unique_id=unique_id,
+                    field_value=source.access,
+                )
+            access = AccessType(source.access)
 
         # We need to be able to tell the difference between explicitly setting the loaded_at_field to None/null
         # and when it's simply not set.  This allows a user to override the source level loaded_at_field so that
@@ -190,6 +205,8 @@ class SourcePatcher:
             tags=tags,
             config=config,
             unrendered_config=unrendered_config,
+            group=group,
+            access=access,
         )
 
         if (

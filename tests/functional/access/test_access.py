@@ -12,6 +12,51 @@ another_model_sql = "select 1234 as notfun"
 
 yet_another_model_sql = "select 999 as weird"
 
+stg_model_sql = """
+-- depends_on: {{ source('my_source', 'my_table') }}
+
+select 999 as weird
+"""
+
+stg_model_yml = """
+models:
+  - name: stg_model
+    description: "my model"
+    group: analytics
+"""
+
+invalid_access_source_yml = """
+sources:
+  - name: my_source
+    access: invalid
+    tables:
+      - name: my_table
+"""
+
+non_grouped_source_yml = """
+sources:
+  - name: my_source
+    tables:
+      - name: my_table
+"""
+
+protected_analytics_source_yml = """
+sources:
+  - name: my_source
+    group: analytics
+    tables:
+      - name: my_table
+"""
+
+private_marts_source_yml = """
+sources:
+  - name: my_source
+    group: marts
+    access: private
+    tables:
+      - name: my_table
+"""
+
 schema_yml = """
 models:
   - name: my_model
@@ -314,6 +359,34 @@ class TestAccess:
         # verify it works again
         manifest = run_dbt(["parse"])
         assert len(manifest.nodes) == 3
+
+        # add source with invalid access
+        write_file(invalid_access_source_yml, project.project_root, "models", "my_source.yml")
+        with pytest.raises(InvalidAccessTypeError):
+            run_dbt(["parse"])
+
+        # add source without group, new model in group analytics that depends on it
+        write_file(non_grouped_source_yml, project.project_root, "models", "my_source.yml")
+        write_file(stg_model_yml, project.project_root, "models", "stg_model.yml")
+        write_file(stg_model_sql, project.project_root, "models", "stg_model.sql")
+        manifest = run_dbt(["parse"])
+        assert len(manifest.nodes) == 4
+        assert len(manifest.sources) == 1
+
+        # add source to group analytics, implicitly set it to protected
+        write_file(protected_analytics_source_yml, project.project_root, "models", "my_source.yml")
+        manifest = run_dbt(["parse"])
+        assert len(manifest.nodes) == 4
+        assert len(manifest.sources) == 1
+
+        # add source to group mart, explicitly set it to private
+        write_file(private_marts_source_yml, project.project_root, "models", "my_source.yml")
+        with pytest.raises(DbtReferenceError):
+            run_dbt(["parse"])
+
+        # revert source to no group, protected access
+        write_file(non_grouped_source_yml, project.project_root, "models", "my_source.yml")
+
         # Write out exposure refing private my_model
         write_file(simple_exposure_yml, project.project_root, "models", "simple_exposure.yml")
         # Fails with reference error
@@ -329,14 +402,14 @@ class TestAccess:
         write_file(metricflow_time_spine_sql, "models", "metricflow_time_spine.sql")
         # Should succeed
         manifest = run_dbt(["parse"])
-        assert len(manifest.nodes) == 5
+        assert len(manifest.nodes) == 6
         metric_id = "metric.test.number_of_people"
         assert manifest.metrics[metric_id].group == "analytics"
 
         # Use access and group in config
         write_file(v5_schema_yml, project.project_root, "models", "schema.yml")
         manifest = run_dbt(["parse"])
-        assert len(manifest.nodes) == 5
+        assert len(manifest.nodes) == 6
         assert manifest.nodes["model.test.my_model"].access == AccessType.Private
         assert manifest.nodes["model.test.my_model"].group == "analytics"
         assert manifest.nodes["model.test.ref_my_model"].access == AccessType.Protected

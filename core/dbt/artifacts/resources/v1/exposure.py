@@ -3,7 +3,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Literal, Optional
 
 from dbt.artifacts.resources.base import GraphResource
-from dbt.artifacts.resources.types import NodeType
+from dbt.artifacts.resources.types import AccessType, NodeType
 from dbt.artifacts.resources.v1.components import DependsOn, RefArgs
 from dbt.artifacts.resources.v1.owner import Owner
 from dbt_common.contracts.config.base import BaseConfig
@@ -47,3 +47,5 @@ class Exposure(GraphResource):
     sources: List[List[str]] = field(default_factory=list)
     metrics: List[List[str]] = field(default_factory=list)
     created_at: float = field(default_factory=lambda: time.time())
+    access: AccessType = AccessType.Public
+    group: Optional[str] = None

@@ -661,6 +661,8 @@ MaybeParsedSource = Optional[
 
 MaybeNonSource = Optional[Union[ManifestNode, Disabled[ManifestNode]]]
 
+MaybeSource = Optional[Union[SourceDefinition, Disabled[SourceDefinition]]]
+
 
 T = TypeVar("T", bound=GraphMemberNode)
 
@@ -1488,6 +1490,36 @@ class Manifest(MacroMethods, dbtClassMixin):
 
         return is_protected_ref and (
             node.package_name != target_model.package_name and restrict_package_access
+        )
+
+    def is_invalid_private_source(self, node: GraphMemberNode, target_source: MaybeSource) -> bool:
+        if not isinstance(target_source, SourceDefinition):
+            return False
+
+        is_private_source = target_source.access == AccessType.Private
+
+        return is_private_source and (
+            not hasattr(node, "group") or not node.group or node.group != target_source.group
+        )
+
+    def is_invalid_protected_source(
+        self, node: GraphMemberNode, target_source: MaybeSource, dependencies: Optional[Mapping]
+    ) -> bool:
+        dependencies = dependencies or {}
+        if not isinstance(target_source, SourceDefinition):
+            return False
+
+        is_protected_source = (
+            target_source.access == AccessType.Protected
+            # don't raise this reference error for ad hoc 'preview' queries
+            and node.resource_type != NodeType.SqlOperation
+            and node.resource_type != NodeType.RPCCall  # TODO: rm
+        )
+        target_dependency = dependencies.get(target_source.package_name)
+        restrict_package_access = target_dependency.restrict_access if target_dependency else False
+
+        return is_protected_source and (
+            node.package_name != target_source.package_name and restrict_package_access
         )
 
     # Called in GraphRunnableTask.before_run, RunTask.before_run, CloneTask.before_run

@@ -34,4 +34,6 @@ def basic_parsed_source_definition_object():
         unique_id="test.source.my_source.my_source_table",
         tags=[],
         config=SourceConfig(),
+        group="",
+        access=AccessType.Protected,  # noqa
     )

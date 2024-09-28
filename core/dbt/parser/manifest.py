@@ -460,7 +460,7 @@ class ManifestLoader:
             # These check the created_at time on the nodes to
             # determine whether they need processing.
             start_process = time.perf_counter()
-            self.process_sources(self.root_project.project_name)
+            self.process_sources(self.root_project.project_name, self.root_project.dependencies)
             self.process_refs(self.root_project.project_name, self.root_project.dependencies)
             self.process_unit_tests(self.root_project.project_name)
             self.process_docs(self.root_project)
@@ -1272,18 +1272,18 @@ class ManifestLoader:
     # Loops through all nodes and exposures, for each element in
     # 'sources' array finds the source node and updates the
     # 'depends_on.nodes' array with the unique id
-    def process_sources(self, current_project: str):
+    def process_sources(self, current_project: str, dependencies: Optional[Mapping[str, Project]]):
         for node in self.manifest.nodes.values():
             if node.resource_type == NodeType.Source:
                 continue
             assert not isinstance(node, SourceDefinition)
             if node.created_at < self.started_at:
                 continue
-            _process_sources_for_node(self.manifest, current_project, node)
+            _process_sources_for_node(self.manifest, current_project, node, dependencies)
         for exposure in self.manifest.exposures.values():
             if exposure.created_at < self.started_at:
                 continue
-            _process_sources_for_exposure(self.manifest, current_project, exposure)
+            _process_sources_for_exposure(self.manifest, current_project, exposure, dependencies)
 
     # Loops through all nodes, for each element in
     # 'unit_test' array finds the node and updates the
@@ -1880,7 +1880,12 @@ def remove_dependent_project_references(manifest, external_node_unique_id):
         node.created_at = time.time()
 
 
-def _process_sources_for_exposure(manifest: Manifest, current_project: str, exposure: Exposure):
+def _process_sources_for_exposure(
+    manifest: Manifest,
+    current_project: str,
+    exposure: Exposure,
+    dependencies: Optional[Mapping[str, Project]],
+):
     target_source: Optional[Union[Disabled, SourceDefinition]] = None
     for source_name, table_name in exposure.sources:
         target_source = manifest.resolve_source(
@@ -1898,6 +1903,21 @@ def _process_sources_for_exposure(manifest: Manifest, current_project: str, expo
                 disabled=(isinstance(target_source, Disabled)),
             )
             continue
+
+        if manifest.is_invalid_private_source(exposure, target_source):
+            raise dbt.exceptions.DbtReferenceError(
+                unique_id=exposure.unique_id,
+                ref_unique_id=target_source.unique_id,
+                access=AccessType.Private,
+                scope=dbt_common.utils.cast_to_str(target_source.group),
+            )
+        elif manifest.is_invalid_protected_source(exposure, target_source, dependencies):
+            raise dbt.exceptions.DbtReferenceError(
+                unique_id=exposure.unique_id,
+                ref_unique_id=target_source.unique_id,
+                access=AccessType.Protected,
+                scope=exposure.package_name,
+            )
         target_source_id = target_source.unique_id
         exposure.depends_on.add_node(target_source_id)
 
@@ -1924,7 +1944,12 @@ def _process_sources_for_metric(manifest: Manifest, current_project: str, metric
         metric.depends_on.add_node(target_source_id)
 
 
-def _process_sources_for_node(manifest: Manifest, current_project: str, node: ManifestNode):
+def _process_sources_for_node(
+    manifest: Manifest,
+    current_project: str,
+    node: ManifestNode,
+    dependencies: Optional[Mapping[str, Project]],
+):
     if isinstance(node, SeedNode):
         return
 
@@ -1938,6 +1963,31 @@ def _process_sources_for_node(manifest: Manifest, current_project: str, node: Ma
         )
 
         if target_source is None or isinstance(target_source, Disabled):
+            node.config.enabled = False
+            invalid_target_fail_unless_test(
+                node=node,
+                target_name=f"{source_name}.{table_name}",
+                target_kind="source",
+                disabled=(isinstance(target_source, Disabled)),
+            )
+            continue
+
+        if manifest.is_invalid_private_source(node, target_source):
+            raise dbt.exceptions.DbtReferenceError(
+                unique_id=node.unique_id,
+                ref_unique_id=target_source.unique_id,
+                access=AccessType.Private,
+                scope=dbt_common.utils.cast_to_str(target_source.group),
+            )
+        elif manifest.is_invalid_protected_source(node, target_source, dependencies):
+            raise dbt.exceptions.DbtReferenceError(
+                unique_id=node.unique_id,
+                ref_unique_id=target_source.unique_id,
+                access=AccessType.Protected,
+                scope=node.package_name,
+            )
+
+        elif target_source is None or isinstance(target_source, Disabled):
             # this follows the same pattern as refs
             node.config.enabled = False
             invalid_target_fail_unless_test(
@@ -1966,7 +2016,7 @@ def process_macro(config: RuntimeConfig, manifest: Manifest, macro: Macro) -> No
 # This is called in task.rpc.sql_commands when a "dynamic" node is
 # created in the manifest, in 'add_refs'
 def process_node(config: RuntimeConfig, manifest: Manifest, node: ManifestNode):
-    _process_sources_for_node(manifest, config.project_name, node)
+    _process_sources_for_node(manifest, config.project_name, node, config.dependencies)
     _process_refs(manifest, config.project_name, node, config.dependencies)
     ctx = generate_runtime_docs_context(config, node, manifest, config.project_name)
     _process_docs_for_node(ctx, node)

@@ -123,6 +123,7 @@ class ExposureParser(YamlReader):
             unique_id=unique_id,
             fqn=fqn,
             name=unparsed.name,
+            group=unparsed.group,
             type=unparsed.type,
             url=unparsed.url,
             meta=unparsed.meta,
