@@ -10,6 +10,7 @@ from itertools import chain
 from typing import Any, Callable, Dict, List, Mapping, Optional, Set, Tuple, Type, Union
 
 import msgpack
+from dbt_config.catalog_config import ExternalCatalogConfig
 
 import dbt.deprecations
 import dbt.exceptions
@@ -29,6 +30,7 @@ from dbt.artifacts.schemas.base import Writable
 from dbt.clients.jinja import MacroStack, get_rendered
 from dbt.clients.jinja_static import statically_extract_macro_calls
 from dbt.config import Project, RuntimeConfig
+from dbt.config.external_config import load_external_catalog_config
 from dbt.constants import (
     MANIFEST_FILE_NAME,
     PARTIAL_PARSE_FILE_NAME,
@@ -444,6 +446,13 @@ class ManifestLoader:
             self.manifest.sources = patcher.sources
             self._perf_info.patch_sources_elapsed = time.perf_counter() - start_patch
 
+            # Get catalog.yml and update the manifest
+            raw_catalog = load_external_catalog_config(self.root_project)
+            if raw_catalog:
+                catalog_config = ExternalCatalogConfig.model_validate(raw_catalog)
+                self.manifest.catalogs = {
+                    c.name: c.model_dump_json(by_alias=True) for c in catalog_config.catalogs
+                }
             # We need to rebuild disabled in order to include disabled sources
             self.manifest.rebuild_disabled_lookup()
 
@@ -466,6 +475,7 @@ class ManifestLoader:
             self.process_docs(self.root_project)
             self.process_metrics(self.root_project)
             self.process_saved_queries(self.root_project)
+            self.process_catalog(self.root_project)
             self.process_model_inferred_primary_keys()
             self.check_valid_group_config()
             self.check_valid_access_property()
@@ -1139,6 +1149,11 @@ class ManifestLoader:
             if exposure.created_at < self.started_at:
                 continue
             _process_metrics_for_node(self.manifest, current_project, exposure)
+
+    def process_catalog(self, config: RuntimeConfig):
+        if config.catalogs:
+            for catalog in config.catalogs.catalogs:
+                self.manifest.catalogs[catalog.name] = catalog.model_dump_json(by_alias=True)
 
     def process_saved_queries(self, config: RuntimeConfig):
         """Processes SavedQuery nodes to populate their `depends_on`."""

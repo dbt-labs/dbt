@@ -3,6 +3,8 @@ from dataclasses import dataclass, field
 from datetime import timedelta
 from typing import Any, Dict, List, Optional, Union
 
+from dbt_config.catalog_config import ExternalCatalog
+
 from dbt.artifacts.resources.base import Docs, FileHash, GraphResource
 from dbt.artifacts.resources.types import NodeType, TimePeriod
 from dbt.artifacts.resources.v1.config import NodeConfig
@@ -164,6 +166,7 @@ class DeferRelation(HasRelationMetadata):
     meta: Dict[str, Any]
     tags: List[str]
     config: Optional[NodeConfig]
+    external_catalog: Optional[ExternalCatalog]
 
     @property
     def identifier(self):

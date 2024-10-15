@@ -15,6 +15,8 @@ from typing import (
     Type,
 )
 
+from dbt_config.catalog_config import ExternalCatalogConfig
+
 from dbt import tracking
 from dbt.adapters.contracts.connection import (
     AdapterRequiredConfig,
@@ -39,6 +41,7 @@ from dbt_common.dataclass_schema import ValidationError
 from dbt_common.events.functions import warn_or_error
 from dbt_common.helper_types import DictDefaultEmptyStr, FQNPath, PathSet
 
+from .external_config import load_external_catalog_config
 from .profile import Profile
 from .project import Project
 from .renderer import DbtProjectYamlRenderer, ProfileRenderer
@@ -98,6 +101,7 @@ class RuntimeConfig(Project, Profile, AdapterRequiredConfig):
     profile_name: str
     cli_vars: Dict[str, Any]
     dependencies: Optional[Mapping[str, "RuntimeConfig"]] = None
+    catalogs: Optional[ExternalCatalogConfig] = None
 
     def __post_init__(self):
         self.validate()
@@ -125,12 +129,15 @@ class RuntimeConfig(Project, Profile, AdapterRequiredConfig):
         profile: Profile,
         args: Any,
         dependencies: Optional[Mapping[str, "RuntimeConfig"]] = None,
+        catalogs: Optional[ExternalCatalogConfig] = None,
     ) -> "RuntimeConfig":
         """Instantiate a RuntimeConfig from its components.
 
         :param profile: A parsed dbt Profile.
         :param project: A parsed dbt Project.
         :param args: The parsed command-line arguments.
+        :param dependencies: A mapping of project names to RuntimeConfigs.
+        :param catalogs: A parsed dbt ExternalCatalogConfig.
         :returns RuntimeConfig: The new configuration.
         """
         quoting: Dict[str, Any] = (
@@ -194,6 +201,7 @@ class RuntimeConfig(Project, Profile, AdapterRequiredConfig):
             dependencies=dependencies,
             dbt_cloud=project.dbt_cloud,
             flags=project.flags,
+            catalogs=catalogs,
         )
 
     # Called by 'load_projects' in this class
@@ -253,7 +261,9 @@ class RuntimeConfig(Project, Profile, AdapterRequiredConfig):
 
     # Called by RuntimeConfig.from_args
     @classmethod
-    def collect_parts(cls: Type["RuntimeConfig"], args: Any) -> Tuple[Project, Profile]:
+    def collect_parts(
+        cls: Type["RuntimeConfig"], args: Any
+    ) -> Tuple[Project, Profile, Optional[ExternalCatalogConfig]]:
         # profile_name from the project
         project_root = args.project_dir if args.project_dir else os.getcwd()
         cli_vars: Dict[str, Any] = getattr(args, "vars", {})
@@ -264,7 +274,9 @@ class RuntimeConfig(Project, Profile, AdapterRequiredConfig):
         )
         flags = get_flags()
         project = load_project(project_root, bool(flags.VERSION_CHECK), profile, cli_vars)
-        return project, profile
+        catalog_yml = load_external_catalog_config(project)
+        catalogs = ExternalCatalogConfig.model_validate(catalog_yml) if catalog_yml else None
+        return project, profile, catalogs
 
     # Called in task/base.py, in BaseTask.from_args
     @classmethod
@@ -278,12 +290,13 @@ class RuntimeConfig(Project, Profile, AdapterRequiredConfig):
         :raises DbtProfileError: If the profile is invalid or missing.
         :raises DbtValidationError: If the cli variables are invalid.
         """
-        project, profile = cls.collect_parts(args)
+        project, profile, catalogs = cls.collect_parts(args)
 
         return cls.from_parts(
             project=project,
             profile=profile,
             args=args,
+            catalogs=catalogs,
         )
 
     def get_metadata(self) -> ManifestMetadata:

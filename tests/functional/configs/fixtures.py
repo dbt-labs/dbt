@@ -32,7 +32,7 @@ models:
 
 models__untagged_sql = """
 {{
-    config(materialized='table')
+    config(materialized=table)
 }}
 
 select id, value from {{ source('raw', 'seed') }}

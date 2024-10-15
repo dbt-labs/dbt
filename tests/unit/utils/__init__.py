@@ -6,12 +6,15 @@ issues.
 
 import os
 import string
+from typing import Dict
 from unittest import TestCase, mock
 
 import agate
 import pytest
+from dbt_config.catalog_config import ExternalCatalogConfig
 
 from dbt.config.project import PartialProject
+from dbt.config.renderer import CatalogRenderer
 from dbt.contracts.graph.manifest import Manifest
 from dbt_common.dataclass_schema import ValidationError
 
@@ -57,6 +60,14 @@ def profile_from_dict(profile, profile_name, cli_vars="{}"):
     )
 
 
+def catalog_from_dict(catalog, cli_vars=None):
+    if cli_vars is None:
+        cli_vars = {}
+    renderer = CatalogRenderer(cli_vars)
+    rendered = renderer.render_value(catalog)
+    return ExternalCatalogConfig.model_validate(rendered)
+
+
 def project_from_dict(project, profile, packages=None, selectors=None, cli_vars="{}"):
     from dbt.config.renderer import DbtProjectYamlRenderer
     from dbt.config.utils import parse_cli_vars
@@ -77,7 +88,9 @@ def project_from_dict(project, profile, packages=None, selectors=None, cli_vars=
     return partial.render(renderer)
 
 
-def config_from_parts_or_dicts(project, profile, packages=None, selectors=None, cli_vars={}):
+def config_from_parts_or_dicts(
+    project, profile, packages=None, selectors=None, cli_vars={}, catalogs=None
+):
     from copy import deepcopy
 
     from dbt.config import Profile, Project, RuntimeConfig
@@ -103,10 +116,13 @@ def config_from_parts_or_dicts(project, profile, packages=None, selectors=None, 
             cli_vars,
         )
 
+    if isinstance(catalogs, Dict):
+        catalogs = catalog_from_dict(catalogs, cli_vars)
+
     args = Obj()
     args.vars = cli_vars
     args.profile_dir = "/dev/null"
-    return RuntimeConfig.from_parts(project=project, profile=profile, args=args)
+    return RuntimeConfig.from_parts(project=project, profile=profile, args=args, catalogs=catalogs)
 
 
 def inject_plugin(plugin):

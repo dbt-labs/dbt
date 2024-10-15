@@ -20,6 +20,7 @@ from typing import (
     Union,
 )
 
+from dbt_config.catalog_config import ExternalCatalog
 from typing_extensions import Protocol
 
 import dbt_common.exceptions
@@ -882,6 +883,7 @@ class Manifest(MacroMethods, dbtClassMixin):
     unit_tests: MutableMapping[str, UnitTestDefinition] = field(default_factory=dict)
     saved_queries: MutableMapping[str, SavedQuery] = field(default_factory=dict)
     fixtures: MutableMapping[str, UnitTestFileFixture] = field(default_factory=dict)
+    catalogs: MutableMapping[str, str] = field(default_factory=dict)
 
     _doc_lookup: Optional[DocLookup] = field(
         default=None, metadata={"serialize": lambda x: None, "deserialize": lambda x: None}
@@ -1379,6 +1381,26 @@ class Manifest(MacroMethods, dbtClassMixin):
         current_project: str,
         node_package: str,
     ) -> MaybeParsedSource:
+        if target_source_name in self.catalogs:
+            catalog = ExternalCatalog.model_validate_json(self.catalogs[target_source_name])
+            identifier = f"{target_source_name}.{target_table_name}"
+            catalog_database = catalog.configuration.internal_namespace.database
+            catalog_schema = catalog.configuration.internal_namespace.schema_
+            return SourceDefinition(
+                database=catalog_database,
+                schema=catalog_schema,
+                fqn=[catalog_database, catalog_schema, catalog.name, target_table_name],
+                name=target_table_name,
+                source_description=f"External Catalog source for {target_source_name}.{target_table_name}",
+                source_name=target_source_name,
+                unique_id=identifier,
+                identifier=identifier,
+                package_name="dbt",
+                path="/root/catalogs.yml",
+                loader=catalog.type.value,
+                resource_type=NodeType.Source,
+                original_file_path="/root/catalogs.yml",
+            )
         search_name = f"{target_source_name}.{target_table_name}"
         candidates = _packages_to_search(current_project, node_package)
 

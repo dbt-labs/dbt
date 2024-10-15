@@ -229,3 +229,9 @@ class PackageRenderer(SecretRenderer):
     @property
     def name(self):
         return "Packages config"
+
+
+class CatalogRenderer(SecretRenderer):
+    @property
+    def name(self):
+        return "Catalog config"
