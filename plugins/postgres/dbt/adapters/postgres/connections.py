@@ -32,7 +32,10 @@ class PostgresCredentials(Credentials):
     sslkey: Optional[str] = None
     sslrootcert: Optional[str] = None
     application_name: Optional[str] = "dbt"
+    endpoint: Optional[str] = None
     retries: int = 1
+    options: Optional[str] = None
+    # options: Dict[str, Any] = field(default_factory=dict)
 
     _ALIASES = {"dbname": "database", "pass": "password"}
 
@@ -129,6 +132,12 @@ class PostgresConnectionManager(SQLConnectionManager):
 
         if credentials.application_name:
             kwargs["application_name"] = credentials.application_name
+
+        if credentials.options:
+            kwargs["options"] = credentials.options
+
+        if credentials.endpoint:
+            kwargs["endpoint"] = credentials.endpoint
 
         def connect():
             handle = psycopg2.connect(
