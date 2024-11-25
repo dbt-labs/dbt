@@ -204,6 +204,7 @@ def base_parsed_model_dict():
         },
         "unrendered_config": {},
         "unrendered_config_call_dict": {},
+        "vars": {},
         "config_call_dict": {},
         "access": AccessType.Protected.value,
         "constraints": [],
@@ -260,6 +261,7 @@ def minimal_parsed_model_dict():
             "checksum": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
         },
         "unrendered_config": {},
+        "vars": {},
     }
 
 
@@ -327,6 +329,7 @@ def complex_parsed_model_dict():
             "post_hook": ['insert into blah(a, b) select "1", 1'],
         },
         "unrendered_config_call_dict": {},
+        "vars": {},
         "config_call_dict": {},
         "access": AccessType.Protected.value,
         "constraints": [],
@@ -537,6 +540,7 @@ def basic_parsed_seed_dict():
         "checksum": {"name": "path", "checksum": "seeds/seed.csv"},
         "unrendered_config": {},
         "unrendered_config_call_dict": {},
+        "vars": {},
         "config_call_dict": {},
     }
 
@@ -643,6 +647,7 @@ def complex_parsed_seed_dict():
             "persist_docs": {"relation": True, "columns": True},
         },
         "unrendered_config_call_dict": {},
+        "vars": {},
         "config_call_dict": {},
     }
 
@@ -843,6 +848,7 @@ def base_parsed_hook_dict():
         },
         "unrendered_config": {},
         "unrendered_config_call_dict": {},
+        "vars": {},
         "config_call_dict": {},
     }
 
@@ -937,6 +943,7 @@ def complex_parsed_hook_dict():
             "materialized": "table",
         },
         "unrendered_config_call_dict": {},
+        "vars": {},
         "config_call_dict": {},
     }
 
@@ -1082,6 +1089,7 @@ def basic_parsed_schema_test_dict():
         },
         "unrendered_config": {},
         "unrendered_config_call_dict": {},
+        "vars": {},
         "config_call_dict": {},
     }
 
@@ -1171,6 +1179,7 @@ def complex_parsed_schema_test_dict():
         },
         "unrendered_config": {"materialized": "table", "severity": "WARN"},
         "unrendered_config_call_dict": {},
+        "vars": {},
         "config_call_dict": {},
     }
 
@@ -1566,6 +1575,7 @@ def basic_timestamp_snapshot_dict():
             "target_schema": "some_snapshot_schema",
         },
         "unrendered_config_call_dict": {},
+        "vars": {},
         "config_call_dict": {},
     }
 
@@ -1672,6 +1682,7 @@ def basic_check_snapshot_dict():
         },
         "unrendered_config_call_dict": {},
         "config_call_dict": {},
+        "vars": {},
     }
 
 
@@ -1881,6 +1892,7 @@ def basic_parsed_source_definition_dict():
             "enabled": True,
         },
         "unrendered_config": {},
+        "vars": {},
     }
 
 
@@ -1913,6 +1925,7 @@ def complex_parsed_source_definition_dict():
         "freshness": {"warn_after": {"period": "hour", "count": 1}, "error_after": {}},
         "loaded_at_field": "loaded_at",
         "unrendered_config": {},
+        "vars": {},
     }
 
 
@@ -2084,6 +2097,7 @@ def basic_parsed_exposure_dict():
             "enabled": True,
         },
         "unrendered_config": {},
+        "vars": {},
     }
 
 
@@ -2139,6 +2153,7 @@ def complex_parsed_exposure_dict():
             "enabled": True,
         },
         "unrendered_config": {},
+        "vars": {},
     }
 
 

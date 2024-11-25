@@ -49,7 +49,10 @@ class TestList:
             "json": {
                 "name": "my_snapshot",
                 "package_name": "test",
-                "depends_on": {"nodes": [], "macros": []},
+                "depends_on": {
+                    "nodes": [],
+                    "macros": [],
+                },
                 "tags": [],
                 "config": {
                     "enabled": True,

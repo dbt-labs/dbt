@@ -41,6 +41,7 @@ class Exposure(GraphResource):
     tags: List[str] = field(default_factory=list)
     config: ExposureConfig = field(default_factory=ExposureConfig)
     unrendered_config: Dict[str, Any] = field(default_factory=dict)
+    vars: Dict[str, Any] = field(default_factory=dict)
     url: Optional[str] = None
     depends_on: DependsOn = field(default_factory=DependsOn)
     refs: List[RefArgs] = field(default_factory=list)

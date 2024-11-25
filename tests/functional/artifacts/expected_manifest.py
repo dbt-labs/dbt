@@ -368,6 +368,7 @@ def expected_seeded_manifest(project, model_database=None, quote_model=False):
                 "extra_ctes": [],
                 "checksum": checksum_file(model_sql_path),
                 "unrendered_config": unrendered_model_config,
+                "vars": {},
                 "access": "protected",
                 "version": None,
                 "latest_version": None,
@@ -467,6 +468,7 @@ def expected_seeded_manifest(project, model_database=None, quote_model=False):
                 "extra_ctes": [],
                 "checksum": checksum_file(second_model_sql_path),
                 "unrendered_config": unrendered_second_config,
+                "vars": {},
                 "access": "protected",
                 "version": None,
                 "latest_version": None,
@@ -549,6 +551,7 @@ def expected_seeded_manifest(project, model_database=None, quote_model=False):
                 "docs": {"node_color": None, "show": True},
                 "checksum": checksum_file(seed_path),
                 "unrendered_config": unrendered_seed_config,
+                "vars": {},
                 "relation_name": relation_name_node_format.format(
                     project.database, my_schema_name, "seed"
                 ),
@@ -604,6 +607,7 @@ def expected_seeded_manifest(project, model_database=None, quote_model=False):
                 },
                 "checksum": {"name": "none", "checksum": ""},
                 "unrendered_config": unrendered_test_config,
+                "vars": {},
                 "contract": {"checksum": None, "enforced": False, "alias_types": True},
             },
             "snapshot.test.snapshot_seed": {
@@ -651,6 +655,7 @@ def expected_seeded_manifest(project, model_database=None, quote_model=False):
                 "tags": [],
                 "unique_id": "snapshot.test.snapshot_seed",
                 "unrendered_config": unrendered_snapshot_config,
+                "vars": {"alternate_schema": alternate_schema},
             },
             "test.test.test_nothing_model_.5d38568946": {
                 "alias": "test_nothing_model_",
@@ -703,6 +708,7 @@ def expected_seeded_manifest(project, model_database=None, quote_model=False):
                 },
                 "checksum": {"name": "none", "checksum": ""},
                 "unrendered_config": unrendered_test_config,
+                "vars": {},
             },
             "test.test.unique_model_id.67b76558ff": {
                 "alias": "unique_model_id",
@@ -756,6 +762,7 @@ def expected_seeded_manifest(project, model_database=None, quote_model=False):
                 },
                 "checksum": {"name": "none", "checksum": ""},
                 "unrendered_config": unrendered_test_config,
+                "vars": {},
             },
         },
         "sources": {
@@ -814,6 +821,7 @@ def expected_seeded_manifest(project, model_database=None, quote_model=False):
                 "unrendered_config": {},
                 "unrendered_database": None,
                 "unrendered_schema": "{{ var('test_schema') }}",
+                "vars": {"test_schema": ANY},
             },
         },
         "exposures": {
@@ -848,6 +856,7 @@ def expected_seeded_manifest(project, model_database=None, quote_model=False):
                 "unique_id": "exposure.test.notebook_exposure",
                 "url": "http://example.com/notebook/1",
                 "unrendered_config": {},
+                "vars": {},
             },
             "exposure.test.simple_exposure": {
                 "created_at": ANY,
@@ -880,6 +889,7 @@ def expected_seeded_manifest(project, model_database=None, quote_model=False):
                 "meta": {},
                 "tags": [],
                 "unrendered_config": {},
+                "vars": {},
             },
         },
         "metrics": {},
@@ -997,6 +1007,7 @@ def expected_references_manifest(project):
                 "extra_ctes": [],
                 "checksum": checksum_file(ephemeral_copy_path),
                 "unrendered_config": get_unrendered_model_config(materialized="ephemeral"),
+                "vars": {},
                 "access": "protected",
                 "version": None,
                 "latest_version": None,
@@ -1069,6 +1080,7 @@ def expected_references_manifest(project):
                 "unrendered_config": get_unrendered_model_config(
                     materialized="table", group="test_group"
                 ),
+                "vars": {},
                 "access": "protected",
                 "version": None,
                 "latest_version": None,
@@ -1137,6 +1149,7 @@ def expected_references_manifest(project):
                 "extra_ctes": [],
                 "checksum": checksum_file(view_summary_path),
                 "unrendered_config": get_unrendered_model_config(materialized="view"),
+                "vars": {},
                 "access": "protected",
                 "version": None,
                 "latest_version": None,
@@ -1220,6 +1233,7 @@ def expected_references_manifest(project):
                 "unique_id": "seed.test.seed",
                 "checksum": checksum_file(seed_path),
                 "unrendered_config": get_unrendered_seed_config(),
+                "vars": {},
                 "relation_name": '"{0}"."{1}".seed'.format(project.database, my_schema_name),
             },
             "snapshot.test.snapshot_seed": {
@@ -1234,7 +1248,10 @@ def expected_references_manifest(project):
                 "config": get_rendered_snapshot_config(target_schema=alternate_schema),
                 "contract": {"checksum": None, "enforced": False, "alias_types": True},
                 "database": model_database,
-                "depends_on": {"macros": [], "nodes": ["seed.test.seed"]},
+                "depends_on": {
+                    "macros": [],
+                    "nodes": ["seed.test.seed"],
+                },
                 "description": "",
                 "docs": {"node_color": None, "show": True},
                 "extra_ctes": [],
@@ -1262,6 +1279,7 @@ def expected_references_manifest(project):
                 "unrendered_config": get_unrendered_snapshot_config(
                     target_schema=alternate_schema
                 ),
+                "vars": {"alternate_schema": alternate_schema},
             },
         },
         "sources": {
@@ -1318,6 +1336,7 @@ def expected_references_manifest(project):
                 "unrendered_config": {},
                 "unrendered_database": None,
                 "unrendered_schema": "{{ var('test_schema') }}",
+                "vars": {"test_schema": ANY},
             },
         },
         "exposures": {
@@ -1343,6 +1362,7 @@ def expected_references_manifest(project):
                 "package_name": "test",
                 "path": "schema.yml",
                 "refs": [{"name": "view_summary", "package": None, "version": None}],
+                "vars": {},
                 "resource_type": "exposure",
                 "sources": [],
                 "type": "notebook",
@@ -1603,6 +1623,7 @@ def expected_versions_manifest(project):
                     group="test_group",
                     meta={"size": "large", "color": "blue"},
                 ),
+                "vars": {},
                 "access": "protected",
                 "version": 1,
                 "latest_version": 2,
@@ -1674,6 +1695,7 @@ def expected_versions_manifest(project):
                 "unrendered_config": get_unrendered_model_config(
                     materialized="view", group="test_group", meta={"size": "large", "color": "red"}
                 ),
+                "vars": {},
                 "access": "protected",
                 "version": 2,
                 "latest_version": 2,
@@ -1732,6 +1754,7 @@ def expected_versions_manifest(project):
                 "extra_ctes": [],
                 "checksum": checksum_file(ref_versioned_model_path),
                 "unrendered_config": get_unrendered_model_config(),
+                "vars": {},
                 "access": "protected",
                 "version": None,
                 "latest_version": None,
@@ -1789,6 +1812,7 @@ def expected_versions_manifest(project):
                 },
                 "checksum": {"name": "none", "checksum": ""},
                 "unrendered_config": unrendered_test_config,
+                "vars": {},
             },
             "test.test.unique_versioned_model_v1_count.0b4c0b688a": {
                 "alias": "unique_versioned_model_v1_count",
@@ -1842,6 +1866,7 @@ def expected_versions_manifest(project):
                 },
                 "checksum": {"name": "none", "checksum": ""},
                 "unrendered_config": unrendered_test_config,
+                "vars": {},
             },
             "test.test.unique_versioned_model_v2_first_name.998430d28e": {
                 "alias": "unique_versioned_model_v2_first_name",
@@ -1895,6 +1920,7 @@ def expected_versions_manifest(project):
                 },
                 "checksum": {"name": "none", "checksum": ""},
                 "unrendered_config": unrendered_test_config,
+                "vars": {},
             },
         },
         "exposures": {
@@ -1926,6 +1952,7 @@ def expected_versions_manifest(project):
                 "unique_id": "exposure.test.notebook_exposure",
                 "url": None,
                 "unrendered_config": {},
+                "vars": {},
             },
         },
         "metrics": {},

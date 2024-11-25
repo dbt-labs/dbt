@@ -91,6 +91,9 @@ class ExposureParser(YamlReader):
         unique_id = f"{NodeType.Exposure}.{package_name}.{unparsed.name}"
         path = self.yaml.path.relative_path
 
+        assert isinstance(self.yaml.file, SchemaSourceFile)
+        exposure_vars = self.yaml.file.get_vars(self.key, unparsed.name)
+
         fqn = self.schema_parser.get_fqn_prefix(path)
         fqn.append(unparsed.name)
 
@@ -133,6 +136,7 @@ class ExposureParser(YamlReader):
             maturity=unparsed.maturity,
             config=config,
             unrendered_config=unrendered_config,
+            vars=exposure_vars,
         )
         ctx = generate_parse_exposure(
             parsed,
@@ -144,7 +148,6 @@ class ExposureParser(YamlReader):
         get_rendered(depends_on_jinja, ctx, parsed, capture_macros=True)
         # parsed now has a populated refs/sources/metrics
 
-        assert isinstance(self.yaml.file, SchemaSourceFile)
         if parsed.config.enabled:
             self.manifest.add_exposure(self.yaml.file, parsed)
         else:

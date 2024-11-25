@@ -1,0 +1,7 @@
+kind: Features
+body: Include models that depend on changed vars in state:modified, add state:modified.vars
+  selection method
+time: 2024-07-29T17:32:03.368508-04:00
+custom:
+  Author: michelleark
+  Issue: "4304"

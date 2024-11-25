@@ -69,6 +69,7 @@ class SourceDefinition(ParsedSourceMandatory):
     config: SourceConfig = field(default_factory=SourceConfig)
     patch_path: Optional[str] = None
     unrendered_config: Dict[str, Any] = field(default_factory=dict)
+    vars: Dict[str, Any] = field(default_factory=dict)
     relation_name: Optional[str] = None
     created_at: float = field(default_factory=lambda: time.time())
     unrendered_database: Optional[str] = None

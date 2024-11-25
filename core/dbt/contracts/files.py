@@ -216,6 +216,7 @@ class SchemaSourceFile(BaseSourceFile):
     unrendered_configs: Dict[str, Any] = field(default_factory=dict)
     unrendered_databases: Dict[str, Any] = field(default_factory=dict)
     unrendered_schemas: Dict[str, Any] = field(default_factory=dict)
+    vars: Dict[str, Any] = field(default_factory=dict)
     pp_dict: Optional[Dict[str, Any]] = None
     pp_test_index: Optional[Dict[str, Any]] = None
 
@@ -355,6 +356,22 @@ class SchemaSourceFile(BaseSourceFile):
 
             if not self.unrendered_configs[yaml_key]:
                 del self.unrendered_configs[yaml_key]
+
+    def add_vars(self, vars: Dict[str, Any], yaml_key: str, name: str) -> None:
+        if yaml_key not in self.vars:
+            self.vars[yaml_key] = {}
+
+        if name not in self.vars[yaml_key]:
+            self.vars[yaml_key][name] = vars
+
+    def get_vars(self, yaml_key: str, name: str) -> Dict[str, Any]:
+        if yaml_key not in self.vars:
+            return {}
+
+        if name not in self.vars[yaml_key]:
+            return {}
+
+        return self.vars[yaml_key][name]
 
     def add_env_var(self, var, yaml_key, name):
         if yaml_key not in self.env_vars:

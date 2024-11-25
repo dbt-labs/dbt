@@ -464,6 +464,7 @@ class SchemaParserSourceTest(SchemaParserTest):
     @mock.patch("dbt.parser.sources.get_adapter")
     def test__parse_basic_source_meta(self, mock_get_adapter):
         block = self.file_block_for(MULTIPLE_TABLE_SOURCE_META, "test_one.yml")
+        self.parser.manifest.files[block.file.file_id] = block.file
         dct = yaml_from_file(block.file)
         self.parser.parse_file(block, dct)
         self.assert_has_manifest_lengths(self.parser.manifest, sources=2)

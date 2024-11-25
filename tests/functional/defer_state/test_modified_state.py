@@ -1144,3 +1144,216 @@ class TestChangedSemanticModelContents(BaseModifiedState):
         write_file(modified_semantic_model_schema_yml, "models", "schema.yml")
         results = run_dbt(["list", "-s", "state:modified", "--state", "./state"])
         assert len(results) == 1
+
+
+class TestModifiedVarsLegacy(BaseModifiedState):
+    @pytest.fixture(scope="class")
+    def project_config_update(self):
+        return {
+            "flags": {
+                "state_modified_compare_vars": False,
+            },
+            "vars": {"my_var": 1},
+        }
+
+    @pytest.fixture(scope="class")
+    def models(self):
+        return {
+            "model_with_var.sql": "select {{ var('my_var') }} as id",
+        }
+
+    def test_changed_vars(self, project):
+        self.run_and_save_state()
+
+        # No var change
+        assert not run_dbt(["list", "-s", "state:modified", "--state", "./state"])
+        assert not run_dbt(["list", "-s", "state:modified.vars", "--state", "./state"])
+
+        # Modify var (my_var: 1 -> 2)
+        update_config_file({"vars": {"my_var": 2}}, "dbt_project.yml")
+
+        # By default, do not detect vars in state:modified to preserve legacy behaviour
+        assert run_dbt(["list", "-s", "state:modified", "--state", "./state"]) == []
+
+        # state:modified.vars is a new selector, opt-in method -> returns results
+        assert run_dbt(["list", "-s", "state:modified.vars", "--state", "./state"]) == [
+            "test.model_with_var"
+        ]
+
+        # Reset dbt_project.yml
+        update_config_file({"vars": {"my_var": 1}}, "dbt_project.yml")
+
+        # Modify var via --var CLI flag
+        assert not run_dbt(
+            ["list", "--vars", '{"my_var": 1}', "-s", "state:modified", "--state", "./state"]
+        )
+        assert (
+            run_dbt(
+                ["list", "--vars", '{"my_var": 2}', "-s", "state:modified", "--state", "./state"]
+            )
+            == []
+        )
+        # state:modified.vars is a new selector, opt-in method -> returns results
+        assert run_dbt(
+            ["list", "--vars", '{"my_var": 2}', "-s", "state:modified.vars", "--state", "./state"]
+        ) == ["test.model_with_var"]
+
+
+class TestModifiedVars(BaseModifiedState):
+    @pytest.fixture(scope="class")
+    def project_config_update(self):
+        return {
+            "flags": {
+                "state_modified_compare_vars": True,
+            },
+            "vars": {"my_var": 1},
+        }
+
+    @pytest.fixture(scope="class")
+    def models(self):
+        return {
+            "model_with_var.sql": "select {{ var('my_var') }} as id",
+        }
+
+    def test_changed_vars(self, project):
+        self.run_and_save_state()
+
+        # No var change
+        assert not run_dbt(["list", "-s", "state:modified", "--state", "./state"])
+        assert not run_dbt(["list", "-s", "state:modified.vars", "--state", "./state"])
+
+        # Modify var (my_var: 1 -> 2)
+        update_config_file({"vars": {"my_var": 2}}, "dbt_project.yml")
+        assert run_dbt(["list", "-s", "state:modified", "--state", "./state"]) == [
+            "test.model_with_var"
+        ]
+        assert run_dbt(["list", "-s", "state:modified.vars", "--state", "./state"]) == [
+            "test.model_with_var"
+        ]
+
+        # Reset dbt_project.yml
+        update_config_file({"vars": {"my_var": 1}}, "dbt_project.yml")
+
+        # Modify var via --var CLI flag
+        assert not run_dbt(
+            ["list", "--vars", '{"my_var": 1}', "-s", "state:modified", "--state", "./state"]
+        )
+        assert run_dbt(
+            ["list", "--vars", '{"my_var": 2}', "-s", "state:modified", "--state", "./state"]
+        ) == ["test.model_with_var"]
+
+
+macro_with_var_sql = """
+{% macro macro_with_var() %}
+    {{ var('my_var') }}
+{% endmacro %}
+"""
+
+
+class TestModifiedMacroVars(BaseModifiedState):
+    @pytest.fixture(scope="class")
+    def project_config_update(self):
+        return {
+            "flags": {
+                "state_modified_compare_vars": True,
+            },
+            "vars": {"my_var": 1},
+        }
+
+    @pytest.fixture(scope="class")
+    def models(self):
+        return {
+            "model_with_macro.sql": "select {{ macro_with_var() }} as id",
+        }
+
+    @pytest.fixture(scope="class")
+    def macros(self):
+        return {
+            "macro_with_var.sql": macro_with_var_sql,
+        }
+
+    def test_changed_vars(self, project):
+        self.run_and_save_state()
+
+        # No var change
+        assert not run_dbt(["list", "-s", "state:modified", "--state", "./state"])
+        assert not run_dbt(["list", "-s", "state:modified.vars", "--state", "./state"])
+
+        # Modify var (my_var: 1 -> 2)
+        update_config_file({"vars": {"my_var": 2}}, "dbt_project.yml")
+        assert run_dbt(["list", "-s", "state:modified", "--state", "./state"]) == [
+            "test.model_with_macro"
+        ]
+        assert run_dbt(["list", "-s", "state:modified.vars", "--state", "./state"]) == [
+            "test.model_with_macro"
+        ]
+
+        # Macros themselves not captured as modified because the var value depends on a node's context
+        assert not run_dbt(["list", "-s", "state:modified.macros", "--state", "./state"])
+
+
+# TODO: test versioned models, tests
+model_with_var_schema_yml = """
+version: 2
+models:
+  - name: model_with_var
+    config:
+        materialized: "{{ var('my_var') }}"
+
+exposures:
+  - name: exposure_name
+    type: dashboard
+    owner:
+      name: "{{ var('my_var') }}"
+
+sources:
+  - name: jaffle_shop
+    database: "{{ var('my_var') }}"
+    schema: jaffle_shop
+    tables:
+      - name: orders
+      - name: customers
+"""
+
+
+class TestModifiedVarsSchemaYml(BaseModifiedState):
+    @pytest.fixture(scope="class")
+    def project_config_update(self):
+        return {
+            "flags": {
+                "state_modified_compare_vars": True,
+            },
+            "vars": {"my_var": "table"},
+        }
+
+    @pytest.fixture(scope="class")
+    def models(self):
+        return {"model_with_var.sql": "select 1 as id", "schema.yml": model_with_var_schema_yml}
+
+    def test_changed_vars(self, project):
+        self.run_and_save_state()
+
+        # No var change
+        assert not run_dbt(["list", "-s", "state:modified", "--state", "./state"])
+        assert not run_dbt(["list", "-s", "state:modified.vars", "--state", "./state"])
+
+        # Modify var (my_var: table -> view)
+        update_config_file({"vars": {"my_var": "view"}}, "dbt_project.yml")
+        assert sorted(run_dbt(["list", "-s", "state:modified", "--state", "./state"])) == sorted(
+            [
+                "test.model_with_var",
+                "exposure:test.exposure_name",
+                "source:test.jaffle_shop.customers",
+                "source:test.jaffle_shop.orders",
+            ]
+        )
+        assert sorted(
+            run_dbt(["list", "-s", "state:modified.vars", "--state", "./state"])
+        ) == sorted(
+            [
+                "test.model_with_var",
+                "exposure:test.exposure_name",
+                "source:test.jaffle_shop.customers",
+                "source:test.jaffle_shop.orders",
+            ]
+        )
