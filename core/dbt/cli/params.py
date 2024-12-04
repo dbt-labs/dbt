@@ -735,3 +735,11 @@ show_resource_report = click.option(
     envvar="DBT_SHOW_RESOURCE_REPORT",
     hidden=True,
 )
+
+keep_connections_alive = click.option(
+    "--keep-connections-alive/--no-keep-connections-alive",
+    envvar=None,
+    help="Experimental: Keep connections alive between dbt invocations. Useful when using dbt as an API.",
+    default=False,
+    is_flag=True,
+)

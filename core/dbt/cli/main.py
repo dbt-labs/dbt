@@ -110,6 +110,7 @@ def global_flags(func):
     @p.fail_fast
     @p.favor_state
     @p.indirect_selection
+    @p.keep_connections_alive
     @p.log_cache_events
     @p.log_file_max_bytes
     @p.log_format
