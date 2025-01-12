@@ -92,6 +92,7 @@ class TestBuilder(Generic[Testable]):
         "fail_calc",
         "store_failures",
         "store_failures_as",
+        "sql_header",
         "meta",
         "database",
         "schema",
@@ -254,6 +255,10 @@ class TestBuilder(Generic[Testable]):
         return self.config.get("store_failures_as")
 
     @property
+    def sql_header(self) -> Optional[str]:
+        return self.config.get("sql_header")
+
+    @property
     def where(self) -> Optional[str]:
         return self.config.get("where")
 
@@ -307,6 +312,8 @@ class TestBuilder(Generic[Testable]):
             config["store_failures"] = self.store_failures
         if self.store_failures_as is not None:
             config["store_failures_as"] = self.store_failures_as
+        if self.sql_header is not None:
+            config["sql_header"] = self.sql_header
         if self.meta is not None:
             config["meta"] = self.meta
         if self.database is not None:
