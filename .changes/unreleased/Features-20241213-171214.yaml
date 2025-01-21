@@ -1,0 +1,6 @@
+kind: Features
+body: Add experimental macro type checking under --type-check flag.
+time: 2024-12-13T17:12:14.984956-05:00
+custom:
+  Author: peterallenwebb
+  Issue: "11090"

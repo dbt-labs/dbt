@@ -1,16 +1,16 @@
-import typing
-from typing import Any, Dict, List, Optional, Union
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Union
 
 import jinja2
 
 from dbt.artifacts.resources import RefArgs
 from dbt.exceptions import MacroNamespaceNotStringError, ParsingError
 from dbt_common.clients.jinja import get_environment
+from dbt_common.clients.jinja_macro_call import DbtMacroCall
 from dbt_common.exceptions.macros import MacroNameNotStringError
 from dbt_common.tests import test_caching_enabled
 from dbt_extractor import ExtractionError, py_extract_from_source  # type: ignore
 
-if typing.TYPE_CHECKING:
+if TYPE_CHECKING:
     from dbt.context.providers import ParseDatabaseWrapper
 
 
@@ -31,7 +31,7 @@ def statically_extract_has_name_this(source: str) -> bool:
 
 def statically_extract_macro_calls(
     source: str, ctx: Dict[str, Any], db_wrapper: Optional["ParseDatabaseWrapper"] = None
-) -> List[str]:
+) -> List[DbtMacroCall]:
     # set 'capture_macros' to capture undefined
     env = get_environment(None, capture_macros=True)
 
@@ -48,11 +48,11 @@ def statically_extract_macro_calls(
             setattr(parsed, "_dbt_cached_calls", func_calls)
 
     standard_calls = ["source", "ref", "config"]
-    possible_macro_calls = []
+    possible_macro_calls: List[DbtMacroCall] = []
     for func_call in func_calls:
-        func_name = None
+        macro_call: Optional[DbtMacroCall] = None
         if hasattr(func_call, "node") and hasattr(func_call.node, "name"):
-            func_name = func_call.node.name
+            macro_call = DbtMacroCall.from_call(func_call, func_call.node.name)
         else:
             if (
                 hasattr(func_call, "node")
@@ -72,34 +72,31 @@ def statically_extract_macro_calls(
                         # This skips calls such as adapter.parse_index
                         continue
                 else:
-                    func_name = f"{package_name}.{macro_name}"
+                    macro_call = DbtMacroCall.from_call(func_call, f"{package_name}.{macro_name}")
             else:
                 continue
-        if not func_name:
+
+        if not macro_call or macro_call.name in standard_calls or ctx.get(macro_call.name):
             continue
-        if func_name in standard_calls:
-            continue
-        elif ctx.get(func_name):
-            continue
-        else:
-            if func_name not in possible_macro_calls:
-                possible_macro_calls.append(func_name)
+
+        possible_macro_calls.append(macro_call)
 
     return possible_macro_calls
 
 
 def statically_parse_adapter_dispatch(
     func_call, ctx: Dict[str, Any], db_wrapper: Optional["ParseDatabaseWrapper"]
-) -> List[str]:
-    possible_macro_calls = []
+) -> List[DbtMacroCall]:
+    possible_macro_calls: List[DbtMacroCall] = []
     # This captures an adapter.dispatch('<macro_name>') call.
 
     func_name = None
     # macro_name positional argument
     if len(func_call.args) > 0:
         func_name = func_call.args[0].value
+
     if func_name:
-        possible_macro_calls.append(func_name)
+        possible_macro_calls.append(DbtMacroCall.from_call(func_call, func_name))
 
     # packages positional argument
     macro_namespace = None
@@ -118,7 +115,7 @@ def statically_parse_adapter_dispatch(
                 # This will remain to enable static resolution
                 if type(kwarg.value).__name__ == "Const":
                     func_name = kwarg.value.value
-                    possible_macro_calls.append(func_name)
+                    possible_macro_calls.append(DbtMacroCall.from_call(func_call, func_name))
                 else:
                     raise MacroNameNotStringError(kwarg_value=kwarg.value.value)
             elif kwarg.key == "macro_namespace":
@@ -143,14 +140,16 @@ def statically_parse_adapter_dispatch(
     if db_wrapper:
         macro = db_wrapper.dispatch(func_name, macro_namespace=macro_namespace).macro
         func_name = f"{macro.package_name}.{macro.name}"  # type: ignore[attr-defined]
-        possible_macro_calls.append(func_name)
+        possible_macro_calls.append(DbtMacroCall.from_call(func_call, func_name))
     else:  # this is only for tests/unit/test_macro_calls.py
         if macro_namespace:
             packages = [macro_namespace]
         else:
             packages = []
         for package_name in packages:
-            possible_macro_calls.append(f"{package_name}.{func_name}")
+            possible_macro_calls.append(
+                DbtMacroCall.from_call(func_call, f"{package_name}.{func_name}")
+            )
 
     return possible_macro_calls
 

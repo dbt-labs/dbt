@@ -9,6 +9,8 @@ from dbt.clients.jinja_static import (
 )
 from dbt.context.base import generate_base_context
 from dbt.exceptions import ParsingError
+from dbt_common.clients.jinja import MacroType
+from dbt_common.clients.jinja_macro_call import DbtMacroCall
 
 
 @pytest.mark.parametrize(
@@ -58,6 +60,34 @@ def test_extract_macro_calls(macro_string, expected_possible_macro_calls):
     ctx = generate_base_context(cli_vars)
 
     possible_macro_calls = statically_extract_macro_calls(macro_string, ctx)
+    assert [c.name for c in possible_macro_calls] == expected_possible_macro_calls
+
+
+@pytest.mark.parametrize(
+    "macro_string,expected_possible_macro_calls",
+    [
+        (
+            "{% macro parent_macro() %} {% do nested_macro(12, 'string', 1.0, True, my_kwarg = 2) %} {% endmacro %}",
+            [
+                DbtMacroCall(
+                    name="nested_macro",
+                    source="",
+                    arg_types=[
+                        MacroType(name="int"),
+                        MacroType(name="str"),
+                        MacroType(name="float"),
+                        MacroType(name="bool"),
+                    ],
+                    kwarg_types={
+                        "my_kwarg": MacroType(name="int"),
+                    },
+                ),
+            ],
+        )
+    ],
+)
+def test_extract_macro_calls_with_type_info(macro_string, expected_possible_macro_calls):
+    possible_macro_calls = statically_extract_macro_calls(macro_string, {})
     assert possible_macro_calls == expected_possible_macro_calls
 
 

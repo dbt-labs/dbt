@@ -742,3 +742,10 @@ use_fast_test_edges = click.option(
     default=False,
     hidden=True,
 )
+
+type_check = click.option(
+    "--type-check/--no-type-check",
+    envvar="DBT_TYPE_CHECK",
+    default=False,
+    hidden=True,
+)

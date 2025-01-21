@@ -696,7 +696,7 @@ class ManifestLoader:
 
         self.build_macro_resolver()
         # Look at changed macros and update the macro.depends_on.macros
-        self.macro_depends_on()
+        self.analyze_macros()
 
     # Parse the files in the 'parser_files' dictionary, for parsers listed in
     # 'parser_types'
@@ -780,32 +780,39 @@ class ManifestLoader:
             self.manifest.macros, self.root_project.project_name, internal_package_names
         )
 
-    # Loop through macros in the manifest and statically parse
-    # the 'macro_sql' to find depends_on.macros
-    def macro_depends_on(self):
+    def analyze_macros(self):
+        """Loop through macros in the manifest and statically parse the
+        'macro_sql' to find and set the value of depends_on.macros. Also,
+        perform type checking if flag is set.
+        """
         macro_ctx = generate_macro_context(self.root_project)
         macro_namespace = TestMacroNamespace(self.macro_resolver, {}, None, MacroStack(), [])
         adapter = get_adapter(self.root_project)
         db_wrapper = ParseProvider().DatabaseWrapper(adapter, macro_namespace)
+        type_check = get_flags().TYPE_CHECK
         for macro in self.manifest.macros.values():
             if macro.created_at < self.started_at:
                 continue
             possible_macro_calls = statically_extract_macro_calls(
                 macro.macro_sql, macro_ctx, db_wrapper
             )
-            for macro_name in possible_macro_calls:
+            for macro_call in possible_macro_calls:
                 # adapter.dispatch calls can generate a call with the same name as the macro
                 # it ought to be an adapter prefix (postgres_) or default_
+                macro_name = macro_call.name
                 if macro_name == macro.name:
                     continue
                 package_name = macro.package_name
                 if "." in macro_name:
                     package_name, macro_name = macro_name.split(".")
-                dep_macro_id = self.macro_resolver.get_macro_id(package_name, macro_name)
-                if dep_macro_id:
-                    macro.depends_on.add_macro(dep_macro_id)  # will check for dupes
+                dep_macro = self.macro_resolver.get_macro(package_name, macro_name)
+                if dep_macro is not None and dep_macro.unique_id:
+                    macro.depends_on.add_macro(dep_macro.unique_id)  # will check for dupes
 
-    def write_manifest_for_partial_parse(self):
+                    if type_check:
+                        macro_call.check(dep_macro)
+
+    def write_manifest_for_partial_parse(self) -> None:
         path = os.path.join(self.root_project.project_target_path, PARTIAL_PARSE_FILE_NAME)
         try:
             # This shouldn't be necessary, but we have gotten bug reports (#3757) of the

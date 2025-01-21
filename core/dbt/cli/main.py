@@ -141,6 +141,7 @@ def global_flags(func):
     @p.warn_error_options
     @p.write_json
     @p.use_fast_test_edges
+    @p.type_check
     @functools.wraps(func)
     def wrapper(*args, **kwargs):
         return func(*args, **kwargs)
