@@ -1,6 +1,6 @@
 git+https://github.com/dbt-labs/dbt-adapters.git@main
 git+https://github.com/dbt-labs/dbt-adapters.git@main#subdirectory=dbt-tests-adapter
-git+https://github.com/dbt-labs/dbt-common.git@main
+git+https://github.com/dbt-labs/dbt-common.git@fix_181
 git+https://github.com/dbt-labs/dbt-postgres.git@main
 # black must match what's in .pre-commit-config.yaml to be sure local env matches CI
 black==24.3.0
