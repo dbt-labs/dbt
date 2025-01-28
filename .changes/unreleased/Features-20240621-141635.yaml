@@ -1,0 +1,6 @@
+kind: Features
+body: Warning message for snapshot timestamp data types
+time: 2024-06-21T14:16:35.717637-04:00
+custom:
+  Author: gshank
+  Issue: "10234"

@@ -1610,6 +1610,17 @@ message CompiledNodeMsg {
     CompiledNode data = 2;
 }
 
+// Q043
+message SnapshotTimestampWarning {
+    string snapshot_time_data_type = 1;
+    string updated_at_data_type = 2;
+}
+
+message SnapshotTimestampWarningMsg {
+    CoreEventInfo info = 1;
+    SnapshotTimestampWarning data = 2;
+}
+
 // W - Node testing
 
 // Skipped W001

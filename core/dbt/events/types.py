@@ -1607,6 +1607,18 @@ class CompiledNode(InfoLevel):
                 return f"Compiled node '{self.node_name}' is:\n{self.compiled}"
 
 
+class SnapshotTimestampWarning(WarnLevel):
+    def code(self) -> str:
+        return "Q043"
+
+    def message(self) -> str:
+        return (
+            f"Data type of snapshot table timestamp columns ({self.snapshot_time_data_type}) "
+            f"doesn't match derived column 'updated_at' ({self.updated_at_data_type}). "
+            "Please update snapshot config 'updated_at'."
+        )
+
+
 # =======================================================
 # W - Node testing
 # =======================================================

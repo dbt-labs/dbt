@@ -416,6 +416,9 @@ sample_values = [
     core_types.CompiledNode(
         node_name="", compiled="", is_inline=True, unique_id="model.test.my_model"
     ),
+    core_types.SnapshotTimestampWarning(
+        snapshot_time_data_type="DATETIME", updated_at_data_type="DATETIMEZ"
+    ),
     # W - Node testing ======================
     core_types.CatchableExceptionOnRun(exc=""),
     core_types.InternalErrorOnRun(build_path="", exc=""),
