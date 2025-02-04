@@ -1,0 +1,6 @@
+kind: Features
+body: Return agate_table in dbt run-operation result
+time: 2024-10-31T20:10:31.10956+08:00
+custom:
+    Author: acjh
+    Issue: "10956"

@@ -72,6 +72,9 @@ class RunResultOutput(BaseResult):
     compiled: Optional[bool]
     compiled_code: Optional[str]
     relation_name: Optional[str]
+    agate_table: Optional["agate.Table"] = field(
+        default=None, metadata={"serialize": lambda x: None, "deserialize": lambda x: None}
+    )
     batch_results: Optional[BatchResults] = None
 
 
@@ -88,6 +91,7 @@ def process_run_result(result: RunResult) -> RunResultOutput:
         message=result.message,
         adapter_response=result.adapter_response,
         failures=result.failures,
+        agate_table=result.agate_table,
         batch_results=result.batch_results,
         compiled=result.node.compiled if compiled else None,  # type:ignore
         compiled_code=result.node.compiled_code if compiled else None,  # type:ignore
@@ -128,7 +132,7 @@ class RunResultsArtifact(ExecutionResult, ArtifactMixin):
         args: Dict,
     ):
         processed_results = [
-            process_run_result(result) for result in results if isinstance(result, RunResult)
+            cls._process_run_result(result) for result in results if isinstance(result, RunResult)
         ]
         meta = RunResultsMetadata(
             dbt_schema_version=str(cls.dbt_schema_version),
@@ -177,6 +181,10 @@ class RunResultsArtifact(ExecutionResult, ArtifactMixin):
                 result["compiled_code"] = ""
                 result["relation_name"] = ""
         return cls.from_dict(data)
+
+    @classmethod
+    def _process_run_result(cls, result: RunResult) -> RunResultOutput:
+        return process_run_result(result)
 
     def write(self, path: str):
         write_json(path, self.to_dict(omit_none=False))

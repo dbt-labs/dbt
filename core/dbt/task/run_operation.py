@@ -48,6 +48,9 @@ class RunOperationTask(ConfiguredTask):
                 macro_name, project=package_name, kwargs=macro_kwargs, macro_resolver=self.manifest
             )
 
+        if isinstance(res, str):
+            return None
+
         return res
 
     def run(self) -> RunResultsArtifact:
@@ -60,10 +63,11 @@ class RunOperationTask(ConfiguredTask):
 
         success = True
         package_name, macro_name = self._get_macro_parts()
+        execute_macro_result = None
 
         with collect_timing_info("execute", timing.append):
             try:
-                self._run_unsafe(package_name, macro_name)
+                execute_macro_result = self._run_unsafe(package_name, macro_name)
             except dbt_common.exceptions.DbtBaseException as exc:
                 fire_event(RunningOperationCaughtError(exc=str(exc)))
                 fire_event(LogDebugStackTrace(exc_info=traceback.format_exc()))
@@ -112,6 +116,7 @@ class RunOperationTask(ConfiguredTask):
             ),
             thread_id=threading.current_thread().name,
             timing=timing,
+            agate_table=execute_macro_result,
             batch_results=None,
         )
 
