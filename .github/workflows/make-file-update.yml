@@ -1,0 +1,91 @@
+# **what?**
+# Updates a file via a make command in CI workflow
+
+# **why?**
+# Ensure dbt-core has up to date files
+
+# **when?**
+# This will be called by another workflow in a PR.
+
+name: "Run Make Command & Commit Changes"
+run-name: "Run make ${{ inputs.make_command}}"
+
+on:
+  workflow_call:
+    inputs:
+      file_path:
+        type: string
+        required: true
+      make_command:
+        type: string
+        required: true
+      pr-branch:
+        type: string
+        required: true
+
+jobs:
+  update-file:
+    runs-on: ubuntu-latest
+    steps:
+      - name: "Checkout Repository at ${{ inputs.pr-branch  }}"
+        uses: actions/checkout@v4
+        with:
+          # define this to make to obvious what repo/ref is being checked out
+          repository: ${{ github.repository }}
+          ref: ${{ inputs.pr-branch }}
+          token: ${{ secrets.FISHTOWN_BOT_PAT }}
+          fetch-depth: 100
+
+      # use python 3.11 since it is what we use in the docker image
+      - name: "Setup Python 3.11"
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: "Install protoc v26.1"
+        # version specified for 26.1 because this is the most recent version that can also be installed on macos
+        if: ${{ inputs.make_command == 'core_proto_types' }}
+        run: |
+          PB_REL="https://github.com/protocolbuffers/protobuf/releases"
+          curl -LO $PB_REL/download/v26.1/protoc-26.1-linux-x86_64.zip
+          unzip protoc-26.1-linux-x86_64.zip -d $HOME/.local
+          rm protoc-26.1-linux-x86_64.zip
+          export PATH="$PATH:$HOME/.local/bin"
+          protoc --version
+
+      - name: "make ${{ inputs.make_command }}"
+        run: |
+          make ${{ inputs.make_command }}
+
+      - name: "check state of git repo"
+        run: |
+          git status
+
+      - name: "Diff changes to check if commit is needed"
+        id: check_changes
+        run: |
+          git diff --quiet ${{ inputs.file_path }}  || echo "diff=found" >> $GITHUB_OUTPUT
+
+      - name: "check state of git repo"
+        run: |
+          git status
+
+      - name: "Commit changes"
+        if: ${{ steps.check_changes.outputs.diff == 'found' }}
+        id: pr
+        run: |
+          git config --global user.email "buildbot@fishtownanalytics.com"
+          git config --global user.name "BuildBot"
+          git add ${{ inputs.file_path }}
+          git commit -m "Update ${{ inputs.file_path }}" || true
+          git push
+
+      - name: "[Notification] Job Status"
+        run: |
+          if [[ "${{ steps.check_changes.outputs.diff }}" != "found" ]]; then
+            message="${{ inputs.file_path }} update skipped.  No changes found."
+          elif [ -n "${{ steps.pr.outputs.nbr }}" ]; then
+            message="${{ inputs.file_path }} updated."
+          fi
+          title="Update dbt-core ${{ inputs.file_path }} File"
+          echo "::notice title=$title::$message"

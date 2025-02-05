@@ -1,0 +1,28 @@
+# **what?**
+# Updates core_types_pb2.py in CI workflow
+
+# **why?**
+# Ensure dbt-core has an up to date proto file
+
+# **when?**
+# This will run on a PR when the `proto update` label is added.
+# If it generates a new commit the rest of CI will retrigger.
+
+name: Update Core Proto
+
+on:
+  pull_request:
+    types:
+      - labeled
+      - synchronize
+      - opened
+
+jobs:
+  update-proto:
+    if: ${{ contains(github.event.pull_request.labels.*.name, 'proto update') }}
+    uses: ./.github/workflows/make-file-update.yml
+    with:
+      file_path: "core/dbt/events/core_types_pb2.py"
+      make_command: "core_proto_types"
+      pr-branch: ${{ github.event.pull_request.head.ref }}
+    secrets: inherit
