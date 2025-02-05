@@ -1,0 +1,6 @@
+kind: Fixes
+body: Fix NoSuchOption errors when running `dbt retry` after `dbt docs generate`.
+time: 2024-09-19T18:08:37.450919604+02:00
+custom:
+    Author: jordivandooren
+    Issue: "10741"

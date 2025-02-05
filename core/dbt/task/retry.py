@@ -90,7 +90,6 @@ class RetryTask(ConfiguredTask):
         cli_command = CMD_DICT.get(self.previous_command_name)  # type: ignore
         # Remove these args when their default values are present, otherwise they'll raise an exception
         args_to_remove = {
-            "show": lambda x: True,
             "resource_types": lambda x: x == [],
             "warn_error_options": lambda x: x == {"exclude": [], "include": []},
         }
