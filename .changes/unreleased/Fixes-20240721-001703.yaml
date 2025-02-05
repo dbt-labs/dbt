@@ -1,0 +1,6 @@
+kind: Fixes
+body: modified tag option in git
+time: 2024-07-21T00:17:03.907658+09:00
+custom:
+    Author: jx2lee
+    Issue: "10381"

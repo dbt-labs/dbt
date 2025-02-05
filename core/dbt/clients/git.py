@@ -72,7 +72,7 @@ def clone(repo, cwd, dirname=None, remove_git_dir=False, revision=None, subdirec
 
 
 def list_tags(cwd):
-    out, err = run_cmd(cwd, ["git", "tag", "--list"], env={"LC_ALL": "C"})
+    out, err = run_cmd(cwd, ["git", "tag", "--no-column"], env={"LC_ALL": "C"})
     tags = out.decode("utf-8").strip().split("\n")
     return tags
 
