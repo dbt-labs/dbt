@@ -1,0 +1,6 @@
+kind: Fixes
+body: Prevent dbt compile from overwriting files that are passed in as absolute paths
+time: 2024-10-18T15:02:56.289808-07:00
+custom:
+    Author: Myles1
+    Issue: "10886"
