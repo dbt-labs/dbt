@@ -1,0 +1,6 @@
+kind: Fixes
+body: Change request type shown in tracking logs for POST request
+time: 2024-03-12T16:55:22.517958+01:00
+custom:
+  Author: pol-defont-reaulx
+  Issue: "9753"

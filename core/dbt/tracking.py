@@ -102,7 +102,7 @@ class TimeoutEmitter(Emitter):
             timeout=5.0,
         )
 
-        self._log_result("GET", r.status_code)
+        self._log_result("POST", r.status_code)
         return r
 
     def http_get(self, payload):
