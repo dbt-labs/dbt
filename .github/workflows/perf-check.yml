@@ -1,0 +1,59 @@
+# **what?**
+# This workflow uses a python script to check the performance of dbt against
+# baselines on a set of benchmark projects.
+
+name: Performance Check
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build-and-perf-check:
+    name: Build dbt and check performance
+
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.8'
+
+      - name: Install Python dependencies and install dbt
+        run: |
+          python -m pip install --user --upgrade pip
+          python -m pip --version
+          make dev
+          mypy --version
+          dbt --version
+
+      - name: Create profile
+        run: |
+          mkdir $HOME/.dbt
+          echo "default:"               >> $HOME/.dbt/profiles.yml
+          echo "  outputs:"             >> $HOME/.dbt/profiles.yml
+          echo "    dev:"               >> $HOME/.dbt/profiles.yml
+          echo "      dbname: dummy"    >> $HOME/.dbt/profiles.yml
+          echo "      host: localhost"  >> $HOME/.dbt/profiles.yml
+          echo "      password: paswd"  >> $HOME/.dbt/profiles.yml
+          echo "      port: 5432"       >> $HOME/.dbt/profiles.yml
+          echo "      schema: dummy"    >> $HOME/.dbt/profiles.yml
+          echo "      threads: 4"       >> $HOME/.dbt/profiles.yml
+          echo "      type: postgres"   >> $HOME/.dbt/profiles.yml
+          echo "      user: dummy"      >> $HOME/.dbt/profiles.yml
+          echo "  target: dev"          >> $HOME/.dbt/profiles.yml
+          cat $HOME/.dbt/profiles.yml
+
+      - name: Run performance script
+        run: |
+          python ./scripts/perf-check.py baseline
+
+      - uses: actions/upload-artifact@v3
+        with:
+          name: perf-check-result
+          path: ./perf_check.json

@@ -1,0 +1,6 @@
+kind: Under the Hood
+body: Added a GitHub action for checking performance characteristics of dbt.
+time: 2023-11-22T12:46:12.16794-05:00
+custom:
+  Author: peterallenwebb
+  Issue: "8323"
