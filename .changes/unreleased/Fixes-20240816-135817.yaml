@@ -1,0 +1,6 @@
+kind: Fixes
+body: Removing unused add_ephemeral_model_prefix
+time: 2024-08-16T13:58:17.159806+05:30
+custom:
+    Author: donjin-master
+    Issue: "10471"

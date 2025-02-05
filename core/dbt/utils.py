@@ -137,8 +137,8 @@ class memoized:
         return functools.partial(self.__call__, obj)
 
 
-def add_ephemeral_model_prefix(s: str) -> str:
-    return "__dbt__cte__{}".format(s)
+def add_ephemeral_prefix(name: str):
+    return f"__dbt__cte__{name}"
 
 
 def timestring() -> str:
