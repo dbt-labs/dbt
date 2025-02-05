@@ -27,8 +27,10 @@ from dbt_common.dataclass_schema import ValidationError
 from dbt_common.exceptions.macros import UndefinedMacroError
 from dbt_extractor import ExtractionError, py_extract_from_source  # type: ignore
 
-dbt_function_key_words = set(["ref", "source", "config", "get"])
-dbt_function_full_names = set(["dbt.ref", "dbt.source", "dbt.config", "dbt.config.get"])
+dbt_function_key_words = set(["ref", "source", "config", "get", "var"])
+dbt_function_full_names = set(
+    ["dbt.ref", "dbt.source", "dbt.config", "dbt.config.get", "dbt.var", "dbt.var.get"]
+)
 
 
 class PythonValidationVisitor(ast.NodeVisitor):
@@ -115,7 +117,10 @@ class PythonParseVisitor(ast.NodeVisitor):
                 # drop the dot-dbt prefix
                 func_name = func_name.split(".")[-1]
                 args, kwargs = self._get_call_literals(node)
-                self.dbt_function_calls.append((func_name, args, kwargs))
+                value = node.func.value
+                # dbt_ctx_obj will be used to get which obj uses the get method: config, var
+                dbt_ctx_obj = value.attr if hasattr(value, "attr") else None
+                self.dbt_function_calls.append((func_name, args, kwargs, dbt_ctx_obj))
 
         # no matter what happened above, we should keep visiting the rest of the tree
         # visit args and kwargs to see if there's call in it
@@ -188,7 +193,8 @@ class ModelParser(SimpleSQLParser[ModelNode]):
     def parse_python_model(self, node, config, context):
         config_keys_used = []
         config_keys_defaults = []
-
+        var_keys_used = []
+        var_keys_defaults = []
         try:
             tree = ast.parse(node.raw_code, filename=node.original_file_path)
         except SyntaxError as exc:
@@ -204,8 +210,7 @@ class ModelParser(SimpleSQLParser[ModelNode]):
 
             dbt_parser = PythonParseVisitor(node)
             dbt_parser.visit(tree)
-
-            for func, args, kwargs in dbt_parser.dbt_function_calls:
+            for func, args, kwargs, dbt_ctx_obj in dbt_parser.dbt_function_calls:
                 if func == "get":
                     num_args = len(args)
                     if num_args == 0:
@@ -220,18 +225,24 @@ class ModelParser(SimpleSQLParser[ModelNode]):
                         )
                     key = args[0]
                     default_value = args[1] if num_args == 2 else None
-                    config_keys_used.append(key)
-                    config_keys_defaults.append(default_value)
+                    if dbt_ctx_obj == "config":
+                        config_keys_used.append(key)
+                        config_keys_defaults.append(default_value)
+                    elif dbt_ctx_obj == "var":
+                        var_keys_used.append(key)
+                        var_keys_defaults.append(default_value)
                     continue
-
                 context[func](*args, **kwargs)
-
+        kwargs_config = {}
+        # this is being used in macro build_config_dict
         if config_keys_used:
-            # this is being used in macro build_config_dict
-            context["config"](
-                config_keys_used=config_keys_used,
-                config_keys_defaults=config_keys_defaults,
-            )
+            kwargs_config["config_keys_used"] = config_keys_used
+            kwargs_config["config_keys_defaults"] = (config_keys_defaults,)
+        if var_keys_used:
+            kwargs_config["var_keys_used"] = var_keys_used
+            kwargs_config["var_keys_defaults"] = var_keys_defaults
+        if kwargs_config:
+            context["config"](**kwargs_config)
 
     def render_update(self, node: ModelNode, config: ContextConfig) -> None:
         self.manifest._parsing_info.static_analysis_path_count += 1
