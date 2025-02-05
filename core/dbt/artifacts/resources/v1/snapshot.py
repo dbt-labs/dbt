@@ -57,6 +57,12 @@ class SnapshotConfig(NodeConfig):
                     f"Invalid value for 'check_cols': {self.check_cols}. "
                     "Expected 'all' or a list of strings."
                 )
+            # Validate if there are duplicate column names in check_cols.
+            if isinstance(self.check_cols, list):
+                if len(self.check_cols) != len(set(self.check_cols)):
+                    raise ValidationError(
+                        f"Duplicate column names in 'check_cols':" f" {self.check_cols}."
+                    )
         elif self.strategy == "timestamp":
             if not self.updated_at:
                 raise ValidationError(
