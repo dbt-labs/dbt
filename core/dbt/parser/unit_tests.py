@@ -102,10 +102,11 @@ class UnitTestManifestLoader:
 
         ctx = generate_parse_exposure(
             unit_test_node,  # type: ignore
-            self.root_project,
+            self.root_project,  # config
             self.manifest,
             test_case.package_name,
         )
+
         get_rendered(unit_test_node.raw_code, ctx, unit_test_node, capture_macros=True)
         # unit_test_node now has a populated refs/sources
 
