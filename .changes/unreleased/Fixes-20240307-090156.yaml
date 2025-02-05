@@ -1,0 +1,6 @@
+kind: Fixes
+body: Avoid recursing when installing a project to a subproject via copytree
+time: 2024-03-07T09:01:56.9007199-06:00
+custom:
+  Author: djbelknap
+  Issue: "9719"
