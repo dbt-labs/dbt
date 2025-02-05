@@ -1,9 +1,9 @@
-from typing import List
+from typing import List, Union
 
 from dbt.adapters.contracts.connection import AdapterRequiredConfig
 from dbt.clients.jinja import MacroStack
 from dbt.context.macro_resolver import TestMacroNamespace
-from dbt.contracts.graph.manifest import Manifest
+from dbt.contracts.graph.manifest import MacroManifest, Manifest
 
 from .base import contextproperty
 from .configured import ConfiguredContext
@@ -22,7 +22,7 @@ class ManifestContext(ConfiguredContext):
     def __init__(
         self,
         config: AdapterRequiredConfig,
-        manifest: Manifest,
+        manifest: Union[Manifest, MacroManifest],
         search_package: str,
     ) -> None:
         super().__init__(config)
