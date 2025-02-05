@@ -37,3 +37,5 @@ These select statements, or "models", form a dbt project. Models frequently buil
 ## Code of Conduct
 
 Everyone interacting in the dbt project's codebases, issue trackers, chat rooms, and mailing lists is expected to follow the [dbt Code of Conduct](https://community.getdbt.com/code-of-conduct).
+
+Dummy change.
