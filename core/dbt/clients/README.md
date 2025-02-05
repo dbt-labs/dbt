@@ -4,7 +4,7 @@
 
 #### How are materializations defined
 
-Model materializations are kept in `core/dbt/include/global_project/macros/materializations/models/`. Materializations are defined using syntax that isn't part of the Jinja standard library. These tags are referenced internally, and materializations can be overridden in user projects when users have specific needs.
+Model materializations are defined by adapters. See the [dbt-adapters](https://github.com/dbt-labs/dbt-adapters) project for [base implementations](https://github.com/dbt-labs/dbt-adapters/tree/main/dbt/include/global_project/macros/materializations/models). Materializations are defined using syntax that isn't part of the Jinja standard library. These tags are referenced internally, and materializations can be overridden in user projects when users have specific needs.
 
 ```
 -- Pseudocode for arguments

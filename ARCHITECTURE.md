@@ -14,7 +14,7 @@ The main subdirectories of core/dbt:
 - [`deps`](core/dbt/deps/README.md): Package installation and dependency resolution
 - [`events`](core/dbt/events/README.md): Logging events
 - [`graph`](core/dbt/graph/README.md): Produce a `networkx` DAG of project resources, and selecting those resources given user-supplied criteria
-- [`include`](core/dbt/include/README.md): The dbt "global project," which defines default implementations of Jinja2 macros
+- [`include`](core/dbt/include/README.md): Set up the starter project scaffold.
 - [`parser`](core/dbt/parser/README.md): Read project files, validate, construct python objects
 - [`task`](core/dbt/task/README.md): Set forth the actions that dbt can perform when invoked
 
