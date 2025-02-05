@@ -58,11 +58,11 @@ class GitPinnedPackage(GitPackageMixin, PinnedPackage):
         self.subdirectory = subdirectory
         self._checkout_name = md5sum(self.name)
 
-    def to_dict(self) -> Dict[str, str]:
+    def to_dict(self) -> Dict[str, Optional[str]]:
         git_scrubbed = scrub_secrets(self.git_unrendered, env_secrets())
         if self.git_unrendered != git_scrubbed:
             warn_or_error(DepsScrubbedPackageName(package_name=git_scrubbed))
-        ret = {
+        ret: Dict[str, Optional[str]] = {
             "git": git_scrubbed,
             "revision": self.revision,
         }

@@ -1,5 +1,5 @@
 from dataclasses import dataclass, field
-from typing import Any, Dict, Iterator, List, NoReturn, Set, Type
+from typing import Any, Dict, Iterator, List, NoReturn, Optional, Set, Type
 
 from dbt.config import Project
 from dbt.config.renderer import PackageRenderer
@@ -66,11 +66,13 @@ class PackageListing:
         else:
             self.packages[key] = package
 
-    def update_from(self, src: List[PackageSpec]) -> None:
+    def update_from(self, src: List[PackageSpec], project_root: Optional[str] = None) -> None:
         pkg: UnpinnedPackage
         for contract in src:
             if isinstance(contract, LocalPackage):
                 pkg = LocalUnpinnedPackage.from_contract(contract)
+                # Override the project root for the local package contract IFF it is provided
+                pkg.project_root = project_root if project_root else pkg.project_root
             elif isinstance(contract, TarballPackage):
                 pkg = TarballUnpinnedPackage.from_contract(contract)
             elif isinstance(contract, GitPackage):
@@ -86,9 +88,11 @@ class PackageListing:
             self.incorporate(pkg)
 
     @classmethod
-    def from_contracts(cls: Type["PackageListing"], src: List[PackageSpec]) -> "PackageListing":
+    def from_contracts(
+        cls: Type["PackageListing"], src: List[PackageSpec], project_root: Optional[str] = None
+    ) -> "PackageListing":
         self = cls({})
-        self.update_from(src)
+        self.update_from(src, project_root=project_root)
         return self
 
     def resolved(self) -> List[PinnedPackage]:
@@ -118,7 +122,7 @@ def resolve_packages(
     project: Project,
     cli_vars: Dict[str, Any],
 ) -> List[PinnedPackage]:
-    pending = PackageListing.from_contracts(packages)
+    pending = PackageListing.from_contracts(packages, project_root=project.project_root)
     final = PackageListing()
 
     renderer = PackageRenderer(cli_vars)
@@ -129,7 +133,14 @@ def resolve_packages(
         for package in pending:
             final.incorporate(package)
             target = final[package].resolved().fetch_metadata(project, renderer)
-            next_pending.update_from(target.packages)
+
+            # Hack to get the project root if it is a LocalPackage
+            # https://github.com/dbt-labs/dbt-core/issues/5410
+            project_root = None
+            if isinstance(package, LocalUnpinnedPackage):
+                project_root = package.resolved().resolve_path(project)
+
+            next_pending.update_from(target.packages, project_root=project_root)
         pending = next_pending
 
     resolved = final.resolved()

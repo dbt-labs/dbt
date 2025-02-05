@@ -1,4 +1,4 @@
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 from dbt.clients import registry
 from dbt.contracts.project import RegistryPackage, RegistryPackageMetadata
@@ -37,7 +37,7 @@ class RegistryPinnedPackage(RegistryPackageMixin, PinnedPackage):
     def name(self):
         return self.package
 
-    def to_dict(self) -> Dict[str, str]:
+    def to_dict(self) -> Dict[str, Optional[str]]:
         return {
             "package": self.package,
             "version": self.version,
