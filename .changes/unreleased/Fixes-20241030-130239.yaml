@@ -1,0 +1,6 @@
+kind: Fixes
+body: Don't try to create the log directory when file logging is disabled
+time: 2024-10-30T13:02:39.206813142-06:00
+custom:
+    Author: ericfreese
+    Issue: "10948"

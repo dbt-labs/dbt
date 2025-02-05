@@ -67,7 +67,6 @@ def _logfile_filter(log_cache_events: bool, line_format: LineFormat, msg: EventM
 
 def setup_event_logger(flags, callbacks: List[Callable[[EventMsg], None]] = []) -> None:
     cleanup_event_logger()
-    make_log_dir_if_missing(flags.LOG_PATH)
     event_manager = get_event_manager()
     event_manager.callbacks = callbacks.copy()
     add_callback_to_manager(track_behavior_change_warn)
@@ -93,6 +92,8 @@ def setup_event_logger(flags, callbacks: List[Callable[[EventMsg], None]] = []) 
         add_logger_to_manager(console_config)
 
     if flags.LOG_LEVEL_FILE != "none":
+        make_log_dir_if_missing(flags.LOG_PATH)
+
         # create and add the file logger to the event manager
         log_file = os.path.join(flags.LOG_PATH, "dbt.log")
         log_file_format = _line_format_from_str(flags.LOG_FORMAT_FILE, LineFormat.DebugText)
