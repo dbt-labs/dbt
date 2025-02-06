@@ -65,6 +65,8 @@ def convert_config(config_name, config_value):
     return ret
 
 
+
+
 def args_to_context(args: List[str]) -> Context:
     """Convert a list of args to a click context with proper hierarchy for dbt commands"""
     from dbt.cli.main import cli
@@ -221,6 +223,7 @@ class Flags:
                     deprecated_env_vars,
                 )
 
+
         params_assigned_from_user = set()  # type: Set[str]
         params_assigned_from_default = set()  # type: Set[str]
         deprecated_env_vars: Dict[str, Callable] = {}
@@ -333,6 +336,8 @@ class Flags:
         """If the value of the lead parameter was set explicitly, apply the value to follow, unless follow was also set explicitly."""
         if lead.lower() not in defaulted and follow.lower() in defaulted:
             object.__setattr__(self, follow.upper(), getattr(self, lead.upper(), None))
+        else:
+            defaulted.discard(lead.lower())
 
     def _assert_mutually_exclusive(
         self, params_assigned_from_default: Set[str], group: List[str]
@@ -357,6 +362,9 @@ class Flags:
         event_time_start: datetime = (
             getattr(self, "EVENT_TIME_START") if hasattr(self, "EVENT_TIME_START") else None
         )
+        event_time_pause: datetime = (
+            getattr(self, "EVENT_TIME_PAUSE") if hasattr(self, "EVENT_TIME_PAUSE") else None
+        )
         event_time_end: datetime = (
             getattr(self, "EVENT_TIME_END") if hasattr(self, "EVENT_TIME_END") else None
         )
@@ -371,6 +379,12 @@ class Flags:
                     "The flag `--event-time-end` was specified, but `--event-time-start` was not. "
                     "When specifying `--event-time-end`, `--event-time-start` must also be present."
                 )
+            
+            if event_time_pause is not None:
+                raise DbtUsageException(
+                    "The flag `--event-time-pause` is not supported when `--event-time-start` or `--event-time-end` are specified. "
+                    "Please remove `--event-time-pause` from the command.")
+
             if event_time_end is None:
                 raise DbtUsageException(
                     "The flag `--event-time-start` was specified, but `--event-time-end` was not. "
@@ -411,6 +425,8 @@ class Flags:
         functions.WARN_ERROR = getattr(self, "WARN_ERROR", False)
         if getattr(self, "WARN_ERROR_OPTIONS", None) is not None:
             functions.WARN_ERROR_OPTIONS = getattr(self, "WARN_ERROR_OPTIONS")
+
+        
 
         # Set globals for common.jinja
         if getattr(self, "MACRO_DEBUGGING", None) is not None:

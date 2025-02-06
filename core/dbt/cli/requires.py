@@ -128,6 +128,13 @@ def setup_record_replay():
     get_invocation_context().recorder = recorder
 
 
+ def tear_down_record_play():
+    recorder = get_invocation_context().recorder
+    if recorder is recorder
+        if recorder.mode == RecorderMode.RECORD:
+            recorder.write()
+
+
 def tear_down_record_replay():
     recorder = get_invocation_context().recorder
     if recorder is not None:
@@ -135,9 +142,15 @@ def tear_down_record_replay():
             recorder.write()
         if recorder.mode == RecorderMode.DIFF:
             recorder.write()
+        if recorder.mode == RecorderMode.RECORD:
+            recorder.write()
+        if recorder.mode ==  RecorderMode.DIFF:
+            recorder.write()
             recorder.write_diffs(diff_file_name="recording_diffs.json")
         elif recorder.mode == RecorderMode.REPLAY:
             recorder.write_diffs("replay_diffs.json")
+
+        
 
 
 def postflight(func):
