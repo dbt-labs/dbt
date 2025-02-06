@@ -9,7 +9,15 @@
 
 **[dbt](https://www.getdbt.com/)** enables data analysts and engineers to transform their data using the same practices that software engineers use to build applications.
 
+dbt Core is an open-source tool that enables data teams to transform data using analytics engineering best practices. 
+
 ![architecture](https://github.com/dbt-labs/dbt-core/blob/202cb7e51e218c7b29eb3b11ad058bd56b7739de/etc/dbt-transform.png)
+
+## Getting started
+This package installs dbt Core on the command line. Learn more with the [quickstart for dbt Core](https://docs.getdbt.com/quickstarts/codespace).
+
+- [Install dbt Core](https://docs.getdbt.com/docs/get-started/installation) 
+- Read the [introduction](https://docs.getdbt.com/docs/introduction/) and [viewpoint](https://docs.getdbt.com/docs/about/viewpoint/)
 
 ## Understanding dbt
 
@@ -19,10 +27,10 @@ These select statements, or "models", form a dbt project. Models frequently buil
 
 ![dbt dag](https://raw.githubusercontent.com/dbt-labs/dbt-core/6c6649f9129d5d108aa3b0526f634cd8f3a9d1ed/etc/dbt-dag.png)
 
-## Getting started
+Use dbt in the following ways:
+- Install dbt Core locally in your environment to transform data. dbt Core is suitable for users who prefer to manually set up dbt through a CLI and locally maintain it.
 
-- [Install dbt Core](https://docs.getdbt.com/docs/get-started/installation) or explore the [dbt Cloud CLI](https://docs.getdbt.com/docs/cloud/cloud-cli-installation), a command-line interface powered by [dbt Cloud](https://docs.getdbt.com/docs/cloud/about-cloud/dbt-cloud-features) that enhances collaboration.
-- Read the [introduction](https://docs.getdbt.com/docs/introduction/) and [viewpoint](https://docs.getdbt.com/docs/about/viewpoint/)
+- Use [dbt Cloud](https://docs.getdbt.com/docs/cloud/about-cloud/dbt-cloud-features), a cloud-based environment that offers the fastest, most reliable, and scalable way to deploy dbt. Develop using the [dbt Cloud CLI](https://docs.getdbt.com/docs/cloud/cloud-cli-installation) or [browser-based IDE](https://www.getdbt.com/resources/webinars/dbt-cloud-demos-with-experts) to test, schedule, and investigate data models in a unified web-based UI.
 
 ## Join the dbt Community
 
