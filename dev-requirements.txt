@@ -1,4 +1,4 @@
-git+https://github.com/dbt-labs/dbt-adapters.git@main#subdirectory=dbt-adapters
+git+https://github.com/dbt-labs/dbt-adapters.git@feature/externalCatalogConfig#subdirectory=dbt-adapters
 git+https://github.com/dbt-labs/dbt-adapters.git@main#subdirectory=dbt-tests-adapter
 git+https://github.com/dbt-labs/dbt-common.git@main
 git+https://github.com/dbt-labs/dbt-adapters.git@main#subdirectory=dbt-postgres
