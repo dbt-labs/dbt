@@ -1,6 +1,6 @@
 from functools import partial
 from itertools import product
-from typing import Iterable, Iterator, NewType, Optional, Set
+from typing import Collection, Iterable, Iterator, NewType, Optional, Set, Tuple
 
 import networkx as nx  # type: ignore
 
@@ -14,13 +14,13 @@ class Graph:
     and how they interact with the graph.
     """
 
-    def __init__(self, graph) -> None:
+    def __init__(self, graph: nx.DiGraph) -> None:
         self.graph: nx.DiGraph = graph
 
     def nodes(self) -> Set[UniqueId]:
         return set(self.graph.nodes())
 
-    def edges(self):
+    def edges(self) -> Collection[Tuple[UniqueId, UniqueId]]:
         return self.graph.edges()
 
     def __iter__(self) -> Iterator[UniqueId]:
@@ -43,13 +43,13 @@ class Graph:
         filtered_graph = self.exclude_edge_type("parent_test")
         return {child for _, child in nx.bfs_edges(filtered_graph, node, depth_limit=max_depth)}
 
-    def exclude_edge_type(self, edge_type_to_exclude):
+    def exclude_edge_type(self, edge_type_to_exclude) -> nx.Graph:
         return nx.subgraph_view(
             self.graph,
             filter_edge=partial(self.filter_edges_by_type, edge_type=edge_type_to_exclude),
         )
 
-    def filter_edges_by_type(self, first_node, second_node, edge_type):
+    def filter_edges_by_type(self, first_node, second_node, edge_type) -> bool:
         return self.graph.get_edge_data(first_node, second_node).get("edge_type") != edge_type
 
     def select_childrens_parents(self, selected: Set[UniqueId]) -> Set[UniqueId]:
@@ -168,5 +168,5 @@ class Graph:
         # the selected unique_id nodes.
         return Graph(self.graph.subgraph(nodes))
 
-    def get_dependent_nodes(self, node: UniqueId):
+    def get_dependent_nodes(self, node: UniqueId) -> Collection[UniqueId]:
         return nx.descendants(self.graph, node)

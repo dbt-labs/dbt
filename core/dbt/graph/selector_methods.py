@@ -514,7 +514,7 @@ def _getattr_descend(obj: Any, attrs: List[str]) -> Any:
 
 
 class CaseInsensitive(str):
-    def __eq__(self, other):
+    def __eq__(self, other: Any) -> bool:
         if isinstance(other, str):
             return self.upper() == other.upper()
         else:
@@ -634,7 +634,7 @@ class StateSelectorMethod(SelectorMethod):
 
         return modified
 
-    def recursively_check_macros_modified(self, node, visited_macros):
+    def recursively_check_macros_modified(self, node, visited_macros) -> bool:
         if not hasattr(node, "depends_on"):
             return False
 
@@ -643,6 +643,7 @@ class StateSelectorMethod(SelectorMethod):
                 continue
             visited_macros.append(macro_uid)
 
+            assert self.modified_macros is not None
             if macro_uid in self.modified_macros:
                 return True
 
@@ -664,7 +665,7 @@ class StateSelectorMethod(SelectorMethod):
 
         return False
 
-    def check_macros_modified(self, node):
+    def check_macros_modified(self, node) -> bool:
         # check if there are any changes in macros the first time
         if self.modified_macros is None:
             self.modified_macros = self._macros_modified()
@@ -673,8 +674,7 @@ class StateSelectorMethod(SelectorMethod):
             return False
         # recursively loop through upstream macros to see if any is modified
         else:
-            visited_macros = []
-            return self.recursively_check_macros_modified(node, visited_macros)
+            return self.recursively_check_macros_modified(node, [])
 
     # TODO check modifed_content and check_modified macro seems a bit redundent
     def check_modified_content(

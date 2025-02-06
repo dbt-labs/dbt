@@ -30,7 +30,7 @@ class IndirectSelection(StrEnum):
     Empty = "empty"
 
 
-def _probably_path(value: str):
+def _probably_path(value: str) -> bool:
     """Decide if the value is probably a path. Windows has two path separators, so
     we should check both sep ('\\') and altsep ('/') there.
     """
@@ -74,7 +74,7 @@ class SelectionCriteria:
     children_depth: Optional[int]
     indirect_selection: IndirectSelection = IndirectSelection.Eager
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         if self.children and self.childrens_parents:
             raise DbtRuntimeError(
                 f'Invalid node spec {self.raw} - "@" prefix and "+" suffix ' "are incompatible"
@@ -138,7 +138,7 @@ class SelectionCriteria:
         )
 
     @classmethod
-    def dict_from_single_spec(cls, raw: str):
+    def dict_from_single_spec(cls, raw: str) -> Dict[str, Any]:
         result = RAW_SELECTOR_PATTERN.match(raw)
         if result is None:
             return {"error": "Invalid selector spec"}
