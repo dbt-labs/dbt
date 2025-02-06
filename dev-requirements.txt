@@ -39,3 +39,4 @@ types-pytz
 types-requests
 types-setuptools
 mocker
+opentelemetry-api
