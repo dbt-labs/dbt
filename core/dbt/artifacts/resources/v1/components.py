@@ -133,7 +133,7 @@ class FreshnessThreshold(dbtClassMixin, Mergeable):
 @dataclass
 class HasRelationMetadata(dbtClassMixin):
     database: Optional[str]
-    schema: str
+    schema: Optional[str]
 
     # Can't set database to None like it ought to be
     # because it messes up the subclasses and default parameters
