@@ -5,7 +5,7 @@ exclude: ^(core/dbt/docs/build/|core/dbt/common/events/types_pb2.py|core/dbt/eve
 
 # Force all unspecified python hooks to run python 3.9
 default_language_version:
-  python: python3
+  python: python3.9
 
 repos:
 - repo: https://github.com/pre-commit/pre-commit-hooks

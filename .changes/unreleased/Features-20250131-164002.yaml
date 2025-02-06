@@ -1,0 +1,6 @@
+kind: Features
+body: Support both yaml and yml file extension for project config files
+time: 2025-01-31T16:40:02.049453+11:00
+custom:
+    Author: morgan-dgk
+    Issue: '#5002 #8738'
