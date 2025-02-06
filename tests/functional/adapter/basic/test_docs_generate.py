@@ -453,9 +453,30 @@ class BaseDocsGenerate(BaseGenerateProject):
         verify_catalog(project, expected_catalog, start_time)
 
         # Check that assets have been copied to the target directory for use in the docs html page
-        assert os.path.exists(os.path.join("", "target", "assets"))
-        assert os.path.exists(os.path.join("", "target", "assets", "lorem-ipsum.txt"))
-        assert not os.path.exists(os.path.join("", "target", "non-existent-assets"))
+        assert os.path.exists(os.path.join(project.project_root, "target", "assets"))
+        assert os.path.exists(
+            os.path.join(project.project_root, "target", "assets", "lorem-ipsum.txt")
+        )
+        assert not os.path.exists(
+            os.path.join(project.project_root, "target", "non-existent-assets")
+        )
+
+    # Test generic "docs generate" command
+    def test_locally_run_and_generate(self, project, expected_catalog):
+        os.chdir(
+            project.profiles_dir
+        )  # Change to random directory to test that assets doc generation works with project-dir
+        start_time = run_and_generate(project)
+        verify_catalog(project, expected_catalog, start_time)
+
+        # Check that assets have been copied to the target directory for use in the docs html page
+        assert os.path.exists(os.path.join(project.project_root, "target", "assets"))
+        assert os.path.exists(
+            os.path.join(project.project_root, "target", "assets", "lorem-ipsum.txt")
+        )
+        assert not os.path.exists(
+            os.path.join(project.project_root, "target", "non-existent-assets")
+        )
 
 
 class TestDocsGenerate(BaseDocsGenerate):

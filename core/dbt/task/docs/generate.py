@@ -238,8 +238,10 @@ class GenerateTask(CompileTask):
             if os.path.exists(to_asset_path):
                 shutil.rmtree(to_asset_path)
 
-            if os.path.exists(asset_path):
-                shutil.copytree(asset_path, to_asset_path)
+            from_asset_path = os.path.join(self.config.project_root, asset_path)
+
+            if os.path.exists(from_asset_path):
+                shutil.copytree(from_asset_path, to_asset_path)
 
         if self.manifest is None:
             raise DbtInternalError("self.manifest was None in run!")

@@ -1,0 +1,6 @@
+kind: Fixes
+body: Allow copying asset when dbt docs command is run outside the dbt project
+time: 2025-01-16T19:26:16.160976423Z
+custom:
+    Author: cedric-orange
+    Issue: "9308"
