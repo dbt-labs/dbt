@@ -42,7 +42,7 @@ class ModelFreshnessDependsOnOptions(enum.Enum):
 
 @dataclass
 class ModelBuildAfter(ExtensibleDbtClassMixin):
-    depends_on: ModelFreshnessDependsOnOptions = ModelFreshnessDependsOnOptions.any
+    depends_on: ModelFreshnessDependsOnOptions = ModelFreshnessDependsOnOptions.all
     count: int = 0
     period: TimePeriod = TimePeriod.hour
 
