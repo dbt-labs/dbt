@@ -393,7 +393,9 @@ class BaseContext(metaclass=ContextMeta):
 
     @contextmember()
     @staticmethod
-    def tojson(value: Any, default: Any = None, sort_keys: bool = False) -> Any:
+    def tojson(
+        value: Any, default: Any = None, sort_keys: bool = False, indent: int | str | None = None
+    ) -> Any:
         """The `tojson` context method can be used to serialize a Python
         object primitive, eg. a `dict` or `list` to a json string.
 
@@ -401,6 +403,9 @@ class BaseContext(metaclass=ContextMeta):
         :param default: A default value to return if the `value` argument
             cannot be serialized
         :param sort_keys: If True, sort the keys.
+        :param indent: If indent is a non-negative integer, then nested
+            structures will be serialized indented by that value. An indent
+            value of 0 will insert newlines with no indenting.
 
 
         Usage:
@@ -410,7 +415,7 @@ class BaseContext(metaclass=ContextMeta):
             {% do log(my_json_string) %}
         """
         try:
-            return json.dumps(value, sort_keys=sort_keys)
+            return json.dumps(value, sort_keys=sort_keys, indent=indent)
         except ValueError:
             return default
 
@@ -448,15 +453,21 @@ class BaseContext(metaclass=ContextMeta):
     @contextmember()
     @staticmethod
     def toyaml(
-        value: Any, default: Optional[str] = None, sort_keys: bool = False
+        value: Any,
+        default: Optional[str] = None,
+        sort_keys: bool = False,
+        indent: int | None = None,
     ) -> Optional[str]:
-        """The `tojson` context method can be used to serialize a Python
+        """The `toyaml` context method can be used to serialize a Python
         object primitive, eg. a `dict` or `list` to a yaml string.
 
         :param value: The value serialize to yaml
         :param default: A default value to return if the `value` argument
             cannot be serialized
         :param sort_keys: If True, sort the keys.
+        :param indent: If indent is a non-negative integer, the number of
+            spaces by which to indent nested structures (Default for YAML
+            is indenting by 2 spaces)
 
 
         Usage:
@@ -466,7 +477,7 @@ class BaseContext(metaclass=ContextMeta):
             {% do log(my_yaml_string) %}
         """
         try:
-            return yaml.safe_dump(data=value, sort_keys=sort_keys)
+            return yaml.safe_dump(data=value, sort_keys=sort_keys, indent=indent)
         except (ValueError, yaml.YAMLError):
             return default
 
