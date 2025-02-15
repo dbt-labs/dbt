@@ -226,7 +226,7 @@ class TestGitPackage(unittest.TestCase):
 
         LocalPinnedPackage("local").install("dummy", "dummy")
         self.assertEqual(mock_shutil.call_count, 1)
-        mock_shutil.assert_called_once_with("/tmp/source", "/tmp/dest")
+        mock_shutil.assert_called_once_with("/tmp/source", "/tmp/dest", ignore=mock.ANY)
 
     def test_invalid(self):
         with self.assertRaises(ValidationError):

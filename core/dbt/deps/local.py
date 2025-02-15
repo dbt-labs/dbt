@@ -64,7 +64,13 @@ class LocalPinnedPackage(LocalPackageMixin, PinnedPackage):
             system.make_symlink(src_path, dest_path)
         except OSError:
             fire_event(DepsSymlinkNotAvailable())
-            shutil.copytree(src_path, dest_path)
+            shutil.copytree(
+                src_path,
+                dest_path,
+                ignore=lambda directory, contents: project.packages_install_path
+                if directory == project.project_root
+                else [],
+            )
 
 
 class LocalUnpinnedPackage(LocalPackageMixin, UnpinnedPackage[LocalPinnedPackage]):
