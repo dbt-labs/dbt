@@ -126,7 +126,7 @@ class PackageConfig(dbtClassMixin):
                         "A git package is missing the value. It is a required property."
                     )
             if isinstance(package, dict) and package.get("package"):
-                if not package["version"]:
+                if not package.get("version"):
                     raise ValidationError(
                         f"{package['package']} is missing the version. When installing from the Hub "
                         "package index, version is a required property"

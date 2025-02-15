@@ -1,0 +1,7 @@
+kind: Fixes
+body: Fix exception when `version` is missing when installing from the Hub package
+  index
+time: 2024-04-25T17:40:24.465839-06:00
+custom:
+  Author: dbeatty10
+  Issue: "10048"
