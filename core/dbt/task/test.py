@@ -313,6 +313,7 @@ class TestRunner(CompileRunner):
             failures = result.failures
         else:
             status = TestStatus.Pass
+            failures = result.failures
 
         run_result = RunResult(
             node=test,
