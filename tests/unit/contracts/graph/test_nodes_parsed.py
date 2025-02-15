@@ -1510,6 +1510,16 @@ def assert_snapshot_config_fails_validation(dct):
         obj.final_validate()
 
 
+def test_duplicate_check_cols(basic_check_snapshot_config_dict):
+    duplicate_cols = basic_check_snapshot_config_dict
+    # Introducing duplicate column names
+    duplicate_cols["check_cols"] = ["col1", "col2", "col2"]
+    with pytest.raises(ValidationError, match=r"Duplicate column names in 'check_cols'"):
+        SnapshotConfig.validate(duplicate_cols)
+        cfg = SnapshotConfig.from_dict(duplicate_cols)
+        cfg.final_validate()
+
+
 def test_invalid_check_value(basic_check_snapshot_config_dict):
     invalid_check_type = basic_check_snapshot_config_dict
     invalid_check_type["check_cols"] = "some"
