@@ -1,0 +1,6 @@
+kind: "Dependencies"
+body: "Bump ubuntu from 22.04 to 24.04"
+time: 2024-04-29T00:59:52.00000Z
+custom:
+  Author: dependabot[bot]
+  Issue: 10061
