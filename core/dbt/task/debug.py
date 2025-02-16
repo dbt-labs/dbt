@@ -219,6 +219,9 @@ class DebugTask(BaseTask):
                     self.target_name = self._choose_target_name(profile_name)
                     self.profile = profile
 
+        if len(profile_names) == 0:
+            profile_errors.append(summary_message)
+
         if profile_errors:
             details = "\n\n".join(profile_errors)
             return SubtaskStatus(
@@ -261,6 +264,7 @@ class DebugTask(BaseTask):
         # try to guess
 
         profiles = []
+        summary_message = f" profile path <{self.profile_path}> not found\n"
         if self.raw_profile_data:
             profiles = [k for k in self.raw_profile_data if k != "config"]
             if project_profile is None:
