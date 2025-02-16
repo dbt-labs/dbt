@@ -154,6 +154,9 @@ make integration
 > These make targets assume you have a local installation of a recent version of [`tox`](https://tox.readthedocs.io/en/latest/) for unit/integration testing and pre-commit for code quality checks,
 > unless you use choose a Docker container to run tests. Run `make help` for more info.
 
+> Running functional tests can fail with repeated errors opening files and other resources.
+> If this occurs, check directory permissions and the limit on open file descriptors. The latter needs to be at least 8000.
+
 Check out the other targets in the Makefile to see other commonly used test
 suites.
 
