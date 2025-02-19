@@ -1,0 +1,6 @@
+kind: "Dependencies"
+body: "Bump black from 24.3.0 to 25.1.0"
+time: 2025-02-17T00:25:24.00000Z
+custom:
+  Author: dependabot[bot]
+  Issue: 11317

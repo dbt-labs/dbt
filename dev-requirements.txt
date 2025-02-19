@@ -3,7 +3,7 @@ git+https://github.com/dbt-labs/dbt-adapters.git@main#subdirectory=dbt-tests-ada
 git+https://github.com/dbt-labs/dbt-common.git@main
 git+https://github.com/dbt-labs/dbt-adapters.git@main#subdirectory=dbt-postgres
 # black must match what's in .pre-commit-config.yaml to be sure local env matches CI
-black==24.3.0
+black==25.1.0
 bumpversion
 ddtrace==2.3.0
 docutils
