@@ -410,6 +410,22 @@ class TestParsedNode:
             database=None,
         )
 
+    @pytest.fixture(scope="class")
+    def parsed_yml_node(self) -> ParsedNode:
+        return ParsedNode(
+            resource_type=NodeType.Model,
+            unique_id="model.test_package.test_name",
+            name="test_name",
+            package_name="test_package",
+            schema="test_schema",
+            alias="test_alias",
+            fqn=["models", "test_name"],
+            original_file_path="folder/test_original_file_path.yml",
+            checksum=FileHash.from_contents("checksum"),
+            path="test_original_file_path.yml/test_path.sql",
+            database=None,
+        )
+
     def test_get_target_write_path(self, parsed_node):
         write_path = parsed_node.get_target_write_path("target_path", "subdirectory")
         assert (
@@ -422,4 +438,11 @@ class TestParsedNode:
         assert (
             write_path
             == "target_path/subdirectory/test_package/test_original_file_path/test_path/test_path_split.sql"
+        )
+
+    def test_get_target_write_path_for_yml_node(self, parsed_yml_node):
+        write_path = parsed_yml_node.get_target_write_path("target_path", "subdirectory")
+        assert (
+            write_path
+            == "target_path/subdirectory/test_package/folder/test_original_file_path_yml/test_path.sql"
         )

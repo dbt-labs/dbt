@@ -1,0 +1,6 @@
+kind: Fixes
+body: Models defined in .yml files have weird paths
+time: 2025-02-19T22:43:10.5172941+10:30
+custom:
+    Author: joshuanits
+    Issue: "11321"

@@ -255,6 +255,11 @@ class ParsedNode(ParsedResource, NodeInfoMixin, ParsedNodeMandatory, Serializabl
         if os.path.basename(self.path) == os.path.basename(self.original_file_path):
             # One-to-one relationship of nodes to files.
             path = self.original_file_path
+        elif os.path.dirname(self.path) == os.path.basename(self.original_file_path):
+            parent_dirname = os.path.dirname(self.original_file_path)
+            dirname = os.path.dirname(self.path).replace(".", "_")
+            basename = os.path.basename(self.path)
+            path = os.path.join(parent_dirname, dirname, basename)
         else:
             #  Many-to-one relationship of nodes to files.
             path = os.path.join(self.original_file_path, self.path)
