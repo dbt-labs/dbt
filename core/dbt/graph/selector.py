@@ -15,11 +15,7 @@ from .selector_methods import MethodManager
 from .selector_spec import IndirectSelection, SelectionCriteria, SelectionSpec
 
 
-def get_package_names(nodes):
-    return set([node.split(".")[1] for node in nodes])
-
-
-def can_select_indirectly(node):
+def can_select_indirectly(node) -> bool:
     """If a node is not selected itself, but its parent(s) are, it may qualify
     for indirect selection.
     Today, only Test nodes can be indirectly selected. In the future,
@@ -365,5 +361,5 @@ class ResourceTypeSelector(NodeSelector):
         )
         self.resource_types: Set[NodeType] = set(resource_types)
 
-    def node_is_match(self, node):
+    def node_is_match(self, node) -> bool:
         return node.resource_type in self.resource_types
