@@ -1,0 +1,6 @@
+kind: Fixes
+body: Error occurs if default_profiles_dir does not exist
+time: 2025-02-10T00:01:07.477255+09:00
+custom:
+    Author: tnk-ysk
+    Issue: "11286"

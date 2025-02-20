@@ -11,7 +11,8 @@ def default_project_dir() -> Path:
 
 
 def default_profiles_dir() -> Path:
-    return Path.cwd() if (Path.cwd() / "profiles.yml").exists() else Path.home() / ".dbt"
+    paths = [Path.cwd(), Path.home() / ".dbt"]
+    return next((x for x in paths if (x / "profiles.yml").exists()), Path.cwd())
 
 
 def default_log_path(project_dir: Path, verify_version: bool = False) -> Path:
