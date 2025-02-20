@@ -1,0 +1,6 @@
+kind: Security
+body: upgrade libpq-dev to version 13.19-0+deb11u1 to resolve CVE-2025-1094
+time: 2025-02-15T17:45:53.0371582+03:00
+custom:
+    Author: saudf
+    Issue: "11314"
