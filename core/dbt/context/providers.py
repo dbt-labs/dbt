@@ -51,7 +51,7 @@ from dbt.context.exceptions_jinja import wrapped_exports
 from dbt.context.macro_resolver import MacroResolver, TestMacroNamespace
 from dbt.context.macros import MacroNamespace, MacroNamespaceBuilder
 from dbt.context.manifest import ManifestContext
-from dbt.contracts.graph.manifest import Disabled, Manifest
+from dbt.contracts.graph.manifest import Disabled, MacroManifest, Manifest
 from dbt.contracts.graph.metrics import MetricReference, ResolvedMetricReference
 from dbt.contracts.graph.nodes import (
     AccessType,
@@ -930,13 +930,15 @@ class ProviderContext(ManifestContext):
         self,
         model,
         config: RuntimeConfig,
-        manifest: Manifest,
+        manifest: Union[Manifest, MacroManifest],
         provider: Provider,
         context_config: Optional[ContextConfig],
     ) -> None:
         if provider is None:
             raise DbtInternalError(f"Invalid provider given to context: {provider}")
+
         # mypy appeasement - we know it'll be a RuntimeConfig
+
         self.config: RuntimeConfig
         self.model: Union[Macro, ManifestNode, SourceDefinition] = model
         super().__init__(config, manifest, model.package_name)
@@ -1526,6 +1528,9 @@ class ProviderContext(ManifestContext):
             return_value = default
 
         if return_value is not None:
+            if isinstance(self.manifest, MacroManifest):
+                return return_value
+
             # Save the env_var value in the manifest and the var name in the source_file.
             # If this is compiling, do not save because it's irrelevant to parsing.
             compiling = (
@@ -1736,6 +1741,7 @@ class UnitTestContext(ModelContext):
 
     @contextproperty()
     def this(self) -> Optional[str]:
+        assert isinstance(self.manifest, Manifest)
         if self.model.this_input_node_unique_id:
             this_node = self.manifest.expect(self.model.this_input_node_unique_id)
             self.model.set_cte(this_node.unique_id, None)  # type: ignore
@@ -2010,6 +2016,7 @@ class TestContext(ProviderContext):
         if return_value is not None:
             # Save the env_var value in the manifest and the var name in the source_file
             if self.model:
+                assert isinstance(self.manifest, Manifest)
                 # If the environment variable is set from a default, store a string indicating
                 # that so we can skip partial parsing.  Otherwise the file will be scheduled for
                 # reparsing. If the default changes, the file will have been updated and therefore
