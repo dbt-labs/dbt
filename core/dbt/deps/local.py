@@ -1,5 +1,5 @@
 import shutil
-from typing import Dict
+from typing import Dict, Optional
 
 from dbt.config.project import PartialProject, Project
 from dbt.config.renderer import PackageRenderer
@@ -11,9 +11,10 @@ from dbt_common.events.functions import fire_event
 
 
 class LocalPackageMixin:
-    def __init__(self, local: str) -> None:
+    def __init__(self, local: str, project_root: Optional[str] = None) -> None:
         super().__init__()
         self.local = local
+        self.project_root = project_root
 
     @property
     def name(self):
@@ -24,12 +25,13 @@ class LocalPackageMixin:
 
 
 class LocalPinnedPackage(LocalPackageMixin, PinnedPackage):
-    def __init__(self, local: str) -> None:
-        super().__init__(local)
+    def __init__(self, local: str, project_root: Optional[str] = None) -> None:
+        super().__init__(local, project_root)
 
-    def to_dict(self) -> Dict[str, str]:
+    def to_dict(self) -> Dict[str, Optional[str]]:
         return {
             "local": self.local,
+            "project_root": self.project_root,
         }
 
     def get_version(self):
@@ -38,10 +40,17 @@ class LocalPinnedPackage(LocalPackageMixin, PinnedPackage):
     def nice_version_name(self):
         return "<local @ {}>".format(self.local)
 
-    def resolve_path(self, project):
+    def resolve_path(self, project: Project) -> str:
+        """If `self.local` is a relative path, create an absolute path
+        with either `self.project_root` or `project.project_root` as the base.
+
+        If `self.local` is an absolute path or a user path (~), just
+        resolve it to an absolute path and return.
+        """
+
         return system.resolve_path_from_base(
             self.local,
-            project.project_root,
+            self.project_root if self.project_root else project.project_root,
         )
 
     def _fetch_metadata(
@@ -70,10 +79,10 @@ class LocalPinnedPackage(LocalPackageMixin, PinnedPackage):
 class LocalUnpinnedPackage(LocalPackageMixin, UnpinnedPackage[LocalPinnedPackage]):
     @classmethod
     def from_contract(cls, contract: LocalPackage) -> "LocalUnpinnedPackage":
-        return cls(local=contract.local)
+        return cls(local=contract.local, project_root=contract.project_root)
 
     def incorporate(self, other: "LocalUnpinnedPackage") -> "LocalUnpinnedPackage":
-        return LocalUnpinnedPackage(local=self.local)
+        return LocalUnpinnedPackage(local=other.local, project_root=other.project_root)
 
     def resolved(self) -> LocalPinnedPackage:
-        return LocalPinnedPackage(local=self.local)
+        return LocalPinnedPackage(local=self.local, project_root=self.project_root)

@@ -1,0 +1,6 @@
+kind: Fixes
+body: Resolve relative local dependencies of local dependencies
+time: 2024-08-23T15:03:43.292804-06:00
+custom:
+  Author: dbeatty10
+  Issue: "10600"

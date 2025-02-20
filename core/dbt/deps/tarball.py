@@ -1,7 +1,7 @@
 import functools
 import os
 from pathlib import Path
-from typing import Dict
+from typing import Dict, Optional
 
 from dbt.config.project import PartialProject
 from dbt.contracts.project import TarballPackage
@@ -39,7 +39,7 @@ class TarballPinnedPackage(TarballPackageMixin, PinnedPackage):
     def name(self):
         return self.package
 
-    def to_dict(self) -> Dict[str, str]:
+    def to_dict(self) -> Dict[str, Optional[str]]:
         tarball_scrubbed = scrub_secrets(self.tarball_unrendered, env_secrets())
         if self.tarball_unrendered != tarball_scrubbed:
             warn_or_error(DepsScrubbedPackageName(package_name=tarball_scrubbed))
