@@ -304,7 +304,9 @@ class BaseResolver(metaclass=abc.ABCMeta):
         return event_time_filter
 
     @abc.abstractmethod
-    def __call__(self, *args: str) -> Union[str, RelationProxy, MetricReference]:
+    def __call__(
+        self, *args: str
+    ) -> Optional[Union[str, int, float, RelationProxy, MetricReference]]:
         pass
 
 
@@ -1856,6 +1858,61 @@ class ExposureRefResolver(BaseResolver):
         return ""
 
 
+class ExposureVarResolver(BaseResolver):
+    def __call__(self, *args) -> Any:  # ?? -> Any??
+        n_args = len(args)
+        if n_args == 0 or n_args > 2:
+            raise RefArgsError(node=self.model, args=args)
+        var = args[0]
+        default = None if n_args == 1 else args[1]
+        # context is None using the same decision at
+        # generate_runtime_unit_test_context
+        return UnitTestVar(context={}, config=self.config, node=self.model)(var, default)
+
+
+# Should  we create a new copy of the `envvar` method, similar to what was done for
+# `TextContext` and `ProviderContext`?
+class ExposureEnvVarResolver(BaseResolver):
+    def __call__(self, *args) -> Optional[Union[int, float, str]]:
+        n_args = len(args)
+        if n_args == 0 or n_args > 2:
+            raise RefArgsError(node=self.model, args=args)
+        var = args[0]
+        default = None if n_args == 1 else args[1]
+
+        return_value = None
+        if var.startswith(SECRET_ENV_PREFIX):
+            raise SecretEnvVarLocationError(var)
+
+        env = get_invocation_context().env
+        if var in env:
+            return_value = env[var]
+        elif default is not None:
+            return_value = default
+
+        if return_value is not None:
+            # Save the env_var value in the manifest and the var name in the source_file
+            if self.model:
+                # If the environment variable is set from a default, store a string indicating
+                # that so we can skip partial parsing.  Otherwise the file will be scheduled for
+                # reparsing. If the default changes, the file will have been updated and therefore
+                # will be scheduled for reparsing anyways.
+                self.manifest.env_vars[var] = (
+                    return_value if var in env else DEFAULT_ENV_PLACEHOLDER
+                )
+                # the "model" should only be test nodes, but just in case, check
+                # TODO CT-211
+                if self.model.resource_type == NodeType.Test and self.model.file_key_name:  # type: ignore[union-attr] # noqa
+                    source_file = self.manifest.files[self.model.file_id]
+                    # TODO CT-211
+                    (yaml_key, name) = self.model.file_key_name.split(".")  # type: ignore[union-attr] # noqa
+                    # TODO CT-211
+                    source_file.add_env_var(var, yaml_key, name)  # type: ignore[union-attr]
+            return return_value
+        else:
+            raise EnvVarMissingError(var)
+
+
 class ExposureSourceResolver(BaseResolver):
     def __call__(self, *args) -> str:
         if len(args) != 2:
@@ -1898,6 +1955,8 @@ def generate_parse_exposure(
             project,
             manifest,
         ),
+        "var": ExposureVarResolver(None, exposure, project, manifest),
+        "env_var": ExposureEnvVarResolver(None, exposure, project, manifest),
     }
 
 
