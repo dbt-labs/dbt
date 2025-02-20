@@ -1,0 +1,6 @@
+kind: Fixes
+body: Prevent error when `node.tags` is `None`
+time: 2024-08-02T16:22:05.2458-07:00
+custom:
+  Author: dbeatty10
+  Issue: "10519"
