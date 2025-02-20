@@ -14,7 +14,7 @@ from .selector_methods import MethodName
 
 RAW_SELECTOR_PATTERN = re.compile(
     r"\A"
-    r"(?P<childrens_parents>(\@))?"
+    r"(?P<childrens_parents>((?P<childrens_parents_depth>(\d*))\@))?"
     r"(?P<parents>((?P<parents_depth>(\d*))\+))?"
     r"((?P<method>([\w.]+)):)?(?P<value>(.*?))"
     r"(?P<children>(\+(?P<children_depth>(\d*))))?"
@@ -68,6 +68,7 @@ class SelectionCriteria:
     method_arguments: List[str]
     value: Any
     childrens_parents: bool
+    childrens_parents_depth: Optional[int]
     parents: bool
     parents_depth: Optional[int]
     children: bool
@@ -118,6 +119,7 @@ class SelectionCriteria:
 
         parents_depth = _match_to_int(dct, "parents_depth")
         children_depth = _match_to_int(dct, "children_depth")
+        childrens_parents_depth = _match_to_int(dct, "childrens_parents_depth")
 
         # If defined field in selector, override CLI flag
         indirect_selection = IndirectSelection(
@@ -130,6 +132,7 @@ class SelectionCriteria:
             method_arguments=method_arguments,
             value=dct["value"],
             childrens_parents=bool(dct.get("childrens_parents")),
+            childrens_parents_depth=childrens_parents_depth,
             parents=bool(dct.get("parents")),
             parents_depth=parents_depth,
             children=bool(dct.get("children")),

@@ -52,9 +52,11 @@ class Graph:
     def filter_edges_by_type(self, first_node, second_node, edge_type):
         return self.graph.get_edge_data(first_node, second_node).get("edge_type") != edge_type
 
-    def select_childrens_parents(self, selected: Set[UniqueId]) -> Set[UniqueId]:
+    def select_childrens_parents(
+        self, selected: Set[UniqueId], max_depth: Optional[int] = None
+    ) -> Set[UniqueId]:
         ancestors_for = self.select_children(selected) | selected
-        return self.select_parents(ancestors_for) | ancestors_for
+        return self.select_parents(ancestors_for, max_depth) | ancestors_for
 
     def select_children(
         self, selected: Set[UniqueId], max_depth: Optional[int] = None

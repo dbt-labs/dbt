@@ -109,7 +109,8 @@ class NodeSelector(MethodManager):
         """
         additional: Set[UniqueId] = set()
         if spec.childrens_parents:
-            additional.update(self.graph.select_childrens_parents(selected))
+            depth = spec.childrens_parents_depth
+            additional.update(self.graph.select_childrens_parents(selected, depth))
 
         if spec.parents:
             depth = spec.parents_depth
