@@ -21,6 +21,7 @@ from dbt.artifacts.schemas.results import (
 )
 from dbt.artifacts.schemas.run import RunResult
 from dbt.cli.flags import Flags
+from dbt.clients.yaml_helper import get_yaml_path
 from dbt.compilation import Compiler
 from dbt.config import RuntimeConfig
 from dbt.config.profile import read_profile
@@ -88,6 +89,7 @@ def get_nearest_project_dir(project_dir: Optional[str]) -> Path:
     if project_dir:
         cur_dir = Path(project_dir)
         project_file = Path(project_dir) / DBT_PROJECT_FILE_NAME
+        project_file = Path(get_yaml_path(str(project_file)))
         if project_file.is_file():
             return cur_dir
         else:

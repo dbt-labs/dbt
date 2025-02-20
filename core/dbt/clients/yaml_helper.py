@@ -1,3 +1,4 @@
+import os
 from typing import Any, Dict, Optional
 
 import yaml
@@ -66,3 +67,12 @@ def load_yaml_text(contents, path=None):
             error = str(e)
 
         raise dbt_common.exceptions.base.DbtValidationError(error)
+
+
+def get_yaml_path(path: str) -> str:
+    if os.path.exists("{}.yml".format(path)):
+        return path + ".yml"
+    elif os.path.exists("{}.yaml".format(path)):
+        return path + ".yaml"
+    else:
+        return ""

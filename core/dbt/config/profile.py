@@ -3,7 +3,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, Optional, Tuple
 
 from dbt.adapters.contracts.connection import Credentials, HasCredentials
-from dbt.clients.yaml_helper import load_yaml_text
+from dbt.clients.yaml_helper import get_yaml_path, load_yaml_text
 from dbt.contracts.project import ProfileConfig
 from dbt.events.types import MissingProfileTarget
 from dbt.exceptions import (
@@ -31,7 +31,7 @@ dbt encountered an error while trying to read your profiles.yml file.
 
 
 def read_profile(profiles_dir: str) -> Dict[str, Any]:
-    path = os.path.join(profiles_dir, "profiles.yml")
+    path = get_yaml_path(os.path.join(profiles_dir, "profiles"))
 
     contents = None
     if os.path.isfile(path):

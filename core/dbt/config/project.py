@@ -8,7 +8,7 @@ from typing_extensions import Protocol, runtime_checkable
 
 from dbt import deprecations
 from dbt.adapters.contracts.connection import QueryComment
-from dbt.clients.yaml_helper import load_yaml_text
+from dbt.clients.yaml_helper import get_yaml_path, load_yaml_text
 from dbt.config.selectors import SelectorDict
 from dbt.config.utils import normalize_warn_error_options
 from dbt.constants import (
@@ -99,8 +99,10 @@ def load_yml_dict(file_path):
 
 
 def package_and_project_data_from_root(project_root):
-    packages_yml_dict = load_yml_dict(f"{project_root}/{PACKAGES_FILE_NAME}")
-    dependencies_yml_dict = load_yml_dict(f"{project_root}/{DEPENDENCIES_FILE_NAME}")
+    packages_yml_dict = load_yml_dict(get_yaml_path(f"{project_root}/{PACKAGES_FILE_NAME}"))
+    dependencies_yml_dict = load_yml_dict(
+        get_yaml_path(f"{project_root}/{DEPENDENCIES_FILE_NAME}")
+    )
 
     if "packages" in packages_yml_dict and "packages" in dependencies_yml_dict:
         msg = "The 'packages' key cannot be specified in both packages.yml and dependencies.yml"
@@ -184,7 +186,7 @@ def value_or(value: Optional[T], default: T) -> T:
 
 def load_raw_project(project_root: str) -> Dict[str, Any]:
     project_root = os.path.normpath(project_root)
-    project_yaml_filepath = os.path.join(project_root, DBT_PROJECT_FILE_NAME)
+    project_yaml_filepath = get_yaml_path(os.path.join(project_root, DBT_PROJECT_FILE_NAME))
 
     # get the project.yml contents
     if not path_exists(project_yaml_filepath):
@@ -197,7 +199,7 @@ def load_raw_project(project_root: str) -> Dict[str, Any]:
     project_dict = _load_yaml(project_yaml_filepath)
 
     if not isinstance(project_dict, dict):
-        raise DbtProjectError(f"{DBT_PROJECT_FILE_NAME} does not parse to a dictionary")
+        raise DbtProjectError(f"{project_yaml_filepath} does not parse to a dictionary")
 
     if "tests" in project_dict and "data_tests" not in project_dict:
         project_dict["data_tests"] = project_dict.pop("tests")
@@ -792,7 +794,7 @@ def read_project_flags(project_dir: str, profiles_dir: str) -> ProjectFlags:
         # want to throw an error for non-existence of dbt_project.yml here
         # because it breaks things.
         project_root = os.path.normpath(project_dir)
-        project_yaml_filepath = os.path.join(project_root, DBT_PROJECT_FILE_NAME)
+        project_yaml_filepath = get_yaml_path(os.path.join(project_root, DBT_PROJECT_FILE_NAME))
         if path_exists(project_yaml_filepath):
             try:
                 project_dict = load_raw_project(project_root)
