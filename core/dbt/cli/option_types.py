@@ -20,11 +20,14 @@ class YAML(ParamType):
         # assume non-string values are a problem
         if not isinstance(value, str):
             self.fail(f"Cannot load YAML from type {type(value)}", param, ctx)
+        else:
+            return parse_cli_yaml_string(value, param.name)
         try:
             param_option_name = param.opts[0] if param.opts else param.name
             return parse_cli_yaml_string(value, param_option_name.strip("-"))
         except (ValidationError, DbtValidationError, OptionNotYamlDictError):
             self.fail(f"String '{value}' is not valid YAML", param, ctx)
+        
 
 
 class Package(ParamType):
@@ -45,6 +48,15 @@ class Package(ParamType):
             return {"name": package_name, "version": package_version}
         except ValueError:
             return {"name": value, "version": None}
+        
+    def convert(self, value, param, ctx):
+
+        if  isinstance(value, str):
+            try:
+                package_name, package_version = value.split("@")
+                return {"name": package_name, "version": package_version}
+            except ValueError:
+                return {"name": value, "version": None}
 
 
 class WarnErrorOptionsType(YAML):
@@ -63,6 +75,8 @@ class WarnErrorOptionsType(YAML):
             silence=include_exclude.get("silence", []),
             valid_error_names=ALL_EVENT_NAMES,
         )
+    
+
 
 
 class Truthy(ParamType):
@@ -79,6 +93,10 @@ class Truthy(ParamType):
             return None
         else:
             return value
+        
+
+ 
+ 
 
 
 class ChoiceTuple(Choice):
