@@ -294,13 +294,12 @@ class TestRunner(CompileRunner):
         severity = test.config.severity.upper()
         thread_id = threading.current_thread().name
         num_errors = pluralize(result.failures, "result")
-        status = None
+        failures = result.failures
+        status = TestStatus.Pass
         message = None
-        failures = 0
         if severity == "ERROR" and result.should_error:
             status = TestStatus.Fail
             message = f"Got {num_errors}, configured to fail if {test.config.error_if}"
-            failures = result.failures
         elif result.should_warn:
             if get_flags().WARN_ERROR or get_flags().WARN_ERROR_OPTIONS.includes(
                 LogTestResult.__name__
@@ -310,9 +309,6 @@ class TestRunner(CompileRunner):
             else:
                 status = TestStatus.Warn
                 message = f"Got {num_errors}, configured to warn if {test.config.warn_if}"
-            failures = result.failures
-        else:
-            status = TestStatus.Pass
 
         run_result = RunResult(
             node=test,
