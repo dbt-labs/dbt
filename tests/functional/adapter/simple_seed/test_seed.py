@@ -386,3 +386,27 @@ class BaseTestEmptySeed:
 
 class TestEmptySeed(BaseTestEmptySeed):
     pass
+
+
+class TestAbsoluteSeedPaths:
+    """
+    This is a regression test for issue #10886.
+    We're ensuring that dbt will not overwrite files that are passed in as asbolute paths in dbt_project.yml
+    """
+
+    @pytest.fixture(scope="class")
+    def project_config_update(self, project_root):
+        # Assign an absolute path to seed-paths
+        return {
+            "seed-paths": [str(Path(project_root) / "seeds")],
+        }
+
+    @pytest.fixture(scope="class")
+    def seeds(self):
+        return {"my_seed.csv": seed__with_dots_csv}
+
+    def test_absolute_seeds_paths(self, project):
+        results = run_dbt(["seed"])
+        assert len(results) == 1
+        # Should not fail due to file being overwritten
+        results = run_dbt(["seed"])
