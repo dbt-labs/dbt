@@ -892,6 +892,10 @@ class Manifest(MacroMethods, dbtClassMixin):
     saved_queries: MutableMapping[str, SavedQuery] = field(default_factory=dict)
     fixtures: MutableMapping[str, UnitTestFileFixture] = field(default_factory=dict)
 
+    child_map: Dict[str, List[str]] = field(default_factory=dict)
+    parent_map: Dict[str, List[str]] = field(default_factory=dict)
+    group_map: Dict[str, List[str]] = field(default_factory=dict)
+
     _doc_lookup: Optional[DocLookup] = field(
         default=None, metadata={"serialize": lambda x: None, "deserialize": lambda x: None}
     )
