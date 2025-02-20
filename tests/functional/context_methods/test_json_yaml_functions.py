@@ -24,6 +24,8 @@ tests__to_yaml_sql = """
 {% set default_sort = (toyaml({'b': 2, 'a': 1}) == 'b: 2\\na: 1\\n') %}
 {% set unsorted = (toyaml({'b': 2, 'a': 1}, sort_keys=False) == 'b: 2\\na: 1\\n') %}
 {% set sorted = (toyaml({'b': 2, 'a': 1}, sort_keys=True) == 'a: 1\\nb: 2\\n') %}
+{% set yaml_indented = (toyaml({'a': {'ab': 1}, 'b': {'ba':2}}, indent=8) == 'a:\\n        ab: 1\\nb:\\n        ba: 2\\n') %}
+{% set json_indented = (tojson({'a': {'ab': 1}, 'b': {'ba':2}}, indent=4) == '{\\n    "a": {\\n        "ab": 1\\n    },\\n    "b": {\\n        "ba": 2\\n    }\\n}') %}
 {% set default_results = (toyaml({'a': adapter}, 'failed') == 'failed') %}
 
 (select 'simplest' as name {% if simplest %}limit 0{% endif %})
