@@ -8,6 +8,9 @@ from datetime import datetime
 from multiprocessing.pool import ThreadPool
 from typing import AbstractSet, Any, Dict, Iterable, List, Optional, Set, Tuple, Type
 
+from opentelemetry import trace
+from opentelemetry.trace import StatusCode
+
 from dbt import tracking, utils
 from dbt.adapters.base import BaseAdapter, BaseRelation
 from dbt.adapters.capability import Capability
@@ -330,7 +333,6 @@ class ModelRunner(CompileRunner):
             )
 
         hook_ctx = self.adapter.pre_model_hook(context_config)
-
         return self._execute_model(hook_ctx, context_config, model, context, materialization_macro)
 
 
@@ -711,6 +713,7 @@ class RunTask(CompileTask):
     ) -> None:
         super().__init__(args, config, manifest)
         self.batch_map = batch_map
+        self._dbt_tracer = trace.get_tracer("com.dbt.runner")
 
     def raise_on_first_error(self) -> bool:
         return False
@@ -899,76 +902,82 @@ class RunTask(CompileTask):
         failed = False
         num_hooks = len(ordered_hooks)
 
-        for idx, hook in enumerate(ordered_hooks, 1):
-            with log_contextvars(node_info=hook.node_info):
-                hook.index = idx
-                hook_name = f"{hook.package_name}.{hook_type}.{hook.index - 1}"
-                execution_time = 0.0
-                timing: List[TimingInfo] = []
-                failures = 1
+        if num_hooks == 0:
+            return status
 
-                if not failed:
-                    with collect_timing_info("compile", timing.append):
-                        sql = self.get_hook_sql(
-                            adapter, hook, hook.index, num_hooks, extra_context
+        with self._dbt_tracer.start_as_current_span(hook_type) as hook_span:
+            for idx, hook in enumerate(ordered_hooks, 1):
+                with log_contextvars(node_info=hook.node_info):
+                    hook.index = idx
+                    hook_name = f"{hook.package_name}.{hook_type}.{hook.index - 1}"
+                    execution_time = 0.0
+                    timing: List[TimingInfo] = []
+                    failures = 1
+
+                    if not failed:
+                        with collect_timing_info("compile", timing.append):
+                            sql = self.get_hook_sql(
+                                adapter, hook, hook.index, num_hooks, extra_context
+                            )
+
+                        started_at = timing[0].started_at or datetime.utcnow()
+                        hook.update_event_status(
+                            started_at=started_at.isoformat(), node_status=RunningStatus.Started
                         )
 
-                    started_at = timing[0].started_at or datetime.utcnow()
-                    hook.update_event_status(
-                        started_at=started_at.isoformat(), node_status=RunningStatus.Started
+                        fire_event(
+                            LogHookStartLine(
+                                statement=hook_name,
+                                index=hook.index,
+                                total=num_hooks,
+                                node_info=hook.node_info,
+                            )
+                        )
+
+                        with collect_timing_info("execute", timing.append):
+                            status, message = get_execution_status(sql, adapter)
+
+                        finished_at = timing[1].completed_at or datetime.utcnow()
+                        hook.update_event_status(finished_at=finished_at.isoformat())
+                        execution_time = (finished_at - started_at).total_seconds()
+                        failures = 0 if status == RunStatus.Success else 1
+
+                        if status == RunStatus.Success:
+                            message = f"{hook_name} passed"
+                        else:
+                            message = f"{hook_name} failed, error:\n {message}"
+                            failed = True
+                            hook_span.set_status(StatusCode.ERROR)
+                    else:
+                        status = RunStatus.Skipped
+                        message = f"{hook_name} skipped"
+
+                    hook.update_event_status(node_status=status)
+                    hook_span.set_attribute("node.status", status.value)
+
+                    self.node_results.append(
+                        RunResult(
+                            status=status,
+                            thread_id="main",
+                            timing=timing,
+                            message=message,
+                            adapter_response={},
+                            execution_time=execution_time,
+                            failures=failures,
+                            node=hook,
+                        )
                     )
 
                     fire_event(
-                        LogHookStartLine(
+                        LogHookEndLine(
                             statement=hook_name,
+                            status=status,
                             index=hook.index,
                             total=num_hooks,
+                            execution_time=execution_time,
                             node_info=hook.node_info,
                         )
                     )
-
-                    with collect_timing_info("execute", timing.append):
-                        status, message = get_execution_status(sql, adapter)
-
-                    finished_at = timing[1].completed_at or datetime.utcnow()
-                    hook.update_event_status(finished_at=finished_at.isoformat())
-                    execution_time = (finished_at - started_at).total_seconds()
-                    failures = 0 if status == RunStatus.Success else 1
-
-                    if status == RunStatus.Success:
-                        message = f"{hook_name} passed"
-                    else:
-                        message = f"{hook_name} failed, error:\n {message}"
-                        failed = True
-                else:
-                    status = RunStatus.Skipped
-                    message = f"{hook_name} skipped"
-
-                hook.update_event_status(node_status=status)
-
-                self.node_results.append(
-                    RunResult(
-                        status=status,
-                        thread_id="main",
-                        timing=timing,
-                        message=message,
-                        adapter_response={},
-                        execution_time=execution_time,
-                        failures=failures,
-                        node=hook,
-                    )
-                )
-
-                fire_event(
-                    LogHookEndLine(
-                        statement=hook_name,
-                        status=status,
-                        index=hook.index,
-                        total=num_hooks,
-                        execution_time=execution_time,
-                        node_info=hook.node_info,
-                    )
-                )
 
         if hook_type == RunHookType.Start and ordered_hooks:
             fire_event(Formatting(""))
@@ -1003,8 +1012,9 @@ class RunTask(CompileTask):
         with adapter.connection_named("master"):
             self.defer_to_manifest()
             required_schemas = self.get_model_schemas(adapter, selected_uids)
-            self.create_schemas(adapter, required_schemas)
-            self.populate_adapter_cache(adapter, required_schemas)
+            with self._dbt_tracer.start_as_current_span("metadata setup") as _:
+                self.create_schemas(adapter, required_schemas)
+                self.populate_adapter_cache(adapter, required_schemas)
             self.populate_microbatch_batches(selected_uids)
             group_lookup.init(self.manifest, selected_uids)
             run_hooks_status = self.safe_run_hooks(adapter, RunHookType.Start, {})

@@ -1,7 +1,8 @@
-git+https://github.com/dbt-labs/dbt-adapters.git@main#subdirectory=dbt-adapters
+git+https://github.com/sfc-gh-vguttha/dbt-adapters.git@vguttha-add-telemetry#subdirectory=dbt-adapters
 git+https://github.com/dbt-labs/dbt-adapters.git@main#subdirectory=dbt-tests-adapter
 git+https://github.com/dbt-labs/dbt-common.git@main
 git+https://github.com/dbt-labs/dbt-adapters.git@main#subdirectory=dbt-postgres
+git+https://github.com/sfc-gh-vguttha/dbt-adapters.git@vguttha-add-telemetry#subdirectory=dbt-snowflake
 # black must match what's in .pre-commit-config.yaml to be sure local env matches CI
 black==24.3.0
 bumpversion
@@ -39,3 +40,5 @@ types-pytz
 types-requests
 types-setuptools
 mocker
+opentelemetry-api
+opentelemetry-sdk

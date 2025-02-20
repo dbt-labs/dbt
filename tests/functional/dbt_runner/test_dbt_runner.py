@@ -2,6 +2,11 @@ import os
 from unittest import mock
 
 import pytest
+from opentelemetry import trace
+from opentelemetry.sdk.resources import Resource
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
 from dbt.adapters.factory import FACTORY, reset_adapters
 from dbt.cli.exceptions import DbtUsageException
@@ -153,6 +158,7 @@ class TestDbtRunnerHooks:
     def models(self):
         return {
             "models.sql": "select 1 as id",
+            "model2.sql": "select * from {{ ref('models') }}",
         }
 
     @pytest.fixture(scope="class")
@@ -163,3 +169,31 @@ class TestDbtRunnerHooks:
         dbt = dbtRunner()
         dbt.invoke(["run", "--select", "models"])
         assert get_node_info() == {}
+
+    def test_dbt_runner_spans(self, project):
+        tracer_provider = TracerProvider(resource=Resource.get_empty())
+        span_exporter = InMemorySpanExporter()
+        trace.set_tracer_provider(tracer_provider)
+        trace.get_tracer_provider().add_span_processor(SimpleSpanProcessor(span_exporter))
+        dbt = dbtRunner()
+        dbt.invoke(["run", "--select", "models", "model2"])
+        assert get_node_info() == {}
+        exported_spans = span_exporter.get_finished_spans()
+        assert len(exported_spans) == 3
+        assert exported_spans[0].instrumentation_scope.name == "com.dbt.runner"
+        span_names = [span.name for span in exported_spans]
+        span_names.sort()
+        assert span_names == ["model.test.model2", "model.test.models", "on-run-end"]
+        model2_span = None
+        models_span = None
+        for span in exported_spans:
+            if span.name == "model.test.model2":
+                model2_span = span
+            if span.name == "model.test.models":
+                models_span = span
+
+        # verify span links
+        assert len(model2_span.links) == 1
+        assert model2_span.links[0].attributes["parent_model_fqn"] == "model.test.models"
+        assert model2_span.links[0].context.span_id == models_span.context.span_id
+        assert model2_span.links[0].context.trace_id == models_span.context.trace_id

@@ -6,6 +6,12 @@ from unittest import mock
 from unittest.mock import MagicMock, patch
 
 import pytest
+from opentelemetry import trace
+from opentelemetry.sdk.resources import Resource
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+from opentelemetry.trace.status import StatusCode
 from psycopg2 import DatabaseError
 from pytest_mock import MockerFixture
 
@@ -50,7 +56,6 @@ def test_run_task_cancel_connections(
     with patch.object(RunTask, "run_queue", mock_run_queue), patch.object(
         RunTask, "_cancel_connections"
     ) as mock_cancel_connections:
-
         set_from_args(Namespace(write_json=False), None)
         task = RunTask(
             get_flags(),
@@ -90,41 +95,42 @@ def test_adapter_info_tracking():
     }
 
 
+@pytest.fixture
+def model_runner(
+    postgres_adapter: PostgresAdapter,
+    table_model: ModelNode,
+    runtime_config: RuntimeConfig,
+) -> ModelRunner:
+    return ModelRunner(
+        config=runtime_config,
+        adapter=postgres_adapter,
+        node=table_model,
+        node_index=1,
+        num_nodes=1,
+    )
+
+
+@pytest.fixture
+def run_result(table_model: ModelNode) -> RunResult:
+    return RunResult(
+        status=RunStatus.Success,
+        timing=[],
+        thread_id="an_id",
+        execution_time=0,
+        adapter_response={},
+        message="It did it",
+        failures=None,
+        batch_results=None,
+        node=table_model,
+    )
+
+
 class TestModelRunner:
     @pytest.fixture
     def log_model_result_catcher(self) -> EventCatcher:
         catcher = EventCatcher(event_to_catch=LogModelResult)
         add_callback_to_manager(catcher.catch)
         return catcher
-
-    @pytest.fixture
-    def model_runner(
-        self,
-        postgres_adapter: PostgresAdapter,
-        table_model: ModelNode,
-        runtime_config: RuntimeConfig,
-    ) -> ModelRunner:
-        return ModelRunner(
-            config=runtime_config,
-            adapter=postgres_adapter,
-            node=table_model,
-            node_index=1,
-            num_nodes=1,
-        )
-
-    @pytest.fixture
-    def run_result(self, table_model: ModelNode) -> RunResult:
-        return RunResult(
-            status=RunStatus.Success,
-            timing=[],
-            thread_id="an_id",
-            execution_time=0,
-            adapter_response={},
-            message="It did it",
-            failures=None,
-            batch_results=None,
-            node=table_model,
-        )
 
     def test_print_result_line(
         self,
@@ -286,6 +292,18 @@ class TestMicrobatchModelRunner:
 
 
 class TestRunTask:
+
+    def setup_class(self):
+        self.tracer_provider = TracerProvider(resource=Resource.get_empty())
+        self.span_exporter = InMemorySpanExporter()
+        trace.set_tracer_provider(self.tracer_provider)
+        trace.get_tracer_provider().add_span_processor(SimpleSpanProcessor(self.span_exporter))
+
+    @pytest.fixture(autouse=True)
+    def before_each(self):
+        self.span_exporter.clear()
+        yield
+
     @pytest.fixture
     def hook_node(self) -> HookNode:
         return HookNode(
@@ -314,12 +332,12 @@ class TestRunTask:
         )
 
     @pytest.mark.parametrize(
-        "error_to_raise,expected_result",
+        "error_to_raise,expected_result,expected_span_status",
         [
-            (None, RunStatus.Success),
-            (DbtRuntimeError, RunStatus.Error),
-            (DatabaseError, RunStatus.Error),
-            (KeyboardInterrupt, KeyboardInterrupt),
+            (None, RunStatus.Success, StatusCode.UNSET),
+            (DbtRuntimeError, RunStatus.Error, StatusCode.ERROR),
+            (DatabaseError, RunStatus.Error, StatusCode.ERROR),
+            (KeyboardInterrupt, KeyboardInterrupt, StatusCode.UNSET),
         ],
     )
     def test_safe_run_hooks(
@@ -330,6 +348,7 @@ class TestRunTask:
         hook_node: HookNode,
         error_to_raise: Optional[Type[Exception]],
         expected_result: Union[RunStatus, Type[Exception]],
+        expected_span_status: StatusCode,
     ):
         mocker.patch("dbt.task.run.RunTask.get_hooks_by_type").return_value = [hook_node]
         mocker.patch("dbt.task.run.RunTask.get_hook_sql").return_value = hook_node.raw_code
@@ -361,7 +380,65 @@ class TestRunTask:
             )
             assert isinstance(expected_result, RunStatus)
             assert result == expected_result
+            exported_spans = self.span_exporter.get_finished_spans()
+            assert expected_span_status == exported_spans[0].status.status_code
         except BaseException as e:
             assert not isinstance(expected_result, RunStatus)
             assert issubclass(expected_result, BaseException)
             assert type(e) == expected_result
+            exported_spans = self.span_exporter.get_finished_spans()
+            assert expected_span_status == exported_spans[0].status.status_code
+
+    def test_no_run_hooks(
+        self,
+        mocker: MockerFixture,
+        runtime_config: RuntimeConfig,
+        manifest: Manifest,
+    ):
+        mocker.patch("dbt.task.run.RunTask.get_hooks_by_type").return_value = []
+
+        flags = mock.Mock()
+        flags.state = None
+        flags.defer_state = None
+
+        run_task = RunTask(
+            args=flags,
+            config=runtime_config,
+            manifest=manifest,
+        )
+
+        adapter = mock.Mock()
+        adapter_execute = mock.Mock()
+        adapter_execute.return_value = (AdapterResponse(_message="Success"), None)
+        adapter.execute = adapter_execute
+
+        run_task.safe_run_hooks(
+            adapter=adapter,
+            hook_type=RunHookType.End,
+            extra_context={},
+        )
+        exported_spans = self.span_exporter.get_finished_spans()
+        assert len(exported_spans) == 0
+
+    def test_call_runner(
+        self,
+        mocker: MockerFixture,
+        runtime_config: RuntimeConfig,
+        manifest: Manifest,
+        model_runner: ModelRunner,
+        run_result: RunResult,
+    ):
+        mocker.patch("dbt.task.run.ModelRunner.run_with_hooks").return_value = run_result
+        flags = mock.Mock()
+        flags.state = None
+        flags.defer_state = None
+
+        run_task = RunTask(
+            args=flags,
+            config=runtime_config,
+            manifest=manifest,
+        )
+
+        run_task.call_runner(runner=model_runner)
+        exported_spans = self.span_exporter.get_finished_spans()
+        assert len(exported_spans) == 1
