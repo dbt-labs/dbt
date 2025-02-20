@@ -14,7 +14,7 @@ In order to build a new image, run the following docker command.
 docker build --tag <your_image_name> --target <target_name> <path/to/dockerfile>
 ```
 ---
-> **Note:**  Docker must be configured to use [BuildKit](https://docs.docker.com/develop/develop-images/build_enhancements/) in order for images to build properly!
+> **Note:**  Docker must be configured to use [BuildKit](https://docs.docker.com/build/buildkit/) in order for images to build properly!
 
 ---
 
