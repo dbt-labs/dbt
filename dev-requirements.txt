@@ -8,7 +8,7 @@ bumpversion
 ddtrace==2.3.0
 docutils
 # flake8 must match what's in .pre-commit-config.yaml to be sure local env matches CI
-flake8==4.0.1
+flake8==7.1.1
 flaky
 freezegun>=1.4.0,<1.5
 hypothesis
