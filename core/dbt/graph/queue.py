@@ -4,13 +4,17 @@ from typing import Dict, Generator, List, Optional, Set
 
 import networkx as nx  # type: ignore
 
+from dbt.artifacts.schemas.run import RunResult
 from dbt.contracts.graph.manifest import Manifest
 from dbt.contracts.graph.nodes import (
     Exposure,
     GraphMemberNode,
     Metric,
+    ModelNode,
     SourceDefinition,
 )
+from dbt.contracts.state import PreviousState
+from dbt.graph.selector_spec import SelectionSpec
 from dbt.node_types import NodeType
 
 from .graph import UniqueId
@@ -212,3 +216,80 @@ class GraphQueue:
         with self.lock:
             self.some_task_done.wait()
             return self.inner.unfinished_tasks
+
+
+class ExecutionQueue:
+    """
+    ExecutionQueue manage what nodes to execute in what order, based on the supplied inputs.
+    It is responsible for managing the queue of nodes to execute, and for marking nodes as
+    done when they have been executed.
+    """
+
+    def __init__(
+        self,
+        manifest: Manifest,
+        previous_state: PreviousState,
+        resource_types: List[NodeType],
+        include_empty_nodes: Optional[bool] = False,
+        selection_spec: Optional[SelectionSpec] = None,
+        fail_fast: Optional[bool] = False,
+    ) -> None:
+        """Create a new ExecutionQueue.
+        Nodes to execute are selected based on the manifest, previous state, selection spec, inlcude_empty_nodes, and resource_types.
+        See Args for more details.
+        Example usage:
+
+        pool = ThreadPool(4)
+        queue = ExecutionQueue(manifest, previous_state, [NodeType.Model, NodeType.Test])
+        def callback(result: RunResult):
+            queue.handle_node_result(result)
+        def run(node: GraphMemberNode):
+            result = node.run()
+            return result
+
+        while queue.count() > 0:
+            node = queue.get()
+            pool.apply_async(run, args=(node), callback=callback)
+        results = queue.join()
+
+        Args:
+            manifest (Manifest): the manifest of the project
+            previous_state (PreviousState): the previous state of the project, used in state selection.
+            resource_types (List[NodeType]): the types of resources to include in the selection.
+            include_empty_nodes (Optional[bool]): whether to include nodes that do not have values in the selection. Defaults to False.
+            selection_spec (Optional[SelectionSpec]): the selection spec to use. Defaults to None
+            fail_fast (Optional[bool]): when set to True, the will will stop execution after the first error. Defaults to False.
+        """
+        pass
+
+    def count(self) -> int:
+        """
+        Returns:
+            int: the number of nodes in the queue (excluding in-progress nodes)
+        """
+        return 0
+
+    def handle_node_result(self, result: RunResult) -> None:
+        """Given a RunResult, mark the node as done and update the queue to make more nodes avaliable.
+
+        Args:
+            result (RunResult): _description_
+        """
+        pass
+
+    def get(self, block: bool = True) -> GraphMemberNode:
+        """
+        Get the next node to execute.
+
+        Args:
+            block (bool, optional): whether to block until a node is available. Defaults to True.
+        """
+        return ModelNode()  # type: ignore
+
+    def join(self) -> list[RunResult]:
+        """Wait for all nodes to finish executing, and return the results of all nodes.
+
+        Returns:
+            list[RunResult]: the results of all nodes.
+        """
+        return []
