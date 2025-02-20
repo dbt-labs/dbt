@@ -307,8 +307,6 @@ class ParsedNode(ParsedResource, NodeInfoMixin, ParsedNodeMandatory, Serializabl
                 return SingularTestNode.from_dict(dct)
         elif resource_type == "operation":
             return HookNode.from_dict(dct)
-        elif resource_type == "seed":
-            return SeedNode.from_dict(dct)
         elif resource_type == "snapshot":
             return SnapshotNode.from_dict(dct)
         else:
