@@ -131,7 +131,14 @@
                 ]
               },
               "schema": {
-                "type": "string"
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
               },
               "name": {
                 "type": "string"
@@ -793,7 +800,14 @@
                         ]
                       },
                       "schema": {
-                        "type": "string"
+                        "anyOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
                       },
                       "alias": {
                         "type": "string"
@@ -1203,7 +1217,14 @@
                 ]
               },
               "schema": {
-                "type": "string"
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
               },
               "name": {
                 "type": "string"
@@ -2009,7 +2030,14 @@
                 ]
               },
               "schema": {
-                "type": "string"
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
               },
               "name": {
                 "type": "string"
@@ -2675,7 +2703,14 @@
                 ]
               },
               "schema": {
-                "type": "string"
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
               },
               "name": {
                 "type": "string"
@@ -3492,7 +3527,14 @@
                 ]
               },
               "schema": {
-                "type": "string"
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
               },
               "name": {
                 "type": "string"
@@ -4415,7 +4457,14 @@
                         ]
                       },
                       "schema": {
-                        "type": "string"
+                        "anyOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
                       },
                       "alias": {
                         "type": "string"
@@ -4920,7 +4969,14 @@
                 ]
               },
               "schema": {
-                "type": "string"
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
               },
               "name": {
                 "type": "string"
@@ -5726,7 +5782,14 @@
                 ]
               },
               "schema": {
-                "type": "string"
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
               },
               "name": {
                 "type": "string"
@@ -6453,7 +6516,14 @@
                 ]
               },
               "schema": {
-                "type": "string"
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
               },
               "name": {
                 "type": "string"
@@ -7379,7 +7449,14 @@
                         ]
                       },
                       "schema": {
-                        "type": "string"
+                        "anyOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
                       },
                       "alias": {
                         "type": "string"
@@ -7799,7 +7876,14 @@
             ]
           },
           "schema": {
-            "type": "string"
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "name": {
             "type": "string"
@@ -10100,7 +10184,14 @@
                       ]
                     },
                     "schema": {
-                      "type": "string"
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
                     },
                     "name": {
                       "type": "string"
@@ -10762,7 +10853,14 @@
                               ]
                             },
                             "schema": {
-                              "type": "string"
+                              "anyOf": [
+                                {
+                                  "type": "string"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
                             },
                             "alias": {
                               "type": "string"
@@ -11172,7 +11270,14 @@
                       ]
                     },
                     "schema": {
-                      "type": "string"
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
                     },
                     "name": {
                       "type": "string"
@@ -11978,7 +12083,14 @@
                       ]
                     },
                     "schema": {
-                      "type": "string"
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
                     },
                     "name": {
                       "type": "string"
@@ -12644,7 +12756,14 @@
                       ]
                     },
                     "schema": {
-                      "type": "string"
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
                     },
                     "name": {
                       "type": "string"
@@ -13461,7 +13580,14 @@
                       ]
                     },
                     "schema": {
-                      "type": "string"
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
                     },
                     "name": {
                       "type": "string"
@@ -14384,7 +14510,14 @@
                               ]
                             },
                             "schema": {
-                              "type": "string"
+                              "anyOf": [
+                                {
+                                  "type": "string"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
                             },
                             "alias": {
                               "type": "string"
@@ -14889,7 +15022,14 @@
                       ]
                     },
                     "schema": {
-                      "type": "string"
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
                     },
                     "name": {
                       "type": "string"
@@ -15695,7 +15835,14 @@
                       ]
                     },
                     "schema": {
-                      "type": "string"
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
                     },
                     "name": {
                       "type": "string"
@@ -16422,7 +16569,14 @@
                       ]
                     },
                     "schema": {
-                      "type": "string"
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
                     },
                     "name": {
                       "type": "string"
@@ -17348,7 +17502,14 @@
                               ]
                             },
                             "schema": {
-                              "type": "string"
+                              "anyOf": [
+                                {
+                                  "type": "string"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
                             },
                             "alias": {
                               "type": "string"
@@ -17759,7 +17920,14 @@
                       ]
                     },
                     "schema": {
-                      "type": "string"
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
                     },
                     "name": {
                       "type": "string"
