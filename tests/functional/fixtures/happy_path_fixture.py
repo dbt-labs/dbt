@@ -1,5 +1,5 @@
 import os
-from distutils.dir_util import copy_tree
+from shutil import copytree
 
 import pytest
 
@@ -19,7 +19,7 @@ def delete_files_in_directory(directory_path):
 def happy_path_project_files(project_root):
     # copy fixture files to the project root
     delete_files_in_directory(project_root)
-    copy_tree(
+    copytree(
         os.path.dirname(os.path.realpath(__file__)) + "/happy_path_project", str(project_root)
     )
 
