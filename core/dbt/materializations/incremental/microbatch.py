@@ -194,13 +194,21 @@ class MicrobatchBuilder:
 
     @staticmethod
     def batch_id(start_time: datetime, batch_size: BatchSize) -> str:
-        return MicrobatchBuilder.format_batch_start(start_time, batch_size).replace("-", "")
+        return MicrobatchBuilder.format_batch_start(start_time, batch_size)
 
     @staticmethod
     def format_batch_start(batch_start: datetime, batch_size: BatchSize) -> str:
-        return str(
-            batch_start.date() if (batch_start and batch_size != BatchSize.hour) else batch_start
-        )
+        """Format the passed in datetime based on the batch_size.
+
+        2024-09-17 16:06:00 + Batchsize.day  -> 20240917
+        2024-09-17 16:06:00 + Batchsize.hour -> 20240917T16
+        """
+        # If we want a date only
+        if batch_size != BatchSize.hour:
+            return batch_start.strftime("%Y%m%d")
+
+        # If we want date + time
+        return batch_start.strftime("%Y%m%dT%H")
 
     @staticmethod
     def ceiling_timestamp(timestamp: datetime, batch_size: BatchSize) -> datetime:
