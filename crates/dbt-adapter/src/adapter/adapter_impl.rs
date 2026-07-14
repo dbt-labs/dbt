@@ -5291,16 +5291,22 @@ impl AdapterImpl {
     }
 }
 
-/// Reads `job_execution_timeout_seconds` from the BigQuery adapter attr of the current
-/// model or snapshot in the Jinja state. Returns `None` if the state has no model or the
-/// model has no BigQuery timeout configured.
+/// Reads the BigQuery adapter attributes (`bigquery_attr`) of the current model or snapshot
+/// in the Jinja state. Returns `None` if the state has no model or the model has no
+/// BigQuery attributes configured.
 ///
 /// The `bigquery_attr` field lives at the top level of the model value because
 /// `dbt-yaml`'s `flatten_dunder` serialization merges `__adapter_attr__` into the parent.
-fn bigquery_job_timeout_from_state(state: &State) -> Option<i64> {
+fn bigquery_attr_from_state(state: &State) -> Option<Value> {
     let model = state.lookup("model", &[])?;
-    let bq_attr = model.get_attr("bigquery_attr").ok()?;
-    bq_attr
+    model.get_attr("bigquery_attr").ok()
+}
+
+/// Reads `job_execution_timeout_seconds` from the BigQuery adapter attr of the current
+/// model or snapshot in the Jinja state. Returns `None` if the state has no model or the
+/// model has no BigQuery timeout configured.
+fn bigquery_job_timeout_from_state(state: &State) -> Option<i64> {
+    bigquery_attr_from_state(state)?
         .get_attr("job_execution_timeout_seconds")
         .ok()?
         .as_i64()
@@ -5309,13 +5315,8 @@ fn bigquery_job_timeout_from_state(state: &State) -> Option<i64> {
 /// Reads `reservation` from the BigQuery adapter attr of the current model or snapshot
 /// in the Jinja state. Returns `None` if the state has no model or the model has no
 /// BigQuery reservation configured.
-///
-/// The `bigquery_attr` field lives at the top level of the model value because
-/// `dbt-yaml`'s `flatten_dunder` serialization merges `__adapter_attr__` into the parent.
 fn bigquery_reservation_from_state(state: &State) -> Option<String> {
-    let model = state.lookup("model", &[])?;
-    let bq_attr = model.get_attr("bigquery_attr").ok()?;
-    bq_attr
+    bigquery_attr_from_state(state)?
         .get_attr("reservation")
         .ok()?
         .as_str()
