@@ -1,0 +1,8 @@
+kind: Features
+body: Microsoft Fabric Lakehouse support as a platform flavor of the spark adapter
+  (Livy API with Microsoft Entra ID auth), covering classic and schema-enabled
+  lakehouses; 'type: fabricspark' profiles work unchanged as an alias
+time: 2026-07-23T21:00:00.000000+12:00
+custom:
+    author: arkin-nz
+    project: dbt-fusion

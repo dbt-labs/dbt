@@ -51,9 +51,10 @@
                                                     database=none,
                                                     type='view') -%}
     {% else %}
+      {#-- database carries through for 3-part naming (schema-enabled Fabric lakehouses) --#}
       {%- set tmp_relation = api.Relation.create(identifier=tmp_identifier,
                                                     schema=target_relation.schema,
-                                                    database=none,
+                                                    database=target_relation.database,
                                                     type='view') -%}
     {% endif %}
 
@@ -92,11 +93,11 @@
 
   {%- set strategy_name = config.get('strategy') -%}
   {%- set unique_key = config.get('unique_key') %}
-  {%- set file_format = config.get('file_format') or 'parquet' -%}
+  {%- set file_format = config.get('file_format') or ('delta' if target.get('lakehouseid') else 'parquet') -%}
   {%- set grant_config = config.get('grants') -%}
 
   {% set target_relation_exists, target_relation = get_or_create_relation(
-          database=none,
+          database=model.database,
           schema=model.schema,
           identifier=target_table,
           type='table') -%}
