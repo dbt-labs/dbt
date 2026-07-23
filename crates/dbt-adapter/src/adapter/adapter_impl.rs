@@ -4174,7 +4174,7 @@ impl AdapterImpl {
             Impl(Bigquery, engine) => {
                 bigquery::list_relations(engine.as_ref(), query_ctx, conn, db_schema, token)
             }
-            Impl(Databricks | Spark, engine) => databricks::list_relations(
+            Impl(Databricks, engine) => databricks::list_relations(
                 engine.as_ref(),
                 state,
                 query_ctx,
@@ -4182,6 +4182,12 @@ impl AdapterImpl {
                 db_schema,
                 token,
             ),
+            // Spark has no `system.information_schema` outside Databricks
+            // Unity Catalog; SHOW TABLE EXTENDED exists on every backend,
+            // including Microsoft Fabric Lakehouses.
+            Impl(Spark, engine) => {
+                spark::list_relations(engine.as_ref(), query_ctx, conn, db_schema, token)
+            }
             Impl(Redshift, engine) => {
                 redshift::list_relations(engine.as_ref(), query_ctx, conn, db_schema, token)
             }
