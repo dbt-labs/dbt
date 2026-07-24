@@ -1998,6 +1998,53 @@ impl<'a> DuckDBPathInfo<'a> {
     }
 }
 
+/// Builds the target context for a `spark` profile. Microsoft Fabric Lakehouse
+/// targets (the "fabric" platform flavor, identified by their GUID fields)
+/// default the method to Livy and the host to the Fabric API endpoint, and a
+/// schema-enabled lakehouse occupies the database slot.
+fn spark_target_context(
+    config: SparkDbConfig,
+    adapter_type: String,
+) -> Result<TargetContext, String> {
+    let is_fabric = config.is_fabric();
+    let database = config.database().cloned().unwrap_or_default();
+    let method = match config.method {
+        Some(method) => method,
+        None if is_fabric => SparkMethod::Livy,
+        None => return Err(missing("method")),
+    };
+    let host = match config.host {
+        Some(host) => host,
+        None if is_fabric => "api.fabric.microsoft.com".to_string(),
+        None => return Err(missing("host")),
+    };
+    Ok(TargetContext::Spark(SparkTargetEnv {
+        method,
+        host,
+        port: config.port.unwrap_or(10000),
+        user: config.user.unwrap_or_default(),
+        password: config.password.unwrap_or_default(),
+
+        kerberos_service_name: config.kerberos_service_name.unwrap_or_default(),
+        use_ssl: config.use_ssl.unwrap_or(false),
+        auth: config.auth.unwrap_or_default(),
+
+        endpoint: config.endpoint,
+        workspaceid: config.workspaceid,
+        lakehouse: config.lakehouse,
+        lakehouseid: config.lakehouseid,
+        lakehouse_schemas: config.lakehouse_schemas,
+        authentication: config.authentication,
+
+        __common__: CommonTargetContext {
+            database,
+            schema: config.schema.ok_or_else(|| missing("schema"))?,
+            type_: adapter_type,
+            threads: None,
+        },
+    }))
+}
+
 fn missing(field: &str) -> String {
     format!("In file `profiles.yml`, field `{field}` is required.")
 }
@@ -2267,48 +2314,7 @@ impl TryFrom<DbConfig> for TargetContext {
                 }))
             }
 
-            DbConfig::Spark(config) => {
-                // Fabric Lakehouse targets (the "fabric" platform flavor)
-                // default to the Livy method and the Fabric API host; the
-                // schema-enabled lakehouse occupies the database slot.
-                let is_fabric = config.is_fabric();
-                let database = config.database().cloned().unwrap_or_default();
-                let method = match config.method {
-                    Some(method) => method,
-                    None if is_fabric => SparkMethod::Livy,
-                    None => return Err(missing("method")),
-                };
-                let host = match config.host {
-                    Some(host) => host,
-                    None if is_fabric => "api.fabric.microsoft.com".to_string(),
-                    None => return Err(missing("host")),
-                };
-                Ok(TargetContext::Spark(SparkTargetEnv {
-                    method,
-                    host,
-                    port: config.port.unwrap_or(10000),
-                    user: config.user.unwrap_or_default(),
-                    password: config.password.unwrap_or_default(),
-
-                    kerberos_service_name: config.kerberos_service_name.unwrap_or_default(),
-                    use_ssl: config.use_ssl.unwrap_or(false),
-                    auth: config.auth.unwrap_or_default(),
-
-                    endpoint: config.endpoint,
-                    workspaceid: config.workspaceid,
-                    lakehouse: config.lakehouse,
-                    lakehouseid: config.lakehouseid,
-                    lakehouse_schemas: config.lakehouse_schemas,
-                    authentication: config.authentication,
-
-                    __common__: CommonTargetContext {
-                        database,
-                        schema: config.schema.ok_or_else(|| missing("schema"))?,
-                        type_: adapter_type,
-                        threads: None,
-                    },
-                }))
-            }
+            DbConfig::Spark(config) => spark_target_context(*config, adapter_type),
             DbConfig::Fabric(config) => {
                 let common = CommonTargetContext {
                     database: config.database.ok_or_else(|| missing("database"))?,

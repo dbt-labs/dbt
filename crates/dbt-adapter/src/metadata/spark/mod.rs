@@ -49,13 +49,15 @@ fn is_schema_not_found(message: &str) -> bool {
 fn relations_from_show_table_extended(
     adapter_type: AdapterType,
     quoting: ResolvedQuoting,
-    catalog: &str,
-    schema: &str,
+    db_schema: &CatalogAndSchema,
     batch: &RecordBatch,
 ) -> AdapterResult<Vec<Arc<dyn BaseRelation>>> {
     if batch.num_rows() == 0 {
         return Ok(Vec::new());
     }
+
+    let catalog = &db_schema.resolved_catalog;
+    let schema = &db_schema.resolved_schema;
 
     let names = batch.column_values::<StringArray>("tableName")?;
     let is_temporary = batch.column_values::<BooleanArray>("isTemporary")?;
@@ -114,8 +116,7 @@ pub fn list_relations(
     relations_from_show_table_extended(
         engine.adapter_type(),
         engine.quoting(),
-        catalog,
-        schema,
+        db_schema,
         &batch,
     )
 }
@@ -182,11 +183,16 @@ and correctness of the schema and catalog.";
 
     fn relations_for(catalog: &str, rows: &[(&str, bool, &str)]) -> Vec<Arc<dyn BaseRelation>> {
         let batch = show_table_extended_batch(rows);
+        let db_schema = CatalogAndSchema {
+            rendered_catalog: catalog.to_string(),
+            rendered_schema: "dbo".to_string(),
+            resolved_catalog: catalog.to_string(),
+            resolved_schema: "dbo".to_string(),
+        };
         relations_from_show_table_extended(
             AdapterType::Spark,
             ResolvedQuoting::trues(),
-            catalog,
-            "dbo",
+            &db_schema,
             &batch,
         )
         .unwrap()
