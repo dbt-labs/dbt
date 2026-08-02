@@ -45,7 +45,7 @@ pub enum DbConfig {
     Bigquery(Box<BigqueryDbConfig>),
     Trino(Box<TrinoDbConfig>),
     Datafusion(Box<DatafusionDbConfig>),
-    // SqlServer,
+    SqlServer(Box<SqlServerDbConfig>),
     // SingleStore,
     Spark(Box<SparkDbConfig>),
     Databricks(Box<DatabricksDbConfig>),
@@ -107,6 +107,7 @@ impl_from_db_config!(Datafusion, DatafusionDbConfig);
 impl_from_db_config!(Databricks, DatabricksDbConfig);
 impl_from_db_config!(DuckDB, DuckDbConfig);
 impl_from_db_config!(Fabric, FabricDbConfig);
+impl_from_db_config!(SqlServer, SqlServerDbConfig);
 impl_from_db_config!(Exasol, ExasolDbConfig);
 impl_from_db_config!(ClickHouse, ClickHouseDbConfig);
 
@@ -162,6 +163,7 @@ impl DbConfig {
             DbConfig::LakeCompute(config) => config.base_url.as_deref(),
             DbConfig::Spark(config) => config.host.as_deref(),
             DbConfig::Fabric(config) => config.host.as_deref(),
+            DbConfig::SqlServer(config) => config.host.as_deref(),
             DbConfig::Exasol(config) => config.host.as_deref(),
             DbConfig::ClickHouse(config) => config.host.as_deref(),
         }
@@ -333,6 +335,20 @@ impl DbConfig {
                 "trust_cert",
                 "api_url",
             ],
+            AdapterType::SqlServer => &[
+                "host",
+                "port",
+                "database",
+                "schema",
+                "UID",
+                "authentication",
+                "retries",
+                "login_timeout",
+                "query_timeout",
+                "trace_flag",
+                "encrypt",
+                "trust_cert",
+            ],
             AdapterType::Exasol => &[
                 "host",
                 "port",
@@ -404,6 +420,7 @@ impl DbConfig {
             DbConfig::Salesforce(config) => dbt_yaml::to_value(config),
             DbConfig::Spark(config) => dbt_yaml::to_value(config),
             DbConfig::Fabric(config) => dbt_yaml::to_value(config),
+            DbConfig::SqlServer(config) => dbt_yaml::to_value(config),
             DbConfig::DuckDB(config) => dbt_yaml::to_value(config),
             DbConfig::LakeCompute(config) => dbt_yaml::to_value(config),
             DbConfig::Exasol(config) => dbt_yaml::to_value(config),
@@ -424,6 +441,7 @@ impl DbConfig {
             DbConfig::DuckDB(..) => AdapterType::DuckDB,
             DbConfig::Spark(..) => AdapterType::Spark,
             DbConfig::Fabric(..) => AdapterType::Fabric,
+            DbConfig::SqlServer(..) => AdapterType::SqlServer,
             DbConfig::Exasol(..) => AdapterType::Exasol,
             DbConfig::ClickHouse(..) => AdapterType::ClickHouse,
             DbConfig::LakeCompute(..) => AdapterType::LakeCompute,
@@ -443,6 +461,7 @@ impl DbConfig {
             DbConfig::DuckDB(config) => config.database.as_ref(),
             DbConfig::Spark(_) => None,
             DbConfig::Fabric(config) => config.database.as_ref(),
+            DbConfig::SqlServer(config) => config.database.as_ref(),
             DbConfig::Exasol(config) => config.database.as_ref(),
             DbConfig::ClickHouse(config) => config.database.as_ref(),
             DbConfig::LakeCompute(config) => config.database.as_ref(),
@@ -484,6 +503,7 @@ impl DbConfig {
             DbConfig::LakeCompute(config) => config.schema.as_ref(),
             DbConfig::Salesforce(_) => None,
             DbConfig::Fabric(config) => config.schema.as_ref(),
+            DbConfig::SqlServer(config) => config.schema.as_ref(),
             DbConfig::Exasol(config) => config.schema.as_ref(),
             DbConfig::ClickHouse(config) => config.schema.as_ref(),
         }
@@ -502,6 +522,7 @@ impl DbConfig {
             DbConfig::Salesforce(_) => None,
             DbConfig::Spark(_) => None,
             DbConfig::Fabric(_) => None,
+            DbConfig::SqlServer(config) => config.threads.as_ref(),
             DbConfig::Exasol(config) => config.threads.as_ref(),
             DbConfig::ClickHouse(config) => config.threads.as_ref(),
             DbConfig::LakeCompute(config) => config.threads.as_ref(),
@@ -521,6 +542,7 @@ impl DbConfig {
             DbConfig::Salesforce(_) => (),
             DbConfig::Spark(_) => (),
             DbConfig::Fabric(_) => (),
+            DbConfig::SqlServer(config) => config.threads = threads,
             DbConfig::Exasol(config) => config.threads = threads,
             DbConfig::ClickHouse(config) => config.threads = threads,
             DbConfig::LakeCompute(config) => config.threads = threads,
@@ -1364,6 +1386,59 @@ pub struct FabricDbConfig {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default, DbtSchema, Merge)]
 #[merge(strategy = merge_strategies_extend::overwrite_option)]
 #[serde(rename_all = "snake_case")]
+pub struct SqlServerDbConfig {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub driver: Option<String>, // v1 pyodbc only; unused on the ADBC path
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(alias = "server")]
+    pub host: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub port: Option<StringOrInteger>, // default = 1433, applied in dbt-auth
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub database: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub schema: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "UID", alias = "user", alias = "username")]
+    pub user: Option<String>, // default = None
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "PWD", alias = "pass", alias = "password")]
+    pub password: Option<String>, // default = None
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(alias = "auth")]
+    pub authentication: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tenant_id: Option<String>, // default = None
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(alias = "app_id")]
+    pub client_id: Option<String>, // default = None
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(alias = "app_secret")]
+    pub client_secret: Option<String>, // default = None
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub encrypt: Option<bool>, // default = True  | default value in MS ODBC Driver 18 as well
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(alias = "TrustServerCertificate")]
+    pub trust_cert: Option<bool>, // default = False  | default value in MS ODBC Driver 18 as well
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub login_timeout: Option<i64>, // default = 0
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub query_timeout: Option<i64>, // default = 0
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub retries: Option<i64>, // default = 3
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(alias = "schema_auth")]
+    pub schema_authorization: Option<String>, // default = None
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(alias = "SQL_ATTR_TRACE")]
+    pub trace_flag: Option<bool>, // default = False
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub threads: Option<StringOrInteger>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default, DbtSchema, Merge)]
+#[merge(strategy = merge_strategies_extend::overwrite_option)]
+#[serde(rename_all = "snake_case")]
 pub struct ExasolDbConfig {
     pub user: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none", alias = "pass")]
@@ -1621,6 +1696,7 @@ pub enum TargetContext {
     DuckDB(DuckDbTargetEnv),
     Spark(SparkTargetEnv),
     Fabric(FabricTargetEnv),
+    SqlServer(SqlServerTargetEnv),
     Exasol(ExasolTargetEnv),
     ClickHouse(ClickHouseTargetEnv),
     // Add other variants as needed
@@ -1797,6 +1873,16 @@ pub struct FabricTargetEnv {
     pub __common__: CommonTargetContext,
     pub authentication: String,
     // TODO: ...
+}
+
+#[derive(Serialize, DbtSchema)]
+#[serde(rename_all = "snake_case")]
+pub struct SqlServerTargetEnv {
+    pub host: Option<String>,
+    pub port: Option<StringOrInteger>,
+    pub user: Option<String>,
+    pub authentication: String,
+    pub __common__: CommonTargetContext,
 }
 
 #[derive(Serialize, DbtSchema)]
@@ -2217,6 +2303,30 @@ impl TryFrom<DbConfig> for TargetContext {
                 Ok(TargetContext::Fabric(FabricTargetEnv {
                     __common__: common,
                     authentication,
+                }))
+            }
+            DbConfig::SqlServer(config) => {
+                let threads = match config.threads {
+                    Some(StringOrInteger::String(threads)) => Some(
+                        threads
+                            .parse::<u16>()
+                            .map_err(|_| "threads must be a positive integer".to_string())?,
+                    ),
+                    Some(StringOrInteger::Integer(threads)) => Some(threads as u16),
+                    None => None,
+                };
+
+                Ok(TargetContext::SqlServer(SqlServerTargetEnv {
+                    host: config.host,
+                    port: config.port,
+                    user: config.user,
+                    authentication: config.authentication.unwrap_or_default(),
+                    __common__: CommonTargetContext {
+                        database: config.database.ok_or_else(|| missing("database"))?,
+                        schema: config.schema.ok_or_else(|| missing("schema"))?,
+                        type_: adapter_type,
+                        threads,
+                    },
                 }))
             }
             DbConfig::Exasol(config) => Ok(TargetContext::Exasol(ExasolTargetEnv {
@@ -2831,6 +2941,145 @@ extensions:
                 .get(dbt_yaml::Value::from("serverless_work_group"))
                 .and_then(|v| v.as_str()),
             Some("my-workgroup")
+        );
+    }
+
+    #[test]
+    fn test_sqlserver_config_parses() {
+        let config: DbConfig = dbt_yaml::from_str(
+            "type: sqlserver\n\
+             host: sql.prod.internal\n\
+             port: 1433\n\
+             database: analytics\n\
+             schema: dbo\n\
+             UID: alice\n\
+             PWD: hunter2\n\
+             authentication: sql\n\
+             threads: 4\n",
+        )
+        .unwrap();
+
+        let DbConfig::SqlServer(sqlserver_config) = config else {
+            panic!("Expected DbConfig::SqlServer");
+        };
+        assert_eq!(sqlserver_config.host, Some("sql.prod.internal".to_string()));
+        assert_eq!(sqlserver_config.port, Some(StringOrInteger::Integer(1433)));
+        assert_eq!(sqlserver_config.database, Some("analytics".to_string()));
+        assert_eq!(sqlserver_config.schema, Some("dbo".to_string()));
+        assert_eq!(sqlserver_config.user, Some("alice".to_string()));
+        assert_eq!(sqlserver_config.password, Some("hunter2".to_string()));
+        assert_eq!(sqlserver_config.authentication, Some("sql".to_string()));
+        assert_eq!(sqlserver_config.threads, Some(StringOrInteger::Integer(4)));
+    }
+
+    /// A dbt-sqlserver v1 profile uses `_ALIASES` spellings throughout, and
+    /// must land in the same fields as the canonical names above.
+    #[test]
+    fn test_sqlserver_v1_aliases_parse() {
+        let config: DbConfig = dbt_yaml::from_str(
+            "type: sqlserver\n\
+             server: sql.prod.internal\n\
+             database: analytics\n\
+             schema: dbo\n\
+             user: alice\n\
+             password: hunter2\n\
+             auth: ActiveDirectoryServicePrincipal\n\
+             app_id: my-client\n\
+             app_secret: my-secret\n\
+             TrustServerCertificate: true\n\
+             schema_auth: some_owner\n\
+             SQL_ATTR_TRACE: true\n",
+        )
+        .unwrap();
+
+        let DbConfig::SqlServer(sqlserver_config) = config else {
+            panic!("Expected DbConfig::SqlServer");
+        };
+        assert_eq!(sqlserver_config.host, Some("sql.prod.internal".to_string()));
+        assert_eq!(sqlserver_config.user, Some("alice".to_string()));
+        assert_eq!(sqlserver_config.password, Some("hunter2".to_string()));
+        assert_eq!(
+            sqlserver_config.authentication,
+            Some("ActiveDirectoryServicePrincipal".to_string())
+        );
+        assert_eq!(sqlserver_config.client_id, Some("my-client".to_string()));
+        assert_eq!(
+            sqlserver_config.client_secret,
+            Some("my-secret".to_string())
+        );
+        assert_eq!(sqlserver_config.trust_cert, Some(true));
+        assert_eq!(
+            sqlserver_config.schema_authorization,
+            Some("some_owner".to_string())
+        );
+        assert_eq!(sqlserver_config.trace_flag, Some(true));
+    }
+
+    #[test]
+    fn test_sqlserver_adapter_type_and_unique_field() {
+        let config: DbConfig = SqlServerDbConfig {
+            host: Some("sql.prod.internal".to_string()),
+            ..Default::default()
+        }
+        .into();
+
+        assert_eq!(config.adapter_type(), AdapterType::SqlServer);
+        assert_eq!(config.get_unique_field(), Some("sql.prod.internal"));
+    }
+
+    #[test]
+    fn test_sqlserver_target_context() {
+        let config: DbConfig = SqlServerDbConfig {
+            host: Some("sql.prod.internal".to_string()),
+            port: Some(StringOrInteger::Integer(1433)),
+            database: Some("analytics".to_string()),
+            schema: Some("dbo".to_string()),
+            user: Some("alice".to_string()),
+            password: Some("hunter2".to_string()),
+            authentication: Some("sql".to_string()),
+            threads: Some(StringOrInteger::Integer(4)),
+            ..Default::default()
+        }
+        .into();
+
+        let target = TargetContext::try_from(config).expect("sqlserver target context");
+        let TargetContext::SqlServer(target) = target else {
+            panic!("expected sqlserver target context");
+        };
+        assert_eq!(target.host, Some("sql.prod.internal".to_string()));
+        assert_eq!(target.user, Some("alice".to_string()));
+        assert_eq!(target.authentication, "sql");
+        assert_eq!(target.__common__.database, "analytics");
+        assert_eq!(target.__common__.schema, "dbo");
+        assert_eq!(target.__common__.threads, Some(4));
+    }
+
+    /// `to_connection_mapping` filters on serialized names, which `serde(alias)`
+    /// does not affect — so `get_connection_keys` has to spell `host`, not v1's
+    /// `server`, or `dbt debug` shows no host at all.
+    #[test]
+    fn test_sqlserver_connection_mapping_includes_host_and_omits_secrets() {
+        let config: DbConfig = SqlServerDbConfig {
+            host: Some("sql.prod.internal".to_string()),
+            database: Some("analytics".to_string()),
+            schema: Some("dbo".to_string()),
+            user: Some("alice".to_string()),
+            password: Some("hunter2".to_string()),
+            client_secret: Some("my-secret".to_string()),
+            ..Default::default()
+        }
+        .into();
+
+        let mapping = config.to_connection_mapping().expect("connection mapping");
+        let keys: Vec<&str> = mapping.keys().filter_map(|k| k.as_str()).collect();
+
+        assert!(keys.contains(&"host"), "expected host in {keys:?}");
+        assert!(keys.contains(&"database"), "expected database in {keys:?}");
+        assert!(keys.contains(&"UID"), "expected UID in {keys:?}");
+        assert!(!keys.contains(&"PWD"), "PWD leaked into {keys:?}");
+        assert!(
+            !keys.contains(&"client_secret"),
+            "client_secret leaked into {keys:?}"
         );
     }
 
