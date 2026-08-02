@@ -32,6 +32,7 @@ pub fn sqlparser_dialect_for(adapter_type: AdapterType) -> &'static dyn Dialect 
         // baseline for tokenization (string/comment forms match).
         Spark => &HIVE,
         Fabric => &MSSQL,
+        SqlServer => &MSSQL,
         ClickHouse => &CLICKHOUSE,
         // No close sqlparser match — generic SQL tokenizer is permissive enough
         // for statement splitting.
