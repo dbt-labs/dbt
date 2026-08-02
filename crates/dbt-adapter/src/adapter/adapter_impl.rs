@@ -33,6 +33,7 @@ use crate::metadata::postgres::PostgresMetadataAdapter;
 use crate::metadata::redshift::RedshiftMetadataAdapter;
 use crate::metadata::salesforce::SalesforceMetadataAdapter;
 use crate::metadata::snowflake::SnowflakeMetadataAdapter;
+use crate::metadata::sqlserver::SqlServerMetadataAdapter;
 use crate::metadata::{self, CatalogAndSchema, MetadataAdapter};
 use crate::query_ctx::{node_id_from_state, query_ctx_from_state};
 use crate::record_batch::{RecordBatchExt, RenamedColumn, StructArrayExt};
@@ -432,6 +433,8 @@ impl AdapterImpl {
                         Fabric => {
                             Box::new(FabricMetadataAdapter::new(engine)) as Box<dyn MetadataAdapter>
                         }
+                        SqlServer => Box::new(SqlServerMetadataAdapter::new(engine))
+                            as Box<dyn MetadataAdapter>,
                         ClickHouse => Box::new(ClickHouseMetadataAdapter::new(engine))
                             as Box<dyn MetadataAdapter>,
                         Exasol => {
@@ -4232,6 +4235,9 @@ impl AdapterImpl {
             }
             Impl(Fabric, engine) => {
                 fabric::list_relations(engine.as_ref(), query_ctx, conn, db_schema, token)
+            }
+            Impl(SqlServer, engine) => {
+                sqlserver::list_relations(engine.as_ref(), query_ctx, conn, db_schema, token)
             }
             Impl(
                 adapter_type @ (Postgres | Salesforce | ClickHouse | Exasol | Starburst | Athena
