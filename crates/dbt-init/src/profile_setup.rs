@@ -1,7 +1,7 @@
 use crate::adapter_config::{
     setup_bigquery_profile, setup_clickhouse_profile, setup_databricks_profile,
     setup_exasol_profile, setup_fabric_profile, setup_postgres_profile, setup_redshift_profile,
-    setup_snowflake_profile,
+    setup_snowflake_profile, setup_sqlserver_profile,
 };
 // Re-exported so `crate::profile_setup::{ProfileTarget, Profiles}` keeps resolving.
 pub use crate::adapter_config::{ProfileTarget, Profiles};
@@ -182,6 +182,7 @@ impl ProfileSetup {
             AdapterType::Postgres,
             AdapterType::Redshift,
             AdapterType::Fabric,
+            AdapterType::SqlServer,
         ]
     }
 
@@ -376,6 +377,13 @@ impl ProfileSetup {
                     _ => None,
                 };
                 DbConfig::Fabric(setup_fabric_profile(fabric_config.map(Box::as_ref))?)
+            }
+            AdapterType::SqlServer => {
+                let sqlserver_config = match existing_config {
+                    Some(DbConfig::SqlServer(config)) => Some(config),
+                    _ => None,
+                };
+                DbConfig::SqlServer(setup_sqlserver_profile(sqlserver_config.map(Box::as_ref))?)
             }
 
             AdapterType::DuckDB => {
