@@ -1,0 +1,7 @@
+kind: Fixes
+body: Fix a multi-statement query batch returning the result of a trailing no-op cleanup statement (e.g. `DROP VIEW`) instead of the actual result, when the caller requested a fetched result.
+time: 2026-08-02T23:19:39.000000+00:00
+custom:
+    author: "axellpadilla"
+    issue: "15765"
+    project: dbt-core
