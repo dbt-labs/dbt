@@ -1087,6 +1087,13 @@ fn sqlserver_get_relation(
 ) -> AdapterResult<Option<Box<dyn BaseRelation>>> {
     use crate::metadata::sqlserver::{build_get_relation_sql, relation_type_from_table_type};
 
+    if database.is_empty() {
+        return Err(AdapterError::new(
+            AdapterErrorKind::UnexpectedResult,
+            "SQL Server relations require a database to build a three-part name",
+        ));
+    }
+
     let relation = Relation::new_sqlserver(
         Some(database.to_string()),
         Some(schema.to_string()),
