@@ -1,0 +1,6 @@
+kind: Features
+body: Extend RunResult with the state_decision_id attribute
+time: 2026-08-12T09:37:48.372488-07:00
+custom:
+    Author: izeigerman
+    Issue: "0"
