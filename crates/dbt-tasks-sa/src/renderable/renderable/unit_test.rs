@@ -2188,9 +2188,10 @@ fn columns_to_formatted_types<'a>(
         .fields()
         .iter()
         .map(|f| {
-            let mut formatted = String::new();
-            type_ops
-                .format_arrow_type_as_sql(f.data_type(), f.is_nullable(), &mut formatted)
+            // Arrow cannot distinguish every warehouse type (for example,
+            // BigQuery TIMESTAMP and DATETIME), so prefer retained SQL metadata.
+            let formatted = type_ops
+                .get_original_sql_type_from_field(f)
                 .map_err(|e| {
                     fs_err!(
                         ErrorCode::InvalidConfig,
@@ -2198,7 +2199,8 @@ fn columns_to_formatted_types<'a>(
                         f.data_type(),
                         e
                     )
-                })?;
+                })?
+                .into_owned();
             Ok((f.name(), f.data_type(), formatted))
         })
         .collect::<FsResult<Vec<_>>>()
@@ -3266,6 +3268,68 @@ mod tests {
             "CAST('2023-01-01 12:00:00' AS DATETIME) AS timestamp_col"
         );
         assert_contains!(result, "CAST(3.15 AS FLOAT64) AS float_col");
+    }
+
+    #[test]
+    fn test_create_values_bigquery_preserves_original_relation_types() {
+        let type_ops = DefaultTypeOps::new(AdapterType::Bigquery);
+        let schema = Arc::new(Schema::new(vec![
+            make_arrow_field(
+                &type_ops,
+                "event_timestamp".to_string(),
+                "TIMESTAMP",
+                None,
+                None,
+            )
+            .unwrap(),
+            make_arrow_field(
+                &type_ops,
+                "local_datetime".to_string(),
+                "DATETIME",
+                None,
+                None,
+            )
+            .unwrap(),
+            make_arrow_field(&type_ops, "event_id".to_string(), "INT64", None, None).unwrap(),
+            make_arrow_field(&type_ops, "event_name".to_string(), "STRING", None, None).unwrap(),
+        ]));
+        let rows = vec![BTreeMap::from([
+            (
+                "event_timestamp".to_string(),
+                YmlValue::string("2026-01-01 00:00:00+00:00".to_string()),
+            ),
+            (
+                "local_datetime".to_string(),
+                YmlValue::string("2026-01-01 00:00:00".to_string()),
+            ),
+            ("event_id".to_string(), YmlValue::number(42.into())),
+            (
+                "event_name".to_string(),
+                YmlValue::string("created".to_string()),
+            ),
+        ])];
+
+        let result = create_values(
+            &schema,
+            &rows,
+            AdapterType::Bigquery,
+            &type_ops,
+            None,
+            "events",
+            true,
+        )
+        .unwrap();
+
+        assert_contains!(
+            result,
+            "CAST('2026-01-01 00:00:00+00:00' AS TIMESTAMP) AS event_timestamp"
+        );
+        assert_contains!(
+            result,
+            "CAST('2026-01-01 00:00:00' AS DATETIME) AS local_datetime"
+        );
+        assert_contains!(result, "CAST(42 AS INT64) AS event_id");
+        assert_contains!(result, "CAST('created' AS STRING) AS event_name");
     }
 
     #[test]
