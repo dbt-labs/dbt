@@ -1402,6 +1402,12 @@ pub fn nodes_from_dbt_manifest(manifest: DbtManifest, dbt_quoting: DbtQuoting) -
                             introspection: IntrospectionKind::None,
                             sync: snapshot.config.sync.clone(),
                             state: snapshot.config.state.clone(),
+                            catalog_name: snapshot
+                                .config
+                                .__warehouse_specific_config__
+                                .catalog_name
+                                .clone(),
+                            table_format: snapshot.config.table_format.clone(),
                         },
                         __adapter_attr__: AdapterAttr::from_config_and_dialect(
                             &snapshot.config.__warehouse_specific_config__,

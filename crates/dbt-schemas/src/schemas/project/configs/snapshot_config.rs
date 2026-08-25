@@ -150,6 +150,14 @@ pub struct ProjectSnapshotConfig {
     pub base_location_subpath: Option<String>,
     #[serde(
         default,
+        rename = "+iceberg_version",
+        deserialize_with = "u64_or_string_u64"
+    )]
+    pub iceberg_version: Option<u64>,
+    #[serde(rename = "+table_format")]
+    pub table_format: Option<String>,
+    #[serde(
+        default,
         rename = "+copy_grants",
         deserialize_with = "bool_or_string_bool"
     )]
@@ -432,6 +440,8 @@ impl TypedRecursiveConfig for ProjectSnapshotConfig {
             || self.backup.is_some()
             || self.base_location_root.is_some()
             || self.base_location_subpath.is_some()
+            || self.iceberg_version.is_some()
+            || self.table_format.is_some()
             || self.copy_grants.is_some()
             || self.copy_tags.is_some()
             || self.external_volume.is_some()
@@ -570,6 +580,7 @@ pub struct SnapshotConfig {
     pub sync: Option<SyncConfig>,
     // dbt State configs (state-aware run-cache behavior)
     pub state: Option<ModelState>,
+    pub table_format: Option<String>,
     // Adapter specific configs
     pub __warehouse_specific_config__: WarehouseSpecificNodeConfig,
 }
@@ -726,6 +737,7 @@ impl From<ProjectSnapshotConfig> for SnapshotConfig {
             docs: config.docs,
             sync: config.sync,
             state: config.state,
+            table_format: config.table_format,
             __warehouse_specific_config__: WarehouseSpecificNodeConfig {
                 description: None, // Only for Bigquery models
                 adapter_properties: config.adapter_properties,
@@ -755,7 +767,7 @@ impl From<ProjectSnapshotConfig> for SnapshotConfig {
                 copy_tags: config.copy_tags,
                 secure: config.secure,
                 transient: config.transient,
-                iceberg_version: None,
+                iceberg_version: config.iceberg_version,
 
                 partition_by: config.partition_by,
 
@@ -907,6 +919,8 @@ impl From<SnapshotConfig> for ProjectSnapshotConfig {
             external_volume: config.__warehouse_specific_config__.external_volume,
             base_location_root: config.__warehouse_specific_config__.base_location_root,
             base_location_subpath: config.__warehouse_specific_config__.base_location_subpath,
+            iceberg_version: config.__warehouse_specific_config__.iceberg_version,
+            table_format: config.table_format,
             target_lag: config.__warehouse_specific_config__.target_lag,
             snowflake_initialization_warehouse: config
                 .__warehouse_specific_config__
@@ -1101,8 +1115,9 @@ impl ConfigKeys for SnapshotConfig {
 
 #[cfg(test)]
 mod tests {
-    use super::{AdapterType, ProjectSnapshotConfig, SnapshotConfig};
+    use super::{AdapterType, ProjectSnapshotConfig, SnapshotConfig, WarehouseSpecificNodeConfig};
     use crate::schemas::common::{FreshnessPeriod, UpdatesOn};
+    use crate::schemas::project::{ResolvableConfig, TypedRecursiveConfig};
     use crate::schemas::properties::{ModelState, StatePreClone};
 
     #[test]
@@ -1120,6 +1135,51 @@ __additional_properties__: {}
             resolved.__warehouse_specific_config__.query_tags.as_deref(),
             Some(r#"{"team":"snapshot"}"#)
         );
+    }
+
+    #[test]
+    fn test_project_snapshot_iceberg_config_parses_and_round_trips() {
+        let project_config: ProjectSnapshotConfig = dbt_yaml::from_str(
+            r#"
++table_format: iceberg
++iceberg_version: "2"
+__additional_properties__: {}
+"#,
+        )
+        .unwrap();
+
+        assert!(project_config.has_set_fields());
+
+        let snapshot_config: SnapshotConfig = project_config.into();
+        assert_eq!(snapshot_config.table_format.as_deref(), Some("iceberg"));
+        assert_eq!(
+            snapshot_config
+                .__warehouse_specific_config__
+                .iceberg_version,
+            Some(2)
+        );
+
+        let round_tripped: ProjectSnapshotConfig = snapshot_config.into();
+        assert_eq!(round_tripped.table_format.as_deref(), Some("iceberg"));
+        assert_eq!(round_tripped.iceberg_version, Some(2));
+    }
+
+    #[test]
+    fn test_snapshot_iceberg_config_inherits_from_parent() {
+        let parent = SnapshotConfig {
+            table_format: Some("iceberg".to_string()),
+            __warehouse_specific_config__: WarehouseSpecificNodeConfig {
+                iceberg_version: Some(2),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let mut child = SnapshotConfig::default();
+
+        child.default_to(&parent);
+
+        assert_eq!(child.table_format.as_deref(), Some("iceberg"));
+        assert_eq!(child.__warehouse_specific_config__.iceberg_version, Some(2));
     }
 
     #[test]

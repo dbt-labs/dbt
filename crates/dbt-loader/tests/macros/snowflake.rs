@@ -8,6 +8,27 @@ use minijinja::Value;
 use crate::macro_test_harness::{MacroTestHarness, default_mock_config};
 
 #[test]
+fn snapshot_time_uses_iceberg_compatible_precision() {
+    let harness = MacroTestHarness::for_adapter(AdapterType::Snowflake)
+        .load_all_macros()
+        .build()
+        .expect("harness should build");
+
+    let rendered = harness
+        .render(
+            "{{ snapshot_get_time() }}",
+            BTreeMap::<String, Value>::new(),
+        )
+        .expect("snapshot_get_time should render");
+    let normalized = rendered.split_whitespace().collect::<Vec<_>>().join(" ");
+
+    assert_eq!(
+        normalized,
+        "to_timestamp_ntz(convert_timezone('UTC', current_timestamp()))::timestamp_ntz(6)"
+    );
+}
+
+#[test]
 fn python_table_tmp_relation_type_is_allowed() {
     let harness = MacroTestHarness::for_adapter(AdapterType::Snowflake)
         .load_all_macros()
