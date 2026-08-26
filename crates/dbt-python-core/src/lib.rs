@@ -13,7 +13,7 @@ use dbt_common::tracing::dbt_init::{
 use dbt_common::tracing::{FsTraceConfig, FsTraceConfigBuilder};
 use dbt_features::feature_stack::FeatureStack;
 use dbt_features::tracing::TracingFeature;
-use dbt_main::{print_trimmed_error, run_cli_with_code};
+use dbt_main::{init_terminal_hyperlinks_from_stderr, print_trimmed_error, run_cli_with_code};
 use dbt_schemas::schemas::DbtCommandExecutionArtifacts;
 use pyo3::prelude::*;
 use pyo3::types::PyBytes;
@@ -428,6 +428,7 @@ where
 fn run_cli(py: Python<'_>, argv: Vec<String>) -> PyResult<()> {
     let distribution = distribution();
     let code = py.detach(|| {
+        init_terminal_hyperlinks_from_stderr();
         run_cli_inner(
             argv,
             &(distribution.cli_parser)(),

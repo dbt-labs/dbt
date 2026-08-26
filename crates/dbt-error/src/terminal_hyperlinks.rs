@@ -196,24 +196,24 @@ fn osc8_open_end(bytes: &[u8], i: usize) -> Option<usize> {
         return None;
     }
     // Skip params (`id=…`) until the URI-separating `;`, then skip the URI.
-    let mut j = i + PREFIX.len();
-    while j < bytes.len() && bytes[j] != b';' {
-        j += 1;
+    let after_params = find_byte(bytes, i + PREFIX.len(), b';')? + 1;
+    (after_params..bytes.len()).find_map(|j| osc_terminator_end(bytes, j))
+}
+
+fn find_byte(bytes: &[u8], start: usize, needle: u8) -> Option<usize> {
+    bytes[start..]
+        .iter()
+        .position(|&b| b == needle)
+        .map(|offset| start + offset)
+}
+
+/// BEL (`0x07`) or ST (`ESC \`) that ends an OSC 8 introducer.
+fn osc_terminator_end(bytes: &[u8], j: usize) -> Option<usize> {
+    match bytes.get(j..) {
+        Some([0x07, ..]) => Some(j + 1),
+        Some([0x1b, b'\\', ..]) => Some(j + 2),
+        _ => None,
     }
-    if j >= bytes.len() {
-        return None;
-    }
-    j += 1; // skip ';'
-    while j < bytes.len() {
-        if bytes[j] == 0x07 {
-            return Some(j + 1);
-        }
-        if bytes[j] == 0x1b && j + 1 < bytes.len() && bytes[j + 1] == b'\\' {
-            return Some(j + 2);
-        }
-        j += 1;
-    }
-    None
 }
 
 #[cfg(test)]
@@ -285,6 +285,12 @@ mod tests {
         let stripped = strip_osc8_hyperlinks(&wrapped);
         assert_eq!(stripped.as_ref(), "models/foo.sql:43:9");
         assert!(!stripped.contains('\x1b'));
+    }
+
+    #[test]
+    fn strip_handles_bel_terminator() {
+        let input = "\x1b]8;;file:///tmp/a.sql\x07a.sql:1:1\x1b]8;;\x07";
+        assert_eq!(strip_osc8_hyperlinks(input).as_ref(), "a.sql:1:1");
     }
 
     #[test]
