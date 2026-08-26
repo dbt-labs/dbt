@@ -15,7 +15,7 @@ use dbt_common::{
     constants::{ERROR, PANIC},
     pretty_string::{GREEN, RED},
 };
-use dbt_error::FsError;
+use dbt_error::{FsError, init_terminal_hyperlinks_from_stderr};
 use dbt_features::feature_stack::FeatureStack;
 
 use crate::ctrl_c::run_future_with_ctrlc_support;
@@ -124,6 +124,10 @@ pub fn run_cli(cli: Box<Cli>, arg: SystemArgs, feature_stack: Arc<FeatureStack>)
 /// so embedders (e.g. the `dbt-core` Python extension's console entrypoint) can
 /// pass it to `std::process::exit`.
 pub fn run_cli_with_code(cli: Box<Cli>, arg: SystemArgs, feature_stack: Arc<FeatureStack>) -> u8 {
+    // Display of diagnostic locations does not know which stream it writes to.
+    // Enable OSC 8 only when stderr is a TTY so piped/CI output stays plain.
+    init_terminal_hyperlinks_from_stderr();
+
     let event_emitter = feature_stack.instrumentation.event_emitter.as_ref();
     let fail_fast_flag = cli.common_args.fail_fast;
 
