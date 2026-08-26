@@ -1,0 +1,7 @@
+kind: Features
+body: Emit OSC 8 terminal hyperlinks for file paths in compiler diagnostics so locations are cmd+clickable in Ghostty, iTerm2, WezTerm, and kitty
+time: 2026-08-26T11:13:00+05:30
+custom:
+    author: TensorDevLJ
+    issue: "14504"
+    project: dbt-core
