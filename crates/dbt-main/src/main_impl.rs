@@ -117,6 +117,9 @@ pub fn prepare_cli_or_exit(cli_parser: &CliParser) -> Box<Cli> {
 }
 
 pub fn run_cli(cli: Box<Cli>, arg: SystemArgs, feature_stack: Arc<FeatureStack>) -> ExitCode {
+    // Display of diagnostic locations does not know which stream it writes to.
+    // Enable OSC 8 only when stderr is a TTY so piped/CI output stays plain.
+    init_terminal_hyperlinks_from_stderr();
     ExitCode::from(run_cli_with_code(cli, arg, feature_stack))
 }
 
@@ -124,10 +127,6 @@ pub fn run_cli(cli: Box<Cli>, arg: SystemArgs, feature_stack: Arc<FeatureStack>)
 /// so embedders (e.g. the `dbt-core` Python extension's console entrypoint) can
 /// pass it to `std::process::exit`.
 pub fn run_cli_with_code(cli: Box<Cli>, arg: SystemArgs, feature_stack: Arc<FeatureStack>) -> u8 {
-    // Display of diagnostic locations does not know which stream it writes to.
-    // Enable OSC 8 only when stderr is a TTY so piped/CI output stays plain.
-    init_terminal_hyperlinks_from_stderr();
-
     let event_emitter = feature_stack.instrumentation.event_emitter.as_ref();
     let fail_fast_flag = cli.common_args.fail_fast;
 
