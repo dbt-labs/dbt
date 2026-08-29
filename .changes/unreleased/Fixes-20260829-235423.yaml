@@ -1,0 +1,7 @@
+kind: Fixes
+body: Seeds now resolve their data file from the package root, so DuckDB loads seeds from installed packages and BigQuery loads seeds when dbt runs outside the project root
+time: 2026-08-29T23:54:23.483438733+02:00
+custom:
+    author: fornwall
+    issue: "16127 16128"
+    project: dbt-core

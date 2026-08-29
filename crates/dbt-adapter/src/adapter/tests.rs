@@ -1,5 +1,5 @@
 use std::collections::BTreeMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use super::*;
 use crate::adapter::Adapter;
@@ -9,7 +9,9 @@ use crate::stmt_splitter::DefaultStmtSplitter;
 use dbt_adapter_core::AdapterType;
 
 use dbt_common::cancellation::never_cancels;
+use dbt_common::path::DbtPath;
 use dbt_schemas::schemas::relations::{DEFAULT_DBT_QUOTING, DEFAULT_RESOLVED_QUOTING};
+use dbt_schemas::schemas::{DbtSeed, InternalDbtNode};
 use indexmap::IndexMap;
 
 /// Helper to call [Adapter::call_method_impl] with jinja-valued arguments.
@@ -708,4 +710,23 @@ fn test_check_schema_exists_tolerates_none_database() {
         message.contains("template not found") || message.contains("check_schema_exists"),
         "expected a macro-lookup failure past arg parsing, got: {message}"
     );
+}
+
+#[test]
+fn test_get_seed_file_path_joins_the_package_root() {
+    let adapter = make_duckdb_parse_adapter();
+    let package_root = PathBuf::from("/workspace/dbt_packages/pkg");
+
+    let mut seed = DbtSeed::default();
+    seed.__common_attr__.path = DbtPath::from("seeds/countries.csv");
+    seed.__seed_attr__.root_path = Some(package_root.clone());
+
+    let model = Value::from_serialize(InternalDbtNode::serialize(&seed));
+    let result = dispatch_test(&adapter, "get_seed_file_path", &[model]).unwrap();
+
+    let expected = package_root
+        .join("seeds/countries.csv")
+        .display()
+        .to_string();
+    assert_eq!(result.as_str(), Some(expected.as_str()));
 }
