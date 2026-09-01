@@ -1,0 +1,7 @@
+kind: Features
+body: 'Announce dbt v2 availability as an INFO message on `dbt --version`, with a link
+    to the v2 install docs'
+time: 2026-08-31T06:47:00.000000-07:00
+custom:
+    Author: tauhid621
+    Issue: ""
