@@ -131,8 +131,11 @@ pub fn execute_query_with_retry(
             Ok(result) => return Ok(result),
             Err(err) => {
                 last_error = Some(err.clone());
-                thread::sleep(Duration::from_secs(1));
                 attempt += 1;
+                if attempt < retry_limit {
+                    // Only back off when another attempt will follow.
+                    thread::sleep(Duration::from_secs(1));
+                }
             }
         }
     }
