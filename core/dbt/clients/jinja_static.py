@@ -259,19 +259,39 @@ def statically_parse_unrendered_config(string: str) -> Optional[Dict[str, Any]]:
     return unrendered_config
 
 
-def construct_static_kwarg_value(kwarg) -> str:
+def _try_evaluate_to_python(node: Any) -> Any:
+    """Evaluate a Jinja2 AST node to a native Python value when possible.
+
+    Handles literal types (Const, List, Dict, Tuple, Neg) recursively.
+    Falls back to a string representation via ``_reconstruct_node`` for complex
+    nodes such as Call, Name, Getattr, etc.
+
+    The *node* parameter is typed as ``Any`` because jinja2 AST node classes
+    define their fields dynamically, which mypy cannot resolve.
+    """
+    if isinstance(node, jinja2.nodes.Const):
+        return node.value  # type: ignore[attr-defined]
+    if isinstance(node, jinja2.nodes.List):
+        return [_try_evaluate_to_python(item) for item in node.items]  # type: ignore[attr-defined]
+    if isinstance(node, jinja2.nodes.Dict):
+        return {
+            _try_evaluate_to_python(pair.key): _try_evaluate_to_python(pair.value)
+            for pair in node.items  # type: ignore[attr-defined]
+        }
+    if isinstance(node, jinja2.nodes.Tuple):
+        return tuple(_try_evaluate_to_python(item) for item in node.items)  # type: ignore[attr-defined]
+    if isinstance(node, jinja2.nodes.Neg):
+        inner = _try_evaluate_to_python(node.node)  # type: ignore[attr-defined]
+        if isinstance(inner, (int, float)):
+            return -inner
+        return _reconstruct_node(node)
+    return _reconstruct_node(node)
+
+
+def construct_static_kwarg_value(kwarg) -> Any:
     try:
-        # jinja2 nodes define fields dynamically; kw typed Any to avoid attr errors.
         kw: Any = kwarg
-        kw_val: Any = kw.value
-        # If the final value is a plain string constant, return it without quotes.
-        # Nested string args (e.g. inside env_var) keep their repr() quoting.
-        if isinstance(kw_val, jinja2.nodes.Const):
-            # Re-bind to Any after narrowing so .value access stays untyped.
-            const_val: Any = kw_val
-            if isinstance(const_val.value, str):
-                return const_val.value
-        return _reconstruct_node(kw_val)
+        return _try_evaluate_to_python(kw.value)
     except Exception:
         # Sensitive codepath — fall back to the original AST repr on any error
         return str(kwarg)
