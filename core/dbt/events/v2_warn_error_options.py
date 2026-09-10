@@ -3,9 +3,7 @@
 # and are NOT valid dbt-core event names.
 #
 # "UnsupportedFusionFeature" is vendored verbatim from the v2 engine and must
-# match it exactly; don't rename it until the engine does. "GenericDatafusionError"
-# and "LegacyDatafusion" are unrelated -- they reference the Apache DataFusion
-# library, not the Fusion engine brand.
+# match it exactly; don't rename it until the engine does.
 from typing import Set
 
 V2_WARN_ERROR_OPTION_NAMES: Set[str] = set(
