@@ -351,7 +351,7 @@ class PrivatePackageHelper:
 
 def _get_ssh_fallback_url(private_def: str, provider: Optional[str]) -> str:
     """SSH URL fallback when DBT_ENV_PRIVATE_GIT_PROVIDER_INFO is unset/empty.
-    Matches the behavior of Fusion's get_local_resolved_url()."""
+    Matches the behavior of the v2 engine's get_local_resolved_url()."""
     resolved_provider = provider or "github"
     if resolved_provider == "github":
         return f"git@github.com:{private_def}.git"

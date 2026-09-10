@@ -481,9 +481,9 @@ def setup_manifest(ctx: Context, write: bool = True, write_perf_info: bool = Fal
     # if a manifest has already been set on the context, don't overwrite it
     if ctx.obj.get("manifest") is None:
         if getattr(flags, "USE_V2_PARSER", False):
-            from dbt.parser.fusion import parse_with_fusion
+            from dbt.parser.v2 import parse_with_v2
 
-            ctx.obj["manifest"] = parse_with_fusion(
+            ctx.obj["manifest"] = parse_with_v2(
                 runtime_config, write, ctx.obj["flags"].write_json
             )
             _wire_adapter_for_external_manifest(
@@ -508,7 +508,7 @@ def setup_manifest(ctx: Context, write: bool = True, write_perf_info: bool = Fal
 def _wire_adapter_for_external_manifest(runtime_config, manifest, active_integrations):
     """Register and configure the adapter for a manifest that was produced
     outside of parse_manifest() — e.g. pre-set on the context, or loaded
-    from the fusion parser.
+    from the v2 parser.
     """
     register_adapter(runtime_config, get_mp_context())
     adapter = get_adapter(runtime_config)

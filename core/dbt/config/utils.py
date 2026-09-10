@@ -84,35 +84,35 @@ def partition_warn_error_options(
     warn_error_options: Dict[str, Any], valid_error_names: Set[str]
 ) -> Tuple[Set[str], Dict[str, Any]]:
 
-    fusion_only_vocab = FUSION_WARN_ERROR_OPTION_NAMES - valid_error_names
+    v2_only_vocab = FUSION_WARN_ERROR_OPTION_NAMES - valid_error_names
 
-    def is_fusion_only(name: Any) -> bool:
-        return isinstance(name, str) and name in fusion_only_vocab
+    def is_v2_only(name: Any) -> bool:
+        return isinstance(name, str) and name in v2_only_vocab
 
-    fusion_only_names: Set[str] = set()
-    core_fusion_warn_error_options = dict(warn_error_options)
+    v2_only_names: Set[str] = set()
+    core_v2_warn_error_options = dict(warn_error_options)
     for key in ("error", "warn", "silence"):
         names = warn_error_options.get(key)
         if isinstance(names, list):
-            fusion_only_names.update(filter(is_fusion_only, names))
-            core_fusion_warn_error_options[key] = [n for n in names if not is_fusion_only(n)]
-    return fusion_only_names, core_fusion_warn_error_options
+            v2_only_names.update(filter(is_v2_only, names))
+            core_v2_warn_error_options[key] = [n for n in names if not is_v2_only(n)]
+    return v2_only_names, core_v2_warn_error_options
 
 
 def build_warn_error_options_v2(
     warn_error_options: Dict[str, Any], valid_error_names: Set[str]
 ) -> WarnErrorOptionsV2:
-    fusion_only_names, core_fusion_warn_error_options = partition_warn_error_options(
+    v2_only_names, core_v2_warn_error_options = partition_warn_error_options(
         warn_error_options, valid_error_names
     )
-    for name in sorted(fusion_only_names):
+    for name in sorted(v2_only_names):
         fire_event(
-            Note(msg=f"{name} is not being used because it's specific to the dbt Fusion engine.")
+            Note(msg=f"{name} is not being used because it's specific to the dbt v2 engine.")
         )
 
     return WarnErrorOptionsV2(
-        error=core_fusion_warn_error_options.get("error", []),
-        warn=core_fusion_warn_error_options.get("warn", []),
-        silence=core_fusion_warn_error_options.get("silence", []),
+        error=core_v2_warn_error_options.get("error", []),
+        warn=core_v2_warn_error_options.get("warn", []),
+        silence=core_v2_warn_error_options.get("silence", []),
         valid_error_names=valid_error_names,
     )

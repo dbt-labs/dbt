@@ -155,7 +155,7 @@ def get_manifest(project_root) -> Optional[Manifest]:
             manifest_mp = fp.read()
         manifest: Manifest = Manifest.from_msgpack(manifest_mp)  # type: ignore[attr-defined]
         return manifest
-    # Fusion parse (parse_with_fusion) deletes partial_parse.msgpack and only
+    # v2 parse (parse_with_v2) deletes partial_parse.msgpack and only
     # writes manifest.json. Fall back so tests under both flows work.
     json_path = os.path.join(project_root, "target", "manifest.json")
     if os.path.exists(json_path):
