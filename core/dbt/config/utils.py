@@ -2,8 +2,8 @@ from typing import Any, Dict, Optional, Set, Tuple
 
 from dbt import deprecations
 from dbt.clients import yaml_helper
-from dbt.events.v2_warn_error_options import V2_WARN_ERROR_OPTION_NAMES
 from dbt.events.types import InvalidOptionYAML
+from dbt.events.v2_warn_error_options import V2_WARN_ERROR_OPTION_NAMES
 from dbt.exceptions import DbtExclusivePropertyUseError, OptionNotYamlDictError
 from dbt_common.events.functions import fire_event
 from dbt_common.events.types import Note

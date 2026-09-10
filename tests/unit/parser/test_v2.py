@@ -8,11 +8,7 @@ from unittest import mock
 import pytest
 
 from dbt.events.types import V2ParserEnd, V2ParserStart
-from dbt.exceptions import (
-    V2ParserError,
-    V2ParserSchemaError,
-    V2ParserVersionError,
-)
+from dbt.exceptions import V2ParserError, V2ParserSchemaError, V2ParserVersionError
 from dbt.parser.v2 import (
     _build_argv,
     _delete_stale_partial_parse,
@@ -426,9 +422,7 @@ class TestParseWithV2:
         bad_version = json.dumps(
             {"metadata": {"dbt_schema_version": "https://schemas.getdbt.com/dbt/manifest/v1.json"}}
         )
-        with mock.patch(
-            "dbt.parser.v2.subprocess.Popen", side_effect=_fake_parser(bad_version)
-        ):
+        with mock.patch("dbt.parser.v2.subprocess.Popen", side_effect=_fake_parser(bad_version)):
             with pytest.raises(V2ParserVersionError):
                 parse_with_v2(self._runtime_config(tmp_path), write=True, write_json=True)
 

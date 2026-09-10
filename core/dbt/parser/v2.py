@@ -28,11 +28,7 @@ from dbt.artifacts.schemas.manifest import WritableManifest
 from dbt.contracts.files import ParseFileType
 from dbt.contracts.graph.manifest import Manifest
 from dbt.events.types import V2ParserEnd, V2ParserStart
-from dbt.exceptions import (
-    V2ParserError,
-    V2ParserSchemaError,
-    V2ParserVersionError,
-)
+from dbt.exceptions import V2ParserError, V2ParserSchemaError, V2ParserVersionError
 from dbt.flags import get_flags
 from dbt_common.events.base_types import EventLevel
 from dbt_common.events.functions import fire_event, get_invocation_id
@@ -450,9 +446,7 @@ def _load_writable_manifest(path: Path) -> WritableManifest:
             f"version: expected {e.expected}, found {e.found}."
         ) from e
     except Exception as e:
-        raise V2ParserSchemaError(
-            f"Could not load v2-produced manifest at {path}: {e}"
-        ) from e
+        raise V2ParserSchemaError(f"Could not load v2-produced manifest at {path}: {e}") from e
 
 
 def _serialize_vars(cli_vars) -> str:
