@@ -2,12 +2,10 @@
 # v2 engine (v2-native error codes plus v2-only grouping keywords)
 # and are NOT valid dbt-core event names.
 #
-# The entry "UnsupportedFusionFeature" is vendored verbatim from the v2
-# engine's own error/warning code name and must match it exactly. Don't
-# rename it just because it still says "Fusion" -- update it only if/when
-# the v2 engine itself renames the underlying code. ("GenericDatafusionError"
-# and "LegacyDatafusion" elsewhere in this set are unrelated: they reference
-# the Apache DataFusion library, not the Fusion engine brand.)
+# "UnsupportedFusionFeature" is vendored verbatim from the v2 engine and must
+# match it exactly; don't rename it until the engine does. "GenericDatafusionError"
+# and "LegacyDatafusion" are unrelated -- they reference the Apache DataFusion
+# library, not the Fusion engine brand.
 from typing import Set
 
 V2_WARN_ERROR_OPTION_NAMES: Set[str] = set(
