@@ -2,7 +2,7 @@ from typing import Any, Dict, Optional, Set, Tuple
 
 from dbt import deprecations
 from dbt.clients import yaml_helper
-from dbt.events.fusion_warn_error_options import FUSION_WARN_ERROR_OPTION_NAMES
+from dbt.events.v2_warn_error_options import V2_WARN_ERROR_OPTION_NAMES
 from dbt.events.types import InvalidOptionYAML
 from dbt.exceptions import DbtExclusivePropertyUseError, OptionNotYamlDictError
 from dbt_common.events.functions import fire_event
@@ -84,10 +84,7 @@ def partition_warn_error_options(
     warn_error_options: Dict[str, Any], valid_error_names: Set[str]
 ) -> Tuple[Set[str], Dict[str, Any]]:
 
-    # FUSION_WARN_ERROR_OPTION_NAMES mirrors the v2 engine's own vocabulary and is
-    # intentionally left with its original name until the engine itself renames it;
-    # everything derived from it below is dbt-core's own "v2" wrapper naming.
-    v2_only_vocab = FUSION_WARN_ERROR_OPTION_NAMES - valid_error_names
+    v2_only_vocab = V2_WARN_ERROR_OPTION_NAMES - valid_error_names
 
     def is_v2_only(name: Any) -> bool:
         return isinstance(name, str) and name in v2_only_vocab

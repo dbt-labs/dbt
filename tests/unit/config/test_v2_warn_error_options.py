@@ -7,7 +7,7 @@ from dbt.cli.flags import convert_config
 from dbt.cli.option_types import WarnErrorOptionsType
 from dbt.config.utils import build_warn_error_options_v2, partition_warn_error_options
 from dbt.events import ALL_EVENT_NAMES
-from dbt.events.fusion_warn_error_options import FUSION_WARN_ERROR_OPTION_NAMES
+from dbt.events.v2_warn_error_options import V2_WARN_ERROR_OPTION_NAMES
 from dbt_common.dataclass_schema import ValidationError
 from dbt_common.events.event_catcher import EventCatcher
 from dbt_common.events.event_manager_client import add_callback_to_manager
@@ -124,11 +124,11 @@ class TestConvertConfigTolerance:
 
 
 class TestVendoredV2Names:
-    """Invariants of the vendored v2 engine name set in fusion_warn_error_options.py."""
+    """Invariants of the vendored v2 engine name set in v2_warn_error_options.py."""
 
     def test_sanity_contents(self) -> None:
         # v2-only groups present; the set is disjoint from dbt-core's events,
         # so a name shared with dbt-core (handled as a core event) is absent.
-        assert {"StaticAnalysis", "PackageParsingCompatibility"} <= FUSION_WARN_ERROR_OPTION_NAMES
-        assert SHARED_NAME not in FUSION_WARN_ERROR_OPTION_NAMES
-        assert not (FUSION_WARN_ERROR_OPTION_NAMES & ALL_EVENT_NAMES)
+        assert {"StaticAnalysis", "PackageParsingCompatibility"} <= V2_WARN_ERROR_OPTION_NAMES
+        assert SHARED_NAME not in V2_WARN_ERROR_OPTION_NAMES
+        assert not (V2_WARN_ERROR_OPTION_NAMES & ALL_EVENT_NAMES)

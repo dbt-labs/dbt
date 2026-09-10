@@ -1,9 +1,9 @@
 # It is the set of ``warn_error_options`` names that are specific to the dbt
-# Fusion engine (Fusion-native error codes plus Fusion-only grouping keywords)
+# v2 engine (v2-native error codes plus v2-only grouping keywords)
 # and are NOT valid dbt-core event names.
 from typing import Set
 
-FUSION_WARN_ERROR_OPTION_NAMES: Set[str] = set(
+V2_WARN_ERROR_OPTION_NAMES: Set[str] = set(
     (
         "ASTSizeLimitExceeded",
         "AccessDenied",
