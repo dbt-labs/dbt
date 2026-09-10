@@ -1,0 +1,7 @@
+kind: Features
+body: '[Athena] Add the `athena` profile type: `AthenaDbConfig` mirrors dbt-athena''s `AthenaCredentials`, so Athena profiles parse, expose `target`, and resolve through the experimental-adapter gate and `AthenaAuth`; `parse`/`ls` report the missing `dbt-athena` macro package instead of panicking'
+time: 2026-09-10T09:48:50.106146+02:00
+custom:
+    author: fpiped
+    issue: "16252"
+    project: dbt-core
