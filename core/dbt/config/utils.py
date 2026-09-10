@@ -84,6 +84,9 @@ def partition_warn_error_options(
     warn_error_options: Dict[str, Any], valid_error_names: Set[str]
 ) -> Tuple[Set[str], Dict[str, Any]]:
 
+    # FUSION_WARN_ERROR_OPTION_NAMES mirrors the v2 engine's own vocabulary and is
+    # intentionally left with its original name until the engine itself renames it;
+    # everything derived from it below is dbt-core's own "v2" wrapper naming.
     v2_only_vocab = FUSION_WARN_ERROR_OPTION_NAMES - valid_error_names
 
     def is_v2_only(name: Any) -> bool:

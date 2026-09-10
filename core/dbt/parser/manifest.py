@@ -2580,7 +2580,7 @@ def process_node(config: RuntimeConfig, manifest: Manifest, node: ManifestNode):
 # (DBT_CLOUD_AUTO_EXPOSURES_FILE_PATH, DBT_CLOUD_PUBLICATIONS_DIR, ...) and
 # produces the same downstream nodes/artifacts, so skipping the Python hook
 # is safe — running it would double-inject.
-FUSION_PARITY_GET_NODES_PLUGINS = {
+V2_PARITY_GET_NODES_PLUGINS = {
     "dbtCloudAutoExposures",
     "dbtCloudCrossProjectRef",
 }
@@ -2593,7 +2593,7 @@ def assert_no_get_nodes_plugins(project_name: str) -> None:
     get_nodes plugins inject manifest nodes mid-parse; v2 mode skips
     dbt-core's parse entirely, so those nodes never make it into the
     runtime manifest and downstream compile/run would silently miss them.
-    Plugins listed in FUSION_PARITY_GET_NODES_PLUGINS are exempt because
+    Plugins listed in V2_PARITY_GET_NODES_PLUGINS are exempt because
     the v2 parser implements the same contribution natively.
     """
     pm = plugins.get_plugin_manager(project_name)
@@ -2602,7 +2602,7 @@ def assert_no_get_nodes_plugins(project_name: str) -> None:
         {
             h.__self__.name  # type: ignore[attr-defined]
             for h in get_nodes_hooks
-            if h.__self__.name not in FUSION_PARITY_GET_NODES_PLUGINS  # type: ignore[attr-defined]
+            if h.__self__.name not in V2_PARITY_GET_NODES_PLUGINS  # type: ignore[attr-defined]
         }
     )
     if offenders:

@@ -123,7 +123,7 @@ class TestConvertConfigTolerance:
             convert_config("warn_error_options", {"error": ["TotallyBogus"]})
 
 
-class TestVendoredFusionNames:
+class TestVendoredV2Names:
     """Invariants of the vendored v2 engine name set in fusion_warn_error_options.py."""
 
     def test_sanity_contents(self) -> None:
