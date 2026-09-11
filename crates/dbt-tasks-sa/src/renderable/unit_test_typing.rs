@@ -125,14 +125,6 @@ impl BigqueryTyping {
     pub fn numeric() -> DataType {
         DataType::Decimal128(38, 9)
     }
-
-    pub fn is_geography(data_type: &DataType) -> bool {
-        matches!(data_type, DataType::FixedSizeList(field, 1) if field.name() == "geography")
-    }
-
-    pub fn is_json(data_type: &DataType) -> bool {
-        matches!(data_type, DataType::FixedSizeList(field, 1) if field.name() == "json")
-    }
 }
 
 // --- SnowflakeTyping ---
