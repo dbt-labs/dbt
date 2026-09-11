@@ -1,0 +1,7 @@
+kind: Fixes
+body: '[BigQuery] Preserve decimal types in unit test fixtures and correctly type struct array elements and nested empty arrays'
+time: 2026-09-25T00:39:27.757713295+02:00
+custom:
+    author: fornwall
+    issue: "16440"
+    project: dbt-core
