@@ -682,7 +682,12 @@ class StateSelectorMethod(SelectorMethod):
 
             # this macro hasn't been modified, but depends on other
             # macros which each need to be tested for modification
-            macro_node = self.manifest.macros[macro_uid]
+            macro_node = self.manifest.macros.get(macro_uid)
+            if macro_node is None:
+                # The macro isn't in the manifest (e.g. a parser that doesn't emit some
+                # adapter-dispatched macros) but it's also not in `modified_macros`, so
+                # there's nothing to flag as changed. Skip it rather than raising.
+                continue
             if len(macro_node.depends_on.macros) > 0:
                 upstream_macros_changed = self.recursively_check_macros_modified(
                     macro_node, visited_macros
