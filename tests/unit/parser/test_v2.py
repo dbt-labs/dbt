@@ -31,9 +31,39 @@ def _flags(**overrides):
         "PACKAGES_INSTALL_PATH": None,
         "VARS": None,
         "WRITE_JSON": True,
+        "USE_COLORS": False,
     }
     base.update(overrides)
     return SimpleNamespace(**base)
+
+
+def _log_record(
+    event_type: str, body: str = "", attributes: Optional[dict] = None, severity_number: int = 9
+) -> str:
+    """Build a `--log-format otel` LogRecord line, as consumed by _run_v2."""
+    return json.dumps(
+        {
+            "record_type": "LogRecord",
+            "event_type": event_type,
+            "body": body,
+            "attributes": attributes or {},
+            "severity_number": severity_number,
+        }
+    )
+
+
+def _span(
+    record_type: str = "SpanStart", event_type: str = "v1.public.events.fusion.process.Process"
+) -> str:
+    """Build a `--log-format otel` SpanStart/SpanEnd line."""
+    return json.dumps(
+        {
+            "record_type": record_type,
+            "event_type": event_type,
+            "attributes": {},
+            "severity_number": 9,
+        }
+    )
 
 
 class _FakeStream:
@@ -115,7 +145,9 @@ class TestBuildArgv:
             "dbt-core-experimental-parser",
             "parse",
             "--log-format",
-            "json",
+            "otel",
+            "--log-level-file",
+            "off",
         ]
 
     def test_forwards_all_known_flags(self):
@@ -144,13 +176,22 @@ class TestBuildArgv:
         i = argv.index("--vars")
         assert "k" in argv[i + 1] and "v" in argv[i + 1]
 
-    def test_forwards_log_format_json(self):
-        """--log-format json is always forwarded (not user-configurable) so
-        _run_v2 can parse each line's real severity instead of using a
-        single hardcoded level per stream."""
+    def test_forwards_log_format_otel(self):
+        """--log-format otel is always forwarded (not user-configurable) so
+        _run_v2 can parse each line's real severity and structure instead of
+        using a single hardcoded level per stream."""
         argv = _build_argv(_flags())
         i = argv.index("--log-format")
-        assert argv[i + 1] == "json"
+        assert argv[i + 1] == "otel"
+
+    def test_forwards_log_level_file_off(self):
+        """The subprocess must not write its own dbt.log. Its file log defaults
+        to {--project-dir}/logs/dbt.log, the same path dbt-core writes to when
+        --log-path isn't redirected, so leaving it on would have both processes
+        appending the same relayed events to one file."""
+        argv = _build_argv(_flags(PROJECT_DIR="/proj"))
+        i = argv.index("--log-level-file")
+        assert argv[i + 1] == "off"
 
     def test_custom_command_split_with_shlex(self):
         argv = _build_argv(_flags(V2_PARSER="uv run dbt-core-experimental-parser parse"))
@@ -160,7 +201,9 @@ class TestBuildArgv:
             "dbt-core-experimental-parser",
             "parse",
             "--log-format",
-            "json",
+            "otel",
+            "--log-level-file",
+            "off",
         ]
 
     def test_expands_tilde_in_v2_parser_path(self):
@@ -168,7 +211,14 @@ class TestBuildArgv:
         # pointing --v2-parser at a binary under their home directory.
         home = os.path.expanduser("~")
         argv = _build_argv(_flags(V2_PARSER="~/bin/my-parser parse"))
-        assert argv == [f"{home}/bin/my-parser", "parse", "--log-format", "json"]
+        assert argv == [
+            f"{home}/bin/my-parser",
+            "parse",
+            "--log-format",
+            "otel",
+            "--log-level-file",
+            "off",
+        ]
 
     def test_target_path_override_replaces_user_value(self):
         argv = _build_argv(_flags(TARGET_PATH="user/target"), target_path_override="/tmp/handoff")
@@ -225,6 +275,14 @@ def _patch_v2_deps():
 
 
 class TestParseWithV2:
+    @pytest.fixture(autouse=True)
+    def _no_color(self):
+        # _style_severity relies on ui.USE_COLOR already being synced from
+        # --use-colors (done in cli/flags.py); fix it here rather than going
+        # through get_flags(), since _pump no longer forces/restores it.
+        with mock.patch("dbt_common.ui.USE_COLOR", False):
+            yield
+
     def _runtime_config(self, target_path: Path):
         return SimpleNamespace(project_target_path=str(target_path), project_name="test")
 
@@ -338,58 +396,160 @@ class TestParseWithV2:
 
         return [(e.msg, lvl) for e, lvl in zip(events, levels) if isinstance(e, Note)]
 
-    def test_output_lines_reemitted_as_note_events(self, tmp_path: Path, _patch_v2_deps):
-        """Non-JSON stdout/stderr lines must still be re-emitted through
-        dbt-core's event system (as Note events) at the stream's fallback
-        level, so they reach any consumer of that stream (e.g. dbt Studio),
-        not just a raw inherited terminal fd. This is the json-compat
-        fallback path: plain-text lines (e.g. pre-JSON-logger clap/panic
-        output) aren't dropped just because they aren't valid JSON."""
+    def test_spans_are_dropped(self, tmp_path: Path, _patch_v2_deps):
+        """SpanStart/SpanEnd carry no body and are what json-compat's
+        denylist used to chase (version banner, ArtifactWritten, per-node
+        start/finish). Dropping the whole record_type eliminates them
+        structurally: no Note event should fire for either."""
+        notes = self._run_and_capture_notes(
+            tmp_path,
+            stdout_lines=[_span("SpanStart"), _span("SpanEnd")],
+        )
+        assert notes == []
+
+    def test_allowlisted_event_types_relay_body(self, tmp_path: Path, _patch_v2_deps):
+        for event_type in [
+            "v1.public.events.fusion.log.LogMessage",
+            "v1.public.events.fusion.log.UserLogMessage",
+            "v1.internal.events.fusion.log.StdoutMessage",
+            "v1.internal.events.fusion.log.StderrMessage",
+        ]:
+            notes = self._run_and_capture_notes(
+                tmp_path, stdout_lines=[_log_record(event_type, body="hello")]
+            )
+            relayed = [msg for msg, _ in notes]
+            assert any("hello" in msg for msg in relayed), event_type
+
+    def test_non_allowlisted_log_record_is_dropped(self, tmp_path: Path, _patch_v2_deps):
+        """Attribute-payload LogRecords (e.g. CloudInvocation) carry body: ""
+        and aren't in the relay allowlist -- they must produce no event,
+        not an empty-message Note."""
+        notes = self._run_and_capture_notes(
+            tmp_path,
+            stdout_lines=[_log_record("v1.events.fusion.invocation.CloudInvocation", body="")],
+        )
+        assert notes == []
+
+    def test_progress_message_renders_action_and_target(self, tmp_path: Path, _patch_v2_deps):
+        line = _log_record(
+            "v1.public.events.fusion.log.ProgressMessage",
+            attributes={"action": "Parsing", "target": "models/model.sql"},
+        )
+        notes = self._run_and_capture_notes(tmp_path, stdout_lines=[line])
+        assert ("   Parsing models/model.sql", EventLevel.INFO) in notes
+
+    def test_progress_message_renders_description(self, tmp_path: Path, _patch_v2_deps):
+        line = _log_record(
+            "v1.public.events.fusion.log.ProgressMessage",
+            attributes={
+                "action": "Loading",
+                "target": "profiles.yml",
+                "description": "from ~/.dbt",
+            },
+        )
+        notes = self._run_and_capture_notes(tmp_path, stdout_lines=[line])
+        assert ("   Loading profiles.yml (from ~/.dbt)", EventLevel.INFO) in notes
+
+    @pytest.mark.parametrize(
+        "severity_number, expected_level",
+        [
+            (1, EventLevel.DEBUG),  # OTLP TRACE; no EventLevel.TRACE, floors to DEBUG
+            (5, EventLevel.DEBUG),
+            (9, EventLevel.INFO),
+            (13, EventLevel.WARN),
+            (17, EventLevel.ERROR),
+            (10, EventLevel.INFO),  # intermediate value floors to the 9 band
+        ],
+    )
+    def test_severity_number_mapped_to_level(
+        self, tmp_path: Path, _patch_v2_deps, severity_number, expected_level
+    ):
+        line = _log_record(
+            "v1.public.events.fusion.log.UserLogMessage",
+            body="boom",
+            severity_number=severity_number,
+        )
+        notes = self._run_and_capture_notes(tmp_path, stdout_lines=[line])
+        assert any(msg.endswith("boom") and lvl == expected_level for msg, lvl in notes)
+
+    def test_non_json_line_falls_back_to_info(self, tmp_path: Path, _patch_v2_deps):
+        """Unparseable lines (pre-logger-init clap output, panics,
+        tracebacks) are relayed at INFO rather than promoted to the old
+        stderr->WARN fallback: WARN is promotable to a raised
+        EventCompilationError under --warn-error, so a stray fusion stderr
+        line could otherwise abort an unrelated run. This is the regression
+        test for that latent bug."""
         notes = self._run_and_capture_notes(
             tmp_path,
             stdout_lines=["compiling model foo"],
-            stderr_lines=["warning: deprecated config"],
+            stderr_lines=["thread panicked at src/main.rs:1"],
         )
         assert ("compiling model foo", EventLevel.INFO) in notes
-        assert ("warning: deprecated config", EventLevel.WARN) in notes
+        assert ("thread panicked at src/main.rs:1", EventLevel.INFO) in notes
 
-    @pytest.mark.parametrize(
-        "v2_level, expected_level",
-        [
-            ("error", EventLevel.ERROR),
-            ("warn", EventLevel.WARN),
-            ("info", EventLevel.INFO),
-            ("debug", EventLevel.DEBUG),
-        ],
-    )
-    def test_json_line_reemitted_with_mapped_level(
-        self, tmp_path: Path, _patch_v2_deps, v2_level, expected_level
+    def test_unrecognized_json_envelope_falls_back_to_info(self, tmp_path: Path, _patch_v2_deps):
+        """Valid JSON that isn't a LogRecord/SpanStart/SpanEnd envelope (a
+        contract change, not a parse error) is relayed like a non-JSON line
+        rather than silently dropped."""
+        line = json.dumps({"unexpected": "shape"})
+        notes = self._run_and_capture_notes(tmp_path, stderr_lines=[line])
+        assert (line, EventLevel.INFO) in notes
+
+    def test_log_message_code_prefix_composed_from_attributes(
+        self, tmp_path: Path, _patch_v2_deps
     ):
-        """A json-compat line's own info.level must override the stream's
-        fallback level (e.g. an "error" on stdout is still fired as ERROR,
-        not silently downgraded to stdout's INFO fallback)."""
-        line = json.dumps({"info": {"level": v2_level, "msg": "boom"}})
+        """otel's body never carries the code (unlike json-compat) -- fusion
+        adds it in its own renderer, not in the message text -- so v1 must
+        compose it back from LogMessage's code/code_name attributes."""
+        line = _log_record(
+            "v1.public.events.fusion.log.LogMessage",
+            body="count and period are required when freshness is provided",
+            attributes={"code": 1007, "code_name": "InvalidArgument"},
+        )
         notes = self._run_and_capture_notes(tmp_path, stdout_lines=[line])
-        assert ("boom", expected_level) in notes
+        assert (
+            "[InvalidArgument (dbt1007)]: count and period are required "
+            "when freshness is provided",
+            EventLevel.INFO,
+        ) in notes
 
-    def test_json_line_unknown_level_falls_back(self, tmp_path: Path, _patch_v2_deps):
-        """An info.level string outside the known vocabulary must not raise —
-        json-compat isn't a stable contract, so an unrecognized level falls
-        back to the stream's default rather than crashing the parse."""
-        line = json.dumps({"info": {"level": "trace", "msg": "boom"}})
+    def test_log_message_code_prefix_without_code_name(self, tmp_path: Path, _patch_v2_deps):
+        line = _log_record(
+            "v1.public.events.fusion.log.LogMessage",
+            body="boom",
+            attributes={"code": 42},
+        )
+        notes = self._run_and_capture_notes(tmp_path, stdout_lines=[line])
+        assert ("dbt0042: boom", EventLevel.INFO) in notes
+
+    def test_log_message_without_code_relays_body_unprefixed(self, tmp_path: Path, _patch_v2_deps):
+        line = _log_record("v1.public.events.fusion.log.LogMessage", body="boom")
         notes = self._run_and_capture_notes(tmp_path, stdout_lines=[line])
         assert ("boom", EventLevel.INFO) in notes
 
-    def test_non_json_line_falls_back_to_raw_note(self, tmp_path: Path, _patch_v2_deps):
-        notes = self._run_and_capture_notes(tmp_path, stdout_lines=["not json at all"])
-        assert ("not json at all", EventLevel.INFO) in notes
+    def test_log_message_non_int_code_falls_back_to_unprefixed_body(
+        self, tmp_path: Path, _patch_v2_deps
+    ):
+        """code is a proto u32 on the wire and should always parse, but a
+        malformed value must fall back to the bare body rather than raising
+        out of the daemon pump thread, which would silently kill the relay
+        for the rest of the run."""
+        line = _log_record(
+            "v1.public.events.fusion.log.LogMessage",
+            body="boom",
+            attributes={"code": "not-a-number", "code_name": "InvalidArgument"},
+        )
+        notes = self._run_and_capture_notes(tmp_path, stdout_lines=[line])
+        assert ("boom", EventLevel.INFO) in notes
 
-    def test_json_line_missing_info_or_msg_falls_back(self, tmp_path: Path, _patch_v2_deps):
-        """json-compat isn't a guaranteed contract; a schema change that drops
-        or renames fields must degrade to the raw line rather than crash."""
-        line = json.dumps({"unexpected": "shape"})
-        notes = self._run_and_capture_notes(tmp_path, stderr_lines=[line])
-        assert (line, EventLevel.WARN) in notes
+    def test_warn_level_styled_with_warning_tag(self, tmp_path: Path, _patch_v2_deps):
+        line = _log_record(
+            "v1.public.events.fusion.log.UserLogMessage",
+            body="deprecated config",
+            severity_number=13,
+        )
+        notes = self._run_and_capture_notes(tmp_path, stdout_lines=[line])
+        assert ("[WARNING]: deprecated config", EventLevel.WARN) in notes
 
     def test_missing_manifest_after_success_raises(self, tmp_path: Path, _patch_v2_deps):
         """Parser exits 0 but writes nothing — must raise, not silently load a stale file."""
