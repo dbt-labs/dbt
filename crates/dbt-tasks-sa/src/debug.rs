@@ -10,7 +10,10 @@ use dbt_common::io_args::{EvalArgs, LocalExecutionBackendKind, ReplayMode};
 use dbt_common::tracing::dbt_emit::emit_info_progress_message;
 use dbt_common::{ErrorCode, FsResult, fs_err};
 use dbt_compilation::core::DbtLoadedProject;
+use dbt_schemas::dbt_utils::resolve_package_quoting;
+use dbt_schemas::schemas::common::ResolvedQuoting;
 use dbt_schemas::schemas::profiles::{DbConfig, Execute};
+use dbt_schemas::schemas::relations::default_resolved_quoting_for;
 use dbt_tasks_core::lake_compute_catalog_attach::{
     LakeComputeCatalogAttachChecker, LakeComputeCatalogAttachOutcome, PatHygieneReport,
 };
@@ -280,12 +283,29 @@ pub async fn debug(
             // guard `send_vortex_telemetry_if_possible` uses on this path.
             let project_name = (!dbt_state.packages.is_empty())
                 .then(|| loaded_project.root_project_name().to_string());
-            let linked_database = dbt_state
-                .catalogs
-                .as_ref()
-                .and_then(|catalogs| catalogs.iceberg_rest_catalog_databases().ok())
-                .and_then(|dbs| dbs.into_iter().next())
-                .map(|(_, db)| db);
+            // The propagation probe below builds its own throwaway catalog
+            // bundle, so it doesn't need a catalog-linked database declared
+            // in `catalogs.yml` -- any Snowflake database the lake compute
+            // target can write to and the native connection can read from
+            // works. Reuse the namespace already resolved for the MDLS
+            // probe above instead of gating on a declared CLD.
+            let propagation_database = mdls_database.clone();
+            // Same quoting a real lake compute model gets absent a node-level
+            // `+quoting` override: the root project's `quoting:` config
+            // filled in with lake compute's adapter defaults (see
+            // `resolver.rs`'s `root_project_quoting`). Packages can be empty
+            // this early (see `project_name` above), in which case there is
+            // no project override to read and the adapter default applies
+            // as-is.
+            let propagation_quoting = if dbt_state.packages.is_empty() {
+                default_resolved_quoting_for(AdapterType::LakeCompute)
+            } else {
+                ResolvedQuoting::try_from(resolve_package_quoting(
+                    *dbt_state.root_project().quoting,
+                    AdapterType::LakeCompute,
+                ))
+                .unwrap_or_else(|_| default_resolved_quoting_for(AdapterType::LakeCompute))
+            };
 
             let catalog_attach_checker = arg.lake_compute_catalog_attach_checker.clone();
             let mdls_checker = arg.mdls_checker.clone();
@@ -321,7 +341,8 @@ pub async fn debug(
                         mdls_schema,
                         project_name,
                         invocation_id,
-                        linked_database,
+                        propagation_database,
+                        propagation_quoting,
                         reply.as_ref(),
                         worker_token,
                     )
@@ -469,8 +490,8 @@ async fn debug_adapter_connection(
 }
 
 /// Runs the Lake Compute checks that are specific to lake compute: declared-catalog
-/// attach, MDLS write/read-back, and (if a checker is registered and the project
-/// declares a catalog-linked database) native-connection propagation.
+/// attach, MDLS write/read-back, and (if a checker is registered)
+/// native-connection propagation.
 ///
 /// Connecting to `lake_compute` is not one of them -- that is a plain connection test, and
 /// the per-adapter loop in [`debug`] runs it for every declared adapter.
@@ -485,7 +506,8 @@ fn debug_lake_compute(
     mdls_schema: String,
     project_name: Option<String>,
     invocation_id: String,
-    linked_database: Option<String>,
+    propagation_database: String,
+    propagation_quoting: ResolvedQuoting,
     replay: Option<&ReplayMode>,
     token: CancellationToken,
 ) -> FsResult<()> {
@@ -564,22 +586,18 @@ fn debug_lake_compute(
         }
     }
 
-    // 3. Snowflake propagation / catalog-linking: only if the project
-    // declares a catalog-linked database, and a checker is registered.
-    match (&linked_database, &propagation_checker) {
-        (None, _) => {
-            emit_info_progress_message(create_progress_msg(
-                ACTION_SKIPPED,
-                "Snowflake propagation test (no catalog-linked database configured)",
-            ));
-        }
-        (Some(_), None) => {
+    // 3. Snowflake propagation: runs whenever a checker is registered. It
+    // does not require a catalog-linked database declared in
+    // `catalogs.yml` -- the checker builds its own throwaway catalog bundle
+    // for the probe write.
+    match &propagation_checker {
+        None => {
             emit_info_progress_message(create_progress_msg(
                 ACTION_SKIPPED,
                 "Snowflake propagation test (unavailable in this build)",
             ));
         }
-        (Some(linked_database), Some(checker)) => {
+        Some(checker) => {
             emit_info_progress_message(create_progress_msg(
                 ACTION_DEBUGGING,
                 "Snowflake propagation test (this mints a short-lived credential and waits \
@@ -590,7 +608,9 @@ fn debug_lake_compute(
             let outcome = checker.check_lake_compute_propagation(
                 &native_db_config,
                 &lake_compute_db_config,
-                linked_database,
+                &propagation_database,
+                &mdls_schema,
+                propagation_quoting,
                 replay,
                 token,
             )?;
