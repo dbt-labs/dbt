@@ -1384,9 +1384,15 @@ impl AdapterImpl {
             }
             Impl(adapter_type, engine) if engine.is_sidecar() => {
                 let client = engine.sidecar_client().unwrap();
+                let query_database = database.to_string();
                 let query_schema = schema.to_string();
                 let query_identifier = identifier.to_string();
-                let relation_type = client.get_relation_type(&query_schema, &query_identifier)?;
+                let relation_type = client.get_relation_type(
+                    &engine.quoting(),
+                    &query_database,
+                    &query_schema,
+                    &query_identifier,
+                )?;
                 match relation_type {
                     Some(rel_type) => {
                         let relation = crate::relation::do_create_relation(
@@ -4064,8 +4070,10 @@ impl AdapterImpl {
             Replay(_, replay) => replay.replay_list_relations(query_ctx, conn, db_schema),
             Impl(adapter_type, engine) if engine.is_sidecar() => {
                 let client = engine.sidecar_client().unwrap();
+                let query_database = db_schema.resolved_catalog.clone();
                 let query_schema = db_schema.resolved_schema.clone();
-                let relation_infos = client.list_relations(&query_schema)?;
+                let relation_infos =
+                    client.list_relations(&engine.quoting(), &query_database, &query_schema)?;
                 let mut relations: Vec<Arc<dyn BaseRelation>> =
                     Vec::with_capacity(relation_infos.len());
                 for (database, schema, name, rel_type) in relation_infos {
