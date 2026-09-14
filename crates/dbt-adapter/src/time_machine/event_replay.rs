@@ -208,6 +208,7 @@ const RELATION_TYPE_FLAG_KEYS: &[&str] = &[
     "is_dynamic_table",
     "is_interactive_table",
     "is_materialized_view",
+    "is_metric_view",
     "is_streaming_table",
     "is_table",
     "is_view",
@@ -2589,6 +2590,7 @@ mod tests {
             "is_delta": false,
             "is_dynamic_table": false,
             "is_materialized_view": false,
+            "is_metric_view": false,
             "is_streaming_table": false,
             "is_table": false,
             "is_view": false,
@@ -2611,6 +2613,7 @@ mod tests {
         let actual = relation_args(serde_json::json!({
             "is_view": true,
             "is_interactive_table": false,
+            "is_metric_view": true,
         }));
 
         assert!(adapter_args_match_for_type(

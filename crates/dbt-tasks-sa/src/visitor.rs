@@ -510,11 +510,7 @@ impl VisitStrategy {
                 // Note: this send may fail if the main loop gets terminated
                 // by should_cancel_compilation, in which case we simply
                 // ignore the error
-                if matches!(self, VisitStrategy::Parallel) {
-                    node.run_task_with_backpressure(&mut ctx).await
-                } else {
-                    node.run_task(&mut ctx).await
-                }
+                node.run_task(&mut ctx).await
             }
             // Instrument the task with the span and assign parent
             .instrument(task_span.clone()),
@@ -530,12 +526,6 @@ async fn visit(
     strategy: VisitStrategy,
     token: &CancellationToken,
 ) -> FsResult<()> {
-    // Drain connection on this thread left by inline metadata or hook work before this phase.
-    // TODO: This is just a stopgap to reduce the number of unrecycled connections.
-    // This call should be removed and instead all upstream connection bearing work should
-    // explictly clean up after itself.
-    dbt_adapter::connection::recycle_thread_local_connection();
-
     let mut slot_pool = WorkerSlotPool::new();
     // Work items yet to be started:
     let mut pending = strategy.new_pending_nodes(schedule)?;

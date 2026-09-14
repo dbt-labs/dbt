@@ -145,7 +145,7 @@ impl PackageNotice {
                     ErrorCode::DepsDuplicatePackage,
                     format!(
                         "Duplicate package name '{package}' found in dependencies. Keeping the first occurrence. \
-                     This will be an error in a future version of Fusion."
+                     This will be an error in a future version of dbt."
                     ),
                 );
             }

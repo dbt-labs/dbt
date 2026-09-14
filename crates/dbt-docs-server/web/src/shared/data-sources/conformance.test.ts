@@ -127,15 +127,14 @@ const duckdbHarness: Harness = {
     const present = new Set<TableName>();
     const engine: DuckDbEngine = {
       async query<T>(sql: string, tables: TableName[]): Promise<T[]> {
-        // Column lineage absence is a missing view, which is what the engine
-        // reports by refusing to register the artifact.
+        // Column lineage availability is rows, not a missing view: the
+        // information schema writes the table even at zero rows, so the source
+        // asks `SELECT EXISTS(...)` and gates on the answer.
         if (tables.includes('dbt.column_lineage')) {
-          if (!fixture.columnLineage) {
-            throw new Error(
-              'Catalog Error: Table with name column_lineage does not exist',
-            );
-          }
           present.add('dbt.column_lineage');
+          if (sql.includes('SELECT EXISTS')) {
+            return [{ present: Boolean(fixture.columnLineage) }] as T[];
+          }
           return [] as T[];
         }
         tables.forEach((t) => present.add(t));
@@ -156,10 +155,10 @@ const duckdbHarness: Harness = {
               : []
           ) as T[];
         }
-        if (sql.includes('FROM dbt.nodes n')) {
+        if (sql.includes('FROM dbt.models n')) {
           return (fixture.asset ? [fixture.asset] : []) as T[];
         }
-        if (sql.includes('FROM dbt.docs')) {
+        if (sql.includes('FROM dbt.docs_blocks')) {
           // The query filters the injected default out in SQL, so "no authored
           // overview" reaches the source as zero rows.
           return (
@@ -327,7 +326,7 @@ describe.each([fakeHarness, duckdbHarness])('$name conforms', (harness) => {
     const source = harness.create({});
     const dist = await source.fetchDistribution?.();
     expect(dist).toMatchObject({
-      isFusion: expect.any(Boolean),
+      isProprietary: expect.any(Boolean),
       isLoggedIn: expect.any(Boolean),
     });
   });

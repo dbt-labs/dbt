@@ -14,7 +14,10 @@ export function NoColumnMetadataFallback() {
           entry, or run the command below to populate this from the warehouse.
         </span>
       </p>
-      <CopyCommandSnippet command="dbt build --write-index --write-lineage --static-analysis strict" />
+      {/* `--write-index` is hidden and no longer what the site reads;
+          `docs generate` writes the information schema itself. What is still
+          needed is static analysis, for the inferred column types. */}
+      <CopyCommandSnippet command="dbt build --static-analysis strict && dbt docs generate" />
     </div>
   );
 }

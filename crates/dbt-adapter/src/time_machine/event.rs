@@ -312,6 +312,17 @@ pub enum MetadataCallArgs {
     Freshness {
         /// List of relation FQNs being checked
         relations: Vec<String>,
+        /// Optional metadata warehouse
+        #[serde(default)]
+        warehouse: Option<String>,
+    },
+    /// Arguments for relation-existence checks
+    RelationsExist {
+        /// List of relation FQNs being checked
+        relations: Vec<String>,
+        /// Optional metadata warehouse
+        #[serde(default)]
+        warehouse: Option<String>,
     },
     /// Arguments for freshness checks with source overrides
     FreshnessWithOverrides {
@@ -320,6 +331,7 @@ pub enum MetadataCallArgs {
         /// Stable `(relation FQN, kind)` override entries
         overrides: Vec<(String, String)>,
         /// Optional metadata warehouse
+        #[serde(default)]
         warehouse: Option<String>,
     },
     /// Arguments for schema-wide freshness checks
@@ -331,6 +343,7 @@ pub enum MetadataCallArgs {
         /// List of relation FQNs being checked
         relations: Vec<String>,
         /// Optional metadata warehouse
+        #[serde(default)]
         warehouse: Option<String>,
     },
     /// Arguments for list_user_defined_functions

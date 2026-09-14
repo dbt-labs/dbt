@@ -12,11 +12,13 @@ use indexmap::{IndexMap, IndexSet};
 
 pub(crate) mod incremental_table;
 pub(crate) mod materialized_view;
+pub(crate) mod metric_view;
 pub(crate) mod streaming_table;
 pub(crate) mod view;
 
 /// Build a `Box<dyn ComponentConfig>` from one recorded component dict.
 fn component_from_recorded(
+    relation_type: RelationType,
     name: &str,
     val: &serde_json::Value,
 ) -> Option<Box<dyn ComponentConfig>> {
@@ -135,7 +137,11 @@ fn component_from_recorded(
                 .get("query")
                 .and_then(|v| serde_json::from_value(v.clone()).ok())
                 .unwrap_or_default();
-            Some(components::QueryLoader::new_component_type_erased(&query))
+            if relation_type == RelationType::MetricView {
+                Some(components::MetricViewQueryLoader::new_component_type_erased(&query))
+            } else {
+                Some(components::QueryLoader::new_component_type_erased(&query))
+            }
         }
         // {"set_column_masks": {col: {"function": str, "using_columns": str|null}},
         //  "unset_column_masks": [str]}
@@ -209,7 +215,7 @@ pub(crate) fn relation_config_from_recorded(
         .as_object()
         .into_iter()
         .flatten()
-        .filter_map(|(name, val)| component_from_recorded(name, val))
+        .filter_map(|(name, val)| component_from_recorded(relation_type, name, val))
         .collect();
 
     let rff: RequiresFullRefreshFn = match relation_type {
@@ -217,6 +223,7 @@ pub(crate) fn relation_config_from_recorded(
         RelationType::MaterializedView => {
             |c| requires_full_refresh(MaterializationType::MaterializedView, c)
         }
+        RelationType::MetricView => |c| requires_full_refresh(MaterializationType::MetricView, c),
         RelationType::StreamingTable => {
             |c| requires_full_refresh(MaterializationType::StreamingTable, c)
         }
@@ -238,6 +245,7 @@ pub(crate) fn relation_config_from_recorded(
 pub(super) enum MaterializationType {
     IncrementalTable,
     MaterializedView,
+    MetricView,
     StreamingTable,
     View,
 }
@@ -267,9 +275,58 @@ pub(super) fn requires_full_refresh(
             ];
             REFRESH_ON.iter().any(|k| components.contains_key(k))
         }
+        MaterializationType::MetricView => false,
         // https://github.com/databricks/dbt-databricks/blob/main/dbt/adapters/databricks/relation_configs/streaming_table.py
         MaterializationType::StreamingTable => components.contains_key(partition_by::TYPE_NAME),
         // https://github.com/databricks/dbt-databricks/blob/main/dbt/adapters/databricks/relation_configs/view.py
         MaterializationType::View => components.contains_key(relation_comment::TYPE_NAME),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn desired_metric_view(definition: &str) -> RelationConfig {
+        RelationConfig::new(
+            AdapterType::Databricks,
+            [components::MetricViewQueryLoader::new_component_type_erased(definition)],
+            |changes| requires_full_refresh(MaterializationType::MetricView, changes),
+        )
+    }
+
+    fn recorded_metric_view(definition: &str) -> RelationConfig {
+        relation_config_from_recorded(
+            AdapterType::Databricks,
+            RelationType::MetricView,
+            &serde_json::json!({"query": {"query": definition}}),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn equivalent_recorded_metric_view_yaml_has_no_diff() {
+        let desired = desired_metric_view(
+            "version: 1.1\nsource: '`catalog`.`schema`.`orders`'\ndimensions: [a, b]",
+        );
+        let equivalent = recorded_metric_view(
+            "dimensions:\n  - a\n  - b\nsource: \"`catalog`.`schema`.`orders`\"\nversion: 1.1",
+        );
+        assert!(RelationConfig::diff(&desired, &equivalent).is_empty());
+    }
+
+    #[test]
+    fn changed_recorded_metric_view_yaml_has_query_diff() {
+        let desired = desired_metric_view(
+            "version: 1.1\nsource: '`catalog`.`schema`.`orders`'\ndimensions: [a, b]",
+        );
+        let changed = recorded_metric_view(
+            "version: 1.1\nsource: '`catalog`.`schema`.`customers`'\ndimensions: [a, b]",
+        );
+        let changes = RelationConfig::diff(&desired, &changed);
+        assert!(matches!(
+            changes.get(components::query::TYPE_NAME),
+            ComponentConfigChange::Some(_)
+        ));
     }
 }

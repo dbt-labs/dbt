@@ -712,6 +712,46 @@ pub(crate) fn test(args: TokenStream, item: TokenStream, rt_multi_thread: bool) 
     }
 }
 
+/// Runs a *synchronous* test body on a `dbt_runtime` worker thread.
+///
+/// Adapter code asserts that database connections are created by pool worker
+/// threads. A test that reaches such code from the thread the harness gave it
+/// aborts the process, so its body is handed to a worker the way production
+/// hands over node work.
+///
+/// Unlike [`test`], this needs no tokio runtime: there is no async body to
+/// drive, just a closure to run elsewhere and wait for.
+pub(crate) fn worker_test(args: TokenStream, item: TokenStream) -> TokenStream {
+    let mut input: syn::ItemFn = match syn::parse2(item.clone()) {
+        Ok(it) => it,
+        Err(e) => return token_stream_with_error(item, e),
+    };
+    if !args.is_empty() {
+        let msg = "`#[dbt_runtime::worker_test]` takes no arguments";
+        return token_stream_with_error(item, syn::Error::new_spanned(args, msg));
+    }
+    if let Some(asyncness) = input.sig.asyncness {
+        let msg = "an async test body already runs on a runtime; use `#[dbt_runtime::test]` and \
+                   dispatch to a worker with `dbt_runtime::spawn_blocking` where it is needed";
+        return token_stream_with_error(item, syn::Error::new_spanned(asyncness, msg));
+    }
+    if let Some(attr) = input.attrs.iter().find(|attr| is_test_attribute(attr)) {
+        let msg = "second test attribute is supplied, consider removing or changing the order of your test attributes";
+        return token_stream_with_error(item, syn::Error::new_spanned(attr, msg));
+    }
+
+    let body = &input.block;
+    let on_worker: syn::Block = syn::parse_quote! {{
+        dbt_runtime::testing::block_on_worker(move || #body)
+    }};
+    *input.block = on_worker;
+
+    quote! {
+        #[::core::prelude::v1::test]
+        #input
+    }
+}
+
 struct ItemFn {
     outer_attrs: Vec<Attribute>,
     vis: Visibility,

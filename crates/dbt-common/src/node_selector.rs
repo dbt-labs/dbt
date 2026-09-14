@@ -386,42 +386,35 @@ pub fn convert_column_selectors_to_fqn(expr: SelectExpression) -> (SelectExpress
     }
 }
 
-/// Checks if a `SelectExpression` contains any `state:modified` or `state:new` selectors.
+/// Checks if a `SelectExpression` contains any `state:` selector, regardless of its value
+/// (`new`, `old`, `modified`, `modified.*`, `unmodified`, or anything else).
 ///
 /// This is useful for determining whether loading the manifest.json is required for
 /// a given selector. If the selector only uses methods like `source_status:fresher+`,
 /// then the manifest is not needed and we should not warn if it fails to load.
-pub fn contains_state_modified_or_new_selector(expr: &SelectExpression) -> bool {
+pub fn contains_state_selector(expr: &SelectExpression) -> bool {
     match expr {
         SelectExpression::Atom(criteria) => {
-            if criteria.method == MethodName::State {
-                criteria.value.as_str().is_some_and(|value| {
-                    let value_lower = value.to_lowercase();
-                    value_lower.starts_with("modified") || value_lower.starts_with("new")
-                })
-            } else {
-                // Also check nested excludes
-                criteria
+            criteria.method == MethodName::State
+                || criteria
                     .exclude
                     .as_ref()
-                    .map(|e| contains_state_modified_or_new_selector(e))
-                    .unwrap_or(false)
-            }
+                    .is_some_and(|e| contains_state_selector(e))
         }
-        SelectExpression::And(expressions) | SelectExpression::Or(expressions) => expressions
-            .iter()
-            .any(contains_state_modified_or_new_selector),
-        SelectExpression::Exclude(expr) => contains_state_modified_or_new_selector(expr),
+        SelectExpression::And(expressions) | SelectExpression::Or(expressions) => {
+            expressions.iter().any(contains_state_selector)
+        }
+        SelectExpression::Exclude(expr) => contains_state_selector(expr),
     }
 }
 
-/// Checks if any of the provided optional select expressions contain `state:modified` or `state:new`.
+/// Checks if any of the provided optional select expressions contain a `state:` selector.
 pub fn selectors_require_manifest(
     select: Option<&SelectExpression>,
     exclude: Option<&SelectExpression>,
 ) -> bool {
-    let select_requires = select.is_some_and(contains_state_modified_or_new_selector);
-    let exclude_requires = exclude.is_some_and(contains_state_modified_or_new_selector);
+    let select_requires = select.is_some_and(contains_state_selector);
+    let exclude_requires = exclude.is_some_and(contains_state_selector);
     select_requires || exclude_requires
 }
 
@@ -1204,6 +1197,40 @@ mod tests {
         assert_eq!(result.method, MethodName::Selector);
         assert_eq!(result.value, "my_selector");
         assert!(result.childrens_parents);
+        Ok(())
+    }
+
+    // Regression test for a gap flagged in review of the fix for dbt-core#15963
+    // (https://github.com/dbt-labs/fs/pull/14191#discussion_r3937827739): this used to only
+    // recognize values starting with `modified`/`new`, silently treating `state:old` and
+    // `state:unmodified` as not needing a comparison manifest even though dbt Core's
+    // `StateSelectorMethod.search` raises "Got a state selector method, but no comparison
+    // manifest" unconditionally for every `state:*` value.
+    #[test]
+    fn test_selectors_require_manifest_covers_every_state_value() -> FsResult<()> {
+        for value in [
+            "new",
+            "old",
+            "modified",
+            "modified.body",
+            "modified.configs",
+            "unmodified",
+        ] {
+            let criteria = parse_single_selector(&format!("state:{value}"))?;
+            let expr = SelectExpression::Atom(criteria);
+            assert!(
+                selectors_require_manifest(Some(&expr), None),
+                "state:{value} should require a comparison manifest"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_selectors_require_manifest_false_for_non_state_selector() -> FsResult<()> {
+        let criteria = parse_single_selector("tag:nightly")?;
+        let expr = SelectExpression::Atom(criteria);
+        assert!(!selectors_require_manifest(Some(&expr), None));
         Ok(())
     }
 }

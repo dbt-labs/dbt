@@ -15,8 +15,17 @@ import { createDuckDbDataSource } from './index';
  * lazily is that a cold load must not pull column lineage or the code columns, and
  * that is only observable here.
  */
+/**
+ * `columnLineage` answers the presence probe every column-lineage path now makes.
+ *
+ * Gating asks the data whether `dbt.column_lineage` has rows, rather than whether
+ * its file exists — the information schema writes every table even at zero rows,
+ * so presence stopped being a signal. Answering it here keeps the probe out of
+ * every unrelated test's `rowsBySql`.
+ */
 function fakeEngine(
   rowsBySql: (sql: string) => Record<string, unknown>[],
+  { columnLineage = true }: { columnLineage?: boolean } = {},
 ): DuckDbEngine & {
   calls: { sql: string; tables: TableName[] }[];
 } {
@@ -27,6 +36,9 @@ function fakeEngine(
     async query<T>(sql: string, tables: TableName[]): Promise<T[]> {
       calls.push({ sql, tables });
       tables.forEach((t) => present.add(t));
+      if (sql.includes('SELECT EXISTS')) {
+        return [{ present: columnLineage }] as T[];
+      }
       return rowsBySql(sql) as T[];
     },
     hasTable: (t) => present.has(t),
@@ -113,37 +125,51 @@ describe('createDuckDbDataSource', () => {
     const engine = fakeEngine(() => []);
     const dist = await makeSource(engine).fetchDistribution?.();
 
-    // `name !== 'oss'` is what the UI reads as Fusion.
-    expect(dist).toMatchObject({ isFusion: true, isLoggedIn: true });
+    // `name !== 'oss'` is what the UI reads as dbt v2.
+    expect(dist).toMatchObject({ isProprietary: true, isLoggedIn: true });
     expect(engine.calls).toHaveLength(0);
   });
 
-  it('derives capabilities from a HEAD on the artifact, not a query', async () => {
-    // Registering it in DuckDB would answer the same question but download 836 KB
-    // of edges on a path the shell blocks on.
-    const fetchSpy = vi.fn(() => Promise.resolve(new Response(null, { status: 200 })));
-    vi.stubGlobal('fetch', fetchSpy);
+  it('derives capabilities from whether the relation has rows', async () => {
+    // Not from whether the file exists, which is what this used to `HEAD`: the
+    // information schema writes every table even at zero rows, so presence now
+    // answers "yes" for every project and the feature would never read as gated.
     const engine = fakeEngine(() => []);
 
     const caps = await makeSource(engine).fetchCapabilities?.();
 
     expect(caps?.hasColumnLineage).toBe(true);
-    expect(engine.calls).toHaveLength(0);
-    expect(fetchSpy).toHaveBeenCalledWith(
-      'https://host/site/data/dbt.column_lineage.parquet',
-      { method: 'HEAD' },
-    );
+    expect(engine.calls[0]?.sql).toContain('SELECT EXISTS');
+    expect(engine.calls[0]?.tables).toEqual(['dbt.column_lineage']);
   });
 
-  it('reports column lineage unavailable when the artifact is absent', async () => {
-    vi.stubGlobal('fetch', () => Promise.resolve(new Response(null, { status: 404 })));
-    const caps = await makeSource(fakeEngine(() => [])).fetchCapabilities?.();
+  it('reports column lineage unavailable when the relation has no rows', async () => {
+    const caps = await makeSource(
+      fakeEngine(() => [], { columnLineage: false }),
+    ).fetchCapabilities?.();
     expect(caps?.hasColumnLineage).toBe(false);
   });
 
-  it('reports column lineage unavailable rather than failing when offline', async () => {
-    vi.stubGlobal('fetch', () => Promise.reject(new Error('network down')));
-    const caps = await makeSource(fakeEngine(() => [])).fetchCapabilities?.();
+  it('asks the question once, however many surfaces ask it', async () => {
+    // The probe fetches an artifact, so a page that renders capabilities and a
+    // column-lineage graph must not pay for it twice.
+    const engine = fakeEngine(() => []);
+    const source = makeSource(engine);
+    await source.fetchCapabilities?.();
+    await source.fetchColumnLineage?.({ uniqueId: 'model.a.b' });
+    expect(engine.calls.filter((c) => c.sql.includes('SELECT EXISTS'))).toHaveLength(1);
+  });
+
+  it('reports column lineage unavailable rather than failing when the relation is absent', async () => {
+    // A partial or hand-copied site. The shell still has to render.
+    const engine: DuckDbEngine = {
+      query: async () => {
+        throw new Error('Catalog Error: Table with name column_lineage does not exist');
+      },
+      hasTable: () => false,
+      ready: async () => {},
+    };
+    const caps = await makeSource(engine).fetchCapabilities?.();
     expect(caps?.hasColumnLineage).toBe(false);
   });
 
@@ -241,12 +267,12 @@ describe('createDuckDbDataSource', () => {
     await source.fetchFiles?.();
     const filesTables = engine.calls.at(-1)?.tables ?? [];
     expect(filesTables).not.toContain('dbt.column_lineage');
-    expect(filesTables).toContain('dbt.nodes');
+    expect(filesTables).toContain('dbt_internal.resources');
 
-    // Code is no longer separately lazy: `raw_code` / `compiled_code` live in the
-    // index's own `dbt.nodes`, so a detail page adds no artifact for them.
+    // A typed detail reads one artifact, not the union: the resource type is known,
+    // and the union would pull every resource artifact to answer about one.
     await source.fetchAsset({ uniqueId: 'model.a.b', resourceType: 'model' });
-    expect(engine.calls.at(-1)?.tables).toEqual(['dbt.nodes']);
+    expect(engine.calls.at(-1)?.tables).toEqual(['dbt.models']);
   });
   describe('fetchOverview', () => {
     const overviewRow = {
@@ -298,10 +324,10 @@ describe('createDuckDbDataSource', () => {
       expect(engine.calls[0].sql).toContain("'o''brien'");
     });
 
-    it('asks only for dbt.docs', async () => {
+    it('asks only for dbt.docs_blocks', async () => {
       const engine = fakeEngine(() => []);
       await makeSource(engine).fetchOverview!();
-      expect(engine.calls[0].tables).toEqual(['dbt.docs']);
+      expect(engine.calls[0].tables).toEqual(['dbt.docs_blocks']);
     });
   });
 
@@ -363,24 +389,34 @@ describe('createDuckDbDataSource', () => {
       expect(engine.calls.every((c) => !c.sql.includes('RECURSIVE'))).toBe(true);
     });
 
-    it('reports column lineage gated when the artifact is absent', async () => {
-      // Distinct from an empty graph: 'gated' is what renders the upgrade card.
-      const engine: DuckDbEngine = {
-        query: async () => {
-          throw new Error(
-            'Catalog Error: Table with name column_lineage does not exist',
-          );
-        },
-        hasTable: () => false,
-        ready: async () => {},
-      };
+    it('reports column lineage gated when the relation has no rows', async () => {
+      // Distinct from an empty graph: 'gated' is what renders the upgrade card,
+      // and the difference is rows in `dbt.column_lineage` — not the presence of
+      // its file, which the information schema always writes.
+      const engine = fakeEngine(() => [], { columnLineage: false });
       const result = await makeSource(engine).fetchColumnLineage?.({
         uniqueId: 'model.a.b',
       });
       expect(result).toEqual({ kind: 'gated' });
     });
 
-    it('normalizes the index kinds to the vocabulary the UI renders', async () => {
+    it('lets a broken lineage query fail rather than reading as an upsell', async () => {
+      // This used to map *any* thrown query to `gated`, so a mistake in the SQL
+      // rendered as an upgrade card for a feature the user already had.
+      const engine: DuckDbEngine = {
+        query: async (sql: string) => {
+          if (sql.includes('SELECT EXISTS')) return [{ present: true }] as never[];
+          throw new Error('Binder Error: Referenced column "nope" not found');
+        },
+        hasTable: () => true,
+        ready: async () => {},
+      };
+      await expect(
+        makeSource(engine).fetchColumnLineage?.({ uniqueId: 'model.a.b' }),
+      ).rejects.toThrow(/Binder Error/);
+    });
+
+    it('normalizes the raw evolution values to the vocabulary the UI renders', async () => {
       const engine = fakeEngine(() => [
         {
           from_node: 'model.a.up',

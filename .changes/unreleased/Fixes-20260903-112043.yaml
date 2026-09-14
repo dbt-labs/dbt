@@ -1,0 +1,7 @@
+kind: Fixes
+body: 'Fix the dbt-docs-server Docker image: it now downloads a released dbt binary from the dbt-core GitHub Releases and verifies it against the release''s published SHA256SUMS, tracking the newest release carrying a Linux binary instead of pinning a stale version (override with `--build-arg DBT_VERSION=`). The documented `docker build` command now works verbatim from either the repo root or the crate directory, a `.dockerignore` keeps the build context empty, and the image is multi-stage, multi-arch, health-checked, and runs as an unprivileged user.'
+time: 2026-09-03T11:20:43.668841-07:00
+custom:
+    author: joshuataylor eliasdefaria
+    issue: "15856"
+    project: dbt-core

@@ -14,6 +14,7 @@ use crate::resolve::resolve_tests::persist_generic_data_tests::{
 };
 use crate::resolve::resolve_utils::{
     build_unrendered_config, err_resource_name_has_spaces, extract_config_map, validate_compute,
+    validate_node_adapter,
 };
 use crate::resolve::yaml_field_utils;
 use crate::sql_file_info::SqlFileInfo;
@@ -437,9 +438,9 @@ pub async fn resolve_snapshots(
                 dependency_package_name,
             );
             validate_compute(snapshot_config.compute, error_path)?;
-            // See `resolve_models`: the flag overrides the config, and nothing is
-            // validated at parse. A snapshot selects explicitly -- it has no
-            // attached node to inherit from.
+            // See `resolve_models`: the flag overrides the config. A snapshot
+            // selects explicitly -- it has no attached node to inherit from.
+            validate_node_adapter(snapshot_config.adapter, error_path)?;
             let resolved_node_adapter = arg.adapter_override.or(snapshot_config.adapter);
 
             // See `resolve_models`: both remaining quoting layers depend on which

@@ -1,7 +1,5 @@
 use crate::adapter::adapter_impl::AdapterImpl;
-use crate::errors::{
-    AdapterError, AdapterErrorKind, AdapterResult, AsyncAdapterResult, into_fs_error,
-};
+use crate::errors::{AdapterError, AdapterErrorKind, AdapterResult, AsyncAdapterResult};
 use crate::macro_exec::execute_macro;
 use crate::relation::{RelationObject, create_relation, do_create_relation};
 use crate::sql_types::{SdfSchema, arrow_schema_to_sdf_schema};
@@ -187,6 +185,7 @@ pub trait MetadataAdapter: Send + Sync {
         unique_id: Option<String>,
         phase: Option<ExecutionPhase>,
         relations: &[Arc<dyn BaseRelation>],
+        item_span_operation_id: Option<&str>,
         token: CancellationToken,
     ) -> AsyncAdapterResult<'_, HashMap<String, AdapterResult<Arc<Schema>>>>;
 
@@ -199,6 +198,7 @@ pub trait MetadataAdapter: Send + Sync {
         unique_id: Option<String>,
         phase: Option<ExecutionPhase>,
         relations: &'a [Arc<dyn BaseRelation>],
+        item_span_operation_id: Option<&'a str>,
         token: CancellationToken,
     ) -> AsyncAdapterResult<'a, HashMap<String, AdapterResult<Arc<Schema>>>> {
         let caller_id = unique_id.clone().unwrap_or_else(|| "global".to_string());
@@ -210,7 +210,13 @@ pub trait MetadataAdapter: Send + Sync {
                 phase.map(|p| p.as_str().to_string()),
                 relations.iter().map(|r| r.semantic_fqn()),
             ),
-            self.list_relations_schemas_inner(unique_id, phase, relations, token),
+            self.list_relations_schemas_inner(
+                unique_id,
+                phase,
+                relations,
+                item_span_operation_id,
+                token,
+            ),
         )
     }
 
@@ -223,10 +229,11 @@ pub trait MetadataAdapter: Send + Sync {
         unique_id: Option<String>,
         phase: Option<ExecutionPhase>,
         relations: &'a [Arc<dyn BaseRelation>],
+        item_span_operation_id: Option<&'a str>,
         token: CancellationToken,
     ) -> AsyncAdapterResult<'a, HashMap<String, AdapterResult<SdfSchema>>> {
         let future = async move {
-            self.list_relations_schemas(unique_id, phase, relations, token)
+            self.list_relations_schemas(unique_id, phase, relations, item_span_operation_id, token)
                 .await
                 .map(|map| {
                     map.into_iter()
@@ -297,7 +304,7 @@ pub trait MetadataAdapter: Send + Sync {
         with_time_machine_metadata_wrapper(
             "global",
             "freshness",
-            args_freshness(relations.iter().map(|r| r.semantic_fqn())),
+            args_freshness(relations.iter().map(|r| r.semantic_fqn()), None),
             self.freshness_inner(relations, token),
         )
     }
@@ -452,7 +459,7 @@ pub trait MetadataAdapter: Send + Sync {
             for ((database, schema), group) in groups {
                 result.extend(
                     freshness_group_dump(self, &database, &schema, &group, options, token.clone())
-                        .await,
+                        .await?,
                 );
             }
             Ok(result)
@@ -610,13 +617,10 @@ pub trait MetadataAdapter: Send + Sync {
 /// Fetch freshness for one already-grouped `(database, schema)` set of relations
 /// via [`MetadataAdapter::freshness_all_in_schema`], with per-group fail-open.
 ///
-/// Never returns an error: on a dump failure it warns and returns an empty map,
-/// so a single bad schema never aborts the whole prefetch. An empty result means
-/// "unknown freshness" for the group; prefetch is a bulk load, so uncovered
-/// relations are resolved by the per-node path at submit time rather than
-/// re-queried per-table here. Shared by the generic
-/// [`MetadataAdapter::freshness_all_in_schemas`] dump path and the Snowflake
-/// per-schema strategy paths.
+/// Ordinary dump failures return an empty map so a single bad schema never aborts
+/// the prefetch. ReplayDataMissing is propagated so callers can fall back to a
+/// legacy replay event. An empty result means "unknown freshness" for the group;
+/// uncovered relations are resolved by the per-node path at submit time.
 pub(crate) async fn freshness_group_dump<A: MetadataAdapter + ?Sized>(
     adapter: &A,
     database: &str,
@@ -624,16 +628,23 @@ pub(crate) async fn freshness_group_dump<A: MetadataAdapter + ?Sized>(
     relations: &[Arc<dyn BaseRelation>],
     options: &MetadataQueryOptions,
     token: CancellationToken,
-) -> BTreeMap<String, MetadataFreshness> {
+) -> Result<BTreeMap<String, MetadataFreshness>, Cancellable<AdapterError>> {
     match adapter
         .freshness_all_in_schema(database, schema, relations, options, token)
         .await
     {
-        Ok(dump) => dump,
-        Err(err) => {
-            // Metadata prefetch failures should not disable dbt State; unknown
-            // freshness keeps downstream decisions conservative.
-            let err = into_fs_error(err);
+        Ok(dump) => Ok(dump),
+        Err(Cancellable::Error(err)) if err.kind() == AdapterErrorKind::ReplayDataMissing => {
+            Err(Cancellable::Error(err))
+        }
+        Err(Cancellable::Cancelled) => Err(Cancellable::Cancelled),
+        // A cancelled join/query can surface as `Cancellable::Error` with kind
+        // `Cancelled` instead of `Cancellable::Cancelled` — treat it the same
+        // way so cancellation always stops the run instead of fail-opening.
+        Err(Cancellable::Error(err)) if err.kind() == AdapterErrorKind::Cancelled => {
+            Err(Cancellable::Error(err))
+        }
+        Err(Cancellable::Error(err)) => {
             emit_warn_log_message(
                 ErrorCode::StateServiceWarn,
                 format!(
@@ -642,7 +653,7 @@ pub(crate) async fn freshness_group_dump<A: MetadataAdapter + ?Sized>(
                     relations.len()
                 ),
             );
-            BTreeMap::new()
+            Ok(BTreeMap::new())
         }
     }
 }
@@ -722,12 +733,14 @@ mod tests {
 
     struct MockMetadataAdapter {
         freshness_all_in_schema_calls: AtomicUsize,
+        replay_missing: bool,
     }
 
     impl MockMetadataAdapter {
         fn new() -> Self {
             Self {
                 freshness_all_in_schema_calls: AtomicUsize::new(0),
+                replay_missing: false,
             }
         }
     }
@@ -764,6 +777,7 @@ mod tests {
             _: Option<String>,
             _: Option<ExecutionPhase>,
             _: &[Arc<dyn BaseRelation>],
+            _: Option<&str>,
             _: CancellationToken,
         ) -> AsyncAdapterResult<'_, HashMap<String, AdapterResult<Arc<Schema>>>> {
             Box::pin(async { Ok(HashMap::new()) })
@@ -796,6 +810,12 @@ mod tests {
             Box::pin(async move {
                 self.freshness_all_in_schema_calls
                     .fetch_add(1, Ordering::SeqCst);
+                if self.replay_missing {
+                    return Err(Cancellable::Error(AdapterError::new(
+                        AdapterErrorKind::ReplayDataMissing,
+                        "missing schema freshness recording",
+                    )));
+                }
                 Ok(BTreeMap::from([(
                     relations[0].semantic_fqn(),
                     MetadataFreshness {
@@ -814,6 +834,40 @@ mod tests {
         {
             Box::pin(async { Ok(BTreeMap::new()) })
         }
+    }
+
+    #[dbt_runtime::test]
+    async fn schema_freshness_replay_missing_is_propagated_for_legacy_fallback() {
+        let _guard = TIME_MACHINE_TEST_LOCK.lock().await;
+        let adapter = MockMetadataAdapter {
+            replay_missing: true,
+            ..MockMetadataAdapter::new()
+        };
+        let relation: Arc<dyn BaseRelation> = create_relation(
+            AdapterType::Snowflake,
+            "db".to_string(),
+            "schema".to_string(),
+            Some("table".to_string()),
+            None,
+            ResolvedQuoting::default(),
+        )
+        .unwrap()
+        .into();
+
+        let result = freshness_group_dump(
+            &adapter,
+            "db",
+            "schema",
+            &[relation],
+            &MetadataQueryOptions::default(),
+            CancellationToken::never_cancels(),
+        )
+        .await;
+        assert!(matches!(
+            result,
+            Err(Cancellable::Error(error))
+                if error.kind() == AdapterErrorKind::ReplayDataMissing
+        ));
     }
 
     #[dbt_runtime::test]

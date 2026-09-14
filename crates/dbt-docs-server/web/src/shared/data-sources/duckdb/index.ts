@@ -104,8 +104,8 @@ import {
   savedQueryDependsOnSql,
 } from './sql';
 
-/** Artifact whose presence means column-level lineage is available. */
-const COLUMN_LINEAGE_ARTIFACT = 'dbt.column_lineage.parquet';
+/** The relation whose *rows* mean column-level lineage is available. */
+const COLUMN_LINEAGE_VIEW = 'dbt.column_lineage';
 
 /**
  * Deserialize a column the index stores as a JSON string.
@@ -177,23 +177,40 @@ export function createDuckDbDataSource(
   }
 
   /**
-   * Capabilities, derived from the artifact set rather than declared.
+   * Whether column lineage is actually present, asked once.
    *
-   * A `HEAD` rather than a query: registering the artifact in DuckDB would answer
-   * the same question but download 836 KB of edges to do it, on a path the shell
-   * blocks on. A flag in the bootstrap would be cheaper still, but could disagree
-   * with the data sitting beside it — the artifact is the one source of truth.
+   * A row probe, not a `HEAD`. Presence used to be the signal, but the
+   * information schema writes *every* table even at zero rows — precisely so
+   * `views.sql` always resolves — so the file is always there and a `HEAD` now
+   * answers "yes" for every project. Rows are the only honest question.
+   *
+   * Still derived from the data rather than declared in the bootstrap: a flag
+   * would be cheaper but could disagree with the artifacts sitting beside it.
+   * The cost is one artifact fetch — a few hundred bytes when the table is empty,
+   * and when it is not, the feature is on and the fetch was needed anyway.
+   *
+   * A failure means the relation is not there at all, which is a broken or
+   * partial site; reported as "unavailable" rather than thrown, so the shell
+   * still renders.
    */
+  let columnLineage: Promise<boolean> | null = null;
+  function hasColumnLineage(): Promise<boolean> {
+    columnLineage ??= (async () => {
+      try {
+        const [row] = await engine.query<{ present: boolean }>(
+          `SELECT EXISTS(SELECT 1 FROM ${COLUMN_LINEAGE_VIEW}) AS present`,
+          [COLUMN_LINEAGE_VIEW],
+        );
+        return Boolean(row?.present);
+      } catch {
+        return false;
+      }
+    })();
+    return columnLineage;
+  }
+
   async function fetchCapabilities(): Promise<Capabilities> {
-    let hasColumnLineage = false;
-    try {
-      const url = new URL(COLUMN_LINEAGE_ARTIFACT, options.dataBaseUrl).href;
-      const res = await fetch(url, { method: 'HEAD' });
-      hasColumnLineage = res.ok;
-    } catch {
-      // Offline or blocked: report the feature off rather than failing the shell.
-    }
-    return fromCapabilities({ has_column_lineage: hasColumnLineage });
+    return fromCapabilities({ has_column_lineage: await hasColumnLineage() });
   }
 
   async function fetchAssetCounts(): Promise<AssetCounts> {
@@ -393,18 +410,20 @@ export function createDuckDbDataSource(
   async function fetchColumnLineage(
     args: ColumnLineageArgs,
   ): Promise<ColumnLineageResult> {
-    let rows: (RestColumnLineageEdge & { lineage_kind: string })[] = [];
-    try {
-      // No column filter: the REST contract fetched every edge touching the node
-      // and `ColumnLineageView` narrows client-side, so this matches it.
-      rows = await engine.query(columnLineageSql(args.uniqueId), COLUMN_LINEAGE_TABLES);
-    } catch {
-      // A query failure here means the view was never created, i.e. no artifact.
+    // Gating is decided before the query, by the same probe `fetchCapabilities`
+    // uses. Deciding it from a *thrown* query instead — which is what this did —
+    // rendered every mistake in this SQL as an upgrade card.
+    if (!(await hasColumnLineage())) {
       return { kind: 'gated' };
     }
-    if (!engine.hasTable(COLUMN_LINEAGE_TABLES[0]!)) {
-      return { kind: 'gated' };
-    }
+
+    // No column filter: the REST contract fetched every edge touching the node
+    // and `ColumnLineageView` narrows client-side, so this matches it. An error
+    // here is a real failure and propagates.
+    const rows = await engine.query<RestColumnLineageEdge & { lineage_kind: string }>(
+      columnLineageSql(args.uniqueId),
+      COLUMN_LINEAGE_TABLES,
+    );
 
     return {
       kind: 'ok',
@@ -523,23 +542,23 @@ export function createDuckDbDataSource(
   async function fetchSearchFacets(): Promise<SearchFacets> {
     const [accesses, layers, materializations, tags, packages] = await Promise.all([
       engine.query<{ value: string | null; cnt: number }>(SEARCH_FACET_ACCESSES, [
-        'dbt.nodes',
+        'dbt.models',
       ]),
       engine.query<{ value: string | null; cnt: number }>(SEARCH_FACET_LAYERS, [
-        'dbt.nodes',
+        'dbt.models',
       ]),
       engine.query<{ value: string | null; cnt: number }>(
         SEARCH_FACET_MATERIALIZATIONS,
-        ['dbt.nodes'],
+        ['dbt.models'],
       ),
       engine.query<{ value: string | null; cnt: number }>(SEARCH_FACET_TAGS, [
-        'dbt.nodes',
+        'dbt_internal.resources',
         'dbt.exposures',
         'dbt.metrics',
         'dbt.saved_queries',
       ]),
       engine.query<{ value: string | null; cnt: number }>(SEARCH_FACET_PACKAGES, [
-        'dbt.nodes',
+        'dbt_internal.resources',
         'dbt.macros',
         'dbt.exposures',
       ]),

@@ -19,9 +19,7 @@ pub use config::{
 };
 pub use dbt_data_layer::{dbt_data_layer_config, dbt_process_span_attributes};
 pub use dbt_init::init_tracing_with_data_layer;
-pub use dbt_tracing::async_tracing::{
-    spawn_blocking_traced, spawn_traced, spawn_traced_block_in_place,
-};
+pub use dbt_tracing::async_tracing::{spawn_traced, spawn_traced_block_in_place};
 pub use dbt_tracing::emit::{
     create_debug_span, create_debug_span_with_parent, create_info_span,
     create_info_span_with_parent, create_root_info_span,

@@ -38,20 +38,20 @@ export const CoreTier: Story = {
     docsApp: {
       source: storyDataSource({
         fetchCapabilities: async () => storyCapabilities({ hasColumnLineage: false }),
-        fetchDistribution: async () => ({ isFusion: false, isLoggedIn: false }),
+        fetchDistribution: async () => ({ isProprietary: false, isLoggedIn: false }),
         fetchColumnLineage: async () => ({ kind: 'gated' }),
       }),
     },
   },
 };
 
-/** Fusion installed but not logged in — the `dbt login` upsell state. */
+/** dbt v2 installed but not logged in — the `dbt login` upsell state. */
 export const FusionNotLoggedIn: Story = {
   parameters: {
     docsApp: {
       source: storyDataSource({
         fetchCapabilities: async () => storyCapabilities({ hasColumnLineage: false }),
-        fetchDistribution: async () => ({ isFusion: true, isLoggedIn: false }),
+        fetchDistribution: async () => ({ isProprietary: true, isLoggedIn: false }),
         fetchColumnLineage: async () => ({ kind: 'gated' }),
       }),
     },

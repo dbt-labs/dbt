@@ -329,7 +329,7 @@ Status legend: ✅ returned today · 🔧 needs backend change · 🔍 verify pa
 | `columns[*].index` | `number \| null` | Core | ✅ | — | Column order |
 | `columns[*].data_type` | `string \| null` | Core | ✅ | — | Declared in YAML |
 | `columns[*].declared_type` | `string \| null` | Core | ✅ | — | |
-| `columns[*].inferred_type` | `string \| null` | Proprietary | ✅ | — | `null` in Core; populated by Fusion static analysis |
+| `columns[*].inferred_type` | `string \| null` | Proprietary | ✅ | — | `null` in Core; populated by dbt v2 static analysis |
 | `columns[*].catalog_type` | `string \| null` | Core-conditional | ✅ | `null` when catalog absent | Warehouse-verified type; `null` unless `dbt docs generate` ran |
 | `columns[*].description` | `string \| null` | Core | ✅ | — | |
 | `columns[*].label` | `string \| null` | Core | ✅ | — | |
@@ -947,7 +947,7 @@ Status legend: ✅ returned today · 🔧 needs backend change · 🔍 verify pa
 | `columns[*].index` | `number \| null` | Core | ✅ | — | |
 | `columns[*].data_type` | `string \| null` | Core | ✅ | — | Declared in YAML |
 | `columns[*].declared_type` | `string \| null` | Core | ✅ | — | |
-| `columns[*].inferred_type` | `string \| null` | Proprietary | ✅ | — | `null` in Core; populated by Fusion static analysis |
+| `columns[*].inferred_type` | `string \| null` | Proprietary | ✅ | — | `null` in Core; populated by dbt v2 static analysis |
 | `columns[*].catalog_type` | `string \| null` | Core-conditional | ✅ | — | Warehouse-verified type |
 | `columns[*].description` | `string \| null` | Core | ✅ | — | |
 | `columns[*].label` | `string \| null` | Core | ✅ | — | |
@@ -1201,7 +1201,7 @@ Status legend: ✅ returned today · 🔧 needs backend change · 🔍 verify pa
 | `columns[*].index` | `number \| null` | Core | ✅ | — | Column order |
 | `columns[*].data_type` | `string \| null` | Core | ✅ | — | Declared in YAML patch |
 | `columns[*].declared_type` | `string \| null` | Core | ✅ | — | |
-| `columns[*].inferred_type` | `string \| null` | Proprietary | ✅ | — | `null` in Core; populated by Fusion static analysis |
+| `columns[*].inferred_type` | `string \| null` | Proprietary | ✅ | — | `null` in Core; populated by dbt v2 static analysis |
 | `columns[*].catalog_type` | `string \| null` | Core-conditional | ✅ | — | Warehouse-verified type; `null` unless `dbt docs generate` ran |
 | `columns[*].description` | `string \| null` | Core | ✅ | — | |
 | `columns[*].label` | `string \| null` | Core | ✅ | — | |
@@ -1447,7 +1447,7 @@ Status legend: ✅ returned today · 🔧 needs backend change · 🔍 verify pa
 | `columns[*].index` | `number \| null` | Core | ✅ | — | Column order |
 | `columns[*].data_type` | `string \| null` | Core | ✅ | — | Declared in YAML |
 | `columns[*].declared_type` | `string \| null` | Core | ✅ | — | |
-| `columns[*].inferred_type` | `string \| null` | Proprietary | ✅ | — | `null` in Core; populated by Fusion static analysis |
+| `columns[*].inferred_type` | `string \| null` | Proprietary | ✅ | — | `null` in Core; populated by dbt v2 static analysis |
 | `columns[*].catalog_type` | `string \| null` | Core-conditional | ✅ | — | Warehouse-verified type; `null` unless `dbt docs generate` ran |
 | `columns[*].description` | `string \| null` | Core | ✅ | — | |
 | `columns[*].label` | `string \| null` | Core | ✅ | — | |
@@ -2712,7 +2712,7 @@ Status legend: ✅ returned today · 🔧 needs backend change · 🔍 verify pa
 | `contract_enforced` | *(absent)* | — | ❌ | — | Model-only governance field; not applicable to metrics |
 | `raw_code` | *(absent)* | — | ❌ | — | Metrics have no SQL body; closest is `type_params.expr` for derived metrics |
 | `compiled_code` | *(absent)* | — | ❌ | — | Metrics have no SQL body |
-| `ai_context` | *(absent)* | — | ❌ | — | `dbt.metrics.ai_context` exists but is Proprietary/Fusion-specific; not a Discovery-public field. Defer until a UI consumer exists |
+| `ai_context` | *(absent)* | — | ❌ | — | `dbt.metrics.ai_context` exists but is Proprietary/dbt-v2-specific; not a Discovery-public field. Defer until a UI consumer exists |
 | `config` | *(absent)* | — | ❌ | — | `dbt.metrics.config` JSON exists but has no Discovery-public schema; defer until a UI consumer exists. Mirrors `TestDetail` Risk: the GraphQL `config` blob has no FE consumer for metrics either |
 | `refs` | *(absent)* | — | ❌ | — | `dbt.metrics.refs` JSON exists but is denormalized into `depends_on` via `dbt.edges`; do not duplicate |
 | `sources` | *(absent)* | — | ❌ | — | Same rationale as `refs` |
@@ -5707,7 +5707,7 @@ No handler exists for `GET /api/v1/metrics` today; every included field is 🔧 
 | `formula` | *(absent)* | — | ❌ | — | Class B per detail Design note 5: not a column on `dbt.metrics.parquet`. For `derived` metrics the expression lives at `type_params.expr` — read it there on the detail endpoint, not on the list row. |
 | `run_generated_at` | *(absent)* | — | ❌ | — | Class B per detail Design note 6: Discovery's `runGeneratedAt` has no parquet analogue under that name. `created_at` (above) replaces it for the list row's "Definition updated as of …" header semantics. |
 | `patch_path` | *(absent)* | — | ❌ | — | Class B: `MetricRow` has no `patch_path` column (unlike `NodeRow`/`MacroRow`). Metrics are defined directly in YAML; `original_file_path` is the YAML file (available on the detail endpoint only). |
-| `ai_context` | *(absent)* | — | ❌ | — | `dbt.metrics.ai_context` exists but is Proprietary/Fusion-specific; not a Discovery-public field. Defer until a UI consumer exists. |
+| `ai_context` | *(absent)* | — | ❌ | — | `dbt.metrics.ai_context` exists but is Proprietary/dbt-v2-specific; not a Discovery-public field. Defer until a UI consumer exists. |
 | `config` | *(absent)* | — | ❌ | — | JSON-string per CC-7. `dbt.metrics.config` exists but has no Discovery-public schema; defer until a UI consumer exists. |
 | `refs` / `sources` / `metrics` | *(absent)* | — | ❌ | — | JSON-string per CC-7. Denormalized into `depends_on` via `dbt.edges` on the detail endpoint; do not duplicate on the list row. |
 | `depends_on_macros` | *(absent)* | — | ❌ | — | Denormalized into the generic `depends_on` edge view on the detail endpoint; metrics rarely reference macros directly. Not exposed on the list row. |

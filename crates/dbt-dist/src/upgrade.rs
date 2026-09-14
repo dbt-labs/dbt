@@ -27,18 +27,9 @@ use crate::python::{
 };
 use crate::version::{ReqwestClient, VersionsHttpClient, cdn_base_url, resolve_target_version};
 use crate::{Channel, DiscoveryContext, DistInfo, DistInfoDiscovery, Distribution};
-
-/// PyPI's legacy dbt namespace, shared with v1. Also
-/// [`confirm_and_uninstall_old_package`]'s fallback when
-/// [`probe_installed_package_name`] can't tell which namespace is actually
-/// installed.
-const DBT_CORE_PACKAGE_NAME: &str = "dbt-core";
-
-/// PyPI's newer, OSS-only dbt namespace.
-const DBT_OSS_PACKAGE_NAME: &str = "dbt-oss";
-
-/// Package names this command can rewrite to [`PROPRIETARY_PACKAGE_NAME`].
-pub(crate) const UPGRADABLE_TARGET_NAMES: [&str; 2] = [DBT_CORE_PACKAGE_NAME, DBT_OSS_PACKAGE_NAME];
+#[cfg(test)]
+use dbt_dist_classify::DBT_OSS_PACKAGE_NAME;
+use dbt_dist_classify::{DBT_CORE_PACKAGE_NAME, UPGRADABLE_TARGET_NAMES};
 
 /// PyPI's proprietary dbt v2 package.
 const PROPRIETARY_PACKAGE_NAME: &str = "dbt";

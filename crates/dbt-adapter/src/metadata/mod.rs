@@ -12,8 +12,88 @@ use crate::{
 use arrow::array::RecordBatch;
 use arrow_schema::{DataType, Field, Schema};
 use chrono::{DateTime, Utc};
+use dbt_adapter_engine::{ConnectionFactory, MapReduce};
+use dbt_adbc::Connection;
+use dbt_common::AsyncAdapterResult;
+use dbt_common::cancellation::{Cancellable, CancellationToken};
 use dbt_schemas::schemas::relations::base::BaseRelation;
+use dbt_tracing::emit::create_debug_span;
+use dbt_tracing::span_info::SpanStatusRecorder as _;
 use minijinja::State;
+
+pub const SCHEMA_CACHE_OP_ID: &str = "hydrate_schema_cache";
+
+/// Run one schema-cache fetch under a DEBUG-level progress item span.
+///
+/// `operation_id` must match the parent `GenericOpExecuted` span's operation_id so the
+/// TUI layer correlates this item with the right progress bar.
+fn with_schema_cache_item_span<T>(
+    operation_id: &str,
+    target: &str,
+    fetch: impl FnOnce() -> AdapterResult<T>,
+) -> AdapterResult<T> {
+    let span = create_debug_span(dbt_telemetry::GenericOpItemProcessed::new(
+        operation_id.to_string(),
+        "downloading".to_string(),
+        "downloaded".to_string(),
+        target.to_string(),
+    ));
+    let _guard = span.enter();
+    fetch().record_status(&span)
+}
+
+trait SchemaCacheKey {
+    fn schema_cache_target(&self) -> String;
+}
+
+impl SchemaCacheKey for Arc<dyn BaseRelation> {
+    fn schema_cache_target(&self) -> String {
+        self.semantic_fqn()
+    }
+}
+
+impl SchemaCacheKey for (String, String) {
+    fn schema_cache_target(&self) -> String {
+        self.0.clone()
+    }
+}
+
+#[allow(clippy::type_complexity)]
+fn run_schema_cache_map_reduce<K>(
+    factory: Box<dyn ConnectionFactory<Error = Cancellable<AdapterError>>>,
+    keys: Vec<K>,
+    item_span_operation_id: Option<&str>,
+    map_f: impl Fn(&mut dyn Connection, &K) -> AdapterResult<Arc<Schema>> + Send + Sync + 'static,
+    reduce_f: impl Fn(
+        &mut HashMap<String, AdapterResult<Arc<Schema>>>,
+        K,
+        AdapterResult<Arc<Schema>>,
+    ) -> Result<(), Cancellable<AdapterError>>
+    + Send
+    + Sync
+    + 'static,
+    node_id: Option<String>,
+    token: CancellationToken,
+) -> AsyncAdapterResult<'static, HashMap<String, AdapterResult<Arc<Schema>>>>
+where
+    K: SchemaCacheKey + Clone + Send + Sync + 'static,
+{
+    // Callers that don't own a parent `GenericOpExecuted` span (item_span_operation_id ==
+    // None) get no item span at all, rather than being silently attributed to the schema
+    // hydration bar's operation_id.
+    let map_f: Box<dyn Fn(&mut dyn Connection, &K) -> AdapterResult<Arc<Schema>> + Send + Sync> =
+        match item_span_operation_id {
+            Some(operation_id) => {
+                let operation_id = operation_id.to_string();
+                Box::new(move |conn: &mut dyn Connection, key: &K| {
+                    let target = key.schema_cache_target();
+                    with_schema_cache_item_span(&operation_id, &target, || map_f(conn, key))
+                })
+            }
+            None => Box::new(map_f),
+        };
+    MapReduce::new(factory, map_f, Box::new(reduce_f), node_id).run(Arc::new(keys), token)
+}
 
 pub(crate) mod bigquery;
 pub(crate) mod clickhouse;

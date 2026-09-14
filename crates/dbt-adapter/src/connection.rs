@@ -2,32 +2,19 @@ use std::borrow::Cow;
 use std::cell::RefCell;
 use std::marker::PhantomData;
 use std::ops::{Deref, DerefMut};
-use std::pin::Pin;
 use std::sync::Arc;
-use std::sync::LazyLock;
-use std::sync::atomic::{AtomicIsize, AtomicU64, AtomicUsize, Ordering};
-use std::task::{Poll, Waker};
-use std::time::Instant;
 
 use dbt_adapter_core::AdapterType;
 use dbt_adapter_engine::ConnectionFactory;
 use dbt_adbc::Connection;
 use dbt_common::AdapterResult;
 use dbt_common::cancellation::Cancellable;
-use dbt_telemetry::{AdapterConnectionClose, ConnectionLimitWait};
-use dbt_tracing::emit::{create_debug_span, emit_trace_event, is_trace_enabled};
+use dbt_telemetry::AdapterConnectionClose;
+use dbt_tracing::emit::emit_trace_event;
 use minijinja::State;
-
-use crossbeam_skiplist::SkipMap;
-use crossbeam_utils::CachePadded;
-
-use tracing::Span;
 
 use crate::AdapterEngine;
 use crate::errors::AdapterError;
-
-/// Global atomic for generating unique connection IDs.
-static CONN_SEQ_NUM: AtomicU64 = AtomicU64::new(0);
 
 // Thread-local connection.
 //
@@ -36,146 +23,48 @@ static CONN_SEQ_NUM: AtomicU64 = AtomicU64::new(0);
 // 2. Connections are reused across multiple operations within the same thread
 // 3. This approach ensures proper transaction management within a DAG node
 // 4. The ConnectionGuard wrapper ensures connections are returned to the thread-local
+// 5. A connection stays in the slot after a node finishes, so it is found again
+//    by the next node that runs on the same worker
+//
+// The number of live connections is therefore bounded by the number of
+// `dbt-runtime` blocking-pool worker threads, because every connection is
+// created by a worker thread (enforced by the `is_pool_worker` assertion in
+// `AdbcEngine::new_connection`). Blocking I/O on a bounded pool is what limits
+// how much work reaches the warehouse at once, so there is no separate
+// connection-admission gate.
 thread_local! {
     static CONNECTION: pri::TlsConnectionContainer = pri::TlsConnectionContainer::new();
 }
-static RECYCLING_POOL: LazyLock<pri::ConnectionRecyclingPool> =
-    LazyLock::new(pri::ConnectionRecyclingPool::new);
 
-/// High water mark when none is explicitly configured or a higher one is requested.
-fn default_high_water_mark(adapter_type: AdapterType) -> u32 {
-    use AdapterType::*;
-    match adapter_type {
-        Snowflake => 48,
-        Redshift => 4,
-        _ => 48,
-    }
-}
-
-/// Derive a connection limit from the `threads` configuration option.
-///
-/// Used by both [`ConnectionBackpressure`] and [`AdapterConnectionFactory`] so
-/// that the MapReduce parallel metadata queries respect the same bound as the
-/// node-execution backpressure mechanism.
-fn connection_limit_from_threads(adapter_type: AdapterType, threads: Option<usize>) -> u32 {
-    let default = default_high_water_mark(adapter_type);
-    let hwm = threads
-        .map(|t| t.min(u32::MAX as usize) as u32)
-        .unwrap_or(default)
-        .clamp(2, default);
-    hwm
-}
-
-/// Reads the atomic counter of active connections.
-pub fn num_active_connections() -> isize {
-    BACKPRESSURE_STATE.num_active_connections()
-}
-
-/// Returns current active nodes and connections if trace level logging is enabled
-fn backpressure_counts_for_trace() -> (Option<u32>, Option<u32>) {
-    if !is_trace_enabled() {
-        return (None, None);
-    }
-
-    (
-        Some(BACKPRESSURE_STATE.num_active_nodes().min(u32::MAX as usize) as u32),
-        Some(
-            BACKPRESSURE_STATE
-                .num_active_connections()
-                .clamp(0, u32::MAX as isize) as u32,
-        ),
-    )
-}
-
-/// Function that must be called when a node/operation finishes executing.
-///
-/// This allows the connection used by that node to be recycled and made available
-/// for reuse by other nodes in other threads. The task execution system should
-/// guarantee that:
-///
-///    (Property I) A node starts executing in a thread and stays in that thread
-///    until it finishes executing.
-///
-/// This will ensure, together with Property II, that arbitrary jinja code
-/// executed in the context of a node (e.g. in macros or hooks) will always
-/// use the same connection instance.
-///
-///     (Property II) While holding a connection, a node execution task will not
-///     attempt to borrow from the thread-local again.
-///
-/// Violations of Property II are detected at runtime when
-/// [pri::too_many_tlocal_connections] is called.
-///
-/// This must be called from the same thread that borrowed the connection. For
-/// blocking task bodies, prefer [`ThreadLocalConnectionRecycleGuard`] so cleanup
-/// also runs while unwinding from a panic.
-pub fn recycle_thread_local_connection() {
-    let conn = CONNECTION.with(|c| c.take());
-    if let Some(conn) = conn {
-        sort_for_recycling(conn)
-    }
-}
-
-/// Drop this thread's cached connection instead of recycling it, so a connection
-/// left in the wrong scope by a failed `RESET USE` / warehouse restore can't be
-/// handed to another node.
+/// Drop this thread's cached connection instead of leaving it in the slot, so a
+/// connection left in the wrong scope by a failed `RESET USE` / warehouse
+/// restore can't be handed to the next node scheduled on this thread.
 pub fn drop_thread_local_connection() {
     let conn = CONNECTION.with(|c| c.take());
     drop(conn);
 }
 
-/// Drop guard that recycles this thread's cached adapter connection.
+/// Take this thread's cached connection, if it can be used with `fingerprint`.
 ///
-/// Create this at the start of a blocking task body that may borrow an adapter
-/// connection. Because it runs in [`Drop`], the connection is moved from the
-/// blocking worker's thread-local slot to the shared recycling pool on both
-/// normal return and panic unwinding.
-#[must_use = "connection recycling only happens when the guard is dropped"]
-pub struct ThreadLocalConnectionRecycleGuard;
-
-impl Default for ThreadLocalConnectionRecycleGuard {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl ThreadLocalConnectionRecycleGuard {
-    pub fn new() -> Self {
-        Self
-    }
-}
-
-impl Drop for ThreadLocalConnectionRecycleGuard {
-    fn drop(&mut self) {
-        recycle_thread_local_connection();
-    }
-}
-
-/// Send a connection for reuse by other nodes/threads.
-pub fn sort_for_recycling(conn: Box<dyn Connection>) {
-    let _ = RECYCLING_POOL.sort_for_recycling(conn);
-}
-
-/// Try to get a recycled connection matching `fingerprint` for reuse.
-pub fn recycle_connection(
-    node_id: Option<&String>,
+/// A cached connection whose config fingerprint doesn't match is dropped, so
+/// connections are only reused among identical connection configurations.
+fn take_tlocal_connection(
+    node_id: Option<String>,
     fingerprint: u64,
 ) -> Option<Box<dyn Connection>> {
-    RECYCLING_POOL
-        .recycle_matching(fingerprint)
-        .map(|mut conn| {
-            conn.update_node_id(node_id.cloned());
-            conn
-        })
+    let mut conn = CONNECTION.with(|c| c.take())?;
+    if conn.fingerprint() != fingerprint {
+        return None;
+    }
+    conn.update_node_id(node_id);
+    Some(conn)
 }
 
-/// Clears the global connection recycling pool.
-#[allow(dead_code)]
-pub(crate) fn drain_recycling_pool() {
-    while RECYCLING_POOL.recycle().is_some() {}
+/// Park a connection in this thread's slot so the next task that runs here
+/// finds it instead of opening another one.
+fn put_tlocal_connection(conn: Box<dyn Connection>) {
+    CONNECTION.with(|c| c.replace(Some(conn)));
 }
-
-static BACKPRESSURE_STATE: pri::BackpressureState = pri::BackpressureState::new();
 
 /// Borrow the current thread-local connection or create one if it's not set yet.
 ///
@@ -213,22 +102,9 @@ pub(crate) fn borrow_tlocal_connection_impl<'a>(
     engine_fingerprint: u64,
     new_connection_fn: impl Fn(Option<&State>, Option<String>) -> AdapterResult<Box<dyn Connection>>,
 ) -> AdapterResult<ConnectionGuard<'a>> {
-    let conn = match CONNECTION.with(|c| c.take()) {
-        None => match recycle_connection(node_id.as_ref(), engine_fingerprint) {
-            Some(conn) => conn,
-            None => new_connection_fn(state, node_id)?,
-        },
-        Some(mut c) => {
-            // Discard a cached connection whose config fingerprint doesn't match
-            // the current engine, so connections are reused only among identical
-            // connection configurations.
-            if c.fingerprint() != engine_fingerprint {
-                new_connection_fn(state, node_id)?
-            } else {
-                c.update_node_id(node_id);
-                c
-            }
-        }
+    let conn = match take_tlocal_connection(node_id.clone(), engine_fingerprint) {
+        Some(conn) => conn,
+        None => new_connection_fn(state, node_id)?,
     };
     let mut guard = ConnectionGuard::new(conn);
     // DuckDB connection are cheap to create, but if long-lived, prevent other processes (not
@@ -251,7 +127,6 @@ pub struct ConnectionGuard<'a> {
 
 impl ConnectionGuard<'_> {
     fn new(conn: Box<dyn Connection>) -> Self {
-        BACKPRESSURE_STATE.will_activate_connection();
         Self {
             conn: Some(conn),
             persist: true,
@@ -287,253 +162,11 @@ impl Drop for ConnectionGuard<'_> {
                 )
             });
         }
-        BACKPRESSURE_STATE.did_deactivate_connection();
-    }
-}
-
-/// [Future] that stays in [Pending](Poll::Pending) mode until DB connection
-/// capacity is available.
-///
-/// This follows Rust's [Future] polling pattern:
-/// - check capacity
-/// - register wakeup
-/// - return pending until notified
-///
-/// Capacity is metered by the number of admitted nodes (live
-/// [`NextBackpressureWakerGuard`] instances), not by the number of actively
-/// borrowed connections. Counting at gate entry closes the race where tasks
-/// could pass the readiness check before any of them had a chance to borrow a
-/// connection and update the active connection counter.
-pub struct ConnectionBackpressure {
-    high_water_mark: u32,
-    span: Option<Span>,
-    /// Key assigned on first registration into [`wakers`](pri::BackpressureState::wakers).
-    /// Reused across re-polls so the task keeps its original queue position.
-    key: Option<(Instant, u64)>,
-}
-
-impl ConnectionBackpressure {
-    /// Create a new backpressure [Future] with the given high water mark.
-    ///
-    /// `high_water_mark` is the number of active connections that should trigger
-    /// backpressure to the node scheduler when reached.
-    pub fn new(high_water_mark: u32) -> Self {
-        Self {
-            high_water_mark,
-            span: None,
-            key: None,
-        }
-    }
-
-    /// Create a new backpressure [Future] based on the given adapter type and `threads`
-    /// configuration option.
-    pub fn from_config(adapter_type: AdapterType, threads: Option<usize>) -> Self {
-        let high_water_mark = connection_limit_from_threads(adapter_type, threads);
-        Self::new(high_water_mark)
-    }
-
-    /// Establish or retrieve the ordered key for this backpressure future.
-    ///
-    /// The key is assigned on first registration into `wakers` and reused
-    /// across re-polls so the task keeps its original queue position. This
-    /// prevents priority inversion [1]. The lower the key, the earlier the task
-    /// is in the `wakers` queue and the sooner it will be woken when capacity is
-    /// available.
-    fn ordered_key(&mut self) -> (Instant, u64) {
-        *self.key.get_or_insert_with(|| {
-            let seq = BACKPRESSURE_STATE.fresh_waker_seq();
-            (Instant::now(), seq)
-        })
-    }
-
-    fn ensure_wait_span(&mut self) {
-        if self.span.is_none() {
-            let (active_nodes, active_connections) = backpressure_counts_for_trace();
-            self.span = Some(create_debug_span(ConnectionLimitWait {
-                active_nodes,
-                active_connections,
-            }));
-        }
-    }
-
-    /// Creates new NextBackpressureWakerGuard and updates current span data if trace is enabled
-    fn ready_guard(&self) -> Option<NextBackpressureWakerGuard> {
-        let guard = NextBackpressureWakerGuard::try_new(self.high_water_mark)?;
-
-        if !is_trace_enabled() {
-            return Some(guard);
-        }
-
-        let (active_nodes, active_connections) = backpressure_counts_for_trace();
-        if let Some(span) = &self.span {
-            dbt_common::tracing::span_info::update_span_attrs(
-                span,
-                |attrs: &mut ConnectionLimitWait| {
-                    attrs.active_nodes = active_nodes;
-                    attrs.active_connections = active_connections;
-                },
-            );
-        }
-
-        Some(guard)
-    }
-}
-
-impl Future for ConnectionBackpressure {
-    type Output = NextBackpressureWakerGuard;
-
-    fn poll(self: Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> Poll<Self::Output> {
-        use Poll::{Pending, Ready};
-        let this = self.get_mut();
-
-        let check_readiness_condition =
-            |this: &ConnectionBackpressure| this.ready_guard().map_or(Pending, Ready);
-
-        if let Ready(guard) = check_readiness_condition(this) {
-            return Ready(guard);
-        }
-
-        this.ensure_wait_span();
-
-        // Register the waker BEFORE checking the condition again to avoid a race
-        // where a node slot is released between the check and the registration
-        // (which would cause us to miss the wake-up and sleep forever). Once a
-        // waker is registered, the next node slot release will wake a waiter.
-        BACKPRESSURE_STATE.register_waker(this.ordered_key(), cx.waker().clone());
-
-        // Check again after registering waker
-        check_readiness_condition(this)
-    }
-}
-
-impl Drop for ConnectionBackpressure {
-    fn drop(&mut self) {
-        if let Some(key) = self.key {
-            BACKPRESSURE_STATE.unregister_waker(key);
-        }
-    }
-}
-
-/// Guard returned by [`ConnectionBackpressure`] for a node admitted past the
-/// backpressure gate.
-///
-/// Owning this guard represents one active node slot. The slot is acquired
-/// atomically before the guard is created and released when the guard is
-/// dropped, at which point the next queued waiter is woken.
-///
-/// https://en.wikipedia.org/wiki/Semaphore_(programming)#Passing_the_baton_pattern
-pub struct NextBackpressureWakerGuard;
-
-impl NextBackpressureWakerGuard {
-    fn try_new(high_water_mark: u32) -> Option<Self> {
-        if BACKPRESSURE_STATE.try_acquire_active_node(high_water_mark as usize) {
-            Some(Self)
-        } else {
-            None
-        }
-    }
-}
-
-impl Drop for NextBackpressureWakerGuard {
-    fn drop(&mut self) {
-        BACKPRESSURE_STATE.release_active_node();
-        BACKPRESSURE_STATE.wake_next_backpressure_waiter();
     }
 }
 
 mod pri {
     use super::*;
-
-    // XXX: don't put anything in this struct that prevents it from being a const-constructible
-    #[derive(Debug)]
-    pub(super) struct BackpressureState {
-        /// Atomic counting of active/borrowed connections.
-        active_connections: CachePadded<AtomicIsize>,
-        /// Monotonically increasing key for `wakers` entries.
-        waker_seq: CachePadded<AtomicU64>,
-        /// Count of active [`NextBackpressureWakerGuard`] instances.
-        ///
-        /// This tracks nodes admitted past the [`ConnectionBackpressure`] gate,
-        /// including nodes that have not borrowed a connection yet.
-        active_nodes: CachePadded<AtomicUsize>,
-        /// Wakers registered by [`ConnectionBackpressure`] futures waiting for capacity.
-        wakers: LazyLock<SkipMap<(Instant, u64), Waker>>,
-    }
-
-    impl BackpressureState {
-        pub const fn new() -> Self {
-            Self {
-                active_connections: CachePadded::new(AtomicIsize::new(0)),
-                active_nodes: CachePadded::new(AtomicUsize::new(0)),
-                waker_seq: CachePadded::new(AtomicU64::new(0)),
-                wakers: LazyLock::new(SkipMap::new),
-            }
-        }
-
-        pub fn try_acquire_active_node(&self, high_water_mark: usize) -> bool {
-            let mut current = self.active_nodes.load(Ordering::Acquire);
-            loop {
-                if current >= high_water_mark {
-                    return false;
-                }
-                match self.active_nodes.compare_exchange_weak(
-                    current,
-                    current + 1,
-                    Ordering::AcqRel,
-                    Ordering::Acquire,
-                ) {
-                    Ok(_) => return true,
-                    Err(actual) => current = actual,
-                }
-            }
-        }
-
-        pub fn release_active_node(&self) -> usize {
-            let prev = self.active_nodes.fetch_sub(1, Ordering::AcqRel);
-            debug_assert!(prev > 0, "active_nodes counter underflow");
-            prev - 1
-        }
-
-        pub fn num_active_nodes(&self) -> usize {
-            self.active_nodes.load(Ordering::Acquire)
-        }
-
-        pub fn will_activate_connection(&self) {
-            self.active_connections.fetch_add(1, Ordering::AcqRel);
-        }
-
-        pub fn did_deactivate_connection(&self) {
-            let prev = self.active_connections.fetch_sub(1, Ordering::AcqRel);
-            debug_assert!(prev > 0, "ACTIVE_CONNECTIONS counter underflow");
-        }
-
-        /// Wake the longest-waiting backpressure waiter, if any.
-        ///
-        /// The [`SkipMap`] is sorted by insertion key, so `pop_front` removes the
-        /// entry with the smallest key — the oldest registered waker.
-        pub fn wake_next_backpressure_waiter(&self) {
-            if let Some(entry) = self.wakers.pop_front() {
-                entry.value().wake_by_ref();
-            }
-        }
-
-        pub fn num_active_connections(&self) -> isize {
-            self.active_connections.load(Ordering::Acquire)
-        }
-
-        pub fn fresh_waker_seq(&self) -> u64 {
-            self.waker_seq.fetch_add(1, Ordering::AcqRel)
-        }
-
-        pub fn register_waker(&self, key: (Instant, u64), waker: Waker) {
-            self.wakers.insert(key, waker);
-        }
-
-        pub fn unregister_waker(&self, key: (Instant, u64)) {
-            #[allow(clippy::used_underscore_binding)]
-            let _removed = self.wakers.remove(&key).is_some();
-        }
-    }
 
     /// A wrapper around a [Connection] stored in thread-local storage
     ///
@@ -567,9 +200,9 @@ mod pri {
                 //     }  // Connection from outer_guard is returning to CONNECTION,
                 //        // but one was already there -- the one from inner_guard.
                 //
-                // We hope to not reach this branch, but if we do, just return the
-                // previous connection to the recycling pool and move on.
-                let _ = RECYCLING_POOL.sort_for_recycling(prev_conn);
+                // We hope to not reach this branch, but if we do, just close the
+                // previous connection and move on.
+                drop(prev_conn);
                 // An assert could be added here to help finding code that creates
                 // a connection instead of taking one as a parameter so that the
                 // outermost caller can pass the thread-local one by reference.
@@ -593,118 +226,24 @@ mod pri {
         // set a breakpoint on this function to find where nested connections guards are created
         debug_assert!(false, "nested connection guards detected");
     }
-
-    /// A wrapper around a [Connection] (non-Sync) that never lets the inner connection escape.
-    ///
-    /// This is used to store connections in the recycling pool, which is shared across threads
-    /// and needs to be [Sync]. By never letting the inner connection escape, we can safely
-    /// implement [Sync] for this wrapper even though [Connection] itself is not [Sync].
-    struct StoredConnection {
-        conn: Box<dyn Connection>,
-    }
-
-    impl StoredConnection {
-        fn new(conn: Box<dyn Connection>) -> Self {
-            Self { conn }
-        }
-
-        fn into_inner(self) -> Box<dyn Connection> {
-            self.conn
-        }
-    }
-
-    // SAFETY: See [StoredConnection].
-    unsafe impl Sync for StoredConnection {}
-
-    pub(super) struct ConnectionRecyclingPool {
-        connection_set: scc::HashMap<u64, StoredConnection>,
-    }
-
-    impl ConnectionRecyclingPool {
-        pub(super) fn new() -> Self {
-            Self {
-                connection_set: scc::HashMap::new(),
-            }
-        }
-
-        pub(super) fn recycle(&self) -> Option<Box<dyn Connection>> {
-            let mut any_id: Option<u64> = None;
-            loop {
-                let found = !self.connection_set.iter_sync(|id, _| {
-                    any_id = Some(*id);
-                    false
-                });
-                if found {
-                    if let Some(id) = any_id {
-                        match self
-                            .connection_set
-                            .remove_sync(&id)
-                            .map(|(_, c)| c.into_inner())
-                        {
-                            Some(conn) => return Some(conn),
-                            None => continue, // the connection was taken by another thread, try again
-                        }
-                    } else {
-                        unreachable!("any_id should be Some if found is true");
-                    }
-                } else {
-                    return None; // the set is empty, stop trying
-                }
-            }
-        }
-
-        pub(super) fn recycle_matching(&self, fingerprint: u64) -> Option<Box<dyn Connection>> {
-            let max_attempts = self.connection_set.len();
-            for _ in 0..max_attempts {
-                let mut found_id: Option<u64> = None;
-                self.connection_set.iter_sync(|id, stored| {
-                    if stored.conn.fingerprint() == fingerprint {
-                        found_id = Some(*id);
-                        false
-                    } else {
-                        true
-                    }
-                });
-                let id = found_id?;
-                match self
-                    .connection_set
-                    .remove_sync(&id)
-                    .map(|(_, c)| c.into_inner())
-                {
-                    Some(conn) => return Some(conn),
-                    None => continue, // taken by another thread, re-scan
-                }
-            }
-            None
-        }
-
-        pub(super) fn sort_for_recycling(&self, conn: Box<dyn Connection>) -> Result<(), ()> {
-            let conn_id = CONN_SEQ_NUM.fetch_add(1, Ordering::Acquire);
-            self.connection_set
-                .insert_sync(conn_id, StoredConnection::new(conn))
-                .map_err(|_| ())
-        }
-    }
 }
 
-/// Connection factory that creates connections via an [`AdapterEngine`],
-/// with recycling through the global connection pool.
+/// Connection factory that hands a worker thread its cached connection, or
+/// creates one via an [`AdapterEngine`] if that thread has none.
 ///
-/// The connection limit is derived from the `threads` configuration using
-/// [`connection_limit_from_threads`], the same logic used by
-/// [`ConnectionBackpressure`].
+/// [`MapReduce`] calls both methods from the same worker thread, so a
+/// connection returned by `recycle_connection` is the one the next task on that
+/// worker picks up.
+///
+/// How many connections are created concurrently is decided by [MapReduce]
+/// from the number of keys and the parallelism of the `dbt_runtime` pool.
 pub struct AdapterConnectionFactory {
     engine: Arc<dyn AdapterEngine>,
-    max_connections: u32,
 }
 
 impl AdapterConnectionFactory {
-    pub fn new(engine: Arc<dyn AdapterEngine>, threads: Option<usize>) -> Self {
-        let adapter_type = engine.adapter_type();
-        Self {
-            engine,
-            max_connections: connection_limit_from_threads(adapter_type, threads),
-        }
+    pub fn new(engine: Arc<dyn AdapterEngine>) -> Self {
+        Self { engine }
     }
 }
 
@@ -712,34 +251,26 @@ impl ConnectionFactory for AdapterConnectionFactory {
     type Error = Cancellable<AdapterError>;
 
     fn new_connection(&self, node_id: Option<&str>) -> Result<Box<dyn Connection>, Self::Error> {
-        let node_id_string = node_id.map(|s| s.to_string());
-        if let Some(conn) = recycle_connection(node_id_string.as_ref(), self.engine.fingerprint()) {
-            Ok(conn)
-        } else {
-            self.engine
-                .new_connection(None, node_id_string)
-                .map_err(Cancellable::Error)
+        let node_id = node_id.map(|s| s.to_string());
+        match take_tlocal_connection(node_id.clone(), self.engine.fingerprint()) {
+            Some(conn) => Ok(conn),
+            None => self
+                .engine
+                .new_connection(None, node_id)
+                .map_err(Cancellable::Error),
         }
     }
 
     fn recycle_connection(&self, conn: Box<dyn Connection>) {
-        // DuckDB connections must not outlive this call. Dropping `conn` here closes
-        // it immediately instead of parking it in the process-lifetime RECYCLING_POOL.
-        if self.engine.adapter_type() != AdapterType::DuckDB {
-            sort_for_recycling(conn);
+        // DuckDB connections must not outlive this call: a long-lived one keeps
+        // other processes from opening the same database file. Dropping `conn`
+        // here closes it instead of parking it in the thread-local slot, which
+        // is also why `borrow_tlocal_connection_impl` never caches one.
+        if self.engine.adapter_type() == AdapterType::DuckDB {
+            drop(conn);
+        } else {
+            put_tlocal_connection(conn);
         }
-    }
-
-    /// Dynamic limit queried by [MapReduce] when deciding to create more connections for tasks.
-    fn connection_limit(&self) -> u32 {
-        // NOTE(felipecrv): this implementation is racy: the number of active connections could
-        // have changed by the time we return. I don't want to introduce a Mutex now cause it
-        // would create a lot of undesirablae contention, but I also don't want to implement
-        // the subtle double-checked locking pattern [1] just yet.
-        //
-        // [1]: https://en.wikipedia.org/wiki/Double-checked_locking
-        let num_active = BACKPRESSURE_STATE.num_active_connections().max(0) as u32;
-        self.max_connections.saturating_sub(num_active)
     }
 }
 
@@ -750,12 +281,9 @@ mod tests {
     use crate::engine::NoopConnection;
     use crate::sql_types::DefaultTypeOps;
     use crate::stmt_splitter::DefaultStmtSplitter;
-    use dbt_adbc::Statement;
     use dbt_schemas::schemas::relations::DEFAULT_RESOLVED_QUOTING;
     use std::collections::BTreeMap;
-    use std::sync::Mutex;
-
-    static GLOBAL_CONNECTION_TEST_LOCK: Mutex<()> = Mutex::new(());
+    use std::sync::atomic::{AtomicU64, Ordering};
 
     fn make_conn() -> Box<dyn Connection> {
         Box::new(NoopConnection)
@@ -819,13 +347,6 @@ mod tests {
         });
     }
 
-    fn _assert_sync<T: Sync>() {}
-
-    #[test]
-    fn recycling_pool_is_sync() {
-        _assert_sync::<pri::ConnectionRecyclingPool>();
-    }
-
     #[test]
     fn tls_container_stores_tlocal_connections() {
         let c = pri::TlsConnectionContainer::new();
@@ -835,29 +356,12 @@ mod tests {
         assert!(c.take().is_none());
     }
 
-    #[test]
-    fn multiple_connections_all_recycled() {
-        let pool = pri::ConnectionRecyclingPool::new();
-        pool.sort_for_recycling(make_conn()).unwrap();
-        pool.sort_for_recycling(make_conn()).unwrap();
-        pool.sort_for_recycling(make_conn()).unwrap();
-        assert!(pool.recycle().is_some());
-        assert!(pool.recycle().is_some());
-        assert!(pool.recycle().is_some());
-        assert!(pool.recycle().is_none());
-    }
-
-    // Fresh threads isolate TLS state; the lock isolates the process-global pool
-    // when libtest runs these cases concurrently.
+    // A fresh worker thread isolates TLS state, and is also the only place a
+    // connection may be created: `new_connection` asserts it. Nothing else is
+    // shared between these cases now that connections live only in the slot of
+    // the thread that opened them, so they need no lock against each other.
     fn run_on_fresh_thread(f: impl FnOnce() + Send + 'static) {
-        let result = {
-            let _guard = GLOBAL_CONNECTION_TEST_LOCK.lock().unwrap();
-            drain_recycling_pool();
-            let result = std::thread::spawn(f).join();
-            drain_recycling_pool();
-            result
-        };
-        result.unwrap();
+        dbt_runtime::testing::block_on_worker(f);
     }
 
     #[test]
@@ -868,9 +372,6 @@ mod tests {
                 let conn = c.take();
                 assert!(conn.is_none());
             });
-
-            // Ensure recycling pool starts empty
-            assert!(RECYCLING_POOL.recycle().is_none());
 
             let new_connection_calls = AtomicU64::new(0);
             let new_connection_fn = |_: Option<&State>, _: Option<String>| {
@@ -894,21 +395,12 @@ mod tests {
                 // Connection should be returned to thread-local after guard is dropped
                 let conn = c.take();
                 assert!(conn.is_some());
-                c.replace(conn); // put it back for the next test
+                c.replace(conn); // put it back for the next borrow
             });
-            recycle_thread_local_connection();
-            CONNECTION.with(|c| {
-                // Connection is not in the thread-local anymore
-                assert!(c.take().is_none());
-            });
-            // Connection should be in the recycling pool after node execution finishes
-            let conn = RECYCLING_POOL.recycle();
-            assert!(conn.is_some());
-            CONNECTION.with(|c| {
-                c.replace(conn); // put it back for the next test
-            });
-            recycle_thread_local_connection();
-            assert_eq!(new_connection_calls.load(Ordering::Relaxed), 1); // ensure this is still 1
+
+            // The connection stays in the slot once the node that used it is
+            // done, so the next node scheduled on this thread borrows it
+            // instead of opening another one.
             let _guard = borrow_tlocal_connection_impl(
                 AdapterType::Snowflake,
                 None,
@@ -919,13 +411,13 @@ mod tests {
             assert_eq!(
                 new_connection_calls.load(Ordering::Relaxed),
                 1,
-                "connection should be reused from the recycling pool"
+                "connection should be reused from the thread-local slot"
             );
         });
     }
 
     #[test]
-    fn drop_thread_local_connection_drops_and_does_not_recycle() {
+    fn drop_thread_local_connection_empties_the_slot() {
         run_on_fresh_thread(|| {
             // Put a connection in the thread-local
             CONNECTION.with(|c| {
@@ -946,9 +438,6 @@ mod tests {
                 let conn = c.take();
                 assert!(conn.is_none());
             });
-
-            // Ensure the connection was dropped, not recycled into the pool
-            assert!(RECYCLING_POOL.recycle().is_none());
         });
     }
 
@@ -958,7 +447,6 @@ mod tests {
     fn mismatched_fingerprint_forces_new_connection() {
         run_on_fresh_thread(|| {
             CONNECTION.with(|c| assert!(c.take().is_none()));
-            assert!(RECYCLING_POOL.recycle().is_none());
 
             let calls = AtomicU64::new(0);
             let new_connection_fn = |_: Option<&State>, _: Option<String>| {
@@ -986,26 +474,8 @@ mod tests {
             drop(guard);
             drop_thread_local_connection();
 
-            // Same fingerprint, but now the recycling-pool discard path.
-            RECYCLING_POOL.sort_for_recycling(make_conn()).unwrap();
-            let guard = borrow_tlocal_connection_impl(
-                AdapterType::Databricks,
-                None,
-                None,
-                mismatched_fingerprint,
-                new_connection_fn,
-            )
-            .unwrap();
-            assert_eq!(
-                calls.load(Ordering::Relaxed),
-                2,
-                "non-matching pooled connection should be discarded"
-            );
-            drop(guard);
-            drop_thread_local_connection();
-
-            // A matching fingerprint (0) reuses the pooled connection instead.
-            RECYCLING_POOL.sort_for_recycling(make_conn()).unwrap();
+            // A matching fingerprint (0) reuses the cached connection instead.
+            CONNECTION.with(|c| c.replace(Some(make_conn())));
             let guard = borrow_tlocal_connection_impl(
                 AdapterType::Databricks,
                 None,
@@ -1016,54 +486,10 @@ mod tests {
             .unwrap();
             assert_eq!(
                 calls.load(Ordering::Relaxed),
-                2,
-                "matching pooled connection should be reused, not recreated"
+                1,
+                "matching thread-local connection should be reused, not recreated"
             );
             drop(guard);
-        });
-    }
-
-    struct FingerprintedConnection(u64);
-
-    impl Connection for FingerprintedConnection {
-        fn new_statement(&mut self) -> adbc_core::error::Result<Box<dyn Statement>> {
-            unimplemented!()
-        }
-        fn cancel(&mut self) -> adbc_core::error::Result<()> {
-            Ok(())
-        }
-        fn commit(&mut self) -> adbc_core::error::Result<()> {
-            Ok(())
-        }
-        fn rollback(&mut self) -> adbc_core::error::Result<()> {
-            Ok(())
-        }
-        fn fingerprint(&self) -> u64 {
-            self.0
-        }
-    }
-
-    #[test]
-    fn recycle_finds_a_matching_connection_behind_a_mismatched_one() {
-        run_on_fresh_thread(|| {
-            drain_recycling_pool();
-
-            RECYCLING_POOL
-                .sort_for_recycling(Box::new(FingerprintedConnection(999)))
-                .unwrap();
-            RECYCLING_POOL
-                .sort_for_recycling(Box::new(FingerprintedConnection(7)))
-                .unwrap();
-
-            let conn = recycle_connection(None, 7).expect("a matching connection is pooled");
-            assert_eq!(conn.fingerprint(), 7);
-
-            let remaining = RECYCLING_POOL
-                .recycle()
-                .expect("the mismatched connection must still be pooled, not evicted");
-            assert_eq!(remaining.fingerprint(), 999);
-
-            assert!(RECYCLING_POOL.recycle().is_none());
         });
     }
 }

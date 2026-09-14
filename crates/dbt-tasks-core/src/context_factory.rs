@@ -92,7 +92,7 @@ pub trait TaskRunnerCtxFactory: Send + Sync + 'static {
                     &schedule,
                     &worker_id,
                     resolver_state.as_ref(),
-                    jinja_env.as_ref(),
+                    &jinja_env,
                     freshness_results.as_deref(),
                     extended_ctx.as_ref(),
                 )
@@ -187,7 +187,7 @@ pub trait TaskRunnerCtxFactory: Send + Sync + 'static {
         schedule: &'a Schedule<String>,
         worker_id: &'a str,
         resolver_state: &'a ResolverState,
-        env: &'a JinjaEnv,
+        env: &'a Arc<JinjaEnv>,
         freshness_results: Option<&'a dyn PreTaskRunData>,
         extended_ctx: &'a dyn ExtendedCtx,
     ) -> Pin<Box<dyn Future<Output = Result<DashMap<String, String>, Box<FsError>>> + Send + 'a>>;

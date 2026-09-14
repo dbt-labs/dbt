@@ -71,12 +71,13 @@ export function LineageView({ rootUniqueId, modelName }: Props) {
           topBarLeft={
             <Button
               variant="outline"
-              size="icon-sm"
-              icon={<Maximize2 className="size-4" />}
+              size="sm"
+              icon={<Maximize2 className="size-3.5" />}
+              text="Expand"
               ariaLabel="Open fullscreen lineage"
               tooltip="Open fullscreen lineage"
               onClick={() => navigate(paths.lineage(rootUniqueId))}
-              className="h-9 w-9"
+              className="h-9"
             />
           }
           onNodeClick={(uniqueId) => navigate(paths.details(uniqueId))}

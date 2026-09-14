@@ -33,7 +33,10 @@ pub mod view_defs;
 pub mod ingest;
 
 pub mod info_schema;
-pub use info_schema::{INFO_SCHEMA_DIR_NAME, Materializer, STAGING_DIR_NAME, write_info_schema};
+pub use info_schema::{
+    INFO_SCHEMA_DIR_NAME, INFO_SCHEMA_VERSION, Materializer, STAGING_DIR_NAME, versioned_dir,
+    write_info_schema,
+};
 
 pub mod parquet;
 pub use parquet::{IndexWriter, WriteMode};
@@ -52,7 +55,8 @@ pub mod freshness;
 pub mod provider;
 
 pub use backend::{
-    Backend, BackendError, RegistrationReport, UnavailableBackend, register_index_views,
+    Backend, BackendError, DuckDbInfoSchemaBackend, RegistrationReport, UnavailableBackend,
+    register_index_views, register_info_schema_views,
 };
 pub use column_impact::{
     ColumnImpactArgs, ColumnImpactNode, ColumnImpactProvider, UnavailableColumnImpact,

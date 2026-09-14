@@ -119,6 +119,10 @@ on:
         description: "Release SemVer. OSS: X.Y.Z or X.Y.Z-{alpha|beta|rc|preview|dev}.N. GA proprietary: X.Y.Z only."
         required: true
         type: string
+      core_wheel_version:
+        description: "Optional dbt-core Python package SemVer (same format as version). Defaults to version; does not change the Rust build, release tag, dbt-oss, or parser version."
+        required: false
+        type: string
       dry_run:
         description: "Build and pack only — skip tag push, PyPI publish, GitHub Release, and Homebrew publish."
         required: false
@@ -426,6 +430,40 @@ jobs:
         with:
           python-version: "3.11"
 
+      # Runs after Setup Python above: on macOS/Windows legs, `python3` isn't
+      # guaranteed on PATH until setup-python has run (Windows runner images
+      # in particular don't reliably ship a `python3` shim).
+      - name: Validate dbt-core wheel version
+        id: core-wheel-version
+        if: inputs.core_wheel_version != ''
+        env:
+          CORE_WHEEL_VERSION: ${{ inputs.core_wheel_version }}
+        run: |
+          if [ -x /opt/python/cp311-cp311/bin/python ]; then
+            PY=/opt/python/cp311-cp311/bin/python
+          else
+            PY=python3
+          fi
+          "$PY" - <<'PY'
+          import os
+          import re
+
+          # Match the SemVer-to-PEP-440 conversion used by the sdist publisher.
+          version = os.environ["CORE_WHEEL_VERSION"]
+          number = r"(?:0|[1-9][0-9]*)"
+          match = re.fullmatch(
+              rf"({number}\.{number}\.{number})(?:-(alpha|beta|rc|preview|dev)\.({number}))?",
+              version,
+          )
+          if match is None:
+              raise SystemExit("core_wheel_version must be X.Y.Z or X.Y.Z-{alpha|beta|rc|preview|dev}.N")
+          base, lane, sequence = match.groups()
+          suffix = {"alpha": "a", "beta": "b", "rc": "rc", "preview": "rc", "dev": ".dev"}
+          version = base if lane is None else f"{base}{suffix[lane]}{sequence}"
+          with open(os.environ["GITHUB_OUTPUT"], "a") as output:
+              output.write(f"pep440={version}\n")
+          PY
+
       # A venv sidesteps the mac/windows runners' externally-managed system
       # Python (PEP 668), which rejects a plain `pip install maturin`
       # outright. `maturin build` only writes a wheel file (it doesn't
@@ -440,6 +478,7 @@ jobs:
       - name: Build maturin wheel (dbt-core)
         env:
           TARGET: ${{ matrix.target }}
+          CORE_WHEEL_VERSION: ${{ steps.core-wheel-version.outputs.pep440 }}
         run: |
           if [ -x /opt/python/cp311-cp311/bin/python ]; then
             PY=/opt/python/cp311-cp311/bin/python
@@ -457,6 +496,15 @@ jobs:
             VENV_BIN=".maturin-venv/bin"
           fi
           "$VENV_BIN/python" -m pip install --upgrade pip "maturin>=1.0,<2.0"
+
+          if [ -n "$CORE_WHEEL_VERSION" ]; then
+            PYPROJECT=crates/dbt-sa-python/pyproject.toml
+            sed "s/dynamic = \[\"version\"\]/version = \"$CORE_WHEEL_VERSION\"/" "$PYPROJECT" > "$PYPROJECT.tmp"
+            mv "$PYPROJECT.tmp" "$PYPROJECT"
+            # Guard against a silent no-op sed (exits 0 either way).
+            grep -qx "version = \"$CORE_WHEEL_VERSION\"" "$PYPROJECT"
+          fi
+
           "$VENV_BIN/maturin" build --release --locked \
             --target "$TARGET" \
             --interpreter "$PY" \
@@ -468,6 +516,10 @@ jobs:
           # the interpreter/venv.
           echo "MATURIN_PY=$PY" >> "$GITHUB_ENV"
           echo "MATURIN_VENV_BIN=$VENV_BIN" >> "$GITHUB_ENV"
+
+      - name: Restore pyproject after dbt-core wheel
+        if: ${{ always() && inputs.core_wheel_version != '' }}
+        run: git -c safe.directory="$GITHUB_WORKSPACE" restore -- crates/dbt-sa-python/pyproject.toml
 
       - name: Upload binary artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # actions/upload-artifact@v4
@@ -863,12 +915,21 @@ jobs:
       # mashumaro; the root says >=3.9, for the binary CLI wheel). uv trusts
       # the sdist's PKG-INFO over the wheel's, so a mismatch installs broken —
       # `cargo ci pypi publish` cross-checks both and fails the release.
+      # Only dbt-core gets the banner; swap-then-restore like the renames below.
+      - name: Prepend PyPI banner to README (dbt-core)
+        if: inputs.release_target == 'all' || inputs.release_target == 'core'
+        run: |
+          cat .github/dbt-core-pypi-banner.md README.md > README.md.tmp
+          mv README.md.tmp README.md
+
       - name: Publish (dbt-core)
         if: inputs.release_target == 'all' || inputs.release_target == 'core'
+        env:
+          CORE_WHEEL_VERSION: ${{ inputs.core_wheel_version || needs.prepare-release.outputs.version }}
         run: |
           cargo ci pypi publish \
             --environment ${{ inputs.dry_run_with_test_pypi && 'test-pypi' || 'prod' }} \
-            --version "${{ needs.prepare-release.outputs.version }}" \
+            --version "$CORE_WHEEL_VERSION" \
             --download-base-url "$BASE_URL" \
             --runtime-metadata-from crates/dbt-sa-python \
             --python-tag cp311 \
@@ -878,6 +939,10 @@ jobs:
             --target x86_64-apple-darwin \
             --target aarch64-apple-darwin \
             --target x86_64-pc-windows-msvc
+
+      - name: Restore README after dbt-core publish
+        if: ${{ always() && (inputs.release_target == 'all' || inputs.release_target == 'core') }}
+        run: git -c safe.directory="$GITHUB_WORKSPACE" restore -- README.md
 
       - name: Rename pyproject for parser publish
         if: inputs.release_target == 'all' || inputs.release_target == 'parser'

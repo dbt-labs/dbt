@@ -36,6 +36,7 @@ pub mod handle;
 pub use handle::Handle;
 
 mod context;
+pub mod testing;
 pub use context::current::SetCurrentGuard;
 pub use context::is_pool_worker;
 
@@ -45,3 +46,4 @@ mod util;
 
 pub use dbt_runtime_macros::main;
 pub use dbt_runtime_macros::test;
+pub use dbt_runtime_macros::worker_test;

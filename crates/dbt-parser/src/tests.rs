@@ -1812,6 +1812,258 @@ mod tests {
         assert_eq!(lm.code, Some(ErrorCode::InvalidConfig as u32));
     }
 
+    // --- dbt-core#15957: state:modified diagnostic logging must carry compared values ---
+    //
+    // `log_state_mod_diff` (`dbt-schemas`) emits a `StateModifiedDiff` TRACE event per failed
+    // `state:modified` sub-check. Several call sites pass `None` for the compared-values slot
+    // even though real values are on hand, so trace logs/OTEL never show *what* differed — only
+    // *that* something did. `check_relation_modified` is the working baseline (real `(current,
+    // previous)` tuples); `check_body_modified` and `check_contract_modified` are the reported
+    // and a sibling gap, respectively. These use the same `TestLayer` tracing-capture harness as
+    // `test_databricks_catalog_alias_duplicate_at_same_layer_errors` above, driven through
+    // `StateArtifacts::is_modified` — the only public entry point into these checks.
+
+    /// Runs `f` under a subscriber that captures every emitted `StateModifiedDiff` telemetry
+    /// event, at TRACE level (matching `--log-level-file trace`, the level `log_state_mod_diff`
+    /// itself gates on).
+    fn capture_state_mod_diffs<F: FnOnce()>(f: F) -> Vec<dbt_telemetry::StateModifiedDiff> {
+        use dbt_tracing::layer::ConsumerLayer;
+        use dbt_tracing::test_support::mocks::{MockDynSpanEvent, TestLayer, test_data_layer};
+        use dbt_tracing::{emit::create_root_info_span, init::create_tracing_subcriber_with_layer};
+
+        let (test_layer, _, _, log_records) = TestLayer::new();
+        let subscriber = create_tracing_subcriber_with_layer(
+            tracing::level_filters::LevelFilter::TRACE,
+            test_data_layer(
+                1,
+                None,
+                false,
+                std::iter::empty(),
+                std::iter::once(Box::new(test_layer) as ConsumerLayer),
+            ),
+            &[],
+        )
+        .expect("test tracing filter directives must be valid");
+
+        tracing::subscriber::with_default(subscriber, || {
+            let _rs = create_root_info_span(MockDynSpanEvent {
+                name: "root".to_string(),
+                flags: dbt_tracing::TelemetryOutputFlags::ALL,
+                ..Default::default()
+            })
+            .entered();
+            f();
+        });
+
+        log_records
+            .lock()
+            .expect("should have no locks")
+            .iter()
+            .filter_map(|r| {
+                r.attributes
+                    .downcast_ref::<dbt_telemetry::StateModifiedDiff>()
+                    .cloned()
+            })
+            .collect()
+    }
+
+    /// RED: reported bug. A genuine body change must be logged with the actual (current,
+    /// previous) checksums so a customer/support engineer can see *why* the node was selected —
+    /// today `check_body_modified` always logs `self_value = other_value = None`.
+    #[test]
+    fn test_state_modified_body_check_logs_checksum_values() {
+        use dbt_schemas::schemas::common::DbtChecksum;
+        use dbt_schemas::schemas::{DbtModel, ModificationType, Nodes, StateArtifacts};
+        use std::sync::Arc;
+
+        let mut previous = DbtModel::default();
+        previous.__common_attr__.unique_id = "model.pkg.my_model".to_string();
+        previous.__common_attr__.checksum = DbtChecksum::String("aaa".to_string());
+
+        let mut current = previous.clone();
+        current.__common_attr__.checksum = DbtChecksum::String("bbb".to_string());
+
+        let mut nodes = Nodes::default();
+        nodes.models.insert(
+            previous.__common_attr__.unique_id.clone(),
+            Arc::new(previous),
+        );
+        let state = StateArtifacts::from_previous_nodes(nodes);
+
+        let diffs = capture_state_mod_diffs(|| {
+            assert!(
+                state.is_modified(
+                    &current,
+                    Some(ModificationType::Body),
+                    None,
+                    AdapterType::Snowflake
+                ),
+                "body checksum differs"
+            );
+        });
+
+        let body_diff = diffs
+            .iter()
+            .find(|d| d.check == "body")
+            .expect("check_body_modified must emit a StateModifiedDiff for the body check");
+        assert!(
+            body_diff.self_value.is_some() && body_diff.other_value.is_some(),
+            "expected the current/previous checksums to be logged, got self_value={:?} \
+             other_value={:?} — dbt-core#15957",
+            body_diff.self_value,
+            body_diff.other_value,
+        );
+    }
+
+    /// RED: the same gap recurs for the contract check — `check_contract_modified` always logs
+    /// `None`, even though `same_contract`'s caller has both contract states in hand. This shows
+    /// the reported issue is not specific to `state:modified.body`: any sub-check that only logs
+    /// a bare boolean loses the same diagnostic information.
+    #[test]
+    fn test_state_modified_contract_check_logs_no_values_same_gap_as_body() {
+        use dbt_schemas::schemas::common::DbtContract;
+        use dbt_schemas::schemas::{DbtModel, ModificationType, Nodes, StateArtifacts};
+        use std::sync::Arc;
+
+        let mut previous = DbtModel::default();
+        previous.__common_attr__.unique_id = "model.pkg.my_model".to_string();
+        previous.__model_attr__.contract = None;
+
+        let mut current = previous.clone();
+        current.__model_attr__.contract = Some(DbtContract {
+            alias_types: true,
+            enforced: true,
+            checksum: None,
+        });
+
+        let mut nodes = Nodes::default();
+        nodes.models.insert(
+            previous.__common_attr__.unique_id.clone(),
+            Arc::new(previous),
+        );
+        let state = StateArtifacts::from_previous_nodes(nodes);
+
+        let diffs = capture_state_mod_diffs(|| {
+            assert!(
+                state.is_modified(
+                    &current,
+                    Some(ModificationType::Contract),
+                    None,
+                    AdapterType::Snowflake
+                ),
+                "contract was newly enforced"
+            );
+        });
+
+        let contract_diff = diffs
+            .iter()
+            .find(|d| d.check == "contract")
+            .expect("check_contract_modified must emit a StateModifiedDiff for the contract check");
+        assert!(
+            contract_diff.self_value.is_some() && contract_diff.other_value.is_some(),
+            "expected the current/previous contract state to be logged, got self_value={:?} \
+             other_value={:?} — same diagnostic gap as dbt-core#15957, just for `contract` \
+             instead of `body`",
+            contract_diff.self_value,
+            contract_diff.other_value,
+        );
+    }
+
+    /// GREEN control: `check_relation_modified` already does this correctly — it logs real
+    /// `(current, previous)` tuples for `database`/`schema`/`alias`. This is the pattern
+    /// `check_body_modified`/`check_contract_modified` should be brought in line with.
+    #[test]
+    fn test_state_modified_relation_check_already_logs_real_values() {
+        use dbt_schemas::schemas::{DbtModel, ModificationType, Nodes, StateArtifacts};
+        use std::collections::BTreeMap;
+        use std::sync::Arc;
+
+        let mut previous = DbtModel::default();
+        previous.__common_attr__.unique_id = "model.pkg.my_model".to_string();
+        previous.__base_attr__.unrendered_config = BTreeMap::from([(
+            "schema".to_string(),
+            dbt_yaml::from_str::<dbt_yaml::Value>("\"prod\"").expect("valid yaml value"),
+        )]);
+
+        let mut current = previous.clone();
+        current.__base_attr__.unrendered_config = BTreeMap::from([(
+            "schema".to_string(),
+            dbt_yaml::from_str::<dbt_yaml::Value>("\"other\"").expect("valid yaml value"),
+        )]);
+
+        let mut nodes = Nodes::default();
+        nodes.models.insert(
+            previous.__common_attr__.unique_id.clone(),
+            Arc::new(previous),
+        );
+        let state = StateArtifacts::from_previous_nodes(nodes);
+
+        let diffs = capture_state_mod_diffs(|| {
+            assert!(
+                state.is_modified(
+                    &current,
+                    Some(ModificationType::Relation),
+                    None,
+                    AdapterType::Snowflake
+                ),
+                "schema differs"
+            );
+        });
+
+        let schema_diff = diffs
+            .iter()
+            .find(|d| d.check == "schema")
+            .expect("check_relation_modified must emit a StateModifiedDiff for the schema check");
+        assert_eq!(schema_diff.self_value.as_deref(), Some("Some(\"other\")"));
+        assert_eq!(schema_diff.other_value.as_deref(), Some("Some(\"prod\")"));
+    }
+
+    /// RED (pre-fix): analyses had *no* content-modified logging at all — unlike models, which at
+    /// least logged a bare boolean before the dbt-core#15957 fix, `DbtAnalysis::has_same_content`
+    /// never called `log_state_mod_diff`. There is no dedicated `ModificationType` for the content
+    /// check, so it's only reached via the default `Any` chain (`is_modified(node, None, ...)`),
+    /// which is also how it fires for a real edited analysis SQL file.
+    #[test]
+    fn test_state_modified_analysis_content_check_logs_checksum_values() {
+        use dbt_schemas::schemas::common::DbtChecksum;
+        use dbt_schemas::schemas::{DbtAnalysis, Nodes, StateArtifacts};
+        use std::sync::Arc;
+
+        let mut previous = DbtAnalysis::default();
+        previous.__common_attr__.unique_id = "analysis.pkg.my_analysis".to_string();
+        previous.__common_attr__.checksum = DbtChecksum::String("aaa".to_string());
+
+        let mut current = previous.clone();
+        current.__common_attr__.checksum = DbtChecksum::String("bbb".to_string());
+
+        let mut nodes = Nodes::default();
+        nodes.analyses.insert(
+            previous.__common_attr__.unique_id.clone(),
+            Arc::new(previous),
+        );
+        let state = StateArtifacts::from_previous_nodes(nodes);
+
+        let diffs = capture_state_mod_diffs(|| {
+            assert!(
+                state.is_modified(&current, None, None, AdapterType::Snowflake),
+                "content checksum differs"
+            );
+        });
+
+        let content_diff = diffs.iter().find(|d| d.check == "content").expect(
+            "check_modified_content (via DbtAnalysis::has_same_content) must emit a \
+             StateModifiedDiff for the content check",
+        );
+        assert!(
+            content_diff.self_value.is_some() && content_diff.other_value.is_some(),
+            "expected the current/previous checksums to be logged, got self_value={:?} \
+             other_value={:?} — same diagnostic gap as dbt-core#15957, for analyses' content \
+             check instead of models' body check",
+            content_diff.self_value,
+            content_diff.other_value,
+        );
+    }
+
     /// A doc block whose name is not an identifier is skipped, but the other
     /// blocks in the same file must still be registered. Dropping them made
     /// every `doc()` reference in the project render as a missing-doc

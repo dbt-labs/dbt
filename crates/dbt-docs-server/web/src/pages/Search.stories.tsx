@@ -28,7 +28,7 @@ const meta: Meta<typeof Search> = {
     query: 'customer',
     filters: NO_FILTERS,
     previewId: null,
-    onUpdateFiltersInPlace: () => {},
+    onSetFilters: () => {},
     onPeek: () => {},
   },
 };

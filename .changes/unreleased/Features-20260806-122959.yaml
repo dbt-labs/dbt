@@ -1,0 +1,7 @@
+kind: Features
+body: Install agent skills (AgentSkills-format `SKILL.md` directories) from installed packages and the project's own `skill-paths` when packages are installed, gated on the new `ai_provider` flag.
+time: 2026-08-06T12:29:59.719265-06:00
+custom:
+    author: dbeatty10
+    issue: "14556"
+    project: dbt-core

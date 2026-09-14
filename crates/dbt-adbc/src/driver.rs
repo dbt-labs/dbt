@@ -6,7 +6,6 @@ use crate::Database;
 use crate::database::AdbcDatabase;
 use crate::driver_manager::ManagedDriver as ManagedAdbcDriver;
 use crate::install::{self, DriverTriplet, build_http_agent};
-use crate::semaphore::Semaphore;
 use adbc_core::{
     Driver as _, LOAD_FLAG_ALLOW_RELATIVE_PATHS, LOAD_FLAG_DEFAULT, LOAD_FLAG_SEARCH_ENV,
     LOAD_FLAG_SEARCH_SYSTEM, LOAD_FLAG_SEARCH_USER,
@@ -14,10 +13,10 @@ use adbc_core::{
     options::{AdbcVersion, OptionDatabase, OptionValue},
 };
 use parking_lot::RwLockUpgradableReadGuard;
+use std::hash;
 use std::{
     collections::HashMap, env, ffi::c_int, fmt, mem, path::Path, path::PathBuf, sync::LazyLock,
 };
-use std::{hash, sync::Arc};
 
 #[cfg(debug_assertions)]
 use {crate::env_var::env_var_bool, std::io::ErrorKind, std::process::Command};
@@ -317,7 +316,6 @@ static LOADED_ADBC_DRIVERS: LazyLock<
 pub(crate) struct AdbcDriver {
     backend: Backend,
     driver: ManagedAdbcDriver,
-    semaphore: Option<Arc<Semaphore>>,
 }
 
 impl AdbcDriver {
@@ -325,7 +323,6 @@ impl AdbcDriver {
     pub fn try_load_dynamic(
         backend: Backend,
         adbc_version: AdbcVersion,
-        semaphore: Option<Arc<Semaphore>>,
         mut load_strategy: LoadStrategy,
     ) -> Result<Self> {
         // Override for Snowflake dbt Projects integration
@@ -336,11 +333,8 @@ impl AdbcDriver {
         if use_local_snowflake {
             load_strategy = LoadStrategy::System(None);
         }
-        Self::try_load_driver(backend, adbc_version, load_strategy).map(|driver| Self {
-            backend,
-            driver,
-            semaphore,
-        })
+        Self::try_load_driver(backend, adbc_version, load_strategy)
+            .map(|driver| Self { backend, driver })
     }
 
     fn try_load_driver(
@@ -563,7 +557,7 @@ be found."
 impl Driver for AdbcDriver {
     fn new_database(&mut self) -> Result<Box<dyn Database>> {
         let managed_database = self.driver.new_database()?;
-        let database = AdbcDatabase::new(self.backend, managed_database, self.semaphore.clone());
+        let database = AdbcDatabase::new(self.backend, managed_database);
         Ok(Box::new(database))
     }
 
@@ -572,7 +566,7 @@ impl Driver for AdbcDriver {
         opts: Vec<(OptionDatabase, OptionValue)>,
     ) -> Result<Box<dyn Database>> {
         let managed_database = self.driver.new_database_with_opts(opts)?;
-        let database = AdbcDatabase::new(self.backend, managed_database, self.semaphore.clone());
+        let database = AdbcDatabase::new(self.backend, managed_database);
         Ok(Box::new(database))
     }
 }
@@ -721,13 +715,11 @@ mod tests {
             let _a = AdbcDriver::try_load_dynamic(
                 backend,
                 AdbcVersion::default(),
-                None,
                 LoadStrategy::CdnCache,
             )?;
             let _b = AdbcDriver::try_load_dynamic(
                 backend,
                 AdbcVersion::default(),
-                None,
                 LoadStrategy::CdnCache,
             )?;
         }
@@ -748,12 +740,7 @@ mod tests {
             Backend::Salesforce,
             Backend::SQLServer,
         ] {
-            AdbcDriver::try_load_dynamic(
-                backend,
-                AdbcVersion::default(),
-                None,
-                LoadStrategy::Remote,
-            )?;
+            AdbcDriver::try_load_dynamic(backend, AdbcVersion::default(), LoadStrategy::Remote)?;
         }
         Ok(())
     }

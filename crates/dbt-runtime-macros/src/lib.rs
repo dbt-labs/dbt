@@ -83,3 +83,28 @@ pub fn main(args: TokenStream, item: TokenStream) -> TokenStream {
 pub fn test(args: TokenStream, item: TokenStream) -> TokenStream {
     entry::test(args.into(), item.into(), true).into()
 }
+
+/// Like [`test`], but for a *synchronous* test whose body must run on a
+/// `dbt_runtime` worker thread.
+///
+/// Adapter code asserts that database connections are only ever created by pool
+/// worker threads -- mock and replay engines included, since the replay path
+/// production uses is a mock engine. A test that reaches `new_connection` from
+/// the thread libtest gave it aborts the process instead of failing, so its
+/// body is dispatched to a worker here.
+///
+/// ```ignore
+/// #[dbt_runtime::worker_test]
+/// fn my_test() {
+///     // Runs on a worker thread, so creating adapter connections is allowed.
+/// }
+/// ```
+///
+/// The body has to be `Send + 'static`, like any other blocking task. Panics
+/// are resumed on the test thread, so assertion messages and `#[should_panic]`
+/// behave as usual. For an async test, use [`test`] and reach for
+/// `dbt_runtime::spawn_blocking` at the point where it is needed.
+#[proc_macro_attribute]
+pub fn worker_test(args: TokenStream, item: TokenStream) -> TokenStream {
+    entry::worker_test(args.into(), item.into()).into()
+}

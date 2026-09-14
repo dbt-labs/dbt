@@ -11,7 +11,7 @@ use super::{
             build_json_compat_layer, build_json_compat_layer_with_background_writer,
         },
         query_log::build_query_log_layer_with_background_writer,
-        tui_layer::build_tui_layer,
+        tui_layer::{TuiConfig, build_tui_layer},
     },
     middlewares::{
         markdown_log_filter::TelemetryMarkdownLogFilter,
@@ -96,6 +96,8 @@ pub struct FsTraceConfig {
     pub(super) enable_query_log: bool,
     /// Show options controlling terminal/file output visibility
     pub(super) show_options: HashSet<ShowOptions>,
+    /// Whether non-result console output is suppressed.
+    pub(super) quiet: bool,
     /// Show all deprecations warnings/errors instead of one per package
     pub(super) show_all_deprecations: bool,
     /// The initial warn-error options loaded from CLI/env before project flags are resolved.
@@ -135,6 +137,7 @@ pub struct FsTraceConfigBuilder {
     file_log_format: Option<LogFormat>,
     enable_query_log: bool,
     show_options: HashSet<ShowOptions>,
+    quiet: bool,
     show_all_deprecations: bool,
     warn_error_options: WarnErrorOptions,
     skip_fusion_only_upgrades: bool,
@@ -163,6 +166,7 @@ impl FsTraceConfigBuilder {
             file_log_format: None,
             enable_query_log: false,
             show_options: HashSet::default(),
+            quiet: false,
             show_all_deprecations: false,
             warn_error_options: WarnErrorOptions::default(),
             skip_fusion_only_upgrades: false,
@@ -303,6 +307,12 @@ impl FsTraceConfigBuilder {
         self
     }
 
+    /// Whether non-result console output is suppressed.
+    pub fn with_quiet(mut self, quiet: bool) -> Self {
+        self.quiet = quiet;
+        self
+    }
+
     /// If true, show all deprecation warnings/errors instead of one per package.
     pub fn with_show_all_deprecations(mut self, show_all_deprecations: bool) -> Self {
         self.show_all_deprecations = show_all_deprecations;
@@ -361,6 +371,7 @@ impl FsTraceConfigBuilder {
             file_log_format: self.file_log_format,
             enable_query_log: self.enable_query_log,
             show_options: self.show_options,
+            quiet: self.quiet,
             show_all_deprecations: self.show_all_deprecations,
             warn_error_options: self.warn_error_options,
             skip_fusion_only_upgrades: self.skip_fusion_only_upgrades,
@@ -536,6 +547,14 @@ impl FsTraceConfig {
         ))
     }
 
+    fn tui_config(&self) -> TuiConfig {
+        TuiConfig {
+            show_options: self.show_options.clone(),
+            command: self.command,
+            quiet: self.quiet,
+        }
+    }
+
     /// Initializes tracing with the consumers configured for this CLI invocation.
     pub fn init(
         self,
@@ -620,8 +639,7 @@ impl FsTraceConfig {
                 consumer_layers.push(build_tui_layer(
                     self.max_log_verbosity,
                     self.log_format,
-                    self.show_options.clone(),
-                    self.command,
+                    self.tui_config(),
                 ))
             }
             LogFormat::Json => {

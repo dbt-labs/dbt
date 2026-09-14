@@ -499,7 +499,7 @@ pub fn get_catalog_schemas(
 }
 
 /// Registers the schemas in the database.
-pub async fn register_catalog_schemas_remote(
+pub fn register_catalog_schemas_remote(
     adapter: &Arc<Adapter>,
     state: &State<'_, '_>,
     catalog_schemas: Vec<(String, String, String)>,

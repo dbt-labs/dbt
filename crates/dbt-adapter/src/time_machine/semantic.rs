@@ -115,6 +115,7 @@ impl SemanticCategory {
             | "generate_unique_temporary_table_suffix"
             | "parse_columns_and_constraints"
             | "clean_sql"
+            | "yaml_quote_backtick_values"
             | "get_common_options"
             | "get_table_options"
             | "get_view_options"
@@ -155,7 +156,8 @@ impl SemanticCategory {
             | "get_credentials"
             | "s3source_clause"
             | "get_csv_data"
-            | "table_format" => SemanticCategory::Pure,
+            | "table_format"
+            | "strip_trailing_statement_terminator" => SemanticCategory::Pure,
 
             _ => {
                 debug_assert!(
@@ -176,6 +178,7 @@ impl SemanticCategory {
             | "list_relations_sdf_schemas"
             | "list_relations_schemas_by_patterns"
             | "list_relations_in_parallel"
+            | "relations_exist"
             | "freshness"
             | "freshness_with_overrides"
             | "freshness_all_in_schema"
@@ -294,6 +297,10 @@ mod tests {
         );
         assert_eq!(
             SemanticCategory::from_metadata_method("freshness"),
+            SemanticCategory::MetadataRead
+        );
+        assert_eq!(
+            SemanticCategory::from_metadata_method("relations_exist"),
             SemanticCategory::MetadataRead
         );
         assert_eq!(

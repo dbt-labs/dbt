@@ -1,5 +1,18 @@
 use std::sync::Arc;
 
+use crate::context::TaskRunnerCtx;
+use crate::run_cache::run_cache_request::{
+    DbtProjectInfo, model_clone_table_properties, model_execution_type_input, node_identity,
+    snapshot_clone_table_properties, snapshot_execution_type_input,
+};
+use crate::run_cache::run_cache_service::{
+    RunCacheCloneDecision, clone_chain_depth_limit_for_adapter,
+    confirm_run_cache_service_execution, execute_run_cache_service_clone, has_metadata_address,
+    legacy_freshness, run_cache_metadata_query_options,
+};
+use crate::run_cache::run_cache_service::{record_dev_clone_decision, replay_dev_clone_decision};
+use dbt_adapter::errors::{AdapterErrorKind, Cancellable};
+use dbt_adapter::metadata::MetadataAdapter;
 use dbt_adapter::relation::create_relation_from_node;
 use dbt_adapter_core::AdapterType;
 use dbt_common::tracing::dbt_emit::{emit_trace_log_message, emit_warn_log_message};
@@ -15,18 +28,6 @@ use dbt_state::proto::query_cache::{CloneResponse, ReadyToCloneResponse, clone_r
 use dbt_state::request_builder::{CloneRequestInput, execution_type_from_input};
 use dbt_state::service_config::CloneIncrementalInDev;
 
-use crate::context::TaskRunnerCtx;
-use crate::run_cache::run_cache_request::{
-    DbtProjectInfo, model_clone_table_properties, model_execution_type_input, node_identity,
-    snapshot_clone_table_properties, snapshot_execution_type_input,
-};
-use crate::run_cache::run_cache_service::{
-    RunCacheCloneDecision, clone_chain_depth_limit_for_adapter,
-    confirm_run_cache_service_execution, execute_run_cache_service_clone,
-    run_cache_metadata_query_options,
-};
-use crate::run_cache::run_cache_service::{record_dev_clone_decision, replay_dev_clone_decision};
-
 pub async fn maybe_run_dev_clone_for_node(ctx: &TaskRunnerCtx, node_id: &str) {
     let Some(candidate) = dev_clone_candidate_for_node(ctx, node_id) else {
         return;
@@ -37,17 +38,7 @@ pub async fn maybe_run_dev_clone_for_node(ctx: &TaskRunnerCtx, node_id: &str) {
         let Some(clone) = replay_dev_clone_decision(node_id) else {
             return;
         };
-        match execute_run_cache_service_clone(
-            ctx,
-            node.as_ref(),
-            &clone,
-            node.node_adapter(),
-            ctx.dbt_profile().threads,
-            None,
-            false,
-        )
-        .await
-        {
+        match execute_run_cache_service_clone(ctx, node.as_ref(), &clone, None, false).await {
             Ok(_) => {
                 finish_dev_clone(
                     ctx,
@@ -121,17 +112,7 @@ pub async fn maybe_run_dev_clone_for_node(ctx: &TaskRunnerCtx, node_id: &str) {
     };
 
     let clone = RunCacheCloneDecision::from_response(&ready_to_clone, 0);
-    match execute_run_cache_service_clone(
-        ctx,
-        node.as_ref(),
-        &clone,
-        node.node_adapter(),
-        ctx.dbt_profile().threads,
-        None,
-        false,
-    )
-    .await
-    {
+    match execute_run_cache_service_clone(ctx, node.as_ref(), &clone, None, false).await {
         Ok(_) => {
             record_dev_clone_decision(node_id, &clone);
             finish_dev_clone(
@@ -240,10 +221,6 @@ fn state_pre_clone_to_policy(pre_clone: StatePreClone) -> CloneIncrementalInDev 
         StatePreClone::IfMissing => CloneIncrementalInDev::IfTableMissing,
         StatePreClone::Always => CloneIncrementalInDev::Always,
     }
-}
-
-fn dev_clone_metadata_probes_use_options_aware_methods() -> bool {
-    true
 }
 
 enum DevCloneCandidate {
@@ -396,6 +373,9 @@ async fn prepare_dev_clone_request(
     let target_relation =
         create_relation_from_node(ctx.default_adapter_type(), candidate.local(), None)?;
     let target_relation: Arc<dyn BaseRelation> = target_relation.into();
+    if !has_metadata_address(ctx.default_adapter_type(), target_relation.as_ref()) {
+        return Ok(None);
+    }
     let target_table = target_relation.semantic_fqn();
 
     if policy == CloneIncrementalInDev::IfTableMissing {
@@ -427,6 +407,9 @@ async fn prepare_dev_clone_request(
     let source_relation =
         create_relation_from_node(ctx.default_adapter_type(), candidate.deferred(), None)?;
     let source_relation: Arc<dyn BaseRelation> = source_relation.into();
+    if !has_metadata_address(ctx.default_adapter_type(), source_relation.as_ref()) {
+        return Ok(None);
+    }
     let clone_source_table = source_relation.semantic_fqn();
     if target_table == clone_source_table {
         let unique_id = candidate.local().unique_id();
@@ -487,6 +470,9 @@ async fn relation_exists(
     name: &str,
     relation: Arc<dyn BaseRelation>,
 ) -> Option<bool> {
+    if !has_metadata_address(ctx.default_adapter_type(), relation.as_ref()) {
+        return None;
+    }
     if let Some(exists) = ctx
         .inner
         .run_cache_ctx
@@ -503,44 +489,58 @@ async fn fetch_relation_exists(
     name: &str,
     relation: Arc<dyn BaseRelation>,
 ) -> Option<bool> {
+    if !has_metadata_address(ctx.default_adapter_type(), relation.as_ref()) {
+        return None;
+    }
     let adapter = ctx.env.get_adapter_ref()?;
-    let metadata_adapter = adapter.metadata_adapter()?;
-
+    let metadata_adapter: Arc<dyn MetadataAdapter> = Arc::from(adapter.metadata_adapter()?);
     let semantic_fqn = relation.semantic_fqn();
-    let relations = [relation];
     let metadata_options = run_cache_metadata_query_options(ctx);
-    let existence_result = if dev_clone_metadata_probes_use_options_aware_methods() {
-        metadata_adapter
-            .relations_exist_with_options(
-                &relations,
-                &metadata_options,
-                adapter.cancellation_token(),
-            )
-            .await
-    } else {
-        metadata_adapter
-            .relations_exist(&relations, adapter.cancellation_token())
-            .await
-    };
-    let existence = match existence_result {
-        Ok(m) => m,
-        Err(err) => {
-            let name = name.to_string();
-            emit_trace_log_message(|| {
-                format!(
-                    "dbt State dev clone relation existence lookup failed (relation {name}): {err:?}"
-                )
-            });
-            return None;
-        }
-    };
-
-    let exists = existence.get(&semantic_fqn).copied()?;
-    ctx.inner
-        .run_cache_ctx
-        .run_cache_metadata
-        .insert_relation_exists(name, exists);
-    Some(exists)
+    let token = adapter.cancellation_token();
+    let cache = &ctx.inner.run_cache_ctx.run_cache_metadata;
+    let result = cache
+        .get_or_try_insert_relation_exists(name, {
+            let token = token.clone();
+            move || {
+                let relation = Arc::clone(&relation);
+                let semantic_fqn = semantic_fqn.clone();
+                let metadata_options = metadata_options.clone();
+                let metadata_adapter = Arc::clone(&metadata_adapter);
+                let token = token.clone();
+                async move {
+                    let relations = [relation];
+                    let existence = match metadata_adapter
+                        .relations_exist_with_options(&relations, &metadata_options, token.clone())
+                        .await
+                    {
+                        Ok(existence) => Ok(existence),
+                        Err(Cancellable::Error(err))
+                            if err.kind() == AdapterErrorKind::ReplayDataMissing => {
+                            metadata_adapter.relations_exist(&relations, token).await
+                        }
+                        Err(err) => Err(err),
+                    }
+                    .map_err(|err| {
+                        emit_trace_log_message(|| {
+                            format!(
+                                "dbt State dev clone relation existence lookup failed (relation {name}): {err:?}"
+                            )
+                        });
+                        format!("{err:?}")
+                    })?;
+                    existence.get(&semantic_fqn).copied().ok_or_else(|| {
+                        format!("relation {name} missing from metadata response")
+                    })
+                }
+            }
+        })
+        .await;
+    if result.is_err() && token.is_cancelled() {
+        // A cancelled run isn't a genuine lookup failure; don't leave it
+        // poisoning the cache for other in-flight lookups of this relation.
+        cache.remove_relation_exists_error(name);
+    }
+    result.ok()
 }
 
 async fn last_modified_epoch(
@@ -548,6 +548,9 @@ async fn last_modified_epoch(
     name: &str,
     relation: Arc<dyn BaseRelation>,
 ) -> Option<i64> {
+    if !has_metadata_address(ctx.default_adapter_type(), relation.as_ref()) {
+        return None;
+    }
     if let Some(epoch) = ctx
         .inner
         .run_cache_ctx
@@ -558,39 +561,53 @@ async fn last_modified_epoch(
     }
 
     let adapter = ctx.env.get_adapter_ref()?;
-    let metadata_adapter = adapter.metadata_adapter()?;
-
+    let metadata_adapter: Arc<dyn MetadataAdapter> = Arc::from(adapter.metadata_adapter()?);
     let semantic_fqn = relation.semantic_fqn();
-    let relations = [relation];
     let metadata_options = run_cache_metadata_query_options(ctx);
-    let freshness = if dev_clone_metadata_probes_use_options_aware_methods() {
-        metadata_adapter
-            .freshness_with_options(&relations, &metadata_options, adapter.cancellation_token())
-            .await
-    } else {
-        metadata_adapter
-            .freshness(&relations, adapter.cancellation_token())
-            .await
-    };
-    let epoch = match freshness {
-        Ok(freshness) => freshness
-            .get(&semantic_fqn)
-            .map(|metadata| metadata.last_altered.timestamp_millis()),
-        Err(err) => {
-            let name = name.to_string();
-            emit_trace_log_message(|| {
-                format!(
-                    "dbt State dev clone source freshness lookup failed (relation {name}): {err:?}"
-                )
-            });
-            None
-        }
-    };
-    ctx.inner
-        .run_cache_ctx
-        .run_cache_metadata
-        .insert_last_modified_epoch(name, epoch);
-    epoch
+    let token = adapter.cancellation_token();
+    let cache = &ctx.inner.run_cache_ctx.run_cache_metadata;
+    let result = cache
+        .get_or_try_insert_last_modified_epoch(name, {
+            let token = token.clone();
+            move || {
+                let relation = Arc::clone(&relation);
+                let semantic_fqn = semantic_fqn.clone();
+                let metadata_options = metadata_options.clone();
+                let metadata_adapter = Arc::clone(&metadata_adapter);
+                let token = token.clone();
+                async move {
+                    let relations = [relation];
+                    let freshness = legacy_freshness(
+                        metadata_adapter.as_ref(),
+                        &relations,
+                        None,
+                        &metadata_options,
+                        token,
+                    )
+                    .await
+                    .map_err(|err| {
+                        emit_trace_log_message(|| {
+                            format!(
+                                "dbt State dev clone source freshness lookup failed (relation {name}): {err:?}"
+                            )
+                        });
+                        format!("{err:?}")
+                    })?;
+                    Ok::<Option<i64>, String>(
+                        freshness
+                            .get(&semantic_fqn)
+                            .map(|metadata| metadata.last_altered.timestamp_millis()),
+                    )
+                }
+            }
+        })
+        .await;
+    if result.is_err() && token.is_cancelled() {
+        // A cancelled run isn't a genuine lookup failure; don't leave it
+        // poisoning the cache for other in-flight lookups of this relation.
+        cache.remove_last_modified_epoch_error(name);
+    }
+    result.ok().flatten()
 }
 
 #[allow(deprecated)] // Reads legacy oneof variants for backward-compat with older servers.
@@ -644,11 +661,6 @@ mod tests {
     /// the built-in materializations these tests use.
     fn test_resolver() -> MaterializationResolver {
         MaterializationResolver::new(&BTreeMap::new(), "jaffle_shop")
-    }
-
-    #[test]
-    fn dev_clone_metadata_probes_use_options_aware_adapter_methods() {
-        assert!(dev_clone_metadata_probes_use_options_aware_methods());
     }
 
     #[test]

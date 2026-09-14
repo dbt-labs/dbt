@@ -6,13 +6,16 @@
  * into domain objects. `fetchAssetList` and `fetchFacets` are generic lookups over
  * it, so adding a type means adding a row here and nothing else.
  *
+ * Every list reads its own information-schema table, never the resource union: the
+ * type is known here, and the union would pull every artifact to answer a question
+ * about one.
+ *
  * Two things the Rust handlers carried that are gone:
  *
  * - **The "view might be missing" variants.** Each list handler built two to four
- *   SQL strings and probed them in order, because `--write-index` skips empty
- *   tables. It still does; the engine now declares an empty relation for the
- *   artifacts that can be absent (`EMPTY_RELATION_DDL`), so one query is enough.
- *   A column added to a query here needs adding there too.
+ *   SQL strings and probed them in order, because the index skipped empty
+ *   tables. The information schema writes every table even at zero rows, so one
+ *   query is enough and there is no empty-relation stand-in to keep in step.
  * - **Cursor pagination.** ADR-6 chose cursors partly because "a read-only parquet
  *   snapshot makes stable cursors free" — with the snapshot in this process that
  *   reasoning collapses into plain offsets. The `Page` contract still speaks
@@ -86,25 +89,35 @@ ${LAYER_CONDITIONS.map(([layer, cond]) => `  WHEN ${cond} THEN '${layer}'`).join
   ELSE NULL
 END`;
 
-/** Latest run per node, for `executed_at` and test statuses. */
+/**
+ * Latest run per node, for `executed_at` and test statuses.
+ *
+ * `dbt_rt.run_results_latest` is a view `views.sql` already ships, so this reads it
+ * rather than re-deriving "latest per node" here. It also excludes compile-only
+ * error rows — `status = 'error'` with no execution time, which record a failed
+ * compile rather than a node execution — which the old `MAX(created_at)` did not.
+ */
 const LAST_RUN_CTE = `last_run AS (
-  SELECT unique_id, MAX(created_at) AS executed_at
-  FROM dbt_rt.run_results
-  GROUP BY unique_id
+  SELECT unique_id, created_at AS executed_at, status, message
+  FROM dbt_rt.run_results_latest
 )`;
 
-/** Catalog stats, split by `stat_id` the way `handlers/models.rs` does. */
-const CATALOG_CTES = `cat_tables AS (
-  SELECT unique_id FROM dbt.catalog_tables
-), row_count_cte AS (
-  SELECT unique_id, TRY_CAST(stat_value AS BIGINT) AS row_count_stat
-  FROM dbt.catalog_stats WHERE stat_id IN ('row_count', 'num_rows')
-), bytes_cte AS (
-  SELECT unique_id, TRY_CAST(stat_value AS BIGINT) AS bytes_stat
-  FROM dbt.catalog_stats WHERE stat_id IN ('bytes', 'num_bytes')
-), last_modified_cte AS (
-  SELECT unique_id, stat_value AS last_modified_stat
-  FROM dbt.catalog_stats WHERE stat_id = 'last_modified'
+/**
+ * What the warehouse reported about each relation.
+ *
+ * One typed row per relation in `dbt_rt.relations`, so this is a single join where
+ * the index needed four CTEs pivoting `stat_id`/`stat_value` and `TRY_CAST`-ing
+ * strings.
+ *
+ * No latest-per-node wrapper: the table supersedes by `unique_id`, so a relation
+ * re-catalogued by a later run replaces its old row rather than adding one. It is
+ * current warehouse state, not an invocation log — unlike `dbt_rt.run_results`,
+ * which is why that one needs `run_results_latest` and this does not.
+ */
+const CATALOG_CTE = `catalog AS (
+  SELECT unique_id, row_count AS row_count_stat, bytes AS bytes_stat,
+         last_modified AS last_modified_stat
+  FROM dbt_rt.relations
 )`;
 
 /** How one resource type is listed. */
@@ -124,15 +137,17 @@ interface ListSpec {
   where?(filter: AssetFilter): string[];
 }
 
-/** `SELECT … FROM dbt.nodes` for one `resource_type`, with shared plumbing. */
+/** `SELECT … FROM dbt.<table>` for one resource type, with shared plumbing. */
 function nodeBacked(
-  resourceType: string,
+  table: string,
   columns: string,
   extras: { ctes?: string[]; joins?: string[] } = {},
 ): Pick<ListSpec, 'sql' | 'countSql'> {
   const ctes = extras.ctes?.length ? `WITH ${extras.ctes.join(',\n')}\n` : '';
   const joins = extras.joins?.length ? `\n${extras.joins.join('\n')}` : '';
-  const base = `FROM dbt.nodes n${joins}\nWHERE n.resource_type = '${resourceType}'`;
+  // `WHERE 1 = 1` where the index needed `resource_type = '…'`: the table is the
+  // type. Kept so the composed filter fragments can all start with `AND`.
+  const base = `FROM ${table} n${joins}\nWHERE 1 = 1`;
   return {
     sql: (where, order, limit, offset) =>
       `${ctes}SELECT ${columns}\n${base}${where}\n${order}\nLIMIT ${limit} OFFSET ${offset}`,
@@ -166,44 +181,40 @@ function inList(expr: string, values: string[] | undefined): string {
 export const LIST_REGISTRY: Partial<Record<ResourceType, ListSpec>> = {
   model: {
     ...nodeBacked(
-      'model',
+      'dbt.models',
       `n.unique_id,
        n.name,
        n.package_name,
        n.original_file_path,
        ${MODELING_LAYER_CASE} AS modeling_layer,
-       n.access_level,
+       n.access AS access_level,
        n.contract_enforced,
-       n.group_name AS owner,
+       n."group" AS owner,
        CAST(lr.executed_at AS VARCHAR) AS executed_at,
-       ct.unique_id IS NOT NULL AS has_catalog,
-       rcc.row_count_stat,
-       bc.bytes_stat,
-       lm.last_modified_stat`,
+       cat.unique_id IS NOT NULL AS has_catalog,
+       cat.row_count_stat,
+       cat.bytes_stat,
+       cat.last_modified_stat`,
       {
-        ctes: [LAST_RUN_CTE, CATALOG_CTES],
+        ctes: [LAST_RUN_CTE, CATALOG_CTE],
         joins: [
           'LEFT JOIN last_run lr ON lr.unique_id = n.unique_id',
-          'LEFT JOIN cat_tables ct ON ct.unique_id = n.unique_id',
-          'LEFT JOIN row_count_cte rcc ON rcc.unique_id = n.unique_id',
-          'LEFT JOIN bytes_cte bc ON bc.unique_id = n.unique_id',
-          'LEFT JOIN last_modified_cte lm ON lm.unique_id = n.unique_id',
+          'LEFT JOIN catalog cat ON cat.unique_id = n.unique_id',
         ],
       },
     ),
     tables: [
-      'dbt.nodes',
-      'dbt_rt.run_results',
-      'dbt.catalog_tables',
-      'dbt.catalog_stats',
+      'dbt.models',
+      'dbt_rt.run_results_latest',
+      'dbt_rt.relations',
       'dbt.groups',
     ],
     filters: ['modelingLayers', 'owners', 'packages'],
     sortable: {
       name: 'n.name',
-      access_level: 'n.access_level',
+      access_level: 'n.access',
       contract_enforced: 'n.contract_enforced',
-      owner: 'n.group_name',
+      owner: 'n."group"',
       executed_at: 'CAST(lr.executed_at AS VARCHAR)',
       modeling_layer: MODELING_LAYER_CASE,
     },
@@ -217,7 +228,7 @@ export const LIST_REGISTRY: Partial<Record<ResourceType, ListSpec>> = {
         ).map(([, cond]) => `(${cond})`);
         if (conds.length) parts.push(`\n  AND (${conds.join(' OR ')})`);
       }
-      parts.push(inList('n.group_name', filter.owners));
+      parts.push(inList('n."group"', filter.owners));
       parts.push(inList('n.package_name', filter.packages));
       return parts;
     },
@@ -239,7 +250,7 @@ export const LIST_REGISTRY: Partial<Record<ResourceType, ListSpec>> = {
 
   source: {
     ...nodeBacked(
-      'source',
+      'dbt.sources',
       `n.unique_id,
        n.name,
        n.package_name,
@@ -253,9 +264,9 @@ export const LIST_REGISTRY: Partial<Record<ResourceType, ListSpec>> = {
        sf.status AS freshness_status,
        CAST(sf.snapshotted_at AS VARCHAR) AS snapshotted_at,
        CAST(sf.max_loaded_at AS VARCHAR) AS max_loaded_at`,
-      { joins: ['LEFT JOIN dbt.source_freshness sf ON sf.unique_id = n.unique_id'] },
+      { joins: ['LEFT JOIN dbt_rt.freshness sf ON sf.unique_id = n.unique_id'] },
     ),
-    tables: ['dbt.nodes', 'dbt.source_freshness'],
+    tables: ['dbt.sources', 'dbt_rt.freshness'],
     filters: ['packages'],
     sortable: { name: 'n.name' },
     where: (filter) => [inList('n.package_name', filter.packages)],
@@ -274,25 +285,19 @@ export const LIST_REGISTRY: Partial<Record<ResourceType, ListSpec>> = {
 
   seed: {
     ...nodeBacked(
-      'seed',
+      'dbt.seeds',
       `n.unique_id, n.name, n.package_name, n.description,
        CAST(lr.executed_at AS VARCHAR) AS executed_at,
-       rcc.row_count_stat`,
+       cat.row_count_stat`,
       {
-        ctes: [
-          LAST_RUN_CTE,
-          `row_count_cte AS (
-  SELECT unique_id, TRY_CAST(stat_value AS BIGINT) AS row_count_stat
-  FROM dbt.catalog_stats WHERE stat_id IN ('row_count', 'num_rows')
-)`,
-        ],
+        ctes: [LAST_RUN_CTE, CATALOG_CTE],
         joins: [
           'LEFT JOIN last_run lr ON lr.unique_id = n.unique_id',
-          'LEFT JOIN row_count_cte rcc ON rcc.unique_id = n.unique_id',
+          'LEFT JOIN catalog cat ON cat.unique_id = n.unique_id',
         ],
       },
     ),
-    tables: ['dbt.nodes', 'dbt_rt.run_results', 'dbt.catalog_stats'],
+    tables: ['dbt.seeds', 'dbt_rt.run_results_latest', 'dbt_rt.relations'],
     filters: ['packages'],
     sortable: { name: 'n.name' },
     where: (filter) => [inList('n.package_name', filter.packages)],
@@ -301,7 +306,7 @@ export const LIST_REGISTRY: Partial<Record<ResourceType, ListSpec>> = {
 
   snapshot: {
     ...nodeBacked(
-      'snapshot',
+      'dbt.snapshots',
       `n.unique_id, n.name, n.package_name, n.description,
        n.database_name, n.schema_name, n.identifier,
        CAST(lr.executed_at AS VARCHAR) AS executed_at`,
@@ -310,7 +315,7 @@ export const LIST_REGISTRY: Partial<Record<ResourceType, ListSpec>> = {
         joins: ['LEFT JOIN last_run lr ON lr.unique_id = n.unique_id'],
       },
     ),
-    tables: ['dbt.nodes', 'dbt_rt.run_results'],
+    tables: ['dbt.snapshots', 'dbt_rt.run_results_latest'],
     filters: ['packages'],
     sortable: { name: 'n.name' },
     where: (filter) => [inList('n.package_name', filter.packages)],
@@ -344,7 +349,7 @@ export const LIST_REGISTRY: Partial<Record<ResourceType, ListSpec>> = {
   metric: {
     ...ownTable(
       'dbt.metrics',
-      't.unique_id, t.name, t.package_name, t.group_name, t.metric_type, t.tags',
+      't.unique_id, t.name, t.package_name, t."group" AS group_name, t.metric_type, t.tags',
     ),
     tables: ['dbt.metrics'],
     filters: ['packages'],
@@ -390,12 +395,11 @@ export const LIST_REGISTRY: Partial<Record<ResourceType, ListSpec>> = {
       `t.unique_id, t.name, t.package_name, t.owner_name, t.owner_email,
        json_extract_string(t.config, '$.owner.github') AS owner_github,
        json_extract_string(t.config, '$.owner.slack') AS owner_slack,
-       (SELECT COUNT(*) FROM dbt.nodes n
-        WHERE n.group_name = t.name
-          AND n.package_name = t.package_name
-          AND n.resource_type = 'model') AS model_count`,
+       (SELECT COUNT(*) FROM dbt.models n
+        WHERE n."group" = t.name
+          AND n.package_name = t.package_name) AS model_count`,
     ),
-    tables: ['dbt.groups', 'dbt.nodes'],
+    tables: ['dbt.groups', 'dbt.models'],
     filters: [],
     sortable: { name: 't.name' },
     map: (row) => fromGroupSummary(asRow<Parameters<typeof fromGroupSummary>[0]>(row)),
@@ -413,7 +417,7 @@ ${order}
 LIMIT ${limit} OFFSET ${offset}`,
     countSql: (where) =>
       `${testsUnionCte()}\nSELECT COUNT(*) AS total FROM tests_union u WHERE 1 = 1${where}`,
-    tables: ['dbt.nodes', 'dbt.test_metadata', 'dbt.unit_tests', 'dbt_rt.run_results'],
+    tables: ['dbt.data_tests', 'dbt.unit_tests', 'dbt_rt.run_results_latest'],
     filters: ['packages', 'testTypes'],
     sortable: { name: 'u.name' },
     where: (filter) => [
@@ -424,7 +428,14 @@ LIMIT ${limit} OFFSET ${offset}`,
   },
 };
 
-/** The `test` ∪ `unit_test` union plus the run-status CTE it joins to. */
+/**
+ * The `test` ∪ `unit_test` union plus the run-status CTE it joins to.
+ *
+ * `dbt.data_tests` already carries the test's own fields, so the join to a
+ * separate metadata table is gone: `node_unique_id` is what the index called
+ * `attached_node`. A unit test names its subject directly in `model`, rather than
+ * as the first element of a dependency list.
+ */
 function testsUnionCte(): string {
   return `WITH tests_union AS (
   SELECT n.unique_id,
@@ -432,27 +443,23 @@ function testsUnionCte(): string {
          'test' AS resource_type,
          n.package_name,
          'data' AS test_type,
-         tm.attached_node AS tested_node_unique_id,
-         tm.column_name AS tested_column,
-         tm.severity
-  FROM dbt.nodes n
-  LEFT JOIN dbt.test_metadata tm ON tm.unique_id = n.unique_id
-  WHERE n.resource_type = 'test'
+         n.node_unique_id AS tested_node_unique_id,
+         n.column_name AS tested_column,
+         n.severity
+  FROM dbt.data_tests n
   UNION ALL
   SELECT ut.unique_id,
          ut.name,
          'unit_test',
          ut.package_name,
          'unit',
-         ut.depends_on_nodes[1],
+         ut.model,
          NULL,
          NULL
   FROM dbt.unit_tests ut
 ), last_run_status AS (
-  SELECT unique_id, MAX(created_at) AS executed_at, ANY_VALUE(status) AS status,
-         ANY_VALUE(message) AS message
-  FROM dbt_rt.run_results
-  GROUP BY unique_id
+  SELECT unique_id, created_at AS executed_at, status, message
+  FROM dbt_rt.run_results_latest
 )`;
 }
 
@@ -573,17 +580,17 @@ export const FACET_QUERIES: Partial<
     },
     {
       key: 'materializations',
-      sql: `SELECT DISTINCT materialized AS value FROM dbt.nodes
-            WHERE resource_type = 'model' AND materialized IS NOT NULL
+      sql: `SELECT DISTINCT materialized AS value FROM dbt.models
+            WHERE materialized IS NOT NULL
             ORDER BY value`,
-      tables: ['dbt.nodes'],
+      tables: ['dbt.models'],
     },
     {
       key: 'packages',
-      sql: `SELECT DISTINCT package_name AS value FROM dbt.nodes
-            WHERE resource_type = 'model' AND package_name IS NOT NULL
+      sql: `SELECT DISTINCT package_name AS value FROM dbt.models
+            WHERE package_name IS NOT NULL
             ORDER BY value`,
-      tables: ['dbt.nodes'],
+      tables: ['dbt.models'],
     },
   ],
   macro: [
@@ -597,10 +604,10 @@ export const FACET_QUERIES: Partial<
   test: [
     {
       key: 'packages',
-      sql: `SELECT DISTINCT package_name AS value FROM dbt.nodes
-            WHERE resource_type = 'test' AND package_name IS NOT NULL
+      sql: `SELECT DISTINCT package_name AS value FROM dbt.data_tests
+            WHERE package_name IS NOT NULL
             ORDER BY value`,
-      tables: ['dbt.nodes'],
+      tables: ['dbt.data_tests'],
     },
   ],
 };

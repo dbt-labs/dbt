@@ -38,7 +38,7 @@ interface Props {
   nodes: NodeSummary[];
   query: string;
   filters: AssetFilters;
-  onUpdateFiltersInPlace(next: AssetFilters): void;
+  onSetFilters(next: AssetFilters): void;
   /** Unused — peek drawer is hidden; search results navigate directly. */
   previewId: string | null;
   /** Unused — see above. */
@@ -114,7 +114,7 @@ function getActiveChips(filters: AssetFilters): ActiveChip[] {
   return chips;
 }
 
-export default function Search({ query, filters, onUpdateFiltersInPlace }: Props) {
+export default function Search({ query, filters, onSetFilters }: Props) {
   const searchArgs = useMemo<ListArgs<SearchFilter>>(
     () => ({
       filter: {
@@ -246,14 +246,14 @@ export default function Search({ query, filters, onUpdateFiltersInPlace }: Props
     !filters.resourceType.includes('model');
 
   const removeChip = (chip: ActiveChip) => {
-    onUpdateFiltersInPlace({
+    onSetFilters({
       ...filters,
       [chip.dimension]: filters[chip.dimension].filter((v) => v !== chip.value),
     });
   };
 
   const clearAllChips = () => {
-    onUpdateFiltersInPlace({
+    onSetFilters({
       ...filters,
       resourceType: [],
       modelingLayer: [],

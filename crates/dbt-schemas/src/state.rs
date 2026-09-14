@@ -11,7 +11,7 @@ use std::{
 };
 
 use crate::schemas::{
-    DbtSource, InternalDbtNodeAttributes, Nodes, ResolvedCloudConfig,
+    DbtSource, InternalDbtNode, InternalDbtNodeAttributes, Nodes, ResolvedCloudConfig,
     common::{DbtQuoting, ResolvedQuoting},
     dbt_catalogs::DbtCatalogs,
     macros::{DbtDocsMacro, DbtMacro},
@@ -777,6 +777,67 @@ pub struct ResolverState {
     /// For now this is populated as empty; later we can use it (e.g. in replay mode) to reconcile
     /// naming differences between Fusion and external recordings.
     pub test_name_truncations: HashMap<String, String>,
+    /// Declared (user-authored YAML `columns:`) schema, hydrated once from
+    /// `nodes` when this `ResolverState` is built. Ground truth, not
+    /// inferred — consulted during binding via a `CatalogProviderList`
+    /// wrapper (see `dbt-tasks::declared_schema_catalog`).
+    pub user_defined_schema_registry:
+        Arc<dbt_common::user_defined_schema_registry::UserDefinedSchemaRegistry>,
+}
+
+pub fn hydrate_user_defined_schema_registry(
+    nodes: &Nodes,
+    adapter_type: AdapterType,
+) -> Arc<dbt_common::user_defined_schema_registry::UserDefinedSchemaRegistry> {
+    let registry =
+        Arc::new(dbt_common::user_defined_schema_registry::UserDefinedSchemaRegistry::new());
+
+    fn record(
+        node: &dyn InternalDbtNode,
+        registry: &dbt_common::user_defined_schema_registry::UserDefinedSchemaRegistry,
+        adapter_type: AdapterType,
+    ) {
+        let base = node.base();
+        if base.columns.is_empty() {
+            return;
+        }
+        let (database, schema, alias) = match adapter_type {
+            AdapterType::Snowflake => (
+                base.database.to_uppercase(),
+                base.schema.to_uppercase(),
+                base.alias.to_uppercase(),
+            ),
+            _ => (
+                base.database.clone(),
+                base.schema.clone(),
+                base.alias.clone(),
+            ),
+        };
+        let relation =
+            datafusion_common::TableReference::full(database, schema, alias).to_quoted_string();
+        for column in &base.columns {
+            let name = match adapter_type {
+                AdapterType::Snowflake => column.name.to_uppercase(),
+                _ => column.name.clone(),
+            };
+            registry.record_column(&relation, &name);
+        }
+    }
+
+    for model in nodes.models.values() {
+        record(model.as_ref(), &registry, adapter_type);
+    }
+    for source in nodes.sources.values() {
+        record(source.as_ref(), &registry, adapter_type);
+    }
+    for seed in nodes.seeds.values() {
+        record(seed.as_ref(), &registry, adapter_type);
+    }
+    for snapshot in nodes.snapshots.values() {
+        record(snapshot.as_ref(), &registry, adapter_type);
+    }
+
+    registry
 }
 
 impl ResolverState {
@@ -1416,5 +1477,178 @@ mod dbt_profile_adapter_tests {
                 "every connection should have threads set, got {threads:?}"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod user_defined_schema_registry_tests {
+    use super::*;
+    use crate::schemas::dbt_column::DbtColumn;
+    use crate::schemas::{
+        CommonAttributes, DbtModel, DbtModelAttr, DbtSeed, DbtSnapshot, NodeBaseAttributes,
+    };
+    use std::collections::BTreeMap;
+
+    fn base_attr(
+        database: &str,
+        schema: &str,
+        alias: &str,
+        columns: &[&str],
+    ) -> NodeBaseAttributes {
+        NodeBaseAttributes {
+            database: database.to_string(),
+            schema: schema.to_string(),
+            alias: alias.to_string(),
+            columns: columns
+                .iter()
+                .map(|name| {
+                    Arc::new(DbtColumn {
+                        name: name.to_string(),
+                        ..Default::default()
+                    })
+                })
+                .collect(),
+            ..Default::default()
+        }
+    }
+
+    fn model_with_columns(database: &str, schema: &str, alias: &str, columns: &[&str]) -> DbtModel {
+        DbtModel {
+            __common_attr__: CommonAttributes {
+                unique_id: "model.m".to_string(),
+                ..Default::default()
+            },
+            __base_attr__: base_attr(database, schema, alias, columns),
+            __model_attr__: DbtModelAttr::default(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn hydrate_from_declared_columns_uppercases_for_snowflake() {
+        let mut models = BTreeMap::new();
+        models.insert(
+            "model.m".to_string(),
+            Arc::new(model_with_columns("db", "sch", "tbl", &["col"])),
+        );
+        let nodes = Nodes {
+            models,
+            ..Default::default()
+        };
+        let registry = hydrate_user_defined_schema_registry(&nodes, AdapterType::Snowflake);
+        let relation =
+            datafusion_common::TableReference::full("DB", "SCH", "TBL").to_quoted_string();
+        assert!(registry.columns_for(&relation).unwrap().contains("COL"));
+    }
+
+    #[test]
+    fn hydrate_from_declared_columns_keeps_case_for_non_snowflake_adapters() {
+        let mut models = BTreeMap::new();
+        models.insert(
+            "model.m".to_string(),
+            Arc::new(model_with_columns("db", "sch", "tbl", &["col"])),
+        );
+        let nodes = Nodes {
+            models,
+            ..Default::default()
+        };
+        let registry = hydrate_user_defined_schema_registry(&nodes, AdapterType::DuckDB);
+        let relation =
+            datafusion_common::TableReference::full("db", "sch", "tbl").to_quoted_string();
+        assert!(registry.columns_for(&relation).unwrap().contains("col"));
+    }
+
+    #[test]
+    fn hydrate_from_declared_columns_skips_models_without_declared_columns() {
+        let mut models = BTreeMap::new();
+        models.insert(
+            "model.m".to_string(),
+            Arc::new(model_with_columns("db", "sch", "tbl", &[])),
+        );
+        let nodes = Nodes {
+            models,
+            ..Default::default()
+        };
+        let registry = hydrate_user_defined_schema_registry(&nodes, AdapterType::Snowflake);
+        let relation =
+            datafusion_common::TableReference::full("DB", "SCH", "TBL").to_quoted_string();
+        assert!(registry.columns_for(&relation).is_none());
+    }
+
+    #[test]
+    fn hydrate_from_declared_columns_covers_sources_seeds_and_snapshots_too() {
+        let mut sources = BTreeMap::new();
+        sources.insert(
+            "source.s".to_string(),
+            Arc::new(DbtSource {
+                __common_attr__: CommonAttributes {
+                    unique_id: "source.s".to_string(),
+                    ..Default::default()
+                },
+                __base_attr__: base_attr("db", "sch", "src_tbl", &["scol"]),
+                ..Default::default()
+            }),
+        );
+
+        let mut seeds = BTreeMap::new();
+        seeds.insert(
+            "seed.sd".to_string(),
+            Arc::new(DbtSeed {
+                __common_attr__: CommonAttributes {
+                    unique_id: "seed.sd".to_string(),
+                    ..Default::default()
+                },
+                __base_attr__: base_attr("db", "sch", "seed_tbl", &["seedcol"]),
+                ..Default::default()
+            }),
+        );
+
+        let mut snapshots = BTreeMap::new();
+        snapshots.insert(
+            "snapshot.sn".to_string(),
+            Arc::new(DbtSnapshot {
+                __common_attr__: CommonAttributes {
+                    unique_id: "snapshot.sn".to_string(),
+                    ..Default::default()
+                },
+                __base_attr__: base_attr("db", "sch", "snap_tbl", &["snapcol"]),
+                ..Default::default()
+            }),
+        );
+
+        let nodes = Nodes {
+            sources,
+            seeds,
+            snapshots,
+            ..Default::default()
+        };
+        let registry = hydrate_user_defined_schema_registry(&nodes, AdapterType::DuckDB);
+
+        let source_relation =
+            datafusion_common::TableReference::full("db", "sch", "src_tbl").to_quoted_string();
+        assert!(
+            registry
+                .columns_for(&source_relation)
+                .unwrap()
+                .contains("scol")
+        );
+
+        let seed_relation =
+            datafusion_common::TableReference::full("db", "sch", "seed_tbl").to_quoted_string();
+        assert!(
+            registry
+                .columns_for(&seed_relation)
+                .unwrap()
+                .contains("seedcol")
+        );
+
+        let snapshot_relation =
+            datafusion_common::TableReference::full("db", "sch", "snap_tbl").to_quoted_string();
+        assert!(
+            registry
+                .columns_for(&snapshot_relation)
+                .unwrap()
+                .contains("snapcol")
+        );
     }
 }

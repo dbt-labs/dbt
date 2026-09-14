@@ -30,6 +30,14 @@
 
 -- funcsign: (string, optional[string]) -> string
 {% macro get_empty_subquery_sql(select_sql, select_sql_header=none) -%}
+  {#-- DIVERGENCE BEGIN: strip a terminal `;` so it does not land inside the
+       wrapper built below; done at the dispatcher so the adapter overrides are
+       covered too. See `StmtSplitter::strip_trailing_statement_terminator`.
+       Upstream: https://github.com/dbt-labs/dbt-adapters/blob/main/dbt-adapters/src/dbt/include/global_project/macros/adapters/columns.sql --#}
+  {%- if dbt_version.startswith('2.') -%}
+    {%- set select_sql = adapter.strip_trailing_statement_terminator(select_sql) -%}
+  {%- endif -%}
+  {#-- DIVERGENCE END --#}
   {{ return(adapter.dispatch('get_empty_subquery_sql', 'dbt')(select_sql, select_sql_header)) }}
 {% endmacro %}
 

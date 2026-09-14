@@ -20,6 +20,7 @@ use dbt_adapter_core::{AdapterType, ExecutionPhase, quote_char};
 use dbt_common::cancellation::Cancellable;
 use dbt_common::collections::DashMap;
 use dbt_common::constants::DBT_CTE_PREFIX;
+use dbt_common::io_args::{ReplayMode, TimeMachineMode};
 use dbt_common::static_analysis::is_static_analysis_off_or_baseline;
 use dbt_common::stats::NodeStatus;
 use dbt_common::stdfs;
@@ -61,6 +62,8 @@ use sqlparser::tokenizer::{Token, Tokenizer, Whitespace};
 
 type YmlValue = dbt_yaml::Value;
 
+const COMPILED_INCREMENTAL_SCHEMA_MARKER: &str = ".compiled_incremental_unit_test_schema_v1";
+
 /// Identifies which unit test relation schema is being resolved for error reporting.
 #[derive(Clone, Copy)]
 enum UnitTestSchemaTarget {
@@ -98,9 +101,70 @@ struct ExpectedSchemaInferenceOptions {
 fn should_use_query_schema_fallback(
     is_tested_model_ephemeral: bool,
     effective_execute: schemas::profiles::Execute,
-    is_replaying: bool,
+    replay_active: bool,
 ) -> bool {
-    is_tested_model_ephemeral || (!effective_execute.is_default() && !is_replaying)
+    // Warehouse recordings contain the temporary-table probe, not the local
+    // query-schema calls, so replay must preserve the recorded path.
+    is_tested_model_ephemeral || (!effective_execute.is_default() && !replay_active)
+}
+
+fn has_is_incremental_false_override(unit_test: &DbtUnitTest) -> bool {
+    unit_test
+        .__unit_test_attr__
+        .overrides
+        .as_ref()
+        .and_then(|overrides| overrides.macros.as_ref().as_ref())
+        .and_then(|macros| macros.get("is_incremental"))
+        .and_then(YmlValue::as_bool)
+        == Some(false)
+}
+
+fn recording_uses_compiled_incremental_schema(ctx: &TaskRunnerCtx) -> FsResult<bool> {
+    let marker_path = match ctx.inner.arg.replay.as_ref() {
+        Some(ReplayMode::FsRecord(path)) => Some((path.clone(), true)),
+        Some(ReplayMode::FsReplay(path)) => Some((path.clone(), false)),
+        Some(ReplayMode::FsTimeMachine(TimeMachineMode::Record(config))) => Some((
+            config.output_path.join(config.invocation_id.to_string()),
+            true,
+        )),
+        Some(ReplayMode::FsTimeMachine(TimeMachineMode::Replay(config))) => {
+            Some((config.artifact_path.clone(), false))
+        }
+        Some(ReplayMode::MantleReplay(_)) => None,
+        None => return Ok(true),
+    };
+
+    let Some((recording_path, is_recording)) = marker_path else {
+        return Ok(false);
+    };
+    let marker = recording_path.join(COMPILED_INCREMENTAL_SCHEMA_MARKER);
+    if is_recording {
+        stdfs::create_dir_all(&recording_path)?;
+        stdfs::write(marker, b"1\n")?;
+        Ok(true)
+    } else {
+        Ok(marker.is_file())
+    }
+}
+
+fn use_compiled_schema_for_incremental(
+    ctx: &TaskRunnerCtx,
+    unit_test: &DbtUnitTest,
+) -> FsResult<bool> {
+    if !has_is_incremental_false_override(unit_test) {
+        return Ok(false);
+    }
+    recording_uses_compiled_incremental_schema(ctx)
+}
+
+fn is_replay_active(ctx: &TaskRunnerCtx) -> bool {
+    ctx.inner.arg.replay.as_ref().is_some_and(|mode| {
+        matches!(mode, ReplayMode::MantleReplay(_) | ReplayMode::FsReplay(_))
+            || mode.is_time_machine_replay()
+    }) || ctx
+        .env
+        .get_base_adapter()
+        .is_some_and(|adapter| adapter.as_replay().is_some())
 }
 
 /// Small utility for merging objects
@@ -340,6 +404,7 @@ async fn hydrate_unit_test_relation_schema(
             Some(unit_test_unique_id.to_string()),
             Some(ExecutionPhase::Analyze),
             &relations,
+            None,
             adapter.cancellation_token(),
         )
         .await
@@ -773,6 +838,37 @@ fn infer_unit_test_expected_schema(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
+fn infer_schema_from_compiled_sql(
+    ctx: &TaskRunnerCtx,
+    unit_test: &DbtUnitTest,
+    raw_model_sql: &str,
+    compile_context: &BTreeMap<String, Value>,
+    original_file_path: &Path,
+    subqueries: &[(String, String)],
+    fixture_shape_subqueries: &[(String, String)],
+    options: ExpectedSchemaInferenceOptions,
+    task_hooks: &dyn RenderTaskHooks,
+) -> FsResult<SchemaRef> {
+    let compiled_model_sql = render_sql(
+        raw_model_sql,
+        &ctx.env,
+        compile_context,
+        ctx.rendering_listener_factory.as_ref(),
+        original_file_path,
+    )?;
+
+    infer_unit_test_expected_schema(
+        ctx,
+        unit_test,
+        &compiled_model_sql,
+        subqueries,
+        fixture_shape_subqueries,
+        options,
+        task_hooks,
+    )
+}
+
 /// `run_started_at` is a plain datetime global, not a macro invoked with
 /// `()` (dbt-core lets it be frozen via `overrides.macros` anyway). Stubbing
 /// it out as a callable like other macro overrides breaks
@@ -1145,7 +1241,8 @@ fn discover_given_relations(
         given_relations.push((fqn_string, relation));
     }
 
-    // Check expect relation for incremental + SA-off case
+    // Static-analysis-off incremental tests normally hydrate the existing model
+    // relation. An `is_incremental: false` override instead uses compiled SQL.
     let model_unique_id = get_unique_id(
         &ut.__unit_test_attr__.model,
         &ut.__common_attr__.package_name,
@@ -1156,30 +1253,30 @@ fn discover_given_relations(
         "model",
     );
     let resolver_state = ctx.resolver_state();
-    let model_static_analysis_off = resolver_state
-        .nodes
-        .get_node(&model_unique_id)
-        .map(|node| is_static_analysis_off_or_baseline(node.static_analysis().into_inner()))
-        .unwrap_or(false);
-    let is_incremental = resolver_state
-        .nodes
-        .get_node(&model_unique_id)
-        .map(|node| node.materialized() == DbtMaterialization::Incremental)
-        .unwrap_or(false);
+    let use_compiled_schema_for_incremental = use_compiled_schema_for_incremental(ctx, ut)?;
+    let should_fetch_expected_schema =
+        resolver_state
+            .nodes
+            .get_node(&model_unique_id)
+            .is_some_and(|node| {
+                node.materialized() == DbtMaterialization::Incremental
+                    && is_static_analysis_off_or_baseline(node.static_analysis().into_inner())
+                    && !use_compiled_schema_for_incremental
+            });
 
-    if model_static_analysis_off && is_incremental {
-        if let Some(expect_relation) = ctx.try_get_relation_from_node(&model_unique_id) {
-            let schema_relation = check_defer_relation(&model_unique_id, ctx)
-                .unwrap_or_else(|| expect_relation.clone());
-            let canonical_fqn = schema_relation.get_canonical_fqn()?;
-            if force_refetch || !ctx.schema_cache.exists(&canonical_fqn) {
-                relations_to_fetch.push((
-                    schema_relation,
-                    UnitTestSchemaTarget::ExpectedModel {
-                        incremental_expected_path: true,
-                    },
-                ));
-            }
+    if should_fetch_expected_schema
+        && let Some(expect_relation) = ctx.try_get_relation_from_node(&model_unique_id)
+    {
+        let schema_relation =
+            check_defer_relation(&model_unique_id, ctx).unwrap_or_else(|| expect_relation.clone());
+        let canonical_fqn = schema_relation.get_canonical_fqn()?;
+        if force_refetch || !ctx.schema_cache.exists(&canonical_fqn) {
+            relations_to_fetch.push((
+                schema_relation,
+                UnitTestSchemaTarget::ExpectedModel {
+                    incremental_expected_path: true,
+                },
+            ));
         }
     }
 
@@ -1265,15 +1362,13 @@ fn render_unit_test(
         .map(|a| a.engine().type_ops().clone())
         .unwrap_or_else(|| Arc::new(DefaultTypeOps::new(adapter_type)) as Arc<dyn TypeOps>);
     let type_ops = type_ops_arc.as_ref();
-    let is_replaying = base_adapter
-        .as_ref()
-        .is_some_and(|adapter| adapter.as_replay().is_some());
+    let replay_active = is_replay_active(ctx);
     let is_mock = base_adapter
         .as_ref()
         .is_some_and(|adapter| adapter.engine().is_mock());
     let effective_execute = effective_unit_test_execute(node, ctx.inner.execute);
     let cache_expected_schema =
-        effective_execute == schemas::profiles::Execute::Sidecar && !is_replaying && !is_mock;
+        effective_execute == schemas::profiles::Execute::Sidecar && !replay_active && !is_mock;
 
     let model_unique_id = get_unique_id(
         &node.__unit_test_attr__.model,
@@ -1473,34 +1568,47 @@ fn render_unit_test(
         )
     })?;
 
-    let model_static_analysis_off = resolver_state
-        .nodes
-        .get_node(&model_unique_id)
-        .map(|node| is_static_analysis_off_or_baseline(node.static_analysis().into_inner()))
-        .unwrap_or(false);
-
-    let is_incremental = resolver_state
-        .nodes
-        .get_node(&model_unique_id)
-        .map(|node| node.materialized() == DbtMaterialization::Incremental)
-        .unwrap_or(false);
+    let tested_model = resolver_state.nodes.get_node(&model_unique_id);
+    let model_static_analysis_off = tested_model.is_some_and(|node| {
+        is_static_analysis_off_or_baseline(node.static_analysis().into_inner())
+    });
+    let model_materialization = tested_model.map(|node| node.materialized());
+    let is_incremental = model_materialization == Some(DbtMaterialization::Incremental);
+    let use_compiled_schema_for_incremental = use_compiled_schema_for_incremental(ctx, node)?;
 
     // Ephemeral models have no registered dataset, so the temp-table fallback in
     // `infer_unit_test_expected_schema` fails with "Dataset not found".
     // Force the self-contained query-schema path instead.
-    let is_tested_model_ephemeral = resolver_state
-        .nodes
-        .get_node(&model_unique_id)
-        .map(|node| node.materialized() == DbtMaterialization::Ephemeral)
-        .unwrap_or(false);
+    let is_tested_model_ephemeral = model_materialization == Some(DbtMaterialization::Ephemeral);
 
-    // If `static_analysis_off` false, it means the model being tested may have an analysis phase.
-    // It would not have it if any of upstreams have static analysis off. So we try the schema,
-    // but allow using the dbt-core approach - by creating temporary empty relation from code to
-    // infer schema.
-    // For incremental models, we either rely on analysis phase or fail, as dbt-core doesn't allow
-    // inferring incremental model schema if it doesn't alredy exist.
+    let use_query_schema_fallback = should_use_query_schema_fallback(
+        is_tested_model_ephemeral,
+        effective_execute,
+        replay_active,
+    );
+    let schema_inference_options = ExpectedSchemaInferenceOptions {
+        use_query_schema_fallback,
+        try_structural_inference: use_query_schema_fallback,
+        cache_result: cache_expected_schema,
+    };
+    let infer_compiled_schema = || {
+        infer_schema_from_compiled_sql(
+            ctx,
+            node,
+            &raw_sql,
+            &compile_context,
+            original_file_path,
+            &subqueries,
+            &fixture_shape_subqueries,
+            schema_inference_options,
+            task_hooks,
+        )
+    };
+
+    // Keep the existing analyzed/hydrated schema paths unless an explicit
+    // override changes an incremental model into its full-refresh SQL branch.
     let expect_schema = match (model_static_analysis_off, is_incremental) {
+        (_, true) if use_compiled_schema_for_incremental => infer_compiled_schema()?,
         // (static analysis is off) + (incremental model): use prod relation from defer
         // state if available (dev table may not exist yet during build --defer)
         (true, true) => {
@@ -1508,7 +1616,7 @@ fn render_unit_test(
                 .unwrap_or_else(|| expect_relation.clone());
             get_schema_for_unit_test_relation(
                 ctx,
-                schema_relation.clone(),
+                schema_relation,
                 UnitTestSchemaTarget::ExpectedModel {
                     incremental_expected_path: true,
                 },
@@ -1554,38 +1662,7 @@ fn render_unit_test(
             if let Some(schema) = cached_schema {
                 schema
             } else {
-                let compiled_model_sql = render_sql(
-                    &raw_sql,
-                    &ctx.env,
-                    &compile_context,
-                    ctx.rendering_listener_factory.as_ref(),
-                    original_file_path,
-                )?;
-                // `--dbt-replay` recordings come from warehouse builds, which
-                // infer non-ephemeral unit-test schemas via the temp-table
-                // probe. The query-schema path's `get_column_schema_from_query`
-                // calls have no matching records under replay, so when the
-                // active adapter is a replayer, fall back to the probe path.
-                // Ephemeral models keep the query-schema path regardless (the
-                // probe has no dataset for them — see `is_tested_model_ephemeral`).
-                let fallback_with_query_schema = should_use_query_schema_fallback(
-                    is_tested_model_ephemeral,
-                    effective_execute,
-                    is_replaying,
-                );
-                infer_unit_test_expected_schema(
-                    ctx,
-                    node,
-                    compiled_model_sql.as_str(),
-                    &subqueries,
-                    &fixture_shape_subqueries,
-                    ExpectedSchemaInferenceOptions {
-                        use_query_schema_fallback: fallback_with_query_schema,
-                        try_structural_inference: fallback_with_query_schema,
-                        cache_result: cache_expected_schema,
-                    },
-                    task_hooks,
-                )?
+                infer_compiled_schema()?
             }
         }
     };

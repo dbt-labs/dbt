@@ -61,7 +61,7 @@ export interface MetadataDataSource {
   fetchCapabilities?(): Promise<Capabilities>;
 
   /**
-   * Build identity of the backend (Fusion vs Core, login state). Distinct from
+   * Build identity of the backend (dbt v2 vs Core, login state). Distinct from
    * {@link fetchCapabilities}, which advertises feature support. A source
    * without a notion of distribution omits this.
    */

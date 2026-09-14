@@ -15,6 +15,7 @@ use dbt_jinja_utils::jinja_environment::JinjaEnv;
 use dbt_scheduler::instructions::Instruction;
 use dbt_schemas::schemas::telemetry::{QueryExecuted, QueryOutcome};
 use dbt_tasks_core::AdhocRunner;
+use dbt_tasks_core::task::TaskOp;
 
 /// Runs queries remotely against the warehouse via an adapter connection.
 pub struct RemoteAdhocRunner {
@@ -53,6 +54,9 @@ impl AdhocRunner for RemoteAdhocRunner {
 /// Reuse `conn_box`'s connection if present, otherwise open and cache one
 /// from the workspace's base adapter engine. Shared by the ordinary
 /// `--inline` path and the `--query-id` result-fetch path below.
+///
+/// Must run on a `dbt_runtime` worker: opening a connection blocks, and
+/// `AdbcEngine::new_connection` asserts the caller is a pool worker.
 fn get_or_open_connection<'a>(
     env: &JinjaEnv,
     conn_box: &'a mut Option<Box<dyn Connection>>,
@@ -80,6 +84,25 @@ fn get_or_open_connection<'a>(
 /// fetch_existing_result`).
 async fn fetch_query_result_with_connection(
     query_id: &str,
+    env: &Arc<JinjaEnv>,
+    conn_box: &mut Option<Box<dyn Connection>>,
+) -> FsResult<(Vec<RecordBatch>, SchemaRef)> {
+    let env = Arc::clone(env);
+    let query_id = query_id.to_owned();
+    let mut conn = conn_box.take();
+    let (conn, result) = TaskOp::Blocking(Box::new(move || {
+        let result = fetch_query_result_blocking(&query_id, &env, &mut conn);
+        (conn, result)
+    }))
+    .run()
+    .await?;
+    *conn_box = conn;
+    result
+}
+
+/// The blocking half of [`fetch_query_result_with_connection`], run on a worker.
+fn fetch_query_result_blocking(
+    query_id: &str,
     env: &JinjaEnv,
     conn_box: &mut Option<Box<dyn Connection>>,
 ) -> FsResult<(Vec<RecordBatch>, SchemaRef)> {
@@ -104,7 +127,7 @@ async fn fetch_query_result_with_connection(
 async fn run_remote_adhoc_with_connection(
     instruction: &Instruction,
     rendered_sql: &str,
-    env: &JinjaEnv,
+    env: &Arc<JinjaEnv>,
     adapter_type: AdapterType,
     conn_box: &mut Option<Box<dyn Connection>>,
 ) -> FsResult<(Vec<RecordBatch>, SchemaRef)> {
@@ -112,8 +135,39 @@ async fn run_remote_adhoc_with_connection(
         return result;
     }
 
-    let conn = get_or_open_connection(env, conn_box)?;
-    let expected_schema = match instruction {
+    // Reading the expected schema off the instruction needs no connection, so
+    // it stays here and only what the query itself needs moves to the worker.
+    let expected_schema = expected_schema_of(instruction);
+    let fqn = instruction.fqn().join(".");
+    let env = Arc::clone(env);
+    let rendered_sql = rendered_sql.to_owned();
+    let mut conn = conn_box.take();
+
+    // Opening the connection and executing the query both block, so they run
+    // on a `dbt_runtime` worker instead of on this async thread. The connection
+    // travels with the closure and comes back with the result, so a subsequent
+    // adhoc query on the same `conn_box` still reuses it.
+    let (conn, result) = TaskOp::Blocking(Box::new(move || {
+        let result = run_remote_adhoc_blocking(
+            &rendered_sql,
+            &env,
+            adapter_type,
+            expected_schema.as_ref(),
+            &fqn,
+            &mut conn,
+        );
+        (conn, result)
+    }))
+    .run()
+    .await?;
+    *conn_box = conn;
+    result
+}
+
+/// The schema an `Lp` instruction's plan promises, as an Arrow schema so the
+/// blocking half needs no datafusion types.
+fn expected_schema_of(instruction: &Instruction) -> Option<SchemaRef> {
+    match instruction {
         Instruction::Sql(_) => None,
         Instruction::Lp(lp_instruction) => match &lp_instruction.plan {
             LogicalPlan::Ddl(..)
@@ -124,9 +178,21 @@ async fn run_remote_adhoc_with_connection(
             | LogicalPlan::Explain(..)
             | LogicalPlan::Analyze(..)
             | LogicalPlan::DescribeTable(..) => None,
-            _ => Some(lp_instruction.plan.schema().clone()),
+            _ => Some(Arc::new(lp_instruction.plan.schema().as_arrow().clone())),
         },
-    };
+    }
+}
+
+/// The blocking half of [`run_remote_adhoc_with_connection`], run on a worker.
+fn run_remote_adhoc_blocking(
+    rendered_sql: &str,
+    env: &JinjaEnv,
+    adapter_type: AdapterType,
+    expected_schema: Option<&SchemaRef>,
+    fqn: &str,
+    conn_box: &mut Option<Box<dyn Connection>>,
+) -> FsResult<(Vec<RecordBatch>, SchemaRef)> {
+    let conn = get_or_open_connection(env, conn_box)?;
     let mut stmt = conn.new_statement().map_err(from_adbc_error)?;
     stmt.set_sql_query(rendered_sql).map_err(from_adbc_error)?;
 
@@ -179,7 +245,7 @@ async fn run_remote_adhoc_with_connection(
     };
 
     if let Some(expected_schema) = expected_schema
-        && !is_schema_compat(schema.as_ref(), expected_schema.as_arrow())
+        && !is_schema_compat(schema.as_ref(), expected_schema.as_ref())
     {
         return err!(
             ErrorCode::RemoteError,
@@ -187,7 +253,7 @@ async fn run_remote_adhoc_with_connection(
                 this is likely because your local workspace has changes that are not \
                 yet reflected in the remote database, \
                 you may need to (re)build the workspace",
-            instruction.fqn().join(".")
+            fqn
         );
     }
 

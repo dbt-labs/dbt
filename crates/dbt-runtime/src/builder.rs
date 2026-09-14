@@ -11,7 +11,7 @@ pub type ThreadNameFn = Arc<dyn Fn() -> String + Send + Sync + 'static>;
 ///
 /// This is how many threads can be running jinja and database queries
 /// at the same time. Configuration is dynamic, this is just the default.
-const DEFAULT_MAX_BLOCKING_THREADS: usize = 48;
+pub const DEFAULT_MAX_BLOCKING_THREADS: usize = 48;
 
 /// Configures and builds a [`Runtime`].
 #[derive(Clone)]

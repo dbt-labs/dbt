@@ -48,6 +48,7 @@ use std::sync::{Arc, Mutex};
 use dbt_adapter::Adapter;
 use dbt_adapter::relation::{RelationObject, create_relation};
 use dbt_adapter::sql_types::DefaultTypeOps;
+use dbt_adapter::stmt_splitter::{DefaultStmtSplitter, StmtSplitter};
 use dbt_adapter_core::AdapterType;
 use dbt_common::FsResult;
 use dbt_jinja_utils::jinja_environment::JinjaEnv;
@@ -623,6 +624,17 @@ impl MacroTestHarnessBuilder {
         let mock = default_mock_adapter();
         let adapter_type_str = self.adapter_type.as_ref().to_string();
         mock.on("type", move |_| Ok(Value::from(adapter_type_str.clone())));
+        // Stands in for `Adapter::strip_trailing_statement_terminator`, running
+        // the same dialect-aware normalization so macros that wrap a node body
+        // see production behavior. The binding itself is covered by
+        // `dbt-adapter`'s own tests, not here.
+        let adapter_type = self.adapter_type;
+        mock.on("strip_trailing_statement_terminator", move |args| {
+            let sql = args.first().and_then(|v| v.as_str()).unwrap_or("");
+            Ok(Value::from(
+                DefaultStmtSplitter.strip_trailing_statement_terminator(sql, adapter_type),
+            ))
+        });
         if !self.behavior_flags.is_empty() {
             mock.set_attr("behavior", Value::from_serialize(&self.behavior_flags));
         }

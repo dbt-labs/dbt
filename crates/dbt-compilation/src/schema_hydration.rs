@@ -25,6 +25,10 @@ pub struct SchemaHydrationArgs<'a> {
     pub global_static_analysis: Option<StaticAnalysisKind>,
     pub execute_mode: Execute,
     pub scope: SchemaHydrationScope,
+    /// `--infer-schemas`: a node whose schema we failed to download should
+    /// stay eligible for static analysis instead of having it disabled, so
+    /// binding can fall back to inferring the schema from usage.
+    pub infer_schemas: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

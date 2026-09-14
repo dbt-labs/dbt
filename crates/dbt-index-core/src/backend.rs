@@ -231,6 +231,142 @@ pub fn register_index_views(
     Ok(report)
 }
 
+/// An in-memory DuckDB over the *information schema* at
+/// `target/info_schema/v<n>/`, rather than over the flat index.
+///
+/// Same `Backend` surface, different artifact set and different vocabulary:
+/// one table per resource type, `dbt.docs_blocks` rather than `dbt.docs`,
+/// `dbt_rt.freshness` rather than `dbt.source_freshness`, and no `dbt.nodes`
+/// at all. A caller swaps the constructor and nothing else.
+pub struct DuckDbInfoSchemaBackend {
+    inner: Mutex<Db>,
+    info_schema_dir: PathBuf,
+}
+
+impl DuckDbInfoSchemaBackend {
+    /// `info_schema_dir` is the *versioned* directory — the one holding the
+    /// parquet and `views.sql`. Resolve it with
+    /// [`crate::info_schema::versioned_dir`] rather than composing the version
+    /// into a path by hand.
+    pub fn open(info_schema_dir: &Path) -> Result<Self, BackendError> {
+        if !info_schema_dir.exists() {
+            return Err(BackendError::Query(format!(
+                "information schema directory does not exist: {}\n\n\
+                 Run `dbt build`, `dbt compile` or `dbt docs generate` with \
+                 `--generate-info-schema` to write it.",
+                info_schema_dir.display()
+            )));
+        }
+        let db = Db::open_memory().map_err(|e| BackendError::Query(e.to_string()))?;
+        let backend = Self {
+            inner: Mutex::new(db),
+            info_schema_dir: info_schema_dir.to_path_buf(),
+        };
+        register_info_schema_views(&backend, info_schema_dir)?;
+        Ok(backend)
+    }
+
+    pub fn info_schema_dir(&self) -> &Path {
+        &self.info_schema_dir
+    }
+}
+
+impl Backend for DuckDbInfoSchemaBackend {
+    fn is_available(&self) -> bool {
+        true
+    }
+
+    fn table_has_rows(&self, table: &str) -> bool {
+        let Ok(mut db) = self.inner.lock() else {
+            return false;
+        };
+        db.query_count(&format!("SELECT COUNT(*) FROM {table}")) != "0"
+    }
+
+    fn query_scalar(&self, sql: &str) -> Option<String> {
+        let mut db = self.inner.lock().ok()?;
+        db.query_scalar(sql, 0)
+    }
+
+    fn query_arrow(&self, sql: &str) -> Result<Vec<RecordBatch>, BackendError> {
+        let mut db = self
+            .inner
+            .lock()
+            .map_err(|e| BackendError::Query(format!("db lock poisoned: {e}")))?;
+        db.execute_query(sql)
+            .map_err(|e| BackendError::Query(e.to_string()))
+    }
+
+    fn execute(&self, sql: &str) -> Result<(), BackendError> {
+        let mut db = self
+            .inner
+            .lock()
+            .map_err(|e| BackendError::Query(format!("db lock poisoned: {e}")))?;
+        db.execute_update(sql)
+            .map(|_| ())
+            .map_err(|e| BackendError::Query(e.to_string()))
+    }
+}
+
+/// Register the information schema's view surface (see
+/// [`crate::info_schema::views`]) over `info_schema_dir`, through `executor`.
+///
+/// The `views.sql` counterpart of [`register_index_views`], with the same
+/// semantics: an absent parquet file is skipped rather than stubbed empty, and
+/// a per-view failure skips that view without taking down the rest.
+///
+/// Unlike the adapter-backed walk the checks gate uses, this registers
+/// `dbt_internal` too. The docs site is the consumer that needs
+/// `dbt_internal.resources`, and it executes the whole shipped document
+/// anyway; a check, which runs user SQL, deliberately cannot see that
+/// namespace.
+pub fn register_info_schema_views(
+    executor: &dyn Backend,
+    info_schema_dir: &Path,
+) -> Result<RegistrationReport, BackendError> {
+    use crate::info_schema::spec::Ns;
+    use crate::info_schema::{schema::INFO_SCHEMA, views};
+
+    // An unreadable directory fails loudly here rather than degrading into a
+    // backend that reports available with zero views: the per-file `exists()`
+    // checks below cannot tell "missing" from "unreadable".
+    std::fs::read_dir(info_schema_dir).map_err(|e| {
+        BackendError::Query(format!(
+            "information schema directory is not readable: {}: {e}",
+            info_schema_dir.display()
+        ))
+    })?;
+
+    for ns in Ns::ALL {
+        executor.execute(&format!("CREATE SCHEMA IF NOT EXISTS {}", ns.prefix()))?;
+    }
+
+    let mut report = RegistrationReport::default();
+    for table in INFO_SCHEMA {
+        let qualified = table.qualified_name();
+        if !info_schema_dir.join(table.file_name()).exists() {
+            report
+                .skipped
+                .push((qualified, "parquet file not present".to_string()));
+            continue;
+        }
+        match executor.execute(&views::base_view_statement(table, Some(info_schema_dir))) {
+            Ok(()) => report.registered.push(qualified),
+            Err(e) => report.skipped.push((qualified, e.to_string())),
+        }
+    }
+    // Derived views bind at creation, so one whose base is missing fails there
+    // and lands in `skipped` with the binder's reason. `derived_statements` is
+    // ordered so prerequisites come first.
+    for (qualified, statement) in views::derived_statements() {
+        match executor.execute(&statement) {
+            Ok(()) => report.registered.push(qualified),
+            Err(e) => report.skipped.push((qualified, e.to_string())),
+        }
+    }
+    Ok(report)
+}
+
 #[cfg(test)]
 mod registration_tests {
     use super::*;
@@ -325,6 +461,65 @@ mod registration_tests {
             report
                 .registered
                 .contains(&"dbt.nodes_enriched".to_string())
+        );
+    }
+
+    /// The information-schema pass registers the shipped document: a base view
+    /// per parquet present, `dbt_internal` included, and the derived views on
+    /// top. Same skip-don't-stub rule as the index pass.
+    #[test]
+    fn info_schema_registers_the_shipped_document() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        touch(tmp.path(), "dbt.models");
+        touch(tmp.path(), "dbt.seeds");
+        touch(tmp.path(), "dbt_internal.node_input_files");
+
+        let exec = FakeExecutor::new(None);
+        let report = register_info_schema_views(&exec, tmp.path()).unwrap();
+
+        for present in ["dbt.models", "dbt.seeds", "dbt_internal.node_input_files"] {
+            assert!(
+                report.registered.contains(&present.to_string()),
+                "{present} should be registered"
+            );
+        }
+        assert!(
+            report
+                .skipped
+                .iter()
+                .any(|(n, r)| n == "dbt.edges" && r.contains("not present")),
+            "an absent parquet is skipped, not stubbed"
+        );
+        // Both derived views are attempted, and the union is the one this
+        // consumer exists for.
+        assert!(
+            report
+                .registered
+                .contains(&"dbt_internal.resources".to_string())
+        );
+        assert!(
+            report
+                .registered
+                .contains(&"dbt_rt.run_results_latest".to_string())
+        );
+
+        let executed = exec.executed.lock().unwrap();
+        // `dbt_internal` is declared here, unlike on the index pass.
+        assert!(
+            executed
+                .iter()
+                .any(|s| s == "CREATE SCHEMA IF NOT EXISTS dbt_internal")
+        );
+        // Absolute paths: the executor's working directory is not the artifact
+        // directory.
+        let dir = view_defs::quote_sql_string(&tmp.path().to_string_lossy());
+        for sql in executed.iter().filter(|s| s.contains("read_parquet")) {
+            assert!(sql.contains(&dir), "expected absolute path in: {sql}");
+        }
+        // The index vocabulary must not leak in.
+        assert!(
+            !executed.iter().any(|s| s.contains("VIEW dbt.nodes AS")),
+            "the information schema has no dbt.nodes"
         );
     }
 }

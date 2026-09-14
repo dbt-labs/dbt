@@ -1,0 +1,7 @@
+kind: Fixes
+body: Rename dbt v2 CLI branding from Fusion/dbt-core to dbt (proprietary) and dbt-oss (OSS), updating --version/--help output and several Fusion-branded warning/error messages to say dbt instead.
+time: 2026-09-08T13:30:18.717781-06:00
+custom:
+    author: kendru
+    issue: ""
+    project: dbt-core

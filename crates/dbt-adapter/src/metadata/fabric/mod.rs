@@ -2,7 +2,7 @@ use crate::adapter::adapter_impl::*;
 use crate::connection::AdapterConnectionFactory;
 use crate::metadata::{
     CatalogAndSchema, MetadataAdapter, MetadataFreshness, RelationSchemaPair, RelationVec,
-    create_schemas_if_not_exists,
+    create_schemas_if_not_exists, run_schema_cache_map_reduce,
 };
 use crate::record_batch::RecordBatchExt;
 use crate::relation::Relation;
@@ -206,14 +206,12 @@ impl MetadataAdapter for FabricMetadataAdapter {
         unique_id: Option<String>,
         phase: Option<ExecutionPhase>,
         relations: &[Arc<dyn BaseRelation>],
+        item_span_operation_id: Option<&str>,
         token: CancellationToken,
     ) -> AsyncAdapterResult<'_, HashMap<String, AdapterResult<Arc<Schema>>>> {
         type Acc = HashMap<String, AdapterResult<Arc<Schema>>>;
 
-        let factory = Box::new(AdapterConnectionFactory::new(
-            self.adapter.engine().clone(),
-            self.adapter.engine().threads(),
-        ));
+        let factory = Box::new(AdapterConnectionFactory::new(self.adapter.engine().clone()));
 
         let adapter = self.adapter.clone();
         let token_clone = token.clone();
@@ -251,8 +249,15 @@ impl MetadataAdapter for FabricMetadataAdapter {
             acc.insert(relation.semantic_fqn(), schema);
             Ok(())
         };
-        let map_reduce = MapReduce::new(factory, Box::new(map_f), Box::new(reduce_f), None);
-        map_reduce.run(Arc::new(relations.to_vec()), token)
+        run_schema_cache_map_reduce(
+            factory,
+            relations.to_vec(),
+            item_span_operation_id,
+            map_f,
+            reduce_f,
+            None,
+            token,
+        )
     }
 
     fn list_relations_schemas_by_patterns_inner(
@@ -281,10 +286,7 @@ impl MetadataAdapter for FabricMetadataAdapter {
         token: CancellationToken,
     ) -> AsyncAdapterResult<'_, BTreeMap<CatalogAndSchema, AdapterResult<RelationVec>>> {
         type Acc = BTreeMap<CatalogAndSchema, AdapterResult<RelationVec>>;
-        let factory = Box::new(AdapterConnectionFactory::new(
-            self.adapter.engine().clone(),
-            self.adapter.engine().threads(),
-        ));
+        let factory = Box::new(AdapterConnectionFactory::new(self.adapter.engine().clone()));
 
         let adapter = self.adapter.clone();
         let token_clone = token.clone();

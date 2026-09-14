@@ -506,7 +506,7 @@ pub trait InternalDbtNode: Any + Send + Sync + fmt::Debug {
             (None, None)
         };
 
-        let node_checksum = common.checksum.as_checksum_string().to_string();
+        let node_checksum = common.checksum.to_checksum_string();
 
         // Use original_name for display if available (for truncated test names)
         NodeEvaluated::start(
@@ -588,7 +588,7 @@ pub trait InternalDbtNode: Any + Send + Sync + fmt::Debug {
             },
         );
 
-        let node_checksum = common.checksum.as_checksum_string().to_string();
+        let node_checksum = common.checksum.to_checksum_string();
 
         NodeProcessed::start(
             common.unique_id.clone(),
@@ -7912,7 +7912,22 @@ impl InternalDbtNode for DbtAnalysis {
 
     fn has_same_content(&self, other: &dyn InternalDbtNode, _adapter_type: AdapterType) -> bool {
         if let Some(other_analysis) = other.as_any().downcast_ref::<DbtAnalysis>() {
-            self.__common_attr__.checksum == other_analysis.__common_attr__.checksum
+            let same = self.__common_attr__.checksum == other_analysis.__common_attr__.checksum;
+            if !same {
+                log_state_mod_diff(
+                    &self.__common_attr__.unique_id,
+                    "analysis_content",
+                    [(
+                        "content",
+                        false,
+                        Some((
+                            self.__common_attr__.checksum.to_checksum_string(),
+                            other_analysis.__common_attr__.checksum.to_checksum_string(),
+                        )),
+                    )],
+                );
+            }
+            same
         } else {
             false
         }

@@ -6,7 +6,6 @@ use std::sync::Arc;
 use arrow_array::RecordBatch;
 use arrow_schema::Schema;
 use dbt_adapter_core::AdapterType;
-use dbt_adbc::semaphore::Semaphore;
 use dbt_adbc::*;
 use dbt_agate::hashers::IdentityBuildHasher;
 use dbt_auth::{AdapterConfig, Auth, AuthError};
@@ -61,8 +60,6 @@ pub struct AdbcEngine {
     config: AdapterConfig,
     /// Lazily initialized databases
     configured_databases: RwLock<DatabaseMap>,
-    /// Semaphore for limiting the number of concurrent connections
-    semaphore: Arc<Semaphore>,
     /// Resolved quoting policy
     quoting: ResolvedQuoting,
     /// Query comment config
@@ -108,11 +105,6 @@ impl AdbcEngine {
         threads: Option<usize>,
         dbt_cloud_project_id: Option<String>,
     ) -> Self {
-        let permits = if mode.has_real_connections() {
-            threads.map(|t| (t as u32).max(1)).unwrap_or(u32::MAX)
-        } else {
-            u32::MAX
-        };
         let behavior = make_behavior(adapter_type, &behavior_flag_overrides);
         Self {
             adapter_type,
@@ -120,7 +112,6 @@ impl AdbcEngine {
             config,
             quoting,
             configured_databases: RwLock::new(DatabaseMap::default()),
-            semaphore: Arc::new(Semaphore::new(permits)),
             type_ops,
             splitter,
             query_comment,
@@ -225,7 +216,6 @@ impl AdbcEngine {
 
         // This will load the "flock" driver if load_strategy is Remote.
         let mut driver = driver::Builder::new(backend, load_strategy)
-            .with_semaphore(Arc::clone(&self.semaphore))
             .try_load()
             .map_err(adbc_error_to_adapter_error)?;
 
@@ -427,6 +417,61 @@ pub(crate) fn resolve_connection_config<'a>(
     }
 }
 
+/// Asserts that the caller is running on a dbt-runtime pool worker, as every
+/// connection-opening path must.
+///
+/// When this assertion is violated, it means that a database connection
+/// (consequently database work) is being performed in code that is not
+/// triggered by a `dbt_runtime::spawn_blocking` call and this is a BUG.
+///
+/// This is a bug because to enforce `--threads` and in general, not overload
+/// the databases with dbt work, we must run all the jinja and database work
+/// in the dbt-runtime thread-pool.
+pub(super) fn assert_connection_on_pool_worker() {
+    if cfg!(debug_assertions) && !dbt_runtime::is_pool_worker() {
+        off_pool_connection_bug();
+    }
+}
+
+/// Reports the off-pool connection bug detected in [`AdbcEngine::new_connection`]
+/// and unwinds.
+///
+/// Panics rather than aborts so the report survives a test harness: the dbt-cli
+/// suite `dup2`s both stdout and stderr to files while the CLI runs, so an
+/// `abort()` here left nothing behind but `signal 6 (SIGABRT)` -- the message
+/// went to a file the harness only dumps when it catches a panic. Unwinding
+/// gets that dump *and* carries the reason as the panic payload.
+#[cold]
+#[inline(never)]
+fn off_pool_connection_bug() -> ! {
+    let thread = std::thread::current();
+    let name = thread.name().unwrap_or("<unnamed>").to_owned();
+    let report = format!(
+        "database connections MUST only be created by dbt-runtime worker threads, \
+         but this one was created on thread `{name}` ({:?}).\n\
+         \n\
+         All jinja and database work has to run on the dbt-runtime blocking pool: \
+         connections are thread-locals of its workers, which is what makes \
+         `--threads` bound the work reaching the warehouse. Fix the caller, not \
+         this assertion -- and see the frame below the adapter for which caller \
+         that is:\n\
+         \n\
+         - production code in an `async fn`: move the call into \
+         `dbt_runtime::spawn_blocking(..)` (or `TaskOp::Blocking`) and await it\n\
+         - a synchronous `#[test]`: use `#[dbt_runtime::worker_test]`\n\
+         - an `async` test: keep `#[dbt_runtime::test]` and dispatch the adapter \
+         call with `dbt_runtime::spawn_blocking(..).await`\n\
+         - a test helper that already hops threads: have the *helper* call \
+         `dbt_runtime::testing::block_on_worker`",
+        thread.id()
+    );
+    // Written here as well as raised: a `catch_unwind` between this frame and
+    // the top would otherwise be free to swallow the whole report.
+    let bt = std::backtrace::Backtrace::force_capture();
+    eprintln!("FATAL: {report}\n{bt}");
+    panic!("{report}");
+}
+
 impl AdapterEngine for AdbcEngine {
     #[inline]
     fn adapter_type(&self) -> AdapterType {
@@ -483,6 +528,8 @@ impl AdapterEngine for AdbcEngine {
         state: Option<&State>,
         _node_id: Option<String>,
     ) -> AdapterResult<Box<dyn Connection>> {
+        assert_connection_on_pool_worker();
+
         match &self.mode {
             EngineMode::Mock => {
                 emit_trace_event(|| {

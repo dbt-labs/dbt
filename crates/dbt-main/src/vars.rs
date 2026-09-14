@@ -1,7 +1,7 @@
 use dbt_common::{
     io_args::{
-        BATCH_TESTS_ENV, REQUIRE_REF_SEARCHES_NODE_PACKAGE_BEFORE_ROOT_ENV,
-        SKIP_REDUNDANT_TESTS_ENV,
+        BATCH_TESTS_ENV, LOCAL_UNIT_TESTS_ENV, MULTI_ADAPTER_ENV,
+        REQUIRE_REF_SEARCHES_NODE_PACKAGE_BEFORE_ROOT_ENV, SKIP_REDUNDANT_TESTS_ENV,
     },
     tracing::dbt_emit::emit_warn_log_message,
 };
@@ -125,6 +125,8 @@ const USED_ENGINE_ENV_VARS: &[&str] = &[
     "DBT_ENGINE_BETA_PACKAGE_PARSING",
     "DBT_ENGINE_BETA_PARSING",
     "DBT_ENGINE_EXPERIMENTAL_LIST_UDFS",
+    LOCAL_UNIT_TESTS_ENV,
+    MULTI_ADAPTER_ENV,
     "DBT_ENGINE_EXPERIMENTAL_SNAPSHOT_COLUMNS",
     "DBT_ENGINE_MANAGE_STATE",
     "DBT_ENGINE_MANTLE_ARTIFACTS",
@@ -243,9 +245,9 @@ pub fn apply_color_env_overrides() {
     }
 }
 
-/// Warns about environment variables that are recognized but not supported by fusion.
+/// Warns about environment variables that are recognized but not supported by dbt.
 ///
-/// These are typically dbt-core specific variables that have no effect in fusion.
+/// These are typically dbt-core specific variables that have no effect in dbt.
 /// Returns a list of the unused variables that were set (for testing purposes).
 pub fn warn_unused_engine_env_vars() -> Vec<String> {
     let unused: Vec<String> = std::env::vars()
@@ -256,7 +258,7 @@ pub fn warn_unused_engine_env_vars() -> Vec<String> {
     for var in &unused {
         emit_warn_log_message(
             ErrorCode::UnsupportedFusionFeature,
-            format!("{var} is not supported by fusion and will have no effect."),
+            format!("{var} is not supported by dbt and will have no effect."),
         );
     }
 

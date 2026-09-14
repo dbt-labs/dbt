@@ -8,51 +8,25 @@
  * from the hyparquet bootstrap while this streams in behind it.
  *
  * Artifacts are fetched whole and handed to `registerFileBuffer` rather than read
- * over HTTP range requests. The whole index for a 6,472-node project is under
- * 5 MB, so ranges buy nothing, and they are actively hostile here: GitLab Pages
- * only serves them when artifacts are stored uncompressed, and duckdb-wasm has a
- * known Firefox × range × compression failure on GitHub Pages. Registration is
- * per-artifact and on demand, so a cold load never pulls column lineage.
+ * over HTTP range requests. The whole artifact set for a 6,472-node project is
+ * under 5 MB, so ranges buy nothing, and they are actively hostile here: GitLab
+ * Pages only serves them when artifacts are stored uncompressed, and duckdb-wasm
+ * has a known Firefox × range × compression failure on GitHub Pages. Registration
+ * is per-artifact and on demand, so a cold load never pulls column lineage.
+ *
+ * **The view SQL is not written here.** It comes from the `views.sql` the
+ * information schema ships beside its parquet, parsed by `viewsSql.ts`. This module
+ * decides *when* to register a view and fetches what it needs; the statement itself
+ * is the generator's. Authoring `CREATE VIEW` here is what made this app a second
+ * definition of the schema.
  */
 
 import type * as duckdb from '@duckdb/duckdb-wasm';
 
-/**
- * Empty relations for index tables that may legitimately have no parquet.
- *
- * The index writes a table only when it has rows, so these four are absent from a
- * project that has not run, has no sources, or has no catalog. Every query reads them
- * through a `LEFT JOIN`, so declaring a zero-row relation with the right columns gives
- * exactly the intended result — nulls — and keeps one version of each query instead of
- * a present/absent pair.
- *
- * Column types mirror the row structs in `dbt-index-core`'s `parquet.rs`
- * (`RunResultRow`, `SourceFreshnessRow`, `CatalogStatRow`, `CatalogTableRow`). Only
- * the columns the queries actually read are declared; a column added to a query needs
- * adding here too, and DuckDB will say so loudly if it is missed.
- */
-const EMPTY_RELATION_DDL: Partial<Record<TableName, string>> = {
-  'dbt_rt.run_results':
-    'CREATE OR REPLACE TABLE "dbt_rt"."run_results" ' +
-    '(unique_id VARCHAR, created_at TIMESTAMP, status VARCHAR, message VARCHAR)',
-  'dbt.source_freshness':
-    'CREATE OR REPLACE TABLE "dbt"."source_freshness" ' +
-    '(unique_id VARCHAR, status VARCHAR, max_loaded_at TIMESTAMP, snapshotted_at TIMESTAMP)',
-  'dbt.catalog_stats':
-    'CREATE OR REPLACE TABLE "dbt"."catalog_stats" ' +
-    '(unique_id VARCHAR, stat_id VARCHAR, stat_value VARCHAR)',
-  'dbt.catalog_tables':
-    'CREATE OR REPLACE TABLE "dbt"."catalog_tables" (unique_id VARCHAR)',
-  // The resolver always injects `doc.dbt.__overview__`, so in practice this table
-  // is never empty — but the delta write path skips a batch with no doc rows, and
-  // the overview query is the landing page. Zero rows means "no authored
-  // overview", which the page already renders the bundled default for.
-  'dbt.docs':
-    'CREATE OR REPLACE TABLE "dbt"."docs" ' +
-    '(unique_id VARCHAR, name VARCHAR, package_name VARCHAR, block_contents VARCHAR)',
-};
+import type { ViewsDocument } from './viewsSql';
+import { fetchViewsSql } from './viewsSql';
 
-/** Logical table name, e.g. `dbt.nodes`. Matches the artifact's file stem. */
+/** Logical relation name, e.g. `dbt.models`. A key into `views.sql`. */
 export type TableName = string;
 
 /**
@@ -111,6 +85,8 @@ export interface DuckDbEngine {
 interface Loaded {
   db: duckdb.AsyncDuckDB;
   conn: duckdb.AsyncDuckDBConnection;
+  /** The view surface, as generated beside the parquet. */
+  doc: ViewsDocument;
 }
 
 export function createEngine(options: EngineOptions): DuckDbEngine {
@@ -123,6 +99,10 @@ export function createEngine(options: EngineOptions): DuckDbEngine {
   async function load(): Promise<Loaded> {
     // `@vite-ignore` keeps Rollup from trying to resolve and inline the CDN URL,
     // which is the whole point: the wasm must not end up in `web/dist/`.
+    // In parallel with the engine: both are needed before the first query, and
+    // the document is a few kilobytes next to the engine's ~6.8 MB.
+    const docPromise = fetchViewsSql(options.dataBaseUrl);
+
     const wasm: typeof duckdb = await import(
       /* @vite-ignore */ `${options.cdnBase}/+esm`
     );
@@ -162,10 +142,13 @@ export function createEngine(options: EngineOptions): DuckDbEngine {
       );
       await db.instantiate(bundle.mainModule, bundle.pthreadWorker);
       const conn = await db.connect();
-      // The artifact set uses two schemas, mirroring the index's own layout.
-      await conn.query('CREATE SCHEMA IF NOT EXISTS dbt');
-      await conn.query('CREATE SCHEMA IF NOT EXISTS dbt_rt');
-      return { db, conn };
+      // The schemas the document declares, not a list of our own: it knows about
+      // `dbt_internal`, which the index layout had no equivalent of.
+      const doc = await docPromise;
+      for (const schema of doc.schemas) {
+        await conn.query(schema);
+      }
+      return { db, conn, doc };
     } finally {
       URL.revokeObjectURL(workerUrl);
     }
@@ -177,51 +160,65 @@ export function createEngine(options: EngineOptions): DuckDbEngine {
   }
 
   /**
-   * Fetch one artifact and create its view.
+   * Create one view from the shipped document, fetching whatever it needs.
    *
-   * Resolves `false` when the artifact is absent, which is not an error. The index
-   * only writes a table that has rows, so a project that has never run has no
-   * `dbt_rt.run_results`, one with no sources has no `dbt.source_freshness`, and so
-   * on. Where a query only reads such a table through a `LEFT JOIN`, an empty
-   * relation is the right answer and {@link EMPTY_RELATION_DDL} supplies one, so the
-   * SQL needs no missing-table variant. Column lineage is the exception: it has no
-   * DDL here because its absence is the capability signal itself.
+   * A base view needs its parquet: it is fetched whole and handed to
+   * `registerFileBuffer` under the *same* file name the statement reads, which is
+   * what lets the generated `read_parquet('dbt.models.parquet')` run unchanged in
+   * a browser that has no filesystem.
    *
-   * Absence is decided by {@link isParquetBytes} rather than by the status code: a
-   * host that rewrites unknown paths to `index.html` reports a missing artifact as
-   * 200 and a document, so a 404 is one way absence arrives and not the only one.
-   * A status that is neither — a 500, a timeout — is still an error and still
-   * throws; those are worth surfacing.
+   * A derived view needs the views it reads, so those register first. Registering
+   * them in dependency order rather than executing the whole document is what
+   * keeps a cold load from pulling every artifact.
+   *
+   * Resolves `false` when the view could not be created, which the caller lets
+   * surface as a query error. Unlike the index, the information schema writes
+   * every table even at zero rows — precisely so `views.sql` always resolves — so
+   * a missing artifact is a broken site, not the empty-relation case the index
+   * needed a stand-in for.
+   *
+   * A non-parquet body is treated as absent rather than registered, by
+   * {@link isParquetBytes} rather than by the status code: a host that rewrites
+   * unknown paths to `index.html` reports a missing artifact as 200 and a
+   * document, and registering that leaves DuckDB to fail on it with "No magic
+   * bytes found at end of file". A status that is neither — a 500, a timeout — is
+   * still an error and still throws; those are worth surfacing.
    */
   function register(table: TableName): Promise<boolean> {
     const existing = registered.get(table);
     if (existing) return existing;
 
     const attempt = (async () => {
-      const { db, conn } = await loaded();
-      const fileName = `${table}.parquet`;
-      const res = await fetch(new URL(fileName, options.dataBaseUrl).href);
-      if (!res.ok && res.status !== 404) {
-        throw new Error(`${res.status} ${res.statusText} fetching ${fileName}`);
+      const { db, conn, doc } = await loaded();
+      const view = doc.views.get(table);
+      if (!view) {
+        // The app asked for a relation the generated document does not define.
+        // That is this app and the artifacts disagreeing, so it is loud.
+        throw new Error(
+          `${table} is not defined in views.sql — the site's data was written by ` +
+            'a dbt version whose information schema does not carry it',
+        );
       }
 
-      const bytes = res.ok ? new Uint8Array(await res.arrayBuffer()) : null;
-      if (!bytes || !isParquetBytes(bytes)) {
-        const ddl = EMPTY_RELATION_DDL[table];
-        if (!ddl) return false;
-        // Nothing to register: the relation is declared straight into the catalog.
-        await conn.query(ddl);
+      if (view.kind === 'derived') {
+        // Prerequisites first: a derived view binds at creation, so one whose
+        // base is absent fails there rather than at query time.
+        const ready = await Promise.all(view.dependsOn.map(register));
+        if (ready.some((ok) => !ok)) return false;
+        await conn.query(view.sql);
         present.add(table);
         return true;
       }
 
-      await db.registerFileBuffer(fileName, bytes);
-      // Quoted so the `.` in `dbt.nodes` reads as schema.table rather than being
-      // taken from the file name, which contains one too.
-      const [schema, name] = splitTableName(table);
-      await conn.query(
-        `CREATE OR REPLACE VIEW "${schema}"."${name}" AS SELECT * FROM read_parquet('${fileName}')`,
-      );
+      const res = await fetch(new URL(view.file, options.dataBaseUrl).href);
+      if (!res.ok && res.status !== 404) {
+        throw new Error(`${res.status} ${res.statusText} fetching ${view.file}`);
+      }
+      const bytes = res.ok ? new Uint8Array(await res.arrayBuffer()) : null;
+      if (!bytes || !isParquetBytes(bytes)) return false;
+
+      await db.registerFileBuffer(view.file, bytes);
+      await conn.query(view.sql);
       present.add(table);
       return true;
     })();
@@ -246,13 +243,6 @@ export function createEngine(options: EngineOptions): DuckDbEngine {
       await loaded();
     },
   };
-}
-
-/** `dbt.nodes` → `['dbt', 'nodes']`; an unqualified name lands in `dbt`. */
-function splitTableName(table: TableName): [string, string] {
-  const idx = table.indexOf('.');
-  if (idx === -1) return ['dbt', table];
-  return [table.slice(0, idx), table.slice(idx + 1)];
 }
 
 /**

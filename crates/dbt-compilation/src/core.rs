@@ -69,6 +69,13 @@ pub struct DbtLoadedProject {
     jinja_factory: Arc<dyn JinjaFactory>,
 }
 
+/// Controls whether adapter initialization may construct an engine backed by a remote system.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AdapterConnectionMode {
+    AllowRemote,
+    Offline,
+}
+
 /// Phase 1: Load and hydrate cache with optional previous state for incremental compilation
 async fn load_phase(
     config: CompilationConfig,
@@ -603,6 +610,7 @@ impl DbtLoadedProject {
         token: &CancellationToken,
         sidecar_client: Option<Arc<dyn SidecarClient>>,
         execute: Execute,
+        connection_mode: AdapterConnectionMode,
     ) -> FsResult<Arc<AdapterStore>> {
         // Each declared adapter's `DbConfig`, cloned because the builder closure has
         // to be `'static` and so cannot hold `resolved_state`. Cloned rather than
@@ -698,6 +706,7 @@ impl DbtLoadedProject {
                 query_comment.clone(),
                 cloud_config.clone(),
                 threads,
+                connection_mode,
             )
         });
 
@@ -723,6 +732,7 @@ impl DbtLoadedProject {
         token: &CancellationToken,
         sidecar_client: Option<Arc<dyn SidecarClient>>,
         execute: Execute,
+        connection_mode: AdapterConnectionMode,
     ) -> FsResult<Arc<Adapter>> {
         self.init_adapter_store(
             resolved_state,
@@ -732,6 +742,7 @@ impl DbtLoadedProject {
             token,
             sidecar_client,
             execute,
+            connection_mode,
         )?
         .default_adapter()
     }
@@ -768,6 +779,7 @@ impl DbtLoadedProject {
         query_comment: Option<QueryComment>,
         cloud_config: Option<ResolvedCloudConfig>,
         threads: Option<usize>,
+        connection_mode: AdapterConnectionMode,
     ) -> FsResult<Arc<Adapter>> {
         let adapter_factory = self.adapter_factory.clone();
         let type_ops_factory = self.type_ops_factory.clone();
@@ -794,7 +806,8 @@ impl DbtLoadedProject {
         let is_mantle_replay = matches!(&replay_mode, Some(ReplayMode::MantleReplay(_)));
         let executes_locally =
             !introspect_enabled || matches!(execute, Execute::Sidecar | Execute::Service);
-        let use_local_mock_adapter = executes_locally && !is_mantle_replay;
+        let offline = connection_mode == AdapterConnectionMode::Offline;
+        let use_local_mock_adapter = offline || (executes_locally && !is_mantle_replay);
         let adapter = if matches!(adapter_type, AdapterType::DuckDB | AdapterType::LakeCompute) {
             adapter_factory
                 .create_adapter(
@@ -818,10 +831,7 @@ impl DbtLoadedProject {
                     )
                 })?
         } else if use_local_mock_adapter {
-            // Construct a MockAdapter wrapped in Adapter
-            let type_ops = type_ops_factory.create(adapter_type);
-
-            if let Some(client) = sidecar_client {
+            if !offline && let Some(client) = sidecar_client {
                 // For sidecar/service mode with a sidecar client, use AdapterImpl
                 // wrapping a SidecarEngine which routes introspection (get_columns_in_relation,
                 // list_relations, get_relation) to the sidecar client.
@@ -842,10 +852,14 @@ impl DbtLoadedProject {
                 );
                 Arc::new(Adapter::new(Arc::new(adapter_impl), None, token.clone()))
             } else {
-                // Fallback: use mock adapter
+                let type_ops = type_ops_factory.create(adapter_type);
+                let mut mock_flags = flags.project_flags();
+                if offline {
+                    mock_flags.insert("introspect".to_string(), false.into());
+                }
                 let mock = AdapterImpl::new_mock(
                     adapter_type,
-                    flags.project_flags(),
+                    mock_flags,
                     root_project_quoting,
                     type_ops,
                     adapter_factory.stmt_splitter(),
@@ -883,6 +897,7 @@ impl DbtLoadedProject {
         &self,
         adapter_type: AdapterType,
         config_as_mapping: dbt_yaml::Mapping,
+        replay_mode: Option<ReplayMode>,
         token: CancellationToken,
     ) -> FsResult<Arc<Adapter>> {
         let type_ops_factory = self.type_ops_factory.clone();
@@ -891,7 +906,7 @@ impl DbtLoadedProject {
             adapter_type,
             config_as_mapping,
             type_ops_factory,
-            None, // replay_mode
+            replay_mode,
             BTreeMap::new(),
             None,
             DEFAULT_RESOLVED_QUOTING,

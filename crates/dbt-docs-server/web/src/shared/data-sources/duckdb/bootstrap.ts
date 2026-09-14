@@ -3,19 +3,24 @@
  *
  * DuckDB-WASM is ~6.8 MB brotli on a cold cache. Waiting for it before rendering
  * anything would be a visible regression against the REST app, so the shell,
- * sidebar and home page come from three small artifacts read with hyparquet — a
- * ~88 KB pure-JS parquet reader — while the engine streams in behind them.
+ * sidebar and home page come from a handful of small artifacts read with
+ * hyparquet — a ~88 KB pure-JS parquet reader — while the engine streams in behind
+ * them.
  *
- * The site reads the index artifacts as written — there is no exported copy and no
- * derived projection, so `dbt.nodes` is the index's own table. Only the nine
- * `NodeSummary` columns the shell renders are decoded (`columns` below); the whole
- * file still crosses the wire, because artifacts are fetched whole rather than by
- * range. At 6,472 nodes that is 1.79 MB in place of a 343 KB projection — the cost
- * of having one artifact contract instead of two.
+ * This is the one place that cannot use `views.sql`: there is no DuckDB here, so
+ * there is no SQL and no `dbt_internal.resources` to read. The resource union has
+ * to be done by reading each resource-type artifact and concatenating, which is
+ * why {@link RESOURCE_TABLES} exists — the only place in this app that still names
+ * information-schema tables in TypeScript. It is a list of *files*, not a schema:
+ * the columns come from `NodeSummary`, and a resource type missing from it shows up
+ * as an empty sidebar section rather than as wrong data.
+ *
+ * Only the nine `NodeSummary` columns the shell renders are decoded (`columns`
+ * below); each file still crosses the wire whole, because artifacts are fetched
+ * whole rather than by range.
  *
  * Everything past first paint — detail pages, lists, search, lineage — goes
- * through DuckDB. This is not a second query engine, it is a fixed three-file
- * read with no SQL.
+ * through DuckDB.
  */
 
 import type { AsyncBuffer } from 'hyparquet';
@@ -25,15 +30,37 @@ import { compressors } from 'hyparquet-compressors';
 import type { NodeSummary } from '../../../types';
 import type { RestProject } from '../mappers/fromWire';
 
-/** The artifact holding the shell's node list. */
-const NODES = 'dbt.nodes';
+/**
+ * The artifacts holding the shell's resource list, in the order they are listed.
+ *
+ * Every table `dbt_internal.resources` unions, plus `dbt.unit_tests` — which the
+ * union leaves out (it is not node-backed) but the sidebar counts under `test`.
+ * `dbt.checks` is absent deliberately: checks are project-quality rules, not
+ * resources the docs site has a page for.
+ */
+const RESOURCE_TABLES = [
+  'dbt.models',
+  'dbt.seeds',
+  'dbt.snapshots',
+  'dbt.sources',
+  'dbt.analyses',
+  'dbt.functions',
+  'dbt.hooks',
+  'dbt.data_tests',
+  'dbt.unit_tests',
+];
 
 /**
- * The columns first paint decodes out of `dbt.nodes`.
+ * The columns first paint decodes out of each resource artifact.
  *
- * Mirrors `NODE_SUMMARY_COLUMNS` in the Rust crate. Parquet is columnar, so naming
- * them keeps the ~1 MB of `raw_code` / `compiled_code` from being decompressed here
- * even though it arrives in the same file.
+ * Parquet is columnar, so naming them keeps the code blobs from being decompressed
+ * here even though they arrive in the same file.
+ *
+ * `dbt.data_tests` and `dbt.unit_tests` do not carry all nine — a unit test has no
+ * `materialized`, `database_name` or `schema_name`, and neither table declares
+ * `resource_type`, since the table *is* the type. hyparquet fails a read that names
+ * an absent column, so each artifact is read with the columns it actually has and
+ * the rest are filled in.
  */
 const NODE_SUMMARY_COLUMNS = [
   'unique_id',
@@ -46,56 +73,107 @@ const NODE_SUMMARY_COLUMNS = [
   'schema_name',
   'original_file_path',
 ];
-/** Single-row conveniences: project identity and the ingest stamp. */
+/** Single-row convenience: project identity and the parse stamp. */
 const PROJECT = 'dbt.project';
-const GENERATION = 'dbt.generation';
 
 export interface BootstrapData {
   /** Every node in the project, shaped exactly like the former `GET /api/v1/nodes`. */
   nodes: NodeSummary[];
   /** Project identity, or `null` when `dbt.project` is empty. */
   project: RestProject | null;
-  /** When the index was ingested (RFC3339), or `null` if unstamped. */
+  /** When the project was last fully parsed (RFC3339), or `null` if unstamped. */
   generation: string | null;
 }
 
 /**
  * Read the first-paint slice.
  *
- * Fetches the three artifacts in parallel and tolerates a missing `dbt.project` or
- * `dbt.generation` — both are single-row conveniences, and a site is still usable
- * without them. A missing or unreadable `dbt.nodes` is fatal: it is the shell.
+ * Fetches every artifact in parallel. A resource artifact that cannot be read is
+ * skipped rather than fatal: a project with no snapshots still has a
+ * `dbt.snapshots.parquet` — the information schema writes every table — but a
+ * partially copied site should still render what it does have, and every resource
+ * type failing shows up as an empty shell either way. `dbt.project` is a
+ * single-row convenience and a site is usable without it.
+ *
+ * The parse stamp comes from `dbt.project.last_full_parse_at`, which absorbed the
+ * index's single-row `dbt.generation` table.
  */
 export async function readBootstrap(dataBaseUrl: string): Promise<BootstrapData> {
-  const [nodes, project, generation] = await Promise.all([
-    readRows(dataBaseUrl, NODES, NODE_SUMMARY_COLUMNS),
+  const [resources, project] = await Promise.all([
+    Promise.all(
+      RESOURCE_TABLES.map((table) =>
+        readRows(dataBaseUrl, table, columnsFor(table)).catch(() => []),
+      ),
+    ),
     readRows(dataBaseUrl, PROJECT).catch(() => []),
-    readRows(dataBaseUrl, GENERATION).catch(() => []),
   ]);
 
   return {
-    // The index's column names are already the `NodeSummary` field names, so this is
-    // a cast rather than a mapping.
-    nodes: nodes as unknown as NodeSummary[],
+    nodes: RESOURCE_TABLES.flatMap((table, i) =>
+      (resources[i] ?? []).map((row) => toNodeSummary(row, table)),
+    ),
     project: toRestProject(project[0]),
-    generation: asIsoString(generation[0]?.ingested_at) ?? null,
+    generation: asIsoString(project[0]?.last_full_parse_at) ?? null,
   };
 }
 
 /**
- * Shape a `dbt.project` row like `GET /api/v1/project` did.
+ * Resource types whose table does not declare `resource_type`, and the value to
+ * fill in. The table *is* the type for these two, so the column would be a
+ * constant column — but the shell groups by it, so something has to supply it.
+ */
+const IMPLIED_RESOURCE_TYPE: Record<string, string> = {
+  'dbt.data_tests': 'test',
+  'dbt.unit_tests': 'unit_test',
+};
+
+/** The subset of {@link NODE_SUMMARY_COLUMNS} one artifact actually declares. */
+function columnsFor(table: string): string[] {
+  const implied = IMPLIED_RESOURCE_TYPE[table];
+  if (!implied) return NODE_SUMMARY_COLUMNS;
+  const absent =
+    table === 'dbt.unit_tests'
+      ? ['resource_type', 'materialized', 'database_name', 'schema_name']
+      : ['resource_type'];
+  return NODE_SUMMARY_COLUMNS.filter((c) => !absent.includes(c));
+}
+
+/**
+ * One row as the shell wants it.
  *
- * The one column that needs renaming: the table calls it `project_name`, and the
- * Rust handler aliased it to `name` in its `SELECT`. Reading the parquet directly
- * skips that alias, so it happens here instead — `fromProject` reads `name`, and
- * without this the project would silently render nameless.
+ * The information schema's column names are already the `NodeSummary` field names,
+ * so this only has to supply what the artifact does not carry.
+ */
+function toNodeSummary(row: Record<string, unknown>, table: string): NodeSummary {
+  const implied = IMPLIED_RESOURCE_TYPE[table];
+  return (implied ? { ...row, resource_type: implied } : row) as unknown as NodeSummary;
+}
+
+/**
+ * Shape a `dbt.project` row the way `fromProject` reads it.
+ *
+ * Two columns need renaming, and both fail silently if missed: the table calls the
+ * name `project_name`, and `git_is_dirty` is `git_uncommitted_changes` in the
+ * information schema. Without the first the project renders nameless; without the
+ * second the dirty-worktree marker never shows.
+ *
+ * Written field by field rather than spread, so the row's other columns —
+ * `schema_version`, `quoting`, `last_full_parse_at` — stay out of the domain
+ * object instead of riding along untyped.
  */
 function toRestProject(row: Record<string, unknown> | undefined): RestProject | null {
   if (!row) return null;
-  const { project_name: projectName, ...rest } = row;
+  const str = (value: unknown) => (typeof value === 'string' ? value : undefined);
   return {
-    ...(rest as Omit<RestProject, 'name'>),
-    name: typeof projectName === 'string' ? projectName : '',
+    name: str(row.project_name) ?? '',
+    dbt_version: str(row.dbt_version),
+    adapter_type: str(row.adapter_type),
+    git_sha: str(row.git_sha) ?? null,
+    git_branch: str(row.git_branch) ?? null,
+    git_is_dirty:
+      typeof row.git_uncommitted_changes === 'boolean'
+        ? row.git_uncommitted_changes
+        : null,
   };
 }
 
@@ -139,7 +217,7 @@ async function wholeFile(url: string): Promise<AsyncBuffer> {
 /**
  * Coerce a parquet timestamp to RFC3339.
  *
- * `ingested_at` is `TIMESTAMP(µs, UTC)`, which hyparquet may surface as a `Date`,
+ * `last_full_parse_at` is `TIMESTAMP(µs, UTC)`, which hyparquet may surface as a `Date`,
  * a number of milliseconds, or a `BigInt` of microseconds depending on how it
  * decodes the logical type. This is a staleness label, so an unrecognized shape
  * degrades to "unknown" rather than throwing.

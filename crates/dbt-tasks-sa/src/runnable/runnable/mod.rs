@@ -93,22 +93,12 @@ impl RunTask {
 
 impl Task for RunTask {
     // Backpressure applied granularly at the node level
-    fn run_task_with_backpressure<'a>(
-        &'a self,
-        ctx: &'a mut TaskRunnerCtx,
-    ) -> Pin<Box<dyn Future<Output = FsResult<NodeStatus>> + Send + 'a>> {
-        self.run_task(ctx)
-    }
-
     fn run_task<'a>(
         &'a self,
         ctx: &'a mut TaskRunnerCtx,
     ) -> Pin<Box<dyn Future<Output = FsResult<NodeStatus>> + Send + 'a>> {
         Box::pin(async move {
             let unique_id = self.node.unique_id();
-            // The node's own adapter drives its execution; see `+adapter`.
-            let adapter_type = self.node.node_adapter();
-            let max_threads = ctx.dbt_profile().threads;
             let mut result_receiver = { self.result_receiver.lock().take() };
             let task_result = receive_task_result(&unique_id, &mut result_receiver)?;
             let start_time = chrono::Utc::now();
@@ -241,7 +231,7 @@ impl Task for RunTask {
                         // resolution error yields None and the service submit executes
                         // normally rather than risk a window-independent skip).
                         let microbatch_window = match try_get_microbatch_model(self.node.as_ref()) {
-                            Some(model) => match resolve_microbatch_window(model, ctx) {
+                            Some(model) => match resolve_microbatch_window(model, ctx).await {
                                 Ok(window) => Some(window),
                                 Err(e) => {
                                     emit_warn_log_message(
@@ -354,8 +344,6 @@ impl Task for RunTask {
                                     ctx,
                                     self.node.as_ref(),
                                     clone,
-                                    adapter_type,
-                                    max_threads,
                                     Some(&task_result),
                                 )
                                 .await
@@ -408,7 +396,8 @@ impl Task for RunTask {
                                     self.node.clone(),
                                     ctx,
                                     &task_result,
-                                )?;
+                                )
+                                .await?;
                                 // An empty event window yields no batches, so the target
                                 // relation is never materialized on a first run. Mirror
                                 // dbt-core's `if not relations` guard: only create the
@@ -420,13 +409,9 @@ impl Task for RunTask {
                                         .into_iter()
                                         .map(|task| {
                                             let ctx = ctx.clone();
-                                            TaskOp::BlockingWithConnection {
-                                                f: Box::new(move || {
-                                                    execute_microbatch_batch(task, &ctx)
-                                                }),
-                                                adapter_type,
-                                                max_threads,
-                                            }
+                                            TaskOp::Blocking(Box::new(move || {
+                                                execute_microbatch_batch(task, &ctx)
+                                            }))
                                             .run()
                                             .instrument(batch_span.clone())
                                         })
@@ -457,26 +442,22 @@ impl Task for RunTask {
                                     );
                                     let model_clone = model.clone();
                                     let ctx_clone = ctx.clone();
-                                    TaskOp::BlockingWithConnection {
-                                        f: Box::new(move || {
-                                            let relations_map = materialize_latest_version_pointer(
-                                                &model_clone,
-                                                model_clone.node_adapter(),
-                                                ctx_clone.runtime_config(),
-                                                &ctx_clone.inner.materialization_resolver,
-                                                ctx_clone.env.clone(),
-                                                &base_context,
-                                                &ctx_clone.inner.arg.io,
-                                            )?;
-                                            let _ = cache_materialization_return_value(
-                                                ctx_clone.env,
-                                                &relations_map,
-                                            );
-                                            Ok::<(), Box<dbt_common::FsError>>(())
-                                        }),
-                                        adapter_type,
-                                        max_threads,
-                                    }
+                                    TaskOp::Blocking(Box::new(move || {
+                                        let relations_map = materialize_latest_version_pointer(
+                                            &model_clone,
+                                            model_clone.node_adapter(),
+                                            ctx_clone.runtime_config(),
+                                            &ctx_clone.inner.materialization_resolver,
+                                            ctx_clone.env.clone(),
+                                            &base_context,
+                                            &ctx_clone.inner.arg.io,
+                                        )?;
+                                        let _ = cache_materialization_return_value(
+                                            ctx_clone.env,
+                                            &relations_map,
+                                        );
+                                        Ok::<(), Box<dbt_common::FsError>>(())
+                                    }))
                                     .run()
                                     .await??;
                                 }
@@ -500,21 +481,15 @@ impl Task for RunTask {
                                 let ctx_inner = ctx.clone();
                                 let task_result_inner = task_result.clone();
                                 let node_inner = self.node.clone();
-                                let (status, result) = TaskOp::BlockingWithConnection {
-                                    f: Box::new(move || {
-                                        let unit_test = node_inner
-                                            .as_any()
-                                            .downcast_ref::<DbtUnitTest>()
-                                            .unwrap();
-                                        execute_unit_test_remote(
-                                            unit_test,
-                                            &ctx_inner,
-                                            &task_result_inner,
-                                        )
-                                    }),
-                                    adapter_type,
-                                    max_threads,
-                                }
+                                let (status, result) = TaskOp::Blocking(Box::new(move || {
+                                    let unit_test =
+                                        node_inner.as_any().downcast_ref::<DbtUnitTest>().unwrap();
+                                    execute_unit_test_remote(
+                                        unit_test,
+                                        &ctx_inner,
+                                        &task_result_inner,
+                                    )
+                                }))
                                 .run()
                                 .await??;
                                 if let Some(result) = result {
@@ -535,17 +510,13 @@ impl Task for RunTask {
                                 let ctx_inner = ctx.clone();
                                 let task_result_inner = task_result.clone();
                                 let node = self.node.clone();
-                                let res = TaskOp::BlockingWithConnection {
-                                    f: Box::new(move || {
-                                        execute_remote_node(
-                                            node.as_ref(),
-                                            &ctx_inner,
-                                            &task_result_inner,
-                                        )
-                                    }),
-                                    adapter_type,
-                                    max_threads,
-                                }
+                                let res = TaskOp::Blocking(Box::new(move || {
+                                    execute_remote_node(
+                                        node.as_ref(),
+                                        &ctx_inner,
+                                        &task_result_inner,
+                                    )
+                                }))
                                 .run()
                                 .await?;
                                 maybe_resolve_remote_seed_column_hint(res, self.node.as_ref(), ctx)
@@ -719,8 +690,6 @@ async fn execute_run_cache_service_clone_with_hooks(
     ctx: &TaskRunnerCtx,
     node: &dyn InternalDbtNodeAttributes,
     clone: &RunCacheCloneDecision,
-    adapter_type: AdapterType,
-    max_threads: Option<usize>,
     task_result: Option<&TaskResult>,
 ) -> Result<NodeStatus, RunCacheCloneError> {
     let hook_node = run_cache_clone_hook_node(node);
@@ -729,16 +698,7 @@ async fn execute_run_cache_service_clone_with_hooks(
         .is_some_and(RunCacheReuseHookNode::has_pre_hooks);
     let hook_executor =
         hook_node.map(|hook_node| build_reuse_hook_executor(ctx, node, task_result, hook_node));
-    execute_run_cache_service_clone(
-        ctx,
-        node,
-        clone,
-        adapter_type,
-        max_threads,
-        hook_executor,
-        pre_hooks_configured,
-    )
-    .await
+    execute_run_cache_service_clone(ctx, node, clone, hook_executor, pre_hooks_configured).await
 }
 
 async fn execute_hooks_for_run_cache_skip_reuse(
@@ -758,14 +718,10 @@ async fn execute_hooks_for_run_cache_skip_reuse(
     };
     let hook_executor = build_reuse_hook_executor(ctx, node, task_result, hook_node);
     let ctx_inner = ctx.clone();
-    TaskOp::BlockingWithConnection {
-        f: Box::new(move || {
-            hook_executor(&ctx_inner, RunCacheReuseHookPhase::Pre)?;
-            hook_executor(&ctx_inner, RunCacheReuseHookPhase::Post)
-        }),
-        adapter_type: node.node_adapter(),
-        max_threads: ctx.dbt_profile().threads,
-    }
+    TaskOp::Blocking(Box::new(move || {
+        hook_executor(&ctx_inner, RunCacheReuseHookPhase::Pre)?;
+        hook_executor(&ctx_inner, RunCacheReuseHookPhase::Post)
+    }))
     .run()
     .await??;
     Ok(())

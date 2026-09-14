@@ -909,10 +909,7 @@ impl BigqueryMetadataAdapter {
     ) -> AsyncAdapterResult<'_, BTreeMap<String, MetadataFreshness>> {
         type Acc = BTreeMap<String, MetadataFreshness>;
 
-        let factory = Box::new(AdapterConnectionFactory::new(
-            self.adapter.engine().clone(),
-            self.adapter.engine().threads(),
-        ));
+        let factory = Box::new(AdapterConnectionFactory::new(self.adapter.engine().clone()));
         let adapter_for_map = self.adapter.clone();
         let token_clone = token.clone();
         let map_f = move |conn: &mut dyn Connection, task: &FreshnessTask| {
@@ -1278,15 +1275,13 @@ impl MetadataAdapter for BigqueryMetadataAdapter {
         unique_id: Option<String>,
         _phase: Option<ExecutionPhase>,
         relations: &[Arc<dyn BaseRelation>],
+        item_span_operation_id: Option<&str>,
         token: CancellationToken,
     ) -> AsyncAdapterResult<'_, HashMap<String, AdapterResult<Arc<Schema>>>> {
         // All results are accumulated in an unordered map
         type Acc = HashMap<String, AdapterResult<Arc<Schema>>>;
 
-        let factory = Box::new(AdapterConnectionFactory::new(
-            self.adapter.engine().clone(),
-            self.adapter.engine().threads(),
-        ));
+        let factory = Box::new(AdapterConnectionFactory::new(self.adapter.engine().clone()));
         let node_id = unique_id.or_else(|| Some("sources".to_string()));
 
         let adapter = self.adapter.clone();
@@ -1364,8 +1359,15 @@ impl MetadataAdapter for BigqueryMetadataAdapter {
             acc.insert(relation.semantic_fqn(), schema);
             Ok(())
         };
-        let map_reduce = MapReduce::new(factory, Box::new(map_f), Box::new(reduce_f), node_id);
-        map_reduce.run(Arc::new(relations.to_vec()), token)
+        run_schema_cache_map_reduce(
+            factory,
+            relations.to_vec(),
+            item_span_operation_id,
+            map_f,
+            reduce_f,
+            node_id,
+            token,
+        )
     }
 
     fn list_relations_schemas_by_patterns_inner(
@@ -1428,10 +1430,7 @@ impl MetadataAdapter for BigqueryMetadataAdapter {
         token: CancellationToken,
     ) -> AsyncAdapterResult<'_, BTreeMap<CatalogAndSchema, AdapterResult<RelationVec>>> {
         type Acc = BTreeMap<CatalogAndSchema, AdapterResult<RelationVec>>;
-        let factory = Box::new(AdapterConnectionFactory::new(
-            self.adapter.engine().clone(),
-            self.adapter.engine().threads(),
-        ));
+        let factory = Box::new(AdapterConnectionFactory::new(self.adapter.engine().clone()));
 
         let adapter = self.adapter.clone();
         let token_clone = token.clone();
@@ -1526,10 +1525,7 @@ impl MetadataAdapter for BigqueryMetadataAdapter {
                 .push(table);
         }
 
-        let factory = Box::new(AdapterConnectionFactory::new(
-            self.adapter.engine().clone(),
-            self.adapter.engine().threads(),
-        ));
+        let factory = Box::new(AdapterConnectionFactory::new(self.adapter.engine().clone()));
 
         let adapter = self.adapter.clone();
         let token_clone = token.clone();
@@ -1613,10 +1609,7 @@ impl MetadataAdapter for BigqueryMetadataAdapter {
         let sql = build_schema_freshness_query(database, schema);
         let relations = relations.to_vec();
         let adapter = self.adapter.clone();
-        let factory = Box::new(AdapterConnectionFactory::new(
-            adapter.engine().clone(),
-            adapter.engine().threads(),
-        ));
+        let factory = Box::new(AdapterConnectionFactory::new(adapter.engine().clone()));
         type Acc = BTreeMap<String, MetadataFreshness>;
 
         let token_clone = token.clone();
@@ -1629,7 +1622,7 @@ impl MetadataAdapter for BigqueryMetadataAdapter {
         let reduce_f = move |acc: &mut Acc, _: (), batch_res: AdapterResult<Arc<RecordBatch>>| {
             let batch = match batch_res {
                 Ok(b) => b,
-                Err(e) if e.message().contains("Error 404: Not found:") => return Ok(()),
+                Err(e) if is_bigquery_not_found_error(&e) => return Ok(()),
                 Err(e) => return Err(Cancellable::Error(e)),
             };
             let schemas = batch.column_values::<StringArray>("table_schema")?;
@@ -1682,6 +1675,9 @@ impl MetadataAdapter for BigqueryMetadataAdapter {
 /// TODO: match on the ADBC status instead — bigquery-adbc already reports
 /// `StatusNotFound` for both — once the driver migration is complete.
 pub fn is_bigquery_not_found_error(e: &AdapterError) -> bool {
+    if e.kind() == AdapterErrorKind::NotFound {
+        return true;
+    }
     let msg = e.message();
     // arrow-adbc (both sources)
     msg.contains("Error 404: Not found:")
@@ -2192,6 +2188,9 @@ mod tests {
             "googleapi: Error 404: Not found: Table proj:dataset.tbl, notFound",
         );
         assert!(is_bigquery_not_found_error(&legacy));
+
+        let typed = AdapterError::new(AdapterErrorKind::NotFound, "table missing");
+        assert!(is_bigquery_not_found_error(&typed));
 
         // arrow-adbc, query job.
         let legacy_job = AdapterError::new(

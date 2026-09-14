@@ -187,6 +187,9 @@ pub struct TaskRunnerCtxInner {
     pub dbt_profile: Arc<DbtProfile>,
     pub runtime_config: Arc<DbtRuntimeConfig>,
     pub generic_test_relationships: GenericTestRelationships,
+    /// Cross-model schema-inference state for `--infer-schemas`, shared by
+    /// every task in this run.
+    pub infer_schema_registry: Arc<dbt_common::infer_schema_registry::InferSchemaRegistry>,
     span_manager: Arc<SpanManager<FsResult<NodeStatus>, SkipReason>>,
     /// Captured show batches for the LSP preview path; set by run_show, collected after the task loop.
     pub preview_results: parking_lot::Mutex<Option<(Vec<RecordBatch>, SchemaRef)>>,
@@ -243,6 +246,9 @@ impl TaskRunnerCtxInner {
             map
         };
 
+        let infer_schema_registry =
+            Arc::new(dbt_common::infer_schema_registry::InferSchemaRegistry::new());
+
         TaskRunnerCtxInner {
             arg,
             worker_id,
@@ -270,6 +276,7 @@ impl TaskRunnerCtxInner {
             dbt_profile: Arc::new(resolver_state.dbt_profile.clone()),
             runtime_config: resolver_state.runtime_config.clone(),
             generic_test_relationships,
+            infer_schema_registry,
             span_manager,
             preview_results: parking_lot::Mutex::new(None),
             preview_error: parking_lot::Mutex::new(None),
@@ -335,6 +342,42 @@ pub trait ExtendedCtx: Send + Sync + Any {
     }
 }
 
+/// The owned slice of a [`TaskRunnerCtx`] that blocking work needs.
+///
+/// It carries four of the ctx's six `Arc`s rather than cloning the whole
+/// thing.
+///
+/// Everything shared sits behind an `Arc`, and the mutable state inside
+/// [`TaskRunnerCtxInner`] is interior-mutable, so writes through this handle
+/// are visible to the task's own ctx.
+#[derive(Clone)]
+pub struct BlockingTaskCtx {
+    pub inner: Arc<TaskRunnerCtxInner>,
+    pub env: Arc<JinjaEnv>,
+    pub data_store: Arc<dyn DataStoreTrait>,
+    pub resolver_state: Arc<ResolverState>,
+    /// Copied, not shared: see [`TaskRunnerCtx::thread_id`].
+    pub thread_id: i32,
+}
+
+impl BlockingTaskCtx {
+    pub fn adapter_store(&self) -> &Arc<AdapterStore> {
+        &self.inner.adapter_store
+    }
+
+    pub fn dbt_profile(&self) -> &DbtProfile {
+        &self.inner.dbt_profile
+    }
+
+    pub fn extended_ctx<T: ExtendedCtx + 'static>(&self) -> Option<&T> {
+        self.inner.extended_ctx.as_any().downcast_ref::<T>()
+    }
+
+    pub fn nodes(&self) -> &Nodes {
+        &self.resolver_state.nodes
+    }
+}
+
 #[derive(Clone)]
 pub struct TaskRunnerCtx {
     pub inner: Arc<TaskRunnerCtxInner>,
@@ -354,6 +397,17 @@ pub struct TaskRunnerCtx {
 }
 
 impl TaskRunnerCtx {
+    /// Takes the handles blocking work needs off this ctx.
+    pub fn blocking_ctx(&self) -> BlockingTaskCtx {
+        BlockingTaskCtx {
+            inner: Arc::clone(&self.inner),
+            env: Arc::clone(&self.env),
+            data_store: Arc::clone(&self.data_store),
+            resolver_state: Arc::clone(&self.resolver_state),
+            thread_id: self.thread_id,
+        }
+    }
+
     pub async fn is_data_test_statically_skippable(&self, unique_id: &str) -> bool {
         if !self
             .inner

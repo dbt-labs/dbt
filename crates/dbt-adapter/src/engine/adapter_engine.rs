@@ -5,7 +5,6 @@ use std::sync::Arc;
 use adbc_core::options::{OptionStatement, OptionValue};
 use arrow_array::RecordBatch;
 use arrow_schema::Schema;
-use dbt_adapter_sql::statements::is_update_statement;
 use dbt_adbc::bigquery::QUERY_LABELS;
 use dbt_adbc::{Backend, Connection, QueryCtx, Statement};
 use dbt_auth::AdapterConfig;
@@ -382,17 +381,6 @@ pub(crate) fn adbc_execute_with_options(
         // Track the statement so execution can be cancelled
         // when the user Ctrl-C's the process.
         let mut stmt = TrackedStatement::new(stmt);
-
-        // ClickHouse DDL/DML does not return an Arrow IPC schema header:
-        // This check should be removed after the fix lands in ClickHouse ADBC driver:
-        // https://github.com/ClickHouse/adbc_clickhouse/pull/54
-        if adapter_type == AdapterType::ClickHouse
-            && is_update_statement(sql.as_ref(), adapter_type)
-        {
-            let rows_affected = stmt.execute_update()?;
-            token.check_cancellation()?;
-            return Ok((Arc::new(Schema::empty()), Vec::new(), rows_affected));
-        }
 
         // Lake compute: every statement compute_platform.rs sends is DDL/DML
         // whose result is never read (it always passes fetch=false -- models

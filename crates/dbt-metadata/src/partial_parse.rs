@@ -4018,6 +4018,7 @@ mod tests {
             nodes_with_access_errors: Default::default(),
             semantic_layer_spec_is_legacy: false,
             test_name_truncations: Default::default(),
+            user_defined_schema_registry: Default::default(),
         }
     }
 

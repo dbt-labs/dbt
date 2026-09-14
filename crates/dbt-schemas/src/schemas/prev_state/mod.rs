@@ -376,6 +376,22 @@ impl StateArtifacts {
         }
     }
 
+    /// Constructs a `StateArtifacts` directly from an already-parsed previous-state `Nodes`
+    /// graph, bypassing the manifest.json load path. For callers (typically tests) that build
+    /// the previous state in memory rather than from a real state directory.
+    pub fn from_previous_nodes(nodes: Nodes) -> Self {
+        Self {
+            nodes: Some(nodes),
+            run_results: None,
+            source_freshness_results: None,
+            state_path: PathBuf::new(),
+            target_path: None,
+            test_sig_index: Default::default(),
+            test_full_name_index: Default::default(),
+            truncated_name_to_state_uid: Default::default(),
+        }
+    }
+
     pub fn try_new(state_path: &Path, root_project_quoting: ResolvedQuoting) -> FsResult<Self> {
         Self::try_new_with_target_path(
             state_path,
@@ -934,7 +950,14 @@ impl StateArtifacts {
                 log_state_mod_diff(
                     &current_node.common().unique_id,
                     "contract",
-                    [("contract", false, None)],
+                    [(
+                        "contract",
+                        false,
+                        Some((
+                            format!("{:?}", current_model.__model_attr__.contract),
+                            format!("{:?}", previous_model.__model_attr__.contract),
+                        )),
+                    )],
                 );
             }
             !is_same_contract
@@ -956,7 +979,14 @@ impl StateArtifacts {
             log_state_mod_diff(
                 &current_node.common().unique_id,
                 "body",
-                [("body", false, None)],
+                [(
+                    "body",
+                    false,
+                    Some((
+                        current_node.common().checksum.to_checksum_string(),
+                        previous_node.common().checksum.to_checksum_string(),
+                    )),
+                )],
             );
         }
 

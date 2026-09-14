@@ -21,7 +21,7 @@ export interface Identity {
 }
 
 /** One row of `dbt.nodes_index` — the nine columns the shell needs, and the reason
- *  that artifact exists: the full `dbt.nodes` carries code blobs no list renders. */
+ *  that artifact exists: the resource tables carry code blobs no list renders. */
 export interface NodeSummary {
   unique_id: string;
   name: string;

@@ -337,16 +337,6 @@ pub fn args_list_relations_in_parallel(
     }
 }
 
-/// Create MetadataCallArgs for freshness.
-pub fn args_freshness(relations: impl IntoIterator<Item = impl AsRef<str>>) -> MetadataCallArgs {
-    MetadataCallArgs::Freshness {
-        relations: relations
-            .into_iter()
-            .map(|r| r.as_ref().to_string())
-            .collect(),
-    }
-}
-
 /// Create MetadataCallArgs for list_user_defined_functions.
 pub fn args_list_udfs(
     catalog_schemas: impl IntoIterator<

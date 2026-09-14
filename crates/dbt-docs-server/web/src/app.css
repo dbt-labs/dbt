@@ -1877,10 +1877,11 @@ code.inline {
 .dark .qq-lineage-canvas .react-flow__edge:focus .react-flow__edge-path {
   stroke: var(--fgBrand);
 }
-/* The v2 (xyflow) canvas -- white, mostly-transparent so edges read as
-   structure rather than competing with the node cards for attention. */
+/* The v2 (xyflow) canvas. Token-based rather than a hardcoded color so edges
+   stay visible in both themes -- the previous hardcoded #ffffff was
+   invisible against light mode's canvas background. */
 .dag-v2-canvas .react-flow__edge-path {
-  stroke: #ffffff;
+  stroke: var(--borderMain);
 }
 .dag-v2-canvas .react-flow__edge.selected .react-flow__edge-path,
 .dag-v2-canvas .react-flow__edge:focus .react-flow__edge-path {
@@ -2273,7 +2274,7 @@ code.inline {
 .dag-node__name {
   display: block;
   overflow: hidden;
-  font-size: 13px;
+  font-size: 14px;
   font-weight: 600;
   line-height: 18px;
   color: var(--fgMain);
@@ -2292,6 +2293,15 @@ code.inline {
   background: var(--bgMainHover);
 }
 
+/* Light mode's --bgMainHover (#f6f6f6) reads almost indistinguishable from
+   the card's own #ffffff background -- --bgMainActive is the same neutral
+   gray family, just with enough contrast to actually separate the badge
+   row from the header. Dark mode's --bgMainHover already has good contrast
+   against its own card color, so it's untouched. */
+.light .dag-node__body {
+  background: var(--bgMainActive);
+}
+
 /* Resource-type badge. The fill comes from a custom property so the per-type
    rules below are one line each, and an unknown type still renders in neutral
    rather than transparent. */
@@ -2306,8 +2316,8 @@ code.inline {
   /* Smaller than the design's badge text on purpose: at 16px, "Source" and "Snapshot"
      ellipsed as soon as a node also had a column chip, and those are ordinary types
      rather than edge cases. The longest labels ("Semantic model") still truncate, and
-     carry a tooltip. */
-  font-size: 14px;
+     carry a tooltip. 12px for hierarchy against the 13px node title. */
+  font-size: 12px;
   line-height: 1;
   color: var(--bgMain);
   white-space: nowrap;
@@ -2318,7 +2328,7 @@ code.inline {
 .dag-node__type-label {
   overflow: hidden;
   text-overflow: ellipsis;
-  font-weight: 500;
+  font-weight: 400;
 }
 
 .dag-node__type-icon {
@@ -2338,7 +2348,7 @@ code.inline {
   gap: 5px;
   height: 30px;
   padding: 0 8px;
-  font-size: 14px;
+  font-size: 12px;
   line-height: 1;
   color: var(--bgMain);
   white-space: nowrap;
@@ -2346,7 +2356,7 @@ code.inline {
 }
 
 .dag-node__lens-badge-label {
-  font-weight: 500;
+  font-weight: 400;
 }
 
 .dag-node__lens-badge-icon {

@@ -719,7 +719,7 @@ pub fn resolve_minimal_properties(
                             emit_warn_log_message(
                                 ErrorCode::SemanticModelDeprecated,
                                 format!(
-                                    "The package '{}' defines semantic models and metrics using the legacy YAML. Please migrate to the new YAML to use the semantic layer with dbt Fusion.",
+                                    "The package '{}' defines semantic models and metrics using the legacy YAML. Please migrate to the new YAML to use the semantic layer with dbt.",
                                     &package.dbt_project.name,
                                 ),
                             );

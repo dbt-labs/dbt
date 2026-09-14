@@ -270,11 +270,13 @@ fn write_metadata_parquet_impl(
             DbtNode::Check(x) => &x.__base_attr__,
         };
 
-        // compile/nodes requires --write-metadata --static-analysis strict.
-        // Without strict SA there is no grain_infos from LP and no schema inference;
-        // compile/nodes would only duplicate what parse/nodes already contains.
-        let write_compile_nodes =
-            arg.write_metadata && arg.static_analysis.is_some_and(is_strict_static_analysis);
+        // compile/nodes requires --write-metadata --static-analysis strict (or
+        // baseline + --write-lineage, i.e. `--infer-schemas`). Without either,
+        // there is no grain_infos from LP and no schema inference; compile/nodes
+        // would only duplicate what parse/nodes already contains.
+        let write_compile_nodes = arg.write_metadata
+            && (arg.static_analysis.is_some_and(is_strict_static_analysis)
+                || arg.infer_schemas_and_typeless);
         if write_compile_nodes {
             let grain_declared: Vec<String> = match node {
                 DbtNode::Model(m) => m.primary_key.as_ref().cloned().unwrap_or_default(),

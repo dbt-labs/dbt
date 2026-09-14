@@ -17,6 +17,7 @@ dbt-common = { workspace = true }
 dbt-fusion-workspace-hack = { version = "0.1" }
 dbt-jinja-utils = { workspace = true }
 dbt-schemas = { workspace = true }
+dbt-skills = { workspace = true }
 dbt-telemetry = { workspace = true }
 dbt-yaml = { workspace = true }
 

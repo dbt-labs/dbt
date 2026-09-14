@@ -78,6 +78,7 @@ async fn maybe_seed_column_change_hint(
             Some(seed.unique_id()),
             None,
             &relations,
+            None,
             adapter.cancellation_token(),
         )
         .await

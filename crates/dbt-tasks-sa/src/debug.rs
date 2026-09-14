@@ -6,11 +6,14 @@ use std::time::{Duration, Instant};
 use dbt_adbc::QueryCtx;
 use dbt_agate::MappedSequence;
 use dbt_common::cancellation::CancellationToken;
-use dbt_common::io_args::{EvalArgs, LocalExecutionBackendKind};
+use dbt_common::io_args::{EvalArgs, LocalExecutionBackendKind, ReplayMode};
 use dbt_common::tracing::dbt_emit::emit_info_progress_message;
 use dbt_common::{ErrorCode, FsResult, fs_err};
 use dbt_compilation::core::DbtLoadedProject;
+use dbt_schemas::dbt_utils::resolve_package_quoting;
+use dbt_schemas::schemas::common::ResolvedQuoting;
 use dbt_schemas::schemas::profiles::{DbConfig, Execute};
+use dbt_schemas::schemas::relations::default_resolved_quoting_for;
 use dbt_tasks_core::lake_compute_catalog_attach::{
     LakeComputeCatalogAttachChecker, LakeComputeCatalogAttachOutcome, PatHygieneReport,
 };
@@ -75,6 +78,10 @@ pub struct DebugArgs {
     /// This invocation's id, sent as `adbc.dbt.run_id` on the queries the lake
     /// compute checks issue so dbt Compute can attribute them.
     pub invocation_id: String,
+    /// The invocation's record/replay mode. Every adapter these checks build
+    /// has to be created with it, or `--fs-record` captures nothing and
+    /// `--fs-replay` goes to the network anyway.
+    pub replay: Option<ReplayMode>,
     /// Checker for verifying lake-compute-to-native propagation, if this
     /// build has one registered. `None` means the check is skipped.
     pub lake_compute_propagation_checker: Option<Arc<dyn LakeComputePropagationChecker>>,
@@ -94,12 +101,18 @@ impl DebugArgs {
             connection: arg.connection,
             local_execution_backend: arg.local_execution_backend,
             invocation_id: arg.io.invocation_id.to_string(),
+            replay: arg.replay.clone(),
             lake_compute_propagation_checker: None,
             lake_compute_catalog_attach_checker: None,
             mdls_checker: None,
         }
     }
 }
+
+/// Ceiling for the whole dbt Compute section of `dbt debug`, enforced around
+/// the one `spawn_blocking` that runs it. See the call site for why it lives
+/// there and not inside the individual checks.
+const LAKE_COMPUTE_CHECKS_TIMEOUT: Duration = Duration::from_secs(300);
 
 #[allow(clippy::cognitive_complexity)]
 pub async fn debug(
@@ -218,8 +231,11 @@ pub async fn debug(
             adapter_db_config,
             &label,
             loaded_project,
+            arg.replay.as_ref(),
             &token,
-        ) {
+        )
+        .await
+        {
             Ok(()) => {}
             Err(e) => {
                 all_debug_checks_passed = false;
@@ -251,14 +267,105 @@ pub async fn debug(
                 "dbt Compute checks (the lake compute connection is unreachable)",
             ));
         } else {
-            debug_lake_compute(
-                arg,
-                &db_config,
+            // Read here rather than in `debug_lake_compute`: none of it opens a
+            // connection, and doing it on this side keeps `DbtLoadedProject` --
+            // which is borrowed all the way up from `dbt-main` -- out of the
+            // `'static` worker closure below.
+            let dbt_state = loaded_project.dbt_state();
+            let (mdls_database, mdls_schema) = resolve_probe_namespace(
                 &lake_compute_db_config,
-                loaded_project,
-                &token,
+                &dbt_state.dbt_profile.database,
+                &dbt_state.dbt_profile.schema,
+            );
+            let (mdls_database, mdls_schema) = (mdls_database.to_string(), mdls_schema.to_string());
+            // `root_project_name()` indexes `packages[0]`, and both `dbt debug`
+            // and `dbt init` can run before any package is loaded -- the same
+            // guard `send_vortex_telemetry_if_possible` uses on this path.
+            let project_name = (!dbt_state.packages.is_empty())
+                .then(|| loaded_project.root_project_name().to_string());
+            // The propagation probe below builds its own throwaway catalog
+            // bundle, so it doesn't need a catalog-linked database declared
+            // in `catalogs.yml` -- any Snowflake database the lake compute
+            // target can write to and the native connection can read from
+            // works. Reuse the namespace already resolved for the MDLS
+            // probe above instead of gating on a declared CLD.
+            let propagation_database = mdls_database.clone();
+            // Same quoting a real lake compute model gets absent a node-level
+            // `+quoting` override: the root project's `quoting:` config
+            // filled in with lake compute's adapter defaults (see
+            // `resolver.rs`'s `root_project_quoting`). Packages can be empty
+            // this early (see `project_name` above), in which case there is
+            // no project override to read and the adapter default applies
+            // as-is.
+            let propagation_quoting = if dbt_state.packages.is_empty() {
+                default_resolved_quoting_for(AdapterType::LakeCompute)
+            } else {
+                ResolvedQuoting::try_from(resolve_package_quoting(
+                    *dbt_state.root_project().quoting,
+                    AdapterType::LakeCompute,
+                ))
+                .unwrap_or_else(|_| default_resolved_quoting_for(AdapterType::LakeCompute))
+            };
+
+            let catalog_attach_checker = arg.lake_compute_catalog_attach_checker.clone();
+            let mdls_checker = arg.mdls_checker.clone();
+            let propagation_checker = arg.lake_compute_propagation_checker.clone();
+            let native_db_config = db_config.clone();
+            let invocation_id = arg.invocation_id.clone();
+            let worker_token = token.clone();
+            let reply = arg.replay.clone();
+
+            // Every probe in the section opens a connection, so the whole
+            // section runs on one worker. The timeout lives here, around that
+            // single dispatch, because the checks themselves are synchronous
+            // and can no longer await one of their own: it is a ceiling for
+            // "dbt Compute never answered at all", and it is deliberately
+            // above the sum of the per-call ceilings it replaced (90s each for
+            // the attach probe and the MDLS statements, 120s for
+            // propagation) so nothing that used to finish in time can newly
+            // time out.
+            //
+            // As before, a timeout abandons the work rather than cancelling
+            // it: a blocking task cannot be interrupted, so the worker stays
+            // busy until the driver returns.
+            match tokio::time::timeout(
+                LAKE_COMPUTE_CHECKS_TIMEOUT,
+                dbt_runtime::spawn_blocking(move || {
+                    debug_lake_compute(
+                        catalog_attach_checker,
+                        mdls_checker,
+                        propagation_checker,
+                        native_db_config,
+                        lake_compute_db_config,
+                        mdls_database,
+                        mdls_schema,
+                        project_name,
+                        invocation_id,
+                        propagation_database,
+                        propagation_quoting,
+                        reply.as_ref(),
+                        worker_token,
+                    )
+                }),
             )
-            .await?;
+            .await
+            {
+                Ok(Ok(result)) => result?,
+                Ok(Err(join_err)) => {
+                    return Err(fs_err!(
+                        ErrorCode::Generic,
+                        "dbt Compute checks panicked: {join_err}"
+                    ));
+                }
+                Err(_elapsed) => {
+                    return Err(fs_err!(
+                        ErrorCode::Generic,
+                        "dbt Compute did not respond to the checks within {}s (hard \
+                         client-side timeout).",
+                        LAKE_COMPUTE_CHECKS_TIMEOUT.as_secs()
+                    ));
+                }
+            }
         }
     }
 
@@ -278,11 +385,12 @@ pub async fn debug(
 ///
 /// `label` names the adapter when a target declares more than one, and is empty
 /// otherwise so single-adapter output reads as it always has.
-fn debug_adapter_connection(
+async fn debug_adapter_connection(
     adapter_type: AdapterType,
     db_config: &DbConfig,
     label: &str,
     loaded_project: &DbtLoadedProject,
+    replay: Option<&ReplayMode>,
     token: &CancellationToken,
 ) -> FsResult<()> {
     // dbt-auth has no notion of self_signed_jwt; the native connection it
@@ -305,81 +413,103 @@ fn debug_adapter_connection(
         .or_insert("1s".into());
 
     // Attempt connection using 'select 1 as id'
-    let base_adapter =
-        loaded_project.init_base_adapter(adapter_type, config_as_mapping, token.clone())?;
+    let base_adapter = loaded_project.init_base_adapter(
+        adapter_type,
+        config_as_mapping,
+        replay.cloned(),
+        token.clone(),
+    )?;
 
-    let sql = "select 1 as id";
-    let ctx = QueryCtx::default();
-    let connection_test_started = Instant::now();
-    base_adapter
-        .execute_without_state(Some(&ctx), sql, false, None)
-        .map_err(|e| fs_err!(ErrorCode::AuthenticationFailed, "dbt was unable to connect to the database configured for the `{}` adapter.\nThe following error was returned:\n\n{}\n\nCheck your database credentials and try again. For more information, visit:\nhttps://docs.getdbt.com/docs/core/connect-data-platform/connection-profiles", adapter_type, e))?;
-    let connection_test_elapsed = connection_test_started.elapsed();
+    // Everything below issues a query, so it runs on a `dbt-runtime` worker:
+    // every database connection must be created by one. Only the adapter, the
+    // label and one flag are needed there -- `init_base_adapter` above opens
+    // nothing by itself.
+    let snowflake_externalbrowser = matches!(db_config, DbConfig::Snowflake(inner)
+        if inner.authenticator.as_deref() == Some("externalbrowser"));
+    let label = label.to_owned();
+    dbt_runtime::spawn_blocking(move || -> FsResult<()> {
+        let sql = "select 1 as id";
+        let ctx = QueryCtx::default();
+        let connection_test_started = Instant::now();
+        base_adapter
+            .execute_without_state(Some(&ctx), sql, false, None)
+            .map_err(|e| fs_err!(ErrorCode::AuthenticationFailed, "dbt was unable to connect to the database configured for the `{}` adapter.\nThe following error was returned:\n\n{}\n\nCheck your database credentials and try again. For more information, visit:\nhttps://docs.getdbt.com/docs/core/connect-data-platform/connection-profiles", adapter_type, e))?;
+        let connection_test_elapsed = connection_test_started.elapsed();
 
-    // Check for allow_id_token parameter when using Snowflake with externalbrowser
-    if let DbConfig::Snowflake(db_config_inner) = db_config
-        && db_config_inner.authenticator == Some("externalbrowser".to_string())
-    {
-        let sql = "SHOW PARAMETERS LIKE 'ALLOW_ID_TOKEN' IN ACCOUNT";
+        // Check for allow_id_token parameter when using Snowflake with externalbrowser
+        if snowflake_externalbrowser {
+            let sql = "SHOW PARAMETERS LIKE 'ALLOW_ID_TOKEN' IN ACCOUNT";
 
-        let allow_token_id = match base_adapter
-            .execute_without_state(Some(&ctx), sql, true, None)
-            .map_err(|e| fs_err!(ErrorCode::AuthenticationFailed, "{}", e))
-        {
-            Ok((_result, agate_table)) => {
-                let columns = agate_table.columns().values();
+            let allow_token_id = match base_adapter
+                .execute_without_state(Some(&ctx), sql, true, None)
+                .map_err(|e| fs_err!(ErrorCode::AuthenticationFailed, "{}", e))
+            {
+                Ok((_result, agate_table)) => {
+                    let columns = agate_table.columns().values();
 
-                if let Some(value_column) = columns.get(1) {
-                    if let Ok(value) = value_column.get_item_by_index(0) {
-                        let value_str = value.as_str().unwrap_or("");
-                        Some(value_str.eq_ignore_ascii_case("true"))
+                    if let Some(value_column) = columns.get(1) {
+                        if let Ok(value) = value_column.get_item_by_index(0) {
+                            let value_str = value.as_str().unwrap_or("");
+                            Some(value_str.eq_ignore_ascii_case("true"))
+                        } else {
+                            None
+                        }
                     } else {
                         None
                     }
-                } else {
-                    None
                 }
-            }
-            Err(_e) => None,
-        };
-
-        // The LSP relies on the contents of this debug line to determine whether to
-        // show a tip. It matches on a substring, so the adapter label may precede it.
-        let allow_token_id_result = match allow_token_id {
-                Some(true) => "Enabled".to_string(),
-                Some(false) => "Disabled. Consider enabling the Snowflake system parameter allow_id_token, to open fewer browser tabs during authentication. See https://docs.getdbt.com/docs/local/connect-data-platform/snowflake-setup?version=2.0#supported-authentication-types for more info.".to_string(),
-                None => "Unable to confirm. Consider enabling the Snowflake system parameter allow_id_token, to open fewer browser tabs during authentication. See https://docs.getdbt.com/docs/local/connect-data-platform/snowflake-setup?version=2.0#supported-authentication-types for more info.".to_string(),
+                Err(_e) => None,
             };
+
+            // The LSP relies on the contents of this debug line to determine whether to
+            // show a tip. It matches on a substring, so the adapter label may precede it.
+            let allow_token_id_result = match allow_token_id {
+                    Some(true) => "Enabled".to_string(),
+                    Some(false) => "Disabled. Consider enabling the Snowflake system parameter allow_id_token, to open fewer browser tabs during authentication. See https://docs.getdbt.com/docs/local/connect-data-platform/snowflake-setup?version=2.0#supported-authentication-types for more info.".to_string(),
+                    None => "Unable to confirm. Consider enabling the Snowflake system parameter allow_id_token, to open fewer browser tabs during authentication. See https://docs.getdbt.com/docs/local/connect-data-platform/snowflake-setup?version=2.0#supported-authentication-types for more info.".to_string(),
+                };
+
+            emit_info_progress_message(create_progress_msg(
+                ACTION_DEBUGGING,
+                &format!("{label}externalbrowser connection caching: {allow_token_id_result}"),
+            ));
+        }
 
         emit_info_progress_message(create_progress_msg(
             ACTION_DEBUGGING,
-            &format!("{label}externalbrowser connection caching: {allow_token_id_result}"),
+            &format!(
+                "{label}connection test: OK{}",
+                duration_suffix(connection_test_elapsed)
+            ),
         ));
-    }
 
-    emit_info_progress_message(create_progress_msg(
-        ACTION_DEBUGGING,
-        &format!(
-            "{label}connection test: OK{}",
-            duration_suffix(connection_test_elapsed)
-        ),
-    ));
-
-    Ok(())
+        Ok(())
+    })
+    .await
+    .map_err(|e| fs_err!(ErrorCode::Generic, "spawn_blocking join error: {e}"))?
 }
 
 /// Runs the Lake Compute checks that are specific to lake compute: declared-catalog
-/// attach, MDLS write/read-back, and (if a checker is registered and the project
-/// declares a catalog-linked database) native-connection propagation.
+/// attach, MDLS write/read-back, and (if a checker is registered)
+/// native-connection propagation.
 ///
 /// Connecting to `lake_compute` is not one of them -- that is a plain connection test, and
 /// the per-adapter loop in [`debug`] runs it for every declared adapter.
-async fn debug_lake_compute(
-    arg: &DebugArgs,
-    native_db_config: &DbConfig,
-    lake_compute_db_config: &DbConfig,
-    loaded_project: &DbtLoadedProject,
-    token: &CancellationToken,
+#[allow(clippy::too_many_arguments)]
+fn debug_lake_compute(
+    catalog_attach_checker: Option<Arc<dyn LakeComputeCatalogAttachChecker>>,
+    mdls_checker: Option<Arc<dyn LakeComputeMdlsChecker>>,
+    propagation_checker: Option<Arc<dyn LakeComputePropagationChecker>>,
+    native_db_config: DbConfig,
+    lake_compute_db_config: DbConfig,
+    mdls_database: String,
+    mdls_schema: String,
+    project_name: Option<String>,
+    invocation_id: String,
+    propagation_database: String,
+    propagation_quoting: ResolvedQuoting,
+    replay: Option<&ReplayMode>,
+    token: CancellationToken,
 ) -> FsResult<()> {
     // No adapter is built here: the `lake_compute` connection round trip is a
     // plain connection test the per-adapter loop above already ran for every
@@ -390,7 +520,7 @@ async fn debug_lake_compute(
     // 1. Declared-catalog attach. Runs before the write tests below because it
     // is the cheapest check that can fail on a misconfigured catalog, and a
     // catalog that cannot be attached makes everything after it moot.
-    match &arg.lake_compute_catalog_attach_checker {
+    match &catalog_attach_checker {
         None => {
             emit_info_progress_message(create_progress_msg(
                 ACTION_SKIPPED,
@@ -399,9 +529,12 @@ async fn debug_lake_compute(
         }
         Some(checker) => {
             let attach_started = Instant::now();
-            let outcome = checker
-                .check_catalog_attach(native_db_config, lake_compute_db_config, token.clone())
-                .await?;
+            let outcome = checker.check_catalog_attach(
+                &native_db_config,
+                &lake_compute_db_config,
+                replay,
+                token.clone(),
+            )?;
             emit_info_progress_message(create_progress_msg(
                 ACTION_DEBUGGING,
                 &format!(
@@ -418,13 +551,6 @@ async fn debug_lake_compute(
         }
     }
 
-    let dbt_state = loaded_project.dbt_state();
-    let (mdls_database, mdls_schema) = resolve_probe_namespace(
-        lake_compute_db_config,
-        &dbt_state.dbt_profile.database,
-        &dbt_state.dbt_profile.schema,
-    );
-
     // 2. MDLS write + read-back, in an already-authorized namespace (the lake compute
     // target's configured database/schema). Namespace-level DDL is
     // deliberately avoided: creating a new namespace is denied for the
@@ -436,7 +562,7 @@ async fn debug_lake_compute(
     // bundle a real model write sends, or it tests strictly less than a write
     // does and can pass while every write fails. Building one needs the
     // Snowflake credential mint, which this crate cannot reach.
-    match &arg.mdls_checker {
+    match &mdls_checker {
         None => {
             emit_info_progress_message(create_progress_msg(
                 ACTION_SKIPPED,
@@ -444,52 +570,34 @@ async fn debug_lake_compute(
             ));
         }
         Some(checker) => {
-            let outcome = checker
-                .check_mdls_round_trip(
-                    native_db_config,
-                    lake_compute_db_config,
-                    mdls_database,
-                    mdls_schema,
-                    // `root_project_name()` indexes `packages[0]`, and both
-                    // `dbt debug` and `dbt init` can run before any package is
-                    // loaded -- the same guard
-                    // `send_vortex_telemetry_if_possible` uses on this path.
-                    (!loaded_project.dbt_state().packages.is_empty())
-                        .then(|| loaded_project.root_project_name()),
-                    &arg.invocation_id,
-                    token.clone(),
-                )
-                .await?;
+            let outcome = checker.check_mdls_round_trip(
+                &native_db_config,
+                &lake_compute_db_config,
+                replay,
+                &mdls_database,
+                &mdls_schema,
+                project_name.as_deref(),
+                &invocation_id,
+                token.clone(),
+            )?;
             for line in format_mdls_outcome(&outcome) {
                 emit_info_progress_message(create_progress_msg(ACTION_DEBUGGING, &line));
             }
         }
     }
 
-    // 3. Snowflake propagation / catalog-linking: only if the project
-    // declares a catalog-linked database, and a checker is registered.
-    let linked_database = loaded_project
-        .dbt_state()
-        .catalogs
-        .as_ref()
-        .and_then(|catalogs| catalogs.iceberg_rest_catalog_databases().ok())
-        .and_then(|dbs| dbs.into_iter().next())
-        .map(|(_, db)| db);
-
-    match (&linked_database, &arg.lake_compute_propagation_checker) {
-        (None, _) => {
-            emit_info_progress_message(create_progress_msg(
-                ACTION_SKIPPED,
-                "Snowflake propagation test (no catalog-linked database configured)",
-            ));
-        }
-        (Some(_), None) => {
+    // 3. Snowflake propagation: runs whenever a checker is registered. It
+    // does not require a catalog-linked database declared in
+    // `catalogs.yml` -- the checker builds its own throwaway catalog bundle
+    // for the probe write.
+    match &propagation_checker {
+        None => {
             emit_info_progress_message(create_progress_msg(
                 ACTION_SKIPPED,
                 "Snowflake propagation test (unavailable in this build)",
             ));
         }
-        (Some(linked_database), Some(checker)) => {
+        Some(checker) => {
             emit_info_progress_message(create_progress_msg(
                 ACTION_DEBUGGING,
                 "Snowflake propagation test (this mints a short-lived credential and waits \
@@ -497,14 +605,15 @@ async fn debug_lake_compute(
                  to a minute)...",
             ));
             let propagation_started = Instant::now();
-            let outcome = checker
-                .check_lake_compute_propagation(
-                    native_db_config,
-                    lake_compute_db_config,
-                    linked_database,
-                    token.clone(),
-                )
-                .await?;
+            let outcome = checker.check_lake_compute_propagation(
+                &native_db_config,
+                &lake_compute_db_config,
+                &propagation_database,
+                &mdls_schema,
+                propagation_quoting,
+                replay,
+                token,
+            )?;
             let propagation_elapsed = propagation_started.elapsed();
             emit_info_progress_message(create_progress_msg(
                 ACTION_DEBUGGING,
