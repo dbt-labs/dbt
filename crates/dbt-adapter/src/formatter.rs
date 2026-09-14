@@ -58,6 +58,14 @@ impl SqlLiteralFormatter {
         }
     }
 
+    /// Formats a string value using dbt's unit-test fixture escaping contract.
+    pub fn format_unit_test_str(&self, value: &str) -> String {
+        match self.adapter_type {
+            AdapterType::Snowflake => format!("'{}'", value.replace('\'', "\\'")),
+            _ => self.format_str(value),
+        }
+    }
+
     pub fn format_bytes(&self, bytes_value: &Value) -> String {
         assert!(bytes_value.kind() == ValueKind::Bytes);
         format!("'{bytes_value}'")
@@ -276,6 +284,18 @@ mod tests {
         assert_eq!(f.format_str("hello"), "'hello'");
         assert_eq!(f.format_str("Mom\\Baby"), "'Mom\\\\Baby'");
         assert_eq!(f.format_str("it's"), "'it''s'");
+    }
+
+    #[test]
+    fn test_snowflake_format_unit_test_str() {
+        let f = SqlLiteralFormatter::new(AdapterType::Snowflake);
+        let nested_json = r#"{"Data":[{"Value":"[{\\"id\\":\\"128091\\"}]"}]}"#;
+
+        assert_eq!(
+            f.format_unit_test_str(nested_json),
+            format!("'{nested_json}'")
+        );
+        assert_eq!(f.format_unit_test_str("they're"), r"'they\'re'");
     }
 
     use chrono::{NaiveDate, NaiveDateTime, NaiveTime};
