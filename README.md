@@ -60,7 +60,7 @@ These select statements, or "models", form a dbt project. Models frequently buil
 
 ## Join the dbt Community
 
-- Be part of the conversation in the [dbt Community Slack](http://community.getdbt.com/)
+- Be part of the conversation in the [dbt Community Slack](https://community.getdbt.com/)
 - Read more on the [dbt Community Discourse](https://discourse.getdbt.com)
 
 ## Reporting bugs and contributing code
