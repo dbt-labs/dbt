@@ -342,6 +342,25 @@
         }
       ]
     },
+    "skill-paths": {
+      "type": [
+        "array",
+        "null"
+      ],
+      "items": {
+        "type": "string"
+      }
+    },
+    "skills": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/ProjectSkillConfig"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
     "snapshot-paths": {
       "type": [
         "array",
@@ -758,6 +777,13 @@
           "description": "only for databricks",
           "type": "string",
           "enum": [
+            "metric_view"
+          ]
+        },
+        {
+          "description": "only for databricks",
+          "type": "string",
+          "enum": [
             "streaming_table"
           ]
         },
@@ -766,6 +792,13 @@
           "type": "string",
           "enum": [
             "dynamic_table"
+          ]
+        },
+        {
+          "description": "only for snowflake",
+          "type": "string",
+          "enum": [
+            "interactive_table"
           ]
         },
         {
@@ -1474,24 +1507,6 @@
       },
       "additionalProperties": false
     },
-    "NodeFqn": {
-      "description": "Which output column(s) node selection scopes a check's rows by.\n\n`\"none\"` opts out of scoping entirely (the check always evaluates the whole project, which is what aggregate checks want). A single name or a list of names scopes on those output columns: a row is kept when the node id in *any* of them is selected.",
-      "anyOf": [
-        {
-          "type": "string"
-        },
-        {
-          "type": "array",
-          "items": {
-            "type": "string"
-          }
-        },
-        {
-          "type": "string",
-          "pattern": "^\\{.*\\}$"
-        }
-      ]
-    },
     "OnConfigurationChange": {
       "type": "string",
       "enum": [
@@ -1757,10 +1772,10 @@
             "$ref": "#/definitions/AnyValue"
           }
         },
-        "+node_fqn": {
+        "+selection_filter_on": {
           "anyOf": [
             {
-              "$ref": "#/definitions/NodeFqn"
+              "$ref": "#/definitions/SelectionFilterOn"
             },
             {
               "type": "null"
@@ -2033,9 +2048,13 @@
           }
         },
         "+dist": {
-          "type": [
-            "string",
-            "null"
+          "anyOf": [
+            {
+              "$ref": "#/definitions/StringOrArrayOfStrings"
+            },
+            {
+              "type": "null"
+            }
           ]
         },
         "+enable_refresh": {
@@ -3386,6 +3405,7 @@
           }
         },
         "+constraints": {
+          "default": null,
           "type": [
             "array",
             "null"
@@ -3506,9 +3526,13 @@
           ]
         },
         "+dist": {
-          "type": [
-            "string",
-            "null"
+          "anyOf": [
+            {
+              "$ref": "#/definitions/StringOrArrayOfStrings"
+            },
+            {
+              "type": "null"
+            }
           ]
         },
         "+distribute_by_config": {
@@ -3578,6 +3602,21 @@
           ]
         },
         "+engine": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "+environment_dependencies": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          }
+        },
+        "+environment_key": {
           "type": [
             "string",
             "null"
@@ -3752,13 +3791,14 @@
           ]
         },
         "+incremental_predicates": {
-          "type": [
-            "array",
-            "null"
-          ],
-          "items": {
-            "type": "string"
-          }
+          "anyOf": [
+            {
+              "$ref": "#/definitions/StringOrArrayOfStrings"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "+incremental_strategy": {
           "anyOf": [
@@ -4170,6 +4210,21 @@
             }
           ]
         },
+        "+persist_constraints": {
+          "anyOf": [
+            {
+              "default": null,
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            {
+              "type": "string",
+              "pattern": "^\\{.*\\}$"
+            }
+          ]
+        },
         "+persist_docs": {
           "anyOf": [
             {
@@ -4236,6 +4291,16 @@
           "items": {
             "$ref": "#/definitions/AnyValue"
           }
+        },
+        "+propagate": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/StringOrArrayOfStrings"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "+python_job_config": {
           "type": [
@@ -4326,13 +4391,14 @@
           ]
         },
         "+refreshable": {
-          "type": [
-            "object",
-            "null"
-          ],
-          "additionalProperties": {
-            "$ref": "#/definitions/AnyValue"
-          }
+          "anyOf": [
+            {
+              "$ref": "#/definitions/RefreshableConfig"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "+repopulate_from_mvs_on_full_refresh": {
           "anyOf": [
@@ -4467,6 +4533,21 @@
           ]
         },
         "+skip_not_matched_step": {
+          "anyOf": [
+            {
+              "default": null,
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            {
+              "type": "string",
+              "pattern": "^\\{.*\\}$"
+            }
+          ]
+        },
+        "+skip_optimize": {
           "anyOf": [
             {
               "default": null,
@@ -5144,9 +5225,13 @@
           ]
         },
         "+dist": {
-          "type": [
-            "string",
-            "null"
+          "anyOf": [
+            {
+              "$ref": "#/definitions/StringOrArrayOfStrings"
+            },
+            {
+              "type": "null"
+            }
           ]
         },
         "+docs": {
@@ -5456,6 +5541,16 @@
           "anyOf": [
             {
               "$ref": "#/definitions/Hooks"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "+propagate": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/StringOrArrayOfStrings"
             },
             {
               "type": "null"
@@ -5802,6 +5897,48 @@
         "$ref": "#/definitions/ProjectSemanticModelConfig"
       }
     },
+    "ProjectSkillConfig": {
+      "type": "object",
+      "properties": {
+        "+enabled": {
+          "anyOf": [
+            {
+              "default": null,
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            {
+              "type": "string",
+              "pattern": "^\\{.*\\}$"
+            }
+          ]
+        },
+        "+meta": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "additionalProperties": {
+            "$ref": "#/definitions/AnyValue"
+          }
+        },
+        "+tags": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/StringOrArrayOfStrings"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "additionalProperties": {
+        "$ref": "#/definitions/ProjectSkillConfig"
+      }
+    },
     "ProjectSnapshotConfig": {
       "type": "object",
       "properties": {
@@ -6059,9 +6196,13 @@
           ]
         },
         "+dist": {
-          "type": [
-            "string",
-            "null"
+          "anyOf": [
+            {
+              "$ref": "#/definitions/StringOrArrayOfStrings"
+            },
+            {
+              "type": "null"
+            }
           ]
         },
         "+docs": {
@@ -6391,6 +6532,21 @@
             }
           ]
         },
+        "+persist_constraints": {
+          "anyOf": [
+            {
+              "default": null,
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            {
+              "type": "string",
+              "pattern": "^\\{.*\\}$"
+            }
+          ]
+        },
         "+persist_docs": {
           "anyOf": [
             {
@@ -6415,6 +6571,16 @@
           "anyOf": [
             {
               "$ref": "#/definitions/Hooks"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "+propagate": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/StringOrArrayOfStrings"
             },
             {
               "type": "null"
@@ -6949,9 +7115,13 @@
           }
         },
         "+dist": {
-          "type": [
-            "string",
-            "null"
+          "anyOf": [
+            {
+              "$ref": "#/definitions/StringOrArrayOfStrings"
+            },
+            {
+              "type": "null"
+            }
           ]
         },
         "+enable_refresh": {
@@ -7635,9 +7805,13 @@
           }
         },
         "+dist": {
-          "type": [
-            "string",
-            "null"
+          "anyOf": [
+            {
+              "$ref": "#/definitions/StringOrArrayOfStrings"
+            },
+            {
+              "type": "null"
+            }
           ]
         },
         "+enable_refresh": {
@@ -8244,6 +8418,24 @@
       },
       "additionalProperties": false
     },
+    "RefreshableConfig": {
+      "description": "ClickHouse `refreshable` MV config: the settings map or a bare bool, where `false` behaves like omitting the key (dbt-clickhouse parity).",
+      "anyOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/definitions/AnyValue"
+          }
+        },
+        {
+          "type": "string",
+          "pattern": "^\\{.*\\}$"
+        }
+      ]
+    },
     "RowFilterConfig": {
       "type": "object",
       "properties": {
@@ -8341,6 +8533,24 @@
     "SchemaRefreshInterval": {
       "description": "Schema refresh interval: '30m', '2h', '1d', or 'never'",
       "type": "string"
+    },
+    "SelectionFilterOn": {
+      "description": "Which output column(s) node selection scopes a check's rows by.\n\n`\"none\"` opts out of scoping entirely (the check always evaluates the whole project, which is what aggregate checks want). A single name or a list of names scopes on those output columns: a row is kept when the node id in *any* of them is selected. Unset defaults to the `unique_id` column when the check outputs one.",
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        {
+          "type": "string",
+          "pattern": "^\\{.*\\}$"
+        }
+      ]
     },
     "Severity": {
       "type": "string",
