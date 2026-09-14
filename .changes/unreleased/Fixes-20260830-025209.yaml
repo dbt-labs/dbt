@@ -1,0 +1,7 @@
+kind: Fixes
+body: 'BigQuery: honor the `priority` profile setting so jobs can be submitted to the batch queue'
+time: 2026-08-30T02:52:09.277146921+02:00
+custom:
+    author: fornwall
+    issue: "16021"
+    project: dbt-core

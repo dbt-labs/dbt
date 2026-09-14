@@ -797,6 +797,13 @@ pub struct PostgresDbConfig {
     pub password: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, DbtSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum BigqueryPriority {
+    Batch,
+    Interactive,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, DbtSchema, Merge)]
 #[merge(strategy = merge_strategies_extend::overwrite_option)]
 #[serde(rename_all = "snake_case")]
@@ -814,7 +821,7 @@ pub struct BigqueryDbConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub timeout_seconds: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub priority: Option<String>,
+    pub priority: Option<BigqueryPriority>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub quota_project: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1662,7 +1669,7 @@ pub struct BigqueryTargetEnv {
     pub location: Option<String>,
     pub maximum_bytes_billed: Option<i64>,
     pub method: Option<String>,
-    pub priority: Option<String>,
+    pub priority: Option<BigqueryPriority>,
     pub quota_project: Option<String>,
     pub retries: Option<i64>,
     pub target_name: Option<String>,
@@ -2021,7 +2028,7 @@ impl TryFrom<DbConfig> for TargetContext {
                     location: config.location.clone(),
                     maximum_bytes_billed: config.maximum_bytes_billed,
                     method: config.method.clone(),
-                    priority: config.priority.clone(),
+                    priority: config.priority,
                     quota_project: config.quota_project.clone(),
                     retries: config.retries,
                     target_name: config.target_name.clone(),
