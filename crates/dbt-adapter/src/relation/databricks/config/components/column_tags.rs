@@ -28,16 +28,20 @@ fn to_jinja(v: &IndexMap<String, IndexMap<String, String>>) -> Value {
 fn new_component(tags: IndexMap<String, IndexMap<String, String>>) -> ColumnTags {
     ColumnTags {
         type_name: TYPE_NAME,
-        diff_fn: merge_tags_diff,
+        diff_fn: changed_column_tags_diff,
         to_jinja_fn: to_jinja,
         value: tags,
     }
 }
 
-fn merge_tags_diff(
+/// Set-only column-tag diff matching dbt-databricks `ColumnTagsConfig.get_diff`.
+///
+/// Reference: https://github.com/databricks/dbt-databricks/blob/main/dbt/adapters/databricks/relation_configs/column_tags.py
+fn changed_column_tags_diff(
     desired_state: &IndexMap<String, IndexMap<String, String>>,
     current_state: &IndexMap<String, IndexMap<String, String>>,
 ) -> Option<IndexMap<String, IndexMap<String, String>>> {
+    // Identifiers are case-insensitive, so compare column names after lowercasing.
     let current_by_lower = current_state
         .iter()
         .map(|(column_name, tags)| (column_name.to_lowercase(), tags))
@@ -130,90 +134,122 @@ impl ColumnTagsLoader {
 mod tests {
     use super::*;
 
+    fn tags(entries: &[(&str, &[(&str, &str)])]) -> IndexMap<String, IndexMap<String, String>> {
+        entries
+            .iter()
+            .map(|(col, col_tags)| {
+                (
+                    (*col).to_string(),
+                    col_tags
+                        .iter()
+                        .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
+                        .collect(),
+                )
+            })
+            .collect()
+    }
+
     #[test]
     fn test_get_diff_column_tags() {
-        let mut old_column_tags = IndexMap::new();
-        let mut old_col1_tags = IndexMap::new();
-        old_col1_tags.insert("old_tag".to_string(), "old_value".to_string());
-        old_column_tags.insert("col1".to_string(), old_col1_tags);
+        // Desired col1 replaces tags (no remote-only keys); col2 is new.
+        let remote = tags(&[("col1", &[("old_tag", "old_value")])]);
+        let desired = tags(&[
+            ("col1", &[("new_tag", "new_value")]),
+            ("col2", &[("col2_tag", "col2_value")]),
+        ]);
 
-        let mut new_column_tags = IndexMap::new();
-        let mut new_col1_tags = IndexMap::new();
-        new_col1_tags.insert("new_tag".to_string(), "new_value".to_string());
-        new_column_tags.insert("col1".to_string(), new_col1_tags);
+        let diff = changed_column_tags_diff(&desired, &remote).unwrap();
 
-        let mut new_col2_tags = IndexMap::new();
-        new_col2_tags.insert("col2_tag".to_string(), "col2_value".to_string());
-        new_column_tags.insert("col2".to_string(), new_col2_tags);
+        assert_eq!(
+            diff,
+            tags(&[
+                ("col1", &[("new_tag", "new_value")]),
+                ("col2", &[("col2_tag", "col2_value")]),
+            ])
+        );
+        assert!(!diff.get("col1").unwrap().contains_key("old_tag"));
+    }
 
-        let diff = merge_tags_diff(&new_column_tags, &old_column_tags).unwrap();
+    #[test]
+    fn test_get_diff_empty_desired_is_none() {
+        // No changeset → apply emits no ALTER; remote-only tags are left as-is.
+        let remote = tags(&[("col1", &[("tag_a", "value_a"), ("tag_b", "value_b")])]);
+        let desired = IndexMap::new();
+        assert!(changed_column_tags_diff(&desired, &remote).is_none());
+    }
 
-        let col1_tags = diff.get("col1").unwrap();
-        assert_eq!(col1_tags.get("new_tag"), Some(&"new_value".to_string()));
-        assert_eq!(col1_tags.len(), 1);
+    #[test]
+    fn test_get_diff_desired_with_empty_remote() {
+        let desired = tags(&[("col1", &[("tag_a", "value_a"), ("tag_b", "value_b")])]);
+        let remote = IndexMap::new();
+        let diff = changed_column_tags_diff(&desired, &remote).unwrap();
+        assert_eq!(diff, desired);
+    }
 
-        let col2_tags = diff.get("col2").unwrap();
-        assert_eq!(col2_tags.get("col2_tag"), Some(&"col2_value".to_string()));
+    #[test]
+    fn test_get_diff_mixed_omits_remote_only_and_uses_desired_maps() {
+        // col1 differs (desired map, not union with tag_d); col2 is new; col3 remote-only omitted.
+        let desired = tags(&[
+            ("col1", &[("tag_a", "new_value"), ("tag_b", "value_b")]),
+            ("col2", &[("tag_c", "value_c")]),
+        ]);
+        let remote = tags(&[
+            ("col1", &[("tag_a", "old_value"), ("tag_d", "value_d")]),
+            ("col3", &[("tag_e", "value_e")]),
+        ]);
+
+        let diff = changed_column_tags_diff(&desired, &remote).unwrap();
+        assert_eq!(
+            diff,
+            tags(&[
+                ("col1", &[("tag_a", "new_value"), ("tag_b", "value_b")]),
+                ("col2", &[("tag_c", "value_c")]),
+            ])
+        );
+        assert!(!diff.contains_key("col3"));
     }
 
     #[test]
     fn test_get_diff_no_change() {
-        let mut column_tags = IndexMap::new();
-        let mut col_tags = IndexMap::new();
-        col_tags.insert("tag1".to_string(), "value1".to_string());
-        column_tags.insert("col1".to_string(), col_tags);
-
-        let diff = merge_tags_diff(&column_tags, &column_tags);
-        assert!(diff.is_none());
+        let column_tags = tags(&[("col1", &[("tag1", "value1")])]);
+        assert!(changed_column_tags_diff(&column_tags, &column_tags).is_none());
     }
 
     #[test]
-    fn test_get_diff_matches_column_names_case_insensitively() {
-        let desired = IndexMap::from([(
-            "account_id".to_string(),
-            IndexMap::from([("pii".to_string(), "true".to_string())]),
-        )]);
-        let existing = IndexMap::from([(
-            "Account_ID".to_string(),
-            IndexMap::from([("pii".to_string(), "true".to_string())]),
-        )]);
-
-        assert!(merge_tags_diff(&desired, &existing).is_none());
+    fn test_get_diff_case_insensitive_column_names_no_change() {
+        let desired = tags(&[
+            ("account_id", &[("pii", "true")]),
+            ("user_name", &[("pii", "true")]),
+        ]);
+        let remote = tags(&[
+            ("Account_ID", &[("pii", "true")]),
+            ("User_Name", &[("pii", "true")]),
+        ]);
+        assert!(changed_column_tags_diff(&desired, &remote).is_none());
     }
 
     #[test]
-    fn test_get_diff_emits_only_changed_desired_columns() {
-        let desired = IndexMap::from([
-            (
-                "account_id".to_string(),
-                IndexMap::from([("pii".to_string(), "false".to_string())]),
-            ),
-            (
-                "user_name".to_string(),
-                IndexMap::from([("pii".to_string(), "true".to_string())]),
-            ),
+    fn test_get_diff_case_insensitive_with_actual_change() {
+        let desired = tags(&[
+            ("account_id", &[("pii", "false")]),
+            ("user_name", &[("pii", "true")]),
         ]);
-        let existing = IndexMap::from([
-            (
-                "Account_ID".to_string(),
-                IndexMap::from([("pii".to_string(), "true".to_string())]),
-            ),
-            (
-                "User_Name".to_string(),
-                IndexMap::from([("pii".to_string(), "true".to_string())]),
-            ),
-            (
-                "unmanaged".to_string(),
-                IndexMap::from([("external".to_string(), "preserved".to_string())]),
-            ),
+        let remote = tags(&[
+            ("Account_ID", &[("pii", "true")]),
+            ("User_Name", &[("pii", "true")]),
         ]);
 
-        assert_eq!(
-            merge_tags_diff(&desired, &existing),
-            Some(IndexMap::from([(
-                "account_id".to_string(),
-                IndexMap::from([("pii".to_string(), "false".to_string())]),
-            )]))
-        );
+        let diff = changed_column_tags_diff(&desired, &remote).unwrap();
+        assert_eq!(diff, tags(&[("account_id", &[("pii", "false")])]));
+    }
+
+    #[test]
+    fn test_get_diff_omits_unchanged_sibling_column() {
+        let remote = tags(&[("col1", &[("a", "1")]), ("col2", &[("c", "3")])]);
+        let desired = tags(&[("col1", &[("a", "1"), ("b", "2")]), ("col2", &[("c", "3")])]);
+
+        let diff = changed_column_tags_diff(&desired, &remote).unwrap();
+        assert_eq!(diff, tags(&[("col1", &[("a", "1"), ("b", "2")])]));
+        assert!(!diff.contains_key("col2"));
     }
 }

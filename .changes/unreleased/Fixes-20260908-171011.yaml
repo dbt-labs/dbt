@@ -1,0 +1,7 @@
+kind: Fixes
+body: Emit only changed columns in Databricks column-tag alter diffs
+time: 2026-09-08T17:10:11.695602+05:30
+custom:
+    author: sd-db
+    issue: "16246"
+    project: dbt-core
