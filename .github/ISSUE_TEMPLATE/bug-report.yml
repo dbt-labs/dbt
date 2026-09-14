@@ -74,6 +74,17 @@ body:
     validations:
       required: false
   - type: dropdown
+    id: feature_area
+    attributes:
+      label: Which feature area is this issue related to?
+      description: Select the feature area if this issue involves a specific dbt Core feature.
+      options:
+        - None
+        - SQLFluff
+        - State
+    validations:
+      required: true
+  - type: dropdown
     id: database
     attributes:
       label: Which database adapter are you using with dbt?
