@@ -12,7 +12,7 @@ use minijinja::{
     value::{Enumerator, Object, ObjectRepr, ValueMap},
     Error, ErrorKind, Value,
 };
-use std::{collections::BTreeMap, fmt, iter, sync::Arc};
+use std::{collections::BTreeMap, fmt, sync::Arc};
 
 // Python re flag values (matching CPython's enum values)
 // https://docs.python.org/3/library/re.html#flags
@@ -166,14 +166,16 @@ pub fn create_re_namespace() -> BTreeMap<String, Value> {
 ///
 /// Python signature: re.compile(pattern, flags=0)
 fn re_compile(args: &[Value]) -> Result<Value, Error> {
-    let pattern_str = args
-        .first()
-        .ok_or_else(|| Error::new(ErrorKind::MissingArgument, "Pattern argument required"))?
-        .to_string();
+    let iter = ArgsIter::new("compile", &["pattern"], args);
+    let pattern_val: &Value = iter.next_arg()?;
+    let pattern_str = pattern_val.to_string();
+    let flags = iter
+        .next_kwarg::<Option<&Value>>("flags")?
+        .map(extract_flags)
+        .unwrap_or(0);
+    iter.finish()?;
 
-    let flags = args.get(1).map(extract_flags).unwrap_or(0);
     let compiled = compile_pattern(&pattern_str, flags)?;
-
     let pattern = Pattern::new(&pattern_str, *compiled);
     Ok(Value::from_object(pattern))
 }
@@ -208,26 +210,58 @@ impl Object for Pattern {
         args: &[Value],
         _listeners: &[std::rc::Rc<dyn minijinja::listener::RenderingEventListener>],
     ) -> Result<Value, Error> {
-        let args = iter::once(Value::from_object(self.as_ref().clone()))
-            .chain(args.iter().cloned())
-            .collect::<Vec<_>>();
-        if method == "match" {
-            re_match(&args)
-        } else if method == "search" {
-            re_search(&args)
-        } else if method == "fullmatch" {
-            re_fullmatch(&args)
-        } else if method == "findall" {
-            re_findall(&args)
-        } else if method == "split" {
-            re_split(&args)
-        } else if method == "sub" {
-            re_sub(&args)
-        } else {
-            Err(Error::new(
+        let pattern_val = Value::from_object(self.as_ref().clone());
+        match method {
+            "match" | "search" | "fullmatch" | "findall" => {
+                let method_name = format!("Pattern.{method}");
+                let iter = ArgsIter::new(&method_name, &["string"], args);
+                let string: &Value = iter.next_arg()?;
+                iter.finish()?;
+                let pair = [pattern_val, string.clone()];
+                match method {
+                    "match" => re_match(&pair),
+                    "search" => re_search(&pair),
+                    "fullmatch" => re_fullmatch(&pair),
+                    "findall" => re_findall(&pair),
+                    _ => unreachable!(),
+                }
+            }
+            "split" => {
+                let iter = ArgsIter::new("Pattern.split", &["string"], args);
+                let string: &Value = iter.next_arg()?;
+                let maxsplit = iter.next_kwarg::<Option<i64>>("maxsplit")?.unwrap_or(0);
+                iter.finish()?;
+                if maxsplit != 0 {
+                    let a = [pattern_val, string.clone(), Value::from(maxsplit)];
+                    re_split(&a)
+                } else {
+                    let a = [pattern_val, string.clone()];
+                    re_split(&a)
+                }
+            }
+            "sub" => {
+                let iter = ArgsIter::new("Pattern.sub", &["repl", "string"], args);
+                let repl: &Value = iter.next_arg()?;
+                let string: &Value = iter.next_arg()?;
+                let count = iter.next_kwarg::<Option<i64>>("count")?.unwrap_or(0);
+                iter.finish()?;
+                if count != 0 {
+                    let a = [
+                        pattern_val,
+                        repl.clone(),
+                        string.clone(),
+                        Value::from(count),
+                    ];
+                    re_sub(&a)
+                } else {
+                    let a = [pattern_val, repl.clone(), string.clone()];
+                    re_sub(&a)
+                }
+            }
+            _ => Err(Error::new(
                 ErrorKind::UnknownMethod,
                 format!("Pattern object has no method named '{method}'"),
-            ))
+            )),
         }
     }
 }
@@ -235,15 +269,16 @@ impl Object for Pattern {
 /// Python `re.match(pattern, string, flags=0)`.
 /// Checks for a match only at the beginning of the string.
 fn re_match(args: &[Value]) -> Result<Value, Error> {
-    if args.len() < 2 {
-        return Err(Error::new(
-            ErrorKind::MissingArgument,
-            "match() requires pattern and string arguments",
-        ));
-    }
-
-    let flags = args.get(2).map(extract_flags).unwrap_or(0);
-    let (regex, text) = get_or_compile_regex_and_text_with_flags(&args[..2], flags)?;
+    let iter = ArgsIter::new("match", &["pattern", "string"], args);
+    let pattern: &Value = iter.next_arg()?;
+    let string: &Value = iter.next_arg()?;
+    let flags = iter
+        .next_kwarg::<Option<&Value>>("flags")?
+        .map(extract_flags)
+        .unwrap_or(0);
+    iter.finish()?;
+    let args_pair = [pattern.clone(), string.clone()];
+    let (regex, text) = get_or_compile_regex_and_text_with_flags(&args_pair, flags)?;
     let raw_pattern = regex.as_str().to_string();
     let input_string = text.to_string();
 
@@ -281,15 +316,16 @@ fn re_match(args: &[Value]) -> Result<Value, Error> {
 /// Python `re.search(pattern, string, flags=0)`.
 /// Searches through the entire string for the first match.
 fn re_search(args: &[Value]) -> Result<Value, Error> {
-    if args.len() < 2 {
-        return Err(Error::new(
-            ErrorKind::MissingArgument,
-            "search() requires pattern and string arguments",
-        ));
-    }
-
-    let flags = args.get(2).map(extract_flags).unwrap_or(0);
-    let (regex, text) = get_or_compile_regex_and_text_with_flags(&args[..2], flags)?;
+    let iter = ArgsIter::new("search", &["pattern", "string"], args);
+    let pattern: &Value = iter.next_arg()?;
+    let string: &Value = iter.next_arg()?;
+    let flags = iter
+        .next_kwarg::<Option<&Value>>("flags")?
+        .map(extract_flags)
+        .unwrap_or(0);
+    iter.finish()?;
+    let args_pair = [pattern.clone(), string.clone()];
+    let (regex, text) = get_or_compile_regex_and_text_with_flags(&args_pair, flags)?;
     let raw_pattern = regex.as_str().to_string();
     let input_string = text.to_string();
 
@@ -317,15 +353,16 @@ fn re_search(args: &[Value]) -> Result<Value, Error> {
 /// Python `re.fullmatch(pattern, string, flags=0)`.
 /// Matches the entire string against the pattern (like `^pattern$`).
 fn re_fullmatch(args: &[Value]) -> Result<Value, Error> {
-    if args.len() < 2 {
-        return Err(Error::new(
-            ErrorKind::MissingArgument,
-            "fullmatch() requires pattern and string arguments",
-        ));
-    }
-
-    let flags = args.get(2).map(extract_flags).unwrap_or(0);
-    let (regex, text) = get_or_compile_regex_and_text_with_flags(&args[..2], flags)?;
+    let iter = ArgsIter::new("fullmatch", &["pattern", "string"], args);
+    let pattern: &Value = iter.next_arg()?;
+    let string: &Value = iter.next_arg()?;
+    let flags = iter
+        .next_kwarg::<Option<&Value>>("flags")?
+        .map(extract_flags)
+        .unwrap_or(0);
+    iter.finish()?;
+    let args_pair = [pattern.clone(), string.clone()];
+    let (regex, text) = get_or_compile_regex_and_text_with_flags(&args_pair, flags)?;
     match regex.find(text) {
         Ok(Some(m)) if m.start() == 0 && m.end() == text.len() => {
             Ok(match_obj_to_list(&regex, text, m.start(), m.end()))
@@ -338,15 +375,16 @@ fn re_fullmatch(args: &[Value]) -> Result<Value, Error> {
 /// Returns all non-overlapping matches of pattern in string, as a list of strings or
 /// list of tuples if groups exist.
 fn re_findall(args: &[Value]) -> Result<Value, Error> {
-    if args.len() < 2 {
-        return Err(Error::new(
-            ErrorKind::MissingArgument,
-            "findall() requires pattern and string arguments",
-        ));
-    }
-
-    let flags = args.get(2).map(extract_flags).unwrap_or(0);
-    let (regex, text) = get_or_compile_regex_and_text_with_flags(&args[..2], flags)?;
+    let iter = ArgsIter::new("findall", &["pattern", "string"], args);
+    let pattern: &Value = iter.next_arg()?;
+    let string: &Value = iter.next_arg()?;
+    let flags = iter
+        .next_kwarg::<Option<&Value>>("flags")?
+        .map(extract_flags)
+        .unwrap_or(0);
+    iter.finish()?;
+    let args_pair = [pattern.clone(), string.clone()];
+    let (regex, text) = get_or_compile_regex_and_text_with_flags(&args_pair, flags)?;
     let raw_pattern = regex.as_str().to_string();
     let input_string = text.to_string();
 
@@ -398,17 +436,17 @@ fn re_findall(args: &[Value]) -> Result<Value, Error> {
 /// Split string by occurrences of pattern. If capturing groups are used,
 /// those are included in the result.
 fn re_split(args: &[Value]) -> Result<Value, Error> {
-    if args.len() < 2 {
-        return Err(Error::new(
-            ErrorKind::MissingArgument,
-            "split() requires pattern and string arguments",
-        ));
-    }
-
-    let flags = args.get(3).map(extract_flags).unwrap_or(0);
-    let (regex, text) = get_or_compile_regex_and_text_with_flags(&args[..2], flags)?;
-
-    let maxsplit = args.get(2).and_then(|v| v.as_i64()).unwrap_or(0) as usize;
+    let iter = ArgsIter::new("split", &["pattern", "string"], args);
+    let pattern: &Value = iter.next_arg()?;
+    let string: &Value = iter.next_arg()?;
+    let maxsplit = iter.next_kwarg::<Option<i64>>("maxsplit")?.unwrap_or(0) as usize;
+    let flags = iter
+        .next_kwarg::<Option<&Value>>("flags")?
+        .map(extract_flags)
+        .unwrap_or(0);
+    iter.finish()?;
+    let args_pair = [pattern.clone(), string.clone()];
+    let (regex, text) = get_or_compile_regex_and_text_with_flags(&args_pair, flags)?;
 
     let mut result = Vec::new();
     let mut last = 0;
@@ -445,19 +483,21 @@ fn re_split(args: &[Value]) -> Result<Value, Error> {
 /// Return the string obtained by replacing the leftmost non-overlapping occurrences
 /// of pattern in string by repl. If repl is a function, it is called for every match.
 fn re_sub(args: &[Value]) -> Result<Value, Error> {
-    if args.len() < 3 {
-        return Err(Error::new(
-            ErrorKind::MissingArgument,
-            "Usage: sub(pattern, repl, string, [count=0])",
-        ));
-    }
+    let iter = ArgsIter::new("sub", &["pattern", "repl", "string"], args);
+    let pattern: &Value = iter.next_arg()?;
+    let repl: &Value = iter.next_arg()?;
+    let string: &Value = iter.next_arg()?;
+    let count = iter.next_kwarg::<Option<i64>>("count")?.unwrap_or(0);
+    let flags = iter
+        .next_kwarg::<Option<&Value>>("flags")?
+        .map(extract_flags)
+        .unwrap_or(0);
+    iter.finish()?;
 
-    let flags = args.get(4).map(extract_flags).unwrap_or(0);
-    let (regex, _text) = get_or_compile_regex_and_text_with_flags(&args[..2], flags)?;
-    let repl_text = args[1].to_string();
-    let text_arg = &args[2].to_string();
-
-    let count = args.get(3).and_then(|v| v.as_i64()).unwrap_or(0);
+    let args_pair = [pattern.clone(), repl.clone()];
+    let (regex, _text) = get_or_compile_regex_and_text_with_flags(&args_pair, flags)?;
+    let repl_text = repl.to_string();
+    let text_arg = &string.to_string();
 
     let expander = Expander::python();
     let mut nonempty_probe = None;
@@ -1290,5 +1330,85 @@ mod tests {
             )
             .expect("match.group() should still work");
         assert_eq!(result, "a,b");
+    }
+
+    fn run_re_template(template: &str) -> String {
+        use minijinja::Environment;
+        let mut env = Environment::new();
+        env.add_global("re", Value::from(create_re_namespace()));
+        env.render_str(template, (), &[]).unwrap()
+    }
+
+    #[test]
+    fn test_re_findall_flags_kwarg() {
+        // Without IGNORECASE: only lowercase matches
+        let result = run_re_template(r#"{{ re.findall('[a-z]+', 'Hello World')|length }}"#);
+        assert_eq!(result, "2"); // "ello", "orld"
+
+        // With IGNORECASE via kwarg: matches full words
+        let result = run_re_template(
+            r#"{{ re.findall('[a-z]+', 'Hello World', flags=re.IGNORECASE)|join(',') }}"#,
+        );
+        assert_eq!(result, "Hello,World");
+    }
+
+    #[test]
+    fn test_re_findall_dotall_kwarg() {
+        // The actual bug from #15508: DOTALL via kwarg for multi-line matching
+        let result = run_re_template(
+            r#"{{ re.findall('begin(.*)end', 'begin\nfoo\nend', flags=re.DOTALL)|length }}"#,
+        );
+        assert_eq!(result, "1");
+    }
+
+    #[test]
+    fn test_re_sub_count_kwarg() {
+        let result = run_re_template(r#"{{ re.sub('a', 'b', 'aaa', count=1) }}"#);
+        assert_eq!(result, "baa");
+    }
+
+    #[test]
+    fn test_re_split_maxsplit_kwarg() {
+        let result = run_re_template(r#"{{ re.split(':', 'a:b:c', maxsplit=1)|join(',') }}"#);
+        assert_eq!(result, "a,b:c");
+    }
+
+    #[test]
+    fn test_re_compile_flags_kwarg() {
+        let result = run_re_template(
+            r#"{% set p = re.compile('[a-z]+', flags=re.IGNORECASE) %}{{ p.findall('Hello')|join(',') }}"#,
+        );
+        assert_eq!(result, "Hello");
+    }
+
+    #[test]
+    fn test_re_search_flags_kwarg() {
+        let result = run_re_template(
+            r#"{% set m = re.search('[a-z]+', 'HELLO', flags=re.IGNORECASE) %}{{ m.group(0) }}"#,
+        );
+        assert_eq!(result, "HELLO");
+    }
+
+    #[test]
+    fn test_re_match_flags_kwarg() {
+        let result = run_re_template(
+            r#"{% set m = re.match('[a-z]+', 'HELLO', flags=re.IGNORECASE) %}{{ m.group(0) }}"#,
+        );
+        assert_eq!(result, "HELLO");
+    }
+
+    #[test]
+    fn test_pattern_split_maxsplit_kwarg() {
+        let result = run_re_template(
+            r#"{% set p = re.compile(':') %}{{ p.split('a:b:c', maxsplit=1)|join(',') }}"#,
+        );
+        assert_eq!(result, "a,b:c");
+    }
+
+    #[test]
+    fn test_pattern_sub_count_kwarg() {
+        let result =
+            run_re_template(r#"{% set p = re.compile('a') %}{{ p.sub('b', 'aaa', count=1) }}"#);
+        assert_eq!(result, "baa");
     }
 }
