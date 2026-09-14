@@ -73,6 +73,42 @@ impl RecordBatchExt for RecordBatch {
         cast_column_to_i64(self.column(idx).as_ref())
     }
 
+    fn rows_affected(&self, adapter_type: AdapterType) -> i64 {
+        if self.num_rows() == 0 {
+            return 0;
+        }
+        if self.schema().has_dml_columns(adapter_type) {
+            return SNOWFLAKE_DML_COLUMNS
+                .iter()
+                .filter_map(|col| self.named_value_as_i64(col))
+                .sum();
+        }
+        self.num_rows() as i64
+    }
+
+    fn query_id(&self, adapter_type: AdapterType) -> Option<String> {
+        let meta = self.schema();
+        let meta = meta.metadata();
+        match adapter_type {
+            AdapterType::Snowflake => meta.get("SNOWFLAKE_QUERY_ID").cloned(),
+            AdapterType::Bigquery => meta.get("BIGQUERY:query_id").cloned(),
+            AdapterType::Databricks => {
+                [
+                    "DATABRICKS_QUERY_ID",
+                    "databricks_query_id",
+                    "databricks.query_id",
+                    "adbc.databricks.query_id",
+                    "adbc.statement.id",
+                    "statement_id",
+                    "query_id",
+                ]
+                .iter()
+                .find_map(|key| meta.get(*key).cloned())
+            }
+            _ => None,
+        }
+    }
+
     fn column_typed<'a>(&'a self, name: &str) -> AdapterResult<&'a Arc<dyn Array>> {
         self.column_by_name(name).ok_or_else(|| {
             let schema = self.schema();

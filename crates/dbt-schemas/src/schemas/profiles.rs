@@ -1238,7 +1238,7 @@ pub struct SparkDbConfig {
     pub kerberos_service_name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub platform_hint: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none", alias = "conf")]
     #[merge(strategy = merge_strategies_extend::overwrite_always)]
     pub server_side_parameters: Option<HashMap<String, YmlValue>>,
     // TODO: python supports some extra properties:
