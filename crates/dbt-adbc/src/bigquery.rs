@@ -71,6 +71,8 @@ pub const QUERY_USE_LEGACY_SQL: &str = "adbc.bigquery.sql.query.use_legacy_sql";
 pub const QUERY_DRY_RUN: &str = "adbc.bigquery.sql.query.dry_run"; // bool
 pub const QUERY_CREATE_SESSION: &str = "adbc.bigquery.sql.query.create_session"; // bool
 pub const QUERY_JOB_TIMEOUT: &str = "adbc.bigquery.sql.query.job_timeout"; // i64
+pub const QUERY_RESERVATION: &str = "adbc.bigquery.sql.query.reservation"; // string
+
 
 pub const QUERY_RESULT_BUFFER_SIZE: &str = "adbc.bigquery.sql.query.result_buffer_size"; // i64
 pub const QUERY_PREFETCH_CONCURRENCY: &str = "adbc.bigquery.sql.query.prefetch_concurrency"; // i64
