@@ -34,6 +34,20 @@ fn set_only_diff(
     }
 }
 
+pub(crate) fn stringify_tag_value(value: &YmlValue) -> String {
+    match value {
+        YmlValue::Null(_) => String::new(),
+        YmlValue::Bool(value, _) => if *value { "True" } else { "False" }.to_string(),
+        YmlValue::Number(value, _) => value.to_string(),
+        YmlValue::String(value, _) => value.clone(),
+        YmlValue::Tagged(value, _) => stringify_tag_value(&value.value),
+        value => dbt_yaml::to_string(value)
+            .unwrap_or_default()
+            .trim()
+            .to_string(),
+    }
+}
+
 fn to_jinja(v: &IndexMap<String, String>) -> Value {
     Value::from(ValueMap::from([(
         Value::from("set_tags"),
@@ -61,10 +75,12 @@ fn from_remote_state(results: &DatabricksRelationMetadata) -> AdapterResult<Rela
     for row in remote_tags.rows() {
         if let (Ok(tag_name_val), Ok(tag_value_val)) =
             (row.get_item(&Value::from(0)), row.get_item(&Value::from(1)))
-            && let (Some(tag_name), Some(tag_value)) =
-                (tag_name_val.as_str(), tag_value_val.as_str())
+            && let Some(tag_name) = tag_name_val.as_str()
         {
-            tags.insert(tag_name.to_string(), tag_value.to_string());
+            tags.insert(
+                tag_name.to_string(),
+                tag_value_val.as_str().unwrap_or_default().to_string(),
+            );
         }
     }
 
@@ -84,9 +100,7 @@ fn from_local_config(
         && let Some(tags_map) = &databricks_attr.databricks_tags
     {
         for (key, value) in tags_map {
-            if let YmlValue::String(value_str, _) = value {
-                tags.insert(key.clone(), value_str.clone());
-            }
+            tags.insert(key.clone(), stringify_tag_value(value));
         }
     }
 
@@ -113,6 +127,17 @@ impl RelationTagsLoader {
 mod tests {
     use super::*;
     use crate::relation::config_v2::ComponentConfig;
+
+    #[test]
+    fn test_scalar_values_use_python_stringification() {
+        let integer = dbt_yaml::from_str("1").unwrap();
+        let null = dbt_yaml::from_str("null").unwrap();
+        let boolean = dbt_yaml::from_str("false").unwrap();
+
+        assert_eq!(stringify_tag_value(&integer), "1");
+        assert_eq!(stringify_tag_value(&null), "");
+        assert_eq!(stringify_tag_value(&boolean), "False");
+    }
 
     #[test]
     fn test_get_diff_add_or_update() {
