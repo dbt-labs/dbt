@@ -1,0 +1,7 @@
+kind: Fixes
+body: 'Generic tests on sources and singular tests (which have no attached model to inherit from) now correctly get their `group` from their own resolved `config.group`, instead of always `None`; this restores group-scoped notifications for these node types, matching dbt Core'
+time: 2026-09-04T06:15:00.000000+00:00
+custom:
+    author: DipakMandlik
+    issue: "15930"
+    project: dbt-fusion

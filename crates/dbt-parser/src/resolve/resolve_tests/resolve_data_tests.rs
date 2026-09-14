@@ -353,6 +353,30 @@ fn build_data_test_raw_code_config(config: &BTreeMap<String, YmlValue>) -> Strin
 }
 
 #[allow(clippy::too_many_arguments)]
+/// Resolve a test node's top-level `group`.
+///
+/// For a test attached to a model (`attached_node` is `Some`), the model's
+/// own group wins -- matching dbt Core, where an attached test's explicit
+/// `config.group` is ignored in favor of the parent model's group (including
+/// when the model has none).
+///
+/// For every other test -- generic tests on sources, and singular tests,
+/// both of which have no attached node to inherit from -- dbt Core instead
+/// uses the test's own resolved `config.group` directly. Falling through to
+/// `None` here (as if there were simply nothing to inherit) silently dropped
+/// `config.group` for these nodes, so group-scoped notifications never fired
+/// for them. See https://github.com/dbt-labs/dbt-core/issues/15930.
+fn resolve_test_group(
+    attached_node: Option<&str>,
+    models: &BTreeMap<String, Arc<DbtModel>>,
+    own_config_group: Option<String>,
+) -> Option<String> {
+    match attached_node.and_then(|id| models.get(id)) {
+        Some(model) => model.__model_attr__.group.clone(),
+        None => own_config_group,
+    }
+}
+
 pub async fn resolve_data_tests(
     arg: &ResolveArgs,
     package: &DbtPackage,
@@ -811,10 +835,8 @@ pub async fn resolve_data_tests(
                 unrendered_config,
             },
             __test_attr__: {
-                let group = attached_node
-                    .as_deref()
-                    .and_then(|id| models.get(id))
-                    .and_then(|m| m.__model_attr__.group.clone());
+                let group =
+                    resolve_test_group(attached_node.as_deref(), models, test_config.group.clone());
                 DbtTestAttr {
                     column_name: test_asset.and_then(|ta| ta.column_name.clone()),
                     attached_node,
@@ -949,7 +971,88 @@ pub async fn resolve_data_tests(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use dbt_schemas::schemas::nodes::DbtModelAttr;
     use dbt_schemas::state::DbtAsset;
+
+    fn model_with_group(group: Option<&str>) -> Arc<DbtModel> {
+        Arc::new(DbtModel {
+            __model_attr__: DbtModelAttr {
+                group: group.map(str::to_string),
+                ..Default::default()
+            },
+            ..Default::default()
+        })
+    }
+
+    /// Regression tests for https://github.com/dbt-labs/dbt-core/issues/15930:
+    /// a test with no attached node (generic tests on sources, singular
+    /// tests) must fall back to its own resolved `config.group`, not `None`.
+    #[test]
+    fn resolve_test_group_uses_own_config_when_no_attached_node() {
+        let models = BTreeMap::new();
+        assert_eq!(
+            resolve_test_group(None, &models, Some("test_group".to_string())),
+            Some("test_group".to_string())
+        );
+    }
+
+    #[test]
+    fn resolve_test_group_is_none_when_no_attached_node_and_no_own_group() {
+        let models = BTreeMap::new();
+        assert_eq!(resolve_test_group(None, &models, None), None);
+    }
+
+    /// An attached test's own `config.group` is irrelevant: the parent
+    /// model's group always wins, matching dbt Core.
+    #[test]
+    fn resolve_test_group_uses_attached_models_group() {
+        let mut models = BTreeMap::new();
+        models.insert(
+            "model.pkg.stg_thing".to_string(),
+            model_with_group(Some("model_group")),
+        );
+        assert_eq!(
+            resolve_test_group(
+                Some("model.pkg.stg_thing"),
+                &models,
+                Some("test_own_group".to_string()),
+            ),
+            Some("model_group".to_string())
+        );
+    }
+
+    /// A group-less attached model yields `None`, even if the test declares
+    /// its own `config.group` -- reproducing the (correct, matches dbt Core)
+    /// "group-less model with explicit test config" row from #15930's table.
+    #[test]
+    fn resolve_test_group_is_none_when_attached_model_has_no_group() {
+        let mut models = BTreeMap::new();
+        models.insert("model.pkg.stg_thing".to_string(), model_with_group(None));
+        assert_eq!(
+            resolve_test_group(
+                Some("model.pkg.stg_thing"),
+                &models,
+                Some("test_own_group".to_string()),
+            ),
+            None
+        );
+    }
+
+    /// `attached_node` pointing at a unique_id absent from `models` (e.g. a
+    /// disabled or otherwise-excluded model) is treated the same as no
+    /// attached node at all: fall back to the test's own group.
+    #[test]
+    fn resolve_test_group_falls_back_when_attached_model_not_found() {
+        let models = BTreeMap::new();
+        assert_eq!(
+            resolve_test_group(
+                Some("model.pkg.missing"),
+                &models,
+                Some("test_group".to_string()),
+            ),
+            Some("test_group".to_string())
+        );
+    }
 
     #[test]
     fn test_builds_test_metadata_from_asset_single_col() {
