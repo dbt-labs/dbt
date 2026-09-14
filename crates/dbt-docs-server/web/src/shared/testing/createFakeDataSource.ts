@@ -159,6 +159,7 @@ export function makeFakeAsset(
         sourceName: 'raw',
         identifier: 'fake',
         loader: null,
+        sourceDescription: null,
         freshness: null,
         relation: null,
         columns: [],
