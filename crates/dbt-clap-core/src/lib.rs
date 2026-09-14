@@ -2105,11 +2105,10 @@ pub struct CommonArgs {
     pub no_fail_fast: bool,
 
     // If set, defer to the argument provided to the state flag for resolving unselected nodes, even if the node(s) exist as a database object in the current environment.
-    #[arg(global = true, long = "favor-state", default_value = "false",action = ArgAction::SetTrue, env = "DBT_FAVOR_STATE", value_parser = BoolishValueParser::new(),hide = true)]
+    #[arg(global = true, long = "favor-state", default_value = "false", action = ArgAction::SetTrue, env = "DBT_FAVOR_STATE", value_parser = BoolishValueParser::new())]
     pub favor_state: bool,
-    #[arg(global = true, long, default_value = "false", action = ArgAction::SetTrue, env = "DBT_NO_FAVOR_STATE", value_parser = BoolishValueParser::new(),hide = true)]
+    #[arg(global = true, long, default_value = "false", action = ArgAction::SetTrue, env = "DBT_NO_FAVOR_STATE", value_parser = BoolishValueParser::new())]
     pub no_favor_state: bool,
-
     // Enable verbose logging for relational cache events to help when debugging.
     #[arg(global = true, long = "log-cache-events", default_value = "false", action = ArgAction::SetTrue, env = "DBT_LOG_CACHE_EVENTS", value_parser = BoolishValueParser::new(),hide = true)]
     pub log_cache_events: bool,

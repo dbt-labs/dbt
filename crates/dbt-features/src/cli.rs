@@ -695,6 +695,23 @@ mod tests {
         assert!(!cli.is_project_command());
     }
 
+    #[test]
+    fn favor_state_documented_in_run_help() {
+        let parser = CliParser::new("dbt-core", "2.x", Box::new(OSSExtensionCommandParser));
+        let help = parser
+            .try_parse_from(["dbt", "run", "--help"])
+            .unwrap_err()
+            .to_string();
+        assert!(
+            help.contains("favor-state"),
+            "expected --favor-state in `run --help` output, got:\n{help}"
+        );
+        assert!(
+            help.contains("no-favor-state"),
+            "expected --no-favor-state in `run --help` output, got:\n{help}"
+        );
+    }
+
     fn root_help(parser: &CliParser) -> String {
         parser
             .try_parse_from(["dbt", "--help"])
