@@ -1,0 +1,7 @@
+kind: Features
+body: Support `.jsonl` and `.ndjson` seed files alongside `.csv`, `.json`, and `.parquet`
+time: 2026-06-11T10:00:00.000000-04:00
+custom:
+    author: jmmaloney4
+    issue: "2365"
+    project: dbt-fusion

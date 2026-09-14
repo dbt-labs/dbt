@@ -424,7 +424,7 @@ pub async fn load(
                 in_dir,
                 pkg_name,
                 &ResourcePathKind::SeedPaths,
-                &["csv", "parquet", "json"],
+                &["csv", "parquet", "json", "jsonl", "ndjson"],
                 ap,
             );
             root.snapshot_files = find_files_by_kind_and_extension(
@@ -1094,7 +1094,7 @@ pub async fn load_inner(
         package_path,
         &dbt_project.name,
         &ResourcePathKind::SeedPaths,
-        &["csv", "parquet", "json"],
+        &["csv", "parquet", "json", "jsonl", "ndjson"],
         &all_files,
     );
     let docs_files = find_files_by_kind_and_extension(

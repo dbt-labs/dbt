@@ -143,10 +143,15 @@ pub async fn resolve_seeds(
     // Track seed names seen so far (name → relative path) to detect duplicates across subdirs
     let mut seen_seed_names: HashMap<String, PathBuf> = HashMap::new();
     for seed_file in package.seed_files.iter() {
-        // Validate that path extension is one of csv, parquet, or json
+        // Validate that path extension is one of csv, parquet, json, jsonl, or ndjson
         let path = seed_file.path.clone();
         let path_extension = path.extension().unwrap_or_default().to_ascii_lowercase();
-        if path_extension != "csv" && path_extension != "parquet" && path_extension != "json" {
+        if path_extension != "csv"
+            && path_extension != "parquet"
+            && path_extension != "json"
+            && path_extension != "jsonl"
+            && path_extension != "ndjson"
+        {
             continue;
         }
 
