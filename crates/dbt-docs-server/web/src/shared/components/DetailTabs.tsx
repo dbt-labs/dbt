@@ -92,7 +92,7 @@ const DetailTabs: FC<TabsParams> = ({
       className={`${show ? 'opacity-100' : 'opacity-0'} duration-300 motion-reduce:duration-0`}
     >
       {(stickyHeader || tabs.length > 1) && (
-        <div className="sticky top-0 z-10 flex flex-col gap-6 bg-bgMain">
+        <div className="sticky top-0 z-20 flex flex-col gap-6 bg-bgMain">
           {stickyHeader}
           {tabs.length > 1 && (
             <div className="overflow-x-auto">

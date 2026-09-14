@@ -342,6 +342,11 @@ pub trait BaseRelation: BaseRelationProperties + Any + Send + Sync + fmt::Debug 
         matches!(self.relation_type(), Some(RelationType::InteractiveTable))
     }
 
+    /// Helper: check if the relation is a metric view
+    fn is_metric_view(&self) -> bool {
+        matches!(self.relation_type(), Some(RelationType::MetricView))
+    }
+
     /// Helper: check if the relation is for a pointer table
     fn is_pointer(&self) -> bool {
         matches!(self.relation_type(), Some(RelationType::PointerTable))

@@ -19,7 +19,7 @@ enum LakeComputeAuthIR<'a> {
     },
     Fivetran {
         credential: &'a str,
-        api_url: Option<&'a str>,
+        auth_url: Option<&'a str>,
     },
 }
 
@@ -61,7 +61,7 @@ impl<'a> LakeComputeAuthIR<'a> {
             }
             Self::Fivetran {
                 credential,
-                api_url,
+                auth_url,
             } => {
                 builder.with_named_option(
                     lake_compute::AUTH_TYPE,
@@ -69,7 +69,7 @@ impl<'a> LakeComputeAuthIR<'a> {
                 )?;
                 builder.with_named_option(lake_compute::FIVETRAN_CREDENTIAL, credential)?;
                 // Absent, the driver exchanges against production Fivetran.
-                if let Some(v) = api_url {
+                if let Some(v) = auth_url {
                     builder.with_named_option(lake_compute::FIVETRAN_API_URL, v)?;
                 }
             }
@@ -102,7 +102,7 @@ fn parse_auth<'a>(
         }),
         lake_compute::auth_type::FIVETRAN => Ok(LakeComputeAuthIR::Fivetran {
             credential: config.require_str("fivetran_credential")?,
-            api_url: config.get_str("fivetran_api_url"),
+            auth_url: config.get_str("fivetran_auth_url"),
         }),
         other => Err(AuthError::config(format!(
             "unknown ALT auth method '{other}'; expected one of: '{}', '{}', '{}', '{}'",

@@ -1,0 +1,7 @@
+kind: Features
+body: Support native Databricks metric view materializations
+time: 2026-08-14T09:50:05.052566+05:30
+custom:
+    author: sd-db
+    issue: "15616"
+    project: dbt-core

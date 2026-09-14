@@ -23,28 +23,23 @@ impl Cloneable for DbtModel {
             add_task_context(&mut base_context, self.common(), &ctx.thread_id);
 
             let adapter_type = self.node_adapter();
-            let max_threads = ctx.dbt_profile().threads;
             let node = self.clone();
             let ctx_inner = ctx.clone();
 
-            let result = TaskOp::BlockingWithConnection {
-                f: Box::new(move || {
-                    materialize_clone(
-                        &node,
-                        &node.deprecated_config,
-                        adapter_type,
-                        ctx_inner.runtime_config(),
-                        ctx_inner.defer_nodes(),
-                        &ctx_inner.inner.materialization_resolver,
-                        ctx_inner.env.clone(),
-                        &base_context,
-                        &ctx_inner.inner.arg.io,
-                        None,
-                    )
-                }),
-                adapter_type,
-                max_threads,
-            }
+            let result = TaskOp::Blocking(Box::new(move || {
+                materialize_clone(
+                    &node,
+                    &node.deprecated_config,
+                    adapter_type,
+                    ctx_inner.runtime_config(),
+                    ctx_inner.defer_nodes(),
+                    &ctx_inner.inner.materialization_resolver,
+                    ctx_inner.env.clone(),
+                    &base_context,
+                    &ctx_inner.inner.arg.io,
+                    None,
+                )
+            }))
             .run()
             .await??;
 

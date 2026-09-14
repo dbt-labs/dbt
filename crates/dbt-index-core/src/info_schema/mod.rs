@@ -304,6 +304,7 @@ fn build_own(
 ) -> Result<Vec<RecordBatch>, IndexError> {
     match spec.name {
         "dag_nodes" => build_dag_nodes(staging_dir, out),
+        "relations" => build_relations(staging_dir, out),
         // No source of taxonomy data yet; the shape is published so it can be
         // filled without a schema change.
         "classifiers" => Ok(Vec::new()),
@@ -311,6 +312,131 @@ fn build_own(
             "info schema: no builder for assembled table '{other}'"
         ))),
     }
+}
+
+/// `dbt_rt.relations`: the warehouse's own view of each materialized relation.
+///
+/// The epoch carries one wide row per relation. The staging index splits that
+/// row in two on the way in — identity into `catalog_tables`, the three numbers
+/// into `catalog_stats` as one entity-attribute-value row each — so getting back
+/// to the published shape means undoing the split. `stat_value` is a string
+/// there, hence the parse; a value that does not parse becomes NULL rather than
+/// failing the whole table, matching the `TRY_CAST` the consumers used to write.
+///
+/// A relation with no stats still gets a row: identity alone is what answers
+/// "is this node in the catalog at all", which is the question the docs site
+/// asks first.
+fn build_relations(staging_dir: &Path, out: &SchemaRef) -> Result<Vec<RecordBatch>, IndexError> {
+    use std::collections::HashMap;
+
+    /// The `stat_id`s `write_catalog_stats` emits, and nothing else: an
+    /// unrecognized one is left out rather than guessed at.
+    struct Stats {
+        row_count: Option<i64>,
+        bytes: Option<i64>,
+        last_modified: Option<String>,
+    }
+
+    let mut stats: HashMap<String, Stats> = HashMap::new();
+    for batch in read_source(staging_dir, "catalog_stats") {
+        let Some(id_col) = str_col(&batch, "unique_id") else {
+            continue;
+        };
+        let sid_col = str_col(&batch, "stat_id");
+        let val_col = str_col(&batch, "stat_value");
+        for row in 0..batch.num_rows() {
+            if id_col.is_null(row) {
+                continue;
+            }
+            let Some(stat_id) = sid_col.filter(|c| !c.is_null(row)).map(|c| c.value(row)) else {
+                continue;
+            };
+            let Some(value) = val_col.filter(|c| !c.is_null(row)).map(|c| c.value(row)) else {
+                continue;
+            };
+            let entry = stats.entry(id_col.value(row).to_string()).or_insert(Stats {
+                row_count: None,
+                bytes: None,
+                last_modified: None,
+            });
+            match stat_id {
+                "row_count" => entry.row_count = value.parse().ok(),
+                "bytes" => entry.bytes = value.parse().ok(),
+                "last_modified" => entry.last_modified = Some(value.to_string()),
+                _ => {}
+            }
+        }
+    }
+
+    let mut ids: Vec<String> = Vec::new();
+    let mut table_types: Vec<Option<String>> = Vec::new();
+    let mut owners: Vec<Option<String>> = Vec::new();
+    let mut databases: Vec<Option<String>> = Vec::new();
+    let mut schemas: Vec<Option<String>> = Vec::new();
+    let mut table_names: Vec<Option<String>> = Vec::new();
+    let mut row_counts: Vec<Option<i64>> = Vec::new();
+    let mut byte_counts: Vec<Option<i64>> = Vec::new();
+    let mut last_modifieds: Vec<Option<String>> = Vec::new();
+    let mut stamps: Vec<i64> = Vec::new();
+
+    /// One nullable string cell.
+    fn cell(col: Option<&StringArray>, row: usize) -> Option<String> {
+        col.filter(|c| !c.is_null(row))
+            .map(|c| c.value(row).to_string())
+    }
+
+    for batch in read_source(staging_dir, "catalog_tables") {
+        let Some(id_col) = str_col(&batch, "unique_id") else {
+            continue;
+        };
+        let tt_col = str_col(&batch, "table_type");
+        let owner_col = str_col(&batch, "table_owner");
+        let db_col = str_col(&batch, "database_name");
+        let schema_col = str_col(&batch, "schema_name");
+        let tname_col = str_col(&batch, "table_name");
+        let ts_col = timestamp_micros_col(&batch, "ingested_at");
+        for row in 0..batch.num_rows() {
+            if id_col.is_null(row) {
+                continue;
+            }
+            let unique_id = id_col.value(row);
+            let found = stats.get(unique_id);
+            ids.push(unique_id.to_string());
+            table_types.push(cell(tt_col, row));
+            owners.push(cell(owner_col, row));
+            databases.push(cell(db_col, row));
+            schemas.push(cell(schema_col, row));
+            table_names.push(cell(tname_col, row));
+            row_counts.push(found.and_then(|s| s.row_count));
+            byte_counts.push(found.and_then(|s| s.bytes));
+            last_modifieds.push(found.and_then(|s| s.last_modified.clone()));
+            stamps.push(
+                ts_col
+                    .filter(|c| !c.is_null(row))
+                    .map(|c| c.value(row))
+                    .unwrap_or(0),
+            );
+        }
+    }
+
+    if ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let cols: Vec<arrow_array::ArrayRef> = vec![
+        Arc::new(StringArray::from(ids)),
+        Arc::new(StringArray::from(table_types)),
+        Arc::new(StringArray::from(owners)),
+        Arc::new(StringArray::from(databases)),
+        Arc::new(StringArray::from(schemas)),
+        Arc::new(StringArray::from(table_names)),
+        Arc::new(arrow_array::Int64Array::from(row_counts)),
+        Arc::new(arrow_array::Int64Array::from(byte_counts)),
+        Arc::new(StringArray::from(last_modifieds)),
+        Arc::new(timestamps(stamps, out, 9)),
+    ];
+    Ok(vec![RecordBatch::try_new(Arc::clone(out), cols).map_err(
+        |e| IndexError::Other(format!("info schema relations: {e}")),
+    )?])
 }
 
 /// `dbt.dag_nodes`: every enabled resource that participates in the DAG.

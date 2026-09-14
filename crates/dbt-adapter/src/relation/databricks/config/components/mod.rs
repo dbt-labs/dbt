@@ -13,6 +13,9 @@ pub(crate) use constraints::ConstraintsLoader;
 pub(crate) mod liquid_clustering;
 pub(crate) use liquid_clustering::LiquidClusteringLoader;
 
+pub(crate) mod metric_view_query;
+pub(crate) use metric_view_query::MetricViewQueryLoader;
+
 pub(crate) mod partition_by;
 pub(crate) use partition_by::PartitionByLoader;
 

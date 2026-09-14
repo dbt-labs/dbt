@@ -17,6 +17,7 @@ use std::{
 };
 
 use dbt_common::{ErrorCode, FsResult, err, error::WrappedError, fs_err};
+pub use dbt_dist_classify::classify_version_output;
 pub use dist::{Channel, DistInfo, Distribution, Generation, uninstall_command_for_package};
 
 use crate::proc::{GRACE_WAIT, NORMAL_WAIT, ProcessOutput, real_run};
@@ -873,7 +874,7 @@ fn get_current(command_name: &str) -> FsResult<DistInfo> {
         channel: path_discovery.channel,
         distribution: path_discovery
             .distribution_override
-            .or_else(|| Some(distribution_from_name(command_name))),
+            .or_else(|| Some(dbt_dist_classify::distribution_from_name(command_name))),
         generation: Generation::V2,
         py_package_manager: fields.py_package_manager,
         py_venv_root: fields.py_venv_root,
@@ -1117,61 +1118,6 @@ fn probe_generation_and_distribution(
         return None;
     }
     classify_version_output(&output.stdout)
-}
-
-/// The version installed, per a v1 `Core:` block's `- installed: X.Y.Z`
-/// line.
-fn extract_v1_installed_version(stdout: &str) -> Option<String> {
-    stdout
-        .lines()
-        .find_map(|line| line.trim().strip_prefix("- installed:"))
-        .map(|v| v.trim().to_string())
-}
-
-/// Classifies the stdout of a `dbt --version` invocation into a
-/// `(generation, distribution, version)` triple, or `None` if the output
-/// doesn't look like any known `dbt` banner. Handles both the `dbt-fusion
-/// X.Y.Z` banner and the renamed `dbt X.Y.Z` banner as `Generation::V2`.
-pub fn classify_version_output(stdout: &str) -> Option<(Generation, Distribution, Option<String>)> {
-    if stdout.contains("Core:") {
-        return Some((
-            Generation::V1,
-            Distribution::Core,
-            extract_v1_installed_version(stdout),
-        ));
-    }
-    if stdout.starts_with("dbt Cloud CLI") {
-        return Some((Generation::NotApplicable, Distribution::CloudCLI, None));
-    }
-    // Validation check: dbt-oss, dbt (proprietary), and the Cloud CLI all
-    // contain "dbt" in the output.
-    if !stdout.contains("dbt") {
-        return None;
-    }
-    let mut parts = stdout.split_whitespace();
-    let name = parts.next()?;
-    let version = parts.next()?;
-    if !version.starts_with(|c: char| c.is_ascii_digit()) {
-        return None;
-    }
-    Some((
-        Generation::V2,
-        distribution_from_name(name),
-        Some(version.to_string()),
-    ))
-}
-
-/// Classifies a CLI-brand name (the same string printed as the leading token
-/// of a v2 binary's `--version` banner, and injected into the running
-/// process as its own `command_name`) into a [Distribution]. Any name in
-/// [`upgrade::UPGRADABLE_TARGET_NAMES`] is OSS; everything else is
-/// proprietary.
-fn distribution_from_name(name: &str) -> Distribution {
-    if upgrade::UPGRADABLE_TARGET_NAMES.contains(&name) {
-        Distribution::Oss
-    } else {
-        Distribution::Dbt
-    }
 }
 
 #[cfg(test)]
@@ -2318,7 +2264,11 @@ mod tests {
         assert!(parse_dist_info_json("").is_none());
     }
 
-    // ---- classify_version_output / probe_generation_and_distribution ----
+    // ---- probe_generation_and_distribution ----
+    //
+    // classify_version_output itself is tested in the dbt-dist-classify
+    // crate; these tests only cover this crate's process-invocation wrapper
+    // around it.
 
     const V1_VERSION_OUTPUT: &str = "\
 Core:
@@ -2329,96 +2279,12 @@ Plugins:
 ";
 
     #[test]
-    fn classify_version_output_v1_core_block_is_core() {
-        assert_eq!(
-            classify_version_output(V1_VERSION_OUTPUT),
-            Some((
-                Generation::V1,
-                Distribution::Core,
-                Some("1.12.0".to_string())
-            ))
-        );
-    }
-
-    #[test]
-    fn classify_version_output_v2_banner_is_dbt() {
-        assert_eq!(
-            classify_version_output("dbt-fusion 2.0.0-preview.196\n"),
-            Some((
-                Generation::V2,
-                Distribution::Dbt,
-                Some("2.0.0-preview.196".to_string())
-            ))
-        );
-    }
-
-    #[test]
-    fn classify_version_output_v2_banner_without_fusion_branding_is_still_dbt() {
-        // The banner's display name is cosmetic and may change (e.g. drop
-        // "fusion"); anything other than the OSS build's `dbt-core` name is
-        // treated as the proprietary distribution.
-        assert_eq!(
-            classify_version_output("dbt 2.0.0-preview.196\n"),
-            Some((
-                Generation::V2,
-                Distribution::Dbt,
-                Some("2.0.0-preview.196".to_string())
-            ))
-        );
-    }
-
-    #[test]
-    fn classify_version_output_v2_dbt_core_banner_is_oss() {
-        // `dbt-sa-cli` (the OSS-only v2 build) brands its `--version` banner
-        // as `dbt-core`, so v2 alone doesn't imply the proprietary
-        // distribution.
-        assert_eq!(
-            classify_version_output("dbt-core 2.0.0-preview.200\n"),
-            Some((
-                Generation::V2,
-                Distribution::Oss,
-                Some("2.0.0-preview.200".to_string())
-            ))
-        );
-    }
-
-    #[test]
-    fn classify_version_output_v2_dbt_oss_banner_is_oss() {
-        // `dbt-sa-cli` (the OSS-only v2 build) is planned to brand its
-        // `--version` banner as `dbt-oss` once it leaves preview.
-        assert_eq!(
-            classify_version_output("dbt-oss 2.0.0-preview.200\n"),
-            Some((
-                Generation::V2,
-                Distribution::Oss,
-                Some("2.0.0-preview.200".to_string())
-            ))
-        );
-    }
-
-    #[test]
-    fn classify_version_output_dbt_cloud_cli() {
-        assert_eq!(
-            classify_version_output(
-                "dbt Cloud CLI - 0.40.18 (aa58f643af1725e279e559883b75cf9e26596d51 2026-06-18T20:34:06Z)\n"
-            ),
-            Some((Generation::NotApplicable, Distribution::CloudCLI, None))
-        );
-    }
-
-    #[test]
     fn is_prerelease_version_distinguishes_stable_from_prerelease() {
         assert!(!is_prerelease_version("2.0.0"));
         assert!(is_prerelease_version("2.0.0-preview.203"));
         assert!(is_prerelease_version("1.10.0rc1"));
         assert!(is_prerelease_version("1.10.0a1"));
         assert!(is_prerelease_version("1.10.0.dev0"));
-    }
-
-    #[test]
-    fn classify_version_output_none_for_unrecognized_output() {
-        assert_eq!(classify_version_output("not a dbt binary\n"), None);
-        assert_eq!(classify_version_output(""), None);
     }
 
     #[test]

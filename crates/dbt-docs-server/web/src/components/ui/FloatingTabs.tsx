@@ -55,7 +55,7 @@ function FloatingTab({
       data-testid={testId}
       data-trackingid={trackingId}
       className={cn(
-        "relative whitespace-nowrap px-1 py-2 text-sm font-medium text-fgDecorative transition-colors after:absolute after:inset-x-0 after:-bottom-px after:h-0.5 after:bg-transparent after:content-[''] hover:text-fgMain data-[state=active]:text-fgMain data-[state=active]:after:bg-bgWhite",
+        "relative whitespace-nowrap px-1 py-2 text-sm font-medium text-fgDecorative transition-colors after:absolute after:inset-x-0 after:-bottom-px after:h-0.5 after:bg-transparent after:content-[''] hover:text-fgMain data-[state=active]:text-fgMain data-[state=active]:after:bg-fgMain",
       )}
     >
       <span className="flex items-center gap-1.5">

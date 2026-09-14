@@ -89,40 +89,23 @@ pub fn filter_select(
     Ok(result)
 }
 
-/// Filter the manifest for a **single** criterion
+/// Filter the manifest for a **single** criterion.
+///
+/// This is a plain scan of every node that runs with or without the `previous_state`
+/// comparison manifest (`None` is understood as "nothing is modified").
+/// This is useful in `dbt-defer`'s `modified_nodes`, which legitimately runs without a
+/// comparison manifest (deferral does not require `--state`).
+///
+/// On the user-authored-selector path, additional checks are necessary,
+/// see [`filter_select_criteria_with_state_selector_results`].
 pub fn filter_select_criteria(
     nodes: &Nodes,
     criteria: &SelectionCriteria,
     previous_state: Option<&StateArtifacts>,
     adapter_type: AdapterType,
 ) -> FsResult<BTreeSet<String>> {
-    filter_select_criteria_with_state_selector_results(
-        nodes,
-        criteria,
-        previous_state,
-        None,
-        adapter_type,
-    )
-}
-
-/// Filter the manifest for a single criterion, optionally using externally evaluated state
-/// selector results.
-pub fn filter_select_criteria_with_state_selector_results(
-    nodes: &Nodes,
-    criteria: &SelectionCriteria,
-    previous_state: Option<&StateArtifacts>,
-    state_selector_results: Option<&StateSelectorResults>,
-    adapter_type: AdapterType,
-) -> FsResult<BTreeSet<String>> {
-    if criteria.method == MethodName::State
-        && let Some(selected) =
-            state_selector_results.and_then(|results| results.get(criteria.value.as_str()?))
-    {
-        return Ok(selected.iter().cloned().collect());
-    }
-
     let project_name = nodes.project_name.as_deref();
-    let result = nodes
+    nodes
         .iter()
         .try_fold(BTreeSet::new(), |mut acc, (_, node)| {
             predicate_include_identifier_node(
@@ -139,8 +122,42 @@ pub fn filter_select_criteria_with_state_selector_results(
                 }
                 acc
             })
-        })?;
-    Ok(result)
+        })
+}
+
+/// Filter the manifest for a single criterion on the user-authored-selector path.
+///
+/// Whenever a `state:...` criterion is used, this checks for presence of a comparison manifest,
+/// unless there is an override with a precomputed selection result.
+pub fn filter_select_criteria_with_state_selector_results(
+    nodes: &Nodes,
+    criteria: &SelectionCriteria,
+    previous_state: Option<&StateArtifacts>,
+    state_selector_results: Option<&StateSelectorResults>,
+    adapter_type: AdapterType,
+) -> FsResult<BTreeSet<String>> {
+    if criteria.method == MethodName::State {
+        // Reuse the selection an external state-selector implementation already made, if it
+        // evaluated this exact `state:` value. Deliberately ahead of the manifest check below.
+        if let Some(selected) =
+            state_selector_results.and_then(|results| results.get(criteria.value.as_str()?))
+        {
+            return Ok(selected.clone());
+        }
+
+        // Otherwise every `state:*` criterion needs something to compare against. This is the
+        // single point every user-authored state criterion reaches — however it was written
+        // (`--select state:modified`, a top-level `--selector`, or a `{selector: name}` reference
+        // nested arbitrarily deep inside a composed selector).
+        if previous_state.is_none() {
+            return err!(
+                ErrorCode::SelectorError,
+                "Got a state selector method, but no comparison manifest"
+            );
+        }
+    }
+
+    filter_select_criteria(nodes, criteria, previous_state, adapter_type)
 }
 
 // ------------------------------------------------------------------------------------------------

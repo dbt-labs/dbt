@@ -439,6 +439,7 @@ mod tests {
             _: Option<String>,
             _: Option<ExecutionPhase>,
             _: &[Arc<dyn BaseRelation>],
+            _: Option<&str>,
             _: CancellationToken,
         ) -> AsyncAdapterResult<'_, HashMap<String, AdapterResult<Arc<arrow_schema::Schema>>>>
         {

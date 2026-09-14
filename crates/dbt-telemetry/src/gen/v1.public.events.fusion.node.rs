@@ -794,6 +794,8 @@ pub enum NodeMaterialization {
     Function = 14,
     /// ONLY FOR SNOWFLAKE
     InteractiveTable = 15,
+    /// ONLY FOR DATABRICKS
+    MetricView = 16,
     Custom = 100,
 }
 impl NodeMaterialization {
@@ -819,6 +821,7 @@ impl NodeMaterialization {
             Self::DynamicTable => "NODE_MATERIALIZATION_DYNAMIC_TABLE",
             Self::Function => "NODE_MATERIALIZATION_FUNCTION",
             Self::InteractiveTable => "NODE_MATERIALIZATION_INTERACTIVE_TABLE",
+            Self::MetricView => "NODE_MATERIALIZATION_METRIC_VIEW",
             Self::Custom => "NODE_MATERIALIZATION_CUSTOM",
         }
     }
@@ -841,6 +844,7 @@ impl NodeMaterialization {
             "NODE_MATERIALIZATION_DYNAMIC_TABLE" => Some(Self::DynamicTable),
             "NODE_MATERIALIZATION_FUNCTION" => Some(Self::Function),
             "NODE_MATERIALIZATION_INTERACTIVE_TABLE" => Some(Self::InteractiveTable),
+            "NODE_MATERIALIZATION_METRIC_VIEW" => Some(Self::MetricView),
             "NODE_MATERIALIZATION_CUSTOM" => Some(Self::Custom),
             _ => None,
         }

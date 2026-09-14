@@ -11,9 +11,15 @@
  * *not* run results or catalog stats — those live on some list summaries but on no
  * detail shape, so joining them here would be dead weight.
  *
+ * Each type reads its own information-schema table (`dbt.models`, `dbt.seeds`, …)
+ * rather than filtering a union: the table *is* the resource type, so the
+ * `resource_type` predicate the index needed is gone. The union
+ * (`dbt_internal.resources`) is reserved for the surfaces that genuinely span
+ * types, because reading it pulls every artifact.
+ *
  * JSON-string columns (`meta`, `config`, `type_params`, `query_params`, `exports`,
- * `arguments`, …) are parsed by the caller, matching CC-7: the index stores them as
- * `VARCHAR`, and the Rust handlers deserialized them handler-side rather than
+ * `arguments`, …) are parsed by the caller, matching CC-7: they are `VARCHAR` in
+ * the parquet, and the Rust handlers deserialized them handler-side rather than
  * letting an escaped string reach the wire.
  */
 
@@ -34,18 +40,25 @@ import {
 } from '../mappers/fromWire';
 import { sqlStr } from './sql';
 
-/** Columns of one node, shaped as `RestNodeColumn`. */
+/**
+ * Columns of one node, shaped as `RestNodeColumn`.
+ *
+ * The information schema renames all four type columns and keys the table on
+ * `node_unique_id`. The aliases put the mapper's names back, so its
+ * `data_type ?? declared_type ?? inferred_type ?? catalog_type` fallback chain —
+ * and what the Columns tab shows — is unchanged.
+ */
 export function nodeColumnsSql(uniqueId: string): string {
   return `
 SELECT LOWER(column_name) AS name,
        column_index AS index,
        data_type,
-       declared_type,
-       inferred_type,
-       catalog_type,
+       data_type_declared AS declared_type,
+       data_type_inferred AS inferred_type,
+       data_type_actual AS catalog_type,
        description
 FROM dbt.node_columns
-WHERE unique_id = ${sqlStr(uniqueId)}
+WHERE node_unique_id = ${sqlStr(uniqueId)}
 ORDER BY column_index`;
 }
 
@@ -62,16 +75,12 @@ export interface DetailSpec {
   map(row: Record<string, unknown>): Asset;
 }
 
-/** `SELECT … FROM dbt.nodes` for one node, by `resource_type`. */
-function nodeDetail(
-  resourceType: string,
-  columns: string,
-): (uniqueId: string) => string {
+/** `SELECT … FROM dbt.<table>` for one resource of that type. */
+function nodeDetail(table: string, columns: string): (uniqueId: string) => string {
   return (uniqueId) => `
 SELECT ${columns}
-FROM dbt.nodes n
+FROM ${table} n
 WHERE n.unique_id = ${sqlStr(uniqueId)}
-  AND n.resource_type = '${resourceType}'
 LIMIT 1`;
 }
 
@@ -84,26 +93,34 @@ WHERE t.unique_id = ${sqlStr(uniqueId)}
 LIMIT 1`;
 }
 
+/**
+ * The fields every resource detail carries.
+ *
+ * `file_path` is gone: of the index's two path columns only `original_file_path`
+ * was ever populated, so the information schema publishes just the one.
+ * `patch_path` is the mapper's name for `properties_yml_file_path`.
+ */
 const NODE_BASE = `n.unique_id, n.name, n.resource_type, n.package_name, n.description,
-  n.original_file_path, n.file_path, n.patch_path, n.tags, n.fqn, n.meta, n.config,
-  n.database_name, n.schema_name, n.identifier`;
+  n.original_file_path, n.properties_yml_file_path AS patch_path, n.tags, n.fqn,
+  n.meta, n.config, n.database_name, n.schema_name, n.identifier`;
 
 export const DETAIL_REGISTRY: Partial<Record<ResourceType, DetailSpec>> = {
   model: {
     sql: nodeDetail(
-      'model',
-      `${NODE_BASE}, n.materialized, n.access_level, n.group_name, n.contract_enforced,
-       n.raw_code, n.compiled_code`,
+      'dbt.models',
+      // `group` is a SQL keyword, so it has to be quoted to be read as a column.
+      `${NODE_BASE}, n.materialized, n.access AS access_level,
+       n."group" AS group_name, n.contract_enforced, n.raw_code, n.compiled_code`,
     ),
-    tables: ['dbt.nodes'],
+    tables: ['dbt.models'],
     wantsColumns: true,
     jsonColumns: ['meta', 'config'],
     map: (row) => fromModelDetail(row as never),
   },
 
   seed: {
-    sql: nodeDetail('seed', `${NODE_BASE}`),
-    tables: ['dbt.nodes'],
+    sql: nodeDetail('dbt.seeds', `${NODE_BASE}`),
+    tables: ['dbt.seeds'],
     wantsColumns: true,
     jsonColumns: ['meta', 'config'],
     map: (row) => fromSeedDetail(row as never),
@@ -111,10 +128,10 @@ export const DETAIL_REGISTRY: Partial<Record<ResourceType, DetailSpec>> = {
 
   snapshot: {
     sql: nodeDetail(
-      'snapshot',
+      'dbt.snapshots',
       `${NODE_BASE}, n.materialized, n.raw_code, n.compiled_code`,
     ),
-    tables: ['dbt.nodes'],
+    tables: ['dbt.snapshots'],
     wantsColumns: true,
     jsonColumns: ['meta', 'config'],
     map: (row) => fromSnapshotDetail(row as never),
@@ -127,12 +144,11 @@ export const DETAIL_REGISTRY: Partial<Record<ResourceType, DetailSpec>> = {
 SELECT ${NODE_BASE}, n.source_name, n.loader,
        sf.status, CAST(sf.snapshotted_at AS VARCHAR) AS snapshotted_at,
        CAST(sf.max_loaded_at AS VARCHAR) AS max_loaded_at
-FROM dbt.nodes n
-LEFT JOIN dbt.source_freshness sf ON sf.unique_id = n.unique_id
+FROM dbt.sources n
+LEFT JOIN dbt_rt.freshness sf ON sf.unique_id = n.unique_id
 WHERE n.unique_id = ${sqlStr(uniqueId)}
-  AND n.resource_type = 'source'
 LIMIT 1`,
-    tables: ['dbt.nodes', 'dbt.source_freshness'],
+    tables: ['dbt.sources', 'dbt_rt.freshness'],
     wantsColumns: true,
     jsonColumns: ['meta', 'config'],
     map: (row) => fromSourceDetail(row as never),
@@ -143,16 +159,19 @@ LIMIT 1`,
     // `resource_type`. The union carries each side's own fields as NULL on the other.
     sql: (uniqueId) => {
       const id = sqlStr(uniqueId);
+      // `dbt.data_tests` is `nodes` LEFT JOINed to `test_metadata` already, so
+      // the test's own fields (`column_name`, `severity`) are columns here rather
+      // than a join of ours. A singular test with no metadata still has a row,
+      // with those columns null — the LEFT join is inside the view.
       return `
 SELECT n.unique_id, n.name, 'test' AS resource_type, n.package_name, n.description,
        n.original_file_path, n.tags, n.fqn,
-       tm.column_name, tm.severity,
+       n.column_name, n.severity,
        'data' AS test_type,
        n.raw_code, n.compiled_code,
        NULL AS model, NULL AS given, NULL AS expect
-FROM dbt.nodes n
-LEFT JOIN dbt.test_metadata tm ON tm.unique_id = n.unique_id
-WHERE n.unique_id = ${id} AND n.resource_type = 'test'
+FROM dbt.data_tests n
+WHERE n.unique_id = ${id}
 UNION ALL
 SELECT ut.unique_id, ut.name, 'unit_test', ut.package_name, ut.description,
        ut.original_file_path, NULL, NULL,
@@ -164,7 +183,7 @@ FROM dbt.unit_tests ut
 WHERE ut.unique_id = ${id}
 LIMIT 1`;
     },
-    tables: ['dbt.nodes', 'dbt.test_metadata', 'dbt.unit_tests'],
+    tables: ['dbt.data_tests', 'dbt.unit_tests'],
     wantsColumns: false,
     jsonColumns: ['given', 'expect'],
     map: (row) => fromTestDetail(row as never),
@@ -173,8 +192,12 @@ LIMIT 1`;
   macro: {
     sql: ownDetail(
       'dbt.macros',
+      // No `file_path`: the information schema publishes only
+      // `original_file_path`, which carried the identical value. Every
+      // `AssetMetadata` caller already prefers it, so the File row is unaffected.
       `t.unique_id, t.name, 'macro' AS resource_type, t.package_name, t.description,
-       t.original_file_path, t.file_path, t.patch_path, t.macro_sql, t.arguments, t.meta`,
+       t.original_file_path, t.properties_yml_file_path AS patch_path, t.macro_sql,
+       t.arguments, t.meta`,
     ),
     tables: ['dbt.macros'],
     wantsColumns: false,
@@ -186,7 +209,7 @@ LIMIT 1`;
     sql: ownDetail(
       'dbt.exposures',
       `t.unique_id, t.name, 'exposure' AS resource_type, t.package_name, t.description,
-       t.original_file_path, t.file_path, t.tags, t.fqn, t.exposure_type, t.maturity,
+       t.original_file_path, t.tags, t.fqn, t.exposure_type, t.maturity,
        t.url, t.owner_name, t.owner_email, t.meta`,
     ),
     tables: ['dbt.exposures'],
@@ -200,7 +223,7 @@ LIMIT 1`;
       'dbt.metrics',
       `t.unique_id, t.name, 'metric' AS resource_type, t.package_name, t.description,
        t.original_file_path, t.fqn, t.tags, t.label, t.metric_type, t.type_params,
-       t.group_name, t.meta`,
+       t."group" AS group_name, t.meta`,
     ),
     tables: ['dbt.metrics'],
     wantsColumns: false,
@@ -274,24 +297,24 @@ LIMIT 1`;
         key: 'models',
         sql: (id) => `
 SELECT n.unique_id, n.name
-FROM dbt.nodes n
+FROM dbt.models n
 JOIN dbt.groups g
-  ON g.name = n.group_name AND g.package_name = n.package_name
-WHERE g.unique_id = ${sqlStr(id)} AND n.resource_type = 'model'
+  ON g.name = n."group" AND g.package_name = n.package_name
+WHERE g.unique_id = ${sqlStr(id)}
 ORDER BY n.name
 LIMIT 500`,
-        tables: ['dbt.nodes', 'dbt.groups'],
+        tables: ['dbt.models', 'dbt.groups'],
       },
     ],
     map: (row) => fromGroupDetail(row as never),
   },
 };
 
-/** Generic-path SQL, which cannot filter on `resource_type`. */
+/** Generic-path SQL: the resource union, since the type is not known here. */
 function genericDetailSql(uniqueId: string): string {
   return `
 SELECT ${NODE_BASE}, n.raw_code, n.compiled_code
-FROM dbt.nodes n
+FROM dbt_internal.resources n
 WHERE n.unique_id = ${sqlStr(uniqueId)}
 LIMIT 1`;
 }
@@ -300,11 +323,13 @@ LIMIT 1`;
  * Fallback for types with no detail of their own.
  *
  * `analysis`, `function` and `operation` had no REST endpoint either; the generic
- * node path is what served them there too.
+ * path is what served them there too. This is the one detail query that reads the
+ * union, because it is reached precisely when the resource type is unknown — so
+ * there is no typed table to pick.
  */
 export const GENERIC_DETAIL: DetailSpec = {
   sql: genericDetailSql,
-  tables: ['dbt.nodes'],
+  tables: ['dbt_internal.resources'],
   wantsColumns: false,
   jsonColumns: ['meta', 'config'],
   map: (row) => fromNodeDetail(row as never),

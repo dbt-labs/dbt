@@ -57,11 +57,38 @@ describe('the list registry', () => {
 
   it('asks only for the artifacts each type needs', () => {
     expect(queryFor('macro').tables).toEqual(['dbt.macros']);
-    // No column lineage or code columns anywhere in a list.
     for (const type of Object.keys(LIST_REGISTRY) as ResourceType[]) {
+      // No column lineage anywhere in a list.
       expect(queryFor(type).tables).not.toContain('dbt.column_lineage');
-      expect(queryFor(type).tables).not.toContain('dbt.node_code');
+      // And never the resource union: the type is known here, so reading it
+      // would pull every resource artifact to answer about one.
+      expect(queryFor(type).tables).not.toContain('dbt_internal.resources');
+      expect(queryFor(type).sql).not.toContain('dbt_internal.resources');
     }
+  });
+
+  it('reads each type from its own table, with no resource_type predicate', () => {
+    for (const [type, table] of [
+      ['model', 'dbt.models'],
+      ['seed', 'dbt.seeds'],
+      ['snapshot', 'dbt.snapshots'],
+      ['source', 'dbt.sources'],
+    ] as [ResourceType, string][]) {
+      const query = queryFor(type);
+      expect(query.sql).toContain(`FROM ${table} n`);
+      expect(query.tables).toContain(table);
+      // The table *is* the type in the information schema.
+      expect(query.sql).not.toContain('resource_type =');
+    }
+  });
+
+  it('quotes `group`, which is a SQL keyword', () => {
+    // The information schema renamed `group_name` to `group`. Unquoted it is a
+    // syntax error, so this is one migration slip that fails loudly — but it
+    // fails at query time, in the browser, on one page.
+    const query = queryFor('model');
+    expect(query.sql).toContain('n."group" AS owner');
+    expect(query.sql).not.toMatch(/[^"]\bn\.group\b/);
   });
 
   it('tie-breaks ordering on unique_id so a page is stable', () => {
@@ -164,6 +191,34 @@ describe('facets', () => {
       'owners',
       'packages',
     ]);
+  });
+});
+
+describe('the catalog join', () => {
+  it('reads the warehouse numbers as typed columns, not an EAV pivot', () => {
+    // `dbt_rt.relations` is one wide row per relation, so the four CTEs that
+    // pivoted `stat_id`/`stat_value` and `TRY_CAST`-ed strings are gone.
+    const query = queryFor('model');
+    expect(query.sql).toContain('FROM dbt_rt.relations');
+    expect(query.sql).toContain('row_count AS row_count_stat');
+    expect(query.sql).not.toContain('stat_id');
+    expect(query.sql).not.toContain('TRY_CAST');
+  });
+
+  it('does not re-derive latest-per-node, because the table already is', () => {
+    // `dbt_rt.relations` supersedes by `unique_id` — current warehouse state, not
+    // an invocation log — so a latest-per-node wrapper here would be dead weight
+    // on every model page. `dbt_rt.run_results` is the one that needs it.
+    expect(queryFor('model').sql).not.toContain('QUALIFY');
+  });
+
+  it('reads the latest run from the view that already defines it', () => {
+    // `dbt_rt.run_results_latest` ships in `views.sql` and also drops
+    // compile-only error rows, which a plain `MAX(created_at)` kept.
+    const query = queryFor('model');
+    expect(query.sql).toContain('FROM dbt_rt.run_results_latest');
+    expect(query.tables).toContain('dbt_rt.run_results_latest');
+    expect(query.sql).not.toContain('MAX(created_at)');
   });
 });
 

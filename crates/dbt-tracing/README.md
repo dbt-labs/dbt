@@ -339,7 +339,7 @@ When work crosses async, task, or thread boundaries, propagate the current span
 explicitly. Prefer the crate helpers for spawned work:
 
 ```rust
-use dbt_tracing::async_tracing::{spawn_blocking_traced, spawn_traced};
+use dbt_tracing::async_tracing::spawn_traced;
 use tracing::Instrument as _;
 
 async fn handle_request() {
@@ -352,7 +352,9 @@ fn spawn_work() {
         run_async_work().await;
     });
 
-    spawn_blocking_traced(|| {
+    // IMPORTANT: dbt_runtime::spawn_blocking already propagates
+    // the current span, so no extra instrumentation is needed.
+    dbt_runtime::spawn_blocking(|| {
         run_blocking_work();
     });
 
@@ -438,7 +440,7 @@ OTLP support lives in `src/serialize/otlp.rs`. JSON envelope support lives in
 4. Use trace-level spans for high-volume developer debugging rather than
    user-facing debug logs.
 5. Preserve span context across async, task, and thread boundaries with
-   `spawn_traced`, `spawn_blocking_traced`, or `tracing::Instrument`.
+   `spawn_traced`, `dbt_runtime::spawn_blocking`, or `tracing::Instrument`.
 6. Implement filtering in `is_span_enabled`, `is_log_enabled`, or a
    `TelemetryFilter` wrapper to avoid unnecessary work in consumers.
 7. Use middleware for global transforms, dropping, scrubbing, and metric

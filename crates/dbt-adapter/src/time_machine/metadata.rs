@@ -225,6 +225,18 @@ impl MetadataResultDeserialize for HashMap<String, AdapterResult<Arc<Schema>>> {
     }
 }
 
+impl MetadataResultSerialize for BTreeMap<String, bool> {
+    fn to_recording_json(&self) -> serde_json::Value {
+        serde_json::to_value(self).unwrap_or(serde_json::Value::Null)
+    }
+}
+
+impl MetadataResultDeserialize for BTreeMap<String, bool> {
+    fn from_recording_json(json: &serde_json::Value) -> Result<Self, String> {
+        serde_json::from_value(json.clone()).map_err(|e| e.to_string())
+    }
+}
+
 impl MetadataResultSerialize for BTreeMap<String, MetadataFreshness> {
     fn to_recording_json(&self) -> serde_json::Value {
         let entries: serde_json::Map<String, serde_json::Value> = self
@@ -665,12 +677,30 @@ pub fn args_list_relations_in_parallel(
 }
 
 /// Create MetadataCallArgs for freshness.
-pub fn args_freshness(relations: impl IntoIterator<Item = impl AsRef<str>>) -> MetadataCallArgs {
+pub fn args_freshness(
+    relations: impl IntoIterator<Item = impl AsRef<str>>,
+    warehouse: Option<String>,
+) -> MetadataCallArgs {
     MetadataCallArgs::Freshness {
         relations: relations
             .into_iter()
             .map(|r| r.as_ref().to_string())
             .collect(),
+        warehouse,
+    }
+}
+
+/// Create MetadataCallArgs for relation-existence checks.
+pub fn args_relations_exist(
+    relations: impl IntoIterator<Item = impl AsRef<str>>,
+    warehouse: Option<String>,
+) -> MetadataCallArgs {
+    MetadataCallArgs::RelationsExist {
+        relations: relations
+            .into_iter()
+            .map(|r| r.as_ref().to_string())
+            .collect(),
+        warehouse,
     }
 }
 
@@ -884,12 +914,19 @@ mod tests {
 
     #[test]
     fn test_args_freshness() {
-        let args = args_freshness(["source.a.b", "source.c.d"]);
+        let args = args_freshness(
+            ["source.a.b", "source.c.d"],
+            Some("metadata_warehouse".to_string()),
+        );
 
         match args {
-            MetadataCallArgs::Freshness { relations } => {
+            MetadataCallArgs::Freshness {
+                relations,
+                warehouse,
+            } => {
                 assert_eq!(relations.len(), 2);
                 assert_eq!(relations[0], "source.a.b");
+                assert_eq!(warehouse, Some("metadata_warehouse".to_string()));
             }
             _ => panic!("Expected Freshness"),
         }

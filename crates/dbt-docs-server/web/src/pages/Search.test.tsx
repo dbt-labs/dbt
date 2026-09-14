@@ -75,7 +75,7 @@ function renderSearch(query: string) {
       nodes={[]}
       query={query}
       filters={EMPTY_FILTERS}
-      onUpdateFiltersInPlace={vi.fn()}
+      onSetFilters={vi.fn()}
       previewId={null}
       onPeek={vi.fn()}
     />,

@@ -6,9 +6,11 @@ use dbt_common::ErrorCode;
 use dbt_common::FsResult;
 use dbt_common::error::FsError;
 use dbt_common::fs_err;
-use dbt_common::io_args::ComputeArg;
+use dbt_common::io_args::{
+    ComputeArg, LOCAL_UNIT_TESTS_ENV, MULTI_ADAPTER_ENV, local_unit_tests_enabled,
+    multi_adapter_enabled,
+};
 use dbt_common::tracing::dbt_emit::emit_warn_log_message;
-use dbt_schemas::schemas::common::DbtQuoting;
 use dbt_schemas::schemas::project::AdapterProjectConfig;
 use dbt_schemas::state::ProfileAdapter;
 use indexmap::IndexMap;
@@ -48,48 +50,6 @@ pub(crate) fn validate_adapter_project_configs(
     }
 }
 
-/// The authored quoting each declared adapter contributes, keyed by adapter type.
-///
-/// Two layers, left **unresolved** (`None`s preserved) so that a node's own
-/// `+quoting:` still wins over both:
-///
-/// 1. the adapter's entry in the root `dbt_project.yml` `adapters:` block;
-/// 2. the top-level `quoting:` block — but **only for the target's default
-///    adapter**. A node on a non-default adapter does not inherit the top-level
-///    block; it takes its own entry and then falls through to its adapter type's
-///    default. Configuring the default adapter is what the top-level block is for,
-///    and letting it leak across adapters is what would otherwise force every
-///    adapter in a target to agree on one policy.
-///
-/// Both inputs come from the **root** project, so this is computed once per run and
-/// lives on `RootProjectConfigs`. A dependency package's own top-level `quoting:`
-/// block does not enter the chain: it was already overridden by the root's via the
-/// root-config overlay, and stays overridden.
-pub(crate) fn authored_quoting_per_adapter(
-    adapters: Option<&IndexMap<AdapterType, AdapterProjectConfig>>,
-    target_adapters: &IndexMap<AdapterType, ProfileAdapter>,
-    default_adapter: AdapterType,
-    top_level_quoting: Option<DbtQuoting>,
-) -> IndexMap<AdapterType, DbtQuoting> {
-    let top_level = top_level_quoting.unwrap_or_default();
-
-    target_adapters
-        .keys()
-        .map(|adapter_type| {
-            let own = adapters
-                .and_then(|configured| configured.get(adapter_type))
-                .and_then(|entry| entry.quoting)
-                .unwrap_or_default();
-
-            let layered = if *adapter_type == default_adapter {
-                own.filled_from(&top_level)
-            } else {
-                own
-            };
-            (*adapter_type, layered)
-        })
-        .collect()
-}
 /// Normalizes hook key names in an unrendered config map, matching dbt-core's
 /// `translate_hook_names` behavior (`context/context_config.py:235`):
 /// `post_hook` → `post-hook`, `pre_hook` → `pre-hook`.
@@ -307,10 +267,22 @@ pub(crate) fn validate_compute(compute: Option<ComputeArg>, path: &Path) -> FsRe
     }
 }
 
-/// Unit tests can run on either on the `remote` warehouse or `sidecar`
+/// Unit tests can run on either on the `remote` warehouse or `sidecar`.
+///
+/// `sidecar` is gated behind [`LOCAL_UNIT_TESTS_ENV`]. The run-wide `--compute` flag is a
+/// separate, older knob and is not covered by that gate.
 pub(crate) fn validate_unit_test_compute(compute: Option<ComputeArg>, path: &Path) -> FsResult<()> {
     match compute {
-        None | Some(ComputeArg::Remote) | Some(ComputeArg::Sidecar) => Ok(()),
+        None | Some(ComputeArg::Remote) => Ok(()),
+        Some(ComputeArg::Sidecar) if local_unit_tests_enabled() => Ok(()),
+        Some(ComputeArg::Sidecar) => Err(fs_err!(
+            code => ErrorCode::InvalidConfig,
+            loc => path.to_path_buf(),
+            "Running an individual unit test on local compute is experimental and not yet \
+             supported. To use it, set the environment variable {LOCAL_UNIT_TESTS_ENV}=true. \
+             Note that experimental features may be unstable and are not yet recommended for \
+             production use.",
+        )),
         Some(other) => Err(fs_err!(
             code => ErrorCode::InvalidConfig,
             loc => path.to_path_buf(),
@@ -319,10 +291,104 @@ pub(crate) fn validate_unit_test_compute(compute: Option<ComputeArg>, path: &Pat
     }
 }
 
+/// Gates a node's authored `+adapter` behind [`MULTI_ADAPTER_ENV`]. Any value is refused, not
+/// just `lakecompute`; selecting a node's adapter at all is what is unreleased.
+///
+/// Pass the **authored** config field, never the resolved adapter. Data tests inherit from
+/// their attached node and unit tests from their subject, so the resolved value is `Some` for
+/// essentially every node in every project; checking it would reject them all.
+pub(crate) fn validate_node_adapter(adapter: Option<AdapterType>, path: &Path) -> FsResult<()> {
+    match adapter {
+        None => Ok(()),
+        Some(_) if multi_adapter_enabled() => Ok(()),
+        Some(adapter) => Err(fs_err!(
+            code => ErrorCode::InvalidConfig,
+            loc => path.to_path_buf(),
+            "Selecting a node's adapter with `adapter: {adapter}` is experimental and not yet \
+             supported. To use it, set the environment variable {MULTI_ADAPTER_ENV}=true. \
+             Note that experimental features may be unstable and are not yet recommended for \
+             production use.",
+        )),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::utils::RawProjectConfig;
+    use std::sync::Mutex;
+
+    /// The gate predicates read process-wide state, so the gate tests below cannot run
+    /// concurrently under a plain `cargo test` (nextest gives each test its own process).
+    static ENV_MUTEX: Mutex<()> = Mutex::new(());
+
+    /// Run `f` with `var` set, restoring the previous value afterwards.
+    fn with_env_var<T>(var: &str, value: &str, f: impl FnOnce() -> T) -> T {
+        let _lock = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let previous = std::env::var(var).ok();
+        unsafe {
+            #[allow(clippy::disallowed_methods)]
+            std::env::set_var(var, value);
+        }
+        let result = f();
+        unsafe {
+            #[allow(clippy::disallowed_methods)]
+            match previous {
+                Some(previous) => std::env::set_var(var, previous),
+                None => std::env::remove_var(var),
+            }
+        }
+        result
+    }
+
+    #[test]
+    fn an_authored_adapter_is_refused_unless_the_gate_is_set() {
+        let path = Path::new("models/m.sql");
+
+        // Not just `lakecompute`: selecting *any* adapter is what is unreleased.
+        let err = validate_node_adapter(Some(AdapterType::Bigquery), path).unwrap_err();
+        assert!(
+            err.to_string().contains(MULTI_ADAPTER_ENV),
+            "the refusal must name the variable that lifts it: {err}"
+        );
+
+        with_env_var(MULTI_ADAPTER_ENV, "true", || {
+            assert!(validate_node_adapter(Some(AdapterType::LakeCompute), path).is_ok());
+        });
+    }
+
+    #[test]
+    fn a_node_without_an_authored_adapter_is_always_accepted() {
+        assert!(validate_node_adapter(None, Path::new("models/m.sql")).is_ok());
+    }
+
+    #[test]
+    fn a_unit_test_selecting_local_compute_is_refused_unless_the_gate_is_set() {
+        let path = Path::new("models/unit_tests.yml");
+
+        assert!(validate_unit_test_compute(None, path).is_ok());
+        assert!(validate_unit_test_compute(Some(ComputeArg::Remote), path).is_ok());
+
+        let err = validate_unit_test_compute(Some(ComputeArg::Sidecar), path).unwrap_err();
+        assert!(
+            err.to_string().contains(LOCAL_UNIT_TESTS_ENV),
+            "the refusal must name the variable that lifts it: {err}"
+        );
+
+        with_env_var(LOCAL_UNIT_TESTS_ENV, "true", || {
+            assert!(validate_unit_test_compute(Some(ComputeArg::Sidecar), path).is_ok());
+        });
+    }
+
+    #[test]
+    fn the_gate_does_not_widen_the_accepted_compute_values() {
+        // The gate governs `sidecar` only; `inline` and `service` stay rejected.
+        let path = Path::new("models/unit_tests.yml");
+        with_env_var(LOCAL_UNIT_TESTS_ENV, "true", || {
+            assert!(validate_unit_test_compute(Some(ComputeArg::Inline), path).is_err());
+            assert!(validate_unit_test_compute(Some(ComputeArg::Service), path).is_err());
+        });
+    }
 
     fn config_map(pairs: &[(&str, &str)]) -> BTreeMap<String, dbt_yaml::Value> {
         pairs
@@ -741,6 +807,10 @@ my_project:
 #[cfg(test)]
 mod adapter_quoting_tests {
     use super::*;
+    // Lives in dbt-schemas now, alongside its only caller
+    // (`build_root_project_configs`); these tests still cover it from here.
+    use dbt_schemas::schemas::common::DbtQuoting;
+    use dbt_schemas::schemas::project::authored_quoting_per_adapter;
 
     fn quoting(database: bool, schema: bool, identifier: bool) -> DbtQuoting {
         DbtQuoting {

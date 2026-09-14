@@ -24,6 +24,9 @@ pub struct LoadArgs {
     pub update_deps: bool,
     // The directory to load the dbt project from
     pub vars: BTreeMap<String, dbt_yaml::Value>,
+    /// AI coding agent(s) to install package skills for, from the CLI or
+    /// `DBT_AI_PROVIDER`. `None` means fall back to the project's `flags:`.
+    pub ai_provider: Option<Vec<String>>,
     /// Vars loaded from `vars.yml` at the root project (populated after the
     /// initial project load). Empty when no `vars.yml` is present.
     pub root_vars_from_file: BTreeMap<String, dbt_yaml::Value>,
@@ -73,6 +76,7 @@ impl LoadArgs {
             internal_packages_install_path: arg.internal_packages_install_path.clone(),
             target: arg.target.clone(),
             update_deps: arg.update_deps,
+            ai_provider: arg.ai_provider.clone(),
             add_package: arg.add_package.clone(),
             upgrade: arg.upgrade,
             lock: arg.lock,

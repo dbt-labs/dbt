@@ -604,6 +604,41 @@ fn own_sql(
             }
             Some((sql.trim_end().to_string(), Some("epoch_parse_nodes")))
         }
+        // The warehouse's own view of each materialized relation. This is the
+        // one table the epoch layer publishes more directly than the Rust path
+        // does: `run/catalog_stats` already carries one wide row per relation,
+        // so this is a projection, while `build_relations` has to undo the
+        // split the staging ingest applied on the way in.
+        //
+        // No `alive` filter: a disabled node keeps its last known catalog row
+        // rather than losing it. The epoch relation is `LatestGroup`, not
+        // `KeepAll` like `dbt_rt.run_results` — this is the warehouse's current
+        // state for a relation, not an invocation log, so a node re-catalogued
+        // by a later `docs generate` replaces its row here instead of
+        // accumulating one per invocation.
+        "relations" => {
+            let cols = cast_cols(
+                spec,
+                &[
+                    ("unique_id", format!("{BASE}.unique_id")),
+                    ("table_type", format!("{BASE}.table_type")),
+                    ("table_owner", format!("{BASE}.table_owner")),
+                    ("database_name", format!("{BASE}.database_name")),
+                    ("schema_name", format!("{BASE}.schema_name")),
+                    ("table_name", format!("{BASE}.table_name")),
+                    ("row_count", format!("{BASE}.row_count")),
+                    ("bytes", format!("{BASE}.bytes")),
+                    ("last_modified", format!("{BASE}.last_modified")),
+                    ("ingested_at", format!("{BASE}.ingested_at")),
+                ],
+            )?;
+            let list: Vec<&str> = cols.iter().map(String::as_str).collect();
+            let sql = format!(
+                "{}FROM dbt_internal.epoch_run_catalog_stats {BASE}\nWHERE {BASE}.unique_id IS NOT NULL",
+                header(&list)
+            );
+            Some((sql, Some("epoch_run_catalog_stats")))
+        }
         // The single-row project snapshot. `quoting` and `ai_context` are left
         // null: the staging schema declares them and `write_parse_project` writes
         // neither.
@@ -618,6 +653,12 @@ fn own_sql(
                     ("git_branch", format!("{BASE}.git_branch")),
                     ("git_uncommitted_changes", format!("{BASE}.git_is_dirty")),
                     ("ingested_at", format!("{BASE}.ingested_at")),
+                    // The generation row's own stamp, which is what "last full
+                    // parse" means. `fill_last_full_parse_at` does this on the
+                    // Arrow path; without it here the production COPY path left
+                    // the column null, and every consumer's staleness label with
+                    // it.
+                    ("last_full_parse_at", format!("{BASE}.ingested_at")),
                     // Same Rust constant the writer stamps in
                     // (`fill_schema_version`), inlined: it describes the shape of
                     // the relations this file declares, so a view layer generated

@@ -39,12 +39,12 @@ const WHATS_HERE = [
 
 const TRY_RUNNING = [
   {
-    command: 'dbt compile --write-index',
-    description: 'Rebuilds the parquet index these docs are served from',
+    command: 'dbt docs generate',
+    description: 'Rebuilds the data these docs are served from',
   },
   {
     command: 'dbt docs serve',
-    description: 'Starts this docs site locally, reading from that index',
+    description: 'Starts this docs site locally',
   },
   {
     command: 'dbt debug',

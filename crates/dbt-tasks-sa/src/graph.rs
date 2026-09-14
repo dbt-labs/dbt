@@ -164,6 +164,7 @@ impl GraphBuilder {
                             self.execute,
                             phases,
                             self.static_analysis_buckets.as_ref(),
+                            self.arg.infer_schemas_and_typeless,
                             aggregation,
                         )
                     } else {
@@ -202,6 +203,7 @@ impl GraphBuilder {
         execute: Execute,
         phases: &[TP],
         buckets: &dyn StaticAnalysisBuckets,
+        infer_schemas: bool,
         generic_test_aggregation: Option<&GenericTestAggregation>,
     ) -> (DiGraph<Arc<dyn Task>, ()>, BTreeSet<String>) {
         // Build reverse dependencies map once for efficient propagation
@@ -223,6 +225,7 @@ impl GraphBuilder {
             nodes,
             phases,
             buckets,
+            infer_schemas,
             schedule,
             tasks_for_node_factory,
             execute,
@@ -328,8 +331,14 @@ impl GraphBuilder {
                                 // find the first upstream nodes with the same phase and add an
                                 // edge to the current node. Except for analyze -> analyze edges
                                 // between baseline nodes, because baseline analyze is only for the
-                                // node itself
-                                if phase == TP::Analyze && buckets.in_baseline_closure(unique_id) {
+                                // node itself — unless `--infer-schemas` is active, in which case
+                                // baseline analyze *does* need its upstream's registered schema
+                                // (the whole point of schema inference), so the ordering edge is
+                                // required just like it is for statically-analyzed nodes.
+                                if phase == TP::Analyze
+                                    && buckets.in_baseline_closure(unique_id)
+                                    && !infer_schemas
+                                {
                                     continue;
                                 }
 
@@ -594,6 +603,7 @@ fn initialize_graph(
     nodes: &Nodes,
     phases: &[TP],
     buckets: &dyn StaticAnalysisBuckets,
+    infer_schemas: bool,
     schedule: &Schedule<String>,
     tasks_for_node_factory: &dyn TasksForNodeFactory,
     execute: Execute,
@@ -694,6 +704,16 @@ fn initialize_graph(
                 && !schedule.all_selected_nodes.contains(unique_id))
         {
             expected_node_phases.retain(|&phase| phase != TP::Show);
+        }
+
+        if infer_schemas
+            && nodes
+                .get_node(unique_id)
+                .is_some_and(|node| !node.introspection().is_none())
+        {
+            // Keep the relation in the resolved graph, but do not let an unavailable
+            // introspection result become a failed task that skips its downstream nodes.
+            expected_node_phases.clear();
         }
 
         let TasksForNode {

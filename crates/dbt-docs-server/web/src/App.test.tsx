@@ -120,11 +120,11 @@ describe('<App />', () => {
     });
 
     it('falls back to the dashboard default when the overview read fails', async () => {
-      // An unreadable dbt.docs must not blank the landing page.
+      // An unreadable dbt.docs_blocks must not blank the landing page.
       renderApp(
         shellSource({
           fetchOverview: async () => {
-            throw new Error('dbt.docs is missing');
+            throw new Error('dbt.docs_blocks is missing');
           },
         } as never),
       );

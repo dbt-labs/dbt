@@ -60,7 +60,7 @@ impl<'a> AthenaAuthIR<'a> {
     }
 }
 
-/// dbt-athena Python profile fields the dbt-fusion Athena backend doesn't yet
+/// dbt-athena Python profile fields the dbt Athena backend doesn't yet
 /// honor. Both lists are kept separate so the policy split (auth-affecting vs
 /// non-auth) is easy to revisit, but during initial rollout both are rejected.
 /// Tracked alongside Part 6 (#9460): full Glue/Iceberg/STS support.
@@ -97,7 +97,7 @@ fn reject_unsupported_fields(config: &AdapterConfig) -> Result<(), AuthError> {
     {
         if config.contains_key(field) {
             return Err(AuthError::config(format!(
-                "Athena profile field '{field}' is not yet supported by the dbt-fusion Athena \
+                "Athena profile field '{field}' is not yet supported by the dbt Athena \
                  backend; please remove it from your profile.",
             )));
         }

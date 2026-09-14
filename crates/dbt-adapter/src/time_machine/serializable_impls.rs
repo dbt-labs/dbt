@@ -145,6 +145,7 @@ impl TimeMachineSerializable for RelationObject {
             "is_dynamic_table": self.is_dynamic_table(),
             "is_interactive_table": self.is_interactive_table(),
             "is_streaming_table": self.is_streaming_table(),
+            "is_metric_view": self.is_metric_view(),
             "is_delta": self.is_delta(),
             "is_shallow_clone": self.is_shallow_clone(),
             "quote_policy": {
@@ -211,6 +212,8 @@ impl TimeMachineSerializable for RelationObject {
             Some(RelationType::InteractiveTable)
         } else if ext.bool_or("is_streaming_table", false) {
             Some(RelationType::StreamingTable)
+        } else if ext.bool_or("is_metric_view", false) {
+            Some(RelationType::MetricView)
         } else {
             None
         };
@@ -454,6 +457,17 @@ mod tests {
                 serde_json::json!({
                     "comment": {"comment": "streaming events", "persist": true},
                     "partitioned_by": {"partition_by": ["event_date"]}
+                }),
+            ),
+            (
+                RelationType::MetricView,
+                serde_json::json!({
+                    "tags": {"set_tags": {"team": "analytics"}},
+                    "tblproperties": {
+                        "tblproperties": {"quality": "gold"},
+                        "pipeline_id": null
+                    },
+                    "query": {"query": "version: 1.1\nsource: orders"}
                 }),
             ),
         ];
@@ -705,6 +719,7 @@ mod tests {
             RelationType::DynamicTable,
             RelationType::InteractiveTable,
             RelationType::StreamingTable,
+            RelationType::MetricView,
         ] {
             let relation = do_create_relation(
                 AdapterType::Snowflake,

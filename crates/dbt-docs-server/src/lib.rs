@@ -45,21 +45,25 @@ pub mod providers;
 mod server;
 pub mod state;
 
-pub use export::{ExportError, ExportOptions, ExportSummary, export_site, index_dir_has_artifacts};
+pub use export::{ExportError, ExportOptions, ExportSummary, export_site, has_artifacts};
 pub use providers::Providers;
 pub use server::run_with_args;
 pub use state::DistInfo;
 
-/// Resolve the directory containing parquet artifacts.
+/// Resolve the versioned information-schema directory the site reads.
 ///
 /// Order of resolution:
-/// 1. `args.target_path` (if provided) → expects `<target_path>/private/index/` to exist.
-/// 2. `./target/private/index/` in the current working directory.
-pub fn resolve_index_dir(args: &DocsServeArgs) -> PathBuf {
-    match &args.target_path {
-        Some(p) => p.join("private").join("index"),
-        None => PathBuf::from("./target/private/index"),
-    }
+/// 1. `args.target_path` (if provided) → `<target_path>/info_schema/v<n>/`.
+/// 2. `./target/info_schema/v<n>/` in the current working directory.
+///
+/// Unlike the index this is not under `target/private/`: it is the site's own data
+/// directory, served over HTTP, so it has to be publishable.
+pub fn resolve_info_schema_dir(args: &DocsServeArgs) -> PathBuf {
+    let target = match &args.target_path {
+        Some(p) => p.clone(),
+        None => PathBuf::from("./target"),
+    };
+    dbt_index_core::versioned_dir(&target.join(dbt_index_core::INFO_SCHEMA_DIR_NAME))
 }
 
 /// Convenience entry that just wraps args in an `Arc`. Mostly useful for

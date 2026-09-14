@@ -2,10 +2,8 @@
 //!
 //!
 
-use std::sync::Arc;
-
 use super::LoadStrategy;
-use crate::{Backend, Driver, driver::AdbcDriver, semaphore::Semaphore};
+use crate::{Backend, Driver, driver::AdbcDriver};
 #[allow(unused_imports)]
 use adbc_core::{
     error::{Error, Result, Status},
@@ -21,9 +19,6 @@ pub struct Builder {
     /// The optionally required [`AdbcVersion`] version of the driver.
     pub adbc_version: Option<AdbcVersion>,
 
-    /// The semaphore for limiting the number of concurrent parallelism.
-    pub semaphore: Option<Arc<Semaphore>>,
-
     /// The strategy for loading the driver.
     pub load_strategy: LoadStrategy,
 }
@@ -33,7 +28,6 @@ impl Builder {
         Self {
             backend,
             adbc_version: None,
-            semaphore: None,
             load_strategy,
         }
     }
@@ -41,12 +35,6 @@ impl Builder {
     /// Require the provided [`AdbcVersion`] when loading the driver.
     pub fn with_adbc_version(&mut self, adbc_version: AdbcVersion) -> &mut Self {
         self.adbc_version = Some(adbc_version);
-        self
-    }
-
-    /// Set the semaphore for limiting the number of concurrent connections.
-    pub fn with_semaphore(&mut self, semaphore: Arc<Semaphore>) -> &mut Self {
-        self.semaphore = Some(semaphore);
         self
     }
 
@@ -61,7 +49,6 @@ impl Builder {
         let adbc_driver = AdbcDriver::try_load_dynamic(
             self.backend,
             self.adbc_version.unwrap_or_default(),
-            self.semaphore.clone(),
             self.load_strategy.clone(),
         )?;
         let driver = Box::new(adbc_driver);

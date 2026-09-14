@@ -74,7 +74,6 @@ function makeProps(
     onSetTheme: vi.fn(),
     filters: makeFilters(),
     onSetFilters: vi.fn(),
-    onUpdateFiltersInPlace: vi.fn(),
     mode: 'assets',
     onSelectMode: vi.fn(),
     searchFacets: null,
@@ -234,48 +233,48 @@ describe('<LocatePane /> — filter mode', () => {
     expect(screen.getByRole('heading', { name: 'Tag' })).toBeInTheDocument();
   });
 
-  it('toggling an unchecked Asset type checkbox adds the value via onUpdateFiltersInPlace', () => {
-    const onUpdateFiltersInPlace = vi.fn();
+  it('toggling an unchecked Asset type checkbox adds the value via onSetFilters', () => {
+    const onSetFilters = vi.fn();
     renderWithProviders(
       <LocatePane
         {...makeProps({
           mode: 'filter',
           filters: makeFilters(),
-          onUpdateFiltersInPlace,
+          onSetFilters,
         })}
       />,
     );
     fireEvent.click(checkboxRow('Models'));
-    expect(onUpdateFiltersInPlace).toHaveBeenCalledWith(
+    expect(onSetFilters).toHaveBeenCalledWith(
       expect.objectContaining({ resourceType: ['model'] }),
     );
   });
 
-  it('toggling a checked Asset type checkbox removes the value via onUpdateFiltersInPlace', () => {
-    const onUpdateFiltersInPlace = vi.fn();
+  it('toggling a checked Asset type checkbox removes the value via onSetFilters', () => {
+    const onSetFilters = vi.fn();
     renderWithProviders(
       <LocatePane
         {...makeProps({
           mode: 'filter',
           filters: makeFilters({ resourceType: ['model'] }),
-          onUpdateFiltersInPlace,
+          onSetFilters,
         })}
       />,
     );
     fireEvent.click(checkboxRow('Models'));
-    expect(onUpdateFiltersInPlace).toHaveBeenCalledWith(
+    expect(onSetFilters).toHaveBeenCalledWith(
       expect.objectContaining({ resourceType: [] }),
     );
   });
 
   it('"Select all" on Asset type selects only the non-zero-count options', () => {
-    const onUpdateFiltersInPlace = vi.fn();
+    const onSetFilters = vi.fn();
     renderWithProviders(
       <LocatePane
         {...makeProps({
           mode: 'filter',
           nodes: NODES, // only 'model' and 'source' have non-zero counts
-          onUpdateFiltersInPlace,
+          onSetFilters,
         })}
       />,
     );
@@ -284,20 +283,20 @@ describe('<LocatePane /> — filter mode', () => {
       .closest('section');
     if (!section) throw new Error('Asset type section not found');
     fireEvent.click(within(section).getByText('Select all'));
-    expect(onUpdateFiltersInPlace).toHaveBeenCalledWith(
+    expect(onSetFilters).toHaveBeenCalledWith(
       expect.objectContaining({ resourceType: ['model', 'source'] }),
     );
   });
 
   it('"Clear all" on Modeling layer sets that key to []', () => {
-    const onUpdateFiltersInPlace = vi.fn();
+    const onSetFilters = vi.fn();
     renderWithProviders(
       <LocatePane
         {...makeProps({
           mode: 'filter',
           searchFacets: SEARCH_FACETS,
           filters: makeFilters({ modelingLayer: ['Staging'] }),
-          onUpdateFiltersInPlace,
+          onSetFilters,
         })}
       />,
     );
@@ -306,7 +305,7 @@ describe('<LocatePane /> — filter mode', () => {
       .closest('section');
     if (!section) throw new Error('Modeling layer section not found');
     fireEvent.click(within(section).getByText('Clear all'));
-    expect(onUpdateFiltersInPlace).toHaveBeenCalledWith(
+    expect(onSetFilters).toHaveBeenCalledWith(
       expect.objectContaining({ modelingLayer: [] }),
     );
   });

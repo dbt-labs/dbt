@@ -4,6 +4,7 @@ use crate::dbt_project_config::{
 };
 use crate::resolve::resolve_utils::{
     build_unrendered_config, err_resource_name_has_spaces, extract_config_map,
+    validate_node_adapter,
 };
 use crate::utils::{
     RelationComponents, extract_resource_config_from_raw_project, get_node_fqn,
@@ -319,8 +320,8 @@ pub async fn resolve_seeds(
 
         validate_delimiter(&properties_config.delimiter)?;
 
-        // See `resolve_models`: the flag overrides the config, and nothing is
-        // validated at parse.
+        // See `resolve_models`: the flag overrides the config.
+        validate_node_adapter(properties_config.adapter, &path)?;
         let resolved_node_adapter = arg.adapter_override.or(properties_config.adapter);
 
         // Calculate original file path first so we can use it for the checksum

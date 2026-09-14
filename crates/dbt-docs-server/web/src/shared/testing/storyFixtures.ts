@@ -702,7 +702,7 @@ export function storyFiles(): FileEntry[] {
   ];
 }
 
-/** The nine-column `dbt.nodes` slice the shell reads at first paint. */
+/** The nine-column resource slice the shell reads at first paint. */
 export function storyNodes(): NodeSummary[] {
   return [
     {

@@ -67,7 +67,7 @@ impl TaskRunnerCtxFactory for DefaultTaskRunnerCtxFactory {
         _schedule: &'a Schedule<String>,
         _worker_id: &'a str,
         _resolver_state: &'a ResolverState,
-        _env: &'a JinjaEnv,
+        _env: &'a Arc<JinjaEnv>,
         _freshness_results: Option<&'a dyn PreTaskRunData>,
         _extended_ctx: &'a dyn ExtendedCtx,
     ) -> Pin<Box<dyn Future<Output = Result<DashMap<String, String>, Box<FsError>>> + Send + 'a>>
@@ -85,7 +85,7 @@ pub struct FeatureStackBuilder {
 impl FeatureStackBuilder {
     pub fn new(tracing: TracingFeature) -> Self {
         Self {
-            name: "dbt-core",
+            name: "dbt-oss",
             distribution: "dbt-oss",
             tracing,
         }

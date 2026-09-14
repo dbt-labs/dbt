@@ -1,5 +1,6 @@
 //! https://github.com/databricks/dbt-databricks/blob/main/dbt/adapters/databricks/relation_configs/query.py
 
+use crate::AdapterType;
 use crate::errors::{AdapterError, AdapterErrorKind, AdapterResult};
 use crate::relation::config_v2::{
     ComponentConfig, ComponentConfigLoader, SimpleComponentConfigImpl, diff, impl_loader,
@@ -16,13 +17,6 @@ pub(crate) const TYPE_NAME: &str = "query";
 /// Component for Databricks query.
 pub type Query = SimpleComponentConfigImpl<String>;
 
-/// `SqlUtils.clean_sql`
-/// https://github.com/databricks/dbt-databricks/blob/main/dbt/adapters/databricks/handle.py
-pub(crate) fn clean_sql(sql: &str) -> String {
-    let trimmed = sql.trim();
-    trimmed.strip_suffix(';').unwrap_or(trimmed).to_string()
-}
-
 // `&String` is required by `ToJinjaFn`
 #[expect(clippy::ptr_arg)]
 fn to_jinja(v: &String) -> Value {
@@ -38,7 +32,7 @@ fn new_component(query: &str) -> Query {
         type_name: TYPE_NAME,
         diff_fn: diff::desired_state,
         to_jinja_fn: to_jinja,
-        value: clean_sql(query),
+        value: dbt_adapter_sql::statements::clean_sql(query, AdapterType::Databricks),
     }
 }
 

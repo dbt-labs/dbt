@@ -72,9 +72,13 @@ fn exempt(spec: &TableSpec, out_col: &str) -> bool {
     {
         return true;
     }
-    // Assembled in `info_schema::mod` after projection, from a source the view
-    // layer reads differently (`fill_last_full_parse_at`). `schema_version` is
-    // *not* exempt: the view inlines the same constant, so the two layers agree.
+    // Both layers now fill this from the generation row's stamp — the view in the
+    // `project` arm, `fill_last_full_parse_at` after projection — but they read a
+    // different copy of it: the Arrow path reads staging, where
+    // `IndexWriter::write_dbt_table` has already overwritten `ingested_at` with
+    // the ingest's clock. Same reason `ingested_at` itself is exempt above.
+    // `schema_version` is *not* exempt: the view inlines the same constant, so the
+    // two layers agree.
     if spec.qualified_name() == "dbt.project" && out_col == "last_full_parse_at" {
         return true;
     }

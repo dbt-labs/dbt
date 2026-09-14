@@ -15,7 +15,10 @@ use dbt_common::{
         metrics::increment_metric,
     },
 };
-use dbt_compilation::{core::DbtLoadedProject, schema_hydration::SchemaHydrationState};
+use dbt_compilation::{
+    core::{AdapterConnectionMode, DbtLoadedProject},
+    schema_hydration::SchemaHydrationState,
+};
 use dbt_dag::{deps_mgmt::reverse, schedule::Schedule};
 use dbt_defer::DeferState;
 use dbt_features::feature_stack::FeatureStack;
@@ -103,6 +106,7 @@ use dbt_telemetry::{ExecutionPhase, NodeType, PhaseExecuted, ShowResult};
 use std::{
     borrow::Cow,
     collections::{BTreeMap, BTreeSet, HashMap, HashSet},
+    num::NonZeroUsize,
     path::PathBuf,
     sync::OnceLock,
 };
@@ -248,6 +252,7 @@ impl<'a> CompilationPhasesExecutor<'a> {
             .with_warn_error_options(dbt_state.warn_error, dbt_state.warn_error_options.clone())
             .build();
         let arg = set_eval_args_threads_and_target(&arg, &dbt_state);
+        set_runtime_max_parallelism(&arg, &dbt_state);
         self.arg = Cow::Owned(arg);
         // --inline warm path: run load_cache normally to detect changed files.
         // On NoFilesChanged, build a synthetic all-unimpacted CacheState so the resolver
@@ -1943,6 +1948,11 @@ impl DbtProjectCompilation {
             token,
             sidecar_client.clone(),
             execute_mode,
+            if arg.infer_schemas_and_typeless {
+                AdapterConnectionMode::Offline
+            } else {
+                AdapterConnectionMode::AllowRemote
+            },
         )?;
         let adapter = if let Some(adapter_override) = arg
             .adapter_override
@@ -1983,6 +1993,9 @@ impl DbtProjectCompilation {
         // Configure jinja env early (no node_resolver clone yet).
         // build_compiler_env is called AFTER Phase 2 defer to avoid Arc refcount issues.
         configure_compile_and_run_jinja_environment(&mut jinja_env, adapter.clone());
+        // Shared from here on: the pre-run hooks and the freshness command hand the
+        // environment to the blocking pool, which needs an owned handle.
+        let jinja_env = Arc::new(jinja_env);
 
         let mut schema_hydration_state = previous_cache_state
             .as_ref()
@@ -2138,7 +2151,7 @@ impl DbtProjectCompilation {
             .did_pre_run(
                 arg,
                 cli,
-                Cow::Borrowed(&jinja_env),
+                Arc::clone(&jinja_env),
                 &resolved_state,
                 &schedule,
                 Arc::clone(&adapter),
@@ -2182,6 +2195,11 @@ impl DbtProjectCompilation {
         token.check_cancellation()?;
 
         if let Command::Core(CoreCommand::RunOperation(..)) = &cli.command {
+            // Shared for this branch only, which ends in a `return`: the inline-SQL
+            // path hands the resolved state to the blocking pool, so it needs an
+            // owned handle. `Nodes` is maps of `Arc`s, so the clone below is shallow.
+            let resolved_state = Arc::new(resolved_state);
+
             // Macro path returns the macro author's `return` value (any `Value`,
             // stringified for display); inline-SQL path returns the Phase 1 rendered
             // SQL string.
@@ -2224,7 +2242,7 @@ impl DbtProjectCompilation {
 
             let run_stats = Stats {
                 stats: vec![stat],
-                nodes: Some(resolved_state.nodes),
+                nodes: Some(resolved_state.nodes.clone()),
                 batch_results: Default::default(),
                 compiled_code: Default::default(),
             };
@@ -2247,7 +2265,6 @@ impl DbtProjectCompilation {
         };
         token.check_cancellation()?;
 
-        let jinja_env = Arc::new(jinja_env);
         typecheck_macros(
             &resolved_state,
             Arc::clone(&jinja_env),
@@ -2609,6 +2626,33 @@ fn set_eval_args_threads_and_target(arg: &EvalArgs, dbt_state: &DbtState) -> Eva
         .build()
 }
 
+/// Reconcile the `dbt_runtime` pool with the `threads` of this invocation.
+///
+/// The pool is built in `main_impl` before any profile is loaded, so it starts
+/// with a default cap. This is called as soon as `threads` is resolved, and
+/// before any node execution or metadata query, so that all jinja and database
+/// work of the invocation runs with the parallelism the user asked for.
+///
+/// `--no-parallel` already pins the pool to a single thread, and `--threads 0`
+/// means "as many as possible"; in both cases the cap set by `main_impl` stands.
+fn set_runtime_max_parallelism(arg: &EvalArgs, dbt_state: &DbtState) {
+    let threads = if arg.no_parallel {
+        1
+    } else {
+        match arg.num_threads {
+            // `--threads 0` asks for as many as possible.
+            Some(0) => dbt_runtime::builder::DEFAULT_MAX_BLOCKING_THREADS,
+            Some(threads) => threads,
+            // select a default based on the adapter type (ensure non-zero).
+            None => {
+                let adapter_type = dbt_state.dbt_profile.default_db_config().adapter_type();
+                adapter_type.default_max_threads().max(1)
+            }
+        }
+    };
+    dbt_runtime::Handle::current().set_max_parallelism(NonZeroUsize::new(threads).unwrap());
+}
+
 fn send_vortex_telemetry_if_possible(
     arg: &EvalArgs,
     dbt_state: &DbtState,
@@ -2663,6 +2707,11 @@ async fn write_catalog(
         token,
         None,
         execute,
+        if arg.infer_schemas_and_typeless {
+            AdapterConnectionMode::Offline
+        } else {
+            AdapterConnectionMode::AllowRemote
+        },
     )?;
     let mut jinja_env = Arc::unwrap_or_clone(jinja_env.clone());
     configure_compile_and_run_jinja_environment(&mut jinja_env, adapter.clone());

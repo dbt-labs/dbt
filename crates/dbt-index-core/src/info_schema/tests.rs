@@ -284,6 +284,106 @@ fn views_sql_covers_every_table() {
     assert!(sql.contains("dbt_rt.run_results_latest"));
 }
 
+/// `dbt_internal.resources` must union exactly the node-backed tables.
+///
+/// Driven off `INFO_SCHEMA` rather than a literal list, so adding a
+/// resource-type table without its branch fails here instead of leaving the
+/// view quietly short of a resource type.
+#[test]
+fn resources_view_unions_every_node_backed_table() {
+    let dir = tempfile::tempdir().unwrap();
+    super::views::write_views_sql(dir.path()).unwrap();
+    let sql = std::fs::read_to_string(dir.path().join("views.sql")).unwrap();
+
+    let (_, view) = sql
+        .split_once("CREATE OR REPLACE VIEW dbt_internal.resources AS")
+        .expect("resources view missing");
+
+    for table in INFO_SCHEMA {
+        // A branch either selects the table straight through or adds the
+        // `resource_type` literal first; either way it ends in `FROM <table>`.
+        let branch = format!("FROM {}\n", table.qualified_name());
+        let node_backed = table.ns == Ns::Dbt
+            && match table.src {
+                Src::Table(name) => name == "nodes",
+                Src::Join { left, .. } => left == "nodes",
+                Src::Own => false,
+            };
+        let present =
+            view.contains(&branch) || view.contains(&format!("FROM {};", table.qualified_name()));
+        assert_eq!(
+            present,
+            node_backed,
+            "{} is {}a branch of dbt_internal.resources but should {}be",
+            table.qualified_name(),
+            if node_backed { "not " } else { "" },
+            if node_backed { "" } else { "not " },
+        );
+    }
+
+    // Every branch past the first is unioned by name, not positionally: the
+    // branches do not share a column set.
+    let branches = view.matches("SELECT *").count();
+    assert_eq!(view.matches("UNION ALL BY NAME").count(), branches - 1);
+}
+
+/// Every branch of `dbt_internal.resources` must produce a `resource_type`.
+///
+/// The column is what every cross-type consumer groups and filters on, and a
+/// branch that left it NULL would be a resource type that counts as none —
+/// which `dbt.data_tests` did, since the table's own spec omits it. A branch
+/// with neither the column nor a single-valued row filter to borrow from cannot
+/// be unioned at all, so that is the failure this pins.
+#[test]
+fn resources_view_supplies_a_resource_type() {
+    use super::spec::Filter;
+
+    let dir = tempfile::tempdir().unwrap();
+    super::views::write_views_sql(dir.path()).unwrap();
+    let sql = std::fs::read_to_string(dir.path().join("views.sql")).unwrap();
+    let (_, view) = sql
+        .split_once("CREATE OR REPLACE VIEW dbt_internal.resources AS")
+        .expect("resources view missing");
+
+    for table in INFO_SCHEMA {
+        let node_backed = table.ns == Ns::Dbt
+            && match table.src {
+                Src::Table(name) => name == "nodes",
+                Src::Join { left, .. } => left == "nodes",
+                Src::Own => false,
+            };
+        if !node_backed {
+            continue;
+        }
+        if table.cols.iter().any(|c| c.out == "resource_type") {
+            continue;
+        }
+        // No column, so the row filter has to name exactly one type, and the
+        // branch has to project it.
+        let Filter::ResourceTypeIn(types) = table.filter else {
+            panic!(
+                "{} has no resource_type column and no row filter to borrow one from",
+                table.qualified_name()
+            );
+        };
+        assert_eq!(
+            types.len(),
+            1,
+            "{} has no resource_type column, so its filter must name exactly one type",
+            table.qualified_name()
+        );
+        assert!(
+            view.contains(&format!(
+                "SELECT *, '{}' AS resource_type FROM {}",
+                types[0],
+                table.qualified_name()
+            )),
+            "{} must project its resource_type as a literal",
+            table.qualified_name()
+        );
+    }
+}
+
 /// Tables removed by the overhaul must not reappear.
 #[test]
 fn removed_tables_are_absent() {
@@ -375,7 +475,7 @@ fn out_columns(dir: &Path, file: &str) -> Vec<String> {
 }
 
 /// Rows of a written output table, as JSON objects.
-fn out_rows(dir: &Path, file: &str) -> Vec<Value> {
+pub(super) fn out_rows(dir: &Path, file: &str) -> Vec<Value> {
     use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
     let path = dir.join(file);
     let f = std::fs::File::open(&path).unwrap();
@@ -573,6 +673,91 @@ fn dag_nodes_spans_the_whole_graph() {
     assert!(
         !ids.contains(&"model.pkg.off"),
         "disabled nodes are not DAG nodes"
+    );
+}
+
+/// `dbt_rt.relations` puts the split catalog back together.
+///
+/// The staging index holds identity in `catalog_tables` and each number as its
+/// own `catalog_stats` row; the published table is one wide, typed row. Also
+/// pins the two edge cases the pivot has to get right: a relation with no stats
+/// keeps its row (that is what answers "is it in the catalog"), and a
+/// `stat_value` that is not a number nulls that one column instead of failing.
+#[test]
+fn relations_pivots_the_catalog_stats() {
+    let staging = tempfile::tempdir().unwrap();
+    let out = tempfile::tempdir().unwrap();
+    let stamp = "2026-08-21T00:00:00Z";
+
+    let table_row = |unique_id: &str, name: &str| {
+        json!({
+            "unique_id": unique_id,
+            "table_type": "BASE TABLE",
+            "database_name": "db",
+            "schema_name": "sch",
+            "table_name": name,
+            "table_owner": "owner",
+            "ingested_at": stamp,
+        })
+    };
+    write_source(
+        staging.path(),
+        "catalog_tables",
+        &[
+            table_row("model.pkg.a", "a"),
+            table_row("model.pkg.bare", "bare"),
+        ],
+    );
+
+    let stat = |unique_id: &str, stat_id: &str, stat_value: &str| {
+        json!({
+            "unique_id": unique_id,
+            "stat_id": stat_id,
+            "stat_label": stat_id,
+            "stat_value": stat_value,
+            "include_in_stats": true,
+            "ingested_at": stamp,
+        })
+    };
+    write_source(
+        staging.path(),
+        "catalog_stats",
+        &[
+            stat("model.pkg.a", "row_count", "42"),
+            stat("model.pkg.a", "bytes", "not a number"),
+            stat("model.pkg.a", "last_modified", "2026-08-20 12:00:00"),
+            // A stat id nothing publishes: left out rather than guessed at.
+            stat("model.pkg.a", "someday", "7"),
+        ],
+    );
+
+    super::project_all(staging.path(), out.path()).unwrap();
+    let rows = out_rows(out.path(), "dbt_rt.relations.parquet");
+    assert_eq!(rows.len(), 2, "one row per catalogued relation");
+
+    let by_id = |id: &str| {
+        rows.iter()
+            .find(|r| r["unique_id"] == id)
+            .unwrap_or_else(|| panic!("{id} missing"))
+            .clone()
+    };
+
+    let a = by_id("model.pkg.a");
+    assert_eq!(a["row_count"], json!(42));
+    assert_eq!(a["table_type"], json!("BASE TABLE"));
+    assert_eq!(a["table_owner"], json!("owner"));
+    assert_eq!(a["table_name"], json!("a"));
+    assert_eq!(a["last_modified"], json!("2026-08-20 12:00:00"));
+    assert!(a["bytes"].is_null(), "an unparseable stat nulls its column");
+
+    let bare = by_id("model.pkg.bare");
+    assert!(bare["row_count"].is_null());
+    assert!(bare["bytes"].is_null());
+    assert!(bare["last_modified"].is_null());
+    assert_eq!(
+        bare["table_name"],
+        json!("bare"),
+        "a relation with no stats keeps its identity row"
     );
 }
 

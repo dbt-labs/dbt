@@ -4612,6 +4612,7 @@ impl AdapterImpl {
         let config_loader = match relation_type {
             RelationType::Table => relation_types::incremental_table::new_loader(),
             RelationType::MaterializedView => relation_types::materialized_view::new_loader(),
+            RelationType::MetricView => relation_types::metric_view::new_loader(),
             RelationType::StreamingTable => relation_types::streaming_table::new_loader(),
             RelationType::View => relation_types::view::new_loader(),
             _ => {
@@ -4638,6 +4639,7 @@ impl AdapterImpl {
         let config_loader = match model.materialized() {
             DbtMaterialization::Incremental => relation_types::incremental_table::new_loader(),
             DbtMaterialization::MaterializedView => relation_types::materialized_view::new_loader(),
+            DbtMaterialization::MetricView => relation_types::metric_view::new_loader(),
             DbtMaterialization::StreamingTable => relation_types::streaming_table::new_loader(),
             DbtMaterialization::View => relation_types::view::new_loader(),
             _ => {
@@ -4803,6 +4805,7 @@ impl AdapterImpl {
             .from_local_config(model)?;
         Ok(tags.to_jinja())
     }
+
     /// Trims surrounding whitespace and strips a single trailing semicolon.
     ///
     /// DatabricksAdapter https://github.com/databricks/dbt-databricks/blob/2f11abb306a400cde32b27891b766bf41a11fb1f/dbt/adapters/databricks/impl.py#L966
@@ -4811,7 +4814,27 @@ impl AdapterImpl {
             self.adapter_type() == Databricks,
             "clean_sql is a Databricks-specific adapter operation"
         );
-        Ok(crate::relation::databricks::config::components::query::clean_sql(sql))
+        Ok(dbt_adapter_sql::statements::clean_sql(
+            sql,
+            self.adapter_type(),
+        ))
+    }
+
+    /// DatabricksAdapter https://github.com/databricks/dbt-databricks/blob/2c3aa9fdddbab30a3c4a660c5e98722e989a592b/dbt/adapters/databricks/impl.py#L1135-L1137
+    pub fn yaml_quote_backtick_values(&self, yaml_body: &str) -> AdapterResult<String> {
+        debug_assert!(
+            self.adapter_type() == Databricks,
+            "yaml_quote_backtick_values is a Databricks-specific adapter operation"
+        );
+        Ok(crate::relation::databricks::metric_view::quote_metric_view_sources(yaml_body))
+    }
+
+    /// Drop the trailing statement terminator from a node body so it can be
+    /// spliced into a wrapping query.
+    pub fn strip_trailing_statement_terminator<'a>(&self, sql: &'a str) -> &'a str {
+        self.engine()
+            .splitter()
+            .strip_trailing_statement_terminator(sql, self.adapter_type())
     }
 
     /// relation_max_name_length
@@ -5202,10 +5225,10 @@ pub(crate) static DEFAULT_BASE_BEHAVIOR_FLAGS: LazyLock<[BehaviorFlag; 4]> = Laz
         BehaviorFlag::new("enable_truthy_nulls_equals_macro", false, None, None, None),
         BehaviorFlag::new(
             "use_catalogs_v2",
-            false,
+            true,
             None,
             Some(
-                "Enable experimental catalogs.yml v2 schema validation. This syntax is under development and may change.",
+                "Validate catalogs.yml against the v2 schema. Set to `false` to keep the deprecated v1 schema.",
             ),
             Some("https://github.com/dbt-labs/dbt-core/discussions/12723"),
         ),

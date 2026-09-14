@@ -317,7 +317,7 @@ export function createFakeDataSource(
         }),
         fetchCapabilities: async (): Promise<Capabilities> => allFalseCapabilities(),
         fetchDistribution: async (): Promise<Distribution> => ({
-          isFusion: false,
+          isProprietary: false,
           isLoggedIn: false,
         }),
         fetchAssetCounts: async (): Promise<AssetCounts> => ({}),

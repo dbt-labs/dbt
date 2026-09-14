@@ -50,9 +50,9 @@ pub struct MicrobatchExecUnit {
     pub is_incremental: bool,
 }
 
-/// Cap on concurrent batches per model, independent of `--threads`/connection
-/// backpressure. Keeps us under Snowflake's non-configurable 20-statement
-/// lock-waiter limit (dbt-core#15987).
+/// Cap on concurrent batches per model, independent of `--threads`. Keeps us
+/// under Snowflake's non-configurable 20-statement lock-waiter limit
+/// (dbt-core#15987).
 const SNOWFLAKE_MAX_CONCURRENT_MICROBATCH_BATCHES: usize = 16;
 
 /// Per-adapter cap on concurrent batches per model, if any.
@@ -75,7 +75,7 @@ fn max_concurrent_microbatch_batches(adapter_type: AdapterType) -> Option<usize>
 ///
 /// TODO(chasewalden): `dbt retry` can be used to re-process only the failed batches.
 ///  Seems like the `retry` subcommand doesn't exist in `fs` though...
-pub fn prepare_microbatch_batches(
+pub async fn prepare_microbatch_batches(
     node: Arc<dyn InternalDbtNodeAttributes>,
     ctx: &TaskRunnerCtx,
     task_result: &TaskResult,
@@ -103,7 +103,8 @@ pub fn prepare_microbatch_batches(
         )
     })?);
 
-    let (batch_builder, start_time, end_time, is_incremental) = resolve_batch_window(model, ctx)?;
+    let (batch_builder, start_time, end_time, is_incremental) =
+        resolve_batch_window(model, ctx).await?;
     let batches = batch_builder.build_batches(start_time, end_time);
 
     if batches.is_empty() {
@@ -189,18 +190,18 @@ fn cap_group_sizes<T: Clone>(groups: Vec<Vec<T>>, max_size: usize) -> Vec<Vec<T>
 /// to its bounds. The run cache folds it into the model-level cache key so
 /// re-running an unchanged window is a whole-model no-op while a different
 /// window executes. Mirrors the dbt-core plugin's `_resolve_microbatch_window`.
-pub fn resolve_microbatch_window(
+pub async fn resolve_microbatch_window(
     model: &DbtModel,
     ctx: &TaskRunnerCtx,
 ) -> FsResult<(DateTime<Utc>, DateTime<Utc>)> {
-    let (_, start_time, end_time, _) = resolve_batch_window(model, ctx)?;
+    let (_, start_time, end_time, _) = resolve_batch_window(model, ctx).await?;
     Ok((start_time, end_time))
 }
 
 /// Compute the `(start, end)` batch window for a microbatch model, clamped to
 /// `--sample`'s bounds if passed. Shared by `prepare_microbatch_batches` and
 /// `resolve_microbatch_window` so the two stay in sync by construction.
-fn resolve_batch_window(
+async fn resolve_batch_window(
     model: &DbtModel,
     ctx: &TaskRunnerCtx,
 ) -> FsResult<(MicrobatchBuilder, DateTime<Utc>, DateTime<Utc>, bool)> {
@@ -217,7 +218,8 @@ fn resolve_batch_window(
         .deprecated_config
         .full_refresh
         .unwrap_or(ctx.inner.arg.full_refresh);
-    let is_incremental = is_incremental(model, full_refresh, model.node_adapter(), ctx.env.clone());
+    let is_incremental =
+        is_incremental(model, full_refresh, model.node_adapter(), ctx.env.clone()).await;
 
     let end_time = batch_builder.build_end_time(ctx.inner.arg.event_time_end.clone())?;
     let start_time = batch_builder.build_start_time(

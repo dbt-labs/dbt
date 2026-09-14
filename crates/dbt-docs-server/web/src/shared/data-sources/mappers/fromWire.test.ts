@@ -127,18 +127,20 @@ describe('fromColumnLineageResponse', () => {
 });
 
 describe('fromDistribution', () => {
-  test('maps name → isFusion and is_logged_in → isLoggedIn', () => {
+  test('maps name → isProprietary and is_logged_in → isLoggedIn', () => {
     expect(
       fromDistribution({ name: 'dbt', version: '2.0.0', is_logged_in: true }),
     ).toEqual({
-      isFusion: true,
+      isProprietary: true,
       isLoggedIn: true,
       version: '2.0.0',
     });
   });
 
-  test('name "oss" → isFusion false', () => {
-    expect(fromDistribution({ name: 'oss', is_logged_in: false }).isFusion).toBe(false);
+  test('name "oss" → isProprietary false', () => {
+    expect(fromDistribution({ name: 'oss', is_logged_in: false }).isProprietary).toBe(
+      false,
+    );
   });
 });
 

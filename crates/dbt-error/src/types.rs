@@ -926,7 +926,7 @@ pub enum WrappedError {
     Fmt(fmt::Error),
     Generic(String),
     Cli(Box<FsError>),
-    // RemoteExecution(reqwest::Error),
+    Reqwest(reqwest::Error),
     ExitCode(i32),
 }
 
@@ -949,7 +949,15 @@ impl Display for WrappedError {
             WrappedError::Parquet(e) => write!(f, "{e}"),
             // WrappedError::ObjectStore(e) => write!(f, "{}", e),
             WrappedError::NameError(e) => write!(f, "{e}"),
-            // WrappedError::RemoteExecution(e) => write!(f, "{}", e),
+            WrappedError::Reqwest(e) => {
+                write!(f, "{e}")?;
+                let mut source = Error::source(e);
+                while let Some(err) = source {
+                    write!(f, ": {err}")?;
+                    source = err.source();
+                }
+                Ok(())
+            }
             WrappedError::Fmt(e) => write!(f, "{e}"),
             WrappedError::ExitCode(code) => write!(f, "exit code {code}"),
         }
@@ -961,6 +969,7 @@ impl Error for WrappedError {
         match self {
             WrappedError::Datafusion(e) => Some(e),
             WrappedError::Arrow(e) => Some(e),
+            WrappedError::Reqwest(e) => Some(e),
             _ => None,
         }
     }
@@ -1224,13 +1233,6 @@ impl From<serde_json::Error> for WrappedError {
 //             e => FsError::new(ErrorCode::JinjaError, "Preprocessor error")
 //                 .with_cause(WrappedError::Preprocessor(e)),
 //         }
-//     }
-// }
-
-// impl From<reqwest::Error> for FsError {
-//     fn from(e: reqwest::Error) -> Self {
-//         FsError::new(ErrorCode::RemoteError, "Remote execution error")
-//             .with_cause(WrappedError::RemoteExecution(e))
 //     }
 // }
 
@@ -1682,6 +1684,36 @@ mod tests {
         assert_eq!(
             location.file.as_ref().as_path(),
             Path::new("run/test/models/test_fail.sql")
+        );
+    }
+
+    #[tokio::test]
+    async fn reqwest_wrapped_error_display_includes_source_chain() {
+        // Bind then immediately drop a listener to obtain a local port that is
+        // guaranteed to refuse connections, so the request fails fast and
+        // deterministically without depending on external network conditions.
+        let port = {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind should succeed");
+            listener
+                .local_addr()
+                .expect("local_addr should succeed")
+                .port()
+        };
+
+        let client = reqwest::Client::new();
+
+        let reqwest_err = client
+            .get(format!("http://127.0.0.1:{port}"))
+            .send()
+            .await
+            .expect_err("request to closed local port should fail");
+
+        let wrapped = WrappedError::Reqwest(reqwest_err);
+        let rendered = wrapped.to_string();
+
+        assert!(
+            rendered.contains(": "),
+            "expected rendered error to include at least one appended source, got: {rendered}"
         );
     }
 }

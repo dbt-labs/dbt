@@ -301,7 +301,7 @@ mod tests {
     /// already on it. The index is Parquet, and the extended driver is described as carrying "internal
     /// extensions" — so the question that matters is whether *vanilla* DuckDB can read Parquet at all.
     /// Writing then reading a Parquet file through the adapter settles it.
-    #[test]
+    #[dbt_runtime::worker_test]
     fn vanilla_duckdb_reads_parquet() {
         let tmp = tempfile::TempDir::new().unwrap();
         let parquet = tmp.path().join("t.parquet");
@@ -345,7 +345,7 @@ mod tests {
     }
 
     /// The load-bearing one: does a view registered in one call survive into the next?
-    #[test]
+    #[dbt_runtime::worker_test]
     fn views_survive_across_adapter_calls() {
         let adapter = index_adapter();
 
@@ -392,7 +392,7 @@ mod tests {
     /// Jinja function, but that only governs what the function *returns*; the SQL it renders
     /// into runs against this adapter. So `dbt_internal` has to be absent from the adapter
     /// itself, or `--inline "... from dbt_internal.<t> ..."` walks straight past the gate.
-    #[test]
+    #[dbt_runtime::worker_test]
     fn dbt_internal_is_not_reachable_from_the_information_schema_adapter() {
         let tmp = tempfile::TempDir::new().unwrap();
         write_parquet(tmp.path(), "dbt.models.parquet");
@@ -415,7 +415,7 @@ mod tests {
     /// One unreadable file must not take down the view the user actually asked for: an
     /// interrupted run can leave a truncated `dbt_rt.run_results.parquet` behind, and
     /// `dbt show --info models` does not read it.
-    #[test]
+    #[dbt_runtime::worker_test]
     fn an_unreadable_parquet_does_not_take_down_the_other_views() {
         let tmp = tempfile::TempDir::new().unwrap();
         write_parquet(tmp.path(), "dbt.models.parquet");

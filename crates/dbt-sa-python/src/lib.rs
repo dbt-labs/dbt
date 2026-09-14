@@ -13,7 +13,7 @@ use std::sync::Arc;
 
 /// This distribution's CLI surface.
 fn dbt_core_cli_parser() -> CliParser {
-    DefaultCliParserFactory.create("dbt-core", env!("CARGO_PKG_VERSION"))
+    DefaultCliParserFactory.create("dbt-oss", env!("CARGO_PKG_VERSION"))
 }
 
 /// This distribution's runtime configuration. Takes the invocation's tracing

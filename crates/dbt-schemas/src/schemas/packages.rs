@@ -33,6 +33,35 @@ pub enum DbtPackageEntry {
     Tarball(TarballPackage),
 }
 
+impl DbtPackageEntry {
+    /// Key identifying this entry, matching [`DbtPackageLock::entry_name`].
+    ///
+    /// Lets a lock entry be traced back to the `packages.yml` line that asked
+    /// for it — the lock itself is sorted by package name, so declaration order
+    /// is only recoverable this way.
+    pub fn entry_name(&self) -> String {
+        match self {
+            DbtPackageEntry::Hub(package) => package.package.clone(),
+            DbtPackageEntry::Git(package) => {
+                let mut key = package.git.to_string();
+                if let Some(subdirectory) = &package.subdirectory {
+                    key.push_str(&format!("#{subdirectory}"));
+                }
+                key
+            }
+            DbtPackageEntry::Local(package) => package.local.to_string_lossy().to_string(),
+            DbtPackageEntry::Private(package) => {
+                let mut key = package.private.to_string();
+                if let Some(subdirectory) = &package.subdirectory {
+                    key.push_str(&format!("#{subdirectory}"));
+                }
+                key
+            }
+            DbtPackageEntry::Tarball(package) => package.tarball.to_string(),
+        }
+    }
+}
+
 impl From<DbtPackageLock> for DbtPackageEntry {
     fn from(dbt_package_lock: DbtPackageLock) -> Self {
         match dbt_package_lock {
@@ -280,6 +309,18 @@ impl DbtPackageLock {
             DbtPackageLock::Tarball(tarball_package_lock) => {
                 tarball_package_lock.tarball.to_string()
             }
+        }
+    }
+
+    /// The pinned version or revision, when the package source has one.
+    ///
+    /// Local and tarball packages carry no version, so they return `None`.
+    pub fn version_string(&self) -> Option<String> {
+        match self {
+            DbtPackageLock::Hub(package) => Some(package.version.to_string()),
+            DbtPackageLock::Git(package) => Some(package.revision.clone()),
+            DbtPackageLock::Private(package) => Some(package.revision.clone()),
+            DbtPackageLock::Local(_) | DbtPackageLock::Tarball(_) => None,
         }
     }
 

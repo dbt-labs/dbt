@@ -89,6 +89,7 @@ impl NodeMaterialization {
             Self::DynamicTable => "dynamic_table",
             Self::InteractiveTable => "interactive_table",
             Self::Function => "function",
+            Self::MetricView => "metric_view",
             Self::Custom => "custom",
         }
     }

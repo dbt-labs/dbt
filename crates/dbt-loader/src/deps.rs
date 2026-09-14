@@ -123,6 +123,7 @@ pub async fn execute_deps_command(
         require_hub_verified_downloads,
         private_package_resolver,
         cloud_config,
+        load_args.ai_provider.as_deref(),
     )
     .await?;
 

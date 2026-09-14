@@ -14,7 +14,7 @@ use dbt_adbc::{
     Backend, database,
     redshift::{
         AWS_ACCESS_KEY_ID, AWS_PROFILE, AWS_REGION, AWS_SECRET_ACCESS_KEY, CLUSTER_IDENTIFIER,
-        CLUSTER_TYPE, WORK_GROUP_NAME,
+        CLUSTER_TYPE, CONNECT_TIMEOUT, WORK_GROUP_NAME,
         cluster_type::{REDSHIFT, SERVERLESS},
     },
 };
@@ -369,10 +369,19 @@ fn parse_auth<'a>(
 }
 
 fn apply_connection_args(
-    _config: &AdapterConfig,
-    builder: DatabaseBuilder,
+    config: &AdapterConfig,
+    mut builder: DatabaseBuilder,
     _warning_printer: &dyn AuthWarningPrinter,
 ) -> Result<DatabaseBuilder, AuthError> {
+    if let Some(secs) = config.get("connect_timeout").and_then(|v| v.as_i64()) {
+        if secs <= 0 {
+            return Err(AuthError::config(format!(
+                "connect_timeout must be a positive number of seconds, got {secs}"
+            )));
+        }
+        builder.with_named_option(CONNECT_TIMEOUT, format!("{secs}s"))?;
+    }
+
     Ok(builder)
 }
 

@@ -12,10 +12,41 @@ pub trait StmtSplitter: Send + Sync + Debug {
     /// The implementation should:
     /// - Split the SQL into individual statements based on delimiters
     /// - Handle dialect-specific syntax correctly
+    /// - Return subslices of `sql` with the delimiters and the surrounding
+    ///   whitespace of the input removed.
     fn split<'i>(&self, sql: &'i str, adapter_type: AdapterType) -> Vec<&'i str>;
 
     /// Determine if a SQL string is either empty or only contains a comment
     fn is_empty(&self, sql: &str, adapter_type: AdapterType) -> bool;
+
+    /// Drop the trailing statement terminator from a rendered node body so it
+    /// can be spliced into a wrapping query.
+    ///
+    /// `sql` is returned untouched unless it holds exactly one non-empty
+    /// statement: multi-statement bodies keep their terminators, and so do
+    /// bodies that are entirely empty or comment-only.
+    fn strip_trailing_statement_terminator<'i>(
+        &self,
+        sql: &'i str,
+        adapter_type: AdapterType,
+    ) -> &'i str {
+        // Skip splitting, which dominates the cost of this call.
+        if !sql.contains(';') {
+            return sql;
+        }
+
+        let mut statements = self
+            .split(sql, adapter_type)
+            .into_iter()
+            .filter(|stmt| !self.is_empty(stmt, adapter_type));
+
+        match (statements.next(), statements.next()) {
+            // Rewrite only when a terminator was actually dropped, so a body
+            // without one keeps its original whitespace byte for byte.
+            (Some(only), None) if only != sql.trim() => only,
+            _ => sql,
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -96,6 +127,10 @@ mod tests {
 
     fn is_empty(sql: &str, adapter_type: AdapterType) -> bool {
         DefaultStmtSplitter.is_empty(sql, adapter_type)
+    }
+
+    fn strip(sql: &str, adapter_type: AdapterType) -> &str {
+        DefaultStmtSplitter.strip_trailing_statement_terminator(sql, adapter_type)
     }
 
     // ---- split: ported from dbt_sql_utils::splitter::tests ----
@@ -259,6 +294,70 @@ mod tests {
             assert!(!is_empty("-- comment\nselect 1", *d));
             assert!(!is_empty("select 1; select 2", *d));
             assert!(!is_empty("/* comment */\nselect 1\n-- trailing", *d));
+        }
+    }
+
+    // ---- strip_trailing_statement_terminator ----
+
+    #[test]
+    fn test_strip_terminator() {
+        for d in REPRESENTATIVE_DIALECTS {
+            assert_eq!(strip("select 1;", *d), "select 1");
+            assert_eq!(strip("select 1;;", *d), "select 1");
+            assert_eq!(strip("select 1 ;  ", *d), "select 1 ");
+            assert_eq!(strip("select 1;\n", *d), "select 1");
+        }
+    }
+
+    #[test]
+    fn test_strip_terminator_followed_by_comments() {
+        for d in REPRESENTATIVE_DIALECTS {
+            assert_eq!(strip("select 1; -- trailing", *d), "select 1");
+            assert_eq!(strip("select 1;\n-- trailing\n", *d), "select 1");
+            assert_eq!(strip("select 1; /* trailing */", *d), "select 1");
+            // A leading empty statement is dropped along with the terminator.
+            assert_eq!(strip("; select 1", *d), " select 1");
+        }
+    }
+
+    #[test]
+    fn test_strip_terminator_keeps_body_comments() {
+        for d in REPRESENTATIVE_DIALECTS {
+            assert_eq!(strip("-- header\nselect 1;", *d), "-- header\nselect 1");
+            assert_eq!(
+                strip("/* before */ select 1 /* after */;", *d),
+                "/* before */ select 1 /* after */"
+            );
+        }
+    }
+
+    #[test]
+    fn test_strip_terminator_absent_is_byte_identical() {
+        for d in REPRESENTATIVE_DIALECTS {
+            // Whitespace is preserved verbatim when there is nothing to drop.
+            assert_eq!(strip("\n  select 1\n", *d), "\n  select 1\n");
+            assert_eq!(strip("select 1", *d), "select 1");
+            assert_eq!(strip("", *d), "");
+            // A `;` that is not a statement terminator must not trigger a rewrite.
+            assert_eq!(strip("select 'a;b'\n", *d), "select 'a;b'\n");
+            assert_eq!(strip("select 1 -- a ; b\n", *d), "select 1 -- a ; b\n");
+        }
+    }
+
+    #[test]
+    fn test_strip_terminator_leaves_multi_statement_bodies() {
+        for d in REPRESENTATIVE_DIALECTS {
+            assert_eq!(strip("select 1; select 2;", *d), "select 1; select 2;");
+            assert_eq!(strip("select 1; select 2", *d), "select 1; select 2");
+        }
+    }
+
+    #[test]
+    fn test_strip_terminator_leaves_bodies_without_statements() {
+        for d in REPRESENTATIVE_DIALECTS {
+            assert_eq!(strip(";", *d), ";");
+            assert_eq!(strip(";;;", *d), ";;;");
+            assert_eq!(strip("-- just a comment;", *d), "-- just a comment;");
         }
     }
 }

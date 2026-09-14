@@ -162,7 +162,6 @@ pub fn build_profile_target(
                 compute_region: None,
                 dataproc_batch: None,
                 dataproc_cluster_name: None,
-                dataproc_region: None,
                 gcs_bucket: None,
                 submission_method: None,
                 job_creation_timeout_seconds: None,

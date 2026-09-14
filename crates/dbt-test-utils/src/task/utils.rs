@@ -5,10 +5,12 @@ use crate::task::task_seq::FeatureStackFactory;
 use dbt_clap_core::{Cli, CliParser};
 use dbt_common::FsError;
 use dbt_common::cancellation::CancellationToken;
-use dbt_common::constants::DBT_FUSION;
+use dbt_common::constants::DBT_BRAND_NAME;
 use dbt_common::tracing::FsTraceConfigBuilder;
 use dbt_main::ctrl_c::run_future_with_ctrlc_support;
+use futures::FutureExt as _;
 use std::fmt::Debug;
+use std::panic::AssertUnwindSafe;
 use std::pin::Pin;
 use std::{
     fs::File,
@@ -67,17 +69,12 @@ static INLINE_SQL_PATTERN: Lazy<Regex> =
 #[cfg(not(windows))]
 static TEMP_ROOT_PATTERN: Lazy<Regex> =
     Lazy::new(|| Regex::new(r"(?:/private)?/var/folders/[^/]+/[^/]+/T/").unwrap());
-#[cfg(windows)]
-static TEMP_ROOT_PATTERN: Lazy<Regex> = Lazy::new(|| {
+#[cfg(any(windows, test))]
+static WINDOWS_TEMP_ROOT_PATTERN: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
-        r"(?i)[A-Z]:\\Users\\[^\\]+\\AppData\\Local\\Temp\\|[A-Z]:\\Windows\\Temp\\|[A-Z]:\\Temp\\",
+        r"(?i)[A-Z]:\\+Users\\+[^\\]+\\+AppData\\+Local\\+Temp\\+|[A-Z]:\\+Windows\\+Temp\\+|[A-Z]:\\+Temp\\+",
     )
     .unwrap()
-});
-#[cfg(windows)]
-static TEMP_ROOT_PATTERN_ESCAPED: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r"(?i)[A-Z]:\\\\Users\\\\[^\\\\]+\\\\AppData\\\\Local\\\\Temp\\\\|[A-Z]:\\\\Windows\\\\Temp\\\\|[A-Z]:\\\\Temp\\\\")
-        .unwrap()
 });
 static MKTEMP_PATTERN: Lazy<Regex> = Lazy::new(|| Regex::new(r"/\.tmp[0-9A-Za-z_-]+").unwrap());
 // Matches OS thread IDs in Rust panic messages: "thread 'name' (12345678) panicked"
@@ -85,6 +82,9 @@ static THREAD_ID_PATTERN: Lazy<Regex> =
     Lazy::new(|| Regex::new(r"(thread '[^']+') \(\d+\) (panicked)").unwrap());
 // Matches absolute replay recording paths in error messages: "(path: /abs/path)"
 static REPLAY_PATH_PATTERN: Lazy<Regex> = Lazy::new(|| Regex::new(r"\(path: [^)]+\)").unwrap());
+// Matches the platform-specific text `std::io::Error`'s `Display` embeds
+static OS_ERROR_PATTERN: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"[A-Za-z][A-Za-z0-9 .,'/-]*\(os error \d+\)").unwrap());
 
 /// Copies a directory and its contents, excluding .gitignored files.
 pub fn copy_dir_non_ignored(src: impl AsRef<Path>, dst: impl AsRef<Path>) -> FsResult<()> {
@@ -203,11 +203,7 @@ pub fn check_set_user_env_var() {
 pub fn maybe_normalize_tmp_paths(output: String) -> String {
     #[cfg(windows)]
     {
-        let normalized = TEMP_ROOT_PATTERN_ESCAPED.replace_all(&output, "/tmp/");
-        let normalized = TEMP_ROOT_PATTERN.replace_all(&normalized, "/tmp/");
-        MKTEMP_PATTERN
-            .replace_all(&normalized, "/.tmpXXXXXX")
-            .to_string()
+        normalize_windows_tmp_paths(output)
     }
     #[cfg(not(windows))]
     {
@@ -216,6 +212,14 @@ pub fn maybe_normalize_tmp_paths(output: String) -> String {
             .replace_all(&normalized, "/.tmpXXXXXX")
             .to_string()
     }
+}
+
+#[cfg(any(windows, test))]
+pub(super) fn normalize_windows_tmp_paths(output: String) -> String {
+    let normalized = WINDOWS_TEMP_ROOT_PATTERN.replace_all(&output, "/tmp/");
+    MKTEMP_PATTERN
+        .replace_all(&normalized, "/.tmpXXXXXX")
+        .to_string()
 }
 
 /// On Windows, this normalizes forward/backward slashes to '|' so as to ignore
@@ -286,9 +290,9 @@ pub fn maybe_normalize_time(output: String) -> String {
 }
 
 /// Strip the version number out of the startup version banner, whose brand name
-/// varies per binary (`dbt-fusion`, `dbt-core`, `dbt-repl`).
+/// varies per binary (`dbt`, `dbt-oss`, `dbt-repl`).
 pub fn normalize_version(output: String) -> String {
-    const BRANDS: [&str; 3] = ["dbt-fusion", "dbt-core", "dbt-repl"];
+    const BRANDS: [&str; 3] = ["dbt", "dbt-oss", "dbt-repl"];
 
     BRANDS.iter().fold(output, |acc, brand| {
         acc.replace(
@@ -334,6 +338,14 @@ pub fn normalize_node_index(output: String) -> String {
 pub fn normalize_replay_paths(output: String) -> String {
     REPLAY_PATH_PATTERN
         .replace_all(&output, "(path: <path>)")
+        .to_string()
+}
+
+/// Strips the platform-specific message text (and error code) for errors
+/// that wrap a raw IO failure.
+pub fn normalize_os_error_messages(output: String) -> String {
+    OS_ERROR_PATTERN
+        .replace_all(&output, "<os error>")
         .to_string()
 }
 
@@ -431,13 +443,14 @@ where
     // this helper does not need a `CliParser`.
     let warn_error_options = Some(cli.common_args.get_cli_warn_error_options());
     let fail_fast_flag = cli.common_args.fail_fast;
-    let trace_config = FsTraceConfigBuilder::from_io_args("dbt-tests", DBT_FUSION, &arg.io)
+    let trace_config = FsTraceConfigBuilder::from_io_args("dbt-tests", DBT_BRAND_NAME, &arg.io)
         .with_command(arg.command)
         .with_project_dir(Some(&project_dir))
         .with_target_path(Some(&target_dir))
         .with_query_log_enabled(true) // Always enable query log for now
         .with_warn_error_options(warn_error_options.as_ref().cloned().unwrap_or_default())
         .with_skip_fusion_only_upgrades(cli.common_args.skip_fusion_only_upgrades())
+        .with_quiet(cli.common_args.get_quiet())
         .build();
     let tracing_config_provider = trace_config.create_config_provider();
     let (middlewares, consumer_layers, mut shutdown_items) =
@@ -458,10 +471,32 @@ where
     let future = Box::pin(execute_fs(arg, cli, feature_stack, token));
     Box::pin(async move {
         // Redirect stdout and stderr for the duration of the future.
-        let _stdout = with_redirected_stdout(stdout_file);
-        let _stderr = with_redirected_stderr(stderr_file);
+        let stdout_guard = with_redirected_stdout(stdout_file);
+        let stderr_guard = with_redirected_stderr(stderr_file);
 
-        let result = run_future_with_ctrlc_support(cst, future, fail_fast, fail_fast_flag).await;
+        let result = AssertUnwindSafe(run_future_with_ctrlc_support(
+            cst,
+            future,
+            fail_fast,
+            fail_fast_flag,
+        ))
+        .catch_unwind()
+        .await;
+        let result = match result {
+            Ok(result) => result,
+            Err(payload) => {
+                // The panic hook runs *before* the unwind drops these guards,
+                // so its report went into the redirected file, and on an
+                // unwind nobody reads that file back -- the test reported a
+                // bare `FAILED` with no reason at all. Restore the real
+                // descriptors and re-state the message, which is the half of
+                // the report worth reading.
+                drop(stderr_guard);
+                drop(stdout_guard);
+                report_panic_message(payload.as_ref());
+                std::panic::resume_unwind(payload);
+            }
+        };
 
         let shutdown_errors: Vec<FsError> = shutdown_items
             .iter_mut()
@@ -481,6 +516,45 @@ where
             _ => unexpected_err!("Failed to shutdown telemetry"),
         }
     })
+}
+
+/// Re-states a panicking command's message on the real stderr, so the test
+/// failure carries a reason.
+///
+/// The captured stderr file cannot be read back for this: it is opened
+/// write-only, and its path does not reach here. The payload does, and for a
+/// `panic!("{..}")` it is the whole message. Anything the hook wrote --
+/// notably a backtrace -- stays in the command's captured stderr.
+///
+/// Call only after the redirection guards are dropped; before that this would
+/// just append to the same file. And call it as `report_panic_message(
+/// payload.as_ref())`: `&payload` coerces the *box* into the trait object, so
+/// every downcast below then fails and the message is lost again.
+fn report_panic_message(payload: &(dyn std::any::Any + Send)) {
+    use std::io::Write as _;
+
+    let message = payload
+        .downcast_ref::<&str>()
+        .map(|s| (*s).to_string())
+        .or_else(|| payload.downcast_ref::<String>().cloned());
+    let mut stderr = std::io::stderr();
+    match message {
+        Some(message) => {
+            let _ = writeln!(
+                stderr,
+                "\n---- the command panicked while its output was redirected ----\n\
+                 {message}\n\
+                 ---- end panic message; a backtrace, if any, is in the command's \
+                 captured stderr ----"
+            );
+        }
+        None => {
+            let _ = writeln!(
+                stderr,
+                "\n---- the command panicked with a non-string payload ----"
+            );
+        }
+    }
 }
 
 /// The purpose of this guard is two fold:

@@ -407,7 +407,7 @@ export function storyDataSource(
     fetchColumnLineage: async () => ({ kind: 'ok', graph: storyColumnLineage() }),
     fetchCapabilities: async () => storyCapabilities(),
     fetchDistribution: async () => ({
-      isFusion: true,
+      isProprietary: true,
       isLoggedIn: true,
       version: '2.0.0',
     }),

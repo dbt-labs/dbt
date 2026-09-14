@@ -325,7 +325,7 @@ export interface RestCapabilities {
 }
 
 /** `GET /api/v1/distribution` — build identity, not feature capability.
- *  `name` is the build flavor (`"oss"` = dbt Core, anything else = Fusion). */
+ *  `name` is the build flavor (`"oss"` = dbt Core, anything else = dbt v2). */
 export interface RestDistribution {
   name: string;
   version?: string;
@@ -344,15 +344,15 @@ export interface RestProject {
   git_is_dirty?: boolean | null;
 }
 
-/** One row of `dbt.docs` — the winning `__overview__` block. */
+/** One row of `dbt.docs_blocks` — the winning `__overview__` block. */
 export interface RestProjectOverview {
   unique_id: string;
   package_name: string | null;
   block_contents: string;
 }
 
-/** One row of `GET /api/v1/files`. `patch_path` is populated only for nodes
- *  and macros. */
+/** One file-bearing resource. `patch_path` — `properties_yml_file_path` in the
+ *  information schema — is populated only for resources and macros. */
 export interface RestFileEntry {
   unique_id: string;
   name: string;
@@ -1234,7 +1234,7 @@ export function fromNodeCounts(raw: RestNodeCounts): AssetCounts {
 
 export function fromDistribution(d: RestDistribution): Distribution {
   return {
-    isFusion: d.name !== 'oss',
+    isProprietary: d.name !== 'oss',
     isLoggedIn: d.is_logged_in,
     version: d.version,
   };

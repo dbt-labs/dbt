@@ -16,6 +16,7 @@ workspace = true
 blake3 = { workspace = true }
 chrono = { workspace = true }
 chrono-tz = { workspace = true }
+datafusion-common = { workspace = true }
 dbt-adapter-core = { workspace = true }
 dbt-common = { workspace = true }
 dbt-frontend-common = { workspace = true }

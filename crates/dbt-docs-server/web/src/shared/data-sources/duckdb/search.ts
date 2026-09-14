@@ -20,12 +20,11 @@
  * window a long description around the match, and SQL is a poor place for that.
  *
  * Not carried over: the three "view might be missing" variants (`full`,
- * `no_freshness`, `no_rr`) the handler probed in order — `dbt.source_freshness` and
- * `dbt_rt.run_results` can still be absent, but the engine declares an empty relation
- * for each (`EMPTY_RELATION_DDL`), which both `LEFT JOIN`s below read as nulls the
- * same way the `full` variant did. Also not carried over: the N+1 query the handler
- * issued per
- * column-matched row to find *which* column matched. That is one join here.
+ * `no_freshness`, `no_rr`) the handler probed in order. The information schema
+ * writes every table even at zero rows, so both `LEFT JOIN`s below read as nulls
+ * the same way the `full` variant did, with nothing to probe. Also not carried
+ * over: the N+1 query the handler issued per column-matched row to find *which*
+ * column matched. That is one join here.
  */
 
 import type { ResourceType } from '../../typings/domain/asset';
@@ -55,24 +54,28 @@ export function tokenize(query: string): string[] {
   return query.trim().split(/\s+/).filter(Boolean);
 }
 
-/** The fifteen columns every branch of the union projects. */
+/**
+ * The fifteen columns every branch of the union projects.
+ *
+ * Reads `dbt_internal.resources`, the one surface here that genuinely spans
+ * resource types — the alternative is a seven-way union of the typed tables, which
+ * would read the same artifacts and restate the projection seven times.
+ *
+ * `unit_test` is not among {@link NODE_TYPES} and has its own branch, so the
+ * `test_type` case only ever needs to recognize `test`.
+ */
 const NODES_BRANCH = `
 SELECT n.unique_id, n.name, n.resource_type, n.package_name,
        n.fqn, n.tags, n.description,
-       n.materialized, n.access_level, n.source_name,
+       n.materialized, n.access AS access_level, n.source_name,
        sf.unique_id IS NOT NULL AS freshness_checked,
-       CASE WHEN n.resource_type = 'test' THEN 'test'
-            WHEN n.resource_type = 'unit_test' THEN 'unit_test'
-            ELSE NULL END AS test_type,
+       CASE WHEN n.resource_type = 'test' THEN 'test' ELSE NULL END AS test_type,
        NULL::VARCHAR AS exposure_type,
-       rr.executed_at,
+       CAST(rr.created_at AS VARCHAR) AS executed_at,
        n.original_file_path
-FROM dbt.nodes n
-LEFT JOIN dbt.source_freshness sf ON sf.unique_id = n.unique_id
-LEFT JOIN (
-  SELECT unique_id, CAST(MAX(created_at) AS VARCHAR) AS executed_at
-  FROM dbt_rt.run_results GROUP BY unique_id
-) rr ON rr.unique_id = n.unique_id
+FROM dbt_internal.resources n
+LEFT JOIN dbt_rt.freshness sf ON sf.unique_id = n.unique_id
+LEFT JOIN dbt_rt.run_results_latest rr ON rr.unique_id = n.unique_id
 WHERE n.resource_type IN (${NODE_TYPES.map(sqlStr).join(', ')})`;
 
 /** One branch for a type with its own artifact; the padding keeps the shape. */
@@ -134,10 +137,10 @@ const BRANCHES: Partial<Record<ResourceType, string>> = {
 
 /** Artifacts the union reads. Every branch is registered whether filtered or not. */
 export const SEARCH_TABLES = [
-  'dbt.nodes',
+  'dbt_internal.resources',
   'dbt.node_columns',
-  'dbt.source_freshness',
-  'dbt_rt.run_results',
+  'dbt_rt.freshness',
+  'dbt_rt.run_results_latest',
   'dbt.exposures',
   'dbt.macros',
   'dbt.metrics',
@@ -185,7 +188,7 @@ function tokenLegs(token: string): string {
   SELECT unique_id, 'name' AS matched_field, 1 AS priority FROM base WHERE ${like('name')}
   UNION ALL
   SELECT b.unique_id, 'column', 2 FROM base b
-    JOIN dbt.node_columns c ON c.unique_id = b.unique_id
+    JOIN dbt.node_columns c ON c.node_unique_id = b.unique_id
     WHERE ${like('c.column_name')}
   UNION ALL
   SELECT unique_id, 'tag', 3 FROM base
@@ -243,16 +246,14 @@ field_matches AS (
  * weights type more heavily and consequently cannot guarantee an exact match ranks
  * first; for docs on a stateless run the typed name is the stronger signal.
  */
-function rankingKey(query: string): string {
-  const exact = `CASE WHEN lower(b.name) = lower(${sqlStr(query)}) THEN '0' ELSE '1' END`;
-  const prefix = `CASE WHEN lower(b.name) LIKE lower('${escapeIlike(query)}') || '%' ESCAPE '\\' THEN '0' ELSE '1' END`;
-  const resource = `CASE b.resource_type
+const RESOURCE_TIER_SQL = `CASE b.resource_type
     WHEN 'model' THEN '0' WHEN 'source' THEN '1' WHEN 'metric' THEN '2'
     WHEN 'exposure' THEN '3' WHEN 'snapshot' THEN '4' WHEN 'semantic_model' THEN '5'
     WHEN 'seed' THEN '6' WHEN 'saved_query' THEN '7' WHEN 'test' THEN '8'
     ELSE '9' END`;
-  // Marts first, unclassified last — the same path rules the model list uses.
-  const layer = `CASE
+
+// Marts first, unclassified last — the same path rules the model list uses.
+const LAYER_TIER_SQL = `CASE
     WHEN lower(b.original_file_path) LIKE '%/marts/%'
       OR lower(b.original_file_path) LIKE '%/dim_%'
       OR lower(b.original_file_path) LIKE '%/fct_%'
@@ -265,11 +266,28 @@ function rankingKey(query: string): string {
       OR lower(b.original_file_path) LIKE 'staging/%' THEN '2'
     ELSE '3' END`;
 
-  const tiers = [exact, prefix, 'w.match_priority', resource, layer]
+function rankingKey(query: string): string {
+  const exact = `CASE WHEN lower(b.name) = lower(${sqlStr(query)}) THEN '0' ELSE '1' END`;
+  const prefix = `CASE WHEN lower(b.name) LIKE lower('${escapeIlike(query)}') || '%' ESCAPE '\\' THEN '0' ELSE '1' END`;
+
+  const tiers = [exact, prefix, 'w.match_priority', RESOURCE_TIER_SQL, LAYER_TIER_SQL]
     .map((expr) => `LPAD(CAST((${expr}) AS VARCHAR), 1, '0')`)
     .join('\n    || ');
 
   // A nameless row sorts last, and carries no name suffix to sort within.
+  return `CASE WHEN b.name IS NULL THEN '9~9999' ELSE ${tiers} || (b.name) END`;
+}
+
+/**
+ * Ranking key for a type/tag/package-only listing: no search text means no
+ * name-match or field-match tiers to rank by, so this just orders by
+ * resource type, modeling layer, then name.
+ */
+function rankingKeyTypeOnly(): string {
+  const tiers = [RESOURCE_TIER_SQL, LAYER_TIER_SQL]
+    .map((expr) => `LPAD(CAST((${expr}) AS VARCHAR), 1, '0')`)
+    .join('\n    || ');
+
   return `CASE WHEN b.name IS NULL THEN '9~9999' ELSE ${tiers} || (b.name) END`;
 }
 
@@ -306,8 +324,12 @@ function filterWhere(filter: SearchFilter): string {
 /**
  * Build the search queries, or `null` when the request cannot match anything.
  *
- * `null` covers an empty query and a type filter naming only unsearchable types —
- * both are "no results" rather than errors.
+ * `null` covers an empty query with no active filters (the blank-on-load state)
+ * and a type filter naming only unsearchable types — both are "no results"
+ * rather than errors. An empty query with a real type/package/tag filter set is
+ * not `null`: the Filter tab stays on this same query builder regardless of how
+ * many type checkboxes are ticked, so those filters need to produce a real,
+ * filtered listing even without search text to rank or highlight against.
  */
 export function buildSearchQuery(
   query: string,
@@ -316,13 +338,39 @@ export function buildSearchQuery(
   offset: number,
 ): SearchQuery | null {
   const tokens = tokenize(query);
-  if (!tokens.length) return null;
+  const hasFilters = Boolean(
+    filter.resourceTypes?.length || filter.packages?.length || filter.tags?.length,
+  );
+  if (!tokens.length && !hasFilters) return null;
 
   const base = baseUnion(filter.resourceTypes);
   if (!base) return null;
 
   const where = filterWhere(filter);
   const pageSize = Math.min(limit, MAX_PAGE_SIZE);
+
+  if (!tokens.length) {
+    const prelude = `WITH base AS (${base}
+)`;
+
+    return {
+      sql: `${prelude}
+SELECT b.*, NULL AS matched_field, NULL AS match_priority,
+       ${rankingKeyTypeOnly()} AS cursor_key,
+       NULL AS matched_column
+FROM base b
+WHERE 1 = 1${where}
+ORDER BY cursor_key ASC, b.unique_id ASC
+LIMIT ${pageSize} OFFSET ${offset}`,
+      countSql: `${prelude}
+SELECT COUNT(*) AS total
+FROM base b
+WHERE 1 = 1${where}`,
+      tables: SEARCH_TABLES,
+      offset,
+      limit: pageSize,
+    };
+  }
 
   const prelude = `WITH base AS (${base}
 ),
@@ -340,7 +388,7 @@ SELECT b.*, w.matched_field, w.match_priority,
        -- Which column matched, so the highlight can name it. The handler issued a
        -- separate query per matched row for this; one join does.
        (SELECT LOWER(c.column_name) FROM dbt.node_columns c
-        WHERE c.unique_id = b.unique_id
+        WHERE c.node_unique_id = b.unique_id
           AND c.column_name ILIKE '%' || '${escapeIlike(tokens[0]!)}' || '%' ESCAPE '\\'
         LIMIT 1) AS matched_column
 FROM base b
@@ -456,16 +504,16 @@ export function highlightFor(
  * these *are* counted — the handler counted them and the rail displays the numbers.
  */
 export const SEARCH_FACET_ACCESSES = `
-SELECT access_level AS value, COUNT(*) AS cnt
-FROM dbt.nodes
-WHERE resource_type = 'model' AND access_level IS NOT NULL
-GROUP BY access_level
+SELECT access AS value, COUNT(*) AS cnt
+FROM dbt.models
+WHERE access IS NOT NULL
+GROUP BY access
 ORDER BY value`;
 
 export const SEARCH_FACET_MATERIALIZATIONS = `
 SELECT materialized AS value, COUNT(*) AS cnt
-FROM dbt.nodes
-WHERE resource_type = 'model' AND materialized IS NOT NULL
+FROM dbt.models
+WHERE materialized IS NOT NULL
 GROUP BY materialized
 ORDER BY value`;
 
@@ -483,15 +531,14 @@ SELECT CASE
     OR lower(original_file_path) LIKE '%/fct_%'
     OR lower(original_file_path) LIKE 'marts/%' THEN 'Marts'
   ELSE NULL END AS value, COUNT(*) AS cnt
-FROM dbt.nodes
-WHERE resource_type = 'model'
+FROM dbt.models
 GROUP BY value
 HAVING value IS NOT NULL
 ORDER BY value`;
 
 export const SEARCH_FACET_TAGS = `
 SELECT t.value, COUNT(*) AS cnt FROM (
-  SELECT unnest(tags) AS value FROM dbt.nodes WHERE tags IS NOT NULL
+  SELECT unnest(tags) AS value FROM dbt_internal.resources WHERE tags IS NOT NULL
   UNION ALL
   SELECT unnest(tags) AS value FROM dbt.exposures WHERE tags IS NOT NULL
   UNION ALL
@@ -504,7 +551,7 @@ ORDER BY t.value`;
 
 export const SEARCH_FACET_PACKAGES = `
 SELECT pkg AS value, COUNT(*) AS cnt FROM (
-  SELECT package_name AS pkg FROM dbt.nodes WHERE package_name IS NOT NULL
+  SELECT package_name AS pkg FROM dbt_internal.resources WHERE package_name IS NOT NULL
   UNION ALL
   SELECT package_name AS pkg FROM dbt.macros WHERE package_name IS NOT NULL
   UNION ALL

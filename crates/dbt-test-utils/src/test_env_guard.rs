@@ -64,7 +64,7 @@ impl TestEnvGuard {
         "VORTEX_DEV_MODE",
         "VORTEX_DEV_MODE_OUTPUT_PATH",
         // Opt-in capture of test OTEL files + rendered summaries for local
-        // debugging / comparing runs (see CompareConnectionBackpressureSummary).
+        // debugging / comparing runs (see CompareThreadConcurrencySummary).
         "DBT_TEST_OTEL_CAPTURE_DIR",
         "DBT_TEST_OTEL_LABEL",
     ];

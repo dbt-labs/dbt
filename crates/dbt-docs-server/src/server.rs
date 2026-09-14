@@ -8,7 +8,7 @@ use tracing::info;
 use crate::DocsServeArgs;
 use crate::assets::serve_assets;
 use crate::providers::Providers;
-use crate::resolve_index_dir;
+use crate::resolve_info_schema_dir;
 use crate::state::AppState;
 
 /// Run the docs server. Must be called from within a tokio runtime —
@@ -17,9 +17,9 @@ use crate::state::AppState;
 /// responsible for constructing the [`Providers`]; the SA crate itself
 /// never touches `dbt-index` or any other proprietary surface.
 pub async fn run_with_args(args: Arc<DocsServeArgs>, providers: Providers) -> io::Result<()> {
-    let index_dir = resolve_index_dir(&args);
+    let data_dir = resolve_info_schema_dir(&args);
     let state = Arc::new(AppState::new(
-        index_dir,
+        data_dir,
         providers,
         args.has_dbt_state,
         args.send_anonymous_usage_stats,
@@ -65,9 +65,9 @@ where
         Some(site_dir) => eprintln!("dbt docs serve: serving site {}", site_dir.display()),
         None => eprintln!("dbt docs serve: serving the embedded bundle (no generated site)"),
     }
-    eprintln!("dbt docs serve: serving from {}", state.index_dir.display());
+    eprintln!("dbt docs serve: serving from {}", state.data_dir.display());
     eprintln!("dbt docs serve: listening on {url}");
-    info!(target: "dbt_docs_server", index_dir = %state.index_dir.display(), %url, "started");
+    info!(target: "dbt_docs_server", data_dir = %state.data_dir.display(), %url, "started");
 
     if !args.no_open {
         if let Err(err) = try_open_browser(&url) {

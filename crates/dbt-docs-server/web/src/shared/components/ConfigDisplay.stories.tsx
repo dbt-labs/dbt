@@ -21,7 +21,7 @@ export default meta;
 type Story = StoryObj<typeof ConfigDisplay>;
 
 /**
- * Note the trailing "Static analysis — Enable Fusion to view" row: it appears whenever
+ * Note the trailing "Static analysis — Enable dbt v2 to view" row: it appears whenever
  * the key is *absent*, deliberately, so a Core user learns the capability exists rather
  * than seeing nothing.
  */

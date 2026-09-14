@@ -1,6 +1,7 @@
 use super::*;
 use crate::metadata::duckdb::CatalogSpecDuckDbExt;
 use dbt_common::string_utils::try_parse_bool_str;
+use dbt_schemas::schemas::dbt_catalogs::DbtCatalogs;
 use dbt_schemas::schemas::dbt_catalogs_v2::{
     CatalogSpecV2View, CatalogType, DbtCatalogsV2View, UniformMode, V2FileFormat,
 };

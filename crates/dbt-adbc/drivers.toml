@@ -37,6 +37,7 @@ drivers = [
   "dbt-0.4.0+dbt0.1.7.g9e77239",
   "dbt-0.4.0+dbt0.1.8.g5b803e8",
   "dbt-0.4.0+dbt0.1.9.g765633c",
+  "dbt-0.4.0+dbt0.1.10.g53736d6",
   "duckdb-0.21.0.dev+dbt0.0.20",
   "duckdb-1.5.2",
   "duckdb-1.5.3",
@@ -46,6 +47,7 @@ drivers = [
   "duckdb_extended-0.21.0.dev+dbt0.0.28",
   "duckdb_extended-0.21.0.dev+dbt0.0.29",
   "duckdb_extended-0.21.0.dev+dbt0.0.30",
+  "duckdb_extended-0.21.0.dev+dbt0.0.31",
   "postgresql-0.18.0+dbt0.0.3",
   "postgresql-0.21.0+dbt0.21.0",
   # skipped: "snowflake-0.21.0.dev+dbt0.21.8"
@@ -64,6 +66,7 @@ drivers = [
   "redshift-0.21.0.dev+dbt0.18.5",
   "redshift-0.21.0.dev+dbt0.18.6",
   "redshift-0.21.0.dev+dbt0.18.7",
+  "redshift-0.21.0.dev+dbt0.18.8",
   "salesforce-0.18.0+dbt0.0.4",
   "salesforce-0.21.0+dbt0.21.1",
   "salesforce-0.21.0.dev+dbt0.21.2",

@@ -66,11 +66,13 @@ members = [
   "crates/dbt-jinja-utils",
   "crates/dbt-main",
   "crates/dbt-dist",
+  "crates/dbt-dist-classify",
   "crates/dbt-sa-cli",
   "crates/dbt-adbc",
   "crates/dbt-tracked-stmt",
   "crates/adbc-record-replay",
   "crates/dbt-deps",
+  "crates/dbt-skills",
   "crates/vortex-client",
   "crates/vortex-events",
   "crates/dbt-vortex",
@@ -93,6 +95,7 @@ members = [
   "crates/dbt-ci",
   "crates/dbt-login",
   "crates/dbt-platform-auth",
+  "crates/dbt-platform",
 
   # COPYBARA-END-PRIVATE
 ]
@@ -253,6 +256,7 @@ dbt-defer = { path = "crates/dbt-defer" }
 dbt-deps = { path = "crates/dbt-deps" }
 dbt-df-providers = { path = "crates/dbt-df-providers" }
 dbt-dist = { path = "crates/dbt-dist" }
+dbt-dist-classify = { path = "crates/dbt-dist-classify" }
 dbt-docs-core = { path = "crates/dbt-docs-core" }
 dbt-docs-server = { path = "crates/dbt-docs-server", default-features = false }
 dbt-env = { path = "crates/dbt-env" }
@@ -278,6 +282,7 @@ dbt-login = { path = "crates/dbt-login" }
 dbt-main = { path = "crates/dbt-main", default-features = false }
 dbt-metricflow = { path = "crates/dbt-metricflow" }
 dbt-parser = { path = "crates/dbt-parser" }
+dbt-platform = { path = "crates/dbt-platform" }
 dbt-platform-auth = { path = "crates/dbt-platform-auth" }
 dbt-pretty-table = { path = "crates/dbt-pretty-table" }
 dbt-proc-macros = { path = "crates/dbt-proc-macros" }
@@ -294,6 +299,7 @@ dbt-metadata-parquet = { path = "crates/dbt-metadata-parquet" }
 dbt-schema-store = { path = "crates/dbt-schema-store" }
 dbt-schemas = { path = "crates/dbt-schemas" }
 dbt-selector-parser = { path = "crates/dbt-selector-parser" }
+dbt-skills = { path = "crates/dbt-skills" }
 dbt-tasks-core = { path = "crates/dbt-tasks-core" }
 dbt-tasks-sa = { path = "crates/dbt-tasks-sa" }
 dbt-telemetry = { path = "crates/dbt-telemetry" }

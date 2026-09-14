@@ -544,6 +544,9 @@ pub struct EvalArgs {
     pub target: Option<String>,
     // Vars to pass to the jinja environment
     pub vars: BTreeMap<String, Value>,
+    /// AI coding agent(s) to install package skills for. Unset means skills are
+    /// discovered but not installed.
+    pub ai_provider: Option<Vec<String>>,
     // Stop as soon as this stage is reached
     pub phase: Phases,
     // Display rows in different formats
@@ -552,9 +555,9 @@ pub struct EvalArgs {
     pub limit: Option<usize>,
     /// called as bin or as library
     pub from_main: bool,
-    /// The number of threads to use. Drives the adapter connection backpressure
-    /// high-water-mark and parser rendering parallelism. Not used to force
-    /// sequential task execution — use `no_parallel` for that.
+    /// The max number of threads to use in the dbt-runtime thread-pool.
+    ///
+    /// Not used to force sequential task execution — use `no_parallel` for that.
     pub num_threads: Option<usize>,
     /// Force sequential task execution and sequential parser rendering without
     /// constraining the connection pool. Set by `--no-parallel`.
@@ -645,6 +648,9 @@ pub struct EvalArgs {
     pub empty: bool,
     pub sample: Option<String>,
     pub full_refresh: bool,
+    /// Bind without a catalog; assume referenced tables/columns exist and
+    /// infer schemas from usage. Set from `--infer-schemas` on `compile`.
+    pub infer_schemas_and_typeless: bool,
     pub store_failures: bool,
     pub favor_state: bool,
     pub refresh_sources: bool,
@@ -1575,7 +1581,7 @@ fn insert_effective_optimize_test_option(
 
 fn parse_boolish_env(value: &OsStr) -> Option<bool> {
     BoolishValueParser::new()
-        .parse_ref(&clap::Command::new("dbt-fusion"), None, value)
+        .parse_ref(&clap::Command::new("dbt"), None, value)
         .ok()
 }
 
@@ -1602,6 +1608,41 @@ pub fn env_path(name: &str) -> Option<PathBuf> {
     std::env::var_os(name)
         .filter(|value| !value.is_empty())
         .map(PathBuf::from)
+}
+
+/// Opts in to selecting the adapter a node runs on: the `+adapter` config and `--adapter`.
+pub const MULTI_ADAPTER_ENV: &str = "DBT_ENGINE_EXPERIMENTAL_MULTI_ADAPTER";
+
+/// Opts in to `+compute: local` (or its `sidecar` spelling) on an individual unit test. The
+/// run-wide `--compute` flag is a separate, older knob and is not covered by this gate.
+pub const LOCAL_UNIT_TESTS_ENV: &str = "DBT_ENGINE_EXPERIMENTAL_LOCAL_UNIT_TESTS";
+
+/// Whether an experimental feature's opt-in environment variable is set. Unset or malformed
+/// reads as off; a malformed value also warns.
+///
+/// Names passed here must be registered in `USED_ENGINE_ENV_VARS` (`dbt-main/src/vars.rs`),
+/// or `validate_engine_env_vars` rejects them at startup.
+fn experimental_gate_enabled(name: &str) -> bool {
+    match env_flag_enabled(name) {
+        Ok(enabled) => enabled,
+        Err(e) => {
+            crate::tracing::dbt_emit::emit_warn_log_message(
+                crate::ErrorCode::InvalidConfig,
+                e.to_string(),
+            );
+            false
+        }
+    }
+}
+
+/// Whether multi-adapter support is opted in to. See [`MULTI_ADAPTER_ENV`].
+pub fn multi_adapter_enabled() -> bool {
+    experimental_gate_enabled(MULTI_ADAPTER_ENV)
+}
+
+/// Whether per-unit-test local execution is opted in to. See [`LOCAL_UNIT_TESTS_ENV`].
+pub fn local_unit_tests_enabled() -> bool {
+    experimental_gate_enabled(LOCAL_UNIT_TESTS_ENV)
 }
 
 pub const LATEST_VERSION_POINTER_ENABLED_BY_DEFAULT_ENV: &str =
