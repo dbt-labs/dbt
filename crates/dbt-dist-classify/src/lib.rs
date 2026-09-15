@@ -1,11 +1,18 @@
-//! Classifies the stdout of a `dbt --version` invocation into a
-//! distribution and generation. Kept as its own crate, independent of
-//! `dbt-dist`'s `dbt-common` dependency, so lightweight consumers (e.g.
-//! `dbt-index`, or `wizard/dbt-codex`) can classify a `dbt` binary's version
-//! banner without pulling in `dbt-dist`'s full self-update/uninstall
-//! dependency tree.
+//! Locates installed `dbt` executables and classifies the stdout of a
+//! `dbt --version` invocation into a distribution and generation. Kept as its
+//! own crate, independent of `dbt-dist`'s `dbt-common` dependency, so
+//! lightweight consumers (e.g. `dbt-index`, or `wizard/dbt-codex`) can find a
+//! `dbt` binary and classify its version banner without pulling in
+//! `dbt-dist`'s full self-update/uninstall dependency tree.
+
+mod executable;
 
 use serde::{Deserialize, Serialize};
+
+pub use executable::{
+    executable_candidates, executable_candidates_from_path, executable_candidates_in,
+    find_executable,
+};
 
 /// PyPI's legacy dbt v1 namespace, also used by dbt-dist for its
 /// self-managed-upgrade fallback.

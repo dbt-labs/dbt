@@ -1,0 +1,7 @@
+kind: Under the Hood
+body: Attribute --infer-schemas columns from declared YAML schema before binding via a CatalogProviderList wrapper, instead of mixing them into InferSchemaRegistry
+time: 2026-09-09T12:02:42.813137-06:00
+custom:
+    author: maxmalkin
+    issue: ""
+    project: dbt-core
