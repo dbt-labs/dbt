@@ -144,7 +144,7 @@ pub fn resolve_destinations(providers: &[AiProvider]) -> Vec<PathBuf> {
 /// Resolve the raw `ai_provider` setting from the CLI/env value and the
 /// project's `flags:` block.
 ///
-/// CLI (which clap also populates from `DBT_AI_PROVIDER`) wins over
+/// CLI (which clap also populates from `DBT_ENGINE_AI_PROVIDER`) wins over
 /// `dbt_project.yml`, matching how every other dual-source flag resolves.
 /// Accepts either a single string or a list in the project file.
 ///
