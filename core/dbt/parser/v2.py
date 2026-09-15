@@ -407,9 +407,11 @@ def _severity_number_to_level(severity_number: object) -> EventLevel:
     Intermediate values floor to the next-lowest defined band (e.g. 10 ->
     INFO, same band as 9) rather than being treated as unknown.
     """
+    if not isinstance(severity_number, (int, str)):
+        return EventLevel.DEBUG
     try:
-        number = int(severity_number)  # type: ignore[arg-type]
-    except (TypeError, ValueError):
+        number = int(severity_number)
+    except ValueError:
         return EventLevel.DEBUG
     level = EventLevel.DEBUG
     for threshold, mapped in _SEVERITY_NUMBER_BANDS:
