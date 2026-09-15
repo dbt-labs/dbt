@@ -1,0 +1,6 @@
+kind: Fixes
+body: Fix regression where node.path for YAML-based snapshots in subdirectories omitted the subdirectory path
+time: 2026-07-31T11:26:45.964839+01:00
+custom:
+    Author: mattogburke
+    Issue: "15753"
