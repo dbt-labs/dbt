@@ -5,7 +5,7 @@
 //! ZSTD compression. No DuckDB driver, no SQL strings, no JSON file I/O.
 
 use std::collections::{HashMap, HashSet};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use arrow_array::Array;
@@ -32,6 +32,75 @@ const CHUNK_SIZE: usize = 256;
 /// write calls; ÷ 65536 = 8 write calls.
 const CHUNK_SIZE_TYPED: usize = 65536;
 
+/// A parquet file written to its temp path but not yet moved into place.
+///
+/// A multi-table index write stages every table first and commits them
+/// together, so a failure partway through leaves the previous index untouched
+/// rather than a mix of new and stale files. Dropping an uncommitted stage
+/// deletes its temp file
+#[must_use = "a staged table is discarded unless it is committed"]
+pub struct StagedTable {
+    tmp: PathBuf,
+    dest: PathBuf,
+    committed: bool,
+}
+
+impl StagedTable {
+    /// Create the temp file backing `dest` and a guard that deletes it unless
+    /// committed.
+    ///
+    /// The suffix deliberately differs from the plain `.parquet.tmp` that the
+    /// hydration and serve writers use for individual tables in the same
+    /// directory. A staged index write holds its temp files open for the whole
+    /// write rather than one table, so sharing those names would let the two
+    /// truncate each other
+    fn create(dest: &Path) -> Result<(Self, std::fs::File), IndexError> {
+        if let Some(parent) = dest.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let tmp = dest.with_extension("parquet.staging.tmp");
+        let file = std::fs::File::create(&tmp)?;
+        let staged = Self {
+            tmp,
+            dest: dest.to_path_buf(),
+            committed: false,
+        };
+        Ok((staged, file))
+    }
+
+    /// Move the staged file onto its destination path
+    pub fn commit(mut self) -> Result<(), IndexError> {
+        std::fs::rename(&self.tmp, &self.dest)?;
+        self.committed = true;
+        Ok(())
+    }
+}
+
+impl Drop for StagedTable {
+    fn drop(&mut self) {
+        if !self.committed {
+            let _ = std::fs::remove_file(&self.tmp);
+        }
+    }
+}
+
+/// Move every staged table into place.
+///
+/// Renaming is a metadata operation, so the window in which the index is
+/// half-updated is far shorter than the staging writes that precede it. It is
+/// not zero: if a rename fails, the tables already renamed stay in place and
+/// the rest are dropped, so an `Err` from here still leaves a mix. The same is
+/// true of a crash between renames. Closing that gap entirely needs a directory
+/// swap or a pointer file
+pub fn commit_staged(staged: Vec<StagedTable>) -> Result<(), IndexError> {
+    timings::time(timings::Stage::StagingWrite, || {
+        for table in staged {
+            table.commit()?;
+        }
+        Ok(())
+    })
+}
+
 /// Write a single parquet file from an explicit schema + rows of flat serializable items.
 ///
 /// Writes in chunks of `CHUNK_SIZE` rows to bound peak Arrow memory.
@@ -43,21 +112,26 @@ fn write_table_items<T: serde::Serialize>(
     schema: SchemaRef,
     items: &[T],
 ) -> Result<(), IndexError> {
-    timings::time(timings::Stage::StagingWrite, || {
-        write_table_items_at(path, schema, items)
-    })
+    stage_table_items(path, schema, items)?.commit()
 }
 
-fn write_table_items_at<T: serde::Serialize>(
+fn stage_table_items<T: serde::Serialize>(
     path: &Path,
     schema: SchemaRef,
     items: &[T],
-) -> Result<(), IndexError> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let tmp = path.with_extension("parquet.tmp");
-    let file = std::fs::File::create(&tmp)?;
+) -> Result<StagedTable, IndexError> {
+    timings::time(timings::Stage::StagingWrite, || {
+        stage_table_items_at(path, schema, items)
+    })
+}
+
+fn stage_table_items_at<T: serde::Serialize>(
+    path: &Path,
+    schema: SchemaRef,
+    items: &[T],
+) -> Result<StagedTable, IndexError> {
+    // Any early return below drops `staged`, which deletes the temp file
+    let (staged, file) = StagedTable::create(path)?;
     let props = WriterProperties::builder()
         .set_compression(Compression::ZSTD(ZstdLevel::try_new(1).unwrap())) // fastest ZSTD; ~same size as level 3 at this scale
         .build();
@@ -78,8 +152,7 @@ fn write_table_items_at<T: serde::Serialize>(
     writer
         .close()
         .map_err(|e| IndexError::Other(format!("ArrowWriter close: {e}")))?;
-    std::fs::rename(&tmp, path)?;
-    Ok(())
+    Ok(staged)
 }
 
 /// Like `write_table_items` but uses `CHUNK_SIZE_TYPED` (64k rows/batch).
@@ -90,20 +163,18 @@ fn write_table_items_typed<T: serde::Serialize>(
     items: &[T],
 ) -> Result<(), IndexError> {
     timings::time(timings::Stage::StagingWrite, || {
-        write_table_items_typed_at(path, schema, items)
-    })
+        stage_table_items_typed_at(path, schema, items)
+    })?
+    .commit()
 }
 
-fn write_table_items_typed_at<T: serde::Serialize>(
+fn stage_table_items_typed_at<T: serde::Serialize>(
     path: &Path,
     schema: SchemaRef,
     items: &[T],
-) -> Result<(), IndexError> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let tmp = path.with_extension("parquet.tmp");
-    let file = std::fs::File::create(&tmp)?;
+) -> Result<StagedTable, IndexError> {
+    // Any early return below drops `staged`, which deletes the temp file
+    let (staged, file) = StagedTable::create(path)?;
     let props = WriterProperties::builder()
         .set_compression(Compression::ZSTD(ZstdLevel::try_new(1).unwrap()))
         .build();
@@ -120,12 +191,20 @@ fn write_table_items_typed_at<T: serde::Serialize>(
     writer
         .close()
         .map_err(|e| IndexError::Other(format!("ArrowWriter close: {e}")))?;
-    std::fs::rename(&tmp, path)?;
-    Ok(())
+    Ok(staged)
 }
 
 /// Convenience wrapper: write a table from `serde_json::Value` rows.
 pub fn write_table(path: &Path, schema: SchemaRef, rows: &[Value]) -> Result<(), IndexError> {
+    stage_table(path, schema, rows)?.commit()
+}
+
+/// Like [`write_table`], but leaves the result staged for a later [`commit_staged`].
+pub fn stage_table(
+    path: &Path,
+    schema: SchemaRef,
+    rows: &[Value],
+) -> Result<StagedTable, IndexError> {
     // `classifiers` is a non-nullable list column on `nodes`/`node_columns`.
     // serde_arrow requires every non-nullable field to be present in each JSON
     // row, but callers that build rows from `serde_json::Value` (manifest
@@ -139,9 +218,9 @@ pub fn write_table(path: &Path, schema: SchemaRef, rows: &[Value]) -> Result<(),
                     .or_insert_with(|| Value::Array(vec![]));
             }
         }
-        return write_table_items(path, schema, &owned);
+        return stage_table_items(path, schema, &owned);
     }
-    write_table_items(path, schema, rows)
+    stage_table_items(path, schema, rows)
 }
 
 // ── Merge-on-write ──────────────────────────────────────────────────────────
@@ -576,6 +655,20 @@ pub fn write_table_merged(
     rows: &mut Vec<Value>,
     mode: WriteMode<'_>,
 ) -> Result<(), IndexError> {
+    stage_table_merged(path, schema, rows, mode)?.commit()
+}
+
+/// Like [`write_table_merged`], but leaves the result staged for a later
+/// [`commit_staged`].
+///
+/// The merge modes read the table's own destination file, so staging a table
+/// without committing it does not change what any other table reads.
+pub fn stage_table_merged(
+    path: &Path,
+    schema: SchemaRef,
+    rows: &mut Vec<Value>,
+    mode: WriteMode<'_>,
+) -> Result<StagedTable, IndexError> {
     match mode {
         WriteMode::Overwrite => {}
         WriteMode::CarryForward {
@@ -621,7 +714,7 @@ pub fn write_table_merged(
             }
         }
     }
-    write_table(path, schema, rows)
+    stage_table(path, schema, rows)
 }
 
 // ── Streaming IndexWriter ───────────────────────────────────────────────────
@@ -637,7 +730,7 @@ pub fn write_table_merged(
 /// full overwrite). Call [`IndexWriter::finish`] to write `views.sql`
 /// and return the total file count.
 pub struct IndexWriter {
-    index_dir: std::path::PathBuf,
+    index_dir: PathBuf,
     now: String,
     count: usize,
 }
@@ -2318,5 +2411,87 @@ pub fn schema_for(table: &str) -> SchemaRef {
             false,
         )])),
         _ => Arc::new(Schema::empty()),
+    }
+}
+
+#[cfg(test)]
+mod staged_table_tests {
+    use super::*;
+
+    fn schema() -> SchemaRef {
+        Arc::new(Schema::new(vec![Field::new("id", DataType::Utf8, false)]))
+    }
+
+    fn rows() -> Vec<Value> {
+        vec![serde_json::json!({"id": "a"})]
+    }
+
+    #[test]
+    fn dropping_a_staged_table_removes_its_temp_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("dbt.t.parquet");
+
+        let tmp = {
+            let staged = stage_table(&dest, schema(), &rows()).unwrap();
+            let tmp = staged.tmp.clone();
+            assert!(tmp.exists(), "staging must write a temp file");
+            tmp
+        };
+
+        assert!(
+            !tmp.exists(),
+            "an uncommitted stage must delete its temp file"
+        );
+        assert!(
+            !dest.exists(),
+            "an uncommitted stage must not touch the destination"
+        );
+    }
+
+    #[test]
+    fn committing_moves_the_staged_file_onto_the_destination() {
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("dbt.t.parquet");
+
+        let staged = stage_table(&dest, schema(), &rows()).unwrap();
+        let tmp = staged.tmp.clone();
+        staged.commit().unwrap();
+
+        assert!(dest.exists());
+        assert!(!tmp.exists(), "commit must consume the temp file");
+    }
+
+    /// `commit_staged` renames in sequence, so a failure partway through leaves
+    /// the tables it already renamed in place. The remaining stages still clean
+    /// up their temp files.
+    #[test]
+    fn a_failed_commit_keeps_earlier_renames_and_drops_the_rest() {
+        let dir = tempfile::tempdir().unwrap();
+        let first = dir.path().join("dbt.first.parquet");
+        let blocked = dir.path().join("dbt.blocked.parquet");
+        let last = dir.path().join("dbt.last.parquet");
+
+        // A directory cannot be replaced by a rename, so `blocked` fails
+        std::fs::create_dir(&blocked).unwrap();
+
+        let staged = vec![
+            stage_table(&first, schema(), &rows()).unwrap(),
+            stage_table(&blocked, schema(), &rows()).unwrap(),
+            stage_table(&last, schema(), &rows()).unwrap(),
+        ];
+        let last_tmp = staged[2].tmp.clone();
+
+        commit_staged(staged).expect_err("renaming onto a directory must fail");
+
+        assert!(first.is_file(), "a rename before the failure stays applied");
+        assert!(
+            blocked.is_dir(),
+            "the failing rename leaves the destination alone"
+        );
+        assert!(!last.exists(), "a stage after the failure is never applied");
+        assert!(
+            !last_tmp.exists(),
+            "a stage after the failure cleans up its temp file"
+        );
     }
 }
