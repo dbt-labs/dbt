@@ -42,15 +42,25 @@ fn merge_tags_diff(
         .iter()
         .map(|(column_name, tags)| (column_name.to_lowercase(), tags))
         .collect::<IndexMap<_, _>>();
-    let changed = desired_state
-        .iter()
-        .filter(|(column_name, tags)| {
-            current_by_lower
-                .get(&column_name.to_lowercase())
-                .is_none_or(|current| current != tags)
-        })
-        .map(|(column_name, tags)| (column_name.clone(), tags.clone()))
-        .collect::<IndexMap<_, _>>();
+
+    let mut changed = IndexMap::new();
+    for (column_name, desired_tags) in desired_state {
+        match current_by_lower.get(&column_name.to_lowercase()) {
+            None => {
+                changed.insert(column_name.clone(), desired_tags.clone());
+            }
+            Some(current_tags) => {
+                let key_diff: IndexMap<_, _> = desired_tags
+                    .iter()
+                    .filter(|(key, value)| current_tags.get(*key) != Some(*value))
+                    .map(|(key, value)| (key.clone(), value.clone()))
+                    .collect();
+                if !key_diff.is_empty() {
+                    changed.insert(column_name.clone(), key_diff);
+                }
+            }
+        }
+    }
 
     if changed.is_empty() {
         None
@@ -213,6 +223,45 @@ mod tests {
             Some(IndexMap::from([(
                 "account_id".to_string(),
                 IndexMap::from([("pii".to_string(), "false".to_string())]),
+            )]))
+        );
+    }
+
+    #[test]
+    fn test_get_diff_omits_unchanged_keys_within_column() {
+        let desired = IndexMap::from([
+            (
+                "col1".to_string(),
+                IndexMap::from([
+                    ("stable".to_string(), "1".to_string()),
+                    ("moved".to_string(), "new".to_string()),
+                ]),
+            ),
+            (
+                "col2".to_string(),
+                IndexMap::from([("ok".to_string(), "yes".to_string())]),
+            ),
+        ]);
+        let existing = IndexMap::from([
+            (
+                "col1".to_string(),
+                IndexMap::from([
+                    ("stable".to_string(), "1".to_string()),
+                    ("moved".to_string(), "old".to_string()),
+                    ("remote_only".to_string(), "x".to_string()),
+                ]),
+            ),
+            (
+                "col2".to_string(),
+                IndexMap::from([("ok".to_string(), "yes".to_string())]),
+            ),
+        ]);
+
+        assert_eq!(
+            merge_tags_diff(&desired, &existing),
+            Some(IndexMap::from([(
+                "col1".to_string(),
+                IndexMap::from([("moved".to_string(), "new".to_string())]),
             )]))
         );
     }
