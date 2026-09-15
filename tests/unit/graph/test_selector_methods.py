@@ -1116,6 +1116,34 @@ def test_select_state_changed_test_macros_with_upstream_change(manifest, previou
     )
 
 
+def test_select_state_changed_test_macros_missing_macro(manifest, previous_state):
+    # Some unrelated macro must change so that `modified_macros` is non-empty and
+    # `recursively_check_macros_modified` actually walks `model1`'s macro deps below.
+    changed_macro = make_macro("dbt", "changed_macro", "blablabla")
+    add_macro(manifest, changed_macro)
+    add_macro(previous_state.manifest, replace(changed_macro, macro_sql="something different"))
+
+    # model1 depends on a macro uid that isn't in `manifest.macros` on either side (e.g. a
+    # v2/fusion-parser manifest that omits an adapter-dispatched macro). This must not raise
+    # KeyError, and since the missing macro isn't in `modified_macros`, model1 is unmodified.
+    missing_macro_uid = "macro.dbt_snowflake.snowflake__date_spine"
+
+    model1 = make_model(
+        "dbt",
+        "model1",
+        "blablabla",
+        depends_on_macros=[missing_macro_uid],
+    )
+    add_node(manifest, model1)
+    add_node(previous_state.manifest, model1)
+
+    method = statemethod(manifest, previous_state)
+
+    assert search_manifest_using_method(manifest, method, "modified") == set()
+    assert search_manifest_using_method(manifest, method, "modified.macros") == set()
+    assert "model1" in search_manifest_using_method(manifest, method, "unmodified")
+
+
 class TestSeedNodeSameSeedsFallback:
     """Tests for the legacy-hash fallback in SeedNode.same_seeds()."""
 

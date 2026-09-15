@@ -177,6 +177,7 @@ def rediscover_adapter_macros(manifest: Manifest, runtime_config: "RuntimeConfig
     internal_pkg_names = set(internal_pkg_names_list)
 
     stale_ids = [uid for uid, m in manifest.macros.items() if m.package_name in internal_pkg_names]
+    stale_macros = {uid: manifest.macros[uid] for uid in stale_ids}
     for uid in stale_ids:
         manifest.macros.pop(uid)
     manifest._macros_by_name = None
@@ -209,6 +210,18 @@ def rediscover_adapter_macros(manifest: Manifest, runtime_config: "RuntimeConfig
                 generic_test_parser.parse_file(FileBlock(source_file))
 
     new_macro_ids = set(manifest.macros.keys()) - pre_existing_ids
+
+    # Some fusion-bundled macros (e.g. adapter dispatch targets like
+    # snowflake__date_spine) have no .sql file on disk, so the reparse passes
+    # above never recreate them. Evicting those unconditionally would leave
+    # dangling depends_on.macros references in whatever calls them. Put back
+    # any evicted macro that wasn't replaced by a reparsed one; it's not a
+    # "new" macro, so it's excluded from new_macro_ids and keeps whatever
+    # depends_on fusion originally gave it.
+    for uid, macro in stale_macros.items():
+        if uid not in manifest.macros:
+            manifest.macros[uid] = macro
+
     if new_macro_ids:
         macro_resolver = MacroResolver(
             manifest.macros, runtime_config.project_name, internal_pkg_names_list
