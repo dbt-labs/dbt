@@ -83,6 +83,11 @@ pub enum Backend {
     ClickHouse,
     /// Exasol driver implementation (ADBC).
     Exasol,
+    /// GizmoSQL driver implementation (ADBC, Arrow Flight SQL transport).
+    ///
+    /// Not distributed via the dbt Labs CDN: loaded from the system library search path
+    /// as `adbc_driver_gizmosql`.
+    GizmoSQL,
     /// Generic ADBC driver implementation.
     ///
     /// This variant is fully dynamic and experimental. Features might not work reliably and fail
@@ -115,6 +120,7 @@ impl fmt::Display for Backend {
             Backend::Athena => write!(f, "Athena"),
             Backend::ClickHouse => write!(f, "ClickHouse"),
             Backend::Exasol => write!(f, "Exasol"),
+            Backend::GizmoSQL => write!(f, "GizmoSQL"),
             Backend::Generic { library_name, .. } => write!(f, "Generic({library_name})"),
         }
     }
@@ -136,6 +142,7 @@ impl Backend {
             Backend::Athena => Some("adbc_driver_athena"),
             Backend::ClickHouse => Some("adbc_clickhouse"),
             Backend::Exasol => Some("adbc_driver_exasol"),
+            Backend::GizmoSQL => Some("adbc_driver_gizmosql"),
             Backend::Generic { library_name, .. } => Some(library_name),
         }
     }
@@ -145,6 +152,7 @@ impl Backend {
             Backend::Snowflake => Some(b"SnowflakeDriverInit"),
             Backend::DuckDB | Backend::DuckDBExtended => Some(b"duckdb_adbc_init"),
             Backend::LakeCompute => Some(b"AdbcDriverDbtInit"),
+            Backend::GizmoSQL => Some(b"AdbcDriverGizmosqlInit"),
             Backend::Generic {
                 library_name: _,
                 entrypoint,
@@ -402,7 +410,7 @@ impl AdbcDriver {
                 }
             }
             // CDN strategy for non-CDN drivers: just fall back to the system strategy.
-            (CdnCache | SystemThenCdnCache | Remote, Athena | Exasol) => System(None),
+            (CdnCache | SystemThenCdnCache | Remote, Athena | Exasol | GizmoSQL) => System(None),
             // Generic drivers can only be loaded from a file, so fallback to the System strategy.
             (CdnCache | SystemThenCdnCache | Remote, Generic { library_name, .. }) => {
                 System(Some(library_name.to_string()))
@@ -675,6 +683,7 @@ mod tests {
         // ClickHouse fails when loaded with v1.0.0 requirements, so we skip it here.
         // try_load_with_builder(Backend::ClickHouse, AdbcVersion::V100)?;
         // try_load_with_builder(Backend::Exasol, AdbcVersion::V100)?;
+        // try_load_with_builder(Backend::GizmoSQL, AdbcVersion::V100)?;
         Ok(())
     }
 
@@ -691,6 +700,7 @@ mod tests {
         // try_load_with_builder(Backend::SQLServer, AdbcVersion::V110)?;
         try_load_with_builder(Backend::ClickHouse, AdbcVersion::V110)?;
         // try_load_with_builder(Backend::Exasol, AdbcVersion::V110)?;
+        // try_load_with_builder(Backend::GizmoSQL, AdbcVersion::V110)?;
         Ok(())
     }
 

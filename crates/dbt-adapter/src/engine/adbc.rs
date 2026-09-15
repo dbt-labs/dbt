@@ -589,15 +589,31 @@ impl AdapterEngine for AdbcEngine {
         let (mut database, fingerprint) = self.load_driver_and_configure_database(config)?;
         let connect = || {
             let mut builder = connection::Builder::default();
-            // dbclient.py `_set_client_database` parity; ensure_database
-            // guarantees it exists.
-            if self.adapter_type == AdapterType::ClickHouse
-                && let Some(schema) = super::clickhouse::target_schema(config)
-            {
-                builder.with_option(
-                    adbc_core::options::OptionConnection::CurrentSchema,
-                    schema.as_ref(),
-                )?;
+            match self.adapter_type {
+                // dbclient.py `_set_client_database` parity; ensure_database
+                // guarantees it exists.
+                AdapterType::ClickHouse => {
+                    if let Some(schema) = super::clickhouse::target_schema(config) {
+                        builder.with_option(
+                            adbc_core::options::OptionConnection::CurrentSchema,
+                            schema.as_ref(),
+                        )?;
+                    }
+                }
+                // dbt-gizmosql (Python) parity: the profile's `database` is the
+                // DuckDB catalog made current for the Flight SQL session, so
+                // unqualified names in user SQL resolve against it.
+                AdapterType::GizmoSQL => {
+                    if let Some(catalog) = config.get_string("database")
+                        && !catalog.is_empty()
+                    {
+                        builder.with_option(
+                            adbc_core::options::OptionConnection::CurrentCatalog,
+                            catalog.as_ref(),
+                        )?;
+                    }
+                }
+                _ => {}
             }
             builder.build(&mut database)
         };

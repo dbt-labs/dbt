@@ -53,6 +53,7 @@ pub enum DbConfig {
     LakeCompute(Box<LakeComputeConfig>),
     // Hive,
     Exasol(Box<ExasolDbConfig>),
+    GizmoSQL(Box<GizmoSQLDbConfig>),
     // Oracle,
     // Synapse,
     Fabric(Box<FabricDbConfig>),
@@ -106,6 +107,7 @@ impl_from_db_config!(Databricks, DatabricksDbConfig);
 impl_from_db_config!(DuckDB, DuckDbConfig);
 impl_from_db_config!(Fabric, FabricDbConfig);
 impl_from_db_config!(Exasol, ExasolDbConfig);
+impl_from_db_config!(GizmoSQL, GizmoSQLDbConfig);
 impl_from_db_config!(ClickHouse, ClickHouseDbConfig);
 
 impl DbConfig {
@@ -125,6 +127,7 @@ impl DbConfig {
             DbConfig::Spark(config) => config.host.as_deref(),
             DbConfig::Fabric(config) => config.host.as_deref(),
             DbConfig::Exasol(config) => config.host.as_deref(),
+            DbConfig::GizmoSQL(config) => config.host.as_deref(),
             DbConfig::ClickHouse(config) => config.host.as_deref(),
         }
     }
@@ -307,6 +310,19 @@ impl DbConfig {
                 "query_timeout",
                 "idle_timeout",
             ],
+            // `password` is deliberately absent: these keys reach `dbt debug`'s
+            // connection display, which must not print credentials.
+            AdapterType::GizmoSQL => &[
+                "host",
+                "port",
+                "username",
+                "database",
+                "schema",
+                "use_encryption",
+                "tls_skip_verify",
+                "auth_type",
+                "external_root",
+            ],
             AdapterType::ClickHouse => &[
                 "database",
                 "schema",
@@ -369,6 +385,7 @@ impl DbConfig {
             DbConfig::DuckDB(config) => dbt_yaml::to_value(config),
             DbConfig::LakeCompute(config) => dbt_yaml::to_value(config),
             DbConfig::Exasol(config) => dbt_yaml::to_value(config),
+            DbConfig::GizmoSQL(config) => dbt_yaml::to_value(config),
             DbConfig::ClickHouse(config) => dbt_yaml::to_value(config),
         }
     }
@@ -387,6 +404,7 @@ impl DbConfig {
             DbConfig::Spark(..) => AdapterType::Spark,
             DbConfig::Fabric(..) => AdapterType::Fabric,
             DbConfig::Exasol(..) => AdapterType::Exasol,
+            DbConfig::GizmoSQL(..) => AdapterType::GizmoSQL,
             DbConfig::ClickHouse(..) => AdapterType::ClickHouse,
             DbConfig::LakeCompute(..) => AdapterType::LakeCompute,
         }
@@ -406,6 +424,7 @@ impl DbConfig {
             DbConfig::Spark(_) => None,
             DbConfig::Fabric(config) => config.database.as_ref(),
             DbConfig::Exasol(config) => config.database.as_ref(),
+            DbConfig::GizmoSQL(config) => config.database.as_ref(),
             DbConfig::ClickHouse(config) => config.database.as_ref(),
             DbConfig::LakeCompute(config) => config.database.as_ref(),
         }
@@ -447,6 +466,7 @@ impl DbConfig {
             DbConfig::Salesforce(_) => None,
             DbConfig::Fabric(config) => config.schema.as_ref(),
             DbConfig::Exasol(config) => config.schema.as_ref(),
+            DbConfig::GizmoSQL(config) => config.schema.as_ref(),
             DbConfig::ClickHouse(config) => config.schema.as_ref(),
         }
     }
@@ -465,6 +485,7 @@ impl DbConfig {
             DbConfig::Spark(_) => None,
             DbConfig::Fabric(_) => None,
             DbConfig::Exasol(config) => config.threads.as_ref(),
+            DbConfig::GizmoSQL(config) => config.threads.as_ref(),
             DbConfig::ClickHouse(config) => config.threads.as_ref(),
             DbConfig::LakeCompute(config) => config.threads.as_ref(),
         }
@@ -484,6 +505,7 @@ impl DbConfig {
             DbConfig::Spark(_) => (),
             DbConfig::Fabric(_) => (),
             DbConfig::Exasol(config) => config.threads = threads,
+            DbConfig::GizmoSQL(config) => config.threads = threads,
             DbConfig::ClickHouse(config) => config.threads = threads,
             DbConfig::LakeCompute(config) => config.threads = threads,
         }
@@ -1355,6 +1377,55 @@ pub struct ExasolDbConfig {
     pub threads: Option<StringOrInteger>,
 }
 
+/// GizmoSQL adapter configuration.
+///
+/// GizmoSQL is an Arrow Flight SQL server backed by DuckDB. Field names and
+/// aliases match the Python `dbt-gizmosql` adapter's credentials so existing
+/// `profiles.yml` targets work unchanged.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default, DbtSchema, Merge)]
+#[merge(strategy = merge_strategies_extend::overwrite_option)]
+#[serde(rename_all = "snake_case")]
+pub struct GizmoSQLDbConfig {
+    /// Hostname of the GizmoSQL server.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub host: Option<String>,
+    /// Arrow Flight SQL port (defaults to 31337).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub port: Option<StringOrInteger>,
+    #[serde(skip_serializing_if = "Option::is_none", alias = "user")]
+    pub username: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", alias = "pass")]
+    pub password: Option<String>,
+    /// The DuckDB catalog (database) on the server to build into.
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        alias = "catalog",
+        alias = "dbname"
+    )]
+    pub database: Option<String>,
+    /// Schema name (defaults to "main").
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub schema: Option<String>,
+    /// Connect over TLS (defaults to true).
+    #[serde(skip_serializing_if = "Option::is_none", alias = "use_tls")]
+    pub use_encryption: Option<bool>,
+    /// Skip TLS certificate verification (defaults to false).
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        alias = "disable_certificate_verification"
+    )]
+    pub tls_skip_verify: Option<bool>,
+    /// `password` (default) or `external` (OAuth/SSO browser flow).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub auth_type: Option<String>,
+    /// Root path, resolved on the server, for `external` materializations
+    /// that do not set their own `location` (defaults to ".").
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub external_root: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub threads: Option<StringOrInteger>,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default, DbtSchema, Merge)]
 #[merge(strategy = merge_strategies_extend::overwrite_option)]
 #[serde(rename_all = "snake_case")]
@@ -1584,6 +1655,7 @@ pub enum TargetContext {
     Spark(SparkTargetEnv),
     Fabric(FabricTargetEnv),
     Exasol(ExasolTargetEnv),
+    GizmoSQL(GizmoSQLTargetEnv),
     ClickHouse(ClickHouseTargetEnv),
     // Add other variants as needed
 }
@@ -1766,6 +1838,15 @@ pub struct FabricTargetEnv {
 pub struct ExasolTargetEnv {
     pub host: Option<String>,
     pub user: Option<String>,
+    pub __common__: CommonTargetContext,
+}
+
+#[derive(Serialize, DbtSchema)]
+#[serde(rename_all = "snake_case")]
+pub struct GizmoSQLTargetEnv {
+    pub host: String,
+    pub port: Option<StringOrInteger>,
+    pub username: Option<String>,
     pub __common__: CommonTargetContext,
 }
 
@@ -2192,6 +2273,40 @@ impl TryFrom<DbConfig> for TargetContext {
                     schema: config.schema.ok_or_else(|| missing("schema"))?,
                     type_: adapter_type,
                     threads: None,
+                },
+            })),
+
+            DbConfig::GizmoSQL(config) => Ok(TargetContext::GizmoSQL(GizmoSQLTargetEnv {
+                // Unlike Exasol there is no sensible default host, and the auth
+                // layer requires one, so fail at profile load rather than later.
+                host: config
+                    .host
+                    .clone()
+                    .filter(|host| !host.is_empty())
+                    .ok_or_else(|| missing("host"))?,
+                port: config.port.clone(),
+                username: config.username.clone(),
+                __common__: CommonTargetContext {
+                    // The DuckDB catalog name on the server cannot be derived
+                    // offline (unlike DuckDB's file path), so it must be given.
+                    database: config
+                        .database
+                        .filter(|database| !database.is_empty())
+                        .ok_or_else(|| missing("database"))?,
+                    schema: config.schema.unwrap_or_else(|| "main".to_string()),
+                    type_: adapter_type,
+                    threads: match config.threads {
+                        Some(StringOrInteger::String(threads)) => Some(
+                            threads
+                                .parse::<u16>()
+                                .map_err(|_| "threads must be a positive integer".to_string())?,
+                        ),
+                        Some(StringOrInteger::Integer(threads)) => Some(
+                            u16::try_from(threads)
+                                .map_err(|_| "threads must be a positive integer".to_string())?,
+                        ),
+                        None => None,
+                    },
                 },
             })),
 
@@ -2973,5 +3088,31 @@ threads: 8
 
         assert_eq!(config.get_database(), None);
         assert_eq!(config.get_database_or_default(), "");
+    }
+
+    #[test]
+    fn test_gizmosql_target_context_rejects_empty_host_and_database() {
+        let base = GizmoSQLDbConfig {
+            host: Some("localhost".to_string()),
+            database: Some("db".to_string()),
+            ..Default::default()
+        };
+
+        let config: DbConfig = base.clone().into();
+        assert!(TargetContext::try_from(config).is_ok());
+
+        let config: DbConfig = GizmoSQLDbConfig {
+            host: Some(String::new()),
+            ..base.clone()
+        }
+        .into();
+        assert!(TargetContext::try_from(config).is_err());
+
+        let config: DbConfig = GizmoSQLDbConfig {
+            database: Some(String::new()),
+            ..base
+        }
+        .into();
+        assert!(TargetContext::try_from(config).is_err());
     }
 }

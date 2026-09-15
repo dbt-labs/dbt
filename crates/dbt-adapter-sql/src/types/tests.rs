@@ -1290,7 +1290,7 @@ fn expected_type_rendering_for(backend: AdapterType) -> Vec<(u32, SqlType, &'sta
                 Postgres | Salesforce => pq,
                 Redshift => rs,
                 Databricks => dbx,
-                DuckDB => todo!("DuckDB tests not implemented yet"),
+                DuckDB | GizmoSQL => todo!("DuckDB tests not implemented yet"),
                 ClickHouse => ch,
                 Exasol => todo!("Exasol tests not implemented yet"),
                 Spark => todo!("Spark tests not implemented yet"),

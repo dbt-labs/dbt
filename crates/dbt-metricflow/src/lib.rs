@@ -449,7 +449,8 @@ impl FromStr for Dialect {
     type Err = MetricFlowError;
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.to_lowercase().as_str() {
-            "duckdb" | "duck" => Ok(Dialect::DuckDB),
+            // GizmoSQL is a DuckDB-backed server and shares DuckDB's SQL dialect.
+            "duckdb" | "duck" | "gizmosql" => Ok(Dialect::DuckDB),
             "snowflake" | "sf" => Ok(Dialect::Snowflake),
             "redshift" | "rs" => Ok(Dialect::Redshift),
             "bigquery" | "bq" => Ok(Dialect::BigQuery),

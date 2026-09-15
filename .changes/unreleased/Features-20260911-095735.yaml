@@ -1,0 +1,7 @@
+kind: Features
+body: 'Add a GizmoSQL adapter (`type: gizmosql`): an Arrow Flight SQL server backed by DuckDB, loaded from the system `adbc_driver_gizmosql` ADBC driver. It shares DuckDB''s SQL dialect and inherits the `dbt-duckdb` macro package.'
+time: 2026-09-11T09:57:35.541015-04:00
+custom:
+    author: prmoore77
+    issue: ""
+    project: dbt-core

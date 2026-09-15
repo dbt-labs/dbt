@@ -228,7 +228,9 @@ impl CatalogRelation {
             // Lake compute is DuckDB-backed for relation-building purposes;
             // v1 catalogs.yml never supported per-catalog DuckDB selection either,
             // so this mirrors the DuckDB arm exactly.
-            AdapterType::DuckDB | AdapterType::LakeCompute => {
+            // GizmoSQL is a remote DuckDB and shares DuckDB's macros, which read
+            // `duckdb_write_strategy` off this relation.
+            AdapterType::DuckDB | AdapterType::LakeCompute | AdapterType::GizmoSQL => {
                 Ok(Self::default_catalog_relation_duckdb())
             }
             _ => Err(AdapterError::new(
@@ -1243,8 +1245,8 @@ impl CatalogRelation {
             AdapterType::Bigquery => BIGQUERY_ATTR,
             AdapterType::Databricks => DATABRICKS_ATTR,
             AdapterType::Snowflake => SNOWFLAKE_ATTR,
-            // Lake compute model configs surface the same way DuckDB's do.
-            AdapterType::DuckDB | AdapterType::LakeCompute => DUCKDB_ATTR,
+            // Lake compute and GizmoSQL model configs surface the same way DuckDB's do.
+            AdapterType::DuckDB | AdapterType::LakeCompute | AdapterType::GizmoSQL => DUCKDB_ATTR,
             _ => return None,
         };
         let model_config = if let Ok(adapter_attr) = model.get_attr(adapter_attr)
@@ -1284,8 +1286,8 @@ impl CatalogRelation {
             AdapterType::Bigquery => BIGQUERY_ATTR,
             AdapterType::Databricks => DATABRICKS_ATTR,
             AdapterType::Snowflake => SNOWFLAKE_ATTR,
-            // Lake compute model configs surface the same way DuckDB's do.
-            AdapterType::DuckDB | AdapterType::LakeCompute => DUCKDB_ATTR,
+            // Lake compute and GizmoSQL model configs surface the same way DuckDB's do.
+            AdapterType::DuckDB | AdapterType::LakeCompute | AdapterType::GizmoSQL => DUCKDB_ATTR,
             _ => return None,
         };
         let model_config = if let Ok(adapter_attr) = model.get_attr(adapter_attr)
