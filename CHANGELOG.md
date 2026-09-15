@@ -12,8 +12,26 @@ All notable changes to this project will be documented in this file.
 
 Released September 15, 2026
 
+### Fixes
+
+- Restore the bundled docs UI in the Python wheel builds, so `dbt docs generate` produces a working docs site again for pip-installed dbt.
+
+### Contributors
+- [@mishamsk](https://github.com/mishamsk)
 
 ## 2.0.1
+
+Released September 14, 2026
+
+### Under the Hood
+
+- Attribute --infer-schemas columns from declared YAML schema before binding via a CatalogProviderList wrapper, instead of mixing them into InferSchemaRegistry
+
+### Contributors
+
+- [@maxmalkin](https://github.com/maxmalkin)
+
+## 2.0.0
 
 Released September 14, 2026
 
@@ -29,17 +47,12 @@ Released September 14, 2026
 - Fix the dbt-docs-server Docker image: it now downloads a released dbt binary from the dbt-core GitHub Releases and verifies it against the release's published SHA256SUMS, tracking the newest release carrying a Linux binary instead of pinning a stale version (override with `--build-arg DBT_VERSION=`). The documented `docker build` command now works verbatim from either the repo root or the crate directory, a `.dockerignore` keeps the build context empty, and the image is multi-stage, multi-arch, health-checked, and runs as an unprivileged user. ([#15856](https://github.com/dbt-labs/dbt-core/issues/15856))
 - Rename dbt v2 CLI branding from Fusion/dbt-core to dbt (proprietary) and dbt-oss (OSS), updating --version/--help output and several Fusion-branded warning/error messages to say dbt instead.
 
-### Under the Hood
-
-- Attribute --infer-schemas columns from declared YAML schema before binding via a CatalogProviderList wrapper, instead of mixing them into InferSchemaRegistry
-
 ### Contributors
 - [@dbeatty10](https://github.com/dbeatty10) ([#14556](https://github.com/dbt-labs/dbt-core/issues/14556))
 - [@eliasdefaria](https://github.com/eliasdefaria) ([#15856](https://github.com/dbt-labs/dbt-core/issues/15856))
 - [@joshuataylor](https://github.com/joshuataylor) ([#15856](https://github.com/dbt-labs/dbt-core/issues/15856))
 - [@kendru](https://github.com/kendru)
 - [@koletzilla](https://github.com/koletzilla) ([#14585](https://github.com/dbt-labs/dbt-core/issues/14585))
-- [@maxmalkin](https://github.com/maxmalkin)
 - [@raunakkssinghc](https://github.com/raunakkssinghc) ([#14538](https://github.com/dbt-labs/dbt-core/issues/14538))
 - [@sd-db](https://github.com/sd-db) ([#15616](https://github.com/dbt-labs/dbt-core/issues/15616))
 
