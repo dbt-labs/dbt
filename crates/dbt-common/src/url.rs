@@ -11,6 +11,10 @@ use crate::{ErrorCode, FsResult, fs_err};
 /// `host` may be a bare host or a URL (scheme and path, if present, are
 /// stripped). The returned value is always a bare host (no scheme).
 ///
+/// Idempotent: if `label` is already one of `host`'s dot-separated
+/// segments, `host` is returned unchanged rather than inserting the label
+/// a second time.
+///
 /// For example, with `label = "semantic-layer"`:
 /// - MC: `{account_prefix}.dbt.com` -> `{account_prefix}.semantic-layer.dbt.com`
 /// - MC staging: `{account_prefix}.us.staging.dbt.com` -> `{account_prefix}.semantic-layer.us.staging.dbt.com`
@@ -30,6 +34,10 @@ pub fn insert_gateway_label(host: &str, label: &str) -> FsResult<String> {
             .unwrap_or(host)
             .to_string()
     };
+    if host.split('.').any(|segment| segment == label) {
+        return Ok(host);
+    }
+
     let host_error = fs_err!(ErrorCode::InvalidConfig, "dbt host is incorrect");
 
     if host.ends_with("getdbt.com") {
@@ -157,12 +165,16 @@ mod tests {
     }
 
     #[test]
-    fn already_has_label_is_inserted_again() {
-        // insert_gateway_label has no dedup logic; callers that need
-        // idempotency (e.g. flock's flock_driver_host) must guard before calling.
+    fn already_has_label_is_unchanged() {
+        // insert_gateway_label is idempotent: if the label is already
+        // present, it's returned unchanged instead of being inserted again.
         assert_eq!(
             insert_gateway_label("acme.dwg.dbt.com", "dwg").unwrap(),
-            "acme.dwg.dwg.dbt.com"
+            "acme.dwg.dbt.com"
+        );
+        assert_eq!(
+            insert_gateway_label("eq165.semantic-layer.us1.dbt.com", "semantic-layer").unwrap(),
+            "eq165.semantic-layer.us1.dbt.com"
         );
     }
 
