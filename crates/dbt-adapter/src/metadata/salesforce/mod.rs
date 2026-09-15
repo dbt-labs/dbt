@@ -57,6 +57,7 @@ impl MetadataAdapter for SalesforceMetadataAdapter {
         _unique_id: Option<String>,
         _phase: Option<ExecutionPhase>,
         _relations: &[Arc<dyn BaseRelation>],
+        _item_span_operation_id: Option<&str>,
         _token: CancellationToken,
     ) -> AsyncAdapterResult<'_, HashMap<String, AdapterResult<Arc<Schema>>>> {
         let future = std::future::ready(Ok(Default::default()));

@@ -60,7 +60,10 @@ use std::collections::HashSet;
 use std::path::Path;
 use std::sync::OnceLock;
 
-use super::dbt_catalogs_v2::{CatalogType, TableFormat};
+use super::dbt_catalogs_v2::{
+    CatalogType, PhysicalFormatResolver, PhysicalTableFormat, TableFormat,
+};
+use dbt_adapter_core::AdapterType;
 use dbt_common::{ErrorCode, FsResult, err, fs_err};
 use dbt_yaml::{self as yml};
 
@@ -85,6 +88,20 @@ impl<'a> LoadedCatalogs<'a> {
             .catalog_names()?
             .is_some_and(|names| names.iter().any(|n| n == name)))
     }
+}
+
+const CATALOG_DATABASE_PLATFORMS: &[AdapterType] = &[
+    AdapterType::DuckDB,
+    AdapterType::Snowflake,
+    AdapterType::Databricks,
+    AdapterType::Bigquery,
+];
+
+#[derive(Debug, Clone)]
+pub struct CatalogPlatformEntry<'a> {
+    pub adapter_type: AdapterType,
+    pub catalog_name: &'a str,
+    pub catalog_database: Option<&'a str>,
 }
 
 /// A validated catalogs.yml mapping.
@@ -151,6 +168,59 @@ impl DbtCatalogs {
         }
         self.populate_v2_caches()?;
         Ok(self.v2_catalog_names.get().unwrap())
+    }
+
+    pub fn platform_entries(&self) -> FsResult<impl Iterator<Item = CatalogPlatformEntry<'_>>> {
+        let view = self.view_v2()?;
+        Ok(view.catalogs.into_iter().flat_map(|catalog| {
+            CATALOG_DATABASE_PLATFORMS
+                .iter()
+                .filter_map(move |&adapter_type| {
+                    let block = catalog.config_block(adapter_type.as_ref())?;
+                    let catalog_database = block
+                        .get(yml::Value::from("catalog_database"))
+                        .and_then(|v| v.as_str())
+                        .map(str::trim)
+                        .filter(|s| !s.is_empty());
+                    Some(CatalogPlatformEntry {
+                        adapter_type,
+                        catalog_name: catalog.name,
+                        catalog_database,
+                    })
+                })
+        }))
+    }
+
+    pub fn catalogs_matching_database(
+        &self,
+        database: &str,
+        adapter_type: AdapterType,
+    ) -> FsResult<Vec<String>> {
+        debug_assert!(!database.trim().is_empty());
+        let names: Vec<&str> = self
+            .platform_entries()?
+            .filter(|entry| entry.adapter_type == adapter_type)
+            .filter_map(|entry| {
+                let alias = match adapter_type {
+                    AdapterType::DuckDB => entry.catalog_database.unwrap_or(entry.catalog_name),
+                    _ => entry.catalog_database?,
+                };
+                alias
+                    .eq_ignore_ascii_case(database)
+                    .then_some(entry.catalog_name)
+            })
+            .collect();
+
+        let view = self.view_v2()?;
+        Ok(view
+            .catalogs
+            .iter()
+            .filter(|catalog| {
+                names.contains(&catalog.name)
+                    && catalog.physical_table_format() != PhysicalTableFormat::Default
+            })
+            .map(|catalog| catalog.name.to_string())
+            .collect())
     }
 
     pub fn is_v2_catalog_database(&self, db: &str) -> FsResult<bool> {
@@ -3052,5 +3122,25 @@ catalogs:
 "#,
         );
         assert!(c.iceberg_rest_catalog_databases().unwrap().is_empty());
+    }
+
+    #[test]
+    fn catalogs_matching_database_default_table_format_is_excluded() {
+        let c = make_v2_catalogs(
+            r#"
+catalogs:
+  - name: horizon_plain
+    type: horizon
+    table_format: default
+    config:
+      duckdb:
+        endpoint: "https://horizon.example.com"
+        catalog_database: "horizon_db"
+"#,
+        );
+        let matches = c
+            .catalogs_matching_database("horizon_db", AdapterType::DuckDB)
+            .unwrap();
+        assert!(matches.is_empty(), "matches was: {matches:?}");
     }
 }

@@ -278,7 +278,11 @@ pub const EPOCH_RELATIONS: &[EpochRelation] = &[
         view: "epoch_run_catalog_stats",
         dir: RUN_CATALOG_STATS_SUBDIR,
         single_file: false,
-        supersede: Supersede::KeepAll,
+        // Unlike `run_results`, this is not an invocation log: it is the
+        // warehouse's current state for a relation. A re-catalogued relation
+        // replaces its old row rather than appending to it, so the newest
+        // epoch's row per `unique_id` wins.
+        supersede: Supersede::LatestGroup("unique_id"),
     },
 ];
 

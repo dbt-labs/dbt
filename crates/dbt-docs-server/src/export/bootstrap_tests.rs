@@ -4,7 +4,7 @@ use super::*;
 
 fn options() -> ExportOptions {
     ExportOptions {
-        index_dir: PathBuf::from("target/private/index"),
+        info_schema_dir: PathBuf::from("target/info_schema/v1"),
         output_dir: PathBuf::from("target"),
         duckdb_cdn_base: None,
         analytics_enabled: true,
@@ -23,12 +23,20 @@ fn payload(bootstrap: &SiteBootstrap) -> serde_json::Value {
     serde_json::from_str(json).expect("bootstrap payload is valid JSON")
 }
 
-/// The client resolves the parquet directory from this rather than hardcoding it.
-/// It is the index directory: the site reads the index artifacts as written.
+/// The client resolves the data directory from this rather than hardcoding it.
+///
+/// It is the information schema's own versioned directory, read where it was
+/// written — and version-scoped, which is the reason it cannot be a client-side
+/// constant: the version belongs to the writer.
 #[test]
 fn payload_carries_the_data_directory() {
     let value = payload(&bootstrap(&options()));
-    assert_eq!(value["data_dir"], "index/");
+    assert_eq!(value["data_dir"], format!("{}/", crate::export::data_dir()));
+    assert_eq!(
+        value["data_dir"],
+        format!("info_schema/v{}/", dbt_index_core::INFO_SCHEMA_VERSION),
+        "the shape the SPA resolves against document.baseURI"
+    );
 }
 
 #[test]

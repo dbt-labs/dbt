@@ -227,6 +227,11 @@ pub const INFO_SCHEMA: &[TableSpec] = &[
             c("name"),
             c("package_name"),
             c("original_file_path"),
+            // A test's SQL. Carried for the same reason `snapshots`, `analyses`,
+            // `hooks` and `functions` carry it and `models` does not: the payload
+            // trim drops it for models only, so a test row has real SQL in it.
+            // Without it a consumer showing a test's code has nothing to show.
+            c("raw_code"),
             c("fqn"),
             c("description"),
             c("database_name"),
@@ -680,6 +685,39 @@ pub const INFO_SCHEMA: &[TableSpec] = &[
             c("timing"),
             c("created_at"),
             c("ingested_at"),
+        ],
+    },
+    // What the warehouse says about the relation a node was materialized into,
+    // as of the last `dbt docs generate`. Distinct from `relation_name` on the
+    // resource tables, which is the relation dbt *intended* to write; these are
+    // observations, which is why they sit in `dbt_rt`.
+    //
+    // `Src::Own` because neither side can project it: the epoch carries one wide
+    // row per relation, while the staging index splits the same row across
+    // `catalog_tables` and an entity-attribute-value `catalog_stats`. Publishing
+    // the epoch's shape means the values arrive typed, so a consumer reads
+    // `row_count` as an integer instead of `TRY_CAST`-ing a string out of a
+    // pivot. `stat_label`, `description` and `include_in_stats` are dropped with
+    // it: they were display strings the index synthesized per stat, and there is
+    // no per-stat row left to hang them on.
+    TableSpec {
+        ns: Ns::DbtRt,
+        name: "relations",
+        src: Src::Own,
+        filter: Filter::All,
+        cols: &[
+            n("unique_id", ColTy::Utf8),
+            n("table_type", ColTy::Utf8),
+            n("table_owner", ColTy::Utf8),
+            n("database_name", ColTy::Utf8),
+            n("schema_name", ColTy::Utf8),
+            n("table_name", ColTy::Utf8),
+            n("row_count", ColTy::I64),
+            n("bytes", ColTy::I64),
+            // Utf8, not a timestamp: the warehouse reports this as text and
+            // neither the epoch nor the index parses it.
+            n("last_modified", ColTy::Utf8),
+            n("ingested_at", ColTy::TsUtc),
         ],
     },
     TableSpec {

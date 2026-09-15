@@ -2059,26 +2059,15 @@ pub fn manifest_model_to_dbt_model(
         custom_granularities: ts.custom_granularities.unwrap_or_default(),
     });
 
-    // Only SQL models should have whitespace/case normalization applied when recalculating checksums.
-    // Python models' checksums are based on the original file contents; applying SQL normalization
-    // would incorrectly mark them as modified under `state:*` selectors when deferring to a
-    // dbt-core-produced manifest.
-    let should_normalize_sql = model
-        .__base_attr__
-        .language
-        .as_deref()
-        .map(|l| l.eq_ignore_ascii_case("sql"))
-        .unwrap_or(true);
-
-    let recalculated_checksum = match (should_normalize_sql, model.__base_attr__.raw_code.clone()) {
-        (true, Some(raw_code)) => {
+    let recalculated_checksum = match model.__base_attr__.raw_code.clone() {
+        Some(raw_code) => {
             let normalized_raw_code = normalize_sql(&raw_code);
             recalculate_checksum(
                 Some(normalized_raw_code.as_str()),
                 model.__base_attr__.checksum.clone(),
             )
         }
-        _ => model.__base_attr__.checksum.clone(),
+        None => model.__base_attr__.checksum.clone(),
     };
 
     DbtModel {
@@ -2278,6 +2267,11 @@ pub fn manifest_function_to_dbt_function(
 }
 
 /// Recalculate checksum for a snapshot/model based on normalized raw code.
+///
+/// Callers normalize `raw_code` the same way for SQL and Python models
+/// (matching dbt-core 1.12+), so deferred-manifest checksums are comparable
+/// regardless of which dbt-core/Fusion version produced the manifest.
+///
 /// If the normalized code is missing, use the original checksum.
 /// If the normalized code is the legacy `--placeholder--` sentinel (older Fusion
 /// versions serialized this instead of the verbatim body, e.g. in deferred/

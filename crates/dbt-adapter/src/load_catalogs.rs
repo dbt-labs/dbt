@@ -37,7 +37,7 @@ pub fn set_use_catalogs_v2_from_flags(project_flags: Option<&yml::Value>) {
     let enabled = project_flags
         .and_then(|f| project_flags_get_value(f, "use_catalogs_v2"))
         .and_then(yml::Value::as_bool)
-        .unwrap_or(false);
+        .unwrap_or(true);
     *match USE_CATALOGS_V2.write() {
         Ok(g) => g,
         Err(p) => p.into_inner(),
@@ -77,27 +77,17 @@ pub fn do_load_catalogs(
     };
 
     let catalogs = DbtCatalogs::new(repr, span);
-    // TODO: remove v1 after discussion/product alignment (see CATALOGS_V2_DISCUSSION_URL)
     set_use_catalogs_v2_from_flags(project_flags);
     if fetch_use_catalogs_v2() {
-        emit_warn_log_message(
-            ErrorCode::NotYetSupportedOption,
-            format!(
-                "catalogs.yml v2 schema validation is experimental, not officially supported yet, and its spec is liable to change. See {CATALOGS_V2_DISCUSSION_URL}"
-            ),
-        );
         let view = catalogs.view_v2()?;
         validate_catalogs_v2(&view, path)?;
     } else {
         emit_warn_log_message(
             ErrorCode::DeprecatedOption,
             format!(
-                "catalogs.yml is being validated against the v1 schema. The `use_catalogs_v2` \
-                 project flag will default to `true` in a future release, which will validate \
-                 catalogs.yml against the v2 schema instead. To migrate now, set \
-                 `use_catalogs_v2: true` under `flags:` in dbt_project.yml. To keep the current \
-                 v1 behavior after the default changes, set `use_catalogs_v2: false` explicitly. \
-                 See {CATALOGS_V2_DISCUSSION_URL}"
+                "catalogs.yml is being validated against the deprecated v1 schema. To migrate, \
+                 remove the `use_catalogs_v2: false` override (or set it to `true`) under \
+                 `flags:` in dbt_project.yml. See {CATALOGS_V2_DISCUSSION_URL}"
             ),
         );
         let view = catalogs.view()?;

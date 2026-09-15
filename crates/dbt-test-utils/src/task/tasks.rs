@@ -331,9 +331,9 @@ impl ExecuteAndCompare {
         func: Arc<CommandFn>,
         use_recording: bool,
     ) -> Self {
-        // `--no-parallel` forces sequential task execution for
-        // deterministic golden output without throttling the connection pool
-        // via `--threads`, which now controls adapter connection backpressure.
+        // `--no-parallel` forces sequential task execution for deterministic
+        // golden output without shrinking the `dbt-runtime` blocking pool via
+        // `--threads`.
         cmd_vec.push("--no-parallel".to_string());
         if !cmd_vec.iter().any(|s| *s == "--log-format") {
             cmd_vec.push("--log-format=text".to_string());

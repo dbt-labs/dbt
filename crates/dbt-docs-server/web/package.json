@@ -72,6 +72,7 @@
     "@types/react": "^19.1.0",
     "@types/react-dom": "^19.1.0",
     "@vitejs/plugin-react": "^4.4.0",
+    "@tailwindcss/forms": "^0.5.7",
     "@vitest/browser": "3.2.7",
     "@vitest/runner": "3.2.7",
     "autoprefixer": "^10.4.24",

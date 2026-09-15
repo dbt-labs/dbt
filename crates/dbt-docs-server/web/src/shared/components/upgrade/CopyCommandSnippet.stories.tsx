@@ -11,7 +11,7 @@ export default meta;
 type Story = StoryObj<typeof CopyCommandSnippet>;
 
 /**
- * The CTA for the column-lineage upsell when Fusion is installed but not
+ * The CTA for the column-lineage upsell when dbt v2 is installed but not
  * authenticated: rather than a button to somewhere, the thing the user needs is a
  * command. Clicking copy swaps the icon to a checkmark for 1.5s and announces the
  * copy through a live region.
@@ -28,7 +28,7 @@ export const InlineWithText: Story = {
   render: () => (
     <div className="flex w-[560px] items-center justify-between gap-3">
       <span className="min-w-0 flex-1 truncate text-sm text-fgDecorative">
-        Column-level lineage is available in Fusion
+        Column-level lineage is available in dbt v2
       </span>
       <CopyCommandSnippet command="dbt login" />
     </div>

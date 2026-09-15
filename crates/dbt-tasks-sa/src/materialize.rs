@@ -29,6 +29,7 @@ use dbt_adapter::adapter::NodeOverride;
 use dbt_adapter::connection::drop_thread_local_connection;
 use dbt_adapter::relation::{RelationObject, do_create_relation};
 use dbt_adapter::response::AdapterResponse;
+use dbt_adapter::stmt_splitter::StmtSplitter;
 use dbt_adapter_core::AdapterType;
 use dbt_agate::{AgateTable, MappedSequence, Tuple};
 use dbt_common::{
@@ -152,10 +153,13 @@ fn apply_node_overrides(
 
 /// Reset the per-node connection overrides (`USE` database / `use warehouse`) after a
 /// materialization. If a reset fails the connection is stuck in the wrong scope, so drop it
-/// (do NOT recycle) so no other node inherits it, then fail this node loudly with a clear
+/// (do NOT leave it in the thread-local slot) so no other node inherits it, then fail this
+/// node loudly with a clear
 /// error; the run continues on other nodes.
 ///
-/// TODO: redundant once the recycling pool is segregated by config fingerprint.
+/// The fingerprint check in `borrow_tlocal_connection_impl` does not help here:
+/// the connection's *configuration* is unchanged, only its session scope is
+/// wrong.
 fn reset_node_overrides(
     adapter: &Adapter,
     unique_id: &str,
@@ -348,12 +352,56 @@ pub fn execute_node_hooks<S: serde::Serialize>(
 #[cfg(test)]
 mod tests {
     use super::{
-        NodeHookPhase, NodeHookStyle, cell_as_bool, model_hook_style, node_hook_expression,
+        NodeHookPhase, NodeHookStyle, body_for_materialization, cell_as_bool, model_hook_style,
+        node_hook_expression,
     };
+    use dbt_adapter::stmt_splitter::DefaultStmtSplitter;
     use dbt_adapter_core::AdapterType;
     use dbt_schemas::schemas::common::DbtMaterialization;
     use minijinja::Value;
     use std::collections::BTreeMap;
+
+    fn body(sql: &str, language: Option<&str>) -> String {
+        body_for_materialization(sql, language, &DefaultStmtSplitter, AdapterType::DuckDB)
+            .to_string()
+    }
+
+    /// Materializations splice the body into a wrapping query, so a terminal `;`
+    /// has to go before the macros see it.
+    #[test]
+    fn sql_bodies_lose_their_trailing_terminator() {
+        assert_eq!(body("select 1 as id;", None), "select 1 as id");
+        assert_eq!(body("select 1 as id;", Some("sql")), "select 1 as id");
+        // Shapes a plain suffix trim would miss.
+        assert_eq!(body("select 1 as id;;", None), "select 1 as id");
+        assert_eq!(body("select 1 as id; -- c", None), "select 1 as id");
+        assert_eq!(body("select 1 as id;\n-- c\n", None), "select 1 as id");
+    }
+
+    /// Python bodies are not SQL; running a SQL splitter over them would be
+    /// meaningless, so they must pass through byte for byte.
+    #[test]
+    fn python_bodies_are_handed_over_verbatim() {
+        let py = "def model(dbt, session):\n    return session.sql('select 1;')\n";
+        assert_eq!(body(py, Some("python")), py);
+    }
+
+    #[test]
+    fn bodies_without_a_terminator_are_untouched() {
+        assert_eq!(body("\n  select 1 as id\n", None), "\n  select 1 as id\n");
+        // A `;` inside a literal is not a terminator.
+        assert_eq!(body("select 'a;b' as id\n", None), "select 'a;b' as id\n");
+    }
+
+    /// A genuine multi-statement body keeps its terminators, so the warehouse
+    /// still rejects it rather than us silently rewriting the user's SQL.
+    #[test]
+    fn multi_statement_bodies_keep_their_terminators() {
+        assert_eq!(
+            body("select 1 as id; select 2 as id;", None),
+            "select 1 as id; select 2 as id;"
+        );
+    }
 
     #[test]
     fn split_transaction_post_hooks_commit_even_when_post_hooks_are_absent() {
@@ -635,6 +683,20 @@ pub fn materialize_seed(
     Ok((value, result_store.main_adapter_response()))
 }
 
+/// Normalize a node body before handing it to a materialization macro.
+fn body_for_materialization<'a>(
+    sql: &'a str,
+    language: Option<&str>,
+    splitter: &dyn StmtSplitter,
+    adapter_type: AdapterType,
+) -> &'a str {
+    match language {
+        // Python bodies are not SQL and must be handed over verbatim.
+        Some("python") => sql,
+        _ => splitter.strip_trailing_statement_terminator(sql, adapter_type),
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn materialize_model(
     sql: &str,
@@ -663,6 +725,19 @@ pub fn materialize_model(
 
     let macro_name = materialization_resolver
         .find_materialization_macro_by_name(&materialization.to_string(), model.node_adapter())?;
+    let adapter = jinja_env.get_base_adapter().ok_or_else(|| {
+        unexpected_fs_err!(
+            "No adapter found for model {}",
+            model.__common_attr__.unique_id
+        )
+    })?;
+
+    let sql = body_for_materialization(
+        sql,
+        model.__common_attr__.language.as_deref(),
+        adapter.engine().splitter(),
+        adapter_type,
+    );
     context.insert("sql".to_string(), Value::from(sql));
     context.insert("compiled_code".to_string(), Value::from(sql));
 
@@ -678,13 +753,6 @@ pub fn materialize_model(
             .get_node_path(NodePathKind::Executable, &io_args.in_dir, &io_args.out_dir)
             .into_owned()
     };
-
-    let adapter = jinja_env.get_base_adapter().ok_or_else(|| {
-        unexpected_fs_err!(
-            "No adapter found for model {}",
-            model.__common_attr__.unique_id
-        )
-    })?;
 
     let custom_warehouse = if let Some(snowflake_attr) = &model.__adapter_attr__.snowflake_attr {
         snowflake_attr.snowflake_warehouse.clone()
@@ -1033,7 +1101,20 @@ pub fn materialize_microbatch_model(
         &io_args.out_dir,
     )?;
 
-    let batch_sql = Value::from(batch_sql);
+    let adapter = jinja_env.get_base_adapter().ok_or_else(|| {
+        fs_err!(
+            ErrorCode::Generic,
+            "No adapter found for microbatch model {}",
+            batch_ctx.id,
+        )
+    })?;
+
+    let batch_sql = Value::from(body_for_materialization(
+        &batch_sql,
+        model.__common_attr__.language.as_deref(),
+        adapter.engine().splitter(),
+        adapter_type,
+    ));
 
     // Databricks incremental materialization reads `model['compiled_code']`.
     let batch_model = run_node_context
@@ -1054,14 +1135,6 @@ pub fn materialize_microbatch_model(
         &DbtMaterialization::Incremental.to_string(),
         model.node_adapter(),
     )?;
-
-    let adapter = jinja_env.get_base_adapter().ok_or_else(|| {
-        fs_err!(
-            ErrorCode::Generic,
-            "No adapter found for microbatch model {}",
-            batch_ctx.id,
-        )
-    })?;
 
     let custom_warehouse = if let Some(snowflake_attr) = &model.__adapter_attr__.snowflake_attr {
         snowflake_attr.snowflake_warehouse.clone()

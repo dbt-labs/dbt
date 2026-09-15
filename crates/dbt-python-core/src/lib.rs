@@ -142,6 +142,7 @@ fn trace_config(cli: &Cli, cli_parser: &CliParser, arg: &SystemArgs) -> FsTraceC
         .with_query_log_enabled(true) // Always enable query log for now
         .with_warn_error_options(cli.common_args().get_cli_warn_error_options())
         .with_skip_fusion_only_upgrades(cli.common_args().skip_fusion_only_upgrades())
+        .with_quiet(cli.common_args().get_quiet())
         .build()
 }
 

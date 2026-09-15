@@ -8,8 +8,9 @@ use dbt_schemas::schemas::project::DbtProject;
 use dbt_schemas::schemas::project::{
     ConfigKeys, DataTestConfig, FunctionConfig, ModelConfig, ProjectAnalysisConfig,
     ProjectDataTestConfig, ProjectExposureConfig, ProjectFunctionConfig, ProjectModelConfig,
-    ProjectSeedConfig, ProjectSemanticModelConfig, ProjectSnapshotConfig, ProjectSourceConfig,
-    ProjectUnitTestConfig, SeedConfig, SnapshotConfig, SourceConfig, UnitTestConfig,
+    ProjectSeedConfig, ProjectSemanticModelConfig, ProjectSkillConfig, ProjectSnapshotConfig,
+    ProjectSourceConfig, ProjectUnitTestConfig, SeedConfig, SnapshotConfig, SourceConfig,
+    UnitTestConfig,
 };
 use dbt_yaml::{ShouldBe, Value as YmlValue};
 use indexmap::IndexMap;
@@ -102,6 +103,14 @@ fn prune_sections(dbt_project: &mut DbtProject) {
         semantic_models,
         "semantic-models",
         ProjectSemanticModelConfig,
+        HashSet::<String>::new()
+    );
+    // TODO: Do we need to implement ConfigKeys for SkillConfig?
+    prune_section!(
+        dbt_project,
+        skills,
+        "skills",
+        ProjectSkillConfig,
         HashSet::<String>::new()
     );
 }

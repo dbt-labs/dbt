@@ -79,7 +79,7 @@ export type ConfigDisplayProps = {
 };
 
 export function ConfigDisplay({ config }: ConfigDisplayProps) {
-  // `static_analysis` is a dbt-fusion-only concept (Core has no static SQL
+  // `static_analysis` is a dbt-v2-only concept (Core has no static SQL
   // analyzer) — when it's genuinely absent, show a locked teaser rather than
   // silently omitting the row, so Core users know the capability exists.
   const hasStaticAnalysis = 'static_analysis' in config;
@@ -95,7 +95,7 @@ export function ConfigDisplay({ config }: ConfigDisplayProps) {
             STATIC ANALYSIS
           </span>
           <span className="text-right text-sm italic text-fgDecorative">
-            Enable Fusion to view
+            Enable dbt v2 to view
           </span>
         </div>
       )}

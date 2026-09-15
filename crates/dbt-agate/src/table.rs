@@ -1450,7 +1450,7 @@ mod tests {
         let env = Environment::new();
 
         for (name, value, expected_len) in values {
-            assert_eq!(value.kind(), minijinja::value::ValueKind::Seq, "{name}");
+            assert_eq!(value.kind(), ValueKind::Seq, "{name}");
             assert_eq!(
                 env.render_str(
                     "{{ value | list | length }}",

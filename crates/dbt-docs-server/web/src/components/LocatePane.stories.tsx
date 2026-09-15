@@ -59,7 +59,6 @@ const meta: Meta<typeof LocatePane> = {
     onShowProject: () => {},
     onSetTheme: () => {},
     onSetFilters: () => {},
-    onUpdateFiltersInPlace: () => {},
     onSelectMode: () => {},
   },
   // The sidebar is a full-height rail; it needs the height to lay out its tabs,

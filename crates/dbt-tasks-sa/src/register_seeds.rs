@@ -1,5 +1,7 @@
 use std::collections::BTreeMap;
+use std::future::Future;
 use std::path::{Path, PathBuf};
+use std::pin::Pin;
 use std::sync::Arc;
 
 use arrow_schema::{DataType, Field, Schema, SchemaRef};
@@ -7,7 +9,7 @@ use dbt_adapter::column::ColumnStatic;
 use dbt_adapter::relation::create_relation_from_node;
 use dbt_adapter::sql_types::TypeOps;
 use dbt_adapter_core::AdapterType;
-use dbt_common::tracing::{dbt_emit::emit_warn_log_message, spawn_blocking_traced, spawn_traced};
+use dbt_common::tracing::{dbt_emit::emit_warn_log_message, spawn_traced};
 use dbt_common::{ErrorCode, FsResult, fs_err};
 use dbt_csv::{CustomCsvOptions, read_to_arrow_records};
 use dbt_df_providers::seed_io::{
@@ -45,9 +47,9 @@ pub fn resolve_seed_path(in_dir: &Path, seed: &DbtSeed) -> PathBuf {
 }
 
 /// Synchronously register a CSV seed.
-/// Intended to run inside `spawn_blocking_traced`.
-/// The seed's schema is registered in the schema cache and its data is written
-/// to the data store.
+///
+/// Intended to run inside `dbt_runtime::spawn_blocking`. The seed's schema is
+/// registered in the schema cache and its data is written to the data store.
 fn register_seed_csv(
     seed: Arc<DbtSeed>,
     ctx: Arc<SeedRegistrationCtx>,
@@ -107,7 +109,8 @@ fn register_seed_csv(
 }
 
 /// Synchronously register a JSON seed.
-/// Intended to run inside `spawn_blocking_traced`.
+///
+/// Intended to run inside `dbt_runtime::spawn_blocking`.
 fn register_seed_json(
     seed: Arc<DbtSeed>,
     ctx: Arc<SeedRegistrationCtx>,
@@ -174,10 +177,17 @@ async fn register_seed_parquet_async(
         let cfqn = canonical_fqn.clone();
         let ts = target_schema.clone();
         let dsc = Arc::clone(&ctx);
-        match spawn_blocking_traced(move || dsc.data_store.persist_data(&cfqn, ts, batches)).await {
+        match dbt_runtime::spawn_blocking(move || dsc.data_store.persist_data(&cfqn, ts, batches))
+            .await
+        {
             Ok(Ok(_)) => {}
             Ok(Err(e)) => return Err(e.into()),
-            Err(j) => return Err(j.into()),
+            Err(j) => {
+                return Err(fs_err!(
+                    ErrorCode::Generic,
+                    "seed persist task panicked: {j}"
+                ));
+            }
         }
     }
 
@@ -208,7 +218,8 @@ pub async fn pre_register_seeds(
         in_dir: in_dir.to_path_buf(),
     });
 
-    let mut handles: Vec<tokio::task::JoinHandle<FsResult<RegisteredSeed>>> = Vec::new();
+    let mut handles: Vec<Pin<Box<dyn Future<Output = FsResult<RegisteredSeed>> + Send>>> =
+        Vec::new();
 
     for unique_id in sorted_nodes {
         let Some(seed) = seeds.get(*unique_id) else {
@@ -237,21 +248,28 @@ pub async fn pre_register_seeds(
         match format {
             None => {
                 let type_ops = Arc::clone(&type_ops);
-                handles.push(spawn_blocking_traced(move || {
-                    register_seed_csv(seed, ctx, type_ops)
-                }))
+                let h = dbt_runtime::spawn_blocking(move || register_seed_csv(seed, ctx, type_ops));
+                handles.push(Box::pin(async move {
+                    h.await
+                        .map_err(|e| fs_err!(ErrorCode::Generic, "seed task panicked: {e}"))?
+                }));
             }
             Some(TableFormat::Json) => {
                 let type_ops = Arc::clone(&type_ops);
-                handles.push(spawn_blocking_traced(move || {
-                    register_seed_json(seed, ctx, type_ops)
-                }))
+                let h =
+                    dbt_runtime::spawn_blocking(move || register_seed_json(seed, ctx, type_ops));
+                handles.push(Box::pin(async move {
+                    h.await
+                        .map_err(|e| fs_err!(ErrorCode::Generic, "seed task panicked: {e}"))?
+                }));
             }
             Some(TableFormat::Parquet) => {
                 let type_ops = Arc::clone(&type_ops);
-                handles.push(spawn_traced(register_seed_parquet_async(
-                    seed, ctx, type_ops,
-                )))
+                let h = spawn_traced(register_seed_parquet_async(seed, ctx, type_ops));
+                handles.push(Box::pin(async move {
+                    h.await
+                        .map_err(|e| fs_err!(ErrorCode::Generic, "seed task panicked: {e}"))?
+                }));
             }
             Some(TableFormat::Csv) => {
                 unreachable!("extension dispatch only yields csv as None, not TableFormat::Csv")
@@ -262,14 +280,8 @@ pub async fn pre_register_seeds(
     let mut results = Vec::with_capacity(handles.len());
     for handle in handles {
         match handle.await {
-            Ok(Ok(registered)) => results.push(registered),
-            // Emit the real error here (CSV parse failure, etc.). The seed's
-            // visit_render will detect the missing schema and mark the task as
-            // failed without emitting a second error.
-            Ok(Err(e)) => tracing::error!("{}", e),
-            Err(join_err) => {
-                tracing::error!("Seed registration task panicked: {}", join_err)
-            }
+            Ok(registered) => results.push(registered),
+            Err(e) => tracing::error!("{}", e),
         }
     }
     results

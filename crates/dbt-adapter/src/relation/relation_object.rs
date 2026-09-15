@@ -373,6 +373,7 @@ impl Object for RelationObject {
             }
             Some("is_view") => Some(Value::from(self.is_view())),
             Some("is_materialized_view") => Some(Value::from(self.is_materialized_view())),
+            Some("is_metric_view") => Some(Value::from(self.is_metric_view())),
             Some("is_streaming_table") => Some(Value::from(self.is_streaming_table())),
             Some("is_dynamic_table") => Some(Value::from(self.is_dynamic_table())),
             Some("is_interactive_table") => Some(Value::from(self.is_interactive_table())),
@@ -423,6 +424,7 @@ impl Object for RelationObject {
             "is_table",
             "is_view",
             "is_materialized_view",
+            "is_metric_view",
             "is_streaming_table",
             "is_cte",
             "is_pointer",
@@ -1039,6 +1041,24 @@ mod tests {
             create primary_key | CONSTRAINT pk_id PRIMARY KEY (id)
             alter check | CONSTRAINT check_id_positive CHECK (id > 0)
             "#,
+        );
+    }
+
+    #[test]
+    fn databricks_metric_view_relation_is_visible_to_jinja() {
+        let relation = Relation::new(
+            AdapterType::Databricks,
+            "main".to_string(),
+            "default".to_string(),
+            "order_metrics".to_string(),
+        )
+        .with_relation_type(RelationType::MetricView)
+        .with_quoting(DEFAULT_RESOLVED_QUOTING);
+
+        jinja_assert(
+            RelationObject::new(Arc::new(relation)),
+            "{{ obj.is_metric_view }} | {{ obj.type }}",
+            "True | metric_view",
         );
     }
 

@@ -1,4 +1,4 @@
-use crate::constants::DBT_FUSION;
+use crate::constants::DBT_BRAND_NAME;
 use crate::io_args::{FsCommand, IoArgs, LogFormat};
 use crate::tracing::{FsTraceConfig, FsTraceConfigBuilder};
 use std::path::PathBuf;
@@ -12,7 +12,7 @@ fn config_from_formats(log_format: LogFormat, log_format_file: Option<LogFormat>
         ..Default::default()
     };
 
-    FsTraceConfigBuilder::from_io_args("dbt-test", DBT_FUSION, &io_args)
+    FsTraceConfigBuilder::from_io_args("dbt-test", DBT_BRAND_NAME, &io_args)
         .with_command(FsCommand::Unset)
         .with_project_dir(Some(&project_dir))
         .build()

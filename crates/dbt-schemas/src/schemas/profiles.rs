@@ -266,7 +266,7 @@ impl DbConfig {
                 "base_url",
                 "method",
                 "organization",
-                "fivetran_api_url",
+                "fivetran_auth_url",
             ],
             // Adapter types with no `DbConfig` variant, so nothing to display.
             AdapterType::Athena
@@ -847,14 +847,12 @@ pub struct BigqueryDbConfig {
     pub execution_project: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub api_endpoint: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none", alias = "dataproc_region")]
     pub compute_region: Option<String>,
     // TODO: support this https://docs.getdbt.com/docs/core/connect-data-platform/bigquery-setup
     pub dataproc_batch: Option<YmlValue>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub dataproc_cluster_name: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub dataproc_region: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub gcs_bucket: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1068,7 +1066,7 @@ pub struct LakeComputeConfig {
     pub fivetran_credential: Option<String>,
     /// Fivetran public API base URL; only needed to reach a non-production one.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub fivetran_api_url: Option<String>,
+    pub fivetran_auth_url: Option<String>,
     /// Days a minted Snowflake PAT stays valid before it needs re-minting.
     /// Only applies when lake compute mints a PAT for Horizon catalog access
     /// (i.e. non-keypair auth on the native Snowflake target). Default: 30.
@@ -2011,7 +2009,7 @@ impl TryFrom<DbConfig> for TargetContext {
                     compute_region: config.compute_region.clone(),
                     dataproc_batch: config.dataproc_batch.clone(),
                     dataproc_cluster_name: config.dataproc_cluster_name.clone(),
-                    dataproc_region: config.dataproc_region.clone(),
+                    dataproc_region: config.compute_region.clone(),
                     execution_project: config.execution_project.clone(),
                     gcs_bucket: config.gcs_bucket.clone(),
                     impersonate_service_account: config.impersonate_service_account.clone(),

@@ -71,21 +71,21 @@ use crate::{
 };
 
 /// Build TUI layer that handles all terminal user interface on stdout and stderr, including progress bars
+pub struct TuiConfig {
+    pub show_options: HashSet<ShowOptions>,
+    pub command: FsCommand,
+    pub quiet: bool,
+}
+
 pub fn build_tui_layer(
     max_log_verbosity: LevelFilter,
     log_format: LogFormat,
-    show_options: HashSet<ShowOptions>,
-    command: FsCommand,
+    config: TuiConfig,
 ) -> ConsumerLayer {
     // Enables progress bar for now.
     let is_interactive = log_format == LogFormat::Default;
 
-    Box::new(TuiLayer::new(
-        max_log_verbosity,
-        is_interactive,
-        show_options,
-        command,
-    ))
+    Box::new(TuiLayer::new(max_log_verbosity, is_interactive, config))
 }
 
 /// Identifies progress bars and spinners in the TUI layer.
@@ -360,6 +360,7 @@ pub struct TuiLayer {
     max_term_line_width: Option<usize>,
     show_options: HashSet<ShowOptions>,
     command: FsCommand,
+    quiet: bool,
     /// Track if we've emitted the list header yet
     list_header_emitted: AtomicBool,
     /// Whether to group skipped tests under TuiAllProcessingNodesGroup spans
@@ -381,12 +382,12 @@ pub struct TuiLayer {
 }
 
 impl TuiLayer {
-    pub fn new(
-        max_log_verbosity: LevelFilter,
-        is_interactive: bool,
-        show_options: HashSet<ShowOptions>,
-        command: FsCommand,
-    ) -> Self {
+    pub fn new(max_log_verbosity: LevelFilter, is_interactive: bool, config: TuiConfig) -> Self {
+        let TuiConfig {
+            show_options,
+            command,
+            quiet,
+        } = config;
         let stdout_term = Term::stdout();
         let is_interactive = is_interactive && stdout_term.is_term();
         let max_term_line_width = stdout_term.size_checked().map(|(_, cols)| cols as usize);
@@ -408,6 +409,7 @@ impl TuiLayer {
             max_term_line_width,
             show_options,
             command,
+            quiet,
             list_header_emitted: AtomicBool::new(false),
             group_skipped_tests,
             progress,
@@ -421,6 +423,7 @@ impl TuiLayer {
             max_term_line_width,
             show_options,
             command,
+            quiet,
             list_header_emitted: AtomicBool::new(false),
             group_skipped_tests,
             progress,
@@ -865,7 +868,6 @@ impl TuiLayer {
             | ExecutionPhase::TaskGraphBuild
             | ExecutionPhase::Debug
             | ExecutionPhase::DeferHydration
-            | ExecutionPhase::SchemaHydration
             | ExecutionPhase::FreshnessAnalysis
             | ExecutionPhase::OnRunStart
             | ExecutionPhase::OnRunEnd => {
@@ -875,6 +877,7 @@ impl TuiLayer {
             | ExecutionPhase::Compare
             | ExecutionPhase::InitAdapter
             | ExecutionPhase::NodeCacheHydration
+            | ExecutionPhase::SchemaHydration
             | ExecutionPhase::Lineage => {
                 // Do not show progress for these phases
             }
@@ -919,7 +922,6 @@ impl TuiLayer {
             | ExecutionPhase::TaskGraphBuild
             | ExecutionPhase::Debug
             | ExecutionPhase::DeferHydration
-            | ExecutionPhase::SchemaHydration
             | ExecutionPhase::FreshnessAnalysis
             | ExecutionPhase::OnRunStart
             | ExecutionPhase::OnRunEnd => {
@@ -929,6 +931,7 @@ impl TuiLayer {
             | ExecutionPhase::Compare
             | ExecutionPhase::InitAdapter
             | ExecutionPhase::NodeCacheHydration
+            | ExecutionPhase::SchemaHydration
             | ExecutionPhase::Lineage => {
                 // Do not show progress for these phases
             }
@@ -1459,6 +1462,16 @@ impl TuiLayer {
     }
 
     fn handle_compiled_code_inline(&self, compiled_code: &CompiledCodeInline) {
+        if self.quiet {
+            self.write_suspended(|| {
+                io::stdout()
+                    .lock()
+                    .write_all(format!("{}\n", compiled_code.sql).as_bytes())
+                    .expect("failed to write compiled code to stdout");
+            });
+            return;
+        }
+
         // Only show if any Progress*, Completed or All option is enabled
         let should_show = self.show_options.contains(&ShowOptions::Progress)
             || self.show_options.contains(&ShowOptions::ProgressRender)
@@ -2027,10 +2040,24 @@ impl TuiLayer {
                 });
         }
 
-        // Only show if ShowOptions::Completed or All is enabled
-        if !self.show_options.contains(&ShowOptions::Completed)
-            && !self.show_options.contains(&ShowOptions::All)
-        {
+        // Lint/format run one of these spans per source file, including every
+        // macro -- an order of magnitude more items than a typical node-based
+        // command schedules, so `ShowOptions::Completed` alone (already on by
+        // default) would print one line per file. Require `All` for these
+        // commands specifically; other commands keep the normal `Completed`
+        // gate.
+        let item_visible = if matches!(
+            self.command,
+            FsCommand::Extension("lint")
+                | FsCommand::Extension("format")
+                | FsCommand::Extension("format-legacy")
+        ) {
+            self.show_options.contains(&ShowOptions::All)
+        } else {
+            self.show_options.contains(&ShowOptions::Completed)
+                || self.show_options.contains(&ShowOptions::All)
+        };
+        if !item_visible {
             return;
         }
 

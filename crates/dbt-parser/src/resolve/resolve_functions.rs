@@ -36,7 +36,9 @@ use crate::dbt_project_config::{
     ProjectConfigResolver, RootProjectConfigs, disallow_plus_prefix_from_flags, init_project_config,
 };
 use crate::renderer::{RenderCtx, RenderCtxInner};
-use crate::resolve::resolve_utils::{build_unrendered_config, extract_config_map};
+use crate::resolve::resolve_utils::{
+    build_unrendered_config, extract_config_map, validate_node_adapter,
+};
 use crate::utils::{
     RelationComponents, extract_resource_config_from_raw_project, parse_unrendered_config,
     update_node_relation_components,
@@ -291,9 +293,9 @@ pub async fn resolve_functions(
             get_original_file_path(&dbt_asset.base_path, &arg.io.in_dir, &dbt_asset.path);
 
         let unique_id = get_unique_id(function_name, package_name, None, "function");
-        // See `resolve_models`: the flag overrides the config, and nothing is
-        // validated at parse. A function selects explicitly; it has no attached
-        // node to inherit from.
+        // See `resolve_models`: the flag overrides the config. A function selects
+        // explicitly; it has no attached node to inherit from.
+        validate_node_adapter(model_config.adapter, &dbt_asset.path)?;
         let resolved_node_adapter = arg.adapter_override.or(model_config.adapter);
         // See `resolve_models`: both remaining quoting layers depend on which
         // adapter the node runs on, which is only known after the config merge.

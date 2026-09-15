@@ -3594,6 +3594,48 @@ impl Adapter {
         }
     }
 
+    /// Drop the trailing statement terminator from a node body so it can be
+    /// spliced into a wrapping query.
+    #[tracing::instrument(skip_all, level = "trace")]
+    pub fn strip_trailing_statement_terminator(
+        &self,
+        _state: &State,
+        args: &[Value],
+    ) -> Result<Value, minijinja::Error> {
+        let iter = ArgsIter::new("strip_trailing_statement_terminator", &["sql"], args);
+        let sql = iter.next_arg::<&str>()?;
+        iter.finish()?;
+
+        match &self.inner {
+            Typed { adapter, .. } => Ok(Value::from(
+                adapter.strip_trailing_statement_terminator(sql),
+            )),
+            // Parse-time rendering never executes SQL, so leave the body alone.
+            Parse(_) => Ok(Value::from(sql)),
+        }
+    }
+
+    /// Wrap backtick-rendered SQL identifiers on metric_view `source:` lines in
+    /// YAML double quotes. Other keys are left untouched.
+    ///
+    /// Only available with Databricks adapter.
+    #[tracing::instrument(skip_all, level = "trace")]
+    pub fn yaml_quote_backtick_values(
+        &self,
+        _state: &State,
+        args: &[Value],
+    ) -> Result<Value, minijinja::Error> {
+        match &self.inner {
+            Typed { adapter, .. } => {
+                let iter = ArgsIter::new("yaml_quote_backtick_values", &["yaml_body"], args);
+                let yaml_body = iter.next_arg::<&str>()?;
+                iter.finish()?;
+                Ok(Value::from(adapter.yaml_quote_backtick_values(yaml_body)?))
+            }
+            Parse(_) => unimplemented!("yaml_quote_backtick_values"),
+        }
+    }
+
     /// Used internally to attempt executing a Snowflake `use warehouse [name]` statement.
     #[tracing::instrument(skip(self), level = "trace")]
     pub fn use_warehouse(
@@ -3813,7 +3855,7 @@ impl Adapter {
         _args: &[Value],
     ) -> Result<Value, minijinja::Error> {
         unimplemented!(
-            "get_catalog_integration is unavailable in Fusion. Access catalogs metadata directly from a catalog relation obtained using adapter.build_catalog_relation(model: RelationConfig)"
+            "get_catalog_integration is unavailable in dbt. Access catalogs metadata directly from a catalog relation obtained using adapter.build_catalog_relation(model: RelationConfig)"
         )
     }
 }
@@ -3856,14 +3898,21 @@ impl Adapter {
                 };
                 // TODO(harry): add iter.finish() and fix the tests
 
-                // NOTE(serramatutu): this is a hacky fix for: https://github.com/dbt-labs/dbt-fusion/issues/1332
-                // It is possible this still fails for other things that return large result sets
-                // unnecessarily. Without users explicitly running with `fetch=False`, we'd need full SQL
-                // parsing to determine whether to fetch or not.
-                if self.adapter_type() == AdapterType::Bigquery
-                    && sql.trim().to_lowercase().starts_with("alter table")
-                {
-                    fetch = false;
+                // dbt.run_query always passes fetch=true. We try to guess whether to actually
+                // fetch the resulting record batch based on the statement SQL contents.
+                if dbt_adapter_sql::statements::is_update_statement(sql, self.adapter_type()) {
+                    let splitter = self.engine().splitter();
+                    let statement_count = splitter
+                        .split(sql, self.adapter_type())
+                        .into_iter()
+                        .filter(|stmt| !splitter.is_empty(stmt, self.adapter_type()))
+                        .count();
+
+                    // we conservatively assume it's not an update statement if the executed SQL
+                    // has multiple statements
+                    if statement_count <= 1 {
+                        fetch = false;
+                    }
                 }
 
                 let (response, table) =
@@ -4217,6 +4266,12 @@ impl Adapter {
             "parse_columns_and_constraints" => self.parse_columns_and_constraints(state, args),
             // sql: str
             "clean_sql" => self.clean_sql(state, args),
+            // sql: str
+            "strip_trailing_statement_terminator" => {
+                self.strip_trailing_statement_terminator(state, args)
+            }
+            // yaml_body: str
+            "yaml_quote_backtick_values" => self.yaml_quote_backtick_values(state, args),
             "get_seed_file_path" => {
                 // model: dict (seed node)
                 let iter = ArgsIter::new(name, &["model"], args);

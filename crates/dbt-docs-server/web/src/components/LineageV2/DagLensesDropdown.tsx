@@ -9,14 +9,14 @@ import {
   DropdownMenuTrigger,
 } from '../ui/DropdownMenu';
 
-/** "Default" (resource type) and "Materialization" render a real badge on
- *  each node card now (see lib/lensBadges). "Model layer" too, though it
- *  needed one small addition to the lineage query (original_file_path) to
- *  have anything to infer a layer from. "Last run", "Last test", and "Query
- *  history" are still scaffold-only: that data isn't in the lineage payload
- *  at all (execution results aren't fetched here), and query history is
- *  Discovery-API/Cloud-only regardless -- selecting them is real, but no
- *  node will show a badge until there's a data source for them. */
+/** "Default", "Materialization", and "Model layer" render a real badge on
+ *  each node card now (see lib/lensBadges). "Last run", "Last test", and
+ *  "Query history" are hidden until there's an actual data source for them:
+ *  that data isn't in the lineage payload at all (execution results aren't
+ *  fetched here), and query history is Discovery-API/Cloud-only regardless.
+ *  Their `lensBadgeFor` cases and store values still exist -- only the menu
+ *  entries are removed -- so wiring them back in later is a one-line add
+ *  here, not a data-layer change. */
 const LENSES = [
   {
     label: 'Default',
@@ -27,12 +27,6 @@ const LENSES = [
     description: 'How the model gets built: table, view, etc.',
   },
   { label: 'Model layer', description: 'Staging, intermediate, marts, etc.' },
-  { label: 'Last run', description: 'Reused, success, skipped, etc.' },
-  { label: 'Last test', description: 'Pass, unknown, etc.' },
-  {
-    label: 'Query history',
-    description: 'Number of consumed queries against this resource',
-  },
 ];
 
 export function DagLensesDropdown() {

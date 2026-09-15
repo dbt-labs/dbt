@@ -971,7 +971,8 @@ object:
       test_chained: optional[string],
       is_iceberg_format: bool,
       is_dynamic_table: bool,
-      is_interactive_table: bool
+      is_interactive_table: bool,
+      is_metric_view: bool
     }
   attributes:
     - name: include

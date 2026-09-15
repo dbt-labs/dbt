@@ -186,6 +186,15 @@ pub async fn clean_project(
     // Explicitly release to predictably wait for the lease internally to drop.
     target_guard.release().await;
 
+    // Remove the agent skills dbt installed into the provider directories. Only
+    // dbt's own installs are touched; anything the user authored is left alone.
+    if let Err(e) =
+        dbt_skills::prune_installed_skills(&arg.io.in_dir, dbt_project, arg.ai_provider.as_deref())
+    {
+        // A skill-pruning problem should not fail `dbt clean`; warn and move on.
+        emit_error_log_from_fs_error(*e);
+    }
+
     Ok(())
 }
 

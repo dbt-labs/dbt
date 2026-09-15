@@ -19,8 +19,8 @@ const cap = (overrides: Partial<Capabilities> = {}): Capabilities => ({
   ...overrides,
 });
 
-const dist = (isFusion: boolean, isLoggedIn: boolean): Distribution => ({
-  isFusion,
+const dist = (isProprietary: boolean, isLoggedIn: boolean): Distribution => ({
+  isProprietary,
   isLoggedIn,
   version: '0.0.0',
 });
@@ -38,27 +38,27 @@ describe('deriveUpgradeCapabilities', () => {
     expect(deriveUpgradeCapabilities(cap(), dist(false, false))).toEqual({
       hasCll: false,
       hasDbtState: false,
-      isFusion: false,
+      isProprietary: false,
       isLoggedIn: false,
     });
   });
 
-  test('fusion + logged in + CLL → fully unlocked flags', () => {
+  test('dbt v2 + logged in + CLL → fully unlocked flags', () => {
     expect(
       deriveUpgradeCapabilities(cap({ hasColumnLineage: true }), dist(true, true)),
     ).toEqual({
       hasCll: true,
       hasDbtState: false,
-      isFusion: true,
+      isProprietary: true,
       isLoggedIn: true,
     });
   });
 
-  test('fusion + not logged in → fusion but anon, CLL off', () => {
+  test('dbt v2 + not logged in → proprietary but anon, CLL off', () => {
     expect(deriveUpgradeCapabilities(cap(), dist(true, false))).toEqual({
       hasCll: false,
       hasDbtState: false,
-      isFusion: true,
+      isProprietary: true,
       isLoggedIn: false,
     });
   });

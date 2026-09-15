@@ -90,7 +90,7 @@
     {{ return(False) }}
   {% endif %}
   {% set update_via_alter = config.get('view_update_via_alter', False) | as_bool %}
-  {% if existing_relation.is_view and update_via_alter %}
+  {% if (existing_relation.is_view or existing_relation.is_metric_view) and update_via_alter %}
     {% if existing_relation.is_hive_metastore() %}
       {{ exceptions.raise_compiler_error("Cannot update a view in the Hive metastore via ALTER VIEW. Please set `view_update_via_alter: false` in your model configuration.") }}
     {% endif %}

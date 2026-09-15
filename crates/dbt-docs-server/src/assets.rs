@@ -4,8 +4,8 @@
 //!
 //! 1. **A generated site directory on disk** ([`serve_site_dir`]). This is what
 //!    `dbt docs serve` uses. Only this source has the `window.__DBT_DOCS__`
-//!    bootstrap injected and the `data/*.parquet` artifacts alongside it, so it
-//!    is the only one that produces a working app.
+//!    bootstrap injected and the `info_schema/v<n>/` artifacts alongside it, so
+//!    it is the only one that produces a working app.
 //! 2. **The bundle embedded via `rust-embed`** ([`serve_assets`]), gated on the
 //!    `embed-ui` feature. A fallback for a server started with no generated site.
 //!
@@ -16,9 +16,9 @@
 //! any subpath by anything, including a plain file server.
 //!
 //! Unknown *files* get a 404 instead ([`is_navigation_path`]). The browser reads the
-//! parquet artifacts over this server, and the index writes no file for a table with
-//! no rows — so "absent" is a normal answer the client handles, and answering it with
-//! an HTML document instead is not.
+//! parquet and `views.sql` over this server, and DuckDB cannot tell an HTML document
+//! from a corrupt artifact — it reports "No magic bytes found at end of file", which
+//! says nothing about the real problem. A 404 does.
 
 use std::path::{Component, Path, PathBuf};
 
@@ -183,8 +183,8 @@ mod tests {
             Some("/site/assets/index.js")
         );
         assert_eq!(
-            resolved("/data/dbt.nodes.parquet").as_deref(),
-            Some("/site/data/dbt.nodes.parquet")
+            resolved("/info_schema/v1/dbt.models.parquet").as_deref(),
+            Some("/site/info_schema/v1/dbt.models.parquet")
         );
         // Empty and redundant segments collapse to the root, which reads as a
         // directory and so falls through to index.html.
@@ -215,12 +215,13 @@ mod tests {
 
     #[test]
     fn only_routes_fall_back_to_the_spa() {
-        // Files. A missing artifact must read as missing: the client writes an empty
-        // relation for it, and cannot do that if it is handed a 200 and a document.
+        // Files. A missing artifact must read as missing: handed a 200 and an HTML
+        // document instead, DuckDB fails on it with "No magic bytes found at end of
+        // file", which says nothing about the real problem.
         for path in [
-            "/index/dbt_rt.run_results.parquet",
-            "/index/dbt.source_freshness.parquet",
-            "/index/dbt.column_lineage.parquet",
+            "/info_schema/v1/dbt_rt.run_results.parquet",
+            "/info_schema/v1/dbt.column_lineage.parquet",
+            "/info_schema/v1/views.sql",
             "/assets/index-C_njZe3n.js",
             "/favicon.ico",
         ] {
@@ -247,22 +248,26 @@ mod tests {
     async fn missing_artifact_is_a_404_not_the_spa() {
         let site = tempfile::tempdir().expect("tempdir");
         std::fs::write(site.path().join("index.html"), "<!doctype html>").expect("write index");
-        std::fs::create_dir(site.path().join("index")).expect("mkdir index");
-        std::fs::write(site.path().join("index/dbt.nodes.parquet"), b"PAR1..PAR1")
-            .expect("write artifact");
+        let data = site.path().join(crate::export::data_dir());
+        std::fs::create_dir_all(&data).expect("mkdir data dir");
+        std::fs::write(data.join("dbt.models.parquet"), b"PAR1..PAR1").expect("write artifact");
 
-        // The index writes no file for a table with no rows, which is the case the
-        // client's empty-relation DDL exists for.
+        // A file that is genuinely not there — a partially copied site, or a host
+        // asked for a table this version does not write.
         let absent = serve_site_dir(
             site.path(),
-            "/index/dbt_rt.run_results.parquet".parse().expect("uri"),
+            format!("/{}/dbt_rt.run_results.parquet", crate::export::data_dir())
+                .parse()
+                .expect("uri"),
         )
         .await;
         assert_eq!(absent.status(), StatusCode::NOT_FOUND);
 
         let present = serve_site_dir(
             site.path(),
-            "/index/dbt.nodes.parquet".parse().expect("uri"),
+            format!("/{}/dbt.models.parquet", crate::export::data_dir())
+                .parse()
+                .expect("uri"),
         )
         .await;
         assert_eq!(present.status(), StatusCode::OK);

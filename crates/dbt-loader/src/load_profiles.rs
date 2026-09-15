@@ -295,7 +295,7 @@ mod tests {
         let err = enforce_adapter_gating(AdapterType::Trino, false).unwrap_err();
         let msg = err.message();
         assert!(
-            msg.contains("not yet supported by dbt Fusion"),
+            msg.contains("not yet supported by dbt"),
             "expected gating message, got: {msg}"
         );
         assert!(

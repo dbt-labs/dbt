@@ -20,7 +20,8 @@ import { CopySpec, UpgradeCopyRegistry, UpgradeHookKind, UserState } from './typ
 
 const CONTACT_SALES_URL = 'https://www.getdbt.com/contact';
 const DBT_STATE_URL = 'https://state.dbt.com/';
-const FUSION_DOWNLOAD_URL =
+// The anchor still says `fusion` because it is docs.getdbt.com's, not ours.
+const DBT_V2_DOWNLOAD_URL =
   'https://docs.getdbt.com/docs/local/install-dbt?version=2.0#dbt-fusion-engine-recommended';
 
 /** Standard "Upgrade — contact sales" CTA used by Mesh, Query history, etc. */
@@ -30,27 +31,27 @@ const UPGRADE_CTA = {
   href: CONTACT_SALES_URL,
 } as const;
 
-/** `dbt login` snippet — used for `proprietary-anon` (Fusion binary present
- *  but not authenticated). Core users get the Fusion-download button instead
- *  since `dbt login` doesn't exist on Core. */
+/** `dbt login` snippet — used for `proprietary-anon` (dbt v2 binary present
+ *  but not authenticated). Core users get the download button instead, since
+ *  `dbt login` doesn't exist on Core. */
 const DBT_LOGIN_SNIPPET = {
   kind: 'snippet',
   command: 'dbt login',
 } as const;
 
-/** Core-only CTA — sends the user to the Fusion install docs. Per the Notion
- *  gating doc: "Download Fusion and login for CLL". */
-const DOWNLOAD_FUSION_CTA = {
+/** Core-only CTA — sends the user to the dbt v2 install docs. Per the Notion
+ *  gating doc: "Download dbt v2". */
+const DOWNLOAD_DBT_V2_CTA = {
   kind: 'button',
-  label: 'Download Fusion',
-  href: FUSION_DOWNLOAD_URL,
+  label: 'Download dbt v2',
+  href: DBT_V2_DOWNLOAD_URL,
 } as const;
 
 const CLL_BASE = {
   title: 'Column-level lineage',
   subtitle: 'Go deeper with CLL',
   description:
-    'See exactly where each column comes from and what transforms it along the way. Column-level lineage is available in Fusion — free when you download and login.',
+    'See exactly where each column comes from and what transforms it along the way. Column-level lineage is available in dbt v2 — free when you download.',
   learnMore: {
     label: 'Learn more about generating CLL.',
     href: 'https://docs.getdbt.com/docs/build/view-documentation?version=2.0#dbt-docs-v2',
@@ -104,10 +105,10 @@ const HIDDEN: CopySpec = { hidden: true };
  */
 export const UPGRADE_COPY: UpgradeCopyRegistry = {
   columnLineage: {
-    // Core has no Fusion binary, so `dbt login` is a dead-end command. Send
-    // them to the Fusion install docs instead — per the Notion gating doc:
-    // "Download Fusion and login for CLL".
-    core: { ...CLL_BASE, cta: DOWNLOAD_FUSION_CTA },
+    // Core has no dbt v2 binary, so `dbt login` is a dead-end command. Send
+    // them to the install docs instead — per the Notion gating doc:
+    // "Download dbt v2".
+    core: { ...CLL_BASE, cta: DOWNLOAD_DBT_V2_CTA },
     'proprietary-anon': { ...CLL_BASE },
     // `proprietary-logged-in` is asserted from `has_column_lineage = true`
     // in the v1 BE — i.e. CLL is already active for this user. Render the

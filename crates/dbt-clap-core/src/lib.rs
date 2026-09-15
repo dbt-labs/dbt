@@ -83,7 +83,7 @@ static BOLD: LazyLock<Style> = LazyLock::new(|| Style::new().bold());
 // ----------------------------------------------------------------------------------------------
 // Cli and its subcommands
 
-const ABOUT: &str = "With dbt, data analysts and engineers can build analytics the way engineers build applications.";
+const ABOUT: &str = "An ELT tool for managing your SQL transformations and data models. For more documentation on these commands, visit: docs.getdbt.com";
 static AFTER_HELP: LazyLock<String> = LazyLock::new(|| {
     format!(
         "{}",
@@ -175,7 +175,8 @@ impl CliParser {
     }
 
     /// Key used for the machine-readable `--format json --version` output, e.g.
-    /// `"dbt-fusion"` -> `"fusion"`, `"dbt-core"` -> `"core"`.
+    /// `"dbt-oss"` -> `"oss"`; `"dbt"` has no `dbt-` prefix so it falls through
+    /// to itself as the key.
     fn version_json_key(&self) -> &str {
         self.command_name
             .strip_prefix("dbt-")
@@ -436,6 +437,16 @@ got {:?}, expected an instance of {}",
             Command::Extension(ext_cmd) => ext_cmd.to_eval_args(&common_args, system_arg)?,
         };
         arg.from_main = from_main;
+        // Must be derived from the caller's *original* `--static-analysis`
+        // value, before the force-to-strict override just below can
+        // overwrite it for local execution — otherwise `baseline` could
+        // never survive to be observed here. `unwrap_or_default()` because
+        // omitting `--static-analysis` leaves `arg.static_analysis` as
+        // `None`, not `Some(Baseline)`, even though baseline is the actual
+        // default behavior everywhere else it's consulted.
+        arg.infer_schemas_and_typeless = arg.static_analysis.unwrap_or_default()
+            == StaticAnalysisKind::Baseline
+            && arg.write_lineage;
         if arg.local_execution_backend != LocalExecutionBackendKind::Remote {
             arg.static_analysis = Some(StaticAnalysisKind::Strict);
         }
@@ -1848,6 +1859,19 @@ pub struct CommonArgs {
     #[arg(global = true, long, value_parser = check_key_value_cli_arg_with_recovery, help_heading = help_headings::PROJECT, hide_short_help = true)]
     pub vars: Option<BTreeMap<String, YValue>>,
 
+    /// The AI coding agent(s) to install package skills for, e.g. 'claude'.
+    /// Accepts a comma-separated list. Skills are only installed when this is set.
+    #[arg(
+        global = true,
+        long,
+        env = "DBT_AI_PROVIDER",
+        num_args(1..),
+        value_delimiter = ',',
+        help_heading = help_headings::PROJECT,
+        hide_short_help = true
+    )]
+    pub ai_provider: Option<Vec<String>>,
+
     /// Select nodes to run
     // has no ENV_VAR
     #[arg(global = true, long, short = 's', value_parser = check_selector, num_args(1..), value_delimiter = ' ', group = "selector_or_select", help_heading = help_headings::SELECTION, hide_short_help = true)]
@@ -2265,7 +2289,7 @@ pub struct CommonArgs {
     // If set, ensure the installed dbt version matches the require-dbt-version specified in the dbt_project.yml file (if any). Otherwise, allow them to differ.
     #[arg(global = true, long , default_value_t=true,  action = ArgAction::SetTrue, env = "DBT_VERSION_CHECK", value_parser = BoolishValueParser::new(), hide=true)]
     pub version_check: bool,
-    /// Disable online version check for dbt-fusion updates
+    /// Disable online version check for dbt updates
     #[arg(global = true, long = "no-version-check", default_value_t=false,  action = ArgAction::SetTrue, env = "DBT_DISABLE_VERSION_CHECK", value_parser = BoolishValueParser::new(), help_heading = help_headings::EXECUTION, hide_short_help = true)]
     pub no_version_check: bool,
 
@@ -2578,7 +2602,7 @@ fn parse_manage_state_env(value: Option<&OsStr>) -> FsResult<Option<bool>> {
         return Ok(None);
     };
     BoolishValueParser::new()
-        .parse_ref(&clap::Command::new("dbt-fusion"), None, value)
+        .parse_ref(&clap::Command::new("dbt"), None, value)
         .map(Some)
         .map_err(|_| {
             fs_err!(
@@ -2670,7 +2694,7 @@ impl CommonArgs {
         } else {
             env::var_os("DBT_WARN_ERROR").and_then(|value| {
                 BoolishValueParser::new()
-                    .parse_ref(&clap::Command::new("dbt-fusion"), None, OsStr::new(&value))
+                    .parse_ref(&clap::Command::new("dbt"), None, OsStr::new(&value))
                     .ok()
             })
         }
@@ -2783,6 +2807,7 @@ impl CommonArgs {
             target: self.target.clone(),
             update_deps: false,
             vars: self.vars.clone().unwrap_or_default(),
+            ai_provider: self.ai_provider.clone(),
             phase: self.phase.clone().unwrap_or(Phases::All),
             format: DEFAULT_FORMAT,
             limit: if arg.command == FsCommand::Extension("sl") {
@@ -2791,9 +2816,9 @@ impl CommonArgs {
                 Some(10)
             },
             from_main: false,
-            // `threads` controls connection backpressure and rendering
-            // parallelism. Sequential task execution is requested via the
-            // separate `no_parallel` flag below.
+            // `threads` caps the `dbt-runtime` blocking pool, and with it both
+            // warehouse concurrency and rendering parallelism. Sequential task
+            // execution is requested via the separate `no_parallel` flag below.
             num_threads: self.threads,
             no_parallel: self.no_parallel,
             select: select_option,
@@ -2893,6 +2918,9 @@ impl CommonArgs {
             task_cache_url: self.task_cache_url.clone(),
             static_analysis: None,
             full_refresh: false,
+            // Derived later in `Cli::to_eval_args` from the caller's
+            // original `--static-analysis`/`--write-lineage` values.
+            infer_schemas_and_typeless: false,
             store_failures: self.store_failures,
             check_all: false,
             sample_renaming: BTreeMap::new(),
@@ -2934,7 +2962,7 @@ impl CommonArgs {
         }
         if let Some(value) = env::var_os("DBT_SEND_ANONYMOUS_USAGE_STATS") {
             return BoolishValueParser::new()
-                .parse_ref(&clap::Command::new("dbt-fusion"), None, value.as_ref())
+                .parse_ref(&clap::Command::new("dbt"), None, value.as_ref())
                 .unwrap_or(true);
         }
         send_anonymous_usage_stats_from_yaml(&project_dir.join(DBT_PROJECT_YML)).unwrap_or(true)
@@ -3675,13 +3703,13 @@ mod tests {
     }
 
     #[test]
-    fn version_json_uses_fusion_key() {
-        let parser = CliParser::new("dbt-fusion", "2.0.0-preview.92", Box::new(NoopParser));
+    fn version_json_uses_dbt_key() {
+        let parser = CliParser::new("dbt", "2.0.0-preview.92", Box::new(NoopParser));
 
-        assert_eq!(parser.version_json(), r#"{"fusion":"2.0.0-preview.92"}"#);
+        assert_eq!(parser.version_json(), r#"{"dbt":"2.0.0-preview.92"}"#);
         assert_eq!(
             parser.json_version_for_args(["dbt", "--format", "json", "--version"]),
-            Some(r#"{"fusion":"2.0.0-preview.92"}"#.to_string())
+            Some(r#"{"dbt":"2.0.0-preview.92"}"#.to_string())
         );
     }
 
@@ -3698,7 +3726,7 @@ mod tests {
     }
 
     fn parse_core_command(args: &[&str]) -> CoreCommand {
-        let cli = CliParser::new("dbt-fusion", "2.0.0", Box::new(NoopParser))
+        let cli = CliParser::new("dbt", "2.0.0", Box::new(NoopParser))
             .try_parse_from(std::iter::once("dbt").chain(args.iter().copied()))
             .expect("args should parse");
         match cli.command {
@@ -3791,14 +3819,14 @@ mod tests {
 
     #[test]
     fn version_json_key_derives_from_command_name() {
-        let parser = CliParser::new("dbt-core", "1.9.0", Box::new(NoopParser));
+        let parser = CliParser::new("dbt-oss", "1.9.0", Box::new(NoopParser));
 
-        assert_eq!(parser.version_json(), r#"{"core":"1.9.0"}"#);
+        assert_eq!(parser.version_json(), r#"{"oss":"1.9.0"}"#);
     }
 
     #[test]
     fn json_version_returns_display_version_error() {
-        let err = CliParser::new("dbt-fusion", "2.0.0-preview.92", Box::new(NoopParser))
+        let err = CliParser::new("dbt", "2.0.0-preview.92", Box::new(NoopParser))
             .try_parse_from(["dbt", "--format", "json", "--version"])
             .expect_err("json version should short-circuit parsing");
 

@@ -52,7 +52,7 @@ use dbt_dist::command::execute_get_distribution_info;
 use dbt_docs_server::providers::Backend;
 use dbt_features::feature_stack::FeatureStack;
 use dbt_features::index::write_metadata_parquet;
-use dbt_index_core::backend::DuckDbViewsBackend;
+use dbt_index_core::backend::DuckDbInfoSchemaBackend;
 use dbt_index_core::ingest::ingest_state::IngestState;
 use dbt_index_core::ingest::metadata_to_parquet::{
     apply_delta_direct, has_persisted_state, ingest_from_metadata_direct,
@@ -93,8 +93,8 @@ use dbt_tasks_core::{
 use dbt_tasks_sa::base_context::build_base_context;
 use dbt_telemetry::ArtifactType;
 use dbt_telemetry::{
-    CompiledCodeInline, NodeOutcome, NodeSkipReason, ProgressMessage, ShowDataOutput,
-    ShowDataOutputFormat, ShowResult, TestOutcome,
+    CompiledCodeInline, GenericOpExecuted, NodeOutcome, NodeSkipReason, ProgressMessage,
+    ShowDataOutput, ShowDataOutputFormat, ShowResult, TestOutcome,
 };
 
 use dbt_vortex::vortex_producer_is_running;
@@ -1108,14 +1108,27 @@ impl<'a> AllPhasesExecutor<'a> {
         if let Command::Core(Show(show_args)) = &self.cli.command
             && show_queries_info_schema(show_args)
         {
-            dbt_tasks_sa::show_info::run_show_info_schema(
-                show_args.info.as_deref(),
-                show_args.inline.as_deref(),
-                &self.arg.metadata_dir(),
-                self.arg.format,
-                self.arg.limit,
-                token.clone(),
-            )?;
+            let info = show_args.info.clone();
+            let inline = show_args.inline.clone();
+            let metadata_dir = self.arg.metadata_dir();
+            let format = self.arg.format;
+            let limit = self.arg.limit;
+            let token = token.clone();
+            // Reads the parse metadata through a DuckDB adapter, so it runs on
+            // a `dbt-runtime` worker: every database connection must be created
+            // by one.
+            dbt_runtime::spawn_blocking(move || {
+                dbt_tasks_sa::show_info::run_show_info_schema(
+                    info.as_deref(),
+                    inline.as_deref(),
+                    &metadata_dir,
+                    format,
+                    limit,
+                    token,
+                )
+            })
+            .await
+            .map_err(|e| fs_err!(ErrorCode::Generic, "spawn_blocking join error: {e}"))??;
             return Ok(());
         }
 
@@ -1321,8 +1334,20 @@ impl<'a> AllPhasesExecutor<'a> {
                         selection_active,
                         schedule.selected_nodes.iter(),
                     );
-                    let outcome =
-                        run_parse_time_checks(&named, &self.arg.metadata_dir(), scope.as_ref(), 5);
+                    // Checks query the parse metadata through a DuckDB
+                    // adapter, so they run on a `dbt-runtime` worker: every
+                    // database connection must be created by one.
+                    let outcome = {
+                        let metadata_dir = self.arg.metadata_dir();
+                        let scope = scope.clone();
+                        dbt_runtime::spawn_blocking(move || {
+                            run_parse_time_checks(&named, &metadata_dir, scope.as_ref(), 5)
+                        })
+                        .await
+                        .map_err(|e| {
+                            fs_err!(ErrorCode::Generic, "spawn_blocking join error: {e}")
+                        })?
+                    };
 
                     // A selector that matched nothing is one fact about the invocation, not one
                     // fact per check: twenty checks produced twenty identical `CheckSkipped`
@@ -2225,6 +2250,14 @@ async fn run_docs_generate(
         .index_dir
         .clone()
         .unwrap_or_else(|| default_index_dir(&target_dir));
+    // The site's data directory. Public under `target/`, unlike the index, because
+    // the browser fetches it over HTTP. An explicit `--info-schema-dir` still wins,
+    // for the same reason `--index-dir` does.
+    let info_schema_root = eval_arg
+        .info_schema_dir
+        .clone()
+        .unwrap_or_else(|| target_dir.join(dbt_common::constants::DBT_INFO_SCHEMA_DIR_NAME));
+    let info_schema_dir = dbt_index_core::versioned_dir(&info_schema_root);
     let output_dir = generate_args
         .output_dir
         .clone()
@@ -2258,33 +2291,42 @@ async fn run_docs_generate(
         .await?;
     }
 
-    // No index to export. Under `--no-compile` that is the expected way to get here;
+    // Build the information schema last, from whatever the metadata directory now
+    // holds. It has to be here rather than left to the compile's own
+    // `--generate-info-schema`: the invocation record is written *after* that point,
+    // so an artifact set built during the compile would miss it and the site's
+    // timings and status surfaces would come up empty — the same reason the ingest
+    // above runs twice. Under `--no-compile` this is the only thing that advances it.
+    build_info_schema_for_docs(&metadata_dir, &index_dir, &info_schema_root);
+
+    // Nothing to export. Under `--no-compile` that is the expected way to get here;
     // otherwise the compile above ran but wrote nothing. Checked before opening the
     // backend so the user gets the export's message — which names both commands that
-    // write an index — rather than the backend's generic "index directory does not exist".
-    if !dbt_docs_server::index_dir_has_artifacts(&index_dir) {
+    // produce the artifacts — rather than the backend's generic "does not exist".
+    if !dbt_docs_server::has_artifacts(&info_schema_dir) {
         emit_error_log_message(
             ErrorCode::Generic,
             format!(
                 "dbt docs generate: {}",
-                dbt_docs_server::ExportError::NoIndex { index_dir }
+                dbt_docs_server::ExportError::NoIndex { info_schema_dir }
             ),
         );
         return Err(FsError::exit_with_status(1));
     }
 
-    let backend: Arc<dyn Backend> = Arc::new(match DuckDbViewsBackend::open(&index_dir) {
-        Ok(backend) => backend,
-        Err(err) => {
-            emit_error_log_message(ErrorCode::Generic, format!("dbt docs generate: {err}"));
-            return Err(FsError::exit_with_status(1));
-        }
-    });
+    let backend: Arc<dyn Backend> =
+        Arc::new(match DuckDbInfoSchemaBackend::open(&info_schema_dir) {
+            Ok(backend) => backend,
+            Err(err) => {
+                emit_error_log_message(ErrorCode::Generic, format!("dbt docs generate: {err}"));
+                return Err(FsError::exit_with_status(1));
+            }
+        });
     let providers = (feature_stack.index.providers_factory)(backend);
 
     let project_dir = &eval_arg.io.in_dir;
     let options = dbt_docs_server::ExportOptions {
-        index_dir,
+        info_schema_dir,
         output_dir,
         duckdb_cdn_base: generate_args.duckdb_cdn_base,
         // Consent is resolved here because the project and profile are only
@@ -2356,6 +2398,37 @@ fn ingest_metadata_into_index(
         emit_warn_log_message(
             ErrorCode::Generic,
             format!("{context}: failed to ingest metadata: {err}"),
+        );
+    }
+}
+
+/// Build the information schema the site reads, best-effort.
+///
+/// Mirrors [`ingest_metadata_into_index`]'s contract: a missing metadata directory is
+/// nothing to do, and a failure is worth a warning but not the command — whatever is
+/// already on disk is still exportable, and the export's own emptiness check is what
+/// decides whether the site can be written.
+///
+/// The flat index is reused as the intermediate when one is present, which it is
+/// whenever a compile has run: the same ingest builds both, so this takes the delta
+/// path instead of re-reading every epoch. Without one it stages privately.
+fn build_info_schema_for_docs(
+    metadata_dir: &std::path::Path,
+    index_dir: &std::path::Path,
+    info_schema_root: &std::path::Path,
+) {
+    if !metadata_dir.exists() {
+        return;
+    }
+    let staging = if has_persisted_state(index_dir) {
+        index_dir.to_path_buf()
+    } else {
+        info_schema_root.with_file_name(dbt_common::constants::DBT_INFO_SCHEMA_STAGING_DIR_NAME)
+    };
+    if let Err(err) = write_info_schema(metadata_dir, info_schema_root, &staging) {
+        emit_warn_log_message(
+            ErrorCode::InfoSchemaWriteFailed,
+            format!("dbt docs: could not build the information schema: {err}"),
         );
     }
 }
@@ -2491,37 +2564,44 @@ async fn run_docs_serve(
         // Filled in below, once the site has been generated.
         site_dir: None,
     };
-    let index_dir = dbt_docs_server::resolve_index_dir(&args);
+    let info_schema_dir = dbt_docs_server::resolve_info_schema_dir(&args);
 
     let target = args
         .target_path
         .clone()
         .unwrap_or_else(|| std::path::PathBuf::from("./target"));
     let metadata_dir = default_metadata_dir(&target);
+    let index_dir = default_index_dir(&target);
+    let info_schema_root = target.join(dbt_common::constants::DBT_INFO_SCHEMA_DIR_NAME);
 
-    if !index_dir.exists() && !metadata_dir.exists() {
+    if !info_schema_dir.exists() && !metadata_dir.exists() {
         emit_error_log_message(
             ErrorCode::Generic,
             format!(
                 "dbt docs serve: no data to serve\n\n\
-                 Index directory not found: {}\n\
-                 Run `dbt build` or `dbt docs generate` to generate parquet artifacts,\n\
-                 or pass `--target-path <DIR>` pointing at a directory whose `private/index/` subdirectory contains them.",
-                index_dir.display(),
+                 Information schema not found: {}\n\
+                 Run `dbt build` or `dbt docs generate` to write it,\n\
+                 or pass `--target-path <DIR>` pointing at a directory that contains it.",
+                info_schema_dir.display(),
             ),
         );
         return Err(FsError::exit_with_status(1));
     }
 
+    // Opportunistic catch-up, the same one `docs generate` does: roll any newer
+    // metadata epochs into the index and rebuild the information schema from them,
+    // so a run since the last `docs generate` is picked up without one.
     ingest_metadata_into_index(&metadata_dir, &index_dir, "dbt docs serve");
+    build_info_schema_for_docs(&metadata_dir, &index_dir, &info_schema_root);
 
-    let backend: Arc<dyn Backend> = Arc::new(match DuckDbViewsBackend::open(&index_dir) {
-        Ok(b) => b,
-        Err(err) => {
-            emit_error_log_message(ErrorCode::Generic, format!("dbt docs serve: {err}"));
-            return Err(FsError::exit_with_status(1));
-        }
-    });
+    let backend: Arc<dyn Backend> =
+        Arc::new(match DuckDbInfoSchemaBackend::open(&info_schema_dir) {
+            Ok(b) => b,
+            Err(err) => {
+                emit_error_log_message(ErrorCode::Generic, format!("dbt docs serve: {err}"));
+                return Err(FsError::exit_with_status(1));
+            }
+        });
     let providers = (feature_stack.index.providers_factory)(backend);
 
     // Serve the same static site `docs generate` produces rather than the
@@ -2529,9 +2609,9 @@ async fn run_docs_serve(
     // actually host. Regenerated when missing or older than the index; a failure
     // here is not fatal, because the embedded bundle is still a usable fallback.
     let site_dir = target.clone();
-    if site_needs_regenerating(&site_dir, &index_dir) {
+    if site_needs_regenerating(&site_dir, &info_schema_dir) {
         let options = dbt_docs_server::ExportOptions {
-            index_dir: index_dir.clone(),
+            info_schema_dir: info_schema_dir.clone(),
             output_dir: site_dir.clone(),
             duckdb_cdn_base: None,
             analytics_enabled: std::env::var("DO_NOT_TRACK").as_deref() != Ok("1")
@@ -2563,17 +2643,17 @@ async fn run_docs_serve(
         })
 }
 
-/// Whether `site_dir` is missing or predates the index it was built from.
+/// Whether `site_dir` is missing or predates the data it was built from.
 ///
-/// Compares against the index directory's mtime, the same staleness signal
+/// Compares against the data directory's mtime, the same staleness signal
 /// `AppState::compute_generation` reports to the UI. Any unreadable timestamp
 /// means regenerate: cheap, and being wrong the other way serves stale docs.
-fn site_needs_regenerating(site_dir: &std::path::Path, index_dir: &std::path::Path) -> bool {
+fn site_needs_regenerating(site_dir: &std::path::Path, data_dir: &std::path::Path) -> bool {
     let Ok(site_mtime) = std::fs::metadata(site_dir.join("index.html")).and_then(|m| m.modified())
     else {
         return true;
     };
-    let Ok(index_mtime) = std::fs::metadata(index_dir).and_then(|m| m.modified()) else {
+    let Ok(index_mtime) = std::fs::metadata(data_dir).and_then(|m| m.modified()) else {
         return true;
     };
     site_mtime < index_mtime
@@ -2808,6 +2888,10 @@ async fn fetch_catalog_data(
     let concurrency = batches.max(1); // this means max of (1 or batches)
     let mut handles = Vec::new();
 
+    // An `Id`, not a `Span`: holds no refcount, so it cannot keep the invocation alive.
+    // Only used for the `follows_from` link below; a stale `Id` is a no-op there.
+    let invocation_span_id = tracing::Span::current().id();
+
     for worker_id in 0..concurrency {
         let task_queue_clone = task_queue.clone();
         let relations_map_clone = relations_map.clone();
@@ -2822,127 +2906,167 @@ async fn fetch_catalog_data(
         let shared_results_clone = shared_results.clone();
         let shared_errors_clone = shared_errors.clone();
         let progress_tracker_clone = progress_tracker.clone();
+        let invocation_span_id_clone = invocation_span_id.clone();
 
-        // Deliberately NOT `Span::current().enter()`ed inside the worker. The poll loop below
-        // abandons workers that blow past `WORKER_TIMEOUT` without joining them, so a worker can
-        // outlive this function. A live thread holding a handle to the invocation span (or any of
-        // its descendants) keeps that span's refcount above zero, so the subscriber never fires
-        // `on_close` for it -- and the end-of-invocation Execution Summary, which is emitted from
-        // `handle_invocation_end`, is silently dropped. Users saw a `--write-index`/`--write-catalog`
-        // build print "Fetched partial catalog.json results" and then simply stop, with no summary
-        // and no result counts (dbt-labs/fs#14424). Abandonment has to be total: these threads must
-        // not participate in the invocation's span lifetime.
-        let handle = std::thread::Builder::new()
-            .stack_size(8 * 1024 * 1024)
-            .spawn(move || -> FsResult<()> {
-                // Worker loop: process tasks until queue is empty
-                loop {
-                    let task = task_queue_clone.lock().unwrap().pop();
-                    let Some((database, schema)) = task else {
-                        // No available work - remove from progress tracker and exit
-                        progress_tracker_clone.lock().unwrap().remove(&worker_id);
-                        break;
-                    };
-                    let schema_clone = schema.clone();
+        // `Handle::spawn_blocking`, not the free `dbt_runtime::spawn_blocking`,
+        // and deliberately NOT `Span::current().enter()`ed inside the worker.
+        // The free function clones and enters the current span for the task's
+        // whole life; the `Handle` method captures none. The poll loop below
+        // abandons workers that blow past `WORKER_TIMEOUT` without joining them,
+        // so a worker can outlive this function. A live worker holding a handle
+        // to the invocation span (or any of its descendants) keeps that span's
+        // refcount above zero, so the subscriber never fires `on_close` for it
+        // -- and the end-of-invocation Execution Summary, which is emitted from
+        // `handle_invocation_end`, is silently dropped. Users saw a
+        // `--write-index`/`--write-catalog` build print "Fetched partial
+        // catalog.json results" and then simply stop, with no summary and no
+        // result counts (dbt-labs/fs#14424). Abandonment has to be total: these
+        // workers must not participate in the invocation's span lifetime.
+        //
+        // Dropping a blocking `JoinHandle` detaches rather than cancels, so
+        // abandonment still works. The pool's threads are built with
+        // `FS_DEFAULT_STACK_SIZE` (8 MiB, `main_impl.rs`), which is the stack
+        // these workers used to ask for themselves.
+        //
+        // ############################################################################
+        // # DO NOT COPY THIS PATTERN.                                                #
+        // #                                                                          #
+        // # CLI code running outside the invocation span is NOT allowed -- a lot of  #
+        // # things depend on that invariant. These workers are a deliberate, short-  #
+        // # term exception, tolerated only because an abandoned one would otherwise  #
+        // # pin the invocation span open (dbt-labs/fs#14424).                        #
+        // #                                                                          #
+        // # TODO(dbt-labs/fs#14598): once dbt-tracing can force a root span to shut  #
+        // # down, put these workers back under the invocation and delete the         #
+        // # independent root below.                                                  #
+        // ############################################################################
+        //
+        // A root rather than nothing at all: with no span context, the adapter's first
+        // span becomes an unnamed root and trips the data layer's `debug_assert!`, which
+        // panics the worker in debug builds.
+        let handle = dbt_runtime::Handle::current().spawn_blocking(move || -> FsResult<()> {
+            // Worker loop: process tasks until queue is empty
+            loop {
+                let task = task_queue_clone.lock().unwrap().pop();
+                let Some((database, schema)) = task else {
+                    // No available work - remove from progress tracker and exit
+                    progress_tracker_clone.lock().unwrap().remove(&worker_id);
+                    break;
+                };
+                let schema_clone = schema.clone();
 
-                    // Update progress tracker with current schema and timestamp
-                    progress_tracker_clone
-                        .lock()
-                        .unwrap()
-                        .insert(worker_id, (schema_clone.clone(), Instant::now()));
+                // Update progress tracker with current schema and timestamp
+                progress_tracker_clone
+                    .lock()
+                    .unwrap()
+                    .insert(worker_id, (schema_clone.clone(), Instant::now()));
 
-                    // CRITICAL: Create a fresh ResultStore for EACH schema iteration to ensure
-                    // complete isolation. The `run_query` macro uses a hardcoded name "run_query_statement"
-                    // for store_result/load_result. By creating a fresh ResultStore for each schema,
-                    // we ensure that:
-                    // 1. No state leaks between different schemas processed by the same worker
-                    // 2. No possibility of race conditions with other workers
-                    // 3. Each macro invocation has a completely clean ResultStore
-                    let iteration_result_store = ResultStore::default();
-                    let mut iteration_context = base_context.clone();
-                    iteration_context.insert(
-                        "store_result".to_owned(),
-                        Value::from_function(iteration_result_store.store_result()),
-                    );
-                    iteration_context.insert(
-                        "load_result".to_owned(),
-                        Value::from_function(iteration_result_store.load_result()),
-                    );
-                    iteration_context.insert(
-                        "store_raw_result".to_owned(),
-                        Value::from_function(iteration_result_store.store_raw_result()),
-                    );
+                // CRITICAL: Create a fresh ResultStore for EACH schema iteration to ensure
+                // complete isolation. The `run_query` macro uses a hardcoded name "run_query_statement"
+                // for store_result/load_result. By creating a fresh ResultStore for each schema,
+                // we ensure that:
+                // 1. No state leaks between different schemas processed by the same worker
+                // 2. No possibility of race conditions with other workers
+                // 3. Each macro invocation has a completely clean ResultStore
+                let iteration_result_store = ResultStore::default();
+                let mut iteration_context = base_context.clone();
+                iteration_context.insert(
+                    "store_result".to_owned(),
+                    Value::from_function(iteration_result_store.store_result()),
+                );
+                iteration_context.insert(
+                    "load_result".to_owned(),
+                    Value::from_function(iteration_result_store.load_result()),
+                );
+                iteration_context.insert(
+                    "store_raw_result".to_owned(),
+                    Value::from_function(iteration_result_store.store_raw_result()),
+                );
 
-                    // Lookup relations for this schema
-                    let rels = relations_map_clone
-                        .get(&(database.clone(), schema.clone()))
-                        .expect("schema must exist in relations map");
-                    let relation_as_values = rels
-                        .iter()
-                        .map(|r| RelationObject::new(Arc::clone(r)).into_value())
-                        .collect::<Vec<Value>>();
+                // Lookup relations for this schema
+                let rels = relations_map_clone
+                    .get(&(database.clone(), schema.clone()))
+                    .expect("schema must exist in relations map");
+                let relation_as_values = rels
+                    .iter()
+                    .map(|r| RelationObject::new(Arc::clone(r)).into_value())
+                    .collect::<Vec<Value>>();
 
-                    let db_schema = RelationObject::new(Arc::from(
-                        create_relation(
-                            adapter_type,
-                            database.to_string(),
-                            schema.clone(),
-                            maybe_region_clone.clone(), // hack for BQ
-                            None,
-                            ResolvedQuoting::default(),
-                        )?,
-                    ))
-                    .into_value();
+                let db_schema = RelationObject::new(Arc::from(
+                    create_relation(
+                        adapter_type,
+                        database.to_string(),
+                        schema.clone(),
+                        maybe_region_clone.clone(), // hack for BQ
+                        None,
+                        ResolvedQuoting::default(),
+                    )?,
+                ))
+                .into_value();
 
-                    // To avoid blowing up the query, we use the get_catalog macro for batches with more than 50 relations
-                    let jinja_result: FsResult<Value> = if relation_as_values.len() > 50 {
-                        let args = vec![
-                            Value::from_serialize(db_schema),
-                            Value::from_serialize(vec![schema.clone()]),
-                        ];
-                        get_catalog_by_relations(
-                            &jinja_env_clone,
-                            "get_catalog",
-                            &project_name_owned,
-                            &project_name_owned,
-                            &iteration_context,
-                            &args,
-                        )
-                    } else {
-                        let args = vec![
-                            Value::from_serialize(db_schema),
-                            Value::from_serialize(relation_as_values.clone()),
-                        ];
-                        get_catalog_by_relations(
-                            &jinja_env_clone,
-                            "get_catalog_relations",
-                            &project_name_owned,
-                            &project_name_owned,
-                            &iteration_context,
-                            &args,
-                        )
-                    };
-                    match jinja_result {
-                        Ok(v) => match convert_macro_result_to_record_batch(&v) {
-                            Ok(record_batch) => {
-                                shared_results_clone.lock().unwrap().push(record_batch);
-                            }
-                            Err(e) => {
-                                let msg = format!("[Non-critical] Issue processing catalog for schema '{database}.{schema}': {e}");
-                                emit_info_log_message(&msg);
-                                shared_errors_clone.lock().unwrap().push(msg);
-                            }
-                        },
+                // Independent root -- see the DO NOT COPY banner on the spawn above.
+                // Dropped at the end of this iteration so tasks do not nest in each other.
+                let catalog_fetch_span = create_root_info_span(GenericOpExecuted::new(
+                    "catalog_fetch".to_string(),
+                    "fetching catalog".to_string(),
+                    Some(relation_as_values.len() as u64),
+                ));
+                // A link, not a parent: keeps the span correlatable to the run without
+                // pinning it open.
+                catalog_fetch_span.follows_from(invocation_span_id_clone.clone());
+                let _catalog_fetch_span_guard = catalog_fetch_span.clone().entered();
+
+                // To avoid blowing up the query, we use the get_catalog macro for batches with more than 50 relations
+                let jinja_result: FsResult<Value> = if relation_as_values.len() > 50 {
+                    let args = vec![
+                        Value::from_serialize(db_schema),
+                        Value::from_serialize(vec![schema.clone()]),
+                    ];
+                    get_catalog_by_relations(
+                        &jinja_env_clone,
+                        "get_catalog",
+                        &project_name_owned,
+                        &project_name_owned,
+                        &iteration_context,
+                        &args,
+                    )
+                } else {
+                    let args = vec![
+                        Value::from_serialize(db_schema),
+                        Value::from_serialize(relation_as_values.clone()),
+                    ];
+                    get_catalog_by_relations(
+                        &jinja_env_clone,
+                        "get_catalog_relations",
+                        &project_name_owned,
+                        &project_name_owned,
+                        &iteration_context,
+                        &args,
+                    )
+                };
+                match jinja_result {
+                    Ok(v) => match convert_macro_result_to_record_batch(&v) {
+                        Ok(record_batch) => {
+                            record_span_status(&catalog_fetch_span, None);
+                            shared_results_clone.lock().unwrap().push(record_batch);
+                        }
                         Err(e) => {
-                            let msg = format!("[Non-critical] Issue fetching catalog for schema '{database}.{schema}': {e}");
+                            let msg = format!("[Non-critical] Issue processing catalog for schema '{database}.{schema}': {e}");
+                            record_span_status(&catalog_fetch_span, Some(&msg));
                             emit_info_log_message(&msg);
                             shared_errors_clone.lock().unwrap().push(msg);
                         }
+                    },
+                    Err(e) => {
+                        let msg = format!("[Non-critical] Issue fetching catalog for schema '{database}.{schema}': {e}");
+                        record_span_status(&catalog_fetch_span, Some(&msg));
+                        emit_info_log_message(&msg);
+                        shared_errors_clone.lock().unwrap().push(msg);
                     }
                 }
-                Ok(())
-            })
-            .expect("failed to spawn worker thread");
+            }
+            Ok(())
+        });
         handles.push(handle);
     }
 
@@ -2955,8 +3079,15 @@ async fn fetch_catalog_data(
 
         let tracker_snapshot = progress_tracker.lock().unwrap().clone();
 
-        // All workers finished normally
-        if tracker_snapshot.is_empty() {
+        // All workers finished normally.
+        //
+        // The queue check is not redundant with the tracker: a worker only
+        // appears in the tracker once it has claimed a task, and workers are now
+        // pool tasks, so with fewer pool threads than workers the ones still
+        // queued have claimed nothing. An empty tracker alone would read that as
+        // "everything finished" on the first tick and report a full catalog
+        // built from zero batches.
+        if tracker_snapshot.is_empty() && task_queue.lock().unwrap().is_empty() {
             emit_info_log_message("Fetched full catalog.json results");
             break;
         }

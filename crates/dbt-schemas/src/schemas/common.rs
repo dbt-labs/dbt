@@ -416,6 +416,8 @@ pub enum DbtMaterialization {
     Analysis,
     Function,
     /// only for databricks
+    MetricView,
+    /// only for databricks
     StreamingTable,
     /// only for snowflake
     DynamicTable,
@@ -435,6 +437,7 @@ impl FromStr for DbtMaterialization {
             "table" => Ok(DbtMaterialization::Table),
             "incremental" => Ok(DbtMaterialization::Incremental),
             "materialized_view" => Ok(DbtMaterialization::MaterializedView),
+            "metric_view" => Ok(DbtMaterialization::MetricView),
             "external" => Ok(DbtMaterialization::External),
             "test" => Ok(DbtMaterialization::Test),
             "ephemeral" => Ok(DbtMaterialization::Ephemeral),
@@ -462,6 +465,7 @@ impl std::fmt::Display for DbtMaterialization {
             DbtMaterialization::Table => "table",
             DbtMaterialization::Incremental => "incremental",
             DbtMaterialization::MaterializedView => "materialized_view",
+            DbtMaterialization::MetricView => "metric_view",
             DbtMaterialization::External => "external",
             DbtMaterialization::Test => "test",
             DbtMaterialization::Ephemeral => "ephemeral",
@@ -487,6 +491,7 @@ impl From<DbtMaterialization> for RelationType {
             DbtMaterialization::Table => RelationType::Table,
             DbtMaterialization::View => RelationType::View,
             DbtMaterialization::MaterializedView => RelationType::MaterializedView,
+            DbtMaterialization::MetricView => RelationType::MetricView,
             DbtMaterialization::Ephemeral => RelationType::Ephemeral,
             DbtMaterialization::External => RelationType::External,
             DbtMaterialization::Test => RelationType::External, // TODO Validate this
@@ -516,6 +521,7 @@ impl From<&DbtMaterialization> for NodeMaterialization {
             DbtMaterialization::Table => Self::Table,
             DbtMaterialization::View => Self::View,
             DbtMaterialization::MaterializedView => Self::MaterializedView,
+            DbtMaterialization::MetricView => Self::MetricView,
             DbtMaterialization::Ephemeral => Self::Ephemeral,
             DbtMaterialization::External => Self::External,
             DbtMaterialization::Test => Self::Test,
@@ -984,7 +990,9 @@ pub enum DbtChecksum {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DbtChecksumObject {
+    /// The algorithm of the checksum, e.g., "sha256".
     pub name: String,
+    /// Hex-encoded string computed by the algorithm.
     pub checksum: String,
 }
 
@@ -1021,6 +1029,10 @@ impl DbtChecksum {
             Self::String(s) => s,
             Self::Object(o) => &o.checksum,
         }
+    }
+
+    pub fn to_checksum_string(&self) -> String {
+        self.as_checksum_string().to_string()
     }
 
     pub fn hash(s: &[u8]) -> Self {

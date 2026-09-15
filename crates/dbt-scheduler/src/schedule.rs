@@ -91,6 +91,7 @@ pub fn build_schedule_with_state_selector_results(
     adapter_type: AdapterType,
 ) -> FsResult<Schedule<String>> {
     token.check_cancellation()?;
+
     let deps = derive_deps(nodes, token)?;
 
     let (converted_include, include_had_columns) =

@@ -1,16 +1,22 @@
 /**
  * SQL the browser runs against the site's parquet.
  *
- * Ported from the Rust handlers of the same name, near-verbatim: both sides speak
- * DuckDB, so the queries carry over and stay diffable against
- * `crates/dbt-docs-server/src/handlers/`. Every projection keeps the handler's
- * snake_case aliases, which is what lets the existing `fromRest` mappers consume
- * these rows unchanged and keeps their tests meaningful.
+ * Written against the **dbt information schema** — `dbt.models`, `dbt.seeds`,
+ * `dbt.docs_blocks`, `dbt_rt.freshness`, and the `dbt_internal.resources` union
+ * for the surfaces that span resource types. The relations themselves are defined
+ * by the `views.sql` that ships beside the parquet, so nothing here declares a
+ * view; these are queries over what that document registered.
  *
- * What does *not* carry over is the machinery that existed because it was a
- * network API: cursor envelopes, `total_count` round-trips, and the two-to-four
- * "view might be missing" variants per handler. The exporter guarantees every
- * artifact is present, so a single query per surface is enough.
+ * Every projection keeps its snake_case output aliases even where the source
+ * column was renamed (`access AS access_level`, `data_type_declared AS
+ * declared_type`, …). That is deliberate and load-bearing: `fromWire.ts` reads
+ * those names, the mappers are the contract, and renaming an output column here
+ * silently nulls a field rather than failing.
+ *
+ * What the REST era left behind: cursor envelopes, `total_count` round-trips, and
+ * the two-to-four "view might be missing" variants per handler. The information
+ * schema writes every table even at zero rows, so a single query per surface is
+ * enough.
  */
 
 /** Literal-escape a string for interpolation, mirroring the Rust `escape_str`. */
@@ -18,16 +24,23 @@ export function sqlStr(value: string): string {
   return `'${value.replace(/'/g, "''")}'`;
 }
 
-/** `handlers/project.rs` — one row of project identity. */
+/**
+ * One row of project identity.
+ *
+ * `project_id` and `description` are not in the information schema — nothing ever
+ * set either — so they are projected as NULL to keep `RestProject`'s shape rather
+ * than dropped, which would make the mapper read `undefined` for a field it
+ * declares as nullable.
+ */
 export const PROJECT_SQL = `
 SELECT project_name AS name,
-       project_id,
-       description,
+       NULL AS project_id,
+       NULL AS description,
        dbt_version,
        adapter_type,
        git_sha,
        git_branch,
-       git_is_dirty
+       git_uncommitted_changes AS git_is_dirty
 FROM dbt.project
 LIMIT 1`;
 
@@ -58,30 +71,37 @@ export const PROJECT_TABLES = ['dbt.project'];
  */
 export function overviewSql(rootPackage: string): string {
   return `
-SELECT unique_id, package_name, block_contents
-FROM dbt.docs
+SELECT unique_id, package_name, content AS block_contents
+FROM dbt.docs_blocks
 WHERE name = '__overview__'
   AND unique_id <> 'doc.dbt.__overview__'
-  AND block_contents IS NOT NULL
-  AND length(trim(block_contents)) > 0
+  AND content IS NOT NULL
+  AND length(trim(content)) > 0
 ORDER BY CASE WHEN package_name = ${sqlStr(rootPackage)} THEN 0 ELSE 1 END,
          package_name,
          unique_id
 LIMIT 1`;
 }
 
-export const OVERVIEW_TABLES = ['dbt.docs'];
+export const OVERVIEW_TABLES = ['dbt.docs_blocks'];
 
 /**
- * `handlers/nodes.rs::list_node_counts` — per-resource-type tallies.
+ * Per-resource-type tallies, for the sidebar and the overview page.
  *
- * The resource-bearing tables sit outside `dbt.nodes`, so they are counted
- * separately and summed. `unit_test` folds into `test` in the mapper below rather
- * than here, matching how the handler did it in Rust after the query.
+ * Counted over `dbt_internal.resources` rather than `dbt.dag_nodes`, which is the
+ * obvious-looking choice and the wrong one: `dag_nodes` keeps only *enabled* rows
+ * whose type participates in the DAG, so hooks and disabled resources would go
+ * missing and five of these side tables have no rows there at all. The union is
+ * every resource, which is what a count of resources has to be.
+ *
+ * The types with their own table are counted separately and summed. `unit_test`
+ * folds into `test` in the mapper rather than here, since the two render on one
+ * page.
  */
 export const COUNTS_SQL = `
 WITH raw AS (
-  SELECT resource_type, COUNT(*) AS count FROM dbt.nodes GROUP BY resource_type
+  SELECT resource_type, COUNT(*) AS count FROM dbt_internal.resources GROUP BY resource_type
+  UNION ALL SELECT 'unit_test',      COUNT(*) FROM dbt.unit_tests
   UNION ALL SELECT 'exposure',       COUNT(*) FROM dbt.exposures
   UNION ALL SELECT 'group',          COUNT(*) FROM dbt.groups
   UNION ALL SELECT 'macro',          COUNT(*) FROM dbt.macros
@@ -95,7 +115,8 @@ GROUP BY resource_type
 ORDER BY resource_type`;
 
 export const COUNTS_TABLES = [
-  'dbt.nodes',
+  'dbt_internal.resources',
+  'dbt.unit_tests',
   'dbt.exposures',
   'dbt.groups',
   'dbt.macros',
@@ -105,16 +126,17 @@ export const COUNTS_TABLES = [
 ];
 
 /**
- * `handlers/files.rs` — every file-bearing resource, unpaginated.
+ * Every file-bearing resource, unpaginated — the sidebar's file tree.
  *
- * The Rust version gated each arm on `table_has_rows` to avoid querying an absent
- * view; here every artifact exists, so the union runs as written. `patch_path` is
- * only real for nodes and macros, and `dbt.semantic_models` needs the null filter
- * because its rows can lack a file path entirely.
+ * `patch_path` is the mapper's name for what the information schema calls
+ * `properties_yml_file_path`, and it is only real for resources and macros.
+ * `dbt.semantic_models` needs the null filter because its rows can lack a file
+ * path entirely.
  */
 export const FILES_SQL = `
-SELECT unique_id, name, resource_type, package_name, original_file_path, patch_path
-FROM dbt.nodes
+SELECT unique_id, name, resource_type, package_name, original_file_path,
+       properties_yml_file_path AS patch_path
+FROM dbt_internal.resources
 UNION ALL
 SELECT unique_id, name, 'exposure', package_name, original_file_path, NULL
 FROM dbt.exposures
@@ -122,7 +144,8 @@ UNION ALL
 SELECT unique_id, name, 'metric', package_name, original_file_path, NULL
 FROM dbt.metrics
 UNION ALL
-SELECT unique_id, name, 'macro', package_name, original_file_path, patch_path
+SELECT unique_id, name, 'macro', package_name, original_file_path,
+       properties_yml_file_path
 FROM dbt.macros
 UNION ALL
 SELECT unique_id, name, 'semantic_model', package_name, original_file_path, NULL
@@ -140,7 +163,7 @@ FROM dbt.saved_queries
 ORDER BY original_file_path, name`;
 
 export const FILES_TABLES = [
-  'dbt.nodes',
+  'dbt_internal.resources',
   'dbt.exposures',
   'dbt.metrics',
   'dbt.macros',
@@ -150,15 +173,22 @@ export const FILES_TABLES = [
   'dbt.saved_queries',
 ];
 
-/** Both edge directions for one node, shaped as `RestEdgeRef` rows. */
+/**
+ * Both edge directions for one node, shaped as `RestEdgeRef` rows.
+ *
+ * `edge_type` is projected as the constant `'ref'`: the information schema does
+ * not publish it, and `RestEdgeRef` declares it. `'ref'` rather than NULL because
+ * that is what the synthesized saved-query edges already use, so every edge the
+ * UI sees carries one value rather than sometimes none.
+ */
 export function nodeEdgesSql(uniqueId: string): string {
   const id = sqlStr(uniqueId);
   return `
-SELECT 'depends_on' AS direction, parent_unique_id AS unique_id, edge_type
+SELECT 'depends_on' AS direction, parent_unique_id AS unique_id, 'ref' AS edge_type
 FROM dbt.edges
 WHERE child_unique_id = ${id}
 UNION ALL
-SELECT 'referenced_by', child_unique_id, edge_type
+SELECT 'referenced_by', child_unique_id, 'ref'
 FROM dbt.edges
 WHERE parent_unique_id = ${id}`;
 }
@@ -201,8 +231,8 @@ downstream AS (
  * 0 root, positive downstream).
  *
  * The `metadata` CTE unions the three resource tables that appear in `dbt.edges`
- * but not in `dbt.nodes` — without them a metric or exposure in the graph would
- * resolve to no name and drop out of the join.
+ * but not in the resource union — without them a metric or exposure in the graph
+ * would resolve to no name and drop out of the join.
  */
 export function lineageNodesSql(
   uniqueId: string,
@@ -218,7 +248,8 @@ all_ids AS (
   SELECT unique_id, MAX(depth) FROM downstream GROUP BY unique_id
 ),
 metadata AS (
-  SELECT unique_id, name, resource_type, materialized, original_file_path FROM dbt.nodes
+  SELECT unique_id, name, resource_type, materialized, original_file_path
+  FROM dbt_internal.resources
   UNION ALL
   SELECT unique_id, name, 'metric', NULL, NULL FROM dbt.metrics
   UNION ALL
@@ -246,7 +277,7 @@ all_ids AS (
   UNION
   SELECT unique_id FROM downstream
 )
-SELECT e.parent_unique_id AS from_id, e.child_unique_id AS to_id, e.edge_type
+SELECT e.parent_unique_id AS from_id, e.child_unique_id AS to_id, 'ref' AS edge_type
 FROM dbt.edges e
 WHERE e.parent_unique_id IN (SELECT unique_id FROM all_ids)
   AND e.child_unique_id IN (SELECT unique_id FROM all_ids)
@@ -255,16 +286,16 @@ ORDER BY e.parent_unique_id, e.child_unique_id`;
 
 export const LINEAGE_TABLES = [
   'dbt.edges',
-  'dbt.nodes',
+  'dbt_internal.resources',
   'dbt.metrics',
   'dbt.semantic_models',
   'dbt.exposures',
 ];
 
-/** `dbt.saved_queries.depends_on_nodes` for the saved-query lineage special case. */
+/** `dbt.saved_queries.depends_on` for the saved-query lineage special case. */
 export function savedQueryDependsOnSql(uniqueId: string): string {
   return `
-SELECT depends_on_nodes
+SELECT depends_on AS depends_on_nodes
 FROM dbt.saved_queries
 WHERE unique_id = ${sqlStr(uniqueId)}
 LIMIT 1`;
@@ -281,27 +312,30 @@ export const SAVED_QUERY_TABLES = ['dbt.saved_queries'];
  */
 export function columnLineageSql(uniqueId: string, column?: string): string {
   const id = sqlStr(uniqueId);
-  const to = column
-    ? `to_node_unique_id = ${id} AND LOWER(to_column_name) = ${sqlStr(column.toLowerCase())}`
-    : `to_node_unique_id = ${id}`;
-  const from = column
-    ? `from_node_unique_id = ${id} AND LOWER(from_column_name) = ${sqlStr(column.toLowerCase())}`
-    : `from_node_unique_id = ${id}`;
+  const child = column
+    ? `child_node_unique_id = ${id} AND LOWER(child_column_name) = ${sqlStr(column.toLowerCase())}`
+    : `child_node_unique_id = ${id}`;
+  const parent = column
+    ? `parent_node_unique_id = ${id} AND LOWER(parent_column_name) = ${sqlStr(column.toLowerCase())}`
+    : `parent_node_unique_id = ${id}`;
 
+  // `parent`/`child` in the information schema, `from`/`to` in the UI's
+  // vocabulary. The aliases do the translation so the mapper and the graph
+  // component are untouched.
   return `
-SELECT from_node_unique_id AS from_node,
-       LOWER(from_column_name) AS from_column,
-       to_node_unique_id AS to_node,
-       LOWER(to_column_name) AS to_column,
-       lineage_kind
+SELECT parent_node_unique_id AS from_node,
+       LOWER(parent_column_name) AS from_column,
+       child_node_unique_id AS to_node,
+       LOWER(child_column_name) AS to_column,
+       evolution AS lineage_kind
 FROM dbt.column_lineage
-WHERE (${to}) OR (${from})`;
+WHERE (${child}) OR (${parent})`;
 }
 
 export const COLUMN_LINEAGE_TABLES = ['dbt.column_lineage'];
 
 /**
- * Normalize the index's raw `lineage_kind` to the vocabulary the UI renders.
+ * Normalize the raw `evolution` value to the vocabulary the UI renders.
  *
  * An unrecognized value passes through rather than being dropped, so a new kind
  * shows up as itself instead of vanishing.

@@ -1034,75 +1034,101 @@ impl<'a> CatalogSpecV2View<'a> {
     // Called from CatalogRegistry::validate_semantic after structural validation passes.
 
     fn validate_duckdb_semantics(&self, duckdb: &yml::Mapping, type_name: &str) -> FsResult<()> {
-        let has_endpoint = get_str(duckdb, "endpoint")?;
-        let has_endpoint_type = get_str(duckdb, "endpoint_type")?;
+        match self.catalog_type {
+            CatalogType::Glue
+            | CatalogType::IcebergRest
+            | CatalogType::Horizon
+            | CatalogType::Unity => {
+                let has_endpoint = get_str(duckdb, "endpoint")?;
+                let has_endpoint_type = get_str(duckdb, "endpoint_type")?;
 
-        match (has_endpoint, has_endpoint_type) {
-            (None, None) => {
-                return err!(
-                    code => ErrorCode::InvalidConfig,
-                    hacky_yml_loc => self.field_span("type").cloned(),
-                    "Catalog '{}' {}/duckdb config requires 'endpoint' or 'endpoint_type'",
-                    self.name, type_name
-                );
-            }
-            (Some(ep), Some(_)) if !ep.is_empty_or_whitespace() => {
-                return err!(
-                    code => ErrorCode::InvalidConfig,
-                    hacky_yml_loc => field_span(duckdb, "endpoint_type").cloned(),
-                    "Catalog '{}' {}/duckdb 'endpoint' and 'endpoint_type' are mutually exclusive",
-                    self.name, type_name
-                );
-            }
-            (Some(ep), _) if ep.is_empty_or_whitespace() => {
-                return err!(
-                    code => ErrorCode::InvalidConfig,
-                    hacky_yml_loc => field_span(duckdb, "endpoint").cloned(),
-                    "Catalog '{}' {}/duckdb 'endpoint' must be non-empty",
-                    self.name, type_name
-                );
-            }
-            (_, Some(et)) => {
-                let val = et.trim();
-                if !matches_enum_ci(val, DUCKDB_ENDPOINT_TYPES) {
-                    return err!(
-                        code => ErrorCode::InvalidConfig,
-                        hacky_yml_loc => field_span(duckdb, "endpoint_type").cloned(),
-                        "Catalog '{}' {}/duckdb 'endpoint_type' must be 'GLUE' or 'S3_TABLES'",
-                        self.name, type_name
-                    );
-                }
-                if val.eq_ignore_ascii_case("S3_TABLES") {
-                    let Some(warehouse) = get_str(duckdb, "warehouse")? else {
+                match (has_endpoint, has_endpoint_type) {
+                    (None, None) => {
+                        return err!(
+                            code => ErrorCode::InvalidConfig,
+                            hacky_yml_loc => self.field_span("type").cloned(),
+                            "Catalog '{}' {}/duckdb config requires 'endpoint' or 'endpoint_type'",
+                            self.name, type_name
+                        );
+                    }
+                    (Some(ep), Some(_)) if !ep.is_empty_or_whitespace() => {
                         return err!(
                             code => ErrorCode::InvalidConfig,
                             hacky_yml_loc => field_span(duckdb, "endpoint_type").cloned(),
-                            "Catalog '{}' {}/duckdb endpoint_type='S3_TABLES' requires 'warehouse'",
+                            "Catalog '{}' {}/duckdb 'endpoint' and 'endpoint_type' are mutually exclusive",
                             self.name, type_name
                         );
-                    };
-                    if warehouse.is_empty_or_whitespace() {
+                    }
+                    (Some(ep), _) if ep.is_empty_or_whitespace() => {
                         return err!(
                             code => ErrorCode::InvalidConfig,
-                            hacky_yml_loc => field_span(duckdb, "warehouse").cloned(),
-                            "Catalog '{}' {}/duckdb 'warehouse' must be non-empty",
+                            hacky_yml_loc => field_span(duckdb, "endpoint").cloned(),
+                            "Catalog '{}' {}/duckdb 'endpoint' must be non-empty",
+                            self.name, type_name
+                        );
+                    }
+                    (_, Some(et)) => {
+                        let val = et.trim();
+                        if !matches_enum_ci(val, DUCKDB_ENDPOINT_TYPES) {
+                            return err!(
+                                code => ErrorCode::InvalidConfig,
+                                hacky_yml_loc => field_span(duckdb, "endpoint_type").cloned(),
+                                "Catalog '{}' {}/duckdb 'endpoint_type' must be 'GLUE' or 'S3_TABLES'",
+                                self.name, type_name
+                            );
+                        }
+                        if val.eq_ignore_ascii_case("S3_TABLES") {
+                            let Some(warehouse) = get_str(duckdb, "warehouse")? else {
+                                return err!(
+                                    code => ErrorCode::InvalidConfig,
+                                    hacky_yml_loc => field_span(duckdb, "endpoint_type").cloned(),
+                                    "Catalog '{}' {}/duckdb endpoint_type='S3_TABLES' requires 'warehouse'",
+                                    self.name, type_name
+                                );
+                            };
+                            if warehouse.is_empty_or_whitespace() {
+                                return err!(
+                                    code => ErrorCode::InvalidConfig,
+                                    hacky_yml_loc => field_span(duckdb, "warehouse").cloned(),
+                                    "Catalog '{}' {}/duckdb 'warehouse' must be non-empty",
+                                    self.name, type_name
+                                );
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+
+                if let Some(_auth_type) = get_str(duckdb, "authorization_type")? {
+                    if has_endpoint_type.is_some() {
+                        return err!(
+                            code => ErrorCode::InvalidConfig,
+                            hacky_yml_loc => field_span(duckdb, "authorization_type").cloned(),
+                            "Catalog '{}' {}/duckdb 'authorization_type' cannot be combined with 'endpoint_type'",
                             self.name, type_name
                         );
                     }
                 }
             }
-            _ => {}
+            CatalogType::DuckLake => {}
+            _ => debug_assert!(
+                false,
+                "validate_duckdb_semantics called for unsupported catalog type: {:?}",
+                self.catalog_type
+            ),
         }
 
-        if let Some(_auth_type) = get_str(duckdb, "authorization_type")? {
-            if has_endpoint_type.is_some() {
-                return err!(
-                    code => ErrorCode::InvalidConfig,
-                    hacky_yml_loc => field_span(duckdb, "authorization_type").cloned(),
-                    "Catalog '{}' {}/duckdb 'authorization_type' cannot be combined with 'endpoint_type'",
-                    self.name, type_name
-                );
-            }
+        if let Some(catalog_database) = get_str(duckdb, "catalog_database")?
+            && !catalog_database
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'_')
+        {
+            return err!(
+                code => ErrorCode::InvalidConfig,
+                hacky_yml_loc => field_span(duckdb, "catalog_database").cloned(),
+                "Catalog '{}' {}/duckdb 'catalog_database' must contain only ASCII letters, digits, and underscores",
+                self.name, type_name
+            );
         }
 
         Ok(())
@@ -1345,7 +1371,12 @@ impl CatalogRegistry {
                     catalog.validate_biglake_semantics(bigquery)?;
                 }
             }
-            CatalogType::HiveMetastore | CatalogType::DuckLake | CatalogType::LocalFilesystem => {}
+            CatalogType::DuckLake => {
+                if let Some(duckdb) = catalog.config_block("duckdb") {
+                    catalog.validate_duckdb_semantics(duckdb, "ducklake")?;
+                }
+            }
+            CatalogType::HiveMetastore | CatalogType::LocalFilesystem => {}
             // These are not supported as explicit catalog types in catalogs.yml's `type` field.
             CatalogType::SnowflakeBuiltIn
             | CatalogType::SnowflakeNative
@@ -2282,6 +2313,45 @@ catalogs:
         assert!(res.is_err(), "expected error but got Ok");
         assert!(
             msg.contains("'catalog_database' must be non-empty"),
+            "unexpected error: {msg}"
+        );
+    }
+
+    #[test]
+    fn snowflake_catalog_database_dashes_allowed() {
+        // The ascii-identifier check only applies to duckdb's `catalog_database`
+        // (which becomes a sanitized ATTACH alias); Snowflake's is never
+        // sanitized, so dashes are fine there.
+        let yaml = r#"
+catalogs:
+  - name: rest_sf
+    type: iceberg_rest
+    table_format: iceberg
+    config:
+      snowflake:
+        catalog_database: "my-linked-db"
+        auto_refresh: true
+"#;
+        parse_and_validate(yaml).expect("dashes in snowflake catalog_database should validate");
+    }
+
+    #[test]
+    fn ducklake_duckdb_non_ascii_identifier_catalog_database_rejected() {
+        let yaml = r#"
+catalogs:
+  - name: my_lake
+    type: ducklake
+    table_format: default
+    config:
+      duckdb:
+        metadata_path: "metadata.ducklake"
+        catalog_database: "my-lake"
+"#;
+        let res = parse_and_validate(yaml);
+        let msg = format!("{res:?}");
+        assert!(res.is_err(), "expected error but got Ok");
+        assert!(
+            msg.contains("must contain only ASCII letters, digits, and underscores"),
             "unexpected error: {msg}"
         );
     }

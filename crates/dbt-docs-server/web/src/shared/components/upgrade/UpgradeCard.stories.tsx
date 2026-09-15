@@ -35,7 +35,7 @@ export const RailCollapsed: Story = {
 };
 
 /**
- * Column lineage on Core sends the user to the Fusion install docs, because
+ * Column lineage on Core sends the user to the dbt v2 install docs, because
  * `dbt login` does not exist on Core. On `proprietary-anon` the same card offers the
  * `dbt login` snippet instead — the clearest example of the copy registry changing the
  * CTA *kind*, not just its wording.

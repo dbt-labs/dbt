@@ -4,7 +4,7 @@
  *
  *  - `hasAnalysis` — analyses are surfaced in the Asset list, File tree, and
  *    Filter pane. Off because analyses have no list projection of their own;
- *    they live in `dbt.nodes` (post PR 10186) so individual detail pages work,
+ *    they live on the resource tables so individual detail pages work,
  *    and only the discovery surfaces are gated.
  */
 export const FEATURE_FLAGS = {

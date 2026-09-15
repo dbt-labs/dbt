@@ -43,6 +43,7 @@ use dbt_schemas::schemas::{
 };
 use dbt_schemas::state::ResolverState;
 use dbt_tasks_core::PreTaskRunData;
+use dbt_tasks_core::task::TaskOp;
 use dbt_telemetry::{
     ArtifactType, ArtifactWritten, NodeOutcome, NodeProcessed, NodeType, ProgressMessage,
     ShowResult, SourceFreshnessDetail, SourceFreshnessOutcome, node_processed,
@@ -182,7 +183,7 @@ fn evaluate_freshness_thresholds(
 async fn measure_query_based_freshness(
     node: &dyn FreshnessNodeRef,
     adapter_type: AdapterType,
-    jinja_env: &JinjaEnv,
+    jinja_env: &Arc<JinjaEnv>,
     compile_base: &CompileBaseCtx,
     io_args: &IoArgs,
     dependencies: BTreeSet<String>,
@@ -234,7 +235,7 @@ pub async fn calculate_freshness(
     filter: &str,
     node: &dyn FreshnessNodeRef,
     adapter_type: AdapterType,
-    jinja_env: &JinjaEnv,
+    jinja_env: &Arc<JinjaEnv>,
     compile_base: &CompileBaseCtx,
     io_args: &IoArgs,
     dependencies: BTreeSet<String>,
@@ -270,7 +271,7 @@ pub async fn calculate_freshness_custom_sql(
     loaded_at_query: &str,
     node: &dyn FreshnessNodeRef,
     adapter_type: AdapterType,
-    jinja_env: &JinjaEnv,
+    jinja_env: &Arc<JinjaEnv>,
     compile_base: &CompileBaseCtx,
     io_args: &IoArgs,
     dependencies: BTreeSet<String>,
@@ -328,28 +329,41 @@ pub async fn calculate_freshness_custom_sql(
             io_args.out_dir.as_path(),
         )
         .into_owned();
-    let rendered_query = jinja_env
-        .render_named_str(
-            &source_path.to_string_lossy(),
-            loaded_at_query,
-            &render_context,
-            &[],
-        )
-        .map_err(|e| {
-            let loc = e.significant_span().map(|span| {
-                CodeLocationWithFile::new(
-                    span.start_line,
-                    span.start_col,
-                    span.start_offset,
-                    source_path.clone(),
+    // A user's `loaded_at_query` can call a macro that reaches the adapter, so
+    // this render goes to the blocking pool like the `collect_freshness`
+    // expression below it: every database connection must be created by a
+    // `dbt-runtime` worker thread.
+    let rendered_query = {
+        let jinja_env = Arc::clone(jinja_env);
+        let loaded_at_query = loaded_at_query.to_owned();
+        TaskOp::Blocking(Box::new(move || -> FsResult<String> {
+            jinja_env
+                .render_named_str(
+                    &source_path.to_string_lossy(),
+                    &loaded_at_query,
+                    &render_context,
+                    &[],
                 )
-            });
-            let fs_err = FsError::from_jinja_err(e, "Failed to render the Jinja str");
-            match loc {
-                Some(loc) => fs_err.with_location(loc),
-                None => fs_err.with_location(source_path.clone()),
-            }
-        })?;
+                .map_err(|e| {
+                    let loc = e.significant_span().map(|span| {
+                        CodeLocationWithFile::new(
+                            span.start_line,
+                            span.start_col,
+                            span.start_offset,
+                            source_path.clone(),
+                        )
+                    });
+                    let fs_err = FsError::from_jinja_err(e, "Failed to render the Jinja str");
+                    match loc {
+                        Some(loc) => fs_err.with_location(loc),
+                        None => fs_err.with_location(source_path.clone()),
+                    }
+                    .into()
+                })
+        }))
+        .run()
+        .await??
+    };
     // Insert loaded_at_query as an escaped string
     let macro_expr = format!(
         "collect_freshness_custom_sql('{relation}', '{}').table",
@@ -375,7 +389,7 @@ async fn calculate_freshness_common(
     macro_expr: &str,
     node: &dyn FreshnessNodeRef,
     adapter_type: AdapterType,
-    jinja_env: &JinjaEnv,
+    jinja_env: &Arc<JinjaEnv>,
     compile_base: &CompileBaseCtx,
     io_args: &IoArgs,
     dependencies: BTreeSet<String>,
@@ -393,11 +407,21 @@ async fn calculate_freshness_common(
         dependencies,
     );
 
-    let expr = jinja_env.compile_expression(macro_expr)?;
-    let table = expr
-        .eval(&context, &[])?
-        .downcast_object::<AgateTable>()
-        .ok_or_else(|| unexpected_fs_err!("Agate table expected"))?;
+    // The `collect_freshness` macros query the warehouse, so the expression has
+    // to be evaluated on the blocking pool: every database connection must be
+    // created by a `dbt-runtime` worker thread.
+    let table = {
+        let jinja_env = Arc::clone(jinja_env);
+        let macro_expr = macro_expr.to_owned();
+        TaskOp::Blocking(Box::new(move || {
+            let expr = jinja_env.compile_expression(&macro_expr)?;
+            expr.eval(&context, &[])?
+                .downcast_object::<AgateTable>()
+                .ok_or_else(|| unexpected_fs_err!("Agate table expected"))
+        }))
+        .run()
+        .await??
+    };
 
     let batch = table.original_record_batch();
 
@@ -509,7 +533,7 @@ pub async fn run_freshness(
     schedule: &Schedule<String>,
     resolver_state: &ResolverState,
     adapter: Arc<Adapter>,
-    env: &JinjaEnv,
+    env: &Arc<JinjaEnv>,
     is_freshness_command: bool,
     check_all: bool,
     sources_only: bool,
@@ -720,7 +744,7 @@ async fn run_freshness_with_spans(
     extended_models: &Vec<&DbtModel>,
     resolver_state: &ResolverState,
     adapter: Arc<Adapter>,
-    env: &JinjaEnv,
+    env: &Arc<JinjaEnv>,
     compile_base: &CompileBaseCtx,
     io_args: &IoArgs,
     is_freshness_command: bool,
@@ -802,32 +826,39 @@ async fn run_freshness_with_spans(
         .keys()
         .cloned()
         .collect();
-    for node in sources.iter() {
-        if let Some(result) = measure_query_based_freshness(
-            *node,
+    let mut node_errors: HashMap<String, Box<FsError>> =
+        HashMap::with_capacity(sources.len() + sla_models.len());
+    let sources_as_query_nodes = sources.iter().map(|node| *node as &dyn FreshnessNodeRef);
+    let sla_models_as_query_nodes = sla_models.iter().map(|node| *node as &dyn FreshnessNodeRef);
+    let query_based_nodes = sources_as_query_nodes.chain(sla_models_as_query_nodes);
+    for node in query_based_nodes {
+        match measure_query_based_freshness(
+            node,
             resolver_state.adapter_type,
             env,
             compile_base,
             io_args,
             dependencies.clone(),
         )
-        .await?
+        .await
         {
-            results.insert(node.__common_attr__.unique_id.clone(), result);
-        }
-    }
-    for node in sla_models.iter() {
-        if let Some(result) = measure_query_based_freshness(
-            *node,
-            resolver_state.adapter_type,
-            env,
-            compile_base,
-            io_args,
-            dependencies.clone(),
-        )
-        .await?
-        {
-            results.insert(node.__common_attr__.unique_id.clone(), result);
+            Ok(Some(result)) => {
+                results.insert(node.common().unique_id.clone(), result);
+            }
+            Ok(None) => {}
+            Err(e) if !is_freshness_command => {
+                emit_warn_log_message(
+                    ErrorCode::FreshnessMetadataWarning,
+                    format!(
+                        "Failed to calculate freshness for {} '{}': {e}. It will be treated as updated, and dependent models will rebuild.",
+                        node.kind_label().to_lowercase(),
+                        node.common().unique_id
+                    ),
+                );
+            }
+            Err(e) => {
+                node_errors.insert(node.common().unique_id.clone(), e);
+            }
         }
     }
 
@@ -896,12 +927,23 @@ async fn run_freshness_with_spans(
                 }
             }
         } else if is_freshness_command {
-            return err!(
-                    code => ErrorCode::Unexpected,
-                    loc => node.common().name_span.start.clone(),
-                    "Could not find freshness information for {kind} '{}'. Please verify that you have access to view metadata for this {kind} in the warehouse.",
-                    node.common().unique_id
-            );
+            if let Some(span) = node_spans.get(node.common().unique_id.as_str()) {
+                update_span_attrs(span, |ev: &mut NodeProcessed| {
+                    ev.node_outcome = NodeOutcome::Error as i32;
+                    update_dbt_core_event_code_for_node_processed_end(ev);
+                });
+            }
+            let err = node_errors
+                .remove(&node.common().unique_id)
+                .unwrap_or_else(|| {
+                    fs_err!(
+                        code => ErrorCode::Unexpected,
+                        loc => node.common().name_span.start.clone(),
+                        "Could not find freshness information for {kind} '{}'. Please verify that you have access to view metadata for this {kind} in the warehouse.",
+                        node.common().unique_id
+                    )
+                });
+            emit_error_log_from_fs_error(*err);
         } else {
             // When freshness is collected as part of a build, missing freshness info is
             // non-fatal. The downstream task runner falls back to Utc::now() for sources
@@ -1390,6 +1432,10 @@ mod tests {
 
     /// Minimal `ResolverState` for tests that only need `nodes` populated.
     fn test_resolver_state_with_nodes(nodes: Nodes) -> ResolverState {
+        let user_defined_schema_registry = dbt_schemas::state::hydrate_user_defined_schema_registry(
+            &nodes,
+            AdapterType::Snowflake,
+        );
         ResolverState {
             root_project_name: "test".to_string(),
             adapter_type: AdapterType::Snowflake,
@@ -1432,6 +1478,7 @@ mod tests {
             nodes_with_access_errors: Default::default(),
             semantic_layer_spec_is_legacy: false,
             test_name_truncations: Default::default(),
+            user_defined_schema_registry,
         }
     }
 

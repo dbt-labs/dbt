@@ -51,6 +51,24 @@ describe('building the query', () => {
     expect(buildSearchQuery('x', { resourceTypes: ['analysis'] }, 50, 0)).toBeNull();
   });
 
+  it('lists by type filter alone, with no search text', () => {
+    // The Filter tab has no search box of its own -- ticking a type checkbox with
+    // an empty query must still produce a real, filtered listing rather than
+    // falling back to the empty-query "no results" case.
+    const built = buildSearchQuery('', { resourceTypes: ['model'] }, 50, 0);
+    expect(built).not.toBeNull();
+    expect(built!.sql).not.toContain('field_matches');
+    expect(built!.sql).not.toContain('winners');
+    expect(built!.sql).toContain('AS matched_field');
+    expect(built!.sql).toContain('ORDER BY cursor_key ASC, b.unique_id ASC');
+  });
+
+  it('lists by package/tag filter alone, with no search text', () => {
+    const built = buildSearchQuery('', { packages: ['jaffle_shop'] }, 50, 0);
+    expect(built).not.toBeNull();
+    expect(built!.sql).toContain("b.package_name IN ('jaffle_shop')");
+  });
+
   it('ANDs multiple tokens by intersecting on unique_id', () => {
     // Every token must match, though not necessarily in the same field — which is
     // why the intersect is on the id rather than the whole match row.

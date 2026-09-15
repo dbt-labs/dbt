@@ -1,6 +1,6 @@
 // ----------------------------------------------------------------------------------------------
-// DBT FUSION
-pub const DBT_FUSION: &str = "dbt-fusion";
+// dbt brand name (shown in --version banners and JSON log lines)
+pub const DBT_BRAND_NAME: &str = "dbt";
 pub const DBT_SA_CLI: &str = "dbt-sa-cli";
 
 // ----------------------------------------------------------------------------------------------

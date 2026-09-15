@@ -4,7 +4,7 @@ Paths in this file are relative to the directory containing `AGENTS.md`.
 
 ## What it is
 
-The successor to Core v1's `dbt docs generate` + `dbt docs serve` for the Rust/Fusion
+The successor to Core v1's `dbt docs generate` + `dbt docs serve` for the Rust dbt v2
 runtime. Apache 2.0 crate at `crates/dbt-docs-server/`.
 
 **`dbt docs generate` writes a static site.** There is no server-side query engine and
@@ -15,14 +15,25 @@ plain file host — GitLab Pages, GitHub Pages, S3 — with no process and no st
 site is missing or older than the index.
 
 **Critical:** it does NOT read `manifest.json` — not on the Rust side and not in the
-browser. Data comes from parquet files written to `<target>/index/` by a run with
-`--write-index`. The exporter reads those through the `dbt-index-core::Backend` trait;
-the site reads its own copies over HTTP.
+browser. Data comes from the **dbt information schema** at `<target>/info_schema/v<n>/`:
+`dbt.*.parquet` plus the generated `views.sql`. The exporter reads it through
+`dbt-index-core::Backend` (`DuckDbInfoSchemaBackend`); the browser fetches the same
+files over HTTP.
+
+**The browser does not author view SQL.** It fetches `views.sql` and executes the
+statements it needs (`web/src/shared/data-sources/duckdb/viewsSql.ts`), so the
+relations the page queries are the ones generated for the parquet beside it. Writing
+`CREATE VIEW` client-side is what made this app a second definition of the schema —
+the cross-language half of fs#13788. Do not reintroduce it.
 
 **`dbt docs generate` compiles, every time.** It synthesizes a `compile --write-index`
 invocation and hands it to the ordinary phase pipeline (`build_index_for_docs`,
-`fs/sa/crates/dbt-main/src/dbt_lib.rs`), so a fresh checkout needs one command rather than
-two. `--no-compile` opts out and reduces the command to the pure exporter it used to be,
+`fs/sa/crates/dbt-main/src/dbt_lib.rs`), then builds the information schema from the
+metadata (`build_info_schema_for_docs`) — so a fresh checkout needs one command rather
+than two. The information schema is built *after* the compile and its metadata ingest
+rather than by the compile's own `--generate-info-schema`, because the invocation
+record is written after that point; built earlier it would miss it and the site's
+timings and status surfaces would come up empty. `--no-compile` opts out and reduces the command to the pure exporter it used to be,
 where a missing index is an error. `--compile` is accepted as a hidden no-op for v1 script
 compatibility.
 
@@ -60,14 +71,17 @@ so read "endpoint" as "the query behind that surface".
 
 ```
 dbt project
-    │  dbt compile --write-index [--static-analysis strict]
+    │  dbt compile [--static-analysis strict]
     │  …or nothing: `docs generate` runs that compile itself unless `--no-compile`
     ▼
-<target>/index/*.parquet        ← data source (NOT manifest.json)
-    │  dbt docs generate — COPY … TO … per artifact, + the embedded SPA
+<target>/private/metadata/**    ← epoch files
+    │  write_info_schema (COPY from the epoch views; Arrow fallback)
     ▼
-<target>/index.html + assets/   ← the site; the parquet stays in index/
-    │  fetched whole by the browser (no range requests)
+<target>/info_schema/v<n>/      ← dbt.*.parquet + views.sql (NOT manifest.json)
+    │  dbt docs generate — writes the embedded SPA beside it, nothing else
+    ▼
+<target>/index.html + assets/   ← the site; the data stays in info_schema/v<n>/
+    │  views.sql fetched once, then artifacts fetched whole on demand
     ▼
 DuckDB-WASM from jsDelivr, in the page
     ▼
@@ -91,7 +105,7 @@ Compile separately when you want column lineage, or to iterate on the exporter w
 paying for a compile each time:
 
 ```
-dbtd compile --write-index --static-analysis strict
+dbtd compile --generate-info-schema --static-analysis strict
 dbtd docs generate --no-compile
 ```
 
@@ -104,26 +118,35 @@ GitLab Pages.
 varies by how the index was produced, so features are detected rather than assumed —
 but the detection now happens in the browser:
 
-- `has_column_lineage` ⟸ `dbt.column_lineage.parquet` is present and has rows. One
-  source of truth; there is no flag that can disagree with the artifact set.
-- A gated surface with no artifact renders the upsell/fallback state. No 412, no error.
+- `has_column_lineage` ⟸ `dbt.column_lineage` **has rows**. Presence is no longer a
+  signal: the information schema writes every table even at zero rows, precisely so
+  `views.sql` always resolves, so the file is always there. A populated and an empty
+  one even measured the same 1552 bytes on a real project, so size is not a signal
+  either. Both the exporter's progress message and the browser ask the same rows
+  question, so they cannot disagree.
+- A gated surface renders the upsell/fallback state. No 412, no error. Gate *before*
+  the query, never by catching one: mapping a thrown query to "gated" renders every
+  mistake in the SQL as an upgrade card.
 
 Two things follow, and both have bitten:
 
 1. **Absence must look deliberate.** The degraded path is the default path, so a gated
    surface rendering as an empty list next to a non-zero sidebar count reads as data
    loss. Use `isSupported` on `useSourceQuery` and the unsupported-surface message.
-2. **The exporter writes every artifact, schema-only when empty**, so client SQL can
-   assume every relation exists and skip "view might be missing" variants.
+2. **The information schema writes every table, schema-only when empty**, so client
+   SQL can assume every relation exists and skip "view might be missing" variants.
+   There is no client-side empty-relation DDL any more, and nothing to keep in step
+   with it.
 
 ## Tech stack
 
 **Frontend** — paths relative to `crates/dbt-docs-server/web/`:
 - React 19 + TypeScript + Vite, standalone pnpm project (not part of any workspace)
 - Routing: `react-router-dom` **`HashRouter`**, Vite `base: './'`, `LinkPrefixProvider
-  prefix="#/"`. All three are required for subpath-agnostic static hosting: a plain file
-  host rewrites nothing, so real paths would 404 on a deep-link reload. The hash also
-  never reaches the server, which keeps `document.baseURI` stable for resolving `data/`.
+  prefix="/"` (the router owns the `#`). All three are required for subpath-agnostic
+  static hosting: a plain file host rewrites nothing, so real paths would 404 on a
+  deep-link reload. The hash also never reaches the server, which keeps
+  `document.baseURI` stable for resolving the data directory.
 - Data: `@tanstack/react-query` over the `MetadataDataSource` adapter in `src/shared/`.
   `createDuckDbDataSource` is the only production implementation.
 - Styling: Tailwind (configured in `tailwind.config.cjs`, with the sourdough and
@@ -157,16 +180,16 @@ All paths relative to `crates/dbt-docs-server/`.
 
 | File | Role |
 |---|---|
-| `src/export/mod.rs` | The exporter. Refuses to write a site with zero nodes; decides lineage absence from the source file on disk, not from a failed `COPY` |
-| `src/export/artifacts.rs` | Which artifacts get written, `DATA_DIR`, and how the index's `dbt.nodes` is split three ways |
+| `src/export/mod.rs` | The exporter. `data_dir()`, refuses to write a site with zero resources, decides lineage from rows rather than from the file |
 | `src/export/bootstrap.rs` | `window.__DBT_DOCS__` injection, with `<`/`>`/`&` escaped so the payload cannot steer the HTML tokenizer |
 | `src/server.rs` | Static host. No routes |
-| `src/state.rs` | AppState: index dir + providers |
+| `src/state.rs` | AppState: data dir + providers |
 | `web/src/main.tsx` | The only production data-source construction site; throws if the bootstrap is missing |
 | `web/src/types.ts` | Shared wire vocabulary that outlived the API (`NodeSummary`, the telemetry event union) |
 | `web/src/lib/siteBootstrap.ts` | Reads and version-checks `window.__DBT_DOCS__`; resolves `data/` against `document.baseURI` |
 | `web/src/lib/vortexSink.ts` | Browser Vortex producer. `enabled: false` under denied consent, so no call site can leak through |
-| `web/src/shared/data-sources/duckdb/` | `engine.ts` (CDN load, `registerFileBuffer`), `bootstrap.ts` (hyparquet first paint), `sql.ts`, `lists.ts`, `details.ts`, `search.ts` |
+| `web/src/shared/data-sources/duckdb/` | `viewsSql.ts` (fetch + parse the shipped `views.sql`), `engine.ts` (CDN load, `registerFileBuffer`, on-demand registration), `bootstrap.ts` (hyparquet first paint), `sql.ts`, `lists.ts`, `details.ts`, `search.ts` |
+| `web/src/shared/data-sources/duckdb/realArtifacts.test.ts` | Every query in the app, bound against a real information schema. Opt-in: `DBT_DOCS_REAL_ARTIFACTS=<target>/info_schema/v1 pnpm test`. This is the mechanical form of the habit below, and it has caught column-name bugs no other test can |
 | `web/src/shared/data-sources/mappers/fromWire.ts` | The single mapping layer, 46 tests. Column names in every SQL projection match what these mappers read — that is the guard against drift |
 | `web/src/shared/data-sources/conformance.test.ts` | Protocol-agnostic suite over `MetadataDataSource`; holds the fake and the DuckDB source to one contract |
 | `web/src/shared/typings/domain/` | Domain types (`Asset`, `ModelSummary`, `Capabilities`, …) |
@@ -177,32 +200,45 @@ All paths relative to `crates/dbt-docs-server/`.
 
 ## The artifact set
 
-Names follow `dbt.<table>.parquet` / `dbt_rt.<table>.parquet`, mirroring `DBT_TABLES` /
-`DBT_RT_TABLES` in `crates/dbt-index-core/src/db.rs`, so the exporter and the browser
-key off filenames identically. Three derived splits of `dbt.nodes` keep code blobs off
-the cold path:
+The dbt information schema, defined in `crates/dbt-index-core/src/info_schema/schema.rs`
+and rendered as views by `info_schema/views.rs`. **There is no exported artifact set.**
+The site reads `<target>/info_schema/v<n>/` as it was written — no projection, no split,
+no copy. `window.__DBT_DOCS__.data_dir` carries the directory (version and all, because
+the version belongs to the writer), and `--output-dir` copies it verbatim, `views.sql`
+included, so a standalone site reads the same files.
 
-**There is no exported artifact set.** The site reads `<target>/index/` as
-`--write-index` wrote it, so the index is the only contract — no projection, no split,
-no copy. `window.__DBT_DOCS__.data_dir` carries the directory (`index/`), and
-`--output-dir` copies the index verbatim so a standalone site reads the same files.
+Names to know, because they are *not* the index's:
 
-Two consequences worth knowing:
+| Index | Information schema |
+|---|---|
+| `dbt.nodes` | one table per resource type (`dbt.models`, `dbt.seeds`, …), unioned by `dbt_internal.resources` |
+| `dbt.docs` / `block_contents` | `dbt.docs_blocks` / `content` |
+| `dbt.test_metadata` | folded into `dbt.data_tests` |
+| `dbt.source_freshness` | `dbt_rt.freshness` |
+| `dbt.catalog_tables` + EAV `dbt.catalog_stats` | `dbt_rt.relations`, one typed row per relation |
+| `dbt.generation` | `dbt.project.last_full_parse_at` |
+| `access_level`, `group_name`, `patch_path`, `declared_type`, `from_*`/`to_*` | `access`, `group`, `properties_yml_file_path`, `data_type_declared`, `parent_*`/`child_*` |
 
-1. **First paint reads the whole `dbt.nodes`.** hyparquet projects the nine
-   `NodeSummary` columns so the ~1 MB of code is never decoded, but it does cross the
-   wire — artifacts are fetched whole, not by range. 1.79 MB at 6,472 nodes against the
-   343 KB a dedicated projection would cost. Re-adding a first-paint artifact is the
-   documented lever if that becomes a problem.
-2. **Empty index tables are declared client-side.** `--write-index` writes a table only
-   when it has rows, so `dbt_rt.run_results`, `dbt.source_freshness`,
-   `dbt.catalog_stats`, and `dbt.catalog_tables` can be absent. `EMPTY_RELATION_DDL` in
-   `engine.ts` declares each as a zero-row relation on 404, which is what keeps one
-   version of every query instead of a present/absent pair. A query that reads a new
-   column from one of those tables must add it there too.
+Three consequences worth knowing:
 
-**Not available:** UDF/function resources — count is always 0 until Fusion writes UDF
-parquet.
+1. **`dbt_internal.resources` reads every resource artifact.** Use the typed table when
+   the resource type is known — lists and details do. The union is for the surfaces
+   that genuinely span types: counts, the file tree, search, lineage metadata.
+   `dbt.dag_nodes` is *not* a substitute: three columns, enabled rows only, DAG types
+   only.
+2. **First paint cannot use `views.sql`.** There is no DuckDB yet, so `bootstrap.ts`
+   reads each resource artifact with hyparquet and concatenates. That list is the only
+   place left that names information-schema tables in TypeScript; a resource type
+   missing from it is a silently empty sidebar section.
+3. **Every table is written, schema-only when empty.** An absent artifact is a broken
+   site, not a signal — the opposite of the index, and why there is no client-side
+   empty-relation DDL any more.
+
+**Not available:** UDF/function resources — count is always 0 until dbt v2 writes UDF
+parquet. Catalog numbers (`row_count`, `bytes`, `last_modified`) need a `dbt run` or
+`dbt build`: the catalog fetch is gated on those commands, and `docs generate`
+synthesizes a *compile*. DuckDB reports no catalog stats at all, so verifying that
+column end to end needs Snowflake or BigQuery.
 
 ## Adding UI or queries
 
@@ -214,8 +250,15 @@ Contracts + ADRs: `crates/dbt-docs-server/API-CONTRACTS.md`
    highest-leverage habit in this crate. Nine bugs in the original port were column
    names that do not exist (`n.language`), columns that are JSON strings rather than
    structs (`meta`), or names that differ from the obvious guess (`dbt.project` stores
-   `project_name`, not `name`). None would have been caught by types or by tests
-   against fixtures.
+   `project_name`, not `name`); the migration onto the information schema added two
+   more. None would have been caught by types or by tests against fixtures.
+
+   `realArtifacts.test.ts` does this mechanically for every query in the app:
+
+   ```
+   dbtd compile --generate-info-schema --static-analysis strict
+   DBT_DOCS_REAL_ARTIFACTS=<project>/target/info_schema/v1 pnpm test
+   ```
 3. Keep projection column names identical to what `fromWire.ts` reads. The mappers are
    the contract; renaming a column silently nulls a field.
 4. Gate nullable data on artifact presence, never on a build flag or a query variant.
@@ -241,7 +284,7 @@ Its `resourceIconMap` maps each type to a Ryecon icon from `@dbt-labs/sourdough`
 | macro | `RyeconFile` | |
 | snapshot | `RyeconCamera` | |
 | saved_query | `RyeconSave` | |
-| function | `RyeconFunction` | count is 0 until Fusion writes UDF parquet |
+| function | `RyeconFunction` | count is 0 until dbt v2 writes UDF parquet |
 | analysis | `RyeconCrosshair` | kept for older project compat |
 
 `DbtResourceIcon`'s `resource` prop expects a specific union type. Cast with `resource={t as any}`

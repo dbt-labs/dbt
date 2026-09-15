@@ -65,6 +65,29 @@ fn errors(e: JoinError) -> std::io::Error {
 #[test]
 fn public_api_compiles() {}
 
+/// `block_on_worker` is the test-support entry point behind
+/// `#[dbt_runtime::worker_test]`: it runs the closure on a worker thread, so
+/// code that insists on being called from one is satisfied.
+#[test]
+fn block_on_worker_runs_the_closure_on_a_pool_worker() {
+    let (value, on_worker) =
+        dbt_runtime::testing::block_on_worker(|| (7u32, dbt_runtime::is_pool_worker()));
+    assert_eq!(value, 7);
+    assert!(on_worker, "the closure must run on a pool worker");
+    assert!(
+        !dbt_runtime::is_pool_worker(),
+        "the calling thread is not a worker itself"
+    );
+}
+
+/// A panic in the closure surfaces on the calling thread, so assertion messages
+/// and `#[should_panic]` keep working through the macro.
+#[test]
+#[should_panic(expected = "from the worker")]
+fn block_on_worker_resumes_a_panic_from_the_worker() {
+    dbt_runtime::testing::block_on_worker(|| panic!("from the worker"));
+}
+
 /// Building a runtime spawns no threads: they start on first use. So this also
 /// exercises shutdown -> `park::block_on` on the empty case.
 #[test]

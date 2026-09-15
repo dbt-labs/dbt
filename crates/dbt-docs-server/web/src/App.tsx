@@ -232,13 +232,37 @@ export default function App() {
     });
   }, [view]);
 
-  // Preserve the current LocatePane view across navigations. From /search
-  // (filter mode), opening an item lands on assets per the URL contract.
-  const viewParam = useCallback((): 'assets' | 'files' => {
-    if (location.pathname === paths.search()) return 'assets';
+  // LocatePane mode (Assets/Files/Filter): URL-derived by default (back/
+  // forward, direct links, and a fresh landing on /search all resolve here),
+  // but picking a tab is a left-panel toggle, not a page — it only flips
+  // `modeOverride` and never moves the user off whatever's on screen. Any
+  // real navigation (a new pathname, from an actual drill-down click) clears
+  // the override so the next page's own URL state takes over again.
+  const urlMode: LocatePaneMode = useMemo(() => {
+    if (location.pathname === paths.search()) return 'filter';
     const v = new URLSearchParams(location.search).get('view');
     return v === 'files' ? 'files' : 'assets';
   }, [location.pathname, location.search]);
+  const [modeOverride, setModeOverride] = useState<LocatePaneMode | null>(null);
+  useEffect(() => {
+    setModeOverride(null);
+  }, [location.pathname]);
+  const mode: LocatePaneMode = modeOverride ?? urlMode;
+
+  const onSelectMode = useCallback(
+    (next: LocatePaneMode) => {
+      setModeOverride(next === urlMode ? null : next);
+    },
+    [urlMode],
+  );
+
+  // Preserve the current LocatePane mode across navigations (e.g. opening a
+  // node while browsing Files keeps the next page on Files too). Filter has
+  // no per-node scope, so it falls back to Assets rather than carrying
+  // forward — mirrors the old URL-contract default.
+  const viewParam = useCallback((): 'assets' | 'files' => {
+    return mode === 'files' ? 'files' : 'assets';
+  }, [mode]);
 
   const onSelect = useCallback(
     (id: string) => {
@@ -263,13 +287,21 @@ export default function App() {
     navigate(`${paths.home()}?view=${viewParam()}`);
   }, [navigate, viewParam]);
 
-  // Filter changes drop us into the list view. When the asset-type filter
-  // narrows to exactly one value, mirror it into the URL so the link is
-  // shareable; otherwise (0 or 2+) land on /search/ and let the multi-select
-  // narrowing live in in-memory filters.
+  // Filter changes narrow whatever's on screen; they only navigate when the
+  // current page can no longer represent the result:
+  //  - a free-text search is active: only /search/ renders `query`, so any
+  //    filter tweak has to stay there or the typed text would be silently
+  //    dropped.
+  //  - otherwise, when the asset-type filter narrows to exactly one value,
+  //    mirror it into the URL so the link is shareable; 0 or 2+ values land
+  //    on /search/, which owns the multi-select narrowing.
   const onSetFilters = useCallback(
     (next: AssetFilters) => {
       setFilters(next);
+      if (search.trim()) {
+        if (location.pathname !== paths.search()) navigate(paths.search());
+        return;
+      }
       const nextType = next.resourceType.length === 1 ? next.resourceType[0] : null;
       const currentType = view.kind === 'list' && view.type ? view.type : null;
       if (nextType !== currentType) {
@@ -278,38 +310,7 @@ export default function App() {
         navigate(paths.search());
       }
     },
-    [navigate, view],
-  );
-
-  // In-place filter setter for LocatePane's Filter mode — same shape as
-  // onSetFilters but without the navigation side-effect. Filter mode owns the
-  // /search/ surface and stays put while the user toggles checkboxes.
-  const onUpdateFiltersInPlace = useCallback((next: AssetFilters) => {
-    setFilters(next);
-  }, []);
-
-  // LocatePane mode is URL-driven:
-  //   /search       → 'filter'  (?view ignored)
-  //   anywhere else → ?view=assets | ?view=files, default 'assets'
-  const mode: LocatePaneMode = useMemo(() => {
-    if (location.pathname === paths.search()) return 'filter';
-    const v = new URLSearchParams(location.search).get('view');
-    return v === 'files' ? 'files' : 'assets';
-  }, [location.pathname, location.search]);
-
-  const onSelectMode = useCallback(
-    (next: LocatePaneMode) => {
-      if (next === 'filter') {
-        if (location.pathname !== paths.search()) navigate(paths.search());
-        return;
-      }
-      // Asset/Files: on /search, exit to project home with view=X.
-      // Anywhere else, update ?view on the current path.
-      const target =
-        location.pathname === paths.search() ? paths.home() : location.pathname;
-      navigate(`${target}?view=${next}`);
-    },
-    [navigate, location.pathname],
+    [navigate, view, search, location.pathname],
   );
 
   const onSubmitTopbarSearch = useCallback(() => {
@@ -415,7 +416,6 @@ export default function App() {
           onSetTheme={theme.setTheme}
           filters={filters}
           onSetFilters={onSetFilters}
-          onUpdateFiltersInPlace={onUpdateFiltersInPlace}
           mode={mode}
           onSelectMode={onSelectMode}
           searchFacets={searchFacets}
@@ -469,7 +469,7 @@ export default function App() {
                   nodes={nodes}
                   query={search}
                   filters={filters}
-                  onUpdateFiltersInPlace={onUpdateFiltersInPlace}
+                  onSetFilters={onSetFilters}
                   previewId={previewId}
                   onPeek={onPeek}
                 />

@@ -16,6 +16,7 @@ workspace = true
 dbt-adbc = { workspace = true }
 dbt-base = { workspace = true }
 dbt-fusion-workspace-hack = { version = "0.1" }
+dbt-runtime = { workspace = true }
 
 futures = { workspace = true }
 tokio = { workspace = true }

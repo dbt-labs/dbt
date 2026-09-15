@@ -25,7 +25,7 @@ use dbt_jinja_utils::serde::into_typed_with_jinja;
 use dbt_jinja_utils::utils::dependency_package_name_from_ctx;
 use dbt_schemas::dbt_utils::resolve_package_quoting;
 use dbt_schemas::schemas::InternalDbtNodeAttributes;
-use dbt_schemas::schemas::common::{Access, DbtIncrementalStrategy};
+use dbt_schemas::schemas::common::{Access, DbtIncrementalStrategy, DbtMaterialization};
 use dbt_schemas::schemas::macros::{DbtDocsMacro, build_macro_units};
 use dbt_schemas::schemas::properties::{
     FUNCTION_LANGUAGE_JAVASCRIPT, FUNCTION_LANGUAGE_PYTHON, FUNCTION_LANGUAGE_SQL, FunctionKind,
@@ -460,6 +460,9 @@ pub async fn resolve(
             .insert(uid.clone(), Arc::new(macro_node.clone()));
     }
 
+    let user_defined_schema_registry =
+        dbt_schemas::state::hydrate_user_defined_schema_registry(&nodes, adapter_type);
+
     Ok((
         ResolverState {
             root_project_name: root_project_name.to_string(),
@@ -486,6 +489,7 @@ pub async fn resolve(
             defer_nodes: None,
             semantic_layer_spec_is_legacy,
             test_name_truncations,
+            user_defined_schema_registry,
         },
         jinja_env,
     ))
@@ -1156,6 +1160,18 @@ fn upstream_is_catalog_reachable(upstream: &DbtModel, catalogs: Option<&DbtCatal
         return true;
     }
 
+    // A `view`/`ephemeral` upstream has no physical storage format on any
+    // adapter: `catalog_name` and `table_format` are both silently ignored
+    // by every warehouse's view materialization (e.g. Snowflake's `view.sql`
+    // never consults either), so no config value can make one Iceberg- or
+    // catalog-reachable. Reject outright rather than trusting the config.
+    if matches!(
+        upstream.base().materialized,
+        DbtMaterialization::View | DbtMaterialization::Ephemeral
+    ) {
+        return false;
+    }
+
     match attr.catalog_name.as_deref() {
         Some(name) => match catalogs.and_then(|c| c.v2_catalog_type(name).ok().flatten()) {
             Some(catalog_type) => catalog_type.lake_compute_can_read(),
@@ -1210,7 +1226,8 @@ pub fn check_compute_platform_upstreams(
             if upstream_id.starts_with("source.") {
                 continue;
             }
-            let reachable = if let Some(up) = nodes.models.get(upstream_id) {
+            let upstream_model = nodes.models.get(upstream_id);
+            let reachable = if let Some(up) = upstream_model {
                 upstream_is_catalog_reachable(up, catalogs)
             } else if let Some(seed) = nodes.seeds.get(upstream_id) {
                 seed_upstream_is_catalog_reachable(seed, catalogs)
@@ -1218,6 +1235,33 @@ pub fn check_compute_platform_upstreams(
                 false
             };
             if !reachable {
+                // A `view`/`ephemeral` upstream is unreachable no matter what
+                // `catalog_name`/`table_format` it declares (see
+                // `upstream_is_catalog_reachable`), so the generic "set
+                // catalog_name/table_format" advice below would be actively
+                // misleading if that config is already set and just being
+                // ignored. Name the real fix instead.
+                if let Some(up) = upstream_model {
+                    if matches!(
+                        up.base().materialized,
+                        DbtMaterialization::View | DbtMaterialization::Ephemeral
+                    ) {
+                        return err!(
+                            ErrorCode::InvalidConfig,
+                            "Model '{}' runs on adapter: '{}' but its upstream '{}' \
+                             materializes as '{}', which has no physical storage format \
+                             and so it can never be catalog-reachable. \
+                             Materialize '{}' as 'table' or 'incremental' (with 'catalog_name' \
+                             or 'table_format: iceberg') or place it on adapter: '{}'.",
+                            unique_id,
+                            AdapterType::LakeCompute.as_ref(),
+                            upstream_id,
+                            up.base().materialized,
+                            upstream_id,
+                            AdapterType::LakeCompute.as_ref()
+                        );
+                    }
+                }
                 return err!(
                     ErrorCode::InvalidConfig,
                     "Model '{}' runs on adapter: '{}' but its upstream '{}' is not \
@@ -1841,6 +1885,113 @@ mod tests {
             .models
             .insert(consumer_uid.to_string(), Arc::new(consumer));
         assert!(check_compute_platform_upstreams(&nodes, None).is_ok());
+    }
+
+    /// WS1 rule 5 for a `view`/`ephemeral` upstream: `catalog_name` and
+    /// `table_format` are both silently ignored by every adapter's view
+    /// materialization, so a `view` upstream must be rejected even when it
+    /// declares `table_format: iceberg` -- the config value is never actually
+    /// honored, so trusting it (as a plain `lands_in_iceberg`-style check
+    /// would) lets a guaranteed-to-fail model through parse/compile and only
+    /// fails at Lakecompute execution time, deep in an adapter-specific error.
+    #[test]
+    fn test_check_compute_platform_upstreams_view_ignores_table_format() {
+        use std::sync::Arc;
+
+        use dbt_adapter_core::AdapterType;
+        use dbt_schemas::schemas::CommonAttributes;
+        use dbt_schemas::schemas::common::DbtMaterialization;
+        use dbt_schemas::schemas::{DbtModel, Nodes};
+
+        use super::check_compute_platform_upstreams;
+
+        let consumer_uid = "model.test.consumer";
+        let upstream_uid = "model.test.upstream";
+
+        let make_model = |uid: &str,
+                          adapter: AdapterType,
+                          materialized: DbtMaterialization,
+                          table_format: Option<&str>,
+                          upstreams: &[&str]| {
+            let mut model = DbtModel {
+                __common_attr__: CommonAttributes {
+                    unique_id: uid.to_string(),
+                    name: uid.rsplit('.').next().unwrap_or(uid).to_string(),
+                    package_name: "test".to_string(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+            model.__base_attr__.adapter = adapter;
+            model.__base_attr__.materialized = materialized;
+            model.__model_attr__.table_format = table_format.map(str::to_string);
+            model.__base_attr__.depends_on.nodes =
+                upstreams.iter().map(|s| (*s).to_string()).collect();
+            model
+        };
+
+        let run = |upstream: DbtModel| {
+            let consumer = make_model(
+                consumer_uid,
+                AdapterType::LakeCompute,
+                DbtMaterialization::Table,
+                None,
+                &[upstream_uid],
+            );
+            let mut nodes = Nodes::default();
+            nodes
+                .models
+                .insert(consumer_uid.to_string(), Arc::new(consumer));
+            nodes
+                .models
+                .insert(upstream_uid.to_string(), Arc::new(upstream));
+            check_compute_platform_upstreams(&nodes, None)
+        };
+
+        // A `view` upstream declaring `table_format: iceberg` is still
+        // rejected -- Snowflake's `view.sql` never consults `table_format`,
+        // so the config is a no-op and the model never actually lands in
+        // Iceberg. The error should name the real fix (change `materialized`),
+        // not repeat advice to set config that is already set.
+        let err = run(make_model(
+            upstream_uid,
+            AdapterType::Snowflake,
+            DbtMaterialization::View,
+            Some("iceberg"),
+            &[],
+        ))
+        .unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("materializes as 'view'"),
+            "expected the view-specific error, got: {msg}"
+        );
+
+        // Same for `ephemeral`, which has no physical relation at all.
+        assert!(
+            run(make_model(
+                upstream_uid,
+                AdapterType::Snowflake,
+                DbtMaterialization::Ephemeral,
+                Some("iceberg"),
+                &[],
+            ))
+            .is_err()
+        );
+
+        // Sanity check: the same upstream materialized as `table` (still with
+        // `table_format: iceberg`) is accepted -- confirms the rejection above
+        // is specific to `view`/`ephemeral`, not to the table_format value.
+        assert!(
+            run(make_model(
+                upstream_uid,
+                AdapterType::Snowflake,
+                DbtMaterialization::Table,
+                Some("iceberg"),
+                &[],
+            ))
+            .is_ok()
+        );
     }
 
     /// WS1 rule 5 for a seed upstream: a seed lives in `nodes.seeds`, not

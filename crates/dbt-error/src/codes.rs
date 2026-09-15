@@ -339,6 +339,28 @@ pub enum ErrorCode {
     DocsGenerateWarning = 1705,
 
     // --------------------------------------------------------------------------------------------
+    // Agent skills
+    /// `ai_provider` names a harness dbt has no destination directory for.
+    UnknownAiProvider = 1800,
+    /// Skills were found but `ai_provider` is unset, so nothing was installed.
+    AiProviderUnset = 1801,
+    /// A `SKILL.md` is missing required frontmatter or its `name` doesn't match its directory.
+    InvalidSkill = 1802,
+    /// Two or more enabled skills resolve to the same install name, so they would
+    /// occupy the same directory. dbt fails rather than pick a winner; the user
+    /// disables all but one (or a maintainer renames), as with duplicate model names.
+    SkillNameCollision = 1803,
+    /// No longer emitted. Retained so an existing `warn_error_options` entry naming it
+    /// keeps resolving, and so the discriminant is not reused: dbt now recognizes its
+    /// own installs by their recorded metadata and reclaims them silently, rather than
+    /// warning that a copy was modified.
+    SkillModifiedByUser = 1804,
+    /// A skill directory dbt wanted to install into is already occupied.
+    SkillDestinationOccupied = 1805,
+    /// A `skill-paths` entry resolves outside the project that declared it.
+    SkillPathEscapesProject = 1806,
+
+    // --------------------------------------------------------------------------------------------
     // Local execution
     SessionError = 2000,
     UnsupportedLocalExecutionDialect = 2001,

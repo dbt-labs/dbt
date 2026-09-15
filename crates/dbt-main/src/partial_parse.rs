@@ -207,6 +207,9 @@ pub fn try_load_prev_compilation(
         Err(_) => return (PrevCompilationResult::None, use_lazy_filter),
     };
 
+    let user_defined_schema_registry =
+        dbt_schemas::state::hydrate_user_defined_schema_registry(&state.nodes, adapter_type);
+
     let resolved_state = ResolverState {
         root_project_name: dbt_state.root_project_name().to_string(),
         adapter_type,
@@ -262,6 +265,7 @@ pub fn try_load_prev_compilation(
         nodes_with_access_errors: state.nodes_with_access_errors,
         semantic_layer_spec_is_legacy: false,
         test_name_truncations: Default::default(),
+        user_defined_schema_registry,
     };
 
     let loaded_project = DbtLoadedProject::from_parts(

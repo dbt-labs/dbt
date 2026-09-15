@@ -45,8 +45,8 @@ pub struct SiteBootstrap {
     /// Base URL for the DuckDB-WASM bundle.
     pub duckdb_cdn_base: String,
     /// Directory holding the parquet, relative to `index.html`. Carried here rather
-    /// than hardcoded client-side because the site is written to the target
-    /// directory, where `data/` is already taken.
+    /// than hardcoded client-side because it is version-scoped
+    /// (`info_schema/v<n>/`) and the version belongs to the writer, not the SPA.
     pub data_dir: String,
     pub telemetry: SiteTelemetry,
 }
@@ -74,7 +74,7 @@ impl SiteBootstrap {
                 .duckdb_cdn_base
                 .clone()
                 .unwrap_or_else(|| DEFAULT_DUCKDB_CDN_BASE.to_string()),
-            data_dir: format!("{}/", crate::export::DATA_DIR),
+            data_dir: format!("{}/", crate::export::data_dir()),
             telemetry: SiteTelemetry {
                 enabled: options.analytics_enabled,
                 dbt_cloud_account_identifier: hydration.dbt_cloud_account_identifier,

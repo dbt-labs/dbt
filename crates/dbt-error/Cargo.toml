@@ -28,6 +28,7 @@ datafusion-common = { workspace = true }
 datafusion-expr = { workspace = true }
 minijinja = { workspace = true }
 parquet = { workspace = true }
+reqwest = { workspace = true }
 
 # Basic utilities
 int-enum = { workspace = true }

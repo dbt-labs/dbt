@@ -5,7 +5,7 @@ use std::fmt::Debug;
 
 use arrow::record_batch::RecordBatch;
 use dbt_adbc::{Connection, QueryCtx};
-use dbt_schemas::dbt_types::RelationType;
+use dbt_schemas::{dbt_types::RelationType, schemas::common::ResolvedQuoting};
 use minijinja::State;
 
 use crate::errors::AdapterResult;
@@ -44,13 +44,21 @@ pub trait SidecarClient: Debug + Send + Sync {
     /// Should be called when the adapter is dropped or the dbt run completes.
     fn shutdown(&self) -> AdapterResult<()>;
 
-    /// `schema`/`table` are case-sensitive for DuckDB.
-    fn get_relation_type(&self, schema: &str, table: &str) -> AdapterResult<Option<RelationType>>;
+    /// `database`/`schema`/`table` are case-sensitive for DuckDB.
+    fn get_relation_type(
+        &self,
+        quoting: &ResolvedQuoting,
+        database: &str,
+        schema: &str,
+        table: &str,
+    ) -> AdapterResult<Option<RelationType>>;
 
     fn get_columns(&self, relation_name: &str) -> AdapterResult<Vec<ColumnInfo>>;
 
     fn list_relations(
         &self,
+        quoting: &ResolvedQuoting,
+        database: &str,
         schema: &str,
     ) -> AdapterResult<Vec<(String, String, String, RelationType)>>;
 }

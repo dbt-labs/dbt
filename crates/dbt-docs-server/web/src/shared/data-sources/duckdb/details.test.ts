@@ -20,23 +20,29 @@ describe('the detail registry', () => {
     ]);
   });
 
-  it('falls back to the generic node path for types with no detail', () => {
+  it('falls back to the resource union for types with no detail', () => {
     // `analysis`, `function` and `operation` were served that way under REST too.
+    // The union is right here and nowhere else in this file: the fallback runs
+    // precisely when the resource type is unknown, so there is no typed table to
+    // pick.
     const spec = detailSpecFor('analysis');
     expect(spec).toBe(detailSpecFor('function'));
-    // The fallback must not filter on resource_type, or it would match nothing.
-    expect(spec.sql('analysis.a.b')).not.toContain("resource_type = ''");
+    expect(spec.sql('analysis.a.b')).toContain('FROM dbt_internal.resources n');
     expect(spec.sql('analysis.a.b')).toContain('n.unique_id =');
   });
 
-  it('scopes each query to its own resource type', () => {
-    // Without it, a mistyped id of another type would render through the wrong mapper.
-    expect(DETAIL_REGISTRY.model!.sql('model.a.b')).toContain(
-      "n.resource_type = 'model'",
-    );
+  it('reads each type from its own table rather than filtering a union', () => {
+    // The table *is* the resource type in the information schema, so the
+    // `resource_type` predicate the index needed is gone — and reading the union
+    // for a known type would pull every resource artifact to answer about one.
+    expect(DETAIL_REGISTRY.model!.sql('model.a.b')).toContain('FROM dbt.models n');
     expect(DETAIL_REGISTRY.snapshot!.sql('snapshot.a.b')).toContain(
-      "n.resource_type = 'snapshot'",
+      'FROM dbt.snapshots n',
     );
+    expect(DETAIL_REGISTRY.source!.sql('source.a.b')).toContain('FROM dbt.sources n');
+    for (const type of ['model', 'snapshot', 'seed', 'source'] as ResourceType[]) {
+      expect(DETAIL_REGISTRY[type]!.sql('x.a.b')).not.toContain('resource_type =');
+    }
   });
 
   it('only asks for columns on the types that have them', () => {
@@ -48,7 +54,7 @@ describe('the detail registry', () => {
   });
 
   it('declares the JSON-string columns each type needs parsed', () => {
-    // The index stores these as VARCHAR; unparsed, an escaped JSON string reaches
+    // These are VARCHAR in the parquet; unparsed, an escaped JSON string reaches
     // the domain type (CC-7).
     expect(DETAIL_REGISTRY.model!.jsonColumns).toContain('meta');
     expect(DETAIL_REGISTRY.macro!.jsonColumns).toContain('arguments');
@@ -67,12 +73,19 @@ describe('the detail registry', () => {
     }
   });
 
-  it('joins the test union explicitly rather than with USING', () => {
-    // Regression: `USING (unique_id)` alongside the test_metadata join made the
-    // reference ambiguous, so every test detail page failed to bind.
+  it("reads a test's own fields off dbt.data_tests, with no metadata join", () => {
+    // `dbt.data_tests` is `nodes` LEFT JOINed to `test_metadata` inside the view,
+    // so `column_name` and `severity` are columns here. The join this used to make
+    // is what `USING (unique_id)` made ambiguous, breaking every test detail page;
+    // there is no join left to get wrong.
     const sql = DETAIL_REGISTRY.test!.sql('test.a.b');
-    expect(sql).toContain('ON tm.unique_id = n.unique_id');
+    expect(sql).toContain('FROM dbt.data_tests n');
+    expect(sql).toContain('n.column_name');
+    expect(sql).toContain('n.severity');
+    expect(sql).not.toContain('dbt.test_metadata');
     expect(sql).not.toContain('USING (unique_id)');
+    // A test's SQL, which `AssetCode` renders nothing without.
+    expect(sql).toContain('n.raw_code');
   });
 
   it('keys semantic members on the parent id', () => {
@@ -86,13 +99,25 @@ describe('the detail registry', () => {
 
   it('matches group members on name and package, not id', () => {
     // Groups are keyed by (name, package); joining on unique_id would find nothing.
+    // `group` is a SQL keyword, so the column has to be quoted to bind at all.
     const sql = DETAIL_REGISTRY.group!.extras![0]!.sql('group.a.b');
-    expect(sql).toContain('g.name = n.group_name');
+    expect(sql).toContain('g.name = n."group"');
     expect(sql).toContain('g.package_name = n.package_name');
   });
 
   it('orders columns by their declared position', () => {
     // Column order is meaningful in a table; alphabetical would be wrong.
     expect(nodeColumnsSql('model.a.b')).toContain('ORDER BY column_index');
+  });
+
+  it("puts the mapper's column-type names back", () => {
+    // The information schema renames all four type columns and keys the table on
+    // `node_unique_id`. The mapper reads the old names and falls through them in
+    // order, so an un-aliased projection would null the Columns tab silently.
+    const sql = nodeColumnsSql('model.a.b');
+    expect(sql).toContain('WHERE node_unique_id =');
+    expect(sql).toContain('data_type_declared AS declared_type');
+    expect(sql).toContain('data_type_inferred AS inferred_type');
+    expect(sql).toContain('data_type_actual AS catalog_type');
   });
 });

@@ -1,7 +1,7 @@
 //! Module defines the input arguments required for resolution
 
 use dbt_adapter_core::AdapterType;
-use dbt_common::io_args::{IoArgs, StaticAnalysisKind};
+use dbt_common::io_args::{IoArgs, MULTI_ADAPTER_ENV, StaticAnalysisKind, multi_adapter_enabled};
 use dbt_common::{ErrorCode, FsResult, fs_err};
 use dbt_common::{
     io_args::{EvalArgs, FsCommand},
@@ -85,6 +85,17 @@ impl ResolveArgs {
                 .adapter_override
                 .as_deref()
                 .map(|written| {
+                    // Same gate as the authored `+adapter` this flag overrides; see
+                    // `validate_node_adapter`.
+                    if !multi_adapter_enabled() {
+                        return Err(fs_err!(
+                            ErrorCode::InvalidArgument,
+                            "`--adapter` is experimental and not yet supported. To use it, set \
+                             the environment variable {MULTI_ADAPTER_ENV}=true. Note that \
+                             experimental features may be unstable and are not yet recommended \
+                             for production use."
+                        ));
+                    }
                     written.parse::<AdapterType>().map_err(|_| {
                         fs_err!(
                             ErrorCode::InvalidArgument,

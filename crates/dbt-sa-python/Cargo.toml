@@ -20,3 +20,7 @@ dbt-python-core = { workspace = true }
 # abi3-py311: build a single stable-ABI wheel per platform that works on
 # CPython 3.11+, instead of one wheel per interpreter version.
 pyo3 = { workspace = true, features = ["abi3-py311"] }
+
+[features]
+default = ["embed-ui"]
+embed-ui = ["dbt-python-core/embed-ui"]

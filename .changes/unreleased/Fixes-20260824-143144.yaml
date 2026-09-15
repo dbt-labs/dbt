@@ -1,0 +1,7 @@
+kind: Fixes
+body: Preserve compiled SQL output for inline compile commands in quiet mode
+time: 2026-08-24T14:31:44.254865-04:00
+custom:
+    author: raunakkssinghc
+    issue: "14538"
+    project: dbt-core

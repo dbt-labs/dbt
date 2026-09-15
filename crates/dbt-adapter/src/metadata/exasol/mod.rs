@@ -19,7 +19,6 @@ use crate::connection::AdapterConnectionFactory;
 use crate::errors::{AdapterError, AdapterErrorKind, AsyncAdapterResult, Cancellable};
 use crate::{AdapterResult, metadata::*, record_batch::RecordBatchExt};
 use arrow_schema::Schema;
-use dbt_adapter_engine::MapReduce;
 use dbt_adbc::{Connection, QueryCtx};
 use dbt_common::cancellation::CancellationToken;
 
@@ -37,8 +36,6 @@ use std::collections::btree_map::Entry;
 use std::collections::{BTreeMap, HashMap};
 use std::future;
 use std::sync::Arc;
-
-const MAX_CONNECTIONS: usize = 4;
 
 pub struct ExasolMetadataAdapter {
     adapter: AdapterImpl,
@@ -174,6 +171,7 @@ impl MetadataAdapter for ExasolMetadataAdapter {
         unique_id: Option<String>,
         phase: Option<ExecutionPhase>,
         relations: &[Arc<dyn BaseRelation>],
+        item_span_operation_id: Option<&str>,
         token: CancellationToken,
     ) -> AsyncAdapterResult<'_, HashMap<String, AdapterResult<Arc<Schema>>>> {
         type Acc = HashMap<String, AdapterResult<Arc<Schema>>>;
@@ -192,10 +190,7 @@ impl MetadataAdapter for ExasolMetadataAdapter {
             .map(|relation| (relation.semantic_fqn(), relation.render_self_as_str()))
             .collect();
 
-        let factory = Box::new(AdapterConnectionFactory::new(
-            self.adapter.engine().clone(),
-            Some(MAX_CONNECTIONS),
-        ));
+        let factory = Box::new(AdapterConnectionFactory::new(self.adapter.engine().clone()));
 
         let adapter = self.adapter.clone();
         let token_clone = token.clone();
@@ -224,8 +219,15 @@ impl MetadataAdapter for ExasolMetadataAdapter {
             Ok(())
         };
 
-        let map_reduce = MapReduce::new(factory, Box::new(map_f), Box::new(reduce_f), None);
-        map_reduce.run(Arc::new(keys), token)
+        run_schema_cache_map_reduce(
+            factory,
+            keys,
+            item_span_operation_id,
+            map_f,
+            reduce_f,
+            None,
+            token,
+        )
     }
 
     fn list_relations_schemas_by_patterns_inner(

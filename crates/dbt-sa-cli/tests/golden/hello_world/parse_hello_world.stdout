@@ -1,4 +1,4 @@
-  dbt-core 
+   dbt-oss 
    Loading profiles.yml
    Parsing models/hello_world.sql
 ==================== Execution Summary =====================

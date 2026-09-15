@@ -219,7 +219,7 @@ pub async fn resolve_exposures(
                 __exposure_attr__: DbtExposureAttr {
                     owner: exposure.owner,
                     label: exposure.label.clone(),
-                    maturity: exposure.maturity.clone(),
+                    maturity: normalize_maturity(exposure.maturity.as_deref()),
                     type_: exposure.type_.clone(),
                     url: exposure.url,
                     unrendered_config,
@@ -379,6 +379,16 @@ fn split_depends_on_item(dep: &Spanned<String>) -> Vec<Spanned<String>> {
     parts
 }
 
+/// Keep exposure maturity within the values accepted by the manifest schema.
+fn normalize_maturity(maturity: Option<&str>) -> Option<String> {
+    match maturity? {
+        "low" => Some("low".to_string()),
+        "medium" => Some("medium".to_string()),
+        "high" => Some("high".to_string()),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -426,6 +436,35 @@ mod tests {
             split("ref('a', version=2), ref('b')"),
             vec!["ref('a', version=2)", "ref('b')"]
         );
+    }
+
+    #[test]
+    fn test_normalize_maturity_valid_values_preserved() {
+        assert_eq!(normalize_maturity(Some("low")), Some("low".to_string()));
+        assert_eq!(
+            normalize_maturity(Some("medium")),
+            Some("medium".to_string())
+        );
+        assert_eq!(normalize_maturity(Some("high")), Some("high".to_string()));
+    }
+
+    #[test]
+    fn test_normalize_maturity_invalid_value_dropped_to_none() {
+        // e.g. `maturity: production`, which the manifest schema rejects.
+        assert_eq!(normalize_maturity(Some("production")), None);
+        assert_eq!(normalize_maturity(Some("")), None);
+        assert_eq!(normalize_maturity(Some("   ")), None);
+    }
+
+    #[test]
+    fn test_normalize_maturity_none_stays_none() {
+        assert_eq!(normalize_maturity(None), None);
+    }
+
+    #[test]
+    fn test_normalize_maturity_requires_exact_schema_value() {
+        assert_eq!(normalize_maturity(Some("HIGH")), None);
+        assert_eq!(normalize_maturity(Some("  medium  ")), None);
     }
 
     #[test]

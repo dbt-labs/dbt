@@ -3,7 +3,7 @@ import { distributionKey } from '../util/queryKeys';
 import { useSourceQuery } from './useSourceQuery';
 
 /**
- * Fetch the active {@link MetadataDataSource}'s build distribution (Fusion vs
+ * Fetch the active {@link MetadataDataSource}'s build distribution (dbt v2 vs
  * Core, login state). Disabled when the source advertises no
  * `fetchDistribution`.
  */

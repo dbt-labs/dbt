@@ -2,6 +2,7 @@ use std::path::Path;
 
 use crate::python::{PythonManifestFormat, PythonPackageManager};
 use dbt_common::{ErrorCode, FsResult, fs_err};
+pub use dbt_dist_classify::{Distribution, Generation};
 use serde::{Deserialize, Serialize};
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
@@ -23,29 +24,6 @@ pub enum Channel {
     /// can vouch for. The `String` is the manager's display name, used only
     /// in messages (never matched on) — see `DistInfo::unsupported_channel_message`.
     Unsupported(String),
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Distribution {
-    /// The full, proprietary dbt v2 distribution.
-    #[serde(rename = "dbt")]
-    Dbt,
-    /// The open-source dbt v2 distribution.
-    #[serde(rename = "dbt-oss")]
-    Oss,
-    /// The legacy, v1-only dbt-core distribution.
-    #[serde(rename = "dbt-core")]
-    Core,
-    #[serde(rename = "cloud-cli")]
-    CloudCLI,
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
-#[serde(rename_all = "kebab-case")]
-pub enum Generation {
-    V1,
-    V2,
-    NotApplicable,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -465,26 +443,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn distribution_serializes_to_spec_contract() {
-        assert_eq!(
-            serde_json::to_string(&Distribution::Dbt).unwrap(),
-            "\"dbt\""
-        );
-        assert_eq!(
-            serde_json::to_string(&Distribution::Oss).unwrap(),
-            "\"dbt-oss\""
-        );
-        assert_eq!(
-            serde_json::to_string(&Distribution::Core).unwrap(),
-            "\"dbt-core\""
-        );
-        assert_eq!(
-            serde_json::to_string(&Distribution::CloudCLI).unwrap(),
-            "\"cloud-cli\""
-        );
-    }
-
-    #[test]
     fn channel_serializes_to_spec_contract() {
         assert_eq!(
             serde_json::to_string(&Channel::Standalone).unwrap(),
@@ -500,12 +458,6 @@ mod tests {
             serde_json::to_string(&Channel::Unclaimed).unwrap(),
             "\"unclaimed\""
         );
-    }
-
-    #[test]
-    fn generation_serializes_to_spec_contract() {
-        assert_eq!(serde_json::to_string(&Generation::V1).unwrap(), "\"v1\"");
-        assert_eq!(serde_json::to_string(&Generation::V2).unwrap(), "\"v2\"");
     }
 
     fn sample_dist_info() -> DistInfo {

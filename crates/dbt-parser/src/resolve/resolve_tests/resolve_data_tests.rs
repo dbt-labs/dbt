@@ -11,7 +11,7 @@ use crate::renderer::render_unresolved_sql_files;
 use crate::resolve::resolve_properties::MinimalPropertiesEntry;
 use crate::resolve::resolve_tests::persist_generic_data_tests::format_node_unique_id;
 use crate::resolve::resolve_utils::{
-    build_unrendered_config, err_resource_name_has_spaces, validate_compute,
+    build_unrendered_config, err_resource_name_has_spaces, validate_compute, validate_node_adapter,
 };
 use crate::utils::RelationComponents;
 use crate::utils::extract_resource_config_from_raw_project;
@@ -626,8 +626,9 @@ pub async fn resolve_data_tests(
                 .or_else(|| seeds.get(id).map(|s| s.node_adapter()))
                 .or_else(|| snapshots.get(id).map(|s| s.node_adapter()))
         });
-        // See `resolve_models`: the flag overrides the config, and nothing is
-        // validated at parse. `None` from both leaves inheritance to fill the gap.
+        // See `resolve_models`: the flag overrides the config. `None` from both
+        // leaves inheritance to fill the gap.
+        validate_node_adapter(test_config.adapter, &dbt_asset.path)?;
         let resolved_node_adapter = arg
             .adapter_override
             .or(test_config.adapter)

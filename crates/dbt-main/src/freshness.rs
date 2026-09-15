@@ -35,7 +35,7 @@ use minijinja::Value;
 /// `sources_only` marks the nested `dbt source freshness` spelling.
 pub async fn run_freshness_command(
     arg: &EvalArgs,
-    jinja_env: &JinjaEnv,
+    jinja_env: &Arc<JinjaEnv>,
     resolved_state: &ResolverState,
     schedule: &Schedule<String>,
     adapter: Arc<Adapter>,
