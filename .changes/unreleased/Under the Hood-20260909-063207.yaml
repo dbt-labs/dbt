@@ -1,0 +1,6 @@
+kind: Under the Hood
+body: 'Add a banner to the `dbt-core` PyPI description pointing users to the v2 install docs'
+time: 2026-09-09T06:32:07.000000-07:00
+custom:
+    Author: tauhid621
+    Issue: ""
