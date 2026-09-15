@@ -91,11 +91,16 @@ impl MetadataAdapter for SalesforceMetadataAdapter {
         Box::pin(future)
     }
 
+    fn supports_relation_progress(&self) -> bool {
+        false
+    }
+
     /// Reference: https://github.com/dbt-labs/dbt-adapters/blob/f492c919d3bd415bf5065b3cd8cd1af23562feb0/dbt-snowflake/src/dbt/include/snowflake/macros/metadata/list_relations_without_caching.sql
     fn list_relations_in_parallel_inner(
         &self,
         _db_schemas: &[CatalogAndSchema],
         _token: CancellationToken,
+        _report_progress: bool,
     ) -> AsyncAdapterResult<'_, BTreeMap<CatalogAndSchema, AdapterResult<RelationVec>>> {
         let future = std::future::ready(Ok(Default::default()));
         Box::pin(future)

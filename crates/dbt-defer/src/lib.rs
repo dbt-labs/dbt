@@ -501,7 +501,12 @@ async fn filter_by_relation_availability(
         dep_id_to_candidate.insert(dep_id.clone(), AvailabilityCandidate::Relation(relation));
     });
 
-    let _ = hydrate_relation_cache_if_not_already_cached(&relation_candidates, adapter).await;
+    let _ = hydrate_relation_cache_if_not_already_cached(
+        &relation_candidates,
+        adapter,
+        "downloading deferred relations",
+    )
+    .await;
     let available_functions = query_available_functions(&catalog_schemas, adapter).await;
 
     let relation_cache = adapter.engine().relation_cache();

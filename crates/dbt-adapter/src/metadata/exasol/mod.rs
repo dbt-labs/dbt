@@ -262,10 +262,15 @@ impl MetadataAdapter for ExasolMetadataAdapter {
         create_schemas_if_not_exists(&self.adapter, self, state, catalog_schemas)
     }
 
+    fn supports_relation_progress(&self) -> bool {
+        false
+    }
+
     fn list_relations_in_parallel_inner(
         &self,
         _db_schemas: &[CatalogAndSchema],
         _token: CancellationToken,
+        _report_progress: bool,
     ) -> AsyncAdapterResult<'_, BTreeMap<CatalogAndSchema, AdapterResult<RelationVec>>> {
         // Cache hydration not implemented: dbt falls back to per-relation
         // `list_relations_without_caching` / `get_relation` macros.
