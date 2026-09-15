@@ -1205,15 +1205,98 @@ fn seed_upstream_is_catalog_reachable(upstream: &DbtSeed, catalogs: Option<&DbtC
     }
 }
 
-/// WS1 rule 5: every `ref`/`source` upstream of a model on a non-`default` compute
-/// platform must be reachable through a catalog. A plain warehouse-native upstream
-/// is rejected with a precise error naming both nodes, since the compute target
-/// reads its inputs through attached catalogs rather than the warehouse.
+/// Shared body of [`check_compute_platform_upstreams`], run once per node
+/// (model or test) that runs on `adapter: lakecompute`. `node_label` names
+/// the *dependent* node's resource type in the error text ("Model"/"Test"),
+/// since that's the only wording difference between the two call sites --
+/// the reachability rules and lookup logic are identical either way.
+fn check_upstreams_reachable(
+    unique_id: &str,
+    node_label: &str,
+    depends_on: &[String],
+    nodes: &Nodes,
+    catalogs: Option<&DbtCatalogs>,
+) -> FsResult<()> {
+    for upstream_id in depends_on {
+        if upstream_id.starts_with("source.") {
+            continue;
+        }
+        let upstream_model = nodes.models.get(upstream_id);
+        let reachable = if let Some(up) = upstream_model {
+            upstream_is_catalog_reachable(up, catalogs)
+        } else if let Some(seed) = nodes.seeds.get(upstream_id) {
+            seed_upstream_is_catalog_reachable(seed, catalogs)
+        } else {
+            false
+        };
+        if !reachable {
+            // A `view`/`ephemeral` upstream is unreachable no matter what
+            // `catalog_name`/`table_format` it declares (see
+            // `upstream_is_catalog_reachable`), so the generic "set
+            // catalog_name/table_format" advice below would be actively
+            // misleading if that config is already set and just being
+            // ignored. Name the real fix instead.
+            if let Some(up) = upstream_model {
+                if matches!(
+                    up.base().materialized,
+                    DbtMaterialization::View | DbtMaterialization::Ephemeral
+                ) {
+                    return err!(
+                        ErrorCode::InvalidConfig,
+                        "{} '{}' runs on adapter: '{}' but its upstream '{}' \
+                         materializes as '{}', which has no physical storage format \
+                         and so it can never be catalog-reachable. \
+                         Materialize '{}' as 'table' or 'incremental' (with 'catalog_name' \
+                         or 'table_format: iceberg') or place it on adapter: '{}'.",
+                        node_label,
+                        unique_id,
+                        AdapterType::LakeCompute.as_ref(),
+                        upstream_id,
+                        up.base().materialized,
+                        upstream_id,
+                        AdapterType::LakeCompute.as_ref()
+                    );
+                }
+            }
+            return err!(
+                ErrorCode::InvalidConfig,
+                "{} '{}' runs on adapter: '{}' but its upstream '{}' is not \
+                 reachable through a catalog. Materialize '{}' into an open table \
+                 format (set 'catalog_name', or set 'table_format: iceberg' to land \
+                 it in Iceberg without a named catalog) or place it on adapter: '{}'.",
+                node_label,
+                unique_id,
+                AdapterType::LakeCompute.as_ref(),
+                upstream_id,
+                upstream_id,
+                AdapterType::LakeCompute.as_ref()
+            );
+        }
+    }
+    Ok(())
+}
+
+/// WS1 rule 5: every `ref`/`source` upstream of a model or test on a
+/// non-`default` compute platform must be reachable through a catalog. A
+/// plain warehouse-native upstream is rejected with a precise error naming
+/// both nodes, since the compute target reads its inputs through attached
+/// catalogs rather than the warehouse.
 ///
-/// Sources are external tables whose catalog reachability is validated elsewhere,
-/// so they are skipped here. Model and seed upstreams are looked up in their own
-/// `Nodes` maps (`unique_id`'s `model.`/`seed.` prefix never overlaps), since a
-/// seed has no `__model_attr__` to check the model-shaped helper against.
+/// Tests are checked here too, not just models: a generic/singular test can
+/// depend on an unreachable node either through the primary column/model it
+/// decorates (e.g. a `unique` test configured with `+adapter: lakecompute`
+/// directly on a plain Snowflake model) or through a test-argument `ref()`
+/// (e.g. a `relationships` test's `to:`) -- both land in the test node's own
+/// `depends_on`, so one pass over it catches either shape. Without this, a
+/// test node with an unreachable upstream fails only much later, at real
+/// query execution, with a raw backend error that never mentions the
+/// missing propagation.
+///
+/// Sources are external tables whose catalog reachability is validated
+/// elsewhere, so they are skipped here. Model and seed upstreams are looked
+/// up in their own `Nodes` maps (`unique_id`'s `model.`/`seed.` prefix never
+/// overlaps), since a seed has no `__model_attr__` to check the
+/// model-shaped helper against.
 pub fn check_compute_platform_upstreams(
     nodes: &Nodes,
     catalogs: Option<&DbtCatalogs>,
@@ -1222,60 +1305,25 @@ pub fn check_compute_platform_upstreams(
         if model.node_adapter() != AdapterType::LakeCompute {
             continue;
         }
-        for upstream_id in &model.__base_attr__.depends_on.nodes {
-            if upstream_id.starts_with("source.") {
-                continue;
-            }
-            let upstream_model = nodes.models.get(upstream_id);
-            let reachable = if let Some(up) = upstream_model {
-                upstream_is_catalog_reachable(up, catalogs)
-            } else if let Some(seed) = nodes.seeds.get(upstream_id) {
-                seed_upstream_is_catalog_reachable(seed, catalogs)
-            } else {
-                false
-            };
-            if !reachable {
-                // A `view`/`ephemeral` upstream is unreachable no matter what
-                // `catalog_name`/`table_format` it declares (see
-                // `upstream_is_catalog_reachable`), so the generic "set
-                // catalog_name/table_format" advice below would be actively
-                // misleading if that config is already set and just being
-                // ignored. Name the real fix instead.
-                if let Some(up) = upstream_model {
-                    if matches!(
-                        up.base().materialized,
-                        DbtMaterialization::View | DbtMaterialization::Ephemeral
-                    ) {
-                        return err!(
-                            ErrorCode::InvalidConfig,
-                            "Model '{}' runs on adapter: '{}' but its upstream '{}' \
-                             materializes as '{}', which has no physical storage format \
-                             and so it can never be catalog-reachable. \
-                             Materialize '{}' as 'table' or 'incremental' (with 'catalog_name' \
-                             or 'table_format: iceberg') or place it on adapter: '{}'.",
-                            unique_id,
-                            AdapterType::LakeCompute.as_ref(),
-                            upstream_id,
-                            up.base().materialized,
-                            upstream_id,
-                            AdapterType::LakeCompute.as_ref()
-                        );
-                    }
-                }
-                return err!(
-                    ErrorCode::InvalidConfig,
-                    "Model '{}' runs on adapter: '{}' but its upstream '{}' is not \
-                     reachable through a catalog. Materialize '{}' into an open table \
-                     format (set 'catalog_name', or set 'table_format: iceberg' to land \
-                     it in Iceberg without a named catalog) or place it on adapter: '{}'.",
-                    unique_id,
-                    AdapterType::LakeCompute.as_ref(),
-                    upstream_id,
-                    upstream_id,
-                    AdapterType::LakeCompute.as_ref()
-                );
-            }
+        check_upstreams_reachable(
+            unique_id,
+            "Model",
+            &model.__base_attr__.depends_on.nodes,
+            nodes,
+            catalogs,
+        )?;
+    }
+    for (unique_id, test) in nodes.tests.iter() {
+        if test.node_adapter() != AdapterType::LakeCompute {
+            continue;
         }
+        check_upstreams_reachable(
+            unique_id,
+            "Test",
+            &test.__base_attr__.depends_on.nodes,
+            nodes,
+            catalogs,
+        )?;
     }
     Ok(())
 }
