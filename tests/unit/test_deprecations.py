@@ -1,10 +1,16 @@
 import pytest
 
 import dbt.deprecations as deprecations
-from dbt.events.types import ProjectFlagsMovedDeprecation
+from dbt.events import ALL_EVENT_NAMES
+from dbt.events.types import DeprecationsSummary, ProjectFlagsMovedDeprecation
 from dbt_common.events.event_catcher import EventCatcher
-from dbt_common.events.event_manager_client import add_callback_to_manager
+from dbt_common.events.event_manager_client import (
+    add_callback_to_manager,
+    get_event_manager,
+)
 from dbt_common.events.types import Note
+from dbt_common.exceptions import EventCompilationError
+from dbt_common.helper_types import WarnErrorOptionsV2
 
 
 @pytest.fixture(scope="function")
@@ -95,3 +101,43 @@ class TestPreviewDeprecation:
         assert "previewed-deprecation" not in deprecations.active_deprecations
         assert len(pfmd_catcher.caught_events) == 0
         assert len(note_catcher.caught_events) == 1
+
+
+@pytest.fixture(scope="function")
+def silenced_project_flags_moved(monkeypatch):
+    # There is no public API for saving/restoring the underlying options slot,
+    # so patch the attribute via monkeypatch, which restores the previous value
+    # on teardown.
+    monkeypatch.setattr(
+        get_event_manager(),
+        "_warn_error_options",
+        WarnErrorOptionsV2(
+            error=["Deprecations"],
+            silence=["ProjectFlagsMovedDeprecation"],
+            valid_error_names=ALL_EVENT_NAMES,
+        ),
+    )
+
+
+def test_summary_skips_silenced_deprecations(active_deprecations, silenced_project_flags_moved):
+    summary_catcher = EventCatcher(event_to_catch=DeprecationsSummary)
+    add_callback_to_manager(summary_catcher.catch)
+
+    deprecations.active_deprecations["project-flags-moved"] += 1
+    deprecations.show_deprecations_summary()
+
+    assert len(summary_catcher.caught_events) == 0
+
+
+def test_summary_keeps_unsilenced_deprecations(active_deprecations, silenced_project_flags_moved):
+    deprecations.active_deprecations["project-flags-moved"] += 1
+    deprecations.active_deprecations["custom-key-in-config-deprecation"] += 1
+
+    # The unsilenced deprecation keeps the summary alive (and, with
+    # `error: Deprecations`, error-handled) — but the silenced one is
+    # excluded from it.
+    with pytest.raises(EventCompilationError) as excinfo:
+        deprecations.show_deprecations_summary()
+
+    assert "CustomKeyInConfigDeprecation" in str(excinfo.value)
+    assert "ProjectFlagsMovedDeprecation" not in str(excinfo.value)
