@@ -37,6 +37,9 @@ pub fn load_db_config_from_test_profile_with_database(
         DbConfig::ClickHouse(ch) => {
             ch.database = Some(database.to_string());
         }
+        DbConfig::Athena(at) => {
+            at.database = Some(database.to_string());
+        }
         _ => {}
     }
 
@@ -96,6 +99,9 @@ pub fn load_db_config<P: AsRef<Path>>(
         }
         DbConfig::ClickHouse(ch) => {
             ch.schema = Some(schema.to_string());
+        }
+        DbConfig::Athena(at) => {
+            at.schema = Some(schema.to_string());
         }
         _ => {}
     }

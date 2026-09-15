@@ -62,7 +62,7 @@ pub enum DbConfig {
     // Rockset,
     // Firebolt,
     // Teradata,
-    // Athena,
+    Athena(Box<AthenaDbConfig>),
     // Vertica,
     // TiDB,
     // #[serde(rename = "glue")]
@@ -107,6 +107,7 @@ impl_from_db_config!(DuckDB, DuckDbConfig);
 impl_from_db_config!(Fabric, FabricDbConfig);
 impl_from_db_config!(Exasol, ExasolDbConfig);
 impl_from_db_config!(ClickHouse, ClickHouseDbConfig);
+impl_from_db_config!(Athena, AthenaDbConfig);
 
 impl DbConfig {
     pub fn get_unique_field(&self) -> Option<&str> {
@@ -126,6 +127,7 @@ impl DbConfig {
             DbConfig::Fabric(config) => config.host.as_deref(),
             DbConfig::Exasol(config) => config.host.as_deref(),
             DbConfig::ClickHouse(config) => config.host.as_deref(),
+            DbConfig::Athena(config) => config.s3_staging_dir.as_deref(),
         }
     }
 
@@ -268,11 +270,19 @@ impl DbConfig {
                 "organization",
                 "fivetran_auth_url",
             ],
+            // Mirrors dbt-athena `_connection_keys`; `aws_secret_access_key` and
+            // `aws_session_token` are secrets and stay out.
+            AdapterType::Athena => &[
+                "region_name",
+                "s3_staging_dir",
+                "work_group",
+                "database",
+                "schema",
+                "aws_profile_name",
+                "aws_access_key_id",
+            ],
             // Adapter types with no `DbConfig` variant, so nothing to display.
-            AdapterType::Athena
-            | AdapterType::Starburst
-            | AdapterType::Dremio
-            | AdapterType::Oracle => &[],
+            AdapterType::Starburst | AdapterType::Dremio | AdapterType::Oracle => &[],
             // TODO(serramatutu): Spark connection keys
             AdapterType::Spark => &[],
             // TODO: Trino and Datafusion connection keys
@@ -370,6 +380,7 @@ impl DbConfig {
             DbConfig::LakeCompute(config) => dbt_yaml::to_value(config),
             DbConfig::Exasol(config) => dbt_yaml::to_value(config),
             DbConfig::ClickHouse(config) => dbt_yaml::to_value(config),
+            DbConfig::Athena(config) => dbt_yaml::to_value(config),
         }
     }
 
@@ -388,6 +399,7 @@ impl DbConfig {
             DbConfig::Fabric(..) => AdapterType::Fabric,
             DbConfig::Exasol(..) => AdapterType::Exasol,
             DbConfig::ClickHouse(..) => AdapterType::ClickHouse,
+            DbConfig::Athena(..) => AdapterType::Athena,
             DbConfig::LakeCompute(..) => AdapterType::LakeCompute,
         }
     }
@@ -407,6 +419,7 @@ impl DbConfig {
             DbConfig::Fabric(config) => config.database.as_ref(),
             DbConfig::Exasol(config) => config.database.as_ref(),
             DbConfig::ClickHouse(config) => config.database.as_ref(),
+            DbConfig::Athena(config) => config.database.as_ref(),
             DbConfig::LakeCompute(config) => config.database.as_ref(),
         }
     }
@@ -428,6 +441,7 @@ impl DbConfig {
                 .database
                 .to_owned(),
             DbConfig::Databricks(_) => DEFAULT_DATABRICKS_DATABASE.to_string(),
+            DbConfig::Athena(_) => DEFAULT_ATHENA_CATALOG.to_string(),
             _ => "".to_string(),
         }
     }
@@ -448,6 +462,7 @@ impl DbConfig {
             DbConfig::Fabric(config) => config.schema.as_ref(),
             DbConfig::Exasol(config) => config.schema.as_ref(),
             DbConfig::ClickHouse(config) => config.schema.as_ref(),
+            DbConfig::Athena(config) => config.schema.as_ref(),
         }
     }
 
@@ -466,6 +481,7 @@ impl DbConfig {
             DbConfig::Fabric(_) => None,
             DbConfig::Exasol(config) => config.threads.as_ref(),
             DbConfig::ClickHouse(config) => config.threads.as_ref(),
+            DbConfig::Athena(config) => config.threads.as_ref(),
             DbConfig::LakeCompute(config) => config.threads.as_ref(),
         }
     }
@@ -485,6 +501,7 @@ impl DbConfig {
             DbConfig::Fabric(_) => (),
             DbConfig::Exasol(config) => config.threads = threads,
             DbConfig::ClickHouse(config) => config.threads = threads,
+            DbConfig::Athena(config) => config.threads = threads,
             DbConfig::LakeCompute(config) => config.threads = threads,
         }
     }
@@ -1567,6 +1584,77 @@ fn default_clickhouse_compress_block_size() -> Option<i64> {
     Some(1_048_576)
 }
 
+/// Glue catalog used when `database` is not set; the same default lives in
+/// `dbt-auth`'s Athena module, which reads the profile through `to_mapping()`.
+pub const DEFAULT_ATHENA_CATALOG: &str = "awsdatacatalog";
+
+/// Field set of dbt-athena's `AthenaCredentials`
+/// (https://github.com/dbt-labs/dbt-adapters/blob/main/dbt-athena/src/dbt/adapters/athena/connections.py).
+///
+/// Every dbt-athena field is declared, including the ones `dbt-auth` currently
+/// rejects (`assume_role_*`, `s3_data_dir`, ...): the auth layer only sees the
+/// mapping produced by `to_mapping()`, so a field missing here would be dropped
+/// silently instead of raising the "not yet supported" error.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default, DbtSchema, Merge)]
+#[merge(strategy = merge_strategies_extend::overwrite_option)]
+#[serde(rename_all = "snake_case")]
+pub struct AthenaDbConfig {
+    pub region_name: Option<String>,
+    pub s3_staging_dir: Option<String>,
+    /// Glue catalog; dbt-athena accepts `catalog` as an alias (`_ALIASES`).
+    #[serde(skip_serializing_if = "Option::is_none", alias = "catalog")]
+    pub database: Option<String>,
+    pub schema: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub work_group: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub aws_profile_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub aws_access_key_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub aws_secret_access_key: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub aws_session_token: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub endpoint_url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub skip_workgroup_check: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub assume_role_arn: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub assume_role_external_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub assume_role_session_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub assume_role_duration_seconds: Option<StringOrInteger>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub poll_interval: Option<YmlValue>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub debug_query_state: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub num_retries: Option<StringOrInteger>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub num_boto3_retries: Option<StringOrInteger>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub num_iceberg_retries: Option<StringOrInteger>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub s3_data_dir: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub s3_data_naming: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub s3_tmp_table_dir: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub spark_work_group: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub seed_s3_upload_args: Option<HashMap<String, YmlValue>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lf_tags_database: Option<HashMap<String, String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub connection_manager: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub threads: Option<StringOrInteger>,
+}
+
 #[derive(Serialize, DbtSchema)]
 #[serde(untagged)]
 #[serde(rename_all = "snake_case")]
@@ -1585,6 +1673,7 @@ pub enum TargetContext {
     Fabric(FabricTargetEnv),
     Exasol(ExasolTargetEnv),
     ClickHouse(ClickHouseTargetEnv),
+    Athena(AthenaTargetEnv),
     // Add other variants as needed
 }
 
@@ -1796,6 +1885,16 @@ pub struct ClickHouseTargetEnv {
     pub __common__: CommonTargetContext,
 }
 
+#[derive(Serialize, DbtSchema)]
+#[serde(rename_all = "snake_case")]
+pub struct AthenaTargetEnv {
+    pub region_name: Option<String>,
+    pub s3_staging_dir: Option<String>,
+    pub work_group: Option<String>,
+    pub aws_profile_name: Option<String>,
+    pub __common__: CommonTargetContext,
+}
+
 /// The location type of a DuckDB database path.
 #[derive(Debug, Clone, PartialEq)]
 pub enum DuckDBLocation<'a> {
@@ -1881,6 +1980,17 @@ impl<'a> DuckDBPathInfo<'a> {
 
 fn missing(field: &str) -> String {
     format!("In file `profiles.yml`, field `{field}` is required.")
+}
+
+fn threads_from_profile(threads: Option<StringOrInteger>) -> Result<Option<u16>, String> {
+    match threads {
+        Some(StringOrInteger::String(threads)) => threads
+            .parse::<u16>()
+            .map(Some)
+            .map_err(|_| "threads must be a positive integer".to_string()),
+        Some(StringOrInteger::Integer(threads)) => Ok(Some(threads as u16)),
+        None => Ok(None),
+    }
 }
 
 // This target context is only to be used in rendering yml's
@@ -2230,6 +2340,21 @@ impl TryFrom<DbConfig> for TargetContext {
                         Some(StringOrInteger::Integer(threads)) => Some(threads as u16),
                         None => None,
                     },
+                },
+            })),
+            DbConfig::Athena(config) => Ok(TargetContext::Athena(AthenaTargetEnv {
+                region_name: config.region_name.clone(),
+                s3_staging_dir: config.s3_staging_dir.clone(),
+                work_group: config.work_group.clone(),
+                aws_profile_name: config.aws_profile_name.clone(),
+                __common__: CommonTargetContext {
+                    database: config
+                        .database
+                        .clone()
+                        .unwrap_or_else(|| DEFAULT_ATHENA_CATALOG.to_string()),
+                    schema: config.schema.ok_or_else(|| missing("schema"))?,
+                    type_: adapter_type,
+                    threads: threads_from_profile(config.threads)?,
                 },
             })),
         }
@@ -2973,5 +3098,154 @@ threads: 8
 
         assert_eq!(config.get_database(), None);
         assert_eq!(config.get_database_or_default(), "");
+    }
+
+    #[test]
+    fn test_athena_minimal_config_parses() {
+        let config: DbConfig = dbt_yaml::from_str(
+            "type: athena\n\
+             region_name: eu-west-1\n\
+             s3_staging_dir: s3://bucket/athena/\n\
+             schema: analytics\n",
+        )
+        .unwrap();
+
+        let DbConfig::Athena(athena_config) = &config else {
+            panic!("Expected DbConfig::Athena");
+        };
+        assert_eq!(athena_config.region_name, Some("eu-west-1".to_string()));
+        assert_eq!(
+            athena_config.s3_staging_dir,
+            Some("s3://bucket/athena/".to_string())
+        );
+        assert_eq!(athena_config.database, None);
+        assert_eq!(athena_config.schema, Some("analytics".to_string()));
+        assert_eq!(config.adapter_type(), AdapterType::Athena);
+        assert_eq!(config.get_unique_field(), Some("s3://bucket/athena/"));
+        assert_eq!(config.get_database_or_default(), DEFAULT_ATHENA_CATALOG);
+    }
+
+    #[test]
+    fn test_athena_catalog_alias_maps_to_database() {
+        let config: DbConfig = dbt_yaml::from_str(
+            "type: athena\n\
+             region_name: eu-west-1\n\
+             s3_staging_dir: s3://bucket/athena/\n\
+             catalog: my_catalog\n\
+             schema: analytics\n",
+        )
+        .unwrap();
+
+        assert_eq!(config.get_database(), Some(&"my_catalog".to_string()));
+        let mapping = config.to_mapping().unwrap();
+        assert!(mapping.contains_key("database"));
+        assert!(!mapping.contains_key("catalog"));
+    }
+
+    #[test]
+    fn test_athena_connection_mapping_omits_secrets() {
+        let config: DbConfig = dbt_yaml::from_str(
+            "type: athena\n\
+             region_name: eu-west-1\n\
+             s3_staging_dir: s3://bucket/athena/\n\
+             schema: analytics\n\
+             work_group: analytics-wg\n\
+             aws_access_key_id: AKIAEXAMPLE\n\
+             aws_secret_access_key: secret\n\
+             aws_session_token: token\n",
+        )
+        .unwrap();
+
+        let mapping = config.to_connection_mapping().unwrap();
+        for key in [
+            "region_name",
+            "s3_staging_dir",
+            "schema",
+            "work_group",
+            "aws_access_key_id",
+        ] {
+            assert!(mapping.contains_key(key), "missing connection key `{key}`");
+        }
+        assert!(!mapping.contains_key("aws_secret_access_key"));
+        assert!(!mapping.contains_key("aws_session_token"));
+    }
+
+    #[test]
+    fn test_athena_unsupported_fields_survive_to_mapping() {
+        let config: DbConfig = dbt_yaml::from_str(
+            r#"
+type: athena
+region_name: eu-west-1
+s3_staging_dir: s3://bucket/athena/
+schema: analytics
+assume_role_arn: arn:aws:iam::123456789012:role/dbt
+assume_role_duration_seconds: 3600
+skip_workgroup_check: true
+poll_interval: 0.5
+s3_data_dir: s3://bucket/data/
+seed_s3_upload_args:
+  ACL: bucket-owner-full-control
+"#,
+        )
+        .unwrap();
+
+        let mapping = config.to_mapping().unwrap();
+        for key in [
+            "assume_role_arn",
+            "assume_role_duration_seconds",
+            "skip_workgroup_check",
+            "poll_interval",
+            "s3_data_dir",
+            "seed_s3_upload_args",
+        ] {
+            assert!(
+                mapping.contains_key(key),
+                "`{key}` must reach the auth layer"
+            );
+        }
+    }
+
+    #[test]
+    fn test_athena_target_context() {
+        let config: DbConfig = dbt_yaml::from_str(
+            "type: athena\n\
+             region_name: eu-west-1\n\
+             s3_staging_dir: s3://bucket/athena/\n\
+             schema: analytics\n\
+             work_group: analytics-wg\n\
+             aws_profile_name: dbt\n\
+             threads: \"8\"\n",
+        )
+        .unwrap();
+
+        let TargetContext::Athena(target) = TargetContext::try_from(config).unwrap() else {
+            panic!("expected athena target context");
+        };
+        assert_eq!(target.region_name.as_deref(), Some("eu-west-1"));
+        assert_eq!(
+            target.s3_staging_dir.as_deref(),
+            Some("s3://bucket/athena/")
+        );
+        assert_eq!(target.work_group.as_deref(), Some("analytics-wg"));
+        assert_eq!(target.aws_profile_name.as_deref(), Some("dbt"));
+        assert_eq!(target.__common__.database, DEFAULT_ATHENA_CATALOG);
+        assert_eq!(target.__common__.schema, "analytics");
+        assert_eq!(target.__common__.type_, "athena");
+        assert_eq!(target.__common__.threads, Some(8));
+    }
+
+    #[test]
+    fn test_athena_target_context_requires_schema() {
+        let config: DbConfig = dbt_yaml::from_str(
+            "type: athena\n\
+             region_name: eu-west-1\n\
+             s3_staging_dir: s3://bucket/athena/\n",
+        )
+        .unwrap();
+
+        let Err(err) = TargetContext::try_from(config) else {
+            panic!("expected a missing-schema error");
+        };
+        assert!(err.contains("`schema`"), "got: {err}");
     }
 }
