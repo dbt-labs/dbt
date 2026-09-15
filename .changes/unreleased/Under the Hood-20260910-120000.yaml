@@ -1,0 +1,6 @@
+kind: Under the Hood
+body: Rename internal "Fusion" naming to "v2" for the v2 parser integration (exceptions, module, and test names); no user-facing behavior change
+time: 2026-09-10T12:00:00.000000+00:00
+custom:
+    Author: aiguofer
+    Issue: "N/A"

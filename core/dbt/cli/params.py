@@ -834,7 +834,7 @@ use_fast_test_edges = _create_option_and_track_env_var(
 use_v2_parser = _create_option_and_track_env_var(
     "--use-v2-parser/--no-use-v2-parser",
     envvar="DBT_ENGINE_USE_V2_PARSER",
-    help="Delegate parsing to the fusion parser instead of running dbt-core's own parser.",
+    help="Delegate parsing to the v2 parser instead of running dbt-core's own parser.",
     default=False,
     hidden=False,
 )
@@ -842,7 +842,7 @@ use_v2_parser = _create_option_and_track_env_var(
 v2_parser = _create_option_and_track_env_var(
     "--v2-parser",
     envvar="DBT_ENGINE_V2_PARSER",
-    help="Command to invoke for the fusion parser when --use-v2-parser is set. Defaults to the bundled 'dbt-core-experimental-parser' binary.",
+    help="Command to invoke for the v2 parser when --use-v2-parser is set. Defaults to the bundled 'dbt-core-experimental-parser' binary.",
     default="dbt-core-experimental-parser parse",
     hidden=True,
 )
