@@ -30,6 +30,8 @@
 # downstream publishers consume, so they all run after it: publish-pypi
 # builds its download-at-install sdist from the uploaded wheels, and
 # publish-homebrew renders its formula from the uploaded SHA256SUMS.
+# validate-pypi installs each published package on Linux, macOS, and Windows
+# before the release announcement runs.
 # publish-homebrew is gated to non-pre-release versions that GitHub marked
 # as "Latest". See **Test-PyPI-only mode** below for the alternate flow
 # that skips everything past publish-pypi.
@@ -1002,6 +1004,53 @@ jobs:
           sed -i 's/^name = "dbt-oss"$/name = "dbt-core"/' pyproject.toml
           grep -qx 'name = "dbt-core"' pyproject.toml
 
+  # Each matrix job installs one package on a fresh runner, without a checkout.
+  validate-pypi:
+    name: Validate ${{ matrix.package }} (${{ matrix.os }})
+    needs: [prepare-release, publish-pypi]
+    if: ${{ !inputs.dry_run }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        package: ${{ fromJSON(inputs.release_target == 'all' && '["dbt-core", "dbt-core-experimental-parser", "dbt-oss"]' || inputs.release_target == 'parser' && '["dbt-core-experimental-parser"]' || inputs.release_target == 'oss' && '["dbt-oss"]' || '["dbt-core"]') }}
+    env:
+      PACKAGE: ${{ matrix.package }}
+      RELEASE_VERSION: ${{ needs.prepare-release.outputs.version }}
+      PIP_INDEX_URL: ${{ inputs.dry_run_with_test_pypi && 'https://test.pypi.org/simple' || 'https://pypi.org/simple' }}
+      PIP_EXTRA_INDEX_URL: ${{ inputs.dry_run_with_test_pypi && 'https://pypi.org/simple' || '' }}
+    steps:
+      - uses: actions/setup-python@e797f83bcb11b83ae66e0230d6156d7c80228e7c # actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Install from PyPI and check CLI
+        run: |
+          # Translate release SemVer to the version published on PyPI.
+          VERSION=$(echo "$RELEASE_VERSION" | sed -E 's/-alpha\./a/; s/-beta\./b/; s/-(rc|preview)\./rc/; s/-dev\./.dev/')
+          for attempt in {1..10}; do
+            if python -m pip install --no-cache-dir --report install.json "$PACKAGE==$VERSION"; then
+              break
+            fi
+            [ "$attempt" -lt 10 ] || exit 1
+            sleep 15
+          done
+          python -m pip check
+          dbt --version
+          # The CLI reports the original SemVer, not the PyPI-normalized version.
+          dbt --format json --version | python -c '
+          import json, os, sys
+          actual = json.load(sys.stdin)["core"]
+          expected = os.environ["RELEASE_VERSION"]
+          assert actual == expected, f"Expected {expected}, got {actual}"
+          '
+
+      - name: Check Python API
+        if: matrix.package != 'dbt-core-experimental-parser'
+        run: python -c 'from dbt.cli.main import dbtRunner; dbtRunner()'
+
   # ------------------------------------------------------------------
   # Create the GitHub Release with all assets. Skipped on dry-run.
   #
@@ -1301,6 +1350,7 @@ jobs:
         pack,
         tag,
         publish-pypi,
+        validate-pypi,
         github-release,
         publish-homebrew,
         publish-winget,
@@ -1336,6 +1386,7 @@ jobs:
         pack,
         tag,
         publish-pypi,
+        validate-pypi,
         github-release,
         publish-homebrew,
         publish-winget,
