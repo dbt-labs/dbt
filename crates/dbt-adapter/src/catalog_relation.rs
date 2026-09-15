@@ -207,6 +207,19 @@ impl CatalogRelation {
         model: &Value,
         catalogs: Option<Arc<DbtCatalogs>>,
     ) -> AdapterResult<Self> {
+        // A bare string is a distinct request shape (Snowflake's "drop a
+        // catalog-linked database by name" caller, see `drop.sql`), not a
+        // model config at all -- it means something different regardless of
+        // whether catalogs.yml v1 or v2 is active, so it must be intercepted
+        // here, before the v1/v2 branch, rather than inside each per-adapter
+        // resolver. Previously this dispatched into the v1/v2 branch first,
+        // so v2 (which has no concept of this call shape) received bare
+        // strings and hit an unreachable-in-theory `debug_assert!`. See
+        // dbt-labs/fs#<TODO: file number>.
+        if model.kind() == ValueKind::String {
+            return Self::from_linked_database_name(adapter_type, model, catalogs);
+        }
+
         if load_catalogs::fetch_use_catalogs_v2()
             && let Some(catalogs) = catalogs.as_ref()
         {
@@ -235,6 +248,47 @@ impl CatalogRelation {
                 AdapterErrorKind::Internal,
                 format!("build_relation_catalog cannot be invoked by an adapter {adapter_type:?}"),
             )),
+        }
+    }
+
+    /// Resolves a catalog relation from a bare database name, used only by
+    /// Snowflake's `drop_relation` macro (`relations/table/drop.sql`) to
+    /// determine whether the database being dropped from is a catalog-linked
+    /// database (CLD, e.g. Glue) before deciding how to drop. This is a
+    /// distinct request shape from a model config and is handled uniformly
+    /// here regardless of the active catalogs.yml version -- CLD-linked-
+    /// database detection currently has no v2 (`DbtCatalogsV2View`)
+    /// implementation, so it always resolves against the v1 view.
+    fn from_linked_database_name(
+        adapter_type: AdapterType,
+        model: &Value,
+        catalogs: Option<Arc<DbtCatalogs>>,
+    ) -> AdapterResult<Self> {
+        debug_assert_eq!(
+            model.kind(),
+            ValueKind::String,
+            "from_linked_database_name called with a non-string model config"
+        );
+
+        if adapter_type != AdapterType::Snowflake {
+            return Err(AdapterError::new(
+                AdapterErrorKind::Internal,
+                format!(
+                    "build_catalog_relation received a bare database name, but catalog-linked \
+                     database detection is only supported for Snowflake, not {adapter_type:?}"
+                ),
+            ));
+        }
+
+        let fqn = model.as_str().unwrap_or_default().trim();
+        let db_only = fqn.split('.').next().unwrap_or(fqn).trim();
+
+        if let Some(cats) = catalogs.as_ref()
+            && Self::cld_exists_in_iceberg_rest(cats.mapping(), db_only)
+        {
+            Self::build_for_cld_only(model)
+        } else {
+            Ok(Self::default_catalog_relation_snowflake())
         }
     }
 
@@ -751,22 +805,15 @@ impl CatalogRelation {
         model: &Value,
         catalogs: Option<Arc<DbtCatalogs>>,
     ) -> AdapterResult<Self> {
-        // Special case hack: a plain string means this is the linked database name.
-        // You cannot use a string literal anywhere except drop for this feature
-        // this function is designed to be used with a model config
-
-        if model.kind() == ValueKind::String {
-            let fqn = model.as_str().unwrap().trim();
-            let db_only = fqn.split('.').next().unwrap_or(fqn).trim();
-
-            return if let Some(cats) = catalogs.as_ref()
-                && Self::cld_exists_in_iceberg_rest(cats.mapping(), db_only)
-            {
-                Self::build_for_cld_only(model)
-            } else {
-                Ok(Self::default_catalog_relation_snowflake())
-            };
-        }
+        // The bare-string "linked database name" call shape (used by
+        // `drop.sql`) is intercepted earlier, in `from_model_config_and_catalogs`,
+        // via `from_linked_database_name` -- before the v1/v2 branch, since v2
+        // has no concept of it. It should never reach this function.
+        debug_assert!(
+            model.kind() != ValueKind::String,
+            "Snowflake adapter received a bare string model config in from_model_config_and_catalogs_snowflake; \
+             this should have been intercepted by from_model_config_and_catalogs's linked-database-name check."
+        );
 
         let model_catalog_name =
             Self::get_model_config_value(model, "catalog_name", AdapterType::Snowflake).and_then(
