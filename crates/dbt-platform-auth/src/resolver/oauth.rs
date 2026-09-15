@@ -184,51 +184,116 @@ impl OAuthPassiveResolver {
 
         // All matching sessions are expired. Try to refresh if a refresh token is available.
         if let Some(session) = matching.iter().copied().find(|s| s.refresh_token.is_some()) {
-            let refresh_tok = session.refresh_token.as_deref().unwrap();
-            let token_url = self.refresh_token_url(&session.account_host);
-
-            let token =
-                exchange_refresh_token(&self.http, &token_url, &self.client_id, refresh_tok)
-                    .await?;
-
-            let (user_id, account_id, account_host) = decode_access_token(&token.access_token)
-                .map_err(|e| AuthError::RefreshFailed(e.to_string()))?;
-
-            let scopes: Vec<String> = token
-                .scope
-                .as_deref()
-                .unwrap_or("")
-                .split_whitespace()
-                .map(str::to_owned)
-                .collect();
-
-            let expires_in = token.expires_in.unwrap_or(3600.0);
-            let expires_at = SystemTime::now() + Duration::from_secs(expires_in as u64);
-
-            let new_session = OAuthSession {
-                access_token: token.access_token,
-                refresh_token: token.refresh_token,
-                id_token: token.id_token,
-                scopes,
-                expires_at,
-                account_host,
-                account_id,
-                user_id,
-                client_id: self.client_id.clone(),
-            };
-
-            if !scopes_adequate(&self.scopes, &new_session.scopes) {
-                return Err(AuthError::InadequateScopes {
-                    requested: self.scopes.clone(),
-                    cached: new_session.scopes,
-                });
-            }
-
-            upsert_session(&path, new_session.clone())?;
-
-            return Ok(Credential::OAuth(new_session));
+            return self.refresh_session(&path, session).await;
         }
         Err(AuthError::AuthenticationExpired)
+    }
+
+    /// Refreshes a matching cached session even when its access token has not
+    /// yet expired, for callers handling a rejected token.
+    pub async fn force_refresh(&self) -> Result<Credential, AuthError> {
+        let path = match self.effective_cache_path() {
+            Some(p) => p,
+            None => return Err(AuthError::NotAuthenticated),
+        };
+
+        let bytes = match std::fs::read(&path) {
+            Ok(b) => b,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                return Err(AuthError::NotAuthenticated);
+            }
+            Err(e) => return Err(AuthError::InaccessibleSource(e)),
+        };
+        let cache: OAuthSessionCache =
+            serde_json::from_slice(&bytes).map_err(|e| AuthError::Malformed(e.to_string()))?;
+        let matching: Vec<&OAuthSession> = cache
+            .sessions
+            .iter()
+            .filter(|s| s.client_id == self.client_id)
+            .filter(|s| {
+                self.account_id
+                    .as_deref()
+                    .is_none_or(|want| s.account_id.to_string() == want)
+            })
+            .collect();
+
+        if matching.is_empty() {
+            return Err(AuthError::NotAuthenticated);
+        }
+        let session = matching
+            .into_iter()
+            .find(|session| session.refresh_token.is_some())
+            .ok_or(AuthError::AuthenticationExpired)?;
+
+        self.refresh_session(&path, session).await
+    }
+
+    async fn refresh_session(
+        &self,
+        path: &PathBuf,
+        session: &OAuthSession,
+    ) -> Result<Credential, AuthError> {
+        let refresh_tok = session
+            .refresh_token
+            .as_deref()
+            .ok_or(AuthError::AuthenticationExpired)?;
+        let token_url = self.refresh_token_url(&session.account_host);
+        let token =
+            exchange_refresh_token(&self.http, &token_url, &self.client_id, refresh_tok).await?;
+
+        let (user_id, account_id, account_host) = decode_access_token(&token.access_token)
+            .map_err(|e| AuthError::RefreshFailed(e.to_string()))?;
+        if account_id != session.account_id {
+            return Err(AuthError::RefreshFailed(
+                "refreshed credential belongs to a different account".into(),
+            ));
+        }
+        let hosts_match = match (
+            normalized_account_host(&session.account_host),
+            normalized_account_host(&account_host),
+        ) {
+            (Some(expected), Some(actual)) => expected == actual,
+            _ => false,
+        };
+        if !hosts_match {
+            return Err(AuthError::RefreshFailed(
+                "refreshed credential belongs to a different account host".into(),
+            ));
+        }
+
+        let scopes: Vec<String> = token
+            .scope
+            .as_deref()
+            .unwrap_or("")
+            .split_whitespace()
+            .map(str::to_owned)
+            .collect();
+
+        let expires_in = token.expires_in.unwrap_or(3600.0);
+        let expires_at = SystemTime::now() + Duration::from_secs(expires_in as u64);
+
+        let new_session = OAuthSession {
+            access_token: token.access_token,
+            refresh_token: token.refresh_token,
+            id_token: token.id_token,
+            scopes,
+            expires_at,
+            account_host,
+            account_id,
+            user_id,
+            client_id: self.client_id.clone(),
+        };
+
+        if !scopes_adequate(&self.scopes, &new_session.scopes) {
+            return Err(AuthError::InadequateScopes {
+                requested: self.scopes.clone(),
+                cached: new_session.scopes,
+            });
+        }
+
+        upsert_session(path, new_session.clone())?;
+
+        Ok(Credential::OAuth(new_session))
     }
 }
 
@@ -919,6 +984,13 @@ fn jwt_claim_as_u64(payload: &serde_json::Value, key: &str) -> Option<u64> {
     v.as_u64().or_else(|| v.as_str()?.parse().ok())
 }
 
+fn normalized_account_host(host: &str) -> Option<String> {
+    Url::parse(&format!("https://{host}"))
+        .ok()?
+        .host_str()
+        .map(str::to_ascii_lowercase)
+}
+
 fn decode_access_token(token: &str) -> Result<(u64, u64, String), AuthError> {
     let parts: Vec<&str> = token.split('.').collect();
     if parts.len() != 3 {
@@ -1017,6 +1089,7 @@ mod tests {
     use std::io::Write as _;
     use std::time::{Duration, UNIX_EPOCH};
     use tempfile::NamedTempFile;
+    use tokio::sync::oneshot;
 
     fn write_cache(cache: &OAuthSessionCache) -> NamedTempFile {
         let mut f = NamedTempFile::new().unwrap();
@@ -1074,6 +1147,44 @@ mod tests {
         addr
     }
 
+    async fn mock_token_server_with_request(
+        status: u16,
+        body: String,
+    ) -> (std::net::SocketAddr, oneshot::Receiver<String>) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (request_sender, request_receiver) = oneshot::channel();
+        tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let (read, mut write) = stream.into_split();
+            let mut reader = BufReader::new(read);
+            let mut content_length: usize = 0;
+            loop {
+                let mut line = String::new();
+                reader.read_line(&mut line).await.unwrap();
+                if line == "\r\n" {
+                    break;
+                }
+                let lower = line.to_lowercase();
+                if let Some(rest) = lower.strip_prefix("content-length:") {
+                    content_length = rest.trim().parse().unwrap_or(0);
+                }
+            }
+            use tokio::io::AsyncReadExt as _;
+            let mut request_body = vec![0u8; content_length];
+            reader.read_exact(&mut request_body).await.unwrap();
+            let _ = request_sender.send(String::from_utf8(request_body).unwrap());
+            let status_text = if status == 200 { "OK" } else { "Unauthorized" };
+            let resp = format!(
+                "HTTP/1.1 {status} {status_text}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            write.write_all(resp.as_bytes()).await.unwrap();
+            write.shutdown().await.unwrap();
+        });
+        (addr, request_receiver)
+    }
+
     fn make_fake_jwt(user_id: u64, account_id: u64, account_host: &str) -> String {
         let payload = serde_json::json!({
             "sub": user_id.to_string(),
@@ -1118,6 +1229,244 @@ mod tests {
         assert!(matches!(cred, Credential::OAuth(_)));
         assert_eq!(cred.token(), "tok_abc");
         assert_eq!(cred.account_id(), 42);
+    }
+
+    #[dbt_runtime::test]
+    async fn force_refreshes_selected_unexpired_session_and_leaves_other_accounts_untouched() {
+        let new_access_token = make_fake_jwt(7, 42, "ab123.us1.dbt.com");
+        let token_response = serde_json::json!({
+            "access_token": new_access_token,
+            "refresh_token": "selected_new_refresh",
+            "scope": "account:read offline_access",
+            "expires_in": 3600.0
+        })
+        .to_string();
+        let (addr, mut request_body) = mock_token_server_with_request(200, token_response).await;
+
+        let mut other = make_session(future_time(), Some("other_refresh".into()));
+        other.account_id = 41;
+        other.access_token = "other_access".into();
+        let selected = make_session(future_time(), Some("selected_refresh".into()));
+        let cache = OAuthSessionCache {
+            version: 1,
+            sessions: vec![other.clone(), selected.clone()],
+        };
+        let f = write_cache(&cache);
+        let mut resolver = resolver_at(f.path().to_path_buf());
+        resolver.account_id = Some("42".into());
+        resolver.token_endpoint_override = Some(format!("http://127.0.0.1:{}", addr.port()));
+
+        let resolved = resolver.resolve().await.unwrap();
+        assert_eq!(resolved.token(), selected.access_token);
+        assert!(matches!(
+            request_body.try_recv(),
+            Err(oneshot::error::TryRecvError::Empty)
+        ));
+
+        let refreshed = resolver.force_refresh().await.unwrap();
+        let request_body = request_body.await.unwrap();
+        assert!(request_body.contains("grant_type=refresh_token"));
+        assert!(request_body.contains("refresh_token=selected_refresh"));
+        assert!(request_body.contains("client_id=test_client"));
+        assert_eq!(refreshed.token(), new_access_token);
+        assert_eq!(refreshed.account_id(), 42);
+
+        let bytes = std::fs::read(f.path()).unwrap();
+        let updated: OAuthSessionCache = serde_json::from_slice(&bytes).unwrap();
+        let updated_other = updated
+            .sessions
+            .iter()
+            .find(|session| session.account_id == 41)
+            .unwrap();
+        let updated_selected = updated
+            .sessions
+            .iter()
+            .find(|session| session.account_id == 42)
+            .unwrap();
+        assert_eq!(updated_other.access_token, other.access_token);
+        assert_eq!(updated_other.refresh_token, other.refresh_token);
+        assert_eq!(updated_selected.access_token, new_access_token);
+        assert_eq!(
+            updated_selected.refresh_token.as_deref(),
+            Some("selected_new_refresh")
+        );
+    }
+
+    #[dbt_runtime::test]
+    async fn force_refresh_without_matching_session_returns_not_authenticated() {
+        let cache = OAuthSessionCache {
+            version: 1,
+            sessions: vec![make_session(future_time(), Some("refresh".into()))],
+        };
+        let f = write_cache(&cache);
+        let mut resolver = resolver_at(f.path().to_path_buf());
+        resolver.account_id = Some("77".into());
+
+        let error = resolver.force_refresh().await.unwrap_err();
+        assert!(matches!(error, AuthError::NotAuthenticated));
+    }
+
+    #[dbt_runtime::test]
+    async fn force_refresh_without_refresh_token_returns_authentication_expired() {
+        let cache = OAuthSessionCache {
+            version: 1,
+            sessions: vec![make_session(future_time(), None)],
+        };
+        let f = write_cache(&cache);
+        let mut resolver = resolver_at(f.path().to_path_buf());
+        resolver.account_id = Some("42".into());
+
+        let error = resolver.force_refresh().await.unwrap_err();
+        assert!(matches!(error, AuthError::AuthenticationExpired));
+    }
+
+    #[dbt_runtime::test]
+    async fn force_refresh_rejects_a_token_for_a_different_account() {
+        let token_response = serde_json::json!({
+            "access_token": make_fake_jwt(7, 41, "ab123.us1.dbt.com"),
+            "refresh_token": "new_refresh",
+            "expires_in": 3600.0
+        })
+        .to_string();
+        let addr = mock_token_server(200, token_response).await;
+        let cache = OAuthSessionCache {
+            version: 1,
+            sessions: vec![make_session(future_time(), Some("refresh".into()))],
+        };
+        let f = write_cache(&cache);
+        let before = std::fs::read(f.path()).unwrap();
+        let mut resolver = resolver_at(f.path().to_path_buf());
+        resolver.account_id = Some("42".into());
+        resolver.token_endpoint_override = Some(format!("http://127.0.0.1:{}", addr.port()));
+
+        let error = resolver.force_refresh().await.unwrap_err();
+        assert!(
+            matches!(error, AuthError::RefreshFailed(message) if message.contains("different account"))
+        );
+        assert_eq!(std::fs::read(f.path()).unwrap(), before);
+    }
+
+    #[dbt_runtime::test]
+    async fn force_refresh_rejects_a_token_for_a_different_account_host() {
+        let token_response = serde_json::json!({
+            "access_token": make_fake_jwt(7, 42, "other.us1.dbt.com"),
+            "refresh_token": "new_refresh",
+            "expires_in": 3600.0
+        })
+        .to_string();
+        let addr = mock_token_server(200, token_response).await;
+        let cache = OAuthSessionCache {
+            version: 1,
+            sessions: vec![make_session(future_time(), Some("refresh".into()))],
+        };
+        let f = write_cache(&cache);
+        let before = std::fs::read(f.path()).unwrap();
+        let mut resolver = resolver_at(f.path().to_path_buf());
+        resolver.account_id = Some("42".into());
+        resolver.token_endpoint_override = Some(format!("http://127.0.0.1:{}", addr.port()));
+
+        let error = resolver.force_refresh().await.unwrap_err();
+        assert!(
+            matches!(error, AuthError::RefreshFailed(message) if message.contains("different account host"))
+        );
+        assert_eq!(std::fs::read(f.path()).unwrap(), before);
+    }
+
+    #[dbt_runtime::test]
+    async fn force_refresh_accepts_an_equivalent_account_host() {
+        let token_response = serde_json::json!({
+            "access_token": make_fake_jwt(7, 42, "ab123.us1.dbt.com"),
+            "refresh_token": "new_refresh",
+            "expires_in": 3600.0
+        })
+        .to_string();
+        let addr = mock_token_server(200, token_response).await;
+        let mut session = make_session(future_time(), Some("refresh".into()));
+        session.account_host = "AB123.US1.dbt.com".into();
+        let cache = OAuthSessionCache {
+            version: 1,
+            sessions: vec![session],
+        };
+        let f = write_cache(&cache);
+        let mut resolver = resolver_at(f.path().to_path_buf());
+        resolver.account_id = Some("42".into());
+        resolver.token_endpoint_override = Some(format!("http://127.0.0.1:{}", addr.port()));
+
+        let credential = resolver.force_refresh().await.unwrap();
+        assert_eq!(credential.account_id(), 42);
+    }
+
+    #[dbt_runtime::test]
+    async fn expired_refresh_rejects_a_token_for_a_different_account() {
+        let token_response = serde_json::json!({
+            "access_token": make_fake_jwt(7, 41, "ab123.us1.dbt.com"),
+            "refresh_token": "new_refresh",
+            "expires_in": 3600.0
+        })
+        .to_string();
+        let addr = mock_token_server(200, token_response).await;
+        let cache = OAuthSessionCache {
+            version: 1,
+            sessions: vec![make_session(past_time(), Some("refresh".into()))],
+        };
+        let f = write_cache(&cache);
+        let before = std::fs::read(f.path()).unwrap();
+        let mut resolver = resolver_at(f.path().to_path_buf());
+        resolver.token_endpoint_override = Some(format!("http://127.0.0.1:{}", addr.port()));
+
+        let error = resolver.resolve().await.unwrap_err();
+        assert!(
+            matches!(error, AuthError::RefreshFailed(message) if message.contains("different account"))
+        );
+        assert_eq!(std::fs::read(f.path()).unwrap(), before);
+    }
+
+    #[dbt_runtime::test]
+    async fn expired_refresh_rejects_a_token_for_a_different_account_host() {
+        let token_response = serde_json::json!({
+            "access_token": make_fake_jwt(7, 42, "other.us1.dbt.com"),
+            "refresh_token": "new_refresh",
+            "expires_in": 3600.0
+        })
+        .to_string();
+        let addr = mock_token_server(200, token_response).await;
+        let cache = OAuthSessionCache {
+            version: 1,
+            sessions: vec![make_session(past_time(), Some("refresh".into()))],
+        };
+        let f = write_cache(&cache);
+        let before = std::fs::read(f.path()).unwrap();
+        let mut resolver = resolver_at(f.path().to_path_buf());
+        resolver.token_endpoint_override = Some(format!("http://127.0.0.1:{}", addr.port()));
+
+        let error = resolver.resolve().await.unwrap_err();
+        assert!(
+            matches!(error, AuthError::RefreshFailed(message) if message.contains("different account host"))
+        );
+        assert_eq!(std::fs::read(f.path()).unwrap(), before);
+    }
+
+    #[dbt_runtime::test]
+    async fn expired_refresh_accepts_an_equivalent_account_host() {
+        let token_response = serde_json::json!({
+            "access_token": make_fake_jwt(7, 42, "ab123.us1.dbt.com"),
+            "refresh_token": "new_refresh",
+            "expires_in": 3600.0
+        })
+        .to_string();
+        let addr = mock_token_server(200, token_response).await;
+        let mut session = make_session(past_time(), Some("refresh".into()));
+        session.account_host = "AB123.US1.dbt.com".into();
+        let cache = OAuthSessionCache {
+            version: 1,
+            sessions: vec![session],
+        };
+        let f = write_cache(&cache);
+        let mut resolver = resolver_at(f.path().to_path_buf());
+        resolver.token_endpoint_override = Some(format!("http://127.0.0.1:{}", addr.port()));
+
+        let credential = resolver.resolve().await.unwrap();
+        assert_eq!(credential.account_id(), 42);
     }
 
     #[dbt_runtime::test]
@@ -1631,7 +1980,7 @@ mod tests {
     #[dbt_runtime::test]
     async fn abort_signal_returns_aborted() {
         let (listener, _addr) = bind_local().await;
-        let (tx, rx) = tokio::sync::oneshot::channel::<()>();
+        let (tx, rx) = oneshot::channel::<()>();
         let handle = tokio::spawn(async move {
             accept_one_redirect(&listener, "any", Duration::from_secs(60), Some(rx)).await
         });
