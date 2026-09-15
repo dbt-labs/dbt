@@ -2917,7 +2917,6 @@ impl Adapter {
                         .tblproperties
                         .clone()
                         .unwrap_or_default()
-                        .0
                         .into_iter()
                         .map(|(k, v)| (k, yml_value_to_minijinja(v)))
                         .collect(),

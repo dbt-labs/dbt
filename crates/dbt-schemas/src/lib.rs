@@ -171,7 +171,7 @@ pub mod schemas {
         };
         pub use configs::common::{WarehouseSpecificNodeConfig, same_warehouse_config};
         pub use configs::config_keys::ConfigKeys;
-        pub use configs::config_merge::{DefaultTo, Packages, Tags, TblProperties};
+        pub use configs::config_merge::{DefaultTo, Packages, Tags};
         pub use configs::data_test_config::{
             DEFAULT_DATA_TEST_ERROR_IF, DEFAULT_DATA_TEST_FAIL_CALC, DEFAULT_DATA_TEST_SEVERITY,
             DEFAULT_DATA_TEST_WARN_IF, DataTestConfig, ProjectDataTestConfig,

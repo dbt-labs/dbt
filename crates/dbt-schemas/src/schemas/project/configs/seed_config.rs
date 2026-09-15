@@ -32,7 +32,7 @@ use crate::schemas::project::TypedRecursiveConfig;
 use crate::schemas::project::configs::common::{
     WarehouseSpecificNodeConfig, take_databricks_catalog_alias,
 };
-use crate::schemas::project::configs::config_merge::{Tags, TblProperties};
+use crate::schemas::project::configs::config_merge::Tags;
 use crate::schemas::serde::PartitionsConfig;
 use crate::schemas::serde::StringOrArrayOfStrings;
 use crate::schemas::serde::bool_or_string_bool;
@@ -218,7 +218,7 @@ pub struct ProjectSeedConfig {
     #[serde(rename = "+location_root")]
     pub location_root: Option<String>,
     #[serde(rename = "+tblproperties")]
-    pub tblproperties: Option<TblProperties>,
+    pub tblproperties: Option<IndexMap<String, YmlValue>>,
     #[serde(
         default,
         rename = "+include_full_name_in_path",
