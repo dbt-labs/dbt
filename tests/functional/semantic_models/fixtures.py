@@ -1119,3 +1119,54 @@ semantic_model_schema_yml_v2_entity_without_name = """models:
         entity:
           type: foreign
 """
+
+# --- Regression fixtures for dbt-core#15294 -------------------------------
+# An inline (v2) semantic model declared on a *versioned* model. The columns
+# carrying the entity/dimension annotations live under versions[].columns.
+versioned_model_v1_sql = """select 1 as id, cast('2020-01-01' as date) as created_at"""
+
+versioned_model_v2_sql = """select 1 as id, cast('2020-01-01' as date) as created_at"""
+
+versioned_model_semantic_schema_yml_v2 = """models:
+  - name: metricflow_time_spine
+    time_spine:
+      standard_granularity_column: date_day
+    columns:
+      - name: date_day
+        granularity: day
+
+  - name: customers
+    description: A versioned model carrying an inline semantic model.
+    latest_version: 2
+    semantic_model:
+      enabled: true
+    agg_time_dimension: created_at
+    metrics:
+      - name: customers_count
+        description: Number of customers.
+        label: Customers Count
+        type: simple
+        agg: count
+        expr: id
+    versions:
+      - v: 1
+        columns:
+          - name: id
+            entity:
+              type: primary
+              name: customer
+          - name: created_at
+            granularity: day
+            dimension:
+              type: time
+      - v: 2
+        columns:
+          - name: id
+            entity:
+              type: primary
+              name: customer
+          - name: created_at
+            granularity: day
+            dimension:
+              type: time
+"""

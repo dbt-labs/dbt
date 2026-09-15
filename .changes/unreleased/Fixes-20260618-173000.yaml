@@ -1,0 +1,8 @@
+kind: Fixes
+body: Parse inline (v2) semantic models and metrics declared on versioned models.
+  They were previously silently dropped from the manifest because the model-level
+  semantic constructs were not propagated to the latest version's patch.
+time: 2026-06-18T17:30:00.000000+00:00
+custom:
+    Author: pgoslatara
+    Issue: "15294"

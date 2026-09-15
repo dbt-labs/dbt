@@ -40,6 +40,10 @@ from tests.functional.semantic_models.fixtures import (
     semantic_model_schema_yml_v2_renamed,
     semantic_model_schema_yml_v2_with_primary_entity_only_on_column,
     semantic_model_test_groups_yml,
+    simple_metricflow_time_spine_sql,
+    versioned_model_semantic_schema_yml_v2,
+    versioned_model_v1_sql,
+    versioned_model_v2_sql,
 )
 
 
@@ -1095,3 +1099,47 @@ class TestSemanticModelEntityWithoutName:
 
 
 # TODO DI-4603: add enforcement and a test for a TIME type dimension and a column that has no granularity set
+
+
+class TestSemanticModelOnVersionedModel:
+    """Regression test for dbt-core#15294.
+
+    An inline (v2) semantic model declared on a *versioned* model — whose
+    columns live under versions[].columns — used to be silently dropped from
+    the manifest (no error, no warning). It should be parsed exactly once, for
+    the latest version (which `ref()` resolves to).
+    """
+
+    @pytest.fixture(scope="class")
+    def models(self):
+        return {
+            "customers_v1.sql": versioned_model_v1_sql,
+            "customers_v2.sql": versioned_model_v2_sql,
+            "metricflow_time_spine.sql": simple_metricflow_time_spine_sql,
+            "schema.yml": versioned_model_semantic_schema_yml_v2,
+        }
+
+    def test_semantic_model_on_versioned_model(self, project) -> None:
+        runner = dbtTestRunner()
+        result = runner.invoke(["parse"])
+        assert result.success
+        assert isinstance(result.result, Manifest)
+        manifest = result.result
+
+        # Exactly one semantic model — not zero (the bug) and not one-per-version.
+        assert len(manifest.semantic_models) == 1
+        semantic_model = manifest.semantic_models["semantic_model.test.customers"]
+        assert semantic_model.name == "customers"
+        # The semantic model targets the model as resolved by ref() (latest version).
+        assert semantic_model.model == "ref('customers')"
+
+        # Entity + time dimension were resolved from the versioned columns.
+        entities = {entity.name: entity for entity in semantic_model.entities}
+        assert "customer" in entities
+        assert entities["customer"].type == EntityType.PRIMARY
+        dimensions = {dimension.name: dimension for dimension in semantic_model.dimensions}
+        assert "created_at" in dimensions
+        assert dimensions["created_at"].type == DimensionType.TIME
+
+        # The model-level metric is also produced (it was dropped by the same bug).
+        assert "metric.test.customers_count" in manifest.metrics
