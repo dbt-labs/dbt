@@ -301,15 +301,9 @@ impl AdapterImpl {
                             as Box<dyn MetadataAdapter>,
                         Postgres => Box::new(PostgresMetadataAdapter::new(engine))
                             as Box<dyn MetadataAdapter>,
-                        DuckDB => {
-                            Box::new(DuckDBMetadataAdapter::new(engine)) as Box<dyn MetadataAdapter>
-                        }
-                        LakeCompute => {
-                            Box::new(DuckDBMetadataAdapter::new(engine)) as Box<dyn MetadataAdapter>
-                        }
                         // GizmoSQL is a DuckDB server: the same information_schema
                         // and duckdb_*() catalog functions are available remotely.
-                        GizmoSQL => {
+                        DuckDB | LakeCompute | GizmoSQL => {
                             Box::new(DuckDBMetadataAdapter::new(engine)) as Box<dyn MetadataAdapter>
                         }
                         Fabric => {

@@ -2289,7 +2289,10 @@ impl TryFrom<DbConfig> for TargetContext {
                 __common__: CommonTargetContext {
                     // The DuckDB catalog name on the server cannot be derived
                     // offline (unlike DuckDB's file path), so it must be given.
-                    database: config.database.ok_or_else(|| missing("database"))?,
+                    database: config
+                        .database
+                        .filter(|database| !database.is_empty())
+                        .ok_or_else(|| missing("database"))?,
                     schema: config.schema.unwrap_or_else(|| "main".to_string()),
                     type_: adapter_type,
                     threads: match config.threads {
@@ -3085,5 +3088,31 @@ threads: 8
 
         assert_eq!(config.get_database(), None);
         assert_eq!(config.get_database_or_default(), "");
+    }
+
+    #[test]
+    fn test_gizmosql_target_context_rejects_empty_host_and_database() {
+        let base = GizmoSQLDbConfig {
+            host: Some("localhost".to_string()),
+            database: Some("db".to_string()),
+            ..Default::default()
+        };
+
+        let config: DbConfig = base.clone().into();
+        assert!(TargetContext::try_from(config).is_ok());
+
+        let config: DbConfig = GizmoSQLDbConfig {
+            host: Some(String::new()),
+            ..base.clone()
+        }
+        .into();
+        assert!(TargetContext::try_from(config).is_err());
+
+        let config: DbConfig = GizmoSQLDbConfig {
+            database: Some(String::new()),
+            ..base
+        }
+        .into();
+        assert!(TargetContext::try_from(config).is_err());
     }
 }

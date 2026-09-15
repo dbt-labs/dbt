@@ -152,7 +152,8 @@ fn parse_auth<'a>(
     // `user` is accepted as an alias.
     let username = config
         .get_string("username")
-        .or_else(|| config.get_string("user"));
+        .or_else(|| config.get_string("user"))
+        .filter(|u| !u.is_empty());
     let password = config
         .get_string("password")
         .or_else(|| config.get_string("pass"));
@@ -475,6 +476,17 @@ use_encryption: false
     fn test_missing_username_returns_error() {
         let result = GizmoSQLAuth::new(Box::new(crate::NoopAuthWarningPrinter)).configure(
             &AdapterConfig::new(Mapping::from_iter([("host".into(), "localhost".into())])),
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_empty_username_returns_error() {
+        let result = GizmoSQLAuth::new(Box::new(crate::NoopAuthWarningPrinter)).configure(
+            &AdapterConfig::new(Mapping::from_iter([
+                ("host".into(), "localhost".into()),
+                ("username".into(), "".into()),
+            ])),
         );
         assert!(result.is_err());
     }
