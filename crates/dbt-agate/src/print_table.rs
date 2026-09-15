@@ -137,6 +137,17 @@ pub fn print_table(
         formatted_data.push(formatted_row);
     }
 
+    // A column is right-justified (numeric) when every non-empty, non-ellipsis
+    // value in it parses as a number and at least one such value is present.
+    // The header of a column is justified the same way as its data, matching
+    // agate's convention, rather than being unconditionally right-justified:
+    // forcing text-column headers to right-justify made their padding direction
+    // disagree with the left-justified data below them, misaligning the header
+    // text within its cell relative to the divider and data rows.
+    let column_is_numeric: Vec<bool> = (0..widths.len())
+        .map(|j| is_numeric_column(formatted_data.iter().map(|row| row[j].as_str()), ellipsis))
+        .collect();
+
     // Helper function to write a row
     let write_row = |out: &mut dyn io::Write,
                      row: &[String],
@@ -145,16 +156,17 @@ pub fn print_table(
         out.write_all(v_line.as_bytes())?;
         for (j, value) in row.iter().enumerate() {
             if j < widths.len() {
-                // Determine if it's a number or text for alignment
-                // Here we're simplifying by just checking if it parses as a number
-                let is_number =
-                    value.parse::<f64>().is_ok() && !value.is_empty() && value != ellipsis;
+                let is_number = if is_header {
+                    column_is_numeric.get(j).copied().unwrap_or(false)
+                } else {
+                    value.parse::<f64>().is_ok() && !value.is_empty() && value != ellipsis
+                };
 
-                if is_number || is_header {
-                    // Right justify numbers and headers
+                if is_number {
+                    // Right justify numbers (and headers of numeric columns)
                     out.write_fmt(format_args!(" {} ", value.to_string().pad_left(widths[j])))?;
                 } else {
-                    // Left justify text
+                    // Left justify text (and headers of text columns)
                     out.write_fmt(format_args!(" {} ", value.to_string().pad_right(widths[j])))?;
                 }
             }
@@ -193,6 +205,23 @@ pub fn print_table(
     }
 
     Ok(())
+}
+
+/// Whether a column's data should be right-justified: every non-empty,
+/// non-ellipsis value parses as a number, and at least one such value exists.
+/// A column with no values (or only empty/ellipsis ones) is treated as text.
+fn is_numeric_column<'a>(values: impl Iterator<Item = &'a str>, ellipsis: &str) -> bool {
+    let mut has_value = false;
+    for value in values {
+        if value.is_empty() || value == ellipsis {
+            continue;
+        }
+        has_value = true;
+        if value.parse::<f64>().is_err() {
+            return false;
+        }
+    }
+    has_value
 }
 
 // Add helper methods for string padding - used in print_table
@@ -265,5 +294,109 @@ impl<'a, 'b> io::Write for FormatterAsWriter<'a, 'b> {
 
     fn flush(&mut self) -> io::Result<()> {
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use arrow::array::StringArray;
+    use arrow::datatypes::{DataType, Field, Schema};
+    use arrow::record_batch::RecordBatch;
+    use std::sync::Arc;
+
+    fn text_table(column_names: &[&str], rows: &[Vec<&str>]) -> AgateTable {
+        let schema = Arc::new(Schema::new(
+            column_names
+                .iter()
+                .map(|name| Field::new((*name).to_string(), DataType::Utf8, false))
+                .collect::<Vec<_>>(),
+        ));
+        let columns = (0..column_names.len())
+            .map(|j| {
+                let values: Vec<&str> = rows.iter().map(|row| row[j]).collect();
+                Arc::new(StringArray::from(values)) as arrow::array::ArrayRef
+            })
+            .collect();
+        let batch = RecordBatch::try_new(schema, columns).unwrap();
+        AgateTable::from_record_batch(Arc::new(batch))
+    }
+
+    fn render(table: &AgateTable) -> String {
+        let mut out = Vec::new();
+        print_table(table, 20, 6, 20, Some(&mut out)).unwrap();
+        String::from_utf8(out).unwrap()
+    }
+
+    /// Regression test for https://github.com/dbt-labs/dbt-core/issues/13635:
+    /// a text column's header must be left-justified like its data, not
+    /// right-justified just because it's a header, or the header text is
+    /// misaligned relative to the divider and data rows below it.
+    #[test]
+    fn header_of_text_column_left_justifies_like_its_data() {
+        let table = text_table(
+            &[
+                "column_name",
+                "definition_type",
+                "contract_type",
+                "mismatch_reason",
+            ],
+            &[vec![
+                "LOW_FIDELITY_INT",
+                "NUMBER(1,0)",
+                "BOOLEAN",
+                "data type mismatch",
+            ]],
+        );
+
+        let expected = "\
+| column_name      | definition_type | contract_type | mismatch_reason    |
+| ---------------- | --------------- | ------------- | ------------------ |
+| LOW_FIDELITY_INT | NUMBER(1,0)     | BOOLEAN       | data type mismatch |
+";
+        assert_eq!(render(&table), expected);
+    }
+
+    /// A column whose data is entirely numeric still right-justifies its
+    /// header, matching agate's convention of aligning headers to the
+    /// column's type.
+    #[test]
+    fn header_of_numeric_column_right_justifies() {
+        let table = text_table(&["id", "name"], &[vec!["100", "a"], vec!["2", "bb"]]);
+
+        let expected = "\
+|  id | name |\n\
+| --- | ---- |\n\
+| 100 | a    |\n\
+|   2 | bb   |\n\
+";
+        assert_eq!(render(&table), expected);
+    }
+
+    /// A column with no rows has no data to infer a type from, so its
+    /// header defaults to left-justified text.
+    #[test]
+    fn header_of_empty_table_defaults_to_left_justified() {
+        let table = text_table(&["id", "name"], &[]);
+
+        let expected = "| id | name |\n| -- | ---- |\n";
+        assert_eq!(render(&table), expected);
+    }
+
+    /// A column mixing numeric-looking and non-numeric values is not
+    /// classified as numeric, so its header stays left-justified even though
+    /// individual numeric-looking cells still right-justify themselves
+    /// (unchanged, pre-existing per-cell behavior for data rows).
+    #[test]
+    fn header_of_mixed_column_stays_left_justified() {
+        let table = text_table(&["value"], &[vec!["1"], vec!["not_a_number"]]);
+
+        let expected = "\
+| value        |
+| ------------ |
+|            1 |
+| not_a_number |
+";
+        assert_eq!(render(&table), expected);
     }
 }

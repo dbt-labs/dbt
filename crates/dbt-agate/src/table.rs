@@ -2603,10 +2603,13 @@ mod tests {
         let printed = nullable_and_wide_table()
             .print_table_to_string(2, 2, 5)
             .unwrap();
+        // Both `n` and `word` are text columns, so their headers are now
+        // left-justified like their data (see #13635) rather than
+        // unconditionally right-justified.
         assert_eq!(
             printed,
             "\
-|     n |  word |
+| n     | word  |
 | ----- | ----- |
 |       | vi... |
 | plain | green |
