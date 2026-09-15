@@ -248,6 +248,7 @@ impl MetadataAdapter for DuckDBMetadataAdapter {
         &self,
         db_schemas: &[CatalogAndSchema],
         token: CancellationToken,
+        report_progress: bool,
     ) -> AsyncAdapterResult<'_, BTreeMap<CatalogAndSchema, AdapterResult<RelationVec>>> {
         type Acc = BTreeMap<CatalogAndSchema, AdapterResult<RelationVec>>;
 
@@ -259,12 +260,18 @@ impl MetadataAdapter for DuckDBMetadataAdapter {
                           db_schema: &CatalogAndSchema|
               -> AdapterResult<Vec<Arc<dyn BaseRelation>>> {
             let ctx = QueryCtx::default().with_desc("list_relations_in_parallel");
-            list_relations(
-                adapter.engine().as_ref(),
-                &ctx,
-                conn,
-                db_schema,
-                token_clone.clone(),
+            with_relation_list_item_span(
+                report_progress.then_some(RELATION_CACHE_OP_ID),
+                &db_schema.to_string(),
+                || {
+                    list_relations(
+                        adapter.engine().as_ref(),
+                        &ctx,
+                        conn,
+                        db_schema,
+                        token_clone.clone(),
+                    )
+                },
             )
         };
 

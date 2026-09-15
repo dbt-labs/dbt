@@ -1428,6 +1428,7 @@ impl MetadataAdapter for BigqueryMetadataAdapter {
         &self,
         db_schemas: &[CatalogAndSchema],
         token: CancellationToken,
+        report_progress: bool,
     ) -> AsyncAdapterResult<'_, BTreeMap<CatalogAndSchema, AdapterResult<RelationVec>>> {
         type Acc = BTreeMap<CatalogAndSchema, AdapterResult<RelationVec>>;
         let factory = Box::new(AdapterConnectionFactory::new(self.adapter.engine().clone()));
@@ -1441,7 +1442,11 @@ impl MetadataAdapter for BigqueryMetadataAdapter {
             // Deviation from core: we cannot use `list_tables` as this is not supported from ADBC
             // Pagination is handled in the ADBC driver
             let query_ctx = QueryCtx::default().with_desc("list_relations_in_parallel");
-            adapter.list_relations(&query_ctx, conn, db_schema, token_clone.clone())
+            with_relation_list_item_span(
+                report_progress.then_some(RELATION_CACHE_OP_ID),
+                &db_schema.to_string(),
+                || adapter.list_relations(&query_ctx, conn, db_schema, token_clone.clone()),
+            )
         };
 
         let reduce_f = move |acc: &mut Acc,

@@ -23,6 +23,12 @@ use minijinja::State;
 
 pub const SCHEMA_CACHE_OP_ID: &str = "hydrate_schema_cache";
 
+/// Operation id shared by the `GenericOpExecuted` parent span (`cache.rs`) and every
+/// adapter's `GenericOpItemProcessed` child span (`with_relation_list_item_span` callers)
+/// for relation-cache hydration. Both sides must reference this constant rather than
+/// duplicating the string literal, or the TUI silently loses the parent/child correlation.
+pub(crate) const RELATION_CACHE_OP_ID: &str = "hydrate_relation_cache";
+
 /// Run one schema-cache fetch under a DEBUG-level progress item span.
 ///
 /// `operation_id` must match the parent `GenericOpExecuted` span's operation_id so the
@@ -38,6 +44,30 @@ fn with_schema_cache_item_span<T>(
         "downloaded".to_string(),
         target.to_string(),
     ));
+    let _guard = span.enter();
+    fetch().record_status(&span)
+}
+
+/// Run one relation-list fetch under a DEBUG-level progress item span.
+///
+/// `operation_id` must match the parent `GenericOpExecuted` span's operation_id so the
+/// TUI layer correlates this item with the right progress bar. `None` means the calling
+/// adapter doesn't report per-item progress (e.g. it's a stub with no real per-schema
+/// hydration); the fetch just runs without a span.
+fn with_relation_list_item_span<T>(
+    operation_id: Option<&str>,
+    target: &str,
+    fetch: impl FnOnce() -> AdapterResult<T>,
+) -> AdapterResult<T> {
+    // `Span::none()` is a real span; entering it and calling `record_status` on it are no-ops.
+    let span = operation_id.map_or_else(tracing::Span::none, |operation_id| {
+        create_debug_span(dbt_telemetry::GenericOpItemProcessed::new(
+            operation_id.to_string(),
+            "downloading".to_string(),
+            "downloaded".to_string(),
+            target.to_string(),
+        ))
+    });
     let _guard = span.enter();
     fetch().record_status(&span)
 }

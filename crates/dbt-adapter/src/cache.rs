@@ -4,7 +4,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use dashmap::DashMap;
 use dbt_common::tracing::span_info::SpanStatusRecorder as _;
-use dbt_common::{FsResult, create_debug_span};
+use dbt_common::{FsResult, create_info_span};
 use dbt_schemas::schemas::relations::base::BaseRelation;
 use dbt_telemetry::GenericOpExecuted;
 use parking_lot::RwLock;
@@ -12,7 +12,7 @@ use tracing::Instrument as _;
 
 use crate::Adapter;
 use crate::{
-    metadata::{CatalogAndSchema, RelationVec},
+    metadata::{CatalogAndSchema, RELATION_CACHE_OP_ID, RelationVec},
     relation::BaseRelationConfig,
 };
 
@@ -410,10 +410,14 @@ impl RelationCache {
 /// The [Adapter] must support [MetadataAdapter] as well
 ///
 /// Takes in an input of placeholder relations from which to hydrate schemas for
-/// if they are not already cached
+/// if they are not already cached.
+///
+/// `display_action` names this call's progress indicator; each caller uses a
+/// distinct label.
 pub async fn hydrate_relation_cache_if_not_already_cached(
     dummy_relations: &[Arc<dyn BaseRelation>],
     adapter: &Arc<Adapter>,
+    display_action: &str,
 ) -> FsResult<()> {
     if adapter.metadata_adapter().is_none() {
         return Ok(());
@@ -439,10 +443,18 @@ pub async fn hydrate_relation_cache_if_not_already_cached(
         return Ok(());
     }
 
-    let span = create_debug_span(GenericOpExecuted::new(
-        "hydrate_relation_cache".to_string(),
-        "downloading relations".to_string(),
-        Some(cache_misses.len() as u64),
+    // Adapters whose `supports_relation_progress()` is `false` (unimplemented stubs)
+    // never emit per-item spans; advertising a count for them would leave the bar
+    // stuck at 0/N.
+    let item_count_total = adapter
+        .metadata_adapter()
+        .is_some_and(|m| m.supports_relation_progress())
+        .then_some(cache_misses.len() as u64);
+
+    let span = create_info_span(GenericOpExecuted::new(
+        RELATION_CACHE_OP_ID.to_string(),
+        display_action.to_string(),
+        item_count_total,
     ));
 
     adapter

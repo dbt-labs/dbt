@@ -2013,7 +2013,7 @@ async fn target_relation_is_view(
     let catalog_schema = CatalogAndSchema::from(target_relation);
     let db_schemas = [catalog_schema.clone()];
     let Ok(listed) = metadata_adapter
-        .list_relations_in_parallel(&db_schemas, adapter.cancellation_token())
+        .list_relations_in_parallel(&db_schemas, adapter.cancellation_token(), false)
         .await
     else {
         return false;

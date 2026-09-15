@@ -370,8 +370,9 @@ impl Adapter {
         let Some(metadata_adapter) = self.metadata_adapter() else {
             return Ok(());
         };
+        // report_progress: true — relation-cache hydration drives a progress bar.
         let collected_relations = metadata_adapter
-            .list_relations_in_parallel(db_schemas, self.cancellation_token())
+            .list_relations_in_parallel(db_schemas, self.cancellation_token(), true)
             .await
             .map_err(into_fs_error)
             .map(|r| {
