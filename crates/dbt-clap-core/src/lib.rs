@@ -1864,7 +1864,7 @@ pub struct CommonArgs {
     #[arg(
         global = true,
         long,
-        env = "DBT_AI_PROVIDER",
+        env = "DBT_ENGINE_AI_PROVIDER",
         num_args(1..),
         value_delimiter = ',',
         help_heading = help_headings::PROJECT,
