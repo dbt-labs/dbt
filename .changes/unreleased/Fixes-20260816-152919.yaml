@@ -1,0 +1,7 @@
+kind: Fixes
+body: Stop panicking on Jinja AgateTable equality comparisons
+time: 2026-08-16T15:29:19.021143+04:00
+custom:
+    author: daviddallakyan2005
+    issue: "15920"
+    project: dbt-core
