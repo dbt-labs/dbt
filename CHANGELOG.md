@@ -12,6 +12,12 @@ All notable changes to this project will be documented in this file.
 
 Released September 15, 2026
 
+### Fixes
+
+- Restore the bundled docs UI in the Python wheel builds, so `dbt docs generate` produces a working docs site again for pip-installed dbt.
+
+### Contributors
+- [@mishamsk](https://github.com/mishamsk)
 
 ## 2.0.1
 
