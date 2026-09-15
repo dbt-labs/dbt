@@ -438,10 +438,8 @@ pub async fn resolve_snapshots(
                 dependency_package_name,
             );
             validate_compute(snapshot_config.compute, error_path)?;
-            // See `resolve_models`: the flag overrides the config, no precondition
-            // is checked at parse, and the gate refuses an opted-out config. A
-            // snapshot selects explicitly -- it has no attached node to inherit
-            // from.
+            // See `resolve_models`: the flag overrides the config. A snapshot
+            // selects explicitly -- it has no attached node to inherit from.
             validate_node_adapter(snapshot_config.adapter, error_path)?;
             let resolved_node_adapter = arg.adapter_override.or(snapshot_config.adapter);
 

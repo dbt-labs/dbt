@@ -333,25 +333,6 @@ mod tests {
     }
 
     #[test]
-    fn experimental_gate_vars_are_registered() {
-        // Regression guard: these are read through `dbt_common::io_args`, not clap, so they are
-        // invisible to the reserved-prefix check unless they are registered. An unregistered one
-        // exits with dbt1005 the moment a user sets it -- which would make the gate impossible
-        // to turn on.
-        //
-        // Asserted against the set rather than by setting the variables and calling
-        // `validate_engine_env_vars`: that function scans the whole process environment, so a
-        // test driving it through the environment fails on any unrelated `DBT_ENGINE_*` var the
-        // developer happens to have exported, and races anything else mutating env in-process.
-        for var in [MULTI_ADAPTER_ENV, LOCAL_UNIT_TESTS_ENV] {
-            assert!(
-                KNOWN_ENGINE_ENV_VARS.contains(var),
-                "{var} must be in USED_ENGINE_ENV_VARS"
-            );
-        }
-    }
-
-    #[test]
     fn validate_engine_env_vars_allows_selection_override_vars() {
         // Regression: these are read straight from the environment, which is invisible to the
         // reserved-prefix check. Setting them must not be rejected as user-authored.

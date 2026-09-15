@@ -160,8 +160,7 @@ pub async fn resolve_analyses(
         let unique_id = get_unique_id(analysis_name, package_name, None, "analysis");
         // An analysis is compiled rather than materialized, but it still renders
         // refs and dispatches macros, so which adapter it renders *as* is a real
-        // choice. Resolved -- and gated -- the same way every other node type
-        // resolves it.
+        // choice. Resolved the same way every other node type resolves it.
         validate_node_adapter(analysis_config.adapter, &dbt_asset.path)?;
         let selected_adapter = arg
             .adapter_override

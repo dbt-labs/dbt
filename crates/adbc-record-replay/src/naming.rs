@@ -69,6 +69,17 @@ fn cleanup_debug_probe_table(input: &str) -> String {
         .to_string()
 }
 
+/// Masks the volatile suffix in `dbt debug`'s Snowflake propagation probe
+/// table name (`__dbt_debug_propagation_<nanos>`, `debug_propagation.rs`).
+/// Same reasoning as `cleanup_debug_probe_table` above: a fresh wall-clock
+/// nanosecond timestamp on every invocation means no two runs ever emit the
+/// literal same name, so it must be normalized away before hashing.
+fn cleanup_debug_propagation_probe_table(input: &str) -> String {
+    let re = Regex::new(r"__dbt_debug_propagation_\d+").unwrap();
+    re.replace_all(input, "__dbt_debug_propagation_MASKED_ID")
+        .to_string()
+}
+
 fn checksum8(input: &str) -> String {
     let input = cleanup_schema_name(input);
     let input = cleanup_ephemeral_timestamps(&input);
@@ -76,6 +87,7 @@ fn checksum8(input: &str) -> String {
     let input = cleanup_show_user_pat_identifier(&input);
     let input = cleanup_exchange_probe_tables(&input);
     let input = cleanup_debug_probe_table(&input);
+    let input = cleanup_debug_propagation_probe_table(&input);
     let mut hasher = DefaultHasher::new();
     input.hash(&mut hasher);
     let hash = hasher.finish();

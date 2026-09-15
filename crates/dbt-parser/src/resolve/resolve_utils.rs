@@ -269,10 +269,8 @@ pub(crate) fn validate_compute(compute: Option<ComputeArg>, path: &Path) -> FsRe
 
 /// Unit tests can run on either on the `remote` warehouse or `sidecar`.
 ///
-/// `sidecar` is gated: promoting an individual unit test to local execution is unreleased, so
-/// it is refused unless [`LOCAL_UNIT_TESTS_ENV`] opts in. The run-wide `--compute` flag is a
-/// separate, older knob and is deliberately still open -- a unit test run under
-/// `--compute sidecar` goes local without this config, and without this gate.
+/// `sidecar` is gated behind [`LOCAL_UNIT_TESTS_ENV`]. The run-wide `--compute` flag is a
+/// separate, older knob and is not covered by that gate.
 pub(crate) fn validate_unit_test_compute(compute: Option<ComputeArg>, path: &Path) -> FsResult<()> {
     match compute {
         None | Some(ComputeArg::Remote) => Ok(()),
@@ -293,19 +291,12 @@ pub(crate) fn validate_unit_test_compute(compute: Option<ComputeArg>, path: &Pat
     }
 }
 
-/// Validates a node's authored `+adapter`, from any resource type that can carry one.
-///
-/// Selecting the adapter a node runs on is unreleased, so *any* value is refused unless
-/// [`MULTI_ADAPTER_ENV`] opts in -- not just `lakecompute`.
+/// Gates a node's authored `+adapter` behind [`MULTI_ADAPTER_ENV`]. Any value is refused, not
+/// just `lakecompute`; selecting a node's adapter at all is what is unreleased.
 ///
 /// Pass the **authored** config field, never the resolved adapter. Data tests inherit from
 /// their attached node and unit tests from their subject, so the resolved value is `Some` for
 /// essentially every node in every project; checking it would reject them all.
-///
-/// Unlike the lake compute *preconditions*, which commit `2f2ac9052c` deliberately moved out
-/// of parse because parse resolves nodes an invocation never runs, this is a gate rather than
-/// a precondition: an opted-out config should be refused wherever it is written, whether or
-/// not the node is selected.
 pub(crate) fn validate_node_adapter(adapter: Option<AdapterType>, path: &Path) -> FsResult<()> {
     match adapter {
         None => Ok(()),
@@ -327,9 +318,8 @@ mod tests {
     use crate::utils::RawProjectConfig;
     use std::sync::Mutex;
 
-    /// The gate predicates read process-wide state, so the two gate tests below cannot run
-    /// concurrently under `cargo test`. Nextest gives each test its own process, but the
-    /// lock keeps a plain `cargo test` honest too.
+    /// The gate predicates read process-wide state, so the gate tests below cannot run
+    /// concurrently under a plain `cargo test` (nextest gives each test its own process).
     static ENV_MUTEX: Mutex<()> = Mutex::new(());
 
     /// Run `f` with `var` set, restoring the previous value afterwards.
@@ -369,10 +359,6 @@ mod tests {
 
     #[test]
     fn a_node_without_an_authored_adapter_is_always_accepted() {
-        // The gate reads the *authored* config, never the resolved adapter. Data tests
-        // inherit from their attached node and unit tests from their subject, so a resolved
-        // value is `Some` for essentially every node in every project -- checking that
-        // instead would reject them all. `None` here is what those nodes actually carry.
         assert!(validate_node_adapter(None, Path::new("models/m.sql")).is_ok());
     }
 
@@ -396,8 +382,7 @@ mod tests {
 
     #[test]
     fn the_gate_does_not_widen_the_accepted_compute_values() {
-        // `inline` and `service` are rejected for a unit test whether or not the gate is
-        // set -- the gate governs `sidecar`, it does not turn the config into a free-for-all.
+        // The gate governs `sidecar` only; `inline` and `service` stay rejected.
         let path = Path::new("models/unit_tests.yml");
         with_env_var(LOCAL_UNIT_TESTS_ENV, "true", || {
             assert!(validate_unit_test_compute(Some(ComputeArg::Inline), path).is_err());

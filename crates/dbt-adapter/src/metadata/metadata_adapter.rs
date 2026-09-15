@@ -838,6 +838,7 @@ mod tests {
 
     #[dbt_runtime::test]
     async fn schema_freshness_replay_missing_is_propagated_for_legacy_fallback() {
+        let _guard = TIME_MACHINE_TEST_LOCK.lock().await;
         let adapter = MockMetadataAdapter {
             replay_missing: true,
             ..MockMetadataAdapter::new()

@@ -590,11 +590,9 @@ pub async fn resolve_models(
         validate_merge_update_columns_xor(&model_config, &dbt_asset.path)?;
         validate_compute(model_config.compute, &dbt_asset.path)?;
         // `--adapter` overrides the authored `+adapter`, as a flag should. No
-        // *precondition* is checked here: parse resolves every node in the project
+        // precondition is checked here: parse resolves every node in the project
         // while only selected nodes run, so one checked here would reject nodes the
-        // invocation never touches. See `resolve_compute_write_target`. The gate
-        // below is a different thing -- it refuses a config the run has not opted in
-        // to at all, which is true wherever that config is written.
+        // invocation never touches. See `resolve_compute_write_target`.
         validate_node_adapter(model_config.adapter, &dbt_asset.path)?;
         let resolved_node_adapter = arg.adapter_override.or(model_config.adapter);
         validate_interactive_table_config(

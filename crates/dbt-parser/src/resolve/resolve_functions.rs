@@ -293,9 +293,8 @@ pub async fn resolve_functions(
             get_original_file_path(&dbt_asset.base_path, &arg.io.in_dir, &dbt_asset.path);
 
         let unique_id = get_unique_id(function_name, package_name, None, "function");
-        // See `resolve_models`: the flag overrides the config, no precondition is
-        // checked at parse, and the gate refuses an opted-out config. A function
-        // selects explicitly; it has no attached node to inherit from.
+        // See `resolve_models`: the flag overrides the config. A function selects
+        // explicitly; it has no attached node to inherit from.
         validate_node_adapter(model_config.adapter, &dbt_asset.path)?;
         let resolved_node_adapter = arg.adapter_override.or(model_config.adapter);
         // See `resolve_models`: both remaining quoting layers depend on which

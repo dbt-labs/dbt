@@ -320,8 +320,7 @@ pub async fn resolve_seeds(
 
         validate_delimiter(&properties_config.delimiter)?;
 
-        // See `resolve_models`: the flag overrides the config, no precondition is
-        // checked at parse, and the gate refuses an opted-out config.
+        // See `resolve_models`: the flag overrides the config.
         validate_node_adapter(properties_config.adapter, &path)?;
         let resolved_node_adapter = arg.adapter_override.or(properties_config.adapter);
 

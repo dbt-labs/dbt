@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::sync::Mutex;
 use std::time::{Duration, SystemTime};
 
-use dbt_platform_auth::{AuthChainBuilder, Credential, ResolverKind};
+use dbt_platform_auth::{AuthChainBuilder, AuthError, Credential, ResolverKind};
 
 use crate::error::{PlatformError, Result};
 
@@ -25,14 +25,11 @@ pub(crate) struct ResolverConfig {
 
 /// How a [`PlatformAuth`] obtains and renews credentials.
 enum Mode {
-    /// Re-resolvable via the credential chain. `primary` is the account the
-    /// client first connected to; its credential may come from any source
-    /// (env var, `dbt_cloud.yml`, or an OAuth session). Other accounts are only
-    /// reachable through account-scoped OAuth sessions.
-    Chain {
-        primary: u64,
-        config: ResolverConfig,
-    },
+    /// Re-resolvable via the credential chain. Every (re-)resolution re-runs the
+    /// chain scoped to the requested account and, if a single-account ambient
+    /// source shadows it, retries with those sources denied — so a connection
+    /// survives token refresh exactly the way it was first established.
+    Chain { config: ResolverConfig },
     /// A caller-supplied credential with no resolver behind it — cannot refresh.
     Static,
 }
@@ -53,14 +50,10 @@ impl PlatformAuth {
     /// Build a refreshing authenticator seeded with the credential just resolved
     /// for the primary account.
     pub(crate) fn chain(primary: Credential, config: ResolverConfig) -> Self {
-        let primary_account = primary.account_id();
         let mut cache = HashMap::new();
-        cache.insert(primary_account, primary);
+        cache.insert(primary.account_id(), primary);
         Self {
-            mode: Mode::Chain {
-                primary: primary_account,
-                config,
-            },
+            mode: Mode::Chain { config },
             cache: Mutex::new(cache),
         }
     }
@@ -73,29 +66,10 @@ impl PlatformAuth {
         account: Option<u64>,
         config: &ResolverConfig,
     ) -> Result<Credential> {
-        let mut chain = AuthChainBuilder::default().source_application(SOURCE_APPLICATION);
-        if let Some(account) = account {
-            chain = chain.account_id(account.to_string());
+        match account {
+            Some(account) => resolve_scoped(account, config).await,
+            None => resolve_chain(None, config).await,
         }
-        if config.interactive {
-            chain = chain.interactive();
-        }
-        if let Some(allow) = &config.allow {
-            chain = chain.allow_only(allow);
-        }
-        if let Some(deny) = &config.deny {
-            chain = chain.deny(deny);
-        }
-        let credential = chain.build().resolve().await?;
-        if let Some(account) = account {
-            if credential.account_id() != account {
-                return Err(PlatformError::AccountUnavailable {
-                    requested: account,
-                    resolved: Some(credential.account_id()),
-                });
-            }
-        }
-        Ok(credential)
     }
 
     /// Build a non-refreshing authenticator around a caller-supplied credential.
@@ -128,53 +102,78 @@ impl PlatformAuth {
         cache.get(&account).filter(|c| is_valid(c)).cloned()
     }
 
-    /// Resolve a fresh credential for `account` through the credential chain.
+    /// Resolve a fresh credential for `account` through the credential chain,
+    /// applying the same shadowing retry as the initial connect so a refresh
+    /// cannot fall back to an ambient source for the wrong account.
     async fn resolve(&self, account: u64) -> Result<Credential> {
-        let config = match &self.mode {
-            Mode::Chain { config, primary } => {
-                // The primary account may be served by any resolver. A different
-                // account can only come from an account-scoped OAuth session, so
-                // exclude the ambient single-account sources to avoid returning
-                // the wrong account.
-                let mut config = config.clone();
-                if account != *primary {
-                    config = config.deny_ambient_sources();
-                }
-                config
-            }
-            Mode::Static => {
-                // No chain to re-run: the only credential we have is whatever was
-                // supplied up front, already cached. If it is gone or expired we
-                // cannot recover it.
-                return Err(PlatformError::AccountUnavailable {
-                    requested: account,
-                    resolved: None,
-                });
-            }
-        };
-
-        let mut chain = AuthChainBuilder::default()
-            .source_application(SOURCE_APPLICATION)
-            .account_id(account.to_string());
-        if config.interactive {
-            chain = chain.interactive();
-        }
-        if let Some(allow) = &config.allow {
-            chain = chain.allow_only(allow);
-        }
-        if let Some(deny) = &config.deny {
-            chain = chain.deny(deny);
-        }
-
-        let credential = chain.build().resolve().await?;
-        if credential.account_id() != account {
-            return Err(PlatformError::AccountUnavailable {
+        match &self.mode {
+            Mode::Chain { config } => resolve_scoped(account, config).await,
+            // No chain to re-run: the only credential we have is whatever was
+            // supplied up front, already cached. If it is gone or expired we
+            // cannot recover it.
+            Mode::Static => Err(PlatformError::AccountUnavailable {
                 requested: account,
-                resolved: Some(credential.account_id()),
-            });
+                resolved: None,
+            }),
         }
-        Ok(credential)
     }
+}
+
+/// Resolve a credential for `account` through the chain under `config`. If a
+/// single-account ambient source (env var, `dbt_cloud.yml`) shadows the request
+/// by resolving a *different* account, retry with those sources denied so the
+/// account-scoped OAuth session can win. Shared by the initial connect and every
+/// refresh so a connection re-resolves exactly the way it was established, rather
+/// than silently falling back to another account's ambient credential.
+async fn resolve_scoped(account: u64, config: &ResolverConfig) -> Result<Credential> {
+    let credential = resolve_chain(Some(account), config).await?;
+    if credential.account_id() == account {
+        return Ok(credential);
+    }
+    // The resolved credential is for a different account: a single-account
+    // ambient source that does not honor the requested account shadowed an
+    // account-scoped OAuth session later in the chain — e.g. `DBT_CLOUD_*` for
+    // another account winning over the session the user selected. Retry with the
+    // ambient sources excluded so the session for the requested account wins.
+    let shadowed = credential.account_id();
+    let scoped = config.clone().deny_ambient_sources();
+    match resolve_chain(Some(account), &scoped).await {
+        Ok(credential) if credential.account_id() == account => Ok(credential),
+        Ok(credential) => Err(PlatformError::AccountUnavailable {
+            requested: account,
+            resolved: Some(credential.account_id()),
+        }),
+        // Only the shadowing ambient credential existed; there is no session for
+        // the requested account. Report it as unavailable (naming the account we
+        // did find) rather than a bare "not authenticated".
+        Err(PlatformError::Auth(AuthError::NotAuthenticated)) => {
+            Err(PlatformError::AccountUnavailable {
+                requested: account,
+                resolved: Some(shadowed),
+            })
+        }
+        Err(e) => Err(e),
+    }
+}
+
+/// Build the credential chain scoped to `account` (unscoped when `None`) under
+/// `config` and run it to the first successful credential. Shared by the initial
+/// connect and every refresh so they configure the chain identically.
+async fn resolve_chain(account: Option<u64>, config: &ResolverConfig) -> Result<Credential> {
+    let mut chain = AuthChainBuilder::default().source_application(SOURCE_APPLICATION);
+    if let Some(account) = account {
+        chain = chain.account_id(account.to_string());
+    }
+    if config.interactive {
+        chain = chain.interactive();
+    }
+    if let Some(allow) = &config.allow {
+        chain = chain.allow_only(allow);
+    }
+    if let Some(deny) = &config.deny {
+        chain = chain.deny(deny);
+    }
+    Ok(chain.build().resolve().await?)
 }
 
 impl ResolverConfig {
@@ -294,5 +293,138 @@ mod tests {
                 resolved: None
             }
         ));
+    }
+
+    // ── Initial resolution against a real credential chain ──────────────────
+    //
+    // These exercise `resolve_initial`'s shadowing retry through the actual
+    // `AuthChainBuilder`, driving it entirely with the `DBT_CLOUD_*` /
+    // `DBT_OAUTH_CLIENT_ID` env vars the chain reads. They also redirect `$HOME`
+    // so neither the OAuth session cache nor `dbt_cloud.yml` under a developer's
+    // real home can leak a credential into the chain. All of that is
+    // process-global, so they serialize on a shared lock and restore the
+    // environment (and delete the temp home) on drop.
+    //
+    // The retry's happy path — an account-scoped OAuth session winning once the
+    // shadowing ambient source is denied — is not re-tested here: it depends on
+    // the passive OAuth resolver reading a session cache keyed off
+    // `dirs::home_dir()` (which ignores `$HOME` on Windows), and that resolver's
+    // account-scoped selection is already covered in `dbt-platform-auth`.
+
+    use std::sync::Mutex;
+
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    /// A scoped, process-global environment: a fresh `$HOME` plus whichever
+    /// `DBT_*` vars a test sets, all reverted when the guard drops.
+    struct EnvSandbox {
+        _lock: std::sync::MutexGuard<'static, ()>,
+        home: std::path::PathBuf,
+        saved: Vec<(&'static str, Option<std::ffi::OsString>)>,
+    }
+
+    impl EnvSandbox {
+        const VARS: [&'static str; 5] = [
+            "HOME",
+            "DBT_OAUTH_CLIENT_ID",
+            "DBT_CLOUD_ACCOUNT_HOST",
+            "DBT_CLOUD_TOKEN",
+            "DBT_CLOUD_ACCOUNT_ID",
+        ];
+
+        // `set_var` is disallowed workspace-wide to catch stray `GOLDIE_UPDATE`
+        // usages; scoped, lock-guarded test env manipulation is the sanctioned
+        // exemption (see clippy.toml).
+        #[allow(clippy::disallowed_methods)]
+        fn new() -> Self {
+            let lock = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+            let unique = SystemTime::now()
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos();
+            let home = std::env::temp_dir().join(format!(
+                "dbt-platform-resolve-{}-{unique}",
+                std::process::id()
+            ));
+            std::fs::create_dir_all(home.join(".dbt")).unwrap();
+            let saved = Self::VARS
+                .iter()
+                .map(|k| (*k, std::env::var_os(k)))
+                .collect();
+            // SAFETY: `ENV_LOCK` serializes every sandbox and nothing else in the
+            // test touches these vars while one is held.
+            unsafe { std::env::set_var("HOME", &home) };
+            Self {
+                _lock: lock,
+                home,
+                saved,
+            }
+        }
+
+        #[allow(clippy::disallowed_methods)]
+        fn set(&self, key: &str, value: &str) {
+            // SAFETY: see `new` — the sandbox holds `ENV_LOCK` for its lifetime.
+            unsafe { std::env::set_var(key, value) };
+        }
+
+        /// Seed an env-var credential for `account`, the ambient source that
+        /// sorts ahead of the account-scoped OAuth resolver in the chain.
+        fn set_env_credential(&self, account: u64) {
+            self.set("DBT_CLOUD_ACCOUNT_HOST", "acme.us1.dbt.com");
+            self.set("DBT_CLOUD_TOKEN", "dbtc_ambient");
+            self.set("DBT_CLOUD_ACCOUNT_ID", &account.to_string());
+        }
+    }
+
+    impl Drop for EnvSandbox {
+        #[allow(clippy::disallowed_methods)]
+        fn drop(&mut self) {
+            for (key, value) in &self.saved {
+                // SAFETY: still under `ENV_LOCK`, restoring the pre-test values.
+                unsafe {
+                    match value {
+                        Some(value) => std::env::set_var(key, value),
+                        None => std::env::remove_var(key),
+                    }
+                }
+            }
+            let _ = std::fs::remove_dir_all(&self.home);
+        }
+    }
+
+    /// When the shadowing env-var credential is the only thing present, the
+    /// requested account is genuinely unreachable — report it as unavailable
+    /// (naming the account we did find) rather than authenticating as the wrong
+    /// one or surfacing a bare "not authenticated".
+    #[dbt_runtime::test]
+    async fn resolve_initial_reports_unavailable_when_only_a_mismatched_env_var_exists() {
+        let sandbox = EnvSandbox::new();
+        sandbox.set("DBT_OAUTH_CLIENT_ID", "test-client");
+        sandbox.set_env_credential(5);
+
+        let err = PlatformAuth::resolve_initial(Some(999), &ResolverConfig::default())
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            PlatformError::AccountUnavailable {
+                requested: 999,
+                resolved: Some(5)
+            }
+        ));
+    }
+
+    /// An env-var credential for the *requested* account is still honored — the
+    /// fix only excludes ambient sources on the mismatch retry, not up front.
+    #[dbt_runtime::test]
+    async fn resolve_initial_still_accepts_an_env_var_for_the_requested_account() {
+        let sandbox = EnvSandbox::new();
+        sandbox.set("DBT_OAUTH_CLIENT_ID", "test-client");
+        sandbox.set_env_credential(5);
+
+        let credential = PlatformAuth::resolve_initial(Some(5), &ResolverConfig::default())
+            .await
+            .expect("an env var for the requested account is still valid");
+        assert_eq!(credential.account_id(), 5);
     }
 }

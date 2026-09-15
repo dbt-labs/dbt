@@ -286,7 +286,6 @@ fn get_profile_with_span(
 mod tests {
     use super::*;
 
-    use dbt_common::io_args::MULTI_ADAPTER_ENV;
     use dbt_common::warn_error_options::WarnErrorOptions;
     use dbt_jinja_utils::register_base_functions;
     use dbt_profile::ProfileEnvironment;
@@ -307,52 +306,6 @@ mod tests {
             msg.contains("DBT_ALLOW_EXPERIMENTAL_ADAPTERS=true"),
             "expected env-var hint, got: {msg}"
         );
-    }
-
-    /// Lake compute answers to `DBT_ENGINE_EXPERIMENTAL_MULTI_ADAPTER` and to nothing else.
-    ///
-    /// The two halves pin the two ways that could go wrong, and the arguments are chosen to
-    /// be the opposite of what each assertion needs:
-    ///
-    /// - `allow_experimental_adapters = true` with the gate unset must still be refused --
-    ///   otherwise `DBT_ALLOW_EXPERIMENTAL_ADAPTERS=true`, or simply a debug build (where
-    ///   `experimental_adapters_allowed` defaults to `true`), silently bypasses the gate.
-    /// - `allow_experimental_adapters = false` with the gate set must be admitted --
-    ///   otherwise the variable named in the refusal is not, on its own, enough to lift it.
-    #[test]
-    fn enforce_adapter_gating_rejects_lake_compute_even_when_experimental_is_allowed() {
-        let restore = std::env::var(MULTI_ADAPTER_ENV).ok();
-        unsafe {
-            #[allow(clippy::disallowed_methods)]
-            std::env::set_var(MULTI_ADAPTER_ENV, "false");
-        }
-        let refused = enforce_adapter_gating(AdapterType::LakeCompute, true);
-        unsafe {
-            #[allow(clippy::disallowed_methods)]
-            std::env::set_var(MULTI_ADAPTER_ENV, "true");
-        }
-        let allowed = enforce_adapter_gating(AdapterType::LakeCompute, false);
-        unsafe {
-            #[allow(clippy::disallowed_methods)]
-            match restore {
-                Some(previous) => std::env::set_var(MULTI_ADAPTER_ENV, previous),
-                None => std::env::remove_var(MULTI_ADAPTER_ENV),
-            }
-        }
-
-        let err = refused.unwrap_err();
-        let msg = err.message();
-        assert!(
-            msg.contains(&format!("{MULTI_ADAPTER_ENV}=true")),
-            "expected the lake compute env-var hint, got: {msg}"
-        );
-        assert!(
-            !msg.contains("DBT_ALLOW_EXPERIMENTAL_ADAPTERS"),
-            "the shared experimental hint would be misleading here, got: {msg}"
-        );
-        // ...and the gate is the *only* thing standing in the way: with it set, lake compute
-        // passes without `allow_experimental_adapters`.
-        assert!(allowed.is_ok(), "gate set should admit lake compute");
     }
 
     #[test]

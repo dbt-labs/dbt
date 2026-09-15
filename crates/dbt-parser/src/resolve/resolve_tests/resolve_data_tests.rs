@@ -626,11 +626,8 @@ pub async fn resolve_data_tests(
                 .or_else(|| seeds.get(id).map(|s| s.node_adapter()))
                 .or_else(|| snapshots.get(id).map(|s| s.node_adapter()))
         });
-        // See `resolve_models`: the flag overrides the config, no precondition is
-        // checked at parse, and the gate refuses an opted-out config. `None` from
-        // both leaves inheritance to fill the gap -- which is why the gate reads
-        // the authored `test_config.adapter` and not the resolved value: an
-        // inherited adapter is not a config this test wrote.
+        // See `resolve_models`: the flag overrides the config. `None` from both
+        // leaves inheritance to fill the gap.
         validate_node_adapter(test_config.adapter, &dbt_asset.path)?;
         let resolved_node_adapter = arg
             .adapter_override

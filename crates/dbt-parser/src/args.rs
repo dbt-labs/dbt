@@ -85,10 +85,8 @@ impl ResolveArgs {
                 .adapter_override
                 .as_deref()
                 .map(|written| {
-                    // The same gate as the authored `+adapter`, which this flag
-                    // overrides -- see `validate_node_adapter`. Checked here rather
-                    // than at each consumer because this is the single point every
-                    // `--adapter` value passes through on its way into the run.
+                    // Same gate as the authored `+adapter` this flag overrides; see
+                    // `validate_node_adapter`.
                     if !multi_adapter_enabled() {
                         return Err(fs_err!(
                             ErrorCode::InvalidArgument,

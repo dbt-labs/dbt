@@ -30,6 +30,7 @@ pub(crate) struct TestDynamicTableConfig {
     pub table_tag: Option<&'static str>,
     pub target_lag: Option<&'static str>,
     pub transient: Option<bool>,
+    pub copy_grants: Option<bool>,
 }
 
 /// Raw `SHOW ...` readback values, spelled exactly as Snowflake reports them.
@@ -158,6 +159,7 @@ pub(crate) fn make_local_config(cfg: TestDynamicTableConfig) -> DbtModel {
         table_tag: cfg.table_tag.map(|s| s.to_owned()),
         target_lag: cfg.target_lag.map(|s| s.to_owned()),
         transient: cfg.transient,
+        copy_grants: cfg.copy_grants,
         ..Default::default()
     };
 

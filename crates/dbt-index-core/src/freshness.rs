@@ -55,6 +55,11 @@ pub struct ArtifactMeta {
     pub context_dir: Option<String>,
     #[serde(default)]
     pub context_fingerprints: HashMap<String, FileFingerprint>,
+    /// Stable identity of the source that produced the configured index.
+    /// Older metadata omits this field and continues to use the inferred
+    /// source location.
+    #[serde(default)]
+    pub source_identity: Option<String>,
 }
 
 pub fn fingerprint_file(path: &Path) -> Option<FileFingerprint> {
@@ -127,6 +132,18 @@ pub fn save_artifact_meta(
     write_source: WriteSource,
     context_dir: Option<&Path>,
 ) -> Result<(), ArtifactMetaError> {
+    save_artifact_meta_with_source(index_dir, target_dir, write_source, context_dir, None)
+}
+
+/// Save artifact fingerprints and, when provided, the stable source identity
+/// used to produce the configured index.
+pub fn save_artifact_meta_with_source(
+    index_dir: &Path,
+    target_dir: &Path,
+    write_source: WriteSource,
+    context_dir: Option<&Path>,
+    source_identity: Option<&Path>,
+) -> Result<(), ArtifactMetaError> {
     let fingerprints = compute_fingerprints(target_dir);
     let (ctx_dir_str, ctx_fps) = match context_dir.filter(|p| p.is_dir()) {
         Some(d) => (
@@ -141,6 +158,7 @@ pub fn save_artifact_meta(
         write_source,
         context_dir: ctx_dir_str,
         context_fingerprints: ctx_fps,
+        source_identity: source_identity.map(|path| path.to_string_lossy().into_owned()),
     };
     let json = serde_json::to_string_pretty(&meta)?;
     std::fs::write(index_dir.join(META_FILE), json)?;

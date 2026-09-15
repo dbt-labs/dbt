@@ -106,36 +106,7 @@ pub fn enforce_adapter_gating(
     allow_experimental_adapters: bool,
 ) -> AdapterResult<()> {
     use dbt_adapter_core::NON_EXPERIMENTAL_ADAPTERS;
-    use dbt_common::io_args::{MULTI_ADAPTER_ENV, multi_adapter_enabled};
     use dbt_common::{AdapterError, AdapterErrorKind};
-
-    // Lake compute answers to its own variable and to nothing else -- decided here, before
-    // everything below, and returned either way.
-    //
-    // It is deliberately *not* folded into the general experimental-adapter gate.
-    // `DBT_ALLOW_EXPERIMENTAL_ADAPTERS` is a shared, documented escape hatch that
-    // `experimental_adapters_allowed` additionally defaults on for debug builds, so deferring
-    // to it would leave lake compute reachable by default in every development binary. Falling
-    // *through* to it would be no better: lake compute would then need two variables in a
-    // release build and one in a debug build, and setting the variable named in the refusal
-    // below would not be enough to lift it.
-    //
-    // Nothing here contradicts the note above about `NON_EXPERIMENTAL_ADAPTERS`: that governs
-    // which adapters are *supported*, while this is a separate gate on an unreleased one.
-    if adapter_type == AdapterType::LakeCompute {
-        return if multi_adapter_enabled() {
-            Ok(())
-        } else {
-            Err(AdapterError::new(
-                AdapterErrorKind::Configuration,
-                format!(
-                    "The '{adapter_type}' adapter is experimental and not yet supported by dbt. \
-To use it, set the environment variable {MULTI_ADAPTER_ENV}=true. \
-Note that experimental features may be unstable and are not yet recommended for production use."
-                ),
-            ))
-        };
-    }
 
     if NON_EXPERIMENTAL_ADAPTERS.contains(&adapter_type) {
         return Ok(());

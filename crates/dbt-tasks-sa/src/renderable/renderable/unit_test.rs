@@ -2051,7 +2051,7 @@ fn yml_value_to_sql_literal(
         {
             Ok(s)
         }
-        YmlValue::String(s, _) => Ok(literal_formatter.format_str(&s)),
+        YmlValue::String(s, _) => Ok(literal_formatter.format_unit_test_str(&s)),
         // Mappings/sequences have per-dialect customizations
         YmlValue::Mapping(m, _) => {
             yml_mapping_to_sql_literal(adapter_type, type_ops, &literal_formatter, m, data_type)
@@ -2693,6 +2693,20 @@ mod tests {
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].get("note"), Some(&YmlValue::null()));
         assert_eq!(rows[0].len(), 3);
+    }
+
+    #[test]
+    fn test_snowflake_unit_test_string_fixture_preserves_backslash_escapes() {
+        let value = r#"{"Data":[{"Value":"[{\\"id\\":\\"128091\\"}]"}]}"#;
+        let literal = yml_value_to_sql_literal(
+            AdapterType::Snowflake,
+            &DefaultTypeOps::new(AdapterType::Snowflake),
+            YmlValue::string(value.to_string()),
+            &DataType::Utf8,
+        )
+        .expect("Snowflake string fixture should render");
+
+        assert_eq!(literal, format!("'{value}'"));
     }
 
     #[test]

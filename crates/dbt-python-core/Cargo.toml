@@ -25,3 +25,6 @@ serde_json = { workspace = true }
 tokio = { workspace = true }
 # LevelFilter, for the process-wide tracing verbosity ceiling.
 tracing = { workspace = true }
+
+[features]
+embed-ui = ["dbt-main/embed-ui"]
