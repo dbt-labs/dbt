@@ -1,5 +1,5 @@
 kind: Fixes
-body: Add missing `datatype` field to the `Dimension` resource so it satisfies the `metricflow-semantic-interfaces` `Dimension` protocol
+body: Add missing `datatype` field to the `Dimension` resource so it satisfies the `metricflow-semantic-interfaces` `Dimension` protocol, and raise the `metricflow` dependency floor to 0.213.0 since `DataType` isn't available before that release
 time: 2026-09-15T13:52:51.000000+00:00
 custom:
     Author: itsnamangoyal
