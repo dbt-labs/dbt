@@ -368,6 +368,7 @@ aws-sdk-codeartifact = "1.60.0"
 aws-sdk-ecr = "1.60.0"
 aws-sdk-s3 = "1.78.0"
 aws-sdk-secretsmanager = "1.63.0"
+aws-smithy-types = ">=1.4, <1.7.0"
 
 # arrow + parquet
 arrow = { version = "=56.0.0", features = ["prettyprint"] }
