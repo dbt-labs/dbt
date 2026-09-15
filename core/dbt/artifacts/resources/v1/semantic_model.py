@@ -12,6 +12,7 @@ from metricflow_semantic_interfaces.references import (
 )
 from metricflow_semantic_interfaces.type_enums import (
     AggregationType,
+    DataType,
     DimensionType,
     EntityType,
     MetricType,
@@ -88,6 +89,7 @@ class Dimension(dbtClassMixin):
     expr: Optional[str] = None
     metadata: Optional[SourceFileMetadata] = None
     config: Optional[SemanticLayerElementConfig] = None
+    datatype: Optional[DataType] = None
 
     @property
     def reference(self) -> DimensionReference:
