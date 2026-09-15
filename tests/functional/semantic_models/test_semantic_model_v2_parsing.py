@@ -24,6 +24,7 @@ from tests.functional.semantic_models.fixtures import (
     schema_yml_v2_metric_with_filter_dimension_jinja,
     schema_yml_v2_metric_with_input_metrics_filter_dimension_jinja,
     schema_yml_v2_metric_with_numerator_filter_dimension_jinja,
+    schema_yml_v2_metrics_with_fill_nulls_with,
     schema_yml_v2_metrics_with_hidden,
     schema_yml_v2_simple_metric_on_model_1,
     schema_yml_v2_standalone_metrics,
@@ -501,6 +502,52 @@ class TestMetricHiddenMapsToIsPrivate:
 
         private_metric = metrics["metric.test.private_metric"]
         assert private_metric.type_params.is_private is True
+
+
+class TestMetricFillNullsWith:
+    """Test that a metric's 'fill_nulls_with' field in YAML reaches the semantic manifest."""
+
+    @pytest.fixture(scope="class")
+    def models(self):
+        return {
+            "schema.yml": base_schema_yml_v2 + schema_yml_v2_metrics_with_fill_nulls_with,
+            "fct_revenue.sql": fct_revenue_sql,
+            "metricflow_time_spine.sql": metricflow_time_spine_sql,
+        }
+
+    def test_metric_fill_nulls_with(self, project):
+        runner = dbtTestRunner()
+        result = runner.invoke(["parse"])
+        assert result.success
+        manifest = result.result
+        metrics = manifest.metrics
+        assert len(metrics) == 3
+
+        semantic_manifest = SemanticManifest(manifest)
+        semantic_manifest_metrics = {
+            metric.name: metric
+            for metric in semantic_manifest._get_pydantic_semantic_manifest().metrics
+        }
+
+        filling_nulls = metrics["metric.test.metric_filling_nulls"]
+        assert filling_nulls.type_params.fill_nulls_with == 0
+        assert filling_nulls.type_params.join_to_timespine is True
+        assert semantic_manifest_metrics["metric_filling_nulls"].type_params.fill_nulls_with == 0
+
+        # A negative fill value must survive too; 0 alone would pass on a falsy-check bug.
+        filling_nulls_negative = metrics["metric.test.metric_filling_nulls_negative"]
+        assert filling_nulls_negative.type_params.fill_nulls_with == -1
+        assert (
+            semantic_manifest_metrics["metric_filling_nulls_negative"].type_params.fill_nulls_with
+            == -1
+        )
+
+        not_filling_nulls = metrics["metric.test.metric_not_filling_nulls"]
+        assert not_filling_nulls.type_params.fill_nulls_with is None
+        assert (
+            semantic_manifest_metrics["metric_not_filling_nulls"].type_params.fill_nulls_with
+            is None
+        )
 
 
 class TestStandaloneMetricParsingSimpleMetricFails:
