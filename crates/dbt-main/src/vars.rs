@@ -121,6 +121,7 @@ const KNOWN_UNUSED_ENGINE_ENV_VARS: &[&str] = &[
 /// Engine-specific environment variables that ARE used by fusion.
 /// These are NOT aliases of DBT_* vars - they are unique to the engine.
 const USED_ENGINE_ENV_VARS: &[&str] = &[
+    "DBT_ENGINE_AI_PROVIDER",
     BATCH_TESTS_ENV,
     "DBT_ENGINE_BETA_PACKAGE_PARSING",
     "DBT_ENGINE_BETA_PARSING",
@@ -128,6 +129,8 @@ const USED_ENGINE_ENV_VARS: &[&str] = &[
     LOCAL_UNIT_TESTS_ENV,
     MULTI_ADAPTER_ENV,
     "DBT_ENGINE_EXPERIMENTAL_SNAPSHOT_COLUMNS",
+    "DBT_ENGINE_GENERATE_INFO_SCHEMA",
+    "DBT_ENGINE_INFO_SCHEMA_DIR",
     "DBT_ENGINE_MANAGE_STATE",
     "DBT_ENGINE_MANTLE_ARTIFACTS",
     "DBT_ENGINE_NO_WARN_SEMANTIC_MANIFEST_VALIDATION",
