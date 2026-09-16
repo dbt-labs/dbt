@@ -356,13 +356,9 @@ def _v2_subprocess_env() -> dict:
     return env
 
 
-# Typed-URL event_type strings (v1.public.events.fusion.log.rs / print_event.rs).
-# LogMessage/UserLogMessage/ProgressMessage are "public", StdoutMessage/
-# StderrMessage are "internal" -- both namespaces appear on the wire.
+# Typed-URL event_type strings (v1.public.events.fusion.log.rs).
 _EVENT_TYPE_LOG_MESSAGE = "v1.public.events.fusion.log.LogMessage"
 _EVENT_TYPE_USER_LOG_MESSAGE = "v1.public.events.fusion.log.UserLogMessage"
-_EVENT_TYPE_STDOUT_MESSAGE = "v1.internal.events.fusion.log.StdoutMessage"
-_EVENT_TYPE_STDERR_MESSAGE = "v1.internal.events.fusion.log.StderrMessage"
 _EVENT_TYPE_PROGRESS_MESSAGE = "v1.public.events.fusion.log.ProgressMessage"
 
 # The Invocation span, whose end carries the aggregate warning/error counts.
@@ -379,19 +375,10 @@ _SUMMARY_OPT_OUT_COMMANDS = frozenset({"man", "login"})
 # Every other LogRecord (e.g. ListItemOutput, ShowDataOutput, CompiledCode,
 # StateModifiedDiff -- show/list/compile concerns irrelevant to parse) is
 # dropped, as is every span except the Invocation span end; see _pump.
-#
-# StdoutMessage/StderrMessage are retained here for forward-compatibility,
-# but as of this writing they don't currently reach the wire on this path:
-# their output_flags() (print_event.rs) is OUTPUT_CONSOLE only, while
-# --log-format otel's JSONL layer gates on the separate EXPORT_JSONL bit
-# (export.rs). This is no regression -- they were equally absent from the
-# old json-compat relay.
 _RELAYED_BODY_EVENT_TYPES = frozenset(
     {
         _EVENT_TYPE_LOG_MESSAGE,
         _EVENT_TYPE_USER_LOG_MESSAGE,
-        _EVENT_TYPE_STDOUT_MESSAGE,
-        _EVENT_TYPE_STDERR_MESSAGE,
     }
 )
 
@@ -613,6 +600,10 @@ def _run_v2(argv: List[str]) -> None:
     On a nonzero exit, raises V2ParserError with just the exit code;
     the actual failure detail was already streamed live as Note events
     above, so it isn't duplicated into the exception message.
+    TODO: once the Python library to decode the v2 parser's native OTel log
+    stream lands, replace this hand-rolled record handling with a real parse
+    into properly leveled/structured dbt events, rather than re-rendering
+    text into a flat Note here.
     """
     try:
         proc = subprocess.Popen(

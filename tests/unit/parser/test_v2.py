@@ -443,8 +443,6 @@ class TestParseWithV2:
         for event_type in [
             "v1.public.events.fusion.log.LogMessage",
             "v1.public.events.fusion.log.UserLogMessage",
-            "v1.internal.events.fusion.log.StdoutMessage",
-            "v1.internal.events.fusion.log.StderrMessage",
         ]:
             notes = self._run_and_capture_notes(
                 tmp_path, stdout_lines=[_log_record(event_type, body="hello")]
