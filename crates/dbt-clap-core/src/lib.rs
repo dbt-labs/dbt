@@ -2140,7 +2140,7 @@ pub struct CommonArgs {
     pub otel_file_name: Option<String>,
 
     /// Set 'otel-parquet-file-name' for the current run, overriding 'DBT_OTEL_PARQUET_FILE_NAME'.
-    /// If set, OTEL telemetry will be written to `$target_path/private/metadata/otel-parquet-file-name` in Parquet format.
+    /// If set, OTEL telemetry will be written to `$target_path/metadata/otel-parquet-file-name` in Parquet format.
     #[arg(
         global = true,
         long = "otel-parquet-file-name",

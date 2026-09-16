@@ -8,7 +8,7 @@ use arrow::record_batch::RecordBatch;
 use async_trait::async_trait;
 use dbt_common::{
     ErrorCode, FsError, FsResult,
-    constants::{DBT_LOG_DIR_NAME, DBT_TARGET_DIR_NAME, default_metadata_dir},
+    constants::{DBT_LOG_DIR_NAME, DBT_TARGET_DIR_NAME, default_telemetry_dir},
     err, stdfs,
 };
 use dbt_test_primitives::is_update_golden_files_mode;
@@ -191,7 +191,7 @@ fn compare_telemetry(
 
     let task_suffix = task_suffix(task_index);
     let actual_jsonl_path = log_dir.join(OTEL_JSONL_FILE_NAME);
-    let actual_parquet_path = default_metadata_dir(&target_dir).join(OTEL_PARQUET_FILE_NAME);
+    let actual_parquet_path = default_telemetry_dir(&target_dir).join(OTEL_PARQUET_FILE_NAME);
     let golden_jsonl_path = test_env
         .golden_dir
         .join(format!("{}{}.otel.jsonl", task.name, task_suffix));
