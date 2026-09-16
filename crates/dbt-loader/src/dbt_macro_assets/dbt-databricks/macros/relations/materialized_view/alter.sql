@@ -67,6 +67,6 @@
     {%- if refresh -%}
         -- Currently only schedule can be altered
         ALTER MATERIALIZED VIEW {{ relation.render() }}
-            {{ get_alter_sql_refresh_schedule(refresh.cron, refresh.time_zone_value, refresh.is_altered) -}}
+            {{ get_alter_sql_refresh_schedule(refresh) -}}
     {%- endif -%}
 {% endmacro %}

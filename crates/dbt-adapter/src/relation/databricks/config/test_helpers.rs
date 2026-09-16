@@ -33,6 +33,9 @@ pub(crate) struct TestModelConfig {
     /// test exercises the contract ownership boundary.
     pub contract_enforced: Option<bool>,
     pub cron: Option<String>,
+    pub every: Option<String>,
+    pub on_update: bool,
+    pub at_most_every: Option<String>,
     pub partition_by: Vec<String>,
     pub persist_column_comments: bool,
     pub persist_relation_comments: bool,
@@ -108,9 +111,17 @@ pub(crate) fn create_mock_dbt_model(cfg: TestModelConfig) -> DbtModel {
         liquid_clustered_by: (!cfg.cluster_by.is_empty())
             .then_some(StringOrArrayOfStrings::ArrayOfStrings(cfg.cluster_by)),
         auto_liquid_cluster: Some(cfg.auto_cluster),
-        schedule: Some(Schedule::ScheduleConfig(ScheduleConfig {
+        schedule: (cfg.cron.is_some()
+            || cfg.time_zone.is_some()
+            || cfg.every.is_some()
+            || cfg.on_update
+            || cfg.at_most_every.is_some())
+        .then_some(Schedule::ScheduleConfig(ScheduleConfig {
             cron: cfg.cron,
             time_zone_value: cfg.time_zone,
+            every: cfg.every,
+            on_update: cfg.on_update.then_some(true),
+            at_most_every: cfg.at_most_every,
         })),
         databricks_tags: Some(
             cfg.tags
