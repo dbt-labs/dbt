@@ -25,7 +25,7 @@ pub struct LoadArgs {
     // The directory to load the dbt project from
     pub vars: BTreeMap<String, dbt_yaml::Value>,
     /// AI coding agent(s) to install package skills for, from the CLI or
-    /// `DBT_AI_PROVIDER`. `None` means fall back to the project's `flags:`.
+    /// `DBT_ENGINE_AI_PROVIDER`. `None` means fall back to the project's `flags:`.
     pub ai_provider: Option<Vec<String>>,
     /// Vars loaded from `vars.yml` at the root project (populated after the
     /// initial project load). Empty when no `vars.yml` is present.

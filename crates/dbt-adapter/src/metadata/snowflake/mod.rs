@@ -750,11 +750,14 @@ impl SnowflakeMetadataAdapter {
         map_reduce.run(Arc::new(tasks), token)
     }
 
+    /// `report_progress`: when `true`, each per-schema fetch is wrapped in a
+    /// progress span for the caller's progress bar.
     fn list_relations_in_parallel_inner_with_options(
         &self,
         db_schemas: &[CatalogAndSchema],
         options: &MetadataQueryOptions,
         token: CancellationToken,
+        report_progress: bool,
     ) -> AsyncAdapterResult<'static, BTreeMap<CatalogAndSchema, AdapterResult<RelationVec>>> {
         type Acc = BTreeMap<CatalogAndSchema, AdapterResult<RelationVec>>;
         let metadata_warehouse = options.warehouse.clone();
@@ -772,7 +775,11 @@ impl SnowflakeMetadataAdapter {
                           db_schema: &CatalogAndSchema|
               -> AdapterResult<Vec<Arc<dyn BaseRelation>>> {
             let query_ctx = QueryCtx::default().with_desc("list_relations_in_parallel");
-            adapter.list_relations(&query_ctx, conn, db_schema, token_clone.clone())
+            with_relation_list_item_span(
+                report_progress.then_some(RELATION_CACHE_OP_ID),
+                &db_schema.to_string(),
+                || adapter.list_relations(&query_ctx, conn, db_schema, token_clone.clone()),
+            )
         };
 
         let reduce_f = move |acc: &mut Acc,
@@ -1817,11 +1824,13 @@ ORDER BY TABLE_CATALOG, TABLE_SCHEMA, TABLE_NAME, ORDINAL_POSITION"
         &self,
         db_schemas: &[CatalogAndSchema],
         token: CancellationToken,
+        report_progress: bool,
     ) -> AsyncAdapterResult<'_, BTreeMap<CatalogAndSchema, AdapterResult<RelationVec>>> {
         self.list_relations_in_parallel_inner_with_options(
             db_schemas,
             &MetadataQueryOptions::default(),
             token,
+            report_progress,
         )
     }
 
@@ -1839,8 +1848,9 @@ ORDER BY TABLE_CATALOG, TABLE_SCHEMA, TABLE_NAME, ORDINAL_POSITION"
             .collect::<Vec<_>>();
 
         let future = async move {
+            // report_progress: false — existence checks don't drive a progress bar.
             let listed = self
-                .list_relations_in_parallel_inner_with_options(&db_schemas, options, token)
+                .list_relations_in_parallel_inner_with_options(&db_schemas, options, token, false)
                 .await?;
             let mut result = BTreeMap::new();
 

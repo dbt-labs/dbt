@@ -388,9 +388,6 @@ impl AdbcEngine {
 /// consumer of `credential.account_host()` (Cloud Config gRPC, the identify
 /// service, `dbt_cloud.yml` matching, OAuth) must keep using the bare host.
 fn flock_driver_host(account_host: &str) -> Result<String, AuthError> {
-    if account_host.split('.').any(|label| label == "dwg") {
-        return Ok(account_host.to_string());
-    }
     dbt_common::url::insert_gateway_label(account_host, "dwg")
         .map_err(|e| AuthError::config(format!("invalid dbt Cloud host {account_host:?}: {e}")))
 }

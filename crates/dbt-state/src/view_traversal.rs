@@ -463,6 +463,7 @@ mod tests {
             &self,
             _: &[CatalogAndSchema],
             _: CancellationToken,
+            _: bool,
         ) -> AsyncAdapterResult<'_, BTreeMap<CatalogAndSchema, AdapterResult<RelationVec>>>
         {
             Box::pin(async { Ok(Default::default()) })
