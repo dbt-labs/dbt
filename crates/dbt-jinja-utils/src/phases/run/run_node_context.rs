@@ -251,13 +251,20 @@ fn build_model_context_fields<S: Serialize>(
     }
 }
 
-/// Extend the base context with stateful functions
+/// Extend the base context with stateful functions.
+///
+/// `result_store`, when supplied, is used as-is instead of allocating a fresh
+/// [`ResultStore`]. Callers that need to hold onto their own store (e.g. to
+/// extract adapter responses after materialization) can build it once and
+/// pass it in here rather than re-injecting its closures into the context
+/// after this function overwrites them with a throwaway store.
 pub fn extend_base_context_stateful_fn(
     base_context: &mut BTreeMap<String, MinijinjaValue>,
     root_project_name: &str,
     packages: BTreeSet<String>,
+    result_store: Option<ResultStore>,
 ) {
-    let result_store = ResultStore::default();
+    let result_store = result_store.unwrap_or_default();
     base_context.insert(
         "store_result".to_owned(),
         MinijinjaValue::from_function(result_store.store_result()),
@@ -532,6 +539,44 @@ pub fn build_run_node_ctx<S: Serialize>(
 mod tests {
     use super::*;
     use serde_json::json;
+
+    /// When a caller supplies its own `ResultStore`, `extend_base_context_stateful_fn`
+    /// must wire that store's closures into the context rather than silently
+    /// allocating (and overwriting with) a fresh default one. Seed a result
+    /// into the caller's store before extending the context, then confirm
+    /// `load_result` on the context can see it.
+    #[test]
+    fn extend_base_context_stateful_fn_uses_provided_result_store() {
+        let store = ResultStore::default();
+        store.store_raw_result()(&[MinijinjaValue::from(minijinja::value::Kwargs::from_iter([
+            ("name", MinijinjaValue::from("seeded")),
+        ]))])
+        .unwrap();
+
+        let mut base_context = BTreeMap::new();
+        extend_base_context_stateful_fn(
+            &mut base_context,
+            "test_pkg",
+            BTreeSet::new(),
+            Some(store),
+        );
+
+        let mut env = minijinja::Environment::new();
+        env.add_global(
+            "load_result",
+            base_context.get("load_result").unwrap().clone(),
+        );
+        let value = env
+            .compile_expression("load_result('seeded')")
+            .unwrap()
+            .eval(minijinja::context!(), &[])
+            .unwrap();
+
+        assert!(
+            !value.is_none(),
+            "expected the caller-provided ResultStore's seeded result to be visible through the context"
+        );
+    }
 
     fn column_data_type<'a>(model: &'a YmlValue, column_name: &str) -> &'a str {
         model

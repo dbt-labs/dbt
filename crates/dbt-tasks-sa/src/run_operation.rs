@@ -443,6 +443,7 @@ pub async fn run_operation_on_run_with_ctx(
         &mut operation_ctx,
         &operation.__common_attr__.package_name,
         ctx.runtime_config().dependencies.keys().cloned().collect(),
+        None,
     );
 
     // Add selected_resources list from schedule

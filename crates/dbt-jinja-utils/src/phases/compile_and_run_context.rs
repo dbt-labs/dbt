@@ -42,6 +42,12 @@ pub fn configure_compile_and_run_jinja_environment(env: &mut JinjaEnv, adapter: 
 ///
 /// `defer_nodes`, when supplied (compile/run with `--defer --state`), drives
 /// the `defer_relation` field on each deferrable graph node. (#1366)
+///
+/// `result_store`, when supplied, is used as-is instead of allocating a fresh
+/// [`ResultStore`]. Callers that need to hold onto their own store (e.g. to
+/// extract adapter responses after materialization) can build it once and
+/// pass it in here rather than re-injecting its closures into the context
+/// after this function overwrites them with a throwaway store.
 pub fn build_compile_base_ctx(
     node_resolver: Arc<dyn NodeResolverTracker>,
     package_name: &str,
@@ -49,6 +55,7 @@ pub fn build_compile_base_ctx(
     defer_nodes: Option<&Nodes>,
     runtime_config: Arc<DbtRuntimeConfig>,
     namespace_keys: Vec<String>,
+    result_store: Option<ResultStore>,
 ) -> CompileBaseCtx {
     // Wrap each per-namespace search order as `Value::from(Vec<String>)` —
     // dispatch lookup downcasts to `Vec<String>` so the underlying Object
@@ -108,7 +115,7 @@ pub fn build_compile_base_ctx(
     let mut packages: BTreeSet<String> = runtime_config.dependencies.keys().cloned().collect();
     packages.insert(package_name.to_string());
 
-    let result_store = ResultStore::default();
+    let result_store = result_store.unwrap_or_default();
 
     let dbt_namespaces: BTreeMap<String, JinjaObject<DbtNamespace>> = namespace_keys
         .into_iter()
@@ -163,6 +170,7 @@ pub fn build_operation_context(
             defer_nodes,
             runtime_config,
             namespace_keys,
+            None,
         )
     });
     OperationCtx {
@@ -1040,6 +1048,7 @@ mod tests {
             None,
             runtime_config,
             vec![],
+            None,
         );
 
         // Cleanup env to avoid side effects
@@ -1088,6 +1097,47 @@ mod tests {
         assert!(
             downcast.is_some(),
             "OperationCtx.config must be a DummyConfig Object"
+        );
+    }
+
+    /// When a caller supplies its own `ResultStore`, `build_compile_base_ctx`
+    /// must wire that store's closures into the ctx rather than silently
+    /// allocating (and overwriting with) a fresh default one. Seed a result
+    /// into the caller's store before building the ctx, then confirm
+    /// `load_result` on the ctx can see it.
+    #[test]
+    fn build_compile_base_ctx_uses_provided_result_store() {
+        let node_resolver = Arc::new(DummyNodeResolverTracker);
+        let nodes = Nodes::default();
+        let runtime_config = Arc::new(DbtRuntimeConfig::default());
+
+        let store = ResultStore::default();
+        store.store_raw_result()(&[MinijinjaValue::from(minijinja::value::Kwargs::from_iter([
+            ("name", MinijinjaValue::from("seeded")),
+        ]))])
+        .unwrap();
+
+        let ctx = build_compile_base_ctx(
+            node_resolver,
+            "test_pkg",
+            &nodes,
+            None,
+            runtime_config,
+            vec![],
+            Some(store),
+        );
+
+        let mut env = minijinja::Environment::new();
+        env.add_global("load_result", ctx.load_result);
+        let value = env
+            .compile_expression("load_result('seeded')")
+            .unwrap()
+            .eval(minijinja::context!(), &[])
+            .unwrap();
+
+        assert!(
+            !value.is_none(),
+            "expected the caller-provided ResultStore's seeded result to be visible through the ctx"
         );
     }
 }

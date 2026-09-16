@@ -1,0 +1,7 @@
+kind: Under the Hood
+body: Accept an optional caller-provided ResultStore in build_compile_base_ctx and extend_base_context_stateful_fn instead of always allocating a fresh one, so callers that need their own store no longer have to re-inject its closures afterward
+time: 2026-09-16T09:37:56.451777-07:00
+custom:
+    author: annbaturytski
+    issue: "14245"
+    project: dbt-core
