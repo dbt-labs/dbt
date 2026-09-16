@@ -26,6 +26,6 @@ pub use adapters::{
 };
 pub use error::{ProfileError, Result};
 pub use resolve::{
-    ProfileEnvironment, ResolveArgs, ResolvedProfile, find_profiles_path, render_target, resolve,
-    resolve_target, resolve_with_env,
+    ProfileEnvironment, ProfileMetadata, ResolveArgs, ResolvedProfile, find_profiles_path,
+    render_target, resolve, resolve_metadata, resolve_target, resolve_with_env,
 };

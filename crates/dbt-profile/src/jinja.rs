@@ -4,6 +4,7 @@
 //! No dependency on `dbt-jinja-utils` or `dbt-common`.
 
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 use dbt_jinja_vars::Var;
 use minijinja::{Environment, Value};
@@ -27,13 +28,21 @@ pub struct ProfileContext {
 }
 
 impl ProfileContext {
-    pub fn new(vars: BTreeMap<String, dbt_yaml::Value>) -> Self {
+    pub fn new(
+        vars: BTreeMap<String, dbt_yaml::Value>,
+        overrides: Arc<BTreeMap<String, String>>,
+    ) -> Self {
         Self {
-            env_var: Value::from_func_func("env_var", |state, args| {
+            env_var: Value::from_func_func("env_var", move |state, args| {
                 // Use placeholder_on_secret_access=true so that DBT_ENV_SECRET_*
                 // variables are substituted with a sentinel placeholder during
                 // Jinja rendering; render_secrets() resolves them afterwards.
-                dbt_jinja_vars::env_var(true, None, None, state, args)
+                let values = Arc::clone(&overrides);
+                let lookup = move |name: &str| {
+                    crate::resolve::lookup_env_override(&values, name)
+                        .map(|value| Value::from(value.as_str()))
+                };
+                dbt_jinja_vars::env_var_with_lookup(true, Some(&lookup), None, state, args)
             }),
             var: Value::from_object(Var::new(vars)),
             context: Value::from_serialize(BTreeMap::<String, Value>::new()),
