@@ -132,6 +132,9 @@ fn new_operation(
                 original_file_path: DbtPath::from(&original_file_path),
                 unique_id,
                 fqn: vec![project_name.to_string(), "hooks".to_string(), name.clone()],
+                // v1's --use-v2-parser runtime discovers hooks purely by this tag
+                // (get_hooks_by_tags in task/run.py); without it hooks silently never run.
+                tags: vec![operation_type.to_string()],
                 checksum: DbtChecksum::hash(operation_sql.trim().as_bytes()),
                 raw_code: Some(operation_sql.to_string()),
                 language: Some("sql".to_string()),
