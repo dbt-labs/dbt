@@ -10,6 +10,7 @@ pub mod version;
 use std::{
     collections::HashSet,
     env,
+    ffi::OsStr,
     io::Read,
     path::{Path, PathBuf},
     sync::mpsc,
@@ -17,7 +18,10 @@ use std::{
 };
 
 use dbt_common::{ErrorCode, FsResult, err, error::WrappedError, fs_err};
-pub use dbt_dist_classify::classify_version_output;
+pub use dbt_dist_classify::{
+    classify_version_output, executable_candidates, executable_candidates_from_path,
+    executable_candidates_in, find_executable,
+};
 pub use dist::{Channel, DistInfo, Distribution, Generation, uninstall_command_for_package};
 
 use crate::proc::{GRACE_WAIT, NORMAL_WAIT, ProcessOutput, real_run};
@@ -901,7 +905,7 @@ fn get_all_in_path(command_name: &str) -> FsResult<Vec<DistInfo>> {
 }
 
 fn discover_all_in_path_value(
-    path_var: Option<&std::ffi::OsStr>,
+    path_var: Option<&OsStr>,
     command_name: &str,
 ) -> FsResult<Vec<DistInfo>> {
     let Some(path_var) = path_var else {
