@@ -365,11 +365,20 @@ _EVENT_TYPE_STDOUT_MESSAGE = "v1.internal.events.fusion.log.StdoutMessage"
 _EVENT_TYPE_STDERR_MESSAGE = "v1.internal.events.fusion.log.StderrMessage"
 _EVENT_TYPE_PROGRESS_MESSAGE = "v1.public.events.fusion.log.ProgressMessage"
 
+# The Invocation span, whose end carries the aggregate warning/error counts.
+# It is the one span record the relay reads rather than drops; see _pump.
+_EVENT_TYPE_INVOCATION = "v1.public.events.fusion.invocation.Invocation"
+
+# RESULT_LINE_OPT_OUT_COMMANDS from fusion's formatters/invocation.rs -- the
+# commands whose runs print no status line, mirrored so the relay doesn't
+# surface a line the v2 parser itself would have withheld.
+_SUMMARY_OPT_OUT_COMMANDS = frozenset({"man", "login"})
+
 # LogRecord event_types relayed as-is (body already holds the rendered text).
 # ProgressMessage is handled separately below since it carries no body.
 # Every other LogRecord (e.g. ListItemOutput, ShowDataOutput, CompiledCode,
-# StateModifiedDiff -- show/list/compile concerns irrelevant to parse) and
-# every SpanStart/SpanEnd is dropped; see _pump.
+# StateModifiedDiff -- show/list/compile concerns irrelevant to parse) is
+# dropped, as is every span except the Invocation span end; see _pump.
 #
 # StdoutMessage/StderrMessage are retained here for forward-compatibility,
 # but as of this writing they don't currently reach the wire on this path:
@@ -458,6 +467,105 @@ def _prefix_log_message_code(attributes: Dict, body: str) -> str:
     return f"{prefix}: {body}"
 
 
+def _count_text(value: int, label_single: str, label_plural: str) -> str:
+    return f"{value} {label_single if value == 1 else label_plural}"
+
+
+def _coerce_count(value: object) -> int:
+    """Read a proto uint64 off the wire, defaulting absent/garbage to 0.
+
+    pbjson renders uint64 as a JSON *string* and omits the field entirely
+    when the proto optional is unset, so both a missing key and "12" have
+    to be handled.
+    """
+    if not isinstance(value, (int, str)):
+        return 0
+    try:
+        return int(value)
+    except ValueError:
+        return 0
+
+
+def _format_summary_duration(record: Dict) -> Optional[str]:
+    """Render the span's elapsed time the way format_duration_for_summary
+    (fusion's formatters/duration.rs) does, from the span's nanosecond
+    timestamps."""
+    start = _coerce_count(record.get("start_time_unix_nano"))
+    end = _coerce_count(record.get("end_time_unix_nano"))
+    if not start or not end or end < start:
+        return None
+
+    elapsed_nanos = end - start
+    total_secs = elapsed_nanos / 1_000_000_000
+    if total_secs >= 3600:
+        hours = int(total_secs // 3600)
+        minutes = int((total_secs % 3600) // 60)
+        seconds = total_secs % 60
+        if seconds >= 1:
+            return f"{hours}h {minutes}m {seconds:.0f}s"
+        return f"{hours}h {minutes}m" if minutes else f"{hours}h"
+    if total_secs >= 60:
+        minutes = int(total_secs // 60)
+        seconds = total_secs % 60
+        return f"{minutes}m {seconds:.0f}s" if seconds >= 1 else f"{minutes}m"
+    if total_secs >= 1:
+        return f"{total_secs:.1f}s"
+    if elapsed_nanos >= 1_000_000:
+        return f"{elapsed_nanos // 1_000_000}ms"
+    if elapsed_nanos >= 1_000:
+        return f"{elapsed_nanos // 1_000}us"
+    return f"{elapsed_nanos}ns"
+
+
+def _format_invocation_summary(record: Dict) -> Optional[str]:
+    """Synthesize the v2 parser's end-of-run status line from its Invocation
+    span end.
+
+    That line has no LogRecord of its own: the v2 parser renders it in its
+    console formatter (formatters/invocation.rs, format_status_line) out of
+    span-end attributes, so relaying LogRecords alone loses it. The counts
+    come from the parser's own metric aggregator, which means they include
+    warnings whose LogRecords this relay filtered out -- tallying relayed
+    lines here instead would under-report.
+
+    Coloring uses dbt-core's own ui helpers (v1-native styling) rather than
+    reproducing fusion's exact palette; ui.USE_COLOR handling is the same as
+    in _style_severity.
+    """
+    attributes = record.get("attributes") or {}
+    eval_args = attributes.get("eval_args") or {}
+
+    command = eval_args.get("command")
+    if not isinstance(command, str) or not command:
+        command = "unknown"
+    if command.lower() in _SUMMARY_OPT_OUT_COMMANDS:
+        return None
+
+    metrics = attributes.get("metrics") or {}
+    warnings = _coerce_count(metrics.get("total_warnings"))
+    errors = _coerce_count(metrics.get("total_errors"))
+
+    if not errors and not warnings:
+        status = ui.green("successfully")
+    elif not errors:
+        status = f"with {ui.yellow(_count_text(warnings, 'warning', 'warnings'))}"
+    elif not warnings:
+        status = f"with {ui.red(_count_text(errors, 'error', 'errors'))}"
+    else:
+        # fusion reds both counts once any error is present.
+        status = (
+            f"with {ui.red(_count_text(warnings, 'warning', 'warnings'))} "
+            f"and {ui.red(_count_text(errors, 'error', 'errors'))}"
+        )
+
+    target = eval_args.get("target")
+    for_target = f" for target '{target}'" if target else ""
+    duration = _format_summary_duration(record)
+    suffix = f" [{duration}]" if duration else ""
+
+    return f"Finished '{command}' {status}{for_target}{suffix}"
+
+
 def _style_severity(msg: str, level: EventLevel) -> str:
     """Apply v1-native WARN/ERROR styling via dbt_common.ui's tag helpers.
 
@@ -541,7 +649,15 @@ def _run_v2(argv: List[str]) -> None:
                 continue
 
             record_type = record.get("record_type") if isinstance(record, dict) else None
-            if record_type in ("SpanStart", "SpanEnd"):
+            if record_type == "SpanEnd":
+                # Spans have no body and are dropped, except the Invocation
+                # span end, the only carrier of the status line's counts.
+                if record.get("event_type") == _EVENT_TYPE_INVOCATION:
+                    summary = _format_invocation_summary(record)
+                    if summary:
+                        fire_event(Note(msg=summary), level=EventLevel.INFO)
+                continue
+            if record_type == "SpanStart":
                 continue
             if record_type != "LogRecord":
                 # Valid JSON that isn't a recognized otel envelope -- relay

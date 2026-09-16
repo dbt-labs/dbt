@@ -16,6 +16,7 @@ from dbt.parser.v2 import (
     parse_with_v2,
     rediscover_adapter_macros,
 )
+from dbt_common import ui
 from dbt_common.events.base_types import EventLevel
 from dbt_common.events.types import Note
 
@@ -61,6 +62,37 @@ def _span(
             "record_type": record_type,
             "event_type": event_type,
             "attributes": {},
+            "severity_number": 9,
+        }
+    )
+
+
+def _invocation_span(
+    metrics: Optional[dict] = None,
+    command: str = "parse",
+    target: Optional[str] = None,
+    start_nanos: int = 1_000_000_000,
+    end_nanos: int = 2_500_000_000,
+) -> str:
+    """Build the Invocation SpanEnd line the status line is synthesized from.
+
+    Mirrors the wire shape: pbjson renders the uint64 counts as JSON strings
+    and omits them entirely when the proto optionals are unset.
+    """
+    eval_args: dict = {"command": command}
+    if target is not None:
+        eval_args["target"] = target
+    attributes: dict = {"eval_args": eval_args}
+    if metrics is not None:
+        attributes["metrics"] = metrics
+    return json.dumps(
+        {
+            "record_type": "SpanEnd",
+            "event_type": "v1.public.events.fusion.invocation.Invocation",
+            "span_name": "Invocation",
+            "start_time_unix_nano": str(start_nanos),
+            "end_time_unix_nano": str(end_nanos),
+            "attributes": attributes,
             "severity_number": 9,
         }
     )
@@ -550,6 +582,69 @@ class TestParseWithV2:
         )
         notes = self._run_and_capture_notes(tmp_path, stdout_lines=[line])
         assert ("[WARNING]: deprecated config", EventLevel.WARN) in notes
+
+    def test_invocation_span_end_emits_status_line(self, tmp_path: Path, _patch_v2_deps):
+        """The counts live only on the Invocation span end, so that one span
+        is read rather than dropped."""
+        line = _invocation_span(metrics={"total_warnings": "2", "total_errors": "1"})
+        notes = self._run_and_capture_notes(tmp_path, stdout_lines=[line])
+        expected = f"Finished 'parse' with {ui.red('2 warnings')} and {ui.red('1 error')} [1.5s]"
+        assert (expected, EventLevel.INFO) in notes
+
+    def test_invocation_span_end_without_metrics_reports_success(
+        self, tmp_path: Path, _patch_v2_deps
+    ):
+        """Both `metrics` and the counts inside it are proto optionals, so an
+        absent object must read as zero rather than blowing up."""
+        notes = self._run_and_capture_notes(tmp_path, stdout_lines=[_invocation_span()])
+        expected = f"Finished 'parse' {ui.green('successfully')} [1.5s]"
+        assert (expected, EventLevel.INFO) in notes
+
+    def test_invocation_span_end_uses_singular_count_labels(self, tmp_path: Path, _patch_v2_deps):
+        line = _invocation_span(metrics={"total_warnings": "1"})
+        notes = self._run_and_capture_notes(tmp_path, stdout_lines=[line])
+        expected = f"Finished 'parse' with {ui.yellow('1 warning')} [1.5s]"
+        assert (expected, EventLevel.INFO) in notes
+
+    def test_invocation_span_end_errors_only(self, tmp_path: Path, _patch_v2_deps):
+        line = _invocation_span(metrics={"total_errors": "3"})
+        notes = self._run_and_capture_notes(tmp_path, stdout_lines=[line])
+        expected = f"Finished 'parse' with {ui.red('3 errors')} [1.5s]"
+        assert (expected, EventLevel.INFO) in notes
+
+    def test_invocation_span_end_includes_target(self, tmp_path: Path, _patch_v2_deps):
+        line = _invocation_span(target="prod")
+        notes = self._run_and_capture_notes(tmp_path, stdout_lines=[line])
+        expected = f"Finished 'parse' {ui.green('successfully')} for target 'prod' [1.5s]"
+        assert (expected, EventLevel.INFO) in notes
+
+    def test_invocation_span_end_colorizes_counts(self, tmp_path: Path, _patch_v2_deps):
+        """Asserted against raw ANSI rather than the ui helpers so the test
+        fails if the coloring is dropped."""
+        line = _invocation_span(metrics={"total_warnings": "2"})
+        with mock.patch("dbt_common.ui.USE_COLOR", True):
+            notes = self._run_and_capture_notes(tmp_path, stdout_lines=[line])
+        assert (
+            "Finished 'parse' with \x1b[33m2 warnings\x1b[0m [1.5s]",
+            EventLevel.INFO,
+        ) in notes
+
+    def test_invocation_span_end_omits_line_for_opt_out_command(
+        self, tmp_path: Path, _patch_v2_deps
+    ):
+        """`man`/`login` print no status line natively; the relay must not
+        invent one."""
+        line = _invocation_span(command="login")
+        notes = self._run_and_capture_notes(tmp_path, stdout_lines=[line])
+        assert notes == []
+
+    def test_invocation_span_end_without_timestamps_omits_duration(
+        self, tmp_path: Path, _patch_v2_deps
+    ):
+        line = _invocation_span(start_nanos=0, end_nanos=0)
+        notes = self._run_and_capture_notes(tmp_path, stdout_lines=[line])
+        expected = f"Finished 'parse' {ui.green('successfully')}"
+        assert (expected, EventLevel.INFO) in notes
 
     def test_missing_manifest_after_success_raises(self, tmp_path: Path, _patch_v2_deps):
         """Parser exits 0 but writes nothing — must raise, not silently load a stale file."""
