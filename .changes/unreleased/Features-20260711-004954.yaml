@@ -1,0 +1,7 @@
+kind: Features
+body: Add support for BigQuery query reservation configuration at model and connection levels
+time: 2026-07-11T00:49:54.355183+02:00
+custom:
+    author: max-ostapenko
+    issue: "15486"
+    project: dbt-core
