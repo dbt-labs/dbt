@@ -311,6 +311,10 @@ pub async fn debug(
             let mdls_checker = arg.mdls_checker.clone();
             let propagation_checker = arg.lake_compute_propagation_checker.clone();
             let native_db_config = db_config.clone();
+            let databricks_db_config = dbt_state
+                .dbt_profile
+                .adapter(AdapterType::Databricks)
+                .cloned();
             let invocation_id = arg.invocation_id.clone();
             let worker_token = token.clone();
             let reply = arg.replay.clone();
@@ -336,6 +340,7 @@ pub async fn debug(
                         mdls_checker,
                         propagation_checker,
                         native_db_config,
+                        databricks_db_config,
                         lake_compute_db_config,
                         mdls_database,
                         mdls_schema,
@@ -501,6 +506,7 @@ fn debug_lake_compute(
     mdls_checker: Option<Arc<dyn LakeComputeMdlsChecker>>,
     propagation_checker: Option<Arc<dyn LakeComputePropagationChecker>>,
     native_db_config: DbConfig,
+    databricks_db_config: Option<DbConfig>,
     lake_compute_db_config: DbConfig,
     mdls_database: String,
     mdls_schema: String,
@@ -531,6 +537,7 @@ fn debug_lake_compute(
             let attach_started = Instant::now();
             let outcome = checker.check_catalog_attach(
                 &native_db_config,
+                databricks_db_config.as_ref(),
                 &lake_compute_db_config,
                 replay,
                 token.clone(),

@@ -219,17 +219,17 @@ pub(super) fn from_model_config_and_catalogs_v2(
                 other.as_str()
             ),
         )),
-        // Lake compute never issues its own ATTACH: the dbt-compute
-        // service auto-attaches the org's MDLS catalog server-side via the
-        // caller's bearer token. All lake compute needs from catalogs.yml is the
-        // Snowflake-cased `catalog_database` these catalog types carry --
-        // see `catalog_attach_database()` in dbt-tasks'
-        // local_engine::runnable::compute_platform, which reads the exact
-        // same field and nothing else.
-        (
-            AdapterType::LakeCompute,
-            CatalogType::Horizon | CatalogType::IcebergRest | CatalogType::Unity,
-        ) => CatalogRelation::build_lake_compute_with_catalogs_v2(catalog, &catalog_name),
+        // Unity is readable through Lake Compute, but model writes remain
+        // unsupported.
+        (AdapterType::LakeCompute, CatalogType::Unity) => Err(AdapterError::new(
+            AdapterErrorKind::Configuration,
+            format!(
+                "Catalog '{catalog_name}' is a Unity catalog accessed via Lake Compute, which is read-only in this release. Models cannot be materialized against it."
+            ),
+        )),
+        (AdapterType::LakeCompute, CatalogType::Horizon | CatalogType::IcebergRest) => {
+            CatalogRelation::build_lake_compute_with_catalogs_v2(catalog, &catalog_name)
+        }
         (AdapterType::LakeCompute, other) => Err(AdapterError::new(
             AdapterErrorKind::Configuration,
             format!(
@@ -869,10 +869,8 @@ impl CatalogRelation {
 
     /// Lake compute equivalent of `build_horizon_with_catalogs_v2` /
     /// `build_snowflake_linked_with_catalogs_v2`, pared down to the single
-    /// field the lake compute runtime actually consults: `catalog_database` from
-    /// `config.snowflake`. Lake compute attaches server-side (see module doc on
-    /// `build_duckdb_with_catalogs_v2` and `catalog_attach_database()` in
-    /// dbt-tasks), so none of the ATTACH/endpoint fields apply here.
+    /// field Lake Compute uses for Horizon and Iceberg REST:
+    /// `catalog_database` from `config.snowflake`.
     fn build_lake_compute_with_catalogs_v2(
         catalog: &CatalogSpecV2View<'_>,
         catalog_name: &str,
@@ -1067,7 +1065,7 @@ mod tests {
             AdapterType::Snowflake => "snowflake_attr".to_string(),
             AdapterType::Bigquery => "bigquery_attr".to_string(),
             AdapterType::Databricks => "databricks_attr".to_string(),
-            AdapterType::DuckDB => "duckdb_attr".to_string(),
+            AdapterType::DuckDB | AdapterType::LakeCompute => "duckdb_attr".to_string(),
             _ => panic!("Not yet supported"),
         }
     }
@@ -1170,6 +1168,29 @@ catalogs:
             assert_eq!(r.table_format, TableFormat::Iceberg);
             assert_eq!(r.file_format.as_deref(), Some("delta"));
         }
+    }
+
+    #[test]
+    fn lake_compute_unity_model_target_is_read_only() {
+        let catalogs = load_catalogs_yaml(
+            r#"
+catalogs:
+  - name: UC
+    type: unity
+    table_format: iceberg
+    config:
+      snowflake:
+        catalog_database: UC_DB
+"#,
+        );
+        let error = from_model_config_and_catalogs_v2(
+            AdapterType::LakeCompute,
+            &model(AdapterType::LakeCompute, json!({ "catalog_name": "UC" })),
+            Arc::new(catalogs),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("Unity"));
+        assert!(error.to_string().contains("read-only"));
     }
 
     #[test]
