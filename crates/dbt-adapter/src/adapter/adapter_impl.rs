@@ -407,6 +407,10 @@ impl AdapterImpl {
                             Box::new(ExasolMetadataAdapter::new(engine)) as Box<dyn MetadataAdapter>
                         }
                         Starburst => todo!("Starburst"),
+                        // Execution layer: needs an AthenaMetadataAdapter
+                        // implementing MetadataAdapter against a live
+                        // connection. Out of scope for parse-only profile
+                        // work; parse never constructs a metadata adapter.
                         Athena => todo!("Athena"),
                         Trino => todo!("Trino"),
                         Datafusion => todo!("Datafusion"),
@@ -1298,7 +1302,9 @@ impl AdapterImpl {
                 ClickHouse => "name",
                 Exasol => "name",
                 Starburst => todo!("Starburst"),
-                Athena => todo!("Athena"),
+                // Athena's information_schema is Trino's, where the schema
+                // listing column is `schema_name`.
+                Athena => "schema_name",
                 Trino => todo!("Trino"),
                 Datafusion => todo!("Datafusion"),
                 Dremio => todo!("Dremio"),
