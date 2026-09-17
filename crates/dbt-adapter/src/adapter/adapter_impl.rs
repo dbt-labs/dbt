@@ -873,6 +873,8 @@ impl AdapterImpl {
         // Deduplicate column names to match dbt-core's behavior, which renames
         // duplicate columns to `col_2`, `col_3`, etc.
         // BigQuery is the exception to this deduping
+        // If static analysis is 'strict', we would have errored before we need to disambiguate.
+        // Therefore, this is only for 'baseline' or 'off'.
         let last_batch = match self.adapter_type() {
             Bigquery => last_batch,
             _ => {
