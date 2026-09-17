@@ -622,6 +622,9 @@ impl From<ProjectDataTestConfig> for DataTestConfig {
                 as_columnstore: config.as_columnstore,
 
                 table_type: config.table_type,
+                partitioned_by: None,   // Athena model configs; not applicable to data tests
+                table_properties: None,
+                force_batch: None,
 
                 indexes: config.indexes,
                 unlogged: config.unlogged,

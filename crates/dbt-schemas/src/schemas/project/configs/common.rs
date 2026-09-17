@@ -347,9 +347,21 @@ pub struct WarehouseSpecificNodeConfig {
     pub as_columnstore: Option<bool>,
 
     // Athena
-    // XXX: This is an incomplete set of configs
+    // XXX: This is an incomplete set of configs — see dbt-athena's
+    // `config.get(...)` calls in dbt_macro_assets/dbt-athena for the full set.
+    // These are the keys real projects set; each must also be mirrored in
+    // same_warehouse_config below and in ProjectModelConfig.
     #[warehouse(valid(all_nodes))]
     pub table_type: Option<String>,
+    /// Iceberg/Hive partition spec, e.g. `['month(created_at)']`.
+    #[warehouse(valid(all_nodes))]
+    pub partitioned_by: Option<StringOrArrayOfStrings>,
+    /// Iceberg TBLPROPERTIES passed through verbatim.
+    #[warehouse(valid(all_nodes))]
+    pub table_properties: Option<BTreeMap<String, YmlValue>>,
+    #[serde(default, deserialize_with = "bool_or_string_bool")]
+    #[warehouse(valid(all_nodes))]
+    pub force_batch: Option<bool>,
 
     // Postgres
     // XXX: This is an incomplete set of configs
@@ -670,6 +682,9 @@ pub fn same_warehouse_config(
     let sort_type_eq = self_wh.sort_type == other_wh.sort_type;
     let as_columnstore_eq = self_wh.as_columnstore == other_wh.as_columnstore;
     let table_type_eq = self_wh.table_type == other_wh.table_type;
+    let partitioned_by_eq = self_wh.partitioned_by == other_wh.partitioned_by;
+    let table_properties_eq = self_wh.table_properties == other_wh.table_properties;
+    let force_batch_eq = self_wh.force_batch == other_wh.force_batch;
     let indexes_eq = self_wh.indexes == other_wh.indexes;
     let primary_key_eq = self_wh.primary_key == other_wh.primary_key;
     let category_eq = self_wh.category == other_wh.category;
@@ -774,6 +789,9 @@ pub fn same_warehouse_config(
         && sort_type_eq
         && as_columnstore_eq
         && table_type_eq
+        && partitioned_by_eq
+        && table_properties_eq
+        && force_batch_eq
         && indexes_eq
         && primary_key_eq
         && category_eq
@@ -1381,6 +1399,30 @@ pub fn same_warehouse_config(
                     Some((
                         format!("{:?}", &self_wh.table_type),
                         format!("{:?}", &other_wh.table_type),
+                    )),
+                ),
+                (
+                    "partitioned_by",
+                    partitioned_by_eq,
+                    Some((
+                        format!("{:?}", &self_wh.partitioned_by),
+                        format!("{:?}", &other_wh.partitioned_by),
+                    )),
+                ),
+                (
+                    "table_properties",
+                    table_properties_eq,
+                    Some((
+                        format!("{:?}", &self_wh.table_properties),
+                        format!("{:?}", &other_wh.table_properties),
+                    )),
+                ),
+                (
+                    "force_batch",
+                    force_batch_eq,
+                    Some((
+                        format!("{:?}", &self_wh.force_batch),
+                        format!("{:?}", &other_wh.force_batch),
                     )),
                 ),
                 (
