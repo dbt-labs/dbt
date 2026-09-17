@@ -18,7 +18,13 @@ pub const SCHEMA: &str = "athena.schema";
 /// ADBC option key for the S3 output location for query results.
 /// Must be an S3 URI, e.g. `"s3://my-bucket/prefix/"`.
 /// Required.
-pub const S3_STAGING_DIR: &str = "athena.s3_staging_dir";
+///
+/// The dbt *profile* field is `s3_staging_dir`, but the driver
+/// (github.com/dbt-labs/athena, `athena_database.go`) names the option
+/// `athena.output_location`; sending `athena.s3_staging_dir` is rejected
+/// with "Unknown database option". The Rust constant keeps the profile
+/// field's name, which callers read, and translates at the wire.
+pub const S3_STAGING_DIR: &str = "athena.output_location";
 
 /// ADBC option key for the Athena workgroup name (default: `"primary"`).
 pub const WORK_GROUP: &str = "athena.work_group";
