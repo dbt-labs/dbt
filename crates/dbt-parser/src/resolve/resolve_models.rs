@@ -15,6 +15,7 @@ use crate::renderer::render_unresolved_sql_files;
 use crate::resolve::resolve_utils::build_unrendered_config;
 use crate::resolve::resolve_utils::err_resource_name_has_spaces;
 use crate::resolve::resolve_utils::extract_config_map;
+use crate::utils::RawProjectConfig;
 use crate::utils::RelationComponents;
 use crate::utils::extract_resource_config_from_raw_project;
 use crate::utils::get_node_fqn;
@@ -39,6 +40,7 @@ use dbt_common::tokiofs::read_to_string;
 use dbt_common::tracing::dbt_emit::emit_error_log_from_fs_error;
 use dbt_common::tracing::dbt_emit::emit_warn_log_from_fs_error;
 use dbt_common::tracing::dbt_emit::emit_warn_log_message;
+use dbt_common::tracing::event_info::store_event_attributes;
 use dbt_jinja_utils::jinja_environment::JinjaEnv;
 use dbt_jinja_utils::listener::JinjaTypeCheckingEventListenerFactory;
 use dbt_jinja_utils::node_resolver::NodeResolver;
@@ -53,6 +55,7 @@ use dbt_schemas::schemas::NodeBaseAttributes;
 use dbt_schemas::schemas::TimeSpine;
 use dbt_schemas::schemas::TimeSpinePrimaryColumn;
 use dbt_schemas::schemas::common::Access;
+use dbt_telemetry::GenericOpExecuted;
 use indexmap::IndexMap;
 
 use dbt_schemas::schemas::common::DbtMaterialization;
@@ -196,7 +199,6 @@ pub async fn resolve_models(
     let mut models: HashMap<String, Arc<DbtModel>> = HashMap::new();
     let mut models_with_execute: HashMap<String, DbtModel> = HashMap::new();
     let mut disabled_models: HashMap<String, Arc<DbtModel>> = HashMap::new();
-    let mut node_names = HashSet::new();
     let mut rendering_results: HashMap<String, (String, MacroSpans)> = HashMap::new();
     let dependency_package_name = dependency_package_name_from_ctx(&env, base_ctx);
 
@@ -357,6 +359,171 @@ pub async fn resolve_models(
 
     // Initialize a counter struct to track the version of each model
     let mut duplicates = Vec::new();
+
+    build_model_nodes(
+        arg,
+        package,
+        adapter_quoting,
+        root_package,
+        &models_properties_sans_semantics,
+        &raw_local_project_config,
+        raw_root_project_models_cfg.as_ref(),
+        &raw_schema_yml_configs,
+        &raw_test_configs,
+        model_sql_resources_map,
+        database,
+        schema,
+        default_adapter,
+        package_name,
+        dependency_package_name,
+        &env,
+        base_ctx,
+        collected_generic_tests,
+        test_name_truncations,
+        seen_generic_test_paths,
+        node_resolver,
+        jinja_type_checking_event_listener_factory,
+        &mut models,
+        &mut models_with_execute,
+        &mut disabled_models,
+        &mut rendering_results,
+        &mut duplicates,
+    )
+    .await?;
+
+    // In incremental and lazy-load runs, model_sql_files only contains changed/new
+    // files — unchanged models are skipped by the build cache. Build the full set of
+    // known model names from all_paths (always a complete filesystem scan, pre-filter)
+    // so we don't fire spurious NoNodeForYamlKey warnings for models that exist on
+    // disk but weren't re-parsed this run.
+    let all_known_model_names: HashSet<&str> = package
+        .all_paths
+        .get(&ResourcePathKind::ModelPaths)
+        .map(|paths| {
+            paths
+                .iter()
+                .filter_map(|(p, _)| p.as_path().file_stem()?.to_str())
+                .collect()
+        })
+        .unwrap_or_default();
+
+    for (model_name, mpe) in models_properties_sans_semantics.iter() {
+        // Skip until we support better error messages for versioned models
+        if mpe.version_info.is_some() {
+            continue;
+        }
+        if !mpe.schema_value.is_null() && !all_known_model_names.contains(model_name.as_str()) {
+            let err = fs_err!(
+                code =>ErrorCode::NoNodeForYamlKey,
+                loc => mpe.relative_path.clone(),
+                "Unused schema.yml entry for model '{}'",
+                model_name,
+            );
+            emit_warn_log_from_fs_error(*err);
+        }
+    }
+
+    // Report duplicates
+    if !duplicates.is_empty() {
+        let mut errs = Vec::new();
+        for (_, model_name, maybe_version, path) in duplicates {
+            let msg = if let Some(version) = maybe_version {
+                format!("Found duplicate model '{model_name}' with version '{version}'")
+            } else {
+                format!("Found duplicate model '{model_name}'")
+            };
+            let err = fs_err!(
+                code => ErrorCode::InvalidConfig,
+                loc => path.clone(),
+                "{}",
+                msg,
+            );
+            errs.push(err);
+        }
+        while let Some(err) = errs.pop() {
+            if errs.is_empty() {
+                return Err(err);
+            }
+            emit_error_log_from_fs_error(*err);
+        }
+    }
+
+    // Second pass to capture all identifiers with the appropriate context
+    // `models_with_execute` should never have overlapping Arc pointers with `models` and `disabled_models`
+    // otherwise make_mut will clone the inner model, and the modifications inside this function call will be lost
+    let models_rest = collect_adapter_identifiers_detect_unsafe(
+        arg,
+        models_with_execute,
+        node_resolver,
+        env,
+        default_adapter,
+        package_name,
+        &root_package.dbt_project.name,
+        runtime_config,
+        token,
+    )
+    .await?;
+
+    models.extend(
+        models_rest
+            .into_iter()
+            .map(|(v, _)| (v.__common_attr__.unique_id.to_string(), Arc::new(v))),
+    );
+    Ok((models, rendering_results, disabled_models))
+}
+
+/// Builds a `DbtModel` node for each rendered model file, routing it into `models`,
+/// `models_with_execute`, or `disabled_models` and registering its ref on `node_resolver`.
+///
+/// Factored out of [`resolve_models`] so the stage span can be created by `instrument`
+/// and stay entered across the loop's await points, making everything the loop emits a
+/// child of it.
+#[allow(
+    clippy::cognitive_complexity,
+    clippy::expect_fun_call,
+    clippy::too_many_arguments
+)]
+#[tracing::instrument(
+    level = "debug",
+    skip_all,
+    fields(
+        _e = ?store_event_attributes(GenericOpExecuted::new(
+            format!("resolve.build_model_nodes.{package_name}"),
+            "building model nodes".to_string(),
+            None,
+        )),
+    )
+)]
+async fn build_model_nodes(
+    arg: &ResolveArgs,
+    package: &DbtPackage,
+    adapter_quoting: &IndexMap<AdapterType, DbtQuoting>,
+    root_package: &DbtPackage,
+    models_properties_sans_semantics: &BTreeMap<String, MinimalPropertiesEntry>,
+    raw_local_project_config: &RawProjectConfig,
+    raw_root_project_models_cfg: Option<&RawProjectConfig>,
+    raw_schema_yml_configs: &BTreeMap<String, BTreeMap<String, dbt_yaml::Value>>,
+    raw_test_configs: &BTreeMap<String, TestUnrenderedConfigs>,
+    model_sql_resources_map: Vec<SqlFileRenderResult<ModelConfig, ModelProperties>>,
+    database: &str,
+    schema: &str,
+    default_adapter: AdapterType,
+    package_name: &str,
+    dependency_package_name: Option<&str>,
+    env: &JinjaEnv,
+    base_ctx: &BTreeMap<String, minijinja::Value>,
+    collected_generic_tests: &mut Vec<GenericTestAsset>,
+    test_name_truncations: &mut HashMap<String, String>,
+    seen_generic_test_paths: &mut HashMap<PathBuf, String>,
+    node_resolver: &mut NodeResolver,
+    jinja_type_checking_event_listener_factory: Arc<dyn JinjaTypeCheckingEventListenerFactory>,
+    models: &mut HashMap<String, Arc<DbtModel>>,
+    models_with_execute: &mut HashMap<String, DbtModel>,
+    disabled_models: &mut HashMap<String, Arc<DbtModel>>,
+    rendering_results: &mut HashMap<String, (String, MacroSpans)>,
+    duplicates: &mut Vec<(String, String, Option<String>, PathBuf)>,
+) -> FsResult<()> {
+    let mut node_names = HashSet::new();
     let catalogs = load_catalogs::fetch_catalogs();
     let use_catalogs_v2 = load_catalogs::fetch_use_catalogs_v2();
     let catalogs_state = match catalogs.as_deref() {
@@ -746,8 +913,8 @@ pub async fn resolve_models(
         // correctly (suppress-only phantom diff, cleared by Stage 2).
         let unrendered_config = build_unrendered_config(
             &fqn,
-            &raw_local_project_config,
-            raw_root_project_models_cfg.as_ref(),
+            raw_local_project_config,
+            raw_root_project_models_cfg,
             raw_schema_yml_configs.get(ref_name),
             raw_config_call_dict.as_ref(),
             true,
@@ -987,7 +1154,7 @@ pub async fn resolve_models(
         // update model components using the generate_relation_components function
         update_node_relation_components(
             &mut dbt_model,
-            &env,
+            env,
             &root_package.dbt_project.name,
             package_name,
             base_ctx,
@@ -1086,85 +1253,7 @@ pub async fn resolve_models(
         }
     }
 
-    // In incremental and lazy-load runs, model_sql_files only contains changed/new
-    // files — unchanged models are skipped by the build cache. Build the full set of
-    // known model names from all_paths (always a complete filesystem scan, pre-filter)
-    // so we don't fire spurious NoNodeForYamlKey warnings for models that exist on
-    // disk but weren't re-parsed this run.
-    let all_known_model_names: HashSet<&str> = package
-        .all_paths
-        .get(&ResourcePathKind::ModelPaths)
-        .map(|paths| {
-            paths
-                .iter()
-                .filter_map(|(p, _)| p.as_path().file_stem()?.to_str())
-                .collect()
-        })
-        .unwrap_or_default();
-
-    for (model_name, mpe) in models_properties_sans_semantics.iter() {
-        // Skip until we support better error messages for versioned models
-        if mpe.version_info.is_some() {
-            continue;
-        }
-        if !mpe.schema_value.is_null() && !all_known_model_names.contains(model_name.as_str()) {
-            let err = fs_err!(
-                code =>ErrorCode::NoNodeForYamlKey,
-                loc => mpe.relative_path.clone(),
-                "Unused schema.yml entry for model '{}'",
-                model_name,
-            );
-            emit_warn_log_from_fs_error(*err);
-        }
-    }
-
-    // Report duplicates
-    if !duplicates.is_empty() {
-        let mut errs = Vec::new();
-        for (_, model_name, maybe_version, path) in duplicates {
-            let msg = if let Some(version) = maybe_version {
-                format!("Found duplicate model '{model_name}' with version '{version}'")
-            } else {
-                format!("Found duplicate model '{model_name}'")
-            };
-            let err = fs_err!(
-                code => ErrorCode::InvalidConfig,
-                loc => path.clone(),
-                "{}",
-                msg,
-            );
-            errs.push(err);
-        }
-        while let Some(err) = errs.pop() {
-            if errs.is_empty() {
-                return Err(err);
-            }
-            emit_error_log_from_fs_error(*err);
-        }
-    }
-
-    // Second pass to capture all identifiers with the appropriate context
-    // `models_with_execute` should never have overlapping Arc pointers with `models` and `disabled_models`
-    // otherwise make_mut will clone the inner model, and the modifications inside this function call will be lost
-    let models_rest = collect_adapter_identifiers_detect_unsafe(
-        arg,
-        models_with_execute,
-        node_resolver,
-        env,
-        default_adapter,
-        package_name,
-        &root_package.dbt_project.name,
-        runtime_config,
-        token,
-    )
-    .await?;
-
-    models.extend(
-        models_rest
-            .into_iter()
-            .map(|(v, _)| (v.__common_attr__.unique_id.to_string(), Arc::new(v))),
-    );
-    Ok((models, rendering_results, disabled_models))
+    Ok(())
 }
 
 /// Per-version overrides for a versioned model, resolved against the top-level
