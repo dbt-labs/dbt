@@ -18,6 +18,7 @@ use super::dbt_catalogs::DbtCatalogs;
 use dbt_common::serde_utils::try_get_bool;
 use dbt_common::{ErrorCode, FsResult, err, fs_err};
 use dbt_yaml::{self as yml};
+use url::{ParseError, Url};
 
 const ALL_V2_PLATFORMS: &[&str] = &[
     "snowflake",
@@ -42,6 +43,58 @@ const BIGLAKE_FILE_FORMATS: &[&str] = &["parquet"];
 
 fn matches_enum_ci(v: &str, allowed: &[&str]) -> bool {
     allowed.iter().any(|a| v.eq_ignore_ascii_case(a))
+}
+
+// FIXME(@VersusFacit): Redo this so we have a normalize type/generic function
+// that splits on adapter type.
+/// Normalize and validate an AWS Databricks workspace host for Unity reads.
+pub fn normalize_databricks_host(raw: &str) -> Result<String, String> {
+    if raw.is_empty() {
+        return Err("host must be a Databricks workspace URL".to_string());
+    }
+
+    let url = match Url::parse(raw) {
+        Ok(url) => url,
+        Err(ParseError::RelativeUrlWithoutBase) => {
+            let candidate = format!("https://{raw}");
+            Url::parse(&candidate).map_err(|error| {
+                format!("host must be a valid Databricks workspace URL: {error}")
+            })?
+        }
+        Err(error) => {
+            return Err(format!(
+                "host must be a valid Databricks workspace URL: {error}"
+            ));
+        }
+    };
+
+    if !url.scheme().eq_ignore_ascii_case("https") {
+        return Err("host must use the https scheme".to_string());
+    }
+    if url.username() != ""
+        || url.password().is_some()
+        || url.port().is_some()
+        || url.query().is_some()
+        || url.fragment().is_some()
+        || (!url.path().is_empty() && url.path() != "/")
+    {
+        return Err(
+            "host must be a Databricks workspace hostname with no non-default port, path, query, fragment, or userinfo"
+                .to_string(),
+        );
+    }
+
+    let Some(hostname) = url.host_str() else {
+        return Err("host must be a Databricks workspace URL".to_string());
+    };
+    let hostname = hostname.to_ascii_lowercase();
+    if !hostname.ends_with(".cloud.databricks.com") || hostname.ends_with(".gcp.databricks.com") {
+        return Err(
+            "host must be an AWS Databricks workspace hostname ending in '.cloud.databricks.com'"
+                .to_string(),
+        );
+    }
+    Ok(format!("https://{hostname}"))
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -218,6 +271,20 @@ const UNITY_DATABRICKS_FIELDS: &[FieldSpec] = &[
         .doc("UniForm mode. true requires file_format: delta; false (default) requires parquet."),
 ];
 
+const UNITY_LAKE_COMPUTE_FIELDS: &[FieldSpec] = &[
+    FieldSpec::string("catalog_database")
+        .required()
+        .non_empty()
+        .doc("Name of the Databricks Unity Catalog to attach for lake compute reads."),
+    FieldSpec::string("region")
+        .required()
+        .non_empty()
+        .doc("AWS region containing the Unity Catalog table storage."),
+    FieldSpec::string("host")
+        .non_empty()
+        .doc("Databricks workspace hostname; defaults to the Databricks profile connection."),
+];
+
 const HIVE_METASTORE_DATABRICKS_FIELDS: &[FieldSpec] =
     &[FieldSpec::enumerated("file_format", HIVE_METASTORE_FILE_FORMATS).required()];
 
@@ -323,13 +390,13 @@ const CATALOG_SCHEMAS: &[CatalogTypeSchema] = &[
     CatalogTypeSchema {
         catalog_type: CatalogType::Unity,
         table_format: "iceberg",
-        description: "Databricks Unity catalog. Supports snowflake, databricks, and/or duckdb (read-only attach) connection blocks.",
+        description: "Databricks Unity catalog. Supports snowflake, databricks, lakecompute, and/or duckdb connection blocks. Lake Compute access is read-only.",
         presence: ConfigPresence::AtLeastOne,
         platforms: &[
             PlatformBlock::new("snowflake", LINKED_SNOWFLAKE_FIELDS),
             PlatformBlock::new("databricks", UNITY_DATABRICKS_FIELDS),
             PlatformBlock::new("duckdb", DUCKDB_ICEBERG_FIELDS),
-            PlatformBlock::new("lakecompute", DUCKDB_ICEBERG_FIELDS),
+            PlatformBlock::new("lakecompute", UNITY_LAKE_COMPUTE_FIELDS),
         ],
     },
     CatalogTypeSchema {
@@ -745,14 +812,13 @@ impl CatalogType {
     pub fn lake_compute_can_read(&self) -> bool {
         match self {
             // Open table formats `lakecompute` can attach.
-            Self::Horizon | Self::Glue | Self::IcebergRest => true,
+            Self::Horizon | Self::Glue | Self::IcebergRest | Self::Unity => true,
             // Snowflake-managed Iceberg under its older spelling; Horizon supersedes it.
             Self::SnowflakeBuiltIn => true,
             // Engine-owned catalogs `lakecompute` does not support today.
             Self::DuckLake
             | Self::LocalFilesystem
             | Self::BiglakeMetastore
-            | Self::Unity
             | Self::HiveMetastore => false,
             // Native platform storage is not readable by an external engine at all --
             // this is the warehouse-native case the check exists to catch.
@@ -1184,6 +1250,34 @@ impl<'a> CatalogSpecV2View<'a> {
         }
     }
 
+    fn validate_unity_lake_compute_semantics(&self, lakecompute: &yml::Mapping) -> FsResult<()> {
+        if let Some(host) = get_str(lakecompute, "host")? {
+            if let Err(message) = normalize_databricks_host(host) {
+                return err!(
+                    code => ErrorCode::InvalidConfig,
+                    hacky_yml_loc => field_span(lakecompute, "host").cloned(),
+                    "Catalog '{}' unity/lakecompute 'host' is invalid: {}",
+                    self.name, message
+                );
+            }
+        }
+        if let Some(region) = get_str(lakecompute, "region")?
+            && (region != region.to_ascii_lowercase()
+                || !region
+                    .bytes()
+                    .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+                || !region.bytes().any(|byte| byte == b'-'))
+        {
+            return err!(
+                code => ErrorCode::InvalidConfig,
+                hacky_yml_loc => field_span(lakecompute, "region").cloned(),
+                "Catalog '{}' unity/lakecompute 'region' must be a lowercase AWS region token",
+                self.name
+            );
+        }
+        Ok(())
+    }
+
     fn validate_biglake_semantics(&self, bigquery: &yml::Mapping) -> FsResult<()> {
         let external_volume = get_str(bigquery, "external_volume")?
             .expect("structural validation ensures external_volume is present");
@@ -1323,6 +1417,23 @@ impl CatalogRegistry {
 
         for platform in schema.platforms {
             if let Some(block) = catalog.config_block(platform.key) {
+                if catalog.catalog_type == CatalogType::Unity && platform.key == "lakecompute" {
+                    if let Some(key) = block.keys().find_map(|key| {
+                        key.as_str().filter(|key| {
+                            DUCKDB_ICEBERG_FIELDS.iter().any(|field| field.name == *key)
+                                && !UNITY_LAKE_COMPUTE_FIELDS
+                                    .iter()
+                                    .any(|field| field.name == *key)
+                        })
+                    }) {
+                        return err!(
+                            code => ErrorCode::InvalidConfig,
+                            hacky_yml_loc => field_span(block, key).cloned(),
+                            "Catalog '{}' unity/lakecompute key '{}' belongs to the local attach configuration; move it to config.duckdb",
+                            catalog.name, key
+                        );
+                    }
+                }
                 Self::validate_fields(
                     block,
                     platform.fields,
@@ -1359,6 +1470,9 @@ impl CatalogRegistry {
                 }
             }
             CatalogType::Unity => {
+                if let Some(lakecompute) = catalog.config_block("lakecompute") {
+                    catalog.validate_unity_lake_compute_semantics(lakecompute)?;
+                }
                 if let Some(databricks) = catalog.config_block("databricks") {
                     catalog.validate_unity_semantics(databricks)?;
                 }
@@ -1692,6 +1806,101 @@ mod tests {
         assert_eq!(CatalogType::SnowflakeNative.as_str(), "INFO_SCHEMA");
         assert_eq!(CatalogType::SnowflakeBuiltIn.as_str(), "BUILT_IN");
         assert_eq!(CatalogType::IcebergRest.as_str(), "ICEBERG_REST");
+    }
+
+    fn parse_unity_lakecompute(extra: &str) -> FsResult<()> {
+        let yaml = format!(
+            "catalogs:\n  - name: dbx_raw\n    type: unity\n    table_format: iceberg\n    config:\n      lakecompute:\n        catalog_database: raw\n        region: us-east-1\n        {extra}\n"
+        );
+        parse_and_validate(&yaml)
+    }
+
+    #[test]
+    fn unity_lakecompute_read_fields_validate() {
+        let yaml = r#"
+catalogs:
+  - name: dbx_raw
+    type: unity
+    table_format: iceberg
+    config:
+      lakecompute:
+        catalog_database: raw
+        region: us-east-1
+        host: dbc-example.cloud.databricks.com
+"#;
+        parse_and_validate(yaml).expect("Unity lakecompute read fields should validate");
+    }
+
+    #[test]
+    fn unity_lakecompute_rejects_credentials_in_catalogs_yml() {
+        for credential in [
+            "host: dbc-example.cloud.databricks.com\n        pat: token",
+            "host: dbc-example.cloud.databricks.com\n        client_id: client\n        client_secret: secret",
+        ] {
+            let error = parse_unity_lakecompute(credential).unwrap_err();
+            assert!(
+                error.to_string().contains("Unknown key")
+                    || error.to_string().contains("credential"),
+                "unexpected error: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn unity_lakecompute_rejects_old_attach_fields_with_migration() {
+        let error = parse_unity_lakecompute("endpoint: https://catalog.example").unwrap_err();
+        assert!(error.to_string().contains("config.duckdb"));
+    }
+
+    #[test]
+    fn unity_lakecompute_capability_is_readable() {
+        assert!(CatalogType::Unity.lake_compute_can_read());
+    }
+
+    #[test]
+    fn unity_lakecompute_host_policy_normalizes_trailing_slash() {
+        assert_eq!(
+            normalize_databricks_host("dbc-example.cloud.databricks.com/"),
+            Ok("https://dbc-example.cloud.databricks.com".to_string())
+        );
+        assert_eq!(
+            normalize_databricks_host("HTTPS://DBC-EXAMPLE.CLOUD.DATABRICKS.COM/"),
+            Ok("https://dbc-example.cloud.databricks.com".to_string())
+        );
+        let error =
+            normalize_databricks_host("https://dbc-example.cloud.databricks.com:abc").unwrap_err();
+        assert!(error.contains("invalid port"), "{error}");
+        assert_eq!(
+            normalize_databricks_host("https://dbc-example.cloud.databricks.com:443"),
+            Ok("https://dbc-example.cloud.databricks.com".to_string())
+        );
+        for host in [
+            "http://dbc-example.cloud.databricks.com",
+            "https://dbc-example.gcp.databricks.com",
+            "https://evil.example.com",
+            "https://dbc-example.cloud.databricks.com:8443",
+            "https://dbc-example.cloud.databricks.com/path",
+            "https://user@dbc-example.cloud.databricks.com",
+        ] {
+            assert!(normalize_databricks_host(host).is_err(), "{host}");
+        }
+    }
+
+    #[test]
+    fn unity_lakecompute_rejects_uppercase_region() {
+        let yaml = r#"
+catalogs:
+  - name: dbx_raw
+    type: unity
+    table_format: iceberg
+    config:
+      lakecompute:
+        catalog_database: raw
+        region: US-EAST-1
+        host: dbc-example.cloud.databricks.com
+"#;
+        let error = parse_and_validate(yaml).unwrap_err();
+        assert!(error.to_string().contains("region"));
     }
 
     #[test]
@@ -3187,6 +3396,22 @@ catalogs:
     }
 
     // ===== owner / meta fields (optional) =====
+
+    #[test]
+    fn unity_catalog_schema_description_identifies_lake_compute_read_only() {
+        let schema = catalogs_v2_json_schema();
+        let unity = schema["properties"]["catalogs"]["items"]["oneOf"]
+            .as_array()
+            .expect("oneOf array")
+            .iter()
+            .find(|branch| branch["properties"]["type"]["const"] == "unity")
+            .expect("unity catalog schema branch");
+
+        assert_eq!(
+            unity["description"],
+            "Databricks Unity catalog. Supports snowflake, databricks, lakecompute, and/or duckdb connection blocks. Lake Compute access is read-only."
+        );
+    }
 
     #[test]
     fn owner_and_meta_appear_in_json_schema() {
