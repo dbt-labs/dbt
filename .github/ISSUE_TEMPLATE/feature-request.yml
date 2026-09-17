@@ -16,7 +16,7 @@ body:
 
         Issues are the right place to request straightforward extensions of existing dbt functionality.
         For "big ideas" about future capabilities of dbt, we ask that you open a
-        [discussion](https://github.com/dbt-labs/dbt-core/discussions) in the "Ideas" category instead.
+        [discussion](https://github.com/dbt-labs/dbt/discussions) in the "Ideas" category instead.
       options:
         - label: I have read the [expectations for open source contributors](https://docs.getdbt.com/docs/contributing/oss-expectations)
           required: true

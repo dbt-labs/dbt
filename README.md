@@ -2,8 +2,8 @@
   <img width="750" alt="dbt logo" src="https://github.com/user-attachments/assets/26b0c2cd-70c1-4aa2-b66a-cda491ffa99c" />
 </p>
 <p align="center">
-  <a href="https://github.com/dbt-labs/dbt-core/actions/workflows/main.yml">
-    <img src="https://github.com/dbt-labs/dbt-core/actions/workflows/main.yml/badge.svg?event=push" alt="CI Badge"/>
+  <a href="https://github.com/dbt-labs/dbt/actions/workflows/ci.yml">
+    <img src="https://github.com/dbt-labs/dbt/actions/workflows/ci.yml/badge.svg?event=push" alt="CI Badge"/>
   </a>
 </p>
 

@@ -2,7 +2,7 @@
 All notable changes to this project will be documented in this file.
 
 - This file covers dbt Core v2.0. For changelogs for other dbt Engines, refer to:
-  - dbt Core v1 (Python) changelog, see [the `1.latest` branch's `CHANGELOG.md`](https://github.com/dbt-labs/dbt-core/blob/1.latest/CHANGELOG.md).
+  - dbt Core v1 (Python) changelog, see [the `1.latest` branch's `CHANGELOG.md`](https://github.com/dbt-labs/dbt/blob/1.latest/CHANGELOG.md).
   - the [dbt Fusion CHANGELOG for beta and preview release notes](/CHANGELOG-fusion.md)
 - Changes are listed under the (pre)release in which they first appear. Subsequent releases include changes from previous releases.
 - "Breaking changes" listed under a version may require action from end users or external maintainers when upgrading to that version.

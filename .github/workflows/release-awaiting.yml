@@ -4,11 +4,11 @@
 # **why?**
 # Support customers subscribe to issues to track fixes. When an issue closes
 # (fix merged), they need to know it's not live yet — average ~1 week to release.
-# dbt-core now hosts both v1 and v2 issues, so this only runs for v2: v1 follows
+# dbt now hosts both v1 and v2 issues, so this only runs for v2: v1 follows
 # a different release cadence and is not tracked by this automation.
 
 # **when?**
-# Whenever a v2 issue in dbt-labs/dbt-core is closed as completed.
+# Whenever a v2 issue in dbt-labs/dbt is closed as completed.
 
 name: "Release Tracker: Awaiting Release"
 
