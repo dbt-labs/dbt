@@ -173,6 +173,15 @@ def test_qualified_name_bare_wildcard_matches_nested_leaf(manifest):
     assert method.node_is_match("f_*", fqn, is_versioned=False)
 
 
+def test_qualified_name_bare_wildcard_matches_nested_versioned_leaf(manifest):
+    # CORE-937 follow-up: for a versioned model, the fqn's last segment is the
+    # version tag (e.g. "v4"), not the model name, so the bare wildcard match
+    # must fall back to the name segment (fqn[-2]) instead of fqn[-1].
+    method = QualifiedNameSelectorMethod(manifest, None, [])
+    fqn = ["my_pkg", "nested_dir", "versioned_model", "v4"]
+    assert method.node_is_match("versioned_model*", fqn, is_versioned=True)
+
+
 def test_select_tag(manifest):
     methods = MethodManager(manifest, None)
     method = methods.get_method("tag", [])

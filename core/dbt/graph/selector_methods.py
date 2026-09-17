@@ -114,9 +114,12 @@ def is_selected_node(fqn: List[str], node_selector: str, is_versioned: bool) -> 
         ):
             return True
         # A bare wildcard selector (no dot) should also match against just the
-        # fqn's leaf segment, regardless of how deeply the node is nested.
-        if not is_versioned and "." not in node_selector:
-            return fnmatch(fqn[-1], node_selector)
+        # fqn's leaf segment, regardless of how deeply the node is nested. For
+        # versioned models, the leaf segment is the version tag (e.g. "v4"),
+        # so match against the model name segment (fqn[-2]) instead.
+        if "." not in node_selector:
+            leaf = fqn[-2] if is_versioned else fqn[-1]
+            return fnmatch(leaf, node_selector)
         return False
 
     # if we get all the way down here, then the node is a match
