@@ -12,7 +12,6 @@ use dbt_proc_macros::StringOrArrayNewtype;
 use dbt_yaml::{Spanned, Verbatim};
 use indexmap::IndexMap;
 use schemars::JsonSchema;
-use serde::{Deserialize, Serialize};
 
 use crate::schemas::common::{DbtQuoting, DocsConfig, Hooks, merge_meta, merge_tags, merge_vec};
 use crate::schemas::properties::model_properties::{DataTestState, ModelState};
@@ -182,14 +181,6 @@ impl DefaultTo for Option<IndexMap<String, YmlValue>> {
         *self = merge_meta(parent.clone(), self.take());
     }
 }
-
-/// Insertion-ordered `tblproperties` map.
-///
-/// Newtype over `IndexMap` so this field can implement `ReplaceIfNone`. A bare
-/// `Option<IndexMap<String, YmlValue>>` already uses union-merge (`meta`).
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
-#[serde(transparent)]
-pub struct TblProperties(pub IndexMap<String, YmlValue>);
 
 // `#[derive(StringOrArrayNewtype)]` (defined in `dbt-proc-macros`) generates the
 // `AsStringOrArrayOfStrings` impl and shared accessors for newtypes wrapping
@@ -365,8 +356,6 @@ impl ReplaceIfNone for YmlValue {}
 // BTreeMap<String, YmlValue> is distinct from BTreeMap<Spanned<String>, String>
 // (column_types, handled by a special DefaultTo impl).
 impl ReplaceIfNone for BTreeMap<String, YmlValue> {}
-// See TblProperties: cannot use IndexMap<String, YmlValue> here (that type is meta).
-impl ReplaceIfNone for TblProperties {}
 impl<T: Clone> ReplaceIfNone for Vec<T> {}
 // IndexMap<String, String> for labels/resource_tags (replace-if-none).
 // IndexMap<String, YmlValue> for meta uses a custom merge — do NOT add ReplaceIfNone for it.

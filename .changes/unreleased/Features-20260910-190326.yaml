@@ -1,0 +1,7 @@
+kind: Features
+body: Merge Databricks tblproperties additively across config hierarchy layers, matching dbt-databricks MergeBehavior.Update.
+time: 2026-09-10T19:03:26.546808+05:30
+custom:
+    author: sd-db
+    issue: "16278"
+    project: dbt-core

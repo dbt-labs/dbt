@@ -17,7 +17,7 @@ use crate::schemas::common::{
 };
 use crate::schemas::manifest::GrantAccessToTarget;
 use crate::schemas::project::configs::common::WarehouseSpecificNodeConfig;
-use crate::schemas::project::configs::config_merge::{Tags, TblProperties};
+use crate::schemas::project::configs::config_merge::Tags;
 use crate::schemas::project::{ResolvableConfig, TypedRecursiveConfig};
 use crate::schemas::serde::{
     IndexesConfig, PartitionsConfig, PrimaryKeyConfig, StringOrArrayOfStrings, StringOrInteger,
@@ -121,7 +121,7 @@ pub struct ProjectSourceConfig {
     #[serde(rename = "+location_root")]
     pub location_root: Option<String>,
     #[serde(rename = "+tblproperties")]
-    pub tblproperties: Option<TblProperties>,
+    pub tblproperties: Option<IndexMap<String, YmlValue>>,
     #[serde(
         default,
         rename = "+include_full_name_in_path",
