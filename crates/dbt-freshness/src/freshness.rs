@@ -701,6 +701,7 @@ pub async fn run_freshness(
         resolver_state.defer_nodes.as_ref(),
         resolver_state.runtime_config.clone(),
         namespace_keys,
+        None,
     );
 
     let results = run_freshness_with_spans(
