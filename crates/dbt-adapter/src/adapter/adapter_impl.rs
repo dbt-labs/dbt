@@ -5253,6 +5253,25 @@ impl AdapterImpl {
                     options.push((QUERY_JOB_TIMEOUT.to_string(), OptionValue::Int(t * 1000)));
                 }
 
+                // The profile takes Core's lowercase spelling, but the driver matches the
+                // Go constants `BATCH`/`INTERACTIVE` and errors on anything else.
+                if let Some(priority) = self.get_db_config("priority") {
+                    options.push((
+                        QUERY_PRIORITY.to_string(),
+                        OptionValue::String(priority.to_uppercase()),
+                    ));
+                }
+
+                if let Some(max_bytes_billed) = self
+                    .get_db_config("maximum_bytes_billed")
+                    .and_then(|v| v.parse::<i64>().ok())
+                {
+                    options.push((
+                        QUERY_MAX_BYTES_BILLED.to_string(),
+                        OptionValue::Int(max_bytes_billed),
+                    ));
+                }
+
                 options
             }
             _ => Vec::new(),
@@ -7562,6 +7581,46 @@ mod tests {
         let state = State::new_for_env(&env);
         let options = adapter.get_adbc_execute_options(&state);
         assert!(find_job_timeout(&options).is_none());
+    }
+
+    #[test]
+    fn test_bigquery_priority_is_uppercased_for_driver() {
+        let config = Mapping::from_iter([("priority".into(), "batch".into())]);
+        let adapter = AdapterImpl::new(build_engine(Bigquery, config), None);
+        let env = Environment::new();
+        let state = State::new_for_env(&env);
+        let options = adapter.get_adbc_execute_options(&state);
+        assert!(options.iter().any(
+            |(k, v)| k == QUERY_PRIORITY && matches!(v, OptionValue::String(s) if s == "BATCH")
+        ));
+    }
+
+    #[test]
+    fn test_bigquery_maximum_bytes_billed_is_applied() {
+        let config = Mapping::from_iter([("maximum_bytes_billed".into(), 1_000_000_i64.into())]);
+        let adapter = AdapterImpl::new(build_engine(Bigquery, config), None);
+        let env = Environment::new();
+        let state = State::new_for_env(&env);
+        let options = adapter.get_adbc_execute_options(&state);
+        assert!(
+            options
+                .iter()
+                .any(|(k, v)| k == QUERY_MAX_BYTES_BILLED
+                    && matches!(v, OptionValue::Int(1_000_000)))
+        );
+    }
+
+    #[test]
+    fn test_bigquery_no_priority_or_bytes_billed_options_when_unconfigured() {
+        let adapter = AdapterImpl::new(engine(Bigquery), None);
+        let env = Environment::new();
+        let state = State::new_for_env(&env);
+        let options = adapter.get_adbc_execute_options(&state);
+        assert!(
+            !options
+                .iter()
+                .any(|(k, _)| k == QUERY_PRIORITY || k == QUERY_MAX_BYTES_BILLED)
+        );
     }
 
     // Regression test for https://github.com/dbt-labs/dbt-fusion/issues/1733:
