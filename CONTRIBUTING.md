@@ -19,8 +19,8 @@ dbt is written in Rust. Please make sure that you have the [rust toolchain insta
 
 1. [Install Rust](https://www.rust-lang.org/tools/install)
 2. Install the testing framework used for all tests & testbench configuration [Nextest](https://nexte.st/docs/installation/pre-built-binaries/)
-3. Clone the repository `git clone https://github.com/dbt-labs/dbt-core.git`
-4. `cd dbt-core`
+3. Clone the repository `git clone https://github.com/dbt-labs/dbt.git`
+4. `cd dbt`
 5. `cargo build` for a debug build. `cargo build --release` for a release build
 
 *There are no virtual environments needed!*
@@ -72,4 +72,4 @@ changie new
 
 Commit the file that's created and your changelog entry is complete!
 
-You don't need to worry about which `dbt-core` version your change will go into. Just create the changelog entry with `changie`, and open your PR against the `main` branch. All merged changes will be included in the next release of `dbt-core`.  If a changelog is not required, a maintainer can add the label `Skip Changelog` to bypass this requirement.
+You don't need to worry about which `dbt` version your change will go into. Just create the changelog entry with `changie`, and open your PR against the `main` branch. All merged changes will be included in the next release of `dbt`.  If a changelog is not required, a maintainer can add the label `Skip Changelog` to bypass this requirement.
