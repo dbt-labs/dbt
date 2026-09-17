@@ -145,6 +145,10 @@ impl Backend {
             Backend::Snowflake => Some(b"SnowflakeDriverInit"),
             Backend::DuckDB | Backend::DuckDBExtended => Some(b"duckdb_adbc_init"),
             Backend::LakeCompute => Some(b"AdbcDriverDbtInit"),
+            // dbt-labs/athena is generated with `-prefix Athena`; its shimtest
+            // links against exactly this symbol. Without the mapping the loader
+            // looks for the generic init and fails even with the library present.
+            Backend::Athena => Some(b"AdbcDriverAthenaInit"),
             Backend::Generic {
                 library_name: _,
                 entrypoint,
