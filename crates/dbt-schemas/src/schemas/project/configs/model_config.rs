@@ -570,6 +570,18 @@ pub struct ProjectModelConfig {
     #[serde(default, rename = "+table_type")]
     pub table_type: Option<String>,
 
+    // Athena
+    #[serde(rename = "+partitioned_by")]
+    pub partitioned_by: Option<StringOrArrayOfStrings>,
+    #[serde(rename = "+table_properties")]
+    pub table_properties: Option<BTreeMap<String, YmlValue>>,
+    #[serde(
+        default,
+        rename = "+force_batch",
+        deserialize_with = "bool_or_string_bool"
+    )]
+    pub force_batch: Option<bool>,
+
     #[serde(default, rename = "+indexes")]
     pub indexes: IndexesConfig,
 
@@ -848,6 +860,9 @@ impl TypedRecursiveConfig for ProjectModelConfig {
             || self.unique_key.is_some()
             || self.as_columnstore.is_some()
             || self.table_type.is_some()
+            || self.partitioned_by.is_some()
+            || self.table_properties.is_some()
+            || self.force_batch.is_some()
             || self.indexes.is_some()
             || self.unlogged.is_some()
             || self.schedule.is_some()
@@ -1165,6 +1180,9 @@ impl From<ProjectModelConfig> for ModelConfig {
                 as_columnstore: config.as_columnstore,
 
                 table_type: config.table_type,
+                partitioned_by: config.partitioned_by,
+                table_properties: config.table_properties,
+                force_batch: config.force_batch,
                 indexes: config.indexes,
                 unlogged: config.unlogged,
 
@@ -1367,6 +1385,9 @@ impl From<ModelConfig> for ProjectModelConfig {
             target_file_size: warehouse_specific.target_file_size,
             as_columnstore: warehouse_specific.as_columnstore,
             table_type: warehouse_specific.table_type,
+            partitioned_by: warehouse_specific.partitioned_by,
+            table_properties: warehouse_specific.table_properties,
+            force_batch: warehouse_specific.force_batch,
             indexes: warehouse_specific.indexes,
             unlogged: warehouse_specific.unlogged,
             schedule: warehouse_specific.schedule,
