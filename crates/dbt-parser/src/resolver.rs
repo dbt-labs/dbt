@@ -11,7 +11,8 @@ use dbt_common::path::DbtPath;
 use dbt_common::stdfs;
 use dbt_common::tracing::dbt_emit::{emit_error_log_from_fs_error, emit_warn_log_from_fs_error};
 use dbt_common::tracing::event_info::store_event_attributes;
-use dbt_common::{ErrorCode, FsResult, err, fs_err};
+use dbt_common::tracing::span_info::SpanStatusRecorder as _;
+use dbt_common::{ErrorCode, FsResult, create_debug_span, err, fs_err};
 use dbt_jinja_utils::JinjaFactory;
 use dbt_jinja_utils::invocation_args::InvocationArgs;
 use dbt_jinja_utils::invocation_graph::reset_invocation_graph;
@@ -33,6 +34,7 @@ use dbt_schemas::schemas::properties::{
     ModelProperties,
 };
 use dbt_schemas::schemas::{DbtModel, DbtSeed, DbtSource, InternalDbtNode, Nodes};
+use dbt_telemetry::GenericOpExecuted;
 
 use dbt_schemas::schemas::dbt_catalogs::DbtCatalogs;
 
@@ -56,6 +58,7 @@ use minijinja::constants::CURRENT_PATH;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
+use tracing::Instrument as _;
 
 use crate::resolve::resolve_analyses::resolve_analyses;
 use crate::resolve::resolve_checks::resolve_checks;
@@ -86,6 +89,25 @@ use crate::unused_config_paths::check_unused_resource_config_paths;
 
 use crate::constants::DEFAULT_OVERVIEW_CONTENTS;
 
+/// Count of individual assets (SQL files and property YAML files) that this
+/// invocation of `resolve` will parse, used to size the parse progress bar.
+/// Excludes seeds and macros, which are not rendered through `AssetParsed`.
+fn parse_asset_count_total(dbt_state: &DbtState) -> u64 {
+    dbt_state
+        .packages
+        .iter()
+        .map(|package| {
+            (package.model_sql_files.len()
+                + package.function_sql_files.len()
+                + package.test_files.len()
+                + package.snapshot_files.len()
+                + package.analysis_files.len()
+                + package.check_files.len()
+                + package.dbt_properties.len()) as u64
+        })
+        .sum()
+}
+
 /// Entrypoint for the resolve phase.
 ///
 /// It is responsible for resolving all project source files (i.e. models, seeds, tests,
@@ -96,7 +118,10 @@ use crate::constants::DEFAULT_OVERVIEW_CONTENTS;
 #[tracing::instrument(
     skip_all,
     fields(
-        _e = ?store_event_attributes(PhaseExecuted::start_general(ExecutionPhase::Parse)),
+        _e = ?store_event_attributes(PhaseExecuted::start_with_node_count(
+            ExecutionPhase::Parse,
+            parse_asset_count_total(&dbt_state),
+        )),
     )
 )]
 #[allow(clippy::too_many_arguments)]
@@ -1073,31 +1098,42 @@ pub async fn resolve_inner(
         disabled_nodes.saved_queries.extend(disabled_saved_queries);
     }
 
-    let (data_tests, disabled_tests) = resolve_data_tests(
-        arg,
-        package,
-        package_quoting,
-        dbt_state.root_package(),
-        root_project_configs,
-        &mut min_properties.tests,
-        database,
-        schema,
-        adapter_type,
-        jinja_env.clone(),
-        &base_ctx,
-        runtime_config.clone(),
-        root_runtime_config.clone(),
-        &collected_generic_tests,
-        &node_resolver,
-        token,
-        jinja_type_checking_event_listener_factory.clone(),
-        &root_project_configs.adapter_quoting,
-        &nodes.models,
-        &disabled_nodes.models,
-        &nodes.seeds,
-        &nodes.snapshots,
-    )
-    .await?;
+    // Scoped so the span handle drops on both exits: SpanEnd fires on last-handle-drop.
+    // operation_id has the package name: resolve_inner runs concurrently across packages.
+    let (data_tests, disabled_tests) = {
+        let span = create_debug_span(GenericOpExecuted::new(
+            format!("resolve.resolve_data_tests.{package_name}"),
+            "resolving data tests".to_string(),
+            None,
+        ));
+        resolve_data_tests(
+            arg,
+            package,
+            package_quoting,
+            dbt_state.root_package(),
+            root_project_configs,
+            &mut min_properties.tests,
+            database,
+            schema,
+            adapter_type,
+            jinja_env.clone(),
+            &base_ctx,
+            runtime_config.clone(),
+            root_runtime_config.clone(),
+            &collected_generic_tests,
+            &node_resolver,
+            token,
+            jinja_type_checking_event_listener_factory.clone(),
+            &root_project_configs.adapter_quoting,
+            &nodes.models,
+            &disabled_nodes.models,
+            &nodes.seeds,
+            &nodes.snapshots,
+        )
+        .instrument(span.clone())
+        .await
+        .record_status(&span)?
+    };
     nodes.tests.extend(data_tests);
     disabled_nodes.tests.extend(disabled_tests);
 
