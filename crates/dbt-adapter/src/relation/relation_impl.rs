@@ -131,6 +131,8 @@ impl StaticBaseRelation for RelationStatic {
                 let relation_type = iter.next_kwarg::<Option<Value>>("type")?;
                 let custom_quoting = iter.next_kwarg::<Option<Value>>("quote_policy")?;
                 let temporary = iter.next_kwarg::<Option<bool>>("temporary")?;
+                // Athena: `AthenaRelation.s3_path_table_part`
+                let s3_path_table_part = iter.next_kwarg::<Option<String>>("s3_path_table_part")?;
                 iter.finish()?;
 
                 let custom_quoting = custom_quoting
@@ -141,7 +143,7 @@ impl StaticBaseRelation for RelationStatic {
                         schema: v.schema.unwrap_or_default(),
                     });
 
-                self.try_new(
+                let relation = self.try_new(
                     database,
                     schema,
                     identifier,
@@ -154,7 +156,11 @@ impl StaticBaseRelation for RelationStatic {
                     }),
                     custom_quoting,
                     temporary,
-                )
+                )?;
+                match s3_path_table_part {
+                    Some(part) => super::relation_object::with_s3_path_table_part(relation, part),
+                    None => Ok(relation),
+                }
             }
         }
     }
@@ -195,6 +201,9 @@ pub struct Relation {
     pub metadata: Option<BTreeMap<String, String>>,
     /// Whether the relation is a delta table
     pub is_delta: bool,
+    /// dbt-athena `AthenaRelation.s3_path_table_part`: the table part of the S3 location
+    /// when it differs from the identifier (`<name>__tmp_not_partitioned` staging tables).
+    pub s3_path_table_part: Option<String>,
     /// Whether the relation is a Databricks shallow clone
     pub is_shallow_clone: bool,
     /// Constraints to be created with the table
@@ -362,6 +371,7 @@ impl Relation {
             native_schema: None,
             metadata: None,
             is_delta: false,
+            s3_path_table_part: None,
             is_shallow_clone: false,
             create_constraints: Vec::new(),
             alter_constraints: Vec::new(),
@@ -397,6 +407,11 @@ impl Relation {
 
     pub fn with_metadata(mut self, metadata: impl Into<Option<BTreeMap<String, String>>>) -> Self {
         self.metadata = metadata.into();
+        self
+    }
+
+    pub fn with_s3_path_table_part(mut self, s3_path_table_part: Option<String>) -> Self {
+        self.s3_path_table_part = s3_path_table_part;
         self
     }
 
@@ -489,6 +504,7 @@ impl Relation {
             native_schema: None,
             metadata: None,
             is_delta: false,
+            s3_path_table_part: None,
             is_shallow_clone: false,
             create_constraints: Vec::default(),
             alter_constraints: Vec::default(),
@@ -745,6 +761,7 @@ impl BaseRelation for Relation {
         .with_quoting(self.quote_policy)
         .with_metadata(self.metadata.clone())
         .with_is_delta(self.is_delta)
+        .with_s3_path_table_part(self.s3_path_table_part.clone())
         .with_is_shallow_clone(self.is_shallow_clone)
         .with_temporary(self.temporary)
         .with_can_exchange(self.can_exchange)
@@ -775,6 +792,7 @@ impl BaseRelation for Relation {
         .with_quoting(policy)
         .with_metadata(self.metadata.clone())
         .with_is_delta(self.is_delta)
+        .with_s3_path_table_part(self.s3_path_table_part.clone())
         .with_is_shallow_clone(self.is_shallow_clone)
         .with_temporary(self.temporary)
         .with_can_exchange(self.can_exchange)
@@ -1281,6 +1299,7 @@ impl BaseRelation for Relation {
             .with_quoting(custom_quoting)
             .with_metadata(self.metadata.clone())
             .with_is_delta(self.is_delta)
+            .with_s3_path_table_part(self.s3_path_table_part.clone())
             .with_is_shallow_clone(self.is_shallow_clone)
             .with_temporary(self.temporary)
             .with_table_format(self.table_format)

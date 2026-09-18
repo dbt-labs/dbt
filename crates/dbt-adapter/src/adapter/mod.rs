@@ -55,6 +55,7 @@ use std::sync::Arc;
 
 pub mod adapter_factory;
 pub mod adapter_impl;
+mod athena;
 pub mod store;
 pub use adapter_factory::*;
 pub use adapter_impl::{AdapterImpl, alias_types_from_state, quote_component, quote_ident};
@@ -658,6 +659,9 @@ impl Adapter {
     ///     quote_config: Optional[bool]
     /// ) -> str
     /// ```
+    ///
+    /// dbt-athena adds `quote_character: Optional[str] = None`: its Hive DDL quotes
+    /// seed columns with backticks instead of the adapter's quote character.
     #[tracing::instrument(skip_all, level = "trace")]
     pub fn quote_seed_column(
         &self,
@@ -666,12 +670,23 @@ impl Adapter {
     ) -> Result<Value, minijinja::Error> {
         match &self.inner {
             Typed { adapter, .. } => {
-                let iter = ArgsIter::new("quote_seed_column", &["column", "quote_config"], args);
+                let iter = ArgsIter::new(
+                    "quote_seed_column",
+                    &["column", "quote_config", "quote_character"],
+                    args,
+                );
                 let column = iter.next_arg::<&str>()?;
                 let quote_config = iter.next_kwarg::<Option<bool>>("quote_config")?;
+                let quote_character = iter
+                    .next_kwarg::<Option<&str>>("quote_character")?
+                    .filter(|c| !c.is_empty());
                 iter.finish()?;
 
                 let result = adapter.quote_seed_column(state, column, quote_config)?;
+                let result = match quote_character {
+                    Some(quote) if result != column => format!("{quote}{column}{quote}"),
+                    _ => result,
+                };
                 Ok(Value::from(result))
             }
             Parse(_) => Ok(empty_string_value()),
@@ -4411,6 +4426,34 @@ impl Adapter {
                 self.get_csv_data(table)
             }
             "get_credentials" => self.get_credentials(args),
+            // Athena: dbt-athena's `AthenaAdapter` methods, see `adapter/athena`.
+            "is_list" => self.athena_is_list(args),
+            "format_value_for_partition" => self.athena_format_value_for_partition(args),
+            "format_one_partition_key" => self.athena_format_one_partition_key(args),
+            "format_partition_keys" => self.athena_format_partition_keys(args),
+            "murmur3_hash" => self.athena_murmur3_hash(args),
+            "generate_s3_location" => self.athena_generate_s3_location(args),
+            "get_glue_table_type" => self.athena_get_glue_table_type(state, args),
+            "clean_up_table" => self.athena_clean_up_table(state, args),
+            "delete_from_glue_catalog" => self.athena_delete_from_glue_catalog(state, args),
+            "drop_glue_database" => self.athena_drop_glue_database(state, args),
+            "expire_glue_table_versions" => self.athena_expire_glue_table_versions(state, args),
+            "swap_table" => self.athena_swap_table(state, args),
+            "clean_up_partitions" => self.athena_clean_up_partitions(state, args),
+            "delete_from_s3" => self.athena_delete_from_s3(state, args),
+            "is_work_group_output_location_enforced" => {
+                self.athena_is_work_group_output_location_enforced(state, args)
+            }
+            "upload_seed_to_s3" => self.athena_upload_seed_to_s3(state, args),
+            "run_query_with_partitions_limit_catching" => {
+                self.athena_run_query_with_partitions_limit_catching(state, args)
+            }
+            "run_operation_with_potential_multiple_runs" => {
+                self.athena_run_operation_with_potential_multiple_runs(state, args)
+            }
+            "persist_docs_to_glue" => self.athena_persist_docs_to_glue(state, args),
+            "add_lf_tags" => self.athena_add_lf_tags(args),
+            "apply_lf_grants" => self.athena_apply_lf_grants(args),
             "render_equals" => {
                 let iter = ArgsIter::new(name, &["expr1", "expr2"], args);
                 let expr1 = iter.next_arg::<&str>()?;
