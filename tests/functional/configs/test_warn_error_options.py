@@ -346,13 +346,13 @@ class TestRequireAllWarningsHandledByWarnErrorBehaviorFlag:
         assert len(microbatch_error_catcher.caught_events) == 1
 
 
-class TestWarnErrorOptionsToleratesFusionFromCLI(BaseTestWarnErrorOptions):
-    """dbt-core should ignore (not error on) Fusion-only warn_error_options names."""
+class TestWarnErrorOptionsToleratesV2FromCLI(BaseTestWarnErrorOptions):
+    """dbt-core should ignore (not error on) v2-only warn_error_options names."""
 
-    def test_fusion_only_name_is_ignored_not_errored(
+    def test_v2_only_name_is_ignored_not_errored(
         self, project, catcher: EventCatcher, runner: dbtRunner
     ) -> None:
-        # 'StaticAnalysis' is specific to the dbt Fusion engine. dbt-core should
+        # 'StaticAnalysis' is specific to the dbt v2 engine. dbt-core should
         # ignore it rather than raise, while still honoring the real 'DeprecatedModel'.
         result = runner.invoke(
             ["run", "--warn-error-options", "{'silence': ['StaticAnalysis', 'DeprecatedModel']}"]
@@ -369,11 +369,11 @@ class TestWarnErrorOptionsToleratesFusionFromCLI(BaseTestWarnErrorOptions):
         assert "not a valid dbt error name" in str(result.exception)
 
 
-class TestWarnErrorOptionsToleratesFusionFromProject(BaseTestWarnErrorOptionsFromProject):
-    def test_fusion_only_name_is_ignored_not_errored(
+class TestWarnErrorOptionsToleratesV2FromProject(BaseTestWarnErrorOptionsFromProject):
+    def test_v2_only_name_is_ignored_not_errored(
         self, project, clear_project_flags, project_root, runner: dbtRunner
     ) -> None:
-        # A Fusion-only name in dbt_project.yml should be ignored (with a Note,
+        # A v2-only name in dbt_project.yml should be ignored (with a Note,
         # see the convert_config unit test) rather than raising. Here we assert
         # the resulting behavior: the run succeeds and the name is stripped from
         # the resolved options. (The Note is emitted during Flags construction,

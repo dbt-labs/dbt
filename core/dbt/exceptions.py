@@ -86,23 +86,23 @@ class DependencyError(DbtRuntimeError):
     MESSAGE = "Dependency Error"
 
 
-class FusionParserError(DbtRuntimeError):
+class V2ParserError(DbtRuntimeError):
     CODE = 10025
-    MESSAGE = "Fusion Parser Error"
+    MESSAGE = "V2 Parser Error"
 
     def __init__(self, msg: str, returncode: int = -1, node=None) -> None:
         super().__init__(msg, node=node)
         self.returncode = returncode
 
 
-class FusionParserSchemaError(FusionParserError):
+class V2ParserSchemaError(V2ParserError):
     CODE = 10027
-    MESSAGE = "Fusion Parser Schema Error"
+    MESSAGE = "V2 Parser Schema Error"
 
 
-class FusionParserVersionError(FusionParserError):
+class V2ParserVersionError(V2ParserError):
     CODE = 10028
-    MESSAGE = "Fusion Parser Version Error"
+    MESSAGE = "V2 Parser Version Error"
 
 
 class FailFastError(DbtRuntimeError):

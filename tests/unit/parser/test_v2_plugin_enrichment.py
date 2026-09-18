@@ -44,7 +44,7 @@ class TestEnrichManifestWithPluginArtifacts:
 
         pm.get_manifest_artifacts.assert_not_called()
 
-    def test_assert_no_get_nodes_plugins_allows_fusion_parity_plugins(self):
+    def test_assert_no_get_nodes_plugins_allows_v2_parity_plugins(self):
         pm = SimpleNamespace(
             hooks={
                 "get_nodes": [

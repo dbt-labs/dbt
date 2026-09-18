@@ -206,7 +206,7 @@ def jsonschema_validate(schema: Dict[str, Any], json: Dict[str, Any], file_path:
             else:
                 key_path = error_path_to_string(error)
                 for key in keys:
-                    # Type params are not in the metrics v2 jsonschema from fusion, but dbt-core continues to maintain support for them in v1.
+                    # Type params are not in the metrics v2 jsonschema from the v2 parser, but dbt-core continues to maintain support for them in v1.
                     if key == "type_params":
                         continue
 

@@ -8,16 +8,12 @@ from unittest import mock
 import pytest
 
 from dbt.events.types import V2ParserEnd, V2ParserStart
-from dbt.exceptions import (
-    FusionParserError,
-    FusionParserSchemaError,
-    FusionParserVersionError,
-)
-from dbt.parser.fusion import (
+from dbt.exceptions import V2ParserError, V2ParserSchemaError, V2ParserVersionError
+from dbt.parser.v2 import (
     _build_argv,
     _delete_stale_partial_parse,
     _serialize_vars,
-    parse_with_fusion,
+    parse_with_v2,
     rediscover_adapter_macros,
 )
 from dbt_common.events.base_types import EventLevel
@@ -56,7 +52,7 @@ class _FakeStream:
 
 
 class _FakePopen:
-    """Stand-in for subprocess.Popen that supplies the attributes _run_fusion
+    """Stand-in for subprocess.Popen that supplies the attributes _run_v2
     reads: iterable text-mode stdout/stderr streams, wait() -> returncode."""
 
     def __init__(
@@ -101,7 +97,7 @@ def _fake_parser(
 @pytest.fixture(autouse=True)
 def _no_invocation_id():
     """Default to no invocation id so argv tests assert only the flags they set."""
-    with mock.patch("dbt.parser.fusion.get_invocation_id", return_value=None):
+    with mock.patch("dbt.parser.v2.get_invocation_id", return_value=None):
         yield
 
 
@@ -111,7 +107,7 @@ class TestBuildArgv:
         # Bypass wheel-binary path resolution so tests assert on the bare
         # command name regardless of whether dbt-core-experimental-parser is
         # installed in the test environment's scripts dir.
-        with mock.patch("dbt.parser.fusion._resolve_engine_command", side_effect=lambda c: c):
+        with mock.patch("dbt.parser.v2._resolve_engine_command", side_effect=lambda c: c):
             yield
 
     def test_default_command_no_forwards(self):
@@ -150,7 +146,7 @@ class TestBuildArgv:
 
     def test_forwards_log_format_json(self):
         """--log-format json is always forwarded (not user-configurable) so
-        _run_fusion can parse each line's real severity instead of using a
+        _run_v2 can parse each line's real severity instead of using a
         single hardcoded level per stream."""
         argv = _build_argv(_flags())
         i = argv.index("--log-format")
@@ -182,7 +178,7 @@ class TestBuildArgv:
 
     def test_forwards_invocation_id(self):
         with mock.patch(
-            "dbt.parser.fusion.get_invocation_id",
+            "dbt.parser.v2.get_invocation_id",
             return_value="11111111-1111-1111-1111-111111111111",
         ):
             argv = _build_argv(_flags())
@@ -215,32 +211,32 @@ class TestDeleteStalePartialParse:
 
 
 @pytest.fixture
-def _patch_fusion_deps():
-    """parse_with_fusion now resolves flags via get_flags() and calls
+def _patch_v2_deps():
+    """parse_with_v2 now resolves flags via get_flags() and calls
     assert_no_get_nodes_plugins / enrich_manifest_with_plugin_artifacts on the
     real plugin manager. Stub them so tests focus on parser invocation behavior.
     """
-    with mock.patch("dbt.parser.fusion.get_flags", return_value=_flags()), mock.patch(
+    with mock.patch("dbt.parser.v2.get_flags", return_value=_flags()), mock.patch(
         "dbt.parser.manifest.assert_no_get_nodes_plugins"
     ), mock.patch("dbt.parser.manifest.enrich_manifest_with_plugin_artifacts"), mock.patch(
-        "dbt.parser.fusion.rediscover_adapter_macros"
+        "dbt.parser.v2.rediscover_adapter_macros"
     ):
         yield
 
 
-class TestParseWithFusion:
+class TestParseWithV2:
     def _runtime_config(self, target_path: Path):
         return SimpleNamespace(project_target_path=str(target_path), project_name="test")
 
-    def test_missing_binary_raises_typed_error(self, tmp_path: Path, _patch_fusion_deps):
+    def test_missing_binary_raises_typed_error(self, tmp_path: Path, _patch_v2_deps):
         with mock.patch(
-            "dbt.parser.fusion.get_flags",
+            "dbt.parser.v2.get_flags",
             return_value=_flags(V2_PARSER="definitely-not-a-real-binary-xyz"),
-        ), mock.patch("dbt.parser.fusion.subprocess.Popen", side_effect=FileNotFoundError()):
-            with pytest.raises(FusionParserError):
-                parse_with_fusion(self._runtime_config(tmp_path), write=True, write_json=True)
+        ), mock.patch("dbt.parser.v2.subprocess.Popen", side_effect=FileNotFoundError()):
+            with pytest.raises(V2ParserError):
+                parse_with_v2(self._runtime_config(tmp_path), write=True, write_json=True)
 
-    def test_sets_dbt_invocation_env_on_subprocess(self, tmp_path: Path, _patch_fusion_deps):
+    def test_sets_dbt_invocation_env_on_subprocess(self, tmp_path: Path, _patch_v2_deps):
         """fs must see DBT_INVOCATION_ENV=dbt-core-v2-parser regardless of the
         parent process's value, so analytics can attribute the embedded fs run
         to the v2-parser pathway without clobbering the host's own telemetry."""
@@ -252,12 +248,12 @@ class TestParseWithFusion:
 
         with mock.patch.dict(
             "os.environ", {"DBT_INVOCATION_ENV": "dbt-cloud-prod__host:cloud"}, clear=False
-        ), mock.patch("dbt.parser.fusion.subprocess.Popen", side_effect=_capture), mock.patch(
-            "dbt.parser.fusion._load_writable_manifest", return_value=mock.MagicMock()
+        ), mock.patch("dbt.parser.v2.subprocess.Popen", side_effect=_capture), mock.patch(
+            "dbt.parser.v2._load_writable_manifest", return_value=mock.MagicMock()
         ), mock.patch(
-            "dbt.parser.fusion.Manifest.from_writable_manifest", return_value=mock.MagicMock()
+            "dbt.parser.v2.Manifest.from_writable_manifest", return_value=mock.MagicMock()
         ):
-            parse_with_fusion(self._runtime_config(tmp_path), write=False, write_json=False)
+            parse_with_v2(self._runtime_config(tmp_path), write=False, write_json=False)
             # parent process env is untouched (asserted inside the patch.dict
             # block so the original value is still in place to compare against)
             assert os.environ["DBT_INVOCATION_ENV"] == "dbt-cloud-prod__host:cloud"
@@ -266,7 +262,7 @@ class TestParseWithFusion:
         assert captured["env"]["DBT_INVOCATION_ENV"] == "dbt-core-v2-parser"
 
     def test_strips_core_only_engine_env_vars_from_subprocess(
-        self, tmp_path: Path, _patch_fusion_deps
+        self, tmp_path: Path, _patch_v2_deps
     ):
         """fs hard-errors on unknown DBT_ENGINE_* vars. Every DBT_ENGINE_* var
         that maps to a dbt-core CLI option must be stripped from the child env;
@@ -289,13 +285,13 @@ class TestParseWithFusion:
             "DBT_ENGINE_STATE_API_URL": "https://state.example.com",
         }
         with mock.patch.dict("os.environ", parent_env, clear=False), mock.patch(
-            "dbt.parser.fusion.subprocess.Popen", side_effect=_capture
+            "dbt.parser.v2.subprocess.Popen", side_effect=_capture
         ), mock.patch(
-            "dbt.parser.fusion._load_writable_manifest", return_value=mock.MagicMock()
+            "dbt.parser.v2._load_writable_manifest", return_value=mock.MagicMock()
         ), mock.patch(
-            "dbt.parser.fusion.Manifest.from_writable_manifest", return_value=mock.MagicMock()
+            "dbt.parser.v2.Manifest.from_writable_manifest", return_value=mock.MagicMock()
         ):
-            parse_with_fusion(self._runtime_config(tmp_path), write=False, write_json=False)
+            parse_with_v2(self._runtime_config(tmp_path), write=False, write_json=False)
 
         child_env = captured["env"]
         assert "DBT_ENGINE_USE_V2_PARSER" not in child_env
@@ -306,16 +302,16 @@ class TestParseWithFusion:
         assert child_env["DBT_ENGINE_STATE_OAUTH_CLIENT_ID"] == "client-id"
         assert child_env["DBT_ENGINE_STATE_API_URL"] == "https://state.example.com"
 
-    def test_nonzero_exit_raises(self, tmp_path: Path, _patch_fusion_deps):
+    def test_nonzero_exit_raises(self, tmp_path: Path, _patch_v2_deps):
         with mock.patch(
-            "dbt.parser.fusion.subprocess.Popen",
+            "dbt.parser.v2.subprocess.Popen",
             side_effect=_fake_parser(manifest_text=None, returncode=2),
         ):
-            with pytest.raises(FusionParserError, match="exit 2"):
-                parse_with_fusion(self._runtime_config(tmp_path), write=True, write_json=True)
+            with pytest.raises(V2ParserError, match="exit 2"):
+                parse_with_v2(self._runtime_config(tmp_path), write=True, write_json=True)
 
     def _run_and_capture_notes(self, tmp_path: Path, stdout_lines=(), stderr_lines=()):
-        """Run parse_with_fusion against fake stdout/stderr lines and return
+        """Run parse_with_v2 against fake stdout/stderr lines and return
         the (msg, level) pairs of every Note event fired."""
         events: list = []
         levels: list = []
@@ -325,24 +321,24 @@ class TestParseWithFusion:
             levels.append(kwargs.get("level"))
 
         with mock.patch(
-            "dbt.parser.fusion.subprocess.Popen",
+            "dbt.parser.v2.subprocess.Popen",
             side_effect=_fake_parser(
                 manifest_text=json.dumps({"metadata": {}}),
                 stdout_lines=stdout_lines,
                 stderr_lines=stderr_lines,
             ),
         ), mock.patch(
-            "dbt.parser.fusion._load_writable_manifest", return_value=mock.MagicMock()
+            "dbt.parser.v2._load_writable_manifest", return_value=mock.MagicMock()
         ), mock.patch(
-            "dbt.parser.fusion.Manifest.from_writable_manifest", return_value=mock.MagicMock()
+            "dbt.parser.v2.Manifest.from_writable_manifest", return_value=mock.MagicMock()
         ), mock.patch(
-            "dbt.parser.fusion.fire_event", side_effect=_capture
+            "dbt.parser.v2.fire_event", side_effect=_capture
         ):
-            parse_with_fusion(self._runtime_config(tmp_path), write=False, write_json=False)
+            parse_with_v2(self._runtime_config(tmp_path), write=False, write_json=False)
 
         return [(e.msg, lvl) for e, lvl in zip(events, levels) if isinstance(e, Note)]
 
-    def test_output_lines_reemitted_as_note_events(self, tmp_path: Path, _patch_fusion_deps):
+    def test_output_lines_reemitted_as_note_events(self, tmp_path: Path, _patch_v2_deps):
         """Non-JSON stdout/stderr lines must still be re-emitted through
         dbt-core's event system (as Note events) at the stream's fallback
         level, so they reach any consumer of that stream (e.g. dbt Studio),
@@ -358,7 +354,7 @@ class TestParseWithFusion:
         assert ("warning: deprecated config", EventLevel.WARN) in notes
 
     @pytest.mark.parametrize(
-        "fusion_level, expected_level",
+        "v2_level, expected_level",
         [
             ("error", EventLevel.ERROR),
             ("warn", EventLevel.WARN),
@@ -367,16 +363,16 @@ class TestParseWithFusion:
         ],
     )
     def test_json_line_reemitted_with_mapped_level(
-        self, tmp_path: Path, _patch_fusion_deps, fusion_level, expected_level
+        self, tmp_path: Path, _patch_v2_deps, v2_level, expected_level
     ):
         """A json-compat line's own info.level must override the stream's
         fallback level (e.g. an "error" on stdout is still fired as ERROR,
         not silently downgraded to stdout's INFO fallback)."""
-        line = json.dumps({"info": {"level": fusion_level, "msg": "boom"}})
+        line = json.dumps({"info": {"level": v2_level, "msg": "boom"}})
         notes = self._run_and_capture_notes(tmp_path, stdout_lines=[line])
         assert ("boom", expected_level) in notes
 
-    def test_json_line_unknown_level_falls_back(self, tmp_path: Path, _patch_fusion_deps):
+    def test_json_line_unknown_level_falls_back(self, tmp_path: Path, _patch_v2_deps):
         """An info.level string outside the known vocabulary must not raise —
         json-compat isn't a stable contract, so an unrecognized level falls
         back to the stream's default rather than crashing the parse."""
@@ -384,104 +380,102 @@ class TestParseWithFusion:
         notes = self._run_and_capture_notes(tmp_path, stdout_lines=[line])
         assert ("boom", EventLevel.INFO) in notes
 
-    def test_non_json_line_falls_back_to_raw_note(self, tmp_path: Path, _patch_fusion_deps):
+    def test_non_json_line_falls_back_to_raw_note(self, tmp_path: Path, _patch_v2_deps):
         notes = self._run_and_capture_notes(tmp_path, stdout_lines=["not json at all"])
         assert ("not json at all", EventLevel.INFO) in notes
 
-    def test_json_line_missing_info_or_msg_falls_back(self, tmp_path: Path, _patch_fusion_deps):
+    def test_json_line_missing_info_or_msg_falls_back(self, tmp_path: Path, _patch_v2_deps):
         """json-compat isn't a guaranteed contract; a schema change that drops
         or renames fields must degrade to the raw line rather than crash."""
         line = json.dumps({"unexpected": "shape"})
         notes = self._run_and_capture_notes(tmp_path, stderr_lines=[line])
         assert (line, EventLevel.WARN) in notes
 
-    def test_missing_manifest_after_success_raises(self, tmp_path: Path, _patch_fusion_deps):
+    def test_missing_manifest_after_success_raises(self, tmp_path: Path, _patch_v2_deps):
         """Parser exits 0 but writes nothing — must raise, not silently load a stale file."""
         with mock.patch(
-            "dbt.parser.fusion.subprocess.Popen", side_effect=_fake_parser(manifest_text=None)
+            "dbt.parser.v2.subprocess.Popen", side_effect=_fake_parser(manifest_text=None)
         ):
-            with pytest.raises(FusionParserError, match="did not produce"):
-                parse_with_fusion(self._runtime_config(tmp_path), write=True, write_json=True)
+            with pytest.raises(V2ParserError, match="did not produce"):
+                parse_with_v2(self._runtime_config(tmp_path), write=True, write_json=True)
 
-    def test_stale_target_manifest_not_loaded(self, tmp_path: Path, _patch_fusion_deps):
+    def test_stale_target_manifest_not_loaded(self, tmp_path: Path, _patch_v2_deps):
         """A stale manifest left in target/ from a prior run must not satisfy
-        the fusion handoff — parser writes into a fresh temp dir."""
+        the v2 handoff — parser writes into a fresh temp dir."""
         (tmp_path / "manifest.json").write_text(json.dumps({"stale": True}))
         with mock.patch(
-            "dbt.parser.fusion.subprocess.Popen", side_effect=_fake_parser(manifest_text=None)
+            "dbt.parser.v2.subprocess.Popen", side_effect=_fake_parser(manifest_text=None)
         ):
-            with pytest.raises(FusionParserError, match="did not produce"):
-                parse_with_fusion(self._runtime_config(tmp_path), write=True, write_json=True)
+            with pytest.raises(V2ParserError, match="did not produce"):
+                parse_with_v2(self._runtime_config(tmp_path), write=True, write_json=True)
 
-    def test_invalid_json_raises_schema_error(self, tmp_path: Path, _patch_fusion_deps):
+    def test_invalid_json_raises_schema_error(self, tmp_path: Path, _patch_v2_deps):
         with mock.patch(
-            "dbt.parser.fusion.subprocess.Popen", side_effect=_fake_parser("{ not valid json")
+            "dbt.parser.v2.subprocess.Popen", side_effect=_fake_parser("{ not valid json")
         ):
-            with pytest.raises(FusionParserSchemaError):
-                parse_with_fusion(self._runtime_config(tmp_path), write=True, write_json=True)
+            with pytest.raises(V2ParserSchemaError):
+                parse_with_v2(self._runtime_config(tmp_path), write=True, write_json=True)
 
     def test_incompatible_schema_version_raises_version_error(
-        self, tmp_path: Path, _patch_fusion_deps
+        self, tmp_path: Path, _patch_v2_deps
     ):
         bad_version = json.dumps(
             {"metadata": {"dbt_schema_version": "https://schemas.getdbt.com/dbt/manifest/v1.json"}}
         )
-        with mock.patch(
-            "dbt.parser.fusion.subprocess.Popen", side_effect=_fake_parser(bad_version)
-        ):
-            with pytest.raises(FusionParserVersionError):
-                parse_with_fusion(self._runtime_config(tmp_path), write=True, write_json=True)
+        with mock.patch("dbt.parser.v2.subprocess.Popen", side_effect=_fake_parser(bad_version)):
+            with pytest.raises(V2ParserVersionError):
+                parse_with_v2(self._runtime_config(tmp_path), write=True, write_json=True)
 
-    def test_no_write_json_leaves_target_dir_untouched(self, tmp_path: Path, _patch_fusion_deps):
-        """With write_json=False, the fusion handoff manifest must not be
+    def test_no_write_json_leaves_target_dir_untouched(self, tmp_path: Path, _patch_v2_deps):
+        """With write_json=False, the v2 handoff manifest must not be
         copied into the user's target dir."""
         # Pre-create target dir but leave it empty.
         target = tmp_path / "target"
         target.mkdir()
         with mock.patch(
-            "dbt.parser.fusion.subprocess.Popen",
+            "dbt.parser.v2.subprocess.Popen",
             side_effect=_fake_parser(json.dumps({"metadata": {}})),
         ), mock.patch(
-            "dbt.parser.fusion._load_writable_manifest",
+            "dbt.parser.v2._load_writable_manifest",
             return_value=mock.MagicMock(),
         ), mock.patch(
-            "dbt.parser.fusion.Manifest.from_writable_manifest",
+            "dbt.parser.v2.Manifest.from_writable_manifest",
             return_value=mock.MagicMock(),
         ):
-            parse_with_fusion(self._runtime_config(target), write=True, write_json=False)
+            parse_with_v2(self._runtime_config(target), write=True, write_json=False)
         assert list(target.iterdir()) == []
 
     def test_write_json_writes_corrected_manifest_to_target_dir(
-        self, tmp_path: Path, _patch_fusion_deps
+        self, tmp_path: Path, _patch_v2_deps
     ):
         """manifest.json must be written from the corrected in-memory Manifest
-        (after rediscover_adapter_macros) rather than copied from Fusion's raw
+        (after rediscover_adapter_macros) rather than copied from the v2 parser's raw
         handoff file, so the on-disk artifact reflects the rediscovered macros
         actually used for compilation."""
         target = tmp_path / "target"
         target.mkdir()
         corrected_manifest = mock.MagicMock()
         with mock.patch(
-            "dbt.parser.fusion.subprocess.Popen",
+            "dbt.parser.v2.subprocess.Popen",
             side_effect=_fake_parser(json.dumps({"metadata": {}})),
         ), mock.patch(
-            "dbt.parser.fusion._load_writable_manifest",
+            "dbt.parser.v2._load_writable_manifest",
             return_value=mock.MagicMock(),
         ), mock.patch(
-            "dbt.parser.fusion.Manifest.from_writable_manifest",
+            "dbt.parser.v2.Manifest.from_writable_manifest",
             return_value=corrected_manifest,
         ):
-            parse_with_fusion(self._runtime_config(target), write=True, write_json=True)
+            parse_with_v2(self._runtime_config(target), write=True, write_json=True)
         corrected_manifest.write.assert_called_once_with(str(target / "manifest.json"))
 
 
-class TestParseWithFusionTelemetry:
+class TestParseWithV2Telemetry:
     """V2ParserStart/V2ParserEnd must fire around every v2-parser handoff so
     internal analytics can attribute v2-parser invocations and measure success
     rate end-to-end. Both events must fire on success; on each typed-exception
     failure path the end event must carry status="failure" + the exception
-    class name. exit_code is -1 except for FusionParserError, which surfaces
-    fs's process exit code via FusionParserError.returncode."""
+    class name. exit_code is -1 except for V2ParserError, which surfaces
+    fs's process exit code via V2ParserError.returncode."""
 
     def _runtime_config(self, target_path: Path):
         return SimpleNamespace(project_target_path=str(target_path), project_name="test")
@@ -492,19 +486,19 @@ class TestParseWithFusionTelemetry:
         def _capture(event, *args, **kwargs):
             events.append(event)
 
-        return events, mock.patch("dbt.parser.fusion.fire_event", side_effect=_capture)
+        return events, mock.patch("dbt.parser.v2.fire_event", side_effect=_capture)
 
-    def test_success_fires_start_and_end_success(self, tmp_path: Path, _patch_fusion_deps):
+    def test_success_fires_start_and_end_success(self, tmp_path: Path, _patch_v2_deps):
         events, patch_fire = self._patch_fire_event()
         with patch_fire, mock.patch(
-            "dbt.parser.fusion.subprocess.Popen",
+            "dbt.parser.v2.subprocess.Popen",
             side_effect=_fake_parser(json.dumps({"metadata": {}})),
         ), mock.patch(
-            "dbt.parser.fusion._load_writable_manifest", return_value=mock.MagicMock()
+            "dbt.parser.v2._load_writable_manifest", return_value=mock.MagicMock()
         ), mock.patch(
-            "dbt.parser.fusion.Manifest.from_writable_manifest", return_value=mock.MagicMock()
+            "dbt.parser.v2.Manifest.from_writable_manifest", return_value=mock.MagicMock()
         ):
-            parse_with_fusion(self._runtime_config(tmp_path), write=False, write_json=False)
+            parse_with_v2(self._runtime_config(tmp_path), write=False, write_json=False)
 
         types = [type(e).__name__ for e in events]
         assert types == ["V2ParserStart", "V2ParserEnd"]
@@ -520,28 +514,28 @@ class TestParseWithFusionTelemetry:
     @pytest.mark.parametrize(
         "subprocess_side_effect, expected_error_class, expected_exit_code",
         [
-            (FileNotFoundError(), "FusionParserError", -1),
-            # fs exits non-zero — exit code surfaced via FusionParserError.returncode
-            (_fake_parser(manifest_text=None, returncode=2), "FusionParserError", 2),
-            # fs exits 0 but writes no manifest — generic FusionParserError, no returncode
-            (_fake_parser(manifest_text=None), "FusionParserError", -1),
-            (_fake_parser("{ not valid json"), "FusionParserSchemaError", -1),
+            (FileNotFoundError(), "V2ParserError", -1),
+            # fs exits non-zero — exit code surfaced via V2ParserError.returncode
+            (_fake_parser(manifest_text=None, returncode=2), "V2ParserError", 2),
+            # fs exits 0 but writes no manifest — generic V2ParserError, no returncode
+            (_fake_parser(manifest_text=None), "V2ParserError", -1),
+            (_fake_parser("{ not valid json"), "V2ParserSchemaError", -1),
         ],
     )
     def test_failure_fires_end_failure(
         self,
         tmp_path: Path,
-        _patch_fusion_deps,
+        _patch_v2_deps,
         subprocess_side_effect,
         expected_error_class,
         expected_exit_code,
     ):
         events, patch_fire = self._patch_fire_event()
         with patch_fire, mock.patch(
-            "dbt.parser.fusion.subprocess.Popen", side_effect=subprocess_side_effect
+            "dbt.parser.v2.subprocess.Popen", side_effect=subprocess_side_effect
         ):
-            with pytest.raises(FusionParserError):
-                parse_with_fusion(self._runtime_config(tmp_path), write=True, write_json=True)
+            with pytest.raises(V2ParserError):
+                parse_with_v2(self._runtime_config(tmp_path), write=True, write_json=True)
 
         types = [type(e).__name__ for e in events]
         assert types == ["V2ParserStart", "V2ParserEnd"]
@@ -550,20 +544,20 @@ class TestParseWithFusionTelemetry:
         assert end.error_class == expected_error_class
         assert end.exit_code == expected_exit_code
 
-    def test_failure_version_error_fires_end_failure(self, tmp_path: Path, _patch_fusion_deps):
+    def test_failure_version_error_fires_end_failure(self, tmp_path: Path, _patch_v2_deps):
         events, patch_fire = self._patch_fire_event()
         bad_version = json.dumps(
             {"metadata": {"dbt_schema_version": "https://schemas.getdbt.com/dbt/manifest/v1.json"}}
         )
         with patch_fire, mock.patch(
-            "dbt.parser.fusion.subprocess.Popen", side_effect=_fake_parser(bad_version)
+            "dbt.parser.v2.subprocess.Popen", side_effect=_fake_parser(bad_version)
         ):
-            with pytest.raises(FusionParserVersionError):
-                parse_with_fusion(self._runtime_config(tmp_path), write=True, write_json=True)
+            with pytest.raises(V2ParserVersionError):
+                parse_with_v2(self._runtime_config(tmp_path), write=True, write_json=True)
 
         end = events[1]
         assert end.status == "failure"
-        assert end.error_class == "FusionParserVersionError"
+        assert end.error_class == "V2ParserVersionError"
         assert end.exit_code == -1
 
 
@@ -700,7 +694,7 @@ class TestRediscoverAdapterMacros:
     def test_populates_depends_on_for_reparsed_macros(self):
         """A re-parsed adapter macro that calls another macro should get
         depends_on.macros populated, mirroring what ManifestLoader.macro_depends_on
-        does for the normal (non-fusion) parse pipeline."""
+        does for the normal (non-v2) parse pipeline."""
         from dbt.contracts.graph.nodes import Macro
         from dbt.node_types import NodeType
 
