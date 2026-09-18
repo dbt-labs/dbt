@@ -27,6 +27,9 @@ use dbt_tasks_core::visitor::SkipReason;
 use dbt_telemetry::{ExecutionPhase, NodeOutcome, NodeType};
 use dbt_yaml::Span;
 
+#[cfg(test)]
+pub(crate) mod wap_test_support;
+
 /// Pool of reusable logical worker slot IDs (1, 2, 3, …).
 ///
 /// Tasks are assigned a slot before execution and release it after.

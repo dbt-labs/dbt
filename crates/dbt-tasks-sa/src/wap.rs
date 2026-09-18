@@ -138,7 +138,7 @@ impl Task for PublishTask {
     }
 }
 
-fn require_passing_audits<'a>(
+pub(crate) fn require_passing_audits<'a>(
     audits: impl IntoIterator<Item = (&'a str, Option<NodeStatus>)>,
 ) -> FsResult<()> {
     let mut count = 0;
@@ -737,6 +737,8 @@ mod clone_tests;
 mod header_tests;
 #[cfg(test)]
 mod publication_tests;
+#[cfg(test)]
+mod stage_tests;
 
 #[cfg(test)]
 mod tests {

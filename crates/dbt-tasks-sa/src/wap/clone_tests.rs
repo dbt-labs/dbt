@@ -19,7 +19,7 @@ const CLONE_MACRO: &str = include_str!(
     "../../../dbt-loader/src/dbt_macro_assets/dbt-snowflake/macros/materializations/clone.sql"
 );
 
-fn fixture(copy_grants: Option<bool>) -> (tempfile::TempDir, IoArgs, WapModel) {
+pub(super) fn fixture(copy_grants: Option<bool>) -> (tempfile::TempDir, IoArgs, WapModel) {
     let directory = tempfile::tempdir().unwrap();
     std::fs::create_dir(directory.path().join("models")).unwrap();
     std::fs::write(directory.path().join("models/orders.sql"), "select 1 as id").unwrap();
@@ -58,7 +58,7 @@ fn fixture(copy_grants: Option<bool>) -> (tempfile::TempDir, IoArgs, WapModel) {
     (directory, io, wap)
 }
 
-fn runtime_context(model: &DbtModel, io: &IoArgs) -> BTreeMap<String, Value> {
+pub(super) fn runtime_context(model: &DbtModel, io: &IoArgs) -> BTreeMap<String, Value> {
     let (context, _) = build_run_node_context(
         model,
         &model.deprecated_config,

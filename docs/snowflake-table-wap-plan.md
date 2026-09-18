@@ -54,6 +54,12 @@ ordinary downstream `ref()` calls remain unchanged.
    clustering, refresh relation metadata, and release downstream tasks. Drop
    the successful working table after publication completes.
 
+Staging copies the model's execution definition to a new table name. The SQL
+transformation builds that working table with `CREATE OR REPLACE TABLE ... AS`.
+Snowflake `CLONE` is used at publication; the existing public table is not
+cloned before the transformation. This also supports a first build when there
+is no public table yet.
+
 On audit failure, the previous published table remains available and downstream
 models are skipped. On a first build, failure leaves the published relation
 absent. Retain failed working tables for inspection and report their exact
@@ -178,6 +184,16 @@ finalization errors, session restoration, retained candidates, and cleanup-only
 warnings. Ref and compiled-SQL cache tests verify that working-table identities
 stay scoped to the current build; a later standalone test reads the public table.
 These checks do not establish Snowflake's live DDL or permission behavior.
+
+Further regression coverage executes the shipped table materialization and CTAS
+macros against a recording adapter, requiring exactly one working-table CTAS in
+the existing schema and checking transformation-error propagation. Scheduler
+tests drive the production graph, readiness, and failure propagation with
+scripted task completions, including delayed audits and chained WAP models.
+Offline CLI tests parse actual projects and inspect manifests using a profile
+that cannot connect to Snowflake. The live runner additionally checks that both
+existing public and downstream sentinel data survive transformation errors,
+audit failures, and warnings.
 
 The live acceptance runner and its invocation instructions are in
 [`crates/dbt-sa-cli/tests/data/snowflake_wap/README.md`](../crates/dbt-sa-cli/tests/data/snowflake_wap/README.md).

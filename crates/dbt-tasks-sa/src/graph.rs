@@ -1242,6 +1242,8 @@ mod wap_tests {
     use dbt_tasks_core::context::TaskRunnerCtx;
     use dbt_tasks_core::wap::WapModel;
 
+    mod execution;
+
     struct PhasedFactory;
 
     impl TasksForNodeFactory for PhasedFactory {
@@ -1323,17 +1325,18 @@ mod wap_tests {
     #[derive(Default)]
     struct StrictBuckets {
         deferred: HashMap<dbt_schema_store::CanonicalFqn, String>,
+        off: bool,
     }
 
     impl StaticAnalysisBuckets for StrictBuckets {
         fn global_static_analysis(&self) -> Option<dbt_common::io_args::StaticAnalysisKind> {
-            Some(dbt_common::io_args::StaticAnalysisKind::Strict)
+            (!self.off).then_some(dbt_common::io_args::StaticAnalysisKind::Strict)
         }
         fn deferred_unique_ids(&self) -> &HashMap<dbt_schema_store::CanonicalFqn, String> {
             &self.deferred
         }
         fn in_off_closure(&self, _: &str) -> bool {
-            false
+            self.off
         }
         fn in_baseline_closure(&self, _: &str) -> bool {
             false

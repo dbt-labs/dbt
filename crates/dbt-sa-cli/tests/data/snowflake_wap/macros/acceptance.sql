@@ -25,9 +25,11 @@
 {% endmacro %}
 
 {% macro wap_fixture_prepare() %}
-  {% set relation = ref('orders') %}
-  {% do wap_fixture_assert(relation.identifier, present=false) %}
-  {% do run_query('create ' ~ ('transient ' if var('transient', false) else '') ~ 'table ' ~ relation ~ ' as select 999::integer as id') %}
+  {% for model_name, sentinel_id in [('orders', 999), ('downstream', 777)] %}
+    {% set relation = ref(model_name) %}
+    {% do wap_fixture_assert(relation.identifier, present=false) %}
+    {% do run_query('create ' ~ ('transient ' if var('transient', false) else '') ~ 'table ' ~ relation ~ ' as select ' ~ sentinel_id ~ '::integer as id') %}
+  {% endfor %}
 {% endmacro %}
 
 {% macro wap_fixture_cleanup(identifiers) %}

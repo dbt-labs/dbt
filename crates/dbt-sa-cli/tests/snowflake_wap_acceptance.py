@@ -19,15 +19,52 @@ import uuid
 PROJECT = "wap_live_acceptance"
 MODEL_ID = f"model.{PROJECT}.orders"
 DOWNSTREAM_ID = f"model.{PROJECT}.downstream"
+TRANSFORMATION_ERROR = "WAP_TRANSFORM_FAILURE"
+CANDIDATE_IDENTIFIER = r"__DBT_WAP_[0-9A-F]{32}_[0-9A-F]{32}"
 STAGED_CANDIDATE = re.compile(
     r"WAP: building[^\r\n]*?in working table[^\r\n]*?"
-    r"(__DBT_WAP_[0-9A-F]{32}_[0-9A-F]{32})"
+    rf"({CANDIDATE_IDENTIFIER})"
+)
+RELATION_COMPONENT = r'(?:"(?:[^"\r\n]|"")*"|[A-Za-z_][A-Za-z0-9_$]*)'
+RELATION_NAME = rf"{RELATION_COMPONENT}\.{RELATION_COMPONENT}\.{RELATION_COMPONENT}"
+STAGED_RELATIONS = re.compile(
+    rf"WAP: building (?P<public>{RELATION_NAME}) in working table "
+    rf"(?P<candidate>{RELATION_NAME})"
 )
 
 
 def require(condition: bool, message: str) -> None:
     if not condition:
         raise RuntimeError(message)
+
+
+def relation_components(relation: str) -> tuple[str, ...]:
+    require(re.fullmatch(RELATION_NAME, relation) is not None, f"Invalid relation: {relation}")
+    return tuple(
+        part[1:-1].replace('""', '"') if part.startswith('"') else part.upper()
+        for part in re.findall(RELATION_COMPONENT, relation)
+    )
+
+
+def staged_candidates(output: str, public_identifier: str) -> set[str]:
+    identifiers = set(STAGED_CANDIDATE.findall(output))
+    located = set()
+    for match in STAGED_RELATIONS.finditer(output):
+        public = relation_components(match["public"])
+        candidate = relation_components(match["candidate"])
+        require(public[2] == public_identifier, f"Unexpected public relation: {match['public']}")
+        require(
+            public[:2] == candidate[:2],
+            f"Candidate must share the public database and schema: {match['candidate']}; "
+            f"public relation: {match['public']}",
+        )
+        require(
+            re.fullmatch(CANDIDATE_IDENTIFIER, candidate[2]) is not None,
+            f"Unexpected candidate identifier: {candidate[2]}",
+        )
+        located.add(candidate[2])
+    require(located == identifiers, "Could not verify every staged candidate's database and schema")
+    return located
 
 
 class Acceptance:
@@ -79,7 +116,11 @@ class Acceptance:
         (capture / "stdout.log").write_text(completed.stdout)
         (capture / "stderr.log").write_text(completed.stderr)
         output = completed.stdout + "\n" + completed.stderr
-        candidates = set(STAGED_CANDIDATE.findall(output))
+        for filename in ("run_results.json", "manifest.json"):
+            artifact = self.artifacts / filename
+            if artifact.exists():
+                shutil.copy2(artifact, capture / filename)
+        candidates = staged_candidates(output, self.public())
         # Only the post-preflight "building" message establishes ownership.
         # A collision error's "retained if created" message does not.
         prefix = self.variables.get("prefix")
@@ -87,10 +128,6 @@ class Acceptance:
             identifiers = self.owned[prefix]["identifiers"]
             identifiers[:] = sorted(set(identifiers) | candidates)
             self.persist_owned()
-        for filename in ("run_results.json", "manifest.json"):
-            artifact = self.artifacts / filename
-            if artifact.exists():
-                shutil.copy2(artifact, capture / filename)
         require(
             (completed.returncode == 0) == success,
             f"Unexpected exit {completed.returncode}: {' '.join(command)}; see {capture}",
@@ -124,6 +161,7 @@ class Acceptance:
         self.variables = {
             "prefix": prefix, "transient": kind == "transient",
             "audit_value": -1, "audit_severity": "error",
+            "transformation_error": False,
         }
         identifiers = [f"{prefix}_ORDERS", f"{prefix}_DOWNSTREAM"]
         for identifier in identifiers:
@@ -140,9 +178,14 @@ class Acceptance:
     def public(self, suffix: str = "ORDERS") -> str:
         return f"{self.variables['prefix']}_{suffix}"
 
-    def build(self, *, success: bool) -> tuple[dict[str, Any], set[str], Path]:
+    def build(
+        self, *, success: bool, static_analysis: str | None = None,
+    ) -> tuple[dict[str, Any], set[str], Path]:
+        command = ["build", "--select", "orders+", "--threads", "4"]
+        if static_analysis is not None:
+            command.extend(["--static-analysis", static_analysis])
         return self.invoke(
-            ["build", "--select", "orders+", "--threads", "4"],
+            command,
             success=success, results=True, staged=True,
         )
 
@@ -155,7 +198,9 @@ class Acceptance:
         singular_id = f"test.{PROJECT}.nonnegative"
         require(singular_id in tests, "Missing nonnegative singular audit")
         for unique_id, row in tests.items():
-            expected = verdict if unique_id == singular_id else "pass"
+            expected = "skipped" if verdict == "transform_error" else (
+                verdict if unique_id == singular_id else "pass"
+            )
             require(row["status"] == expected, f"Unexpected audit result: {row}")
         return set(tests)
 
@@ -164,8 +209,15 @@ class Acceptance:
         rows = artifact["results"]
         model_rows = [row for row in rows if row["unique_id"] == MODEL_ID]
         require(len(model_rows) == 1, "Expected exactly one canonical model result")
-        expected_model = {"pass": "success", "fail": "skipped", "warn": "error"}[verdict]
+        expected_model = {
+            "pass": "success", "fail": "skipped", "warn": "error", "transform_error": "error",
+        }[verdict]
         require(model_rows[0]["status"] == expected_model, f"Unexpected model result: {model_rows}")
+        if verdict == "transform_error":
+            require(
+                TRANSFORMATION_ERROR in str(model_rows[0].get("message", "")),
+                f"Expected the deliberate SQL transformation error: {model_rows}",
+            )
         audits = Acceptance.verify_audits(artifact, verdict=verdict)
         downstream = [row for row in rows if row["unique_id"] == DOWNSTREAM_ID]
         expected_downstream = "success" if verdict == "pass" else "skipped"
@@ -174,6 +226,10 @@ class Acceptance:
             f"Unexpected downstream result: {downstream}",
         )
         return audits
+
+    def verify_existing_data_preserved(self) -> None:
+        self.check(self.public(), ids=[999])
+        self.check(self.public("DOWNSTREAM"), ids=[777])
 
     def verify_published(self, ids: list[int], candidates: set[str]) -> None:
         self.check(self.public(), ids=ids)
@@ -187,12 +243,14 @@ class Acceptance:
         require("__DBT_WAP_" not in sql, "Candidate relation leaked into downstream SQL")
 
     def run_kind(self, kind: str) -> None:
-        print(f"Checking {kind}: failure, retry, warning, first publish, first failure", flush=True)
+        print(
+            f"Checking {kind}: audit failure, retry, transformation error, warning, "
+            "first publish, first failure", flush=True,
+        )
         self.begin(kind, "fail_retry", sentinel=True)
         failed, retained, state = self.build(success=False)
         audits = self.verify_results(failed, verdict="fail")
-        self.check(self.public(), ids=[999])
-        self.check(self.public("DOWNSTREAM"), present=False)
+        self.verify_existing_data_preserved()
         for candidate in retained:
             self.check(candidate, ids=[-1, 2])
 
@@ -206,7 +264,7 @@ class Acceptance:
             "Standalone test omitted an audit",
         )
         require(len(standalone["results"]) == 3, "Standalone test unexpectedly rebuilt a model")
-        self.check(self.public(), ids=[999])
+        self.verify_existing_data_preserved()
         for candidate in retained:
             self.check(candidate, ids=[-1, 2])
 
@@ -222,12 +280,18 @@ class Acceptance:
         for candidate in retained:
             self.check(candidate, ids=[-1, 2])
 
+        self.begin(kind, "transformation_error", sentinel=True)
+        self.variables["transformation_error"] = True
+        # Force warehouse execution so local analysis cannot satisfy this case.
+        errored, _, _ = self.build(success=False, static_analysis="off")
+        self.verify_results(errored, verdict="transform_error")
+        self.verify_existing_data_preserved()
+
         self.begin(kind, "warning", sentinel=True)
         self.variables["audit_severity"] = "warn"
         warned, candidates, _ = self.build(success=False)
         self.verify_results(warned, verdict="warn")
-        self.check(self.public(), ids=[999])
-        self.check(self.public("DOWNSTREAM"), present=False)
+        self.verify_existing_data_preserved()
         for candidate in candidates:
             self.check(candidate, ids=[-1, 2])
 
