@@ -48,6 +48,7 @@ snapshots:
       strategy: timestamp
       unique_key: id
       updated_at: updated_time
+      hard_deletes: invalidate
 """
 
 
@@ -69,4 +70,4 @@ class TestSnapshotConfig:
         run_dbt(["run"])
         results, log_output = run_dbt_and_capture(["snapshot"])
         assert len(results) == 1
-        assert "Please update snapshot config" in log_output
+        assert "Override the 'snapshot_get_time' macro" in log_output
