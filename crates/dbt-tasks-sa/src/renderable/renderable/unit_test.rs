@@ -635,8 +635,14 @@ fn infer_unit_test_expected_schema(
     // rendered for the default's dialect.
     // ClickHouse: the probe's session-scoped TEMPORARY table is invisible to
     // introspection (never in system.columns), so infer via the query schema.
+    // Athena: a zero-row Hive CTAS produces a table with no accessible columns
+    // (`COLUMN_NOT_FOUND: Relation contains no accessible columns`), and the
+    // temporary probe would land under `s3_staging_dir/tables/`; the driver
+    // returns the result-set schema for `... where false limit 0`, so infer
+    // via the query schema.
     let materialization = if unit_test.node_adapter() == AdapterType::DuckDB
         || unit_test.node_adapter() == AdapterType::ClickHouse
+        || unit_test.node_adapter() == AdapterType::Athena
         || options.use_query_schema_fallback
     {
         r#"
