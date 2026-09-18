@@ -5,6 +5,14 @@ All adapter macros are currently maintained in:
 
 ## Changelog
 
+### [2026-09-16]
+  - dbt-athena: v1.11.0, vendored from the `dbt-athena` wheel's
+    `dbt/include/athena/` (42 files, 2212 SQL LOC). Note the macros ship in the
+    `dbt-athena` distribution, NOT `dbt-athena-community`, which is an empty
+    shim that merely depends on it.
+    No loader change was needed: `internal_package_names` derives the directory
+    name as `dbt-{adapter_type}`, and Athena inherits no other adapter's macros.
+
 ### [2026-08-19]
   - dbt-databricks: view full-refresh precedence from commit 45351e11517d3f37c5ac7a736b5fcba453d3f368
 
