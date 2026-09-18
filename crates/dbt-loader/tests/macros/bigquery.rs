@@ -8,7 +8,7 @@ use dbt_jinja_utils::mock_object::MockJinjaObject;
 use dbt_schemas::dbt_types::RelationType;
 use minijinja::Value;
 
-use crate::macro_test_harness::MacroTestHarness;
+use crate::macro_test_harness::{MacroTestHarness, assert_executed_contains};
 
 fn build_harness() -> MacroTestHarness {
     MacroTestHarness::for_adapter(AdapterType::Bigquery)
@@ -208,4 +208,59 @@ fn generate_schema_name_composes_on_a_projects_own_default() {
             .trim(),
         "sales_catalog.custom_staging"
     );
+}
+
+#[test]
+fn load_csv_rows_sets_description_without_adapter_update() {
+    let harness = build_harness();
+    harness
+        .mock()
+        .on("load_dataframe", |_| Ok(Value::UNDEFINED))
+        .on("get_table_options", |_| {
+            Ok(Value::from_serialize(BTreeMap::from([(
+                "description",
+                r#""""Seed description""""#,
+            )])))
+        })
+        .on("update_table_description", |_| Ok(Value::UNDEFINED));
+
+    let config = Arc::new(MockJinjaObject::new());
+    config.on("get", |args| {
+        Ok(args.get(1).cloned().unwrap_or(Value::UNDEFINED))
+    });
+    config.on("persist_relation_docs", |_| Ok(Value::from(true)));
+    let config = Value::from_dyn_object(config);
+    let model = Value::from_serialize(BTreeMap::from([
+        ("config", config.clone()),
+        ("database", Value::from("test-db")),
+        ("schema", Value::from("test_schema")),
+        ("alias", Value::from("countries")),
+        ("project_root", Value::from("/project/")),
+        ("original_file_path", Value::from("seeds/countries.csv")),
+        ("description", Value::from("Seed description")),
+    ]));
+    let this = harness.relation(
+        "test-db",
+        "test_schema",
+        "countries",
+        Some(RelationType::Table),
+    );
+
+    harness
+        .render(
+            "{{ bigquery__load_csv_rows(model, none) }}",
+            BTreeMap::from([
+                ("model", model),
+                ("config", config),
+                ("this", RelationObject::new(this).into_value()),
+                ("execute", Value::from(true)),
+            ]),
+        )
+        .expect("render should succeed");
+
+    assert_executed_contains(harness.mock(), r#"description="""Seed description""""#);
+    harness
+        .mock()
+        .observed_calls()
+        .assert_not_called("update_table_description");
 }
