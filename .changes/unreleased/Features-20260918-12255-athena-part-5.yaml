@@ -1,0 +1,7 @@
+kind: Features
+body: '[Athena] Add `AthenaMetadataAdapter` and `get_relation` over `information_schema`, so `show`, `compile` and `run` no longer panic on the metadata `todo!()`'
+time: 2026-09-18T12:25:03.409621-07:00
+custom:
+    author: aoelvp94
+    issue: "16252"
+    project: dbt-core
