@@ -1,0 +1,7 @@
+kind: Fixes
+body: '[BigQuery] Unit test fixtures preserve reported types: GEOGRAPHY expressions remain unquoted, TIMESTAMP values are no longer cast to DATETIME, and JSON values use PARSE_JSON instead of STRING casts'
+time: 2026-09-12T10:38:10.938459432+02:00
+custom:
+    author: fornwall
+    issue: 14625 15708 15882
+    project: dbt-core

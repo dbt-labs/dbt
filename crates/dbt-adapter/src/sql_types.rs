@@ -122,18 +122,11 @@ pub trait TypeOps: Send + Sync {
         Ok(true)
     }
 
-    fn cast_from_quoted_string_literal_unsupported_for(&self, data_type: &DataType) -> bool {
-        use AdapterType::*;
-
+    fn cast_from_quoted_string_literal_unsupported_for(&self, field: &Field) -> bool {
         match self.adapter_type() {
-            Bigquery => {
-                let is_struct = matches!(data_type, DataType::Struct(_));
-                let is_geography = matches!(
-                    data_type,
-                    DataType::FixedSizeList(field, 1) if field.name() == "geography"
-                );
-
-                is_struct || is_geography
+            AdapterType::Bigquery => {
+                matches!(field.data_type(), DataType::Struct(_))
+                    || bigquery::is_type(field, "GEOGRAPHY")
             }
             _ => false,
         }
@@ -699,7 +692,12 @@ pub mod bigquery {
     use arrow_schema::{DataType, Field};
     use dbt_adapter_core::AdapterType;
 
-    use crate::sql_types::get_field_sql_type_metadata_key;
+    use crate::sql_types::{get_field_sql_type_metadata_key, original_type_string};
+
+    pub fn is_type(field: &Field, sql_type: &str) -> bool {
+        original_type_string(AdapterType::Bigquery, field)
+            .is_some_and(|declared| declared.eq_ignore_ascii_case(sql_type))
+    }
 
     pub fn field_to_string<'a>(field: &'a Field) -> Option<Cow<'a, str>> {
         let type_key = get_field_sql_type_metadata_key(AdapterType::Bigquery);
