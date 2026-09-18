@@ -1,7 +1,7 @@
 use crate::adapter_config::{
-    setup_bigquery_profile, setup_clickhouse_profile, setup_databricks_profile,
-    setup_exasol_profile, setup_fabric_profile, setup_postgres_profile, setup_redshift_profile,
-    setup_snowflake_profile,
+    setup_athena_profile, setup_bigquery_profile, setup_clickhouse_profile,
+    setup_databricks_profile, setup_exasol_profile, setup_fabric_profile, setup_postgres_profile,
+    setup_redshift_profile, setup_snowflake_profile,
 };
 // Re-exported so `crate::profile_setup::{ProfileTarget, Profiles}` keeps resolving.
 pub use crate::adapter_config::{ProfileTarget, Profiles};
@@ -182,6 +182,7 @@ impl ProfileSetup {
             AdapterType::Postgres,
             AdapterType::Redshift,
             AdapterType::Fabric,
+            AdapterType::Athena,
         ]
     }
 
@@ -410,7 +411,13 @@ impl ProfileSetup {
                 DbConfig::Exasol(setup_exasol_profile(exasol_config.map(Box::as_ref))?)
             }
             AdapterType::Starburst => todo!("Starburst"),
-            AdapterType::Athena => todo!("Athena"),
+            AdapterType::Athena => {
+                let athena_config = match existing_config {
+                    Some(DbConfig::Athena(config)) => Some(config),
+                    _ => None,
+                };
+                DbConfig::Athena(setup_athena_profile(athena_config.map(Box::as_ref))?)
+            }
             AdapterType::Trino => todo!("Trino"),
             AdapterType::Datafusion => todo!("Datafusion"),
             AdapterType::Dremio => todo!("Dremio"),
