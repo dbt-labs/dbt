@@ -173,6 +173,8 @@ impl StaticBaseRelation for RelationStatic {
                     AdapterType::Databricks => iter.next_kwarg::<Option<bool>>("is_staging")?,
                     _ => None,
                 };
+                // Athena: `AthenaRelation.s3_path_table_part`
+                let s3_path_table_part = iter.next_kwarg::<Option<String>>("s3_path_table_part")?;
                 iter.finish()?;
 
                 let custom_quoting = custom_quoting
@@ -183,7 +185,7 @@ impl StaticBaseRelation for RelationStatic {
                         schema: v.schema.unwrap_or_default(),
                     });
 
-                Relation::new(self.adapter_type, database, schema, identifier)
+                let relation = Relation::new(self.adapter_type, database, schema, identifier)
                     .with_relation_type(relation_type.and_then(|v: Value| {
                         if v.is_none() || v.is_undefined() {
                             None
@@ -195,7 +197,11 @@ impl StaticBaseRelation for RelationStatic {
                     .with_temporary(temporary.unwrap_or(false))
                     .with_is_staging(is_staging.unwrap_or(false))
                     .validate()
-                    .map(|r| RelationObject::new(Arc::new(r)).into_value())
+                    .map(|r| RelationObject::new(Arc::new(r)).into_value())?;
+                match s3_path_table_part {
+                    Some(part) => super::relation_object::with_s3_path_table_part(relation, part),
+                    None => Ok(relation),
+                }
             }
         }
     }
@@ -236,6 +242,9 @@ pub struct Relation {
     pub metadata: Option<BTreeMap<String, String>>,
     /// Whether the relation is a delta table
     pub is_delta: bool,
+    /// dbt-athena `AthenaRelation.s3_path_table_part`: the table part of the S3 location
+    /// when it differs from the identifier (`<name>__tmp_not_partitioned` staging tables).
+    pub s3_path_table_part: Option<String>,
     /// Whether the relation is a Databricks shallow clone
     pub is_shallow_clone: bool,
     /// Whether this is a Databricks safer-replace staging relation, whose keys are always
@@ -410,6 +419,7 @@ impl Relation {
             native_schema: None,
             metadata: None,
             is_delta: false,
+            s3_path_table_part: None,
             is_shallow_clone: false,
             is_staging: false,
             create_constraints: Vec::new(),
@@ -447,6 +457,11 @@ impl Relation {
 
     pub fn with_metadata(mut self, metadata: impl Into<Option<BTreeMap<String, String>>>) -> Self {
         self.metadata = metadata.into();
+        self
+    }
+
+    pub fn with_s3_path_table_part(mut self, s3_path_table_part: Option<String>) -> Self {
+        self.s3_path_table_part = s3_path_table_part;
         self
     }
 
@@ -549,6 +564,7 @@ impl Relation {
             native_schema: None,
             metadata: None,
             is_delta: false,
+            s3_path_table_part: None,
             is_shallow_clone: false,
             is_staging: false,
             create_constraints: Vec::default(),
@@ -820,6 +836,7 @@ impl BaseRelation for Relation {
         .with_quoting(self.quote_policy)
         .with_metadata(self.metadata.clone())
         .with_is_delta(self.is_delta)
+        .with_s3_path_table_part(self.s3_path_table_part.clone())
         .with_is_shallow_clone(self.is_shallow_clone)
         .with_is_staging(self.is_staging)
         .with_temporary(self.temporary)
@@ -852,6 +869,7 @@ impl BaseRelation for Relation {
         .with_quoting(policy)
         .with_metadata(self.metadata.clone())
         .with_is_delta(self.is_delta)
+        .with_s3_path_table_part(self.s3_path_table_part.clone())
         .with_is_shallow_clone(self.is_shallow_clone)
         .with_is_staging(self.is_staging)
         .with_temporary(self.temporary)
@@ -1365,6 +1383,7 @@ impl BaseRelation for Relation {
             .with_quoting(custom_quoting)
             .with_metadata(self.metadata.clone())
             .with_is_delta(self.is_delta)
+            .with_s3_path_table_part(self.s3_path_table_part.clone())
             .with_is_shallow_clone(self.is_shallow_clone)
             .with_is_staging(self.is_staging)
             .with_temporary(self.temporary)

@@ -108,6 +108,30 @@ pub struct QueryCommentConfig {
 /// Checks for full credentials first (local dbt Cloud CLI with dbt_cloud.yml),
 /// then falls back to environment_id, which orchestration always sets via
 /// DBT_CLOUD_ENVIRONMENT_ID even when token/host are not available.
+/// dbt-athena `_AthenaQueryComment.add`: Athena rejects a block comment ahead of
+/// OPTIMIZE / VACUUM and does not always honour `/* */` on DDL, so the comment is
+/// skipped for those statements and written as a `--` line comment otherwise.
+fn athena_add_comment(sql: &str, comment: &str, append: bool) -> String {
+    let sql = sql.trim_start();
+    let lower = sql.to_ascii_lowercase();
+    if ["alter", "drop", "optimize", "vacuum", "msck"]
+        .iter()
+        .any(|keyword| lower.starts_with(keyword))
+    {
+        return sql.to_owned();
+    }
+    let comment = comment.trim().replace('\n', " ");
+    if append {
+        let sql = sql.trim_end();
+        match sql.strip_suffix(';') {
+            Some(sql) => format!("{sql}\n-- /* {comment} */;"),
+            None => format!("{sql}\n-- /* {comment} */"),
+        }
+    } else {
+        format!("-- /* {comment} */\n{sql}")
+    }
+}
+
 fn has_cloud_config(cloud_config: Option<&ResolvedCloudConfig>) -> bool {
     cloud_config
         .map(|c| c.credentials.is_some() || c.environment_id.is_some())
@@ -174,9 +198,18 @@ impl QueryCommentConfig {
     }
 
     /// Add query comment to SQL.
-    pub fn add_comment(&self, sql: &str, resolved_comment: &str) -> String {
+    pub fn add_comment(
+        &self,
+        sql: &str,
+        resolved_comment: &str,
+        adapter_type: AdapterType,
+    ) -> String {
         if resolved_comment.is_empty() {
             return sql.to_owned();
+        }
+
+        if adapter_type == AdapterType::Athena {
+            return athena_add_comment(sql, resolved_comment, self.append);
         }
 
         if self.append {
@@ -252,6 +285,36 @@ mod tests {
     };
 
     // Env var tests mutate process-wide state, so they must not run in parallel.
+
+    #[test]
+    fn athena_comment_is_a_line_comment_and_skips_maintenance_statements() {
+        let config = QueryCommentConfig::from_query_comment(None, AdapterType::Athena, true, None);
+        let comment = "{\"app\": \"dbt\",\n \"node_id\": \"model.x\"}";
+        assert_eq!(
+            config.add_comment("select 1", comment, AdapterType::Athena),
+            "-- /* {\"app\": \"dbt\",  \"node_id\": \"model.x\"} */\nselect 1"
+        );
+        for sql in [
+            "OPTIMIZE db.t REWRITE DATA USING BIN_PACK",
+            "vacuum db.t",
+            "  ALTER TABLE db.t ADD COLUMNS (x int)",
+            "drop table db.t",
+            "MSCK REPAIR TABLE db.t",
+        ] {
+            assert_eq!(
+                config.add_comment(sql, comment, AdapterType::Athena),
+                sql.trim_start()
+            );
+        }
+        assert_eq!(
+            super::athena_add_comment("select 1;", "c", true),
+            "select 1\n-- /* c */;"
+        );
+        assert_eq!(
+            config.add_comment("select 1", comment, AdapterType::Postgres),
+            format!("/* {comment} */\nselect 1")
+        );
+    }
 
     fn assert_configs_equal(left: &QueryCommentConfig, right: &QueryCommentConfig) {
         assert_eq!(left.comment, right.comment);

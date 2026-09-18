@@ -19,7 +19,7 @@ pub use relation_object::apply_clickhouse_node_config;
 pub use relation_object::{
     RelationObject, StaticBaseRelation, StaticBaseRelationObject, canonical_relation_parts,
     create_relation, create_relation_from_node, create_relation_from_source, do_create_relation,
-    is_parse_time_relation, render_effective_relation,
+    is_parse_time_relation, render_effective_relation, s3_path_table_part,
 };
 
 pub(crate) mod config_v2;

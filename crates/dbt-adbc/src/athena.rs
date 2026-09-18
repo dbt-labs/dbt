@@ -52,3 +52,12 @@ pub const SESSION_TOKEN: &str = "athena.aws.session_token";
 /// ADBC option key for the named AWS CLI profile.
 /// Only used when [`AUTH_TYPE`] = [`auth_type::PROFILE`].
 pub const PROFILE_NAME: &str = "athena.aws.profile";
+
+/// ADBC statement option naming a catalog or storage operation the driver runs in
+/// place of the SQL text (`glue.get_table`, `s3.put_object`, ...). The response comes
+/// back as one row with a utf8 `result` column holding the AWS API output as JSON.
+/// See `operations.go` in github.com/dbt-labs/athena.
+pub const OPERATION: &str = "athena.operation";
+
+/// ADBC statement option carrying the operation's input, the AWS API input as JSON.
+pub const OPERATION_PAYLOAD: &str = "athena.operation.payload";
