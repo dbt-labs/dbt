@@ -406,6 +406,51 @@ message DbtWizardPermissionMode {
   v1.public.common.vortex_telemetry_contexts.VortexTelemetryCommonContext common_context = 25;
 }
 
+// Emitted on every model-provider credential validation probe, from both the
+// onboarding flow and the settings flow, plus a follow-up event when the user
+// dismisses a failure and proceeds anyway.
+message DbtWizardProviderValidation {
+  option (v1.public.common.vortex_namespace) = VORTEX_ICEBERG_NAMESPACE_TELEMETRY;
+  option (v1.public.common.vortex_enabled) = true;
+
+  v1.events.vortex.VortexMessageEnrichment enrichment = 1;
+  // Unique identifier for this event.
+  string event_id = 2;
+  // Authenticated dbt Cloud user ID (JWT sub claim); falls back to anonymous
+  // UUID from ~/.dbt/.user.yml when unauthenticated.
+  string user_id = 3;
+  // Numeric dbt Cloud account ID (from JWT claims or dbt_cloud.yml).
+  string account_id = 4;
+  // Global dbt Cloud account identifier slug (from /api/v2/accounts/{id}/).
+  string account_identifier = 5;
+  // Provider id: "anthropic", "openai", "azure", "bedrock", "gemini",
+  // "snowflake", "databricks", "dbt".
+  string provider = 6;
+  // Validation outcome: "success" or "failure".
+  string outcome = 7;
+  // On failure: "auth_invalid", "network_error", "rate_limited",
+  // "endpoint_invalid", "model_not_available", or "unknown". Empty on success.
+  string error_category = 8;
+  // Which UI surface fired the validation: "onboarding" or "settings".
+  string flow = 9;
+  // True when the user dismissed the failure inline and proceeded anyway.
+  // Always false on success and on the initial failure event; the follow-up
+  // event with continued_anyway = true is what signals the user's choice.
+  bool continued_anyway = 10;
+  // dbt-wizard binary version.
+  string version = 11;
+  // Operating system: "macos", "linux", "windows".
+  string os = 12;
+  // CPU architecture: "aarch64", "x86_64".
+  string arch = 13;
+  // Whether the WIZARD_INTERNAL env var was set for this session.
+  bool is_wizard_internal = 14;
+  // The anonymous UUID from ~/.dbt/.user.yml. Always populated regardless of
+  // auth state, enabling a join between pre-auth and post-auth events.
+  string anonymous_id = 15;
+  v1.public.common.vortex_telemetry_contexts.VortexTelemetryCommonContext common_context = 16;
+}
+
 // Emitted when the Wizard desktop app opens as the anonymous behavioral
 // counterpart of the WizardAppOpened Amplitude event; distinct from the CLI
 // lifecycle telemetry in DbtWizardSession and DbtWizardTurn.
