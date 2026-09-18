@@ -24,7 +24,7 @@ def pytest_addoption(parser):
         default=False,
         help=(
             "Parametrize @pytest.mark.v2_parser_parity tests across "
-            "parser_mode=['core', 'v2_self']. v2_self routes the fusion "
+            "parser_mode=['core', 'v2_self']. v2_self routes the v2 "
             "parser subprocess through an in-process dbt parse to surface "
             "hidden parse-phase state."
         ),

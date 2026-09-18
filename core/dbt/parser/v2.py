@@ -1,10 +1,10 @@
-"""Fusion parser integration.
+"""v2 parser integration.
 
-Delegates parsing to an external fusion parser subprocess that produces a
+Delegates parsing to an external v2 parser subprocess that produces a
 manifest.json on disk. dbt-core then loads that manifest and converts it
 to a runtime Manifest, bypassing its own parser entirely.
 
-This module implements the handoff to the fusion parser and loading of the
+This module implements the handoff to the v2 parser and loading of the
 resulting manifest artifacts.
 """
 
@@ -28,11 +28,7 @@ from dbt.artifacts.schemas.manifest import WritableManifest
 from dbt.contracts.files import ParseFileType
 from dbt.contracts.graph.manifest import Manifest
 from dbt.events.types import V2ParserEnd, V2ParserStart
-from dbt.exceptions import (
-    FusionParserError,
-    FusionParserSchemaError,
-    FusionParserVersionError,
-)
+from dbt.exceptions import V2ParserError, V2ParserSchemaError, V2ParserVersionError
 from dbt.flags import get_flags
 from dbt_common.events.base_types import EventLevel
 from dbt_common.events.functions import fire_event, get_invocation_id
@@ -42,14 +38,14 @@ if TYPE_CHECKING:
     from dbt.config import RuntimeConfig
 
 
-def parse_with_fusion(
+def parse_with_v2(
     runtime_config: "RuntimeConfig",
     write: bool,
     write_json: bool,
 ) -> Manifest:
-    """Invoke the fusion parser, load the resulting manifest.json, return runtime Manifest.
+    """Invoke the v2 parser, load the resulting manifest.json, return runtime Manifest.
 
-    The fusion parser is run into a temp handoff dir rather than the project's
+    The v2 parser is run into a temp handoff dir rather than the project's
     target dir so that (a) we can detect "parser exited 0 without writing"
     instead of silently loading a stale manifest from a prior run, and (b)
     `--no-write-json` doesn't leak a manifest.json into the user's target dir.
@@ -69,16 +65,16 @@ def parse_with_fusion(
     fire_event(V2ParserStart(v2_parser_command=v2_parser_command, project_name=project_name))
     start_time = time.monotonic()
     try:
-        with tempfile.TemporaryDirectory(prefix="dbt-fusion-") as handoff_dir:
+        with tempfile.TemporaryDirectory(prefix="dbt-v2-") as handoff_dir:
             handoff = Path(handoff_dir)
             argv = _build_argv(flags, target_path_override=str(handoff))
 
-            _run_fusion(argv)
+            _run_v2(argv)
 
             manifest_path = handoff / "manifest.json"
             if not manifest_path.exists():
-                raise FusionParserError(
-                    f"Fusion parser exited successfully but did not produce {manifest_path.name} "
+                raise V2ParserError(
+                    f"v2 parser exited successfully but did not produce {manifest_path.name} "
                     f"in the handoff directory."
                 )
 
@@ -94,9 +90,9 @@ def parse_with_fusion(
                         semantic_manifest_path, project_target_path / "semantic_manifest.json"
                     )
     except (
-        FusionParserVersionError,
-        FusionParserSchemaError,
-        FusionParserError,
+        V2ParserVersionError,
+        V2ParserSchemaError,
+        V2ParserError,
     ) as e:
         fire_event(
             V2ParserEnd(
@@ -124,7 +120,7 @@ def parse_with_fusion(
     manifest = Manifest.from_writable_manifest(writable_manifest)
     rediscover_adapter_macros(manifest, runtime_config)
     # build_flat_graph is normally called by ManifestLoader.get_full_manifest;
-    # the fusion path bypasses that loader, so populate flat_graph here to
+    # the v2 path bypasses that loader, so populate flat_graph here to
     # power the `graph` context variable (graph.nodes, graph.sources, ...).
     manifest.build_flat_graph()
 
@@ -132,7 +128,7 @@ def parse_with_fusion(
 
     if write and write_json:
         # Written from the corrected manifest so the on-disk artifact reflects
-        # rediscovered adapter macros rather than Fusion's bundled ones.
+        # rediscovered adapter macros rather than the v2 parser's bundled ones.
         # write_manifest() isn't reusable here: it no-ops under USE_V2_PARSER
         # and would also rewrite the semantic_manifest.json copied above.
         from dbt.utils.artifact_upload import add_artifact_produced
@@ -146,9 +142,9 @@ def parse_with_fusion(
 
 
 def rediscover_adapter_macros(manifest: Manifest, runtime_config: "RuntimeConfig") -> None:
-    """Evict Fusion-embedded adapter macros and re-parse them from the installed adapter.
+    """Evict v2-embedded adapter macros and re-parse them from the installed adapter.
 
-    Fusion compiles against its own bundled adapter macros. If the user's installed
+    The v2 parser compiles against its own bundled adapter macros. If the user's installed
     dbt-<adapter> differs, those differences are silently lost after manifest load.
     This function replaces the embedded macros with freshly parsed ones from disk.
     """
@@ -169,7 +165,7 @@ def rediscover_adapter_macros(manifest: Manifest, runtime_config: "RuntimeConfig
     adapter_type = runtime_config.credentials.type
     load_plugin(adapter_type)
     # resolve_macro_depends_on below needs a live adapter instance, but in the
-    # fusion CLI flow the adapter isn't registered until after this function
+    # v2 CLI flow the adapter isn't registered until after this function
     # returns (see requires.py's _wire_adapter_for_external_manifest). Register
     # it now; a later re-registration for the same adapter name is a no-op.
     register_adapter(runtime_config, get_mp_context())
@@ -227,7 +223,7 @@ def rediscover_adapter_macros(manifest: Manifest, runtime_config: "RuntimeConfig
 
 
 def _build_argv(flags, target_path_override: Optional[str] = None) -> List[str]:
-    """Translate dbt-core flags into fusion parser CLI args.
+    """Translate dbt-core flags into v2 parser CLI args.
 
     The base command is taken from flags.V2_PARSER (default
     'dbt-core-experimental-parser parse') and split with shlex so users can
@@ -240,11 +236,11 @@ def _build_argv(flags, target_path_override: Optional[str] = None) -> List[str]:
     Also always forwards --log-format json so the subprocess emits structured
     per-line JSON on stdout/stderr instead of human-formatted text. This is not
     a user-configurable passthrough (unlike the flags above) — it's how
-    _run_fusion talks to the subprocess, so it's added unconditionally rather
+    _run_v2 talks to the subprocess, so it's added unconditionally rather
     than gated on a dbt-core flag.
 
     When target_path_override is provided, it replaces the user's --target-path
-    so the fusion parser writes its handoff manifest where dbt expects it (a
+    so the v2 parser writes its handoff manifest where dbt expects it (a
     temp dir).
     """
     # posix=False on Windows so backslashes in paths (e.g. C:\path\to\parser.exe)
@@ -295,7 +291,7 @@ def _build_argv(flags, target_path_override: Optional[str] = None) -> List[str]:
     if invocation_id:
         forwarded += ["--invocation-id", str(invocation_id)]
 
-    # json-compat output lets _run_fusion re-level each line by its real
+    # json-compat output lets _run_v2 re-level each line by its real
     # severity instead of a single hardcoded level per stream. Request full
     # verbosity here and let dbt-core's own event system filter by level,
     # rather than also forwarding a --log-level and double-filtering.
@@ -321,7 +317,7 @@ def _resolve_engine_command(command: str) -> str:
     return command
 
 
-def _fusion_subprocess_env() -> dict:
+def _v2_subprocess_env() -> dict:
     """Return env for the fs subprocess, overriding DBT_INVOCATION_ENV.
 
     Setting DBT_INVOCATION_ENV=dbt-core-v2-parser on the child only (not the
@@ -346,7 +342,7 @@ def _fusion_subprocess_env() -> dict:
     return env
 
 
-_FUSION_JSON_LEVELS = {
+_V2_JSON_LEVELS = {
     "error": EventLevel.ERROR,
     "warn": EventLevel.WARN,
     "info": EventLevel.INFO,
@@ -354,32 +350,32 @@ _FUSION_JSON_LEVELS = {
 }
 
 
-def _run_fusion(argv: List[str]) -> None:
-    """Run the fusion parser subprocess, capturing stdout/stderr and re-emitting
+def _run_v2(argv: List[str]) -> None:
+    """Run the v2 parser subprocess, capturing stdout/stderr and re-emitting
     each line live through dbt-core's event system as it arrives.
 
     Piping (rather than inheriting) the child's fds means its output only
     reaches the user via fire_event — this is what makes it visible to any
     consumer of dbt-core's own event stream (e.g. dbt Studio's IDE log
-    capture), which previously only saw the fusion parser's output if
+    capture), which previously only saw the v2 parser's output if
     something was reading the raw inherited file descriptors directly (true
     for a CLI terminal, not true inside Studio's execution model).
 
     _build_argv requests --log-format json, so each line is normally a JSON
-    object with the fusion-assigned severity at `info.level` and message at
+    object with the v2-assigned severity at `info.level` and message at
     `info.msg`; those are re-emitted as a Note at the mapped level rather than
     the stream's fallback level. json-compat is not a stable, fully-supported
-    fusion contract (schema/fields/level strings may change between fusion
-    releases without notice), and fusion emits plain text before its JSON
-    logger initializes (e.g. CLI-arg errors) or after a panic — so any line
-    that isn't valid JSON, or is missing the fields above, falls back to
+    v2 parser contract (schema/fields/level strings may change between v2
+    parser releases without notice), and the v2 parser emits plain text before
+    its JSON logger initializes (e.g. CLI-arg errors) or after a panic — so any
+    line that isn't valid JSON, or is missing the fields above, falls back to
     today's behavior: re-emitted verbatim at the stream's fallback level
     (stdout at INFO, stderr at WARN).
 
-    On a nonzero exit, raises FusionParserError with just the exit code;
+    On a nonzero exit, raises V2ParserError with just the exit code;
     the actual failure detail was already streamed live as Note events
     above, so it isn't duplicated into the exception message.
-    TODO: once the Python library to decode fusion's native OTel log stream
+    TODO: once the Python library to decode the v2 parser's native OTel log stream
     lands, replace this json-compat parsing with a real parse into properly
     leveled/structured dbt events (also preserving info.code/info.name,
     which json-compat exposes but this still discards into a flat Note).
@@ -393,11 +389,11 @@ def _run_fusion(argv: List[str]) -> None:
             encoding="utf-8",
             errors="replace",
             bufsize=1,
-            env=_fusion_subprocess_env(),
+            env=_v2_subprocess_env(),
         )
     except FileNotFoundError as e:
-        raise FusionParserError(
-            f"Fusion parser command not found: {argv[0]!r}. "
+        raise V2ParserError(
+            f"v2 parser command not found: {argv[0]!r}. "
             f"Reinstall dbt-core-experimental-parser, or set --v2-parser to "
             f"point to an alternate engine binary."
         ) from e
@@ -415,7 +411,7 @@ def _run_fusion(argv: List[str]) -> None:
                 parsed = json.loads(line)
                 info = parsed["info"]
                 msg = info["msg"]
-                level = _FUSION_JSON_LEVELS.get(info.get("level"), fallback_level)
+                level = _V2_JSON_LEVELS.get(info.get("level"), fallback_level)
             except (json.JSONDecodeError, KeyError, TypeError):
                 pass
             fire_event(Note(msg=msg), level=level)
@@ -435,8 +431,8 @@ def _run_fusion(argv: List[str]) -> None:
     returncode = proc.wait()
 
     if returncode != 0:
-        raise FusionParserError(
-            f"Fusion parser failed (exit {returncode}); see parser output above.",
+        raise V2ParserError(
+            f"v2 parser failed (exit {returncode}); see parser output above.",
             returncode=returncode,
         )
 
@@ -445,21 +441,19 @@ def _load_writable_manifest(path: Path) -> WritableManifest:
     try:
         return WritableManifest.read_and_check_versions(str(path))
     except IncompatibleSchemaError as e:
-        raise FusionParserVersionError(
-            f"Fusion-produced manifest at {path} has an incompatible schema "
+        raise V2ParserVersionError(
+            f"v2-produced manifest at {path} has an incompatible schema "
             f"version: expected {e.expected}, found {e.found}."
         ) from e
     except Exception as e:
-        raise FusionParserSchemaError(
-            f"Could not load fusion-produced manifest at {path}: {e}"
-        ) from e
+        raise V2ParserSchemaError(f"Could not load v2-produced manifest at {path}: {e}") from e
 
 
 def _serialize_vars(cli_vars) -> str:
-    """Serialize the resolved --vars dict to a YAML string for the fusion parser.
+    """Serialize the resolved --vars dict to a YAML string for the v2 parser.
 
     dbt-core's --vars is parsed into a dict by click via the YAML param type
-    (cli/params.py vars). Forward as a compact YAML string so the fusion
+    (cli/params.py vars). Forward as a compact YAML string so the v2
     parser receives a single canonical value rather than re-resolving env
     vars or layered configs.
     """
@@ -471,12 +465,12 @@ def _serialize_vars(cli_vars) -> str:
 
 
 def _delete_stale_partial_parse(target_path: Path) -> None:
-    """Remove partial_parse.msgpack written by a prior non-fusion run.
+    """Remove partial_parse.msgpack written by a prior non-v2 run.
 
-    The msgpack cache is owned by dbt-core's parser; in fusion mode it is no
-    longer written, and a later non-fusion run would load a cache whose
-    file_id mappings predate any fusion-era source changes. Deleting on
-    fusion entry is harmless if absent and unambiguous if present.
+    The msgpack cache is owned by dbt-core's parser; in v2 mode it is no
+    longer written, and a later non-v2 run would load a cache whose
+    file_id mappings predate any v2-era source changes. Deleting on
+    v2 entry is harmless if absent and unambiguous if present.
     """
     msgpack = target_path / "partial_parse.msgpack"
     if msgpack.exists():
