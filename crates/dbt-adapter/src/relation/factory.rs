@@ -17,7 +17,7 @@ pub fn create_static_relation(
     use AdapterType::*;
     let result = match adapter_type {
         Snowflake | Databricks | Spark | Fabric | DuckDB | LakeCompute | Exasol | Postgres
-        | Redshift | Salesforce | Bigquery | ClickHouse => {
+        | Redshift | Salesforce | Bigquery | ClickHouse | Athena => {
             let relation_type = RelationStatic {
                 adapter_type,
                 quoting,
@@ -25,7 +25,6 @@ pub fn create_static_relation(
             StaticBaseRelationObject::new(Arc::new(relation_type))
         }
         Starburst => todo!("Starburst"),
-        Athena => todo!("Athena"),
         Trino => todo!("Trino"),
         Dremio => todo!("Dremio"),
         Oracle => todo!("Oracle"),

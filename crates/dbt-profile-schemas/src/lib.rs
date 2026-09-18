@@ -1,3 +1,4 @@
+pub mod athena_config;
 pub mod bigquery_config;
 pub mod clickhouse_config;
 pub mod common;
@@ -16,6 +17,7 @@ pub mod snowflake_config;
 pub use common::*;
 pub use profile::*;
 
+pub use athena_config::setup_athena_profile;
 pub use bigquery_config::setup_bigquery_profile;
 pub use clickhouse_config::setup_clickhouse_profile;
 pub use databricks_config::setup_databricks_profile;
