@@ -9,7 +9,7 @@ pub fn reserved_keywords(backend: AdapterType) -> &'static [&'static str] {
         Bigquery => bigquery::RESERVED_KEYWORDS,
         Databricks => databricks::RESERVED_KEYWORDS,
         Redshift => redshift::RESERVED_KEYWORDS,
-        DuckDB => duckdb::RESERVED_KEYWORDS,
+        DuckDB | GizmoSQL => duckdb::RESERVED_KEYWORDS,
         Trino => trino::RESERVED_KEYWORDS,
         // TODO: fill in other dialects' keywords and define a default fallback
         _ => &[],
@@ -25,7 +25,7 @@ pub fn strict_non_reserved_keywords(backend: AdapterType) -> &'static [&'static 
         Bigquery => bigquery::STRICT_NON_RESERVED_KEYWORDS,
         Databricks => databricks::STRICT_NON_RESERVED_KEYWORDS,
         Redshift => redshift::STRICT_NON_RESERVED_KEYWORDS,
-        DuckDB => duckdb::STRICT_NON_RESERVED_KEYWORDS,
+        DuckDB | GizmoSQL => duckdb::STRICT_NON_RESERVED_KEYWORDS,
         Trino => trino::STRICT_NON_RESERVED_KEYWORDS,
         // TODO: fill in other dialects' keywords and define a default fallback
         _ => &[],
@@ -42,7 +42,7 @@ pub fn non_reserved_keywords(backend: AdapterType) -> &'static [&'static str] {
         Bigquery => bigquery::NON_RESERVED_KEYWORDS,
         Databricks => databricks::NON_RESERVED_KEYWORDS,
         Redshift => redshift::NON_RESERVED_KEYWORDS,
-        DuckDB => duckdb::NON_RESERVED_KEYWORDS,
+        DuckDB | GizmoSQL => duckdb::NON_RESERVED_KEYWORDS,
         Trino => trino::NON_RESERVED_KEYWORDS,
         _ => &[],
     }

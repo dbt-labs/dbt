@@ -367,7 +367,7 @@ fn canonical_name_and_version(backend: Backend) -> (&'static str, &'static str) 
         Backend::LakeCompute => ("dbt", LAKE_COMPUTE_DRIVER_VERSION),
         Backend::SQLServer => ("mssql", MSSQLSERVER_DRIVER_VERSION),
         Backend::ClickHouse => ("clickhouse", CLICKHOUSE_DRIVER_VERSION),
-        Backend::Athena | Backend::Exasol | Backend::Generic { .. } => {
+        Backend::Athena | Backend::Exasol | Backend::GizmoSQL | Backend::Generic { .. } => {
             unreachable!("driver_parameters() called with backend={:?}", backend)
         }
     }
@@ -861,6 +861,7 @@ mod tests {
         for backend in [
             Backend::Athena,
             Backend::Exasol,
+            Backend::GizmoSQL,
             Backend::Generic {
                 library_name: "adbc_driver_sqlite",
                 entrypoint: Some(b"SqliteDriverInit"),

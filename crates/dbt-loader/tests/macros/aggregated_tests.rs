@@ -70,3 +70,16 @@ fn duckdb_batched_unique_uses_plain_cast() {
         "expected no try_cast on the default path, got:\n{rendered}"
     );
 }
+
+/// GizmoSQL inherits DuckDB's macro chain, so it must render exactly as DuckDB does.
+#[test]
+fn gizmosql_batched_unique_matches_duckdb() {
+    let rendered = render_batched_unique(AdapterType::GizmoSQL);
+    assert_eq!(
+        rendered.split_whitespace().collect::<Vec<_>>(),
+        render_batched_unique(AdapterType::DuckDB)
+            .split_whitespace()
+            .collect::<Vec<_>>(),
+        "GizmoSQL should resolve the batched unique test through DuckDB's chain, got:\n{rendered}"
+    );
+}
