@@ -36,7 +36,7 @@ use dbt_schemas::{
     schemas::{
         DbtFunction, DbtModel, DbtSeed, DbtSnapshot, InternalDbtNodeAttributes, Nodes,
         common::DbtMaterialization,
-        profiles::{DbConfig, Execute, TargetContext},
+        profiles::{DbConfig, Execute, TargetContext, canonicalize_bigquery_region_alias},
         serde::yaml_to_fs_error,
     },
     state::{DbtProfile, ResolverState},
@@ -330,8 +330,9 @@ fn resolve_run_cache_defer_target_profile(
     let resolved: ResolvedProfile =
         resolve_with_env(&penv, &profile_path, profile_name, Some(defer_to_target))?;
 
-    let credentials_value =
-        dbt_yaml::Value::Mapping(resolved.credentials, dbt_yaml::Span::default());
+    let mut credentials = resolved.credentials;
+    canonicalize_bigquery_region_alias(&mut credentials);
+    let credentials_value = dbt_yaml::Value::Mapping(credentials, dbt_yaml::Span::default());
     dbt_yaml::from_value(credentials_value).map_err(|source| ProfileError::Yaml {
         source,
         path: profile_path,
