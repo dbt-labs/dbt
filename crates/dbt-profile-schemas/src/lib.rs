@@ -2,6 +2,7 @@ use dbt_adapter_core::AdapterType;
 use dbt_common::{ErrorCode, FsResult, fs_err};
 use dbt_schemas::schemas::profiles::DbConfig;
 
+mod athena_config;
 mod bigquery_config;
 mod clickhouse_config;
 mod databricks_config;
@@ -107,7 +108,9 @@ impl ProfileSetup {
                 Ok(DbConfig::Exasol(c1))
             }
             Athena => {
-                todo!("setup_athena_profile")
+                let c0 = unwrap_db_config!(Athena);
+                let c1 = athena_config::setup_athena_profile(c0.map(Box::as_ref))?;
+                Ok(DbConfig::Athena(c1))
             }
             Starburst => {
                 todo!("setup_starburst_profile")
