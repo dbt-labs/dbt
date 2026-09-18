@@ -122,6 +122,17 @@ jobs:
       - name: Run tests
         run: cargo nextest run --workspace
 
+      - name: Build dbt for offline WAP checks
+        run: cargo build -p dbt-sa-cli --bin dbt
+
+      - name: Run offline WAP Python checks
+        env:
+          DBT_WAP_TEST_BIN: ${{ github.workspace }}/target/debug/dbt
+          PYTHONDONTWRITEBYTECODE: "1"
+        run: |
+          test -x "$DBT_WAP_TEST_BIN"
+          python3 -m unittest discover -s crates/dbt-sa-cli/tests -p 'test_snowflake_wap_*.py' -v
+
       - name: sccache stats
         if: always()
         run: sccache --show-stats || true
