@@ -4,6 +4,8 @@ use crate::schemas::relations::DEFAULT_DATABRICKS_DATABASE;
 use crate::schemas::serde::{DuckDbExtension, QueryTag, StringOrInteger, StringOrMap};
 
 use dbt_adapter_core::AdapterType;
+use dbt_common::ErrorCode;
+use dbt_common::tracing::dbt_emit::emit_warn_log_message;
 use dbt_yaml::DbtSchema;
 use dbt_yaml::UntaggedEnumDeserialize;
 use merge::Merge;
@@ -107,6 +109,42 @@ impl_from_db_config!(DuckDB, DuckDbConfig);
 impl_from_db_config!(Fabric, FabricDbConfig);
 impl_from_db_config!(Exasol, ExasolDbConfig);
 impl_from_db_config!(ClickHouse, ClickHouseDbConfig);
+
+/// Resolves BigQuery's `compute_region` / legacy `dataproc_region` alias in a raw profiles.yml
+/// mapping, before it's parsed into a typed `DbConfig`.
+///
+/// The two are aliases (dbt-bigquery `Credentials._ALIASES`), but dbt Cloud can legitimately
+/// emit both in the same profile -- `dataproc_region` from the connection, `compute_region` from
+/// an environment override -- so this can't be a `#[serde(alias = ...)]` on the field: that
+/// treats two keys targeting one field as a duplicate and fails to parse. `compute_region` wins
+/// when both are present; if the two disagree, that's logged, since it's a plausible sign of a
+/// stale manual override silently beating a newer connection-supplied value. Call this on a
+/// target's raw credentials mapping before deserializing it.
+pub fn canonicalize_bigquery_region_alias(credentials: &mut dbt_yaml::Mapping) {
+    if credentials.get("type").and_then(|v| v.as_str()) != Some("bigquery") {
+        return;
+    }
+    let Some(dataproc_region) = credentials.remove("dataproc_region") else {
+        return;
+    };
+    match credentials.get("compute_region") {
+        None => {
+            credentials.insert("compute_region".into(), dataproc_region);
+        }
+        Some(compute_region) if compute_region != &dataproc_region => {
+            emit_warn_log_message(
+                ErrorCode::DuplicateConfigKey,
+                format!(
+                    "BigQuery profile sets both `compute_region` ({}) and the legacy \
+                     `dataproc_region` ({}); using `compute_region`.",
+                    compute_region.as_str().unwrap_or("<non-string>"),
+                    dataproc_region.as_str().unwrap_or("<non-string>"),
+                ),
+            );
+        }
+        Some(_) => {}
+    }
+}
 
 impl DbConfig {
     pub fn get_unique_field(&self) -> Option<&str> {
@@ -847,7 +885,7 @@ pub struct BigqueryDbConfig {
     pub execution_project: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub api_endpoint: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none", alias = "dataproc_region")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub compute_region: Option<String>,
     // TODO: support this https://docs.getdbt.com/docs/core/connect-data-platform/bigquery-setup
     pub dataproc_batch: Option<YmlValue>,
@@ -2377,6 +2415,59 @@ query_tags:
         } else {
             panic!("Expected DbConfig::Bigquery, got {config:?}",);
         }
+    }
+
+    // Regression coverage: `compute_region` used to carry `#[serde(alias = "dataproc_region")]`,
+    // which made a profile supplying both keys fail to parse with "duplicate field
+    // `compute_region`" -- exactly what happens when dbt Cloud emits `dataproc_region` from the
+    // connection while an environment override also sets `compute_region`.
+    #[test]
+    fn test_canonicalize_bigquery_region_alias() {
+        let cases = [
+            // (input, expected `compute_region` after canonicalizing, description)
+            (
+                "compute_region: a\ndataproc_region: b",
+                Some("a"),
+                "both present: compute_region wins, parses instead of erroring",
+            ),
+            (
+                "dataproc_region: b",
+                Some("b"),
+                "dataproc_region alone canonicalizes to compute_region",
+            ),
+            (
+                "compute_region: a",
+                Some("a"),
+                "compute_region alone is unaffected",
+            ),
+        ];
+        for (fields, expected, description) in cases {
+            let mut mapping: dbt_yaml::Mapping =
+                dbt_yaml::from_str(&format!("type: bigquery\n{fields}")).unwrap();
+            canonicalize_bigquery_region_alias(&mut mapping);
+            assert!(!mapping.contains_key("dataproc_region"), "{description}");
+
+            let config: DbConfig =
+                dbt_yaml::from_value(dbt_yaml::Value::Mapping(mapping, dbt_yaml::Span::default()))
+                    .unwrap_or_else(|e| panic!("{description}: {e}"));
+            let DbConfig::Bigquery(bigquery_config) = config else {
+                panic!("expected DbConfig::Bigquery");
+            };
+            assert_eq!(
+                bigquery_config.compute_region.as_deref(),
+                expected,
+                "{description}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_canonicalize_bigquery_region_alias_ignores_other_adapters() {
+        let mut mapping: dbt_yaml::Mapping =
+            dbt_yaml::from_str("type: postgres\ndataproc_region: b").unwrap();
+        canonicalize_bigquery_region_alias(&mut mapping);
+        assert!(mapping.contains_key("dataproc_region"));
+        assert!(!mapping.contains_key("compute_region"));
     }
 
     #[test]
