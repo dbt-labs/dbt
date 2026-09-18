@@ -18,7 +18,7 @@ use arrow_array::{Array, StringViewArray, UInt64Array};
 use arrow_schema::{ArrowError, Schema};
 use minijinja::arg_utils::ArgsIter;
 use minijinja::listener::RenderingEventListener;
-use minijinja::value::{Enumerator, Kwargs, Object, ValueMap, mutable_map::MutableMap};
+use minijinja::value::{DynObject, Enumerator, Kwargs, Object, ValueMap, mutable_map::MutableMap};
 use minijinja::{Error, ErrorKind, State, Value};
 use std::cmp::Ordering;
 use std::collections::HashSet;
@@ -1032,6 +1032,10 @@ impl Object for AgateTable {
         Enumerator::Seq(self.num_rows())
     }
 
+    fn custom_cmp(self: &Arc<Self>, other: &DynObject) -> Option<Ordering> {
+        self.custom_cmp_object(other)
+    }
+
     fn call_method(
         self: &Arc<Self>,
         _state: &State,
@@ -1388,7 +1392,7 @@ impl Object for AgateTable {
                 })?;
                 Ok(Value::from_object(result))
             }
-            other => unimplemented!("AgateTable::{}", other),
+            _ => self.call_unknown_method(name, args),
         }
     }
 }
