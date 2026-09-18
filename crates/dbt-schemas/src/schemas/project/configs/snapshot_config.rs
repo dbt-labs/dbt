@@ -831,6 +831,9 @@ impl From<ProjectSnapshotConfig> for SnapshotConfig {
                 as_columnstore: config.as_columnstore,
 
                 table_type: config.table_type,
+                partitioned_by: None,   // Athena model configs; not surfaced on snapshots
+                table_properties: None,
+                force_batch: None,
 
                 indexes: config.indexes,
                 unlogged: config.unlogged,
