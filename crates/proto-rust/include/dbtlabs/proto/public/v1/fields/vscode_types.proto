@@ -191,6 +191,15 @@ enum LineageGrain {
     LINEAGE_GRAIN_COLUMN = 2;
 }
 
+// Which lineage UI emitted the event
+enum LineageSurface {
+    LINEAGE_SURFACE_UNSPECIFIED = 0;
+    // The full lineage graph panel
+    LINEAGE_SURFACE_GRAPH_PANEL = 1;
+    // A lineage tree view in the launchpad
+    LINEAGE_SURFACE_LAUNCHPAD_TREE = 2;
+}
+
 // Step in the Get Started onboarding panel
 enum GetStartedStepId {
     GET_STARTED_STEP_ID_UNSPECIFIED = 0;
@@ -245,6 +254,9 @@ enum QueryOrigin {
     QUERY_ORIGIN_PREVIEW_FILE = 1;
     // Triggered by Preview CTE within a model.
     QUERY_ORIGIN_PREVIEW_CTE = 2;
+    // Triggered by Preview on a user-selected SQL fragment rather than the
+    // whole file. Both paths run through the single dbt.previewFile command.
+    QUERY_ORIGIN_PREVIEW_SELECTION = 3;
 }
 
 // Type of user interaction with the Query Results panel after results render.
@@ -304,4 +316,69 @@ enum OAuthSessionFileActionAtActivation {
     OAUTH_SESSION_FILE_ACTION_AT_ACTIVATION_NO_ACTION = 4;
     // File present with a newer schema version; we refused to read or overwrite it.
     OAUTH_SESSION_FILE_ACTION_AT_ACTIVATION_WRONG_VERSION = 5;
+}
+
+// What a language-feature request resolved to. Classified on the client from
+// the target file path, because getProjectInfo does not expose model-paths or
+// macro-paths. Projects that rename the conventional directories land in
+// LSP_RESOURCE_TYPE_UNKNOWN.
+enum LspResourceType {
+    LSP_RESOURCE_TYPE_UNSPECIFIED = 0;
+    LSP_RESOURCE_TYPE_MODEL = 1;
+    LSP_RESOURCE_TYPE_SOURCE = 2;
+    LSP_RESOURCE_TYPE_MACRO = 3;
+    LSP_RESOURCE_TYPE_DOC_BLOCK = 4;
+    LSP_RESOURCE_TYPE_SEED = 5;
+    LSP_RESOURCE_TYPE_SNAPSHOT = 6;
+    LSP_RESOURCE_TYPE_TEST = 7;
+    // Target did not match any known convention.
+    LSP_RESOURCE_TYPE_UNKNOWN = 8;
+}
+
+// Which kind of completion the user accepted. Derived on the client from the
+// CompletionItemKind plus the item's `detail`; the raw `detail` string is never
+// transmitted because it embeds source names.
+enum CompletionCategory {
+    COMPLETION_CATEGORY_UNSPECIFIED = 0;
+    COMPLETION_CATEGORY_MODEL_REF = 1;
+    COMPLETION_CATEGORY_SOURCE = 2;
+    COMPLETION_CATEGORY_MACRO = 3;
+    COMPLETION_CATEGORY_DOC_BLOCK = 4;
+    COMPLETION_CATEGORY_WAREHOUSE_FUNCTION = 5;
+    COMPLETION_CATEGORY_JINJA_SNIPPET = 6;
+    COMPLETION_CATEGORY_COLUMN_FIELD = 7;
+    COMPLETION_CATEGORY_OTHER = 8;
+}
+
+// Which dbt sub-command a run/build/test invocation launched.
+enum DbtCommandKind {
+    DBT_COMMAND_KIND_UNSPECIFIED = 0;
+    DBT_COMMAND_KIND_RUN = 1;
+    DBT_COMMAND_KIND_BUILD = 2;
+    DBT_COMMAND_KIND_TEST = 3;
+    DBT_COMMAND_KIND_CLEAN = 4;
+    DBT_COMMAND_KIND_DEPS = 5;
+}
+
+// How a dbt command invocation ended. CANCELLED corresponds to an undefined
+// exit code (cancelled or never launched), which has no int32 representation.
+enum DbtCommandOutcome {
+    DBT_COMMAND_OUTCOME_UNSPECIFIED = 0;
+    DBT_COMMAND_OUTCOME_SUCCEEDED = 1;
+    DBT_COMMAND_OUTCOME_FAILED = 2;
+    // The user abandoned a task that had already launched.
+    DBT_COMMAND_OUTCOME_CANCELLED = 3;
+    // The task layer refused the invocation and nothing ever launched -- e.g.
+    // no active editor, or a file outside any dbt project. Distinct from
+    // CANCELLED: this is the extension declining, not the user abandoning, and
+    // conflating them would make "how often do users abandon runs"
+    // indistinguishable from "how often did we fail to resolve a project".
+    DBT_COMMAND_OUTCOME_SKIPPED = 4;
+}
+
+// Whether a dbt command targeted a single model or the whole project.
+enum DbtCommandScope {
+    DBT_COMMAND_SCOPE_UNSPECIFIED = 0;
+    DBT_COMMAND_SCOPE_MODEL = 1;
+    DBT_COMMAND_SCOPE_PROJECT = 2;
 }
