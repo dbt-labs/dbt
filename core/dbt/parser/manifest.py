@@ -2576,11 +2576,11 @@ def process_node(config: RuntimeConfig, manifest: Manifest, node: ManifestNode):
 
 
 # Plugins whose get_nodes contribution has a native equivalent inside the
-# fusion parser. The fusion parser reads the same env-var contract
+# v2 parser. The v2 parser reads the same env-var contract
 # (DBT_CLOUD_AUTO_EXPOSURES_FILE_PATH, DBT_CLOUD_PUBLICATIONS_DIR, ...) and
 # produces the same downstream nodes/artifacts, so skipping the Python hook
 # is safe — running it would double-inject.
-FUSION_PARITY_GET_NODES_PLUGINS = {
+V2_PARITY_GET_NODES_PLUGINS = {
     "dbtCloudAutoExposures",
     "dbtCloudCrossProjectRef",
 }
@@ -2588,13 +2588,13 @@ FUSION_PARITY_GET_NODES_PLUGINS = {
 
 def assert_no_get_nodes_plugins(project_name: str) -> None:
     """Fail fast if any registered plugin advertises a get_nodes hook
-    that fusion does not natively cover.
+    that the v2 parser does not natively cover.
 
-    get_nodes plugins inject manifest nodes mid-parse; fusion mode skips
+    get_nodes plugins inject manifest nodes mid-parse; v2 mode skips
     dbt-core's parse entirely, so those nodes never make it into the
     runtime manifest and downstream compile/run would silently miss them.
-    Plugins listed in FUSION_PARITY_GET_NODES_PLUGINS are exempt because
-    fusion implements the same contribution natively.
+    Plugins listed in V2_PARITY_GET_NODES_PLUGINS are exempt because
+    the v2 parser implements the same contribution natively.
     """
     pm = plugins.get_plugin_manager(project_name)
     get_nodes_hooks = pm.hooks.get("get_nodes", [])
@@ -2602,13 +2602,13 @@ def assert_no_get_nodes_plugins(project_name: str) -> None:
         {
             h.__self__.name  # type: ignore[attr-defined]
             for h in get_nodes_hooks
-            if h.__self__.name not in FUSION_PARITY_GET_NODES_PLUGINS  # type: ignore[attr-defined]
+            if h.__self__.name not in V2_PARITY_GET_NODES_PLUGINS  # type: ignore[attr-defined]
         }
     )
     if offenders:
         raise dbtPluginError(
             f"Plugin(s) {offenders} register a get_nodes hook, which is not "
-            f"supported in fusion parser mode."
+            f"supported in v2 parser mode."
         )
 
 
@@ -2616,7 +2616,7 @@ def enrich_manifest_with_plugin_artifacts(manifest: Manifest, project_name: str)
     """Run the read-only plugin enrichment hook against a fully-loaded
     manifest and write the resulting artifacts.
 
-    Called from both parse paths (parse_manifest and parse_with_fusion) after
+    Called from both parse paths (parse_manifest and parse_with_v2) after
     the manifest has been written. Callers must have already run
     assert_no_get_nodes_plugins; this function only handles the
     artifact-writing side and assumes the check has passed.
