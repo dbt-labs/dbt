@@ -1790,28 +1790,16 @@ impl InternalDbtNode for DbtSeed {
             // warnings are logged about this. Implement these warnings later
             // after confirming they make sense. See:
             //https://github.com/dbt-labs/dbt-core/blob/b75d5e701ef4dc2d7a98c5301ef63ecfc02eae15/core/dbt/contracts/graph/nodes.py#L900-L933
-            let mut same_body_result =
-                same_body(&self.__common_attr__, &other_seed.__common_attr__);
 
             // Migration fallback: the new text-mode seed hash normalizes CRLF -> LF,
             // so a freshly computed seed checksum might not match one stored by the
             // old binary-mode hashing even when the file is unchanged. Recompute the
             // current seed with the legacy hash and compare to the previous checksum,
             // mirroring dbt-core's `same_seeds` fallback.
-            if !same_body_result {
-                if let (DbtChecksum::Object(self_cs), Some(root_path)) = (
-                    &self.__common_attr__.checksum,
-                    self.__seed_attr__.root_path.as_ref(),
-                ) {
-                    if self_cs.name == "sha256" {
-                        let seed_path = root_path.join(&self.__common_attr__.path);
-                        if let Ok(bytes) = std::fs::read(&seed_path) {
-                            let legacy = DbtChecksum::seed_content_checksum_legacy(&bytes);
-                            same_body_result = legacy == other_seed.__common_attr__.checksum;
-                        }
-                    }
-                }
-            }
+            let same_body_result = same_body(&self.__common_attr__, &other_seed.__common_attr__)
+                || self
+                    .legacy_file_checksum()
+                    .is_some_and(|checksum| checksum == other_seed.__common_attr__.checksum);
 
             // Config is owned by `check_configs_modified`; calling `has_same_config` here would
             // double-count it. This check is therefore restricted to non-config fields.
@@ -5111,6 +5099,34 @@ pub struct DbtSeed {
     pub __other__: BTreeMap<String, YmlValue>,
 }
 
+impl DbtSeed {
+    /// Path of the seed's data file. `path` is relative to `root_path` (the package
+    /// root); `original_file_path` is project-relative and must never be joined onto it.
+    pub fn resolve_file_path(&self) -> FsResult<PathBuf> {
+        match self.__seed_attr__.root_path.as_ref() {
+            Some(root) => Ok(root.join(&self.__common_attr__.path)),
+            None => err!(
+                ErrorCode::Unexpected,
+                "Could not resolve the data file for seed '{}': the node has no root path",
+                self.__common_attr__.unique_id
+            ),
+        }
+    }
+
+    fn legacy_file_checksum(&self) -> Option<DbtChecksum> {
+        let DbtChecksum::Object(checksum) = &self.__common_attr__.checksum else {
+            return None;
+        };
+        if checksum.name != "sha256" {
+            return None;
+        }
+
+        let path = self.resolve_file_path().ok()?;
+        let bytes = std::fs::read(path).ok()?;
+        Some(DbtChecksum::seed_content_checksum_legacy(&bytes))
+    }
+}
+
 #[skip_serializing_none]
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
@@ -6686,6 +6702,24 @@ mod tests {
         seed.__common_attr__.original_file_path = DbtPath::from(original_file_path);
         seed.__base_attr__.alias = name.to_string();
         seed
+    }
+
+    #[test]
+    fn seed_resolve_file_path_joins_package_root() {
+        let mut seed = seed_with_paths("my_seed", "seeds/my_seed.csv");
+        seed.__common_attr__.original_file_path =
+            DbtPath::from("dbt_packages/pkg/seeds/my_seed.csv");
+        seed.__seed_attr__.root_path = Some(PathBuf::from("/workspace/dbt_packages/pkg"));
+        assert_eq!(
+            seed.resolve_file_path().unwrap(),
+            Path::new("/workspace/dbt_packages/pkg/seeds/my_seed.csv")
+        );
+
+        assert!(
+            seed_with_paths("my_seed", "seeds/my_seed.csv")
+                .resolve_file_path()
+                .is_err()
+        );
     }
 
     #[test]

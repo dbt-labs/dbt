@@ -1,6 +1,5 @@
 use std::collections::BTreeMap;
 use std::future::Future;
-use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::Arc;
 
@@ -35,15 +34,6 @@ pub struct RegisteredSeed {
 struct SeedRegistrationCtx {
     schema_cache: Arc<dyn SchemaStoreTrait>,
     data_store: Arc<dyn DataStoreTrait>,
-    in_dir: PathBuf,
-}
-
-pub fn resolve_seed_path(in_dir: &Path, seed: &DbtSeed) -> PathBuf {
-    seed.__seed_attr__
-        .root_path
-        .as_ref()
-        .map(|root| root.join(&seed.__common_attr__.path))
-        .unwrap_or_else(|| in_dir.join(&seed.__common_attr__.original_file_path))
 }
 
 /// Synchronously register a CSV seed.
@@ -64,7 +54,7 @@ fn register_seed_csv(
         .as_ref()
         .map(|s| s.chars().next().unwrap_or(','))
         .unwrap_or(',');
-    let seed_path = resolve_seed_path(&ctx.in_dir, &seed);
+    let seed_path = seed.resolve_file_path()?;
     let infer_column_name_strategy =
         infer_seed_column_name_strategy(seed.__seed_attr__.quote_columns, adapter_type);
 
@@ -119,7 +109,7 @@ fn register_seed_json(
     let adapter_type = seed.node_adapter();
     let relation = create_relation_from_node(adapter_type, seed.as_ref(), None)?;
     let canonical_fqn = relation.get_canonical_fqn()?;
-    let seed_path = resolve_seed_path(&ctx.in_dir, &seed);
+    let seed_path = seed.resolve_file_path()?;
     let infer_column_name_strategy =
         infer_seed_column_name_strategy(seed.__seed_attr__.quote_columns, adapter_type);
 
@@ -157,7 +147,7 @@ async fn register_seed_parquet_async(
     let adapter_type = seed.node_adapter();
     let relation = create_relation_from_node(adapter_type, seed.as_ref(), None)?;
     let canonical_fqn = relation.get_canonical_fqn()?;
-    let seed_path = resolve_seed_path(&ctx.in_dir, &seed);
+    let seed_path = seed.resolve_file_path()?;
     let infer_column_name_strategy =
         infer_seed_column_name_strategy(seed.__seed_attr__.quote_columns, adapter_type);
 
@@ -203,19 +193,16 @@ async fn register_seed_parquet_async(
 ///
 /// Errors are logged immediately but do not abort the run. Failed seeds will
 /// be detected during the render phase when the schema store check fails.
-#[allow(clippy::too_many_arguments)]
 pub async fn pre_register_seeds(
     sorted_nodes: &[&String],
     seeds: &BTreeMap<String, Arc<DbtSeed>>,
     schema_cache: Arc<dyn SchemaStoreTrait>,
     data_store: Arc<dyn DataStoreTrait>,
     type_ops: Arc<dyn TypeOps>,
-    in_dir: &Path,
 ) -> Vec<RegisteredSeed> {
     let ctx = Arc::new(SeedRegistrationCtx {
         schema_cache,
         data_store,
-        in_dir: in_dir.to_path_buf(),
     });
 
     let mut handles: Vec<Pin<Box<dyn Future<Output = FsResult<RegisteredSeed>> + Send>>> =
@@ -226,8 +213,7 @@ pub async fn pre_register_seeds(
             continue;
         };
         let seed = Arc::clone(seed);
-        // Extension dispatch only — the actual read uses `resolve_seed_path`
-        // inside the per-format function, which honors `seed.__seed_attr__.root_path`.
+        // Dispatch on extension only; the per-format functions resolve the real path.
         let extension = seed
             .__common_attr__
             .original_file_path
