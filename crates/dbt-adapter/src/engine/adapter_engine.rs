@@ -261,7 +261,9 @@ pub(crate) fn adbc_execute_with_options(
 
     let sql = match &maybe_query_comment {
         Some(comment) => {
-            let sql = engine.query_comment().add_comment(sql, comment);
+            let sql = engine
+                .query_comment()
+                .add_comment(sql, comment, engine.adapter_type());
             Cow::Owned(sql)
         }
         None => Cow::Borrowed(sql),

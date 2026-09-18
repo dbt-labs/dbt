@@ -99,6 +99,12 @@ impl AdapterResponse {
         self.get_str(KEY_QUERY_ID)
     }
 
+    pub fn bytes_processed(&self) -> Option<i64> {
+        self.0
+            .get(&Value::from(KEY_BYTES_PROCESSED))
+            .and_then(Value::as_i64)
+    }
+
     /// Non-fatal backend warning text, if the executed statement's response
     /// carried one (e.g. a LakeCompute export-limit truncation notice).
     pub fn warning(&self) -> Option<String> {

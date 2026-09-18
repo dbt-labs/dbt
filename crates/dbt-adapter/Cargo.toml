@@ -37,6 +37,11 @@ dbt-yaml = { workspace = true }
 
 adbc-core = { workspace = true }
 arrow = { workspace = true }
+aws-config = { workspace = true }
+aws-sdk-athena = { workspace = true }
+aws-sdk-glue = { workspace = true }
+aws-sdk-s3 = { workspace = true }
+aws-sdk-sts = { workspace = true }
 arrow-array = { workspace = true }
 arrow-ipc = { workspace = true }
 arrow-json = { workspace = true }
