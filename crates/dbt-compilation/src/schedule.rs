@@ -6,7 +6,7 @@ use dbt_common::node_selector::IndirectSelection;
 use dbt_common::path::DbtPath;
 use dbt_schemas::state::CacheState;
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct DbtCustomScheduleDescription {
     pub unique_ids: Vec<String>,
     pub include_parents: bool,
@@ -17,6 +17,8 @@ pub struct DbtCustomScheduleDescription {
     /// to reflect the semantics they want (e.g. `Empty` when the originating
     /// command does not execute tests).
     pub indirect_selection: IndirectSelection,
+    /// Retry rebuilds WAP models and reruns every audit of their fresh candidates.
+    pub is_retry: bool,
 }
 
 pub enum DbtScheduleDescription<'a> {

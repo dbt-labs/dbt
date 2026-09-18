@@ -582,6 +582,7 @@ pub fn execute_test_remote(
     let mut base_context = ctx.inner.base_context.clone();
 
     add_task_context(&mut base_context, test.common(), &ctx.thread_id);
+    ctx.apply_wap_ref_overrides(unique_id, &mut base_context)?;
 
     let sql_instruction = match &task_result.lp_instruction {
         Some(_) => {

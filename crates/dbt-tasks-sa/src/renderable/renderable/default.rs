@@ -5,10 +5,11 @@ use std::sync::Arc;
 use dbt_common::collections::DashMap;
 use dbt_common::constants::DBT_EPHEMERAL_DIR_NAME;
 use dbt_common::constants::RENDERING;
+use dbt_common::io_args::IoArgs;
 use dbt_common::serde_utils::convert_yml_to_dash_map;
 use dbt_common::stats::NodeStatus;
 use dbt_common::tracing::emit::emit_debug_event;
-use dbt_common::{FsResult, MacroSpansOnly, stdfs};
+use dbt_common::{CompiledSpans, FsResult, MacroSpansOnly, stdfs};
 use dbt_jinja_utils::phases::compile::DependencyValidationConfig;
 use dbt_jinja_utils::utils::{
     add_task_context, inject_and_persist_ephemeral_models, macro_spans_to_macro_span_vec,
@@ -17,7 +18,8 @@ use dbt_jinja_utils::utils::{
 use dbt_scheduler::instructions::SqlInstruction;
 use dbt_schemas::schemas::common::DbtMaterialization;
 use dbt_schemas::schemas::properties::UnitTestOverrides;
-use dbt_schemas::schemas::{InternalDbtNodeAttributes, NodePathKind};
+use dbt_schemas::schemas::{CommonAttributes, InternalDbtNodeAttributes, NodePathKind};
+use dbt_tasks_core::CompiledSqlCache;
 use dbt_tasks_core::context::TaskRunnerCtx;
 use dbt_tasks_core::task::TaskOp;
 use dbt_telemetry::{CompiledCode, NodeType};
@@ -53,12 +55,29 @@ fn render_default(
     ctx: &mut TaskRunnerCtx,
     local_exec_unit_test_overrides: &Option<UnitTestOverrides>,
 ) -> FsResult<(SqlInstruction, Arc<DashMap<String, MinijinjaValue>>)> {
+    // Analysis registers the model's output under its public identity so
+    // downstream refs can use that schema after publication.
+    let canonical_fqn = vec![node.database(), node.schema(), node.alias()];
+    // Execution-local copies keep the canonical manifest and resolver intact.
+    let execution_node = ctx
+        .inner
+        .wap_plan
+        .model(&node.common().unique_id)
+        .map(|entry| {
+            entry
+                .execution_model()
+                .map(|model| Arc::new(model) as Arc<dyn InternalDbtNodeAttributes>)
+        })
+        .transpose()?;
+    let node = execution_node.as_ref().unwrap_or(node);
+    let cacheable = !ctx.inner.wap_plan.contains_node(&node.common().unique_id);
     report_rendering_progress(node, ctx);
 
-    if let Some((rendered_sql_maybe_with_cte, macro_spans, reclassify_spans)) = ctx
-        .inner
-        .compiled_sql_cache
-        .try_get_compiled_sql(&ctx.inner.arg.io, node.common())
+    if cacheable
+        && let Some((rendered_sql_maybe_with_cte, macro_spans, reclassify_spans)) = ctx
+            .inner
+            .compiled_sql_cache
+            .try_get_compiled_sql(&ctx.inner.arg.io, node.common())
     {
         let config_map = Arc::new(convert_yml_to_dash_map(node.serialized_config()));
         emit_compiled_code(node, ctx, &rendered_sql_maybe_with_cte);
@@ -150,24 +169,50 @@ fn render_default(
         .rendering_listener_factory
         .compiled_spans(macro_spans, &render_file_path);
 
-    ctx.inner.compiled_sql_cache.set_compiled_sql(
+    persist_rendered_sql(
+        ctx.inner.compiled_sql_cache.as_ref(),
         &ctx.inner.arg.io,
         node.common(),
         &rendered_sql_maybe_with_cte,
         spans.as_ref(),
+        cacheable,
     )?;
 
     emit_compiled_code(node, ctx, &rendered_sql_maybe_with_cte);
 
     Ok((
         SqlInstruction {
-            fqn: vec![node.database(), node.schema(), node.alias()],
+            fqn: canonical_fqn,
             sql: rendered_sql_maybe_with_cte,
             original_path: node.common().original_file_path.to_path_buf(),
             spans,
         },
         config_map,
     ))
+}
+
+fn persist_rendered_sql(
+    cache: &dyn CompiledSqlCache,
+    io: &IoArgs,
+    common: &CommonAttributes,
+    sql: &str,
+    spans: &dyn CompiledSpans,
+    cacheable: bool,
+) -> FsResult<()> {
+    if cacheable {
+        cache.set_compiled_sql(io, common, sql, spans)
+    } else {
+        // Materialization contexts lazily read `model.compiled_code` from this
+        // artifact. Persist the current SQL without making it reusable by a
+        // later invocation (or a standalone test using the same cache).
+        cache.clear(&common.unique_id);
+        let path = cache.get_compiled_sql_path(io, common);
+        if let Some(parent) = path.parent() {
+            stdfs::create_dir_all(parent)?;
+        }
+        stdfs::write(path, sql)?;
+        Ok(())
+    }
 }
 
 fn report_rendering_progress(node: &Arc<dyn InternalDbtNodeAttributes>, ctx: &TaskRunnerCtx) {
@@ -263,4 +308,55 @@ fn render_python_model(
         },
         config_map,
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::compiled_sql_cache::CompiledSqlCacheImpl;
+
+    #[test]
+    fn candidate_sql_replaces_artifacts_without_becoming_reusable() {
+        let directory = tempfile::tempdir().unwrap();
+        let io = IoArgs {
+            in_dir: directory.path().to_path_buf(),
+            out_dir: directory.path().join("target"),
+            ..Default::default()
+        };
+        let common = CommonAttributes {
+            unique_id: "test.pkg.audit".to_string(),
+            name: "audit".to_string(),
+            package_name: "pkg".to_string(),
+            path: PathBuf::from("tests/audit.sql").into(),
+            original_file_path: PathBuf::from("tests/audit.sql").into(),
+            ..Default::default()
+        };
+        let cache = CompiledSqlCacheImpl::default();
+        let spans = MacroSpansOnly::default();
+        let public_sql = "select * from PUBLIC_ORDERS";
+        persist_rendered_sql(&cache, &io, &common, public_sql, &spans, true).unwrap();
+        assert_eq!(
+            cache.try_get_compiled_sql(&io, &common).unwrap().0,
+            public_sql
+        );
+
+        // A previous cache entry must be invalidated, and every new candidate
+        // must replace the artifact that run-time model.compiled_code reads.
+        for candidate in ["__DBT_WAP_FIRST", "__DBT_WAP_SECOND"] {
+            let sql = format!("select * from {candidate}");
+            persist_rendered_sql(&cache, &io, &common, &sql, &spans, false).unwrap();
+            assert!(cache.try_get_compiled_sql(&io, &common).is_none());
+            assert_eq!(
+                stdfs::read_to_string(cache.get_compiled_sql_path(&io, &common)).unwrap(),
+                sql,
+            );
+        }
+
+        // Standalone tests may cache their freshly rendered public SQL again.
+        persist_rendered_sql(&cache, &io, &common, public_sql, &spans, true).unwrap();
+        assert_eq!(
+            cache.try_get_compiled_sql(&io, &common).unwrap().0,
+            public_sql
+        );
+    }
 }

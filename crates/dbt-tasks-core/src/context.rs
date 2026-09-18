@@ -12,17 +12,18 @@ use crate::run_cache::run_cache_service::{
 use arrow::array::RecordBatch;
 use arrow_schema::SchemaRef;
 use dbt_adapter::AdapterStore;
-use dbt_adapter::relation::create_relation_from_node;
+use dbt_adapter::relation::{RelationObject, create_relation_from_node};
 use dbt_adapter::response::AdapterResponse;
 use dbt_adapter_core::AdapterType;
-use dbt_common::FsResult;
 use dbt_common::collections::{DashMap, SccHashMap};
 use dbt_common::io_args::OptimizeTestsOptions;
 use dbt_common::path::DbtPath;
 use dbt_common::stats::{NodeStatus, Stat};
+use dbt_common::{ErrorCode, FsError, FsResult, fs_err};
 use dbt_dag::schedule::Schedule;
 use dbt_frontend_common::sources_extractor::SourcesExtractor;
 use dbt_jinja_utils::jinja_environment::{JinjaEnv, adapter_api_value};
+use dbt_jinja_utils::phases::apply_ref_relation_overrides;
 use dbt_jinja_utils::phases::compile::{
     DependencyValidationConfig, build_compile_node_context_inner,
 };
@@ -46,6 +47,7 @@ use crate::task::Task;
 use crate::test_aggregation::{GenericTestRelationships, is_data_test_static_analysis_eligible};
 use crate::unit_test_schema::UnitTestSchemaState;
 use crate::visitor::SkipReason;
+use crate::wap::WapPlan;
 
 use dbt_schemas::schemas::common::DbtMaterialization;
 
@@ -162,6 +164,9 @@ pub struct TaskRunnerCtxInner {
     pub base_context: BTreeMap<String, Value>,
     pub analyze_stats: DashMap<String, Stat>,
     pub run_stats: DashMap<String, Stat>,
+    /// Candidate builds are provisional until their publication task succeeds.
+    pub wap_stage_stats: DashMap<String, Stat>,
+    pub wap_plan: WapPlan,
     pub data_test_execution_results: DashMap<String, CachedTestExecutionResult>,
     pub batch_results_map: DashMap<String, BatchResults>,
     pub main_adapter_responses: DashMap<String, AdapterResponse>,
@@ -220,7 +225,22 @@ impl TaskRunnerCtxInner {
         adapter_store: Arc<AdapterStore>,
         sources_extractor: Arc<dyn SourcesExtractor>,
         run_cache_ctx: RunCacheCtx,
-    ) -> Self {
+    ) -> FsResult<Self> {
+        let wap_plan = WapPlan::build(&arg, &schedule, &resolver_state.nodes)?;
+        if !wap_plan.models.is_empty()
+            && adapter_store.default_adapter_type() != AdapterType::Snowflake
+        {
+            return Err(fs_err!(
+                ErrorCode::InvalidConfig,
+                "WAP requires a Snowflake profile target; a per-model adapter override is not supported"
+            ));
+        }
+        if !wap_plan.models.is_empty() {
+            wap_plan.validate_test_storage_relations(
+                &resolver_state.nodes,
+                adapter_store.default_adapter()?.engine().quoting(),
+            )?;
+        }
         let runnable_set = schedule
             .selected_nodes
             .iter()
@@ -249,7 +269,7 @@ impl TaskRunnerCtxInner {
         let infer_schema_registry =
             Arc::new(dbt_common::infer_schema_registry::InferSchemaRegistry::new());
 
-        TaskRunnerCtxInner {
+        Ok(TaskRunnerCtxInner {
             arg,
             worker_id,
             schedule,
@@ -257,6 +277,8 @@ impl TaskRunnerCtxInner {
             base_context,
             analyze_stats: DashMap::default(),
             run_stats: DashMap::default(),
+            wap_stage_stats: DashMap::default(),
+            wap_plan,
             data_test_execution_results: DashMap::default(),
             batch_results_map,
             main_adapter_responses: DashMap::default(),
@@ -282,7 +304,7 @@ impl TaskRunnerCtxInner {
             preview_error: parking_lot::Mutex::new(None),
             unit_test_schema: UnitTestSchemaState::default(),
             run_cache_ctx,
-        }
+        })
     }
 
     pub fn span_manager(&self) -> Arc<SpanManager<FsResult<NodeStatus>, SkipReason>> {
@@ -409,6 +431,9 @@ impl TaskRunnerCtx {
     }
 
     pub async fn is_data_test_statically_skippable(&self, unique_id: &str) -> bool {
+        if self.inner.wap_plan.audit_owner(unique_id).is_some() {
+            return false;
+        }
         if !self
             .inner
             .arg
@@ -556,6 +581,23 @@ impl TaskRunnerCtx {
             ref_validation_config,
         )?;
 
+        // A candidate is a scoped copy of the model, while the resolver still
+        // stores the public relation. Bind `this` from that copy explicitly.
+        // The alias check keeps unit-test contexts for the canonical model unchanged.
+        if let Some(entry) = self
+            .inner
+            .wap_plan
+            .model(&model.common().unique_id)
+            .filter(|entry| entry.candidate_identifier == model.base().alias)
+        {
+            let relation = entry.candidate_relation()?;
+            ctx.insert(
+                "this".to_string(),
+                RelationObject::new(relation.into()).into_value(),
+            );
+        }
+        self.apply_wap_ref_overrides(&model.common().unique_id, &mut ctx)?;
+
         // `adapter` and `api` are environment globals bound to a single adapter,
         // and the environment is shared by every render. Shadow them in this
         // node's own context -- the same context-then-globals lookup `DIALECT`
@@ -572,6 +614,28 @@ impl TaskRunnerCtx {
         }
 
         Ok((ctx, config_map))
+    }
+
+    /// Route an audit's refs to its candidate without changing other node contexts.
+    /// Runtime materialization contexts use this too, so macro-time refs agree
+    /// with the relations used while rendering the audit SQL.
+    pub fn apply_wap_ref_overrides(
+        &self,
+        node_unique_id: &str,
+        context: &mut BTreeMap<String, Value>,
+    ) -> FsResult<()> {
+        let Some(entry) = self.inner.wap_plan.audit_owner(node_unique_id) else {
+            return Ok(());
+        };
+        let relation = entry.candidate_relation()?;
+        let overrides = BTreeMap::from([(
+            entry.model.common().unique_id.clone(),
+            RelationObject::new(relation.into()).into_value(),
+        )]);
+        apply_ref_relation_overrides(context, Arc::new(overrides)).map_err(|error| {
+            FsError::from_jinja_err(error, "binding WAP audit references to the candidate")
+        })?;
+        Ok(())
     }
 
     pub fn on_test_failure(

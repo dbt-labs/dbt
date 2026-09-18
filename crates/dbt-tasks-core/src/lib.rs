@@ -26,6 +26,7 @@ pub mod test_aggregation;
 pub mod unit_test_schema;
 pub mod utils;
 pub mod visitor;
+pub mod wap;
 
 use std::any::Any;
 use std::collections::{HashMap, HashSet};

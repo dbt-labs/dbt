@@ -102,7 +102,7 @@ use super::resolve_tests::persist_generic_data_tests::{
     TestUnrenderedConfigs, extract_test_unrendered_configs,
 };
 use super::resolve_utils::{validate_compute, validate_node_adapter};
-use super::validate_models::validate_model;
+use super::validate_models::{validate_model, validate_wap_model};
 
 /// Parses `ref('name')`, `ref('pkg', 'name')`, `ref('name', version=N)`, or
 /// `ref('pkg', 'name', version=N)` from a constraint `to:` string (also accepts `v=` alias).
@@ -1143,6 +1143,9 @@ async fn build_model_nodes(
             deprecated_config: model_config.clone().into(),
             __other__: BTreeMap::new(),
         };
+
+        validate_wap_model(&dbt_model, selected_adapter)
+            .map_err(|error| error.with_location(dbt_asset.path.clone()))?;
 
         let components = RelationComponents {
             database: model_config.database.clone().into_inner().unwrap_or(None),

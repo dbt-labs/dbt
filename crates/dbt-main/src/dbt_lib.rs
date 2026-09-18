@@ -755,15 +755,18 @@ impl<'a> AllPhasesExecutor<'a> {
             // This keeps retry bounded to nodes recorded in run_results.json instead
             // of broadening the selection by expanding descendants.
             //
-            // Retry executes exactly the node ids recorded in run_results.json, so
+            // Ordinary retry executes the node ids recorded in run_results.json, so
             // indirect selection must be `Empty`. The recorded set already contains
             // every node that has to re-run -- in particular, tests skipped behind a
             // failed model are recorded `skipped`, which is retryable -- so expanding
-            // is never needed. Any expansion is by construction a node the original
+            // is normally unnecessary. Any expansion is by construction a node the original
             // command did not run: an already-passed unit test, or a test excluded by
             // the original --indirect-selection / --exclude. This matches dbt-core,
             // whose retry path replaces the graph queue outright and never consults
             // indirect selection (dbt-labs/dbt-core#14536).
+            // WAP is the explicit exception: after resolving the current manifest,
+            // compilation expands a retried WAP owner to every required audit,
+            // because the rebuilt candidate has never been audited.
             // Check ids are **not schedulable**: checks run before the task graph exists, so they
             // are not nodes in it. Putting one in a custom schedule produced a false green —
             // `dbt retry` after a failing check selected only that id, row scoping then found no
@@ -782,6 +785,7 @@ impl<'a> AllPhasesExecutor<'a> {
                 None
             } else {
                 Some(DbtCustomScheduleDescription {
+                    is_retry: true,
                     unique_ids: retry_node_ids,
                     include_parents: false,
                     include_children: false,

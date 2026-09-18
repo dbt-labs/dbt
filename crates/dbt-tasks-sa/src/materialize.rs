@@ -130,7 +130,7 @@ fn execute_materialization_macro(
     })
 }
 
-fn apply_node_overrides(
+pub(crate) fn apply_node_overrides(
     adapter: &Adapter,
     adapter_type: AdapterType,
     custom_warehouse: Option<String>,
@@ -160,7 +160,7 @@ fn apply_node_overrides(
 /// The fingerprint check in `borrow_tlocal_connection_impl` does not help here:
 /// the connection's *configuration* is unchanged, only its session scope is
 /// wrong.
-fn reset_node_overrides(
+pub(crate) fn reset_node_overrides(
     adapter: &Adapter,
     unique_id: &str,
     targets: &[NodeOverride],

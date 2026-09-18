@@ -15,7 +15,7 @@ use dbt_metadata::{
     },
 };
 use dbt_schemas::{
-    schemas::common::ResolvedQuoting,
+    schemas::{Nodes, common::ResolvedQuoting},
     state::{DbtRuntimeConfig, DbtState, NodeResolverTracker, ResolverState},
 };
 
@@ -30,6 +30,18 @@ pub enum PrevCompilationResult {
     FullParse,
     /// No state file, corrupted, or validation failed
     None,
+}
+
+/// A filtered manifest cannot establish the complete mandatory WAP audit set.
+/// This is checked both on cached nodes and after incremental SQL re-resolution,
+/// because an inline config can enable WAP during the incremental pass.
+pub(crate) fn wap_full_parse_reason(filtered: bool, nodes: &Nodes) -> Option<&'static str> {
+    (filtered
+        && nodes
+            .models
+            .values()
+            .any(|model| model.deprecated_config.wap == Some(true)))
+    .then_some("WAP audit discovery requires an unfiltered manifest")
 }
 
 /// Attempt to load and reconstruct a previous compilation from the parquet parse cache.
@@ -125,6 +137,11 @@ pub fn try_load_prev_compilation(
     ) else {
         return (PrevCompilationResult::None, use_lazy_filter);
     };
+
+    if let Some(reason) = wap_full_parse_reason(use_lazy_filter, &state.nodes) {
+        tracing::debug!("Partial parse: {reason}, falling back to full parse");
+        return (PrevCompilationResult::FullParse, false);
+    }
 
     if let Some(reason) = state.validate(&cli.common_args.vars) {
         tracing::debug!("Partial parse: {reason}, invalidating cache");
@@ -323,5 +340,42 @@ pub fn try_lazy_load_fast_path(
             *maybe_prev = Some(arc);
             None
         }
+    }
+}
+
+#[cfg(test)]
+mod wap_tests {
+    use super::*;
+    use dbt_schemas::schemas::DbtModel;
+
+    #[test]
+    fn filtered_wap_nodes_require_full_parse_even_when_audits_are_absent() {
+        let mut nodes = Nodes::default();
+        let mut model = DbtModel::default();
+        model.deprecated_config.wap = Some(true);
+        nodes
+            .models
+            .insert("model.pkg.orders".to_owned(), Arc::new(model));
+        // Empty/Cautious indirect selection can omit these tests entirely at load time.
+        assert!(nodes.tests.is_empty());
+        assert!(wap_full_parse_reason(true, &nodes).is_some());
+        assert!(wap_full_parse_reason(false, &nodes).is_none());
+    }
+
+    #[test]
+    fn newly_enabled_wap_requires_reloading_the_filtered_manifest() {
+        let mut nodes = Nodes::default();
+        nodes
+            .models
+            .insert("model.pkg.orders".to_owned(), Arc::new(DbtModel::default()));
+        assert!(wap_full_parse_reason(true, &nodes).is_none());
+        Arc::make_mut(nodes.models.get_mut("model.pkg.orders").unwrap())
+            .deprecated_config
+            .wap = Some(true);
+        assert!(wap_full_parse_reason(true, &nodes).is_some());
+        Arc::make_mut(nodes.models.get_mut("model.pkg.orders").unwrap())
+            .deprecated_config
+            .wap = Some(false);
+        assert!(wap_full_parse_reason(true, &nodes).is_none());
     }
 }

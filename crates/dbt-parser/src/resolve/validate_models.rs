@@ -1,6 +1,12 @@
+use dbt_adapter_core::AdapterType;
 use dbt_common::{ErrorCode, FsError, FsResult, fs_err};
+use dbt_schemas::schemas::DbtModel;
 use dbt_schemas::schemas::properties::ModelProperties;
 use std::collections::HashSet;
+
+pub(super) fn validate_wap_model(model: &DbtModel, adapter: AdapterType) -> FsResult<()> {
+    model.validate_wap_config(adapter)
+}
 
 /// Validates time spine configuration for semantic models according to the rules ported from Python dbt.
 /// This checks:
@@ -163,12 +169,88 @@ pub fn validate_model(model_props: &ModelProperties) -> FsResult<Vec<FsError>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use dbt_schemas::schemas::common::Versions;
+    use dbt_schemas::schemas::common::{ConstraintType, DbtMaterialization, OnError, Versions};
     use dbt_schemas::schemas::dbt_column::{ColumnProperties, Granularity};
     use dbt_schemas::schemas::properties::model_properties::{
         ModelPropertiesTimeSpine, TimeSpineCustomGranularity,
     };
     use dbt_schemas::schemas::serde::FloatOrString;
+
+    fn wap_model() -> DbtModel {
+        let mut model = DbtModel::default();
+        model.__common_attr__.unique_id = "model.project.orders".to_string();
+        model.__common_attr__.language = Some("sql".to_string());
+        model.__base_attr__.materialized = DbtMaterialization::Table;
+        model.deprecated_config.wap = Some(true);
+        model
+    }
+
+    #[test]
+    fn wap_accepts_native_sql_tables_and_false_is_inert() {
+        let mut model = wap_model();
+        assert!(validate_wap_model(&model, AdapterType::Snowflake).is_ok());
+        model.deprecated_config.wap = Some(false);
+        model.__common_attr__.language = Some("python".to_string());
+        assert!(validate_wap_model(&model, AdapterType::Bigquery).is_ok());
+    }
+
+    #[test]
+    fn wap_rejects_unsupported_model_kinds() {
+        let mut model = wap_model();
+        assert!(validate_wap_model(&model, AdapterType::Bigquery).is_err());
+        model.__common_attr__.language = Some("python".to_string());
+        assert!(validate_wap_model(&model, AdapterType::Snowflake).is_err());
+        model.__common_attr__.language = Some("sql".to_string());
+        model.__base_attr__.materialized = DbtMaterialization::View;
+        assert!(validate_wap_model(&model, AdapterType::Snowflake).is_err());
+        model.__base_attr__.materialized = DbtMaterialization::Table;
+        model.deprecated_config.table_format = Some("iceberg".to_string());
+        assert!(validate_wap_model(&model, AdapterType::Snowflake).is_err());
+    }
+
+    #[test]
+    fn wap_rejects_hooks_headers_continue_and_governance_options() {
+        use dbt_schemas::schemas::common::Hooks;
+
+        let cases: &[fn(&mut DbtModel)] = &[
+            |m| {
+                m.deprecated_config.pre_hook =
+                    dbt_yaml::Verbatim::from(Some(Hooks::String("select 1".to_string())))
+            },
+            |m| {
+                m.deprecated_config.post_hook =
+                    dbt_yaml::Verbatim::from(Some(Hooks::String("select 1".to_string())))
+            },
+            |m| m.deprecated_config.sql_header = Some("set x=1;".to_string()),
+            |m| m.deprecated_config.on_error = Some(OnError::Continue),
+            |m| {
+                m.deprecated_config
+                    .__warehouse_specific_config__
+                    .row_access_policy = Some("policy on (id)".to_string())
+            },
+            |m| {
+                m.deprecated_config.__warehouse_specific_config__.table_tag =
+                    Some("tag='value'".to_string())
+            },
+            |m| m.deprecated_config.__warehouse_specific_config__.copy_tags = Some(true),
+            |m| {
+                m.__model_attr__.constraints.push(
+                    dbt_schemas::schemas::properties::ModelConstraint {
+                        type_: ConstraintType::Custom,
+                        expression: Some("check (id > 0)".to_string()),
+                        ..Default::default()
+                    },
+                )
+            },
+        ];
+        for change in cases {
+            let mut model = wap_model();
+            change(&mut model);
+            let error = validate_wap_model(&model, AdapterType::Snowflake).unwrap_err();
+            assert_eq!(error.code, ErrorCode::InvalidConfig);
+            assert!(error.context.contains("wap=true"));
+        }
+    }
 
     fn create_test_model_properties(name: &str) -> ModelProperties {
         ModelProperties {

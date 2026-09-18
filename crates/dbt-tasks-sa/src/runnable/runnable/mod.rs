@@ -109,9 +109,25 @@ impl Task for RunTask {
     ) -> Pin<Box<dyn Future<Output = FsResult<NodeStatus>> + Send + 'a>> {
         Box::pin(async move {
             let unique_id = self.node.unique_id();
+            let is_wap_node = ctx.inner.wap_plan.contains_node(&unique_id);
+            let is_wap_stage = ctx.inner.wap_plan.model(&unique_id).is_some();
             let mut result_receiver = { self.result_receiver.lock().take() };
             let task_result = receive_task_result(&unique_id, &mut result_receiver)?;
             let start_time = chrono::Utc::now();
+            if is_wap_stage {
+                // Keep a retryable provisional outcome even if cancellation interrupts staging.
+                ctx.inner.wap_stage_stats.insert(
+                    unique_id.clone(),
+                    Stat::new(
+                        unique_id.clone(),
+                        start_time.into(),
+                        None,
+                        NodeStatus::SkippedUpstreamFailed,
+                        Some("WAP: working table not published".to_string()),
+                        ctx.thread_id,
+                    ),
+                );
+            }
             // Status lines keep source path for Models for readability
             let display_path_kind = if self.node.resource_type() == NodeType::Model {
                 NodePathKind::Definition
@@ -140,7 +156,8 @@ impl Task for RunTask {
             // the original recording when the service was active. Replay
             // must be driven solely by recorded events (see
             // `maybe_replay_remote_run` / `maybe_replay_run_cache_clone`).
-            let cache_enabled = self.execution_path == RunExecutionPath::Remote
+            let cache_enabled = !is_wap_node
+                && self.execution_path == RunExecutionPath::Remote
                 && !ctx.inner.run_cache_ctx.run_cache_service_requested
                 && !is_replaying()
                 && ctx.inner.arg.run_cache_mode.write_cache()
@@ -208,7 +225,9 @@ impl Task for RunTask {
                     // `sao_guard`), or Disabled.
                     let run_cache_service_requested =
                         ctx.inner.run_cache_ctx.run_cache_service_requested;
-                    let decision = if let Some(decision) = replayed_cache_decision {
+                    let decision = if is_wap_node {
+                        RunCacheServiceDecision::Disabled
+                    } else if let Some(decision) = replayed_cache_decision {
                         decision
                     } else if is_replaying()
                         && ctx
@@ -551,7 +570,7 @@ impl Task for RunTask {
                 }
             };
 
-            if result.is_ok() {
+            if result.is_ok() && !is_wap_node {
                 run_cache_after_success_action(
                     ctx,
                     self.node.as_ref(),
@@ -566,6 +585,16 @@ impl Task for RunTask {
                 attrs.sao_enabled = Some(cache_enabled);
                 span_rows_affected = attrs.rows_affected.map(|n| n as i64);
             });
+
+            if is_wap_stage && let Ok(status) = &result {
+                if let Some(mut stat) = ctx.inner.wap_stage_stats.get_mut(&unique_id) {
+                    stat.rows_affected = span_rows_affected;
+                    stat.end_time = std::time::SystemTime::now();
+                }
+                // Stage completion only releases audits. The publish task owns the
+                // model's terminal result, progress completion, and usage reporting.
+                return Ok(status.clone());
+            }
 
             // Get status and insert stats
             // Note: Inner visit_run implementations may insert their own stats on success,
@@ -604,6 +633,9 @@ impl Task for RunTask {
                     // TODO: At some point, these should log as part of the same event
                     let node_status = NodeStatus::Errored;
                     let error_message = e.to_string();
+                    if is_wap_stage {
+                        crate::wap::report_retained_candidate(ctx, &unique_id);
+                    }
                     report_completed(
                         &NodeStatus::Errored,
                         self.node.defined_at().cloned(),
@@ -1076,7 +1108,7 @@ fn sao_status_for_task_status(task_status: &NodeStatus) -> Option<(SaoStatus, St
     })
 }
 
-fn emit_run_usage_stats(
+pub(crate) fn emit_run_usage_stats(
     node: &dyn InternalDbtNodeAttributes,
     ctx: &TaskRunnerCtx,
     execution_path: RunExecutionPath,

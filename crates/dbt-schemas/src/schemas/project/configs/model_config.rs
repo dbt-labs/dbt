@@ -340,6 +340,12 @@ pub struct ProjectModelConfig {
     pub matched_condition: Option<String>,
     #[serde(rename = "+materialized")]
     pub materialized: Option<DbtMaterialization>,
+    #[serde(
+        default,
+        rename = "+wap",
+        deserialize_with = "crate::schemas::serde::strict_bool_or_string_bool"
+    )]
+    pub wap: Option<bool>,
     #[serde(rename = "+max_staleness")]
     pub max_staleness: Option<String>,
     #[serde(
@@ -673,7 +679,8 @@ impl TypedRecursiveConfig for ProjectModelConfig {
     }
 
     fn has_set_fields(&self) -> bool {
-        self.access.is_some()
+        self.wap.is_some()
+            || self.access.is_some()
             || self.adapter_properties.is_some()
             || self.alias.is_some()
             || self.automatic_clustering.is_some()
@@ -870,6 +877,13 @@ pub struct ModelConfig {
     pub group: Option<String>,
     #[resolved(promote, default = DbtMaterialization::View)]
     pub materialized: Option<DbtMaterialization>,
+    /// Audit a Snowflake SQL table candidate before publishing it during `build`.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "crate::schemas::serde::strict_bool_or_string_bool"
+    )]
+    pub wap: Option<bool>,
     pub incremental_strategy: Option<DbtIncrementalStrategy>,
     pub incremental_predicates: Option<StringOrArrayOfStrings>,
     // Hashed into the run-cache key only; the functional source of a model's constraints is the
@@ -1007,6 +1021,7 @@ impl From<ProjectModelConfig> for ModelConfig {
             location: config.location,
             lookback: config.lookback,
             materialized: config.materialized,
+            wap: config.wap,
             merge_exclude_columns: config.merge_exclude_columns,
             merge_update_columns: config.merge_update_columns,
             meta: config.meta.0,
@@ -1210,6 +1225,7 @@ impl From<ModelConfig> for ProjectModelConfig {
             location: config.location,
             lookback: config.lookback,
             materialized: config.materialized,
+            wap: config.wap,
             merge_exclude_columns: config.merge_exclude_columns,
             merge_update_columns: config.merge_update_columns,
             meta: config.meta.into(),
@@ -1514,6 +1530,7 @@ impl ModelConfig {
         let propagate_eq = self.propagate == other.propagate;
         let meta_eq_result = meta_eq(&self.meta, &other.meta); // Custom comparison for meta
         let materialized_eq_result = materialized_eq(&self.materialized, &other.materialized);
+        let wap_eq = self.wap.unwrap_or(false) == other.wap.unwrap_or(false);
         let incremental_strategy_eq = self.incremental_strategy == other.incremental_strategy;
         // incremental_predicates can differ because of environment, i.e. dev vs prod
         // so we don't compare them. To compare them we will need a SQL AST whose
@@ -1575,6 +1592,7 @@ impl ModelConfig {
             && propagate_eq
             && meta_eq_result
             && materialized_eq_result
+            && wap_eq
             && incremental_strategy_eq
             && batch_size_eq
             && lookback_eq_result
@@ -1874,6 +1892,7 @@ impl ModelConfig {
                             format!("{:?}", &other.predicates),
                         )),
                     ),
+                    ("wap", wap_eq, None),
                     ("warehouse_config", warehouse_config_eq, None),
                 ],
             );
@@ -1918,6 +1937,8 @@ impl ConfigKeys for ModelConfig {
         field_names.insert("dataset".to_string()); // alias for schema
         field_names.insert("post-hook".to_string()); // might be serialized as post_hook
         field_names.insert("pre-hook".to_string()); // might be serialized as pre_hook
+        // Optional extension omitted from default serialized configs.
+        field_names.insert("wap".to_string());
 
         field_names
     }
@@ -2061,6 +2082,45 @@ mod tests {
     use crate::schemas::properties::StatePreClone;
     use crate::schemas::serde::{AdapterTypeOrArray, RefreshableConfig, StringOrArrayOfStrings};
     use dbt_adapter_core::AdapterType;
+
+    #[test]
+    fn wap_config_inherits_overrides_and_round_trips() {
+        let project: ProjectModelConfig =
+            dbt_yaml::from_str("+wap: true\n__additional_properties__: {}\n").unwrap();
+        let parent: ModelConfig = project.into();
+        let mut inherited = ModelConfig::default();
+        inherited.default_to(&parent);
+        assert_eq!(inherited.wap, Some(true));
+
+        let mut child: ModelConfig =
+            dbt_yaml::from_str("wap: false\n__warehouse_specific_config__: {}\n").unwrap();
+        child.default_to(&parent);
+        assert_eq!(child.wap, Some(false));
+        let manifest: ManifestModelConfig = inherited.into();
+        let serialized = serde_json::to_string(&manifest).unwrap();
+        let manifest: ManifestModelConfig = serde_json::from_str(&serialized).unwrap();
+        let restored: ModelConfig = manifest.into();
+        assert_eq!(restored.wap, Some(true));
+        let project: ProjectModelConfig = restored.into();
+        assert_eq!(project.wap, Some(true));
+    }
+
+    #[test]
+    fn wap_is_a_known_model_config_and_changes_state_only_when_enabled() {
+        use super::ConfigKeys;
+
+        assert!(ModelConfig::valid_field_names().contains("wap"));
+        let omitted = ModelConfig::default();
+        let mut configured = omitted.clone();
+        configured.wap = Some(false);
+        assert!(omitted.same_config(&configured));
+        configured.wap = Some(true);
+        assert!(!omitted.same_config(&configured));
+        assert!(
+            dbt_yaml::from_str::<ModelConfig>("wap: invalid\n__warehouse_specific_config__: {}\n")
+                .is_err()
+        );
+    }
 
     /// `+propagate` rides the same project -> node -> project path `+adapter`
     /// does, in both its single-value and list forms.

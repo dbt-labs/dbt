@@ -2628,6 +2628,11 @@ mod tests {
         use dbt_yaml::{Spanned, Verbatim};
 
         let cases: Vec<(&str, ExcludeKind, Box<dyn Fn(&mut DbtModel)>)> = vec![
+            (
+                "wap",
+                ExcludeKind::Relevant,
+                Box::new(|n| n.deprecated_config.wap = Some(true)),
+            ),
             // --- fields `ModelConfig::same_config` actually compares ---
             (
                 "enabled",

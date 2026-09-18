@@ -1,7 +1,7 @@
 use dbt_common::io_args::{FsCommand, OptimizeTestsOptions};
 use dbt_common::static_analysis::is_strict_static_analysis;
 use dbt_common::tracing::dbt_emit::emit_warn_log_message;
-use dbt_common::{ErrorCode, FsResult};
+use dbt_common::{ErrorCode, FsResult, fs_err};
 use dbt_dag::deps_mgmt::{find_all_upstream_deps, restrict_with_transitive};
 use dbt_dag::schedule::Schedule;
 use dbt_schemas::schemas::InternalDbtNode;
@@ -26,12 +26,14 @@ use dbt_tasks_core::task::{TP, TasksForNode};
 use dbt_tasks_core::test_aggregation::{
     GenericTestAggregation, GenericTestRelationships, create_generic_test_aggregation,
 };
+use dbt_tasks_core::wap::WapPlan;
 
 use crate::barrier::BarrierTask;
 use crate::cloneable::RunCloneTask;
 use crate::cloneable::cloneable_task;
 use crate::renderable::unit_test::build_unit_test_overrides_map;
 use crate::task::TasksForNodeFactory;
+use crate::wap::PublishTask;
 
 const PHASES_RENDER_ANALYZE_RUN: &[TP] = &[TP::Render, TP::Analyze, TP::Run];
 const PHASES_RENDER_ANALYZE: &[TP] = &[TP::Render, TP::Analyze];
@@ -104,6 +106,7 @@ impl GraphBuilder {
         resolver_state: &Arc<ResolverState>,
     ) -> FsResult<(Graph<Arc<dyn Task>, ()>, GenericTestRelationships)> {
         let nodes = &resolver_state.nodes;
+        let wap_plan = WapPlan::build(self.arg.as_ref(), schedule, nodes)?;
 
         // Test aggregation
         let generic_test_aggregation = if self
@@ -112,7 +115,20 @@ impl GraphBuilder {
             .contains(&OptimizeTestsOptions::TestAggregation)
             && command_uses_generic_test_aggregation(self.arg.command)
         {
-            create_generic_test_aggregation(&self.arg.io, schedule, nodes, self.execute)?
+            // Audit nodes must keep their identities and candidate-scoped contexts.
+            let aggregation_schedule = (!wap_plan.models.is_empty()).then(|| {
+                let mut schedule = schedule.clone();
+                schedule
+                    .selected_nodes
+                    .retain(|unique_id| wap_plan.audit_owner(unique_id).is_none());
+                schedule
+            });
+            create_generic_test_aggregation(
+                &self.arg.io,
+                aggregation_schedule.as_ref().unwrap_or(schedule),
+                nodes,
+                self.execute,
+            )?
         } else {
             None
         };
@@ -166,7 +182,8 @@ impl GraphBuilder {
                             self.static_analysis_buckets.as_ref(),
                             self.arg.infer_schemas_and_typeless,
                             aggregation,
-                        )
+                            &wap_plan,
+                        )?
                     } else {
                         // Freshness and `jinja-check` legitimately produce an
                         // empty task graph.
@@ -205,7 +222,8 @@ impl GraphBuilder {
         buckets: &dyn StaticAnalysisBuckets,
         infer_schemas: bool,
         generic_test_aggregation: Option<&GenericTestAggregation>,
-    ) -> (DiGraph<Arc<dyn Task>, ()>, BTreeSet<String>) {
+        wap_plan: &WapPlan,
+    ) -> FsResult<(DiGraph<Arc<dyn Task>, ()>, BTreeSet<String>)> {
         // Build reverse dependencies map once for efficient propagation
         let reverse_deps = build_reverse_deps(&schedule.deps);
 
@@ -232,6 +250,7 @@ impl GraphBuilder {
             &unit_test_overrides_map,
             generic_test_aggregation,
             &reverse_deps,
+            wap_plan,
         );
 
         // Add phase transitions (e.g. render -> analyze -> run) for each node
@@ -448,6 +467,8 @@ impl GraphBuilder {
             );
         }
 
+        add_wap_publication_tasks(&mut graph, &node_indices, wap_plan)?;
+
         // Insert barrier only for static nodes
         if buckets
             .global_static_analysis()
@@ -488,8 +509,66 @@ impl GraphBuilder {
 
         assert_graph(&graph);
 
-        (graph, nodes_with_no_tasks)
+        if !wap_plan.models.is_empty() && petgraph::algo::is_cyclic_directed(&graph) {
+            return Err(fs_err!(
+                ErrorCode::InvalidConfig,
+                "The execution graph contains a cycle; WAP audits must depend only on their owning model"
+            ));
+        }
+
+        Ok((graph, nodes_with_no_tasks))
     }
+}
+
+/// Give consumers a publication dependency while audits consume the staged table.
+fn add_wap_publication_tasks(
+    graph: &mut DiGraph<Arc<dyn Task>, ()>,
+    node_indices: &BTreeMap<(TP, String), NodeIndex>,
+    wap_plan: &WapPlan,
+) -> FsResult<()> {
+    for (model_id, model) in &wap_plan.models {
+        let stage = *node_indices
+            .get(&(TP::Run, model_id.clone()))
+            .ok_or_else(|| {
+                fs_err!(
+                    ErrorCode::InvalidConfig,
+                    "WAP model '{model_id}' has no execution task"
+                )
+            })?;
+        let publish = graph.add_node(Arc::new(PublishTask::new(Arc::clone(&model.model))));
+        let consumers: Vec<_> = graph
+            .neighbors_directed(stage, petgraph::Outgoing)
+            .filter(|index| !model.audit_ids.contains(graph[*index].work_node_id()))
+            .collect();
+        for consumer in consumers {
+            if let Some(edge) = graph.find_edge(stage, consumer) {
+                graph.remove_edge(edge);
+            }
+            graph.update_edge(publish, consumer, ());
+        }
+        graph.update_edge(stage, publish, ());
+        for audit_id in &model.audit_ids {
+            let render = node_indices
+                .get(&(TP::Render, audit_id.clone()))
+                .ok_or_else(|| {
+                    fs_err!(
+                        ErrorCode::InvalidConfig,
+                        "WAP audit '{audit_id}' has no render task"
+                    )
+                })?;
+            let run = node_indices
+                .get(&(TP::Run, audit_id.clone()))
+                .ok_or_else(|| {
+                    fs_err!(
+                        ErrorCode::InvalidConfig,
+                        "WAP audit '{audit_id}' has no execution task"
+                    )
+                })?;
+            graph.update_edge(stage, *render, ());
+            graph.update_edge(*run, publish, ());
+        }
+    }
+    Ok(())
 }
 
 /// Create a new schedule and nodes based on test aggregation.
@@ -610,6 +689,7 @@ fn initialize_graph(
     unit_test_overrides_map: &BTreeMap<String, UnitTestOverrides>,
     generic_test_aggregation: Option<&GenericTestAggregation>,
     reverse_deps: &HashMap<String, HashSet<String>>,
+    wap_plan: &WapPlan,
 ) -> (
     DiGraph<Arc<dyn Task>, ()>,
     BTreeMap<TP, BTreeMap<String, Arc<dyn Task>>>,
@@ -714,6 +794,13 @@ fn initialize_graph(
             // Keep the relation in the resolved graph, but do not let an unavailable
             // introspection result become a failed task that skips its downstream nodes.
             expected_node_phases.clear();
+        }
+
+        if wap_plan.audit_owner(unique_id).is_some() {
+            // Audits must read the newly staged table on Snowflake. Its invocation-local
+            // relation is not part of the schema snapshot used by static analysis.
+            // Select phases before constructing channels so Render feeds Run directly.
+            expected_node_phases.retain(|phase| *phase != TP::Analyze);
         }
 
         let TasksForNode {
@@ -1141,4 +1228,366 @@ pub fn print_task_graph(graph: &DiGraph<Arc<dyn Task>, ()>) -> Vec<(String, Stri
         res.push((from, tos));
     }
     res
+}
+
+#[cfg(test)]
+mod wap_tests {
+    use super::*;
+    use std::future::Future;
+    use std::pin::Pin;
+
+    use dbt_common::stats::NodeStatus;
+    use dbt_schemas::schemas::telemetry::NodeType;
+    use dbt_schemas::schemas::{DbtModel, DbtTest, InternalDbtNodeAttributes};
+    use dbt_tasks_core::context::TaskRunnerCtx;
+    use dbt_tasks_core::wap::WapModel;
+
+    struct PhasedFactory;
+
+    impl TasksForNodeFactory for PhasedFactory {
+        fn tasks_for_node(
+            &self,
+            unique_id: &str,
+            nodes: &Nodes,
+            _schedule: &Schedule<String>,
+            _execute: Execute,
+            phases: &[TP],
+            _aggregation: Option<&GenericTestAggregation>,
+            _unit_test_overrides: Option<&UnitTestOverrides>,
+            _reverse_deps: &HashMap<String, HashSet<String>>,
+        ) -> TasksForNode {
+            let node = nodes.get_node_owned(unique_id).unwrap();
+            let task = |phase| {
+                phases.contains(&phase).then(|| {
+                    Arc::new(GraphTask {
+                        node: Arc::clone(&node),
+                        phase,
+                    }) as Arc<dyn Task>
+                })
+            };
+            TasksForNode {
+                renderable: task(TP::Render),
+                analyzeable: task(TP::Analyze),
+                runnable: task(TP::Run),
+                showable: None,
+            }
+        }
+
+        fn tasks_for_generic_test_group(
+            &self,
+            _: &[TP],
+            _: &Arc<dbt_tasks_core::test_aggregation::GenericTestGroup>,
+        ) -> TasksForNode {
+            unreachable!()
+        }
+        fn runnable_task(
+            &self,
+            _: &str,
+            _: &Nodes,
+            _: &[TP],
+            _: Execute,
+        ) -> Option<Arc<dyn InternalDbtNodeAttributes>> {
+            unreachable!()
+        }
+        fn analyze_task(
+            &self,
+            _: Arc<dyn InternalDbtNodeAttributes>,
+            _: Option<std::sync::mpsc::Receiver<dbt_tasks_core::task::TaskResult>>,
+            _: Option<std::sync::mpsc::SyncSender<dbt_tasks_core::task::TaskResult>>,
+        ) -> Option<Arc<dyn Task>> {
+            unreachable!()
+        }
+        fn analyzeable_task(
+            &self,
+            _: &Nodes,
+            _: &str,
+            _: &[TP],
+        ) -> Option<Arc<dyn InternalDbtNodeAttributes>> {
+            unreachable!()
+        }
+        fn create_show_task_hooks(
+            &self,
+        ) -> Arc<dyn dbt_tasks_core::show_task_hooks::ShowTaskHooks> {
+            unreachable!()
+        }
+        fn create_render_task_hooks(
+            &self,
+        ) -> Arc<dyn dbt_tasks_core::render_task_hooks::RenderTaskHooks> {
+            unreachable!()
+        }
+        fn create_run_task_hooks(&self) -> Arc<dyn dbt_tasks_core::run_task_hooks::RunTaskHooks> {
+            unreachable!()
+        }
+    }
+
+    #[derive(Default)]
+    struct StrictBuckets {
+        deferred: HashMap<dbt_schema_store::CanonicalFqn, String>,
+    }
+
+    impl StaticAnalysisBuckets for StrictBuckets {
+        fn global_static_analysis(&self) -> Option<dbt_common::io_args::StaticAnalysisKind> {
+            Some(dbt_common::io_args::StaticAnalysisKind::Strict)
+        }
+        fn deferred_unique_ids(&self) -> &HashMap<dbt_schema_store::CanonicalFqn, String> {
+            &self.deferred
+        }
+        fn in_off_closure(&self, _: &str) -> bool {
+            false
+        }
+        fn in_baseline_closure(&self, _: &str) -> bool {
+            false
+        }
+        fn in_dynamic_closure(&self, _: &str) -> bool {
+            false
+        }
+        fn dynamic_node(&self, _: &str) -> Option<IntrospectionKind> {
+            None
+        }
+        fn has_dynamic_closure(&self) -> bool {
+            false
+        }
+        fn will_build_phased_task_graph(&self, _: &RunTasksArgs, _: &Nodes) {}
+        fn did_build_phased_task_graph(&self, _: &RunTasksArgs, _: &BTreeSet<String>) {}
+    }
+
+    struct GraphTask {
+        node: Arc<dyn InternalDbtNodeAttributes>,
+        phase: TP,
+    }
+
+    impl Task for GraphTask {
+        fn run_task<'a>(
+            &'a self,
+            _ctx: &'a mut TaskRunnerCtx,
+        ) -> Pin<Box<dyn Future<Output = FsResult<NodeStatus>> + Send + 'a>> {
+            Box::pin(async { Ok(NodeStatus::Succeeded) })
+        }
+
+        fn resource_type(&self) -> NodeType {
+            self.node.resource_type()
+        }
+        fn task_type(&self) -> &str {
+            match self.phase {
+                TP::Render => "render",
+                TP::Analyze => "analyze",
+                _ => "run",
+            }
+        }
+        fn work_node_id(&self) -> &str {
+            &self.node.common().unique_id
+        }
+        fn dbt_nodes(&self) -> Vec<Arc<dyn InternalDbtNodeAttributes>> {
+            vec![Arc::clone(&self.node)]
+        }
+        fn task_phase(&self) -> Option<TP> {
+            Some(self.phase)
+        }
+    }
+
+    fn add_task(
+        graph: &mut DiGraph<Arc<dyn Task>, ()>,
+        indices: &mut BTreeMap<(TP, String), NodeIndex>,
+        unique_id: &str,
+        phase: TP,
+    ) -> NodeIndex {
+        let node: Arc<dyn InternalDbtNodeAttributes> = if unique_id.starts_with("test.") {
+            let mut node = DbtTest::default();
+            node.__common_attr__.unique_id = unique_id.to_owned();
+            Arc::new(node)
+        } else {
+            let mut node = DbtModel::default();
+            node.__common_attr__.unique_id = unique_id.to_owned();
+            Arc::new(node)
+        };
+        let index = graph.add_node(Arc::new(GraphTask { node, phase }));
+        indices.insert((phase, unique_id.to_owned()), index);
+        index
+    }
+
+    fn entry(model_id: &str, audit_id: &str) -> WapModel {
+        let mut model = DbtModel::default();
+        model.__common_attr__.unique_id = model_id.to_owned();
+        WapModel {
+            model: Arc::new(model),
+            candidate_identifier: format!("candidate_{model_id}"),
+            audit_ids: BTreeSet::from([audit_id.to_owned()]),
+        }
+    }
+
+    #[test]
+    fn audit_runs_before_publication_and_downstream_rendering() {
+        let mut graph = DiGraph::new();
+        let mut indices = BTreeMap::new();
+        let stage = add_task(&mut graph, &mut indices, "model.pkg.a", TP::Run);
+        let render = add_task(&mut graph, &mut indices, "test.pkg.a", TP::Render);
+        let analyze = add_task(&mut graph, &mut indices, "test.pkg.a", TP::Analyze);
+        let audit = add_task(&mut graph, &mut indices, "test.pkg.a", TP::Run);
+        let second_render = add_task(&mut graph, &mut indices, "test.pkg.a_second", TP::Render);
+        let second_audit = add_task(&mut graph, &mut indices, "test.pkg.a_second", TP::Run);
+        let child_render = add_task(&mut graph, &mut indices, "model.pkg.b", TP::Render);
+        let child_run = add_task(&mut graph, &mut indices, "model.pkg.b", TP::Run);
+        let unrelated = add_task(&mut graph, &mut indices, "model.pkg.unrelated", TP::Run);
+        for (from, to) in [
+            (render, analyze),
+            (analyze, audit),
+            (stage, audit),
+            (second_render, second_audit),
+            (stage, second_audit),
+            (stage, child_render),
+            (stage, child_run),
+        ] {
+            graph.update_edge(from, to, ());
+        }
+        let mut model = entry("model.pkg.a", "test.pkg.a");
+        model.audit_ids.insert("test.pkg.a_second".to_owned());
+        let plan = WapPlan {
+            models: BTreeMap::from([("model.pkg.a".to_owned(), model)]),
+        };
+        add_wap_publication_tasks(&mut graph, &indices, &plan).unwrap();
+        let publish = graph
+            .node_indices()
+            .find(|index| graph[*index].task_type() == "wap_publish_run")
+            .unwrap();
+        assert!(graph.contains_edge(stage, render));
+        assert!(graph.contains_edge(stage, second_render));
+        assert!(graph.contains_edge(audit, publish));
+        assert!(graph.contains_edge(second_audit, publish));
+        assert!(graph.contains_edge(publish, child_render));
+        assert!(graph.contains_edge(publish, child_run));
+        assert!(!graph.contains_edge(stage, child_render));
+        assert!(!graph.contains_edge(stage, child_run));
+        assert_eq!(
+            graph
+                .neighbors_directed(unrelated, petgraph::Incoming)
+                .count(),
+            0
+        );
+        let sorted = stable_toposort_task_graph(&graph).unwrap();
+        let position = |index| {
+            sorted
+                .iter()
+                .position(|candidate| *candidate == index)
+                .unwrap()
+        };
+        assert!(position(stage) < position(render));
+        assert!(position(audit) < position(publish));
+        assert!(position(second_audit) < position(publish));
+        assert!(position(publish) < position(child_render));
+    }
+
+    #[test]
+    fn chained_wap_models_each_wait_for_upstream_publication() {
+        let mut graph = DiGraph::new();
+        let mut indices = BTreeMap::new();
+        let mut plan = WapPlan::default();
+        let mut previous = None;
+        for suffix in ["a", "b"] {
+            let model_id = format!("model.pkg.{suffix}");
+            let audit_id = format!("test.pkg.{suffix}");
+            let stage = add_task(&mut graph, &mut indices, &model_id, TP::Run);
+            let render = add_task(&mut graph, &mut indices, &audit_id, TP::Render);
+            let audit = add_task(&mut graph, &mut indices, &audit_id, TP::Run);
+            graph.update_edge(render, audit, ());
+            graph.update_edge(stage, audit, ());
+            if let Some(upstream) = previous {
+                graph.update_edge(upstream, stage, ());
+            }
+            previous = Some(stage);
+            plan.models
+                .insert(model_id.clone(), entry(&model_id, &audit_id));
+        }
+        add_wap_publication_tasks(&mut graph, &indices, &plan).unwrap();
+        let publish_a = graph
+            .node_indices()
+            .find(|index| {
+                graph[*index].work_node_id() == "model.pkg.a"
+                    && graph[*index].task_type() == "wap_publish_run"
+            })
+            .unwrap();
+        let stage_b = indices[&(TP::Run, "model.pkg.b".to_owned())];
+        assert!(graph.contains_edge(publish_a, stage_b));
+        assert!(stable_toposort_task_graph(&graph).is_ok());
+        assert_graph(&graph);
+    }
+
+    #[test]
+    fn missing_audit_execution_task_rejects_publication_graph() {
+        let mut graph = DiGraph::new();
+        let mut indices = BTreeMap::new();
+        add_task(&mut graph, &mut indices, "model.pkg.a", TP::Run);
+        add_task(&mut graph, &mut indices, "test.pkg.a", TP::Render);
+        let plan = WapPlan {
+            models: BTreeMap::from([(
+                "model.pkg.a".to_owned(),
+                entry("model.pkg.a", "test.pkg.a"),
+            )]),
+        };
+        assert!(
+            add_wap_publication_tasks(&mut graph, &indices, &plan)
+                .unwrap_err()
+                .to_string()
+                .contains("no execution task")
+        );
+    }
+
+    #[test]
+    fn strict_analysis_omits_audit_analysis_and_preserves_model_barrier() {
+        let model_id = "model.pkg.a".to_owned();
+        let audit_id = "test.pkg.a".to_owned();
+        let wap = entry(&model_id, &audit_id);
+        let mut nodes = Nodes::default();
+        nodes
+            .models
+            .insert(model_id.clone(), Arc::clone(&wap.model));
+        let mut audit = DbtTest::default();
+        audit.__common_attr__.unique_id = audit_id.clone();
+        nodes.tests.insert(audit_id.clone(), Arc::new(audit));
+        let schedule = Schedule {
+            deps: BTreeMap::from([
+                (model_id.clone(), BTreeSet::new()),
+                (audit_id.clone(), BTreeSet::from([model_id.clone()])),
+            ]),
+            selected_nodes: BTreeSet::from([model_id.clone(), audit_id.clone()]),
+            sorted_nodes: vec![model_id.clone(), audit_id.clone()],
+            ..Default::default()
+        };
+        let plan = WapPlan {
+            models: BTreeMap::from([(model_id.clone(), wap)]),
+        };
+        let (graph, _) = GraphBuilder::build_phased_task_graph(
+            &schedule,
+            &PhasedFactory,
+            &nodes,
+            Execute::Remote,
+            PHASES_RENDER_ANALYZE_RUN,
+            &StrictBuckets::default(),
+            false,
+            None,
+            &plan,
+        )
+        .unwrap();
+        assert!(
+            !graph
+                .node_weights()
+                .any(|task| task.work_node_id() == audit_id
+                    && task.task_phase() == Some(TP::Analyze))
+        );
+        assert!(
+            graph
+                .node_weights()
+                .any(|task| task.work_node_id() == model_id
+                    && task.task_phase() == Some(TP::Analyze))
+        );
+        assert!(
+            graph
+                .node_weights()
+                .any(|task| task.task_type() == "barrier")
+        );
+        assert!(stable_toposort_task_graph(&graph).is_ok());
+        let rows = print_task_graph(&graph);
+        let (_, dependencies) = rows.iter().find(|(id, _)| id == "test.pkg.a/run").unwrap();
+        assert!(dependencies.contains("test.pkg.a/render"));
+        assert!(!dependencies.contains("test.pkg.a/analyze"));
+    }
 }

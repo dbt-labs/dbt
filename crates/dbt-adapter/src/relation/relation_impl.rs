@@ -14,7 +14,7 @@ use crate::relation::{RelationObject, StaticBaseRelation};
 use crate::value::none_value;
 
 use dbt_adapter_core::AdapterType;
-use dbt_adapter_sql::ident::max_identifier_length;
+use dbt_adapter_sql::ident::{max_identifier_length, quote_identifier};
 use dbt_common::{ErrorCode, FsResult, constants::DBT_CTE_PREFIX, fs_err};
 use dbt_frontend_common::ident::Identifier;
 use dbt_schema_store::CanonicalFqn;
@@ -285,7 +285,7 @@ impl BaseRelationProperties for Relation {
             }
         };
 
-        let schema = if self.quote_policy().database {
+        let schema = if self.quote_policy().schema {
             schema_str
         } else {
             match self.adapter_type {
@@ -295,7 +295,7 @@ impl BaseRelationProperties for Relation {
             }
         };
 
-        let ident = if self.quote_policy().database {
+        let ident = if self.quote_policy().identifier {
             ident_str
         } else {
             match self.adapter_type {
@@ -1176,6 +1176,18 @@ impl BaseRelation for Relation {
         }
     }
 
+    fn quoted(&self, component: &str) -> String {
+        match self.adapter_type {
+            AdapterType::Snowflake => quote_identifier(component, self.adapter_type),
+            _ => format!(
+                "{}{}{}",
+                self.quote_character(),
+                component,
+                self.quote_character()
+            ),
+        }
+    }
+
     fn render_self_as_str(&self) -> String {
         if self.adapter_type == AdapterType::DuckDB
             && let Some(external) = &self.external
@@ -1580,6 +1592,70 @@ mod tests {
                 identifier: true,
             });
             assert_eq!(relation.semantic_fqn(), "\"MyDB\".\"myschema\".\"MyTable\"");
+        }
+
+        #[test]
+        fn relation_rendering_escapes_embedded_quotes_in_each_component() {
+            let relation = Relation::new(
+                AdapterType::Snowflake,
+                "db\"name".to_owned(),
+                "schema.with.dot".to_owned(),
+                "table\"name".to_owned(),
+            )
+            .with_quoting(Policy::enabled());
+            let expected = "\"db\"\"name\".\"schema.with.dot\".\"table\"\"name\"";
+            assert_eq!(relation.render_self_as_str(), expected);
+            assert_eq!(relation.semantic_fqn(), expected);
+
+            let mixed = relation.with_quoting(Policy {
+                database: true,
+                schema: false,
+                identifier: true,
+            });
+            assert_eq!(
+                mixed.render_self_as_str(),
+                "\"db\"\"name\".schema.with.dot.\"table\"\"name\""
+            );
+        }
+
+        #[test]
+        fn test_canonical_fqn_uses_each_component_quote_policy() {
+            for (adapter, normalized) in [
+                (AdapterType::Snowflake, ["MYDB", "MYSCHEMA", "MYTABLE"]),
+                (AdapterType::Postgres, ["mydb", "myschema", "mytable"]),
+            ] {
+                for (quoting, expected) in [
+                    (
+                        Policy {
+                            database: true,
+                            schema: false,
+                            identifier: false,
+                        },
+                        ["MyDB", normalized[1], normalized[2]],
+                    ),
+                    (
+                        Policy {
+                            database: false,
+                            schema: true,
+                            identifier: true,
+                        },
+                        [normalized[0], "MySchema", "MyTable"],
+                    ),
+                ] {
+                    let fqn = Relation::new(
+                        adapter,
+                        "MyDB".to_string(),
+                        "MySchema".to_string(),
+                        "MyTable".to_string(),
+                    )
+                    .with_quoting(quoting)
+                    .get_canonical_fqn()
+                    .unwrap();
+                    assert_eq!(fqn.catalog().as_str(), expected[0]);
+                    assert_eq!(fqn.schema().as_str(), expected[1]);
+                    assert_eq!(fqn.table().as_str(), expected[2]);
+                }
+            }
         }
 
         fn filter_relation() -> Relation {

@@ -8006,7 +8006,8 @@ mod tests {
                 telemetry_session_ended: std::sync::atomic::AtomicBool::new(false),
                 telemetry_dispatcher: std::sync::OnceLock::new(),
             },
-        );
+        )
+        .expect("test context must have a valid execution plan");
 
         TaskRunnerCtx {
             inner: Arc::new(inner),

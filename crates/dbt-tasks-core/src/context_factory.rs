@@ -169,7 +169,7 @@ pub trait TaskRunnerCtxFactory: Send + Sync + 'static {
                     adapter_store,
                     sources_extractor,
                     run_cache_ctx,
-                )),
+                )?),
                 schema_cache,
                 data_store,
                 resolver_state,
