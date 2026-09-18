@@ -1237,12 +1237,15 @@ pub struct PersistDocsConfig {
 pub struct ScheduleConfig {
     pub cron: Option<String>,
     pub time_zone_value: Option<String>,
+    pub every: Option<String>,
+    pub on_update: Option<bool>,
+    pub at_most_every: Option<String>,
 }
 
 /// Schedule configuration that accepts both string and structured formats.
 /// This allows users to specify schedule as either:
 /// - A string: `schedule: "USING CRON 0,15,30,45 * * * * UTC"`
-/// - A structured config: `schedule: { cron: "0 * * * *", time_zone_value: "UTC" }`
+/// - A structured config: `schedule: { every: "2 HOURS" }`
 #[derive(UntaggedEnumDeserialize, Serialize, Debug, Clone, PartialEq, Eq, DbtSchema)]
 #[serde(untagged)]
 pub enum Schedule {
@@ -1257,6 +1260,9 @@ impl Schedule {
             Schedule::String(s) => ScheduleConfig {
                 cron: Some(s.clone()),
                 time_zone_value: None,
+                every: None,
+                on_update: None,
+                at_most_every: None,
             },
             Schedule::ScheduleConfig(config) => config.clone(),
         }
@@ -2646,6 +2652,40 @@ schedule:
         let schedule_config = config.schedule.to_schedule_config();
         assert_eq!(schedule_config.cron, Some("0 */6 * * *".to_string()));
         assert_eq!(schedule_config.time_zone_value, Some("UTC".to_string()));
+        assert_eq!(schedule_config.every, None);
+        assert_eq!(schedule_config.on_update, None);
+        assert_eq!(schedule_config.at_most_every, None);
+    }
+
+    #[test]
+    fn test_schedule_parses_every_and_on_update_formats() {
+        #[derive(Deserialize)]
+        struct TestConfig {
+            schedule: Schedule,
+        }
+
+        let every: TestConfig = dbt_yaml::from_str(
+            r#"
+schedule:
+  every: "2 HOURS"
+"#,
+        )
+        .unwrap();
+        let every = every.schedule.to_schedule_config();
+        assert_eq!(every.every, Some("2 HOURS".to_string()));
+        assert_eq!(every.on_update, None);
+
+        let on_update: TestConfig = dbt_yaml::from_str(
+            r#"
+schedule:
+  on_update: true
+  at_most_every: "15 MINUTES"
+"#,
+        )
+        .unwrap();
+        let on_update = on_update.schedule.to_schedule_config();
+        assert_eq!(on_update.on_update, Some(true));
+        assert_eq!(on_update.at_most_every, Some("15 MINUTES".to_string()));
     }
 
     #[test]

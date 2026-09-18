@@ -16,8 +16,9 @@ fn requires_full_refresh(components: &IndexMap<&'static str, ComponentConfigChan
 
 /// Create a `RelationConfigLoader` for Snowflake dynamic tables.
 pub(crate) fn new_loader() -> RelationConfigLoader<'static, SnowflakeDescribeResults> {
-    let loaders: [Box<dyn ComponentConfigLoader<SnowflakeDescribeResults>>; 12] = [
+    let loaders: [Box<dyn ComponentConfigLoader<SnowflakeDescribeResults>>; 13] = [
         Box::new(components::ClusterByLoader),
+        Box::new(components::CopyGrantsLoader),
         Box::new(components::ImmutableWhereLoader),
         Box::new(components::InitializeLoader),
         Box::new(components::RefreshModeLoader),

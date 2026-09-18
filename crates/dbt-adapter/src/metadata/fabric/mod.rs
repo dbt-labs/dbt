@@ -1,8 +1,9 @@
 use crate::adapter::adapter_impl::*;
 use crate::connection::AdapterConnectionFactory;
 use crate::metadata::{
-    CatalogAndSchema, MetadataAdapter, MetadataFreshness, RelationSchemaPair, RelationVec,
-    create_schemas_if_not_exists, run_schema_cache_map_reduce,
+    CatalogAndSchema, MetadataAdapter, MetadataFreshness, RELATION_CACHE_OP_ID, RelationSchemaPair,
+    RelationVec, create_schemas_if_not_exists, run_schema_cache_map_reduce,
+    with_relation_list_item_span,
 };
 use crate::record_batch::RecordBatchExt;
 use crate::relation::Relation;
@@ -284,6 +285,7 @@ impl MetadataAdapter for FabricMetadataAdapter {
         &self,
         db_schemas: &[CatalogAndSchema],
         token: CancellationToken,
+        report_progress: bool,
     ) -> AsyncAdapterResult<'_, BTreeMap<CatalogAndSchema, AdapterResult<RelationVec>>> {
         type Acc = BTreeMap<CatalogAndSchema, AdapterResult<RelationVec>>;
         let factory = Box::new(AdapterConnectionFactory::new(self.adapter.engine().clone()));
@@ -294,7 +296,11 @@ impl MetadataAdapter for FabricMetadataAdapter {
                           db_schema: &CatalogAndSchema|
               -> AdapterResult<Vec<Arc<dyn BaseRelation>>> {
             let query_ctx = QueryCtx::default().with_desc("list_relations_in_parallel");
-            adapter.list_relations(&query_ctx, conn, db_schema, token_clone.clone())
+            with_relation_list_item_span(
+                report_progress.then_some(RELATION_CACHE_OP_ID),
+                &db_schema.to_string(),
+                || adapter.list_relations(&query_ctx, conn, db_schema, token_clone.clone()),
+            )
         };
 
         let reduce_f = move |acc: &mut Acc,

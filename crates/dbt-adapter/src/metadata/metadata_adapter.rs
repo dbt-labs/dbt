@@ -485,7 +485,10 @@ pub trait MetadataAdapter: Send + Sync {
             .collect::<Vec<_>>();
 
         let future = async move {
-            let listed = self.list_relations_in_parallel(&db_schemas, token).await?;
+            // report_progress: false — existence checks don't drive a progress bar.
+            let listed = self
+                .list_relations_in_parallel(&db_schemas, token, false)
+                .await?;
             let mut result = BTreeMap::new();
 
             for relation in relations {
@@ -527,14 +530,30 @@ pub trait MetadataAdapter: Send + Sync {
         self.relations_exist(relations, token)
     }
 
+    /// Whether this adapter reports real per-schema progress during
+    /// `list_relations_in_parallel` when `report_progress` is `true`.
+    ///
+    /// Lets callers building a parent progress span (e.g. relation-cache hydration)
+    /// know whether to advertise an expected item count. Adapters that return `false`
+    /// here are unimplemented stubs that never emit the per-item spans
+    /// `list_relations_in_parallel_inner` would otherwise wrap each schema fetch in —
+    /// advertising a count for them would leave the progress bar stuck at 0/N.
+    fn supports_relation_progress(&self) -> bool {
+        true
+    }
+
     /// List relations in the specified [CatalogAndSchema] in parallel (implementation).
     ///
     /// Override this method with your adapter's implementation.
     /// Call `list_relations_in_parallel` for the recorded version.
+    ///
+    /// `report_progress`: when `true`, each per-schema fetch is wrapped in a
+    /// progress span for the caller's progress bar.
     fn list_relations_in_parallel_inner(
         &self,
         db_schemas: &[CatalogAndSchema],
         token: CancellationToken,
+        report_progress: bool,
     ) -> AsyncAdapterResult<'_, BTreeMap<CatalogAndSchema, AdapterResult<RelationVec>>>;
 
     /// List relations in the specified [CatalogAndSchema] in parallel.
@@ -545,6 +564,7 @@ pub trait MetadataAdapter: Send + Sync {
         &'a self,
         db_schemas: &'a [CatalogAndSchema],
         token: CancellationToken,
+        report_progress: bool,
     ) -> AsyncAdapterResult<'a, BTreeMap<CatalogAndSchema, AdapterResult<RelationVec>>> {
         with_time_machine_metadata_wrapper(
             "global",
@@ -554,7 +574,7 @@ pub trait MetadataAdapter: Send + Sync {
                     .iter()
                     .map(|s| (s.resolved_catalog.clone(), s.resolved_schema.clone())),
             ),
-            self.list_relations_in_parallel_inner(db_schemas, token),
+            self.list_relations_in_parallel_inner(db_schemas, token, report_progress),
         )
     }
 
@@ -830,6 +850,7 @@ mod tests {
             &self,
             _: &[CatalogAndSchema],
             _: CancellationToken,
+            _: bool,
         ) -> AsyncAdapterResult<'_, BTreeMap<CatalogAndSchema, AdapterResult<RelationVec>>>
         {
             Box::pin(async { Ok(BTreeMap::new()) })

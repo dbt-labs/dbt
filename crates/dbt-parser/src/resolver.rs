@@ -1,4 +1,5 @@
 //! Module containing the entrypoint for the resolve phase.
+use dbt_adapter::load_catalogs;
 use dbt_adapter_core::AdapterType;
 #[allow(unused_imports)]
 use dbt_common::FsError;
@@ -10,7 +11,8 @@ use dbt_common::path::DbtPath;
 use dbt_common::stdfs;
 use dbt_common::tracing::dbt_emit::{emit_error_log_from_fs_error, emit_warn_log_from_fs_error};
 use dbt_common::tracing::event_info::store_event_attributes;
-use dbt_common::{ErrorCode, FsResult, err, fs_err};
+use dbt_common::tracing::span_info::SpanStatusRecorder as _;
+use dbt_common::{ErrorCode, FsResult, create_debug_span, err, fs_err};
 use dbt_jinja_utils::JinjaFactory;
 use dbt_jinja_utils::invocation_args::InvocationArgs;
 use dbt_jinja_utils::invocation_graph::reset_invocation_graph;
@@ -31,7 +33,8 @@ use dbt_schemas::schemas::properties::{
     FUNCTION_LANGUAGE_JAVASCRIPT, FUNCTION_LANGUAGE_PYTHON, FUNCTION_LANGUAGE_SQL, FunctionKind,
     ModelProperties,
 };
-use dbt_schemas::schemas::{DbtModel, DbtSeed, InternalDbtNode, Nodes};
+use dbt_schemas::schemas::{DbtModel, DbtSeed, DbtSource, InternalDbtNode, Nodes};
+use dbt_telemetry::GenericOpExecuted;
 
 use dbt_schemas::schemas::dbt_catalogs::DbtCatalogs;
 
@@ -55,6 +58,7 @@ use minijinja::constants::CURRENT_PATH;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
+use tracing::Instrument as _;
 
 use crate::resolve::resolve_analyses::resolve_analyses;
 use crate::resolve::resolve_checks::resolve_checks;
@@ -85,6 +89,25 @@ use crate::unused_config_paths::check_unused_resource_config_paths;
 
 use crate::constants::DEFAULT_OVERVIEW_CONTENTS;
 
+/// Count of individual assets (SQL files and property YAML files) that this
+/// invocation of `resolve` will parse, used to size the parse progress bar.
+/// Excludes seeds and macros, which are not rendered through `AssetParsed`.
+fn parse_asset_count_total(dbt_state: &DbtState) -> u64 {
+    dbt_state
+        .packages
+        .iter()
+        .map(|package| {
+            (package.model_sql_files.len()
+                + package.function_sql_files.len()
+                + package.test_files.len()
+                + package.snapshot_files.len()
+                + package.analysis_files.len()
+                + package.check_files.len()
+                + package.dbt_properties.len()) as u64
+        })
+        .sum()
+}
+
 /// Entrypoint for the resolve phase.
 ///
 /// It is responsible for resolving all project source files (i.e. models, seeds, tests,
@@ -95,7 +118,10 @@ use crate::constants::DEFAULT_OVERVIEW_CONTENTS;
 #[tracing::instrument(
     skip_all,
     fields(
-        _e = ?store_event_attributes(PhaseExecuted::start_general(ExecutionPhase::Parse)),
+        _e = ?store_event_attributes(PhaseExecuted::start_with_node_count(
+            ExecutionPhase::Parse,
+            parse_asset_count_total(&dbt_state),
+        )),
     )
 )]
 #[allow(clippy::too_many_arguments)]
@@ -426,7 +452,12 @@ pub async fn resolve(
 
     // A model on a non-`default` compute platform requires each of its upstreams
     // to be reachable through a catalog (see `check_compute_platform_upstreams`).
-    check_compute_platform_upstreams(&nodes, dbt_state.catalogs.as_deref())?;
+    let catalogs = if load_catalogs::fetch_use_catalogs_v2() {
+        dbt_state.catalogs.as_deref()
+    } else {
+        None
+    };
+    check_compute_platform_upstreams(&nodes, catalogs)?;
 
     // Check access
     let nodes_with_access_errors = check_access(&nodes, &all_runtime_configs);
@@ -1067,31 +1098,42 @@ pub async fn resolve_inner(
         disabled_nodes.saved_queries.extend(disabled_saved_queries);
     }
 
-    let (data_tests, disabled_tests) = resolve_data_tests(
-        arg,
-        package,
-        package_quoting,
-        dbt_state.root_package(),
-        root_project_configs,
-        &mut min_properties.tests,
-        database,
-        schema,
-        adapter_type,
-        jinja_env.clone(),
-        &base_ctx,
-        runtime_config.clone(),
-        root_runtime_config.clone(),
-        &collected_generic_tests,
-        &node_resolver,
-        token,
-        jinja_type_checking_event_listener_factory.clone(),
-        &root_project_configs.adapter_quoting,
-        &nodes.models,
-        &disabled_nodes.models,
-        &nodes.seeds,
-        &nodes.snapshots,
-    )
-    .await?;
+    // Scoped so the span handle drops on both exits: SpanEnd fires on last-handle-drop.
+    // operation_id has the package name: resolve_inner runs concurrently across packages.
+    let (data_tests, disabled_tests) = {
+        let span = create_debug_span(GenericOpExecuted::new(
+            format!("resolve.resolve_data_tests.{package_name}"),
+            "resolving data tests".to_string(),
+            None,
+        ));
+        resolve_data_tests(
+            arg,
+            package,
+            package_quoting,
+            dbt_state.root_package(),
+            root_project_configs,
+            &mut min_properties.tests,
+            database,
+            schema,
+            adapter_type,
+            jinja_env.clone(),
+            &base_ctx,
+            runtime_config.clone(),
+            root_runtime_config.clone(),
+            &collected_generic_tests,
+            &node_resolver,
+            token,
+            jinja_type_checking_event_listener_factory.clone(),
+            &root_project_configs.adapter_quoting,
+            &nodes.models,
+            &disabled_nodes.models,
+            &nodes.seeds,
+            &nodes.snapshots,
+        )
+        .instrument(span.clone())
+        .await
+        .record_status(&span)?
+    };
     nodes.tests.extend(data_tests);
     disabled_nodes.tests.extend(disabled_tests);
 
@@ -1142,6 +1184,34 @@ pub async fn resolve_inner(
     ))
 }
 
+fn catalog_is_lake_compute_reachable(catalogs: &DbtCatalogs, name: &str) -> FsResult<bool> {
+    use dbt_schemas::schemas::dbt_catalogs_v2::CatalogType;
+
+    let view = catalogs.view_v2()?;
+    // Catalog names are validated as unique before resolution, so this lookup
+    // has at most one matching declaration.
+    let Some(catalog) = view.catalogs.iter().find(|catalog| catalog.name == name) else {
+        // Preserve the historical permissive behavior for an unknown catalog.
+        return Ok(true);
+    };
+
+    if !catalog.catalog_type.lake_compute_can_read() {
+        return Ok(false);
+    }
+
+    Ok(match catalog.catalog_type {
+        CatalogType::Glue => {
+            catalog.config_block("lakecompute").is_some()
+                || catalog.config_block("snowflake").is_some()
+        }
+        CatalogType::Unity => catalog.config_block("lakecompute").is_some(),
+        CatalogType::Horizon | CatalogType::IcebergRest | CatalogType::SnowflakeBuiltIn => {
+            catalog.config_block("snowflake").is_some()
+        }
+        _ => false,
+    })
+}
+
 /// Returns `true` if `upstream` is readable as an input for a node running on
 /// `lake_compute`.
 ///
@@ -1152,12 +1222,15 @@ pub async fn resolve_inner(
 /// Where the catalog type is known, it decides. Where it cannot be resolved — no
 /// `catalogs.yml`, or a name that is not a v2 catalog — a named catalog stays
 /// permissive, so this only ever tightens on positive knowledge.
-fn upstream_is_catalog_reachable(upstream: &DbtModel, catalogs: Option<&DbtCatalogs>) -> bool {
+fn upstream_is_catalog_reachable(
+    upstream: &DbtModel,
+    catalogs: Option<&DbtCatalogs>,
+) -> FsResult<bool> {
     let attr = &upstream.__model_attr__;
 
     // An upstream on `lake_compute` itself writes somewhere `lake_compute` can read, by definition.
     if upstream.node_adapter() == AdapterType::LakeCompute {
-        return true;
+        return Ok(true);
     }
 
     // A `view`/`ephemeral` upstream has no physical storage format on any
@@ -1169,19 +1242,19 @@ fn upstream_is_catalog_reachable(upstream: &DbtModel, catalogs: Option<&DbtCatal
         upstream.base().materialized,
         DbtMaterialization::View | DbtMaterialization::Ephemeral
     ) {
-        return false;
+        return Ok(false);
     }
 
     match attr.catalog_name.as_deref() {
-        Some(name) => match catalogs.and_then(|c| c.v2_catalog_type(name).ok().flatten()) {
-            Some(catalog_type) => catalog_type.lake_compute_can_read(),
-            None => true,
+        Some(name) => match catalogs {
+            Some(catalogs) => catalog_is_lake_compute_reachable(catalogs, name),
+            None => Ok(true),
         },
         // Iceberg without a named catalog is still an open format.
-        None => attr
+        None => Ok(attr
             .table_format
             .as_deref()
-            .is_some_and(|f| f.eq_ignore_ascii_case("iceberg")),
+            .is_some_and(|f| f.eq_ignore_ascii_case("iceberg"))),
     }
 }
 
@@ -1191,29 +1264,151 @@ fn upstream_is_catalog_reachable(upstream: &DbtModel, catalogs: Option<&DbtCatal
 /// reachable only by being placed on `lake_compute` itself — there is no
 /// "landed in Iceberg with no named catalog" escape hatch for seeds the way
 /// there is for models.
-fn seed_upstream_is_catalog_reachable(upstream: &DbtSeed, catalogs: Option<&DbtCatalogs>) -> bool {
+fn seed_upstream_is_catalog_reachable(
+    upstream: &DbtSeed,
+    catalogs: Option<&DbtCatalogs>,
+) -> FsResult<bool> {
     if upstream.node_adapter() == AdapterType::LakeCompute {
-        return true;
+        return Ok(true);
     }
 
     match upstream.__seed_attr__.catalog_name.as_deref() {
-        Some(name) => match catalogs.and_then(|c| c.v2_catalog_type(name).ok().flatten()) {
-            Some(catalog_type) => catalog_type.lake_compute_can_read(),
-            None => true,
+        Some(name) => match catalogs {
+            Some(catalogs) => catalog_is_lake_compute_reachable(catalogs, name),
+            None => Ok(true),
         },
-        None => false,
+        None => Ok(false),
     }
 }
 
-/// WS1 rule 5: every `ref`/`source` upstream of a model on a non-`default` compute
-/// platform must be reachable through a catalog. A plain warehouse-native upstream
-/// is rejected with a precise error naming both nodes, since the compute target
-/// reads its inputs through attached catalogs rather than the warehouse.
+/// Same declaration-aware check for sources. Sources without a catalog name,
+/// and names that do not resolve to a v2 catalog, retain their historical
+/// permissive behavior.
+fn source_catalog_is_reachable(
+    source: &DbtSource,
+    catalogs: Option<&DbtCatalogs>,
+) -> FsResult<bool> {
+    let Some(name) = source.__source_attr__.catalog_name.as_deref() else {
+        return Ok(true);
+    };
+    match catalogs {
+        Some(catalogs) => catalog_is_lake_compute_reachable(catalogs, name),
+        None => Ok(true),
+    }
+}
+
+/// Shared body of [`check_compute_platform_upstreams`], run once per node
+/// (model or test) that runs on `adapter: lakecompute`. `node_label` names
+/// the *dependent* node's resource type in the error text ("Model"/"Test"),
+/// since that's the only wording difference between the two call sites --
+/// the reachability rules and lookup logic are identical either way.
+fn check_upstreams_reachable(
+    unique_id: &str,
+    node_label: &str,
+    depends_on: &[String],
+    nodes: &Nodes,
+    catalogs: Option<&DbtCatalogs>,
+) -> FsResult<()> {
+    for upstream_id in depends_on {
+        let upstream_model = nodes.models.get(upstream_id);
+        let reachable = if let Some(source) = nodes.sources.get(upstream_id) {
+            source_catalog_is_reachable(source, catalogs)
+        } else if upstream_id.starts_with("source.") {
+            // An unresolved source has no catalog metadata to validate;
+            // preserve the historical permissive behavior and let the
+            // source-resolution phase report its own error.
+            Ok(true)
+        } else if let Some(up) = upstream_model {
+            upstream_is_catalog_reachable(up, catalogs)
+        } else if let Some(seed) = nodes.seeds.get(upstream_id) {
+            seed_upstream_is_catalog_reachable(seed, catalogs)
+        } else {
+            Ok(false)
+        }?;
+        if !reachable {
+            if let Some(source) = nodes.sources.get(upstream_id) {
+                let catalog_name = source
+                    .__source_attr__
+                    .catalog_name
+                    .as_deref()
+                    .unwrap_or("<unnamed>");
+                return err!(
+                    ErrorCode::InvalidConfig,
+                    "{} '{}' runs on adapter: '{}' but source '{}' uses catalog '{}' without a reachable Lake Compute catalog declaration. Add the required connection block to catalogs.yml or place the model on adapter: '{}'.",
+                    node_label,
+                    unique_id,
+                    AdapterType::LakeCompute.as_ref(),
+                    upstream_id,
+                    catalog_name,
+                    AdapterType::LakeCompute.as_ref()
+                );
+            }
+            // A `view`/`ephemeral` upstream is unreachable no matter what
+            // `catalog_name`/`table_format` it declares (see
+            // `upstream_is_catalog_reachable`), so the generic "set
+            // catalog_name/table_format" advice below would be actively
+            // misleading if that config is already set and just being
+            // ignored. Name the real fix instead.
+            if let Some(up) = upstream_model {
+                if matches!(
+                    up.base().materialized,
+                    DbtMaterialization::View | DbtMaterialization::Ephemeral
+                ) {
+                    return err!(
+                        ErrorCode::InvalidConfig,
+                        "{} '{}' runs on adapter: '{}' but its upstream '{}' \
+                         materializes as '{}', which has no physical storage format \
+                         and so it can never be catalog-reachable. \
+                         Materialize '{}' as 'table' or 'incremental' (with 'catalog_name' \
+                         or 'table_format: iceberg') or place it on adapter: '{}'.",
+                        node_label,
+                        unique_id,
+                        AdapterType::LakeCompute.as_ref(),
+                        upstream_id,
+                        up.base().materialized,
+                        upstream_id,
+                        AdapterType::LakeCompute.as_ref()
+                    );
+                }
+            }
+            return err!(
+                ErrorCode::InvalidConfig,
+                "{} '{}' runs on adapter: '{}' but its upstream '{}' is not \
+                 reachable through a catalog. Materialize '{}' into an open table \
+                 format (set 'catalog_name', or set 'table_format: iceberg' to land \
+                 it in Iceberg without a named catalog) or place it on adapter: '{}'.",
+                node_label,
+                unique_id,
+                AdapterType::LakeCompute.as_ref(),
+                upstream_id,
+                upstream_id,
+                AdapterType::LakeCompute.as_ref()
+            );
+        }
+    }
+    Ok(())
+}
+
+/// WS1 rule 5: every `ref`/`source` upstream of a model or test on a
+/// non-`default` compute platform must be reachable through a catalog. A
+/// plain warehouse-native upstream is rejected with a precise error naming
+/// both nodes, since the compute target reads its inputs through attached
+/// catalogs rather than the warehouse.
 ///
-/// Sources are external tables whose catalog reachability is validated elsewhere,
-/// so they are skipped here. Model and seed upstreams are looked up in their own
-/// `Nodes` maps (`unique_id`'s `model.`/`seed.` prefix never overlaps), since a
-/// seed has no `__model_attr__` to check the model-shaped helper against.
+/// Tests are checked here too, not just models: a generic/singular test can
+/// depend on an unreachable node either through the primary column/model it
+/// decorates (e.g. a `unique` test configured with `+adapter: lakecompute`
+/// directly on a plain Snowflake model) or through a test-argument `ref()`
+/// (e.g. a `relationships` test's `to:`) -- both land in the test node's own
+/// `depends_on`, so one pass over it catches either shape. Without this, a
+/// test node with an unreachable upstream fails only much later, at real
+/// query execution, with a raw backend error that never mentions the
+/// missing propagation.
+///
+/// Sources are checked by their declared catalog connection, while model and
+/// seed upstreams are looked up in their own `Nodes` maps (`unique_id`'s
+/// `model.`/`seed.` prefix never overlaps), since a seed has no
+/// `__model_attr__` to check the model-shaped helper against.
 pub fn check_compute_platform_upstreams(
     nodes: &Nodes,
     catalogs: Option<&DbtCatalogs>,
@@ -1222,60 +1417,25 @@ pub fn check_compute_platform_upstreams(
         if model.node_adapter() != AdapterType::LakeCompute {
             continue;
         }
-        for upstream_id in &model.__base_attr__.depends_on.nodes {
-            if upstream_id.starts_with("source.") {
-                continue;
-            }
-            let upstream_model = nodes.models.get(upstream_id);
-            let reachable = if let Some(up) = upstream_model {
-                upstream_is_catalog_reachable(up, catalogs)
-            } else if let Some(seed) = nodes.seeds.get(upstream_id) {
-                seed_upstream_is_catalog_reachable(seed, catalogs)
-            } else {
-                false
-            };
-            if !reachable {
-                // A `view`/`ephemeral` upstream is unreachable no matter what
-                // `catalog_name`/`table_format` it declares (see
-                // `upstream_is_catalog_reachable`), so the generic "set
-                // catalog_name/table_format" advice below would be actively
-                // misleading if that config is already set and just being
-                // ignored. Name the real fix instead.
-                if let Some(up) = upstream_model {
-                    if matches!(
-                        up.base().materialized,
-                        DbtMaterialization::View | DbtMaterialization::Ephemeral
-                    ) {
-                        return err!(
-                            ErrorCode::InvalidConfig,
-                            "Model '{}' runs on adapter: '{}' but its upstream '{}' \
-                             materializes as '{}', which has no physical storage format \
-                             and so it can never be catalog-reachable. \
-                             Materialize '{}' as 'table' or 'incremental' (with 'catalog_name' \
-                             or 'table_format: iceberg') or place it on adapter: '{}'.",
-                            unique_id,
-                            AdapterType::LakeCompute.as_ref(),
-                            upstream_id,
-                            up.base().materialized,
-                            upstream_id,
-                            AdapterType::LakeCompute.as_ref()
-                        );
-                    }
-                }
-                return err!(
-                    ErrorCode::InvalidConfig,
-                    "Model '{}' runs on adapter: '{}' but its upstream '{}' is not \
-                     reachable through a catalog. Materialize '{}' into an open table \
-                     format (set 'catalog_name', or set 'table_format: iceberg' to land \
-                     it in Iceberg without a named catalog) or place it on adapter: '{}'.",
-                    unique_id,
-                    AdapterType::LakeCompute.as_ref(),
-                    upstream_id,
-                    upstream_id,
-                    AdapterType::LakeCompute.as_ref()
-                );
-            }
+        check_upstreams_reachable(
+            unique_id,
+            "Model",
+            &model.__base_attr__.depends_on.nodes,
+            nodes,
+            catalogs,
+        )?;
+    }
+    for (unique_id, test) in nodes.tests.iter() {
+        if test.node_adapter() != AdapterType::LakeCompute {
+            continue;
         }
+        check_upstreams_reachable(
+            unique_id,
+            "Test",
+            &test.__base_attr__.depends_on.nodes,
+            nodes,
+            catalogs,
+        )?;
     }
     Ok(())
 }
@@ -1731,6 +1891,7 @@ mod tests {
             CatalogType::Horizon,
             CatalogType::Glue,
             CatalogType::IcebergRest,
+            CatalogType::Unity,
         ] {
             assert!(
                 readable.lake_compute_can_read(),
@@ -1741,7 +1902,6 @@ mod tests {
             CatalogType::DuckLake,
             CatalogType::LocalFilesystem,
             CatalogType::BiglakeMetastore,
-            CatalogType::Unity,
             CatalogType::HiveMetastore,
         ] {
             assert!(
@@ -1749,6 +1909,28 @@ mod tests {
                 "lake compute does not support {unreadable:?} today"
             );
         }
+    }
+
+    #[test]
+    fn lake_compute_catalog_reachability_is_resolved_here() {
+        use dbt_schemas::schemas::dbt_catalogs::DbtCatalogs;
+
+        use super::catalog_is_lake_compute_reachable;
+
+        fn catalogs(config: &str) -> DbtCatalogs {
+            let yaml = format!(
+                "catalogs:\n  - name: dbx_raw\n    type: unity\n    table_format: iceberg\n    config:\n{config}"
+            );
+            let value: dbt_yaml::Value = dbt_yaml::from_str(&yaml).unwrap();
+            DbtCatalogs::new(value.as_mapping().unwrap().clone(), value.span().clone())
+        }
+
+        let declared = catalogs("      lakecompute:\n        catalog_database: raw\n");
+        let blockless = catalogs("      duckdb:\n        endpoint: http://localhost:8181\n");
+
+        assert!(catalog_is_lake_compute_reachable(&declared, "dbx_raw").unwrap());
+        assert!(!catalog_is_lake_compute_reachable(&blockless, "dbx_raw").unwrap());
+        assert!(catalog_is_lake_compute_reachable(&declared, "unknown").unwrap());
     }
 
     /// WS1 rule 5: an `adapter: lake_compute` model requires each of its model upstreams to
@@ -1885,6 +2067,112 @@ mod tests {
             .models
             .insert(consumer_uid.to_string(), Arc::new(consumer));
         assert!(check_compute_platform_upstreams(&nodes, None).is_ok());
+    }
+
+    #[test]
+    fn lake_compute_unity_upstreams_require_a_lakecompute_declaration() {
+        use std::sync::Arc;
+
+        use dbt_adapter_core::AdapterType;
+        use dbt_schemas::schemas::dbt_catalogs::DbtCatalogs;
+        use dbt_schemas::schemas::{CommonAttributes, DbtModel, DbtSeed, DbtSource, Nodes};
+
+        use super::check_compute_platform_upstreams;
+
+        fn catalogs(with_lakecompute: bool) -> DbtCatalogs {
+            let block = if with_lakecompute {
+                "\n      lakecompute:\n        catalog_database: raw\n        region: us-east-1"
+            } else {
+                "\n      databricks:\n        file_format: parquet"
+            };
+            let yaml = format!(
+                "catalogs:\n  - name: dbx_raw\n    type: unity\n    table_format: iceberg\n    config:{block}\n"
+            );
+            let value: dbt_yaml::Value = dbt_yaml::from_str(&yaml).unwrap();
+            DbtCatalogs::new(value.as_mapping().unwrap().clone(), value.span().clone())
+        }
+
+        fn lake_compute_consumer(upstream_id: &str) -> DbtModel {
+            let mut model = DbtModel {
+                __common_attr__: CommonAttributes {
+                    unique_id: "model.test.consumer".to_string(),
+                    name: "consumer".to_string(),
+                    package_name: "test".to_string(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+            model.__base_attr__.adapter = AdapterType::LakeCompute;
+            model.__base_attr__.depends_on.nodes = vec![upstream_id.to_string()];
+            model
+        }
+
+        fn model_upstream() -> DbtModel {
+            let mut model = DbtModel {
+                __common_attr__: CommonAttributes {
+                    unique_id: "model.test.upstream".to_string(),
+                    name: "upstream".to_string(),
+                    package_name: "test".to_string(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+            model.__base_attr__.adapter = AdapterType::Snowflake;
+            model.__model_attr__.catalog_name = Some("dbx_raw".to_string());
+            model
+        }
+
+        let mut model_nodes = Nodes::default();
+        model_nodes.models.insert(
+            "model.test.consumer".to_string(),
+            Arc::new(lake_compute_consumer("model.test.upstream")),
+        );
+        model_nodes.models.insert(
+            "model.test.upstream".to_string(),
+            Arc::new(model_upstream()),
+        );
+        let blockless = catalogs(false);
+        assert!(check_compute_platform_upstreams(&model_nodes, Some(&blockless)).is_err());
+        let declared = catalogs(true);
+        assert!(check_compute_platform_upstreams(&model_nodes, Some(&declared)).is_ok());
+
+        let mut seed = DbtSeed {
+            __common_attr__: CommonAttributes {
+                unique_id: "seed.test.raw".to_string(),
+                name: "raw".to_string(),
+                package_name: "test".to_string(),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        seed.__base_attr__.adapter = AdapterType::Snowflake;
+        seed.__seed_attr__.catalog_name = Some("dbx_raw".to_string());
+        let mut seed_nodes = Nodes::default();
+        seed_nodes.models.insert(
+            "model.test.consumer".to_string(),
+            Arc::new(lake_compute_consumer("seed.test.raw")),
+        );
+        seed_nodes
+            .seeds
+            .insert("seed.test.raw".to_string(), Arc::new(seed));
+        assert!(check_compute_platform_upstreams(&seed_nodes, Some(&blockless)).is_err());
+        assert!(check_compute_platform_upstreams(&seed_nodes, Some(&declared)).is_ok());
+
+        let mut source = DbtSource::default();
+        source.__common_attr__.unique_id = "source.test.raw".to_string();
+        source.__source_attr__.catalog_name = Some("dbx_raw".to_string());
+        let mut source_nodes = Nodes::default();
+        source_nodes.models.insert(
+            "model.test.consumer".to_string(),
+            Arc::new(lake_compute_consumer("source.test.raw")),
+        );
+        source_nodes
+            .sources
+            .insert("source.test.raw".to_string(), Arc::new(source));
+        let error = check_compute_platform_upstreams(&source_nodes, Some(&blockless)).unwrap_err();
+        assert!(error.to_string().contains("source"));
+        assert!(error.to_string().contains("catalog declaration"));
+        assert!(check_compute_platform_upstreams(&source_nodes, Some(&declared)).is_ok());
     }
 
     /// WS1 rule 5 for a `view`/`ephemeral` upstream: `catalog_name` and

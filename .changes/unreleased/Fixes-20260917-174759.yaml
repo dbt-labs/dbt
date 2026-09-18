@@ -1,0 +1,7 @@
+kind: Fixes
+body: Both Legacy/Foundry BigQuery drivers now continue on ADBC.GetObjects 404/403. This fixes a possible usage of "REPLACE TABLE" instead of "MERGE" for incremental tables
+time: 2026-09-17T17:47:59.682287+02:00
+custom:
+    author: serramatutu
+    issue: "16331"
+    project: dbt-core

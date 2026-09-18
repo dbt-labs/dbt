@@ -148,7 +148,14 @@ fn dynamic_config(
     let mock = default_mock_config();
     mock.on("get", move |args| {
         let key = args.first().and_then(|v| v.as_str());
-        let default = args.get(1).cloned().unwrap_or(Value::UNDEFINED);
+        // `default` may arrive positionally or as a keyword (`default=...`), which minijinja
+        // passes as a trailing `Kwargs` value.
+        let default = args
+            .last()
+            .and_then(|v| <Kwargs as minijinja::value::ArgType>::from_value(Some(v)).ok())
+            .and_then(|kwargs| kwargs.get::<Value>("default").ok())
+            .or_else(|| args.get(1).cloned())
+            .unwrap_or(Value::UNDEFINED);
         match key {
             Some("contract") => Ok(Value::from_serialize(BTreeMap::from([(
                 "enforced".to_string(),

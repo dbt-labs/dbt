@@ -17,8 +17,6 @@
 
 ## About dbt v2.0
 
-> 🚧 dbt v2.0 is in beta. Behavior, APIs, and on-disk formats may change before the stable release.
-
 dbt v2.0 is engineered for performance at scale. It parses, compiles, and runs projects in a fraction of the time compared to v1. The source code in this repository is available to everyone under the standard Apache 2.0 license. [dbt](https://docs.getdbt.com/docs/introduction) is a distribution of the dbt repository with dbt-specific customizations released under a [dbt product license](https://www.getdbt.com/dbt-fusion-engine-license-agreement).
 
 The big shifts from v1:

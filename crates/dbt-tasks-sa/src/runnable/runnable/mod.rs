@@ -67,6 +67,16 @@ pub enum RunExecutionPath {
     LakeCompute,
 }
 
+impl RunExecutionPath {
+    fn compute_mode(self) -> &'static str {
+        match self {
+            Self::Remote => "remote",
+            Self::SideCar => "local",
+            Self::LakeCompute => "lake_compute",
+        }
+    }
+}
+
 pub struct RunTask {
     node: Arc<dyn InternalDbtNodeAttributes>,
     // Channel receiver for getting results
@@ -639,7 +649,7 @@ impl Task for RunTask {
             // TODO: migrate this to Vortex tracing layer
             // TODO: migrate this to structured logger
             if ctx.inner.arg.io.send_anonymous_usage_stats {
-                emit_run_usage_stats(self.node.as_ref(), ctx, self.execution_path);
+                emit_run_usage_stats(self.node.as_ref(), ctx, effective_execution_path);
             }
 
             Ok(node_status)
@@ -1115,6 +1125,7 @@ fn emit_run_usage_stats(
         table_format,
         catalog_name,
         catalog_type,
+        execution_path.compute_mode().to_string(),
     );
 }
 
@@ -1264,6 +1275,13 @@ mod tests {
     use dbt_schemas::schemas::properties::ModelState;
     use dbt_yaml::Verbatim;
     use std::time::SystemTime;
+
+    #[test]
+    fn compute_mode_matches_execution_path() {
+        assert_eq!(RunExecutionPath::Remote.compute_mode(), "remote");
+        assert_eq!(RunExecutionPath::SideCar.compute_mode(), "local");
+        assert_eq!(RunExecutionPath::LakeCompute.compute_mode(), "lake_compute");
+    }
 
     fn model_with_pre_hook_and_reuse_hook_config(
         execute_hooks_on_any_reuse: Option<bool>,

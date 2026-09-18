@@ -915,7 +915,6 @@ jobs:
       # mashumaro; the root says >=3.9, for the binary CLI wheel). uv trusts
       # the sdist's PKG-INFO over the wheel's, so a mismatch installs broken —
       # `cargo ci pypi publish` cross-checks both and fails the release.
-      # Only dbt-core gets the banner; swap-then-restore like the renames below.
       - name: Prepend PyPI banner to README (dbt-core)
         if: inputs.release_target == 'all' || inputs.release_target == 'core'
         run: |
@@ -980,6 +979,12 @@ jobs:
           sed -i 's/^name = "dbt-core"$/name = "dbt-oss"/' pyproject.toml
           grep -qx 'name = "dbt-oss"' pyproject.toml
 
+      - name: Prepend PyPI banner to README (dbt-oss)
+        if: inputs.release_target == 'all' || inputs.release_target == 'oss'
+        run: |
+          cat .github/dbt-oss-pypi-banner.md README.md > README.md.tmp
+          mv README.md.tmp README.md
+
       - name: Publish (dbt-oss)
         if: inputs.release_target == 'all' || inputs.release_target == 'oss'
         run: |
@@ -995,6 +1000,10 @@ jobs:
             --target x86_64-apple-darwin \
             --target aarch64-apple-darwin \
             --target x86_64-pc-windows-msvc
+
+      - name: Restore README after dbt-oss publish
+        if: ${{ always() && (inputs.release_target == 'all' || inputs.release_target == 'oss') }}
+        run: git -c safe.directory="$GITHUB_WORKSPACE" restore -- README.md
 
       - name: Restore pyproject name after oss publish
         if: ${{ always() && (inputs.release_target == 'all' || inputs.release_target == 'oss') }}
