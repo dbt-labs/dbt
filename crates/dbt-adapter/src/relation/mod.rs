@@ -18,7 +18,7 @@ mod relation_object;
 pub use relation_object::{
     RelationObject, StaticBaseRelation, StaticBaseRelationObject, create_relation,
     create_relation_from_node, create_relation_from_source, do_create_relation,
-    is_parse_time_relation,
+    is_parse_time_relation, s3_path_table_part,
 };
 
 pub(crate) mod config_v2;
