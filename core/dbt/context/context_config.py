@@ -133,7 +133,9 @@ class BaseContextConfigGenerator(Generic[T]):
             for key, value in level_config.items():
                 if key.startswith("+"):
                     result[key[1:].strip()] = deepcopy(value)
-                elif not isinstance(value, dict):
+                # Skip null hierarchy placeholders (e.g. `beta:` with no children).
+                # None is not a dict, but it is also not a legacy bare config value.
+                elif value is not None and not isinstance(value, dict):
                     result[key] = deepcopy(value)
 
             yield result
