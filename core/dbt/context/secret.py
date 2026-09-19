@@ -50,7 +50,7 @@ class SecretContext(BaseContext):
                 self.env_vars[var] = return_value if found_in_env else DEFAULT_ENV_PLACEHOLDER
             return return_value
         else:
-            raise EnvVarMissingError(var)
+            raise EnvVarMissingError(var, source="profiles.yml or packages.yml")
 
 
 def generate_secret_context(cli_vars: Dict[str, Any]) -> Dict[str, Any]:
