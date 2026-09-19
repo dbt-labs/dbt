@@ -1,0 +1,7 @@
+kind: Fixes
+body: Preserve BigQuery relation column types when rendering unit test fixtures.
+time: 2026-08-17T13:17:38.982609+01:00
+custom:
+    author: danmawdsleyoaknorth
+    issue: "15961"
+    project: dbt-core

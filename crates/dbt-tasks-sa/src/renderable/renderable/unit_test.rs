@@ -2070,21 +2070,32 @@ fn columns_to_formatted_types<'a>(
     ref_schema: &'a SchemaRef,
     type_ops: &dyn TypeOps,
 ) -> FsResult<Vec<(&'a String, &'a DataType, String)>> {
+    // Arrow cannot distinguish every BigQuery type (for example TIMESTAMP and
+    // DATETIME), so prefer the retained SQL metadata for that adapter only.
+    let prefer_original_sql_type = type_ops.adapter_type() == AdapterType::Bigquery;
+
     ref_schema
         .fields()
         .iter()
         .map(|f| {
-            let mut formatted = String::new();
-            type_ops
-                .format_arrow_type_as_sql(f.data_type(), f.is_nullable(), &mut formatted)
-                .map_err(|e| {
-                    fs_err!(
-                        ErrorCode::InvalidConfig,
-                        "Failed to format type {:?}: {}",
-                        f.data_type(),
-                        e
-                    )
-                })?;
+            let formatted = if prefer_original_sql_type {
+                type_ops
+                    .get_original_sql_type_from_field(f)
+                    .map(|formatted| formatted.into_owned())
+            } else {
+                let mut formatted = String::new();
+                type_ops
+                    .format_arrow_type_as_sql(f.data_type(), f.is_nullable(), &mut formatted)
+                    .map(|()| formatted)
+            }
+            .map_err(|e| {
+                fs_err!(
+                    ErrorCode::InvalidConfig,
+                    "Failed to format type {:?}: {}",
+                    f.data_type(),
+                    e
+                )
+            })?;
             Ok((f.name(), f.data_type(), formatted))
         })
         .collect::<FsResult<Vec<_>>>()
@@ -3031,6 +3042,138 @@ mod tests {
             "CAST('2023-01-01 12:00:00' AS DATETIME) AS timestamp_col"
         );
         assert_contains!(result, "CAST(3.15 AS FLOAT64) AS float_col");
+    }
+
+    #[test]
+    fn test_create_values_bigquery_preserves_original_relation_types() {
+        let type_ops = DefaultTypeOps::new(AdapterType::Bigquery);
+        let schema = Arc::new(Schema::new(vec![
+            make_arrow_field(
+                &type_ops,
+                "event_timestamp".to_string(),
+                "TIMESTAMP",
+                None,
+                None,
+            )
+            .unwrap(),
+            make_arrow_field(
+                &type_ops,
+                "local_datetime".to_string(),
+                "DATETIME",
+                None,
+                None,
+            )
+            .unwrap(),
+            make_arrow_field(&type_ops, "event_id".to_string(), "INT64", None, None).unwrap(),
+            make_arrow_field(&type_ops, "event_name".to_string(), "STRING", None, None).unwrap(),
+            make_arrow_field(
+                &type_ops,
+                "amount".to_string(),
+                "NUMERIC(10, 2)",
+                None,
+                None,
+            )
+            .unwrap(),
+            make_arrow_field(&type_ops, "tag_ids".to_string(), "ARRAY<INT64>", None, None).unwrap(),
+            make_arrow_field(
+                &type_ops,
+                "actor".to_string(),
+                "STRUCT<id INT64, name STRING>",
+                None,
+                None,
+            )
+            .unwrap(),
+        ]));
+        let mut actor = dbt_yaml::mapping::Mapping::new();
+        actor.insert(
+            YmlValue::string("id".to_string()),
+            YmlValue::number(7.into()),
+        );
+        actor.insert(
+            YmlValue::string("name".to_string()),
+            YmlValue::string("alice".to_string()),
+        );
+        let rows = vec![BTreeMap::from([
+            (
+                "event_timestamp".to_string(),
+                YmlValue::string("2026-01-01 00:00:00+00:00".to_string()),
+            ),
+            (
+                "local_datetime".to_string(),
+                YmlValue::string("2026-01-01 00:00:00".to_string()),
+            ),
+            ("event_id".to_string(), YmlValue::number(42.into())),
+            (
+                "event_name".to_string(),
+                YmlValue::string("created".to_string()),
+            ),
+            ("amount".to_string(), YmlValue::string("12.34".to_string())),
+            (
+                "tag_ids".to_string(),
+                YmlValue::Sequence(
+                    vec![YmlValue::number(1.into()), YmlValue::number(2.into())],
+                    Default::default(),
+                ),
+            ),
+            (
+                "actor".to_string(),
+                YmlValue::Mapping(actor, Default::default()),
+            ),
+        ])];
+
+        let result = create_values(
+            &schema,
+            &rows,
+            AdapterType::Bigquery,
+            &type_ops,
+            None,
+            "events",
+            true,
+        )
+        .unwrap();
+
+        assert_contains!(
+            result,
+            "CAST('2026-01-01 00:00:00+00:00' AS TIMESTAMP) AS event_timestamp"
+        );
+        assert_contains!(
+            result,
+            "CAST('2026-01-01 00:00:00' AS DATETIME) AS local_datetime"
+        );
+        assert_contains!(result, "CAST(42 AS INT64) AS event_id");
+        assert_contains!(result, "CAST('created' AS STRING) AS event_name");
+        assert_contains!(result, "CAST('12.34' AS NUMERIC(10, 2)) AS amount");
+        assert_contains!(
+            result,
+            "CAST([CAST(1 AS int64), CAST(2 AS int64)] AS ARRAY<INT64>) AS tag_ids"
+        );
+        assert_contains!(
+            result,
+            "CAST(STRUCT(7 AS id, 'alice' AS name) AS STRUCT<id INT64, name STRING>) AS actor"
+        );
+    }
+
+    /// The original-SQL-type preference is BigQuery-only: other adapters keep
+    /// formatting from the Arrow type even when the metadata is present.
+    #[test]
+    fn test_columns_to_formatted_types_non_bigquery_uses_arrow_type() {
+        let type_ops = DefaultTypeOps::new(AdapterType::Snowflake);
+        let schema = Arc::new(Schema::new(vec![
+            make_arrow_field(&type_ops, "amount".to_string(), "NUMBER(10,2)", None, None).unwrap(),
+            make_arrow_field(&type_ops, "name".to_string(), "VARCHAR(16)", None, None).unwrap(),
+            make_arrow_field(&type_ops, "ts".to_string(), "TIMESTAMP_NTZ(9)", None, None).unwrap(),
+        ]));
+
+        let formatted: Vec<String> = columns_to_formatted_types(&schema, &type_ops)
+            .unwrap()
+            .into_iter()
+            .map(|(_, _, formatted)| formatted)
+            .collect();
+
+        assert_eq!(
+            formatted,
+            vec!["float8", "text", "timestamp without time zone"]
+        );
     }
 
     #[test]
