@@ -1,0 +1,7 @@
+kind: Fixes
+body: Fix infinite loop in str.count() when search substring is empty; now matches Python behavior (len(chars) + 1)
+time: 2026-08-24T16:35:00.000000-07:00
+custom:
+    author: mmustafasenoglu
+    issue: "16062"
+    project: dbt-core
