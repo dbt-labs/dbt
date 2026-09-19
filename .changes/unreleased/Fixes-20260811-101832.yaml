@@ -1,0 +1,7 @@
+kind: Fixes
+body: Fixes array_construct bug for Databricks with new adapter-specific macro.
+time: 2026-08-11T10:18:32.886483-07:00
+custom:
+    author: ""
+    issue: "15893"
+    project: dbt-core
