@@ -12,6 +12,9 @@ All adapter macros are currently maintained in:
     shim that merely depends on it.
     No loader change was needed: `internal_package_names` derives the directory
     name as `dbt-{adapter_type}`, and Athena inherits no other adapter's macros.
+    `sample_profiles.yml` is not vendored: `is_metadata_file` accepts only
+    `dbt_project.yml`, `packages.yml`, `profile_template.yml` and `__init__.py`
+    in an internal package, and the sample profile is covered by `dbt init`.
 
 ### [2026-08-19]
   - dbt-databricks: view full-refresh precedence from commit 45351e11517d3f37c5ac7a736b5fcba453d3f368
