@@ -513,6 +513,7 @@ class MetricParser(YamlReader):
                     unparsed_metric=unparsed_metric,
                 ),
                 metric_aggregation_params=metric_aggregation_params,
+                fill_nulls_with=unparsed_metric.fill_nulls_with,
                 join_to_timespine=unparsed_metric.join_to_timespine or False,
                 is_private=unparsed_metric.hidden,
             )

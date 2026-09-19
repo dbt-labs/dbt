@@ -896,6 +896,31 @@ schema_yml_v2_metrics_with_hidden = """
         hidden: true
 """
 
+schema_yml_v2_metrics_with_fill_nulls_with = """
+    metrics:
+      - name: metric_filling_nulls
+        description: A metric that fills nulls with zero.
+        label: Metric Filling Nulls
+        type: simple
+        agg: count
+        expr: id
+        fill_nulls_with: 0
+        join_to_timespine: true
+      - name: metric_filling_nulls_negative
+        description: A metric that fills nulls with a negative value.
+        label: Metric Filling Nulls Negative
+        type: simple
+        agg: count
+        expr: id
+        fill_nulls_with: -1
+      - name: metric_not_filling_nulls
+        description: A metric that does not fill nulls.
+        label: Metric Not Filling Nulls
+        type: simple
+        agg: count
+        expr: id
+"""
+
 schema_yml_v2_metric_with_doc_jinja = """
       - name: simple_metric_with_doc_jinja
         description: "{{ doc('simple_metric_description') }}"
