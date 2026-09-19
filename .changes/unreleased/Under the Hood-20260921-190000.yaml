@@ -1,0 +1,7 @@
+kind: Under the Hood
+body: Refresh README with a dbt v2.0 DAG screenshot stored in `assets/`, point the CI badge at the current `dbt-labs/dbt` workflow, and add release and license badges.
+time: 2026-09-21T19:00:00.000000+01:00
+custom:
+    author: ernestoongaro
+    issue: ''
+    project: dbt-core
