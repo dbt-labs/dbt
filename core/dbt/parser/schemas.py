@@ -1,4 +1,5 @@
 import datetime
+import pathlib
 import re
 import time
 from abc import ABCMeta, abstractmethod
@@ -345,7 +346,11 @@ class SchemaParser(SimpleParser[YamlBlock, ModelNode]):
                 fqn = parser.get_fqn_prefix(block.path.relative_path)
                 fqn.append(snapshot["name"])
 
-                compiled_path = snapshot["name"] + ".sql"
+                compiled_path = str(
+                    pathlib.PurePath("").joinpath(
+                        block.path.relative_path, snapshot["name"] + ".sql"
+                    )
+                )
                 snapshot_node = parser._create_parsetime_node(
                     block,
                     compiled_path,
