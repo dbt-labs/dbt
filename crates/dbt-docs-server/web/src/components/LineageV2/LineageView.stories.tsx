@@ -1,5 +1,8 @@
+import { Route, Routes } from 'react-router-dom';
 import type { Meta, StoryObj } from '@storybook/react-vite';
+import { expect, userEvent, within } from 'storybook/test';
 
+import { paths, ROUTES } from '../../routes';
 import { storyLineage } from '../../shared/testing/storyFixtures';
 import {
   failingStorySource,
@@ -7,6 +10,8 @@ import {
   minimalStorySource,
   storyDataSource,
 } from '../../shared/testing/storySources';
+import { useLineageStore } from '../../stores/lineageStore';
+import FullLineagePage from './FullLineagePage';
 import { LineageView } from './LineageView';
 
 const meta: Meta<typeof LineageView> = {
@@ -100,4 +105,46 @@ export const LoadError: Story = {
  */
 export const UnsupportedSurface: Story = {
   parameters: { docsApp: { source: minimalStorySource() } },
+};
+
+/** Expansion and closing remount the DAG for the same root. Its scope should stay
+ *  intact in both directions, including the unlimited hop preset. */
+export const PreservesHopsOnExpand: Story = {
+  parameters: {
+    docsApp: {
+      initialEntries: [paths.details('model.jaffle_shop.customers')],
+    },
+  },
+  beforeEach: () => {
+    useLineageStore.getState().reset();
+  },
+  render: (args) => (
+    <Routes>
+      <Route path={ROUTES.details} element={<LineageView {...args} />} />
+      <Route path={ROUTES.lineage} element={<FullLineagePage />} />
+    </Routes>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const page = within(canvasElement.ownerDocument.body);
+    await userEvent.click(await canvas.findByRole('button', { name: '1+' }));
+    await userEvent.click(await page.findByRole('menuitemradio', { name: '3+' }));
+    await userEvent.click(canvas.getByRole('button', { name: '+1' }));
+    await userEvent.click(await page.findByRole('menuitemradio', { name: '+6' }));
+    await userEvent.click(
+      canvas.getByRole('button', { name: 'Open fullscreen lineage' }),
+    );
+    await canvas.findByRole('button', { name: 'Close full lineage' });
+    await expect(canvas.getByRole('button', { name: '3+' })).toBeVisible();
+    await expect(canvas.getByRole('button', { name: '+6' })).toBeVisible();
+
+    await userEvent.click(canvas.getByRole('button', { name: '3+' }));
+    await userEvent.click(await page.findByRole('menuitemradio', { name: 'max+' }));
+    await userEvent.click(canvas.getByRole('button', { name: '+6' }));
+    await userEvent.click(await page.findByRole('menuitemradio', { name: '+max' }));
+    await userEvent.click(canvas.getByRole('button', { name: 'Close full lineage' }));
+    await canvas.findByRole('button', { name: 'Open fullscreen lineage' });
+    await expect(canvas.getByRole('button', { name: 'max+' })).toBeVisible();
+    await expect(canvas.getByRole('button', { name: '+max' })).toBeVisible();
+  },
 };
