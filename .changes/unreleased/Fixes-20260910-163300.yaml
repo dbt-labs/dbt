@@ -1,0 +1,6 @@
+kind: Fixes
+body: Fix `statically_parse_unrendered_config` stringifying list/dict config values, which caused false positives in `state:modified` comparisons across different dbt versions.
+time: 2026-09-10T16:33:00.000000+05:30
+custom:
+    Author: aagarg
+    Issue: "16133"
