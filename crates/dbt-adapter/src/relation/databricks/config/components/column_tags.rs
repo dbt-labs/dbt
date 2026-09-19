@@ -9,7 +9,6 @@ use crate::relation::databricks::config::{
 };
 use dbt_schemas::schemas::DbtModel;
 use dbt_schemas::schemas::InternalDbtNodeAttributes;
-use dbt_yaml::Value as YmlValue;
 use indexmap::IndexMap;
 use minijinja::value::{Value, ValueMap};
 
@@ -93,9 +92,8 @@ fn from_local_config(relation_config: &dyn InternalDbtNodeAttributes) -> Adapter
             if let Some(column_databricks_tags) = &column.databricks_tags {
                 let mut column_tag_map = IndexMap::new();
                 for (tag_name, tag_value) in column_databricks_tags {
-                    if let YmlValue::String(value_str, _) = tag_value {
-                        column_tag_map.insert(tag_name.clone(), value_str.clone());
-                    }
+                    column_tag_map
+                        .insert(tag_name.clone(), super::relation_tags::stringify_tag_value(tag_value));
                 }
                 if !column_tag_map.is_empty() {
                     column_tags.insert(column.name.clone(), column_tag_map);

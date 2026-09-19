@@ -1,0 +1,7 @@
+kind: Fixes
+body: Stringify non-string Databricks tag and tblproperty YAML values
+time: 2026-09-05T06:20:00.00000+05:30
+custom:
+    author: sd-db
+    issue: ""
+    project: dbt-core
