@@ -265,6 +265,16 @@ where
         });
     }
 
+    /// Removes a context item from a progress bar without advancing it.
+    ///
+    /// For context items that are not units of the bar's total, e.g. a named stage of a
+    /// phase shown alongside the items it is working through.
+    pub fn remove_bar_context(&self, id: &Id, item: &str) {
+        self.bars.read_sync(id, |_, bar| {
+            bar.delete(item);
+        });
+    }
+
     /// Marks a progress bar context item idle without removing it.
     pub fn set_bar_context_idle(&self, id: &Id, item: &str) {
         self.bars.read_sync(id, |_, bar| {

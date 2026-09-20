@@ -34,9 +34,16 @@
         -- get config options
         {% set on_configuration_change = config.get('on_configuration_change', 'apply') %} {# DIVERGENCE: core does not default to `apply` here because it sets it elsewhere in the Python code #}
         {% set configuration_changes = get_configuration_changes(existing_relation) %}
+        {# Skip manual REFRESH on no-op re-runs for auto-refreshed modes. #}
         {% if configuration_changes is none %}
-            {{ log("REFRESHING STREAMING TABLE: " ~ target_relation) }}
-            {% set build_sql = refresh_streaming_table(target_relation, sql) %}
+            {# DIVERGENCE: Relation config exposes components directly, without Python's .config wrapper. #}
+            {%- set refresh = adapter.get_config_from_model(config.model)["refresh"] -%}
+            {%- if refresh.auto_refreshed -%}
+                {% set build_sql = '' %}
+            {%- else -%}
+                {{ log("REFRESHING STREAMING TABLE: " ~ target_relation) }}
+                {% set build_sql = refresh_streaming_table(target_relation, sql) %}
+            {%- endif -%}
 
         {% elif on_configuration_change == 'apply' %}
             {% set build_sql = get_alter_streaming_table_as_sql(target_relation, configuration_changes, sql, existing_relation, None, None) %}
