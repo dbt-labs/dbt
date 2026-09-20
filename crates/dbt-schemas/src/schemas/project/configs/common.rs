@@ -256,6 +256,55 @@ pub struct WarehouseSpecificNodeConfig {
     pub table_properties: Option<BTreeMap<String, YmlValue>>,
     #[serde(default, deserialize_with = "bool_or_string_bool")]
     pub force_batch: Option<bool>,
+    /// Number of buckets for Hive bucketing.
+    pub bucket_count: Option<StringOrInteger>,
+    /// Columns to bucket by.
+    pub bucketed_by: Option<StringOrArrayOfStrings>,
+    /// Row filter for the MERGE delete branch.
+    pub delete_condition: Option<String>,
+    /// Explicit S3 location for the table.
+    pub external_location: Option<String>,
+    /// Field delimiter for Hive text tables.
+    pub field_delimiter: Option<String>,
+    /// Build through a temporary table and swap, keeping the table queryable.
+    #[serde(default, deserialize_with = "bool_or_string_bool")]
+    pub ha: Option<bool>,
+    /// Row filter for the MERGE insert branch.
+    pub insert_condition: Option<String>,
+    /// Lake Formation grants.
+    pub lf_grants: Option<BTreeMap<String, YmlValue>>,
+    /// Lake Formation tags inherited from the database.
+    pub lf_inherited_tags: Option<StringOrArrayOfStrings>,
+    /// Lake Formation tag configuration.
+    pub lf_tags_config: Option<BTreeMap<String, YmlValue>>,
+    /// Default rule applied to columns with no explicit rule.
+    pub merge_update_columns_default_rule: Option<String>,
+    /// Per-column rules for the MERGE update branch.
+    pub merge_update_columns_rules: Option<BTreeMap<String, YmlValue>>,
+    /// Use Iceberg's native DROP instead of the Glue/S3 path.
+    #[serde(default, deserialize_with = "bool_or_string_bool")]
+    pub native_drop: Option<bool>,
+    /// Maximum partitions written per statement.
+    pub partitions_limit: Option<StringOrInteger>,
+    /// S3 prefix for this table's data.
+    pub s3_data_dir: Option<String>,
+    /// Layout under the data prefix.
+    pub s3_data_naming: Option<String>,
+    /// S3 prefix for temporary tables.
+    pub s3_tmp_table_dir: Option<String>,
+    /// Load seeds with INSERT statements instead of an external table.
+    #[serde(default, deserialize_with = "bool_or_string_bool")]
+    pub seed_by_insert: Option<bool>,
+    /// Extra arguments for the seed upload.
+    pub seed_s3_upload_args: Option<BTreeMap<String, YmlValue>>,
+    /// Schema used for temporary relations.
+    pub temp_schema: Option<String>,
+    /// Row filter for the MERGE update branch.
+    pub update_condition: Option<String>,
+    /// Iceberg table versions retained by the expiry hook.
+    pub versions_to_keep: Option<StringOrInteger>,
+    /// Compression codec for written files.
+    pub write_compression: Option<String>,
 
     // Postgres
     // XXX: This is an incomplete set of configs
@@ -548,6 +597,31 @@ pub fn same_warehouse_config(
     let partitioned_by_eq = self_wh.partitioned_by == other_wh.partitioned_by;
     let table_properties_eq = self_wh.table_properties == other_wh.table_properties;
     let force_batch_eq = self_wh.force_batch == other_wh.force_batch;
+    let bucket_count_eq = self_wh.bucket_count == other_wh.bucket_count;
+    let bucketed_by_eq = self_wh.bucketed_by == other_wh.bucketed_by;
+    let delete_condition_eq = self_wh.delete_condition == other_wh.delete_condition;
+    let external_location_eq = self_wh.external_location == other_wh.external_location;
+    let field_delimiter_eq = self_wh.field_delimiter == other_wh.field_delimiter;
+    let ha_eq = self_wh.ha == other_wh.ha;
+    let insert_condition_eq = self_wh.insert_condition == other_wh.insert_condition;
+    let lf_grants_eq = self_wh.lf_grants == other_wh.lf_grants;
+    let lf_inherited_tags_eq = self_wh.lf_inherited_tags == other_wh.lf_inherited_tags;
+    let lf_tags_config_eq = self_wh.lf_tags_config == other_wh.lf_tags_config;
+    let merge_update_columns_default_rule_eq =
+        self_wh.merge_update_columns_default_rule == other_wh.merge_update_columns_default_rule;
+    let merge_update_columns_rules_eq =
+        self_wh.merge_update_columns_rules == other_wh.merge_update_columns_rules;
+    let native_drop_eq = self_wh.native_drop == other_wh.native_drop;
+    let partitions_limit_eq = self_wh.partitions_limit == other_wh.partitions_limit;
+    let s3_data_dir_eq = self_wh.s3_data_dir == other_wh.s3_data_dir;
+    let s3_data_naming_eq = self_wh.s3_data_naming == other_wh.s3_data_naming;
+    let s3_tmp_table_dir_eq = self_wh.s3_tmp_table_dir == other_wh.s3_tmp_table_dir;
+    let seed_by_insert_eq = self_wh.seed_by_insert == other_wh.seed_by_insert;
+    let seed_s3_upload_args_eq = self_wh.seed_s3_upload_args == other_wh.seed_s3_upload_args;
+    let temp_schema_eq = self_wh.temp_schema == other_wh.temp_schema;
+    let update_condition_eq = self_wh.update_condition == other_wh.update_condition;
+    let versions_to_keep_eq = self_wh.versions_to_keep == other_wh.versions_to_keep;
+    let write_compression_eq = self_wh.write_compression == other_wh.write_compression;
     let indexes_eq = self_wh.indexes == other_wh.indexes;
     let primary_key_eq = self_wh.primary_key == other_wh.primary_key;
     let category_eq = self_wh.category == other_wh.category;
@@ -652,6 +726,29 @@ pub fn same_warehouse_config(
         && partitioned_by_eq
         && table_properties_eq
         && force_batch_eq
+        && bucket_count_eq
+        && bucketed_by_eq
+        && delete_condition_eq
+        && external_location_eq
+        && field_delimiter_eq
+        && ha_eq
+        && insert_condition_eq
+        && lf_grants_eq
+        && lf_inherited_tags_eq
+        && lf_tags_config_eq
+        && merge_update_columns_default_rule_eq
+        && merge_update_columns_rules_eq
+        && native_drop_eq
+        && partitions_limit_eq
+        && s3_data_dir_eq
+        && s3_data_naming_eq
+        && s3_tmp_table_dir_eq
+        && seed_by_insert_eq
+        && seed_s3_upload_args_eq
+        && temp_schema_eq
+        && update_condition_eq
+        && versions_to_keep_eq
+        && write_compression_eq
         && indexes_eq
         && primary_key_eq
         && category_eq
@@ -1286,6 +1383,187 @@ pub fn same_warehouse_config(
                     )),
                 ),
                 (
+                    "bucket_count",
+                    bucket_count_eq,
+                    Some((
+                        format!("{:?}", &self_wh.bucket_count),
+                        format!("{:?}", &other_wh.bucket_count),
+                    )),
+                ),
+                (
+                    "bucketed_by",
+                    bucketed_by_eq,
+                    Some((
+                        format!("{:?}", &self_wh.bucketed_by),
+                        format!("{:?}", &other_wh.bucketed_by),
+                    )),
+                ),
+                (
+                    "delete_condition",
+                    delete_condition_eq,
+                    Some((
+                        format!("{:?}", &self_wh.delete_condition),
+                        format!("{:?}", &other_wh.delete_condition),
+                    )),
+                ),
+                (
+                    "external_location",
+                    external_location_eq,
+                    Some((
+                        format!("{:?}", &self_wh.external_location),
+                        format!("{:?}", &other_wh.external_location),
+                    )),
+                ),
+                (
+                    "field_delimiter",
+                    field_delimiter_eq,
+                    Some((
+                        format!("{:?}", &self_wh.field_delimiter),
+                        format!("{:?}", &other_wh.field_delimiter),
+                    )),
+                ),
+                (
+                    "ha",
+                    ha_eq,
+                    Some((format!("{:?}", &self_wh.ha), format!("{:?}", &other_wh.ha))),
+                ),
+                (
+                    "insert_condition",
+                    insert_condition_eq,
+                    Some((
+                        format!("{:?}", &self_wh.insert_condition),
+                        format!("{:?}", &other_wh.insert_condition),
+                    )),
+                ),
+                (
+                    "lf_grants",
+                    lf_grants_eq,
+                    Some((
+                        format!("{:?}", &self_wh.lf_grants),
+                        format!("{:?}", &other_wh.lf_grants),
+                    )),
+                ),
+                (
+                    "lf_inherited_tags",
+                    lf_inherited_tags_eq,
+                    Some((
+                        format!("{:?}", &self_wh.lf_inherited_tags),
+                        format!("{:?}", &other_wh.lf_inherited_tags),
+                    )),
+                ),
+                (
+                    "lf_tags_config",
+                    lf_tags_config_eq,
+                    Some((
+                        format!("{:?}", &self_wh.lf_tags_config),
+                        format!("{:?}", &other_wh.lf_tags_config),
+                    )),
+                ),
+                (
+                    "merge_update_columns_default_rule",
+                    merge_update_columns_default_rule_eq,
+                    Some((
+                        format!("{:?}", &self_wh.merge_update_columns_default_rule),
+                        format!("{:?}", &other_wh.merge_update_columns_default_rule),
+                    )),
+                ),
+                (
+                    "merge_update_columns_rules",
+                    merge_update_columns_rules_eq,
+                    Some((
+                        format!("{:?}", &self_wh.merge_update_columns_rules),
+                        format!("{:?}", &other_wh.merge_update_columns_rules),
+                    )),
+                ),
+                (
+                    "native_drop",
+                    native_drop_eq,
+                    Some((
+                        format!("{:?}", &self_wh.native_drop),
+                        format!("{:?}", &other_wh.native_drop),
+                    )),
+                ),
+                (
+                    "partitions_limit",
+                    partitions_limit_eq,
+                    Some((
+                        format!("{:?}", &self_wh.partitions_limit),
+                        format!("{:?}", &other_wh.partitions_limit),
+                    )),
+                ),
+                (
+                    "s3_data_dir",
+                    s3_data_dir_eq,
+                    Some((
+                        format!("{:?}", &self_wh.s3_data_dir),
+                        format!("{:?}", &other_wh.s3_data_dir),
+                    )),
+                ),
+                (
+                    "s3_data_naming",
+                    s3_data_naming_eq,
+                    Some((
+                        format!("{:?}", &self_wh.s3_data_naming),
+                        format!("{:?}", &other_wh.s3_data_naming),
+                    )),
+                ),
+                (
+                    "s3_tmp_table_dir",
+                    s3_tmp_table_dir_eq,
+                    Some((
+                        format!("{:?}", &self_wh.s3_tmp_table_dir),
+                        format!("{:?}", &other_wh.s3_tmp_table_dir),
+                    )),
+                ),
+                (
+                    "seed_by_insert",
+                    seed_by_insert_eq,
+                    Some((
+                        format!("{:?}", &self_wh.seed_by_insert),
+                        format!("{:?}", &other_wh.seed_by_insert),
+                    )),
+                ),
+                (
+                    "seed_s3_upload_args",
+                    seed_s3_upload_args_eq,
+                    Some((
+                        format!("{:?}", &self_wh.seed_s3_upload_args),
+                        format!("{:?}", &other_wh.seed_s3_upload_args),
+                    )),
+                ),
+                (
+                    "temp_schema",
+                    temp_schema_eq,
+                    Some((
+                        format!("{:?}", &self_wh.temp_schema),
+                        format!("{:?}", &other_wh.temp_schema),
+                    )),
+                ),
+                (
+                    "update_condition",
+                    update_condition_eq,
+                    Some((
+                        format!("{:?}", &self_wh.update_condition),
+                        format!("{:?}", &other_wh.update_condition),
+                    )),
+                ),
+                (
+                    "versions_to_keep",
+                    versions_to_keep_eq,
+                    Some((
+                        format!("{:?}", &self_wh.versions_to_keep),
+                        format!("{:?}", &other_wh.versions_to_keep),
+                    )),
+                ),
+                (
+                    "write_compression",
+                    write_compression_eq,
+                    Some((
+                        format!("{:?}", &self_wh.write_compression),
+                        format!("{:?}", &other_wh.write_compression),
+                    )),
+                ),
+                (
                     "indexes",
                     indexes_eq,
                     Some((
@@ -1540,6 +1818,57 @@ pub(crate) fn unrendered_value_eq(a: Option<&YmlValue>, b: Option<&YmlValue>) ->
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Every Athena model config must be compared by `same_warehouse_config`.
+    ///
+    /// The compiler enforces the exhaustive struct literals in the sibling
+    /// config modules, but not the `_eq` bindings and the `&&` chain here: a
+    /// key added to `WarehouseSpecificNodeConfig` and missed there compiles
+    /// and silently makes `state:modified` blind to that config. Setting each
+    /// key in turn must make the comparison fail.
+    #[test]
+    fn athena_model_configs_are_compared() {
+        let base = WarehouseSpecificNodeConfig::default();
+        macro_rules! assert_compared {
+            ($($field:ident = $value:expr),* $(,)?) => {$({
+                let mut other = base.clone();
+                other.$field = Some($value);
+                assert!(
+                    !same_warehouse_config(&base, &other),
+                    "`{}` is not compared in same_warehouse_config",
+                    stringify!($field),
+                );
+            })*};
+        }
+        assert_compared!(
+            delete_condition = "x".to_string(),
+            external_location = "x".to_string(),
+            field_delimiter = "x".to_string(),
+            insert_condition = "x".to_string(),
+            merge_update_columns_default_rule = "x".to_string(),
+            s3_data_dir = "x".to_string(),
+            s3_data_naming = "x".to_string(),
+            s3_tmp_table_dir = "x".to_string(),
+            temp_schema = "x".to_string(),
+            update_condition = "x".to_string(),
+            write_compression = "x".to_string(),
+            force_batch = true,
+            ha = true,
+            native_drop = true,
+            seed_by_insert = true,
+            bucket_count = StringOrInteger::Integer(1),
+            partitions_limit = StringOrInteger::Integer(1),
+            versions_to_keep = StringOrInteger::Integer(1),
+            bucketed_by = StringOrArrayOfStrings::String("x".to_string()),
+            lf_inherited_tags = StringOrArrayOfStrings::String("x".to_string()),
+            partitioned_by = StringOrArrayOfStrings::String("x".to_string()),
+            lf_grants = BTreeMap::new(),
+            lf_tags_config = BTreeMap::new(),
+            merge_update_columns_rules = BTreeMap::new(),
+            seed_s3_upload_args = BTreeMap::new(),
+            table_properties = BTreeMap::new(),
+        );
+    }
 
     #[test]
     fn test_take_databricks_catalog_alias_moves_catalog_when_database_unset() {
