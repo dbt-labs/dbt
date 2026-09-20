@@ -13,7 +13,7 @@ use dbt_jinja_utils::register_base_functions;
 use dbt_profile::{
     ProfileEnvironment, ProfileError, ResolvedProfile, find_profiles_path, resolve_with_env,
 };
-use dbt_schemas::schemas::profiles::DbConfig;
+use dbt_schemas::schemas::profiles::{DbConfig, canonicalize_bigquery_region_alias};
 use dbt_schemas::schemas::serde::yaml_to_fs_error;
 use dbt_schemas::state::{ProfileAdapter, ProfileConnection};
 
@@ -90,7 +90,9 @@ pub fn load_profiles(
     // Convert the rendered credentials mapping into a typed DbConfig. Cloned
     // rather than moved because the non-default adapters are read from
     // `resolved` further down.
-    let credentials_value = dbt_yaml::Value::Mapping(resolved.credentials.clone(), Span::default());
+    let mut credentials = resolved.credentials.clone();
+    canonicalize_bigquery_region_alias(&mut credentials);
+    let credentials_value = dbt_yaml::Value::Mapping(credentials, Span::default());
     let db_config: DbConfig = dbt_yaml::from_value(credentials_value).map_err(|e| {
         fs_err!(
             ErrorCode::InvalidConfig,
@@ -116,8 +118,9 @@ pub fn load_profiles(
             let config = if connection.is_default {
                 db_config.clone()
             } else {
-                let value =
-                    dbt_yaml::Value::Mapping(connection.credentials.clone(), Span::default());
+                let mut credentials = connection.credentials.clone();
+                canonicalize_bigquery_region_alias(&mut credentials);
+                let value = dbt_yaml::Value::Mapping(credentials, Span::default());
                 let config: DbConfig = dbt_yaml::from_value(value).map_err(|e| {
                     fs_err!(
                         ErrorCode::InvalidConfig,

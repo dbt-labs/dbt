@@ -75,4 +75,31 @@ message ToolCalled {
   // Attribution identifier for tracking. Uses the format "type__value" (e.g. "thread_id__<x-dbt-copilot-thread-id>"). Only applicable to tool calls within an agent run in the dbt Platform.
   string attribution_id = 21;
   v1.public.common.vortex_telemetry_contexts.VortexTelemetryCommonContext common_context = 22;
+
+  // Estimated number of tokens in the serialized tool arguments (the tool call input).
+  // Approximate: produced by a single reference tokenizer server-side, not the calling
+  // client's actual tokenizer. See token_estimation_method for how it was derived.
+  int64 request_token_estimate = 23;
+
+  // Estimated number of tokens in the serialized tool response payload (the tool call
+  // output). Approximate in the same way as request_token_estimate.
+  int64 response_token_estimate = 24;
+
+  // How the token estimates were produced, e.g. "tiktoken/o200k_base" or "char_div_4".
+  // Lets consumers treat the estimates as approximate and know when the method changed.
+  string token_estimation_method = 25;
+
+  // The LLM model the calling client used, when known (e.g. "claude-sonnet-4-5"). Populated
+  // for tool calls within an agent run in the dbt Platform, where the model is resolved
+  // server-side. Blank for remote and local MCP, where the client's model is not known to
+  // the server.
+  string llm_model = 26;
+
+  // Exact character count of the serialized tool arguments. Deterministic and
+  // tokenizer-independent — the durable primitive behind request_token_estimate.
+  int64 request_char_count = 27;
+
+  // Exact character count of the serialized tool response payload. Deterministic and
+  // tokenizer-independent — the durable primitive behind response_token_estimate.
+  int64 response_char_count = 28;
 }
