@@ -195,6 +195,18 @@ mod tests {
     }
 
     #[test]
+    fn wap_failure_retention_config_is_allowed_on_wap_and_other_models() {
+        for retain_failed in [None, Some(true), Some(false)] {
+            let mut model = wap_model();
+            model.deprecated_config.wap_retain_failed = retain_failed;
+            assert!(validate_wap_model(&model, AdapterType::Snowflake).is_ok());
+            model.deprecated_config.wap = Some(false);
+            model.__base_attr__.materialized = DbtMaterialization::View;
+            assert!(validate_wap_model(&model, AdapterType::Bigquery).is_ok());
+        }
+    }
+
+    #[test]
     fn wap_rejects_unsupported_model_kinds() {
         let mut model = wap_model();
         assert!(validate_wap_model(&model, AdapterType::Bigquery).is_err());

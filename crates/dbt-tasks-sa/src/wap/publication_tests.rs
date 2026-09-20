@@ -1,6 +1,13 @@
-use super::{PublicationStep, run_publication_steps};
+use super::{PublicationStep, audit_publication_status, run_publication_steps};
+use crate::runnable::test::{TestExecutionStatus, status_with_warn_error_overrides};
 use dbt_common::stats::NodeStatus;
+use dbt_common::warn_error_options::{
+    SupportedLegacyWarnError, WarnErrorOptionValue, WarnErrorOptions,
+};
 use dbt_common::{ErrorCode, FsResult, fs_err};
+use dbt_schemas::schemas::DbtTest;
+use dbt_schemas::schemas::common::Severity;
+use dbt_tasks_core::run_cache::run_cache_service::CachedTestExecutionResult;
 
 use PublicationStep::*;
 
@@ -91,6 +98,146 @@ fn publication_does_not_touch_warehouse_without_every_audit_passing() {
 }
 
 #[test]
+fn publication_rejects_silenced_audit_warnings() {
+    let mut test = DbtTest::default();
+    test.deprecated_config.severity = Some(Severity::Warn);
+    let raw_result = CachedTestExecutionResult {
+        failures: 1,
+        should_warn: true,
+        should_error: true,
+    };
+    let options = WarnErrorOptions {
+        silence: vec![WarnErrorOptionValue::SupportedLegacy(
+            SupportedLegacyWarnError::LogTestResult,
+        )],
+        ..Default::default()
+    };
+    let reported_status =
+        status_with_warn_error_overrides(TestExecutionStatus::Warned, &options).node_status();
+    assert_eq!(reported_status, NodeStatus::TestPassed);
+
+    let status = audit_publication_status(Some(reported_status), Some(&test), Some(raw_result));
+    let mut warehouse = Warehouse::new(vec![]);
+    let error = run_publication_steps([("audit", status)], "ORDERS", "WORK", |step| {
+        warehouse.execute(step)
+    })
+    .unwrap_err();
+    assert!(error.to_string().contains("did not PASS"));
+    assert!(warehouse.steps.is_empty());
+    assert_eq!(warehouse.public_revision, 1);
+    assert!(warehouse.candidate_exists);
+}
+
+#[test]
+fn publication_requires_the_audit_node_and_raw_result() {
+    let test = DbtTest::default();
+    let raw_result = CachedTestExecutionResult {
+        failures: 0,
+        should_warn: false,
+        should_error: false,
+    };
+    for (test, raw_result) in [(Some(&test), None), (None, Some(raw_result))] {
+        let status = audit_publication_status(Some(NodeStatus::TestPassed), test, raw_result);
+        let mut warehouse = Warehouse::new(vec![]);
+        let result = run_publication_steps([("audit", status)], "ORDERS", "WORK", |step| {
+            warehouse.execute(step)
+        });
+        assert!(result.is_err());
+        assert!(warehouse.steps.is_empty());
+        assert_eq!(warehouse.public_revision, 1);
+        assert!(warehouse.candidate_exists);
+    }
+}
+
+#[test]
+fn publication_rejects_invalid_raw_failure_counts() {
+    let test = DbtTest::default();
+    let status = audit_publication_status(
+        Some(NodeStatus::TestPassed),
+        Some(&test),
+        Some(CachedTestExecutionResult {
+            failures: -1,
+            should_warn: false,
+            should_error: false,
+        }),
+    );
+    let mut warehouse = Warehouse::new(vec![]);
+    assert!(
+        run_publication_steps([("audit", status)], "ORDERS", "WORK", |step| {
+            warehouse.execute(step)
+        })
+        .is_err()
+    );
+    assert!(warehouse.steps.is_empty());
+    assert_eq!(warehouse.public_revision, 1);
+    assert!(warehouse.candidate_exists);
+}
+
+#[test]
+fn publication_raw_results_do_not_override_nonpassing_statuses() {
+    let test = DbtTest::default();
+    let raw_result = CachedTestExecutionResult {
+        failures: 0,
+        should_warn: false,
+        should_error: false,
+    };
+    for reported_status in [
+        None,
+        Some(NodeStatus::Errored),
+        Some(NodeStatus::TestWarned),
+        Some(NodeStatus::SkippedUpstreamFailed),
+        Some(NodeStatus::StaticallyCheckedDataTest),
+        Some(NodeStatus::ReusedNoChanges("cached".to_owned())),
+    ] {
+        let status =
+            audit_publication_status(reported_status.clone(), Some(&test), Some(raw_result));
+        assert_eq!(status, reported_status);
+        let mut warehouse = Warehouse::new(vec![]);
+        let result = run_publication_steps([("audit", status)], "ORDERS", "WORK", |step| {
+            warehouse.execute(step)
+        });
+        assert!(result.is_err());
+        assert!(warehouse.steps.is_empty());
+    }
+}
+
+#[test]
+fn publication_uses_configured_thresholds_and_severity_for_raw_results() {
+    for (severity, failures, should_warn, should_error, passes) in [
+        (None, 0, false, false, true),
+        (Some(Severity::Error), 3, false, false, true),
+        (Some(Severity::Warn), 3, false, true, true),
+        (Some(Severity::Error), 3, false, true, false),
+        (Some(Severity::Warn), 3, true, false, false),
+    ] {
+        let mut test = DbtTest::default();
+        test.deprecated_config.severity = severity;
+        let status = audit_publication_status(
+            Some(NodeStatus::TestPassed),
+            Some(&test),
+            Some(CachedTestExecutionResult {
+                failures,
+                should_warn,
+                should_error,
+            }),
+        );
+        let mut warehouse = Warehouse::new(vec![]);
+        let result = run_publication_steps([("audit", status)], "ORDERS", "WORK", |step| {
+            warehouse.execute(step)
+        });
+        assert_eq!(result.is_ok(), passes);
+        if passes {
+            assert_eq!(warehouse.public_revision, 2);
+            assert!(!warehouse.candidate_exists);
+        } else {
+            assert!(warehouse.steps.is_empty());
+            assert_eq!(warehouse.public_revision, 1);
+            assert!(warehouse.candidate_exists);
+        }
+    }
+}
+
+#[test]
 fn publication_cleans_up_only_after_finalization_and_session_restoration() {
     let mut warehouse = Warehouse::new(vec![]);
     warehouse.publish().unwrap();
@@ -168,7 +315,7 @@ fn publication_finalization_failures_report_published_and_retain_candidate() {
         let message = warehouse.publish().unwrap_err().to_string();
         assert!(message.contains("DB.SCHEMA.ORDERS was published"));
         assert!(message.contains(&format!("injected {failure:?}")));
-        assert!(message.contains("Working table retained: DB.SCHEMA.__DBT_WAP_TEST"));
+        assert!(message.contains("Working table at failure: DB.SCHEMA.__DBT_WAP_TEST"));
         assert_eq!(warehouse.public_revision, 2);
         assert!(warehouse.candidate_exists);
         assert!(warehouse.steps.contains(&ResetQueryTag));

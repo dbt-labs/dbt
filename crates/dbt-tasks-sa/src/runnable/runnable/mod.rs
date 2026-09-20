@@ -480,6 +480,7 @@ impl Task for RunTask {
                                             ctx_clone.env.clone(),
                                             &base_context,
                                             &ctx_clone.inner.arg.io,
+                                            &ctx_clone.inner.wap_plan,
                                         )?;
                                         let _ = cache_materialization_return_value(
                                             ctx_clone.env,

@@ -383,6 +383,7 @@ impl AggregatedTestRunRemoteTask {
                     ctx_inner.env.clone(),
                     &base_context,
                     &ctx_inner.inner.arg.io,
+                    false,
                 )
             }))
             .run()
@@ -622,6 +623,10 @@ fn execute_test_remote_inner(
         ctx.env.clone(),
         base_context,
         &ctx.inner.arg.io,
+        ctx.inner
+            .wap_plan
+            .audit_owner(&test.common().unique_id)
+            .is_some(),
     )?;
     if let Some(main_response) = main_response {
         ctx.inner

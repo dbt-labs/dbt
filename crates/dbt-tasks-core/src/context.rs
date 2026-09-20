@@ -47,7 +47,7 @@ use crate::task::Task;
 use crate::test_aggregation::{GenericTestRelationships, is_data_test_static_analysis_eligible};
 use crate::unit_test_schema::UnitTestSchemaState;
 use crate::visitor::SkipReason;
-use crate::wap::WapPlan;
+use crate::wap::{WapCandidateState, WapPlan};
 
 use dbt_schemas::schemas::common::DbtMaterialization;
 
@@ -166,6 +166,7 @@ pub struct TaskRunnerCtxInner {
     pub run_stats: DashMap<String, Stat>,
     /// Candidate builds are provisional until their publication task succeeds.
     pub wap_stage_stats: DashMap<String, Stat>,
+    pub wap_candidates: DashMap<String, WapCandidateState>,
     pub wap_plan: WapPlan,
     pub data_test_execution_results: DashMap<String, CachedTestExecutionResult>,
     pub batch_results_map: DashMap<String, BatchResults>,
@@ -236,9 +237,13 @@ impl TaskRunnerCtxInner {
             ));
         }
         if !wap_plan.models.is_empty() {
+            let effective_quoting = adapter_store.default_adapter()?.engine().quoting();
+            wap_plan
+                .validate_materialization_relations(&resolver_state.nodes, effective_quoting)?;
             wap_plan.validate_test_storage_relations(
                 &resolver_state.nodes,
-                adapter_store.default_adapter()?.engine().quoting(),
+                effective_quoting,
+                false,
             )?;
         }
         let runnable_set = schedule
@@ -257,6 +262,7 @@ impl TaskRunnerCtxInner {
             &resolver_state.macros.macros,
             &resolver_state.root_project_name,
         );
+        wap_plan.validate_materializations(&materialization_resolver)?;
 
         let batch_results_map: DashMap<String, BatchResults> = {
             let map = DashMap::default();
@@ -278,6 +284,7 @@ impl TaskRunnerCtxInner {
             analyze_stats: DashMap::default(),
             run_stats: DashMap::default(),
             wap_stage_stats: DashMap::default(),
+            wap_candidates: DashMap::default(),
             wap_plan,
             data_test_execution_results: DashMap::default(),
             batch_results_map,

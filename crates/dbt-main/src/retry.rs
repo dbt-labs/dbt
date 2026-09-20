@@ -22,46 +22,19 @@ pub const RETRIABLE_COMMANDS: &[&str] = &[
     "run", "build", "test", "seed", "snapshot", "compile", "check",
 ];
 
-/// A retried WAP build creates a new candidate, so previously passed audits must rerun.
+/// A retried WAP model creates a new candidate, so previously passed audits must rerun.
+/// Test-only retries do not rebuild their owners or create new candidates.
 pub(crate) fn expand_wap_retry_ids(ids: &[String], nodes: &Nodes) -> FsResult<Vec<String>> {
     let mut selected: BTreeSet<String> = ids.iter().cloned().collect();
-    let mut owners = BTreeSet::new();
-    for id in ids {
-        if nodes
+    for owner in ids {
+        if !nodes
             .models
-            .get(id)
+            .get(owner)
             .is_some_and(|model| model.deprecated_config.wap.unwrap_or(false))
         {
-            owners.insert(id.clone());
+            continue;
         }
-        if let Some(test) = nodes.tests.get(id) {
-            let potential_owners = match test.__test_attr__.attached_node.as_ref() {
-                Some(owner) => vec![owner],
-                None => test.base().depends_on.nodes.iter().collect(),
-            };
-            for owner in potential_owners {
-                if nodes
-                    .models
-                    .get(owner)
-                    .is_some_and(|model| model.deprecated_config.wap.unwrap_or(false))
-                {
-                    owners.insert(owner.clone());
-                }
-            }
-        }
-        if let Some(test) = nodes.unit_tests.get(id)
-            && let Some(owner) = test.base().depends_on.nodes.first()
-            && nodes
-                .models
-                .get(owner)
-                .is_some_and(|model| model.deprecated_config.wap.unwrap_or(false))
-        {
-            owners.insert(owner.clone());
-        }
-    }
-    for owner in owners {
-        selected.insert(owner.clone());
-        selected.extend(WapPlan::required_audit_ids(&owner, nodes)?);
+        selected.extend(WapPlan::required_audit_ids(owner, nodes)?);
         selected.extend(
             nodes
                 .unit_tests
@@ -69,7 +42,7 @@ pub(crate) fn expand_wap_retry_ids(ids: &[String], nodes: &Nodes) -> FsResult<Ve
                 .filter(|(_, test)| {
                     test.base().enabled
                         && test.deprecated_config.enabled != Some(false)
-                        && test.base().depends_on.nodes.first() == Some(&owner)
+                        && test.base().depends_on.nodes.first() == Some(owner)
                 })
                 .map(|(id, _)| id.clone()),
         );
@@ -268,8 +241,7 @@ mod tests {
     use std::io::Write;
     use tempfile::NamedTempFile;
 
-    #[test]
-    fn wap_retry_rebuilds_owner_and_all_audits_without_unrelated_nodes() {
+    fn wap_retry_nodes() -> Nodes {
         use dbt_schemas::schemas::{DbtModel, DbtTest, DbtUnitTest};
         use std::sync::Arc;
 
@@ -278,11 +250,17 @@ mod tests {
         let mut model = DbtModel::default();
         model.deprecated_config.wap = Some(true);
         nodes.models.insert(model_id.to_string(), Arc::new(model));
-        for id in ["test.failed", "test.passed", "test.disabled"] {
+        for id in [
+            "test.failed",
+            "test.passed",
+            "test.singular",
+            "test.disabled",
+        ] {
             let mut test = DbtTest::default();
             test.__base_attr__.enabled = id != "test.disabled";
             test.__base_attr__.depends_on.nodes = vec![model_id.to_string()];
-            test.__test_attr__.attached_node = Some(model_id.to_string());
+            test.__test_attr__.attached_node =
+                (id != "test.singular").then(|| model_id.to_string());
             nodes.tests.insert(id.to_string(), Arc::new(test));
         }
         let mut unit = DbtUnitTest::default();
@@ -290,29 +268,81 @@ mod tests {
         unit.__base_attr__.depends_on.nodes = vec![model_id.to_string()];
         nodes
             .unit_tests
-            .insert("unit_test.passed".to_string(), Arc::new(unit));
+            .insert("unit_test.orders".to_string(), Arc::new(unit));
+        nodes
+    }
 
+    #[test]
+    fn wap_retry_rebuilds_unpublished_models_and_all_audits() {
+        let model_id = "model.project.orders";
+        let nodes = wap_retry_nodes();
         let expected = vec![
             model_id.to_string(),
             "test.failed".to_string(),
             "test.passed".to_string(),
-            "unit_test.passed".to_string(),
+            "test.singular".to_string(),
+            "unit_test.orders".to_string(),
         ];
-        assert_eq!(
-            expand_wap_retry_ids(&["test.failed".to_string()], &nodes).unwrap(),
-            expected
-        );
-        assert_eq!(
-            expand_wap_retry_ids(&[model_id.to_string()], &nodes).unwrap(),
-            expected
-        );
-        assert_eq!(
-            expand_wap_retry_ids(&["unit_test.passed".to_string()], &nodes).unwrap(),
-            expected
-        );
+        for &status in RETRYABLE_STATUSES {
+            let file = create_run_results_json(
+                &[
+                    (model_id, status),
+                    ("test.failed", "fail"),
+                    ("test.passed", "pass"),
+                    ("test.singular", "pass"),
+                    ("unit_test.orders", "pass"),
+                    ("model.other", "success"),
+                ],
+                "build",
+            );
+            let state = RetryState::from_run_results(file.path(), false).unwrap();
+            assert_eq!(
+                expand_wap_retry_ids(&state.retryable_node_ids, &nodes).unwrap(),
+                expected,
+                "unpublished model status: {status}"
+            );
+        }
         assert_eq!(
             expand_wap_retry_ids(&["model.other".to_string()], &nodes).unwrap(),
             ["model.other"]
+        );
+    }
+
+    #[test]
+    fn wap_retry_test_only_builds_do_not_select_the_owner() {
+        let nodes = wap_retry_nodes();
+        for (id, status) in [
+            ("test.failed", "fail"),
+            ("test.singular", "fail"),
+            ("unit_test.orders", "error"),
+        ] {
+            let file = create_run_results_json(&[(id, status)], "build");
+            let state = RetryState::from_run_results(file.path(), false).unwrap();
+            assert_eq!(
+                expand_wap_retry_ids(&state.retryable_node_ids, &nodes).unwrap(),
+                [id],
+                "test-only build: {id}"
+            );
+        }
+    }
+
+    #[test]
+    fn wap_retry_does_not_rebuild_a_successful_owner_for_a_failed_test() {
+        let nodes = wap_retry_nodes();
+        let file = create_run_results_json(
+            &[
+                ("model.project.orders", "success"),
+                ("test.failed", "fail"),
+                ("test.passed", "pass"),
+                ("test.singular", "pass"),
+                ("unit_test.orders", "pass"),
+            ],
+            "build",
+        );
+        let state = RetryState::from_run_results(file.path(), false).unwrap();
+        assert_eq!(
+            expand_wap_retry_ids(&state.retryable_node_ids, &nodes).unwrap(),
+            ["test.failed"]
         );
     }
 

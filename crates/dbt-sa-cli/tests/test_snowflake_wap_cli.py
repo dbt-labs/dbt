@@ -97,6 +97,46 @@ class WapCliTests(unittest.TestCase):
         self.write_model("orders", "{{ config(wap='typo') }}\nselect 1 as id")
         self.parse(success=False, error="expected true, false, or null")
 
+    def test_parse_failed_candidate_retention_inheritance(self) -> None:
+        project_path = self.project / "dbt_project.yml"
+        project_path.write_text(project_path.read_text() + "    +wap_retain_failed: false\n")
+        inherited = self.parse()["nodes"]["model.wap_cli.orders"]["config"]
+        self.assertFalse(inherited["wap_retain_failed"])
+
+        properties_path = self.project / "models/schema.yml"
+        properties_path.write_text(properties_path.read_text().replace(
+            "  - name: orders\n",
+            "  - name: orders\n    config:\n      wap_retain_failed: true\n",
+        ))
+        properties = self.parse()["nodes"]["model.wap_cli.orders"]["config"]
+        self.assertTrue(properties["wap_retain_failed"])
+
+        self.write_model(
+            "orders", "{{ config(wap_retain_failed=false, alias='PUBLIC_ORDERS') }}\nselect 1 as id"
+        )
+        overridden = self.parse()["nodes"]["model.wap_cli.orders"]["config"]
+        self.assertFalse(overridden["wap_retain_failed"])
+
+    def test_parse_rejects_invalid_failed_candidate_retention_value(self) -> None:
+        self.write_model("orders", "{{ config(wap_retain_failed='typo') }}\nselect 1 as id")
+        self.parse(success=False, error="expected true, false, or null")
+
+    def test_reparse_updates_retention_without_changing_public_identity(self) -> None:
+        original = self.parse()["nodes"]["model.wap_cli.orders"]
+        self.assertNotIn("wap_retain_failed", original["config"])
+        for retain in (False, True):
+            with self.subTest(retain=retain):
+                self.write_model(
+                    "orders",
+                    "{{ config(wap_retain_failed=" + str(retain).lower()
+                    + ", alias='PUBLIC_ORDERS') }}\nselect 1 as id",
+                )
+                updated = self.parse()["nodes"]["model.wap_cli.orders"]
+                self.assertIs(updated["config"]["wap_retain_failed"], retain)
+                self.assertTrue(updated["config"]["wap"])
+                for field in ("unique_id", "database", "schema", "alias", "relation_name"):
+                    self.assertEqual(updated[field], original[field], field)
+
     def test_reparse_updates_wap_without_changing_public_identity(self) -> None:
         original = self.parse()["nodes"]["model.wap_cli.orders"]
         self.write_model(

@@ -22,29 +22,65 @@ work is explicitly invoked by this command. Transformation, audit queries, and
 retained tables consume ordinary Snowflake resources.
 
 The default run covers both permanent and transient WAP tables. Use
-`--table-kind permanent` or `--table-kind transient` for one variant. Each variant
-checks:
+`--table-kind permanent` or `--table-kind transient` for one variant.
 
-- An error-severity audit fails; the public sentinel stays `[999]`, the existing
-  downstream sentinel stays `[777]`, and the candidate retains `[-1, 2]`.
+Scenarios that inspect failed candidates explicitly set `wap_retain_failed: true`.
+Cleanup scenarios leave the setting unspecified to verify default deletion,
+with a separate case exercising explicit `false`.
+
+Each variant checks:
+
+- An error-severity audit fails with explicit `wap_retain_failed: true`; the
+  public sentinel stays `[999]`, the existing downstream sentinel stays `[777]`,
+  and the candidate retains `[-1, 2]`.
+- Reusing that failed build's invocation ID is rejected before staging, even with
+  otherwise-passing model SQL and default failed-table cleanup. The retained
+  candidate and both sentinels remain unchanged, and the failed command reports
+  no successful candidate creation.
 - A subsequent standalone `dbt test` passes against the public sentinel, despite
   the retained failing candidate and compiled SQL from the preceding build.
-- `dbt retry` creates a different candidate, reruns all three audits including
-  the two that previously passed, publishes `[2, 3]`, and builds the downstream
+- `dbt retry` creates a different candidate containing `[2, 2]`. The previously
+  passing uniqueness audit must now fail, preserving both sentinels. A subsequent
+  retry reruns all three audits, publishes `[2, 3]`, and builds the downstream
   through its ordinary public `ref`.
 - A deliberate SQL conversion error runs on Snowflake with static analysis off.
   The model errors, all audits and downstream execution are skipped, and both
-  existing sentinel tables retain their original rows. The model result must
+  existing sentinel tables retain their original rows. Its retained working
+  clone still contains the public sentinel `[999]`, proving that cloning preceded
+  the failed transformation. The model result must
   include the deliberate conversion-error marker, so an earlier configuration
   or permissions error cannot satisfy this scenario.
 - A warning-severity audit also prevents publication, preserves both existing
   sentinel tables, and retains its candidate.
+- A singular audit with a literal NULL failure calculation errors instead of
+  passing. Both sentinels remain unchanged and the candidate is retained. The
+  result must identify the invalid audit result, so an unrelated error cannot
+  satisfy this scenario.
+- Silencing that warning with `--warn-error-options '{"silence":["LogTestResult"]}'`
+  still prevents publication. The audit's displayed status is `pass` with one
+  failing row, the model errors, and both sentinel tables remain unchanged.
+- A transformation reading `{{ this }}` with static analysis off reads the
+  initial working clone, adds one to its sentinel, publishes `[1000]`, and drops
+  the successful candidate. This checks runtime execution, not compile-time
+  introspection.
 - A successful first build publishes exactly `[1, 2]` and drops its candidate.
 - A failing first build leaves the public table absent.
+- By default, audit failures and transformation errors remove
+  their confirmed-created candidates after execution finishes, while preserving
+  both sentinels. A failing first build also removes its candidate and leaves
+  both public tables absent. Checks require the exact removal message and actual
+  warehouse absence. An additional audit failure with explicit
+  `wap_retain_failed: false` verifies the same cleanup behavior.
+
+Warehouse checks verify the actual permanent/transient table kind, as well as
+rows. The default two-kind run also checks permanent-to-transient publication
+and rejects transient-to-permanent conversion before a candidate is created.
 
 Assertions check actual warehouse contents, `run_results.json`, and compiled
 downstream SQL. Each model must have one canonical result. Audit SQL includes
-both generic `not_null`/`unique` tests and a singular test. Builds use four threads
+both generic `not_null`/`unique` tests and a singular test. The runner requires
+their exact audit IDs from the fixture manifest, so unrelated passing tests
+cannot satisfy the check. Builds use four threads
 and do not use fail-fast.
 
 Every staging message must identify its candidate in the same database and
@@ -52,17 +88,34 @@ schema as the public model. The runner checks fully qualified names, including
 quoted names containing dots or embedded quotes, before recording ownership.
 A candidate in another database or a scratch schema fails the check and is not
 added to the cleanup inventory. The fixture never creates or drops a schema.
+These names isolate ordinary `ref()` calls; schema grants can still allow other
+users to access the working tables directly.
 
 Every run uses a copied temporary project and UUID-based public aliases in the
 target schema. The runner first verifies those public aliases are absent. It
-records candidate ownership only from WAP's post-preflight staging message, so a
-pre-existing collision reported as “retained if created” is never treated as a
-table the runner owns. It never scans or deletes tables using a wildcard.
+records candidate ownership only when WAP confirms successful working-table
+creation and the current run's invocation ID agrees. A staging-intent message,
+failed create-only claim, pre-existing collision reported as “retained if
+created,” or foreign invocation never establishes ownership. A matching confirmed
+creation event still establishes ownership if the command later fails before
+writing its result artifact. It never scans or deletes tables using a wildcard.
 
-Successful and failed runs clean up only their recorded public tables and exact
-candidate identifiers. `--keep-objects` retains them for inspection. Logs,
+The runner's final cleanup drops only its recorded public tables and exact
+candidate identifiers. `--keep-objects` skips this final cleanup for inspection;
+it does not override default model cleanup. Set `wap_retain_failed: true` to
+retain failed candidates; otherwise dbt attempts cleanup after ordinary failed
+execution. Interrupted runs and uncertain
+publication outcomes retain candidates for investigation. Logs,
 per-command artifacts, saved retry state, and `owned_objects.json` stay in the
-temporary directory printed at startup. On interruption or incomplete cleanup,
+temporary directory printed at startup. The runner forces text info logging and
+JSON artifacts so inherited output settings cannot hide ownership evidence;
+it also resets inherited warning overrides so each scenario controls its verdicts
+and assigns a fresh invocation UUID to each command, overriding any inherited ID.
+The collision scenario deliberately reuses one known fixture invocation ID.
+The runner disables inherited failure storage; required WAP audits count their
+query results directly and cannot use shared persistent failure tables.
+Profile and authentication environment variables are preserved.
+On interruption or incomplete cleanup,
 use that inventory with `wap_fixture_cleanup(identifiers=...)` and the recorded
 variables/profile/target in the copied project. In particular, do not drop every
 table whose name begins with `__DBT_WAP_`.

@@ -152,7 +152,7 @@ pub trait TaskRunnerCtxFactory: Send + Sync + 'static {
                 telemetry_dispatcher: std::sync::OnceLock::new(),
             };
 
-            Ok(TaskRunnerCtx {
+            let ctx = TaskRunnerCtx {
                 inner: Arc::new(TaskRunnerCtxInner::new(
                     run_task_args,
                     worker_id,
@@ -176,7 +176,19 @@ pub trait TaskRunnerCtxFactory: Send + Sync + 'static {
                 rendering_listener_factory,
                 env: jinja_env,
                 thread_id: 0,
-            })
+            };
+            if !ctx.inner.wap_plan.models.is_empty() {
+                ctx.inner.wap_plan.validate_runtime_failure_storage(
+                    &ctx.resolver_state.nodes,
+                    ctx.inner
+                        .adapter_store
+                        .default_adapter()?
+                        .engine()
+                        .quoting(),
+                    &ctx.env,
+                )?;
+            }
+            Ok(ctx)
         })
     }
 

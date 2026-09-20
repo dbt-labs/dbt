@@ -346,6 +346,12 @@ pub struct ProjectModelConfig {
         deserialize_with = "crate::schemas::serde::strict_bool_or_string_bool"
     )]
     pub wap: Option<bool>,
+    #[serde(
+        default,
+        rename = "+wap_retain_failed",
+        deserialize_with = "crate::schemas::serde::strict_bool_or_string_bool"
+    )]
+    pub wap_retain_failed: Option<bool>,
     #[serde(rename = "+max_staleness")]
     pub max_staleness: Option<String>,
     #[serde(
@@ -680,6 +686,7 @@ impl TypedRecursiveConfig for ProjectModelConfig {
 
     fn has_set_fields(&self) -> bool {
         self.wap.is_some()
+            || self.wap_retain_failed.is_some()
             || self.access.is_some()
             || self.adapter_properties.is_some()
             || self.alias.is_some()
@@ -884,6 +891,13 @@ pub struct ModelConfig {
         deserialize_with = "crate::schemas::serde::strict_bool_or_string_bool"
     )]
     pub wap: Option<bool>,
+    /// Retain failed WAP candidates for inspection; defaults to false.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "crate::schemas::serde::strict_bool_or_string_bool"
+    )]
+    pub wap_retain_failed: Option<bool>,
     pub incremental_strategy: Option<DbtIncrementalStrategy>,
     pub incremental_predicates: Option<StringOrArrayOfStrings>,
     // Hashed into the run-cache key only; the functional source of a model's constraints is the
@@ -1022,6 +1036,7 @@ impl From<ProjectModelConfig> for ModelConfig {
             lookback: config.lookback,
             materialized: config.materialized,
             wap: config.wap,
+            wap_retain_failed: config.wap_retain_failed,
             merge_exclude_columns: config.merge_exclude_columns,
             merge_update_columns: config.merge_update_columns,
             meta: config.meta.0,
@@ -1226,6 +1241,7 @@ impl From<ModelConfig> for ProjectModelConfig {
             lookback: config.lookback,
             materialized: config.materialized,
             wap: config.wap,
+            wap_retain_failed: config.wap_retain_failed,
             merge_exclude_columns: config.merge_exclude_columns,
             merge_update_columns: config.merge_update_columns,
             meta: config.meta.into(),
@@ -1531,6 +1547,8 @@ impl ModelConfig {
         let meta_eq_result = meta_eq(&self.meta, &other.meta); // Custom comparison for meta
         let materialized_eq_result = materialized_eq(&self.materialized, &other.materialized);
         let wap_eq = self.wap.unwrap_or(false) == other.wap.unwrap_or(false);
+        let wap_retain_failed_eq =
+            self.wap_retain_failed.unwrap_or(false) == other.wap_retain_failed.unwrap_or(false);
         let incremental_strategy_eq = self.incremental_strategy == other.incremental_strategy;
         // incremental_predicates can differ because of environment, i.e. dev vs prod
         // so we don't compare them. To compare them we will need a SQL AST whose
@@ -1593,6 +1611,7 @@ impl ModelConfig {
             && meta_eq_result
             && materialized_eq_result
             && wap_eq
+            && wap_retain_failed_eq
             && incremental_strategy_eq
             && batch_size_eq
             && lookback_eq_result
@@ -1893,6 +1912,7 @@ impl ModelConfig {
                         )),
                     ),
                     ("wap", wap_eq, None),
+                    ("wap_retain_failed", wap_retain_failed_eq, None),
                     ("warehouse_config", warehouse_config_eq, None),
                 ],
             );
@@ -1937,8 +1957,9 @@ impl ConfigKeys for ModelConfig {
         field_names.insert("dataset".to_string()); // alias for schema
         field_names.insert("post-hook".to_string()); // might be serialized as post_hook
         field_names.insert("pre-hook".to_string()); // might be serialized as pre_hook
-        // Optional extension omitted from default serialized configs.
+        // Optional extensions omitted from default serialized configs.
         field_names.insert("wap".to_string());
+        field_names.insert("wap_retain_failed".to_string());
 
         field_names
     }
@@ -2120,6 +2141,103 @@ mod tests {
             dbt_yaml::from_str::<ModelConfig>("wap: invalid\n__warehouse_specific_config__: {}\n")
                 .is_err()
         );
+    }
+
+    #[test]
+    fn wap_retain_failed_inherits_overrides_and_round_trips() {
+        use crate::schemas::project::TypedRecursiveConfig;
+
+        let project: ProjectModelConfig =
+            dbt_yaml::from_str("+wap_retain_failed: false\n__additional_properties__: {}\n")
+                .unwrap();
+        assert!(project.has_set_fields());
+        let parent: ModelConfig = project.into();
+        let mut inherited = ModelConfig::default();
+        inherited.default_to(&parent);
+        assert_eq!(inherited.wap_retain_failed, Some(false));
+
+        let mut child: ModelConfig =
+            dbt_yaml::from_str("wap_retain_failed: true\n__warehouse_specific_config__: {}\n")
+                .unwrap();
+        child.default_to(&parent);
+        assert_eq!(child.wap_retain_failed, Some(true));
+
+        let manifest: ManifestModelConfig = inherited.clone().into();
+        let serialized = serde_json::to_string(&manifest).unwrap();
+        let manifest: ManifestModelConfig = serde_json::from_str(&serialized).unwrap();
+        let restored: ModelConfig = manifest.into();
+        assert_eq!(restored.wap_retain_failed, Some(false));
+        let project: ProjectModelConfig = restored.into();
+        assert_eq!(project.wap_retain_failed, Some(false));
+
+        inherited.apply_package_defaults(Default::default());
+        inherited.apply_resolve_defaults(Default::default());
+        assert_eq!(inherited.finalize().wap_retain_failed, Some(false));
+    }
+
+    #[test]
+    fn wap_retain_failed_is_known_and_state_defaults_to_cleanup() {
+        use super::ConfigKeys;
+
+        assert!(ModelConfig::valid_field_names().contains("wap_retain_failed"));
+        let omitted = ModelConfig::default();
+        assert_eq!(omitted.wap_retain_failed, None);
+        let mut configured = omitted.clone();
+        configured.wap_retain_failed = Some(false);
+        assert!(omitted.same_config(&configured));
+        configured.wap_retain_failed = Some(true);
+        assert!(!omitted.same_config(&configured));
+
+        let retained: ManifestModelConfig = configured.into();
+        let retained: ManifestModelConfig =
+            serde_json::from_value(serde_json::to_value(retained).unwrap()).unwrap();
+        let retained: ModelConfig = retained.into();
+        assert_eq!(retained.wap_retain_failed, Some(true));
+        assert!(!omitted.same_config(&retained));
+
+        assert!(
+            serde_json::to_value(&omitted)
+                .unwrap()
+                .get("wap_retain_failed")
+                .is_none()
+        );
+        let manifest: ManifestModelConfig = omitted.into();
+        assert!(
+            serde_json::to_value(manifest)
+                .unwrap()
+                .get("wap_retain_failed")
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn wap_retain_failed_uses_strict_boolean_parsing() {
+        for (value, expected) in [
+            ("true", Some(true)),
+            ("'false'", Some(false)),
+            ("null", None),
+        ] {
+            let model: ModelConfig = dbt_yaml::from_str(&format!(
+                "wap_retain_failed: {value}\n__warehouse_specific_config__: {{}}\n"
+            ))
+            .unwrap();
+            assert_eq!(model.wap_retain_failed, expected);
+        }
+        assert!(
+            dbt_yaml::from_str::<ModelConfig>(
+                "wap_retain_failed: invalid\n__warehouse_specific_config__: {}\n"
+            )
+            .is_err()
+        );
+        assert!(
+            dbt_yaml::from_str::<ProjectModelConfig>(
+                "+wap_retain_failed: invalid\n__additional_properties__: {}\n"
+            )
+            .is_err()
+        );
+        let mut manifest = serde_json::to_value(ManifestModelConfig::default()).unwrap();
+        manifest["wap_retain_failed"] = serde_json::json!("invalid");
+        assert!(serde_json::from_value::<ManifestModelConfig>(manifest).is_err());
     }
 
     /// `+propagate` rides the same project -> node -> project path `+adapter`

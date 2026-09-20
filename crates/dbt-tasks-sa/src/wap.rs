@@ -25,11 +25,15 @@ use dbt_jinja_utils::phases::run::build_run_node_context;
 use dbt_jinja_utils::utils::add_task_context;
 use dbt_schemas::schemas::dbt_catalogs_v2::{CatalogType, TableFormat};
 use dbt_schemas::schemas::relations::base::BaseRelation;
-use dbt_schemas::schemas::{DbtModel, InternalDbtNode, InternalDbtNodeAttributes, NodePathKind};
+use dbt_schemas::schemas::{
+    DbtModel, DbtTest, InternalDbtNode, InternalDbtNodeAttributes, NodePathKind,
+};
 use dbt_tasks_core::context::TaskRunnerCtx;
-use dbt_tasks_core::run_cache::run_cache_service::evict_node_metadata_for_untracked_rebuild;
+use dbt_tasks_core::run_cache::run_cache_service::{
+    CachedTestExecutionResult, evict_node_metadata_for_untracked_rebuild,
+};
 use dbt_tasks_core::task::{TP, Task, TaskOp};
-use dbt_tasks_core::wap::WapModel;
+use dbt_tasks_core::wap::{WapCandidateState, WapModel};
 use dbt_telemetry::{ExecutionPhase, NodeType};
 use minijinja::Value;
 
@@ -39,6 +43,7 @@ use crate::materialize::{
 };
 use crate::runnable::cache::cache_materialization_return_value;
 use crate::runnable::runnable::{RunExecutionPath, emit_run_usage_stats};
+use crate::runnable::test::reported_test_verdict_from_components;
 
 /// The model's terminal task: no public success is recorded by the preceding stage task.
 pub struct PublishTask {
@@ -138,6 +143,31 @@ impl Task for PublishTask {
     }
 }
 
+/// Warning presentation can turn a warning into a reported pass. Publication
+/// still requires the warehouse result to pass the configured test thresholds.
+fn audit_publication_status(
+    reported_status: Option<NodeStatus>,
+    test: Option<&DbtTest>,
+    execution_result: Option<CachedTestExecutionResult>,
+) -> Option<NodeStatus> {
+    if reported_status != Some(NodeStatus::TestPassed) {
+        return reported_status;
+    }
+    let test = test?;
+    let result = execution_result?;
+    if result.failures < 0 {
+        return Some(NodeStatus::Errored);
+    }
+    Some(
+        reported_test_verdict_from_components(
+            test.deprecated_config.severity.as_ref(),
+            result.should_warn,
+            result.should_error,
+        )
+        .node_status(),
+    )
+}
+
 pub(crate) fn require_passing_audits<'a>(
     audits: impl IntoIterator<Item = (&'a str, Option<NodeStatus>)>,
 ) -> FsResult<()> {
@@ -209,8 +239,8 @@ pub(crate) fn validate_runtime_sql_header(sql_header: Option<&Value>) -> FsResul
     Ok(())
 }
 
-/// Check the live warehouse, not the adapter cache, before touching a working table.
-pub(crate) fn preflight_stage(wap: &WapModel, ctx: &TaskRunnerCtx) -> FsResult<()> {
+/// Validate live relations, then create the working table before materialization.
+pub(crate) fn prepare_stage(wap: &WapModel, ctx: &TaskRunnerCtx) -> FsResult<()> {
     if ctx
         .inner
         .materialization_resolver
@@ -229,12 +259,79 @@ pub(crate) fn preflight_stage(wap: &WapModel, ctx: &TaskRunnerCtx) -> FsResult<(
     wap.validate_materialization_quoting(adapter.engine().quoting())?;
     let (target, candidate) = relations(wap)?;
     let mut context = model_context(&wap.model, ctx);
-    resolved_transient(ctx, &context)?;
-    inspect_relations(ctx, &mut context, &target, &candidate, false)?;
+    let transient = resolved_transient(ctx, &context)?;
+    let source = inspect_relations(ctx, &mut context, &target, &candidate, false)?;
+    initialize_candidate(
+        target.as_ref(),
+        candidate.as_ref(),
+        source,
+        transient,
+        |sql| {
+            adapter.cancellation_token().check_cancellation()?;
+            execute_sql(ctx, &mut context, sql)?;
+            Ok(())
+        },
+    )?;
+    ctx.inner.wap_candidates.insert(
+        wap.model.common().unique_id.clone(),
+        WapCandidateState::Created,
+    );
+    adapter
+        .cache_added(&ctx.env.empty_state(), candidate)
+        .map_err(|e| FsError::from_jinja_err(e, "WAP working table cache"))?;
+    Ok(())
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TableLifecycle {
+    Permanent,
+    Transient,
+}
+
+fn initialize_candidate(
+    target: &dyn BaseRelation,
+    candidate: &dyn BaseRelation,
+    source: Option<TableLifecycle>,
+    transient: bool,
+    execute: impl FnOnce(String) -> FsResult<()>,
+) -> FsResult<()> {
+    // Snowflake cannot clone transient data into a permanent table.
+    // https://docs.snowflake.com/en/user-guide/table-considerations
+    if source == Some(TableLifecycle::Transient) && !transient {
+        return Err(fs_err!(
+            ErrorCode::InvalidConfig,
+            "WAP cannot clone transient public table {} into a permanent working table; \
+             use transient=true or migrate the public table before building",
+            target.render_self_as_str()
+        ));
+    }
     emit_info_log_message(format!(
         "WAP: building {} in working table {}",
         target.render_self_as_str(),
         candidate.render_self_as_str()
+    ));
+    let sql = match target.adapter_type() {
+        AdapterType::Snowflake => match source {
+            Some(_) => dbt_adapter::relation::snowflake::create_table_clone_sql(
+                candidate, target, transient,
+            ),
+            None => dbt_adapter::relation::snowflake::create_table_claim_sql(candidate, transient),
+        },
+        _ => return Err(fs_err!(ErrorCode::InvalidConfig, "WAP requires Snowflake")),
+    };
+    execute(sql).map_err(|error| {
+        let message = format!(
+            "WAP working table creation failed: {error}. Public table {} was not replaced. \
+             Working table {} may have been created; inspect Snowflake query history",
+            target.render_self_as_str(),
+            candidate.render_self_as_str()
+        );
+        Box::new(error.with_context(message))
+    })?;
+    emit_info_log_message(format!(
+        "WAP: created working table {} for {}",
+        candidate.render_self_as_str(),
+        target.render_self_as_str()
     ));
     Ok(())
 }
@@ -245,8 +342,8 @@ fn inspect_relations(
     target: &Arc<dyn BaseRelation>,
     candidate: &Arc<dyn BaseRelation>,
     candidate_must_exist: bool,
-) -> FsResult<bool> {
-    let mut target_exists = false;
+) -> FsResult<Option<TableLifecycle>> {
+    let mut target_lifecycle = None;
     for (relation, expectation) in [
         (target, RelationExpectation::OptionalTable),
         (
@@ -277,13 +374,13 @@ fn inspect_relations(
                 _ => return Err(fs_err!(ErrorCode::InvalidConfig, "WAP requires Snowflake")),
             };
             let tables = fetch_relation_metadata(ctx, context, sql)?;
-            inspect_table_rows(&tables, &name)?;
-        }
-        if matches!(expectation, RelationExpectation::OptionalTable) {
-            target_exists = exists;
+            let lifecycle = inspect_table_rows(&tables, &name)?;
+            if matches!(expectation, RelationExpectation::OptionalTable) {
+                target_lifecycle = Some(lifecycle);
+            }
         }
     }
-    Ok(target_exists)
+    Ok(target_lifecycle)
 }
 
 fn fetch_relation_metadata(
@@ -346,7 +443,7 @@ fn inspect_relation_rows(
     Ok(row.is_some())
 }
 
-fn inspect_table_rows(batch: &RecordBatch, identifier: &str) -> FsResult<()> {
+fn inspect_table_rows(batch: &RecordBatch, identifier: &str) -> FsResult<TableLifecycle> {
     let row = exact_relation_row(batch, identifier)?.ok_or_else(|| {
         fs_err!(
             ErrorCode::ExecutionError,
@@ -360,7 +457,12 @@ fn inspect_table_rows(batch: &RecordBatch, identifier: &str) -> FsResult<()> {
     if batch.column_by_name("is_immutable").is_some() {
         require_disabled_flag(batch, row, identifier, "is_immutable")?;
     }
-    Ok(())
+    let kinds = batch.column_values::<StringArray>("kind")?;
+    Ok(if kinds.value(row).eq_ignore_ascii_case("TRANSIENT") {
+        TableLifecycle::Transient
+    } else {
+        TableLifecycle::Permanent
+    })
 }
 
 fn exact_relation_row(batch: &RecordBatch, identifier: &str) -> FsResult<Option<usize>> {
@@ -513,7 +615,7 @@ fn run_publication_steps<'a>(
         if published {
             let message = format!(
                 "WAP: {target_name} was published; finalization failed: {error}. \
-                 Working table retained: {candidate_name}"
+                 Working table at failure: {candidate_name}"
             );
             Box::new(error.with_context(message))
         } else {
@@ -549,7 +651,7 @@ fn publication_context(
     candidate: &Arc<dyn BaseRelation>,
 ) -> FsResult<BTreeMap<String, Value>> {
     let mut context = model_context(model, ctx);
-    let target_exists = inspect_relations(ctx, &mut context, target, candidate, true)?;
+    let target_exists = inspect_relations(ctx, &mut context, target, candidate, true)?.is_some();
     let transient = resolved_transient(ctx, &context)?;
     let publication = publication_model(model, transient, target_exists);
     context = model_context(&publication, ctx);
@@ -609,6 +711,7 @@ fn finalize_publication(
             ctx.env.clone(),
             &base,
             &ctx.inner.arg.io,
+            &ctx.inner.wap_plan,
         )?;
         cache_materialization_return_value(ctx.env.clone(), &result)
             .map_err(|e| FsError::from_jinja_err(e, "WAP version pointer cache"))?;
@@ -631,7 +734,14 @@ fn publish_model(model: &DbtModel, ctx: &TaskRunnerCtx) -> FsResult<()> {
     let mut context = BTreeMap::new();
     let mut overrides = Vec::new();
     let audits = wap.audit_ids.iter().map(|id| {
-        let status = ctx.inner.run_stats.get(id).map(|stat| stat.status.clone());
+        let status = audit_publication_status(
+            ctx.inner.run_stats.get(id).map(|stat| stat.status.clone()),
+            ctx.nodes().tests.get(id).map(Arc::as_ref),
+            ctx.inner
+                .data_test_execution_results
+                .get(id)
+                .map(|result| *result),
+        );
         (id.as_str(), status)
     });
 
@@ -668,6 +778,9 @@ fn publish_model(model: &DbtModel, ctx: &TaskRunnerCtx) -> FsResult<()> {
                     .to_string();
                     adapter.cancellation_token().check_cancellation()?;
                     // A failed submission can have committed without returning a response.
+                    ctx.inner
+                        .wap_candidates
+                        .insert(unique_id.clone(), WapCandidateState::PublicationSubmitted);
                     let response = execute_sql(ctx, &mut context, sql).map_err(|error| {
                         let message = format!(
                             "WAP publication failed for {}: {error}. Publication may have committed; \
@@ -677,6 +790,9 @@ fn publish_model(model: &DbtModel, ctx: &TaskRunnerCtx) -> FsResult<()> {
                         );
                         Box::new(error.with_context(message))
                     })?;
+                    ctx.inner
+                        .wap_candidates
+                        .insert(unique_id.clone(), WapCandidateState::Published);
                     ctx.inner.main_adapter_responses.insert(
                         unique_id.clone(),
                         response
@@ -695,6 +811,7 @@ fn publish_model(model: &DbtModel, ctx: &TaskRunnerCtx) -> FsResult<()> {
                 }
                 PublicationStep::DropCandidate => {
                     eval(ctx, &context, "adapter.drop_relation(__wap_candidate)")?;
+                    ctx.inner.wap_candidates.remove(unique_id);
                 }
             }
             Ok(())
@@ -724,13 +841,131 @@ pub(crate) fn report_retained_candidate(ctx: &TaskRunnerCtx, unique_id: &str) {
     if let Some(wap) = ctx.inner.wap_plan.model(unique_id)
         && let Ok((_, candidate)) = relations(wap)
     {
+        let uncertain_publication = ctx
+            .inner
+            .wap_candidates
+            .get(unique_id)
+            .is_some_and(|state| *state == WapCandidateState::PublicationSubmitted);
+        let disposition = if uncertain_publication {
+            "retained because the publication outcome is uncertain"
+        } else if wap.model.deprecated_config.wap_retain_failed == Some(true) {
+            "retained if created"
+        } else {
+            "cleanup requested after tasks finish, if safely owned"
+        };
         emit_info_log_message(format!(
-            "WAP working table retained if created: {} (model {unique_id})",
+            "WAP working table {disposition}: {} (model {unique_id})",
             candidate.render_self_as_str()
         ));
     }
 }
 
+fn run_failed_candidate_cleanup(
+    retain_failed: Option<bool>,
+    state: Option<WapCandidateState>,
+    status: Option<NodeStatus>,
+    execute: impl FnOnce() -> FsResult<()>,
+) -> FsResult<bool> {
+    if retain_failed == Some(true)
+        || !matches!(
+            state,
+            Some(WapCandidateState::Created | WapCandidateState::Published)
+        )
+        || !matches!(
+            status,
+            Some(NodeStatus::Errored | NodeStatus::SkippedUpstreamFailed)
+        )
+    {
+        return Ok(false);
+    }
+    execute()?;
+    Ok(true)
+}
+
+/// Call only after the visitor finishes normally: a skipped publication can be
+/// recorded while sibling audits still read the candidate. Cancellation can
+/// leave blocking workers alive, so an interrupted visitor must skip cleanup.
+pub(crate) async fn cleanup_failed_candidates(ctx: &TaskRunnerCtx) {
+    if !ctx.inner.wap_plan.models.iter().any(|(unique_id, wap)| {
+        wap.model.deprecated_config.wap_retain_failed != Some(true)
+            && ctx.inner.wap_candidates.contains_key(unique_id)
+            && ctx.inner.run_stats.get(unique_id).is_some_and(|stat| {
+                matches!(
+                    stat.status,
+                    NodeStatus::Errored | NodeStatus::SkippedUpstreamFailed
+                )
+            })
+    }) {
+        return;
+    }
+    let cleanup_ctx = ctx.clone();
+    let result = TaskOp::Blocking(Box::new(move || {
+        let ctx = &cleanup_ctx;
+        let adapter = ctx
+            .env
+            .get_base_adapter()
+            .ok_or_else(|| fs_err!(ErrorCode::Unexpected, "Missing adapter for WAP cleanup"))?;
+        for (unique_id, wap) in &ctx.inner.wap_plan.models {
+            let state = ctx.inner.wap_candidates.get(unique_id).map(|state| *state);
+            let status = ctx
+                .inner
+                .run_stats
+                .get(unique_id)
+                .map(|stat| stat.status.clone());
+            let result = run_failed_candidate_cleanup(
+                wap.model.deprecated_config.wap_retain_failed,
+                state,
+                status,
+                || {
+                    let candidate = Arc::from(wap.candidate_relation()?);
+                    let mut context = model_context(&wap.model, ctx);
+                    context.insert(
+                        "__wap_candidate".to_string(),
+                        RelationObject::new(candidate).into_value(),
+                    );
+                    // Cancellation after graph completion still forbids cleanup.
+                    adapter.cancellation_token().check_cancellation()?;
+                    eval(ctx, &context, "adapter.drop_relation(__wap_candidate)")?;
+                    Ok(())
+                },
+            );
+            match result {
+                Ok(true) => {
+                    ctx.inner.wap_candidates.remove(unique_id);
+                    if let Ok(candidate) = wap.candidate_relation() {
+                        emit_info_log_message(format!(
+                            "WAP: removed failed working table {}",
+                            candidate.render_self_as_str()
+                        ));
+                    }
+                }
+                Ok(false) => {}
+                Err(error) => {
+                    drop_thread_local_connection();
+                    emit_warn_log_message(
+                        ErrorCode::ExecutionError,
+                        format!(
+                            "WAP could not remove failed working table for '{unique_id}': {error}"
+                        ),
+                    );
+                }
+            }
+        }
+        Ok(())
+    }))
+    .run()
+    .await
+    .and_then(|result| result);
+    if let Err(error) = result {
+        emit_warn_log_message(
+            ErrorCode::ExecutionError,
+            format!("WAP failed-table cleanup did not finish: {error}"),
+        );
+    }
+}
+
+#[cfg(test)]
+mod cleanup_tests;
 #[cfg(test)]
 mod clone_tests;
 #[cfg(test)]
@@ -869,8 +1104,15 @@ mod tests {
 
     #[test]
     fn wap_requires_native_permanent_or_transient_table_details() {
-        for kind in ["TABLE", "TRANSIENT"] {
-            assert!(inspect_table_rows(&table(kind, &[]), "PUBLIC").is_ok());
+        for (kind, lifecycle) in [
+            ("TABLE", TableLifecycle::Permanent),
+            ("TRANSIENT", TableLifecycle::Transient),
+            ("transient", TableLifecycle::Transient),
+        ] {
+            assert_eq!(
+                inspect_table_rows(&table(kind, &[]), "PUBLIC").unwrap(),
+                lifecycle
+            );
         }
         for kind in [
             "TEMPORARY",

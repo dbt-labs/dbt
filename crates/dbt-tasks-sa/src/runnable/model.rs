@@ -326,7 +326,7 @@ pub fn execute_model_remote(
     let wap = ctx.inner.wap_plan.model(&model.common().unique_id);
     let execution_model = if let Some(wap) = wap {
         crate::wap::validate_runtime_sql_header(sql_header.as_ref())?;
-        crate::wap::preflight_stage(wap, ctx)?;
+        crate::wap::prepare_stage(wap, ctx)?;
         Some(wap.execution_model()?)
     } else {
         None
@@ -378,6 +378,7 @@ pub fn execute_model_remote(
             ctx.env.clone(),
             &base_context,
             &ctx.inner.arg.io,
+            &ctx.inner.wap_plan,
         )?;
         let _ = cache_materialization_return_value(ctx.env.clone(), &relations_map);
     }

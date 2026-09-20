@@ -10,12 +10,25 @@ use dbt_common::io_args::{ComputeArg, FsCommand, LocalExecutionBackendKind};
 use dbt_common::{ErrorCode, FsResult, fs_err};
 use dbt_dag::schedule::Schedule;
 use dbt_schemas::dbt_types::RelationType;
+use dbt_schemas::materialization_resolver::MaterializationResolver;
 use dbt_schemas::schemas::common::{DbtMaterialization, ResolvedQuoting, StoreFailuresAs};
+use dbt_schemas::schemas::project::{
+    DEFAULT_DATA_TEST_ERROR_IF, DEFAULT_DATA_TEST_FAIL_CALC, DEFAULT_DATA_TEST_WARN_IF,
+};
 use dbt_schemas::schemas::relations::base::BaseRelation;
 use dbt_schemas::schemas::telemetry::NodeType;
-use dbt_schemas::schemas::{DbtModel, InternalDbtNode, InternalDbtNodeAttributes, Nodes};
+use dbt_schemas::schemas::{DbtModel, DbtTest, InternalDbtNode, InternalDbtNodeAttributes, Nodes};
 
 use crate::RunTasksArgs;
+
+/// Cleanup authority is recorded only after a successful create-only claim.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WapCandidateState {
+    Created,
+    /// A lost clone response leaves the publication outcome unknown.
+    PublicationSubmitted,
+    Published,
+}
 
 /// A canonical model and the private execution identity used by this invocation.
 #[derive(Debug, Clone)]
@@ -175,6 +188,18 @@ impl WapPlan {
             }
             for audit_id in &audit_ids {
                 let audit = &nodes.tests[audit_id];
+                Self::validate_audit_sql_config(audit_id, audit)?;
+                if audit
+                    .deprecated_config
+                    .sql_header
+                    .as_deref()
+                    .is_some_and(|header| !header.trim().is_empty())
+                {
+                    return Err(fs_err!(
+                        ErrorCode::InvalidConfig,
+                        "WAP audit '{audit_id}' does not support sql_header; audits must not execute statements outside their test query"
+                    ));
+                }
                 if audit.node_adapter() != AdapterType::Snowflake
                     || audit
                         .base()
@@ -203,7 +228,123 @@ impl WapPlan {
             );
         }
         plan.validate_relation_names(nodes)?;
+        plan.validate_audit_failure_storage(nodes, false)?;
         Ok(plan)
+    }
+
+    /// Persisted failure tables are shared across invocations. Another test can
+    /// replace their contents between materialization and counting failures.
+    pub fn validate_audit_failure_storage(
+        &self,
+        nodes: &Nodes,
+        store_failures_flag: bool,
+    ) -> FsResult<()> {
+        for entry in self.models.values() {
+            for audit_id in &entry.audit_ids {
+                if Self::stores_test_failures(&nodes.tests[audit_id], store_failures_flag) {
+                    return Err(fs_err!(
+                        ErrorCode::InvalidConfig,
+                        "WAP audit '{audit_id}' does not support persisted failure storage; concurrent tests can replace stored failures before the audit counts them. Set store_failures=false; to inspect failed working tables, set wap_retain_failed=true on the model"
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Check the actual execution flag as well as the parser-resolved configs.
+    /// Flags are Jinja globals and are not part of the node's base context.
+    pub fn validate_runtime_failure_storage(
+        &self,
+        nodes: &Nodes,
+        effective_quoting: ResolvedQuoting,
+        env: &dbt_jinja_utils::jinja_environment::JinjaEnv,
+    ) -> FsResult<()> {
+        if self.models.is_empty() {
+            return Ok(());
+        }
+        let store_failures_flag = env
+            .get_global("flags")
+            .and_then(|flags| flags.get_attr("STORE_FAILURES").ok())
+            .filter(|value| value.kind() == minijinja::value::ValueKind::Bool)
+            .map(|value| value.is_true())
+            .ok_or_else(|| {
+                fs_err!(
+                    ErrorCode::InvalidConfig,
+                    "WAP requires a resolved boolean STORE_FAILURES flag"
+                )
+            })?;
+        self.validate_audit_failure_storage(nodes, store_failures_flag)?;
+        self.validate_test_storage_relations(nodes, effective_quoting, store_failures_flag)
+    }
+
+    fn stores_test_failures(test: &DbtTest, store_failures_flag: bool) -> bool {
+        let config = &test.deprecated_config;
+        // Explicit false wins, just as in should_store_failures(). The parser
+        // normally resolves both the CLI flag and store_failures_as already.
+        config.store_failures.unwrap_or(
+            store_failures_flag
+                || matches!(
+                    config.store_failures_as,
+                    Some(StoreFailuresAs::Table | StoreFailuresAs::View)
+                ),
+        )
+    }
+
+    /// Parsed config strings do not participate in the audit's ref overrides.
+    /// Require literal SQL config, or known defaults when no authored origin exists.
+    fn validate_audit_sql_config(audit_id: &str, audit: &DbtTest) -> FsResult<()> {
+        let config = &audit.deprecated_config;
+        for (key, resolved, default) in [
+            ("where", config.where_.as_deref(), None),
+            (
+                "fail_calc",
+                config.fail_calc.as_deref(),
+                Some(DEFAULT_DATA_TEST_FAIL_CALC),
+            ),
+            (
+                "error_if",
+                config.error_if.as_deref(),
+                Some(DEFAULT_DATA_TEST_ERROR_IF),
+            ),
+            (
+                "warn_if",
+                config.warn_if.as_deref(),
+                Some(DEFAULT_DATA_TEST_WARN_IF),
+            ),
+        ] {
+            let literal = match audit.base().unrendered_config.get(key) {
+                Some(value) if value.is_null() => resolved.is_none() || resolved == default,
+                Some(value) => value.as_str().is_some_and(|value| Some(value) == resolved),
+                None => resolved.is_none() || resolved == default,
+            };
+            if !literal {
+                return Err(fs_err!(
+                    ErrorCode::InvalidConfig,
+                    "WAP audit '{audit_id}' requires a literal '{key}' config; dynamically rendered SQL config or a nondefault value without an authored origin is not supported. Move relation-dependent expressions into the test SQL so ref() can bind to the working table"
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    /// Resolve model and audit materializations before any warehouse writes.
+    pub fn validate_materializations(&self, resolver: &MaterializationResolver) -> FsResult<()> {
+        for (model_id, model) in &self.models {
+            for materialization in ["table", "test"] {
+                resolver.find_materialization_macro_by_name(
+                    materialization,
+                    model.model.node_adapter(),
+                )?;
+                if resolver.is_custom_materialization(materialization, model.model.node_adapter()) {
+                    return Err(fs_err!(
+                        ErrorCode::InvalidConfig,
+                        "WAP model '{model_id}' requires the built-in Snowflake '{materialization}' materialization"
+                    ));
+                }
+            }
+        }
+        Ok(())
     }
 
     fn validate_relation_names(&self, nodes: &Nodes) -> FsResult<()> {
@@ -243,6 +384,66 @@ impl WapPlan {
         Ok(())
     }
 
+    /// Auxiliary relations must not replace a public or working WAP table.
+    pub fn validate_auxiliary_relation(
+        &self,
+        relation: &dyn BaseRelation,
+        description: &str,
+    ) -> FsResult<()> {
+        if self.models.is_empty() || relation.adapter_type() != AdapterType::Snowflake {
+            return Ok(());
+        }
+        let name = relation_identity(relation)?;
+        for (model_id, entry) in &self.models {
+            let (target_name, candidate_name) = entry.relation_names()?;
+            if name == target_name || name == candidate_name {
+                return Err(fs_err!(
+                    ErrorCode::InvalidConfig,
+                    "{description} collides with the public or candidate table of WAP model '{model_id}'"
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    /// Built-in materializations create outputs using the adapter's quoting,
+    /// which can resolve a different name from the node's manifest relation.
+    pub fn validate_materialization_relations(
+        &self,
+        nodes: &Nodes,
+        effective_quoting: ResolvedQuoting,
+    ) -> FsResult<()> {
+        if self.models.is_empty() {
+            return Ok(());
+        }
+        for (node_id, node) in nodes.iter() {
+            if self.models.contains_key(node_id)
+                || !node.base().enabled
+                || node.node_adapter() != AdapterType::Snowflake
+                || !matches!(
+                    node.resource_type(),
+                    NodeType::Model | NodeType::Seed | NodeType::Snapshot
+                )
+                || node.materialized() == DbtMaterialization::Ephemeral
+            {
+                continue;
+            }
+            let relation = create_relation(
+                AdapterType::Snowflake,
+                node.database(),
+                node.schema(),
+                Some(node.base().alias.clone()),
+                None,
+                effective_quoting,
+            )?;
+            self.validate_auxiliary_relation(
+                relation.as_ref(),
+                &format!("Output relation for '{node_id}'"),
+            )?;
+        }
+        Ok(())
+    }
+
     /// Failure storage must not overwrite a public or working WAP table.
     /// Test materializations use `api.Relation.create` with the adapter's quoting,
     /// which can differ from the test node's configured quoting.
@@ -250,6 +451,7 @@ impl WapPlan {
         &self,
         nodes: &Nodes,
         effective_quoting: ResolvedQuoting,
+        store_failures_flag: bool,
     ) -> FsResult<()> {
         for (model_id, entry) in &self.models {
             let (target_name, candidate_name) = entry.relation_names()?;
@@ -258,10 +460,7 @@ impl WapPlan {
                 if !test.base().enabled
                     || config.enabled == Some(false)
                     || test.node_adapter() != AdapterType::Snowflake
-                    || !config.store_failures.unwrap_or(matches!(
-                        config.store_failures_as,
-                        Some(StoreFailuresAs::Table | StoreFailuresAs::View)
-                    ))
+                    || !Self::stores_test_failures(test, store_failures_flag)
                 {
                     continue;
                 }
@@ -583,6 +782,188 @@ mod tests {
     }
 
     #[test]
+    fn audit_sql_headers_are_rejected_before_building_a_candidate() {
+        let (args, schedule, mut nodes) = fixtures();
+        for attached_node in [Some("model.pkg.orders".to_owned()), None] {
+            let audit = Arc::make_mut(nodes.tests.get_mut("test.pkg.orders_not_null").unwrap());
+            audit.__test_attr__.attached_node = attached_node;
+            audit.deprecated_config.sql_header = Some("delete from DB.PUBLIC.ORDERS".to_owned());
+            let error = WapPlan::build(&args, &schedule, &nodes).unwrap_err();
+            assert!(error.to_string().contains("test.pkg.orders_not_null"));
+            assert!(error.to_string().contains("does not support sql_header"));
+        }
+    }
+
+    #[test]
+    fn absent_and_blank_audit_sql_headers_remain_supported() {
+        let (args, schedule, mut nodes) = fixtures();
+        for header in [None, Some(String::new()), Some(" \n\t ".to_owned())] {
+            Arc::make_mut(nodes.tests.get_mut("test.pkg.orders_not_null").unwrap())
+                .deprecated_config
+                .sql_header = header;
+            assert!(WapPlan::build(&args, &schedule, &nodes).is_ok());
+        }
+
+        let mut other = nodes.tests["test.pkg.orders_not_null"].as_ref().clone();
+        other.__common_attr__.unique_id = "test.pkg.unrelated".to_owned();
+        other.__base_attr__.depends_on.nodes = vec!["model.pkg.other".to_owned()];
+        other.__test_attr__.attached_node = Some("model.pkg.other".to_owned());
+        other.deprecated_config.sql_header = Some("select 1".to_owned());
+        nodes
+            .tests
+            .insert(other.unique_id(), Arc::new(other.clone()));
+        other.__common_attr__.unique_id = "test.pkg.disabled".to_owned();
+        other.__base_attr__.depends_on.nodes = vec!["model.pkg.orders".to_owned()];
+        other.__test_attr__.attached_node = Some("model.pkg.orders".to_owned());
+        other.__base_attr__.enabled = false;
+        nodes.tests.insert(other.unique_id(), Arc::new(other));
+        assert!(WapPlan::build(&args, &schedule, &nodes).is_ok());
+    }
+
+    #[test]
+    fn dynamically_rendered_audit_sql_configs_cannot_read_public_relations() {
+        for (key, resolved, authored) in [
+            (
+                "fail_calc",
+                "case when (select max(id) from DB.PUBLIC.ORDERS) = 999 then 0 else count(*) end",
+                "\"case when (select max(id) from \" ~ ref('orders') ~ \") = 999 then 0 else count(*) end\"",
+            ),
+            (
+                "where",
+                "id in (select id from DB.PUBLIC.ORDERS)",
+                "id in (select id from {{ ref('orders') }})",
+            ),
+            ("error_if", "> 5", "{{ var('failure_threshold') }}"),
+            ("warn_if", "> 0", "warning_threshold()"),
+        ] {
+            let (args, schedule, mut nodes) = fixtures();
+            let audit = Arc::make_mut(nodes.tests.get_mut("test.pkg.orders_not_null").unwrap());
+            match key {
+                "fail_calc" => audit.deprecated_config.fail_calc = Some(resolved.to_owned()),
+                "where" => audit.deprecated_config.where_ = Some(resolved.to_owned()),
+                "error_if" => audit.deprecated_config.error_if = Some(resolved.to_owned()),
+                "warn_if" => audit.deprecated_config.warn_if = Some(resolved.to_owned()),
+                _ => unreachable!(),
+            }
+            audit
+                .__base_attr__
+                .unrendered_config
+                .insert(key.to_owned(), dbt_yaml::Value::from(authored));
+            let error = WapPlan::build(&args, &schedule, &nodes).unwrap_err();
+            assert!(error.to_string().contains(&format!("literal '{key}'")));
+            assert!(
+                error
+                    .to_string()
+                    .contains("Move relation-dependent expressions")
+            );
+
+            // Config set inside a helper macro has no authored field in the
+            // test's unrendered_config, so absence cannot certify a SQL literal.
+            Arc::make_mut(nodes.tests.get_mut("test.pkg.orders_not_null").unwrap())
+                .__base_attr__
+                .unrendered_config
+                .remove(key);
+            assert!(WapPlan::build(&args, &schedule, &nodes).is_err());
+        }
+    }
+
+    #[test]
+    fn literal_audit_sql_configs_and_parser_defaults_remain_supported() {
+        let (args, schedule, mut nodes) = fixtures();
+        let audit = Arc::make_mut(nodes.tests.get_mut("test.pkg.orders_not_null").unwrap());
+        audit.deprecated_config.fail_calc = Some(DEFAULT_DATA_TEST_FAIL_CALC.to_owned());
+        audit.deprecated_config.error_if = Some(DEFAULT_DATA_TEST_ERROR_IF.to_owned());
+        audit.deprecated_config.warn_if = Some(DEFAULT_DATA_TEST_WARN_IF.to_owned());
+        assert!(WapPlan::build(&args, &schedule, &nodes).is_ok());
+
+        let audit = Arc::make_mut(nodes.tests.get_mut("test.pkg.orders_not_null").unwrap());
+        for key in ["where", "fail_calc", "error_if", "warn_if"] {
+            audit
+                .__base_attr__
+                .unrendered_config
+                .insert(key.to_owned(), dbt_yaml::to_value(None::<String>).unwrap());
+        }
+        assert!(WapPlan::build(&args, &schedule, &nodes).is_ok());
+
+        let audit = Arc::make_mut(nodes.tests.get_mut("test.pkg.orders_not_null").unwrap());
+        audit.deprecated_config.fail_calc = Some("sum(id)".to_owned());
+        audit.deprecated_config.where_ = Some("id > 0".to_owned());
+        audit.deprecated_config.error_if = Some("> 5".to_owned());
+        audit.deprecated_config.warn_if = Some("> 0".to_owned());
+        for (key, value) in [
+            ("fail_calc", "sum(id)"),
+            ("where", "id > 0"),
+            ("error_if", "> 5"),
+            ("warn_if", "> 0"),
+        ] {
+            audit
+                .__base_attr__
+                .unrendered_config
+                .insert(key.to_owned(), dbt_yaml::Value::from(value));
+        }
+        assert!(WapPlan::build(&args, &schedule, &nodes).is_ok());
+
+        let audit = Arc::make_mut(nodes.tests.get_mut("test.pkg.orders_not_null").unwrap());
+        audit.deprecated_config.where_ = None;
+        audit.__base_attr__.unrendered_config.insert(
+            "where".to_owned(),
+            dbt_yaml::to_value(None::<String>).unwrap(),
+        );
+        assert!(WapPlan::build(&args, &schedule, &nodes).is_ok());
+    }
+
+    #[test]
+    fn wap_materializations_follow_dispatch_and_reject_selected_overrides() {
+        use dbt_schemas::schemas::macros::DbtMacro;
+
+        let (args, schedule, nodes) = fixtures();
+        let plan = WapPlan::build(&args, &schedule, &nodes).unwrap();
+        for (custom_name, accepted) in [
+            (None, true),
+            (Some("materialization_table_default"), true),
+            (Some("materialization_table_snowflake"), false),
+            (Some("materialization_test_default"), false),
+            (Some("materialization_test_snowflake"), false),
+        ] {
+            let mut macros = BTreeMap::new();
+            for (name, package) in [
+                ("materialization_table_snowflake", "dbt_snowflake"),
+                ("materialization_table_default", "dbt"),
+                ("materialization_test_default", "dbt"),
+            ]
+            .into_iter()
+            .chain(custom_name.map(|name| (name, "pkg")))
+            {
+                let unique_id = format!("macro.{package}.{name}");
+                macros.insert(
+                    unique_id.clone(),
+                    DbtMacro {
+                        name: name.to_owned(),
+                        package_name: package.to_owned(),
+                        unique_id,
+                        ..Default::default()
+                    },
+                );
+            }
+            let resolver = MaterializationResolver::new(&macros, "pkg");
+            let result = plan.validate_materializations(&resolver);
+            assert_eq!(result.is_ok(), accepted, "override={custom_name:?}");
+            if let Err(error) = result {
+                assert!(
+                    error
+                        .to_string()
+                        .contains("requires the built-in Snowflake")
+                );
+            }
+        }
+        assert!(
+            WapPlan::default()
+                .validate_materializations(&MaterializationResolver::new(&BTreeMap::new(), "pkg"))
+                .is_ok()
+        );
+    }
+
+    #[test]
     fn commands_cannot_bypass_audits() {
         let (mut args, schedule, nodes) = fixtures();
         for command in [FsCommand::Run, FsCommand::Clone] {
@@ -676,8 +1057,234 @@ mod tests {
     }
 
     #[test]
-    fn audit_failure_storage_cannot_replace_public_or_candidate_tables() {
+    fn auxiliary_relations_cannot_replace_public_or_candidate_tables() {
+        let (args, schedule, nodes) = fixtures();
+        let plan = WapPlan::build(&args, &schedule, &nodes).unwrap();
+        for identifier in [
+            "orders".to_owned(),
+            plan.models["model.pkg.orders"]
+                .candidate_identifier
+                .to_ascii_lowercase(),
+        ] {
+            let relation = create_relation(
+                AdapterType::Snowflake,
+                "db".to_owned(),
+                "public".to_owned(),
+                Some(identifier),
+                Some(RelationType::View),
+                ResolvedQuoting::falses(),
+            )
+            .unwrap();
+            let error = plan
+                .validate_auxiliary_relation(relation.as_ref(), "Latest-version pointer")
+                .unwrap_err();
+            assert!(error.to_string().contains("Latest-version pointer"));
+            assert!(error.to_string().contains("model.pkg.orders"));
+        }
+    }
+
+    #[test]
+    fn auxiliary_relation_collisions_respect_quoted_names_and_schemas() {
+        let (args, schedule, nodes) = fixtures();
+        let plan = WapPlan::build(&args, &schedule, &nodes).unwrap();
+        for (database, schema, identifier) in [
+            ("DB", "PUBLIC", "orders"),
+            ("DB", "public", "ORDERS"),
+            ("DB", "OTHER", "ORDERS"),
+            ("other_db", "PUBLIC", "ORDERS"),
+        ] {
+            let relation = create_relation(
+                AdapterType::Snowflake,
+                database.to_owned(),
+                schema.to_owned(),
+                Some(identifier.to_owned()),
+                Some(RelationType::View),
+                ResolvedQuoting::trues(),
+            )
+            .unwrap();
+            assert!(
+                plan.validate_auxiliary_relation(relation.as_ref(), "Latest-version pointer")
+                    .is_ok()
+            );
+        }
+    }
+
+    #[test]
+    fn other_materialization_outputs_use_runtime_quoting_for_collision_checks() {
         let (args, schedule, mut nodes) = fixtures();
+        let mut other = nodes.models["model.pkg.orders"].as_ref().clone();
+        other.__common_attr__.unique_id = "model.pkg.other".to_owned();
+        other.__base_attr__.alias = "orders".to_owned();
+        other.__base_attr__.quoting = ResolvedQuoting::trues();
+        other.deprecated_config.wap = Some(false);
+        nodes.models.insert(other.unique_id(), Arc::new(other));
+        let plan = WapPlan::build(&args, &schedule, &nodes).unwrap();
+        let error = plan
+            .validate_materialization_relations(&nodes, ResolvedQuoting::falses())
+            .unwrap_err();
+        assert!(error.to_string().contains("model.pkg.other"));
+        assert!(error.to_string().contains("model.pkg.orders"));
+        assert!(
+            plan.validate_materialization_relations(&nodes, ResolvedQuoting::trues())
+                .is_ok()
+        );
+
+        nodes.models.remove("model.pkg.other");
+        assert!(
+            plan.validate_materialization_relations(&nodes, ResolvedQuoting::falses())
+                .is_ok(),
+            "WAP models write their candidates instead of their public outputs"
+        );
+    }
+
+    #[test]
+    fn persisted_audit_failures_are_rejected_before_building_a_candidate() {
+        for (store_failures, store_failures_as) in [
+            (Some(true), None),
+            (Some(true), Some(StoreFailuresAs::Table)),
+            (Some(true), Some(StoreFailuresAs::View)),
+            (Some(true), Some(StoreFailuresAs::Ephemeral)),
+            (None, Some(StoreFailuresAs::Table)),
+            (None, Some(StoreFailuresAs::View)),
+        ] {
+            let (args, schedule, mut nodes) = fixtures();
+            let audit = Arc::make_mut(nodes.tests.get_mut("test.pkg.orders_not_null").unwrap());
+            audit.deprecated_config.store_failures = store_failures;
+            audit.deprecated_config.store_failures_as = store_failures_as;
+            let error = WapPlan::build(&args, &schedule, &nodes).unwrap_err();
+            assert!(error.to_string().contains("test.pkg.orders_not_null"));
+            assert!(error.to_string().contains("persisted failure storage"));
+        }
+    }
+
+    #[test]
+    fn audit_failure_storage_respects_runtime_flags_and_explicit_false() {
+        for store_failures_as in [
+            None,
+            Some(StoreFailuresAs::Table),
+            Some(StoreFailuresAs::View),
+            Some(StoreFailuresAs::Ephemeral),
+        ] {
+            let (args, schedule, mut nodes) = fixtures();
+            let audit = Arc::make_mut(nodes.tests.get_mut("test.pkg.orders_not_null").unwrap());
+            audit.deprecated_config.store_failures = Some(false);
+            audit.deprecated_config.store_failures_as = store_failures_as;
+            let plan = WapPlan::build(&args, &schedule, &nodes).unwrap();
+            assert!(plan.validate_audit_failure_storage(&nodes, true).is_ok());
+        }
+        for store_failures_as in [None, Some(StoreFailuresAs::Ephemeral)] {
+            let (args, schedule, mut nodes) = fixtures();
+            let audit = Arc::make_mut(nodes.tests.get_mut("test.pkg.orders_not_null").unwrap());
+            audit.deprecated_config.store_failures_as = store_failures_as;
+            let plan = WapPlan::build(&args, &schedule, &nodes).unwrap();
+            assert!(plan.validate_audit_failure_storage(&nodes, false).is_ok());
+            assert!(
+                plan.validate_audit_failure_storage(&nodes, true)
+                    .unwrap_err()
+                    .to_string()
+                    .contains("persisted failure storage")
+            );
+        }
+    }
+
+    #[test]
+    fn resolved_cli_failure_storage_is_rejected() {
+        use dbt_schemas::schemas::project::ResolvableConfig;
+
+        let (args, schedule, mut nodes) = fixtures();
+        let audit = Arc::make_mut(nodes.tests.get_mut("test.pkg.orders_not_null").unwrap());
+        audit
+            .deprecated_config
+            .apply_resolve_defaults((Default::default(), true));
+        assert_eq!(audit.deprecated_config.store_failures, Some(true));
+        assert!(
+            WapPlan::build(&args, &schedule, &nodes)
+                .unwrap_err()
+                .to_string()
+                .contains("persisted failure storage")
+        );
+    }
+
+    #[test]
+    fn runtime_failure_storage_reads_real_jinja_flags_and_fails_closed() {
+        use dbt_jinja_utils::flags::Flags;
+        use dbt_jinja_utils::invocation_args::InvocationArgs;
+        use dbt_jinja_utils::jinja_environment::JinjaEnv;
+
+        let (args, schedule, mut nodes) = fixtures();
+        let plan = WapPlan::build(&args, &schedule, &nodes).unwrap();
+        let mut env = JinjaEnv::new(minijinja::Environment::new());
+        assert!(
+            plan.validate_runtime_failure_storage(&nodes, ResolvedQuoting::trues(), &env)
+                .unwrap_err()
+                .to_string()
+                .contains("resolved boolean STORE_FAILURES")
+        );
+        env.add_global("flags", minijinja::Value::from_object(Flags::new()));
+        assert!(
+            plan.validate_runtime_failure_storage(&nodes, ResolvedQuoting::trues(), &env)
+                .is_ok()
+        );
+
+        let mut flags = Flags::new();
+        flags.set_cli_flags(&InvocationArgs {
+            store_failures: true,
+            ..Default::default()
+        });
+        env.add_global("flags", minijinja::Value::from_object(flags));
+        assert!(
+            plan.validate_runtime_failure_storage(&nodes, ResolvedQuoting::trues(), &env)
+                .unwrap_err()
+                .to_string()
+                .contains("persisted failure storage")
+        );
+        Arc::make_mut(nodes.tests.get_mut("test.pkg.orders_not_null").unwrap())
+            .deprecated_config
+            .store_failures = Some(false);
+        assert!(
+            plan.validate_runtime_failure_storage(&nodes, ResolvedQuoting::trues(), &env)
+                .is_ok()
+        );
+
+        env.add_global(
+            "flags",
+            minijinja::Value::from_object(Flags::from_invocation_args(BTreeMap::from([(
+                "STORE_FAILURES".to_owned(),
+                minijinja::Value::from("unknown"),
+            )]))),
+        );
+        assert!(
+            plan.validate_runtime_failure_storage(&nodes, ResolvedQuoting::trues(), &env)
+                .unwrap_err()
+                .to_string()
+                .contains("resolved boolean STORE_FAILURES")
+        );
+        assert!(
+            WapPlan::default()
+                .validate_runtime_failure_storage(&nodes, ResolvedQuoting::trues(), &env)
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn builds_without_selected_wap_models_allow_persisted_failures() {
+        let (args, mut schedule, mut nodes) = fixtures();
+        schedule.selected_nodes.remove("model.pkg.orders");
+        Arc::make_mut(nodes.tests.get_mut("test.pkg.orders_not_null").unwrap())
+            .deprecated_config
+            .store_failures = Some(true);
+        let plan = WapPlan::build(&args, &schedule, &nodes).unwrap();
+        assert!(plan.validate_audit_failure_storage(&nodes, true).is_ok());
+    }
+
+    #[test]
+    fn unrelated_failure_storage_cannot_replace_public_or_candidate_tables() {
+        let (args, schedule, mut nodes) = fixtures();
+        let mut other = nodes.tests["test.pkg.orders_not_null"].as_ref().clone();
+        other.__common_attr__.unique_id = "test.pkg.other_storage".to_owned();
+        other.__test_attr__.attached_node = Some("model.pkg.other".to_owned());
+        other.__base_attr__.depends_on.nodes = vec!["model.pkg.other".to_owned()];
+        nodes.tests.insert(other.unique_id(), Arc::new(other));
         let plan = WapPlan::build(&args, &schedule, &nodes).unwrap();
         let candidate = plan.models["model.pkg.orders"].candidate_identifier.clone();
         for alias in ["ORDERS", candidate.as_str()] {
@@ -686,7 +1293,7 @@ mod tests {
                 (Some(true), Some(StoreFailuresAs::Table)),
                 (None, Some(StoreFailuresAs::View)),
             ] {
-                let audit = Arc::make_mut(nodes.tests.get_mut("test.pkg.orders_not_null").unwrap());
+                let audit = Arc::make_mut(nodes.tests.get_mut("test.pkg.other_storage").unwrap());
                 audit.__base_attr__.database = "DB".to_owned();
                 audit.__base_attr__.schema = "PUBLIC".to_owned();
                 audit.__base_attr__.alias = alias.to_ascii_lowercase();
@@ -701,26 +1308,32 @@ mod tests {
                             schema: true,
                             identifier: false,
                         },
+                        false,
                     )
                     .unwrap_err();
-                assert!(error.to_string().contains("test.pkg.orders_not_null"));
+                assert!(error.to_string().contains("test.pkg.other_storage"));
             }
         }
     }
 
     #[test]
-    fn distinct_failure_storage_and_non_storing_tests_remain_supported() {
+    fn unrelated_failure_storage_and_disabled_storing_audits_remain_supported() {
         let (args, schedule, mut nodes) = fixtures();
-        let plan = WapPlan::build(&args, &schedule, &nodes).unwrap();
+        let mut other = nodes.tests["test.pkg.orders_not_null"].as_ref().clone();
+        other.__common_attr__.unique_id = "test.pkg.other_storage".to_owned();
+        other.__test_attr__.attached_node = Some("model.pkg.other".to_owned());
+        other.__base_attr__.depends_on.nodes = vec!["model.pkg.other".to_owned()];
+        nodes.tests.insert(other.unique_id(), Arc::new(other));
         for storage_type in [StoreFailuresAs::Table, StoreFailuresAs::View] {
-            let audit = Arc::make_mut(nodes.tests.get_mut("test.pkg.orders_not_null").unwrap());
+            let audit = Arc::make_mut(nodes.tests.get_mut("test.pkg.other_storage").unwrap());
             audit.__base_attr__.database = "DB".to_owned();
             audit.__base_attr__.schema = "PUBLIC".to_owned();
             audit.__base_attr__.alias = "ORDERS_FAILURES".to_owned();
             audit.deprecated_config.store_failures = Some(true);
             audit.deprecated_config.store_failures_as = Some(storage_type);
+            let plan = WapPlan::build(&args, &schedule, &nodes).unwrap();
             assert!(
-                plan.validate_test_storage_relations(&nodes, ResolvedQuoting::trues())
+                plan.validate_test_storage_relations(&nodes, ResolvedQuoting::trues(), false)
                     .is_ok()
             );
         }
@@ -729,8 +1342,9 @@ mod tests {
         audit.__base_attr__.alias = "ORDERS".to_owned();
         audit.deprecated_config.store_failures = Some(false);
         audit.deprecated_config.store_failures_as = Some(StoreFailuresAs::Ephemeral);
+        let plan = WapPlan::build(&args, &schedule, &nodes).unwrap();
         assert!(
-            plan.validate_test_storage_relations(&nodes, ResolvedQuoting::trues())
+            plan.validate_test_storage_relations(&nodes, ResolvedQuoting::trues(), false)
                 .is_ok()
         );
 
@@ -740,8 +1354,9 @@ mod tests {
         disabled.deprecated_config.store_failures_as = Some(StoreFailuresAs::Table);
         disabled.deprecated_config.enabled = Some(false);
         nodes.tests.insert(disabled.unique_id(), Arc::new(disabled));
+        let plan = WapPlan::build(&args, &schedule, &nodes).unwrap();
         assert!(
-            plan.validate_test_storage_relations(&nodes, ResolvedQuoting::trues())
+            plan.validate_test_storage_relations(&nodes, ResolvedQuoting::trues(), false)
                 .is_ok()
         );
     }
@@ -761,11 +1376,25 @@ mod tests {
         other.deprecated_config.store_failures = Some(true);
         nodes.tests.insert(other.unique_id(), Arc::new(other));
         assert!(
-            plan.validate_test_storage_relations(&nodes, ResolvedQuoting::trues())
+            plan.validate_test_storage_relations(&nodes, ResolvedQuoting::trues(), false)
                 .is_ok()
         );
         assert!(
-            plan.validate_test_storage_relations(&nodes, ResolvedQuoting::falses())
+            plan.validate_test_storage_relations(&nodes, ResolvedQuoting::falses(), false)
+                .unwrap_err()
+                .to_string()
+                .contains("test.pkg.other_storage")
+        );
+
+        Arc::make_mut(nodes.tests.get_mut("test.pkg.other_storage").unwrap())
+            .deprecated_config
+            .store_failures = None;
+        assert!(
+            plan.validate_test_storage_relations(&nodes, ResolvedQuoting::falses(), false)
+                .is_ok()
+        );
+        assert!(
+            plan.validate_test_storage_relations(&nodes, ResolvedQuoting::falses(), true)
                 .unwrap_err()
                 .to_string()
                 .contains("test.pkg.other_storage")
