@@ -1,0 +1,7 @@
+kind: Fixes
+body: Fix modules.re functions silently dropping keyword arguments (flags=, maxsplit=, count=)
+time: 2026-07-14T18:09:31.089719352-07:00
+custom:
+    author: srchilukoori
+    issue: "15508"
+    project: dbt-core

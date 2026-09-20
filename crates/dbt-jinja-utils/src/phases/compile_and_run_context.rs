@@ -49,6 +49,7 @@ pub fn build_compile_base_ctx(
     defer_nodes: Option<&Nodes>,
     runtime_config: Arc<DbtRuntimeConfig>,
     namespace_keys: Vec<String>,
+    result_store: Option<ResultStore>,
 ) -> CompileBaseCtx {
     // Wrap each per-namespace search order as `Value::from(Vec<String>)` —
     // dispatch lookup downcasts to `Vec<String>` so the underlying Object
@@ -108,7 +109,7 @@ pub fn build_compile_base_ctx(
     let mut packages: BTreeSet<String> = runtime_config.dependencies.keys().cloned().collect();
     packages.insert(package_name.to_string());
 
-    let result_store = ResultStore::default();
+    let result_store = result_store.unwrap_or_default();
 
     let dbt_namespaces: BTreeMap<String, JinjaObject<DbtNamespace>> = namespace_keys
         .into_iter()
@@ -163,6 +164,7 @@ pub fn build_operation_context(
             defer_nodes,
             runtime_config,
             namespace_keys,
+            None,
         )
     });
     OperationCtx {
@@ -1040,6 +1042,7 @@ mod tests {
             None,
             runtime_config,
             vec![],
+            None,
         );
 
         // Cleanup env to avoid side effects
