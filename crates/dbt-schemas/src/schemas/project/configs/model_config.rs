@@ -581,6 +581,60 @@ pub struct ProjectModelConfig {
         deserialize_with = "bool_or_string_bool"
     )]
     pub force_batch: Option<bool>,
+    #[serde(rename = "+bucket_count")]
+    pub bucket_count: Option<StringOrInteger>,
+    #[serde(rename = "+bucketed_by")]
+    pub bucketed_by: Option<StringOrArrayOfStrings>,
+    #[serde(rename = "+delete_condition")]
+    pub delete_condition: Option<String>,
+    #[serde(rename = "+external_location")]
+    pub external_location: Option<String>,
+    #[serde(rename = "+field_delimiter")]
+    pub field_delimiter: Option<String>,
+    #[serde(default, rename = "+ha", deserialize_with = "bool_or_string_bool")]
+    pub ha: Option<bool>,
+    #[serde(rename = "+insert_condition")]
+    pub insert_condition: Option<String>,
+    #[serde(rename = "+lf_grants")]
+    pub lf_grants: Option<BTreeMap<String, YmlValue>>,
+    #[serde(rename = "+lf_inherited_tags")]
+    pub lf_inherited_tags: Option<StringOrArrayOfStrings>,
+    #[serde(rename = "+lf_tags_config")]
+    pub lf_tags_config: Option<BTreeMap<String, YmlValue>>,
+    #[serde(rename = "+merge_update_columns_default_rule")]
+    pub merge_update_columns_default_rule: Option<String>,
+    #[serde(rename = "+merge_update_columns_rules")]
+    pub merge_update_columns_rules: Option<BTreeMap<String, YmlValue>>,
+    #[serde(
+        default,
+        rename = "+native_drop",
+        deserialize_with = "bool_or_string_bool"
+    )]
+    pub native_drop: Option<bool>,
+    #[serde(rename = "+partitions_limit")]
+    pub partitions_limit: Option<StringOrInteger>,
+    #[serde(rename = "+s3_data_dir")]
+    pub s3_data_dir: Option<String>,
+    #[serde(rename = "+s3_data_naming")]
+    pub s3_data_naming: Option<String>,
+    #[serde(rename = "+s3_tmp_table_dir")]
+    pub s3_tmp_table_dir: Option<String>,
+    #[serde(
+        default,
+        rename = "+seed_by_insert",
+        deserialize_with = "bool_or_string_bool"
+    )]
+    pub seed_by_insert: Option<bool>,
+    #[serde(rename = "+seed_s3_upload_args")]
+    pub seed_s3_upload_args: Option<BTreeMap<String, YmlValue>>,
+    #[serde(rename = "+temp_schema")]
+    pub temp_schema: Option<String>,
+    #[serde(rename = "+update_condition")]
+    pub update_condition: Option<String>,
+    #[serde(rename = "+versions_to_keep")]
+    pub versions_to_keep: Option<StringOrInteger>,
+    #[serde(rename = "+write_compression")]
+    pub write_compression: Option<String>,
 
     #[serde(default, rename = "+indexes")]
     pub indexes: IndexesConfig,
@@ -863,6 +917,29 @@ impl TypedRecursiveConfig for ProjectModelConfig {
             || self.partitioned_by.is_some()
             || self.table_properties.is_some()
             || self.force_batch.is_some()
+            || self.bucket_count.is_some()
+            || self.bucketed_by.is_some()
+            || self.delete_condition.is_some()
+            || self.external_location.is_some()
+            || self.field_delimiter.is_some()
+            || self.ha.is_some()
+            || self.insert_condition.is_some()
+            || self.lf_grants.is_some()
+            || self.lf_inherited_tags.is_some()
+            || self.lf_tags_config.is_some()
+            || self.merge_update_columns_default_rule.is_some()
+            || self.merge_update_columns_rules.is_some()
+            || self.native_drop.is_some()
+            || self.partitions_limit.is_some()
+            || self.s3_data_dir.is_some()
+            || self.s3_data_naming.is_some()
+            || self.s3_tmp_table_dir.is_some()
+            || self.seed_by_insert.is_some()
+            || self.seed_s3_upload_args.is_some()
+            || self.temp_schema.is_some()
+            || self.update_condition.is_some()
+            || self.versions_to_keep.is_some()
+            || self.write_compression.is_some()
             || self.indexes.is_some()
             || self.unlogged.is_some()
             || self.schedule.is_some()
@@ -1183,6 +1260,29 @@ impl From<ProjectModelConfig> for ModelConfig {
                 partitioned_by: config.partitioned_by,
                 table_properties: config.table_properties,
                 force_batch: config.force_batch,
+                bucket_count: config.bucket_count,
+                bucketed_by: config.bucketed_by,
+                delete_condition: config.delete_condition,
+                external_location: config.external_location,
+                field_delimiter: config.field_delimiter,
+                ha: config.ha,
+                insert_condition: config.insert_condition,
+                lf_grants: config.lf_grants,
+                lf_inherited_tags: config.lf_inherited_tags,
+                lf_tags_config: config.lf_tags_config,
+                merge_update_columns_default_rule: config.merge_update_columns_default_rule,
+                merge_update_columns_rules: config.merge_update_columns_rules,
+                native_drop: config.native_drop,
+                partitions_limit: config.partitions_limit,
+                s3_data_dir: config.s3_data_dir,
+                s3_data_naming: config.s3_data_naming,
+                s3_tmp_table_dir: config.s3_tmp_table_dir,
+                seed_by_insert: config.seed_by_insert,
+                seed_s3_upload_args: config.seed_s3_upload_args,
+                temp_schema: config.temp_schema,
+                update_condition: config.update_condition,
+                versions_to_keep: config.versions_to_keep,
+                write_compression: config.write_compression,
                 indexes: config.indexes,
                 unlogged: config.unlogged,
 
@@ -1388,6 +1488,29 @@ impl From<ModelConfig> for ProjectModelConfig {
             partitioned_by: warehouse_specific.partitioned_by,
             table_properties: warehouse_specific.table_properties,
             force_batch: warehouse_specific.force_batch,
+            bucket_count: warehouse_specific.bucket_count,
+            bucketed_by: warehouse_specific.bucketed_by,
+            delete_condition: warehouse_specific.delete_condition,
+            external_location: warehouse_specific.external_location,
+            field_delimiter: warehouse_specific.field_delimiter,
+            ha: warehouse_specific.ha,
+            insert_condition: warehouse_specific.insert_condition,
+            lf_grants: warehouse_specific.lf_grants,
+            lf_inherited_tags: warehouse_specific.lf_inherited_tags,
+            lf_tags_config: warehouse_specific.lf_tags_config,
+            merge_update_columns_default_rule: warehouse_specific.merge_update_columns_default_rule,
+            merge_update_columns_rules: warehouse_specific.merge_update_columns_rules,
+            native_drop: warehouse_specific.native_drop,
+            partitions_limit: warehouse_specific.partitions_limit,
+            s3_data_dir: warehouse_specific.s3_data_dir,
+            s3_data_naming: warehouse_specific.s3_data_naming,
+            s3_tmp_table_dir: warehouse_specific.s3_tmp_table_dir,
+            seed_by_insert: warehouse_specific.seed_by_insert,
+            seed_s3_upload_args: warehouse_specific.seed_s3_upload_args,
+            temp_schema: warehouse_specific.temp_schema,
+            update_condition: warehouse_specific.update_condition,
+            versions_to_keep: warehouse_specific.versions_to_keep,
+            write_compression: warehouse_specific.write_compression,
             indexes: warehouse_specific.indexes,
             unlogged: warehouse_specific.unlogged,
             schedule: warehouse_specific.schedule,
