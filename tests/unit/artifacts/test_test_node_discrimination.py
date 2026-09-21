@@ -6,7 +6,7 @@ so resolution falls through to GenericTest.
 Without this guard, every test deserializes as SingularTest, silently
 dropping test_metadata. That's latent for state comparison (which
 doesn't compile tests) but breaks generic-test compile in any path that
-loads a manifest from disk, including the fusion parser branch.
+loads a manifest from disk, including the v2 parser branch.
 """
 
 from __future__ import annotations
