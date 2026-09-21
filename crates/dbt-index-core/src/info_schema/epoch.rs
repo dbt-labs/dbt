@@ -1418,8 +1418,8 @@ const METRICS: &[(&str, EpochExpr)] = &[
             "COALESCE(list_filter(list_transform(json_extract(COALESCE(\
              json_extract(t.payload, '$.__metric_attr__.type_params.input_measures'), \
              json_extract(t.payload, '$.__metric_attr__.type_params.input_metrics')), '$[*]'), \
-             e -> COALESCE(json_extract_string(e, '$.name'), json_extract_string(e, '$'))), \
-             x -> x IS NOT NULL), [])",
+             lambda e: COALESCE(json_extract_string(e, '$.name'), json_extract_string(e, '$'))), \
+             lambda x: x IS NOT NULL), [])",
         ),
     ),
     ("group_name", EpochExpr::Json("__metric_attr__.group")),
