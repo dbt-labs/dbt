@@ -1,0 +1,7 @@
+kind: Fixes
+body: Emit only changed keys in Databricks relation-tag SET TAGS diffs
+time: 2026-09-08T19:14:05.44393+05:30
+custom:
+    author: sd-db
+    issue: "16248"
+    project: dbt-core
