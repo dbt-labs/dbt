@@ -80,30 +80,6 @@ impl Serialize for SelectorValue {
     }
 }
 
-/// A method argument. Loading accepts any shape dbt Core's `Any`-typed `value` would;
-/// `Unsupported` defers the failure to resolution, like dbt Core does.
-#[derive(Debug, Clone, Serialize, UntaggedEnumDeserialize, DbtSchema)]
-#[serde(untagged)]
-pub enum SelectorMethodValue {
-    Scalar(SelectorValue),
-    Unsupported(Box<dbt_yaml::Value>),
-}
-
-impl SelectorMethodValue {
-    pub fn scalar(&self) -> Option<&SelectorValue> {
-        match self {
-            SelectorMethodValue::Scalar(v) => Some(v),
-            SelectorMethodValue::Unsupported(_) => None,
-        }
-    }
-}
-
-impl From<SelectorValue> for SelectorMethodValue {
-    fn from(v: SelectorValue) -> Self {
-        SelectorMethodValue::Scalar(v)
-    }
-}
-
 impl<'de> Deserialize<'de> for SelectorValue {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
@@ -144,6 +120,30 @@ impl<'de> Deserialize<'de> for SelectorValue {
         }
 
         deserializer.deserialize_any(SelectorValueVisitor)
+    }
+}
+
+/// A method argument. Loading accepts any shape dbt Core's `Any`-typed `value` would;
+/// `Unsupported` defers the failure to resolution, like dbt Core does.
+#[derive(Debug, Clone, Serialize, UntaggedEnumDeserialize, DbtSchema)]
+#[serde(untagged)]
+pub enum SelectorMethodValue {
+    Scalar(SelectorValue),
+    Unsupported(Box<dbt_yaml::Value>),
+}
+
+impl SelectorMethodValue {
+    pub fn scalar(&self) -> Option<&SelectorValue> {
+        match self {
+            SelectorMethodValue::Scalar(v) => Some(v),
+            SelectorMethodValue::Unsupported(_) => None,
+        }
+    }
+}
+
+impl From<SelectorValue> for SelectorMethodValue {
+    fn from(v: SelectorValue) -> Self {
+        SelectorMethodValue::Scalar(v)
     }
 }
 
