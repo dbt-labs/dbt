@@ -1,5 +1,5 @@
 <p align="center">
-  <img width="750" alt="dbt logo" src="assets/dbt-logo.png" />
+  <img width="750" alt="dbt logo" src="assets/dbt-logo-full.png" />
 </p>
 <p align="center">
   <a href="https://github.com/dbt-labs/dbt-core/actions/workflows/main.yml">
