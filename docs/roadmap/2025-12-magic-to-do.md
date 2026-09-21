@@ -28,7 +28,7 @@ In 2025, we had:
 - **10** [Community Awards](https://www.youtube.com/watch?v=I-DgySJ0Syg)
 - **1** [demo on roller skates](https://youtu.be/aMUAQjqTKtc?si=9ZCmz30wZ118HeHI&t=1116)
 
-    <img width="512" height="341.5" alt="picture of demo on roller skates" src="https://github.com/user-attachments/assets/c3857e83-eca7-4b9d-a144-4638b05af564" />
+    <img width="512" height="341.5" alt="picture of demo on roller skates" src="assets/grace-rollerskates.png" />
     
 - **2** minor dbt Core releases
     
@@ -67,7 +67,7 @@ In order for the Fusion engine to work on your project, your dbt code will need 
 
 We closed out this year with "De*bug*-cember" - a month-long bug bash where we squashed 35 long-standing issues across parsing, execution, logging, error messages, and more in the lead up to the final `v1.11` release. (To see the full list, head over to #dbt-core-development in the community Slack.)
 
-<img width="604" height="292" alt="screenshot of slack post" src="https://github.com/user-attachments/assets/e2ed08a4-7eef-4adc-a540-47a45d8e5e5a" />
+<img width="604" height="292" alt="screenshot of slack post" src="assets/debug-cember.png" />
 
 # What’s in the Queue for 2026?
 
@@ -113,4 +113,4 @@ See you in the new year,
 
 your neighborhood theater kids (Jerco & Grace)
 
-<img width="512" height="341.5" alt="picture of jerco and grace running away" src="https://github.com/user-attachments/assets/425221e9-aac0-4e5a-a115-0f8dba4cd2e7" />
+<img width="512" height="341.5" alt="picture of jerco and grace running away" src="assets/jerco-grace-coalesce.png" />
