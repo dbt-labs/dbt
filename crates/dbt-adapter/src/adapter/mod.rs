@@ -1474,6 +1474,7 @@ impl Adapter {
                             let query_ctx = query_ctx_from_state(state)?
                                 .with_desc("get_relation > list_relations call");
                             let maybe_relations_list = adapter.list_relations(
+                                Some(state),
                                 &query_ctx,
                                 conn.as_mut(),
                                 &db_schema,
@@ -2500,6 +2501,7 @@ impl Adapter {
                 let mut conn =
                     adapter.borrow_tlocal_connection(Some(state), node_id_from_state(state))?;
                 let result = adapter.list_relations(
+                    Some(state),
                     &query_ctx,
                     conn.as_mut(),
                     &CatalogAndSchema::from(schema_relation.as_ref()),
