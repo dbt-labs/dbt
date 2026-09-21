@@ -21,9 +21,10 @@ use tokio::sync::mpsc;
 use crate::context::TaskRunnerCtx;
 use crate::task::{TaskOp, TaskResult};
 use dbt_adapter::AdapterResult;
+use dbt_adapter::cache::hydrate_relation_cache_if_not_already_cached;
 use dbt_adapter::errors::{AdapterError, AdapterErrorKind, Cancellable, into_fs_error};
 use dbt_adapter::metadata::{
-    CatalogAndSchema, FreshnessOverride, MetadataAdapter, MetadataFreshness, MetadataQueryOptions,
+    FreshnessOverride, MetadataAdapter, MetadataFreshness, MetadataQueryOptions,
 };
 use dbt_adapter::record_batch::RecordBatchExt;
 use dbt_adapter::relation::{RelationObject, create_relation, create_relation_from_node};
@@ -1996,35 +1997,27 @@ fn drop_stale_view_sql(
         .then(|| format!("drop view if exists {target_relation}"))
 }
 
-/// Fail-open on lookup errors. Uses `list_relations_in_parallel` (same primitive as
-/// `relations_exist`) rather than `freshness`, which some adapters (e.g. Redshift) can't
-/// reliably report for views since it depends on a last-altered timestamp.
+/// Whether `target_relation` exists as a view, so the caller knows to drop it before
+/// cloning something else over it. Fails open to `false` on lookup errors; hydrates the
+/// relation cache so repeat dev-clones into the same schema only hit the warehouse once.
 async fn target_relation_is_view(
     ctx: &TaskRunnerCtx,
     target_relation: &Arc<dyn BaseRelation>,
 ) -> bool {
-    let Some(adapter) = ctx.env.get_adapter_ref() else {
+    let Some(adapter) = ctx.env.get_adapter() else {
         return false;
     };
-    let Some(metadata_adapter) = adapter.metadata_adapter() else {
-        return false;
-    };
-    let semantic_fqn = target_relation.semantic_fqn();
-    let catalog_schema = CatalogAndSchema::from(target_relation);
-    let db_schemas = [catalog_schema.clone()];
-    let Ok(listed) = metadata_adapter
-        .list_relations_in_parallel(&db_schemas, adapter.cancellation_token(), false)
-        .await
-    else {
-        return false;
-    };
-    let Some(Ok(schema_relations)) = listed.get(&catalog_schema) else {
-        return false;
-    };
-    schema_relations
-        .iter()
-        .find(|candidate| candidate.semantic_fqn() == semantic_fqn)
-        .and_then(|relation| relation.relation_type())
+    let _ = hydrate_relation_cache_if_not_already_cached(
+        std::slice::from_ref(target_relation),
+        &adapter,
+        "checking dev-clone target for a stale view",
+    )
+    .await;
+    adapter
+        .engine()
+        .relation_cache()
+        .get_relation(target_relation.as_ref())
+        .and_then(|entry| entry.relation().relation_type())
         == Some(RelationType::View)
 }
 
@@ -4974,6 +4967,7 @@ fn record_submit_skipped(node: &dyn InternalDbtNodeAttributes, reason: &'static 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use dbt_adapter::metadata::CatalogAndSchema;
     use dbt_adapter::{Adapter, AdapterBuilder, AdapterImpl, AdapterStore};
     use dbt_common::path::DbtPath;
     use dbt_schemas::state::ProfileAdapter;
@@ -8121,6 +8115,70 @@ mod tests {
                 .is_none(),
             "existing view is removed from the relation cache"
         );
+    }
+
+    /// `target_relation_is_view` reads the adapter off `ctx.env`, not `ctx.adapter_store()`,
+    /// so tests exercising it need the mock adapter wired into the jinja environment.
+    fn ctx_with_adapter_in_env(ctx: &TaskRunnerCtx, adapter: &Arc<Adapter>) -> TaskRunnerCtx {
+        let mut mj = minijinja::Environment::new();
+        mj.add_global("adapter", adapter.as_value());
+        TaskRunnerCtx {
+            env: Arc::new(JinjaEnv::new(mj)),
+            ..ctx.clone()
+        }
+    }
+
+    #[dbt_runtime::test]
+    async fn target_relation_is_view_uses_relation_cache_when_schema_already_warmed() {
+        let ctx = test_task_runner_ctx(None);
+        let adapter = ctx
+            .adapter_store()
+            .get(AdapterType::Snowflake)
+            .expect("mock adapter");
+        let ctx = ctx_with_adapter_in_env(&ctx, &adapter);
+        let view_target = clone_target(Some(RelationType::View));
+        let catalog_schema = CatalogAndSchema::from(&view_target);
+        // The mock adapter has no metadata_adapter(), so if the cache weren't
+        // consulted first this would fail open to `false`.
+        adapter
+            .engine()
+            .relation_cache()
+            .insert_schema(catalog_schema, vec![Arc::clone(&view_target)]);
+
+        assert!(target_relation_is_view(&ctx, &view_target).await);
+    }
+
+    #[dbt_runtime::test]
+    async fn target_relation_is_view_returns_false_for_cached_non_view() {
+        let ctx = test_task_runner_ctx(None);
+        let adapter = ctx
+            .adapter_store()
+            .get(AdapterType::Snowflake)
+            .expect("mock adapter");
+        let ctx = ctx_with_adapter_in_env(&ctx, &adapter);
+        let table_target = clone_target(Some(RelationType::Table));
+        let catalog_schema = CatalogAndSchema::from(&table_target);
+        adapter
+            .engine()
+            .relation_cache()
+            .insert_schema(catalog_schema, vec![Arc::clone(&table_target)]);
+
+        assert!(!target_relation_is_view(&ctx, &table_target).await);
+    }
+
+    #[dbt_runtime::test]
+    async fn target_relation_is_view_returns_false_when_uncached_and_no_metadata_adapter() {
+        let ctx = test_task_runner_ctx(None);
+        let adapter = ctx
+            .adapter_store()
+            .get(AdapterType::Snowflake)
+            .expect("mock adapter");
+        let ctx = ctx_with_adapter_in_env(&ctx, &adapter);
+        let view_target = clone_target(Some(RelationType::View));
+
+        // Schema was never hydrated, and the mock adapter has no metadata_adapter(),
+        // so this fails open to `false` rather than panicking or blocking.
+        assert!(!target_relation_is_view(&ctx, &view_target).await);
     }
 
     #[dbt_runtime::worker_test]
