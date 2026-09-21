@@ -157,6 +157,8 @@ impl SemanticCategory {
             | "s3source_clause"
             | "get_csv_data"
             | "table_format"
+            | "get_binding_char"
+            | "convert_datetimes_to_strs"
             | "strip_trailing_statement_terminator" => SemanticCategory::Pure,
 
             _ => {

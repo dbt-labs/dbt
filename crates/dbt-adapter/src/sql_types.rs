@@ -557,7 +557,7 @@ pub const fn get_field_sql_type_metadata_key(adapter_type: AdapterType) -> &'sta
         AdapterType::Postgres => todo!(),
         AdapterType::Salesforce => todo!(),
         AdapterType::Spark => todo!(),
-        AdapterType::DuckDB | AdapterType::LakeCompute => todo!(),
+        AdapterType::DuckDB | AdapterType::LakeCompute | AdapterType::GizmoSQL => todo!(),
         AdapterType::Fabric => FABRIC_METADATA_SQL_TYPE_KEY,
         AdapterType::ClickHouse => CLICKHOUSE_METADATA_SQL_TYPE_KEY,
         AdapterType::Exasol => "DATA_TYPE",
@@ -609,7 +609,7 @@ impl SdfSchemaBuilder {
         let metadata = field.metadata();
         let comment = match self.adapter_type {
             Bigquery => metadata.get("Description"),
-            Redshift | Databricks | Spark | DuckDB | LakeCompute => {
+            Redshift | Databricks | Spark | DuckDB | LakeCompute | GizmoSQL => {
                 metadata.get(ARROW_FIELD_COMMENT_METADATA_KEY)
             }
             // no evidence that these drivers store comments in metadata, but just in case
@@ -650,7 +650,7 @@ impl SdfSchemaBuilder {
     pub fn build_sdf_schema(self, type_ops: &dyn TypeOps) -> AdapterResult<SdfSchema> {
         use AdapterType::*;
         match self.adapter_type {
-            Bigquery | Redshift | Databricks | Spark | DuckDB | LakeCompute | Fabric
+            Bigquery | Redshift | Databricks | Spark | DuckDB | LakeCompute | GizmoSQL | Fabric
             | ClickHouse | Exasol | Starburst | Athena | Trino | Dremio | Oracle | Datafusion => {
                 let original_fields = self.original.fields();
                 let mut sdf_fields = Vec::with_capacity(original_fields.len());
@@ -991,8 +991,9 @@ pub const fn max_varchar_size(adapter_type: AdapterType) -> Option<usize> {
         // FIXME: Actual MAX is 134_217_728 - 16_777_216 is the default value
         Snowflake => Some(16_777_216),
         Redshift => Some(256),
-        Postgres | Bigquery | Databricks | Salesforce | Spark | DuckDB | LakeCompute | Fabric
-        | ClickHouse | Exasol | Starburst | Athena | Trino | Dremio | Oracle | Datafusion => None,
+        Postgres | Bigquery | Databricks | Salesforce | Spark | DuckDB | LakeCompute | GizmoSQL
+        | Fabric | ClickHouse | Exasol | Starburst | Athena | Trino | Dremio | Oracle
+        | Datafusion => None,
     }
 }
 
@@ -1002,8 +1003,9 @@ pub const fn max_varbinary_size(adapter_type: AdapterType) -> Option<usize> {
         Snowflake => Some(16_777_216),
         Redshift => Some(65_535),
         // TODO: define limits for more systems
-        Postgres | Bigquery | Databricks | Salesforce | Spark | DuckDB | LakeCompute | Fabric
-        | ClickHouse | Exasol | Starburst | Athena | Trino | Dremio | Oracle | Datafusion => None,
+        Postgres | Bigquery | Databricks | Salesforce | Spark | DuckDB | LakeCompute | GizmoSQL
+        | Fabric | ClickHouse | Exasol | Starburst | Athena | Trino | Dremio | Oracle
+        | Datafusion => None,
     }
 }
 

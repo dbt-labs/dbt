@@ -27,9 +27,14 @@ impl ColumnBuilder {
             Bigquery => Ok(Self::build_bigquery(field, type_ops)),
             Databricks | Spark => Ok(Self::build_databricks(field, type_ops)),
             Redshift => Ok(Self::build_redshift(field, type_ops)),
+            // These adapters have always been tagged as Postgres columns here;
+            // keep that as-is for them.
             Postgres | Salesforce | DuckDB | LakeCompute => {
-                Ok(Self::build_postgres_like(field, type_ops))
+                Ok(Self::build_postgres_like(Postgres, field, type_ops))
             }
+            // Same rendering rules, but tag the column with its own adapter type so
+            // downstream `Column` logic and `build_from_parts` agree.
+            GizmoSQL => Ok(Self::build_postgres_like(GizmoSQL, field, type_ops)),
             Fabric => Ok(Self::build_fabric(field, type_ops)),
             ClickHouse => Self::build_clickhouse(field, type_ops),
             Exasol => Ok(Self::build_exasol(field, type_ops)),
@@ -63,6 +68,14 @@ impl ColumnBuilder {
             ),
             DuckDB => Column::new(
                 DuckDB,
+                name,
+                dtype,
+                char_size,
+                numeric_precision,
+                numeric_scale,
+            ),
+            GizmoSQL => Column::new(
+                GizmoSQL,
                 name,
                 dtype,
                 char_size,
@@ -481,7 +494,11 @@ impl ColumnBuilder {
         )
     }
 
-    fn build_postgres_like(field: &FieldRef, type_ops: &dyn TypeOps) -> Column {
+    fn build_postgres_like(
+        adapter_type: AdapterType,
+        field: &FieldRef,
+        type_ops: &dyn TypeOps,
+    ) -> Column {
         let data_type_ref = field.data_type();
         let mut rendered_type = String::new();
         match data_type_ref {
@@ -504,6 +521,8 @@ impl ColumnBuilder {
         }
 
         let (numeric_precision, numeric_scale) = {
+            // Precision/scale follow the Postgres rules for every adapter built
+            // here (integers get scale 0); only the column's adapter tag varies.
             let precision_scale =
                 sql_types::numeric_precision_scale(AdapterType::Postgres, data_type_ref)
                     .ok()
@@ -515,7 +534,7 @@ impl ColumnBuilder {
             }
         };
         Column::new(
-            AdapterType::Postgres,
+            adapter_type,
             field.name().to_string(),
             rendered_type,
             None, // char_size

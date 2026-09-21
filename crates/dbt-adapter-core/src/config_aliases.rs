@@ -35,6 +35,15 @@ pub fn config_aliases(adapter_type: AdapterType) -> &'static [(&'static str, &'s
         AdapterType::Redshift => &[("dbname", "database"), ("pass", "password")],
         // Verified: these adapters' `Credentials` declare no `_ALIASES`.
         AdapterType::Snowflake | AdapterType::Spark | AdapterType::DuckDB => &[],
+        // dbt-gizmosql 1.12.2, `dbt/adapters/gizmosql/connections.py`.
+        AdapterType::GizmoSQL => &[
+            ("catalog", "database"),
+            ("dbname", "database"),
+            ("pass", "password"),
+            ("user", "username"),
+            ("use_tls", "use_encryption"),
+            ("disable_certificate_verification", "tls_skip_verify"),
+        ],
         // TODO(fs#13424): `_ALIASES` not transcribed for this adapter -- its Python package was
         // not vendored in the local cache used to populate this map.
         AdapterType::Salesforce

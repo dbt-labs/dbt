@@ -321,6 +321,7 @@ pub fn internal_package_names(adapter_type: AdapterType) -> Vec<String> {
         AdapterType::Redshift => packages.push("dbt-postgres".to_string()),
         AdapterType::Databricks => packages.push("dbt-spark".to_string()),
         AdapterType::LakeCompute => packages.push("dbt-duckdb".to_string()),
+        AdapterType::GizmoSQL => packages.push("dbt-duckdb".to_string()),
         _ => {}
     }
     packages
@@ -606,6 +607,19 @@ mod internal_package_union_tests {
         );
     }
 
+    /// GizmoSQL inherits DuckDB's macros: its chain is its own package plus `dbt-duckdb`.
+    #[test]
+    fn gizmosql_chain_includes_duckdb() {
+        assert_eq!(
+            internal_package_names(AdapterType::GizmoSQL),
+            vec![
+                "dbt-adapters".to_string(),
+                "dbt-gizmosql".to_string(),
+                "dbt-duckdb".to_string(),
+            ]
+        );
+    }
+
     /// Redshift and Databricks borrow a sibling package; the union preserves that.
     #[test]
     fn inherited_siblings_survive_the_union() {
@@ -632,6 +646,7 @@ mod internal_package_union_tests {
             AdapterType::Snowflake,
             AdapterType::DuckDB,
             AdapterType::LakeCompute,
+            AdapterType::GizmoSQL,
             AdapterType::Redshift,
             AdapterType::Databricks,
         ] {

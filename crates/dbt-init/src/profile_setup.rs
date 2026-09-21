@@ -1,7 +1,7 @@
 use crate::adapter_config::{
     setup_bigquery_profile, setup_clickhouse_profile, setup_databricks_profile,
-    setup_exasol_profile, setup_fabric_profile, setup_postgres_profile, setup_redshift_profile,
-    setup_snowflake_profile,
+    setup_exasol_profile, setup_fabric_profile, setup_gizmosql_profile, setup_postgres_profile,
+    setup_redshift_profile, setup_snowflake_profile,
 };
 // Re-exported so `crate::profile_setup::{ProfileTarget, Profiles}` keeps resolving.
 pub use crate::adapter_config::{ProfileTarget, Profiles};
@@ -179,6 +179,7 @@ impl ProfileSetup {
             AdapterType::Bigquery,
             AdapterType::ClickHouse,
             AdapterType::Exasol,
+            AdapterType::GizmoSQL,
             AdapterType::Postgres,
             AdapterType::Redshift,
             AdapterType::Fabric,
@@ -408,6 +409,13 @@ impl ProfileSetup {
                     _ => None,
                 };
                 DbConfig::Exasol(setup_exasol_profile(exasol_config.map(Box::as_ref))?)
+            }
+            AdapterType::GizmoSQL => {
+                let gizmosql_config = match existing_config {
+                    Some(DbConfig::GizmoSQL(config)) => Some(config),
+                    _ => None,
+                };
+                DbConfig::GizmoSQL(setup_gizmosql_profile(gizmosql_config.map(Box::as_ref))?)
             }
             AdapterType::Starburst => todo!("Starburst"),
             AdapterType::Athena => todo!("Athena"),
