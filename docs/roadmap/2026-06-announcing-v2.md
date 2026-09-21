@@ -27,7 +27,7 @@ Meaning - *there are several dozen people working on the dbt framework today,* m
 
 Over the past six months, we’ve resolved some of the most-upvoted feature requests from the dbt community:
 
-<img width="998" height="423" alt="most-upvoted features requests from the dbt community closed in the past six months" src="https://github.com/user-attachments/assets/b7f675f2-a2f1-492a-aede-199509618e77" />
+<img width="998" height="423" alt="most-upvoted features requests from the dbt community closed in the past six months" src="assets/upvoted-feature-requests.png" />
 
 The v1.12 release goes… kind of hard (humble brag). As part of onboarding new folks to work on the dbt-core codebase, we queued up lots of narrow, well-scoped bugs and paper cuts — “good first issue” type-stuff — and knocked out about 100 of them. And you pitched in too, with dozens of external contributions across dbt-core and adapters.
 
