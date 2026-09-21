@@ -797,7 +797,8 @@ pub struct SeedArgs {
 
     /// The mode to use for dbt State. Cannot be used with --force-node-selection
     #[arg(
-        long,
+        long = "state-mode",
+        alias = "run-cache-mode",
         default_value = "read-write",
         conflicts_with = "force_node_selection"
     )]
@@ -1029,7 +1030,8 @@ pub struct SnapshotArgs {
 
     /// The mode to use for dbt State. Cannot be used with --force-node-selection
     #[arg(
-        long,
+        long = "state-mode",
+        alias = "run-cache-mode",
         default_value = "read-write",
         conflicts_with = "force_node_selection"
     )]
@@ -1084,7 +1086,8 @@ pub struct TestArgs {
 
     /// The mode to use for dbt State. Cannot be used with --force-node-selection
     #[arg(
-        long,
+        long = "state-mode",
+        alias = "run-cache-mode",
         default_value = "read-write",
         conflicts_with = "force_node_selection"
     )]
@@ -1172,7 +1175,8 @@ pub struct BuildArgs {
 
     /// The mode to use for dbt State. Cannot be used with --force-node-selection
     #[arg(
-        long,
+        long = "state-mode",
+        alias = "run-cache-mode",
         default_value = "read-write",
         conflicts_with = "force_node_selection"
     )]
@@ -1325,7 +1329,8 @@ pub struct RunArgs {
 
     /// The mode to use for dbt State. Cannot be used with --force-node-selection
     #[arg(
-        long,
+        long = "state-mode",
+        alias = "run-cache-mode",
         default_value = "read-write",
         conflicts_with = "force_node_selection"
     )]
