@@ -21,7 +21,7 @@ import tempfile
 import threading
 import time
 from pathlib import Path
-from typing import TYPE_CHECKING, List, Optional
+from typing import TYPE_CHECKING, Dict, List, Optional, Tuple
 
 from dbt.artifacts.exceptions import IncompatibleSchemaError
 from dbt.artifacts.schemas.manifest import WritableManifest
@@ -30,6 +30,7 @@ from dbt.contracts.graph.manifest import Manifest
 from dbt.events.types import V2ParserEnd, V2ParserStart
 from dbt.exceptions import V2ParserError, V2ParserSchemaError, V2ParserVersionError
 from dbt.flags import get_flags
+from dbt_common import ui
 from dbt_common.events.base_types import EventLevel
 from dbt_common.events.functions import fire_event, get_invocation_id
 from dbt_common.events.types import Note
@@ -233,11 +234,15 @@ def _build_argv(flags, target_path_override: Optional[str] = None) -> List[str]:
       --project-dir, --profiles-dir, --profile, --target,
       --target-path, --vars, --packages-install-path
 
-    Also always forwards --log-format json so the subprocess emits structured
-    per-line JSON on stdout/stderr instead of human-formatted text. This is not
-    a user-configurable passthrough (unlike the flags above) — it's how
+    Also always forwards --log-format otel so the subprocess emits
+    newline-delimited otel-shaped JSON (self-describing LogRecord/SpanStart/
+    SpanEnd records) on stdout/stderr instead of human-formatted text. This is
+    not a user-configurable passthrough (unlike the flags above) — it's how
     _run_v2 talks to the subprocess, so it's added unconditionally rather
     than gated on a dbt-core flag.
+
+    Also always forwards --log-level-file off so the subprocess doesn't write
+    its own dbt.log alongside dbt-core's.
 
     When target_path_override is provided, it replaces the user's --target-path
     so the v2 parser writes its handoff manifest where dbt expects it (a
@@ -291,11 +296,20 @@ def _build_argv(flags, target_path_override: Optional[str] = None) -> List[str]:
     if invocation_id:
         forwarded += ["--invocation-id", str(invocation_id)]
 
-    # json-compat output lets _run_v2 re-level each line by its real
-    # severity instead of a single hardcoded level per stream. Request full
-    # verbosity here and let dbt-core's own event system filter by level,
-    # rather than also forwarding a --log-level and double-filtering.
-    forwarded += ["--log-format", "json"]
+    # otel output lets _run_v2 re-level each line by its real severity and
+    # relay it as a structured event instead of a single hardcoded level per
+    # stream. Request full verbosity here and let dbt-core's own event system
+    # filter by level, rather than also forwarding a --log-level and
+    # double-filtering.
+    forwarded += ["--log-format", "otel"]
+
+    # The v2 parser defaults its file log to {--project-dir}/logs/dbt.log, which
+    # is the same path dbt-core writes its own file log to when --log-path isn't
+    # redirected. Both processes would then append the same relayed events to one
+    # file. dbt-core is the only writer that should own that file, so turn the
+    # subprocess's off: everything it emits reaches dbt-core over stdout anyway
+    # and lands in dbt.log through dbt-core's own logger.
+    forwarded += ["--log-level-file", "off"]
 
     return base + forwarded
 
@@ -342,12 +356,214 @@ def _v2_subprocess_env() -> dict:
     return env
 
 
-_V2_JSON_LEVELS = {
-    "error": EventLevel.ERROR,
-    "warn": EventLevel.WARN,
-    "info": EventLevel.INFO,
-    "debug": EventLevel.DEBUG,
-}
+# Typed-URL event_type strings (v1.public.events.fusion.log.rs).
+_EVENT_TYPE_LOG_MESSAGE = "v1.public.events.fusion.log.LogMessage"
+_EVENT_TYPE_USER_LOG_MESSAGE = "v1.public.events.fusion.log.UserLogMessage"
+_EVENT_TYPE_PROGRESS_MESSAGE = "v1.public.events.fusion.log.ProgressMessage"
+
+# The Invocation span, whose end carries the aggregate warning/error counts.
+# It is the one span record the relay reads rather than drops; see _pump.
+_EVENT_TYPE_INVOCATION = "v1.public.events.fusion.invocation.Invocation"
+
+# RESULT_LINE_OPT_OUT_COMMANDS from fusion's formatters/invocation.rs -- the
+# commands whose runs print no status line, mirrored so the relay doesn't
+# surface a line the v2 parser itself would have withheld.
+_SUMMARY_OPT_OUT_COMMANDS = frozenset({"man", "login"})
+
+# LogRecord event_types relayed as-is (body already holds the rendered text).
+# ProgressMessage is handled separately below since it carries no body.
+# Every other LogRecord (e.g. ListItemOutput, ShowDataOutput, CompiledCode,
+# StateModifiedDiff -- show/list/compile concerns irrelevant to parse) is
+# dropped, as is every span except the Invocation span end; see _pump.
+_RELAYED_BODY_EVENT_TYPES = frozenset(
+    {
+        _EVENT_TYPE_LOG_MESSAGE,
+        _EVENT_TYPE_USER_LOG_MESSAGE,
+    }
+)
+
+# ACTION_WIDTH from fusion's formatters/constants.rs, used to right-align
+# ProgressMessage's action the same way format_progress_message does.
+_PROGRESS_ACTION_WIDTH = 10
+
+# OTLP severity_number subset (proto .../fusion/compat/otlp.proto), ascending.
+# dbt-core's EventLevel has no TRACE tier, so TRACE floors to DEBUG.
+_SEVERITY_NUMBER_BANDS: List[Tuple[int, EventLevel]] = [
+    (1, EventLevel.DEBUG),
+    (5, EventLevel.DEBUG),
+    (9, EventLevel.INFO),
+    (13, EventLevel.WARN),
+    (17, EventLevel.ERROR),
+]
+
+
+def _severity_number_to_level(severity_number: object) -> EventLevel:
+    """Map an otel severity_number to the closest EventLevel.
+
+    Intermediate values floor to the next-lowest defined band (e.g. 10 ->
+    INFO, same band as 9) rather than being treated as unknown.
+    """
+    if not isinstance(severity_number, (int, str)):
+        return EventLevel.DEBUG
+    try:
+        number = int(severity_number)
+    except ValueError:
+        return EventLevel.DEBUG
+    level = EventLevel.DEBUG
+    for threshold, mapped in _SEVERITY_NUMBER_BANDS:
+        if number >= threshold:
+            level = mapped
+    return level
+
+
+def _format_progress_message(attributes: Dict) -> str:
+    """Reproduce fusion's format_progress_message (formatters/progress.rs) v1-side.
+
+    ProgressMessage carries no `body` -- dbt_emit.rs's
+    emit_info_progress_message calls emit_info_event(message, None) -- so the
+    display text is built entirely from `attributes` here instead.
+    """
+    action = str(attributes.get("action", "")).rjust(_PROGRESS_ACTION_WIDTH)
+    target = attributes.get("target", "")
+    description = attributes.get("description")
+    if description:
+        return f"{action} {target} ({description})"
+    return f"{action} {target}"
+
+
+def _prefix_log_message_code(attributes: Dict, body: str) -> str:
+    """Reconstruct fusion's `[Name (dbt####)]` code prefix for LogMessage.
+
+    Unlike json-compat, otel's `body` never carries the code -- fusion adds
+    it in its own renderer (log_message.rs), not in the tracing event's
+    message text -- so it must be composed back from LogMessage's
+    `code`/`code_name` attributes here.
+    """
+    code = attributes.get("code")
+    if code is None:
+        return body
+    try:
+        code_number = int(code)
+    except (TypeError, ValueError):
+        # code is a proto u32 on the wire and should always parse; fall back
+        # to the bare body rather than raising out of a daemon pump thread,
+        # which would silently kill the relay for the rest of the run.
+        return body
+    code_name = attributes.get("code_name")
+    prefix = f"[{code_name} (dbt{code_number:04d})]" if code_name else f"dbt{code_number:04d}"
+    return f"{prefix}: {body}"
+
+
+def _count_text(value: int, label_single: str, label_plural: str) -> str:
+    return f"{value} {label_single if value == 1 else label_plural}"
+
+
+def _coerce_count(value: object) -> int:
+    """Read a proto uint64 off the wire, defaulting absent/garbage to 0.
+
+    pbjson renders uint64 as a JSON *string* and omits the field entirely
+    when the proto optional is unset, so both a missing key and "12" have
+    to be handled.
+    """
+    if not isinstance(value, (int, str)):
+        return 0
+    try:
+        return int(value)
+    except ValueError:
+        return 0
+
+
+def _format_summary_duration(record: Dict) -> Optional[str]:
+    """Render the span's elapsed time the way format_duration_for_summary
+    (fusion's formatters/duration.rs) does, from the span's nanosecond
+    timestamps."""
+    start = _coerce_count(record.get("start_time_unix_nano"))
+    end = _coerce_count(record.get("end_time_unix_nano"))
+    if not start or not end or end < start:
+        return None
+
+    elapsed_nanos = end - start
+    total_secs = elapsed_nanos / 1_000_000_000
+    if total_secs >= 3600:
+        hours = int(total_secs // 3600)
+        minutes = int((total_secs % 3600) // 60)
+        seconds = total_secs % 60
+        if seconds >= 1:
+            return f"{hours}h {minutes}m {seconds:.0f}s"
+        return f"{hours}h {minutes}m" if minutes else f"{hours}h"
+    if total_secs >= 60:
+        minutes = int(total_secs // 60)
+        seconds = total_secs % 60
+        return f"{minutes}m {seconds:.0f}s" if seconds >= 1 else f"{minutes}m"
+    if total_secs >= 1:
+        return f"{total_secs:.1f}s"
+    if elapsed_nanos >= 1_000_000:
+        return f"{elapsed_nanos // 1_000_000}ms"
+    if elapsed_nanos >= 1_000:
+        return f"{elapsed_nanos // 1_000}us"
+    return f"{elapsed_nanos}ns"
+
+
+def _format_invocation_summary(record: Dict) -> Optional[str]:
+    """Synthesize the v2 parser's end-of-run status line from its Invocation
+    span end.
+
+    That line has no LogRecord of its own: the v2 parser renders it in its
+    console formatter (formatters/invocation.rs, format_status_line) out of
+    span-end attributes, so relaying LogRecords alone loses it. The counts
+    come from the parser's own metric aggregator, which means they include
+    warnings whose LogRecords this relay filtered out -- tallying relayed
+    lines here instead would under-report.
+
+    Coloring uses dbt-core's own ui helpers (v1-native styling) rather than
+    reproducing fusion's exact palette; ui.USE_COLOR handling is the same as
+    in _style_severity.
+    """
+    attributes = record.get("attributes") or {}
+    eval_args = attributes.get("eval_args") or {}
+
+    command = eval_args.get("command")
+    if not isinstance(command, str) or not command:
+        command = "unknown"
+    if command.lower() in _SUMMARY_OPT_OUT_COMMANDS:
+        return None
+
+    metrics = attributes.get("metrics") or {}
+    warnings = _coerce_count(metrics.get("total_warnings"))
+    errors = _coerce_count(metrics.get("total_errors"))
+
+    if not errors and not warnings:
+        status = ui.green("successfully")
+    elif not errors:
+        status = f"with {ui.yellow(_count_text(warnings, 'warning', 'warnings'))}"
+    elif not warnings:
+        status = f"with {ui.red(_count_text(errors, 'error', 'errors'))}"
+    else:
+        # fusion reds both counts once any error is present.
+        status = (
+            f"with {ui.red(_count_text(warnings, 'warning', 'warnings'))} "
+            f"and {ui.red(_count_text(errors, 'error', 'errors'))}"
+        )
+
+    target = eval_args.get("target")
+    for_target = f" for target '{target}'" if target else ""
+    duration = _format_summary_duration(record)
+    suffix = f" [{duration}]" if duration else ""
+
+    return f"Finished '{command}' {status}{for_target}{suffix}"
+
+
+def _style_severity(msg: str, level: EventLevel) -> str:
+    """Apply v1-native WARN/ERROR styling via dbt_common.ui's tag helpers.
+
+    Relies on ui.USE_COLOR already being synced from --use-colors (done at
+    flag-construction time in cli/flags.py); _run_v2 only runs once flags
+    are constructed. Forcing/restoring the global here would be a data race
+    since _pump runs concurrently on two threads.
+    """
+    if level not in (EventLevel.WARN, EventLevel.ERROR):
+        return msg
+    return ui.warning_tag(msg) if level == EventLevel.WARN else ui.error_tag(msg)
 
 
 def _run_v2(argv: List[str]) -> None:
@@ -361,24 +577,33 @@ def _run_v2(argv: List[str]) -> None:
     something was reading the raw inherited file descriptors directly (true
     for a CLI terminal, not true inside Studio's execution model).
 
-    _build_argv requests --log-format json, so each line is normally a JSON
-    object with the v2-assigned severity at `info.level` and message at
-    `info.msg`; those are re-emitted as a Note at the mapped level rather than
-    the stream's fallback level. json-compat is not a stable, fully-supported
-    v2 parser contract (schema/fields/level strings may change between v2
-    parser releases without notice), and the v2 parser emits plain text before
-    its JSON logger initializes (e.g. CLI-arg errors) or after a panic — so any
-    line that isn't valid JSON, or is missing the fields above, falls back to
-    today's behavior: re-emitted verbatim at the stream's fallback level
-    (stdout at INFO, stderr at WARN).
+    _build_argv requests --log-format otel, so each line is normally a
+    self-describing JSON object: `record_type` discriminates SpanStart /
+    SpanEnd / LogRecord. Spans are dropped unconditionally -- this is what
+    structurally eliminates the duplicate version banner, ArtifactWritten,
+    and per-node start/finish noise that the old json-compat relay used to
+    show. Only an allowlist of LogRecord `event_type`s is relayed (see
+    _RELAYED_BODY_EVENT_TYPES / _EVENT_TYPE_PROGRESS_MESSAGE); everything
+    else is a show/list/compile concern irrelevant to parse.
+
+    otel is not a stable, fully-supported v2 parser contract (schema/fields
+    may change between v2 parser releases without notice), and the v2 parser
+    emits plain text before its logger initializes (e.g. CLI-arg errors) or
+    after a panic — any line that isn't a recognized otel record (invalid
+    JSON, or valid JSON that isn't a LogRecord/SpanStart/SpanEnd envelope)
+    falls back to being relayed verbatim. It is relayed at INFO regardless of
+    stream: fire_event raises EventCompilationError for WARN-level events
+    under --warn-error (dbt_common/events/event_manager.py), so a stray
+    non-JSON stderr line (the old stderr->WARN fallback) could otherwise
+    abort an unrelated run.
 
     On a nonzero exit, raises V2ParserError with just the exit code;
     the actual failure detail was already streamed live as Note events
     above, so it isn't duplicated into the exception message.
-    TODO: once the Python library to decode the v2 parser's native OTel log stream
-    lands, replace this json-compat parsing with a real parse into properly
-    leveled/structured dbt events (also preserving info.code/info.name,
-    which json-compat exposes but this still discards into a flat Note).
+    TODO: once the Python library to decode the v2 parser's native OTel log
+    stream lands, replace this hand-rolled record handling with a real parse
+    into properly leveled/structured dbt events, rather than re-rendering
+    text into a flat Note here.
     """
     try:
         proc = subprocess.Popen(
@@ -402,25 +627,55 @@ def _run_v2(argv: List[str]) -> None:
         proc.stdout is not None and proc.stderr is not None
     )  # guaranteed by stdout/stderr=PIPE above
 
-    def _pump(stream, fallback_level: EventLevel) -> None:
+    def _pump(stream) -> None:
         for raw_line in stream:
             line = raw_line.rstrip("\n")
-            level = fallback_level
-            msg = line
+            if not line:
+                continue
+
             try:
-                parsed = json.loads(line)
-                info = parsed["info"]
-                msg = info["msg"]
-                level = _V2_JSON_LEVELS.get(info.get("level"), fallback_level)
-            except (json.JSONDecodeError, KeyError, TypeError):
-                pass
-            fire_event(Note(msg=msg), level=level)
+                record = json.loads(line)
+            except json.JSONDecodeError:
+                fire_event(Note(msg=line), level=EventLevel.INFO)
+                continue
+
+            record_type = record.get("record_type") if isinstance(record, dict) else None
+            if record_type == "SpanEnd":
+                # Spans have no body and are dropped, except the Invocation
+                # span end, the only carrier of the status line's counts.
+                if record.get("event_type") == _EVENT_TYPE_INVOCATION:
+                    summary = _format_invocation_summary(record)
+                    if summary:
+                        fire_event(Note(msg=summary), level=EventLevel.INFO)
+                continue
+            if record_type == "SpanStart":
+                continue
+            if record_type != "LogRecord":
+                # Valid JSON that isn't a recognized otel envelope -- relay
+                # it like a non-JSON line rather than silently dropping it.
+                fire_event(Note(msg=line), level=EventLevel.INFO)
+                continue
+
+            event_type = record.get("event_type", "")
+            attributes = record.get("attributes") or {}
+            level = _severity_number_to_level(record.get("severity_number"))
+
+            if event_type == _EVENT_TYPE_PROGRESS_MESSAGE:
+                msg = _format_progress_message(attributes)
+            elif event_type in _RELAYED_BODY_EVENT_TYPES:
+                msg = record.get("body", "")
+                if event_type == _EVENT_TYPE_LOG_MESSAGE:
+                    msg = _prefix_log_message_code(attributes, msg)
+            else:
+                continue
+
+            fire_event(Note(msg=_style_severity(msg, level)), level=level)
 
     # Separate threads per stream avoid the deadlock a single blocking
     # readline() would hit if the other stream fills its OS pipe buffer.
     readers = [
-        threading.Thread(target=_pump, args=(proc.stdout, EventLevel.INFO), daemon=True),
-        threading.Thread(target=_pump, args=(proc.stderr, EventLevel.WARN), daemon=True),
+        threading.Thread(target=_pump, args=(proc.stdout,), daemon=True),
+        threading.Thread(target=_pump, args=(proc.stderr,), daemon=True),
     ]
     for reader in readers:
         reader.start()
