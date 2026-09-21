@@ -5,7 +5,7 @@ use std::collections::HashSet;
 use crate::notices::{PackageNotice, PackageNoticeKind};
 use crate::package_listing::{PackageListing, UnpinnedPackage};
 use crate::package_resolver::ResolvedPackage;
-use crate::utils::{fusion_sha1_hash_packages, max_resolve_concurrency};
+use crate::{package_checksum::fusion_sha1_hash_packages, utils::max_resolve_concurrency};
 
 use crate::context::DepsOperationContext;
 
