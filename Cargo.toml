@@ -82,6 +82,7 @@ members = [
   "crates/dbt-test-utils",
   "crates/dbt-tui-progress",
   "crates/dbt-metricflow",
+  "crates/dbt-metricflow-sidecar",
   "crates/dbt-sql-keywords",
 
   "crates/dbt-sql/dbt-lexer-bigquery",
@@ -281,6 +282,7 @@ dbt-loader = { path = "crates/dbt-loader" }
 dbt-login = { path = "crates/dbt-login" }
 dbt-main = { path = "crates/dbt-main", default-features = false }
 dbt-metricflow = { path = "crates/dbt-metricflow" }
+dbt-metricflow-sidecar = { path = "crates/dbt-metricflow-sidecar" }
 dbt-parser = { path = "crates/dbt-parser" }
 dbt-platform = { path = "crates/dbt-platform" }
 dbt-platform-auth = { path = "crates/dbt-platform-auth" }
