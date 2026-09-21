@@ -1075,7 +1075,13 @@ fn write_secure(data: &[u8], path: &PathBuf) -> std::io::Result<()> {
     std::io::Write::write_all(&mut file, data)
 }
 
-#[cfg(not(unix))]
+#[cfg(windows)]
+fn write_secure(data: &[u8], path: &PathBuf) -> std::io::Result<()> {
+    let mut file = dbt_file_security::open_owner_only(path)?;
+    std::io::Write::write_all(&mut file, data)
+}
+
+#[cfg(not(any(unix, windows)))]
 fn write_secure(data: &[u8], path: &PathBuf) -> std::io::Result<()> {
     std::fs::write(path, data)
 }

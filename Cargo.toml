@@ -94,6 +94,7 @@ members = [
 
   "crates/dbt-ci",
   "crates/dbt-login",
+  "crates/dbt-file-security",
   "crates/dbt-platform-auth",
   "crates/dbt-platform",
 
@@ -264,6 +265,7 @@ dbt-error = { path = "crates/dbt-error" }
 dbt-feature-fingerprint = { path = "crates/dbt-feature-fingerprint" }
 dbt-feature-gating = { path = "crates/dbt-feature-gating" }
 dbt-features = { path = "crates/dbt-features" }
+dbt-file-security = { path = "crates/dbt-file-security" }
 dbt-freshness = { path = "crates/dbt-freshness" }
 dbt-frontend-common = { path = "crates/dbt-frontend-common" }
 dbt-goldie = { path = "crates/dbt-goldie" }
