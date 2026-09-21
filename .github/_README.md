@@ -30,7 +30,7 @@ ___
 
 - View the detailed action output for your PR in the **Checks** tab of the PR.  This only shows the most recent run.  You can also view high level **Checks** output at the bottom on the PR.
 
-- View _all_ action output for a repository from the [**Actions**](https://github.com/dbt-labs/dbt-core/actions) tab.  Workflow results last 1 year.  Artifacts last 90 days, unless specified otherwise in individual workflows.
+- View _all_ action output for a repository from the [**Actions**](https://github.com/dbt-labs/dbt/actions) tab.  Workflow results last 1 year.  Artifacts last 90 days, unless specified otherwise in individual workflows.
 
   This view often shows what seem like duplicates of the same workflow.  This occurs when files are renamed but the workflow name has not changed.  These are in fact _not_ duplicates.
 
@@ -43,7 +43,7 @@ ___
 ### How to manually run a workflow
 
 - If a workflow has the `on: workflow_dispatch` trigger, it can be manually triggered
-- From the [**Actions**](https://github.com/dbt-labs/dbt-core/actions) tab, find the workflow you want to run, select it and fill in any inputs requied.  That's it!
+- From the [**Actions**](https://github.com/dbt-labs/dbt/actions) tab, find the workflow you want to run, select it and fill in any inputs requied.  That's it!
 
 ### How to re-run jobs
 
