@@ -268,6 +268,29 @@ pub fn warn_unused_engine_env_vars() -> Vec<String> {
     unused
 }
 
+/// Warns when the deprecated `--run-cache-mode` CLI flag is used.
+///
+/// `--run-cache-mode` was renamed to `--state-mode` to match the `dbt State`
+/// terminology it configures. The old name is kept as a hidden alias so
+/// existing invocations keep working, but usage should nudge callers toward
+/// the new name.
+///
+/// TODO: remove `--run-cache-mode` (this alias and warning included) once v2
+/// has a policy for deprecating and removing CLI flags.
+pub fn warn_if_legacy_run_cache_mode_flag_used() {
+    let used_legacy_flag = std::env::args()
+        .any(|arg| arg == "--run-cache-mode" || arg.starts_with("--run-cache-mode="));
+
+    if used_legacy_flag {
+        emit_warn_log_message(
+            ErrorCode::DeprecatedOption,
+            "The `--run-cache-mode` flag has been renamed to `--state-mode` and will be \
+             removed in a future release. Please update your invocation to use `--state-mode` \
+             instead.",
+        );
+    }
+}
+
 /// Validates that no unknown environment variables use the reserved `DBT_ENGINE_` prefix.
 ///
 /// The `DBT_ENGINE_` prefix is reserved for dbt engine use. User-authored environment
