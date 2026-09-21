@@ -1331,7 +1331,9 @@ impl MetadataAdapter for BigqueryMetadataAdapter {
                     .map_err(adbc_error_to_adapter_error)?;
                 let mut schema_builder = SchemaBuilder::from(schema.fields());
 
-                if let Some(time_partitioning_type) = schema.metadata().get("TimePartitioning.Type")
+                if schema.metadata().get("TimePartitioning.Field").is_none()
+                    && let Some(time_partitioning_type) =
+                        schema.metadata().get("TimePartitioning.Type")
                 {
                     schema_builder.push(Field::new(
                         "_PARTITIONTIME",

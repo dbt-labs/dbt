@@ -2330,7 +2330,11 @@ impl AdapterImpl {
         // been cached or not
         let columns = match self.adapter_type() {
             Bigquery => {
-                columns.retain(|c| !BIGQUERY_PSEUDOCOLUMNS.contains(&c.name()));
+                columns.retain(|c| {
+                    !BIGQUERY_PSEUDOCOLUMNS
+                        .iter()
+                        .any(|pseudocolumn| pseudocolumn.eq_ignore_ascii_case(c.name()))
+                });
                 columns
             }
             _ => columns,
