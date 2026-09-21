@@ -224,21 +224,6 @@ fn relations(wap: &WapModel) -> FsResult<(Arc<dyn BaseRelation>, Arc<dyn BaseRel
     ))
 }
 
-/// Rendering can set a header after the parsed model configuration was validated.
-pub(crate) fn validate_runtime_sql_header(sql_header: Option<&Value>) -> FsResult<()> {
-    if sql_header.is_some_and(|header| {
-        !header.is_none()
-            && !header.is_undefined()
-            && !header.as_str().is_some_and(|text| text.trim().is_empty())
-    }) {
-        return Err(fs_err!(
-            ErrorCode::InvalidConfig,
-            "WAP does not support sql_header, including headers added while rendering"
-        ));
-    }
-    Ok(())
-}
-
 /// Validate live relations, then create the working table before materialization.
 pub(crate) fn prepare_stage(wap: &WapModel, ctx: &TaskRunnerCtx) -> FsResult<()> {
     if ctx

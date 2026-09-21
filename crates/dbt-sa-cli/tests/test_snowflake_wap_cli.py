@@ -85,6 +85,41 @@ class WapCliTests(unittest.TestCase):
         self.assertFalse(config["wap"])
         self.assertEqual(config["materialized"], "view")
 
+    def test_parse_preserves_inherited_and_inline_hooks_and_header(self) -> None:
+        original = self.parse()["nodes"]["model.wap_cli.orders"]
+        project_path = self.project / "dbt_project.yml"
+        project_path.write_text(project_path.read_text() + (
+            "    +pre-hook: ['select 11']\n"
+            "    +post-hook: ['select 21']\n"
+            "    +sql_header: 'set wap_header = 31;'\n"
+        ))
+        inherited = self.parse()["nodes"]["model.wap_cli.orders"]["config"]
+        self.assertEqual(inherited["sql_header"], "set wap_header = 31;")
+
+        self.write_model("orders", (
+            "{{ config(alias='PUBLIC_ORDERS', pre_hook=['select 12'], "
+            "post_hook=['delete from {{ this }} where id < 0'], "
+            "sql_header='set wap_header = 32;') }}\nselect 1 as id"
+        ))
+        for _ in range(2):
+            manifest = self.parse()
+            orders = manifest["nodes"]["model.wap_cli.orders"]
+            config = orders["config"]
+            self.assertEqual([hook["sql"] for hook in config["pre-hook"]], [
+                "select 11", "select 12",
+            ])
+            self.assertEqual([hook["sql"] for hook in config["post-hook"]], [
+                "select 21", "delete from {{ this }} where id < 0",
+            ])
+            self.assertEqual(config["sql_header"], "set wap_header = 32;")
+            for field in ("unique_id", "database", "schema", "alias", "relation_name"):
+                self.assertEqual(orders[field], original[field], field)
+            self.assertNotIn("__DBT_WAP_", json.dumps(manifest))
+            self.assertEqual(
+                manifest["nodes"]["model.wap_cli.downstream"]["depends_on"]["nodes"],
+                ["model.wap_cli.orders"],
+            )
+
     def test_parse_rejects_unsupported_materializations(self) -> None:
         for materialized in ("view", "incremental"):
             with self.subTest(materialized=materialized):

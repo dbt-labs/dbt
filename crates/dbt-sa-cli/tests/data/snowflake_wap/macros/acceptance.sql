@@ -6,6 +6,12 @@
   {{ return(public.incorporate(path={'identifier': identifier})) }}
 {% endmacro %}
 
+{% macro wap_fixture_post_hook() %}
+  {% if var('post_hook_id', none) is not none %}
+    update {{ this }} set id = {{ var('post_hook_id') }} where id = 1
+  {% endif %}
+{% endmacro %}
+
 {% macro wap_fixture_assert(identifier, present=true, expected_ids=none, expected_transient=none) %}
   {% set relation = wap_fixture_relation(identifier) %}
   {% set actual = adapter.get_relation(database=relation.database, schema=relation.schema, identifier=relation.identifier) %}

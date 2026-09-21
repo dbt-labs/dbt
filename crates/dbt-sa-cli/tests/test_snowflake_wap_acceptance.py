@@ -588,6 +588,7 @@ class AcceptanceInvocationTests(unittest.TestCase):
             mock.patch.object(self.fixture, "check") as check,
             mock.patch.object(self.fixture, "verify_published") as published,
             mock.patch.object(self.fixture, "run_failed_candidate_cleanup") as cleanup,
+            mock.patch.object(self.fixture, "run_hooks_and_header") as hooks_and_header,
             mock.patch("builtins.print"),
         ):
             self.fixture.run_kind("permanent")
@@ -603,6 +604,45 @@ class AcceptanceInvocationTests(unittest.TestCase):
         build.assert_any_call(success=True, static_analysis="off")
         build.assert_any_call(success=False, silence_audit_warnings=True)
         cleanup.assert_called_once_with("permanent", set(AUDIT_NAMES))
+        hooks_and_header.assert_called_once_with("permanent", set(AUDIT_NAMES))
+
+    def test_live_hooks_and_header_check_mutations_audits_and_session_state(self):
+        build_scenarios = []
+        published_scenarios = []
+
+        def build_result(**kwargs):
+            variables = dict(self.fixture.variables)
+            build_scenarios.append((variables, kwargs))
+            verdict = "fail" if variables["post_hook_id"] == -1 else "pass"
+            return AcceptanceEvidenceTests().artifact(verdict), {self.candidate}, self.fixture.work
+
+        def published_result(ids, candidates):
+            published_scenarios.append((ids, candidates))
+
+        with (
+            mock.patch.object(self.fixture, "build", side_effect=build_result),
+            mock.patch.object(self.fixture, "operation"),
+            mock.patch.object(self.fixture, "check") as check,
+            mock.patch.object(self.fixture, "verify_published", side_effect=published_result),
+        ):
+            self.fixture.run_hooks_and_header("transient", set(AUDIT_NAMES))
+        self.assertEqual([kwargs for _, kwargs in build_scenarios], [
+            {"success": True}, {"success": False},
+            {"success": True, "static_analysis": "off"},
+        ])
+        passing, failing, header = [variables for variables, _ in build_scenarios]
+        self.assertEqual((passing["audit_value"], passing["post_hook_id"]), (1, 3))
+        self.assertEqual((failing["audit_value"], failing["post_hook_id"]), (1, -1))
+        self.assertIs(failing["wap_retain_failed"], True)
+        self.assertIs(header["header_session"], True)
+        self.assertIsNone(header["post_hook_id"])
+        self.assertIsNone(header["wap_retain_failed"])
+        self.assertEqual(published_scenarios, [
+            ([2, 3], {self.candidate}), ([41], {self.candidate}),
+        ])
+        check.assert_any_call(failing["prefix"] + "_ORDERS", ids=[999])
+        check.assert_any_call(failing["prefix"] + "_DOWNSTREAM", ids=[777])
+        check.assert_any_call(self.candidate, ids=[-1, 2])
 
     def test_live_default_cleanup_covers_audits_transformations_and_first_builds(self):
         scenarios = []

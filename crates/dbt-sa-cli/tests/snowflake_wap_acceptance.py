@@ -231,6 +231,7 @@ class Acceptance:
             "prefix": prefix, "transient": kind == "transient",
             "audit_value": -1, "audit_severity": "error",
             "transformation_error": False, "self_read": False,
+            "post_hook_id": None, "header_session": False,
             "wap_retain_failed": None,
         }
         identifiers = [f"{prefix}_ORDERS", f"{prefix}_DOWNSTREAM"]
@@ -414,7 +415,8 @@ class Acceptance:
     def run_kind(self, kind: str) -> None:
         print(
             f"Checking {kind}: audit failure, candidate collision, retry, transformation error, warnings, "
-            "NULL audit result, self-read, first publish, first failure, failed candidate cleanup", flush=True,
+            "NULL audit result, self-read, hooks and headers, first publish, first failure, "
+            "failed candidate cleanup", flush=True,
         )
         self.begin(kind, "fail_retry", sentinel=True)
         self.variables["wap_retain_failed"] = True
@@ -513,6 +515,8 @@ class Acceptance:
         self.verify_results(passed, verdict="pass", expected_audit_ids=audits)
         self.verify_published([1000], candidates)
 
+        self.run_hooks_and_header(kind, audits)
+
         self.begin(kind, "first_publish", sentinel=False)
         self.variables["audit_value"] = 1
         passed, candidates, _ = self.build(success=True)
@@ -529,6 +533,28 @@ class Acceptance:
             self.check(candidate, ids=[-1, 2])
 
         self.run_failed_candidate_cleanup(kind, audits)
+
+    def run_hooks_and_header(self, kind: str, audits: set[str]) -> None:
+        self.begin(kind, "post_hook_publish", sentinel=True)
+        self.variables.update(audit_value=1, post_hook_id=3)
+        passed, candidates, _ = self.build(success=True)
+        self.verify_results(passed, verdict="pass", expected_audit_ids=audits)
+        self.verify_published([2, 3], candidates)
+
+        self.begin(kind, "post_hook_audit_failure", sentinel=True)
+        self.variables.update(audit_value=1, post_hook_id=-1, wap_retain_failed=True)
+        failed, candidates, _ = self.build(success=False)
+        self.verify_results(failed, verdict="fail", expected_audit_ids=audits)
+        self.verify_existing_data_preserved()
+        for candidate in candidates:
+            self.check(candidate, ids=[-1, 2])
+
+        self.begin(kind, "header_session", sentinel=True)
+        self.variables["header_session"] = True
+        # The session variable is established by sql_header on the CTAS connection.
+        passed, candidates, _ = self.build(success=True, static_analysis="off")
+        self.verify_results(passed, verdict="pass", expected_audit_ids=audits)
+        self.verify_published([41], candidates)
 
     def run_lifecycle_transitions(self) -> None:
         print("Checking permanent-to-transient publication and transient-to-permanent rejection", flush=True)

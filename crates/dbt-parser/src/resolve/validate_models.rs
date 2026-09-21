@@ -221,7 +221,7 @@ mod tests {
     }
 
     #[test]
-    fn wap_rejects_hooks_headers_continue_and_governance_options() {
+    fn wap_accepts_model_hooks_and_sql_headers() {
         use dbt_schemas::schemas::common::Hooks;
 
         let cases: &[fn(&mut DbtModel)] = &[
@@ -234,6 +234,20 @@ mod tests {
                     dbt_yaml::Verbatim::from(Some(Hooks::String("select 1".to_string())))
             },
             |m| m.deprecated_config.sql_header = Some("set x=1;".to_string()),
+        ];
+        let mut combined = wap_model();
+        for change in cases {
+            let mut model = wap_model();
+            change(&mut model);
+            assert!(validate_wap_model(&model, AdapterType::Snowflake).is_ok());
+            change(&mut combined);
+        }
+        assert!(validate_wap_model(&combined, AdapterType::Snowflake).is_ok());
+    }
+
+    #[test]
+    fn wap_rejects_continue_and_governance_options() {
+        let cases: &[fn(&mut DbtModel)] = &[
             |m| m.deprecated_config.on_error = Some(OnError::Continue),
             |m| {
                 m.deprecated_config

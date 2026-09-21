@@ -5563,15 +5563,6 @@ impl DbtModel {
         }
 
         let warehouse = &config.__warehouse_specific_config__;
-        let has_hooks = [&config.pre_hook, &config.post_hook].iter().any(|hooks| {
-            hooks.as_ref().as_ref().is_some_and(|hooks| {
-                hooks.to_hook_config_array().iter().any(|hook| {
-                    hook.sql
-                        .as_deref()
-                        .is_some_and(|sql| !sql.trim().is_empty())
-                })
-            })
-        });
         let has_custom_constraints = self
             .__model_attr__
             .constraints
@@ -5599,13 +5590,6 @@ impl DbtModel {
             || warehouse.base_location_subpath.is_some()
         {
             Some("supports only native Snowflake tables, not Iceberg or external catalogs")
-        } else if has_hooks
-            || config
-                .sql_header
-                .as_deref()
-                .is_some_and(|sql| !sql.trim().is_empty())
-        {
-            Some("does not support model pre-hooks, post-hooks, or sql_header")
         } else if config.on_error == Some(OnError::Continue) {
             Some("does not support on_error: continue")
         } else if warehouse.row_access_policy.is_some()

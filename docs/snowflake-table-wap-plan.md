@@ -59,6 +59,8 @@ disabled. This is best-effort cleanup, not an expiration policy.
    for an empty table, then rebuild it from model SQL. This closes the gap between
    checking name availability and running replacement SQL, including concurrent
    commands that reuse an explicit invocation ID. A failed claim stops the build.
+   After the claim, run the model's pre-hooks, its SQL header and table creation,
+   and then its post-hooks before any audits run.
 3. Bind this model's audit references to the working relation using an
    execution-local relation override. Do not rewrite SQL text or globally change
    the manifest's model relation. Ordinary model dependencies continue to read
@@ -97,6 +99,36 @@ The empty first-build claim has a reserved placeholder column; model CTAS replac
 its schema before any audits run. If that transformation fails, the empty claim
 is removed by default while the public table stays absent; opting into retention
 keeps the empty claim for inspection.
+
+Model pre-hooks and post-hooks retain ordinary Snowflake ordering and inheritance.
+They run once during working-table materialization and are not repeated at
+publication. Use deferred hook SQL or quoted macro calls so `this` resolves to the
+working table when the hook runs:
+
+```sql
+{{ config(
+    materialized='table',
+    wap=true,
+    post_hook="delete from {{ this }} where amount is null"
+) }}
+```
+
+Audits see the table after post-hook changes. A pre-hook, model header, or
+post-hook failure prevents publication and downstream execution, with the same
+failed-table retention and cleanup behavior as a model failure.
+
+Model `sql_header` retains ordinary materialization behavior, including headers
+set during rendering with `set_sql_header`. The header executes in the same
+session as table creation; its session state is not guaranteed to be available
+to audits or publication, which run as separate tasks. Literal header strings
+are not given an additional Jinja rendering pass.
+
+Eager hook expressions such as `post_hook=my_macro(this)` can embed the public
+table name during parsing; their SQL is not rewritten. Use
+`post_hook="{{ my_macro(this) }}"` for deferred candidate targeting. Hardcoded
+public names and ordinary `ref()` calls in hooks still target public relations.
+Hooks and headers are trusted SQL: effects outside the working table are not
+isolated or rolled back by WAP.
 
 On audit failure, the previous published table remains available and downstream
 models are skipped. On a first build, failure leaves the published relation
@@ -179,9 +211,8 @@ complete Snowflake table and prevent downstream execution after failure.
 The first version requires a Snowflake target and supports SQL, the built-in
 Snowflake table materialization, and native permanent/transient tables. It
 excludes incremental, view, dynamic, interactive, external, event, hybrid, and
-Iceberg/catalog-linked tables; Python models;
-custom table or test materializations; effective model pre/post hooks; and model
-or audit `sql_header`, including model headers added during rendering. The model and profile quoting settings
+Iceberg/catalog-linked tables; Python models; custom table or test
+materializations; and audit `sql_header`. The model and profile quoting settings
 must resolve the working table to the same database and schema. Reject a mismatch
 before staging, because the built-in table macro creates its relation with the
 profile's quoting policy.

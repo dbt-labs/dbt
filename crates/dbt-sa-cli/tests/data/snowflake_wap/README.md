@@ -63,6 +63,13 @@ Each variant checks:
   initial working clone, adds one to its sentinel, publishes `[1000]`, and drops
   the successful candidate. This checks runtime execution, not compile-time
   introspection.
+- A deferred post-hook changes candidate rows from `[1, 2]` to `[2, 3]` before
+  audits; both the published and downstream tables receive `[2, 3]`.
+- A post-hook instead changes those rows to `[-1, 2]`, causing the audit to fail.
+  Both existing sentinel tables remain unchanged and the retained candidate
+  contains the hook's mutation.
+- A model SQL header sets a session variable consumed by the CTAS on Snowflake,
+  with static analysis off. Both public and downstream tables receive `[41]`.
 - A successful first build publishes exactly `[1, 2]` and drops its candidate.
 - A failing first build leaves the public table absent.
 - By default, audit failures and transformation errors remove
@@ -134,6 +141,8 @@ python3 -m unittest discover -s crates/dbt-sa-cli/tests -p test_snowflake_wap_ac
 Separate CLI integration checks parse temporary projects with an unusable
 Snowflake profile. They verify actual config inheritance and validation,
 canonical manifest identities and refs, and repeated parsing when WAP changes.
+They also check inherited and inline hooks retain their order exactly once and
+model SQL headers preserve the public manifest identity.
 They make no warehouse calls and require a built dbt binary:
 
 ```sh

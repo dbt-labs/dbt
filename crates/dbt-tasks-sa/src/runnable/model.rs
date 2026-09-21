@@ -325,7 +325,6 @@ pub fn execute_model_remote(
         .map(|v| v.value().clone());
     let wap = ctx.inner.wap_plan.model(&model.common().unique_id);
     let execution_model = if let Some(wap) = wap {
-        crate::wap::validate_runtime_sql_header(sql_header.as_ref())?;
         crate::wap::prepare_stage(wap, ctx)?;
         Some(wap.execution_model()?)
     } else {
