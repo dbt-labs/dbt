@@ -236,7 +236,7 @@ pub async fn pre_register_seeds(
         let format = match extension.as_deref() {
             Some("csv") => None,
             Some("parquet") => Some(TableFormat::Parquet),
-            Some("json") => Some(TableFormat::Json),
+            Some("json") | Some("jsonl") | Some("ndjson") => Some(TableFormat::Json),
             _ => {
                 // Silently skip — visit_render will detect missing schema and
                 // emit the error through normal task graph propagation.
