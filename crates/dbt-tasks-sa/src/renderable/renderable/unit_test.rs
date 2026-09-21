@@ -1607,7 +1607,7 @@ fn render_unit_test(
 
     // Keep the existing analyzed/hydrated schema paths unless an explicit
     // override changes an incremental model into its full-refresh SQL branch.
-    let expect_schema = match (model_static_analysis_off, is_incremental) {
+    let fetched_expect_schema = match (model_static_analysis_off, is_incremental) {
         (_, true) if use_compiled_schema_for_incremental => infer_compiled_schema()?,
         // (static analysis is off) + (incremental model): use prod relation from defer
         // state if available (dev table may not exist yet during build --defer)
@@ -1666,6 +1666,7 @@ fn render_unit_test(
             }
         }
     };
+    let expect_schema = strip_pseudocolumns(&fetched_expect_schema, adapter_type);
 
     let mut column_names_to_field_names: BTreeMap<String, &String> = BTreeMap::new();
     let mut column_names_to_data_types: BTreeMap<String, &DataType> = BTreeMap::new();
@@ -2113,7 +2114,11 @@ fn strip_pseudocolumns(ref_schema: &SchemaRef, adapter_type: AdapterType) -> Sch
     let fields: Vec<Field> = ref_schema
         .fields()
         .iter()
-        .filter(|f| !pseudocolumns.contains(&f.name().as_str()))
+        .filter(|f| {
+            !pseudocolumns
+                .iter()
+                .any(|pseudocolumn| pseudocolumn.eq_ignore_ascii_case(f.name()))
+        })
         .map(|f| f.as_ref().clone())
         .collect();
 
@@ -2121,7 +2126,10 @@ fn strip_pseudocolumns(ref_schema: &SchemaRef, adapter_type: AdapterType) -> Sch
         return ref_schema.clone();
     }
 
-    Arc::new(Schema::new(fields))
+    Arc::new(Schema::new_with_metadata(
+        fields,
+        ref_schema.metadata().clone(),
+    ))
 }
 
 /// Return `ref_schema` extended with any recognized pseudocolumns (see
@@ -2186,7 +2194,10 @@ fn append_referenced_pseudocolumns(
         .map(|f| f.as_ref().clone())
         .collect();
     fields.extend(extra_fields);
-    Arc::new(Schema::new(fields))
+    Arc::new(Schema::new_with_metadata(
+        fields,
+        ref_schema.metadata().clone(),
+    ))
 }
 
 fn create_values_and_shape_sql(
@@ -2654,6 +2665,8 @@ fn get_fixture_rows(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashMap;
+
     use arrow::datatypes::{DataType, Field, Schema, TimeUnit};
     use dbt_common::io_args::ComputeArg;
     use dbt_schemas::schemas::profiles::Execute;
@@ -3987,5 +4000,77 @@ mod tests {
             .filter(|f| f.name().eq_ignore_ascii_case("_FILE_NAME"))
             .count();
         assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn strip_pseudocolumns_removes_bigquery_pseudocolumns() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            Field::new(
+                "_PARTITIONTIME",
+                DataType::Timestamp(TimeUnit::Microsecond, None),
+                true,
+            ),
+            Field::new("_PARTITIONDATE", DataType::Date32, true),
+            Field::new("_FILE_NAME", DataType::Utf8, true),
+        ]));
+        let result = strip_pseudocolumns(&schema, AdapterType::Bigquery);
+        let names: Vec<&str> = result.fields().iter().map(|f| f.name().as_str()).collect();
+        assert_eq!(names, vec!["id"]);
+    }
+
+    #[test]
+    fn strip_pseudocolumns_ignores_case() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            Field::new(
+                "_partitiontime",
+                DataType::Timestamp(TimeUnit::Microsecond, None),
+                true,
+            ),
+            Field::new("_PartitionDate", DataType::Date32, true),
+        ]));
+        let result = strip_pseudocolumns(&schema, AdapterType::Bigquery);
+        let names: Vec<&str> = result.fields().iter().map(|f| f.name().as_str()).collect();
+        assert_eq!(names, vec!["id"]);
+    }
+
+    #[test]
+    fn strip_pseudocolumns_preserves_schema_metadata() {
+        let metadata = HashMap::from([("TimePartitioning.Type".to_string(), "DAY".to_string())]);
+        let schema = Arc::new(Schema::new_with_metadata(
+            vec![
+                Field::new("id", DataType::Int64, false),
+                Field::new(
+                    "_PARTITIONTIME",
+                    DataType::Timestamp(TimeUnit::Microsecond, None),
+                    true,
+                ),
+            ],
+            metadata.clone(),
+        ));
+        let result = strip_pseudocolumns(&schema, AdapterType::Bigquery);
+        assert_eq!(result.metadata(), &metadata);
+    }
+
+    #[test]
+    fn strip_pseudocolumns_reuses_schema_when_nothing_matches() {
+        let schema = schema_id_name();
+        let result = strip_pseudocolumns(&schema, AdapterType::Bigquery);
+        assert!(Arc::ptr_eq(&schema, &result));
+    }
+
+    #[test]
+    fn strip_pseudocolumns_is_a_no_op_for_other_adapters() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            Field::new(
+                "_PARTITIONTIME",
+                DataType::Timestamp(TimeUnit::Microsecond, None),
+                true,
+            ),
+        ]));
+        let result = strip_pseudocolumns(&schema, AdapterType::Snowflake);
+        assert!(Arc::ptr_eq(&schema, &result));
     }
 }
