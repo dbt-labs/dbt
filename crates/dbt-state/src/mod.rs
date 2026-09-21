@@ -1,6 +1,7 @@
 pub mod auth;
 pub mod explain;
 pub mod hash;
+pub mod materialization;
 pub mod metadata_cache;
 pub mod node_session;
 pub mod proto;
