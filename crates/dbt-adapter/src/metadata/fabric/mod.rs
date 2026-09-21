@@ -299,7 +299,7 @@ impl MetadataAdapter for FabricMetadataAdapter {
             with_relation_list_item_span(
                 report_progress.then_some(RELATION_CACHE_OP_ID),
                 &db_schema.to_string(),
-                || adapter.list_relations(&query_ctx, conn, db_schema, token_clone.clone()),
+                || adapter.list_relations(None, &query_ctx, conn, db_schema, token_clone.clone()),
             )
         };
 
