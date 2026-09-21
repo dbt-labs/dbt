@@ -240,14 +240,24 @@ impl TableRepr {
         todo!("column_without_nulls_sorted")
     }
 
-    pub fn count_occurrences_of_value_in_column(&self, _needle: &Value, col_idx: isize) -> usize {
-        let _col = self.single_column_table(col_idx).unwrap();
-        todo!("count_occurrences_of_value_in_column")
+    pub fn count_occurrences_of_value_in_column(&self, needle: &Value, col_idx: isize) -> usize {
+        let Some(col_idx) = self.adjusted_column_index(col_idx) else {
+            return 0;
+        };
+        (0..self.num_rows())
+            .filter(|&r| {
+                self.cell(r as isize, col_idx as isize)
+                    .is_some_and(|v| v == *needle)
+            })
+            .count()
     }
 
-    pub fn index_of_value_in_column(&self, _needle: &Value, col_idx: isize) -> Option<usize> {
-        let _col = self.single_column_table(col_idx).unwrap();
-        todo!("index_of_value_in_column")
+    pub fn index_of_value_in_column(&self, needle: &Value, col_idx: isize) -> Option<usize> {
+        let col_idx = self.adjusted_column_index(col_idx)?;
+        (0..self.num_rows()).find(|&r| {
+            self.cell(r as isize, col_idx as isize)
+                .is_some_and(|v| v == *needle)
+        })
     }
 
     fn with_renamed_columns(&self, renamed_columns: Vec<String>) -> Arc<Self> {
@@ -1660,6 +1670,53 @@ mod tests {
 
         let out_of_bounds = UInt64Array::new(vec![99].into(), None);
         assert!(table.repr.select_rows(&out_of_bounds, None).is_err());
+    }
+
+    #[test]
+    fn test_index_of_and_count_occurrences_in_column() {
+        let table = main_table(&[1, 2, 2, 3], &["one", "two", "two", "three"], &[None; 4]);
+
+        assert_eq!(
+            table.repr.index_of_value_in_column(&Value::from(2), 0),
+            Some(1)
+        );
+        assert_eq!(
+            table.repr.index_of_value_in_column(&Value::from(99), 0),
+            None
+        );
+        assert_eq!(
+            table.repr.index_of_value_in_column(&Value::from("two"), -2),
+            Some(1)
+        );
+
+        assert_eq!(
+            table
+                .repr
+                .count_occurrences_of_value_in_column(&Value::from(2), 0),
+            2
+        );
+        assert_eq!(
+            table
+                .repr
+                .count_occurrences_of_value_in_column(&Value::from("two"), -2),
+            2
+        );
+        assert_eq!(
+            table
+                .repr
+                .count_occurrences_of_value_in_column(&Value::from("missing"), 1),
+            0
+        );
+        assert_eq!(
+            table
+                .repr
+                .count_occurrences_of_value_in_column(&Value::from(2), 99),
+            0
+        );
+        assert_eq!(
+            table.repr.index_of_value_in_column(&Value::from(2), 99),
+            None
+        );
     }
 
     #[test]
