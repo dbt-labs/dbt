@@ -13,6 +13,7 @@ use serde_json::Value;
 use thiserror::Error;
 
 use crate::hash;
+use crate::materialization::normalize_incremental_strategy;
 use crate::proto::query_cache::{
     ClientPrepareEnrichedSqlRequest, ClientTelemetryEvent, CloneRequest, DbtNodeState,
     ExecutionOutcome, ExecutionRecord, ModelExecutionType, QueryDependency, SessionEndRequest,
@@ -115,6 +116,13 @@ pub struct ExecutionTypeInput {
     pub has_unique_key: bool,
 }
 
+/// Derives the wire execution type for a node.
+///
+/// Branch order is significant. `DBT_CUSTOM` is decided *before* the
+/// incremental/snapshot branch, so a custom node stays `DBT_CUSTOM` even under
+/// `--full-refresh`. The incremental/snapshot branch is gated on full refresh
+/// as a whole, so a full-refreshed snapshot rewrites its target wholesale and
+/// is `FULL` rather than `SNAPSHOT`.
 pub fn execution_type_from_input(
     input: &ExecutionTypeInput,
 ) -> Result<ModelExecutionType, RequestBuildError> {
@@ -127,21 +135,28 @@ pub fn execution_type_from_input(
     if input.is_custom_materialization {
         return Ok(ModelExecutionType::DbtCustom);
     }
-    if input.resource_type == NodeType::Snapshot {
-        return Ok(ModelExecutionType::Snapshot);
-    }
-    if input.resource_type == NodeType::Model && input.is_incremental && !input.full_refresh {
-        let strategy = input
-            .incremental_strategy
-            .as_deref()
-            .unwrap_or("append")
-            .replace('+', "_")
-            .to_ascii_uppercase();
+    // An incremental model, or any node whose resource type is snapshot.
+    let is_incremental_or_snapshot =
+        input.is_incremental || input.resource_type == NodeType::Snapshot;
+    if is_incremental_or_snapshot && !input.full_refresh {
+        if input.resource_type == NodeType::Snapshot {
+            return Ok(ModelExecutionType::Snapshot);
+        }
+
+        // Proto enum names are upper-case; the shared normalizer lower-cases,
+        // so flip the case after it has stripped any `+` prefix.
+        let strategy = normalize_incremental_strategy(
+            input.incremental_strategy.as_deref().unwrap_or("append"),
+        )
+        .to_ascii_uppercase();
 
         if strategy == "MERGE" && !input.has_unique_key {
             return Ok(ModelExecutionType::Append);
         }
 
+        // A strategy outside dbt's built-ins is already classified as a custom
+        // materialization above; this fallback only guards names the proto does
+        // not carry.
         return Ok(
             ModelExecutionType::from_str_name(&strategy).unwrap_or(ModelExecutionType::DbtCustom)
         );

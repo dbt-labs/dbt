@@ -57,6 +57,7 @@ use dbt_schemas::schemas::{
 use dbt_state::explain::{
     StateExplainLogRecord, StateExplainNode, StateExplainNodeInfo, append_state_explain_log_record,
 };
+use dbt_state::materialization;
 use dbt_state::metadata_cache::{MetadataPrefetchGuard, RunCacheMetadataCache};
 use dbt_state::node_session::ExecutionGuard;
 use dbt_state::proto::query_cache::{
@@ -76,7 +77,7 @@ use dbt_telemetry::{NodeEvaluated, NodeType};
 use crate::run_cache::run_cache_request::{
     DbtProjectInfo, SeedRunCacheRequestContext, SqlRunCacheRequestContext, build_model_sql_request,
     build_seed_values_request, build_snapshot_sql_request, build_test_sql_request,
-    is_microbatch_model, node_identity,
+    is_microbatch_model, model_is_custom_materialization, model_is_view, node_identity,
 };
 use chrono::{DateTime, Utc};
 
@@ -1486,12 +1487,12 @@ pub async fn run_cache_service_before_execution(
     }
 
     let result = if let Some(model) = node.as_any().downcast_ref::<DbtModel>() {
-        if is_no_op_model_materialization(model.materialized()) {
+        if !is_submittable_model_materialization(&model.materialized()) {
             let unique_id = node.unique_id();
             let materialization = model.materialized().to_string();
             emit_trace_log_message(|| {
                 format!(
-                    "dbt State service submit skipped for no-op model materialization (node {unique_id}, materialization {materialization})"
+                    "dbt State service submit skipped for non-submittable model materialization (node {unique_id}, materialization {materialization})"
                 )
             });
             write_state_explain_node(ctx, node, None);
@@ -1707,17 +1708,10 @@ fn state_explain_node_info_for_parts(
     StateExplainNodeInfo {
         fqn,
         node_resource_type: node.resource_type().as_static_ref().to_string(),
-        is_view: matches!(
-            materialized,
-            DbtMaterialization::View | DbtMaterialization::MetricView
-        ),
-        is_table: matches!(
-            materialized,
-            DbtMaterialization::Table
-                | DbtMaterialization::Incremental
-                | DbtMaterialization::Snapshot
-                | DbtMaterialization::Seed
-        ),
+        is_view: materialization::is_view(&materialized.to_string()),
+        // `is_table` is exclusion-based, so it would otherwise report `inline`
+        // — which has no warehouse relation at all — as a table.
+        is_table: !is_ephemeral && materialization::is_table(&materialized.to_string()),
         is_ephemeral,
         is_incremental_or_snapshot: matches!(
             materialized,
@@ -2543,10 +2537,7 @@ async fn submit_model(
         ctx,
         model,
         task_result.sql_instruction.sql.clone(),
-        matches!(
-            model.materialized(),
-            DbtMaterialization::View | DbtMaterialization::MetricView
-        ),
+        model_is_view(model, &ctx.inner.materialization_resolver),
         full_refresh,
         microbatch_window,
         client,
@@ -2882,8 +2873,8 @@ async fn prepare_write_only_execution_record(
     await_prefetch(ctx).await;
 
     if let Some(model) = node.as_any().downcast_ref::<DbtModel>() {
-        if is_no_op_model_materialization(model.materialized()) {
-            record_submit_skipped(model, "no-op model materialization");
+        if !is_submittable_model_materialization(&model.materialized()) {
+            record_submit_skipped(model, "non-submittable model materialization");
             return Ok(None);
         }
         if model.common().language.as_deref() != Some("sql") {
@@ -2904,10 +2895,7 @@ async fn prepare_write_only_execution_record(
             ctx,
             model,
             task_result.sql_instruction.sql.clone(),
-            matches!(
-                model.materialized(),
-                DbtMaterialization::View | DbtMaterialization::MetricView
-            ),
+            model_is_view(model, &ctx.inner.materialization_resolver),
             full_refresh,
             false,
         )
@@ -4585,16 +4573,20 @@ fn is_cacheable_resource_type(resource_type: NodeType) -> bool {
     )
 }
 
+/// Whether a node's compiled SQL may not be a plain query.
+///
+/// Uses the same name-plus-dispatch union as the submitted execution type, so
+/// the dependency fallbacks and the wire classification agree on what "custom"
+/// means. A dispatch-only check would miss adapter-specific materializations
+/// such as `metric_view`, whose macro is adapter-internal but whose compiled
+/// code is not necessarily SQL at all.
 fn node_uses_custom_materialization(
     node: &dyn InternalDbtNodeAttributes,
     materialization_resolver: &MaterializationResolver,
 ) -> bool {
     node.as_any()
         .downcast_ref::<DbtModel>()
-        .is_some_and(|model| {
-            materialization_resolver
-                .is_custom_materialization(&model.materialized().to_string(), model.node_adapter())
-        })
+        .is_some_and(|model| model_is_custom_materialization(model, materialization_resolver))
 }
 
 fn parse_sql_relations_for_run_cache(
@@ -4762,11 +4754,23 @@ fn effective_run_cache_service_use_cache(
         || (service_requested && matches!(run_cache_mode, RunCacheMode::Noop))
 }
 
+/// Materializations that are inlined into their consumers and therefore never
+/// get a warehouse relation of their own.
 fn is_no_op_model_materialization(materialization: DbtMaterialization) -> bool {
     matches!(
         materialization,
         DbtMaterialization::Ephemeral | DbtMaterialization::Inline
     )
+}
+
+/// Whether a model is submitted to the dbt State service at all.
+///
+/// A node is submitted iff its materialization is table-like or view-like,
+/// which rejects exactly `ephemeral` and `semantic_view`. The `inline`
+/// materialization (inline SQL compilation) is likewise never submitted.
+fn is_submittable_model_materialization(materialization: &DbtMaterialization) -> bool {
+    !matches!(materialization, DbtMaterialization::Inline)
+        && materialization::is_submittable(&materialization.to_string())
 }
 
 fn record_service_decision(
@@ -5052,6 +5056,63 @@ mod tests {
         assert!(!info.is_view);
         // Ephemeral models are inlined into their consumers, so naming a
         // warehouse relation for them would name a table that cannot exist.
+        assert!(info.fqn.is_empty());
+    }
+
+    #[test]
+    fn adapter_specific_materializations_get_the_custom_dependency_fallbacks() {
+        // These dispatch to adapter-internal macros, so a dispatch-only check
+        // reports them as built-in. Their compiled code is not necessarily a
+        // plain query though, so they must still get the manifest and
+        // parse-error fallbacks that guard dependency collection — otherwise
+        // an empty or unparseable body silently yields no upstreams.
+        let resolver = MaterializationResolver::new(&BTreeMap::new(), "jaffle_shop");
+
+        for materialization in [
+            DbtMaterialization::DynamicTable,
+            DbtMaterialization::MetricView,
+            DbtMaterialization::StreamingTable,
+        ] {
+            let model = make_model(
+                "model.test.orders",
+                "db",
+                "dbt_test",
+                "orders",
+                materialization.clone(),
+            );
+            assert!(
+                node_uses_custom_materialization(model.as_ref(), &resolver),
+                "{materialization} should take the custom-materialization fallbacks"
+            );
+        }
+
+        for materialization in [DbtMaterialization::Table, DbtMaterialization::Incremental] {
+            let model = make_model(
+                "model.test.orders",
+                "db",
+                "dbt_test",
+                "orders",
+                materialization.clone(),
+            );
+            assert!(
+                !node_uses_custom_materialization(model.as_ref(), &resolver),
+                "{materialization} compiles to a real query and needs no fallback"
+            );
+        }
+    }
+
+    #[test]
+    fn state_explain_node_info_reports_inline_without_a_relation() {
+        // `inline` is not one of the names the table/view classification knows,
+        // and that classification is exclusion-based, so it must not fall
+        // through and report an inline model as a table.
+        let model = state_explain_model(DbtMaterialization::Inline);
+
+        let info = state_explain_node_info_for_parts(AdapterType::Postgres, false, &model);
+
+        assert!(info.is_ephemeral);
+        assert!(!info.is_table);
+        assert!(!info.is_view);
         assert!(info.fqn.is_empty());
     }
 
@@ -5406,13 +5467,48 @@ mod tests {
     }
 
     #[test]
-    fn no_op_model_materializations_are_not_submitted() {
+    fn no_op_model_materializations_have_no_relation() {
         assert!(is_no_op_model_materialization(
             DbtMaterialization::Ephemeral
         ));
         assert!(is_no_op_model_materialization(DbtMaterialization::Inline));
         assert!(!is_no_op_model_materialization(DbtMaterialization::View));
         assert!(!is_no_op_model_materialization(DbtMaterialization::Table));
+    }
+
+    #[test]
+    fn only_virtual_materializations_are_not_submitted() {
+        // A node is submitted iff it is table-like or view-like, which rejects
+        // exactly `ephemeral` and `semantic_view`. `inline` is never submitted
+        // either.
+        assert!(!is_submittable_model_materialization(
+            &DbtMaterialization::Ephemeral
+        ));
+        assert!(!is_submittable_model_materialization(
+            &DbtMaterialization::Inline
+        ));
+        // There is no `semantic_view` variant; it parses as `Unknown`, which is
+        // why the predicate classifies by name rather than by enum variant.
+        assert!(!is_submittable_model_materialization(
+            &DbtMaterialization::Unknown("semantic_view".to_string())
+        ));
+
+        for materialization in [
+            DbtMaterialization::View,
+            DbtMaterialization::MaterializedView,
+            DbtMaterialization::Table,
+            DbtMaterialization::Incremental,
+            DbtMaterialization::Snapshot,
+            DbtMaterialization::DynamicTable,
+            DbtMaterialization::MetricView,
+            DbtMaterialization::StreamingTable,
+            DbtMaterialization::Unknown("custom_table".to_string()),
+        ] {
+            assert!(
+                is_submittable_model_materialization(&materialization),
+                "{materialization} should be submitted"
+            );
+        }
     }
 
     #[dbt_runtime::test]
