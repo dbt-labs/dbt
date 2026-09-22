@@ -25,10 +25,10 @@ impl ColumnBuilder {
         match self.adapter_type {
             Snowflake => Ok(Self::build_snowflake(field, type_ops)),
             Bigquery => Ok(Self::build_bigquery(field, type_ops)),
-            Databricks | Spark => Ok(Self::build_databricks(field, type_ops)),
+            Databricks | Spark => Self::build_databricks(field, type_ops),
             Redshift => Ok(Self::build_redshift(field, type_ops)),
             Postgres | Salesforce | DuckDB | LakeCompute => {
-                Ok(Self::build_postgres_like(field, type_ops))
+                Self::build_postgres_like(field, type_ops)
             }
             Fabric => Ok(Self::build_fabric(field, type_ops)),
             ClickHouse => Self::build_clickhouse(field, type_ops),
@@ -450,7 +450,7 @@ impl ColumnBuilder {
         )
     }
 
-    fn build_databricks(field: &FieldRef, type_ops: &dyn TypeOps) -> Column {
+    fn build_databricks(field: &FieldRef, type_ops: &dyn TypeOps) -> AdapterResult<Column> {
         let name = field.name().to_string();
         let type_text = {
             let type_text = original_type_string(AdapterType::Databricks, field);
@@ -458,30 +458,28 @@ impl ColumnBuilder {
                 type_text
             } else {
                 let mut type_text = String::new();
-                type_ops
-                    .format_arrow_type_as_sql(
-                        field.data_type(),
-                        field.is_nullable(),
-                        &mut type_text,
-                    )
-                    .unwrap();
+                type_ops.format_arrow_type_as_sql(
+                    field.data_type(),
+                    field.is_nullable(),
+                    &mut type_text,
+                )?;
                 if !field.is_nullable() {
                     type_text.push_str(" not null");
                 }
                 Cow::Owned(type_text)
             }
         };
-        Column::new(
+        Ok(Column::new(
             AdapterType::Databricks,
             name,
             type_text.to_string(),
             None, // char_size
             None, // numeric_precision
             None, // numeric_scale
-        )
+        ))
     }
 
-    fn build_postgres_like(field: &FieldRef, type_ops: &dyn TypeOps) -> Column {
+    fn build_postgres_like(field: &FieldRef, type_ops: &dyn TypeOps) -> AdapterResult<Column> {
         let data_type_ref = field.data_type();
         let mut rendered_type = String::new();
         match data_type_ref {
@@ -490,13 +488,11 @@ impl ColumnBuilder {
             // TODO: remove this broken formatting behavior
             DataType::Timestamp(_, _) | DataType::Time64(_) => rendered_type.push_str("datetime"),
             _ => {
-                type_ops
-                    .format_arrow_type_as_sql(
-                        data_type_ref,
-                        field.is_nullable(),
-                        &mut rendered_type,
-                    )
-                    .unwrap();
+                type_ops.format_arrow_type_as_sql(
+                    data_type_ref,
+                    field.is_nullable(),
+                    &mut rendered_type,
+                )?;
             }
         }
         if !field.is_nullable() {
@@ -514,7 +510,7 @@ impl ColumnBuilder {
                 None => (None, None),
             }
         };
-        Column::new(
+        Ok(Column::new(
             AdapterType::Postgres,
             field.name().to_string(),
             rendered_type,
@@ -522,7 +518,7 @@ impl ColumnBuilder {
             numeric_precision,
             // If it is an integer, the scale is 0, otherwise it is the scale of the number.
             numeric_scale,
-        )
+        ))
     }
 
     fn build_exasol(field: &FieldRef, type_ops: &dyn TypeOps) -> Column {
