@@ -4912,15 +4912,6 @@ impl AdapterImpl {
         ))
     }
 
-    /// DatabricksAdapter https://github.com/databricks/dbt-databricks/blob/2c3aa9fdddbab30a3c4a660c5e98722e989a592b/dbt/adapters/databricks/impl.py#L1135-L1137
-    pub fn yaml_quote_backtick_values(&self, yaml_body: &str) -> AdapterResult<String> {
-        debug_assert!(
-            self.adapter_type() == Databricks,
-            "yaml_quote_backtick_values is a Databricks-specific adapter operation"
-        );
-        Ok(crate::relation::databricks::metric_view::quote_metric_view_sources(yaml_body))
-    }
-
     /// Drop the trailing statement terminator from a node body so it can be
     /// spliced into a wrapping query.
     pub fn strip_trailing_statement_terminator<'a>(&self, sql: &'a str) -> &'a str {
