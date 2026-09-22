@@ -1371,7 +1371,10 @@ async fn submit_run_cache_session_start(ctx: &TaskRunnerCtx) {
     let Some(config) = run_cache_ctx.run_cache_service_config.as_ref() else {
         return;
     };
-    let event = session_start_event(config.telemetry_config(), next_telemetry_event_order(ctx));
+    let event = session_start_event(
+        config.telemetry_config(ctx.dbt_profile()),
+        next_telemetry_event_order(ctx),
+    );
     submit_run_cache_telemetry_event(ctx, event).await;
 }
 
