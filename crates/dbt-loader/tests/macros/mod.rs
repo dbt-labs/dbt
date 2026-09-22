@@ -11,4 +11,5 @@ mod persist_docs;
 mod python;
 mod relations;
 mod snowflake;
+mod snowflake_clone;
 mod spark;
