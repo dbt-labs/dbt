@@ -1,0 +1,23 @@
+# syntax=docker/dockerfile:1.7
+
+FROM rust:1.96-bookworm AS builder
+
+WORKDIR /workspace
+
+# Keep the build bounded on developer machines. The repository's
+# rust-toolchain.toml selects the pinned Rust toolchain.
+ENV CARGO_BUILD_JOBS=2 \
+    CARGO_TERM_COLOR=always
+
+COPY . .
+
+RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
+    --mount=type=cache,target=/usr/local/cargo/git,sharing=locked \
+    --mount=type=cache,target=/workspace/target,sharing=locked \
+    rustup show active-toolchain \
+    && cargo build -p dbt-sa-cli --release --locked -j 2 \
+    && install -Dm755 target/release/dbt /out/dbt
+
+FROM scratch AS output
+
+COPY --from=builder /out/dbt /dbt
