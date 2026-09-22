@@ -195,6 +195,7 @@ pub async fn resolve_exposures(
                     adapter: adapter_type,
                     // This node type has no `+propagate` config; nothing is published.
                     propagate: Vec::new(),
+                    effective_propagation_target: None,
                     database: "".to_string(),
                     schema: "".to_string(),
                     alias: "".to_string(),

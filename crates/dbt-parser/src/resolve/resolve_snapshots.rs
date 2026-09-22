@@ -540,6 +540,7 @@ pub async fn resolve_snapshots(
                 __base_attr__: NodeBaseAttributes {
                     adapter: selected_adapter,
                     propagate: selected_propagate,
+                    effective_propagation_target: None,
                     database: "".to_owned(), // will be updated below
                     schema: "".to_owned(),   // will be updated below
                     alias: "".to_owned(),    // will be updated below

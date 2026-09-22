@@ -88,6 +88,7 @@ use dbt_schemas::state::GenericTestAsset;
 use dbt_schemas::state::ModelStatus;
 use dbt_schemas::state::NodeResolverTracker;
 use dbt_schemas::state::ResourcePathKind;
+use dbt_schemas::state::resolve_effective_propagation_target;
 use dbt_yaml::Spanned;
 use minijinja::MacroSpans;
 use minijinja::constants::CURRENT_PATH;
@@ -940,6 +941,19 @@ async fn build_model_nodes(
             .map(Into::into)
             .unwrap_or_default();
         let selected_adapter = resolved_node_adapter.unwrap_or(default_adapter);
+        let catalog_requires_snowflake = catalogs_state
+            .catalog_requires_snowflake_propagation(model_config.catalog_name.as_deref())?;
+        let effective_propagation_target = (selected_adapter == AdapterType::LakeCompute)
+            .then(|| {
+                arg.profile_adapter_types.as_deref().and_then(|adapters| {
+                    resolve_effective_propagation_target(
+                        &selected_propagate,
+                        adapters,
+                        catalog_requires_snowflake,
+                    )
+                })
+            })
+            .flatten();
         model_config.quoting = resolve_package_quoting(
             Some(match adapter_quoting.get(&selected_adapter) {
                 Some(authored) => model_config.quoting.filled_from(authored),
@@ -985,6 +999,7 @@ async fn build_model_nodes(
             __base_attr__: NodeBaseAttributes {
                 adapter: selected_adapter,
                 propagate: selected_propagate,
+                effective_propagation_target,
                 database: database.to_string(), // will be updated below
                 schema: schema.to_string(),     // will be updated below
                 alias: "".to_owned(),           // will be updated below

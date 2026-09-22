@@ -455,11 +455,62 @@ impl Object for RelationObject {
     }
 }
 
+/// Return relation components normalized for the effective target.
+pub fn canonical_relation_parts(
+    target: Option<AdapterType>,
+    database: &str,
+    schema: &str,
+    identifier: &str,
+) -> (String, String, String) {
+    if target == Some(AdapterType::Databricks) {
+        (
+            database.to_lowercase(),
+            schema.to_lowercase(),
+            identifier.to_lowercase(),
+        )
+    } else {
+        (
+            database.to_string(),
+            schema.to_string(),
+            identifier.to_string(),
+        )
+    }
+}
+
 /// Whether a Jinja value contains a parse-time relation placeholder.
 pub fn is_parse_time_relation(value: &Value) -> bool {
     value
         .downcast_object_ref::<RelationObject>()
         .is_some_and(RelationObject::is_parse_time)
+}
+
+/// Render a relation using the effective destination when one is present.
+/// Databricks-targeted rendering uses canonical, unquoted lower-case components; all
+/// other targets retain the adapter's normal relation rendering.
+pub fn render_effective_relation(
+    adapter_type: AdapterType,
+    database: &str,
+    schema: &str,
+    identifier: &str,
+    custom_quoting: ResolvedQuoting,
+    target: Option<AdapterType>,
+) -> FsResult<String> {
+    match target {
+        Some(AdapterType::Databricks) => {
+            let (database, schema, identifier) =
+                canonical_relation_parts(target, database, schema, identifier);
+            Ok(format!("{database}.{schema}.{identifier}"))
+        }
+        _ => create_relation(
+            adapter_type,
+            database.to_owned(),
+            schema.to_owned(),
+            Some(identifier.to_owned()),
+            None,
+            custom_quoting,
+        )
+        .map(|relation| relation.render_self_as_str()),
+    }
 }
 
 /// Creates a relation based on the adapter type
@@ -929,6 +980,38 @@ mod tests {
         source.__source_attr__.identifier = "orders".to_string();
         source.__source_attr__.source_name = "raw".to_string();
         source
+    }
+
+    #[test]
+    fn databricks_relation_policy_tests() {
+        assert_eq!(
+            canonical_relation_parts(Some(AdapterType::Databricks), "Cat", "Sch", "Tbl"),
+            ("cat".to_string(), "sch".to_string(), "tbl".to_string())
+        );
+        assert_eq!(
+            render_effective_relation(
+                AdapterType::LakeCompute,
+                "Cat",
+                "Sch",
+                "Tbl",
+                ResolvedQuoting::trues(),
+                Some(AdapterType::Databricks),
+            )
+            .unwrap(),
+            "cat.sch.tbl"
+        );
+        assert_eq!(
+            render_effective_relation(
+                AdapterType::Snowflake,
+                "Cat",
+                "Sch",
+                "Tbl",
+                ResolvedQuoting::falses(),
+                None,
+            )
+            .unwrap(),
+            "Cat.Sch.Tbl"
+        );
     }
 
     #[test]

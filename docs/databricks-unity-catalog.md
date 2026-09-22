@@ -54,6 +54,29 @@ catalog attachment types; the Unity entry supplies its Databricks credentials
 while the Snowflake bundle credential handles Snowflake attachments or
 propagation.
 
+## Publishing Lake Compute output to Unity Catalog
+
+AWS Databricks Unity Catalog can also be selected as the publication target for
+Lake Compute output. The publication catalog is the Lake Compute profile's
+`database`, not the name of a `type: unity` entry in `catalogs.yml`; those
+entries remain read-only as direct model targets. Use an unquoted Unity Catalog
+catalog name; `hive_metastore` is not a supported publication destination.
+Quoting configuration is rejected for Databricks publication, so destinations
+must be supplied as ordinary unquoted identifiers.
+
+The Unity Catalog administrator must create an External Location covering the
+storage prefix supplied for the Lake Compute output and grant the publishing
+identity the privileges required to create and modify tables in that catalog
+and schema. Lake Compute does not create the External Location, its Storage
+Credential, or the associated cloud permissions.
+
+OAuth M2M is the recommended Databricks profile credential for publication.
+PAT credentials are supported with the same host and authentication fields.
+The profile credential is used for publication; credentials embedded in Unity
+read entries remain separate and self-contained. A publication error can be
+reported after the Lake Compute write has completed, so resolve the catalog
+and storage prerequisites before running a production build.
+
 ## Local attach migration
 
 `config.lakecompute` on Unity now describes the Lake Compute read connection.
@@ -63,10 +86,19 @@ Move old local DuckDB/Iceberg attach options such as `endpoint`, `warehouse`,
 to move. This migration preserves local Unity attach behavior, including
 `read_only: false` local writes when the installed DuckDB version supports the
 Unity write-compatibility options. The Lake Compute relation check is separate:
-Unity model targets are read-only in this release because propagation to Unity
-is deferred.
+local DuckDB Unity attach behavior remains read-only where configured, and
+`type: unity` entries remain read-only as direct model targets. Lake Compute
+models can publish to Unity when Databricks propagation is selected.
 
 ## Addressing and limitations
+
+Databricks-targeted Lake Compute relations are canonicalized to lower-case,
+unquoted `database.schema.table` names. Enabling implicit Databricks
+propagation on an existing project with mixed-case database or schema names
+changes the physical table namespace used by those models; existing
+mixed-case tables will not be found by relation or incremental-existence
+checks. Plan a full
+refresh when adopting this behavior for such projects.
 
 A model reads the real Unity catalog name:
 

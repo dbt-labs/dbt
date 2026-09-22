@@ -11,6 +11,7 @@ use crate::utils::{
     register_duplicate_resource, trigger_duplicate_errors, update_node_relation_components,
 };
 use crate::validation::check_node_static_analysis;
+use dbt_adapter::load_catalogs;
 use dbt_adapter_core::AdapterType;
 use dbt_common::io_args::{StaticAnalysisKind, StaticAnalysisOffReason};
 use dbt_common::path::DbtPath;
@@ -24,9 +25,11 @@ use dbt_jinja_utils::utils::dependency_package_name_from_ctx;
 use dbt_schemas::dbt_utils::resolve_package_quoting;
 use dbt_schemas::dbt_utils::validate_delimiter;
 use dbt_schemas::schemas::common::{DbtChecksum, DbtMaterialization, DbtQuoting, NodeDependsOn};
+use dbt_schemas::schemas::dbt_catalogs::LoadedCatalogs;
 use dbt_schemas::schemas::dbt_column::process_columns;
 use dbt_schemas::schemas::properties::SeedProperties;
 use dbt_schemas::schemas::{CommonAttributes, DbtSeed, DbtSeedAttr, NodeBaseAttributes};
+use dbt_schemas::state::resolve_effective_propagation_target;
 use dbt_schemas::state::{DbtPackage, GenericTestAsset};
 use dbt_schemas::state::{ModelStatus, NodeResolverTracker};
 use indexmap::IndexMap;
@@ -66,6 +69,13 @@ pub async fn resolve_seeds(
     let mut seeds: HashMap<String, Arc<DbtSeed>> = HashMap::new();
     let mut disabled_seeds: HashMap<String, Arc<DbtSeed>> = HashMap::new();
     let io_args = &arg.io;
+    let catalogs = load_catalogs::fetch_catalogs();
+    let use_catalogs_v2 = load_catalogs::fetch_use_catalogs_v2();
+    let catalogs_state = match catalogs.as_deref() {
+        Some(c) if use_catalogs_v2 => LoadedCatalogs::V2(c),
+        Some(c) => LoadedCatalogs::V1(c),
+        None => LoadedCatalogs::None,
+    };
     let dependency_package_name = dependency_package_name_from_ctx(jinja_env, base_ctx);
 
     let is_dependency = dependency_package_name.is_some();
@@ -341,6 +351,19 @@ pub async fn resolve_seeds(
             .map(Into::into)
             .unwrap_or_default();
         let selected_adapter = resolved_node_adapter.unwrap_or(default_adapter);
+        let catalog_requires_snowflake = catalogs_state
+            .catalog_requires_snowflake_propagation(properties_config.catalog_name.as_deref())?;
+        let effective_propagation_target = (selected_adapter == AdapterType::LakeCompute)
+            .then(|| {
+                arg.profile_adapter_types.as_deref().and_then(|adapters| {
+                    resolve_effective_propagation_target(
+                        &selected_propagate,
+                        adapters,
+                        catalog_requires_snowflake,
+                    )
+                })
+            })
+            .flatten();
         properties_config.quoting = resolve_package_quoting(
             Some(match adapter_quoting.get(&selected_adapter) {
                 Some(authored) => properties_config.quoting.filled_from(authored),
@@ -383,6 +406,7 @@ pub async fn resolve_seeds(
             __base_attr__: NodeBaseAttributes {
                 adapter: selected_adapter,
                 propagate: selected_propagate,
+                effective_propagation_target,
                 database: database.to_string(), // will be updated below
                 schema: schema.to_string(),     // will be updated below
                 alias: "".to_owned(),           // will be updated below

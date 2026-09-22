@@ -800,6 +800,12 @@ impl CatalogType {
         }
     }
 
+    /// Whether this catalog type requires Snowflake destination handling when it is used by
+    /// a Lake Compute node.
+    pub fn requires_snowflake_propagation(&self) -> bool {
+        matches!(self, Self::IcebergRest)
+    }
+
     /// Whether `lakecompute` can read a catalog of this type.
     ///
     /// A capability of `lakecompute`, expressed here in code: it is a property of the

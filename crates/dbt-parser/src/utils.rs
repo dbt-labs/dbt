@@ -10,7 +10,7 @@ use dbt_common::{ErrorCode, FsError, FsResult, fs_err, stdfs};
 use dbt_jinja_utils::jinja_environment::JinjaEnv;
 use dbt_jinja_utils::malformed_block_name::MalformedBlockNameListener;
 use dbt_jinja_utils::phases::parse::sql_resource::SqlResource;
-use dbt_jinja_utils::utils::{generate_component_name, generate_relation_name};
+use dbt_jinja_utils::utils::{generate_component_name, generate_relation_name_with_target};
 use dbt_schemas::schemas::InternalDbtNodeAttributes;
 use dbt_schemas::schemas::common::{DbtMaterialization, ResolvedQuoting, normalize_quoting};
 use dbt_schemas::schemas::project::{ResolvableConfig, ResolvedConfig};
@@ -448,12 +448,13 @@ pub fn generate_relation_components(
     } else {
         &format!("{alias}_ephemeral")
     };
-    let relation_name = generate_relation_name(
+    let relation_name = generate_relation_name_with_target(
         parse_adapter,
         database_name,
         schema_name,
         alias_name,
         quoting,
+        node.base().effective_propagation_target,
     )?;
 
     Ok((database, schema, alias, relation_name, quoting))
@@ -563,12 +564,13 @@ fn generate_alias_and_relation_name(
     } else {
         &format!("{alias}_ephemeral")
     };
-    let relation_name = generate_relation_name(
+    let relation_name = generate_relation_name_with_target(
         parse_adapter,
         database_name,
         schema_name,
         alias_name,
         quoting,
+        node.base().effective_propagation_target,
     )?;
 
     Ok((alias, relation_name))

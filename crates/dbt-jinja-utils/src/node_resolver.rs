@@ -7,7 +7,8 @@ use std::{
 
 use chrono::Utc;
 use dbt_adapter::relation::{
-    RelationObject, create_relation, create_relation_from_node, create_relation_from_source,
+    RelationObject, canonical_relation_parts, create_relation, create_relation_from_node,
+    create_relation_from_source,
 };
 use dbt_adapter_core::AdapterType;
 use dbt_common::{
@@ -23,7 +24,7 @@ use dbt_schemas::{
     filter::RunFilter,
     schemas::{
         DbtFunction, DbtSource, InternalDbtNodeAttributes, IntrospectionKind, Nodes,
-        common::{DbtMaterialization, DbtQuoting, parse_deprecation_date},
+        common::{DbtMaterialization, DbtQuoting, ResolvedQuoting, parse_deprecation_date},
         ref_and_source::{DbtRef, DbtSourceWrapper},
         telemetry::NodeType,
     },
@@ -32,6 +33,31 @@ use dbt_schemas::{
 use minijinja::{Value as MinijinjaValue, value::function_object::FunctionObject};
 
 type RefRecord = (String, MinijinjaValue, ModelStatus, Option<MinijinjaValue>);
+
+fn create_ref_relation(
+    node: &dyn InternalDbtNodeAttributes,
+    adapter_type: AdapterType,
+    run_filter: Option<RunFilter>,
+) -> FsResult<Box<dyn dbt_schemas::schemas::relations::base::BaseRelation>> {
+    if node.base().effective_propagation_target == Some(AdapterType::Databricks) {
+        let (database, schema, identifier) = canonical_relation_parts(
+            Some(AdapterType::Databricks),
+            &node.database(),
+            &node.schema(),
+            &node.alias(),
+        );
+        create_relation(
+            node.node_adapter(),
+            database,
+            schema,
+            Some(identifier),
+            Some(RelationType::from(node.materialized())),
+            ResolvedQuoting::falses(),
+        )
+    } else {
+        create_relation_from_node(adapter_type, node, run_filter)
+    }
+}
 
 fn downgraded_node_dependency_warning(
     error: &FsError,
@@ -357,7 +383,7 @@ impl NodeResolverTracker for NodeResolver {
         };
 
         let relation = RelationObject::new_with_filter(
-            create_relation_from_node(adapter_type, node, Some(self.run_filter.clone()))?.into(),
+            create_ref_relation(node, adapter_type, Some(self.run_filter.clone()))?.into(),
             self.run_filter.clone(),
             node.event_time(),
         )
@@ -839,7 +865,7 @@ impl NodeResolverTracker for NodeResolver {
         };
 
         let deferred_relation = RelationObject::new_with_filter(
-            create_relation_from_node(adapter_type, node, Some(self.run_filter.clone()))?.into(),
+            create_ref_relation(node, adapter_type, Some(self.run_filter.clone()))?.into(),
             self.run_filter.clone(),
             node.event_time(),
         )
@@ -1394,7 +1420,10 @@ pub fn create_function_object_from_node(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use dbt_schemas::schemas::common::NodeDependsOn;
+    use dbt_schemas::schemas::common::{DbtQuoting, NodeDependsOn};
+    use dbt_schemas::schemas::manifest::{
+        DbtManifest, DbtNode, ManifestMetadata, ManifestModel, nodes_from_dbt_manifest,
+    };
     use dbt_schemas::schemas::nodes::{
         CommonAttributes, DbtModel, DbtModelAttr, NodeBaseAttributes,
     };
@@ -1482,6 +1511,147 @@ mod tests {
             );
         }
         node_resolver
+    }
+
+    #[test]
+    fn databricks_relation_policy_tests() {
+        let mut model = make_model(
+            "model.root_project.orders",
+            "orders",
+            "root_project",
+            None,
+            vec![],
+        );
+        let base = &mut Arc::make_mut(&mut model).__base_attr__;
+        base.adapter = AdapterType::LakeCompute;
+        base.database = "Cat".to_string();
+        base.schema = "Sch".to_string();
+        base.alias = "Tbl".to_string();
+        base.effective_propagation_target = Some(AdapterType::Databricks);
+
+        let mut resolver = NodeResolver::default();
+        resolver
+            .insert_ref(
+                model.as_ref(),
+                AdapterType::LakeCompute,
+                ModelStatus::Enabled,
+                false,
+            )
+            .unwrap();
+        let (relation, deferred) = resolver
+            .lookup_self_relation("model.root_project.orders", "root_project", "orders", &None)
+            .unwrap();
+        assert_eq!(relation.to_string(), "cat.sch.tbl");
+        assert_eq!(
+            relation
+                .downcast_object_ref::<RelationObject>()
+                .expect("ref should be a relation object")
+                .inner()
+                .adapter_type(),
+            AdapterType::LakeCompute
+        );
+        assert!(
+            relation
+                .downcast_object_ref::<RelationObject>()
+                .expect("ref should be a relation object")
+                .inner()
+                .is_table()
+        );
+        assert!(deferred.is_none());
+
+        let mut snowflake_resolver = NodeResolver::default();
+        snowflake_resolver
+            .insert_ref(
+                model.as_ref(),
+                AdapterType::Snowflake,
+                ModelStatus::Enabled,
+                false,
+            )
+            .unwrap();
+        let (relation, deferred) = snowflake_resolver
+            .lookup_self_relation("model.root_project.orders", "root_project", "orders", &None)
+            .unwrap();
+        assert_eq!(
+            relation
+                .downcast_object_ref::<RelationObject>()
+                .expect("ref should be a relation object")
+                .inner()
+                .get_canonical_fqn()
+                .unwrap()
+                .to_string(),
+            "cat.sch.tbl"
+        );
+        assert!(deferred.is_none());
+    }
+
+    #[test]
+    fn deferred_manifest_databricks_ref_uses_lake_compute_canonical_namespace() {
+        let mut manifest = DbtManifest {
+            metadata: ManifestMetadata {
+                adapter_type: "snowflake".to_string(),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let mut manifest_model = ManifestModel::default();
+        manifest_model.__common_attr__.unique_id = "model.root_project.orders".to_string();
+        manifest_model.__common_attr__.name = "orders".to_string();
+        manifest_model.__common_attr__.package_name = "root_project".to_string();
+        manifest_model.__common_attr__.database = "Cat".to_string();
+        manifest_model.__common_attr__.schema = "Sch".to_string();
+        manifest_model.__base_attr__.alias = "Tbl".to_string();
+        manifest_model.__base_attr__.canonical_relation_adapter = Some(AdapterType::Databricks);
+
+        manifest.nodes = [(
+            "model.root_project.orders".to_string(),
+            DbtNode::Model(manifest_model),
+        )]
+        .into_iter()
+        .collect();
+        let model = nodes_from_dbt_manifest(
+            manifest,
+            DbtQuoting {
+                database: Some(false),
+                identifier: Some(false),
+                schema: Some(false),
+                snowflake_ignore_case: Some(false),
+            },
+        )
+        .models
+        .into_iter()
+        .next()
+        .map(|(_, model)| model)
+        .expect("manifest model should be rehydrated");
+        assert_eq!(model.node_adapter(), AdapterType::LakeCompute);
+
+        let mut resolver = NodeResolver::default();
+        resolver
+            .insert_ref(
+                model.as_ref(),
+                AdapterType::Snowflake,
+                ModelStatus::Enabled,
+                false,
+            )
+            .unwrap();
+        resolver
+            .update_ref_with_deferral(model.as_ref(), AdapterType::Snowflake, true)
+            .unwrap();
+
+        let (relation, deferred) = resolver
+            .lookup_self_relation("model.root_project.orders", "root_project", "orders", &None)
+            .unwrap();
+        let deferred = deferred.expect("deferred ref should be populated");
+        for value in [relation, deferred] {
+            assert_eq!(value.to_string(), "cat.sch.tbl");
+            let relation = value
+                .downcast_object_ref::<RelationObject>()
+                .expect("ref should be a relation object")
+                .inner();
+            assert_eq!(
+                relation.get_canonical_fqn().unwrap().to_string(),
+                "cat.sch.tbl"
+            );
+        }
     }
 
     #[test]

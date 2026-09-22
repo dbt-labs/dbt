@@ -148,6 +148,9 @@ pub struct ManifestNodeBaseAttributes {
     #[serde(default)]
     pub alias: String,
     pub relation_name: Option<String>,
+    /// Marker for Databricks canonical relation rendering. Legacy manifests omit it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub canonical_relation_adapter: Option<AdapterType>,
 
     // Paths
     pub compiled_path: Option<String>,
@@ -234,6 +237,9 @@ impl From<DbtSeed> for ManifestSeed {
             __base_attr__: ManifestNodeBaseAttributes {
                 alias: seed.__base_attr__.alias,
                 relation_name: seed.__base_attr__.relation_name,
+                canonical_relation_adapter: (seed.__base_attr__.effective_propagation_target
+                    == Some(AdapterType::Databricks))
+                .then_some(AdapterType::Databricks),
                 columns: seed.__base_attr__.columns,
                 depends_on: seed.__base_attr__.depends_on,
                 refs: seed.__base_attr__.refs,
@@ -307,6 +313,7 @@ impl From<DbtUnitTest> for ManifestUnitTest {
             __base_attr__: ManifestNodeBaseAttributes {
                 alias: unit_test.__base_attr__.alias,
                 relation_name: unit_test.__base_attr__.relation_name,
+                canonical_relation_adapter: None,
                 columns: unit_test.__base_attr__.columns,
                 depends_on: unit_test.__base_attr__.depends_on,
                 refs: unit_test.__base_attr__.refs,
@@ -391,6 +398,7 @@ impl From<DbtTest> for ManifestDataTest {
             __base_attr__: ManifestNodeBaseAttributes {
                 alias: test.__base_attr__.alias,
                 relation_name: test.__base_attr__.relation_name,
+                canonical_relation_adapter: None,
                 columns: test.__base_attr__.columns,
                 depends_on: test.__base_attr__.depends_on,
                 refs: test.__base_attr__.refs,
@@ -635,6 +643,7 @@ impl From<DbtSnapshot> for ManifestSnapshot {
             __base_attr__: ManifestNodeBaseAttributes {
                 alias: snapshot.__base_attr__.alias,
                 relation_name: snapshot.__base_attr__.relation_name,
+                canonical_relation_adapter: None,
                 columns: snapshot.__base_attr__.columns,
                 depends_on: snapshot.__base_attr__.depends_on,
                 refs: snapshot.__base_attr__.refs,
@@ -1342,6 +1351,9 @@ impl From<DbtModel> for ManifestModel {
             __base_attr__: ManifestNodeBaseAttributes {
                 alias: model.__base_attr__.alias,
                 relation_name: model.__base_attr__.relation_name,
+                canonical_relation_adapter: (model.__base_attr__.effective_propagation_target
+                    == Some(AdapterType::Databricks))
+                .then_some(AdapterType::Databricks),
                 columns: model.__base_attr__.columns,
                 depends_on: model.__base_attr__.depends_on,
                 refs: model.__base_attr__.refs,
@@ -1427,6 +1439,7 @@ impl From<DbtAnalysis> for ManifestAnalysis {
             __base_attr__: ManifestNodeBaseAttributes {
                 alias: analysis.__base_attr__.alias,
                 relation_name: analysis.__base_attr__.relation_name,
+                canonical_relation_adapter: None,
                 columns: analysis.__base_attr__.columns,
                 depends_on: analysis.__base_attr__.depends_on,
                 refs: analysis.__base_attr__.refs,
@@ -1506,6 +1519,7 @@ impl From<DbtCheck> for ManifestCheck {
             __base_attr__: ManifestNodeBaseAttributes {
                 alias: check.__base_attr__.alias,
                 relation_name: check.__base_attr__.relation_name,
+                canonical_relation_adapter: None,
                 columns: check.__base_attr__.columns,
                 depends_on: check.__base_attr__.depends_on,
                 refs: check.__base_attr__.refs,
@@ -1565,6 +1579,7 @@ impl From<DbtOperation> for ManifestOperation {
             __base_attr__: ManifestNodeBaseAttributes {
                 alias: operation.__base_attr__.alias,
                 relation_name: operation.__base_attr__.relation_name,
+                canonical_relation_adapter: None,
                 columns: operation.__base_attr__.columns,
                 depends_on: operation.__base_attr__.depends_on,
                 refs: operation.__base_attr__.refs,
@@ -1678,6 +1693,7 @@ impl From<DbtFunction> for ManifestFunction {
             __base_attr__: ManifestNodeBaseAttributes {
                 alias: function.__base_attr__.alias,
                 relation_name: function.__base_attr__.relation_name,
+                canonical_relation_adapter: None,
                 compiled_path: None,
                 build_path: None,
                 columns: Vec::new(),
@@ -2298,8 +2314,38 @@ mod manifest_model_config_null_omission_tests {
 #[cfg(test)]
 mod node_adapter_manifest_round_trip_tests {
     use super::{
-        AdapterType, ManifestSeedConfig, ManifestSnapshotConfig, SeedConfig, SnapshotConfig,
+        AdapterType, DbtModel, DbtSeed, ManifestModel, ManifestSeedConfig, ManifestSnapshotConfig,
+        NodeBaseAttributes, SeedConfig, SnapshotConfig,
     };
+
+    #[test]
+    fn databricks_canonical_relation_marker_round_trips_for_models_and_seeds() {
+        let model = DbtModel {
+            __base_attr__: NodeBaseAttributes {
+                effective_propagation_target: Some(AdapterType::Databricks),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let manifest_model: ManifestModel = model.into();
+        assert_eq!(
+            manifest_model.__base_attr__.canonical_relation_adapter,
+            Some(AdapterType::Databricks)
+        );
+
+        let seed = DbtSeed {
+            __base_attr__: NodeBaseAttributes {
+                effective_propagation_target: Some(AdapterType::Databricks),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let manifest_seed: super::ManifestSeed = seed.into();
+        assert_eq!(
+            manifest_seed.__base_attr__.canonical_relation_adapter,
+            Some(AdapterType::Databricks)
+        );
+    }
 
     #[test]
     fn seed_config_adapter_round_trips_through_manifest_seed_config() {

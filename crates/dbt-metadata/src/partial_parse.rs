@@ -86,7 +86,7 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-const INCREMENTAL_STATE_VERSION: u32 = 4;
+const INCREMENTAL_STATE_VERSION: u32 = 5;
 
 pub struct IncrementalState {
     pub version: u32,

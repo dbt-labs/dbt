@@ -759,6 +759,10 @@ pub async fn resolve_inner(
     bool,
     BTreeMap<String, resolve_properties::MinimalPropertiesEntry>,
 )> {
+    let mut resolve_args = arg.clone();
+    resolve_args.profile_adapter_types = Some(dbt_state.dbt_profile.adapter_types());
+    let arg = &resolve_args;
+
     let mut nodes = Nodes::default();
     let mut disabled_nodes = Nodes::default();
 

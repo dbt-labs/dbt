@@ -5014,6 +5014,11 @@ pub struct NodeBaseAttributes {
     /// that serializes a node, to say nothing.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub propagate: Vec<AdapterType>,
+    /// The destination resolved during parsing, when this node's configuration and
+    /// active profile select one unambiguously. Execution consumes this value without needing
+    /// access to profile or project configuration.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effective_propagation_target: Option<AdapterType>,
     pub static_analysis: Spanned<StaticAnalysisKind>,
     #[serde(skip_deserializing, default)]
     pub static_analysis_off_reason: Option<StaticAnalysisOffReason>,
@@ -5077,6 +5082,7 @@ impl Default for NodeBaseAttributes {
             materialized: DbtMaterialization::default(),
             adapter: AdapterType::Snowflake,
             propagate: Vec::new(),
+            effective_propagation_target: None,
             static_analysis: Spanned::default(),
             static_analysis_off_reason: None,
             compute: None,
