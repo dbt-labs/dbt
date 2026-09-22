@@ -21,7 +21,9 @@
   {% set is_replaceable_format = is_delta or is_iceberg %}
   {% set compiled_code = adapter.clean_sql(model['compiled_code']) %}
 
+  {#-- DIVERGENCE BEGIN: v2 adapter doesn't expose get_behavior_flag_no_warn as a Jinja-callable method; use the direct attribute-access form, which fs supports and is functionally equivalent for this if-check. --#}
   {% if adapter.behavior.use_materialization_v2 %}
+  {#-- DIVERGENCE END --#}
     {{ log("USING V2 MATERIALIZATION") }}
     {#-- Set vars --#}
     {% set safe_create = config.get('use_safer_relation_operations', False) | as_bool  %}
