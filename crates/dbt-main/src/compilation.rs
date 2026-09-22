@@ -2041,6 +2041,7 @@ impl DbtProjectCompilation {
             let run_task_args_copy = run_task_args.clone();
             let adapter_type = resolved_state.adapter_type;
             let cloud_config = resolved_state.cloud_config.clone();
+            let dbt_profile = resolved_state.dbt_profile.clone();
 
             DeferState::load(
                 arg,
@@ -2057,6 +2058,7 @@ impl DbtProjectCompilation {
                         execute_mode,
                         adapter_type,
                         cloud_config.as_ref(),
+                        &dbt_profile,
                     )
                     .await
                 },
@@ -2324,6 +2326,7 @@ impl DbtProjectCompilation {
             execute_mode,
             resolved_state.adapter_type,
             resolved_state.cloud_config.as_ref(),
+            &resolved_state.dbt_profile,
         )
         .await?;
 
@@ -2942,6 +2945,7 @@ async fn create_run_cache_state_selector_args(
         execute_mode,
         resolved_state.adapter_type,
         cloud_config,
+        &resolved_state.dbt_profile,
     )
     .await?;
 

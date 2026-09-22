@@ -354,7 +354,7 @@ impl RunCacheServiceConfig {
         self.defer_to_target(active_profile) == active_profile.target
     }
 
-    pub fn telemetry_config(&self) -> Struct {
+    pub fn telemetry_config(&self, active_profile: &DbtProfile) -> Struct {
         let mut fields = HashMap::new();
         insert_string(&mut fields, "api_url", &self.api_url);
         insert_bool(&mut fields, "secure", self.secure);
@@ -374,7 +374,11 @@ impl RunCacheServiceConfig {
             "api_client_max_attempts",
             i64::from(self.max_attempts),
         );
-        insert_string(&mut fields, "defer_to", &self.defer_to);
+        insert_string(
+            &mut fields,
+            "defer_to",
+            &self.defer_to_target(active_profile),
+        );
         insert_string(&mut fields, "defer_log_level", &self.defer_log_level);
         insert_bool(
             &mut fields,
@@ -1058,12 +1062,31 @@ mod tests {
         config.oauth_client_secret = Some("secret".to_string());
         config.org_id = Some("org-1".to_string());
 
-        let telemetry = config.telemetry_config();
+        let telemetry = config.telemetry_config(&test_profile("dev", None));
 
         assert!(telemetry.fields.contains_key("api_url"));
         assert!(telemetry.fields.contains_key("org_id"));
         assert!(!telemetry.fields.contains_key("oauth_client_id"));
         assert!(!telemetry.fields.contains_key("oauth_client_secret"));
+    }
+
+    #[test]
+    fn telemetry_config_reports_profile_defer_to_target() {
+        let mut config = RunCacheServiceConfig::disabled();
+        config.defer_to = "prod".to_string();
+
+        let telemetry = config.telemetry_config(&test_profile("dev", Some("staging")));
+
+        assert_eq!(
+            telemetry
+                .fields
+                .get("defer_to")
+                .and_then(|value| match &value.kind {
+                    Some(value::Kind::StringValue(value)) => Some(value.as_str()),
+                    _ => None,
+                }),
+            Some("staging")
+        );
     }
 
     #[test]

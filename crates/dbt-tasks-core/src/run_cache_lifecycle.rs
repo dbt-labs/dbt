@@ -43,9 +43,11 @@ impl RunCacheLifecycle {
         execute: Execute,
         adapter_type: AdapterType,
         cloud_config: Option<&ResolvedCloudConfig>,
+        active_profile: &DbtProfile,
     ) -> FsResult<Self> {
         let service =
-            initialize_run_cache_service(arg, execute, adapter_type, cloud_config).await?;
+            initialize_run_cache_service(arg, execute, adapter_type, cloud_config, active_profile)
+                .await?;
         let metadata_ttl_seconds = service
             .config
             .as_ref()
@@ -65,10 +67,11 @@ impl RunCacheLifecycle {
         execute: Execute,
         adapter_type: AdapterType,
         cloud_config: Option<&ResolvedCloudConfig>,
+        active_profile: &DbtProfile,
     ) -> FsResult<Arc<RunCacheLifecycle>> {
         let run_cache_lifecycle = SINGLETON
             .get_or_try_init(async || {
-                Self::initialize(arg, execute, adapter_type, cloud_config)
+                Self::initialize(arg, execute, adapter_type, cloud_config, active_profile)
                     .await
                     .map(Arc::new)
             })
@@ -99,6 +102,7 @@ async fn initialize_run_cache_service(
     execute: Execute,
     adapter_type: AdapterType,
     cloud_config: Option<&ResolvedCloudConfig>,
+    active_profile: &DbtProfile,
 ) -> FsResult<RunCacheServiceLifecycle> {
     if !should_initialize_run_cache_service(arg, execute, adapter_type) {
         increment_metric(
@@ -206,7 +210,7 @@ async fn initialize_run_cache_service(
             emit_info_log_message(format!(
                 "dbt State is enabled (endpoint {}, defer_to {})",
                 config.endpoint_uri(),
-                config.defer_to
+                config.defer_to_target(active_profile)
             ));
             let shared_client = shared_run_cache_service_client(client);
             Ok(RunCacheServiceLifecycle {
@@ -331,7 +335,9 @@ mod tests {
     use async_trait::async_trait;
     use dbt_adapter_core::AdapterType;
     use dbt_common::ErrorCode;
-    use dbt_schemas::schemas::profiles::Execute;
+    use dbt_schemas::IndexMap;
+    use dbt_schemas::schemas::profiles::{DbConfig, DuckDbConfig, Execute};
+    use dbt_schemas::state::{DbtProfile, ProfileAdapter};
     use dbt_state::metadata_cache::RunCacheMetadataCache;
     use dbt_state::proto::query_cache::{
         ConfirmExecutionRequest, ConfirmExecutionResponse, SubmitSqlResponse, SubmitValuesRequest,
@@ -345,6 +351,23 @@ mod tests {
 
     fn args() -> RunTasksArgs {
         RunTasksArgs::default()
+    }
+
+    fn test_profile(target: &str, defer_to_target: Option<&str>) -> DbtProfile {
+        let db_config = DbConfig::DuckDB(Box::<DuckDbConfig>::default());
+        let default_adapter = db_config.adapter_type();
+        DbtProfile {
+            profile: "default".to_string(),
+            target: target.to_string(),
+            defer_to_target: defer_to_target.map(str::to_string),
+            allow_clones: true,
+            adapters: IndexMap::from([(default_adapter, ProfileAdapter::single(db_config))]),
+            default_adapter,
+            schema: "dbt_test".to_string(),
+            database: "db".to_string(),
+            relative_profile_path: std::path::PathBuf::new(),
+            threads: None,
+        }
     }
 
     fn requested_args() -> RunTasksArgs {
@@ -605,6 +628,7 @@ mod tests {
             Execute::Sidecar,
             AdapterType::Snowflake,
             None,
+            &test_profile("dev", None),
         )
         .await
         .unwrap();
@@ -615,6 +639,7 @@ mod tests {
             Execute::Sidecar,
             AdapterType::Snowflake,
             None,
+            &test_profile("dev", None),
         )
         .await
         .unwrap();
@@ -636,6 +661,7 @@ mod tests {
                         Execute::Sidecar,
                         AdapterType::Snowflake,
                         None,
+                        &test_profile("dev", None),
                     )
                     .await
                     .unwrap()
