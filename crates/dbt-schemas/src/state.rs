@@ -332,6 +332,109 @@ impl DbtProfile {
         hex::encode(&hash.as_bytes()[..16])
     }
 }
+/// A propagation target selection failed validation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PropagationTargetError {
+    /// More than one explicit target was configured.
+    MultipleTargets(usize),
+    /// The explicit target is not supported for Lake Compute propagation.
+    UnsupportedTarget(AdapterType),
+    /// The explicit target is not declared by the active profile.
+    TargetNotInProfile(AdapterType),
+    /// A Databricks target conflicts with a Snowflake-backed catalog.
+    DatabricksCatalogConflict,
+    /// A catalog requires Snowflake propagation, but the profile has no Snowflake adapter.
+    SnowflakeTargetRequired,
+}
+
+impl fmt::Display for PropagationTargetError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::MultipleTargets(count) => write!(
+                f,
+                "only one propagation target is supported in v1; {count} explicit targets were configured"
+            ),
+            Self::UnsupportedTarget(target) => {
+                write!(f, "'{target}' is not a supported propagation target")
+            }
+            Self::TargetNotInProfile(target) => write!(
+                f,
+                "explicit target '{target}' is not declared by the active profile"
+            ),
+            Self::DatabricksCatalogConflict => write!(
+                f,
+                "Databricks conflicts with catalog-implied Snowflake propagation"
+            ),
+            Self::SnowflakeTargetRequired => write!(
+                f,
+                "catalog requires Snowflake propagation, but the active profile has no usable Snowflake target"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for PropagationTargetError {}
+
+/// Resolve and validate the destination adapter for a Lake Compute node.
+///
+/// This is the single source of truth for explicit-target validation and implicit
+/// target selection. Parsing can use [`resolve_effective_propagation_target`] when
+/// it must preserve its existing best-effort behavior for unselected nodes;
+/// execution should use this fallible function to report configuration errors.
+pub fn resolve_propagation_target(
+    explicit: &[AdapterType],
+    profile_adapters: &[AdapterType],
+    catalog_requires_snowflake: bool,
+) -> Result<Option<AdapterType>, PropagationTargetError> {
+    if explicit.len() > 1 {
+        return Err(PropagationTargetError::MultipleTargets(explicit.len()));
+    }
+
+    if let Some(explicit) = explicit.first() {
+        if !matches!(explicit, AdapterType::Snowflake | AdapterType::Databricks) {
+            return Err(PropagationTargetError::UnsupportedTarget(*explicit));
+        }
+        if !profile_adapters.contains(explicit) {
+            return Err(PropagationTargetError::TargetNotInProfile(*explicit));
+        }
+        if catalog_requires_snowflake && *explicit == AdapterType::Databricks {
+            return Err(PropagationTargetError::DatabricksCatalogConflict);
+        }
+        return Ok(Some(*explicit));
+    }
+
+    let has_lake_compute = profile_adapters.contains(&AdapterType::LakeCompute);
+    let has_snowflake = profile_adapters.contains(&AdapterType::Snowflake);
+    let has_databricks = profile_adapters.contains(&AdapterType::Databricks);
+
+    if catalog_requires_snowflake {
+        return if has_snowflake {
+            Ok(Some(AdapterType::Snowflake))
+        } else {
+            Err(PropagationTargetError::SnowflakeTargetRequired)
+        };
+    }
+    if has_lake_compute && has_snowflake {
+        Ok(Some(AdapterType::Snowflake))
+    } else if has_lake_compute && has_databricks {
+        Ok(Some(AdapterType::Databricks))
+    } else {
+        Ok(None)
+    }
+}
+
+/// Best-effort parse-time wrapper. Invalid selections remain `None` so parsing
+/// can continue for nodes that will not be selected for execution.
+pub fn resolve_effective_propagation_target(
+    explicit: &[AdapterType],
+    profile_adapters: &[AdapterType],
+    catalog_requires_snowflake: bool,
+) -> Option<AdapterType> {
+    resolve_propagation_target(explicit, profile_adapters, catalog_requires_snowflake)
+        .ok()
+        .flatten()
+}
+
 impl fmt::Display for DbtProfile {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
@@ -1375,7 +1478,9 @@ pub enum ModelStatus {
 #[cfg(test)]
 mod dbt_profile_adapter_tests {
     use super::*;
-    use crate::schemas::profiles::{DuckDbConfig, SnowflakeDbConfig};
+    use crate::schemas::profiles::{
+        DatabricksDbConfig, DuckDbConfig, LakeComputeConfig, SnowflakeDbConfig,
+    };
 
     fn profile(
         adapters: IndexMap<AdapterType, ProfileAdapter>,
@@ -1403,8 +1508,102 @@ mod dbt_profile_adapter_tests {
         DbConfig::Snowflake(Box::<SnowflakeDbConfig>::default())
     }
 
+    fn databricks() -> DbConfig {
+        DbConfig::Databricks(Box::<DatabricksDbConfig>::default())
+    }
+
+    fn lake_compute() -> DbConfig {
+        DbConfig::LakeCompute(Box::<LakeComputeConfig>::default())
+    }
+
     fn one(config: DbConfig) -> (AdapterType, ProfileAdapter) {
         (config.adapter_type(), ProfileAdapter::single(config))
+    }
+
+    #[test]
+    fn databricks_propagation_policy_tests() {
+        let cases = [
+            (
+                IndexMap::from([one(lake_compute()), one(databricks())]),
+                AdapterType::LakeCompute,
+                &[][..],
+                false,
+                Some(AdapterType::Databricks),
+            ),
+            (
+                IndexMap::from([one(lake_compute()), one(snowflake()), one(databricks())]),
+                AdapterType::LakeCompute,
+                &[][..],
+                false,
+                Some(AdapterType::Snowflake),
+            ),
+            (
+                IndexMap::from([one(lake_compute()), one(databricks())]),
+                AdapterType::LakeCompute,
+                &[AdapterType::Databricks][..],
+                false,
+                Some(AdapterType::Databricks),
+            ),
+            (
+                IndexMap::from([one(lake_compute()), one(snowflake())]),
+                AdapterType::LakeCompute,
+                &[][..],
+                true,
+                Some(AdapterType::Snowflake),
+            ),
+            (
+                IndexMap::from([one(lake_compute())]),
+                AdapterType::LakeCompute,
+                &[AdapterType::Databricks][..],
+                false,
+                None,
+            ),
+            (
+                IndexMap::from([one(lake_compute()), one(databricks())]),
+                AdapterType::LakeCompute,
+                &[AdapterType::Databricks][..],
+                true,
+                None,
+            ),
+            (
+                IndexMap::from([one(lake_compute()), one(snowflake()), one(databricks())]),
+                AdapterType::LakeCompute,
+                &[AdapterType::Snowflake, AdapterType::Databricks][..],
+                false,
+                None,
+            ),
+            (
+                IndexMap::from([one(snowflake())]),
+                AdapterType::Snowflake,
+                &[][..],
+                false,
+                None,
+            ),
+        ];
+
+        for (adapters, default_adapter, explicit, catalog_requires_snowflake, expected) in cases {
+            let profile = profile(adapters, default_adapter);
+            let profile_adapters = profile.adapter_types();
+            assert_eq!(
+                resolve_effective_propagation_target(
+                    explicit,
+                    &profile_adapters,
+                    catalog_requires_snowflake,
+                ),
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn propagation_target_resolution_reports_invalid_explicit_selection() {
+        let profile_adapters = vec![AdapterType::LakeCompute];
+        assert_eq!(
+            resolve_propagation_target(&[AdapterType::Databricks], &profile_adapters, false,),
+            Err(PropagationTargetError::TargetNotInProfile(
+                AdapterType::Databricks,
+            ))
+        );
     }
 
     /// `default_db_config()` must follow `default_adapter`, not insertion order — the

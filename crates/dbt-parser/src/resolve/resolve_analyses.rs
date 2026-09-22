@@ -235,6 +235,7 @@ pub async fn resolve_analyses(
                 // An analysis materializes nothing, so there is no relation to publish:
                 // no `+propagate` config exists for this node type.
                 propagate: Vec::new(),
+                effective_propagation_target: None,
                 database: database.to_string(), // will be updated below
                 schema: schema.to_string(),     // will be updated below
                 alias: "".to_owned(),           // will be updated below

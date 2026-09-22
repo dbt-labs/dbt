@@ -88,6 +88,7 @@ fn serialized_model(config: &LocalConfig) -> Value {
     let base_attr = NodeBaseAttributes {
         adapter: AdapterType::Snowflake,
         propagate: Vec::new(),
+        effective_propagation_target: None,
         unrendered_config: Default::default(),
         database: DATABASE.to_string(),
         schema: SCHEMA.to_string(),

@@ -94,6 +94,7 @@ mod tests {
             store_failures: false,
             skip_creating_generic_tests: false,
             adapter_override: None,
+            profile_adapter_types: None,
             maximum_seed_size_mib: 1,
         };
 
@@ -272,6 +273,7 @@ mod tests {
             store_failures: false,
             skip_creating_generic_tests: false,
             adapter_override: None,
+            profile_adapter_types: None,
             maximum_seed_size_mib: 1,
         };
 

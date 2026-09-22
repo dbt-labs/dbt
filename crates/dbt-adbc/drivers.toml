@@ -41,6 +41,7 @@ drivers = [
   "dbt-0.4.0+dbt0.1.9.g765633c",
   "dbt-0.4.0+dbt0.1.10.g53736d6",
   "dbt-0.4.0+dbt0.1.11.gc853a7b",
+  "dbt-0.4.0+dbt0.1.12.gc55396d",
   "duckdb-0.21.0.dev+dbt0.0.20",
   "duckdb-1.5.2",
   "duckdb-1.5.3",
