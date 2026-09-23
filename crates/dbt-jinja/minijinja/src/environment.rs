@@ -8,6 +8,7 @@ use std::sync::Arc;
 
 use serde::Serialize;
 
+use crate::compiler::ast;
 use crate::compiler::codegen::{CodeGenerationProfile, CodeGenerator};
 use crate::compiler::instructions::Instructions;
 use crate::compiler::parser::{parse, parse_expr};
@@ -472,12 +473,14 @@ impl<'source> Environment<'source> {
         ))
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn template_from_named_str_with_profile_and_tokenizer_listeners(
         &self,
         name: &'source str,
         source: &'source str,
         profile: CodeGenerationProfile,
         tokenizer_listeners: &[Rc<dyn TokenizerEventListener>],
+        ast_visitor: Option<&mut dyn FnMut(&ast::Stmt<'_>)>,
     ) -> Result<Template<'_, 'source>, Error> {
         Ok(Template::new(
             self,
@@ -489,6 +492,7 @@ impl<'source> Environment<'source> {
                     None,
                     profile,
                     tokenizer_listeners,
+                    ast_visitor,
                 )
             ))),
         ))
@@ -561,6 +565,10 @@ impl<'source> Environment<'source> {
     }
 
     /// Parses and renders a template from a string while emitting tokenizer events.
+    ///
+    /// If `ast_visitor` is `Some`, this parse's AST is reused for it instead of parsing
+    /// `source` again.
+    #[allow(clippy::too_many_arguments)]
     pub fn render_named_str_with_tokenizer_listeners<S: Serialize>(
         &self,
         name: &str,
@@ -568,6 +576,7 @@ impl<'source> Environment<'source> {
         ctx: S,
         listeners: &[Rc<dyn RenderingEventListener>],
         tokenizer_listeners: &[Rc<dyn TokenizerEventListener>],
+        ast_visitor: Option<&mut dyn FnMut(&ast::Stmt<'_>)>,
     ) -> Result<String, Error> {
         ok!(
             self.template_from_named_str_with_profile_and_tokenizer_listeners(
@@ -575,6 +584,7 @@ impl<'source> Environment<'source> {
                 source,
                 self.profile.clone(),
                 tokenizer_listeners,
+                ast_visitor,
             )
         )
         .render(ctx, listeners)

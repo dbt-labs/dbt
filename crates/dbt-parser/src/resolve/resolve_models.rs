@@ -21,7 +21,6 @@ use crate::utils::extract_resource_config_from_raw_project;
 use crate::utils::get_node_fqn;
 use crate::utils::get_original_file_path;
 use crate::utils::get_unique_id;
-use crate::utils::parse_unrendered_config;
 use crate::utils::update_node_relation_components;
 use crate::validation::check_node_static_analysis;
 
@@ -36,7 +35,6 @@ use dbt_common::fs_err;
 use dbt_common::io_args::StaticAnalysisKind;
 use dbt_common::io_args::StaticAnalysisOffReason;
 use dbt_common::path::DbtPath;
-use dbt_common::tokiofs::read_to_string;
 use dbt_common::tracing::dbt_emit::emit_error_log_from_fs_error;
 use dbt_common::tracing::dbt_emit::emit_warn_log_from_fs_error;
 use dbt_common::tracing::dbt_emit::emit_warn_log_message;
@@ -545,6 +543,7 @@ async fn build_model_nodes(
         render_error_deferred,
         patch_path,
         macro_dependencies,
+        raw_config_call_dict,
     } in model_sql_resources_map.into_iter()
     {
         let ref_name = dbt_asset.path.file_stem().unwrap().to_str().unwrap();
@@ -554,13 +553,6 @@ async fn build_model_nodes(
         }
 
         let mut model_config = model_config_resolved;
-
-        // Capture inline SQL config overrides (from `{{ config(...) }}`) separately.
-        // This should include only values explicitly set in the SQL file, not inherited defaults.
-        let raw_config_call_dict = read_to_string(dbt_asset.base_path.join(&dbt_asset.path))
-            .await
-            .ok()
-            .and_then(|sql| parse_unrendered_config(&sql, false));
 
         // A model is an ad-hoc inline model iff it lives in the dedicated "" package.
         let is_inline_file = package_name.is_empty();
@@ -1721,6 +1713,8 @@ fn process_python_models(
             render_error_deferred: false,
             patch_path,
             macro_dependencies: Vec::new(),
+            // Python models have no Jinja `{{ config(...) }}` call to extract.
+            raw_config_call_dict: None,
         };
 
         results.push(python_result);

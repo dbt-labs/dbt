@@ -40,15 +40,13 @@ use crate::resolve::resolve_utils::{
     build_unrendered_config, extract_config_map, validate_node_adapter,
 };
 use crate::utils::{
-    RelationComponents, extract_resource_config_from_raw_project, parse_unrendered_config,
-    update_node_relation_components,
+    RelationComponents, extract_resource_config_from_raw_project, update_node_relation_components,
 };
 use crate::{
     args::ResolveArgs,
     renderer::{SqlFileRenderResult, render_unresolved_sql_files},
     utils::{get_node_fqn, get_original_file_path, get_unique_id},
 };
-use dbt_common::tokiofs::read_to_string;
 
 use super::resolve_properties::MinimalPropertiesEntry;
 
@@ -234,6 +232,7 @@ pub async fn resolve_functions(
         properties: maybe_properties,
         status,
         patch_path,
+        raw_config_call_dict,
         ..
     } in function_sql_resources_map.into_iter()
     {
@@ -334,12 +333,6 @@ pub async fn resolve_functions(
                 .as_ref()
                 .unwrap_or(&vec![]),
         );
-
-        // Capture inline `{{ config(...) }}` overrides from the function SQL file, Jinja preserved.
-        let raw_config_call_dict = read_to_string(dbt_asset.base_path.join(&dbt_asset.path))
-            .await
-            .ok()
-            .and_then(|sql| parse_unrendered_config(&sql, false));
 
         // Merge the four raw sources (project < root < schema.yml < inline) into the node's
         // `unrendered_config`. Functions do not support pre_hook/post_hook, so hook-name

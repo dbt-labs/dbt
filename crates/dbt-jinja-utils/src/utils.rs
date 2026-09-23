@@ -436,6 +436,7 @@ pub fn render_sql(
             ctx,
             &listeners,
             &[],
+            None,
         )
         .map_err(|e| FsError::from_jinja_err(e, "Failed to render SQL"))?;
     for listener in listeners {
@@ -448,6 +449,9 @@ pub fn render_sql(
 /// Renders SQL with Jinja macros, using caller-provided listeners
 /// This allows callers to access listener state after rendering
 /// (e.g., for MangledRefWarningPrinter to check for mangled refs)
+///
+/// If `ast_visitor` is `Some`, this parse's AST is reused for it instead of parsing
+/// `sql` again.
 #[allow(clippy::too_many_arguments)]
 pub fn render_sql_with_listeners(
     sql: &str,
@@ -456,6 +460,7 @@ pub fn render_sql_with_listeners(
     listeners: &[Rc<dyn RenderingEventListener>],
     tokenizer_listeners: &[Rc<dyn minijinja::listener::TokenizerEventListener>],
     filename: &Path,
+    ast_visitor: Option<&mut dyn FnMut(&minijinja::compiler::ast::Stmt<'_>)>,
 ) -> FsResult<String> {
     let result = env
         .env
@@ -465,6 +470,7 @@ pub fn render_sql_with_listeners(
             ctx,
             listeners,
             tokenizer_listeners,
+            ast_visitor,
         )
         .map_err(|e| FsError::from_jinja_err(e, "Failed to render SQL"))?;
 
