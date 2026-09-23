@@ -1,0 +1,6 @@
+kind: Under the Hood
+body: Remove the unused `enable` argument from `dbt.profiler` and update the CLI call site accordingly.
+time: 2026-05-22T23:15:00.000000000Z
+custom:
+    Author: RaghunandanKumar
+    Issue: "5886"
