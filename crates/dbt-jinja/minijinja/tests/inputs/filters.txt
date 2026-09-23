@@ -69,6 +69,9 @@ sort-case-sensitive: {{ ["B", "a", "C", "z"]|sort(case_sensitive=true) }}
 sort-case-insensitive-mixed: {{ [0, 1, "true", "false", "True", "False", true, false]|sort }}
 sort-case-sensitive-mixed: {{ [0, 1, "true", "false", "True", "False", true, false]|sort(case_sensitive=true) }}
 sort-attribute {{ objects|sort(attribute="name") }}
+sort-attr-int: {{ [[1, "alice"], [3, "eve"], [2, "bob"], [4, "charlie"]]|sort(attribute=0) }}
+sort-attr-int-str: {{ [[1, "alice"], [3, "eve"], [2, "bob"], [4, "charlie"]]|sort(attribute=1) }}
+sort-attr-int-reverse: {{ [[1, "alice"], [3, "eve"], [2, "bob"], [4, "charlie"]]|sort(attribute=0, reverse=true) }}
 d: {{ undefined|d == "" }}
 json: {{ map|tojson }}
 json-pretty: {{ map|tojson(true) }}
@@ -103,6 +106,9 @@ map-attr: {{ [dict(a=1), dict(a=2), {}]|map(attribute='a', default=None) }}
 map-attr-undefined: {{ [dict(a=1), dict(a=2), {}]|map(attribute='a', default=definitely_undefined) }}
 map-attr-deep: {{ [dict(a=[1]), dict(a=[2]), dict(a=[])]|map(attribute='a.0', default=None) }}
 map-attr-int: {{ [[1], [1, 2]]|map(attribute=1, default=999) }}
+join-attr-int: {{ [["a", 1], ["b", 2]]|join(",", attribute=0) }}
+unique-attr-int: {{ [[1, "a"], [1, "b"], [2, "c"]]|unique(attribute=0) }}
+groupby-attr-int: {% for g in [[1, "a"], [2, "b"], [1, "c"]]|groupby(0) %}{{ g.grouper }}={{ g.list|map(attribute=1)|join }};{% endfor %}
 attr-filter: {{ map|attr("a") }}
 unique-filter: {{ [1, 1, 1, 4, 3, 0, 0, 5]|unique }}
 unique-filter-ci: {{ ["a", "A", "b", "c", "b", "D", "d"]|unique }}
