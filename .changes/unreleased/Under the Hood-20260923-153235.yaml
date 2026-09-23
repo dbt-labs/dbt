@@ -1,7 +1,0 @@
-kind: Under the Hood
-body: Update the release workflow's maturin wheel build to target the Python 3.10 abi3 floor
-time: 2026-09-23T15:32:35.782547+05:30
-custom:
-    author: ash2shukla
-    issue: ""
-    project: dbt-core
