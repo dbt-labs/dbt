@@ -288,6 +288,14 @@ pub trait TokenizerEventListener: std::fmt::Debug {
     /// Called when a `{% snapshot %}`/`{% docs %}` block name is followed by a
     /// non-empty suffix that dbt-core's regex extractor silently discards.
     fn on_malformed_block_name(&self, _kind: BlockNameKind, _name: &str, _name_span: &Span) {}
+
+    /// Called with the exact byte range of source text silently dropped by
+    /// whitespace control (`{%-`/`-%}`/`{{-`/`-}}`/`{#-`/`-#}`) or
+    /// `lstrip_blocks`, right as it's skipped. This text never becomes a
+    /// `Token`/AST node of its own — without this hook, a listener has no
+    /// way to learn it existed at all, short of re-tokenizing and inferring
+    /// gaps between consecutive token spans.
+    fn on_trimmed_whitespace(&self, _span: &Span) {}
 }
 
 /// A macro start event.
