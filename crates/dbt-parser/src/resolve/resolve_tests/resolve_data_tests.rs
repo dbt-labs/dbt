@@ -19,7 +19,6 @@ use crate::utils::generate_relation_components;
 use crate::utils::get_node_fqn;
 use crate::utils::get_original_file_contents;
 use crate::utils::get_original_file_path;
-use crate::utils::parse_unrendered_config;
 use crate::utils::update_node_relation_components;
 use crate::validation::check_node_static_analysis;
 use dbt_adapter_core::AdapterType;
@@ -495,6 +494,7 @@ pub async fn resolve_data_tests(
         status,
         render_error_deferred,
         patch_path: _,
+        raw_config_call_dict: rendered_raw_config_call_dict,
         ..
     } in test_sql_resources_map.into_iter()
     {
@@ -695,12 +695,10 @@ pub async fn resolve_data_tests(
                 .unwrap_or_default()
         };
 
-        // For singular tests, parse the user-written SQL for inline {{ config(...) }}.
+        // For singular tests, the user-written SQL's inline {{ config(...) }} was already
+        // extracted from the AST produced while rendering it (see `SqlFileRenderResult::raw_config_call_dict`).
         let raw_inline_config = if is_singular_data_test {
-            dbt_common::tokiofs::read_to_string(dbt_asset.base_path.join(&dbt_asset.path))
-                .await
-                .ok()
-                .and_then(|sql| parse_unrendered_config(&sql, false))
+            rendered_raw_config_call_dict
         } else {
             None
         };

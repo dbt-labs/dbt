@@ -5,7 +5,8 @@ use crate::dbt_project_config::ProjectConfigResolver;
 use crate::resolve::resolve_properties::MinimalPropertiesEntry;
 use crate::sql_file_info::SqlFileInfo;
 use crate::utils::{
-    get_node_fqn, get_snapshot_fqn, register_duplicate_resource, trigger_duplicate_errors,
+    extract_unrendered_config_from_ast, get_node_fqn, get_snapshot_fqn, parse_unrendered_config,
+    register_duplicate_resource, trigger_duplicate_errors,
 };
 use dbt_adapter_core::AdapterType;
 use dbt_common::cancellation::CancellationToken;
@@ -38,6 +39,7 @@ use dbt_schemas::schemas::telemetry::NodeType;
 use dbt_schemas::schemas::{InternalDbtNodeAttributes, IntrospectionKind, Nodes};
 use dbt_schemas::state::{DbtAsset, DbtRuntimeConfig, ModelStatus};
 use dbt_telemetry::AssetParsed;
+use std::cell::RefCell;
 use std::fmt::Debug;
 use std::rc::Rc;
 use tracing::Instrument as _;
@@ -79,6 +81,11 @@ pub struct SqlFileRenderResult<T: ResolvableConfig<T>, S> {
     pub patch_path: Option<PathBuf>,
     /// Macro unique_ids that were invoked during rendering (for `depends_on.macros`).
     pub macro_dependencies: Vec<String>,
+    /// Raw (unrendered) kwargs from any `{{ config(...) }}` call(s) in the rendered source,
+    /// extracted from the same Jinja parse used to render it (see [`extract_unrendered_config_from_ast`]).
+    /// `None` for sources that were never rendered from their own file's raw text (e.g. the
+    /// rewritten block-style snapshot stub, whose caller re-derives this from the original file).
+    pub raw_config_call_dict: Option<BTreeMap<String, dbt_yaml::Value>>,
 }
 
 /// Whether `command` is one of the commands that defer a render error to
@@ -356,8 +363,13 @@ where
 
     // Early exit: the root overlay has the highest precedence for dependency packages, so if it
     // explicitly disables this node no inline `{{ config(...) }}` call can re-enable it.
-    // Skip the SQL file read and Jinja rendering entirely.
+    // Skip Jinja rendering entirely, but still statically extract unrendered_config from the raw
+    // file (a single, cheap parse) so a disabled node's manifest entry stays accurate.
     if config_resolver.is_disabled_by_root_overlay(&fqn) {
+        let raw_config_call_dict = read_to_string(dbt_asset.base_path.join(&dbt_asset.path))
+            .await
+            .ok()
+            .and_then(|sql| parse_unrendered_config(&sql, *uses_snapshot_fqn));
         return Ok(Some(SqlFileRenderResult {
             asset: dbt_asset.clone(),
             sql_file_info: SqlFileInfo::default(),
@@ -372,6 +384,7 @@ where
                 .get(ref_name)
                 .map(|mpe| mpe.relative_path.clone()),
             macro_dependencies: Vec::new(),
+            raw_config_call_dict,
         }));
     }
 
@@ -455,6 +468,14 @@ where
     let macro_dep_listener = Rc::new(dbt_jinja_utils::listener::MacroDependencyListener::new());
     listeners.push(macro_dep_listener.clone());
 
+    // Populated by `ast_visitor` below, reusing the AST from the compile it's passed into.
+    let raw_config_call_dict_cell: RefCell<Option<BTreeMap<String, dbt_yaml::Value>>> =
+        RefCell::new(None);
+    let mut ast_visitor = |ast: &minijinja::compiler::ast::Stmt<'_>| {
+        *raw_config_call_dict_cell.borrow_mut() =
+            extract_unrendered_config_from_ast(ast, *uses_snapshot_fqn, sql.as_bytes());
+    };
+
     let (sql_file_info, resolved_config, status, rendered_sql, macro_spans, macro_dependencies) =
         match render_sql_with_listeners(
             &sql,
@@ -463,6 +484,7 @@ where
             &listeners,
             &[],
             &display_path,
+            Some(&mut ast_visitor),
         ) {
             Ok(rendered_sql) => {
                 // A `source()` inside a Jinja branch that evaluates to false
@@ -634,6 +656,7 @@ where
         };
 
     let (status, render_error_deferred) = status;
+    let raw_config_call_dict = raw_config_call_dict_cell.into_inner();
 
     // Only check for duplicate resource definitions for enabled models to match dbt-core behavior.
     if status == ModelStatus::Enabled
@@ -665,6 +688,7 @@ where
             .get(ref_name)
             .map(|mpe| mpe.relative_path.clone()),
         macro_dependencies,
+        raw_config_call_dict,
     }))
 }
 
