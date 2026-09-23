@@ -310,7 +310,7 @@ pub mod machinery {
     pub use crate::compiler::codegen::CodeGenerator;
     pub use crate::compiler::instructions::{Instruction, Instructions};
     pub use crate::compiler::lexer::{tokenize, Tokenizer, WhitespaceConfig};
-    pub use crate::compiler::parser::{parse, parse_expr};
+    pub use crate::compiler::parser::{parse, parse_expr, parse_with_listeners};
     pub use crate::compiler::tokens::{Span, Token};
     pub use crate::template::{CompiledTemplate, TemplateConfig};
     pub use crate::vm::Vm;
