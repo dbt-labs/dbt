@@ -178,6 +178,7 @@ pub enum ErrorCode {
     SemanticModelDeprecated = 1157,
     PackageMissingProjectFile = 1158,
     DbtYamlValidationError = 1159,
+    FunctionNameCaseMismatch = 1160,
 
     // Network/HTTP [1200–1249]
     NetworkError = 1200,

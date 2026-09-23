@@ -344,13 +344,34 @@ impl MinimalProperties {
                     dependency_package_name_from_ctx(jinja_env, base_ctx),
                     true,
                 )?;
-                if let Some(existing_function) = self.functions.get_mut(&function.name) {
+                // Function node names are always derived as lowercase from the SQL
+                // filename. Normalize the YAML `name:` to lowercase so the lookup
+                // succeeds even when the author used a different case (e.g.
+                // `RENAME_DATA_CLOUD_COLUMN` vs `rename_data_cloud_column.sql`).
+                let normalized_name = function.name.to_ascii_lowercase();
+                if normalized_name != function.name {
+                    emit_warn_log_message(
+                        ErrorCode::FunctionNameCaseMismatch,
+                        format!(
+                            "Function name '{}' in '{}' does not match the expected lowercase \
+                             form '{}'. dbt derives the function node name from the SQL filename \
+                             (always lowercase), so the YAML entry will be matched \
+                             case-insensitively. Consider renaming it to '{}' to avoid ambiguity.",
+                            function.name,
+                            properties_path.display(),
+                            normalized_name,
+                            normalized_name,
+                        ),
+                        io_args.status_reporter.as_ref(),
+                    );
+                }
+                if let Some(existing_function) = self.functions.get_mut(&normalized_name) {
                     existing_function
                         .duplicate_paths
                         .push(properties_path.to_path_buf());
                 } else {
                     self.functions.insert(
-                        function.name.clone(),
+                        normalized_name,
                         MinimalPropertiesEntry {
                             name: validate_resource_name(&function.name)?,
                             name_span: Span::default(),
@@ -926,5 +947,74 @@ fn pre_render_tables_field(
                 }
             }
         }
+    }
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_function_yaml_value(name: &str) -> dbt_yaml::Value {
+        let yaml = format!("name: {name}\n");
+        dbt_yaml::from_str(&yaml).expect("valid yaml")
+    }
+
+    /// Inserting a function whose YAML `name:` is uppercase must store the
+    /// entry under the lowercase key so the renderer (which derives the node
+    /// name from the lowercase SQL filename) can find it.
+    #[test]
+    fn test_function_name_normalized_to_lowercase_on_insert() {
+        let mut props = MinimalProperties::default();
+
+        let uppercase_name = "RENAME_DATA_CLOUD_COLUMN";
+        let lowercase_name = "rename_data_cloud_column";
+
+        let normalized = uppercase_name.to_ascii_lowercase();
+        props.functions.insert(
+            normalized.clone(),
+            MinimalPropertiesEntry {
+                name: uppercase_name.to_string(),
+                name_span: Default::default(),
+                relative_path: std::path::PathBuf::from("schema.yml"),
+                schema_value: make_function_yaml_value(uppercase_name),
+                table_value: None,
+                version_info: None,
+                duplicate_paths: vec![],
+            },
+        );
+
+        // Must be reachable via lowercase key (how renderer looks it up)
+        assert!(
+            props.functions.contains_key(lowercase_name),
+            "expected key '{lowercase_name}' after inserting uppercase '{uppercase_name}'"
+        );
+
+        // Original casing preserved in the entry itself
+        let entry = props.functions.get(lowercase_name).unwrap();
+        assert_eq!(entry.name, uppercase_name);
+
+        // Uppercase key must NOT exist (that was the silent no-op bug)
+        assert!(!props.functions.contains_key(uppercase_name));
+    }
+
+    /// A function whose YAML `name:` is already lowercase is stored as-is.
+    #[test]
+    fn test_function_name_already_lowercase_unchanged() {
+        let mut props = MinimalProperties::default();
+        let name = "my_udf";
+
+        props.functions.insert(
+            name.to_string(),
+            MinimalPropertiesEntry {
+                name: name.to_string(),
+                name_span: Default::default(),
+                relative_path: std::path::PathBuf::from("schema.yml"),
+                schema_value: make_function_yaml_value(name),
+                table_value: None,
+                version_info: None,
+                duplicate_paths: vec![],
+            },
+        );
+
+        assert!(props.functions.contains_key(name));
     }
 }
