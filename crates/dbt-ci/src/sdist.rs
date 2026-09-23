@@ -442,9 +442,9 @@ mod tests {
     fn cross_check_rejects_a_narrower_requires_python() {
         let tmp = tempfile::tempdir().unwrap();
         let spec = sample_spec(tmp.path());
-        // The real defect: an sdist promising 3.9 in front of abi3-py311 wheels.
+        // The real defect: an sdist promising 3.9 in front of abi3-py310 wheels.
         let wheel = wheel_with_metadata(
-            "Requires-Python: >=3.11\nRequires-Dist: mashumaro[msgpack]>=3.14\n",
+            "Requires-Python: >=3.10\nRequires-Dist: mashumaro[msgpack]>=3.14\n",
         );
 
         let err = check_wheel_metadata_agrees(&spec, "w.whl", &wheel)
@@ -540,11 +540,11 @@ mod tests {
         let dir = tmp.path();
         let mut spec = sample_spec(dir);
         spec.wheel_name = "dbt-oss".to_string();
-        spec.requires_python = Some(">=3.11".to_string());
+        spec.requires_python = Some(">=3.10".to_string());
         spec.dependencies = vec!["mashumaro[msgpack]>=3.14".to_string()];
         let wheels = vec![WheelAsset {
             platform_tag: "macosx_11_0_arm64".to_string(),
-            filename: "dbt_oss-2.0.0a1-cp311-abi3-macosx_11_0_arm64.whl".to_string(),
+            filename: "dbt_oss-2.0.0a1-cp310-abi3-macosx_11_0_arm64.whl".to_string(),
             sha256_hex: "cc".repeat(32),
         }];
 
@@ -552,7 +552,7 @@ mod tests {
         let files = read_targz(&path);
 
         let pyproject = &files["dbt_oss-2.0.0a1/pyproject.toml"];
-        assert!(pyproject.contains("requires-python = \">=3.11\""));
+        assert!(pyproject.contains("requires-python = \">=3.10\""));
         assert!(
             pyproject.contains("dependencies = [\n  \"mashumaro[msgpack]>=3.14\",\n]"),
             "sdist pyproject must declare the wheel's deps, got:\n{pyproject}"
@@ -560,7 +560,7 @@ mod tests {
 
         let pkg_info = &files["dbt_oss-2.0.0a1/PKG-INFO"];
         assert!(pkg_info.contains("Requires-Dist: mashumaro[msgpack]>=3.14"));
-        assert!(pkg_info.contains("Requires-Python: >=3.11"));
+        assert!(pkg_info.contains("Requires-Python: >=3.10"));
     }
 
     #[test]
@@ -632,7 +632,7 @@ mod tests {
         let dir = tmp.path();
         let wheels = vec![WheelAsset {
             platform_tag: "macosx_11_0_arm64".to_string(),
-            filename: "dbt_core-2.0.0rc1-cp311-abi3-macosx_11_0_arm64.whl".to_string(),
+            filename: "dbt_core-2.0.0rc1-cp310-abi3-macosx_11_0_arm64.whl".to_string(),
             sha256_hex: "aa".repeat(32),
         }];
 
