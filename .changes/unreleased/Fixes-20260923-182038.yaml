@@ -1,0 +1,6 @@
+kind: Fixes
+body: Fix cumulative metrics with an `input_metric` and a top-level `window` field (v2 metric spec) incorrectly failing to parse with a legacy nested-`type_params` error
+time: 2026-09-23T18:20:38.341842+05:30
+custom:
+    Author: ashish-shukla
+    Issue: N/A
