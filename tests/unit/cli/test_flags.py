@@ -565,7 +565,7 @@ def test_project_flag_defaults():
         assert getattr(flags, flag) is None
 
 
-class TestFusionParserFlags:
+class TestV2ParserFlags:
     def make_dbt_context(
         self, context_name: str, args: List[str], parent: Optional[click.Context] = None
     ) -> click.Context:

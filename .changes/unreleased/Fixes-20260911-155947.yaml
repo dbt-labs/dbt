@@ -1,0 +1,6 @@
+kind: Fixes
+body: Relay the v2 (Fusion) parser's log output via --log-format otel instead of json-compat, dropping span noise, keeping fusion's error/warning codes, and fixing a latent bug where a stray fusion stderr line could abort the run under --warn-error
+time: 2026-09-11T15:59:47.872674-06:00
+custom:
+    Author: ""
+    Issue: ""
