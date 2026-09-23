@@ -3187,6 +3187,10 @@ async fn build_sql_context(
                 node,
                 config.compare_unrendered_code,
             ),
+            ignore_external_modifications: resolve_ignore_external_modifications(
+                node,
+                config.ignore_external_modifications,
+            ),
             full_refresh,
             clone_time_travel_limit: config.clone_time_travel_limit_seconds,
             clone_table_properties: None,
@@ -3278,6 +3282,16 @@ fn resolve_compare_unrendered_code(
     });
 
     resolved
+}
+
+/// Per-model override for ignoring external / out of band changes.
+fn resolve_ignore_external_modifications(
+    node: &dyn InternalDbtNodeAttributes,
+    service_default: bool,
+) -> bool {
+    model_state_for_node(node)
+        .and_then(|state| state.ignore_external_modifications)
+        .unwrap_or(service_default)
 }
 
 pub fn should_execute_hooks_for_skip_reuse(
@@ -4729,6 +4743,7 @@ fn remove_cache_decision_fields(context: &mut SqlRunCacheRequestContext) {
     context.freshness_tolerance_seconds = 0;
     context.lenient_dependencies.clear();
     context.tolerate_nondeterminism = false;
+    context.ignore_external_modifications = false;
     context.clone_time_travel_limit = None;
     context.clone_table_properties = None;
 }
@@ -6976,6 +6991,7 @@ mod tests {
             pre_clone: None,
             execute_hooks_on_any_reuse: Some(true),
             compare_unrendered_code: None,
+            ignore_external_modifications: None,
         });
 
         assert!(should_execute_hooks_for_skip_reuse(&model, false));
@@ -6990,6 +7006,7 @@ mod tests {
             pre_clone: None,
             execute_hooks_on_any_reuse: None,
             compare_unrendered_code: None,
+            ignore_external_modifications: None,
         });
 
         assert!(should_execute_hooks_for_skip_reuse(&model, true));
@@ -7008,6 +7025,7 @@ mod tests {
             pre_clone: None,
             execute_hooks_on_any_reuse: None,
             compare_unrendered_code: None,
+            ignore_external_modifications: None,
         });
 
         assert_eq!(freshness_tolerance_seconds_for_node(&model, 2700), 7200);
@@ -7022,6 +7040,7 @@ mod tests {
             pre_clone: None,
             execute_hooks_on_any_reuse: None,
             compare_unrendered_code: None,
+            ignore_external_modifications: None,
         });
         model.__model_attr__.freshness = Some(ModelFreshness {
             build_after: Some(ModelFreshnessRules {
@@ -7048,6 +7067,7 @@ mod tests {
             pre_clone: None,
             execute_hooks_on_any_reuse: None,
             compare_unrendered_code: None,
+            ignore_external_modifications: None,
         });
         model.__model_attr__.freshness = Some(ModelFreshness {
             build_after: Some(ModelFreshnessRules {
@@ -7080,6 +7100,7 @@ mod tests {
             pre_clone: None,
             execute_hooks_on_any_reuse: None,
             compare_unrendered_code: None,
+            ignore_external_modifications: None,
         });
         model.__model_attr__.freshness = Some(ModelFreshness {
             build_after: Some(ModelFreshnessRules {
@@ -7105,6 +7126,7 @@ mod tests {
             pre_clone: None,
             execute_hooks_on_any_reuse: None,
             compare_unrendered_code: None,
+            ignore_external_modifications: None,
         });
         model.__common_attr__.meta.insert(
             "run_cache_tolerate_nondeterminism".to_string(),
@@ -7135,6 +7157,7 @@ mod tests {
             pre_clone: None,
             execute_hooks_on_any_reuse: Some(true),
             compare_unrendered_code: None,
+            ignore_external_modifications: None,
         });
 
         assert!(should_execute_hooks_for_skip_reuse(&snapshot, false));
@@ -7182,6 +7205,7 @@ mod tests {
             pre_clone: None,
             execute_hooks_on_any_reuse: None,
             compare_unrendered_code: None,
+            ignore_external_modifications: None,
         });
 
         assert!(resolve_compare_unrendered_code(&model, true));
@@ -7200,6 +7224,7 @@ mod tests {
             pre_clone: None,
             execute_hooks_on_any_reuse: None,
             compare_unrendered_code: Some(true),
+            ignore_external_modifications: None,
         });
         let disabled = model_with_state(ModelState {
             lag_tolerance: None,
@@ -7208,6 +7233,7 @@ mod tests {
             pre_clone: None,
             execute_hooks_on_any_reuse: None,
             compare_unrendered_code: Some(false),
+            ignore_external_modifications: None,
         });
 
         assert!(resolve_compare_unrendered_code(&enabled, false));
@@ -7223,6 +7249,7 @@ mod tests {
             pre_clone: None,
             execute_hooks_on_any_reuse: None,
             compare_unrendered_code: Some(true),
+            ignore_external_modifications: None,
         });
         let test = data_test_with_state(DataTestState {
             require_fresh_data_from: None,
@@ -7232,6 +7259,67 @@ mod tests {
 
         assert!(resolve_compare_unrendered_code(&snapshot, false));
         assert!(resolve_compare_unrendered_code(&test, false));
+    }
+
+    #[test]
+    fn ignore_external_modifications_only_applies_to_models() {
+        let mut view = model_with_state(ModelState {
+            lag_tolerance: None,
+            require_fresh_data_from: None,
+            evaluate_volatile_sql: None,
+            pre_clone: None,
+            execute_hooks_on_any_reuse: None,
+            compare_unrendered_code: None,
+            ignore_external_modifications: Some(true),
+        });
+        view.__base_attr__.materialized = DbtMaterialization::View;
+        assert!(resolve_ignore_external_modifications(&view, false));
+
+        view.__model_attr__
+            .state
+            .as_mut()
+            .unwrap()
+            .ignore_external_modifications = Some(false);
+        assert!(!resolve_ignore_external_modifications(&view, true));
+
+        view.__model_attr__.state = None;
+        assert!(resolve_ignore_external_modifications(&view, true));
+        assert!(!resolve_ignore_external_modifications(&view, false));
+
+        for materialization in [
+            DbtMaterialization::Table,
+            DbtMaterialization::Incremental,
+            DbtMaterialization::MetricView,
+        ] {
+            view.__base_attr__.materialized = materialization;
+            view.__model_attr__.state = Some(ModelState {
+                lag_tolerance: None,
+                require_fresh_data_from: None,
+                evaluate_volatile_sql: None,
+                pre_clone: None,
+                execute_hooks_on_any_reuse: None,
+                compare_unrendered_code: None,
+                ignore_external_modifications: Some(true),
+            });
+            assert!(resolve_ignore_external_modifications(&view, false));
+        }
+
+        let snapshot = snapshot_with_state(ModelState {
+            lag_tolerance: None,
+            require_fresh_data_from: None,
+            evaluate_volatile_sql: None,
+            pre_clone: None,
+            execute_hooks_on_any_reuse: None,
+            compare_unrendered_code: None,
+            ignore_external_modifications: Some(true),
+        });
+        let data_test = data_test_with_state(DataTestState {
+            require_fresh_data_from: None,
+            evaluate_volatile_sql: None,
+            compare_unrendered_code: None,
+        });
+        assert!(resolve_ignore_external_modifications(&snapshot, false));
+        assert!(!resolve_ignore_external_modifications(&data_test, false));
     }
 
     #[test]

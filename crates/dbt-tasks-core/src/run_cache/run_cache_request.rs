@@ -104,6 +104,7 @@ pub struct SqlRunCacheRequestContext {
     /// When set, the service first matches candidates on the unrendered node hashes carried in
     /// `dbt_node_state` and only falls back to the compiled-SQL hash if those differ.
     pub compare_unrendered_code: bool,
+    pub ignore_external_modifications: bool,
     pub full_refresh: bool,
     pub clone_time_travel_limit: Option<i64>,
     pub clone_table_properties: Option<TableProperties>,
@@ -550,6 +551,7 @@ fn build_sql_request_input(
         dbt_node_state: Some(node_state),
         compare_unrendered_code: context.compare_unrendered_code,
         table_namespace: context.dbt_project_info.table_namespace,
+        ignore_external_modifications: context.ignore_external_modifications,
     })
 }
 
@@ -1023,6 +1025,7 @@ mod tests {
             lenient_dependencies: vec![],
             tolerate_nondeterminism: true,
             compare_unrendered_code: false,
+            ignore_external_modifications: false,
             full_refresh,
             clone_time_travel_limit: None,
             clone_table_properties: None,
@@ -1037,13 +1040,11 @@ mod tests {
     #[test]
     fn model_request_uses_fusion_node_identity_target_and_semantic_extras() {
         let model = make_model(DbtMaterialization::Incremental);
-        let request = build_model_sql_request(
-            &model,
-            sql_context(false),
-            &test_materialization_resolver(),
-            |_| None,
-        )
-        .unwrap();
+        let mut context = sql_context(false);
+        context.ignore_external_modifications = true;
+        let request =
+            build_model_sql_request(&model, context, &test_materialization_resolver(), |_| None)
+                .unwrap();
 
         assert_eq!(
             request.target_table.as_deref(),
@@ -1051,6 +1052,7 @@ mod tests {
         );
         assert_eq!(request.default_catalog, "analytics");
         assert_eq!(request.execution_type, ModelExecutionType::Merge as i32);
+        assert!(request.ignore_external_modifications);
         assert_eq!(request.table_namespace(), "adapter-unique-id");
         assert_eq!(
             request.labels.get("dbt_node_unique_id").unwrap(),

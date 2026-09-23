@@ -35,6 +35,7 @@ message SubmitEnrichedSQLRequest {
   optional string default_schema = 20;
   bool compare_unrendered_code = 21;
   optional string table_namespace = 22;
+  bool ignore_external_modifications = 23;
 }
 
 message SubmitValuesRequest {
