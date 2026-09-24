@@ -46,6 +46,7 @@ use tracing::Instrument as _;
 
 use dbt_frontend_common::error::CodeLocation;
 use dbt_jinja_utils::phases::parse::sql_resource::SqlResource;
+use minijinja::compiler::meta::{StaticFunctionCall, find_string_arg_calls};
 use minijinja::constants::{TARGET_PACKAGE_NAME, TARGET_UNIQUE_ID};
 use minijinja::{MacroSpans, Value as MinijinjaValue};
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -150,21 +151,12 @@ fn extract_model_config<T: ResolvableConfig<T>, S: GetConfig<T> + Debug>(
 /// `{% if is_incremental() %}` or `{% if execute %}` would otherwise be missing
 /// from the model's dependencies and never have its schema fetched
 /// (dbt-fusion #1660). Sources with non-literal arguments cannot be resolved
-/// statically and are left to render-driven discovery.
+/// statically and are left to render-driven discovery. `discovered` comes from
+/// the AST the caller already parsed, not a fresh parse of `sql`.
 fn augment_sql_resources_with_static_sources<T: ResolvableConfig<T>>(
-    sql: &str,
-    display_path: &Path,
-    jinja_env: &JinjaEnv,
+    discovered: Vec<StaticFunctionCall>,
     sql_resources: &Arc<Mutex<Vec<SqlResource<T>>>>,
 ) {
-    let filename = display_path.to_string_lossy();
-    // Parse failure here is non-fatal: the render above already succeeded.
-    let Ok(discovered) = jinja_env
-        .env
-        .find_static_string_arg_calls(&filename, sql, &["source"])
-    else {
-        return;
-    };
     if discovered.is_empty() {
         return;
     }
@@ -471,9 +463,12 @@ where
     // Populated by `ast_visitor` below, reusing the AST from the compile it's passed into.
     let raw_config_call_dict_cell: RefCell<Option<BTreeMap<String, dbt_yaml::Value>>> =
         RefCell::new(None);
+    // Populated by `ast_visitor` below; see `augment_sql_resources_with_static_sources`.
+    let static_source_calls_cell: RefCell<Vec<StaticFunctionCall>> = RefCell::new(Vec::new());
     let mut ast_visitor = |ast: &minijinja::compiler::ast::Stmt<'_>| {
         *raw_config_call_dict_cell.borrow_mut() =
             extract_unrendered_config_from_ast(ast, *uses_snapshot_fqn, sql.as_bytes());
+        *static_source_calls_cell.borrow_mut() = find_string_arg_calls(ast, &["source"]);
     };
 
     let (sql_file_info, resolved_config, status, rendered_sql, macro_spans, macro_dependencies) =
@@ -487,15 +482,8 @@ where
             Some(&mut ast_visitor),
         ) {
             Ok(rendered_sql) => {
-                // A `source()` inside a Jinja branch that evaluates to false
-                // during this `execute=false` render is never observed by the
-                // render-driven `SqlResource` collection above. Walk the
-                // template AST to recover any such sources so their schemas
-                // are still fetched (dbt-fusion #1660).
                 augment_sql_resources_with_static_sources(
-                    &sql,
-                    &display_path,
-                    jinja_env,
+                    static_source_calls_cell.into_inner(),
                     &sql_resources,
                 );
 
@@ -1183,5 +1171,74 @@ mod tests {
                 "{command:?} should not defer render errors to compile"
             );
         }
+    }
+
+    /// Regression test for dbt-fusion #1660 / fs#15321: `source()` calls that sit in a Jinja
+    /// branch which evaluates to `false` during the `execute=false` discovery render must still
+    /// be recovered from the AST, and this must not depend on a second, independent parse of the
+    /// SQL — `discovered` here comes from the same `find_string_arg_calls` walk the renderer now
+    /// feeds from its single `ast_visitor` parse.
+    #[test]
+    fn augment_sql_resources_with_static_sources_recovers_source_in_dead_branch() {
+        use dbt_schemas::schemas::project::ModelConfig;
+        use minijinja::compiler::parser::Parser;
+        use minijinja::machinery::WhitespaceConfig;
+        use minijinja::syntax::SyntaxConfig;
+
+        let sql = "\
+            {% if execute %}{{ source('observed_pkg', 'observed_tbl') }}{% endif %}\n\
+            {% if is_incremental() %}{{ source('dead_pkg', 'dead_tbl') }}{% endif %}\n\
+            select 1";
+
+        let mut parser = Parser::new(
+            sql,
+            "model.sql",
+            false,
+            #[allow(clippy::default_constructed_unit_structs)]
+            SyntaxConfig::builder().build().unwrap(),
+            WhitespaceConfig::default(),
+        );
+        let ast = parser.parse().expect("valid jinja");
+        let discovered = find_string_arg_calls(&ast, &["source"]);
+
+        // Only the render-observed source is present beforehand, mirroring what
+        // `render_sql_with_listeners`'s listener-driven collection would have added for a
+        // successful `execute=false` render of the `is_incremental()` branch above.
+        let sql_resources: Arc<Mutex<Vec<SqlResource<ModelConfig>>>> =
+            Arc::new(Mutex::new(vec![SqlResource::Source((
+                "observed_pkg".to_string(),
+                "observed_tbl".to_string(),
+                CodeLocation::default(),
+            ))]));
+
+        augment_sql_resources_with_static_sources(discovered, &sql_resources);
+
+        let resources = sql_resources.lock().unwrap();
+        assert!(
+            resources.iter().any(|r| matches!(
+                r,
+                SqlResource::StaticSource((name, table, _))
+                    if name == "dead_pkg" && table == "dead_tbl"
+            )),
+            "source() in the dead branch should be recovered as a StaticSource: {resources:?}"
+        );
+        assert_eq!(
+            resources
+                .iter()
+                .filter(
+                    |r| matches!(r, SqlResource::Source((name, table, _)) if name == "observed_pkg" && table == "observed_tbl")
+                )
+                .count(),
+            1,
+            "the already-observed source must not be duplicated: {resources:?}"
+        );
+        assert!(
+            !resources.iter().any(|r| matches!(
+                r,
+                SqlResource::StaticSource((name, table, _))
+                    if name == "observed_pkg" && table == "observed_tbl"
+            )),
+            "an already-observed source must not also gain a StaticSource entry: {resources:?}"
+        );
     }
 }
