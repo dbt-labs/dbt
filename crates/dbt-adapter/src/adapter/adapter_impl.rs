@@ -862,14 +862,12 @@ impl AdapterImpl {
         if statements.is_empty() {
             return Ok((AdapterResponse::default(), AgateTable::default()));
         }
-        // Without XACT_ABORT a failed statement doesn't stop the rest of the batch.
+        // Without XACT_ABORT a failed statement doesn't stop the rest of the batch. It's
+        // sent on its own, not prefixed to the batch: a `CREATE VIEW` must open its batch
+        // (Msg 111). The setting holds for the connection, as v1's per-connection SET does.
         // https://github.com/dbt-msft/dbt-sqlserver/blob/10a589985f4c102d3151cfffd8eb8f9d48e62a84/dbt/adapters/sqlserver/sqlserver_connections.py#L491
-        let sqlserver_batch;
         let statements = match adapter_type {
-            SqlServer => {
-                sqlserver_batch = format!("SET XACT_ABORT ON;\n{}", statements[0]);
-                vec![sqlserver_batch.as_str()]
-            }
+            SqlServer => vec!["SET XACT_ABORT ON", statements[0]],
             _ => statements,
         };
 
