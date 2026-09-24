@@ -3047,6 +3047,60 @@ mod tests {
     }
 
     #[test]
+    fn test_create_values_bigquery_preserves_inferred_logical_types() {
+        let type_ops = DefaultTypeOps::new(AdapterType::Bigquery);
+        let fields = [
+            ("location", "GEOGRAPHY"),
+            ("created_at", "TIMESTAMP"),
+            ("payload", "JSON"),
+        ]
+        .into_iter()
+        .map(|(name, sql_type)| {
+            make_arrow_field(&type_ops, name.to_string(), sql_type, None, None).unwrap()
+        })
+        .collect::<Vec<_>>();
+        let schema = Arc::new(Schema::new(fields));
+        let rows = vec![BTreeMap::from([
+            (
+                "location".to_string(),
+                YmlValue::string("ST_GEOGPOINT(100, -37)".to_string()),
+            ),
+            (
+                "created_at".to_string(),
+                YmlValue::string("2026-01-01 00:00:00+00".to_string()),
+            ),
+            (
+                "payload".to_string(),
+                YmlValue::string(r#"{"segmentCode":"HORECA"}"#.to_string()),
+            ),
+        ])];
+
+        let result = create_values(
+            &schema,
+            &rows,
+            AdapterType::Bigquery,
+            &type_ops,
+            None,
+            "fixture_types",
+            false,
+        )
+        .unwrap();
+
+        assert_contains!(
+            result,
+            "CAST(ST_GEOGPOINT(100, -37) AS GEOGRAPHY) AS location"
+        );
+        assert_contains!(
+            result,
+            "CAST('2026-01-01 00:00:00+00' AS TIMESTAMP) AS created_at"
+        );
+        assert_contains!(
+            result,
+            r#"PARSE_JSON('{"segmentCode":"HORECA"}') AS payload"#
+        );
+    }
+
+    #[test]
     fn test_create_select_with_union_all() {
         // Test single row case
         let id = "id".to_string();
