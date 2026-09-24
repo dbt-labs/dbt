@@ -49,6 +49,16 @@ pub const BIGQUERY_PSEUDOCOLUMNS: [&str; 7] = [
     "_CHANGE_SEQUENCE_NUMBER",
 ];
 
+/// List all relations (tables/views) in a BigQuery dataset.
+///
+/// Uses a single bulk `INFORMATION_SCHEMA.TABLES` query — O(1) API calls
+/// regardless of dataset size.
+///
+/// The ADBC driver path (`list_relations_via_adbc`) was removed as the
+/// primary implementation because the BigQuery ADBC driver issues one
+/// sequential `tables.get` API call per table inside `GetObjects`, turning
+/// this into an O(n) round-trip loop that takes multiple minutes on large
+/// (1 000+ table) datasets. See: <https://github.com/dbt-labs/dbt-core/issues/16425>
 pub fn list_relations(
     engine: &dyn AdapterEngine,
     ctx: &QueryCtx,
@@ -56,19 +66,7 @@ pub fn list_relations(
     db_schema: &CatalogAndSchema,
     token: CancellationToken,
 ) -> AdapterResult<Vec<Arc<dyn BaseRelation>>> {
-    let relations = list_relations_via_adbc(engine, conn, db_schema)?;
-    let connection_project = engine
-        .config("execution_project")
-        .or_else(|| engine.config("project"))
-        .or_else(|| engine.config("database"));
-    let (target_project, _) =
-        normalize_quote(false, AdapterType::Bigquery, &db_schema.rendered_catalog);
-    let is_cross_project =
-        connection_project.is_some_and(|project| project.as_ref() != target_project);
-
-    verify_empty_adbc_listing(relations, is_cross_project, || {
-        list_relations_via_information_schema(engine, ctx, conn, db_schema, token)
-    })
+    list_relations_via_information_schema(engine, ctx, conn, db_schema, token)
 }
 
 fn list_relations_via_information_schema(
@@ -163,6 +161,7 @@ WHERE
     Ok(result)
 }
 
+#[allow(dead_code)]
 fn verify_empty_adbc_listing<F>(
     relations: Vec<Arc<dyn BaseRelation>>,
     is_cross_project: bool,
@@ -183,6 +182,7 @@ where
     }
 }
 
+#[allow(dead_code)]
 fn list_relations_via_adbc(
     engine: &dyn AdapterEngine,
     conn: &'_ mut dyn Connection,

@@ -1,0 +1,7 @@
+kind: Fixes
+body: Revert BigQuery list_relations to bulk INFORMATION_SCHEMA.TABLES query, fixing O(n) per-table metadata regression from ADBC driver path
+time: 2026-09-24T21:27:35.614989+05:30
+custom:
+    author: ""
+    issue: "16425"
+    project: dbt-core
