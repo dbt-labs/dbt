@@ -258,7 +258,7 @@ impl<T: TestableNodeTrait> TestableNode<'_, T> {
                             .cloned()
                             .unwrap_or_default();
                         let mut tags = inherited_test_tags.to_vec();
-                        tags.extend(&entry.tags);
+                        tags.extend(entry.tags.iter().cloned());
                         let test_asset = persist_inner(
                             project_name,
                             root_project_name,
