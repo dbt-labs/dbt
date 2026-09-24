@@ -7,6 +7,7 @@ import dbt.tracking
 from dbt.events import types as core_types
 from dbt.flags import get_flags
 from dbt_common.dataclass_schema import dbtClassMixin
+from dbt_common.events.event_manager_client import get_event_manager
 from dbt_common.events.functions import fire_event
 from dbt_common.events.types import Note
 from dbt_common.exceptions import DbtInternalError
@@ -282,12 +283,20 @@ def buffer(name: str, *args, **kwargs):
 
 
 def show_deprecations_summary() -> None:
+    warn_error_options = get_event_manager().warn_error_options
     summaries: List[Dict[str, Any]] = []
     for deprecation, occurrences in active_deprecations.items():
         deprecation_event = deprecations[deprecation].event()
+        event_name = type(deprecation_event).__name__
+        # Deprecations silenced via warn_error_options should not resurface
+        # through the summary: with `error: Deprecations` the summary event
+        # itself is error-handled, so counting silenced occurrences would turn
+        # them back into a hard failure.
+        if warn_error_options.silenced(event_name):
+            continue
         summaries.append(
             DeprecationSummary(
-                event_name=type(deprecation_event).__name__,
+                event_name=event_name,
                 event_code=deprecation_event.code(),
                 occurrences=occurrences,
             ).to_msg_dict()
