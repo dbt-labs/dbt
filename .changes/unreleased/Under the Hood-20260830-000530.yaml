@@ -1,0 +1,7 @@
+kind: Under the Hood
+body: Avoid a duplicate API call setting description on seed tables with persist_docs enabled
+time: 2026-08-30T00:05:30.069247668+02:00
+custom:
+    author: fornwall
+    issue: ""
+    project: dbt-core
