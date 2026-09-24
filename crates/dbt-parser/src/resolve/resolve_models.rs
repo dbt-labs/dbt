@@ -1495,7 +1495,7 @@ fn validate_interactive_table_cluster_by(
             let err = fs_err!(
                 code => ErrorCode::InvalidConfig,
                 loc => path.to_path_buf(),
-                "interactive_table models require `cluster_by` to name at least one non-blank column; `CREATE INTERACTIVE TABLE` without `CLUSTER BY`, or with only blank entries, is rejected by Snowflake (010405)",
+                "interactive_table models require every `cluster_by` entry to be non-blank; `CREATE INTERACTIVE TABLE` without `CLUSTER BY`, with no entries, or with any blank entry, is rejected by Snowflake (010405)",
             );
             return Err(err);
         }
@@ -2494,7 +2494,7 @@ mod interactive_table_validation_tests {
         let resolved = resolve(cfg);
         assert_rejects_with(
             validate_interactive_table_cluster_by(&resolved, &test_path()),
-            "require `cluster_by`",
+            "require every `cluster_by` entry to be non-blank",
         );
     }
 
@@ -2514,7 +2514,7 @@ mod interactive_table_validation_tests {
         let resolved = resolve(cfg);
         assert_rejects_with(
             validate_interactive_table_cluster_by(&resolved, &test_path()),
-            "name at least one non-blank column",
+            "require every `cluster_by` entry to be non-blank",
         );
     }
 
@@ -2525,7 +2525,7 @@ mod interactive_table_validation_tests {
         let resolved = resolve(cfg);
         assert_rejects_with(
             validate_interactive_table_cluster_by(&resolved, &test_path()),
-            "name at least one non-blank column",
+            "require every `cluster_by` entry to be non-blank",
         );
     }
 
@@ -2537,7 +2537,7 @@ mod interactive_table_validation_tests {
         let resolved = resolve(cfg);
         assert_rejects_with(
             validate_interactive_table_cluster_by(&resolved, &test_path()),
-            "name at least one non-blank column",
+            "require every `cluster_by` entry to be non-blank",
         );
     }
 
@@ -2553,7 +2553,7 @@ mod interactive_table_validation_tests {
         let resolved = resolve(cfg);
         assert_rejects_with(
             validate_interactive_table_cluster_by(&resolved, &test_path()),
-            "name at least one non-blank column",
+            "require every `cluster_by` entry to be non-blank",
         );
     }
 
@@ -2779,7 +2779,7 @@ mod interactive_table_validation_tests {
                 AdapterType::Snowflake,
                 &test_path(),
             ),
-            "require `cluster_by`",
+            "require every `cluster_by` entry to be non-blank",
         );
     }
 
