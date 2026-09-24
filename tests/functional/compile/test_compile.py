@@ -13,11 +13,13 @@ from tests.functional.compile.fixtures import (
     first_ephemeral_model_sql,
     first_ephemeral_model_with_alias_sql,
     first_model_sql,
+    incremental_model_sql,
     model_multiline_jinja,
     schema_yml,
     second_ephemeral_model_sql,
     second_ephemeral_model_with_alias_sql,
     second_model_sql,
+    table_model_using_is_incremental_sql,
     third_ephemeral_model_sql,
     with_recursive_model_sql,
 )
@@ -367,3 +369,31 @@ class TestSqlParseOnlyDepthLeavesTokensNone:
     def test_only_depth_set_leaves_tokens_none(self, project):
         run_dbt(["compile", "--sqlparse", '{"MAX_GROUPING_DEPTH": "10000"}'])
         assert sqlparse.engine.grouping.MAX_GROUPING_TOKENS is None
+
+
+class TestNoFullRefreshFlag:
+    @pytest.fixture(scope="class")
+    def models(self):
+        return {
+            "incremental_model.sql": incremental_model_sql,
+            "table_model.sql": table_model_using_is_incremental_sql,
+        }
+
+    def _compiled(self, model_name):
+        return norm_whitespace(read_file("target", "compiled", "test", "models", model_name + ".sql"))
+
+    def test_incremental_model_treated_as_incremental(self, project):
+        run_dbt(["compile", "--no-full-refresh"])
+        assert "where fun > 0" in self._compiled("incremental_model")
+
+    def test_default_does_not_treat_as_incremental(self, project):
+        run_dbt(["compile"])
+        assert "where fun > 0" not in self._compiled("incremental_model")
+
+    def test_non_incremental_model_unaffected(self, project):
+        run_dbt(["compile", "--no-full-refresh"])
+        assert "where fun > 0" not in self._compiled("table_model")
+
+    def test_mutually_exclusive_with_full_refresh(self, project):
+        with pytest.raises(DbtRuntimeError, match="mutually exclusive"):
+            run_dbt(["compile", "--no-full-refresh", "--full-refresh"])
