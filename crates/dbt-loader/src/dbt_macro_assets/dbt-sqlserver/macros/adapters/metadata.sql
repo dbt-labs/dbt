@@ -187,6 +187,55 @@
   where object_id({{ object_name }}, 'V') is not null
 {% endmacro %}
 
+{% macro get_view_skip_check_sql(relation, compiled_sql) %}
+    {{ return(adapter.dispatch('get_view_skip_check_sql')(relation, compiled_sql)) }}
+{% endmacro %}
+
+{#- `definition` for the skip decision, and `needs_refresh` when the cached column
+    metadata no longer matches what the body resolves to. Refreshing unconditionally
+    would advance modify_date on every unchanged view.
+    - dm_exec_describe_first_result_set is referenced once: each reference compiles the body.
+    - Its error row is kept, so a body it cannot describe is refreshed.
+    - COLLATE DATABASE_DEFAULT, or the join fails where catalog and database collations differ.
+    - The body is inlined as an N'' literal: the function needs nvarchar. -#}
+{% macro sqlserver__get_view_skip_check_sql(relation, compiled_sql) -%}
+  {%- set object_name = "quotename('" ~ relation.schema ~ "') + '.' + quotename('" ~ relation.identifier ~ "')" -%}
+  {{ get_use_database_sql(relation.database) }}
+  declare @dbt_sqlserver_skip_check_body nvarchar(max) = N'{{ escape_single_quotes(compiled_sql) }}';
+  select
+      object_definition(object_id({{ object_name }}, 'V')) as definition,
+      case when exists (
+          select 1
+          from (
+              select column_ordinal, name, system_type_id, user_type_id,
+                     max_length, precision, scale, collation_name
+              from sys.dm_exec_describe_first_result_set(
+                  @dbt_sqlserver_skip_check_body, null, 0)
+              where is_hidden = 0 or error_number is not null
+          ) as described
+          full outer join (
+              select row_number() over (order by column_id) as column_ordinal,
+                     name, system_type_id, user_type_id,
+                     max_length, precision, scale, collation_name
+              from sys.columns {{ information_schema_hints() }}
+              where object_id = object_id({{ object_name }}, 'V')
+          ) as cached
+            on described.column_ordinal = cached.column_ordinal
+          where described.column_ordinal is null
+             or cached.column_ordinal is null
+             or described.name collate database_default
+                    <> cached.name collate database_default
+             or described.system_type_id <> cached.system_type_id
+             or described.user_type_id <> cached.user_type_id
+             or described.max_length <> cached.max_length
+             or described.precision <> cached.precision
+             or described.scale <> cached.scale
+             or isnull(described.collation_name, '') collate database_default
+                    <> isnull(cached.collation_name, '') collate database_default
+      ) then 1 else 0 end as needs_refresh
+  where object_id({{ object_name }}, 'V') is not null
+{% endmacro %}
+
 {% macro sqlserver__get_relation_last_modified(information_schema, relations) -%}
   {%- call statement('last_modified', fetch_result=True) -%}
         select

@@ -1,11 +1,8 @@
 {% macro sqlserver__get_test_sql(main_sql, fail_calc, warn_if, error_if, limit) -%}
 
-  -- Create target schema if it does not
+  -- Create target schema if it does not exist
   {{ get_use_database_sql(target.database) }}
-  IF NOT EXISTS (SELECT * FROM sys.schemas WHERE name = '{{ target.schema }}')
-  BEGIN
-    EXEC('CREATE SCHEMA {{ adapter.quote(target.schema) }}')
-  END
+  {{ create_schema_if_not_exists(target.schema) }}
 
   {% set testview_name = "testview_" ~ local_md5(main_sql) ~ "_" ~ (range(1300, 19000) | random) %}
   {% set testview %}
@@ -32,10 +29,7 @@
 {% macro sqlserver__get_unit_test_sql(main_sql, expected_fixture_sql, expected_column_names) -%}
 
   {{ get_use_database_sql(target.database) }}
-  IF NOT EXISTS (SELECT * FROM sys.schemas WHERE name = '{{ target.schema }}')
-  BEGIN
-  EXEC('CREATE SCHEMA {{ adapter.quote(target.schema) }}')
-  END
+  {{ create_schema_if_not_exists(target.schema) }}
 
   {% set test_view_name = "testview_" ~ local_md5(main_sql) ~ "_" ~ (range(1300, 19000) | random) %}
   {% set test_view %}

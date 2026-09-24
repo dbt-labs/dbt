@@ -15,6 +15,7 @@ use crate::macro_test_harness::{
 fn incremental_macro_name(adapter_type: AdapterType) -> &'static str {
     match adapter_type {
         AdapterType::Databricks => "materialization_incremental_databricks",
+        AdapterType::SqlServer => "materialization_incremental_sqlserver",
         other => panic!("unsupported adapter for incremental materialization test: {other:?}"),
     }
 }
@@ -813,5 +814,110 @@ mod spark {
         assert!(lower.contains("insert overwrite table"), "got: {sql}");
         assert!(sql.contains("`order_id`, `order_date`"), "got: {sql}");
         assert!(lower.contains("select"), "got: {sql}");
+    }
+}
+
+mod sqlserver {
+    use super::*;
+    const ADAPTER: AdapterType = AdapterType::SqlServer;
+
+    fn build_harness() -> MacroTestHarness {
+        let harness = MacroTestHarness::for_adapter(ADAPTER)
+            .load_all_macros()
+            .with_stub_functions()
+            .build()
+            .expect("harness should build");
+
+        let mock = harness.mock();
+        mock.on("quote", |args| {
+            Ok(args.first().cloned().unwrap_or(Value::UNDEFINED))
+        });
+        mock.on("rename_relation", |_| Ok(Value::UNDEFINED));
+        mock.on("drop_relation", |_| Ok(Value::UNDEFINED));
+        mock.on("commit", |_| Ok(Value::UNDEFINED));
+
+        harness
+    }
+
+    /// `indexes` is read with a keyword `default=`, which the shared config mock
+    /// doesn't unwrap.
+    fn sqlserver_ctx(harness: &MacroTestHarness) -> BTreeMap<String, Value> {
+        let config = incremental_config();
+        config.on("get", |args| {
+            let key = args.first().and_then(|v| v.as_str());
+            let default = args.get(1).cloned().unwrap_or(Value::UNDEFINED);
+            match key {
+                Some("contract") => Ok(Value::from_serialize(BTreeMap::from([(
+                    "enforced".to_string(),
+                    Value::from(false),
+                )]))),
+                Some("indexes") => Ok(Value::from(Vec::<Value>::new())),
+                Some("full_refresh") => Ok(Value::from(false)),
+                Some("on_schema_change") => Ok(Value::from("ignore")),
+                _ => Ok(default),
+            }
+        });
+        incremental_ctx_with_config(harness, config)
+    }
+
+    #[test]
+    fn no_existing_relation_builds_intermediate_and_swaps_it_in() {
+        let harness = build_harness();
+        harness.mock().on("get_relation", |_| Ok(Value::from(())));
+
+        let ctx = sqlserver_ctx(&harness);
+        render_incremental(&harness, ADAPTER, ctx)
+            .unwrap_or_else(|e| panic!("incremental first build failed: {e:?}"));
+
+        let calls = harness.mock().observed_calls();
+        // Only intermediate -> target: there is nothing to back up.
+        assert_eq!(calls.to("rename_relation").count(), 1);
+        calls.assert_not_called("commit_if_open");
+        calls.assert_not_called("begin_if_closed");
+    }
+
+    #[test]
+    fn existing_table_expands_target_columns_without_max_rows() {
+        let harness = build_harness();
+        let existing = harness.relation(
+            "TEST_DB",
+            "TEST_SCHEMA",
+            "my_incr",
+            Some(RelationType::Table),
+        );
+        harness.mock().on("get_relation", move |_| {
+            Ok(RelationObject::new(Arc::clone(&existing)).into_value())
+        });
+        harness
+            .mock()
+            .on("expand_target_column_types", |_| Ok(Value::UNDEFINED));
+        harness.mock().on("get_columns_in_relation", |_| {
+            Ok(Value::from(Vec::<Value>::new()))
+        });
+        harness.mock().on("get_incremental_strategy_macro", |_| {
+            Ok(Value::from_function(
+                |_args: &[Value]| -> Result<Value, minijinja::Error> {
+                    Ok(Value::from("SELECT 1 /* incremental merge */"))
+                },
+            ))
+        });
+
+        let ctx = sqlserver_ctx(&harness);
+        render_incremental(&harness, ADAPTER, ctx)
+            .unwrap_or_else(|e| panic!("incremental merge failed: {e:?}"));
+
+        let calls = harness.mock().observed_calls();
+        let expand_calls: Vec<_> = calls.to("expand_target_column_types").collect();
+        assert_eq!(expand_calls.len(), 1);
+        // The Rust adapter takes only from_relation and to_relation.
+        let kwargs = expand_calls[0].args.last().expect("keyword arguments");
+        assert!(
+            kwargs
+                .get_item(&Value::from("max_rows"))
+                .unwrap()
+                .is_undefined(),
+            "unexpected max_rows in {:?}",
+            expand_calls[0].args
+        );
     }
 }

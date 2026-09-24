@@ -65,10 +65,8 @@
       {% set build_or_select_sql = snapshot_staging_table(strategy, temp_snapshot_relation, target_relation) %}
       {% set staging_table = build_snapshot_staging_table(strategy, temp_snapshot_relation, target_relation) %}
       -- this may no-op if the database does not require column expansion
-      {% set expansion_max_rows = config.get('column_type_expansion_max_rows', 1000000) %}
       {% do adapter.expand_target_column_types(from_relation=staging_table,
-                                               to_relation=target_relation,
-                                               max_rows=expansion_max_rows) %}
+                                               to_relation=target_relation) %}
 
       {% set remove_columns = ['dbt_change_type', 'DBT_CHANGE_TYPE', 'dbt_unique_key', 'DBT_UNIQUE_KEY'] %}
       {% if unique_key | is_list %}
