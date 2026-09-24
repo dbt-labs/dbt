@@ -848,7 +848,10 @@ impl AdapterImpl {
             // execute() call avoids the need for cross-call connection caching.
             //
             // Lake compute: also supports batching
-            Bigquery | DuckDB | LakeCompute => vec![sql],
+            //
+            // SQL Server: T-SQL scopes a DECLARE'd variable to its batch, and MERGE must keep
+            // its own terminating `;`, so splitting breaks both.
+            Bigquery | DuckDB | LakeCompute | SqlServer => vec![sql],
             _ => splitter.split(sql, adapter_type),
         };
         // Filter out empty and comment-only statements.
@@ -859,6 +862,16 @@ impl AdapterImpl {
         if statements.is_empty() {
             return Ok((AdapterResponse::default(), AgateTable::default()));
         }
+        // Without XACT_ABORT a failed statement doesn't stop the rest of the batch.
+        // https://github.com/dbt-msft/dbt-sqlserver/blob/10a589985f4c102d3151cfffd8eb8f9d48e62a84/dbt/adapters/sqlserver/sqlserver_connections.py#L491
+        let sqlserver_batch;
+        let statements = match adapter_type {
+            SqlServer => {
+                sqlserver_batch = format!("SET XACT_ABORT ON;\n{}", statements[0]);
+                vec![sqlserver_batch.as_str()]
+            }
+            _ => statements,
+        };
 
         let mut options = options.unwrap_or_default();
         if let Some(state) = state {
