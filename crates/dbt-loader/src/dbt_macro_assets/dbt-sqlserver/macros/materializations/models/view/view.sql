@@ -41,14 +41,35 @@
     {% endfor %}
     {% set build_sql = get_create_view_as_sql(intermediate_relation, sql) %}
   {% elif existing_relation is not none and existing_relation.type == 'view' %}
-    {% set current_view_definition_table = run_query(get_view_definition_sql(existing_relation)) %}
+    {% set current_view_definition_table = run_query(get_view_skip_check_sql(existing_relation, sql)) %}
+    {% set view_metadata_is_stale = false %}
     {% if current_view_definition_table is not none and current_view_definition_table.rows | length > 0 %}
-      {% set normalized_relation = target_relation.include(database=False) | lower | replace('\n', '') | replace('\r', '') | replace('\t', '') | replace(' ', '') | replace(';', '') %}
-      {% set normalized_sql = sql | lower | replace('\n', '') | replace('\r', '') | replace('\t', '') | replace(' ', '') | replace(';', '') %}
-      {% set normalized_definition = current_view_definition_table.rows[0][0] | lower | replace('\n', '') | replace('\r', '') | replace('\t', '') | replace(' ', '') | replace(';', '') %}
-      {% set should_skip_view_update = normalized_definition.endswith(normalized_sql) %}
+      {#- Compare the view *body* exactly, not by suffix.
+          The stored definition is `CREATE OR ALTER VIEW <quoted name> AS <body>;`; the
+          first ' as ' is the header/body separator. No lowercasing or whitespace
+          stripping: both make genuinely different bodies compare equal. When unsure,
+          rebuild. The offset is taken with `length` (chars), not str.find (bytes in
+          minijinja), because string slicing is by chars. -#}
+      {% set stored = current_view_definition_table.rows[0][0] %}
+      {% set stored_lower = stored | lower %}
+      {% if ' as ' not in stored_lower %}
+        {% set should_skip_view_update = false %}
+      {% else %}
+        {% set marker = (stored_lower.split(' as ') | first) | length %}
+        {% set stored_body = stored[marker + 4:] | replace('\r\n', '\n') | trim %}
+        {% set stored_body = (stored_body[:-1] if stored_body.endswith(';') else stored_body) | trim %}
+        {% set model_body = sql | replace('\r\n', '\n') | trim %}
+        {% set model_body = (model_body[:-1] if model_body.endswith(';') else model_body) | trim %}
+        {% set should_skip_view_update = stored_body == model_body %}
+      {% endif %}
+      {% set view_metadata_is_stale = current_view_definition_table.rows[0][1] == 1 %}
     {% endif %}
-    {% if should_skip_view_update %}
+    {% if should_skip_view_update and view_metadata_is_stale %}
+      {#- A source changed shape under an unchanged body (e.g. a `select *` expansion).
+          sp_refreshview resolves its argument in the current database, hence the USE. -#}
+      {% set object_name = "quotename('" ~ target_relation.schema ~ "') + '.' + quotename('" ~ target_relation.identifier ~ "')" %}
+      {% set build_sql = get_use_database_sql(target_relation.database) ~ " declare @dbt_sqlserver_refresh_target nvarchar(max) = " ~ object_name ~ "; exec sp_refreshview @dbt_sqlserver_refresh_target;" %}
+    {% elif should_skip_view_update %}
       {% set build_sql = 'declare @dbt_sqlserver_noop int;' %}
     {% else %}
       {% set build_sql = get_create_view_as_sql(target_relation, sql) %}
