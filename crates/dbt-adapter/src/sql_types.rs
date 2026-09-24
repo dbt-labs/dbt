@@ -186,6 +186,7 @@ impl TypeOps for DefaultTypeOps {
         match adapter_type {
             Postgres | Salesforce => postgres::try_format_type(data_type, nullable, out),
             Fabric => fabric::try_format_type(data_type, nullable, out),
+            SqlServer => sqlserver::try_format_type(data_type, nullable, out),
             ClickHouse => clickhouse::try_format_type(data_type, nullable, out),
             _ => {
                 if adapter_type == Bigquery && matches!(data_type, DataType::Timestamp(_, Some(_)))
@@ -350,7 +351,7 @@ impl DefaultTypeOps {
             (SqlType::Real | SqlType::HalfFloat, _) => match adapter_type {
                 Bigquery => "float64",
                 Databricks => "float",
-                Fabric => "real",
+                Fabric | SqlServer => "real",
                 // Exasol float type is DOUBLE PRECISION (no float8 alias).
                 Exasol => "DOUBLE PRECISION",
                 _ => "float8",
@@ -363,7 +364,7 @@ impl DefaultTypeOps {
                 // Divergence: upstream has an implicit narrowing bug we fix
                 // see https://github.com/microsoft/dbt-fabric/blob/0de219082282724a789b0d1b18509d39899da8e1/dbt/adapters/fabric/fabric_adapter.py#L117
                 // https://learn.microsoft.com/en-us/sql/t-sql/data-types/float-and-real-transact-sql?view=fabric&preserve-view=true
-                Fabric => "float",
+                Fabric | SqlServer => "float",
                 // Exasol float type is DOUBLE PRECISION (no float8 alias).
                 Exasol => "DOUBLE PRECISION",
                 _ => "float8",
@@ -387,6 +388,8 @@ impl DefaultTypeOps {
                 // Exasol: fractional -> DOUBLE PRECISION; zero/negative scale
                 // falls through to "integer" (a valid DECIMAL(18,0) alias).
                 (Exasol, 1..) => "DOUBLE PRECISION",
+                (SqlServer, 1..) => "float",
+                (SqlServer, ..=0) => "int",
                 (_, 1..) => "float8",
                 (_, ..=0) => "integer",
             },
@@ -398,7 +401,7 @@ impl DefaultTypeOps {
             // ## convert_boolean_type()
             (SqlType::Boolean, _) => match adapter_type {
                 Bigquery => "bool",
-                Fabric => "bit",
+                Fabric | SqlServer => "bit",
                 _ => "boolean",
             },
 
@@ -406,7 +409,7 @@ impl DefaultTypeOps {
             (SqlType::Timestamp { .. }, _) => match adapter_type {
                 Bigquery => "datetime",
                 Databricks => "timestamp",
-                Fabric => "datetime2(6)",
+                Fabric | SqlServer => "datetime2(6)",
                 Exasol => "timestamp",
                 _ => "timestamp without time zone",
             },
@@ -417,7 +420,7 @@ impl DefaultTypeOps {
             // ## convert_time_type()
             // Upstream maps Duration and Interval Arrow types to time.
             (SqlType::Interval(_) | SqlType::Time { .. }, _) => match adapter_type {
-                Fabric => "time(6)",
+                Fabric | SqlServer => "time(6)",
                 // Exasol stores a time-of-day value as TIMESTAMP.
                 Exasol => "timestamp",
                 _ => "time",
@@ -432,7 +435,7 @@ impl DefaultTypeOps {
                     // but that information isn't available here
                     // - N = 64 if column is empty
                     // - N = max(16, max_length) if column is not empty
-                    Fabric => "varchar",
+                    Fabric | SqlServer => "varchar",
                     Exasol => "VARCHAR(2000000)",
                     _ => "text",
                 }
@@ -565,6 +568,7 @@ pub const fn get_field_sql_type_metadata_key(adapter_type: AdapterType) -> &'sta
         AdapterType::Spark => todo!(),
         AdapterType::DuckDB | AdapterType::LakeCompute => todo!(),
         AdapterType::Fabric => FABRIC_METADATA_SQL_TYPE_KEY,
+        AdapterType::SqlServer => todo!(),
         AdapterType::ClickHouse => CLICKHOUSE_METADATA_SQL_TYPE_KEY,
         AdapterType::Exasol => "DATA_TYPE",
         AdapterType::Starburst => todo!(),
@@ -619,8 +623,8 @@ impl SdfSchemaBuilder {
                 metadata.get(ARROW_FIELD_COMMENT_METADATA_KEY)
             }
             // no evidence that these drivers store comments in metadata, but just in case
-            Postgres | Snowflake | Salesforce | Fabric | ClickHouse | Exasol | Starburst
-            | Athena | Trino | Dremio | Oracle | Datafusion => {
+            Postgres | Snowflake | Salesforce | Fabric | SqlServer | ClickHouse | Exasol
+            | Starburst | Athena | Trino | Dremio | Oracle | Datafusion => {
                 metadata.get(ARROW_FIELD_COMMENT_METADATA_KEY)
             }
         };
@@ -657,7 +661,8 @@ impl SdfSchemaBuilder {
         use AdapterType::*;
         match self.adapter_type {
             Bigquery | Redshift | Databricks | Spark | DuckDB | LakeCompute | Fabric
-            | ClickHouse | Exasol | Starburst | Athena | Trino | Dremio | Oracle | Datafusion => {
+            | SqlServer | ClickHouse | Exasol | Starburst | Athena | Trino | Dremio | Oracle
+            | Datafusion => {
                 let original_fields = self.original.fields();
                 let mut sdf_fields = Vec::with_capacity(original_fields.len());
                 for field in original_fields {
@@ -991,6 +996,78 @@ pub mod fabric {
     }
 }
 
+pub mod sqlserver {
+
+    use arrow_schema::DataType;
+    use std::fmt::Write;
+
+    use crate::AdapterResult;
+    use crate::errors::{AdapterError, AdapterErrorKind};
+
+    const SQLSERVER_MAX_VARCHAR_TYPE: &str = "VARCHAR(MAX)";
+
+    pub fn try_format_type(
+        datatype: &DataType,
+        nullable: bool,
+        out: &mut String,
+    ) -> AdapterResult<()> {
+        match datatype {
+            DataType::Null => out.push_str("INT"),
+            DataType::Boolean => out.push_str("BIT"),
+            DataType::Int8 => out.push_str("SMALLINT"),
+            DataType::Int16 => out.push_str("SMALLINT"),
+            DataType::Int32 => out.push_str("INT"),
+            DataType::Int64 => out.push_str("BIGINT"),
+
+            DataType::UInt8 => out.push_str("SMALLINT"),
+            DataType::UInt16 => out.push_str("INT"),
+            DataType::UInt32 => out.push_str("BIGINT"),
+            DataType::UInt64 => out.push_str("DECIMAL(20,0)"),
+            DataType::Float32 => out.push_str("REAL"),
+            DataType::Float64 => out.push_str("FLOAT"),
+
+            DataType::Timestamp(_, _) => out.push_str("DATETIME2(6)"),
+
+            DataType::Date32 => out.push_str("DATE"),
+
+            DataType::Time32(_) | DataType::Time64(_) => out.push_str("TIME(6)"),
+
+            DataType::Interval(_) => {
+                return Err(AdapterError::new(
+                    AdapterErrorKind::UnsupportedType,
+                    "INTERVAL is not supported in SQL Server",
+                ));
+            }
+            DataType::Binary => out.push_str("VARBINARY(MAX)"),
+            DataType::Utf8 | DataType::Utf8View => out.push_str(SQLSERVER_MAX_VARCHAR_TYPE),
+
+            DataType::List(_) => {
+                return Err(AdapterError::new(
+                    AdapterErrorKind::UnsupportedType,
+                    "ARRAY is not supported in SQL Server",
+                ));
+            }
+
+            DataType::Dictionary(_, value) if value.as_ref() == &DataType::Utf8 => {
+                out.push_str(SQLSERVER_MAX_VARCHAR_TYPE)
+            }
+            DataType::Decimal128(precision, scale) => {
+                write!(out, "DECIMAL({precision}, {scale})").unwrap()
+            }
+            _ => {
+                return Err(AdapterError::new(
+                    AdapterErrorKind::UnsupportedType,
+                    format!("{datatype} is not convertible to sqlserver sql type"),
+                ));
+            }
+        };
+        if !nullable {
+            out.push_str(" NOT NULL");
+        }
+        Ok(())
+    }
+}
+
 pub const fn max_varchar_size(adapter_type: AdapterType) -> Option<usize> {
     use AdapterType::*;
     match adapter_type {
@@ -998,7 +1075,8 @@ pub const fn max_varchar_size(adapter_type: AdapterType) -> Option<usize> {
         Snowflake => Some(16_777_216),
         Redshift => Some(256),
         Postgres | Bigquery | Databricks | Salesforce | Spark | DuckDB | LakeCompute | Fabric
-        | ClickHouse | Exasol | Starburst | Athena | Trino | Dremio | Oracle | Datafusion => None,
+        | SqlServer | ClickHouse | Exasol | Starburst | Athena | Trino | Dremio | Oracle
+        | Datafusion => None,
     }
 }
 
@@ -1009,7 +1087,8 @@ pub const fn max_varbinary_size(adapter_type: AdapterType) -> Option<usize> {
         Redshift => Some(65_535),
         // TODO: define limits for more systems
         Postgres | Bigquery | Databricks | Salesforce | Spark | DuckDB | LakeCompute | Fabric
-        | ClickHouse | Exasol | Starburst | Athena | Trino | Dremio | Oracle | Datafusion => None,
+        | SqlServer | ClickHouse | Exasol | Starburst | Athena | Trino | Dremio | Oracle
+        | Datafusion => None,
     }
 }
 
@@ -1352,6 +1431,8 @@ mod tests {
         assert_eq!(convert_floating_type(Postgres), "float8");
         assert_eq!(convert_floating_type(Snowflake), "float8");
         assert_eq!(convert_floating_type(Redshift), "float8");
+        assert_eq!(convert_floating_type(SqlServer), "float");
+        assert_eq!(convert_type(&DataType::Float32, SqlServer), "real");
         let convert_decimal_type =
             |adapter_type| convert_type(&DataType::Decimal32(10, 0), adapter_type);
         assert_eq!(convert_decimal_type(Bigquery), "int64");
@@ -1359,6 +1440,7 @@ mod tests {
         assert_eq!(convert_decimal_type(Postgres), "integer");
         assert_eq!(convert_decimal_type(Snowflake), "integer");
         assert_eq!(convert_decimal_type(Redshift), "integer");
+        assert_eq!(convert_decimal_type(SqlServer), "int");
         let convert_decimal_type =
             |adapter_type| convert_type(&DataType::Decimal128(10, 2), adapter_type);
         assert_eq!(convert_decimal_type(Bigquery), "float64");
@@ -1366,6 +1448,7 @@ mod tests {
         assert_eq!(convert_decimal_type(Postgres), "float8");
         assert_eq!(convert_decimal_type(Snowflake), "float8");
         assert_eq!(convert_decimal_type(Redshift), "float8");
+        assert_eq!(convert_decimal_type(SqlServer), "float");
     }
 
     #[test]
@@ -1376,6 +1459,7 @@ mod tests {
         assert_eq!(convert_boolean_type(Postgres), "boolean");
         assert_eq!(convert_boolean_type(Snowflake), "boolean");
         assert_eq!(convert_boolean_type(Redshift), "boolean");
+        assert_eq!(convert_boolean_type(SqlServer), "bit");
     }
 
     #[test]
@@ -1400,6 +1484,7 @@ mod tests {
             convert_datetime_type(Redshift),
             "timestamp without time zone"
         );
+        assert_eq!(convert_datetime_type(SqlServer), "datetime2(6)");
     }
 
     #[test]
@@ -1462,6 +1547,7 @@ mod tests {
         for adapter_type in ALL_ADAPTERS {
             assert_eq!(convert_date_type(adapter_type), "date");
         }
+        assert_eq!(convert_date_type(SqlServer), "date");
     }
 
     #[test]
@@ -1472,6 +1558,7 @@ mod tests {
         for adapter_type in ALL_ADAPTERS {
             assert_eq!(convert_time_type(adapter_type), "time");
         }
+        assert_eq!(convert_time_type(SqlServer), "time(6)");
     }
 
     #[test]
@@ -1482,6 +1569,53 @@ mod tests {
         assert_eq!(convert_text_type(Postgres), "text");
         assert_eq!(convert_text_type(Snowflake), "text");
         assert_eq!(convert_text_type(Redshift), "text");
+        assert_eq!(convert_text_type(SqlServer), "varchar");
+    }
+
+    #[test]
+    fn sqlserver_try_format_type_formats_native_types() {
+        let mut out = String::new();
+        sqlserver::try_format_type(&DataType::Boolean, false, &mut out).unwrap();
+        assert_eq!(out, "BIT NOT NULL");
+
+        out.clear();
+        sqlserver::try_format_type(&DataType::Int32, true, &mut out).unwrap();
+        assert_eq!(out, "INT");
+
+        out.clear();
+        sqlserver::try_format_type(&DataType::Utf8, true, &mut out).unwrap();
+        assert_eq!(out, "VARCHAR(MAX)");
+
+        out.clear();
+        sqlserver::try_format_type(&DataType::Decimal128(18, 4), true, &mut out).unwrap();
+        assert_eq!(out, "DECIMAL(18, 4)");
+
+        out.clear();
+        sqlserver::try_format_type(
+            &DataType::Timestamp(TimeUnit::Microsecond, None),
+            true,
+            &mut out,
+        )
+        .unwrap();
+        assert_eq!(out, "DATETIME2(6)");
+    }
+
+    #[test]
+    fn sqlserver_try_format_type_rejects_unsupported_arrow_types() {
+        let mut out = String::new();
+        let err = sqlserver::try_format_type(
+            &DataType::Interval(arrow_schema::IntervalUnit::MonthDayNano),
+            true,
+            &mut out,
+        )
+        .expect_err("INTERVAL is not supported in SQL Server");
+        assert_eq!(err.kind(), AdapterErrorKind::UnsupportedType);
+
+        out.clear();
+        let item = Arc::new(Field::new("item", DataType::Int32, true));
+        let err = sqlserver::try_format_type(&DataType::List(item), true, &mut out)
+            .expect_err("ARRAY is not supported in SQL Server");
+        assert_eq!(err.kind(), AdapterErrorKind::UnsupportedType);
     }
 
     fn bq(ty: &str, repeated: bool) -> HashMap<String, String> {
