@@ -504,7 +504,11 @@ class MetricParser(YamlReader):
                 numerator=self._get_optional_metric_input(unparsed_metric.numerator),
                 denominator=self._get_optional_metric_input(unparsed_metric.denominator),
                 expr=str(unparsed_metric.expr) if unparsed_metric.expr is not None else None,
-                window=self._get_optional_time_window(unparsed_metric.window),
+                # `window` is a legacy v1-only field (see MetricTypeParams); v2 YAML never
+                # has a top-level `type_params` block, so it must stay unset here or the
+                # semantic manifest validator mistakes this metric for one written in the
+                # deprecated unnested format. The real window lives in
+                # cumulative_type_params/conversion_type_params below.
                 metrics=self._get_metric_inputs(unparsed_metric.input_metrics),
                 conversion_type_params=self._get_optional_v2_conversion_type_params(
                     unparsed_metric=unparsed_metric,
