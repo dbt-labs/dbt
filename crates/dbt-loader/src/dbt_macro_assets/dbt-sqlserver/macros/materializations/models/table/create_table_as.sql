@@ -1,7 +1,11 @@
-{% macro sqlserver__create_clustered_columnstore_index(relation) -%}
-    {#- cci_name embeds the schema, so it must be quoted as an identifier
-        (raw only in the string comparison below) -- issue #409 -#}
-    {%- set cci_name = (relation.schema ~ '_' ~ relation.identifier ~ '_cci') | replace(".", "") | replace(" ", "") -%}
+{% macro sqlserver__create_clustered_columnstore_index(relation, logical_relation=none) -%}
+    {#- Named after logical_relation, the name relation takes once swapped in, so a
+        __dbt_tmp build doesn't leave its suffix on the index. Index names are scoped per
+        table, so the build table and the live one can both hold it. cci_name embeds the
+        schema, so it must be quoted as an identifier (raw only in the string comparison
+        below) -- issue #409 -#}
+    {%- set name_relation = logical_relation or relation -%}
+    {%- set cci_name = (name_relation.schema ~ '_' ~ name_relation.identifier ~ '_cci') | replace(".", "") | replace(" ", "") -%}
     {%- set relation_name = relation.include(database=False) -%}
     {{ get_use_database_sql(relation.database) }}
     if EXISTS (
@@ -71,11 +75,23 @@
             IF OBJECT_ID('{{ escape_single_quotes(relation.include(database=False)) }}', 'U') IS NOT NULL
                 EXEC('DROP TABLE {{ relation }}');
             {%- endif -%}
-            SELECT * INTO {{ table_name }} FROM {{ tmp_relation }} {{ query_label }}
+            {#- Empty create + TABLOCK load, not a fused SELECT * INTO: the fused form
+                holds the new table's Sch-M, which blocks catalog readers in other
+                sessions, for the whole load. Separate EXECs commit separately, so the
+                Sch-M lasts an instant. TABLOCK keeps the load minimally logged. -#}
+            SELECT TOP 0 * INTO {{ table_name }} FROM {{ tmp_relation }}
         {% endif %}
     {%- endset -%}
 
     EXEC('{{- escape_single_quotes(query) -}}')
+
+    {%- if not (contract_config.enforced and (not temporary)) %}
+    {%- set load_query -%}
+        INSERT INTO {{ table_name }} WITH (TABLOCK)
+        SELECT * FROM {{ tmp_relation }} {{ query_label }}
+    {%- endset %}
+    EXEC('{{- escape_single_quotes(load_query) -}}')
+    {%- endif %}
 
     {# For some reason drop_relation is not firing. This solves the issue for now. #}
     EXEC('DROP VIEW IF EXISTS {{ tmp_relation.include(database=False) }}')
@@ -84,12 +100,12 @@
 
     {% set as_columnstore = config.get('as_columnstore', default=true) %}
     {% if not temporary and as_columnstore -%}
-        {#-
-        add columnstore index
-        this creates with dbt_temp as its coming from a temporary relation before renaming
-        could alter relation to drop the dbt_temp portion if needed
-        -#}
-        {{ sqlserver__create_clustered_columnstore_index(relation) }}
+        {#- Add the columnstore index. Name the CCI after the relation this build is swapped into: the
+            materializations build into make_intermediate_relation's
+            `<model>__dbt_tmp` and rename it over the target. -#}
+        {%- set logical_relation = relation.incorporate(path={"identifier": relation.identifier[:-9]})
+              if relation.identifier.endswith('__dbt_tmp') else relation -%}
+        {{ sqlserver__create_clustered_columnstore_index(relation, logical_relation) }}
    {% endif %}
 
 {% endmacro %}
