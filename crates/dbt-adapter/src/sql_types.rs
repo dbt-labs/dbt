@@ -1038,8 +1038,12 @@ pub mod sqlserver {
                     "INTERVAL is not supported in SQL Server",
                 ));
             }
-            DataType::Binary => out.push_str("VARBINARY(MAX)"),
-            DataType::Utf8 | DataType::Utf8View => out.push_str(SQLSERVER_MAX_VARCHAR_TYPE),
+            DataType::Binary | DataType::LargeBinary | DataType::BinaryView => {
+                out.push_str("VARBINARY(MAX)")
+            }
+            DataType::Utf8 | DataType::LargeUtf8 | DataType::Utf8View => {
+                out.push_str(SQLSERVER_MAX_VARCHAR_TYPE)
+            }
 
             DataType::List(_) => {
                 return Err(AdapterError::new(
@@ -1616,6 +1620,22 @@ mod tests {
         let err = sqlserver::try_format_type(&DataType::List(item), true, &mut out)
             .expect_err("ARRAY is not supported in SQL Server");
         assert_eq!(err.kind(), AdapterErrorKind::UnsupportedType);
+    }
+
+    #[test]
+    fn sqlserver_format_arrow_type_as_sql_accepts_large_and_view_types() {
+        let type_ops = DefaultTypeOps::new(AdapterType::SqlServer);
+        for (data_type, expected) in [
+            (DataType::LargeUtf8, "VARCHAR(MAX)"),
+            (DataType::LargeBinary, "VARBINARY(MAX)"),
+            (DataType::BinaryView, "VARBINARY(MAX)"),
+        ] {
+            let mut out = String::new();
+            type_ops
+                .format_arrow_type_as_sql(&data_type, true, &mut out)
+                .unwrap();
+            assert_eq!(out, expected);
+        }
     }
 
     fn bq(ty: &str, repeated: bool) -> HashMap<String, String> {
