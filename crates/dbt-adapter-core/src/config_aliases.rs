@@ -39,6 +39,7 @@ pub fn config_aliases(adapter_type: AdapterType) -> &'static [(&'static str, &'s
         // not vendored in the local cache used to populate this map.
         AdapterType::Salesforce
         | AdapterType::Fabric
+        | AdapterType::SqlServer
         | AdapterType::ClickHouse
         | AdapterType::Exasol
         | AdapterType::Athena

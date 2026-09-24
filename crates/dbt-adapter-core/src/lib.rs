@@ -67,6 +67,8 @@ pub enum AdapterType {
     Salesforce,
     // Microsoft Fabric DWH
     Fabric,
+    /// Microsoft SQL Server
+    SqlServer,
     /// ClickHouse
     ClickHouse,
     /// Exasol
@@ -130,6 +132,11 @@ pub fn quote_char(adapter_type: AdapterType) -> char {
         Redshift => '"',
         Postgres | Salesforce => '"',
         Fabric => '"',
+        // T-SQL also accepts `[brackets]`, but double quotes match Fabric and
+        // dbt-sqlserver v1, which renders identifiers with dbt-core's default
+        // quote character. They are only identifier delimiters while
+        // QUOTED_IDENTIFIER is ON, so connection init SQL has to set it.
+        SqlServer => '"',
         DuckDB | LakeCompute => '"',
         Athena | Trino | Starburst => '"',
         Datafusion => '"',
@@ -186,6 +193,7 @@ mod tests {
             ("sPark", AdapterType::Spark),
             ("dUckdb", AdapterType::DuckDB),
             ("fAbric", AdapterType::Fabric),
+            ("sQlserver", AdapterType::SqlServer),
             ("cLickhouse", AdapterType::ClickHouse),
             ("aThena", AdapterType::Athena),
             ("sTarburst", AdapterType::Starburst),
@@ -276,6 +284,7 @@ mod tests {
                 (AdapterType::Postgres, "postgresql"),
                 (AdapterType::Salesforce, "salesforce"),
                 (AdapterType::Fabric, "fabric"),
+                (AdapterType::SqlServer, "sqlserver"),
                 (AdapterType::ClickHouse, "clickhouse"),
                 (AdapterType::Exasol, "exasol"),
                 (AdapterType::Athena, "athena"),
@@ -305,6 +314,7 @@ mod tests {
             AdapterType::Postgres,
             AdapterType::Salesforce,
             AdapterType::Fabric,
+            AdapterType::SqlServer,
             AdapterType::DuckDB,
             AdapterType::LakeCompute,
             AdapterType::Athena,
