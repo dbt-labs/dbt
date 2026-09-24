@@ -186,7 +186,7 @@ impl TypeOps for DefaultTypeOps {
         match adapter_type {
             Postgres | Salesforce => postgres::try_format_type(data_type, nullable, out),
             Fabric => fabric::try_format_type(data_type, nullable, out),
-            SqlServer => sqlserver::try_format_type(data_type, nullable, out),
+            SqlServer => sqlserver::try_format_type(data_type, out),
             ClickHouse => clickhouse::try_format_type(data_type, nullable, out),
             _ => {
                 if adapter_type == Bigquery && matches!(data_type, DataType::Timestamp(_, Some(_)))
@@ -1006,11 +1006,9 @@ pub mod sqlserver {
 
     const SQLSERVER_MAX_VARCHAR_TYPE: &str = "VARCHAR(MAX)";
 
-    pub fn try_format_type(
-        datatype: &DataType,
-        nullable: bool,
-        out: &mut String,
-    ) -> AdapterResult<()> {
+    /// Nullability is never rendered: every caller uses the result as a bare
+    /// type (a `CAST` target, a column's `dtype`), where `NOT NULL` is invalid.
+    pub fn try_format_type(datatype: &DataType, out: &mut String) -> AdapterResult<()> {
         match datatype {
             DataType::Null => out.push_str("INT"),
             DataType::Boolean => out.push_str("BIT"),
@@ -1061,9 +1059,6 @@ pub mod sqlserver {
                 ));
             }
         };
-        if !nullable {
-            out.push_str(" NOT NULL");
-        }
         Ok(())
     }
 }
@@ -1575,29 +1570,34 @@ mod tests {
     #[test]
     fn sqlserver_try_format_type_formats_native_types() {
         let mut out = String::new();
-        sqlserver::try_format_type(&DataType::Boolean, false, &mut out).unwrap();
-        assert_eq!(out, "BIT NOT NULL");
+        sqlserver::try_format_type(&DataType::Boolean, &mut out).unwrap();
+        assert_eq!(out, "BIT");
 
         out.clear();
-        sqlserver::try_format_type(&DataType::Int32, true, &mut out).unwrap();
+        sqlserver::try_format_type(&DataType::Int32, &mut out).unwrap();
         assert_eq!(out, "INT");
 
         out.clear();
-        sqlserver::try_format_type(&DataType::Utf8, true, &mut out).unwrap();
+        sqlserver::try_format_type(&DataType::Utf8, &mut out).unwrap();
         assert_eq!(out, "VARCHAR(MAX)");
 
         out.clear();
-        sqlserver::try_format_type(&DataType::Decimal128(18, 4), true, &mut out).unwrap();
+        sqlserver::try_format_type(&DataType::Decimal128(18, 4), &mut out).unwrap();
         assert_eq!(out, "DECIMAL(18, 4)");
 
         out.clear();
-        sqlserver::try_format_type(
-            &DataType::Timestamp(TimeUnit::Microsecond, None),
-            true,
-            &mut out,
-        )
-        .unwrap();
+        sqlserver::try_format_type(&DataType::Timestamp(TimeUnit::Microsecond, None), &mut out)
+            .unwrap();
         assert_eq!(out, "DATETIME2(6)");
+    }
+
+    #[test]
+    fn sqlserver_format_arrow_type_as_sql_ignores_nullability() {
+        let mut out = String::new();
+        DefaultTypeOps::new(AdapterType::SqlServer)
+            .format_arrow_type_as_sql(&DataType::Int32, false, &mut out)
+            .unwrap();
+        assert_eq!(out, "INT");
     }
 
     #[test]
@@ -1605,7 +1605,6 @@ mod tests {
         let mut out = String::new();
         let err = sqlserver::try_format_type(
             &DataType::Interval(arrow_schema::IntervalUnit::MonthDayNano),
-            true,
             &mut out,
         )
         .expect_err("INTERVAL is not supported in SQL Server");
@@ -1613,7 +1612,7 @@ mod tests {
 
         out.clear();
         let item = Arc::new(Field::new("item", DataType::Int32, true));
-        let err = sqlserver::try_format_type(&DataType::List(item), true, &mut out)
+        let err = sqlserver::try_format_type(&DataType::List(item), &mut out)
             .expect_err("ARRAY is not supported in SQL Server");
         assert_eq!(err.kind(), AdapterErrorKind::UnsupportedType);
     }
