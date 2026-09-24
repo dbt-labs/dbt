@@ -420,7 +420,14 @@ impl DbConfig {
             DbConfig::Salesforce(config) => dbt_yaml::to_value(config),
             DbConfig::Spark(config) => dbt_yaml::to_value(config),
             DbConfig::Fabric(config) => dbt_yaml::to_value(config),
-            DbConfig::SqlServer(config) => dbt_yaml::to_value(config),
+            DbConfig::SqlServer(config) => {
+                // An unset `authentication` is a SQL login; dbt-auth's default is a service principal.
+                let mut config = config.clone();
+                config
+                    .authentication
+                    .get_or_insert_with(|| "sql".to_string());
+                dbt_yaml::to_value(config)
+            }
             DbConfig::DuckDB(config) => dbt_yaml::to_value(config),
             DbConfig::LakeCompute(config) => dbt_yaml::to_value(config),
             DbConfig::Exasol(config) => dbt_yaml::to_value(config),
@@ -1416,6 +1423,8 @@ pub struct SqlServerDbConfig {
     #[serde(alias = "app_secret")]
     pub client_secret: Option<String>, // default = None
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub access_token: Option<String>, // default = None
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub encrypt: Option<bool>, // default = True  | default value in MS ODBC Driver 18 as well
     #[serde(skip_serializing_if = "Option::is_none")]
     #[serde(alias = "TrustServerCertificate")]
@@ -2320,7 +2329,7 @@ impl TryFrom<DbConfig> for TargetContext {
                     host: config.host,
                     port: config.port,
                     user: config.user,
-                    authentication: config.authentication.unwrap_or_default(),
+                    authentication: config.authentication.unwrap_or_else(|| "sql".to_string()),
                     __common__: CommonTargetContext {
                         database: config.database.ok_or_else(|| missing("database"))?,
                         schema: config.schema.ok_or_else(|| missing("schema"))?,
@@ -3052,6 +3061,26 @@ extensions:
         assert_eq!(target.__common__.database, "analytics");
         assert_eq!(target.__common__.schema, "dbo");
         assert_eq!(target.__common__.threads, Some(4));
+    }
+
+    #[test]
+    fn test_sqlserver_authentication_defaults_to_sql() {
+        let config: DbConfig = SqlServerDbConfig {
+            database: Some("analytics".to_string()),
+            schema: Some("dbo".to_string()),
+            ..Default::default()
+        }
+        .into();
+
+        let mapping = config.to_mapping().expect("mapping");
+        assert_eq!(
+            mapping.get("authentication").and_then(|v| v.as_str()),
+            Some("sql")
+        );
+        let TargetContext::SqlServer(target) = TargetContext::try_from(config).unwrap() else {
+            panic!("expected sqlserver target context");
+        };
+        assert_eq!(target.authentication, "sql");
     }
 
     /// `to_connection_mapping` filters on serialized names, which `serde(alias)`

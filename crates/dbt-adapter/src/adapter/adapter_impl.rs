@@ -2604,12 +2604,20 @@ impl AdapterImpl {
                     if let Some(target_column) = to_columns_map.get(&column_name)
                         && target_column.can_expand_to(&reference_column)?
                     {
-                        let col_string_size = reference_column.string_size().map_err(|msg| {
-                            AdapterError::new(AdapterErrorKind::UnexpectedResult, msg)
-                        })?;
-                        let mut new_type = reference_column
-                            .as_static()
-                            .string_type(Some(col_string_size as usize));
+                        let mut new_type = match self.adapter_type() {
+                            // Keeps nvarchar/nchar and (max), which the class-level string_type drops.
+                            // https://github.com/dbt-msft/dbt-sqlserver/blob/10a589985f4c102d3151cfffd8eb8f9d48e62a84/dbt/adapters/sqlserver/sqlserver_adapter.py#L856-L858
+                            SqlServer => reference_column.data_type(),
+                            _ => {
+                                let col_string_size =
+                                    reference_column.string_size().map_err(|msg| {
+                                        AdapterError::new(AdapterErrorKind::UnexpectedResult, msg)
+                                    })?;
+                                reference_column
+                                    .as_static()
+                                    .string_type(Some(col_string_size as usize))
+                            }
+                        };
 
                         // Preserve collation from the target (existing) column
                         if let Some(collation) = target_column.collation() {

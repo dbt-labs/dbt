@@ -33,13 +33,27 @@ pub fn config_aliases(adapter_type: AdapterType) -> &'static [(&'static str, &'s
         AdapterType::Postgres => &[("dbname", "database"), ("pass", "password")],
         // dbt-redshift 1.9.0 and 1.9.5 (identical), `dbt/adapters/redshift/connections.py:156`.
         AdapterType::Redshift => &[("dbname", "database"), ("pass", "password")],
+        // dbt-sqlserver 1.12.0rc4, `dbt/adapters/sqlserver/sqlserver_credentials.py:61-74`.
+        AdapterType::SqlServer => &[
+            ("user", "UID"),
+            ("username", "UID"),
+            ("pass", "PWD"),
+            ("password", "PWD"),
+            ("server", "host"),
+            ("trusted_connection", "windows_login"),
+            ("auth", "authentication"),
+            ("app_id", "client_id"),
+            ("app_secret", "client_secret"),
+            ("TrustServerCertificate", "trust_cert"),
+            ("schema_auth", "schema_authorization"),
+            ("SQL_ATTR_TRACE", "trace_flag"),
+        ],
         // Verified: these adapters' `Credentials` declare no `_ALIASES`.
         AdapterType::Snowflake | AdapterType::Spark | AdapterType::DuckDB => &[],
         // TODO(fs#13424): `_ALIASES` not transcribed for this adapter -- its Python package was
         // not vendored in the local cache used to populate this map.
         AdapterType::Salesforce
         | AdapterType::Fabric
-        | AdapterType::SqlServer
         | AdapterType::ClickHouse
         | AdapterType::Exasol
         | AdapterType::Athena

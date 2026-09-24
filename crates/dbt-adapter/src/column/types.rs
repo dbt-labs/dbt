@@ -282,6 +282,10 @@ impl ColumnStatic {
             // ClickHouseColumn.string_type ignores the size: always plain String,
             // never FixedString (would break contract comparisons and ALTERs).
             AdapterType::ClickHouse => "String".to_string(),
+            // https://github.com/dbt-msft/dbt-sqlserver/blob/10a589985f4c102d3151cfffd8eb8f9d48e62a84/dbt/adapters/sqlserver/sqlserver_column.py#L39
+            AdapterType::SqlServer => {
+                format!("varchar({})", size.filter(|s| *s > 0).unwrap_or(8000))
+            }
             _ => match size {
                 Some(size) => format!("character varying({size})"),
                 _ => "character varying".to_string(),
@@ -860,6 +864,7 @@ impl Column {
         if self.core_dtype == "text" || self.char_size.is_none() {
             let size = match self._adapter_type {
                 AdapterType::Snowflake => 16777216,
+                AdapterType::SqlServer => 8000,
                 _ => 256,
             };
             Ok(size)
@@ -891,6 +896,12 @@ impl Column {
                         | "number"
                 )
             }
+            AdapterType::SqlServer => {
+                matches!(
+                    self.core_dtype.to_lowercase().as_str(),
+                    "numeric" | "decimal" | "money" | "smallmoney"
+                )
+            }
             _ => {
                 matches!(
                     self.core_dtype.to_lowercase().as_str(),
@@ -906,6 +917,12 @@ impl Column {
                 matches!(self.core_dtype.to_lowercase().as_str(), "int64")
             }
             AdapterType::Snowflake => false,
+            AdapterType::SqlServer => {
+                matches!(
+                    self.core_dtype.to_lowercase().as_str(),
+                    "bit" | "tinyint" | "smallint" | "int" | "integer" | "bigint"
+                )
+            }
             _ => {
                 matches!(
                     self.core_dtype.to_lowercase().as_str(),
@@ -956,6 +973,12 @@ impl Column {
                 matches!(
                     self.core_dtype.to_lowercase().as_str(),
                     "string" | "fixedstring"
+                )
+            }
+            AdapterType::SqlServer => {
+                matches!(
+                    self.core_dtype.to_lowercase().as_str(),
+                    "varchar" | "char" | "nvarchar" | "nchar"
                 )
             }
             _ => {
@@ -1027,6 +1050,23 @@ impl Column {
                     }
                 }
                 bigquery_data_type_inner(self)
+            }
+            // https://github.com/dbt-msft/dbt-sqlserver/blob/10a589985f4c102d3151cfffd8eb8f9d48e62a84/dbt/adapters/sqlserver/sqlserver_column.py#L74
+            AdapterType::SqlServer => {
+                let dtype = self.core_dtype.to_lowercase();
+                match (dtype.as_str(), self.char_size) {
+                    ("datetime2", _) => "datetime2(6)".to_string(),
+                    ("varchar" | "char" | "nvarchar" | "nchar", Some(size)) => {
+                        format!("{dtype}({size})")
+                    }
+                    ("varchar" | "nvarchar", None) => format!("{dtype}(max)"),
+                    ("numeric" | "decimal", _) => self.as_static().numeric_type(
+                        &dtype,
+                        self.numeric_precision,
+                        self.numeric_scale,
+                    ),
+                    _ => self.core_dtype.clone(),
+                }
             }
             _ => {
                 if self.is_string() {
@@ -1102,14 +1142,26 @@ impl Column {
 
     /// https://github.com/dbt-labs/dbt-adapters/blob/main/dbt-adapters/src/dbt/adapters/base/column.py#L102-L103
     pub fn can_expand_to(&self, other: &Column) -> Result<bool, minijinja::Error> {
-        Ok(self.is_string()
-            && other.is_string()
-            && self
-                .string_size()
-                .map_err(|msg| minijinja::Error::new(minijinja::ErrorKind::MissingArgument, msg))?
-                < other.string_size().map_err(|msg| {
+        match self._adapter_type {
+            // https://github.com/dbt-msft/dbt-sqlserver/blob/10a589985f4c102d3151cfffd8eb8f9d48e62a84/dbt/adapters/sqlserver/sqlserver_column.py#L140
+            AdapterType::SqlServer => {
+                if !self.is_string() || !self.core_dtype.eq_ignore_ascii_case(&other.core_dtype) {
+                    return Ok(false);
+                }
+                Ok(match (self.char_size, other.char_size) {
+                    (Some(size), Some(other_size)) => size < other_size,
+                    (Some(_), None) => true,
+                    (None, _) => false,
+                })
+            }
+            _ => Ok(self.is_string()
+                && other.is_string()
+                && self.string_size().map_err(|msg| {
                     minijinja::Error::new(minijinja::ErrorKind::MissingArgument, msg)
-                })?)
+                })? < other.string_size().map_err(|msg| {
+                    minijinja::Error::new(minijinja::ErrorKind::MissingArgument, msg)
+                })?),
+        }
     }
 
     fn _bq_flatten_inner(&self, prefix: &str) -> Vec<Self> {
@@ -1725,6 +1777,57 @@ mod tests {
         assert_eq!(
             enriched.render_for_create(),
             "`col_b` int NOT NULL COMMENT 'has a description'"
+        );
+    }
+
+    fn sqlserver_col(dtype: &str, char_size: Option<u32>) -> Column {
+        // `sqlserver__get_columns_in_relation` reports a `max` length as -1,
+        // which `api.Column` parses as no size.
+        Column::new(
+            AdapterType::SqlServer,
+            "c".to_string(),
+            dtype.to_string(),
+            char_size,
+            Some(10),
+            Some(2),
+        )
+    }
+
+    #[test]
+    fn test_sqlserver_data_type_matches_v1() {
+        for (dtype, char_size, expected) in [
+            ("nvarchar", Some(10), "nvarchar(10)"),
+            ("varchar", None, "varchar(max)"),
+            ("nvarchar", None, "nvarchar(max)"),
+            ("char", Some(3), "char(3)"),
+            ("nchar", Some(3), "nchar(3)"),
+            ("decimal", None, "decimal(10,2)"),
+            ("datetime2", None, "datetime2(6)"),
+            ("datetime", None, "datetime"),
+            ("money", None, "money"),
+        ] {
+            assert_eq!(
+                sqlserver_col(dtype, char_size).data_type(),
+                expected,
+                "{dtype}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_sqlserver_can_expand_to() {
+        let varchar_10 = sqlserver_col("varchar", Some(10));
+        let varchar_20 = sqlserver_col("varchar", Some(20));
+        let varchar_max = sqlserver_col("varchar", None);
+        assert!(varchar_10.can_expand_to(&varchar_20).unwrap());
+        assert!(!varchar_20.can_expand_to(&varchar_10).unwrap());
+        assert!(varchar_10.can_expand_to(&varchar_max).unwrap());
+        assert!(!varchar_max.can_expand_to(&varchar_max).unwrap());
+        assert!(!varchar_max.can_expand_to(&varchar_10).unwrap());
+        assert!(
+            !varchar_10
+                .can_expand_to(&sqlserver_col("nvarchar", Some(20)))
+                .unwrap()
         );
     }
 }
