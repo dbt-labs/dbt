@@ -75,6 +75,7 @@ pub fn is_update_statement(sql: &str, adapter_type: AdapterType) -> bool {
         | AdapterType::Spark
         | AdapterType::DuckDB
         | AdapterType::Fabric
+        | AdapterType::SqlServer
         | AdapterType::Exasol
         | AdapterType::Starburst
         | AdapterType::Athena
