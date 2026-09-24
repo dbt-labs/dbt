@@ -133,6 +133,25 @@ mod sqlserver {
     }
 
     #[test]
+    fn model_constraints_skipped_without_enforced_contract() {
+        let harness = build_harness();
+        harness.mock().on("get_relation", |_| Ok(Value::from(())));
+
+        let ctx = harness
+            .materialization_context("my_table", "SELECT id FROM source_table")
+            .relation_type(RelationType::Table)
+            .config(Value::from_dyn_object(config_mock(BTreeMap::new())))
+            .build();
+        render_table(&harness, ctx)
+            .unwrap_or_else(|e| panic!("table materialization failed: {e:?}"));
+
+        harness
+            .mock()
+            .observed_calls()
+            .assert_not_called("render_raw_model_constraints");
+    }
+
+    #[test]
     fn full_refresh_build_prebuilt_raises_compiler_error() {
         let harness = build_harness();
         harness.mock().on("get_relation", |_| Ok(Value::from(())));

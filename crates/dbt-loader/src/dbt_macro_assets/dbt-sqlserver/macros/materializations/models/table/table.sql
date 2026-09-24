@@ -75,13 +75,15 @@
 
   {% do persist_docs(target_relation, model) %}
 
-  {{ build_model_constraints(target_relation) }}
-
   -- `COMMIT` happens here
   {{ adapter.commit() }}
 
   -- finally, drop the existing/backup relation after the commit
   {{ drop_relation_if_exists(backup_relation) }}
+
+  {#- After the backup drop: SQL Server scopes constraint names per schema, so a
+      named constraint collides with the backup's copy until that is gone. -#}
+  {{ build_model_constraints(target_relation) }}
 
   {{ run_hooks(post_hooks, inside_transaction=False) }}
 
