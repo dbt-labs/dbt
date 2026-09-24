@@ -14,6 +14,7 @@ from dbt.contracts.graph.manifest import Manifest
 from dbt.contracts.graph.nodes import (
     AnalysisNode,
     GenericTestNode,
+    ManifestNode,
     ModelNode,
     SeedNode,
     SnapshotNode,
@@ -491,20 +492,32 @@ class PartialParsing:
         if unique_id in self.saved_manifest.child_map:
             self.schedule_nodes_for_parsing(self.saved_manifest.child_map[unique_id])
 
+    def _reschedule_saved_node(self, node: ManifestNode) -> None:
+        # Generic test nodes are handled separately (removed from the schema file).
+        if node.resource_type == NodeType.Test and node.test_node_type == "generic":
+            return
+        file_id = node.file_id
+        if file_id not in self.saved_files or file_id in self.file_diff["deleted"]:
+            return
+        source_file = self.saved_files[file_id]
+        if isinstance(source_file, SchemaSourceFile):
+            # YAML-defined nodes live in a schema file, not a SQL SourceFile.
+            # remove_mssat_file is a no-op for these and overwriting saved_files with
+            # the new content here would leave the stale node in the manifest. Route
+            # through the schema-file change path so the stale node is removed and
+            # the new one is scheduled.
+            if file_id in self.new_files:
+                self.change_schema_file(file_id)
+        else:
+            self.remove_mssat_file(source_file)
+            # content of non-schema files is only in new files
+            self.saved_files[file_id] = deepcopy(self.new_files[file_id])
+            self.add_to_pp_files(self.saved_files[file_id])
+
     def schedule_nodes_for_parsing(self, unique_ids):
         for unique_id in unique_ids:
             if unique_id in self.saved_manifest.nodes:
-                node = self.saved_manifest.nodes[unique_id]
-                if node.resource_type == NodeType.Test and node.test_node_type == "generic":
-                    # test nodes are handled separately. Must be removed from schema file
-                    continue
-                file_id = node.file_id
-                if file_id in self.saved_files and file_id not in self.file_diff["deleted"]:
-                    source_file = self.saved_files[file_id]
-                    self.remove_mssat_file(source_file)
-                    # content of non-schema files is only in new files
-                    self.saved_files[file_id] = deepcopy(self.new_files[file_id])
-                    self.add_to_pp_files(self.saved_files[file_id])
+                self._reschedule_saved_node(self.saved_manifest.nodes[unique_id])
             elif unique_id in self.saved_manifest.sources:
                 source = self.saved_manifest.sources[unique_id]
                 self._schedule_for_parsing(
