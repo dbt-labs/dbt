@@ -6,7 +6,7 @@ use dbt_schemas::schemas::serde::StringOrInteger;
 
 // Index → authentication string. Order is the order the user sees in the select prompt.
 // SQL Server, unlike Fabric, defaults to native SQL auth (v1's `sqlserver_credentials.py`
-// default), and all four methods below are implemented in `dbt-auth/src/sqlserver/mod.rs`
+// default), and every method below is implemented in `dbt-auth/src/sqlserver/mod.rs`
 // (`parse_auth`), so none need to stay commented out pending untested credentials.
 const AUTH_METHODS: &[(&str, &str)] = &[
     (
@@ -22,6 +22,10 @@ const AUTH_METHODS: &[(&str, &str)] = &[
         "environment",
         "Environment (DefaultAzureCredential env vars, see https://learn.microsoft.com/en-us/python/api/azure-identity/azure.identity.environmentcredential, explain the available combinations of environment variables you can use to authenticate.)",
     ),
+    (
+        "ActiveDirectoryAccessToken",
+        "Active Directory Access Token",
+    ),
 ];
 
 impl InteractiveSetup for SqlServerDbConfig {
@@ -35,6 +39,7 @@ impl InteractiveSetup for SqlServerDbConfig {
         let sql_idx = auth_index("sql").unwrap_or(0);
         let sp_idx = auth_index("ActiveDirectoryServicePrincipal").unwrap_or(0);
         let adpw_idx = auth_index("ActiveDirectoryPassword").unwrap_or(0);
+        let token_idx = auth_index("ActiveDirectoryAccessToken").unwrap_or(0);
 
         vec![
             // Core connection settings
@@ -76,6 +81,9 @@ impl InteractiveSetup for SqlServerDbConfig {
                 .when_field_equals("authentication", FieldValue::Integer(adpw_idx)),
             ConfigField::password("password", "Password (Entra user password)")
                 .when_field_equals("authentication", FieldValue::Integer(adpw_idx)),
+            // Active Directory Access Token field
+            ConfigField::password("access_token", "Access token")
+                .when_field_equals("authentication", FieldValue::Integer(token_idx)),
             // `environment` needs no additional fields: credentials come from AZURE_* env vars.
         ]
     }
@@ -140,6 +148,11 @@ impl InteractiveSetup for SqlServerDbConfig {
                     self.tenant_id = Some(s);
                 }
             }
+            "access_token" => {
+                if let FieldValue::String(s) = value {
+                    self.access_token = Some(s);
+                }
+            }
             _ => {} // Ignore temporary or unrecognized fields
         }
         Ok(())
@@ -179,6 +192,10 @@ impl InteractiveSetup for SqlServerDbConfig {
                 .tenant_id
                 .as_ref()
                 .map(|s| FieldValue::String(s.clone())),
+            "access_token" => self
+                .access_token
+                .as_ref()
+                .map(|s| FieldValue::String(s.clone())),
             _ => None,
         }
     }
@@ -199,6 +216,7 @@ impl InteractiveSetup for SqlServerDbConfig {
             "client_id" => self.client_id.is_some(),
             "client_secret" => self.client_secret.is_some(),
             "tenant_id" => self.tenant_id.is_some(),
+            "access_token" => self.access_token.is_some(),
             _ => false,
         }
     }
@@ -215,7 +233,7 @@ fn auth_label_options() -> Vec<&'static str> {
     AUTH_METHODS.iter().map(|(_, label)| *label).collect()
 }
 
-fn default_sqlserver_config() -> SqlServerDbConfig {
+pub fn default_sqlserver_config() -> SqlServerDbConfig {
     SqlServerDbConfig {
         authentication: Some("sql".to_string()),
         encrypt: Some(true),
