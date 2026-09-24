@@ -1,6 +1,6 @@
 import time
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Literal, Optional
+from typing import Any, Dict, List, Literal, Optional, Union
 
 from metricflow_semantic_interfaces.references import MeasureReference, MetricReference
 from metricflow_semantic_interfaces.type_enums import (
@@ -20,7 +20,9 @@ from dbt.artifacts.resources.v1.semantic_layer_components import (
     SourceFileMetadata,
     WhereFilterIntersection,
 )
+from dbt.artifacts.resources.v1.config import list_str, metas
 from dbt_common.contracts.config.base import BaseConfig, CompareBehavior, MergeBehavior
+from dbt_common.contracts.config.metadata import ShowBehavior
 from dbt_common.dataclass_schema import dbtClassMixin
 
 """
@@ -151,8 +153,12 @@ class MetricConfig(BaseConfig):
         default=None,
         metadata=CompareBehavior.Exclude.meta(),
     )
-
     meta: Dict[str, Any] = field(default_factory=dict, metadata=MergeBehavior.Update.meta())
+
+    tags: Union[List[str], str] = field(
+        default_factory=list_str,
+        metadata=metas(ShowBehavior.Hide, MergeBehavior.Append, CompareBehavior.Exclude),
+    )
 
 
 @dataclass
@@ -177,6 +183,7 @@ class Metric(GraphResource):
 
     # These fields are only used in v1 metrics.
     meta: Dict[str, Any] = field(default_factory=dict, metadata=MergeBehavior.Update.meta())
+
     tags: List[str] = field(default_factory=list)
 
     @property

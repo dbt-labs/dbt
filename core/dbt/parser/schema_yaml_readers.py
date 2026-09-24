@@ -87,12 +87,14 @@ from dbt.contracts.graph.unparsed import (
     UnparsedSemanticModelConfig,
     UnparsedSemanticResourceConfig,
 )
+from dbt.events.types import ValidationWarning
 from dbt.exceptions import JSONValidationError, YamlParseDictError
 from dbt.node_types import NodeType
-from dbt.parser.common import YamlBlock
+from dbt.parser.common import YamlBlock, normalize_tags
 from dbt.parser.schemas import ParseResult, SchemaParser, YamlReader
 from dbt_common.dataclass_schema import ValidationError
 from dbt_common.exceptions import DbtInternalError
+from dbt_common.events.functions import warn_or_error
 
 
 def parse_where_filter(
@@ -141,10 +143,7 @@ class ExposureParser(YamlReader):
                 f"Calculated a {type(config)} for an exposure, but expected an ExposureConfig"
             )
 
-        # Null tags caught during deserialization, but guard here defensively.
-        tags = sorted(
-            set((self.project.exposures.get("tags") or []) + unparsed.tags + config.tags)
-        )
+        tags = normalize_tags(self.project.exposures.get("tags"), unparsed.tags, config.tags)
         meta = {**self.project.exposures.get("meta", {}), **unparsed.meta, **config.meta}
 
         config.tags = tags
@@ -542,6 +541,8 @@ class MetricParser(YamlReader):
             rendered=True,
         )
 
+        config.tags = normalize_tags(config.tags)
+
         config = config.finalize_and_validate()
 
         unrendered_config = self._generate_metric_config(
@@ -562,12 +563,21 @@ class MetricParser(YamlReader):
             if "meta" in config and config["meta"]:
                 unparsed.meta = config["meta"]
             meta = unparsed.meta
-            tags = unparsed.tags
+            if unparsed.tags:
+                # Top-level tags on v1 metrics are ignored; use config.tags instead.
+                warn_or_error(
+                    ValidationWarning(
+                        field_name=(
+                            "top-level `tags:` (ignored; use `config.tags` in YAML "
+                            "or `+tags` in dbt_project.yml instead)"
+                        ),
+                        resource_type="metric (v1)",
+                        node_name=unparsed.name,
+                    )
+                )
         elif isinstance(unparsed, UnparsedMetricV2):
-            # V2 Metrics do not have a top-level meta field; this should be part of
-            # the config.
+            # V2 Metrics do not have a top-level meta or tags field; use config only.
             meta = {}
-            tags = []
         else:
             raise DbtInternalError(
                 f"Tried to parse a {type(unparsed)} into a metric, but expected "
@@ -593,7 +603,7 @@ class MetricParser(YamlReader):
             time_granularity=unparsed.time_granularity,
             filter=parse_where_filter(unparsed.filter),
             meta=meta,
-            tags=tags,
+            tags=config.tags,
             config=config,
             unrendered_config=unrendered_config,
             group=config.group,
@@ -1295,17 +1305,7 @@ class SavedQueryParser(YamlReader):
             rendered=False,
         )
 
-        # The parser handles plain strings just fine, but we need to be able
-        # to join two lists, remove duplicates, and sort, so we have to wrap things here.
-        def wrap_tags(s: Union[List[str], str]) -> List[str]:
-            if s is None:
-                return []
-            return [s] if isinstance(s, str) else s
-
-        config_tags = wrap_tags(config.get("tags"))
-        unparsed_tags = wrap_tags(unparsed.tags)
-        tags = list(set([*unparsed_tags, *config_tags]))
-        tags.sort()
+        tags = normalize_tags(unparsed.tags, config.get("tags"))
 
         parsed = SavedQuery(
             description=unparsed.description,
