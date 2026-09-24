@@ -1397,6 +1397,40 @@ fn test_struct_on_databricks() {
     }
 }
 
+#[test]
+fn test_bigquery_logical_types_preserve_identity() {
+    for (sql_type, expected_name) in [(Json, "json"), (Geography(None), "geography")] {
+        assert_eq!(
+            sql_type.pick_best_arrow_type(Bigquery),
+            DataType::FixedSizeList(Arc::new(Field::new(expected_name, DataType::Utf8, true)), 1,),
+        );
+    }
+
+    let nested = Struct(Some(vec![
+        StructField::new(Ident::plain("payload"), Json, true),
+        StructField::new(Ident::plain("location"), Geography(None), true),
+    ]))
+    .pick_best_arrow_type(Bigquery);
+    let logical_type =
+        |name| DataType::FixedSizeList(Arc::new(Field::new(name, DataType::Utf8, true)), 1);
+    let field = |name: &str, data_type: DataType, sql_type: &str| {
+        Field::new(name, data_type, true).with_metadata(HashMap::from([(
+            metadata_sql_type_key(Bigquery).to_string(),
+            sql_type.to_string(),
+        )]))
+    };
+    assert_eq!(
+        nested,
+        DataType::Struct(
+            vec![
+                field("payload", logical_type("json"), "JSON"),
+                field("location", logical_type("geography"), "GEOGRAPHY"),
+            ]
+            .into(),
+        ),
+    );
+}
+
 // Athena-specific type behavior tests
 // Athena is Presto/Trino-based; see https://docs.aws.amazon.com/athena/latest/ug/data-types.html
 
