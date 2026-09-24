@@ -199,6 +199,7 @@ impl<T: TestableNodeTrait> TestableNode<'_, T> {
         raw_test_configs: &TestUnrenderedConfigs,
     ) -> FsResult<()> {
         let test_configs: Vec<GenericTestConfig> = self.try_into()?;
+        let inherited_test_tags = self.inner.inherited_test_tags();
         // Process tests for each version (or single resource)
         let mut seen_tests: HashSet<String> = HashSet::new();
         for test_config in test_configs {
@@ -227,7 +228,7 @@ impl<T: TestableNodeTrait> TestableNode<'_, T> {
                         &mut seen_tests,
                         test_name_truncations,
                         seen_generic_test_paths,
-                        &[],
+                        inherited_test_tags,
                         suppress_deprecated_test_validation,
                         LegacyTestSyntaxHandling::Strict,
                         raw_config,
@@ -256,6 +257,8 @@ impl<T: TestableNodeTrait> TestableNode<'_, T> {
                             .and_then(|v| v.get(i))
                             .cloned()
                             .unwrap_or_default();
+                        let mut tags = inherited_test_tags.to_vec();
+                        tags.extend(&entry.tags);
                         let test_asset = persist_inner(
                             project_name,
                             root_project_name,
@@ -268,7 +271,7 @@ impl<T: TestableNodeTrait> TestableNode<'_, T> {
                             &mut seen_tests,
                             test_name_truncations,
                             seen_generic_test_paths,
-                            &entry.tags,
+                            &tags,
                             suppress_deprecated_test_validation,
                             entry.legacy_syntax_handling,
                             raw_config,
@@ -1683,6 +1686,11 @@ pub trait TestableNodeTrait {
     /// Columns, each with optional tests.
     fn column_tests(&self) -> FsResult<Option<BTreeMap<String, ColumnTestEntry>>>;
 
+    /// Tags inherited by every generic test on this resource.
+    fn inherited_test_tags(&self) -> &[String] {
+        &[]
+    }
+
     /// Versions for models, or None for everything else.
     fn versions(&self) -> Option<&[Versions]> {
         None
@@ -1758,6 +1766,7 @@ impl TestableNodeTrait for SnapshotProperties {
 pub struct TestableTable<'a> {
     pub source_name: String,
     pub table: &'a Tables,
+    pub tags: Vec<String>,
 }
 
 impl TestableNodeTrait for TestableTable<'_> {
@@ -1783,6 +1792,10 @@ impl TestableNodeTrait for TestableTable<'_> {
     fn column_tests(&self) -> FsResult<Option<BTreeMap<String, ColumnTestEntry>>> {
         column_tests_inner(&self.table.columns)
     }
+
+    fn inherited_test_tags(&self) -> &[String] {
+        &self.tags
+    }
 }
 
 /// Normalizes a test name following the existing dbt behavior
@@ -1800,8 +1813,38 @@ fn normalize_test_name(input: &str) -> FsResult<String> {
 mod tests {
     use super::*;
     use dbt_schemas::schemas::data_tests::{CustomTestInner, CustomTestMultiKey};
+    use dbt_schemas::schemas::properties::Tables;
     use serde_json::Value;
     use std::collections::{BTreeMap, HashMap};
+
+    #[test]
+    fn source_table_config_tags_are_inherited_by_generic_tests() {
+        let table = Tables {
+            columns: None,
+            config: None,
+            data_tests: None,
+            description: None,
+            external: None,
+            identifier: None,
+            loader: None,
+            name: "orders".to_string(),
+            quoting: None,
+            tests: None,
+        };
+        let source = TestableTable {
+            source_name: "raw".to_string(),
+            table: &table,
+            tags: vec![
+                "source_config_tag".to_string(),
+                "table_config_tag".to_string(),
+            ],
+        };
+
+        assert_eq!(
+            source.inherited_test_tags(),
+            ["source_config_tag", "table_config_tag"]
+        );
+    }
 
     #[test]
     fn test_generic_test_asset_path_disambiguates_name_collisions() {
