@@ -1,0 +1,7 @@
+kind: Fixes
+body: Keep the microbatch event-time filter on relations derived from a ref with include(), quote(), replace_path(), incorporate() or without_identifier()
+time: 2026-09-24T11:20:27.396454+03:00
+custom:
+    author: alex-mirkin
+    issue: "16383"
+    project: dbt-core

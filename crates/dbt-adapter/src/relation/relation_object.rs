@@ -211,7 +211,7 @@ impl Object for RelationObject {
                 let identifier: Option<String> =
                     args.consume_optional_only_from_kwargs("identifier");
                 self.replace_path(database, schema, identifier)
-                    .map(|r| Value::from_object(RelationObject::new(r)))
+                    .map(|r| Value::from_object(self.with_relation(r)))
             }
             "get" => {
                 let mut args = ArgParser::new(args, None);
@@ -236,7 +236,7 @@ impl Object for RelationObject {
             }
             "without_identifier" => self
                 .without_identifier()
-                .map(|r| Value::from_object(RelationObject::new(r))),
+                .map(|r| Value::from_object(self.with_relation(r))),
             "include" => {
                 let mut args = ArgParser::new(args, None);
                 let database: Option<bool> = args.consume_optional_only_from_kwargs("database");
@@ -267,7 +267,7 @@ impl Object for RelationObject {
                     }
                 });
                 self.incorporate(path, relation_type, location)
-                    .map(|r| Value::from_object(RelationObject::new(r)))
+                    .map(|r| Value::from_object(self.with_relation(r)))
             }
             "information_schema" => {
                 let iter = ArgsIter::new("information_schema", &["view_name"], args);
@@ -1152,7 +1152,7 @@ mod tests {
     }
 
     #[test]
-    fn include_and_quote_keep_microbatch_filter() {
+    fn derived_relations_keep_microbatch_filter() {
         use chrono::{TimeZone, Utc};
         use dbt_schemas::filter::Sample;
 
@@ -1182,10 +1182,16 @@ mod tests {
             r#"
             {{ obj.include(database=false) }}
             {{ obj.quote(identifier=false) }}
+            {{ obj.replace_path(identifier='j') }}
+            {{ obj.incorporate(path={'identifier': 'k'}) }}
+            {{ obj.without_identifier() }}
             "#,
             r#"
             (select * from "s"."i" where event_date >= to_timestamp_tz('2026-07-13T00:00:00+00:00') and event_date < to_timestamp_tz('2026-07-14T00:00:00+00:00'))
             (select * from "d"."s".i where event_date >= to_timestamp_tz('2026-07-13T00:00:00+00:00') and event_date < to_timestamp_tz('2026-07-14T00:00:00+00:00'))
+            (select * from "d"."s"."j" where event_date >= to_timestamp_tz('2026-07-13T00:00:00+00:00') and event_date < to_timestamp_tz('2026-07-14T00:00:00+00:00'))
+            (select * from "d"."s"."k" where event_date >= to_timestamp_tz('2026-07-13T00:00:00+00:00') and event_date < to_timestamp_tz('2026-07-14T00:00:00+00:00'))
+            (select * from "d"."s" where event_date >= to_timestamp_tz('2026-07-13T00:00:00+00:00') and event_date < to_timestamp_tz('2026-07-14T00:00:00+00:00'))
             "#,
         );
     }

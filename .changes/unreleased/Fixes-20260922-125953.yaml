@@ -1,7 +1,0 @@
-kind: Fixes
-body: Keep the microbatch event-time filter when a ref is modified with include() or quote()
-time: 2026-09-22T12:59:53.739489+03:00
-custom:
-    author: alex-mirkin
-    issue: "16383"
-    project: dbt-core
