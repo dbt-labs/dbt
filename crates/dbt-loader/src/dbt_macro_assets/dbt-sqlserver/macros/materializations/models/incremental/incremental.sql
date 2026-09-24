@@ -48,8 +48,13 @@
   {% set build_sql_is_create_table_as = false %}
 
   {% if existing_relation is none %}
-    {% set build_sql = get_create_table_as_sql(False, target_relation, sql) %}
+    {#- Build into the intermediate and swap, not straight into the target. The
+        empty CREATE and the load commit separately, so a failed load would
+        otherwise leave an empty table under the model's name, and the next run
+        would append into it instead of rebuilding. -#}
+    {% set build_sql = get_create_table_as_sql(False, intermediate_relation, sql) %}
     {% set build_sql_is_create_table_as = true %}
+    {% set need_swap = true %}
   {% elif full_refresh_mode %}
     {% set build_sql = get_create_table_as_sql(False, intermediate_relation, sql) %}
     {% set build_sql_is_create_table_as = true %}
@@ -68,11 +73,9 @@
 
     {% set contract_config = config.get('contract') %}
     {% if not contract_config or not contract_config.enforced %}
-      {% set expansion_max_rows = config.get('column_type_expansion_max_rows', 1000000) %}
       {% do adapter.expand_target_column_types(
                from_relation=temp_relation,
-               to_relation=target_relation,
-               max_rows=expansion_max_rows) %}
+               to_relation=target_relation) %}
     {% endif %}
     {#-- Process schema changes. Returns dict of changes if successful. Use source columns for upserting/merging --#}
     {% set dest_columns = process_schema_changes(on_schema_change, temp_relation, existing_relation) %}
@@ -97,13 +100,6 @@
     {% call statement("main", auto_begin=False) %}
         {{ build_sql }}
     {% endcall %}
-    {#- Reopen the ambient transaction the batch above declined to start, so
-        the swap and the tail (grants/persist_docs/indexes/post-hooks) keep
-        their semantics and adapter.commit() below has a matching BEGIN
-        rather than raising Msg 3902. -#}
-    {% do adapter.commit_if_open() %}
-    {% do adapter.begin_if_closed() %}
-    {{ build_model_constraints(target_relation) }}
   {% else %}
     {% call statement("main") %}
         {{ build_sql }}
@@ -111,9 +107,12 @@
   {% endif %}
 
   {% if need_swap %}
-      {% do adapter.rename_relation(target_relation, backup_relation) %}
+      {#- The fresh-create branch swaps too, with nothing to back up. -#}
+      {% if existing_relation is not none %}
+        {% do adapter.rename_relation(target_relation, backup_relation) %}
+        {% do to_drop.append(backup_relation) %}
+      {% endif %}
       {% do adapter.rename_relation(intermediate_relation, target_relation) %}
-      {% do to_drop.append(backup_relation) %}
   {% endif %}
 
   {% set should_revoke = should_revoke(existing_relation, full_refresh_mode) %}
@@ -133,6 +132,12 @@
   {% for rel in to_drop %}
       {% do adapter.drop_relation(rel) %}
   {% endfor %}
+
+  {#- Model-level constraints go on the table that was just built, once the
+      backup holding the old (schema-scoped) constraint names is gone. -#}
+  {% if build_sql_is_create_table_as %}
+    {{ build_model_constraints(target_relation) }}
+  {% endif %}
 
   {{ run_hooks(post_hooks, inside_transaction=False) }}
 
