@@ -1,0 +1,6 @@
+kind: Fixes
+body: 'Fail parse when generic tests reference missing nodes (Fixes #12975)'
+time: 2026-05-17T11:59:03.833668-04:00
+custom:
+    Author: omarfarooq908
+    Issue: "12975"
