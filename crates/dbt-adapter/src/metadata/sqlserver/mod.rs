@@ -35,8 +35,8 @@ use std::{collections::BTreeMap, sync::Arc};
 /// - They read the connection's current database only. Any other `@table_qualifier`
 ///   is error 15250, "The database name component of the object qualifier must be the
 ///   name of the current database".
-/// - `@table_name` is a `LIKE` pattern unless `@fUsePattern = 0` is passed, so
-///   `stg_orders` also matches `stgXorders`.
+/// - `@table_owner` and `@table_name` are `LIKE` patterns, so `stg_orders` also
+///   matches `stgXorders`. `sp_columns` has no `@fUsePattern` to turn that off.
 ///
 /// The catalog views take a three-part name, which resolves cross-database without
 /// changing the connection's current database the way `USE` does.
