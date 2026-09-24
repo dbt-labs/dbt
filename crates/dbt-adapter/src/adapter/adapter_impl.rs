@@ -4194,9 +4194,12 @@ impl AdapterImpl {
             Impl(Fabric, engine) => {
                 fabric::list_relations(engine.as_ref(), query_ctx, conn, db_schema, token)
             }
+            Impl(ClickHouse, engine) => {
+                clickhouse::list_relations(engine.as_ref(), query_ctx, conn, db_schema, token)
+            }
             Impl(
-                adapter_type @ (Postgres | Salesforce | ClickHouse | Exasol | Starburst | Athena
-                | Trino | Datafusion | Dremio | Oracle),
+                adapter_type @ (Postgres | Salesforce | Exasol | Starburst | Athena | Trino
+                | Datafusion | Dremio | Oracle),
                 _,
             ) => {
                 let err = AdapterError::new(
