@@ -279,7 +279,9 @@ def _try_evaluate_to_python(node: Any) -> Any:
             for pair in node.items  # type: ignore[attr-defined]
         }
     if isinstance(node, jinja2.nodes.Tuple):
-        return tuple(_try_evaluate_to_python(item) for item in node.items)  # type: ignore[attr-defined]
+        # list, not tuple: unrendered_config round-trips through JSON and msgpack,
+        # neither of which preserves tuple-ness
+        return [_try_evaluate_to_python(item) for item in node.items]  # type: ignore[attr-defined]
     if isinstance(node, jinja2.nodes.Neg):
         inner = _try_evaluate_to_python(node.node)  # type: ignore[attr-defined]
         if isinstance(inner, (int, float)):
