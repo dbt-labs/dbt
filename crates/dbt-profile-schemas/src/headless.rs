@@ -10,13 +10,14 @@ use dbt_adapter_core::AdapterType;
 use dbt_common::{ErrorCode, FsResult, fs_err};
 use dbt_schemas::schemas::profiles::{
     BigqueryDbConfig, ClickHouseDbConfig, DatabricksDbConfig, DbConfig, ExasolDbConfig,
-    FabricDbConfig, PostgresDbConfig, RedshiftDbConfig, SnowflakeDbConfig,
+    FabricDbConfig, PostgresDbConfig, RedshiftDbConfig, SnowflakeDbConfig, SqlServerDbConfig,
 };
 use dbt_schemas::schemas::serde::StringOrInteger;
 
 use crate::common::{ConfigField, ConfigProcessor, FieldValue, InteractiveSetup};
 use crate::fabric_config::default_fabric_config;
 use crate::profile::ProfileTarget;
+use crate::sqlserver_config::default_sqlserver_config;
 
 /// The adapters that support headless profile construction, in display order.
 ///
@@ -31,6 +32,7 @@ pub fn supported_adapters() -> Vec<AdapterType> {
         AdapterType::Postgres,
         AdapterType::Redshift,
         AdapterType::Fabric,
+        AdapterType::SqlServer,
     ]
 }
 
@@ -45,6 +47,7 @@ pub fn adapter_fields(adapter: AdapterType) -> FsResult<Vec<ConfigField>> {
         AdapterType::Postgres => PostgresDbConfig::get_fields(),
         AdapterType::Redshift => RedshiftDbConfig::get_fields(),
         AdapterType::Fabric => FabricDbConfig::get_fields(),
+        AdapterType::SqlServer => SqlServerDbConfig::get_fields(),
         other => {
             return Err(fs_err!(
                 ErrorCode::InvalidConfig,
@@ -247,6 +250,11 @@ pub fn build_profile_target(
             let config = apply_values(&default_fabric_config(), values)?;
             DbConfig::Fabric(Box::new(config))
         }
+        AdapterType::SqlServer => {
+            // SQL Server's interactive setup does not apply a `threads` default.
+            let config = apply_values(&default_sqlserver_config(), values)?;
+            DbConfig::SqlServer(Box::new(config))
+        }
         other => {
             return Err(fs_err!(
                 ErrorCode::InvalidConfig,
@@ -263,4 +271,44 @@ pub fn build_profile_target(
         target: target.to_string(),
         outputs,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_sqlserver_access_token_profile() {
+        let values = HashMap::from([
+            (
+                "host".to_string(),
+                FieldValue::String("sql.prod.internal".to_string()),
+            ),
+            (
+                "database".to_string(),
+                FieldValue::String("analytics".to_string()),
+            ),
+            ("schema".to_string(), FieldValue::String("dbo".to_string())),
+            ("authentication".to_string(), FieldValue::Integer(4)),
+            (
+                "access_token".to_string(),
+                FieldValue::String("token".to_string()),
+            ),
+            (
+                "password".to_string(),
+                FieldValue::String("ignored".to_string()),
+            ),
+        ]);
+
+        let profile = build_profile_target(AdapterType::SqlServer, "dev", &values).unwrap();
+        let Some(DbConfig::SqlServer(config)) = profile.outputs.get("dev") else {
+            panic!("expected a sqlserver output");
+        };
+        assert_eq!(
+            config.authentication.as_deref(),
+            Some("ActiveDirectoryAccessToken")
+        );
+        assert_eq!(config.access_token.as_deref(), Some("token"));
+        assert_eq!(config.password, None);
+    }
 }
