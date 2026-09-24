@@ -8,8 +8,12 @@
 {%- endmacro %}
 
 {% macro snowflake__snapshot_get_time() -%}
-  {#- Cast to microsecond precision because Iceberg tables reject TIMESTAMP_NTZ(9). -#}
-  to_timestamp_ntz({{ current_timestamp() }})::timestamp_ntz(6)
+  {%- if config.get('table_format') == 'iceberg' -%}
+    {#- Cast to microsecond precision because Iceberg tables reject TIMESTAMP_NTZ(9). -#}
+    to_timestamp_ntz({{ current_timestamp() }})::timestamp_ntz(6)
+  {%- else -%}
+    to_timestamp_ntz({{ current_timestamp() }})
+  {%- endif -%}
 {%- endmacro %}
 
 {% macro snowflake__current_timestamp_backcompat() %}
