@@ -12,6 +12,7 @@ use dbt_adapter_core::AdapterType;
 use dbt_common::cancellation::CancellationToken;
 use dbt_common::constants::{DBT_SNAPSHOTS_DIR_NAME, DBT_TARGET_DIR_NAME, PARSING};
 use dbt_common::io_args::{FsCommand, IoArgs, StaticAnalysisKind};
+use dbt_common::path::node_name_from_path;
 use dbt_common::tokiofs::read_to_string;
 use dbt_common::tracing::dbt_emit::{
     emit_debug_log_message, emit_error_log_from_fs_error, emit_warn_log_from_fs_error,
@@ -208,7 +209,7 @@ where
         args, package_name, ..
     } = &**inner;
 
-    let ref_name = dbt_asset.path.file_stem().unwrap().to_str().unwrap();
+    let ref_name = node_name_from_path(&dbt_asset.path).unwrap();
 
     let display_path = if dbt_asset.base_path == args.io.out_dir
         && dbt_asset.path.starts_with(DBT_SNAPSHOTS_DIR_NAME)
@@ -762,7 +763,7 @@ pub async fn render_unresolved_sql_files<
             let chunk_vec = chunk.to_vec();
             let mut chunk_props = BTreeMap::new();
             for dbt_asset in &chunk_vec {
-                let ref_name = dbt_asset.path.file_stem().unwrap().to_str().unwrap();
+                let ref_name = node_name_from_path(&dbt_asset.path).unwrap();
                 if let Some(entry) = node_properties.get(ref_name) {
                     chunk_props.insert(ref_name.to_string(), entry.clone());
                 }

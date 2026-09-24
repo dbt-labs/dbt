@@ -66,7 +66,7 @@ use dbt_common::{
     ErrorCode, FsResult, fs_err,
     io_args::{EvalArgs, FsCommand, IoArgs},
     node_selector::{IndirectSelection, MethodName, SelectExpression},
-    path::DbtPath,
+    path::{DbtPath, resource_extension},
 };
 use dbt_jinja_vars::{DEFAULT_ENV_PLACEHOLDER, DbtVars};
 use dbt_schemas::{
@@ -218,11 +218,8 @@ impl IncrementalState {
                     // DocsPaths tracks all files in doc directories, but only .md changes
                     // require a full re-parse (SQL/YML in doc dirs are tracked by other kinds).
                     if is_docs_path
-                        && !Path::new(path_str)
-                            .extension()
-                            .and_then(|e| e.to_str())
-                            .map(|e| e.eq_ignore_ascii_case("md"))
-                            .unwrap_or(false)
+                        && !resource_extension(Path::new(path_str))
+                            .is_some_and(|e| e.eq_ignore_ascii_case("md"))
                     {
                         continue;
                     }
@@ -235,11 +232,8 @@ impl IncrementalState {
                         continue;
                     }
                     // File changed — only model/analysis .sql is safe for incremental.
-                    let is_sql = Path::new(path_str)
-                        .extension()
-                        .and_then(|e| e.to_str())
-                        .map(|e| e.eq_ignore_ascii_case("sql"))
-                        .unwrap_or(false);
+                    let is_sql = resource_extension(Path::new(path_str))
+                        .is_some_and(|e| e.eq_ignore_ascii_case("sql"));
                     if kind_safe_for_incremental && is_sql {
                         continue; // handled by incremental path
                     }
@@ -260,11 +254,8 @@ impl IncrementalState {
                 let is_docs_path = *kind == ResourcePathKind::DocsPaths;
                 for (path_str, saved_nanos) in files {
                     if is_docs_path
-                        && !Path::new(path_str)
-                            .extension()
-                            .and_then(|e| e.to_str())
-                            .map(|e| e.eq_ignore_ascii_case("md"))
-                            .unwrap_or(false)
+                        && !resource_extension(Path::new(path_str))
+                            .is_some_and(|e| e.eq_ignore_ascii_case("md"))
                     {
                         continue;
                     }
@@ -1044,11 +1035,8 @@ pub fn dbt_packages_have_no_file_changes(packages: &[DbtPackage]) -> bool {
             let is_docs_path = *kind == ResourcePathKind::DocsPaths;
             for (dbt_path, saved_time) in files {
                 if is_docs_path
-                    && !dbt_path
-                        .extension()
-                        .and_then(|e| e.to_str())
-                        .map(|e| e.eq_ignore_ascii_case("md"))
-                        .unwrap_or(false)
+                    && !resource_extension(dbt_path.as_path())
+                        .is_some_and(|e| e.eq_ignore_ascii_case("md"))
                 {
                     continue;
                 }
@@ -1792,6 +1780,50 @@ mod tests {
             state.needs_full_parse(),
             None,
             "model .sql modified → incremental (None)"
+        );
+    }
+
+    /// A templated `.md.j2` doc used to be skipped outright, so an edited doc block
+    /// never invalidated the manifest. A templated `.sql.j2` model stays incremental-safe.
+    #[test]
+    fn needs_full_parse_sees_jinja_templated_files() {
+        let tmp = tempfile::tempdir().unwrap();
+        let models_dir = tmp.path().join("models");
+        std::fs::create_dir_all(&models_dir).unwrap();
+        let model_path = models_dir.join("c.sql.j2");
+        let docs_path = models_dir.join("doc.md.j2");
+        std::fs::write(&model_path, b"select 1").unwrap();
+        std::fs::write(&docs_path, b"{% docs d %}v1{% enddocs %}").unwrap();
+        let mtime_nanos = |path: &Path| {
+            system_time_to_nanos(std::fs::metadata(path).unwrap().modified().unwrap())
+        };
+
+        let mut state = test_state();
+        state.packages[0].package_root_path = tmp.path().to_str().unwrap().into();
+        state.packages[0].all_paths = HashMap::from([
+            (
+                ResourcePathKind::ModelPaths,
+                vec![("models/c.sql.j2".into(), mtime_nanos(&model_path))],
+            ),
+            (
+                ResourcePathKind::DocsPaths,
+                vec![("models/doc.md.j2".into(), mtime_nanos(&docs_path))],
+            ),
+        ]);
+
+        std::thread::sleep(Duration::from_millis(10));
+        std::fs::write(&model_path, b"select 2").unwrap();
+        assert_eq!(
+            state.needs_full_parse(),
+            None,
+            "templated model .sql.j2 modified → incremental (None)"
+        );
+
+        std::fs::write(&docs_path, b"{% docs d %}v2{% enddocs %}").unwrap();
+        assert_eq!(
+            state.needs_full_parse(),
+            Some("non-incremental file changed"),
+            "templated doc .md.j2 modified → full parse"
         );
     }
 

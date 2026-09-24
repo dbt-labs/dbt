@@ -72,6 +72,47 @@ pub fn get_target_write_path(
 
 use serde::{Deserialize, Serialize};
 
+/// Template suffixes that may trail a resource file's real extension
+/// (`model.sql.j2`). Mirrors dbt-core's `JINJA_FILE_EXTENSIONS`.
+pub const JINJA_FILE_EXTENSIONS: &[&str] = &["j2", "jinja2", "jinja"];
+
+fn is_jinja_extension(ext: &str) -> bool {
+    JINJA_FILE_EXTENSIONS
+        .iter()
+        .any(|jinja_ext| ext.eq_ignore_ascii_case(jinja_ext))
+}
+
+/// The resource extension of a file, looking through at most one template suffix:
+/// `a.sql.j2` -> `sql`, `a.sql` -> `sql`, `a.j2` -> `j2` (no real extension underneath).
+pub fn resource_extension(path: &Path) -> Option<&str> {
+    let ext = path.extension()?.to_str()?;
+    if !is_jinja_extension(ext) {
+        return Some(ext);
+    }
+    // `a.sql.j2` has file_stem `a.sql`; only look through the suffix when a real
+    // extension remains underneath, so a bare `a.jinja` keeps its own extension.
+    match path.file_stem()?.to_str()?.rsplit_once('.') {
+        Some((base, inner)) if !base.is_empty() && !inner.is_empty() => Some(inner),
+        _ => Some(ext),
+    }
+}
+
+/// The node name derived from a file path, stripping a template suffix along with
+/// the resource extension: `a.sql` -> `a`, `a.sql.j2` -> `a`.
+pub fn node_name_from_path(path: &Path) -> Option<&str> {
+    let stem = path.file_stem()?.to_str()?;
+    if path
+        .extension()
+        .and_then(OsStr::to_str)
+        .is_some_and(is_jinja_extension)
+        && let Some((base, _)) = stem.rsplit_once('.')
+        && !base.is_empty()
+    {
+        return Some(base);
+    }
+    Some(stem)
+}
+
 /// Strip the first matching resource-root prefix (e.g. `models`) from a
 /// package-relative path, yielding the path dbt exposes to Jinja as
 /// `model.path` (relative to the resource directory).
@@ -599,6 +640,48 @@ mod tests {
             diff_paths_os_ascii_case(path, base),
             expected.map(|s| s.into())
         );
+    }
+
+    #[test]
+    fn test_resource_extension() {
+        fn ext(p: &str) -> Option<&str> {
+            resource_extension(Path::new(p))
+        }
+        assert_eq!(ext("models/a.sql"), Some("sql"));
+        assert_eq!(ext("models/a.sql.j2"), Some("sql"));
+        assert_eq!(ext("models/a.sql.jinja2"), Some("sql"));
+        assert_eq!(ext("models/a.sql.jinja"), Some("sql"));
+        assert_eq!(ext("models/a.SQL.J2"), Some("SQL"));
+        assert_eq!(ext("models/a.b.sql.j2"), Some("sql"));
+        assert_eq!(ext("docs/a.md.j2"), Some("md"));
+        assert_eq!(ext("models/a.py"), Some("py"));
+        assert_eq!(ext("seeds/a.csv"), Some("csv"));
+        // No real extension underneath the template suffix.
+        assert_eq!(ext("models/a.j2"), Some("j2"));
+        assert_eq!(ext("macros/a.jinja"), Some("jinja"));
+        assert_eq!(ext("models/a"), None);
+        assert_eq!(ext("models/.hidden"), None);
+        assert_eq!(ext("models/.hidden.j2"), Some("j2"));
+    }
+
+    #[test]
+    fn test_node_name_from_path() {
+        fn name(p: &str) -> Option<&str> {
+            node_name_from_path(Path::new(p))
+        }
+        assert_eq!(name("models/a.sql"), Some("a"));
+        assert_eq!(name("models/a.sql.j2"), Some("a"));
+        assert_eq!(name("models/a.sql.jinja2"), Some("a"));
+        assert_eq!(name("models/a.sql.jinja"), Some("a"));
+        assert_eq!(name("models/a.SQL.J2"), Some("a"));
+        assert_eq!(name("models/a.b.sql.j2"), Some("a.b"));
+        assert_eq!(name("docs/a.md.j2"), Some("a"));
+        assert_eq!(name("models/a.py"), Some("a"));
+        assert_eq!(name("models/a.j2"), Some("a"));
+        assert_eq!(name("macros/a.jinja"), Some("a"));
+        assert_eq!(name("models/a"), Some("a"));
+        assert_eq!(name("models/.hidden"), Some(".hidden"));
+        assert_eq!(name("models/.hidden.j2"), Some(".hidden"));
     }
 
     #[test]
