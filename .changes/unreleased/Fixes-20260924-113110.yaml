@@ -1,0 +1,7 @@
+kind: Fixes
+body: Clean dbt-installed skills from all known provider destinations.
+time: 2026-09-24T11:31:10.464595-04:00
+custom:
+    author: akashmalbari
+    issue: "16349"
+    project: dbt-core
