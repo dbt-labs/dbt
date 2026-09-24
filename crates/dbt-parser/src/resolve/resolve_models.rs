@@ -34,7 +34,7 @@ use dbt_common::error::AbstractLocation;
 use dbt_common::fs_err;
 use dbt_common::io_args::StaticAnalysisKind;
 use dbt_common::io_args::StaticAnalysisOffReason;
-use dbt_common::path::DbtPath;
+use dbt_common::path::{DbtPath, node_name_from_path, resource_extension};
 use dbt_common::tracing::dbt_emit::emit_error_log_from_fs_error;
 use dbt_common::tracing::dbt_emit::emit_warn_log_from_fs_error;
 use dbt_common::tracing::dbt_emit::emit_warn_log_message;
@@ -312,10 +312,7 @@ pub async fn resolve_models(
     // Split SQL and Python models for different processing paths
     let (sql_files, python_files): (Vec<_>, Vec<_>) =
         package.model_sql_files.iter().cloned().partition(|asset| {
-            asset
-                .path
-                .extension()
-                .and_then(|ext| ext.to_str())
+            resource_extension(&asset.path)
                 .map(|ext| ext.eq_ignore_ascii_case("sql"))
                 .unwrap_or(true)
         });
@@ -401,7 +398,7 @@ pub async fn resolve_models(
         .map(|paths| {
             paths
                 .iter()
-                .filter_map(|(p, _)| p.as_path().file_stem()?.to_str())
+                .filter_map(|(p, _)| node_name_from_path(p.as_path()))
                 .collect()
         })
         .unwrap_or_default();
@@ -546,7 +543,7 @@ async fn build_model_nodes(
         raw_config_call_dict,
     } in model_sql_resources_map.into_iter()
     {
-        let ref_name = dbt_asset.path.file_stem().unwrap().to_str().unwrap();
+        let ref_name = node_name_from_path(&dbt_asset.path).unwrap();
 
         if ref_name.contains(' ') {
             return Err(err_resource_name_has_spaces(ref_name, &dbt_asset.path));

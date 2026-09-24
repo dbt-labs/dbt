@@ -188,6 +188,8 @@ pub fn get_node_fqn(
 ///
 ///   * Block-style (`{% snapshot %}` in a .sql file): `SnapshotParser.get_fqn`
 ///     keeps the original filename stem -> `[pkg, ..dirs, file_stem, block_name]`.
+///     Core does not strip a trailing jinja suffix here, so `a.sql.j2` contributes
+///     `a.sql` to the fqn even when `allow_jinja_file_extensions` is on.
 ///   * YAML-defined: the generic `get_fqn_prefix` drops the filename entirely ->
 ///     `[pkg, ..dirs, snapshot_name]`.
 ///
