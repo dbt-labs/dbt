@@ -410,7 +410,7 @@ class TestYamlSnapshotCompiledPath(BasicYaml):
         """Verify yml-based snapshots get correct compiled paths without doubling."""
         manifest = run_dbt(["parse"])
         node = manifest.nodes["snapshot.test.snapshot_actual"]
-        assert node.path == "snapshot_actual.sql"
+        assert node.path == os.path.join("snapshot.yml", "snapshot_actual.sql")
         assert node.original_file_path == os.path.join("snapshots", "snapshot.yml")
 
         run_dbt(["compile"])
@@ -489,6 +489,45 @@ class TestSnapshotNodePathIncludesSubdir:
             "subdir", "subdir_snap.sql"
         ), f"Expected node.path to include subdirectory, got: {node.path!r}"
         assert node.original_file_path == os.path.join("snapshots", "subdir", "subdir_snap.sql")
+
+
+subdir_model__sql = """
+select 1 as id, 'alice' as name
+"""
+
+subdir_snapshot__yml = """
+version: 2
+snapshots:
+  - name: subdir_snap
+    relation: ref('subdir_model')
+    config:
+      strategy: check
+      unique_key: id
+      check_cols: all
+      hard_deletes: new_record"""
+
+
+class TestYamlSnapshotNodePathIncludesSubdir:
+    """Regression test: node.path for a snapshot in a subdirectory must include
+    the subdirectory and original filename (e.g. 'subdir/subdir_snap.yml/subdir_snap.sql'),
+    not just the filename.
+    See https://github.com/dbt-labs/dbt-core/issues/15753."""
+
+    @pytest.fixture(scope="class")
+    def models(self):
+        return {"subdir": {"subdir_model.sql": subdir_model__sql}}
+
+    @pytest.fixture(scope="class")
+    def snapshots(self):
+        return {"subdir": {"subdir_snap.yml": subdir_snapshot__yml}}
+
+    def test_node_path_includes_subdir(self, project):
+        manifest = run_dbt(["parse"])
+        node = manifest.nodes["snapshot.test.subdir_snap"]
+        assert node.path == os.path.join(
+            "subdir", "subdir_snap.yml", "subdir_snap.sql"
+        ), f"Expected node.path to include subdirectory, got: {node.path!r}"
+        assert node.original_file_path == os.path.join("snapshots", "subdir", "subdir_snap.yml")
 
 
 class TestYamlSnapshotPartialParsing(BasicYaml):
