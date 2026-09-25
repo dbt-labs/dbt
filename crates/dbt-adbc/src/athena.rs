@@ -36,6 +36,35 @@ pub mod auth_type {
     pub const PROFILE: &str = "profile";
 }
 
+/// ADBC option key for an IAM role assumed on top of the credentials of
+/// [`AUTH_TYPE`]; every AWS call of the driver then uses the role.
+/// Maps to the dbt profile field `assume_role_arn`.
+pub const ROLE_ARN: &str = "athena.aws.role_arn";
+
+/// ADBC option key for the AssumeRole external ID (`assume_role_external_id`).
+pub const ROLE_EXTERNAL_ID: &str = "athena.aws.role_external_id";
+
+/// ADBC option key for the AssumeRole session name (`assume_role_session_name`).
+pub const ROLE_SESSION_NAME: &str = "athena.aws.role_session_name";
+
+/// ADBC option key for the lifetime of the assumed credentials, as a Go duration
+/// (`"3600s"`). Maps to `assume_role_duration_seconds`.
+pub const ROLE_DURATION: &str = "athena.aws.role_duration";
+
+/// ADBC option key for the attempts per AWS API request, the first one included.
+pub const MAX_ATTEMPTS: &str = "athena.aws.max_attempts";
+
+/// ADBC option key for the Athena API endpoint (`endpoint_url`).
+pub const ENDPOINT_URL: &str = "athena.endpoint_url";
+
+/// ADBC option key for the interval between query status checks, as a Go
+/// duration (`"1s"`). Maps to `poll_interval`.
+pub const POLL_INTERVAL: &str = "athena.poll_interval";
+
+/// ADBC option key for the reruns of a query that fails with
+/// `ICEBERG_COMMIT_ERROR` (`num_iceberg_retries`).
+pub const ICEBERG_COMMIT_RETRIES: &str = "athena.iceberg_commit_retries";
+
 /// ADBC option key for the AWS access key ID.
 /// Only used when [`AUTH_TYPE`] = [`auth_type::ACCESS_KEY`].
 pub const ACCESS_KEY_ID: &str = "athena.aws.access_key_id";
