@@ -1586,6 +1586,25 @@ mod tests {
             assert_eq!(relation.semantic_fqn(), "\"MyDB\".\"myschema\".\"MyTable\"");
         }
 
+        #[test]
+        fn test_normalized_fqn_athena_folds_quoted_components() {
+            let relation = Relation::new(
+                AdapterType::Athena,
+                "AwsDataCatalog".to_string(),
+                "Analytics".to_string(),
+                "Lab_MixedCase".to_string(),
+            )
+            .with_quoting(Policy {
+                database: true,
+                schema: true,
+                identifier: true,
+            });
+            assert_eq!(
+                relation.semantic_fqn(),
+                "\"awsdatacatalog\".\"analytics\".\"lab_mixedcase\""
+            );
+        }
+
         fn filter_relation() -> Relation {
             Relation::new(
                 AdapterType::Postgres,

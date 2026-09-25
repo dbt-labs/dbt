@@ -1360,6 +1360,36 @@ mod tests {
     }
 
     #[test]
+    fn test_quoted_hive_is_athena_only() {
+        let athena = Value::from_object(Column::new(
+            AdapterType::Athena,
+            "order_id".to_string(),
+            "bigint".to_string(),
+            None,
+            None,
+            None,
+        ));
+        assert_eq!(
+            athena.get_attr("quoted_hive").unwrap().as_str(),
+            Some("`order_id`")
+        );
+        assert_eq!(
+            athena.get_attr("quoted").unwrap().as_str(),
+            Some("\"order_id\"")
+        );
+
+        let postgres = Value::from_object(Column::new(
+            AdapterType::Postgres,
+            "order_id".to_string(),
+            "bigint".to_string(),
+            None,
+            None,
+            None,
+        ));
+        assert!(postgres.get_attr("quoted_hive").unwrap().is_undefined());
+    }
+
+    #[test]
     fn databricks_create_column_omits_empty_comment() {
         let column = Column::new(
             AdapterType::Databricks,
