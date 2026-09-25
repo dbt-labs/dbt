@@ -3629,16 +3629,6 @@ impl AdapterImpl {
         }
     }
 
-    /// This only supports non-nested columns additions
-    ///
-    /// Since internally this is only used by snapshot materialization macro where newly added
-    /// columns all have non-nested data types, Read from
-    /// [here](https://github.com/sdf-labs/fs/blob/9b87be839f6aa54cab1ab91cde2c77855758c396/crates/dbt-loader/src/dbt_macro_assets/dbt-adapters/macros/materializations/snapshots/snapshot.sql#L32-L33).
-    /// This builds sql that creates the snapshot relation, and this relation only adds non-nested
-    /// columns to the source relation it is supposed to work well for this use case due to
-    /// limitation:
-    /// https://cloud.google.com/bigquery/docs/managing-table-schemas#add_a_nested_column_to_a_record_column
-    ///
     /// BigQueryAdapter https://github.com/dbt-labs/dbt-adapters/blob/0efd8d3d1081e1ab43e38797d5104f7b424a6284/dbt-bigquery/src/dbt/adapters/bigquery/impl.py#L742
     pub fn alter_table_add_columns(
         &self,
@@ -3660,7 +3650,7 @@ impl AdapterImpl {
 
                 let add_columns: Vec<String> = columns
                     .iter()
-                    .map(|col| format!("ADD COLUMN {} {}", col.name(), &col.dtype()))
+                    .map(|col| format!("ADD COLUMN {} {}", col.name(), col.data_type()))
                     .collect();
 
                 let sql = format!(
