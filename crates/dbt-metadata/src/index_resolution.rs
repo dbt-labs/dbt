@@ -17,6 +17,7 @@ use std::{
 
 use parquet::arrow::{ProjectionMask, arrow_reader::ParquetRecordBatchReaderBuilder};
 
+use dbt_common::path::resource_extension;
 use dbt_schemas::state::ResourcePathKind;
 
 use crate::parse_state::{
@@ -394,11 +395,8 @@ fn detect_dirty_files(packages: &[PackageSnapshot]) -> HashSet<(String, String)>
                 continue;
             }
             for (rel_path, saved_nanos) in files {
-                let is_sql = Path::new(rel_path)
-                    .extension()
-                    .and_then(|e| e.to_str())
-                    .map(|e| e.eq_ignore_ascii_case("sql"))
-                    .unwrap_or(false);
+                let is_sql = resource_extension(Path::new(rel_path))
+                    .is_some_and(|e| e.eq_ignore_ascii_case("sql"));
                 if !is_sql {
                     continue;
                 }

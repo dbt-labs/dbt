@@ -5,7 +5,7 @@ use crate::resolve::resolve_utils::{err_resource_name_has_spaces, validate_node_
 
 use dbt_adapter_core::AdapterType;
 use dbt_common::cancellation::CancellationToken;
-use dbt_common::path::DbtPath;
+use dbt_common::path::{DbtPath, node_name_from_path};
 use dbt_common::tracing::dbt_emit::emit_warn_log_from_fs_error;
 use dbt_common::{ErrorCode, FsResult, error::AbstractLocation, fs_err};
 use dbt_jinja_utils::jinja_environment::JinjaEnv;
@@ -144,7 +144,7 @@ pub async fn resolve_analyses(
         ..
     } in analysis_sql_resources_map.into_iter()
     {
-        let analysis_name = dbt_asset.path.file_stem().unwrap().to_str().unwrap();
+        let analysis_name = node_name_from_path(&dbt_asset.path).unwrap();
 
         if analysis_name.contains(' ') {
             return Err(err_resource_name_has_spaces(analysis_name, &dbt_asset.path));

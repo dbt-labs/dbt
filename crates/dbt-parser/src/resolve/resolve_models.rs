@@ -21,7 +21,6 @@ use crate::utils::extract_resource_config_from_raw_project;
 use crate::utils::get_node_fqn;
 use crate::utils::get_original_file_path;
 use crate::utils::get_unique_id;
-use crate::utils::parse_unrendered_config;
 use crate::utils::update_node_relation_components;
 use crate::validation::check_node_static_analysis;
 
@@ -35,8 +34,7 @@ use dbt_common::error::AbstractLocation;
 use dbt_common::fs_err;
 use dbt_common::io_args::StaticAnalysisKind;
 use dbt_common::io_args::StaticAnalysisOffReason;
-use dbt_common::path::DbtPath;
-use dbt_common::tokiofs::read_to_string;
+use dbt_common::path::{DbtPath, node_name_from_path, resource_extension};
 use dbt_common::tracing::dbt_emit::emit_error_log_from_fs_error;
 use dbt_common::tracing::dbt_emit::emit_warn_log_from_fs_error;
 use dbt_common::tracing::dbt_emit::emit_warn_log_message;
@@ -314,10 +312,7 @@ pub async fn resolve_models(
     // Split SQL and Python models for different processing paths
     let (sql_files, python_files): (Vec<_>, Vec<_>) =
         package.model_sql_files.iter().cloned().partition(|asset| {
-            asset
-                .path
-                .extension()
-                .and_then(|ext| ext.to_str())
+            resource_extension(&asset.path)
                 .map(|ext| ext.eq_ignore_ascii_case("sql"))
                 .unwrap_or(true)
         });
@@ -403,7 +398,7 @@ pub async fn resolve_models(
         .map(|paths| {
             paths
                 .iter()
-                .filter_map(|(p, _)| p.as_path().file_stem()?.to_str())
+                .filter_map(|(p, _)| node_name_from_path(p.as_path()))
                 .collect()
         })
         .unwrap_or_default();
@@ -545,22 +540,16 @@ async fn build_model_nodes(
         render_error_deferred,
         patch_path,
         macro_dependencies,
+        raw_config_call_dict,
     } in model_sql_resources_map.into_iter()
     {
-        let ref_name = dbt_asset.path.file_stem().unwrap().to_str().unwrap();
+        let ref_name = node_name_from_path(&dbt_asset.path).unwrap();
 
         if ref_name.contains(' ') {
             return Err(err_resource_name_has_spaces(ref_name, &dbt_asset.path));
         }
 
         let mut model_config = model_config_resolved;
-
-        // Capture inline SQL config overrides (from `{{ config(...) }}`) separately.
-        // This should include only values explicitly set in the SQL file, not inherited defaults.
-        let raw_config_call_dict = read_to_string(dbt_asset.base_path.join(&dbt_asset.path))
-            .await
-            .ok()
-            .and_then(|sql| parse_unrendered_config(&sql, false));
 
         // A model is an ad-hoc inline model iff it lives in the dedicated "" package.
         let is_inline_file = package_name.is_empty();
@@ -1503,7 +1492,7 @@ fn validate_interactive_table_cluster_by(
             let err = fs_err!(
                 code => ErrorCode::InvalidConfig,
                 loc => path.to_path_buf(),
-                "interactive_table models require `cluster_by` to name at least one non-blank column; `CREATE INTERACTIVE TABLE` without `CLUSTER BY`, or with only blank entries, is rejected by Snowflake (010405)",
+                "interactive_table models require every `cluster_by` entry to be non-blank; `CREATE INTERACTIVE TABLE` without `CLUSTER BY`, with no entries, or with any blank entry, is rejected by Snowflake (010405)",
             );
             return Err(err);
         }
@@ -1721,6 +1710,8 @@ fn process_python_models(
             render_error_deferred: false,
             patch_path,
             macro_dependencies: Vec::new(),
+            // Python models have no Jinja `{{ config(...) }}` call to extract.
+            raw_config_call_dict: None,
         };
 
         results.push(python_result);
@@ -2500,7 +2491,7 @@ mod interactive_table_validation_tests {
         let resolved = resolve(cfg);
         assert_rejects_with(
             validate_interactive_table_cluster_by(&resolved, &test_path()),
-            "require `cluster_by`",
+            "require every `cluster_by` entry to be non-blank",
         );
     }
 
@@ -2520,7 +2511,7 @@ mod interactive_table_validation_tests {
         let resolved = resolve(cfg);
         assert_rejects_with(
             validate_interactive_table_cluster_by(&resolved, &test_path()),
-            "name at least one non-blank column",
+            "require every `cluster_by` entry to be non-blank",
         );
     }
 
@@ -2531,7 +2522,7 @@ mod interactive_table_validation_tests {
         let resolved = resolve(cfg);
         assert_rejects_with(
             validate_interactive_table_cluster_by(&resolved, &test_path()),
-            "name at least one non-blank column",
+            "require every `cluster_by` entry to be non-blank",
         );
     }
 
@@ -2543,7 +2534,7 @@ mod interactive_table_validation_tests {
         let resolved = resolve(cfg);
         assert_rejects_with(
             validate_interactive_table_cluster_by(&resolved, &test_path()),
-            "name at least one non-blank column",
+            "require every `cluster_by` entry to be non-blank",
         );
     }
 
@@ -2559,7 +2550,7 @@ mod interactive_table_validation_tests {
         let resolved = resolve(cfg);
         assert_rejects_with(
             validate_interactive_table_cluster_by(&resolved, &test_path()),
-            "name at least one non-blank column",
+            "require every `cluster_by` entry to be non-blank",
         );
     }
 
@@ -2785,7 +2776,7 @@ mod interactive_table_validation_tests {
                 AdapterType::Snowflake,
                 &test_path(),
             ),
-            "require `cluster_by`",
+            "require every `cluster_by` entry to be non-blank",
         );
     }
 

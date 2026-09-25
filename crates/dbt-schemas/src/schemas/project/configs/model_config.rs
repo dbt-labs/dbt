@@ -2380,6 +2380,7 @@ state:
   evaluate_volatile_sql: true
   pre_clone: if_missing
   execute_hooks_on_any_reuse: true
+  ignore_external_modifications: true
 __warehouse_specific_config__: {}
 "#,
         )
@@ -2393,6 +2394,7 @@ __warehouse_specific_config__: {}
         assert_eq!(state.evaluate_volatile_sql, Some(true));
         assert_eq!(state.pre_clone, Some(StatePreClone::IfMissing));
         assert_eq!(state.execute_hooks_on_any_reuse, Some(true));
+        assert_eq!(state.ignore_external_modifications, Some(true));
     }
 
     /// Regression for #16135: `state:` keys merge key by key, so a model that sets
@@ -2414,6 +2416,7 @@ __warehouse_specific_config__: {}
                 pre_clone: Some(StatePreClone::Always),
                 execute_hooks_on_any_reuse: None,
                 compare_unrendered_code: None,
+                ignore_external_modifications: Some(true),
             }),
             ..Default::default()
         };
@@ -2425,6 +2428,7 @@ __warehouse_specific_config__: {}
                 pre_clone: None,
                 execute_hooks_on_any_reuse: None,
                 compare_unrendered_code: None,
+                ignore_external_modifications: None,
             }),
             ..Default::default()
         };
@@ -2438,6 +2442,7 @@ __warehouse_specific_config__: {}
         assert_eq!(lag_tolerance.period, Some(FreshnessPeriod::minute));
         assert_eq!(state.require_fresh_data_from, Some(UpdatesOn::All));
         assert_eq!(state.pre_clone, Some(StatePreClone::Always));
+        assert_eq!(state.ignore_external_modifications, Some(true));
     }
 
     /// Regression for fs#13343: Core accepts a sequence-valued `column_types` entry

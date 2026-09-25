@@ -536,6 +536,12 @@ fn check_access(
 
     // Check access for models
     for (unique_id, node) in nodes.models.iter() {
+        // Ad-hoc inline (preview) nodes live in the dedicated "" package and have no
+        // group, so they sit outside the group/access system - matching dbt Core.
+        if node.common().package_name.is_empty() {
+            continue;
+        }
+
         if check_node_access(
             unique_id,
             &node.base().depends_on.nodes_with_ref_location,

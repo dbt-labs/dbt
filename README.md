@@ -2,9 +2,7 @@
   <img width="750" alt="dbt logo" src="assets/dbt-logo-full.png" />
 </p>
 <p align="center">
-  <a href="https://github.com/dbt-labs/dbt-core/actions/workflows/main.yml">
-    <img src="https://github.com/dbt-labs/dbt-core/actions/workflows/main.yml/badge.svg?event=push" alt="CI Badge"/>
-  </a>
+  <a href="https://github.com/dbt-labs/dbt/actions/workflows/ci.yml?query=branch%3Amain"><img src="https://github.com/dbt-labs/dbt/actions/workflows/ci.yml/badge.svg?branch=main&amp;event=push" alt="dbt CI status"/></a>
 </p>
 
 > [!WARNING]
@@ -47,7 +45,7 @@ Analysts using dbt can transform their data by simply writing select statements,
 
 These select statements, or "models", form a dbt project. Models frequently build on top of one another – dbt makes it easy to [manage relationships](https://docs.getdbt.com/docs/ref) between models, and [visualize these relationships](https://docs.getdbt.com/docs/documentation), as well as assure the quality of your transformations through [testing](https://docs.getdbt.com/docs/testing).
 
-![dbt dag](https://raw.githubusercontent.com/dbt-labs/dbt/6c6649f9129d5d108aa3b0526f634cd8f3a9d1ed/etc/dbt-dag.png)
+![dbt dag](assets/dbt-dag.png)
 
 ## Getting started
 

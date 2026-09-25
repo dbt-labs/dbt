@@ -43,7 +43,9 @@ use dbt_schemas::schemas::{DbtUnitTest, InternalDbtNodeAttributes, NodePathKind}
 use dbt_tasks_core::context::TaskRunnerCtx;
 use dbt_tasks_core::render_task_hooks::RenderTaskHooks;
 use dbt_tasks_core::task::TaskResult;
-use dbt_tasks_core::unit_test_schema::{UnitTestExpectedSchemaKey, UnitTestExpectedSchemaKeyInput};
+use dbt_tasks_core::unit_test_schema::{
+    FixtureSchemaCachePolicy, UnitTestExpectedSchemaKey, UnitTestExpectedSchemaKeyInput,
+};
 use dbt_telemetry::{ExecutionPhase as TelemetryExecutionPhase, NodeType};
 
 use crate::renderable::unit_test_typing::{BigqueryTyping, DatabricksTyping, SnowflakeTyping};
@@ -448,6 +450,7 @@ async fn fetch_schema_for_unit_test_relation(
     unit_test_unique_id: &str,
     fetched: &mut HashSet<String>,
     schema_target: UnitTestSchemaTarget,
+    cache_policy: FixtureSchemaCachePolicy,
     task_hooks: Arc<dyn RenderTaskHooks>,
 ) -> FsResult<SchemaRef> {
     let canonical_fqn = relation.get_canonical_fqn()?;
@@ -461,18 +464,10 @@ async fn fetch_schema_for_unit_test_relation(
         )
     })?;
 
-    let is_local_unit_test =
-        ctx.nodes()
-            .unit_tests
-            .get(unit_test_unique_id)
-            .is_some_and(|unit_test| {
-                effective_unit_test_execute(unit_test, ctx.inner.execute)
-                    == schemas::profiles::Execute::Sidecar
-            });
-    let coordinate_fetch = is_local_unit_test
-        && matches!(schema_target, UnitTestSchemaTarget::GivenUpstream)
+    let coordinate_fetch = matches!(schema_target, UnitTestSchemaTarget::GivenUpstream)
         && adapter.as_replay().is_none()
-        && !adapter.engine().is_mock();
+        && !adapter.engine().is_mock()
+        && !is_replay_active(ctx);
     if !coordinate_fetch {
         return hydrate_unit_test_relation_schema(
             ctx,
@@ -490,18 +485,23 @@ async fn fetch_schema_for_unit_test_relation(
     let schema = ctx
         .inner
         .unit_test_schema
-        .get_or_try_fetch_fixture_schema(canonical_fqn, ctx.schema_cache.as_ref(), || async move {
-            hydrate_unit_test_relation_schema(
-                ctx,
-                relation,
-                unit_test_unique_id,
-                fetched_for_fetch,
-                schema_target,
-                task_hooks,
-                &adapter,
-            )
-            .await
-        })
+        .get_or_try_fetch_fixture_schema(
+            canonical_fqn,
+            ctx.schema_cache.as_ref(),
+            cache_policy,
+            || async move {
+                hydrate_unit_test_relation_schema(
+                    ctx,
+                    relation,
+                    unit_test_unique_id,
+                    fetched_for_fetch,
+                    schema_target,
+                    task_hooks,
+                    &adapter,
+                )
+                .await
+            },
+        )
         .await?;
     fetched.insert(semantic_fqn);
     Ok(schema)
@@ -1006,8 +1006,14 @@ fn replace_subquery_refs_with_cte_names(
 
 /// Per-given: (rendered FQN string, relation Arc).
 type GivenRelations = Vec<(String, Arc<dyn BaseRelation>)>;
-/// Relations needing async schema fetch (cache misses).
-type RelationsToFetch = Vec<(Arc<dyn BaseRelation>, UnitTestSchemaTarget)>;
+struct RelationToFetch {
+    relation: Arc<dyn BaseRelation>,
+    schema_target: UnitTestSchemaTarget,
+    cache_policy: FixtureSchemaCachePolicy,
+}
+
+/// Relations needing async schema fetch (cache misses or persisted entries).
+type RelationsToFetch = Vec<RelationToFetch>;
 
 #[derive(Default)]
 struct DiscoveredGivenRelations {
@@ -1212,6 +1218,11 @@ fn discover_given_relations(
     // has no TTL, so a cached schema goes stale when an upstream model is
     // rebuilt with different column types between invocations.
     let force_refetch = ut.node_adapter() == AdapterType::ClickHouse;
+    let refresh_persisted_given_schemas = !is_replay_active(ctx)
+        && ctx
+            .env
+            .get_base_adapter()
+            .is_some_and(|adapter| !adapter.engine().is_mock());
 
     for given in &ut.__unit_test_attr__.given {
         let given_relation = {
@@ -1232,9 +1243,21 @@ fn discover_given_relations(
         // Only check/fetch schemas for Dict and Csv formats.
         if given.format != schemas::common::Formats::Sql {
             let canonical_fqn = relation.get_canonical_fqn()?;
-            if force_refetch || !ctx.schema_cache.exists(&canonical_fqn) {
-                relations_to_fetch
-                    .push((Arc::clone(&relation), UnitTestSchemaTarget::GivenUpstream));
+            let should_refresh = force_refetch
+                || (refresh_persisted_given_schemas
+                    && ctx
+                        .schema_cache
+                        .schema_is_from_prior_invocation(&canonical_fqn));
+            if should_refresh || !ctx.schema_cache.exists(&canonical_fqn) {
+                relations_to_fetch.push(RelationToFetch {
+                    relation: Arc::clone(&relation),
+                    schema_target: UnitTestSchemaTarget::GivenUpstream,
+                    cache_policy: if should_refresh {
+                        FixtureSchemaCachePolicy::Refresh
+                    } else {
+                        FixtureSchemaCachePolicy::Reuse
+                    },
+                });
             }
         }
 
@@ -1271,12 +1294,17 @@ fn discover_given_relations(
             check_defer_relation(&model_unique_id, ctx).unwrap_or_else(|| expect_relation.clone());
         let canonical_fqn = schema_relation.get_canonical_fqn()?;
         if force_refetch || !ctx.schema_cache.exists(&canonical_fqn) {
-            relations_to_fetch.push((
-                schema_relation,
-                UnitTestSchemaTarget::ExpectedModel {
+            relations_to_fetch.push(RelationToFetch {
+                relation: schema_relation,
+                schema_target: UnitTestSchemaTarget::ExpectedModel {
                     incremental_expected_path: true,
                 },
-            ));
+                cache_policy: if force_refetch {
+                    FixtureSchemaCachePolicy::Refresh
+                } else {
+                    FixtureSchemaCachePolicy::Reuse
+                },
+            });
         }
     }
 
@@ -1295,19 +1323,20 @@ fn discover_given_relations(
 
 /// Step 1 (async): Fetch missing schemas into the cache.
 async fn fetch_missing_schemas(
-    to_fetch: &[(Arc<dyn BaseRelation>, UnitTestSchemaTarget)],
+    to_fetch: &[RelationToFetch],
     unit_test_unique_id: &str,
     ctx: &mut TaskRunnerCtx,
     task_hooks: Arc<dyn RenderTaskHooks>,
 ) -> FsResult<()> {
     let mut fetched = HashSet::new();
-    for (relation, schema_target) in to_fetch {
+    for request in to_fetch {
         fetch_schema_for_unit_test_relation(
             ctx,
-            Arc::clone(relation),
+            Arc::clone(&request.relation),
             unit_test_unique_id,
             &mut fetched,
-            *schema_target,
+            request.schema_target,
+            request.cache_policy,
             task_hooks.clone(),
         )
         .await?;
@@ -3044,6 +3073,60 @@ mod tests {
             "CAST('2023-01-01 12:00:00' AS DATETIME) AS timestamp_col"
         );
         assert_contains!(result, "CAST(3.15 AS FLOAT64) AS float_col");
+    }
+
+    #[test]
+    fn test_create_values_bigquery_preserves_inferred_logical_types() {
+        let type_ops = DefaultTypeOps::new(AdapterType::Bigquery);
+        let fields = [
+            ("location", "GEOGRAPHY"),
+            ("created_at", "TIMESTAMP"),
+            ("payload", "JSON"),
+        ]
+        .into_iter()
+        .map(|(name, sql_type)| {
+            make_arrow_field(&type_ops, name.to_string(), sql_type, None, None).unwrap()
+        })
+        .collect::<Vec<_>>();
+        let schema = Arc::new(Schema::new(fields));
+        let rows = vec![BTreeMap::from([
+            (
+                "location".to_string(),
+                YmlValue::string("ST_GEOGPOINT(100, -37)".to_string()),
+            ),
+            (
+                "created_at".to_string(),
+                YmlValue::string("2026-01-01 00:00:00+00".to_string()),
+            ),
+            (
+                "payload".to_string(),
+                YmlValue::string(r#"{"segmentCode":"HORECA"}"#.to_string()),
+            ),
+        ])];
+
+        let result = create_values(
+            &schema,
+            &rows,
+            AdapterType::Bigquery,
+            &type_ops,
+            None,
+            "fixture_types",
+            false,
+        )
+        .unwrap();
+
+        assert_contains!(
+            result,
+            "CAST(ST_GEOGPOINT(100, -37) AS GEOGRAPHY) AS location"
+        );
+        assert_contains!(
+            result,
+            "CAST('2026-01-01 00:00:00+00' AS TIMESTAMP) AS created_at"
+        );
+        assert_contains!(
+            result,
+            r#"PARSE_JSON('{"segmentCode":"HORECA"}') AS payload"#
+        );
     }
 
     #[test]

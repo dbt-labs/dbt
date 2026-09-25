@@ -19,7 +19,6 @@ use crate::utils::generate_relation_components;
 use crate::utils::get_node_fqn;
 use crate::utils::get_original_file_contents;
 use crate::utils::get_original_file_path;
-use crate::utils::parse_unrendered_config;
 use crate::utils::update_node_relation_components;
 use crate::validation::check_node_static_analysis;
 use dbt_adapter_core::AdapterType;
@@ -32,7 +31,7 @@ use dbt_common::fs_err;
 use dbt_common::io_args::StaticAnalysisKind;
 use dbt_common::io_args::StaticAnalysisOffReason;
 use dbt_common::io_utils::try_read_yml_to_str;
-use dbt_common::path::DbtPath;
+use dbt_common::path::{DbtPath, node_name_from_path};
 use dbt_common::stdfs;
 use dbt_common::tracing::dbt_emit::emit_warn_log_from_fs_error;
 use dbt_jinja_utils::jinja_arg_format::format_value_for_jinja;
@@ -495,6 +494,7 @@ pub async fn resolve_data_tests(
         status,
         render_error_deferred,
         patch_path: _,
+        raw_config_call_dict: rendered_raw_config_call_dict,
         ..
     } in test_sql_resources_map.into_iter()
     {
@@ -511,13 +511,7 @@ pub async fn resolve_data_tests(
                     .clone();
                 (short, full)
             } else {
-                let name = dbt_asset
-                    .path
-                    .file_stem()
-                    .unwrap()
-                    .to_str()
-                    .unwrap()
-                    .to_string();
+                let name = node_name_from_path(&dbt_asset.path).unwrap().to_string();
                 if name.contains(' ') {
                     return Err(err_resource_name_has_spaces(&name, &dbt_asset.path));
                 }
@@ -559,11 +553,7 @@ pub async fn resolve_data_tests(
         // Using fqn_name here caused a key miss when the name was truncated, leaving
         // depends_on.macros empty (dbt-core#15308). The stem usually equals test_name,
         // but diverges for name-collided generic tests whose file carries a hash suffix.
-        let renderer_name = dbt_asset
-            .path
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or(&test_name);
+        let renderer_name = node_name_from_path(&dbt_asset.path).unwrap_or(&test_name);
         jinja_type_checking_event_listener_factory
             .update_unique_id(&format!("{package_name}.{renderer_name}"), &unique_id);
         let mut macro_depends_on =
@@ -695,12 +685,10 @@ pub async fn resolve_data_tests(
                 .unwrap_or_default()
         };
 
-        // For singular tests, parse the user-written SQL for inline {{ config(...) }}.
+        // For singular tests, the user-written SQL's inline {{ config(...) }} was already
+        // extracted from the AST produced while rendering it (see `SqlFileRenderResult::raw_config_call_dict`).
         let raw_inline_config = if is_singular_data_test {
-            dbt_common::tokiofs::read_to_string(dbt_asset.base_path.join(&dbt_asset.path))
-                .await
-                .ok()
-                .and_then(|sql| parse_unrendered_config(&sql, false))
+            rendered_raw_config_call_dict
         } else {
             None
         };

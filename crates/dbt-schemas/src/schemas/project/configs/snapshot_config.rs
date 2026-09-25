@@ -1249,6 +1249,7 @@ __warehouse_specific_config__: {}
                 pre_clone: Some(StatePreClone::IfMissing),
                 execute_hooks_on_any_reuse: None,
                 compare_unrendered_code: None,
+                ignore_external_modifications: None,
             }),
             ..Default::default()
         };
@@ -1277,6 +1278,7 @@ __warehouse_specific_config__: {}
                 pre_clone: Some(StatePreClone::IfMissing),
                 execute_hooks_on_any_reuse: None,
                 compare_unrendered_code: None,
+                ignore_external_modifications: None,
             }),
             ..Default::default()
         };
@@ -1288,6 +1290,7 @@ __warehouse_specific_config__: {}
                 pre_clone: None,
                 execute_hooks_on_any_reuse: None,
                 compare_unrendered_code: None,
+                ignore_external_modifications: None,
             }),
             ..Default::default()
         };

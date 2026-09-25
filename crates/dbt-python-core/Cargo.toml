@@ -16,9 +16,9 @@ dbt-runtime = { workspace = true }
 dbt-schemas = { workspace = true }
 dbt-tracing = { workspace = true }
 dbt-yaml = { workspace = true }
-# abi3-py311 to match the distribution cdylibs; feature unification would apply it
+# abi3-py310 to match the distribution cdylibs; feature unification would apply it
 # anyway, and stating it keeps a lone `cargo check -p dbt-python-core` honest.
-pyo3 = { workspace = true, features = ["abi3-py311"] }
+pyo3 = { workspace = true, features = ["abi3-py310"] }
 rmp-serde = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

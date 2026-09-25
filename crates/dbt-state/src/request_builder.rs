@@ -221,6 +221,7 @@ pub struct SubmitEnrichedSqlRequestInput {
     pub dbt_node_state: Option<DbtNodeState>,
     pub compare_unrendered_code: bool,
     pub table_namespace: Option<String>,
+    pub ignore_external_modifications: bool,
 }
 
 impl SubmitEnrichedSqlRequestInput {
@@ -246,6 +247,7 @@ impl SubmitEnrichedSqlRequestInput {
             dbt_node_state: self.dbt_node_state,
             compare_unrendered_code: self.compare_unrendered_code,
             table_namespace: self.table_namespace,
+            ignore_external_modifications: self.ignore_external_modifications,
         }
     }
 }
@@ -885,10 +887,12 @@ mod tests {
             }),
             compare_unrendered_code: true,
             table_namespace: None,
+            ignore_external_modifications: true,
         }
         .into_proto();
 
         assert!(request.compare_unrendered_code);
+        assert!(request.ignore_external_modifications);
         assert_eq!(request.target_table.as_deref(), Some("analytics.orders"));
         assert_eq!(request.default_schema.as_deref(), Some("marts"));
         assert_eq!(request.execution_type, ModelExecutionType::Merge as i32);
@@ -1012,6 +1016,7 @@ mod tests {
             dbt_node_state: None,
             compare_unrendered_code: false,
             table_namespace: None,
+            ignore_external_modifications: false,
         }
         .into_proto();
 

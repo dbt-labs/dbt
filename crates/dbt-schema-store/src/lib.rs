@@ -177,6 +177,15 @@ pub trait SchemaStoreTrait: std::fmt::Debug + Send + Sync {
     /// current task.
     async fn get_schema_async(&self, cfqn: &CanonicalFqn) -> Option<SchemaEntry>;
 
+    /// Returns whether the schema was restored from an earlier invocation.
+    ///
+    /// In-memory stores default to `false`; persistent stores override this so
+    /// callers that require warehouse-current metadata can distinguish a warm
+    /// disk-cache hit from a schema produced during the active invocation.
+    fn schema_is_from_prior_invocation(&self, _cfqn: &CanonicalFqn) -> bool {
+        false
+    }
+
     /// Retrieves a schema entry by its dbt `unique_id`.
     fn get_schema_by_unique_id(&self, unique_id: &str) -> Option<SchemaEntry>;
 
