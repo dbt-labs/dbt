@@ -745,7 +745,9 @@ impl Adapter {
         args: &[Value],
     ) -> Result<Value, JinjaError> {
         let iter = ArgsIter::new("add_lf_tags_to_database", &["relation"], args);
-        let relation = relation_parts(iter.next_arg::<&Value>()?)?;
+        // `create_schema` passes a schema-level relation: no identifier.
+        let relation = downcast_value_to_dyn_base_relation(iter.next_arg::<&Value>()?)?;
+        let schema = relation.schema_as_str()?;
         iter.finish()?;
         let tags: BTreeMap<String, String> = match self.profile_config().get("lf_tags_database") {
             Some(tags) => serde_json::to_value(tags)
@@ -756,11 +758,11 @@ impl Adapter {
             None => BTreeMap::new(),
         };
         if tags.is_empty() {
-            tracing::debug!("Lakeformation is disabled for {}", relation.rendered);
+            tracing::debug!("Lakeformation is disabled for {schema}");
             return Ok(none_value());
         }
         if let Some(aws) = self.athena_ops(state) {
-            aws.add_lf_tags_to_database(&relation.schema, &tags)?;
+            aws.add_lf_tags_to_database(&schema, &tags)?;
         }
         Ok(none_value())
     }

@@ -845,6 +845,21 @@ fn athena_lake_formation_configs_are_no_ops_when_disabled_and_checked_when_malfo
     let result = dispatch_test(&adapter, "apply_lf_grants", &[relation.clone(), grants]).unwrap();
     assert!(result.is_none());
 
+    // `create_schema` hands over a schema-level relation; without lf_tags_database in
+    // the profile the call is a no-op.
+    let schema = do_create_relation(
+        AdapterType::Athena,
+        "awsdatacatalog".to_string(),
+        "analytics".to_string(),
+        None,
+        None,
+        DEFAULT_RESOLVED_QUOTING,
+    )
+    .unwrap();
+    let schema = RelationObject::new(Arc::from(schema)).into_value();
+    let result = dispatch_test(&adapter, "add_lf_tags_to_database", &[schema]).unwrap();
+    assert!(result.is_none());
+
     // pydantic rejects a tag value that is not a string; so does the port.
     let malformed = Value::from_iter([
         ("enabled", Value::from(true)),
