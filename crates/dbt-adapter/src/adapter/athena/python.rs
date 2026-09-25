@@ -394,15 +394,21 @@ impl SparkJob<'_, '_, '_, '_> {
         outcome.map(|()| AdapterResponse::new().with_message("OK"))
     }
 
-    /// `AthenaPythonJobHelper.poll_until_execution_completion`; a timeout or a
-    /// cancelled run stops the calculation.
+    /// `AthenaPythonJobHelper.poll_until_execution_completion`. A calculation dbt stops
+    /// waiting for, on the model timeout or a cancelled run, is abandoned.
     fn wait_for_calculation(&self, session: &str, calculation: &str) -> AdapterResult<()> {
         let started = Instant::now();
         loop {
-            let execution = self.ops.call(
+            let execution = match self.ops.call(
                 "athena.get_calculation_execution",
                 json!({ "CalculationExecutionId": calculation }),
-            )?;
+            ) {
+                Ok(execution) => execution,
+                Err(e) if self.token.is_cancelled() => {
+                    return Err(self.abandon(session, calculation, e));
+                }
+                Err(e) => return Err(e),
+            };
             match str_at(&execution, &["Status", "State"]) {
                 "COMPLETED" => return Ok(()),
                 state @ ("FAILED" | "CANCELED") => {
@@ -416,24 +422,33 @@ impl SparkJob<'_, '_, '_, '_> {
                 }
                 _ => {}
             }
-            let stop = |error: AdapterError| {
-                // Best effort: the error below is the one to report.
-                let _ = self.ops.call(
-                    "athena.stop_calculation_execution",
-                    json!({ "CalculationExecutionId": calculation }),
-                );
-                Err(error)
-            };
             if started.elapsed() > self.config.timeout {
-                return stop(runtime_error(format!(
+                let timeout = runtime_error(format!(
                     "Execution {calculation} did not complete within {} seconds.",
                     self.config.timeout.as_secs()
-                )));
+                ));
+                return Err(self.abandon(session, calculation, timeout));
             }
             if let Err(cancelled) = self.wait() {
-                return stop(cancelled);
+                return Err(self.abandon(session, calculation, cancelled));
             }
         }
+    }
+
+    /// Stop an abandoned calculation and terminate its session: Athena stops a
+    /// calculation on a best-effort basis, and a calculation left running would still
+    /// write its table. The calls go out even after Ctrl-C; their failures are dropped
+    /// in favour of `error`, the one to report.
+    fn abandon(&self, session: &str, calculation: &str, error: AdapterError) -> AdapterError {
+        let _ = self.ops.call_uncancellable(
+            "athena.stop_calculation_execution",
+            json!({ "CalculationExecutionId": calculation }),
+        );
+        let _ = self
+            .ops
+            .call_uncancellable("athena.terminate_session", json!({ "SessionId": session }));
+        Self::release_session(session, false);
+        error
     }
 }
 
