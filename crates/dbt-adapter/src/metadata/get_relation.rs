@@ -75,6 +75,9 @@ pub fn get_relation(
         AdapterType::Fabric => fabric_get_relation(
             adapter, state, ctx, conn, database, schema, identifier, token,
         ),
+        AdapterType::SqlServer => sqlserver_get_relation(
+            adapter, state, ctx, conn, database, schema, identifier, token,
+        ),
         AdapterType::ClickHouse => clickhouse_get_relation(
             adapter, state, ctx, conn, database, schema, identifier, token,
         ),
@@ -1069,6 +1072,60 @@ fn fabric_get_relation(
         relation_type,
         adapter.quoting(),
     ))))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn sqlserver_get_relation(
+    adapter: &AdapterImpl,
+    state: &State,
+    ctx: &QueryCtx,
+    conn: &'_ mut dyn Connection,
+    database: &str,
+    schema: &str,
+    identifier: &str,
+    token: CancellationToken,
+) -> AdapterResult<Option<Box<dyn BaseRelation>>> {
+    use crate::metadata::sqlserver::{build_get_relation_sql, relation_type_from_table_type};
+
+    if database.is_empty() {
+        return Err(AdapterError::new(
+            AdapterErrorKind::UnexpectedResult,
+            "SQL Server relations require a database to build a three-part name",
+        ));
+    }
+
+    let relation = Relation::new_sqlserver(
+        Some(database.to_string()),
+        Some(schema.to_string()),
+        Some(identifier.to_string()),
+        None,
+        adapter.quoting(),
+    );
+
+    let sql = build_get_relation_sql(&relation.quoted(database), schema, identifier);
+
+    let batch = adapter
+        .engine()
+        .execute(Some(state), conn, ctx, &sql, token)?;
+
+    if batch.num_rows() == 0 {
+        return Ok(None);
+    }
+
+    let table_types = batch.column_values::<StringArray>("table_type")?;
+    if table_types.len() != 1 {
+        return Err(AdapterError::new(
+            AdapterErrorKind::UnexpectedResult,
+            format!(
+                "Expected exactly one row for SQL Server get_relation, got {}",
+                table_types.len()
+            ),
+        ));
+    }
+
+    let relation_type = relation_type_from_table_type(table_types.value(0));
+
+    Ok(Some(Box::new(relation.with_relation_type(relation_type))))
 }
 
 #[allow(clippy::too_many_arguments)]

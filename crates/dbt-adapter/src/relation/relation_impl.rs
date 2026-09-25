@@ -228,7 +228,7 @@ impl BaseRelationProperties for Relation {
     fn get_database(&self) -> FsResult<String> {
         use AdapterType::*;
         match self.adapter_type {
-            Databricks | Fabric | Postgres | Redshift | Salesforce | Bigquery => {
+            Databricks | Fabric | SqlServer | Postgres | Redshift | Salesforce | Bigquery => {
                 self.path.database.clone().ok_or_else(|| {
                     fs_err!(
                         ErrorCode::InvalidConfig,
@@ -279,7 +279,7 @@ impl BaseRelationProperties for Relation {
             db_str
         } else {
             match self.adapter_type {
-                Fabric | Bigquery => db_str,
+                Fabric | SqlServer | Bigquery => db_str,
                 Salesforce | Snowflake => db_str.to_ascii_uppercase(),
                 _ => db_str.to_ascii_lowercase(),
             }
@@ -289,7 +289,7 @@ impl BaseRelationProperties for Relation {
             schema_str
         } else {
             match self.adapter_type {
-                Fabric | Bigquery => schema_str,
+                Fabric | SqlServer | Bigquery => schema_str,
                 Salesforce | Snowflake => schema_str.to_ascii_uppercase(),
                 _ => schema_str.to_ascii_lowercase(),
             }
@@ -299,7 +299,7 @@ impl BaseRelationProperties for Relation {
             ident_str
         } else {
             match self.adapter_type {
-                Fabric | Bigquery => ident_str,
+                Fabric | SqlServer | Bigquery => ident_str,
                 Salesforce | Snowflake => ident_str.to_ascii_uppercase(),
                 _ => ident_str.to_ascii_lowercase(),
             }
@@ -533,6 +533,18 @@ impl Relation {
         custom_quoting: ResolvedQuoting,
     ) -> Self {
         Self::new(AdapterType::Fabric, database, schema, identifier)
+            .with_relation_type(relation_type)
+            .with_quoting(custom_quoting)
+    }
+
+    pub fn new_sqlserver(
+        database: Option<String>,
+        schema: Option<String>,
+        identifier: Option<String>,
+        relation_type: Option<RelationType>,
+        custom_quoting: ResolvedQuoting,
+    ) -> Self {
+        Self::new(AdapterType::SqlServer, database, schema, identifier)
             .with_relation_type(relation_type)
             .with_quoting(custom_quoting)
     }
@@ -1169,10 +1181,22 @@ impl BaseRelation for Relation {
 
     fn normalize_component(&self, component: &str) -> String {
         use AdapterType::*;
+        // SqlServer falls into the `_ => to_lowercase()` arm here, which
+        // folds names that a case-sensitive collation keeps distinct.
         match self.adapter_type {
             Salesforce | Bigquery | ClickHouse => component.to_string(),
             Snowflake => component.to_uppercase(),
             _ => component.to_lowercase(),
+        }
+    }
+
+    fn quoted(&self, s: &str) -> String {
+        let q = self.quote_character();
+        match self.adapter_type {
+            // A delimited SQL Server identifier escapes an embedded delimiter by
+            // doubling it: https://learn.microsoft.com/sql/relational-databases/databases/database-identifiers
+            AdapterType::SqlServer => format!("{q}{}{q}", s.replace(q, &format!("{q}{q}"))),
+            _ => format!("{q}{s}{q}"),
         }
     }
 
@@ -2501,6 +2525,90 @@ mod tests {
                 from_supplied.inner().render_self_as_str(),
                 "`my_schema`.`my_table`"
             );
+        }
+    }
+
+    mod sqlserver {
+        use super::*;
+
+        fn relation(database: Option<String>) -> Relation {
+            Relation::new(
+                AdapterType::SqlServer,
+                database,
+                "my_schema".to_string(),
+                "my_table".to_string(),
+            )
+            .with_quoting(DEFAULT_RESOLVED_QUOTING)
+        }
+
+        #[test]
+        fn test_renders_all_three_parts_quoted() {
+            let relation = relation(Some("my_db".to_string()));
+            assert_eq!(
+                relation.render_self_as_str(),
+                "\"my_db\".\"my_schema\".\"my_table\""
+            );
+        }
+
+        #[test]
+        fn test_missing_database_is_an_error() {
+            assert!(relation(None).get_database().is_err());
+        }
+
+        #[test]
+        fn test_embedded_delimiter_is_doubled() {
+            let relation = Relation::new(
+                AdapterType::SqlServer,
+                "my_db".to_string(),
+                "dom\\usr".to_string(),
+                "x\"q".to_string(),
+            )
+            .with_quoting(DEFAULT_RESOLVED_QUOTING);
+
+            assert_eq!(
+                relation.render_self_as_str(),
+                "\"my_db\".\"dom\\usr\".\"x\"\"q\""
+            );
+        }
+
+        /// An unquoted path part keeps the case it was given, as SQL Server stores it.
+        #[test]
+        fn test_canonical_fqn_preserves_case() {
+            let relation = Relation::new(
+                AdapterType::SqlServer,
+                "MyDB".to_string(),
+                "MySchema".to_string(),
+                "MyTable".to_string(),
+            )
+            .with_quoting(Policy::falses());
+
+            let fqn = relation.get_canonical_fqn().unwrap();
+            assert_eq!(fqn.to_string(), "MyDB.MySchema.MyTable");
+        }
+
+        #[test]
+        fn test_try_new_via_static_base_relation() {
+            let relation_type = RelationStatic {
+                adapter_type: AdapterType::SqlServer,
+                quoting: DEFAULT_RESOLVED_QUOTING,
+            };
+            let relation = relation_type
+                .try_new(
+                    Some("my_db".to_string()),
+                    Some("my_schema".to_string()),
+                    Some("my_table".to_string()),
+                    Some(RelationType::Table),
+                    Some(DEFAULT_RESOLVED_QUOTING),
+                    None,
+                )
+                .unwrap();
+
+            let relation = relation.downcast_object::<RelationObject>().unwrap();
+            assert_eq!(
+                relation.inner().render_self_as_str(),
+                "\"my_db\".\"my_schema\".\"my_table\""
+            );
+            assert_eq!(relation.relation_type().unwrap(), RelationType::Table);
         }
     }
 }

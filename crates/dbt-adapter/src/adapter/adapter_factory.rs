@@ -41,6 +41,7 @@ pub fn backend_of(adapter_type: AdapterType) -> Backend {
         AdapterType::DuckDB => Backend::DuckDB,
         AdapterType::LakeCompute => Backend::LakeCompute,
         AdapterType::Fabric => Backend::SQLServer,
+        AdapterType::SqlServer => Backend::SQLServer,
         AdapterType::ClickHouse => Backend::ClickHouse,
         AdapterType::Exasol => Backend::Exasol,
         AdapterType::Starburst => todo!("Starburst"),

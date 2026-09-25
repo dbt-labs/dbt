@@ -138,6 +138,7 @@ pub(crate) mod redshift;
 pub(crate) mod salesforce;
 pub mod snowflake; // XXX: temporarily pub before the refactor is complete
 pub(crate) mod spark;
+pub(crate) mod sqlserver;
 pub(crate) mod view_definition;
 
 // Re-export `metadata_adapter` symbols

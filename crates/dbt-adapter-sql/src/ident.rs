@@ -120,6 +120,12 @@ pub fn max_identifier_length(adapter_type: AdapterType) -> Option<NonZero<usize>
             // SAFETY: literal 127 is never 0
             Some(unsafe { NonZero::new_unchecked(127) })
         }
+        SqlServer => {
+            // Regular identifiers are `sysname`, i.e. `nvarchar(128)`.
+            // https://learn.microsoft.com/en-us/sql/relational-databases/databases/database-identifiers
+            // SAFETY: literal 128 is never 0
+            Some(unsafe { NonZero::new_unchecked(128) })
+        }
         Snowflake | Bigquery | Databricks | Spark | DuckDB | Salesforce | Fabric | ClickHouse
         | Exasol | Athena | Starburst | Trino | Datafusion | Dremio | Oracle | LakeCompute => None,
     }
@@ -144,7 +150,7 @@ pub const fn canonical_quote(backend: AdapterType) -> QuotingStyle {
             QuotingStyle::Double
         }
         // https://learn.microsoft.com/en-us/sql/t-sql/statements/set-quoted-identifier-transact-sql?view=sql-server-ver17
-        Fabric => QuotingStyle::Double,
+        Fabric | SqlServer => QuotingStyle::Double,
         // Fabric => QuotingStyle::Bracketed,
         _ => QuotingStyle::Double,
     }
@@ -170,6 +176,7 @@ pub fn is_valid_ident_char(c: char, backend: AdapterType) -> bool {
             | Salesforce
             | DuckDB
             | Fabric
+            | SqlServer
             | ClickHouse
             | Starburst
             | Trino
