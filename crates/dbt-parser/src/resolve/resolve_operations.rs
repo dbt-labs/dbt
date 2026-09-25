@@ -138,6 +138,8 @@ fn new_operation(
                 checksum: DbtChecksum::hash(operation_sql.trim().as_bytes()),
                 raw_code: Some(operation_sql.to_string()),
                 language: Some("sql".to_string()),
+                // dbt-core tags each hook with its own hook type.
+                tags: vec![operation_type.to_string()],
                 // Stored as a plain field (unlike `Spanned<T>`'s own span) so it
                 // survives the `--partial-parse` cache's JSON round-trip; see
                 // `run_operation_on_run` in dbt-tasks-sa, which relies on this to
