@@ -9,8 +9,10 @@
 use std::panic::Location;
 
 use crate::{
-    TelemetryAttributes, TelemetryEventRecType, constants::ROOT_SPAN_NAME,
-    event_info::store_event_attributes, shared::Recordable,
+    TelemetryAttributes, TelemetryEventRecType,
+    constants::{CLOSE_SPAN_FIELD, ROOT_SPAN_NAME},
+    event_info::store_event_attributes,
+    shared::Recordable,
 };
 
 use tracing;
@@ -211,6 +213,8 @@ pub fn is_trace_enabled() -> bool {
 /// has no parent span (root of a trace tree). It tracks the caller's location
 /// and injects file/line information into the span for better debugging.
 ///
+/// The returned span is force closable, see [`force_close_span`].
+///
 /// # Arguments
 /// * `attrs` - Telemetry attributes for the span. In production this is expected
 ///   to be an `Invocation` type
@@ -232,8 +236,30 @@ pub fn create_root_info_span(attrs: impl Into<TelemetryAttributes>) -> tracing::
         // for debug assertions in some API's that assume the correct root span is used.
         ROOT_SPAN_NAME,
         { FILE_FIELD } = loc.file(),
-        { LINE_FIELD } = loc.line()
+        { LINE_FIELD } = loc.line(),
+        // Makes the span force closable, see `force_close_span`
+        { CLOSE_SPAN_FIELD } = tracing::field::Empty
     )
+}
+
+/// Ends the structured telemetry of a force closable span now, even if other
+/// handles to the span or its descendants are still alive.
+///
+/// A span is force closable if it was created with that capability. As of now,
+/// only [`create_root_info_span`] creates such spans. For any other span this
+/// does nothing.
+///
+/// The span end record is delivered at most once: repeated calls and the
+/// eventual native close of the span are no-ops. Every later record in the span
+/// subtree, including events, new child spans and the ends of children that
+/// were already open, is suppressed. The native span itself stays alive until
+/// all handles are dropped.
+///
+/// A record that is already being delivered on another thread when the span is
+/// closed may still reach consumers after the span end.
+pub fn force_close_span(span: &tracing::Span) {
+    // Recording any value on the marker field requests the close from the data layer
+    span.record(CLOSE_SPAN_FIELD, true);
 }
 
 /// Create an info-level span with the current active span as parent.
