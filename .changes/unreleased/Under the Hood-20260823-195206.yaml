@@ -1,0 +1,6 @@
+kind: Under the Hood
+body: Move the built-in SQL incremental materialization lifecycle into a compatibility-gated Python executor.
+time: 2026-08-23T19:52:06.808335-04:00
+custom:
+    Author: dataders
+    Issue: ""

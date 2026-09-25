@@ -68,7 +68,9 @@ from dbt.flags import get_flags
 from dbt.graph import ResourceTypeSelector
 from dbt.graph.thread_pool import DbtThreadPool
 from dbt.hooks import get_hook_dict
+from dbt.materializations.incremental.executor import IncrementalMaterializationExecutor
 from dbt.materializations.incremental.microbatch import MicrobatchBuilder
+from dbt.materializations.table import TableMaterializationExecutor
 from dbt.node_types import NodeType, RunHookType
 from dbt.task import group_lookup
 from dbt.task.base import BaseRunner
@@ -234,6 +236,30 @@ def _validate_materialization_relations_dict(inp: Dict[Any, Any], model) -> List
 
 
 class ModelRunner(CompileRunner[ModelNode]):
+    _PYTHON_MATERIALIZATION_EXECUTORS = {
+        "macro.dbt.materialization_incremental_default": IncrementalMaterializationExecutor,
+        "macro.dbt.materialization_table_default": TableMaterializationExecutor,
+    }
+
+    def _get_python_materialization_executor(
+        self, model: ModelNode, materialization_macro: MacroProtocol
+    ) -> Optional[Type[TableMaterializationExecutor]]:
+        if str(model.language) != "sql":
+            return None
+        unique_id = getattr(materialization_macro, "unique_id", None)
+        if not isinstance(unique_id, str):
+            return None
+        executor_type = self._PYTHON_MATERIALIZATION_EXECUTORS.get(unique_id)
+        if executor_type is None:
+            return None
+        required_adapter_methods = getattr(executor_type, "REQUIRED_ADAPTER_METHODS", ())
+        if not all(
+            callable(getattr(self.adapter, method_name, None))
+            for method_name in required_adapter_methods
+        ):
+            return None
+        return executor_type
+
     def _relation_identifier(self, relation: BaseRelation) -> str:
         identifier = getattr(relation, "identifier", None)
         if identifier is not None:
@@ -437,9 +463,13 @@ class ModelRunner(CompileRunner[ModelNode]):
     ) -> RunResult:
         relations: List[BaseRelation] = []
         try:
-            result = MacroGenerator(
-                materialization_macro, context, stack=context["context_macro_stack"]
-            )()
+            executor_type = self._get_python_materialization_executor(model, materialization_macro)
+            if executor_type is None:
+                result = MacroGenerator(
+                    materialization_macro, context, stack=context["context_macro_stack"]
+                )()
+            else:
+                result = executor_type(self.adapter, model, context).execute()
             relations = self._materialization_relations(result, model)
             relations.extend(
                 self._materialize_latest_version_pointer(manifest, model, context, relations)
