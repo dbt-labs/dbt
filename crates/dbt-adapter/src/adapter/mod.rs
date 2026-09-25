@@ -1008,6 +1008,9 @@ impl Adapter {
                 let model = iter.next_arg::<&Value>()?;
                 let compiled_code = iter.next_arg::<&str>()?;
                 iter.finish()?;
+                if adapter.adapter_type() == AdapterType::Athena {
+                    return self.athena_submit_python_job(state, model, compiled_code);
+                }
 
                 let mut conn =
                     adapter.borrow_tlocal_connection(Some(state), node_id_from_state(state))?;
