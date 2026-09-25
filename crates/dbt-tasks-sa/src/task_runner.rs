@@ -21,6 +21,7 @@ use dbt_schema_store::store::SchemaStore;
 use dbt_schemas::schemas::profiles::Execute;
 use dbt_schemas::state::ResolverState;
 use dbt_schemas::stats::Stats;
+use dbt_state::telemetry::SharedEventOrder;
 use dbt_tasks_core::RunTaskResults;
 use dbt_tasks_core::RunTasksArgs;
 use dbt_tasks_core::TaskRunnerStats;
@@ -203,6 +204,7 @@ impl TaskRunner {
         base_context: BTreeMap<String, minijinja::Value>,
         schedule: Schedule<String>,
         freshness_results: Option<Box<dyn PreTaskRunData>>,
+        shared_event_order: Option<SharedEventOrder>,
     ) -> Result<TaskRunnerCtx, Box<FsError>> {
         let extended_ctx_factory = self
             .hooks
@@ -228,6 +230,7 @@ impl TaskRunner {
                 Arc::clone(&self.adapter),
                 Arc::clone(&self.adapter_store),
                 self.run_cache.clone(),
+                shared_event_order,
             )
             .await
     }

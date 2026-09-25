@@ -807,6 +807,7 @@ use crate::partial_parse::{
 };
 use dbt_compilation::traits::{CompilationCache, CompiledProject};
 use dbt_state::selector::RunCacheStateSelectorArgs;
+use dbt_state::telemetry::SharedEventOrder;
 
 impl DbtProjectCompilation {
     fn dbt_state(&self) -> Arc<DbtState> {
@@ -2368,6 +2369,8 @@ impl DbtProjectCompilation {
                     .register_seeds_for_selected_ids(run_task_args.as_ref(), &schedule)
                     .await?;
 
+                let shared_event_order =
+                    run_cache_state_selector_args.map(|args| args.shared_event_order.clone());
                 let ctx = task_runner
                     .create_context(
                         Arc::clone(&run_task_args),
@@ -2376,6 +2379,7 @@ impl DbtProjectCompilation {
                         base_context.clone(),
                         schedule.clone(),
                         freshness_results,
+                        shared_event_order,
                     )
                     .await?;
 
@@ -2964,6 +2968,7 @@ async fn create_run_cache_state_selector_args(
         project_id,
         macros: resolved_state.macros.macros.clone(),
         project_root: DbtPath::from(project_root),
+        shared_event_order: SharedEventOrder::new(),
     }))
 }
 
