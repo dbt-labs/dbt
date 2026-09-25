@@ -99,6 +99,17 @@
           {{ query_result }}
         {% endcall %}
       {%- endif -%}
+    {%- elif adapter.is_s3_tables_database(database) -%}
+      -- S3 Tables manages its own storage and does not support ALTER TABLE RENAME, so the
+      -- near-zero-downtime swap used for Glue Iceberg is not possible. Drop the existing
+      -- table (via SQL) and recreate it directly.
+      {%- do drop_relation(old_relation) -%}
+      {%- set query_result = safe_create_table_as(False, target_relation, compiled_code, language, force_batch) -%}
+      {%- if language == 'python' -%}
+        {% call statement('create_table', language=language) %}
+          {{ query_result }}
+        {% endcall %}
+      {%- endif -%}
     {%- else -%}
       {%- if old_relation.is_view -%}
         {%- set query_result = safe_create_table_as(False, tmp_relation, compiled_code, language, force_batch) -%}

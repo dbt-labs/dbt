@@ -246,7 +246,11 @@
 
   {% do persist_docs(target_relation, model) %}
 
-  {% do adapter.expire_glue_table_versions(target_relation, versions_to_keep, False) %}
+  {# S3 Tables manages its own Iceberg versioning; the Glue GetTableVersions API is not
+     available for the federated catalog (raises EntityNotFoundException), so skip it. #}
+  {% if not adapter.is_s3_tables_database(target_relation.database) %}
+    {% do adapter.expire_glue_table_versions(target_relation, versions_to_keep, False) %}
+  {% endif %}
 
   {{ return({'relations': [target_relation]}) }}
 

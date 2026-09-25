@@ -13,27 +13,32 @@
   {%- set field_delimiter = config.get('field_delimiter', default=none) -%}
   {%- set catalog_relation = adapter.build_catalog_relation(config.model) -%}
   {%- set table_type = resolve_table_type() -%}
+  {# S3 Tables manages storage automatically — no explicit location in DDL #}
+  {%- set is_s3_tables = catalog_relation is not none and catalog_relation.catalog_type == 's3_tables' -%}
   {# format: model `format` config > catalog file_format > parquet #}
   {%- set catalog_file_format = catalog_relation.file_format if catalog_relation is not none else none -%}
   {%- set format = config.get('format', default=none) or catalog_file_format or 'parquet' -%}
   {%- set write_compression = config.get('write_compression', default=none) -%}
-  {# location base: model `s3_data_dir` config > catalog external_volume > target default #}
-  {%- set catalog_external_volume = catalog_relation.external_volume if catalog_relation is not none else none -%}
-  {%- set s3_data_dir = config.get('s3_data_dir', default=none) or catalog_external_volume or target.s3_data_dir -%}
-  {%- set s3_data_naming = config.get('s3_data_naming', default=target.s3_data_naming) -%}
-  {%- set s3_tmp_table_dir = config.get('s3_tmp_table_dir', default=target.s3_tmp_table_dir) -%}
   {%- set extra_table_properties = config.get('table_properties', default=none) -%}
 
   {%- set location_property = 'external_location' -%}
   {%- set partition_property = 'partitioned_by' -%}
-  {%- set work_group_output_location_enforced = adapter.is_work_group_output_location_enforced() -%}
-  {%- set location = adapter.generate_s3_location(relation,
-                                                 s3_data_dir,
-                                                 s3_data_naming,
-                                                 s3_tmp_table_dir,
-                                                 external_location,
-                                                 temporary,
-                                                 ) -%}
+
+  {%- if not is_s3_tables -%}
+    {# location base: model `s3_data_dir` config > catalog external_volume > target default #}
+    {%- set catalog_external_volume = catalog_relation.external_volume if catalog_relation is not none else none -%}
+    {%- set s3_data_dir = config.get('s3_data_dir', default=none) or catalog_external_volume or target.s3_data_dir -%}
+    {%- set s3_data_naming = config.get('s3_data_naming', default=target.s3_data_naming) -%}
+    {%- set s3_tmp_table_dir = config.get('s3_tmp_table_dir', default=target.s3_tmp_table_dir) -%}
+    {%- set work_group_output_location_enforced = adapter.is_work_group_output_location_enforced() -%}
+    {%- set location = adapter.generate_s3_location(relation,
+                                                   s3_data_dir,
+                                                   s3_data_naming,
+                                                   s3_tmp_table_dir,
+                                                   external_location,
+                                                   temporary,
+                                                   ) -%}
+  {%- endif -%}
   {%- set native_drop = config.get('native_drop', default=false) -%}
 
   {%- set contract_config = config.get('contract') -%}
@@ -41,13 +46,23 @@
     {{ get_assert_columns_equivalent(compiled_code) }}
   {%- endif -%}
 
-  {%- if native_drop and table_type == 'iceberg' -%}
+  {%- if is_s3_tables -%}
+    {# S3 Tables manages its own storage; never delete directly from S3 #}
+  {%- elif native_drop and table_type == 'iceberg' -%}
     {% do log('Config native_drop enabled, skipping direct S3 delete') %}
   {%- else -%}
     {% do adapter.delete_from_s3(location) %}
   {%- endif -%}
 
   {%- if language == 'python' -%}
+    {%- if is_s3_tables -%}
+      {%- set error_python_s3_tables -%}
+        Python models are not supported for S3 Tables catalogs. S3 Tables manages its own
+        storage and rejects the explicit location required by the Spark writer. Use a SQL
+        model instead.
+      {%- endset -%}
+      {% do exceptions.raise_compiler_error(error_python_s3_tables) %}
+    {%- endif -%}
     {%- set spark_ctas = '' -%}
     {%- if table_type == 'iceberg' -%}
       {%- set spark_ctas -%}
@@ -107,7 +122,7 @@
         {%- set bucket_count = none -%}
         {% do log(ignored_bucket_iceberg) %}
       {%- endif -%}
-      {%- if materialized == 'table' and ( 'unique' not in s3_data_naming or external_location is not none) -%}
+      {%- if not is_s3_tables and materialized == 'table' and ( 'unique' not in s3_data_naming or external_location is not none) -%}
         {%- set error_unique_location_iceberg -%}
           You need to have an unique table location when creating Iceberg table since we use the RENAME feature
           to have near-zero downtime.
@@ -120,7 +135,7 @@
     with (
       table_type='{{ table_type }}',
       is_external={%- if table_type == 'iceberg' -%}false{%- else -%}true{%- endif %},
-    {%- if not work_group_output_location_enforced or table_type == 'iceberg' -%}
+    {%- if not is_s3_tables and (not work_group_output_location_enforced or table_type == 'iceberg') -%}
       {{ location_property }}='{{ location }}',
     {%- endif %}
     {%- if partitioned_by is not none %}
