@@ -1,11 +1,17 @@
 use crate::hash::{NodeHashError, node_state_hashes};
-use crate::proto::query_cache::{DbtNodeData, SelectorCriteria, SelectorRequest};
+use crate::proto::query_cache::{
+    ClientSelectorEvent, ClientTelemetryEvent, DbtNodeData, SelectorCriteria, SelectorRequest,
+    SubmitTelemetryBatchRequest, client_telemetry_event,
+};
 use crate::service_client::{RunCacheServiceError, SharedRunCacheServiceClient};
 use crate::service_config::RunCacheServiceConfigError;
+use crate::telemetry::SharedEventOrder;
 use dbt_common::path::DbtPath;
 use dbt_schemas::schemas::{Nodes, macros::DbtMacro};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::LazyLock;
+use std::time::{Duration, Instant};
+use uuid::Uuid;
 
 /// Inputs shared by requests to the run-cache state selector service.
 ///
@@ -19,6 +25,9 @@ pub struct RunCacheStateSelectorArgs {
     pub project_id: Option<String>,
     pub macros: BTreeMap<String, DbtMacro>,
     pub project_root: DbtPath,
+    /// Shared telemetry event order counter for monotonic ordering across
+    /// state selector (compilation phase) and task execution (run phase).
+    pub shared_event_order: SharedEventOrder,
 }
 
 static SELECTOR_CRITERIA_BY_SELECTOR: LazyLock<HashMap<&str, SelectorCriteria>> =
@@ -64,6 +73,9 @@ pub async fn evaluate_state_selector(
         .as_deref()
         .ok_or(RunCacheServiceConfigError::ProjectIdRequired)?;
 
+    let total = Instant::now();
+
+    let hash_calc_start = Instant::now();
     let macro_resolver = |macro_id: &str| args.macros.get(macro_id);
     let mut node_data_list = Vec::new();
     for (unique_id, node) in nodes.iter() {
@@ -89,6 +101,7 @@ pub async fn evaluate_state_selector(
             node_database_representation,
         });
     }
+    let hash_calc_duration = hash_calc_start.elapsed();
 
     let criteria = parse_selector_criteria(selector)?;
 
@@ -104,7 +117,51 @@ pub async fn evaluate_state_selector(
         result.extend(response.node_unique_ids);
     }
 
+    let total_duration = total.elapsed();
+
+    emit_state_selector_telemetry(
+        args,
+        criteria,
+        result.len() as i64,
+        total_duration,
+        hash_calc_duration,
+    );
+
     Ok(result)
+}
+
+fn emit_state_selector_telemetry(
+    args: &RunCacheStateSelectorArgs,
+    criteria: SelectorCriteria,
+    num_nodes: i64,
+    total_duration: Duration,
+    hash_calc_duration: Duration,
+) {
+    let event_order = args.shared_event_order.next();
+    let event = ClientTelemetryEvent {
+        request: Some(client_telemetry_event::Request::ClientSelectorEvent(
+            ClientSelectorEvent {
+                request_id: Uuid::new_v4().simple().to_string(),
+                project_id: args.project_id.clone().unwrap_or_default(),
+                dbt_target: args.defer_to.clone(),
+                selector_criteria: criteria as i32,
+                num_nodes,
+                processing_time_ms: total_duration.as_millis() as i64,
+                hash_calculation_time_ms: hash_calc_duration.as_millis() as i64,
+            },
+        )),
+        event_order: Some(event_order),
+    };
+
+    let request = SubmitTelemetryBatchRequest {
+        events: vec![event],
+    };
+    let client = args.client.clone();
+    tokio::spawn(async move {
+        if let Err(e) = client.submit_telemetry_batch(request).await {
+            tracing::debug!("Failed to submit state selector telemetry: {e}");
+        }
+    });
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -266,6 +323,7 @@ mod tests {
             project_id: Some("project-123".to_string()),
             macros: BTreeMap::new(),
             project_root: DbtPath::from("test-project"),
+            shared_event_order: crate::telemetry::SharedEventOrder::new(),
         }
     }
 

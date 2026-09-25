@@ -1452,10 +1452,7 @@ async fn flush_run_cache_telemetry(ctx: &TaskRunnerCtx) {
 }
 
 fn next_telemetry_event_order(ctx: &TaskRunnerCtx) -> i64 {
-    ctx.inner
-        .run_cache_ctx
-        .telemetry_event_order
-        .fetch_add(1, Ordering::Relaxed)
+    ctx.inner.run_cache_ctx.shared_event_order.next()
 }
 
 /// Submits a runnable node to the dbt State service before local execution.
@@ -5048,6 +5045,7 @@ mod tests {
     use dbt_adapter::{Adapter, AdapterBuilder, AdapterImpl, AdapterStore};
     use dbt_common::path::DbtPath;
     use dbt_schemas::state::ProfileAdapter;
+    use dbt_state::telemetry::SharedEventOrder;
     use indexmap::IndexMap;
     use std::any::Any;
     use std::future::Future;
@@ -8237,7 +8235,7 @@ mod tests {
                 view_traverser: None,
                 heuristic_clock: std::sync::OnceLock::new(),
                 prefetch: Default::default(),
-                telemetry_event_order: std::sync::atomic::AtomicI64::new(0),
+                shared_event_order: SharedEventOrder::new(),
                 telemetry_session_start: std::sync::OnceLock::new(),
                 telemetry_session_ended: std::sync::atomic::AtomicBool::new(false),
                 telemetry_dispatcher: std::sync::OnceLock::new(),

@@ -21,6 +21,7 @@ use dbt_state::explain::{
     append_state_explain_log_record, new_state_explain_log_path, prune_state_explain_logs,
 };
 use dbt_state::service_config::RunCacheServiceConfig;
+use dbt_state::telemetry::SharedEventOrder;
 use dbt_state::view_traversal::ViewDefinitionTraverser;
 use petgraph::graph::DiGraph;
 
@@ -60,6 +61,7 @@ pub trait TaskRunnerCtxFactory: Send + Sync + 'static {
         adapter: Arc<Adapter>,
         adapter_store: Arc<AdapterStore>,
         run_cache_lifecycle: Arc<RunCacheLifecycle>,
+        shared_event_order: Option<SharedEventOrder>,
     ) -> Pin<Box<dyn Future<Output = Result<TaskRunnerCtx, Box<FsError>>> + Send>> {
         let rendering_listener_factory = self.rendering_listener_factory();
         let span_manager = Arc::new({
@@ -151,7 +153,7 @@ pub trait TaskRunnerCtxFactory: Send + Sync + 'static {
                 }),
                 heuristic_clock: std::sync::OnceLock::new(),
                 prefetch: Default::default(),
-                telemetry_event_order: std::sync::atomic::AtomicI64::new(0),
+                shared_event_order: shared_event_order.unwrap_or_default(),
                 telemetry_session_start: std::sync::OnceLock::new(),
                 telemetry_session_ended: std::sync::atomic::AtomicBool::new(false),
                 telemetry_dispatcher: std::sync::OnceLock::new(),
