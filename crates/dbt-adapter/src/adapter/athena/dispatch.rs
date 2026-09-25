@@ -10,7 +10,7 @@ use super::lakeformation::{LfGrantsConfig, LfTagsConfig};
 use super::python::{SparkConfig, SparkJob};
 use super::{
     S3DataNaming, clean_sql_comment, ellipsis_comment, format_one_partition_key,
-    format_partition_keys, format_value_for_partition, generate_s3_location,
+    format_partition_keys, format_value_for_partition, generate_s3_location, is_s3_tables_database,
     is_valid_table_parameter_key, murmur3_hash, parse_s3_path, s3_table_prefix,
     stringify_table_parameter_value,
 };
@@ -154,6 +154,15 @@ impl Adapter {
             token: self.cancellation_token(),
         };
         Ok(Value::from_object(job.submit(compiled_code)?))
+    }
+
+    /// `adapter.is_s3_tables_database(database)`: an S3 Tables catalog,
+    /// `s3tablescatalog/<table-bucket>`.
+    pub fn athena_is_s3_tables_database(&self, args: &[Value]) -> Result<Value, JinjaError> {
+        let iter = ArgsIter::new("is_s3_tables_database", &["database"], args);
+        let database = optional_str(iter.next_arg::<Option<&Value>>()?);
+        iter.finish()?;
+        Ok(Value::from(is_s3_tables_database(database.as_deref())))
     }
 
     /// `adapter.is_list(value)`

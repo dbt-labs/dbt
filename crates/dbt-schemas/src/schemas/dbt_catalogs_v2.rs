@@ -26,6 +26,7 @@ const ALL_V2_PLATFORMS: &[&str] = &[
     "bigquery",
     "duckdb",
     "lakecompute",
+    "athena",
 ];
 
 const TARGET_FILE_SIZES: &[&str] = &["AUTO", "16MB", "32MB", "64MB", "128MB"];
@@ -40,6 +41,8 @@ const LOCAL_FS_FILE_FORMATS: &[&str] = &["parquet", "csv", "json"];
 const UNITY_DATABRICKS_FILE_FORMATS: &[&str] = &["delta", "parquet"];
 const HIVE_METASTORE_FILE_FORMATS: &[&str] = &["delta", "parquet", "hudi"];
 const BIGLAKE_FILE_FORMATS: &[&str] = &["parquet"];
+/// Iceberg data file formats Athena writes.
+const ATHENA_ICEBERG_FILE_FORMATS: &[&str] = &["parquet", "orc", "avro"];
 
 fn matches_enum_ci(v: &str, allowed: &[&str]) -> bool {
     allowed.iter().any(|a| v.eq_ignore_ascii_case(a))
@@ -158,6 +161,30 @@ impl FieldSpec {
         self
     }
 }
+
+// dbt-athena reads `catalog_database`, `external_volume` and `file_format` from the
+// `athena` block; the model's own `database`, `s3_data_dir` / `external_location` and
+// `format` configs take precedence.
+const GLUE_ATHENA_FIELDS: &[FieldSpec] = &[
+    FieldSpec::string("catalog_database").non_empty().doc(
+        "Athena database (Glue catalog) of the catalog's tables; defaults to the target database.",
+    ),
+    FieldSpec::string("external_volume")
+        .non_empty()
+        .doc("S3 location base of the catalog's tables, e.g. s3://bucket/prefix."),
+    FieldSpec::enumerated("file_format", ATHENA_ICEBERG_FILE_FORMATS),
+];
+
+const S3_TABLES_ATHENA_FIELDS: &[FieldSpec] = &[
+    FieldSpec::string("catalog_database")
+        .required()
+        .non_empty()
+        .doc("The table bucket as Athena addresses it: s3tablescatalog/<table-bucket>."),
+    FieldSpec::string("external_volume")
+        .forbidden()
+        .doc("S3 Tables manages the storage of its tables."),
+    FieldSpec::enumerated("file_format", ATHENA_ICEBERG_FILE_FORMATS),
+];
 
 const HORIZON_SNOWFLAKE_FIELDS: &[FieldSpec] = &[
     FieldSpec::string("external_volume")
@@ -368,13 +395,21 @@ const CATALOG_SCHEMAS: &[CatalogTypeSchema] = &[
     CatalogTypeSchema {
         catalog_type: CatalogType::Glue,
         table_format: "iceberg",
-        description: "AWS Glue catalog. Supports snowflake and/or duckdb connection blocks.",
+        description: "AWS Glue catalog. Supports snowflake, duckdb, lakecompute and/or athena connection blocks.",
         presence: ConfigPresence::AtLeastOne,
         platforms: &[
             PlatformBlock::new("snowflake", LINKED_SNOWFLAKE_FIELDS),
             PlatformBlock::new("duckdb", DUCKDB_ICEBERG_FIELDS),
             PlatformBlock::new("lakecompute", GLUE_LAKE_COMPUTE_FIELDS),
+            PlatformBlock::new("athena", GLUE_ATHENA_FIELDS),
         ],
+    },
+    CatalogTypeSchema {
+        catalog_type: CatalogType::S3Tables,
+        table_format: "iceberg",
+        description: "AWS S3 Tables catalog: the Iceberg tables of a table bucket, addressed in Athena as s3tablescatalog/<table-bucket>. Athena platform only.",
+        presence: ConfigPresence::AllRequired,
+        platforms: &[PlatformBlock::new("athena", S3_TABLES_ATHENA_FIELDS)],
     },
     CatalogTypeSchema {
         catalog_type: CatalogType::IcebergRest,
@@ -740,6 +775,7 @@ pub fn validate_catalogs_v2_shape(map: &yml::Mapping, span: &yml::Span) -> FsRes
 pub enum CatalogType {
     Horizon,
     Glue,
+    S3Tables,
     IcebergRest,
     HiveMetastore,
     Unity,
@@ -761,6 +797,8 @@ impl CatalogType {
             Ok(Self::Horizon)
         } else if raw.eq_ignore_ascii_case("glue") {
             Ok(Self::Glue)
+        } else if raw.eq_ignore_ascii_case("s3_tables") {
+            Ok(Self::S3Tables)
         } else if raw.eq_ignore_ascii_case("iceberg_rest") {
             Ok(Self::IcebergRest)
         } else if raw.eq_ignore_ascii_case("hive_metastore") {
@@ -777,7 +815,7 @@ impl CatalogType {
             err!(
                 code => ErrorCode::InvalidConfig,
                 hacky_yml_loc => Some(span.clone()),
-                "type '{}' invalid. choose one of (horizon|glue|iceberg_rest|unity|hive_metastore|biglake_metastore|ducklake|local_filesystem)",
+                "type '{}' invalid. choose one of (horizon|glue|s3_tables|iceberg_rest|unity|hive_metastore|biglake_metastore|ducklake|local_filesystem)",
                 raw
             )
         }
@@ -787,6 +825,7 @@ impl CatalogType {
         match self {
             Self::Horizon => "horizon",
             Self::Glue => "glue",
+            Self::S3Tables => "s3_tables",
             Self::IcebergRest => "ICEBERG_REST", // required by legacy dbt core v1 Jinja macros
             Self::HiveMetastore => "hive_metastore",
             Self::Unity => "unity",
@@ -817,8 +856,9 @@ impl CatalogType {
     /// question to be answered rather than defaulting either way.
     pub fn lake_compute_can_read(&self) -> bool {
         match self {
-            // Open table formats `lakecompute` can attach.
-            Self::Horizon | Self::Glue | Self::IcebergRest | Self::Unity => true,
+            // Open table formats `lakecompute` can attach (S3 Tables through DuckDB's
+            // `S3_TABLES` endpoint type).
+            Self::Horizon | Self::Glue | Self::S3Tables | Self::IcebergRest | Self::Unity => true,
             // Snowflake-managed Iceberg under its older spelling; Horizon supersedes it.
             Self::SnowflakeBuiltIn => true,
             // Engine-owned catalogs `lakecompute` does not support today.
@@ -840,6 +880,7 @@ impl CatalogType {
     pub fn is_catalog_linked(&self) -> bool {
         match self {
             Self::Glue
+            | Self::S3Tables
             | Self::IcebergRest
             | Self::HiveMetastore
             | Self::Unity
@@ -861,6 +902,7 @@ impl CatalogType {
         match raw {
             "horizon" => Self::Horizon,
             "glue" => Self::Glue,
+            "s3_tables" => Self::S3Tables,
             // "ICEBERG_REST" only exists on the Jinja plane. Model configs should
             // be lowercase to obscure the internal uppercase as much as possible.
             "iceberg_rest" => Self::IcebergRest,
@@ -965,6 +1007,7 @@ pub trait PhysicalFormatResolver {
             TableFormat::Default => match self.catalog_type() {
                 CatalogType::Horizon
                 | CatalogType::Glue
+                | CatalogType::S3Tables
                 | CatalogType::IcebergRest
                 | CatalogType::HiveMetastore
                 | CatalogType::Unity
@@ -979,6 +1022,7 @@ pub trait PhysicalFormatResolver {
             TableFormat::Iceberg => match self.catalog_type() {
                 CatalogType::Horizon
                 | CatalogType::Glue
+                | CatalogType::S3Tables
                 | CatalogType::IcebergRest
                 | CatalogType::HiveMetastore
                 | CatalogType::Unity
@@ -1494,6 +1538,21 @@ impl CatalogRegistry {
             CatalogType::DuckLake => {
                 if let Some(duckdb) = catalog.config_block("duckdb") {
                     catalog.validate_duckdb_semantics(duckdb, "ducklake")?;
+                }
+            }
+            CatalogType::S3Tables => {
+                if let Some(athena) = catalog.config_block("athena")
+                    && let Some(database) = get_str(athena, "catalog_database")?
+                    && !database
+                        .to_ascii_lowercase()
+                        .starts_with("s3tablescatalog/")
+                {
+                    return err!(
+                        code => ErrorCode::InvalidConfig,
+                        hacky_yml_loc => field_span(athena, "catalog_database").cloned(),
+                        "Catalog '{}' s3_tables/athena catalog_database must name the table bucket as s3tablescatalog/<table-bucket>, got '{}'",
+                        catalog.name, database
+                    );
                 }
             }
             CatalogType::HiveMetastore | CatalogType::LocalFilesystem => {}
@@ -2125,6 +2184,60 @@ catalogs:
 "#;
         let res = parse_and_validate(yaml);
         assert!(res.is_err(), "expected error but got Ok");
+    }
+
+    #[test]
+    fn athena_glue_and_s3_tables_v2_valid() {
+        let yaml = r#"
+catalogs:
+  - name: lake
+    type: glue
+    table_format: iceberg
+    config:
+      athena:
+        external_volume: "s3://bucket/lake"
+        file_format: parquet
+  - name: tables
+    type: s3_tables
+    table_format: iceberg
+    config:
+      athena:
+        catalog_database: "s3tablescatalog/my-table-bucket"
+"#;
+        parse_and_validate(yaml).expect("v2 athena catalogs should validate");
+    }
+
+    #[test]
+    fn s3_tables_v2_rejects_what_s3_tables_cannot_do() {
+        for (config, why) in [
+            (
+                "catalog_database: \"s3tablescatalog/b\"\n        external_volume: \"s3://x\"",
+                "S3 Tables manages the storage",
+            ),
+            ("file_format: parquet", "catalog_database is required"),
+            (
+                "catalog_database: \"my-table-bucket\"",
+                "catalog_database must name the table bucket",
+            ),
+        ] {
+            let yaml = format!(
+                "catalogs:\n  - name: tables\n    type: s3_tables\n    table_format: iceberg\n    config:\n      athena:\n        {config}\n"
+            );
+            assert!(parse_and_validate(&yaml).is_err(), "{why}: {yaml}");
+        }
+        let hive = r#"
+catalogs:
+  - name: tables
+    type: s3_tables
+    table_format: default
+    config:
+      athena:
+        catalog_database: "s3tablescatalog/b"
+"#;
+        assert!(
+            parse_and_validate(hive).is_err(),
+            "S3 Tables holds Iceberg only"
+        );
     }
 
     #[test]

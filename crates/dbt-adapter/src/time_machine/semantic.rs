@@ -177,6 +177,7 @@ impl SemanticCategory {
             | "strip_trailing_statement_terminator"
             // Athena
             | "is_list"
+            | "is_s3_tables_database"
             | "format_value_for_partition"
             | "format_one_partition_key"
             | "format_partition_keys"
