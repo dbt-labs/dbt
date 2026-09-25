@@ -196,6 +196,12 @@ jobs:
       version_number: ${{ inputs.version_number }}
       test_run: ${{ inputs.test_run }}
       use_hatch: ${{ needs.job-setup.outputs.use_hatch == 'true' }} # workflow outputs are strings...
+      # This repo was renamed from dbt-core to dbt (GitHub redirects the old
+      # name), but it still builds and publishes the dbt-core PyPI package,
+      # not a package named "dbt". Without this override, pypi-release.yml
+      # derives the package name from the repo name and validates against
+      # the wrong PyPI package.
+      package_name: "dbt-core"
 
     secrets:
       PYPI_API_TOKEN: ${{ secrets.PYPI_API_TOKEN }}
