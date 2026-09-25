@@ -330,6 +330,12 @@ where
     base_builtins.insert("source".to_string(), source_value.clone());
 
     let mut model_map = convert_yml_to_value_map(model.serialize());
+    // Wrap resource_type as a StrEnumValue so that `.name` returns the
+    // capitalized member name (e.g. "Model"), matching dbt 1.x StrEnum.
+    model_map.insert(
+        "resource_type".to_owned(),
+        dbt_common::serde_utils::node_type_to_str_enum_value(model.resource_type()),
+    );
     // dbt-core exposes `model.path` relative to the resource root (e.g.
     // `staging/orders.sql`), not package-relative (`models/staging/orders.sql`).
     // Fusion stores the package-relative form on the node (it is used for file
