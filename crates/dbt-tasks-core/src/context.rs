@@ -74,6 +74,7 @@ pub struct RunCacheCtx {
     /// Background telemetry batching worker, started lazily on the first
     /// event so runs with the dbt State service disabled never spawn it.
     pub telemetry_dispatcher: std::sync::OnceLock<TelemetryDispatcher>,
+    pub redshift_case_sensitivity_enabled: tokio::sync::OnceCell<bool>,
 }
 
 /// Lifecycle handle for the background dependency last-modified prefetch.

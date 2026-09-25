@@ -16,6 +16,7 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::Instant;
 
+use arrow::array::{Array, BooleanArray, RecordBatch};
 use tokio::sync::mpsc;
 
 use crate::context::TaskRunnerCtx;
@@ -710,6 +711,33 @@ pub(crate) fn has_metadata_address(adapter_type: AdapterType, relation: &dyn Bas
                 .is_some_and(|database| !database.trim().is_empty()))
 }
 
+fn parse_case_sensitivity_result(batch: &RecordBatch) -> Option<bool> {
+    let schema = batch.schema();
+    let column_name = schema.fields().first()?.name();
+
+    let col = batch.column_values::<BooleanArray>(column_name).ok()?;
+    (col.len() == 1 && col.is_valid(0)).then(|| col.value(0))
+}
+
+async fn check_redshift_case_sensitivity(ctx: &TaskRunnerCtx) -> bool {
+    let sql: &str =
+        "SELECT CURRENT_SETTING('enable_case_sensitive_identifier')::boolean AS case_sensitive";
+    let ctx_inner = ctx.clone();
+    TaskOp::Blocking(Box::new(move || -> Option<bool> {
+        let adapter = ctx_inner.env.get_adapter_ref()?;
+
+        let query_ctx = QueryCtx::default().with_desc("Redshift case-sensitivity setting check");
+        let (_, table) = adapter
+            .execute_without_state(Some(&query_ctx), sql, true, None)
+            .ok()?;
+        parse_case_sensitivity_result(&table.original_record_batch())
+    }))
+    .run()
+    .await
+    .ok()
+    .flatten()
+    .unwrap_or(false)
+}
 /// Collect every relation and source freshness override needed for the run's
 /// metadata prefetch.
 ///
@@ -1108,6 +1136,15 @@ pub async fn run_cache_service_before_run(ctx: &TaskRunnerCtx) -> AdapterResult<
     if let Some(clock) = HeuristicClock::bootstrap(ctx).await {
         let _ = ctx.inner.run_cache_ctx.heuristic_clock.set(clock);
     }
+
+    if ctx.default_adapter_type() == AdapterType::Redshift {
+        ctx.inner
+            .run_cache_ctx
+            .redshift_case_sensitivity_enabled
+            .get_or_init(|| async { check_redshift_case_sensitivity(ctx).await })
+            .await;
+    }
+
     Ok(())
 }
 
@@ -4727,9 +4764,27 @@ fn quoting_for_upstream(
         identifier: type_ops.need_quotes_for_ident(upstream.table().as_str()) || upstream.is_prefix,
     }
 }
+// Dialect used when Redshift has enable_case_sensitive_identifier = on. When enabled, Redshift
+// folds unquoted identifiers to lowercase and preserves case only when identifiers are quoted,
+// which matches sqlglot 'lowercase' strategy.
+// https://docs.aws.amazon.com/redshift/latest/dg/r_enable_case_sensitive_identifier.html
+const REDSHIFT_CASE_SENSITIVE_NORMALIZATION_DIALECT: &str =
+    "redshift, normalization_strategy = lowercase";
 
-fn run_cache_dialect(ctx: &TaskRunnerCtx) -> String {
-    ctx.default_adapter_type().to_string()
+pub fn run_cache_dialect(ctx: &TaskRunnerCtx) -> String {
+    let adapter_type = ctx.default_adapter_type();
+    let redshift_case_sensitivity_enabled = ctx
+        .inner
+        .run_cache_ctx
+        .redshift_case_sensitivity_enabled
+        .get()
+        .copied()
+        .unwrap_or(false);
+    if adapter_type == AdapterType::Redshift && redshift_case_sensitivity_enabled {
+        REDSHIFT_CASE_SENSITIVE_NORMALIZATION_DIALECT.to_string()
+    } else {
+        adapter_type.to_string()
+    }
 }
 
 fn should_honor_service_skip(ctx: &TaskRunnerCtx) -> bool {
@@ -5003,7 +5058,7 @@ mod tests {
     use crate::RunTasksArgs;
     use crate::context::{ExtendedCtx, RunCacheCtx, TaskRunnerCtxInner};
     use arrow::array::RecordBatch;
-    use arrow_schema::{Schema, SchemaRef};
+    use arrow_schema::{DataType, Field, Schema, SchemaRef};
     use dbt_adapter::sql_types::DefaultTypeOps;
     use dbt_adapter::stmt_splitter::DefaultStmtSplitter;
     use dbt_common::cancellation::never_cancels;
@@ -8186,6 +8241,7 @@ mod tests {
                 telemetry_session_start: std::sync::OnceLock::new(),
                 telemetry_session_ended: std::sync::atomic::AtomicBool::new(false),
                 telemetry_dispatcher: std::sync::OnceLock::new(),
+                redshift_case_sensitivity_enabled: tokio::sync::OnceCell::new(),
             },
         );
 
@@ -8200,7 +8256,19 @@ mod tests {
         }
     }
 
+    fn test_task_runner_ctx_with_adapter_type(adapter_type: AdapterType) -> TaskRunnerCtx {
+        let mut ctx = test_task_runner_ctx(None);
+        Arc::get_mut(&mut ctx.inner)
+            .expect("sole owner of inner right after construction")
+            .adapter_store = test_adapter_store_for(adapter_type);
+        ctx
+    }
+
     fn test_adapter_store() -> Arc<AdapterStore> {
+        test_adapter_store_for(AdapterType::Snowflake)
+    }
+
+    fn test_adapter_store_for(adapter_type: AdapterType) -> Arc<AdapterStore> {
         let build: AdapterBuilder = Box::new(|adapter_type| {
             let adapter = AdapterImpl::new_mock(
                 adapter_type,
@@ -8215,10 +8283,69 @@ mod tests {
                 never_cancels(),
             )))
         });
-        Arc::new(
-            AdapterStore::new(vec![AdapterType::Snowflake], AdapterType::Snowflake, build)
-                .expect("valid store"),
-        )
+        Arc::new(AdapterStore::new(vec![adapter_type], adapter_type, build).expect("valid store"))
+    }
+
+    #[dbt_runtime::test]
+    async fn run_cache_dialect_sets_plain_dialect_for_default_redshift() {
+        let ctx = test_task_runner_ctx_with_adapter_type(AdapterType::Redshift);
+        assert_eq!(run_cache_dialect(&ctx), "redshift");
+    }
+
+    #[dbt_runtime::test]
+    async fn run_cache_dialect_sets_plain_dialect_for_non_redshift_adapter() {
+        let ctx = test_task_runner_ctx(None);
+        assert_eq!(run_cache_dialect(&ctx), "snowflake");
+    }
+
+    #[dbt_runtime::test]
+    async fn run_cache_dialect_sets_normalization_dialect_for_redshift_case_sensitive() {
+        let ctx = test_task_runner_ctx_with_adapter_type(AdapterType::Redshift);
+        ctx.inner
+            .run_cache_ctx
+            .redshift_case_sensitivity_enabled
+            .set(true)
+            .expect("cell already initialized");
+
+        assert_eq!(
+            run_cache_dialect(&ctx),
+            REDSHIFT_CASE_SENSITIVE_NORMALIZATION_DIALECT
+        );
+    }
+
+    #[dbt_runtime::test]
+    async fn run_cache_dialect_non_redshift_ignores_case_sensitivity_cell() {
+        let ctx = test_task_runner_ctx(None);
+
+        ctx.inner
+            .run_cache_ctx
+            .redshift_case_sensitivity_enabled
+            .set(true)
+            .expect("cell should be empty");
+
+        assert_eq!(run_cache_dialect(&ctx), "snowflake");
+    }
+
+    #[dbt_runtime::test]
+    async fn run_cache_service_redshift_case_sensitivity_enabled_defaults_false() {
+        let ctx = test_task_runner_ctx_with_adapter_type(AdapterType::Redshift);
+
+        let adapter = ctx
+            .adapter_store()
+            .get(AdapterType::Redshift)
+            .expect("mock Redshift adapter");
+
+        let ctx = ctx_with_adapter_in_env(&ctx, &adapter);
+
+        run_cache_service_before_run(&ctx).await.unwrap();
+
+        assert_eq!(
+            ctx.inner
+                .run_cache_ctx
+                .redshift_case_sensitivity_enabled
+                .get(),
+            Some(&false)
+        );
     }
 
     fn clone_target(relation_type: Option<RelationType>) -> Arc<dyn BaseRelation> {
@@ -8351,6 +8478,48 @@ mod tests {
             .insert_schema(catalog_schema, vec![Arc::clone(&table_target)]);
 
         assert!(!target_relation_is_view(&ctx, &table_target).await);
+    }
+
+    fn case_sensitivity_result_batch(values: Vec<Option<bool>>) -> RecordBatch {
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "case_sensitive",
+            DataType::Boolean,
+            true,
+        )]));
+        RecordBatch::try_new(schema, vec![Arc::new(BooleanArray::from(values))])
+            .expect("valid single-column boolean batch")
+    }
+
+    #[test]
+    fn parse_case_sensitivity_empty_result_is_none() {
+        assert_eq!(
+            parse_case_sensitivity_result(&case_sensitivity_result_batch(vec![])),
+            None
+        );
+    }
+
+    #[test]
+    fn parse_case_sensitivity_true_result_is_true() {
+        assert_eq!(
+            parse_case_sensitivity_result(&case_sensitivity_result_batch(vec![Some(true)])),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn parse_case_sensitivity_false_result_is_false() {
+        assert_eq!(
+            parse_case_sensitivity_result(&case_sensitivity_result_batch(vec![Some(false)])),
+            Some(false)
+        );
+    }
+
+    #[test]
+    fn parse_case_sensitivity_null_result_is_none() {
+        assert_eq!(
+            parse_case_sensitivity_result(&case_sensitivity_result_batch(vec![None])),
+            None
+        );
     }
 
     #[dbt_runtime::test]

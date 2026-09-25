@@ -155,6 +155,7 @@ pub trait TaskRunnerCtxFactory: Send + Sync + 'static {
                 telemetry_session_start: std::sync::OnceLock::new(),
                 telemetry_session_ended: std::sync::atomic::AtomicBool::new(false),
                 telemetry_dispatcher: std::sync::OnceLock::new(),
+                redshift_case_sensitivity_enabled: tokio::sync::OnceCell::new(),
             };
 
             Ok(TaskRunnerCtx {
