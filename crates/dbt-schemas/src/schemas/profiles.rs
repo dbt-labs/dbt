@@ -1625,6 +1625,8 @@ fn default_clickhouse_compress_block_size() -> Option<i64> {
 /// Glue catalog used when `database` is not set; the same default lives in
 /// `dbt-auth`'s Athena module, which reads the profile through `to_mapping()`.
 pub const DEFAULT_ATHENA_CATALOG: &str = "awsdatacatalog";
+/// `AthenaCredentials.s3_data_naming` default.
+pub const DEFAULT_ATHENA_S3_DATA_NAMING: &str = "table_unique";
 
 /// Field set of dbt-athena's `AthenaCredentials`
 /// (https://github.com/dbt-labs/dbt-adapters/blob/main/dbt-athena/src/dbt/adapters/athena/connections.py).
@@ -1930,6 +1932,12 @@ pub struct AthenaTargetEnv {
     pub s3_staging_dir: Option<String>,
     pub work_group: Option<String>,
     pub aws_profile_name: Option<String>,
+    /// S3 layout settings the dbt-athena macros read from `target.*`.
+    pub s3_data_dir: Option<String>,
+    /// Defaults to `table_unique`, as `AthenaCredentials.s3_data_naming` does.
+    pub s3_data_naming: String,
+    pub s3_tmp_table_dir: Option<String>,
+    pub seed_s3_upload_args: Option<HashMap<String, YmlValue>>,
     pub __common__: CommonTargetContext,
 }
 
@@ -2385,6 +2393,13 @@ impl TryFrom<DbConfig> for TargetContext {
                 s3_staging_dir: config.s3_staging_dir.clone(),
                 work_group: config.work_group.clone(),
                 aws_profile_name: config.aws_profile_name.clone(),
+                s3_data_dir: config.s3_data_dir.clone(),
+                s3_data_naming: config
+                    .s3_data_naming
+                    .clone()
+                    .unwrap_or_else(|| DEFAULT_ATHENA_S3_DATA_NAMING.to_string()),
+                s3_tmp_table_dir: config.s3_tmp_table_dir.clone(),
+                seed_s3_upload_args: config.seed_s3_upload_args.clone(),
                 __common__: CommonTargetContext {
                     database: config
                         .database
@@ -3319,10 +3334,34 @@ seed_s3_upload_args:
         );
         assert_eq!(target.work_group.as_deref(), Some("analytics-wg"));
         assert_eq!(target.aws_profile_name.as_deref(), Some("dbt"));
+        assert_eq!(target.s3_data_dir, None);
+        assert_eq!(target.s3_data_naming, DEFAULT_ATHENA_S3_DATA_NAMING);
+        assert_eq!(target.s3_tmp_table_dir, None);
         assert_eq!(target.__common__.database, DEFAULT_ATHENA_CATALOG);
         assert_eq!(target.__common__.schema, "analytics");
         assert_eq!(target.__common__.type_, "athena");
         assert_eq!(target.__common__.threads, Some(8));
+    }
+
+    #[test]
+    fn test_athena_target_context_s3_layout_fields() {
+        let config: DbConfig = dbt_yaml::from_str(
+            "type: athena\n\
+             region_name: eu-west-1\n\
+             s3_staging_dir: s3://bucket/athena/\n\
+             s3_data_dir: s3://bucket/data/\n\
+             s3_data_naming: schema_table\n\
+             s3_tmp_table_dir: s3://bucket/tmp/\n\
+             schema: analytics\n",
+        )
+        .unwrap();
+
+        let TargetContext::Athena(target) = TargetContext::try_from(config).unwrap() else {
+            panic!("expected athena target context");
+        };
+        assert_eq!(target.s3_data_dir.as_deref(), Some("s3://bucket/data/"));
+        assert_eq!(target.s3_data_naming, "schema_table");
+        assert_eq!(target.s3_tmp_table_dir.as_deref(), Some("s3://bucket/tmp/"));
     }
 
     #[test]
