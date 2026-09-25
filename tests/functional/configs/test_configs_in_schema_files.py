@@ -113,10 +113,27 @@ class TestSchemaFileConfigs:
     @pytest.fixture(scope="class")
     def expected_unrendered_config(self):
         # my_attr is unrendered when state_modified_compare_more_unrendered_values: True
+        # inherited merge-behavior fields (meta, tags) accumulate across the
+        # project hierarchy instead of keeping only the innermost scope
         return {
             "materialized": "view",
-            "meta": {"my_attr": "{{ var('my_var') }}", "owner": "Julie Smith"},
-            "tags": ["tag_1_in_model", "tag_2_in_model"],
+            "meta": {
+                "company": "NuMade",
+                "project": "test",
+                "team": "Core Team",
+                "my_attr": "{{ var('my_var') }}",
+                "owner": "Julie Smith",
+            },
+            # tags accumulate across project scopes, the schema-file patch and
+            # config() calls; the duplicate tag_in_schema comes from the patch
+            # dict being deep-merged with its unrendered form (parser/base.py)
+            "tags": [
+                "tag_in_project",
+                "tag_in_schema",
+                "tag_in_schema",
+                "tag_1_in_model",
+                "tag_2_in_model",
+            ],
         }
 
     @pytest.fixture(scope="class")
