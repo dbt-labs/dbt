@@ -1946,9 +1946,101 @@ fn value_as_string(array: &ArrayRef, index: usize, data_type: &DataType) -> Stri
 #[cfg(test)]
 mod compare_record_batches_tests {
     use super::compare_record_batches;
-    use arrow::array::{BinaryArray, Int32Array, Int64Array, StringViewArray};
-    use arrow::datatypes::{DataType, Field, Schema};
+    use arrow::array::{
+        BinaryArray, Int32Array, Int64Array, StringArray, StringViewArray,
+        TimestampMicrosecondArray, TimestampSecondArray,
+    };
+    use arrow::datatypes::{DataType, Field, Schema, TimeUnit};
     use std::sync::Arc;
+
+    // Warehouse TIMESTAMP / DATETIME columns reach the comparison as
+    // Timestamp(Microsecond, _) (BigQuery, DuckDB, ...). Regression tests for
+    // dbt-labs/dbt#15894: a wrong expected value must be reported instead of
+    // both sides rendering as "[unsupported]" and comparing equal.
+    #[test]
+    fn detects_mismatch_in_microsecond_timestamp_column_without_timezone() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("actual_or_expected", DataType::Utf8, false),
+            Field::new(
+                "ts",
+                DataType::Timestamp(TimeUnit::Microsecond, None),
+                false,
+            ),
+        ]));
+        let batch = arrow::array::RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(StringArray::from(vec!["expected", "actual"])),
+                Arc::new(TimestampMicrosecondArray::from(vec![
+                    1_700_000_000_000_000i64,
+                    1_700_000_001_000_000i64,
+                ])),
+            ],
+        )
+        .unwrap();
+
+        let result = compare_record_batches(&batch).unwrap();
+        assert!(
+            result.has_differences,
+            "expected differing DATETIME-like (microsecond, no tz) values to be flagged as a mismatch, but the column was silently treated as unsupported"
+        );
+    }
+
+    #[test]
+    fn detects_mismatch_in_microsecond_timestamp_column_with_timezone() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("actual_or_expected", DataType::Utf8, false),
+            Field::new(
+                "ts",
+                DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into())),
+                false,
+            ),
+        ]));
+        let batch = arrow::array::RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(StringArray::from(vec!["expected", "actual"])),
+                Arc::new(
+                    TimestampMicrosecondArray::from(vec![
+                        1_700_000_000_000_000i64,
+                        1_700_000_001_000_000i64,
+                    ])
+                    .with_timezone("UTC"),
+                ),
+            ],
+        )
+        .unwrap();
+
+        let result = compare_record_batches(&batch).unwrap();
+        assert!(
+            result.has_differences,
+            "expected differing TIMESTAMP-like (microsecond, UTC) values to be flagged as a mismatch, but the column was silently treated as unsupported"
+        );
+    }
+
+    // Control: second-precision timestamps are handled today, so a mismatch
+    // there is already detected. Documents the inconsistency across TimeUnits.
+    #[test]
+    fn detects_mismatch_in_second_timestamp_column() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("actual_or_expected", DataType::Utf8, false),
+            Field::new("ts", DataType::Timestamp(TimeUnit::Second, None), false),
+        ]));
+        let batch = arrow::array::RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(StringArray::from(vec!["expected", "actual"])),
+                Arc::new(TimestampSecondArray::from(vec![
+                    1_700_000_000i64,
+                    1_700_000_001i64,
+                ])),
+            ],
+        )
+        .unwrap();
+
+        let result = compare_record_batches(&batch).unwrap();
+        assert!(result.has_differences);
+    }
 
     // Query results are normalized to Utf8View/LargeUtf8 at the adapter boundary
     // (dbt-adapter's concat_batches::to_view_types), so AgateTable's batches carry
