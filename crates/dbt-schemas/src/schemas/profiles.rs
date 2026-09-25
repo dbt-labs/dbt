@@ -311,13 +311,31 @@ impl DbConfig {
             // Mirrors dbt-athena `_connection_keys`; `aws_secret_access_key` and
             // `aws_session_token` are secrets and stay out.
             AdapterType::Athena => &[
-                "region_name",
-                "s3_staging_dir",
-                "work_group",
-                "database",
-                "schema",
-                "aws_profile_name",
+                "assume_role_arn",
+                "assume_role_duration_seconds",
+                "assume_role_external_id",
+                "assume_role_session_name",
                 "aws_access_key_id",
+                "aws_profile_name",
+                "connection_manager",
+                "database",
+                "debug_query_state",
+                "endpoint_url",
+                "lf_tags_database",
+                "num_boto3_retries",
+                "num_iceberg_retries",
+                "num_retries",
+                "poll_interval",
+                "region_name",
+                "s3_data_dir",
+                "s3_data_naming",
+                "s3_staging_dir",
+                "s3_tmp_table_dir",
+                "schema",
+                "seed_s3_upload_args",
+                "skip_workgroup_check",
+                "spark_work_group",
+                "work_group",
             ],
             // Adapter types with no `DbConfig` variant, so nothing to display.
             AdapterType::Starburst | AdapterType::Dremio | AdapterType::Oracle => &[],
@@ -1626,13 +1644,13 @@ fn default_clickhouse_compress_block_size() -> Option<i64> {
 /// `dbt-auth`'s Athena module, which reads the profile through `to_mapping()`.
 pub const DEFAULT_ATHENA_CATALOG: &str = "awsdatacatalog";
 /// `AthenaCredentials.s3_data_naming` default.
-pub const DEFAULT_ATHENA_S3_DATA_NAMING: &str = "table_unique";
+pub const DEFAULT_ATHENA_S3_DATA_NAMING: &str = "schema_table_unique";
 
 /// Field set of dbt-athena's `AthenaCredentials`
 /// (https://github.com/dbt-labs/dbt-adapters/blob/main/dbt-athena/src/dbt/adapters/athena/connections.py).
 ///
 /// Every dbt-athena field is declared, including the ones `dbt-auth` currently
-/// rejects (`assume_role_*`, `s3_data_dir`, ...): the auth layer only sees the
+/// rejects (`spark_work_group`, `lf_tags_database`): the auth layer only sees the
 /// mapping produced by `to_mapping()`, so a field missing here would be dropped
 /// silently instead of raising the "not yet supported" error.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default, DbtSchema, Merge)]
@@ -3335,7 +3353,7 @@ seed_s3_upload_args:
         assert_eq!(target.work_group.as_deref(), Some("analytics-wg"));
         assert_eq!(target.aws_profile_name.as_deref(), Some("dbt"));
         assert_eq!(target.s3_data_dir, None);
-        assert_eq!(target.s3_data_naming, DEFAULT_ATHENA_S3_DATA_NAMING);
+        assert_eq!(target.s3_data_naming, "schema_table_unique");
         assert_eq!(target.s3_tmp_table_dir, None);
         assert_eq!(target.__common__.database, DEFAULT_ATHENA_CATALOG);
         assert_eq!(target.__common__.schema, "analytics");
