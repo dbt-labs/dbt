@@ -6,8 +6,8 @@
         {# For bucketed columns, compute bucket numbers and conditions #}
         {%- set column_type = adapter.convert_type(table, col_index) -%}
         {%- set ns.is_bucketed = true -%}
-        {%- set ns.bucket_column = bucket_match[1] -%}
-        {%- set bucket_num = adapter.murmur3_hash(col, bucket_match[2] | int) -%}
+        {%- set ns.bucket_column = bucket_match.group(1) -%}
+        {%- set bucket_num = adapter.murmur3_hash(col, bucket_match.group(2) | int) -%}
         {%- set formatted_value, comp_func = adapter.format_value_for_partition(col, column_type) -%}
 
         {%- if bucket_num not in ns.bucket_numbers %}
