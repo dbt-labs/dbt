@@ -1,0 +1,7 @@
+kind: Fixes
+body: Report a mismatch for TIMESTAMP and DATETIME values in unit test `expect` rows instead of silently passing; column types the comparison cannot render now error instead of comparing equal
+time: 2026-09-25T16:48:02.501865-03:00
+custom:
+    author: luc-pimentel
+    issue: "15894"
+    project: dbt-core
