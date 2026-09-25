@@ -15,6 +15,7 @@ use arrow::array::{Array, StringArray};
 use base64::Engine as _;
 use dashmap::DashMap;
 use dbt_adbc::athena::{OPERATION, OPERATION_PAYLOAD};
+use dbt_common::cancellation::{CancellationToken, never_cancels};
 use minijinja::State;
 use serde_json::{Map, Value as Json, json};
 use std::collections::HashMap;
@@ -107,6 +108,21 @@ impl<'a, 't, 'e> AthenaOps<'a, 't, 'e> {
 
     /// Run one driver operation and decode its JSON response.
     pub(super) fn call(&self, operation: &str, payload: Json) -> AdapterResult<Json> {
+        self.call_with(operation, payload, self.adapter.cancellation_token())
+    }
+
+    /// [`Self::call`] that goes out even when the run has been cancelled: cleanup of
+    /// work left running in AWS.
+    pub(super) fn call_uncancellable(&self, operation: &str, payload: Json) -> AdapterResult<Json> {
+        self.call_with(operation, payload, never_cancels())
+    }
+
+    fn call_with(
+        &self,
+        operation: &str,
+        payload: Json,
+        token: CancellationToken,
+    ) -> AdapterResult<Json> {
         let options = vec![
             (
                 OPERATION.to_string(),
@@ -117,9 +133,16 @@ impl<'a, 't, 'e> AthenaOps<'a, 't, 'e> {
                 OptionValue::String(payload.to_string()),
             ),
         ];
-        let (_, table) =
-            self.adapter
-                .execute(self.state, None, "none", false, true, None, Some(options))?;
+        let (_, table) = self.adapter.execute_with_token(
+            self.state,
+            None,
+            "none",
+            false,
+            true,
+            None,
+            Some(options),
+            token,
+        )?;
         let batch = table.original_record_batch();
         let column = batch.column_by_name("result").ok_or_else(|| {
             unexpected(format!(
