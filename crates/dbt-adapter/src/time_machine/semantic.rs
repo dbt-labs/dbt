@@ -100,6 +100,7 @@ impl SemanticCategory {
             | "persist_docs_to_glue"
             | "add_lf_tags"
             | "apply_lf_grants"
+            | "add_lf_tags_to_database"
             | "run_query_with_partitions_limit_catching"
             | "run_operation_with_potential_multiple_runs" => SemanticCategory::Write,
 
