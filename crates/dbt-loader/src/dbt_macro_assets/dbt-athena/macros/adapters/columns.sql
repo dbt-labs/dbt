@@ -1,6 +1,8 @@
 {#- Fusion runs this macro from AdapterImpl::get_columns_in_relation, so
     delegating back to adapter.get_columns_in_relation would recurse. Trino's
-    information_schema.columns has no length/precision/scale columns. -#}
+    information_schema.columns has no length/precision/scale columns, and covers only
+    its own catalog, so it is qualified with the relation's (S3 Tables:
+    s3tablescatalog/<bucket>). -#}
 {% macro athena__get_columns_in_relation(relation) -%}
   {% call statement('get_columns_in_relation', fetch_result=True) %}
     select
@@ -9,7 +11,7 @@
         cast(null as integer) as character_maximum_length,
         cast(null as integer) as numeric_precision,
         cast(null as integer) as numeric_scale
-    from information_schema.columns
+    from {% if relation.database %}"{{ relation.database }}".{% endif %}information_schema.columns
     where lower(table_name) = '{{ relation.identifier | lower }}'
       {% if relation.schema %} and lower(table_schema) = '{{ relation.schema | lower }}' {% endif %}
     order by ordinal_position
