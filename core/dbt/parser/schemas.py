@@ -818,7 +818,11 @@ class NodePatchParser(PatchParser[NodeTarget, ParsedNodePatch], Generic[NodeTarg
         )
 
     @staticmethod
-    def _semantic_patch_fields(target: UnparsedModelUpdate) -> Dict[str, Any]:
+    def _semantic_patch_fields(
+        target: UnparsedModelUpdate, include: bool = True
+    ) -> Dict[str, Any]:
+        if not include:
+            return {}
         return {
             "semantic_model": target.semantic_model,
             "metrics": target.metrics,
@@ -1076,6 +1080,9 @@ class ModelPatchParser(NodePatchParser[UnparsedModelUpdate]):
                     block.target, unparsed_version.v
                 )
 
+                semantic_fields = self._semantic_patch_fields(
+                    target, include=unparsed_version.v == latest_version
+                )
                 versioned_model_patch = ParsedNodePatch(
                     name=target.name,
                     original_file_path=target.original_file_path,
@@ -1091,6 +1098,7 @@ class ModelPatchParser(NodePatchParser[UnparsedModelUpdate]):
                     latest_version=latest_version,
                     constraints=unparsed_version.constraints or target.constraints,
                     deprecation_date=unparsed_version.deprecation_date,
+                    **semantic_fields,
                 )
                 # Node patched before config because config patching depends on model name,
                 # which may have been updated in the version patch
