@@ -106,7 +106,7 @@ impl<'a, 't, 'e> AthenaOps<'a, 't, 'e> {
     }
 
     /// Run one driver operation and decode its JSON response.
-    fn call(&self, operation: &str, payload: Json) -> AdapterResult<Json> {
+    pub(super) fn call(&self, operation: &str, payload: Json) -> AdapterResult<Json> {
         let options = vec![
             (
                 OPERATION.to_string(),
