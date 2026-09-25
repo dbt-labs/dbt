@@ -109,7 +109,7 @@ fn from_local_config(
     if let Some(databricks_attr) = &model.__adapter_attr__.databricks_attr
         && let Some(props_map) = &databricks_attr.tblproperties
     {
-        for (key, value) in &props_map.0 {
+        for (key, value) in props_map {
             if let YmlValue::String(value_str, _) = value {
                 tblproperties.insert(key.clone(), value_str.clone());
             }

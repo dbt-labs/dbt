@@ -35,7 +35,7 @@ use crate::schemas::project::TypedRecursiveConfig;
 use crate::schemas::project::configs::common::{
     WarehouseSpecificNodeConfig, take_databricks_catalog_alias,
 };
-use crate::schemas::project::configs::config_merge::{Tags, TblProperties};
+use crate::schemas::project::configs::config_merge::Tags;
 use crate::schemas::properties::ModelState;
 use crate::schemas::serde::PartitionsConfig;
 use crate::schemas::serde::StringOrArrayOfStrings;
@@ -341,7 +341,7 @@ pub struct ProjectSnapshotConfig {
     #[serde(rename = "+target_alias")]
     pub target_alias: Option<String>,
     #[serde(rename = "+tblproperties")]
-    pub tblproperties: Option<TblProperties>,
+    pub tblproperties: Option<IndexMap<String, YmlValue>>,
     // Adapter-specific fields (Redshift)
     #[serde(default, rename = "+bind", deserialize_with = "bool_or_string_bool")]
     pub bind: Option<bool>,

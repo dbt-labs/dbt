@@ -36,7 +36,7 @@ use crate::schemas::project::configs::common::{
     WarehouseSpecificNodeConfig, access_eq, docs_eq, grants_equal, meta_eq, omissible_option_eq,
     same_warehouse_config, take_databricks_catalog_alias,
 };
-use crate::schemas::project::configs::config_merge::{Classifiers, Packages, Tags, TblProperties};
+use crate::schemas::project::configs::config_merge::{Classifiers, Packages, Tags};
 use crate::schemas::project::dbt_project::ResolvableConfig;
 use crate::schemas::project::dbt_project::TypedRecursiveConfig;
 use crate::schemas::properties::model_properties::ModelConstraint;
@@ -534,7 +534,7 @@ pub struct ProjectModelConfig {
     #[serde(rename = "+target_file_size")]
     pub target_file_size: Option<String>,
     #[serde(rename = "+tblproperties")]
-    pub tblproperties: Option<TblProperties>,
+    pub tblproperties: Option<IndexMap<String, YmlValue>>,
     #[serde(rename = "+tmp_relation_type")]
     pub tmp_relation_type: Option<String>,
     #[serde(
@@ -2153,7 +2153,6 @@ __additional_properties__: {}
             .tblproperties
             .as_ref()
             .expect("tblproperties should parse")
-            .0
             .keys()
             .map(String::as_str)
             .collect::<Vec<_>>();
@@ -2162,39 +2161,37 @@ __additional_properties__: {}
     }
 
     #[test]
-    fn test_tblproperties_default_to_clobbers_or_inherits_without_reordering() {
-        use crate::schemas::project::dbt_project::ResolvableConfig;
-
+    fn test_tblproperties_default_to_merges() {
         let parent: ModelConfig = dbt_yaml::from_str(
             r#"
 __warehouse_specific_config__:
   tblproperties:
-    parent_zeta: last
-    parent_alpha: first
-"#,
-        )
-        .unwrap();
-        let mut configured_child: ModelConfig = dbt_yaml::from_str(
-            r#"
-__warehouse_specific_config__:
-  tblproperties:
-    child_zeta: last
-    child_alpha: first
+    parent_only: keep
+    shared: parent
 "#,
         )
         .unwrap();
 
+        let mut configured_child: ModelConfig = dbt_yaml::from_str(
+            r#"
+__warehouse_specific_config__:
+  tblproperties:
+    shared: child
+    child_only: new
+"#,
+        )
+        .unwrap();
         configured_child.default_to(&parent);
-        let configured_keys = configured_child
+        let merged = configured_child
             .__warehouse_specific_config__
             .tblproperties
             .as_ref()
-            .expect("configured child should retain tblproperties")
-            .0
-            .keys()
-            .map(String::as_str)
-            .collect::<Vec<_>>();
-        assert_eq!(configured_keys, ["child_zeta", "child_alpha"]);
+            .expect("configured child should retain tblproperties");
+        assert_eq!(
+            merged.keys().map(String::as_str).collect::<Vec<_>>(),
+            ["parent_only", "shared", "child_only"]
+        );
+        assert_eq!(merged.get("shared").and_then(|v| v.as_str()), Some("child"));
 
         let mut empty_child: ModelConfig = dbt_yaml::from_str(
             r#"
@@ -2208,15 +2205,11 @@ __warehouse_specific_config__:
             .__warehouse_specific_config__
             .tblproperties
             .as_ref()
-            .expect("empty tblproperties should remain Some, not inherit")
-            .0
+            .expect("empty tblproperties should remain Some")
             .keys()
             .map(String::as_str)
             .collect::<Vec<_>>();
-        assert!(
-            empty_keys.is_empty(),
-            "empty tblproperties should clobber parent, got {empty_keys:?}"
-        );
+        assert_eq!(empty_keys, ["parent_only", "shared"]);
 
         let mut unset_child = ModelConfig::default();
         unset_child.default_to(&parent);
@@ -2225,11 +2218,10 @@ __warehouse_specific_config__:
             .tblproperties
             .as_ref()
             .expect("unset child should inherit tblproperties")
-            .0
             .keys()
             .map(String::as_str)
             .collect::<Vec<_>>();
-        assert_eq!(inherited_keys, ["parent_zeta", "parent_alpha"]);
+        assert_eq!(inherited_keys, ["parent_only", "shared"]);
     }
 
     #[test]
