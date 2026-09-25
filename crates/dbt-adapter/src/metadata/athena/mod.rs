@@ -325,12 +325,36 @@ impl MetadataAdapter for AthenaMetadataAdapter {
     }
 }
 
+/// The `list_relations` query for a schema, in the given catalog when there is one.
+fn list_relations_sql(catalog: &str, schema: &str) -> String {
+    let schema_literal = athena_string_literal(schema);
+    let catalog_filter = if catalog.is_empty() {
+        String::new()
+    } else {
+        format!(
+            " and lower(table_catalog) = '{}'",
+            athena_string_literal(catalog)
+        )
+    };
+    let information_schema = if catalog.is_empty() {
+        "information_schema".to_string()
+    } else {
+        format!("\"{}\".information_schema", catalog.replace('"', "\"\""))
+    };
+    format!(
+        "select table_schema, table_name, table_type \
+         from {information_schema}.tables \
+         where lower(table_schema) = '{schema_literal}'{catalog_filter}"
+    )
+}
+
 /// List every table and view in a schema by querying `information_schema.tables`.
 ///
 /// A schema that does not exist yields zero rows rather than an error, which
-/// is what cache hydration wants for not-yet-created target schemas. The
-/// catalog filter is skipped when dbt has no resolved database (Athena's
-/// `information_schema` is scoped to the connection's catalog anyway).
+/// is what cache hydration wants for not-yet-created target schemas. Athena's
+/// `information_schema` covers only the catalog it is read from, so it is
+/// qualified with the resolved catalog (S3 Tables: `s3tablescatalog/<bucket>`);
+/// with no resolved database, the connection's catalog is read.
 pub fn list_relations(
     engine: &dyn AdapterEngine,
     ctx: &QueryCtx,
@@ -338,20 +362,7 @@ pub fn list_relations(
     db_schema: &CatalogAndSchema,
     token: CancellationToken,
 ) -> AdapterResult<Vec<Arc<dyn BaseRelation>>> {
-    let schema_literal = athena_string_literal(&db_schema.resolved_schema);
-    let catalog_filter = if db_schema.resolved_catalog.is_empty() {
-        String::new()
-    } else {
-        format!(
-            " and lower(table_catalog) = '{}'",
-            athena_string_literal(&db_schema.resolved_catalog)
-        )
-    };
-    let sql = format!(
-        "select table_schema, table_name, table_type \
-         from information_schema.tables \
-         where lower(table_schema) = '{schema_literal}'{catalog_filter}"
-    );
+    let sql = list_relations_sql(&db_schema.resolved_catalog, &db_schema.resolved_schema);
 
     let batch = engine.execute(None, conn, ctx, &sql, token)?;
 
@@ -386,15 +397,41 @@ mod tests {
 
     #[test]
     fn literals_are_lowercased_and_quote_escaped() {
-        assert_eq!(athena_string_literal("Analytics_Bronze_QA"), "analytics_bronze_qa");
+        assert_eq!(
+            athena_string_literal("Analytics_Bronze_QA"),
+            "analytics_bronze_qa"
+        );
         assert_eq!(athena_string_literal("o'neil"), "o''neil");
     }
 
     #[test]
+    fn list_relations_reads_the_information_schema_of_the_catalog() {
+        assert_eq!(
+            list_relations_sql("s3tablescatalog/lab-bucket", "Analytics"),
+            "select table_schema, table_name, table_type \
+             from \"s3tablescatalog/lab-bucket\".information_schema.tables \
+             where lower(table_schema) = 'analytics' \
+             and lower(table_catalog) = 's3tablescatalog/lab-bucket'"
+        );
+        assert_eq!(
+            list_relations_sql("", "analytics"),
+            "select table_schema, table_name, table_type \
+             from information_schema.tables \
+             where lower(table_schema) = 'analytics'"
+        );
+    }
+
+    #[test]
     fn table_type_mapping_follows_trino() {
-        assert_eq!(relation_type_from_table_type("BASE TABLE"), RelationType::Table);
+        assert_eq!(
+            relation_type_from_table_type("BASE TABLE"),
+            RelationType::Table
+        );
         assert_eq!(relation_type_from_table_type("VIEW"), RelationType::View);
         assert_eq!(relation_type_from_table_type("view"), RelationType::View);
-        assert_eq!(relation_type_from_table_type("SOMETHING"), RelationType::Table);
+        assert_eq!(
+            relation_type_from_table_type("SOMETHING"),
+            RelationType::Table
+        );
     }
 }
