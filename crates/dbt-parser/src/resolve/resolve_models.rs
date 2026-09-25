@@ -12,6 +12,7 @@ use crate::renderer::RenderCtxInner;
 use crate::renderer::SqlFileRenderResult;
 use crate::renderer::collect_adapter_identifiers_detect_unsafe;
 use crate::renderer::render_unresolved_sql_files;
+use crate::renderer::strip_deprecated_warehouse_keys_from_properties;
 use crate::resolve::resolve_utils::build_unrendered_config;
 use crate::resolve::resolve_utils::err_resource_name_has_spaces;
 use crate::resolve::resolve_utils::extract_config_map;
@@ -53,6 +54,7 @@ use dbt_schemas::schemas::NodeBaseAttributes;
 use dbt_schemas::schemas::TimeSpine;
 use dbt_schemas::schemas::TimeSpinePrimaryColumn;
 use dbt_schemas::schemas::common::Access;
+use dbt_schemas::schemas::telemetry::NodeType;
 use dbt_telemetry::GenericOpExecuted;
 use indexmap::IndexMap;
 
@@ -258,6 +260,7 @@ pub async fn resolve_models(
                 .as_ref()
                 .unwrap_or(&vec![])
                 .clone(),
+            resource_type: Some(NodeType::Model),
         }),
         jinja_env: env.clone(),
         runtime_config: runtime_config.clone(),
@@ -308,6 +311,13 @@ pub async fn resolve_models(
                 )
             })
             .collect();
+
+    // Preserve raw properties before validation for state comparison.
+    strip_deprecated_warehouse_keys_from_properties(
+        &mut models_properties_sans_semantics,
+        NodeType::Model,
+        dependency_package_name,
+    );
 
     // Split SQL and Python models for different processing paths
     let (sql_files, python_files): (Vec<_>, Vec<_>) =

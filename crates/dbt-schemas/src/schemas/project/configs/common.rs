@@ -1,5 +1,5 @@
 use dbt_adapter_core::AdapterType;
-use dbt_proc_macros::DefaultTo;
+use dbt_proc_macros::{DefaultTo, WarehouseScope};
 use dbt_yaml::DbtSchema;
 use serde::{Deserialize, Serialize};
 // Type aliases for clarity
@@ -96,209 +96,343 @@ pub fn tags_eq_vec(a: &[String], b: &[String]) -> bool {
 
 /// This configuration is a superset of all warehouse specific configurations
 /// that users can set
+// `#[warehouse(...)]` is required on every field and generates the resource applicability table.
 #[skip_serializing_none]
-#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, DbtSchema, DefaultTo)]
+#[derive(
+    Debug, Clone, Serialize, Deserialize, Default, PartialEq, DbtSchema, DefaultTo, WarehouseScope,
+)]
+// Clippy mistakes repeated variants across groups for duplicated attributes.
+#[allow(clippy::duplicated_attributes)]
+#[warehouse(
+    group(all_nodes, Model, Seed, Snapshot, Source, Test, UnitTest),
+    group(materializing, Model, Seed, Snapshot, Test, UnitTest)
+)]
 pub struct WarehouseSpecificNodeConfig {
     // Shared
+    #[warehouse(valid(all_nodes))]
     pub partition_by: Option<PartitionConfig>,
+    #[warehouse(valid(all_nodes))]
     pub cluster_by: Option<ClusterConfig>,
+    #[warehouse(valid(materializing))]
     pub adapter_properties: Option<BTreeMap<String, YmlValue>>,
 
     // BigQuery
+    #[warehouse(valid(Function, Model, Test))]
     pub description: Option<String>,
     #[serde(
         default,
         deserialize_with = "hours_to_expiration_or_string_omissible",
         skip_serializing_if = "Omissible::is_omitted"
     )]
+    #[warehouse(valid(all_nodes))]
     pub hours_to_expiration: Omissible<Option<StringOrInteger>>,
     #[serde(default, deserialize_with = "u64_or_string_u64")]
+    #[warehouse(valid(all_nodes))]
     pub job_execution_timeout_seconds: Option<u64>,
+    #[warehouse(valid(all_nodes))]
     pub reservation: Option<String>,
+    #[warehouse(valid(all_nodes))]
     pub labels: Option<IndexMap<String, String>>,
     #[serde(default, deserialize_with = "bool_or_string_bool")]
+    #[warehouse(valid(all_nodes))]
     pub labels_from_meta: Option<bool>,
+    #[warehouse(valid(all_nodes))]
     pub kms_key_name: Option<String>,
     #[serde(default, deserialize_with = "bool_or_string_bool")]
+    #[warehouse(valid(all_nodes))]
     pub require_partition_filter: Option<bool>,
     #[serde(default, deserialize_with = "u64_or_string_u64")]
+    #[warehouse(valid(all_nodes))]
     pub partition_expiration_days: Option<u64>,
+    #[warehouse(valid(all_nodes))]
     pub grant_access_to: Option<Vec<GrantAccessToTarget>>,
+    #[warehouse(valid(all_nodes))]
     pub partitions: Option<PartitionsConfig>,
     #[serde(default, deserialize_with = "bool_or_string_bool")]
+    #[warehouse(valid(all_nodes))]
     pub enable_refresh: Option<bool>,
     #[serde(default, deserialize_with = "f64_or_string_f64")]
+    #[warehouse(valid(all_nodes))]
     pub refresh_interval_minutes: Option<f64>,
+    #[warehouse(valid(Model, Seed, Snapshot))]
     pub resource_tags: Option<IndexMap<String, String>>,
+    #[warehouse(valid(all_nodes))]
     pub max_staleness: Option<String>,
+    #[warehouse(valid(Model))]
     pub jar_file_uri: Option<String>,
+    #[warehouse(valid(Model))]
     pub timeout: Option<u64>,
+    #[warehouse(valid(Model))]
     pub batch_id: Option<String>,
+    #[warehouse(valid(Model))]
     pub dataproc_cluster_name: Option<String>,
     #[serde(default, deserialize_with = "u64_or_string_u64")]
+    #[warehouse(valid(Model))]
     pub notebook_template_id: Option<u64>,
+    #[warehouse(valid(Model))]
     pub intermediate_format: Option<String>,
+    #[warehouse(valid(Model))]
     pub enable_list_inference: Option<bool>,
+    #[warehouse(valid(Model))]
     pub storage_uri: Option<String>,
 
     // Used by both Databricks and Bigquery
+    #[warehouse(valid(all_nodes))]
     pub file_format: Option<String>,
 
     // Databricks
+    #[warehouse(valid(all_nodes))]
     pub catalog_name: Option<String>,
+    #[warehouse(valid(all_nodes))]
     pub location_root: Option<String>,
     #[serde(default, deserialize_with = "bool_or_string_bool")]
+    #[warehouse(valid(Model))]
     pub use_uniform: Option<bool>,
+    #[warehouse(valid(all_nodes))]
     pub tblproperties: Option<TblProperties>,
     // this config is introduced here https://github.com/databricks/dbt-databricks/pull/823
     #[serde(default, deserialize_with = "bool_or_string_bool")]
+    #[warehouse(valid(all_nodes))]
     pub include_full_name_in_path: Option<bool>,
+    #[warehouse(valid(all_nodes))]
     pub liquid_clustered_by: Option<StringOrArrayOfStrings>,
     #[serde(default, deserialize_with = "bool_or_string_bool")]
+    #[warehouse(valid(all_nodes))]
     pub auto_liquid_cluster: Option<bool>,
+    #[warehouse(valid(Model))]
     pub zorder: Option<StringOrArrayOfStrings>,
     #[serde(default, deserialize_with = "bool_or_string_bool")]
+    #[warehouse(valid(Model))]
     pub skip_optimize: Option<bool>,
+    #[warehouse(valid(all_nodes))]
     pub clustered_by: Option<StringOrArrayOfStrings>,
+    #[warehouse(valid(all_nodes))]
     pub buckets: Option<i64>,
+    #[warehouse(valid(all_nodes))]
     pub catalog: Option<String>,
+    #[warehouse(valid(all_nodes))]
     pub databricks_tags: Option<IndexMap<String, YmlValue>>,
+    #[warehouse(valid(materializing))]
     pub query_tags: Option<String>,
+    #[warehouse(valid(all_nodes))]
     pub compression: Option<String>,
+    #[warehouse(valid(all_nodes))]
     pub databricks_compute: Option<String>,
+    #[warehouse(valid(all_nodes))]
     pub target_alias: Option<String>,
+    #[warehouse(valid(all_nodes))]
     pub source_alias: Option<String>,
+    #[warehouse(valid(all_nodes))]
     pub matched_condition: Option<String>,
+    #[warehouse(valid(all_nodes))]
     pub not_matched_condition: Option<String>,
+    #[warehouse(valid(all_nodes))]
     pub not_matched_by_source_condition: Option<String>,
+    #[warehouse(valid(all_nodes))]
     pub not_matched_by_source_action: Option<String>,
     #[serde(default, deserialize_with = "bool_or_string_bool")]
+    #[warehouse(valid(all_nodes))]
     pub merge_with_schema_evolution: Option<bool>,
     #[serde(default, deserialize_with = "bool_or_string_bool")]
+    #[warehouse(valid(all_nodes))]
     pub skip_matched_step: Option<bool>,
     #[serde(default, deserialize_with = "bool_or_string_bool")]
+    #[warehouse(valid(all_nodes))]
     pub skip_not_matched_step: Option<bool>,
+    #[warehouse(valid(all_nodes))]
     pub schedule: Option<Schedule>,
     #[serde(default, deserialize_with = "bool_or_string_bool")]
+    #[warehouse(valid(Model))]
     pub incremental_apply_config_changes: Option<bool>,
     #[serde(default, deserialize_with = "bool_or_string_bool")]
+    #[warehouse(valid(Model, Snapshot))]
     pub persist_constraints: Option<bool>,
     #[serde(default, deserialize_with = "bool_or_string_bool")]
+    #[warehouse(valid(Model))]
     pub use_safer_relation_operations: Option<bool>,
     #[serde(default, deserialize_with = "bool_or_string_bool")]
+    #[warehouse(valid(Model))]
     pub view_update_via_alter: Option<bool>,
     #[serde(default, deserialize_with = "bool_or_string_bool")]
+    #[warehouse(valid(Model, Snapshot, UnitTest))]
     pub unique_tmp_table_suffix: Option<bool>,
+    #[warehouse(valid(Model))]
     pub row_filter: Option<RowFilterConfig>,
 
     // Snowflake
+    #[warehouse(valid(materializing))]
     pub table_tag: Option<String>,
+    #[warehouse(valid(materializing))]
     pub row_access_policy: Option<String>,
+    #[warehouse(valid(materializing))]
     pub external_volume: Option<String>,
+    #[warehouse(valid(materializing))]
     pub base_location_root: Option<String>,
+    #[warehouse(valid(materializing))]
     pub base_location_subpath: Option<String>,
+    // Snapshot table creation shares these Snowflake relation settings with models.
     #[serde(default, deserialize_with = "bool_or_string_bool")]
+    #[warehouse(valid(Model, Snapshot))]
     pub change_tracking: Option<bool>,
     #[serde(default, deserialize_with = "u64_or_string_u64")]
+    #[warehouse(valid(Model, Snapshot))]
     pub data_retention_time_in_days: Option<u64>,
     #[serde(default, deserialize_with = "u64_or_string_u64")]
+    #[warehouse(valid(Model, Snapshot))]
     pub max_data_extension_time_in_days: Option<u64>,
+    #[warehouse(valid(Model, Snapshot))]
     pub storage_serialization_policy: Option<String>,
+    #[warehouse(valid(Model, Snapshot))]
     pub target_file_size: Option<String>,
+    #[warehouse(valid(materializing))]
     pub target_lag: Option<String>,
+    #[warehouse(valid(materializing))]
     pub snowflake_initialization_warehouse: Option<String>,
+    #[warehouse(valid(materializing))]
     pub snowflake_warehouse: Option<String>,
+    #[warehouse(valid(materializing))]
     pub refresh_warehouse: Option<String>,
+    #[warehouse(valid(materializing))]
     pub immutable_where: Option<String>,
+    #[warehouse(valid(materializing))]
     pub refresh_mode: Option<String>,
+    #[warehouse(valid(materializing))]
     pub initialize: Option<String>,
+    #[warehouse(valid(materializing))]
     pub scheduler: Option<String>,
+    #[warehouse(valid(materializing))]
     pub tmp_relation_type: Option<String>,
+    #[warehouse(valid(materializing))]
     pub query_tag: Option<QueryTag>,
     #[serde(default, deserialize_with = "bool_or_string_bool")]
+    #[warehouse(valid(materializing))]
     pub automatic_clustering: Option<bool>,
     #[serde(default, deserialize_with = "bool_or_string_bool")]
+    #[warehouse(valid(materializing))]
     pub copy_grants: Option<bool>,
     #[serde(default, deserialize_with = "bool_or_string_bool")]
+    #[warehouse(valid(materializing))]
     pub copy_tags: Option<bool>,
     #[serde(default, deserialize_with = "bool_or_string_bool")]
+    #[warehouse(valid(materializing))]
     pub secure: Option<bool>,
     #[serde(default, deserialize_with = "bool_or_string_bool")]
+    #[warehouse(valid(materializing))]
     pub transient: Option<bool>,
     #[serde(default, deserialize_with = "u64_or_string_u64")]
+    #[warehouse(valid(Model, Snapshot))]
     pub iceberg_version: Option<u64>,
 
     // Redshift
     #[serde(default, deserialize_with = "bool_or_string_bool")]
+    #[warehouse(valid(all_nodes))]
     pub auto_refresh: Option<bool>,
     #[serde(default, deserialize_with = "bool_or_string_bool")]
+    #[warehouse(valid(all_nodes))]
     pub backup: Option<bool>,
     #[serde(default, deserialize_with = "bool_or_string_bool")]
+    #[warehouse(valid(all_nodes))]
     pub bind: Option<bool>,
+    #[warehouse(valid(all_nodes))]
     pub dist: Option<StringOrArrayOfStrings>,
+    #[warehouse(valid(all_nodes))]
     pub sort: Option<StringOrArrayOfStrings>,
+    #[warehouse(valid(all_nodes))]
     pub sort_type: Option<String>,
 
     // MsSql
     // XXX: This is an incomplete set of configs
     #[serde(default, deserialize_with = "bool_or_string_bool")]
+    #[warehouse(valid(all_nodes))]
     pub as_columnstore: Option<bool>,
 
     // Athena
     // XXX: This is an incomplete set of configs
+    #[warehouse(valid(all_nodes))]
     pub table_type: Option<String>,
 
     // Postgres
     // XXX: This is an incomplete set of configs
     #[serde(default, skip_serializing_if = "IndexesConfig::is_none")]
+    #[warehouse(valid(all_nodes))]
     pub indexes: IndexesConfig,
     #[serde(default, deserialize_with = "bool_or_string_bool")]
+    #[warehouse(valid(all_nodes))]
     pub unlogged: Option<bool>,
 
     // Salesforce
     #[serde(default, skip_serializing_if = "PrimaryKeyConfig::is_none")]
+    #[warehouse(valid(Model))]
     pub primary_key: PrimaryKeyConfig,
+    #[warehouse(valid(Model))]
     pub category: Option<DataLakeObjectCategory>,
 
     // ClickHouse
-    // table materialization
+    // Snapshots share ClickHouse table creation; seeds also consume engine and order_by.
+    #[warehouse(valid(Model, Seed, Snapshot))]
     pub engine: Option<String>,
+    #[warehouse(valid(Model, Seed, Snapshot))]
     pub order_by: Option<StringOrArrayOfStrings>,
+    #[warehouse(valid(Model, Snapshot))]
     pub ttl: Option<String>,
+    #[warehouse(valid(Model, Snapshot))]
     pub settings: Option<BTreeMap<String, YmlValue>>,
+    #[warehouse(valid(Model, Snapshot))]
     pub query_settings: Option<BTreeMap<String, YmlValue>>,
+    #[warehouse(valid(Model, Snapshot))]
     pub projections: Option<Vec<YmlValue>>,
     // incremental materialization
     #[serde(default, deserialize_with = "bool_or_string_bool")]
+    #[warehouse(valid(Model))]
     pub inserts_only: Option<bool>,
     // dictionary materialization
+    #[warehouse(valid(Model))]
     pub connection_overrides: Option<BTreeMap<String, YmlValue>>,
+    #[warehouse(valid(Model))]
     pub fields: Option<Vec<YmlValue>>,
+    #[warehouse(valid(Model))]
     pub source_type: Option<String>,
+    #[warehouse(valid(Model))]
     pub url: Option<String>,
+    #[warehouse(valid(Model))]
     pub format: Option<String>,
+    #[warehouse(valid(Model))]
     pub layout: Option<String>,
+    #[warehouse(valid(Model))]
     pub lifetime: Option<YmlValue>,
+    #[warehouse(valid(Model))]
     pub range: Option<YmlValue>,
+    #[warehouse(valid(Model))]
     pub table: Option<String>,
+    #[warehouse(valid(Model))]
     pub update_field: Option<String>,
+    #[warehouse(valid(Model))]
     pub update_lag: Option<YmlValue>,
     // view materialization
+    #[warehouse(valid(Model))]
     pub definer: Option<String>,
+    #[warehouse(valid(Model))]
     pub sql_security: Option<String>,
     // materialized-view materialization
+    #[warehouse(valid(Model))]
     pub refreshable: Option<RefreshableConfig>,
     #[serde(default, deserialize_with = "bool_or_string_bool")]
+    #[warehouse(valid(Model))]
     pub catchup: Option<bool>,
+    #[warehouse(valid(Model))]
     pub mv_on_schema_change: Option<String>,
     #[serde(default, deserialize_with = "bool_or_string_bool")]
+    #[warehouse(valid(Model))]
     pub repopulate_from_mvs_on_full_refresh: Option<bool>,
 
     // Exasol
     // Key names match the Python dbt-exasol adapter so existing projects
-    // migrate without config changes.
+    // migrate without config changes. Snapshots share Exasol table creation with models.
+    #[warehouse(valid(Model, Snapshot))]
     pub partition_by_config: Option<StringOrArrayOfStrings>,
+    #[warehouse(valid(Model, Snapshot))]
     pub distribute_by_config: Option<StringOrArrayOfStrings>,
+    #[warehouse(valid(Model, Snapshot))]
     pub primary_key_config: Option<StringOrArrayOfStrings>,
 }
 

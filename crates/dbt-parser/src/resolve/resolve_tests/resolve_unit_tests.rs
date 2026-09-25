@@ -3,6 +3,7 @@ use crate::dbt_project_config::ProjectConfigResolver;
 use crate::dbt_project_config::RootProjectConfigs;
 use crate::dbt_project_config::disallow_plus_prefix_from_flags;
 use crate::dbt_project_config::init_project_config;
+use crate::renderer::strip_warehouse_keys_in_config_block;
 use crate::resolve::resolve_properties::MinimalPropertiesEntry;
 use crate::resolve::resolve_utils::validate_unit_test_compute;
 use crate::utils::get_node_fqn;
@@ -42,9 +43,11 @@ use dbt_schemas::schemas::project::DbtProject;
 use dbt_schemas::schemas::project::ResolvableConfig;
 use dbt_schemas::schemas::project::ResolvedConfig;
 use dbt_schemas::schemas::project::UnitTestConfig;
+use dbt_schemas::schemas::project::WarningEmission;
 use dbt_schemas::schemas::properties::UnitTestProperties;
 use dbt_schemas::schemas::ref_and_source::DbtRef;
 use dbt_schemas::schemas::ref_and_source::DbtSourceWrapper;
+use dbt_schemas::schemas::telemetry::NodeType;
 use dbt_schemas::schemas::{CommonAttributes, DbtUnitTest, NodeBaseAttributes};
 use dbt_schemas::state::DbtPackage;
 use dbt_schemas::state::DbtRuntimeConfig;
@@ -99,7 +102,7 @@ pub fn resolve_unit_tests(
     )?
     .with_resolve_defaults(arg.static_analysis.unwrap_or_default());
 
-    for (unit_test_name, mpe) in unit_test_properties.into_iter() {
+    for (unit_test_name, mut mpe) in unit_test_properties.into_iter() {
         // Capture YAML span of the unit-test `name:` declaration for error reporting.
         // The analyzer uses this as `start_location` so messages anchor at the unit
         // test's entry in the source YAML rather than at line 1 col 1.
@@ -111,6 +114,14 @@ pub fn resolve_unit_tests(
                 mpe.relative_path.clone(),
             )
         });
+
+        strip_warehouse_keys_in_config_block(
+            &mut mpe.schema_value,
+            &unit_test_name,
+            NodeType::UnitTest,
+            dependency_package_name,
+            WarningEmission::Emit,
+        );
 
         let unit_test = into_typed_with_jinja::<UnitTestProperties, _>(
             mpe.schema_value,
@@ -506,6 +517,7 @@ fn resolve_given_seed(
         relative_path,
         &PathBuf::new(),
         global_static_analysis,
+        None,
     ));
 
     match render_extract_ref_or_source_expr(

@@ -1923,6 +1923,10 @@ impl ConfigKeys for ModelConfig {
     }
 }
 
+impl crate::schemas::project::configs::warehouse_scope::WarehouseConfigResource for ModelConfig {
+    const NODE_TYPE: dbt_telemetry::NodeType = dbt_telemetry::NodeType::Model;
+}
+
 // Helper function to compare on_schema_change fields, treating None and default OnSchemaChange as equivalent
 fn on_schema_change_eq(a: &Option<OnSchemaChange>, b: &Option<OnSchemaChange>) -> bool {
     use crate::schemas::common::OnSchemaChange;

@@ -154,6 +154,7 @@ pub mod schemas {
             pub mod snapshot_config;
             pub mod source_config;
             pub mod unit_test_config;
+            pub mod warehouse_scope;
         }
 
         pub use config_tree::{
@@ -203,6 +204,10 @@ pub mod schemas {
         pub use configs::source_config::{ProjectSourceConfig, ResolvedSourceConfig, SourceConfig};
         pub use configs::unit_test_config::{
             ProjectUnitTestConfig, ResolvedUnitTestConfig, UnitTestConfig,
+        };
+        pub use configs::warehouse_scope::{
+            KeyStatus, WarningEmission, project_surface_key_status, resolved_surface_key_status,
+            warn_and_strip_deprecated_warehouse_keys,
         };
         pub use dbt_project::{
             AdapterProjectConfig, DEFAULT_SKILL_PATH, DbtProject, DbtProjectNameOnly,

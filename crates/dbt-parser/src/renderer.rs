@@ -34,7 +34,10 @@ use dbt_jinja_utils::serde::into_typed_with_jinja_error_context;
 use dbt_jinja_utils::silence_base_context;
 use dbt_jinja_utils::utils::{render_sql, render_sql_with_listeners};
 use dbt_schemas::schemas::common::{DbtChecksum, DbtQuoting, Hooks, normalize_sql};
-use dbt_schemas::schemas::project::{ResolvableConfig, ResolvedConfig};
+use dbt_schemas::schemas::project::{
+    ResolvableConfig, ResolvedConfig, WarningEmission, resolved_surface_key_status,
+    warn_and_strip_deprecated_warehouse_keys,
+};
 use dbt_schemas::schemas::properties::GetConfig;
 use dbt_schemas::schemas::telemetry::NodeType;
 use dbt_schemas::schemas::{InternalDbtNodeAttributes, IntrospectionKind, Nodes};
@@ -142,6 +145,50 @@ fn extract_model_config<T: ResolvableConfig<T>, S: GetConfig<T> + Debug>(
     )?;
 
     Ok(Some(maybe_model))
+}
+
+/// Applies warehouse-key validation to one root-project `config:` block.
+pub(crate) fn strip_warehouse_keys_in_config_block(
+    schema_value: &mut dbt_yaml::Value,
+    context: &str,
+    resource: NodeType,
+    dependency_package_name: Option<&str>,
+    warning_emission: WarningEmission,
+) {
+    if dependency_package_name.is_some() {
+        return;
+    }
+    let Some(config_mapping) = schema_value
+        .get_mut("config")
+        .and_then(dbt_yaml::Value::as_mapping_mut)
+    else {
+        return;
+    };
+    warn_and_strip_deprecated_warehouse_keys(
+        config_mapping,
+        Some(context),
+        resource,
+        warning_emission,
+        |key| resolved_surface_key_status(resource, key),
+    );
+}
+
+/// Applies warehouse-key validation before properties are typed.
+pub(crate) fn strip_deprecated_warehouse_keys_from_properties(
+    node_properties: &mut BTreeMap<String, MinimalPropertiesEntry>,
+    resource: NodeType,
+    dependency_package_name: Option<&str>,
+) {
+    for mpe in node_properties.values_mut() {
+        let context = mpe.name.clone();
+        strip_warehouse_keys_in_config_block(
+            &mut mpe.schema_value,
+            &context,
+            resource,
+            dependency_package_name,
+            WarningEmission::Emit,
+        );
+    }
 }
 
 /// Appends `source()` calls discovered by static AST analysis to
@@ -296,6 +343,7 @@ where
         package_quoting,
         uses_snapshot_fqn,
         defer_render_errors_to_compile,
+        resource_type,
     } = &**inner;
 
     token.check_cancellation()?;
@@ -415,6 +463,7 @@ where
         &display_path,
         &model_path,
         args.static_analysis,
+        *resource_type,
     ));
 
     if let Some(status_reporter) = &args.io.status_reporter {
@@ -714,6 +763,8 @@ pub struct RenderCtxInner<T: ResolvableConfig<T>> {
     /// Keep parse-failed runnable nodes available for selection so compilation
     /// reports the error only when the command selects that node.
     pub defer_render_errors_to_compile: bool,
+    /// `None` for resource types without warehouse fields.
+    pub resource_type: Option<NodeType>,
 }
 
 /// Outer context for rendering sql files
@@ -1240,6 +1291,113 @@ mod tests {
                     if name == "observed_pkg" && table == "observed_tbl"
             )),
             "an already-observed source must not also gain a StaticSource entry: {resources:?}"
+        );
+    }
+
+    fn mpe_with_config(yaml: &str) -> MinimalPropertiesEntry {
+        MinimalPropertiesEntry {
+            name: "my_node".to_string(),
+            name_span: dbt_yaml::Span::zero(),
+            relative_path: PathBuf::new(),
+            schema_value: dbt_yaml::from_str(yaml).unwrap(),
+            table_value: None,
+            version_info: None,
+            duplicate_paths: vec![],
+        }
+    }
+
+    #[test]
+    fn stale_warehouse_key_in_config_block_is_kept() {
+        let mut node_properties = BTreeMap::new();
+        node_properties.insert(
+            "my_snapshot".to_string(),
+            mpe_with_config(
+                r#"
+                name: my_snapshot
+                config:
+                  strategy: timestamp
+                  jar_file_uri: "gs://bucket/jar"
+                  partition_by:
+                    field: created_at
+                "#,
+            ),
+        );
+
+        strip_deprecated_warehouse_keys_from_properties(
+            &mut node_properties,
+            NodeType::Snapshot,
+            None,
+        );
+
+        let config = node_properties["my_snapshot"]
+            .schema_value
+            .get("config")
+            .unwrap();
+        assert!(
+            config.get("jar_file_uri").is_some(),
+            "a Stale warehouse key must keep applying -- the canary must not change behavior"
+        );
+        assert!(
+            config.get("partition_by").is_some(),
+            "a Valid warehouse key must survive untouched"
+        );
+        assert!(
+            config.get("strategy").is_some(),
+            "a non-warehouse field must be untouched"
+        );
+    }
+
+    #[test]
+    fn dependency_package_config_block_is_untouched() {
+        let mut node_properties = BTreeMap::new();
+        node_properties.insert(
+            "my_snapshot".to_string(),
+            mpe_with_config(
+                r#"
+                name: my_snapshot
+                config:
+                  jar_file_uri: "gs://bucket/jar"
+                "#,
+            ),
+        );
+
+        strip_deprecated_warehouse_keys_from_properties(
+            &mut node_properties,
+            NodeType::Snapshot,
+            Some("some_dependency"),
+        );
+
+        assert!(
+            node_properties["my_snapshot"]
+                .schema_value
+                .get("config")
+                .and_then(|c| c.get("jar_file_uri"))
+                .is_some(),
+            "a dependency package's config block must not be touched"
+        );
+    }
+
+    #[test]
+    fn absent_config_block_is_a_no_op() {
+        let mut node_properties = BTreeMap::new();
+        node_properties.insert("no_config".to_string(), mpe_with_config("name: no_config"));
+        node_properties.insert(
+            "no_properties".to_string(),
+            MinimalPropertiesEntry {
+                name: "no_properties".to_string(),
+                name_span: dbt_yaml::Span::zero(),
+                relative_path: PathBuf::new(),
+                schema_value: dbt_yaml::Value::null(),
+                table_value: None,
+                version_info: None,
+                duplicate_paths: vec![],
+            },
+        );
+
+        strip_deprecated_warehouse_keys_from_properties(
+            &mut node_properties,
+            NodeType::Model,
+            None,
         );
     }
 }

@@ -16,6 +16,7 @@ use dbt_schemas::dbt_utils::resolve_package_quoting;
 use dbt_schemas::schemas::common::{Access, DbtMaterialization, DbtQuoting};
 use dbt_schemas::schemas::project::FunctionConfig;
 use dbt_schemas::schemas::project::ResolvedConfig;
+use dbt_schemas::schemas::telemetry::NodeType;
 use dbt_schemas::schemas::{AbsorbedOverload, DbtFunctionAttr};
 use dbt_schemas::{
     schemas::{
@@ -44,7 +45,10 @@ use crate::utils::{
 };
 use crate::{
     args::ResolveArgs,
-    renderer::{SqlFileRenderResult, render_unresolved_sql_files},
+    renderer::{
+        SqlFileRenderResult, render_unresolved_sql_files,
+        strip_deprecated_warehouse_keys_from_properties,
+    },
     utils::{get_node_fqn, get_original_file_path, get_unique_id},
 };
 
@@ -124,6 +128,7 @@ pub async fn resolve_functions(
                 .as_ref()
                 .unwrap_or(&vec![])
                 .clone(),
+            resource_type: Some(NodeType::Function),
         }),
         jinja_env: env.clone(),
         runtime_config: runtime_config.clone(),
@@ -161,6 +166,12 @@ pub async fn resolve_functions(
                 Some((key.clone(), config_map))
             })
             .collect();
+
+    strip_deprecated_warehouse_keys_from_properties(
+        function_properties,
+        NodeType::Function,
+        dependency_package_name,
+    );
 
     let mut function_sql_resources_map =
         render_unresolved_sql_files::<FunctionConfig, FunctionProperties>(

@@ -837,6 +837,10 @@ impl ConfigKeys for SeedConfig {
     }
 }
 
+impl crate::schemas::project::configs::warehouse_scope::WarehouseConfigResource for SeedConfig {
+    const NODE_TYPE: dbt_telemetry::NodeType = dbt_telemetry::NodeType::Seed;
+}
+
 #[cfg(test)]
 mod tests {
     use super::{ProjectSeedConfig, SeedConfig};

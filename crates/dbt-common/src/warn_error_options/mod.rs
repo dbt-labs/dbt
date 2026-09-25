@@ -553,6 +553,13 @@ impl WarnErrorOptions {
             _ => MatchType::NotMatched,
         };
 
+        // Keep the canary warning-only unless the code is selected explicitly.
+        let implicit_warn_match = if error_code == ErrorCode::DeprecatedConfigKey {
+            MatchType::Group
+        } else {
+            MatchType::NotMatched
+        };
+
         let max_matches_and_verdict = [
             (
                 self.silence
@@ -567,7 +574,8 @@ impl WarnErrorOptions {
                     .iter()
                     .map(matches)
                     .max()
-                    .unwrap_or(MatchType::NotMatched),
+                    .unwrap_or(MatchType::NotMatched)
+                    .max(implicit_warn_match),
                 WarnErrorDecision::Retain,
             ),
             (
@@ -786,6 +794,44 @@ mod tests {
                 "{code:?} has no dbt-core counterpart"
             );
         }
+    }
+
+    #[test]
+    fn deprecated_config_key_canary_is_not_escalated_by_warn_error() {
+        assert!(
+            is_fusion_only_warning(ErrorCode::DeprecatedConfigKey),
+            "DeprecatedConfigKey must stay Fusion-only while it is a canary"
+        );
+
+        let mut blanket_warn_error = WarnErrorOptions::default();
+        blanket_warn_error.add_all_to_error();
+        assert_eq!(
+            blanket_warn_error.decision_for_error_code(ErrorCode::DeprecatedConfigKey),
+            WarnErrorDecision::Retain,
+            "blanket --warn-error must not turn the canary into an error"
+        );
+
+        let silenced_by_name = WarnErrorOptions {
+            silence: vec![WarnErrorOptionValue::FusionCode(
+                ErrorCode::DeprecatedConfigKey as u16,
+            )],
+            ..Default::default()
+        };
+        assert_eq!(
+            silenced_by_name.decision_for_error_code(ErrorCode::DeprecatedConfigKey),
+            WarnErrorDecision::Silence,
+        );
+
+        let escalated_by_name = WarnErrorOptions {
+            error: vec![WarnErrorOptionValue::FusionCode(
+                ErrorCode::DeprecatedConfigKey as u16,
+            )],
+            ..Default::default()
+        };
+        assert_eq!(
+            escalated_by_name.decision_for_error_code(ErrorCode::DeprecatedConfigKey),
+            WarnErrorDecision::UpgradeToError,
+        );
     }
 
     #[test]
