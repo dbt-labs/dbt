@@ -297,23 +297,6 @@ fn match_version(pattern: &str, node: &dyn InternalDbtNode) -> FsResult<bool> {
         return Ok(false);
     }
 
-    let file_name = node
-        .common()
-        .original_file_path
-        .file_name()
-        .expect("Model should have a file name");
-    let file_stem = Path::new(file_name)
-        .file_stem()
-        .expect("file name should have a stem");
-    let file_stem = file_stem.to_string_lossy();
-    let file_version = if file_stem.ends_with("_v1") {
-        Some(1)
-    } else if file_stem.ends_with("_v2") {
-        Some(2)
-    } else {
-        None
-    };
-
     match pattern {
         "latest" => match (&node.version(), &node.latest_version()) {
             (None, None) => Ok(false),
@@ -341,7 +324,7 @@ fn match_version(pattern: &str, node: &dyn InternalDbtNode) -> FsResult<bool> {
                 Ok(version_v < latest_v)
             }
         },
-        "none" => Ok(file_version.is_none()),
+        "none" => Ok(node.version().is_none()),
         _ => {
             err!(
                 ErrorCode::SelectorError,
@@ -1663,6 +1646,73 @@ mod tests {
 
         Arc::get_mut(&mut node).unwrap().__common_attr__.tags = vec![];
         assert!(!match_tag("daily", node.tags()).unwrap());
+    }
+
+    /// `version:none` must be decided by the model's parsed version, not by a
+    /// `_v1`/`_v2` suffix on the file name. dbt-core decides it with
+    /// `node.version is None` (`VersionSelectorMethod` in
+    /// `core/dbt/graph/selector_methods.py`), and the other three arms of
+    /// `match_version` already read the parsed version.
+    ///
+    /// A Fusion version can be any string, `v: 3` or `v: 1.0` among them, and
+    /// `defined_in:` can put it in a file with any name, so a two-value suffix
+    /// probe misclassifies every model outside `_v1`/`_v2`. It also produces a
+    /// false positive in the other direction: dbt only treats `orders_v1` as a
+    /// version when `versions:` declares it.
+    #[test]
+    fn test_match_version_none_uses_parsed_version_not_file_name() {
+        // A model on its third version: versioned, so `version:none` must not
+        // match it, even though `orders_v3.sql` has no `_v1`/`_v2` suffix.
+        let mut v3 = create_test_node("model.test.orders.v3", vec!["col1"]);
+        Arc::get_mut(&mut v3)
+            .unwrap()
+            .__common_attr__
+            .original_file_path = "models/orders_v3.sql".into();
+        Arc::get_mut(&mut v3).unwrap().__model_attr__.version =
+            Some(StringOrInteger::from("3".to_string()));
+        Arc::get_mut(&mut v3).unwrap().__model_attr__.latest_version =
+            Some(StringOrInteger::from("3".to_string()));
+        assert!(
+            !match_version("none", v3.as_ref()).unwrap(),
+            "a versioned model must never match version:none"
+        );
+
+        // A non-integer version, `v: 1.0` in `versions:`, in `orders_v1.0.sql`.
+        let mut dotted = create_test_node("model.test.orders.v1_0", vec!["col1"]);
+        Arc::get_mut(&mut dotted)
+            .unwrap()
+            .__common_attr__
+            .original_file_path = "models/orders_v1.0.sql".into();
+        Arc::get_mut(&mut dotted).unwrap().__model_attr__.version =
+            Some(StringOrInteger::from("1.0".to_string()));
+        Arc::get_mut(&mut dotted)
+            .unwrap()
+            .__model_attr__
+            .latest_version = Some(StringOrInteger::from("1.0".to_string()));
+        assert!(
+            !match_version("none", dotted.as_ref()).unwrap(),
+            "`v: 1.0` is a version even though the file stem does not end in `_v1`"
+        );
+
+        // The mirror image: an unversioned model whose name merely ends in
+        // `_v1`. dbt only makes `orders_v1` a version when `versions:` says so.
+        let mut coincidental = create_test_node("model.test.orders_v1", vec!["col1"]);
+        Arc::get_mut(&mut coincidental)
+            .unwrap()
+            .__common_attr__
+            .original_file_path = "models/orders_v1.sql".into();
+        Arc::get_mut(&mut coincidental)
+            .unwrap()
+            .__model_attr__
+            .version = None;
+        Arc::get_mut(&mut coincidental)
+            .unwrap()
+            .__model_attr__
+            .latest_version = None;
+        assert!(
+            match_version("none", coincidental.as_ref()).unwrap(),
+            "a model with no declared version must match version:none"
+        );
     }
 
     #[test]
