@@ -102,6 +102,7 @@ pub async fn resolve_analyses(
                 .as_ref()
                 .unwrap_or(&vec![])
                 .clone(),
+            resource_type: None,
         }),
         jinja_env: env.clone(),
         runtime_config: runtime_config.clone(),

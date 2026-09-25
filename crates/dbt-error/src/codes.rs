@@ -95,6 +95,7 @@ pub enum ErrorCode {
     FailedToLookupExistingTable = 1055,
 
     MissingTargetDirectory = 1056,
+    DeprecatedConfigKey = 1057,
     ColumnTypeMismatch = 1058,
     DuplicateConfigKey = 1059,
     UnusedConfigKey = 1060,

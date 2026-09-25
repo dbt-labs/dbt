@@ -6,7 +6,7 @@ use crate::dbt_project_config::{
 };
 use crate::renderer::{
     RenderCtx, RenderCtxInner, SqlFileRenderResult, collect_adapter_identifiers_detect_unsafe,
-    render_unresolved_sql_files,
+    render_unresolved_sql_files, strip_deprecated_warehouse_keys_from_properties,
 };
 use crate::resolve::resolve_tests::persist_generic_data_tests::TestableNodeTrait;
 use crate::resolve::resolve_tests::persist_generic_data_tests::{
@@ -47,6 +47,7 @@ use dbt_schemas::schemas::nodes::AdapterAttr;
 use dbt_schemas::schemas::project::SnapshotConfig;
 use dbt_schemas::schemas::properties::SnapshotProperties;
 use dbt_schemas::schemas::ref_and_source::{DbtRef, DbtSourceWrapper};
+use dbt_schemas::schemas::telemetry::NodeType;
 use dbt_schemas::schemas::{
     CommonAttributes, DbtSnapshot, DbtSnapshotAttr, InternalDbtNode, IntrospectionKind,
     NodeBaseAttributes, NodePathKind,
@@ -205,6 +206,12 @@ pub async fn resolve_snapshots(
         })
         .collect();
 
+    strip_deprecated_warehouse_keys_from_properties(
+        &mut snapshot_properties,
+        NodeType::Snapshot,
+        dependency_package_name,
+    );
+
     // Save snapshot from yml to the `snapshots` directory
     for (snapshot_name, mpe) in snapshot_properties.iter_mut() {
         // if mpe.schema_value
@@ -328,6 +335,7 @@ pub async fn resolve_snapshots(
                 .as_ref()
                 .unwrap_or(&default_snapshots_path)
                 .clone(),
+            resource_type: Some(NodeType::Snapshot),
         }),
         jinja_env: jinja_env.clone(),
         runtime_config: runtime_config.clone(),

@@ -288,6 +288,7 @@ pub fn resolve_yaml_depends_on(
             &PathBuf::from(relative_path),
             &PathBuf::new(),
             global_static_analysis,
+            None,
         ));
 
         let sql_resource = render_extract_ref_or_source_expr(

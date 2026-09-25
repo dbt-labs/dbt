@@ -103,6 +103,7 @@ pub async fn resolve_checks(
             // (matches resolve_functions.rs, the other resource type with no compile-time
             // re-render).
             defer_render_errors_to_compile: false,
+            resource_type: None,
         }),
         jinja_env: env.clone(),
         runtime_config: runtime_config.clone(),

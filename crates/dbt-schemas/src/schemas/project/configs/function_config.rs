@@ -546,6 +546,10 @@ impl ConfigKeys for FunctionConfig {
     }
 }
 
+impl crate::schemas::project::configs::warehouse_scope::WarehouseConfigResource for FunctionConfig {
+    const NODE_TYPE: dbt_telemetry::NodeType = dbt_telemetry::NodeType::Function;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

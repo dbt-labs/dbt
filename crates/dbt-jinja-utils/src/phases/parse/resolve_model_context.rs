@@ -21,7 +21,11 @@ use dbt_schemas::schemas::{
     DbtModelAttr, InternalDbtNode, IntrospectionKind,
     common::{Access, ResolvedQuoting},
     nodes::AdapterAttr,
-    project::{ModelConfig, ResolvableConfig},
+    project::{
+        ModelConfig, ResolvableConfig, WarningEmission, resolved_surface_key_status,
+        warn_and_strip_deprecated_warehouse_keys,
+    },
+    telemetry::NodeType,
 };
 use dbt_schemas::{
     dbt_types::RelationType,
@@ -76,6 +80,7 @@ pub fn build_resolve_model_context<T: ResolvableConfig<T> + Serialize + 'static>
     display_path: &Path,
     model_path: &Path,
     global_static_analysis: Option<StaticAnalysisKind>,
+    resource_type: Option<NodeType>,
 ) -> BTreeMap<String, MinijinjaValue> {
     // Create a relation for 'this' using config values
     let sql_resources_clone = sql_resources.clone();
@@ -160,6 +165,7 @@ pub fn build_resolve_model_context<T: ResolvableConfig<T> + Serialize + 'static>
         package_dependency: package_dependency.clone(),
         error_path: Some(display_path.to_path_buf()),
         adapter_type,
+        resource_type,
     });
     builtins.insert(
         "config".to_string(),
@@ -170,6 +176,7 @@ pub fn build_resolve_model_context<T: ResolvableConfig<T> + Serialize + 'static>
             package_dependency,
             error_path: Some(display_path.to_path_buf()),
             adapter_type,
+            resource_type,
         }),
     );
 
@@ -707,6 +714,8 @@ pub struct ParseConfig<T: ResolvableConfig<T> + 'static> {
     /// The target's adapter type, used to canonicalize adapter config-key aliases.
     /// [dbt-core's `credentials.translate_aliases`]
     pub adapter_type: AdapterType,
+    /// `None` for resource types without warehouse fields.
+    pub resource_type: Option<NodeType>,
 }
 
 impl<T: ResolvableConfig<T>> ParseConfig<T> {
@@ -794,6 +803,19 @@ impl<T: ResolvableConfig<T>> ParseConfig<T> {
             .with_span(span.clone());
 
             mapping.insert(dbt_yaml::Value::String(key, span.clone()), value);
+        }
+
+        // Dependency package configs are not actionable by the root project.
+        if self.package_dependency.is_none()
+            && let Some(resource_type) = self.resource_type
+        {
+            warn_and_strip_deprecated_warehouse_keys(
+                &mut mapping,
+                None,
+                resource_type,
+                WarningEmission::Emit,
+                |key| resolved_surface_key_status(resource_type, key),
+            );
         }
 
         let yaml_value = dbt_yaml::Value::Mapping(mapping, span);
@@ -1006,6 +1028,7 @@ impl<T: ResolvableConfig<T>> Object for ResolveThisFunction<T> {
 #[cfg(test)]
 mod test {
     use super::*;
+    use dbt_schemas::schemas::common::DbtMaterialization;
     use dbt_schemas::schemas::relations::DEFAULT_DBT_QUOTING;
     use dbt_test_primitives::assert_contains;
     #[test]
@@ -1048,6 +1071,7 @@ mod test {
             package_dependency: None,
             error_path: None,
             adapter_type: AdapterType::Postgres,
+            resource_type: None,
         }
     }
 
@@ -1205,6 +1229,7 @@ mod test {
             package_dependency: None,
             error_path: None,
             adapter_type: AdapterType::Databricks,
+            resource_type: None,
         };
 
         let mut env = minijinja::Environment::new();
@@ -1223,6 +1248,100 @@ mod test {
         assert_eq!(cfg.target_database, Some("cat1".to_string()));
     }
 
+    #[test]
+    fn test_parse_config_inline_stale_warehouse_key_is_applied() {
+        use dbt_schemas::schemas::project::SnapshotConfig;
+
+        let sql_resources = Arc::new(Mutex::new(Vec::new()));
+        let config = ParseConfig::<SnapshotConfig> {
+            sql_resources: sql_resources.clone(),
+            enabled: true,
+            root_overlay_forces_enabled: false,
+            package_dependency: None,
+            error_path: None,
+            adapter_type: AdapterType::Snowflake,
+            resource_type: Some(NodeType::Snapshot),
+        };
+
+        let mut env = minijinja::Environment::new();
+        env.add_global("config", MinijinjaValue::from_object(config));
+        let template = env
+            .template_from_str("{{ config(jar_file_uri='gs://bucket/jar') }}")
+            .unwrap();
+        template.render(minijinja::context!(), &[]).unwrap();
+
+        let resources = sql_resources.lock().unwrap();
+        let SqlResource::ConfigCall(cfg) = resources.last().expect("config call recorded") else {
+            panic!("expected a ConfigCall resource");
+        };
+        assert_eq!(
+            cfg.__warehouse_specific_config__.jar_file_uri,
+            Some("gs://bucket/jar".to_string()),
+            "a Stale warehouse key must keep applying -- flipping this to a strip is the \
+             behavior change the canary exists to measure first"
+        );
+    }
+
+    #[test]
+    fn test_parse_config_inline_resource_type_none_never_strips() {
+        let sql_resources = Arc::new(Mutex::new(Vec::new()));
+        let config = ParseConfig::<ModelConfig> {
+            sql_resources: sql_resources.clone(),
+            enabled: true,
+            root_overlay_forces_enabled: false,
+            package_dependency: None,
+            error_path: None,
+            adapter_type: AdapterType::Snowflake,
+            resource_type: None,
+        };
+
+        let mut env = minijinja::Environment::new();
+        env.add_global("config", MinijinjaValue::from_object(config));
+        let template = env
+            .template_from_str("{{ config(materialized='table') }}")
+            .unwrap();
+        template.render(minijinja::context!(), &[]).unwrap();
+
+        let resources = sql_resources.lock().unwrap();
+        let SqlResource::ConfigCall(cfg) = resources.last().expect("config call recorded") else {
+            panic!("expected a ConfigCall resource");
+        };
+        assert_eq!(cfg.materialized, Some(DbtMaterialization::Table));
+    }
+
+    #[test]
+    fn test_parse_config_inline_dependency_package_keys_are_not_stripped() {
+        use dbt_schemas::schemas::project::SnapshotConfig;
+
+        let sql_resources = Arc::new(Mutex::new(Vec::new()));
+        let config = ParseConfig::<SnapshotConfig> {
+            sql_resources: sql_resources.clone(),
+            enabled: true,
+            root_overlay_forces_enabled: false,
+            package_dependency: Some("some_dependency".to_string()),
+            error_path: None,
+            adapter_type: AdapterType::Snowflake,
+            resource_type: Some(NodeType::Snapshot),
+        };
+
+        let mut env = minijinja::Environment::new();
+        env.add_global("config", MinijinjaValue::from_object(config));
+        let template = env
+            .template_from_str("{{ config(jar_file_uri='gs://bucket/jar') }}")
+            .unwrap();
+        template.render(minijinja::context!(), &[]).unwrap();
+
+        let resources = sql_resources.lock().unwrap();
+        let SqlResource::ConfigCall(cfg) = resources.last().expect("config call recorded") else {
+            panic!("expected a ConfigCall resource");
+        };
+        assert_eq!(
+            cfg.__warehouse_specific_config__.jar_file_uri,
+            Some("gs://bucket/jar".to_string()),
+            "a dependency package's own config() call must not be touched"
+        );
+    }
+
     /// fs#13424: postgres' `dbname` -> `database` alias likewise has no dedicated field of its
     /// own and resolves only via the same raw config-key rename.
     #[test]
@@ -1235,6 +1354,7 @@ mod test {
             package_dependency: None,
             error_path: None,
             adapter_type: AdapterType::Postgres,
+            resource_type: None,
         };
 
         let mut env = minijinja::Environment::new();
@@ -1269,6 +1389,7 @@ mod test {
             package_dependency: None,
             error_path: None,
             adapter_type: AdapterType::Databricks,
+            resource_type: None,
         };
 
         let mut env = minijinja::Environment::new();

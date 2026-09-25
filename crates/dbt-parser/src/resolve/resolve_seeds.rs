@@ -2,6 +2,7 @@ use crate::args::ResolveArgs;
 use crate::dbt_project_config::{
     ProjectConfigResolver, RootProjectConfigs, disallow_plus_prefix_from_flags, init_project_config,
 };
+use crate::renderer::strip_warehouse_keys_in_config_block;
 use crate::resolve::resolve_utils::{
     build_unrendered_config, err_resource_name_has_spaces, extract_config_map,
     validate_node_adapter,
@@ -27,7 +28,9 @@ use dbt_schemas::dbt_utils::validate_delimiter;
 use dbt_schemas::schemas::common::{DbtChecksum, DbtMaterialization, DbtQuoting, NodeDependsOn};
 use dbt_schemas::schemas::dbt_catalogs::LoadedCatalogs;
 use dbt_schemas::schemas::dbt_column::process_columns;
+use dbt_schemas::schemas::project::WarningEmission;
 use dbt_schemas::schemas::properties::SeedProperties;
+use dbt_schemas::schemas::telemetry::NodeType;
 use dbt_schemas::schemas::{CommonAttributes, DbtSeed, DbtSeedAttr, NodeBaseAttributes};
 use dbt_schemas::state::resolve_effective_propagation_target;
 use dbt_schemas::state::{DbtPackage, GenericTestAsset};
@@ -243,10 +246,17 @@ pub async fn resolve_seeds(
         )?;
 
         // Merge schema_file_info
-        let (seed, patch_path) = if let Some(mpe) = seed_properties.remove(seed_name) {
+        let (seed, patch_path) = if let Some(mut mpe) = seed_properties.remove(seed_name) {
             if !mpe.duplicate_paths.is_empty() {
                 register_duplicate_resource(&mpe, seed_name, "seed", &mut duplicate_errors);
             }
+            strip_warehouse_keys_in_config_block(
+                &mut mpe.schema_value,
+                seed_name,
+                NodeType::Seed,
+                dependency_package_name,
+                WarningEmission::Emit,
+            );
             (
                 into_typed_with_jinja::<SeedProperties, _>(
                     mpe.schema_value,
