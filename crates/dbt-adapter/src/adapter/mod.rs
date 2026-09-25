@@ -4431,6 +4431,7 @@ impl Adapter {
             "get_credentials" => self.get_credentials(args),
             // Athena: dbt-athena's `AthenaAdapter` methods, see `adapter/athena`.
             "is_list" => self.athena_is_list(args),
+            "is_s3_tables_database" => self.athena_is_s3_tables_database(args),
             "format_value_for_partition" => self.athena_format_value_for_partition(args),
             "format_one_partition_key" => self.athena_format_one_partition_key(args),
             "format_partition_keys" => self.athena_format_partition_keys(args),

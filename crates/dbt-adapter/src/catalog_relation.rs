@@ -1327,14 +1327,17 @@ impl CatalogRelation {
         adapter_type: AdapterType,
     ) -> Option<String> {
         let adapter_attr = match adapter_type {
-            AdapterType::Bigquery => BIGQUERY_ATTR,
-            AdapterType::Databricks => DATABRICKS_ATTR,
-            AdapterType::Snowflake => SNOWFLAKE_ATTR,
+            AdapterType::Bigquery => Some(BIGQUERY_ATTR),
+            AdapterType::Databricks => Some(DATABRICKS_ATTR),
+            AdapterType::Snowflake => Some(SNOWFLAKE_ATTR),
             // Lake compute model configs surface the same way DuckDB's do.
-            AdapterType::DuckDB | AdapterType::LakeCompute => DUCKDB_ATTR,
+            AdapterType::DuckDB | AdapterType::LakeCompute => Some(DUCKDB_ATTR),
+            // Athena nodes carry no adapter attribute; its configs are in `config`.
+            AdapterType::Athena => None,
             _ => return None,
         };
-        let model_config = if let Ok(adapter_attr) = model.get_attr(adapter_attr)
+        let model_config = if let Some(adapter_attr) = adapter_attr
+            && let Ok(adapter_attr) = model.get_attr(adapter_attr)
             && !adapter_attr.is_undefined()
         {
             adapter_attr
@@ -1766,9 +1769,11 @@ impl Object for CatalogRelation {
             "is_transient" => self.gate_by_adapter(vec![AdapterType::Snowflake], || {
                 Self::map_opt_bool(self.is_transient)
             }),
-            "external_volume" => self.gate_by_adapter(vec![AdapterType::Snowflake], || {
-                Self::map_opt_str(self.external_volume.clone())
-            }),
+            // Athena: the S3 location base of the dbt-athena `create_table_as` macro.
+            "external_volume" => self
+                .gate_by_adapter(vec![AdapterType::Snowflake, AdapterType::Athena], || {
+                    Self::map_opt_str(self.external_volume.clone())
+                }),
 
             // === Databricks
             "file_format" => self.gate_by_adapter(
@@ -1776,6 +1781,7 @@ impl Object for CatalogRelation {
                     AdapterType::Databricks,
                     AdapterType::Bigquery,
                     AdapterType::DuckDB,
+                    AdapterType::Athena,
                 ],
                 || Self::map_opt_str(self.file_format.clone()),
             ),
