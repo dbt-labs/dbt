@@ -13,6 +13,14 @@ use scc::hash_map::Entry;
 
 type UnitTestExpectedSchemaFingerprint = [u8; 32];
 
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum FixtureSchemaCachePolicy {
+    /// Accept a schema already available in the shared cache.
+    Reuse,
+    /// Make the first request in this invocation fetch a fresh schema.
+    Refresh,
+}
+
 /// All inputs that must match before reusing an inferred unit-test schema.
 ///
 /// Each field is hashed into the cache key; the strings themselves are not stored.
@@ -122,7 +130,8 @@ impl UnitTestSchemaCounters {
 #[derive(Debug, Default)]
 pub struct UnitTestSchemaState {
     /// Entry guards serialize shared-cache rechecks and fetches by relation.
-    fixture_schema_fetches: SccHashMap<CanonicalFqn, ()>,
+    /// `Some` means this invocation has accepted or refreshed the schema.
+    fixture_schema_fetches: SccHashMap<CanonicalFqn, Option<SchemaRef>>,
     expected_schema_entries: SccHashMap<UnitTestExpectedSchemaKey, SchemaRef>,
     counters: UnitTestSchemaCounters,
 }
@@ -132,6 +141,7 @@ impl UnitTestSchemaState {
         &self,
         canonical_fqn: CanonicalFqn,
         schema_cache: &dyn SchemaStoreTrait,
+        cache_policy: FixtureSchemaCachePolicy,
         fetch: F,
     ) -> FsResult<SchemaRef>
     where
@@ -142,21 +152,38 @@ impl UnitTestSchemaState {
             .fixture_requests
             .fetch_add(1, Ordering::Relaxed);
         let wait_started = Instant::now();
-        let entry_guard = self
+        let mut entry_guard = self
             .fixture_schema_fetches
             .entry_async(canonical_fqn)
             .await
-            .or_insert(());
+            .or_insert(None);
         UnitTestSchemaCounters::add_duration(
             &self.counters.fixture_wait_ns,
             wait_started.elapsed(),
         );
 
-        if let Some(entry) = schema_cache.get_schema_async(entry_guard.key()).await {
+        if let Some(invocation_schema) = entry_guard.get() {
             self.counters
                 .fixture_coalesced
                 .fetch_add(1, Ordering::Relaxed);
-            return Ok(Arc::clone(entry.inner()));
+            return Ok(schema_cache
+                .get_schema_async(entry_guard.key())
+                .await
+                .map_or_else(
+                    || Arc::clone(invocation_schema),
+                    |entry| Arc::clone(entry.inner()),
+                ));
+        }
+
+        if cache_policy == FixtureSchemaCachePolicy::Reuse
+            && let Some(entry) = schema_cache.get_schema_async(entry_guard.key()).await
+        {
+            let schema = Arc::clone(entry.inner());
+            *entry_guard.get_mut() = Some(Arc::clone(&schema));
+            self.counters
+                .fixture_coalesced
+                .fetch_add(1, Ordering::Relaxed);
+            return Ok(schema);
         }
 
         self.counters.fixture_owners.fetch_add(1, Ordering::Relaxed);
@@ -166,6 +193,9 @@ impl UnitTestSchemaState {
             &self.counters.fixture_fetch_ns,
             fetch_started.elapsed(),
         );
+        if let Ok(schema) = &schema {
+            *entry_guard.get_mut() = Some(Arc::clone(schema));
+        }
         schema
     }
 
@@ -226,7 +256,10 @@ mod tests {
     use dbt_schema_store::mock_store::MockSchemaStore;
     use dbt_schema_store::{CanonicalFqn, SchemaStoreTrait};
 
-    use super::{UnitTestExpectedSchemaKey, UnitTestExpectedSchemaKeyInput, UnitTestSchemaState};
+    use super::{
+        FixtureSchemaCachePolicy, UnitTestExpectedSchemaKey, UnitTestExpectedSchemaKeyInput,
+        UnitTestSchemaState,
+    };
 
     #[dbt_runtime::test]
     async fn fixture_schema_state_serializes_fetches_by_relation() {
@@ -235,8 +268,11 @@ mod tests {
         let schema_cache = MockSchemaStore::new();
         let fetch_count = AtomicUsize::new(0);
 
-        let first =
-            state.get_or_try_fetch_fixture_schema(canonical_fqn.clone(), &schema_cache, || async {
+        let first = state.get_or_try_fetch_fixture_schema(
+            canonical_fqn.clone(),
+            &schema_cache,
+            FixtureSchemaCachePolicy::Reuse,
+            || async {
                 fetch_count.fetch_add(1, Ordering::Relaxed);
                 tokio::task::yield_now().await;
                 let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)]));
@@ -244,12 +280,17 @@ mod tests {
                     .register_schema(&canonical_fqn, None, Arc::clone(&schema), true)
                     .unwrap();
                 Ok(schema)
-            });
-        let second =
-            state.get_or_try_fetch_fixture_schema(canonical_fqn.clone(), &schema_cache, || async {
+            },
+        );
+        let second = state.get_or_try_fetch_fixture_schema(
+            canonical_fqn.clone(),
+            &schema_cache,
+            FixtureSchemaCachePolicy::Reuse,
+            || async {
                 fetch_count.fetch_add(1, Ordering::Relaxed);
                 Ok(Arc::new(Schema::empty()))
-            });
+            },
+        );
         let (first, second) = tokio::join!(biased;
             first,
             second,
@@ -266,28 +307,48 @@ mod tests {
     }
 
     #[dbt_runtime::test]
-    async fn fixture_schema_cache_retries_failed_fetch() {
+    async fn fixture_schema_refresh_retries_failed_fetch() {
         use dbt_common::{ErrorCode, fs_err};
 
         let state = UnitTestSchemaState::default();
         let canonical_fqn = CanonicalFqn::default();
         let schema_cache = MockSchemaStore::new();
+        schema_cache
+            .register_schema(
+                &canonical_fqn,
+                None,
+                Arc::new(Schema::new(vec![Field::new(
+                    "stale_id",
+                    DataType::Int64,
+                    false,
+                )])),
+                true,
+            )
+            .unwrap();
 
         let first = state
-            .get_or_try_fetch_fixture_schema(canonical_fqn.clone(), &schema_cache, || async {
-                Err(fs_err!(ErrorCode::Generic, "fetch failed"))
-            })
+            .get_or_try_fetch_fixture_schema(
+                canonical_fqn.clone(),
+                &schema_cache,
+                FixtureSchemaCachePolicy::Refresh,
+                || async { Err(fs_err!(ErrorCode::Generic, "fetch failed")) },
+            )
             .await;
         assert!(first.is_err());
 
         let schema = state
-            .get_or_try_fetch_fixture_schema(canonical_fqn, &schema_cache, || async {
-                Ok(Arc::new(Schema::new(vec![Field::new(
-                    "id",
-                    DataType::Int64,
-                    false,
-                )])))
-            })
+            .get_or_try_fetch_fixture_schema(
+                canonical_fqn,
+                &schema_cache,
+                FixtureSchemaCachePolicy::Refresh,
+                || async {
+                    Ok(Arc::new(Schema::new(vec![Field::new(
+                        "id",
+                        DataType::Int64,
+                        false,
+                    )])))
+                },
+            )
             .await
             .unwrap();
 
@@ -313,9 +374,12 @@ mod tests {
             .unwrap();
 
         let first = state
-            .get_or_try_fetch_fixture_schema(canonical_fqn.clone(), &schema_cache, || async {
-                panic!("cached schema should skip fetch")
-            })
+            .get_or_try_fetch_fixture_schema(
+                canonical_fqn.clone(),
+                &schema_cache,
+                FixtureSchemaCachePolicy::Reuse,
+                || async { panic!("cached schema should skip fetch") },
+            )
             .await
             .unwrap();
         assert_eq!(first.field(0).name(), "first_id");
@@ -330,12 +394,68 @@ mod tests {
             .unwrap();
 
         let second = state
-            .get_or_try_fetch_fixture_schema(canonical_fqn, &schema_cache, || async {
-                panic!("cached schema should skip fetch")
-            })
+            .get_or_try_fetch_fixture_schema(
+                canonical_fqn,
+                &schema_cache,
+                FixtureSchemaCachePolicy::Reuse,
+                || async { panic!("cached schema should skip fetch") },
+            )
             .await
             .unwrap();
         assert_eq!(second.field(0).name(), "second_id");
+    }
+
+    #[dbt_runtime::test]
+    async fn fixture_schema_refresh_replaces_prior_cache_once() {
+        let state = UnitTestSchemaState::default();
+        let canonical_fqn = CanonicalFqn::default();
+        let schema_cache = MockSchemaStore::new();
+        schema_cache
+            .register_schema(
+                &canonical_fqn,
+                None,
+                Arc::new(Schema::new(vec![Field::new(
+                    "stale_id",
+                    DataType::Int64,
+                    false,
+                )])),
+                true,
+            )
+            .unwrap();
+        let fetch_count = AtomicUsize::new(0);
+
+        let first = state.get_or_try_fetch_fixture_schema(
+            canonical_fqn.clone(),
+            &schema_cache,
+            FixtureSchemaCachePolicy::Refresh,
+            || async {
+                fetch_count.fetch_add(1, Ordering::Relaxed);
+                tokio::task::yield_now().await;
+                let schema = Arc::new(Schema::new(vec![Field::new(
+                    "fresh_id",
+                    DataType::Int64,
+                    false,
+                )]));
+                schema_cache
+                    .register_schema(&canonical_fqn, None, Arc::clone(&schema), true)
+                    .unwrap();
+                Ok(schema)
+            },
+        );
+        let second = state.get_or_try_fetch_fixture_schema(
+            canonical_fqn.clone(),
+            &schema_cache,
+            FixtureSchemaCachePolicy::Refresh,
+            || async {
+                fetch_count.fetch_add(1, Ordering::Relaxed);
+                Ok(Arc::new(Schema::empty()))
+            },
+        );
+        let (first, second) = tokio::join!(biased; first, second);
+
+        assert_eq!(first.unwrap().field(0).name(), "fresh_id");
+        assert_eq!(second.unwrap().field(0).name(), "fresh_id");
+        assert_eq!(fetch_count.load(Ordering::Relaxed), 1);
     }
 
     #[test]

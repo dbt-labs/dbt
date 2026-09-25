@@ -82,6 +82,15 @@ impl RelationObject {
         }
     }
 
+    /// Wraps a relation derived from this one, keeping this relation's run filter.
+    fn with_relation(&self, relation: Arc<dyn BaseRelation>) -> Self {
+        Self {
+            relation,
+            run_filter: self.run_filter.clone(),
+            event_time: self.event_time.clone(),
+        }
+    }
+
     pub fn has_filter(&self) -> bool {
         self.run_filter.is_some()
     }
@@ -202,7 +211,7 @@ impl Object for RelationObject {
                 let identifier: Option<String> =
                     args.consume_optional_only_from_kwargs("identifier");
                 self.replace_path(database, schema, identifier)
-                    .map(|r| Value::from_object(RelationObject::new(r)))
+                    .map(|r| Value::from_object(self.with_relation(r)))
             }
             "get" => {
                 let mut args = ArgParser::new(args, None);
@@ -227,14 +236,14 @@ impl Object for RelationObject {
             }
             "without_identifier" => self
                 .without_identifier()
-                .map(|r| Value::from_object(RelationObject::new(r))),
+                .map(|r| Value::from_object(self.with_relation(r))),
             "include" => {
                 let mut args = ArgParser::new(args, None);
                 let database: Option<bool> = args.consume_optional_only_from_kwargs("database");
                 let schema: Option<bool> = args.consume_optional_only_from_kwargs("schema");
                 let identifier: Option<bool> = args.consume_optional_only_from_kwargs("identifier");
                 self.include(database, schema, identifier)
-                    .map(|r| Value::from_object(RelationObject::new(r)))
+                    .map(|r| Value::from_object(self.with_relation(r)))
             }
             "quote" => {
                 let mut args = ArgParser::new(args, None);
@@ -242,7 +251,7 @@ impl Object for RelationObject {
                 let schema: Option<bool> = args.consume_optional_only_from_kwargs("schema");
                 let identifier: Option<bool> = args.consume_optional_only_from_kwargs("identifier");
                 self.quote(database, schema, identifier)
-                    .map(|r| Value::from_object(RelationObject::new(r)))
+                    .map(|r| Value::from_object(self.with_relation(r)))
             }
             "incorporate" => {
                 let mut args = ArgParser::new(args, None);
@@ -258,7 +267,7 @@ impl Object for RelationObject {
                     }
                 });
                 self.incorporate(path, relation_type, location)
-                    .map(|r| Value::from_object(RelationObject::new(r)))
+                    .map(|r| Value::from_object(self.with_relation(r)))
             }
             "information_schema" => {
                 let iter = ArgsIter::new("information_schema", &["view_name"], args);
@@ -1223,6 +1232,51 @@ mod tests {
             .unwrap_err();
 
         assert_eq!(err.kind(), minijinja::ErrorKind::MissingArgument, "{err}");
+    }
+
+    #[test]
+    fn derived_relations_keep_microbatch_filter() {
+        use chrono::{TimeZone, Utc};
+        use dbt_schemas::filter::Sample;
+
+        let relation = do_create_relation(
+            AdapterType::Snowflake,
+            "d".to_string(),
+            "s".to_string(),
+            Some("i".to_string()),
+            Some(RelationType::Table),
+            DEFAULT_RESOLVED_QUOTING,
+        )
+        .unwrap();
+        let relation = RelationObject::new_with_filter(
+            relation.into(),
+            RunFilter {
+                empty: false,
+                sample: Some(Sample {
+                    start: Some(Utc.with_ymd_and_hms(2026, 7, 13, 0, 0, 0).unwrap()),
+                    end: Some(Utc.with_ymd_and_hms(2026, 7, 14, 0, 0, 0).unwrap()),
+                }),
+            },
+            Some("event_date".to_string()),
+        );
+
+        jinja_assert(
+            relation,
+            r#"
+            {{ obj.include(database=false) }}
+            {{ obj.quote(identifier=false) }}
+            {{ obj.replace_path(identifier='j') }}
+            {{ obj.incorporate(path={'identifier': 'k'}) }}
+            {{ obj.without_identifier() }}
+            "#,
+            r#"
+            (select * from "s"."i" where event_date >= to_timestamp_tz('2026-07-13T00:00:00+00:00') and event_date < to_timestamp_tz('2026-07-14T00:00:00+00:00'))
+            (select * from "d"."s".i where event_date >= to_timestamp_tz('2026-07-13T00:00:00+00:00') and event_date < to_timestamp_tz('2026-07-14T00:00:00+00:00'))
+            (select * from "d"."s"."j" where event_date >= to_timestamp_tz('2026-07-13T00:00:00+00:00') and event_date < to_timestamp_tz('2026-07-14T00:00:00+00:00'))
+            (select * from "d"."s"."k" where event_date >= to_timestamp_tz('2026-07-13T00:00:00+00:00') and event_date < to_timestamp_tz('2026-07-14T00:00:00+00:00'))
+            (select * from "d"."s" where event_date >= to_timestamp_tz('2026-07-13T00:00:00+00:00') and event_date < to_timestamp_tz('2026-07-14T00:00:00+00:00'))
+            "#,
+        );
     }
 
     #[test]
