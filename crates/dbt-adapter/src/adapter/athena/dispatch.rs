@@ -6,6 +6,7 @@
 //! adapters' side-effecting methods.
 
 use super::driver_ops::{AthenaOps, RelationParts};
+use super::lakeformation::{LfGrantsConfig, LfTagsConfig};
 use super::python::{SparkConfig, SparkJob};
 use super::{
     S3DataNaming, clean_sql_comment, ellipsis_comment, format_one_partition_key,
@@ -23,7 +24,7 @@ use dbt_auth::AdapterConfig;
 use minijinja::arg_utils::ArgsIter;
 use minijinja::value::ValueKind;
 use minijinja::{Error as JinjaError, ErrorKind as JinjaErrorKind, State, Value};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 fn invalid(msg: impl Into<String>) -> JinjaError {
     JinjaError::new(JinjaErrorKind::InvalidOperation, msg.into())
@@ -76,6 +77,13 @@ fn to_usize(value: &Value, name: &str) -> Result<usize, JinjaError> {
         "{name} must be an integer, got {}",
         value.kind()
     )))
+}
+
+/// A macro argument as the typed config dbt-athena builds from it with pydantic.
+fn from_jinja<T: serde::de::DeserializeOwned>(value: &Value, name: &str) -> Result<T, JinjaError> {
+    serde_json::to_value(value)
+        .and_then(serde_json::from_value)
+        .map_err(|e| invalid(format!("invalid {name}: {e}")))
 }
 
 fn config_error(msg: &str) -> JinjaError {
@@ -692,42 +700,68 @@ impl Adapter {
         Ok(none_value())
     }
 
-    /// `adapter.add_lf_tags(relation, lf_tags_config)`. Lake Formation tagging is not
-    /// ported yet: a disabled config is a no-op as in dbt-athena, an enabled one is an error.
-    pub fn athena_add_lf_tags(&self, args: &[Value]) -> Result<Value, JinjaError> {
+    /// `adapter.add_lf_tags(relation, lf_tags_config)`: the table and column LF-Tags
+    /// become the configured ones; a disabled config is a no-op.
+    pub fn athena_add_lf_tags(&self, state: &State, args: &[Value]) -> Result<Value, JinjaError> {
         let iter = ArgsIter::new("add_lf_tags", &["relation", "lf_tags_config"], args);
         let relation = relation_parts(iter.next_arg::<&Value>()?)?;
-        let config = iter.next_arg::<&Value>()?;
+        let config: LfTagsConfig = from_jinja(iter.next_arg::<&Value>()?, "lf_tags_config")?;
         iter.finish()?;
-        let enabled = config.get_attr("enabled").is_ok_and(|v| v.is_true());
-        if !enabled {
+        if !config.enabled {
             tracing::debug!("Lakeformation is disabled for {}", relation.rendered);
             return Ok(none_value());
         }
-        Err(AdapterError::new(
-            AdapterErrorKind::NotSupported,
-            "lf_tags_config is not yet supported by the dbt Athena backend",
-        )
-        .into())
+        if let Some(aws) = self.athena_ops(state) {
+            aws.add_lf_tags(&relation, &config)?;
+        }
+        Ok(none_value())
     }
 
-    /// `adapter.apply_lf_grants(relation, lf_grants_config)`; see [`Self::athena_add_lf_tags`].
-    pub fn athena_apply_lf_grants(&self, args: &[Value]) -> Result<Value, JinjaError> {
+    /// `adapter.apply_lf_grants(relation, lf_grants_config)`: the table's data cell
+    /// filters and their SELECT grantees become the configured ones.
+    pub fn athena_apply_lf_grants(
+        &self,
+        state: &State,
+        args: &[Value],
+    ) -> Result<Value, JinjaError> {
         let iter = ArgsIter::new("apply_lf_grants", &["relation", "lf_grants_config"], args);
-        let _relation = relation_parts(iter.next_arg::<&Value>()?)?;
-        let config = iter.next_arg::<&Value>()?;
+        let relation = relation_parts(iter.next_arg::<&Value>()?)?;
+        let config: LfGrantsConfig = from_jinja(iter.next_arg::<&Value>()?, "lf_grants")?;
         iter.finish()?;
-        let enabled = config
-            .get_attr("data_cell_filters")
-            .and_then(|f| f.get_attr("enabled"))
-            .is_ok_and(|v| v.is_true());
-        if !enabled {
+        if !config.data_cell_filters.enabled {
             return Ok(none_value());
         }
-        Err(AdapterError::new(
-            AdapterErrorKind::NotSupported,
-            "lf_grants is not yet supported by the dbt Athena backend",
-        )
-        .into())
+        if let Some(aws) = self.athena_ops(state) {
+            aws.apply_lf_grants(&relation, &config)?;
+        }
+        Ok(none_value())
+    }
+
+    /// `adapter.add_lf_tags_to_database(relation)`: the profile's `lf_tags_database`
+    /// on the relation's schema.
+    pub fn athena_add_lf_tags_to_database(
+        &self,
+        state: &State,
+        args: &[Value],
+    ) -> Result<Value, JinjaError> {
+        let iter = ArgsIter::new("add_lf_tags_to_database", &["relation"], args);
+        let relation = relation_parts(iter.next_arg::<&Value>()?)?;
+        iter.finish()?;
+        let tags: BTreeMap<String, String> = match self.profile_config().get("lf_tags_database") {
+            Some(tags) => serde_json::to_value(tags)
+                .and_then(serde_json::from_value)
+                .map_err(|e| {
+                    invalid(format!("lf_tags_database must map tag keys to values: {e}"))
+                })?,
+            None => BTreeMap::new(),
+        };
+        if tags.is_empty() {
+            tracing::debug!("Lakeformation is disabled for {}", relation.rendered);
+            return Ok(none_value());
+        }
+        if let Some(aws) = self.athena_ops(state) {
+            aws.add_lf_tags_to_database(&relation.schema, &tags)?;
+        }
+        Ok(none_value())
     }
 }
