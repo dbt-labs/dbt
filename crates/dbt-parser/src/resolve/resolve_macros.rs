@@ -20,6 +20,7 @@ use dbt_schemas::schemas::macros::MacroDependsOn;
 use dbt_schemas::schemas::properties::MacrosProperties;
 use dbt_schemas::state::DbtAsset;
 use dbt_telemetry::GenericOpExecuted;
+use minijinja::ArgSpec;
 use minijinja::Value as MinijinjaValue;
 use std::collections::BTreeMap;
 use std::collections::HashMap;
@@ -31,6 +32,17 @@ use std::sync::Arc;
 use crate::resolve::resolve_properties::MinimalPropertiesEntry;
 
 use crate::utils::parse_macro_statements;
+
+/// Mirrors dbt-core, which derives macro arguments from the Jinja signature.
+fn arguments_from_signature(args: &[ArgSpec]) -> Vec<MacroArgument> {
+    args.iter()
+        .map(|arg| MacroArgument {
+            name: arg.name.clone(),
+            type_: None,
+            description: String::new(),
+        })
+        .collect()
+}
 
 /// Resolve docs macros from a list of docs macro files
 pub fn resolve_docs_macros(
@@ -161,7 +173,7 @@ pub fn resolve_macros(
                             funcsign: None,
                             supported_languages: None,
                             args: args.clone(),
-                            arguments: vec![],
+                            arguments: arguments_from_signature(&args),
                             macro_name_span: Some(macro_name_span),
                             __other__: BTreeMap::new(),
                         };
@@ -192,7 +204,7 @@ pub fn resolve_macros(
                             funcsign: func_sign.clone(),
                             supported_languages: None,
                             args: args.clone(),
-                            arguments: vec![],
+                            arguments: arguments_from_signature(&args),
                             macro_name_span: Some(macro_name_span),
                             __other__: BTreeMap::new(),
                         };
