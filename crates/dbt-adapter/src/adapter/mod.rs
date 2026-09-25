@@ -899,6 +899,32 @@ impl Adapter {
         limit: Option<i64>,
         options: Option<Options>,
     ) -> AdapterResult<(AdapterResponse, AgateTable)> {
+        self.execute_with_token(
+            state,
+            ctx,
+            sql,
+            auto_begin,
+            fetch,
+            limit,
+            options,
+            self.cancellation_token.clone(),
+        )
+    }
+
+    /// [`Self::execute`] under the given cancellation token instead of the run's, for
+    /// cleanup that must still go out after the run is cancelled.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn execute_with_token(
+        &self,
+        state: &State,
+        ctx: Option<&QueryCtx>,
+        sql: &str,
+        auto_begin: bool,
+        fetch: bool,
+        limit: Option<i64>,
+        options: Option<Options>,
+        token: CancellationToken,
+    ) -> AdapterResult<(AdapterResponse, AgateTable)> {
         match &self.inner {
             Typed { adapter, .. } => {
                 let mut conn =
@@ -912,7 +938,7 @@ impl Adapter {
                     fetch,
                     limit,
                     options,
-                    self.cancellation_token.clone(),
+                    token,
                 )?;
                 Ok((response, table))
             }
