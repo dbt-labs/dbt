@@ -304,9 +304,27 @@ pub struct ProjectSeedConfig {
     )]
     pub as_columnstore: Option<bool>,
 
-    // Athena specific fields
+    // Athena specific fields: the configs dbt-athena's seed macros read
     #[serde(default, rename = "+table_type")]
     pub table_type: Option<String>,
+    #[serde(rename = "+external_location")]
+    pub external_location: Option<String>,
+    #[serde(rename = "+lf_grants")]
+    pub lf_grants: Option<BTreeMap<String, YmlValue>>,
+    #[serde(rename = "+lf_tags_config")]
+    pub lf_tags_config: Option<BTreeMap<String, YmlValue>>,
+    #[serde(rename = "+s3_data_dir")]
+    pub s3_data_dir: Option<String>,
+    #[serde(rename = "+s3_data_naming")]
+    pub s3_data_naming: Option<String>,
+    #[serde(
+        default,
+        rename = "+seed_by_insert",
+        deserialize_with = "bool_or_string_bool"
+    )]
+    pub seed_by_insert: Option<bool>,
+    #[serde(rename = "+seed_s3_upload_args")]
+    pub seed_s3_upload_args: Option<BTreeMap<String, YmlValue>>,
 
     // Postgres specific fields
     #[serde(default, rename = "+indexes")]
@@ -424,6 +442,13 @@ impl TypedRecursiveConfig for ProjectSeedConfig {
             || self.sort_type.is_some()
             || self.as_columnstore.is_some()
             || self.table_type.is_some()
+            || self.external_location.is_some()
+            || self.lf_grants.is_some()
+            || self.lf_tags_config.is_some()
+            || self.s3_data_dir.is_some()
+            || self.s3_data_naming.is_some()
+            || self.seed_by_insert.is_some()
+            || self.seed_s3_upload_args.is_some()
             || self.indexes.is_some()
             || self.unlogged.is_some()
             || self.schedule.is_some()
@@ -618,22 +643,22 @@ impl From<ProjectSeedConfig> for SeedConfig {
                 bucket_count: None,
                 bucketed_by: None,
                 delete_condition: None,
-                external_location: None,
+                external_location: config.external_location,
                 field_delimiter: None,
                 ha: None,
                 insert_condition: None,
-                lf_grants: None,
+                lf_grants: config.lf_grants,
                 lf_inherited_tags: None,
-                lf_tags_config: None,
+                lf_tags_config: config.lf_tags_config,
                 merge_update_columns_default_rule: None,
                 merge_update_columns_rules: None,
                 native_drop: None,
                 partitions_limit: None,
-                s3_data_dir: None,
-                s3_data_naming: None,
+                s3_data_dir: config.s3_data_dir,
+                s3_data_naming: config.s3_data_naming,
                 s3_tmp_table_dir: None,
-                seed_by_insert: None,
-                seed_s3_upload_args: None,
+                seed_by_insert: config.seed_by_insert,
+                seed_s3_upload_args: config.seed_s3_upload_args,
                 temp_schema: None,
                 update_condition: None,
                 versions_to_keep: None,
@@ -791,6 +816,13 @@ impl From<SeedConfig> for ProjectSeedConfig {
             as_columnstore: config.__warehouse_specific_config__.as_columnstore,
 
             table_type: config.__warehouse_specific_config__.table_type,
+            external_location: config.__warehouse_specific_config__.external_location,
+            lf_grants: config.__warehouse_specific_config__.lf_grants,
+            lf_tags_config: config.__warehouse_specific_config__.lf_tags_config,
+            s3_data_dir: config.__warehouse_specific_config__.s3_data_dir,
+            s3_data_naming: config.__warehouse_specific_config__.s3_data_naming,
+            seed_by_insert: config.__warehouse_specific_config__.seed_by_insert,
+            seed_s3_upload_args: config.__warehouse_specific_config__.seed_s3_upload_args,
             indexes: config.__warehouse_specific_config__.indexes,
             unlogged: config.__warehouse_specific_config__.unlogged,
             schedule: config.__warehouse_specific_config__.schedule,
@@ -896,6 +928,47 @@ __additional_properties__: {}
             resolved.__warehouse_specific_config__.query_tags.as_deref(),
             Some(r#"{"team":"seed"}"#)
         );
+    }
+
+    #[test]
+    fn test_athena_seed_configs_propagate_through_resolved_config() {
+        let project: ProjectSeedConfig = dbt_yaml::from_str(
+            r#"
++seed_by_insert: true
++seed_s3_upload_args:
+  ServerSideEncryption: AES256
++s3_data_dir: s3://bucket/seeds/
++s3_data_naming: schema_table
++external_location: s3://bucket/fixed/
++lf_tags_config:
+  enabled: true
++lf_grants:
+  data_cell_filters:
+    enabled: false
+__additional_properties__: {}
+"#,
+        )
+        .unwrap();
+
+        let resolved: SeedConfig = project.into();
+        let athena = &resolved.__warehouse_specific_config__;
+        assert_eq!(athena.seed_by_insert, Some(true));
+        assert_eq!(
+            athena.seed_s3_upload_args.as_ref().unwrap()["ServerSideEncryption"],
+            "AES256"
+        );
+        assert_eq!(athena.s3_data_dir.as_deref(), Some("s3://bucket/seeds/"));
+        assert_eq!(athena.s3_data_naming.as_deref(), Some("schema_table"));
+        assert_eq!(
+            athena.external_location.as_deref(),
+            Some("s3://bucket/fixed/")
+        );
+        assert!(athena.lf_tags_config.is_some());
+        assert!(athena.lf_grants.is_some());
+
+        let back: ProjectSeedConfig = resolved.into();
+        assert_eq!(back.seed_by_insert, Some(true));
+        assert_eq!(back.s3_data_naming.as_deref(), Some("schema_table"));
     }
 
     #[test]
