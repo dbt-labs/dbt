@@ -179,7 +179,7 @@ impl<'a, 't, 'e> AthenaOps<'a, 't, 'e> {
     /// dbt database. `awsdatacatalog` and S3 Tables catalogs are derived from the account
     /// id; anything else is looked up as an Athena data catalog and yields an id only when
     /// Glue-backed.
-    fn catalog_id(&self, database: Option<&str>) -> AdapterResult<Option<String>> {
+    pub(super) fn catalog_id(&self, database: Option<&str>) -> AdapterResult<Option<String>> {
         let Some(database) = database.filter(|d| !d.is_empty()) else {
             return Ok(None);
         };

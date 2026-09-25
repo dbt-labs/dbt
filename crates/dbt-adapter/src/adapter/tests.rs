@@ -818,7 +818,7 @@ fn athena_persist_docs_reads_its_flags_as_truthiness() {
 }
 
 #[test]
-fn athena_lake_formation_config_is_a_no_op_when_disabled_and_rejected_when_enabled() {
+fn athena_lake_formation_configs_are_no_ops_when_disabled_and_checked_when_malformed() {
     let adapter = make_duckdb_adapter();
     let relation = do_create_relation(
         AdapterType::Athena,
@@ -835,19 +835,23 @@ fn athena_lake_formation_config_is_a_no_op_when_disabled_and_rejected_when_enabl
     let result = dispatch_test(&adapter, "add_lf_tags", &[relation.clone(), disabled]).unwrap();
     assert!(result.is_none());
 
-    let enabled = Value::from_iter([("enabled", Value::from(true))]);
-    let err = dispatch_test(&adapter, "add_lf_tags", &[relation.clone(), enabled]).unwrap_err();
-    assert!(
-        err.to_string()
-            .contains("lf_tags_config is not yet supported")
-    );
-
     let grants = Value::from_iter([(
         "data_cell_filters",
-        Value::from_iter([("enabled", Value::from(false))]),
+        Value::from_iter([
+            ("enabled", Value::from(false)),
+            ("filters", Value::from_iter::<[(&str, Value); 0]>([])),
+        ]),
     )]);
-    let result = dispatch_test(&adapter, "apply_lf_grants", &[relation, grants]).unwrap();
+    let result = dispatch_test(&adapter, "apply_lf_grants", &[relation.clone(), grants]).unwrap();
     assert!(result.is_none());
+
+    // pydantic rejects a tag value that is not a string; so does the port.
+    let malformed = Value::from_iter([
+        ("enabled", Value::from(true)),
+        ("tags", Value::from_iter([("tier", Value::from(1))])),
+    ]);
+    let err = dispatch_test(&adapter, "add_lf_tags", &[relation, malformed]).unwrap_err();
+    assert!(err.to_string().contains("invalid lf_tags_config"), "{err}");
 }
 
 #[test]

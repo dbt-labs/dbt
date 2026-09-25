@@ -4455,8 +4455,9 @@ impl Adapter {
                 self.athena_run_operation_with_potential_multiple_runs(state, args)
             }
             "persist_docs_to_glue" => self.athena_persist_docs_to_glue(state, args),
-            "add_lf_tags" => self.athena_add_lf_tags(args),
-            "apply_lf_grants" => self.athena_apply_lf_grants(args),
+            "add_lf_tags" => self.athena_add_lf_tags(state, args),
+            "apply_lf_grants" => self.athena_apply_lf_grants(state, args),
+            "add_lf_tags_to_database" => self.athena_add_lf_tags_to_database(state, args),
             "render_equals" => {
                 let iter = ArgsIter::new(name, &["expr1", "expr2"], args);
                 let expr1 = iter.next_arg::<&str>()?;
