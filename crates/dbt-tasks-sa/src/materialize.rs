@@ -20,6 +20,7 @@ use arrow::{
     },
     compute::{CastOptions, cast_with_options},
     datatypes::{DataType, Field, Schema, TimeUnit},
+    util::display::{ArrayFormatter, FormatOptions},
     util::pretty::{pretty_format_batches, print_batches},
 };
 use chrono::DateTime;
@@ -1847,21 +1848,21 @@ pub fn compare_record_batches_with_json_columns(
                     .enumerate()
                     .map(|(index, column)| {
                         if index == label_col_index || column.is_null(row) {
-                            return None;
+                            return Ok(None);
                         }
-                        let value = value_as_string(column, row, schema.field(index).data_type());
-                        Some(if json_columns.contains(&index) {
+                        let value = value_as_string(column, row, schema.field(index).data_type())?;
+                        Ok(Some(if json_columns.contains(&index) {
                             serde_json::from_str::<&RawValue>(&value)
                                 .and_then(canonicalize_json_object_keys)
                                 .map(|value| value.get().to_owned())
                                 .unwrap_or(value)
                         } else {
                             value
-                        })
+                        }))
                     })
-                    .collect::<Vec<_>>()
+                    .collect::<arrow::error::Result<Vec<_>>>()
             })
-            .collect::<Vec<_>>();
+            .collect::<arrow::error::Result<Vec<_>>>()?;
         actual_rows.sort_by(|a, b| rows[*a].cmp(&rows[*b]));
         expected_rows.sort_by(|a, b| rows[*a].cmp(&rows[*b]));
         Some(rows)
@@ -1890,34 +1891,36 @@ pub fn compare_record_batches_with_json_columns(
         let diffs: Vec<String> = actual_rows
             .iter()
             .zip_longest(expected_rows.iter())
-            .map(|pair| match pair {
-                EitherOrBoth::Both(a, e) => {
-                    let actual_val = value_as_string(col, *a, data_type);
-                    let expected_val = value_as_string(col, *e, data_type);
+            .map(|pair| -> arrow::error::Result<String> {
+                Ok(match pair {
+                    EitherOrBoth::Both(a, e) => {
+                        let actual_val = value_as_string(col, *a, data_type)?;
+                        let expected_val = value_as_string(col, *e, data_type)?;
 
-                    let equal = match &comparison_rows {
-                        Some(rows) => rows[*a][col_index] == rows[*e][col_index],
-                        None => actual_val == expected_val,
-                    };
-                    if equal {
-                        expected_val
-                    } else {
-                        has_differences = true;
-                        format!("{expected_val} -> {actual_val}")
+                        let equal = match &comparison_rows {
+                            Some(rows) => rows[*a][col_index] == rows[*e][col_index],
+                            None => actual_val == expected_val,
+                        };
+                        if equal {
+                            expected_val
+                        } else {
+                            has_differences = true;
+                            format!("{expected_val} -> {actual_val}")
+                        }
                     }
-                }
-                EitherOrBoth::Left(a) => {
-                    let actual_val = value_as_string(col, *a, data_type);
-                    has_differences = true;
-                    format!("∅ -> {actual_val}")
-                }
-                EitherOrBoth::Right(e) => {
-                    let expected_val = value_as_string(col, *e, data_type);
-                    has_differences = true;
-                    format!("{expected_val} -> ∅")
-                }
+                    EitherOrBoth::Left(a) => {
+                        let actual_val = value_as_string(col, *a, data_type)?;
+                        has_differences = true;
+                        format!("∅ -> {actual_val}")
+                    }
+                    EitherOrBoth::Right(e) => {
+                        let expected_val = value_as_string(col, *e, data_type)?;
+                        has_differences = true;
+                        format!("{expected_val} -> ∅")
+                    }
+                })
             })
-            .collect();
+            .collect::<arrow::error::Result<_>>()?;
 
         let new_array = Arc::new(StringArray::from(diffs)) as ArrayRef;
         new_columns.push(new_array);
@@ -1952,8 +1955,19 @@ pub fn compare_record_batches_with_json_columns(
     })
 }
 
-fn value_as_string(array: &ArrayRef, index: usize, data_type: &DataType) -> String {
-    match data_type {
+/// Renders one cell of a unit test result for comparison and display.
+///
+/// Every value must render deterministically from its content: the actual and
+/// expected rows are compared as strings, so a type-dependent placeholder would
+/// make differing values compare equal. Types without a dedicated arm go through
+/// Arrow's display formatter, and a type it cannot format is an error rather
+/// than a silent match.
+fn value_as_string(
+    array: &ArrayRef,
+    index: usize,
+    data_type: &DataType,
+) -> arrow::error::Result<String> {
+    let value = match data_type {
         DataType::Int32 => {
             let arr = array.as_any().downcast_ref::<Int32Array>().unwrap();
             null_or!(arr, index, arr.value(index).to_string())
@@ -2018,8 +2032,23 @@ fn value_as_string(array: &ArrayRef, index: usize, data_type: &DataType) -> Stri
                 (epoch + chrono::Duration::days(days)).to_string()
             })
         }
-        _ => "[unsupported]".to_string(),
-    }
+        _ => {
+            if array.is_null(index) {
+                return Ok("NULL".to_string());
+            }
+            let unsupported = |e: arrow::error::ArrowError| {
+                arrow::error::ArrowError::ComputeError(format!(
+                    "Cannot compare unit test values of type {data_type}: {e}"
+                ))
+            };
+            ArrayFormatter::try_new(array.as_ref(), &FormatOptions::new())
+                .map_err(unsupported)?
+                .value(index)
+                .try_to_string()
+                .map_err(unsupported)?
+        }
+    };
+    Ok(value)
 }
 
 #[cfg(test)]
@@ -2027,7 +2056,7 @@ mod compare_record_batches_tests {
     use super::{compare_record_batches, compare_record_batches_with_json_columns};
     use arrow::array::{
         BinaryArray, Int32Array, Int64Array, StringArray, StringViewArray,
-        TimestampMicrosecondArray, TimestampSecondArray,
+        TimestampMicrosecondArray, TimestampMillisecondArray, TimestampSecondArray,
     };
     use arrow::datatypes::{DataType, Field, Schema, TimeUnit};
     use std::sync::Arc;
@@ -2097,8 +2126,60 @@ mod compare_record_batches_tests {
         );
     }
 
-    // Control: second-precision timestamps are handled today, so a mismatch
-    // there is already detected. Documents the inconsistency across TimeUnits.
+    #[test]
+    fn no_differences_when_microsecond_timestamp_values_match() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("actual_or_expected", DataType::Utf8, false),
+            Field::new(
+                "ts",
+                DataType::Timestamp(TimeUnit::Microsecond, None),
+                false,
+            ),
+        ]));
+        let batch = arrow::array::RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(StringArray::from(vec!["expected", "actual"])),
+                Arc::new(TimestampMicrosecondArray::from(vec![
+                    1_700_000_000_000_000i64,
+                    1_700_000_000_000_000i64,
+                ])),
+            ],
+        )
+        .unwrap();
+
+        let result = compare_record_batches(&batch).unwrap();
+        assert!(!result.has_differences);
+    }
+
+    #[test]
+    fn detects_mismatch_in_millisecond_timestamp_column() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("actual_or_expected", DataType::Utf8, false),
+            Field::new(
+                "ts",
+                DataType::Timestamp(TimeUnit::Millisecond, None),
+                false,
+            ),
+        ]));
+        let batch = arrow::array::RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(StringArray::from(vec!["expected", "actual"])),
+                Arc::new(TimestampMillisecondArray::from(vec![
+                    1_700_000_000_000i64,
+                    1_700_000_000_500i64,
+                ])),
+            ],
+        )
+        .unwrap();
+
+        let result = compare_record_batches(&batch).unwrap();
+        assert!(result.has_differences);
+    }
+
+    // Second-precision timestamps have a dedicated formatting arm; keep it
+    // covered alongside the generic fallback.
     #[test]
     fn detects_mismatch_in_second_timestamp_column() {
         let schema = Arc::new(Schema::new(vec![
