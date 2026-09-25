@@ -784,6 +784,40 @@ fn athena_partition_key_formatting_and_bucketing() {
 }
 
 #[test]
+fn athena_persist_docs_reads_its_flags_as_truthiness() {
+    // `athena__persist_docs` hands over `... and model.columns`: a mapping, not a bool.
+    let adapter = make_duckdb_parse_adapter();
+    let relation = do_create_relation(
+        AdapterType::Athena,
+        "awsdatacatalog".to_string(),
+        "analytics".to_string(),
+        Some("events".to_string()),
+        Some(RelationType::Table),
+        DEFAULT_RESOLVED_QUOTING,
+    )
+    .unwrap();
+    let relation = RelationObject::new(Arc::from(relation)).into_value();
+    let columns = Value::from_iter([(
+        "customer_id",
+        Value::from_iter([("description", Value::from("Primary key."))]),
+    )]);
+    let model = Value::from_iter([("columns", columns.clone())]);
+    let result = dispatch_test(
+        &adapter,
+        "persist_docs_to_glue",
+        &[
+            relation,
+            model,
+            Value::from(true),
+            columns,
+            Value::from(true),
+        ],
+    )
+    .unwrap();
+    assert!(result.is_none());
+}
+
+#[test]
 fn athena_lake_formation_config_is_a_no_op_when_disabled_and_rejected_when_enabled() {
     let adapter = make_duckdb_adapter();
     let relation = do_create_relation(

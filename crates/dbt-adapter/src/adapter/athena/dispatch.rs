@@ -538,9 +538,18 @@ impl Adapter {
         );
         let relation = relation_parts(iter.next_arg::<&Value>()?)?;
         let model = iter.next_arg::<&Value>()?;
-        let persist_relation_docs = iter.next_arg::<Option<bool>>()?.unwrap_or(false);
-        let persist_column_docs = iter.next_arg::<Option<bool>>()?.unwrap_or(false);
-        let skip_archive_table_version = iter.next_arg::<Option<bool>>()?.unwrap_or(false);
+        // Read as truthiness, as dbt-athena does: `athena__persist_docs` passes
+        // `for_columns and config.persist_column_docs() and model.columns`, which is the
+        // columns mapping itself when every operand is truthy.
+        let persist_relation_docs = iter
+            .next_arg::<Option<&Value>>()?
+            .is_some_and(Value::is_true);
+        let persist_column_docs = iter
+            .next_arg::<Option<&Value>>()?
+            .is_some_and(Value::is_true);
+        let skip_archive_table_version = iter
+            .next_arg::<Option<&Value>>()?
+            .is_some_and(Value::is_true);
         iter.finish()?;
 
         let Some(aws) = self.athena_ops(state) else {
