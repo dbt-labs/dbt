@@ -61,3 +61,11 @@ pub const OPERATION: &str = "athena.operation";
 
 /// ADBC statement option carrying the operation's input, the AWS API input as JSON.
 pub const OPERATION_PAYLOAD: &str = "athena.operation.payload";
+
+/// Keys of the query statistics the driver puts in the result schema metadata.
+pub mod schema_metadata {
+    pub const QUERY_ID: &str = "ATHENA:query_id";
+    pub const DATA_SCANNED_IN_BYTES: &str = "ATHENA:Statistics:DataScannedInBytes";
+    /// Rows written by a CTAS, INSERT, MERGE or DELETE; absent for DDL.
+    pub const UPDATE_COUNT: &str = "ATHENA:UpdateCount";
+}

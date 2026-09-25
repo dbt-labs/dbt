@@ -482,7 +482,7 @@ impl Adapter {
             Ok((response, _)) => Ok(Value::from(format!(
                 r#"{{"rowcount":{},"data_scanned_in_bytes":{}}}"#,
                 response.rows_affected_i64(),
-                response.bytes_processed().unwrap_or(0)
+                response.data_scanned_in_bytes().unwrap_or(0)
             ))),
             Err(e) if e.message().contains("TOO_MANY_OPEN_PARTITIONS") => {
                 Ok(Value::from("TOO_MANY_OPEN_PARTITIONS"))
