@@ -1,0 +1,7 @@
+kind: Fixes
+body: Stop sleeping for one second after an erroring query
+time: 2026-09-01T22:06:46.204717236+02:00
+custom:
+    author: fornwall
+    issue: ""
+    project: dbt-core
