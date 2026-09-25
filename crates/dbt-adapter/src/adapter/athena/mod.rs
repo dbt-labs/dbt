@@ -8,6 +8,7 @@
 
 mod dispatch;
 pub mod driver_ops;
+mod python;
 
 use minijinja::Value;
 use regex::Regex;

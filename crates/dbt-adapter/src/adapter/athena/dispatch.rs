@@ -6,6 +6,7 @@
 //! adapters' side-effecting methods.
 
 use super::driver_ops::{AthenaOps, RelationParts};
+use super::python::{SparkConfig, SparkJob};
 use super::{
     S3DataNaming, clean_sql_comment, ellipsis_comment, format_one_partition_key,
     format_partition_keys, format_value_for_partition, generate_s3_location,
@@ -102,6 +103,49 @@ impl Adapter {
             }
             Parse(_) => None,
         }
+    }
+
+    /// `adapter.submit_python_job(parsed_model, compiled_code)` for Athena: the model
+    /// runs as a calculation in a Spark session of `spark_work_group`.
+    pub fn athena_submit_python_job(
+        &self,
+        state: &State,
+        model: &Value,
+        compiled_code: &str,
+    ) -> Result<Value, JinjaError> {
+        let config = self.profile_config();
+        let work_group = config.get_str("spark_work_group").ok_or_else(|| {
+            config_error("Expected spark_work_group in profile to run Python models")
+        })?;
+        let poll_interval = config
+            .get_string("poll_interval")
+            .and_then(|v| v.parse::<f64>().ok());
+        let spark = SparkConfig::from_model_config(&model.get_attr("config")?, poll_interval)?;
+        let invocation_id = state
+            .lookup("invocation_id", &[])
+            .map(|v| v.to_string())
+            .unwrap_or_default();
+        let description = format!(
+            "dbt: {invocation_id} - {:x}",
+            md5::compute(spark.engine_config.to_string())
+        );
+        let Some(ops) = self.athena_ops(state) else {
+            return Err(invalid(
+                "submit_python_job can only be called in materialization macros",
+            ));
+        };
+        let job = SparkJob {
+            ops: &ops,
+            work_group: work_group.to_string(),
+            config: spark,
+            description,
+            relation_name: model
+                .get_attr("relation_name")
+                .map(|v| v.to_string())
+                .unwrap_or_default(),
+            token: self.cancellation_token(),
+        };
+        Ok(Value::from_object(job.submit(compiled_code)?))
     }
 
     /// `adapter.is_list(value)`
