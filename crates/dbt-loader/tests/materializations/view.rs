@@ -317,6 +317,34 @@ mod databricks {
                 .contains("Cannot update a view in the Hive metastore via ALTER VIEW")
         );
     }
+
+    #[test]
+    fn v2_update_via_alter_replaces_metric_view_with_view() {
+        // Converting a metric view into an ordinary view must replace it, never
+        // take the in-place ALTER path, even with view_update_via_alter enabled:
+        // the relation types differ, so the type gate short-circuits ALTER.
+        let harness = build_view_harness(ADAPTER);
+        harness.set_behavior_flags([("use_materialization_v2", true)]);
+        let existing = harness.relation(
+            "TEST_DB",
+            "TEST_SCHEMA",
+            "my_view",
+            Some(RelationType::MetricView),
+        );
+        harness.mock().on("get_relation", move |_| {
+            Ok(RelationObject::new(Arc::clone(&existing)).into_value())
+        });
+
+        let ctx = harness
+            .materialization_context("my_view", "SELECT id, name FROM source_table")
+            .config(Value::from_dyn_object(v2_update_via_alter_config(false)))
+            .build();
+        render_view(&harness, ADAPTER, ctx)
+            .expect("metric_view to view must replace instead of ALTER");
+
+        // A recreate proves replacement; a broken gate would ALTER and skip it.
+        assert_executed_contains(harness.mock(), "create or replace view");
+    }
 }
 
 mod bigquery {
