@@ -298,18 +298,11 @@ impl Task for RunTask {
                         ) {
                             let severity =
                                 test.deprecated_config.severity.clone().unwrap_or_default();
-                            let emit_reused_status = ctx
-                                .inner
-                                .run_cache_ctx
-                                .run_cache_service_config
-                                .as_ref()
-                                .is_some_and(|config| config.emit_reused_status);
-                            let cached_status = cached_data_test_status_with_emit_reused_status(
+                            let cached_status = cached_data_test_status(
                                 status,
                                 *cached_result,
                                 severity,
                                 &ctx.inner.arg.warn_error_options,
-                                emit_reused_status,
                             );
                             let reported_result = cached_status.reported_result();
                             record_test_metric(reported_result.status);
@@ -326,7 +319,7 @@ impl Task for RunTask {
                                     start_time.into(),
                                     Some(cached_status.failures),
                                     cached_status.stat_status.clone(),
-                                    Some("NO-OP - cached test result".to_string()),
+                                    Some(format!("NO-OP - {}", status.default_message())),
                                     ctx.thread_id,
                                 ),
                             );
@@ -945,28 +938,11 @@ impl CachedDataTestStatus {
 /// a passing test stat. Cached failures use the cached threshold booleans plus data test severity
 /// to report warn/error stats and increment the matching invocation metric so command status
 /// matches a normally executed test.
-#[cfg(test)]
 fn cached_data_test_status(
     reused_status: &NodeStatus,
     result: CachedTestExecutionResult,
     severity: Severity,
     warn_error_options: &WarnErrorOptions,
-) -> CachedDataTestStatus {
-    cached_data_test_status_with_emit_reused_status(
-        reused_status,
-        result,
-        severity,
-        warn_error_options,
-        true,
-    )
-}
-
-fn cached_data_test_status_with_emit_reused_status(
-    reused_status: &NodeStatus,
-    result: CachedTestExecutionResult,
-    severity: Severity,
-    warn_error_options: &WarnErrorOptions,
-    emit_reused_status: bool,
 ) -> CachedDataTestStatus {
     let failures = result.failures.max(0) as usize;
     let status = reported_test_verdict_from_components(
@@ -976,7 +952,9 @@ fn cached_data_test_status_with_emit_reused_status(
     );
     let status = status_with_warn_error_overrides(status, warn_error_options);
     let stat_status = match status.node_status() {
-        NodeStatus::TestPassed if emit_reused_status => reused_status.clone(),
+        NodeStatus::TestPassed => {
+            NodeStatus::ReusedNoChanges("No new changes on any upstreams".to_string())
+        }
         status => status,
     };
     let final_status = if stat_status == NodeStatus::TestPassed {
@@ -1462,12 +1440,9 @@ mod tests {
     }
 
     #[test]
-    fn cached_passing_data_test_keeps_pass_status_when_reuse_status_is_disabled() {
-        let reused_status =
-            NodeStatus::ReusedNoChanges("No new changes on any upstreams".to_string());
-
-        let status = cached_data_test_status_with_emit_reused_status(
-            &reused_status,
+    fn cached_passing_data_test_uses_reused_status_for_test_passed_input() {
+        let status = cached_data_test_status(
+            &NodeStatus::TestPassed,
             CachedTestExecutionResult {
                 failures: 0,
                 should_warn: false,
@@ -1475,11 +1450,13 @@ mod tests {
             },
             Severity::Error,
             &WarnErrorOptions::default(),
-            false,
         );
 
-        assert_eq!(status.stat_status, NodeStatus::TestPassed);
-        assert_eq!(status.final_status, reused_status);
+        assert_eq!(
+            status.stat_status,
+            NodeStatus::ReusedNoChanges("No new changes on any upstreams".to_string())
+        );
+        assert_eq!(status.final_status, status.stat_status);
     }
 
     #[test]

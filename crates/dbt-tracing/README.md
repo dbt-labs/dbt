@@ -128,6 +128,34 @@ structured record pipeline. It:
 - Applies middleware before dispatching records to consumers.
 - Stores per-consumer filter masks so a consumer that filtered out a span start
   will not receive that span end.
+- Supports force closing span subtrees (see below).
+
+#### Force Closing Spans
+
+Native `tracing` closes a span when its last handle is dropped, so a worker that
+retains any descendant keeps the span open after the work it represents has
+ended. `force_close_span` ends the structured telemetry of a force closable span
+and its whole subtree immediately:
+
+- The span end record is delivered once, through the current middlewares and
+  consumers. Repeated calls and the eventual native close are no-ops.
+- Every later record in the subtree is suppressed: events, new child spans, and
+  the ends of children that were already open. Consumers may therefore see a
+  span start without a matching end for descendants that outlive the span.
+- A record already being delivered on another thread when the span is closed may
+  still reach consumers after the span end.
+- The native span, its extensions, and reference counts are not affected.
+
+A span is force closable if it declares the close marker field at creation.
+Closable spans can be nested, and closing one leaves the enclosing closable spans
+open. As of now only `create_root_info_span` creates closable spans; other spans
+can get the capability through an additional span creation helper that declares
+the field. `force_close_span` on a span without the field does nothing.
+
+For a reloadable data layer, close the span before flushing and detaching its
+consumers. Reload waits for callbacks already running, and records from retained
+descendants that arrive after a reload are still suppressed, so they never reach
+the next consumer stack.
 
 ### TelemetryMiddleware
 
