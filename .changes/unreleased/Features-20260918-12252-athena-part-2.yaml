@@ -1,0 +1,7 @@
+kind: Features
+body: '[Athena] Fill the parse-path `todo!("Athena")` arms in `dbt-adapter` (relation factory, column builder, schema-listing column, microbatch timestamp literals, seed column casing) and transcribe dbt-athena''s `catalog → database` config alias'
+time: 2026-09-18T12:25:02.208547-07:00
+custom:
+    author: aoelvp94
+    issue: "16252"
+    project: dbt-core
