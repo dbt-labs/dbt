@@ -179,7 +179,8 @@ impl Adapter {
         {
             Some(name) => S3DataNaming::parse(name)
                 .ok_or_else(|| invalid(format!("'{name}' is not a valid s3_data_naming")))?,
-            None => S3DataNaming::TableUnique,
+            // The `AthenaCredentials.s3_data_naming` default.
+            None => S3DataNaming::SchemaTableUnique,
         };
         let prefix = s3_table_prefix(
             s3_staging_dir,
@@ -389,6 +390,14 @@ impl Adapter {
         args: &[Value],
     ) -> Result<Value, JinjaError> {
         ArgsIter::nullary("is_work_group_output_location_enforced", args).finish()?;
+        // dbt-athena reads the work group only when the profile names one and does
+        // not set `skip_workgroup_check`.
+        let config = self.profile_config();
+        if config.get_str("work_group").is_none()
+            || config.get_bool("skip_workgroup_check") == Some(true)
+        {
+            return Ok(Value::from(false));
+        }
         match self.athena_ops(state) {
             Some(aws) => Ok(Value::from(aws.is_work_group_output_location_enforced()?)),
             None => Ok(Value::from(false)),
