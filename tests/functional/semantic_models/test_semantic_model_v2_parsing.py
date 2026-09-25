@@ -40,6 +40,10 @@ from tests.functional.semantic_models.fixtures import (
     semantic_model_schema_yml_v2_renamed,
     semantic_model_schema_yml_v2_with_primary_entity_only_on_column,
     semantic_model_test_groups_yml,
+    simple_metricflow_time_spine_sql,
+    versioned_model_semantic_schema_yml_v2,
+    versioned_model_sql,
+    versioned_model_top_level_columns_semantic_schema_yml_v2,
 )
 
 
@@ -1095,3 +1099,51 @@ class TestSemanticModelEntityWithoutName:
 
 
 # TODO DI-4603: add enforcement and a test for a TIME type dimension and a column that has no granularity set
+
+
+class TestSemanticModelOnVersionedModelParsing:
+    @pytest.fixture(scope="class")
+    def models(self):
+        return {
+            "customers_v1.sql": versioned_model_sql,
+            "customers_v2.sql": versioned_model_sql,
+            "metricflow_time_spine.sql": simple_metricflow_time_spine_sql,
+            "schema.yml": versioned_model_semantic_schema_yml_v2,
+        }
+
+    def test_semantic_model_on_versioned_model(self, project):
+        _assert_semantic_model_attached_to_latest_version()
+
+
+class TestSemanticModelOnVersionedModelWithTopLevelColumnsParsing:
+    @pytest.fixture(scope="class")
+    def models(self):
+        return {
+            "customers_v1.sql": versioned_model_sql,
+            "customers_v2.sql": versioned_model_sql,
+            "metricflow_time_spine.sql": simple_metricflow_time_spine_sql,
+            "schema.yml": versioned_model_top_level_columns_semantic_schema_yml_v2,
+        }
+
+    def test_semantic_model_on_versioned_model(self, project):
+        _assert_semantic_model_attached_to_latest_version()
+
+
+def _assert_semantic_model_attached_to_latest_version():
+    runner = dbtTestRunner()
+    result = runner.invoke(["parse"])
+    assert result.success, result.exception
+    manifest = result.result
+    assert isinstance(manifest, Manifest)
+
+    assert list(manifest.semantic_models) == ["semantic_model.test.customers"]
+    semantic_model = manifest.semantic_models["semantic_model.test.customers"]
+    assert semantic_model.model == "ref('customers')"
+    assert semantic_model.depends_on.nodes == ["model.test.customers.v2"]
+
+    entities = {entity.name: entity for entity in semantic_model.entities}
+    assert entities["customer"].type == EntityType.PRIMARY
+    dimensions = {dimension.name: dimension for dimension in semantic_model.dimensions}
+    assert dimensions["created_at"].type == DimensionType.TIME
+
+    assert "metric.test.customers_count" in manifest.metrics
