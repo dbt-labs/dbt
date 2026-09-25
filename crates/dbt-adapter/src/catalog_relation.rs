@@ -731,14 +731,17 @@ impl CatalogRelation {
         adapter_type: AdapterType,
     ) -> Option<String> {
         let adapter_attr = match adapter_type {
-            AdapterType::Bigquery => BIGQUERY_ATTR,
-            AdapterType::Databricks => DATABRICKS_ATTR,
-            AdapterType::Snowflake => SNOWFLAKE_ATTR,
+            AdapterType::Bigquery => Some(BIGQUERY_ATTR),
+            AdapterType::Databricks => Some(DATABRICKS_ATTR),
+            AdapterType::Snowflake => Some(SNOWFLAKE_ATTR),
             // Lake compute model configs surface the same way DuckDB's do.
-            AdapterType::DuckDB | AdapterType::LakeCompute => DUCKDB_ATTR,
+            AdapterType::DuckDB | AdapterType::LakeCompute => Some(DUCKDB_ATTR),
+            // Athena nodes carry no adapter attribute; its configs are in `config`.
+            AdapterType::Athena => None,
             _ => return None,
         };
-        let model_config = if let Ok(adapter_attr) = model.get_attr(adapter_attr)
+        let model_config = if let Some(adapter_attr) = adapter_attr
+            && let Ok(adapter_attr) = model.get_attr(adapter_attr)
             && !adapter_attr.is_undefined()
         {
             adapter_attr
@@ -1190,6 +1193,10 @@ fn from_model_config_and_catalogs_default(
                 Some(catalog_name) => catalog_name,
             }
         }
+        AdapterType::Athena => match model_catalog_name(model, AdapterType::Athena) {
+            None => return CatalogRelation::default_catalog_relation_athena(model),
+            Some(catalog_name) => catalog_name,
+        },
         // Lake compute behaves as DuckDB-backed for relation-building purposes.
         AdapterType::DuckDB | AdapterType::LakeCompute => {
             match model_catalog_name(model, adapter_type) {
@@ -1249,6 +1256,9 @@ fn from_model_config_and_catalogs_default(
         }
         (AdapterType::Bigquery, CatalogType::BiglakeMetastore) => {
             CatalogRelation::build_bigquery_biglake_with_catalogs(model, catalog, &catalog_name)
+        }
+        (AdapterType::Athena, CatalogType::Glue | CatalogType::S3Tables) => {
+            CatalogRelation::build_athena_with_catalogs(catalog, &catalog_name)
         }
         // Horizon/Unity are Iceberg REST under the hood; with duckdb 1.5.4's
         // write-compat ATTACH options they are writable, so models may target
@@ -1310,6 +1320,13 @@ fn from_model_config_and_catalogs_default(
             AdapterErrorKind::Configuration,
             format!(
                 "Catalog '{catalog_name}' has type '{}'; Snowflake v2 mapping supports only 'horizon', 'glue', 'iceberg_rest', and 'unity'",
+                other.as_str()
+            ),
+        )),
+        (AdapterType::Athena, other) => Err(AdapterError::new(
+            AdapterErrorKind::Configuration,
+            format!(
+                "Catalog '{catalog_name}' has type '{}'; Athena v2 mapping supports only 'glue' and 's3_tables'",
                 other.as_str()
             ),
         )),
@@ -1823,6 +1840,34 @@ impl CatalogRelation {
         })
     }
 
+    /// dbt-athena's `GlueCatalogIntegration` / `S3TablesCatalogIntegration`: Iceberg
+    /// tables with the `athena` block's `file_format` (parquet by default),
+    /// `external_volume` and `catalog_database`. The model's `format`, `s3_data_dir` /
+    /// `external_location` and `database` configs win in the macros.
+    fn build_athena_with_catalogs(
+        catalog: &CatalogSpecView<'_>,
+        catalog_name: &str,
+    ) -> AdapterResult<CatalogRelation> {
+        let athena = require_platform_block(catalog, catalog_name, "athena")?;
+        let file_format = get_yaml_str(athena, FIELD_FILE_FORMAT)
+            .unwrap_or(PARQUET_TABLE_FORMAT)
+            .to_ascii_lowercase();
+        Ok(CatalogRelation {
+            adapter_type: AdapterType::Athena,
+            catalog_name: Some(catalog_name.to_string()),
+            integration_name: None,
+            catalog_type: catalog.catalog_type,
+            table_format: catalog.table_format,
+            file_format: Some(file_format),
+            external_volume: get_yaml_str(athena, FIELD_EXTERNAL_VOLUME).map(str::to_string),
+            catalog_database: get_yaml_str(athena, FIELD_CATALOG_DATABASE).map(str::to_string),
+            lakehouse_catalog: None,
+            base_location: None,
+            adapter_properties: BTreeMap::new(),
+            is_transient: None,
+        })
+    }
+
     fn build_bigquery_biglake_with_catalogs(
         model: &Value,
         catalog: &CatalogSpecView<'_>,
@@ -2230,6 +2275,74 @@ mod default_relation_tests {
         let view = catalogs.view().expect("valid v2 view");
         validate_catalogs(&view, Path::new("<test>")).expect("valid v2 catalogs");
         catalogs
+    }
+
+    #[test]
+    fn athena_glue_and_s3_tables_build_relations() {
+        let catalogs = Arc::new(load_catalogs_yaml(
+            r#"
+catalogs:
+  - name: lake
+    type: glue
+    table_format: iceberg
+    config:
+      athena:
+        external_volume: "s3://bucket/lake"
+        file_format: ORC
+  - name: tables
+    type: s3_tables
+    table_format: iceberg
+    config:
+      athena:
+        catalog_database: "s3tablescatalog/my-table-bucket"
+"#,
+        ));
+
+        let glue = from_model_config_and_catalogs_default(
+            AdapterType::Athena,
+            &model_deprecated_config(json!({ "catalog_name": "lake" })),
+            catalogs.clone(),
+        )
+        .unwrap();
+        assert_eq!(glue.catalog_type, CatalogType::Glue);
+        assert_eq!(glue.table_format, TableFormat::Iceberg);
+        assert_eq!(glue.file_format.as_deref(), Some("orc"));
+        assert_eq!(glue.external_volume.as_deref(), Some("s3://bucket/lake"));
+        assert_eq!(glue.catalog_database, None);
+        // What the dbt-athena `create_table_as` macro reads off the relation.
+        let jinja = JVal::from_object(glue);
+        assert_eq!(
+            jinja.get_attr("external_volume").unwrap().as_str(),
+            Some("s3://bucket/lake")
+        );
+        assert_eq!(jinja.get_attr("file_format").unwrap().as_str(), Some("orc"));
+        assert_eq!(
+            jinja.get_attr("catalog_type").unwrap().as_str(),
+            Some("glue")
+        );
+
+        let tables = from_model_config_and_catalogs_default(
+            AdapterType::Athena,
+            &model_deprecated_config(json!({ "catalog_name": "tables" })),
+            catalogs.clone(),
+        )
+        .unwrap();
+        // The dbt-athena macros compare `catalog_relation.catalog_type == 's3_tables'`.
+        assert_eq!(tables.catalog_type.as_str(), "s3_tables");
+        assert_eq!(tables.file_format.as_deref(), Some("parquet"));
+        assert_eq!(
+            tables.catalog_database.as_deref(),
+            Some("s3tablescatalog/my-table-bucket")
+        );
+
+        let hive = from_model_config_and_catalogs_default(
+            AdapterType::Athena,
+            &model_deprecated_config(json!({ "table_type": "hive" })),
+            catalogs,
+        )
+        .unwrap();
+        assert_eq!(hive.catalog_name, None);
+        assert_eq!(hive.table_format, TableFormat::Default);
     }
 
     #[test]
@@ -3710,9 +3823,11 @@ impl Object for CatalogRelation {
             "is_transient" => self.gate_by_adapter(vec![AdapterType::Snowflake], || {
                 Self::map_opt_bool(self.is_transient)
             }),
-            "external_volume" => self.gate_by_adapter(vec![AdapterType::Snowflake], || {
-                Self::map_opt_str(self.external_volume.clone())
-            }),
+            // Athena: the S3 location base of the dbt-athena `create_table_as` macro.
+            "external_volume" => self
+                .gate_by_adapter(vec![AdapterType::Snowflake, AdapterType::Athena], || {
+                    Self::map_opt_str(self.external_volume.clone())
+                }),
 
             // === Databricks
             "file_format" => self.gate_by_adapter(
@@ -3720,6 +3835,7 @@ impl Object for CatalogRelation {
                     AdapterType::Databricks,
                     AdapterType::Bigquery,
                     AdapterType::DuckDB,
+                    AdapterType::Athena,
                 ],
                 || Self::map_opt_str(self.file_format.clone()),
             ),
