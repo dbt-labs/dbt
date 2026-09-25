@@ -1,7 +1,10 @@
+import { useState } from 'react';
 import type { Meta, StoryObj } from '@storybook/react-vite';
+import { expect, userEvent, within } from 'storybook/test';
 
 import { storyLineage } from '../../shared/testing/storyFixtures';
 import { storyDataSource } from '../../shared/testing/storySources';
+import { useLineageStore } from '../../stores/lineageStore';
 import { BaseDag } from './BaseDag';
 
 const meta: Meta<typeof BaseDag> = {
@@ -50,5 +53,39 @@ export const SimpleExample: Story = {
         },
       }),
     },
+  },
+};
+
+/** A different root must not inherit another resource's saved hop settings. */
+export const ResetsHopsForDifferentRoot: Story = {
+  beforeEach: () => {
+    useLineageStore.getState().reset();
+    useLineageStore.getState().startHydration('model.other.resource', 6, Infinity);
+  },
+  render: function RootSwitcher(args) {
+    const [root, setRoot] = useState(args.rootUniqueId);
+    return (
+      <BaseDag
+        rootUniqueId={root}
+        topBarLeft={
+          <button onClick={() => setRoot('model.jaffle_shop.orders')}>
+            Show orders
+          </button>
+        }
+      />
+    );
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const page = within(canvasElement.ownerDocument.body);
+    await expect(await canvas.findByRole('button', { name: '1+' })).toBeVisible();
+    await expect(canvas.getByRole('button', { name: '+1' })).toBeVisible();
+    await userEvent.click(canvas.getByRole('button', { name: '1+' }));
+    await userEvent.click(await page.findByRole('menuitemradio', { name: '6+' }));
+    await userEvent.click(canvas.getByRole('button', { name: '+1' }));
+    await userEvent.click(await page.findByRole('menuitemradio', { name: '+max' }));
+    await userEvent.click(canvas.getByRole('button', { name: 'Show orders' }));
+    await expect(await canvas.findByRole('button', { name: '1+' })).toBeVisible();
+    await expect(canvas.getByRole('button', { name: '+1' })).toBeVisible();
   },
 };
