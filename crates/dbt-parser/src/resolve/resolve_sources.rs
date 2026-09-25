@@ -642,6 +642,12 @@ pub async fn resolve_sources(
                     TestableTable {
                         source_name: source_name.clone(),
                         table: &table.clone(),
+                        tags: source_config
+                            .tags
+                            .inner()
+                            .clone()
+                            .map(Into::into)
+                            .unwrap_or_default(),
                     }
                     .as_testable()
                     .persist(
