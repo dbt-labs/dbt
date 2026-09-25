@@ -1,0 +1,7 @@
+kind: Fixes
+body: 'ClickHouse: list relations per schema so get_relation is served from the relation cache instead of one catalog query per relation'
+time: 2026-09-24T18:49:11.657291+08:00
+custom:
+    author: benjamin-awd
+    issue: "16427"
+    project: dbt-core
