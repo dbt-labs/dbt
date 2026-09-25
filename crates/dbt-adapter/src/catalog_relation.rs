@@ -244,11 +244,51 @@ impl CatalogRelation {
             AdapterType::DuckDB | AdapterType::LakeCompute => {
                 Ok(Self::default_catalog_relation_duckdb())
             }
+            AdapterType::Athena => Self::default_catalog_relation_athena(model),
             _ => Err(AdapterError::new(
                 AdapterErrorKind::Internal,
                 format!("build_relation_catalog cannot be invoked by an adapter {adapter_type:?}"),
             )),
         }
+    }
+
+    /// Athena without `catalogs.yml`: every table lives in Glue; the format comes from
+    /// dbt-athena's `table_type` model config (`hive` | `iceberg`, default `hive`), or the
+    /// generic `table_format` when that is set instead.
+    fn default_catalog_relation_athena(model: &Value) -> AdapterResult<CatalogRelation> {
+        let config = model.get_attr("config").unwrap_or(Value::UNDEFINED);
+        let get = |key: &str| {
+            [model.get_attr(key).ok(), config.get_attr(key).ok()]
+                .into_iter()
+                .flatten()
+                .find(|v| !v.is_undefined() && !v.is_none())
+                .map(|v| v.to_string())
+        };
+        let table_type = get("table_type");
+        let table_format = TableFormat::parse(get("table_format").as_deref())
+            .map_err(|e| AdapterError::new(AdapterErrorKind::Configuration, e.to_string()))?;
+        let is_iceberg = table_format.is_iceberg()
+            || table_type
+                .as_deref()
+                .is_some_and(|t| t.trim().eq_ignore_ascii_case("iceberg"));
+        Ok(CatalogRelation {
+            adapter_type: AdapterType::Athena,
+            catalog_name: None,
+            integration_name: None,
+            catalog_type: CatalogType::Glue,
+            table_format: if is_iceberg {
+                TableFormat::Iceberg
+            } else {
+                TableFormat::Default
+            },
+            file_format: None,
+            external_volume: None,
+            catalog_database: None,
+            lakehouse_catalog: None,
+            base_location: None,
+            adapter_properties: BTreeMap::new(),
+            is_transient: None,
+        })
     }
 
     /// Resolves a catalog relation from a bare database name, used only by
@@ -1287,14 +1327,17 @@ impl CatalogRelation {
         adapter_type: AdapterType,
     ) -> Option<String> {
         let adapter_attr = match adapter_type {
-            AdapterType::Bigquery => BIGQUERY_ATTR,
-            AdapterType::Databricks => DATABRICKS_ATTR,
-            AdapterType::Snowflake => SNOWFLAKE_ATTR,
+            AdapterType::Bigquery => Some(BIGQUERY_ATTR),
+            AdapterType::Databricks => Some(DATABRICKS_ATTR),
+            AdapterType::Snowflake => Some(SNOWFLAKE_ATTR),
             // Lake compute model configs surface the same way DuckDB's do.
-            AdapterType::DuckDB | AdapterType::LakeCompute => DUCKDB_ATTR,
+            AdapterType::DuckDB | AdapterType::LakeCompute => Some(DUCKDB_ATTR),
+            // Athena nodes carry no adapter attribute; its configs are in `config`.
+            AdapterType::Athena => None,
             _ => return None,
         };
-        let model_config = if let Ok(adapter_attr) = model.get_attr(adapter_attr)
+        let model_config = if let Some(adapter_attr) = adapter_attr
+            && let Ok(adapter_attr) = model.get_attr(adapter_attr)
             && !adapter_attr.is_undefined()
         {
             adapter_attr
@@ -1726,9 +1769,11 @@ impl Object for CatalogRelation {
             "is_transient" => self.gate_by_adapter(vec![AdapterType::Snowflake], || {
                 Self::map_opt_bool(self.is_transient)
             }),
-            "external_volume" => self.gate_by_adapter(vec![AdapterType::Snowflake], || {
-                Self::map_opt_str(self.external_volume.clone())
-            }),
+            // Athena: the S3 location base of the dbt-athena `create_table_as` macro.
+            "external_volume" => self
+                .gate_by_adapter(vec![AdapterType::Snowflake, AdapterType::Athena], || {
+                    Self::map_opt_str(self.external_volume.clone())
+                }),
 
             // === Databricks
             "file_format" => self.gate_by_adapter(
@@ -1736,6 +1781,7 @@ impl Object for CatalogRelation {
                     AdapterType::Databricks,
                     AdapterType::Bigquery,
                     AdapterType::DuckDB,
+                    AdapterType::Athena,
                 ],
                 || Self::map_opt_str(self.file_format.clone()),
             ),
@@ -3918,5 +3964,33 @@ mod tests {
                 Some("cool_connection")
             );
         }
+    }
+
+    #[test]
+    fn athena_catalog_relation_follows_table_type_config() {
+        let hive = CatalogRelation::from_model_config_and_catalogs(
+            AdapterType::Athena,
+            &JVal::from_serialize(json!({"config": {"materialized": "table"}})),
+            None,
+        )
+        .unwrap();
+        assert_eq!(hive.catalog_type, CatalogType::Glue);
+        assert_eq!(hive.table_format, TableFormat::Default);
+
+        let iceberg = CatalogRelation::from_model_config_and_catalogs(
+            AdapterType::Athena,
+            &JVal::from_serialize(json!({"config": {"table_type": "Iceberg"}})),
+            None,
+        )
+        .unwrap();
+        assert_eq!(iceberg.table_format, TableFormat::Iceberg);
+
+        let via_table_format = CatalogRelation::from_model_config_and_catalogs(
+            AdapterType::Athena,
+            &JVal::from_serialize(json!({"table_format": "iceberg", "config": {}})),
+            None,
+        )
+        .unwrap();
+        assert_eq!(via_table_format.table_format, TableFormat::Iceberg);
     }
 }

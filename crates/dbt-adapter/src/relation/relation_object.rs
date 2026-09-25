@@ -144,6 +144,65 @@ impl RelationObject {
 
 /// Always returns the unfiltered relation string (via [`BaseRelation::render_self_as_str`]),
 /// reference: https://github.com/dbt-labs/dbt-adapters/blob/616a8d3cb595605872c011070c240e7a2b825d79/dbt-adapters/src/dbt/adapters/base/relation.py#L268-L269
+/// dbt-athena `AthenaRelation.render_hive`: the Hive DDL form Athena wants for
+/// `CREATE EXTERNAL TABLE` / `DROP SCHEMA`: backtick-quoted, schema and identifier
+/// only, whatever the relation's include policy says.
+fn render_hive(relation: &dyn BaseRelation) -> String {
+    let quote_policy = relation.quote_policy();
+    [
+        (quote_policy.schema, relation.schema()),
+        (quote_policy.identifier, relation.identifier()),
+    ]
+    .into_iter()
+    .filter_map(|(quote, part)| {
+        part.map(|p| {
+            if quote {
+                format!("`{p}`")
+            } else {
+                p.to_string()
+            }
+        })
+    })
+    .collect::<Vec<_>>()
+    .join(".")
+}
+
+/// dbt-athena `AthenaRelation.render_pure`: no quoting, for OPTIMIZE and VACUUM.
+fn render_pure(relation: &dyn BaseRelation) -> String {
+    let include_policy = relation.include_policy();
+    [
+        (include_policy.database, relation.database()),
+        (include_policy.schema, relation.schema()),
+        (include_policy.identifier, relation.identifier()),
+    ]
+    .into_iter()
+    .filter_map(|(include, part)| part.filter(|p| include && !p.is_empty()))
+    .collect::<Vec<_>>()
+    .join(".")
+}
+
+/// Athena: `api.Relation.create(..., s3_path_table_part=...)`.
+pub(super) fn with_s3_path_table_part(
+    value: Value,
+    part: String,
+) -> Result<Value, minijinja::Error> {
+    let relation = crate::cast_util::downcast_value_to_dyn_base_relation(&value)?;
+    let Some(relation) = relation.as_any().downcast_ref::<Relation>() else {
+        return Ok(value);
+    };
+    let relation = relation.clone().with_s3_path_table_part(Some(part));
+    Ok(RelationObject::new(Arc::new(relation)).into_value())
+}
+
+/// Athena: `relation.s3_path_table_part`, set only through `Relation.create`.
+pub fn s3_path_table_part(relation: &dyn BaseRelation) -> Option<String> {
+    relation
+        .as_any()
+        .downcast_ref::<Relation>()?
+        .s3_path_table_part
+        .clone()
+}
+
 fn render_without_filter(ro: &Arc<RelationObject>) -> Value {
     let rendered = ro.render_self_as_str();
     if rendered.is_empty() {
@@ -319,6 +378,13 @@ impl Object for RelationObject {
                 iter.finish()?;
                 self.from_config(&config)
             }
+            // Below are available for Athena
+            "render_hive" if self.relation.adapter_type() == AdapterType::Athena => {
+                Ok(Value::from(render_hive(self.relation.as_ref())))
+            }
+            "render_pure" if self.relation.adapter_type() == AdapterType::Athena => {
+                Ok(Value::from(render_pure(self.relation.as_ref())))
+            }
             // Below are available for Databricks
             "is_hive_metastore" => Ok(Value::from(self.is_hive_metastore())),
             "enrich" => self.relation_enrich(args),
@@ -352,6 +418,11 @@ impl Object for RelationObject {
 
             Some("is_table") => Some(Value::from(self.is_table())),
             Some("is_delta") => Some(Value::from(self.is_delta())),
+            Some("s3_path_table_part") => Some(
+                s3_path_table_part(self.relation.as_ref())
+                    .map(Value::from)
+                    .unwrap_or_else(none_value),
+            ),
             Some("is_shallow_clone") => Some(Value::from(self.is_shallow_clone())),
             Some("alter_constraints") => {
                 let dbx = self.relation.as_any().downcast_ref::<Relation>()?;
@@ -1223,6 +1294,71 @@ mod tests {
             .unwrap_err();
 
         assert_eq!(err.kind(), minijinja::ErrorKind::MissingArgument, "{err}");
+    }
+
+    #[test]
+    fn athena_s3_path_table_part_is_carried_and_exposed() {
+        let relation = do_create_relation(
+            AdapterType::Athena,
+            "awsdatacatalog".to_string(),
+            "analytics".to_string(),
+            Some("events".to_string()),
+            Some(RelationType::Table),
+            DEFAULT_RESOLVED_QUOTING,
+        )
+        .unwrap();
+        assert_eq!(s3_path_table_part(relation.as_ref()), None);
+
+        let value = RelationObject::new(Arc::from(relation)).into_value();
+        let staged =
+            with_s3_path_table_part(value, "events__tmp_not_partitioned".to_string()).unwrap();
+        assert_eq!(
+            staged.get_attr("s3_path_table_part").unwrap().as_str(),
+            Some("events__tmp_not_partitioned")
+        );
+        // survives the rebuilds the materializations do
+        let inner = crate::cast_util::downcast_value_to_dyn_base_relation(&staged).unwrap();
+        let retyped = inner
+            .incorporate(None, Some(RelationType::View), None)
+            .unwrap();
+        assert_eq!(
+            s3_path_table_part(retyped.as_ref()).as_deref(),
+            Some("events__tmp_not_partitioned")
+        );
+    }
+
+    #[test]
+    fn athena_render_hive_and_render_pure_follow_dbt_athena() {
+        let relation = do_create_relation(
+            AdapterType::Athena,
+            "awsdatacatalog".to_string(),
+            "analytics".to_string(),
+            Some("events".to_string()),
+            Some(RelationType::Table),
+            ResolvedQuoting {
+                database: true,
+                schema: true,
+                identifier: true,
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            relation.render_self_as_str(),
+            "\"awsdatacatalog\".\"analytics\".\"events\""
+        );
+        assert_eq!(render_hive(relation.as_ref()), "`analytics`.`events`");
+        assert_eq!(
+            render_pure(relation.as_ref()),
+            "awsdatacatalog.analytics.events"
+        );
+
+        // `drop schema {{ relation.without_identifier().render_hive() }}`
+        let schema_only = relation.without_identifier().unwrap();
+        assert_eq!(render_hive(schema_only.as_ref()), "`analytics`");
+        assert_eq!(
+            render_pure(schema_only.as_ref()),
+            "awsdatacatalog.analytics"
+        );
     }
 
     #[test]
