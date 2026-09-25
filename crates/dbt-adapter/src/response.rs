@@ -207,6 +207,36 @@ impl AdapterResponse {
         response
     }
 
+    /// `AthenaConnectionManager.process_query_stats`: a statement naming both
+    /// `rowcount` and `data_scanned_in_bytes` reports the JSON object after its last
+    /// `select`. The dbt-athena table materialization ends with
+    /// `SELECT '{"rowcount":99,"data_scanned_in_bytes":1552}'` for the CTAS it ran.
+    pub fn with_athena_query_stats(self, sql: &str) -> Self {
+        if !(sql.contains("rowcount") && sql.contains("data_scanned_in_bytes")) {
+            return self;
+        }
+        let lowered = sql.to_lowercase();
+        let tail = lowered.rsplit("select").next().unwrap_or_default();
+        let Some(object) = tail
+            .find('{')
+            .zip(tail.rfind('}'))
+            .and_then(|(start, end)| tail.get(start..=end))
+        else {
+            return self;
+        };
+        let (rows, data_scanned) = match serde_json::from_str::<serde_json::Value>(object) {
+            Ok(stats) => (
+                stats["rowcount"].as_i64().unwrap_or(-1),
+                stats["data_scanned_in_bytes"].as_i64().unwrap_or(0),
+            ),
+            Err(_) => (-1, 0),
+        };
+        let message = format!("{} {rows}", self.code());
+        self.with_message(message)
+            .with_rows_affected(rows)
+            .with(KEY_DATA_SCANNED_IN_BYTES, data_scanned)
+    }
+
     /// Add the parts of the response that describe the connection rather than the
     /// statement, and so cannot be read off the result batch.
     pub fn with_connection_info(
@@ -748,6 +778,27 @@ mod from_record_batch_tests {
         let response = AdapterResponse::from_record_batch(&select, AdapterType::Athena);
         assert_eq!(response.message(), "OK 3");
         assert_eq!(response.data_scanned_in_bytes(), Some(0));
+    }
+
+    #[test]
+    fn test_athena_query_stats_come_from_the_reporting_select() {
+        let reporting = AdapterResponse::from_record_batch(&select_batch(1, &[]), AdapterType::Athena)
+            .with_athena_query_stats(
+                "-- /* {\"app\": \"dbt\"} */\nSELECT '{\"rowcount\":99,\"data_scanned_in_bytes\":1552}'",
+            );
+        assert_eq!(reporting.message(), "OK 99");
+        assert_eq!(reporting.rows_affected_i64(), 99);
+        assert_eq!(reporting.data_scanned_in_bytes(), Some(1552));
+
+        let other = AdapterResponse::from_record_batch(&select_batch(2, &[]), AdapterType::Athena)
+            .with_athena_query_stats("select rowcount from t");
+        assert_eq!(other.message(), "OK 2");
+
+        let malformed =
+            AdapterResponse::from_record_batch(&select_batch(1, &[]), AdapterType::Athena)
+                .with_athena_query_stats("select '{rowcount: data_scanned_in_bytes}'");
+        assert_eq!(malformed.rows_affected_i64(), -1);
+        assert_eq!(malformed.data_scanned_in_bytes(), Some(0));
     }
 
     #[test]
