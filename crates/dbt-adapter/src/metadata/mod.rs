@@ -125,6 +125,7 @@ where
     MapReduce::new(factory, map_f, Box::new(reduce_f), node_id).run(Arc::new(keys), token)
 }
 
+pub(crate) mod athena;
 pub(crate) mod bigquery;
 pub(crate) mod clickhouse;
 pub mod databricks;
