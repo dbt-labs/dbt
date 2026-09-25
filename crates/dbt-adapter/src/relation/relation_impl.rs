@@ -1176,6 +1176,10 @@ impl BaseRelation for Relation {
         }
     }
 
+    fn folds_quoted_identifiers(&self) -> bool {
+        self.adapter_type == AdapterType::Athena
+    }
+
     fn render_self_as_str(&self) -> String {
         if self.adapter_type == AdapterType::DuckDB
             && let Some(external) = &self.external
