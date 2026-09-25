@@ -1649,10 +1649,8 @@ pub const DEFAULT_ATHENA_S3_DATA_NAMING: &str = "schema_table_unique";
 /// Field set of dbt-athena's `AthenaCredentials`
 /// (https://github.com/dbt-labs/dbt-adapters/blob/main/dbt-athena/src/dbt/adapters/athena/connections.py).
 ///
-/// Every dbt-athena field is declared, including the ones `dbt-auth` currently
-/// rejects (`lf_tags_database`): the auth layer only sees the
-/// mapping produced by `to_mapping()`, so a field missing here would be dropped
-/// silently instead of raising the "not yet supported" error.
+/// Every dbt-athena field is declared: `dbt-auth` and the adapter read the profile
+/// through `to_mapping()`, so a field missing here would be dropped silently.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default, DbtSchema, Merge)]
 #[merge(strategy = merge_strategies_extend::overwrite_option)]
 #[serde(rename_all = "snake_case")]
@@ -3295,7 +3293,7 @@ threads: 8
     }
 
     #[test]
-    fn test_athena_unsupported_fields_survive_to_mapping() {
+    fn test_athena_fields_survive_to_mapping() {
         let config: DbConfig = dbt_yaml::from_str(
             r#"
 type: athena
