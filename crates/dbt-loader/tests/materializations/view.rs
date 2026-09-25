@@ -7,7 +7,9 @@ use dbt_jinja_utils::mock_object::MockJinjaObject;
 use dbt_schemas::dbt_types::RelationType;
 use minijinja::Value;
 
-use crate::macro_test_harness::{MacroTestHarness, assert_executed_contains, default_mock_config};
+use crate::macro_test_harness::{
+    MacroTestHarness, assert_executed_contains, default_mock_config, executed_sql,
+};
 
 // ---------------------------------------------------------------------------
 // Shared helpers
@@ -201,10 +203,18 @@ mod databricks {
     }
 
     #[test]
-    fn existing_table_dropped_before_create() {
+    fn existing_table_replaced_after_view_is_staged() {
         let h = run_existing_table(ADAPTER);
-        h.mock().observed_calls().assert_called("drop_relation");
-        assert_executed_contains(h.mock(), "create or replace");
+        let executed = executed_sql(h.mock());
+        let first = executed
+            .first()
+            .expect("view materialization should execute SQL");
+        assert!(
+            first.contains("create or replace view") && first.contains("my_view__dbt_stg"),
+            "view must be created at the staging relation before the table is touched: {executed:?}"
+        );
+        h.mock().observed_calls().assert_called("rename_relation");
+        assert_executed_contains(h.mock(), "rename to");
     }
 
     // -- use_materialization_v2 = true ----------------------------------
