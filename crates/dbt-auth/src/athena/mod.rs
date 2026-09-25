@@ -74,16 +74,12 @@ const HARD_ERROR_UNSUPPORTED_FIELDS: &[&str] = &[
 const NOT_YET_SUPPORTED_FIELDS: &[&str] = &[
     "endpoint_url",
     "skip_workgroup_check",
-    "s3_data_dir",
-    "s3_data_naming",
-    "s3_tmp_table_dir",
     "poll_interval",
     "debug_query_state",
     "num_retries",
     "num_boto3_retries",
     "num_iceberg_retries",
     "spark_work_group",
-    "seed_s3_upload_args",
     "lf_tags_database",
 ];
 
@@ -499,13 +495,15 @@ mod tests {
     }
 
     #[test]
-    fn test_s3_data_dir_returns_error() {
+    fn test_s3_layout_fields_are_accepted() {
+        // Read by the macros (`target.*`) and the adapter methods, not by the driver.
         let mut config = base_required();
         config.insert("s3_data_dir".into(), "s3://mybucket/data/".into());
+        config.insert("s3_data_naming".into(), "schema_table".into());
+        config.insert("s3_tmp_table_dir".into(), "s3://mybucket/tmp/".into());
 
-        let err = AthenaAuth::new(Box::new(crate::NoopAuthWarningPrinter))
+        AthenaAuth::new(Box::new(crate::NoopAuthWarningPrinter))
             .configure(&AdapterConfig::new(config))
-            .expect_err("s3_data_dir should be rejected");
-        assert!(err.msg().contains("s3_data_dir"), "got: {}", err.msg());
+            .expect("s3 layout fields are accepted");
     }
 }
