@@ -870,6 +870,10 @@ impl AdapterImpl {
 
         let response = AdapterResponse::from_record_batch(&last_batch, self.adapter_type())
             .with_connection_info(self.adapter_type(), engine.as_ref());
+        let response = match self.adapter_type() {
+            Athena => response.with_athena_query_stats(sql),
+            _ => response,
+        };
 
         // Deduplicate column names to match dbt-core's behavior, which renames
         // duplicate columns to `col_2`, `col_3`, etc.
