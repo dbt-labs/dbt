@@ -65,9 +65,9 @@ impl<'a> AthenaAuthIR<'a> {
     }
 }
 
-/// dbt-athena profile fields the dbt Athena backend doesn't honor: Python models
-/// (`spark_work_group`) and Lake Formation tags (`lf_tags_database`).
-const NOT_YET_SUPPORTED_FIELDS: &[&str] = &["spark_work_group", "lf_tags_database"];
+/// dbt-athena profile fields the dbt Athena backend doesn't honor: Lake Formation
+/// tags (`lf_tags_database`).
+const NOT_YET_SUPPORTED_FIELDS: &[&str] = &["lf_tags_database"];
 
 fn reject_unsupported_fields(config: &AdapterConfig) -> Result<(), AuthError> {
     // `contains_key` (vs string-only checks) so unsupported non-string YAML
@@ -673,16 +673,25 @@ mod tests {
     }
 
     #[test]
-    fn test_spark_and_lake_formation_fields_return_errors() {
-        for field in ["spark_work_group", "lf_tags_database"] {
-            let mut config = base_required();
-            config.insert(field.into(), "value".into());
+    fn test_lake_formation_tags_return_an_error() {
+        let mut config = base_required();
+        config.insert("lf_tags_database".into(), "value".into());
 
-            let err = AthenaAuth::new(Box::new(crate::NoopAuthWarningPrinter))
-                .configure(&AdapterConfig::new(config))
-                .expect_err("field should be rejected");
-            assert!(err.msg().contains(field), "got: {}", err.msg());
-        }
+        let err = AthenaAuth::new(Box::new(crate::NoopAuthWarningPrinter))
+            .configure(&AdapterConfig::new(config))
+            .expect_err("lf_tags_database should be rejected");
+        assert!(err.msg().contains("lf_tags_database"), "got: {}", err.msg());
+    }
+
+    #[test]
+    fn test_spark_work_group_is_accepted() {
+        // Read by the adapter for Python models, not by the driver.
+        let mut config = base_required();
+        config.insert("spark_work_group".into(), "spark-wg".into());
+
+        AthenaAuth::new(Box::new(crate::NoopAuthWarningPrinter))
+            .configure(&AdapterConfig::new(config))
+            .expect("spark_work_group is accepted");
     }
 
     #[test]

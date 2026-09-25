@@ -1650,7 +1650,7 @@ pub const DEFAULT_ATHENA_S3_DATA_NAMING: &str = "schema_table_unique";
 /// (https://github.com/dbt-labs/dbt-adapters/blob/main/dbt-athena/src/dbt/adapters/athena/connections.py).
 ///
 /// Every dbt-athena field is declared, including the ones `dbt-auth` currently
-/// rejects (`spark_work_group`, `lf_tags_database`): the auth layer only sees the
+/// rejects (`lf_tags_database`): the auth layer only sees the
 /// mapping produced by `to_mapping()`, so a field missing here would be dropped
 /// silently instead of raising the "not yet supported" error.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default, DbtSchema, Merge)]
