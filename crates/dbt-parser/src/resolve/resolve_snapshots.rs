@@ -28,7 +28,7 @@ use dbt_common::cancellation::CancellationToken;
 use dbt_common::constants::DBT_SNAPSHOTS_DIR_NAME;
 use dbt_common::error::AbstractLocation;
 use dbt_common::io_args::{StaticAnalysisKind, StaticAnalysisOffReason};
-use dbt_common::path::DbtPath;
+use dbt_common::path::{DbtPath, node_name_from_path};
 use dbt_common::tokiofs;
 use dbt_common::tracing::dbt_emit::{emit_error_log_from_fs_error, emit_warn_log_from_fs_error};
 use dbt_common::{ErrorCode, FsResult, fs_err, stdfs, unexpected_fs_err};
@@ -373,7 +373,7 @@ pub async fn resolve_snapshots(
     {
         {
             let error_path = &dbt_asset.original_path;
-            let snapshot_name = dbt_asset.path.file_stem().unwrap().to_str().unwrap();
+            let snapshot_name = node_name_from_path(&dbt_asset.path).unwrap();
             if snapshot_name.contains(' ') {
                 return Err(err_resource_name_has_spaces(snapshot_name, error_path));
             }
