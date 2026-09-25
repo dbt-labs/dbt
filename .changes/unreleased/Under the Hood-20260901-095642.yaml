@@ -1,0 +1,9 @@
+kind: Under the Hood
+body: Pass the ADBC `adbc.bigquery.dataproc.pooling_timeout` option as an int
+    instead of a string, so BigQuery Python models work with the opt-in Foundry
+    driver (`DBT_ADBC_BIGQUERY_USE_FOUNDRY=1`)
+time: 2026-09-01T09:56:42.380106382+02:00
+custom:
+    author: fornwall
+    issue: ""
+    project: dbt-core
