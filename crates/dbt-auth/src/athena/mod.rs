@@ -65,24 +65,6 @@ impl<'a> AthenaAuthIR<'a> {
     }
 }
 
-/// dbt-athena profile fields the dbt Athena backend doesn't honor: Lake Formation
-/// tags (`lf_tags_database`).
-const NOT_YET_SUPPORTED_FIELDS: &[&str] = &["lf_tags_database"];
-
-fn reject_unsupported_fields(config: &AdapterConfig) -> Result<(), AuthError> {
-    // `contains_key` (vs string-only checks) so unsupported non-string YAML
-    // values are still caught.
-    for field in NOT_YET_SUPPORTED_FIELDS {
-        if config.contains_key(field) {
-            return Err(AuthError::config(format!(
-                "Athena profile field '{field}' is not yet supported by the dbt Athena \
-                 backend; please remove it from your profile.",
-            )));
-        }
-    }
-    Ok(())
-}
-
 /// A non-negative integer profile field, given as a YAML number or a string.
 fn get_count(config: &AdapterConfig, field: &str) -> Result<Option<u32>, AuthError> {
     config
@@ -101,8 +83,6 @@ fn parse_auth<'a>(
     config: &'a AdapterConfig,
     _warning_printer: &dyn AuthWarningPrinter,
 ) -> Result<AthenaAuthIR<'a>, AuthError> {
-    reject_unsupported_fields(config)?;
-
     // Auth path is inferred from which credential fields are set, matching
     // dbt-athena Python (which has no explicit `method` field):
     //   aws_access_key_id  + aws_session_token  -> TemporaryCredentials
@@ -673,25 +653,16 @@ mod tests {
     }
 
     #[test]
-    fn test_lake_formation_tags_return_an_error() {
-        let mut config = base_required();
-        config.insert("lf_tags_database".into(), "value".into());
-
-        let err = AthenaAuth::new(Box::new(crate::NoopAuthWarningPrinter))
-            .configure(&AdapterConfig::new(config))
-            .expect_err("lf_tags_database should be rejected");
-        assert!(err.msg().contains("lf_tags_database"), "got: {}", err.msg());
-    }
-
-    #[test]
-    fn test_spark_work_group_is_accepted() {
-        // Read by the adapter for Python models, not by the driver.
+    fn test_adapter_read_fields_are_accepted() {
+        // Read by the adapter (Python models, Lake Formation), not by the driver.
         let mut config = base_required();
         config.insert("spark_work_group".into(), "spark-wg".into());
+        let tags = Mapping::from_iter([("domain".into(), "sales".into())]);
+        config.insert("lf_tags_database".into(), dbt_yaml::Value::mapping(tags));
 
         AthenaAuth::new(Box::new(crate::NoopAuthWarningPrinter))
             .configure(&AdapterConfig::new(config))
-            .expect("spark_work_group is accepted");
+            .expect("spark_work_group and lf_tags_database are accepted");
     }
 
     #[test]
