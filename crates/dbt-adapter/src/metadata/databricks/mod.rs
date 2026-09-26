@@ -1399,13 +1399,13 @@ impl MetadataAdapter for DatabricksMetadataAdapter {
             };
 
             let fqn = match adapter.adapter_type() {
-                AdapterType::Spark => {
-                    debug_assert!(
-                        database.is_empty(),
-                        "Spark database should be empty but got '{database}'"
-                    );
+                // Schema-enabled Fabric lakehouses carry the lakehouse name in
+                // `database` (3-part naming); classic lakehouses and plain
+                // Spark leave it empty.
+                AdapterType::Spark if database.is_empty() => {
                     format!("{schema}.{identifier}")
                 }
+                AdapterType::Spark => format!("{database}.{schema}.{identifier}"),
                 AdapterType::Databricks => format!("{database}.{schema}.{identifier}"),
                 _ => unreachable!(),
             };

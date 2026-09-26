@@ -342,14 +342,14 @@ impl DefaultTypeOps {
                 _,
             ) => match adapter_type {
                 Bigquery => "int64",
-                Databricks => "bigint",
+                Databricks | Spark => "bigint",
                 _ => "integer",
             },
 
             // ## convert_number_type() - Float32
             (SqlType::Real | SqlType::HalfFloat, _) => match adapter_type {
                 Bigquery => "float64",
-                Databricks => "float",
+                Databricks | Spark => "float",
                 Fabric => "real",
                 // Exasol float type is DOUBLE PRECISION (no float8 alias).
                 Exasol => "DOUBLE PRECISION",
@@ -359,7 +359,7 @@ impl DefaultTypeOps {
             // ## convert_number_type() - Float64
             (SqlType::Double | SqlType::Float(_), _) => match adapter_type {
                 Bigquery => "float64",
-                Databricks => "double",
+                Databricks | Spark => "double",
                 // Divergence: upstream has an implicit narrowing bug we fix
                 // see https://github.com/microsoft/dbt-fabric/blob/0de219082282724a789b0d1b18509d39899da8e1/dbt/adapters/fabric/fabric_adapter.py#L117
                 // https://learn.microsoft.com/en-us/sql/t-sql/data-types/float-and-real-transact-sql?view=fabric&preserve-view=true
@@ -382,8 +382,8 @@ impl DefaultTypeOps {
                 (Bigquery, 1..) => "float64",
                 (Bigquery, ..=0) => "int64",
                 (Fabric, _) => "float",
-                (Databricks, 1..) => "double",
-                (Databricks, ..=0) => "bigint",
+                (Databricks | Spark, 1..) => "double",
+                (Databricks | Spark, ..=0) => "bigint",
                 // Exasol: fractional -> DOUBLE PRECISION; zero/negative scale
                 // falls through to "integer" (a valid DECIMAL(18,0) alias).
                 (Exasol, 1..) => "DOUBLE PRECISION",
@@ -405,7 +405,7 @@ impl DefaultTypeOps {
             // ## convert_datetime_type()
             (SqlType::Timestamp { .. }, _) => match adapter_type {
                 Bigquery => "datetime",
-                Databricks => "timestamp",
+                Databricks | Spark => "timestamp",
                 Fabric => "datetime2(6)",
                 Exasol => "timestamp",
                 _ => "timestamp without time zone",
@@ -426,7 +426,7 @@ impl DefaultTypeOps {
             // ## convert_text_type()
             (SqlType::Varchar(..) | SqlType::Text | SqlType::Clob | SqlType::Char(_), _) => {
                 match adapter_type {
-                    Bigquery | Databricks => "string",
+                    Bigquery | Databricks | Spark => "string",
                     // technically should be `varchar(N)`
                     // where `N` is based on the max length of the strings in the column
                     // but that information isn't available here
@@ -1594,5 +1594,27 @@ mod tests {
             convert_type(&DataType::Time64(TimeUnit::Microsecond), Exasol),
             "timestamp"
         );
+    }
+
+    #[test]
+    fn test_convert_types_for_spark() {
+        // Regression test: seeds previously emitted PostgreSQL types (text,
+        // float8, timestamp without time zone) for Spark, which Spark SQL
+        // rejects at CREATE TABLE.
+        assert_eq!(convert_type(&DataType::Utf8, Spark), "string");
+        assert_eq!(convert_type(&DataType::Int32, Spark), "bigint");
+        assert_eq!(convert_type(&DataType::Int64, Spark), "bigint");
+        assert_eq!(convert_type(&DataType::Float64, Spark), "double");
+        assert_eq!(convert_type(&DataType::Float32, Spark), "float");
+        // decimals follow the Databricks coercion rules
+        assert_eq!(convert_type(&DataType::Decimal128(10, 2), Spark), "double");
+        assert_eq!(convert_type(&DataType::Decimal32(10, 0), Spark), "bigint");
+        // datetime -> timestamp (not "timestamp without time zone")
+        assert_eq!(
+            convert_type(&DataType::Timestamp(TimeUnit::Microsecond, None), Spark),
+            "timestamp"
+        );
+        assert_eq!(convert_type(&DataType::Boolean, Spark), "boolean");
+        assert_eq!(convert_type(&DataType::Date64, Spark), "date");
     }
 }
