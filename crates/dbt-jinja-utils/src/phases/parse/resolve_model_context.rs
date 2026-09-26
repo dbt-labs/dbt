@@ -267,7 +267,7 @@ pub fn build_resolve_model_context<T: ResolvableConfig<T> + Serialize + 'static>
     // (`get_view_options`, `get_config_from_model`, …) round-trips correctly.
     let config_yml = dbt_yaml::to_value(config)
         .expect("Failed to serialize merged node config to dbt_yaml::Value for parse model.config");
-    model_map.insert("config".to_owned(), yml_value_to_minijinja(config_yml));
+    model_map.insert("config".to_owned(), yml_value_to_minijinja(&config_yml));
     model_map.insert(
         "batch".to_owned(),
         MinijinjaValue::from_object(init_batch_context()),

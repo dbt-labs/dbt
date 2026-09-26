@@ -676,21 +676,24 @@ pub fn same_warehouse_config(
     let engine_eq = self_wh.engine == other_wh.engine;
     let order_by_eq = self_wh.order_by == other_wh.order_by;
     let ttl_eq = self_wh.ttl == other_wh.ttl;
-    let settings_eq = self_wh.settings == other_wh.settings;
-    let query_settings_eq = self_wh.query_settings == other_wh.query_settings;
-    let projections_eq = self_wh.projections == other_wh.projections;
+    let settings_eq = opt_yml_map_eq(&self_wh.settings, &other_wh.settings);
+    let query_settings_eq = opt_yml_map_eq(&self_wh.query_settings, &other_wh.query_settings);
+    let projections_eq = opt_yml_vec_eq(&self_wh.projections, &other_wh.projections);
     let inserts_only_eq = self_wh.inserts_only == other_wh.inserts_only;
-    let connection_overrides_eq = self_wh.connection_overrides == other_wh.connection_overrides;
-    let fields_eq = self_wh.fields == other_wh.fields;
+    let connection_overrides_eq = opt_yml_map_eq(
+        &self_wh.connection_overrides,
+        &other_wh.connection_overrides,
+    );
+    let fields_eq = opt_yml_vec_eq(&self_wh.fields, &other_wh.fields);
     let source_type_eq = self_wh.source_type == other_wh.source_type;
     let url_eq = self_wh.url == other_wh.url;
     let format_eq = self_wh.format == other_wh.format;
     let layout_eq = self_wh.layout == other_wh.layout;
-    let lifetime_eq = self_wh.lifetime == other_wh.lifetime;
-    let range_eq = self_wh.range == other_wh.range;
+    let lifetime_eq = opt_yml_value_eq(&self_wh.lifetime, &other_wh.lifetime);
+    let range_eq = opt_yml_value_eq(&self_wh.range, &other_wh.range);
     let table_eq = self_wh.table == other_wh.table;
     let update_field_eq = self_wh.update_field == other_wh.update_field;
-    let update_lag_eq = self_wh.update_lag == other_wh.update_lag;
+    let update_lag_eq = opt_yml_value_eq(&self_wh.update_lag, &other_wh.update_lag);
     let definer_eq = self_wh.definer == other_wh.definer;
     let sql_security_eq = self_wh.sql_security == other_wh.sql_security;
     let refreshable_eq = self_wh.refreshable == other_wh.refreshable;
@@ -1603,9 +1606,44 @@ pub fn same_warehouse_config(
     result
 }
 
-/// Compare two `unrendered_config` values, treating absent/`null`/empty as equivalent and
-/// canonicalizing trailing newlines on strings. Mirrors the semantics used by
-/// `check_configs_modified`'s unrendered path in `prev_state`.
+/// Equality for optional free-form YAML values, delegating to [`YmlValue::lenient_eq`]: a
+/// timestamp scalar and a string naming the same instant compare equal. The previous side of
+/// a comparison is deserialized from manifest JSON, which has no timestamp type, so a
+/// timestamp scalar always crosses the boundary as a string.
+fn opt_yml_value_eq(a: &Option<YmlValue>, b: &Option<YmlValue>) -> bool {
+    match (a, b) {
+        (Some(x), Some(y)) => x.lenient_eq(y),
+        _ => a == b,
+    }
+}
+
+fn opt_yml_vec_eq(a: &Option<Vec<YmlValue>>, b: &Option<Vec<YmlValue>>) -> bool {
+    match (a, b) {
+        (Some(x), Some(y)) => {
+            x.len() == y.len() && x.iter().zip(y.iter()).all(|(u, v)| u.lenient_eq(v))
+        }
+        _ => a == b,
+    }
+}
+
+fn opt_yml_map_eq(
+    a: &Option<BTreeMap<String, YmlValue>>,
+    b: &Option<BTreeMap<String, YmlValue>>,
+) -> bool {
+    match (a, b) {
+        (Some(x), Some(y)) => {
+            x.len() == y.len()
+                && x.iter()
+                    .all(|(k, v)| y.get(k).is_some_and(|yv| v.lenient_eq(yv)))
+        }
+        _ => a == b,
+    }
+}
+
+/// Compare two `unrendered_config` values, treating absent/`null`/empty as equivalent,
+/// canonicalizing trailing newlines on strings, and comparing scalars with
+/// [`YmlValue::lenient_eq`] (manifests store timestamps as strings). Mirrors the
+/// semantics used by `check_configs_modified`'s unrendered path in `prev_state`.
 pub(crate) fn unrendered_value_eq(a: Option<&YmlValue>, b: Option<&YmlValue>) -> bool {
     fn is_effectively_empty(v: &YmlValue) -> bool {
         match v {
@@ -1628,7 +1666,7 @@ pub(crate) fn unrendered_value_eq(a: Option<&YmlValue>, b: Option<&YmlValue>) ->
         (Some(YmlValue::String(sa, _)), Some(YmlValue::String(sb, _))) => {
             canonicalize_str(sa) == canonicalize_str(sb)
         }
-        (Some(va), Some(vb)) => va == vb,
+        (Some(va), Some(vb)) => va.lenient_eq(vb),
     }
 }
 
@@ -1636,6 +1674,17 @@ pub(crate) fn unrendered_value_eq(a: Option<&YmlValue>, b: Option<&YmlValue>) ->
 mod tests {
     use super::*;
 
+    #[test]
+    fn test_unrendered_value_eq_timestamp_against_manifest_string() {
+        let ts = YmlValue::timestamp(dbt_yaml::Timestamp::parse("2024-01-01").unwrap());
+        let s = YmlValue::string("2024-01-01".to_string());
+        assert!(unrendered_value_eq(Some(&ts), Some(&s)));
+        assert!(unrendered_value_eq(Some(&s), Some(&ts)));
+        let other = YmlValue::string("2024-01-02".to_string());
+        assert!(!unrendered_value_eq(Some(&ts), Some(&other)));
+        let not_a_date = YmlValue::string("not-a-date".to_string());
+        assert!(!unrendered_value_eq(Some(&ts), Some(&not_a_date)));
+    }
     #[test]
     fn test_take_databricks_catalog_alias_moves_catalog_when_database_unset() {
         let mut wh = WarehouseSpecificNodeConfig {

@@ -1,6 +1,6 @@
 use crate::schemas::project::TypedRecursiveConfig;
 use dbt_proc_macros::Resolvable;
-use dbt_yaml::{DbtSchema, ShouldBe};
+use dbt_yaml::{DbtSchema, ShouldBe, UntaggedEnumDeserialize};
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -43,7 +43,7 @@ pub struct InfoSchemaConfig {
 /// what aggregate checks want). A single name or a list of names scopes on those output columns:
 /// a row is kept when the node id in *any* of them is selected. Unset defaults to the `unique_id`
 /// column when the check outputs one.
-#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq, DbtSchema)]
+#[derive(Debug, Serialize, UntaggedEnumDeserialize, Clone, PartialEq, Eq, DbtSchema)]
 #[serde(untagged)]
 pub enum SelectionFilterOn {
     One(String),

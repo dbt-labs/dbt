@@ -43,6 +43,9 @@ fn canonicalize(value: dbt_yaml::Value, source: &str) -> CanonicalYaml {
         dbt_yaml::Value::Number(value, span) => {
             CanonicalYaml::Scalar(scalar_lexeme(source, &span).unwrap_or_else(|| value.to_string()))
         }
+        dbt_yaml::Value::Timestamp(value, span) => {
+            CanonicalYaml::Scalar(scalar_lexeme(source, &span).unwrap_or_else(|| value.to_string()))
+        }
         dbt_yaml::Value::String(value, _) => CanonicalYaml::Scalar(value),
         dbt_yaml::Value::Sequence(values, _) => CanonicalYaml::Sequence(
             values

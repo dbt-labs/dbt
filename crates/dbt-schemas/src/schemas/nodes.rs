@@ -4,7 +4,6 @@ use std::path::Path;
 use std::str::FromStr;
 use std::{any::Any, collections::BTreeMap, fmt::Display, path::PathBuf, sync::Arc};
 
-use chrono::Utc;
 use dbt_adapter_core::{AdapterType, MICROBATCH_SUPPORTED_ADAPTERS};
 use dbt_common::constants::{DBT_COMPILED_DIR_NAME, DBT_RUN_DIR_NAME};
 use dbt_common::io_args::{ComputeArg, StaticAnalysisKind, StaticAnalysisOffReason};
@@ -1137,35 +1136,39 @@ fn latest_version_eq(a: &Option<StringOrInteger>, b: &Option<StringOrInteger>) -
     }
 }
 
-/// `deprecation_date` equality, compared as a **date** rather than as a string.
+/// A "lenient" form of timestamp equality, where the timezone portion is
+/// potentially ignored.
 ///
-/// dbt-core compares `datetime` objects, so date semantics — not spelling — is the faithful
-/// transcription here. The two sides can legitimately disagree on spelling in two ways:
+/// FIXME: !!HACK!! In no world is this actually correct! The ONLY reason we need
+/// this for now is to tolerate manifest.json produced by dbt v1:
 ///
-/// - Fusion normalizes an authored date to RFC 3339 on the parse side
-///   (`normalize_deprecation_date`), so an authored `2099-01-01` faces a manifest's
-///   `2099-01-01T00:00:00+00:00`.
-/// - The normalizations do not agree on the *offset* of a naive authored date: Fusion reads it as
-///   UTC, while dbt-core's `normalize_date` re-interprets it in the **system** time zone
-///   (dbt-mantle `core/dbt/contracts/graph/unparsed.py:1012-1024`). A Mantle-produced previous
-///   manifest can therefore carry `2020-01-01T00:00:00-05:00` where this run parses
-///   `2020-01-01T00:00:00+00:00` from the same authored `2020-01-01`.
+/// - When we serialize naive Yaml Timestamp values to manifest.json, the value
+///   is first normalized to some timezone. This normalization is performed
+///   differently between v1 and v2: v1 normalizes to the system time zone
+///   (dbt-mantle `core/dbt/contracts/graph/unparsed.py:1012-1024`), while v2
+///   normalizes to UTC. This means that a same naive timestamp authored in Yaml
+///   could differ by up to a day in manifest.json, depending on whether its
+///   produced by v1 or v2.
 ///
-/// So two parseable values are equal when they name the same instant *or* the same wall-clock
-/// time. String equality is the fast path, and the fallback when either side fails to parse.
-fn deprecation_date_eq(a: &Option<String>, b: &Option<String>) -> bool {
+/// - When a timestamp value is read back from manifest.json, we do not preserve
+///   which version of dbt produced the manifest, and thus at this point we're
+///   just blindly comparing two timestamp values that could have completely
+///   bogus timezones
+///
+/// Deprecate this as soon as we get over the v1 -> v2 migration.
+fn timestamp_eq_maybe_ignore_tz(
+    a: &Option<dbt_yaml::Timestamp>,
+    b: &Option<dbt_yaml::Timestamp>,
+) -> bool {
+    let wall_clock = |ts: &dbt_yaml::Timestamp| {
+        (
+            ts.date(),
+            ts.time().unwrap_or(dbt_yaml::TimeOfDay::MIDNIGHT),
+        )
+    };
     match (a, b) {
         (None, None) => true,
-        (Some(a), Some(b)) => {
-            a == b
-                || match (
-                    crate::schemas::common::parse_deprecation_date(a),
-                    crate::schemas::common::parse_deprecation_date(b),
-                ) {
-                    (Some(a), Some(b)) => a == b || a.naive_local() == b.naive_local(),
-                    _ => false,
-                }
-        }
+        (Some(a), Some(b)) => a == b || wall_clock(a) == wall_clock(b),
         _ => false,
     }
 }
@@ -1640,12 +1643,19 @@ fn indexmap_yml_value_equal(
 ) -> bool {
     match (left, right) {
         (None, None) => true,
-        (Some(l), Some(r)) => l == r,
+        (Some(l), Some(r)) => yml_map_eq_lenient(l, r),
         (None, Some(r)) => r.is_empty(),
         (Some(l), None) => l.is_empty(),
     }
 }
 
+/// Element-wise map equality via [`YmlValue::lenient_eq`]: a timestamp scalar in the
+/// current parse compares equal to a string naming the same instant from a manifest.
+fn yml_map_eq_lenient(l: &IndexMap<String, YmlValue>, r: &IndexMap<String, YmlValue>) -> bool {
+    l.len() == r.len()
+        && l.iter()
+            .all(|(k, v)| r.get(k).is_some_and(|rv| v.lenient_eq(rv)))
+}
 /// Compare DocsConfig considering None vs Some(default) as equal
 fn docs_config_equal(
     left: &Option<crate::schemas::common::DocsConfig>,
@@ -3189,10 +3199,13 @@ impl InternalDbtNode for DbtCheck {
             // `meta` is compared for the same reason models compare it: a user editing `meta:`
             // expects the node to be selected, and this was the one key where a check behaved
             // differently from a model. Read from common_attr, like tags: that field holds the
-            // resolved value and is not an `Option`, so plain equality is enough --
-            // `indexmap_yml_value_equal` exists to treat `None` and an empty map as equal, which
-            // only arises for the `Option` config wrappers.
-            let meta_eq = self.__common_attr__.meta == other_check.__common_attr__.meta;
+            // resolved value and is not an `Option`, so the `None`/empty-map handling of
+            // `indexmap_yml_value_equal` is not needed -- but the timestamp-vs-string leniency
+            // is, since the previous value comes from manifest JSON.
+            let meta_eq = yml_map_eq_lenient(
+                &self.__common_attr__.meta,
+                &other_check.__common_attr__.meta,
+            );
 
             let result = enabled_eq && severity_eq && selection_filter_on_eq && tags_eq && meta_eq;
 
@@ -5606,7 +5619,7 @@ impl DbtModel {
         // `manifest_model_access_falls_back_to_node_attribute` guard that.
         let same_access = current.access == previous.access;
         let same_deprecation_date =
-            deprecation_date_eq(&current.deprecation_date, &previous.deprecation_date);
+            timestamp_eq_maybe_ignore_tz(&current.deprecation_date, &previous.deprecation_date);
 
         let result = same_latest_version && same_access && same_deprecation_date;
 
@@ -5952,10 +5965,9 @@ impl DbtModel {
             return true;
         }
         // Removed node is past its deprecation_date, so deletion does not constitute a contract change
-        if let Some(deprecation_date_str) = &old.__model_attr__.deprecation_date
-            && let Some(deprecation_date) =
-                crate::schemas::common::parse_deprecation_date(deprecation_date_str)
-            && deprecation_date < Utc::now()
+        // Instant comparison; a missing time/zone defaults to midnight UTC.
+        if let Some(ts) = &old.__model_attr__.deprecation_date
+            && *ts < dbt_yaml::Timestamp::utc_now()
         {
             return true;
         }
@@ -6402,7 +6414,8 @@ pub struct DbtModelAttr {
     pub version: Option<StringOrInteger>,
     pub latest_version: Option<StringOrInteger>,
     pub constraints: Vec<ModelConstraint>,
-    pub deprecation_date: Option<String>,
+    #[serde(serialize_with = "crate::schemas::serde::serialize_timestamp_as_rfc3339")]
+    pub deprecation_date: Option<dbt_yaml::Timestamp>,
     // TODO: Investigate why primary_key is needed here (constraints already exist)
     pub primary_key: Vec<String>,
     pub time_spine: Option<TimeSpine>,
@@ -8347,7 +8360,8 @@ mod seed_has_same_content_tests {
 #[cfg(test)]
 mod model_same_ref_representation_tests {
     use super::{
-        Access, DbtModel, InternalDbtNode, StringOrInteger, deprecation_date_eq, latest_version_eq,
+        Access, DbtModel, InternalDbtNode, StringOrInteger, latest_version_eq,
+        timestamp_eq_maybe_ignore_tz,
     };
     use dbt_adapter_core::AdapterType;
 
@@ -8412,17 +8426,21 @@ mod model_same_ref_representation_tests {
 
     // --- comparator 3: `deprecation_date` (date semantics, not string equality) ---
 
-    /// Fusion normalizes an authored date to RFC 3339 on the parse side, so the authored and
-    /// manifest spellings of one date routinely differ.
+    fn ts(s: &str) -> Option<dbt_yaml::Timestamp> {
+        dbt_yaml::Timestamp::parse(s)
+    }
+
+    /// A manifest records a normalized datetime, so the authored and manifest spellings of one
+    /// date routinely differ.
     #[test]
     fn deprecation_date_eq_tolerates_authored_vs_normalized_spelling() {
-        assert!(deprecation_date_eq(
-            &Some("2099-01-01".to_string()),
-            &Some("2099-01-01T00:00:00+00:00".to_string())
+        assert!(timestamp_eq_maybe_ignore_tz(
+            &ts("2099-01-01"),
+            &ts("2099-01-01T00:00:00+00:00")
         ));
-        assert!(deprecation_date_eq(
-            &Some("2099-01-01T00:00:00Z".to_string()),
-            &Some("2099-01-01T00:00:00+00:00".to_string())
+        assert!(timestamp_eq_maybe_ignore_tz(
+            &ts("2099-01-01T00:00:00Z"),
+            &ts("2099-01-01T00:00:00+00:00")
         ));
     }
 
@@ -8431,43 +8449,30 @@ mod model_same_ref_representation_tests {
     /// two different offsets whenever the previous manifest was produced by dbt-core outside UTC.
     #[test]
     fn deprecation_date_eq_tolerates_a_mantle_local_offset() {
-        assert!(deprecation_date_eq(
-            &Some("2020-01-01T00:00:00+00:00".to_string()),
-            &Some("2020-01-01T00:00:00-05:00".to_string())
+        assert!(timestamp_eq_maybe_ignore_tz(
+            &ts("2020-01-01T00:00:00+00:00"),
+            &ts("2020-01-01T00:00:00-05:00")
         ));
     }
 
     /// dbt-core compares `datetime` objects, so two spellings of one instant are not a change.
     #[test]
     fn deprecation_date_eq_tolerates_equal_instants() {
-        assert!(deprecation_date_eq(
-            &Some("2020-01-01T05:00:00+00:00".to_string()),
-            &Some("2020-01-01T00:00:00-05:00".to_string())
+        assert!(timestamp_eq_maybe_ignore_tz(
+            &ts("2020-01-01T05:00:00+00:00"),
+            &ts("2020-01-01T00:00:00-05:00")
         ));
     }
 
     #[test]
     fn deprecation_date_eq_still_sees_a_real_change() {
-        assert!(!deprecation_date_eq(
-            &Some("2099-01-01".to_string()),
-            &Some("2098-01-01".to_string())
+        assert!(!timestamp_eq_maybe_ignore_tz(
+            &ts("2099-01-01"),
+            &ts("2098-01-01")
         ));
-        assert!(!deprecation_date_eq(&Some("2099-01-01".to_string()), &None));
-        assert!(!deprecation_date_eq(&None, &Some("2099-01-01".to_string())));
-        assert!(deprecation_date_eq(&None, &None));
-    }
-
-    /// Unparseable values fall back to string equality rather than comparing equal by accident.
-    #[test]
-    fn deprecation_date_eq_falls_back_to_string_equality() {
-        assert!(deprecation_date_eq(
-            &Some("not-a-date".to_string()),
-            &Some("not-a-date".to_string())
-        ));
-        assert!(!deprecation_date_eq(
-            &Some("not-a-date".to_string()),
-            &Some("2099-01-01".to_string())
-        ));
+        assert!(!timestamp_eq_maybe_ignore_tz(&ts("2099-01-01"), &None));
+        assert!(!timestamp_eq_maybe_ignore_tz(&None, &ts("2099-01-01")));
+        assert!(timestamp_eq_maybe_ignore_tz(&None, &None));
     }
 
     // --- the conjunct as wired into `has_same_content` ---
@@ -8503,7 +8508,7 @@ mod model_same_ref_representation_tests {
     #[test]
     fn deprecation_date_change_is_state_modified() {
         let mut current = model();
-        current.__model_attr__.deprecation_date = Some("2099-01-01T00:00:00+00:00".to_string());
+        current.__model_attr__.deprecation_date = ts("2099-01-01T00:00:00+00:00");
         let previous = model();
 
         assert!(

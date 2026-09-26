@@ -2073,6 +2073,10 @@ fn yml_value_to_sql_literal(
         YmlValue::Null(_) => Ok(literal_formatter.none_value()),
         YmlValue::Bool(b, _) => Ok(literal_formatter.format_bool(b)),
         YmlValue::Number(n, _) => Ok(n.to_string()),
+        // A date/timestamp fixture is rendered in its canonical YAML form as a
+        // string literal; the fixture builder wraps it in a cast to the
+        // column's declared type, same as a quoted string fixture.
+        YmlValue::Timestamp(t, _) => Ok(literal_formatter.format_unit_test_str(&t.to_string())),
         // A string fixture for a type that cannot be produced by casting a
         // string literal (e.g. BigQuery STRUCT/GEOGRAPHY) is a SQL expression
         // that must be injected verbatim. See dbt-labs/dbt-core#14625.
@@ -2740,6 +2744,27 @@ mod tests {
         assert_eq!(literal, format!("'{value}'"));
     }
 
+    #[test]
+    fn test_unit_test_timestamp_fixture_renders_as_string_literal() {
+        // Expected values are `Timestamp`'s canonical Display form (RFC 3339-style `T`
+        // separator); the fixture builder wraps the literal in a cast to the column type.
+        let cases = [
+            ("2020-01-01", "'2020-01-01'"),
+            ("2020-01-01 10:30:00", "'2020-01-01T10:30:00'"),
+            ("2020-01-01T10:30:00+05:00", "'2020-01-01T10:30:00+05:00'"),
+        ];
+        for (authored, expected) in cases {
+            let ts = dbt_yaml::Timestamp::parse(authored).expect("valid timestamp");
+            let literal = yml_value_to_sql_literal(
+                AdapterType::Snowflake,
+                &DefaultTypeOps::new(AdapterType::Snowflake),
+                YmlValue::timestamp(ts),
+                &DataType::Date32,
+            )
+            .expect("timestamp fixture should render as a string literal");
+            assert_eq!(literal, expected, "for authored value {authored}");
+        }
+    }
     #[test]
     fn test_parse_csv_rows_preserves_scalar_text() {
         let rows = parse_csv_rows(b"id,code,enabled,ratio,empty\n1,000001,true,1.5,\n")

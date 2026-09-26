@@ -107,7 +107,7 @@ pub struct ProjectModelConfig {
     #[serde(rename = "+batch_size")]
     pub batch_size: Option<DbtBatchSize>,
     #[serde(rename = "+begin")]
-    pub begin: Option<String>,
+    pub begin: Option<dbt_yaml::Timestamp>,
     #[serde(default, rename = "+bind", deserialize_with = "bool_or_string_bool")]
     pub bind: Option<bool>,
     #[serde(rename = "+buckets")]
@@ -879,7 +879,7 @@ pub struct ModelConfig {
     pub batch_size: Option<DbtBatchSize>,
     #[resolved(promote, default = 1)]
     pub lookback: Option<i32>,
-    pub begin: Option<String>,
+    pub begin: Option<dbt_yaml::Timestamp>,
     pub persist_docs: Option<PersistDocsConfig>,
     #[serde(alias = "post-hook")]
     pub post_hook: Verbatim<Option<Hooks>>,

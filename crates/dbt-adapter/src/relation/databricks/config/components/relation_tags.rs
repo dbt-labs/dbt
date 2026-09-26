@@ -82,9 +82,15 @@ fn from_local_config(
         && let Some(tags_map) = &databricks_attr.databricks_tags
     {
         for (key, value) in tags_map {
-            if let YmlValue::String(value_str, _) = value {
-                tags.insert(key.clone(), value_str.clone());
-            }
+            let value_str = match value {
+                YmlValue::String(s, _) => s.clone(),
+                // A bare date/datetime scalar resolves to a Timestamp; render its
+                // canonical form, as it was a plain string before YAML 1.1
+                // timestamp resolution.
+                YmlValue::Timestamp(t, _) => t.to_string(),
+                _ => continue,
+            };
+            tags.insert(key.clone(), value_str);
         }
     }
 

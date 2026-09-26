@@ -3,6 +3,7 @@
 use std::{collections::BTreeMap, rc::Rc, sync::Arc};
 
 use crate::DbtVars;
+use crate::utils::yml_value_to_minijinja;
 use indexmap::IndexMap;
 
 use minijinja::{
@@ -11,13 +12,12 @@ use minijinja::{
 };
 
 use crate::VarFunction;
-use crate::cli_value::cli_var_value_to_minijinja;
 
 /// A struct that represent a var object to be used in configuration contexts
 #[derive(Clone, Debug)]
 pub struct ConfiguredVar {
     vars: BTreeMap<String, IndexMap<String, DbtVars>>,
-    cli_vars: BTreeMap<String, dbt_yaml::Value>,
+    cli_vars: BTreeMap<String, Value>,
     /// Package namespace, when the context has no `TARGET_PACKAGE_NAME` key to read it from.
     package_name: Option<String>,
 }
@@ -31,7 +31,10 @@ impl ConfiguredVar {
     ) -> Self {
         Self {
             vars,
-            cli_vars,
+            cli_vars: cli_vars
+                .into_iter()
+                .map(|(key, val)| (key, yml_value_to_minijinja(&val)))
+                .collect(),
             package_name: None,
         }
     }
@@ -83,7 +86,7 @@ impl VarFunction for ConfiguredVar {
     ) -> Result<Value, Error> {
         // 1. CLI vars
         if let Some(value) = self.cli_vars.get(&var_name) {
-            return Ok(cli_var_value_to_minijinja(value));
+            return Ok(value.clone());
         }
         // 2. Check if this is dbt_project.yml parsing
         let package_name = self.package_name(state, &var_name)?;

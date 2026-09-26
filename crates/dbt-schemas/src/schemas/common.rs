@@ -772,9 +772,10 @@ impl<'de> Deserialize<'de> for DbtCheckColsSpec {
             YmlValue::Sequence(col_list, _) => {
                 let cols: Result<Vec<_>, D::Error> = col_list
                     .into_iter()
-                    .map(|v| match v {
-                        YmlValue::String(s, _) => Ok(s),
-                        _ => Err(serde::de::Error::custom("Expected array of strings")),
+                    .map(|v| {
+                        v.as_scalar_string()
+                            .map(|s| s.into_owned())
+                            .ok_or_else(|| serde::de::Error::custom("Expected array of strings"))
                     })
                     .collect();
                 match cols {
@@ -1541,60 +1542,47 @@ pub enum Severity {
     Warn,
 }
 
-/// Parses a `deprecation_date` string in any of the documented input formats
-/// (bare date, or a full datetime with or without a UTC offset -- see
-/// https://docs.getdbt.com/reference/resource-properties/deprecation_date)
-/// into a timezone-aware timestamp. An already offset-aware input keeps its
-/// original offset; a naive (offset-less) datetime is assumed to be UTC.
-pub fn parse_deprecation_date(raw: &str) -> Option<chrono::DateTime<chrono::FixedOffset>> {
-    let raw = raw.trim();
-
-    if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(raw) {
-        return Some(dt);
-    }
-    for format in ["%Y-%m-%d %H:%M:%S%.f%z", "%Y-%m-%d %H:%M:%S%z"] {
-        if let Ok(dt) = chrono::DateTime::parse_from_str(raw, format) {
-            return Some(dt);
-        }
-    }
-
-    let naive_utc_to_fixed = |naive: chrono::NaiveDateTime| {
-        chrono::DateTime::<chrono::Utc>::from_naive_utc_and_offset(naive, chrono::Utc)
-            .fixed_offset()
-    };
-    for format in [
-        "%Y-%m-%dT%H:%M:%S%.f",
-        "%Y-%m-%d %H:%M:%S%.f",
-        "%Y-%m-%dT%H:%M:%S",
-        "%Y-%m-%d %H:%M:%S",
-    ] {
-        if let Ok(naive) = chrono::NaiveDateTime::parse_from_str(raw, format) {
-            return Some(naive_utc_to_fixed(naive));
-        }
-    }
-    if let Ok(date) = chrono::NaiveDate::parse_from_str(raw, "%Y-%m-%d") {
-        let naive = date.and_hms_opt(0, 0, 0).unwrap();
-        return Some(naive_utc_to_fixed(naive));
-    }
-
-    None
+/// Converts a YAML 1.1 timestamp to a timezone-aware datetime, applying the
+/// spec's defaults of midnight for a missing time-of-day and UTC for a missing
+/// zone. An offset-aware timestamp keeps its authored offset.
+///
+/// Note: this operation is _fallible_! Yaml `Timestamp` is an unvalidated
+/// container, whereas `chrono::DateTime` is fully validated -- in the case when
+/// `ts` is an invalid `DateTime` this method returns `None`.
+pub fn timestamp_to_fixed_offset(
+    ts: &dbt_yaml::Timestamp,
+) -> Option<chrono::DateTime<chrono::FixedOffset>> {
+    use chrono::TimeZone;
+    let (year, month, day) = ts.date();
+    let date = chrono::NaiveDate::from_ymd_opt(year, u32::from(month), u32::from(day))?;
+    let tod = ts.time().unwrap_or(dbt_yaml::TimeOfDay::MIDNIGHT);
+    let time = chrono::NaiveTime::from_hms_nano_opt(
+        u32::from(tod.hour),
+        u32::from(tod.minute),
+        u32::from(tod.second),
+        tod.nanosecond,
+    )?;
+    let offset = chrono::FixedOffset::east_opt(ts.tz_minutes().unwrap_or(0) * 60)?;
+    offset.from_local_datetime(&date.and_time(time)).single()
 }
 
-/// Normalizes a raw `deprecation_date` string (as authored in YAML) to an
-/// RFC 3339 string with an explicit UTC offset, matching dbt-core's manifest
-/// output. Falls back to the original string if it doesn't match any
-/// documented format.
-pub fn normalize_deprecation_date(raw: &str) -> String {
-    parse_deprecation_date(raw)
-        .map(|dt| dt.to_rfc3339())
-        .unwrap_or_else(|| raw.to_string())
+/// Converts a YAML 1.1 timestamp to a UTC datetime, applying the spec's
+/// defaults of midnight for a missing time-of-day and UTC for a missing zone.
+///
+/// Note: this operation is _fallible_! Yaml `Timestamp` is an unvalidated
+/// container, whereas `chrono::DateTime` is fully validated -- in the case when
+/// `ts` is an invalid `DateTime` this method returns `None`.
+pub fn timestamp_to_datetime_utc(
+    ts: &dbt_yaml::Timestamp,
+) -> Option<chrono::DateTime<chrono::Utc>> {
+    timestamp_to_fixed_offset(ts).map(|dt| dt.with_timezone(&chrono::Utc))
 }
 
 #[skip_serializing_none]
 #[derive(Deserialize, Serialize, Debug, Clone, DbtSchema)]
 pub struct Versions {
     pub v: YmlValue,
-    pub deprecation_date: Option<String>,
+    pub deprecation_date: Option<dbt_yaml::Timestamp>,
     pub defined_in: Option<String>,
     pub description: Option<String>,
     pub access: Option<String>,
@@ -3035,61 +3023,7 @@ period: hour
         );
     }
 
-    // ---- deprecation_date normalization (dbt-core#14563) ----
-
-    #[test]
-    fn test_normalize_deprecation_date_bare_date() {
-        assert_eq!(
-            normalize_deprecation_date("2025-10-31"),
-            "2025-10-31T00:00:00+00:00"
-        );
-    }
-
-    #[test]
-    fn test_normalize_deprecation_date_naive_t_separator() {
-        assert_eq!(
-            normalize_deprecation_date("2025-10-31T00:00:00"),
-            "2025-10-31T00:00:00+00:00"
-        );
-    }
-
-    #[test]
-    fn test_normalize_deprecation_date_naive_space_separator() {
-        assert_eq!(
-            normalize_deprecation_date("2025-10-31 00:00:00"),
-            "2025-10-31T00:00:00+00:00"
-        );
-    }
-
-    #[test]
-    fn test_normalize_deprecation_date_z_suffix() {
-        assert_eq!(
-            normalize_deprecation_date("2025-10-31T00:00:00Z"),
-            "2025-10-31T00:00:00+00:00"
-        );
-    }
-
-    #[test]
-    fn test_normalize_deprecation_date_with_offset_preserved() {
-        assert_eq!(
-            normalize_deprecation_date("2025-10-31T00:00:00-05:00"),
-            "2025-10-31T00:00:00-05:00"
-        );
-    }
-
-    #[test]
-    fn test_normalize_deprecation_date_space_separator_with_offset_and_fraction() {
-        // Exact example from the docs page for `deprecation_date`.
-        assert_eq!(
-            normalize_deprecation_date("1999-01-01 00:00:00.00+00:00"),
-            "1999-01-01T00:00:00+00:00"
-        );
-    }
-
-    #[test]
-    fn test_normalize_deprecation_date_unparseable_passes_through() {
-        assert_eq!(normalize_deprecation_date("not-a-date"), "not-a-date");
-    }
+    // ---- timestamp conversion ----
 
     /// PyYAML (and so dbt-core) resolves the YAML 1.1 boolean tokens that Fusion's YAML 1.2
     /// reader hands to serde as strings. `yes` must resolve to `true`, and a token outside the

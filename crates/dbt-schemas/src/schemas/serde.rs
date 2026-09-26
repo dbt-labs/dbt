@@ -16,6 +16,9 @@ use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
 use std::str::FromStr;
 use std::sync::Arc;
+
+pub use dbt_jinja_vars::yml_value_to_minijinja;
+
 // Type aliases for clarity
 type YmlValue = dbt_yaml::Value;
 type MinijinjaValue = minijinja::Value;
@@ -211,7 +214,9 @@ where
                 .map(|(k, v)| {
                     let yml_val = dbt_yaml::from_value::<YmlValue>(v).unwrap_or(YmlValue::null());
                     (
-                        k.as_str().expect("key is not a string").to_string(),
+                        k.as_scalar_string()
+                            .expect("mapping key is not a scalar")
+                            .into_owned(),
                         yml_val,
                     )
                 })
@@ -229,16 +234,17 @@ where
 {
     let value = dbt_yaml::Value::deserialize(deserializer)?;
     match value {
-        dbt_yaml::Value::Sequence(arr, _) => Ok(Some(
-            arr.iter()
-                .map(|v| v.as_str().unwrap().to_string())
-                .collect(),
-        )),
-        dbt_yaml::Value::String(s, _) => Ok(Some(vec![s])),
+        dbt_yaml::Value::Sequence(arr, _) => arr
+            .iter()
+            .map(|v| v.as_scalar_string().map(|s| s.into_owned()))
+            .collect::<Option<Vec<_>>>()
+            .map(Some)
+            .ok_or_else(|| de::Error::custom("expected a string, an array of strings, or null")),
         dbt_yaml::Value::Null(_) => Ok(None),
-        _ => Err(de::Error::custom(
-            "expected a string, an array of strings, or null",
-        )),
+        other => other
+            .as_scalar_string()
+            .map(|s| Some(vec![s.into_owned()]))
+            .ok_or_else(|| de::Error::custom("expected a string, an array of strings, or null")),
     }
 }
 
@@ -333,10 +339,11 @@ where
 {
     let value = dbt_yaml::Value::deserialize(deserializer)?;
     match value {
-        dbt_yaml::Value::String(s, _) => Ok(Some(s)),
-        dbt_yaml::Value::Number(n, _) => Ok(Some(n.to_string())),
         dbt_yaml::Value::Null(_) => Ok(None),
-        _ => Err(de::Error::custom("expected a string, number, or null")),
+        other => other
+            .as_scalar_string()
+            .map(|s| Some(s.into_owned()))
+            .ok_or_else(|| de::Error::custom("expected a scalar or null")),
     }
 }
 
@@ -353,13 +360,31 @@ where
         return Ok(None);
     };
     match value {
-        YmlValue::String(s, _) => Ok(Some(s)),
         YmlValue::Mapping(_, _) | YmlValue::Sequence(_, _) => {
             let json_string = serde_json::to_string(&value)
                 .map_err(|e| de::Error::custom(format!("Failed to serialize to JSON: {e}")))?;
             Ok(Some(json_string))
         }
-        _ => Err(de::Error::custom("expected a string, a map, or a sequence")),
+        scalar => scalar
+            .as_scalar_string()
+            .map(|s| Some(s.into_owned()))
+            .ok_or_else(|| de::Error::custom("expected a string, a map, or a sequence")),
+    }
+}
+
+/// Serializes an optional YAML 1.1 timestamp as a fully-defaulted RFC 3339
+/// string: a missing time defaults to midnight and a missing zone to UTC,
+/// matching the semantics of dbt-core's manifest output for `deprecation_date`.
+pub fn serialize_timestamp_as_rfc3339<S>(
+    ts: &Option<dbt_yaml::Timestamp>,
+    serializer: S,
+) -> Result<S::Ok, S::Error>
+where
+    S: Serializer,
+{
+    match ts {
+        Some(ts) => serializer.serialize_some(&ts.with_defaults().to_string()),
+        None => serializer.serialize_none(),
     }
 }
 
@@ -551,14 +576,16 @@ impl<'de> Deserialize<'de> for QueryTag {
     {
         let value = dbt_yaml::Value::deserialize(deserializer)?;
         match value {
-            dbt_yaml::Value::String(s, _) => Ok(QueryTag(s)),
             dbt_yaml::Value::Mapping(_, _) | dbt_yaml::Value::Sequence(_, _) => {
                 // Fusion-only stringification (see module doc above) — not what Core does
                 let json_string = serde_json::to_string(&value)
                     .map_err(|e| de::Error::custom(format!("Failed to serialize to JSON: {e}")))?;
                 Ok(QueryTag(json_string))
             }
-            _ => Err(de::Error::custom("expected a string, a map, or a sequence")),
+            scalar => scalar
+                .as_scalar_string()
+                .map(|s| QueryTag(s.into_owned()))
+                .ok_or_else(|| de::Error::custom("expected a string, a map, or a sequence")),
         }
     }
 }
@@ -590,15 +617,13 @@ pub fn try_from_value<T: DeserializeOwned>(
 /// Convert YmlValue to a BTreeMap for minijinja
 pub fn yml_value_to_minijinja_map(value: YmlValue) -> BTreeMap<String, MinijinjaValue> {
     match value {
-        YmlValue::Mapping(map, _) => {
-            let mut result = BTreeMap::new();
-            for (k, v) in map {
-                if let YmlValue::String(key, _) = k {
-                    result.insert(key, yml_value_to_minijinja(v));
-                }
-            }
-            result
-        }
+        YmlValue::Mapping(map, _) => map
+            .into_iter()
+            .filter_map(|(k, v)| {
+                k.as_scalar_string()
+                    .map(|s| (s.into_owned(), yml_value_to_minijinja(&v)))
+            })
+            .collect(),
         _ => BTreeMap::new(),
     }
 }
@@ -612,52 +637,6 @@ pub fn minijinja_value_to_typed_struct<T: DeserializeOwned>(value: MinijinjaValu
     })?;
 
     T::deserialize(yml_val).map_err(|e| yaml_to_fs_error(e, None))
-}
-
-/// Convert YmlValue to String
-pub fn yml_value_to_string(value: &YmlValue) -> Option<String> {
-    match value {
-        YmlValue::String(s, _) => Some(s.clone()),
-        YmlValue::Number(n, _) => Some(n.to_string()),
-        YmlValue::Bool(b, _) => Some(b.to_string()),
-        YmlValue::Null(_) => Some("null".to_string()),
-        _ => None,
-    }
-}
-
-/// Convert YmlValue to minijinja::Value
-pub fn yml_value_to_minijinja(value: YmlValue) -> MinijinjaValue {
-    match value {
-        YmlValue::Null(_) => MinijinjaValue::from(None::<()>),
-        YmlValue::Bool(b, _) => MinijinjaValue::from(b),
-        YmlValue::String(s, _) => MinijinjaValue::from(s),
-        YmlValue::Number(n, _) => {
-            if let Some(i) = n.as_i64() {
-                MinijinjaValue::from(i)
-            } else if let Some(f) = n.as_f64() {
-                MinijinjaValue::from(f)
-            } else {
-                MinijinjaValue::from(n.to_string())
-            }
-        }
-        YmlValue::Sequence(seq, _) => {
-            let items: Vec<MinijinjaValue> = seq.into_iter().map(yml_value_to_minijinja).collect();
-            MinijinjaValue::from(items)
-        }
-        YmlValue::Mapping(map, _) => {
-            let mut result = BTreeMap::new();
-            for (k, v) in map {
-                if let YmlValue::String(key, _) = k {
-                    result.insert(key, yml_value_to_minijinja(v));
-                }
-            }
-            MinijinjaValue::from_object(result)
-        }
-        YmlValue::Tagged(tagged, _) => {
-            // For tagged values, convert the inner value
-            yml_value_to_minijinja(tagged.value)
-        }
-    }
 }
 
 pub fn try_string_to_type<T: DeserializeOwned>(
@@ -880,21 +859,21 @@ where
 {
     let value = dbt_yaml::Value::deserialize(deserializer)?;
     match value {
-        dbt_yaml::Value::String(s, _) => Ok(Some(StringOrArrayOfStrings::String(s))),
-        dbt_yaml::Value::Number(n, _) => Ok(Some(StringOrArrayOfStrings::String(n.to_string()))),
         dbt_yaml::Value::Sequence(values, _) => values
             .into_iter()
-            .map(|value| match value {
-                dbt_yaml::Value::String(s, _) => Ok(s),
-                dbt_yaml::Value::Number(n, _) => Ok(n.to_string()),
-                _ => Err(de::Error::custom("expected a string or number")),
+            .map(|value| {
+                value
+                    .as_scalar_string()
+                    .map(|s| s.into_owned())
+                    .ok_or_else(|| de::Error::custom("expected a scalar"))
             })
             .collect::<Result<Vec<_>, _>>()
             .map(|values| Some(StringOrArrayOfStrings::ArrayOfStrings(values))),
         dbt_yaml::Value::Null(_) => Ok(None),
-        _ => Err(de::Error::custom(
-            "expected a string, number, array, or null",
-        )),
+        other => other
+            .as_scalar_string()
+            .map(|s| Some(StringOrArrayOfStrings::String(s.into_owned())))
+            .ok_or_else(|| de::Error::custom("expected a scalar, array, or null")),
     }
 }
 

@@ -8,7 +8,7 @@ use minijinja::value::{Object, ValueKind};
 use minijinja::{Error, ErrorKind, State, Value};
 use serde::Serialize;
 
-use crate::cli_value::cli_var_value_to_minijinja;
+use crate::utils::yml_value_to_minijinja;
 
 /// Shared behavior for dbt var-like functions.
 pub trait VarFunction: Object {
@@ -204,9 +204,9 @@ impl VarFunction for Var {
         if let Some(overrides) = &self.overrides
             && let Some(value) = overrides.get(&var_name)
         {
-            Ok(cli_var_value_to_minijinja(value))
+            Ok(yml_value_to_minijinja(value))
         } else if let Some(value) = self.vars.get(&var_name) {
-            Ok(cli_var_value_to_minijinja(value))
+            Ok(yml_value_to_minijinja(value))
         } else if let Some(default) = default_value {
             Ok(default)
         } else {

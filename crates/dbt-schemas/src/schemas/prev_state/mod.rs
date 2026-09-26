@@ -2674,7 +2674,7 @@ mod tests {
             (
                 "begin",
                 ExcludeKind::Relevant,
-                Box::new(|n| n.deprecated_config.begin = Some("2024-01-01".to_string())),
+                Box::new(|n| n.deprecated_config.begin = dbt_yaml::Timestamp::parse("2024-01-01")),
             ),
             (
                 "persist_docs",
