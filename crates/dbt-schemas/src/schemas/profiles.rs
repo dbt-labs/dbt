@@ -530,7 +530,10 @@ impl DbConfig {
     pub fn to_connection_mapping(&self) -> Result<dbt_yaml::Mapping, dbt_yaml::Error> {
         let connection_keys = self.get_connection_keys();
         let mapping = self.to_mapping()?;
-        let filtered = mapping
+        // #13626: `dbt debug` printed keys in struct-serialization order, burying
+        // key fields like `account` at the bottom. Sort alphabetically so every
+        // adapter renders a deterministic, scannable order.
+        let mut entries: Vec<(dbt_yaml::Value, dbt_yaml::Value)> = mapping
             .into_iter()
             .filter(|(key, _)| {
                 key.as_str()
@@ -538,7 +541,8 @@ impl DbConfig {
                     .unwrap_or(false)
             })
             .collect();
-        Ok(filtered)
+        entries.sort_by(|(a, _), (b, _)| a.as_str().cmp(&b.as_str()));
+        Ok(entries.into_iter().collect())
     }
 
     pub fn to_mapping(&self) -> Result<dbt_yaml::Mapping, dbt_yaml::Error> {
@@ -2832,6 +2836,40 @@ extensions:
                 .and_then(|v| v.as_str()),
             Some("my-workgroup")
         );
+    }
+
+    #[test]
+    fn test_connection_mapping_keys_are_sorted_alphabetically() {
+        // #13626: `dbt debug` buried `account` at the bottom; keys must be alphabetical.
+        let config: DbConfig = dbt_yaml::from_str(
+            "type: snowflake\n\
+             account: myaccount\n\
+             user: myuser\n\
+             database: mydb\n\
+             warehouse: mywh\n\
+             role: myrole\n\
+             schema: public\n\
+             connect_retries: 0\n\
+             connect_timeout: 10\n\
+             retry_all: false\n\
+             retry_on_database_errors: false\n\
+             client_session_keep_alive: false",
+        )
+        .unwrap();
+
+        let mapping = config.to_connection_mapping().unwrap();
+        let keys: Vec<String> = mapping
+            .into_iter()
+            .filter_map(|(k, _)| k.as_str().map(|s| s.to_string()))
+            .collect();
+        let mut sorted = keys.clone();
+        sorted.sort();
+        assert_eq!(
+            keys, sorted,
+            "connection mapping keys should be alphabetical (see #13626)"
+        );
+        assert_eq!(keys.first().unwrap(), "account");
+        assert_eq!(keys.last().unwrap(), "warehouse");
     }
 
     #[test]
