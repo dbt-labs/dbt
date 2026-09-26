@@ -47,6 +47,18 @@ impl ConfiguredVar {
         }
     }
 
+    /// Returns a copy where `overrides` take precedence over the CLI vars, as dbt-core
+    /// does for unit test `overrides.vars`. Project and package vars stay reachable.
+    pub fn with_overrides(&self, overrides: &BTreeMap<String, dbt_yaml::Value>) -> Self {
+        let mut var = self.clone();
+        var.cli_vars.extend(
+            overrides
+                .iter()
+                .map(|(key, val)| (key.clone(), yml_value_to_minijinja(val))),
+        );
+        var
+    }
+
     fn package_name(&self, state: &State<'_, '_>, var_name: &str) -> Result<String, Error> {
         self.package_name
             .clone()
@@ -256,6 +268,35 @@ mod tests {
             .unwrap();
         let rendered = template.render(minijinja::context!(), &[]).unwrap();
         assert_eq!(rendered, "202608");
+    }
+
+    /// Unit test `overrides.vars` win over CLI vars and must not hide project vars.
+    #[test]
+    fn overrides_take_precedence_and_keep_project_vars() {
+        let project_vars: IndexMap<String, DbtVars> =
+            dbt_yaml::from_str("max_ts: '9999-12-31'\nfrom_cli: project\n").unwrap();
+        let vars = BTreeMap::from([("my_new_project".to_string(), project_vars)]);
+        let cli_vars: BTreeMap<String, dbt_yaml::Value> =
+            dbt_yaml::from_str("from_cli: cli\noverridden: cli\n").unwrap();
+        let overrides: BTreeMap<String, dbt_yaml::Value> =
+            dbt_yaml::from_str("overridden: override\nunrelated: x\n").unwrap();
+
+        let mut env = minijinja::Environment::new();
+        env.add_global(TARGET_PACKAGE_NAME, MinijinjaValue::from("my_new_project"));
+        env.add_global(
+            "var",
+            MinijinjaValue::from_object(
+                ConfiguredVar::new(vars, cli_vars).with_overrides(&overrides),
+            ),
+        );
+
+        let template = env
+            .template_from_str(
+                "{{ var('max_ts') }},{{ var('from_cli') }},{{ var('overridden') }},{{ var('unrelated') }}",
+            )
+            .unwrap();
+        let rendered = template.render(minijinja::context!(), &[]).unwrap();
+        assert_eq!(rendered, "9999-12-31,cli,override,x");
     }
 
     #[test]
