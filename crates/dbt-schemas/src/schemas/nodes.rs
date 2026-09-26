@@ -2661,6 +2661,7 @@ impl InternalDbtNode for DbtSnapshot {
                 self_config.invalidate_hard_deletes == other_config.invalidate_hard_deletes;
             // dbt State configs (mirror `ModelConfig::same_config`).
             let state_eq = self_config.state == other_config.state;
+            let table_format_eq = self_config.table_format == other_config.table_format;
 
             // Adapter specific configs
             let warehouse_config_eq = same_warehouse_config(
@@ -2691,6 +2692,7 @@ impl InternalDbtNode for DbtSnapshot {
                 && quote_columns_eq
                 && invalidate_hard_deletes_eq
                 && state_eq
+                && table_format_eq
                 // Adapter specific configs
                 && warehouse_config_eq;
 
@@ -2866,6 +2868,14 @@ impl InternalDbtNode for DbtSnapshot {
                             Some((
                                 format!("{:?}", &self_config.state),
                                 format!("{:?}", &other_config.state),
+                            )),
+                        ),
+                        (
+                            "table_format",
+                            table_format_eq,
+                            Some((
+                                format!("{:?}", &self_config.table_format),
+                                format!("{:?}", &other_config.table_format),
                             )),
                         ),
                         ("warehouse_config", warehouse_config_eq, None),
@@ -5417,6 +5427,10 @@ pub struct DbtSnapshotAttr {
     pub sync: Option<SyncConfig>,
     /// dbt State configs, read by the run-cache at run time.
     pub state: Option<crate::schemas::properties::ModelState>,
+    // Exposed top-level on the node (like DbtModelAttr) so catalog resolution
+    // can classify snapshot targets such as Snowflake-managed Iceberg.
+    pub catalog_name: Option<String>,
+    pub table_format: Option<String>,
 }
 
 #[skip_serializing_none]

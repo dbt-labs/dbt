@@ -1,11 +1,187 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
+use dbt_adapter::relation::{Relation, RelationObject};
 use dbt_adapter_core::AdapterType;
 use dbt_jinja_utils::mock_object::MockJinjaObject;
+use dbt_schemas::dbt_types::RelationType;
+use dbt_schemas::schemas::relations::base::{BaseRelation, TableFormat};
 use minijinja::Value;
 
-use crate::macro_test_harness::{MacroTestHarness, default_mock_config};
+use crate::macro_test_harness::{
+    MacroTestHarness, assert_executed_contains, default_mock_config, executed_sql,
+    resolved_quoting_for,
+};
+
+#[test]
+fn snapshot_time_uses_iceberg_compatible_precision() {
+    let harness = MacroTestHarness::for_adapter(AdapterType::Snowflake)
+        .load_all_macros()
+        .build()
+        .expect("harness should build");
+
+    let config = default_mock_config();
+    config.on("get", |args| {
+        let key = args.first().and_then(|v| v.as_str());
+        let default = args.get(1).cloned().unwrap_or(Value::UNDEFINED);
+        match key {
+            Some("table_format") => Ok(Value::from("iceberg")),
+            _ => Ok(default),
+        }
+    });
+    let ctx = BTreeMap::from([("config".to_string(), Value::from_dyn_object(config))]);
+
+    let rendered = harness
+        .render("{{ snapshot_get_time() }}", ctx)
+        .expect("snapshot_get_time should render");
+    let normalized = rendered.split_whitespace().collect::<Vec<_>>().join(" ");
+
+    assert_eq!(
+        normalized,
+        "to_timestamp_ntz(convert_timezone('UTC', current_timestamp()))::timestamp_ntz(6)"
+    );
+}
+
+#[test]
+fn snapshot_time_uses_default_precision_for_non_iceberg() {
+    let harness = MacroTestHarness::for_adapter(AdapterType::Snowflake)
+        .load_all_macros()
+        .build()
+        .expect("harness should build");
+
+    let ctx = BTreeMap::from([(
+        "config".to_string(),
+        Value::from_dyn_object(default_mock_config()),
+    )]);
+
+    let rendered = harness
+        .render("{{ snapshot_get_time() }}", ctx)
+        .expect("snapshot_get_time should render");
+    let normalized = rendered.split_whitespace().collect::<Vec<_>>().join(" ");
+
+    assert_eq!(
+        normalized,
+        "to_timestamp_ntz(convert_timezone('UTC', current_timestamp()))"
+    );
+}
+
+#[test]
+fn snapshot_schema_evolution_uses_iceberg_alter() {
+    let harness = MacroTestHarness::for_adapter(AdapterType::Snowflake)
+        .load_all_macros()
+        .with_stub_functions()
+        .build()
+        .expect("harness should build");
+    harness.mock().on("quote", |args| {
+        let identifier = args
+            .first()
+            .and_then(Value::as_str)
+            .expect("quote should receive an identifier");
+        Ok(Value::from(format!("\"{identifier}\"")))
+    });
+
+    let relation: Arc<dyn BaseRelation> = Arc::new(
+        Relation::new(
+            AdapterType::Snowflake,
+            "TEST_DB".to_string(),
+            "TEST_SCHEMA".to_string(),
+            "SNAPSHOT".to_string(),
+        )
+        .with_relation_type(RelationType::Table)
+        .with_quoting(resolved_quoting_for(AdapterType::Snowflake))
+        .with_table_format(TableFormat::Iceberg),
+    );
+    let column = Arc::new(MockJinjaObject::new());
+    column.set_attr("name", Value::from("NEW_COLUMN"));
+    column.set_attr("data_type", Value::from("NUMBER"));
+    column.on("is_string", |_| Ok(Value::from(false)));
+    let context = BTreeMap::from([
+        (
+            "relation".to_string(),
+            RelationObject::new(relation).into_value(),
+        ),
+        (
+            "columns".to_string(),
+            Value::from(vec![Value::from_dyn_object(column)]),
+        ),
+        ("execute".to_string(), Value::from(true)),
+    ]);
+
+    harness
+        .render("{{ create_columns(relation, columns) }}", context)
+        .expect("snapshot column creation should render");
+
+    assert_executed_contains(
+        harness.mock(),
+        "alter iceberg table TEST_DB.TEST_SCHEMA.SNAPSHOT add column",
+    );
+    assert_executed_contains(harness.mock(), "\"NEW_COLUMN\"");
+}
+
+#[test]
+fn snapshot_schema_evolution_uses_default_alter_for_non_iceberg() {
+    let harness = MacroTestHarness::for_adapter(AdapterType::Snowflake)
+        .load_all_macros()
+        .with_stub_functions()
+        .build()
+        .expect("harness should build");
+    harness.mock().on("quote", |args| {
+        let identifier = args
+            .first()
+            .and_then(Value::as_str)
+            .expect("quote should receive an identifier");
+        Ok(Value::from(format!("\"{identifier}\"")))
+    });
+
+    let relation: Arc<dyn BaseRelation> = Arc::new(
+        Relation::new(
+            AdapterType::Snowflake,
+            "TEST_DB".to_string(),
+            "TEST_SCHEMA".to_string(),
+            "SNAPSHOT".to_string(),
+        )
+        .with_relation_type(RelationType::Table)
+        .with_quoting(resolved_quoting_for(AdapterType::Snowflake))
+        .with_table_format(TableFormat::Default),
+    );
+    let column = Arc::new(MockJinjaObject::new());
+    column.set_attr("name", Value::from("NEW_COLUMN"));
+    column.set_attr("data_type", Value::from("NUMBER"));
+    column.on("is_string", |_| Ok(Value::from(false)));
+    let context = BTreeMap::from([
+        (
+            "relation".to_string(),
+            RelationObject::new(relation).into_value(),
+        ),
+        (
+            "columns".to_string(),
+            Value::from(vec![Value::from_dyn_object(column)]),
+        ),
+        ("execute".to_string(), Value::from(true)),
+    ]);
+
+    harness
+        .render("{{ create_columns(relation, columns) }}", context)
+        .expect("snapshot column creation should render");
+
+    let sqls = executed_sql(harness.mock());
+    let normalized: Vec<String> = sqls
+        .iter()
+        .map(|s| s.split_whitespace().collect::<Vec<_>>().join(" "))
+        .collect();
+    assert!(
+        normalized.iter().any(|s| s
+            .to_lowercase()
+            .contains("alter table test_db.test_schema.snapshot add column")),
+        "expected a plain ALTER TABLE for a non-Iceberg snapshot, got: {sqls:?}"
+    );
+    assert!(
+        !normalized
+            .iter()
+            .any(|s| s.to_lowercase().contains("iceberg")),
+        "non-Iceberg snapshot should not use ALTER ICEBERG TABLE, got: {sqls:?}"
+    );
+}
 
 #[test]
 fn python_table_tmp_relation_type_is_allowed() {

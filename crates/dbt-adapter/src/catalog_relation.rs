@@ -1860,6 +1860,9 @@ mod has_catalog_linked_database_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use dbt_common::serde_utils::convert_yml_to_value_map;
+    use dbt_schemas::schemas::project::SnapshotConfig;
+    use dbt_schemas::schemas::{DbtSnapshot, InternalDbtNode};
     use minijinja::Value as JVal;
     use serde_json::json;
 
@@ -1925,6 +1928,21 @@ mod tests {
         } else {
             panic!("Config is not a JSON object");
         }
+    }
+
+    fn snapshot(config: SnapshotConfig) -> JVal {
+        let mut snapshot = DbtSnapshot {
+            deprecated_config: config,
+            ..Default::default()
+        };
+        snapshot.__snapshot_attr__.catalog_name = snapshot
+            .deprecated_config
+            .__warehouse_specific_config__
+            .catalog_name
+            .clone();
+        snapshot.__snapshot_attr__.table_format = snapshot.deprecated_config.table_format.clone();
+
+        JVal::from_object(convert_yml_to_value_map(snapshot.serialize()))
     }
 
     fn s(s: &str) -> YmlValue {
@@ -2094,6 +2112,37 @@ mod tests {
             assert!(r.external_volume.is_none());
             assert!(r.base_location.is_none());
         }
+    }
+
+    #[test]
+    fn snapshot_config_selects_snowflake_iceberg_relation() {
+        let mut config = SnapshotConfig {
+            schema: Some("SCH".to_string()),
+            alias: Some("SNAPSHOT".to_string()),
+            table_format: Some("iceberg".to_string()),
+            ..Default::default()
+        };
+        config.__warehouse_specific_config__.external_volume = Some("EV".to_string());
+        config.__warehouse_specific_config__.iceberg_version = Some(2);
+        let snapshot = snapshot(config);
+
+        let relation = CatalogRelation::from_model_config_and_catalogs(
+            AdapterType::Snowflake,
+            &snapshot,
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(relation.catalog_type, CatalogType::SnowflakeBuiltIn);
+        assert_eq!(relation.table_format, TableFormat::Iceberg);
+        assert_eq!(relation.external_volume.as_deref(), Some("EV"));
+        assert_eq!(
+            relation
+                .adapter_properties
+                .get("iceberg_version")
+                .map(String::as_str),
+            Some("2")
+        );
     }
 
     #[test]
@@ -2920,6 +2969,35 @@ mod tests {
             );
             assert!(r.is_transient.is_none());
         }
+    }
+
+    #[test]
+    fn snapshot_config_selects_databricks_iceberg_relation() {
+        let cats = catalogs_yaml_one(
+            "UC",
+            "WIN",
+            "unity",
+            "ICEBERG",
+            &[("file_format", s("delta"))],
+        );
+        let mut config = SnapshotConfig {
+            table_format: Some("iceberg".to_string()),
+            ..Default::default()
+        };
+        config.__warehouse_specific_config__.catalog_name = Some("UC".to_string());
+        let snapshot = snapshot(config);
+
+        let relation = CatalogRelation::from_model_config_and_catalogs(
+            AdapterType::Databricks,
+            &snapshot,
+            Some(Arc::new(DbtCatalogs::new(cats, Default::default()))),
+        )
+        .unwrap();
+
+        assert_eq!(relation.catalog_name.as_deref(), Some("UC"));
+        assert_eq!(relation.catalog_type, CatalogType::Unity);
+        assert_eq!(relation.table_format, TableFormat::Iceberg);
+        assert_eq!(relation.file_format.as_deref(), Some("delta"));
     }
 
     #[test]

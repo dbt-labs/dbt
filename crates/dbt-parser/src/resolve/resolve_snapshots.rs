@@ -618,6 +618,11 @@ pub async fn resolve_snapshots(
                     },
                     sync: snapshot_config.sync.clone(),
                     state: snapshot_config.state.clone(),
+                    catalog_name: snapshot_config
+                        .__warehouse_specific_config__
+                        .catalog_name
+                        .clone(),
+                    table_format: snapshot_config.table_format.clone(),
                 },
                 __adapter_attr__: AdapterAttr::from_config_and_dialect(
                     &snapshot_config.__warehouse_specific_config__,
