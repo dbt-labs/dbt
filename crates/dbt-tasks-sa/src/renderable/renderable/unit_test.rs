@@ -1939,21 +1939,20 @@ fn yml_sequence_to_sql_literal(
             parent_data_type
         ));
     };
-    let mut element_type_literal = String::new();
-    type_ops
-        .format_arrow_type_as_sql(element_field.data_type(), true, &mut element_type_literal)
-        .map_err(|e| {
-            fs_err!(
-                ErrorCode::InvalidConfig,
-                "Failed to format element type {:?}: {}",
-                element_field.data_type(),
-                e
-            )
-        })?;
-
-    // Snowflake's containers are 'untyped' and can be heterogeneous, e.g.
-    // SELECT ARRAY_CONSTRUCT(1, 'two')
-    let supports_hlist = adapter_type == AdapterType::Snowflake;
+    let element_type_literal = format_fixture_type(type_ops, element_field, true)?;
+    let cast_elements = match adapter_type {
+        // Snowflake's containers are 'untyped' and can be heterogeneous, e.g.
+        // SELECT ARRAY_CONSTRUCT(1, 'two')
+        AdapterType::Snowflake => false,
+        // BigQuery cannot cast arrays with different element types, so struct
+        // elements must be cast before constructing the array.
+        // https://cloud.google.com/bigquery/docs/reference/standard-sql/conversion_functions#cast_as_array
+        AdapterType::Bigquery => {
+            !element_field.data_type().is_nested()
+                || matches!(element_field.data_type(), DataType::Struct(_))
+        }
+        _ => !element_field.data_type().is_nested(),
+    };
 
     let child_literals = value
         .into_iter()
@@ -1961,15 +1960,20 @@ fn yml_sequence_to_sql_literal(
             let literal =
                 yml_value_to_sql_literal(adapter_type, type_ops, v, element_field.data_type())?;
 
-            if supports_hlist || element_field.data_type().is_nested() {
-                Ok(literal)
+            if cast_elements {
+                Ok(format!("CAST({literal} AS {element_type_literal})"))
             } else {
-                Ok(format!("CAST({} AS {})", literal, element_type_literal))
+                Ok(literal)
             }
         })
         .collect::<FsResult<Vec<_>>>()?;
 
-    Ok(format!("[{}]", child_literals.join(", ")))
+    match adapter_type {
+        AdapterType::Bigquery if child_literals.is_empty() => {
+            Ok(format!("ARRAY<{element_type_literal}>[]"))
+        }
+        _ => Ok(format!("[{}]", child_literals.join(", "))),
+    }
 }
 
 /// Renders a `dbt_yaml::value::Mapping` to a SQL literal expression. All dialects
@@ -2100,6 +2104,28 @@ fn yml_value_to_sql_literal(
     }
 }
 
+fn format_fixture_type(type_ops: &dyn TypeOps, field: &Field, nullable: bool) -> FsResult<String> {
+    match type_ops.adapter_type() {
+        AdapterType::Bigquery => type_ops
+            .get_original_sql_type_from_field(field)
+            .map(Cow::into_owned),
+        _ => {
+            let mut formatted = String::new();
+            type_ops
+                .format_arrow_type_as_sql(field.data_type(), nullable, &mut formatted)
+                .map(|()| formatted)
+        }
+    }
+    .map_err(|e| {
+        fs_err!(
+            ErrorCode::InvalidConfig,
+            "Failed to format type {:?}: {}",
+            field.data_type(),
+            e
+        )
+    })
+}
+
 fn columns_to_formatted_types<'a>(
     ref_schema: &'a SchemaRef,
     type_ops: &dyn TypeOps,
@@ -2108,17 +2134,7 @@ fn columns_to_formatted_types<'a>(
         .fields()
         .iter()
         .map(|f| {
-            let mut formatted = String::new();
-            type_ops
-                .format_arrow_type_as_sql(f.data_type(), f.is_nullable(), &mut formatted)
-                .map_err(|e| {
-                    fs_err!(
-                        ErrorCode::InvalidConfig,
-                        "Failed to format type {:?}: {}",
-                        f.data_type(),
-                        e
-                    )
-                })?;
+            let formatted = format_fixture_type(type_ops, f, f.is_nullable())?;
             Ok((f.name(), f.data_type(), formatted))
         })
         .collect::<FsResult<Vec<_>>>()
@@ -4180,5 +4196,120 @@ mod tests {
         ]));
         let result = strip_pseudocolumns(&schema, AdapterType::Snowflake);
         assert!(Arc::ptr_eq(&schema, &result));
+    }
+
+    #[test]
+    fn format_fixture_type_falls_back_without_metadata() {
+        let type_ops = DefaultTypeOps::new(AdapterType::Bigquery);
+        let field = Field::new(
+            "c",
+            DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into())),
+            true,
+        );
+        assert_eq!(
+            format_fixture_type(&type_ops, &field, true).unwrap(),
+            "TIMESTAMP"
+        );
+
+        let type_ops = DefaultTypeOps::new(AdapterType::Snowflake);
+        let field =
+            make_arrow_field(&type_ops, "c".to_string(), "TIMESTAMP_NTZ(9)", None, None).unwrap();
+        assert_eq!(
+            format_fixture_type(&type_ops, &field, true).unwrap(),
+            "timestamp without time zone"
+        );
+    }
+
+    mod bigquery_fixtures {
+        use super::*;
+        use dbt_adapter::column::BigqueryColumnMode;
+
+        fn render_fixture(schema: &SchemaRef, yaml: &str) -> String {
+            let rows: Vec<BTreeMap<String, YmlValue>> = dbt_yaml::from_str(yaml).unwrap();
+            let render = |allow_pseudocolumns| {
+                create_values(
+                    schema,
+                    &rows,
+                    AdapterType::Bigquery,
+                    &DefaultTypeOps::new(AdapterType::Bigquery),
+                    None,
+                    "t",
+                    allow_pseudocolumns,
+                )
+                .unwrap()
+            };
+            let expected = render(false);
+            assert_eq!(
+                expected,
+                render(true),
+                "given and expect fixtures must render identically"
+            );
+            expected
+        }
+
+        fn schema_from_columns(columns: &[(&str, &str)]) -> SchemaRef {
+            let type_ops = DefaultTypeOps::new(AdapterType::Bigquery);
+            let columns = columns
+                .iter()
+                .map(|(name, sql_type)| {
+                    Column::new_bigquery(
+                        name.to_string(),
+                        sql_type.to_string(),
+                        Vec::new(),
+                        BigqueryColumnMode::Nullable,
+                    )
+                })
+                .collect();
+            columns_to_schema(&type_ops, columns, "unit_test.regression").unwrap()
+        }
+
+        #[test]
+        fn fixture_casts_preserve_reported_types() {
+            for (sql_type, value) in [
+                ("TIMESTAMP", "2026-01-01 00:00:00+00"),
+                ("DATETIME", "2026-01-01 00:00:00"),
+                ("NUMERIC", "123456789.123456789"),
+                ("BIGNUMERIC", "123456789.123456789123456789"),
+            ] {
+                let schema = schema_from_columns(&[
+                    ("scalar", sql_type),
+                    ("items", &format!("ARRAY<{sql_type}>")),
+                    ("records", &format!("ARRAY<STRUCT<item_value {sql_type}>>")),
+                ]);
+                let sql = render_fixture(
+                    &schema,
+                    &format!(
+                        "- scalar: '{value}'\n  items: ['{value}']\n  records: [{{item_value: '{value}'}}]"
+                    ),
+                );
+                assert_contains!(sql, &format!("CAST('{value}' AS {sql_type}) AS scalar"));
+                assert_contains!(
+                    sql,
+                    &format!("CAST([CAST('{value}' AS {sql_type})] AS ARRAY<{sql_type}>) AS items")
+                );
+                assert_contains!(
+                    sql,
+                    &format!(
+                        "CAST([CAST(STRUCT('{value}' AS item_value) AS STRUCT<item_value {sql_type}>)] AS ARRAY<STRUCT<item_value {sql_type}>>) AS records"
+                    )
+                );
+                assert_contains!(
+                    render_fixture(&schema, "[]"),
+                    &format!(
+                        "ARRAY<STRUCT<scalar {sql_type}, items ARRAY<{sql_type}>, records ARRAY<STRUCT<item_value {sql_type}>>>>[]"
+                    )
+                );
+            }
+        }
+
+        #[test]
+        fn nested_empty_arrays_keep_their_element_type() {
+            for sql_type in ["TIMESTAMP", "DATETIME", "NUMERIC", "BIGNUMERIC"] {
+                let schema =
+                    schema_from_columns(&[("nested", &format!("STRUCT<items ARRAY<{sql_type}>>"))]);
+                let sql = render_fixture(&schema, "- nested: {items: []}");
+                assert_contains!(sql, &format!("STRUCT(ARRAY<{sql_type}>[] AS items)"));
+            }
+        }
     }
 }
