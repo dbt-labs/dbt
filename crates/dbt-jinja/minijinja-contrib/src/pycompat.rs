@@ -294,6 +294,11 @@ fn string_methods(value: &Value, method: &str, args: &[Value]) -> Result<Value, 
         }
         "count" => {
             let (what,): (&str,) = from_args(args)?;
+            if what.is_empty() {
+                // Python behavior: "abc".count("") == 4, "".count("") == 1
+                // Number of Unicode characters + 1
+                return Ok(Value::from(s.chars().count() + 1));
+            }
             let mut c = 0;
             let mut rest = s;
             while let Some(offset) = rest.find(what) {
