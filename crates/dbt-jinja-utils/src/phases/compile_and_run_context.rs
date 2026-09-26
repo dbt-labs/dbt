@@ -258,7 +258,7 @@ impl MicrobatchRefContext {
 /// - Package-qualified refs: `ref('package_name', 'model_name')`
 /// - Versioned refs: `ref('model_name', version=1)`
 /// - Microbatch-aware filtering when `microbatch_context` is set
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct RefFunction {
     node_resolver: Arc<dyn NodeResolverTracker>,
     package_name: String,
@@ -270,6 +270,8 @@ pub struct RefFunction {
     /// The unique_id of the node that owns this ref context.
     /// Used for O(1) defer decisions via `NodeResolver::prefers_deferred`.
     current_node_unique_id: String,
+    /// Physical relations visible only to this execution context, keyed by node identity.
+    relation_overrides: Option<Arc<BTreeMap<String, MinijinjaValue>>>,
 }
 
 impl RefFunction {
@@ -287,6 +289,7 @@ impl RefFunction {
             validation_config: DependencyValidationConfig::default(),
             microbatch_context: None,
             current_node_unique_id: String::new(),
+            relation_overrides: None,
         }
     }
 
@@ -305,6 +308,7 @@ impl RefFunction {
             validation_config,
             microbatch_context: None,
             current_node_unique_id,
+            relation_overrides: None,
         }
     }
 
@@ -328,6 +332,7 @@ impl RefFunction {
             validation_config,
             microbatch_context: Some(microbatch_context),
             current_node_unique_id,
+            relation_overrides: None,
         }
     }
 
@@ -337,6 +342,18 @@ impl RefFunction {
     pub fn with_microbatch_context(self, microbatch_context: MicrobatchRefContext) -> Self {
         Self {
             microbatch_context: Some(microbatch_context),
+            ..self
+        }
+    }
+
+    /// Bind selected node identities to execution-local physical relations.
+    /// Dependency validation still runs before an override is considered.
+    pub fn with_relation_overrides(
+        self,
+        relation_overrides: Arc<BTreeMap<String, MinijinjaValue>>,
+    ) -> Self {
+        Self {
+            relation_overrides: Some(relation_overrides),
             ..self
         }
     }
@@ -432,6 +449,49 @@ To fix this, add the following hint to the top of the model \"{model_name}\":
     }
 }
 
+/// Overlay both spellings of `ref` without changing the shared resolver or base context.
+/// Invalid context objects are rejected before either binding is changed.
+pub fn apply_ref_relation_overrides(
+    context: &mut BTreeMap<String, MinijinjaValue>,
+    relation_overrides: Arc<BTreeMap<String, MinijinjaValue>>,
+) -> Result<(), MinijinjaError> {
+    let ref_function = context
+        .get("ref")
+        .and_then(MinijinjaValue::as_object)
+        .and_then(|object| object.downcast_ref::<RefFunction>())
+        .ok_or_else(|| {
+            MinijinjaError::new(
+                MinijinjaErrorKind::InvalidOperation,
+                "execution relation overrides require the built-in ref function",
+            )
+        })?;
+    let ref_value = MinijinjaValue::from_object(
+        ref_function
+            .clone()
+            .with_relation_overrides(relation_overrides),
+    );
+    let mut builtins = match context.get("builtins") {
+        Some(value) => value
+            .as_object()
+            .and_then(|object| object.downcast_ref::<BTreeMap<String, MinijinjaValue>>())
+            .cloned()
+            .ok_or_else(|| {
+                MinijinjaError::new(
+                    MinijinjaErrorKind::InvalidOperation,
+                    "execution relation overrides require the built-in context map",
+                )
+            })?,
+        None => BTreeMap::new(),
+    };
+    builtins.insert("ref".to_string(), ref_value.clone());
+    context.insert("ref".to_string(), ref_value);
+    context.insert(
+        "builtins".to_string(),
+        MinijinjaValue::from_object(builtins),
+    );
+    Ok(())
+}
+
 impl Object for RefFunction {
     fn call(
         self: &Arc<Self>,
@@ -450,15 +510,23 @@ impl Object for RefFunction {
             Ok((unique_id, relation, _, deferred_relation)) => {
                 // Validate that this ref is allowed (only if validation is configured)
                 self.validate_dependency(&unique_id, &package_name, &model_name)?;
-                // Use phase-aware defer logic: check if we should use the deferred
-                // (production) relation for this specific upstream node.
-                let prefers = self
-                    .node_resolver
-                    .prefers_deferred(&self.current_node_unique_id, &unique_id);
-                let resolved_relation = match (prefers, deferred_relation) {
-                    (true, Some(deferred)) => deferred,
-                    _ => relation,
-                };
+                let resolved_relation = self
+                    .relation_overrides
+                    .as_deref()
+                    .and_then(|overrides| overrides.get(&unique_id))
+                    .cloned()
+                    // Only ordinary refs consult phase-aware deferral. A scoped
+                    // execution relation must take precedence over production.
+                    .unwrap_or_else(|| match deferred_relation {
+                        Some(deferred)
+                            if self
+                                .node_resolver
+                                .prefers_deferred(&self.current_node_unique_id, &unique_id) =>
+                        {
+                            deferred
+                        }
+                        _ => relation,
+                    });
 
                 for listener in listeners {
                     listener.on_ref_or_source_resolved(&unique_id);
@@ -1011,9 +1079,283 @@ impl Object for LazyFlatGraph {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::node_resolver::NodeResolver;
+    use dbt_adapter::AdapterType;
+    use dbt_adapter::relation::create_relation_from_node;
+    use dbt_schemas::schemas::common::{DbtMaterialization, ResolvedQuoting};
+    use dbt_schemas::schemas::nodes::{CommonAttributes, DbtModel, DbtTest, NodeBaseAttributes};
+    use dbt_schemas::schemas::serde::StringOrInteger;
     use dbt_schemas::state::DummyNodeResolverTracker;
+    use dbt_schemas::state::ModelStatus;
     use dbt_test_utils::TestEnvGuard;
     use std::env;
+
+    fn ref_model(name: &str, alias: &str) -> DbtModel {
+        DbtModel {
+            __common_attr__: CommonAttributes {
+                unique_id: format!("model.pkg.{name}"),
+                name: name.to_string(),
+                package_name: "pkg".to_string(),
+                ..Default::default()
+            },
+            __base_attr__: NodeBaseAttributes {
+                database: "DB".to_string(),
+                schema: "SCHEMA".to_string(),
+                alias: alias.to_string(),
+                materialized: DbtMaterialization::Table,
+                quoting: ResolvedQuoting::enabled(),
+                ..Default::default()
+            },
+            ..Default::default()
+        }
+    }
+
+    fn relation_value(model: &DbtModel) -> MinijinjaValue {
+        RelationObject::new(
+            create_relation_from_node(AdapterType::Snowflake, model, None)
+                .unwrap()
+                .into(),
+        )
+        .into_value()
+    }
+
+    fn ref_context(resolver: NodeResolver) -> BTreeMap<String, MinijinjaValue> {
+        let ref_value = MinijinjaValue::from_object(RefFunction::new_unvalidated(
+            Arc::new(resolver),
+            "pkg".to_string(),
+            Arc::new(DbtRuntimeConfig::default()),
+        ));
+        BTreeMap::from([
+            ("ref".to_string(), ref_value.clone()),
+            (
+                "builtins".to_string(),
+                MinijinjaValue::from_object(BTreeMap::from([
+                    ("ref".to_string(), ref_value),
+                    (
+                        "config".to_string(),
+                        MinijinjaValue::from("original config"),
+                    ),
+                ])),
+            ),
+        ])
+    }
+
+    #[test]
+    fn execution_refs_override_defer_for_both_spellings_without_leaking() {
+        let mut model = ref_model("orders", "Public Orders");
+        model.__model_attr__.version = Some(StringOrInteger::Integer(1));
+        model.__model_attr__.latest_version = Some(StringOrInteger::Integer(1));
+        let upstream = ref_model("upstream", "Upstream");
+        let mut deferred = model.clone();
+        deferred.__base_attr__.database = "DEFERRED".to_string();
+        let mut candidate = model.clone();
+        candidate.__base_attr__.alias = "__DBT_WAP_TEST".to_string();
+
+        let mut resolver = NodeResolver::default();
+        resolver
+            .insert_ref(&model, AdapterType::Snowflake, ModelStatus::Enabled, false)
+            .unwrap();
+        resolver
+            .insert_ref(
+                &upstream,
+                AdapterType::Snowflake,
+                ModelStatus::Enabled,
+                false,
+            )
+            .unwrap();
+        resolver
+            .update_ref_with_deferral(&deferred, AdapterType::Snowflake, false)
+            .unwrap();
+        assert!(resolver.prefers_deferred("test.pkg.audit", &model.__common_attr__.unique_id));
+
+        let mut original = ref_context(resolver);
+        original.extend([
+            (
+                "this".to_string(),
+                MinijinjaValue::from("audit_failure_table"),
+            ),
+            (
+                "source".to_string(),
+                MinijinjaValue::from_function(|_: String, _: String| "public_source"),
+            ),
+        ]);
+        let mut audit = original.clone();
+        apply_ref_relation_overrides(
+            &mut audit,
+            Arc::new(BTreeMap::from([(
+                model.__common_attr__.unique_id.clone(),
+                relation_value(&candidate),
+            )])),
+        )
+        .unwrap();
+
+        let env = minijinja::Environment::new();
+        let template = "{{ ref('pkg', 'orders', version=1) }}|{{ builtins.ref('orders', v=1) }}|{{ ref('upstream') }}|{{ this }}|{{ source('raw', 'orders') }}";
+        assert_eq!(
+            env.render_str(template, &audit, &[]).unwrap(),
+            format!(
+                "{0}|{0}|{1}|audit_failure_table|public_source",
+                relation_value(&candidate),
+                relation_value(&upstream)
+            ),
+        );
+        assert_eq!(
+            env.render_str(
+                "{{ ref('orders', version=1) }}|{{ builtins.ref('orders', version=1) }}",
+                &original,
+                &[],
+            )
+            .unwrap(),
+            format!("{0}|{0}", relation_value(&deferred)),
+        );
+
+        // The run overlay replaces `builtins.config` and `this`, while both
+        // audit ref bindings must survive into the test materialization.
+        let test = DbtTest {
+            __common_attr__: CommonAttributes {
+                unique_id: "test.pkg.audit".to_string(),
+                name: "audit".to_string(),
+                package_name: "pkg".to_string(),
+                ..Default::default()
+            },
+            __base_attr__: NodeBaseAttributes {
+                alias: "audit_failures".to_string(),
+                ..model.__base_attr__.clone()
+            },
+            ..Default::default()
+        };
+        let (run_context, _) = crate::phases::run::build_run_node_context(
+            &test,
+            &test.deprecated_config,
+            AdapterType::Snowflake,
+            None,
+            &audit,
+            &dbt_common::io_args::IoArgs::default(),
+            dbt_telemetry::ExecutionPhase::Run,
+            None,
+            BTreeSet::new(),
+        );
+        assert_eq!(
+            env.render_str(
+                "{{ ref('orders', version=1) }}|{{ builtins.ref('orders', version=1) }}|{{ this.identifier }}",
+                &run_context,
+                &[],
+            ).unwrap(),
+            format!("{0}|{0}|audit_failures", relation_value(&candidate)),
+        );
+    }
+
+    #[test]
+    fn execution_refs_preserve_wrappers_identity_and_other_execution_contexts() {
+        let model = ref_model("orders", "Public Orders");
+        let mut other_package = ref_model("orders", "Other Package Orders");
+        other_package.__common_attr__.package_name = "other".to_string();
+        other_package.__common_attr__.unique_id = "model.other.orders".to_string();
+        let mut resolver = NodeResolver::default();
+        for node in [&model, &other_package] {
+            resolver
+                .insert_ref(node, AdapterType::Snowflake, ModelStatus::Enabled, false)
+                .unwrap();
+        }
+        let original = ref_context(resolver);
+        let mut candidates = Vec::new();
+        // Two independent overlays coexist on one resolver, as concurrent builds
+        // or separate audited models do. Neither may mutate the original binding.
+        for alias in ["__DBT_WAP_FIRST", "__DBT_WAP_SECOND"] {
+            let mut candidate = model.clone();
+            candidate.__base_attr__.alias = alias.to_string();
+            let mut context = original.clone();
+            apply_ref_relation_overrides(
+                &mut context,
+                Arc::new(BTreeMap::from([(
+                    model.__common_attr__.unique_id.clone(),
+                    relation_value(&candidate),
+                )])),
+            )
+            .unwrap();
+            candidates.push((candidate, context));
+        }
+        let env = minijinja::Environment::new();
+        let template = "{% macro ref(name) %}{{ builtins.ref(name) }}{% endmacro %}{{ ref('orders') }}|{{ builtins.ref.id('orders') }}|{{ builtins.ref('other', 'orders') }}|{{ builtins.config }}";
+        for (candidate, context) in &candidates {
+            assert_eq!(
+                env.render_str(template, context, &[]).unwrap(),
+                format!(
+                    "{}|{}|{}|original config",
+                    relation_value(candidate),
+                    model.__common_attr__.unique_id,
+                    relation_value(&other_package),
+                ),
+            );
+        }
+        assert_eq!(
+            env.render_str("{{ ref('orders') }}", &original, &[])
+                .unwrap(),
+            relation_value(&model).to_string(),
+        );
+    }
+
+    #[test]
+    fn execution_ref_overlays_reject_invalid_contexts_without_partial_changes() {
+        let model = ref_model("orders", "Public Orders");
+        let mut candidate = model.clone();
+        candidate.__base_attr__.alias = "__DBT_WAP_TEST".to_string();
+        let mut resolver = NodeResolver::default();
+        resolver
+            .insert_ref(&model, AdapterType::Snowflake, ModelStatus::Enabled, false)
+            .unwrap();
+        let original = ref_context(resolver);
+        let overrides = Arc::new(BTreeMap::from([(
+            model.__common_attr__.unique_id.clone(),
+            relation_value(&candidate),
+        )]));
+        let env = minijinja::Environment::new();
+
+        let mut invalid_builtins = original.clone();
+        invalid_builtins.insert("builtins".to_string(), MinijinjaValue::from("invalid"));
+        assert!(
+            apply_ref_relation_overrides(&mut invalid_builtins, Arc::clone(&overrides)).is_err()
+        );
+        assert_eq!(
+            env.render_str("{{ ref('orders') }}", &invalid_builtins, &[])
+                .unwrap(),
+            relation_value(&model).to_string(),
+        );
+
+        let mut invalid_ref = original;
+        invalid_ref.insert("ref".to_string(), MinijinjaValue::from("custom binding"));
+        assert!(apply_ref_relation_overrides(&mut invalid_ref, overrides).is_err());
+        assert_eq!(
+            env.render_str("{{ ref }}|{{ builtins.ref('orders') }}", &invalid_ref, &[])
+                .unwrap(),
+            format!("custom binding|{}", relation_value(&model)),
+        );
+    }
+
+    #[test]
+    fn execution_refs_do_not_bypass_dependency_validation() {
+        let model = ref_model("orders", "Public Orders");
+        let mut resolver = NodeResolver::default();
+        resolver
+            .insert_ref(&model, AdapterType::Snowflake, ModelStatus::Enabled, false)
+            .unwrap();
+        let ref_function = RefFunction::new_with_validation(
+            Arc::new(resolver),
+            "pkg".to_string(),
+            Arc::new(DbtRuntimeConfig::default()),
+            DependencyValidationConfig::new_validated(),
+            "test.pkg.audit".to_string(),
+        )
+        .with_relation_overrides(Arc::new(BTreeMap::from([(
+            model.__common_attr__.unique_id.clone(),
+            relation_value(&model),
+        )])));
+        let ctx = BTreeMap::from([("ref", MinijinjaValue::from_object(ref_function))]);
+        let err = minijinja::Environment::new()
+            .render_str("{{ ref('orders') }}", ctx, &[])
+            .unwrap_err();
+        assert!(err.to_string().contains("unable to infer all dependencies"));
+    }
 
     #[test]
     fn test_dbt_metadata_envs_populated_from_env() {

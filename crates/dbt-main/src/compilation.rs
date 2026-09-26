@@ -804,6 +804,7 @@ pub type DbtRunTasksResult = (
 
 use crate::partial_parse::{
     PrevCompilationResult, try_lazy_load_fast_path, try_load_prev_compilation,
+    wap_full_parse_reason,
 };
 use dbt_compilation::traits::{CompilationCache, CompiledProject};
 use dbt_state::selector::RunCacheStateSelectorArgs;
@@ -1271,6 +1272,25 @@ impl DbtProjectCompilation {
                 .await
             }
             Ok((mut compilation, jinja_env, changes)) => {
+                if let Some(reason) = wap_full_parse_reason(
+                    partial_load_filter_applied,
+                    &compilation.resolved_state.nodes,
+                ) {
+                    tracing::debug!("Partial parse: {reason}, falling back to full parse");
+                    return DbtProjectCompilation::initialize(
+                        feature_stack,
+                        arg,
+                        cli,
+                        config,
+                        event_emitter,
+                        jinja_type_checking_event_listener_factory,
+                        None,
+                        token,
+                        version_check_handle,
+                        artifacts_sink,
+                    )
+                    .await;
+                }
                 compilation.partial_load_filter_applied = partial_load_filter_applied;
                 Ok((compilation, jinja_env, changes))
             }
@@ -1604,12 +1624,21 @@ impl DbtProjectCompilation {
                     .await?
                 }
                 DbtScheduleDescription::Custom(custom_schedule_desc) => {
+                    let unique_ids =
+                        if custom_schedule_desc.is_retry && arg.command == FsCommand::Build {
+                            crate::retry::expand_wap_retry_ids(
+                                &custom_schedule_desc.unique_ids,
+                                &self.resolved_state.nodes,
+                            )?
+                        } else {
+                            custom_schedule_desc.unique_ids.clone()
+                        };
                     schedule_with_unique_ids(
                         &self.resolved_state,
                         scheduler_args,
                         maybe_previous_state.as_ref().map(|x| x.as_ref()),
                         run_cache_state_selector_args,
-                        &custom_schedule_desc.unique_ids,
+                        &unique_ids,
                         custom_schedule_desc.include_parents,
                         custom_schedule_desc.include_children,
                         custom_schedule_desc.indirect_selection,

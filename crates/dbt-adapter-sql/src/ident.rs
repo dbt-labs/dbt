@@ -263,11 +263,13 @@ pub fn quote_identifier(id: &str, backend: AdapterType) -> String {
 /// value can never terminate the literal early. The literal-value member of
 /// the family next to [`sanitize_identifier`] (strip) and [`quote_identifier`]
 /// (quote), which handle identifiers.
-pub fn escape_string_literal(s: &str, _backend: AdapterType) -> String {
-    // ANSI '' doubling — correct for every currently supported backend.
-    // Dialects with different literal-escape rules (e.g. backslash-escaped
-    // strings) grow a match arm on `_backend` when they arrive.
-    s.replace('\'', "''")
+pub fn escape_string_literal(s: &str, backend: AdapterType) -> String {
+    match backend {
+        // Snowflake interprets backslash escapes inside single-quoted literals.
+        // https://docs.snowflake.com/en/sql-reference/data-types-text#escape-sequences-in-single-quoted-string-constants
+        AdapterType::Snowflake => s.replace('\\', "\\\\").replace('\'', "''"),
+        _ => s.replace('\'', "''"),
+    }
 }
 
 #[cfg(test)]
@@ -299,6 +301,16 @@ mod sanitize_tests {
         assert_eq!(e("o'brien"), "o''brien");
         assert_eq!(e("'; DROP TABLE x; --"), "''; DROP TABLE x; --");
         assert_eq!(e("plain"), "plain");
+    }
+
+    #[test]
+    fn snowflake_string_literals_preserve_backslashes_and_quotes() {
+        let escape = |s: &str| escape_string_literal(s, AdapterType::Snowflake);
+        assert_eq!(escape(r"path\name"), r"path\\name");
+        assert_eq!(escape(r"\'; DROP TABLE x; --"), r"\\''; DROP TABLE x; --");
+        assert_eq!(escape("trailing\\"), "trailing\\\\");
+        assert_eq!(escape("o'brien"), "o''brien");
+        assert_eq!(escape("plain"), "plain");
     }
 
     #[test]

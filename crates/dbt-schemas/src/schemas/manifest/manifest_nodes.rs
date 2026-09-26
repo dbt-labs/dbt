@@ -849,6 +849,18 @@ pub struct ManifestModel {
 }
 #[derive(Deserialize, Serialize, Debug, Default, Clone, PartialEq, DbtSchema)]
 pub struct ManifestModelConfig {
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "crate::schemas::serde::strict_bool_or_string_bool"
+    )]
+    pub wap: Option<bool>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "crate::schemas::serde::strict_bool_or_string_bool"
+    )]
+    pub wap_retain_failed: Option<bool>,
     #[serde(default, deserialize_with = "bool_or_string_bool")]
     pub enabled: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1164,6 +1176,8 @@ impl From<ManifestSeedConfig> for SeedConfig {
 impl From<ModelConfig> for ManifestModelConfig {
     fn from(config: ModelConfig) -> Self {
         Self {
+            wap: config.wap,
+            wap_retain_failed: config.wap_retain_failed,
             enabled: config.enabled,
             compute: config.compute,
             alias: config.alias,
@@ -1242,6 +1256,8 @@ impl From<ModelConfig> for ManifestModelConfig {
 impl From<ManifestModelConfig> for ModelConfig {
     fn from(config: ManifestModelConfig) -> Self {
         Self {
+            wap: config.wap,
+            wap_retain_failed: config.wap_retain_failed,
             enabled: config.enabled,
             alias: config.alias,
             database: config.database,

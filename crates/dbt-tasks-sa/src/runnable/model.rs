@@ -319,6 +319,18 @@ pub fn execute_model_remote(
     ctx: &TaskRunnerCtx,
     task_result: &TaskResult,
 ) -> FsResult<NodeStatus> {
+    let sql_header = task_result
+        .config_map
+        .get("sql_header")
+        .map(|v| v.value().clone());
+    let wap = ctx.inner.wap_plan.model(&model.common().unique_id);
+    let execution_model = if let Some(wap) = wap {
+        crate::wap::prepare_stage(wap, ctx)?;
+        Some(wap.execution_model()?)
+    } else {
+        None
+    };
+    let model = execution_model.as_ref().unwrap_or(model);
     let mut base_context = ctx.inner.base_context.clone();
 
     add_task_context(&mut base_context, model.common(), &ctx.thread_id);
@@ -329,11 +341,6 @@ pub fn execute_model_remote(
     {
         return Ok(NodeStatus::NoOp);
     }
-
-    let sql_header = task_result
-        .config_map
-        .get("sql_header")
-        .map(|v| v.value().clone());
 
     // Traditional warehouse execution via Jinja materialization macros
     match materialize_model(
@@ -361,7 +368,7 @@ pub fn execute_model_remote(
     }
 
     // After successful materialization, create the latest version pointer view if applicable
-    if should_create_latest_version_pointer(model, ctx.runtime_config()) {
+    if wap.is_none() && should_create_latest_version_pointer(model, ctx.runtime_config()) {
         let relations_map = materialize_latest_version_pointer(
             model,
             model.node_adapter(),
@@ -370,6 +377,7 @@ pub fn execute_model_remote(
             ctx.env.clone(),
             &base_context,
             &ctx.inner.arg.io,
+            &ctx.inner.wap_plan,
         )?;
         let _ = cache_materialization_return_value(ctx.env.clone(), &relations_map);
     }

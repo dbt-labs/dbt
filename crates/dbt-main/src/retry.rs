@@ -3,8 +3,9 @@
 use dbt_clap_core::*;
 use dbt_common::io_args::StaticAnalysisKind;
 use dbt_common::{ErrorCode, FsResult, err};
-use dbt_schemas::schemas::{BatchResults, RunResultsArtifact};
-use std::collections::HashMap;
+use dbt_schemas::schemas::{BatchResults, InternalDbtNode, Nodes, RunResultsArtifact};
+use dbt_tasks_core::wap::WapPlan;
+use std::collections::{BTreeSet, HashMap};
 use std::path::Path;
 use std::str::FromStr;
 
@@ -20,6 +21,34 @@ pub const WARN_ERROR_RETRYABLE_STATUSES: &[&str] = &["warn"];
 pub const RETRIABLE_COMMANDS: &[&str] = &[
     "run", "build", "test", "seed", "snapshot", "compile", "check",
 ];
+
+/// A retried WAP model creates a new candidate, so previously passed audits must rerun.
+/// Test-only retries do not rebuild their owners or create new candidates.
+pub(crate) fn expand_wap_retry_ids(ids: &[String], nodes: &Nodes) -> FsResult<Vec<String>> {
+    let mut selected: BTreeSet<String> = ids.iter().cloned().collect();
+    for owner in ids {
+        if !nodes
+            .models
+            .get(owner)
+            .is_some_and(|model| model.deprecated_config.wap.unwrap_or(false))
+        {
+            continue;
+        }
+        selected.extend(WapPlan::required_audit_ids(owner, nodes)?);
+        selected.extend(
+            nodes
+                .unit_tests
+                .iter()
+                .filter(|(_, test)| {
+                    test.base().enabled
+                        && test.deprecated_config.enabled != Some(false)
+                        && test.base().depends_on.nodes.first() == Some(owner)
+                })
+                .map(|(id, _)| id.clone()),
+        );
+    }
+    Ok(selected.into_iter().collect())
+}
 
 /// Holds the state extracted from a previous run's run_results.json
 /// needed to execute a retry command.
@@ -211,6 +240,111 @@ mod tests {
     use super::*;
     use std::io::Write;
     use tempfile::NamedTempFile;
+
+    fn wap_retry_nodes() -> Nodes {
+        use dbt_schemas::schemas::{DbtModel, DbtTest, DbtUnitTest};
+        use std::sync::Arc;
+
+        let model_id = "model.project.orders";
+        let mut nodes = Nodes::default();
+        let mut model = DbtModel::default();
+        model.deprecated_config.wap = Some(true);
+        nodes.models.insert(model_id.to_string(), Arc::new(model));
+        for id in [
+            "test.failed",
+            "test.passed",
+            "test.singular",
+            "test.disabled",
+        ] {
+            let mut test = DbtTest::default();
+            test.__base_attr__.enabled = id != "test.disabled";
+            test.__base_attr__.depends_on.nodes = vec![model_id.to_string()];
+            test.__test_attr__.attached_node =
+                (id != "test.singular").then(|| model_id.to_string());
+            nodes.tests.insert(id.to_string(), Arc::new(test));
+        }
+        let mut unit = DbtUnitTest::default();
+        unit.__base_attr__.enabled = true;
+        unit.__base_attr__.depends_on.nodes = vec![model_id.to_string()];
+        nodes
+            .unit_tests
+            .insert("unit_test.orders".to_string(), Arc::new(unit));
+        nodes
+    }
+
+    #[test]
+    fn wap_retry_rebuilds_unpublished_models_and_all_audits() {
+        let model_id = "model.project.orders";
+        let nodes = wap_retry_nodes();
+        let expected = vec![
+            model_id.to_string(),
+            "test.failed".to_string(),
+            "test.passed".to_string(),
+            "test.singular".to_string(),
+            "unit_test.orders".to_string(),
+        ];
+        for &status in RETRYABLE_STATUSES {
+            let file = create_run_results_json(
+                &[
+                    (model_id, status),
+                    ("test.failed", "fail"),
+                    ("test.passed", "pass"),
+                    ("test.singular", "pass"),
+                    ("unit_test.orders", "pass"),
+                    ("model.other", "success"),
+                ],
+                "build",
+            );
+            let state = RetryState::from_run_results(file.path(), false).unwrap();
+            assert_eq!(
+                expand_wap_retry_ids(&state.retryable_node_ids, &nodes).unwrap(),
+                expected,
+                "unpublished model status: {status}"
+            );
+        }
+        assert_eq!(
+            expand_wap_retry_ids(&["model.other".to_string()], &nodes).unwrap(),
+            ["model.other"]
+        );
+    }
+
+    #[test]
+    fn wap_retry_test_only_builds_do_not_select_the_owner() {
+        let nodes = wap_retry_nodes();
+        for (id, status) in [
+            ("test.failed", "fail"),
+            ("test.singular", "fail"),
+            ("unit_test.orders", "error"),
+        ] {
+            let file = create_run_results_json(&[(id, status)], "build");
+            let state = RetryState::from_run_results(file.path(), false).unwrap();
+            assert_eq!(
+                expand_wap_retry_ids(&state.retryable_node_ids, &nodes).unwrap(),
+                [id],
+                "test-only build: {id}"
+            );
+        }
+    }
+
+    #[test]
+    fn wap_retry_does_not_rebuild_a_successful_owner_for_a_failed_test() {
+        let nodes = wap_retry_nodes();
+        let file = create_run_results_json(
+            &[
+                ("model.project.orders", "success"),
+                ("test.failed", "fail"),
+                ("test.passed", "pass"),
+                ("test.singular", "pass"),
+                ("unit_test.orders", "pass"),
+            ],
+            "build",
+        );
+        let state = RetryState::from_run_results(file.path(), false).unwrap();
+        assert_eq!(
+            expand_wap_retry_ids(&state.retryable_node_ids, &nodes).unwrap(),
+            ["test.failed"]
+        );
+    }
 
     #[test]
     fn test_retryable_statuses_contains_expected() {

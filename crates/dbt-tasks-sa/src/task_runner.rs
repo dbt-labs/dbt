@@ -399,6 +399,7 @@ impl TaskRunner {
                 .in_current_span()
                 .await?;
         }
+        crate::wap::cleanup_failed_candidates(&ctx).await;
         self.hooks
             .did_visit_taskgraph(&run_task_args, &schedule, &graph, &mut ctx, &token)
             .await?;

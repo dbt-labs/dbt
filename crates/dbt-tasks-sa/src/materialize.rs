@@ -27,7 +27,7 @@ use dbt_adapter::Adapter;
 use dbt_adapter::LATEST_VERSION_POINTER_SUFFIX;
 use dbt_adapter::adapter::NodeOverride;
 use dbt_adapter::connection::drop_thread_local_connection;
-use dbt_adapter::relation::{RelationObject, do_create_relation};
+use dbt_adapter::relation::{RelationObject, create_relation, do_create_relation};
 use dbt_adapter::response::AdapterResponse;
 use dbt_adapter::stmt_splitter::StmtSplitter;
 use dbt_adapter_core::AdapterType;
@@ -43,11 +43,13 @@ use dbt_schemas::{
     materialization_resolver::MaterializationResolver,
     schemas::{
         DbtFunction, DbtModel, DbtSeed, DbtSnapshot, DbtTest, DbtUnitTest, InternalDbtNode,
-        NodePathKind, Nodes, common::DbtMaterialization,
+        NodePathKind, Nodes,
+        common::{DbtMaterialization, ResolvedQuoting},
     },
     state::{DbtRuntimeConfig, NodeResolverTracker, ResolverState},
 };
 use dbt_tasks_core::test_aggregation::GenericTestRelationships;
+use dbt_tasks_core::wap::WapPlan;
 use dbt_telemetry::ExecutionPhase;
 use dbt_yaml::Verbatim;
 use minijinja::Value;
@@ -130,7 +132,7 @@ fn execute_materialization_macro(
     })
 }
 
-fn apply_node_overrides(
+pub(crate) fn apply_node_overrides(
     adapter: &Adapter,
     adapter_type: AdapterType,
     custom_warehouse: Option<String>,
@@ -160,7 +162,7 @@ fn apply_node_overrides(
 /// The fingerprint check in `borrow_tlocal_connection_impl` does not help here:
 /// the connection's *configuration* is unchanged, only its session scope is
 /// wrong.
-fn reset_node_overrides(
+pub(crate) fn reset_node_overrides(
     adapter: &Adapter,
     unique_id: &str,
     targets: &[NodeOverride],
@@ -353,13 +355,18 @@ pub fn execute_node_hooks<S: serde::Serialize>(
 mod tests {
     use super::{
         NodeHookPhase, NodeHookStyle, body_for_materialization, cell_as_bool, model_hook_style,
-        node_hook_expression,
+        node_hook_expression, validate_latest_version_pointer_destination,
     };
     use dbt_adapter::stmt_splitter::DefaultStmtSplitter;
     use dbt_adapter_core::AdapterType;
-    use dbt_schemas::schemas::common::DbtMaterialization;
+    use dbt_schemas::schemas::{
+        DbtModel,
+        common::{DbtMaterialization, ResolvedQuoting},
+    };
+    use dbt_tasks_core::wap::{WapModel, WapPlan};
     use minijinja::Value;
     use std::collections::BTreeMap;
+    use std::sync::Arc;
 
     fn body(sql: &str, language: Option<&str>) -> String {
         body_for_materialization(sql, language, &DefaultStmtSplitter, AdapterType::DuckDB)
@@ -523,6 +530,60 @@ mod tests {
         assert!(cell_as_bool(&Value::from(1i64)));
         assert!(!cell_as_bool(&Value::from(0i64)));
         assert!(!cell_as_bool(&Value::from(())));
+    }
+
+    #[test]
+    fn latest_version_pointer_wap_guard_uses_materialization_quoting() {
+        let mut public = DbtModel::default();
+        public.__common_attr__.unique_id = "model.pkg.orders".to_owned();
+        public.__base_attr__.adapter = AdapterType::Snowflake;
+        public.__base_attr__.database = "DB".to_owned();
+        public.__base_attr__.schema = "PUBLIC".to_owned();
+        public.__base_attr__.alias = "ORDERS".to_owned();
+        public.__base_attr__.quoting = ResolvedQuoting::falses();
+        let mut pointer_model = public.clone();
+        pointer_model.__common_attr__.unique_id = "model.pkg.orders_v1".to_owned();
+        pointer_model.__base_attr__.alias = "orders_v1".to_owned();
+        pointer_model.__base_attr__.quoting = ResolvedQuoting::trues();
+        let plan = WapPlan {
+            models: BTreeMap::from([(
+                public.__common_attr__.unique_id.clone(),
+                WapModel {
+                    model: Arc::new(public),
+                    candidate_identifier: "__DBT_WAP_TEST".to_owned(),
+                    audit_ids: Default::default(),
+                },
+            )]),
+        };
+
+        for identifier in ["orders", "__dbt_wap_test"] {
+            // The node's quoting would allow these distinct lowercase names,
+            // but api.Relation.create uses the profile's unquoted uppercase names.
+            validate_latest_version_pointer_destination(
+                &pointer_model,
+                identifier,
+                pointer_model.__base_attr__.quoting,
+                &plan,
+            )
+            .unwrap();
+            let error = validate_latest_version_pointer_destination(
+                &pointer_model,
+                identifier,
+                ResolvedQuoting::falses(),
+                &plan,
+            )
+            .unwrap_err();
+            assert!(error.to_string().contains("Latest version pointer"));
+            assert!(error.to_string().contains("model.pkg.orders"));
+        }
+        pointer_model.__base_attr__.schema = "OTHER".to_owned();
+        validate_latest_version_pointer_destination(
+            &pointer_model,
+            "orders",
+            ResolvedQuoting::falses(),
+            &plan,
+        )
+        .unwrap();
     }
 }
 
@@ -885,6 +946,7 @@ pub fn materialize_latest_version_pointer(
     jinja_env: Arc<JinjaEnv>,
     base_context: &BTreeMap<String, Value>,
     io_args: &IoArgs,
+    wap_plan: &WapPlan,
 ) -> FsResult<Value> {
     // Build a context from the original model first so macros can access `model`
     let (mut resolve_context, _result_store) = build_run_node_context(
@@ -968,6 +1030,26 @@ pub fn materialize_latest_version_pointer(
     }
 
     let source_relation_str = source_relation.render_self_as_str();
+
+    // Snowflake's view macro creates its destination with api.Relation.create,
+    // whose quoting comes from the adapter rather than the node's `this` relation.
+    match adapter_type {
+        AdapterType::Snowflake if !wap_plan.models.is_empty() => {
+            let adapter = jinja_env.get_base_adapter().ok_or_else(|| {
+                fs_err!(
+                    ErrorCode::Unexpected,
+                    "Missing adapter for WAP pointer validation"
+                )
+            })?;
+            validate_latest_version_pointer_destination(
+                model,
+                &pointer_identifier,
+                adapter.engine().quoting(),
+                wap_plan,
+            )?;
+        }
+        _ => {}
+    }
 
     // Uppercase, matching dbt-core's own generated SQL for this synthetic pointer (confirmed
     // against a production recording) and this file's other synthetic pass-through SQL
@@ -1063,6 +1145,26 @@ pub fn materialize_latest_version_pointer(
         &target_unique_id,
         &pointer_identifier,
         run_path,
+    )
+}
+
+fn validate_latest_version_pointer_destination(
+    model: &DbtModel,
+    pointer_identifier: &str,
+    effective_quoting: ResolvedQuoting,
+    wap_plan: &WapPlan,
+) -> FsResult<()> {
+    let destination = create_relation(
+        model.node_adapter(),
+        model.__base_attr__.database.clone(),
+        model.__base_attr__.schema.clone(),
+        Some(pointer_identifier.to_owned()),
+        None,
+        effective_quoting,
+    )?;
+    wap_plan.validate_auxiliary_relation(
+        destination.as_ref(),
+        &format!("Latest version pointer for '{}'", model.common().unique_id),
     )
 }
 
@@ -1462,7 +1564,72 @@ fn cell_as_bool(v: &Value) -> bool {
     }
 }
 
-fn get_test_results(table: &AgateTable) -> FsResult<Vec<TestResult>> {
+#[cfg(test)]
+mod wap_audit_result_tests;
+
+/// WAP cannot treat NULL or malformed verdicts as an audit that passed.
+fn get_wap_audit_result(table: &AgateTable) -> FsResult<TestResult> {
+    if table.num_rows() != 1 || table.num_columns() != 3 {
+        return Err(fs_err!(
+            ErrorCode::ExecutionError,
+            "WAP audit requires exactly one result row with failures, should_warn, and should_error columns; got {} rows and {} columns",
+            table.num_rows(),
+            table.num_columns()
+        ));
+    }
+    let names = table.column_names();
+    let columns = table.columns().values();
+    let cell = |name: &str| -> FsResult<Value> {
+        let index = names
+            .iter()
+            .position(|column| column.eq_ignore_ascii_case(name))
+            .ok_or_else(|| {
+                fs_err!(
+                    ErrorCode::ExecutionError,
+                    "WAP audit result is missing the '{name}' column"
+                )
+            })?;
+        get_cell_value(&columns, 0, Some(index)).ok_or_else(|| {
+            fs_err!(
+                ErrorCode::ExecutionError,
+                "WAP audit result is missing the '{name}' value"
+            )
+        })
+    };
+    let failures = cell("failures")?;
+    let failures = failures
+        .is_integer()
+        .then(|| failures.as_i64())
+        .flatten()
+        .filter(|failures| *failures >= 0)
+        .ok_or_else(|| {
+            fs_err!(
+                ErrorCode::ExecutionError,
+                "WAP audit failures must be a non-NULL, nonnegative integer within the supported range"
+            )
+        })?;
+    let flag = |name: &str| -> FsResult<bool> {
+        let value = cell(name)?;
+        if value.kind() != minijinja::value::ValueKind::Bool {
+            return Err(fs_err!(
+                ErrorCode::ExecutionError,
+                "WAP audit '{name}' must be a non-NULL boolean"
+            ));
+        }
+        Ok(value.is_true())
+    };
+    Ok(TestResult::new(
+        None,
+        failures,
+        flag("should_warn")?,
+        flag("should_error")?,
+    ))
+}
+
+fn get_test_results(table: &AgateTable, wap_audit: bool) -> FsResult<Vec<TestResult>> {
+    if wap_audit {
+        return get_wap_audit_result(table).map(|result| vec![result]);
+    }
     let column_names = table.column_names();
     let column_name_idx = column_names
         .iter()
@@ -1566,6 +1733,7 @@ pub fn materialize_test(
     jinja_env: Arc<JinjaEnv>,
     base_context: &BTreeMap<String, Value>,
     io_args: &IoArgs,
+    wap_audit: bool,
 ) -> FsResult<(
     Vec<TestResult>,
     Option<RecordBatch>,
@@ -1672,12 +1840,16 @@ pub fn materialize_test(
 
     let expr = jinja_env.compile_expression("load_result('main').table")?;
     let table = expr
-        .eval(&context, &[])
-        .unwrap()
+        .eval(&context, &[])?
         .downcast_object::<AgateTable>()
-        .unwrap();
+        .ok_or_else(|| {
+            fs_err!(
+                ErrorCode::ExecutionError,
+                "Test '{unique_id}' did not return a main result table"
+            )
+        })?;
 
-    let test_results = get_test_results(&table)?;
+    let test_results = get_test_results(&table, wap_audit)?;
     Ok((test_results, None, result_store.main_adapter_response()))
 }
 

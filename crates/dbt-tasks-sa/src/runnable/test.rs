@@ -383,6 +383,7 @@ impl AggregatedTestRunRemoteTask {
                     ctx_inner.env.clone(),
                     &base_context,
                     &ctx_inner.inner.arg.io,
+                    false,
                 )
             }))
             .run()
@@ -582,6 +583,7 @@ pub fn execute_test_remote(
     let mut base_context = ctx.inner.base_context.clone();
 
     add_task_context(&mut base_context, test.common(), &ctx.thread_id);
+    ctx.apply_wap_ref_overrides(unique_id, &mut base_context)?;
 
     let sql_instruction = match &task_result.lp_instruction {
         Some(_) => {
@@ -621,6 +623,10 @@ fn execute_test_remote_inner(
         ctx.env.clone(),
         base_context,
         &ctx.inner.arg.io,
+        ctx.inner
+            .wap_plan
+            .audit_owner(&test.common().unique_id)
+            .is_some(),
     )?;
     if let Some(main_response) = main_response {
         ctx.inner

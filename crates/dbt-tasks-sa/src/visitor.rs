@@ -27,6 +27,9 @@ use dbt_tasks_core::visitor::SkipReason;
 use dbt_telemetry::{ExecutionPhase, NodeOutcome, NodeType};
 use dbt_yaml::Span;
 
+#[cfg(test)]
+pub(crate) mod wap_test_support;
+
 /// Pool of reusable logical worker slot IDs (1, 2, 3, …).
 ///
 /// Tasks are assigned a slot before execution and release it after.
@@ -312,6 +315,24 @@ fn record_skipped_stats(
     let now = chrono::Utc::now();
     for node in skipped_nodes {
         let unique_id = node.common().unique_id.clone();
+        if ctx.inner.wap_plan.model(&unique_id).is_some() {
+            // The stage and publish tasks share a model identity. A skipped
+            // publication must not overwrite the stage's execution error.
+            if ctx.inner.run_stats.contains_key(&unique_id) {
+                continue;
+            }
+            if let Some((_, mut stat)) = ctx.inner.wap_stage_stats.remove(&unique_id) {
+                stat.end_time = std::time::SystemTime::now();
+                stat.status = NodeStatus::SkippedUpstreamFailed;
+                stat.message = Some(
+                    "WAP: table not published because an audit or upstream phase failed"
+                        .to_string(),
+                );
+                ctx.inner.run_stats.insert(unique_id.clone(), stat);
+                crate::wap::report_retained_candidate(ctx, &unique_id);
+                continue;
+            }
+        }
         let (status, message) = match skip_reason {
             SkipReason::Reused => (
                 NodeStatus::ReusedNoChanges("Model reused".to_string()),
@@ -546,6 +567,20 @@ async fn visit(
                                e: CancelledError,
                                waiting: HashMap<NodeIndex, _>|
      -> FsResult<()> {
+        // Completed stages are not terminal model successes. Include them in
+        // cancellation artifacts even when their publish task never started.
+        for stage in ctx.inner.wap_stage_stats.iter() {
+            if !ctx.inner.run_stats.contains_key(stage.key()) {
+                let mut stat = stage.value().clone();
+                stat.end_time = std::time::SystemTime::now();
+                stat.status = NodeStatus::Errored;
+                let response = ctx.inner.main_adapter_responses.get(stage.key());
+                stat.message =
+                    Some(crate::wap::interruption_message(response.as_deref()).to_string());
+                ctx.inner.run_stats.insert(stage.key().clone(), stat);
+                crate::wap::report_retained_candidate(ctx, stage.key());
+            }
+        }
         // Any tasks that are running and waiting need to be reported as failed.
         for (node_idx, task_span) in waiting {
             let maybe_node = schedule.node_weight(node_idx);
@@ -780,6 +815,15 @@ fn report_node_evaluation(
     node: &dyn Task,
     node_status: Option<&NodeStatus>,
 ) {
+    if node.task_type() == "run"
+        && ctx.inner.wap_plan.model(node.work_node_id()).is_some()
+        && matches!(
+            node_status,
+            Some(NodeStatus::Succeeded | NodeStatus::SucceededWithWarning)
+        )
+    {
+        return;
+    }
     if let Some(reporter) = &ctx.inner.arg.io.status_reporter {
         // For successful status, emit a node evaluation event
         let node_outcome = match node_status {

@@ -25,6 +25,7 @@ use dbt_adapter_engine::{ConnectionFactory, MapReduce};
 use dbt_adbc::{Connection, QueryCtx};
 use dbt_common::AsyncAdapterResult;
 use dbt_common::ErrorCode;
+use dbt_common::FsResult;
 use dbt_common::cancellation::Cancellable;
 use dbt_common::cancellation::CancellationToken;
 use dbt_common::tracing::dbt_emit::{emit_debug_log_message, emit_warn_log_message};
@@ -43,6 +44,45 @@ use std::fmt::Display;
 use std::sync::Arc;
 
 const SNOWFLAKE_METADATA_NODE_ID: &str = "snowflake-metadata";
+
+/// Inspect an exact relation without depending on schema-list pagination limits.
+///
+/// Callers must filter the returned names for exact equality: `STARTS WITH` may
+/// also return longer names. Two rows let callers detect temporary-table
+/// shadowing. SHOW orders names lexicographically, so an exact match comes first.
+/// https://docs.snowflake.com/en/sql-reference/sql/show-objects
+pub fn relation_lookup_sql(relation: &dyn BaseRelation) -> FsResult<String> {
+    lookup_sql(relation, "OBJECTS")
+}
+
+/// Inspect the lifecycle and native-table flags not exposed by SHOW OBJECTS.
+/// https://docs.snowflake.com/en/sql-reference/sql/show-tables
+pub fn table_lookup_sql(relation: &dyn BaseRelation) -> FsResult<String> {
+    lookup_sql(relation, "TABLES")
+}
+
+fn lookup_sql(relation: &dyn BaseRelation, object_type: &str) -> FsResult<String> {
+    let metadata_error = |error| dbt_common::FsError::from_jinja_err(error, "WAP relation lookup");
+    let database = quote_identifier(
+        &relation
+            .database_as_resolved_str()
+            .map_err(metadata_error)?,
+        AdapterType::Snowflake,
+    );
+    let schema = quote_identifier(
+        &relation.schema_as_resolved_str().map_err(metadata_error)?,
+        AdapterType::Snowflake,
+    );
+    let identifier = escape_string_literal(
+        &relation
+            .identifier_as_resolved_str()
+            .map_err(metadata_error)?,
+        AdapterType::Snowflake,
+    );
+    Ok(format!(
+        "SHOW {object_type} IN {database}.{schema} STARTS WITH '{identifier}' LIMIT 2"
+    ))
+}
 
 fn metadata_warehouse_error(err: impl Display) -> AdapterError {
     AdapterError::new(AdapterErrorKind::Configuration, err.to_string())
@@ -2099,6 +2139,44 @@ mod tests {
     use crate::engine::NoopConnection;
     use arrow_schema::{DataType, Field};
     use std::sync::Mutex;
+
+    #[test]
+    fn relation_lookup_resolves_unquoted_names_and_bounds_results() {
+        let relation = Relation::new(
+            AdapterType::Snowflake,
+            "database".to_string(),
+            "schema".to_string(),
+            "orders".to_string(),
+        )
+        .with_quoting(ResolvedQuoting::falses());
+        assert_eq!(
+            relation_lookup_sql(&relation).unwrap(),
+            "SHOW OBJECTS IN \"DATABASE\".\"SCHEMA\" STARTS WITH 'ORDERS' LIMIT 2"
+        );
+        assert_eq!(
+            table_lookup_sql(&relation).unwrap(),
+            "SHOW TABLES IN \"DATABASE\".\"SCHEMA\" STARTS WITH 'ORDERS' LIMIT 2"
+        );
+    }
+
+    #[test]
+    fn relation_lookup_preserves_quoted_case_and_escapes_literal_characters() {
+        let relation = Relation::new(
+            AdapterType::Snowflake,
+            "My\"Database".to_string(),
+            "My.Schema".to_string(),
+            r"O\'Brien".to_string(),
+        )
+        .with_quoting(ResolvedQuoting::trues());
+        assert_eq!(
+            relation_lookup_sql(&relation).unwrap(),
+            r#"SHOW OBJECTS IN "My""Database"."My.Schema" STARTS WITH 'O\\''Brien' LIMIT 2"#
+        );
+        assert_eq!(
+            table_lookup_sql(&relation).unwrap(),
+            r#"SHOW TABLES IN "My""Database"."My.Schema" STARTS WITH 'O\\''Brien' LIMIT 2"#
+        );
+    }
 
     struct FakeConnectionFactory {
         recycled: Arc<Mutex<u32>>,

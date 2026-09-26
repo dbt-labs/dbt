@@ -258,6 +258,21 @@ where
         .or_else(|| value.as_str().map(|s| s.to_lowercase() == "true")))
 }
 
+/// Deserialize a boolean flag without silently treating unknown values as false.
+pub fn strict_bool_or_string_bool<'de, D>(deserializer: D) -> Result<Option<bool>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = dbt_yaml::Value::deserialize(deserializer)?;
+    match value {
+        dbt_yaml::Value::Bool(value, _) => Ok(Some(value)),
+        dbt_yaml::Value::Null(_) => Ok(None),
+        dbt_yaml::Value::String(value, _) if value.eq_ignore_ascii_case("true") => Ok(Some(true)),
+        dbt_yaml::Value::String(value, _) if value.eq_ignore_ascii_case("false") => Ok(Some(false)),
+        _ => Err(de::Error::custom("expected true, false, or null")),
+    }
+}
+
 pub fn bool_or_string_bool_default<'de, D>(deserializer: D) -> Result<bool, D::Error>
 where
     D: Deserializer<'de>,

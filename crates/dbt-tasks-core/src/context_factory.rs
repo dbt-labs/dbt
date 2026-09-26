@@ -160,7 +160,7 @@ pub trait TaskRunnerCtxFactory: Send + Sync + 'static {
                 redshift_case_sensitivity_enabled: tokio::sync::OnceCell::new(),
             };
 
-            Ok(TaskRunnerCtx {
+            let ctx = TaskRunnerCtx {
                 inner: Arc::new(TaskRunnerCtxInner::new(
                     run_task_args,
                     worker_id,
@@ -177,14 +177,26 @@ pub trait TaskRunnerCtxFactory: Send + Sync + 'static {
                     adapter_store,
                     sources_extractor,
                     run_cache_ctx,
-                )),
+                )?),
                 schema_cache,
                 data_store,
                 resolver_state,
                 rendering_listener_factory,
                 env: jinja_env,
                 thread_id: 0,
-            })
+            };
+            if !ctx.inner.wap_plan.models.is_empty() {
+                ctx.inner.wap_plan.validate_runtime_failure_storage(
+                    &ctx.resolver_state.nodes,
+                    ctx.inner
+                        .adapter_store
+                        .default_adapter()?
+                        .engine()
+                        .quoting(),
+                    &ctx.env,
+                )?;
+            }
+            Ok(ctx)
         })
     }
 

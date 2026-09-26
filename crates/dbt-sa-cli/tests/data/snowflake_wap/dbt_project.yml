@@ -1,0 +1,9 @@
+name: wap_live_acceptance
+version: '1.0'
+config-version: 2
+profile: wap_live_acceptance
+model-paths: [models]
+test-paths: [tests]
+macro-paths: [macros]
+quoting:
+  identifier: true

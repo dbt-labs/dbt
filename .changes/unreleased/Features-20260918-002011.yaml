@@ -1,0 +1,7 @@
+kind: Features
+body: Add opt-in write-audit-publish builds for native Snowflake SQL table models using same-schema working tables and a required passing data-test gate.
+time: 2026-09-18T00:20:11.745413-04:00
+custom:
+    author: ""
+    issue: ""
+    project: dbt-core

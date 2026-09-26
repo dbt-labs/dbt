@@ -5583,6 +5583,67 @@ pub struct DbtModel {
 }
 
 impl DbtModel {
+    /// Validate the model options supported by table write-audit-publish.
+    /// Catalog and materialization macro resolution are checked again at execution.
+    pub fn validate_wap_config(&self, adapter: AdapterType) -> FsResult<()> {
+        use crate::schemas::common::{ConstraintType, OnError};
+
+        let config = &self.deprecated_config;
+        if !config.wap.unwrap_or(false) {
+            return Ok(());
+        }
+
+        let warehouse = &config.__warehouse_specific_config__;
+        let has_custom_constraints = self
+            .__model_attr__
+            .constraints
+            .iter()
+            .chain(config.constraints.iter().flatten())
+            .any(|constraint| constraint.type_ == ConstraintType::Custom)
+            || self.__base_attr__.columns.iter().any(|column| {
+                column
+                    .constraints
+                    .iter()
+                    .any(|constraint| constraint.type_ == ConstraintType::Custom)
+            });
+
+        let unsupported = if adapter != AdapterType::Snowflake
+            || self.__common_attr__.language.as_deref() != Some("sql")
+            || self.__base_attr__.materialized != DbtMaterialization::Table
+        {
+            Some("requires a Snowflake SQL model materialized as table")
+        } else if config
+            .table_format
+            .as_deref()
+            .is_some_and(|format| !format.eq_ignore_ascii_case("default"))
+            || warehouse.external_volume.is_some()
+            || warehouse.base_location_root.is_some()
+            || warehouse.base_location_subpath.is_some()
+        {
+            Some("supports only native Snowflake tables, not Iceberg or external catalogs")
+        } else if config.on_error == Some(OnError::Continue) {
+            Some("does not support on_error: continue")
+        } else if warehouse.row_access_policy.is_some()
+            || warehouse.table_tag.is_some()
+            || warehouse.copy_tags.unwrap_or(false)
+            || has_custom_constraints
+        {
+            Some("does not support row_access_policy, table_tag, copy_tags, or custom constraints")
+        } else {
+            None
+        };
+
+        if let Some(reason) = unsupported {
+            return Err(dbt_common::fs_err!(
+                ErrorCode::InvalidConfig,
+                "Model '{}': wap=true {}",
+                self.__common_attr__.unique_id,
+                reason
+            ));
+        }
+        Ok(())
+    }
+
     /// Transcribes dbt-core's `ModelNode.same_ref_representation` (dbt-mantle
     /// `core/dbt/contracts/graph/nodes.py:684-691`), which is ANDed into `ModelNode.same_contents`
     /// at `:677-682`:

@@ -8241,7 +8241,8 @@ mod tests {
                 telemetry_dispatcher: std::sync::OnceLock::new(),
                 redshift_case_sensitivity_enabled: tokio::sync::OnceCell::new(),
             },
-        );
+        )
+        .expect("test context must have a valid execution plan");
 
         TaskRunnerCtx {
             inner: Arc::new(inner),
