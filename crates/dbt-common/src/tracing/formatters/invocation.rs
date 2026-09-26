@@ -283,6 +283,9 @@ pub fn format_invocation_summary(
         }
     }
 
+    let footer = format_delimiter(" End of Execution ", max_line_width, colorize);
+    lines.push(footer);
+
     let autofix_line = if summary.metrics.autofix > 0 {
         Some(format_autofix_line(colorize))
     } else {
