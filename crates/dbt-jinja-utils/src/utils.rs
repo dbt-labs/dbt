@@ -688,7 +688,18 @@ pub fn generate_component_name(
                 }
             }
         }
-        args.push(Value::from_serialize(serialized));
+        // Wrap resource_type as a StrEnumValue so that `.name` returns the
+        // capitalized member name (e.g. "Model"), matching dbt 1.x StrEnum.
+        // See: https://github.com/dbt-labs/dbt-core/issues/16426
+        let resource_type_value =
+            dbt_common::serde_utils::node_type_to_str_enum_value(node.resource_type());
+        let mut value_map = dbt_common::serde_utils::convert_yml_to_value_map(serialized);
+        value_map.insert("resource_type".to_owned(), resource_type_value);
+        let value_map_jinja: minijinja::value::ValueMap = value_map
+            .into_iter()
+            .map(|(k, v)| (Value::from(k), v))
+            .collect();
+        args.push(Value::from_object(value_map_jinja));
     }
 
     // Call the macro

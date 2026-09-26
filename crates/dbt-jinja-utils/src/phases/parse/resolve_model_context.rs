@@ -256,6 +256,12 @@ pub fn build_resolve_model_context<T: ResolvableConfig<T> + Serialize + 'static>
     };
 
     let mut model_map = convert_yml_to_value_map(InternalDbtNode::serialize(&model));
+    // Wrap resource_type as a StrEnumValue so that `.name` returns the
+    // capitalized member name (e.g. "Model"), matching dbt 1.x StrEnum.
+    model_map.insert(
+        "resource_type".to_owned(),
+        dbt_common::serde_utils::node_type_to_str_enum_value(model.resource_type()),
+    );
     // Stub `DbtModel` uses `ModelConfig::default()` for `config` in YAML serialization. At parse
     // time, kwargs to `config(...)` (e.g. `post_hook=my_macro(model)`) are evaluated while
     // rendering; macros must see the merged node config (`properties_config` / `BaseConfig`),

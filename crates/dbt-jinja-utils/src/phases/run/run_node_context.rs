@@ -187,6 +187,13 @@ fn build_model_context_fields<S: Serialize>(
 
     let mut model_map = convert_yml_to_value_map(normalized_model_context(model, adapter_type));
 
+    // Wrap resource_type as a StrEnumValue so that `.name` returns the
+    // capitalized member name (e.g. "Model"), matching dbt 1.x StrEnum.
+    model_map.insert(
+        "resource_type".to_owned(),
+        dbt_common::serde_utils::node_type_to_str_enum_value(resource_type),
+    );
+
     // We are reading the raw_sql here for snapshots and models
     let raw_sql_path = match resource_type {
         // For snapshots, use path (generated file path) since original_file_path tracks the source
