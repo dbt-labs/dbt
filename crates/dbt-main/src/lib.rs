@@ -20,6 +20,7 @@ pub mod update;
 mod utils;
 
 mod main_impl;
+pub use dbt_error::init_terminal_hyperlinks_from_stderr;
 pub use main_impl::{
     init_env_before_parse, prepare_cli_or_exit, print_trimmed_error, run_cli, run_cli_with_code,
 };
