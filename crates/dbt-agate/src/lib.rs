@@ -24,6 +24,7 @@ mod print_table;
 mod row;
 mod rows;
 mod table;
+mod table_eq;
 mod table_set;
 /// Fixtures for testing within this crate and by users of it.
 pub mod test_fixtures;
