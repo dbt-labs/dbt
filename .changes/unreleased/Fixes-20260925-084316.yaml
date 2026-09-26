@@ -3,5 +3,5 @@ body: Keep the existing Databricks table when a view model that replaces it fail
 time: 2026-09-25T08:43:16.493667-07:00
 custom:
     author: sd-db
-    issue: ""
+    issue: "16476"
     project: dbt-core
