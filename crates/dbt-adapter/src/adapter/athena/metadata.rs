@@ -44,6 +44,15 @@ fn relation_type(table: &Json) -> Option<RelationType> {
     }
 }
 
+/// `get_table_type(table) == TableType.ICEBERG`.
+fn is_iceberg(table: &Json) -> bool {
+    table
+        .get("Parameters")
+        .and_then(|p| p.get("table_type"))
+        .and_then(Json::as_str)
+        .is_some_and(|t| t.eq_ignore_ascii_case("iceberg"))
+}
+
 /// Name and type of a table's current columns, then its partition keys.
 fn columns(table: &Json) -> Vec<(String, String)> {
     let listed = |key: &Json| key.as_array().cloned().unwrap_or_default();
@@ -243,20 +252,17 @@ impl AdapterImpl {
             ops.glue_table_raw(database, schema, identifier)
         })?;
         Ok(table.map(|table| {
-            table
-                .as_ref()
-                .map(columns)
-                .unwrap_or_default()
+            let Some(table) = table else {
+                return Vec::new();
+            };
+            let iceberg = is_iceberg(&table);
+            columns(&table)
                 .into_iter()
                 .map(|(name, dtype)| {
-                    Arc::new(Column::new(
-                        AdapterType::Athena,
-                        name,
-                        dtype,
-                        None,
-                        None,
-                        None,
-                    ))
+                    Arc::new(
+                        Column::new(AdapterType::Athena, name, dtype, None, None, None)
+                            .with_iceberg(iceberg),
+                    )
                 })
                 .collect()
         }))
