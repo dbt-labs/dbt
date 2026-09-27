@@ -1970,7 +1970,7 @@ ORDER BY TABLE_CATALOG, TABLE_SCHEMA, TABLE_NAME, ORDINAL_POSITION"
 
 /// `describe table` on a Snowflake stream fails with `Invalid object type: 'TABLE'`.
 fn is_describe_table_invalid_object_type(err: &AdapterError) -> bool {
-    err.message().contains("Invalid object type")
+    err.message().contains("Invalid object type: 'TABLE'")
 }
 
 /// reference: https://github.com/sdf-labs/sdf/blob/main/crates/sdf-cli/src/providers/database/snowflake.rs#L177-L178
@@ -2174,13 +2174,16 @@ mod tests {
     }
 
     #[test]
-    fn describe_table_invalid_object_type_matches_only_stream_error() {
+    fn describe_table_invalid_object_type_matches_only_table_error() {
         let err = |msg: &str| AdapterError::new(AdapterErrorKind::Driver, msg);
         assert!(is_describe_table_invalid_object_type(&err(
             "Unknown: SQL compilation error:\nInvalid object type: 'TABLE'."
         )));
         assert!(!is_describe_table_invalid_object_type(&err(
             "SQL compilation error:\nTable 'DB.S.T' does not exist or not authorized."
+        )));
+        assert!(!is_describe_table_invalid_object_type(&err(
+            "SQL compilation error:\nInvalid object type: 'VIEW'."
         )));
     }
 
