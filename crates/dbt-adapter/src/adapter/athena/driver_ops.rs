@@ -8,18 +8,21 @@
 //! the composition below follows `impl.py` field for field.
 
 use super::{TableType, is_s3_tables_database, parse_s3_path};
+use crate::AdapterEngine;
 use crate::adapter::Adapter;
 use crate::errors::{AdapterError, AdapterErrorKind, AdapterResult};
 use adbc_core::options::OptionValue;
-use arrow::array::{Array, StringArray};
+use arrow::array::{Array, RecordBatch, StringArray};
 use base64::Engine as _;
 use dashmap::DashMap;
 use dbt_adbc::athena::{OPERATION, OPERATION_PAYLOAD};
+use dbt_adbc::{Connection, QueryCtx};
 use dbt_common::cancellation::{CancellationToken, never_cancels};
 use minijinja::State;
 use serde_json::{Map, Value as Json, json};
+use std::cell::RefCell;
 use std::collections::HashMap;
-use std::sync::{LazyLock, OnceLock};
+use std::sync::{Arc, LazyLock, OnceLock};
 
 /// `AthenaAdapter.GET_PARTITIONS_API_EXPRESSION_MAX_LENGTH`
 const GET_PARTITIONS_API_EXPRESSION_MAX_LENGTH: usize = 2048;
@@ -65,6 +68,14 @@ pub struct GlueTable {
     pub location: Option<String>,
 }
 
+/// A dbt database as `AthenaAdapter._get_data_catalog` resolves it.
+pub enum DataCatalog {
+    /// Glue, with the `CatalogId` to pass (`None`: the credentials' default catalog).
+    Glue(Option<String>),
+    /// A data catalog Athena reads through a Lambda or Hive connector.
+    Other,
+}
+
 /// Per-engine facts that dbt-athena caches for the run (`_get_aws_account_id`,
 /// the `lru_cache` on `_get_work_group`).
 #[derive(Default)]
@@ -75,10 +86,26 @@ struct Cached {
 
 static CACHE: LazyLock<DashMap<u64, Cached>> = LazyLock::new(DashMap::new);
 
-/// The operations, bound to the adapter and the Jinja state of one call.
+/// Where the operations run.
+enum Via<'a, 't, 'e> {
+    /// An adapter method called from Jinja: the node's connection, as `run_query`.
+    Adapter {
+        adapter: &'a Adapter,
+        state: &'a State<'t, 'e>,
+    },
+    /// An engine metadata read that already holds a connection.
+    Connection {
+        engine: &'a dyn AdapterEngine,
+        state: Option<&'a State<'t, 'e>>,
+        ctx: &'a QueryCtx,
+        conn: RefCell<&'a mut dyn Connection>,
+        token: CancellationToken,
+    },
+}
+
+/// The operations, bound to where they run.
 pub struct AthenaOps<'a, 't, 'e> {
-    adapter: &'a Adapter,
-    state: &'a State<'t, 'e>,
+    via: Via<'a, 't, 'e>,
     engine_key: u64,
     work_group: String,
 }
@@ -99,16 +126,44 @@ impl<'a, 't, 'e> AthenaOps<'a, 't, 'e> {
         work_group: Option<&str>,
     ) -> Self {
         Self {
-            adapter,
-            state,
+            via: Via::Adapter { adapter, state },
             engine_key,
             work_group: work_group.unwrap_or(DEFAULT_WORK_GROUP).to_string(),
         }
     }
 
+    /// The operations on a connection the caller holds, for the engine's metadata reads.
+    pub fn on_connection(
+        engine: &'a dyn AdapterEngine,
+        state: Option<&'a State<'t, 'e>>,
+        ctx: &'a QueryCtx,
+        conn: &'a mut dyn Connection,
+        token: CancellationToken,
+    ) -> Self {
+        Self {
+            engine_key: engine.fingerprint(),
+            work_group: engine
+                .get_config()
+                .get_str("work_group")
+                .unwrap_or(DEFAULT_WORK_GROUP)
+                .to_string(),
+            via: Via::Connection {
+                engine,
+                state,
+                ctx,
+                conn: RefCell::new(conn),
+                token,
+            },
+        }
+    }
+
     /// Run one driver operation and decode its JSON response.
     pub(super) fn call(&self, operation: &str, payload: Json) -> AdapterResult<Json> {
-        self.call_with(operation, payload, self.adapter.cancellation_token())
+        let token = match &self.via {
+            Via::Adapter { adapter, .. } => adapter.cancellation_token(),
+            Via::Connection { token, .. } => token.clone(),
+        };
+        self.call_with(operation, payload, token)
     }
 
     /// [`Self::call`] that goes out even when the run has been cancelled: cleanup of
@@ -133,17 +188,36 @@ impl<'a, 't, 'e> AthenaOps<'a, 't, 'e> {
                 OptionValue::String(payload.to_string()),
             ),
         ];
-        let (_, table) = self.adapter.execute_with_token(
-            self.state,
-            None,
-            "none",
-            false,
-            true,
-            None,
-            Some(options),
-            token,
-        )?;
-        let batch = table.original_record_batch();
+        let batch: Arc<RecordBatch> = match &self.via {
+            Via::Adapter { adapter, state } => {
+                let (_, table) = adapter.execute_with_token(
+                    state,
+                    None,
+                    "none",
+                    false,
+                    true,
+                    None,
+                    Some(options),
+                    token,
+                )?;
+                table.original_record_batch()
+            }
+            Via::Connection {
+                engine,
+                state,
+                ctx,
+                conn,
+                ..
+            } => Arc::new(engine.execute_with_options(
+                *state,
+                ctx,
+                &mut **conn.borrow_mut(),
+                "none",
+                options,
+                true,
+                token,
+            )?),
+        };
         let column = batch.column_by_name("result").ok_or_else(|| {
             unexpected(format!(
                 "[athena] {operation}: the driver returned no result column (columns {:?})",
@@ -198,30 +272,43 @@ impl<'a, 't, 'e> AthenaOps<'a, 't, 'e> {
         Ok(self.remember(|c| &c.account_id, account))
     }
 
-    /// `get_catalog_id(self._get_data_catalog(database))`: the Glue `CatalogId` for a
-    /// dbt database. `awsdatacatalog` and S3 Tables catalogs are derived from the account
-    /// id; anything else is looked up as an Athena data catalog and yields an id only when
-    /// Glue-backed.
-    pub(super) fn catalog_id(&self, database: Option<&str>) -> AdapterResult<Option<String>> {
+    /// `AthenaAdapter._get_data_catalog`. `awsdatacatalog` and S3 Tables catalogs are
+    /// Glue catalogs whose id derives from the account id; anything else is looked up as
+    /// an Athena data catalog.
+    pub(super) fn data_catalog(&self, database: Option<&str>) -> AdapterResult<DataCatalog> {
         let Some(database) = database.filter(|d| !d.is_empty()) else {
-            return Ok(None);
+            return Ok(DataCatalog::Glue(None));
         };
         if database.eq_ignore_ascii_case("awsdatacatalog") {
-            return Ok(Some(self.account_id()?));
+            return Ok(DataCatalog::Glue(Some(self.account_id()?)));
         }
         if is_s3_tables_database(Some(database)) {
-            return Ok(Some(format!("{}:{database}", self.account_id()?)));
+            return Ok(DataCatalog::Glue(Some(format!(
+                "{}:{database}",
+                self.account_id()?
+            ))));
         }
         let response = self.call("athena.get_data_catalog", json!({ "Name": database }))?;
         let catalog = &response["DataCatalog"];
         if catalog.get("Type").and_then(Json::as_str) != Some("GLUE") {
-            return Ok(None);
+            return Ok(DataCatalog::Other);
         }
-        Ok(catalog
-            .get("Parameters")
-            .and_then(|p| p.get("catalog-id"))
-            .and_then(Json::as_str)
-            .map(str::to_string))
+        Ok(DataCatalog::Glue(
+            catalog
+                .get("Parameters")
+                .and_then(|p| p.get("catalog-id"))
+                .and_then(Json::as_str)
+                .map(str::to_string),
+        ))
+    }
+
+    /// `get_catalog_id(self._get_data_catalog(database))`: the Glue `CatalogId` for a
+    /// dbt database, `None` for the default catalog or a catalog outside Glue.
+    pub(super) fn catalog_id(&self, database: Option<&str>) -> AdapterResult<Option<String>> {
+        Ok(match self.data_catalog(database)? {
+            DataCatalog::Glue(catalog_id) => catalog_id,
+            DataCatalog::Other => None,
+        })
     }
 
     fn table_scope(&self, relation: &RelationParts) -> AdapterResult<Map<String, Json>> {
