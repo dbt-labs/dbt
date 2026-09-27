@@ -1,0 +1,7 @@
+kind: Features
+body: Add an End of Execution footer to the invocation summary so one invocation ending is visually distinct from the next starting
+time: 2026-09-27T15:21:25.4088125+05:30
+custom:
+    author: mahesh-desu
+    issue: "15108"
+    project: dbt-core
