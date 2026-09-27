@@ -4,11 +4,13 @@
 //! (`dbt-athena/src/dbt/adapters/athena/impl.py`) and the vendored macro package
 //! calls them from every materialization. This module holds the pure helpers;
 //! [`driver_ops`] runs the Glue / S3 / Athena / STS calls through the ADBC driver;
-//! [`dispatch`] wires both into `adapter.call_method_impl`.
+//! [`dispatch`] wires both into `adapter.call_method_impl`; [`metadata`] answers the
+//! engine's relation, column and schema reads from Glue.
 
 mod dispatch;
 pub mod driver_ops;
 mod lakeformation;
+mod metadata;
 mod python;
 
 use minijinja::Value;
