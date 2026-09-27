@@ -1448,21 +1448,24 @@ impl MetadataAdapter for SnowflakeMetadataAdapter {
                 // run statements on the session in between.
                 Err(err) if is_describe_table_invalid_object_type(&err) => {
                     let ctx = new_ctx("Get stream schema");
+                    // Keep cancellation; otherwise report the original describe-table error.
+                    let or_original = |e: AdapterError| {
+                        if e.kind() == AdapterErrorKind::Cancelled {
+                            e
+                        } else {
+                            err.clone()
+                        }
+                    };
                     let select = format!("select * from {} limit 0;", rendered);
-                    let described = adapter
+                    let (response, _) = adapter
                         .query(&ctx, conn, &select, None, token_clone.clone())
-                        .ok()
-                        .and_then(|(response, _)| response.query_id())
-                        .and_then(|query_id| {
-                            let sql = format!("describe result '{}';", query_id);
-                            adapter
-                                .query(&ctx, conn, &sql, None, token_clone.clone())
-                                .ok()
-                        });
-                    match described {
-                        Some((_, table)) => table,
-                        None => return Err(err),
-                    }
+                        .map_err(or_original)?;
+                    let query_id = response.query_id().ok_or_else(|| err.clone())?;
+                    let sql = format!("describe result '{}';", query_id);
+                    adapter
+                        .query(&ctx, conn, &sql, None, token_clone.clone())
+                        .map_err(or_original)?
+                        .1
                 }
                 Err(err) => return Err(err),
             };
