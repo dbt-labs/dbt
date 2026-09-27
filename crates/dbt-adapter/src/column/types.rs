@@ -28,6 +28,10 @@ static LOG_RE: LazyLock<Regex> =
 static COLLATION_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?i)\s+COLLATE\s+'([^']+)'").expect("A valid regex"));
 
+/// `AthenaColumn.array_inner_type`: the element type of `array<t>` or `array(t)`.
+static ATHENA_ARRAY_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^(?i:array)[<(](.*)[>)]$").expect("A valid regex"));
+
 /// A struct representing a column type for use with static methods
 #[derive(Clone, Copy, Debug)]
 pub struct ColumnStatic(AdapterType);
@@ -288,6 +292,11 @@ impl ColumnStatic {
             // ClickHouseColumn.string_type ignores the size: always plain String,
             // never FixedString (would break contract comparisons and ALTERs).
             AdapterType::ClickHouse => "String".to_string(),
+            // AthenaColumn.string_type
+            AdapterType::Athena => match size {
+                Some(size) if size > 0 => format!("varchar({size})"),
+                _ => "varchar".to_string(),
+            },
             _ => match size {
                 Some(size) => format!("character varying({size})"),
                 _ => "character varying".to_string(),
@@ -439,6 +448,11 @@ pub struct Column {
     /// Collation specifier for string columns (e.g. `"en-ci"` from `VARCHAR(10) COLLATE 'en-ci'`).
     /// Populated when parsing Snowflake raw data types that include a COLLATE clause.
     collation: Option<String>,
+
+    /// Whether the column belongs to an Iceberg table (Athena): `AthenaColumn.table_type`,
+    /// which sets the precision of its timestamps.
+    #[allow(clippy::used_underscore_binding)]
+    _iceberg: bool,
 }
 
 impl Column {
@@ -606,6 +620,7 @@ impl Column {
             numeric_precision,
             numeric_scale,
             collation: None,
+            _iceberg: false,
         }
     }
 
@@ -627,6 +642,7 @@ impl Column {
             numeric_precision: col.numeric_precision,
             numeric_scale: col.numeric_scale,
             collation: None,
+            _iceberg: false,
         }
     }
 
@@ -693,6 +709,7 @@ impl Column {
             numeric_precision: None,
             numeric_scale: None,
             collation: None,
+            _iceberg: false,
         }
     }
 
@@ -740,6 +757,7 @@ impl Column {
                 numeric_precision: None,
                 numeric_scale: None,
                 collation: None,
+                _iceberg: false,
             });
         }
         // Parse data type using regex pattern ([^(]+)(\([^)]+\))?
@@ -807,6 +825,7 @@ impl Column {
             numeric_precision,
             numeric_scale,
             collation,
+            _iceberg: false,
         })
     }
 
@@ -821,6 +840,12 @@ impl Column {
 
     pub fn comment(&self) -> Option<&str> {
         self.comment.as_deref()
+    }
+
+    /// `AthenaColumn(table_type=...)`: timestamps of Iceberg tables are `timestamp(6)`.
+    pub fn with_iceberg(mut self, iceberg: bool) -> Self {
+        self._iceberg = iceberg;
+        self
     }
 
     pub fn with_comment(mut self, comment: Option<String>) -> Self {
@@ -865,6 +890,11 @@ impl Column {
     pub fn string_size(&self) -> Result<u32, String> {
         if !self.is_string() {
             return Err("Called string_size() on non-string field".to_string());
+        }
+
+        // AthenaColumn.string_size
+        if self._adapter_type == AdapterType::Athena {
+            return Ok(self.char_size.unwrap_or(0));
         }
 
         // FIXME: why self.core_dtype == "text" instead of is_string()? This is probably a bug...
@@ -1013,6 +1043,13 @@ impl Column {
                     "string" | "varchar" | "char"
                 )
             }
+            // AthenaColumn.is_string: Glue's Hive `string` and Trino's `varchar`
+            AdapterType::Athena => {
+                matches!(
+                    self.core_dtype.to_lowercase().as_str(),
+                    "varchar" | "string"
+                )
+            }
             _ => {
                 matches!(
                     self.core_dtype.to_lowercase().as_str(),
@@ -1032,6 +1069,51 @@ impl Column {
 
     // TODO: impl data_type - need to handle nested types
     // https://github.com/dbt-labs/dbt-adapters/blob/6f2aae13e39c5df1c93e5d514678914142d71768/dbt-bigquery/src/dbt/adapters/bigquery/column.py#L80
+    /// `AthenaColumn.data_type`: Glue's Hive types in the Trino spelling queries use
+    /// (`string` -> `varchar`, `binary` -> `varbinary`, `array<t>` -> `array(t)`). `map<...>`
+    /// and `struct<...>` stay as Glue reports them, as in dbt-athena.
+    fn athena_data_type(&self) -> String {
+        let dtype = self.core_dtype.to_lowercase();
+        if self.is_string() {
+            return self
+                .as_static()
+                .string_type(Some(self.char_size.unwrap_or(0) as usize));
+        }
+        if self.is_numeric() {
+            return self.as_static().numeric_type(
+                &self.core_dtype,
+                self.numeric_precision,
+                self.numeric_scale,
+            );
+        }
+        if matches!(dtype.as_str(), "binary" | "varbinary") {
+            return "varbinary".to_string();
+        }
+        if dtype == "timestamp" {
+            return if self._iceberg {
+                "timestamp(6)"
+            } else {
+                "timestamp"
+            }
+            .to_string();
+        }
+        if let Some(inner) = ATHENA_ARRAY_RE
+            .captures(&self.core_dtype)
+            .and_then(|c| c.get(1))
+        {
+            let inner = Column::new(
+                AdapterType::Athena,
+                self.name.clone(),
+                inner.as_str().to_string(),
+                self.char_size,
+                self.numeric_precision,
+                self.numeric_scale,
+            );
+            return format!("array({})", inner.athena_data_type());
+        }
+        self.core_dtype.clone()
+    }
+
     pub fn data_type(&self) -> String {
         // FIXME: replace all implementations with core_data_type
         match self._adapter_type {
@@ -1087,6 +1169,7 @@ impl Column {
             // turn Databricks strings into `character varying(256)`.
             // https://github.com/databricks/dbt-databricks/blob/6cc739d473043d4e1c94be9ca391850edd02e7fb/dbt/adapters/databricks/column.py#L140-L142
             AdapterType::Databricks => self.core_dtype.clone(),
+            AdapterType::Athena => self.athena_data_type(),
             _ => {
                 if self.is_string() {
                     self.as_static().string_type(Some(
@@ -1343,6 +1426,59 @@ mod tests {
         let col = ColumnStatic(AdapterType::ClickHouse);
         assert_eq!(col.string_type(Some(256)), "String");
         assert_eq!(col.string_type(None), "String");
+    }
+
+    /// AthenaColumn over Glue's types, as dbt-athena 1.11 renders them (read back from a Hive
+    /// and an Iceberg table built by one CTAS).
+    #[test]
+    fn test_athena_data_type_follows_athena_column() {
+        let athena = |dtype: &str, iceberg: bool| {
+            let col = Column::new(
+                AdapterType::Athena,
+                "c".to_string(),
+                dtype.to_string(),
+                None,
+                None,
+                None,
+            )
+            .with_iceberg(iceberg);
+            (col.data_type(), col.is_string())
+        };
+        let hive = |dtype: &str| athena(dtype, false);
+        assert_eq!(hive("string"), ("varchar".to_string(), true));
+        assert_eq!(hive("varchar(10)"), ("varchar(10)".to_string(), false));
+        assert_eq!(
+            hive("array<varchar(1)>"),
+            ("array(varchar(1))".to_string(), false)
+        );
+        assert_eq!(hive("array<string>").0, "array(varchar)");
+        assert_eq!(hive("array<array<string>>").0, "array(array(varchar))");
+        assert_eq!(hive("map<varchar(1),int>").0, "map<varchar(1),int>");
+        assert_eq!(hive("struct<f:string,g:int>").0, "struct<f:string,g:int>");
+        assert_eq!(hive("decimal(10,2)").0, "decimal(10,2)");
+        assert_eq!(hive("binary").0, "varbinary");
+        assert_eq!(hive("timestamp").0, "timestamp");
+        assert_eq!(athena("timestamp", true).0, "timestamp(6)");
+        for same in ["int", "bigint", "double", "boolean", "date"] {
+            assert_eq!(hive(same), (same.to_string(), false));
+        }
+        let string = Column::new(
+            AdapterType::Athena,
+            "c".to_string(),
+            "string".to_string(),
+            None,
+            None,
+            None,
+        );
+        assert_eq!(string.string_size(), Ok(0));
+        assert_eq!(
+            ColumnStatic(AdapterType::Athena).string_type(Some(0)),
+            "varchar"
+        );
+        assert_eq!(
+            ColumnStatic(AdapterType::Athena).string_type(Some(5)),
+            "varchar(5)"
+        );
     }
 
     #[test]
