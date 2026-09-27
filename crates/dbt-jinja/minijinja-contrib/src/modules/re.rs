@@ -1327,6 +1327,18 @@ mod tests {
         assert_eq!(result, "a,b");
     }
 
+    // Python's Match.__getitem__ returns the same as match.group(): m[0] is the whole
+    // match, m[1] the first group, m['name'] a named group.
+    #[test]
+    fn test_re_match_capture_index_access_returns_group() {
+        assert_eq!(
+            run_re_template(
+                r#"{% set m = re.search('(?P<name>[a-z]+)-(?P<num>[0-9]+)', 'order-42') %}{{ m[0] }},{{ m[1] }},{{ m[2] }},{{ m['num'] }}"#
+            ),
+            "order-42,order,42,42"
+        );
+    }
+
     fn re_env() -> minijinja::Environment<'static> {
         use minijinja::Environment;
         let mut env = Environment::new();
