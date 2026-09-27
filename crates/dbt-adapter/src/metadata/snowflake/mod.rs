@@ -1429,33 +1429,40 @@ impl MetadataAdapter for SnowflakeMetadataAdapter {
               -> AdapterResult<Arc<Schema>> {
             let (_, rendered) = key;
             let sql = format!("describe table {};", rendered);
-            let mut ctx = QueryCtx::new_metadata().with_desc("Get table schema");
-            if let Some(node_id) = unique_id.clone() {
-                ctx = ctx.with_node_id(&node_id);
-            }
-            if let Some(phase) = phase {
-                ctx = ctx.with_phase(phase.as_str());
-            }
+            let new_ctx = |desc: &str| {
+                let mut ctx = QueryCtx::new_metadata().with_desc(desc);
+                if let Some(node_id) = unique_id.clone() {
+                    ctx = ctx.with_node_id(&node_id);
+                }
+                if let Some(phase) = phase {
+                    ctx = ctx.with_phase(phase.as_str());
+                }
+                ctx
+            };
+            let ctx = new_ctx("Get table schema");
             let table = match adapter.query(&ctx, conn, &sql, None, token_clone.clone()) {
                 Ok((_, table)) => table,
                 // `describe table` rejects streams; describe an empty select instead
-                // (neither statement advances the stream offset).
+                // (neither statement advances the stream offset). Describe the select
+                // by its own query id, not last_query_id(): a proxy or middleware may
+                // run statements on the session in between.
                 Err(err) if is_describe_table_invalid_object_type(&err) => {
-                    let ctx = ctx.with_desc("Get stream schema");
+                    let ctx = new_ctx("Get stream schema");
                     let select = format!("select * from {} limit 0;", rendered);
-                    adapter
+                    let described = adapter
                         .query(&ctx, conn, &select, None, token_clone.clone())
-                        .and_then(|_| {
-                            adapter.query(
-                                &ctx,
-                                conn,
-                                "describe result last_query_id();",
-                                None,
-                                token_clone.clone(),
-                            )
-                        })
-                        .map_err(|_| err)?
-                        .1
+                        .ok()
+                        .and_then(|(response, _)| response.query_id())
+                        .and_then(|query_id| {
+                            let sql = format!("describe result '{}';", query_id);
+                            adapter
+                                .query(&ctx, conn, &sql, None, token_clone.clone())
+                                .ok()
+                        });
+                    match described {
+                        Some((_, table)) => table,
+                        None => return Err(err),
+                    }
                 }
                 Err(err) => return Err(err),
             };
