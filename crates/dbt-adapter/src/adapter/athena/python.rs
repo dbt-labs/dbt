@@ -435,18 +435,25 @@ impl SparkJob<'_, '_, '_, '_> {
         }
     }
 
-    /// Stop an abandoned calculation and terminate its session: Athena stops a
-    /// calculation on a best-effort basis, and a calculation left running would still
-    /// write its table. The calls go out even after Ctrl-C; their failures are dropped
-    /// in favour of `error`, the one to report.
+    /// Terminate the session of an abandoned calculation, then stop the calculation:
+    /// a calculation left running would still write its table, and Athena stops one on
+    /// a best-effort basis (a stopped calculation has been seen to run to completion),
+    /// while a terminated session ends it. The session goes first because after Ctrl-C
+    /// the process may exit before a second call is sent. Both calls go out even after
+    /// Ctrl-C; their failures are logged and `error` is the one reported.
     fn abandon(&self, session: &str, calculation: &str, error: AdapterError) -> AdapterError {
-        let _ = self.ops.call_uncancellable(
+        if let Err(e) = self
+            .ops
+            .call_uncancellable("athena.terminate_session", json!({ "SessionId": session }))
+        {
+            tracing::warn!("could not terminate Spark session {session}: {e}");
+        }
+        if let Err(e) = self.ops.call_uncancellable(
             "athena.stop_calculation_execution",
             json!({ "CalculationExecutionId": calculation }),
-        );
-        let _ = self
-            .ops
-            .call_uncancellable("athena.terminate_session", json!({ "SessionId": session }));
+        ) {
+            tracing::debug!("could not stop calculation {calculation}: {e}");
+        }
         Self::release_session(session, false);
         error
     }
