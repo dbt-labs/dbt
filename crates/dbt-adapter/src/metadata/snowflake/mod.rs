@@ -1436,7 +1436,29 @@ impl MetadataAdapter for SnowflakeMetadataAdapter {
             if let Some(phase) = phase {
                 ctx = ctx.with_phase(phase.as_str());
             }
-            let (_, table) = adapter.query(&ctx, conn, &sql, None, token_clone.clone())?;
+            let table = match adapter.query(&ctx, conn, &sql, None, token_clone.clone()) {
+                Ok((_, table)) => table,
+                // `describe table` rejects streams; describe an empty select instead
+                // (neither statement advances the stream offset).
+                Err(err) if is_describe_table_invalid_object_type(&err) => {
+                    let ctx = ctx.with_desc("Get stream schema");
+                    let select = format!("select * from {} limit 0;", rendered);
+                    adapter
+                        .query(&ctx, conn, &select, None, token_clone.clone())
+                        .and_then(|_| {
+                            adapter.query(
+                                &ctx,
+                                conn,
+                                "describe result last_query_id();",
+                                None,
+                                token_clone.clone(),
+                            )
+                        })
+                        .map_err(|_| err)?
+                        .1
+                }
+                Err(err) => return Err(err),
+            };
             let batch = table.original_record_batch();
             let schema = build_schema_from_desc_table(batch, adapter.engine().type_ops().as_ref())?;
             Ok(schema)
@@ -1946,6 +1968,11 @@ ORDER BY TABLE_CATALOG, TABLE_SCHEMA, TABLE_NAME, ORDINAL_POSITION"
     }
 }
 
+/// `describe table` on a Snowflake stream fails with `Invalid object type: 'TABLE'`.
+fn is_describe_table_invalid_object_type(err: &AdapterError) -> bool {
+    err.message().contains("Invalid object type")
+}
+
 /// reference: https://github.com/sdf-labs/sdf/blob/main/crates/sdf-cli/src/providers/database/snowflake.rs#L177-L178
 fn build_schema_from_desc_table(
     show_columns_result: Arc<RecordBatch>,
@@ -2144,6 +2171,17 @@ mod tests {
                 }
             }),
         )
+    }
+
+    #[test]
+    fn describe_table_invalid_object_type_matches_only_stream_error() {
+        let err = |msg: &str| AdapterError::new(AdapterErrorKind::Driver, msg);
+        assert!(is_describe_table_invalid_object_type(&err(
+            "Unknown: SQL compilation error:\nInvalid object type: 'TABLE'."
+        )));
+        assert!(!is_describe_table_invalid_object_type(&err(
+            "SQL compilation error:\nTable 'DB.S.T' does not exist or not authorized."
+        )));
     }
 
     #[test]
