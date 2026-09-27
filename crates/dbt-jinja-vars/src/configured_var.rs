@@ -80,6 +80,10 @@ impl ConfiguredVar {
 
 impl VarFunction for ConfiguredVar {
     fn contains_var(&self, state: &State<'_, '_>, var_name: &str) -> Result<bool, Error> {
+        // CLI vars (and unit test overrides) come first, as in `call_as_function`.
+        if self.cli_vars.contains_key(var_name) {
+            return Ok(true);
+        }
         let package_name = self.package_name(state, var_name)?;
         let vars_lookup = self.vars.get(&package_name).ok_or_else(|| {
             Error::new(
@@ -308,6 +312,36 @@ mod tests {
 
         let rendered = template.render(minijinja::context!(), &[]).unwrap();
         assert_eq!(rendered, "False");
+    }
+
+    /// `has_var` sees the same vars as `var()`: CLI vars (including unit test
+    /// overrides) and the package's project vars.
+    #[test]
+    fn has_var_sees_cli_vars_overrides_and_project_vars() {
+        let project_vars: IndexMap<String, DbtVars> =
+            dbt_yaml::from_str("project_var: p\n").unwrap();
+        let vars = BTreeMap::from([("my_new_project".to_string(), project_vars)]);
+        let cli_vars: BTreeMap<String, dbt_yaml::Value> =
+            dbt_yaml::from_str("cli_var: c\n").unwrap();
+        let overrides: BTreeMap<String, dbt_yaml::Value> =
+            dbt_yaml::from_str("override_var: o\n").unwrap();
+
+        let mut env = minijinja::Environment::new();
+        env.add_global(TARGET_PACKAGE_NAME, MinijinjaValue::from("my_new_project"));
+        env.add_global(
+            "var",
+            MinijinjaValue::from_object(
+                ConfiguredVar::new(vars, cli_vars).with_overrides(&overrides),
+            ),
+        );
+
+        let template = env
+            .template_from_str(
+                "{{ var.has_var('cli_var') }},{{ var.has_var('override_var') }},{{ var.has_var('project_var') }},{{ var.has_var('missing') }}",
+            )
+            .unwrap();
+        let rendered = template.render(minijinja::context!(), &[]).unwrap();
+        assert_eq!(rendered, "True,True,True,False");
     }
 
     /// Build an environment where the project vars are parsed directly from a

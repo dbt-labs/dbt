@@ -1,0 +1,7 @@
+kind: Fixes
+body: Make var.has_var() find vars passed with --vars and unit test overrides, matching dbt-core
+time: 2026-09-27T10:14:29.940236-03:00
+custom:
+    author: luc-pimentel
+    issue: "16448"
+    project: dbt-core
