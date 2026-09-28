@@ -354,62 +354,85 @@ pub struct WarehouseSpecificNodeConfig {
     #[warehouse(valid(all_nodes))]
     pub table_type: Option<String>,
     /// Iceberg/Hive partition spec, e.g. `['month(created_at)']`.
-    #[warehouse(valid(all_nodes))]
+    #[warehouse(valid(Model))]
     pub partitioned_by: Option<StringOrArrayOfStrings>,
     /// Iceberg TBLPROPERTIES passed through verbatim.
-    #[warehouse(valid(all_nodes))]
+    #[warehouse(valid(Model))]
     pub table_properties: Option<BTreeMap<String, YmlValue>>,
     #[serde(default, deserialize_with = "bool_or_string_bool")]
-    #[warehouse(valid(all_nodes))]
+    #[warehouse(valid(Model))]
     pub force_batch: Option<bool>,
     /// Number of buckets for Hive bucketing.
+    #[warehouse(valid(Model))]
     pub bucket_count: Option<StringOrInteger>,
     /// Columns to bucket by.
+    #[warehouse(valid(Model))]
     pub bucketed_by: Option<StringOrArrayOfStrings>,
     /// Row filter for the MERGE delete branch.
+    #[warehouse(valid(Model))]
     pub delete_condition: Option<String>,
     /// Explicit S3 location for the table.
+    #[warehouse(valid(Model, Seed, Source))]
     pub external_location: Option<String>,
     /// Field delimiter for Hive text tables.
+    #[warehouse(valid(Model))]
     pub field_delimiter: Option<String>,
     /// Build through a temporary table and swap, keeping the table queryable.
     #[serde(default, deserialize_with = "bool_or_string_bool")]
+    #[warehouse(valid(Model))]
     pub ha: Option<bool>,
     /// Row filter for the MERGE insert branch.
+    #[warehouse(valid(Model))]
     pub insert_condition: Option<String>,
     /// Lake Formation grants.
+    #[warehouse(valid(Model, Seed))]
     pub lf_grants: Option<BTreeMap<String, YmlValue>>,
     /// Lake Formation tags inherited from the database.
+    #[warehouse(valid(Model))]
     pub lf_inherited_tags: Option<StringOrArrayOfStrings>,
     /// Lake Formation tag configuration.
+    #[warehouse(valid(Model, Seed))]
     pub lf_tags_config: Option<BTreeMap<String, YmlValue>>,
     /// Default rule applied to columns with no explicit rule.
+    #[warehouse(valid(Model))]
     pub merge_update_columns_default_rule: Option<String>,
     /// Per-column rules for the MERGE update branch.
+    #[warehouse(valid(Model))]
     pub merge_update_columns_rules: Option<BTreeMap<String, YmlValue>>,
     /// Use Iceberg's native DROP instead of the Glue/S3 path.
     #[serde(default, deserialize_with = "bool_or_string_bool")]
+    #[warehouse(valid(Model))]
     pub native_drop: Option<bool>,
     /// Maximum partitions written per statement.
+    #[warehouse(valid(Model))]
     pub partitions_limit: Option<StringOrInteger>,
     /// S3 prefix for this table's data.
+    #[warehouse(valid(Model, Seed))]
     pub s3_data_dir: Option<String>,
     /// Layout under the data prefix.
+    #[warehouse(valid(Model, Seed))]
     pub s3_data_naming: Option<String>,
     /// S3 prefix for temporary tables.
+    #[warehouse(valid(Model))]
     pub s3_tmp_table_dir: Option<String>,
     /// Load seeds with INSERT statements instead of an external table.
     #[serde(default, deserialize_with = "bool_or_string_bool")]
+    #[warehouse(valid(Model, Seed))]
     pub seed_by_insert: Option<bool>,
     /// Extra arguments for the seed upload.
+    #[warehouse(valid(Model, Seed))]
     pub seed_s3_upload_args: Option<BTreeMap<String, YmlValue>>,
     /// Schema used for temporary relations.
+    #[warehouse(valid(Model))]
     pub temp_schema: Option<String>,
     /// Row filter for the MERGE update branch.
+    #[warehouse(valid(Model))]
     pub update_condition: Option<String>,
     /// Iceberg table versions retained by the expiry hook.
+    #[warehouse(valid(Model))]
     pub versions_to_keep: Option<StringOrInteger>,
     /// Compression codec for written files.
+    #[warehouse(valid(Model))]
     pub write_compression: Option<String>,
 
     // Postgres
