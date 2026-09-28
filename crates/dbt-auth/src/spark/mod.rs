@@ -233,17 +233,13 @@ fn parse_auth<'a>(
                 ));
             };
 
-            let value = match value {
-                YmlValue::String(v, _) => v.to_string(),
-                YmlValue::Number(v, _) => v.to_string(),
-                _ => {
-                    return Err(AuthError::config(
-                        "'server_side_parameters' value must be string or number",
-                    ));
-                }
+            let Some(value) = value.as_scalar_string() else {
+                return Err(AuthError::config(
+                    "'server_side_parameters' value must be a scalar",
+                ));
             };
 
-            session_params.insert(key.as_str(), value);
+            session_params.insert(key.as_str(), value.into_owned());
         }
     }
 

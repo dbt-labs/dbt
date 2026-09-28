@@ -881,6 +881,10 @@ impl ConfigKeys for DataTestConfig {
     }
 }
 
+impl crate::schemas::project::configs::warehouse_scope::WarehouseConfigResource for DataTestConfig {
+    const NODE_TYPE: dbt_telemetry::NodeType = dbt_telemetry::NodeType::Test;
+}
+
 #[cfg(test)]
 mod tests {
     use super::{AdapterType, DataTestConfig, ProjectDataTestConfig};

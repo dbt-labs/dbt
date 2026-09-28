@@ -3,6 +3,7 @@ use crate::args::ResolveArgs;
 use crate::dbt_project_config::{
     ProjectConfigResolver, RootProjectConfigs, disallow_plus_prefix_from_flags, init_project_config,
 };
+use crate::renderer::strip_warehouse_keys_in_config_block;
 use crate::resolve::resolve_utils::{canonicalize_source_config_keys, extract_config_map};
 use crate::utils::{extract_resource_config_from_raw_project, get_node_fqn};
 use crate::validation::check_node_static_analysis;
@@ -23,16 +24,18 @@ use dbt_schemas::schemas::common::{
 };
 use dbt_schemas::schemas::dbt_catalogs::LoadedCatalogs;
 use dbt_schemas::schemas::dbt_column::process_columns;
-use dbt_schemas::schemas::project::{ResolvableConfig, SourceConfig, Tags};
+use dbt_schemas::schemas::project::{ResolvableConfig, SourceConfig, Tags, WarningEmission};
 use dbt_schemas::schemas::properties::{SourceProperties, Tables, TablesConfig};
 use dbt_schemas::schemas::relations::default_dbt_quoting_for;
 use dbt_schemas::schemas::serde::strip_one_trailing_newline_at_keys;
+use dbt_schemas::schemas::telemetry::NodeType;
 use dbt_schemas::schemas::{CommonAttributes, DbtSource, DbtSourceAttr, NodeBaseAttributes};
 use dbt_schemas::state::{DbtPackage, GenericTestAsset, ModelStatus, NodeResolverTracker};
 use minijinja::Value as MinijinjaValue;
 use regex::Regex;
 use std::collections::BTreeMap;
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -288,6 +291,8 @@ pub async fn resolve_sources(
         arg.static_analysis.unwrap_or_default(),
         root_package.dbt_project.sync.clone(),
     ));
+    // Source properties repeat per table; warn once while validating every copy.
+    let mut warehouse_keys_stripped_for_source: HashSet<String> = HashSet::new();
     for ((source_name, table_name), mpe) in source_properties.into_iter() {
         // Extract raw (unrendered) database and schema from the YAML before Jinja rendering.
         // These preserve Jinja templates like `{{ env_var('DBT_ENV') }}` for state comparisons.
@@ -320,6 +325,19 @@ pub async fn resolve_sources(
         strip_one_trailing_newline_at_keys(
             &mut schema_value,
             &["name", "schema", "database", "catalog"],
+        );
+
+        let warning_emission = if warehouse_keys_stripped_for_source.insert(source_name.clone()) {
+            WarningEmission::Emit
+        } else {
+            WarningEmission::Suppress
+        };
+        strip_warehouse_keys_in_config_block(
+            &mut schema_value,
+            &source_name,
+            NodeType::Source,
+            dependency_package_name,
+            warning_emission,
         );
 
         let mut source: SourceProperties = into_typed_with_jinja(

@@ -516,15 +516,14 @@ impl CliExtensionHooks for DefaultCliExtensionHooks {
                         emit_error_log_from_fs_error(*e);
                         Err(FsError::exit_with_status(1))
                     }
-                    SystemCommand::InstallDrivers => {
-                        dbt_adbc::pre_install_all_drivers().map_err(|install_err| {
+                    SystemCommand::InstallDrivers => dbt_adbc::pre_install_all_drivers(None)
+                        .map_err(|install_err| {
                             emit_error_log_message(
                                 ErrorCode::Generic,
                                 format!("Failed to install drivers: {}", install_err).as_str(),
                             );
                             FsError::exit_with_status(1)
-                        })
-                    }
+                        }),
                     SystemCommand::UpgradeDistribution(args) => exec_upgrade_distribution(
                         args.yes,
                         args.package_manager.clone(),

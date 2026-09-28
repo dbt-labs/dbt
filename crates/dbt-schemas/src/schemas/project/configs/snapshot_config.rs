@@ -1099,6 +1099,10 @@ impl ConfigKeys for SnapshotConfig {
     }
 }
 
+impl crate::schemas::project::configs::warehouse_scope::WarehouseConfigResource for SnapshotConfig {
+    const NODE_TYPE: dbt_telemetry::NodeType = dbt_telemetry::NodeType::Snapshot;
+}
+
 #[cfg(test)]
 mod tests {
     use super::{AdapterType, ProjectSnapshotConfig, SnapshotConfig};

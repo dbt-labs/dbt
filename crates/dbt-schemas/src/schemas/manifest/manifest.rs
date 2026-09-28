@@ -2176,7 +2176,9 @@ pub fn manifest_model_to_dbt_model(
             version: model.version,
             latest_version: model.latest_version,
             constraints: model.constraints.unwrap_or_default(),
-            deprecation_date: model.deprecation_date,
+            deprecation_date: model
+                .deprecation_date
+                .and_then(|raw| dbt_yaml::Timestamp::parse(&raw)),
             primary_key: model.primary_key.unwrap_or_default(),
             time_spine,
             event_time: model.config.event_time.clone(),

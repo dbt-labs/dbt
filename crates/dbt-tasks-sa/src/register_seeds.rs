@@ -39,10 +39,7 @@ struct SeedRegistrationCtx {
 }
 
 pub fn resolve_seed_path(in_dir: &Path, seed: &DbtSeed) -> PathBuf {
-    seed.__seed_attr__
-        .root_path
-        .as_ref()
-        .map(|root| root.join(&seed.__common_attr__.path))
+    seed.file_path_from_root()
         .unwrap_or_else(|| in_dir.join(&seed.__common_attr__.original_file_path))
 }
 

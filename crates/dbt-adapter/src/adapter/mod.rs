@@ -2918,11 +2918,9 @@ impl Adapter {
                     _ => config
                         .__warehouse_specific_config__
                         .tblproperties
-                        .clone()
-                        .unwrap_or_default()
-                        .0
-                        .into_iter()
-                        .map(|(k, v)| (k, yml_value_to_minijinja(v)))
+                        .iter()
+                        .flat_map(|tp| tp.0.iter())
+                        .map(|(k, v)| (k.to_string(), yml_value_to_minijinja(v)))
                         .collect(),
                 };
 
@@ -4258,8 +4256,6 @@ impl Adapter {
                 let model = iter.next_arg::<Value>()?;
                 iter.finish()?;
 
-                // Extract seed file path from the model
-                // The seed file path is root_path + original_file_path
                 let seed =
                     minijinja_value_to_typed_struct::<dbt_schemas::schemas::nodes::DbtSeed>(model)
                         .map_err(|e| {
@@ -4269,9 +4265,9 @@ impl Adapter {
                             )
                         })?;
 
-                let root_path = seed.__seed_attr__.root_path.unwrap_or_default();
-                let original_file_path = &seed.__common_attr__.original_file_path;
-                let full_path = root_path.join(original_file_path);
+                let full_path = seed
+                    .file_path_from_root()
+                    .unwrap_or_else(|| seed.__common_attr__.original_file_path.to_path_buf());
                 Ok(Value::from(full_path.display().to_string()))
             }
             "external_root" => {
