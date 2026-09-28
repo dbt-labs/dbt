@@ -509,7 +509,8 @@ Second error:\n\
             adbc_version,
         )
         .or_else(|_| {
-            install::install_driver_internal(&http_agent, backend_name, triplet)
+            // TODO: look for drivers in different cache directories
+            install::install_driver_internal(&http_agent, backend_name, triplet, None)
                 .map_err(|e| Error::with_message_and_status(e.to_string(), Status::IO))?;
 
             let driver = ManagedAdbcDriver::load_dynamic_from_filename(
