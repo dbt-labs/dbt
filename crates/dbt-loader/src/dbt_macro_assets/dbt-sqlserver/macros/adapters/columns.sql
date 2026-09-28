@@ -49,6 +49,15 @@
 
     {% else %}
         {%- set tmp_column = column_name + "__dbt_alter" -%}
+        {%- set relation_name = escape_single_quotes(relation.include(database=False)) -%}
+
+        {#-- The four steps below autocommit one by one, so a failed run can leave tmp_column behind, and the next run's ADD then fails forever (dbt-msft/dbt-sqlserver#836).
+             Drop it first. It is only a partial copy while the original column still exists; if the original is gone, tmp_column holds the data, so it is left alone. --#}
+        {% set drop_leftover %}
+            if col_length('{{ relation_name }}', '{{ escape_single_quotes(tmp_column) }}') is not null
+                and col_length('{{ relation_name }}', '{{ escape_single_quotes(column_name) }}') is not null
+                alter {{ relation.type }} {{ relation }} drop column "{{ tmp_column }}";
+        {%- endset %}
 
         {% set add_column %}
             alter {{ relation.type }} {{ relation }}
@@ -62,9 +71,10 @@
             drop column "{{ column_name }}";
         {%- endset %}
         {% set rename_column %}
-            exec sp_rename '{{ escape_single_quotes(relation.include(database=False)) }}.{{ escape_single_quotes(adapter.quote(tmp_column)) }}', '{{ escape_single_quotes(column_name) }}', 'column'
+            exec sp_rename '{{ relation_name }}.{{ escape_single_quotes(adapter.quote(tmp_column)) }}', '{{ escape_single_quotes(column_name) }}', 'column'
         {%- endset %}
 
+        {% do run_query(drop_leftover) %}
         {% do run_query(add_column) %}
         {% do run_query(update_column) %}
         {% do run_query(drop_column) %}
