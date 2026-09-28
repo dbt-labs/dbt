@@ -24,6 +24,7 @@ use dbt_pretty_table::{make_column_names, pretty_data_table};
 use dbt_scheduler::instructions::SqlInstruction;
 use dbt_schemas::schemas::DbtTest;
 use dbt_schemas::schemas::common::Severity;
+use dbt_schemas::schemas::project::{DEFAULT_DATA_TEST_ERROR_IF, DEFAULT_DATA_TEST_WARN_IF};
 use dbt_schemas::schemas::{InternalDbtNode, InternalDbtNodeAttributes, NodePathKind};
 use dbt_tasks_core::context::{BlockingTaskCtx, TaskRunnerCtx};
 use dbt_tasks_core::pretty_table::from_pretty_table_error;
@@ -80,6 +81,8 @@ impl TestExecutionStatus {
 pub struct TestReportedResult {
     pub failures: usize,
     pub status: TestExecutionStatus,
+    /// Message for `run_results.json`; `None` falls back to the status name.
+    pub message: Option<String>,
     pub diff: Option<String>,
     pub execution_result: Option<CachedTestExecutionResult>,
 }
@@ -136,6 +139,28 @@ fn reported_test_verdict_from_materialize_result(
     )
 }
 
+/// Message for a data test that failed or warned, in dbt Core's wording, e.g.
+/// "Got 2 results, configured to fail if != 0". `verdict` is the status before `--warn-error`
+/// overrides: a warning upgraded to an error reports its `warn_if` threshold.
+fn test_result_message(
+    failures: usize,
+    verdict: TestExecutionStatus,
+    status: TestExecutionStatus,
+    error_if: &str,
+    warn_if: &str,
+) -> Option<String> {
+    let (action, threshold) = match (verdict, status) {
+        (TestExecutionStatus::Failed, _) => ("fail", error_if),
+        (TestExecutionStatus::Warned, TestExecutionStatus::Failed) => ("fail", warn_if),
+        (TestExecutionStatus::Warned, TestExecutionStatus::Warned) => ("warn", warn_if),
+        _ => return None,
+    };
+    let results = if failures == 1 { "result" } else { "results" };
+    Some(format!(
+        "Got {failures} {results}, configured to {action} if {threshold}"
+    ))
+}
+
 pub fn record_test_metric(status: TestExecutionStatus) {
     if let Some(metric_key) = status.metric_key() {
         increment_metric(FusionMetricKey::InvocationMetric(metric_key), 1);
@@ -148,6 +173,7 @@ pub fn insert_test_run_stat(
     start: SystemTime,
     failures: usize,
     status: TestExecutionStatus,
+    message: Option<String>,
 ) {
     let thread_id = ctx.thread_id;
     ctx.inner.run_stats.insert(
@@ -157,7 +183,7 @@ pub fn insert_test_run_stat(
             start,
             Some(failures),
             status.node_status(),
-            None,
+            message,
             thread_id,
         ),
     );
@@ -307,13 +333,13 @@ impl AggregatedTestRunRemoteTask {
                 dbt_tasks_core::test_aggregation::normalize_column_name(&test.column_name);
             let column_result = column_results.get(&column_name).copied();
 
-            let status = match column_result {
+            let verdict = match column_result {
                 Some(result) => {
                     reported_test_verdict_from_materialize_result(test.severity.as_ref(), result)
                 }
                 None => TestExecutionStatus::Passed,
             };
-            let status = status_with_warn_error_overrides(status, warn_error_options);
+            let status = status_with_warn_error_overrides(verdict, warn_error_options);
             worst_status = worst_status.max(status);
 
             let failures = column_result
@@ -325,6 +351,14 @@ impl AggregatedTestRunRemoteTask {
                 TestReportedResult {
                     failures,
                     status,
+                    // Only tests with the default thresholds are aggregated.
+                    message: test_result_message(
+                        failures,
+                        verdict,
+                        status,
+                        DEFAULT_DATA_TEST_ERROR_IF,
+                        DEFAULT_DATA_TEST_WARN_IF,
+                    ),
                     diff: None,
                     execution_result: Some(CachedTestExecutionResult {
                         failures: failures as i64,
@@ -479,6 +513,7 @@ impl AggregatedTestRunRemoteTask {
             SystemTime::now(),
             result.failures,
             result.status,
+            result.message.clone(),
         );
         if let Some(execution_result) = result.execution_result {
             ctx.inner
@@ -661,9 +696,25 @@ fn execute_test_remote_inner(
         None
     };
 
+    let reported_status =
+        status_with_warn_error_overrides(status, &ctx.inner.arg.warn_error_options);
+    let config = &test.deprecated_config;
     Ok(TestReportedResult {
         failures: test_result.failures as usize,
-        status: status_with_warn_error_overrides(status, &ctx.inner.arg.warn_error_options),
+        status: reported_status,
+        message: test_result_message(
+            test_result.failures as usize,
+            status,
+            reported_status,
+            config
+                .error_if
+                .as_deref()
+                .unwrap_or(DEFAULT_DATA_TEST_ERROR_IF),
+            config
+                .warn_if
+                .as_deref()
+                .unwrap_or(DEFAULT_DATA_TEST_WARN_IF),
+        ),
         diff,
         execution_result: Some(CachedTestExecutionResult {
             failures: test_result.failures,
@@ -693,6 +744,7 @@ pub fn process_test_result(
         start,
         result.failures,
         result.status,
+        result.message.clone(),
     );
     if let Some(execution_result) = result.execution_result {
         ctx.inner
@@ -711,6 +763,7 @@ pub fn process_statically_checked_test_result(
     let result = TestReportedResult {
         failures: 0,
         status: TestExecutionStatus::Passed,
+        message: None,
         diff: None,
         execution_result: None,
     };
@@ -734,4 +787,67 @@ pub fn process_statically_checked_test_result(
     );
 
     NodeStatus::StaticallyCheckedDataTest
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn failed_test_message_names_error_if() {
+        let message = test_result_message(
+            2,
+            TestExecutionStatus::Failed,
+            TestExecutionStatus::Failed,
+            "!= 0",
+            "> 5",
+        );
+        assert_eq!(
+            message.as_deref(),
+            Some("Got 2 results, configured to fail if != 0")
+        );
+    }
+
+    #[test]
+    fn warned_test_message_names_warn_if() {
+        let message = test_result_message(
+            1,
+            TestExecutionStatus::Warned,
+            TestExecutionStatus::Warned,
+            "> 5",
+            "!= 0",
+        );
+        assert_eq!(
+            message.as_deref(),
+            Some("Got 1 result, configured to warn if != 0")
+        );
+    }
+
+    #[test]
+    fn warning_upgraded_by_warn_error_names_warn_if() {
+        let message = test_result_message(
+            3,
+            TestExecutionStatus::Warned,
+            TestExecutionStatus::Failed,
+            "> 5",
+            "> 1",
+        );
+        assert_eq!(
+            message.as_deref(),
+            Some("Got 3 results, configured to fail if > 1")
+        );
+    }
+
+    #[test]
+    fn passed_and_silenced_tests_keep_the_default_message() {
+        for (verdict, status) in [
+            (TestExecutionStatus::Passed, TestExecutionStatus::Passed),
+            (TestExecutionStatus::Warned, TestExecutionStatus::Passed),
+        ] {
+            assert_eq!(
+                test_result_message(0, verdict, status, "!= 0", "!= 0"),
+                None
+            );
+        }
+    }
 }
