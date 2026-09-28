@@ -468,6 +468,7 @@ pub async fn resolve(
 
     resolver_hooks.post_resolve(
         &arg.io,
+        adapter_type,
         &mut nodes,
         root_project_name,
         root_project_quoting,
