@@ -32,6 +32,7 @@ use dbt_jinja_utils::serde::single_expression_body;
 use dbt_jinja_utils::utils::add_task_context;
 use dbt_jinja_utils::utils::macro_spans_to_macro_span_vec;
 use dbt_jinja_utils::utils::render_sql;
+use dbt_jinja_utils::utils::splice_ctes_into_leading_with;
 use dbt_jinja_utils::{Var, env_var};
 use dbt_scheduler::instructions::SqlInstruction;
 use dbt_schemas::schemas;
@@ -542,6 +543,17 @@ fn columns_to_schema(
     Ok(Arc::new(Schema::new(fields)))
 }
 
+/// `WITH <ctes> <sql>`. SQL Server can't nest a WITH, so a model that has its
+/// own gets the CTEs spliced into it.
+fn prefix_ctes(adapter_type: AdapterType, ctes: &str, sql: &str) -> String {
+    if adapter_type == AdapterType::SqlServer
+        && let Some(sql) = splice_ctes_into_leading_with(sql, ctes)
+    {
+        return sql;
+    }
+    format!("WITH {ctes} {sql}")
+}
+
 fn build_unit_test_schema_probe(
     adapter_type: AdapterType,
     type_ops: &dyn TypeOps,
@@ -567,7 +579,7 @@ fn build_unit_test_schema_probe(
     let query_sql = if ctes.is_empty() {
         schema_sql.clone()
     } else {
-        format!("WITH {ctes} {schema_sql}")
+        prefix_ctes(adapter_type, &ctes, &schema_sql)
     };
     UnitTestSchemaProbe {
         schema_sql,
@@ -796,12 +808,20 @@ fn infer_unit_test_expected_schema(
             )
         })?;
 
-        let mut args = vec![Value::from(schema_sql)];
-        if ctes.is_empty() {
-            args.push(Value::from(()));
+        let args = if ctes.is_empty() {
+            vec![Value::from(schema_sql), Value::from(())]
+        } else if unit_test.node_adapter() == AdapterType::SqlServer {
+            // sqlserver__get_empty_subquery_sql drops the select_sql_header.
+            vec![
+                Value::from(prefix_ctes(AdapterType::SqlServer, &ctes, &schema_sql)),
+                Value::from(()),
+            ]
         } else {
-            args.push(Value::from(format!("WITH {ctes} ")));
-        }
+            vec![
+                Value::from(schema_sql),
+                Value::from(format!("WITH {ctes} ")),
+            ]
+        };
 
         let columns_as_value = func.call(&state, &args, &[]).map_err(|e| {
             fs_err!(
@@ -1683,8 +1703,6 @@ fn render_unit_test(
     let model_schema = expect_relation.get_schema()?;
     let model_alias = expect_relation.get_identifier()?;
 
-    // The given fixtures; the expected and actual subqueries follow.
-    let given_count = subqueries.len();
     let expect_table = format!("{model_alias}_expect");
     let fqn_expect = format_fqn(type_ops, &model_catalog, &model_schema, &expect_table);
     subqueries.push((fqn_expect.clone(), expect_values));
@@ -1693,7 +1711,12 @@ fn render_unit_test(
     let actual_table = format!("{model_alias}_actual");
     let fqn_actual = format_fqn(type_ops, &model_catalog, &model_schema, &actual_table);
 
-    subqueries.push((fqn_actual.clone(), raw_sql));
+    let actual_sql = if adapter_type == AdapterType::SqlServer {
+        sqlserver_unit_test::mark_model(&raw_sql)
+    } else {
+        raw_sql
+    };
+    subqueries.push((fqn_actual.clone(), actual_sql));
 
     // now build the final query
     let mut query_str = String::new();
@@ -1747,17 +1770,10 @@ fn render_unit_test(
         .collect::<FsResult<Vec<String>>>()?
         .join(", ");
 
-    if adapter_type == AdapterType::SqlServer {
-        query_str.push_str(&sqlserver_unit_test::template(
-            &subqueries_vec[..given_count],
-            &subqueries[given_count].1,
-            &subqueries[given_count + 1].1,
-        ));
-    } else {
-        // Redshift errors (SQLSTATE XX000) on a top-level UNION ALL immediately
-        // followed by ORDER BY. dbt-labs/dbt-core#14549
-        query_str.push_str(&format!(
-            r#"-- Build actual result given inputs
+    // Redshift errors (SQLSTATE XX000) on a top-level UNION ALL immediately
+    // followed by ORDER BY. dbt-labs/dbt-core#14549
+    query_str.push_str(&format!(
+        r#"-- Build actual result given inputs
 WITH
             {}
         SELECT * FROM (
@@ -1766,14 +1782,13 @@ WITH
         (SELECT {}, 'expected' AS actual_or_expected FROM {})
         ) unit_test_diff
         {}"#,
-            subqueries_vec.join(",\n  "),
-            expected_column_names_formatted,
-            fqn_actual,
-            expected_column_names_formatted,
-            fqn_expect,
-            order_by_clause
-        ));
-    }
+        subqueries_vec.join(",\n  "),
+        expected_column_names_formatted,
+        fqn_actual,
+        expected_column_names_formatted,
+        fqn_expect,
+        order_by_clause
+    ));
 
     // create a subquery for the actual value ...
 
@@ -1801,12 +1816,9 @@ WITH
     let rendered_sql =
         replace_subquery_refs_with_cte_names(adapter_type, type_ops, rendered_sql, &subqueries);
     let rendered_sql = if adapter_type == AdapterType::SqlServer {
-        sqlserver_unit_test::batch(
+        sqlserver_unit_test::lift_model_ctes(
             &rendered_sql,
-            type_ops,
-            &node.__common_attr__.unique_id,
-            &expected_column_names_formatted,
-            &order_by_clause,
+            &create_cte_name_from_fqn(adapter_type, type_ops, &fqn_actual),
         )?
     } else {
         rendered_sql
@@ -2683,233 +2695,112 @@ fn get_fixture_rows(
     }
 }
 
-/// SQL Server runs a unit test the way v1's `sqlserver__get_unit_test_sql`
-/// does, which v2 never calls.
-///
-/// T-SQL allows `WITH` only at the start of a statement, so a model with its own
-/// CTEs can't be the body of the `<model>_actual` CTE (Msg 156). As in v1, the
-/// model, with the given fixtures spliced into its `WITH`, and the expected rows
-/// become views, and the diff selects from them, ordered like every other
-/// adapter's since the rows are compared by position. The fixtures, expected
-/// rows and model are rendered in one pass between marker lines, so refs are
-/// swapped for fixture CTE names as for every other adapter.
+/// T-SQL allows `WITH` only at the start of a statement, so the model under test
+/// can't bring its own CTEs into the body of the `<model>_actual` CTE (Msg 156).
+/// v1's `sqlserver__get_unit_test_sql`, which v2 never calls, created the model
+/// as a view. Instead, SQL Server lifts the model's CTEs into the unit test's
+/// `WITH` list, ahead of `<model>_actual`, whose body keeps the model's final
+/// statement. The query keeps every other adapter's shape and needs no DDL.
 mod sqlserver_unit_test {
-    use std::hash::{DefaultHasher, Hash, Hasher};
-    use std::time::{SystemTime, UNIX_EPOCH};
-
-    use dbt_adapter::sql_types::TypeOps;
+    use dbt_adapter_core::AdapterType;
     use dbt_common::{ErrorCode, FsResult, fs_err};
-    use dbt_jinja_utils::utils::splice_ctes_into_leading_with;
+    use dbt_jinja_utils::utils::split_leading_ctes;
 
-    const VIEW_SCHEMA: &str = "--dbt_sqlserver_unit_test:view_schema";
-    const FIXTURES: &str = "--dbt_sqlserver_unit_test:fixtures";
-    const EXPECTED: &str = "--dbt_sqlserver_unit_test:expected";
-    const MODEL: &str = "--dbt_sqlserver_unit_test:model";
+    use crate::sql::dialect::sqlparser_dialect_for;
 
-    /// The Jinja to render: v1's `USE` and schema creation, the views' schema,
-    /// then the given CTEs, the expected rows and the model, each after a marker.
-    pub(super) fn template(given_ctes: &[String], expected_sql: &str, model_sql: &str) -> String {
-        format!(
-            "{{{{ get_use_database_sql(target.database) }}}}\n\
-             {{{{ create_schema_if_not_exists(target.schema) }}}}\n\
-             {VIEW_SCHEMA}\n{{{{ adapter.quote(target.schema) }}}}\n\
-             {FIXTURES}\n{}\n\
-             {EXPECTED}\n{expected_sql}\n\
-             {MODEL}\n{model_sql}",
-            given_ctes.join(",\n")
-        )
+    const MODEL_START: &str = "--dbt_sqlserver_unit_test:model_start\n";
+    const MODEL_END: &str = "\n--dbt_sqlserver_unit_test:model_end\n";
+
+    /// Brackets the model's raw SQL so it can be found once the unit test is
+    /// rendered and its refs are swapped for fixture CTE names.
+    pub(super) fn mark_model(raw_sql: &str) -> String {
+        format!("\n{MODEL_START}{raw_sql}{MODEL_END}")
     }
 
-    /// Builds the batch from the rendered [`template`]: create both views, select
-    /// the diff, drop them, and drop them on failure too.
-    pub(super) fn batch(
-        rendered: &str,
-        type_ops: &dyn TypeOps,
-        unique_id: &str,
-        columns: &str,
-        order_by: &str,
-    ) -> FsResult<String> {
-        let (prelude, rest) = split_at_marker(rendered, VIEW_SCHEMA)?;
-        let (view_schema, rest) = split_at_marker(rest, FIXTURES)?;
-        let (fixtures, rest) = split_at_marker(rest, EXPECTED)?;
-        let (expected_sql, model_sql) = split_at_marker(rest, MODEL)?;
-
-        let fixtures = fixtures.trim();
-        let model_sql = model_sql.trim();
-        let main_sql = if fixtures.is_empty() {
-            model_sql.to_string()
-        } else {
-            splice_ctes_into_leading_with(model_sql, fixtures)
-                .unwrap_or_else(|| format!("with {fixtures}\n{model_sql}"))
-        };
-
-        let suffix = view_suffix(unique_id);
-        let view_schema = view_schema.trim();
-        let actual_view = format!(
-            "{view_schema}.{}",
-            type_ops.format_ident(&format!("testview_{suffix}"))
-        );
-        let expected_view = format!(
-            "{view_schema}.{}",
-            type_ops.format_ident(&format!("expectedview_{suffix}"))
-        );
-        let diff = format!(
-            "select * from (\
-             select {columns}, 'actual' as actual_or_expected from {actual_view} \
-             union all \
-             select {columns}, 'expected' as actual_or_expected from {expected_view}\
-             ) unit_test_diff {order_by}"
-        );
-
-        Ok(format!(
-            "{prelude}
-BEGIN TRY
-    EXEC(N'create view {actual_view_lit} as {}');
-    EXEC(N'create view {expected_view_lit} as {}');
-    EXEC(N'{}');
-END TRY
-BEGIN CATCH
-    EXEC(N'drop view if exists {actual_view_lit}');
-    EXEC(N'drop view if exists {expected_view_lit}');
-    THROW;
-END CATCH;
-EXEC(N'drop view {actual_view_lit}');
-EXEC(N'drop view {expected_view_lit}');",
-            escape(&main_sql),
-            escape(expected_sql.trim()),
-            escape(&diff),
-            prelude = prelude.trim_end(),
-            actual_view_lit = escape(&actual_view),
-            expected_view_lit = escape(&expected_view),
-        ))
-    }
-
-    fn split_at_marker<'a>(sql: &'a str, marker: &str) -> FsResult<(&'a str, &'a str)> {
-        sql.split_once(&format!("\n{marker}\n")).ok_or_else(|| {
+    /// Moves the rendered model's own CTEs out of the `actual_cte` body and in
+    /// front of it. A model without a leading `WITH` is left as it is.
+    pub(super) fn lift_model_ctes(rendered: &str, actual_cte: &str) -> FsResult<String> {
+        let missing = |what: &str| {
             fs_err!(
                 ErrorCode::Unexpected,
-                "Internal error: '{marker}' is missing from the rendered SQL Server unit test"
+                "Internal error: {what} is missing from the rendered SQL Server unit test"
             )
-        })
-    }
-
-    /// Unique per run, as v1's `local_md5(...) ~ random` is, so parallel runs
-    /// don't share views.
-    fn view_suffix(unique_id: &str) -> String {
-        let mut hasher = DefaultHasher::new();
-        unique_id.hash(&mut hasher);
-        std::process::id().hash(&mut hasher);
-        std::thread::current().id().hash(&mut hasher);
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or_default()
-            .hash(&mut hasher);
-        format!("{:016x}", hasher.finish())
-    }
-
-    fn escape(sql: &str) -> String {
-        sql.replace('\'', "''")
+        };
+        let start = rendered
+            .find(MODEL_START)
+            .ok_or_else(|| missing("the model start marker"))?
+            + MODEL_START.len();
+        let end = start
+            + rendered[start..]
+                .find(MODEL_END)
+                .ok_or_else(|| missing("the model end marker"))?;
+        let Some((model_ctes, statement)) = split_leading_ctes(
+            &rendered[start..end],
+            sqlparser_dialect_for(AdapterType::SqlServer),
+        ) else {
+            return Ok(rendered.to_string());
+        };
+        let declaration = rendered[..start]
+            .rfind(&format!("{actual_cte} as ("))
+            .ok_or_else(|| missing("the actual CTE"))?;
+        Ok(format!(
+            "{}{model_ctes},\n\t{}{}{}",
+            &rendered[..declaration],
+            &rendered[declaration..start],
+            statement.trim_start(),
+            &rendered[end..]
+        ))
     }
 
     #[cfg(test)]
     mod tests {
-        use dbt_adapter::sql_types::DefaultTypeOps;
-        use dbt_adapter_core::AdapterType;
-
         use super::*;
 
-        /// What the renderer produces from [`template`] once Jinja and ref
-        /// replacement have run.
-        fn rendered(fixtures: &str, model_sql: &str) -> String {
+        /// The unit test as rendered, with the given's ref already swapped
+        /// for its fixture CTE.
+        fn rendered(model_sql: &str) -> String {
             format!(
-                "USE \"TestDB\";\nDECLARE @dbt_schema_lock int;\n\
-                 {VIEW_SCHEMA}\n\"dbo\"\n\
-                 {FIXTURES}\n{fixtures}\n\
-                 {EXPECTED}\nselect cast(1 as int) as \"id\"\n\
-                 {MODEL}\n{model_sql}"
+                "-- Build actual result given inputs\nWITH\n\
+                 \tTestDB_dbo_base as (select 1 as id),\n  \
+                 \tTestDB_dbo_m_expect as (select 1 as id),\n  \
+                 \tTestDB_dbo_m_actual as ({})\n\
+                 SELECT * FROM (SELECT id FROM TestDB_dbo_m_actual) unit_test_diff",
+                mark_model(model_sql)
             )
-        }
-
-        fn build(fixtures: &str, model_sql: &str) -> String {
-            let type_ops = DefaultTypeOps::new(AdapterType::SqlServer);
-            batch(
-                &rendered(fixtures, model_sql),
-                &type_ops,
-                "unit_test.p.m.t",
-                "\"id\"",
-                "ORDER BY \"id\"",
-            )
-            .expect("batch should build")
-        }
-
-        /// The dynamic SQL of the `EXEC(N'...')` that starts with `prefix`, unescaped.
-        fn exec_body(sql: &str, prefix: &str) -> String {
-            let start = sql
-                .find(&format!("EXEC(N'{prefix}"))
-                .unwrap_or_else(|| panic!("no EXEC starting with {prefix:?} in {sql}"))
-                + "EXEC(N'".len();
-            let end = start + sql[start..].find("');").expect("EXEC is closed");
-            sql[start..end].replace("''", "'")
         }
 
         #[test]
-        fn model_with_its_own_with_gets_the_fixtures_spliced_into_it() {
-            let sql = build(
-                "\t\"TestDB_dbo_base\" as (select 1 as \"id\")",
-                "with src as (select id from \"TestDB_dbo_base\")\nselect id from src",
-            );
-            let view = exec_body(&sql, "create view \"dbo\".testview_");
-            let body = &view[view.find(" as ").unwrap() + 4..];
+        fn lifts_the_model_ctes_ahead_of_the_actual_cte() {
+            let sql = lift_model_ctes(
+                &rendered("with src as (select id from TestDB_dbo_base)\nselect id from src"),
+                "TestDB_dbo_m_actual",
+            )
+            .unwrap();
             assert_eq!(
-                body,
-                "with  \"TestDB_dbo_base\" as (select 1 as \"id\"), src as (select id from \"TestDB_dbo_base\")\nselect id from src"
+                sql,
+                format!(
+                    "-- Build actual result given inputs\nWITH\n\
+                     \tTestDB_dbo_base as (select 1 as id),\n  \
+                     \tTestDB_dbo_m_expect as (select 1 as id),\n  \
+                     \tsrc as (select id from TestDB_dbo_base),\n\
+                     \tTestDB_dbo_m_actual as (\n{MODEL_START}select id from src{MODEL_END})\n\
+                     SELECT * FROM (SELECT id FROM TestDB_dbo_m_actual) unit_test_diff"
+                )
             );
         }
 
         #[test]
-        fn model_without_with_gets_a_with_of_the_fixtures() {
-            let sql = build(
-                "\t\"TestDB_dbo_base\" as (select 1 as \"id\")",
-                "select id from \"TestDB_dbo_base\"",
+        fn model_without_with_is_unchanged() {
+            let rendered = rendered("select id from TestDB_dbo_base");
+            assert_eq!(
+                lift_model_ctes(&rendered, "TestDB_dbo_m_actual").unwrap(),
+                rendered
             );
-            let view = exec_body(&sql, "create view \"dbo\".testview_");
-            assert!(
-                view.ends_with(
-                    " as with \"TestDB_dbo_base\" as (select 1 as \"id\")\nselect id from \"TestDB_dbo_base\""
-                ),
-                "got: {view}"
-            );
-        }
-
-        #[test]
-        fn model_without_givens_is_the_view_body_as_is() {
-            let sql = build("", "select 1 as id");
-            let view = exec_body(&sql, "create view \"dbo\".testview_");
-            assert!(view.ends_with(" as select 1 as id"), "got: {view}");
-        }
-
-        #[test]
-        fn diff_selects_both_views_in_order_and_drops_them() {
-            let sql = build("", "select 'x' as id");
-            assert!(sql.starts_with("USE \"TestDB\";\nDECLARE @dbt_schema_lock int;\nBEGIN TRY"));
-            let diff = exec_body(&sql, "select * from (");
-            assert!(
-                diff.contains("'actual' as actual_or_expected from \"dbo\".testview_")
-                    && diff.contains("'expected' as actual_or_expected from \"dbo\".expectedview_")
-                    && diff.ends_with(") unit_test_diff ORDER BY \"id\""),
-                "got: {diff}"
-            );
-            // The model's quote is doubled inside the view's EXEC string.
-            assert!(sql.contains("as select ''x'' as id');"), "got: {sql}");
-            assert_eq!(sql.matches("EXEC(N'drop view if exists ").count(), 2);
-            assert!(sql.ends_with("');") && sql.matches("EXEC(N'drop view \"dbo\"").count() == 2);
         }
 
         #[test]
         fn missing_marker_is_an_error() {
-            let type_ops = DefaultTypeOps::new(AdapterType::SqlServer);
-            assert!(batch("select 1", &type_ops, "u", "\"id\"", "").is_err());
+            assert!(lift_model_ctes("select 1", "x").is_err());
         }
     }
 }
