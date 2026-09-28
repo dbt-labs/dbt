@@ -1598,7 +1598,7 @@ mod tests {
     #[test]
     fn sqlserver_format_arrow_type_as_sql_ignores_nullability() {
         let mut out = String::new();
-        DefaultTypeOps::new(AdapterType::SqlServer)
+        DefaultTypeOps::new(SqlServer)
             .format_arrow_type_as_sql(&DataType::Int32, false, &mut out)
             .unwrap();
         assert_eq!(out, "INT");
@@ -1623,7 +1623,7 @@ mod tests {
 
     #[test]
     fn sqlserver_format_arrow_type_as_sql_accepts_large_and_view_types() {
-        let type_ops = DefaultTypeOps::new(AdapterType::SqlServer);
+        let type_ops = DefaultTypeOps::new(SqlServer);
         for (data_type, expected) in [
             (DataType::LargeUtf8, "VARCHAR(MAX)"),
             (DataType::LargeBinary, "VARBINARY(MAX)"),
