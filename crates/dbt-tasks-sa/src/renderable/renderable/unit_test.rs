@@ -169,7 +169,8 @@ fn is_replay_active(ctx: &TaskRunnerCtx) -> bool {
         .is_some_and(|adapter| adapter.as_replay().is_some())
 }
 
-/// Small utility for merging objects
+/// Small utility for merging objects: a key resolves in the first object that
+/// defines it.
 #[derive(Debug, Clone)]
 struct ObjectOverlay(pub Vec<Value>);
 
@@ -177,9 +178,26 @@ impl Object for ObjectOverlay {
     fn get_value(self: &Arc<Self>, key: &Value) -> Option<Value> {
         self.0
             .iter()
-            // Err if undefined
+            // `get_item` returns `Ok(UNDEFINED)` for a missing key, so skip
+            // undefined values or the first object answers every key.
             .filter_map(|o| o.get_item(key).ok())
-            .next()
+            .find(|v| !v.is_undefined())
+    }
+
+    // Package namespaces (`DbtNamespace`) resolve their macros here rather than
+    // in `get_value`, because the lookup needs the render state.
+    fn get_property(
+        self: &Arc<Self>,
+        state: &State<'_, '_>,
+        name: &str,
+        listeners: &[Rc<dyn RenderingEventListener>],
+    ) -> Result<Value, minijinja::Error> {
+        Ok(self
+            .0
+            .iter()
+            .filter_map(|o| o.as_object()?.get_property(state, name, listeners).ok())
+            .find(|v| !v.is_undefined())
+            .unwrap_or(Value::UNDEFINED))
     }
 }
 
