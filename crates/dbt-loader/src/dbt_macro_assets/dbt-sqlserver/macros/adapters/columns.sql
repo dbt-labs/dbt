@@ -36,9 +36,39 @@
     {% endif %}
 {% endmacro %}
 
-{% macro sqlserver__alter_column_type(relation, column_name, new_column_type) %}
+{#
+    Widens to_relation's columns to from_relation's, as adapter.expand_target_column_types
+    does, but passes prefer_single to sqlserver__alter_column_type. That call takes only
+    three arguments, so the macro can't tell a widening from on_schema_change's type change;
+    v1's adapter passes the setting in (dbt-msft/dbt-sqlserver#836). Unset, a widening takes
+    a single ALTER COLUMN, which keeps the column's indexes, default and position and is
+    metadata-only for a longer varchar. can_expand_to only matches a longer type of the same
+    family, so nothing here takes v1's opt-in varchar -> nvarchar promotion.
+#}
+{% macro sqlserver__expand_target_column_types(from_relation, to_relation) %}
+    {%- set reference_columns = {} -%}
+    {%- for column in adapter.get_columns_in_relation(from_relation) -%}
+        {%- do reference_columns.update({column.name: column}) -%}
+    {%- endfor -%}
+    {%- set prefer_single = config.get('prefer_single_alter_column') -%}
+    {%- for target_column in adapter.get_columns_in_relation(to_relation) -%}
+        {%- set reference_column = reference_columns.get(target_column.name) -%}
+        {%- if reference_column is not none and target_column.can_expand_to(reference_column) -%}
+            {% do sqlserver__alter_column_type(
+                to_relation,
+                target_column.name,
+                reference_column.data_type,
+                true if prefer_single is none else prefer_single) %}
+        {%- endif -%}
+    {%- endfor -%}
+{% endmacro %}
 
-    {% set prefer_single = config.get('prefer_single_alter_column', false) %}
+{% macro sqlserver__alter_column_type(relation, column_name, new_column_type, prefer_single=none) %}
+
+    {#-- on_schema_change reaches this through alter_column_type's three arguments, and takes the four-step rewrite unless the model sets prefer_single_alter_column --#}
+    {% if prefer_single is none %}
+        {% set prefer_single = config.get('prefer_single_alter_column', false) %}
+    {% endif %}
 
     {% if prefer_single and relation.type == 'table' %}
         {% set alter_sql %}

@@ -1,5 +1,9 @@
 use std::collections::BTreeMap;
 
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+use dbt_adapter::Column;
 use dbt_adapter::relation::RelationObject;
 use dbt_adapter_core::AdapterType;
 use dbt_schemas::dbt_types::RelationType;
@@ -80,6 +84,83 @@ fn alter_column_type_drops_leftover_tmp_column_before_add() {
     );
     assert!(
         sqls[1].contains("add \"c__dbt_alter\" varchar(9)"),
+        "got: {sqls:?}"
+    );
+}
+
+/// As `sqlserver__get_columns_in_relation` builds it: the bare type name, with
+/// the length in `char_size`.
+fn varchar(name: &str, size: u32) -> Value {
+    Value::from_object(Column::new(
+        ADAPTER,
+        name.to_string(),
+        "varchar".to_string(),
+        Some(size),
+        None,
+        None,
+    ))
+}
+
+/// Widens `s` from varchar(2) to varchar(6) with `prefer_single_alter_column`
+/// answering `setting`, and returns the SQL sent.
+fn render_widening(setting: Value) -> Vec<String> {
+    let harness = build_harness();
+    // First call reads from_relation (the new build), second to_relation.
+    let calls = Arc::new(AtomicUsize::new(0));
+    harness.mock().on("get_columns_in_relation", move |_| {
+        let size = if calls.fetch_add(1, Ordering::SeqCst) == 0 {
+            6
+        } else {
+            2
+        };
+        Ok(Value::from(vec![varchar("s", size)]))
+    });
+    let config = default_mock_config();
+    config.on("get", move |args| {
+        match args.first().and_then(|v| v.as_str()) {
+            Some("prefer_single_alter_column") => Ok(setting.clone()),
+            _ => Ok(args.get(1).cloned().unwrap_or_else(|| Value::from(()))),
+        }
+    });
+    let from = harness.relation("TestDB", "dbo", "tbl__dbt_tmp", Some(RelationType::Table));
+    let to = harness.relation("TestDB", "dbo", "tbl", Some(RelationType::Table));
+    let ctx = BTreeMap::from([
+        (
+            "from_rel".to_string(),
+            RelationObject::new(from).into_value(),
+        ),
+        ("to_rel".to_string(), RelationObject::new(to).into_value()),
+        ("config".to_string(), Value::from_dyn_object(config)),
+        ("execute".to_string(), Value::from(true)),
+    ]);
+    harness
+        .render(
+            "{% do sqlserver__expand_target_column_types(from_rel, to_rel) %}",
+            ctx,
+        )
+        .expect("render should succeed");
+    executed_sql(harness.mock())
+}
+
+/// v1 1.12.0: unset, a widening takes one ALTER COLUMN, which keeps the
+/// column's indexes, default and position (dbt-msft/dbt-sqlserver#836).
+#[test]
+fn widening_takes_a_single_alter_column_when_unset() {
+    let sqls = render_widening(Value::from(()));
+    assert_eq!(sqls.len(), 1, "got: {sqls:?}");
+    let sql = sqls[0].split_whitespace().collect::<Vec<_>>().join(" ");
+    assert_eq!(
+        sql,
+        "alter table \"TestDB\".\"dbo\".\"tbl\" alter column \"s\" varchar(6);"
+    );
+}
+
+#[test]
+fn widening_keeps_the_rewrite_when_prefer_single_alter_column_is_false() {
+    let sqls = render_widening(Value::from(false));
+    assert_eq!(sqls.len(), 5, "got: {sqls:?}");
+    assert!(
+        sqls[1].contains("add \"s__dbt_alter\" varchar(6)"),
         "got: {sqls:?}"
     );
 }
