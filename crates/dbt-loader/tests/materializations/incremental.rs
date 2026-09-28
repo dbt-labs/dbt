@@ -877,7 +877,7 @@ mod sqlserver {
     }
 
     #[test]
-    fn existing_table_expands_target_columns_without_max_rows() {
+    fn existing_table_widens_columns_in_the_sqlserver_macro() {
         let harness = build_harness();
         let existing = harness.relation(
             "TEST_DB",
@@ -888,9 +888,6 @@ mod sqlserver {
         harness.mock().on("get_relation", move |_| {
             Ok(RelationObject::new(Arc::clone(&existing)).into_value())
         });
-        harness
-            .mock()
-            .on("expand_target_column_types", |_| Ok(Value::UNDEFINED));
         harness.mock().on("get_columns_in_relation", |_| {
             Ok(Value::from(Vec::<Value>::new()))
         });
@@ -907,17 +904,9 @@ mod sqlserver {
             .unwrap_or_else(|e| panic!("incremental merge failed: {e:?}"));
 
         let calls = harness.mock().observed_calls();
-        let expand_calls: Vec<_> = calls.to("expand_target_column_types").collect();
-        assert_eq!(expand_calls.len(), 1);
-        // The Rust adapter takes only from_relation and to_relation.
-        let kwargs = expand_calls[0].args.last().expect("keyword arguments");
-        assert!(
-            kwargs
-                .get_item(&Value::from("max_rows"))
-                .unwrap()
-                .is_undefined(),
-            "unexpected max_rows in {:?}",
-            expand_calls[0].args
-        );
+        // sqlserver__expand_target_column_types passes prefer_single to
+        // alter_column_type, which adapter.expand_target_column_types can't.
+        calls.assert_not_called("expand_target_column_types");
+        assert!(calls.to("get_columns_in_relation").count() >= 2);
     }
 }

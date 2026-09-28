@@ -36,9 +36,39 @@
     {% endif %}
 {% endmacro %}
 
-{% macro sqlserver__alter_column_type(relation, column_name, new_column_type) %}
+{#
+    Widens to_relation's columns to from_relation's, as adapter.expand_target_column_types
+    does, but passes prefer_single to sqlserver__alter_column_type. That call takes only
+    three arguments, so the macro can't tell a widening from on_schema_change's type change;
+    v1's adapter passes the setting in (dbt-msft/dbt-sqlserver#836). Unset, a widening takes
+    a single ALTER COLUMN, which keeps the column's indexes, default and position and is
+    metadata-only for a longer varchar. can_expand_to only matches a longer type of the same
+    family, so nothing here takes v1's opt-in varchar -> nvarchar promotion.
+#}
+{% macro sqlserver__expand_target_column_types(from_relation, to_relation) %}
+    {%- set reference_columns = {} -%}
+    {%- for column in adapter.get_columns_in_relation(from_relation) -%}
+        {%- do reference_columns.update({column.name: column}) -%}
+    {%- endfor -%}
+    {%- set prefer_single = config.get('prefer_single_alter_column') -%}
+    {%- for target_column in adapter.get_columns_in_relation(to_relation) -%}
+        {%- set reference_column = reference_columns.get(target_column.name) -%}
+        {%- if reference_column is not none and target_column.can_expand_to(reference_column) -%}
+            {% do sqlserver__alter_column_type(
+                to_relation,
+                target_column.name,
+                reference_column.data_type,
+                true if prefer_single is none else prefer_single) %}
+        {%- endif -%}
+    {%- endfor -%}
+{% endmacro %}
 
-    {% set prefer_single = config.get('prefer_single_alter_column', false) %}
+{% macro sqlserver__alter_column_type(relation, column_name, new_column_type, prefer_single=none) %}
+
+    {#-- on_schema_change reaches this through alter_column_type's three arguments, and takes the four-step rewrite unless the model sets prefer_single_alter_column --#}
+    {% if prefer_single is none %}
+        {% set prefer_single = config.get('prefer_single_alter_column', false) %}
+    {% endif %}
 
     {% if prefer_single and relation.type == 'table' %}
         {% set alter_sql %}
@@ -49,6 +79,15 @@
 
     {% else %}
         {%- set tmp_column = column_name + "__dbt_alter" -%}
+        {%- set relation_name = escape_single_quotes(relation.include(database=False)) -%}
+
+        {#-- The four steps below autocommit one by one, so a failed run can leave tmp_column behind, and the next run's ADD then fails forever (dbt-msft/dbt-sqlserver#836).
+             Drop it first. It is only a partial copy while the original column still exists; if the original is gone, tmp_column holds the data, so it is left alone. --#}
+        {% set drop_leftover %}
+            if col_length('{{ relation_name }}', '{{ escape_single_quotes(tmp_column) }}') is not null
+                and col_length('{{ relation_name }}', '{{ escape_single_quotes(column_name) }}') is not null
+                alter {{ relation.type }} {{ relation }} drop column "{{ tmp_column }}";
+        {%- endset %}
 
         {% set add_column %}
             alter {{ relation.type }} {{ relation }}
@@ -62,9 +101,10 @@
             drop column "{{ column_name }}";
         {%- endset %}
         {% set rename_column %}
-            exec sp_rename '{{ escape_single_quotes(relation.include(database=False)) }}.{{ escape_single_quotes(adapter.quote(tmp_column)) }}', '{{ escape_single_quotes(column_name) }}', 'column'
+            exec sp_rename '{{ relation_name }}.{{ escape_single_quotes(adapter.quote(tmp_column)) }}', '{{ escape_single_quotes(column_name) }}', 'column'
         {%- endset %}
 
+        {% do run_query(drop_leftover) %}
         {% do run_query(add_column) %}
         {% do run_query(update_column) %}
         {% do run_query(drop_column) %}

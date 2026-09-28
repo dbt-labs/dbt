@@ -73,7 +73,7 @@
 
     {% set contract_config = config.get('contract') %}
     {% if not contract_config or not contract_config.enforced %}
-      {% do adapter.expand_target_column_types(
+      {% do sqlserver__expand_target_column_types(
                from_relation=temp_relation,
                to_relation=target_relation) %}
     {% endif %}
