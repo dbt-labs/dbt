@@ -2704,6 +2704,7 @@ mod tests {
     use dbt_common::io_args::ComputeArg;
     use dbt_schemas::schemas::profiles::Execute;
     use dbt_test_primitives::assert_contains;
+    use minijinja::dispatch_object::DispatchObject;
 
     type YmlValue = dbt_yaml::Value;
 
@@ -2855,6 +2856,84 @@ mod tests {
         let rendered =
             render_run_started_at_override(YmlValue::number(12345.into()), "{{ run_started_at }}");
         assert_eq!(rendered, "12345");
+    }
+
+    /// A package namespace that, like `DbtNamespace`, resolves macros only in
+    /// `get_property` and dispatches to the `<package>.<macro>` template.
+    #[derive(Debug)]
+    struct PackageNamespace(&'static str);
+
+    impl Object for PackageNamespace {
+        fn get_property(
+            self: &Arc<Self>,
+            state: &State<'_, '_>,
+            name: &str,
+            _listeners: &[Rc<dyn RenderingEventListener>],
+        ) -> Result<Value, minijinja::Error> {
+            let template = format!("{}.{name}", self.0);
+            if state.env().get_template(&template).is_err() {
+                return Ok(Value::UNDEFINED);
+            }
+            Ok(Value::from_object(DispatchObject {
+                macro_name: name.to_string(),
+                package_name: Some(self.0.to_string()),
+                strict: true,
+                auto_execute: false,
+                context: None,
+            }))
+        }
+    }
+
+    /// Binds one `overrides.macros` entry over a `my_project` package and renders
+    /// `{{ my_project.pick_label() }}`, where `pick_label` calls `my_project.is_ci()`.
+    fn render_package_macro_override(macro_name: &str, value: YmlValue) -> String {
+        let mut raw_env = minijinja::Environment::new();
+        let pick_label = "{% macro pick_label() %}{% if my_project.is_ci() %}{{ return('ci') }}\
+                          {% else %}{{ return('local') }}{% endif %}{% endmacro %}";
+        for (name, source) in [
+            (
+                "my_project.is_ci",
+                "{% macro is_ci() %}{{ return(false) }}{% endmacro %}",
+            ),
+            ("my_project.pick_label", pick_label),
+            (
+                "my_project.unused_macro",
+                "{% macro unused_macro() %}{{ return('unused') }}{% endmacro %}",
+            ),
+        ] {
+            raw_env
+                .add_template(name, source)
+                .expect("macro template should parse");
+        }
+        let env = JinjaEnv::new(raw_env);
+
+        let macros = BTreeMap::from([(macro_name.to_string(), value)]);
+        let mut compile_context = BTreeMap::from([(
+            "my_project".to_string(),
+            Value::from_object(PackageNamespace("my_project")),
+        )]);
+        bind_override_macros(&macros, &mut compile_context, &env);
+
+        env.render_str("{{ my_project.pick_label() }}", &compile_context, &[])
+            .expect("the package's other macros should stay callable")
+    }
+
+    /// Regression test for https://github.com/dbt-labs/dbt/issues/16477: overriding
+    /// one package macro must keep the package's other macros callable, and they
+    /// must see the override, as in dbt-core.
+    #[test]
+    fn test_package_macro_override_is_seen_by_other_package_macros() {
+        let rendered = render_package_macro_override("my_project.is_ci", YmlValue::bool(true));
+        assert_eq!(rendered, "ci");
+    }
+
+    #[test]
+    fn test_package_macro_override_keeps_unrelated_package_macros() {
+        let rendered = render_package_macro_override(
+            "my_project.unused_macro",
+            YmlValue::string("stub".to_string()),
+        );
+        assert_eq!(rendered, "local");
     }
 
     #[test]
