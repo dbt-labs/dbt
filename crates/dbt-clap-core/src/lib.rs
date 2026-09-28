@@ -2594,7 +2594,6 @@ struct FlagsBlock {
     manage_state: Option<bool>,
     maximum_seed_size_mib: Option<u64>,
     send_anonymous_usage_stats: Option<bool>,
-    // A string, so an invalid mode doesn't fail parsing of the other flags.
     indirect_selection: Option<String>,
 }
 
