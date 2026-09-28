@@ -269,6 +269,12 @@ struct Insertion {
     trailing_cols: u32,
 }
 
+/// Splices `ctes` (a comma-separated `name as (...)` list) into `sql`'s leading
+/// `WITH` chain. Returns `None` when `sql` doesn't start with `WITH`.
+pub fn splice_ctes_into_leading_with(sql: &str, ctes: &str) -> Option<String> {
+    inject_ctes_into_existing_with(sql, ctes).map(|(sql, _)| sql)
+}
+
 /// Uses token locations to splice ephemeral CTEs into a leading WITH chain
 /// without reformatting the warehouse-specific SQL.
 fn inject_ctes_into_existing_with(sql: &str, ctes: &str) -> Option<(String, Insertion)> {

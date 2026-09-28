@@ -1683,6 +1683,8 @@ fn render_unit_test(
     let model_schema = expect_relation.get_schema()?;
     let model_alias = expect_relation.get_identifier()?;
 
+    // The given fixtures; the expected and actual subqueries follow.
+    let given_count = subqueries.len();
     let expect_table = format!("{model_alias}_expect");
     let fqn_expect = format_fqn(type_ops, &model_catalog, &model_schema, &expect_table);
     subqueries.push((fqn_expect.clone(), expect_values));
@@ -1745,10 +1747,17 @@ fn render_unit_test(
         .collect::<FsResult<Vec<String>>>()?
         .join(", ");
 
-    // Redshift errors (SQLSTATE XX000) on a top-level UNION ALL immediately
-    // followed by ORDER BY. dbt-labs/dbt-core#14549
-    query_str.push_str(&format!(
-        r#"-- Build actual result given inputs
+    if adapter_type == AdapterType::SqlServer {
+        query_str.push_str(&sqlserver_unit_test::template(
+            &subqueries_vec[..given_count],
+            &subqueries[given_count].1,
+            &subqueries[given_count + 1].1,
+        ));
+    } else {
+        // Redshift errors (SQLSTATE XX000) on a top-level UNION ALL immediately
+        // followed by ORDER BY. dbt-labs/dbt-core#14549
+        query_str.push_str(&format!(
+            r#"-- Build actual result given inputs
 WITH
             {}
         SELECT * FROM (
@@ -1757,13 +1766,14 @@ WITH
         (SELECT {}, 'expected' AS actual_or_expected FROM {})
         ) unit_test_diff
         {}"#,
-        subqueries_vec.join(",\n  "),
-        expected_column_names_formatted,
-        fqn_actual,
-        expected_column_names_formatted,
-        fqn_expect,
-        order_by_clause
-    ));
+            subqueries_vec.join(",\n  "),
+            expected_column_names_formatted,
+            fqn_actual,
+            expected_column_names_formatted,
+            fqn_expect,
+            order_by_clause
+        ));
+    }
 
     // create a subquery for the actual value ...
 
@@ -1790,6 +1800,17 @@ WITH
     // todo: use Jinja to render all refs, here we just replace the fqns with the actual values
     let rendered_sql =
         replace_subquery_refs_with_cte_names(adapter_type, type_ops, rendered_sql, &subqueries);
+    let rendered_sql = if adapter_type == AdapterType::SqlServer {
+        sqlserver_unit_test::batch(
+            &rendered_sql,
+            type_ops,
+            &node.__common_attr__.unique_id,
+            &expected_column_names_formatted,
+            &order_by_clause,
+        )?
+    } else {
+        rendered_sql
+    };
 
     stdfs::create_dir_all(absolute_path_unit_test.parent().unwrap())?;
     stdfs::write(&absolute_path_unit_test, &rendered_sql)?;
@@ -2659,6 +2680,237 @@ fn get_fixture_rows(
             "The unit test {} has a sql format, which is not supported yet",
             fixture
         )),
+    }
+}
+
+/// SQL Server runs a unit test the way v1's `sqlserver__get_unit_test_sql`
+/// does, which v2 never calls.
+///
+/// T-SQL allows `WITH` only at the start of a statement, so a model with its own
+/// CTEs can't be the body of the `<model>_actual` CTE (Msg 156). As in v1, the
+/// model, with the given fixtures spliced into its `WITH`, and the expected rows
+/// become views, and the diff selects from them, ordered like every other
+/// adapter's since the rows are compared by position. The fixtures, expected
+/// rows and model are rendered in one pass between marker lines, so refs are
+/// swapped for fixture CTE names as for every other adapter.
+mod sqlserver_unit_test {
+    use std::hash::{DefaultHasher, Hash, Hasher};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    use dbt_adapter::sql_types::TypeOps;
+    use dbt_common::{ErrorCode, FsResult, fs_err};
+    use dbt_jinja_utils::utils::splice_ctes_into_leading_with;
+
+    const VIEW_SCHEMA: &str = "--dbt_sqlserver_unit_test:view_schema";
+    const FIXTURES: &str = "--dbt_sqlserver_unit_test:fixtures";
+    const EXPECTED: &str = "--dbt_sqlserver_unit_test:expected";
+    const MODEL: &str = "--dbt_sqlserver_unit_test:model";
+
+    /// The Jinja to render: v1's `USE` and schema creation, the views' schema,
+    /// then the given CTEs, the expected rows and the model, each after a marker.
+    pub(super) fn template(given_ctes: &[String], expected_sql: &str, model_sql: &str) -> String {
+        format!(
+            "{{{{ get_use_database_sql(target.database) }}}}\n\
+             {{{{ create_schema_if_not_exists(target.schema) }}}}\n\
+             {VIEW_SCHEMA}\n{{{{ adapter.quote(target.schema) }}}}\n\
+             {FIXTURES}\n{}\n\
+             {EXPECTED}\n{expected_sql}\n\
+             {MODEL}\n{model_sql}",
+            given_ctes.join(",\n")
+        )
+    }
+
+    /// Builds the batch from the rendered [`template`]: create both views, select
+    /// the diff, drop them, and drop them on failure too.
+    pub(super) fn batch(
+        rendered: &str,
+        type_ops: &dyn TypeOps,
+        unique_id: &str,
+        columns: &str,
+        order_by: &str,
+    ) -> FsResult<String> {
+        let (prelude, rest) = split_at_marker(rendered, VIEW_SCHEMA)?;
+        let (view_schema, rest) = split_at_marker(rest, FIXTURES)?;
+        let (fixtures, rest) = split_at_marker(rest, EXPECTED)?;
+        let (expected_sql, model_sql) = split_at_marker(rest, MODEL)?;
+
+        let fixtures = fixtures.trim();
+        let model_sql = model_sql.trim();
+        let main_sql = if fixtures.is_empty() {
+            model_sql.to_string()
+        } else {
+            splice_ctes_into_leading_with(model_sql, fixtures)
+                .unwrap_or_else(|| format!("with {fixtures}\n{model_sql}"))
+        };
+
+        let suffix = view_suffix(unique_id);
+        let view_schema = view_schema.trim();
+        let actual_view = format!(
+            "{view_schema}.{}",
+            type_ops.format_ident(&format!("testview_{suffix}"))
+        );
+        let expected_view = format!(
+            "{view_schema}.{}",
+            type_ops.format_ident(&format!("expectedview_{suffix}"))
+        );
+        let diff = format!(
+            "select * from (\
+             select {columns}, 'actual' as actual_or_expected from {actual_view} \
+             union all \
+             select {columns}, 'expected' as actual_or_expected from {expected_view}\
+             ) unit_test_diff {order_by}"
+        );
+
+        Ok(format!(
+            "{prelude}
+BEGIN TRY
+    EXEC(N'create view {actual_view_lit} as {}');
+    EXEC(N'create view {expected_view_lit} as {}');
+    EXEC(N'{}');
+END TRY
+BEGIN CATCH
+    EXEC(N'drop view if exists {actual_view_lit}');
+    EXEC(N'drop view if exists {expected_view_lit}');
+    THROW;
+END CATCH;
+EXEC(N'drop view {actual_view_lit}');
+EXEC(N'drop view {expected_view_lit}');",
+            escape(&main_sql),
+            escape(expected_sql.trim()),
+            escape(&diff),
+            prelude = prelude.trim_end(),
+            actual_view_lit = escape(&actual_view),
+            expected_view_lit = escape(&expected_view),
+        ))
+    }
+
+    fn split_at_marker<'a>(sql: &'a str, marker: &str) -> FsResult<(&'a str, &'a str)> {
+        sql.split_once(&format!("\n{marker}\n")).ok_or_else(|| {
+            fs_err!(
+                ErrorCode::Unexpected,
+                "Internal error: '{marker}' is missing from the rendered SQL Server unit test"
+            )
+        })
+    }
+
+    /// Unique per run, as v1's `local_md5(...) ~ random` is, so parallel runs
+    /// don't share views.
+    fn view_suffix(unique_id: &str) -> String {
+        let mut hasher = DefaultHasher::new();
+        unique_id.hash(&mut hasher);
+        std::process::id().hash(&mut hasher);
+        std::thread::current().id().hash(&mut hasher);
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or_default()
+            .hash(&mut hasher);
+        format!("{:016x}", hasher.finish())
+    }
+
+    fn escape(sql: &str) -> String {
+        sql.replace('\'', "''")
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use dbt_adapter::sql_types::DefaultTypeOps;
+        use dbt_adapter_core::AdapterType;
+
+        use super::*;
+
+        /// What the renderer produces from [`template`] once Jinja and ref
+        /// replacement have run.
+        fn rendered(fixtures: &str, model_sql: &str) -> String {
+            format!(
+                "USE \"TestDB\";\nDECLARE @dbt_schema_lock int;\n\
+                 {VIEW_SCHEMA}\n\"dbo\"\n\
+                 {FIXTURES}\n{fixtures}\n\
+                 {EXPECTED}\nselect cast(1 as int) as \"id\"\n\
+                 {MODEL}\n{model_sql}"
+            )
+        }
+
+        fn build(fixtures: &str, model_sql: &str) -> String {
+            let type_ops = DefaultTypeOps::new(AdapterType::SqlServer);
+            batch(
+                &rendered(fixtures, model_sql),
+                &type_ops,
+                "unit_test.p.m.t",
+                "\"id\"",
+                "ORDER BY \"id\"",
+            )
+            .expect("batch should build")
+        }
+
+        /// The dynamic SQL of the `EXEC(N'...')` that starts with `prefix`, unescaped.
+        fn exec_body(sql: &str, prefix: &str) -> String {
+            let start = sql
+                .find(&format!("EXEC(N'{prefix}"))
+                .unwrap_or_else(|| panic!("no EXEC starting with {prefix:?} in {sql}"))
+                + "EXEC(N'".len();
+            let end = start + sql[start..].find("');").expect("EXEC is closed");
+            sql[start..end].replace("''", "'")
+        }
+
+        #[test]
+        fn model_with_its_own_with_gets_the_fixtures_spliced_into_it() {
+            let sql = build(
+                "\t\"TestDB_dbo_base\" as (select 1 as \"id\")",
+                "with src as (select id from \"TestDB_dbo_base\")\nselect id from src",
+            );
+            let view = exec_body(&sql, "create view \"dbo\".testview_");
+            let body = &view[view.find(" as ").unwrap() + 4..];
+            assert_eq!(
+                body,
+                "with  \"TestDB_dbo_base\" as (select 1 as \"id\"), src as (select id from \"TestDB_dbo_base\")\nselect id from src"
+            );
+        }
+
+        #[test]
+        fn model_without_with_gets_a_with_of_the_fixtures() {
+            let sql = build(
+                "\t\"TestDB_dbo_base\" as (select 1 as \"id\")",
+                "select id from \"TestDB_dbo_base\"",
+            );
+            let view = exec_body(&sql, "create view \"dbo\".testview_");
+            assert!(
+                view.ends_with(
+                    " as with \"TestDB_dbo_base\" as (select 1 as \"id\")\nselect id from \"TestDB_dbo_base\""
+                ),
+                "got: {view}"
+            );
+        }
+
+        #[test]
+        fn model_without_givens_is_the_view_body_as_is() {
+            let sql = build("", "select 1 as id");
+            let view = exec_body(&sql, "create view \"dbo\".testview_");
+            assert!(view.ends_with(" as select 1 as id"), "got: {view}");
+        }
+
+        #[test]
+        fn diff_selects_both_views_in_order_and_drops_them() {
+            let sql = build("", "select 'x' as id");
+            assert!(sql.starts_with("USE \"TestDB\";\nDECLARE @dbt_schema_lock int;\nBEGIN TRY"));
+            let diff = exec_body(&sql, "select * from (");
+            assert!(
+                diff.contains("'actual' as actual_or_expected from \"dbo\".testview_")
+                    && diff.contains("'expected' as actual_or_expected from \"dbo\".expectedview_")
+                    && diff.ends_with(") unit_test_diff ORDER BY \"id\""),
+                "got: {diff}"
+            );
+            // The model's quote is doubled inside the view's EXEC string.
+            assert!(sql.contains("as select ''x'' as id');"), "got: {sql}");
+            assert_eq!(sql.matches("EXEC(N'drop view if exists ").count(), 2);
+            assert!(sql.ends_with("');") && sql.matches("EXEC(N'drop view \"dbo\"").count() == 2);
+        }
+
+        #[test]
+        fn missing_marker_is_an_error() {
+            let type_ops = DefaultTypeOps::new(AdapterType::SqlServer);
+            assert!(batch("select 1", &type_ops, "u", "\"id\"", "").is_err());
+        }
     }
 }
 
