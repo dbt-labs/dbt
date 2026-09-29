@@ -76,6 +76,11 @@ pub struct InvocationArgs {
     /// Empty flag
     pub empty: bool,
 
+    /// Override end datetime when generating microbatches
+    pub event_time_end: Option<String>,
+    /// Override start datetime when generating microbatches
+    pub event_time_start: Option<String>,
+
     /// Replay mode (when running against a recording)
     pub replay: Option<ReplayMode>,
 
@@ -117,6 +122,8 @@ impl Default for InvocationArgs {
             store_failures: false,
             favor_state: false,
             empty: false,
+            event_time_end: None,
+            event_time_start: None,
             replay: None,
             use_v2_compatible_package_downloads: false,
         }
@@ -194,6 +201,8 @@ impl InvocationArgs {
             store_failures: arg.store_failures,
             favor_state: arg.favor_state,
             empty: arg.empty,
+            event_time_end: arg.event_time_end.clone(),
+            event_time_start: arg.event_time_start.clone(),
             replay: arg.replay.clone(),
             use_v2_compatible_package_downloads: arg.io.use_v2_compatible_package_downloads,
         }
@@ -278,6 +287,18 @@ impl InvocationArgs {
         );
         dict.insert("FAVOR_STATE".to_string(), Value::from(self.favor_state));
         dict.insert("EMPTY".to_string(), Value::from(self.empty));
+        if let Some(event_time_end) = &self.event_time_end {
+            dict.insert(
+                "EVENT_TIME_END".to_string(),
+                Value::from(event_time_end.clone()),
+            );
+        }
+        if let Some(event_time_start) = &self.event_time_start {
+            dict.insert(
+                "EVENT_TIME_START".to_string(),
+                Value::from(event_time_start.clone()),
+            );
+        }
         dict.insert("REPLAY".to_string(), Value::from(self.replay.is_some()));
         dict.insert(
             "USE_V2_COMPATIBLE_PACKAGE_DOWNLOADS".to_string(),
@@ -343,5 +364,42 @@ mod tests {
             !replay2.is_true(),
             "REPLAY should be present and falsy, got: {replay2:?}"
         );
+    }
+
+    #[test]
+    fn to_dict_includes_event_time_flags() {
+        let args = InvocationArgs::from_eval_args(&EvalArgs {
+            event_time_start: Some("2026-09-01".to_string()),
+            event_time_end: Some("2026-09-03".to_string()),
+            ..EvalArgs::default()
+        });
+
+        let dict = args.to_dict();
+        assert_eq!(
+            dict.get("EVENT_TIME_START").unwrap().to_string(),
+            "2026-09-01"
+        );
+        assert_eq!(
+            dict.get("EVENT_TIME_END").unwrap().to_string(),
+            "2026-09-03"
+        );
+        assert_eq!(
+            dict.get("event_time_start").unwrap().to_string(),
+            "2026-09-01"
+        );
+        assert_eq!(
+            dict.get("event_time_end").unwrap().to_string(),
+            "2026-09-03"
+        );
+    }
+
+    #[test]
+    fn to_dict_omits_unset_event_time_flags() {
+        let dict = InvocationArgs::default().to_dict();
+
+        assert!(!dict.contains_key("EVENT_TIME_START"));
+        assert!(!dict.contains_key("EVENT_TIME_END"));
+        assert!(!dict.contains_key("event_time_start"));
+        assert!(!dict.contains_key("event_time_end"));
     }
 }

@@ -3199,6 +3199,8 @@ pub fn from_lib(cli: &Cli) -> SystemArgs {
 
 #[cfg(test)]
 mod tests {
+    use std::env;
+
     use super::*;
 
     struct NoopParser;
@@ -3738,6 +3740,87 @@ mod tests {
             Command::Core(cmd) => cmd,
             Command::Extension(_) => panic!("expected a core command"),
         }
+    }
+
+    #[test]
+    fn event_time_flags_parse_from_cli_and_flow_to_eval_args() {
+        let cmd = parse_core_command(&[
+            "compile",
+            "--event-time-start",
+            "2026-09-01",
+            "--event-time-end",
+            "2026-09-03",
+        ]);
+        let CoreCommand::Compile(args) = cmd else {
+            panic!("expected CoreCommand::Compile");
+        };
+
+        let eval_args = args.to_eval_args(
+            test_system_args(FsCommand::Compile),
+            Path::new("/tmp/in"),
+            Path::new("/tmp/out"),
+        );
+
+        assert_eq!(eval_args.event_time_start.as_deref(), Some("2026-09-01"));
+        assert_eq!(eval_args.event_time_end.as_deref(), Some("2026-09-03"));
+    }
+
+    #[test]
+    fn event_time_flags_parse_from_environment_and_flow_to_eval_args() {
+        unsafe {
+            env::set_var("DBT_EVENT_TIME_START", "2026-09-01");
+            env::set_var("DBT_EVENT_TIME_END", "2026-09-03");
+        }
+
+        let cmd = parse_core_command(&["compile"]);
+        let CoreCommand::Compile(args) = cmd else {
+            panic!("expected CoreCommand::Compile");
+        };
+        let eval_args = args.to_eval_args(
+            test_system_args(FsCommand::Compile),
+            Path::new("/tmp/in"),
+            Path::new("/tmp/out"),
+        );
+
+        unsafe {
+            env::remove_var("DBT_EVENT_TIME_START");
+            env::remove_var("DBT_EVENT_TIME_END");
+        }
+
+        assert_eq!(eval_args.event_time_start.as_deref(), Some("2026-09-01"));
+        assert_eq!(eval_args.event_time_end.as_deref(), Some("2026-09-03"));
+    }
+
+    #[test]
+    fn event_time_cli_values_take_precedence_over_environment() {
+        unsafe {
+            env::set_var("DBT_EVENT_TIME_START", "2026-08-01");
+            env::set_var("DBT_EVENT_TIME_END", "2026-08-03");
+        }
+
+        let cmd = parse_core_command(&[
+            "compile",
+            "--event-time-start",
+            "2026-09-01",
+            "--event-time-end",
+            "2026-09-03",
+        ]);
+        let CoreCommand::Compile(args) = cmd else {
+            panic!("expected CoreCommand::Compile");
+        };
+        let eval_args = args.to_eval_args(
+            test_system_args(FsCommand::Compile),
+            Path::new("/tmp/in"),
+            Path::new("/tmp/out"),
+        );
+
+        unsafe {
+            env::remove_var("DBT_EVENT_TIME_START");
+            env::remove_var("DBT_EVENT_TIME_END");
+        }
+
+        assert_eq!(eval_args.event_time_start.as_deref(), Some("2026-09-01"));
+        assert_eq!(eval_args.event_time_end.as_deref(), Some("2026-09-03"));
     }
 
     #[test]
