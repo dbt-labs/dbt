@@ -7,6 +7,7 @@ use crate::renderer::strip_warehouse_keys_in_config_block;
 use crate::resolve::resolve_properties::MinimalPropertiesEntry;
 use crate::resolve::resolve_utils::validate_unit_test_compute;
 use crate::utils::get_node_fqn;
+use crate::utils::get_original_file_path;
 use crate::utils::get_unique_id;
 use crate::validation::check_node_static_analysis;
 use dbt_adapter_core::AdapterType;
@@ -19,6 +20,7 @@ use dbt_common::fs_err;
 use dbt_common::io_args::ComputeArg;
 use dbt_common::io_args::StaticAnalysisKind;
 use dbt_common::io_args::StaticAnalysisOffReason;
+use dbt_common::stdfs;
 
 use dbt_common::path::DbtPath;
 use dbt_jinja_utils::jinja_environment::JinjaEnv;
@@ -240,7 +242,15 @@ pub fn resolve_unit_tests(
             asset.path.file_name().map(|file_name| {
                 file_map.insert(
                     file_name.to_string_lossy().to_string(),
-                    asset.path.to_string_lossy().to_string(),
+                    // `asset.path` is relative to *this* package's own root (e.g. a
+                    // dependency installed under `dbt_packages/<pkg>/`), but every
+                    // downstream reader of the resolved `fixture` path -- both the
+                    // eager read below and the lazy reads in the task executor --
+                    // joins it against the project root (`arg.io.in_dir`). Rebase it
+                    // onto the project root now so both root-package and
+                    // dependency-package fixtures resolve to the right file on disk.
+                    get_original_file_path(&asset.base_path, &arg.io.in_dir, &asset.path)
+                        .to_string(),
                 )
             });
         }
@@ -257,6 +267,13 @@ pub fn resolve_unit_tests(
                     }
                     _ => given_entry.fixture.clone(),
                 };
+                check_fixture_resolved(
+                    &unit_test_name,
+                    &format!("given input '{}'", given_entry.input.as_str()),
+                    &given_entry.fixture,
+                    &given_entry.format,
+                    &full_path,
+                )?;
 
                 let rows = if given_entry.format == Formats::Dict
                     && given_entry.rows.is_none()
@@ -286,6 +303,7 @@ pub fn resolve_unit_tests(
                 } else {
                     given_entry.rows.clone()
                 };
+                let rows = read_fixture_rows(arg, &full_path, &given_entry.format, rows)?;
 
                 given.push(Given {
                     fixture: full_path,
@@ -306,10 +324,23 @@ pub fn resolve_unit_tests(
                 }
                 _ => unit_test.expect.fixture.clone(),
             };
+            check_fixture_resolved(
+                &unit_test_name,
+                "expect",
+                &unit_test.expect.fixture,
+                &unit_test.expect.format,
+                &full_path,
+            )?;
+            let rows = read_fixture_rows(
+                arg,
+                &full_path,
+                &unit_test.expect.format,
+                unit_test.expect.rows.clone(),
+            )?;
 
             Expect {
                 fixture: full_path,
-                rows: unit_test.expect.rows.clone(),
+                rows,
                 format: unit_test.expect.format.clone(),
             }
         };
@@ -477,6 +508,78 @@ pub fn resolve_unit_tests(
         }
     }
     Ok((unit_tests, disabled_unit_tests))
+}
+
+/// A `fixture:` name that didn't resolve to a real file must be a hard parse
+/// error, not a silent `None` deferred to the warehouse (dbt-labs/dbt#16354).
+fn check_fixture_resolved(
+    unit_test_name: &str,
+    context_label: &str,
+    fixture: &Option<String>,
+    format: &Formats,
+    full_path: &Option<String>,
+) -> FsResult<()> {
+    if let Some(fixture) = fixture
+        && matches!(format, Formats::Csv | Formats::Sql)
+        && full_path.is_none()
+    {
+        return err!(
+            ErrorCode::InvalidConfig,
+            "Unit test '{}' {} references fixture '{}', but no matching {} fixture file was found",
+            unit_test_name,
+            context_label,
+            fixture,
+            format,
+        );
+    }
+    Ok(())
+}
+
+/// `format: sql`/`format: csv` fixtures are resolved to a path above but not read:
+/// the file is only ever read lazily, at task-execution time, by Fusion's own
+/// unit-test renderable (`dbt-tasks-sa`). A consumer of the parsed manifest that
+/// never reaches that renderer -- e.g. the embedded v2 parser used by dbt-core's
+/// own compiler, which expects the fixture *content* in `rows` the same way the
+/// 1.x Python parser's `FixtureParser.parse_file`/`get_fixture_file_rows`
+/// populates it -- sees `rows: None` and either inlines the literal string
+/// "None" as the unit test's CTE body (sql), or a jinja/python syntax error
+/// building the `get_fixture_sql(...)` macro call (csv) (dbt-labs/dbt#16354).
+/// Read it eagerly here so `rows` is always populated for sql/csv fixtures.
+///
+/// Note this deliberately reads csv fixtures as raw text (`Rows::String`), the
+/// same as sql, rather than eagerly parsing them into `Rows::List` to fully
+/// match dbt-core's `List[Dict]` shape for csv: parsing (and thus validating)
+/// the csv content here would move a currently execution-time-only failure
+/// (e.g. a ragged csv fixture) to parse time, aborting the whole run instead of
+/// failing just that one unit test -- a much bigger, unrelated behavior change.
+///
+/// Also deliberately reads the file verbatim (no `strip=True`-style trim to
+/// match dbt-core's `load_file_contents`): Fusion's own task executor already
+/// reads sql fixtures byte-for-byte via `stdfs::read_to_string`/`in_dir.join`
+/// with no trim, and at least one snowflake record/replay test pins the exact
+/// (untrimmed) assembled CTE text, so trimming here would just move that same
+/// whitespace divergence from "always" to "only when dbt-core's compiler reads
+/// this manifest" without fixing it, while breaking that replay test.
+///
+/// A resolved `fixture:` always overrides an inline `rows:` when both are given,
+/// matching dbt-core's own `_validate_and_normalize_rows`, which unconditionally
+/// does `ut_fixture.rows = <fixture file content>` whenever `ut_fixture.fixture`
+/// is set.
+fn read_fixture_rows(
+    arg: &ResolveArgs,
+    full_path: &Option<String>,
+    format: &Formats,
+    rows: Option<Rows>,
+) -> FsResult<Option<Rows>> {
+    let Some(path) = full_path else {
+        return Ok(rows);
+    };
+    match format {
+        Formats::Sql | Formats::Csv => Ok(Some(Rows::String(stdfs::read_to_string(
+            arg.io.in_dir.join(path),
+        )?))),
+        Formats::Dict => Ok(rows),
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
