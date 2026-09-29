@@ -1,0 +1,8 @@
+kind: Features
+body: Add experimental support for the SQL Server adapter (dbt Fusion / v2). Enable
+    with DBT_ALLOW_EXPERIMENTAL_ADAPTERS=true.
+time: 2026-08-03T00:00:00.000000-00:00
+custom:
+    author: axellpadilla
+    issue: "15714"
+    project: dbt-core

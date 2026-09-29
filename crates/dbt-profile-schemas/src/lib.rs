@@ -9,6 +9,7 @@ pub mod postgres_config;
 pub mod profile;
 pub mod redshift_config;
 pub mod snowflake_config;
+pub mod sqlserver_config;
 
 // Re-export the commonly used items so a single `use dbt_profile_schemas::*`
 // gives everything the old `dbt-init::adapter_config::*` provided, plus the
@@ -24,5 +25,6 @@ pub use fabric_config::setup_fabric_profile;
 pub use postgres_config::setup_postgres_profile;
 pub use redshift_config::setup_redshift_profile;
 pub use snowflake_config::setup_snowflake_profile;
+pub use sqlserver_config::setup_sqlserver_profile;
 
 pub use headless::{adapter_fields, apply_values, build_profile_target, supported_adapters};

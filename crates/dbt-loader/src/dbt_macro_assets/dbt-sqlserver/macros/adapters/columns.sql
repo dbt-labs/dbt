@@ -1,0 +1,154 @@
+{% macro sqlserver__select_starts_with_cte(select_sql) %}
+    {#-- Strip comments first so a leading comment does not hide the CTE --#}
+    {%- set select_sql_stripped = modules.re.sub('(?s)/\\*.*?\\*/|--[^\n]*\n', '', select_sql) -%}
+    {{ return(select_sql_stripped.strip().lower().startswith('with')) }}
+{% endmacro %}
+
+{% macro sqlserver__get_empty_subquery_sql(select_sql, select_sql_header=none) %}
+    {% if sqlserver__select_starts_with_cte(select_sql) %}
+        {{ select_sql }}
+    {% else -%}
+        select * from (
+        {{ select_sql }}
+    ) dbt_sbq_tmp
+    where 1 = 0
+    {%- endif -%}
+
+{% endmacro %}
+
+{% macro sqlserver__get_columns_in_query(select_sql) %}
+    {% set query_label = get_query_options() %}
+    {% if sqlserver__select_starts_with_cte(select_sql) %}
+        {#-- A query starting with a CTE cannot be wrapped in a subquery; describe its result set instead of executing it (dbt-msft/dbt-sqlserver#698) --#}
+        {% call statement('get_columns_in_query', fetch_result=True, auto_begin=False) -%}
+            exec sp_describe_first_result_set @tsql = N'{{ escape_single_quotes(select_sql) }}'
+        {% endcall %}
+        {{ return(load_result('get_columns_in_query').table.columns['name'].values() | list) }}
+    {% else %}
+        {% call statement('get_columns_in_query', fetch_result=True, auto_begin=False) -%}
+            select TOP 0 * from (
+                {{ select_sql }}
+            ) as __dbt_sbq
+            where 0 = 1
+            {{ query_label }}
+        {% endcall %}
+        {{ return(load_result('get_columns_in_query').table.columns | map(attribute='name') | list) }}
+    {% endif %}
+{% endmacro %}
+
+{#
+    Widens to_relation's columns to from_relation's, as adapter.expand_target_column_types
+    does, but passes prefer_single to sqlserver__alter_column_type. That call takes only
+    three arguments, so the macro can't tell a widening from on_schema_change's type change;
+    v1's adapter passes the setting in (dbt-msft/dbt-sqlserver#836). Unset, a widening takes
+    a single ALTER COLUMN, which keeps the column's indexes, default and position and is
+    metadata-only for a longer varchar. can_expand_to only matches a longer type of the same
+    family, so nothing here takes v1's opt-in varchar -> nvarchar promotion.
+#}
+{% macro sqlserver__expand_target_column_types(from_relation, to_relation) %}
+    {%- set reference_columns = {} -%}
+    {%- for column in adapter.get_columns_in_relation(from_relation) -%}
+        {%- do reference_columns.update({column.name: column}) -%}
+    {%- endfor -%}
+    {%- set prefer_single = config.get('prefer_single_alter_column') -%}
+    {%- for target_column in adapter.get_columns_in_relation(to_relation) -%}
+        {%- set reference_column = reference_columns.get(target_column.name) -%}
+        {%- if reference_column is not none and target_column.can_expand_to(reference_column) -%}
+            {% do sqlserver__alter_column_type(
+                to_relation,
+                target_column.name,
+                reference_column.data_type,
+                true if prefer_single is none else prefer_single) %}
+        {%- endif -%}
+    {%- endfor -%}
+{% endmacro %}
+
+{% macro sqlserver__alter_column_type(relation, column_name, new_column_type, prefer_single=none) %}
+
+    {#-- on_schema_change reaches this through alter_column_type's three arguments, and takes the four-step rewrite unless the model sets prefer_single_alter_column --#}
+    {% if prefer_single is none %}
+        {% set prefer_single = config.get('prefer_single_alter_column', false) %}
+    {% endif %}
+
+    {% if prefer_single and relation.type == 'table' %}
+        {% set alter_sql %}
+            alter {{ relation.type }} {{ relation }}
+            alter column "{{ column_name }}" {{ new_column_type }};
+        {%- endset %}
+        {% do run_query(alter_sql) %}
+
+    {% else %}
+        {%- set tmp_column = column_name + "__dbt_alter" -%}
+        {%- set relation_name = escape_single_quotes(relation.include(database=False)) -%}
+
+        {#-- The four steps below autocommit one by one, so a failed run can leave tmp_column behind, and the next run's ADD then fails forever (dbt-msft/dbt-sqlserver#836).
+             Drop it first. It is only a partial copy while the original column still exists; if the original is gone, tmp_column holds the data, so it is left alone. --#}
+        {% set drop_leftover %}
+            if col_length('{{ relation_name }}', '{{ escape_single_quotes(tmp_column) }}') is not null
+                and col_length('{{ relation_name }}', '{{ escape_single_quotes(column_name) }}') is not null
+                alter {{ relation.type }} {{ relation }} drop column "{{ tmp_column }}";
+        {%- endset %}
+
+        {% set add_column %}
+            alter {{ relation.type }} {{ relation }}
+            add "{{ tmp_column }}" {{ new_column_type }};
+        {%- endset %}
+        {% set update_column %}
+            update {{ relation }} set "{{ tmp_column }}" = "{{ column_name }}";
+        {%- endset %}
+        {% set drop_column %}
+            alter {{ relation.type }} {{ relation }}
+            drop column "{{ column_name }}";
+        {%- endset %}
+        {% set rename_column %}
+            exec sp_rename '{{ relation_name }}.{{ escape_single_quotes(adapter.quote(tmp_column)) }}', '{{ escape_single_quotes(column_name) }}', 'column'
+        {%- endset %}
+
+        {% do run_query(drop_leftover) %}
+        {% do run_query(add_column) %}
+        {% do run_query(update_column) %}
+        {% do run_query(drop_column) %}
+        {% do run_query(rename_column) %}
+    {% endif %}
+
+{% endmacro %}
+
+
+{% macro sqlserver__alter_relation_add_remove_columns(relation, add_columns, remove_columns) %}
+  {% call statement('add_drop_columns') -%}
+    {% if add_columns %}
+        alter {{ relation.type }} {{ relation }}
+        add {% for column in add_columns %}"{{ column.name }}" {{ column.data_type }}{{ ', ' if not loop.last }}{% endfor %};
+    {% endif %}
+
+    {% if remove_columns %}
+        alter {{ relation.type }} {{ relation }}
+        drop column {% for column in remove_columns %}"{{ column.name }}"{{ ',' if not loop.last }}{% endfor %};
+    {% endif %}
+  {%- endcall -%}
+{% endmacro %}
+
+{% macro sqlserver__get_columns_in_relation(relation) -%}
+    {% set query_label = get_query_options() %}
+    {% call statement('get_columns_in_relation', fetch_result=True) %}
+        {{ get_use_database_sql(relation.database) }}
+        select
+            c.name collate database_default as column_name,
+            t.name as data_type,
+            case
+                when (t.name in ('nchar', 'nvarchar', 'sysname') and c.max_length <> -1) then c.max_length / 2
+                else c.max_length
+            end as character_maximum_length,
+            c.precision as numeric_precision,
+            c.scale as numeric_scale
+        from sys.columns c {{ information_schema_hints() }}
+        inner join sys.types t {{ information_schema_hints() }}
+        on c.user_type_id = t.user_type_id
+        where c.object_id = object_id('{{ 'tempdb..' ~ relation.include(database=false, schema=false) if '#' in relation.identifier else relation }}')
+        order by c.column_id
+        {{ query_label }}
+
+    {% endcall %}
+    {% set table = load_result('get_columns_in_relation').table %}
+    {{ return(sql_convert_columns_in_relation(table)) }}
+{% endmacro %}

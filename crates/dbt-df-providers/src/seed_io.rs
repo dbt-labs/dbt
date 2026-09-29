@@ -230,7 +230,8 @@ pub fn infer_seed_column_name_strategy(
             AdapterType::Bigquery
             | AdapterType::Databricks
             | AdapterType::Spark
-            | AdapterType::Fabric,
+            | AdapterType::Fabric
+            | AdapterType::SqlServer,
         ) => InferColumnNameStrategy::Verbatim,
         (false, AdapterType::ClickHouse) => InferColumnNameStrategy::Verbatim,
         (false, AdapterType::Exasol) => InferColumnNameStrategy::Uppercase,
