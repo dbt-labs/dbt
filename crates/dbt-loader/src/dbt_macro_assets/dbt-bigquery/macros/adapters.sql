@@ -28,7 +28,7 @@
     {{ partition_by(partition_config) }}
     {{ cluster_by(raw_cluster_by) }}
 
-    {% if catalog_relation.table_format == 'iceberg' and not temporary and not (flags.get('use_catalogs_v2') and catalog_relation.lakehouse_catalog) %}
+    {% if catalog_relation.table_format == 'iceberg' and not temporary and not catalog_relation.lakehouse_catalog %}
     {%- if catalog_relation.connection_id -%} with connection `{{ catalog_relation.connection_id }}`
     {%- else -%} with connection default
     {%- endif -%}
