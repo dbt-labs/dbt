@@ -3,8 +3,8 @@ use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::Arc;
 
-use dbt_adapter::Adapter;
 use dbt_adapter::relation::create_relation_from_node;
+use dbt_adapter::{Adapter, AdapterStore};
 use dbt_adapter_core::AdapterType;
 use dbt_common::FsError;
 use dbt_common::collections::DashMap;
@@ -15,12 +15,13 @@ use dbt_jinja_utils::jinja_environment::JinjaEnv;
 use dbt_jinja_utils::listener::RenderingEventListenerFactory;
 use dbt_schema_store::{DataStoreTrait, SchemaStoreTrait};
 use dbt_schemas::schemas::profiles::Execute;
-use dbt_schemas::state::ResolverState;
+use dbt_schemas::state::{DbtProfile, ResolverState};
 use dbt_state::explain::{
     StateExplainLogRecord, StateExplainRunConfig, StateExplainRunStart,
     append_state_explain_log_record, new_state_explain_log_path, prune_state_explain_logs,
 };
 use dbt_state::service_config::RunCacheServiceConfig;
+use dbt_state::telemetry::SharedEventOrder;
 use dbt_state::view_traversal::ViewDefinitionTraverser;
 use petgraph::graph::DiGraph;
 
@@ -58,6 +59,9 @@ pub trait TaskRunnerCtxFactory: Send + Sync + 'static {
         freshness_results: Option<Box<dyn PreTaskRunData>>,
         static_analysis_buckets: Arc<dyn StaticAnalysisBuckets>,
         adapter: Arc<Adapter>,
+        adapter_store: Arc<AdapterStore>,
+        run_cache_lifecycle: Arc<RunCacheLifecycle>,
+        shared_event_order: Option<SharedEventOrder>,
     ) -> Pin<Box<dyn Future<Output = Result<TaskRunnerCtx, Box<FsError>>> + Send>> {
         let rendering_listener_factory = self.rendering_listener_factory();
         let span_manager = Arc::new({
@@ -79,13 +83,6 @@ pub trait TaskRunnerCtxFactory: Send + Sync + 'static {
         );
         Box::pin(async move {
             let execute = Execute::from_compute_flag(run_task_args.local_execution_backend);
-            let run_cache_lifecycle = RunCacheLifecycle::initialize(
-                run_task_args.as_ref(),
-                execute,
-                resolver_state.adapter_type,
-                resolver_state.cloud_config.as_ref(),
-            )
-            .await?;
 
             let extended_ctx = extended_ctx_factory
                 .build(run_cache_lifecycle.is_requested())
@@ -97,7 +94,7 @@ pub trait TaskRunnerCtxFactory: Send + Sync + 'static {
                     &schedule,
                     &worker_id,
                     resolver_state.as_ref(),
-                    jinja_env.as_ref(),
+                    &jinja_env,
                     freshness_results.as_deref(),
                     extended_ctx.as_ref(),
                 )
@@ -121,17 +118,21 @@ pub trait TaskRunnerCtxFactory: Send + Sync + 'static {
                 })
                 .collect();
 
-            let RunCacheLifecycle {
-                service: run_cache_service,
-                metadata: run_cache_metadata,
-            } = run_cache_lifecycle;
+            let run_cache_service = &run_cache_lifecycle.service;
+            let run_cache_metadata = run_cache_lifecycle.metadata.clone();
+
             let state_explain_log_path =
-                state_explain_log_path_for_run(&run_cache_service, run_task_args.as_ref());
+                state_explain_log_path_for_run(run_cache_service, run_task_args.as_ref());
             if let (Some(path), Some(config)) = (
                 state_explain_log_path.as_ref(),
                 run_cache_service.config.as_ref(),
             ) {
-                write_state_explain_run_start(path, run_task_args.as_ref(), config);
+                write_state_explain_run_start(
+                    path,
+                    run_task_args.as_ref(),
+                    config,
+                    &resolver_state.dbt_profile,
+                );
                 prune_state_explain_logs(path, config);
             }
 
@@ -141,8 +142,8 @@ pub trait TaskRunnerCtxFactory: Send + Sync + 'static {
                 run_cache_dev_cloned_nodes: DashMap::default(),
                 run_cache_deferred_fqns,
                 run_cache_service_requested: run_cache_service.requested,
-                run_cache_service_config: run_cache_service.config,
-                run_cache_service_client: run_cache_service.client,
+                run_cache_service_config: run_cache_service.config.clone(),
+                run_cache_service_client: run_cache_service.client.clone(),
                 state_explain_log_path,
                 view_traverser: adapter.metadata_adapter().map(|metadata_adapter| {
                     Arc::new(ViewDefinitionTraverser::new(
@@ -152,10 +153,11 @@ pub trait TaskRunnerCtxFactory: Send + Sync + 'static {
                 }),
                 heuristic_clock: std::sync::OnceLock::new(),
                 prefetch: Default::default(),
-                telemetry_event_order: std::sync::atomic::AtomicI64::new(0),
+                shared_event_order: shared_event_order.unwrap_or_default(),
                 telemetry_session_start: std::sync::OnceLock::new(),
                 telemetry_session_ended: std::sync::atomic::AtomicBool::new(false),
                 telemetry_dispatcher: std::sync::OnceLock::new(),
+                redshift_case_sensitivity_enabled: tokio::sync::OnceCell::new(),
             };
 
             Ok(TaskRunnerCtx {
@@ -172,6 +174,7 @@ pub trait TaskRunnerCtxFactory: Send + Sync + 'static {
                     generic_test_relationships,
                     span_manager,
                     execute,
+                    adapter_store,
                     sources_extractor,
                     run_cache_ctx,
                 )),
@@ -192,7 +195,7 @@ pub trait TaskRunnerCtxFactory: Send + Sync + 'static {
         schedule: &'a Schedule<String>,
         worker_id: &'a str,
         resolver_state: &'a ResolverState,
-        env: &'a JinjaEnv,
+        env: &'a Arc<JinjaEnv>,
         freshness_results: Option<&'a dyn PreTaskRunData>,
         extended_ctx: &'a dyn ExtendedCtx,
     ) -> Pin<Box<dyn Future<Output = Result<DashMap<String, String>, Box<FsError>>> + Send + 'a>>;
@@ -222,12 +225,13 @@ fn write_state_explain_run_start(
     path: &Path,
     run_task_args: &RunTasksArgs,
     config: &RunCacheServiceConfig,
+    active_profile: &DbtProfile,
 ) {
     let record = StateExplainLogRecord::RunStart(StateExplainRunStart {
         start_timestamp_utc: chrono::Utc::now().to_rfc3339(),
         run_config: StateExplainRunConfig {
             org_id: config.org_id.clone(),
-            defer_to_target: config.defer_to.clone(),
+            defer_to_target: config.defer_to_target(active_profile),
             freshness_tolerance_seconds: config.freshness_tolerance_seconds,
             tolerate_nondeterminism: config.tolerate_nondeterminism,
             clone_incremental_in_dev: config.clone_incremental_in_dev.as_str().to_string(),
@@ -275,6 +279,26 @@ pub trait ExtendedTaskRunnerCtxFactory: Send + Sync {
 mod tests {
     use super::*;
     use dbt_common::node_selector::{MethodName, SelectExpression, SelectionCriteria};
+    use dbt_schemas::IndexMap;
+    use dbt_schemas::schemas::profiles::{DbConfig, DuckDbConfig};
+    use dbt_schemas::state::ProfileAdapter;
+
+    fn test_profile(target: &str, defer_to_target: Option<&str>) -> DbtProfile {
+        let db_config = DbConfig::DuckDB(Box::<DuckDbConfig>::default());
+        let default_adapter = db_config.adapter_type();
+        DbtProfile {
+            profile: "jaffle_shop".to_string(),
+            target: target.to_string(),
+            defer_to_target: defer_to_target.map(str::to_string),
+            allow_clones: true,
+            adapters: IndexMap::from([(default_adapter, ProfileAdapter::single(db_config))]),
+            default_adapter,
+            schema: "dbt_test".to_string(),
+            database: "db".to_string(),
+            relative_profile_path: PathBuf::new(),
+            threads: None,
+        }
+    }
 
     #[test]
     fn write_state_explain_run_start_captures_run_config() {
@@ -296,7 +320,7 @@ mod tests {
         config.defer_to = "prod".to_string();
         config.clone_incremental_in_dev = dbt_state::service_config::CloneIncrementalInDev::Always;
 
-        write_state_explain_run_start(&path, &args, &config);
+        write_state_explain_run_start(&path, &args, &config, &test_profile("dev", None));
 
         let log = dbt_state::explain::read_state_explain_log(&path).unwrap();
         let run_config = log.run_start.unwrap().run_config;
@@ -307,6 +331,26 @@ mod tests {
         assert_eq!(run_config.target_name, "dev");
         assert_eq!(run_config.select, ["fqn:orders", "fqn:customers"]);
         assert_eq!(run_config.exclude, ["fqn:customers"]);
+    }
+
+    #[test]
+    fn write_state_explain_run_start_prefers_profile_defer_to_target() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let path = temp_dir.path().join("state-explain.jsonl");
+        let mut args = RunTasksArgs {
+            resolved_profile: "jaffle_shop".to_string(),
+            resolved_target: "dev".to_string(),
+            ..Default::default()
+        };
+        args.io.in_dir = temp_dir.path().to_path_buf();
+        let mut config = RunCacheServiceConfig::disabled();
+        config.defer_to = "prod".to_string();
+
+        write_state_explain_run_start(&path, &args, &config, &test_profile("dev", Some("staging")));
+
+        let log = dbt_state::explain::read_state_explain_log(&path).unwrap();
+        let run_config = log.run_start.unwrap().run_config;
+        assert_eq!(run_config.defer_to_target, "staging");
     }
 
     #[test]

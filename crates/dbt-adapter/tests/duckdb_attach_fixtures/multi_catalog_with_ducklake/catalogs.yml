@@ -8,18 +8,18 @@ catalogs:
     config:
       duckdb:
         warehouse: "demo_warehouse"
-        attach_as: "rest_demo"
+        catalog_database: "rest_demo"
   - name: lake_a
     type: ducklake
     table_format: default
     config:
       duckdb:
         metadata_path: "lake_a.db"
-        attach_as: lake_a
+        catalog_database: lake_a
   - name: lake_b
     type: ducklake
     table_format: default
     config:
       duckdb:
         metadata_path: "lake_b.db"
-        attach_as: lake_b
+        catalog_database: lake_b

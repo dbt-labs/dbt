@@ -142,7 +142,7 @@ async fn download_archive(
         .unwrap_or_default();
 
     tarball_client
-        .download_and_extract_tarball(&archive_url, target_dir, true, subdirectory, &headers)
+        .download_and_extract_tarball(&archive_url, target_dir, true, subdirectory, &headers, None)
         .await
         .map_err(|e| {
             fs_err!(

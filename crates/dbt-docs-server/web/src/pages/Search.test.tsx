@@ -1,16 +1,12 @@
-import {
-  afterEach,
-  beforeEach,
-  describe,
-  expect,
-  it,
-  type MockInstance,
-  vi,
-} from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, type Mock, vi } from 'vitest';
 
-import { api } from '../api';
 import type { AssetFilters } from '../App';
+import {
+  type SiteBootstrap,
+  SUPPORTED_BOOTSTRAP_SCHEMA_VERSION,
+} from '../lib/siteBootstrap';
 import { initTelemetry, resetTelemetryForTests } from '../lib/telemetry';
+import { logEvent } from '../lib/vortexSink';
 import type { Project } from '../shared';
 import { renderWithProviders } from '../test/renderWithProviders';
 import Search from './Search';
@@ -28,6 +24,30 @@ const searchReturn = {
   errorMessage: undefined as string | undefined,
   fetchNextPage: vi.fn(),
 };
+
+vi.mock('../lib/vortexSink', () => ({
+  logEvent: vi.fn(() => Promise.resolve()),
+  flushVortex: vi.fn(() => Promise.resolve()),
+}));
+
+/** `flush` needs a bootstrap: there is nowhere else to send an event. */
+function siteBootstrap(): SiteBootstrap {
+  return {
+    schema_version: SUPPORTED_BOOTSTRAP_SCHEMA_VERSION,
+    generated_at: '2026-08-08T18:00:00Z',
+    dbt_version: '2.0.0',
+    distribution: 'dbt',
+    is_logged_in: true,
+    duckdb_cdn_base: 'https://cdn.jsdelivr.net/npm/@duckdb/duckdb-wasm@1.32.0',
+    data_dir: 'index/',
+    telemetry: {
+      enabled: true,
+      dbt_cloud_account_identifier: '',
+      dbt_cloud_project_id: '',
+      dbt_cloud_environment_id: '',
+    },
+  };
+}
 
 vi.mock('../shared', async (importOriginal) => {
   const mod = await importOriginal<typeof import('../shared')>();
@@ -55,7 +75,7 @@ function renderSearch(query: string) {
       nodes={[]}
       query={query}
       filters={EMPTY_FILTERS}
-      onUpdateFiltersInPlace={vi.fn()}
+      onSetFilters={vi.fn()}
       previewId={null}
       onPeek={vi.fn()}
     />,
@@ -63,13 +83,10 @@ function renderSearch(query: string) {
 }
 
 describe('Search — search_performed analytics', () => {
-  let analytics: MockInstance<typeof api.analytics>;
-
   beforeEach(() => {
     vi.useFakeTimers();
-    analytics = vi
-      .spyOn(api, 'analytics')
-      .mockResolvedValue({ accepted: 1, skipped: 0 });
+    vi.mocked(logEvent).mockClear();
+    window.__DBT_DOCS__ = siteBootstrap();
     searchReturn.total = 0;
     searchReturn.isPending = false;
   });
@@ -78,7 +95,7 @@ describe('Search — search_performed analytics', () => {
     resetTelemetryForTests();
     vi.runOnlyPendingTimers();
     vi.useRealTimers();
-    vi.restoreAllMocks();
+    delete window.__DBT_DOCS__;
   });
 
   it('fires search_performed once with the trimmed query + result count', () => {
@@ -87,10 +104,8 @@ describe('Search — search_performed analytics', () => {
     renderSearch('  orders  ');
     vi.runAllTimers();
 
-    expect(analytics).toHaveBeenCalledTimes(1);
-    const event = (
-      analytics.mock.calls[0][0] as unknown as { events: Record<string, unknown>[] }
-    ).events[0];
+    expect(logEvent).toHaveBeenCalledTimes(1);
+    const event = (logEvent as Mock).mock.calls[0][0] as Record<string, unknown>;
     expect(event).toMatchObject({
       event_type: 'search_performed',
       search_query: 'orders',
@@ -103,7 +118,7 @@ describe('Search — search_performed analytics', () => {
     renderSearch('   ');
     vi.runAllTimers();
 
-    expect(analytics).not.toHaveBeenCalled();
+    expect(logEvent).not.toHaveBeenCalled();
   });
 
   it('does not fire while the query is still pending', () => {
@@ -112,7 +127,7 @@ describe('Search — search_performed analytics', () => {
     renderSearch('orders');
     vi.runAllTimers();
 
-    expect(analytics).not.toHaveBeenCalled();
+    expect(logEvent).not.toHaveBeenCalled();
   });
 
   it('does not fire when telemetry is not initialised', () => {
@@ -120,6 +135,6 @@ describe('Search — search_performed analytics', () => {
     renderSearch('orders');
     vi.runAllTimers();
 
-    expect(analytics).not.toHaveBeenCalled();
+    expect(logEvent).not.toHaveBeenCalled();
   });
 });

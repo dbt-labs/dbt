@@ -2,6 +2,7 @@
 use crate::dbt_project_config::strip_resource_paths_from_ref_path;
 use crate::resolve::resolve_properties::MinimalPropertiesEntry;
 use dbt_adapter_core::AdapterType;
+use dbt_common::constants::DBT_SNAPSHOTS_DIR_NAME;
 use dbt_common::io_args::IoArgs;
 use dbt_common::path::DbtPath;
 use dbt_common::tracing::dbt_emit::emit_error_log_from_fs_error;
@@ -9,7 +10,7 @@ use dbt_common::{ErrorCode, FsError, FsResult, fs_err, stdfs};
 use dbt_jinja_utils::jinja_environment::JinjaEnv;
 use dbt_jinja_utils::malformed_block_name::MalformedBlockNameListener;
 use dbt_jinja_utils::phases::parse::sql_resource::SqlResource;
-use dbt_jinja_utils::utils::{generate_component_name, generate_relation_name};
+use dbt_jinja_utils::utils::{generate_component_name, generate_relation_name_with_target};
 use dbt_schemas::schemas::InternalDbtNodeAttributes;
 use dbt_schemas::schemas::common::{DbtMaterialization, ResolvedQuoting, normalize_quoting};
 use dbt_schemas::schemas::project::{ResolvableConfig, ResolvedConfig};
@@ -62,32 +63,51 @@ impl RawProjectConfig {
     }
 }
 
-/// Merges a parent raw config map with config keys from a child raw YAML mapping.
+/// Merges a parent raw config map (already canonical) with config keys from a child raw YAML
+/// mapping, i.e. one `dbt_project.yml` hierarchy level.
 /// Keys prefixed with `+` are config keys (prefix stripped before inserting).
 /// Non-`+` keys are hierarchy keys (package/folder names) and are ignored.
-/// Child values overwrite parent values.
+///
+/// The child level's own keys are canonicalized against `adapter_type`'s alias map *before*
+/// merging, mirroring dbt-mantle's `fqn_search`/`_update_from_config`
+/// (`core/dbt/context/context_config.py:120-127,222,302`): each hierarchy level is translated on
+/// its own, then folded into the accumulating result one level at a time. Canonicalizing only
+/// the child level here -- not the already-merged `parent` -- is what makes that possible: a
+/// parent-level alias (e.g. `+catalog:`) and a child-level canonical spelling (`+database:`) are
+/// two different levels' dicts, never one dict with two colliding keys, so this cannot spuriously
+/// raise `DuplicateAliasKey` the way canonicalizing the pre-merged result of both levels at once
+/// would. A single level authoring both an alias and its canonical spelling still errors, via
+/// `canonicalize_source_config_keys`. Child values overwrite parent values.
 pub fn merge_raw_config_mappings(
     parent: &BTreeMap<String, dbt_yaml::Value>,
     child_mapping: &dbt_yaml::Mapping,
-) -> BTreeMap<String, dbt_yaml::Value> {
-    let mut merged = parent.clone();
+    adapter_type: AdapterType,
+) -> FsResult<BTreeMap<String, dbt_yaml::Value>> {
+    let mut own_level = BTreeMap::new();
     for (k, v) in child_mapping.iter() {
         if let Some(key_str) = k.as_str() {
             if let Some(stripped) = key_str.strip_prefix('+') {
-                merged.insert(stripped.to_string(), v.clone());
+                own_level.insert(stripped.to_string(), v.clone());
             }
         }
     }
-    merged
+    let own_level =
+        crate::resolve::resolve_utils::canonicalize_source_config_keys(adapter_type, own_level)?;
+    let mut merged = parent.clone();
+    merged.extend(own_level);
+    Ok(merged)
 }
 
 /// Recursively builds a `RawProjectConfig` tree from a raw YAML mapping.
-/// At each level, `+`-prefixed keys are merged into the config; non-`+` keys with mapping values are recursed into as children.
+/// At each level, `+`-prefixed keys are canonicalized and merged into the config; non-`+` keys
+/// with mapping values are recursed into as children. See [`merge_raw_config_mappings`] for why
+/// canonicalization happens per level rather than once on the fully-merged tree.
 pub fn recur_raw_project_config(
     mapping: &dbt_yaml::Mapping,
     parent_config: &BTreeMap<String, dbt_yaml::Value>,
-) -> RawProjectConfig {
-    let current_config = merge_raw_config_mappings(parent_config, mapping);
+    adapter_type: AdapterType,
+) -> FsResult<RawProjectConfig> {
+    let current_config = merge_raw_config_mappings(parent_config, mapping, adapter_type)?;
     let mut children = BTreeMap::new();
     for (k, v) in mapping.iter() {
         if let Some(key_str) = k.as_str() {
@@ -95,16 +115,16 @@ pub fn recur_raw_project_config(
                 if let Some(child_mapping) = v.as_mapping() {
                     children.insert(
                         key_str.to_string(),
-                        recur_raw_project_config(child_mapping, &current_config),
+                        recur_raw_project_config(child_mapping, &current_config, adapter_type)?,
                     );
                 }
             }
         }
     }
-    RawProjectConfig {
+    Ok(RawProjectConfig {
         config: current_config,
         children,
-    }
+    })
 }
 
 /// Coalesce a list of optional values into a single value
@@ -168,6 +188,8 @@ pub fn get_node_fqn(
 ///
 ///   * Block-style (`{% snapshot %}` in a .sql file): `SnapshotParser.get_fqn`
 ///     keeps the original filename stem -> `[pkg, ..dirs, file_stem, block_name]`.
+///     Core does not strip a trailing jinja suffix here, so `a.sql.j2` contributes
+///     `a.sql` to the fqn even when `allow_jinja_file_extensions` is on.
 ///   * YAML-defined: the generic `get_fqn_prefix` drops the filename entirely ->
 ///     `[pkg, ..dirs, snapshot_name]`.
 ///
@@ -193,11 +215,13 @@ pub fn get_snapshot_fqn(
         .is_some_and(|ext| ext.eq_ignore_ascii_case("yml") || ext.eq_ignore_ascii_case("yaml"));
 
     if is_yaml_defined {
+        // We've already normalized the yaml snapshots here under snapshots/,
+        // so we strip the normalized snapshots path instead of the original.
         get_node_fqn(
             package_name,
             path.to_path_buf(),
             vec![snapshot_name.to_string()],
-            snapshot_paths,
+            &[DBT_SNAPSHOTS_DIR_NAME.into()],
         )
     } else {
         let original_file_stem = strip_resource_paths_from_ref_path(original_path, snapshot_paths)
@@ -426,12 +450,13 @@ pub fn generate_relation_components(
     } else {
         &format!("{alias}_ephemeral")
     };
-    let relation_name = generate_relation_name(
+    let relation_name = generate_relation_name_with_target(
         parse_adapter,
         database_name,
         schema_name,
         alias_name,
         quoting,
+        node.base().effective_propagation_target,
     )?;
 
     Ok((database, schema, alias, relation_name, quoting))
@@ -541,12 +566,13 @@ fn generate_alias_and_relation_name(
     } else {
         &format!("{alias}_ephemeral")
     };
-    let relation_name = generate_relation_name(
+    let relation_name = generate_relation_name_with_target(
         parse_adapter,
         database_name,
         schema_name,
         alias_name,
         quoting,
+        node.base().effective_propagation_target,
     )?;
 
     Ok((alias, relation_name))
@@ -649,7 +675,8 @@ pub fn update_node_relation_components(
 pub fn extract_resource_config_from_raw_project(
     raw_yml: &dbt_yaml::Value,
     resource_type: &str,
-) -> RawProjectConfig {
+    adapter_type: AdapterType,
+) -> FsResult<RawProjectConfig> {
     if let Some(raw_subtree) = raw_yml.get(resource_type).cloned().and_then(|v| {
         if let dbt_yaml::Value::Mapping(m, _) = v {
             Some(m)
@@ -657,21 +684,41 @@ pub fn extract_resource_config_from_raw_project(
             None
         }
     }) {
-        recur_raw_project_config(&raw_subtree, &BTreeMap::new())
+        recur_raw_project_config(&raw_subtree, &BTreeMap::new(), adapter_type)
     } else {
-        RawProjectConfig::empty()
+        Ok(RawProjectConfig::empty())
     }
 }
 
 /// Statically parses the raw (unrendered) kwargs from a `{{ config(...) }}` call in a SQL file.
 /// Uses the minijinja AST and byte-offset spans to extract the raw source text for each kwarg,
 /// preserving Jinja expressions as-is. Returns None if no config call is found.
+/// Parses `sql` itself; use [`extract_unrendered_config_from_ast`] if an AST already exists.
 /// Reference: https://github.com/dbt-labs/dbt-mantle/blob/da5abca4f829b167bd1b1d5c6666c12cd8c719c0/core/dbt/clients/jinja_static.py#L205
-///
-/// WARNING: This performs a duplicate AST parse. minijinja does not expose the AST after compilation, so we need to figure out a way to reuse the parsed AST instead of performing a full parse again.
 pub fn parse_unrendered_config(
     sql: &str,
     snapshot: bool,
+) -> Option<BTreeMap<String, dbt_yaml::Value>> {
+    let mut parser = Parser::new(
+        sql,
+        "",
+        false,
+        #[allow(clippy::default_constructed_unit_structs)]
+        SyntaxConfig::builder().build().unwrap(),
+        WhitespaceConfig::default(),
+    );
+    let ast = parser.parse().ok()?;
+    extract_unrendered_config_from_ast(&ast, snapshot, sql.as_bytes())
+}
+
+/// Extracts the raw (unrendered) kwargs from every `{{ config(...) }}` call in an already-parsed
+/// minijinja AST. See [`parse_unrendered_config`] for the string-parsing entry point; use this
+/// directly when the AST was already produced elsewhere (e.g. during Jinja compilation) to avoid
+/// a redundant parse.
+pub fn extract_unrendered_config_from_ast(
+    ast: &Stmt<'_>,
+    snapshot: bool,
+    sql_bytes: &[u8],
 ) -> Option<BTreeMap<String, dbt_yaml::Value>> {
     use minijinja::compiler::tokens::Span;
     use minijinja::value::ValueKind;
@@ -694,16 +741,6 @@ pub fn parse_unrendered_config(
             Expr::Const(s) => s.span,
         })
     }
-
-    let mut parser = Parser::new(
-        sql,
-        "",
-        false,
-        #[allow(clippy::default_constructed_unit_structs)]
-        SyntaxConfig::builder().build().unwrap(),
-        WhitespaceConfig::default(),
-    );
-    let ast = parser.parse().ok()?;
 
     // A SQL file may contain more than one `{{ config(...) }}` call (e.g. one for
     // `materialized`, a separate later one for `post_hook`). dbt-core's manifest
@@ -792,11 +829,10 @@ pub fn parse_unrendered_config(
     }
 
     let mut calls = Vec::new();
-    find_config_calls(&ast, snapshot, &mut calls);
+    find_config_calls(ast, snapshot, &mut calls);
     if calls.is_empty() {
         return None;
     }
-    let sql_bytes = sql.as_bytes();
 
     let mut map = BTreeMap::new();
     for args in calls {

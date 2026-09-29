@@ -1,5 +1,7 @@
 //! Dbt-specific tracing initialization built on top of the generic subscriber setup.
 
+use std::sync::Arc;
+
 use dbt_error::{ErrorCode, FsError, FsResult, fs_err};
 
 use super::{
@@ -83,8 +85,7 @@ pub fn init_tracing_with_layers(
     middlewares: Vec<MiddlewareLayer>,
     consumer_layers: Vec<ConsumerLayer>,
     shutdown_items: Vec<TelemetryShutdownItem>,
-    feature_handle: Box<dyn TracingConfigProvider>,
-) -> FsResult<(TelemetryHandle, Box<dyn TracingConfigProvider>)> {
+) -> FsResult<TelemetryHandle> {
     // Strip code location in non-debug builds
     let strip_code_location = !cfg!(debug_assertions);
 
@@ -102,10 +103,7 @@ pub fn init_tracing_with_layers(
     )
     .map_err(FsError::from)?;
 
-    Ok((
-        TelemetryHandle::new(shutdown_items, process_span),
-        feature_handle,
-    ))
+    Ok(TelemetryHandle::new(shutdown_items, process_span))
 }
 
 /// Process-wide tracing state for a host that runs many invocations.
@@ -125,9 +123,10 @@ impl ProcessTracing {
     pub fn begin_invocation(
         &self,
         config: FsTraceConfig,
-    ) -> FsResult<(InvocationTracingGuard, Box<dyn TracingConfigProvider>)> {
-        let (middlewares, consumer_layers, shutdown_items, feature_handle) =
-            config.build_layers()?.into_parts();
+        tracing_config: Arc<dyn TracingConfigProvider>,
+    ) -> FsResult<InvocationTracingGuard> {
+        let (middlewares, consumer_layers, shutdown_items) =
+            config.build_layers(tracing_config)?.into_parts();
 
         self.reload_handle
             .reload_telemetry(middlewares, consumer_layers)
@@ -139,14 +138,11 @@ impl ProcessTracing {
                 )
             })?;
 
-        Ok((
-            InvocationTracingGuard {
-                shutdown_items,
-                reload_handle: self.reload_handle.clone(),
-                finished: false,
-            },
-            feature_handle,
-        ))
+        Ok(InvocationTracingGuard {
+            shutdown_items,
+            reload_handle: self.reload_handle.clone(),
+            finished: false,
+        })
     }
 }
 

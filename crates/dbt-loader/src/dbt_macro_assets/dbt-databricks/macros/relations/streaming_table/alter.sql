@@ -44,6 +44,18 @@
         {%- if tags and tags.set_tags and tags.set_tags != [] -%}
             {{ return_statements.append(alter_set_tags(relation, tags.set_tags)) }}
         {%- endif -%}
+
+        {#- Row filter handling - append SQL to list, don't execute -#}
+        {#- is_change guard prevents false alters from `diff or value` fallback in streaming_table.py:56 -#}
+        {%- set row_filter = configuration_changes.changes.get("row_filter") -%}
+        {%- if row_filter and row_filter.is_change -%}
+          {%- if row_filter.should_unset -%}
+            {{ return_statements.append(alter_drop_row_filter(relation)) }}
+          {%- elif row_filter.function -%}
+            {{ return_statements.append(alter_set_row_filter(relation, row_filter)) }}
+          {%- endif -%}
+        {%- endif -%}
+
         {% do return(return_statements) %}
     {%- endif -%}
 {% endmacro %}
@@ -67,8 +79,9 @@
 
 {% macro get_alter_st_internal(relation, configuration_changes) %}
   {%- set refresh = configuration_changes.changes["refresh"] -%}
-  {%- if refresh and refresh.cron -%}
+  {%- set is_scheduled = refresh and (refresh.cron or refresh.every or refresh.on_update) -%}
+  {%- if is_scheduled -%}
     ALTER STREAMING TABLE {{ relation.render() }}
-        {{ get_alter_sql_refresh_schedule(refresh.cron, refresh.time_zone_value, False) -}}
+        ADD {{ get_create_sql_refresh_schedule(refresh) -}}
   {%- endif -%}
 {% endmacro %}

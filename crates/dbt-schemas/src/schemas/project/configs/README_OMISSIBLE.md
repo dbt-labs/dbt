@@ -35,6 +35,7 @@ Each field type implements `inherit_from` with its own merge semantics:
 | `Option<DbtQuoting>` | Deep-merge: each sub-field inherits from parent when unset |
 | `Option<DocsConfig>` | Deep-merge: `node_color` falls back to parent |
 | `Option<IndexMap<String, YmlValue>>` | Union-merge: child keys win, missing keys fall back to parent |
+| `Option<TblProperties>` | Replace-if-none while preserving mapping insertion order |
 | `Option<BTreeMap<Spanned<String>, String>>` | Union-merge: parent keys fill missing child keys |
 | `OmissibleGrantConfig` | DictKeyAppend: `+key` extends, plain key clobbers |
 | `Verbatim<Option<Hooks>>` | Append: parent hooks prepended to child hooks |

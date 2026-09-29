@@ -1,13 +1,14 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 
 use minijinja::Environment;
 use minijinja::listener::RenderingEventListener;
 use regex::Regex;
 use serde::Serialize;
 
+use crate::adapters::{AdapterConnections, ResolutionMode, parse_connections};
 use crate::error::{ProfileError, Result};
 use crate::jinja::{ProfileContext, profile_environment};
 
@@ -20,17 +21,29 @@ use crate::jinja::{ProfileContext, profile_environment};
 pub struct ProfileEnvironment {
     pub env: Environment<'static>,
     pub ctx: ProfileContext,
+    env_overrides: Arc<BTreeMap<String, String>>,
 }
 
 impl ProfileEnvironment {
     /// Build the profile-resolution environment.
     ///
     /// `vars` are the CLI `--vars` values, exposed as `var(...)` in Jinja.
-    /// `env_var(...)` reads from `std::env` (real values, no secret placeholders).
+    /// `env_var(...)` reads from `std::env`, resolving secret placeholders after rendering.
     pub fn new(vars: BTreeMap<String, dbt_yaml::Value>) -> Self {
+        Self::with_env_overrides(vars, BTreeMap::new())
+    }
+
+    /// Use caller-supplied values ahead of the inherited process environment,
+    /// without modifying it. The caller owns any filtering policy.
+    pub fn with_env_overrides(
+        vars: BTreeMap<String, dbt_yaml::Value>,
+        overrides: BTreeMap<String, String>,
+    ) -> Self {
+        let overrides = Arc::new(overrides);
         Self {
             env: profile_environment(),
-            ctx: ProfileContext::new(vars),
+            ctx: ProfileContext::new(vars, Arc::clone(&overrides)),
+            env_overrides: overrides,
         }
     }
 }
@@ -58,14 +71,12 @@ pub struct ResolveArgs {
     /// If unset, uses the profile's `target:` field, defaulting to `"default"`.
     pub target: Option<String>,
 
-    /// Explicit output to use for the alternate compute target (equivalent to
-    /// `--x-alt-target` / `DBT_X_ALT_TARGET`). If unset, uses the
-    /// profile's `x_alt_target:` field; absent means no compute output.
-    pub x_alt_target: Option<String>,
-
     /// Variables to inject into the Jinja context as `var(...)`.
     /// Equivalent to `--vars '{"key": "value"}'`.
     pub vars: BTreeMap<String, dbt_yaml::Value>,
+
+    /// Caller-scoped values, taking precedence over the inherited environment.
+    pub env_overrides: BTreeMap<String, String>,
 }
 
 /// A fully-resolved dbt profile ready for use.
@@ -79,11 +90,18 @@ pub struct ResolvedProfile {
     pub adapter_type: String,
     /// The rendered target output as a YAML mapping — the source of truth for
     /// connection configuration. Flows directly to `AdapterConfig` / `dbt-auth`.
+    ///
+    /// This is the *default* adapter's config. When the target declares several
+    /// adapters, read [`Self::adapters`] to reach the others.
     pub credentials: dbt_yaml::Mapping,
-    /// The rendered `x_alt_target` output, if one is configured — the
-    /// connection config for the alternate compute target. `None` when the
-    /// profile declares no compute output.
-    pub alt_target_credentials: Option<dbt_yaml::Mapping>,
+    /// Every adapter the target declares, in declaration order, keyed by adapter
+    /// type, each with its connections. A target using the legacy
+    /// single-adapter shape yields one entry with one connection, so callers
+    /// never branch on the `profiles.yml` shape.
+    ///
+    /// This is where non-default adapters — including an alternate compute
+    /// target — are reached. There is no separate field for them.
+    pub adapters: Vec<AdapterConnections>,
     /// Path to the `profiles.yml` file that was loaded.
     pub profile_path: PathBuf,
 }
@@ -91,6 +109,33 @@ pub struct ResolvedProfile {
 impl ResolvedProfile {
     pub fn get_str(&self, key: &str) -> Option<&str> {
         self.credentials.get(key).and_then(|v| v.as_str())
+    }
+
+    /// The adapter a node's `+adapter` config selects, if the target declares it.
+    pub fn adapter_by_type(&self, adapter_type: &str) -> Option<&AdapterConnections> {
+        self.adapters
+            .iter()
+            .find(|a| a.adapter_type.eq_ignore_ascii_case(adapter_type))
+    }
+
+    /// The target's default adapter — the one used by nodes that select none.
+    ///
+    /// The adapter holding the connection marked `default: true`, which is why the
+    /// marker is resolved target-wide rather than per adapter.
+    pub fn default_adapter(&self) -> &AdapterConnections {
+        self.adapters
+            .iter()
+            .find(|a| a.connections.iter().any(|c| c.is_default))
+            .expect("a resolved profile always has exactly one default connection")
+    }
+
+    /// The adapters a node may select *other* than the default, in declaration
+    /// order.
+    pub fn non_default_adapters(&self) -> impl Iterator<Item = &AdapterConnections> {
+        let default = self.default_adapter().adapter_type.clone();
+        self.adapters
+            .iter()
+            .filter(move |a| a.adapter_type != default)
     }
 
     pub fn database(&self) -> Option<&str> {
@@ -121,6 +166,26 @@ impl ResolvedProfile {
 // High-level: resolve() — self-contained entrypoint
 // ---------------------------------------------------------------------------
 
+/// Selection metadata only; this does not validate connection credentials.
+#[derive(Debug, Clone)]
+pub struct ProfileMetadata {
+    pub profile_name: String,
+    pub target_name: String,
+    pub adapter_type: String,
+    pub profile_path: PathBuf,
+}
+
+/// Identify the selected adapter without requiring connection credentials.
+pub fn resolve_metadata(args: &ResolveArgs) -> Result<ProfileMetadata> {
+    let resolved = resolve_args(args, ResolutionMode::Metadata)?;
+    Ok(ProfileMetadata {
+        profile_name: resolved.profile_name,
+        target_name: resolved.target_name,
+        adapter_type: resolved.adapter_type,
+        profile_path: resolved.profile_path,
+    })
+}
+
 /// Resolve a dbt profile from `profiles.yml` in one call.
 ///
 /// Creates its own `ProfileEnvironment` internally. For callers that need
@@ -129,16 +194,21 @@ impl ResolvedProfile {
 /// [`ProfileEnvironment::new`], [`find_profiles_path`], [`resolve_target`],
 /// [`render_target`].
 pub fn resolve(args: &ResolveArgs) -> Result<ResolvedProfile> {
-    let penv = ProfileEnvironment::new(args.vars.clone());
+    resolve_args(args, ResolutionMode::Credentials)
+}
+
+fn resolve_args(args: &ResolveArgs, mode: ResolutionMode) -> Result<ResolvedProfile> {
+    let penv =
+        ProfileEnvironment::with_env_overrides(args.vars.clone(), args.env_overrides.clone());
     let profile_path = find_profiles_path(args.profiles_dir.as_deref())?;
     let profile_name = resolve_profile_name(args)?;
 
-    resolve_with_env_ext(
+    resolve_profile(
         &penv,
         &profile_path,
         &profile_name,
         args.target.as_deref(),
-        args.x_alt_target.as_deref(),
+        mode,
     )
 }
 
@@ -149,17 +219,21 @@ pub fn resolve_with_env(
     profile_name: &str,
     target_override: Option<&str>,
 ) -> Result<ResolvedProfile> {
-    resolve_with_env_ext(penv, profile_path, profile_name, target_override, None)
+    resolve_profile(
+        penv,
+        profile_path,
+        profile_name,
+        target_override,
+        ResolutionMode::Credentials,
+    )
 }
 
-/// Like [`resolve_with_env`], but also resolves the `x_alt_target` output
-/// (for the alternate compute target) into `alt_target_credentials`.
-pub fn resolve_with_env_ext(
+fn resolve_profile(
     penv: &ProfileEnvironment,
     profile_path: &Path,
     profile_name: &str,
     target_override: Option<&str>,
-    x_alt_target_override: Option<&str>,
+    mode: ResolutionMode,
 ) -> Result<ResolvedProfile> {
     let raw_yaml = std::fs::read_to_string(profile_path)?;
     let sanitized = sanitize_yml(&raw_yaml);
@@ -203,68 +277,28 @@ pub fn resolve_with_env_ext(
             target: target_name.clone(),
         })?;
 
-    let credentials = render_target(target_raw, penv)?;
+    // Both `profiles.yml` shapes collapse to the same structure here; the legacy
+    // single-adapter mapping yields one adapter with one connection, so
+    // `credentials` and `adapter_type` below keep their existing meaning for every
+    // caller.
+    let adapters = parse_connections(profile_name, &target_name, target_raw, penv, mode)?;
 
-    let adapter_type = credentials
-        .get("type")
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_owned())
-        .ok_or(ProfileError::NoAdapterType)?;
+    let default_adapter = adapters
+        .iter()
+        .find(|a| a.connections.iter().any(|c| c.is_default))
+        .expect("parse_target_connections guarantees exactly one default connection");
 
-    // Resolve the optional alternate compute target output.
-    let alt_target_credentials =
-        match resolve_x_alt_target(x_alt_target_override, profile_val, penv)? {
-            Some(compute_target) => {
-                let raw =
-                    outputs
-                        .get(&compute_target)
-                        .ok_or_else(|| ProfileError::TargetMissing {
-                            profile: profile_name.to_owned(),
-                            target: compute_target,
-                        })?;
-                Some(render_target(raw, penv)?)
-            }
-            None => None,
-        };
+    let credentials = default_adapter.default_connection().credentials.clone();
+    let adapter_type = default_adapter.adapter_type.clone();
 
     Ok(ResolvedProfile {
         profile_name: profile_name.to_owned(),
         target_name,
         adapter_type,
         credentials,
-        alt_target_credentials,
+        adapters,
         profile_path: profile_path.to_path_buf(),
     })
-}
-
-/// Resolve the compute output name from overrides, `DBT_X_ALT_TARGET`, or
-/// the profile's `x_alt_target:` field (which may contain Jinja). Unlike
-/// `target`, there is no default: `None` means the profile has no compute output.
-fn resolve_x_alt_target(
-    override_name: Option<&str>,
-    profile_val: &dbt_yaml::Value,
-    penv: &ProfileEnvironment,
-) -> Result<Option<String>> {
-    if let Some(t) = override_name {
-        return Ok(Some(t.to_owned()));
-    }
-    if let Some(t) = std::env::var("DBT_X_ALT_TARGET")
-        .ok()
-        .filter(|s| !s.is_empty())
-    {
-        return Ok(Some(t));
-    }
-    let Some(raw_str) = profile_val.get("x_alt_target").and_then(|v| v.as_str()) else {
-        return Ok(None);
-    };
-    if raw_str.contains("{{") || raw_str.contains("{%") {
-        let rendered = penv
-            .env
-            .render_str(raw_str, &penv.ctx, &[])
-            .map_err(ProfileError::Jinja)?;
-        return Ok(Some(rendered));
-    }
-    Ok(Some(raw_str.to_owned()))
 }
 
 // ---------------------------------------------------------------------------
@@ -332,7 +366,7 @@ pub fn resolve_target(
         return Ok(t.to_owned());
     }
 
-    if let Some(t) = std::env::var("DBT_TARGET").ok().filter(|s| !s.is_empty()) {
+    if let Some(t) = lookup_env(&penv.env_overrides, "DBT_TARGET").filter(|s| !s.is_empty()) {
         return Ok(t);
     }
 
@@ -342,7 +376,7 @@ pub fn resolve_target(
                 .env
                 .render_str(raw_str, &penv.ctx, &[])
                 .map_err(ProfileError::Jinja)?;
-            return Ok(rendered);
+            return render_secrets(&rendered, &penv.env_overrides);
         }
         return Ok(raw_str.to_owned());
     }
@@ -356,7 +390,7 @@ pub fn render_target(
     target_val: &dbt_yaml::Value,
     penv: &ProfileEnvironment,
 ) -> Result<dbt_yaml::Mapping> {
-    let rendered = render_value_recursive(&penv.env, &penv.ctx, target_val)?;
+    let rendered = render_value_recursive(&penv.env, &penv.ctx, target_val, &penv.env_overrides)?;
     match rendered {
         dbt_yaml::Value::Mapping(m, _) => Ok(m),
         _ => Err(ProfileError::Other(
@@ -400,6 +434,7 @@ fn render_value_recursive<S: Serialize>(
     env: &Environment<'_>,
     ctx: &S,
     value: &dbt_yaml::Value,
+    overrides: &BTreeMap<String, String>,
 ) -> Result<dbt_yaml::Value> {
     let listeners: &[Rc<dyn RenderingEventListener>] = &[];
 
@@ -412,7 +447,7 @@ fn render_value_recursive<S: Serialize>(
             } else {
                 s.clone()
             };
-            let resolved = render_secrets(&rendered)?;
+            let resolved = render_secrets(&rendered, overrides)?;
             if !has_jinja && resolved == rendered {
                 Ok(value.clone())
             } else {
@@ -430,14 +465,14 @@ fn render_value_recursive<S: Serialize>(
         dbt_yaml::Value::Mapping(map, span) => {
             let mut new_map = dbt_yaml::Mapping::new();
             for (k, v) in map.iter() {
-                new_map.insert(k.clone(), render_value_recursive(env, ctx, v)?);
+                new_map.insert(k.clone(), render_value_recursive(env, ctx, v, overrides)?);
             }
             Ok(dbt_yaml::Value::Mapping(new_map, span.clone()))
         }
         dbt_yaml::Value::Sequence(seq, span) => {
             let rendered: std::result::Result<Vec<_>, _> = seq
                 .iter()
-                .map(|v| render_value_recursive(env, ctx, v))
+                .map(|v| render_value_recursive(env, ctx, v, overrides))
                 .collect();
             Ok(dbt_yaml::Value::Sequence(rendered?, span.clone()))
         }
@@ -449,13 +484,40 @@ fn render_value_recursive<S: Serialize>(
 // Helpers
 // ---------------------------------------------------------------------------
 
-/// Resolve `DBT_ENV_SECRET_*` sentinel placeholders inserted by the Jinja
-/// `env_var` function (when `placeholder_on_secret_access = true`) to their
-/// real environment variable values.
-///
-/// Mirrors `dbt_jinja_utils::phases::load::secret_renderer::render_secrets`
-/// but is duplicated here to keep `dbt-profile` free of `dbt-jinja-utils`.
-fn render_secrets(s: &str) -> Result<String> {
+fn lookup_env(overrides: &BTreeMap<String, String>, name: &str) -> Option<String> {
+    lookup_env_override(overrides, name)
+        .cloned()
+        .or_else(|| std::env::var(name).ok())
+}
+
+pub(crate) fn lookup_env_override<'a>(
+    overrides: &'a BTreeMap<String, String>,
+    name: &str,
+) -> Option<&'a String> {
+    scoped_env_value(overrides, name, cfg!(windows))
+}
+
+fn scoped_env_value<'a>(
+    overrides: &'a BTreeMap<String, String>,
+    name: &str,
+    case_insensitive: bool,
+) -> Option<&'a String> {
+    if case_insensitive {
+        // Command::envs applies entries in iteration order, so the last
+        // equivalent key wins even when an earlier key matches exactly.
+        overrides
+            .iter()
+            .rev()
+            .find(|(key, _)| key.eq_ignore_ascii_case(name))
+            .map(|(_, value)| value)
+    } else {
+        overrides.get(name)
+    }
+}
+
+/// Resolve secret sentinels using the same scoped environment as `env_var`.
+/// Kept here to avoid a dependency on `dbt-jinja-utils`.
+fn render_secrets(s: &str, overrides: &BTreeMap<String, String>) -> Result<String> {
     use dbt_jinja_vars::{SECRET_ENV_VAR_PREFIX, SECRET_PLACEHOLDER};
 
     if !s.contains(SECRET_ENV_VAR_PREFIX) {
@@ -464,7 +526,7 @@ fn render_secrets(s: &str) -> Result<String> {
 
     static RE: OnceLock<Regex> = OnceLock::new();
     let pattern = SECRET_PLACEHOLDER
-        .replace("{}", &format!("({SECRET_ENV_VAR_PREFIX}(.*))"))
+        .replace("{}", &format!("({SECRET_ENV_VAR_PREFIX}.*?)"))
         .replace("$", r"\$");
     let re = RE.get_or_init(|| Regex::new(&pattern).expect("valid secret placeholder regex"));
 
@@ -472,9 +534,9 @@ fn render_secrets(s: &str) -> Result<String> {
     for caps in re.captures_iter(s) {
         let var_name = &caps[1];
         let full_match = &caps[0];
-        match std::env::var(var_name) {
-            Ok(value) => result = result.replace(full_match, &value),
-            Err(_) => {
+        match lookup_env(overrides, var_name) {
+            Some(value) => result = result.replace(full_match, &value),
+            None => {
                 return Err(ProfileError::Other(format!(
                     "Secret environment variable '{var_name}' not found"
                 )));
@@ -536,5 +598,54 @@ fn yaml_value_to_json(v: &dbt_yaml::Value) -> serde_json::Value {
             serde_json::Value::Object(obj)
         }
         dbt_yaml::Value::Tagged(tagged, _) => yaml_value_to_json(&tagged.value),
+        dbt_yaml::Value::Timestamp(timestamp, _) => {
+            serde_json::Value::String(timestamp.to_string())
+        }
+    }
+}
+
+#[cfg(test)]
+mod scoped_env_tests {
+    use super::scoped_env_value;
+    use std::collections::BTreeMap;
+
+    #[test]
+    fn windows_scoped_environment_uses_case_insensitive_keys() {
+        let overrides = BTreeMap::from([("dbt_target".into(), "prod".into())]);
+        assert_eq!(
+            scoped_env_value(&overrides, "DBT_TARGET", true).map(String::as_str),
+            Some("prod")
+        );
+    }
+
+    #[test]
+    fn windows_scoped_environment_last_equivalent_key_wins() {
+        let overrides = BTreeMap::from([
+            ("DBT_TARGET".into(), "dev".into()),
+            ("dbt_target".into(), "prod".into()),
+        ]);
+        for name in ["DBT_TARGET", "dbt_target", "Dbt_Target"] {
+            assert_eq!(
+                scoped_env_value(&overrides, name, true).map(String::as_str),
+                Some("prod")
+            );
+        }
+    }
+
+    #[test]
+    fn unix_scoped_environment_preserves_case_and_empty_values() {
+        let overrides = BTreeMap::from([
+            ("DBT_TARGET".into(), "".into()),
+            ("dbt_target".into(), "prod".into()),
+        ]);
+        assert_eq!(
+            scoped_env_value(&overrides, "DBT_TARGET", false).map(String::as_str),
+            Some("")
+        );
+        assert_eq!(
+            scoped_env_value(&overrides, "dbt_target", false).map(String::as_str),
+            Some("prod")
+        );
+        assert_eq!(scoped_env_value(&overrides, "Dbt_Target", false), None);
     }
 }

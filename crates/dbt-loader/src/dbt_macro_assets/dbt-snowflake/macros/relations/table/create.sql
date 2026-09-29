@@ -20,7 +20,7 @@
         {%- if catalog_relation.catalog_type == 'BUILT_IN' %}
             {% do exceptions.raise_compiler_error('Iceberg is incompatible with Python models. Please use a SQL model for the iceberg format.') %}
         {%- else -%}
-            {{ py_write_table(compiled_code, relation) }}
+            {{ py_write_table(compiled_code, relation, temporary) }}
         {%- endif %}
 
     {%- else -%}
@@ -460,11 +460,13 @@ insert into {{ glue_relation }}
 {%- endmacro %}
 
 
-{% macro py_write_table(compiled_code, target_relation) %}
+{% macro py_write_table(compiled_code, target_relation, temporary=False) %}
 
 {%- set catalog_relation = adapter.build_catalog_relation(config.model) -%}
 
-{% if catalog_relation.is_transient %}
+{% if temporary %}
+    {%- set table_type='temporary' -%}
+{% elif catalog_relation.is_transient %}
     {%- set table_type='transient' -%}
 {% endif %}
 

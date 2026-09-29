@@ -15,21 +15,24 @@ workspace = true
 [dependencies]
 adbc-record-replay = { workspace = true }
 dbt-adapter-core = { workspace = true }
+dbt-adapter-engine = { workspace = true }
 dbt-adapter-sql = { workspace = true }
 dbt-adbc = { workspace = true }
 dbt-agate = { workspace = true }
 dbt-auth = { workspace = true }
-dbt-cloud-config = { workspace = true }
 dbt-common = { workspace = true }
-dbt-csv = { workspace = true }
 dbt-env = { workspace = true }
 dbt-frontend-common = { workspace = true }
 dbt-handles = { workspace = true }
+dbt-platform-auth = { workspace = true }
+dbt-runtime = { workspace = true }
 dbt-schema-store = { workspace = true }
 dbt-schemas = { workspace = true }
+dbt-sql-keywords = { workspace = true }
 dbt-sql-utils = { workspace = true }
 dbt-telemetry = { workspace = true }
 dbt-tracing = { workspace = true }
+dbt-tracked-stmt = { workspace = true }
 dbt-yaml = { workspace = true }
 
 adbc-core = { workspace = true }
@@ -40,8 +43,6 @@ arrow-json = { workspace = true }
 arrow-schema = { workspace = true }
 base64 = { workspace = true }
 chrono = { workspace = true }
-crossbeam-skiplist = { workspace = true }
-crossbeam-utils = { workspace = true }
 dashmap = { workspace = true }
 dbt-fusion-workspace-hack = { version = "0.1" }
 fancy-regex = { workspace = true }
@@ -55,7 +56,7 @@ once_cell = { workspace = true }
 parking_lot = { workspace = true }
 paste = { workspace = true }
 regex = { workspace = true }
-scc = { workspace = true }
+
 serde = { workspace = true }
 serde_json = { workspace = true }
 similar = { workspace = true }
@@ -66,6 +67,7 @@ ureq = { workspace = true }
 uuid = { workspace = true }
 
 [dev-dependencies]
+dbt-runtime = { workspace = true }
 dbt-test-primitives = { workspace = true }
 dirs = { workspace = true }
 ini = { workspace = true }

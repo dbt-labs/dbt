@@ -2,8 +2,10 @@ import { Route, Routes } from 'react-router-dom';
 import { screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import type { NodeSummary } from '../api';
+import { DETAIL_REGISTRY } from '../shared/data-sources/duckdb/details';
+import { createFakeDataSource } from '../shared/testing/createFakeDataSource';
 import { renderWithProviders } from '../test/renderWithProviders';
+import type { NodeSummary } from '../types';
 import { SourceCollectionPage } from './SourceCollectionPage';
 
 const SOURCE_NODE: NodeSummary = {
@@ -38,18 +40,17 @@ const SOURCE_DETAIL = {
 describe('<SourceCollectionPage />', () => {
   afterEach(() => vi.unstubAllGlobals());
 
-  it('renders freshness from the per-source detail endpoint', async () => {
-    vi.stubGlobal(
-      'fetch',
-      vi.fn((url: string) => {
-        if (url.includes('/api/v1/sources/')) {
-          return Promise.resolve({
-            ok: true,
-            json: () => Promise.resolve(SOURCE_DETAIL),
-          });
-        }
-        return Promise.resolve({ ok: true, json: () => Promise.resolve({}) });
-      }),
+  it('renders freshness from the per-source detail', async () => {
+    // Was a stubbed `/api/v1/sources/:id` response. The fixture is still the right
+    // description of the data, so it goes through the same source mapper the app uses.
+    const source = createFakeDataSource(
+      {
+        fetchAsset: async () =>
+          DETAIL_REGISTRY.source!.map(
+            SOURCE_DETAIL as unknown as Record<string, unknown>,
+          ),
+      } as never,
+      { full: true },
     );
 
     renderWithProviders(
@@ -59,7 +60,7 @@ describe('<SourceCollectionPage />', () => {
           element={<SourceCollectionPage nodes={[SOURCE_NODE]} onSelect={() => {}} />}
         />
       </Routes>,
-      { initialEntries: ['/sources/my_source'] },
+      { initialEntries: ['/sources/my_source'], source },
     );
 
     // The header's "last loaded at" is derived from the per-source detail's

@@ -1,18 +1,10 @@
 import type { ComponentType } from 'react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Route, Routes, useLocation, useNavigate, useParams } from 'react-router-dom';
+import { Search as SearchIcon } from 'lucide-react';
 
-import {
-  Badge,
-  Icon,
-  RyeconColorDbt,
-  RyeconMagnifyingGlass,
-  Tooltip,
-} from '@dbt-labs/sourdough';
-
-import { type NodeSummary } from './api';
 import { AnalysisFilterView } from './components/AnalysisFilterView';
-import FullLineagePage from './components/FullLineagePage';
+import { FullLineagePageV2 } from './components/LineageV2/FullLineagePage';
 import { LocatePane, type LocatePaneMode } from './components/LocatePane';
 import { MacroFilterView } from './components/MacroFilterView';
 import { ModelFilterView } from './components/ModelFilterView';
@@ -29,6 +21,7 @@ import {
 import { SourceCollectionPage } from './components/SourceCollectionPage';
 import { SourceFilterView } from './components/SourceFilterView';
 import { TestFilterView } from './components/TestFilterView';
+import { Input } from './components/ui/Input';
 import { useAllNodes } from './hooks/useAllNodes';
 import { deriveUpgradeCapabilities } from './hooks/useCapabilities';
 import { useIdentity } from './hooks/useIdentity';
@@ -44,19 +37,17 @@ import {
   useTelemetryInitialized,
 } from './lib/telemetry';
 import { type View, viewFromPath } from './lib/viewFromPath';
-import Home from './pages/Home';
 import NotFoundPage from './pages/NotFoundPage';
+import Overview from './pages/Overview';
 import ResourceDetails from './pages/ResourceDetails';
 import ResourceFilter from './pages/ResourceFilter';
 import Search from './pages/Search';
 import { paths, ROUTES } from './routes';
 import {
   type Asset,
-  type ModelSummary,
   type Project,
   useAssetCounts,
   useAssetDetail,
-  useAssetList,
   useCapabilities,
   useDistribution,
   useFiles,
@@ -64,6 +55,7 @@ import {
   type UserState,
   useSearchFacets,
 } from './shared';
+import { type NodeSummary } from './types';
 
 export type { View };
 
@@ -109,10 +101,10 @@ export default function App() {
   const assetCountsQuery = useAssetCounts();
   const allNodes = useAllNodes();
 
-  // Telemetry consent gate. Checked once on load via `/api/v1/identity`;
+  // Telemetry consent gate. Resolved once on load from the site bootstrap;
   // `initTelemetry` only runs after it resolves, so no analytics init or
-  // network call happens before consent is known. Failure resolves to
-  // consent-denied (see useIdentity), so telemetry never fails open.
+  // network call happens before consent is known. An unreadable bootstrap
+  // resolves to consent-denied (see useIdentity), so telemetry never fails open.
   const identityQuery = useIdentity();
   useEffect(() => {
     if (identityQuery.data) initTelemetry(identityQuery.data);
@@ -131,19 +123,11 @@ export default function App() {
   const nodes = allNodes.nodes;
   const nodeTotal = allNodes.total;
 
-  // Derive the upsell-component user state from `/api/v1/distribution`,
-  // which separates "build flavor" (`name`) from "auth state"
-  // (`is_logged_in`). Stays `null` until the response lands so the
-  // upsells don't flash through the Core default on first paint.
+  // Derive the upsell-component user state from the distribution, which separates
+  // "build flavor" (`name`) from "auth state" (`is_logged_in`). Stays `null` until
+  // it lands so the upsells don't flash through the Core default on first paint.
   const userState = deriveUserState(distInfo);
   const upgradeCapabilities = deriveUpgradeCapabilities(capabilities, distInfo);
-
-  // Marts list for the home page. Best-effort and isolated — section hides
-  // when the fetch returns zero or errors.
-  const { data: marts } = useAssetList<ModelSummary>(
-    { filter: { resourceTypes: ['model'], modelingLayers: ['Marts'] }, limit: 12 },
-    'marts',
-  );
 
   const [search, setSearch] = useState('');
   const [filters, setFilters] = useState<AssetFilters>(() => {
@@ -184,7 +168,7 @@ export default function App() {
     });
   }, [project, nodeTotal, identityQuery.data]);
 
-  // Analytics: `resource_viewed` on detail and list routes. Home and /search
+  // Analytics: `resource_viewed` on detail and list routes. The overview and /search
   // (a list view with no type) emit nothing — search is covered by
   // `search_performed`.
   useEffect(() => {
@@ -229,20 +213,6 @@ export default function App() {
     (detailFetchError && !detailNotFound ? detailFetchError.message : null) ??
     null;
 
-  // Spin the topbar dbt mark briefly whenever a "parent filter" changes —
-  // active view kind/type or the package filter. Detail navigations don't
-  // trigger; this is meant for orientation moments.
-  const [spinTrigger, setSpinTrigger] = useState(0);
-  const firstRender = useRef(true);
-  const parentKey = `${view.kind === 'list' ? filters.resourceType.slice().sort().join(',') || 'all' : view.kind}|${filters.pkg.slice().sort().join(',')}`;
-  useEffect(() => {
-    if (firstRender.current) {
-      firstRender.current = false;
-      return;
-    }
-    setSpinTrigger((s) => s + 1);
-  }, [parentKey]);
-
   // URL → filters sync: when the route's `:resourceType` param changes
   // (e.g. back/forward, Asset-tab click), mirror it into filters.resourceType
   // so AssetListView's multi-select narrowing stays consistent with the URL.
@@ -262,13 +232,37 @@ export default function App() {
     });
   }, [view]);
 
-  // Preserve the current LocatePane view across navigations. From /search
-  // (filter mode), opening an item lands on assets per the URL contract.
-  const viewParam = useCallback((): 'assets' | 'files' => {
-    if (location.pathname === paths.search()) return 'assets';
+  // LocatePane mode (Assets/Files/Filter): URL-derived by default (back/
+  // forward, direct links, and a fresh landing on /search all resolve here),
+  // but picking a tab is a left-panel toggle, not a page — it only flips
+  // `modeOverride` and never moves the user off whatever's on screen. Any
+  // real navigation (a new pathname, from an actual drill-down click) clears
+  // the override so the next page's own URL state takes over again.
+  const urlMode: LocatePaneMode = useMemo(() => {
+    if (location.pathname === paths.search()) return 'filter';
     const v = new URLSearchParams(location.search).get('view');
     return v === 'files' ? 'files' : 'assets';
   }, [location.pathname, location.search]);
+  const [modeOverride, setModeOverride] = useState<LocatePaneMode | null>(null);
+  useEffect(() => {
+    setModeOverride(null);
+  }, [location.pathname]);
+  const mode: LocatePaneMode = modeOverride ?? urlMode;
+
+  const onSelectMode = useCallback(
+    (next: LocatePaneMode) => {
+      setModeOverride(next === urlMode ? null : next);
+    },
+    [urlMode],
+  );
+
+  // Preserve the current LocatePane mode across navigations (e.g. opening a
+  // node while browsing Files keeps the next page on Files too). Filter has
+  // no per-node scope, so it falls back to Assets rather than carrying
+  // forward — mirrors the old URL-contract default.
+  const viewParam = useCallback((): 'assets' | 'files' => {
+    return mode === 'files' ? 'files' : 'assets';
+  }, [mode]);
 
   const onSelect = useCallback(
     (id: string) => {
@@ -287,25 +281,27 @@ export default function App() {
     [navigate],
   );
 
-  const onShowMarts = useCallback(() => {
-    // ModelFilterView reads `?modeling_layer=` and passes it as a server-side
-    // list filter. dbt-docs-server's LAYER_CONDITIONS uses capitalized "Marts".
-    navigate(`${paths.resource('model')}?modeling_layer=Marts`);
-  }, [navigate]);
-
   // LocatePane's project-root row (Assets or Files tab) navigates here.
   const onShowProject = useCallback(() => {
     setFilters(EMPTY_FILTERS);
     navigate(`${paths.home()}?view=${viewParam()}`);
   }, [navigate, viewParam]);
 
-  // Filter changes drop us into the list view. When the asset-type filter
-  // narrows to exactly one value, mirror it into the URL so the link is
-  // shareable; otherwise (0 or 2+) land on /search/ and let the multi-select
-  // narrowing live in in-memory filters.
+  // Filter changes narrow whatever's on screen; they only navigate when the
+  // current page can no longer represent the result:
+  //  - a free-text search is active: only /search/ renders `query`, so any
+  //    filter tweak has to stay there or the typed text would be silently
+  //    dropped.
+  //  - otherwise, when the asset-type filter narrows to exactly one value,
+  //    mirror it into the URL so the link is shareable; 0 or 2+ values land
+  //    on /search/, which owns the multi-select narrowing.
   const onSetFilters = useCallback(
     (next: AssetFilters) => {
       setFilters(next);
+      if (search.trim()) {
+        if (location.pathname !== paths.search()) navigate(paths.search());
+        return;
+      }
       const nextType = next.resourceType.length === 1 ? next.resourceType[0] : null;
       const currentType = view.kind === 'list' && view.type ? view.type : null;
       if (nextType !== currentType) {
@@ -314,38 +310,7 @@ export default function App() {
         navigate(paths.search());
       }
     },
-    [navigate, view],
-  );
-
-  // In-place filter setter for LocatePane's Filter mode — same shape as
-  // onSetFilters but without the navigation side-effect. Filter mode owns the
-  // /search/ surface and stays put while the user toggles checkboxes.
-  const onUpdateFiltersInPlace = useCallback((next: AssetFilters) => {
-    setFilters(next);
-  }, []);
-
-  // LocatePane mode is URL-driven:
-  //   /search       → 'filter'  (?view ignored)
-  //   anywhere else → ?view=assets | ?view=files, default 'assets'
-  const mode: LocatePaneMode = useMemo(() => {
-    if (location.pathname === paths.search()) return 'filter';
-    const v = new URLSearchParams(location.search).get('view');
-    return v === 'files' ? 'files' : 'assets';
-  }, [location.pathname, location.search]);
-
-  const onSelectMode = useCallback(
-    (next: LocatePaneMode) => {
-      if (next === 'filter') {
-        if (location.pathname !== paths.search()) navigate(paths.search());
-        return;
-      }
-      // Asset/Files: on /search, exit to project home with view=X.
-      // Anywhere else, update ?view on the current path.
-      const target =
-        location.pathname === paths.search() ? paths.home() : location.pathname;
-      navigate(`${target}?view=${next}`);
-    },
-    [navigate, location.pathname],
+    [navigate, view, search, location.pathname],
   );
 
   const onSubmitTopbarSearch = useCallback(() => {
@@ -412,7 +377,7 @@ export default function App() {
   if (isLineageRoute) {
     return (
       <Routes>
-        <Route path={ROUTES.lineage} element={<FullLineagePage />} />
+        <Route path={ROUTES.lineage} element={<FullLineagePageV2 />} />
       </Routes>
     );
   }
@@ -424,7 +389,6 @@ export default function App() {
         search={search}
         onSearch={setSearch}
         onResetHome={onResetHome}
-        spinTrigger={spinTrigger}
         onSubmitSearch={onSubmitTopbarSearch}
       />
       <div
@@ -452,7 +416,6 @@ export default function App() {
           onSetTheme={theme.setTheme}
           filters={filters}
           onSetFilters={onSetFilters}
-          onUpdateFiltersInPlace={onUpdateFiltersInPlace}
           mode={mode}
           onSelectMode={onSelectMode}
           searchFacets={searchFacets}
@@ -467,22 +430,7 @@ export default function App() {
         />
         <main className="main">
           <Routes>
-            <Route
-              path={ROUTES.home}
-              element={
-                <Home
-                  project={project}
-                  nodes={nodes}
-                  previewId={previewId}
-                  marts={marts}
-                  onPeek={onPeek}
-                  onShowList={onShowList}
-                  onShowMarts={onShowMarts}
-                  userState={userState}
-                  hasDbtState={upgradeCapabilities?.hasDbtState ?? false}
-                />
-              }
-            />
+            <Route path={ROUTES.home} element={<Overview />} />
             <Route
               path={ROUTES.details}
               element={
@@ -521,7 +469,7 @@ export default function App() {
                   nodes={nodes}
                   query={search}
                   filters={filters}
-                  onUpdateFiltersInPlace={onUpdateFiltersInPlace}
+                  onSetFilters={onSetFilters}
                   previewId={previewId}
                   onPeek={onPeek}
                 />
@@ -634,62 +582,52 @@ function Topbar({
   search,
   onSearch,
   onResetHome,
-  spinTrigger,
   onSubmitSearch,
 }: {
   project: Project | null;
   search: string;
   onSearch: (v: string) => void;
   onResetHome?: () => void;
-  spinTrigger?: number;
   onSubmitSearch?: () => void;
 }) {
   return (
     <header className="topbar-v2">
-      <div className="topbar-v2__bg" aria-hidden />
       <div className="topbar-v2__left">
         <div className="topbar-v2__brand">
-          <button
-            type="button"
-            className="topbar-v2__brand-btn"
-            onClick={onResetHome}
-            aria-label="Home — reset view"
-            title="Home — reset view"
-          >
-            <span key={spinTrigger ?? 0} className="topbar-v2__brand-anim">
-              <Icon ryecon={RyeconColorDbt} size="xl" alt="dbt" />
-            </span>
-          </button>
-          <Tooltip content="This docs site is in alpha." placement="bottom">
-            <Badge text="alpha" type="purple" size="xs" />
-          </Tooltip>
           {project && (
-            <div className="topbar-v2__brand-text">
-              <div className="topbar-v2__brand-name">{project.name}</div>
-              <div className="topbar-v2__brand-sub">
-                {project.adapterType ?? ''}
-                {project.dbtVersion ? ` · v${project.dbtVersion}` : ''}
+            <button
+              type="button"
+              className="topbar-v2__brand-btn topbar-v2__brand-btn--text"
+              onClick={onResetHome}
+              aria-label="Overview — reset view"
+              title="Overview — reset view"
+            >
+              <div className="topbar-v2__brand-text">
+                <div className="topbar-v2__brand-name">{project.name}</div>
+                <div className="topbar-v2__brand-sub">
+                  {project.adapterType ?? ''}
+                  {project.dbtVersion ? ` · v${project.dbtVersion}` : ''}
+                </div>
               </div>
-            </div>
+            </button>
           )}
         </div>
       </div>
-      <label className="topbar-v2__search">
-        <Icon ryecon={RyeconMagnifyingGlass} size="sm" alt="Search" />
-        <input
-          type="search"
-          placeholder="Search models, sources, tests, metrics…"
-          value={search}
-          onChange={(e) => onSearch(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter') {
-              e.preventDefault();
-              onSubmitSearch?.();
-            }
-          }}
-          aria-label={project ? `Search ${project.name}` : 'Search project'}
-        />
-      </label>
+      <Input
+        type="search"
+        startIcon={{ icon: <SearchIcon className="size-3" /> }}
+        placeholder="Search models, sources, tests, metrics…"
+        value={search}
+        onChange={(e) => onSearch(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') {
+            e.preventDefault();
+            onSubmitSearch?.();
+          }
+        }}
+        aria-label={project ? `Search ${project.name}` : 'Search project'}
+        className="w-full"
+      />
     </header>
   );
 }

@@ -428,7 +428,7 @@ pub enum WillNotSupportLegacyWarnError {
     #[strum(message = "Fusion reports this case under NoNodeForYamlKey instead.")]
     WrongResourceSchemaFile,
     #[strum(
-        message = "Fusion only supports the newer behavior-change flag `require_ref_searches_node_package_before_root`, where this case is a hard error."
+        message = "Fusion does not warn on this case; set the `require_ref_searches_node_package_before_root` flag to control the resolution order instead."
     )]
     PackageNodeDependsOnRootProjectNode,
 }

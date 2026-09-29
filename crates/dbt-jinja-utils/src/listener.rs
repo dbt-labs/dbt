@@ -45,6 +45,14 @@ pub trait RenderingEventListenerFactory: Send + Sync {
     /// get macro spans
     fn drain_macro_spans(&self, filename: &Path) -> MacroSpans;
 
+    /// Raw source spans of `ref()`/`source()` calls and bare `this`
+    /// references recorded for `filename` during this render (see
+    /// [`DefaultRenderingEventListener::ref_source_this_spans`]). Default
+    /// implementation returns nothing.
+    fn drain_ref_source_this_spans(&self, _filename: &Path) -> Vec<(u32, u32)> {
+        Vec::new()
+    }
+
     /// Builds the [`CompiledSpans`] for a freshly rendered node from its
     /// converted macro spans. The default carries macro spans only; an
     /// implementation may override this to attach additional spans associated
@@ -70,6 +78,11 @@ pub trait RenderingEventListenerFactory: Send + Sync {
     }
 }
 
+/// Per-filename raw source byte ranges `[start, end)` of `ref()`/`source()`
+/// calls and bare `this` references (see
+/// [`DefaultRenderingEventListener::ref_source_this_spans`]).
+type RefSourceThisSpansByFile = Arc<RwLock<HashMap<PathBuf, Vec<(u32, u32)>>>>;
+
 /// Default implementation of the `ListenerFactory` trait
 #[derive(Default, Debug)]
 pub struct DefaultRenderingEventListenerFactory {
@@ -77,6 +90,8 @@ pub struct DefaultRenderingEventListenerFactory {
     pub quiet: bool,
     /// macro spans
     pub macro_spans: Arc<RwLock<HashMap<PathBuf, MacroSpans>>>,
+    /// ref/source/this raw source spans, keyed by filename.
+    pub ref_source_this_spans: RefSourceThisSpansByFile,
     /// Whether to check for mangled refs
     pub check_mangled_refs: bool,
     /// IO args for warning emission
@@ -89,6 +104,7 @@ impl DefaultRenderingEventListenerFactory {
         Self {
             quiet,
             macro_spans: Arc::new(RwLock::new(HashMap::new())),
+            ref_source_this_spans: Arc::new(RwLock::new(HashMap::new())),
             check_mangled_refs: false,
             io_args: IoArgs::default(),
         }
@@ -99,6 +115,7 @@ impl DefaultRenderingEventListenerFactory {
         Self {
             quiet,
             macro_spans: Arc::new(RwLock::new(HashMap::new())),
+            ref_source_this_spans: Arc::new(RwLock::new(HashMap::new())),
             check_mangled_refs: true,
             io_args,
         }
@@ -158,6 +175,15 @@ impl RenderingEventListenerFactory for DefaultRenderingEventListenerFactory {
                     "Failed to acquire write lock on macro_spans",
                 );
             }
+            let new_ref_source_this_spans = default_listener.ref_source_this_spans.borrow().clone();
+            if let Ok(mut ref_source_this_spans) = self.ref_source_this_spans.write() {
+                ref_source_this_spans.insert(filename.to_path_buf(), new_ref_source_this_spans);
+            } else {
+                emit_error_log_message(
+                    ErrorCode::Generic,
+                    "Failed to acquire write lock on ref_source_this_spans",
+                );
+            }
         }
     }
 
@@ -170,6 +196,18 @@ impl RenderingEventListenerFactory for DefaultRenderingEventListenerFactory {
                 "Failed to acquire write lock on macro_spans",
             );
             MacroSpans::default()
+        }
+    }
+
+    fn drain_ref_source_this_spans(&self, filename: &Path) -> Vec<(u32, u32)> {
+        if let Ok(mut spans) = self.ref_source_this_spans.write() {
+            spans.remove(filename).unwrap_or_default()
+        } else {
+            emit_error_log_message(
+                ErrorCode::Generic,
+                "Failed to acquire write lock on ref_source_this_spans",
+            );
+            Vec::new()
         }
     }
 }
@@ -674,6 +712,13 @@ pub struct DefaultRenderingEventListener {
 
     /// Output tracker location for tracking expanded positions
     output_tracker_location: Rc<OutputTrackerLocation>,
+
+    /// Raw (pre-render) source byte ranges `[start, end)` of `ref()`/`source()`
+    /// calls and bare `this` references encountered during this render. Lets a
+    /// consumer determine, alongside `macro_spans`, whether a rendered span
+    /// came from real `ref`/`source`/`this` provenance rather than literal text
+    /// or other templating -- without any text matching on the rendered output.
+    pub ref_source_this_spans: RefCell<Vec<(u32, u32)>>,
 }
 
 impl Default for DefaultRenderingEventListener {
@@ -684,6 +729,7 @@ impl Default for DefaultRenderingEventListener {
             macro_spans: RefCell::new(MacroSpans::default()),
             macro_start_stack: RefCell::new(vec![vec![]]),
             output_tracker_location: Rc::new(OutputTrackerLocation::default()),
+            ref_source_this_spans: RefCell::new(Vec::new()),
         }
     }
 }
@@ -697,6 +743,7 @@ impl DefaultRenderingEventListener {
             macro_spans: RefCell::new(MacroSpans::default()),
             macro_start_stack: RefCell::new(vec![vec![]]),
             output_tracker_location: Rc::new(OutputTrackerLocation::default()),
+            ref_source_this_spans: RefCell::new(Vec::new()),
         }
     }
 
@@ -710,6 +757,7 @@ impl DefaultRenderingEventListener {
             macro_spans: RefCell::new(MacroSpans::default()),
             macro_start_stack: RefCell::new(vec![vec![]]),
             output_tracker_location,
+            ref_source_this_spans: RefCell::new(Vec::new()),
         }
     }
 }
@@ -889,6 +937,35 @@ impl RenderingEventListener for DefaultRenderingEventListener {
             );
         }
     }
+
+    fn on_ref_or_source(
+        &self,
+        _name: &str,
+        _start_line: u32,
+        _start_col: u32,
+        start_offset: u32,
+        _end_line: u32,
+        _end_col: u32,
+        end_offset: u32,
+    ) {
+        self.ref_source_this_spans
+            .borrow_mut()
+            .push((start_offset, end_offset));
+    }
+
+    fn on_this_reference(
+        &self,
+        _start_line: u32,
+        _start_col: u32,
+        start_offset: u32,
+        _end_line: u32,
+        _end_col: u32,
+        end_offset: u32,
+    ) {
+        self.ref_source_this_spans
+            .borrow_mut()
+            .push((start_offset, end_offset));
+    }
 }
 
 /// Function registry (to resolve a macro's qualified name to a dbt
@@ -946,10 +1023,30 @@ impl SymbolicRenderingEventListener {
         }
     }
 
+    /// Creates a new listener with a shared output tracker location. Use this
+    /// when the output position needs to be observable by another listener at
+    /// the same time (e.g. a `SqlfluffTemplatedFileListener` built with
+    /// `owns_output_tracker: false`, so the two can be combined in one render
+    /// pass without fighting over which one attaches the tracker).
+    pub fn with_tracker(quiet: bool, output_tracker_location: Rc<OutputTrackerLocation>) -> Self {
+        Self {
+            inner: DefaultRenderingEventListener::with_tracker(quiet, output_tracker_location),
+            introspective_branch_overrides: HashMap::new(),
+            introspective_branch_ordinal: Cell::new(0),
+            introspective_macro_registry: None,
+        }
+    }
+
     /// The macro spans accumulated by the wrapped
     /// [`DefaultRenderingEventListener`] during this render.
     pub fn macro_spans(&self) -> std::cell::Ref<'_, MacroSpans> {
         self.inner.macro_spans.borrow()
+    }
+
+    /// The ref/source/this raw source spans accumulated by the wrapped
+    /// [`DefaultRenderingEventListener`] during this render.
+    pub fn ref_source_this_spans(&self) -> std::cell::Ref<'_, Vec<(u32, u32)>> {
+        self.inner.ref_source_this_spans.borrow()
     }
 
     /// Forces the tainted `{% if %}` decision at each given ordinal (in
@@ -1023,6 +1120,46 @@ impl RenderingEventListener for SymbolicRenderingEventListener {
 
     fn on_function_end(&self) {
         self.inner.on_function_end()
+    }
+
+    fn on_ref_or_source(
+        &self,
+        name: &str,
+        start_line: u32,
+        start_col: u32,
+        start_offset: u32,
+        end_line: u32,
+        end_col: u32,
+        end_offset: u32,
+    ) {
+        self.inner.on_ref_or_source(
+            name,
+            start_line,
+            start_col,
+            start_offset,
+            end_line,
+            end_col,
+            end_offset,
+        )
+    }
+
+    fn on_this_reference(
+        &self,
+        start_line: u32,
+        start_col: u32,
+        start_offset: u32,
+        end_line: u32,
+        end_col: u32,
+        end_offset: u32,
+    ) {
+        self.inner.on_this_reference(
+            start_line,
+            start_col,
+            start_offset,
+            end_line,
+            end_col,
+            end_offset,
+        )
     }
 
     fn wants_introspective_holes(&self) -> bool {

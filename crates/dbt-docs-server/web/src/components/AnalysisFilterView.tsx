@@ -1,11 +1,7 @@
 import { useMemo, useState } from 'react';
 import { type ColumnDef } from '@tanstack/react-table';
 
-import { resourceIconMap } from '@dbt-labs/dbt-dag';
-import type { DropdownOption } from '@dbt-labs/sourdough';
-
-import { type NodeSummary } from '../api';
-import { useNodes } from '../hooks/useNodes';
+import { useAllNodes } from '../hooks/useAllNodes';
 import { makeNameCell } from '../lib/nameCell';
 import type { Project } from '../shared';
 import {
@@ -15,7 +11,9 @@ import {
   TruncatedCell,
   useResourceLink,
 } from '../shared';
+import { type NodeSummary } from '../types';
 import { ResourceFilterTable } from './ResourceFilterTable';
+import type { DropdownOption } from './ui/DropdownButton';
 
 interface Props {
   project: Project;
@@ -27,28 +25,32 @@ const ALL_PKG: DropdownOption = { label: 'All', value: '' };
 export function AnalysisFilterView({ project, onPeek }: Props) {
   const links = useResourceLink();
   const [selectedPackage, setSelectedPackage] = useState('');
-  const {
-    nodes,
-    total,
-    isPending,
-    isFetchingNextPage,
-    hasNextPage,
-    errorMessage,
-    fetchNextPage,
-  } = useNodes('analysis', {
-    package: selectedPackage || undefined,
-  });
+  // Analyses have no list query of their own — they never did, on either side of the
+  // API. The whole node index is already in memory, and there are few enough analyses
+  // in any project that filtering it here beats a dedicated projection.
+  const { nodes: allNodes, isPending, error } = useAllNodes();
+  const analyses = useMemo(
+    () => (allNodes ?? []).filter((n) => n.resource_type === 'analysis'),
+    [allNodes],
+  );
+  const nodes = useMemo(
+    () =>
+      selectedPackage
+        ? analyses.filter((n) => n.package_name === selectedPackage)
+        : analyses,
+    [analyses, selectedPackage],
+  );
 
   const pkgOptions = useMemo<DropdownOption[]>(() => {
     const values = [
-      ...new Set(nodes.map((n) => n.package_name).filter(Boolean)),
+      ...new Set(analyses.map((n) => n.package_name).filter(Boolean)),
     ] as string[];
     return [ALL_PKG, ...values.map((v) => ({ label: v, value: v }))];
-  }, [nodes]);
+  }, [analyses]);
 
   const columns = useMemo<ColumnDef<NodeSummary>[]>(
     () => [
-      makeNameCell<NodeSummary>(resourceIconMap.analysis, onPeek, (r) => r.unique_id),
+      makeNameCell<NodeSummary>(onPeek, (r) => r.unique_id),
       {
         id: 'package',
         header: 'Package',
@@ -91,13 +93,13 @@ export function AnalysisFilterView({ project, onPeek }: Props) {
       <ResourceFilterTable
         columns={columns}
         data={nodes}
-        isLoading={isPending || isFetchingNextPage}
-        hasMore={hasNextPage}
-        onLoadMore={fetchNextPage}
-        total={total}
+        isLoading={isPending}
+        hasMore={false}
+        onLoadMore={() => {}}
+        total={nodes.length}
         shownCount={nodes.length}
         emptyMessage="No analyses found."
-        error={errorMessage}
+        error={error ? 'Failed to load analyses.' : null}
       />
     </div>
   );

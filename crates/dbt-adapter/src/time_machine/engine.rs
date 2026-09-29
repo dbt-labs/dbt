@@ -15,7 +15,7 @@ use dbt_schemas::schemas::common::ResolvedQuoting;
 use crate::relation::RelationObject;
 use crate::time_machine::AdapterCallEvent;
 
-use super::event::{MetadataCallArgs, SaoEvent};
+use super::event::{MetadataCallArgs, RunCacheCloneEvent, SaoEvent};
 use super::event_recorder::EventRecorder;
 use super::event_replay::{Recording, ReplayError, ReplayMode, is_read_only_execute_call};
 use super::semantic::SemanticCategory;
@@ -492,6 +492,25 @@ impl EventReplayer {
 
     pub fn has_sao_event(&self, node_id: &str) -> bool {
         self.recording.has_sao_event(node_id)
+    }
+
+    /// Get the recorded dbt State service clone decision for a node if one exists.
+    ///
+    /// Returns the recorded decision if the node's execution was satisfied by
+    /// a clone during recording, so replay can route the node back through
+    /// the same clone path instead of falling through to a normal Execute.
+    pub fn get_run_cache_clone_event(&self, node_id: &str) -> Option<&RunCacheCloneEvent> {
+        self.recording.get_run_cache_clone_event(node_id)
+    }
+
+    /// Get the recorded clone decision for a node and clone phase.
+    pub fn get_run_cache_clone_event_for_phase(
+        &self,
+        node_id: &str,
+        dev_clone: bool,
+    ) -> Option<&RunCacheCloneEvent> {
+        self.recording
+            .get_run_cache_clone_event_for_phase(node_id, dev_clone)
     }
 
     /// Get total number of SAO skip events in the recording.

@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::ffi::OsString;
 use std::io::{Read as _, Write as _};
 use std::path::{Path, PathBuf};
@@ -24,7 +25,7 @@ static INSTALLABLE_DRIVERS: &[Backend; 12] = &[
     Backend::Redshift,
     Backend::DuckDB,
     Backend::DuckDBExtended,
-    Backend::Alt,
+    Backend::LakeCompute,
     Backend::Salesforce,
     Backend::Spark,
     Backend::SQLServer,
@@ -286,36 +287,62 @@ pub fn format_driver_url(backend_name: &str, triplet: DriverTriplet) -> String {
 ///
 /// ${FOLDERID_LocalAppData}/com.getdbt/adbc/x86_64-pc-windows-msvc/adbc_driver_snowflake-0.17.0+dbt0.0.1.dll
 pub fn format_driver_path(name: &str, triplet: DriverTriplet) -> Result<PathBuf, InstallError> {
+    format_driver_path_in(None, name, triplet)
+}
+
+/// Format the full path to the driver file (`${cache_dir}/com.getdbt/adbc/...`).
+///
+/// Like [format_driver_path], but `cache_dir` (when given) is used instead of
+/// the default OS cache directory.
+pub fn format_driver_path_in(
+    cache_dir: Option<&Path>,
+    name: &str,
+    triplet: DriverTriplet,
+) -> Result<PathBuf, InstallError> {
     const APP_ID: &str = "com.getdbt";
-    dirs::cache_dir()
-        .map(|cache_dir| {
-            let driver_relpath = format!(
-                "{}-{}/{}",
-                triplet.arch,
-                triplet.os,
-                DriverFilenameDisplay { name, triplet }
-            );
-            cache_dir.join(APP_ID).join("adbc").join(driver_relpath)
-        })
-        .ok_or(InstallError::DetermineCacheDir)
+    let cache_dir = match cache_dir {
+        Some(dir) => Cow::Borrowed(dir),
+        None => dirs::cache_dir()
+            .map(Cow::Owned)
+            .ok_or(InstallError::DetermineCacheDir)?,
+    };
+    let driver_relpath = format!(
+        "{}-{}/{}",
+        triplet.arch,
+        triplet.os,
+        DriverFilenameDisplay { name, triplet }
+    );
+    Ok(cache_dir.join(APP_ID).join("adbc").join(driver_relpath))
 }
 
 /// ADBC users can call this function to pre-install the driver for the given backend.
 ///
 /// Instead of relying on the automatic installation at connection creation time.
-pub fn pre_install_driver(http_agent: &ureq::Agent, backend: Backend) -> Result<(), InstallError> {
+pub fn pre_install_driver(
+    http_agent: &ureq::Agent,
+    backend: Backend,
+    cache_dir: Option<&Path>,
+) -> Result<(), InstallError> {
     if !is_installable_driver(backend) {
         return Ok(());
     }
     let (backend_name, triplet) = driver_parameters(backend);
-    install_driver_internal(http_agent, backend_name, triplet)
+    install_driver_internal(http_agent, backend_name, triplet, cache_dir)
 }
 
 /// Pre-install all supported drivers for the current platform.
-pub fn pre_install_all_drivers() -> Result<(), InstallError> {
+///
+/// Drivers are installed under `${cache_dir}/com.getdbt/...`.
+/// When `cache_dir` is `None`, the OS cache directory is used (see
+/// [format_driver_path]).
+pub fn pre_install_all_drivers(cache_dir: Option<&Path>) -> Result<(), InstallError> {
+    let cache_dir = cache_dir
+        .map(std::path::absolute)
+        .transpose()
+        .map_err(InstallError::Io)?;
     let http_agent = build_http_agent();
     for backend in INSTALLABLE_DRIVERS.iter() {
-        pre_install_driver(&http_agent, *backend)?;
+        pre_install_driver(&http_agent, *backend, cache_dir.as_deref())?;
     }
     Ok(())
 }
@@ -364,7 +391,7 @@ fn canonical_name_and_version(backend: Backend) -> (&'static str, &'static str) 
         Backend::Salesforce => ("salesforce", SALESFORCE_DRIVER_VERSION),
         Backend::DuckDB => ("duckdb", DUCKDB_DRIVER_VERSION),
         Backend::DuckDBExtended => ("duckdb_extended", DUCKDB_EXTENDED_DRIVER_VERSION),
-        Backend::Alt => ("dbt", ALT_DRIVER_VERSION),
+        Backend::LakeCompute => ("dbt", LAKE_COMPUTE_DRIVER_VERSION),
         Backend::SQLServer => ("mssql", MSSQLSERVER_DRIVER_VERSION),
         Backend::ClickHouse => ("clickhouse", CLICKHOUSE_DRIVER_VERSION),
         Backend::Athena | Backend::Exasol | Backend::Generic { .. } => {
@@ -432,8 +459,9 @@ pub fn install_driver_internal(
     http_agent: &ureq::Agent,
     backend_name: &str,
     triplet: DriverTriplet,
+    cache_dir: Option<&Path>,
 ) -> Result<(), InstallError> {
-    let full_driver_path = format_driver_path(backend_name, triplet)?;
+    let full_driver_path = format_driver_path_in(cache_dir, backend_name, triplet)?;
     let url = format_driver_url(backend_name, triplet);
     let checksum = find_expected_checksum(backend_name, triplet);
     download_zst_driver_file(http_agent, &url, &full_driver_path, checksum)
@@ -684,7 +712,23 @@ pub fn download_zst_driver_file(
 
     // fsync() the temp file and atomically rename it to the destination.
     tmp.sync_data().map_err(InstallError::SyncFile)?;
-    std::fs::rename(tmp_path, destination).map_err(InstallError::RenameFile)?;
+    finalize_install(&tmp_path, destination)
+}
+
+/// Move a fully-downloaded temporary file over the destination.
+///
+/// If the rename fails but the destination exists, another process installed the
+/// same (version-qualified) driver concurrently and we can use theirs. This is the
+/// common case on Windows, where renaming over a DLL another process has already
+/// `LoadLibrary`'d fails with "Access is denied" (os error 5).
+fn finalize_install(tmp_path: &Path, destination: &Path) -> Result<(), InstallError> {
+    if let Err(e) = std::fs::rename(tmp_path, destination) {
+        let installed_by_other_process = destination.try_exists().unwrap_or(false);
+        let _ = std::fs::remove_file(tmp_path);
+        if !installed_by_other_process {
+            return Err(InstallError::RenameFile(e));
+        }
+    }
     Ok(())
 }
 
@@ -693,6 +737,31 @@ mod tests {
     use super::*;
     use std::path::PathBuf;
     use std::sync::Mutex;
+
+    #[test]
+    fn finalize_install_tolerates_concurrent_install() {
+        let dir = env::temp_dir().join(tmpname("finalize-install-", 12, "").unwrap());
+        std::fs::create_dir_all(&dir).unwrap();
+        let dst = dir.join("driver.bin");
+        let missing_tmp = dir.join("nonexistent.download");
+
+        // Rename failure with no destination in place is a real error.
+        assert!(finalize_install(&missing_tmp, &dst).is_err());
+
+        // Another process won the race: destination exists, so we accept it.
+        std::fs::write(&dst, b"theirs").unwrap();
+        assert!(finalize_install(&missing_tmp, &dst).is_ok());
+        assert_eq!(std::fs::read(&dst).unwrap(), b"theirs");
+
+        // Normal path still renames.
+        let tmp = dir.join("ours.download");
+        std::fs::write(&tmp, b"ours").unwrap();
+        assert!(finalize_install(&tmp, &dst).is_ok());
+        assert_eq!(std::fs::read(&dst).unwrap(), b"ours");
+        assert!(!tmp.exists());
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 
     static ENV_LOCK: Mutex<()> = Mutex::new(());
 
@@ -735,6 +804,14 @@ mod tests {
             dbt_cache_dir.display(),
         ));
         assert_eq!(path, expected);
+
+        let custom =
+            format_driver_path_in(Some(Path::new("/opt/cache")), "snowflake", triplet).unwrap();
+        assert_eq!(
+            custom,
+            Path::new("/opt/cache/com.getdbt/adbc/x86_64-manylinux_2_17-linux-gnu")
+                .join("libadbc_driver_snowflake-0.17.0+dbt0.2.0.so")
+        );
     }
 
     #[test]

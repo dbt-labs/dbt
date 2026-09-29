@@ -1,7 +1,6 @@
 import { FC, useMemo } from 'react';
 
-import { PaginationFooter } from '@dbt-labs/sourdough';
-
+import { PaginationFooter } from '../../../components/ui/PaginationFooter';
 import { TrustSignals } from '../../typings/trustSignals';
 import { HighlightsByField } from './HighlightPills';
 import { RichSearchResultItem, RichSearchResultMetadata } from './RichSearchResultItem';

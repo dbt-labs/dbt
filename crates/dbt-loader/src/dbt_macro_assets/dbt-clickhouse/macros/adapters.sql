@@ -25,18 +25,6 @@
   {%- endif -%}
 {% endmacro %}
 
-{% macro clickhouse_model_settings(model, engine) %}
-  {{ return('') }}
-{% endmacro %}
-
-{% macro clickhouse_model_query_settings(model) %}
-  {{ return('') }}
-{% endmacro %}
-
-{% macro clickhouse_is_before_version(version) %}
-  {{ return(false) }}
-{% endmacro %}
-
 {% macro clickhouse_can_exchange(schema, relation_type) %}
   {{ return(false) }}
 {% endmacro %}
@@ -81,7 +69,8 @@
         name as mv_name,
         database as mv_database,
         any(as_select) as mv_sql,
-        any(replaceRegexpOne(create_table_query, '.*TO\\s+`?([^`\\s(]+)`?\\.`?([^`\\s(]+)`?.*', '\\1.\\2')) as target_fqn
+        {#- '\x3F' is the ClickHouse string-literal escape for '?' (regex quantifier); some drivers treat a literal '?' in query text as a bind parameter -#}
+        any(replaceRegexpOne(create_table_query, '.*TO\\s+`\x3F([^`\\s(]+)`\x3F\\.`\x3F([^`\\s(]+)`\x3F.*', '\\1.\\2')) as target_fqn
       {% if get_clickhouse_cluster_name() -%}
       from clusterAllReplicas({{ get_clickhouse_cluster_name() }}, system.tables)
       {% else %}
@@ -105,6 +94,10 @@
         map('schema', mv_sources.mv_database, 'name', mv_sources.mv_name, 'sql', mv_sources.mv_sql),
         mv_sources.mv_name != ''
       ) as mvs_pointing_to_it,
+      -- The refresh clause of a refreshable MV sits between the view name and the TO clause,
+      -- e.g. CREATE MATERIALIZED VIEW db.mv REFRESH EVERY 2 MINUTE [APPEND] TO db.target ...
+      max(position(substring(t.create_table_query, 1, position(t.create_table_query, ' TO ')), ' REFRESH ')) > 0 as is_refreshable,
+      max(position(substring(t.create_table_query, 1, position(t.create_table_query, ' TO ')), ' APPEND')) > 0 as refreshable_append,
       {%- if get_clickhouse_cluster_name() -%}
         count(distinct _shard_num) > 1  as  is_on_cluster
         from clusterAllReplicas({{ get_clickhouse_cluster_name() }}, system.tables) as t
@@ -177,7 +170,8 @@
     limit 0
   {% endcall %}
 
-  {{ return(load_result('get_columns_in_query').table.columns | map(attribute='name') | list) }}
+  {# DIVERGENCE: Fusion reads the original schema because Agate flattens nested columns. #}
+  {{ return(load_result('get_columns_in_query').table.top_level_column_names) }}
 {% endmacro %}
 
 {% macro clickhouse__alter_column_type(relation, column_name, new_column_type) -%}

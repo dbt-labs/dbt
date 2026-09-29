@@ -49,9 +49,9 @@ impl NodeStatus {
             NodeStatus::ReusedNoChanges(msg) => msg.clone(),
             NodeStatus::ReusedStillFresh(msg, _, _) => msg.clone(),
             NodeStatus::ReusedStillFreshNoChanges(msg) => msg.clone(),
-            NodeStatus::ReusedCloned(None) => "Cloned from cached relation".to_string(),
+            NodeStatus::ReusedCloned(None) => "Cloned from other environment".to_string(),
             NodeStatus::ReusedCloned(Some(_)) => {
-                "Cloned from cached relation within freshness tolerance".to_string()
+                "Cloned from other environment within tolerance".to_string()
             }
             NodeStatus::StaticallyCheckedDataTest => "Statically checked".to_string(),
             NodeStatus::SucceededWithWarning => "Warn".to_string(),
@@ -111,7 +111,7 @@ impl Stat {
             start_time,
             end_time,
             status,
-            thread_id: format!("Thread-{}", thread_id),
+            thread_id: format!("Thread-{} (worker)", thread_id),
             message,
         }
     }
@@ -143,12 +143,18 @@ impl Stat {
             format!("{:?}", self.status)
         }
     }
+    /// Nodes whose result is an *assertion* rather than a build: they report `pass`/`fail` instead
+    /// of `success`/`error`, and the row count decides which. Checks belong here for the same reason
+    /// tests do — "3 rows came back" is a failed assertion, not a failed build.
+    fn is_assertion_node(&self) -> bool {
+        self.unique_id.starts_with("test.")
+            || self.unique_id.starts_with("unit_test.")
+            || self.unique_id.starts_with("check.")
+    }
+
     pub fn result_status_string(&self) -> String {
         match self.status {
-            NodeStatus::Succeeded
-                if self.unique_id.starts_with("test.")
-                    || self.unique_id.starts_with("unit_test.") =>
-            {
+            NodeStatus::Succeeded if self.is_assertion_node() => {
                 match self.num_rows {
                     Some(0) => "pass".to_string(),
                     Some(_) => "fail".to_string(),
@@ -156,16 +162,11 @@ impl Stat {
                     None => "pass".to_string(),
                 }
             }
-            NodeStatus::Errored
-                if self.unique_id.starts_with("test.")
-                    || self.unique_id.starts_with("unit_test.") =>
-            {
-                match self.num_rows {
-                    Some(0) => "error".to_string(),
-                    Some(_) => "fail".to_string(),
-                    None => "error".to_string(),
-                }
-            }
+            NodeStatus::Errored if self.is_assertion_node() => match self.num_rows {
+                Some(0) => "error".to_string(),
+                Some(_) => "fail".to_string(),
+                None => "error".to_string(),
+            },
             NodeStatus::Succeeded => "success".to_string(),
             NodeStatus::SucceededWithWarning => "warn".to_string(),
             NodeStatus::TestWarned => "warn".to_string(),
@@ -197,18 +198,26 @@ mod tests {
             1,
         );
 
-        // Thread ID should be in format "Thread-<number>"
+        // Thread ID should be in format "Thread-<number> (worker)"
         assert!(
             stat.thread_id.starts_with("Thread-"),
             "thread_id should start with 'Thread-', got: {}",
             stat.thread_id
         );
+        assert!(
+            stat.thread_id.ends_with(" (worker)"),
+            "thread_id should end with ' (worker)', got: {}",
+            stat.thread_id
+        );
 
         // Extract the number part and verify it's a valid number
-        let number_part = stat.thread_id.trim_start_matches("Thread-");
+        let number_part = stat
+            .thread_id
+            .trim_start_matches("Thread-")
+            .trim_end_matches(" (worker)");
         assert!(
             number_part.parse::<u64>().is_ok(),
-            "thread_id should end with a number, got: {}",
+            "thread_id should have a number between 'Thread-' and ' (worker)', got: {}",
             stat.thread_id
         );
     }
@@ -271,11 +280,11 @@ mod tests {
         );
         assert_eq!(
             NodeStatus::ReusedCloned(None).default_message(),
-            "Cloned from cached relation"
+            "Cloned from other environment"
         );
         assert_eq!(
             NodeStatus::ReusedCloned(Some(3600)).default_message(),
-            "Cloned from cached relation within freshness tolerance"
+            "Cloned from other environment within tolerance"
         );
     }
 

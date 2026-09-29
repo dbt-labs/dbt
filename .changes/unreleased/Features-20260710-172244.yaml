@@ -1,7 +1,0 @@
-kind: Features
-body: 'Clickhouse: Add more settings and missing internal methods'
-time: 2026-07-10T17:22:44.120442+02:00
-custom:
-    author: koletzilla
-    issue: "14587"
-    project: dbt-core

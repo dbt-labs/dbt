@@ -16,3 +16,6 @@ workspace = true
 dbt-fusion-workspace-hack = { version = "0.1" }
 serde = { workspace = true, features = ["derive"] }
 strum = { workspace = true, features = ["derive"] }
+
+[dev-dependencies]
+serde_json = { workspace = true }

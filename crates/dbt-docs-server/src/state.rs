@@ -2,64 +2,51 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use chrono::{DateTime, SecondsFormat, Utc};
-use serde::Serialize;
 
-use crate::handlers::analytics::{AnalyticsSink, VortexSink};
 use crate::providers::Providers;
 pub use dbt_docs_core::{DistInfo, TelemetryHydration};
 
 /// Shared application state held by the axum router.
 pub struct AppState {
-    pub index_dir: PathBuf,
+    /// The information schema's versioned directory, which the site serves as its
+    /// data directory.
+    pub data_dir: PathBuf,
     pub providers: Providers,
     pub has_dbt_state: bool,
     pub do_not_track: bool,
     pub send_anonymous_usage_stats: bool,
-    /// Whether an index is actually loaded: `index_dir` exists and holds at
-    /// least one `*.parquet` file. Computed once at boot.
+    /// Whether data is actually loaded: `data_dir` exists and holds at least
+    /// one `*.parquet` file. Computed once at boot.
     pub project_loaded: bool,
-    /// RFC3339 timestamp of the loaded snapshot (`index_dir` mtime), or
-    /// `None` on empty-start. Computed once at boot; a staleness signal.
+    /// RFC3339 timestamp of the loaded snapshot (`data_dir` mtime), or `None`
+    /// on empty-start. Computed once at boot; a staleness signal.
     pub generation: Option<String>,
-    /// Sink for docs analytics events (`POST /api/v1/analytics/events`).
-    /// Production forwards to Vortex; tests inject a recording double.
-    pub analytics: Arc<dyn AnalyticsSink>,
 }
 
 pub type SharedState = Arc<AppState>;
 
-/// Gated feature surfaces — `true` only when the running distribution
-/// supports the feature. The UI reads this via `GET /api/v1/capabilities`
-/// to decide which features are enabled.
-#[derive(Debug, Clone, Serialize)]
-pub struct Capabilities {
-    pub has_column_lineage: bool,
-    pub has_dbt_state: bool,
-}
-
 impl AppState {
     pub fn new(
-        index_dir: PathBuf,
+        data_dir: PathBuf,
         providers: Providers,
         has_dbt_state: bool,
         send_anonymous_usage_stats: bool,
     ) -> Self {
         let do_not_track = std::env::var("DO_NOT_TRACK").as_deref() == Ok("1");
-        let project_loaded = Self::compute_project_loaded(&index_dir);
+        let project_loaded = Self::compute_project_loaded(&data_dir);
         let generation = if project_loaded {
-            Self::compute_generation(&index_dir)
+            Self::compute_generation(&data_dir)
         } else {
             None
         };
         Self {
-            index_dir,
+            data_dir,
             providers,
             has_dbt_state,
             do_not_track,
             send_anonymous_usage_stats,
             project_loaded,
             generation,
-            analytics: Arc::new(VortexSink),
         }
     }
 
@@ -98,13 +85,6 @@ impl AppState {
         self
     }
 
-    /// Inject a recording analytics sink for testing.
-    #[cfg(test)]
-    pub fn with_analytics(mut self, sink: Arc<dyn AnalyticsSink>) -> Self {
-        self.analytics = sink;
-        self
-    }
-
     pub fn dist_info(&self) -> DistInfo {
         self.providers.dist_info.dist_info()
     }
@@ -113,8 +93,10 @@ impl AppState {
         self.providers.dist_info.server_version()
     }
 
-    /// Server-authoritative telemetry fields hydrated onto docs analytics
-    /// events. Mirrors [`Self::dist_info`] / [`Self::server_version`].
+    /// Telemetry fields the build knows authoritatively. The server no longer
+    /// hydrates events with them — the export bakes them into the site's
+    /// bootstrap instead (ADR-10). Mirrors [`Self::dist_info`] /
+    /// [`Self::server_version`].
     pub fn telemetry_hydration(&self) -> TelemetryHydration {
         self.providers.dist_info.telemetry_hydration()
     }
@@ -125,12 +107,5 @@ impl AppState {
 
     pub fn has_dbt_state(&self) -> bool {
         self.has_dbt_state
-    }
-
-    pub fn capabilities(&self) -> Capabilities {
-        Capabilities {
-            has_column_lineage: self.has_column_lineage(),
-            has_dbt_state: self.has_dbt_state(),
-        }
     }
 }

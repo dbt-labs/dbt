@@ -1,7 +1,7 @@
 import { FC, ReactNode, useMemo, useState } from 'react';
+import { Search } from 'lucide-react';
 
-import { Input, RyeconMagnifyingGlass } from '@dbt-labs/sourdough';
-
+import { Input } from '../../components/ui/Input';
 import { ColumnCardShell } from './ColumnCardShell';
 
 export type ColumnItem = {
@@ -83,7 +83,7 @@ export const ColumnsView: FC<ColumnsViewProps> = ({
           className="my-4 mb-4 w-64"
           isEdit
           placeholder="Search for columns"
-          startIcon={{ ryecon: RyeconMagnifyingGlass }}
+          startIcon={{ icon: <Search className="size-3" /> }}
           onChange={(e) => setQuery(e.target.value)}
         />
       )}

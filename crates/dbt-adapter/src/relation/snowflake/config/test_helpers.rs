@@ -9,8 +9,13 @@ use dbt_schemas::schemas::{
 };
 use dbt_yaml::Spanned;
 
-use crate::{AdapterType, relation::snowflake::config::DescribeDynamicTableResults};
+use crate::{AdapterType, relation::snowflake::config::SnowflakeDescribeResults};
 
+/// Model-side config, i.e. what the user writes.
+///
+/// `default()` is NOT a valid dynamic-table config — `snowflake_warehouse` is required and
+/// defaults to `None`. For anything diff-related use `TestRemoteState`, not
+/// `make_remote_config`.
 #[derive(Debug, Default)]
 pub(crate) struct TestDynamicTableConfig {
     pub cluster_by: Option<ClusterConfig>,
@@ -20,44 +25,104 @@ pub(crate) struct TestDynamicTableConfig {
     pub row_access_policy: Option<&'static str>,
     pub scheduler: Option<&'static str>,
     pub snowflake_initialization_warehouse: Option<&'static str>,
-    pub snowflake_warehouse: &'static str,
+    pub snowflake_warehouse: Option<&'static str>,
     pub refresh_warehouse: Option<&'static str>,
     pub table_tag: Option<&'static str>,
     pub target_lag: Option<&'static str>,
     pub transient: Option<bool>,
+    pub copy_grants: Option<bool>,
 }
 
-pub(crate) fn make_remote_config(cfg: TestDynamicTableConfig) -> DescribeDynamicTableResults {
+/// Raw `SHOW ...` readback values, spelled exactly as Snowflake reports them.
+///
+/// Deliberately a separate struct from `TestDynamicTableConfig` (the model-side config),
+/// because Snowflake does not echo config back verbatim: e.g. `'60 seconds'` reads back as
+/// `'1 minute'`, `["id","val"]` as `(id, val)`.
+#[derive(Debug, Default)]
+pub(crate) struct TestRemoteState {
+    pub cluster_by: Option<String>,
+    pub immutable_where: Option<String>,
+    pub initialization_warehouse: Option<String>,
+    pub refresh_mode: Option<String>,
+    pub scheduler: Option<String>,
+    pub target_lag: Option<String>,
+    pub transient: Option<bool>,
+    /// `SHOW DYNAMIC TABLES` names this column `warehouse`; interactive names it
+    /// `refresh_warehouse`.
+    pub refresh_warehouse: Option<String>,
+}
+
+/// Readback shaped like `SHOW DYNAMIC TABLES`.
+pub(crate) fn make_remote_state(state: TestRemoteState) -> SnowflakeDescribeResults {
     let batch = record_batch!(
         ("name", Utf8, ["test_table"]),
         ("schema_name", Utf8, ["test_schema"]),
         ("database_name", Utf8, ["test_db"]),
         ("text", Utf8, [""]),
-        ("target_lag", Utf8, [cfg.target_lag]),
-        ("scheduler", Utf8, [cfg.scheduler]),
-        ("warehouse", Utf8, [cfg.snowflake_warehouse]),
-        ("refresh_mode", Utf8, [cfg.refresh_mode]),
+        ("target_lag", Utf8, [state.target_lag]),
+        ("scheduler", Utf8, [state.scheduler]),
+        ("warehouse", Utf8, [state.refresh_warehouse]),
+        ("refresh_mode", Utf8, [state.refresh_mode]),
         (
             "initialization_warehouse",
             Utf8,
-            [cfg.snowflake_initialization_warehouse]
+            [state.initialization_warehouse]
         ),
-        ("immutable_where", Utf8, [cfg.immutable_where]),
-        (
-            "cluster_by",
-            Utf8,
-            [cfg.cluster_by.map(|c| c.fields().join(", "))]
-        ),
-        ("transient", Boolean, [cfg.transient])
+        ("immutable_where", Utf8, [state.immutable_where]),
+        ("cluster_by", Utf8, [state.cluster_by]),
+        ("transient", Boolean, [state.transient])
     )
     .unwrap();
-    DescribeDynamicTableResults {
-        dynamic_table: std::sync::Arc::new(batch),
+    SnowflakeDescribeResults {
+        record_batch: std::sync::Arc::new(batch),
     }
+}
+
+/// Readback shaped like `SHOW INTERACTIVE TABLES` — a strictly reduced column set. There is
+/// no `warehouse`, `scheduler`, `refresh_mode`, `immutable_where` or `transient` column, so
+/// a component that reads one of those names must tolerate its absence (or be reading the
+/// wrong name).
+pub(crate) fn make_remote_interactive_state(state: TestRemoteState) -> SnowflakeDescribeResults {
+    let batch = record_batch!(
+        ("name", Utf8, ["test_table"]),
+        ("schema_name", Utf8, ["test_schema"]),
+        ("database_name", Utf8, ["test_db"]),
+        ("text", Utf8, [""]),
+        ("target_lag", Utf8, [state.target_lag]),
+        ("refresh_warehouse", Utf8, [state.refresh_warehouse]),
+        (
+            "initialization_warehouse",
+            Utf8,
+            [state.initialization_warehouse]
+        ),
+        ("cluster_by", Utf8, [state.cluster_by])
+    )
+    .unwrap();
+    SnowflakeDescribeResults {
+        record_batch: std::sync::Arc::new(batch),
+    }
+}
+
+/// Convenience wrapper for tests that only need the readback to echo the model config back
+/// verbatim.
+pub(crate) fn make_remote_config(cfg: TestDynamicTableConfig) -> SnowflakeDescribeResults {
+    make_remote_state(TestRemoteState {
+        cluster_by: cfg.cluster_by.map(|c| c.fields().join(", ")),
+        immutable_where: cfg.immutable_where.map(|s| s.to_owned()),
+        initialization_warehouse: cfg.snowflake_initialization_warehouse.map(|s| s.to_owned()),
+        refresh_mode: cfg.refresh_mode.map(|s| s.to_owned()),
+        scheduler: cfg.scheduler.map(|s| s.to_owned()),
+        target_lag: cfg.target_lag.map(|s| s.to_owned()),
+        transient: cfg.transient,
+        refresh_warehouse: cfg.snowflake_warehouse.map(|s| s.to_owned()),
+    })
 }
 
 pub(crate) fn make_local_config(cfg: TestDynamicTableConfig) -> DbtModel {
     let base_attrs = NodeBaseAttributes {
+        adapter: AdapterType::Snowflake,
+        propagate: Vec::new(),
+        effective_propagation_target: None,
         unrendered_config: Default::default(),
         database: "test_db".to_string(),
         schema: "test_schema".to_string(),
@@ -90,11 +155,12 @@ pub(crate) fn make_local_config(cfg: TestDynamicTableConfig) -> DbtModel {
         snowflake_initialization_warehouse: cfg
             .snowflake_initialization_warehouse
             .map(|s| s.to_owned()),
-        snowflake_warehouse: Some(cfg.snowflake_warehouse.to_owned()),
+        snowflake_warehouse: cfg.snowflake_warehouse.map(|s| s.to_owned()),
         refresh_warehouse: cfg.refresh_warehouse.map(|s| s.to_owned()),
         table_tag: cfg.table_tag.map(|s| s.to_owned()),
         target_lag: cfg.target_lag.map(|s| s.to_owned()),
         transient: cfg.transient,
+        copy_grants: cfg.copy_grants,
         ..Default::default()
     };
 

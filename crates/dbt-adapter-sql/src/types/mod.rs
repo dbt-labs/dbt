@@ -438,6 +438,8 @@ pub enum SqlType {
     IPv4,
     /// IPv6 (ClickHouse)
     IPv6,
+    /// HASHTYPE [ '(' n BYTE | n BIT ')' ] (Exasol; byte size, default 16)
+    HashType(Option<u32>),
     /// GEOMETRY [ '(' srid | 'ANY' ')' ]
     Geometry(Option<String>),
     /// GEOGRAPHY [ '(' srid | 'ANY' ')' ]
@@ -757,6 +759,63 @@ impl SqlType {
             (ClickHouse, IPv6) => write!(out, "IPv6"),
             // }}}
 
+            // Exasol {{{
+            // Strings and arbitrary bytes use VARCHAR, up to Exasol's
+            // 2,000,000-char maximum (CLOB / LONG VARCHAR are aliases of it).
+            (Exasol, Text | Clob | Blob | Binary(_)) => write!(out, "VARCHAR(2000000)"),
+            (Exasol, Varchar(max_len, attrs)) => {
+                // VARCHAR needs an explicit length; default to the maximum.
+                let len = max_len.unwrap_or(0);
+                let len = if len > 0 { len } else { 2_000_000 };
+                write!(out, "VARCHAR({len})")?;
+                if let Some(collate_spec) = &attrs.collate_spec {
+                    write!(out, " COLLATE {collate_spec}")?;
+                }
+                Ok(())
+            }
+            (Exasol, Real | HalfFloat | Float(_) | Double) => write!(out, "DOUBLE PRECISION"),
+            (
+                Exasol,
+                Timestamp {
+                    precision,
+                    time_zone_spec,
+                },
+            ) => {
+                write!(out, "TIMESTAMP")?;
+                if let Some(p) = precision {
+                    write!(out, "({p})")?;
+                }
+                // Exasol's only tz-aware timestamp is WITH LOCAL TIME ZONE.
+                if matches!(
+                    time_zone_spec,
+                    TimeZoneSpec::Local | TimeZoneSpec::With | TimeZoneSpec::Fixed(_)
+                ) {
+                    write!(out, " WITH LOCAL TIME ZONE")?;
+                }
+                Ok(())
+            }
+            // Time-of-day and datetime values both render as TIMESTAMP.
+            (Exasol, Time { precision, .. }) => {
+                write!(out, "TIMESTAMP")?;
+                if let Some(p) = precision {
+                    write!(out, "({p})")?;
+                }
+                Ok(())
+            }
+            (Exasol, DateTime) => write!(out, "TIMESTAMP"),
+            // Normalize to Exasol's two interval types.
+            (Exasol, Interval(qualifier)) => {
+                if matches!(
+                    qualifier,
+                    Some((DateTimeField::Year | DateTimeField::Month, _))
+                ) {
+                    write!(out, "INTERVAL YEAR TO MONTH")
+                } else {
+                    write!(out, "INTERVAL DAY TO SECOND")
+                }
+            }
+            // }}}
+
             // Generic SQL / Fallback logic {{{
             (_, Boolean) => write!(out, "BOOLEAN"),
             (_, TinyInt) => write!(out, "TINYINT"),
@@ -867,6 +926,13 @@ impl SqlType {
             (_, Uuid) => write!(out, "UUID"),
             (_, IPv4) => write!(out, "IPV4"),
             (_, IPv6) => write!(out, "IPV6"),
+            (_, HashType(byte_size)) => {
+                write!(out, "HASHTYPE")?;
+                if let Some(n) = byte_size {
+                    write!(out, "({n} BYTE)")?;
+                }
+                Ok(())
+            }
             (_, Geometry(srid)) => {
                 write!(out, "GEOMETRY")?;
                 if let Some(srid) = srid {
@@ -1037,6 +1103,15 @@ impl SqlType {
             },
             DataType::Time32(_) | DataType::Time64(_) => {
                 unreachable!("unexpected time unit in Arrow data type: {data_type:?}")
+            }
+            // BigQuery TIMESTAMP represents an absolute instant without a
+            // time-zone suffix in its SQL spelling. Arrow's time zone marks
+            // that distinction from BigQuery DATETIME.
+            DataType::Timestamp(_, Some(_)) if backend == AdapterType::Bigquery => {
+                SqlType::Timestamp {
+                    precision: None,
+                    time_zone_spec: TimeZoneSpec::Unspecified,
+                }
             }
             DataType::Timestamp(TimeUnit::Second, tz) => SqlType::Timestamp {
                 precision: None,
@@ -1329,6 +1404,17 @@ impl SqlType {
             // Bigquery floats are 64-bit
             // https://cloud.google.com/bigquery/docs/reference/standard-sql/data-types#floating_point_types
             (Bigquery, Real | Float(_) | Double) => DataType::Float64,
+
+            // Arrow has no native JSON or GEOGRAPHY types. Preserve their
+            // BigQuery identity using the distinct-type encoding understood by
+            // the adapter and fixture-rendering layers instead of collapsing
+            // both to Utf8.
+            (Bigquery, Json) => {
+                DataType::FixedSizeList(Arc::new(Field::new("json", DataType::Utf8, true)), 1)
+            }
+            (Bigquery, Geography(_)) => {
+                DataType::FixedSizeList(Arc::new(Field::new("geography", DataType::Utf8, true)), 1)
+            }
             // }}}
 
             // Databricks {{{
@@ -1685,6 +1771,8 @@ impl SqlType {
             (_, Enum(..)) => DataType::Utf8,
             (Snowflake, Variant) => DataType::Binary,
             (_, Variant) => DataType::Utf8,
+            // Exasol's ADBC driver (exarrow-rs) maps HASHTYPE values to Binary
+            (_, HashType(_)) => DataType::Binary,
             (_, Geometry(_)) => DataType::Utf8,
             (_, Geography(_)) => DataType::Utf8,
             (_, Array(Some(inner_sql_type))) => {
@@ -1827,7 +1915,7 @@ fn metadata_type_candidate_keys(backend: AdapterType) -> &'static [&'static str]
         AdapterType::Databricks => &DATABRICKS_KEYS,
         AdapterType::Spark => &SPARK_KEYS,
         AdapterType::Redshift => &REDSHIFT_KEYS,
-        AdapterType::DuckDB => &DUCKDB_KEYS,
+        AdapterType::DuckDB | AdapterType::LakeCompute => &DUCKDB_KEYS,
         AdapterType::Fabric => &SQLSERVER_KEYS,
         AdapterType::ClickHouse => &CLICKHOUSE_KEYS,
         AdapterType::Athena => &ATHENA_KEYS,
@@ -2838,6 +2926,22 @@ impl<'source> Parser<'source> {
                     SqlType::Jsonb
                 } else if eqi(w, "UUID") {
                     SqlType::Uuid
+                } else if eqi(w, "HASHTYPE") {
+                    // Exasol: HASHTYPE [(n BYTE | n BIT)], default 16 bytes
+                    let byte_size = if self.match_(Token::LParen) {
+                        let n = self.next_int::<u32>()?;
+                        let bits = self.match_word("BIT");
+                        if !bits {
+                            let _ = self.match_word("BYTE");
+                        }
+                        self.expect(Token::RParen)?;
+                        // Exasol only accepts BIT sizes that are multiples of 8,
+                        // so integer division is exact for server-emitted strings.
+                        Some(if bits { n / 8 } else { n })
+                    } else {
+                        None
+                    };
+                    SqlType::HashType(byte_size)
                 } else if eqi(w, "GEOMETRY") {
                     let srid = self.srid()?;
                     SqlType::Geometry(srid.map(str::to_string))

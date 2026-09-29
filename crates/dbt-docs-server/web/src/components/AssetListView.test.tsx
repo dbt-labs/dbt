@@ -2,10 +2,10 @@ import type { ComponentProps } from 'react';
 import { fireEvent, screen, within } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 
-import type { NodeSummary } from '../api';
 import type { AssetFilters } from '../App';
 import type { Project } from '../shared';
 import { renderWithProviders } from '../test/renderWithProviders';
+import type { NodeSummary } from '../types';
 import { AssetListView } from './AssetListView';
 
 const PROJECT: Project = { name: 'jaffle_shop' };

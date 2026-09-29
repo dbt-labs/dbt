@@ -6,6 +6,7 @@ use chrono::{Local, NaiveDate, NaiveTime, Timelike};
 use minijinja::arg_utils::{ArgParser, ArgsIter};
 use minijinja::{value::Object, Error, ErrorKind, Value};
 
+use crate::modules::py_datetime::find_microsecond_directive;
 use crate::modules::py_datetime::timedelta::PyTimeDelta;
 use crate::modules::pytz::PytzTimezone;
 
@@ -163,37 +164,20 @@ impl PyTime {
             )
         })?;
 
-        // Python's %f is microseconds (6 digits)
-        // We need to handle this specially since Chrono's %f equivalent is %N (nanoseconds, 9 digits)
-        if fmt.contains("%f") {
-            // First, format everything except %f
-            let mut result = String::new();
-            let mut remaining = fmt;
-
-            // Process the format string piece by piece
-            while let Some(pos) = remaining.find("%f") {
-                // Add everything before %f
-                let prefix = &remaining[..pos];
-                result.push_str(&self.time.format(prefix).to_string());
-
-                // Add microseconds (6 digits)
-                let microseconds = self.time.nanosecond() / 1000;
-                result.push_str(&format!("{microseconds:06}"));
-
-                // Continue with the rest of the string
-                remaining = &remaining[pos + 2..]; // +2 to skip "%f"
-            }
-
-            // Add any remaining part of the format string
-            if !remaining.is_empty() {
-                result.push_str(&self.time.format(remaining).to_string());
-            }
-
-            return Ok(Value::from(result));
+        // Python's `%f` is six zero-padded microsecond digits; chrono's `%f` is
+        // nine nanosecond digits. Format the surrounding pieces with chrono and
+        // write the microseconds ourselves.
+        let mut result = String::new();
+        let mut remaining = fmt;
+        while let Some(pos) = find_microsecond_directive(remaining) {
+            result.push_str(&self.time.format(&remaining[..pos]).to_string());
+            let microseconds = self.time.nanosecond() / 1_000;
+            result.push_str(&format!("{microseconds:06}"));
+            remaining = &remaining[pos + "%f".len()..];
         }
+        result.push_str(&self.time.format(remaining).to_string());
 
-        // If no %f in the format string, use Chrono's formatting directly
-        Ok(Value::from(self.time.format(fmt).to_string()))
+        Ok(Value::from(result))
     }
 
     fn replace(&self, args: &[Value]) -> Result<PyTime, Error> {

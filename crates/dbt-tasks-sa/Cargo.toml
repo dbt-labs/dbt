@@ -25,12 +25,15 @@ dbt-defer = { workspace = true }
 dbt-df-providers = { workspace = true }
 dbt-frontend-common = { workspace = true }
 dbt-fusion-workspace-hack = { version = "0.1" }
+dbt-index-core = { workspace = true }
 dbt-jinja-utils = { workspace = true }
 dbt-loader = { workspace = true }
 dbt-pretty-table = { workspace = true }
+dbt-runtime = { workspace = true }
 dbt-scheduler = { workspace = true }
 dbt-schema-store = { workspace = true }
 dbt-schemas = { workspace = true }
+dbt-state = { workspace = true }
 dbt-tasks-core = { workspace = true }
 dbt-telemetry = { workspace = true }
 dbt-yaml = { workspace = true }
@@ -64,3 +67,4 @@ doctest = false
 
 [dev-dependencies]
 dbt-test-primitives = { workspace = true }
+tempfile = { workspace = true }

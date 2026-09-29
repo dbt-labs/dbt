@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use dbt_clap_core::CliParserFactory as _;
 use dbt_features::cli::DefaultCliParserFactory;
+use dbt_features::feature_stack::FeatureStackConfig;
 use dbt_features::feature_stack_builder::FeatureStackBuilder;
 use dbt_features::tracing::TracingFeature;
 use dbt_test_utils::task::utils::exec_fs;
@@ -13,10 +14,11 @@ fn make_fs_command_fn() -> Arc<CommandFn> {
     let feature_stack = G_DBT_TEST_UTILS_FEATURE_STACK.get_or_init(|| {
         Arc::new(|tracing_config| {
             let tracing = TracingFeature::default().with_config_provider(tracing_config);
-            FeatureStackBuilder::new(tracing)
-                .send_anonymous_usage_stats(false)
-                .build()
-                .into()
+            let feature_stack = FeatureStackBuilder::new(tracing).build();
+            let config = FeatureStackConfig {
+                send_anonymous_usage_stats: false,
+            };
+            feature_stack.configure(&config).into()
         })
     });
 

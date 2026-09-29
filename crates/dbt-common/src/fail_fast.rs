@@ -91,7 +91,7 @@ mod tests {
 
     const TIMEOUT: Duration = Duration::from_millis(100);
 
-    #[tokio::test]
+    #[dbt_runtime::test]
     async fn subscribe_returns_immediately_when_already_triggered() {
         let signal = FailFast::new();
         signal.trigger();
@@ -103,7 +103,7 @@ mod tests {
         }
     }
 
-    #[tokio::test]
+    #[dbt_runtime::test]
     async fn subscribe_never_returns_if_flag_is_false() {
         let signal = FailFast::new();
         let result = tokio::time::timeout(TIMEOUT, signal.subscribe(false)).await;

@@ -11,7 +11,7 @@ use std::{
 use dbt_common::{
     ErrorCode, FsResult,
     cancellation::CancellationToken,
-    constants::{DBT_PROJECT_YML, DBT_TARGET_DIR_NAME},
+    constants::{DBT_INDEX_DIR_NAME, DBT_METADATA_DIR_NAME, DBT_PROJECT_YML, DBT_TARGET_DIR_NAME},
     err, fs_err,
     io_args::{EvalArgs, EvalArgsBuilder},
     lease,
@@ -54,8 +54,8 @@ pub async fn execute_clean_command(
     let env = initialize_load_jinja_environment(
         &dbt_state.dbt_profile.profile,
         &dbt_state.dbt_profile.target,
-        dbt_state.dbt_profile.db_config.adapter_type(),
-        dbt_state.dbt_profile.db_config.clone(),
+        dbt_state.dbt_profile.default_db_config().adapter_type(),
+        dbt_state.dbt_profile.default_db_config().clone(),
         dbt_state.run_started_at,
         &flags,
         invocation_args.warn_error_options.clone(),
@@ -106,7 +106,13 @@ pub async fn clean_project(
         })
         .collect::<Result<HashSet<_>, _>>()?;
 
-    paths_to_delete.insert(DbtPath::from(&arg.io.out_dir));
+    let out_dir = DbtPath::from(&arg.io.out_dir);
+    paths_to_delete.insert(out_dir.clone());
+    // Leftover public copies from before index/metadata moved under `private/`.
+    // Wiping `out_dir` already removes them; keep the paths explicit so a custom
+    // `clean-targets` that does not delete the whole target still hides them.
+    paths_to_delete.insert(out_dir.join(DBT_INDEX_DIR_NAME));
+    paths_to_delete.insert(out_dir.join(DBT_METADATA_DIR_NAME));
 
     let all_safe = paths_to_delete.iter().all(|path_to_delete| {
         // The clean command does not delete anything outside of the project directory
@@ -179,6 +185,15 @@ pub async fn clean_project(
 
     // Explicitly release to predictably wait for the lease internally to drop.
     target_guard.release().await;
+
+    // Remove the agent skills dbt installed into the provider directories. Only
+    // dbt's own installs are touched; anything the user authored is left alone.
+    if let Err(e) =
+        dbt_skills::prune_installed_skills(&arg.io.in_dir, dbt_project, arg.ai_provider.as_deref())
+    {
+        // A skill-pruning problem should not fail `dbt clean`; warn and move on.
+        emit_error_log_from_fs_error(*e);
+    }
 
     Ok(())
 }

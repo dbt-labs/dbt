@@ -1,14 +1,22 @@
 use std::fs;
 
 use crate::{
-    AdapterConfig, Auth, AuthError, AuthOutcome, PrivateKeySource, auth_configure_pipeline,
+    AdapterConfig, Auth, AuthError, AuthWarningPrinter, PrivateKeySource, auth_configure_pipeline,
 };
 use database::Builder as DatabaseBuilder;
 
 use dbt_adbc::salesforce::auth_type;
 use dbt_adbc::{Backend, database, salesforce};
 
-pub struct SalesforceAuth;
+pub struct SalesforceAuth {
+    pub warning_printer: Box<dyn AuthWarningPrinter>,
+}
+
+impl SalesforceAuth {
+    pub fn new(warning_printer: Box<dyn AuthWarningPrinter>) -> Self {
+        Self { warning_printer }
+    }
+}
 
 /// Salesforce authentication methods
 enum AuthMethod<'a> {
@@ -22,7 +30,11 @@ enum AuthMethod<'a> {
 }
 
 impl<'a> AuthMethod<'a> {
-    pub fn apply(self, mut builder: DatabaseBuilder) -> Result<DatabaseBuilder, AuthError> {
+    pub fn apply(
+        self,
+        mut builder: DatabaseBuilder,
+        _warning_printer: &dyn AuthWarningPrinter,
+    ) -> Result<DatabaseBuilder, AuthError> {
         match self {
             AuthMethod::JwtBearer { private_key } => {
                 builder.with_named_option(salesforce::AUTH_TYPE, auth_type::JWT)?;
@@ -46,7 +58,10 @@ impl<'a> AuthMethod<'a> {
     }
 }
 
-fn parse_auth<'a>(config: &'a AdapterConfig) -> Result<AuthMethod<'a>, AuthError> {
+fn parse_auth<'a>(
+    config: &'a AdapterConfig,
+    _warning_printer: &dyn AuthWarningPrinter,
+) -> Result<AuthMethod<'a>, AuthError> {
     let method = config.require_str("method")?;
 
     let auth_method = match method {
@@ -89,6 +104,7 @@ fn parse_auth<'a>(config: &'a AdapterConfig) -> Result<AuthMethod<'a>, AuthError
 fn apply_connection_args(
     config: &AdapterConfig,
     mut builder: DatabaseBuilder,
+    _warning_printer: &dyn AuthWarningPrinter,
 ) -> Result<DatabaseBuilder, AuthError> {
     for (opt_name, adbc_opt_name) in [
         ("username", salesforce::USERNAME),
@@ -107,8 +123,8 @@ impl Auth for SalesforceAuth {
         Backend::Salesforce
     }
 
-    fn configure(&self, config: &AdapterConfig) -> Result<AuthOutcome, AuthError> {
-        auth_configure_pipeline!(self.backend(), &config, parse_auth, apply_connection_args)
+    fn configure(&self, config: &AdapterConfig) -> Result<database::Builder, AuthError> {
+        auth_configure_pipeline!(self, &config, parse_auth, apply_connection_args)
     }
 }
 
@@ -129,10 +145,9 @@ mod tests {
             ("private_key".into(), "KEYDATA".into()),
         ]);
 
-        let builder = SalesforceAuth {}
+        let builder = SalesforceAuth::new(Box::new(crate::NoopAuthWarningPrinter))
             .configure(&AdapterConfig::new(config))
-            .expect("configure")
-            .builder;
+            .expect("configure");
 
         assert_eq!(
             other_option_value(&builder, salesforce::AUTH_TYPE).unwrap(),
@@ -155,7 +170,7 @@ mod tests {
             ("private_key_path".into(), "/tmp/key.pem".into()),
         ]);
 
-        let err = SalesforceAuth {}
+        let err = SalesforceAuth::new(Box::new(crate::NoopAuthWarningPrinter))
             .configure(&AdapterConfig::new(config))
             .expect_err("configure should fail");
         assert_contains!(

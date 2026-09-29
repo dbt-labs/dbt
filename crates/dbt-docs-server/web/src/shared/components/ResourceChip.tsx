@@ -1,14 +1,13 @@
-import { FC } from 'react';
+import { createElement, FC } from 'react';
 import { twMerge } from 'tailwind-merge';
 
 import {
-  backgroundColors,
-  DbtResourceIcon,
-  ResourceTypeExplorer,
-  WarehouseType,
-  warehouseTypes,
-} from '@dbt-labs/dbt-dag';
-
+  iconForType,
+  resourceTypeColor,
+  type ResourceTypeExplorer,
+  WAREHOUSE_TYPES,
+  type WarehouseType,
+} from '../../lib/resourceType';
 import { capitalizedResourceNames } from '../util/resourceType';
 import { DataPlatformChip } from './DataPlatformChip';
 
@@ -25,14 +24,14 @@ export const ResourceChip: FC<ResourceChipProps> = ({
 }) => {
   const classes = 'flex w-fit space-x-2 rounded px-2 py-1 text-xs';
 
-  if (warehouseTypes.includes(resourceType as WarehouseType)) {
+  if ((WAREHOUSE_TYPES as readonly string[]).includes(resourceType)) {
     return (
       <DataPlatformChip
         platform={resourceType as WarehouseType}
-        showText={true}
-        className={twMerge(classes, backgroundColors.column, className)}
+        className={twMerge(classes, 'text-bgMain', className)}
         bordered={false}
         {...props}
+        style={{ backgroundColor: resourceTypeColor('column') }}
       />
     );
   }
@@ -41,21 +40,16 @@ export const ResourceChip: FC<ResourceChipProps> = ({
     capitalizedResourceNames[resourceType as ResourceTypeExplorer];
   return (
     <div
-      className={twMerge(
-        classes,
-        backgroundColors[resourceType as ResourceTypeExplorer],
-        className,
-      )}
+      className={twMerge(classes, 'text-bgMain', className)}
       {...props}
+      style={{ backgroundColor: resourceTypeColor(resourceType) }}
     >
-      <DbtResourceIcon
-        resource={resourceType as ResourceTypeExplorer}
-        className="mt-0.5 align-middle"
-      />
+      {createElement(iconForType(resourceType), {
+        className: 'mt-0.5 align-middle',
+        size: 16,
+      })}
       {showText && (
-        <span className="align-middle font-normal leading-5 text-fgBlack">
-          {capitalizedName}
-        </span>
+        <span className="align-middle font-normal leading-5">{capitalizedName}</span>
       )}
     </div>
   );

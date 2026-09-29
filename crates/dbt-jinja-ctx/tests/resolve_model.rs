@@ -21,6 +21,7 @@ use dbt_jinja_ctx::{
 };
 use minijinja::Value as MinijinjaValue;
 use minijinja::machinery::Span;
+use minijinja::value::mutable_map::MutableMap;
 
 fn fixture_resolve_model_ctx() -> ResolveModelCtx {
     let mut model_inner: BTreeMap<String, MinijinjaValue> = BTreeMap::new();
@@ -47,7 +48,7 @@ fn fixture_resolve_model_ctx() -> ResolveModelCtx {
         config: MinijinjaValue::from("config-stub"),
         model: MinijinjaValue::from_object(model_inner),
         builtins: MinijinjaValue::from_object(builtins_inner),
-        graph: MinijinjaValue::UNDEFINED,
+        graph: MinijinjaValue::from_dyn_object(Arc::new(MutableMap::new())),
         store_result: MinijinjaValue::from("store-result-stub"),
         load_result: MinijinjaValue::from("load-result-stub"),
         store_raw_result: MinijinjaValue::from("store-raw-result-stub"),
@@ -155,15 +156,31 @@ fn target_unique_id_serializes_as_string_value() {
     assert_eq!(value.as_str(), Some("my_project.dbt_columns"));
 }
 
+/// `graph` must survive registration as the *same* interior-mutable map
+/// object, not a serde-rematerialized copy: parse-time macros stash scratch
+/// state on it and read it back from a later render. dbt-labs/fs#13454.
 #[test]
-fn graph_is_undefined_at_resolve_model() {
+fn graph_is_a_shared_mutable_mapping_at_resolve_model() {
     let ctx = fixture_resolve_model_ctx();
     let registered = to_jinja_btreemap(&ctx);
     let graph = registered.get("graph").expect("graph must be registered");
-    assert!(
-        graph.is_undefined(),
-        "graph must be Value::UNDEFINED at parse-model scope; the real \
-         flat graph is set at compile time"
+    let map = graph
+        .as_object()
+        .and_then(|obj| obj.downcast_ref::<MutableMap>())
+        .expect("graph must register as a MutableMap");
+    assert_eq!(
+        map.keys().len(),
+        0,
+        "graph starts empty at parse-model scope"
+    );
+    map.insert(MinijinjaValue::from("scratch"), MinijinjaValue::from(1));
+    assert_eq!(
+        registered
+            .get("graph")
+            .and_then(|g| g.get_attr("scratch").ok())
+            .and_then(|v| v.as_i64()),
+        Some(1),
+        "a write through the registered graph must be visible on re-read"
     );
 }
 

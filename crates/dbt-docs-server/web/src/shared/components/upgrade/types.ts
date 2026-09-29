@@ -25,11 +25,11 @@ export type UpgradeHookKind =
  * flag is sourced separately (defaults `false`, i.e. "always upsell").
  */
 export type UserState =
-  /** OSS dbt user, Fusion binary not installed. */
+  /** OSS dbt user, dbt v2 binary not installed. */
   | 'core'
-  /** Fusion binary installed but not authenticated. */
+  /** dbt v2 binary installed but not authenticated. */
   | 'proprietary-anon'
-  /** Fusion + logged in (implied by `has_column_lineage = true` in the v1 BE). */
+  /** dbt v2 + logged in (implied by `has_column_lineage = true` in the v1 BE). */
   | 'proprietary-logged-in'
   /** Internal "full platform" — docs are embedded via the Catalog app. */
   | 'via-catalog';
@@ -71,7 +71,7 @@ export type CopySpec =
       cta: CopyCta;
       /** When true, render the title with a "is ON" suffix and a green
        *  status dot instead of the muted dot. Used for the CLL row on
-       *  Fusion logged-in. */
+       *  dbt v2 logged-in. */
       onState?: boolean;
     };
 

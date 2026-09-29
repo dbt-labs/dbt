@@ -31,9 +31,9 @@
 {% macro alter_set_tags(relation, tags) -%}
   {#- DIVERGENCE BEGIN: upstream uses relation.type.render(); we use render_type() Jinja macro instead -#}
   ALTER {{ render_type(relation.type) }} {{ relation.render() }} SET TAGS (
-  {#- DIVERGENCE END -#}
     {% for tag in tags -%}
       '{{ tag }}' = '{{ tags[tag] }}' {%- if not loop.last %}, {% endif -%}
     {%- endfor %}
   )
+  {#- DIVERGENCE END -#}
 {%- endmacro -%}

@@ -5,7 +5,7 @@ expression: schema
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "title": "ResolveModelCtx",
-  "description": "Per-model overlay layered onto [`ResolveBaseCtx`] for each model SQL render. Today's `build_resolve_model_context<T>` populates this 1:1 — 17 keys total, same field-key strings (including the underscore-decorated `__dbt_target_unique_id__` / `__dbt_current_path__` / `__dbt_current_span__` constants).\n\nEvery `Object`-typed field is typed [`MinijinjaValue`] (wrapped at construction site via `MinijinjaValue::from_object(...)` / `MinijinjaValue::from_function(closure)`) rather than a concrete type going through serde. Two reasons:\n\n1. The Object impls (`ResolveRefFunction<T>`, `ParseConfig<T>`, `ResolveSourceFunction<T>`, `ResolveFunctionFunction<T>`, `ParseExecute`, `ParseMetricReference`, `MacroLookupContext`) live in `dbt-jinja-utils`; this crate can't depend on them. A later PR moves them here and tightens to `JinjaObject<…>`. 2. `builtins` is constructed via `Value::from_object(BTreeMap<String, MinijinjaValue>)` and downstream code downcasts via `.downcast_ref::<BTreeMap<String, MinijinjaValue>>()`. Going through serde would produce a `MutableMap<Value, Value>` instead and silently break the downcast — same trap PR 3 hit with `MACRO_DISPATCH_ORDER`'s `Vec<String>` values.",
+  "description": "Per-model overlay layered onto [`ResolveBaseCtx`] for each model SQL render. Today's `build_resolve_model_context<T>` populates this 1:1 — 17 keys total, same field-key strings (including the underscore-decorated `__dbt_target_unique_id__` / `__dbt_current_path__` / `__dbt_current_span__` constants).\n\nEvery `Object`-typed field is typed [`MinijinjaValue`] (wrapped at construction site via `MinijinjaValue::from_object(...)` / `MinijinjaValue::from_function(closure)`) rather than a concrete type going through serde. Two reasons:\n\n1. The Object impls (`ResolveRefFunction<T>`, `ParseConfig<T>`, `ResolveSourceFunction<T>`, `ResolveFunctionFunction<T>`, `ResolveMetricFunction<T>`, `ParseExecute`, `ParseMetricReference`, `MacroLookupContext`) live in `dbt-jinja-utils`; this crate can't depend on them. A later PR moves them here and tightens to `JinjaObject<…>`. 2. `builtins` is constructed via `Value::from_object(BTreeMap<String, MinijinjaValue>)` and downstream code downcasts via `.downcast_ref::<BTreeMap<String, MinijinjaValue>>()`. Going through serde would produce a `MutableMap<Value, Value>` instead and silently break the downcast — same trap PR 3 hit with `MACRO_DISPATCH_ORDER`'s `Vec<String>` values.",
   "type": "object",
   "required": [
     "TARGET_UNIQUE_ID",
@@ -39,7 +39,7 @@ expression: schema
       "description": "`{{ __minijinja_current_span }}` — span at the start of rendering (typically `minijinja::machinery::Span::default()`). Key string matches `minijinja::constants::CURRENT_SPAN`.\n\nWrapped as `MinijinjaValue::from_serialize(Span::default())` at the call site rather than typed as the concrete `Span` here, because the `Span` type lives in `minijinja::machinery` (private to the runtime) and we want to keep this crate's view of it opaque."
     },
     "builtins": {
-      "description": "`{{ builtins.* }}` — `BTreeMap<String, MinijinjaValue>` Object holding `ref` / `source` / `function` / `config`. Compile/run-phase code downcasts this to `BTreeMap<String, MinijinjaValue>` to overlay per-node validations."
+      "description": "`{{ builtins.* }}` — `BTreeMap<String, MinijinjaValue>` Object holding `ref` / `source` / `function` / `metric` / `config`. Compile/run-phase code downcasts this to `BTreeMap<String, MinijinjaValue>` to overlay per-node validations."
     },
     "config": {
       "description": "`{{ config(...) }}` — `ParseConfig<T>` Object."
@@ -64,13 +64,13 @@ expression: schema
       "description": "`{{ function(...) }}` — `ResolveFunctionFunction<T>` Object."
     },
     "graph": {
-      "description": "`{{ graph }}` — `Value::UNDEFINED` at parse-model scope; the real flat graph is set at compile time."
+      "description": "`{{ graph }}` — the invocation-wide mutable mapping, empty at parse-model scope; the flat graph is merged into that same mapping at compile time. Mirrors dbt-core, where `graph` is `manifest.flat_graph`: one dict for the whole invocation, `{}` until `build_flat_graph()` runs, so macros can use it as scratch state throughout. dbt-labs/fs#13454."
     },
     "load_result": {
       "description": "`{{ load_result(...) }}` — `ResultStore`-backed closure."
     },
     "metric": {
-      "description": "`{{ metric(...) }}` — closure that records `SqlResource::Metric`."
+      "description": "`{{ metric(...) }}` — `ResolveMetricFunction<T>` Object that records `SqlResource::Metric`."
     },
     "model": {
       "description": "`{{ model.* }}` — mutable dict-compatible Object backing the parse-time stub model dict (built via `convert_yml_to_value_map` plus a serialized merged config). Downstream adapter code reads via `state.lookup(\"model\").get_attr(...)`."

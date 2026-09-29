@@ -16,72 +16,113 @@
 use crate::AuthError;
 use crate::config::{AdapterConfig, YmlValue};
 
-// ---------------------------------------------------------------------------
-// Parsed types
-// ---------------------------------------------------------------------------
+/// Borrows a resolved `motherduck_token` just long enough to render it.
+struct MotherDuckToken<'a>(&'a str);
 
-#[derive(serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Attachment {
-    path: String,
-    alias: Option<String>,
-    #[serde(rename = "type")]
-    db_type: Option<String>,
-    #[serde(default)]
-    read_only: bool,
+impl MotherDuckToken<'_> {
+    fn render(&self) -> String {
+        format!("SET motherduck_token = '{}'", escape_single_quotes(self.0))
+    }
 }
 
-enum DuckDbPath {
-    Memory,
-    Local,
+pub enum DuckDbTarget<'a> {
+    /// Local or in-memory database.
+    Plain {
+        /// Corresponds to `path:` in the profile, or `:memory:`.
+        path: &'a str,
+    },
+    /// MotherDuck database, no token resolved.
     MotherDuck {
         /// Attach path with query parameters stripped.
         path: String,
-        /// Database alias (from `database` config or derived from path).
-        alias: String,
-        /// Token, if resolved.
-        token: Option<String>,
+        /// The identifier used in `ATTACH ... AS <database_name>`.
+        database_name: String,
+    },
+    /// MotherDuck database, with a resolved `motherduck_token`.
+    MotherDuckWithToken {
+        /// Attach path with query parameters stripped.
+        path: String,
+        /// The identifier used in `ATTACH ... AS <database_name>`.
+        database_name: String,
+        token: String,
     },
 }
 
-impl DuckDbPath {
-    fn resolve(config: &AdapterConfig) -> Self {
+impl<'a> DuckDbTarget<'a> {
+    pub fn from_config(config: &'a AdapterConfig) -> Result<Self, AuthError> {
         let raw = config
             .get("path")
             .and_then(|v| v.as_str())
             .unwrap_or_default();
 
-        if raw.is_empty() || raw == ":memory:" {
-            return DuckDbPath::Memory;
-        }
+        match raw.to_lowercase().split_once(':') {
+            Some(("md" | "motherduck", _)) => {
+                let path = Self::attach_path(raw);
 
-        if !is_motherduck_path(raw) {
-            return DuckDbPath::Local;
-        }
+                let database_name = config
+                    .get("database")
+                    .and_then(|v| v.as_str())
+                    .map(sanitize_identifier)
+                    .filter(|s| !s.is_empty())
+                    .or_else(|| {
+                        let derived = sanitize_identifier(&Self::database_name(raw));
+                        (!derived.is_empty()).then_some(derived)
+                    })
+                    // https://github.com/duckdb/dbt-duckdb/blob/67b43f1f86ef6b4252b184ebeb00b750a7e9a513/dbt/adapters/duckdb/credentials.py#L339
+                    .unwrap_or_else(|| "my_db".to_owned());
 
-        let path = Self::attach_path(raw);
-
-        let alias = {
-            let from_config = config
-                .get("database")
-                .and_then(|v| v.as_str())
-                .map(sanitize_identifier)
-                .unwrap_or_default();
-            if from_config.is_empty() {
-                let derived = sanitize_identifier(&Self::database_name(raw));
-                if derived.is_empty() {
-                    "my_db".to_owned()
-                } else {
-                    derived
-                }
-            } else {
-                from_config
+                Ok(match Self::resolve_token(raw, config) {
+                    Some(token) => DuckDbTarget::MotherDuckWithToken {
+                        path,
+                        database_name,
+                        token,
+                    },
+                    None => DuckDbTarget::MotherDuck {
+                        path,
+                        database_name,
+                    },
+                })
             }
-        };
+            // Matches upstream dbt-duckdb: `database:` for a local/in-memory
+            // connection must match the name DuckDB derives from `path`, else
+            // it's a hard config error (no aliasing on the primary connection).
+            _ => {
+                let path = match raw {
+                    "" | ":memory:" => ":memory:",
+                    _ => raw,
+                };
+                // `ducklake:` is a transparent prefix over the real path for
+                // database-name derivation purposes (matches upstream).
+                let derivation_path = path.strip_prefix("ducklake:").unwrap_or(path);
+                let base = derivation_path
+                    .rsplit(['/', '\\'])
+                    .next()
+                    .unwrap_or(derivation_path);
+                let derived = if derivation_path == ":memory:" {
+                    "memory"
+                } else {
+                    match base.rsplit_once('.') {
+                        Some((stem, _)) if !stem.is_empty() => stem,
+                        _ => base,
+                    }
+                };
 
-        let token = Self::resolve_token(raw, config);
-
-        DuckDbPath::MotherDuck { path, alias, token }
+                match config.get("database").and_then(|v| v.as_str()) {
+                    None | Some("") => Ok(DuckDbTarget::Plain { path }),
+                    Some(requested) if requested == derived => Ok(DuckDbTarget::Plain { path }),
+                    Some(requested) if requested.eq_ignore_ascii_case("main") => {
+                        Err(AuthError::config(
+                            "database: 'main' is invalid. 'main' is DuckDB's reserved default database name"
+                                .to_owned(),
+                        ))
+                    }
+                    Some(_) => Err(AuthError::config(format!(
+                        "Inconsistency detected between 'path' and 'database' fields in profile; \
+                         the 'database' property must be set to '{derived}' to match the 'path'"
+                    ))),
+                }
+            }
+        }
     }
 
     fn resolve_token(path: &str, config: &AdapterConfig) -> Option<String> {
@@ -131,12 +172,7 @@ impl DuckDbPath {
             path
         };
 
-        let name = stripped.split('?').next().unwrap_or("");
-        if name.is_empty() {
-            "my_db".to_owned()
-        } else {
-            name.to_owned()
-        }
+        stripped.split('?').next().unwrap_or("").to_owned()
     }
 
     /// Strip URL query parameters from a MotherDuck attach path.
@@ -147,144 +183,55 @@ impl DuckDbPath {
     }
 }
 
-/// All parsed inputs needed to generate init SQL.
-struct DuckDbInitInputs {
-    path: DuckDbPath,
-    extensions: Vec<String>,
-    secrets: Vec<String>,
-    // FIXME: settings is raw YAML key/value pairs with no validation — same problem
-    // secrets had before. Should be replaced with a typed struct of known DuckDB
-    // settings so unknown keys are rejected at parse time.
-    settings: Vec<(String, YmlValue)>,
-    attachments: Vec<Attachment>,
+struct Extensions<'a> {
+    names: Vec<&'a str>,
 }
 
-// ---------------------------------------------------------------------------
-// Parse
-// ---------------------------------------------------------------------------
-
-fn read_init_inputs(config: &AdapterConfig) -> Result<DuckDbInitInputs, AuthError> {
-    let path = DuckDbPath::resolve(config);
-
-    let extensions = {
+impl<'a> Extensions<'a> {
+    fn from_config(config: &'a AdapterConfig) -> Result<Self, AuthError> {
         match config.get("extensions") {
-            None => vec![],
             Some(YmlValue::Sequence(seq, _)) => {
-                let mut result = Vec::with_capacity(seq.len());
-                for (i, item) in seq.iter().enumerate() {
-                    match item.as_str() {
-                        Some(s) => result.push(s.to_owned()),
-                        None => {
-                            return Err(AuthError::config(format!(
+                let names = seq
+                    .iter()
+                    .enumerate()
+                    .map(|(i, item)| {
+                        item.as_str().ok_or_else(|| {
+                            AuthError::config(format!(
                                 "extensions: item {i} must be a string, got {item:?}"
-                            )));
-                        }
-                    }
-                }
-                result
+                            ))
+                        })
+                    })
+                    .collect::<Result<_, _>>()?;
+                Ok(Extensions { names })
             }
-            Some(other) => {
-                return Err(AuthError::config(format!(
-                    "extensions: expected a sequence, got {other:?}"
-                )));
-            }
+            None => Ok(Extensions { names: vec![] }),
+            Some(other) => Err(AuthError::config(format!(
+                "extensions: expected a sequence, got {other:?}"
+            ))),
         }
-    };
+    }
 
-    let secrets = {
-        match config.get("secrets") {
-            None => vec![],
-            Some(YmlValue::Sequence(seq, _)) => seq
-                .iter()
-                .enumerate()
-                .filter_map(|(i, item)| render_secret_untyped(item, i))
-                .collect(),
-            Some(other) => {
-                return Err(AuthError::config(format!(
-                    "secrets: expected a sequence, got {other:?}"
-                )));
-            }
-        }
-    };
-
-    let settings = {
-        match config.get("settings") {
-            None => vec![],
-            Some(YmlValue::Mapping(map, _)) => {
-                let mut result = Vec::with_capacity(map.len());
-                for (k, v) in map.iter() {
-                    let key = match k.as_str() {
-                        Some(s) => s,
-                        None => continue,
-                    };
-                    // motherduck_token is emitted separately as a SET statement
-                    // only for MotherDuck paths; skip it from the general settings.
-                    if key == "motherduck_token" {
-                        continue;
-                    }
-                    result.push((key.to_owned(), v.clone()));
-                }
-                result
-            }
-            Some(other) => {
-                return Err(AuthError::config(format!(
-                    "settings: expected a mapping, got {other:?}"
-                )));
-            }
-        }
-    };
-
-    let attachments = {
-        match config.get("attach") {
-            None => vec![],
-            Some(YmlValue::Sequence(seq, _)) => {
-                let mut result = Vec::with_capacity(seq.len());
-                for (i, item) in seq.iter().enumerate() {
-                    let attachment: Attachment = dbt_yaml::from_value(item.clone())
-                        .map_err(|e| AuthError::config(format!("attach: item {i}: {e}")))?;
-                    result.push(attachment);
-                }
-                result
-            }
-            Some(other) => {
-                return Err(AuthError::config(format!(
-                    "attach: expected a sequence, got {other:?}"
-                )));
-            }
-        }
-    };
-
-    Ok(DuckDbInitInputs {
-        path,
-        extensions,
-        secrets,
-        settings,
-        attachments,
-    })
-}
-
-// ---------------------------------------------------------------------------
-// Statement types
-// ---------------------------------------------------------------------------
-
-struct ExtensionStatements {
-    names: Vec<String>,
-}
-
-impl ExtensionStatements {
-    /// Build from an explicit list of extension names (local/memory paths).
-    fn from_config(extensions: &[String]) -> Self {
-        let names = extensions
+    /// `INSTALL`/`LOAD` for the configured extensions (local/memory paths).
+    fn render(&self) -> Vec<String> {
+        let names: Vec<String> = self
+            .names
             .iter()
             .map(|s| sanitize_identifier(s))
             .filter(|s| !s.is_empty())
             .collect();
-        Self { names }
+
+        let mut out = Vec::with_capacity(names.len() * 2);
+        for name in &names {
+            out.push(format!("INSTALL {name}"));
+            out.push(format!("LOAD {name}"));
+        }
+        out
     }
 
-    /// Build with auto-injected `motherduck` (MotherDuck paths).
-    fn with_motherduck(extensions: &[String]) -> Self {
-        let has_motherduck = extensions
+    /// Same as [`Self::render`], with `motherduck` auto-injected if absent.
+    fn render_with_motherduck(&self) -> Vec<String> {
+        let has_motherduck = self
+            .names
             .iter()
             .any(|s| s.eq_ignore_ascii_case("motherduck"));
 
@@ -293,18 +240,15 @@ impl ExtensionStatements {
         } else {
             vec!["motherduck".to_owned()]
         };
-        for ext in extensions {
+        for ext in &self.names {
             let sanitized = sanitize_identifier(ext);
             if !sanitized.is_empty() {
                 names.push(sanitized);
             }
         }
-        Self { names }
-    }
 
-    fn render(&self) -> Vec<String> {
-        let mut out = Vec::with_capacity(self.names.len() * 2);
-        for name in &self.names {
+        let mut out = Vec::with_capacity(names.len() * 2);
+        for name in &names {
             out.push(format!("INSTALL {name}"));
             out.push(format!("LOAD {name}"));
         }
@@ -312,106 +256,119 @@ impl ExtensionStatements {
     }
 }
 
-// FIXME: replace with typed Secret variants per issue #7834 (S3, GCS, R2, Azure, HuggingFace).
-// Currently passes all unknown fields through as SQL params, same as the original main logic.
-fn render_secret_untyped(item: &YmlValue, i: usize) -> Option<String> {
-    let YmlValue::Mapping(map, _) = item else {
-        return None;
-    };
-    let secret_type = sanitize_identifier(map.get("type").and_then(|v| v.as_str())?);
-    let name = map
-        .get("name")
-        .and_then(|v| v.as_str())
-        .map(sanitize_identifier)
-        .unwrap_or_else(|| format!("__dbt_secret_{i}"));
-    let persistent = map
-        .get("persistent")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
-    let persist_kw = if persistent { " PERSISTENT" } else { "" };
+struct Secrets<'a> {
+    items: Vec<&'a YmlValue>,
+}
 
-    let mut params = vec![format!("TYPE {secret_type}")];
-    if let Some(provider) = map.get("provider").and_then(|v| v.as_str()) {
-        params.push(format!("PROVIDER {}", sanitize_identifier(provider)));
-    }
-    if let Some(scope) = map.get("scope").and_then(|v| v.as_str()) {
-        params.push(format!("SCOPE '{}'", escape_single_quotes(scope)));
-    }
-    const RESERVED: &[&str] = &["type", "name", "persistent", "provider", "scope"];
-    for (k, v) in map.iter() {
-        if let Some(key) = k.as_str().filter(|k| !RESERVED.contains(k)) {
-            let key_upper = sanitize_identifier(key).to_uppercase();
-            if !key_upper.is_empty() {
-                params.push(format!("{key_upper} {}", yml_value_to_sql_literal(v)));
-            }
+impl<'a> Secrets<'a> {
+    fn from_config(config: &'a AdapterConfig) -> Result<Self, AuthError> {
+        match config.get("secrets") {
+            Some(YmlValue::Sequence(seq, _)) => Ok(Secrets {
+                items: seq.iter().collect(),
+            }),
+            None => Ok(Secrets { items: vec![] }),
+            Some(other) => Err(AuthError::config(format!(
+                "secrets: expected a sequence, got {other:?}"
+            ))),
         }
     }
-    Some(format!(
-        "CREATE OR REPLACE{persist_kw} SECRET {name} ({})",
-        params.join(", ")
-    ))
-}
 
-struct SecretStatements {
-    secrets: Vec<String>,
-}
-
-impl SecretStatements {
-    fn new(secrets: Vec<String>) -> Self {
-        Self { secrets }
-    }
-
+    // FIXME: replace with typed Secret variants per issue #7834 (S3, GCS, R2, Azure, HuggingFace).
+    // Currently passes all unknown fields through as SQL params, same as the original main logic.
     fn render(&self) -> Vec<String> {
-        self.secrets.clone()
+        self.items
+            .iter()
+            .enumerate()
+            .filter_map(|(i, item)| {
+                let YmlValue::Mapping(map, _) = item else {
+                    return None;
+                };
+                let secret_type = sanitize_identifier(map.get("type").and_then(|v| v.as_str())?);
+                let name = map
+                    .get("name")
+                    .and_then(|v| v.as_str())
+                    .map(sanitize_identifier)
+                    .unwrap_or_else(|| format!("__dbt_secret_{i}"));
+                let persistent = map
+                    .get("persistent")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                let persist_kw = if persistent { " PERSISTENT" } else { "" };
+
+                let mut params = vec![format!("TYPE {secret_type}")];
+                if let Some(provider) = map.get("provider").and_then(|v| v.as_str()) {
+                    params.push(format!("PROVIDER {}", sanitize_identifier(provider)));
+                }
+                if let Some(scope) = map.get("scope").and_then(|v| v.as_str()) {
+                    params.push(format!("SCOPE '{}'", escape_single_quotes(scope)));
+                }
+                const RESERVED: &[&str] = &["type", "name", "persistent", "provider", "scope"];
+                for (k, v) in map.iter() {
+                    if let Some(key) = k.as_str().filter(|k| !RESERVED.contains(k)) {
+                        let key_upper = sanitize_identifier(key).to_uppercase();
+                        if !key_upper.is_empty() {
+                            params.push(format!("{key_upper} {}", yml_value_to_sql_literal(v)));
+                        }
+                    }
+                }
+                Some(format!(
+                    "CREATE OR REPLACE{persist_kw} SECRET {name} ({})",
+                    params.join(", ")
+                ))
+            })
+            .collect()
     }
 }
 
-struct TokenStatement {
-    token: String,
+// FIXME: validate settings at parse time, like secrets.
+struct Settings<'a> {
+    keys: Vec<String>,
+    values: Vec<&'a YmlValue>,
 }
 
-impl TokenStatement {
-    fn new(token: String) -> Self {
-        Self { token }
-    }
-
-    fn render(&self) -> Vec<String> {
-        vec![format!(
-            "SET motherduck_token = '{}'",
-            escape_single_quotes(&self.token)
-        )]
-    }
-}
-
-struct SettingStatements {
-    settings: Vec<(String, YmlValue)>,
-}
-
-impl SettingStatements {
-    fn new(settings: Vec<(String, YmlValue)>) -> Self {
-        Self { settings }
-    }
-
-    fn render(&self) -> Vec<String> {
-        let mut out = Vec::with_capacity(self.settings.len());
-        for (key, value) in &self.settings {
-            let k = sanitize_identifier(key);
-            if k.is_empty() {
-                continue;
+impl<'a> Settings<'a> {
+    fn from_config(config: &'a AdapterConfig) -> Result<Self, AuthError> {
+        match config.get("settings") {
+            Some(YmlValue::Mapping(map, _)) => {
+                let (keys, values) = map
+                    .iter()
+                    .filter_map(|(k, value)| k.as_str().map(|key| (key, value)))
+                    .filter(|(key, _)| *key != "motherduck_token")
+                    .filter_map(|(key, value)| {
+                        let key = sanitize_identifier(key);
+                        (!key.is_empty()).then_some((key, value))
+                    })
+                    .unzip();
+                Ok(Settings { keys, values })
             }
-            out.push(format!("SET {k} = {}", yml_value_to_sql_literal(value)));
+            None => Ok(Settings {
+                keys: vec![],
+                values: vec![],
+            }),
+            Some(other) => Err(AuthError::config(format!(
+                "settings: expected a mapping, got {other:?}"
+            ))),
         }
-        out
+    }
+
+    fn render(&self) -> Vec<String> {
+        debug_assert_eq!(self.keys.len(), self.values.len());
+        self.keys
+            .iter()
+            .zip(self.values.iter())
+            .map(|(key, value)| format!("SET {key} = {}", yml_value_to_sql_literal(value)))
+            .collect()
     }
 }
 
-struct MotherDuckAttach {
-    path: String,
-    alias: String,
+/// The profile's own primary catalog (`path:`/`database:`).
+struct PrimaryAttach<'a> {
+    path: &'a str,
+    alias: &'a str,
 }
 
-impl MotherDuckAttach {
-    fn new(path: String, alias: String) -> Self {
+impl<'a> PrimaryAttach<'a> {
+    fn new(path: &'a str, alias: &'a str) -> Self {
         Self { path, alias }
     }
 
@@ -419,53 +376,123 @@ impl MotherDuckAttach {
         vec![
             format!(
                 "ATTACH IF NOT EXISTS '{}' AS {}",
-                escape_single_quotes(&self.path),
-                self.alias,
+                escape_single_quotes(self.path),
+                self.alias
             ),
             format!("USE {}", self.alias),
         ]
     }
 }
 
-struct AttachmentStatements {
-    attachments: Vec<Attachment>,
+const ATTACHMENT_FIELDS: &[&str] = &["path", "alias", "type", "read_only"];
+
+struct Attachments<'a> {
+    paths: Vec<&'a str>,
+    aliases: Vec<Option<String>>,
+    db_types: Vec<Option<String>>,
+    read_onlys: Vec<bool>,
 }
 
-impl AttachmentStatements {
-    fn new(attachments: Vec<Attachment>) -> Self {
-        Self { attachments }
+impl<'a> Attachments<'a> {
+    fn from_config(config: &'a AdapterConfig) -> Result<Self, AuthError> {
+        match config.get("attach") {
+            Some(YmlValue::Sequence(seq, _)) => {
+                let mut paths = Vec::with_capacity(seq.len());
+                let mut aliases = Vec::with_capacity(seq.len());
+                let mut db_types = Vec::with_capacity(seq.len());
+                let mut read_onlys = Vec::with_capacity(seq.len());
+
+                for (i, item) in seq.iter().enumerate() {
+                    let YmlValue::Mapping(map, _) = item else {
+                        return Err(AuthError::config(format!(
+                            "attach: item {i} must be a mapping, got {item:?}"
+                        )));
+                    };
+                    if let Some(unknown) = map
+                        .iter()
+                        .filter_map(|(k, _)| k.as_str())
+                        .find(|k| !ATTACHMENT_FIELDS.contains(k))
+                    {
+                        return Err(AuthError::config(format!(
+                            "attach: item {i}: unknown field '{unknown}'"
+                        )));
+                    }
+                    let path = map.get("path").and_then(|v| v.as_str()).ok_or_else(|| {
+                        AuthError::config(format!(
+                            "attach: item {i}: missing required field 'path'"
+                        ))
+                    })?;
+
+                    let sanitized_field = |key: &str| -> Result<Option<String>, AuthError> {
+                        let Some(raw) = map.get(key).and_then(|v| v.as_str()) else {
+                            return Ok(None);
+                        };
+                        let sanitized = sanitize_identifier(raw);
+                        if sanitized.is_empty() {
+                            return Err(AuthError::config(format!(
+                                "attach: item {i}: {key} '{raw}' sanitizes to an empty identifier"
+                            )));
+                        }
+                        Ok(Some(sanitized))
+                    };
+
+                    paths.push(path);
+                    aliases.push(sanitized_field("alias")?);
+                    db_types.push(sanitized_field("type")?);
+                    read_onlys.push(
+                        map.get("read_only")
+                            .and_then(|v| v.as_bool())
+                            .unwrap_or(false),
+                    );
+                }
+
+                Ok(Attachments {
+                    paths,
+                    aliases,
+                    db_types,
+                    read_onlys,
+                })
+            }
+            None => Ok(Attachments {
+                paths: vec![],
+                aliases: vec![],
+                db_types: vec![],
+                read_onlys: vec![],
+            }),
+            Some(other) => Err(AuthError::config(format!(
+                "attach: expected a sequence, got {other:?}"
+            ))),
+        }
     }
 
     fn render(&self) -> Vec<String> {
-        let mut out = Vec::with_capacity(self.attachments.len());
-        for attachment in &self.attachments {
-            let path_escaped = escape_single_quotes(&attachment.path);
-            let mut sql = format!("ATTACH IF NOT EXISTS '{path_escaped}'");
+        debug_assert_eq!(self.paths.len(), self.aliases.len());
+        debug_assert_eq!(self.paths.len(), self.db_types.len());
+        debug_assert_eq!(self.paths.len(), self.read_onlys.len());
 
-            if let Some(alias) = &attachment.alias {
-                let alias = sanitize_identifier(alias);
-                if !alias.is_empty() {
+        (0..self.paths.len())
+            .map(|i| {
+                let path_escaped = escape_single_quotes(self.paths[i]);
+                let mut sql = format!("ATTACH IF NOT EXISTS '{path_escaped}'");
+
+                if let Some(alias) = &self.aliases[i] {
                     sql.push_str(&format!(" AS {alias}"));
                 }
-            }
 
-            let db_type = attachment.db_type.as_deref();
-            let read_only = attachment.read_only;
-
-            if db_type.is_some() || read_only {
                 let mut opts = Vec::new();
-                if let Some(t) = db_type {
-                    opts.push(format!("TYPE {}", sanitize_identifier(t)));
+                if let Some(t) = &self.db_types[i] {
+                    opts.push(format!("TYPE {t}"));
                 }
-                if read_only {
+                if self.read_onlys[i] {
                     opts.push("READ_ONLY".to_owned());
                 }
-                sql.push_str(&format!(" ({})", opts.join(", ")));
-            }
+                if !opts.is_empty() {
+                    sql.push_str(&format!(" ({})", opts.join(", ")));
+                }
 
-            out.push(sql);
-        }
-        out
+                sql
+            })
+            .collect()
     }
 }
 
@@ -479,35 +506,42 @@ impl AttachmentStatements {
 /// When the path is a MotherDuck connection (`md:` / `motherduck:`), the
 /// `motherduck` extension is auto-installed/loaded and the token is injected.
 pub fn generate_duckdb_init_sql(config: &AdapterConfig) -> Result<Vec<String>, AuthError> {
-    let params = read_init_inputs(config)?;
+    let target = DuckDbTarget::from_config(config)?;
+    let extensions = Extensions::from_config(config)?;
+    let secrets = Secrets::from_config(config)?;
+    let settings = Settings::from_config(config)?;
+    let attachments = Attachments::from_config(config)?;
 
-    match params.path {
-        DuckDbPath::MotherDuck { path, alias, token } => {
-            let extensions = ExtensionStatements::with_motherduck(&params.extensions);
-            let secrets = SecretStatements::new(params.secrets);
-            let token_stmt = token.map(TokenStatement::new);
-            let settings = SettingStatements::new(params.settings);
-            let md_attach = MotherDuckAttach::new(path, alias);
-            let attachments = AttachmentStatements::new(params.attachments);
-
+    match target {
+        DuckDbTarget::MotherDuck {
+            path,
+            database_name: alias,
+        } => {
             let mut out = Vec::new();
-            out.extend(extensions.render());
+            out.extend(extensions.render_with_motherduck());
             out.extend(secrets.render());
-            if let Some(t) = token_stmt {
-                out.extend(t.render());
-            }
             out.extend(settings.render());
-            out.extend(md_attach.render());
+            out.extend(PrimaryAttach::new(&path, &alias).render());
             out.extend(attachments.render());
             Ok(out)
         }
 
-        DuckDbPath::Local | DuckDbPath::Memory => {
-            let extensions = ExtensionStatements::from_config(&params.extensions);
-            let secrets = SecretStatements::new(params.secrets);
-            let settings = SettingStatements::new(params.settings);
-            let attachments = AttachmentStatements::new(params.attachments);
+        DuckDbTarget::MotherDuckWithToken {
+            path,
+            database_name: alias,
+            token,
+        } => {
+            let mut out = Vec::new();
+            out.extend(extensions.render_with_motherduck());
+            out.extend(secrets.render());
+            out.push(MotherDuckToken(&token).render());
+            out.extend(settings.render());
+            out.extend(PrimaryAttach::new(&path, &alias).render());
+            out.extend(attachments.render());
+            Ok(out)
+        }
 
+        DuckDbTarget::Plain { .. } => {
             let mut out = Vec::new();
             out.extend(extensions.render());
             out.extend(secrets.render());
@@ -516,16 +550,6 @@ pub fn generate_duckdb_init_sql(config: &AdapterConfig) -> Result<Vec<String>, A
             Ok(out)
         }
     }
-}
-
-// ---------------------------------------------------------------------------
-// MotherDuck helpers (private — consumed by DuckDbPath::resolve)
-// ---------------------------------------------------------------------------
-
-/// Returns `true` if `path` is a MotherDuck connection string (`md:` or `motherduck:` prefix).
-pub fn is_motherduck_path(path: &str) -> bool {
-    let lower = path.to_lowercase();
-    lower.starts_with("md:") || lower.starts_with("motherduck:")
 }
 
 // ---------------------------------------------------------------------------
@@ -814,6 +838,113 @@ attach:
         assert!(stmts[6].starts_with("ATTACH IF NOT EXISTS"));
     }
 
+    // -----------------------------------------------------------------------
+    // `database:` config for local/in-memory paths (dbt-labs/fs#14196)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_local_path_database_mismatch_hard_fails() {
+        let config = config_from_yaml(
+            r#"
+path: "/tmp/scratch_file.duckdb"
+database: "totally_different_name"
+"#,
+        );
+        let err = generate_duckdb_init_sql(&config).unwrap_err();
+        assert!(
+            matches!(&err, AuthError::Config(msg) if msg == "Inconsistency detected between 'path' and 'database' fields in profile; the 'database' property must be set to 'scratch_file' to match the 'path'"),
+            "{err:?}"
+        );
+    }
+
+    #[test]
+    fn test_memory_path_database_mismatch_hard_fails() {
+        let config = config_from_yaml(
+            r#"
+database: "my_catalog"
+"#,
+        );
+        let err = generate_duckdb_init_sql(&config).unwrap_err();
+        assert!(
+            matches!(&err, AuthError::Config(msg) if msg == "Inconsistency detected between 'path' and 'database' fields in profile; the 'database' property must be set to 'memory' to match the 'path'"),
+            "{err:?}"
+        );
+    }
+
+    #[test]
+    fn test_local_path_database_matching_derived_name_succeeds() {
+        let config = config_from_yaml(
+            r#"
+path: "/tmp/scratch_file.duckdb"
+database: "scratch_file"
+"#,
+        );
+        let stmts = generate_duckdb_init_sql(&config).unwrap();
+        assert!(
+            stmts.is_empty(),
+            "database: matches derived name, no attach needed: {stmts:?}"
+        );
+    }
+
+    #[test]
+    fn test_local_path_without_database_config_unchanged() {
+        let config = config_from_yaml(
+            r#"
+path: "/tmp/scratch_file.duckdb"
+"#,
+        );
+        let stmts = generate_duckdb_init_sql(&config).unwrap();
+        assert!(
+            stmts.is_empty(),
+            "no database: set, no attach should be emitted: {stmts:?}"
+        );
+    }
+
+    #[test]
+    fn test_local_database_matching_main_file_stem_succeeds() {
+        let config = config_from_yaml(
+            r#"
+path: "/tmp/main.duckdb"
+database: "main"
+"#,
+        );
+        let stmts = generate_duckdb_init_sql(&config).unwrap();
+        assert!(
+            stmts.is_empty(),
+            "database: 'main' matches the derived name for main.duckdb, no attach needed: {stmts:?}"
+        );
+    }
+
+    #[test]
+    fn test_ducklake_prefix_stripped_for_database_derivation() {
+        let config = config_from_yaml(
+            r#"
+path: "ducklake:/tmp/scratch_file.duckdb"
+database: "scratch_file"
+"#,
+        );
+        let stmts = generate_duckdb_init_sql(&config).unwrap();
+        assert!(
+            stmts.is_empty(),
+            "database: matches the name derived from the path under the ducklake: prefix: {stmts:?}"
+        );
+    }
+
+    #[test]
+    fn test_local_database_mismatch_hard_fails_without_sanitizing() {
+        let config = config_from_yaml(
+            r#"
+path: "/tmp/scratch_file.duckdb"
+database: "weird name!"
+"#,
+        );
+        let err = generate_duckdb_init_sql(&config).unwrap_err();
+        assert!(
+            matches!(&err, AuthError::Config(msg) if msg == "Inconsistency detected between 'path' and 'database' fields in profile; the 'database' property must be set to 'scratch_file' to match the 'path'"),
+            "{err:?}"
+        );
+    }
+
     #[test]
     fn test_sanitize_identifier() {
         assert_eq!(sanitize_identifier("normal_name"), "normal_name");
@@ -920,28 +1051,13 @@ settings:
         assert!(stmts.contains(&"SET threads = 8".to_owned()));
     }
 
-    // -----------------------------------------------------------------------
-    // MotherDuck helpers
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn test_is_motherduck_path() {
-        assert!(is_motherduck_path("md:"));
-        assert!(is_motherduck_path("md:my_db"));
-        assert!(is_motherduck_path("MD:my_db"));
-        assert!(is_motherduck_path("motherduck:"));
-        assert!(is_motherduck_path("MotherDuck:my_db"));
-        assert!(!is_motherduck_path("/tmp/local.duckdb"));
-        assert!(!is_motherduck_path(":memory:"));
-    }
-
     #[test]
     fn test_database_name() {
-        assert_eq!(DuckDbPath::database_name("md:my_db"), "my_db");
-        assert_eq!(DuckDbPath::database_name("md:"), "my_db");
-        assert_eq!(DuckDbPath::database_name("motherduck:sales"), "sales");
+        assert_eq!(DuckDbTarget::database_name("md:my_db"), "my_db");
+        assert_eq!(DuckDbTarget::database_name("md:"), "");
+        assert_eq!(DuckDbTarget::database_name("motherduck:sales"), "sales");
         assert_eq!(
-            DuckDbPath::database_name("md:my_db?motherduck_token=tok123"),
+            DuckDbTarget::database_name("md:my_db?motherduck_token=tok123"),
             "my_db"
         );
     }
@@ -949,14 +1065,14 @@ settings:
     #[test]
     fn test_attach_path_strips_query() {
         assert_eq!(
-            DuckDbPath::attach_path("md:my_db?motherduck_token=tok"),
+            DuckDbTarget::attach_path("md:my_db?motherduck_token=tok"),
             "md:my_db"
         );
         assert_eq!(
-            DuckDbPath::attach_path("motherduck:sales?user=1"),
+            DuckDbTarget::attach_path("motherduck:sales?user=1"),
             "motherduck:sales"
         );
-        assert_eq!(DuckDbPath::attach_path("md:plain"), "md:plain");
+        assert_eq!(DuckDbTarget::attach_path("md:plain"), "md:plain");
     }
 
     #[test]
@@ -1091,7 +1207,7 @@ settings:
 "#,
         );
         assert_eq!(
-            DuckDbPath::resolve_token(
+            DuckDbTarget::resolve_token(
                 config
                     .get("path")
                     .and_then(|v| v.as_str())
@@ -1110,7 +1226,7 @@ path: "md:my_db?motherduck_token=tok_from_path"
 "#,
         );
         assert_eq!(
-            DuckDbPath::resolve_token(
+            DuckDbTarget::resolve_token(
                 config
                     .get("path")
                     .and_then(|v| v.as_str())
@@ -1132,7 +1248,7 @@ settings:
 "#,
         );
         assert_eq!(
-            DuckDbPath::resolve_token(
+            DuckDbTarget::resolve_token(
                 config
                     .get("path")
                     .and_then(|v| v.as_str())
@@ -1213,7 +1329,7 @@ settings:
         );
         // Empty settings token should be skipped; path query should win
         assert_eq!(
-            DuckDbPath::resolve_token(
+            DuckDbTarget::resolve_token(
                 config
                     .get("path")
                     .and_then(|v| v.as_str())
@@ -1234,7 +1350,7 @@ settings:
 "#,
         );
         assert_eq!(
-            DuckDbPath::resolve_token(
+            DuckDbTarget::resolve_token(
                 config
                     .get("path")
                     .and_then(|v| v.as_str())
@@ -1381,6 +1497,8 @@ database: "!@#$%"
 
     #[test]
     fn test_bare_md_path_attach_alias_is_my_db() {
+        // matches upstream dbt-duckdb's own fallback:
+        // https://github.com/duckdb/dbt-duckdb/blob/67b43f1f86ef6b4252b184ebeb00b750a7e9a513/dbt/adapters/duckdb/credentials.py#L339
         let config = config_from_yaml(
             r#"
 path: "md:"

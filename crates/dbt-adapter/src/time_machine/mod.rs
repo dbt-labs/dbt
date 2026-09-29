@@ -82,8 +82,9 @@ pub mod writer;
 pub use engine::{EventReplayer, ReplayCallError, ReplayerStats, TimeMachine};
 pub use event::{
     AdapterCallEvent, CacheInvalidationEvent, CatalogSchema, CatalogSchemas, MetadataCallArgs,
-    MetadataCallEvent, NodeIndex, RecordedEvent, RecordingHeader, RunRemoteAdhocEvent, SaoEvent,
-    SaoStatus,
+    MetadataCallEvent, NodeIndex, RecordedCachedTestResult, RecordedEvent,
+    RecordedRunCacheCloneDecision, RecordingHeader, RunCacheCloneEvent, RunRemoteAdhocEvent,
+    SaoEvent, SaoStatus,
 };
 pub use event_recorder::EventRecorder;
 pub use event_replay::{
@@ -104,8 +105,9 @@ impl From<TimeMachineReplayOrdering> for ReplayMode {
 }
 pub use metadata::{
     MetadataResultDeserialize, MetadataResultSerialize, args_create_schemas_if_not_exists,
-    args_fetch_view_definitions, args_freshness, args_list_relations_in_parallel,
-    args_list_relations_schemas, args_list_relations_schemas_by_patterns, args_list_udfs,
+    args_fetch_view_definitions, args_freshness, args_freshness_all_in_schema,
+    args_freshness_with_overrides, args_list_relations_in_parallel, args_list_relations_schemas,
+    args_list_relations_schemas_by_patterns, args_list_udfs, args_relations_exist,
     with_time_machine_metadata_wrapper,
 };
 pub use semantic::SemanticCategory;
@@ -263,13 +265,17 @@ pub struct RecordingHandle {
 impl RecordingHandle {
     /// Shutdown the recording session and wait for all events to be written.
     ///
-    /// After shutdown, the global recorder is still accessible but events
+    /// After shutdown, the global recording session is cleared and events
     /// will be silently dropped.
     pub async fn shutdown(self) -> Result<RecordingResult, RecordingError> {
-        // Extract needed data synchronously (don't hold MutexGuard across await)
+        // Extract needed data synchronously (don't hold MutexGuard across await).
+        // Must `take()` (not `as_ref()`): the writer's mpsc channel only closes
+        // once the sole `Arc<EventRecorder>` is dropped, so leaving it in
+        // `GLOBAL_SESSION` means the writer's `receiver.recv()` never sees
+        // `None` and the `handle.await` below never resolves.
         let handle = {
-            let guard = GLOBAL_SESSION.lock();
-            let session = guard.as_ref().ok_or(RecordingError::NotInitialized)?;
+            let mut guard = GLOBAL_SESSION.lock();
+            let session = guard.take().ok_or(RecordingError::NotInitialized)?;
             session.recorder.close();
             session
                 .writer_handle

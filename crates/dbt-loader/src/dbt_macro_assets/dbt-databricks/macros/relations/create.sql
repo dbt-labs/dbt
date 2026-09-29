@@ -11,6 +11,9 @@
     {%- elif relation.is_streaming_table -%}
         {{ get_create_streaming_table_as_sql(relation, sql) }}
 
+    {%- elif relation.is_metric_view -%}
+        {{ get_create_metric_view_as_sql(relation, sql) }}
+
     {%- else -%}
         {{- exceptions.raise_compiler_error("`get_create_sql` has not been implemented for: " ~ relation.type ) -}}
 

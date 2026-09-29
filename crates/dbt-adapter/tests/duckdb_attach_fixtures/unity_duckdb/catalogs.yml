@@ -10,5 +10,5 @@ catalogs:
       duckdb:
         warehouse: "unity_wh"
         endpoint: "https://dbc-example.cloud.databricks.com/api/2.1/unity-catalog/iceberg"
-        attach_as: "unity_db"
+        catalog_database: "unity_db"
         default_schema: "demo"

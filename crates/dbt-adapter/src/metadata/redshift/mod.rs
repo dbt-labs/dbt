@@ -11,6 +11,7 @@ use arrow::compute::concat_batches;
 use arrow::datatypes::GenericStringType;
 use arrow_schema::{DataType, Field, Schema};
 use dbt_adapter_core::{AdapterType, ExecutionPhase};
+use dbt_adapter_engine::MapReduce;
 use dbt_adbc::*;
 use dbt_common::cancellation::Cancellable;
 use dbt_common::cancellation::CancellationToken;
@@ -291,6 +292,16 @@ fn show_table_catalog_type(table_type: &str, table_subtype: Option<&str>) -> &'s
         .unwrap_or("BASE TABLE")
 }
 
+/// Converts a `Decimal128Array` cell to a `serde_json::Value`, dividing out the
+/// decimal's scale first (`Decimal128Array::value` returns the raw unscaled i128
+/// mantissa, e.g. `4550000000` for `45.5` at scale 8).
+fn decimal128_to_json_value(array: &Decimal128Array, i: usize) -> serde_json::Value {
+    let scaled = array.value(i) as f64 / 10f64.powi(array.scale() as i32);
+    serde_json::Number::from_f64(scaled)
+        .map(serde_json::Value::Number)
+        .unwrap_or(serde_json::Value::Null)
+}
+
 fn table_hash(database: &str, schema: &str, table: &str) -> u64 {
     const FIELD_SEPARATOR: &str = "|";
 
@@ -320,6 +331,7 @@ fn table_hash(database: &str, schema: &str, table: &str) -> u64 {
 /// Reference: <https://github.com/dbt-labs/dbt-adapters/pull/1718>
 /// SHOW TABLES: <https://docs.aws.amazon.com/redshift/latest/dg/r_SHOW_TABLES.html>
 /// SVV_REDSHIFT_COLUMNS: <https://docs.aws.amazon.com/redshift/latest/dg/r_SVV_REDSHIFT_COLUMNS.html>
+/// TODO (debrin-og): Refactor and move to `AgateTable.join`
 pub(crate) fn join_show_tables_and_svv_columns(
     show_tables_results: &[Arc<RecordBatch>],
     svv_columns: &RecordBatch,
@@ -473,14 +485,12 @@ impl ListRelationsSchemasStrategy for RedshiftListRelationsSchemasStrategy {
         relations: Arc<Vec<Arc<dyn BaseRelation>>>,
         unique_id: Option<String>,
         phase: Option<ExecutionPhase>,
+        item_span_operation_id: Option<&str>,
         token: CancellationToken,
     ) -> AsyncAdapterResult<'static, HashMap<String, AdapterResult<Arc<Schema>>>> {
         type Acc = HashMap<String, AdapterResult<Arc<Schema>>>;
 
-        let factory = Box::new(AdapterConnectionFactory::new(
-            self.adapter.engine().clone(),
-            self.adapter.engine().threads(),
-        ));
+        let factory = Box::new(AdapterConnectionFactory::new(self.adapter.engine().clone()));
 
         let adapter = self.adapter.clone();
         let token_clone = token.clone();
@@ -592,8 +602,15 @@ AND table_name = '{identifier}'"
             acc.insert(relation.semantic_fqn(), schema);
             Ok(())
         };
-        let map_reduce = MapReduce::new(factory, Box::new(map_f), Box::new(reduce_f), None);
-        map_reduce.run(Arc::new(relations.to_vec()), token)
+        run_schema_cache_map_reduce(
+            factory,
+            relations.to_vec(),
+            item_span_operation_id,
+            map_f,
+            reduce_f,
+            None,
+            token,
+        )
     }
 
     fn run_by_patterns(
@@ -665,10 +682,7 @@ impl RedshiftFreshnessStrategy {
         // name → (epoch_ms, is_view)
         type MapResult = HashMap<String, (i64, bool)>;
 
-        let factory = Box::new(AdapterConnectionFactory::new(
-            self.adapter.engine().clone(),
-            self.adapter.engine().threads(),
-        ));
+        let factory = Box::new(AdapterConnectionFactory::new(self.adapter.engine().clone()));
 
         let adapter = self.adapter.clone();
         let token_clone = token.clone();
@@ -815,10 +829,7 @@ impl RedshiftFreshnessStrategy {
         }
         let keys: Vec<(String, String)> = relations_by_schema.keys().cloned().collect();
 
-        let factory = Box::new(AdapterConnectionFactory::new(
-            self.adapter.engine().clone(),
-            self.adapter.engine().threads(),
-        ));
+        let factory = Box::new(AdapterConnectionFactory::new(self.adapter.engine().clone()));
         let adapter = self.adapter.clone();
         let token_clone = token.clone();
 
@@ -945,18 +956,18 @@ impl MetadataAdapter for RedshiftMetadataAdapter {
             stats_sql_result.column_values::<BooleanArray>("stats:encoded:include")?;
 
         let diststyle_label =
-            stats_sql_result.column_values::<StringArray>("`stats:diststyle:label")?;
+            stats_sql_result.column_values::<StringArray>("stats:diststyle:label")?;
         let diststyle_value =
-            stats_sql_result.column_values::<Decimal128Array>("`stats:diststyle:value")?;
+            stats_sql_result.column_values::<StringArray>("stats:diststyle:value")?;
         let diststyle_description =
-            stats_sql_result.column_values::<StringArray>("`stats:diststyle:description")?;
+            stats_sql_result.column_values::<StringArray>("stats:diststyle:description")?;
         let diststyle_include =
-            stats_sql_result.column_values::<BooleanArray>("`stats:diststyle:include")?;
+            stats_sql_result.column_values::<BooleanArray>("stats:diststyle:include")?;
 
         let sortkey1_label =
             stats_sql_result.column_values::<StringArray>("stats:sortkey1:label")?;
         let sortkey1_value =
-            stats_sql_result.column_values::<Decimal128Array>("stats:sortkey1:value")?;
+            stats_sql_result.column_values::<StringArray>("stats:sortkey1:value")?;
         let sortkey1_description =
             stats_sql_result.column_values::<StringArray>("stats:sortkey1:description")?;
         let sortkey1_include =
@@ -1095,32 +1106,26 @@ impl MetadataAdapter for RedshiftMetadataAdapter {
                 let size_include_i = size_include.value(i);
 
                 let pct_used_label_i = pct_used_label.value(i);
-                let pct_used_value_i = pct_used_value.value(i);
                 let pct_used_description_i = pct_used_description.value(i);
                 let pct_used_include_i = pct_used_include.value(i);
 
                 let unsorted_label_i = unsorted_label.value(i);
-                let unsorted_value_i = unsorted_value.value(i);
                 let unsorted_description_i = unsorted_description.value(i);
                 let unsorted_include_i = unsorted_include.value(i);
 
                 let stats_off_label_i = stats_off_label.value(i);
-                let stats_off_value_i = stats_off_value.value(i);
                 let stats_off_description_i = stats_off_description.value(i);
                 let stats_off_include_i = stats_off_include.value(i);
 
                 let rows_label_i = rows_label.value(i);
-                let rows_value_i = rows_value.value(i);
                 let rows_description_i = rows_description.value(i);
                 let rows_include_i = rows_include.value(i);
 
                 let skew_sortkey1_label_i = skew_sortkey1_label.value(i);
-                let skew_sortkey1_value_i = skew_sortkey1_value.value(i);
                 let skew_sortkey1_description_i = skew_sortkey1_description.value(i);
                 let skew_sortkey1_include_i = skew_sortkey1_include.value(i);
 
                 let skew_rows_label_i = skew_rows_label.value(i);
-                let skew_rows_value_i = skew_rows_value.value(i);
                 let skew_rows_description_i = skew_rows_description.value(i);
                 let skew_rows_include_i = skew_rows_include.value(i);
 
@@ -1145,7 +1150,7 @@ impl MetadataAdapter for RedshiftMetadataAdapter {
                         CatalogNodeStats {
                             id: "diststyle".to_string(),
                             label: diststyle_label_i.to_string(),
-                            value: serde_json::Number::from_i128(diststyle_value_i).into(),
+                            value: serde_json::Value::String(diststyle_value_i.to_string()),
                             description: Some(diststyle_description_i.to_string()),
                             include: diststyle_include_i,
                         },
@@ -1158,7 +1163,7 @@ impl MetadataAdapter for RedshiftMetadataAdapter {
                         CatalogNodeStats {
                             id: "sortkey1".to_string(),
                             label: sortkey1_label_i.to_string(),
-                            value: serde_json::Number::from_i128(sortkey1_value_i).into(),
+                            value: serde_json::Value::String(sortkey1_value_i.to_string()),
                             description: Some(sortkey1_description_i.to_string()),
                             include: sortkey1_include_i,
                         },
@@ -1223,7 +1228,7 @@ impl MetadataAdapter for RedshiftMetadataAdapter {
                         CatalogNodeStats {
                             id: "pct_used".to_string(),
                             label: pct_used_label_i.to_string(),
-                            value: serde_json::Number::from_i128(pct_used_value_i).into(),
+                            value: decimal128_to_json_value(&pct_used_value, i),
                             description: Some(pct_used_description_i.to_string()),
                             include: pct_used_include_i,
                         },
@@ -1236,7 +1241,7 @@ impl MetadataAdapter for RedshiftMetadataAdapter {
                         CatalogNodeStats {
                             id: "unsorted".to_string(),
                             label: unsorted_label_i.to_string(),
-                            value: serde_json::Number::from_i128(unsorted_value_i).into(),
+                            value: decimal128_to_json_value(&unsorted_value, i),
                             description: Some(unsorted_description_i.to_string()),
                             include: unsorted_include_i,
                         },
@@ -1249,7 +1254,7 @@ impl MetadataAdapter for RedshiftMetadataAdapter {
                         CatalogNodeStats {
                             id: "stats_off".to_string(),
                             label: stats_off_label_i.to_string(),
-                            value: serde_json::Number::from_i128(stats_off_value_i).into(),
+                            value: decimal128_to_json_value(&stats_off_value, i),
                             description: Some(stats_off_description_i.to_string()),
                             include: stats_off_include_i,
                         },
@@ -1262,7 +1267,7 @@ impl MetadataAdapter for RedshiftMetadataAdapter {
                         CatalogNodeStats {
                             id: "rows".to_string(),
                             label: rows_label_i.to_string(),
-                            value: serde_json::Number::from_i128(rows_value_i).into(),
+                            value: decimal128_to_json_value(&rows_value, i),
                             description: Some(rows_description_i.to_string()),
                             include: rows_include_i,
                         },
@@ -1275,7 +1280,7 @@ impl MetadataAdapter for RedshiftMetadataAdapter {
                         CatalogNodeStats {
                             id: "skew_sortkey1".to_string(),
                             label: skew_sortkey1_label_i.to_string(),
-                            value: serde_json::Number::from_i128(skew_sortkey1_value_i).into(),
+                            value: decimal128_to_json_value(&skew_sortkey1_value, i),
                             description: Some(skew_sortkey1_description_i.to_string()),
                             include: skew_sortkey1_include_i,
                         },
@@ -1288,7 +1293,7 @@ impl MetadataAdapter for RedshiftMetadataAdapter {
                         CatalogNodeStats {
                             id: "skew_rows".to_string(),
                             label: skew_rows_label_i.to_string(),
-                            value: serde_json::Number::from_i128(skew_rows_value_i).into(),
+                            value: decimal128_to_json_value(&skew_rows_value, i),
                             description: Some(skew_rows_description_i.to_string()),
                             include: skew_rows_include_i,
                         },
@@ -1300,7 +1305,7 @@ impl MetadataAdapter for RedshiftMetadataAdapter {
                     CatalogNodeStats {
                         id: "has_stats".to_string(),
                         label: "has_stats".to_string(),
-                        value: serde_json::Value::Bool(stats.is_empty()),
+                        value: serde_json::Value::Bool(!stats.is_empty()),
                         description: Some(
                             "Indicates whether there are any statistics for this table".to_string(),
                         ),
@@ -1387,11 +1392,12 @@ impl MetadataAdapter for RedshiftMetadataAdapter {
         unique_id: Option<String>,
         phase: Option<ExecutionPhase>,
         relations: &[Arc<dyn BaseRelation>], // TODO: change to an Arc<Vec<..>>
+        item_span_operation_id: Option<&str>,
         token: CancellationToken,
     ) -> AsyncAdapterResult<'_, HashMap<String, AdapterResult<Arc<Schema>>>> {
         let strategy = RedshiftListRelationsSchemasStrategy::new(self.adapter.clone());
         let relations = Arc::new(relations.to_vec());
-        strategy.run(relations, unique_id, phase, token)
+        strategy.run(relations, unique_id, phase, item_span_operation_id, token)
     }
 
     fn list_relations_schemas_by_patterns_inner(
@@ -1451,10 +1457,7 @@ impl MetadataAdapter for RedshiftMetadataAdapter {
         let relations_owned: Vec<Arc<dyn BaseRelation>> = relations.to_vec();
         let token_clone = token.clone();
 
-        let factory = Box::new(AdapterConnectionFactory::new(
-            self.adapter.engine().clone(),
-            self.adapter.engine().threads(),
-        ));
+        let factory = Box::new(AdapterConnectionFactory::new(self.adapter.engine().clone()));
 
         // Use MapReduce with a single item to get a managed connection.
         let map_f =
@@ -1516,12 +1519,10 @@ impl MetadataAdapter for RedshiftMetadataAdapter {
         &self,
         db_schemas: &[CatalogAndSchema],
         token: CancellationToken,
+        report_progress: bool,
     ) -> AsyncAdapterResult<'_, BTreeMap<CatalogAndSchema, AdapterResult<RelationVec>>> {
         type Acc = BTreeMap<CatalogAndSchema, AdapterResult<RelationVec>>;
-        let factory = Box::new(AdapterConnectionFactory::new(
-            self.adapter.engine().clone(),
-            self.adapter.engine().threads(),
-        ));
+        let factory = Box::new(AdapterConnectionFactory::new(self.adapter.engine().clone()));
 
         let adapter = self.adapter.clone();
         let token_clone = token.clone();
@@ -1530,7 +1531,11 @@ impl MetadataAdapter for RedshiftMetadataAdapter {
                           db_schema: &CatalogAndSchema|
               -> AdapterResult<Vec<Arc<dyn BaseRelation>>> {
             let query_ctx = QueryCtx::default().with_desc("list_relations_in_parallel");
-            adapter.list_relations(&query_ctx, conn, db_schema, token_clone.clone())
+            with_relation_list_item_span(
+                report_progress.then_some(RELATION_CACHE_OP_ID),
+                &db_schema.to_string(),
+                || adapter.list_relations(None, &query_ctx, conn, db_schema, token_clone.clone()),
+            )
         };
 
         let reduce_f = move |acc: &mut Acc,
@@ -1563,10 +1568,7 @@ impl MetadataAdapter for RedshiftMetadataAdapter {
         }
         let jobs: Vec<(String, BTreeSet<String>)> = jobs.into_iter().collect();
 
-        let factory = Box::new(AdapterConnectionFactory::new(
-            self.adapter.engine().clone(),
-            self.adapter.engine().threads(),
-        ));
+        let factory = Box::new(AdapterConnectionFactory::new(self.adapter.engine().clone()));
         let adapter = self.adapter.clone();
         let token_clone = token.clone();
 

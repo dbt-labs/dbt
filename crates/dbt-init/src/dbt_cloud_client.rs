@@ -167,7 +167,6 @@ fn create_merged_db_config(
                 compute_region: None,
                 dataproc_batch: None,
                 dataproc_cluster_name: None,
-                dataproc_region: None,
                 gcs_bucket: None,
                 submission_method: None,
                 job_creation_timeout_seconds: None,
@@ -289,7 +288,6 @@ fn create_merged_db_config(
                     compute_region: None,
                     dataproc_batch: None,
                     dataproc_cluster_name: None,
-                    dataproc_region: None,
                     gcs_bucket: None,
                     submission_method: None,
                     job_creation_timeout_seconds: None,
@@ -330,7 +328,6 @@ fn create_merged_db_config(
                     scopes: bigquery_v1.scopes.clone(),
                     api_endpoint: None,
                     gcs_bucket: bigquery_v1.gcs_bucket.clone(),
-                    dataproc_region: bigquery_v1.dataproc_region.clone(),
                     dataproc_cluster_name: bigquery_v1.dataproc_cluster_name.clone(),
                     job_retry_deadline_seconds: bigquery_v1
                         .job_retry_deadline_seconds
@@ -354,7 +351,10 @@ fn create_merged_db_config(
                     token: None,
                     keyfile: None,
                     keyfile_json: None,
-                    compute_region: None,
+                    // Populate `compute_region` from the V1 API's legacy `dataproc_region`
+                    // spelling; the two are aliases per dbt-bigquery `Credentials._ALIASES`
+                    // and the profile schema canonicalizes on `compute_region`.
+                    compute_region: bigquery_v1.dataproc_region.clone(),
                     dataproc_batch: None,
                     timeout_seconds: None,
                     job_retries: None,

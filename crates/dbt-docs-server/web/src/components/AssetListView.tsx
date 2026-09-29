@@ -1,17 +1,15 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 
-import { Icon } from '@dbt-labs/sourdough';
-
-import type { NodeSummary } from '../api';
 import type { AssetFilters } from '../App';
 import {
   inferModelingLayer,
   RESOURCE_TYPE_LABEL,
   ResourceBadge,
-  ryeconForType,
+  ResourceTypeIcon,
 } from '../lib/resourceType';
 import type { Project } from '../shared';
 import { SimpleLinkBreadcrumbs, useResourceLink } from '../shared';
+import type { NodeSummary } from '../types';
 
 const PAGE_SIZE = 200;
 
@@ -127,7 +125,7 @@ export function AssetListView({
 
       <header className="asset-list__header">
         <div className="asset-list__title-row">
-          {singleType && <Icon ryecon={ryeconForType(singleType)} size="md" alt="" />}
+          {singleType && <ResourceTypeIcon type={singleType} className="size-4" />}
           <h1 className="asset-list__title">{title}</h1>
         </div>
         <div className="asset-list__count">
@@ -372,7 +370,7 @@ function Row({
             return (
               <td key={c} className="asset-list__col-name">
                 <div className="asset-list__name-cell">
-                  <Icon ryecon={ryeconForType(node.resource_type)} size="xs" alt="" />
+                  <ResourceTypeIcon type={node.resource_type} className="size-3" />
                   <span>{node.name}</span>
                 </div>
               </td>

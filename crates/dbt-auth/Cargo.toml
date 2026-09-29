@@ -32,6 +32,7 @@ url = { workspace = true }
 
 [dev-dependencies]
 arrow-array = { workspace = true }
+arrow-schema = { workspace = true }
 dbt-cloud-config = { workspace = true }
 dbt-test-primitives = { workspace = true }
 tempfile = { workspace = true }

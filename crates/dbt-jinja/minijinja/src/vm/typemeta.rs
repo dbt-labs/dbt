@@ -5,7 +5,10 @@ use crate::compiler::codegen::{TypeConstraintOperation, Variable};
 use crate::compiler::instructions::Instruction;
 use crate::compiler::tokens::Span;
 use crate::compiler::typecheck::FunctionRegistry;
-use crate::constants::{DBT_AND_ADAPTERS_NAMESPACE, ROOT_PACKAGE_NAME, TARGET_PACKAGE_NAME};
+use crate::constants::{
+    DBT_AND_ADAPTERS_NAMESPACE, DIALECT, ROOT_PACKAGE_NAME, TARGET_PACKAGE_NAME,
+};
+use crate::dispatch_object::dbt_and_adapters_namespace_for;
 use crate::types::function::{LambdaType, UserDefinedFunctionType};
 use crate::types::list::ListType;
 use crate::types::struct_::StructType;
@@ -1960,7 +1963,7 @@ impl<'src> TypeChecker<'src> {
                     }
                 }
                 #[cfg(feature = "macros")]
-                Instruction::Return { explicit } => {
+                Instruction::Return { explicit, .. } => {
                     // TYPECHECK: NO
                     // do nothing instead of break because we want to cover all instructions
                     if *explicit {
@@ -2262,15 +2265,23 @@ pub fn macro_namespace_template_resolver(
         .cloned()
         .unwrap_or_else(|| Value::from("dbt"));
     let root_package = root_package.as_str().unwrap();
-    let dbt_and_adapters = typecheck_resolved_context
+    // The published namespace is `dialect -> (macro_name -> package)`; select this
+    // context's dialect so an unprefixed internal macro defined by more than one
+    // loaded adapter resolves to the right package, matching dispatch.
+    let dialect = typecheck_resolved_context
+        .get(DIALECT)
+        .and_then(|v| v.as_str())
+        .unwrap_or("postgres")
+        .to_string();
+    let namespaces = typecheck_resolved_context
         .get(DBT_AND_ADAPTERS_NAMESPACE)
         .cloned()
         .unwrap_or_default();
-    let dbt_and_adapters = dbt_and_adapters
+    let namespaces = namespaces
         .as_object()
-        .unwrap()
-        .downcast_ref::<ValueMap>()
-        .unwrap();
+        .and_then(|o| o.downcast_ref::<ValueMap>().cloned())
+        .unwrap_or_default();
+    let dbt_and_adapters = dbt_and_adapters_namespace_for(&namespaces, &dialect);
 
     // 1. Local namespace (current package)
     let template_name = format!("{current_package_name}.{search_name}");

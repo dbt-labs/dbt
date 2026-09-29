@@ -1,3 +1,4 @@
+use dbt_adapter_core::AdapterType;
 use dbt_common::io_args::ComputeArg;
 use dbt_common::io_args::StaticAnalysisKind;
 use dbt_common::serde_utils::Omissible;
@@ -16,8 +17,10 @@ use crate::schemas::common::{
     ClusterConfig, DbtMaterialization, DbtQuoting, Schedule, Severity, StoreFailuresAs,
 };
 use crate::schemas::manifest::GrantAccessToTarget;
-use crate::schemas::project::configs::common::WarehouseSpecificNodeConfig;
-use crate::schemas::project::configs::config_merge::Tags;
+use crate::schemas::project::configs::common::{
+    WarehouseSpecificNodeConfig, take_databricks_catalog_alias,
+};
+use crate::schemas::project::configs::config_merge::{Tags, TblProperties};
 use crate::schemas::properties::DataTestState;
 use dbt_proc_macros::DefaultTo;
 use dbt_proc_macros::Resolvable;
@@ -37,6 +40,9 @@ pub const DEFAULT_DATA_TEST_WARN_IF: &str = "!= 0";
 // NOTE: No #[skip_serializing_none] - we handle None serialization in serialize_with_mode
 #[derive(Deserialize, Serialize, Debug, Clone, DbtSchema)]
 pub struct ProjectDataTestConfig {
+    #[serde(rename = "+adapter")]
+    #[schemars(with = "Option<String>")]
+    pub adapter: Option<AdapterType>,
     #[serde(rename = "+alias")]
     pub alias: Option<String>,
     #[serde(rename = "+compute")]
@@ -115,6 +121,8 @@ pub struct ProjectDataTestConfig {
     pub tmp_relation_type: Option<String>,
     #[serde(rename = "+query_tag")]
     pub query_tag: Option<QueryTag>,
+    #[serde(rename = "+query_tags")]
+    pub query_tags: Option<String>,
     #[serde(rename = "+table_tag")]
     pub table_tag: Option<String>,
     #[serde(rename = "+row_access_policy")]
@@ -214,7 +222,7 @@ pub struct ProjectDataTestConfig {
     #[serde(rename = "+location_root")]
     pub location_root: Option<String>,
     #[serde(rename = "+tblproperties")]
-    pub tblproperties: Option<BTreeMap<String, YmlValue>>,
+    pub tblproperties: Option<TblProperties>,
     #[serde(
         default,
         rename = "+include_full_name_in_path",
@@ -236,7 +244,7 @@ pub struct ProjectDataTestConfig {
     #[serde(rename = "+catalog")]
     pub catalog: Option<String>,
     #[serde(rename = "+databricks_tags")]
-    pub databricks_tags: Option<BTreeMap<String, YmlValue>>,
+    pub databricks_tags: Option<IndexMap<String, YmlValue>>,
     #[serde(rename = "+compression")]
     pub compression: Option<String>,
     #[serde(rename = "+databricks_compute")]
@@ -284,7 +292,7 @@ pub struct ProjectDataTestConfig {
     #[serde(default, rename = "+bind", deserialize_with = "bool_or_string_bool")]
     pub bind: Option<bool>,
     #[serde(rename = "+dist")]
-    pub dist: Option<String>,
+    pub dist: Option<StringOrArrayOfStrings>,
     #[serde(rename = "+sort")]
     pub sort: Option<StringOrArrayOfStrings>,
     #[serde(rename = "+sort_type")]
@@ -333,7 +341,8 @@ impl TypedRecursiveConfig for ProjectDataTestConfig {
     }
 
     fn has_set_fields(&self) -> bool {
-        self.alias.is_some()
+        self.adapter.is_some()
+            || self.alias.is_some()
             || self.compute.is_some()
             || self.database.is_some()
             || self.enabled.is_some()
@@ -430,6 +439,10 @@ impl TypedRecursiveConfig for ProjectDataTestConfig {
     Resolvable, DefaultTo, Deserialize, Serialize, Debug, Clone, Default, DbtSchema, PartialEq,
 )]
 pub struct DataTestConfig {
+    // Internal placement hint; kept out of serialized config/telemetry output.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "Option<String>")]
+    pub adapter: Option<AdapterType>,
     pub alias: Option<String>,
     pub compute: Option<ComputeArg>,
     #[serde(alias = "project", alias = "data_space")]
@@ -480,6 +493,7 @@ pub struct DataTestConfig {
 impl From<ProjectDataTestConfig> for DataTestConfig {
     fn from(config: ProjectDataTestConfig) -> Self {
         Self {
+            adapter: config.adapter,
             alias: config.alias,
             compute: config.compute,
             database: config.database,
@@ -524,6 +538,7 @@ impl From<ProjectDataTestConfig> for DataTestConfig {
                 scheduler: config.scheduler,
                 tmp_relation_type: config.tmp_relation_type,
                 query_tag: config.query_tag,
+                query_tags: config.query_tags,
                 table_tag: config.table_tag,
                 row_access_policy: config.row_access_policy,
                 automatic_clustering: config.automatic_clustering,
@@ -534,6 +549,12 @@ impl From<ProjectDataTestConfig> for DataTestConfig {
                 iceberg_version: None,
 
                 partition_by: config.partition_by,
+
+                partition_by_config: None,
+
+                distribute_by_config: None,
+
+                primary_key_config: None,
                 cluster_by: config.cluster_by,
                 hours_to_expiration: config.hours_to_expiration,
                 job_execution_timeout_seconds: config.job_execution_timeout_seconds,
@@ -566,6 +587,8 @@ impl From<ProjectDataTestConfig> for DataTestConfig {
                 include_full_name_in_path: config.include_full_name_in_path,
                 liquid_clustered_by: config.liquid_clustered_by,
                 auto_liquid_cluster: config.auto_liquid_cluster,
+                zorder: None,
+                skip_optimize: None,
                 clustered_by: config.clustered_by,
                 buckets: config.buckets,
                 catalog: config.catalog,
@@ -581,8 +604,11 @@ impl From<ProjectDataTestConfig> for DataTestConfig {
                 merge_with_schema_evolution: config.merge_with_schema_evolution,
                 skip_matched_step: config.skip_matched_step,
                 skip_not_matched_step: config.skip_not_matched_step,
+                unique_tmp_table_suffix: None,
                 schedule: config.schedule,
+                row_filter: None,
                 incremental_apply_config_changes: None,
+                persist_constraints: None,
                 use_safer_relation_operations: None,
                 view_update_via_alter: None,
 
@@ -609,6 +635,8 @@ impl From<ProjectDataTestConfig> for DataTestConfig {
                 ttl: None,
                 settings: None,
                 query_settings: None,
+                projections: None,
+                inserts_only: None,
                 connection_overrides: None,
                 fields: None,
                 source_type: None,
@@ -620,6 +648,8 @@ impl From<ProjectDataTestConfig> for DataTestConfig {
                 table: None,
                 update_field: None,
                 update_lag: None,
+                definer: None,
+                sql_security: None,
                 refreshable: None,
                 catchup: None,
                 mv_on_schema_change: None,
@@ -632,6 +662,7 @@ impl From<ProjectDataTestConfig> for DataTestConfig {
 impl From<DataTestConfig> for ProjectDataTestConfig {
     fn from(config: DataTestConfig) -> Self {
         Self {
+            adapter: config.adapter,
             alias: config.alias,
             compute: config.compute,
             database: config.database,
@@ -671,6 +702,7 @@ impl From<DataTestConfig> for ProjectDataTestConfig {
             scheduler: config.__warehouse_specific_config__.scheduler,
             tmp_relation_type: config.__warehouse_specific_config__.tmp_relation_type,
             query_tag: config.__warehouse_specific_config__.query_tag,
+            query_tags: config.__warehouse_specific_config__.query_tags,
             table_tag: config.__warehouse_specific_config__.table_tag,
             row_access_policy: config.__warehouse_specific_config__.row_access_policy,
             automatic_clustering: config.__warehouse_specific_config__.automatic_clustering,
@@ -762,6 +794,10 @@ impl ResolvableConfig<DataTestConfig> for DataTestConfig {
         self.enabled.unwrap_or(true)
     }
 
+    fn get_enabled(&self) -> Option<bool> {
+        self.enabled
+    }
+
     fn disable(&mut self) {
         self.enabled = Some(false);
     }
@@ -806,6 +842,18 @@ impl ResolvableConfig<DataTestConfig> for DataTestConfig {
     fn default_to(&mut self, parent: &DataTestConfig) {
         self.default_to_fields(parent);
     }
+
+    fn canonicalize_adapter_aliases(&mut self, default_adapter: AdapterType) {
+        if let Some(catalog) = take_databricks_catalog_alias(
+            default_adapter,
+            &mut self.__warehouse_specific_config__,
+            self.database.is_some(),
+        ) {
+            self.database = Some(catalog);
+        }
+        // BigQuery's `project`/`dataset` aliases are already routed to `database`/`schema` by
+        // the pre-existing, ungated serde `alias`es on those fields (D1); nothing to do here.
+    }
 }
 
 impl ConfigKeys for DataTestConfig {
@@ -833,10 +881,31 @@ impl ConfigKeys for DataTestConfig {
     }
 }
 
+impl crate::schemas::project::configs::warehouse_scope::WarehouseConfigResource for DataTestConfig {
+    const NODE_TYPE: dbt_telemetry::NodeType = dbt_telemetry::NodeType::Test;
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{DataTestConfig, ProjectDataTestConfig};
+    use super::{AdapterType, DataTestConfig, ProjectDataTestConfig};
     use crate::schemas::common::UpdatesOn;
+
+    #[test]
+    fn test_data_test_query_tags_propagate_through_resolved_config() {
+        let project: ProjectDataTestConfig = dbt_yaml::from_str(
+            r#"
++query_tags: '{"team":"data-test"}'
+__additional_properties__: {}
+"#,
+        )
+        .unwrap();
+
+        let resolved: DataTestConfig = project.into();
+        assert_eq!(
+            resolved.__warehouse_specific_config__.query_tags.as_deref(),
+            Some(r#"{"team":"data-test"}"#)
+        );
+    }
 
     #[test]
     fn test_project_data_test_config_state_parses_with_plus_prefix() {
@@ -898,6 +967,37 @@ __warehouse_specific_config__: {}
         assert_eq!(state.evaluate_volatile_sql, Some(true));
     }
 
+    /// Regression for #16135: a data test that sets one `state:` key keeps the keys
+    /// the project layer set.
+    #[test]
+    fn test_data_test_config_state_merges_field_by_field() {
+        use crate::schemas::project::dbt_project::ResolvableConfig;
+        use crate::schemas::properties::DataTestState;
+
+        let parent = DataTestConfig {
+            state: Some(DataTestState {
+                require_fresh_data_from: None,
+                evaluate_volatile_sql: Some(true),
+                compare_unrendered_code: Some(true),
+            }),
+            ..Default::default()
+        };
+        let mut child = DataTestConfig {
+            state: Some(DataTestState {
+                require_fresh_data_from: Some(UpdatesOn::All),
+                evaluate_volatile_sql: None,
+                compare_unrendered_code: None,
+            }),
+            ..Default::default()
+        };
+        child.default_to(&parent);
+
+        let state = child.state.expect("state should survive the merge");
+        assert_eq!(state.require_fresh_data_from, Some(UpdatesOn::All));
+        assert_eq!(state.evaluate_volatile_sql, Some(true));
+        assert_eq!(state.compare_unrendered_code, Some(true));
+    }
+
     #[test]
     fn test_data_test_state_type_models_only_two_keys() {
         use crate::schemas::properties::DataTestState;
@@ -920,5 +1020,41 @@ execute_hooks_on_any_reuse: true
 
         assert_eq!(state.require_fresh_data_from, Some(UpdatesOn::All));
         assert_eq!(state.evaluate_volatile_sql, Some(true));
+    }
+
+    /// `+adapter` names an adapter *type*, so the value is typed rather than a
+    /// free string -- anything that is not a supported adapter fails here, at
+    /// deserialization. Mirrors the seed and model cases.
+    #[test]
+    fn test_project_data_test_config_adapter_parses_and_round_trips() {
+        let project_config: ProjectDataTestConfig = dbt_yaml::from_str(
+            r#"
++adapter: bigquery
+__additional_properties__: {}
+"#,
+        )
+        .unwrap();
+        assert_eq!(project_config.adapter, Some(AdapterType::Bigquery));
+
+        let config: DataTestConfig = project_config.into();
+        assert_eq!(config.adapter, Some(AdapterType::Bigquery));
+
+        let round_tripped: ProjectDataTestConfig = config.into();
+        assert_eq!(round_tripped.adapter, Some(AdapterType::Bigquery));
+    }
+
+    #[test]
+    fn test_project_data_test_config_rejects_a_value_that_is_not_an_adapter() {
+        let err = dbt_yaml::from_str::<ProjectDataTestConfig>(
+            r#"
++adapter: compute
+__additional_properties__: {}
+"#,
+        )
+        .expect_err("`compute` is not an adapter type");
+        assert!(
+            format!("{err}").contains("compute"),
+            "error should name the offending value: {err}"
+        );
     }
 }

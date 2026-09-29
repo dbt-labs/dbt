@@ -1,4 +1,10 @@
-use dbt_common::{io_args::SKIP_REDUNDANT_TESTS_ENV, tracing::dbt_emit::emit_warn_log_message};
+use dbt_common::{
+    io_args::{
+        BATCH_TESTS_ENV, LOCAL_UNIT_TESTS_ENV, MULTI_ADAPTER_ENV,
+        REQUIRE_REF_SEARCHES_NODE_PACKAGE_BEFORE_ROOT_ENV, SKIP_REDUNDANT_TESTS_ENV,
+    },
+    tracing::dbt_emit::emit_warn_log_message,
+};
 use dbt_init::{ErrorCode, FsResult, fs_err};
 
 const ENGINE_ENV_PREFIX: &str = "DBT_ENGINE_";
@@ -115,20 +121,30 @@ const KNOWN_UNUSED_ENGINE_ENV_VARS: &[&str] = &[
 /// Engine-specific environment variables that ARE used by fusion.
 /// These are NOT aliases of DBT_* vars - they are unique to the engine.
 const USED_ENGINE_ENV_VARS: &[&str] = &[
+    "DBT_ENGINE_AI_PROVIDER",
+    BATCH_TESTS_ENV,
     "DBT_ENGINE_BETA_PACKAGE_PARSING",
     "DBT_ENGINE_BETA_PARSING",
     "DBT_ENGINE_EXPERIMENTAL_LIST_UDFS",
+    LOCAL_UNIT_TESTS_ENV,
+    MULTI_ADAPTER_ENV,
     "DBT_ENGINE_EXPERIMENTAL_SNAPSHOT_COLUMNS",
+    "DBT_ENGINE_GENERATE_INFO_SCHEMA",
+    "DBT_ENGINE_INFO_SCHEMA_DIR",
     "DBT_ENGINE_MANAGE_STATE",
+    "DBT_ENGINE_MANTLE_ARTIFACTS",
     "DBT_ENGINE_NO_WARN_SEMANTIC_MANIFEST_VALIDATION",
+    "DBT_ENGINE_OVERRIDE_SELECTION_FROM_RECORDING",
+    "DBT_ENGINE_OVERRIDE_SELECTION_FROM_RUN_RESULTS",
     "DBT_ENGINE_RECORDER_FILE_PATH",
     "DBT_ENGINE_RECORDER_MODE",
     "DBT_ENGINE_RECORDER_ROW_LIMIT",
     "DBT_ENGINE_RECORDER_TYPES",
+    REQUIRE_REF_SEARCHES_NODE_PACKAGE_BEFORE_ROOT_ENV,
     SKIP_REDUNDANT_TESTS_ENV,
     "DBT_ENGINE_STATE_API_URL",
     "DBT_ENGINE_STATE_AUTH_URL",
-    "DBT_ENGINE_STATE_EMIT_REUSED_STATUS",
+    "DBT_ENGINE_STATE_HOME",
     "DBT_ENGINE_STATE_OAUTH_CLIENT_ID",
     "DBT_ENGINE_STATE_TOKEN_URL",
 ];
@@ -192,9 +208,48 @@ pub fn apply_engine_env_var_aliases() {
     }
 }
 
-/// Warns about environment variables that are recognized but not supported by fusion.
+/// Translates the `FORCE_COLOR` convention (<https://force-color.org>) into the
+/// `CLICOLOR`/`CLICOLOR_FORCE` variables that the `console` crate (all terminal
+/// output styling) and `anstream` (clap usage and error text) already honor.
 ///
-/// These are typically dbt-core specific variables that have no effect in fusion.
+/// Without this, colored output is dropped whenever stdout is not a terminal --
+/// for example when a wrapper process captures it for logging or reformatting.
+///
+/// `NO_COLOR` needs no translation: both libraries honor it natively, so it is
+/// only checked here to make sure it wins over `FORCE_COLOR`.
+///
+/// # Safety
+///
+/// This function modifies the process environment. It must be called before
+/// spawning any threads and before CLI parsing.
+pub fn apply_color_env_overrides() {
+    // Per <https://no-color.org>, honored when present and non-empty.
+    if std::env::var_os("NO_COLOR").is_some_and(|value| !value.is_empty()) {
+        return;
+    }
+
+    let Some(force_color) = std::env::var_os("FORCE_COLOR") else {
+        return;
+    };
+
+    // `FORCE_COLOR=0` means off, matching npm's `supports-color`. Any other
+    // value, including an empty one, means force on.
+    let (var, value) = if force_color == "0" {
+        ("CLICOLOR", "0")
+    } else {
+        ("CLICOLOR_FORCE", "1")
+    };
+
+    // SAFETY: Called before any threads are spawned
+    #[allow(clippy::disallowed_methods)]
+    unsafe {
+        std::env::set_var(var, value);
+    }
+}
+
+/// Warns about environment variables that are recognized but not supported by dbt.
+///
+/// These are typically dbt-core specific variables that have no effect in dbt.
 /// Returns a list of the unused variables that were set (for testing purposes).
 pub fn warn_unused_engine_env_vars() -> Vec<String> {
     let unused: Vec<String> = std::env::vars()
@@ -205,11 +260,34 @@ pub fn warn_unused_engine_env_vars() -> Vec<String> {
     for var in &unused {
         emit_warn_log_message(
             ErrorCode::UnsupportedFusionFeature,
-            format!("{var} is not supported by fusion and will have no effect."),
+            format!("{var} is not supported by dbt and will have no effect."),
         );
     }
 
     unused
+}
+
+/// Warns when the deprecated `--run-cache-mode` CLI flag is used.
+///
+/// `--run-cache-mode` was renamed to `--state-mode` to match the `dbt State`
+/// terminology it configures. The old name is kept as a hidden alias so
+/// existing invocations keep working, but usage should nudge callers toward
+/// the new name.
+///
+/// TODO: remove `--run-cache-mode` (this alias and warning included) once v2
+/// has a policy for deprecating and removing CLI flags.
+pub fn warn_if_legacy_run_cache_mode_flag_used() {
+    let used_legacy_flag = std::env::args()
+        .any(|arg| arg == "--run-cache-mode" || arg.starts_with("--run-cache-mode="));
+
+    if used_legacy_flag {
+        emit_warn_log_message(
+            ErrorCode::DeprecatedOption,
+            "The `--run-cache-mode` flag has been renamed to `--state-mode` and will be \
+             removed in a future release. Please update your invocation to use `--state-mode` \
+             instead.",
+        );
+    }
 }
 
 /// Validates that no unknown environment variables use the reserved `DBT_ENGINE_` prefix.
@@ -280,6 +358,35 @@ mod tests {
     }
 
     #[test]
+    fn validate_engine_env_vars_allows_selection_override_vars() {
+        // Regression: these are read straight from the environment, which is invisible to the
+        // reserved-prefix check. Setting them must not be rejected as user-authored.
+        let _lock = ENV_MUTEX.lock().unwrap();
+        let vars = [
+            ("DBT_ENGINE_MANTLE_ARTIFACTS", "/tmp/mantle"),
+            ("DBT_ENGINE_OVERRIDE_SELECTION_FROM_RUN_RESULTS", "1"),
+            ("DBT_ENGINE_OVERRIDE_SELECTION_FROM_RECORDING", "1"),
+        ];
+        for (key, value) in vars {
+            unsafe {
+                #[allow(clippy::disallowed_methods)]
+                std::env::set_var(key, value);
+            }
+        }
+        let result = validate_engine_env_vars();
+        for (key, _) in vars {
+            unsafe {
+                #[allow(clippy::disallowed_methods)]
+                std::env::remove_var(key);
+            }
+        }
+        assert!(
+            result.is_ok(),
+            "selection-override vars should be known engine env vars: {result:?}"
+        );
+    }
+
+    #[test]
     fn validate_engine_env_vars_allows_dbt_state_vars() {
         let _lock = ENV_MUTEX.lock().unwrap();
         unsafe {
@@ -287,6 +394,8 @@ mod tests {
             std::env::set_var("DBT_ENGINE_MANAGE_STATE", "1");
             #[allow(clippy::disallowed_methods)]
             std::env::set_var("DBT_ENGINE_STATE_OAUTH_CLIENT_ID", "client-id");
+            #[allow(clippy::disallowed_methods)]
+            std::env::set_var("DBT_ENGINE_STATE_HOME", "state-home");
         }
         let result = validate_engine_env_vars();
         unsafe {
@@ -294,6 +403,8 @@ mod tests {
             std::env::remove_var("DBT_ENGINE_MANAGE_STATE");
             #[allow(clippy::disallowed_methods)]
             std::env::remove_var("DBT_ENGINE_STATE_OAUTH_CLIENT_ID");
+            #[allow(clippy::disallowed_methods)]
+            std::env::remove_var("DBT_ENGINE_STATE_HOME");
         }
         assert!(result.is_ok(), "dbt State engine env vars should not error");
     }
@@ -304,15 +415,37 @@ mod tests {
         unsafe {
             #[allow(clippy::disallowed_methods)]
             std::env::set_var(SKIP_REDUNDANT_TESTS_ENV, "1");
+            #[allow(clippy::disallowed_methods)]
+            std::env::set_var(BATCH_TESTS_ENV, "1");
         }
         let result = validate_engine_env_vars();
         unsafe {
             #[allow(clippy::disallowed_methods)]
             std::env::remove_var(SKIP_REDUNDANT_TESTS_ENV);
+            #[allow(clippy::disallowed_methods)]
+            std::env::remove_var(BATCH_TESTS_ENV);
         }
         assert!(
             result.is_ok(),
             "test optimization engine env vars should not error"
+        );
+    }
+
+    #[test]
+    fn validate_engine_env_vars_allows_ref_search_order_var() {
+        let _lock = ENV_MUTEX.lock().unwrap();
+        unsafe {
+            #[allow(clippy::disallowed_methods)]
+            std::env::set_var(REQUIRE_REF_SEARCHES_NODE_PACKAGE_BEFORE_ROOT_ENV, "1");
+        }
+        let result = validate_engine_env_vars();
+        unsafe {
+            #[allow(clippy::disallowed_methods)]
+            std::env::remove_var(REQUIRE_REF_SEARCHES_NODE_PACKAGE_BEFORE_ROOT_ENV);
+        }
+        assert!(
+            result.is_ok(),
+            "the ref search order engine env var should not error"
         );
     }
 
@@ -475,6 +608,111 @@ mod tests {
         unsafe {
             #[allow(clippy::disallowed_methods)]
             std::env::remove_var("DBT_ENGINE_FAIL_FAST");
+        }
+    }
+
+    /// Every variable `apply_color_env_overrides` reads or writes.
+    const COLOR_ENV_VARS: [&str; 4] = ["NO_COLOR", "FORCE_COLOR", "CLICOLOR", "CLICOLOR_FORCE"];
+
+    /// Clears the color variables so a case starts from a known state regardless
+    /// of the developer's shell, then restores the original values on drop so the
+    /// tests do not change color settings for the rest of the process (under
+    /// `cargo test` all tests share one process).
+    struct ColorEnvGuard {
+        saved: Vec<(&'static str, Option<std::ffi::OsString>)>,
+    }
+
+    impl ColorEnvGuard {
+        fn new(set: &[(&str, &str)]) -> Self {
+            let saved = COLOR_ENV_VARS
+                .iter()
+                .map(|var| (*var, std::env::var_os(var)))
+                .collect();
+
+            for var in COLOR_ENV_VARS {
+                unsafe {
+                    #[allow(clippy::disallowed_methods)]
+                    std::env::remove_var(var);
+                }
+            }
+            for (var, value) in set {
+                unsafe {
+                    #[allow(clippy::disallowed_methods)]
+                    std::env::set_var(var, value);
+                }
+            }
+
+            Self { saved }
+        }
+    }
+
+    impl Drop for ColorEnvGuard {
+        fn drop(&mut self) {
+            for (var, value) in &self.saved {
+                unsafe {
+                    #[allow(clippy::disallowed_methods)]
+                    match value {
+                        Some(value) => std::env::set_var(var, value),
+                        None => std::env::remove_var(var),
+                    }
+                }
+            }
+        }
+    }
+
+    /// One `apply_color_env_overrides` case: a name, the color variables to start
+    /// from, and the `CLICOLOR`/`CLICOLOR_FORCE` values expected afterwards.
+    type ColorCase = (
+        &'static str,
+        &'static [(&'static str, &'static str)],
+        Option<&'static str>,
+        Option<&'static str>,
+    );
+
+    #[test]
+    fn apply_color_env_overrides_translates_force_color() {
+        let cases: &[ColorCase] = &[
+            ("nothing set", &[], None, None),
+            ("FORCE_COLOR=1", &[("FORCE_COLOR", "1")], None, Some("1")),
+            // Any value other than `0` forces color on, matching npm's
+            // `supports-color`.
+            ("FORCE_COLOR=2", &[("FORCE_COLOR", "2")], None, Some("1")),
+            ("empty FORCE_COLOR", &[("FORCE_COLOR", "")], None, Some("1")),
+            ("FORCE_COLOR=0", &[("FORCE_COLOR", "0")], Some("0"), None),
+            // NO_COLOR is honored natively by `console` and `anstream`, so
+            // neither variable is written and thus neither can override it.
+            (
+                "NO_COLOR beats FORCE_COLOR",
+                &[("NO_COLOR", "1"), ("FORCE_COLOR", "1")],
+                None,
+                None,
+            ),
+            // Per <https://no-color.org>, an empty NO_COLOR is not honored.
+            (
+                "empty NO_COLOR is ignored",
+                &[("NO_COLOR", ""), ("FORCE_COLOR", "1")],
+                None,
+                Some("1"),
+            ),
+        ];
+
+        let _lock = ENV_MUTEX.lock().unwrap();
+
+        for (case, set, clicolor, clicolor_force) in cases {
+            let _guard = ColorEnvGuard::new(set);
+
+            apply_color_env_overrides();
+
+            assert_eq!(
+                std::env::var("CLICOLOR").ok().as_deref(),
+                *clicolor,
+                "unexpected CLICOLOR for case: {case}"
+            );
+            assert_eq!(
+                std::env::var("CLICOLOR_FORCE").ok().as_deref(),
+                *clicolor_force,
+                "unexpected CLICOLOR_FORCE for case: {case}"
+            );
         }
     }
 }

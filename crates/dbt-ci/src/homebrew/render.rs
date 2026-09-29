@@ -793,16 +793,17 @@ mod tests {
 
     #[test]
     fn render_formula_renames_when_install_as_differs_from_binary() {
-        // dbt-core's formula: tarball ships `dbt-sa-cli`, brew installs it
-        // as `dbt`, formula filename is `dbt-core.rb`. All three names
-        // distinct.
+        // Tarball ships `dbt-legacy-name`, brew installs it as `dbt`,
+        // formula filename is `dbt-core.rb`. All three names distinct.
+        // dbt-core's own formula no longer needs this (its tarball ships
+        // `dbt`), but the rename-on-install path is still supported.
         let mut ctx = fixture_ctx_dbt();
         ctx.class_name = "DbtCore".into();
-        ctx.binary_name = "dbt-sa-cli".into();
+        ctx.binary_name = "dbt-legacy-name".into();
         ctx.install_as = "dbt".into();
         let out = render_formula(&ctx);
         assert!(out.contains("class DbtCore < Formula\n"));
-        assert!(out.contains("bin.install \"dbt-sa-cli\" => \"dbt\"\n"));
+        assert!(out.contains("bin.install \"dbt-legacy-name\" => \"dbt\"\n"));
         // Test invocation uses the installed name, not the formula name.
         assert!(out.contains("shell_output(\"#{bin}/dbt --version\")"));
     }
@@ -811,7 +812,7 @@ mod tests {
     fn render_formula_emits_conflicts_with_clauses_referencing_installed_name() {
         let mut ctx = fixture_ctx_dbt();
         ctx.class_name = "DbtCore".into();
-        ctx.binary_name = "dbt-sa-cli".into();
+        ctx.binary_name = "dbt-legacy-name".into();
         ctx.install_as = "dbt".into();
         ctx.conflicts_with = vec!["dbt".into()];
         let out = render_formula(&ctx);

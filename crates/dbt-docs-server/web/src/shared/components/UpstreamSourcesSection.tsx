@@ -1,17 +1,14 @@
-import { useMemo } from 'react';
-
+import { createElement, useMemo } from 'react';
 import {
-  Icon,
-  Ryecon,
-  RyeconFreshnessError,
-  RyeconFreshnessPassed,
-  RyeconFreshnessStale,
-  RyeconFreshnessUnknown,
-  RyeconStatusSkipped,
-  RyeconStatusWarning,
-  Tooltip,
-} from '@dbt-labs/sourdough';
+  BadgeAlert,
+  BadgeCheck,
+  BadgeMinus,
+  BadgeX,
+  CircleMinus,
+  type LucideIcon,
+} from 'lucide-react';
 
+import { Tooltip } from '../../components/ui/Tooltip';
 import { truthy } from '../util/array';
 import { CollapsibleSection } from './CollapsibleSection';
 
@@ -22,14 +19,14 @@ export type SharedUpstreamSource = {
 };
 
 // exported for external use
-export const upstreamFreshnessToRyeconMap: Record<string, Ryecon> = {
-  error: RyeconFreshnessError,
-  warn: RyeconStatusWarning,
-  unknown: RyeconFreshnessUnknown,
-  pass: RyeconFreshnessPassed,
-  skipped: RyeconStatusSkipped,
-  outdated: RyeconFreshnessStale,
-  unconfigured: RyeconFreshnessUnknown,
+export const upstreamFreshnessToIconMap: Record<string, LucideIcon> = {
+  error: BadgeX,
+  warn: BadgeAlert,
+  unknown: BadgeMinus,
+  pass: BadgeCheck,
+  skipped: CircleMinus,
+  outdated: BadgeX,
+  unconfigured: BadgeMinus,
 };
 
 // used to sort results by severity (lower = worse)
@@ -112,9 +109,6 @@ export const UpstreamSourcesSection: React.FC<UpstreamSourcesSectionProps> = ({
     };
   }, [sources]);
 
-  const freshnessRyecon =
-    upstreamFreshnessToRyeconMap[worstFreshnessStatus] ?? RyeconFreshnessUnknown;
-
   return (
     <>
       {sortedSources && sortedSources.length > 0 && (
@@ -136,11 +130,10 @@ export const UpstreamSourcesSection: React.FC<UpstreamSourcesSectionProps> = ({
                 content={tooltipMessage}
                 className="pointer-events-auto flex items-center"
               >
-                <Icon
-                  size="md"
-                  ryecon={freshnessRyecon}
-                  className="pointer-events-auto align-middle"
-                />
+                {createElement(
+                  upstreamFreshnessToIconMap[worstFreshnessStatus] ?? BadgeMinus,
+                  { className: 'size-4 pointer-events-auto align-middle' },
+                )}
                 <div className="sr-only">{tooltipMessage}</div>
               </Tooltip>
             </span>

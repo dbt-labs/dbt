@@ -1,9 +1,9 @@
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     path::{Path, PathBuf},
     sync::{
         Arc,
-        atomic::{AtomicU8, AtomicU64, Ordering},
+        atomic::{AtomicU8, AtomicU32, AtomicU64, Ordering},
     },
 };
 
@@ -11,13 +11,14 @@ use dbt_common::{
     FsResult,
     stats::NodeStatus,
     tracing::{
-        layers::tui_layer::TuiAllProcessingNodesGroup,
+        layers::tui_layer::{TuiAggregatedTestGroup, TuiAllProcessingNodesGroup},
         span_info::{
             read_span_attrs, read_span_start_info, record_span_status_from_attrs, update_span_attrs,
         },
     },
 };
 use dbt_schemas::schemas::InternalDbtNodeAttributes;
+use dbt_schemas::schemas::common::DbtMaterialization;
 use dbt_telemetry::{
     ExecutionPhase, NodeCacheDetail, NodeCacheReason, NodeErrorType, NodeEvaluated, NodeOutcome,
     NodeOutcomeDetail, NodeProcessed, NodeSkipReason, NodeSkipUpstreamDetail, NodeType,
@@ -32,9 +33,50 @@ use crate::{
         ParentSpanBuilder, ParentSpanRef, ParentTaskSpanOnClose, ParentTaskSpanOnSkip, SpanLevel,
         SpanManager, SpanTreeRequest,
     },
-    task::{TP, Task},
+    task::{AggregatedNodeGroup, TP, Task},
     visitor::SkipReason,
 };
+
+/// Hands out dbt core style `[N of M]` execution indices for `NodeProcessed` spans.
+///
+/// `next_index` is bumped once per node, when that node's span is built. The span manager
+/// builds each parent span lazily and exactly once, as the node's first task opens, so the
+/// index ends up reflecting the order in which nodes *begin* processing -- the same thing
+/// dbt core's dequeue counter measures.
+///
+/// `total` is accumulated while spans are registered and read back lazily by the builders.
+/// Registration completes before any task runs, so builders always observe the final value.
+#[derive(Default)]
+pub struct NodeIndexAllocator {
+    next_index: AtomicU32,
+    total: AtomicU32,
+}
+
+impl NodeIndexAllocator {
+    /// Counts one more node that will be handed an index.
+    fn add_node(&self) {
+        self.total.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Claims the next 1-based index, paired with the total it should be shown against.
+    fn claim(&self) -> (u32, u32) {
+        (
+            self.next_index.fetch_add(1, Ordering::AcqRel) + 1,
+            self.total.load(Ordering::Acquire),
+        )
+    }
+}
+
+/// Whether a node takes part in the `[N of M]` numbering.
+///
+/// dbt core numbers every selected node except ephemeral models: those print no progress
+/// line and are left out of the `M` denominator (`num_nodes` in `GraphRunnableTask`). Fusion
+/// pulls ephemeral upstreams into the selection to build them, and reports them as no-op
+/// skips that the TUI suppresses, so they have to be excluded here for the largest index to
+/// match the total.
+fn takes_execution_index(node: &dyn InternalDbtNodeAttributes, in_selection: bool) -> bool {
+    in_selection && node.materialized() != DbtMaterialization::Ephemeral
+}
 
 /// Helper functions for generating span keys used in registration and task requests
 /// Returns the span key for a PhaseExecuted span
@@ -50,6 +92,11 @@ pub fn node_processed_span_key(unique_id: &str) -> String {
 /// Returns the span key for the TuiAllProcessingNodesGroup span
 fn all_processing_nodes_span_key() -> String {
     "__all_processing_nodes__".to_string()
+}
+
+/// Returns the span key for an aggregated node group's grouping span
+fn aggregated_test_group_span_key(group_unique_id: &str) -> String {
+    format!("__aggregated_test_group__::{group_unique_id}")
 }
 
 pub fn update_node_outcome_from_skip_reason(ev: &mut NodeEvaluated, skip_reason: &SkipReason) {
@@ -96,7 +143,7 @@ fn update_node_outcome_from_legacy_status(event: &mut NodeEvaluated, status: Nod
         NodeStatus::StaticallyCheckedDataTest => {
             event.set_node_outcome(NodeOutcome::Success);
             event.node_outcome_detail = Some(NodeOutcomeDetail::NodeTestDetail(
-                TestEvaluationDetail::new(TestOutcome::Passed, 0, None, None, Some(true)),
+                TestEvaluationDetail::new(TestOutcome::Passed, 0, None, None, Some(true), None),
             ));
         }
         NodeStatus::TestWarned => {
@@ -213,8 +260,6 @@ pub fn create_task_span_for_node(
 /// Information about node counts across phases, used for span creation.
 #[derive(Debug, Clone)]
 struct NodeCounts {
-    /// Total number of unique nodes being processed
-    node_count_total: u64,
     /// Number of nodes in each phase
     node_counts_by_phase: HashMap<TP, u64>,
     /// Number of tasks for each unique node ID
@@ -228,7 +273,6 @@ struct NodeCounts {
 fn calculate_node_counts(schedule: &DiGraph<Arc<dyn Task>, ()>) -> NodeCounts {
     let mut node_counts_by_phase: HashMap<TP, u64> = HashMap::new();
     let mut node_unique_id_to_task_count: HashMap<String, u8> = HashMap::new();
-    let mut all_unique_ids = HashSet::new();
 
     for task in schedule.node_weights() {
         if let Some(tp) = task.task_phase() {
@@ -239,7 +283,6 @@ fn calculate_node_counts(schedule: &DiGraph<Arc<dyn Task>, ()>) -> NodeCounts {
                 .iter()
                 .map(|node| node.common().unique_id.as_str())
             {
-                all_unique_ids.insert(unique_id.to_string());
                 *node_unique_id_to_task_count
                     .entry(unique_id.to_string())
                     .or_insert(0) += 1
@@ -247,13 +290,40 @@ fn calculate_node_counts(schedule: &DiGraph<Arc<dyn Task>, ()>) -> NodeCounts {
         }
     }
 
-    let node_count_total = all_unique_ids.len() as u64;
-
     NodeCounts {
-        node_count_total,
         node_counts_by_phase,
         node_unique_id_to_task_count,
     }
+}
+
+/// Collects the aggregated node groups in the schedule together with the unique ids of the
+/// nodes each one covers.
+///
+/// Keyed by group unique id so a group reported by several tasks is registered exactly
+/// once - `register_parent_span_builder` rejects duplicate keys, and a partial
+/// registration surfaces much later as a missing parent span builder.
+fn collect_aggregated_node_groups(
+    schedule: &DiGraph<Arc<dyn Task>, ()>,
+) -> BTreeMap<String, (AggregatedNodeGroup, BTreeSet<String>)> {
+    let mut groups: BTreeMap<String, (AggregatedNodeGroup, BTreeSet<String>)> = BTreeMap::new();
+
+    for task in schedule.node_weights() {
+        let Some(group) = task.aggregated_node_group() else {
+            continue;
+        };
+
+        let (_, member_ids) = groups
+            .entry(group.unique_id.clone())
+            .or_insert_with(|| (group, BTreeSet::new()));
+
+        member_ids.extend(
+            task.dbt_nodes()
+                .iter()
+                .map(|node| node.common().unique_id.clone()),
+        );
+    }
+
+    groups
 }
 
 fn update_node_processed_from_node_evaluated(sum_ev: &mut NodeProcessed, phase_ev: &NodeEvaluated) {
@@ -509,19 +579,30 @@ fn create_node_processed_builder_fn(
     initial_phase: ExecutionPhase,
     task_count_total: u8,
     in_selection: bool,
+    index_allocator: Arc<NodeIndexAllocator>,
+    takes_index: bool,
 ) -> impl FnOnce() -> ParentSpanBuilder<FsResult<NodeStatus>, SkipReason> {
     let node_processed_finished_counter = Arc::new(AtomicU8::new(0));
     let node_processed_finished_counter_clone = node_processed_finished_counter.clone();
 
     move || {
+        let mut event = node.get_node_processed_event(
+            Some(initial_phase),
+            in_dir.as_path(),
+            out_dir.as_path(),
+            in_selection,
+        );
+
+        // Claimed here, rather than at registration, so the number reflects the order nodes
+        // start processing instead of the order they happen to sit in the schedule.
+        if takes_index {
+            let (index, total) = index_allocator.claim();
+            event.node_index = Some(index);
+            event.node_count_total = Some(total);
+        }
+
         ParentSpanBuilder::new(
-            node.get_node_processed_event(
-                Some(initial_phase),
-                in_dir.as_path(),
-                out_dir.as_path(),
-                in_selection,
-            )
-            .into(),
+            event.into(),
             // Update dbt core code, status should auto-infer from attributes
             Some(Box::new(|this_span| {
                 update_span_attrs(this_span, |ev: &mut NodeProcessed| {
@@ -540,9 +621,48 @@ fn create_node_processed_builder_fn(
     }
 }
 
+/// Creates a builder_fn closure for an aggregated node group's grouping span.
+///
+/// `member_count` must be the number of `NodeProcessed` spans registered under this group,
+/// so the span closes exactly when the last of them does.
+fn create_aggregated_test_group_builder_fn(
+    group: AggregatedNodeGroup,
+    member_count: u64,
+) -> impl FnOnce() -> ParentSpanBuilder<FsResult<NodeStatus>, SkipReason> {
+    move || {
+        let group_finished_counter = Arc::new(AtomicU64::new(0));
+        let group_finished_counter_clone = group_finished_counter.clone();
+
+        ParentSpanBuilder::new(
+            TuiAggregatedTestGroup {
+                macro_name: group.macro_name,
+                attached_node: group.attached_node,
+            }
+            .into(),
+            // No callbacks, pure TUI grouping span
+            None,
+            // Track when member nodes finish for counting
+            Some(Box::new(move |_, _, _| {
+                let cur_finished = group_finished_counter.fetch_add(1, Ordering::AcqRel) + 1;
+
+                cur_finished == member_count
+            })),
+            Some(Box::new(move |_, _, _| {
+                let cur_finished = group_finished_counter_clone.fetch_add(1, Ordering::AcqRel) + 1;
+
+                cur_finished == member_count
+            })),
+        )
+    }
+}
+
 /// Creates a builder_fn closure for the all processing nodes group parent span.
+///
+/// The close callbacks fire once per closing *direct child*, so `child_count_total` counts
+/// spans registered directly under this one - not nodes. Aggregated group members close
+/// under their own group span and contribute one increment per group, not per member.
 fn create_node_group_builder_fn(
-    node_count_total: u64,
+    child_count_total: u64,
 ) -> impl FnOnce() -> ParentSpanBuilder<FsResult<NodeStatus>, SkipReason> {
     move || {
         let node_group_finished_counter = Arc::new(AtomicU64::new(0));
@@ -557,16 +677,16 @@ fn create_node_group_builder_fn(
                 // Increment finished counter
                 let cur_finished = node_group_finished_counter.fetch_add(1, Ordering::AcqRel) + 1;
 
-                // Close when all tasks are done
-                cur_finished == node_count_total
+                // Close when all children are done
+                cur_finished == child_count_total
             })),
             Some(Box::new(move |_, _, _| {
                 // Increment finished counter
                 let cur_finished =
                     node_group_finished_counter_clone.fetch_add(1, Ordering::AcqRel) + 1;
 
-                // Close when all tasks are done
-                cur_finished == node_count_total
+                // Close when all children are done
+                cur_finished == child_count_total
             })),
         )
     }
@@ -579,6 +699,7 @@ fn create_node_group_builder_fn(
 ///
 /// This must be called before any task spans are created. It registers:
 /// - Phase spans (one per phase with nodes in that phase)
+/// - TuiAggregatedTestGroup spans (one per aggregated node group)
 /// - NodeProcessed spans (one per unique node)
 /// - TuiAllProcessingNodesGroup span (single span for all nodes)
 ///
@@ -590,7 +711,7 @@ pub fn populate_span_manager(
     schedule: &DiGraph<Arc<dyn Task>, ()>,
     in_dir: &Path,
     out_dir: &Path,
-    selected_nodes: &std::collections::BTreeSet<String>,
+    selected_nodes: &BTreeSet<String>,
 ) -> FsResult<()> {
     let node_counts = calculate_node_counts(schedule);
 
@@ -601,6 +722,42 @@ pub fn populate_span_manager(
             phase_span_key(execution_phase),
             None, // Phase spans have no managed parent (will be placed under visitor span)
             Box::new(create_phase_parent_builder_fn(execution_phase, count)),
+        )?;
+    }
+
+    let aggregated_node_groups = collect_aggregated_node_groups(schedule);
+    let node_id_to_group: HashMap<String, String> = aggregated_node_groups
+        .iter()
+        .flat_map(|(group_unique_id, (_, member_ids))| {
+            member_ids
+                .iter()
+                .map(|member_id| (member_id.clone(), group_unique_id.clone()))
+        })
+        .collect();
+
+    // Counted as spans are registered, so the total the TuiAllProcessingNodesGroup span
+    // closes on can never disagree with the tree that actually gets built.
+    let mut all_processing_nodes_child_count = 0u64;
+
+    // Shared by every NodeProcessed builder: the loop below tallies the denominator while
+    // registering, and each builder claims its own index once execution reaches that node.
+    let index_allocator = Arc::new(NodeIndexAllocator::default());
+
+    // Register TuiAggregatedTestGroup spans (one per aggregated node group)
+    for (group_unique_id, (group, member_ids)) in aggregated_node_groups {
+        all_processing_nodes_child_count += 1;
+
+        span_manager.register_parent_span_builder(
+            aggregated_test_group_span_key(&group_unique_id),
+            // TuiAggregatedTestGroup has TuiAllProcessingNodesGroup as parent
+            Some(ParentSpanRef::new(
+                SpanLevel::Info,
+                all_processing_nodes_span_key().into(),
+            )),
+            Box::new(create_aggregated_test_group_builder_fn(
+                group,
+                member_ids.len() as u64,
+            )),
         )?;
     }
 
@@ -617,13 +774,24 @@ pub fn populate_span_manager(
 
                 let in_selection = selected_nodes.contains(&unique_id);
 
+                let takes_index = takes_execution_index(node.as_ref(), in_selection);
+                if takes_index {
+                    index_allocator.add_node();
+                }
+
+                // Members of an aggregated group hang off their group span; every other
+                // node hangs off TuiAllProcessingNodesGroup directly.
+                let parent_span_key = match node_id_to_group.get(&unique_id) {
+                    Some(group_unique_id) => aggregated_test_group_span_key(group_unique_id),
+                    None => {
+                        all_processing_nodes_child_count += 1;
+                        all_processing_nodes_span_key()
+                    }
+                };
+
                 span_manager.register_parent_span_builder(
                     node_processed_span_key(&unique_id),
-                    // NodeProcessed has TuiAllProcessingNodesGroup as parent
-                    Some(ParentSpanRef::new(
-                        SpanLevel::Info,
-                        all_processing_nodes_span_key().into(),
-                    )),
+                    Some(ParentSpanRef::new(SpanLevel::Info, parent_span_key.into())),
                     Box::new(create_node_processed_builder_fn(
                         node.clone(),
                         in_dir.to_path_buf(),
@@ -631,6 +799,8 @@ pub fn populate_span_manager(
                         ExecutionPhase::Unspecified,
                         task_count_total,
                         in_selection,
+                        index_allocator.clone(),
+                        takes_index,
                     )),
                 )?;
             }
@@ -641,7 +811,9 @@ pub fn populate_span_manager(
     span_manager.register_parent_span_builder(
         all_processing_nodes_span_key(),
         None, // TuiAllProcessingNodesGroup has no managed parent (will be placed under visitor span)
-        Box::new(create_node_group_builder_fn(node_counts.node_count_total)),
+        Box::new(create_node_group_builder_fn(
+            all_processing_nodes_child_count,
+        )),
     )?;
 
     Ok(())
@@ -736,7 +908,7 @@ mod tests {
         run.set_node_outcome(NodeOutcome::Success);
         run.set_node_skip_reason(NodeSkipReason::Cached);
         run.node_outcome_detail = Some(NodeOutcomeDetail::NodeTestDetail(
-            TestEvaluationDetail::new(TestOutcome::Warned, 2, None, None, None),
+            TestEvaluationDetail::new(TestOutcome::Warned, 2, None, None, None, None),
         ));
 
         update_node_processed_from_node_evaluated(&mut processed, &run);
@@ -759,7 +931,7 @@ mod tests {
         run.set_node_outcome(NodeOutcome::Success);
         run.set_node_skip_reason(NodeSkipReason::Cached);
         run.node_outcome_detail = Some(NodeOutcomeDetail::NodeTestDetail(
-            TestEvaluationDetail::new(TestOutcome::Warned, 2, None, None, None),
+            TestEvaluationDetail::new(TestOutcome::Warned, 2, None, None, None, None),
         ));
 
         accumulate_node_processed_phase_duration(&mut processed, Some(250), Some(&run));

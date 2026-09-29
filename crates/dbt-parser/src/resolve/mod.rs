@@ -2,6 +2,8 @@
 pub(crate) mod primary_key_inference;
 /// Functions for resolving analyses
 pub mod resolve_analyses;
+/// Functions for resolving checks
+pub mod resolve_checks;
 /// Functions for resolving exposures
 pub(crate) mod resolve_exposures;
 /// Functions for resolving functions

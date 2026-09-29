@@ -1,14 +1,14 @@
 import type { ColumnDef } from '@tanstack/react-table';
 
-import type { Ryecon } from '@dbt-labs/sourdough';
-import { Icon, Tooltip } from '@dbt-labs/sourdough';
+import { Tooltip } from '../components/ui/Tooltip';
 
-/** Factory for the standard resource-list name column: icon + truncating tooltip + peek button.
+/** Factory for the standard resource-list name column: truncating tooltip + peek button.
  *  Replaces the 15-line inline cell block duplicated across every *FilterView.
  *  `getId` reads the row's unique id — domain summaries expose `uniqueId`, the
- *  nodes-backed views' `NodeSummary` exposes `unique_id`. */
+ *  nodes-backed views' `NodeSummary` exposes `unique_id`.
+ *  No resource-type icon here by design — matches prod (dbt Explorer), which
+ *  doesn't show one in the Name column either. */
 export function makeNameCell<T extends { name: string }>(
-  ryecon: Ryecon,
   onPeek: (id: string) => void,
   getId: (row: T) => string,
   opts?: { enableSorting?: boolean },
@@ -21,7 +21,6 @@ export function makeNameCell<T extends { name: string }>(
     enableSorting: opts?.enableSorting,
     cell: (info) => (
       <div className="flex min-w-0 items-center gap-2">
-        <Icon ryecon={ryecon} size="xs" alt="" className="shrink-0" />
         <Tooltip
           displayOnlyWhenTruncated
           content={info.row.original.name}

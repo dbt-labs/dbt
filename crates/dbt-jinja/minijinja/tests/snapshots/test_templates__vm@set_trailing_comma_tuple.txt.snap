@@ -1,0 +1,30 @@
+---
+source: fs/sa/crates/dbt-jinja/minijinja/tests/test_templates.rs
+description: "Scalar (no comma):\n{% set scalar = 1 %}{{ scalar }}\n\nSingle value with trailing comma (must be a 1-tuple, not the bare scalar):\n{% set one_tuple = 1, %}{{ one_tuple }}\n{{ one_tuple[0] }}\n{% for v in one_tuple %}{{ v }}{% endfor %}\n\nTwo values, no trailing comma (tuple):\n{% set two_tuple = 1, 2 %}{{ two_tuple }}\n\nTwo values, trailing comma (same tuple, comma is just a terminator):\n{% set two_tuple_trailing = 1, 2, %}{{ two_tuple_trailing }}\n\nList literal for contrast (mutable list, must render differently from the tuple):\n{% set lit_list = [1, 2] %}{{ lit_list }}"
+info:
+  __minijinja_current_path: set_trailing_comma_tuple.txt
+  __minijinja_current_span:
+    start_line: 1
+    start_col: 1
+    start_offset: 0
+    end_line: 1
+    end_col: 1
+    end_offset: 0
+input_file: fs/sa/crates/dbt-jinja/minijinja/tests/inputs/set_trailing_comma_tuple.txt
+---
+Scalar (no comma):
+1
+
+Single value with trailing comma (must be a 1-tuple, not the bare scalar):
+(1,)
+1
+1
+
+Two values, no trailing comma (tuple):
+(1, 2)
+
+Two values, trailing comma (same tuple, comma is just a terminator):
+(1, 2)
+
+List literal for contrast (mutable list, must render differently from the tuple):
+[1, 2]

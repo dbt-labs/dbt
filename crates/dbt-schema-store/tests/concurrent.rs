@@ -193,7 +193,7 @@ fn save_is_idempotent() {
     store.save(dir.path()).unwrap();
 
     // Only one epoch file should exist (the second save wrote nothing new).
-    let remote_dir = dir.path().join("metadata/warehouse/schemas");
+    let remote_dir = dir.path().join("private/metadata/warehouse/schemas");
     let file_count = std::fs::read_dir(&remote_dir)
         .unwrap()
         .flatten()
@@ -251,7 +251,7 @@ fn save_from_multiple_threads() {
     // At most one epoch file should have been written (all saves are idempotent
     // after the first one writes). With the current implementation (no idempotency
     // guard), we may get multiple files — this test documents the desired behavior.
-    let remote_dir = dir.path().join("metadata/warehouse/schemas");
+    let remote_dir = dir.path().join("private/metadata/warehouse/schemas");
     let file_count = std::fs::read_dir(&remote_dir)
         .unwrap()
         .flatten()

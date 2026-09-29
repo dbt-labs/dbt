@@ -8,7 +8,6 @@ use dbt_adbc::{Backend, database};
 mod config;
 
 // Database-specific auth implementations
-mod alt;
 mod athena;
 mod bigquery;
 mod clickhouse;
@@ -17,36 +16,27 @@ mod duckdb;
 mod exasol;
 #[cfg(test)]
 mod flock;
+mod lake_compute;
 mod postgres;
 mod redshift;
 mod salesforce;
-mod snowflake;
+pub mod snowflake;
 mod spark;
 mod sqlserver;
 #[cfg(test)]
 mod test_options;
 
 pub use config::AdapterConfig;
-pub use duckdb::init::{generate_duckdb_init_sql, is_motherduck_path};
-
-/// The result of configuring an auth backend.
-///
-/// Contains the configured database builder and any warnings emitted during
-/// configuration (e.g. ignored profile fields).
-#[derive(Debug)]
-pub struct AuthOutcome {
-    pub builder: database::Builder,
-    pub warnings: Vec<String>,
-}
+pub use duckdb::init::{DuckDbTarget, generate_duckdb_init_sql};
 
 pub trait AuthWarningPrinter: Send + Sync {
-    fn warn(&self, msg: &str);
+    fn warn(&self, message: &str);
 }
 
 pub struct NoopAuthWarningPrinter;
 
 impl AuthWarningPrinter for NoopAuthWarningPrinter {
-    fn warn(&self, _msg: &str) {}
+    fn warn(&self, _message: &str) {}
 }
 
 /// Authorization trait.
@@ -55,45 +45,48 @@ pub trait Auth: Send + Sync {
     fn backend(&self) -> Backend;
 
     /// Configure the XDBC database builder.
-    fn configure(&self, config: &AdapterConfig) -> Result<AuthOutcome, AuthError>;
+    fn configure(&self, config: &AdapterConfig) -> Result<database::Builder, AuthError>;
 }
 
 /// Macro used to structure the AdapterConfig -> database::Builder pipeline
 #[macro_export]
 macro_rules! auth_configure_pipeline {
-    ($backend:expr, $cfg:expr, $parse_auth:path, $apply_connection_args:path) => {{
-        let authentication_args = $parse_auth($cfg)?;
+    ($self:expr, $cfg:expr, $parse_auth:path, $apply_connection_args:path) => {{
+        let authentication_args = $parse_auth($cfg, $self.warning_printer.as_ref())?;
 
-        let builder = database::Builder::new($backend);
-        let builder = authentication_args.apply(builder)?;
-        let builder = $apply_connection_args($cfg, builder)?;
+        let builder = database::Builder::new($self.backend());
+        let builder = authentication_args.apply(builder, $self.warning_printer.as_ref())?;
+        let builder = $apply_connection_args($cfg, builder, $self.warning_printer.as_ref())?;
 
-        Ok($crate::AuthOutcome {
-            builder,
-            warnings: vec![],
-        })
+        Ok(builder)
     }};
 }
 
 /// Factory function to create an Auth instance based on the backend type.
-pub fn auth_for_backend(
-    warning_printer: Box<dyn AuthWarningPrinter>,
+pub fn auth_for_backend(backend: Backend) -> Box<dyn Auth> {
+    auth_for_backend_with_warnings(backend, Box::new(NoopAuthWarningPrinter))
+}
+
+pub fn auth_for_backend_with_warnings(
     backend: Backend,
+    warning_printer: Box<dyn AuthWarningPrinter>,
 ) -> Box<dyn Auth> {
     match backend {
-        Backend::Snowflake => Box::new(snowflake::SnowflakeAuth { warning_printer }),
-        Backend::Postgres => Box::new(postgres::PostgresAuth {}),
-        Backend::BigQuery => Box::new(bigquery::BigqueryAuth {}),
-        Backend::Databricks => Box::new(databricks::DatabricksAuth {}),
-        Backend::Redshift => Box::new(redshift::RedshiftAuth {}),
-        Backend::Salesforce => Box::new(salesforce::SalesforceAuth {}),
-        Backend::Spark => Box::new(spark::SparkAuth {}),
-        Backend::DuckDB | Backend::DuckDBExtended => Box::new(duckdb::DuckDbAuth::new(backend)),
-        Backend::Alt => Box::new(alt::AltAuth {}),
-        Backend::SQLServer => Box::new(sqlserver::SQLServerAuth {}),
-        Backend::ClickHouse => Box::new(clickhouse::ClickHouseAuth {}),
-        Backend::Athena => Box::new(athena::AthenaAuth {}),
-        Backend::Exasol => Box::new(exasol::ExasolAuth {}),
+        Backend::Snowflake => Box::new(snowflake::SnowflakeAuth::new(warning_printer)),
+        Backend::Postgres => Box::new(postgres::PostgresAuth::new(warning_printer)),
+        Backend::BigQuery => Box::new(bigquery::BigqueryAuth::new(warning_printer)),
+        Backend::Databricks => Box::new(databricks::DatabricksAuth::new(warning_printer)),
+        Backend::Redshift => Box::new(redshift::RedshiftAuth::new(warning_printer)),
+        Backend::Salesforce => Box::new(salesforce::SalesforceAuth::new(warning_printer)),
+        Backend::Spark => Box::new(spark::SparkAuth::new(warning_printer)),
+        Backend::DuckDB | Backend::DuckDBExtended => {
+            Box::new(duckdb::DuckDbAuth::new(backend, warning_printer))
+        }
+        Backend::LakeCompute => Box::new(lake_compute::LakeComputeAuth::new(warning_printer)),
+        Backend::SQLServer => Box::new(sqlserver::SQLServerAuth::new(warning_printer)),
+        Backend::ClickHouse => Box::new(clickhouse::ClickHouseAuth::new(warning_printer)),
+        Backend::Athena => Box::new(athena::AthenaAuth::new(warning_printer)),
+        Backend::Exasol => Box::new(exasol::ExasolAuth::new(warning_printer)),
         Backend::Generic { .. } => unimplemented!("generic backend authentication"),
     }
 }

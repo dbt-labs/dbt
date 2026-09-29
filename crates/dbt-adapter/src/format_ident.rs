@@ -3,16 +3,6 @@ use std::collections::HashSet;
 use dbt_adapter_core::{AdapterType, quote_char};
 use once_cell::sync::Lazy;
 
-pub fn default_identifier_case(component: &str, adapter: AdapterType) -> String {
-    match adapter {
-        AdapterType::Salesforce | AdapterType::Bigquery | AdapterType::ClickHouse => {
-            component.to_string()
-        }
-        AdapterType::Snowflake => component.to_uppercase(),
-        _ => component.to_lowercase(),
-    }
-}
-
 pub fn format_ident(id: &str, adapter: AdapterType) -> String {
     if !need_quotes(id, adapter) {
         return id.to_string();
@@ -88,11 +78,21 @@ static EMPTY_KEYWORDS: Lazy<HashSet<&'static str>> = Lazy::new(HashSet::new);
 pub fn reserved_keywords(adapter: AdapterType) -> &'static HashSet<&'static str> {
     match adapter {
         AdapterType::Fabric => &FABRIC_KEYWORDS,
+        AdapterType::Exasol => &EXASOL_KEYWORDS,
         // For other adapters the proprietary TypeOpsImpl handles keyword checks via sdf-frontend;
         // the source-available fallback uses an empty set.
         _ => &EMPTY_KEYWORDS,
     }
 }
+
+// Unquoted identifiers matching an Exasol reserved word fail to parse, so they
+// force quoting.
+static EXASOL_KEYWORDS: Lazy<HashSet<&'static str>> = Lazy::new(|| {
+    dbt_sql_keywords::exasol::RESERVED_KEYWORDS
+        .iter()
+        .copied()
+        .collect()
+});
 
 //TODO: revisit after Dialect is added for TSQL
 static FABRIC_KEYWORDS: Lazy<HashSet<&'static str>> = Lazy::new(|| {

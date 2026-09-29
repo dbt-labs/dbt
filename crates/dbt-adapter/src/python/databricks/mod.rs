@@ -108,7 +108,7 @@ fn submit_all_purpose_cluster(
 
     if create_notebook {
         // Extract library configuration (packages, index_url, additional_libs)
-        let packages = extract_packages(config);
+        let packages = extract_string_list(config, "packages");
         let index_url = config
             .get_attr("index_url")
             .ok()
@@ -254,7 +254,7 @@ fn submit_job_cluster(
 
     validate_job_cluster_config(&job_cluster_config)?;
 
-    let packages = extract_packages(config);
+    let packages = extract_string_list(config, "packages");
     let index_url = config
         .get_attr("index_url")
         .ok()
@@ -390,6 +390,7 @@ fn submit_via_notebook(
         &notebook_path,
         task_settings,
         timeout,
+        &extract_python_environment_spec(config),
     )?;
 
     poll_job_completion(&api_client, &run_id, timeout)?;
@@ -484,14 +485,14 @@ fn validate_job_cluster_config(config: &Value) -> AdapterResult<()> {
     Ok(())
 }
 
-fn extract_packages(config: &Value) -> Vec<String> {
+fn extract_string_list(config: &Value, attr: &str) -> Vec<String> {
     config
-        .get_attr("packages")
+        .get_attr(attr)
         .ok()
         .and_then(|v| v.try_iter().ok())
         .map(|iter| {
-            iter.filter_map(|v| v.as_str().map(String::from))
-                .collect::<Vec<_>>()
+            iter.filter_map(|item| item.as_str().map(String::from))
+                .collect()
         })
         .unwrap_or_default()
 }
@@ -516,6 +517,112 @@ fn extract_timeout(config: &Value) -> u64 {
             0
         }
     }
+}
+
+#[derive(Debug, Default)]
+struct PythonEnvironmentSpec {
+    environment_key: Option<String>,
+    environment_dependencies: Vec<String>,
+    user_environments: Option<serde_json::Value>,
+}
+
+fn extract_python_environment_spec(config: &Value) -> PythonEnvironmentSpec {
+    let environment_key = config
+        .get_attr("environment_key")
+        .ok()
+        .and_then(|v| v.as_str().map(String::from))
+        .filter(|s| !s.is_empty());
+
+    let environment_dependencies = extract_string_list(config, "environment_dependencies");
+
+    // Empty `python_job_config.environments` is unset (`not environments` in v1).
+    // https://github.com/databricks/dbt-databricks/blob/955743ab67543ef1fad3c4f7c13cc8b4a0ab8c06/dbt/adapters/databricks/python_models/python_submissions.py#L362
+    let user_environments = config
+        .get_attr("python_job_config")
+        .ok()
+        .and_then(|pjc| pjc.get_attr("environments").ok())
+        .filter(|envs| !envs.is_undefined() && !envs.is_none())
+        .and_then(|envs| serde_json::to_value(&envs).ok())
+        .and_then(|value| match &value {
+            serde_json::Value::Array(items) if !items.is_empty() => Some(value),
+            serde_json::Value::Object(map) if !map.is_empty() => Some(value),
+            serde_json::Value::String(s) if !s.is_empty() => Some(value),
+            serde_json::Value::Bool(true) => Some(value),
+            serde_json::Value::Number(n) if n.as_f64().is_some_and(|n| n != 0.0) => Some(value),
+            _ => None,
+        });
+
+    PythonEnvironmentSpec {
+        environment_key,
+        environment_dependencies,
+        user_environments,
+    }
+}
+
+fn additional_job_config_for_environment(spec: &PythonEnvironmentSpec) -> serde_json::Value {
+    let user_environments = match spec.user_environments.as_ref() {
+        Some(serde_json::Value::Array(items)) if items.is_empty() => None,
+        other => other,
+    };
+    match (user_environments, spec.environment_key.as_deref()) {
+        (Some(user_environments), _) => json!({ "environments": user_environments }),
+        (None, Some(environment_key)) if !spec.environment_dependencies.is_empty() => json!({
+            "environments": [{
+                "environment_key": environment_key,
+                "spec": {
+                    "environment_version": "4",
+                    "dependencies": spec.environment_dependencies,
+                }
+            }]
+        }),
+        _ => json!({}),
+    }
+}
+
+fn build_notebook_task(
+    notebook_path: &str,
+    task_settings: serde_json::Value,
+    environment_key: Option<&str>,
+) -> serde_json::Value {
+    let mut task = json!({
+        "task_key": "inner_notebook",
+        "notebook_task": {
+            "notebook_path": notebook_path,
+            "source": "WORKSPACE"
+        }
+    });
+    if let Some(environment_key) = environment_key {
+        task["environment_key"] = json!(environment_key);
+    }
+    if let serde_json::Value::Object(settings_map) = task_settings
+        && let serde_json::Value::Object(ref mut task_map) = task
+    {
+        task_map.extend(settings_map);
+    }
+    task
+}
+
+pub(crate) fn build_job_run_payload(
+    run_name: &str,
+    task: serde_json::Value,
+    timeout_seconds: u64,
+    additional_job_config: serde_json::Value,
+) -> serde_json::Value {
+    let capped_timeout = timeout_seconds.min(i64::MAX as u64);
+    let mut payload = json!({
+        "run_name": run_name,
+        "timeout_seconds": capped_timeout as i64,
+        "tasks": [task],
+        "queue": {
+            "enabled": true
+        }
+    });
+    if let serde_json::Value::Object(extra) = additional_job_config
+        && let serde_json::Value::Object(ref mut map) = payload
+    {
+        map.extend(extra);
+    }
+    payload
 }
 
 fn build_libraries(
@@ -553,22 +660,15 @@ fn submit_notebook_job(
     notebook_path: &str,
     task_settings: serde_json::Value,
     timeout_seconds: u64,
+    environment: &PythonEnvironmentSpec,
 ) -> AdapterResult<String> {
-    let mut task = json!({
-        "task_key": "inner_notebook",
-        "notebook_task": {
-            "notebook_path": notebook_path,
-            "source": "WORKSPACE"
-        }
-    });
-
-    if let serde_json::Value::Object(settings_map) = task_settings
-        && let serde_json::Value::Object(ref mut task_map) = task
-    {
-        task_map.extend(settings_map);
-    }
-
-    api_client.submit_job_run(run_name, &task, timeout_seconds)
+    let task = build_notebook_task(
+        notebook_path,
+        task_settings,
+        environment.environment_key.as_deref(),
+    );
+    let additional_job_config = additional_job_config_for_environment(environment);
+    api_client.submit_job_run(run_name, &task, timeout_seconds, &additional_job_config)
 }
 
 fn poll_job_completion(
@@ -677,20 +777,8 @@ fn build_workflow_spec(
         })
         .unwrap_or_default();
 
-    let mut notebook_task = json!({
-        "task_key": "inner_notebook",
-        "notebook_task": {
-            "notebook_path": notebook_path,
-            "source": "WORKSPACE"
-        }
-    });
-
-    // notebook_task is always an Object since we just created it with json!({...})
+    let mut notebook_task = build_notebook_task(notebook_path, task_settings, None);
     let task_map = notebook_task.as_object_mut().unwrap();
-
-    if let serde_json::Value::Object(settings_map) = task_settings {
-        task_map.extend(settings_map);
-    }
 
     if let Ok(additional_settings) = python_job_config.get_attr("additional_task_settings") {
         let additional_json =
@@ -759,4 +847,97 @@ fn create_or_update_workflow(
     }
 
     api_client.create_workflow(workflow_spec)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn payload_for(spec: PythonEnvironmentSpec) -> serde_json::Value {
+        let task = build_notebook_task(
+            "/Workspace/model",
+            json!({}),
+            spec.environment_key.as_deref(),
+        );
+        let additional = additional_job_config_for_environment(&spec);
+        build_job_run_payload("run-name", task, 0, additional)
+    }
+
+    #[test]
+    fn environment_key_only_sets_task_key_without_environments() {
+        let payload = payload_for(PythonEnvironmentSpec {
+            environment_key: Some("test_key".to_string()),
+            ..Default::default()
+        });
+        assert_eq!(payload["tasks"][0]["environment_key"], json!("test_key"));
+        assert!(payload.get("environments").is_none());
+    }
+
+    #[test]
+    fn environment_key_and_deps_auto_build_environments() {
+        let payload = payload_for(PythonEnvironmentSpec {
+            environment_key: Some("test_key".to_string()),
+            environment_dependencies: vec!["requests".to_string()],
+            user_environments: None,
+        });
+        assert_eq!(payload["tasks"][0]["environment_key"], json!("test_key"));
+        assert_eq!(
+            payload["environments"],
+            json!([{
+                "environment_key": "test_key",
+                "spec": {
+                    "environment_version": "4",
+                    "dependencies": ["requests"]
+                }
+            }])
+        );
+    }
+
+    #[test]
+    fn user_python_job_config_environments_are_not_overwritten() {
+        let user_environments = json!([{
+            "environment_key": "custom_env",
+            "spec": {
+                "environment_version": "3",
+                "dependencies": ["pandas"]
+            }
+        }]);
+        let payload = payload_for(PythonEnvironmentSpec {
+            environment_key: Some("custom_env".to_string()),
+            environment_dependencies: vec!["requests".to_string()],
+            user_environments: Some(user_environments.clone()),
+        });
+        assert_eq!(payload["tasks"][0]["environment_key"], json!("custom_env"));
+        assert_eq!(payload["environments"], user_environments);
+    }
+
+    #[test]
+    fn empty_user_environments_still_auto_build() {
+        let payload = payload_for(PythonEnvironmentSpec {
+            environment_key: Some("test_key".to_string()),
+            environment_dependencies: vec!["requests".to_string()],
+            user_environments: Some(json!([])),
+        });
+        assert_eq!(payload["tasks"][0]["environment_key"], json!("test_key"));
+        assert_eq!(
+            payload["environments"],
+            json!([{
+                "environment_key": "test_key",
+                "spec": {
+                    "environment_version": "4",
+                    "dependencies": ["requests"]
+                }
+            }])
+        );
+    }
+
+    #[test]
+    fn missing_environment_key_leaves_payload_unchanged() {
+        let payload = payload_for(PythonEnvironmentSpec::default());
+        assert!(payload["tasks"][0].get("environment_key").is_none());
+        assert!(payload.get("environments").is_none());
+        assert_eq!(payload["run_name"], json!("run-name"));
+        assert_eq!(payload["queue"], json!({ "enabled": true }));
+    }
 }

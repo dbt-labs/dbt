@@ -272,17 +272,15 @@
     {{ sql }}
 {% endmacro %}
 
-  -- TODO: confirm that the added without_identifier() is correct, this doesn't exist in the original macro
-  -- from ani, cc @gliga @xuliangs
 {% macro spark__create_schema(relation) -%}
   {%- call statement('create_schema') -%}
-    create schema if not exists {{relation.without_identifier()}}
+    create schema if not exists {{ relation }}
   {% endcall %}
 {% endmacro %}
 
 {% macro spark__drop_schema(relation) -%}
   {%- call statement('drop_schema') -%}
-    drop schema if exists {{ relation.without_identifier() }} cascade
+    drop schema if exists {{ relation }} cascade
   {%- endcall -%}
 {% endmacro %}
 

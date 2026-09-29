@@ -10,11 +10,14 @@ use arrow_schema::Schema;
 use arrow_array::{Array, Int32Array, RecordBatch, StringArray};
 
 use dbt_adapter_core::ExecutionPhase;
-use dbt_adbc::{Connection, MapReduce, QueryCtx};
+use dbt_adapter_engine::MapReduce;
+use dbt_adbc::{Connection, QueryCtx};
 use dbt_common::cancellation::Cancellable;
 use dbt_common::cancellation::CancellationToken;
 use dbt_schemas::dbt_types::RelationType;
-use dbt_schemas::schemas::dbt_catalogs_v2::{CatalogSpecV2View, DbtCatalogsV2View, V2CatalogType};
+use dbt_schemas::schemas::dbt_catalogs_v2::{
+    CatalogSpecV2View, CatalogType, DbtCatalogsV2View, PhysicalFormatResolver,
+};
 use dbt_schemas::schemas::{
     common::ResolvedQuoting,
     legacy_catalog::{CatalogNodeStats, CatalogTable, ColumnMetadata, TableMetadata},
@@ -27,9 +30,6 @@ use std::collections::btree_map::Entry;
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
-
-/// Maximum number of concurrent connections for schema introspection.
-const MAX_CONNECTIONS: usize = 4;
 
 pub struct DuckDBMetadataAdapter {
     adapter: AdapterImpl,
@@ -165,6 +165,7 @@ impl MetadataAdapter for DuckDBMetadataAdapter {
         unique_id: Option<String>,
         phase: Option<ExecutionPhase>,
         relations: &[Arc<dyn BaseRelation>],
+        item_span_operation_id: Option<&str>,
         token: CancellationToken,
     ) -> AsyncAdapterResult<'_, HashMap<String, AdapterResult<Arc<Schema>>>> {
         type Acc = HashMap<String, AdapterResult<Arc<Schema>>>;
@@ -174,10 +175,7 @@ impl MetadataAdapter for DuckDBMetadataAdapter {
             .map(|relation| (relation.semantic_fqn(), relation.render_self_as_str()))
             .collect();
 
-        let factory = Box::new(AdapterConnectionFactory::new(
-            self.adapter.engine().clone(),
-            Some(MAX_CONNECTIONS),
-        ));
+        let factory = Box::new(AdapterConnectionFactory::new(self.adapter.engine().clone()));
 
         let adapter = self.adapter.clone();
         let token_clone = token.clone();
@@ -211,8 +209,15 @@ impl MetadataAdapter for DuckDBMetadataAdapter {
             Ok(())
         };
 
-        let map_reduce = MapReduce::new(factory, Box::new(map_f), Box::new(reduce_f), None);
-        map_reduce.run(Arc::new(keys), token)
+        run_schema_cache_map_reduce(
+            factory,
+            keys,
+            item_span_operation_id,
+            map_f,
+            reduce_f,
+            None,
+            token,
+        )
     }
 
     fn list_relations_schemas_by_patterns_inner(
@@ -243,13 +248,11 @@ impl MetadataAdapter for DuckDBMetadataAdapter {
         &self,
         db_schemas: &[CatalogAndSchema],
         token: CancellationToken,
+        report_progress: bool,
     ) -> AsyncAdapterResult<'_, BTreeMap<CatalogAndSchema, AdapterResult<RelationVec>>> {
         type Acc = BTreeMap<CatalogAndSchema, AdapterResult<RelationVec>>;
 
-        let factory = Box::new(AdapterConnectionFactory::new(
-            self.adapter.engine().clone(),
-            Some(MAX_CONNECTIONS),
-        ));
+        let factory = Box::new(AdapterConnectionFactory::new(self.adapter.engine().clone()));
 
         let adapter = self.adapter.clone();
         let token_clone = token.clone();
@@ -257,12 +260,18 @@ impl MetadataAdapter for DuckDBMetadataAdapter {
                           db_schema: &CatalogAndSchema|
               -> AdapterResult<Vec<Arc<dyn BaseRelation>>> {
             let ctx = QueryCtx::default().with_desc("list_relations_in_parallel");
-            list_relations(
-                adapter.engine().as_ref(),
-                &ctx,
-                conn,
-                db_schema,
-                token_clone.clone(),
+            with_relation_list_item_span(
+                report_progress.then_some(RELATION_CACHE_OP_ID),
+                &db_schema.to_string(),
+                || {
+                    list_relations(
+                        adapter.engine().as_ref(),
+                        &ctx,
+                        conn,
+                        db_schema,
+                        token_clone.clone(),
+                    )
+                },
             )
         };
 
@@ -410,28 +419,24 @@ pub(crate) struct ExternalIcebergAttach {
 }
 
 /// Catalog types DuckDB reaches through an Iceberg REST `ATTACH ... (TYPE
-/// ICEBERG)`. Horizon and Unity are Iceberg REST services under the hood.
-/// Single answer to "is this an Iceberg REST-style attachment?" so the ATTACH
-/// composer (`engine::duckdb_attach`) and the metadata routing below can never
-/// disagree about which catalogs need REST-attachment treatment.
-pub(crate) fn attaches_via_iceberg_rest(catalog_type: V2CatalogType) -> bool {
+/// ICEBERG)`. Horizon, Unity, and Glue are Iceberg REST services under the
+/// hood. Single answer to "is this an Iceberg REST-style attachment?" so the
+/// ATTACH composer (`engine::duckdb_attach`) and the metadata routing below
+/// can never disagree about which catalogs need REST-attachment treatment.
+pub(crate) fn attaches_via_iceberg_rest(catalog_type: CatalogType) -> bool {
     matches!(
         catalog_type,
-        V2CatalogType::IcebergRest | V2CatalogType::Horizon | V2CatalogType::Unity
+        CatalogType::IcebergRest | CatalogType::Horizon | CatalogType::Unity | CatalogType::Glue
     )
 }
 
 /// DuckDB-specific classification of a single v2 catalog spec.
 pub(crate) trait CatalogSpecDuckDbExt {
     /// `Some(..)` iff this catalog is an external Iceberg REST-attached catalog
-    /// (IcebergRest/Horizon/Unity with `table_format: iceberg` and a `duckdb`
+    /// (IcebergRest/Horizon/Unity/Glue with `table_format: iceberg` and a `duckdb`
     /// config block), carrying its sanitized `ATTACH` alias.
     fn external_iceberg_attach(&self) -> Option<ExternalIcebergAttach>;
 
-    /// The sanitized DuckDB `ATTACH` alias this catalog resolves to
-    /// (`attach_as` when set, otherwise the catalog name), or `None` when the
-    /// catalog has no `duckdb` config block. Single source of truth for alias
-    /// resolution so routing and attachment can never drift apart.
     fn resolved_attach_alias(&self) -> Option<String>;
 }
 
@@ -451,14 +456,14 @@ impl CatalogSpecDuckDbExt for CatalogSpecV2View<'_> {
         })
     }
 
+    /// Single source of truth for alias resolution, so routing and attachment
+    /// can never drift apart.
     fn resolved_attach_alias(&self) -> Option<String> {
-        // The base DuckDB adapter uses the `duckdb` block; the alt compute engine
-        // uses `alt`. Fall back so a catalog configured for either resolves.
         let duckdb_block = self
-            .config_block("duckdb")
-            .or_else(|| self.config_block("alt"))?;
+            .config_block(AdapterType::DuckDB.as_ref())
+            .or_else(|| self.config_block(AdapterType::LakeCompute.as_ref()))?;
         let alias = duckdb_block
-            .get(dbt_yaml::Value::from("attach_as"))
+            .get(dbt_yaml::Value::from("catalog_database"))
             .and_then(|value| value.as_str())
             .unwrap_or(self.name);
         Some(dbt_adapter_sql::ident::sanitize_identifier(
@@ -502,11 +507,7 @@ impl CatalogsViewDuckDbExt for DbtCatalogsV2View<'_> {
             if !alias.eq_ignore_ascii_case(database) {
                 return None;
             }
-            Some(if catalog.catalog_type == V2CatalogType::DuckLake {
-                "ducklake"
-            } else {
-                catalog.table_format.as_str()
-            })
+            Some(catalog.physical_table_format().as_str())
         })
     }
 }
@@ -740,7 +741,7 @@ catalogs:
       duckdb:
         endpoint: http://localhost:8181/catalog
         warehouse: demo
-        attach_as: iceberg_demo
+        catalog_database: iceberg_demo
   - name: horizon_demo
     type: horizon
     table_format: iceberg
@@ -754,7 +755,7 @@ catalogs:
     config:
       duckdb:
         endpoint: https://dbc.example.com/api/2.1/unity-catalog/iceberg
-        attach_as: unity_db
+        catalog_database: unity_db
   - name: files
     type: local_filesystem
     table_format: default
@@ -816,7 +817,7 @@ catalogs:
     config:
       duckdb:
         root_path: /tmp/remote
-        attach_as: remote_db
+        catalog_database: remote_db
 "#,
             |view| {
                 assert_eq!(view.table_format_for_database("lake"), Some("ducklake"));

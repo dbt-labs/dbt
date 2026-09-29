@@ -5,7 +5,6 @@ use std::io::{self};
 use std::pin::Pin;
 use std::sync::Arc;
 use std::{fmt, panic};
-use tokio::task::JoinError;
 
 use super::{ErrorCode, types::FsError};
 
@@ -311,8 +310,21 @@ impl From<dbt_yaml::Error> for AdapterError {
     }
 }
 
-impl From<JoinError> for AdapterError {
-    fn from(err: JoinError) -> Self {
+impl From<tokio::task::JoinError> for AdapterError {
+    fn from(err: tokio::task::JoinError) -> Self {
+        if err.is_cancelled() {
+            AdapterError::new(AdapterErrorKind::Cancelled, "")
+        } else if err.is_panic() {
+            panic::resume_unwind(err.into_panic());
+        } else {
+            // as of today, this is unreachable, but we keep it for future-proofing
+            AdapterError::new(AdapterErrorKind::Internal, err.to_string())
+        }
+    }
+}
+
+impl From<dbt_runtime::JoinError> for AdapterError {
+    fn from(err: dbt_runtime::JoinError) -> Self {
         if err.is_cancelled() {
             AdapterError::new(AdapterErrorKind::Cancelled, "")
         } else if err.is_panic() {

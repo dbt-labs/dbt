@@ -1,0 +1,4 @@
+# The Dockerfile COPYs nothing out of the build context — the dbt binary is
+# downloaded from GitHub Releases — so send an empty context instead of
+# uploading web/, src/, and the rest of the crate to the daemon.
+*

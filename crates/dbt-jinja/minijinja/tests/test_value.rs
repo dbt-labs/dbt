@@ -8,7 +8,9 @@ use minijinja::value::{
     mutable_map, mutable_vec, DynObject, Enumerator, Kwargs, Object, ObjectRepr, Rest, Value,
     ValueKind,
 };
-use minijinja::{args, context, list, render, tuple, Environment, Error, ErrorKind};
+use minijinja::{
+    args, context, list, render, tuple, Environment, Error, ErrorKind, UndefinedBehavior,
+};
 
 #[test]
 fn test_sort() {
@@ -335,52 +337,26 @@ fn test_mutable_vec_strings() {
     assert_snapshot!(rv, @"[]");
 }
 
-// T1: insert(idx) with idx > len must return a typed Jinja error, not panic.
-// Today this triggers a Vec::insert OOB panic at object.rs:1056, which is the
-// primary panic that poisons the RwLock and produces the "lock poisoned"
-// cascade reported in production.
 #[test]
-fn test_mutable_vec_insert_out_of_bounds_errors() {
+fn test_mutable_vec_insert_oversized_index_appends() {
     let arr = Value::from_object(mutable_vec::MutableVec::<Value>::from(vec![1u32, 2, 3]));
-    let env = Environment::new();
-    let err = env
-        .render_str(
-            "{% do my_arr.insert(99, 'x') %}",
-            context! { my_arr => arr },
-            &[],
-        )
-        .unwrap_err();
-    assert_eq!(err.kind(), ErrorKind::InvalidOperation);
+    let rv = minijinja::render!(
+        "{% do my_arr.insert(99, 'x') %}{{ my_arr }}",
+        my_arr => arr
+    );
+    assert_snapshot!(rv, @"[1, 2, 3, 'x']");
 }
 
-// T2: after an OOB insert is rejected, the same MutableVec must still be
-// usable. If insert panics instead of returning Err, the RwLock is poisoned
-// and this second render surfaces "lock poisoned". This is the cascade guard.
 #[test]
-fn test_mutable_vec_insert_oob_does_not_poison_lock() {
-    let arr = Value::from_object(mutable_vec::MutableVec::<Value>::from(vec![1u32, 2, 3]));
-    let env = Environment::new();
-
-    let _ = env
-        .render_str(
-            "{% do my_arr.insert(99, 'x') %}",
-            context! { my_arr => arr },
-            &[],
-        )
-        .unwrap_err();
-
-    let rv = env
-        .render_str(
-            "{% do my_arr.append(4) %}{{ my_arr }}",
-            context! { my_arr => arr },
-            &[],
-        )
-        .unwrap();
-    assert_eq!(rv, "[1, 2, 3, 4]");
+fn test_mutable_vec_insert_oversized_index_into_empty_list_appends() {
+    let arr = Value::from_object(mutable_vec::MutableVec::<Value>::default());
+    let rv = minijinja::render!(
+        "{% do my_arr.insert(83, 'x') %}{{ my_arr }}",
+        my_arr => arr
+    );
+    assert_snapshot!(rv, @"['x']");
 }
 
-// T3: insert(idx == len) is the append-at-end boundary and must keep working.
-// Pinning this catches an off-by-one (`>=` vs `>`) in the new bounds check.
 #[test]
 fn test_mutable_vec_insert_at_len_appends() {
     let arr = Value::from_object(mutable_vec::MutableVec::<Value>::from(vec![1u32, 2, 3]));
@@ -507,6 +483,11 @@ fn test_mutable_map() {
     assert_snapshot!(rv, @"{'foo': 42, 'bar': 42}");
 
     let rv = minijinja::render!(
+        "{% set cache = {} %}{% do cache.update([('source', 'pairs')], owner='kwargs') %}{{ cache }}",
+    );
+    assert_snapshot!(rv, @"{'source': 'pairs', 'owner': 'kwargs'}");
+
+    let rv = minijinja::render!(
         "{% do my_map.update({'baz': 4}) %}{{ my_map.baz }}",
         my_map => map
     );
@@ -523,6 +504,69 @@ fn test_mutable_map() {
         my_map => map
     );
     assert_snapshot!(rv, @"{}");
+}
+
+#[test]
+fn test_mutable_map_update_none_errors() {
+    // Python's `dict.update(None)` raises TypeError; it must not silently
+    // no-op just because `Value::try_iter` treats None as an empty iterator.
+    let env = Environment::new();
+    let err = env
+        .render_str(
+            "{% set my_map = {} %}{% do my_map.update(none) %}",
+            context! {},
+            &[],
+        )
+        .unwrap_err();
+    assert_eq!(err.kind(), ErrorKind::CannotUnpack);
+}
+
+#[test]
+fn test_mutable_map_update_kwargs_preserve_order() {
+    // `ArgParser` stores kwargs in a `BTreeMap`, which would sort them
+    // alphabetically; Python (and dbt-common) preserves the caller's
+    // keyword order, so `update(z=1, a=2)` must keep `z` before `a`.
+    let env = Environment::new();
+    let rv = env
+        .render_str(
+            "{% set cache = {} %}{% do cache.update(z=1, a=2) %}{{ cache }}",
+            context! {},
+            &[],
+        )
+        .unwrap();
+    assert_snapshot!(rv, @"{'z': 1, 'a': 2}");
+}
+
+#[test]
+fn test_mutable_map_update_undefined_under_allow_all() {
+    // dbt-common's Undefined is an empty, chainable iterable, so
+    // `d.update(missing, owner='x')` should apply the kwargs without error
+    // under `AllowAll` (used for dbt parse), unlike `dict.update(None)`.
+    let mut env = Environment::new();
+    env.set_undefined_behavior(UndefinedBehavior::AllowAll);
+    let rv = env
+        .render_str(
+            "{% set cache = {} %}{% do cache.update(missing, owner='x') %}{{ cache }}",
+            context! {},
+            &[],
+        )
+        .unwrap();
+    assert_snapshot!(rv, @"{'owner': 'x'}");
+}
+
+#[test]
+fn test_mutable_map_update_undefined_errors_outside_allow_all() {
+    // Outside `AllowAll`, an undefined positional argument to `update()`
+    // must still fail like `None` does, rather than silently no-op.
+    let env = Environment::new();
+    let err = env
+        .render_str(
+            "{% set cache = {} %}{% do cache.update(missing, owner='x') %}",
+            context! {},
+            &[],
+        )
+        .unwrap_err();
+    assert_eq!(err.kind(), ErrorKind::CannotUnpack);
 }
 
 #[test]
@@ -577,6 +621,43 @@ fn test_builtin_seq_objects() {
         val => Value::from_object(vec!["foo", "bar"]),
     );
     assert_snapshot!(rv, @"('foo', 'bar')");
+}
+
+#[test]
+fn test_debug_repr_quotes_strings_with_both_quote_chars() {
+    // Regression test: a string containing both `'` and `"` must not produce a
+    // broken, unescaped literal when a tuple or dict stringifies it -- the
+    // embedded `'` needs escaping instead of just switching quote style.
+    let rv = minijinja::render!(
+        "{{ val }}",
+        val => Value::from_object(vec!["it's \"great\"", "plain"]),
+    );
+    assert_snapshot!(rv, @r#"('it\'s "great"', 'plain')"#);
+
+    let rv = minijinja::render!(
+        "{{ val }}",
+        val => Value::from_iter([("key", "it's \"great\"")]),
+    );
+    assert_snapshot!(rv, @r#"{'key': 'it\'s "great"'}"#);
+}
+
+#[test]
+fn test_debug_repr_escapes_backslashes_and_control_chars_like_python() {
+    // Regression test: Python's repr() doubles backslashes and escapes
+    // control characters (\n, \t, \x00, etc). A tuple/dict stringifying a
+    // string containing these must escape them too, or the rendered SQL/text
+    // is corrupted (fs#14245 review).
+    let rv = minijinja::render!(
+        "{{ val }}",
+        val => Value::from_object(vec!["back\\slash", "line\nbreak", "tab\ttab", "cr\rcr"]),
+    );
+    assert_snapshot!(rv, @r#"('back\\slash', 'line\nbreak', 'tab\ttab', 'cr\rcr')"#);
+
+    let rv = minijinja::render!(
+        "{{ val }}",
+        val => Value::from_object(vec!["nul\x00byte", "esc\x1bcape", "del\x7fchar"]),
+    );
+    assert_snapshot!(rv, @r#"('nul\x00byte', 'esc\x1bcape', 'del\x7fchar')"#);
 }
 
 #[test]
@@ -1316,6 +1397,26 @@ fn test_object_btree_map() {
         Some(1)
     );
     assert_eq!(value.to_string(), "{True: 1}");
+}
+
+#[test]
+fn test_namespace_dict_method_names_resolve_to_attributes() {
+    let env = Environment::new();
+    assert_eq!(
+        env.render_str(
+            r#"{%- set ns = namespace(
+                items="item value",
+                keys="key value",
+                values="complete SQL",
+                get="get value",
+            ) -%}
+            {{- ns.items }}|{{ ns.keys }}|{{ ns.values }}|{{ ns.get }}"#,
+            (),
+            &[],
+        )
+        .unwrap(),
+        "item value|key value|complete SQL|get value"
+    );
 }
 
 #[test]

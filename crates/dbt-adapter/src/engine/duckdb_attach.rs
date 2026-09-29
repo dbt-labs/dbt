@@ -5,13 +5,13 @@
 //!
 //! FIXME: as the number of catalog types and attach options grows, audit whether
 //! the attach composition logic here is clean and scalable — e.g. per-catalog-type
-//! attach builders rather than branching on V2CatalogType inline.
+//! attach builders rather than branching on CatalogType inline.
 
 use std::collections::HashMap;
 
 use dbt_adapter_core::AdapterType;
 use dbt_common::AdapterResult;
-use dbt_schemas::schemas::dbt_catalogs_v2::{CatalogSpecV2View, DbtCatalogsV2View, V2CatalogType};
+use dbt_schemas::schemas::dbt_catalogs_v2::{CatalogSpecV2View, CatalogType, DbtCatalogsV2View};
 
 use dbt_adapter_sql::ident::escape_string_literal;
 
@@ -40,11 +40,11 @@ pub fn compose_v2_catalog_attach_stmts(
         .catalogs
         .iter()
         .filter(|catalog| {
-            matches!(catalog.catalog_type, V2CatalogType::DuckLake)
+            matches!(catalog.catalog_type, CatalogType::DuckLake)
                 || attaches_via_iceberg_rest(catalog.catalog_type)
         })
         .filter_map(|catalog| {
-            // Prefer the caller's platform block (e.g. `alt` for the compute
+            // Prefer the caller's platform block (e.g. `lake_compute` for the compute
             // engine), falling back to the `duckdb` block.
             catalog
                 .config_block(platform)
@@ -53,7 +53,7 @@ pub fn compose_v2_catalog_attach_stmts(
         })
     {
         let (alias, stmt) = match catalog.catalog_type {
-            V2CatalogType::DuckLake => {
+            CatalogType::DuckLake => {
                 needs_ducklake = true;
                 build_duckdb_ducklake_attach_stmt(catalog, duckdb)?
             }
@@ -170,6 +170,11 @@ fn build_duckdb_catalog_attach_stmt(
     duckdb: &dbt_yaml::Mapping,
 ) -> AdapterResult<(String, String)> {
     let alias = resolve_required_attach_alias(catalog)?;
+    let endpoint_type = duckdb_get_str(duckdb, "endpoint_type");
+    // Glue is reached either by `type: glue` or by `endpoint_type: GLUE` on any
+    // Iceberg REST catalog; DuckDB picks its Glue code path off the latter.
+    let is_glue = matches!(catalog.catalog_type, CatalogType::Glue)
+        || endpoint_type.is_some_and(|et| et.trim().eq_ignore_ascii_case("GLUE"));
 
     let mut opts = vec!["TYPE ICEBERG".to_string()];
     if let Some(secret) = duckdb_get_str(duckdb, "secret") {
@@ -182,6 +187,14 @@ fn build_duckdb_catalog_attach_stmt(
         opts.push(format!(
             "ENDPOINT '{}'",
             escape_string_literal(ep, AdapterType::DuckDB)
+        ));
+    }
+    // Mutually exclusive with `endpoint`: DuckDB derives both the endpoint URL
+    // and SigV4 authorization from the endpoint type itself.
+    if let Some(et) = endpoint_type {
+        opts.push(format!(
+            "ENDPOINT_TYPE '{}'",
+            escape_string_literal(et, AdapterType::DuckDB)
         ));
     }
 
@@ -222,19 +235,25 @@ fn build_duckdb_catalog_attach_stmt(
     // attach read-write by default; a user-supplied `read_only` config overrides.
     let read_only = duckdb_get_bool(duckdb, "read_only")?.unwrap_or(false);
     opts.push(format!("READ_ONLY {read_only}"));
-    // Preset write-compat defaults per catalog type for keys the user did not set.
-    for (config_key, default_clause) in catalog_attach_defaults(catalog.catalog_type) {
-        if !duckdb_has_key(duckdb, config_key) {
-            opts.push((*default_clause).to_string());
-        }
+    // Preset write-compat defaults per catalog type for keys the user did not
+    // set. `endpoint_type` implies its own authorization inside DuckDB, which
+    // rejects the pair, so that default is filtered out when it's present.
+    for (_, default_clause) in catalog_attach_defaults(catalog.catalog_type)
+        .iter()
+        .filter(|(k, _)| !(*k == "authorization_type" && endpoint_type.is_some()))
+        .filter(|(k, _)| !duckdb_has_key(duckdb, k))
+    {
+        opts.push((*default_clause).to_string());
     }
     if duckdb_get_bool(duckdb, "encode_entire_prefix")?.unwrap_or(false) {
         opts.push("ENCODE_ENTIRE_PREFIX true".to_string());
     }
 
     // For Iceberg REST catalogs, source is the warehouse name, not the endpoint
-    // URL.
-    let warehouse = duckdb_get_str(duckdb, "warehouse").unwrap_or(catalog.name);
+    // URL. Glue reads it as a catalog path, so a plain dbt catalog name fails
+    // its grammar; ':' is the caller's own default account catalog.
+    let warehouse =
+        duckdb_get_str(duckdb, "warehouse").unwrap_or(if is_glue { ":" } else { catalog.name });
     let source = format!(
         "'{}'",
         escape_string_literal(warehouse, AdapterType::DuckDB)
@@ -279,12 +298,12 @@ fn duckdb_has_key(duckdb: &dbt_yaml::Mapping, key: &str) -> bool {
 /// `(config.duckdb key, full SQL option clause)`; the clause is emitted only
 /// when the user has not set that key, so explicit user values always win.
 /// These options require duckdb 1.5.4 / duckdb-iceberg#1017.
-fn catalog_attach_defaults(catalog_type: V2CatalogType) -> &'static [(&'static str, &'static str)] {
+fn catalog_attach_defaults(catalog_type: CatalogType) -> &'static [(&'static str, &'static str)] {
     match catalog_type {
         // Snowflake Horizon (Polaris) Iceberg REST: OAuth2 + vended credentials,
         // and a write path that supports neither staged creates nor multi-table
         // commits.
-        V2CatalogType::Horizon => &[
+        CatalogType::Horizon => &[
             ("authorization_type", "AUTHORIZATION_TYPE 'OAUTH2'"),
             (
                 "access_delegation_mode",
@@ -305,10 +324,15 @@ fn catalog_attach_defaults(catalog_type: V2CatalogType) -> &'static [(&'static s
         // REST multi-table commit, so default it off; single-table commits work.
         // (Other write-path options are left to DuckDB's defaults pending
         // confirmation against a live Unity catalog.)
-        V2CatalogType::Unity => &[(
+        CatalogType::Unity => &[(
             "disable_multi_table_commit",
             "DISABLE_MULTI_TABLE_COMMIT true",
         )],
+        // AWS Glue's Iceberg REST endpoint authenticates with SigV4, never
+        // DuckDB's OAuth2 fallback. `endpoint_type: GLUE` gets SigV4 from
+        // DuckDB itself; this covers a Glue catalog pinning an explicit
+        // `endpoint` instead, which has nothing else to supply it.
+        CatalogType::Glue => &[("authorization_type", "AUTHORIZATION_TYPE 'SIGV4'")],
         _ => &[],
     }
 }

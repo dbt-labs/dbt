@@ -76,6 +76,24 @@ fn full_refresh_mock_config() -> Arc<MockJinjaObject> {
     mock
 }
 
+fn v2_update_via_alter_config(full_refresh: bool) -> Arc<MockJinjaObject> {
+    let mock = default_mock_config();
+    mock.on("get", move |args| {
+        let key = args.first().and_then(|v| v.as_str());
+        let default = args.get(1).cloned().unwrap_or(Value::UNDEFINED);
+        match key {
+            Some("contract") => Ok(Value::from_serialize(BTreeMap::from([(
+                "enforced".to_string(),
+                Value::from(false),
+            )]))),
+            Some("full_refresh") => Ok(Value::from(full_refresh)),
+            Some("view_update_via_alter") => Ok(Value::from(true)),
+            _ => Ok(default),
+        }
+    });
+    mock
+}
+
 // Scenarios:
 // 1. Nothing already exists under the target namespace
 // 2. A view already exists under the target namespace
@@ -233,6 +251,71 @@ mod databricks {
             .observed_calls()
             .assert_not_called("drop_relation");
         assert_executed_contains(harness.mock(), "create");
+    }
+
+    #[test]
+    fn v2_full_refresh_replaces_view_when_update_via_alter_is_enabled() {
+        let mut harness = build_view_harness(ADAPTER);
+        harness
+            .env_mut()
+            .env
+            .add_function("store_raw_result", |_kwargs: minijinja::value::Kwargs| {
+                Ok(Value::UNDEFINED)
+            });
+        harness.set_behavior_flags([("use_materialization_v2", true)]);
+        let existing = harness.relation(
+            "TEST_DB",
+            "TEST_SCHEMA",
+            "my_view",
+            Some(RelationType::View),
+        );
+        harness.mock().on("get_relation", move |_| {
+            Ok(RelationObject::new(Arc::clone(&existing)).into_value())
+        });
+        harness
+            .mock()
+            .on("get_relation_config", |_| Ok(Value::UNDEFINED));
+        let model_config = Arc::new(MockJinjaObject::new());
+        model_config.on("get_changeset", |_| Ok(Value::UNDEFINED));
+        harness.mock().on("get_config_from_model", move |_| {
+            Ok(Value::from_dyn_object(Arc::clone(&model_config)))
+        });
+
+        let ctx = harness
+            .materialization_context("my_view", "SELECT id, name FROM source_table")
+            .config(Value::from_dyn_object(v2_update_via_alter_config(true)))
+            .build();
+        render_view(&harness, ADAPTER, ctx).expect("v2 full refresh should replace the view");
+
+        assert_executed_contains(harness.mock(), "create or replace");
+    }
+
+    #[test]
+    fn v2_update_via_alter_rejects_hive_metastore_views() {
+        let harness = build_view_harness(ADAPTER);
+        harness.set_behavior_flags([("use_materialization_v2", true)]);
+        let existing = harness.relation(
+            "hive_metastore",
+            "TEST_SCHEMA",
+            "my_view",
+            Some(RelationType::View),
+        );
+        harness.mock().on("get_relation", move |_| {
+            Ok(RelationObject::new(Arc::clone(&existing)).into_value())
+        });
+
+        let ctx = harness
+            .materialization_context("my_view", "SELECT id, name FROM source_table")
+            .config(Value::from_dyn_object(v2_update_via_alter_config(false)))
+            .build();
+        let error = render_view(&harness, ADAPTER, ctx)
+            .expect_err("Hive Metastore views must reject update-via-alter");
+
+        assert!(
+            error
+                .to_string()
+                .contains("Cannot update a view in the Hive metastore via ALTER VIEW")
+        );
     }
 }
 

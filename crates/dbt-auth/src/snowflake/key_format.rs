@@ -1,11 +1,15 @@
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use pkcs8::der::{Decode, oid::ObjectIdentifier};
-use pkcs8::{EncryptedPrivateKeyInfo, PrivateKeyInfo};
+use pkcs8::{EncodePrivateKey, EncryptedPrivateKeyInfo, LineEnding, PrivateKeyInfo};
 use rsa::{RsaPrivateKey, pkcs1::DecodeRsaPrivateKey};
-use std::sync::Once;
 
 use crate::AuthError;
-use crate::AuthWarningPrinter;
+
+#[derive(Debug)]
+pub enum SnowflakeKeypairStatus<'a> {
+    Clean,
+    Warn3Des(&'a str),
+}
 
 pub const PEM_UNENCRYPTED_START: &str = "-----BEGIN PRIVATE KEY-----";
 pub const PEM_UNENCRYPTED_END: &str = "-----END PRIVATE KEY-----";
@@ -69,14 +73,27 @@ fn has_single_valid_pem_pair(s: &str) -> bool {
 const OID_DES_EDE3_CBC: ObjectIdentifier = ObjectIdentifier::new_unwrap("1.2.840.113549.3.7");
 const OID_P12_SHA_3KEY_3DES: ObjectIdentifier =
     ObjectIdentifier::new_unwrap("1.2.840.113549.1.12.1.3");
-static WARN_ONCE: Once = Once::new();
+
+const THREE_DES_WARNING: &str = "------------------------------------------------------------------------ \n\
+ Warning: You appear to be using a 3DES encrypted, headerless PEM body. We \n\
+ encourage re-exporting your key using a modern algorithm such as AES-256: \n\
+ >   $ openssl pkcs8 -topk8 -in rsa_key.pem -v2 aes256 -out rsa_key_aes.pem\n\
+ \n\
+ If you'd prefer to keep your current key and can supply your body PEM in a \n\
+ multiline format, affix the customary header and footer:\n\
+ >   -----BEGIN ENCRYPTED PRIVATE KEY-----\n\
+ >   ...PEM BODY...\n\
+ >   -----END ENCRYPTED PRIVATE KEY-----\n\
+ \n\
+ Note: Future releases may reject 3DES-encrypted keys entirely. \n\
+ ------------------------------------------------------------------------";
 
 /// Take the DER [1] payload of a key and recognize its format.
 ///
 /// [1] https://en.wikipedia.org/wiki/X.690#DER_encoding
-fn parse_der_key_type(warning_printer: &dyn AuthWarningPrinter, der: &[u8]) -> BodyKind {
+fn parse_der_key_type(der: &[u8]) -> (BodyKind, SnowflakeKeypairStatus<'static>) {
     if PrivateKeyInfo::from_der(der).is_ok() {
-        BodyKind::Pkcs8Unencrypted
+        (BodyKind::Pkcs8Unencrypted, SnowflakeKeypairStatus::Clean)
     } else if let Ok(enc) = EncryptedPrivateKeyInfo::from_der(der) {
         let alg = enc.encryption_algorithm;
 
@@ -90,31 +107,17 @@ fn parse_der_key_type(warning_printer: &dyn AuthWarningPrinter, der: &[u8]) -> B
         // Some encoders use PKCS#12 3DES PBE as the top-level algorithm
         let is_p12_3des = alg.oid() == OID_P12_SHA_3KEY_3DES;
 
-        const WARNING: &str = "------------------------------------------------------------------------ \n\
-         Warning: You appear to be using a 3DES encrypted, headerless PEM body. We \n\
-         encourage re-exporting your key using a modern algorithm such as AES-256: \n\
-         >   $ openssl pkcs8 -topk8 -in rsa_key.pem -v2 aes256 -out rsa_key_aes.pem\n\
-         \n\
-         If you'd prefer to keep your current key and can supply your body PEM in a \n\
-         multiline format, affix the customary header and footer:\n\
-         >   -----BEGIN ENCRYPTED PRIVATE KEY-----\n\
-         >   ...PEM BODY...\n\
-         >   -----END ENCRYPTED PRIVATE KEY-----\n\
-         \n\
-         Note: Future releases may reject 3DES-encrypted keys entirely. \n\
-         ------------------------------------------------------------------------";
+        let status = if is_p12_3des || is_pbes2 {
+            SnowflakeKeypairStatus::Warn3Des(THREE_DES_WARNING)
+        } else {
+            SnowflakeKeypairStatus::Clean
+        };
 
-        if is_p12_3des || is_pbes2 {
-            WARN_ONCE.call_once(|| {
-                warning_printer.warn(WARNING);
-            });
-        }
-
-        BodyKind::Pkcs8Encrypted
+        (BodyKind::Pkcs8Encrypted, status)
     } else if RsaPrivateKey::from_pkcs1_der(der).is_ok() {
-        BodyKind::Pkcs1Rsa
+        (BodyKind::Pkcs1Rsa, SnowflakeKeypairStatus::Clean)
     } else {
-        BodyKind::UnknownMalformed
+        (BodyKind::UnknownMalformed, SnowflakeKeypairStatus::Clean)
     }
 }
 
@@ -171,10 +174,7 @@ fn has_pkcs1_pem_pair(s: &str) -> bool {
 ///   - PKCS#8 encrypted   -> `BEGIN ENCRYPTED PRIVATE KEY`
 ///   - PKCS#1 RSA         -> error (ask caller to convert to PKCS#8)
 /// - If only one header present -> error.
-pub fn normalize_key(
-    warning_printer: &dyn AuthWarningPrinter,
-    input: &str,
-) -> Result<String, AuthError> {
+pub fn normalize_key(input: &str) -> Result<(String, SnowflakeKeypairStatus<'_>), AuthError> {
     let trimmed_input = input.trim();
     match detect_pem_state(trimmed_input) {
         PemHeaderAndFooterState::Present => {
@@ -182,7 +182,7 @@ pub fn normalize_key(
                 return Err(AuthError::Config(PKCS1_UNSUPPORTED_ERROR.to_string()));
             }
             has_single_valid_pem_pair(trimmed_input)
-                .then(|| input.to_string())
+                .then(|| (input.to_string(), SnowflakeKeypairStatus::Clean))
                 .ok_or_else(|| {
                     AuthError::config("malformed key: missing or mismatched BEGIN/END header pair")
                 })
@@ -204,20 +204,19 @@ pub fn normalize_key(
                 let pem = String::from_utf8(decoded).map_err(|_| {
                     AuthError::config("decoded base64 looked like PEM but was not UTF-8")
                 })?;
-                return Ok(pem.trim().to_string());
+                return Ok((pem.trim().to_string(), SnowflakeKeypairStatus::Clean));
             }
 
             // case b: treat as der and classify.
-            match parse_der_key_type(warning_printer, &decoded) {
-                BodyKind::Pkcs8Unencrypted => Ok(wrap_der_as_pem(
-                    &decoded,
-                    PEM_UNENCRYPTED_START,
-                    PEM_UNENCRYPTED_END,
+            let (body_kind, status) = parse_der_key_type(&decoded);
+            match body_kind {
+                BodyKind::Pkcs8Unencrypted => Ok((
+                    wrap_der_as_pem(&decoded, PEM_UNENCRYPTED_START, PEM_UNENCRYPTED_END),
+                    status,
                 )),
-                BodyKind::Pkcs8Encrypted => Ok(wrap_der_as_pem(
-                    &decoded,
-                    PEM_ENCRYPTED_START,
-                    PEM_ENCRYPTED_END,
+                BodyKind::Pkcs8Encrypted => Ok((
+                    wrap_der_as_pem(&decoded, PEM_ENCRYPTED_START, PEM_ENCRYPTED_END),
+                    status,
                 )),
                 BodyKind::Pkcs1Rsa => Err(AuthError::config(PKCS1_UNSUPPORTED_ERROR.to_string())),
                 BodyKind::UnknownMalformed => Err(AuthError::config("key body is not PKCS#8 DER.")),
@@ -229,15 +228,21 @@ pub fn normalize_key(
     }
 }
 
+/// Re-encode a decrypted key as unencrypted PKCS#8 PEM, e.g. for a caller
+/// that needs to hand PEM text to a library expecting that input shape
+/// rather than a parsed key.
+pub fn to_pkcs8_pem(key: &RsaPrivateKey) -> Result<String, AuthError> {
+    key.to_pkcs8_pem(LineEnding::LF)
+        .map(|pem| pem.to_string())
+        .map_err(|e| AuthError::config(format!("could not re-encode private key: {e}")))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use dbt_test_primitives::assert_contains;
-    use pkcs8::{EncodePrivateKey, LineEnding};
+    use pkcs8::DecodePrivateKey;
     use rsa::{RsaPrivateKey, pkcs1::EncodeRsaPrivateKey, rand_core::OsRng};
-
-    use crate::NoopAuthWarningPrinter;
-    const NOOP: NoopAuthWarningPrinter = NoopAuthWarningPrinter;
 
     fn gen_rsa() -> RsaPrivateKey {
         RsaPrivateKey::new(&mut OsRng, 2048).unwrap()
@@ -265,7 +270,7 @@ mod tests {
     fn pkcs8_unencrypted_pem_passthrough() {
         let rsa = gen_rsa();
         let pem = to_pkcs8_unenc_pem(&rsa);
-        let norm = normalize_key(&NOOP, &pem).unwrap();
+        let norm = normalize_key(&pem).unwrap().0;
         assert_eq!(norm, pem);
     }
 
@@ -273,7 +278,7 @@ mod tests {
     fn pkcs8_unencrypted_der_b64_wraps() {
         let rsa = gen_rsa();
         let b64 = to_pkcs8_unenc_der_b64(&rsa);
-        let norm = normalize_key(&NOOP, &b64).unwrap();
+        let norm = normalize_key(&b64).unwrap().0;
         assert!(norm.starts_with(PEM_UNENCRYPTED_START));
     }
 
@@ -282,7 +287,7 @@ mod tests {
         let rsa = gen_rsa();
         let pem = to_pkcs8_unenc_pem(&rsa);
         let b64_of_pem = to_base64_of_pem_text(&pem);
-        let norm = normalize_key(&NOOP, &b64_of_pem).unwrap();
+        let norm = normalize_key(&b64_of_pem).unwrap().0;
         assert_eq!(norm, pem.trim());
     }
 
@@ -290,7 +295,7 @@ mod tests {
     fn pkcs1_der_b64_errors() {
         let rsa = gen_rsa();
         let b64_pkcs1 = to_pkcs1_der_b64(&rsa);
-        let err = normalize_key(&NOOP, &b64_pkcs1).unwrap_err();
+        let err = normalize_key(&b64_pkcs1).unwrap_err();
         let msg = format!("{err:?}");
         assert_contains!(msg, "PKCS#1");
     }
@@ -298,14 +303,14 @@ mod tests {
     #[test]
     fn header_mismatch_errors() {
         let pem = format!("{PEM_UNENCRYPTED_START}\nMII...\n{PEM_ENCRYPTED_END}");
-        let err = normalize_key(&NOOP, &pem).unwrap_err();
+        let err = normalize_key(&pem).unwrap_err();
         assert!(format!("{err:?}").contains("malformed key"));
     }
 
     #[test]
     fn unknown_malformed_errors() {
         let bad_b64 = STANDARD.encode(b"not-a-real-key");
-        let err = normalize_key(&NOOP, &bad_b64).unwrap_err();
+        let err = normalize_key(&bad_b64).unwrap_err();
         assert!(format!("{err:?}").contains("key body is not PKCS#8"));
     }
     #[test]
@@ -318,7 +323,7 @@ mod tests {
             .replace(PEM_UNENCRYPTED_START, PEM_ENCRYPTED_START)
             .replace(PEM_UNENCRYPTED_END, PEM_ENCRYPTED_END);
 
-        let norm = normalize_key(&NOOP, &pem_enc).unwrap();
+        let norm = normalize_key(&pem_enc).unwrap().0;
         assert_eq!(norm, pem_enc, "encrypted PEM should pass through unchanged");
     }
 
@@ -327,7 +332,7 @@ mod tests {
         // PKCS#1 PEM should be rejected in the PEM branch (headers don't match pkcs8).
         let rsa = gen_rsa();
         let pkcs1_pem = rsa.to_pkcs1_pem(LineEnding::LF).unwrap().to_string();
-        let err = normalize_key(&NOOP, &pkcs1_pem).unwrap_err();
+        let err = normalize_key(&pkcs1_pem).unwrap_err();
         assert!(
             format!("{err:?}").contains("PKCS#1"),
             "PKCS#1 PEM must not be accepted as PKCS#8 PEM"
@@ -337,7 +342,7 @@ mod tests {
     #[test]
     fn begin_without_end_errors() {
         let pem = format!("{PEM_UNENCRYPTED_START}\nMII...\n"); // missing END line
-        let err = normalize_key(&NOOP, &pem).unwrap_err();
+        let err = normalize_key(&pem).unwrap_err();
         assert!(format!("{err:?}").contains("BEGIN/END header mismatch"));
     }
 
@@ -347,7 +352,7 @@ mod tests {
         let pem = format!(
             "{PEM_UNENCRYPTED_START}\nMII...\n{PEM_UNENCRYPTED_END}\n{PEM_ENCRYPTED_START}\n..."
         );
-        let err = normalize_key(&NOOP, &pem).unwrap_err();
+        let err = normalize_key(&pem).unwrap_err();
         assert!(format!("{err:?}").contains("missing or mismatched BEGIN/END"));
     }
 
@@ -357,7 +362,7 @@ mod tests {
         let pem = format!(
             "{PEM_UNENCRYPTED_START}\nMII...\n{PEM_UNENCRYPTED_END}\n{PEM_ENCRYPTED_START}\n"
         );
-        let err = normalize_key(&NOOP, &pem).unwrap_err();
+        let err = normalize_key(&pem).unwrap_err();
         assert!(format!("{err:?}").contains("missing or mismatched BEGIN/END"));
     }
 
@@ -372,7 +377,7 @@ mod tests {
             &b64[..b64.len() / 2],
             &b64[b64.len() / 2..]
         );
-        let norm = normalize_key(&NOOP, &noisy).unwrap();
+        let norm = normalize_key(&noisy).unwrap().0;
         assert!(norm.starts_with(PEM_UNENCRYPTED_START));
         assert!(
             norm.ends_with(PEM_UNENCRYPTED_END),
@@ -385,7 +390,7 @@ mod tests {
         // Verify emitted PEM body lines are wrapped at 64 chars (except the last).
         let rsa = gen_rsa();
         let b64 = to_pkcs8_unenc_der_b64(&rsa);
-        let norm = normalize_key(&NOOP, &b64).unwrap();
+        let norm = normalize_key(&b64).unwrap().0;
 
         // Extract body between headers
         let body = norm
@@ -405,7 +410,7 @@ mod tests {
 
     #[test]
     fn empty_input_errors() {
-        let err = normalize_key(&NOOP, "").unwrap_err();
+        let err = normalize_key("").unwrap_err();
         assert!(format!("{err:?}").contains("key body is not PKCS#8"));
     }
 
@@ -419,7 +424,7 @@ mod tests {
             .replace(PEM_UNENCRYPTED_END, PEM_ENCRYPTED_END);
         let b64_of_pem = to_base64_of_pem_text(&pem_enc);
 
-        let norm = normalize_key(&NOOP, &b64_of_pem).unwrap();
+        let norm = normalize_key(&b64_of_pem).unwrap().0;
         assert_eq!(
             norm,
             pem_enc.trim(),
@@ -431,7 +436,7 @@ mod tests {
     fn open_ssh_pem_rejected() {
         // Non-PKCS#8 PEM header should be rejected in PEM-branch.
         let pem = "-----BEGIN OPENSSH PRIVATE KEY-----\nAAAA...\n-----END OPENSSH PRIVATE KEY-----";
-        let err = normalize_key(&NOOP, pem).unwrap_err();
+        let err = normalize_key(pem).unwrap_err();
         assert!(format!("{err:?}").contains("malformed key"));
     }
 
@@ -470,7 +475,7 @@ mod tests {
 
         let body_b64 = STANDARD.encode(&der);
 
-        let normalized = normalize_key(&NOOP, &body_b64).expect("normalize_key failed");
+        let normalized = normalize_key(&body_b64).expect("normalize_key failed").0;
 
         assert!(
             normalized.starts_with(PEM_ENCRYPTED_START),
@@ -491,5 +496,19 @@ mod tests {
             .decode(re_body.as_bytes())
             .expect("emitted body not base64");
         assert_eq!(der_roundtrip, der, "PEM rewrap must be byte-preserving");
+    }
+
+    #[test]
+    fn to_pkcs8_pem_roundtrips_a_key() {
+        let rsa = gen_rsa();
+        let pem = to_pkcs8_pem(&rsa).unwrap();
+        assert!(pem.starts_with(PEM_UNENCRYPTED_START));
+        assert!(pem.trim_end().ends_with(PEM_UNENCRYPTED_END));
+
+        let decoded = RsaPrivateKey::from_pkcs8_pem(&pem).unwrap();
+        assert_eq!(
+            decoded, rsa,
+            "re-encoded PEM must decode back to the same key"
+        );
     }
 }

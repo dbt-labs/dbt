@@ -1,5 +1,4 @@
 use std::collections::BTreeMap;
-use std::path::Path;
 use std::sync::Arc;
 
 use crate::compiler::ast::{self, Expr};
@@ -805,7 +804,10 @@ impl<'source> CodeGenerator<'source> {
         for node in &macro_decl.body {
             self.compile_stmt(node)?;
         }
-        self.add(Instruction::Return { explicit: false });
+        self.add(Instruction::Return {
+            explicit: false,
+            arg_count: None,
+        });
         let mut undeclared = crate::compiler::meta::find_macro_closure(macro_decl);
         let caller_reference = undeclared.remove("caller");
         let macro_instr = self.next_instruction();
@@ -878,14 +880,10 @@ impl<'source> CodeGenerator<'source> {
             if let ast::CallType::Function(name) = call.identify_call() {
                 if name == "return" {
                     let arg_count = self.compile_call_args(&call.args, 0, None, do_tag.span())?;
-                    if arg_count != Some(1) {
-                        return Err(crate::Error::new(
-                            crate::error::ErrorKind::InvalidOperation,
-                            "Incorrect return argument count",
-                        )
-                        .with_span(Path::new(self.instructions.name()), &do_tag.span()));
-                    }
-                    self.add(Instruction::Return { explicit: true });
+                    self.add(Instruction::Return {
+                        explicit: true,
+                        arg_count: Some(arg_count),
+                    });
                     return Ok(());
                 }
             }
@@ -994,20 +992,16 @@ impl<'source> CodeGenerator<'source> {
                 ast::CallType::Function(name) => {
                     if name == "return" {
                         let arg_count = self.compile_call_args(&call.args, 0, None, span)?;
-                        if arg_count != Some(1) {
-                            return Err(crate::Error::new(
-                                crate::error::ErrorKind::InvalidOperation,
-                                "Incorrect return argument count",
-                            )
-                            .with_span(Path::new(self.instructions.name()), &span));
-                        }
                         self.add(Instruction::MacroStop(
                             span.end_line,
                             span.end_col,
                             span.end_offset,
                         ));
 
-                        self.add(Instruction::Return { explicit: true });
+                        self.add(Instruction::Return {
+                            explicit: true,
+                            arg_count: Some(arg_count),
+                        });
                         return Ok(());
                     } else if name == "super" && call.args.is_empty() {
                         self.add_with_span(Instruction::FastSuper(call.span()), call.span());

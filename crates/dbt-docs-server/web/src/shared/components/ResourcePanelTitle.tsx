@@ -1,14 +1,9 @@
 import { FC } from 'react';
 import { twMerge } from 'tailwind-merge';
 
-import {
-  AccessLevelIcon,
-  getAccessType,
-  ResourceType,
-  ResourceTypeExplorer,
-} from '@dbt-labs/dbt-dag';
-import { Tooltip } from '@dbt-labs/sourdough';
-
+import { Tooltip } from '../../components/ui/Tooltip';
+import { AccessLevelIcon, getAccessType } from '../../lib/accessLevel';
+import type { ResourceType, ResourceTypeExplorer } from '../../lib/resourceType';
 import {
   TrustSignals,
   trustSignalsSupportedResourceTypes,
@@ -47,7 +42,6 @@ export const ResourcePanelTitle: FC<ResourcePanelTitleProps> = ({
               {showAccessIcon && (
                 <span>
                   <AccessLevelIcon
-                    size="md"
                     access={accessType}
                     tooltipConfig={{ placement: 'bottom' }}
                     iconClassName="h-6 w-6"

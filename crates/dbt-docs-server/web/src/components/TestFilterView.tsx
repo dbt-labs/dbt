@@ -1,8 +1,6 @@
 import { useMemo, useState } from 'react';
 import { type ColumnDef } from '@tanstack/react-table';
 
-import { resourceIconMap } from '@dbt-labs/dbt-dag';
-
 import { facetOptions, selectedFacetOption } from '../lib/facetOptions';
 import { makeNameCell } from '../lib/nameCell';
 import type { TestSummary } from '../shared';
@@ -49,7 +47,7 @@ export function TestFilterView({ project, onPeek }: Props) {
 
   const columns = useMemo<ColumnDef<TestSummary>[]>(
     () => [
-      makeNameCell(resourceIconMap.test, onPeek, (r) => r.uniqueId),
+      makeNameCell(onPeek, (r) => r.uniqueId),
       {
         id: 'test_type',
         header: 'Test type',

@@ -23,6 +23,20 @@ fn dispatch_test(
     adapter.call_method_impl(&state, name, args, &[])
 }
 
+/// As `dispatch_test`, but with a `dialect` global standing in for the render
+/// context a node that selected an adapter via `+adapter` would carry.
+fn dispatch_test_with_dialect(
+    adapter: &Arc<Adapter>,
+    dialect: &str,
+    name: &str,
+    args: &[Value],
+) -> Result<Value, minijinja::Error> {
+    let mut env = minijinja::Environment::new();
+    env.add_global(minijinja::constants::DIALECT, Value::from(dialect));
+    let state = State::new_for_env(&env);
+    adapter.call_method_impl(&state, name, args, &[])
+}
+
 /// Minimal listener that opts into introspective-hole rendering, standing in
 /// for `dbt_jinja_utils::listener::SymbolicRenderingEventListener` (which
 /// this crate doesn't depend on): `Adapter::call_method`'s Parse-mode
@@ -345,6 +359,21 @@ fn test_render_equals_flag_on_databricks_is_not_distinct_from() {
     assert_eq!(result.as_str().unwrap(), "(a IS NOT DISTINCT FROM b)");
 }
 
+/// `LakeCompute` defines no null-comparison form of its own, so it must answer as
+/// DuckDB. It previously fell into the `_` arm and emitted the verbose
+/// `case when ... end = 0` form.
+#[test]
+fn test_render_equals_flag_on_lake_compute_matches_duckdb() {
+    let adapter = make_adapter_with_truthy_nulls(AdapterType::LakeCompute);
+    let result = dispatch_test(
+        &adapter,
+        "render_equals",
+        &[Value::from("a"), Value::from("b")],
+    )
+    .unwrap();
+    assert_eq!(result.as_str().unwrap(), "(a IS NOT DISTINCT FROM b)");
+}
+
 // -- location_exists tests ------------------------------------------------
 
 #[test]
@@ -403,7 +432,7 @@ fn test_parse_mode_accepts_mistyped_args_list_relations_without_caching() {
     assert!(result.try_iter().unwrap().next().is_none());
 }
 
-#[test]
+#[dbt_runtime::worker_test]
 fn test_get_relation_dispatch_spark_absent_database() {
     // Exercises the full `"get_relation"` arm of `call_method_impl` (arg parsing + per-adapter
     // database resolution + handoff to `get_relation`) for the absent-database (`none`) case,
@@ -509,6 +538,30 @@ fn test_parse_mode_get_columns_in_relation_result_is_tainted() {
 }
 
 #[test]
+fn test_parse_mode_get_columns_in_relation_accepts_string() {
+    let adapter = make_duckdb_parse_adapter();
+    let result = call_method_test(
+        &adapter,
+        "get_columns_in_relation",
+        &[Value::from("relation_name")],
+    )
+    .unwrap();
+    assert!(result.is_introspective_stub());
+}
+
+#[test]
+fn test_runtime_get_columns_in_relation_rejects_string() {
+    let adapter = make_duckdb_adapter();
+    let err = dispatch_test(
+        &adapter,
+        "get_columns_in_relation",
+        &[Value::from("relation_name")],
+    )
+    .unwrap_err();
+    assert_eq!(err.detail(), Some("relation must be an object"));
+}
+
+#[test]
 fn test_parse_mode_get_relation_result_is_tainted() {
     let adapter = make_duckdb_parse_adapter();
     let result = call_method_test(
@@ -536,9 +589,123 @@ fn test_parse_mode_non_introspective_method_is_not_tainted() {
     assert!(!result.is_introspective_stub());
 }
 
-#[test]
+#[dbt_runtime::worker_test]
 fn test_typed_mode_execute_result_is_not_tainted() {
     let adapter = make_duckdb_adapter();
     let result = call_method_test(&adapter, "execute", &[Value::from("select 1")]).unwrap();
     assert!(!result.is_introspective_stub());
+}
+
+/// `adapter.type()` must report the adapter the *node* runs on. Model bodies
+/// branch on it, so a node that selected a `lakecompute` adapter seeing the
+/// target's default would take the wrong branch.
+#[test]
+fn adapter_type_follows_the_nodes_selected_dialect() {
+    let adapter = make_duckdb_adapter();
+
+    // No selection: the adapter's own type.
+    let default = dispatch_test(&adapter, "type", &[]).unwrap();
+    assert_eq!(default.as_str().unwrap(), "duckdb");
+
+    // Selection: the node's dialect wins.
+    let selected = dispatch_test_with_dialect(&adapter, "lakecompute", "type", &[]).unwrap();
+    assert_eq!(selected.as_str().unwrap(), "lakecompute");
+}
+
+/// An unparseable or absent dialect must fall back to the adapter's own type
+/// rather than erroring or silently reporting something else.
+#[test]
+fn adapter_type_falls_back_on_an_unknown_dialect() {
+    let adapter = make_duckdb_adapter();
+
+    let result = dispatch_test_with_dialect(&adapter, "not_an_adapter", "type", &[]).unwrap();
+    assert_eq!(result.as_str().unwrap(), "duckdb");
+}
+
+#[test]
+fn test_statement_macro_does_not_crash_in_symbolic_lint_mode() {
+    // Regression test: `JinjaRenderMode::Symbolic` forces `execute = true` so
+    // macros guarded by `{% if not execute %}`/`{% if execute %}` take their
+    // real (introspective) branch instead of a hardcoded default -- relying
+    // on `Adapter::call_method`'s Parse-mode taint-wrapping (see
+    // `test_parse_mode_execute_result_is_tainted`) plus tuple-unpack taint
+    // propagation (`IntrospectiveValue::unpack`) to keep that branch safe.
+    // dbt's own `statement()` macro is the canonical case this must handle:
+    // `{% set res, table = adapter.execute(...) %}` inside a real
+    // `{% if execute %}` block, invoked via `{% call statement() %}`.
+    // Before the taint/unpack fix, this failed with "cannot unpack: sequence
+    // of wrong length (expected 2, got 1)".
+    let adapter = make_duckdb_parse_adapter();
+    let env = minijinja::Environment::new();
+    let listener: Rc<dyn RenderingEventListener> = Rc::new(TaintGateListener);
+    let source = "\
+{%- macro statement(name=None, fetch_result=False, auto_begin=True, language='sql') -%}
+  {%- if execute -%}
+    {%- set compiled_code = caller() -%}
+    {%- if language == 'sql' -%}
+      {%- set res, table = adapter.execute(compiled_code, auto_begin=auto_begin, fetch=fetch_result) -%}
+    {%- endif -%}
+  {%- endif -%}
+{%- endmacro -%}
+{%- call statement('run_query_statement', fetch_result=true) -%}
+select 1
+{%- endcall -%}";
+    let result = env.render_str(
+        source,
+        minijinja::context! {
+            execute => true,
+            adapter => Value::from_object(adapter.as_ref().clone()),
+        },
+        &[listener],
+    );
+
+    assert!(result.is_ok(), "{:?}", result.err());
+}
+
+#[test]
+fn test_parse_mode_call_with_tainted_argument_short_circuits_instead_of_erroring() {
+    // Regression test: `quote()` isn't itself introspective (it's a pure
+    // string transform, not in `INTROSPECTIVE_METHODS`), but it's commonly
+    // called with an identifier drawn from an already-tainted result (e.g. a
+    // column name from `get_columns_in_relation()`). Before this fix,
+    // `call_method_impl`'s `ArgsIter::next_arg::<&str>()` hard-failed with
+    // "argument 'identifier' to quote() has incompatible type
+    // IntrospectiveValue; value is not a string" because the tainted arg is
+    // an `Object`, not a real `&str`, and `Adapter::call_method` called the
+    // real impl regardless of argument taint.
+    let adapter = make_duckdb_parse_adapter();
+    let tainted_relation = call_method_test(
+        &adapter,
+        "get_relation",
+        &[
+            Value::from("db"),
+            Value::from("schema"),
+            Value::from("my_table"),
+        ],
+    )
+    .unwrap();
+    assert!(tainted_relation.is_introspective_stub());
+
+    let result = call_method_test(&adapter, "quote", &[tainted_relation]).unwrap();
+    assert!(result.is_introspective_stub());
+}
+
+#[test]
+fn test_check_schema_exists_tolerates_none_database() {
+    let adapter = make_duckdb_adapter();
+    let err = dispatch_test(
+        &adapter,
+        "check_schema_exists",
+        &[Value::from(()), Value::from("main")],
+    )
+    .unwrap_err();
+    let message = err.to_string();
+    assert!(
+        !message.contains("incompatible type"),
+        "database=none should not fail argument type conversion, got: {message}"
+    );
+    assert!(
+        message.contains("template not found") || message.contains("check_schema_exists"),
+        "expected a macro-lookup failure past arg parsing, got: {message}"
+    );
 }

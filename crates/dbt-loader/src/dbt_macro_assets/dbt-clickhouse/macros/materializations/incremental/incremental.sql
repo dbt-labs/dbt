@@ -56,26 +56,16 @@
 
   {% else %}
     {% set column_changes = none %}
-    {#-
-      Divergence from Python adapter: the upstream dbt-clickhouse Python adapter calls
-      adapter.calculate_incremental_strategy() (defaulting None→'legacy') and
-      adapter.validate_incremental_strategy() (ClickHouse-specific cross-config checks).
-      In Fusion those methods don't exist; instead we:
-        1. Apply the 'legacy' default directly in Jinja.
-        2. Validate the supported ClickHouse strategy names in Jinja.
-      Cross-config validation (e.g. insert_overwrite requires partition_by) is deferred to a
-      future Rust-layer validator; invalid combos will currently fail at SQL execution time.
-    -#}
-    {% set incremental_strategy = config.get('incremental_strategy') or 'legacy' %}
-    {% set incremental_strategy = incremental_strategy | replace('+', '_') %}
-    {% set valid_incremental_strategies = ['legacy', 'append', 'delete_insert', 'insert_overwrite', 'microbatch'] %}
-    {% if incremental_strategy not in valid_incremental_strategies %}
-      {% do exceptions.raise_compiler_error("Invalid ClickHouse incremental strategy '" ~ incremental_strategy ~ "'") %}
-    {% endif %}
+    {% set incremental_strategy = adapter.calculate_incremental_strategy(config.get('incremental_strategy'))  %}
     {% set incremental_predicates = config.get('predicates', []) or config.get('incremental_predicates', []) %}
     {% set partition_by = config.get('partition_by') %}
+    {% do adapter.validate_incremental_strategy(incremental_strategy, incremental_predicates, unique_key, partition_by) %}
     {%- if on_schema_change != 'ignore' %}
-      {% do exceptions.raise_compiler_error("ClickHouse on_schema_change != 'ignore' is not yet supported in Fusion") %}
+      {%- set column_changes = adapter.check_incremental_schema_changes(on_schema_change, existing_relation, sql, query_settings=config.get('query_settings', {})) -%}
+      {% if column_changes and incremental_strategy != 'legacy' %}
+        {% do clickhouse__apply_column_changes(column_changes, existing_relation) %}
+        {% set existing_relation = load_cached_relation(this) %}
+      {% endif %}
     {% endif %}
     {% if incremental_strategy == 'legacy' %}
       {% do clickhouse__incremental_legacy(existing_relation, intermediate_relation, column_changes, unique_key) %}
@@ -184,7 +174,7 @@
             select {{ unique_key }}
             from {{ inserting_relation }}
           )
-       {{ clickhouse_model_query_settings(model) }}
+       {{ adapter.get_model_query_settings(model) }}
     {% endcall %}
 
     -- Insert all of the new data into the temporary table
@@ -198,7 +188,7 @@
      insert into {{ inserted_relation }} ({{ dest_columns_csv }})
         select {{ dest_columns_csv }}
         from {{ inserting_relation }}
-      {{ clickhouse_model_query_settings(model) }}
+      {{ adapter.get_model_query_settings(model) }}
     {% endcall %}
 
     {% do adapter.drop_relation(new_data_relation) %}
@@ -232,26 +222,29 @@
     {% endif %}
 
     {% call statement('delete_existing_data') %}
+      {#- The delete mutation may run on a replica that has not yet synced the new data;
+          embedding the setting in the subquery makes it read a fresh snapshot. -#}
+      {%- set subquery_settings = ' settings select_sequential_consistency = 1' if target.database_engine == 'Shared' else '' -%}
       {% if is_distributed %}
           {% set existing_local = existing_relation.incorporate(path={"identifier": this.identifier + local_suffix, "schema": local_db_prefix + this.schema}) if existing_relation is not none else none %}
             delete from {{ existing_local }} {{ on_cluster_clause(existing_relation) }} where ({{ unique_key }}) in (select {{ unique_key }}
-                                          from {{ inserting_relation }})
+                                          from {{ inserting_relation }}{{ subquery_settings }})
       {% else %}
             delete from {{ existing_relation }} where ({{ unique_key }}) in (select {{ unique_key }}
-                                          from {{ inserting_relation }})
+                                          from {{ inserting_relation }}{{ subquery_settings }})
       {% endif %}
       {%- if incremental_predicates %}
         {% for predicate in incremental_predicates %}
             and {{ predicate }}
         {% endfor %}
       {%- endif -%}
-      {{ clickhouse_model_query_settings(model) }}
+      {{ adapter.get_model_query_settings(model) }}
     {% endcall %}
 
     {%- set dest_columns = adapter.get_columns_in_relation(existing_relation) -%}
     {%- set dest_cols_csv = dest_columns | map(attribute='quoted') | join(', ') -%}
     {% call statement('insert_new_data') %}
-        insert into {{ existing_relation }} select {{ dest_cols_csv }} from {{ inserting_relation }} {{ clickhouse_model_query_settings(model) }}
+        insert into {{ existing_relation }} select {{ dest_cols_csv }} from {{ inserting_relation }} {{ adapter.get_model_query_settings(model) }}
     {% endcall %}
     {% do adapter.drop_relation(new_data_relation) %}
     {{ drop_relation_if_exists(distributed_new_data_relation) }}
@@ -306,6 +299,12 @@
                 from {{ new_data_relation }}
                 {{- ', ' if not loop.last }}
             {%- endfor %}
+            {#- The strategy relies on REPLACE PARTITION from a source with no parts in the partition
+                to clear shards that received no new data. ClickHouse 26.6+ refuses that by default,
+                so opt back in. Older servers don't know the setting and would reject the query. -#}
+            {%- if adapter.is_at_or_after_version('26.6') %}
+                settings allow_replace_partition_from_empty_source = 1
+            {%- endif %}
       {% endcall %}
     {% endif %}
 

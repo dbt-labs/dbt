@@ -2,8 +2,6 @@ import { useMemo } from 'react';
 import { type ColumnDef } from '@tanstack/react-table';
 import prettyBytes from 'pretty-bytes';
 
-import { resourceIconMap } from '@dbt-labs/dbt-dag';
-
 import { makeNameCell } from '../lib/nameCell';
 import type {
   ExposureSummary,
@@ -33,7 +31,7 @@ const ADAPTERS_WITH_LAST_MODIFIED_STAT = new Set<string>(['snowflake']);
 export function SeedFilterView({ project, onPeek }: FilterViewProps) {
   const columns = useMemo<ColumnDef<SeedSummary>[]>(
     () => [
-      makeNameCell(resourceIconMap.seed, onPeek, (r) => r.uniqueId),
+      makeNameCell(onPeek, (r) => r.uniqueId),
       {
         id: 'row_count',
         header: 'Row count',
@@ -65,7 +63,7 @@ export function SeedFilterView({ project, onPeek }: FilterViewProps) {
 export function ExposureFilterView({ project, onPeek }: FilterViewProps) {
   const columns = useMemo<ColumnDef<ExposureSummary>[]>(
     () => [
-      makeNameCell(resourceIconMap.exposure, onPeek, (r) => r.uniqueId),
+      makeNameCell(onPeek, (r) => r.uniqueId),
       {
         id: 'exposure_type',
         header: 'Type',
@@ -102,7 +100,7 @@ export function ExposureFilterView({ project, onPeek }: FilterViewProps) {
 export function MetricFilterView({ project, onPeek }: FilterViewProps) {
   const columns = useMemo<ColumnDef<MetricSummary>[]>(
     () => [
-      makeNameCell(resourceIconMap.metric, onPeek, (r) => r.uniqueId),
+      makeNameCell(onPeek, (r) => r.uniqueId),
       {
         id: 'metric_type',
         header: 'Type',
@@ -133,7 +131,7 @@ export function MetricFilterView({ project, onPeek }: FilterViewProps) {
 export function GroupFilterView({ project, onPeek }: FilterViewProps) {
   const columns = useMemo<ColumnDef<GroupSummary>[]>(
     () => [
-      makeNameCell(resourceIconMap.group, onPeek, (r) => r.uniqueId),
+      makeNameCell(onPeek, (r) => r.uniqueId),
       {
         id: 'model_count',
         header: 'Model count',
@@ -181,7 +179,7 @@ export function GroupFilterView({ project, onPeek }: FilterViewProps) {
 export function SemanticModelFilterView({ project, onPeek }: FilterViewProps) {
   const columns = useMemo<ColumnDef<SemanticModelSummary>[]>(
     () => [
-      makeNameCell(resourceIconMap.semantic_model, onPeek, (r) => r.uniqueId),
+      makeNameCell(onPeek, (r) => r.uniqueId),
       {
         id: 'entities',
         header: 'Entities',
@@ -212,7 +210,7 @@ export function SemanticModelFilterView({ project, onPeek }: FilterViewProps) {
 export function SavedQueryFilterView({ project, onPeek }: FilterViewProps) {
   const columns = useMemo<ColumnDef<SavedQuerySummary>[]>(
     () => [
-      makeNameCell(resourceIconMap.saved_query, onPeek, (r) => r.uniqueId),
+      makeNameCell(onPeek, (r) => r.uniqueId),
       {
         id: 'description',
         header: 'Description',
@@ -236,7 +234,7 @@ export function SavedQueryFilterView({ project, onPeek }: FilterViewProps) {
 export function SnapshotFilterView({ project, onPeek }: FilterViewProps) {
   const columns = useMemo<ColumnDef<SnapshotSummary>[]>(() => {
     const cols: ColumnDef<SnapshotSummary>[] = [
-      makeNameCell(resourceIconMap.snapshot, onPeek, (r) => r.uniqueId),
+      makeNameCell(onPeek, (r) => r.uniqueId),
       {
         id: 'row_count',
         header: 'Row count',

@@ -7,9 +7,12 @@
 
 use std::fmt::Display;
 use std::future::Future;
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{Duration, Instant};
 
 use dashmap::DashMap;
+use tokio::sync::{Mutex, OwnedMutexGuard};
 
 #[derive(Debug, Default)]
 pub struct RunCacheMetadataCache {
@@ -17,6 +20,16 @@ pub struct RunCacheMetadataCache {
     relation_exists: DashMap<String, TimedEntry<bool>>,
     last_modified_epochs: DashMap<String, TimedEntry<Option<i64>>>,
     lookup_errors: DashMap<String, TimedEntry<String>>,
+    in_flight: DashMap<String, Arc<FlightState>>,
+    generation: AtomicU64,
+    write_lock: StdMutex<()>,
+}
+
+#[derive(Debug, Default)]
+struct FlightState {
+    lock: Arc<Mutex<()>>,
+    version: AtomicU64,
+    users: AtomicUsize,
 }
 
 #[derive(Clone, Debug)]
@@ -71,39 +84,67 @@ impl RunCacheMetadataCache {
     }
 
     pub fn insert_relation_exists(&self, relation: impl Into<String>, exists: bool) {
-        let relation = relation.into();
-        self.remove_lookup_error(&lookup_error_key("relation_exists", &relation));
-        self.relation_exists
-            .insert(relation, TimedEntry::new(exists));
+        self.insert_value(
+            &self.relation_exists,
+            "relation_exists",
+            relation.into(),
+            exists,
+        );
     }
 
     pub fn insert_last_modified_epoch(&self, relation: impl Into<String>, epoch: Option<i64>) {
-        let relation = relation.into();
-        self.remove_lookup_error(&lookup_error_key("last_modified_epoch", &relation));
-        self.last_modified_epochs
-            .insert(relation, TimedEntry::new(epoch));
+        self.insert_value(
+            &self.last_modified_epochs,
+            "last_modified_epoch",
+            relation.into(),
+            epoch,
+        );
     }
 
     pub fn remove_last_modified_epoch(&self, relation: &str) {
+        let _guard = lock_write(&self.write_lock);
+        self.bump_version(&lookup_error_key("last_modified_epoch", relation));
         self.last_modified_epochs.remove(relation);
     }
 
     pub fn insert_lookup_error(&self, lookup: impl Into<String>, error: impl Into<String>) {
+        let lookup = lookup.into();
+        let _guard = lock_write(&self.write_lock);
+        self.bump_version(&lookup);
         self.lookup_errors
-            .insert(lookup.into(), TimedEntry::new(error.into()));
+            .insert(lookup, TimedEntry::new(error.into()));
     }
 
     pub fn remove_lookup_error(&self, lookup: &str) {
+        let _guard = lock_write(&self.write_lock);
+        self.bump_version(lookup);
         self.lookup_errors.remove(lookup);
     }
 
+    /// Drop a cached `relation_exists` lookup failure. Callers use this after a
+    /// cancelled lookup, so cancellation isn't mistaken for a genuine warehouse
+    /// failure and cached for other in-flight lookups of the same relation.
+    pub fn remove_relation_exists_error(&self, relation: &str) {
+        self.remove_lookup_error(&lookup_error_key("relation_exists", relation));
+    }
+
+    /// Drop a cached `last_modified_epoch` lookup failure. See
+    /// `remove_relation_exists_error`.
+    pub fn remove_last_modified_epoch_error(&self, relation: &str) {
+        self.remove_lookup_error(&lookup_error_key("last_modified_epoch", relation));
+    }
+
     pub fn invalidate_relation_metadata(&self, relation: &str) {
+        let _guard = lock_write(&self.write_lock);
+        for kind in ["relation_exists", "last_modified_epoch"] {
+            self.bump_version(&lookup_error_key(kind, relation));
+        }
         self.relation_exists.remove(relation);
         self.last_modified_epochs.remove(relation);
         self.lookup_errors
-            .remove(&format!("relation_exists:{relation}"));
+            .remove(&lookup_error_key("relation_exists", relation));
         self.lookup_errors
-            .remove(&format!("last_modified_epoch:{relation}"));
+            .remove(&lookup_error_key("last_modified_epoch", relation));
     }
 
     pub async fn get_or_try_insert_relation_exists<E, F, Fut>(
@@ -112,11 +153,12 @@ impl RunCacheMetadataCache {
         fetch: F,
     ) -> Result<bool, E>
     where
-        F: FnOnce() -> Fut,
+        F: Fn() -> Fut,
         Fut: Future<Output = Result<bool, E>>,
         E: Display,
     {
         get_or_try_insert(
+            self,
             &self.relation_exists,
             &self.lookup_errors,
             self.ttl,
@@ -127,17 +169,22 @@ impl RunCacheMetadataCache {
         .await
     }
 
+    pub fn begin_last_modified_prefetch(&self, relation: &str) -> MetadataPrefetchGuard<'_> {
+        MetadataPrefetchGuard::new(self, lookup_error_key("last_modified_epoch", relation))
+    }
+
     pub async fn get_or_try_insert_last_modified_epoch<E, F, Fut>(
         &self,
         relation: &str,
         fetch: F,
     ) -> Result<Option<i64>, E>
     where
-        F: FnOnce() -> Fut,
+        F: Fn() -> Fut,
         Fut: Future<Output = Result<Option<i64>, E>>,
         E: Display,
     {
         get_or_try_insert(
+            self,
             &self.last_modified_epochs,
             &self.lookup_errors,
             self.ttl,
@@ -148,7 +195,28 @@ impl RunCacheMetadataCache {
         .await
     }
 
+    fn bump_version(&self, key: &str) {
+        if let Some(state) = self.in_flight.get(key) {
+            state.version.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    fn insert_value<T>(
+        &self,
+        map: &DashMap<String, TimedEntry<T>>,
+        kind: &str,
+        key: String,
+        value: T,
+    ) {
+        let _guard = lock_write(&self.write_lock);
+        let lookup = lookup_error_key(kind, &key);
+        self.bump_version(&lookup);
+        commit_value(map, &self.lookup_errors, &lookup, key, value);
+    }
+
     pub fn clear(&self) {
+        let _guard = lock_write(&self.write_lock);
+        self.generation.fetch_add(1, Ordering::Relaxed);
         self.relation_exists.clear();
         self.last_modified_epochs.clear();
         self.lookup_errors.clear();
@@ -156,6 +224,7 @@ impl RunCacheMetadataCache {
 }
 
 async fn get_or_try_insert<T, E, F, Fut>(
+    cache: &RunCacheMetadataCache,
     map: &DashMap<String, TimedEntry<T>>,
     errors: &DashMap<String, TimedEntry<String>>,
     ttl: Option<Duration>,
@@ -165,7 +234,7 @@ async fn get_or_try_insert<T, E, F, Fut>(
 ) -> Result<T, E>
 where
     T: Clone,
-    F: FnOnce() -> Fut,
+    F: Fn() -> Fut,
     Fut: Future<Output = Result<T, E>>,
     E: Display,
 {
@@ -173,19 +242,154 @@ where
         return Ok(value);
     }
 
-    let value = match fetch().await {
-        Ok(value) => value,
-        Err(error) => {
-            errors.insert(
-                lookup_error_key(lookup_kind, key),
-                TimedEntry::new(error.to_string()),
-            );
-            return Err(error);
+    let lookup_key = lookup_error_key(lookup_kind, key);
+    let flight_guard = MetadataPrefetchGuard::new(cache, lookup_key);
+    let state = &flight_guard.state;
+
+    loop {
+        let _lock_guard = state.lock.lock().await;
+
+        if let Some(value) = get_cached(map, key, ttl) {
+            return Ok(value);
         }
-    };
-    errors.remove(&lookup_error_key(lookup_kind, key));
-    map.insert(key.to_string(), TimedEntry::new(value.clone()));
-    Ok(value)
+
+        let version_at_fetch = state.version.load(Ordering::Relaxed);
+        let generation_at_fetch = cache.generation.load(Ordering::Relaxed);
+        let result = fetch().await;
+
+        // Keep the check and insertion under the same lock as invalidation and
+        // clear. Otherwise an invalidation can land between the check and the
+        // insert, allowing a stale result to repopulate the cache.
+        let _write_guard = lock_write(&cache.write_lock);
+        let unchanged = cache.generation.load(Ordering::Relaxed) == generation_at_fetch
+            && state.version.load(Ordering::Relaxed) == version_at_fetch;
+        if !unchanged {
+            // Invalidation or clear raced this fetch. Do not expose its stale
+            // result; the reusable fetch is retried under the new generation.
+            continue;
+        }
+
+        if let Ok(value) = &result {
+            commit_value(
+                map,
+                errors,
+                &flight_guard.key,
+                key.to_string(),
+                value.clone(),
+            );
+        } else if let Err(error) = &result {
+            errors.insert(flight_guard.key.clone(), TimedEntry::new(error.to_string()));
+        }
+        return result;
+    }
+}
+
+pub struct MetadataPrefetchGuard<'a> {
+    cache: &'a RunCacheMetadataCache,
+    key: String,
+    state: Arc<FlightState>,
+    generation: u64,
+    version: u64,
+    lock_guard: Option<OwnedMutexGuard<()>>,
+}
+
+impl<'a> MetadataPrefetchGuard<'a> {
+    fn new(cache: &'a RunCacheMetadataCache, key: String) -> Self {
+        let state = acquire_flight(&cache.in_flight, &cache.write_lock, &key);
+        Self {
+            cache,
+            key,
+            generation: cache.generation.load(Ordering::Relaxed),
+            version: state.version.load(Ordering::Relaxed),
+            state,
+            lock_guard: None,
+        }
+    }
+
+    /// Serialize a bulk metadata fetch with per-relation lookups for this key.
+    pub async fn acquire(&mut self) {
+        self.lock_guard = Some(Arc::clone(&self.state.lock).lock_owned().await);
+    }
+
+    pub fn insert_last_modified_epoch(&self, relation: impl Into<String>, epoch: Option<i64>) {
+        let _write_guard = lock_write(&self.cache.write_lock);
+        if self.cache.generation.load(Ordering::Relaxed) != self.generation
+            || self.state.version.load(Ordering::Relaxed) != self.version
+        {
+            // The cache was invalidated while this fetch was in flight; the
+            // result is stale and must not be committed. The caller's miss
+            // will be retried under the new generation/version.
+            tracing::trace!(
+                key = %self.key,
+                "dropping stale last-modified epoch write: cache generation/version changed \
+                 since prefetch began"
+            );
+            return;
+        }
+        commit_value(
+            &self.cache.last_modified_epochs,
+            &self.cache.lookup_errors,
+            &self.key,
+            relation.into(),
+            epoch,
+        );
+    }
+}
+
+impl Drop for MetadataPrefetchGuard<'_> {
+    fn drop(&mut self) {
+        release_flight(
+            &self.cache.in_flight,
+            &self.cache.write_lock,
+            &self.key,
+            &self.state,
+        );
+    }
+}
+
+fn commit_value<T>(
+    map: &DashMap<String, TimedEntry<T>>,
+    errors: &DashMap<String, TimedEntry<String>>,
+    lookup: &str,
+    key: String,
+    value: T,
+) {
+    errors.remove(lookup);
+    map.insert(key, TimedEntry::new(value));
+}
+
+fn lock_write(lock: &StdMutex<()>) -> std::sync::MutexGuard<'_, ()> {
+    lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+fn acquire_flight(
+    in_flight: &DashMap<String, Arc<FlightState>>,
+    write_lock: &StdMutex<()>,
+    key: &str,
+) -> Arc<FlightState> {
+    let _write_guard = write_lock
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let state = in_flight
+        .entry(key.to_owned())
+        .or_insert_with(|| Arc::new(FlightState::default()))
+        .clone();
+    state.users.fetch_add(1, Ordering::Relaxed);
+    state
+}
+
+fn release_flight(
+    in_flight: &DashMap<String, Arc<FlightState>>,
+    write_lock: &StdMutex<()>,
+    key: &str,
+    state: &Arc<FlightState>,
+) {
+    let _write_guard = write_lock
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if state.users.fetch_sub(1, Ordering::Relaxed) == 1 {
+        in_flight.remove_if(key, |_, current| Arc::ptr_eq(current, state));
+    }
 }
 
 fn get_cached<T: Clone>(
@@ -216,9 +420,10 @@ mod tests {
     use super::*;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
-    use tokio::time::{Duration as TokioDuration, sleep};
+    use tokio::sync::Notify;
+    use tokio::time::{Duration as TokioDuration, sleep, timeout};
 
-    #[tokio::test]
+    #[dbt_runtime::test]
     async fn relation_exists_lookup_caches_success() {
         let cache = RunCacheMetadataCache::new();
         let calls = Arc::new(AtomicUsize::new(0));
@@ -226,9 +431,12 @@ mod tests {
         let first = cache
             .get_or_try_insert_relation_exists("analytics.orders", {
                 let calls = Arc::clone(&calls);
-                move || async move {
-                    calls.fetch_add(1, Ordering::SeqCst);
-                    Ok::<_, &'static str>(true)
+                move || {
+                    let calls = Arc::clone(&calls);
+                    async move {
+                        calls.fetch_add(1, Ordering::SeqCst);
+                        Ok::<_, &'static str>(true)
+                    }
                 }
             })
             .await
@@ -243,9 +451,246 @@ mod tests {
         assert!(first);
         assert!(second);
         assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert!(cache.in_flight.is_empty());
     }
 
     #[tokio::test]
+    async fn concurrent_last_modified_lookup_fetches_once() {
+        let cache = Arc::new(RunCacheMetadataCache::new());
+        let calls = Arc::new(AtomicUsize::new(0));
+        let first_started = Arc::new(Notify::new());
+        let second_started = Arc::new(Notify::new());
+        let release = Arc::new(Notify::new());
+
+        let first = tokio::spawn({
+            let cache = Arc::clone(&cache);
+            let calls = Arc::clone(&calls);
+            let first_started = Arc::clone(&first_started);
+            let release = Arc::clone(&release);
+            async move {
+                cache
+                    .get_or_try_insert_last_modified_epoch("analytics.orders", move || {
+                        let calls = Arc::clone(&calls);
+                        let first_started = Arc::clone(&first_started);
+                        let release = Arc::clone(&release);
+                        async move {
+                            calls.fetch_add(1, Ordering::SeqCst);
+                            first_started.notify_one();
+                            release.notified().await;
+                            Ok::<_, &'static str>(Some(123))
+                        }
+                    })
+                    .await
+            }
+        });
+
+        first_started.notified().await;
+
+        let second = tokio::spawn({
+            let cache = Arc::clone(&cache);
+            let calls = Arc::clone(&calls);
+            let second_started = Arc::clone(&second_started);
+            let release = Arc::clone(&release);
+            async move {
+                cache
+                    .get_or_try_insert_last_modified_epoch("analytics.orders", move || {
+                        let calls = Arc::clone(&calls);
+                        let second_started = Arc::clone(&second_started);
+                        let release = Arc::clone(&release);
+                        async move {
+                            calls.fetch_add(1, Ordering::SeqCst);
+                            second_started.notify_one();
+                            release.notified().await;
+                            Ok::<_, &'static str>(Some(123))
+                        }
+                    })
+                    .await
+            }
+        });
+
+        // Give the second caller time to enter its fetch path. A single-flight
+        // implementation will time out here because it waits on the first fetch.
+        let _ = timeout(TokioDuration::from_millis(100), second_started.notified()).await;
+        release.notify_waiters();
+
+        assert_eq!(first.await.unwrap().unwrap(), Some(123));
+        assert_eq!(second.await.unwrap().unwrap(), Some(123));
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn blocked_prefetch_does_not_repopulate_removed_epoch() {
+        let cache = Arc::new(RunCacheMetadataCache::new());
+        let started = Arc::new(Notify::new());
+        let release = Arc::new(Notify::new());
+        let task = tokio::spawn({
+            let cache = Arc::clone(&cache);
+            let started = Arc::clone(&started);
+            let release = Arc::clone(&release);
+            async move {
+                let mut guard = cache.begin_last_modified_prefetch("analytics.orders");
+                guard.acquire().await;
+                started.notify_one();
+                release.notified().await;
+                guard.insert_last_modified_epoch("analytics.orders", Some(123));
+            }
+        });
+
+        started.notified().await;
+        cache.remove_last_modified_epoch("analytics.orders");
+        release.notify_one();
+        task.await.unwrap();
+
+        assert_eq!(cache.last_modified_epoch("analytics.orders"), None);
+        assert!(cache.in_flight.is_empty());
+    }
+
+    #[tokio::test]
+    async fn prefetch_serializes_with_per_relation_lookup() {
+        let cache = Arc::new(RunCacheMetadataCache::new());
+        let lookup_started = Arc::new(Notify::new());
+        let mut guard = cache.begin_last_modified_prefetch("analytics.orders");
+        guard.acquire().await;
+
+        let lookup = tokio::spawn({
+            let cache = Arc::clone(&cache);
+            let lookup_started = Arc::clone(&lookup_started);
+            async move {
+                cache
+                    .get_or_try_insert_last_modified_epoch("analytics.orders", move || {
+                        let lookup_started = Arc::clone(&lookup_started);
+                        async move {
+                            lookup_started.notify_one();
+                            Ok::<_, &'static str>(Some(200))
+                        }
+                    })
+                    .await
+            }
+        });
+
+        assert!(
+            timeout(TokioDuration::from_millis(100), lookup_started.notified())
+                .await
+                .is_err()
+        );
+        drop(guard);
+
+        assert_eq!(lookup.await.unwrap().unwrap(), Some(200));
+        assert_eq!(
+            cache.last_modified_epoch("analytics.orders"),
+            Some(Some(200))
+        );
+    }
+
+    #[tokio::test]
+    async fn invalidation_retries_in_flight_lookup_before_caching_result() {
+        let cache = Arc::new(RunCacheMetadataCache::new());
+        let calls = Arc::new(AtomicUsize::new(0));
+        let started = Arc::new(Notify::new());
+        let release = Arc::new(Notify::new());
+        let task = tokio::spawn({
+            let cache = Arc::clone(&cache);
+            let calls = Arc::clone(&calls);
+            let started = Arc::clone(&started);
+            let release = Arc::clone(&release);
+            async move {
+                cache
+                    .get_or_try_insert_last_modified_epoch("analytics.orders", move || {
+                        let calls = Arc::clone(&calls);
+                        let started = Arc::clone(&started);
+                        let release = Arc::clone(&release);
+                        async move {
+                            calls.fetch_add(1, Ordering::SeqCst);
+                            started.notify_one();
+                            release.notified().await;
+                            Ok::<_, &'static str>(Some(123))
+                        }
+                    })
+                    .await
+            }
+        });
+
+        started.notified().await;
+        cache.invalidate_relation_metadata("analytics.orders");
+        release.notify_one();
+        started.notified().await;
+        release.notify_one();
+
+        assert_eq!(task.await.unwrap().unwrap(), Some(123));
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+        assert_eq!(
+            cache.last_modified_epoch("analytics.orders"),
+            Some(Some(123))
+        );
+    }
+
+    #[tokio::test]
+    async fn concurrent_relation_exists_lookup_fetches_once_and_clear_retries() {
+        let cache = Arc::new(RunCacheMetadataCache::new());
+        let calls = Arc::new(AtomicUsize::new(0));
+        let started = Arc::new(Notify::new());
+        let release = Arc::new(Notify::new());
+        let task = tokio::spawn({
+            let cache = Arc::clone(&cache);
+            let calls = Arc::clone(&calls);
+            let started = Arc::clone(&started);
+            let release = Arc::clone(&release);
+            async move {
+                cache
+                    .get_or_try_insert_relation_exists("analytics.orders", move || {
+                        let calls = Arc::clone(&calls);
+                        let started = Arc::clone(&started);
+                        let release = Arc::clone(&release);
+                        async move {
+                            calls.fetch_add(1, Ordering::SeqCst);
+                            started.notify_one();
+                            release.notified().await;
+                            Ok::<_, &'static str>(true)
+                        }
+                    })
+                    .await
+            }
+        });
+
+        started.notified().await;
+        cache.clear();
+        release.notify_one();
+        started.notified().await;
+        release.notify_one();
+
+        assert!(task.await.unwrap().unwrap());
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+        assert_eq!(cache.relation_exists("analytics.orders"), Some(true));
+        assert!(cache.in_flight.is_empty());
+    }
+
+    #[tokio::test]
+    async fn cancelled_lookup_releases_coordination_entry() {
+        let cache = Arc::new(RunCacheMetadataCache::new());
+        let started = Arc::new(Notify::new());
+        let task = tokio::spawn({
+            let cache = Arc::clone(&cache);
+            let started = Arc::clone(&started);
+            async move {
+                cache
+                    .get_or_try_insert_relation_exists("analytics.orders", move || {
+                        let started = Arc::clone(&started);
+                        async move {
+                            started.notify_one();
+                            std::future::pending::<Result<bool, &'static str>>().await
+                        }
+                    })
+                    .await
+            }
+        });
+
+        started.notified().await;
+        task.abort();
+        assert!(task.await.unwrap_err().is_cancelled());
+        assert!(cache.in_flight.is_empty());
+    }
+
+    #[dbt_runtime::test]
     async fn failed_lookup_is_not_cached_for_fail_open_callers() {
         let cache = RunCacheMetadataCache::new();
 
@@ -281,7 +726,7 @@ mod tests {
         );
     }
 
-    #[tokio::test]
+    #[dbt_runtime::test]
     async fn ttl_expiry_refreshes_cached_values() {
         let cache = RunCacheMetadataCache::with_ttl(Duration::from_millis(5));
         let calls = Arc::new(AtomicUsize::new(0));
@@ -289,9 +734,12 @@ mod tests {
         let first = cache
             .get_or_try_insert_relation_exists("analytics.orders", {
                 let calls = Arc::clone(&calls);
-                move || async move {
-                    calls.fetch_add(1, Ordering::SeqCst);
-                    Ok::<_, &'static str>(true)
+                move || {
+                    let calls = Arc::clone(&calls);
+                    async move {
+                        calls.fetch_add(1, Ordering::SeqCst);
+                        Ok::<_, &'static str>(true)
+                    }
                 }
             })
             .await
@@ -303,9 +751,12 @@ mod tests {
         let second = cache
             .get_or_try_insert_relation_exists("analytics.orders", {
                 let calls = Arc::clone(&calls);
-                move || async move {
-                    calls.fetch_add(1, Ordering::SeqCst);
-                    Ok::<_, &'static str>(false)
+                move || {
+                    let calls = Arc::clone(&calls);
+                    async move {
+                        calls.fetch_add(1, Ordering::SeqCst);
+                        Ok::<_, &'static str>(false)
+                    }
                 }
             })
             .await
@@ -315,7 +766,7 @@ mod tests {
         assert_eq!(calls.load(Ordering::SeqCst), 2);
     }
 
-    #[tokio::test]
+    #[dbt_runtime::test]
     async fn ttl_expiry_refreshes_lookup_errors() {
         let cache = RunCacheMetadataCache::with_ttl(Duration::from_millis(5));
 

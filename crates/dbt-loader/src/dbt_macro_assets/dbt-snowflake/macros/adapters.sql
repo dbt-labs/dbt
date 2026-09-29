@@ -10,9 +10,7 @@
     {% set matched_column = None -%}
   {% endif -%}
   {% if matched_column -%}
-    {{ adapter.quote(column_name) }} COMMENT $${{ column_dict[matched_column]['description'] | replace('$', '[$]') }}$$
-  {%- else -%}
-    {{ adapter.quote(column_name) }} COMMENT $$$$
+    {{ column_dict[matched_column]['description'] | replace('$', '[$]') }}
   {%- endif -%}
 {% endmacro %}
 
@@ -20,7 +18,7 @@
 {% macro get_persist_docs_column_list(model_columns, query_columns) %}
 (
   {% for column_name in query_columns %}
-    {{ get_column_comment_sql(column_name, model_columns) }}
+    {{ adapter.quote(column_name) }} COMMENT $${{ get_column_comment_sql(column_name, model_columns) }}$$
     {{- ", " if not loop.last else "" }}
   {% endfor %}
 )
@@ -100,7 +98,9 @@
 
 -- funcsign: (relation, string) -> string
 {% macro snowflake__alter_relation_comment(relation, relation_comment) -%}
-    {%- if relation.is_dynamic_table -%}
+    {%- if relation.is_interactive_table -%}
+        {%- set relation_type = 'table' -%}
+    {%- elif relation.is_dynamic_table -%}
         {%- set relation_type = 'dynamic table' -%}
     {%- else -%}
         {%- set relation_type = relation.type -%}
@@ -116,16 +116,30 @@
 
 -- funcsign: (relation, dict[string, model]) -> string
 {% macro snowflake__alter_column_comment(relation, column_dict) -%}
+    {# DIVERGENCE BEGIN: dbt-core v1 always emits the batched ALTER form, which fails on catalog-linked Iceberg #}
     {% set existing_columns = adapter.get_columns_in_relation(relation) | map(attribute="name") | list %}
-    {% if relation.is_dynamic_table -%}
+    {% set descriptions = {} %}
+    {% for column_name in existing_columns %}
+        {% do descriptions.update({column_name: get_column_comment_sql(column_name, column_dict)}) %}
+    {% endfor %}
+
+    {% if relation.is_interactive_table or relation.is_dynamic_table -%}
         {% set relation_type = "table" %}
     {% else -%}
         {% set relation_type = relation.type %}
     {% endif %}
-    alter {{ relation.get_ddl_prefix_for_alter() }} {{ relation_type }} {{ relation.render() }} alter
-    {% for column_name in existing_columns if (column_name in existing_columns) or (column_name|lower in existing_columns) %}
-        {{ get_column_comment_sql(column_name, column_dict) }} {{- ',' if not loop.last else ';' }}
-    {% endfor %}
+
+    {%- if snowflake__is_catalog_linked_database(relation=config.model) -%}
+        {% for column_name in existing_columns %}
+            comment on column {{ relation.render() }}.{{ adapter.quote(column_name) }} is $${{ descriptions[column_name] }}$$;
+        {% endfor %}
+    {%- else -%}
+        alter {{ relation.get_ddl_prefix_for_alter() }} {{ relation_type }} {{ relation.render() }} alter
+        {% for column_name in existing_columns %}
+            {{ adapter.quote(column_name) }} COMMENT $${{ descriptions[column_name] }}$${{ ',' if not loop.last else ';' }}
+        {% endfor %}
+    {%- endif -%}
+    {# DIVERGENCE END #}
 {% endmacro %}
 
 
@@ -207,10 +221,20 @@
 -- funcsign: (relation, optional[list[base_column]], optional[list[base_column]]) -> string
 {% macro snowflake__alter_relation_add_remove_columns(relation, add_columns, remove_columns) %}
 
-    {% if relation.is_dynamic_table -%}
+    {#- Interactive tables ALTER as plain TABLEs; only dynamic tables use ALTER DYNAMIC TABLE. -#}
+    {% if relation.is_interactive_table -%}
+        {% set relation_type = "table" %}
+    {% elif relation.is_dynamic_table -%}
         {% set relation_type = "dynamic table" %}
     {% else -%}
         {% set relation_type = relation.type %}
+    {% endif %}
+
+    {#- Snowflake's ALTER TABLE reference doesn't list ADD/DROP COLUMN as supported for interactive
+        tables. Live-verified: ADD COLUMN works anyway (undocumented); DROP COLUMN is rejected with
+        `010406: Altering interactive tables is not supported.` -#}
+    {% if relation.is_interactive_table and remove_columns %}
+        {% do exceptions.raise_compiler_error("Columns cannot be removed from an interactive table: `" ~ relation ~ "`.") %}
     {% endif %}
 
     {% if add_columns %}
@@ -252,7 +276,7 @@
            Accessing it under dbt-core (e.g. via the v2-parser handoff) raises a CompilationError,
            which `is defined` does NOT swallow. Fusion is dbt 2.x and dbt-core is 1.x, so gate
            the access on `dbt_version.startswith('2.')`. See dbt-labs/fs#10659. #}
-        {%- if dbt_version.startswith('2.') and adapter.behavior.use_catalogs_v2.no_warn and catalog_relation|attr('catalog_database') -%}
+        {%- if dbt_version.startswith('2.') and catalog_relation.has_catalog_linked_database() -%}
         {# DIVERGENCE END #}
             {{ return(true) }}
         {%- elif catalog_relation|attr('catalog_linked_database') -%}
@@ -267,7 +291,7 @@
            which `is defined` does NOT swallow. Fusion is dbt 2.x and dbt-core is 1.x, so gate
            the access on `dbt_version.startswith('2.')`. See dbt-labs/fs#10659. #}
         {%- if catalog_relation is not none and (
-            (dbt_version.startswith('2.') and adapter.behavior.use_catalogs_v2.no_warn and catalog_relation|attr('catalog_database'))
+            (dbt_version.startswith('2.') and catalog_relation.has_catalog_linked_database())
             or catalog_relation|attr('catalog_linked_database')
         ) -%}
         {# DIVERGENCE END #}
@@ -319,7 +343,7 @@
     AWS Glue requires:
     1. Lowercase identifiers only
     2. Double-quoted identifiers
-    
+
     This macro creates a new relation with lowercased identifiers
     and enabled quoting policy.
   -#}

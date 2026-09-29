@@ -1,11 +1,14 @@
 import type { ReactNode } from 'react';
-import type { ColumnDef } from '@tanstack/react-table';
-
-import type { SortingState } from '@dbt-labs/sourdough';
+import type { ColumnDef, SortingState } from '@tanstack/react-table';
 
 import type { AssetFilter, AssetSummary, ListSort, ResourceType } from '../shared';
 import type { Project } from '../shared';
-import { SimpleLinkBreadcrumbs, useAssetList, useResourceLink } from '../shared';
+import {
+  getResultCountString,
+  SimpleLinkBreadcrumbs,
+  useAssetList,
+  useResourceLink,
+} from '../shared';
 import { ResourceFilterTable } from './ResourceFilterTable';
 
 export interface GenericFilterViewProps<T extends AssetSummary> {
@@ -69,8 +72,13 @@ export function GenericFilterView<T extends AssetSummary>({
         breadcrumbs={[{ text: project.name, href: links.home() }, { text: label }]}
       />
 
-      <header>
+      <header className="flex items-baseline justify-between">
         <h1 className="m-0 text-2xl font-bold leading-tight text-fgMain">{label}</h1>
+        {total != null && (
+          <span className="text-base font-medium text-fgMain">
+            {getResultCountString(total)}
+          </span>
+        )}
       </header>
 
       {filterControls && (

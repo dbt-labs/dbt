@@ -1,0 +1,7 @@
+kind: Fixes
+body: Copy config.group onto the top-level group for source and singular tests, matching dbt-core
+time: 2026-09-09T10:50:51.671558+02:00
+custom:
+    author: larspettermadsstuen
+    issue: "15930"
+    project: dbt-core

@@ -3,7 +3,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicI64};
+use std::sync::atomic::AtomicBool;
 use std::time::Instant;
 
 use crate::run_cache::run_cache_service::{
@@ -11,6 +11,7 @@ use crate::run_cache::run_cache_service::{
 };
 use arrow::array::RecordBatch;
 use arrow_schema::SchemaRef;
+use dbt_adapter::AdapterStore;
 use dbt_adapter::relation::create_relation_from_node;
 use dbt_adapter::response::AdapterResponse;
 use dbt_adapter_core::AdapterType;
@@ -21,7 +22,7 @@ use dbt_common::path::DbtPath;
 use dbt_common::stats::{NodeStatus, Stat};
 use dbt_dag::schedule::Schedule;
 use dbt_frontend_common::sources_extractor::SourcesExtractor;
-use dbt_jinja_utils::jinja_environment::JinjaEnv;
+use dbt_jinja_utils::jinja_environment::{JinjaEnv, adapter_api_value};
 use dbt_jinja_utils::phases::compile::{
     DependencyValidationConfig, build_compile_node_context_inner,
 };
@@ -36,6 +37,7 @@ use dbt_state::explain::StateExplainDevClone;
 use dbt_state::metadata_cache::RunCacheMetadataCache;
 use dbt_state::service_client::SharedRunCacheServiceClient;
 use dbt_state::service_config::RunCacheServiceConfig;
+use dbt_state::telemetry::SharedEventOrder;
 use dbt_state::view_traversal::ViewDefinitionTraverser;
 use minijinja::Value;
 
@@ -43,6 +45,7 @@ use crate::RunTasksArgs;
 use crate::span_manager::SpanManager;
 use crate::task::Task;
 use crate::test_aggregation::{GenericTestRelationships, is_data_test_static_analysis_eligible};
+use crate::unit_test_schema::UnitTestSchemaState;
 use crate::visitor::SkipReason;
 
 use dbt_schemas::schemas::common::DbtMaterialization;
@@ -66,12 +69,20 @@ pub struct RunCacheCtx {
     /// Tracks the background dependency last-modified prefetch so per-node
     /// submits can observe its progress and await it on demand.
     pub prefetch: RunCachePrefetchState,
-    pub telemetry_event_order: AtomicI64,
+    /// Shared telemetry event order counter for monotonic ordering across
+    /// state selector (compilation phase) and task execution (run phase).
+    ///
+    /// Always initialized: when a state selector creates one during
+    /// compilation, the same counter is passed here so run-phase events
+    /// continue the sequence; otherwise a fresh counter is created at run
+    /// start.
+    pub shared_event_order: SharedEventOrder,
     pub telemetry_session_start: std::sync::OnceLock<Instant>,
     pub telemetry_session_ended: AtomicBool,
     /// Background telemetry batching worker, started lazily on the first
     /// event so runs with the dbt State service disabled never spawn it.
     pub telemetry_dispatcher: std::sync::OnceLock<TelemetryDispatcher>,
+    pub redshift_case_sensitivity_enabled: tokio::sync::OnceCell<bool>,
 }
 
 /// Lifecycle handle for the background dependency last-modified prefetch.
@@ -175,16 +186,26 @@ pub struct TaskRunnerCtxInner {
     pub adhoc_runner: Arc<dyn crate::AdhocRunner>,
     pub materialization_resolver: Arc<MaterializationResolver>,
     pub root_project_name: String,
-    pub adapter_type: AdapterType,
+    /// Every adapter the active target declares, built on first use.
+    ///
+    /// A task that knows its node's adapter type asks this for the adapter that
+    /// executes it, rather than re-deriving one from the profile. Its
+    /// `default_adapter_type()` is what an unannotated node runs on.
+    pub adapter_store: Arc<AdapterStore>,
     pub sources_extractor: Arc<dyn SourcesExtractor>,
     pub dbt_profile: Arc<DbtProfile>,
     pub runtime_config: Arc<DbtRuntimeConfig>,
     pub generic_test_relationships: GenericTestRelationships,
+    /// Cross-model schema-inference state for `--infer-schemas`, shared by
+    /// every task in this run.
+    pub infer_schema_registry: Arc<dbt_common::infer_schema_registry::InferSchemaRegistry>,
     span_manager: Arc<SpanManager<FsResult<NodeStatus>, SkipReason>>,
     /// Captured show batches for the LSP preview path; set by run_show, collected after the task loop.
     pub preview_results: parking_lot::Mutex<Option<(Vec<RecordBatch>, SchemaRef)>>,
     /// Error from a failed show query; set by run_show when execution fails, collected after the task loop.
     pub preview_error: parking_lot::Mutex<Option<String>>,
+    /// Coordinates unit-test schema hydration and memoization for this invocation.
+    pub unit_test_schema: UnitTestSchemaState,
     // <Start> RunCache-related fields. These are only populated when the RunCache is enabled for the current execution.
     pub run_cache_ctx: RunCacheCtx,
     // <End> RunCache-related fields.
@@ -205,6 +226,7 @@ impl TaskRunnerCtxInner {
         generic_test_relationships: GenericTestRelationships,
         span_manager: Arc<SpanManager<FsResult<NodeStatus>, SkipReason>>,
         execute: dbt_schemas::schemas::profiles::Execute,
+        adapter_store: Arc<AdapterStore>,
         sources_extractor: Arc<dyn SourcesExtractor>,
         run_cache_ctx: RunCacheCtx,
     ) -> Self {
@@ -222,7 +244,6 @@ impl TaskRunnerCtxInner {
 
         let materialization_resolver = MaterializationResolver::new(
             &resolver_state.macros.macros,
-            resolver_state.adapter_type,
             &resolver_state.root_project_name,
         );
 
@@ -233,6 +254,9 @@ impl TaskRunnerCtxInner {
             }
             map
         };
+
+        let infer_schema_registry =
+            Arc::new(dbt_common::infer_schema_registry::InferSchemaRegistry::new());
 
         TaskRunnerCtxInner {
             arg,
@@ -256,14 +280,16 @@ impl TaskRunnerCtxInner {
             adhoc_runner,
             materialization_resolver: Arc::new(materialization_resolver),
             root_project_name: resolver_state.root_project_name.clone(),
-            adapter_type: resolver_state.adapter_type,
+            adapter_store,
             sources_extractor,
             dbt_profile: Arc::new(resolver_state.dbt_profile.clone()),
             runtime_config: resolver_state.runtime_config.clone(),
             generic_test_relationships,
+            infer_schema_registry,
             span_manager,
             preview_results: parking_lot::Mutex::new(None),
             preview_error: parking_lot::Mutex::new(None),
+            unit_test_schema: UnitTestSchemaState::default(),
             run_cache_ctx,
         }
     }
@@ -325,6 +351,42 @@ pub trait ExtendedCtx: Send + Sync + Any {
     }
 }
 
+/// The owned slice of a [`TaskRunnerCtx`] that blocking work needs.
+///
+/// It carries four of the ctx's six `Arc`s rather than cloning the whole
+/// thing.
+///
+/// Everything shared sits behind an `Arc`, and the mutable state inside
+/// [`TaskRunnerCtxInner`] is interior-mutable, so writes through this handle
+/// are visible to the task's own ctx.
+#[derive(Clone)]
+pub struct BlockingTaskCtx {
+    pub inner: Arc<TaskRunnerCtxInner>,
+    pub env: Arc<JinjaEnv>,
+    pub data_store: Arc<dyn DataStoreTrait>,
+    pub resolver_state: Arc<ResolverState>,
+    /// Copied, not shared: see [`TaskRunnerCtx::thread_id`].
+    pub thread_id: i32,
+}
+
+impl BlockingTaskCtx {
+    pub fn adapter_store(&self) -> &Arc<AdapterStore> {
+        &self.inner.adapter_store
+    }
+
+    pub fn dbt_profile(&self) -> &DbtProfile {
+        &self.inner.dbt_profile
+    }
+
+    pub fn extended_ctx<T: ExtendedCtx + 'static>(&self) -> Option<&T> {
+        self.inner.extended_ctx.as_any().downcast_ref::<T>()
+    }
+
+    pub fn nodes(&self) -> &Nodes {
+        &self.resolver_state.nodes
+    }
+}
+
 #[derive(Clone)]
 pub struct TaskRunnerCtx {
     pub inner: Arc<TaskRunnerCtxInner>,
@@ -344,6 +406,17 @@ pub struct TaskRunnerCtx {
 }
 
 impl TaskRunnerCtx {
+    /// Takes the handles blocking work needs off this ctx.
+    pub fn blocking_ctx(&self) -> BlockingTaskCtx {
+        BlockingTaskCtx {
+            inner: Arc::clone(&self.inner),
+            env: Arc::clone(&self.env),
+            data_store: Arc::clone(&self.data_store),
+            resolver_state: Arc::clone(&self.resolver_state),
+            thread_id: self.thread_id,
+        }
+    }
+
     pub async fn is_data_test_statically_skippable(&self, unique_id: &str) -> bool {
         if !self
             .inner
@@ -384,8 +457,24 @@ impl TaskRunnerCtx {
         &self.inner.root_project_name
     }
 
-    pub fn adapter_type(&self) -> AdapterType {
-        self.inner.adapter_type
+    /// The adapter unannotated nodes run on.
+    ///
+    /// Named for what it returns. It used to be `adapter_type()`, which read as
+    /// "the adapter" and was taken as such by callers that meant the node's --
+    /// the bug fixed on the render and materialize paths. Every remaining caller
+    /// is now asserting it wants the *target default*, which is reviewable.
+    ///
+    /// Read off the store rather than stored alongside it, so there is one answer
+    /// to "what is the default" and it cannot drift from the adapter the store
+    /// hands out for it.
+    pub fn default_adapter_type(&self) -> AdapterType {
+        self.inner.adapter_store.default_adapter_type()
+    }
+
+    /// Every adapter the active target declares. Ask it for the adapter that
+    /// executes a given adapter type; see [`AdapterStore`].
+    pub fn adapter_store(&self) -> &Arc<AdapterStore> {
+        &self.inner.adapter_store
     }
 
     pub fn extended_ctx<T: ExtendedCtx + 'static>(&self) -> Option<&T> {
@@ -430,7 +519,7 @@ impl TaskRunnerCtx {
 
     pub fn try_get_relation_from_node(&self, unique_id: &str) -> Option<Arc<dyn BaseRelation>> {
         self.resolver_state.nodes.get_node(unique_id).map(|node| {
-            create_relation_from_node(self.adapter_type(), node, None)
+            create_relation_from_node(node.node_adapter(), node, None)
                 .expect("Failed to create relation from node")
                 .into()
         })
@@ -460,15 +549,38 @@ impl TaskRunnerCtx {
     where
         T: InternalDbtNodeAttributes + ?Sized,
     {
-        build_compile_node_context_inner(
+        // The node's own adapter, not the target's default: `+adapter` already
+        // drives macro dispatch (`DIALECT`, inserted by the callee), and the same
+        // choice has to reach relation rendering and introspection or the node
+        // dispatches to one adapter's macros while talking to another's
+        // connection.
+        let node_adapter = model.node_adapter();
+        let (mut ctx, config_map) = build_compile_node_context_inner(
             model,
-            self.adapter_type(),
+            node_adapter,
             base_context,
             self.root_project_name(),
             self.resolver_state.node_resolver.clone(),
             self.inner.runtime_config.clone(),
             ref_validation_config,
-        )
+        )?;
+
+        // `adapter` and `api` are environment globals bound to a single adapter,
+        // and the environment is shared by every render. Shadow them in this
+        // node's own context -- the same context-then-globals lookup `DIALECT`
+        // relies on -- so `adapter.get_relation`, `adapter.execute` and friends
+        // reach the connection the node actually runs on.
+        //
+        // Only when the node differs from the default: an unannotated node then
+        // resolves the identical global it always did, and a single-adapter
+        // target never asks the store for a second adapter.
+        if node_adapter != self.default_adapter_type() {
+            let adapter = self.adapter_store().get(node_adapter)?;
+            ctx.insert("api".to_string(), adapter_api_value(&adapter));
+            ctx.insert("adapter".to_string(), adapter.as_value());
+        }
+
+        Ok((ctx, config_map))
     }
 
     pub fn on_test_failure(

@@ -86,7 +86,10 @@ fn execute_unit_test_remote_inner(
     match materialize_unit_test_fast_pass(
         &sql_instruction.sql,
         unit_test,
-        ctx.adapter_type(),
+        // A unit test carries the tested model's adapter (`resolve_unit_tests`
+        // sets `adapter: model_adapter.unwrap_or(default)`), so a test on a
+        // non-default model must not materialize as the default.
+        unit_test.node_adapter(),
         ctx.runtime_config(),
         ctx.env.clone(),
         base_context,
@@ -155,7 +158,7 @@ pub fn process_unit_test_result(
             attrs.set_node_outcome(NodeOutcome::Success);
 
             attrs.node_outcome_detail = Some(NodeOutcomeDetail::NodeTestDetail(
-                TestEvaluationDetail::new(TestOutcome::Passed, 0, None, None, None),
+                TestEvaluationDetail::new(TestOutcome::Passed, 0, None, None, None, None),
             ));
         });
         let thread_id = ctx.thread_id;
@@ -187,6 +190,7 @@ pub fn process_unit_test_result(
                     TestOutcome::Failed,
                     result.diff_num_rows.try_into().unwrap_or(i32::MAX),
                     diff.take(),
+                    None,
                     None,
                     None,
                 ),

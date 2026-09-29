@@ -221,6 +221,34 @@ mod tests {
         assert_eq!(rendered, "runtime description");
     }
 
+    #[test]
+    fn test_model_wrapper_value_matrix() {
+        let mut model_map = IndexMap::new();
+        model_map.insert("name".to_string(), MinijinjaValue::from("test_model"));
+        model_map.insert("version".to_string(), MinijinjaValue::from(2));
+        let wrapper = MinijinjaValue::from_object(LazyModelWrapper::new(
+            to_model_context_map(model_map),
+            PathBuf::from("/non/existent/path.sql"),
+        ));
+
+        let hook = MinijinjaValue::from_object(HookConfig {
+            sql: "select 1".to_string(),
+            transaction: true,
+        });
+        assert_eq!(wrapper.kind(), minijinja::value::ValueKind::Map);
+        assert_eq!(hook.kind(), minijinja::value::ValueKind::Map);
+        let env = minijinja::Environment::new();
+        assert_eq!(
+            env.render_str(
+                "{{ value | list | length }}|{{ value.name }}|{{ value.version }}|{{ hook.sql }}|{{ hook.transaction }}",
+                std::collections::BTreeMap::from([("value", wrapper), ("hook", hook)]),
+                &[],
+            )
+            .unwrap(),
+            "2|test_model|2|select 1|True"
+        );
+    }
+
     /// `model` and `node` wrap the same node, so a mutation through one
     /// (what `{% do model.update(...) %}` ends up doing) is visible via the
     /// other — matching dbt Core, where both names refer to one dict.

@@ -10,6 +10,7 @@ use crate::schemas::InternalDbtNodeAttributes;
 use crate::schemas::legacy_catalog::DbtCatalog;
 use crate::schemas::manifest::DbtManifest;
 use crate::schemas::serde::typed_struct_from_json_file;
+use crate::schemas::sources::FreshnessResultsArtifact;
 
 // Type aliases for clarity
 type YmlValue = dbt_yaml::Value;
@@ -177,6 +178,35 @@ pub struct RunResultOutput {
     pub static_analysis_off_reason: Option<StaticAnalysisOffReason>,
 }
 
+impl RunResultOutput {
+    /// A result row synthesized outside the task graph (e.g. a parse-time check, or a node
+    /// reported `skipped` because one failed) — every per-node field that only a real task
+    /// execution could populate (timing, compiled SQL, batch results, …) is left at its
+    /// "nothing ran" value.
+    pub fn synthetic(
+        unique_id: String,
+        status: impl Into<String>,
+        message: Option<String>,
+        failures: Option<i64>,
+    ) -> Self {
+        Self {
+            status: status.into(),
+            timing: Vec::new(),
+            thread_id: "main".to_string(),
+            execution_time: 0.0,
+            adapter_response: BTreeMap::new(),
+            message,
+            failures,
+            unique_id,
+            compiled: None,
+            compiled_code: None,
+            relation_name: None,
+            batch_results: None,
+            static_analysis_off_reason: None,
+        }
+    }
+}
+
 /// Arguments passed to the dbt command.
 #[skip_serializing_none]
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -220,6 +250,8 @@ pub struct DbtCommandExecutionArtifacts {
     pub manifest: Option<DbtManifest>,
     pub run_results: Option<RunResultsArtifact>,
     pub catalog: Option<DbtCatalog>,
+    /// `source freshness`'s results, as written to `sources.json`.
+    pub sources: Option<FreshnessResultsArtifact>,
     /// `list`'s selected nodes in selector format.
     pub list_items: Option<Vec<String>>,
     /// Rendered message of a real (non-exit-status) error, captured before it is

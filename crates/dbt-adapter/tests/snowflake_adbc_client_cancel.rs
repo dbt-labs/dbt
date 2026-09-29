@@ -16,12 +16,12 @@ use std::time::{Duration, Instant};
 
 use adbc_core::error::{Error, Result};
 use adbc_core::options::AdbcVersion;
-use dbt_adapter::statement::{TrackedStatement, cancel_all_tracked_statements};
 use dbt_adbc::{
     Backend, Database, Statement, connection,
     database::{self, LogLevel},
     driver, snowflake,
 };
+use dbt_tracked_stmt::{TrackedStatement, cancel_all_tracked_statements};
 
 const ADBC_VERSION: AdbcVersion = AdbcVersion::V110;
 const WAIT_SECONDS: u64 = 300;

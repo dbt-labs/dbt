@@ -31,6 +31,7 @@ impl TestEnvGuard {
 
     const EXACT_MATCH_VARS: &'static [&'static str] = &[
         "_DBT_SKIP_DEV_LICENSE",
+        "DBT_DISABLE_VERSION_CHECK",
         "DBT_SKIP_REMOTE_LICENSE",
         "ADAPTER_AUTH_CREDS",
         "ADAPTER_POSTGRES",
@@ -64,7 +65,7 @@ impl TestEnvGuard {
         "VORTEX_DEV_MODE",
         "VORTEX_DEV_MODE_OUTPUT_PATH",
         // Opt-in capture of test OTEL files + rendered summaries for local
-        // debugging / comparing runs (see CompareConnectionBackpressureSummary).
+        // debugging / comparing runs (see CompareThreadConcurrencySummary).
         "DBT_TEST_OTEL_CAPTURE_DIR",
         "DBT_TEST_OTEL_LABEL",
     ];

@@ -128,7 +128,7 @@ pub fn determine_org_id(
                 });
             }
             Err(RunCacheServiceError::Auth(
-                "OAuth token does not include an organization scope".to_string(),
+                "Cannot determine the account ID. Please make sure dbt State is enabled in your account.".to_string(),
             ))
         }
         _ => Err(RunCacheServiceError::Auth(
@@ -193,6 +193,16 @@ mod tests {
         .unwrap();
         let err = determine_org_id(&scope, None).unwrap_err();
         assert!(err.to_string().contains("state-org-id"));
+    }
+
+    #[test]
+    fn determine_org_id_errors_when_token_has_no_org_scope() {
+        let scope = Scope::from_string("").unwrap();
+        let err = determine_org_id(&scope, None).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("Please make sure dbt State is enabled in your account")
+        );
     }
 
     #[test]

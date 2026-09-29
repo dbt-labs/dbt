@@ -1,5 +1,4 @@
-import { ResourceTypeExplorer } from '@dbt-labs/dbt-dag';
-
+import type { ResourceTypeExplorer } from '../../../lib/resourceType';
 import type { MatchedField } from '../../typings/domain/search';
 
 /**

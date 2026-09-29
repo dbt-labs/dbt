@@ -5,7 +5,7 @@ interface Props {
 }
 
 export function NoLineageFallback({ modelName }: Props) {
-  const command = `dbt build --write-index --select +${modelName}+`;
+  const command = `dbt build --select +${modelName}+ && dbt docs generate`;
   return (
     <div className="flex flex-col gap-2 p-6">
       <h4 className="m-0 text-base font-semibold leading-6 text-fgMain">

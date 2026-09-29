@@ -3,10 +3,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use adbc_core::options::{OptionStatement, OptionValue};
-use arrow::compute::concat_batches;
 use arrow_array::RecordBatch;
 use arrow_schema::Schema;
-use dbt_adapter_sql::statements::is_update_statement;
 use dbt_adbc::bigquery::QUERY_LABELS;
 use dbt_adbc::{Backend, Connection, QueryCtx, Statement};
 use dbt_auth::AdapterConfig;
@@ -20,16 +18,20 @@ use dbt_common::{AdapterError, AdapterErrorKind, AdapterResult, Cancellable, cre
 use dbt_schemas::schemas::common::ResolvedQuoting;
 use dbt_sql_utils::snowflake_terminal_flow_statement;
 use dbt_telemetry::{QueryExecuted, QueryOutcome};
+use dbt_tracked_stmt::TrackedStatement;
 use indexmap::IndexMap;
 use minijinja::State;
 use tracy_client::span;
 
 use crate::AdapterType;
 use crate::cache::RelationCache;
+use crate::engine::concat_batches::concat_batches_widened;
+use crate::engine::databricks_query_tags::query_tags_from_state;
 use crate::engine::query_comment::QueryCommentConfig;
 use crate::engine::sidecar_client::SidecarClient;
-use crate::errors::{adbc_error_to_adapter_error, arrow_error_to_adapter_error};
-use crate::record_batch::{RecordBatchExt, SchemaExt};
+use crate::errors::adbc_error_to_adapter_error;
+use crate::record_batch::{ROWS_AFFECTED_META, RecordBatchExt, SchemaExt};
+use crate::response::query_id_from_record_batch;
 use crate::sql::normalize::strip_sql_comments;
 use crate::sql_types::TypeOps;
 use crate::statement::*;
@@ -193,6 +195,13 @@ pub trait AdapterEngine: Send + Sync {
         0
     }
 
+    /// Fingerprints the connection `config` would open, without opening one.
+    /// The pool reuses a connection only when this matches the connection's
+    /// own fingerprint; a mismatch forces a new connection.
+    fn fingerprint_for_config(&self, _config: &AdapterConfig) -> AdapterResult<u64> {
+        Ok(self.fingerprint())
+    }
+
     /// Get the physical execution backend for sidecar engines.
     ///
     /// Returns the actual database backend (DuckDB, Snowflake, etc.) that SQL
@@ -260,31 +269,42 @@ pub(crate) fn adbc_execute_with_options(
 
     let adapter_type = engine.adapter_type();
     let mut options = options;
-    if let (Some(state), AdapterType::Bigquery) = (state, adapter_type) {
-        let mut job_labels = maybe_query_comment
-            .as_ref()
-            .map_or_else(IndexMap::new, |comment| {
-                engine
-                    .query_comment()
-                    .get_job_labels_from_query_comment(comment)
-            });
-        if let Some(invocation_id_label) = state
-            .lookup("invocation_id", &[])
-            .and_then(|value| value.as_str().map(|label| label.to_owned()))
-        {
-            job_labels.insert("dbt_invocation_id".to_string(), invocation_id_label);
+    match (state, adapter_type) {
+        (_, AdapterType::Databricks) => {
+            options.extend(query_tags_from_state(state)?.into_statement_options())
         }
+        (_, AdapterType::ClickHouse) => {
+            options.extend(crate::metadata::clickhouse::statement_options())
+        }
+        (Some(state), AdapterType::Bigquery) => {
+            let mut job_labels =
+                maybe_query_comment
+                    .as_ref()
+                    .map_or_else(IndexMap::new, |comment| {
+                        engine
+                            .query_comment()
+                            .get_job_labels_from_query_comment(comment)
+                    });
+            if let Some(invocation_id_label) = state
+                .lookup("invocation_id", &[])
+                .and_then(|value| value.as_str().map(|label| label.to_owned()))
+            {
+                job_labels.insert("dbt_invocation_id".to_string(), invocation_id_label);
+            }
 
-        let job_label_option =
-            serde_json::to_string(&job_labels).expect("Should be able to serialize job labels");
-        options.push((
-            QUERY_LABELS.to_owned(),
-            OptionValue::String(job_label_option),
-        ));
+            let job_label_option =
+                serde_json::to_string(&job_labels).expect("Should be able to serialize job labels");
+            options.push((
+                QUERY_LABELS.to_owned(),
+                OptionValue::String(job_label_option),
+            ));
+        }
+        _ => {}
     }
 
+    type ExecuteOutput = (Arc<Schema>, Vec<RecordBatch>, Option<i64>);
     let do_execute = |conn: &'_ mut dyn Connection| -> Result<
-        (Arc<Schema>, Vec<RecordBatch>),
+        ExecuteOutput,
         Cancellable<adbc_core::error::Error>,
     > {
         use dbt_adbc::statement::Statement as _;
@@ -311,6 +331,26 @@ pub(crate) fn adbc_execute_with_options(
                 OptionStatement::Other(DBT_EXECUTION_PHASE.to_string()),
                 OptionValue::String(p.to_string()),
             )?;
+        }
+        if adapter_type == AdapterType::LakeCompute {
+            if let Some(project) = ctx.project_name() {
+                stmt.set_option(
+                    OptionStatement::Other(DBT_PROJECT.to_string()),
+                    OptionValue::String(project.clone()),
+                )?;
+            }
+            if let Some(model) = ctx.model_name() {
+                stmt.set_option(
+                    OptionStatement::Other(DBT_MODEL.to_string()),
+                    OptionValue::String(model.clone()),
+                )?;
+            }
+            if let Some(run_id) = ctx.run_id() {
+                stmt.set_option(
+                    OptionStatement::Other(DBT_RUN_ID.to_string()),
+                    OptionValue::String(run_id.clone()),
+                )?;
+            }
         }
         stmt.set_option(
             OptionStatement::Other(DBT_METADATA.to_string()),
@@ -342,18 +382,7 @@ pub(crate) fn adbc_execute_with_options(
         // when the user Ctrl-C's the process.
         let mut stmt = TrackedStatement::new(stmt);
 
-        // ClickHouse DDL/DML does not return an Arrow IPC schema header:
-        // This check should be removed after the fix lands in ClickHouse ADBC driver:
-        // https://github.com/ClickHouse/adbc_clickhouse/pull/54
-        if adapter_type == AdapterType::ClickHouse
-            && is_update_statement(sql.as_ref(), adapter_type)
-        {
-            stmt.execute_update()?;
-            token.check_cancellation()?;
-            return Ok((Arc::new(Schema::empty()), Vec::new()));
-        }
-
-        // Alt compute: every statement compute_platform.rs sends is DDL/DML
+        // Lake compute: every statement compute_platform.rs sends is DDL/DML
         // whose result is never read (it always passes fetch=false -- models
         // only ever create/drop/write, they don't read query results back).
         // `stmt.execute()` below calls `reader.schema()` unconditionally, which
@@ -361,14 +390,59 @@ pub(crate) fn adbc_execute_with_options(
         // + list_files, ~2-3s) even though nothing will ever consume that
         // export. `execute_update()` skips export setup server-side entirely
         // and never touches the schema. This is only safe because dbt-compute
-        // doesn't execute tests today (see AltCompute routing in
+        // doesn't execute tests today (see `selects_lake_compute` routing in
         // dbt-tasks-sa/src/task.rs, keyed off the models table) -- a test
-        // needs its result rows, so a future test-execution path over Alt must
+        // needs its result rows, so a future test-execution path over lake compute must
         // pass fetch=true and must not hit this branch.
-        if adapter_type == AdapterType::Alt && !fetch {
-            stmt.execute_update()?;
+        if adapter_type == AdapterType::LakeCompute && !fetch {
+            let rows_affected = stmt.execute_update()?;
             token.check_cancellation()?;
-            return Ok((Arc::new(Schema::empty()), Vec::new()));
+            // Surface non-fatal backend warnings (e.g. an export-limit
+            // truncation notice) and the job id via schema metadata, since
+            // this function's return type has no other slot for
+            // statement-level side channels. `AdapterResponse::from_record_batch`
+            // reads both back; the job id is the only way to later recover
+            // this statement's result via dbt-compute's `/download_credentials`.
+            let warnings = stmt
+                .get_option_string(OptionStatement::Other(
+                    dbt_adbc::lake_compute::LAST_WARNINGS.to_string(),
+                ))
+                .unwrap_or_default();
+            let query_id = stmt
+                .get_option_string(OptionStatement::Other(
+                    dbt_adbc::lake_compute::LAST_QUERY_ID.to_string(),
+                ))
+                .unwrap_or_default();
+            let mut metadata = std::collections::HashMap::new();
+            if !warnings.is_empty() {
+                metadata.insert(
+                    dbt_adbc::lake_compute::schema_metadata::WARNINGS.to_string(),
+                    warnings,
+                );
+            }
+            if !query_id.is_empty() {
+                metadata.insert(
+                    dbt_adbc::lake_compute::schema_metadata::QUERY_ID.to_string(),
+                    query_id,
+                );
+            }
+            let schema = if metadata.is_empty() {
+                Arc::new(Schema::empty())
+            } else {
+                Arc::new(Schema::new_with_metadata(
+                    Vec::<arrow_schema::Field>::new(),
+                    metadata,
+                ))
+            };
+            return Ok((schema, Vec::new(), rows_affected));
+        }
+
+        // Redshift-only: other adapters need execute()'s schema metadata
+        // (query_id, BigQuery row counts) that this path drops.
+        if adapter_type == AdapterType::Redshift && !fetch {
+            let rows_affected = stmt.execute_update()?;
+            token.check_cancellation()?;
+            return Ok((Arc::new(Schema::empty()), Vec::new(), rows_affected));
         }
 
         let t_exec = std::time::Instant::now();
@@ -382,11 +456,53 @@ pub(crate) fn adbc_execute_with_options(
         log_step_duration("reader.schema()", t_schema.elapsed());
         let mut batches = Vec::with_capacity(1);
 
+        // Surface non-fatal backend warnings (e.g. an export-limit truncation
+        // notice) the same way the `!fetch` lake compute branch above does: via schema
+        // metadata, since this closure's return type has no other slot for
+        // statement-level side channels. `stmt.execute()` (quack's
+        // `ComputeStatement::do_execute`) already stashed them internally, so
+        // this is a local option read, not a second round trip -- but it must
+        // happen after `reader` (which holds `stmt` borrowed) is dropped.
+        let attach_lake_compute_metadata = |stmt: &TrackedStatement, schema: Arc<Schema>| {
+            if adapter_type != AdapterType::LakeCompute {
+                return schema;
+            }
+            let warnings = stmt
+                .get_option_string(OptionStatement::Other(
+                    dbt_adbc::lake_compute::LAST_WARNINGS.to_string(),
+                ))
+                .unwrap_or_default();
+            let query_id = stmt
+                .get_option_string(OptionStatement::Other(
+                    dbt_adbc::lake_compute::LAST_QUERY_ID.to_string(),
+                ))
+                .unwrap_or_default();
+            if warnings.is_empty() && query_id.is_empty() {
+                return schema;
+            }
+            let mut metadata = schema.metadata().clone();
+            if !warnings.is_empty() {
+                metadata.insert(
+                    dbt_adbc::lake_compute::schema_metadata::WARNINGS.to_string(),
+                    warnings,
+                );
+            }
+            if !query_id.is_empty() {
+                metadata.insert(
+                    dbt_adbc::lake_compute::schema_metadata::QUERY_ID.to_string(),
+                    query_id,
+                );
+            }
+            Arc::new(Schema::new_with_metadata(schema.fields().clone(), metadata))
+        };
+
         // Snowflake DML (MERGE/INSERT/UPDATE/DELETE) returns a one-row metadata batch
         // with columns like "number of rows inserted". AdapterResponse needs that batch
         // to compute rows_affected correctly, so we must drain even when fetch=false.
         if !fetch && !schema.has_dml_columns(engine.adapter_type()) {
-            return Ok((schema, batches));
+            drop(reader);
+            let schema = attach_lake_compute_metadata(&stmt, schema);
+            return Ok((schema, batches, None));
         }
 
         // This loop has been discovered to inexplicably hang in some circumstances
@@ -400,7 +516,8 @@ pub(crate) fn adbc_execute_with_options(
             token.check_cancellation()?;
         }
         log_step_duration("batch-consume loop (for res in reader)", t_loop.elapsed());
-        Ok((schema, batches))
+        let schema = attach_lake_compute_metadata(&stmt, schema);
+        Ok((schema, batches, None))
     };
     let _span = span!("SqlEngine::execute");
 
@@ -417,7 +534,7 @@ pub(crate) fn adbc_execute_with_options(
     log_step_duration("create_debug_span(...).entered()", t_span_create.elapsed());
 
     let t_do_execute = std::time::Instant::now();
-    let (schema, batches) = match do_execute(conn) {
+    let (schema, batches, rows_affected) = match do_execute(conn) {
         Ok(res) => res,
         Err(err @ (Cancellable::Cancelled | Cancellable::Error(_))) => {
             let cancelled = || {
@@ -464,7 +581,15 @@ pub(crate) fn adbc_execute_with_options(
         t_do_execute.elapsed(),
     );
     let t_post = std::time::Instant::now();
-    let total_batch = concat_batches(&schema, &batches).map_err(arrow_error_to_adapter_error)?;
+    let schema = match rows_affected {
+        Some(rows) => {
+            let mut metadata = schema.metadata().clone();
+            metadata.insert(ROWS_AFFECTED_META.to_string(), rows.to_string());
+            Arc::new(Schema::new_with_metadata(schema.fields().clone(), metadata))
+        }
+        None => schema,
+    };
+    let total_batch = concat_batches_widened(schema, batches)?;
     let total_batch = normalize_result_column_names(adapter_type, sql.as_ref(), total_batch);
     log_step_duration(
         "concat_batches + normalize_result_column_names",
@@ -476,7 +601,7 @@ pub(crate) fn adbc_execute_with_options(
         if let Some(attrs) = attrs.downcast_mut::<QueryExecuted>() {
             attrs.dbt_core_event_code = "E017".to_string();
             attrs.set_query_outcome(QueryOutcome::Success);
-            attrs.query_id = total_batch.query_id(adapter_type)
+            attrs.query_id = query_id_from_record_batch(&total_batch, adapter_type);
         }
     });
     log_step_duration("record_current_span_status_from_attrs", t_status.elapsed());

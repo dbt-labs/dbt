@@ -123,7 +123,7 @@ fn unique_key_to_grain(uk: &Option<dbt_schemas::schemas::common::DbtUniqueKey>) 
 
 /// Write metadata parquet epoch files from in-memory typed structs.
 ///
-/// Writes only `target/metadata/` epoch files — no DuckDB, no `target/index/`.
+/// Writes only `target/private/metadata/` epoch files — no DuckDB, no `target/private/index/`.
 /// Independent of `write_json`. Errors are non-fatal — logged as warnings.
 #[allow(clippy::cognitive_complexity)]
 pub fn write_metadata_parquet(
@@ -177,6 +177,7 @@ fn node_declared_classifiers(node: &DbtNode) -> &[String] {
         DbtNode::Test(x) => &x.__common_attr__.classifiers,
         DbtNode::Operation(x) => &x.__common_attr__.classifiers,
         DbtNode::Function(x) => &x.__common_attr__.classifiers,
+        DbtNode::Check(x) => &x.__common_attr__.classifiers,
     }
 }
 
@@ -266,13 +267,16 @@ fn write_metadata_parquet_impl(
             DbtNode::Test(x) => &x.__base_attr__,
             DbtNode::Operation(x) => &x.__base_attr__,
             DbtNode::Function(x) => &x.__base_attr__,
+            DbtNode::Check(x) => &x.__base_attr__,
         };
 
-        // compile/nodes requires --write-metadata --static-analysis strict.
-        // Without strict SA there is no grain_infos from LP and no schema inference;
-        // compile/nodes would only duplicate what parse/nodes already contains.
-        let write_compile_nodes =
-            arg.write_metadata && arg.static_analysis.is_some_and(is_strict_static_analysis);
+        // compile/nodes requires --write-metadata --static-analysis strict (or
+        // baseline + --write-lineage, i.e. `--infer-schemas`). Without either,
+        // there is no grain_infos from LP and no schema inference; compile/nodes
+        // would only duplicate what parse/nodes already contains.
+        let write_compile_nodes = arg.write_metadata
+            && (arg.static_analysis.is_some_and(is_strict_static_analysis)
+                || arg.infer_schemas_and_typeless);
         if write_compile_nodes {
             let grain_declared: Vec<String> = match node {
                 DbtNode::Model(m) => m.primary_key.as_ref().cloned().unwrap_or_default(),

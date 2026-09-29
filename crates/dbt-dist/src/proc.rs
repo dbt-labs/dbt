@@ -24,6 +24,10 @@ pub(crate) const NORMAL_WAIT: Duration = Duration::from_secs(8);
 /// before we escalate to a forceful kill.
 pub(crate) const GRACE_WAIT: Duration = Duration::from_secs(2);
 const POLL_INTERVAL: Duration = Duration::from_millis(50);
+/// How long to keep retrying a spawn that fails with `ETXTBSY`, and how long
+/// to wait between those attempts. See [spawn_retrying_if_busy].
+const BUSY_RETRY_BUDGET: Duration = Duration::from_millis(500);
+const BUSY_RETRY_INTERVAL: Duration = Duration::from_millis(10);
 
 pub(crate) fn real_run(program: &str, args: &[&str]) -> Option<ProcessOutput> {
     run_with_timeouts(program, args, NORMAL_WAIT, GRACE_WAIT)
@@ -40,13 +44,13 @@ fn run_with_timeouts(
     normal_wait: Duration,
     grace_wait: Duration,
 ) -> Option<ProcessOutput> {
-    let mut child = Command::new(program)
+    let mut command = Command::new(program);
+    command
         .args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .ok()?;
+        .stderr(Stdio::piped());
+    let mut child = spawn_retrying_if_busy(&mut command)?;
 
     // Drain stdout/stderr on their own threads while we poll for exit below —
     // otherwise a chatty child could fill a pipe buffer and block on writing
@@ -89,6 +93,34 @@ fn run_with_timeouts(
         stdout: String::from_utf8_lossy(&stdout).into_owned(),
         stderr: String::from_utf8_lossy(&stderr).into_owned(),
     })
+}
+
+/// Spawns `command`, retrying for a short while if the OS reports the
+/// executable as busy (`ETXTBSY`).
+///
+/// A file can't be `exec`'d while any process still holds it open for
+/// writing, and that condition is transient and not the caller's fault: a
+/// program elsewhere in this process (or in another process) that writes an
+/// executable — a downloaded/installed `dbt`, or a script a test just laid
+/// down — leaves a write handle open for a moment, and any concurrent
+/// `fork` in between inherits that handle until the forked child `exec`s.
+/// Treating that momentary overlap as "couldn't run it" would make discovery
+/// silently misclassify a perfectly good `dbt`, so wait it out instead.
+fn spawn_retrying_if_busy(command: &mut Command) -> Option<Child> {
+    let deadline = Instant::now() + BUSY_RETRY_BUDGET;
+    loop {
+        match command.spawn() {
+            Ok(child) => return Some(child),
+            Err(e) if e.kind() == std::io::ErrorKind::ExecutableFileBusy => {
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                if remaining.is_zero() {
+                    return None;
+                }
+                std::thread::sleep(BUSY_RETRY_INTERVAL.min(remaining));
+            }
+            Err(_) => return None,
+        }
+    }
 }
 
 /// Polls `child` for exit until it's done or `timeout` elapses.
@@ -137,6 +169,34 @@ mod tests {
         assert!(!output.success);
         assert_eq!(output.stdout, "hello\n");
         assert_eq!(output.stderr, "err\n");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn real_run_waits_out_a_busy_executable() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let script = dir.path().join("busy.sh");
+        std::fs::write(&script, b"#!/bin/sh\necho ran\n").unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        // Holding the script open for writing makes `exec` fail with ETXTBSY,
+        // the same transient condition a concurrent fork can create. Release
+        // the handle partway into the retry budget: the spawn must ride it out
+        // rather than reporting the program as unrunnable.
+        let writer = std::fs::OpenOptions::new()
+            .write(true)
+            .open(&script)
+            .unwrap();
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(100));
+            drop(writer);
+        });
+
+        let output = real_run(script.to_str().unwrap(), &[]).unwrap();
+        assert!(output.success);
+        assert_eq!(output.stdout, "ran\n");
     }
 
     #[test]

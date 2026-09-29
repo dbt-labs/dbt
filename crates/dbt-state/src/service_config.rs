@@ -12,6 +12,9 @@ pub const DEFAULT_API_URL: &str = "api.state.dbt.com:443";
 pub const DEFAULT_OAUTH_TOKEN_URL: &str = "https://auth.state.dbt.com/token";
 pub const DEFAULT_OAUTH_AUTH_URL: &str = "https://auth.state.dbt.com";
 pub const DEFAULT_API_CLIENT_TIMEOUT_SECONDS: u64 = 60;
+/// Total attempts per State API request when a transient (UNAVAILABLE / dropped
+/// connection) transport error occurs.
+pub const DEFAULT_API_CLIENT_MAX_ATTEMPTS: u32 = 3;
 pub const DEFAULT_FRESHNESS_TOLERANCE_SECONDS: i64 = 2700;
 pub const DEFAULT_OAUTH_CLIENT_ID: &str = "2fd87cd5-69a6-4c5f-9097-747a58f0edf6";
 pub const DEFAULT_DEFER_TO: &str = "prod";
@@ -46,11 +49,19 @@ pub struct RunCacheServiceConfig {
     pub api_url: String,
     pub secure: bool,
     pub org_id: Option<String>,
+    /// dbt platform account id from `dbt-cloud: account_id` (or
+    /// `DBT_CLOUD_ACCOUNT_ID`), trimmed. Used to pick the matching cached
+    /// platform OAuth session when several accounts are logged in, and to
+    /// detect that a cached dbt State token belongs to another account.
+    pub platform_account_id: Option<String>,
     pub oauth_client_id: String,
     pub oauth_client_secret: Option<String>,
     pub oauth_token_url: String,
     pub oauth_auth_url: String,
     pub timeout: Duration,
+    /// Total attempts per request on transient (dropped-connection) transport
+    /// errors. `1` disables retries; clamped to gRPC's cap of 5 by the client.
+    pub max_attempts: u32,
     pub defer_to: String,
     pub defer_log_level: String,
     pub enable_response_logging: bool,
@@ -66,6 +77,7 @@ pub struct RunCacheServiceConfig {
     pub metadata_cache_ttl_seconds: i64,
     pub run_hooks_on_no_op: bool,
     pub compare_unrendered_code: bool,
+    pub ignore_external_modifications: bool,
     pub snowflake_get_view_ddl_override: Option<String>,
     pub snowflake_metadata_warehouse: Option<String>,
 }
@@ -142,6 +154,10 @@ impl RunCacheServiceConfig {
             Some(value) => Duration::from_secs(parse_u64_seconds("API_CLIENT_TIMEOUT", &value)?),
             None => Duration::from_secs(DEFAULT_API_CLIENT_TIMEOUT_SECONDS),
         };
+        let max_attempts = match config_value(&mut get_env, "API_CLIENT_MAX_ATTEMPTS") {
+            Some(value) => parse_u32("API_CLIENT_MAX_ATTEMPTS", &value)?,
+            None => DEFAULT_API_CLIENT_MAX_ATTEMPTS,
+        };
         let defer_to =
             config_value(&mut get_env, "DEFER_TO").unwrap_or_else(|| DEFAULT_DEFER_TO.to_string());
         let defer_log_level = config_value(&mut get_env, "DEFER_LOG_LEVEL")
@@ -195,12 +211,18 @@ impl RunCacheServiceConfig {
             Some(value) => parse_bool("COMPARE_UNRENDERED_CODE", &value)?,
             None => false,
         };
+        let ignore_external_modifications =
+            match config_value(&mut get_env, "IGNORE_EXTERNAL_MODIFICATIONS") {
+                Some(value) => parse_bool("ignore_external_modifications", &value)?,
+                None => false,
+            };
 
         Ok(Self {
             enabled,
             api_url,
             secure,
             org_id: config_value(&mut get_env, "ORG_ID"),
+            platform_account_id: None,
             oauth_client_id: state_config_value(
                 &mut get_env,
                 STATE_OAUTH_CLIENT_ID_ENV,
@@ -217,6 +239,7 @@ impl RunCacheServiceConfig {
             oauth_auth_url: config_value(&mut get_env, "AUTH_URL")
                 .unwrap_or_else(|| DEFAULT_OAUTH_AUTH_URL.to_string()),
             timeout,
+            max_attempts,
             defer_to,
             defer_log_level,
             enable_response_logging,
@@ -232,6 +255,7 @@ impl RunCacheServiceConfig {
             metadata_cache_ttl_seconds,
             run_hooks_on_no_op,
             compare_unrendered_code,
+            ignore_external_modifications,
             snowflake_get_view_ddl_override: config_value(
                 &mut get_env,
                 "SNOWFLAKE_GET_VIEW_DDL_OVERRIDE",
@@ -259,11 +283,13 @@ impl RunCacheServiceConfig {
             api_url: DEFAULT_API_URL.to_string(),
             secure: true,
             org_id: None,
+            platform_account_id: None,
             oauth_client_id: DEFAULT_OAUTH_CLIENT_ID.to_string(),
             oauth_client_secret: None,
             oauth_token_url: DEFAULT_OAUTH_TOKEN_URL.to_string(),
             oauth_auth_url: DEFAULT_OAUTH_AUTH_URL.to_string(),
             timeout: Duration::from_secs(DEFAULT_API_CLIENT_TIMEOUT_SECONDS),
+            max_attempts: DEFAULT_API_CLIENT_MAX_ATTEMPTS,
             defer_to: DEFAULT_DEFER_TO.to_string(),
             defer_log_level: DEFAULT_DEFER_LOG_LEVEL.to_string(),
             enable_response_logging: true,
@@ -279,6 +305,7 @@ impl RunCacheServiceConfig {
             metadata_cache_ttl_seconds: DEFAULT_METADATA_CACHE_TTL_SECONDS,
             run_hooks_on_no_op: false,
             compare_unrendered_code: false,
+            ignore_external_modifications: false,
             snowflake_get_view_ddl_override: None,
             snowflake_metadata_warehouse: None,
         }
@@ -298,6 +325,13 @@ impl RunCacheServiceConfig {
         if self.org_id.is_none() {
             self.org_id = cloud_config.and_then(|config| config.state_org_id.clone());
         }
+        if self.platform_account_id.is_none() {
+            self.platform_account_id = cloud_config
+                .and_then(|config| config.account_id.as_deref())
+                .map(str::trim)
+                .filter(|account_id| !account_id.is_empty())
+                .map(str::to_string);
+        }
         self
     }
 
@@ -316,7 +350,7 @@ impl RunCacheServiceConfig {
         self.defer_to_target(active_profile) == active_profile.target
     }
 
-    pub fn telemetry_config(&self) -> Struct {
+    pub fn telemetry_config(&self, active_profile: &DbtProfile) -> Struct {
         let mut fields = HashMap::new();
         insert_string(&mut fields, "api_url", &self.api_url);
         insert_bool(&mut fields, "secure", self.secure);
@@ -331,7 +365,16 @@ impl RunCacheServiceConfig {
             "api_client_timeout",
             i64::try_from(self.timeout.as_secs()).unwrap_or(i64::MAX),
         );
-        insert_string(&mut fields, "defer_to", &self.defer_to);
+        insert_i64(
+            &mut fields,
+            "api_client_max_attempts",
+            i64::from(self.max_attempts),
+        );
+        insert_string(
+            &mut fields,
+            "defer_to",
+            &self.defer_to_target(active_profile),
+        );
         insert_string(&mut fields, "defer_log_level", &self.defer_log_level);
         insert_bool(
             &mut fields,
@@ -436,6 +479,7 @@ pub enum RunCacheServiceConfigError {
     InvalidDuration { name: &'static str, value: String },
     InvalidInteger { name: &'static str, value: String },
     InvalidCloneIncrementalInDev { value: String },
+    ProjectIdRequired,
 }
 
 impl fmt::Display for RunCacheServiceConfigError {
@@ -453,6 +497,10 @@ impl fmt::Display for RunCacheServiceConfigError {
             Self::InvalidCloneIncrementalInDev { value } => write!(
                 f,
                 "invalid value for RUN_CACHE_CLONE_INCREMENTAL_IN_DEV: {value}"
+            ),
+            Self::ProjectIdRequired => write!(
+                f,
+                "To use the state:* selector, please define the 'project-id' field in your dbt_project.yml:\n\ndbt-cloud:\n  project-id: 'your-project-id'\n\n",
             ),
         }
     }
@@ -527,6 +575,16 @@ fn parse_i64_seconds(name: &'static str, value: &str) -> Result<i64, RunCacheSer
     parse_seconds(name, value)
 }
 
+fn parse_u32(name: &'static str, value: &str) -> Result<u32, RunCacheServiceConfigError> {
+    value
+        .trim()
+        .parse::<u32>()
+        .map_err(|_| RunCacheServiceConfigError::InvalidInteger {
+            name,
+            value: value.to_string(),
+        })
+}
+
 fn parse_i64(name: &'static str, value: &str) -> Result<i64, RunCacheServiceConfigError> {
     value
         .trim()
@@ -588,18 +646,23 @@ fn parse_seconds(name: &'static str, value: &str) -> Result<i64, RunCacheService
 #[cfg(test)]
 mod tests {
     use super::*;
+    use dbt_schemas::IndexMap;
     use dbt_schemas::schemas::profiles::{DbConfig, DuckDbConfig};
+    use dbt_schemas::state::ProfileAdapter;
     use std::collections::BTreeMap;
     use std::path::PathBuf;
 
     fn test_profile(target: &str, defer_to_target: Option<&str>) -> DbtProfile {
+        let db_config = DbConfig::DuckDB(Box::<DuckDbConfig>::default());
+        let default_adapter = db_config.adapter_type();
+        let adapters = IndexMap::from([(default_adapter, ProfileAdapter::single(db_config))]);
         DbtProfile {
             profile: "default".to_string(),
             target: target.to_string(),
             defer_to_target: defer_to_target.map(|target| target.to_string()),
             allow_clones: true,
-            db_config: DbConfig::DuckDB(Box::<DuckDbConfig>::default()),
-            alt_target_db_config: None,
+            adapters,
+            default_adapter,
             schema: "dbt_test".to_string(),
             database: "db".to_string(),
             relative_profile_path: PathBuf::new(),
@@ -632,14 +695,15 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::cognitive_complexity)]
     fn defaults_match_python_client_surface() {
         let config = config_from_pairs(&[]).unwrap();
-
         assert_eq!(config.api_url, DEFAULT_API_URL);
         assert_eq!(config.oauth_token_url, DEFAULT_OAUTH_TOKEN_URL);
         assert!(config.enabled);
         assert!(config.secure);
         assert_eq!(config.timeout, Duration::from_secs(60));
+        assert_eq!(config.max_attempts, DEFAULT_API_CLIENT_MAX_ATTEMPTS);
         assert_eq!(config.defer_to, "prod");
         assert_eq!(config.defer_log_level, "off");
         assert!(config.enable_response_logging);
@@ -658,6 +722,7 @@ mod tests {
         assert_eq!(config.metadata_cache_ttl_seconds, 0);
         assert!(!config.run_hooks_on_no_op);
         assert!(!config.compare_unrendered_code);
+        assert!(!config.ignore_external_modifications);
         assert_eq!(config.snowflake_get_view_ddl_override, None);
         assert_eq!(config.snowflake_metadata_warehouse, None);
     }
@@ -703,6 +768,35 @@ mod tests {
         let config = config_from_pairs_and_cloud_config(&[], Some(&cloud_config)).unwrap();
 
         assert_eq!(config.org_id.as_deref(), Some("project-org"));
+    }
+
+    #[test]
+    fn cloud_config_account_id_sets_platform_account_id() {
+        let cloud_config = ResolvedCloudConfig {
+            account_id: Some("456".to_string()),
+            ..Default::default()
+        };
+
+        let config = config_from_pairs_and_cloud_config(&[], Some(&cloud_config)).unwrap();
+
+        assert_eq!(config.platform_account_id.as_deref(), Some("456"));
+    }
+
+    #[test]
+    fn cloud_config_account_id_is_trimmed_and_empty_is_ignored() {
+        let padded = ResolvedCloudConfig {
+            account_id: Some("  456  ".to_string()),
+            ..Default::default()
+        };
+        let config = config_from_pairs_and_cloud_config(&[], Some(&padded)).unwrap();
+        assert_eq!(config.platform_account_id.as_deref(), Some("456"));
+
+        let blank = ResolvedCloudConfig {
+            account_id: Some("   ".to_string()),
+            ..Default::default()
+        };
+        let config = config_from_pairs_and_cloud_config(&[], Some(&blank)).unwrap();
+        assert_eq!(config.platform_account_id, None);
     }
 
     #[test]
@@ -852,6 +946,7 @@ mod tests {
             ("RUN_CACHE_API_URL", "localhost:50051"),
             ("RUN_CACHE_API_SECURE", "0"),
             ("RUN_CACHE_API_CLIENT_TIMEOUT", "2m"),
+            ("RUN_CACHE_API_CLIENT_MAX_ATTEMPTS", "5"),
             ("RUN_CACHE_FRESHNESS_TOLERANCE", "45min"),
             ("RUN_CACHE_TOLERATE_NONDETERMINISM", "yes"),
             ("RUN_CACHE_ENABLE_LENIENT_DEPENDENCIES", "off"),
@@ -859,11 +954,13 @@ mod tests {
             ("RUN_CACHE_ENABLE_DATA_TESTS", "0"),
             ("RUN_CACHE_RUN_HOOKS_ON_NO_OP", "true"),
             ("RUN_CACHE_COMPARE_UNRENDERED_CODE", "true"),
+            ("RUN_CACHE_IGNORE_EXTERNAL_MODIFICATIONS", "true"),
         ])
         .unwrap();
 
         assert!(!config.secure);
         assert_eq!(config.timeout, Duration::from_secs(120));
+        assert_eq!(config.max_attempts, 5);
         assert_eq!(config.freshness_tolerance_seconds, 2700);
         assert!(config.tolerate_nondeterminism);
         assert!(!config.enable_lenient_dependencies);
@@ -871,11 +968,19 @@ mod tests {
         assert!(!config.enable_data_tests);
         assert!(config.run_hooks_on_no_op);
         assert!(config.compare_unrendered_code);
+        assert!(config.ignore_external_modifications);
     }
 
     #[test]
     fn compare_unrendered_code_rejects_unparseable_values() {
         assert!(config_from_pairs(&[("RUN_CACHE_COMPARE_UNRENDERED_CODE", "maybe")]).is_err());
+    }
+
+    #[test]
+    fn max_attempts_rejects_non_integer_values() {
+        let err = config_from_pairs(&[("RUN_CACHE_API_CLIENT_MAX_ATTEMPTS", "lots")]).unwrap_err();
+
+        assert!(err.to_string().contains("API_CLIENT_MAX_ATTEMPTS"));
     }
 
     #[test]
@@ -946,12 +1051,31 @@ mod tests {
         config.oauth_client_secret = Some("secret".to_string());
         config.org_id = Some("org-1".to_string());
 
-        let telemetry = config.telemetry_config();
+        let telemetry = config.telemetry_config(&test_profile("dev", None));
 
         assert!(telemetry.fields.contains_key("api_url"));
         assert!(telemetry.fields.contains_key("org_id"));
         assert!(!telemetry.fields.contains_key("oauth_client_id"));
         assert!(!telemetry.fields.contains_key("oauth_client_secret"));
+    }
+
+    #[test]
+    fn telemetry_config_reports_profile_defer_to_target() {
+        let mut config = RunCacheServiceConfig::disabled();
+        config.defer_to = "prod".to_string();
+
+        let telemetry = config.telemetry_config(&test_profile("dev", Some("staging")));
+
+        assert_eq!(
+            telemetry
+                .fields
+                .get("defer_to")
+                .and_then(|value| match &value.kind {
+                    Some(value::Kind::StringValue(value)) => Some(value.as_str()),
+                    _ => None,
+                }),
+            Some("staging")
+        );
     }
 
     #[test]

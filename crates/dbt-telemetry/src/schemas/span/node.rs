@@ -10,9 +10,9 @@ use std::borrow::Cow;
 
 pub use crate::impls::node::{
     AnyNodeOutcomeDetail, NodeEvent, get_cache_detail, get_freshness_detail,
-    get_node_outcome_detail, get_test_outcome, has_node_warning, is_statically_checked_test,
-    set_node_warning_outcome_no_warnings, set_node_warning_outcome_warned,
-    update_dbt_core_event_code_for_node_processed_end,
+    get_node_outcome_detail, get_test_batch_unique_id, get_test_outcome, has_node_warning,
+    is_batched_test, is_statically_checked_test, set_node_warning_outcome_no_warnings,
+    set_node_warning_outcome_warned, update_dbt_core_event_code_for_node_processed_end,
 };
 pub use crate::proto::v1::public::events::fusion::node::{
     NodeCacheDetail, NodeCacheReason, NodeCancelReason, NodeErrorType, NodeEvaluated,
@@ -83,6 +83,8 @@ struct NodeEvaluatedJsonPayload {
     pub node_outcome_detail: Option<NodeOutcomeDetail>,
     /// Time the node evaluation spent idle.
     pub idle_time_ms: Option<u64>,
+    /// dbt State decision id for the node's run-phase execution.
+    pub state_decision_id: Option<String>,
 }
 
 /// Internal struct used for serializing/deserializing subset of
@@ -98,6 +100,10 @@ struct NodeProcessedJsonPayload {
     pub idle_time_ms: Option<u64>,
     /// Source name for source nodes.
     pub source_name: Option<String>,
+    /// 1-based position of this node within the invocation.
+    pub node_index: Option<u32>,
+    /// Total number of nodes in the selection set.
+    pub node_count_total: Option<u32>,
 }
 
 fn deserialize_node_evaluated_json_payload(
@@ -107,6 +113,7 @@ fn deserialize_node_evaluated_json_payload(
         return Ok(NodeEvaluatedJsonPayload {
             node_outcome_detail: None,
             idle_time_ms: None,
+            state_decision_id: None,
         });
     };
 
@@ -119,7 +126,9 @@ fn deserialize_node_evaluated_json_payload(
     })?;
 
     let is_wrapped_payload = value.as_object().is_some_and(|obj| {
-        obj.contains_key("node_outcome_detail") || obj.contains_key("idle_time_ms")
+        obj.contains_key("node_outcome_detail")
+            || obj.contains_key("idle_time_ms")
+            || obj.contains_key("state_decision_id")
     });
 
     if is_wrapped_payload {
@@ -142,6 +151,7 @@ fn deserialize_node_evaluated_json_payload(
                 },
             )?),
             idle_time_ms: None,
+            state_decision_id: None,
         })
     }
 }
@@ -172,20 +182,22 @@ impl ArrowSerializableTelemetryEvent for NodeEvaluated {
             content_hash: Some(Cow::Borrowed(self.node_checksum.as_str())),
             // Serialize less frequently queried node fields into JSON as they may grow
             // with arbitrary data.
-            json_payload: (self.node_outcome_detail.is_some() || self.idle_time_ms.is_some()).then(
-                || {
-                    serde_json::to_string(&NodeEvaluatedJsonPayload {
-                        node_outcome_detail: self.node_outcome_detail.clone(),
-                        idle_time_ms: self.idle_time_ms,
-                    })
-                    .unwrap_or_else(|_| {
-                        panic!(
-                            "Failed to serialize json payload for event type \"{}\" to JSON",
-                            Self::full_name()
-                        )
-                    })
-                },
-            ),
+            json_payload: (self.node_outcome_detail.is_some()
+                || self.idle_time_ms.is_some()
+                || self.state_decision_id.is_some())
+            .then(|| {
+                serde_json::to_string(&NodeEvaluatedJsonPayload {
+                    node_outcome_detail: self.node_outcome_detail.clone(),
+                    idle_time_ms: self.idle_time_ms,
+                    state_decision_id: self.state_decision_id.clone(),
+                })
+                .unwrap_or_else(|_| {
+                    panic!(
+                        "Failed to serialize json payload for event type \"{}\" to JSON",
+                        Self::full_name()
+                    )
+                })
+            }),
             rows_affected: self.rows_affected,
             ..Default::default()
         }
@@ -232,6 +244,7 @@ impl ArrowSerializableTelemetryEvent for NodeEvaluated {
             node_cancel_reason: record.node_cancel_reason.map(|v| v as i32),
             node_skip_reason: record.node_skip_reason.map(|v| v as i32),
             sao_enabled: record.sao_enabled,
+            state_decision_id: json_payload.state_decision_id,
             dbt_core_event_code: record.dbt_core_event_code.as_deref().map(str::to_string),
             node_outcome_detail: json_payload.node_outcome_detail,
             relative_path: record
@@ -339,6 +352,8 @@ impl ArrowSerializableTelemetryEvent for NodeProcessed {
                 node_outcome_detail: self.node_outcome_detail.clone(),
                 idle_time_ms: self.idle_time_ms,
                 source_name: self.source_name.clone(),
+                node_index: self.node_index,
+                node_count_total: self.node_count_total,
             })
             .unwrap_or_else(|_| {
                 panic!(
@@ -448,6 +463,8 @@ impl ArrowSerializableTelemetryEvent for NodeProcessed {
             rows_affected: record.rows_affected,
             group: record.group.as_deref().map(str::to_string),
             idle_time_ms: json_payload.idle_time_ms,
+            node_index: json_payload.node_index,
+            node_count_total: json_payload.node_count_total,
         })
     }
 }

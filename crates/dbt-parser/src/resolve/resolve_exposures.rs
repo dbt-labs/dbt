@@ -6,7 +6,7 @@ use crate::resolve::resolve_utils::build_unrendered_config;
 use crate::resolve::resolve_utils::extract_config_map;
 use crate::utils::{extract_resource_config_from_raw_project, get_node_fqn};
 use dbt_adapter_core::AdapterType;
-use dbt_common::error::AbstractLocation;
+use dbt_common::CodeLocationWithFile;
 use dbt_common::io_args::StaticAnalysisKind;
 use dbt_common::path::DbtPath;
 use dbt_common::tracing::dbt_emit::emit_error_log_from_fs_error;
@@ -66,17 +66,23 @@ pub async fn resolve_exposures(
                 (),
                 dependency_package_name,
                 disallow_plus_prefix_from_flags(root_package.dbt_project.flags.as_ref()),
+                adapter_type,
             )
         },
+        adapter_type,
     )?;
 
-    let raw_local_project_config =
-        extract_resource_config_from_raw_project(&package.raw_project_yml, "exposures");
+    let raw_local_project_config = extract_resource_config_from_raw_project(
+        &package.raw_project_yml,
+        "exposures",
+        adapter_type,
+    )?;
     let raw_root_project_cfg = if is_dependency {
         Some(extract_resource_config_from_raw_project(
             &root_package.raw_project_yml,
             "exposures",
-        ))
+            adapter_type,
+        )?)
     } else {
         None
     };
@@ -155,7 +161,8 @@ pub async fn resolve_exposures(
                 raw_properties_yml_config.as_ref(),
                 None,
                 false,
-            );
+                adapter_type,
+            )?;
 
             let dbt_exposure = DbtExposure {
                 __common_attr__: CommonAttributes {
@@ -185,6 +192,10 @@ pub async fn resolve_exposures(
                     meta: exposure_properties_config.meta.clone().unwrap_or_default(),
                 },
                 __base_attr__: NodeBaseAttributes {
+                    adapter: adapter_type,
+                    // This node type has no `+propagate` config; nothing is published.
+                    propagate: Vec::new(),
+                    effective_propagation_target: None,
                     database: "".to_string(),
                     schema: "".to_string(),
                     alias: "".to_string(),
@@ -209,7 +220,7 @@ pub async fn resolve_exposures(
                 __exposure_attr__: DbtExposureAttr {
                     owner: exposure.owner,
                     label: exposure.label.clone(),
-                    maturity: exposure.maturity.clone(),
+                    maturity: normalize_maturity(exposure.maturity.as_deref()),
                     type_: exposure.type_.clone(),
                     url: exposure.url,
                     unrendered_config,
@@ -261,6 +272,7 @@ pub fn resolve_yaml_depends_on(
         let mut resolve_model_context = base_ctx.clone();
         resolve_model_context.extend(build_resolve_model_context(
             &exposure_config,
+            false,
             adapter_type,
             database,
             schema,
@@ -270,11 +282,13 @@ pub fn resolve_yaml_depends_on(
             root_project_name,
             DEFAULT_DBT_QUOTING,
             Arc::new(DbtRuntimeConfig::default()),
+            Arc::new(DbtRuntimeConfig::default()),
             sql_resources.clone(),
             Arc::new(AtomicBool::new(false)),
             &PathBuf::from(relative_path),
             &PathBuf::new(),
             global_static_analysis,
+            None,
         ));
 
         let sql_resource = render_extract_ref_or_source_expr(
@@ -284,19 +298,30 @@ pub fn resolve_yaml_depends_on(
             dependency,
         )?;
 
+        let dep_location = if dependency.has_valid_span() {
+            Some(CodeLocationWithFile::new(
+                dependency.span().start.line as u32,
+                dependency.span().start.column as u32,
+                dependency.span().start.index as u32,
+                relative_path.to_string(),
+            ))
+        } else {
+            None
+        };
+
         match sql_resource {
             SqlResource::Ref(ref_info) => {
                 dependent_refs.push(DbtRef {
                     name: ref_info.0,
                     package: ref_info.1,
                     version: ref_info.2,
-                    location: Some(ref_info.3.with_file(relative_path)),
+                    location: dep_location,
                 });
             }
             SqlResource::Source(source_info) => {
                 dependent_sources.push(DbtSourceWrapper {
                     source: vec![source_info.0, source_info.1],
-                    location: Some(source_info.2.with_file(relative_path)),
+                    location: dep_location,
                 });
             }
             SqlResource::Metric(metric_info) => {
@@ -356,6 +381,16 @@ fn split_depends_on_item(dep: &Spanned<String>) -> Vec<Spanned<String>> {
     parts
 }
 
+/// Keep exposure maturity within the values accepted by the manifest schema.
+fn normalize_maturity(maturity: Option<&str>) -> Option<String> {
+    match maturity? {
+        "low" => Some("low".to_string()),
+        "medium" => Some("medium".to_string()),
+        "high" => Some("high".to_string()),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -403,6 +438,35 @@ mod tests {
             split("ref('a', version=2), ref('b')"),
             vec!["ref('a', version=2)", "ref('b')"]
         );
+    }
+
+    #[test]
+    fn test_normalize_maturity_valid_values_preserved() {
+        assert_eq!(normalize_maturity(Some("low")), Some("low".to_string()));
+        assert_eq!(
+            normalize_maturity(Some("medium")),
+            Some("medium".to_string())
+        );
+        assert_eq!(normalize_maturity(Some("high")), Some("high".to_string()));
+    }
+
+    #[test]
+    fn test_normalize_maturity_invalid_value_dropped_to_none() {
+        // e.g. `maturity: production`, which the manifest schema rejects.
+        assert_eq!(normalize_maturity(Some("production")), None);
+        assert_eq!(normalize_maturity(Some("")), None);
+        assert_eq!(normalize_maturity(Some("   ")), None);
+    }
+
+    #[test]
+    fn test_normalize_maturity_none_stays_none() {
+        assert_eq!(normalize_maturity(None), None);
+    }
+
+    #[test]
+    fn test_normalize_maturity_requires_exact_schema_value() {
+        assert_eq!(normalize_maturity(Some("HIGH")), None);
+        assert_eq!(normalize_maturity(Some("  medium  ")), None);
     }
 
     #[test]

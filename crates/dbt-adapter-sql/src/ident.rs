@@ -121,7 +121,7 @@ pub fn max_identifier_length(adapter_type: AdapterType) -> Option<NonZero<usize>
             Some(unsafe { NonZero::new_unchecked(127) })
         }
         Snowflake | Bigquery | Databricks | Spark | DuckDB | Salesforce | Fabric | ClickHouse
-        | Exasol | Athena | Starburst | Trino | Datafusion | Dremio | Oracle | Alt => None,
+        | Exasol | Athena | Starburst | Trino | Datafusion | Dremio | Oracle | LakeCompute => None,
     }
 }
 
@@ -176,7 +176,7 @@ pub fn is_valid_ident_char(c: char, backend: AdapterType) -> bool {
             | Datafusion
             | Dremio
             | Oracle
-            | Alt
+            | LakeCompute
             | Exasol => c.is_alphanumeric() || c == '_',
     }
 }
@@ -215,8 +215,9 @@ pub fn must_be_quoted(id: &str, backend: AdapterType) -> bool {
     let has_invalid_char = chars.any(|c| {
         !is_valid_ident_char(c, backend)
             // BigQuery allows hyphens in unquoted identifiers in certain
-            // contexts (e.g. table names), but we still quote them here
-            || (matches!(backend, AdapterType::Bigquery) && c == '-')
+            // contexts (e.g. table names), but we still quote them here.
+            // Snowflake requires hyphenated identifiers to be quoted.
+            || (matches!(backend, AdapterType::Bigquery | AdapterType::Snowflake) && c == '-')
     });
     // Invalid characters MUST be in a quoted identifier (sometimes escaped)
     if has_invalid_char {
@@ -272,6 +273,12 @@ pub fn escape_string_literal(s: &str, _backend: AdapterType) -> String {
 #[cfg(test)]
 mod sanitize_tests {
     use super::*;
+
+    #[test]
+    fn snowflake_hyphen_must_be_quoted() {
+        assert!(must_be_quoted("GIFT-CARDS", AdapterType::Snowflake));
+        assert!(!must_be_quoted("GIFT_CARDS", AdapterType::Snowflake));
+    }
 
     #[test]
     fn quote_identifier_always_quotes_and_escapes() {

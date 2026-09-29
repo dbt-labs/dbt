@@ -3,7 +3,7 @@ use dbt_schemas::schemas::{DbtModel, InternalDbtNodeAttributes};
 use minijinja::Value;
 
 use crate::relation::config_v2::diff;
-use crate::relation::snowflake::config::DescribeDynamicTableResults;
+use crate::relation::snowflake::config::SnowflakeDescribeResults;
 use crate::{
     relation::config_v2::{
         ComponentConfig, ComponentConfigLoader, SimpleComponentConfigImpl, impl_loader,
@@ -29,7 +29,7 @@ fn new_component(table_tag: Option<String>) -> TableTag {
     }
 }
 
-fn from_remote_state(_results: &DescribeDynamicTableResults) -> AdapterResult<TableTag> {
+fn from_remote_state(_results: &SnowflakeDescribeResults) -> AdapterResult<TableTag> {
     // In Core, the table tag is extracted here but never accessed
     // https://github.com/dbt-labs/dbt-adapters/blob/cb1b4a0b0758fd307dc21583bb3acfc78397a077/dbt-snowflake/src/dbt/adapters/snowflake/relation_configs/dynamic_table.py#L236
     Ok(new_component(None))
@@ -57,7 +57,7 @@ fn from_local_config(relation_config: &dyn InternalDbtNodeAttributes) -> Adapter
     Ok(new_component(snowflake_config.table_tag.clone()))
 }
 
-impl_loader!(TableTag, DescribeDynamicTableResults);
+impl_loader!(TableTag, SnowflakeDescribeResults);
 
 #[cfg(test)]
 mod tests {

@@ -5,7 +5,7 @@ use minijinja::Value;
 use crate::relation::config_v2::{
     ComponentConfig, ComponentConfigLoader, SimpleComponentConfigImpl, diff, impl_loader,
 };
-use crate::relation::snowflake::config::DescribeDynamicTableResults;
+use crate::relation::snowflake::config::SnowflakeDescribeResults;
 
 pub(crate) const TYPE_NAME: &str = "initialize";
 
@@ -27,7 +27,7 @@ fn new_component(initialize: String) -> Initialize {
     }
 }
 
-fn from_remote_state(_results: &DescribeDynamicTableResults) -> AdapterResult<Initialize> {
+fn from_remote_state(_results: &SnowflakeDescribeResults) -> AdapterResult<Initialize> {
     // We don't get initialize since that's a one-time scheduler attribute, not a DT attribute
     Ok(new_component(DEFAULT_INITIALIZE.to_string()))
 }
@@ -58,7 +58,7 @@ fn from_local_config(relation_config: &dyn InternalDbtNodeAttributes) -> Adapter
     Ok(new_component(initialize))
 }
 
-impl_loader!(Initialize, DescribeDynamicTableResults);
+impl_loader!(Initialize, SnowflakeDescribeResults);
 
 #[cfg(test)]
 mod tests {

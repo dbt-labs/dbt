@@ -1,4 +1,4 @@
-# Scenario: attach_as that sanitizes to the empty string.
+# Scenario: catalog_database that sanitizes to the empty string.
 # Exercises: Configuration error for empty alias after sanitization.
 catalogs:
   - name: bad_alias
@@ -6,5 +6,5 @@ catalogs:
     table_format: iceberg
     config:
       duckdb:
-        attach_as: "!!!"
+        catalog_database: "!!!"
         endpoint: "https://rest.example.com"

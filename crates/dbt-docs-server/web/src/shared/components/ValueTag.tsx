@@ -1,6 +1,5 @@
 import { FC } from 'react';
-
-import { CellContext } from '@dbt-labs/sourdough';
+import { type CellContext } from '@tanstack/react-table';
 
 type ValueCellProps = CellContext<any, string | undefined>;
 

@@ -5,7 +5,7 @@
 //! ZSTD compression. No DuckDB driver, no SQL strings, no JSON file I/O.
 
 use std::collections::{HashMap, HashSet};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use arrow_array::Array;
@@ -18,6 +18,7 @@ use serde_json::{Map, Value};
 
 use crate::IndexError;
 use crate::db::{DBT_RT_TABLES, DBT_TABLES, write_views_sql};
+use crate::ingest::timings;
 
 // ── Generic helpers ─────────────────────────────────────────────────────────
 
@@ -31,6 +32,75 @@ const CHUNK_SIZE: usize = 256;
 /// write calls; ÷ 65536 = 8 write calls.
 const CHUNK_SIZE_TYPED: usize = 65536;
 
+/// A parquet file written to its temp path but not yet moved into place.
+///
+/// A multi-table index write stages every table first and commits them
+/// together, so a failure partway through leaves the previous index untouched
+/// rather than a mix of new and stale files. Dropping an uncommitted stage
+/// deletes its temp file
+#[must_use = "a staged table is discarded unless it is committed"]
+pub struct StagedTable {
+    tmp: PathBuf,
+    dest: PathBuf,
+    committed: bool,
+}
+
+impl StagedTable {
+    /// Create the temp file backing `dest` and a guard that deletes it unless
+    /// committed.
+    ///
+    /// The suffix deliberately differs from the plain `.parquet.tmp` that the
+    /// hydration and serve writers use for individual tables in the same
+    /// directory. A staged index write holds its temp files open for the whole
+    /// write rather than one table, so sharing those names would let the two
+    /// truncate each other
+    fn create(dest: &Path) -> Result<(Self, std::fs::File), IndexError> {
+        if let Some(parent) = dest.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let tmp = dest.with_extension("parquet.staging.tmp");
+        let file = std::fs::File::create(&tmp)?;
+        let staged = Self {
+            tmp,
+            dest: dest.to_path_buf(),
+            committed: false,
+        };
+        Ok((staged, file))
+    }
+
+    /// Move the staged file onto its destination path
+    pub fn commit(mut self) -> Result<(), IndexError> {
+        std::fs::rename(&self.tmp, &self.dest)?;
+        self.committed = true;
+        Ok(())
+    }
+}
+
+impl Drop for StagedTable {
+    fn drop(&mut self) {
+        if !self.committed {
+            let _ = std::fs::remove_file(&self.tmp);
+        }
+    }
+}
+
+/// Move every staged table into place.
+///
+/// Renaming is a metadata operation, so the window in which the index is
+/// half-updated is far shorter than the staging writes that precede it. It is
+/// not zero: if a rename fails, the tables already renamed stay in place and
+/// the rest are dropped, so an `Err` from here still leaves a mix. The same is
+/// true of a crash between renames. Closing that gap entirely needs a directory
+/// swap or a pointer file
+pub fn commit_staged(staged: Vec<StagedTable>) -> Result<(), IndexError> {
+    timings::time(timings::Stage::StagingWrite, || {
+        for table in staged {
+            table.commit()?;
+        }
+        Ok(())
+    })
+}
+
 /// Write a single parquet file from an explicit schema + rows of flat serializable items.
 ///
 /// Writes in chunks of `CHUNK_SIZE` rows to bound peak Arrow memory.
@@ -42,11 +112,26 @@ fn write_table_items<T: serde::Serialize>(
     schema: SchemaRef,
     items: &[T],
 ) -> Result<(), IndexError> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let tmp = path.with_extension("parquet.tmp");
-    let file = std::fs::File::create(&tmp)?;
+    stage_table_items(path, schema, items)?.commit()
+}
+
+fn stage_table_items<T: serde::Serialize>(
+    path: &Path,
+    schema: SchemaRef,
+    items: &[T],
+) -> Result<StagedTable, IndexError> {
+    timings::time(timings::Stage::StagingWrite, || {
+        stage_table_items_at(path, schema, items)
+    })
+}
+
+fn stage_table_items_at<T: serde::Serialize>(
+    path: &Path,
+    schema: SchemaRef,
+    items: &[T],
+) -> Result<StagedTable, IndexError> {
+    // Any early return below drops `staged`, which deletes the temp file
+    let (staged, file) = StagedTable::create(path)?;
     let props = WriterProperties::builder()
         .set_compression(Compression::ZSTD(ZstdLevel::try_new(1).unwrap())) // fastest ZSTD; ~same size as level 3 at this scale
         .build();
@@ -67,8 +152,7 @@ fn write_table_items<T: serde::Serialize>(
     writer
         .close()
         .map_err(|e| IndexError::Other(format!("ArrowWriter close: {e}")))?;
-    std::fs::rename(&tmp, path)?;
-    Ok(())
+    Ok(staged)
 }
 
 /// Like `write_table_items` but uses `CHUNK_SIZE_TYPED` (64k rows/batch).
@@ -78,11 +162,19 @@ fn write_table_items_typed<T: serde::Serialize>(
     schema: SchemaRef,
     items: &[T],
 ) -> Result<(), IndexError> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let tmp = path.with_extension("parquet.tmp");
-    let file = std::fs::File::create(&tmp)?;
+    timings::time(timings::Stage::StagingWrite, || {
+        stage_table_items_typed_at(path, schema, items)
+    })?
+    .commit()
+}
+
+fn stage_table_items_typed_at<T: serde::Serialize>(
+    path: &Path,
+    schema: SchemaRef,
+    items: &[T],
+) -> Result<StagedTable, IndexError> {
+    // Any early return below drops `staged`, which deletes the temp file
+    let (staged, file) = StagedTable::create(path)?;
     let props = WriterProperties::builder()
         .set_compression(Compression::ZSTD(ZstdLevel::try_new(1).unwrap()))
         .build();
@@ -99,12 +191,20 @@ fn write_table_items_typed<T: serde::Serialize>(
     writer
         .close()
         .map_err(|e| IndexError::Other(format!("ArrowWriter close: {e}")))?;
-    std::fs::rename(&tmp, path)?;
-    Ok(())
+    Ok(staged)
 }
 
 /// Convenience wrapper: write a table from `serde_json::Value` rows.
 pub fn write_table(path: &Path, schema: SchemaRef, rows: &[Value]) -> Result<(), IndexError> {
+    stage_table(path, schema, rows)?.commit()
+}
+
+/// Like [`write_table`], but leaves the result staged for a later [`commit_staged`].
+pub fn stage_table(
+    path: &Path,
+    schema: SchemaRef,
+    rows: &[Value],
+) -> Result<StagedTable, IndexError> {
     // `classifiers` is a non-nullable list column on `nodes`/`node_columns`.
     // serde_arrow requires every non-nullable field to be present in each JSON
     // row, but callers that build rows from `serde_json::Value` (manifest
@@ -118,9 +218,9 @@ pub fn write_table(path: &Path, schema: SchemaRef, rows: &[Value]) -> Result<(),
                     .or_insert_with(|| Value::Array(vec![]));
             }
         }
-        return write_table_items(path, schema, &owned);
+        return stage_table_items(path, schema, &owned);
     }
-    write_table_items(path, schema, rows)
+    stage_table_items(path, schema, rows)
 }
 
 // ── Merge-on-write ──────────────────────────────────────────────────────────
@@ -165,6 +265,18 @@ pub enum WriteMode<'a> {
 ///
 /// Returns the total rows written. No-op (writes only `new_batch`) if file absent.
 pub fn merge_prune_arrow(
+    path: &Path,
+    schema: SchemaRef,
+    new_batch: arrow_array::RecordBatch,
+    key_col: &str,
+    drop_keys: &HashSet<String>,
+) -> Result<usize, IndexError> {
+    timings::time(timings::Stage::StagingWrite, || {
+        merge_prune_arrow_at(path, schema, new_batch, key_col, drop_keys)
+    })
+}
+
+fn merge_prune_arrow_at(
     path: &Path,
     schema: SchemaRef,
     new_batch: arrow_array::RecordBatch,
@@ -359,6 +471,16 @@ fn composite_key(row: &Map<String, Value>, key_cols: &[&str]) -> Option<String> 
     Some(key)
 }
 
+fn opt_str(v: &Option<String>) -> Value {
+    v.as_ref()
+        .map(|s| Value::String(s.clone()))
+        .unwrap_or(Value::Null)
+}
+
+fn str_array(v: &[String]) -> Value {
+    Value::Array(v.iter().map(|s| Value::String(s.clone())).collect())
+}
+
 /// Apply `CarryForward` merge: for rows in `new_rows` where a carry column is NULL,
 /// copy the value from `old_rows` (matched by composite `key_cols`).
 fn merge_carry_forward(
@@ -533,6 +655,20 @@ pub fn write_table_merged(
     rows: &mut Vec<Value>,
     mode: WriteMode<'_>,
 ) -> Result<(), IndexError> {
+    stage_table_merged(path, schema, rows, mode)?.commit()
+}
+
+/// Like [`write_table_merged`], but leaves the result staged for a later
+/// [`commit_staged`].
+///
+/// The merge modes read the table's own destination file, so staging a table
+/// without committing it does not change what any other table reads.
+pub fn stage_table_merged(
+    path: &Path,
+    schema: SchemaRef,
+    rows: &mut Vec<Value>,
+    mode: WriteMode<'_>,
+) -> Result<StagedTable, IndexError> {
     match mode {
         WriteMode::Overwrite => {}
         WriteMode::CarryForward {
@@ -578,7 +714,7 @@ pub fn write_table_merged(
             }
         }
     }
-    write_table(path, schema, rows)
+    stage_table(path, schema, rows)
 }
 
 // ── Streaming IndexWriter ───────────────────────────────────────────────────
@@ -594,7 +730,7 @@ pub fn write_table_merged(
 /// full overwrite). Call [`IndexWriter::finish`] to write `views.sql`
 /// and return the total file count.
 pub struct IndexWriter {
-    index_dir: std::path::PathBuf,
+    index_dir: PathBuf,
     now: String,
     count: usize,
 }
@@ -796,6 +932,16 @@ impl IndexWriter {
         table: &str,
         batches: Vec<arrow_array::RecordBatch>,
     ) -> Result<(), IndexError> {
+        timings::time(timings::Stage::StagingWrite, || {
+            self.write_arrow_batches_at(table, batches)
+        })
+    }
+
+    fn write_arrow_batches_at(
+        &mut self,
+        table: &str,
+        batches: Vec<arrow_array::RecordBatch>,
+    ) -> Result<(), IndexError> {
         let schema = schema_for(table);
         let path = self.index_dir.join(format!("dbt.{table}.parquet"));
         if let Some(parent) = path.parent() {
@@ -823,6 +969,18 @@ impl IndexWriter {
 
     /// Merge-prune a `dbt.*` table using pre-built Arrow RecordBatches.
     pub fn write_arrow_batches_merge_prune(
+        &mut self,
+        table: &str,
+        new_batches: Vec<arrow_array::RecordBatch>,
+        key_col: &str,
+        drop_keys: &HashSet<String>,
+    ) -> Result<(), IndexError> {
+        timings::time(timings::Stage::StagingWrite, || {
+            self.write_arrow_batches_merge_prune_at(table, new_batches, key_col, drop_keys)
+        })
+    }
+
+    fn write_arrow_batches_merge_prune_at(
         &mut self,
         table: &str,
         new_batches: Vec<arrow_array::RecordBatch>,
@@ -886,6 +1044,86 @@ impl IndexWriter {
         std::fs::rename(&tmp, &path)?;
         self.count += 1;
         Ok(())
+    }
+
+    /// Update the compile-filled columns on an existing `dbt.nodes` parquet, keyed by `unique_id`.
+    ///
+    /// The counterpart of the join `write_parse_nodes` performs when it builds node rows: same
+    /// eight fields, same source, but applied to rows that already exist rather than to rows being
+    /// constructed. That distinction is the point — it makes the compile layer applicable whenever
+    /// it happens to land, instead of only while the parse epochs are still unconsumed.
+    ///
+    /// Mirrors the DuckDB path's `UPDATE dbt.nodes SET compiled_code = src.compiled_code, … FROM
+    /// read_parquet(…) WHERE dbt.nodes.unique_id = src.unique_id`, including its `WHERE`: a node
+    /// absent from `compile_map` is left exactly as it is, so a partial compile extends the index
+    /// rather than truncating it. `classifiers` is updated here but not in the DuckDB statement,
+    /// because on this path it is the compile epoch that populates it.
+    ///
+    /// Rows whose compile columns already hold these values are left alone, and a call that changes
+    /// nothing writes no file. That makes it safe to call unconditionally after `write_parse_nodes`,
+    /// which has usually applied the same map to the subset of nodes it rebuilt.
+    ///
+    /// Returns the number of rows changed.
+    pub fn merge_compiled_nodes_into_nodes(
+        &mut self,
+        compile_map: &crate::ingest::metadata_to_parquet::CompileMap,
+    ) -> Result<usize, IndexError> {
+        fn set_if_changed(row: &mut Map<String, Value>, col: &str, val: Value, changed: &mut bool) {
+            if row.get(col) != Some(&val) {
+                row.insert(col.to_string(), val);
+                *changed = true;
+            }
+        }
+
+        let table = "nodes";
+        let path = self.index_dir.join(format!("dbt.{table}.parquet"));
+        let Some(existing) = read_parquet_rows(&path)? else {
+            return Ok(0);
+        };
+
+        let mut updated = 0usize;
+        let mut rows: Vec<Value> = Vec::with_capacity(existing.len());
+        for mut row in existing {
+            let uid = row
+                .get("unique_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string();
+            if let Some(c) = compile_map.get(&uid) {
+                let mut changed = false;
+                let r = &mut row;
+                set_if_changed(r, "compiled_code", opt_str(&c.compiled_code), &mut changed);
+                set_if_changed(
+                    r,
+                    "compiled_code_hash",
+                    opt_str(&c.compiled_code_hash),
+                    &mut changed,
+                );
+                set_if_changed(r, "compiled_path", opt_str(&c.compiled_path), &mut changed);
+                set_if_changed(r, "grain", str_array(&c.grain), &mut changed);
+                set_if_changed(
+                    r,
+                    "grain_declared",
+                    str_array(&c.grain_declared),
+                    &mut changed,
+                );
+                set_if_changed(r, "grain_tested", str_array(&c.grain_tested), &mut changed);
+                set_if_changed(r, "classifiers", str_array(&c.classifiers), &mut changed);
+                set_if_changed(r, "table_role", opt_str(&c.table_role), &mut changed);
+                if changed {
+                    row.insert("ingested_at".to_string(), Value::String(self.now.clone()));
+                    updated += 1;
+                }
+            }
+            rows.push(Value::Object(row));
+        }
+
+        if updated == 0 {
+            return Ok(0);
+        }
+        write_table(&path, schema_for(table), &rows)?;
+        self.count += 1;
+        Ok(updated)
     }
 
     /// Merge compile-column data into an existing `node_columns` parquet file.
@@ -1083,7 +1321,14 @@ impl IndexWriter {
         let table = "node_columns";
         let path = self.index_dir.join(format!("dbt.{table}.parquet"));
 
+        // Key by (unique_id, LOWERCASED column_name) so catalog rows match the
+        // existing parse/compile rows case-insensitively. Snowflake uppercases
+        // unquoted identifiers in the catalog (`EMAIL`) while the merged rows use
+        // the manifest casing (`email`); a case-sensitive key would miss the
+        // match and append a duplicate row, splitting a column's classifiers and
+        // types across two rows.
         struct CatalogInfo {
+            column_name: String,
             column_index: Option<i64>,
             catalog_type: Option<String>,
             catalog_comment: Option<String>,
@@ -1113,8 +1358,9 @@ impl IndexWriter {
                     continue;
                 };
                 catalog_map.insert(
-                    (uid.to_string(), cname.to_string()),
+                    (uid.to_string(), cname.to_ascii_lowercase()),
                     CatalogInfo {
+                        column_name: cname.to_string(),
                         column_index: idx_col.filter(|c| !c.is_null(i)).map(|c| c.value(i)),
                         catalog_type: ctype_col
                             .filter(|c| !c.is_null(i))
@@ -1142,7 +1388,7 @@ impl IndexWriter {
                     .and_then(|v| v.as_str())
                     .unwrap_or("")
                     .to_string();
-                let key = (uid, cname);
+                let key = (uid, cname.to_ascii_lowercase());
                 if let Some(ci) = catalog_map.get(&key) {
                     if let Some(idx) = ci.column_index {
                         map.insert("column_index".to_string(), Value::Number(idx.into()));
@@ -1170,14 +1416,19 @@ impl IndexWriter {
             }
         }
 
-        // Append catalog rows that had no existing match
+        // Append catalog rows that had no existing match. `cname` here is the
+        // lowercased match key; use `ci.column_name` for the stored name to
+        // preserve the original (warehouse) casing.
         for ((uid, cname), ci) in &catalog_map {
             if seen_keys.contains(&(uid.clone(), cname.clone())) {
                 continue;
             }
             let mut obj = Map::new();
             obj.insert("unique_id".to_string(), Value::String(uid.clone()));
-            obj.insert("column_name".to_string(), Value::String(cname.clone()));
+            obj.insert(
+                "column_name".to_string(),
+                Value::String(ci.column_name.clone()),
+            );
             if let Some(idx) = ci.column_index {
                 obj.insert("column_index".to_string(), Value::Number(idx.into()));
             }
@@ -1252,23 +1503,25 @@ impl IndexWriter {
     /// write `views.sql`, and return total files written.
     /// Standard finish: writes empty schema-placeholder parquet files for any
     /// tables not yet written (for standalone DuckDB / views.sql compatibility),
-    /// then writes views.sql. Use this for export and CLI ingest paths.
+    /// then writes views.sql. Placeholders are only written for files that
+    /// don't exist yet, so repeated ingests into the same index dir pay a
+    /// stat per table, not a rewrite.
     pub fn finish(mut self) -> Result<usize, IndexError> {
         self.ensure_dbt_tables()?;
         self.ensure_rt_tables()?;
         write_views_sql(&self.index_dir)?;
         Ok(self.count)
     }
+}
 
-    /// Ingest-optimized finish: skips writing empty placeholder parquet files.
-    /// import_parquet already skips missing files, so this saves ~29ms per reload
-    /// (43% of import cost) by not writing 0-row parquet files for unused tables.
-    /// Use this when the index will be loaded via import_parquet, not queried
-    /// directly by standalone DuckDB.
-    pub fn finish_for_ingest(self) -> Result<usize, IndexError> {
-        write_views_sql(&self.index_dir)?;
-        Ok(self.count)
-    }
+/// Very simple hash for raw_code (not cryptographic). Every writer of
+/// `dbt.nodes.raw_code_hash` must use this so the two ingest paths stamp
+/// identical values for identical code
+pub fn raw_code_hash(s: &str) -> String {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    s.hash(&mut hasher);
+    format!("{:016x}", hasher.finish())
 }
 
 // ── Schema definitions ──────────────────────────────────────────────────────
@@ -1429,6 +1682,7 @@ define_row! {
 define_row! {
     /// dbt.project_vars row.
     pub struct ProjectVarRow<'a> => schema_project_vars {
+        [utf8!] pub project_name: &'a str,
         [utf8!] pub var_name: &'a str,
         [utf8]  pub var_value: String,
         [timestamp !] pub ingested_at: &'a str,
@@ -1449,19 +1703,19 @@ define_row! {
     /// Path fields are `String` (owned) because `PathBuf::to_string_lossy()` returns `Cow`.
     pub struct NodeRow<'a> => schema_nodes {
         [utf8!] pub unique_id: &'a str,
-        [utf8]  pub name: &'a str,
+        [utf8]  pub name: Option<&'a str>,
         [utf8]  pub resource_type: &'a str,
-        [utf8]  pub package_name: &'a str,
-        [utf8]  pub file_path: String,
-        [utf8]  pub original_file_path: String,
+        [utf8]  pub package_name: Option<&'a str>,
+        [utf8]  pub file_path: Option<String>,
+        [utf8]  pub original_file_path: Option<String>,
         [list_utf8!] pub fqn: Vec<String>,
         [utf8]  pub alias: Option<&'a str>,
         [utf8]  pub checksum: Option<&'a str>,
         [utf8]  pub description: Option<&'a str>,
         [utf8]  pub node_language: Option<&'a str>,
         [utf8]  pub raw_code: Option<&'a str>,
-        [utf8]  pub database_name: &'a str,
-        [utf8]  pub schema_name: &'a str,
+        [utf8]  pub database_name: Option<&'a str>,
+        [utf8]  pub schema_name: Option<&'a str>,
         [utf8]  pub relation_name: Option<&'a str>,
         [utf8]  pub identifier: Option<&'a str>,
         [bool]  pub enabled: Option<bool>,
@@ -1624,6 +1878,9 @@ define_row! {
         [list_utf8!] pub tags: Vec<String>,
         [utf8]  pub meta: Option<String>,
         [utf8]  pub config: Option<String>,
+        // From the epoch relation's inverted `is_disabled`; NULL when the row
+        // came from a source that does not carry it (manifest extraction).
+        [bool]  pub enabled: Option<bool>,
         [float] pub created_at: Option<f64>,
         [timestamp !] pub ingested_at: &'a str,
     }
@@ -1656,6 +1913,8 @@ define_row! {
         [utf8]  pub meta: Option<String>,
         [utf8]  pub ai_context: Option<String>,
         [utf8]  pub config: Option<String>,
+        // See `ExposureRow::enabled`.
+        [bool]  pub enabled: Option<bool>,
         [float] pub created_at: Option<f64>,
         [timestamp !] pub ingested_at: &'a str,
     }
@@ -1845,6 +2104,8 @@ define_row! {
         [list_utf8!] pub depends_on_macros: Vec<String>,
         [utf8]  pub checksum: Option<&'a str>,
         [utf8]  pub config: Option<String>,
+        // See `ExposureRow::enabled`.
+        [bool]  pub enabled: Option<bool>,
         [float] pub created_at: Option<f64>,
         [timestamp !] pub ingested_at: &'a str,
     }
@@ -1975,9 +2236,13 @@ define_row! {
 }
 
 define_row! {
-    /// dbt.source_freshness row (snapshot — merge-on-write, one row per source).
+    /// dbt.source_freshness row (snapshot — merge-on-write, one row per resource).
+    ///
+    /// Sources and models both, since `dbt freshness` measures both; `resource_type`
+    /// says which. Published as `dbt_rt.freshness`.
     pub struct SourceFreshnessRow<'a> => schema_source_freshness {
         [utf8!] pub unique_id: &'a str,
+        [utf8]  pub resource_type: Option<&'a str>,
         [utf8]  pub invocation_id: Option<&'a str>,
         [utf8]  pub status: Option<&'a str>,
         [timestamp] pub max_loaded_at: Option<&'a str>,
@@ -2146,5 +2411,87 @@ pub fn schema_for(table: &str) -> SchemaRef {
             false,
         )])),
         _ => Arc::new(Schema::empty()),
+    }
+}
+
+#[cfg(test)]
+mod staged_table_tests {
+    use super::*;
+
+    fn schema() -> SchemaRef {
+        Arc::new(Schema::new(vec![Field::new("id", DataType::Utf8, false)]))
+    }
+
+    fn rows() -> Vec<Value> {
+        vec![serde_json::json!({"id": "a"})]
+    }
+
+    #[test]
+    fn dropping_a_staged_table_removes_its_temp_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("dbt.t.parquet");
+
+        let tmp = {
+            let staged = stage_table(&dest, schema(), &rows()).unwrap();
+            let tmp = staged.tmp.clone();
+            assert!(tmp.exists(), "staging must write a temp file");
+            tmp
+        };
+
+        assert!(
+            !tmp.exists(),
+            "an uncommitted stage must delete its temp file"
+        );
+        assert!(
+            !dest.exists(),
+            "an uncommitted stage must not touch the destination"
+        );
+    }
+
+    #[test]
+    fn committing_moves_the_staged_file_onto_the_destination() {
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("dbt.t.parquet");
+
+        let staged = stage_table(&dest, schema(), &rows()).unwrap();
+        let tmp = staged.tmp.clone();
+        staged.commit().unwrap();
+
+        assert!(dest.exists());
+        assert!(!tmp.exists(), "commit must consume the temp file");
+    }
+
+    /// `commit_staged` renames in sequence, so a failure partway through leaves
+    /// the tables it already renamed in place. The remaining stages still clean
+    /// up their temp files.
+    #[test]
+    fn a_failed_commit_keeps_earlier_renames_and_drops_the_rest() {
+        let dir = tempfile::tempdir().unwrap();
+        let first = dir.path().join("dbt.first.parquet");
+        let blocked = dir.path().join("dbt.blocked.parquet");
+        let last = dir.path().join("dbt.last.parquet");
+
+        // A directory cannot be replaced by a rename, so `blocked` fails
+        std::fs::create_dir(&blocked).unwrap();
+
+        let staged = vec![
+            stage_table(&first, schema(), &rows()).unwrap(),
+            stage_table(&blocked, schema(), &rows()).unwrap(),
+            stage_table(&last, schema(), &rows()).unwrap(),
+        ];
+        let last_tmp = staged[2].tmp.clone();
+
+        commit_staged(staged).expect_err("renaming onto a directory must fail");
+
+        assert!(first.is_file(), "a rename before the failure stays applied");
+        assert!(
+            blocked.is_dir(),
+            "the failing rename leaves the destination alone"
+        );
+        assert!(!last.exists(), "a stage after the failure is never applied");
+        assert!(
+            !last_tmp.exists(),
+            "a stage after the failure cleans up its temp file"
+        );
     }
 }

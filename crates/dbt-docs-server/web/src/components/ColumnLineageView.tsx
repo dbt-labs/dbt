@@ -1,14 +1,15 @@
 import { useCallback, useEffect, useMemo } from 'react';
-
 import {
-  Dag,
-  type DbtDagNode,
-  type ResourceTypeExplorer,
-  type TransformationType,
-  transformationTypes,
-} from '@dbt-labs/dbt-dag';
+  Background,
+  type Edge,
+  type Node as ReactFlowNode,
+  ReactFlow,
+} from '@xyflow/react';
 
+import { useTheme } from '../hooks/useTheme';
+import { applyDagreLayout } from '../lib/dagreLayout';
 import { decorateOutboundHref } from '../lib/outboundReferrer';
+import { type ResourceTypeExplorer } from '../lib/resourceType';
 import {
   type ColumnLineageGraph,
   type ColumnLineageResult,
@@ -17,6 +18,19 @@ import {
   useColumnLineage as useSharedColumnLineage,
   type UserState,
 } from '../shared';
+import { DAG_NODE_TYPE, DAG_NODE_TYPES, type DagNodeData } from './LineageV2/DagNode';
+
+/** Local stand-in for dbt-dag's `DbtDagNode` -- same fields this file actually
+ *  used (`dbtCloudProject`/`projectId` were dbt-dag-cloud-account plumbing
+ *  the new engine has no equivalent of, and nothing here read them back). */
+type ColumnLineageNode = {
+  id: string;
+  label: string;
+  sublabel: string;
+  parents: string[];
+  resourceType: ResourceTypeExplorer;
+  transformationType: TransformationType;
+};
 
 /** Local snake-cased edge shape the subgraph BFS below walks in both
  *  directions. Sourced directly from the domain {@link ColumnLineageGraph}'s
@@ -29,10 +43,20 @@ type ColumnLineageEdge = {
   kind: string;
 };
 
-const LOCAL_PROJECT = 'local';
-const LOCAL_PROJECT_ID = 0;
+/** Mirrors dbt-dag's retired `transformationTypes`/`TransformationType` --
+ *  no longer fed to anything dbt-dag owns, kept only because
+ *  `buildColumnSubgraph`'s BFS still computes it per node (see below). */
+const TRANSFORMATION_TYPES = [
+  'UNKNOWN',
+  'RAW',
+  'PARSE_ERROR',
+  'PASSTHROUGH',
+  'TRANSFORMATION',
+  'RENAME',
+] as const;
+type TransformationType = (typeof TRANSFORMATION_TYPES)[number];
 
-const TRANSFORMATION_VALUES = new Set<string>(transformationTypes);
+const TRANSFORMATION_VALUES = new Set<string>(TRANSFORMATION_TYPES);
 
 function toTransformationType(kind: string | undefined): TransformationType {
   if (!kind) return 'UNKNOWN';
@@ -116,6 +140,13 @@ export function ColumnLineageMini({
   onSelect,
   userState,
 }: MiniProps) {
+  // React Flow stamps `light` or `dark` on the canvas root for its own theming,
+  // and this app's tokens are scoped by those exact class names (`:root .light` /
+  // `:root .dark` in styles/tokens.css) -- same collision BaseDag.tsx already
+  // works around. Left on the default (`light`), it re-themes every token
+  // inside it regardless of the app's real theme.
+  const { resolved } = useTheme();
+
   useEffect(() => {
     if (state.kind === 'idle') load();
   }, [state.kind, load]);
@@ -167,33 +198,57 @@ export function ColumnLineageMini({
     );
   }
 
-  const primaryNodeIds = subgraph.nodes
-    .filter(
-      (n) =>
-        splitCompositeId(n.id).nodeUniqueId === rootUniqueId &&
-        splitCompositeId(n.id).column === columnName,
-    )
-    .map((n) => n.id);
+  const primaryNodeIds = new Set(
+    subgraph.nodes
+      .filter(
+        (n) =>
+          splitCompositeId(n.id).nodeUniqueId === rootUniqueId &&
+          splitCompositeId(n.id).column === columnName,
+      )
+      .map((n) => n.id),
+  );
+
+  // Combined into one line (DagNode has no separate sublabel slot) rather
+  // than dropped -- which model a column belongs to is real information the
+  // old dbt-dag rendering showed, not just decoration. DagNode's own
+  // truncate-and-tooltip handles anything that doesn't fit.
+  const rawNodes: ReactFlowNode<DagNodeData>[] = subgraph.nodes.map((n) => ({
+    id: n.id,
+    type: DAG_NODE_TYPE,
+    position: { x: 0, y: 0 },
+    selected: primaryNodeIds.has(n.id),
+    data: {
+      name:
+        n.sublabel && n.sublabel !== n.label ? `${n.label} · ${n.sublabel}` : n.label,
+      resourceType: n.resourceType,
+    },
+  }));
+  const flowEdges: Edge[] = subgraph.nodes.flatMap((n) =>
+    n.parents.map((parentId) => ({
+      id: `${parentId}->${n.id}`,
+      source: parentId,
+      target: n.id,
+      type: 'smoothstep',
+    })),
+  );
+  const flowNodes = applyDagreLayout(rawNodes, flowEdges, { rankdir: 'LR' });
 
   return (
-    <div className="lineage-frame" style={{ height: 320 }}>
-      <Dag
-        nodes={subgraph.nodes}
-        activeDbtCloudProject={LOCAL_PROJECT}
-        grain="column"
-        primaryNodeIds={primaryNodeIds}
-        status="success"
-        onNodeInteraction={(event) => {
-          if (
-            event.interactionType === 'single_click' ||
-            event.interactionType === 'double_click'
-          ) {
-            if (event.targetNode) {
-              onSelect(splitCompositeId(event.targetNode.id).nodeUniqueId);
-            }
-          }
-        }}
-      />
+    <div className="lineage-frame dag-v2-canvas" style={{ height: 320 }}>
+      <ReactFlow
+        nodes={flowNodes}
+        edges={flowEdges}
+        nodeTypes={DAG_NODE_TYPES}
+        colorMode={resolved}
+        fitView
+        nodesConnectable={false}
+        nodesDraggable={false}
+        elementsSelectable={false}
+        panOnScroll
+        onNodeClick={(_, node) => onSelect(splitCompositeId(node.id).nodeUniqueId)}
+      >
+        <Background color="var(--muted-foreground)" gap={20} size={1} />
+      </ReactFlow>
     </div>
   );
 }
@@ -210,14 +265,23 @@ function edgesFromGraph(graph: ColumnLineageGraph): ColumnLineageEdge[] {
   }));
 }
 
+/** Value `normalizeLineageKind` (duckdb data source, the only production
+ *  source) emits for a `scan`-kind edge -- e.g. a column only referenced in a
+ *  WHERE/JOIN condition, never copied or transformed into the target's value.
+ *  Filtered out below so it never appears as a false lineage node. Keep in
+ *  sync with `shared/data-sources/duckdb/sql.ts`. */
+const SCAN_KIND = 'indirect';
+
 /** BFS the edge set both upstream and downstream from the target column,
- *  then materialize Dag nodes for the reachable composite ids. */
+ *  then materialize nodes for the reachable composite ids. Scan-kind edges
+ *  are dropped first, so a column reachable only through one never enters
+ *  the subgraph at all (matches VSCE's effective behavior). */
 function buildColumnSubgraph(
   graph: ColumnLineageGraph,
   rootUniqueId: string,
   columnName: string,
-): { nodes: DbtDagNode[] } {
-  const edges = edgesFromGraph(graph);
+): { nodes: ColumnLineageNode[] } {
+  const edges = edgesFromGraph(graph).filter((e) => e.kind !== SCAN_KIND);
   const target = compositeId(rootUniqueId, columnName);
 
   const outgoing = new Map<string, ColumnLineageEdge[]>();
@@ -263,7 +327,7 @@ function buildColumnSubgraph(
     parentMap.set(toId, arr);
   }
 
-  const nodes: DbtDagNode[] = Array.from(reachable).map((id) => {
+  const nodes: ColumnLineageNode[] = Array.from(reachable).map((id) => {
     const { nodeUniqueId, column } = splitCompositeId(id);
     const incomingEdges = parentMap.get(id) ?? [];
     const parents = incomingEdges.map((p) => p.parentId);
@@ -275,8 +339,6 @@ function buildColumnSubgraph(
       resourceType: resourceTypeFromUniqueId(nodeUniqueId),
       transformationType:
         parents.length === 0 ? 'RAW' : toTransformationType(incomingEdges[0]?.kind),
-      dbtCloudProject: LOCAL_PROJECT,
-      projectId: LOCAL_PROJECT_ID,
     };
   });
 

@@ -2,82 +2,81 @@ import { HelmetProvider } from 'react-helmet-async';
 import { MemoryRouter } from 'react-router-dom';
 import { QueryClientProvider } from '@tanstack/react-query';
 import { render, screen, waitFor } from '@testing-library/react';
-import { afterEach, beforeEach, vi } from 'vitest';
 
 import App from './App';
+import { BootstrapProvider } from './lib/bootstrapContext';
 import { LinkPrefixProvider, MetadataDataProvider } from './shared';
-import { createRestDataSource } from './shared/data-sources/rest';
+import type { BootstrapData } from './shared/data-sources/duckdb/bootstrap';
+import { DETAIL_REGISTRY } from './shared/data-sources/duckdb/details';
+import {
+  fromCapabilities,
+  fromDistribution,
+} from './shared/data-sources/mappers/fromWire';
+import type { MetadataDataSource } from './shared/data-sources/MetadataDataSource';
+import { createFakeDataSource } from './shared/testing/createFakeDataSource';
 import { makeTestQueryClient } from './test/renderWithProviders';
 
-const testDataSource = createRestDataSource();
-
-type FetchOverrides = Record<string, unknown>;
-
-function stubFetch(overrides: FetchOverrides = {}) {
-  const defaults: FetchOverrides = {
-    '/api/v1/project': {
-      name: 'demo_project',
-      description: 'A demo project description.',
-    },
-    '/api/v1/capabilities': { has_column_lineage: false },
-    '/api/v1/distribution': { name: 'oss', version: '0.0.0', is_logged_in: false },
-    '/api/v1/identity': { is_logged_in: false, analytics_enabled: false },
-    '/api/v1/nodes': { nodes: [], total: 0, offset: 0, limit: 1000 },
-    '/api/v1/files': { files: [] },
-    '/api/v1/tables': [],
-    // /api/v1/models?modeling_layer=Marts&first=12 — match by prefix below
-    '/api/v1/models': {
-      data: [
-        {
-          unique_id: 'model.demo.dim_customers',
-          name: 'dim_customers',
-          package_name: 'demo',
-          original_file_path: 'models/marts/dim_customers.sql',
-          modeling_layer: 'Marts',
-          access_level: null,
-          contract_enforced: null,
-          owner: null,
-          executed_at: null,
-        },
-      ],
-      page_info: {
-        total_count: 1,
-        start_cursor: null,
-        end_cursor: null,
-        has_next_page: false,
-      },
-    },
-    ...overrides,
-  };
-
-  vi.stubGlobal(
-    'fetch',
-    vi.fn((url: string) => {
-      const path = url.split('?')[0];
-      const body = defaults[path] ?? defaults[url];
-      if (body === undefined) {
-        return Promise.resolve(
-          new Response(JSON.stringify({ error: 'not stubbed' }), { status: 404 }),
-        );
-      }
-      return Promise.resolve(
-        new Response(JSON.stringify(body), {
-          status: 200,
-          headers: { 'Content-Type': 'application/json' },
-        }),
-      );
-    }),
+/**
+ * The shell's data source, built from the same fixtures the fetch stub described.
+ *
+ * This test used to stub `fetch` and let the REST source read it. The fixtures are
+ * still the right description of the shell's data, so they feed a fake source instead.
+ */
+function shellSource(overrides: Partial<MetadataDataSource> = {}): MetadataDataSource {
+  return createFakeDataSource(
+    {
+      fetchProject: async () => ({
+        name: 'demo_project',
+        description: 'A demo project description.',
+        dbtVersion: null,
+        adapterType: null,
+        git: null,
+      }),
+      fetchCapabilities: async () => fromCapabilities({ has_column_lineage: false }),
+      fetchDistribution: async () =>
+        fromDistribution({ name: 'oss', version: '0.0.0', is_logged_in: false }),
+      fetchFiles: async () => [],
+      fetchAssetCounts: async () => ({ model: 1 }),
+      ...overrides,
+    } as never,
+    { full: true },
   );
 }
 
-function renderApp() {
+const testDataSource = shellSource();
+
+/**
+ * The first-paint read `main.tsx` starts before mounting.
+ *
+ * The shell renders nothing until this settles — it is where the node list, and so the
+ * sidebar, file tree, and resource-type resolver, come from.
+ */
+function bootstrapRead(nodes: BootstrapData['nodes'] = []): Promise<BootstrapData> {
+  return Promise.resolve({
+    nodes,
+    project: {
+      name: 'demo_project',
+      description: 'A demo project description.',
+      dbtVersion: null,
+      adapterType: null,
+    },
+    generation: null,
+  } as unknown as BootstrapData);
+}
+
+function renderApp(
+  source: MetadataDataSource = testDataSource,
+  bootstrap: Promise<BootstrapData> = bootstrapRead(),
+) {
   return render(
     <QueryClientProvider client={makeTestQueryClient()}>
       <HelmetProvider>
         <MemoryRouter initialEntries={['/']}>
-          <MetadataDataProvider source={testDataSource}>
-            <App />
-          </MetadataDataProvider>
+          <BootstrapProvider value={bootstrap}>
+            <MetadataDataProvider source={source}>
+              <App />
+            </MetadataDataProvider>
+          </BootstrapProvider>
         </MemoryRouter>
       </HelmetProvider>
     </QueryClientProvider>,
@@ -85,157 +84,95 @@ function renderApp() {
 }
 
 describe('<App />', () => {
-  afterEach(() => {
-    vi.unstubAllGlobals();
-  });
-
   it('renders topbar and loading state', () => {
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(() => new Promise(() => {})),
-    );
-
-    renderApp();
+    // A read that never settles: the shell must show its chrome and a loading state
+    // rather than an empty project.
+    renderApp(testDataSource, new Promise<BootstrapData>(() => {}));
 
     expect(screen.getByRole('searchbox')).toBeVisible();
     expect(screen.getByText('Loading…')).toBeVisible();
   });
 
-  describe('home page', () => {
-    beforeEach(() => stubFetch());
-
-    it('does not render hero action buttons', async () => {
-      renderApp();
+  describe('overview page', () => {
+    it('renders the project-authored overview at /', async () => {
+      renderApp(
+        shellSource({
+          fetchOverview: async () => ({
+            uniqueId: 'doc.demo.__overview__',
+            packageName: 'demo',
+            blockContents: '# Authored overview\n\nFrom the project.',
+          }),
+        } as never),
+      );
       await waitFor(() => {
-        expect(screen.getByText('demo_project', { selector: 'h1' })).toBeVisible();
+        expect(screen.getByText('Authored overview', { selector: 'h1' })).toBeVisible();
       });
-      expect(screen.queryByRole('button', { name: /set as home/i })).toBeNull();
-      expect(screen.queryByRole('button', { name: /add to favorites/i })).toBeNull();
-      expect(screen.queryByRole('button', { name: /in favorites/i })).toBeNull();
+      expect(screen.getByText('From the project.')).toBeVisible();
     });
 
-    it('renders the "Get more from dbt" upgrade panel for Core users', async () => {
-      // Test fixtures stub `has_column_lineage: false`, which maps to
-      // `core` — per the gating doc, that surfaces the CLL + Mesh
-      // upgrade panel on home.
-      renderApp();
+    it('falls back to the dashboard default when no package defines one', async () => {
+      // `fetchOverview` resolving null is the real "not defined" answer, not an
+      // error — the landing page must still render something.
+      renderApp(shellSource({ fetchOverview: async () => null } as never));
       await waitFor(() => {
-        expect(screen.getByText('demo_project', { selector: 'h1' })).toBeVisible();
+        expect(screen.getByText('Welcome!', { selector: 'h1' })).toBeVisible();
       });
-      expect(screen.getByText(/Get more from dbt/i)).toBeVisible();
     });
 
-    it('renders all asset types in the Explore grid, including zero-count types', async () => {
-      renderApp();
-      await waitFor(() => {
-        expect(screen.getByText('Explore')).toBeVisible();
-      });
-      // Every canonical resource type renders, even when there are zero nodes.
-      for (const label of [
-        'Models',
-        'Sources',
-        'Tests',
-        'Exposures',
-        'Groups',
-        'Metrics',
-        'Semantic models',
-        'Seeds',
-        'Macros',
-        'Snapshots',
-        'Saved queries',
-      ]) {
-        expect(
-          screen.getByRole('button', { name: new RegExp(`Browse ${label}`, 'i') }),
-        ).toBeVisible();
-      }
-    });
-
-    it('renders the project description when present', async () => {
-      renderApp();
-      await waitFor(() => {
-        expect(screen.getByText('About this project')).toBeVisible();
-      });
-      expect(screen.getByText('A demo project description.')).toBeVisible();
-    });
-
-    it('hides the description section when description is empty', async () => {
-      stubFetch({
-        '/api/v1/project': { name: 'demo_project', description: '   ' },
-      });
-      renderApp();
-      await waitFor(() => {
-        expect(screen.getByText('demo_project', { selector: 'h1' })).toBeVisible();
-      });
-      expect(screen.queryByText('About this project')).toBeNull();
-    });
-
-    it('renders the marts section when marts exist', async () => {
-      renderApp();
-      await waitFor(() => {
-        expect(screen.getByText('Marts')).toBeVisible();
-      });
-      expect(screen.getByText('dim_customers')).toBeVisible();
-      expect(screen.getByRole('button', { name: /view all/i })).toBeVisible();
-    });
-
-    it('hides the marts section when no marts are returned', async () => {
-      stubFetch({
-        '/api/v1/models': {
-          data: [],
-          page_info: {
-            total_count: 0,
-            start_cursor: null,
-            end_cursor: null,
-            has_next_page: false,
+    it('falls back to the dashboard default when the overview read fails', async () => {
+      // An unreadable dbt.docs_blocks must not blank the landing page.
+      renderApp(
+        shellSource({
+          fetchOverview: async () => {
+            throw new Error('dbt.docs_blocks is missing');
           },
-        },
-      });
-      renderApp();
+        } as never),
+      );
       await waitFor(() => {
-        expect(screen.getByText('demo_project', { selector: 'h1' })).toBeVisible();
+        expect(screen.getByText('Welcome!', { selector: 'h1' })).toBeVisible();
       });
-      expect(screen.queryByText('Marts')).toBeNull();
     });
   });
 
   describe('detail panel', () => {
     it('renders model detail when navigating to a detail route', async () => {
-      stubFetch({
-        '/api/v1/nodes': {
-          nodes: [
-            {
-              unique_id: 'model.demo.dim_customers',
-              name: 'dim_customers',
-              resource_type: 'model',
-              package_name: 'demo',
-            },
-          ],
-          total: 1,
-          offset: 0,
-          limit: 1000,
-        },
-        '/api/v1/models/model.demo.dim_customers': {
-          unique_id: 'model.demo.dim_customers',
-          name: 'dim_customers',
-          resource_type: 'model',
-          package_name: 'demo',
-          description: 'Customer dimension table',
-          tags: [],
-          fqn: ['demo', 'dim_customers'],
-          columns: [],
-          depends_on: [],
-          referenced_by: [],
-        },
-      });
+      // The node index carries the resource type, which is what routes the detail
+      // panel to the model view; the detail body itself comes from the source.
+      const detailSource = shellSource({
+        fetchAsset: async () =>
+          DETAIL_REGISTRY.model!.map({
+            unique_id: 'model.demo.dim_customers',
+            name: 'dim_customers',
+            resource_type: 'model',
+            package_name: 'demo',
+            description: 'Customer dimension table',
+            tags: [],
+            fqn: ['demo', 'dim_customers'],
+            columns: [],
+            depends_on: [],
+            referenced_by: [],
+          }),
+      } as never);
 
       render(
         <QueryClientProvider client={makeTestQueryClient()}>
           <HelmetProvider>
             <MemoryRouter initialEntries={['/details/model.demo.dim_customers']}>
               <LinkPrefixProvider prefix="/">
-                <MetadataDataProvider source={testDataSource}>
-                  <App />
-                </MetadataDataProvider>
+                <BootstrapProvider
+                  value={bootstrapRead([
+                    {
+                      unique_id: 'model.demo.dim_customers',
+                      name: 'dim_customers',
+                      resource_type: 'model',
+                      package_name: 'demo',
+                    },
+                  ])}
+                >
+                  <MetadataDataProvider source={detailSource}>
+                    <App />
+                  </MetadataDataProvider>
+                </BootstrapProvider>
               </LinkPrefixProvider>
             </MemoryRouter>
           </HelmetProvider>

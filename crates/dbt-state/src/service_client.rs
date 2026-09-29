@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -17,11 +18,12 @@ use crate::auth::browser_flow::is_retryable_token_error;
 use crate::proto::query_cache::{
     CloneRequest, CloneResponse, ConfirmExecutionRequest, ConfirmExecutionResponse,
     GetExplainMessagesRequest, GetExplainMessagesResponse, RecordExecutionsRequest,
-    RecordExecutionsResponse, SubmitEnrichedSqlRequest, SubmitSqlResponse,
-    SubmitSqlSpeculativeResponse, SubmitTelemetryBatchRequest, SubmitTelemetryBatchResponse,
-    SubmitValuesRequest, ValidateClientVersionRequest,
-    client_validation_client::ClientValidationClient, execution_client::ExecutionClient,
-    explain_client::ExplainClient, sql_client::SqlClient,
+    RecordExecutionsResponse, ResolveDeferredRelationsRequest, SelectorRequest, SelectorResponse,
+    SubmitEnrichedSqlRequest, SubmitSqlResponse, SubmitSqlSpeculativeResponse,
+    SubmitTelemetryBatchRequest, SubmitTelemetryBatchResponse, SubmitValuesRequest,
+    ValidateClientVersionRequest, client_validation_client::ClientValidationClient,
+    execution_client::ExecutionClient, explain_client::ExplainClient,
+    selector_service_client::SelectorServiceClient, sql_client::SqlClient,
 };
 use crate::proto::query_cache::{client_telemetry_client::ClientTelemetryClient, clone_client};
 use crate::service_config::{RunCacheServiceConfig, RunCacheServiceConfigError};
@@ -37,6 +39,15 @@ const SUBMITTED_AT_EPOCH_HEADER: &str = "x-submitted-at-epoch";
 const SYSTEM_USER_ID_HEADER: &str = "x-system-user-id";
 const HTTP2_KEEP_ALIVE_INTERVAL: Duration = Duration::from_secs(30);
 const HTTP2_KEEP_ALIVE_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// gRPC caps a retry policy's `maxAttempts` at 5; higher configured values are
+/// clamped to this.
+const GRPC_MAX_ATTEMPTS_CAP: u32 = 5;
+/// Backoff before the first retry; doubled after each attempt up to
+/// [`RETRY_MAX_BACKOFF`].
+const RETRY_INITIAL_BACKOFF: Duration = Duration::from_secs(1);
+const RETRY_MAX_BACKOFF: Duration = Duration::from_secs(10);
+const RETRY_BACKOFF_MULTIPLIER: u32 = 2;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ClientVersionStatus {
@@ -77,6 +88,28 @@ pub enum RunCacheServiceError {
         "dbt State authentication requires an interactive terminal, but none is available in this environment"
     )]
     NoInteractiveTerminal,
+    /// No dbt platform credential is available for the account the project
+    /// configures. Deliberately not an `Auth` error: like
+    /// [`Self::NoInteractiveTerminal`] it is not user-actionable *auth*, so
+    /// validation fails open and dbt State is bypassed for the invocation
+    /// rather than failing the run.
+    #[error("{}", platform_account_unavailable_message(.configured, .found.as_deref()))]
+    PlatformAccountUnavailable {
+        configured: String,
+        found: Option<String>,
+    },
+}
+
+fn platform_account_unavailable_message(configured: &str, found: Option<&str>) -> String {
+    let found = match found {
+        Some(found) => format!(", but the available credentials belong to account {found}"),
+        None => String::new(),
+    };
+    format!(
+        "no dbt platform credentials for account {configured}{found}. \
+         Run `dbt login` with account {configured}, or update 'account_id' in the \
+         'dbt-cloud' block of dbt_project.yml"
+    )
 }
 
 impl RunCacheServiceError {
@@ -96,6 +129,7 @@ impl RunCacheServiceError {
             Self::Aborted => "Aborted",
             Self::Timeout(_) => "Timeout",
             Self::NoInteractiveTerminal => "NoInteractiveTerminal",
+            Self::PlatformAccountUnavailable { .. } => "PlatformAccountUnavailable",
         }
     }
 
@@ -106,6 +140,18 @@ impl RunCacheServiceError {
             }
             _ => false,
         }
+    }
+
+    /// Whether a failed RPC is a transient transport failure that is safe to
+    /// retry. Retries only `UNAVAILABLE` — the status a dropped connection
+    /// ("connection reset by peer", connection-refused, socket-closed, etc.)
+    /// surfaces as — plus tonic's `Unknown` "transport error" (see
+    /// [`Self::is_transient_transport_rpc`]), which reports a connection drop
+    /// mid-request. Both are safe to retry: per gRPC semantics the server did
+    /// not process the request.
+    pub fn is_retryable_transport(&self) -> bool {
+        self.is_transient_transport_rpc()
+            || matches!(self, Self::Rpc(status) if status.code() == tonic::Code::Unavailable)
     }
 
     /// Returns `true` when this error should permanently disable the client
@@ -333,6 +379,19 @@ pub trait RunCacheServiceClient: Send + Sync {
     ) -> Result<GetExplainMessagesResponse, RunCacheServiceError> {
         Err(RunCacheServiceError::Disabled)
     }
+    async fn get_state_selection(
+        &self,
+        _request: SelectorRequest,
+    ) -> Result<SelectorResponse, RunCacheServiceError> {
+        Err(RunCacheServiceError::Disabled)
+    }
+
+    async fn resolve_deferred_relations(
+        &self,
+        _request: ResolveDeferredRelationsRequest,
+    ) -> Result<HashMap<String, String>, RunCacheServiceError> {
+        Err(RunCacheServiceError::Disabled)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -343,9 +402,17 @@ pub struct GrpcRunCacheServiceClient {
     client_telemetry: ClientTelemetryClient<Channel>,
     client_validation: ClientValidationClient<Channel>,
     explain: ExplainClient<Channel>,
+    state_selector: SelectorServiceClient<Channel>,
     auth: RunCacheAuth,
     metadata: RunCacheClientMetadata,
     disabled: Arc<AtomicBool>,
+    /// Total attempts per request on transient transport failures, clamped to
+    /// [`GRPC_MAX_ATTEMPTS_CAP`]. `1` disables retries.
+    max_attempts: u32,
+    /// Backoff before the first retry (doubled up to [`RETRY_MAX_BACKOFF`]).
+    /// A field rather than a constant so tests can drive it to zero and avoid
+    /// real sleeps; production always uses [`RETRY_INITIAL_BACKOFF`].
+    initial_backoff: Duration,
 }
 
 impl GrpcRunCacheServiceClient {
@@ -379,10 +446,13 @@ impl GrpcRunCacheServiceClient {
             execution: ExecutionClient::new(channel.clone()),
             client_telemetry: ClientTelemetryClient::new(channel.clone()),
             client_validation: ClientValidationClient::new(channel.clone()),
+            state_selector: SelectorServiceClient::new(channel.clone()),
             explain: ExplainClient::new(channel),
             auth,
             metadata,
             disabled: Arc::new(AtomicBool::new(false)),
+            max_attempts: config.max_attempts.clamp(1, GRPC_MAX_ATTEMPTS_CAP),
+            initial_backoff: RETRY_INITIAL_BACKOFF,
         })
     }
 
@@ -434,6 +504,33 @@ impl GrpcRunCacheServiceClient {
                 .map_err(Into::into),
         )
     }
+
+    /// Runs a single RPC operation, retrying it on transient transport failures
+    /// with exponential backoff. tonic has no equivalent of gRPC's C-core
+    /// service-config retry policy, so the loop reproduces it explicitly: only
+    /// [`RunCacheServiceError::is_retryable_transport`] errors are retried, up to
+    /// `self.max_attempts` total attempts. `attempt` is invoked afresh each time
+    /// so a new `x-request-id` and auth token are attached per attempt.
+    async fn with_retry<T, F, Fut>(&self, mut attempt: F) -> Result<T, RunCacheServiceError>
+    where
+        F: FnMut() -> Fut,
+        Fut: Future<Output = Result<T, RunCacheServiceError>>,
+    {
+        let mut remaining = self.max_attempts.max(1);
+        let mut backoff = self.initial_backoff;
+        loop {
+            remaining -= 1;
+            match attempt().await {
+                Err(err) if remaining > 0 && err.is_retryable_transport() => {
+                    tokio::time::sleep(backoff).await;
+                    backoff = backoff
+                        .saturating_mul(RETRY_BACKOFF_MULTIPLIER)
+                        .min(RETRY_MAX_BACKOFF);
+                }
+                other => return other,
+            }
+        }
+    }
 }
 
 #[async_trait]
@@ -443,17 +540,21 @@ impl RunCacheServiceClient for GrpcRunCacheServiceClient {
     }
 
     async fn validate_client_version(&self) -> Result<ClientVersionStatus, RunCacheServiceError> {
-        let request = self
-            .attach(Request::new(ValidateClientVersionRequest {
-                dbt_run_cache_version: env!("CARGO_PKG_VERSION").to_string(),
-            }))
+        let response = self
+            .with_retry(|| async {
+                let request = self
+                    .attach(Request::new(ValidateClientVersionRequest {
+                        dbt_run_cache_version: env!("CARGO_PKG_VERSION").to_string(),
+                    }))
+                    .await?;
+                self.response(
+                    self.client_validation
+                        .clone()
+                        .validate_client_version(request)
+                        .await,
+                )
+            })
             .await?;
-        let response = self.response(
-            self.client_validation
-                .clone()
-                .validate_client_version(request)
-                .await,
-        )?;
 
         if response.is_supported {
             Ok(ClientVersionStatus::Supported)
@@ -466,14 +567,21 @@ impl RunCacheServiceClient for GrpcRunCacheServiceClient {
         &self,
         request: SubmitEnrichedSqlRequest,
     ) -> Result<SubmitSqlResponse, RunCacheServiceError> {
-        let request = self.attach(Request::new(request)).await?;
-        self.response(self.sql.clone().submit_enriched_sql(request).await)
+        self.with_retry(|| async {
+            let request = self.attach(Request::new(request.clone())).await?;
+            self.response(self.sql.clone().submit_enriched_sql(request).await)
+        })
+        .await
     }
 
     async fn submit_enriched_sql_speculative(
         &self,
         request: SubmitEnrichedSqlRequest,
     ) -> Result<SubmitSqlSpeculativeResponse, RunCacheServiceError> {
+        // Deliberately not retried: the speculative verdict is fired while the
+        // dependency prefetch is still in flight to shave latency, so blocking on
+        // retry backoff would defeat its purpose. A transient failure here just
+        // falls back to the authoritative `submit_enriched_sql`, which is retried.
         let request = self.attach(Request::new(request)).await?;
         Ok(self
             .sql
@@ -487,53 +595,102 @@ impl RunCacheServiceClient for GrpcRunCacheServiceClient {
         &self,
         request: SubmitValuesRequest,
     ) -> Result<SubmitSqlResponse, RunCacheServiceError> {
-        let request = self.attach(Request::new(request)).await?;
-        self.response(self.sql.clone().submit_values(request).await)
+        self.with_retry(|| async {
+            let request = self.attach(Request::new(request.clone())).await?;
+            self.response(self.sql.clone().submit_values(request).await)
+        })
+        .await
     }
 
     async fn confirm_execution(
         &self,
         request: ConfirmExecutionRequest,
     ) -> Result<ConfirmExecutionResponse, RunCacheServiceError> {
-        let request = self.attach(Request::new(request)).await?;
-        self.response(self.execution.clone().confirm_execution(request).await)
+        self.with_retry(|| async {
+            let request = self.attach(Request::new(request.clone())).await?;
+            self.response(self.execution.clone().confirm_execution(request).await)
+        })
+        .await
     }
 
     async fn record_executions(
         &self,
         request: RecordExecutionsRequest,
     ) -> Result<RecordExecutionsResponse, RunCacheServiceError> {
-        let request = self.attach(Request::new(request)).await?;
-        self.response(self.execution.clone().record_executions(request).await)
+        self.with_retry(|| async {
+            let request = self.attach(Request::new(request.clone())).await?;
+            self.response(self.execution.clone().record_executions(request).await)
+        })
+        .await
     }
 
     async fn register_clone(
         &self,
         request: CloneRequest,
     ) -> Result<CloneResponse, RunCacheServiceError> {
-        let request = self.attach(Request::new(request)).await?;
-        self.response(self.clone.clone().register_clone(request).await)
+        self.with_retry(|| async {
+            let request = self.attach(Request::new(request.clone())).await?;
+            self.response(self.clone.clone().register_clone(request).await)
+        })
+        .await
     }
 
     async fn submit_telemetry_batch(
         &self,
         request: SubmitTelemetryBatchRequest,
     ) -> Result<SubmitTelemetryBatchResponse, RunCacheServiceError> {
-        let request = self.attach(Request::new(request)).await?;
-        self.response(
-            self.client_telemetry
-                .clone()
-                .submit_telemetry_batch(request)
-                .await,
-        )
+        self.with_retry(|| async {
+            let request = self.attach(Request::new(request.clone())).await?;
+            self.response(
+                self.client_telemetry
+                    .clone()
+                    .submit_telemetry_batch(request)
+                    .await,
+            )
+        })
+        .await
     }
 
     async fn get_explain_messages(
         &self,
         request: GetExplainMessagesRequest,
     ) -> Result<GetExplainMessagesResponse, RunCacheServiceError> {
+        self.with_retry(|| async {
+            let request = self.attach(Request::new(request.clone())).await?;
+            self.response(self.explain.clone().get_explain_messages(request).await)
+        })
+        .await
+    }
+
+    async fn resolve_deferred_relations(
+        &self,
+        request: ResolveDeferredRelationsRequest,
+    ) -> Result<HashMap<String, String>, RunCacheServiceError> {
         let request = self.attach(Request::new(request)).await?;
-        self.response(self.explain.clone().get_explain_messages(request).await)
+        let response = self.response(
+            self.execution
+                .clone()
+                .resolve_deferred_relations(request)
+                .await,
+        )?;
+
+        Ok(response.fqn_by_unique_id)
+    }
+
+    async fn get_state_selection(
+        &self,
+        request: SelectorRequest,
+    ) -> Result<SelectorResponse, RunCacheServiceError> {
+        self.with_retry(|| async {
+            let request = self.attach(Request::new(request.clone())).await?;
+            self.response(
+                self.state_selector
+                    .clone()
+                    .get_state_selection(request)
+                    .await,
+            )
+        })
+        .await
     }
 }
 
@@ -603,6 +760,7 @@ pub fn format_error_chain(err: &(dyn std::error::Error + 'static)) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::AtomicU32;
     use std::time::Duration;
 
     use super::*;
@@ -656,7 +814,7 @@ mod tests {
         }
     }
 
-    #[tokio::test]
+    #[dbt_runtime::test]
     async fn validation_rpc_error_fails_open_to_skipped() {
         let client = ValidationClient(RunCacheServiceError::Rpc(tonic::Status::unavailable(
             "service unavailable",
@@ -668,7 +826,7 @@ mod tests {
         );
     }
 
-    #[tokio::test]
+    #[dbt_runtime::test]
     async fn validation_auth_error_fails_closed() {
         let client = ValidationClient(RunCacheServiceError::Auth("bad credentials".to_string()));
 
@@ -678,7 +836,7 @@ mod tests {
         ));
     }
 
-    #[tokio::test]
+    #[dbt_runtime::test]
     async fn validation_unexpected_rpc_error_fails_open_to_skipped() {
         let client = ValidationClient(RunCacheServiceError::Rpc(tonic::Status::internal(
             "service error",
@@ -690,7 +848,7 @@ mod tests {
         );
     }
 
-    #[tokio::test]
+    #[dbt_runtime::test]
     async fn validation_disabled_error_fails_open_to_skipped() {
         let client = ValidationClient(RunCacheServiceError::Disabled);
 
@@ -700,7 +858,7 @@ mod tests {
         );
     }
 
-    #[tokio::test]
+    #[dbt_runtime::test]
     async fn speculative_submit_defaults_to_disabled() {
         let client = ValidationClient(RunCacheServiceError::Disabled);
 
@@ -712,7 +870,7 @@ mod tests {
         ));
     }
 
-    #[tokio::test]
+    #[dbt_runtime::test]
     async fn disabled_config_does_not_connect() {
         let err = GrpcRunCacheServiceClient::connect(RunCacheServiceConfig::disabled())
             .await
@@ -798,7 +956,7 @@ mod tests {
         assert!(!RunCacheServiceError::Auth("bad credentials".to_string()).disables_service());
     }
 
-    #[tokio::test]
+    #[dbt_runtime::test]
     async fn initial_transport_error_does_not_disable_service() {
         let err = GrpcRunCacheServiceClient::connect(RunCacheServiceConfig {
             enabled: true,
@@ -814,20 +972,30 @@ mod tests {
         assert!(!err.disables_service());
     }
 
-    #[tokio::test]
-    async fn unavailable_rpc_does_not_disable_service() {
+    /// Build a lazily-connected client (no live endpoint) for exercising the
+    /// pure request/response bookkeeping and the retry loop. Backoff is zeroed
+    /// so retry tests run without real sleeps.
+    fn lazy_test_client(max_attempts: u32) -> GrpcRunCacheServiceClient {
         let channel = Endpoint::from_static("http://127.0.0.1:1").connect_lazy();
-        let client = GrpcRunCacheServiceClient {
+        GrpcRunCacheServiceClient {
             sql: SqlClient::new(channel.clone()),
             clone: clone_client::CloneClient::new(channel.clone()),
             execution: ExecutionClient::new(channel.clone()),
             client_telemetry: ClientTelemetryClient::new(channel.clone()),
             client_validation: ClientValidationClient::new(channel.clone()),
+            state_selector: SelectorServiceClient::new(channel.clone()),
             explain: ExplainClient::new(channel),
             auth: RunCacheAuth::None,
             metadata: RunCacheClientMetadata::default(),
             disabled: Arc::new(AtomicBool::new(false)),
-        };
+            max_attempts,
+            initial_backoff: Duration::ZERO,
+        }
+    }
+
+    #[dbt_runtime::test]
+    async fn unavailable_rpc_does_not_disable_service() {
+        let client = lazy_test_client(1);
 
         assert!(matches!(
             client.after_request::<()>(Err(RunCacheServiceError::Rpc(tonic::Status::unavailable(
@@ -854,20 +1022,113 @@ mod tests {
         assert!(!application_unknown.is_transient_transport_rpc());
     }
 
-    #[tokio::test]
+    #[test]
+    fn retryable_transport_covers_unavailable_and_transport_errors() {
+        assert!(
+            RunCacheServiceError::Rpc(tonic::Status::unavailable("connection reset by peer"))
+                .is_retryable_transport()
+        );
+        assert!(
+            RunCacheServiceError::Rpc(tonic::Status::unknown("transport error"))
+                .is_retryable_transport()
+        );
+        assert!(
+            !RunCacheServiceError::Rpc(tonic::Status::internal("boom")).is_retryable_transport()
+        );
+        assert!(!RunCacheServiceError::Disabled.is_retryable_transport());
+    }
+
+    #[dbt_runtime::test]
+    async fn with_retry_retries_transient_transport_until_success() {
+        let client = lazy_test_client(3);
+        let calls = AtomicU32::new(0);
+
+        let result = client
+            .with_retry(|| async {
+                if calls.fetch_add(1, Ordering::SeqCst) < 2 {
+                    Err(RunCacheServiceError::Rpc(tonic::Status::unknown(
+                        "transport error",
+                    )))
+                } else {
+                    Ok(())
+                }
+            })
+            .await;
+
+        assert!(result.is_ok());
+        assert_eq!(calls.load(Ordering::SeqCst), 3);
+    }
+
+    #[dbt_runtime::test]
+    async fn with_retry_exhausts_attempts_and_returns_last_error() {
+        let client = lazy_test_client(3);
+        let calls = AtomicU32::new(0);
+
+        let result: Result<(), _> = client
+            .with_retry(|| async {
+                calls.fetch_add(1, Ordering::SeqCst);
+                Err(RunCacheServiceError::Rpc(tonic::Status::unavailable(
+                    "down",
+                )))
+            })
+            .await;
+
+        assert!(matches!(
+            result,
+            Err(RunCacheServiceError::Rpc(status)) if status.code() == tonic::Code::Unavailable
+        ));
+        assert_eq!(calls.load(Ordering::SeqCst), 3);
+    }
+
+    #[dbt_runtime::test]
+    async fn with_retry_does_not_retry_non_transient_errors() {
+        let client = lazy_test_client(3);
+        let calls = AtomicU32::new(0);
+
+        let result: Result<(), _> = client
+            .with_retry(|| async {
+                calls.fetch_add(1, Ordering::SeqCst);
+                Err(RunCacheServiceError::Rpc(tonic::Status::permission_denied(
+                    "nope",
+                )))
+            })
+            .await;
+
+        assert!(result.is_err());
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[dbt_runtime::test]
+    async fn with_retry_single_attempt_disables_retries() {
+        let client = lazy_test_client(1);
+        let calls = AtomicU32::new(0);
+
+        let result: Result<(), _> = client
+            .with_retry(|| async {
+                calls.fetch_add(1, Ordering::SeqCst);
+                Err(RunCacheServiceError::Rpc(tonic::Status::unavailable(
+                    "down",
+                )))
+            })
+            .await;
+
+        assert!(result.is_err());
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn connect_clamps_max_attempts_to_grpc_cap() {
+        // The config value is clamped to gRPC's hard cap when the client is built.
+        assert_eq!(
+            10_u32.clamp(1, GRPC_MAX_ATTEMPTS_CAP),
+            GRPC_MAX_ATTEMPTS_CAP
+        );
+        assert_eq!(0_u32.clamp(1, GRPC_MAX_ATTEMPTS_CAP), 1);
+    }
+
+    #[dbt_runtime::test]
     async fn grpc_client_disables_after_first_service_disabling_error() {
-        let channel = Endpoint::from_static("http://127.0.0.1:1").connect_lazy();
-        let client = GrpcRunCacheServiceClient {
-            sql: SqlClient::new(channel.clone()),
-            clone: clone_client::CloneClient::new(channel.clone()),
-            execution: ExecutionClient::new(channel.clone()),
-            client_telemetry: ClientTelemetryClient::new(channel.clone()),
-            client_validation: ClientValidationClient::new(channel.clone()),
-            explain: ExplainClient::new(channel),
-            auth: RunCacheAuth::None,
-            metadata: RunCacheClientMetadata::default(),
-            disabled: Arc::new(AtomicBool::new(false)),
-        };
+        let client = lazy_test_client(1);
 
         assert!(client.before_request().is_ok());
         assert!(matches!(

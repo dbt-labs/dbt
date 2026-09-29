@@ -9,3 +9,7 @@ node_modules/
 # un-tracks the embedded SPA — but keep sourcemaps out.
 !dist/
 dist/**/*.map
+
+# Storybook build output. Unlike `dist/`, this is a developer tool and is never
+# embedded in the binary, so it stays untracked.
+storybook-static/

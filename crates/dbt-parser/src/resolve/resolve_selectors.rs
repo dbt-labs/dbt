@@ -1,4 +1,4 @@
-use dbt_common::node_selector::SelectExpression;
+use dbt_common::node_selector::{SelectExpression, parse_model_specifiers};
 use dbt_common::once_cell_vars::DISPATCH_CONFIG;
 use dbt_common::{ErrorCode, FsResult, err, fs_err};
 use dbt_jinja_utils::jinja_environment::JinjaEnv;
@@ -6,11 +6,15 @@ use dbt_jinja_utils::phases::parse::build_resolve_context;
 use dbt_jinja_utils::serde::value_from_file;
 use dbt_schemas::schemas::{
     manifest::DbtSelector,
-    selectors::{SelectorDefaultSpec, SelectorEntry, SelectorFile},
+    selectors::{
+        AtomExpr, CompositeExpr, MethodAtomExpr, SelectorDefaultSpec, SelectorDefinitionValue,
+        SelectorEntry, SelectorExpr, SelectorFile, SelectorMethodValue,
+    },
 };
 use dbt_selector_parser::{ResolvedSelector, SelectorParser};
 use dbt_yaml::Value as YmlValue;
 use std::collections::{BTreeMap, HashMap};
+use std::slice;
 
 use crate::args::ResolveArgs;
 
@@ -37,7 +41,7 @@ pub fn resolve_manifest_selectors(
     let manifest_selectors = resolved_selectors
         .into_iter()
         .map(|(name, entry)| {
-            let definition_value = select_expression_to_yaml(&entry.include);
+            let definition_value = selector_definition_to_yaml(&entry.definition)?;
 
             let selector = DbtSelector {
                 name: name.clone(),
@@ -45,9 +49,9 @@ pub fn resolve_manifest_selectors(
                 definition: Some(definition_value),
                 __other__: BTreeMap::new(),
             };
-            (name, selector)
+            Ok((name, selector))
         })
-        .collect();
+        .collect::<FsResult<_>>()?;
 
     Ok(manifest_selectors)
 }
@@ -161,6 +165,7 @@ fn load_and_parse_selectors_file(
         &BTreeMap::new(),
         DISPATCH_CONFIG.get().unwrap().read().unwrap().clone(),
         namespace_keys,
+        None,
     );
 
     let yaml: SelectorFile = match dbt_jinja_utils::serde::into_typed_with_jinja(
@@ -222,6 +227,7 @@ fn resolve_selector_definitions(
                 include: resolved,
                 is_default,
                 description: def.description,
+                definition: def.definition,
             },
         );
     }
@@ -248,6 +254,7 @@ fn render_default_template(
         &BTreeMap::new(),
         DISPATCH_CONFIG.get().unwrap().read().unwrap().clone(),
         namespace_keys,
+        None,
     );
     let rendered = jinja_env.render_str(template, &context, &[]).map_err(|e| {
         fs_err!(
@@ -264,18 +271,187 @@ fn render_default_template(
     })
 }
 
+fn selector_definition_to_yaml(def: &SelectorDefinitionValue) -> FsResult<YmlValue> {
+    match def {
+        SelectorDefinitionValue::String(s) => Ok(select_expression_to_yaml(
+            &parse_model_specifiers(slice::from_ref(s))?,
+        )),
+        SelectorDefinitionValue::Full(expr) => selector_expr_to_yaml(expr),
+        SelectorDefinitionValue::Array(items) => {
+            let mut union_map = dbt_yaml::Mapping::new();
+            union_map.insert(
+                YmlValue::String("union".to_string(), Default::default()),
+                YmlValue::Sequence(selector_definitions_to_yaml(items)?, Default::default()),
+            );
+            Ok(YmlValue::Mapping(union_map, Default::default()))
+        }
+    }
+}
+
+fn selector_expr_to_yaml(expr: &SelectorExpr) -> FsResult<YmlValue> {
+    match expr {
+        SelectorExpr::Composite(comp) => selector_composite_to_yaml(comp),
+        SelectorExpr::Atom(atom) => selector_atom_to_yaml(atom),
+    }
+}
+
+fn selector_composite_to_yaml(comp: &CompositeExpr) -> FsResult<YmlValue> {
+    let mut map = dbt_yaml::Mapping::new();
+    if let Some(items) = &comp.union {
+        map.insert(
+            YmlValue::String("union".to_string(), Default::default()),
+            YmlValue::Sequence(selector_definitions_to_yaml(items)?, Default::default()),
+        );
+    }
+    if let Some(items) = &comp.intersection {
+        map.insert(
+            YmlValue::String("intersection".to_string(), Default::default()),
+            YmlValue::Sequence(selector_definitions_to_yaml(items)?, Default::default()),
+        );
+    }
+    if let Some(items) = &comp.exclude {
+        map.insert(
+            YmlValue::String("exclude".to_string(), Default::default()),
+            YmlValue::Sequence(selector_definitions_to_yaml(items)?, Default::default()),
+        );
+    }
+    Ok(YmlValue::Mapping(map, Default::default()))
+}
+
+fn selector_definitions_to_yaml(defs: &[SelectorDefinitionValue]) -> FsResult<Vec<YmlValue>> {
+    defs.iter().map(selector_definition_to_yaml).collect()
+}
+
+fn selector_atom_to_yaml(atom: &AtomExpr) -> FsResult<YmlValue> {
+    match atom {
+        AtomExpr::Method(expr) => {
+            let mut value = method_atom_to_yaml(expr);
+            if let Some(exclude) = &expr.exclude
+                && let YmlValue::Mapping(map, _) = &mut value
+            {
+                map.insert(
+                    YmlValue::String("exclude".to_string(), Default::default()),
+                    YmlValue::Sequence(selector_definitions_to_yaml(exclude)?, Default::default()),
+                );
+            }
+            Ok(value)
+        }
+        AtomExpr::MethodKey(method_value) => {
+            let (method, value) = method_value
+                .iter()
+                .next()
+                .filter(|_| method_value.len() == 1)
+                .ok_or_else(|| {
+                    fs_err!(
+                        ErrorCode::SelectorError,
+                        "MethodKey must have exactly one key-value pair"
+                    )
+                })?;
+            Ok(method_value_to_yaml(method, selector_value_to_yaml(value)))
+        }
+        AtomExpr::Exclude(expr) => {
+            let mut map = dbt_yaml::Mapping::new();
+            map.insert(
+                YmlValue::String("exclude".to_string(), Default::default()),
+                YmlValue::Sequence(
+                    selector_definitions_to_yaml(&expr.exclude)?,
+                    Default::default(),
+                ),
+            );
+            Ok(YmlValue::Mapping(map, Default::default()))
+        }
+    }
+}
+
+fn method_atom_to_yaml(expr: &MethodAtomExpr) -> YmlValue {
+    let mut value = method_value_to_yaml(&expr.method, selector_value_to_yaml(&expr.value));
+    if let YmlValue::Mapping(map, _) = &mut value {
+        if expr.parents.as_bool() || expr.parents_depth.is_some() {
+            map.insert(
+                YmlValue::String("parents".to_string(), Default::default()),
+                YmlValue::Bool(true, Default::default()),
+            );
+        }
+        if let Some(depth) = expr.parents_depth {
+            map.insert(
+                YmlValue::String("parents_depth".to_string(), Default::default()),
+                YmlValue::String(depth.to_string(), Default::default()),
+            );
+        }
+        if expr.children.as_bool() || expr.children_depth.is_some() {
+            map.insert(
+                YmlValue::String("children".to_string(), Default::default()),
+                YmlValue::Bool(true, Default::default()),
+            );
+        }
+        if let Some(depth) = expr.children_depth {
+            map.insert(
+                YmlValue::String("children_depth".to_string(), Default::default()),
+                YmlValue::String(depth.to_string(), Default::default()),
+            );
+        }
+        if expr.childrens_parents.as_bool() {
+            map.insert(
+                YmlValue::String("childrens_parents".to_string(), Default::default()),
+                YmlValue::Bool(true, Default::default()),
+            );
+        }
+        if let Some(indirect_selection) = expr.indirect_selection {
+            map.insert(
+                YmlValue::String("indirect_selection".to_string(), Default::default()),
+                YmlValue::String(indirect_selection.to_string(), Default::default()),
+            );
+        }
+    }
+    value
+}
+
+fn method_value_to_yaml(method: &str, value: YmlValue) -> YmlValue {
+    let mut map = dbt_yaml::Mapping::new();
+    map.insert(
+        YmlValue::String("method".to_string(), Default::default()),
+        YmlValue::String(method.to_string(), Default::default()),
+    );
+    map.insert(
+        YmlValue::String("value".to_string(), Default::default()),
+        value,
+    );
+    YmlValue::Mapping(map, Default::default())
+}
+
+/// Renders a method argument back to YAML, preserving the shape it was parsed with.
+fn selector_value_to_yaml(value: &SelectorMethodValue) -> YmlValue {
+    match value {
+        SelectorMethodValue::Scalar(v) => {
+            YmlValue::String(v.as_str().to_string(), Default::default())
+        }
+        SelectorMethodValue::Unsupported(y) => (**y).clone(),
+    }
+}
+
 /// Converts a SelectExpression to the normalized YAML format expected by the manifest.
 fn select_expression_to_yaml(expr: &SelectExpression) -> YmlValue {
     match expr {
         SelectExpression::Atom(criteria) => {
             let mut map = dbt_yaml::Mapping::new();
+            let method = if criteria.method_args.is_empty() {
+                criteria.method.to_string()
+            } else {
+                format!("{}.{}", criteria.method, criteria.method_args.join("."))
+            };
             map.insert(
                 YmlValue::String("method".to_string(), Default::default()),
-                YmlValue::String(criteria.method.to_string(), Default::default()),
+                YmlValue::String(method, Default::default()),
             );
+            let value = match &criteria.value {
+                dbt_common::node_selector::SelectionValue::Scalar(s) => {
+                    YmlValue::String(s.clone(), Default::default())
+                }
+                dbt_common::node_selector::SelectionValue::Unsupported(y) => (**y).clone(),
+            };
             map.insert(
                 YmlValue::String("value".to_string(), Default::default()),
-                YmlValue::String(criteria.value.clone(), Default::default()),
+                value,
             );
 
             if criteria.parents_depth.is_some() {
@@ -377,6 +553,10 @@ fn validate_default_selectors(resolved_selectors: &HashMap<String, SelectorEntry
 mod tests {
     use super::*;
     use dbt_common::node_selector::{MethodName, SelectionCriteria};
+    use dbt_schemas::schemas::selectors::{
+        AtomExpr, CompositeExpr, ExcludeAtomExpr, MethodAtomExpr, SelectorDefaultSpec,
+        SelectorDefinitionValue, SelectorExpr, SelectorValue,
+    };
 
     fn atom(method: MethodName, value: &str) -> SelectExpression {
         SelectExpression::Atom(SelectionCriteria::new(
@@ -452,5 +632,309 @@ mod tests {
             yaml.get("exclude").is_none(),
             "did not expect an `exclude` key when criteria.exclude is None"
         );
+    }
+
+    #[test]
+    fn test_serialize_dot_notation_method() {
+        let expr = parse_model_specifiers(&["config.materialized:table".to_string()]).unwrap();
+        let yaml = select_expression_to_yaml(&expr);
+
+        assert_eq!(
+            yaml.get("method").and_then(|v| v.as_str()),
+            Some("config.materialized")
+        );
+    }
+
+    #[test]
+    fn test_serialize_selector_definition_array_as_union() {
+        let definition = SelectorDefinitionValue::Array(vec![
+            SelectorDefinitionValue::String("a".to_string()),
+            SelectorDefinitionValue::String("b".to_string()),
+        ]);
+        let yaml = selector_definition_to_yaml(&definition).unwrap();
+
+        let sequence = yaml
+            .get("union")
+            .and_then(|value| value.as_sequence())
+            .expect("array definition should become a union");
+        assert_eq!(sequence.len(), 2);
+        assert_eq!(sequence[0].get("value").and_then(|v| v.as_str()), Some("a"));
+        assert_eq!(sequence[1].get("value").and_then(|v| v.as_str()), Some("b"));
+    }
+
+    #[test]
+    fn test_serialize_method_key_requires_one_entry() {
+        let method_value = BTreeMap::from([
+            ("selector".to_string(), SelectorValue::from("base").into()),
+            ("fqn".to_string(), SelectorValue::from("other").into()),
+        ]);
+        let atom = AtomExpr::MethodKey(method_value);
+
+        assert!(selector_atom_to_yaml(&atom).is_err());
+    }
+
+    #[test]
+    fn test_manifest_selector_preserves_union_with_inline_exclude_shape() -> FsResult<()> {
+        let selector_file: SelectorFile = dbt_yaml::from_str(
+            r#"
+selectors:
+  - name: all_except_c
+    description: Union of a and b, excluding c
+    definition:
+      union:
+        - a
+        - b
+        - exclude:
+            - c
+"#,
+        )
+        .expect("issue #10393 selector YAML should parse");
+        let original_definition = selector_file.selectors[0].definition.clone();
+        let normalized_include =
+            SelectorParser::new(BTreeMap::new()).parse_definition(&original_definition)?;
+        let resolved_selectors = HashMap::from([(
+            "all_except_c".to_string(),
+            SelectorEntry {
+                include: normalized_include,
+                is_default: false,
+                description: Some("Union of a and b, excluding c".to_string()),
+                definition: original_definition,
+            },
+        )]);
+
+        let manifest_selectors = resolve_manifest_selectors(resolved_selectors)?;
+        let definition = manifest_selectors
+            .get("all_except_c")
+            .and_then(|selector| selector.definition.as_ref())
+            .expect("selector definition should be present");
+
+        assert!(
+            definition.get("intersection").is_none(),
+            "manifest must not serialize normalized runtime And as intersection"
+        );
+        let union = definition
+            .get("union")
+            .and_then(|value| value.as_sequence())
+            .expect("manifest should preserve original union");
+        assert_eq!(union.len(), 3);
+        assert_eq!(union[0].get("method").and_then(|v| v.as_str()), Some("fqn"));
+        assert_eq!(union[0].get("value").and_then(|v| v.as_str()), Some("a"));
+        assert_eq!(union[1].get("method").and_then(|v| v.as_str()), Some("fqn"));
+        assert_eq!(union[1].get("value").and_then(|v| v.as_str()), Some("b"));
+        let exclude = union[2]
+            .get("exclude")
+            .and_then(|value| value.as_sequence())
+            .expect("inline exclude should remain a list inside union");
+        assert_eq!(exclude.len(), 1);
+        assert_eq!(
+            exclude[0].get("method").and_then(|v| v.as_str()),
+            Some("fqn")
+        );
+        assert_eq!(exclude[0].get("value").and_then(|v| v.as_str()), Some("c"));
+        Ok(())
+    }
+
+    #[test]
+    fn test_manifest_selector_preserves_dot_notation_method() -> FsResult<()> {
+        let original_definition =
+            SelectorDefinitionValue::Full(SelectorExpr::Atom(AtomExpr::Method(MethodAtomExpr {
+                method: "config.materialized".to_string(),
+                value: SelectorValue::from("table").into(),
+                childrens_parents: SelectorDefaultSpec::from(false),
+                parents: SelectorDefaultSpec::from(false),
+                children: SelectorDefaultSpec::from(false),
+                parents_depth: None,
+                children_depth: None,
+                indirect_selection: Some(dbt_common::node_selector::IndirectSelection::default()),
+                exclude: None,
+            })));
+        let resolved_selectors = HashMap::from([(
+            "tables".to_string(),
+            SelectorEntry {
+                include: atom(MethodName::Config, "table"),
+                is_default: false,
+                description: None,
+                definition: original_definition,
+            },
+        )]);
+
+        let manifest_selectors = resolve_manifest_selectors(resolved_selectors)?;
+        let definition = manifest_selectors
+            .get("tables")
+            .and_then(|selector| selector.definition.as_ref())
+            .expect("selector definition should be present");
+        assert_eq!(
+            definition.get("method").and_then(|v| v.as_str()),
+            Some("config.materialized")
+        );
+        assert_eq!(
+            definition.get("value").and_then(|v| v.as_str()),
+            Some("table")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_manifest_selector_preserves_mixed_union_with_selector_reference() -> FsResult<()> {
+        let mut selector_ref = BTreeMap::new();
+        selector_ref.insert("selector".to_string(), SelectorValue::from("base").into());
+        let original_definition =
+            SelectorDefinitionValue::Full(SelectorExpr::Composite(CompositeExpr {
+                union: Some(vec![
+                    SelectorDefinitionValue::Full(SelectorExpr::Atom(AtomExpr::MethodKey(
+                        selector_ref,
+                    ))),
+                    SelectorDefinitionValue::String("d".to_string()),
+                    SelectorDefinitionValue::Full(SelectorExpr::Atom(AtomExpr::Exclude(
+                        ExcludeAtomExpr {
+                            exclude: vec![SelectorDefinitionValue::String("e".to_string())],
+                        },
+                    ))),
+                ]),
+                intersection: None,
+                exclude: None,
+            }));
+        let normalized_include = SelectExpression::And(vec![
+            SelectExpression::Or(vec![
+                atom(MethodName::Tag, "base"),
+                atom(MethodName::Fqn, "d"),
+            ]),
+            SelectExpression::Exclude(Box::new(atom(MethodName::Fqn, "e"))),
+        ]);
+        let resolved_selectors = HashMap::from([(
+            "mixed".to_string(),
+            SelectorEntry {
+                include: normalized_include,
+                is_default: false,
+                description: None,
+                definition: original_definition,
+            },
+        )]);
+
+        let manifest_selectors = resolve_manifest_selectors(resolved_selectors)?;
+        let definition = manifest_selectors
+            .get("mixed")
+            .and_then(|selector| selector.definition.as_ref())
+            .expect("selector definition should be present");
+        assert!(
+            definition.get("intersection").is_none(),
+            "mixed selector references must not force whole-expression AST serialization"
+        );
+        let union = definition
+            .get("union")
+            .and_then(|value| value.as_sequence())
+            .expect("manifest should preserve original union");
+        assert_eq!(union.len(), 3);
+        assert_eq!(
+            union[0].get("method").and_then(|v| v.as_str()),
+            Some("selector")
+        );
+        assert_eq!(union[0].get("value").and_then(|v| v.as_str()), Some("base"));
+        assert_eq!(union[1].get("method").and_then(|v| v.as_str()), Some("fqn"));
+        assert_eq!(union[1].get("value").and_then(|v| v.as_str()), Some("d"));
+        let exclude = union[2]
+            .get("exclude")
+            .and_then(|value| value.as_sequence())
+            .expect("inline exclude should remain inside union");
+        assert_eq!(exclude[0].get("value").and_then(|v| v.as_str()), Some("e"));
+        Ok(())
+    }
+
+    #[test]
+    fn test_manifest_selector_preserves_pure_selector_alias() -> FsResult<()> {
+        let mut selector_ref = BTreeMap::new();
+        selector_ref.insert("selector".to_string(), SelectorValue::from("base").into());
+        let original_definition =
+            SelectorDefinitionValue::Full(SelectorExpr::Atom(AtomExpr::MethodKey(selector_ref)));
+        let normalized_include = SelectExpression::And(vec![
+            SelectExpression::Or(vec![atom(MethodName::Fqn, "a"), atom(MethodName::Fqn, "b")]),
+            SelectExpression::Exclude(Box::new(atom(MethodName::Fqn, "c"))),
+        ]);
+        let resolved_selectors = HashMap::from([(
+            "alias".to_string(),
+            SelectorEntry {
+                include: normalized_include,
+                is_default: false,
+                description: None,
+                definition: original_definition,
+            },
+        )]);
+
+        let manifest_selectors = resolve_manifest_selectors(resolved_selectors)?;
+        let definition = manifest_selectors
+            .get("alias")
+            .and_then(|selector| selector.definition.as_ref())
+            .expect("selector definition should be present");
+        assert!(
+            definition.get("intersection").is_none(),
+            "pure selector aliases must not serialize the referenced selector's runtime AST"
+        );
+        assert_eq!(
+            definition.get("method").and_then(|v| v.as_str()),
+            Some("selector")
+        );
+        assert_eq!(
+            definition.get("value").and_then(|v| v.as_str()),
+            Some("base")
+        );
+        Ok(())
+    }
+
+    /// Regression (dbt-labs/fs#13604): dbt Core types a method argument's
+    /// `value` as `Any`, so a sequence like `value: ["models"]` loads fine
+    /// even for an unused selector. A one-element sequence is no exception:
+    /// `Path.glob()` still gets a `list`, so it must defer, not resolve.
+    #[test]
+    fn test_sequence_valued_selector_argument_parses() -> FsResult<()> {
+        let selector_file: SelectorFile = dbt_yaml::from_str(
+            r#"
+selectors:
+  - name: default
+    definition:
+      method: path
+      value: ["models"]
+"#,
+        )
+        .expect("issue #13604 selector YAML should parse");
+
+        let original_definition = selector_file.selectors[0].definition.clone();
+        let normalized_include =
+            SelectorParser::new(BTreeMap::new()).parse_definition(&original_definition)?;
+        if let SelectExpression::Atom(criteria) = &normalized_include {
+            assert_eq!(criteria.method, MethodName::Path);
+            assert!(
+                matches!(
+                    criteria.value,
+                    dbt_common::node_selector::SelectionValue::Unsupported(_)
+                ),
+                "a sequence value has no selection semantics and must be deferred, not treated as a scalar"
+            );
+        } else {
+            panic!("Expected a single deferred Atom for a sequence value");
+        }
+
+        // Manifest round-trip must preserve the sequence shape, matching how
+        // dbt Core stores the raw, unvalidated `value` in the manifest.
+        let resolved_selectors = HashMap::from([(
+            "default".to_string(),
+            SelectorEntry {
+                include: normalized_include,
+                is_default: false,
+                description: None,
+                definition: original_definition,
+            },
+        )]);
+        let manifest_selectors = resolve_manifest_selectors(resolved_selectors)?;
+        let definition = manifest_selectors
+            .get("default")
+            .and_then(|selector| selector.definition.as_ref())
+            .expect("selector definition should be present");
+        let value = definition
+            .get("value")
+            .and_then(|v| v.as_sequence())
+            .expect("manifest should preserve the sequence-valued argument");
+        assert_eq!(value.len(), 1);
+        assert_eq!(value[0].as_str(), Some("models"));
+        Ok(())
     }
 }

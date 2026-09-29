@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'vitest';
 
-import type { NodeSummary } from '../api';
+import type { NodeSummary } from '../types';
 import { inferResourceType, resolveAssetArgs } from './inferResourceType';
 
 /**

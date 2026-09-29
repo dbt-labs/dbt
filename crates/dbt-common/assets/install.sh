@@ -25,6 +25,8 @@ RED='\033[0;31m'
 NC='\033[0m' # No Color
 
 TARGET_VERSION=""
+DBT_CDN_URL="${DBT_CDN_URL:-https://public.cdn.getdbt.com/fs}"
+DBT_DB_RUNNER_BASE_URL="${DBT_DB_RUNNER_BASE_URL:-$DBT_CDN_URL/cli}"
 
 log() {
     printf "install.sh: %s\n" "$1"
@@ -159,7 +161,7 @@ help() {
     echo "  --target TARGET    Install for target platform TARGET"
     echo "  --to DEST          Install to DEST"
     echo "  --help, -h         Show this help text"
-    echo "  --package PACKAGE  Install package PACKAGE [dbt|all]"
+    echo "  --package PACKAGE  Select package set [dbt|all] (all adds dbt-db-runner)"
 }
 
 update=false
@@ -255,19 +257,19 @@ check_binary_version() {
 }
 
 # Compare installed version with target version
-# Usage: compare_versions current_version target_version is_latest
+# Usage: compare_versions current_version target_version requested_version package
 # Returns: 0 if versions match, 1 if they don't match
 compare_versions() {
-    current_version="$1"
-    target_version="$2"
-    version="$3"
-    package="$4"
+    compare_current_version="$1"
+    compare_target_version="$2"
+    compare_requested_version="$3"
+    compare_package="$4"
 
-    if [ "$current_version" = "$target_version" ]; then
-        if [ -z "$version" ]; then
-            log "Latest $package version $target_version is already installed"
+    if [ "$compare_current_version" = "$compare_target_version" ]; then
+        if [ -z "$compare_requested_version" ]; then
+            log "Latest $compare_package version $compare_target_version is already installed"
         else
-            log "$package version $target_version is already installed"
+            log "$compare_package version $compare_target_version is already installed"
         fi
         return 0
     fi
@@ -281,7 +283,7 @@ compare_versions() {
 check_version_exists() {
     version="$1"
     target="$2"
-    url="https://public.cdn.getdbt.com/fs/cli/fs-v$version-$target.tar.gz"
+    url="$DBT_CDN_URL/cli/fs-v$version-$target.tar.gz"
     log_debug "Checking if version $version exists on CDN: $url"
     if ! curl -sLI -f "$url" >/dev/null 2>&1; then
         err_and_exit "Version $version not found on CDN. Please check available versions and try again."
@@ -447,7 +449,7 @@ setup_shell_config() {
 # Returns: target version string
 determine_version() {
     specific_version="$1"
-    version_url="https://public.cdn.getdbt.com/fs/versions.json"
+    version_url="$DBT_CDN_URL/versions.json"
     versions=""
 
     TARGET_VERSION=""
@@ -483,19 +485,19 @@ display_ascii_art() {
     if [ "$package_name" = "dbt" ]; then
         cat<<EOF
 
- =====              =====    ┓┓  
-=========        =========  ┏┫┣┓╋
- ===========    >========   ┗┻┗┛┗
-  ======================    ███████╗██╗   ██╗███████╗██╗ ██████╗ ███╗   ██╗
-   ====================     ██╔════╝██║   ██║██╔════╝██║██╔═══██╗████╗  ██║
-    ========--========      █████╗  ██║   ██║███████╗██║██║   ██║██╔██╗ ██║
-     =====-    -=====       ██╔══╝  ██║   ██║╚════██║██║██║   ██║██║╚██╗██║
-    ========--========      ██╔══╝  ██║   ██║╚════██║██║██║   ██║██║╚██╗██║
-   ====================     ██║     ╚██████╔╝███████║██║╚██████╔╝██║ ╚████║
-  ======================    ╚═╝      ╚═════╝ ╚══════╝╚═╝ ╚═════╝ ╚═╝  ╚═══╝
- ========<   ============                        ┌─┐┌┐┌┌─┐┬┌┐┌┌─┐
-=========      ==========                        ├┤ ││││ ┬││││├┤ 
- =====             =====                         └─┘┘└┘└─┘┴┘└┘└─┘ $version
+ =====              =====
+=========        =========
+ ===========    >========
+  ======================         ██╗   ██╗        ██╗  
+   ====================          ██║   ██║       ████╗ 
+    ========--========       ██████║   ██████╗   ╚██╔╝ 
+     =====-    -=====       ██╔══██║   ██╔══██╗   ██║  
+    ========--========      ██║  ██║   ██║  ██║   ██║  
+   ====================     ╚██████║   ██████╔╝   ╚██╗ v$version
+  ======================     ╚═════╝   ╚═════╝     ╚═╝ 
+ ========<   ============
+=========      ==========
+ =====             =====
 
 EOF
     else
@@ -540,7 +542,10 @@ install_package() {
     # Construct URL based on package
     case "$package_name" in
         "dbt")
-            url="https://public.cdn.getdbt.com/fs/cli/fs-v$version-$target.tar.gz"
+            url="$DBT_CDN_URL/cli/fs-v$version-$target.tar.gz"
+            ;;
+        "dbt-db-runner")
+            url="$DBT_DB_RUNNER_BASE_URL/fs-db-runner-v$version-$target.tar.gz"
             ;;
         *)
             err_and_exit "Invalid package name: $package_name"
@@ -548,10 +553,24 @@ install_package() {
     esac
 
     log_debug "Downloading: $url"
+    archive="$td/package.tar.gz"
+    http_status=""
+    if ! http_status=$(curl -sL -f -o "$archive" -w '%{http_code}' "$url"); then
+        if [ "$package_name" = "dbt-db-runner" ] && [ "$http_status" = "404" ]; then
+            log_grey "$package_name is not available for version $version; installing dbt without it."
+            rm -f "$dest/$package_name"
+            rm -rf "$td"
+            td=""
+            return 0
+        fi
+        err_and_exit "Failed to download $package_name version $version for $target."
+    fi
+
     # Download and extract
-    if ! curl -sL "$url" | tar -C "$td" -xz; then
+    if ! tar -C "$td" -xzf "$archive"; then
         err_and_exit "Failed to extract package. The downloaded archive appears to be invalid."
     fi
+    rm -f "$archive"
 
     # Check if any files were extracted
     if [ ! -d "$td" ] || [ -z "$(ls -A "$td")" ]; then
@@ -580,6 +599,9 @@ install_package() {
         log_debug "Installed $package_name to $dest/$package_name"
     done
 
+    rm -rf "$td"
+    td=""
+
     display_ascii_art "$package_name" "$version"
 
     if [ "$update" = true ] && [ -n "$current_version" ]; then
@@ -599,7 +621,10 @@ install_packages() {
     dest="$4"
     update="$5"
     current_dbt_version=""
+    current_runner_version=""
     dbt_needs_update=false
+    runner_needs_update=false
+    install_runner=false
 
     if [ "$package" = "dbt-lsp" ]; then
         err_and_exit "The standalone dbt-lsp package is no longer published. Install dbt and run 'dbt lsp' instead."
@@ -617,12 +642,28 @@ install_packages() {
         fi
     fi
 
+    # --package all opts in to the runner. Updates also preserve an existing
+    # runner so a bundled installation stays version-matched.
+    if [ "$package" = "all" ] || { [ "$update" = true ] && [ -e "$dest/dbt-db-runner" ]; }; then
+        install_runner=true
+        current_runner_version=$(check_binary_version "$dest/dbt-db-runner" "dbt-db-runner")
+        if ! compare_versions "$current_runner_version" "$target_version" "$version" "dbt-db-runner"; then
+            runner_needs_update=true
+        fi
+    fi
+
     # Exit if no updates needed
-    if [ "$dbt_needs_update" = false ]; then
+    if [ "$dbt_needs_update" = false ] && [ "$runner_needs_update" = false ]; then
         return 0
     fi
 
     # Install packages
+    if [ "$install_runner" = true ] && [ "$runner_needs_update" = true ]; then
+        if ! install_package "dbt-db-runner" "$target_version" "$target" "$dest" "$update"; then
+            return 1
+        fi
+    fi
+
     if ([ "$package" = "all" ] || [ "$package" = "dbt" ]) && [ "$dbt_needs_update" = true ]; then
         if ! install_package "dbt" "$target_version" "$target" "$dest" "$update"; then
             return 1

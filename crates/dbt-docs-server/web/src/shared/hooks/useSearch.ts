@@ -4,6 +4,7 @@ import { useMetadataDataSource } from '../context/MetadataDataProvider';
 import type { ListArgs } from '../typings/args';
 import type { SearchFilter, SearchHit, SearchResult } from '../typings/domain/search';
 import { searchKey } from '../util/queryKeys';
+import { UNSUPPORTED_SURFACE_MESSAGE } from './unsupportedSurface';
 
 /** Server-side page size when the consumer omits `limit`. Mirrors dbt-docs-v2's
  *  `PROJECT_SEARCH_PAGE_SIZE`. */
@@ -34,6 +35,7 @@ export interface UseSearchResult {
  */
 export function useSearch(args: ListArgs<SearchFilter>): UseSearchResult {
   const source = useMetadataDataSource();
+
   const supported = 'fetchSearch' in source;
 
   const query = useInfiniteQuery({
@@ -73,7 +75,9 @@ export function useSearch(args: ListArgs<SearchFilter>): UseSearchResult {
     hasNextPage: query.hasNextPage,
     error: query.error,
     errorCode: query.data?.errorCode ?? null,
-    errorMessage: query.data?.errorMessage ?? null,
+    errorMessage: supported
+      ? (query.data?.errorMessage ?? null)
+      : UNSUPPORTED_SURFACE_MESSAGE,
     fetchNextPage: query.fetchNextPage,
   };
 }

@@ -6,6 +6,7 @@ pub(crate) mod git_client;
 mod hub_client;
 mod network_client;
 mod notices;
+mod package_checksum;
 mod package_installer;
 pub mod package_listing;
 mod package_resolver;
@@ -27,16 +28,19 @@ use dbt_common::tracing::span_info::{
 use dbt_common::{ErrorCode, FsResult, err, stdfs};
 use dbt_common::{create_info_span, fs_err, lease};
 use dbt_jinja_utils::jinja_environment::JinjaEnv;
+use dbt_schemas::schemas::ResolvedCloudConfig;
 use dbt_schemas::schemas::packages::{DbtPackagesLock, UpstreamProject};
 use dbt_telemetry::{DepsAllPackagesInstalled, GenericOpExecuted};
+use std::sync::Arc;
 use std::{collections::BTreeMap, path::Path};
 use steps::{
-    compute_package_lock, install_packages, load_dbt_packages,
+    SkillInstallInputs, compute_package_lock, install_packages, install_skills, load_dbt_packages,
     load_dbt_packages_lock_without_validation, try_load_valid_dbt_packages_lock,
 };
 use tracing::Instrument as _;
 
 use crate::context::DepsOperationContext;
+use crate::private_package::PrivatePackageResolver;
 
 /// Loads and installs packages, and returns the packages lock and the dependencies map
 #[allow(clippy::cognitive_complexity, clippy::too_many_arguments)]
@@ -55,6 +59,10 @@ pub async fn get_or_install_packages(
     replay_mode: Option<&ReplayMode>,
     token: &CancellationToken,
     use_v2_compatible_package_downloads: bool,
+    require_hub_verified_downloads: bool,
+    private_package_resolver: Arc<dyn PrivatePackageResolver>,
+    cloud_config: Option<ResolvedCloudConfig>,
+    ai_provider: Option<&[String]>,
 ) -> FsResult<(DbtPackagesLock, Vec<UpstreamProject>)> {
     let Some(packages_relative_dir) =
         DbtPath::from(packages_install_path).get_relative_path(&io.in_dir)
@@ -98,6 +106,9 @@ pub async fn get_or_install_packages(
         skip_private_deps,
         version_check,
         use_v2_compatible_package_downloads,
+        require_hub_verified_downloads,
+        private_package_resolver,
+        cloud_config,
     );
 
     // Add package first if specified, then load the package definition
@@ -115,6 +126,8 @@ pub async fn get_or_install_packages(
             try_load_valid_dbt_packages_lock(
                 io,
                 packages_install_path,
+                &io.in_dir.join(package_yml_name.as_ref()),
+                package_yml_name,
                 dbt_packages,
                 env,
                 &vars,
@@ -131,13 +144,13 @@ pub async fn get_or_install_packages(
         if let Some(dbt_packages_lock) = try_cached_lock {
             emit_info_progress_message(dbt_telemetry::ProgressMessage::new_from_action_and_target(
                 "Loading".to_string(),
-                package_yml_name.to_string(),
+                package_yml_name.as_ref().to_string(),
             ));
             dbt_packages_lock
         } else {
             let fetch_span = create_info_span(GenericOpExecuted::new(
                 "deps-compute-package-lock".to_string(),
-                format!("resolving packages from {}", package_yml_name),
+                format!("resolving packages from {}", package_yml_name.as_ref()),
                 None,
             ));
             let lock_result = compute_package_lock(&deps_context, dbt_packages)
@@ -282,6 +295,18 @@ pub async fn get_or_install_packages(
     }
 
     deps_context.flush_notices(&dbt_packages_lock);
+
+    // Skills ship inside packages, so install them at the same moment the
+    // packages land. Skipped in lock-only mode, where nothing was unpacked. A
+    // skill-name collision is the one skill problem that fails `dbt deps`.
+    if !lock {
+        install_skills(SkillInstallInputs {
+            in_dir: &io.in_dir,
+            packages_install_path,
+            dbt_packages_lock: &dbt_packages_lock,
+            ai_provider,
+        })?;
+    }
 
     Ok((
         dbt_packages_lock,

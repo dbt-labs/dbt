@@ -11,15 +11,53 @@
 {% endmacro %}
 
 {% macro exasol__create_table_as(temporary, relation, sql) -%}
+  {#- Exasol CTAS cannot carry inline column or constraint definitions, so
+      contract constraints and the Exasol table-tuning configs are applied as
+      separate post-CTAS ALTER statements (Fusion splits on ';'). -#}
+  {%- set contract_config = config.get('contract') -%}
+  {%- if contract_config.enforced -%}
+    {{- get_assert_columns_equivalent(sql) }}
+  {%- endif %}
   create or replace table {{ relation }} as (
+    {%- if contract_config.enforced %}
+    {{ get_select_subquery(sql) }}
+    {%- else %}
     {{ sql }}
+    {%- endif %}
   )
+  {{- exasol__post_create_table_alters(relation, contract_config) }}
 {%- endmacro %}
 
 {% macro exasol__create_view_as(relation, sql) -%}
-  create or replace view {{ relation }} as (
+  {#- Exasol view/column comments can only be set inside CREATE VIEW
+      (COMMENT ON VIEW is rejected), so persist_docs for views lives in the DDL. -#}
+  {%- set contract_config = config.get('contract') -%}
+  {%- if contract_config.enforced -%}
+    {{- get_assert_columns_equivalent(sql) }}
+  {%- endif %}
+  {%- set col_docs = {} -%}
+  {%- if config.persist_column_docs() and model.columns -%}
+    {%- for col_name, col in model.columns.items() -%}
+      {%- if col.description -%}
+        {%- do col_docs.update({col_name | lower: col.description}) -%}
+      {%- endif -%}
+    {%- endfor -%}
+  {%- endif -%}
+  create or replace view {{ relation }}
+  {%- if col_docs %}
+  (
+    {%- set query_columns = get_columns_in_query(sql) %}
+    {%- for column_name in query_columns %}
+    {{ adapter.quote(column_name) }}{% if col_docs.get(column_name | lower) %} comment is '{{ col_docs[column_name | lower] | replace("'", "''") }}'{% endif %}{{ ',' if not loop.last }}
+    {%- endfor %}
+  )
+  {%- endif %}
+  as (
     {{ sql }}
   )
+  {%- if config.persist_relation_docs() and model.description %}
+  comment is '{{ model.description | replace("'", "''") }}'
+  {%- endif %}
 {%- endmacro %}
 
 {% macro exasol__drop_relation(relation) -%}
@@ -29,8 +67,11 @@
 {% endmacro %}
 
 {% macro exasol__rename_relation(from_relation, to_relation) -%}
+  {#- Quote the target per the quoting policy. Exasol uppercases unquoted
+      identifiers, so a bare target name would break refs that render the
+      relation quoted (the default quoting policy). -#}
   {% call statement('rename_relation') -%}
-    rename {{ from_relation.type }} {{ from_relation }} to {{ to_relation.identifier }}
+    rename {{ from_relation.type }} {{ from_relation }} to {{ adapter.quote_as_configured(to_relation.identifier, 'identifier') }}
   {%- endcall %}
 {% endmacro %}
 

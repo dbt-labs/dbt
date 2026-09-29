@@ -1,4 +1,7 @@
-use crate::warn_error_options::{WarnErrorOptions, project_flags_get_value};
+use crate::{
+    tracing::dbt_convert::log_level_filter_to_tracing,
+    warn_error_options::{WarnErrorOptions, project_flags_get_value},
+};
 use clap::{
     ValueEnum,
     builder::{BoolishValueParser, TypedValueParser},
@@ -11,6 +14,7 @@ use pathdiff::diff_paths;
 use serde::{Deserialize, Serialize};
 use std::ffi::{OsStr, OsString};
 use std::fs;
+use std::io::Write;
 use std::str::FromStr;
 use std::{
     collections::BTreeMap,
@@ -20,6 +24,7 @@ use std::{
 };
 use strum::EnumIter;
 use strum_macros::Display;
+use tracing::level_filters::LevelFilter;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum LocalExecutionBackendKind {
@@ -32,6 +37,19 @@ pub enum LocalExecutionBackendKind {
     Worker,
     /// Run models in a service
     Service,
+}
+
+impl LocalExecutionBackendKind {
+    /// Whether this backend can execute against the adapter.
+    pub fn is_supported_for_adapter(self, adapter: AdapterType) -> bool {
+        matches!(
+            (adapter, self),
+            (_, Self::Remote)
+                | (AdapterType::Snowflake, _)
+                | (AdapterType::Bigquery, Self::Worker)
+                | (AdapterType::Datafusion, Self::Inline)
+        )
+    }
 }
 
 #[derive(
@@ -121,7 +139,11 @@ impl From<ComputeArg> for LocalExecutionBackendKind {
     }
 }
 
-use crate::constants::{DBT_METADATA_DIR_NAME, DBT_TARGET_DIR_NAME};
+use crate::constants::{
+    DBT_INFO_SCHEMA_DIR_NAME, DBT_INFO_SCHEMA_STAGING_DIR_NAME, DBT_TARGET_DIR_NAME, WARNING,
+    default_index_dir, default_metadata_dir,
+};
+use crate::pretty_string::YELLOW;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, clap::ValueEnum)]
 #[clap(rename_all = "lowercase")]
@@ -211,6 +233,7 @@ pub enum FsCommand {
     Parse,
     List, // aka: Ls
     Compile,
+    Check,
     Run,
     RunOperation,
     Test,
@@ -220,6 +243,7 @@ pub enum FsCommand {
     Build,
     Clean,
     Source,
+    Freshness,
     Clone,
     System,
     Man,
@@ -236,6 +260,14 @@ pub enum FsCommand {
 }
 
 impl FsCommand {
+    pub const fn is_freshness_command(&self) -> bool {
+        matches!(self, FsCommand::Source | FsCommand::Freshness)
+    }
+
+    pub const fn is_sources_only_freshness(&self) -> bool {
+        matches!(self, FsCommand::Source)
+    }
+
     pub const fn as_str(&self) -> &'static str {
         match self {
             FsCommand::Unset => "",
@@ -244,6 +276,7 @@ impl FsCommand {
             FsCommand::Parse => "parse",
             FsCommand::List => "list",
             FsCommand::Compile => "compile",
+            FsCommand::Check => "check",
             FsCommand::Run => "run",
             FsCommand::RunOperation => "run-operation",
             FsCommand::Test => "test",
@@ -253,6 +286,7 @@ impl FsCommand {
             FsCommand::Build => "build",
             FsCommand::Clean => "clean",
             FsCommand::Source => "freshness",
+            FsCommand::Freshness => "freshness",
             FsCommand::Clone => "clone",
             FsCommand::System => "system",
             FsCommand::Man => "man",
@@ -265,6 +299,16 @@ impl FsCommand {
             FsCommand::Internal => "internal",
             FsCommand::Extension(s) => s,
         }
+    }
+
+    /// Whether this command compiles every node in the project (as opposed to a narrower
+    /// operation like `test`, `seed`, or `snapshot`, which act on a subset). Per-node artifacts
+    /// derived from a full compile are only meaningful for these commands.
+    pub const fn compiles_project(&self) -> bool {
+        matches!(
+            self,
+            FsCommand::Compile | FsCommand::Check | FsCommand::Build | FsCommand::Run
+        )
     }
 }
 
@@ -287,6 +331,7 @@ pub struct IoArgs {
     pub otel_parquet_file_name: Option<String>,
     pub export_to_otlp: bool,
     pub log_format: LogFormat,
+    pub log_format_file: Option<LogFormat>,
     pub log_level: Option<LogLevel>,
     pub log_level_file: Option<LogLevel>,
     pub log_file_max_bytes: u64,
@@ -297,6 +342,9 @@ pub struct IoArgs {
 
     // Flag for deps to use Fusion-compatible downloads from Package Hub
     pub use_v2_compatible_package_downloads: bool,
+
+    // Flag for deps to require a sha1-verified download from Package Hub
+    pub require_hub_verified_downloads: bool,
 
     /// Optional status reporter for reporting status messages during execution
     pub status_reporter: Option<Arc<dyn StatusReporter>>,
@@ -313,6 +361,24 @@ impl IoArgs {
         let out_dir_last = self.out_dir.components().next_back();
         let rel_first = rel_path.components().next();
         out_dir_last == rel_first
+    }
+
+    pub fn max_log_verbosity(&self) -> LevelFilter {
+        self.log_level
+            .map(|lf| log_level_filter_to_tracing(&lf))
+            .unwrap_or(LevelFilter::INFO)
+    }
+
+    pub fn max_file_log_verbosity(&self) -> LevelFilter {
+        self.log_level_file
+            .map(|lf| log_level_filter_to_tracing(&lf))
+            .unwrap_or(LevelFilter::DEBUG)
+    }
+
+    /// OTel Parquet tracing is only enabled when explicitly requested via
+    /// --otel/-parquet-file-name. The write_metadata flag no longer auto-enables it.
+    pub fn otel_parquet_file_name(&self) -> Option<&str> {
+        self.otel_parquet_file_name.as_deref()
     }
 
     // -----------------------------------------------------------------------------------------
@@ -476,10 +542,11 @@ pub struct EvalArgs {
     pub profile: Option<String>,
     // The target within the profile to use for the dbt run
     pub target: Option<String>,
-    // The output to use for models on the alternate compute target (--x-alt-target)
-    pub x_alt_target: Option<String>,
     // Vars to pass to the jinja environment
     pub vars: BTreeMap<String, Value>,
+    /// AI coding agent(s) to install package skills for. Unset means skills are
+    /// discovered but not installed.
+    pub ai_provider: Option<Vec<String>>,
     // Stop as soon as this stage is reached
     pub phase: Phases,
     // Display rows in different formats
@@ -488,9 +555,9 @@ pub struct EvalArgs {
     pub limit: Option<usize>,
     /// called as bin or as library
     pub from_main: bool,
-    /// The number of threads to use. Drives the adapter connection backpressure
-    /// high-water-mark and parser rendering parallelism. Not used to force
-    /// sequential task execution — use `no_parallel` for that.
+    /// The max number of threads to use in the dbt-runtime thread-pool.
+    ///
+    /// Not used to force sequential task execution — use `no_parallel` for that.
     pub num_threads: Option<usize>,
     /// Force sequential task execution and sequential parser rendering without
     /// constraining the connection pool. Set by `--no-parallel`.
@@ -565,6 +632,13 @@ pub struct EvalArgs {
     pub macro_name: Option<String>,
     pub macro_args: BTreeMap<String, Value>,
     pub macro_sql: Option<String>,
+    /// `run-operation --adapter <type>`: run against this non-default adapter
+    /// instead of the target's default one.
+    pub adapter_override: Option<String>,
+    /// `show --query-id <id>`: fetch a previously completed LakeCompute query's
+    /// result directly, instead of compiling/executing a query. Mutually
+    /// exclusive with `inline`.
+    pub query_id: Option<String>,
     pub warn_error: Option<bool>,
     pub warn_error_options: WarnErrorOptions,
     pub version_check: bool,
@@ -574,10 +648,9 @@ pub struct EvalArgs {
     pub empty: bool,
     pub sample: Option<String>,
     pub full_refresh: bool,
-    pub infer_schemas: bool,
-    pub skip_type_checking: bool,
-    pub show_sources: bool,
-    pub resolve_ambiguous_cols: bool,
+    /// Bind without a catalog; assume referenced tables/columns exist and
+    /// infer schemas from usage. Set from `--infer-schemas` on `compile`.
+    pub infer_schemas_and_typeless: bool,
     pub store_failures: bool,
     pub favor_state: bool,
     pub refresh_sources: bool,
@@ -605,18 +678,38 @@ pub struct EvalArgs {
     pub skip_post_hooks: bool,
     /// Write metadata parquet epoch files (parse/nodes, compile/nodes, compile/columns, etc.)
     pub write_metadata: bool,
-    /// Also write snapshot index parquet to target/index/ (implies write_metadata)
+    /// Also write snapshot index parquet to target/private/index/ (implies write_metadata)
     pub write_index: bool,
-    /// Directory for index parquet output (default: <target>/index/)
+    /// True when `write_index` came from a command's default rather than from the command
+    /// line. The index itself is identical either way; this only suppresses the advisory
+    /// naming the extra flags that would enrich it, which is noise for a user who never
+    /// asked for an index (and fails the command under `--warn-error`).
+    pub write_index_implied: bool,
+    /// Directory for index parquet output (default: <target>/private/index/)
     pub index_dir: Option<PathBuf>,
-    /// Directory for metadata parquet output (default: <target>/metadata/)
+    /// Directory for metadata parquet output (default: <target>/private/metadata/)
     pub metadata_dir: Option<PathBuf>,
+    /// Write the dbt information schema to target/info_schema/ (implies write_metadata)
+    pub generate_info_schema: bool,
+    /// Directory for information schema parquet output (default: <target>/info_schema/)
+    pub info_schema_dir: Option<PathBuf>,
     /// Whether to skip creating generic tests
     pub skip_creating_generic_tests: bool,
     /// Compute and write column-level lineage into compile/cll parquet (requires --write-metadata and --static-analysis strict)
     pub write_lineage: bool,
+    /// Positional check names from `dbt check <name>...`. Empty means every check.
+    ///
+    /// A filter on which checks run, not a node selection: the parse-time gate still
+    /// evaluates against the whole project's index. Narrowing the schedule to the check
+    /// node instead would leave it querying an empty index and passing vacuously.
+    pub check_names: Vec<String>,
+    /// Skip the parse-time check gate (`dbt build --skip-checks`). Opt-out, no
+    /// warning: the user asked to skip. The index is still written.
+    pub skip_checks: bool,
     /// Always enable the linter.
     pub force_enable_linter: bool,
+    /// Always enable formatter-fix diagnostics.
+    pub force_enable_formatter_diagnostics: bool,
     /// Command that originated the execution.
     /// Used for extension commands that execute core commands like compilation.
     pub command_entrypoint: FsCommand,
@@ -754,18 +847,50 @@ impl EvalArgsBuilder {
 }
 
 impl EvalArgs {
-    /// Resolves the metadata output directory: `--metadata-dir` if set, else `<out_dir>/metadata`.
+    /// Resolves the metadata output directory: `--metadata-dir` if set, else
+    /// `<out_dir>/private/metadata`.
     pub fn metadata_dir(&self) -> PathBuf {
         self.metadata_dir
             .clone()
-            .unwrap_or_else(|| self.io.out_dir.join(DBT_METADATA_DIR_NAME))
+            .unwrap_or_else(|| default_metadata_dir(&self.io.out_dir))
     }
 
-    /// Resolves the index output directory: `--index-dir` if set, else `<out_dir>/index`.
+    /// Resolves the index output directory: `--index-dir` if set, else
+    /// `<out_dir>/private/index`.
     pub fn index_dir(&self) -> PathBuf {
         self.index_dir
             .clone()
-            .unwrap_or_else(|| self.io.out_dir.join("index"))
+            .unwrap_or_else(|| default_index_dir(&self.io.out_dir))
+    }
+
+    /// Resolves the information schema output directory: `--info-schema-dir` if
+    /// set, else `<out_dir>/info_schema`.
+    ///
+    /// The intermediate for building it is the flat index at [`index_dir`] when one
+    /// is already present; otherwise the fallback at [`info_schema_staging_dir`].
+    ///
+    /// [`index_dir`]: Self::index_dir
+    /// [`info_schema_staging_dir`]: Self::info_schema_staging_dir
+    pub fn info_schema_dir(&self) -> PathBuf {
+        self.info_schema_dir
+            .clone()
+            .unwrap_or_else(|| self.io.out_dir.join(DBT_INFO_SCHEMA_DIR_NAME))
+    }
+
+    /// Fallback intermediate for building the information schema, used only when
+    /// there is no flat index at [`index_dir`] to reuse — e.g. under
+    /// `--no-write-index`, or a `parse` that never builds one. Held beside the
+    /// output directory rather than inside it, because it holds files in a
+    /// different shape and must never be picked up by a caller globbing the
+    /// information schema. When an index *is* present it is reused directly and
+    /// this directory is never created.
+    ///
+    /// [`index_dir`]: Self::index_dir
+    pub fn info_schema_staging_dir(&self) -> PathBuf {
+        match &self.info_schema_dir {
+            Some(dir) => dir.with_file_name(DBT_INFO_SCHEMA_STAGING_DIR_NAME),
+            None => self.io.out_dir.join(DBT_INFO_SCHEMA_STAGING_DIR_NAME),
+        }
     }
 
     // this could accept a SelectExpression in case we want to join more complex selections together.
@@ -828,6 +953,7 @@ pub enum ClapResourceType {
     SemanticModel,
     Metric,
     SavedQuery,
+    Check,
 }
 
 impl Display for ClapResourceType {
@@ -844,6 +970,7 @@ impl Display for ClapResourceType {
             ClapResourceType::SemanticModel => "semantic_model",
             ClapResourceType::Metric => "metric",
             ClapResourceType::SavedQuery => "saved_query",
+            ClapResourceType::Check => "check",
         };
         write!(f, "{s}")
     }
@@ -863,6 +990,7 @@ impl From<&ClapResourceType> for NodeType {
             ClapResourceType::SemanticModel => NodeType::SemanticModel,
             ClapResourceType::Metric => NodeType::Metric,
             ClapResourceType::SavedQuery => NodeType::SavedQuery,
+            ClapResourceType::Check => NodeType::Check,
         }
     }
 }
@@ -1279,6 +1407,10 @@ pub enum StaticAnalysisOffReason {
     ConfiguredOff,
     UnableToFetchSchema,
     NoDownstream,
+    /// No longer produced: a model with a custom materialization now honors its
+    /// configured `static_analysis` (dbt-labs/fs#14357). Retained because
+    /// `RunResultOutput` deserializes this field, so a `run_results.json`
+    /// written by an older Fusion must still parse (e.g. `dbt retry`).
     CustomMaterialization,
 }
 
@@ -1341,6 +1473,7 @@ pub enum OptimizeTestsOptions {
 }
 
 pub const SKIP_REDUNDANT_TESTS_ENV: &str = "DBT_ENGINE_SKIP_REDUNDANT_TESTS";
+pub const BATCH_TESTS_ENV: &str = "DBT_ENGINE_BATCH_TESTS";
 
 pub fn optimize_test_defaults_from_project_flags(
     project_flags: Option<&Value>,
@@ -1351,6 +1484,12 @@ pub fn optimize_test_defaults_from_project_flags(
         project_flags,
         OptimizeTestsOptions::TestStaticAnalysis,
         "skip_redundant_tests",
+    );
+    insert_project_default_if_enabled(
+        &mut optimize_tests,
+        project_flags,
+        OptimizeTestsOptions::TestAggregation,
+        "batch_tests",
     );
     optimize_tests
 }
@@ -1390,6 +1529,16 @@ fn resolve_effective_optimize_tests_with_env_lookup(
     get_env: impl Fn(&str) -> Option<OsString>,
 ) -> HashSet<OptimizeTestsOptions> {
     let mut optimize_tests = explicit_cli.clone();
+    // Not gated on Build: batching applies to every command that schedules generic
+    // tests. Graph construction filters by command, so it is inert elsewhere.
+    insert_effective_optimize_test_option(
+        &mut optimize_tests,
+        explicit_cli,
+        project_defaults,
+        &get_env,
+        OptimizeTestsOptions::TestAggregation,
+        BATCH_TESTS_ENV,
+    );
     if command == FsCommand::Build {
         insert_effective_optimize_test_option(
             &mut optimize_tests,
@@ -1432,8 +1581,137 @@ fn insert_effective_optimize_test_option(
 
 fn parse_boolish_env(value: &OsStr) -> Option<bool> {
     BoolishValueParser::new()
-        .parse_ref(&clap::Command::new("dbt-fusion"), None, value)
+        .parse_ref(&clap::Command::new("dbt"), None, value)
         .ok()
+}
+
+/// Read a boolean environment variable, using the same value grammar as the boolean CLI flags
+/// (`1`/`0`, `true`/`false`, `yes`/`no`, …).
+///
+/// Unset reads as `false`; set-but-unparseable is an error rather than a silent `false`, so a typo
+/// cannot quietly turn a feature off.
+pub fn env_flag_enabled(name: &str) -> crate::FsResult<bool> {
+    let Some(value) = std::env::var_os(name) else {
+        return Ok(false);
+    };
+    parse_boolish_env(value.as_ref()).ok_or_else(|| {
+        crate::fs_err!(
+            crate::ErrorCode::InvalidConfig,
+            "{name} must be a boolean (1/0, true/false, yes/no), got '{}'",
+            value.to_string_lossy()
+        )
+    })
+}
+
+/// Read an environment variable holding a path, treating empty as unset.
+pub fn env_path(name: &str) -> Option<PathBuf> {
+    std::env::var_os(name)
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+}
+
+/// Opts in to selecting the adapter a node runs on: the `+adapter` config and `--adapter`.
+pub const MULTI_ADAPTER_ENV: &str = "DBT_ENGINE_EXPERIMENTAL_MULTI_ADAPTER";
+
+/// Opts in to `+compute: local` (or its `sidecar` spelling) on an individual unit test. The
+/// run-wide `--compute` flag is a separate, older knob and is not covered by this gate.
+pub const LOCAL_UNIT_TESTS_ENV: &str = "DBT_ENGINE_EXPERIMENTAL_LOCAL_UNIT_TESTS";
+
+/// Whether an experimental feature's opt-in environment variable is set. Unset or malformed
+/// reads as off; a malformed value also warns.
+///
+/// Names passed here must be registered in `USED_ENGINE_ENV_VARS` (`dbt-main/src/vars.rs`),
+/// or `validate_engine_env_vars` rejects them at startup.
+fn experimental_gate_enabled(name: &str) -> bool {
+    match env_flag_enabled(name) {
+        Ok(enabled) => enabled,
+        Err(e) => {
+            crate::tracing::dbt_emit::emit_warn_log_message(
+                crate::ErrorCode::InvalidConfig,
+                e.to_string(),
+            );
+            false
+        }
+    }
+}
+
+/// Whether multi-adapter support is opted in to. See [`MULTI_ADAPTER_ENV`].
+pub fn multi_adapter_enabled() -> bool {
+    experimental_gate_enabled(MULTI_ADAPTER_ENV)
+}
+
+/// Whether per-unit-test local execution is opted in to. See [`LOCAL_UNIT_TESTS_ENV`].
+pub fn local_unit_tests_enabled() -> bool {
+    experimental_gate_enabled(LOCAL_UNIT_TESTS_ENV)
+}
+
+pub const LATEST_VERSION_POINTER_ENABLED_BY_DEFAULT_ENV: &str =
+    "DBT_LATEST_VERSION_POINTER_ENABLED_BY_DEFAULT";
+
+pub fn resolve_latest_version_pointer_enabled_by_default(project_flags: Option<&Value>) -> bool {
+    resolve_latest_version_pointer_enabled_by_default_with_env_lookup(project_flags, |name| {
+        std::env::var_os(name)
+    })
+}
+
+fn resolve_latest_version_pointer_enabled_by_default_with_env_lookup(
+    project_flags: Option<&Value>,
+    get_env: impl Fn(&str) -> Option<OsString>,
+) -> bool {
+    if let Some(value) = get_env(LATEST_VERSION_POINTER_ENABLED_BY_DEFAULT_ENV) {
+        if let Some(resolved) = parse_boolish_env(value.as_ref()) {
+            return resolved;
+        }
+    }
+
+    if let Some(enabled) = project_flags
+        .and_then(|flags| {
+            project_flags_get_value(flags, "latest_version_pointer_enabled_by_default")
+        })
+        .and_then(Value::as_bool)
+    {
+        return enabled;
+    }
+
+    true
+}
+
+pub const REQUIRE_REF_SEARCHES_NODE_PACKAGE_BEFORE_ROOT_ENV: &str =
+    "DBT_ENGINE_REQUIRE_REF_SEARCHES_NODE_PACKAGE_BEFORE_ROOT";
+
+/// Whether an unqualified `ref()` / `source()` / `function()` from a node inside an
+/// installed package searches that package before the root project.
+///
+/// Defaults to `true`, which is Fusion's established behavior. Set it to `false` for
+/// dbt-core's candidate order, where a root-project definition wins instead.
+pub fn resolve_require_ref_searches_node_package_before_root(
+    project_flags: Option<&Value>,
+) -> bool {
+    resolve_require_ref_searches_node_package_before_root_with_env_lookup(project_flags, |name| {
+        std::env::var_os(name)
+    })
+}
+
+fn resolve_require_ref_searches_node_package_before_root_with_env_lookup(
+    project_flags: Option<&Value>,
+    get_env: impl Fn(&str) -> Option<OsString>,
+) -> bool {
+    if let Some(value) = get_env(REQUIRE_REF_SEARCHES_NODE_PACKAGE_BEFORE_ROOT_ENV) {
+        if let Some(resolved) = parse_boolish_env(value.as_ref()) {
+            return resolved;
+        }
+    }
+
+    if let Some(enabled) = project_flags
+        .and_then(|flags| {
+            project_flags_get_value(flags, "require_ref_searches_node_package_before_root")
+        })
+        .and_then(Value::as_bool)
+    {
+        return enabled;
+    }
+
+    true
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, ValueEnum, EnumIter)]
@@ -1517,6 +1795,42 @@ pub fn check_target(filename: &str) -> Result<String, String> {
     }
 }
 
+/// `{key:value}` (no space) parses in YAML as one scalar key with a null value, not
+/// a pair — a colon-containing key with null is that collapse's unambiguous signature
+/// (a real key never has a null value), so we split and re-parse it here (#12873).
+///
+/// This is only called for flow-style inputs (wrapped in {}). Block-style YAML is
+/// unambiguous and doesn't need recovery; the YAML parser handles it correctly.
+fn recover_unspaced_colon_pairs(mut btree: BTreeMap<String, Value>) -> BTreeMap<String, Value> {
+    let ambiguous_keys: Vec<String> = btree
+        .iter()
+        .filter(|(key, val)| key.contains(':') && val.is_null())
+        .map(|(key, _)| key.clone())
+        .collect();
+
+    for full_key in ambiguous_keys {
+        let Some((real_key, raw_value)) = full_key.split_once(':') else {
+            continue;
+        };
+        let raw_value = raw_value.trim();
+        let mut stderr = std::io::stderr();
+        let _ = writeln!(
+            stderr,
+            "{}: --vars key '{full_key}' has no space after ':', so YAML treats it as a single \
+             key with a null value rather than a 'key: value' pair. Recovered it as \
+             '{real_key}: {raw_value}' — add a space after the colon to avoid relying on this.",
+            YELLOW.apply_to(WARNING)
+        );
+        btree.remove(&full_key);
+        btree.insert(
+            real_key.to_string(),
+            dbt_yaml::from_str::<Value>(raw_value).unwrap_or_else(|_| Value::from(raw_value)),
+        );
+    }
+
+    btree
+}
+
 pub fn check_key_value_cli_arg(value: &str) -> Result<BTreeMap<String, Value>, String> {
     // Handle empty input
     if value.trim().is_empty() {
@@ -1533,18 +1847,7 @@ pub fn check_key_value_cli_arg(value: &str) -> Result<BTreeMap<String, Value>, S
     let yaml_str = vars.to_string();
 
     match dbt_yaml::from_str::<BTreeMap<String, Value>>(&yaml_str) {
-        Ok(btree) => {
-            // Disallow the '{key:value}' format for flow-style YAML syntax
-            // to prevent key:value: None interpretation: https://stackoverflow.com/a/70909331
-            for key in btree.keys() {
-                if key.contains(':') {
-                    return Err(format!(
-                        "Invalid key-value pair: '{key}'. Value must start with a space after colon."
-                    ));
-                }
-            }
-            Ok(btree)
-        }
+        Ok(btree) => Ok(btree),
         Err(_) => {
             // If YAML parsing fails, try JSON
             match serde_json::from_str(&yaml_str) {
@@ -1556,6 +1859,20 @@ pub fn check_key_value_cli_arg(value: &str) -> Result<BTreeMap<String, Value>, S
             }
         }
     }
+}
+
+pub fn check_key_value_cli_arg_with_recovery(
+    value: &str,
+) -> Result<BTreeMap<String, Value>, String> {
+    let btree = check_key_value_cli_arg(value)?;
+    // Only apply recovery for flow-style inputs (wrapped in {}). Block-style YAML
+    // is unambiguous and doesn't need recovery; the YAML parser handles it correctly.
+    let is_flow_style = value.trim().trim_matches('\'').starts_with('{');
+    Ok(if is_flow_style {
+        recover_unspaced_colon_pairs(btree)
+    } else {
+        btree
+    })
 }
 
 pub fn check_env_var(vars: &str) -> Result<HashMap<String, String>, String> {
@@ -1608,6 +1925,38 @@ pub fn validate_project_name(name: &str) -> Result<String, String> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn local_execution_backend_support_matrix() {
+        let cases: &[(LocalExecutionBackendKind, &[AdapterType])] = &[
+            (
+                LocalExecutionBackendKind::Inline,
+                &[AdapterType::Snowflake, AdapterType::Datafusion],
+            ),
+            (
+                LocalExecutionBackendKind::Worker,
+                &[AdapterType::Snowflake, AdapterType::Bigquery],
+            ),
+            (
+                LocalExecutionBackendKind::Service,
+                &[AdapterType::Snowflake],
+            ),
+        ];
+
+        for (adapter, _) in AdapterType::iter_with_names() {
+            assert!(
+                LocalExecutionBackendKind::Remote.is_supported_for_adapter(adapter),
+                "remote must support {adapter}"
+            );
+            for (backend, supported_adapters) in cases {
+                assert_eq!(
+                    backend.is_supported_for_adapter(adapter),
+                    supported_adapters.contains(&adapter),
+                    "unexpected {backend:?} support for {adapter}"
+                );
+            }
+        }
+    }
+
     fn optimize_tests_with_env(
         command: FsCommand,
         explicit_cli: &HashSet<OptimizeTestsOptions>,
@@ -1628,6 +1977,104 @@ mod tests {
     fn project_defaults(yaml: &str) -> HashSet<OptimizeTestsOptions> {
         let project_flags: Value = dbt_yaml::from_str(yaml).unwrap();
         optimize_test_defaults_from_project_flags(Some(&project_flags))
+    }
+
+    fn latest_version_pointer_with_env(
+        project_flags_yaml: Option<&str>,
+        env: &[(&str, &str)],
+    ) -> bool {
+        let project_flags =
+            project_flags_yaml.map(|yaml| dbt_yaml::from_str::<Value>(yaml).unwrap());
+        resolve_latest_version_pointer_enabled_by_default_with_env_lookup(
+            project_flags.as_ref(),
+            |name| {
+                env.iter()
+                    .find_map(|(key, value)| (*key == name).then(|| OsString::from(*value)))
+            },
+        )
+    }
+
+    fn require_ref_searches_node_package_before_root_with_env(
+        project_flags_yaml: Option<&str>,
+        env: &[(&str, &str)],
+    ) -> bool {
+        let project_flags =
+            project_flags_yaml.map(|yaml| dbt_yaml::from_str::<Value>(yaml).unwrap());
+        resolve_require_ref_searches_node_package_before_root_with_env_lookup(
+            project_flags.as_ref(),
+            |name| {
+                env.iter()
+                    .find_map(|(key, value)| (*key == name).then(|| OsString::from(*value)))
+            },
+        )
+    }
+
+    #[test]
+    fn require_ref_searches_node_package_before_root_defaults_to_fusion_order() {
+        assert!(require_ref_searches_node_package_before_root_with_env(
+            None,
+            &[]
+        ));
+        assert!(require_ref_searches_node_package_before_root_with_env(
+            Some("some_other_flag: true\n"),
+            &[]
+        ));
+    }
+
+    #[test]
+    fn require_ref_searches_node_package_before_root_reads_project_flag() {
+        assert!(require_ref_searches_node_package_before_root_with_env(
+            Some("require_ref_searches_node_package_before_root: true\n"),
+            &[]
+        ));
+        assert!(!require_ref_searches_node_package_before_root_with_env(
+            Some("require_ref_searches_node_package_before_root: false\n"),
+            &[]
+        ));
+    }
+
+    #[test]
+    fn require_ref_searches_node_package_before_root_env_overrides_project_flag() {
+        // Env wins in both directions
+        assert!(require_ref_searches_node_package_before_root_with_env(
+            Some("require_ref_searches_node_package_before_root: false\n"),
+            &[(REQUIRE_REF_SEARCHES_NODE_PACKAGE_BEFORE_ROOT_ENV, "1")]
+        ));
+        assert!(!require_ref_searches_node_package_before_root_with_env(
+            Some("require_ref_searches_node_package_before_root: true\n"),
+            &[(REQUIRE_REF_SEARCHES_NODE_PACKAGE_BEFORE_ROOT_ENV, "false")]
+        ));
+    }
+
+    #[test]
+    fn require_ref_searches_node_package_before_root_env_accepts_boolish_values() {
+        for truthy in ["1", "true", "TRUE", "yes", "on"] {
+            assert!(
+                require_ref_searches_node_package_before_root_with_env(
+                    None,
+                    &[(REQUIRE_REF_SEARCHES_NODE_PACKAGE_BEFORE_ROOT_ENV, truthy)]
+                ),
+                "expected {truthy} to enable the flag"
+            );
+        }
+        for falsy in ["0", "false", "no", "off"] {
+            assert!(
+                !require_ref_searches_node_package_before_root_with_env(
+                    None,
+                    &[(REQUIRE_REF_SEARCHES_NODE_PACKAGE_BEFORE_ROOT_ENV, falsy)]
+                ),
+                "expected {falsy} to disable the flag"
+            );
+        }
+    }
+
+    #[test]
+    fn require_ref_searches_node_package_before_root_unparseable_env_falls_back() {
+        // A typo must not silently flip the behavior; the project flag still wins
+        assert!(!require_ref_searches_node_package_before_root_with_env(
+            Some("require_ref_searches_node_package_before_root: false\n"),
+            &[(REQUIRE_REF_SEARCHES_NODE_PACKAGE_BEFORE_ROOT_ENV, "yep")]
+        ));
     }
 
     #[test]
@@ -1714,6 +2161,45 @@ mod tests {
     }
 
     #[test]
+    fn optimize_tests_batch_tests_project_flag_applies_to_test_command() {
+        let project_defaults = project_defaults("batch_tests: true\n");
+
+        let resolved =
+            optimize_tests_with_env(FsCommand::Test, &HashSet::default(), &project_defaults, &[]);
+
+        assert!(resolved.contains(&OptimizeTestsOptions::TestAggregation));
+    }
+
+    #[test]
+    fn optimize_tests_batch_tests_env_false_overrides_project_true() {
+        let project_defaults = project_defaults("batch_tests: true\n");
+
+        let resolved = optimize_tests_with_env(
+            FsCommand::Build,
+            &HashSet::default(),
+            &project_defaults,
+            &[(BATCH_TESTS_ENV, "0")],
+        );
+
+        assert!(!resolved.contains(&OptimizeTestsOptions::TestAggregation));
+    }
+
+    #[test]
+    fn optimize_tests_batch_tests_cli_true_wins_over_env_false() {
+        let mut explicit_cli = HashSet::default();
+        explicit_cli.insert(OptimizeTestsOptions::TestAggregation);
+
+        let resolved = optimize_tests_with_env(
+            FsCommand::Build,
+            &explicit_cli,
+            &HashSet::default(),
+            &[(BATCH_TESTS_ENV, "false")],
+        );
+
+        assert!(resolved.contains(&OptimizeTestsOptions::TestAggregation));
+    }
+
+    #[test]
     fn test_check_single_var() {
         let result = check_key_value_cli_arg("key: value").unwrap();
         let expected_result =
@@ -1745,9 +2231,8 @@ mod tests {
     #[test]
     fn test_check_var_invalid() {
         let invalid_vars = vec![
-            "key",         // Missing colon — YAML returns scalar string, not dict
-            "key:value",   // No space after colon — YAML returns scalar string, not dict
-            "{key:value}", // Flow-style without space — key-contains-colon guard catches it
+            "key",       // Missing colon — YAML returns scalar string, not dict
+            "key:value", // No space after colon — YAML returns scalar string, not dict
         ];
 
         for var in invalid_vars {
@@ -1756,6 +2241,55 @@ mod tests {
                 "Should have failed: {var}"
             );
         }
+    }
+
+    #[test]
+    fn test_check_var_flow_style_without_space_after_colon() {
+        // Flow-style: {key:value} without space after ':' collapses to a single null-valued key.
+        // Recovery splits it back to the intended pair {key: value} (#12873).
+        let result = check_key_value_cli_arg_with_recovery("{key:value}").unwrap();
+        let expected = BTreeMap::from([("key".to_string(), dbt_yaml::from_str("value").unwrap())]);
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn test_check_var_flow_style_complex_unspaced() {
+        // Real example (#12873): {adf_run_id:<uuid>, start_date: X, end_date: Y}
+        // Unspaced pair collapses; recovery extracts it while preserving spaced pairs.
+        let result = check_key_value_cli_arg_with_recovery(
+            "{adf_run_id:30578aee-7913-47b7-a36c-549a2ede5210, start_date: 12.07.2026, end_date: 09.08.2026}"
+        ).unwrap();
+        assert_eq!(result.len(), 3);
+        assert_eq!(
+            result["adf_run_id"],
+            dbt_yaml::from_str::<Value>("30578aee-7913-47b7-a36c-549a2ede5210").unwrap()
+        );
+        assert!(result.contains_key("start_date"));
+        assert!(result.contains_key("end_date"));
+    }
+
+    #[test]
+    fn test_check_var_flow_style_unspaced_numeric_value() {
+        // The recovered value is re-parsed as a YAML scalar (not forced to a string), so
+        // typed values still come through correctly, e.g. an unspaced numeric pair.
+        // Uses _with_recovery since recovery now happens in the vars-specific handler.
+        let result = check_key_value_cli_arg_with_recovery("{count:5}").unwrap();
+        let expected = BTreeMap::from([("count".to_string(), dbt_yaml::from_str("5").unwrap())]);
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn test_check_var_flow_style_key_with_colon_and_real_value_untouched() {
+        // A deliberately colon-containing key with a real (non-null) value is NOT the
+        // ambiguous collapse case — it already has an unambiguous ': ' separator — so
+        // recovery must leave it alone rather than re-splitting it.
+        let result = check_key_value_cli_arg("{ns:key: value}").unwrap();
+        assert_eq!(result.len(), 1);
+        assert!(result.contains_key("ns:key"));
+        assert_eq!(
+            result["ns:key"],
+            dbt_yaml::from_str::<Value>("value").unwrap()
+        );
     }
 
     #[test]
@@ -1770,15 +2304,6 @@ mod tests {
     }
 
     #[test]
-    fn test_check_var_block_yaml_three_keys() {
-        let result = check_key_value_cli_arg("a: 1\nb: 2\nc: 3").unwrap();
-        assert_eq!(result.len(), 3);
-        assert!(result.contains_key("a"));
-        assert!(result.contains_key("b"));
-        assert!(result.contains_key("c"));
-    }
-
-    #[test]
     fn test_check_var_value_with_colons() {
         // Values containing colons are valid YAML (and valid in dbt-core / PyYAML).
         // The colon-count pre-check that was removed in the fix for issue #402
@@ -1789,6 +2314,24 @@ mod tests {
             dbt_yaml::from_str("value:with:colons").unwrap(),
         )]);
         assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn test_check_var_block_yaml_key_with_double_colon() {
+        // Block-style: keys can contain colons since the last ': ' is the separator.
+        // Example: 'set_var::something: value' parses as key 'set_var::something'.
+        let result = check_key_value_cli_arg("set_var::something: value").unwrap();
+        assert_eq!(result.len(), 1);
+        assert!(result.contains_key("set_var::something"));
+    }
+
+    #[test]
+    fn test_check_var_flow_style_key_with_double_colon() {
+        // Same as above but in flow-map ('{...}') form; the spaced ': ' still acts as
+        // the separator even though the key itself contains '::'.
+        let result = check_key_value_cli_arg("{key::with::colons: value}").unwrap();
+        assert_eq!(result.len(), 1);
+        assert!(result.contains_key("key::with::colons"));
     }
 
     #[test]
@@ -1862,5 +2405,84 @@ mod tests {
             dbt_yaml::from_str::<StaticAnalysisKind>("\"True\"").unwrap(),
             StaticAnalysisKind::On
         );
+    }
+
+    #[test]
+    fn latest_version_pointer_env_true_overrides_project_false() {
+        let resolved = latest_version_pointer_with_env(
+            Some("latest_version_pointer_enabled_by_default: false\n"),
+            &[(LATEST_VERSION_POINTER_ENABLED_BY_DEFAULT_ENV, "true")],
+        );
+
+        assert!(resolved);
+    }
+
+    #[test]
+    fn latest_version_pointer_env_false_overrides_project_true() {
+        let resolved = latest_version_pointer_with_env(
+            Some("latest_version_pointer_enabled_by_default: true\n"),
+            &[(LATEST_VERSION_POINTER_ENABLED_BY_DEFAULT_ENV, "false")],
+        );
+
+        assert!(!resolved);
+    }
+
+    #[test]
+    fn latest_version_pointer_absent_env_uses_project_defaults() {
+        let resolved = latest_version_pointer_with_env(
+            Some("latest_version_pointer_enabled_by_default: false\n"),
+            &[],
+        );
+
+        assert!(!resolved);
+    }
+
+    #[test]
+    fn latest_version_pointer_absent_env_and_project_defaults_true() {
+        let resolved = latest_version_pointer_with_env(None, &[]);
+
+        assert!(resolved);
+    }
+
+    #[test]
+    fn latest_version_pointer_malformed_env_falls_back_to_project() {
+        let resolved = latest_version_pointer_with_env(
+            Some("latest_version_pointer_enabled_by_default: false\n"),
+            &[(LATEST_VERSION_POINTER_ENABLED_BY_DEFAULT_ENV, "maybe")],
+        );
+
+        assert!(!resolved);
+    }
+
+    #[test]
+    fn test_check_var_straightforward_plain_pair() {
+        // Simple block-style: 'plain: valid' parses correctly as-is.
+        let result = check_key_value_cli_arg_with_recovery("plain: valid").unwrap();
+        assert_eq!(result.len(), 1);
+        assert!(result.contains_key("plain"));
+        assert_eq!(
+            result["plain"],
+            dbt_yaml::from_str::<Value>("valid").unwrap()
+        );
+    }
+
+    #[test]
+    fn test_check_var_flow_style_explicit_null_value() {
+        // Flow-style: {key: null} (no colon in key)
+        // Recovery does not trigger; null is preserved correctly.
+        let result = check_key_value_cli_arg("{key: null}").unwrap();
+        assert_eq!(result.len(), 1);
+        assert!(result.contains_key("key"));
+        assert!(result["key"].is_null());
+    }
+
+    #[test]
+    fn test_check_var_flow_style_colon_key_explicit_null() {
+        // Flow-style: {ns:key: null} recovers to {ns: key}.
+        // Recovery splits on first ':' for unspaced collapse detection.
+        let result = check_key_value_cli_arg_with_recovery("{ns:key: null}").unwrap();
+        assert_eq!(result.len(), 1);
+        assert!(result.contains_key("ns"));
+        assert_eq!(result["ns"], dbt_yaml::from_str::<Value>("key").unwrap());
     }
 }

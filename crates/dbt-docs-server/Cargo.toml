@@ -4,7 +4,7 @@ version.workspace = true
 homepage.workspace = true
 repository.workspace = true
 authors.workspace = true
-description = "HTTP server that powers dbt docs v2 from parquet artifacts written by --use-index"
+description = "Generates and serves dbt docs v2 as a static site over parquet artifacts written by --write-index"
 license.workspace = true
 keywords.workspace = true
 edition.workspace = true
@@ -20,26 +20,19 @@ default = ["embed-ui"]
 # Bake the SPA bundle into the binary at compile time. The bundle is
 # read from `web/dist/` (committed in-repo; rebuild from dbt-ui and copy
 # in as needed).
-embed-ui = ["dep:rust-embed", "dep:mime_guess"]
-# Serve interactive Swagger UI at /api/v1/docs, backed by the generated
-# OpenAPI spec at /api/v1/openapi.json (always served, regardless of this
-# feature). Optional because it pulls in vendored Swagger UI assets.
-openapi-ui = ["dep:utoipa-swagger-ui"]
+embed-ui = ["dep:rust-embed"]
 
 [dependencies]
 dbt-docs-core = { workspace = true }
 dbt-fusion-workspace-hack = { version = "0.1" }
 dbt-index-core = { workspace = true }
-vortex-client = { workspace = true }
 
 arrow-array = { workspace = true }
-arrow-json = { workspace = true }
+arrow-schema = { workspace = true }
 axum = { workspace = true }
-base64 = { workspace = true }
 chrono = { workspace = true }
 http = { workspace = true }
-mime_guess = { version = "2.0", optional = true }
-prost = { workspace = true }
+mime_guess = { version = "2.0" }
 rust-embed = { workspace = true, features = [
   "interpolate-folder-path",
 ], optional = true }
@@ -48,9 +41,8 @@ serde_json = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
-utoipa = { workspace = true }
-utoipa-swagger-ui = { workspace = true, optional = true }
 
 [dev-dependencies]
-arrow-schema = { workspace = true }
+dbt-runtime = { workspace = true }
 # tokio macros + rt-multi-thread already enabled by the workspace dep above.
+tempfile = { workspace = true }

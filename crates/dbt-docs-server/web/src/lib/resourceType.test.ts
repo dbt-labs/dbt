@@ -1,16 +1,15 @@
+import { Box, FileText } from 'lucide-react';
 import { describe, expect, test } from 'vitest';
 
-import { RyeconFile, RyeconModel } from '@dbt-labs/sourdough';
+import { iconForType, inferModelingLayer } from './resourceType';
 
-import { inferModelingLayer, ryeconForType } from './resourceType';
-
-describe('ryeconForType', () => {
-  test('returns the mapped ryecon for a known type', () => {
-    expect(ryeconForType('model')).toBe(RyeconModel);
+describe('iconForType', () => {
+  test('returns the mapped icon for a known type', () => {
+    expect(iconForType('model')).toBe(Box);
   });
 
-  test('falls back to RyeconFile for an unknown type', () => {
-    expect(ryeconForType('unknown_type')).toBe(RyeconFile);
+  test('falls back to FileText for an unknown type', () => {
+    expect(iconForType('unknown_type')).toBe(FileText);
   });
 });
 

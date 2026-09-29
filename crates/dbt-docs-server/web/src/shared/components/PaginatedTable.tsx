@@ -1,26 +1,31 @@
+import { useState } from 'react';
 import {
-  ColumnDef,
-  DefaultTData,
-  Pagination,
-  PaginationFooterProps,
+  type ColumnDef,
+  flexRender,
+  getCoreRowModel,
+  type SortingState,
+  useReactTable,
+} from '@tanstack/react-table';
+import { ArrowDown, ArrowUp, ArrowUpDown } from 'lucide-react';
+
+import { LoadingBlock } from '../../components/ui/LoadingBlock';
+import { Pagination } from '../../components/ui/Pagination';
+import {
+  PaginationFooter,
+  type PaginationFooterProps,
+} from '../../components/ui/PaginationFooter';
+import {
   Table,
-  TableProps,
-} from '@dbt-labs/sourdough';
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from '../../components/ui/Table';
 
-const ROW_HEIGHT_PX = 52;
-
-const calcTableHeight = (
-  pageSize: number,
-  count: number,
-  includeSpaceForLoadMore = false,
-) => {
-  if (count === 0) {
-    return ROW_HEIGHT_PX * 4;
-  }
-  if (count < pageSize) {
-    return ROW_HEIGHT_PX * (count + 2);
-  }
-  return pageSize * ROW_HEIGHT_PX + ROW_HEIGHT_PX * (includeSpaceForLoadMore ? 2 : 1);
+export type DefaultTData = object & {
+  isLoadingRow?: boolean;
+  testId?: string;
 };
 
 type PaginatedRowData = DefaultTData & {
@@ -29,9 +34,11 @@ type PaginatedRowData = DefaultTData & {
 
 export type PaginationType = 'loadMore' | 'pageBased';
 
-interface BasePaginatedTableProps<
-  TData extends PaginatedRowData,
-> extends TableProps<TData> {
+interface EmptyStateProps {
+  header: string;
+}
+
+interface BasePaginatedTableProps<TData extends PaginatedRowData> {
   /** The list of all results */
   data: TData[];
   /** If true, we are loading the initial set of data */
@@ -42,6 +49,16 @@ interface BasePaginatedTableProps<
   pageSize: number;
   /** ColumnDefs to display in the table's heading */
   columns: ColumnDef<TData>[];
+  /** Configuration for the empty state, shown when no rows are provided */
+  emptyStateProps?: EmptyStateProps;
+  /** A flag to indicate the table is sortable */
+  isSortable?: boolean;
+  /** The starting sort column */
+  initialSortColumn?: string;
+  /** Whether the initial sort is descending or ascending */
+  initialSortDesc?: boolean;
+  /** Callback to handle sort events */
+  onChangeSort?(sortBy: SortingState): void;
 }
 
 interface PaginatedTableProps<
@@ -98,30 +115,26 @@ const LoadMorePaginatedTable = <TData extends object>({
   maxResultCount,
   pageSize,
   columns,
-  ...tableProps
+  ...rest
 }: LoadMorePaginatedTableProps<TData>) => {
   return (
-    <Table
-      {...tableProps}
-      isLoading={isLoading}
-      data={data}
-      height={tableProps.height ?? calcTableHeight(pageSize, data.length, true)}
-      isWindowed={true}
-      loadingRowCount={pageSize}
-      columns={columns}
-      rowHeight={ROW_HEIGHT_PX}
-      paginationProps={{
-        pageDisplayLabel:
-          maxResultCount != null
-            ? `Loaded ${data.length} of ${maxResultCount}`
-            : undefined,
-        selectedPageCount: {
-          label: `${pageSize} Rows`,
-          value: pageSize,
-        },
-        ...pagination,
-      }}
-    />
+    <>
+      <DataTable
+        data={data}
+        isLoading={isLoading}
+        loadingRowCount={pageSize}
+        columns={columns}
+        {...rest}
+      />
+      <div className="flex flex-col items-center gap-1 py-1">
+        <PaginationFooter {...pagination} />
+        {maxResultCount != null && (
+          <p role="status" className="m-0 text-xs text-fgAlt">
+            Loaded {data.length} of {maxResultCount}
+          </p>
+        )}
+      </div>
+    </>
   );
 };
 
@@ -142,19 +155,16 @@ const PageBasedPaginatedTable = <TData extends object>({
   columns,
   currentPage,
   setCurrentPage,
-  ...tableProps
+  ...rest
 }: PageBasedPaginatedTableProps<TData>) => {
   return (
     <>
-      <Table
-        {...tableProps}
-        isLoading={isLoading}
+      <DataTable
         data={data}
-        height={tableProps.height ?? calcTableHeight(pageSize, data.length)}
-        isWindowed={true}
+        isLoading={isLoading}
         loadingRowCount={pageSize}
         columns={columns}
-        rowHeight={ROW_HEIGHT_PX}
+        {...rest}
       />
       <Pagination
         onPageChange={setCurrentPage}
@@ -165,3 +175,141 @@ const PageBasedPaginatedTable = <TData extends object>({
     </>
   );
 };
+
+interface DataTableProps<TData extends object> {
+  data: TData[];
+  columns: ColumnDef<TData>[];
+  isLoading: boolean;
+  loadingRowCount: number;
+  emptyStateProps?: EmptyStateProps;
+  isSortable?: boolean;
+  initialSortColumn?: string;
+  initialSortDesc?: boolean;
+  onChangeSort?(sortBy: SortingState): void;
+}
+
+function DataTable<TData extends object>({
+  data,
+  columns,
+  isLoading,
+  loadingRowCount,
+  emptyStateProps,
+  isSortable,
+  initialSortColumn,
+  initialSortDesc,
+  onChangeSort,
+}: DataTableProps<TData>) {
+  const [sorting, setSorting] = useState<SortingState>(
+    initialSortColumn ? [{ id: initialSortColumn, desc: !!initialSortDesc }] : [],
+  );
+
+  // eslint-disable-next-line react-hooks/incompatible-library -- TanStack's own API, not memoizable
+  const table = useReactTable({
+    data,
+    columns,
+    state: { sorting },
+    manualSorting: true,
+    defaultColumn: { enableSorting: false },
+    onSortingChange: (updater) => {
+      const next = typeof updater === 'function' ? updater(sorting) : updater;
+      setSorting(next);
+      onChangeSort?.(next);
+    },
+    getCoreRowModel: getCoreRowModel(),
+  });
+
+  if (isLoading && data.length === 0) {
+    return (
+      <Table>
+        <TableHeader>
+          {table.getHeaderGroups().map((headerGroup) => (
+            <TableRow key={headerGroup.id}>
+              {headerGroup.headers.map((header) => (
+                <TableHead key={header.id}>
+                  {header.isPlaceholder
+                    ? null
+                    : flexRender(header.column.columnDef.header, header.getContext())}
+                </TableHead>
+              ))}
+            </TableRow>
+          ))}
+        </TableHeader>
+        <TableBody>
+          {Array.from({ length: loadingRowCount }).map((_, rowIdx) => (
+            <TableRow key={rowIdx}>
+              {columns.map((column, colIdx) => (
+                <TableCell key={column.id ?? colIdx}>
+                  <LoadingBlock />
+                </TableCell>
+              ))}
+            </TableRow>
+          ))}
+        </TableBody>
+      </Table>
+    );
+  }
+
+  return (
+    <Table>
+      <TableHeader>
+        {table.getHeaderGroups().map((headerGroup) => (
+          <TableRow key={headerGroup.id}>
+            {headerGroup.headers.map((header) => {
+              const canSort = isSortable && header.column.getCanSort();
+              const sortDirection = header.column.getIsSorted();
+              return (
+                <TableHead key={header.id}>
+                  {header.isPlaceholder ? null : canSort ? (
+                    <button
+                      type="button"
+                      className="inline-flex items-center gap-1 border-0 bg-transparent p-0 font-medium text-fgAlt"
+                      onClick={header.column.getToggleSortingHandler()}
+                    >
+                      {flexRender(header.column.columnDef.header, header.getContext())}
+                      {(() => {
+                        const SortIcon =
+                          sortDirection === 'asc'
+                            ? ArrowUp
+                            : sortDirection === 'desc'
+                              ? ArrowDown
+                              : ArrowUpDown;
+                        const label =
+                          sortDirection === 'asc'
+                            ? 'sort ascending'
+                            : sortDirection === 'desc'
+                              ? 'sort descending'
+                              : 'sortable';
+                        return <SortIcon className="size-3" aria-label={label} />;
+                      })()}
+                    </button>
+                  ) : (
+                    flexRender(header.column.columnDef.header, header.getContext())
+                  )}
+                </TableHead>
+              );
+            })}
+          </TableRow>
+        ))}
+      </TableHeader>
+      <TableBody>
+        {data.length === 0 ? (
+          <TableRow>
+            <TableCell colSpan={columns.length} className="py-8 text-center text-fgAlt">
+              {emptyStateProps?.header ?? 'No results.'}
+            </TableCell>
+          </TableRow>
+        ) : (
+          table.getRowModel().rows.map((row) => (
+            <TableRow key={row.id}>
+              {row.getVisibleCells().map((cell) => (
+                <TableCell key={cell.id}>
+                  {flexRender(cell.column.columnDef.cell, cell.getContext())}
+                </TableCell>
+              ))}
+            </TableRow>
+          ))
+        )}
+      </TableBody>
+    </Table>
+  );
+}

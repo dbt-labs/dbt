@@ -8,14 +8,41 @@ use std::{collections::BTreeMap, slice, str::FromStr};
 use dbt_common::{
     ErrorCode, FsResult, err, fs_err,
     node_selector::{
-        IndirectSelection, MethodName, SelectExpression, SelectionCriteria, parse_model_specifiers,
+        IndirectSelection, MethodName, SelectExpression, SelectionCriteria, SelectionValue,
+        parse_model_specifiers,
     },
 };
 
 use dbt_schemas::schemas::selectors::{
     AtomExpr, CompositeExpr, MethodAtomExpr, SelectorDefaultSpec, SelectorDefinition,
-    SelectorDefinitionValue, SelectorExpr,
+    SelectorDefinitionValue, SelectorExpr, SelectorMethodValue,
 };
+
+/// Splits a `tag` / `config.materialized`-style method string into its name and
+/// sub-arguments, inferring the name from the value when unrecognised.
+fn split_method(method: &str, value: &SelectorMethodValue) -> (MethodName, Vec<String>) {
+    let mut parts = method.split('.').map(|s| s.to_string());
+    let head = parts.next().unwrap();
+    let name = MethodName::from_str(&head)
+        .unwrap_or_else(|_| MethodName::default_for(value.scalar().map_or("", |v| v.as_str())));
+    (name, parts.collect())
+}
+
+/// Crosses the crate boundary between the YAML-side and resolver-side value types.
+fn to_selection_value(value: &SelectorMethodValue) -> SelectionValue {
+    match value {
+        SelectorMethodValue::Scalar(v) => SelectionValue::Scalar(v.to_string()),
+        SelectorMethodValue::Unsupported(y) => SelectionValue::Unsupported(y.clone()),
+    }
+}
+
+/// Builds the criteria for one method argument.
+fn criteria_for_value(
+    value: &SelectorMethodValue,
+    mut new_criteria: impl FnMut(SelectionValue) -> SelectionCriteria,
+) -> SelectExpression {
+    SelectExpression::Atom(new_criteria(to_selection_value(value)))
+}
 
 #[derive(Debug, Clone)]
 pub struct SelectorParser {
@@ -188,8 +215,7 @@ impl SelectorParser {
     fn atom_to_select_expression(&self, atom: AtomExpr) -> FsResult<SelectExpression> {
         match atom {
             AtomExpr::Method(expr) => {
-                let method = expr.method.clone();
-                let value = expr.value.clone();
+                let value = expr.value;
                 let childrens_parents = expr.childrens_parents.as_bool();
                 let parents = expr.parents.as_bool();
                 let children = expr.children.as_bool();
@@ -198,13 +224,7 @@ impl SelectorParser {
                 let indirect_selection = expr.indirect_selection;
                 let exclude = expr.exclude;
                 // ── 1️⃣  resolve method / args ────────────────────────────────
-                let (name, args) = {
-                    let mut parts = method.split('.').map(|s| s.to_string());
-                    let head = parts.next().unwrap();
-                    let nm = MethodName::from_str(&head)
-                        .unwrap_or_else(|_| MethodName::default_for(&value));
-                    (nm, parts.collect())
-                };
+                let (name, args) = split_method(&expr.method, &value);
 
                 // ── 2️⃣  normalise depth flags ────────────────────────────────
                 let pd = if parents && parents_depth.is_none() {
@@ -233,38 +253,35 @@ impl SelectorParser {
                     None
                 };
 
-                // ── 4️⃣  assemble criteria & return ───────────────────────────
-                let criteria = SelectionCriteria::new(
-                    name,
-                    args,
-                    value.into(),
-                    childrens_parents,
-                    pd,
-                    cd,
-                    indirect_selection,
-                    exclude_expr,
-                );
-                Ok(SelectExpression::Atom(criteria))
+                // ── 4️⃣  assemble criteria ────────────────────────────────────
+                Ok(criteria_for_value(&value, |v| {
+                    SelectionCriteria::new(
+                        name,
+                        args.clone(),
+                        v,
+                        childrens_parents,
+                        pd,
+                        cd,
+                        indirect_selection,
+                        exclude_expr.clone(),
+                    )
+                }))
             }
             AtomExpr::MethodKey(method_value) => {
                 let (m, v) = method_value.into_iter().next().unwrap();
-                let (name, args) = {
-                    let mut parts = m.split('.').map(|s| s.to_string());
-                    let head = parts.next().unwrap();
-                    let nm =
-                        MethodName::from_str(&head).unwrap_or_else(|_| MethodName::default_for(&v));
-                    (nm, parts.collect())
-                };
-                Ok(SelectExpression::Atom(SelectionCriteria::new(
-                    name,
-                    args,
-                    v.into(),
-                    false,
-                    None,
-                    None,
-                    Some(IndirectSelection::default()),
-                    None,
-                )))
+                let (name, args) = split_method(&m, &v);
+                Ok(criteria_for_value(&v, |value| {
+                    SelectionCriteria::new(
+                        name,
+                        args.clone(),
+                        value,
+                        false,
+                        None,
+                        None,
+                        Some(IndirectSelection::default()),
+                        None,
+                    )
+                }))
             }
             AtomExpr::Exclude(expr) => {
                 // A standalone exclude atom - this becomes a top-level exclude
@@ -283,7 +300,7 @@ impl SelectorParser {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use dbt_schemas::schemas::selectors::{ExcludeAtomExpr, SelectorValue};
+    use dbt_schemas::schemas::selectors::{ExcludeAtomExpr, SelectorMethodValue, SelectorValue};
     use dbt_test_primitives::assert_contains;
 
     // ============================================================================
@@ -320,7 +337,7 @@ mod tests {
 
         let expr = SelectorExpr::Atom(AtomExpr::Method(MethodAtomExpr {
             method: "tag".to_string(),
-            value: SelectorValue::from("nightly"),
+            value: SelectorValue::from("nightly").into(),
             childrens_parents: SelectorDefaultSpec::from(false),
             parents: SelectorDefaultSpec::from(false),
             children: SelectorDefaultSpec::from(false),
@@ -349,7 +366,7 @@ mod tests {
         let parser = SelectorParser::new(defs);
 
         let mut method_value = BTreeMap::new();
-        method_value.insert("tag".to_string(), SelectorValue::from("nightly"));
+        method_value.insert("tag".to_string(), SelectorValue::from("nightly").into());
 
         let result = parser.parse_atom(&AtomExpr::MethodKey(method_value))?;
 
@@ -374,8 +391,8 @@ mod tests {
         let parser = SelectorParser::new(defs);
 
         let mut method_value = BTreeMap::new();
-        method_value.insert("tag".to_string(), SelectorValue::from("nightly"));
-        method_value.insert("path".to_string(), SelectorValue::from("models/"));
+        method_value.insert("tag".to_string(), SelectorValue::from("nightly").into());
+        method_value.insert("path".to_string(), SelectorValue::from("models/").into());
 
         let result = parser.parse_atom(&AtomExpr::MethodKey(method_value));
         assert!(result.is_err());
@@ -386,6 +403,73 @@ mod tests {
                 "MethodKey must have exactly one key-value pair"
             );
         }
+    }
+
+    #[test]
+    /// Regression (dbt-labs/fs#13604): a sequence-valued method argument
+    /// (`value: ["a", "b"]`), which dbt Core loads as `Any`, must parse
+    /// instead of being eagerly rejected, and defer rather than fan out.
+    fn test_sequence_valued_method_argument() -> FsResult<()> {
+        let defs = BTreeMap::new();
+        let parser = SelectorParser::new(defs);
+
+        let expr = SelectorExpr::Atom(AtomExpr::Method(MethodAtomExpr {
+            method: "path".to_string(),
+            value: SelectorMethodValue::Unsupported(Box::new(dbt_yaml::Value::from(vec![
+                dbt_yaml::Value::from("models"),
+                dbt_yaml::Value::from("seeds"),
+            ]))),
+            childrens_parents: SelectorDefaultSpec::from(false),
+            parents: SelectorDefaultSpec::from(false),
+            children: SelectorDefaultSpec::from(false),
+            parents_depth: None,
+            children_depth: None,
+            indirect_selection: Some(IndirectSelection::default()),
+            exclude: None,
+        }));
+
+        let result = parser.parse_definition(&SelectorDefinitionValue::Full(expr))?;
+
+        if let SelectExpression::Atom(criteria) = result {
+            assert_eq!(criteria.method, MethodName::Path);
+            assert!(
+                matches!(criteria.value, SelectionValue::Unsupported(_)),
+                "expected a sequence value to be deferred, not fanned out"
+            );
+        } else {
+            panic!("Expected a single deferred Atom, got {result:?}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    /// An empty sequence (`value: []`) is deferred too, not treated as a scalar.
+    fn test_empty_sequence_valued_method_argument() -> FsResult<()> {
+        let parser = SelectorParser::new(BTreeMap::new());
+
+        let expr = SelectorExpr::Atom(AtomExpr::Method(MethodAtomExpr {
+            method: "not_a_known_method".to_string(),
+            value: SelectorMethodValue::Unsupported(Box::new(dbt_yaml::Value::from(Vec::<
+                dbt_yaml::Value,
+            >::new(
+            )))),
+            childrens_parents: SelectorDefaultSpec::from(false),
+            parents: SelectorDefaultSpec::from(false),
+            children: SelectorDefaultSpec::from(false),
+            parents_depth: None,
+            children_depth: None,
+            indirect_selection: Some(IndirectSelection::default()),
+            exclude: None,
+        }));
+
+        let result = parser.parse_definition(&SelectorDefinitionValue::Full(expr))?;
+
+        if let SelectExpression::Atom(criteria) = result {
+            assert!(matches!(criteria.value, SelectionValue::Unsupported(_)));
+        } else {
+            panic!("Expected a single deferred Atom, got {result:?}");
+        }
+        Ok(())
     }
 
     // ============================================================================
@@ -428,7 +512,7 @@ mod tests {
             SelectorDefinitionValue::String("tag:bar".to_string()),
             SelectorDefinitionValue::Full(SelectorExpr::Atom(AtomExpr::Method(MethodAtomExpr {
                 method: "tag".to_string(),
-                value: SelectorValue::from("baz"),
+                value: SelectorValue::from("baz").into(),
                 childrens_parents: SelectorDefaultSpec::from(false),
                 parents: SelectorDefaultSpec::from(false),
                 children: SelectorDefaultSpec::from(false),
@@ -490,7 +574,7 @@ mod tests {
         // Test single exclude - should be nested within SelectionCriteria
         let single_result = parser.parse_atom(&AtomExpr::Method(MethodAtomExpr {
             method: "tag".to_string(),
-            value: SelectorValue::from("nightly"),
+            value: SelectorValue::from("nightly").into(),
             childrens_parents: SelectorDefaultSpec::from(false),
             parents: SelectorDefaultSpec::from(false),
             children: SelectorDefaultSpec::from(false),
@@ -524,7 +608,7 @@ mod tests {
         // Test multiple excludes - should be nested within SelectionCriteria as Or
         let multiple_result = parser.parse_atom(&AtomExpr::Method(MethodAtomExpr {
             method: "tag".to_string(),
-            value: SelectorValue::from("nightly"),
+            value: SelectorValue::from("nightly").into(),
             childrens_parents: SelectorDefaultSpec::from(false),
             parents: SelectorDefaultSpec::from(false),
             children: SelectorDefaultSpec::from(false),
@@ -701,7 +785,7 @@ mod tests {
                         .iter()
                         .map(|e| {
                             if let SelectExpression::Atom(c) = e {
-                                c.value.clone()
+                                c.value.to_string()
                             } else {
                                 "".to_string()
                             }
@@ -746,7 +830,7 @@ mod tests {
                         .iter()
                         .map(|e| {
                             if let SelectExpression::Atom(c) = e {
-                                c.value.clone()
+                                c.value.to_string()
                             } else {
                                 "".to_string()
                             }
@@ -941,7 +1025,7 @@ mod tests {
 
         let result = parser.parse_atom(&AtomExpr::Method(MethodAtomExpr {
             method: "tag".to_string(),
-            value: SelectorValue::from("nightly"),
+            value: SelectorValue::from("nightly").into(),
             childrens_parents: SelectorDefaultSpec::from(true),
             parents: SelectorDefaultSpec::from(true),
             children: SelectorDefaultSpec::from(true),
@@ -1019,7 +1103,7 @@ mod tests {
 
         let result = parser.parse_atom(&AtomExpr::Method(MethodAtomExpr {
             method: "selector".to_string(),
-            value: SelectorValue::from("foo_and_bar"),
+            value: SelectorValue::from("foo_and_bar").into(),
             childrens_parents: SelectorDefaultSpec::from(false),
             parents: SelectorDefaultSpec::from(false),
             children: SelectorDefaultSpec::from(false),
@@ -1061,7 +1145,7 @@ mod tests {
 
         let result = parser.parse_atom(&AtomExpr::Method(MethodAtomExpr {
             method: "selector".to_string(),
-            value: SelectorValue::from("base_sel"),
+            value: SelectorValue::from("base_sel").into(),
             childrens_parents: SelectorDefaultSpec::from(false),
             parents: SelectorDefaultSpec::from(true),
             children: SelectorDefaultSpec::from(true),
@@ -1136,7 +1220,7 @@ mod tests {
         // so unknown selectors are not caught at parse time
         let inheritance_result = parser.parse_atom(&AtomExpr::Method(MethodAtomExpr {
             method: "selector".to_string(),
-            value: SelectorValue::from("unknown_selector"),
+            value: SelectorValue::from("unknown_selector").into(),
             childrens_parents: SelectorDefaultSpec::from(false),
             parents: SelectorDefaultSpec::from(false),
             children: SelectorDefaultSpec::from(false),

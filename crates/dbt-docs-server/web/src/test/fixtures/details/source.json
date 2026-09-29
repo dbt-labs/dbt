@@ -1,22 +1,22 @@
 {
   "detail": {
-    "unique_id": "source.fishtown_internal_analytics.meetup._dlt_loads",
-    "name": "_dlt_loads",
+    "unique_id": "source.jaffle_shop.raw_source_4.discounts_9",
+    "name": "discounts_9",
     "resource_type": "source",
-    "package_name": "fishtown_internal_analytics",
-    "description": "The dltHub metadata as ran through Prefect.",
-    "original_file_path": "models/staging/meetup/_meetup__sources.yml",
-    "file_path": "models/staging/meetup/_meetup__sources.yml",
+    "package_name": "jaffle_shop",
+    "description": "Synthetic fixture description. Structure is what this fixture exists to pin down; the prose is deliberately not real.",
+    "original_file_path": "models/_orders__sources.yml",
+    "file_path": "models/_orders__sources.yml",
     "tags": [],
     "fqn": [
-      "fishtown_internal_analytics",
+      "jaffle_shop",
       "staging",
-      "meetup",
-      "meetup",
-      "_dlt_loads"
+      "raw_source_4",
+      "raw_source_4",
+      "discounts_9"
     ],
-    "database_name": "raw",
-    "schema_name": "meetup_data",
+    "database_name": "analytics",
+    "schema_name": "public",
     "identifier": null,
     "source_name": null,
     "source_description": null,
@@ -24,15 +24,15 @@
     "meta": null,
     "referenced_by": [
       {
-        "unique_id": "model.fishtown_internal_analytics.base_meetup__dlt_loads",
+        "unique_id": "model.jaffle_shop.base_campaigns_7",
         "edge_type": "ref"
       },
       {
-        "unique_id": "test.fishtown_internal_analytics.source_not_null_meetup__dlt_loads_load_id.977f0e0764",
+        "unique_id": "test.jaffle_shop.carts",
         "edge_type": "ref"
       },
       {
-        "unique_id": "test.fishtown_internal_analytics.source_unique_meetup__dlt_loads_load_id.e60902c4d6",
+        "unique_id": "test.jaffle_shop.features",
         "edge_type": "ref"
       }
     ],
@@ -44,7 +44,7 @@
         "declared_type": null,
         "inferred_type": null,
         "catalog_type": null,
-        "description": "The ID of the Prefect/dltHub load.",
+        "description": "Synthetic fixture description. Structure is what this fixture exists to pin down; the prose is deliberately not real.",
         "label": null,
         "granularity": null
       }
@@ -61,178 +61,178 @@
   "lineage": {
     "status": 200,
     "body": {
-      "root": "source.fishtown_internal_analytics.meetup._dlt_loads",
+      "root": "source.jaffle_shop.raw_source_4.discounts_9",
       "max_depth": 3,
       "nodes": [
         {
           "depth": 0,
           "materialized": "external",
-          "name": "_dlt_loads",
+          "name": "discounts_9",
           "resource_type": "source",
-          "unique_id": "source.fishtown_internal_analytics.meetup._dlt_loads"
+          "unique_id": "source.jaffle_shop.raw_source_4.discounts_9"
         },
         {
           "depth": 1,
           "materialized": "view",
-          "name": "base_meetup__dlt_loads",
+          "name": "base_campaigns_7",
           "resource_type": "model",
-          "unique_id": "model.fishtown_internal_analytics.base_meetup__dlt_loads"
+          "unique_id": "model.jaffle_shop.base_campaigns_7"
         },
         {
           "depth": 1,
           "materialized": "test",
-          "name": "source_not_null_meetup__dlt_loads_load_id",
+          "name": "source_not_null_orders__loads_load_id",
           "resource_type": "test",
-          "unique_id": "test.fishtown_internal_analytics.source_not_null_meetup__dlt_loads_load_id.977f0e0764"
+          "unique_id": "test.jaffle_shop.carts"
         },
         {
           "depth": 1,
           "materialized": "test",
-          "name": "source_unique_meetup__dlt_loads_load_id",
+          "name": "source_unique_orders__loads_load_id",
           "resource_type": "test",
-          "unique_id": "test.fishtown_internal_analytics.source_unique_meetup__dlt_loads_load_id.e60902c4d6"
+          "unique_id": "test.jaffle_shop.features"
         },
         {
           "depth": 2,
           "materialized": "view",
-          "name": "stg_meetup__events",
+          "name": "stg_renewals_8",
           "resource_type": "model",
-          "unique_id": "model.fishtown_internal_analytics.stg_meetup__events"
+          "unique_id": "model.jaffle_shop.stg_renewals_8"
         },
         {
           "depth": 2,
           "materialized": "view",
-          "name": "stg_meetup__surveys",
+          "name": "stg_usage_8",
           "resource_type": "model",
-          "unique_id": "model.fishtown_internal_analytics.stg_meetup__surveys"
+          "unique_id": "model.jaffle_shop.stg_usage_8"
         },
         {
           "depth": 2,
           "materialized": "test",
-          "name": "not_null_base_meetup__dlt_loads_load_id",
+          "name": "not_null_base_orders__loads_load_id",
           "resource_type": "test",
-          "unique_id": "test.fishtown_internal_analytics.not_null_base_meetup__dlt_loads_load_id.e44b53e4a4"
+          "unique_id": "test.jaffle_shop.not_null_plans_id.e44b53e4a4"
         },
         {
           "depth": 2,
           "materialized": "test",
-          "name": "unique_base_meetup__dlt_loads_load_id",
+          "name": "unique_base_orders__loads_load_id",
           "resource_type": "test",
-          "unique_id": "test.fishtown_internal_analytics.unique_base_meetup__dlt_loads_load_id.69a481ac1c"
+          "unique_id": "test.jaffle_shop.unique_customers_1_id.69a481ac1c"
         },
         {
           "depth": 3,
           "materialized": "table",
-          "name": "dim_meetup_events",
+          "name": "dim_orders_9",
           "resource_type": "model",
-          "unique_id": "model.fishtown_internal_analytics.dim_meetup_events"
+          "unique_id": "model.jaffle_shop.dim_orders_9"
         },
         {
           "depth": 3,
           "materialized": "table",
-          "name": "fct_meetup_registrations",
+          "name": "fct_events_6",
           "resource_type": "model",
-          "unique_id": "model.fishtown_internal_analytics.fct_meetup_registrations"
+          "unique_id": "model.jaffle_shop.fct_events_6"
         },
         {
           "depth": 3,
           "materialized": "test",
-          "name": "not_null_stg_meetup__events_event_id",
+          "name": "not_null_stg_orders__events_event_id",
           "resource_type": "test",
-          "unique_id": "test.fishtown_internal_analytics.not_null_stg_meetup__events_event_id.ede0aa9fcb"
+          "unique_id": "test.jaffle_shop.not_null_supplies_1_id.ede0aa9fcb"
         },
         {
           "depth": 3,
           "materialized": "test",
-          "name": "not_null_stg_meetup__surveys_survey_id",
+          "name": "not_null_stg_orders__surveys_survey_id",
           "resource_type": "test",
-          "unique_id": "test.fishtown_internal_analytics.not_null_stg_meetup__surveys_survey_id.b96bf09182"
+          "unique_id": "test.jaffle_shop.not_null_signups_id.b96bf09182"
         },
         {
           "depth": 3,
           "materialized": "test",
-          "name": "unique_stg_meetup__events_event_id",
+          "name": "unique_stg_orders__events_event_id",
           "resource_type": "test",
-          "unique_id": "test.fishtown_internal_analytics.unique_stg_meetup__events_event_id.23962a6e53"
+          "unique_id": "test.jaffle_shop.unique_campaigns_1_id.23962a6e53"
         },
         {
           "depth": 3,
           "materialized": "test",
-          "name": "unique_stg_meetup__surveys_survey_id",
+          "name": "unique_stg_orders__surveys_survey_id",
           "resource_type": "test",
-          "unique_id": "test.fishtown_internal_analytics.unique_stg_meetup__surveys_survey_id.8e172a6464"
+          "unique_id": "test.jaffle_shop.unique_payments_1_id.8e172a6464"
         }
       ],
       "edges": [
         {
           "edge_type": "ref",
-          "from_id": "model.fishtown_internal_analytics.base_meetup__dlt_loads",
-          "to_id": "model.fishtown_internal_analytics.stg_meetup__events"
+          "from_id": "model.jaffle_shop.base_campaigns_7",
+          "to_id": "model.jaffle_shop.stg_renewals_8"
         },
         {
           "edge_type": "ref",
-          "from_id": "model.fishtown_internal_analytics.base_meetup__dlt_loads",
-          "to_id": "model.fishtown_internal_analytics.stg_meetup__surveys"
+          "from_id": "model.jaffle_shop.base_campaigns_7",
+          "to_id": "model.jaffle_shop.stg_usage_8"
         },
         {
           "edge_type": "ref",
-          "from_id": "model.fishtown_internal_analytics.base_meetup__dlt_loads",
-          "to_id": "test.fishtown_internal_analytics.not_null_base_meetup__dlt_loads_load_id.e44b53e4a4"
+          "from_id": "model.jaffle_shop.base_campaigns_7",
+          "to_id": "test.jaffle_shop.not_null_plans_id.e44b53e4a4"
         },
         {
           "edge_type": "ref",
-          "from_id": "model.fishtown_internal_analytics.base_meetup__dlt_loads",
-          "to_id": "test.fishtown_internal_analytics.unique_base_meetup__dlt_loads_load_id.69a481ac1c"
+          "from_id": "model.jaffle_shop.base_campaigns_7",
+          "to_id": "test.jaffle_shop.unique_customers_1_id.69a481ac1c"
         },
         {
           "edge_type": "ref",
-          "from_id": "model.fishtown_internal_analytics.dim_meetup_events",
-          "to_id": "model.fishtown_internal_analytics.fct_meetup_registrations"
+          "from_id": "model.jaffle_shop.dim_orders_9",
+          "to_id": "model.jaffle_shop.fct_events_6"
         },
         {
           "edge_type": "ref",
-          "from_id": "model.fishtown_internal_analytics.stg_meetup__events",
-          "to_id": "model.fishtown_internal_analytics.dim_meetup_events"
+          "from_id": "model.jaffle_shop.stg_renewals_8",
+          "to_id": "model.jaffle_shop.dim_orders_9"
         },
         {
           "edge_type": "ref",
-          "from_id": "model.fishtown_internal_analytics.stg_meetup__events",
-          "to_id": "test.fishtown_internal_analytics.not_null_stg_meetup__events_event_id.ede0aa9fcb"
+          "from_id": "model.jaffle_shop.stg_renewals_8",
+          "to_id": "test.jaffle_shop.not_null_supplies_1_id.ede0aa9fcb"
         },
         {
           "edge_type": "ref",
-          "from_id": "model.fishtown_internal_analytics.stg_meetup__events",
-          "to_id": "test.fishtown_internal_analytics.unique_stg_meetup__events_event_id.23962a6e53"
+          "from_id": "model.jaffle_shop.stg_renewals_8",
+          "to_id": "test.jaffle_shop.unique_campaigns_1_id.23962a6e53"
         },
         {
           "edge_type": "ref",
-          "from_id": "model.fishtown_internal_analytics.stg_meetup__surveys",
-          "to_id": "model.fishtown_internal_analytics.fct_meetup_registrations"
+          "from_id": "model.jaffle_shop.stg_usage_8",
+          "to_id": "model.jaffle_shop.fct_events_6"
         },
         {
           "edge_type": "ref",
-          "from_id": "model.fishtown_internal_analytics.stg_meetup__surveys",
-          "to_id": "test.fishtown_internal_analytics.not_null_stg_meetup__surveys_survey_id.b96bf09182"
+          "from_id": "model.jaffle_shop.stg_usage_8",
+          "to_id": "test.jaffle_shop.not_null_signups_id.b96bf09182"
         },
         {
           "edge_type": "ref",
-          "from_id": "model.fishtown_internal_analytics.stg_meetup__surveys",
-          "to_id": "test.fishtown_internal_analytics.unique_stg_meetup__surveys_survey_id.8e172a6464"
+          "from_id": "model.jaffle_shop.stg_usage_8",
+          "to_id": "test.jaffle_shop.unique_payments_1_id.8e172a6464"
         },
         {
           "edge_type": "ref",
-          "from_id": "source.fishtown_internal_analytics.meetup._dlt_loads",
-          "to_id": "model.fishtown_internal_analytics.base_meetup__dlt_loads"
+          "from_id": "source.jaffle_shop.raw_source_4.discounts_9",
+          "to_id": "model.jaffle_shop.base_campaigns_7"
         },
         {
           "edge_type": "ref",
-          "from_id": "source.fishtown_internal_analytics.meetup._dlt_loads",
-          "to_id": "test.fishtown_internal_analytics.source_not_null_meetup__dlt_loads_load_id.977f0e0764"
+          "from_id": "source.jaffle_shop.raw_source_4.discounts_9",
+          "to_id": "test.jaffle_shop.carts"
         },
         {
           "edge_type": "ref",
-          "from_id": "source.fishtown_internal_analytics.meetup._dlt_loads",
-          "to_id": "test.fishtown_internal_analytics.source_unique_meetup__dlt_loads_load_id.e60902c4d6"
+          "from_id": "source.jaffle_shop.raw_source_4.discounts_9",
+          "to_id": "test.jaffle_shop.features"
         }
       ]
     }

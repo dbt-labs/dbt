@@ -1,8 +1,11 @@
+import { createElement, type ReactNode } from 'react';
 import { renderHook, waitFor } from '@testing-library/react';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { describe, expect, it } from 'vitest';
 
-import type { NodeListResponse, NodeSummary } from '../api';
+import { BootstrapProvider } from '../lib/bootstrapContext';
+import type { BootstrapData } from '../shared/data-sources/duckdb/bootstrap';
 import { createQueryWrapper } from '../test/renderWithProviders';
+import type { NodeSummary } from '../types';
 import { useAllNodes } from './useAllNodes';
 
 const node = (id: string): NodeSummary => ({
@@ -13,37 +16,32 @@ const node = (id: string): NodeSummary => ({
   description: null,
 });
 
-function jsonResponse(data: NodeListResponse) {
-  return { ok: true, json: () => Promise.resolve(data) };
+function bootstrapData(nodes: NodeSummary[]): BootstrapData {
+  return {
+    nodes,
+    project: { name: 'pkg', description: null, dbtVersion: null, adapterType: null },
+    generation: null,
+  } as unknown as BootstrapData;
+}
+
+/** The provider stack the hook expects: a QueryClient plus the in-flight read. */
+function wrapper(read: Promise<BootstrapData>) {
+  const QueryWrapper = createQueryWrapper();
+  return ({ children }: { children: ReactNode }) =>
+    createElement(
+      QueryWrapper,
+      null,
+      createElement(BootstrapProvider, {
+        value: read,
+        children,
+      }),
+    );
 }
 
 describe('useAllNodes', () => {
-  afterEach(() => vi.unstubAllGlobals());
-
-  it('auto-pages progressively until the full list lands', async () => {
-    const page1: NodeListResponse = {
-      nodes: [node('a')],
-      total: 2,
-      offset: 0,
-      limit: 1000,
-    };
-    const page2: NodeListResponse = {
-      nodes: [node('b')],
-      total: 2,
-      offset: 1,
-      limit: 1000,
-    };
-    let calls = 0;
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(() => {
-        calls += 1;
-        return Promise.resolve(jsonResponse(calls === 1 ? page1 : page2));
-      }),
-    );
-
+  it('resolves the whole project from the bootstrap read', async () => {
     const { result } = renderHook(() => useAllNodes(), {
-      wrapper: createQueryWrapper(),
+      wrapper: wrapper(Promise.resolve(bootstrapData([node('a'), node('b')]))),
     });
 
     await waitFor(() => expect(result.current.nodes).toHaveLength(2));
@@ -51,34 +49,23 @@ describe('useAllNodes', () => {
     expect(result.current.error).toBeNull();
   });
 
-  it('stops auto-paging when a mid-pagination page fails permanently', async () => {
-    const page1: NodeListResponse = {
-      nodes: [node('a')],
-      total: 2,
-      offset: 0,
-      limit: 1000,
-    };
-    const fetchMock = vi.fn(() => {
-      // First call serves page 1; every subsequent page rejects forever.
-      const call = fetchMock.mock.calls.length;
-      return call === 1
-        ? Promise.resolve(jsonResponse(page1))
-        : Promise.reject(new Error('boom'));
-    });
-    vi.stubGlobal('fetch', fetchMock);
-
+  it('reports pending until the read settles', () => {
     const { result } = renderHook(() => useAllNodes(), {
-      wrapper: createQueryWrapper(),
+      wrapper: wrapper(new Promise<BootstrapData>(() => {})),
+    });
+
+    expect(result.current.isPending).toBe(true);
+    expect(result.current.nodes).toBeNull();
+  });
+
+  it('surfaces a failed read as an error rather than an empty project', async () => {
+    const { result } = renderHook(() => useAllNodes(), {
+      wrapper: wrapper(Promise.reject(new Error('boom'))),
     });
 
     await waitFor(() => expect(result.current.error).not.toBeNull());
-
-    // The effect must NOT keep re-firing fetchNextPage after the failure.
-    const callsAtFailure = fetchMock.mock.calls.length;
-    await new Promise((r) => setTimeout(r, 50));
-    expect(fetchMock.mock.calls.length).toBe(callsAtFailure);
-    // Bounded: page-1 success + the single failed page (retry off in tests).
-    expect(fetchMock).toHaveBeenCalledTimes(2);
-    expect(result.current.nodes).toHaveLength(1);
+    // An empty list here would render as "this project has no nodes", which is a
+    // different and much more alarming claim than "the read failed".
+    expect(result.current.nodes).toBeNull();
   });
 });

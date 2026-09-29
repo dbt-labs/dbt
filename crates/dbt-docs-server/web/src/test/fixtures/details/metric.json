@@ -1,21 +1,21 @@
 {
   "detail": {
-    "unique_id": "metric.fishtown_internal_analytics.account_conversions",
-    "name": "account_conversions",
+    "unique_id": "metric.jaffle_shop.warehouses_8",
+    "name": "warehouses_8",
     "resource_type": "metric",
-    "package_name": "fishtown_internal_analytics",
-    "description": "The count of dbt Cloud accounts that have activated (executed its first succesful job run) within 14 days of account creation and converted to a developer, team, or enterprise plan within 30 days of account creation.\n",
-    "original_file_path": "models/semantic_models/account_conversions.yml",
-    "file_path": "models/semantic_models/account_conversions.yml",
+    "package_name": "jaffle_shop",
+    "description": "Synthetic fixture description. Structure is what this fixture exists to pin down; the prose is deliberately not real.",
+    "original_file_path": "models/warehouses_8.yml",
+    "file_path": "models/warehouses_8.yml",
     "fqn": [],
     "tags": [],
-    "label": "Account Conversions (Cloud)",
+    "label": "Order Conversions",
     "metric_type": "simple",
     "type_params": {
       "conversion_type_params": null,
       "cumulative_type_params": null,
       "denominator": null,
-      "expr": "case when account_id is not null then 1 else 0 end",
+      "expr": "case when order_id is not null then 1 else 0 end",
       "fill_nulls_with": null,
       "grain_to_date": null,
       "input_measures": [],
@@ -30,9 +30,9 @@
           "use_discrete_percentile": false
         },
         "agg_time_dimension": "created_at",
-        "expr": "case when account_id is not null then 1 else 0 end",
+        "expr": "case when order_id is not null then 1 else 0 end",
         "non_additive_dimension": null,
-        "semantic_model": "account_conversions"
+        "semantic_model": "warehouses_8"
       },
       "metrics": null,
       "numerator": null,
@@ -41,7 +41,7 @@
     "filter": {
       "where_filters": [
         {
-          "where_sql_template": "{{ Dimension('converted_account__is_converted')}} = true"
+          "where_sql_template": "{{ Dimension('customer__is_active')}} = true"
         }
       ]
     },
@@ -52,7 +52,7 @@
     "meta": null,
     "depends_on": [
       {
-        "unique_id": "semantic_model.fishtown_internal_analytics.account_conversions",
+        "unique_id": "semantic_model.jaffle_shop.warehouses_8",
         "edge_type": "ref"
       }
     ],
@@ -62,87 +62,87 @@
   "lineage": {
     "status": 200,
     "body": {
-      "root": "metric.fishtown_internal_analytics.account_conversions",
+      "root": "metric.jaffle_shop.warehouses_8",
       "max_depth": 3,
       "nodes": [
         {
           "depth": -3,
           "materialized": "table",
-          "name": "dim_salesforce_accounts",
+          "name": "dim_revenue_7",
           "resource_type": "model",
-          "unique_id": "model.fishtown_internal_analytics.dim_salesforce_accounts"
+          "unique_id": "model.jaffle_shop.dim_revenue_7"
         },
         {
           "depth": -3,
           "materialized": "table",
-          "name": "fct_cloud_accounts",
+          "name": "fct_trials_8",
           "resource_type": "model",
-          "unique_id": "model.fishtown_internal_analytics.fct_cloud_accounts"
+          "unique_id": "model.jaffle_shop.fct_trials_8"
         },
         {
           "depth": -3,
           "materialized": "table",
-          "name": "fct_cloud_subscription_transactions",
+          "name": "fct_products_3",
           "resource_type": "model",
-          "unique_id": "model.fishtown_internal_analytics.fct_cloud_subscription_transactions"
+          "unique_id": "model.jaffle_shop.fct_products_3"
         },
         {
           "depth": -3,
           "materialized": "table",
-          "name": "stg_cloud__accounts_snapshot_daily",
+          "name": "stg_channels_3",
           "resource_type": "model",
-          "unique_id": "model.fishtown_internal_analytics.stg_cloud__accounts_snapshot_daily"
+          "unique_id": "model.jaffle_shop.stg_channels_3"
         },
         {
           "depth": -2,
           "materialized": "view",
-          "name": "account_conversions",
+          "name": "warehouses_8",
           "resource_type": "model",
-          "unique_id": "model.fishtown_internal_analytics.account_conversions"
+          "unique_id": "model.jaffle_shop.warehouses_8"
         },
         {
           "depth": -1,
-          "name": "account_conversions",
+          "name": "warehouses_8",
           "resource_type": "semantic_model",
-          "unique_id": "semantic_model.fishtown_internal_analytics.account_conversions"
+          "unique_id": "semantic_model.jaffle_shop.warehouses_8"
         },
         {
           "depth": 0,
-          "name": "account_conversions",
+          "name": "warehouses_8",
           "resource_type": "metric",
-          "unique_id": "metric.fishtown_internal_analytics.account_conversions"
+          "unique_id": "metric.jaffle_shop.warehouses_8"
         }
       ],
       "edges": [
         {
           "edge_type": "ref",
-          "from_id": "model.fishtown_internal_analytics.account_conversions",
-          "to_id": "semantic_model.fishtown_internal_analytics.account_conversions"
+          "from_id": "model.jaffle_shop.warehouses_8",
+          "to_id": "semantic_model.jaffle_shop.warehouses_8"
         },
         {
           "edge_type": "ref",
-          "from_id": "model.fishtown_internal_analytics.dim_salesforce_accounts",
-          "to_id": "model.fishtown_internal_analytics.account_conversions"
+          "from_id": "model.jaffle_shop.dim_revenue_7",
+          "to_id": "model.jaffle_shop.warehouses_8"
         },
         {
           "edge_type": "ref",
-          "from_id": "model.fishtown_internal_analytics.fct_cloud_accounts",
-          "to_id": "model.fishtown_internal_analytics.account_conversions"
+          "from_id": "model.jaffle_shop.fct_trials_8",
+          "to_id": "model.jaffle_shop.warehouses_8"
         },
         {
           "edge_type": "ref",
-          "from_id": "model.fishtown_internal_analytics.fct_cloud_subscription_transactions",
-          "to_id": "model.fishtown_internal_analytics.account_conversions"
+          "from_id": "model.jaffle_shop.fct_products_3",
+          "to_id": "model.jaffle_shop.warehouses_8"
         },
         {
           "edge_type": "ref",
-          "from_id": "model.fishtown_internal_analytics.stg_cloud__accounts_snapshot_daily",
-          "to_id": "model.fishtown_internal_analytics.account_conversions"
+          "from_id": "model.jaffle_shop.stg_channels_3",
+          "to_id": "model.jaffle_shop.warehouses_8"
         },
         {
           "edge_type": "ref",
-          "from_id": "semantic_model.fishtown_internal_analytics.account_conversions",
-          "to_id": "metric.fishtown_internal_analytics.account_conversions"
+          "from_id": "semantic_model.jaffle_shop.warehouses_8",
+          "to_id": "metric.jaffle_shop.warehouses_8"
         }
       ]
     }

@@ -594,13 +594,21 @@ impl ParsedMacro {
 
 pub struct ParsedDoc {
     pub name: String,
+    pub package_name: String,
+    pub file_path: String,
+    pub original_file_path: String,
     pub block_contents: Option<String>,
 }
 
 impl ParsedDoc {
     pub fn from_payload(payload: &Value) -> Self {
+        // Docs serialize flat (no __attr__ nesting), like macros above.
         Self {
             name: str_field_default(payload, "name", ""),
+            package_name: str_field_default(payload, "package_name", ""),
+            // `DbtDocsMacro` calls it `path`; the column is `file_path`.
+            file_path: str_field_default(payload, "path", ""),
+            original_file_path: str_field_default(payload, "original_file_path", ""),
             block_contents: str_field(payload, "block_contents"),
         }
     }
@@ -757,5 +765,44 @@ mod tests {
             m.name, "correct_name",
             "__common_attr__.name must take precedence"
         );
+    }
+
+    /// `ParsedDoc` must read every column `dbt.docs` declares, not just `name`
+    /// and `block_contents`.
+    ///
+    /// The docs-v2 overview page picks the winning `__overview__` block by
+    /// package, so a NULL `package_name` makes a user-authored overview
+    /// indistinguishable from the injected default. Note `file_path` comes from
+    /// the payload's `path` key — `DbtDocsMacro` names the field `path`, and
+    /// reading `file_path` instead yields an empty string rather than an error.
+    #[test]
+    fn parsed_doc_reads_package_and_paths() {
+        let payload = json!({
+            "name": "__overview__",
+            "package_name": "jaffle_shop",
+            "path": "overview.md",
+            "original_file_path": "models/overview.md",
+            "unique_id": "doc.jaffle_shop.__overview__",
+            "block_contents": "# Jaffle Shop"
+        });
+        let d = ParsedDoc::from_payload(&payload);
+        assert_eq!(d.name, "__overview__");
+        assert_eq!(d.package_name, "jaffle_shop");
+        assert_eq!(d.file_path, "overview.md", "file_path reads the `path` key");
+        assert_eq!(d.original_file_path, "models/overview.md");
+        assert_eq!(d.block_contents.as_deref(), Some("# Jaffle Shop"));
+    }
+
+    /// A payload from before those fields were read must still parse, so an
+    /// index written by an older Fusion keeps loading (the columns are nullable
+    /// and simply stay empty).
+    #[test]
+    fn parsed_doc_tolerates_a_legacy_payload() {
+        let payload = json!({ "name": "__overview__", "block_contents": "hi" });
+        let d = ParsedDoc::from_payload(&payload);
+        assert_eq!(d.name, "__overview__");
+        assert_eq!(d.package_name, "");
+        assert_eq!(d.file_path, "");
+        assert_eq!(d.original_file_path, "");
     }
 }

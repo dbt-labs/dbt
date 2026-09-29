@@ -1,21 +1,6 @@
-import {
-  differenceInHours,
-  differenceInMinutes,
-  differenceInSeconds,
-  endOfWeek,
-  isAfter,
-  startOfMonth,
-  startOfWeek,
-} from 'date-fns';
+import { endOfWeek, startOfMonth, startOfWeek } from 'date-fns';
 
-import { BadgeProps } from '@dbt-labs/sourdough';
-
-import {
-  CostInsight,
-  CostInsightByJob,
-  CostInsightsConnectionTestStatusOverview,
-  Grouping,
-} from '../typings/costInsights';
+import { CostInsight, CostInsightByJob, Grouping } from '../typings/costInsights';
 import { COLUMN_LABELS } from './columnLabels';
 import { downloadCsv } from './csv';
 import { formatDateForCsv, formatLocalDate } from './dateUtils';
@@ -465,83 +450,4 @@ export const downloadCostInsightsByJobCsv = (
   ]);
 
   downloadCsv(headers, rows, filename || `cost-insights-by-job-${grouping}`);
-};
-
-const DEFAULT_TIMESTAMP = 'at unknown time';
-
-const formatTimestamp = (timestamp?: string): string => {
-  if (!timestamp) return DEFAULT_TIMESTAMP;
-  try {
-    const date = new Date(timestamp);
-    if (isNaN(date.getTime())) return DEFAULT_TIMESTAMP;
-    const now = new Date();
-    const diffInHours = Math.abs(differenceInHours(now, date));
-    const diffInMinutes = Math.abs(differenceInMinutes(now, date));
-    const diffInSeconds = Math.abs(differenceInSeconds(now, date));
-    const isInFuture = isAfter(date, now);
-
-    let relativeTime: string;
-    if (diffInHours < 1) {
-      relativeTime = `${diffInMinutes}m ${diffInSeconds - 60 * diffInMinutes}s`;
-    } else if (diffInHours < 6) {
-      relativeTime = `${diffInHours}h ${diffInMinutes - 60 * diffInHours}m`;
-    } else {
-      return formatLocalDate(date, 'PP, p z');
-    }
-    return isInFuture ? `in ${relativeTime}` : `${relativeTime} ago`;
-  } catch {
-    return DEFAULT_TIMESTAMP;
-  }
-};
-
-/**
- * Returns the Badge props for a given Cost Insights connection test status overview.
- * @param statusOverview - The connection test status overview
- * @returns BadgeProps to pass to the sourdough Badge component
- */
-export const getConnectionTestBadgeConfig = (
-  statusOverview: CostInsightsConnectionTestStatusOverview,
-  options?: { isCostProcessed?: boolean },
-): BadgeProps => {
-  const formattedTimestamp = formatTimestamp(statusOverview.updated_at);
-
-  switch (statusOverview.status) {
-    case 'succeeded':
-      if (options?.isCostProcessed === false) {
-        return {
-          text: 'Connection verified',
-          type: 'info',
-          statusIconVariant: 'in-progress',
-        };
-      }
-      return {
-        text: `Updated ${formattedTimestamp}`,
-        type: 'success',
-        statusIconVariant: 'success',
-      };
-    case 'failed':
-      return {
-        text: `Failed ${formattedTimestamp}`,
-        type: 'error',
-        statusIconVariant: 'error',
-      };
-    case 'unknown':
-      return {
-        text: 'Unknown connection test status',
-        type: 'warning',
-        statusIconVariant: 'warning',
-      };
-    case 'never_triggered':
-      return {
-        text: 'Not yet tested',
-        type: 'default',
-        statusIconVariant: 'skipped',
-      };
-    default:
-      return {
-        text: 'Testing',
-        type: 'info',
-        statusIconVariant: 'in-progress',
-      };
-  }
 };

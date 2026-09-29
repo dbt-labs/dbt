@@ -15,6 +15,7 @@ use std::collections::BTreeMap;
 type YmlValue = dbt_yaml::Value;
 
 use super::AnalysesProperties;
+use super::CheckProperties;
 use super::DataTestProperties;
 use super::ExposureProperties;
 use super::FunctionProperties;
@@ -30,6 +31,7 @@ use super::unit_test_properties::UnitTestProperties;
 pub struct DbtPropertiesFileValues {
     pub version: Option<FloatOrString>,
     pub analyses: Option<Vec<dbt_yaml::Value>>,
+    pub checks: Option<Vec<dbt_yaml::Value>>,
     pub exposures: Option<Vec<dbt_yaml::Value>>,
     pub groups: Option<Vec<dbt_yaml::Value>>,
     pub macros: Option<Vec<dbt_yaml::Value>>,
@@ -46,7 +48,7 @@ pub struct DbtPropertiesFileValues {
     pub unit_tests: Option<Vec<dbt_yaml::Value>>,
     pub tests: Option<Vec<dbt_yaml::Value>>,
     pub data_tests: Option<Vec<dbt_yaml::Value>>,
-    pub anchors: Verbatim<Option<Vec<dbt_yaml::Value>>>,
+    pub anchors: Verbatim<Option<dbt_yaml::Value>>,
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone)]
@@ -89,6 +91,7 @@ pub struct DbtPropertiesFile {
     pub tests: Option<Vec<DataTestProperties>>,
     pub data_tests: Option<Vec<DataTestProperties>>,
     pub analyses: Option<Vec<AnalysesProperties>>,
+    pub checks: Option<Vec<CheckProperties>>,
     pub exposures: Option<Vec<ExposureProperties>>,
     pub groups: Option<Vec<GroupProperties>>,
     pub macros: Option<Vec<MacrosProperties>>,
@@ -98,7 +101,7 @@ pub struct DbtPropertiesFile {
     // removal would result in many regression tests failing
     pub semantic_models: Option<Vec<dbt_yaml::Value>>,
     pub version: Option<FloatOrString>,
-    pub anchors: Verbatim<Option<Vec<dbt_yaml::Value>>>,
+    pub anchors: Verbatim<Option<dbt_yaml::Value>>,
 }
 
 // -- Additional Properties

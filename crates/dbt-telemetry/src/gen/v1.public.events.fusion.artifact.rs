@@ -39,6 +39,7 @@ pub enum ArtifactType {
     SemanticManifest = 2,
     Catalog = 3,
     Sources = 4,
+    Freshness = 5,
 }
 impl ArtifactType {
     /// String value of the enum field names used in the ProtoBuf definition.
@@ -52,6 +53,7 @@ impl ArtifactType {
             Self::SemanticManifest => "ARTIFACT_TYPE_SEMANTIC_MANIFEST",
             Self::Catalog => "ARTIFACT_TYPE_CATALOG",
             Self::Sources => "ARTIFACT_TYPE_SOURCES",
+            Self::Freshness => "ARTIFACT_TYPE_FRESHNESS",
         }
     }
     /// Creates an enum from field names used in the ProtoBuf definition.
@@ -62,6 +64,7 @@ impl ArtifactType {
             "ARTIFACT_TYPE_SEMANTIC_MANIFEST" => Some(Self::SemanticManifest),
             "ARTIFACT_TYPE_CATALOG" => Some(Self::Catalog),
             "ARTIFACT_TYPE_SOURCES" => Some(Self::Sources),
+            "ARTIFACT_TYPE_FRESHNESS" => Some(Self::Freshness),
             _ => None,
         }
     }

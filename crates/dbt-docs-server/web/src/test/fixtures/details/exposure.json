@@ -1,20 +1,20 @@
 {
   "detail": {
-    "unique_id": "exposure.fishtown_internal_analytics.2025_California_Web_Visitors",
-    "name": "2025_California_Web_Visitors",
+    "unique_id": "exposure.jaffle_shop.categories_5",
+    "name": "categories_5",
     "resource_type": "exposure",
-    "package_name": "fishtown_internal_analytics",
+    "package_name": "jaffle_shop",
     "description": "",
-    "original_file_path": "models/omni_exposures/2a55306d-cc65-45d6-9eb1-95121307e138.yml",
-    "file_path": "models/omni_exposures/2a55306d-cc65-45d6-9eb1-95121307e138.yml",
+    "original_file_path": "models/a1b2c3d4.yml",
+    "file_path": "models/a1b2c3d4.yml",
     "tags": [],
     "fqn": [],
-    "label": "2025 California Web Visitors",
+    "label": "Regional Web Visitors",
     "exposure_type": "dashboard",
     "maturity": null,
-    "url": "https://dbtlabs.omniapp.co/dashboards/d43a385f",
-    "owner_name": "Allyson Larson",
-    "owner_email": "allyson.larson@dbtlabs.com",
+    "url": "https://bi.example.com/dashboards/1",
+    "owner_name": "Analytics Team",
+    "owner_email": "analytics@example.com",
     "meta": null,
     "depends_on": [],
     "created_at": null
@@ -22,99 +22,99 @@
   "lineage": {
     "status": 200,
     "body": {
-      "root": "exposure.fishtown_internal_analytics.2025_California_Web_Visitors",
+      "root": "exposure.jaffle_shop.categories_5",
       "max_depth": 3,
       "nodes": [
         {
           "depth": -3,
           "materialized": "table",
-          "name": "country_to_region_mappings",
+          "name": "supplies_6",
           "resource_type": "model",
-          "unique_id": "model.fishtown_internal_analytics.country_to_region_mappings"
+          "unique_id": "model.jaffle_shop.supplies_6"
         },
         {
           "depth": -3,
           "materialized": "incremental",
-          "name": "int_current_web_conversions",
+          "name": "int_events_5",
           "resource_type": "model",
-          "unique_id": "model.fishtown_internal_analytics.int_current_web_conversions"
+          "unique_id": "model.jaffle_shop.int_events_5"
         },
         {
           "depth": -3,
           "materialized": "incremental",
-          "name": "int_historical_web_conversions",
+          "name": "int_cohorts_4",
           "resource_type": "model",
-          "unique_id": "model.fishtown_internal_analytics.int_historical_web_conversions"
+          "unique_id": "model.jaffle_shop.int_cohorts_4"
         },
         {
           "depth": -3,
           "materialized": "incremental",
-          "name": "int_snowplow__web_events_scroll_depth",
+          "name": "int_tickets_2",
           "resource_type": "model",
-          "unique_id": "model.fishtown_internal_analytics.int_snowplow__web_events_scroll_depth"
+          "unique_id": "model.jaffle_shop.int_tickets_2"
         },
         {
           "depth": -3,
           "materialized": "incremental",
-          "name": "int_snowplow__web_events_time",
+          "name": "int_revenue_5",
           "resource_type": "model",
-          "unique_id": "model.fishtown_internal_analytics.int_snowplow__web_events_time"
+          "unique_id": "model.jaffle_shop.int_revenue_5"
         },
         {
           "depth": -3,
           "materialized": "table",
-          "name": "int_snowplow__web_timing_context",
+          "name": "int_returns_4",
           "resource_type": "model",
-          "unique_id": "model.fishtown_internal_analytics.int_snowplow__web_timing_context"
+          "unique_id": "model.jaffle_shop.int_returns_4"
         },
         {
           "depth": -3,
           "materialized": "incremental",
-          "name": "int_snowplow_page_views",
+          "name": "int_categories_7",
           "resource_type": "model",
-          "unique_id": "model.fishtown_internal_analytics.int_snowplow_page_views"
+          "unique_id": "model.jaffle_shop.int_categories_7"
         },
         {
           "depth": -3,
           "materialized": "incremental",
-          "name": "int_snowplow_sessions_tmp",
+          "name": "int_discounts_6",
           "resource_type": "model",
-          "unique_id": "model.fishtown_internal_analytics.int_snowplow_sessions_tmp"
+          "unique_id": "model.jaffle_shop.int_discounts_6"
         },
         {
           "depth": -3,
           "materialized": "incremental",
-          "name": "int_snowplow_unioned__web",
+          "name": "int_refunds_6",
           "resource_type": "model",
-          "unique_id": "model.fishtown_internal_analytics.int_snowplow_unioned__web"
+          "unique_id": "model.jaffle_shop.int_refunds_6"
         },
         {
           "depth": -3,
           "materialized": "incremental",
-          "name": "int_snowplow_web_events",
+          "name": "int_suppliers_7",
           "resource_type": "model",
-          "unique_id": "model.fishtown_internal_analytics.int_snowplow_web_events"
+          "unique_id": "model.jaffle_shop.int_suppliers_7"
         },
         {
           "depth": -3,
           "materialized": "table",
-          "name": "int_web_blog_metadata__joined",
+          "name": "int_invoices_5",
           "resource_type": "model",
-          "unique_id": "model.fishtown_internal_analytics.int_web_blog_metadata__joined"
+          "unique_id": "model.jaffle_shop.int_invoices_5"
         },
         {
           "depth": -3,
           "materialized": "table",
-          "name": "int_web_experiments__joined",
+          "name": "int_renewals_5",
           "resource_type": "model",
-          "unique_id": "model.fishtown_internal_analytics.int_web_experiments__joined"
+          "unique_id": "model.jaffle_shop.int_renewals_5"
         },
         {
           "depth": -3,
           "materialized": "table",
-          "name": "snowplow_id_mappings",
+          "name": "suppliers_8",
           "resource_type": "model",
-          "unique_id": "model.fishtown_internal_analytics.snowplow_id_mappings"
+          "unique_id": "model.jaffle_shop.suppliers_8"
         },
         {
           "depth": -3,
@@ -126,409 +126,409 @@
         {
           "depth": -3,
           "materialized": "view",
-          "name": "stg_notion__databases",
+          "name": "stg_locations_8",
           "resource_type": "model",
-          "unique_id": "model.fishtown_internal_analytics.stg_notion__databases"
+          "unique_id": "model.jaffle_shop.stg_locations_8"
         },
         {
           "depth": -3,
           "materialized": "view",
-          "name": "stg_salesforce__contacts",
+          "name": "stg_payments_7",
           "resource_type": "model",
-          "unique_id": "model.fishtown_internal_analytics.stg_salesforce__contacts"
+          "unique_id": "model.jaffle_shop.stg_payments_7"
         },
         {
           "depth": -3,
           "materialized": "view",
-          "name": "stg_salesforce__territories",
+          "name": "stg_customers_6",
           "resource_type": "model",
-          "unique_id": "model.fishtown_internal_analytics.stg_salesforce__territories"
+          "unique_id": "model.jaffle_shop.stg_customers_6"
         },
         {
           "depth": -3,
           "materialized": "view",
-          "name": "stg_salesforce__territory_countries",
+          "name": "stg_invoices_3",
           "resource_type": "model",
-          "unique_id": "model.fishtown_internal_analytics.stg_salesforce__territory_countries"
+          "unique_id": "model.jaffle_shop.stg_invoices_3"
         },
         {
           "depth": -3,
           "materialized": "view",
-          "name": "stg_salesforce__territory_states",
+          "name": "stg_reviews_4",
           "resource_type": "model",
-          "unique_id": "model.fishtown_internal_analytics.stg_salesforce__territory_states"
+          "unique_id": "model.jaffle_shop.stg_reviews_4"
         },
         {
           "depth": -3,
           "materialized": "view",
-          "name": "stg_salesforce__territory_zipcodes",
+          "name": "stg_regions_3",
           "resource_type": "model",
-          "unique_id": "model.fishtown_internal_analytics.stg_salesforce__territory_zipcodes"
+          "unique_id": "model.jaffle_shop.stg_regions_3"
         },
         {
           "depth": -3,
           "materialized": "view",
-          "name": "stg_salesforce__touchpoints",
+          "name": "stg_orders_6",
           "resource_type": "model",
-          "unique_id": "model.fishtown_internal_analytics.stg_salesforce__touchpoints"
+          "unique_id": "model.jaffle_shop.stg_orders_6"
         },
         {
           "depth": -3,
           "materialized": "table",
-          "name": "stg_seed__clearbit_country_mapping",
+          "name": "stg_currencies_3",
           "resource_type": "seed",
-          "unique_id": "seed.fishtown_internal_analytics.stg_seed__clearbit_country_mapping"
+          "unique_id": "seed.jaffle_shop.stg_currencies_3"
         },
         {
           "depth": -3,
           "materialized": "table",
-          "name": "stg_seed__country_to_region",
+          "name": "stg_order_items_6",
           "resource_type": "seed",
-          "unique_id": "seed.fishtown_internal_analytics.stg_seed__country_to_region"
+          "unique_id": "seed.jaffle_shop.stg_order_items_6"
         },
         {
           "depth": -3,
           "materialized": "table",
-          "name": "website_conversion_exceptions",
+          "name": "reviews_5",
           "resource_type": "seed",
-          "unique_id": "seed.fishtown_internal_analytics.website_conversion_exceptions"
+          "unique_id": "seed.jaffle_shop.reviews_5"
         },
         {
           "depth": -3,
           "materialized": "external",
-          "name": "account",
+          "name": "plans_9",
           "resource_type": "source",
-          "unique_id": "source.fishtown_internal_analytics.salesforce.account"
+          "unique_id": "source.jaffle_shop.raw_source_5.plans_9"
         },
         {
           "depth": -2,
           "materialized": "incremental",
-          "name": "event_web__submit_form",
+          "name": "currencies_7",
           "resource_type": "model",
-          "unique_id": "model.fishtown_internal_analytics.event_web__submit_form"
+          "unique_id": "model.jaffle_shop.currencies_7"
         },
         {
           "depth": -2,
           "materialized": "table",
-          "name": "fct_notion_channel_mapping",
+          "name": "fct_revenue_6",
           "resource_type": "model",
-          "unique_id": "model.fishtown_internal_analytics.fct_notion_channel_mapping"
+          "unique_id": "model.jaffle_shop.fct_revenue_6"
         },
         {
           "depth": -2,
           "materialized": "table",
-          "name": "fct_web_conversions",
+          "name": "fct_discounts_8",
           "resource_type": "model",
-          "unique_id": "model.fishtown_internal_analytics.fct_web_conversions"
+          "unique_id": "model.jaffle_shop.fct_discounts_8"
         },
         {
           "depth": -2,
           "materialized": "table",
-          "name": "int_cloud_ide_refreshes",
+          "name": "int_reviews_7",
           "resource_type": "model",
-          "unique_id": "model.fishtown_internal_analytics.int_cloud_ide_refreshes"
+          "unique_id": "model.jaffle_shop.int_reviews_7"
         },
         {
           "depth": -2,
           "materialized": "table",
-          "name": "int_salesforce__contacts_joined",
+          "name": "int_carts_4",
           "resource_type": "model",
-          "unique_id": "model.fishtown_internal_analytics.int_salesforce__contacts_joined"
+          "unique_id": "model.jaffle_shop.int_carts_4"
         },
         {
           "depth": -2,
           "materialized": "table",
-          "name": "int_salesforce__territory_mappings",
+          "name": "int_promotions_3",
           "resource_type": "model",
-          "unique_id": "model.fishtown_internal_analytics.int_salesforce__territory_mappings"
+          "unique_id": "model.jaffle_shop.int_promotions_3"
         },
         {
           "depth": -2,
           "materialized": "table",
-          "name": "int_snowplow_sessions",
+          "name": "int_customers_8",
           "resource_type": "model",
-          "unique_id": "model.fishtown_internal_analytics.int_snowplow_sessions"
+          "unique_id": "model.jaffle_shop.int_customers_8"
         },
         {
           "depth": -2,
           "materialized": "table",
-          "name": "int_web_experiment_sessions",
+          "name": "int_trials_5",
           "resource_type": "model",
-          "unique_id": "model.fishtown_internal_analytics.int_web_experiment_sessions"
+          "unique_id": "model.jaffle_shop.int_trials_5"
         },
         {
           "depth": -2,
           "materialized": "view",
-          "name": "stg_salesforce__accounts",
+          "name": "stg_locations_7",
           "resource_type": "model",
-          "unique_id": "model.fishtown_internal_analytics.stg_salesforce__accounts"
+          "unique_id": "model.jaffle_shop.stg_locations_7"
         },
         {
           "depth": -1,
           "materialized": "incremental",
-          "name": "fct_web_pageviews",
+          "name": "fct_locations_9",
           "resource_type": "model",
-          "unique_id": "model.fishtown_internal_analytics.fct_web_pageviews"
+          "unique_id": "model.jaffle_shop.fct_locations_9"
         },
         {
           "depth": -1,
           "materialized": "incremental",
-          "name": "fct_web_sessions",
+          "name": "fct_shipments_9",
           "resource_type": "model",
-          "unique_id": "model.fishtown_internal_analytics.fct_web_sessions"
+          "unique_id": "model.jaffle_shop.fct_shipments_9"
         },
         {
           "depth": 0,
-          "name": "2025_California_Web_Visitors",
+          "name": "categories_5",
           "resource_type": "exposure",
-          "unique_id": "exposure.fishtown_internal_analytics.2025_California_Web_Visitors"
+          "unique_id": "exposure.jaffle_shop.categories_5"
         }
       ],
       "edges": [
         {
           "edge_type": "ref",
-          "from_id": "model.fishtown_internal_analytics.country_to_region_mappings",
-          "to_id": "model.fishtown_internal_analytics.fct_web_sessions"
+          "from_id": "model.jaffle_shop.supplies_6",
+          "to_id": "model.jaffle_shop.fct_shipments_9"
         },
         {
           "edge_type": "ref",
-          "from_id": "model.fishtown_internal_analytics.country_to_region_mappings",
-          "to_id": "model.fishtown_internal_analytics.int_salesforce__contacts_joined"
+          "from_id": "model.jaffle_shop.supplies_6",
+          "to_id": "model.jaffle_shop.int_carts_4"
         },
         {
           "edge_type": "ref",
-          "from_id": "model.fishtown_internal_analytics.country_to_region_mappings",
-          "to_id": "model.fishtown_internal_analytics.int_salesforce__territory_mappings"
+          "from_id": "model.jaffle_shop.supplies_6",
+          "to_id": "model.jaffle_shop.int_promotions_3"
         },
         {
           "edge_type": "ref",
-          "from_id": "model.fishtown_internal_analytics.event_web__submit_form",
-          "to_id": "model.fishtown_internal_analytics.fct_web_sessions"
+          "from_id": "model.jaffle_shop.currencies_7",
+          "to_id": "model.jaffle_shop.fct_shipments_9"
         },
         {
           "edge_type": "ref",
-          "from_id": "model.fishtown_internal_analytics.event_web__submit_form",
-          "to_id": "model.fishtown_internal_analytics.int_historical_web_conversions"
+          "from_id": "model.jaffle_shop.currencies_7",
+          "to_id": "model.jaffle_shop.int_cohorts_4"
         },
         {
           "edge_type": "ref",
-          "from_id": "model.fishtown_internal_analytics.fct_notion_channel_mapping",
-          "to_id": "model.fishtown_internal_analytics.fct_web_pageviews"
+          "from_id": "model.jaffle_shop.fct_revenue_6",
+          "to_id": "model.jaffle_shop.fct_locations_9"
         },
         {
           "edge_type": "ref",
-          "from_id": "model.fishtown_internal_analytics.fct_notion_channel_mapping",
-          "to_id": "model.fishtown_internal_analytics.fct_web_sessions"
+          "from_id": "model.jaffle_shop.fct_revenue_6",
+          "to_id": "model.jaffle_shop.fct_shipments_9"
         },
         {
           "edge_type": "ref",
-          "from_id": "model.fishtown_internal_analytics.fct_web_conversions",
-          "to_id": "model.fishtown_internal_analytics.fct_web_pageviews"
+          "from_id": "model.jaffle_shop.fct_discounts_8",
+          "to_id": "model.jaffle_shop.fct_locations_9"
         },
         {
           "edge_type": "ref",
-          "from_id": "model.fishtown_internal_analytics.fct_web_pageviews",
-          "to_id": "exposure.fishtown_internal_analytics.2025_California_Web_Visitors"
+          "from_id": "model.jaffle_shop.fct_locations_9",
+          "to_id": "exposure.jaffle_shop.categories_5"
         },
         {
           "edge_type": "ref",
-          "from_id": "model.fishtown_internal_analytics.fct_web_sessions",
-          "to_id": "exposure.fishtown_internal_analytics.2025_California_Web_Visitors"
+          "from_id": "model.jaffle_shop.fct_shipments_9",
+          "to_id": "exposure.jaffle_shop.categories_5"
         },
         {
           "edge_type": "ref",
-          "from_id": "model.fishtown_internal_analytics.int_cloud_ide_refreshes",
-          "to_id": "model.fishtown_internal_analytics.fct_web_pageviews"
+          "from_id": "model.jaffle_shop.int_reviews_7",
+          "to_id": "model.jaffle_shop.fct_locations_9"
         },
         {
           "edge_type": "ref",
-          "from_id": "model.fishtown_internal_analytics.int_current_web_conversions",
-          "to_id": "model.fishtown_internal_analytics.fct_web_conversions"
+          "from_id": "model.jaffle_shop.int_events_5",
+          "to_id": "model.jaffle_shop.fct_discounts_8"
         },
         {
           "edge_type": "ref",
-          "from_id": "model.fishtown_internal_analytics.int_historical_web_conversions",
-          "to_id": "model.fishtown_internal_analytics.fct_web_conversions"
+          "from_id": "model.jaffle_shop.int_cohorts_4",
+          "to_id": "model.jaffle_shop.fct_discounts_8"
         },
         {
           "edge_type": "ref",
-          "from_id": "model.fishtown_internal_analytics.int_salesforce__contacts_joined",
-          "to_id": "model.fishtown_internal_analytics.fct_web_sessions"
+          "from_id": "model.jaffle_shop.int_carts_4",
+          "to_id": "model.jaffle_shop.fct_shipments_9"
         },
         {
           "edge_type": "ref",
-          "from_id": "model.fishtown_internal_analytics.int_salesforce__contacts_joined",
-          "to_id": "model.fishtown_internal_analytics.snowplow_id_mappings"
+          "from_id": "model.jaffle_shop.int_carts_4",
+          "to_id": "model.jaffle_shop.suppliers_8"
         },
         {
           "edge_type": "ref",
-          "from_id": "model.fishtown_internal_analytics.int_salesforce__territory_mappings",
-          "to_id": "model.fishtown_internal_analytics.fct_web_sessions"
+          "from_id": "model.jaffle_shop.int_promotions_3",
+          "to_id": "model.jaffle_shop.fct_shipments_9"
         },
         {
           "edge_type": "ref",
-          "from_id": "model.fishtown_internal_analytics.int_snowplow__web_events_scroll_depth",
-          "to_id": "model.fishtown_internal_analytics.int_snowplow_page_views"
+          "from_id": "model.jaffle_shop.int_tickets_2",
+          "to_id": "model.jaffle_shop.int_categories_7"
         },
         {
           "edge_type": "ref",
-          "from_id": "model.fishtown_internal_analytics.int_snowplow__web_events_time",
-          "to_id": "model.fishtown_internal_analytics.int_snowplow_page_views"
+          "from_id": "model.jaffle_shop.int_revenue_5",
+          "to_id": "model.jaffle_shop.int_categories_7"
         },
         {
           "edge_type": "ref",
-          "from_id": "model.fishtown_internal_analytics.int_snowplow__web_timing_context",
-          "to_id": "model.fishtown_internal_analytics.int_snowplow_page_views"
+          "from_id": "model.jaffle_shop.int_returns_4",
+          "to_id": "model.jaffle_shop.int_categories_7"
         },
         {
           "edge_type": "ref",
-          "from_id": "model.fishtown_internal_analytics.int_snowplow_page_views",
-          "to_id": "model.fishtown_internal_analytics.fct_web_pageviews"
+          "from_id": "model.jaffle_shop.int_categories_7",
+          "to_id": "model.jaffle_shop.fct_locations_9"
         },
         {
           "edge_type": "ref",
-          "from_id": "model.fishtown_internal_analytics.int_snowplow_page_views",
-          "to_id": "model.fishtown_internal_analytics.int_cloud_ide_refreshes"
+          "from_id": "model.jaffle_shop.int_categories_7",
+          "to_id": "model.jaffle_shop.int_reviews_7"
         },
         {
           "edge_type": "ref",
-          "from_id": "model.fishtown_internal_analytics.int_snowplow_page_views",
-          "to_id": "model.fishtown_internal_analytics.int_snowplow_sessions_tmp"
+          "from_id": "model.jaffle_shop.int_categories_7",
+          "to_id": "model.jaffle_shop.int_discounts_6"
         },
         {
           "edge_type": "ref",
-          "from_id": "model.fishtown_internal_analytics.int_snowplow_page_views",
-          "to_id": "model.fishtown_internal_analytics.int_web_experiment_sessions"
+          "from_id": "model.jaffle_shop.int_categories_7",
+          "to_id": "model.jaffle_shop.int_trials_5"
         },
         {
           "edge_type": "ref",
-          "from_id": "model.fishtown_internal_analytics.int_snowplow_sessions",
-          "to_id": "model.fishtown_internal_analytics.fct_web_pageviews"
+          "from_id": "model.jaffle_shop.int_customers_8",
+          "to_id": "model.jaffle_shop.fct_locations_9"
         },
         {
           "edge_type": "ref",
-          "from_id": "model.fishtown_internal_analytics.int_snowplow_sessions",
-          "to_id": "model.fishtown_internal_analytics.fct_web_sessions"
+          "from_id": "model.jaffle_shop.int_customers_8",
+          "to_id": "model.jaffle_shop.fct_shipments_9"
         },
         {
           "edge_type": "ref",
-          "from_id": "model.fishtown_internal_analytics.int_snowplow_sessions",
-          "to_id": "model.fishtown_internal_analytics.int_current_web_conversions"
+          "from_id": "model.jaffle_shop.int_customers_8",
+          "to_id": "model.jaffle_shop.int_events_5"
         },
         {
           "edge_type": "ref",
-          "from_id": "model.fishtown_internal_analytics.int_snowplow_sessions",
-          "to_id": "model.fishtown_internal_analytics.int_historical_web_conversions"
+          "from_id": "model.jaffle_shop.int_customers_8",
+          "to_id": "model.jaffle_shop.int_cohorts_4"
         },
         {
           "edge_type": "ref",
-          "from_id": "model.fishtown_internal_analytics.int_snowplow_sessions_tmp",
-          "to_id": "model.fishtown_internal_analytics.int_snowplow_sessions"
+          "from_id": "model.jaffle_shop.int_discounts_6",
+          "to_id": "model.jaffle_shop.int_customers_8"
         },
         {
           "edge_type": "ref",
-          "from_id": "model.fishtown_internal_analytics.int_snowplow_unioned__web",
-          "to_id": "model.fishtown_internal_analytics.event_web__submit_form"
+          "from_id": "model.jaffle_shop.int_refunds_6",
+          "to_id": "model.jaffle_shop.currencies_7"
         },
         {
           "edge_type": "ref",
-          "from_id": "model.fishtown_internal_analytics.int_snowplow_unioned__web",
-          "to_id": "model.fishtown_internal_analytics.int_historical_web_conversions"
+          "from_id": "model.jaffle_shop.int_refunds_6",
+          "to_id": "model.jaffle_shop.int_cohorts_4"
         },
         {
           "edge_type": "ref",
-          "from_id": "model.fishtown_internal_analytics.int_snowplow_web_events",
-          "to_id": "model.fishtown_internal_analytics.int_snowplow_page_views"
+          "from_id": "model.jaffle_shop.int_suppliers_7",
+          "to_id": "model.jaffle_shop.int_categories_7"
         },
         {
           "edge_type": "ref",
-          "from_id": "model.fishtown_internal_analytics.int_snowplow_web_events",
-          "to_id": "model.fishtown_internal_analytics.snowplow_id_mappings"
+          "from_id": "model.jaffle_shop.int_suppliers_7",
+          "to_id": "model.jaffle_shop.suppliers_8"
         },
         {
           "edge_type": "ref",
-          "from_id": "model.fishtown_internal_analytics.int_web_blog_metadata__joined",
-          "to_id": "model.fishtown_internal_analytics.int_snowplow_page_views"
+          "from_id": "model.jaffle_shop.int_invoices_5",
+          "to_id": "model.jaffle_shop.int_categories_7"
         },
         {
           "edge_type": "ref",
-          "from_id": "model.fishtown_internal_analytics.int_web_experiment_sessions",
-          "to_id": "model.fishtown_internal_analytics.fct_web_sessions"
+          "from_id": "model.jaffle_shop.int_trials_5",
+          "to_id": "model.jaffle_shop.fct_shipments_9"
         },
         {
           "edge_type": "ref",
-          "from_id": "model.fishtown_internal_analytics.int_web_experiments__joined",
-          "to_id": "model.fishtown_internal_analytics.int_snowplow_page_views"
+          "from_id": "model.jaffle_shop.int_renewals_5",
+          "to_id": "model.jaffle_shop.int_categories_7"
         },
         {
           "edge_type": "ref",
-          "from_id": "model.fishtown_internal_analytics.snowplow_id_mappings",
-          "to_id": "model.fishtown_internal_analytics.int_snowplow_sessions"
+          "from_id": "model.jaffle_shop.suppliers_8",
+          "to_id": "model.jaffle_shop.int_customers_8"
         },
         {
           "edge_type": "ref",
-          "from_id": "model.fishtown_internal_analytics.stg_notion__databases",
-          "to_id": "model.fishtown_internal_analytics.fct_notion_channel_mapping"
+          "from_id": "model.jaffle_shop.stg_locations_8",
+          "to_id": "model.jaffle_shop.fct_revenue_6"
         },
         {
           "edge_type": "ref",
-          "from_id": "model.fishtown_internal_analytics.stg_salesforce__accounts",
-          "to_id": "model.fishtown_internal_analytics.fct_web_sessions"
+          "from_id": "model.jaffle_shop.stg_locations_7",
+          "to_id": "model.jaffle_shop.fct_shipments_9"
         },
         {
           "edge_type": "ref",
-          "from_id": "model.fishtown_internal_analytics.stg_salesforce__contacts",
-          "to_id": "model.fishtown_internal_analytics.int_salesforce__contacts_joined"
+          "from_id": "model.jaffle_shop.stg_payments_7",
+          "to_id": "model.jaffle_shop.int_carts_4"
         },
         {
           "edge_type": "ref",
-          "from_id": "model.fishtown_internal_analytics.stg_salesforce__territories",
-          "to_id": "model.fishtown_internal_analytics.int_salesforce__territory_mappings"
+          "from_id": "model.jaffle_shop.stg_customers_6",
+          "to_id": "model.jaffle_shop.int_promotions_3"
         },
         {
           "edge_type": "ref",
-          "from_id": "model.fishtown_internal_analytics.stg_salesforce__territory_countries",
-          "to_id": "model.fishtown_internal_analytics.int_salesforce__territory_mappings"
+          "from_id": "model.jaffle_shop.stg_invoices_3",
+          "to_id": "model.jaffle_shop.int_promotions_3"
         },
         {
           "edge_type": "ref",
-          "from_id": "model.fishtown_internal_analytics.stg_salesforce__territory_states",
-          "to_id": "model.fishtown_internal_analytics.int_salesforce__territory_mappings"
+          "from_id": "model.jaffle_shop.stg_reviews_4",
+          "to_id": "model.jaffle_shop.int_promotions_3"
         },
         {
           "edge_type": "ref",
-          "from_id": "model.fishtown_internal_analytics.stg_salesforce__territory_zipcodes",
-          "to_id": "model.fishtown_internal_analytics.int_salesforce__territory_mappings"
+          "from_id": "model.jaffle_shop.stg_regions_3",
+          "to_id": "model.jaffle_shop.int_promotions_3"
         },
         {
           "edge_type": "ref",
-          "from_id": "model.fishtown_internal_analytics.stg_salesforce__touchpoints",
-          "to_id": "model.fishtown_internal_analytics.int_salesforce__contacts_joined"
+          "from_id": "model.jaffle_shop.stg_orders_6",
+          "to_id": "model.jaffle_shop.int_carts_4"
         },
         {
           "edge_type": "ref",
           "from_id": "model.hubspot.stg_hubspot__contact",
-          "to_id": "model.fishtown_internal_analytics.int_salesforce__contacts_joined"
+          "to_id": "model.jaffle_shop.int_carts_4"
         },
         {
           "edge_type": "ref",
-          "from_id": "seed.fishtown_internal_analytics.stg_seed__clearbit_country_mapping",
-          "to_id": "model.fishtown_internal_analytics.country_to_region_mappings"
+          "from_id": "seed.jaffle_shop.stg_currencies_3",
+          "to_id": "model.jaffle_shop.supplies_6"
         },
         {
           "edge_type": "ref",
-          "from_id": "seed.fishtown_internal_analytics.stg_seed__country_to_region",
-          "to_id": "model.fishtown_internal_analytics.country_to_region_mappings"
+          "from_id": "seed.jaffle_shop.stg_order_items_6",
+          "to_id": "model.jaffle_shop.supplies_6"
         },
         {
           "edge_type": "ref",
-          "from_id": "seed.fishtown_internal_analytics.website_conversion_exceptions",
-          "to_id": "model.fishtown_internal_analytics.fct_web_conversions"
+          "from_id": "seed.jaffle_shop.reviews_5",
+          "to_id": "model.jaffle_shop.fct_discounts_8"
         },
         {
           "edge_type": "ref",
-          "from_id": "source.fishtown_internal_analytics.salesforce.account",
-          "to_id": "model.fishtown_internal_analytics.stg_salesforce__accounts"
+          "from_id": "source.jaffle_shop.raw_source_5.plans_9",
+          "to_id": "model.jaffle_shop.stg_locations_7"
         }
       ]
     }

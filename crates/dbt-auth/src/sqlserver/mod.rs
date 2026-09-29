@@ -2,7 +2,7 @@
 
 use std::borrow::Cow;
 
-use crate::{AdapterConfig, Auth, AuthError, AuthOutcome};
+use crate::{AdapterConfig, Auth, AuthError, AuthWarningPrinter};
 
 use dbt_adbc::{
     Backend,
@@ -37,6 +37,23 @@ enum SQLServerAuthIR<'a> {
         client_secret: &'a str,
     },
 
+    /// Pre-minted Entra bearer token supplied directly in the profile.
+    ///
+    /// Profile: `authentication: ActiveDirectoryAccessToken`, `access_token`.
+    ///
+    /// URI: `fedauth=ActiveDirectoryServicePrincipalAccessToken`, `password={access_token}`.
+    ///
+    /// Note: the profile name and the `fedauth` value differ on purpose; the driver spells
+    /// this workflow `ActiveDirectoryServicePrincipalAccessToken` and reads the token from
+    /// `password`.
+    ///
+    /// No credential exchange happens: the token is forwarded to the TDS FEDAUTH handshake
+    /// verbatim, so an expired token fails at connection time and is never refreshed.
+    ActiveDirectoryAccessToken {
+        /// Entra bearer token (`access_token` in profile, `password` in URI).
+        access_token: &'a str,
+    },
+
     /// user/password auth via the resource-owner password credentials flow.
     ///
     /// Profile: `authentication: ActiveDirectoryPassword`, `UID`, `PWD`, and `client_id`.
@@ -68,7 +85,11 @@ enum SQLServerAuthIR<'a> {
 }
 
 impl<'a> SQLServerAuthIR<'a> {
-    pub fn apply(self, mut builder: DatabaseBuilder) -> Result<DatabaseBuilder, AuthError> {
+    pub fn apply(
+        self,
+        mut builder: DatabaseBuilder,
+        _warning_printer: &dyn AuthWarningPrinter,
+    ) -> Result<DatabaseBuilder, AuthError> {
         // nearly all auth parameters are set in the URI
         // There are quite a few parameters that can be set
         // See: https://github.com/microsoft/go-mssqldb/tree/main?tab=readme-ov-file#connection-parameters-and-dsn
@@ -88,6 +109,16 @@ impl<'a> SQLServerAuthIR<'a> {
                         .append_pair("fedauth", "ActiveDirectoryServicePrincipal")
                         .append_pair("user id", &uid)
                         .append_pair("password", client_secret)
+                        .finish();
+                }
+            }
+            Self::ActiveDirectoryAccessToken { access_token } => {
+                if let Some(uri) = builder.uri.as_mut() {
+                    // go-mssqldb reads the bearer token from `password` and requires no
+                    // `user id` for this workflow.
+                    uri.query_pairs_mut()
+                        .append_pair("fedauth", "ActiveDirectoryServicePrincipalAccessToken")
+                        .append_pair("password", access_token)
                         .finish();
                 }
             }
@@ -117,12 +148,21 @@ impl<'a> SQLServerAuthIR<'a> {
     }
 }
 
-fn parse_auth<'a>(config: &'a AdapterConfig) -> Result<SQLServerAuthIR<'a>, AuthError> {
+fn parse_auth<'a>(
+    config: &'a AdapterConfig,
+    _warning_printer: &dyn AuthWarningPrinter,
+) -> Result<SQLServerAuthIR<'a>, AuthError> {
     let mut authentication = config.get_str("authentication").unwrap_or(DEFAULT_AUTH);
 
     // https://github.com/microsoft/dbt-fabric/blob/0de219082282724a789b0d1b18509d39899da8e1/dbt/adapters/fabric/fabric_credentials.py#L78-L79
     if authentication.eq_ignore_ascii_case("serviceprincipal") {
         authentication = "ActiveDirectoryServicePrincipal";
+    }
+
+    // dbt-fabric matches this method case-insensitively:
+    // `credentials.authentication.lower() == "activedirectoryaccesstoken"`
+    if authentication.eq_ignore_ascii_case("ActiveDirectoryAccessToken") {
+        authentication = "ActiveDirectoryAccessToken";
     }
 
     match authentication {
@@ -131,6 +171,18 @@ fn parse_auth<'a>(config: &'a AdapterConfig) -> Result<SQLServerAuthIR<'a>, Auth
             client_id: config.require_str("client_id")?,
             client_secret: config.require_str("client_secret")?,
         }),
+        "ActiveDirectoryAccessToken" => {
+            let access_token = config.require_str("access_token")?;
+            // The driver rejects an empty token with a message that names the `password`
+            // URI parameter, which does not exist in the user's profile. Fail earlier with
+            // the profile field name instead.
+            if access_token.is_empty() {
+                return Err(AuthError::config(
+                    "`access_token` must not be empty when using ActiveDirectoryAccessToken authentication",
+                ));
+            }
+            Ok(SQLServerAuthIR::ActiveDirectoryAccessToken { access_token })
+        }
         "ActiveDirectoryPassword" => Ok(SQLServerAuthIR::ActiveDirectoryPassword {
             user: config.require_str("UID")?,
             password: config.require_str("PWD")?,
@@ -141,7 +193,7 @@ fn parse_auth<'a>(config: &'a AdapterConfig) -> Result<SQLServerAuthIR<'a>, Auth
             unimplemented!("authentication method {} not implemented", authentication)
         }
         _ => Err(AuthError::config(format!(
-            "Invalid authentication method: {authentication} must be one of: [ActiveDirectoryServicePrincipal, ActiveDirectoryPassword, environment]"
+            "Invalid authentication method: {authentication} must be one of: [ActiveDirectoryServicePrincipal, ActiveDirectoryAccessToken, ActiveDirectoryPassword, environment]"
         ))),
     }
 }
@@ -149,6 +201,7 @@ fn parse_auth<'a>(config: &'a AdapterConfig) -> Result<SQLServerAuthIR<'a>, Auth
 fn apply_connection_args(
     config: &AdapterConfig,
     mut builder: DatabaseBuilder,
+    _warning_printer: &dyn AuthWarningPrinter,
 ) -> Result<DatabaseBuilder, AuthError> {
     let host = config.require_str("host")?;
     let port = config
@@ -181,22 +234,27 @@ fn apply_connection_args(
     Ok(builder)
 }
 
-pub struct SQLServerAuth;
+pub struct SQLServerAuth {
+    pub warning_printer: Box<dyn AuthWarningPrinter>,
+}
+
+impl SQLServerAuth {
+    pub fn new(warning_printer: Box<dyn AuthWarningPrinter>) -> Self {
+        Self { warning_printer }
+    }
+}
 
 impl Auth for SQLServerAuth {
     fn backend(&self) -> Backend {
         Backend::SQLServer
     }
 
-    fn configure(&self, config: &AdapterConfig) -> Result<AuthOutcome, AuthError> {
-        let authentication_args = parse_auth(config)?;
+    fn configure(&self, config: &AdapterConfig) -> Result<database::Builder, AuthError> {
+        let authentication_args = parse_auth(config, self.warning_printer.as_ref())?;
         let builder = database::Builder::new(self.backend());
-        let builder = apply_connection_args(config, builder)?;
-        let builder = authentication_args.apply(builder)?;
-        Ok(AuthOutcome {
-            builder,
-            warnings: vec![],
-        })
+        let builder = apply_connection_args(config, builder, self.warning_printer.as_ref())?;
+        let builder = authentication_args.apply(builder, self.warning_printer.as_ref())?;
+        Ok(builder)
     }
 }
 
@@ -224,8 +282,10 @@ mod tests {
             ("client_secret", "my-secret"),
         ]);
 
-        let outcome = SQLServerAuth.configure(&config).expect("configure");
-        let uri = uri_value(&outcome.builder);
+        let outcome = SQLServerAuth::new(Box::new(crate::NoopAuthWarningPrinter))
+            .configure(&config)
+            .expect("configure");
+        let uri = uri_value(&outcome);
 
         assert_contains!(&uri, "sqlserver://myserver.database.windows.net:1433");
         assert_contains!(&uri, "database=mydb");
@@ -244,8 +304,10 @@ mod tests {
             ("client_secret", "my-secret"),
         ]);
 
-        let outcome = SQLServerAuth.configure(&config).expect("configure");
-        let uri = uri_value(&outcome.builder);
+        let outcome = SQLServerAuth::new(Box::new(crate::NoopAuthWarningPrinter))
+            .configure(&config)
+            .expect("configure");
+        let uri = uri_value(&outcome);
 
         assert_contains!(&uri, "fedauth=ActiveDirectoryServicePrincipal");
         assert_contains!(&uri, "user+id=my-client");
@@ -263,8 +325,10 @@ mod tests {
             ("PWD", "hunter2"),
         ]);
 
-        let outcome = SQLServerAuth.configure(&config).expect("configure");
-        let uri = uri_value(&outcome.builder);
+        let outcome = SQLServerAuth::new(Box::new(crate::NoopAuthWarningPrinter))
+            .configure(&config)
+            .expect("configure");
+        let uri = uri_value(&outcome);
 
         assert_contains!(&uri, "sqlserver://myserver.database.windows.net:1433");
         assert_contains!(&uri, "fedauth=ActiveDirectoryPassword");
@@ -281,8 +345,10 @@ mod tests {
             ("database", "mydb"),
         ]);
 
-        let outcome = SQLServerAuth.configure(&config).expect("configure");
-        let uri = uri_value(&outcome.builder);
+        let outcome = SQLServerAuth::new(Box::new(crate::NoopAuthWarningPrinter))
+            .configure(&config)
+            .expect("configure");
+        let uri = uri_value(&outcome);
 
         assert_contains!(&uri, "sqlserver://myserver.database.windows.net:1433");
         assert_contains!(&uri, "database=mydb");
@@ -297,8 +363,10 @@ mod tests {
             ("database", "mydb"),
         ]);
 
-        let outcome = SQLServerAuth.configure(&config).expect("configure");
-        let uri = uri_value(&outcome.builder);
+        let outcome = SQLServerAuth::new(Box::new(crate::NoopAuthWarningPrinter))
+            .configure(&config)
+            .expect("configure");
+        let uri = uri_value(&outcome);
 
         assert_contains!(&uri, ":1433");
     }
@@ -312,8 +380,10 @@ mod tests {
             ("database", "mydb"),
         ]);
 
-        let outcome = SQLServerAuth.configure(&config).expect("configure");
-        let uri = uri_value(&outcome.builder);
+        let outcome = SQLServerAuth::new(Box::new(crate::NoopAuthWarningPrinter))
+            .configure(&config)
+            .expect("configure");
+        let uri = uri_value(&outcome);
 
         assert_contains!(&uri, ":1434");
     }
@@ -329,9 +399,110 @@ mod tests {
             ("client_secret", "my-secret"),
         ]);
 
-        let outcome = SQLServerAuth.configure(&config).expect("configure");
-        let uri = uri_value(&outcome.builder);
+        let outcome = SQLServerAuth::new(Box::new(crate::NoopAuthWarningPrinter))
+            .configure(&config)
+            .expect("configure");
+        let uri = uri_value(&outcome);
 
         assert_contains!(&uri, "fedauth=ActiveDirectoryServicePrincipal");
+    }
+
+    const FAKE_ACCESS_TOKEN: &str = "eyJ0eXAiOiJKV1QifQ.eyJhdWQiOiJkYiJ9.c2lnbmF0dXJl";
+
+    #[test]
+    fn test_active_directory_access_token() {
+        let config = make_config([
+            ("authentication", "ActiveDirectoryAccessToken"),
+            ("host", "myserver.database.windows.net"),
+            ("database", "mydb"),
+            ("access_token", FAKE_ACCESS_TOKEN),
+        ]);
+
+        let outcome = SQLServerAuth::new(Box::new(crate::NoopAuthWarningPrinter))
+            .configure(&config)
+            .expect("configure");
+        let uri = uri_value(&outcome);
+
+        assert_contains!(&uri, "sqlserver://myserver.database.windows.net:1433");
+        assert_contains!(&uri, "database=mydb");
+        // dbt-fabric spells the profile value `ActiveDirectoryAccessToken`, but the driver
+        // only understands the go-mssqldb spelling.
+        assert_contains!(&uri, "fedauth=ActiveDirectoryServicePrincipalAccessToken");
+        assert_contains!(&uri, &format!("password={FAKE_ACCESS_TOKEN}"));
+        // This workflow takes no identity parameters.
+        assert!(!uri.contains("user+id"), "unexpected `user id` in {uri}");
+        assert!(
+            !uri.contains("applicationclientid"),
+            "unexpected `applicationclientid` in {uri}"
+        );
+    }
+
+    #[test]
+    fn test_access_token_is_case_insensitive() {
+        // dbt-fabric lowercases `authentication` before comparing.
+        let config = make_config([
+            ("authentication", "activedirectoryaccesstoken"),
+            ("host", "myserver.database.windows.net"),
+            ("database", "mydb"),
+            ("access_token", FAKE_ACCESS_TOKEN),
+        ]);
+
+        let outcome = SQLServerAuth::new(Box::new(crate::NoopAuthWarningPrinter))
+            .configure(&config)
+            .expect("configure");
+        let uri = uri_value(&outcome);
+
+        assert_contains!(&uri, "fedauth=ActiveDirectoryServicePrincipalAccessToken");
+    }
+
+    #[test]
+    fn test_access_token_missing() {
+        let config = make_config([
+            ("authentication", "ActiveDirectoryAccessToken"),
+            ("host", "myserver.database.windows.net"),
+            ("database", "mydb"),
+        ]);
+
+        let err = SQLServerAuth::new(Box::new(crate::NoopAuthWarningPrinter))
+            .configure(&config)
+            .expect_err("missing access_token must fail");
+
+        match err {
+            AuthError::YAML(e) => {
+                assert_contains!(e.to_string(), "missing field `access_token`")
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_access_token_empty() {
+        let config = make_config([
+            ("authentication", "ActiveDirectoryAccessToken"),
+            ("host", "myserver.database.windows.net"),
+            ("database", "mydb"),
+            ("access_token", ""),
+        ]);
+
+        let err = SQLServerAuth::new(Box::new(crate::NoopAuthWarningPrinter))
+            .configure(&config)
+            .expect_err("empty access_token must fail");
+
+        assert_contains!(err.msg(), "`access_token` must not be empty");
+    }
+
+    #[test]
+    fn test_invalid_authentication_lists_access_token() {
+        let config = make_config([
+            ("authentication", "NotAnAuthMethod"),
+            ("host", "myserver.database.windows.net"),
+            ("database", "mydb"),
+        ]);
+
+        let err = SQLServerAuth::new(Box::new(crate::NoopAuthWarningPrinter))
+            .configure(&config)
+            .expect_err("invalid authentication must fail");
+
+        assert_contains!(err.msg(), "ActiveDirectoryAccessToken");
     }
 }

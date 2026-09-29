@@ -1,7 +1,8 @@
 import { FC, PropsWithChildren } from 'react';
+import { Info } from 'lucide-react';
 import { twMerge } from 'tailwind-merge';
 
-import { Icon, RyeconInfoOutline, Tooltip } from '@dbt-labs/sourdough';
+import { Tooltip } from '../../components/ui/Tooltip';
 
 interface PropertyCardProps extends PropsWithChildren<{}> {
   title: string;
@@ -23,7 +24,7 @@ export const PropertyCard: FC<PropertyCardProps> = ({
           {info && (
             <span className="flex-0">
               <Tooltip content={info}>
-                <Icon className="text-fgDecorative" ryecon={RyeconInfoOutline} />
+                <Info className="size-3.5 text-fgDecorative" />
               </Tooltip>
             </span>
           )}

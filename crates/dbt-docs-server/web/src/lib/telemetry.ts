@@ -2,7 +2,6 @@ import { useSyncExternalStore } from 'react';
 
 import {
   type AnalyticsEvent,
-  api,
   type DocsSiteOpenedEvent,
   type Identity,
   type LineageViewedEvent,
@@ -12,7 +11,9 @@ import {
   type UpsellPromptClickedEvent,
   type UpsellPromptDismissedEvent,
   type UpsellPromptDisplayedEvent,
-} from '../api';
+} from '../types';
+import { readSiteBootstrap } from './siteBootstrap';
+import { flushVortex, logEvent } from './vortexSink';
 
 /** Base properties attached to every telemetry event once analytics is
  *  initialised. `isLoggedIn` is the V1 engagement-slice dimension (events are
@@ -32,12 +33,8 @@ export type TrackableEvent = DistributiveOmit<
   'is_logged_in' | 'context'
 >;
 
-/** Endpoint the relay listens on. Mirrors `api.analytics`'s path so the
- *  exit-time `sendBeacon` fallback can target it directly. */
-const ANALYTICS_PATH = '/api/v1/analytics/events';
-
-/** Debounce before a queued batch is POSTed. Mirrors the server worker's
- *  flush cadence so we don't out-pace it. */
+/** Debounce before a queued batch is handed to the producer, so a burst of
+ *  navigation events coalesces into one pass. */
 const FLUSH_DELAY_MS = 500;
 
 let initialized = false;
@@ -56,8 +53,8 @@ function notifyInitialized(): void {
 }
 
 /**
- * Consent-gated telemetry bootstrap. Call once, on app load, with the resolved
- * {@link Identity} from `GET /api/v1/identity`.
+ * Consent-gated telemetry bootstrap. Call once, on app load, with the {@link Identity}
+ * resolved from the site bootstrap.
  *
  * If `analytics_enabled` is not `true` this is a no-op: no session is started,
  * no events are queued, and no network calls to any analytics endpoint are
@@ -77,7 +74,7 @@ export function initTelemetry(identity: Identity): void {
   sessionId = crypto.randomUUID();
 
   // Flush on page exit so a batch queued in the last ~500ms isn't lost. Loss
-  // on a hard crash is acceptable (ADR-9, fire-and-forget); this just narrows
+  // on a hard crash is acceptable (ADR-10, fire-and-forget); this just narrows
   // the window for the common navigate-away case.
   exitListener = () => {
     if (document.visibilityState === 'hidden') flushOnExit();
@@ -141,21 +138,33 @@ function scheduleFlush(): void {
   }, FLUSH_DELAY_MS);
 }
 
-/** POST the queued batch and clear it. Fire-and-forget: errors are swallowed
- *  (event loss is acceptable per ADR-9). */
+/**
+ * Send the queued batch and clear it.
+ *
+ * Straight to the collector: there is no server in this architecture to relay through
+ * (ADR-10). Fire-and-forget — event loss is acceptable, and analytics must never be
+ * why a docs page misbehaves.
+ */
 async function flush(): Promise<void> {
   if (queue.length === 0) return;
   const events = queue;
   queue = [];
+  const site = readSiteBootstrap();
+  if (!site) return;
   try {
-    await api.analytics({ events });
+    await Promise.all(events.map((event) => logEvent(event, site)));
   } catch {
     // Intentionally ignored — analytics is best-effort.
   }
 }
 
-/** Synchronous exit-time flush. Prefers `sendBeacon`, which survives page
- *  teardown; falls back to a `keepalive` fetch. */
+/**
+ * Exit-time flush, which cannot wait for a promise.
+ *
+ * The producer sends each event as it is logged (batching is off), so by here there is
+ * usually nothing queued — anything left gets one unawaited attempt plus a producer
+ * flush, which is the best a closing tab allows.
+ */
 function flushOnExit(): void {
   if (flushTimer != null) {
     clearTimeout(flushTimer);
@@ -164,19 +173,11 @@ function flushOnExit(): void {
   if (queue.length === 0) return;
   const events = queue;
   queue = [];
-  const body = JSON.stringify({ events });
-  if (typeof navigator !== 'undefined' && typeof navigator.sendBeacon === 'function') {
-    navigator.sendBeacon(
-      ANALYTICS_PATH,
-      new Blob([body], { type: 'application/json' }),
-    );
-    return;
-  }
-  try {
-    void api.analytics({ events }, { keepalive: true });
-  } catch {
-    // Best-effort.
-  }
+
+  const site = readSiteBootstrap();
+  if (!site) return;
+  for (const event of events) void logEvent(event, site);
+  void flushVortex();
 }
 
 /* ---------- typed call-site helpers ---------- */

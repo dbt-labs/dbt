@@ -1,0 +1,134 @@
+import { useState, type ReactNode } from 'react';
+import { HelmetProvider } from 'react-helmet-async';
+import { MemoryRouter } from 'react-router-dom';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { withThemeByClassName } from '@storybook/addon-themes';
+import type { Decorator, Preview } from '@storybook/react-vite';
+
+import { BootstrapProvider } from '../src/lib/bootstrapContext';
+import {
+  LinkPrefixProvider,
+  MetadataDataProvider,
+  type MetadataDataSource,
+} from '../src/shared';
+import type { BootstrapData } from '../src/shared/data-sources/duckdb/bootstrap';
+import { storyBootstrapData } from '../src/shared/testing/storyFixtures';
+import { storyDataSource } from '../src/shared/testing/storySources';
+import { ReactFlow, ReactFlowProvider } from '@xyflow/react';
+
+// The whole app stylesheet: biga tokens, dbt-dag's react-flow CSS, sourdough, tailwind,
+// then `app.css`. Components here are styled almost entirely by CSS custom properties
+// from that chain, so importing anything less renders them colorless.
+import '../src/index.css';
+
+/**
+ * Per-story overrides for the provider stack.
+ *
+ * Declared as a parameter rather than a set of args because none of it is a prop of
+ * the component under test — it is the environment the component is mounted in, and
+ * args are reserved for the real props so the controls panel stays meaningful.
+ */
+export interface DocsStoryParameters {
+  /** Backing data source. Defaults to the fully-populated `storyDataSource()`. */
+  source?: MetadataDataSource;
+  /** Initial `MemoryRouter` history. Use when a component reads route params or
+   *  search params (e.g. `ModelFilterView` reads `?modeling_layer=`). */
+  initialEntries?: string[];
+  /** The first-paint node read, for components calling `useAllNodes`. Defaults to
+   *  the resolved story fixture — the context's own default never settles. */
+  bootstrap?: BootstrapData | Promise<BootstrapData>;
+}
+
+function Providers({
+  children,
+  source,
+  initialEntries,
+  bootstrap,
+}: DocsStoryParameters & { children: ReactNode }) {
+  // One client per story mount. Created in state rather than in the render body so a
+  // control change re-renders against the same cache instead of silently dropping it.
+  const [queryClient] = useState(
+    () =>
+      new QueryClient({
+        // No retries: a story that shows an error state should show it immediately
+        // rather than after three backoffs.
+        defaultOptions: { queries: { retry: false } },
+      }),
+  );
+  const [read] = useState(() =>
+    bootstrap instanceof Promise
+      ? bootstrap
+      : Promise.resolve(bootstrap ?? storyBootstrapData()),
+  );
+
+  return (
+    <QueryClientProvider client={queryClient}>
+      <HelmetProvider>
+        <MetadataDataProvider source={source ?? storyDataSource()}>
+          {/* `#/` matches `main.tsx`: the real app is hash-routed so the built
+              directory works at any path. Keeping the prefix identical means a story
+              renders the same hrefs the shipped app does. */}
+          <LinkPrefixProvider prefix="#/">
+            <BootstrapProvider value={read}>
+              <ReactFlowProvider>
+                <MemoryRouter initialEntries={initialEntries ?? ['/']}>
+                  {children}
+                </MemoryRouter>
+              </ReactFlowProvider>
+            </BootstrapProvider>
+          </LinkPrefixProvider>
+        </MetadataDataProvider>
+      </HelmetProvider>
+    </QueryClientProvider>
+  );
+}
+
+/** Mounts every story under the same provider stack `main.tsx` builds. */
+const withProviders: Decorator = (Story, context) => {
+  const { source, initialEntries, bootstrap } = (context.parameters.docsApp ??
+    {}) as DocsStoryParameters;
+  return (
+    <Providers source={source} initialEntries={initialEntries} bootstrap={bootstrap}>
+      <Story />
+    </Providers>
+  );
+};
+
+const preview: Preview = {
+  decorators: [
+    withProviders,
+    withThemeByClassName({
+      themes: { dark: 'dark', light: 'light' },
+      // Dark is the app's default (`hooks/useTheme.ts`), so it is the default here too
+      // — a component reviewed only in light mode is a component half-reviewed.
+      defaultTheme: 'dark',
+      // `useTheme` toggles the class on <html>, not on the story root.
+      parentSelector: 'html',
+    }),
+  ],
+
+  parameters: {
+    // `app.css` paints the page background from `--bgMain`; the addon's own
+    // backgrounds would sit on top of it and disagree with the theme switcher.
+    backgrounds: { disable: true },
+
+    controls: {
+      matchers: {
+        color: /(background|color)$/i,
+        date: /(At|Date)$/,
+      },
+    },
+
+    a11y: {
+      // Report violations in the panel rather than failing the story: several
+      // sourdough primitives have known contrast findings that are not this app's to
+      // fix, and a hard failure would hide new regressions among them.
+      test: 'todo',
+    },
+  },
+
+  // Opts every story into an autogenerated docs page.
+  tags: ['autodocs'],
+};
+
+export default preview;

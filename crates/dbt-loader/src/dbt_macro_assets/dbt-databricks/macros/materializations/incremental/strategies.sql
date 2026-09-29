@@ -35,7 +35,9 @@
         {%- if adapter.has_dbr_capability('replace_on') -%}
             {{ get_insert_replace_on_sql(source_relation, target_relation) }}
         {%- else -%}
-            {#-- Use legacy DPO INSERT OVERWRITE for older DBR versions --#}
+            {%- if adapter.behavior.use_replace_on_for_insert_overwrite -%}
+                {{ exceptions.warn("insert_overwrite: use_replace_on_for_insert_overwrite is enabled but this cluster's DBR version does not support REPLACE ON (requires DBR 17.1+). Falling back to legacy INSERT OVERWRITE.") }}
+            {%- endif -%}
             {%- set has_insert_by_name = adapter.has_dbr_capability('insert_by_name') -%}
             insert overwrite table {{ target_relation }}
             {{ partition_cols(label="partition") }}
@@ -43,10 +45,7 @@
             select * from {{ source_relation }}
         {%- endif -%}
     {%- else -%}
-        {#-- SQL Warehouses: Check behavior flag first --#}
         {%- if adapter.behavior.use_replace_on_for_insert_overwrite -%}
-            {#-- Behavior flag enabled, SQL warehouses are assumed capable --#}
-            {{ exceptions.warn("insert_overwrite will perform a dynamic insert overwrite. If you depended on the legacy truncation behavior, consider disabling the behavior flag use_replace_on_for_insert_overwrite.") }}
             {{ get_insert_replace_on_sql(source_relation, target_relation) }}
         {%- else -%}
             {#-- Behavior flag disabled, use legacy DPO INSERT OVERWRITE --#}
@@ -84,7 +83,7 @@
     {%- if replace_columns -%}
         {%- set replace_conditions = [] -%}
         {%- for col in replace_columns -%}
-            {%- do replace_conditions.append('t.' ~ col ~ ' <=> s.' ~ col) -%}
+            {%- do replace_conditions.append('t.' ~ adapter.quote(col) ~ ' <=> s.' ~ adapter.quote(col)) -%}
         {%- endfor -%}
         {%- set replace_conditions_csv = replace_conditions | join(' AND ') -%}
         {%- set source_columns = adapter.get_columns_in_relation(source_relation) | map(attribute="name") | list -%}
@@ -100,9 +99,9 @@
                 {%- endif -%}
             {%- endfor -%}
             {%- if matched_col.value is not none -%}
-                {%- do select_columns.append(matched_col.value) -%}
+                {%- do select_columns.append(adapter.quote(matched_col.value)) -%}
             {%- else -%}
-                {%- do select_columns.append('NULL as ' ~ dest_col) -%}
+                {%- do select_columns.append('NULL as ' ~ adapter.quote(dest_col)) -%}
             {%- endif -%}
         {%- endfor -%}
         insert into table {{ target_relation }} AS t
@@ -121,7 +120,11 @@
   {%- set predicates = args_dict['incremental_predicates'] -%}
   {%- set target_relation = args_dict['target_relation'] -%}
   {%- set temp_relation = args_dict['temp_relation'] -%}
+  {#-- BY NAME + REPLACE WHERE needs DBR 18.0+ on clusters (SPARK-54803), a higher floor than
+       plain insert_by_name; emitting it on older clusters fails to parse (issue #1532). --#}
+  {%- set has_by_name = adapter.has_dbr_capability('insert_by_name_replace_where') -%}
 INSERT INTO {{ target_relation.render() }}
+{%- if has_by_name %} BY NAME{% endif %}
 {%- if predicates %}
   {%- if predicates is sequence and predicates is not string %}
  REPLACE WHERE {{ predicates | join(' and ') }}
@@ -157,7 +160,7 @@ INSERT INTO {{ target_relation.render() }}
     {#-- DBR 17.1+: Use efficient REPLACE ON syntax --#}
     {%- set replace_on_expr = [] -%}
     {%- for key in unique_keys -%}
-      {%- do replace_on_expr.append('target.' ~ key ~ ' <=> temp.' ~ key) -%}
+      {%- do replace_on_expr.append('target.' ~ adapter.quote(key) ~ ' <=> temp.' ~ adapter.quote(key)) -%}
     {%- endfor -%}
     {%- set replace_on_expr = replace_on_expr | join(' and ') -%}
  insert into table {{ target_relation }} as target
@@ -179,7 +182,7 @@ replace on ({{ replace_on_expr }})
   {#-- Build WHERE clause for DELETE statement --#}
   {%- set delete_conditions = [] -%}
   {%- for key in unique_keys -%}
-    {%- do delete_conditions.append(target_relation ~ '.' ~ key ~ ' IN (SELECT ' ~ key ~ ' FROM ' ~ source_relation ~ ')') -%}
+    {%- do delete_conditions.append(target_relation ~ '.' ~ adapter.quote(key) ~ ' IN (SELECT ' ~ adapter.quote(key) ~ ' FROM ' ~ source_relation ~ ')') -%}
   {%- endfor -%}
   
   {#-- Add incremental predicates to DELETE if specified --#}
@@ -245,7 +248,7 @@ where {{ incremental_predicates }}
         {%- set common_columns = [] -%}
         {%- for dest_col in dest_columns -%}
             {%- if dest_col | lower in source_cols_lower -%}
-                {%- do common_columns.append(dest_col) -%}
+                {%- do common_columns.append(adapter.quote(dest_col)) -%}
             {%- endif -%}
         {%- endfor -%}
         {%- if common_columns | length > 0 -%}

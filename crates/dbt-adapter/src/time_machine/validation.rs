@@ -265,6 +265,7 @@ impl TimeMachineEventValidationEngine {
         engine.register_sanitizer(Box::new(DateLiteralSanitizer));
         engine.register_sanitizer(Box::new(QueryTagSanitizer));
         engine.register_sanitizer(Box::new(UuidSanitizer));
+        engine.register_sanitizer(Box::new(TmpSuffixSanitizer));
         engine.register_sanitizer(Box::new(GrantOrderingSanitizer));
         // Strip SQL comments before whitespace normalization so dynamic text in comments
         // (timestamps, state fingerprints, etc.) does not cause false mismatches.
@@ -654,6 +655,27 @@ impl SqlSanitizer for UuidSanitizer {
     }
 }
 
+/// Sanitizer for `__dbt_tmp` relation-name suffixes.
+///
+/// Replaces `__dbt_tmp<digits>` (and bare `__dbt_tmp`) with `__dbt_tmpSUFFIX`.
+/// Mirrors `canonicalize_dbt_model_tmp_suffix` in `sql::diff`.
+pub struct TmpSuffixSanitizer;
+
+impl SqlSanitizer for TmpSuffixSanitizer {
+    fn name(&self) -> &'static str {
+        "tmp_suffix"
+    }
+
+    fn sanitize(&self, sql: &str) -> String {
+        if !sql.to_ascii_lowercase().contains("__dbt_tmp") {
+            return sql.to_string();
+        }
+        static RE: LazyLock<Regex> =
+            LazyLock::new(|| Regex::new(r"(?i)(__dbt_tmp)_?\d*\b").expect("valid regex"));
+        RE.replace_all(sql, "${1}SUFFIX").to_string()
+    }
+}
+
 /// Sanitizer that normalizes the ordering of semicolon-separated GRANT/REVOKE privilege
 /// statements within contiguous verb groups.
 ///
@@ -890,6 +912,44 @@ mod tests {
         // The pattern 'YYYY-MM-DD' doesn't match inside a timestamp
         // because the timestamp continues past the date portion
         assert_eq!(sanitized, "VALUES ('2026-01-23T00:49:47.760170')");
+    }
+
+    #[test]
+    fn test_tmp_suffix_sanitizer_normalizes_bare_and_suffixed() {
+        let sanitizer = TmpSuffixSanitizer;
+        let bare = "create or replace table `p`.`d`.`snap__dbt_tmp` as ( select 1 )";
+        let suffixed =
+            "create or replace table `p`.`d`.`snap__dbt_tmp152555838935494` as ( select 1 )";
+        let with_underscore =
+            "create or replace table `p`.`d`.`snap__dbt_tmp_152555838935494` as ( select 1 )";
+        assert_eq!(sanitizer.sanitize(bare), sanitizer.sanitize(suffixed));
+        assert_eq!(
+            sanitizer.sanitize(bare),
+            sanitizer.sanitize(with_underscore)
+        );
+        assert_eq!(
+            sanitizer.sanitize(bare),
+            "create or replace table `p`.`d`.`snap__dbt_tmpSUFFIX` as ( select 1 )"
+        );
+    }
+
+    #[test]
+    fn test_tmp_suffix_sanitizer_makes_replay_match() {
+        let engine = TimeMachineEventValidationEngine::new();
+        let recorded_sql = "create or replace table `p`.`d`.`snap__dbt_tmp` OPTIONS( expiration_timestamp=TIMESTAMP_ADD(CURRENT_TIMESTAMP(), INTERVAL 12 hour) ) as ( select 1 )";
+        let incoming_sql = "create or replace table `p`.`d`.`snap__dbt_tmp152555838935494` OPTIONS( expiration_timestamp=TIMESTAMP_ADD(CURRENT_TIMESTAMP(), INTERVAL 12 hour) ) as ( select 1 )";
+
+        let recorded_args = serde_json::json!([recorded_sql]);
+        let incoming_args = serde_json::json!([incoming_sql]);
+        let incoming = IncomingEvent::new(
+            "snapshot.motherbrain_data.snapshot_salesforce_lead_id_changes",
+            "execute",
+            &incoming_args,
+        );
+        let recorded = make_recorded_event(incoming.node_id, "execute", recorded_args);
+
+        let result = engine.validate(&incoming, &recorded);
+        assert!(matches!(result, ValidationResult::Match));
     }
 
     #[test]

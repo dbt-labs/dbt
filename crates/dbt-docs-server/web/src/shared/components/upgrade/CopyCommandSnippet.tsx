@@ -1,6 +1,8 @@
 import { useCallback, useState } from 'react';
+import { Check, Copy } from 'lucide-react';
 
-import { Button, Code, RyeconCheckmark, RyeconCopy, Sizes } from '@dbt-labs/sourdough';
+import { Button } from '../../../components/ui/Button';
+import { Code } from '../../../components/ui/Code';
 
 /** Inline `run: <code>` snippet with an icon-only copy button — the CTA
  *  pattern the Notion handoff specifies for the column-level-lineage row
@@ -25,10 +27,10 @@ export function CopyCommandSnippet({ command, className }: Props) {
       <span className="text-xs text-fgDecorative">run:</span>
       <Code>{command}</Code>
       <Button
-        type="tertiary"
-        size={Sizes.xs}
+        variant="ghost"
+        size="xs"
         ariaLabel={copied ? 'Copied to clipboard' : `Copy ${command}`}
-        ryecon={copied ? RyeconCheckmark : RyeconCopy}
+        icon={copied ? <Check className="size-3" /> : <Copy className="size-3" />}
         onClick={handleCopy}
         testId="upgrade-copy-command"
       />

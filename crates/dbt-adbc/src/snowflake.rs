@@ -37,6 +37,16 @@ pub const DISABLE_TELEMETRY: &str = "adbc.snowflake.sql.client_option.disable_te
 pub const LOG_TRACING: &str = "adbc.snowflake.sql.client_option.tracing";
 pub const CLIENT_CONFIG_FILE: &str = "adbc.snowflake.sql.client_option.config_file";
 
+/// The identity provider to use for Workload Identity Federation (WIF) auth.
+///
+/// One of "OIDC", "AWS", "GCP", "AZURE". Must be set when auth_type is
+/// auth_type::WORKLOAD_IDENTITY.
+pub const WORKLOAD_IDENTITY_PROVIDER: &str = "adbc.snowflake.sql.client_option.identity_provider";
+/// The Entra resource to request a token for. Only valid when
+/// WORKLOAD_IDENTITY_PROVIDER is "AZURE"; Snowflake's default resource is used if unset.
+pub const WORKLOAD_IDENTITY_ENTRA_RESOURCE: &str =
+    "adbc.snowflake.sql.client_option.identity_provider_entra_resource";
+
 // WARN: Do not set both of these for one runtime
 // Turn on caching for username password MFA tokens
 pub const CLIENT_CACHE_MFA_TOKEN: &str = "adbc.snowflake.sql.client_option.cache_mfa_token";
@@ -63,6 +73,8 @@ pub mod auth_type {
     pub const USERNAME_PASSWORD_MFA: &str = "auth_mfa";
     /// Snowflake Programmatic Access Token (PAT)
     pub const PROGRAMMATIC_ACCESS_TOKEN: &str = "auth_pat";
+    /// Workload Identity Federation (WIF)
+    pub const WORKLOAD_IDENTITY: &str = "auth_wif";
 }
 
 // Names of Connection options --------------------------------------------
@@ -73,3 +85,9 @@ pub mod auth_type {
 pub const CLIENT_ID: &str = "adbc.snowflake.sql.client_option.client_id";
 pub const CLIENT_SECRET: &str = "adbc.snowflake.sql.client_option.client_secret";
 pub const REFRESH_TOKEN: &str = "adbc.snowflake.sql.client_option.refresh_token";
+
+// Names of schema metadata keys -----------------------------------------
+
+pub mod schema_metadata {
+    pub const QUERY_ID: &str = "SNOWFLAKE_QUERY_ID";
+}

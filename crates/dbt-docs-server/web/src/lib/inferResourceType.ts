@@ -1,10 +1,10 @@
-import type { NodeSummary } from '../api';
 import type { AssetArgs, ResourceType } from '../shared';
+import type { NodeSummary } from '../types';
 
 /**
  * Resource types whose `unique_id` is a bare name (no
  * `<resource_type>.<package>.<name>` prefix). Today this is only
- * `saved_query` — `/api/v1/saved_queries` returns ids like
+ * `saved_query` — `dbt.saved_queries` holds ids like
  * `dbt_invocations_by_billing_email`. Used as the inference fallback when a
  * dotless id arrives via the URL and the caller didn't pass `resourceType`.
  */

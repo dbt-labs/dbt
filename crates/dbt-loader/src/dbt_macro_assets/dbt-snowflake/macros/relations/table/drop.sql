@@ -1,6 +1,6 @@
 {% macro snowflake__drop_table(relation) %}
     {#-- CASCADE is not supported in catalog-linked databases --#}
-    {# DIVERGENCE START: core stashes this information on the relation; we cannot so we do some catalogs.yml hacks instead #}
+    {# DIVERGENCE BEGIN: core stashes this information on the relation; we cannot so we do some catalogs.yml hacks instead #}
     {# TODO: redesign the catalog_relation type to sidestep this whole problem #}
     {%- if dbt_version.startswith('2.') -%}
         {%- set catalog_relation = adapter.build_catalog_relation(relation.database) -%}

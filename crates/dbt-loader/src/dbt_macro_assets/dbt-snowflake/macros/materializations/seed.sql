@@ -1,28 +1,62 @@
 -- funcsign: (model, bool, relation, agate_table) -> string
 {% macro snowflake__reset_csv_table(model, full_refresh, old_relation, agate_table) %}
-    {% if full_refresh or (agate_table.rows | length) == 0 %}
-        {# When the agate has zero rows there is no INSERT OVERWRITE to atomically
-           replace data, so we drop + recreate to leave the table empty with the
-           current schema. This also handles column-drift on --empty re-seeds. #}
+    {#--
+        On non-full-refresh seeds, skip the explicit TRUNCATE. INSERT OVERWRITE in
+        snowflake__load_csv_rows will atomically clear and repopulate the table in a
+        single DML statement, closing the window where concurrent readers see an empty table.
+        (TRUNCATE is DDL in Snowflake and auto-commits, creating that window.)
+
+        Exception: when --empty is used, load_csv_rows is skipped entirely, so we
+        must truncate here to clear the table.
+    --#}
+    {% set sql = "" %}
+    {% if full_refresh %}
         {{ adapter.drop_relation(old_relation) }}
         {% set sql = create_csv_table(model, agate_table) %}
-        {{ return(sql) }}
-    {% else %}
-        {# For non-full-refresh, Snowflake uses INSERT OVERWRITE INTO which atomically
-           replaces data, so no separate truncate_relation call is needed. #}
-        {{ return("") }}
+    {% elif (agate_table.rows | length) == 0 %}
+        {{ adapter.truncate_relation(old_relation) }}
     {% endif %}
+    {{ return(sql) }}
 {% endmacro %}
 
 -- funcsign: (model, agate_table) -> string
 {% macro snowflake__load_csv_rows(model, agate_table) %}
+    {#--
+        Wrap all INSERT batches in a single transaction. The first batch uses
+        INSERT OVERWRITE, which atomically clears the table and inserts new rows as
+        one DML operation. Subsequent batches append with regular INSERT. Everything
+        commits together, so concurrent readers never see an empty or partial table.
+
+        For catalog-linked databases (e.g. Glue-backed Iceberg), explicit transaction
+        wrapping is skipped to stay consistent with the rest of the adapter.
+    --#}
     {% set batch_size = get_batch_size() %}
     {% set cols_sql = get_seed_column_quoted_csv(model, agate_table.column_names) %}
-    {% set bindings = [] %}
+    {% set is_catalog_linked = snowflake__is_catalog_linked_database(relation=config.model) %}
+
+    {#-- Handle empty seeds (header-only CSV) with an early return. The batching
+         loop below would never run, so we issue a single INSERT OVERWRITE that
+         selects zero rows to atomically clear the table. --#}
+    {% if (agate_table.rows | length) == 0 %}
+        {% set sql %}
+            insert overwrite into {{ this.render() }} ({{ cols_sql }})
+            select {{ cols_sql }} from {{ this.render() }} where 1=0
+        {% endset %}
+        {% if not is_catalog_linked %}
+            {% do adapter.add_query('BEGIN', auto_begin=False) %}
+        {% endif %}
+        {% do adapter.add_query(sql, abridge_sql_log=True) %}
+        {% if not is_catalog_linked %}
+            {% do adapter.add_query('COMMIT', auto_begin=False) %}
+        {% endif %}
+        {{ return(sql) }}
+    {% endif %}
 
     {% set statements = [] %}
 
-    {% do adapter.add_query('BEGIN', auto_begin=False) %}
+    {% if not is_catalog_linked %}
+        {% do adapter.add_query('BEGIN', auto_begin=False) %}
+    {% endif %}
 
     {% for chunk in agate_table.rows | batch(batch_size) %}
         {% set bindings = [] %}
@@ -49,7 +83,9 @@
         {% endif %}
     {% endfor %}
 
-    {% do adapter.add_query('COMMIT', auto_begin=False) %}
+    {% if not is_catalog_linked %}
+        {% do adapter.add_query('COMMIT', auto_begin=False) %}
+    {% endif %}
 
     {# Return SQL so we can render it out into the compiled files #}
     {{ return(statements[0]) }}

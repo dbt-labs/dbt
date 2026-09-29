@@ -1,5 +1,10 @@
-use crate::ctrl_c::run_future_with_ctrlc_support;
+use std::cell::Cell;
+use std::io::{self, Write};
+use std::process::ExitCode;
+use std::sync::Arc;
+
 use clap::error::ErrorKind;
+
 use dbt_clap_core::Cli;
 use dbt_clap_core::CliParser;
 use dbt_clap_core::commands::CoreCommand;
@@ -12,12 +17,11 @@ use dbt_common::{
 };
 use dbt_error::FsError;
 use dbt_features::feature_stack::FeatureStack;
-use std::io::{self, Write};
-use std::process::ExitCode;
-use std::sync::Arc;
+
+use crate::ctrl_c::run_future_with_ctrlc_support;
 
 use crate::dbt_lib::execute_fs_and_shutdown;
-use crate::vars::apply_engine_env_var_aliases;
+use crate::vars::{apply_color_env_overrides, apply_engine_env_var_aliases};
 
 const FS_DEFAULT_STACK_SIZE: usize = 8 * 1024 * 1024;
 
@@ -27,6 +31,22 @@ const FS_DEFAULT_STACK_SIZE: usize = 8 * 1024 * 1024;
 /// These threads are used mostly for blocking I/O operations, so they don't really
 /// consume CPU resources. That's why we can afford and should have a lot of them.
 const FS_DEFAULT_MAX_BLOCKING_THREADS: usize = 512;
+
+thread_local! {
+    static DBT_RT_GUARD: Cell<Option<dbt_runtime::SetCurrentGuard>> =
+        const { Cell::new(None) };
+}
+
+fn on_tokio_thread_start(handle: &dbt_runtime::Handle) {
+    // SAFETY: this is called only from the tokio thread start callback.
+    // Cleanup is performed on the tokio thread stop callback.
+    let guard = unsafe { handle.enter_owned() };
+    DBT_RT_GUARD.set(Some(guard));
+}
+
+fn on_tokio_thread_stop() {
+    DBT_RT_GUARD.set(None);
+}
 
 /// Load environment variables from .env file in the current working directory.
 ///
@@ -45,7 +65,7 @@ fn maybe_load_dotenv() {
     }
 }
 
-fn init_env_before_parse() {
+pub fn init_env_before_parse() {
     // Find project root and load .env BEFORE CLI parsing so that environment
     // variables from .env are available for clap's `env = "VAR"` attributes.
     maybe_load_dotenv();
@@ -53,6 +73,10 @@ fn init_env_before_parse() {
     // Apply DBT_ENGINE_* -> DBT_* aliases before CLI parsing.
     // This allows users to use DBT_ENGINE_FAIL_FAST instead of DBT_FAIL_FAST.
     apply_engine_env_var_aliases();
+
+    // Translate FORCE_COLOR before CLI parsing, so clap's own usage/error text
+    // is styled consistently with the rest of the output.
+    apply_color_env_overrides();
 }
 
 fn parse_cli_or_exit(cli_parser: &CliParser) -> Box<Cli> {
@@ -118,26 +142,43 @@ pub fn run_cli_with_code(cli: Box<Cli>, arg: SystemArgs, feature_stack: Arc<Feat
         .config
         .apply_configuration(&cli.common_args());
 
+    // See also: `set_runtime_max_parallelism`.
+    let dbt_rt = dbt_runtime::builder::Builder::new()
+        .max_blocking_threads(if arg.no_parallel {
+            1
+        } else {
+            dbt_runtime::builder::DEFAULT_MAX_BLOCKING_THREADS
+        })
+        .thread_stack_size(FS_DEFAULT_STACK_SIZE)
+        .build();
+
     // Setup tokio runtime and set stack-size to 8MB
     // DO NOT USE Rayon, it is not compatible with Tokio
 
-    // Only `--no-parallel` pins the tokio runtime to a single worker.
-    // `--threads` is exclusively the adapter connection-backpressure knob
-    // and does not affect the runtime.
+    // Only `--no-parallel` pins the tokio runtime to a single worker. The
+    // blocking pool above starts with a default cap because `threads` is not
+    // resolved yet; `set_runtime_max_parallelism` lowers it to `threads` once
+    // the profile is loaded.
     let tokio_rt = if arg.no_parallel {
+        let dbt_rt_handle = dbt_rt.handle().clone();
         tokio::runtime::Builder::new_multi_thread()
             .enable_all()
             .thread_stack_size(FS_DEFAULT_STACK_SIZE)
             .worker_threads(1)
             .max_blocking_threads(1)
+            .on_thread_start(move || on_tokio_thread_start(&dbt_rt_handle))
+            .on_thread_stop(on_tokio_thread_stop)
             .build()
             .expect("failed to initialize 'single-worker' tokio runtime")
     } else {
+        let dbt_rt_handle = dbt_rt.handle().clone();
         // Multi-threaded runtime: use default (max parallelism)
         tokio::runtime::Builder::new_multi_thread()
             .enable_all()
             .max_blocking_threads(FS_DEFAULT_MAX_BLOCKING_THREADS)
             .thread_stack_size(FS_DEFAULT_STACK_SIZE)
+            .on_thread_start(move || on_tokio_thread_start(&dbt_rt_handle))
+            .on_thread_stop(on_tokio_thread_stop)
             .build()
             .expect("failed to initialize default multi-threaded tokio runtime")
     };
@@ -184,8 +225,6 @@ pub fn run_cli_with_code(cli: Box<Cli>, arg: SystemArgs, feature_stack: Arc<Feat
     // Remove the panic hook
     let _ = std::panic::take_hook();
 
-    dbt_common::source_lineage::print_report();
-
     // Handle regular execution
     match result {
         Ok(cancellation_report) => {
@@ -206,6 +245,7 @@ pub fn run_cli_with_code(cli: Box<Cli>, arg: SystemArgs, feature_stack: Arc<Feat
                 //    (technically, this is implied by the 2nd step, but
                 //    nonetheless we make it explicit here in case this function
                 //    gets refactored in the future)
+                std::mem::forget(dbt_rt);
                 std::mem::forget(tokio_rt);
                 // 2. Call a platform-specific function to hard terminate the
                 //    current process

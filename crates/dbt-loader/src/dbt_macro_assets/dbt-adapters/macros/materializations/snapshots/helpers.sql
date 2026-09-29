@@ -180,21 +180,17 @@
 
     {%- if strategy.hard_deletes == 'new_record' %}
         {% set snapshotted_cols = get_list_of_column_names(get_columns_in_relation(target_relation)) %}
-        {% set source_sql_cols = get_column_schema_from_query(source_sql) %}
+        {% set source_col_names = get_columns_in_query(source_sql) %}
     ,
     deletion_records as (
 
         select
             'insert' as dbt_change_type,
-            {#/*
-                If a column has been added to the source it won't yet exist in the
-                snapshotted table so we insert a null value as a placeholder for the column.
-             */#}
-            {%- for col in source_sql_cols -%}
-            {%- if col.name in snapshotted_cols -%}
-            snapshotted_data.{{ adapter.quote(col.column) }},
+            {%- for col_name in source_col_names -%}
+            {%- if col_name in snapshotted_cols -%}
+            snapshotted_data.{{ adapter.quote(col_name) }},
             {%- else -%}
-            NULL as {{ adapter.quote(col.column) }},
+            source_data.{{ adapter.quote(col_name) }},
             {%- endif -%}
             {% endfor -%}
             {%- if strategy.unique_key | is_list -%}
@@ -300,7 +296,10 @@
 {% macro check_time_data_types(sql) %}
   {% set dbt_updated_at_data_type = get_updated_at_column_data_type(sql) %}
   {% set snapshot_get_time_data_type = get_snapshot_get_time_data_type() %}
-  {% if snapshot_get_time_data_type is not none and dbt_updated_at_data_type is not none and snapshot_get_time_data_type != dbt_updated_at_data_type %}
+  {#- Assumes strategy.hard_deletes (which builds the SQL)
+      agrees with get_hard_deletes_behavior(config); true for all built-in strategies. #}
+  {% set hard_deletes = adapter.get_hard_deletes_behavior(config) %}
+  {% if hard_deletes in ['invalidate', 'new_record'] and snapshot_get_time_data_type is not none and dbt_updated_at_data_type is not none and snapshot_get_time_data_type != dbt_updated_at_data_type %}
   {%   if exceptions.warn_snapshot_timestamp_data_types %}
   {{     exceptions.warn_snapshot_timestamp_data_types(snapshot_get_time_data_type, dbt_updated_at_data_type) }}
   {%   endif %}

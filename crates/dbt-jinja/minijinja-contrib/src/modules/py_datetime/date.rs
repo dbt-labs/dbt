@@ -9,6 +9,7 @@ use minijinja::{
     Error, ErrorKind, Value,
 };
 
+use super::find_microsecond_directive;
 use super::timedelta::PyTimeDelta;
 
 #[derive(Debug)]
@@ -249,7 +250,19 @@ impl PyDate {
         // "Format codes referring to hours, minutes or seconds will see 0 values"
         let datetime: NaiveDateTime = self.date.into();
 
-        Ok(Value::from(datetime.format(fmt).to_string()))
+        // Python's `%f` is six zero-padded microsecond digits (always zero here);
+        // chrono's `%f` is nine nanosecond digits. Format the surrounding pieces
+        // with chrono and write the microseconds ourselves.
+        let mut formatted = String::new();
+        let mut remaining = fmt;
+        while let Some(pos) = find_microsecond_directive(remaining) {
+            formatted.push_str(&datetime.format(&remaining[..pos]).to_string());
+            formatted.push_str("000000");
+            remaining = &remaining[pos + "%f".len()..];
+        }
+        formatted.push_str(&datetime.format(remaining).to_string());
+
+        Ok(Value::from(formatted))
     }
 
     /// Handle date + timedelta or date - timedelta or date - date operations

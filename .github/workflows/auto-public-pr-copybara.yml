@@ -35,10 +35,12 @@ on:
       - 'crates/dbt-loader/src/loader.rs'
       - 'crates/dbt-loader/src/mod.rs'
 
-# only run this once per PR at a time
+# Only run this once per PR at a time. Only a new push supersedes an earlier
+# run, so the `labeled` run cla-bot's `cla:yes` triggers can't cancel — and
+# then skip — the `opened` run's dispatch.
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.number }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event.action == 'synchronize' }}
 
 permissions: {}
 

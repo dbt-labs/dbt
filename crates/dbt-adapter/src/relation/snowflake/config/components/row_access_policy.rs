@@ -3,7 +3,7 @@ use dbt_schemas::schemas::{DbtModel, InternalDbtNodeAttributes};
 use minijinja::Value;
 
 use crate::relation::config_v2::diff;
-use crate::relation::snowflake::config::DescribeDynamicTableResults;
+use crate::relation::snowflake::config::SnowflakeDescribeResults;
 use crate::{
     relation::config_v2::{
         ComponentConfig, ComponentConfigLoader, SimpleComponentConfigImpl, impl_loader,
@@ -29,7 +29,7 @@ fn new_component(row_access_policy: Option<String>) -> RowAccessPolicy {
     }
 }
 
-fn from_remote_state(_results: &DescribeDynamicTableResults) -> AdapterResult<RowAccessPolicy> {
+fn from_remote_state(_results: &SnowflakeDescribeResults) -> AdapterResult<RowAccessPolicy> {
     // In Core, the row access policy is extracted here but never accessed
     // https://github.com/dbt-labs/dbt-adapters/blob/cb1b4a0b0758fd307dc21583bb3acfc78397a077/dbt-snowflake/src/dbt/adapters/snowflake/relation_configs/dynamic_table.py#L235
     Ok(new_component(None))
@@ -59,7 +59,7 @@ fn from_local_config(
     Ok(new_component(snowflake_config.row_access_policy.clone()))
 }
 
-impl_loader!(RowAccessPolicy, DescribeDynamicTableResults);
+impl_loader!(RowAccessPolicy, SnowflakeDescribeResults);
 
 #[cfg(test)]
 mod tests {

@@ -23,6 +23,7 @@ enum NodeType {
   NODE_TYPE_SAVED_QUERY = 13;
   NODE_TYPE_SEMANTIC_MODEL = 14;
   NODE_TYPE_FUNCTION = 15;
+  NODE_TYPE_CHECK = 16;
 }
 
 // Core outcome for any node evaluation result within any phase.
@@ -113,6 +114,10 @@ enum NodeMaterialization {
   // ONLY FOR SNOWFLAKE
   NODE_MATERIALIZATION_DYNAMIC_TABLE = 13;
   NODE_MATERIALIZATION_FUNCTION = 14;
+  // ONLY FOR SNOWFLAKE
+  NODE_MATERIALIZATION_INTERACTIVE_TABLE = 15;
+  // ONLY FOR DATABRICKS
+  NODE_MATERIALIZATION_METRIC_VIEW = 16;
   NODE_MATERIALIZATION_CUSTOM = 100;
 }
 
@@ -140,6 +145,10 @@ message TestEvaluationDetail {
 
   // Whether this test passed by static checking instead of execution.
   optional bool statically_checked = 6;
+
+  // unique_id of the batched test node whose single query produced this result.
+  // Matches `QueryExecuted.unique_id` for that query. Unset when the test ran on its own.
+  optional string batch_unique_id = 7;
 }
 
 // Freshness-specific outcome details (only for SOURCE nodes with freshness checks).
@@ -288,6 +297,11 @@ message NodeEvaluated {
   // Total time in milliseconds this node evaluation spent idle.
   // This includes time spent waiting on internal backpressure.
   optional uint64 idle_time_ms = 42;
+
+  // Identifier of the dbt State execution decision that governed this node's
+  // run-phase execution. Only set when the dbt State service was consulted and
+  // returned an execution decision.
+  optional string state_decision_id = 43;
 }
 
 // Span event tracking full processing of a node across all phases.
@@ -401,4 +415,13 @@ message NodeProcessed {
   // Total time in milliseconds spent idle across all nested node evaluations.
   // This includes time spent waiting on internal backpressure.
   optional uint64 idle_time_ms = 45;
+
+  // 1-based position of this node within the invocation, assigned in the order
+  // nodes begin processing. Mirrors dbt core's `node_index`. Only set for nodes
+  // in the selection set; ephemeral models never consume an index.
+  optional uint32 node_index = 46;
+
+  // Total number of nodes in the selection set, the denominator of `node_index`.
+  // Mirrors dbt core's `num_nodes`.
+  optional uint32 node_count_total = 47;
 }

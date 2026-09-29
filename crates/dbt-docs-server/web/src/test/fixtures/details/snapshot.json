@@ -1,34 +1,34 @@
 {
   "detail": {
-    "unique_id": "snapshot.fishtown_internal_analytics.adp_person_current_snapshot",
-    "name": "adp_person_current_snapshot",
+    "unique_id": "snapshot.jaffle_shop.currencies_5",
+    "name": "currencies_5",
     "resource_type": "snapshot",
-    "package_name": "fishtown_internal_analytics",
-    "description": "Timeseries of person-level attributes. The source table from Fivetran is very unique in that it includes versioned records but it does not maintain all changes that occur throughout history.  Therefore, since we cannot rely on the versioned table from Fivetran to have the complete history, we need to take snapshots in the data warehouse.  In addition, the snapshots have to be made off of a model with just the current records because it does not make sense to take snapshots  of a slowly-changing dimension.\n",
-    "original_file_path": "snapshots/adp_person_current_snapshot.sql",
+    "package_name": "jaffle_shop",
+    "description": "Synthetic fixture description. Structure is what this fixture exists to pin down; the prose is deliberately not real.",
+    "original_file_path": "models/currencies_5.sql",
     "patch_path": null,
     "tags": [],
     "fqn": [
-      "fishtown_internal_analytics",
-      "adp_person_current_snapshot"
+      "jaffle_shop",
+      "currencies_5"
     ],
-    "database_name": "staging",
-    "schema_name": "snapshots",
+    "database_name": "analytics",
+    "schema_name": "public",
     "identifier": null,
-    "relation_name": "staging.snapshots.adp_person_current_snapshot",
+    "relation_name": "analytics.public.currencies_5",
     "materialized": "snapshot",
     "raw_code": null,
     "compiled_code": null,
     "meta": null,
     "depends_on": [
       {
-        "unique_id": "model.fishtown_internal_analytics.stg_adp__person_history",
+        "unique_id": "model.jaffle_shop.stg_warehouses_7",
         "edge_type": "ref"
       }
     ],
     "referenced_by": [
       {
-        "unique_id": "model.fishtown_internal_analytics.int_adp_person_history",
+        "unique_id": "model.jaffle_shop.int_plans_7",
         "edge_type": "ref"
       }
     ],
@@ -39,291 +39,291 @@
   "lineage": {
     "status": 200,
     "body": {
-      "root": "snapshot.fishtown_internal_analytics.adp_person_current_snapshot",
+      "root": "snapshot.jaffle_shop.currencies_5",
       "max_depth": 3,
       "nodes": [
         {
           "depth": -2,
           "materialized": "external",
-          "name": "person_history",
+          "name": "channels_9",
           "resource_type": "source",
-          "unique_id": "source.fishtown_internal_analytics.adp.person_history"
+          "unique_id": "source.jaffle_shop.raw_source_0.channels_9"
         },
         {
           "depth": -1,
           "materialized": "view",
-          "name": "stg_adp__person_history",
+          "name": "stg_warehouses_7",
           "resource_type": "model",
-          "unique_id": "model.fishtown_internal_analytics.stg_adp__person_history"
+          "unique_id": "model.jaffle_shop.stg_warehouses_7"
         },
         {
           "depth": 0,
           "materialized": "snapshot",
-          "name": "adp_person_current_snapshot",
+          "name": "currencies_5",
           "resource_type": "snapshot",
-          "unique_id": "snapshot.fishtown_internal_analytics.adp_person_current_snapshot"
+          "unique_id": "snapshot.jaffle_shop.currencies_5"
         },
         {
           "depth": 1,
           "materialized": "table",
-          "name": "int_adp_person_history",
+          "name": "int_plans_7",
           "resource_type": "model",
-          "unique_id": "model.fishtown_internal_analytics.int_adp_person_history"
+          "unique_id": "model.jaffle_shop.int_plans_7"
         },
         {
           "depth": 2,
           "materialized": "table",
-          "name": "int_adp_worker_reports_to_name",
+          "name": "int_trials_4",
           "resource_type": "model",
-          "unique_id": "model.fishtown_internal_analytics.int_adp_worker_reports_to_name"
+          "unique_id": "model.jaffle_shop.int_trials_4"
         },
         {
           "depth": 2,
           "materialized": "test",
-          "name": "data_sequence_test_int_adp_person_history_worker_id",
+          "name": "orders_count",
           "resource_type": "test",
-          "unique_id": "test.fishtown_internal_analytics.data_sequence_test_int_adp_person_history_worker_id.4e55cc503f"
+          "unique_id": "test.jaffle_shop.campaigns"
         },
         {
           "depth": 2,
           "materialized": "test",
-          "name": "dbt_utils_unique_combination_of_columns_int_adp_person_history_worker_id__valid_from",
+          "name": "orders_total",
           "resource_type": "test",
-          "unique_id": "test.fishtown_internal_analytics.dbt_utils_unique_combination_of_columns_int_adp_person_history_worker_id__valid_from.f4dcd4ca54"
+          "unique_id": "test.jaffle_shop.dbt_utils_unique_combination_of_columns_supplies_id.f4dcd4ca54"
         },
         {
           "depth": 2,
           "materialized": "test",
-          "name": "not_null_int_adp_person_history_worker_id",
+          "name": "customers_new",
           "resource_type": "test",
-          "unique_id": "test.fishtown_internal_analytics.not_null_int_adp_person_history_worker_id.7a67f4dfb3"
+          "unique_id": "test.jaffle_shop.not_null_refunds_id.7a67f4dfb3"
         },
         {
           "depth": 2,
           "materialized": "test",
-          "name": "unique_int_adp_person_history_worker_id",
+          "name": "order_value_average",
           "resource_type": "test",
-          "unique_id": "test.fishtown_internal_analytics.unique_int_adp_person_history_worker_id.b4360ca245"
+          "unique_id": "test.jaffle_shop.unique_usage_id.b4360ca245"
         },
         {
           "depth": 3,
           "materialized": "table",
-          "name": "dim_employees",
+          "name": "dim_currencies_9",
           "resource_type": "model",
-          "unique_id": "model.fishtown_internal_analytics.dim_employees"
+          "unique_id": "model.jaffle_shop.dim_currencies_9"
         },
         {
           "depth": 3,
           "materialized": "table",
-          "name": "int_adp_worker_timeseries",
+          "name": "int_currencies_6",
           "resource_type": "model",
-          "unique_id": "model.fishtown_internal_analytics.int_adp_worker_timeseries"
+          "unique_id": "model.jaffle_shop.int_currencies_6"
         },
         {
           "depth": 3,
           "materialized": "test",
-          "name": "data_sequence_test_int_adp_worker_reports_to_name_worker_assignment_sk",
+          "name": "data_sequence_test_int_orders_channel_name_order_item_sk",
           "resource_type": "test",
-          "unique_id": "test.fishtown_internal_analytics.data_sequence_test_int_adp_worker_reports_to_name_worker_assignment_sk.2016402c16"
+          "unique_id": "test.jaffle_shop.sessions"
         },
         {
           "depth": 3,
           "materialized": "test",
-          "name": "data_sequence_test_int_adp_worker_timeseries_worker_id",
+          "name": "data_sequence_test_int_orders_timeseries_order_id",
           "resource_type": "test",
-          "unique_id": "test.fishtown_internal_analytics.data_sequence_test_int_adp_worker_timeseries_worker_id.a78c900766"
+          "unique_id": "test.jaffle_shop.suppliers"
         },
         {
           "depth": 3,
           "materialized": "test",
-          "name": "dbt_utils_unique_combination_of_columns_int_adp_worker_reports_to_name_worker_assignment_sk__valid_from",
+          "name": "dbt_utils_unique_combination_of_columns_int_orders_channel_name_order_item_sk__valid_from",
           "resource_type": "test",
-          "unique_id": "test.fishtown_internal_analytics.dbt_utils_unique_combination_of_columns_int_adp_worker_reports_to_name_worker_assignment_sk__valid_from.62e4b5b765"
+          "unique_id": "test.jaffle_shop.dbt_utils_unique_combination_of_columns_orders_id.62e4b5b765"
         },
         {
           "depth": 3,
           "materialized": "test",
-          "name": "dbt_utils_unique_combination_of_columns_int_adp_worker_timeseries_worker_assignment_sk__valid_from",
+          "name": "dbt_utils_unique_combination_of_columns_int_orders_timeseries_order_item_sk__valid_from",
           "resource_type": "test",
-          "unique_id": "test.fishtown_internal_analytics.dbt_utils_unique_combination_of_columns_int_adp_worker_timeseries_worker_assignment_sk__valid_from.60d63c1585"
+          "unique_id": "test.jaffle_shop.dbt_utils_unique_combination_of_columns_products_id.60d63c1585"
         },
         {
           "depth": 3,
           "materialized": "test",
-          "name": "not_null_int_adp_worker_reports_to_name_worker_assignment_sk",
+          "name": "not_null_int_orders_channel_name_order_item_sk",
           "resource_type": "test",
-          "unique_id": "test.fishtown_internal_analytics.not_null_int_adp_worker_reports_to_name_worker_assignment_sk.937e046818"
+          "unique_id": "test.jaffle_shop.not_null_invoices_id.937e046818"
         },
         {
           "depth": 3,
           "materialized": "test",
-          "name": "not_null_int_adp_worker_timeseries_valid_from",
+          "name": "not_null_int_orders_timeseries_valid_from",
           "resource_type": "test",
-          "unique_id": "test.fishtown_internal_analytics.not_null_int_adp_worker_timeseries_valid_from.deb6c2df74"
+          "unique_id": "test.jaffle_shop.not_null_currencies_id.deb6c2df74"
         },
         {
           "depth": 3,
           "materialized": "test",
-          "name": "not_null_int_adp_worker_timeseries_valid_to",
+          "name": "not_null_int_orders_timeseries_valid_to",
           "resource_type": "test",
-          "unique_id": "test.fishtown_internal_analytics.not_null_int_adp_worker_timeseries_valid_to.d7571a8d2d"
+          "unique_id": "test.jaffle_shop.not_null_discounts_id.d7571a8d2d"
         },
         {
           "depth": 3,
           "materialized": "test",
-          "name": "not_null_int_adp_worker_timeseries_worker_assignment_id",
+          "name": "not_null_int_orders_timeseries_order_item_id",
           "resource_type": "test",
-          "unique_id": "test.fishtown_internal_analytics.not_null_int_adp_worker_timeseries_worker_assignment_id.99e7cf0534"
+          "unique_id": "test.jaffle_shop.not_null_reviews_id.99e7cf0534"
         },
         {
           "depth": 3,
           "materialized": "test",
-          "name": "not_null_int_adp_worker_timeseries_worker_assignment_sk",
+          "name": "not_null_int_orders_timeseries_order_item_sk",
           "resource_type": "test",
-          "unique_id": "test.fishtown_internal_analytics.not_null_int_adp_worker_timeseries_worker_assignment_sk.127f1d1770"
+          "unique_id": "test.jaffle_shop.not_null_categories_id.127f1d1770"
         },
         {
           "depth": 3,
           "materialized": "test",
-          "name": "not_null_int_adp_worker_timeseries_worker_id",
+          "name": "not_null_int_orders_timeseries_order_id",
           "resource_type": "test",
-          "unique_id": "test.fishtown_internal_analytics.not_null_int_adp_worker_timeseries_worker_id.68ed9d8dc4"
+          "unique_id": "test.jaffle_shop.not_null_taxes_id.68ed9d8dc4"
         },
         {
           "depth": 3,
           "materialized": "test",
-          "name": "unique_int_adp_worker_reports_to_name_worker_assignment_sk",
+          "name": "unique_int_orders_channel_name_order_item_sk",
           "resource_type": "test",
-          "unique_id": "test.fishtown_internal_analytics.unique_int_adp_worker_reports_to_name_worker_assignment_sk.c4799fdf8b"
+          "unique_id": "test.jaffle_shop.unique_returns_id.c4799fdf8b"
         },
         {
           "depth": 3,
           "materialized": "test",
-          "name": "unique_int_adp_worker_timeseries_worker_assignment_sk",
+          "name": "unique_int_orders_timeseries_order_item_sk",
           "resource_type": "test",
-          "unique_id": "test.fishtown_internal_analytics.unique_int_adp_worker_timeseries_worker_assignment_sk.35bbf5ff2b"
+          "unique_id": "test.jaffle_shop.unique_warehouses_id.35bbf5ff2b"
         }
       ],
       "edges": [
         {
           "edge_type": "ref",
-          "from_id": "model.fishtown_internal_analytics.int_adp_person_history",
-          "to_id": "model.fishtown_internal_analytics.int_adp_worker_reports_to_name"
+          "from_id": "model.jaffle_shop.int_plans_7",
+          "to_id": "model.jaffle_shop.int_trials_4"
         },
         {
           "edge_type": "ref",
-          "from_id": "model.fishtown_internal_analytics.int_adp_person_history",
-          "to_id": "model.fishtown_internal_analytics.int_adp_worker_timeseries"
+          "from_id": "model.jaffle_shop.int_plans_7",
+          "to_id": "model.jaffle_shop.int_currencies_6"
         },
         {
           "edge_type": "ref",
-          "from_id": "model.fishtown_internal_analytics.int_adp_person_history",
-          "to_id": "test.fishtown_internal_analytics.data_sequence_test_int_adp_person_history_worker_id.4e55cc503f"
+          "from_id": "model.jaffle_shop.int_plans_7",
+          "to_id": "test.jaffle_shop.campaigns"
         },
         {
           "edge_type": "ref",
-          "from_id": "model.fishtown_internal_analytics.int_adp_person_history",
-          "to_id": "test.fishtown_internal_analytics.dbt_utils_unique_combination_of_columns_int_adp_person_history_worker_id__valid_from.f4dcd4ca54"
+          "from_id": "model.jaffle_shop.int_plans_7",
+          "to_id": "test.jaffle_shop.dbt_utils_unique_combination_of_columns_supplies_id.f4dcd4ca54"
         },
         {
           "edge_type": "ref",
-          "from_id": "model.fishtown_internal_analytics.int_adp_person_history",
-          "to_id": "test.fishtown_internal_analytics.not_null_int_adp_person_history_worker_id.7a67f4dfb3"
+          "from_id": "model.jaffle_shop.int_plans_7",
+          "to_id": "test.jaffle_shop.not_null_refunds_id.7a67f4dfb3"
         },
         {
           "edge_type": "ref",
-          "from_id": "model.fishtown_internal_analytics.int_adp_person_history",
-          "to_id": "test.fishtown_internal_analytics.unique_int_adp_person_history_worker_id.b4360ca245"
+          "from_id": "model.jaffle_shop.int_plans_7",
+          "to_id": "test.jaffle_shop.unique_usage_id.b4360ca245"
         },
         {
           "edge_type": "ref",
-          "from_id": "model.fishtown_internal_analytics.int_adp_worker_reports_to_name",
-          "to_id": "model.fishtown_internal_analytics.int_adp_worker_timeseries"
+          "from_id": "model.jaffle_shop.int_trials_4",
+          "to_id": "model.jaffle_shop.int_currencies_6"
         },
         {
           "edge_type": "ref",
-          "from_id": "model.fishtown_internal_analytics.int_adp_worker_reports_to_name",
-          "to_id": "test.fishtown_internal_analytics.data_sequence_test_int_adp_worker_reports_to_name_worker_assignment_sk.2016402c16"
+          "from_id": "model.jaffle_shop.int_trials_4",
+          "to_id": "test.jaffle_shop.sessions"
         },
         {
           "edge_type": "ref",
-          "from_id": "model.fishtown_internal_analytics.int_adp_worker_reports_to_name",
-          "to_id": "test.fishtown_internal_analytics.dbt_utils_unique_combination_of_columns_int_adp_worker_reports_to_name_worker_assignment_sk__valid_from.62e4b5b765"
+          "from_id": "model.jaffle_shop.int_trials_4",
+          "to_id": "test.jaffle_shop.dbt_utils_unique_combination_of_columns_orders_id.62e4b5b765"
         },
         {
           "edge_type": "ref",
-          "from_id": "model.fishtown_internal_analytics.int_adp_worker_reports_to_name",
-          "to_id": "test.fishtown_internal_analytics.not_null_int_adp_worker_reports_to_name_worker_assignment_sk.937e046818"
+          "from_id": "model.jaffle_shop.int_trials_4",
+          "to_id": "test.jaffle_shop.not_null_invoices_id.937e046818"
         },
         {
           "edge_type": "ref",
-          "from_id": "model.fishtown_internal_analytics.int_adp_worker_reports_to_name",
-          "to_id": "test.fishtown_internal_analytics.unique_int_adp_worker_reports_to_name_worker_assignment_sk.c4799fdf8b"
+          "from_id": "model.jaffle_shop.int_trials_4",
+          "to_id": "test.jaffle_shop.unique_returns_id.c4799fdf8b"
         },
         {
           "edge_type": "ref",
-          "from_id": "model.fishtown_internal_analytics.int_adp_worker_timeseries",
-          "to_id": "model.fishtown_internal_analytics.dim_employees"
+          "from_id": "model.jaffle_shop.int_currencies_6",
+          "to_id": "model.jaffle_shop.dim_currencies_9"
         },
         {
           "edge_type": "ref",
-          "from_id": "model.fishtown_internal_analytics.int_adp_worker_timeseries",
-          "to_id": "test.fishtown_internal_analytics.data_sequence_test_int_adp_worker_timeseries_worker_id.a78c900766"
+          "from_id": "model.jaffle_shop.int_currencies_6",
+          "to_id": "test.jaffle_shop.suppliers"
         },
         {
           "edge_type": "ref",
-          "from_id": "model.fishtown_internal_analytics.int_adp_worker_timeseries",
-          "to_id": "test.fishtown_internal_analytics.dbt_utils_unique_combination_of_columns_int_adp_worker_timeseries_worker_assignment_sk__valid_from.60d63c1585"
+          "from_id": "model.jaffle_shop.int_currencies_6",
+          "to_id": "test.jaffle_shop.dbt_utils_unique_combination_of_columns_products_id.60d63c1585"
         },
         {
           "edge_type": "ref",
-          "from_id": "model.fishtown_internal_analytics.int_adp_worker_timeseries",
-          "to_id": "test.fishtown_internal_analytics.not_null_int_adp_worker_timeseries_valid_from.deb6c2df74"
+          "from_id": "model.jaffle_shop.int_currencies_6",
+          "to_id": "test.jaffle_shop.not_null_currencies_id.deb6c2df74"
         },
         {
           "edge_type": "ref",
-          "from_id": "model.fishtown_internal_analytics.int_adp_worker_timeseries",
-          "to_id": "test.fishtown_internal_analytics.not_null_int_adp_worker_timeseries_valid_to.d7571a8d2d"
+          "from_id": "model.jaffle_shop.int_currencies_6",
+          "to_id": "test.jaffle_shop.not_null_discounts_id.d7571a8d2d"
         },
         {
           "edge_type": "ref",
-          "from_id": "model.fishtown_internal_analytics.int_adp_worker_timeseries",
-          "to_id": "test.fishtown_internal_analytics.not_null_int_adp_worker_timeseries_worker_assignment_id.99e7cf0534"
+          "from_id": "model.jaffle_shop.int_currencies_6",
+          "to_id": "test.jaffle_shop.not_null_reviews_id.99e7cf0534"
         },
         {
           "edge_type": "ref",
-          "from_id": "model.fishtown_internal_analytics.int_adp_worker_timeseries",
-          "to_id": "test.fishtown_internal_analytics.not_null_int_adp_worker_timeseries_worker_assignment_sk.127f1d1770"
+          "from_id": "model.jaffle_shop.int_currencies_6",
+          "to_id": "test.jaffle_shop.not_null_categories_id.127f1d1770"
         },
         {
           "edge_type": "ref",
-          "from_id": "model.fishtown_internal_analytics.int_adp_worker_timeseries",
-          "to_id": "test.fishtown_internal_analytics.not_null_int_adp_worker_timeseries_worker_id.68ed9d8dc4"
+          "from_id": "model.jaffle_shop.int_currencies_6",
+          "to_id": "test.jaffle_shop.not_null_taxes_id.68ed9d8dc4"
         },
         {
           "edge_type": "ref",
-          "from_id": "model.fishtown_internal_analytics.int_adp_worker_timeseries",
-          "to_id": "test.fishtown_internal_analytics.unique_int_adp_worker_timeseries_worker_assignment_sk.35bbf5ff2b"
+          "from_id": "model.jaffle_shop.int_currencies_6",
+          "to_id": "test.jaffle_shop.unique_warehouses_id.35bbf5ff2b"
         },
         {
           "edge_type": "ref",
-          "from_id": "model.fishtown_internal_analytics.stg_adp__person_history",
-          "to_id": "model.fishtown_internal_analytics.int_adp_person_history"
+          "from_id": "model.jaffle_shop.stg_warehouses_7",
+          "to_id": "model.jaffle_shop.int_plans_7"
         },
         {
           "edge_type": "ref",
-          "from_id": "model.fishtown_internal_analytics.stg_adp__person_history",
-          "to_id": "snapshot.fishtown_internal_analytics.adp_person_current_snapshot"
+          "from_id": "model.jaffle_shop.stg_warehouses_7",
+          "to_id": "snapshot.jaffle_shop.currencies_5"
         },
         {
           "edge_type": "ref",
-          "from_id": "snapshot.fishtown_internal_analytics.adp_person_current_snapshot",
-          "to_id": "model.fishtown_internal_analytics.int_adp_person_history"
+          "from_id": "snapshot.jaffle_shop.currencies_5",
+          "to_id": "model.jaffle_shop.int_plans_7"
         },
         {
           "edge_type": "ref",
-          "from_id": "source.fishtown_internal_analytics.adp.person_history",
-          "to_id": "model.fishtown_internal_analytics.stg_adp__person_history"
+          "from_id": "source.jaffle_shop.raw_source_0.channels_9",
+          "to_id": "model.jaffle_shop.stg_warehouses_7"
         }
       ]
     }

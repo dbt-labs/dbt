@@ -58,9 +58,17 @@ fn build_harness(
     });
     mock.on("get_column_schema_from_query", |_| {
         Ok(Value::from_serialize(vec![BTreeMap::from([
-            ("quoted", Value::from("id")),
+            ("name", Value::from("id")),
+            ("quoted", Value::from("\"id\"")),
             ("dtype", Value::from("integer")),
         ])]))
+    });
+    mock.on("quote", |args| {
+        let name = args
+            .first()
+            .and_then(|v| v.as_str().map(str::to_string))
+            .unwrap_or_default();
+        Ok(Value::from(format!("\"{name}\"")))
     });
     harness
         .env_mut()
@@ -81,6 +89,93 @@ fn build_harness(
         .add_global("adapter", Value::from_dyn_object(mock));
 
     harness
+}
+
+#[test]
+fn create_table_as_quotes_only_columns_marked_quote_true() {
+    let harness = build_harness("iceberg_demo", "ducklake_demo");
+    harness.mock().on("build_catalog_relation", |_| {
+        Ok(catalog_relation("direct_create"))
+    });
+    // `quoted` mirrors real `Column::quoted()` under DuckDB's default resolved
+    // quoting (identifier quoting on): always pre-quoted, regardless of any
+    // per-column `quote` config.
+    harness.mock().on("get_column_schema_from_query", |_| {
+        Ok(Value::from_serialize(vec![
+            BTreeMap::from([
+                ("name", Value::from("id")),
+                ("quoted", Value::from("\"id\"")),
+                ("dtype", Value::from("integer")),
+            ]),
+            BTreeMap::from([
+                ("name", Value::from("MixedCase")),
+                ("quoted", Value::from("\"MixedCase\"")),
+                ("dtype", Value::from("varchar")),
+            ]),
+        ]))
+    });
+    harness.mock().on("quote", |args| {
+        let identifier = args.first().and_then(|v| v.as_str()).unwrap_or_default();
+        Ok(Value::from(format!("\"{identifier}\"")))
+    });
+
+    let model = Value::from_serialize(BTreeMap::from([
+        ("alias".to_string(), Value::from("orders")),
+        (
+            "unique_id".to_string(),
+            Value::from("model.test_project.orders"),
+        ),
+        (
+            "columns".to_string(),
+            Value::from_serialize(BTreeMap::from([(
+                "MixedCase",
+                BTreeMap::from([
+                    ("name", Value::from("MixedCase")),
+                    ("quote", Value::from(true)),
+                ]),
+            )])),
+        ),
+    ]));
+
+    let ctx = harness
+        .materialization_context("orders", "select 1 as id, 2 as mixedcase")
+        .relation_type(RelationType::Table)
+        .with("model", model)
+        .with("dbt_version", Value::from("2.0.0"))
+        .build();
+
+    let rendered = harness
+        .render(
+            "{{ duckdb__create_table_as(false, this, compiled_code) }}",
+            ctx,
+        )
+        .expect("render should succeed");
+
+    // `compiled_code` (the select statement) is passed through verbatim by the
+    // macro, so assert only on the column lists the macro itself generates
+    // (the `create table (...)` and `insert into (...)` clauses), not on
+    // anything that could leak in from the query body.
+    assert!(
+        rendered.contains("\"MixedCase\" varchar"),
+        "column configured with quote: true should be quoted in the create-table column list, got: {rendered}"
+    );
+    assert!(
+        rendered.contains("id integer") && !rendered.contains("\"id\" integer"),
+        "column without quote: true should remain unquoted in the create-table column list, got: {rendered}"
+    );
+
+    let insert_clause = rendered
+        .split("insert into")
+        .nth(1)
+        .expect("rendered SQL should contain an insert into clause");
+    assert!(
+        insert_clause.contains("\"MixedCase\""),
+        "column configured with quote: true should be quoted in the insert column list, got: {insert_clause}"
+    );
+    assert!(
+        !insert_clause.contains("\"id\""),
+        "column without quote: true should remain unquoted in the insert column list, got: {insert_clause}"
+    );
 }
 
 #[test]
@@ -177,6 +272,15 @@ fn rename_relation_alters_iceberg_without_committing_connection() {
 }
 
 fn render_table_materialization(write_strategy: &'static str) -> MacroTestHarness {
+    render_table_materialization_with_columns(write_strategy, BTreeMap::new())
+}
+
+/// `user_columns` populates the model's yaml `columns:` block, keyed by column
+/// name — this is what the `direct_create` column list consults for `quote:`.
+fn render_table_materialization_with_columns(
+    write_strategy: &'static str,
+    user_columns: BTreeMap<String, Value>,
+) -> MacroTestHarness {
     let harness = build_harness("iceberg_demo", "ducklake_demo");
     harness
         .mock()
@@ -196,7 +300,7 @@ fn render_table_materialization(write_strategy: &'static str) -> MacroTestHarnes
     let model = Value::from_serialize(BTreeMap::from([
         ("alias", Value::from("orders")),
         ("unique_id", Value::from("model.test_project.orders")),
-        ("columns", Value::from(BTreeMap::<String, Value>::new())),
+        ("columns", Value::from_serialize(user_columns)),
         ("language", Value::from("sql")),
         ("compiled_code", Value::from("select 1 as id")),
     ]));
@@ -260,6 +364,51 @@ fn table_materialization_writes_iceberg_target_directly() {
     assert!(
         !executed.contains(" as ("),
         "Iceberg table materialization should not use CTAS, got: {executed}"
+    );
+}
+
+/// The `direct_create` branch derives its column list from the SELECT via
+/// `get_column_schema_from_query`, so those columns carry no `quote:` flag of
+/// their own. Undeclared columns must be emitted bare rather than quoted
+/// unconditionally, matching every other adapter's DDL.
+#[test]
+fn table_materialization_does_not_quote_undeclared_column_names() {
+    let harness = render_table_materialization("direct_create");
+    let executed = executed_sql(harness.mock()).join("\n");
+
+    assert!(
+        executed.contains("id integer"),
+        "column spec should name the column unquoted, got: {executed}"
+    );
+    assert!(
+        !executed.contains("\"id\""),
+        "undeclared column name must not be quoted in generated DDL, got: {executed}"
+    );
+}
+
+/// Counterpart to the above: the `quote:` flag is looked up by name in the
+/// model's yaml `columns:` block, so declaring `quote: true` still quotes.
+/// Without this the fix would be indistinguishable from always emitting
+/// `col.name`.
+#[test]
+fn table_materialization_quotes_column_names_flagged_in_yaml() {
+    let user_columns = BTreeMap::from([(
+        "id".to_string(),
+        Value::from_serialize(BTreeMap::from([
+            ("name".to_string(), Value::from("id")),
+            ("quote".to_string(), Value::from(true)),
+        ])),
+    )]);
+    let harness = render_table_materialization_with_columns("direct_create", user_columns);
+    let executed = executed_sql(harness.mock()).join("\n");
+
+    assert!(
+        executed.contains("\"id\" integer"),
+        "column flagged `quote: true` should be quoted, got: {executed}"
+    );
+    assert!(
+        executed.contains("insert into"),
+        "expected the create-then-insert path, got: {executed}"
     );
 }
 

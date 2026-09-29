@@ -21,7 +21,7 @@ use std::sync::Arc;
 use std::{fs, iter};
 
 pub type FeatureStackFactory =
-    dyn Fn(Box<dyn TracingConfigProvider>) -> Arc<FeatureStack> + Send + Sync;
+    dyn Fn(Arc<dyn TracingConfigProvider>) -> Arc<FeatureStack> + Send + Sync;
 
 /// Global [Arc] of a [FeatureStackFactory] to be shared across tests.
 pub static G_DBT_TEST_UTILS_FEATURE_STACK: OnceCell<Arc<FeatureStackFactory>> = OnceCell::new();

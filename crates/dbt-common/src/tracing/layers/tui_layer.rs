@@ -55,6 +55,7 @@ use crate::{
             layout::{format_delimiter, right_align_action},
             log_message::format_log_message,
             node::{
+                format_aggregated_test_group_header, format_aggregated_test_group_member,
                 format_compiled_code, format_compiled_inline_code, format_node_evaluated_end,
                 format_node_evaluated_start, format_node_processed_end, format_skipped_test_group,
             },
@@ -70,21 +71,21 @@ use crate::{
 };
 
 /// Build TUI layer that handles all terminal user interface on stdout and stderr, including progress bars
+pub struct TuiConfig {
+    pub show_options: HashSet<ShowOptions>,
+    pub command: FsCommand,
+    pub quiet: bool,
+}
+
 pub fn build_tui_layer(
     max_log_verbosity: LevelFilter,
     log_format: LogFormat,
-    show_options: HashSet<ShowOptions>,
-    command: FsCommand,
+    config: TuiConfig,
 ) -> ConsumerLayer {
     // Enables progress bar for now.
     let is_interactive = log_format == LogFormat::Default;
 
-    Box::new(TuiLayer::new(
-        max_log_verbosity,
-        is_interactive,
-        show_options,
-        command,
-    ))
+    Box::new(TuiLayer::new(max_log_verbosity, is_interactive, config))
 }
 
 /// Identifies progress bars and spinners in the TUI layer.
@@ -153,11 +154,82 @@ impl AnyTelemetryEvent for TuiAllProcessingNodesGroup {
     }
 }
 
+/// A special non-exported event type grouping the `NodeProcessed` spans of one aggregated
+/// generic-test query, so the console can report them as a single block. Its close is the
+/// signal that every member of the group has finished.
+#[derive(Debug, Clone)]
+pub struct TuiAggregatedTestGroup {
+    /// Generic test macro shared by every member of the group, e.g. `not_null`.
+    pub macro_name: String,
+    /// unique_id of the node the group's tests are attached to.
+    pub attached_node: String,
+}
+
+impl AnyTelemetryEvent for TuiAggregatedTestGroup {
+    fn event_type(&self) -> &'static str {
+        "v1.internal.events.fusion.node.TuiAggregatedTestGroup"
+    }
+
+    fn event_display_name(&self) -> String {
+        format!(
+            "Aggregated test group ({} on {})",
+            self.macro_name, self.attached_node
+        )
+    }
+
+    fn record_category(&self) -> TelemetryEventRecType {
+        TelemetryEventRecType::Span
+    }
+
+    fn output_flags(&self) -> TelemetryOutputFlags {
+        TelemetryOutputFlags::OUTPUT_CONSOLE
+    }
+
+    fn event_eq(&self, _: &dyn AnyTelemetryEvent) -> bool {
+        false
+    }
+
+    fn has_sensitive_data(&self) -> bool {
+        false
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
+    }
+
+    fn clone_box(&self) -> Box<dyn AnyTelemetryEvent> {
+        Box::new(self.clone())
+    }
+
+    fn to_json(&self) -> Result<serde_json::Value, String> {
+        Ok(serde_json::json!({
+            "macro_name": self.macro_name,
+            "attached_node": self.attached_node,
+        }))
+    }
+}
+
 /// Holds a vector of skipped test node names and flags indicating which types were seen
 struct SkippedTestNodes {
     pending_names: Vec<String>,
     seen_test: bool,
     seen_unit_test: bool,
+    /// Denominator of the `N of M` counter, copied off the accumulated nodes so the summary
+    /// line can pad its bracket to the same width as the indexed lines around it.
+    node_count_total: Option<u32>,
+}
+
+/// Members of one aggregated generic-test group, buffered on the group's span until it
+/// closes. Each entry is the member's event plus the duration its flat line would show.
+///
+/// The events are buffered rather than formatted lines because the tree connectors depend
+/// on how many members there turn out to be, which is only known once the group closes.
+struct PendingAggregatedTestGroup {
+    members: Vec<(NodeProcessed, std::time::Duration)>,
 }
 
 fn emit_pending_skips(tui: &TuiLayer, data_provider: &mut DataProvider<'_>) {
@@ -171,6 +243,7 @@ fn emit_pending_skips(tui: &TuiLayer, data_provider: &mut DataProvider<'_>) {
                     &skipped.pending_names,
                     skipped.seen_test,
                     skipped.seen_unit_test,
+                    skipped.node_count_total,
                     true,
                 ));
 
@@ -178,6 +251,7 @@ fn emit_pending_skips(tui: &TuiLayer, data_provider: &mut DataProvider<'_>) {
                 skipped.pending_names.clear();
                 skipped.seen_test = false;
                 skipped.seen_unit_test = false;
+                skipped.node_count_total = None;
             }
         },
     );
@@ -286,6 +360,7 @@ pub struct TuiLayer {
     max_term_line_width: Option<usize>,
     show_options: HashSet<ShowOptions>,
     command: FsCommand,
+    quiet: bool,
     /// Track if we've emitted the list header yet
     list_header_emitted: AtomicBool,
     /// Whether to group skipped tests under TuiAllProcessingNodesGroup spans
@@ -307,12 +382,12 @@ pub struct TuiLayer {
 }
 
 impl TuiLayer {
-    pub fn new(
-        max_log_verbosity: LevelFilter,
-        is_interactive: bool,
-        show_options: HashSet<ShowOptions>,
-        command: FsCommand,
-    ) -> Self {
+    pub fn new(max_log_verbosity: LevelFilter, is_interactive: bool, config: TuiConfig) -> Self {
+        let TuiConfig {
+            show_options,
+            command,
+            quiet,
+        } = config;
         let stdout_term = Term::stdout();
         let is_interactive = is_interactive && stdout_term.is_term();
         let max_term_line_width = stdout_term.size_checked().map(|(_, cols)| cols as usize);
@@ -334,6 +409,7 @@ impl TuiLayer {
             max_term_line_width,
             show_options,
             command,
+            quiet,
             list_header_emitted: AtomicBool::new(false),
             group_skipped_tests,
             progress,
@@ -347,6 +423,7 @@ impl TuiLayer {
             max_term_line_width,
             show_options,
             command,
+            quiet,
             list_header_emitted: AtomicBool::new(false),
             group_skipped_tests,
             progress,
@@ -375,6 +452,25 @@ fn format_unique_id_as_progress_item(unique_id: &str) -> String {
     let resource_type = parts.first().unwrap_or(&"unknown");
     let name = parts.last().unwrap_or(&"unknown");
     format!("{resource_type}:{name}")
+}
+
+/// Routes `resolve()`'s stage spans (`operation_id` prefixed `resolve.`) onto Parse's bar
+/// context line instead of a standalone spinner.
+fn resolve_stage_context_label(op: &GenericOpExecuted) -> Option<String> {
+    const PACKAGE_SCOPED_PREFIXES: [&str; 2] =
+        ["resolve.build_model_nodes.", "resolve.resolve_data_tests."];
+
+    if !op.operation_id.starts_with("resolve.") {
+        return None;
+    }
+
+    for prefix in PACKAGE_SCOPED_PREFIXES {
+        if let Some(package_name) = op.operation_id.strip_prefix(prefix) {
+            return Some(format!("{} ({package_name})", op.display_action));
+        }
+    }
+
+    Some(op.display_action.clone())
 }
 
 impl TelemetryConsumer for TuiLayer {
@@ -425,6 +521,14 @@ impl TelemetryConsumer for TuiLayer {
                 pending_names: Vec::new(),
                 seen_test: false,
                 seen_unit_test: false,
+                node_count_total: None,
+            });
+        }
+
+        // Init member storage for an aggregated test group
+        if span.attributes.is::<TuiAggregatedTestGroup>() {
+            data_provider.init_cur::<PendingAggregatedTestGroup>(PendingAggregatedTestGroup {
+                members: Vec::new(),
             });
         }
 
@@ -505,6 +609,11 @@ impl TelemetryConsumer for TuiLayer {
             return;
         }
 
+        if let Some(asset_parsed) = span.attributes.downcast_ref::<AssetParsed>() {
+            self.handle_asset_parsed_end(span, asset_parsed);
+            return;
+        }
+
         if let Some(ne) = span.attributes.downcast_ref::<PhaseExecuted>() {
             self.handle_phase_executed_end(span, ne);
             return;
@@ -542,8 +651,17 @@ impl TelemetryConsumer for TuiLayer {
             return;
         }
 
-        // Handle close of TuiAllProcessingNodesGroup in case we have pending skipped tests to emit
-        // after all nodes have been processed
+        // An aggregated test group has finished, so its buffered members can be emitted
+        // as one block
+        if let Some(group) = span.attributes.downcast_ref::<TuiAggregatedTestGroup>() {
+            if self.show_options.contains(&ShowOptions::Completed) {
+                self.handle_aggregated_test_group_end(group, data_provider);
+            }
+            return;
+        }
+
+        // Handle close of TuiAllProcessingNodesGroup in case we have pending skipped tests
+        // to emit after all nodes have been processed
         if span.attributes.is::<TuiAllProcessingNodesGroup>()
             && self.show_options.contains(&ShowOptions::Completed)
         {
@@ -741,7 +859,10 @@ impl TuiLayer {
         };
 
         match phase_enum {
-            ExecutionPhase::Render | ExecutionPhase::Analyze | ExecutionPhase::Run => {
+            ExecutionPhase::Render
+            | ExecutionPhase::Analyze
+            | ExecutionPhase::Run
+            | ExecutionPhase::Parse => {
                 progress.start_bar(ProgressId::Phase(phase_enum), total, progress_text);
             }
             ExecutionPhase::LoadProject => {
@@ -764,12 +885,10 @@ impl TuiLayer {
                 progress.start_spinner(ProgressId::GenericOp(load_op_id), progress_text);
             }
             ExecutionPhase::Clean
-            | ExecutionPhase::Parse
             | ExecutionPhase::Schedule
             | ExecutionPhase::TaskGraphBuild
             | ExecutionPhase::Debug
             | ExecutionPhase::DeferHydration
-            | ExecutionPhase::SchemaHydration
             | ExecutionPhase::FreshnessAnalysis
             | ExecutionPhase::OnRunStart
             | ExecutionPhase::OnRunEnd => {
@@ -779,6 +898,7 @@ impl TuiLayer {
             | ExecutionPhase::Compare
             | ExecutionPhase::InitAdapter
             | ExecutionPhase::NodeCacheHydration
+            | ExecutionPhase::SchemaHydration
             | ExecutionPhase::Lineage => {
                 // Do not show progress for these phases
             }
@@ -797,8 +917,11 @@ impl TuiLayer {
         };
 
         match phase_enum {
-            // Close contextual progress bar for render, analyze, run phases
-            ExecutionPhase::Render | ExecutionPhase::Analyze | ExecutionPhase::Run => {
+            // Close contextual progress bar for render, analyze, run, parse phases
+            ExecutionPhase::Render
+            | ExecutionPhase::Analyze
+            | ExecutionPhase::Run
+            | ExecutionPhase::Parse => {
                 progress.remove_bar(&ProgressId::Phase(phase_enum));
             }
             // Use spinner for phases without progress total
@@ -818,12 +941,10 @@ impl TuiLayer {
                 }
             }
             ExecutionPhase::Clean
-            | ExecutionPhase::Parse
             | ExecutionPhase::Schedule
             | ExecutionPhase::TaskGraphBuild
             | ExecutionPhase::Debug
             | ExecutionPhase::DeferHydration
-            | ExecutionPhase::SchemaHydration
             | ExecutionPhase::FreshnessAnalysis
             | ExecutionPhase::OnRunStart
             | ExecutionPhase::OnRunEnd => {
@@ -833,6 +954,7 @@ impl TuiLayer {
             | ExecutionPhase::Compare
             | ExecutionPhase::InitAdapter
             | ExecutionPhase::NodeCacheHydration
+            | ExecutionPhase::SchemaHydration
             | ExecutionPhase::Lineage => {
                 // Do not show progress for these phases
             }
@@ -1111,6 +1233,7 @@ impl TuiLayer {
             data_provider.with_ancestor_ext_mut::<TuiAllProcessingNodesGroup, SkippedTestNodes>(
                 |skipped| {
                     skipped.pending_names.push(node.name.clone());
+                    skipped.node_count_total = node.node_count_total;
                     if node.node_type() == NodeType::Test {
                         skipped.seen_test = true;
                     } else if node.node_type() == NodeType::UnitTest {
@@ -1139,6 +1262,27 @@ impl TuiLayer {
                     .unwrap_or_default()
             });
 
+        // Members of an aggregated generic-test query are buffered on their group span and
+        // printed as one block when it closes. Whether this node is a member is answered
+        // structurally, by the presence of that ancestor span.
+        //
+        // The outcome guard keeps members that finished without a reported result (the
+        // aggregated run task's error path) on their own flat line, as today: the group
+        // header can only render a test verdict, not a node error.
+        let mut buffered = false;
+        if get_test_outcome(node.into()).is_some() {
+            data_provider
+                .with_ancestor_ext_mut::<TuiAggregatedTestGroup, PendingAggregatedTestGroup>(
+                    |group| {
+                        group.members.push((node.clone(), duration));
+                        buffered = true;
+                    },
+                );
+        }
+        if buffered {
+            return;
+        }
+
         // Format the output line using the formatter with color enabled
         let output = format_node_processed_end(node, duration, true);
 
@@ -1147,6 +1291,72 @@ impl TuiLayer {
             io::stdout()
                 .lock()
                 .write_all(format!("{}\n", output).as_bytes())
+                .expect("failed to write to stdout");
+        });
+    }
+
+    /// Emits an aggregated test group's buffered members as one block, headed by the
+    /// group's worst verdict and the query's duration.
+    fn handle_aggregated_test_group_end(
+        &self,
+        group: &TuiAggregatedTestGroup,
+        data_provider: &mut DataProvider<'_>,
+    ) {
+        // The closing span is included in the ancestor search, so this reads the members
+        // off the group span itself
+        let mut members = Vec::new();
+        data_provider.with_ancestor_ext_mut::<TuiAggregatedTestGroup, PendingAggregatedTestGroup>(
+            |pending| {
+                members = std::mem::take(&mut pending.members);
+            },
+        );
+
+        if members.is_empty() {
+            return;
+        }
+
+        // The header's duration is the worst member's accumulated processing time, not the
+        // group span's wall time, which also covers waiting on upstream nodes.
+        let worst_outcome = members
+            .iter()
+            .map(|(node, _)| get_test_outcome(node.into()).unwrap_or(TestOutcome::Passed))
+            .max()
+            .unwrap_or(TestOutcome::Passed);
+        let max_duration = members
+            .iter()
+            .map(|(_, duration)| *duration)
+            .max()
+            .unwrap_or_default();
+
+        // Written as one atomic stdout write, so concurrently completing nodes cannot
+        // interleave lines into the block.
+        let mut block = format!(
+            "{}\n",
+            format_aggregated_test_group_header(
+                &group.macro_name,
+                &group.attached_node,
+                members.len(),
+                worst_outcome,
+                max_duration,
+                // Every member shares the one invocation-wide denominator.
+                members.first().and_then(|(node, _)| node.node_count_total),
+                true,
+            )
+        );
+        for (index, (node, _)) in members.iter().enumerate() {
+            block.push_str(&format_aggregated_test_group_member(
+                node,
+                index + 1 == members.len(),
+                true,
+            ));
+            block.push('\n');
+        }
+
+        // Emit after the span lock has been released to avoid possible deadlocks
+        self.write_suspended(|| {
+            io::stdout()
+                .lock()
+                .write_all(block.as_bytes())
                 .expect("failed to write to stdout");
         });
     }
@@ -1275,6 +1485,16 @@ impl TuiLayer {
     }
 
     fn handle_compiled_code_inline(&self, compiled_code: &CompiledCodeInline) {
+        if self.quiet {
+            self.write_suspended(|| {
+                io::stdout()
+                    .lock()
+                    .write_all(format!("{}\n", compiled_code.sql).as_bytes())
+                    .expect("failed to write compiled code to stdout");
+            });
+            return;
+        }
+
         // Only show if any Progress*, Completed or All option is enabled
         let should_show = self.show_options.contains(&ShowOptions::Progress)
             || self.show_options.contains(&ShowOptions::ProgressRender)
@@ -1350,14 +1570,21 @@ impl TuiLayer {
     }
 
     fn handle_asset_parsed_start(&self, _span: &SpanStartInfo, asset: &AssetParsed) {
-        // TODO: This is temporary legacy rendering for parse progress and should
-        // be replaced with the new end-span rendering (matching file log) once fully migrated.
-        // We ignore this span severity level and only check show options for progress.
+        // Legacy filter exclusion for generic tests, which are generated rather than
+        // authored and so are noise in both the progress indicator and the log line.
+        if asset.display_path.contains(DBT_GENERIC_TESTS_DIR_NAME) {
+            return;
+        }
 
-        if !should_show_progress_message(asset.phase(), &self.show_options)
-            // Legacy filter exclusion for generic tests
-            || asset.display_path.contains(DBT_GENERIC_TESTS_DIR_NAME)
-        {
+        // In interactive mode, the bar's contextual item is the only per-asset
+        // feedback; we ignore this span's severity level and only check show
+        // options for the text-mode line below.
+        if let Some(ref progress) = self.progress {
+            progress.add_bar_context(&ProgressId::Phase(asset.phase()), &asset.display_path);
+            return;
+        }
+
+        if !should_show_progress_message(asset.phase(), &self.show_options) {
             return;
         }
 
@@ -1368,6 +1595,23 @@ impl TuiLayer {
                 .write_all(format!("{}\n", formatted).as_bytes())
                 .expect("failed to write to stdout");
         });
+    }
+
+    fn handle_asset_parsed_end(&self, _span: &SpanEndInfo, asset: &AssetParsed) {
+        let Some(ref progress) = self.progress else {
+            return;
+        };
+
+        // Must mirror the exclusion in `handle_asset_parsed_start`, or the excluded
+        // assets would decrement a counter they never incremented.
+        if asset.display_path.contains(DBT_GENERIC_TESTS_DIR_NAME) {
+            return;
+        }
+
+        // No status counter: the parse bar's `pos/len` already counts parsed assets, and a
+        // second "N parsed" beside it can only disagree, since the total is an estimate the
+        // position clamps to.
+        progress.finish_bar_context(&ProgressId::Phase(asset.phase()), &asset.display_path, None);
     }
 
     fn handle_deps_all_packages_installing_start(&self, ev: &DepsAllPackagesInstalled) {
@@ -1648,6 +1892,11 @@ impl TuiLayer {
     fn handle_generic_op_start(&self, span: &SpanStartInfo, op: &GenericOpExecuted) {
         // Handle progress bars in interactive mode
         if let Some(ref progress) = self.progress {
+            if let Some(label) = resolve_stage_context_label(op) {
+                progress.add_bar_context(&ProgressId::Phase(ExecutionPhase::Parse), &label);
+                return;
+            }
+
             // Create action text for the progress bar or spinner
             let progress_text =
                 right_align_action(capitalize_first_letter(op.display_action.as_str()).into());
@@ -1706,19 +1955,24 @@ impl TuiLayer {
     fn handle_generic_op_end(&self, span: &SpanEndInfo, op: &GenericOpExecuted) {
         // Handle progress bars in interactive mode
         if let Some(ref progress) = self.progress {
-            // Get whether this op uses a bar or spinner and remove from tracking
-            let is_bar_entry = self.generic_op_is_bar.remove_sync(&op.operation_id);
-
-            let progress_id = ProgressId::GenericOp(op.operation_id.clone());
-            if let Some((_, is_bar)) = is_bar_entry {
-                if is_bar {
-                    progress.remove_bar(&progress_id);
-                } else {
-                    progress.remove_spinner(&progress_id);
-                }
+            if let Some(label) = resolve_stage_context_label(op) {
+                progress.remove_bar_context(&ProgressId::Phase(ExecutionPhase::Parse), &label);
+                return;
             } else {
-                #[cfg(debug_assertions)]
-                panic!("A non existing id was used to end a generic operation span!");
+                // Get whether this op uses a bar or spinner and remove from tracking
+                let is_bar_entry = self.generic_op_is_bar.remove_sync(&op.operation_id);
+
+                let progress_id = ProgressId::GenericOp(op.operation_id.clone());
+                if let Some((_, is_bar)) = is_bar_entry {
+                    if is_bar {
+                        progress.remove_bar(&progress_id);
+                    } else {
+                        progress.remove_spinner(&progress_id);
+                    }
+                } else {
+                    #[cfg(debug_assertions)]
+                    panic!("A non existing id was used to end a generic operation span!");
+                }
             }
 
             // Progress is transient, so we fall through to allow end line be printed in interactive mode
@@ -1816,10 +2070,24 @@ impl TuiLayer {
                 });
         }
 
-        // Only show if ShowOptions::Completed or All is enabled
-        if !self.show_options.contains(&ShowOptions::Completed)
-            && !self.show_options.contains(&ShowOptions::All)
-        {
+        // Lint/format run one of these spans per source file, including every
+        // macro -- an order of magnitude more items than a typical node-based
+        // command schedules, so `ShowOptions::Completed` alone (already on by
+        // default) would print one line per file. Require `All` for these
+        // commands specifically; other commands keep the normal `Completed`
+        // gate.
+        let item_visible = if matches!(
+            self.command,
+            FsCommand::Extension("lint")
+                | FsCommand::Extension("format")
+                | FsCommand::Extension("format-legacy")
+        ) {
+            self.show_options.contains(&ShowOptions::All)
+        } else {
+            self.show_options.contains(&ShowOptions::Completed)
+                || self.show_options.contains(&ShowOptions::All)
+        };
+        if !item_visible {
             return;
         }
 
@@ -1868,7 +2136,7 @@ mod tests {
         );
         node.set_node_outcome(NodeOutcome::Success);
         node.node_outcome_detail = Some(NodeOutcomeDetail::NodeTestDetail(
-            TestEvaluationDetail::new(test_outcome, 1, None, None, None),
+            TestEvaluationDetail::new(test_outcome, 1, None, None, None, None),
         ));
         node
     }
@@ -1888,5 +2156,13 @@ mod tests {
             node_evaluated_progress_status(None, &node),
             Some("succeeded")
         );
+    }
+
+    #[test]
+    fn test_outcome_ordering_ranks_severity() {
+        // An aggregated group header takes its verdict from `max`, so a new variant added
+        // out of severity order would silently outrank `Failed`.
+        assert!(TestOutcome::Passed < TestOutcome::Warned);
+        assert!(TestOutcome::Warned < TestOutcome::Failed);
     }
 }

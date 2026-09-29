@@ -1,8 +1,6 @@
-import type { ColumnDef } from '@tanstack/react-table';
+import type { ColumnDef, SortingState } from '@tanstack/react-table';
 
-import type { DefaultTData, SortingState } from '@dbt-labs/sourdough';
-
-import { PaginatedTable } from '../shared';
+import { type DefaultTData, PaginatedTable } from '../shared';
 
 interface ResourceFilterTableProps<T extends DefaultTData> {
   columns: ColumnDef<T>[];

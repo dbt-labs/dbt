@@ -45,6 +45,7 @@ mod tests {
     ) -> BTreeMap<String, Value> {
         let mut context = build_resolve_model_context(
             init_config,
+            false,
             AdapterType::Postgres,
             "db",
             "schema",
@@ -59,11 +60,13 @@ mod tests {
             "test",
             DEFAULT_DBT_QUOTING,
             Arc::new(DbtRuntimeConfig::default()),
+            Arc::new(DbtRuntimeConfig::default()),
             sql_resources.clone(),
             Arc::new(AtomicBool::new(false)),
             &PathBuf::from("test"),
             &PathBuf::from("test"),
             Some(StaticAnalysisKind::Strict),
+            None,
         );
         context.insert(TARGET_PACKAGE_NAME.to_string(), Value::from("common"));
         context
@@ -98,6 +101,7 @@ mod tests {
                 ..Default::default()
             })
             .into(),
+            vec![AdapterType::Postgres],
             DEFAULT_DBT_QUOTING,
             BTreeMap::new(),
             BTreeMap::new(),
@@ -117,9 +121,17 @@ mod tests {
     }
 
     #[test]
-    fn test_meta_field_renders_at_parse_time() {
-        // +meta Jinja is rendered eagerly at parse time (matching dbt-core behavior),
-        // just like other string config fields such as +description.
+    fn test_meta_field_is_verbatim_at_parse_time() {
+        // +description (a plain string field) still renders eagerly as part of the single
+        // combined `into_typed` pass over the whole document.
+        //
+        // +meta does not: it's `Verbatim<...>` (fs#14217) precisely so that a render failure
+        // nested inside a customer's `+meta` value can't fail this whole node -- and by
+        // extension the whole enclosing directory-path node -- the way a plain field's failure
+        // would. `dbt_project_yml_loader::render_meta_tolerantly` re-renders +meta on its own,
+        // afterward, tolerating a failure instead of propagating it; see
+        // `dbt-loader::dbt_project_yml_loader::tests::test_meta_render_failure_does_not_drop_sibling_config`
+        // for that success/failure-tolerance behavior end to end.
         let yaml = r#"
         +meta:
           demo: "{{ 1 + 2 }}"
@@ -136,12 +148,12 @@ mod tests {
         )
         .unwrap();
 
-        let meta = cfg.meta.as_ref().expect("+meta should be present");
+        let meta = cfg.meta.0.as_ref().expect("+meta should be present");
         let demo_val = meta.get("demo").expect("demo key in +meta");
-        // `{{ 1 + 2 }}` renders to the integer 3; the YAML value reflects the evaluated type.
+        // Still the raw, unrendered Jinja text -- `into_typed_with_jinja` alone never touches it.
         match demo_val {
-            dbt_yaml::Value::Number(n, _) => assert_eq!(n.as_i64(), Some(3)),
-            other => panic!("expected number in +meta.demo, got {other:?}"),
+            dbt_yaml::Value::String(s, _) => assert_eq!(s, "{{ 1 + 2 }}"),
+            other => panic!("expected raw string in +meta.demo, got {other:?}"),
         }
 
         assert_eq!(cfg.description.as_deref(), Some("prefix 3"));
@@ -213,7 +225,36 @@ mod tests {
         );
     }
 
-    #[tokio::test]
+    #[test]
+    fn test_freshness_entire_value_nested_dict_renders_as_typed() {
+        use dbt_schemas::schemas::common::{FreshnessDefinition, FreshnessPeriod};
+
+        // The whole `freshness` value is a single Jinja expression evaluating to
+        // a mapping whose `warn_after` entry is itself a nested dict literal
+        // (issue #13214). The adjacent closing braces from the inner and outer
+        // dict literals (`...'day'}}`) must not be mistaken for a Jinja `}}`
+        // delimiter -- doing so previously routed the whole mapping through
+        // string rendering and raised dbt1013 instead of a typed FreshnessDefinition.
+        let yaml = r#""{{ {'warn_after': {'count': 1, 'period': 'day'}} }}""#;
+
+        let val: dbt_yaml::Value = dbt_yaml::from_str(yaml).unwrap();
+        let (env, _sql_resources, _init_cfg) = setup_test_env();
+        let ctx: BTreeMap<String, Value> = BTreeMap::new();
+        let listeners: Vec<Rc<dyn minijinja::listener::RenderingEventListener>> = Vec::new();
+
+        let freshness: FreshnessDefinition = dbt_jinja_utils::serde::into_typed_with_jinja(
+            val, false, &env, &ctx, &listeners, None, true,
+        )
+        .unwrap();
+
+        let warn = freshness
+            .warn_after
+            .expect("warn_after should deserialize as FreshnessRules");
+        assert_eq!(warn.count, Some(1));
+        assert_eq!(warn.period, Some(FreshnessPeriod::day));
+    }
+
+    #[dbt_runtime::test]
     async fn test_render_sql_with_ref_macro() {
         let (env, sql_resources, init_config) = setup_test_env();
         // Set the package name for the current context
@@ -248,7 +289,7 @@ mod tests {
         }
     }
 
-    #[tokio::test]
+    #[dbt_runtime::test]
     async fn test_render_sql_with_source_macro() {
         let (env, sql_resources, init_config) = setup_test_env();
         // Set the package name for the current context
@@ -282,7 +323,7 @@ mod tests {
         }
     }
 
-    #[tokio::test]
+    #[dbt_runtime::test]
     async fn test_render_sql_with_metric_macro() {
         let (env, sql_resources, init_config) = setup_test_env();
         // Set the package name for the current context
@@ -315,7 +356,7 @@ mod tests {
         }
     }
 
-    #[tokio::test]
+    #[dbt_runtime::test]
     async fn test_render_sql_with_config_macro() {
         let (env, sql_resources, init_config) = setup_test_env();
         // Set the package name for the current context
@@ -396,7 +437,7 @@ mod tests {
         panic!("test code disabled below");
     }
 
-    #[tokio::test]
+    #[dbt_runtime::test]
     async fn test_fromjson() {
         let (env, _, _) = setup_test_env();
         let env = Arc::new(env);
@@ -418,7 +459,7 @@ mod tests {
         assert_eq!(rendered.trim(), "123");
     }
 
-    #[tokio::test]
+    #[dbt_runtime::test]
     async fn test_tojson() {
         let (env, _, _) = setup_test_env();
         let env = Arc::new(env);
@@ -441,7 +482,7 @@ mod tests {
         assert_eq!(rendered, r#"{"abc":123,"def":456}"#);
     }
 
-    #[tokio::test]
+    #[dbt_runtime::test]
     async fn test_tojson_with_sort_keys() {
         let (env, _, _) = setup_test_env();
         let env = Arc::new(env);
@@ -464,7 +505,7 @@ mod tests {
         assert_eq!(rendered, r#"{"abc":123,"def":456}"#);
     }
 
-    #[tokio::test]
+    #[dbt_runtime::test]
     async fn test_tojson_with_default() {
         let (env, _, _) = setup_test_env();
         let env = Arc::new(env);
@@ -486,7 +527,7 @@ mod tests {
         assert_eq!(rendered.trim(), r#"{"default": true}"#);
     }
 
-    #[tokio::test]
+    #[dbt_runtime::test]
     async fn test_fromyaml() {
         let (env, _, _) = setup_test_env();
         let env = Arc::new(env);
@@ -512,7 +553,7 @@ mod tests {
         assert_eq!(rendered.trim(), "good, bad");
     }
 
-    #[tokio::test]
+    #[dbt_runtime::test]
     async fn test_toyaml_basic() {
         let (env, _, _) = setup_test_env();
         let env = Arc::new(env);
@@ -537,7 +578,7 @@ mod tests {
         assert_contains!(trimmed, "def: 456");
     }
 
-    #[tokio::test]
+    #[dbt_runtime::test]
     async fn test_set_strict_function() {
         let (env, _, _) = setup_test_env();
         let env = Arc::new(env);
@@ -583,7 +624,7 @@ mod tests {
         assert!(result.is_err());
     }
 
-    #[tokio::test]
+    #[dbt_runtime::test]
     async fn test_local_md5() {
         let (env, _, _) = setup_test_env();
         let env = Arc::new(env);
@@ -1005,7 +1046,7 @@ mod tests {
         Ok(())
     }
 
-    #[tokio::test]
+    #[dbt_runtime::test]
     async fn test_dict_update() {
         let (env, _, _) = setup_test_env();
         let env = Arc::new(env);
@@ -1219,6 +1260,7 @@ mod tests {
             "",
             &|_variant: &dbt_yaml::ShouldBe<ProjectModelConfig>, _key: &str, _key_path: &str| {},
             false,
+            AdapterType::Snowflake,
         );
 
         let hours = |cfg: &ModelConfig| {
@@ -1270,6 +1312,7 @@ mod tests {
             "",
             &|_variant: &dbt_yaml::ShouldBe<ProjectModelConfig>, _key: &str, _key_path: &str| {},
             false,
+            AdapterType::Snowflake,
         )
     }
 
@@ -1413,6 +1456,7 @@ mod tests {
             "",
             &|_variant: &dbt_yaml::ShouldBe<ProjectSnapshotConfig>, _key: &str, _key_path: &str| {},
             false,
+            AdapterType::Snowflake,
         );
 
         let hours = |cfg: &SnapshotConfig| {
@@ -1437,6 +1481,587 @@ mod tests {
             hours(inherited),
             Some(StringOrInteger::Integer(120)),
             "omitted key must still inherit hours_to_expiration for snapshots"
+        );
+    }
+
+    /// fs#13424: a Databricks `+catalog:` config-key alias canonicalizes into `database`
+    /// (dbt-core's `Credentials._ALIASES`, `catalog` -> `database`), and the
+    /// warehouse-specific `catalog` field is cleared once canonicalized. Gated on adapter type
+    /// (D1): the same project on Snowflake -- which has no such alias -- keeps `catalog` as an
+    /// ordinary extra config key and leaves `database` unset.
+    #[test]
+    fn test_databricks_catalog_alias_canonicalizes_to_database() {
+        use crate::dbt_project_config::recur_build_dbt_project_config;
+        use dbt_schemas::schemas::project::ProjectModelConfig;
+
+        let yaml = r#"
+        +catalog: my_catalog
+        +catalog_name: unrelated_catalog_name
+        "#;
+
+        let val: dbt_yaml::Value = dbt_yaml::from_str(yaml).unwrap();
+        let (env, _sql_resources, _init_cfg) = setup_test_env();
+        let ctx: BTreeMap<String, Value> = BTreeMap::new();
+        let listeners: Vec<Rc<dyn minijinja::listener::RenderingEventListener>> = Vec::new();
+
+        let build_tree = |adapter_type: AdapterType| {
+            let pmc: ProjectModelConfig = dbt_jinja_utils::serde::into_typed_with_jinja(
+                val.clone(),
+                false,
+                &env,
+                &ctx,
+                &listeners,
+                None,
+                true,
+            )
+            .unwrap();
+            recur_build_dbt_project_config(
+                &ModelConfig::default(),
+                &pmc,
+                "",
+                &|_variant: &dbt_yaml::ShouldBe<ProjectModelConfig>,
+                  _key: &str,
+                  _key_path: &str| {},
+                false,
+                adapter_type,
+            )
+        };
+
+        let databricks_tree = build_tree(AdapterType::Databricks);
+        assert_eq!(
+            databricks_tree
+                .config
+                .database
+                .clone()
+                .into_inner()
+                .flatten(),
+            Some("my_catalog".to_string()),
+            "Databricks `+catalog:` must canonicalize into `database`"
+        );
+        assert_eq!(
+            databricks_tree.config.__warehouse_specific_config__.catalog, None,
+            "the warehouse-specific `catalog` field must be cleared once canonicalized"
+        );
+        assert_eq!(
+            databricks_tree.config.catalog_name,
+            Some("unrelated_catalog_name".to_string()),
+            "an unrelated `catalog_name` field must be untouched by canonicalization"
+        );
+
+        let snowflake_tree = build_tree(AdapterType::Snowflake);
+        assert_eq!(
+            snowflake_tree
+                .config
+                .database
+                .clone()
+                .into_inner()
+                .flatten(),
+            None,
+            "on Snowflake, `+catalog:` must not canonicalize into `database`"
+        );
+        assert_eq!(
+            snowflake_tree.config.__warehouse_specific_config__.catalog,
+            Some("my_catalog".to_string()),
+            "on Snowflake, `catalog` stays an inert extra config key"
+        );
+    }
+
+    /// fs#13424: dbt-core's `credentials.translate_aliases` canonicalizes each config *source* --
+    /// here, the project-level `dbt_project.yml` subtree and the model-level properties/inline
+    /// layer -- independently, before ordinary `default_to` precedence combines them. So a
+    /// project-level `+catalog:` and a model-level `database:` (or the reverse) must resolve to
+    /// the model-level value either way, never to a fold applied once after merging.
+    #[test]
+    fn test_databricks_catalog_alias_mixed_spelling_precedence() {
+        use crate::dbt_project_config::{ProjectConfigResolver, recur_build_dbt_project_config};
+        use dbt_common::serde_utils::Omissible;
+        use dbt_schemas::schemas::project::ProjectModelConfig;
+
+        let (env, _sql_resources, _init_cfg) = setup_test_env();
+        let ctx: BTreeMap<String, Value> = BTreeMap::new();
+        let listeners: Vec<Rc<dyn minijinja::listener::RenderingEventListener>> = Vec::new();
+
+        let project_tree = |yaml: &str| {
+            let val: dbt_yaml::Value = dbt_yaml::from_str(yaml).unwrap();
+            let pmc: ProjectModelConfig = dbt_jinja_utils::serde::into_typed_with_jinja(
+                val, false, &env, &ctx, &listeners, None, true,
+            )
+            .unwrap();
+            recur_build_dbt_project_config(
+                &ModelConfig::default(),
+                &pmc,
+                "",
+                &|_variant: &dbt_yaml::ShouldBe<ProjectModelConfig>,
+                  _key: &str,
+                  _key_path: &str| {},
+                false,
+                AdapterType::Databricks,
+            )
+        };
+        let fqn = vec!["my_model".to_string()];
+
+        // Project-level `+catalog:` (canonicalizes to `database`); model-level `database:` set
+        // directly. The model-level layer wins by ordinary precedence.
+        let root = project_tree("+catalog: project_catalog\n");
+        let resolver = ProjectConfigResolver::for_root(root, AdapterType::Databricks);
+        let model_level_database = ModelConfig {
+            database: Omissible::Present(Some("model_database".to_string())),
+            ..Default::default()
+        };
+        let resolved = resolver.with_configs(&fqn, &[Some(&model_level_database)]);
+        assert_eq!(
+            resolved.database.into_inner().flatten(),
+            Some("model_database".to_string()),
+            "model-level `database:` must win over a project-level `+catalog:`"
+        );
+
+        // The reverse: project-level `database:` set directly; model-level `+catalog:` --
+        // authored via inline/properties config, so already the typed `ModelConfig` shape --
+        // canonicalizes to `database` and must still win.
+        let root = project_tree("+database: project_database\n");
+        let resolver = ProjectConfigResolver::for_root(root, AdapterType::Databricks);
+        let mut model_level_catalog = ModelConfig::default();
+        model_level_catalog.__warehouse_specific_config__.catalog =
+            Some("model_catalog".to_string());
+        let resolved = resolver.with_configs(&fqn, &[Some(&model_level_catalog)]);
+        assert_eq!(
+            resolved.database.into_inner().flatten(),
+            Some("model_catalog".to_string()),
+            "model-level `catalog` (canonicalized) must win over a project-level `database:`"
+        );
+    }
+
+    /// Residual (fs#13424 phase 2): `canonicalize_adapter_aliases` runs with the *target's
+    /// default* adapter, threaded once per `resolve_*.rs` call, before a node's own `+adapter:`
+    /// override (a real, mergeable `ModelConfig.adapter` field -- Fusion's multi-adapter/mesh
+    /// dispatch, `resolve_utils.rs::validate_node_adapter`) is known. That override can only be
+    /// read *from* the merged config, so canonicalizing per-layer before merging (required for
+    /// D3's mixed-spelling precedence above) and keying it to the node's own resolved adapter
+    /// are in tension -- resolving both needs a two-pass merge (discover `.adapter`, then
+    /// re-merge with the right alias table), which this phase does not attempt. Pre-existing:
+    /// the five deleted `RelationComponents.database` special cases and phase 1's
+    /// `build_unrendered_config` gate on the exact same target-default `adapter_type`, so a
+    /// `+adapter:`-overridden node was never correctly handled either; this residual just
+    /// documents it rather than fixing it. `#[ignore]`d because it pins the gap, not the
+    /// desired behavior.
+    #[test]
+    #[ignore = "fs#13424 phase 2 residual: canonicalize_adapter_aliases is keyed to the \
+                target's default adapter, not a node's own +adapter: override (see \
+                ResolvableConfig::canonicalize_adapter_aliases)"]
+    fn test_databricks_catalog_alias_not_canonicalized_for_adapter_overridden_node() {
+        use crate::dbt_project_config::{DbtProjectConfig, ProjectConfigResolver};
+
+        let root = DbtProjectConfig::<ModelConfig> {
+            config: ModelConfig::default(),
+            children: indexmap::IndexMap::new(),
+        };
+        // The package/target default is Snowflake; this node overrides to Databricks via
+        // `+adapter:`, which is only readable *after* this same merge produces it.
+        let resolver = ProjectConfigResolver::for_root(root, AdapterType::Snowflake);
+        let mut model_level_databricks_override = ModelConfig {
+            adapter: Some(AdapterType::Databricks),
+            ..Default::default()
+        };
+        model_level_databricks_override
+            .__warehouse_specific_config__
+            .catalog = Some("my_catalog".to_string());
+
+        let fqn = vec!["my_model".to_string()];
+        let resolved = resolver.with_configs(&fqn, &[Some(&model_level_databricks_override)]);
+
+        // Desired (not delivered): `database == Some("my_catalog")`, since the node actually
+        // runs on Databricks. Actual: canonicalization ran keyed to Snowflake (a no-op), so
+        // `database` stays unset and `catalog` stays an un-canonicalized extra key.
+        assert_eq!(resolved.database.into_inner().flatten(), None);
+        assert_eq!(
+            resolved.__warehouse_specific_config__.catalog,
+            Some("my_catalog".to_string())
+        );
+    }
+
+    /// Residual (fs#13424): the `+dataset` / `+project` / `+data_space` serde aliases on
+    /// `ProjectModelConfig` (and its `Seed`/`Snapshot`/`DataTest`/`Function` siblings) are
+    /// **ungated** -- they route a value to `schema`/`database` on every adapter, where dbt-core
+    /// only translates an alias the *active* adapter's `Credentials._ALIASES` declares. On
+    /// Snowflake, dbt-core keeps `dataset` as an inert extra config key and leaves `schema` unset;
+    /// Fusion sets `schema`, which changes the rendered relation. Predates the gated map in
+    /// `dbt_adapter_core::config_aliases` (a no-op for these, since serde has already moved the
+    /// value by the time it runs) and is left alone deliberately: gating them is behavior-changing
+    /// for existing non-BigQuery projects and needs its own conformance evidence. Note the two
+    /// paths also disagree with each other -- `build_unrendered_config` canonicalizes *gated*, so
+    /// on Snowflake Stage 1 sees a `dataset` key while Stage 2 sees the rendered `schema`.
+    /// `#[ignore]`d because it pins the gap, not the desired behavior; the reasoning is in
+    /// `.agents/plans/completed/2026-08-20-adapter-config-alias-canonicalization/`.
+    #[test]
+    #[ignore = "fs#13424 residual: the +dataset/+project/+data_space serde aliases are ungated, \
+                unlike dbt-core's per-adapter _ALIASES map"]
+    fn test_ungated_serde_dataset_alias_applies_on_every_adapter() {
+        use crate::dbt_project_config::recur_build_dbt_project_config;
+        use dbt_schemas::schemas::project::ProjectModelConfig;
+
+        let val: dbt_yaml::Value = dbt_yaml::from_str("+dataset: my_dataset\n").unwrap();
+        let (env, _sql_resources, _init_cfg) = setup_test_env();
+        let ctx: BTreeMap<String, Value> = BTreeMap::new();
+        let listeners: Vec<Rc<dyn minijinja::listener::RenderingEventListener>> = Vec::new();
+
+        let pmc: ProjectModelConfig = dbt_jinja_utils::serde::into_typed_with_jinja(
+            val, false, &env, &ctx, &listeners, None, true,
+        )
+        .unwrap();
+        let tree = recur_build_dbt_project_config(
+            &ModelConfig::default(),
+            &pmc,
+            "",
+            &|_variant: &dbt_yaml::ShouldBe<ProjectModelConfig>, _key: &str, _key_path: &str| {},
+            false,
+            // Snowflake declares no `_ALIASES` at all, so dbt-core translates nothing here.
+            AdapterType::Snowflake,
+        );
+
+        // Desired (not delivered): `schema` unset, `dataset` carried as an extra config key.
+        assert_eq!(
+            tree.config.schema.into_inner().flatten(),
+            Some("my_dataset".to_string()),
+            "`+dataset:` is routed to `schema` even on an adapter with no such alias"
+        );
+    }
+
+    /// fs#13424 (surfaced by a phase-3 self-review): dbt-core's `Translator.translate_mapping`
+    /// raises a `DuplicateAliasError` when a single config source authors both an alias and its
+    /// canonical key (D4) -- `+catalog:` and `+database:` at the same `dbt_project.yml`/schema.yml
+    /// layer is that same shape. The raw-dict paths already raise a hard `FsError` for it
+    /// (`build_unrendered_config`'s `canonicalize_source_config_keys`, both inline-config layers);
+    /// `take_databricks_catalog_alias`'s typed-struct fold can't return a `Result` without
+    /// cascading through `ResolvableConfig::canonicalize_adapter_aliases` and every one of
+    /// `ProjectConfigResolver::{apply_root_overlay, with_configs}`'s ~25 callers, so it instead
+    /// emits a hard parse-time error via `emit_error_log_message` -- same effect (the run fails),
+    /// no signature change anywhere. This test proves the emission actually fires, using the
+    /// `TestLayer` tracing-capture harness (`dbt_common::tracing::tests::dbt_emit_tests` in
+    /// `dbt-common` uses the identical pattern for the same convenience functions).
+    #[test]
+    fn test_databricks_catalog_alias_duplicate_at_same_layer_errors() {
+        use crate::dbt_project_config::{DbtProjectConfig, ProjectConfigResolver};
+        use dbt_common::ErrorCode;
+        use dbt_common::serde_utils::Omissible;
+        use dbt_common::tracing::fs_error_log::get_log_message;
+        use dbt_common::tracing::layer::ConsumerLayer;
+        use dbt_tracing::emit::create_root_info_span;
+        use dbt_tracing::init::create_tracing_subcriber_with_layer;
+        use dbt_tracing::test_support::mocks::{MockDynSpanEvent, TestLayer, test_data_layer};
+        use dbt_tracing::{SeverityNumber, TelemetryOutputFlags};
+
+        let root = DbtProjectConfig::<ModelConfig> {
+            config: ModelConfig::default(),
+            children: indexmap::IndexMap::new(),
+        };
+        let resolver = ProjectConfigResolver::for_root(root, AdapterType::Databricks);
+
+        // Both spellings authored at the same layer -- the same shape dbt-core rejects outright.
+        let mut same_layer_duplicate = ModelConfig {
+            database: Omissible::Present(Some("explicit_database".to_string())),
+            ..Default::default()
+        };
+        same_layer_duplicate.__warehouse_specific_config__.catalog =
+            Some("aliased_catalog".to_string());
+        let fqn = vec!["my_model".to_string()];
+
+        let trace_id = 0x13424_u128;
+        let (test_layer, _, _, log_records) = TestLayer::new();
+        let subscriber = create_tracing_subcriber_with_layer(
+            tracing::level_filters::LevelFilter::TRACE,
+            test_data_layer(
+                trace_id,
+                None,
+                false,
+                std::iter::empty(),
+                std::iter::once(Box::new(test_layer) as ConsumerLayer),
+            ),
+            &[],
+        )
+        .expect("tracing filter directives must be valid");
+
+        let resolved = tracing::subscriber::with_default(subscriber, || {
+            let _rs = create_root_info_span(MockDynSpanEvent {
+                name: "root".to_string(),
+                flags: TelemetryOutputFlags::ALL,
+                ..Default::default()
+            })
+            .entered();
+            resolver.with_configs(&fqn, &[Some(&same_layer_duplicate)])
+        });
+
+        // `database` still wins by ordinary same-layer precedence and `catalog` is left in place
+        // (not cleared) so the emitted message and the config both point at it -- but unlike the
+        // pre-fix behavior, the run now also fails.
+        assert_eq!(
+            resolved.database.into_inner().flatten(),
+            Some("explicit_database".to_string())
+        );
+        assert_eq!(
+            resolved.__warehouse_specific_config__.catalog,
+            Some("aliased_catalog".to_string())
+        );
+
+        let log_records = log_records.lock().expect("should have no locks").clone();
+        let error_event = log_records
+            .iter()
+            .find(|r| r.body.contains("both resolve to `database`"))
+            .expect("expected a hard error for the same-layer catalog/database duplicate");
+        assert_eq!(error_event.severity_number, SeverityNumber::Error);
+        let lm = get_log_message(&error_event.attributes)
+            .expect("expected LogMessage attributes on the emitted error");
+        assert_eq!(lm.code, Some(ErrorCode::InvalidConfig as u32));
+    }
+
+    // --- dbt-core#15957: state:modified diagnostic logging must carry compared values ---
+    //
+    // `log_state_mod_diff` (`dbt-schemas`) emits a `StateModifiedDiff` TRACE event per failed
+    // `state:modified` sub-check. Several call sites pass `None` for the compared-values slot
+    // even though real values are on hand, so trace logs/OTEL never show *what* differed — only
+    // *that* something did. `check_relation_modified` is the working baseline (real `(current,
+    // previous)` tuples); `check_body_modified` and `check_contract_modified` are the reported
+    // and a sibling gap, respectively. These use the same `TestLayer` tracing-capture harness as
+    // `test_databricks_catalog_alias_duplicate_at_same_layer_errors` above, driven through
+    // `StateArtifacts::is_modified` — the only public entry point into these checks.
+
+    /// Runs `f` under a subscriber that captures every emitted `StateModifiedDiff` telemetry
+    /// event, at TRACE level (matching `--log-level-file trace`, the level `log_state_mod_diff`
+    /// itself gates on).
+    fn capture_state_mod_diffs<F: FnOnce()>(f: F) -> Vec<dbt_telemetry::StateModifiedDiff> {
+        use dbt_tracing::layer::ConsumerLayer;
+        use dbt_tracing::test_support::mocks::{MockDynSpanEvent, TestLayer, test_data_layer};
+        use dbt_tracing::{emit::create_root_info_span, init::create_tracing_subcriber_with_layer};
+
+        let (test_layer, _, _, log_records) = TestLayer::new();
+        let subscriber = create_tracing_subcriber_with_layer(
+            tracing::level_filters::LevelFilter::TRACE,
+            test_data_layer(
+                1,
+                None,
+                false,
+                std::iter::empty(),
+                std::iter::once(Box::new(test_layer) as ConsumerLayer),
+            ),
+            &[],
+        )
+        .expect("test tracing filter directives must be valid");
+
+        tracing::subscriber::with_default(subscriber, || {
+            let _rs = create_root_info_span(MockDynSpanEvent {
+                name: "root".to_string(),
+                flags: dbt_tracing::TelemetryOutputFlags::ALL,
+                ..Default::default()
+            })
+            .entered();
+            f();
+        });
+
+        log_records
+            .lock()
+            .expect("should have no locks")
+            .iter()
+            .filter_map(|r| {
+                r.attributes
+                    .downcast_ref::<dbt_telemetry::StateModifiedDiff>()
+                    .cloned()
+            })
+            .collect()
+    }
+
+    /// RED: reported bug. A genuine body change must be logged with the actual (current,
+    /// previous) checksums so a customer/support engineer can see *why* the node was selected —
+    /// today `check_body_modified` always logs `self_value = other_value = None`.
+    #[test]
+    fn test_state_modified_body_check_logs_checksum_values() {
+        use dbt_schemas::schemas::common::DbtChecksum;
+        use dbt_schemas::schemas::{DbtModel, ModificationType, Nodes, StateArtifacts};
+        use std::sync::Arc;
+
+        let mut previous = DbtModel::default();
+        previous.__common_attr__.unique_id = "model.pkg.my_model".to_string();
+        previous.__common_attr__.checksum = DbtChecksum::String("aaa".to_string());
+
+        let mut current = previous.clone();
+        current.__common_attr__.checksum = DbtChecksum::String("bbb".to_string());
+
+        let mut nodes = Nodes::default();
+        nodes.models.insert(
+            previous.__common_attr__.unique_id.clone(),
+            Arc::new(previous),
+        );
+        let state = StateArtifacts::from_previous_nodes(nodes);
+
+        let diffs = capture_state_mod_diffs(|| {
+            assert!(
+                state.is_modified(
+                    &current,
+                    Some(ModificationType::Body),
+                    None,
+                    AdapterType::Snowflake
+                ),
+                "body checksum differs"
+            );
+        });
+
+        let body_diff = diffs
+            .iter()
+            .find(|d| d.check == "body")
+            .expect("check_body_modified must emit a StateModifiedDiff for the body check");
+        assert!(
+            body_diff.self_value.is_some() && body_diff.other_value.is_some(),
+            "expected the current/previous checksums to be logged, got self_value={:?} \
+             other_value={:?} — dbt-core#15957",
+            body_diff.self_value,
+            body_diff.other_value,
+        );
+    }
+
+    /// RED: the same gap recurs for the contract check — `check_contract_modified` always logs
+    /// `None`, even though `same_contract`'s caller has both contract states in hand. This shows
+    /// the reported issue is not specific to `state:modified.body`: any sub-check that only logs
+    /// a bare boolean loses the same diagnostic information.
+    #[test]
+    fn test_state_modified_contract_check_logs_no_values_same_gap_as_body() {
+        use dbt_schemas::schemas::common::DbtContract;
+        use dbt_schemas::schemas::{DbtModel, ModificationType, Nodes, StateArtifacts};
+        use std::sync::Arc;
+
+        let mut previous = DbtModel::default();
+        previous.__common_attr__.unique_id = "model.pkg.my_model".to_string();
+        previous.__model_attr__.contract = None;
+
+        let mut current = previous.clone();
+        current.__model_attr__.contract = Some(DbtContract {
+            alias_types: true,
+            enforced: true,
+            checksum: None,
+        });
+
+        let mut nodes = Nodes::default();
+        nodes.models.insert(
+            previous.__common_attr__.unique_id.clone(),
+            Arc::new(previous),
+        );
+        let state = StateArtifacts::from_previous_nodes(nodes);
+
+        let diffs = capture_state_mod_diffs(|| {
+            assert!(
+                state.is_modified(
+                    &current,
+                    Some(ModificationType::Contract),
+                    None,
+                    AdapterType::Snowflake
+                ),
+                "contract was newly enforced"
+            );
+        });
+
+        let contract_diff = diffs
+            .iter()
+            .find(|d| d.check == "contract")
+            .expect("check_contract_modified must emit a StateModifiedDiff for the contract check");
+        assert!(
+            contract_diff.self_value.is_some() && contract_diff.other_value.is_some(),
+            "expected the current/previous contract state to be logged, got self_value={:?} \
+             other_value={:?} — same diagnostic gap as dbt-core#15957, just for `contract` \
+             instead of `body`",
+            contract_diff.self_value,
+            contract_diff.other_value,
+        );
+    }
+
+    /// GREEN control: `check_relation_modified` already does this correctly — it logs real
+    /// `(current, previous)` tuples for `database`/`schema`/`alias`. This is the pattern
+    /// `check_body_modified`/`check_contract_modified` should be brought in line with.
+    #[test]
+    fn test_state_modified_relation_check_already_logs_real_values() {
+        use dbt_schemas::schemas::{DbtModel, ModificationType, Nodes, StateArtifacts};
+        use std::collections::BTreeMap;
+        use std::sync::Arc;
+
+        let mut previous = DbtModel::default();
+        previous.__common_attr__.unique_id = "model.pkg.my_model".to_string();
+        previous.__base_attr__.unrendered_config = BTreeMap::from([(
+            "schema".to_string(),
+            dbt_yaml::from_str::<dbt_yaml::Value>("\"prod\"").expect("valid yaml value"),
+        )]);
+
+        let mut current = previous.clone();
+        current.__base_attr__.unrendered_config = BTreeMap::from([(
+            "schema".to_string(),
+            dbt_yaml::from_str::<dbt_yaml::Value>("\"other\"").expect("valid yaml value"),
+        )]);
+
+        let mut nodes = Nodes::default();
+        nodes.models.insert(
+            previous.__common_attr__.unique_id.clone(),
+            Arc::new(previous),
+        );
+        let state = StateArtifacts::from_previous_nodes(nodes);
+
+        let diffs = capture_state_mod_diffs(|| {
+            assert!(
+                state.is_modified(
+                    &current,
+                    Some(ModificationType::Relation),
+                    None,
+                    AdapterType::Snowflake
+                ),
+                "schema differs"
+            );
+        });
+
+        let schema_diff = diffs
+            .iter()
+            .find(|d| d.check == "schema")
+            .expect("check_relation_modified must emit a StateModifiedDiff for the schema check");
+        assert_eq!(schema_diff.self_value.as_deref(), Some("Some(\"other\")"));
+        assert_eq!(schema_diff.other_value.as_deref(), Some("Some(\"prod\")"));
+    }
+
+    /// RED (pre-fix): analyses had *no* content-modified logging at all — unlike models, which at
+    /// least logged a bare boolean before the dbt-core#15957 fix, `DbtAnalysis::has_same_content`
+    /// never called `log_state_mod_diff`. There is no dedicated `ModificationType` for the content
+    /// check, so it's only reached via the default `Any` chain (`is_modified(node, None, ...)`),
+    /// which is also how it fires for a real edited analysis SQL file.
+    #[test]
+    fn test_state_modified_analysis_content_check_logs_checksum_values() {
+        use dbt_schemas::schemas::common::DbtChecksum;
+        use dbt_schemas::schemas::{DbtAnalysis, Nodes, StateArtifacts};
+        use std::sync::Arc;
+
+        let mut previous = DbtAnalysis::default();
+        previous.__common_attr__.unique_id = "analysis.pkg.my_analysis".to_string();
+        previous.__common_attr__.checksum = DbtChecksum::String("aaa".to_string());
+
+        let mut current = previous.clone();
+        current.__common_attr__.checksum = DbtChecksum::String("bbb".to_string());
+
+        let mut nodes = Nodes::default();
+        nodes.analyses.insert(
+            previous.__common_attr__.unique_id.clone(),
+            Arc::new(previous),
+        );
+        let state = StateArtifacts::from_previous_nodes(nodes);
+
+        let diffs = capture_state_mod_diffs(|| {
+            assert!(
+                state.is_modified(&current, None, None, AdapterType::Snowflake),
+                "content checksum differs"
+            );
+        });
+
+        let content_diff = diffs.iter().find(|d| d.check == "content").expect(
+            "check_modified_content (via DbtAnalysis::has_same_content) must emit a \
+             StateModifiedDiff for the content check",
+        );
+        assert!(
+            content_diff.self_value.is_some() && content_diff.other_value.is_some(),
+            "expected the current/previous checksums to be logged, got self_value={:?} \
+             other_value={:?} — same diagnostic gap as dbt-core#15957, for analyses' content \
+             check instead of models' body check",
+            content_diff.self_value,
+            content_diff.other_value,
         );
     }
 
@@ -1508,5 +2133,212 @@ mod tests {
             doc_names,
             vec!["cloud_plan".to_string(), "database_source".to_string()]
         );
+    }
+
+    #[test]
+    fn test_databricks_python_environment_config_keys_are_recognized() {
+        let yaml = r#"
+        +environment_key: test_key
+        +environment_dependencies:
+          - requests
+        +submission_method: serverless_cluster
+        "#;
+
+        let val: dbt_yaml::Value = dbt_yaml::from_str(yaml).unwrap();
+        let (env, _sql_resources, _init_cfg) = setup_test_env();
+        let ctx: BTreeMap<String, Value> = BTreeMap::new();
+        let listeners: Vec<Rc<dyn minijinja::listener::RenderingEventListener>> = Vec::new();
+
+        let cfg: ProjectModelConfig = dbt_jinja_utils::serde::into_typed_with_jinja(
+            val, false, &env, &ctx, &listeners, None, true,
+        )
+        .unwrap();
+
+        assert_eq!(cfg.environment_key.as_deref(), Some("test_key"));
+        assert_eq!(
+            cfg.environment_dependencies.as_deref(),
+            Some(["requests".to_string()].as_slice())
+        );
+        assert_eq!(cfg.submission_method.as_deref(), Some("serverless_cluster"));
+    }
+
+    #[test]
+    fn test_databricks_python_environment_config_keys_on_model_config() {
+        let yaml = r#"
+        environment_key: test_key
+        environment_dependencies:
+          - requests
+        submission_method: serverless_cluster
+        "#;
+
+        let val: dbt_yaml::Value = dbt_yaml::from_str(yaml).unwrap();
+        let (env, _sql_resources, _init_cfg) = setup_test_env();
+        let ctx: BTreeMap<String, Value> = BTreeMap::new();
+        let listeners: Vec<Rc<dyn minijinja::listener::RenderingEventListener>> = Vec::new();
+
+        let cfg: ModelConfig = dbt_jinja_utils::serde::into_typed_with_jinja(
+            val, false, &env, &ctx, &listeners, None, true,
+        )
+        .unwrap();
+
+        assert_eq!(cfg.environment_key.as_deref(), Some("test_key"));
+        assert_eq!(
+            cfg.environment_dependencies.as_deref(),
+            Some(["requests".to_string()].as_slice())
+        );
+        assert_eq!(cfg.submission_method.as_deref(), Some("serverless_cluster"));
+    }
+
+    #[test]
+    fn test_unknown_python_config_key_is_still_unused() {
+        // schema.yml config keys (no `+` prefix). ProjectModelConfig absorbs
+        // unknown `+` keys as nested folder configs via __additional_properties__.
+        let yaml = r#"
+        environment_key: test_key
+        not_a_real_python_config: true
+        "#;
+
+        let val: dbt_yaml::Value = dbt_yaml::from_str(yaml).unwrap();
+        let mut unused_keys = Vec::new();
+        let cfg: ModelConfig = val
+            .into_typed(
+                |path, key, _| {
+                    let key_repr =
+                        dbt_yaml::to_string(key).unwrap_or_else(|_| "<opaque>".to_string());
+                    unused_keys.push((path.to_string(), key_repr));
+                },
+                |_| Ok(None),
+            )
+            .unwrap();
+
+        assert_eq!(cfg.environment_key.as_deref(), Some("test_key"));
+        assert!(
+            unused_keys
+                .iter()
+                .any(|(_, key)| key.contains("not_a_real_python_config")),
+            "expected unused key warning, got {unused_keys:?}"
+        );
+        assert!(
+            unused_keys
+                .iter()
+                .all(|(_, key)| !key.contains("environment_key")),
+            "environment_key should not be reported unused, got {unused_keys:?}"
+        );
+    }
+
+    #[test]
+    fn test_literal_block_scalar_names_drop_trailing_newline() {
+        use dbt_schemas::schemas::properties::{
+            MinimalSchemaValue, MinimalTableValue, SourceProperties, Tables,
+        };
+        use dbt_schemas::schemas::serde::strip_one_trailing_newline_at_keys;
+
+        // YAML hands a literal block scalar to serde with its final newline intact. dbt-core
+        // loses it because every schema-yaml string goes through `get_rendered(..., native=True)`,
+        // which never takes the no-jinja fast path and so always runs the Jinja lexer
+        // (`keep_trailing_newline=False`). Fusion's fast path returns the string untouched, so the
+        // newline has to be dropped -- otherwise it lands in the source identity and
+        // `source('declared_source', 'rates')` cannot resolve it (#13842).
+        let yaml = r#"
+        name: |
+          declared_source
+        schema: |
+          raw
+        database: |
+          analytics
+        tables:
+          - name: |
+              rates
+            identifier: |
+              raw_rates
+        "#;
+
+        let mut val: dbt_yaml::Value = dbt_yaml::from_str(yaml).unwrap();
+        let (env, _sql_resources, _init_cfg) = setup_test_env();
+        let ctx: BTreeMap<String, Value> = BTreeMap::new();
+        let listeners: Vec<Rc<dyn minijinja::listener::RenderingEventListener>> = Vec::new();
+
+        strip_one_trailing_newline_at_keys(&mut val, &["name", "schema", "database", "catalog"]);
+        let source: SourceProperties = dbt_jinja_utils::serde::into_typed_with_jinja(
+            val.clone(),
+            false,
+            &env,
+            &ctx,
+            &listeners,
+            None,
+            true,
+        )
+        .unwrap();
+        assert_eq!(source.name, "declared_source");
+        assert_eq!(source.schema.as_deref(), Some("raw"));
+        assert_eq!(source.database.as_deref(), Some("analytics"));
+        // `tables` is nested, so the entries are stripped where they are deserialized instead.
+        let table = &source.tables.expect("tables")[0];
+        assert_eq!(table.name, "rates\n");
+
+        // The same YAML is also read as a `MinimalSchemaValue` to build the resolver keys, and
+        // that name has to agree with the one above or the source is registered under one key
+        // and looked up under another.
+        let minimal: MinimalSchemaValue = dbt_jinja_utils::serde::into_typed_with_jinja(
+            val, false, &env, &ctx, &listeners, None, true,
+        )
+        .unwrap();
+        assert_eq!(minimal.name, "declared_source");
+
+        let mut table_val: dbt_yaml::Value =
+            dbt_yaml::from_str("name: |\n  rates\nidentifier: |\n  raw_rates\n").unwrap();
+        strip_one_trailing_newline_at_keys(&mut table_val, &["name", "identifier"]);
+        let minimal_table: MinimalTableValue = dbt_jinja_utils::serde::into_typed_with_jinja(
+            table_val.clone(),
+            false,
+            &env,
+            &ctx,
+            &listeners,
+            None,
+            true,
+        )
+        .unwrap();
+        assert_eq!(minimal_table.name.as_ref(), "rates");
+        // The strip rebuilds the scalar with its original span, so diagnostics still point at it.
+        assert_ne!(minimal_table.name.span(), &dbt_yaml::Span::default());
+
+        let table: Tables = dbt_jinja_utils::serde::into_typed_with_jinja(
+            table_val, false, &env, &ctx, &listeners, None, true,
+        )
+        .unwrap();
+        assert_eq!(table.name, "rates");
+        assert_eq!(table.identifier.as_deref(), Some("raw_rates"));
+    }
+
+    #[test]
+    fn test_jinja_produced_trailing_newline_survives() {
+        use dbt_schemas::schemas::properties::SourceProperties;
+        use dbt_schemas::schemas::serde::strip_one_trailing_newline_at_keys;
+
+        // dbt-core strips the newline off the *template source*, then evaluates, so a newline
+        // that the expression itself returns is kept. Stripping after rendering would eat it and
+        // diverge from Core in the opposite direction -- hence the pre-render pass above.
+        // `schema` is a plain scalar, `database` a block scalar wrapping the same expression;
+        // Core renders both to a value that still ends in `\n`.
+        let yaml = r#"
+        name: declared_source
+        schema: "{{ 'raw' ~ '\n' }}"
+        database: |
+          {{ 'analytics' ~ '\n' }}
+        "#;
+
+        let mut val: dbt_yaml::Value = dbt_yaml::from_str(yaml).unwrap();
+        let (env, _sql_resources, _init_cfg) = setup_test_env();
+        let ctx: BTreeMap<String, Value> = BTreeMap::new();
+        let listeners: Vec<Rc<dyn minijinja::listener::RenderingEventListener>> = Vec::new();
+
+        strip_one_trailing_newline_at_keys(&mut val, &["name", "schema", "database", "catalog"]);
+        let source: SourceProperties = dbt_jinja_utils::serde::into_typed_with_jinja(
+            val, false, &env, &ctx, &listeners, None, true,
+        )
+        .unwrap();
+        assert_eq!(source.name, "declared_source");
+        assert_eq!(source.schema.as_deref(), Some("raw\n"));
+        assert_eq!(source.database.as_deref(), Some("analytics\n"));
     }
 }

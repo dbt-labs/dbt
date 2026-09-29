@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -34,6 +34,10 @@ pub struct GenericTest {
 pub struct GenericTestGroup {
     pub unique_id: String,
     pub name: String,
+    /// Generic test macro shared by every member of the group, e.g. `not_null`.
+    pub macro_name: String,
+    /// unique_id of the node the group's tests are attached to.
+    pub attached_node: String,
     pub aggregated_test: Arc<DbtTest>,
     pub member_tests: Vec<Arc<DbtTest>>,
     pub tests: Vec<GenericTest>,
@@ -51,7 +55,7 @@ pub struct GenericTestRelationships {
 
 #[derive(Debug, Default, Clone)]
 pub struct GenericTestAggregation {
-    pub groups: HashMap<String, Arc<GenericTestGroup>>,
+    pub groups: BTreeMap<String, Arc<GenericTestGroup>>,
     pub group_ids: HashMap<String, String>,
     pub relationships: GenericTestRelationships,
 }
@@ -179,7 +183,7 @@ pub fn normalize_column_name(column_name: &str) -> String {
 }
 
 fn create_generic_test_relationships(
-    test_groups: &HashMap<String, Arc<GenericTestGroup>>,
+    test_groups: &BTreeMap<String, Arc<GenericTestGroup>>,
 ) -> GenericTestRelationships {
     let mut relationships = GenericTestRelationships::default();
 
@@ -241,7 +245,7 @@ pub fn create_generic_test_aggregation(
             .push(test.clone());
     }
 
-    let mut groups: HashMap<String, Arc<GenericTestGroup>> = HashMap::new();
+    let mut groups: BTreeMap<String, Arc<GenericTestGroup>> = BTreeMap::new();
     let mut group_ids = HashMap::new();
 
     for ((resource_name, macro_name), member_tests) in grouped_tests {
@@ -286,6 +290,8 @@ pub fn create_generic_test_aggregation(
         let group = GenericTestGroup {
             unique_id: group_id.clone(),
             name: group_name.clone(),
+            macro_name,
+            attached_node: resource_name,
             aggregated_test: Arc::new(aggregated_test),
             tests: tests.clone(),
             member_tests: member_tests.clone(),
@@ -416,7 +422,7 @@ fn build_aggregated_raw_code(
             e
         )
     })?;
-    let jinja_set_vars = std::collections::BTreeMap::new();
+    let jinja_set_vars = BTreeMap::new();
     let model_arg = format_value_for_jinja(&model_json, &jinja_set_vars);
     let column_names_arg = format_value_for_jinja(&column_names_json, &jinja_set_vars);
     let alias_arg = serde_json::to_string(alias).expect("string serialization should not fail");
@@ -536,6 +542,49 @@ mod tests {
         assert_eq!(
             raw_code,
             "{{ test_aggregated_not_null(model=get_where_subquery(ref('orders')), column_names=[\"id\"]) }}{{ config(alias=\"aggregated_not_null_orders\\\" }}{{ var('secret') }}{{ \\\"\") }}"
+        );
+    }
+
+    /// Group iteration order reaches `Schedule::sorted_nodes` and therefore the order of
+    /// console result lines, so it must not depend on how the groups were inserted.
+    #[test]
+    fn aggregation_groups_iterate_in_sorted_group_id_order() {
+        let mut tests = Vec::new();
+        for model in ["orders", "customers", "payments", "products"] {
+            for macro_name in ["not_null", "unique"] {
+                for column in ["id", "code"] {
+                    let mut test = test_node(
+                        &format!("test.pkg.{macro_name}_{model}_{column}"),
+                        macro_name,
+                        column,
+                    );
+                    test.__test_attr__.attached_node = Some(format!("model.pkg.{model}"));
+                    resolved_default_config(&mut test);
+                    tests.push(test);
+                }
+            }
+        }
+
+        let (schedule, nodes) = schedule_and_nodes(tests);
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let io = dbt_common::io_args::IoArgs {
+            out_dir: temp_dir.path().to_path_buf(),
+            ..Default::default()
+        };
+
+        let aggregation = create_generic_test_aggregation(&io, &schedule, &nodes, Execute::Remote)
+            .expect("aggregation")
+            .expect("aggregated groups");
+
+        // 4 models x 2 macros, each with 2 member columns.
+        let group_ids: Vec<String> = aggregation.groups.keys().cloned().collect();
+        assert_eq!(group_ids.len(), 8);
+
+        let mut sorted_group_ids = group_ids.clone();
+        sorted_group_ids.sort();
+        assert_eq!(
+            group_ids, sorted_group_ids,
+            "groups must iterate in sorted group-id order"
         );
     }
 

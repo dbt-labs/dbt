@@ -5,7 +5,7 @@ use dbt_schemas::state::ResolverState;
 pub fn profile_execution_time_zone(resolver_state: &ResolverState) -> Option<String> {
     resolver_state
         .dbt_profile
-        .db_config
+        .default_db_config()
         .to_mapping()
         .ok()
         .and_then(|m| {

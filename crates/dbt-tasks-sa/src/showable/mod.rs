@@ -21,6 +21,7 @@ use dbt_schemas::schemas::{InternalDbtNodeAttributes, Nodes};
 use dbt_tasks_core::context::TaskRunnerCtx;
 use dbt_tasks_core::pretty_table::from_pretty_table_error;
 use dbt_tasks_core::show_task_hooks::ShowTaskHooks;
+use dbt_tasks_core::task::TaskOp;
 use dbt_tasks_core::task::TaskResult;
 use dbt_tasks_core::task::{TP, Task};
 use dbt_telemetry::{ShowDataOutput, ShowDataOutputFormat};
@@ -57,8 +58,13 @@ where
     let query = base_query_provider(ctx)?;
     let limit = ctx.inner.arg.limit.filter(|limit| *limit > 0);
 
-    let use_worker_backend =
-        matches!(ctx.inner.execute, Execute::Sidecar | Execute::Service) && ctx.is_sidecar();
+    // `--query-id` always goes through the adhoc_runner path (RemoteAdhocRunner
+    // is the only one that knows how to fetch an existing query's result
+    // directly) -- never the local sidecar worker, which would just execute
+    // the placeholder SQL and silently ignore the requested query id.
+    let use_worker_backend = ctx.inner.arg.query_id.is_none()
+        && matches!(ctx.inner.execute, Execute::Sidecar | Execute::Service)
+        && ctx.is_sidecar();
 
     let mut compile_ctx = make_show_compile_context(ctx)?;
     compile_ctx.insert(
@@ -75,25 +81,26 @@ where
 
     let filename = PathBuf::from(format!("show-{unique_id}"));
 
-    let final_rendered_sql = if use_worker_backend {
-        // Worker backend applies limit separately via run_query_batches; render the query as-is.
-        render_sql(
-            &query,
-            &ctx.env,
-            &compile_ctx,
-            &*ctx.rendering_listener_factory,
-            &filename,
-        )?
-    } else {
-        // Non-worker path: delegate limit handling to the adapter-aware get_show_sql macro,
-        // which dispatches to adapter-specific limit syntax (e.g. FETCH FIRST n ROWS ONLY for Fabric).
-        render_sql(
-            "{{ get_show_sql(compiled_code, none, show_limit) }}",
-            &ctx.env,
-            &compile_ctx,
-            &*ctx.rendering_listener_factory,
-            &filename,
-        )?
+    // `get_show_sql` dispatches by adapter and a project can override it with a
+    // macro that reaches the adapter, so this render goes to the blocking pool:
+    // every database connection must be created by a `dbt-runtime` worker thread.
+    let final_rendered_sql = {
+        let template = if use_worker_backend {
+            // Worker backend applies limit separately via run_query_batches; render the query as-is.
+            query.clone()
+        } else {
+            // Non-worker path: delegate limit handling to the adapter-aware get_show_sql macro,
+            // which dispatches to adapter-specific limit syntax (e.g. FETCH FIRST n ROWS ONLY for Fabric).
+            "{{ get_show_sql(compiled_code, none, show_limit) }}".to_owned()
+        };
+        let env = Arc::clone(&ctx.env);
+        let listener_factory = Arc::clone(&ctx.rendering_listener_factory);
+        let filename = filename.clone();
+        TaskOp::Blocking(Box::new(move || {
+            render_sql(&template, &env, &compile_ctx, &*listener_factory, &filename)
+        }))
+        .run()
+        .await??
     };
     let macro_spans = ctx.rendering_listener_factory.drain_macro_spans(&filename);
 
@@ -179,7 +186,17 @@ where
         io_args::DisplayFormat::Path => dbt_pretty_table::DisplayFormat::Path,
     };
     let column_names = make_column_names(schema.as_ref());
-    let title = make_title("Query", object_name.as_str());
+    let mut title = make_title("Query", object_name.as_str());
+    // Surface the dbt-compute query id, if this ran via lake compute: the only
+    // way to later recover this result via dbt-compute's
+    // `/download_credentials` endpoint, and otherwise never shown to the user.
+    if let Some(query_id) = schema
+        .metadata()
+        .get(dbt_adbc::lake_compute::schema_metadata::QUERY_ID)
+        .filter(|id| !id.is_empty())
+    {
+        title = format!("{title} (query_id={query_id})");
+    }
     let table = pretty_data_table(
         &title,
         "",

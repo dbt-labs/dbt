@@ -1,26 +1,26 @@
 {
   "detail": {
-    "unique_id": "seed.fishtown_internal_analytics.adp_worker_base_remuneration_snapshot_exceptions",
-    "name": "adp_worker_base_remuneration_snapshot_exceptions",
+    "unique_id": "seed.jaffle_shop.renewals",
+    "name": "renewals",
     "resource_type": "seed",
-    "package_name": "fishtown_internal_analytics",
+    "package_name": "jaffle_shop",
     "description": "",
-    "original_file_path": "data/exceptions/adp_worker_base_remuneration_snapshot_exceptions.csv",
-    "file_path": "data/exceptions/adp_worker_base_remuneration_snapshot_exceptions.csv",
+    "original_file_path": "models/renewals.csv",
+    "file_path": "models/renewals.csv",
     "patch_path": null,
     "tags": [],
     "fqn": [
-      "fishtown_internal_analytics",
+      "jaffle_shop",
       "exceptions",
-      "adp_worker_base_remuneration_snapshot_exceptions"
+      "renewals"
     ],
-    "database_name": "staging",
-    "schema_name": "dbt_jcserv",
-    "identifier": "adp_worker_base_remuneration_snapshot_exceptions",
+    "database_name": "analytics",
+    "schema_name": "public",
+    "identifier": "renewals",
     "meta": null,
     "columns": [
       {
-        "name": "WORKER_ASSIGNMENT_ID",
+        "name": "ORDER_ITEM_ID",
         "index": 0,
         "data_type": null,
         "declared_type": null,
@@ -31,7 +31,7 @@
         "granularity": null
       },
       {
-        "name": "ANNUAL_RATE_AMOUNT_CURRENCY_CODE",
+        "name": "ORDER_AMOUNT_CURRENCY_CODE",
         "index": 1,
         "data_type": null,
         "declared_type": null,
@@ -55,7 +55,7 @@
     ],
     "referenced_by": [
       {
-        "unique_id": "model.fishtown_internal_analytics.int_adp_worker_base_remuneration_snapshot_adj",
+        "unique_id": "model.jaffle_shop.int_categories_1",
         "edge_type": "ref"
       }
     ],
@@ -70,7 +70,7 @@
           "id": "row_count",
           "label": "Row Count",
           "value": "1",
-          "description": "Row count derived from seed data parquet",
+          "description": "Synthetic fixture description. Structure is what this fixture exists to pin down; the prose is deliberately not real.",
           "include": true
         }
       ]
@@ -79,149 +79,149 @@
   "lineage": {
     "status": 200,
     "body": {
-      "root": "seed.fishtown_internal_analytics.adp_worker_base_remuneration_snapshot_exceptions",
+      "root": "seed.jaffle_shop.renewals",
       "max_depth": 3,
       "nodes": [
         {
           "depth": 0,
           "materialized": "table",
-          "name": "adp_worker_base_remuneration_snapshot_exceptions",
+          "name": "renewals",
           "resource_type": "seed",
-          "unique_id": "seed.fishtown_internal_analytics.adp_worker_base_remuneration_snapshot_exceptions"
+          "unique_id": "seed.jaffle_shop.renewals"
         },
         {
           "depth": 1,
           "materialized": "table",
-          "name": "int_adp_worker_base_remuneration_snapshot_adj",
+          "name": "int_categories_1",
           "resource_type": "model",
-          "unique_id": "model.fishtown_internal_analytics.int_adp_worker_base_remuneration_snapshot_adj"
+          "unique_id": "model.jaffle_shop.int_categories_1"
         },
         {
           "depth": 2,
           "materialized": "table",
-          "name": "int_adp_worker_base_remuneration",
+          "name": "int_sessions_4",
           "resource_type": "model",
-          "unique_id": "model.fishtown_internal_analytics.int_adp_worker_base_remuneration"
+          "unique_id": "model.jaffle_shop.int_sessions_4"
         },
         {
           "depth": 3,
           "materialized": "table",
-          "name": "int_adp_worker_timeseries",
+          "name": "int_currencies_6",
           "resource_type": "model",
-          "unique_id": "model.fishtown_internal_analytics.int_adp_worker_timeseries"
+          "unique_id": "model.jaffle_shop.int_currencies_6"
         },
         {
           "depth": 3,
           "materialized": "test",
-          "name": "data_sequence_test_int_adp_worker_base_remuneration_worker_assignment_sk",
+          "name": "data_sequence_test_int_orders_enriched_order_item_sk",
           "resource_type": "test",
-          "unique_id": "test.fishtown_internal_analytics.data_sequence_test_int_adp_worker_base_remuneration_worker_assignment_sk.620eb51746"
+          "unique_id": "test.jaffle_shop.payments"
         },
         {
           "depth": 3,
           "materialized": "test",
-          "name": "dbt_utils_unique_combination_of_columns_int_adp_worker_base_remuneration_worker_assignment_sk__valid_from",
+          "name": "dbt_utils_unique_combination_of_columns_int_orders_enriched_order_item_sk__valid_from",
           "resource_type": "test",
-          "unique_id": "test.fishtown_internal_analytics.dbt_utils_unique_combination_of_columns_int_adp_worker_base_remuneration_worker_assignment_sk__valid_from.8f4c462c01"
+          "unique_id": "test.jaffle_shop.dbt_utils_unique_combination_of_columns_customers_id.8f4c462c01"
         },
         {
           "depth": 3,
           "materialized": "test",
-          "name": "not_null_int_adp_worker_base_remuneration_valid_from",
+          "name": "not_null_int_orders_enriched_valid_from",
           "resource_type": "test",
-          "unique_id": "test.fishtown_internal_analytics.not_null_int_adp_worker_base_remuneration_valid_from.0658f334ed"
+          "unique_id": "test.jaffle_shop.not_null_promotions_id.0658f334ed"
         },
         {
           "depth": 3,
           "materialized": "test",
-          "name": "not_null_int_adp_worker_base_remuneration_valid_to",
+          "name": "not_null_int_orders_enriched_valid_to",
           "resource_type": "test",
-          "unique_id": "test.fishtown_internal_analytics.not_null_int_adp_worker_base_remuneration_valid_to.06fe92c90f"
+          "unique_id": "test.jaffle_shop.not_null_regions_id.06fe92c90f"
         },
         {
           "depth": 3,
           "materialized": "test",
-          "name": "not_null_int_adp_worker_base_remuneration_worker_assignment_id",
+          "name": "not_null_int_orders_enriched_order_item_id",
           "resource_type": "test",
-          "unique_id": "test.fishtown_internal_analytics.not_null_int_adp_worker_base_remuneration_worker_assignment_id.cdda302edf"
+          "unique_id": "test.jaffle_shop.not_null_page_views_id.cdda302edf"
         },
         {
           "depth": 3,
           "materialized": "test",
-          "name": "not_null_int_adp_worker_base_remuneration_worker_assignment_sk",
+          "name": "not_null_int_orders_enriched_order_item_sk",
           "resource_type": "test",
-          "unique_id": "test.fishtown_internal_analytics.not_null_int_adp_worker_base_remuneration_worker_assignment_sk.9698fc7423"
+          "unique_id": "test.jaffle_shop.not_null_revenue_id.9698fc7423"
         },
         {
           "depth": 3,
           "materialized": "test",
-          "name": "not_null_int_adp_worker_base_remuneration_worker_id",
+          "name": "not_null_int_orders_enriched_order_id",
           "resource_type": "test",
-          "unique_id": "test.fishtown_internal_analytics.not_null_int_adp_worker_base_remuneration_worker_id.4747ee257d"
+          "unique_id": "test.jaffle_shop.not_null_channels_id.4747ee257d"
         },
         {
           "depth": 3,
           "materialized": "test",
-          "name": "unique_int_adp_worker_base_remuneration_worker_assignment_sk",
+          "name": "unique_int_orders_enriched_order_item_sk",
           "resource_type": "test",
-          "unique_id": "test.fishtown_internal_analytics.unique_int_adp_worker_base_remuneration_worker_assignment_sk.089e67d6ca"
+          "unique_id": "test.jaffle_shop.unique_shipments_id.089e67d6ca"
         }
       ],
       "edges": [
         {
           "edge_type": "ref",
-          "from_id": "model.fishtown_internal_analytics.int_adp_worker_base_remuneration",
-          "to_id": "model.fishtown_internal_analytics.int_adp_worker_timeseries"
+          "from_id": "model.jaffle_shop.int_sessions_4",
+          "to_id": "model.jaffle_shop.int_currencies_6"
         },
         {
           "edge_type": "ref",
-          "from_id": "model.fishtown_internal_analytics.int_adp_worker_base_remuneration",
-          "to_id": "test.fishtown_internal_analytics.data_sequence_test_int_adp_worker_base_remuneration_worker_assignment_sk.620eb51746"
+          "from_id": "model.jaffle_shop.int_sessions_4",
+          "to_id": "test.jaffle_shop.payments"
         },
         {
           "edge_type": "ref",
-          "from_id": "model.fishtown_internal_analytics.int_adp_worker_base_remuneration",
-          "to_id": "test.fishtown_internal_analytics.dbt_utils_unique_combination_of_columns_int_adp_worker_base_remuneration_worker_assignment_sk__valid_from.8f4c462c01"
+          "from_id": "model.jaffle_shop.int_sessions_4",
+          "to_id": "test.jaffle_shop.dbt_utils_unique_combination_of_columns_customers_id.8f4c462c01"
         },
         {
           "edge_type": "ref",
-          "from_id": "model.fishtown_internal_analytics.int_adp_worker_base_remuneration",
-          "to_id": "test.fishtown_internal_analytics.not_null_int_adp_worker_base_remuneration_valid_from.0658f334ed"
+          "from_id": "model.jaffle_shop.int_sessions_4",
+          "to_id": "test.jaffle_shop.not_null_promotions_id.0658f334ed"
         },
         {
           "edge_type": "ref",
-          "from_id": "model.fishtown_internal_analytics.int_adp_worker_base_remuneration",
-          "to_id": "test.fishtown_internal_analytics.not_null_int_adp_worker_base_remuneration_valid_to.06fe92c90f"
+          "from_id": "model.jaffle_shop.int_sessions_4",
+          "to_id": "test.jaffle_shop.not_null_regions_id.06fe92c90f"
         },
         {
           "edge_type": "ref",
-          "from_id": "model.fishtown_internal_analytics.int_adp_worker_base_remuneration",
-          "to_id": "test.fishtown_internal_analytics.not_null_int_adp_worker_base_remuneration_worker_assignment_id.cdda302edf"
+          "from_id": "model.jaffle_shop.int_sessions_4",
+          "to_id": "test.jaffle_shop.not_null_page_views_id.cdda302edf"
         },
         {
           "edge_type": "ref",
-          "from_id": "model.fishtown_internal_analytics.int_adp_worker_base_remuneration",
-          "to_id": "test.fishtown_internal_analytics.not_null_int_adp_worker_base_remuneration_worker_assignment_sk.9698fc7423"
+          "from_id": "model.jaffle_shop.int_sessions_4",
+          "to_id": "test.jaffle_shop.not_null_revenue_id.9698fc7423"
         },
         {
           "edge_type": "ref",
-          "from_id": "model.fishtown_internal_analytics.int_adp_worker_base_remuneration",
-          "to_id": "test.fishtown_internal_analytics.not_null_int_adp_worker_base_remuneration_worker_id.4747ee257d"
+          "from_id": "model.jaffle_shop.int_sessions_4",
+          "to_id": "test.jaffle_shop.not_null_channels_id.4747ee257d"
         },
         {
           "edge_type": "ref",
-          "from_id": "model.fishtown_internal_analytics.int_adp_worker_base_remuneration",
-          "to_id": "test.fishtown_internal_analytics.unique_int_adp_worker_base_remuneration_worker_assignment_sk.089e67d6ca"
+          "from_id": "model.jaffle_shop.int_sessions_4",
+          "to_id": "test.jaffle_shop.unique_shipments_id.089e67d6ca"
         },
         {
           "edge_type": "ref",
-          "from_id": "model.fishtown_internal_analytics.int_adp_worker_base_remuneration_snapshot_adj",
-          "to_id": "model.fishtown_internal_analytics.int_adp_worker_base_remuneration"
+          "from_id": "model.jaffle_shop.int_categories_1",
+          "to_id": "model.jaffle_shop.int_sessions_4"
         },
         {
           "edge_type": "ref",
-          "from_id": "seed.fishtown_internal_analytics.adp_worker_base_remuneration_snapshot_exceptions",
-          "to_id": "model.fishtown_internal_analytics.int_adp_worker_base_remuneration_snapshot_adj"
+          "from_id": "seed.jaffle_shop.renewals",
+          "to_id": "model.jaffle_shop.int_categories_1"
         }
       ]
     }

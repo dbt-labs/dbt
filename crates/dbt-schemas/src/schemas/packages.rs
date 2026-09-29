@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, HashMap, HashSet},
     fmt::Display,
     path::{Path, PathBuf},
 };
@@ -10,9 +10,26 @@ use serde::{Deserialize, Serialize};
 // Type aliases for clarity
 type YmlValue = dbt_yaml::Value;
 
+#[derive(Debug, Serialize, UntaggedEnumDeserialize, Clone, DbtSchema, PartialEq, Eq, Hash)]
+#[serde(untagged)]
+pub enum EnvironmentRef {
+    Id(i64),
+    Name(String),
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, DbtSchema)]
+pub struct MeshEnvironmentRoute {
+    pub in_this_project_environment: EnvironmentRef,
+    pub use_upstream_environment: EnvironmentRef,
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone, DbtSchema)]
 pub struct UpstreamProject {
     pub name: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub mesh_environment_routing: Vec<MeshEnvironmentRoute>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_upstream_environment: Option<EnvironmentRef>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Default, DbtSchema)]
@@ -31,6 +48,35 @@ pub enum DbtPackageEntry {
     Local(LocalPackage),
     Private(PrivatePackage),
     Tarball(TarballPackage),
+}
+
+impl DbtPackageEntry {
+    /// Key identifying this entry, matching [`DbtPackageLock::entry_name`].
+    ///
+    /// Lets a lock entry be traced back to the `packages.yml` line that asked
+    /// for it — the lock itself is sorted by package name, so declaration order
+    /// is only recoverable this way.
+    pub fn entry_name(&self) -> String {
+        match self {
+            DbtPackageEntry::Hub(package) => package.package.clone(),
+            DbtPackageEntry::Git(package) => {
+                let mut key = package.git.to_string();
+                if let Some(subdirectory) = &package.subdirectory {
+                    key.push_str(&format!("#{subdirectory}"));
+                }
+                key
+            }
+            DbtPackageEntry::Local(package) => package.local.to_string_lossy().to_string(),
+            DbtPackageEntry::Private(package) => {
+                let mut key = package.private.to_string();
+                if let Some(subdirectory) = &package.subdirectory {
+                    key.push_str(&format!("#{subdirectory}"));
+                }
+                key
+            }
+            DbtPackageEntry::Tarball(package) => package.tarball.to_string(),
+        }
+    }
 }
 
 impl From<DbtPackageLock> for DbtPackageEntry {
@@ -231,7 +277,7 @@ impl DbtPackagesLock {
     }
 
     pub fn has_duplicate_package_names(&self) -> bool {
-        let mut seen = std::collections::HashSet::new();
+        let mut seen = HashSet::new();
         self.packages.iter().any(|p| !seen.insert(p.package_name()))
     }
 }
@@ -280,6 +326,18 @@ impl DbtPackageLock {
             DbtPackageLock::Tarball(tarball_package_lock) => {
                 tarball_package_lock.tarball.to_string()
             }
+        }
+    }
+
+    /// The pinned version or revision, when the package source has one.
+    ///
+    /// Local and tarball packages carry no version, so they return `None`.
+    pub fn version_string(&self) -> Option<String> {
+        match self {
+            DbtPackageLock::Hub(package) => Some(package.version.to_string()),
+            DbtPackageLock::Git(package) => Some(package.revision.clone()),
+            DbtPackageLock::Private(package) => Some(package.revision.clone()),
+            DbtPackageLock::Local(_) | DbtPackageLock::Tarball(_) => None,
         }
     }
 

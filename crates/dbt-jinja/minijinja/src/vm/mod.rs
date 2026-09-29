@@ -18,6 +18,7 @@ use crate::listener::RenderingEventListener;
 use crate::machinery::Span;
 use crate::output::{CaptureMode, Output};
 use crate::utils::{untrusted_size_hint, AutoEscape};
+use crate::value::introspective::IntrospectiveValue;
 use crate::value::mutable_map::MutableMap;
 use crate::value::namespace_object::Namespace;
 use crate::value::Object;
@@ -605,7 +606,19 @@ impl<'env> Vm<'env> {
                         state.ctx.store(name, value);
                     }
                 }
-                Instruction::Lookup(name, _) => {
+                Instruction::Lookup(name, span) => {
+                    if *name == "this" {
+                        listeners.iter().for_each(|listener| {
+                            listener.on_this_reference(
+                                span.start_line,
+                                span.start_col,
+                                span.start_offset,
+                                span.end_line,
+                                span.end_col,
+                                span.end_offset,
+                            );
+                        });
+                    }
                     // Remember which identifier failed to resolve. The name travels
                     // with the value, so an error raised after it has been passed
                     // somewhere else — into a macro, say — can still report the
@@ -672,9 +685,23 @@ impl<'env> Vm<'env> {
                     let stop = stack.pop();
                     let b = stack.pop();
                     let a = stack.pop();
-                    stack.push(
-                        ops::slice(a, b, stop, step).map_err(|e| state.with_span_error(e, span))?,
-                    );
+                    // `ops::slice` only understands `ObjectRepr::Seq`/`Iterable`
+                    // (or scalars it knows how to index); a tainted value's
+                    // fabricated inner value is usually neither (most stub
+                    // methods return `ObjectRepr::Plain` placeholders), which
+                    // would otherwise fail with "cannot be sliced" instead of
+                    // propagating the taint like every other operator here.
+                    let overridden = override_listener.and_then(|l| {
+                        l.override_value(&a)
+                            .or_else(|| l.override_value(&b))
+                            .or_else(|| l.override_value(&stop))
+                            .or_else(|| l.override_value(&step))
+                    });
+                    stack.push(match overridden {
+                        Some(v) => v,
+                        None => ops::slice(a, b, stop, step)
+                            .map_err(|e| state.with_span_error(e, span))?,
+                    });
                 }
                 Instruction::LoadConst(value) => {
                     stack.push(value.clone());
@@ -958,10 +985,25 @@ impl<'env> Vm<'env> {
                     }
                 }
                 Instruction::JumpIfFalseOrPop(jump_target, span) => {
-                    if !undefined_behavior
-                        .is_true(stack.peek())
-                        .map_err(|e| state.with_span_error(e, span))?
-                    {
+                    // `and`'s short-circuit point: on a tainted LHS, deciding
+                    // "truthy" purely from the fabricated fake value (as plain
+                    // `is_true` would) can short-circuit away a *real*,
+                    // non-tainted RHS that would have deterministically made
+                    // the whole expression false regardless of the LHS's real
+                    // value (e.g. `is_incremental() and flags.WHICH != "lint"`
+                    // during lint, where the RHS is always false). Consulting
+                    // `override_branch` here mirrors `JumpIfFalse` below: when
+                    // exploration wants to treat the tainted LHS as truthy, it
+                    // must actually continue on to evaluate the RHS for real
+                    // instead of blindly short-circuiting on the fake value.
+                    let treat_as_true =
+                        match override_listener.and_then(|l| l.override_branch(stack.peek())) {
+                            Some(overridden) => overridden,
+                            None => undefined_behavior
+                                .is_true(stack.peek())
+                                .map_err(|e| state.with_span_error(e, span))?,
+                        };
+                    if !treat_as_true {
                         pc = *jump_target;
                         continue;
                     } else {
@@ -969,10 +1011,16 @@ impl<'env> Vm<'env> {
                     }
                 }
                 Instruction::JumpIfTrueOrPop(jump_target, span) => {
-                    if undefined_behavior
-                        .is_true(stack.peek())
-                        .map_err(|e| state.with_span_error(e, span))?
-                    {
+                    // `or`'s short-circuit point; see `JumpIfFalseOrPop` above
+                    // for why this must also be taint/override-aware.
+                    let treat_as_true =
+                        match override_listener.and_then(|l| l.override_branch(stack.peek())) {
+                            Some(overridden) => overridden,
+                            None => undefined_behavior
+                                .is_true(stack.peek())
+                                .map_err(|e| state.with_span_error(e, span))?,
+                        };
+                    if treat_as_true {
                         pc = *jump_target;
                         continue;
                     } else {
@@ -1204,8 +1252,29 @@ impl<'env> Vm<'env> {
                         });
 
                         state.record_pending_call_site(listeners, this_span);
-                        let rv = call_wrapper(listeners, || func.call(state, args, listeners))
-                            .map_err(|err| state.with_span_error(err, this_span))?;
+
+                        // An overridden argument short-circuits a plain (non-macro)
+                        // callable the same way `ApplyFilter`/`PerformTest`/`In` already
+                        // short-circuit filters/tests/membership tests: a native function
+                        // like `range()` expects a concretely-typed argument (e.g. `i32`)
+                        // and has no taint-awareness of its own, so calling it with a
+                        // fabricated stub value would otherwise raise a hard render error
+                        // (e.g. "cannot convert plain object to i32") instead of degrading
+                        // like every other operation on tainted values. Macro calls are
+                        // exempted -- their own call-boundary taint rule (`Macro::call`)
+                        // requires the macro body to actually execute so it can absorb
+                        // taint from real internal logic, not just re-push an argument.
+                        let overridden = if func.downcast_object::<Macro>().is_none() {
+                            override_listener
+                                .and_then(|l| args.iter().find_map(|v| l.override_value(v)))
+                        } else {
+                            None
+                        };
+                        let rv = match overridden {
+                            Some(v) => v,
+                            None => call_wrapper(listeners, || func.call(state, args, listeners))
+                                .map_err(|err| state.with_span_error(err, this_span))?,
+                        };
 
                         listeners.iter().for_each(|listener| {
                             listener.on_function_call_end(&function_name);
@@ -1426,7 +1495,20 @@ impl<'env> Vm<'env> {
                     self.build_macro(&mut stack, state, *offset, name, *flags);
                 }
                 #[cfg(feature = "macros")]
-                Instruction::Return { explicit } => {
+                Instruction::Return {
+                    explicit,
+                    arg_count,
+                } => {
+                    if let Some(arg_count) = arg_count {
+                        let args = stack.get_call_args(*arg_count);
+                        let arg_count = args.len();
+                        if arg_count != 1 {
+                            return Err(Error::new(
+                                crate::error::ErrorKind::InvalidOperation,
+                                "Incorrect return argument count",
+                            ));
+                        }
+                    }
                     is_explicit_return = *explicit;
                     if *explicit && current_macro_name == Some("caller".to_string()) {
                         is_caller_return = true;
@@ -1814,6 +1896,30 @@ impl<'env> Vm<'env> {
 
     fn unpack_list(&self, stack: &mut Stack, count: usize) -> Result<(), Error> {
         let top = stack.pop();
+        if let Some(stub) = top.downcast_object::<IntrospectiveValue>() {
+            // Fixed-arity destructuring (`{% set a, b = call() %}`, and each
+            // item of a `{% for a, b in list %}`) also compiles to
+            // `UnpackList` and shares this VM path with for-loops, but
+            // `IntrospectiveValue::enumerate` always yields exactly one
+            // representative item regardless of arity (see its doc comment
+            // -- that invariant is specifically for loop bodies). Delegate
+            // to `IntrospectiveValue::unpack`, which hands back exactly
+            // `count` tainted items (preserving the fabricated inner
+            // value's real items when their count already matches) instead
+            // of forcing the value through that single-item iterator, which
+            // would otherwise fail every tainted tuple-unpack with
+            // "sequence of wrong length" (e.g. `{% set res, table =
+            // adapter.execute(...) %}` in dbt-adapters' `statement()`
+            // macro). Checking for the concrete wrapper type here (rather
+            // than the broader `is_introspective_stub()`) is deliberate: an
+            // ordinary container that merely *contains* a tainted item (see
+            // e.g. `appending_a_tainted_item_taints_the_list`) doesn't have
+            // this single-item invariant and unpacks fine below.
+            for item in stub.unpack(count) {
+                stack.push(item);
+            }
+            return Ok(());
+        }
         let iter = ok!(top
             .as_object()
             .and_then(|x| x.try_iter())

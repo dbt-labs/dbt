@@ -6,8 +6,8 @@ use std::sync::mpsc;
 use dbt_adapter::relation::create_relation_from_node;
 use dbt_common::FsResult;
 use dbt_common::stats::NodeStatus;
-use dbt_schemas::schemas::DbtSnapshot;
 use dbt_schemas::schemas::profiles::Execute;
+use dbt_schemas::schemas::{DbtSnapshot, InternalDbtNodeAttributes};
 use dbt_tasks_core::context::TaskRunnerCtx;
 use dbt_tasks_core::show_task_hooks::ShowTaskHooks;
 use dbt_tasks_core::task::TaskResult;
@@ -35,7 +35,7 @@ impl Showable for DbtSnapshot {
                     Execute::Remote => rendered_sql_for(ctx, unique_id.as_str(), "snapshot"),
                     Execute::Sidecar | Execute::Service => {
                         // Query the materialized snapshot table using canonical FQN
-                        let relation = create_relation_from_node(ctx.adapter_type(), self, None)?;
+                        let relation = create_relation_from_node(self.node_adapter(), self, None)?;
                         let fqn = relation.get_canonical_fqn()?;
                         Ok(format!("select * from {fqn}"))
                     }

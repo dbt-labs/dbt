@@ -50,7 +50,7 @@
   {{ run_hooks(pre_hooks, inside_transaction=False) }}
   {{ run_hooks(pre_hooks, inside_transaction=True) }}
   {% set to_drop = [] %}
-  {% set local_column_changes = none %}
+  {% set schema_changes = none %}
 
   {% call statement('main') %}
     {{ create_view_as(view_relation, sql) }}
@@ -80,17 +80,16 @@
       {% set existing_relation = target_relation %}
     {% endif %}
 
-    {#- See incremental.sql for divergence notes re: calculate/validate_incremental_strategy -#}
-    {% set incremental_strategy = config.get('incremental_strategy') or 'legacy' %}
-    {% set incremental_strategy = incremental_strategy | replace('+', '_') %}
-    {% set valid_incremental_strategies = ['legacy', 'append', 'delete_insert', 'insert_overwrite'] %}
-    {% if incremental_strategy not in valid_incremental_strategies %}
-      {% do exceptions.raise_compiler_error("Invalid ClickHouse distributed_incremental strategy '" ~ incremental_strategy ~ "'") %}
-    {% endif %}
+    {% set incremental_strategy = adapter.calculate_incremental_strategy(config.get('incremental_strategy'))  %}
     {% set incremental_predicates = config.get('predicates', []) or config.get('incremental_predicates', []) %}
     {% set partition_by = config.get('partition_by') %}
+    {% do adapter.validate_incremental_strategy(incremental_strategy, incremental_predicates, unique_key, partition_by) %}
     {%- if on_schema_change != 'ignore' %}
-      {% do exceptions.raise_compiler_error("ClickHouse on_schema_change != 'ignore' is not yet supported in Fusion") %}
+      {%- set local_column_changes = adapter.check_incremental_schema_changes(on_schema_change, existing_relation_local, sql, query_settings=config.get('query_settings', {})) -%}
+      {% if local_column_changes and incremental_strategy != 'legacy' %}
+        {% do clickhouse__apply_column_changes(local_column_changes, existing_relation, True) %}
+        {% set existing_relation = load_cached_relation(this) %}
+      {% endif %}
     {% endif %}
     {% if incremental_strategy == 'legacy' %}
       {% do clickhouse__incremental_legacy(existing_relation, intermediate_relation, local_column_changes, unique_key, True) %}

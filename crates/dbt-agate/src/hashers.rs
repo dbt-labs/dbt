@@ -5,7 +5,10 @@
 use arrow::array::{AsArray as _, PrimitiveArray};
 use arrow::buffer::{BooleanBuffer, NullBuffer, ScalarBuffer};
 use arrow::datatypes::*;
-use arrow_array::{Array, ArrowPrimitiveType, BooleanArray, GenericByteArray, OffsetSizeTrait};
+use arrow_array::{
+    Array, ArrowPrimitiveType, BooleanArray, GenericByteArray, GenericByteViewArray,
+    OffsetSizeTrait,
+};
 use arrow_buffer::i256;
 use arrow_schema::ArrowError;
 use core::mem;
@@ -241,11 +244,48 @@ impl<O: OffsetSizeTrait> ColumnHasher for GenericByteColumnHasher<GenericBinaryT
 
 type GenericStringColumnHasher<O> = GenericByteColumnHasher<GenericStringType<O>>;
 type StringColumnHasher = GenericStringColumnHasher<i32>;
-// type LargeStringColumnHasher = GenericStringColumnHasher<i64>;
+type LargeStringColumnHasher = GenericStringColumnHasher<i64>;
 
 type GenericBinaryColumnHasher<O> = GenericByteColumnHasher<GenericBinaryType<O>>;
 type BinaryColumnHasher = GenericBinaryColumnHasher<i32>;
-// type LargeBinaryColumnHasher = GenericBinaryColumnHasher<i64>;
+type LargeBinaryColumnHasher = GenericBinaryColumnHasher<i64>;
+// }}}
+
+// StringView and BinaryView {{{
+struct ByteViewColumnHasher<T: ByteViewType> {
+    array: GenericByteViewArray<T>,
+}
+
+impl<T: ByteViewType> ByteViewColumnHasher<T> {
+    pub fn new(array: &GenericByteViewArray<T>) -> Self {
+        Self {
+            array: array.clone(),
+        }
+    }
+}
+
+impl ColumnHasher for ByteViewColumnHasher<StringViewType> {
+    fn write_row(&self, hasher: &mut sip128::SipHasher13, row_idx: usize) {
+        let is_valid = self.array.is_valid(row_idx);
+        let value = self.array.value(row_idx);
+        let str = if is_valid { value } else { "" };
+        is_valid.hash(hasher);
+        str.hash(hasher);
+    }
+}
+
+impl ColumnHasher for ByteViewColumnHasher<BinaryViewType> {
+    fn write_row(&self, hasher: &mut sip128::SipHasher13, row_idx: usize) {
+        let is_valid = self.array.is_valid(row_idx);
+        let value = self.array.value(row_idx);
+        let bytes = if is_valid { value } else { b"" };
+        is_valid.hash(hasher);
+        bytes.hash(hasher);
+    }
+}
+
+type StringViewColumnHasher = ByteViewColumnHasher<StringViewType>;
+type BinaryViewColumnHasher = ByteViewColumnHasher<BinaryViewType>;
 // }}}
 
 /// Creates a new PrimitiveArray<U> by transmuting the underlying buffer of a PrimitiveArray<T>.
@@ -332,7 +372,11 @@ pub fn make_column_hasher(array: &dyn Array) -> Result<Box<dyn ColumnHasher>, Ar
             array.as_primitive::<Decimal256Type>(),
         )),
         DataType::Utf8 => Box::new(StringColumnHasher::new(array.as_string())),
+        DataType::LargeUtf8 => Box::new(LargeStringColumnHasher::new(array.as_string::<i64>())),
         DataType::Binary => Box::new(BinaryColumnHasher::new(array.as_binary())),
+        DataType::LargeBinary => Box::new(LargeBinaryColumnHasher::new(array.as_binary::<i64>())),
+        DataType::Utf8View => Box::new(StringViewColumnHasher::new(array.as_string_view())),
+        DataType::BinaryView => Box::new(BinaryViewColumnHasher::new(array.as_binary_view())),
         DataType::Date32 => {
             let typed = transmuted_primitive::<Date32Type, UInt32Type>(array.as_primitive());
             Box::new(PrimitiveColumnHasher::<UInt32Type>::new(&typed))
@@ -422,5 +466,56 @@ impl BuildHasher for IdentityBuildHasher {
     type Hasher = IdentityHasher;
     fn build_hasher(&self) -> Self::Hasher {
         IdentityHasher::default()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use arrow_array::{
+        BinaryArray, BinaryViewArray, LargeBinaryArray, LargeStringArray, StringArray,
+        StringViewArray,
+    };
+
+    fn hash_first_row(array: &dyn Array) -> u64 {
+        let column_hasher = make_column_hasher(array).unwrap();
+        let mut hasher = sip128::SipHasher13::new();
+        column_hasher.write_row(&mut hasher, 0);
+        hasher.finish()
+    }
+
+    #[test]
+    fn large_utf8_hashes_like_utf8() {
+        let small = StringArray::from(vec![Some("hello")]);
+        let large = LargeStringArray::from(vec![Some("hello")]);
+        assert_eq!(hash_first_row(&small), hash_first_row(&large));
+    }
+
+    #[test]
+    fn large_binary_hashes_like_binary() {
+        let small = BinaryArray::from(vec![Some(b"hello".as_ref())]);
+        let large = LargeBinaryArray::from(vec![Some(b"hello".as_ref())]);
+        assert_eq!(hash_first_row(&small), hash_first_row(&large));
+    }
+
+    #[test]
+    fn string_view_hashes_like_utf8() {
+        let small = StringArray::from(vec![Some("hello")]);
+        let view = StringViewArray::from(vec![Some("hello")]);
+        assert_eq!(hash_first_row(&small), hash_first_row(&view));
+    }
+
+    #[test]
+    fn binary_view_hashes_like_binary() {
+        let small = BinaryArray::from(vec![Some(b"hello".as_ref())]);
+        let view = BinaryViewArray::from(vec![Some(b"hello".as_ref())]);
+        assert_eq!(hash_first_row(&small), hash_first_row(&view));
+    }
+
+    #[test]
+    fn string_view_hashes_differ_by_validity() {
+        let value = StringViewArray::from(vec![Some("hello")]);
+        let null = StringViewArray::from(vec![None::<&str>]);
+        assert_ne!(hash_first_row(&value), hash_first_row(&null));
     }
 }

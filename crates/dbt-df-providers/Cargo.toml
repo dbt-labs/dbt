@@ -31,3 +31,6 @@ tokio = { workspace = true }
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+dbt-runtime = { workspace = true }

@@ -7,7 +7,7 @@ use dbt_common::{
 use minijinja::{
     AdapterDispatchFunction, ErrorKind, Value,
     compiler::codegen::CodeGenerationProfile,
-    constants::{DBT_AND_ADAPTERS_NAMESPACE, ROOT_PACKAGE_NAME, TARGET_PACKAGE_NAME},
+    constants::{DBT_AND_ADAPTERS_NAMESPACE, DIALECT, ROOT_PACKAGE_NAME, TARGET_PACKAGE_NAME},
     load_builtins_with_namespace,
 };
 use std::{
@@ -59,6 +59,12 @@ pub fn typecheck(
         DBT_AND_ADAPTERS_NAMESPACE.to_string(),
         dbt_and_adapters_namespace,
     );
+    // The namespace is dialect-keyed, so the typechecker needs the dialect to
+    // select from it. Sourced from the env rather than threaded through every
+    // caller.
+    if let Some(dialect) = env.env.get_dialect().cloned() {
+        typecheck_resolved_context.insert(DIALECT.to_string(), dialect);
+    }
 
     let profile = CodeGenerationProfile::TypeCheck(
         function_signatures.clone(),

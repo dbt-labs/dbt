@@ -134,6 +134,7 @@ fn resolve_cloud_config_with_env_reader(
     let resolved = ResolvedCloudConfig {
         credentials,
         project_id,
+        account_id,
         account_identifier,
         environment_id,
         defer_env_id,
@@ -146,6 +147,7 @@ fn resolve_cloud_config_with_env_reader(
     if let ResolvedCloudConfig {
         credentials: None,
         project_id: None,
+        account_id: None,
         account_identifier: None,
         environment_id: None,
         defer_env_id: None,
@@ -281,6 +283,28 @@ mod tests {
         // No token source → no credentials
         assert!(r.credentials.is_none());
         assert_eq!(r.defer_env_id.as_deref(), Some("def1"));
+    }
+
+    #[test]
+    fn dbt_project_yml_account_id_resolves_without_credentials() {
+        let mut pc = project_cloud(Some("789"), None, None, None);
+        pc.account_id = Some(StringOrInteger::Integer(456));
+        let r = resolve_cloud_config_with_env_reader(None, Some(&pc), env(&[])).unwrap();
+        assert!(r.credentials.is_none());
+        assert_eq!(r.account_id.as_deref(), Some("456"));
+    }
+
+    #[test]
+    fn env_account_id_overrides_dbt_project_yml_account_id() {
+        let mut pc = project_cloud(Some("789"), None, None, None);
+        pc.account_id = Some(StringOrInteger::Integer(456));
+        let r = resolve_cloud_config_with_env_reader(
+            None,
+            Some(&pc),
+            env(&[("DBT_CLOUD_ACCOUNT_ID", "999")]),
+        )
+        .unwrap();
+        assert_eq!(r.account_id.as_deref(), Some("999"));
     }
 
     #[test]

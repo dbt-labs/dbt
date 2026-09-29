@@ -95,7 +95,9 @@ pub async fn install_packages(
     }
 
     let mut package_listing = PackageListing::new(ctx.io.clone(), ctx.vars.clone(), &ctx.notices)
-        .with_skip_private_deps(ctx.skip_private_deps);
+        .with_skip_private_deps(ctx.skip_private_deps)
+        .with_private_package_resolver(ctx.private_package_resolver.clone())
+        .with_cloud_config(ctx.cloud_config.clone());
     package_listing
         .hydrate_dbt_packages_lock(dbt_packages_lock, ctx.jinja_env)
         .await?;

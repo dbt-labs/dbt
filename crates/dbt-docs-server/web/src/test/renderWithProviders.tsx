@@ -9,7 +9,7 @@ import {
   MetadataDataProvider,
   type MetadataDataSource,
 } from '../shared';
-import { createRestDataSource } from '../shared/data-sources/rest';
+import { createFakeDataSource } from '../shared/testing/createFakeDataSource';
 
 /** A fresh QueryClient per render so cache never leaks between tests. Retries
  *  are off (failures surface immediately) and gcTime is 0 (no lingering data). */
@@ -22,8 +22,8 @@ export function makeTestQueryClient(): QueryClient {
 interface ProviderOptions {
   /** Initial history entries for the MemoryRouter. */
   initialEntries?: string[];
-  /** Override the metadata data source. Defaults to a REST source over the
-   *  (typically stubbed) global `fetch`, matching the runtime wiring. */
+  /** Override the metadata data source. Defaults to a fully-capable fake, so a test
+   *  only describes the surface it exercises. */
   source?: MetadataDataSource;
 }
 
@@ -35,7 +35,9 @@ function Providers({
   return (
     <QueryClientProvider client={makeTestQueryClient()}>
       <HelmetProvider>
-        <MetadataDataProvider source={source ?? createRestDataSource()}>
+        <MetadataDataProvider
+          source={source ?? createFakeDataSource({}, { full: true })}
+        >
           <LinkPrefixProvider prefix="/">
             <MemoryRouter initialEntries={initialEntries}>{children}</MemoryRouter>
           </LinkPrefixProvider>

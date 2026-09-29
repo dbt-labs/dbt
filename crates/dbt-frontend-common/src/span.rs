@@ -37,12 +37,12 @@ impl Span {
         &self.start <= location && location < &self.stop
     }
 
-    pub fn slice(&self, input: &str) -> String {
+    pub fn slice<'i>(&self, input: &'i str) -> &'i str {
         // TODO it was
         // input[self.start.index..self.stop.index + 1].to_string()
         // because macro span is exclusive, we removed +1
         // be careful lint fix is inclusive, lint fix will break
-        input[self.start.index as usize..self.stop.index as usize].to_string()
+        &input[self.start.index as usize..self.stop.index as usize]
     }
 
     pub fn with_offset(&self, start_location: &CodeLocation) -> Self {

@@ -1,12 +1,16 @@
 import { FC } from 'react';
 import { twMerge } from 'tailwind-merge';
 
-import { AutoExposureBiProvider, AutoExposureIcon } from '@dbt-labs/dbt-dag';
+export type AutoExposureBiProvider = 'tableau' | 'powerbi';
 
 interface AutoExposureChipProps extends React.ComponentPropsWithoutRef<'div'> {
   biProvider: AutoExposureBiProvider | null;
 }
 
+/** Renders the BI provider name as plain text -- no Tableau/Power BI brand
+ *  mark. dbt-dag's `AutoExposureIcon` rendered the actual logos; those
+ *  aren't something to bundle into an OSS-published repo, so this is
+ *  text-only by design, same treatment as `DataPlatformChip`. */
 export const AutoExposureChip: FC<AutoExposureChipProps> = ({
   biProvider,
   className,
@@ -25,7 +29,6 @@ export const AutoExposureChip: FC<AutoExposureChipProps> = ({
       )}
       {...props}
     >
-      <AutoExposureIcon biProvider={biProvider} className="h-4" />
       <span>{biProviderName}</span>
     </div>
   );

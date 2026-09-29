@@ -71,6 +71,7 @@ pub const QUERY_USE_LEGACY_SQL: &str = "adbc.bigquery.sql.query.use_legacy_sql";
 pub const QUERY_DRY_RUN: &str = "adbc.bigquery.sql.query.dry_run"; // bool
 pub const QUERY_CREATE_SESSION: &str = "adbc.bigquery.sql.query.create_session"; // bool
 pub const QUERY_JOB_TIMEOUT: &str = "adbc.bigquery.sql.query.job_timeout"; // i64
+pub const QUERY_RESERVATION: &str = "bigquery.query.reservation"; // string
 
 pub const QUERY_RESULT_BUFFER_SIZE: &str = "adbc.bigquery.sql.query.result_buffer_size"; // i64
 pub const QUERY_PREFETCH_CONCURRENCY: &str = "adbc.bigquery.sql.query.prefetch_concurrency"; // i64
@@ -123,3 +124,13 @@ pub const CREATE_NOTEBOOK_EXECUTE_JOB_REQ_REGION: &str =
 pub const COPY_TABLE_SOURCE: &str = "adbc.bigquery.copy_table.source";
 pub const COPY_TABLE_DESTINATION: &str = "adbc.bigquery.copy_table.destination";
 pub const COPY_TABLE_WRITE_DISPOSITION: &str = "adbc.bigquery.copy_table.write_disposition";
+
+pub mod schema_metadata {
+    pub const QUERY_ID: &str = "BIGQUERY:query_id";
+    pub const STATEMENT_TYPE: &str = "BIGQUERY:Statistics:Query:StatementType";
+    pub const TOTAL_BYTES_BILLED: &str = "BIGQUERY:Statistics:Query:TotalBytesBilled";
+    pub const QUERY_TOTAL_BYTES_PROCESSED: &str = "BIGQUERY:Statistics:Query:TotalBytesProcessed";
+    pub const JOB_TOTAL_BYTES_PROCESSED: &str = "BIGQUERY:Statistics:TotalBytesProcessed";
+    pub const SLOT_MILLIS: &str = "BIGQUERY:Statistics:Query:SlotMillis";
+    pub const NUM_DML_AFFECTED_ROWS: &str = "BIGQUERY:Statistics:Query:NumDMLAffectedRows";
+}

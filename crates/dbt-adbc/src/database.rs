@@ -24,10 +24,7 @@ use std::{
 };
 use tracy_client::span;
 
-use crate::{
-    Backend, Connection, connection::AdbcConnection, semaphore::Semaphore, snowflake,
-    str_from_sqlstate,
-};
+use crate::{Backend, Connection, connection::AdbcConnection, snowflake, str_from_sqlstate};
 
 mod builder;
 pub use builder::*;
@@ -37,9 +34,9 @@ pub use builder::*;
 /// dyn-compatible trait covering functionality from the adbc_core::{Database, Optionable} traits.
 pub trait Database: Send + Sync + DatabaseInfo {
     // adbc_core::Database<Box<dyn Connection>> functions -----------------------
-    fn new_connection(&mut self) -> Result<Box<dyn Connection>>;
+    fn new_connection(&self) -> Result<Box<dyn Connection>>;
     fn new_connection_with_opts(
-        &mut self,
+        &self,
         opts: Vec<(OptionConnection, OptionValue)>,
     ) -> Result<Box<dyn Connection>>;
 
@@ -267,10 +264,9 @@ impl InnerAdbcDatabase {
     fn new_connection_with_opts_impl(
         &self,
         conn_opts: Vec<(OptionConnection, OptionValue)>,
-        semaphore: Option<Arc<Semaphore>>,
     ) -> Result<Box<dyn Connection>> {
         let conn_opts_for_retry = conn_opts.clone();
-        self.try_new_connection_with_opts_once(conn_opts, semaphore.clone())
+        self.try_new_connection_with_opts_once(conn_opts)
             .or_else(|e| {
                 // Snowflake might return a connection error when the cached ID token is invalid.
                 //
@@ -281,7 +277,7 @@ impl InnerAdbcDatabase {
                     && e.vendor_code == 390195
                     && str_from_sqlstate(&e.sqlstate) == "08004"
                 {
-                    self.try_new_connection_with_opts_once(conn_opts_for_retry, semaphore)
+                    self.try_new_connection_with_opts_once(conn_opts_for_retry)
                 } else {
                     Err(e)
                 }
@@ -321,7 +317,6 @@ impl InnerAdbcDatabase {
     fn try_new_connection_with_opts_once(
         &self,
         mut conn_opts: Vec<(OptionConnection, OptionValue)>,
-        semaphore: Option<Arc<Semaphore>>,
     ) -> Result<Box<dyn Connection>> {
         let _span = span!("try_new_connection_with_opts_once");
         let mut db_opts = Vec::<(OptionDatabase, OptionValue)>::new();
@@ -348,27 +343,12 @@ impl InnerAdbcDatabase {
                     return Err(e);
                 }
             }
-            // TODO(backpressure): re-enable once re-entrancy is handled.
-            // The semaphore can deadlock when a node holding a permit triggers
-            // a MapReduce metadata operation that also needs a permit.
-            // if let Some(semaphore) = &semaphore {
-            //     semaphore.unguarded_acquire();
-            // }
             let conn_res = if conn_opts.is_empty() {
                 managed_database.new_connection()
             } else {
                 managed_database.new_connection_with_opts(conn_opts)
             };
-            let conn = match conn_res {
-                Ok(conn) => Ok(conn),
-                Err(e) => {
-                    // if let Some(semaphore) = &semaphore {
-                    //     semaphore.unguarded_release();
-                    // }
-                    Err(e)
-                }
-            }?;
-            Ok(AdbcConnection(self.backend, conn, semaphore, 0))
+            Ok(AdbcConnection(self.backend, conn_res?, 0))
         };
 
         let conn = if db_opts.is_empty() {
@@ -394,15 +374,10 @@ impl InnerAdbcDatabase {
 /// configuration and caches.
 pub(crate) struct AdbcDatabase {
     inner: Arc<InnerAdbcDatabase>,
-    semaphore: Option<Arc<Semaphore>>,
 }
 
 impl AdbcDatabase {
-    pub fn new(
-        backend: Backend,
-        managed_database: ManagedAdbcDatabase,
-        semaphore: Option<Arc<Semaphore>>,
-    ) -> Self {
+    pub fn new(backend: Backend, managed_database: ManagedAdbcDatabase) -> Self {
         let token_refresher = TokenRefresher::for_database(backend, &managed_database)
             .ok()
             .flatten();
@@ -410,7 +385,6 @@ impl AdbcDatabase {
             InnerAdbcDatabase::new_with_refresher(backend, managed_database, token_refresher);
         Self {
             inner: Arc::new(inner),
-            semaphore,
         }
     }
 }
@@ -440,17 +414,16 @@ impl DatabaseInfo for AdbcDatabase {
 }
 
 impl Database for AdbcDatabase {
-    fn new_connection(&mut self) -> Result<Box<dyn Connection>> {
+    fn new_connection(&self) -> Result<Box<dyn Connection>> {
         let opts = Vec::new();
         self.new_connection_with_opts(opts)
     }
 
     fn new_connection_with_opts(
-        &mut self,
+        &self,
         conn_opts: Vec<(OptionConnection, OptionValue)>,
     ) -> Result<Box<dyn Connection>> {
-        self.inner
-            .new_connection_with_opts_impl(conn_opts, self.semaphore.clone())
+        self.inner.new_connection_with_opts_impl(conn_opts)
     }
 
     fn set_option(&mut self, key: OptionDatabase, value: OptionValue) -> Result<()> {
@@ -481,7 +454,6 @@ impl Database for AdbcDatabase {
     fn clone_box(&self) -> Box<dyn Database> {
         let adbc_database = AdbcDatabase {
             inner: self.inner.clone(),
-            semaphore: self.semaphore.clone(),
         };
         Box::new(adbc_database)
     }

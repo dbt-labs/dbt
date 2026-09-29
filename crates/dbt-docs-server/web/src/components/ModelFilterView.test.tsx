@@ -1,7 +1,9 @@
 import { fireEvent, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import { createFakeDataSource } from '../shared/testing/createFakeDataSource';
 import { renderWithProviders } from '../test/renderWithProviders';
+import { pageFromWire } from '../test/wireFixtures';
 
 /** Local mirror of the REST `/models` list envelope this test mocks (the
  *  adapter maps it into the domain shape). */
@@ -56,15 +58,6 @@ vi.mock('../shared', async (importOriginal) => {
   };
 });
 
-vi.mock('@dbt-labs/dbt-dag', () => ({
-  resourceIconMap: new Proxy({}, { get: () => 'model' }),
-}));
-
-vi.mock('@dbt-labs/sourdough', async (importOriginal) => {
-  const mod = await importOriginal<typeof import('@dbt-labs/sourdough')>();
-  return { ...mod, Icon: () => null };
-});
-
 vi.mock('./ResourceFilterTable', () => ({
   ResourceFilterTable: ({
     columns,
@@ -106,13 +99,37 @@ const emptyFacets: ModelFacetsBody = {
   packages: [],
 };
 
-function makeFetch(modelRes: ModelListResponse, facets: ModelFacetsBody = emptyFacets) {
-  return vi.fn((url: string) => {
-    if (String(url).includes('facets')) {
-      return Promise.resolve({ ok: true, json: () => Promise.resolve(facets) });
-    }
-    return Promise.resolve({ ok: true, json: () => Promise.resolve(modelRes) });
+/**
+ * A source serving the same two fixtures the fetch stub used to.
+ *
+ * Returns the `fetchAssetList` spy alongside it: the tests that asserted on request
+ * URLs now assert on the filter and sort the view passes down, which is the same intent
+ * with the transport removed.
+ */
+function makeSource(
+  modelRes: ModelListResponse,
+  facets: ModelFacetsBody = emptyFacets,
+) {
+  const fetchAssetList = vi.fn(async (args: unknown) => {
+    void args;
+    return pageFromWire('model', modelRes as never);
   });
+  const source = createFakeDataSource(
+    {
+      fetchAssetList,
+      fetchFacets: async () => ({
+        owners: facets.owners ?? [],
+        modelingLayers: facets.modeling_layers ?? [],
+        ...(facets as {
+          materializations?: unknown[];
+          accesses?: unknown[];
+          packages?: unknown[];
+        }),
+      }),
+    } as never,
+    { full: true },
+  );
+  return { source, fetchAssetList };
 }
 
 const EMPTY_LIST: ModelListResponse = {
@@ -131,70 +148,67 @@ describe('<ModelFilterView />', () => {
   afterEach(() => vi.unstubAllGlobals());
 
   it('loads models and shows total count', async () => {
-    vi.stubGlobal(
-      'fetch',
-      makeFetch({
-        data: [
-          {
-            unique_id: 'model.pkg.orders',
-            name: 'orders',
-            package_name: 'pkg',
-            original_file_path: 'models/orders.sql',
-            modeling_layer: 'mart',
-            access_level: 'public',
-            contract_enforced: true,
-            owner: 'alice',
-            executed_at: null,
-            catalog: null,
-          },
-        ],
-        page_info: {
-          total_count: 1,
-          has_next_page: false,
-          end_cursor: null,
-          start_cursor: null,
+    const { source } = makeSource({
+      data: [
+        {
+          unique_id: 'model.pkg.orders',
+          name: 'orders',
+          package_name: 'pkg',
+          original_file_path: 'models/orders.sql',
+          modeling_layer: 'mart',
+          access_level: 'public',
+          contract_enforced: true,
+          owner: 'alice',
+          executed_at: null,
+          has_catalog: false,
         },
-      }),
-    );
+      ],
+      page_info: {
+        total_count: 1,
+        has_next_page: false,
+        end_cursor: null,
+        start_cursor: null,
+      },
+    });
     renderWithProviders(
       <ModelFilterView project={{ name: 'test_project' }} onPeek={vi.fn()} />,
+      { source },
     );
     await waitFor(() => expect(screen.getByText('Loaded 1 of 1')).toBeInTheDocument());
     expect(screen.getByText('Models')).toBeInTheDocument();
   });
 
   it('renders formatted row count when catalog stat present', async () => {
-    vi.stubGlobal(
-      'fetch',
-      makeFetch({
-        data: [
-          {
-            unique_id: 'model.pkg.big',
-            name: 'big',
-            package_name: 'pkg',
-            original_file_path: 'models/big.sql',
-            modeling_layer: null,
-            access_level: null,
-            contract_enforced: null,
-            owner: null,
-            executed_at: null,
-            catalog: {
-              row_count_stat: 1234567,
-              bytes_stat: null,
-              last_modified_stat: null,
-            },
-          },
-        ],
-        page_info: {
-          total_count: 1,
-          has_next_page: false,
-          end_cursor: null,
-          start_cursor: null,
+    const { source } = makeSource({
+      data: [
+        {
+          unique_id: 'model.pkg.big',
+          name: 'big',
+          package_name: 'pkg',
+          original_file_path: 'models/big.sql',
+          modeling_layer: null,
+          access_level: null,
+          contract_enforced: null,
+          owner: null,
+          executed_at: null,
+          // Flat, as the model list projection emits them — the nested `catalog`
+          // object is assembled by the mapper, not supplied to it.
+          has_catalog: true,
+          row_count_stat: 1234567,
+          bytes_stat: null,
+          last_modified_stat: null,
         },
-      }),
-    );
+      ],
+      page_info: {
+        total_count: 1,
+        has_next_page: false,
+        end_cursor: null,
+        start_cursor: null,
+      },
+    });
     renderWithProviders(
       <ModelFilterView project={{ name: 'test_project' }} onPeek={vi.fn()} />,
+      { source },
     );
     // The cell uses locale-aware `toLocaleString()`, so build the expected grouped
     // string the same way rather than hardcoding en-US's '1,234,567'.
@@ -204,40 +218,38 @@ describe('<ModelFilterView />', () => {
   });
 
   it('renders empty cell when catalog is null', async () => {
-    vi.stubGlobal(
-      'fetch',
-      makeFetch({
-        data: [
-          {
-            unique_id: 'model.pkg.no_catalog',
-            name: 'no_catalog',
-            package_name: 'pkg',
-            original_file_path: 'models/no_catalog.sql',
-            modeling_layer: null,
-            access_level: null,
-            contract_enforced: null,
-            owner: null,
-            executed_at: null,
-            catalog: null,
-          },
-        ],
-        page_info: {
-          total_count: 1,
-          has_next_page: false,
-          end_cursor: null,
-          start_cursor: null,
+    const { source } = makeSource({
+      data: [
+        {
+          unique_id: 'model.pkg.no_catalog',
+          name: 'no_catalog',
+          package_name: 'pkg',
+          original_file_path: 'models/no_catalog.sql',
+          modeling_layer: null,
+          access_level: null,
+          contract_enforced: null,
+          owner: null,
+          executed_at: null,
+          has_catalog: false,
         },
-      }),
-    );
+      ],
+      page_info: {
+        total_count: 1,
+        has_next_page: false,
+        end_cursor: null,
+        start_cursor: null,
+      },
+    });
     renderWithProviders(
       <ModelFilterView project={{ name: 'test_project' }} onPeek={vi.fn()} />,
+      { source },
     );
     await waitFor(() => expect(screen.getByText('no_catalog')).toBeInTheDocument());
     expect(screen.queryByText(/\d{1,3}(,\d{3})+/)).not.toBeInTheDocument();
   });
 
   it('carries the modeling_layer deep-link param into the list fetch', async () => {
-    const fetchSpy = makeFetch({
+    const { source, fetchAssetList } = makeSource({
       data: [],
       page_info: {
         total_count: 0,
@@ -246,20 +258,23 @@ describe('<ModelFilterView />', () => {
         start_cursor: null,
       },
     });
-    vi.stubGlobal('fetch', fetchSpy);
     renderWithProviders(
       <ModelFilterView project={{ name: 'test_project' }} onPeek={vi.fn()} />,
-      { initialEntries: ['/models?modeling_layer=Marts'] },
+      { initialEntries: ['/models?modeling_layer=Marts'], source },
     );
     await waitFor(() =>
       expect(
-        fetchSpy.mock.calls.some((c) => String(c[0]).includes('modeling_layer=Marts')),
+        fetchAssetList.mock.calls.some((c) =>
+          (
+            c[0] as { filter?: { modelingLayers?: string[] } }
+          )?.filter?.modelingLayers?.includes('Marts'),
+        ),
       ).toBe(true),
     );
   });
 
   it('refetches with the mapped sort field when a sortable header is clicked', async () => {
-    const fetchSpy = makeFetch({
+    const { source, fetchAssetList } = makeSource({
       data: [],
       page_info: {
         total_count: 0,
@@ -268,37 +283,33 @@ describe('<ModelFilterView />', () => {
         start_cursor: null,
       },
     });
-    vi.stubGlobal('fetch', fetchSpy);
     renderWithProviders(
       <ModelFilterView project={{ name: 'test_project' }} onPeek={vi.fn()} />,
+      { source },
     );
     // Wait for the initial (unsorted) models fetch.
-    await waitFor(() =>
-      expect(
-        fetchSpy.mock.calls.some((c) => String(c[0]).includes('/api/v1/models')),
-      ).toBe(true),
-    );
+    await waitFor(() => expect(fetchAssetList.mock.calls.length > 0).toBe(true));
 
     fireEvent.click(screen.getByTestId('sort-name'));
 
     await waitFor(() =>
       expect(
-        fetchSpy.mock.calls.some((c) => String(c[0]).includes('sort=name%3Aasc')),
+        fetchAssetList.mock.calls.some(
+          (c) => (c[0] as { sort?: { field?: string } })?.sort?.field === 'name',
+        ),
       ).toBe(true),
     );
   });
 
   it('renders facet dropdown options with counts', async () => {
-    vi.stubGlobal(
-      'fetch',
-      makeFetch(EMPTY_LIST, {
-        modeling_layers: [{ value: 'Marts', count: 3 }],
-        owners: [{ value: 'alice', count: 2 }],
-        packages: [{ value: 'jaffle_shop', count: 5 }],
-      }),
-    );
+    const { source } = makeSource(EMPTY_LIST, {
+      modeling_layers: [{ value: 'Marts', count: 3 }],
+      owners: [{ value: 'alice', count: 2 }],
+      packages: [{ value: 'jaffle_shop', count: 5 }],
+    });
     renderWithProviders(
       <ModelFilterView project={{ name: 'test_project' }} onPeek={vi.fn()} />,
+      { source },
     );
     await waitFor(() =>
       expect(screen.getByRole('option', { name: 'alice (2)' })).toBeInTheDocument(),
@@ -308,14 +319,14 @@ describe('<ModelFilterView />', () => {
   });
 
   it('re-issues the list with owner= when an owner is selected', async () => {
-    const fetchSpy = makeFetch(EMPTY_LIST, {
+    const { source, fetchAssetList } = makeSource(EMPTY_LIST, {
       modeling_layers: [],
       owners: [{ value: 'alice', count: 2 }],
       packages: [],
     });
-    vi.stubGlobal('fetch', fetchSpy);
     renderWithProviders(
       <ModelFilterView project={{ name: 'test_project' }} onPeek={vi.fn()} />,
+      { source },
     );
     await waitFor(() =>
       expect(screen.getByRole('option', { name: 'alice (2)' })).toBeInTheDocument(),
@@ -327,7 +338,11 @@ describe('<ModelFilterView />', () => {
 
     await waitFor(() =>
       expect(
-        fetchSpy.mock.calls.some((c) => String(c[0]).includes('owner=alice')),
+        fetchAssetList.mock.calls.some((c) =>
+          (c[0] as { filter?: { owners?: string[] } })?.filter?.owners?.includes(
+            'alice',
+          ),
+        ),
       ).toBe(true),
     );
   });

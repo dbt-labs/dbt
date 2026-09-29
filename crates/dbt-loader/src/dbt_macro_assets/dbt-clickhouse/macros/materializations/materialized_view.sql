@@ -28,6 +28,33 @@
     {{ return(result) }}
 {%- endmaterialization -%}
 
+{#-
+  Split a model's sql into individual materialized view queries (if multiple exist).
+
+  Views are delimited by `--<name>:begin` / `--<name>:end` marker comments.
+  The returned mapping is keyed by marker name in the order the markers appear.
+  Each key becomes a suffix on the model's relation, so marker `mv1` creates the
+  view `<model>_mv1`. A model without any markers yields the single key `mv`
+  covering the whole sql, yielding one `<model>_mv` view.
+-#}
+{% macro clickhouse__extract_mv_views(sql) %}
+  {#- the name must be a single token. If the pattern permits a space in the name, an
+      unrelated `--` comment becomes a part of the marker, and the name is then wrong -#}
+  {% set view_names = modules.re.findall('--(?:\\s)?([^:\\s]+):begin', sql) %}
+
+  {% set views = {} %}
+  {% if view_names %}
+    {% for view_name in view_names %}
+      {% set view_sql = modules.re.findall('--(?:\\s)?' + view_name + ':begin(.*)--(?:\\s)?' + view_name + ':end', sql, modules.re.DOTALL)[0] %}
+      {%- set _ = views.update({view_name: view_sql}) -%}
+    {% endfor %}
+  {% else %}
+    {%- set _ = views.update({"mv": sql}) -%}
+  {% endif %}
+
+  {{ return(views) }}
+{% endmacro %}
+
 {% macro strip_identifier_quotes(ident) %}
   {%- set s = ident.strip() -%}
   {%- if (s.startswith('`') and s.endswith('`')) or
@@ -114,7 +141,7 @@
     {% endif %}
 
     {{ log('Updating query of existing MV ' ~ mv_relation.name ~ ' for recreation') }}
-    -- We should also update refreshable paramenters here https://github.com/ClickHouse/dbt-clickhouse/issues/611
+    {{ clickhouse__modify_mv_refresh(mv_relation, existing_relation, cluster_clause) }}
     {{ clickhouse__modify_mv(mv_relation, cluster_clause, sql, is_main_statement=True) }};
     {%- set view_created = False -%}
   {% endif %}
@@ -178,19 +205,8 @@
   -- `BEGIN` happens here:
   {{ run_hooks(pre_hooks, inside_transaction=True) }}
 
-  -- extract the names of the materialized views from the sql
-  {% set view_names = modules.re.findall('--(?:\s)?([^:]+):begin', sql) %}
-
-  -- extract the sql for each of the materialized view into a map
-  {% set views = {} %}
-  {% if view_names %}
-    {% for view_name in view_names %}
-      {% set view_sql = modules.re.findall('--(?:\s)?' + view_name + ':begin(.*)--(?:\s)?' + view_name + ':end', sql, modules.re.DOTALL)[0] %}
-      {%- set _ = views.update({view_name: view_sql}) -%}
-    {% endfor %}
-  {% else %}
-    {%- set _ = views.update({"mv": sql}) -%}
-  {% endif %}
+  -- extract the sql for each of the materialized views into a map
+  {% set views = clickhouse__extract_mv_views(sql) %}
 
   {% if backup_relation is none %}
     {{ log('Creating new materialized view ' + target_relation.name )}}
@@ -213,9 +229,7 @@
       {% endfor %}
     {% endif %}
     {% if should_full_refresh() %}
-      {% call statement('main') -%}
-        {{ clickhouse__create_target_table(backup_relation, sql, catchup_data) }}
-      {%- endcall %}
+      {% do clickhouse__create_target_table(backup_relation, sql, catchup_data) %}
 
       {# Drop MV just before exchange to minimize blind period while avoiding old MV writing to new table #}
       {{ clickhouse__drop_mvs_by_suffixes(target_relation, cluster_clause, views) }}
@@ -232,7 +246,11 @@
        {%- set on_schema_change = incremental_validate_on_schema_change(config.get('on_schema_change'), default='ignore') -%}
        {{ log('on_schema_change strategy for destination table of  MV: ' + on_schema_change, info=True) }}
        {%- if on_schema_change != 'ignore' -%}
-        {% do exceptions.raise_compiler_error("ClickHouse materialized_view on_schema_change != 'ignore' is not yet supported in Fusion") %}
+        {%- set column_changes = adapter.check_incremental_schema_changes(on_schema_change, existing_relation, sql, materialization='materialized view', query_settings=config.get('query_settings', {})) -%}
+        {% if column_changes %}
+          {% do clickhouse__apply_column_changes(column_changes, existing_relation) %}
+          {% set existing_relation = load_cached_relation(this) %}
+        {% endif %}
       {%- endif %}
       -- try to alter view first to replace sql, else drop and create
       {{ clickhouse__update_mvs(target_relation, cluster_clause, refreshable_clause, views) }}
@@ -272,12 +290,14 @@
   If catchup is False, creates an empty table without backfilling.
 #}
 {% macro clickhouse__create_target_table(relation, sql, catchup=True) -%}
-  {% if catchup == True %}
-    {{ get_create_table_as_sql(False, relation, sql) }}
+  {% if catchup %}
+    {% call statement('main') %}
+      {{ get_create_table_as_sql(False, relation, sql) }}
+    {% endcall %}
   {% else %}
     {{ log('Catchup config set to false, skipping table backfill for ' + relation.name) }}
     {% set has_contract = config.get('contract').enforced %}
-    {{ create_table_or_empty(False, relation, sql, has_contract) }}
+    {{ clickhouse__create_empty_table(False, relation, sql, has_contract, statement_name='main') }}
   {% endif %}
 {%- endmacro %}
 
@@ -289,9 +309,7 @@
   data into the table creating during step 1
 #}
 {% macro clickhouse__get_create_materialized_view_as_sql(relation, sql, views, catchup=True ) -%}
-  {% call statement('main') %}
-    {{ clickhouse__create_target_table(relation, sql, catchup) }}
-  {% endcall %}
+  {% do clickhouse__create_target_table(relation, sql, catchup) %}
   {%- set cluster_clause = on_cluster_clause(relation) -%}
   {%- set refreshable_clause = refreshable_mv_clause() -%}
   {%- set mv_relation = relation.derivative('_mv', 'materialized_view') -%}
@@ -323,7 +341,10 @@
 
 {% macro clickhouse__get_mv_current_target(mv_relation) %}
   {% set query %}
-    {#- '\x3F' is the ClickHouse string-literal escape for '?' (regex quantifier); the ADBC driver treats a literal '?' in query text as a bind parameter. To be fixed in https://github.com/ClickHouse/adbc_clickhouse/issues/53 -#}
+    {# 
+      '\x3F' is the ClickHouse string-literal escape for '?' (regex quantifier); some drivers treat a literal '?' in query text as a bind parameter.
+      Literal can be configured back to '?' after https://github.com/ClickHouse/adbc_clickhouse/issues/53 is fixed.
+    #}
     select replaceRegexpOne(create_table_query, '.*TO\\s+`\x3F([^`\\s(]+)`\x3F\\.`\x3F([^`\\s(]+)`\x3F.*', '\\1.\\2') as target_table
     from system.tables
     where database = '{{ mv_relation.schema }}'
@@ -337,9 +358,62 @@
   {{ return(none) }}
 {% endmacro %}
 
+{#-
+  Applies refresh parameter changes to an existing refreshable MV in place via
+  ALTER TABLE ... MODIFY REFRESH (https://github.com/ClickHouse/dbt-clickhouse/issues/611).
+  Like MODIFY QUERY, the statement is deliberately issued on every run without diffing
+  against the deployed schedule (simplicity over avoiding no-op DDL): it replaces the
+  whole schedule (interval, randomization and dependencies), so reissuing unchanged
+  parameters is a harmless no-op.
+  The deployed state comes from the cached relation (is_refreshable / refreshable_append),
+  so no extra round trip to ClickHouse is needed. Transitions that ClickHouse cannot apply
+  in place (regular <-> refreshable, APPEND <-> non-APPEND) raise an error pointing the
+  user to --full-refresh instead of being silently ignored.
+  mv_relation and existing_relation always refer to the same MV: both call sites resolve
+  existing_relation from mv_relation's own schema and identifier. The split exists because
+  mv_relation is the render target while existing_relation carries the cache-populated flags.
+-#}
+{% macro clickhouse__modify_mv_refresh(mv_relation, existing_relation, cluster_clause) %}
+  {%- set refreshable_config = config.get('refreshable') -%}
+  {%- if refreshable_config is none or refreshable_config == false -%}
+    {%- if existing_relation.is_refreshable -%}
+      {% do exceptions.raise_compiler_error(
+        'Materialized view "' ~ mv_relation.name ~ '" is refreshable, but the model does not define a "refreshable" config. '
+        ~ 'A refreshable MV cannot be converted to a regular MV in place. '
+        ~ 'If you want to change this MV to a regular MV, please run with --full-refresh.'
+      ) %}
+    {%- endif -%}
+  {%- else -%}
+    {%- if not existing_relation.is_refreshable -%}
+      {% do exceptions.raise_compiler_error(
+        'Materialized view "' ~ mv_relation.name ~ '" is not refreshable, but the model defines a "refreshable" config. '
+        ~ 'A regular MV cannot be converted to a refreshable MV in place. '
+        ~ 'If you want to change this MV to be refreshable, please run with --full-refresh.'
+      ) %}
+    {%- endif -%}
+    {%- set config_append = true if (refreshable_config is mapping and refreshable_config.get('append', false)) else false -%}
+    {%- if config_append != existing_relation.refreshable_append -%}
+      {% do exceptions.raise_compiler_error(
+        'The APPEND setting of materialized view "' ~ mv_relation.name ~ '" does not match the model config. '
+        ~ 'APPEND cannot be changed via ALTER TABLE ... MODIFY REFRESH. '
+        ~ 'If you want to change it, please run with --full-refresh.'
+      ) %}
+    {%- endif -%}
+    {{ log('Updating refresh parameters of existing MV ' ~ mv_relation.name) }}
+    {#- ClickHouse requires the APPEND keyword in MODIFY REFRESH to match the view's
+        creation-time APPEND mode ("Adding or removing APPEND is not supported"), so the
+        full clause is used here; the guard above guarantees config and deployed agree. -#}
+    {%- set modify_refresh_clause = refreshable_mv_clause() -%}
+    {% call statement('modify refresh of existing mv: ' ~ mv_relation.name) -%}
+      alter table {{ mv_relation }} {{ cluster_clause }} modify {{ modify_refresh_clause }}
+    {%- endcall %}
+  {%- endif -%}
+{% endmacro %}
+
 {% macro clickhouse__update_mv(mv_relation, target_relation, cluster_clause, refreshable_clause, view_sql)  -%}
   {% set existing_relation = adapter.get_relation(database=mv_relation.database, schema=mv_relation.schema, identifier=mv_relation.identifier) %}
   {% if existing_relation %}
+    {{ clickhouse__modify_mv_refresh(mv_relation, existing_relation, cluster_clause) }}
     {{ clickhouse__modify_mv(mv_relation, cluster_clause, view_sql) }};
   {% else %}
     {{ clickhouse__drop_mv(mv_relation, cluster_clause) }};
@@ -434,9 +508,7 @@
   {{ clickhouse__drop_mvs_by_suffixes(target_relation, cluster_clause, views) }}
 
   {# recreate the target table #}
-  {% call statement('main') -%}
-    {{ clickhouse__create_target_table(intermediate_relation, sql, catchup) }}
-  {%- endcall %}
+  {% do clickhouse__create_target_table(intermediate_relation, sql, catchup) %}
   {{ adapter.rename_relation(existing_relation, backup_relation) }}
   {{ adapter.rename_relation(intermediate_relation, target_relation) }}
 
@@ -444,8 +516,12 @@
   {{ clickhouse__create_mvs(target_relation, cluster_clause, refreshable_clause, views) }}
 {% endmacro %}
 
+{#-
+  Renders the refresh clause of a refreshable MV
+  (REFRESH ... [RANDOMIZE FOR ...] [DEPENDS ON ...] [APPEND]).
+-#}
 {% macro refreshable_mv_clause() %}
-  {%- if config.get('refreshable') is not none -%}
+  {%- if config.get('refreshable') is not none and config.get('refreshable') != false -%}
 
     {% set refreshable_config = config.get('refreshable') %}
     {% if refreshable_config is not mapping %}

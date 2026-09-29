@@ -376,6 +376,22 @@ impl StateArtifacts {
         }
     }
 
+    /// Constructs a `StateArtifacts` directly from an already-parsed previous-state `Nodes`
+    /// graph, bypassing the manifest.json load path. For callers (typically tests) that build
+    /// the previous state in memory rather than from a real state directory.
+    pub fn from_previous_nodes(nodes: Nodes) -> Self {
+        Self {
+            nodes: Some(nodes),
+            run_results: None,
+            source_freshness_results: None,
+            state_path: PathBuf::new(),
+            target_path: None,
+            test_sig_index: Default::default(),
+            test_full_name_index: Default::default(),
+            truncated_name_to_state_uid: Default::default(),
+        }
+    }
+
     pub fn try_new(state_path: &Path, root_project_quoting: ResolvedQuoting) -> FsResult<Self> {
         Self::try_new_with_target_path(
             state_path,
@@ -639,18 +655,6 @@ impl StateArtifacts {
             return true;
         };
 
-        // For models, treat "modified content" as a *body* comparison (checksum/raw_code),
-        // not a full same_contents comparison. Config/relation/persisted-description diffs
-        // are handled by dedicated checks in `state:modified` selection.
-        if current_node.resource_type() == NodeType::Model
-            && previous_node.resource_type() == NodeType::Model
-        {
-            // Fast path: identical checksums => body is unchanged.
-            if current_node.common().checksum == previous_node.common().checksum {
-                return false;
-            }
-        }
-
         if current_node.has_same_content(previous_node, adapter_type) {
             return false;
         }
@@ -723,12 +727,21 @@ impl StateArtifacts {
             // specific keys where env-aware Jinja is known to appear. A new false positive for
             // those types requires a new per-key fix; the wholesale approach cannot yet be applied
             // to them.
+            // Checks are on Approach B deliberately. They have no dbt-core counterpart to mirror
+            // (`same_contents` does not exist for the type), and `build_unrendered_config` does not
+            // populate `unrendered_config` for them, so the Stage-1 wholesale shortcut would be an
+            // under-selection landmine: it would report "not modified" off an empty map and mask
+            // real edits to `severity`/`tags`/`phase`. `DbtCheck::has_same_config` compares the
+            // rendered config instead. Moving checks to Approach A requires populating
+            // `unrendered_config` first, as a prerequisite commit
+            // (see `.agents/state-modified-conformance.md`).
             NodeType::Exposure
             | NodeType::Analysis
             | NodeType::Macro
             | NodeType::SemanticModel
             | NodeType::Metric
-            | NodeType::SavedQuery => !current_node.has_same_config(previous_node, adapter_type),
+            | NodeType::SavedQuery
+            | NodeType::Check => !current_node.has_same_config(previous_node, adapter_type),
 
             // Never returned by any `InternalDbtNode::resource_type()` impl (see nodes.rs) —
             // `DocsMacro`/`Operation` describe non-node telemetry concepts and `Unspecified` is a
@@ -937,7 +950,14 @@ impl StateArtifacts {
                 log_state_mod_diff(
                     &current_node.common().unique_id,
                     "contract",
-                    [("contract", false, None)],
+                    [(
+                        "contract",
+                        false,
+                        Some((
+                            format!("{:?}", current_model.__model_attr__.contract),
+                            format!("{:?}", previous_model.__model_attr__.contract),
+                        )),
+                    )],
                 );
             }
             !is_same_contract
@@ -959,7 +979,14 @@ impl StateArtifacts {
             log_state_mod_diff(
                 &current_node.common().unique_id,
                 "body",
-                [("body", false, None)],
+                [(
+                    "body",
+                    false,
+                    Some((
+                        current_node.common().checksum.to_checksum_string(),
+                        previous_node.common().checksum.to_checksum_string(),
+                    )),
+                )],
             );
         }
 
@@ -1356,6 +1383,56 @@ mod tests {
         assert!(!state.is_modified(&current, None, None, AdapterType::Bigquery));
     }
 
+    fn state_with_previous_model(previous_model: DbtModel) -> StateArtifacts {
+        let mut prev_nodes = Nodes::default();
+        prev_nodes.models.insert(
+            previous_model.__common_attr__.unique_id.clone(),
+            Arc::new(previous_model),
+        );
+
+        StateArtifacts {
+            nodes: Some(prev_nodes),
+            run_results: None,
+            source_freshness_results: None,
+            state_path: PathBuf::from("/tmp/fake_state"),
+            target_path: None,
+            test_sig_index: Default::default(),
+            test_full_name_index: Default::default(),
+            truncated_name_to_state_uid: std::sync::OnceLock::new(),
+        }
+    }
+
+    /// Regression guard for the `NodeType::Model` checksum fast path that `check_modified_content`
+    /// used to carry: it returned "unmodified" as soon as the checksums matched, which made every
+    /// non-body conjunct of `DbtModel::has_same_content` — dbt-core's `ParsedNode.same_contents` —
+    /// unreachable whenever the body was unchanged. `latest_version` is the sharpest witness: it is
+    /// not a `ModelConfig` key, so no config comparison can see it, and
+    /// `DbtModel::same_ref_representation` is the only check that does. If the fast path is ever
+    /// reintroduced, this fails.
+    #[test]
+    fn model_latest_version_change_is_modified_with_an_unchanged_body() {
+        use crate::schemas::serde::StringOrInteger;
+
+        let mut previous = DbtModel::default();
+        previous.__common_attr__.unique_id = "model.pkg.my_model.v1".to_string();
+        previous.__common_attr__.name = "my_model".to_string();
+        previous.__common_attr__.package_name = "pkg".to_string();
+        previous.__model_attr__.version = Some(StringOrInteger::Integer(1));
+        previous.__model_attr__.latest_version = Some(StringOrInteger::Integer(1));
+
+        // Identical body (same default checksum), only `latest_version` moves 1 -> 2.
+        let mut current = previous.clone();
+        current.__model_attr__.latest_version = Some(StringOrInteger::Integer(2));
+
+        let state = state_with_previous_model(previous);
+        assert!(!state.is_new(&current));
+        assert!(
+            state.is_modified(&current, None, None, AdapterType::DuckDB),
+            "a `latest_version` bump with an unchanged body must still be state:modified — \
+             `check_modified_content` must not short-circuit on matching checksums"
+        );
+    }
+
     /// The fallback keys on the table name both engines store verbatim, not on the sanitized
     /// unique_id, so a source genuinely renamed to the sanitized spelling is still new.
     #[test]
@@ -1471,7 +1548,7 @@ mod tests {
     fn config_map(pairs: &[(&str, &str)]) -> BTreeMap<String, dbt_yaml::Value> {
         pairs
             .iter()
-            .map(|(k, v)| (k.to_string(), yml_value(v)))
+            .map(|(k, v)| ((*k).to_string(), yml_value(v)))
             .collect()
     }
 
@@ -2483,6 +2560,7 @@ mod tests {
                         pre_clone: None,
                         execute_hooks_on_any_reuse: None,
                         compare_unrendered_code: None,
+                        ignore_external_modifications: None,
                     })
                 }),
             ),
@@ -2596,7 +2674,7 @@ mod tests {
             (
                 "begin",
                 ExcludeKind::Relevant,
-                Box::new(|n| n.deprecated_config.begin = Some("2024-01-01".to_string())),
+                Box::new(|n| n.deprecated_config.begin = dbt_yaml::Timestamp::parse("2024-01-01")),
             ),
             (
                 "persist_docs",
@@ -2745,9 +2823,7 @@ mod tests {
             (
                 "freshness",
                 ExcludeKind::Relevant,
-                Box::new(|n| {
-                    n.deprecated_config.freshness = Some(ModelFreshness { build_after: None })
-                }),
+                Box::new(|n| n.deprecated_config.freshness = Some(ModelFreshness::default())),
             ),
             (
                 "state",
@@ -2760,6 +2836,7 @@ mod tests {
                         pre_clone: None,
                         execute_hooks_on_any_reuse: None,
                         compare_unrendered_code: None,
+                        ignore_external_modifications: None,
                     })
                 }),
             ),
@@ -2838,6 +2915,13 @@ mod tests {
         // deliberately not compared there) — outside this drift guard's scope, which only
         // transcribes the comparator's actual active field list. `warehouse_config` is nested
         // adapter-specific config with its own dedicated test coverage.
+        //
+        // Out of scope by ownership, not by omission: `latest_version` and `deprecation_date` are
+        // not `ModelConfig` keys at all, and the `access` *node attribute* (`__model_attr__.access`,
+        // as distinct from the `access` config key exercised above) is not either. All three are
+        // owned by `DbtModel::same_ref_representation` (nodes.rs), dbt-core's
+        // `ModelNode.same_ref_representation` — so they need no entry here, and if you are looking
+        // for "who compares `deprecation_date`", that is the answer.
         assert_denylist_keys_agree_across_stage1_and_stage2::<DbtModel>(
             NodeType::Model,
             "ModelConfig::same_config",

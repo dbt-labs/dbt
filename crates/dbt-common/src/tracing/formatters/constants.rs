@@ -13,5 +13,12 @@ pub(super) const UNIT_TEST_SCHEMA_SUFFIX: &str = "_dbt_test__audit";
 /// Width for action labels
 pub(super) const ACTION_WIDTH: usize = 10;
 
+/// Width of the duration value rendered by `format_duration_fixed_width`
+pub(super) const DURATION_WIDTH: usize = 7;
+
+/// Column where a group header's verdict starts inside the right-aligned action column,
+/// so member lines branch from directly beneath that verdict.
+pub(super) const MEMBER_TREE_INDENT: usize = ACTION_WIDTH - "Failed".len();
+
 /// Selected nodes delimeter title
 pub(in crate::tracing) const SELECTED_NODES_TITLE: &str = "Selected nodes";

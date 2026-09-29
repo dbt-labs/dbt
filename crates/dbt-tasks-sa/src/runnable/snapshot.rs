@@ -3,7 +3,7 @@ use crate::runnable::cache::cache_materialization_return_value;
 use dbt_common::FsResult;
 use dbt_common::stats::NodeStatus;
 use dbt_jinja_utils::utils::add_task_context;
-use dbt_schemas::schemas::{DbtSnapshot, InternalDbtNode};
+use dbt_schemas::schemas::{DbtSnapshot, InternalDbtNode, InternalDbtNodeAttributes};
 use dbt_tasks_core::context::TaskRunnerCtx;
 use dbt_tasks_core::task::TaskResult;
 
@@ -20,7 +20,7 @@ pub fn execute_snapshot_remote(
     let (relations_map, main_response) = materialize_snapshot(
         &sql_instruction.sql,
         snapshot,
-        ctx.adapter_type(),
+        snapshot.node_adapter(),
         ctx.runtime_config(),
         &ctx.inner.materialization_resolver,
         ctx.env.clone(),

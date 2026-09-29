@@ -2,6 +2,10 @@
  * Route table for dbt-docs-v2. Param names (`dbtUniqueId`, `resourceType`)
  * mirror `packages/metadata/dbt-explorer/src/routes.tsx` so a future shared
  * component layer can read the same `useParams` shape in either app.
+ *
+ * `home` is the project overview — dbt Docs v1 landed on `/overview` too
+ * (`$urlRouterProvider.otherwise('/overview')`). The name is kept because it
+ * still reads as "the landing page" at every call site.
  */
 export const ROUTES = {
   home: '/',

@@ -86,6 +86,9 @@ pub struct CloudCredentials {
 pub struct ResolvedCloudConfig {
     pub credentials: Option<CloudCredentials>,
     pub project_id: Option<String>,
+    /// dbt platform account id. Resolved independently of [`Self::credentials`],
+    /// which additionally requires a host and a token.
+    pub account_id: Option<String>,
     pub account_identifier: Option<String>,
     pub environment_id: Option<String>,
     pub defer_env_id: Option<String>,

@@ -1,6 +1,6 @@
 import { FC } from 'react';
 
-import { Tooltip } from '@dbt-labs/sourdough';
+import { Tooltip } from '../../components/ui/Tooltip';
 
 type HeadingProps = {
   children?: React.ReactNode;

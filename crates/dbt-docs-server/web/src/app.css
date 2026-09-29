@@ -1,16 +1,14 @@
-/* @dbt-labs/biga ships the design tokens (CSS custom properties for
-   every color, spacing, and typography value). Sourdough and dbt-dag
-   both reference these via `var(--bgBrand)` etc.; without them every
-   color renders as missing. Cloud-ui imports in the same order. */
-@import "@dbt-labs/biga/tokens.css";
-/* @dbt-labs/dbt-dag bundles react-flow under the hood; its CSS provides
-   node positioning, zoom transforms, and viewport styles. Without this
-   import, nodes overlap in a tight cluster and zoom is broken. */
-@import "@dbt-labs/dbt-dag/dist/dbt-dag.css";
-/* Sourdough's design-system tokens + component styles. The published package
-   only exports `./dist/*.css`, so this must go through `dist/` (dbt-ui consumes
-   sourdough from source via `workspace:*` and can use the bare path). */
-@import "@dbt-labs/sourdough/dist/sourdough.css";
+/* Vendored copy of @dbt-labs/biga's tokens.css (design tokens: CSS custom
+   properties for every color value). Sourdough and dbt-dag both reference
+   these via `var(--bgBrand)` etc.; without them every color renders as
+   missing. Vendored (not imported from the private package) so docs v2 can
+   build without it for OSS distribution — see the OSS Design Capability
+   plan. Re-copy from @dbt-labs/biga/tokens.css if biga's tokens change. */
+@import './styles/tokens.css';
+/* React Flow's own stylesheet: node positioning, zoom transforms, and viewport
+   styles. dbt-dag's last consumers (`LineageView`, `FullLineagePage`) are gone,
+   so this is the only lineage-canvas CSS import now. */
+@import '@xyflow/react/dist/style.css';
 
 @tailwind base;
 @tailwind components;
@@ -31,7 +29,7 @@ body {
 
 body {
   font-family:
-    -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", Roboto, sans-serif;
+    -apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', Roboto, sans-serif;
   font-size: 14px;
   color: var(--fgMain);
   background: var(--bgMain);
@@ -59,8 +57,7 @@ button {
 }
 
 /* ---------- Topbar v2 ----------
-   Aurora gradient bar inspired by the catalog Figma. Translucent brand
-   tints stacked on a dark base; magnify icon + search field + ⌘K hint. */
+   Magnify icon + search field + ⌘K hint. */
 
 .topbar-v2 {
   position: relative;
@@ -69,6 +66,7 @@ button {
   align-items: center;
   padding: 0 16px;
   gap: 16px;
+  background: var(--bgNavHeader);
   border-bottom: 1px solid var(--borderMuted);
   overflow: hidden;
   isolation: isolate;
@@ -129,20 +127,10 @@ button {
   outline: none;
   box-shadow: 0 0 0 3px var(--focusHalo);
 }
-
-/* Brief spin when a parent-level filter changes. Element is remounted via
-   a React `key` change, replaying the animation each transition. */
-.topbar-v2__brand-anim {
-  display: inline-flex;
-  transform-origin: 50% 50%;
-  animation: brand-spin 520ms cubic-bezier(0.22, 0.61, 0.36, 1);
-}
-@keyframes brand-spin {
-  from { transform: rotate(0deg); }
-  to   { transform: rotate(360deg); }
-}
-@media (prefers-reduced-motion: reduce) {
-  .topbar-v2__brand-anim { animation: none; }
+.topbar-v2__brand-btn--text {
+  justify-content: flex-start;
+  padding: 4px 8px;
+  text-align: left;
 }
 .topbar-v2__brand-name {
   font-size: 13px;
@@ -151,51 +139,9 @@ button {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-}
-.topbar-v2__bg {
-  position: absolute;
-  inset: 0;
-  pointer-events: none;
-  z-index: -1;
-  background:
-    /* aurora tints, bottom-anchored */
-    linear-gradient(178.84deg, rgba(254, 103, 2, 0) 78.15%, rgba(254, 103, 2, 0.30) 98.7%),
-    linear-gradient(181.69deg, rgba(99, 47, 245, 0) 71.10%, rgba(99, 47, 245, 0.30) 96.95%),
-    linear-gradient(179.59deg, rgba(255, 204, 37, 0) 67.02%, rgba(255, 204, 37, 0.20) 94.05%),
-    /* dark base */
-    var(--bgNavHeader);
-}
-.topbar-v2__search {
-  position: relative;
-  display: flex;
+  display: inline-flex;
   align-items: center;
-  gap: 8px;
-  width: 100%;
-  justify-self: center;
-  height: 32px;
-  padding: 0 10px 0 12px;
-  border-radius: 6px;
-  background: var(--bgMain);
-  border: 1px solid var(--borderMain);
-  color: var(--fgAlt);
-  transition: border-color 120ms ease, box-shadow 120ms ease;
-}
-.topbar-v2__search:focus-within {
-  border-color: var(--borderBrand);
-  box-shadow: 0 0 0 3px var(--focusHalo);
-}
-.topbar-v2__search input {
-  flex: 1;
-  min-width: 0;
-  border: 0;
-  outline: 0;
-  background: transparent;
-  color: var(--fgMain);
-  font-size: 13px;
-  font-family: inherit;
-}
-.topbar-v2__search input::placeholder {
-  color: var(--fgAlt);
+  gap: 6px;
 }
 .topbar {
   display: grid;
@@ -358,8 +304,12 @@ button {
   }
 }
 @keyframes drawer-slide-in {
-  from { transform: translateX(100%); }
-  to { transform: translateX(0); }
+  from {
+    transform: translateX(100%);
+  }
+  to {
+    transform: translateX(0);
+  }
 }
 
 .preview-drawer__head {
@@ -502,8 +452,13 @@ button {
   animation: skeleton-pulse 1.4s ease-in-out infinite;
 }
 @keyframes skeleton-pulse {
-  0%, 100% { opacity: 0.4; }
-  50% { opacity: 0.8; }
+  0%,
+  100% {
+    opacity: 0.4;
+  }
+  50% {
+    opacity: 0.8;
+  }
 }
 
 .preview-drawer__pending {
@@ -547,7 +502,6 @@ button {
   border-radius: 3px;
 }
 
-
 /* Active row highlight in AssetListView when the row is being previewed.
    Subtle brand tint with a left border so it reads as "current" without
    dominating the page. */
@@ -561,7 +515,7 @@ button {
   background: var(--bgBrandMuted);
 }
 
-/* Screen-reader-only utility (used by CatalogHome project anchor) */
+/* Screen-reader-only utility */
 .sr-only {
   position: absolute;
   width: 1px;
@@ -706,8 +660,8 @@ button {
   align-items: center;
   transition: transform 120ms ease;
 }
-.locate-pane__pkg-head[aria-expanded="false"] .locate-pane__caret,
-.locate-pane__bucket-head[aria-expanded="false"] .locate-pane__caret {
+.locate-pane__pkg-head[aria-expanded='false'] .locate-pane__caret,
+.locate-pane__bucket-head[aria-expanded='false'] .locate-pane__caret {
   transform: rotate(180deg);
 }
 
@@ -898,7 +852,9 @@ button {
   position: relative;
   margin: 0;
   cursor: pointer;
-  transition: background 120ms ease, border-color 120ms ease;
+  transition:
+    background 120ms ease,
+    border-color 120ms ease;
 }
 .locate-pane__checkbox:hover {
   border-color: var(--borderBrand);
@@ -908,7 +864,7 @@ button {
   border-color: var(--fgBrand);
 }
 .locate-pane__checkbox:checked::after {
-  content: "";
+  content: '';
   position: absolute;
   left: 3px;
   top: 0px;
@@ -957,20 +913,6 @@ button {
   padding-top: 8px;
   border-top: 1px solid var(--borderMuted);
 }
-.locate-pane__branch {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  color: var(--fgMain);
-  background: transparent;
-  border: 1px solid var(--borderMuted);
-  border-radius: 999px;
-  padding: 2px 8px;
-}
-.locate-pane__dirty {
-  color: var(--fgWarning);
-}
-
 /* ---------- Main content ---------- */
 
 .main {
@@ -1414,7 +1356,7 @@ code.inline {
   cursor: pointer;
   padding: 0;
 }
-.locate-pane__schema-toggle[aria-expanded="false"] svg {
+.locate-pane__schema-toggle[aria-expanded='false'] svg {
   transform: rotate(-90deg);
   transition: transform 120ms ease;
 }
@@ -1636,11 +1578,17 @@ code.inline {
   animation: qq-starter-spin 520ms cubic-bezier(0.22, 0.61, 0.36, 1);
 }
 @keyframes qq-starter-spin {
-  from { transform: rotate(0deg); }
-  to   { transform: rotate(360deg); }
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
 }
 @media (prefers-reduced-motion: reduce) {
-  .qq-starters-icon { animation: none; }
+  .qq-starters-icon {
+    animation: none;
+  }
 }
 .qq-starters-title-block {
   display: flex;
@@ -1677,7 +1625,9 @@ code.inline {
   border-radius: 8px;
   text-align: left;
   cursor: pointer;
-  transition: border-color 120ms ease, background 120ms ease;
+  transition:
+    border-color 120ms ease,
+    background 120ms ease;
 }
 .qq-starter:hover {
   border-color: var(--borderBrand);
@@ -1914,7 +1864,7 @@ code.inline {
 .dark .qq-lineage-canvas .react-flow__node {
   color: var(--fgMain);
 }
-.dark .qq-lineage-canvas .react-flow__node [class*="text-"],
+.dark .qq-lineage-canvas .react-flow__node [class*='text-'],
 .dark .qq-lineage-canvas .react-flow__node text {
   fill: var(--fgMain);
   color: var(--fgMain);
@@ -1927,6 +1877,16 @@ code.inline {
 .dark .qq-lineage-canvas .react-flow__edge:focus .react-flow__edge-path {
   stroke: var(--fgBrand);
 }
+/* The v2 (xyflow) canvas. Token-based rather than a hardcoded color so edges
+   stay visible in both themes -- the previous hardcoded #ffffff was
+   invisible against light mode's canvas background. */
+.dag-v2-canvas .react-flow__edge-path {
+  stroke: var(--borderMain);
+}
+.dag-v2-canvas .react-flow__edge.selected .react-flow__edge-path,
+.dag-v2-canvas .react-flow__edge:focus .react-flow__edge-path {
+  stroke: var(--fgBrand);
+}
 .qq-lineage-error,
 .qq-lineage-loading,
 .qq-lineage-empty {
@@ -1934,17 +1894,6 @@ code.inline {
   color: var(--fgAlt);
   font-size: 12px;
   margin: 0;
-}
-
-/* CatalogHome upgrade cluster — vertical stack with breathing room
-   below the marts section. The shared UpgradeStatusPanel and persistent
-   UpgradeCards bring their own visual treatment; this just provides the
-   layout slot. */
-.catalog-home__upgrade {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-  margin-top: 12px;
 }
 
 /* ============================================================
@@ -2168,10 +2117,9 @@ code.inline {
   color: var(--fgDecorative);
 }
 
-/* CatalogHome + NodeDetail hook clusters — stack vertically with breathing
-   room. On wider screens we could 2-up these as a grid; for v0 the column
-   layout is calmer and reads as a discrete "platform features" zone. */
-.catalog-home__hooks,
+/* NodeDetail hook cluster — stacks vertically with breathing room. On wider
+   screens we could 2-up these as a grid; for v0 the column layout is calmer and
+   reads as a discrete "platform features" zone. */
 .node-detail__hooks {
   display: flex;
   flex-direction: column;
@@ -2209,11 +2157,319 @@ code.inline {
 /* Color variants — `Tinted` token is the soft pastel bg, text stays as
    fgMain (high contrast). In dark mode biga remaps the tinted alpha,
    so both modes read correctly without per-mode overrides. */
-.resource-badge--blue   { background: var(--brandBlueTinted); }
-.resource-badge--green  { background: var(--brandGreenTinted); }
-.resource-badge--orange { background: var(--brandOrangeTinted); }
-.resource-badge--yellow { background: var(--brandYellowTinted); }
-.resource-badge--pink   { background: var(--brandPinkTinted); }
-.resource-badge--purple { background: var(--brandPurpleTinted); }
-.resource-badge--neutral { background: var(--bgMainHover); }
+.resource-badge--blue {
+  background: var(--brandBlueTinted);
+}
+.resource-badge--green {
+  background: var(--brandGreenTinted);
+}
+.resource-badge--orange {
+  background: var(--brandOrangeTinted);
+}
+.resource-badge--yellow {
+  background: var(--brandYellowTinted);
+}
+.resource-badge--pink {
+  background: var(--brandPinkTinted);
+}
+.resource-badge--purple {
+  background: var(--brandPurpleTinted);
+}
+.resource-badge--neutral {
+  background: var(--bgMainHover);
+}
 
+/* ============================================================
+   Lineage DAG node — components/LineageV2/DagNode.tsx
+   ============================================================
+
+   The card grows with its name between 245px and 600px, so a resource's full
+   name is readable on the canvas. This width is used to render the 
+   node without cutting off the name which is then used by the Dagre layout. */
+.dag-node {
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  /* `stretch`, so the header and body span whatever width the widest of them asks
+    for. With `flex-start` they collapse to their own content and the divider and
+    body fill stop short of the border. */
+  align-items: stretch;
+  /* Accommodates the full node name unless it's extremely long */
+  width: max-content;
+  min-width: 245px;
+  max-width: 600px;
+  height: 108px;
+  padding: 0;
+  overflow: hidden;
+  background: var(--bgMain);
+  border: 1.5px solid var(--borderMuted);
+  border-radius: 6px;
+  /* Four stacked layers rather than one large blur — that is what lifts a node
+     off the canvas without the halo a single 12px shadow would give it. */
+  box-shadow:
+    0 2px 2px rgba(0, 0, 0, 0.4),
+    0 6px 6px rgba(0, 0, 0, 0.4),
+    0 8px 8px rgba(0, 0, 0, 0.4),
+    0 12px 12px rgba(0, 0, 0, 0.4);
+}
+
+/* LOD compact state: just the resource badge, no card chrome. Shrinks to content
+   instead of the full node's fixed 245x108 -- dagre still reserves that footprint,
+   so this floats inside it rather than filling it, matching the reference mock.
+   That only holds because a card never collapses while it is being measured; see
+   `isCardCompact` in stores/lineageStore. */
+.dag-node--compact {
+  flex-direction: row;
+  align-items: center;
+  width: auto;
+  height: auto;
+  background: none;
+  border: none;
+  box-shadow: none;
+}
+
+/* Active/selected. Thicker and colored by the node's own resource type (via
+   `data-resource-type` on the outer card, see the token list below) rather than a
+   flat neutral, so the selected state reads clearly against the badge next to it.
+   Only the border changes: the shadow is the node's resting elevation, not a
+   selection cue. */
+.dag-node--active {
+  border-width: 2px;
+  border-color: var(--dag-node-type-color, var(--fgMain));
+}
+
+/* Handles carry the edges. Kept in the layout (opacity, not `display: none`,
+   which would stop React Flow measuring them) but invisible — the design has
+   edges meeting the node border with no visible port. */
+.dag-node .react-flow__handle {
+  width: 1px;
+  min-width: 1px;
+  height: 1px;
+  min-height: 1px;
+  background: transparent;
+  border: 0;
+  opacity: 0;
+}
+
+.dag-node__header {
+  box-sizing: border-box;
+  display: flex;
+  flex: 0 0 51px;
+  align-items: center;
+  width: 100%;
+  height: 51px;
+  padding: 0 24px;
+  border-bottom: 1.5px solid var(--borderMuted);
+}
+
+/* The Tooltip trigger wrapper sits between the header and the name, so it is the
+   thing that has to be allowed to shrink — without `min-width: 0` a long name makes
+   the flex item overflow instead of ellipsing. */
+.dag-node__name-wrap {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.dag-node__name {
+  display: block;
+  overflow: hidden;
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 18px;
+  color: var(--fgMain);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dag-node__body {
+  box-sizing: border-box;
+  display: flex;
+  flex: 1 1 auto;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  padding: 0 24px;
+  background: var(--bgMainHover);
+}
+
+/* Light mode's --bgMainHover (#f6f6f6) reads almost indistinguishable from
+   the card's own #ffffff background -- --bgMainActive is the same neutral
+   gray family, just with enough contrast to actually separate the badge
+   row from the header. Dark mode's --bgMainHover already has good contrast
+   against its own card color, so it's untouched. */
+.light .dag-node__body {
+  background: var(--bgMainActive);
+}
+
+/* Resource-type badge. The fill comes from a custom property so the per-type
+   rules below are one line each, and an unknown type still renders in neutral
+   rather than transparent. */
+.dag-node__type {
+  display: inline-flex;
+  flex: 0 1 auto;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  height: 30px;
+  padding: 0 8px;
+  /* Smaller than the design's badge text on purpose: at 16px, "Source" and "Snapshot"
+     ellipsed as soon as a node also had a column chip, and those are ordinary types
+     rather than edge cases. The longest labels ("Semantic model") still truncate, and
+     carry a tooltip. 12px for hierarchy against the 13px node title. */
+  font-size: 12px;
+  line-height: 1;
+  color: var(--bgMain);
+  white-space: nowrap;
+  background: var(--dag-node-type-color, var(--bgDisabled));
+  border-radius: 6px;
+}
+
+.dag-node__type-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-weight: 400;
+}
+
+.dag-node__type-icon {
+  flex: none;
+}
+
+/* Lens badge -- same recipe as .dag-node__type (height/padding/font/dark
+   text), but the background is a plain hex set inline (style=), not a CSS
+   var: these are a fixed "status color" set, not per-resource-type tokens.
+   See lensBadges.tsx. Always short labels (Table, Stg, Pass, ...), so no
+   truncation/tooltip machinery needed here the way the name and resource
+   badge have. */
+.dag-node__lens-badge {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 5px;
+  height: 30px;
+  padding: 0 8px;
+  font-size: 12px;
+  line-height: 1;
+  color: var(--bgMain);
+  white-space: nowrap;
+  border-radius: 6px;
+}
+
+.dag-node__lens-badge-label {
+  font-weight: 400;
+}
+
+.dag-node__lens-badge-icon {
+  flex: none;
+}
+
+/* The badge's own Tooltip wrapper, same shrink problem as the name's. */
+.dag-node__type-wrap {
+  display: inline-flex;
+  min-width: 0;
+}
+
+/* Keyed off the `data-resource-type` attribute rather than the `.dag-node__type--*`
+   class so the same token is reachable from the outer `.dag-node` card too (see
+   `.dag-node--active`), not just the inner badge -- a custom property set on the
+   badge span wouldn't cascade back up to its own parent.
+   `--fgViz*` base values (not `--bgDag*`, not `--fgViz*Hover`/`Muted`) -- confirmed
+   against Jess's reference swatch of all 8 types as the universal OSS palette.
+   These are theme-invariant (same hex in both the light and dark theme blocks in
+   tokens.css), unlike the Hover/Muted variants. */
+[data-resource-type='analysis'] {
+  --dag-node-type-color: var(--fgVizAnalysis);
+}
+[data-resource-type='column'] {
+  --dag-node-type-color: var(--fgVizColumn);
+}
+[data-resource-type='exposure'] {
+  --dag-node-type-color: var(--fgVizExposure);
+}
+[data-resource-type='function'] {
+  --dag-node-type-color: var(--fgVizFunction);
+}
+[data-resource-type='macro'] {
+  --dag-node-type-color: var(--fgVizMacro);
+}
+[data-resource-type='metric'] {
+  --dag-node-type-color: var(--fgVizMetric);
+}
+[data-resource-type='model'] {
+  --dag-node-type-color: var(--fgVizModel);
+}
+[data-resource-type='saved_query'] {
+  --dag-node-type-color: var(--fgVizSavedquery);
+}
+[data-resource-type='seed'] {
+  --dag-node-type-color: var(--fgVizSeed);
+}
+[data-resource-type='semantic_model'] {
+  --dag-node-type-color: var(--fgVizSemanticmodel);
+}
+[data-resource-type='snapshot'] {
+  --dag-node-type-color: var(--fgVizSnapshot);
+}
+[data-resource-type='source'] {
+  --dag-node-type-color: var(--fgVizSource);
+}
+[data-resource-type='test'] {
+  --dag-node-type-color: var(--fgVizTest);
+}
+[data-resource-type='unit_test'] {
+  --dag-node-type-color: var(--bgDagTest);
+}
+
+/* Column count — two abutting segments, icon then count, so the pair reads as
+   one control while each keeps its own rounded outer edge. Present only when
+   the node has column-level lineage. A real <button> (not a <span>) since it's
+   meant to open the node's Columns tab -- reset the native button chrome so it
+   still just looks like the badge underneath. */
+.dag-node__columns {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  margin-left: auto;
+  border: none;
+  padding: 0;
+  background: none;
+  cursor: pointer;
+}
+
+.dag-node__columns:hover .dag-node__columns-icon,
+.dag-node__columns:hover .dag-node__columns-count {
+  background: var(--bgMainHover);
+}
+
+.dag-node__columns:focus-visible {
+  outline: 2px solid var(--fgBrand);
+  outline-offset: 1px;
+}
+
+.dag-node__columns-icon,
+.dag-node__columns-count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 30px;
+  background: var(--bgMainActive);
+  box-shadow:
+    0 1.5px 1.5px rgba(29, 0, 81, 0.64),
+    0 0 1.5px rgba(29, 0, 81, 0.64);
+}
+
+.dag-node__columns-icon {
+  width: 39px;
+  color: var(--fgAlt);
+  border-radius: 6px 0 0 6px;
+}
+
+.dag-node__columns-count {
+  box-sizing: border-box;
+  min-width: 43px;
+  padding: 0 8px;
+  font-size: 16px;
+  line-height: 1;
+  color: var(--fgMain);
+  border-radius: 0 6px 6px 0;
+}

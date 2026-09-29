@@ -3,6 +3,7 @@ import { screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { renderWithProviders } from '../test/renderWithProviders';
+import { listSource } from '../test/wireFixtures';
 
 vi.mock('../shared', async (importOriginal) => {
   const mod = await importOriginal<typeof import('../shared')>();
@@ -37,23 +38,6 @@ vi.mock('../shared', async (importOriginal) => {
     ),
   };
 });
-vi.mock('@dbt-labs/dbt-dag', () => ({
-  resourceIconMap: new Proxy({}, { get: () => 'source' }),
-  freshnessStatuses: [
-    'pass',
-    'warn',
-    'error',
-    'runtime error',
-    'unknown',
-    'skipped',
-    'unconfigured',
-    'outdated',
-  ],
-}));
-vi.mock('@dbt-labs/sourdough', async (importOriginal) => {
-  const mod = await importOriginal<typeof import('@dbt-labs/sourdough')>();
-  return { ...mod, Icon: () => null };
-});
 vi.mock('react-router-dom', async (importOriginal) => {
   const mod = await importOriginal<typeof import('react-router-dom')>();
   return {
@@ -73,10 +57,6 @@ vi.mock('react-router-dom', async (importOriginal) => {
     ),
   };
 });
-
-function makeResponse(data: unknown) {
-  return vi.fn(() => Promise.resolve({ ok: true, json: () => Promise.resolve(data) }));
-}
 
 const twoSources = {
   data: [
@@ -106,8 +86,9 @@ describe('<SourceFilterView />', () => {
   afterEach(() => vi.unstubAllGlobals());
 
   it('renders database and schema filter dropdowns', async () => {
-    vi.stubGlobal('fetch', makeResponse(twoSources));
-    renderWithProviders(<SourceFilterView project={{ name: 'test_project' }} />);
+    renderWithProviders(<SourceFilterView project={{ name: 'test_project' }} />, {
+      source: listSource('source', twoSources),
+    });
     await waitFor(() =>
       expect(screen.getByTestId('filter-Database')).toBeInTheDocument(),
     );
@@ -115,22 +96,21 @@ describe('<SourceFilterView />', () => {
   });
 
   it('loads sources and groups into collections', async () => {
-    vi.stubGlobal('fetch', makeResponse(twoSources));
-    renderWithProviders(<SourceFilterView project={{ name: 'test_project' }} />);
+    renderWithProviders(<SourceFilterView project={{ name: 'test_project' }} />, {
+      source: listSource('source', twoSources),
+    });
     // Two sources with same sourceName 'raw' → 1 collection → header count shows 1
     await waitFor(() => expect(screen.getByText('Loaded 1 of 1')).toBeInTheDocument());
     expect(screen.getByText('Sources')).toBeInTheDocument();
   });
 
   it('shows empty state when no sources', async () => {
-    vi.stubGlobal(
-      'fetch',
-      makeResponse({
+    renderWithProviders(<SourceFilterView project={{ name: 'test_project' }} />, {
+      source: listSource('source', {
         data: [],
         page_info: { total_count: 0, has_next_page: false, end_cursor: null },
       }),
-    );
-    renderWithProviders(<SourceFilterView project={{ name: 'test_project' }} />);
+    });
     await waitFor(() =>
       expect(screen.getByText('No sources found.')).toBeInTheDocument(),
     );

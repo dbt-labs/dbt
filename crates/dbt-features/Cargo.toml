@@ -20,6 +20,7 @@ dbt-cloud-config = { workspace = true }
 dbt-common = { workspace = true }
 dbt-compilation = { workspace = true }
 dbt-dag = { workspace = true }
+dbt-deps = { workspace = true }
 dbt-dist = { workspace = true }
 dbt-docs-server = { workspace = true }
 dbt-env = { workspace = true }

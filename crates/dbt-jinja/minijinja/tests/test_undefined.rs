@@ -177,6 +177,15 @@ fn test_strict_undefined() {
 }
 
 #[test]
+fn test_undefined_operation_names_variable() {
+    let env = Environment::new();
+    let err = env.render_str("{{ missing + 1 }}", (), &[]).unwrap_err();
+
+    assert_eq!(err.kind(), ErrorKind::UndefinedError);
+    assert!(err.to_string().contains("`missing` is undefined"), "{err}");
+}
+
+#[test]
 fn test_chainable_undefined() {
     let mut env = Environment::new();
     env.set_undefined_behavior(UndefinedBehavior::Chainable);

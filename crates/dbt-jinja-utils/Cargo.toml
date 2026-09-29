@@ -57,4 +57,5 @@ dbt-test-primitives = { workspace = true }
 dbt-test-utils = { workspace = true }
 dbt-tracing = { workspace = true, features = ["test-utils"] }
 insta = { version = "1.38.0", features = ["glob", "serde"] }
+tempfile = { workspace = true }
 tracing = { workspace = true }

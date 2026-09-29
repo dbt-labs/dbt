@@ -1,9 +1,11 @@
 use std::{collections::HashSet, ops::Deref};
 
 use dbt_common::{
-    ErrorCode, FsResult, create_debug_span_with_parent, create_info_span_with_parent, fs_err,
+    ErrorCode, FsError, FsResult, create_debug_span_with_parent, create_info_span_with_parent,
+    fs_err,
 };
 use dbt_tracing::TelemetryAttributes;
+use scc::hash_map::Entry;
 use tracing::{Span, span::Id as SpanId};
 
 /// A subset of severity level for spans, since other severity levels are not used here.
@@ -391,11 +393,16 @@ struct ManagedTaskSpan<R, S> {
 /// ```
 ///
 /// ## Related task chain (used for aggregage node result reporting)
+///
+/// Nodes that share one aggregated query are nested under a grouping span of their own,
+/// so that span's close signals that the whole group has finished.
 /// ```text
 /// [visitor's current span]
 ///   └─ TuiAllProcessingNodesGroup (single span for all nodes)
 ///       ├─ NodeProcessed (unique_id=model.x, last_phase=Run) [Info]
-///       ├─ NodeProcessed (unique_id=test.y, last_phase=Run) [Info]
+///       ├─ TuiAggregatedTestGroup (macro_name=unique, attached_node=model.x) [Info]
+///       │   ├─ NodeProcessed (unique_id=test.y, last_phase=Run) [Info]
+///       │   └─ NodeProcessed (unique_id=test.z, last_phase=Run) [Info]
 ///       └─ ...
 /// ```
 ///
@@ -493,6 +500,15 @@ impl<R, S> SpanManager<R, S> {
     }
 }
 
+/// Error for a span key that has neither a live managed span nor a registered builder.
+fn parent_span_builder_not_found(span_key: &SpanKey) -> Box<FsError> {
+    fs_err!(
+        ErrorCode::Unexpected,
+        "Parent span builder not found for key: {}. Ensure populate_span_manager was called before task execution.",
+        span_key.as_str()
+    )
+}
+
 impl<R, S> SpanManager<R, S> {
     /// Registers a parent span builder with the given key and optional parent.
     ///
@@ -552,18 +568,26 @@ impl<R, S> SpanManager<R, S> {
         }
 
         // Look up the registered metadata (without consuming builder yet) for the expected grandparent
-        let parent_ref_opt = self
+        let Some(parent_ref_opt) = self
             .registered_builders
-            .read_sync(&span_ref.span_key, |_, registered| registered.parent_ref.clone())
-            .ok_or_else(|| {
-                fs_err!(
-                    ErrorCode::Unexpected,
-                    "Parent span builder not found for key: {}. Ensure populate_span_manager was called before task execution.",
-                    span_ref.span_key.as_str()
-                )
-            })?;
+            .read_sync(&span_ref.span_key, |_, registered| {
+                registered.parent_ref.clone()
+            })
+        else {
+            // The builder is gone: either a concurrent creator already consumed it, in which
+            // case the entry lock below waits for its span id, or it was never registered.
+            return match self
+                .parent_span_key_to_span_id
+                .entry_sync(span_ref.span_key.clone())
+            {
+                Entry::Occupied(existing) => Ok(existing.get().clone()),
+                Entry::Vacant(_) => Err(parent_span_builder_not_found(&span_ref.span_key)),
+            };
+        };
 
-        // Determine the parent under which this span should be created
+        // Determine the parent under which this span should be created.
+        // Ancestors must be resolved before this key's entry lock is taken below: `scc` entry
+        // locks are per bucket, so nesting them on this map can self-deadlock a single thread.
         let parent_id = if let Some(parent_ref) = parent_ref_opt {
             // Recursively ensure parent exists
             self.ensure_span_exists(parent_ref)?
@@ -572,39 +596,56 @@ impl<R, S> SpanManager<R, S> {
             self.span_manager_cur_span_id.clone()
         };
 
-        #[cfg(debug_assertions)]
+        // Creation and publication happen under this key's entry lock, so exactly one thread
+        // creates the span and concurrent requesters observe the same span id.
+        match self
+            .parent_span_key_to_span_id
+            .entry_sync(span_ref.span_key.clone())
         {
-            // This span should not exist among parent's children, otherwise
-            // we should have found it at the start of this function.
-            // We have to read span_key into the vector first, to avoid deadlocks,
-            // we can't just read and check in the same lock.
-            let child_ids: Vec<SpanId> = self
-                .parent_spans
-                .get_sync(&parent_id)
-                .expect("Parent span must exist")
-                .children
-                .iter()
-                .cloned()
-                .collect();
-
-            for child_id in child_ids {
-                if let Some(mspan) = self.parent_spans.get_sync(&child_id)
-                    && mspan.span_key == span_ref.span_key
+            // Another thread created this span first, reuse it.
+            Entry::Occupied(existing) => Ok(existing.get().clone()),
+            Entry::Vacant(vacant) => {
+                #[cfg(debug_assertions)]
                 {
-                    panic!(
-                        "Span with key {} already exists under parent {:?}, but not among managed spans",
-                        span_ref.span_key.as_str(),
-                        parent_id
-                    );
+                    // This span should not exist among parent's children, otherwise
+                    // we should have found it at the start of this function.
+                    // We have to read span_key into the vector first, to avoid deadlocks,
+                    // we can't just read and check in the same lock.
+                    let child_ids: Vec<SpanId> = self
+                        .parent_spans
+                        .get_sync(&parent_id)
+                        .expect("Parent span must exist")
+                        .children
+                        .iter()
+                        .cloned()
+                        .collect();
+
+                    for child_id in child_ids {
+                        if let Some(mspan) = self.parent_spans.get_sync(&child_id)
+                            && mspan.span_key == span_ref.span_key
+                        {
+                            panic!(
+                                "Span with key {} already exists under parent {:?}, but not among managed spans",
+                                span_ref.span_key.as_str(),
+                                parent_id
+                            );
+                        }
+                    }
                 }
+
+                // Span doesn't exist, create it
+                let new_span_id = self.create_managed_parent_span(parent_id, span_ref)?;
+                vacant.insert_entry(new_span_id.clone());
+
+                Ok(new_span_id)
             }
         }
-
-        // Span doesn't exist, create it
-        self.create_managed_parent_span(parent_id, span_ref)
     }
 
     /// Creates a ManagedParentSpan by looking up and calling the registered builder.
+    ///
+    /// The caller is responsible for publishing the returned span id in
+    /// `parent_span_key_to_span_id` while holding that key's entry lock.
     fn create_managed_parent_span(
         &self,
         managed_parent_id: SpanId,
@@ -614,13 +655,7 @@ impl<R, S> SpanManager<R, S> {
         let registered_span = self
             .registered_builders
             .remove_sync(&parent_span_ref.span_key)
-            .ok_or_else(|| {
-                fs_err!(
-                    ErrorCode::Unexpected,
-                    "Parent span builder not found for key: {}. Ensure populate_span_manager was called before task execution.",
-                    parent_span_ref.span_key.as_str()
-                )
-            })?
+            .ok_or_else(|| parent_span_builder_not_found(&parent_span_ref.span_key))?
             .1;
 
         // Call the builder to get attributes and callbacks
@@ -645,7 +680,7 @@ impl<R, S> SpanManager<R, S> {
         let new_managed = ManagedParentSpan::new(
             span,
             Some(managed_parent_id.clone()),
-            parent_span_ref.span_key.clone(),
+            parent_span_ref.span_key,
             on_close,
             on_task_close,
             on_task_skip,
@@ -660,18 +695,6 @@ impl<R, S> SpanManager<R, S> {
             .get_mut()
             .children
             .insert(new_span_id.clone());
-
-        // Add reverse mapping from span key to span id
-        self.parent_span_key_to_span_id
-            .insert_sync(parent_span_ref.span_key, new_span_id.clone())
-            .map_err(|(key, id)| {
-                fs_err!(
-                    ErrorCode::Unexpected,
-                    "Parent span key `{}` already mapped to a span id: {:?}",
-                    key.as_str(),
-                    id
-                )
-            })?;
 
         // Insert the new span
         self.parent_spans
@@ -947,7 +970,10 @@ impl<R, S> SpanManager<R, S> {
 mod tests {
     use std::{
         collections::{HashMap, HashSet},
-        sync::{Arc, Mutex},
+        sync::{
+            Arc, Barrier, Mutex,
+            atomic::{AtomicU64, Ordering},
+        },
     };
 
     use dbt_telemetry::GenericOpExecuted;
@@ -1026,6 +1052,38 @@ mod tests {
                         None,
                         Some(Box::new(|_, _, _| true)),
                         Some(Box::new(|_, _, _| true)),
+                    )
+                }),
+            )
+            .expect("parent span builder should register");
+    }
+
+    /// Registers a parent span that closes only once `expected_children` of its direct
+    /// children have closed, mirroring the counting parents built in `task_spans`.
+    fn register_counting_parent(
+        span_manager: &SpanManager<(), ()>,
+        key: &'static str,
+        parent_key: Option<&'static str>,
+        expected_children: u64,
+    ) {
+        let close_counter = Arc::new(AtomicU64::new(0));
+
+        span_manager
+            .register_parent_span_builder(
+                key.to_string(),
+                parent_key.map(|key| ParentSpanRef::new(SpanLevel::Info, key.into())),
+                Box::new(move || {
+                    let skip_counter = close_counter.clone();
+
+                    ParentSpanBuilder::new(
+                        attrs(key),
+                        None,
+                        Some(Box::new(move |_, _, _| {
+                            close_counter.fetch_add(1, Ordering::AcqRel) + 1 == expected_children
+                        })),
+                        Some(Box::new(move |_, _, _| {
+                            skip_counter.fetch_add(1, Ordering::AcqRel) + 1 == expected_children
+                        })),
                     )
                 }),
             )
@@ -1145,6 +1203,205 @@ mod tests {
                 "related_leaf",
                 "related_mid",
                 "related_root",
+            ]
+        );
+    }
+
+    /// Threads that first-touch the same span key simultaneously.
+    const CONCURRENT_REQUESTERS: usize = 8;
+
+    /// Requests a task span under `leaf_key` from [`CONCURRENT_REQUESTERS`] threads released
+    /// at once, against a fresh span manager registered with `chain` of (key, parent key).
+    ///
+    /// Returns the managed parent span id each task span ended up under, and the total number
+    /// of managed parent spans created (including the manager's root).
+    fn concurrent_first_touch(
+        chain: &[(&'static str, Option<&'static str>)],
+        leaf_key: &'static str,
+    ) -> (Vec<SpanId>, usize) {
+        tracing::subscriber::with_default(tracing_subscriber::registry(), || {
+            // The span manager requires an active tracing span to root its span tree at.
+            let root_span = tracing::info_span!("root");
+            let _root_scope = root_span.enter();
+
+            let span_manager = Arc::new(SpanManager::<(), ()>::new_empty());
+            for (key, parent_key) in chain {
+                register_parent(&span_manager, key, *parent_key);
+            }
+
+            // `with_default` installs the subscriber on this thread only, and spans created
+            // without one get no id, which `get_task_span` panics on.
+            let dispatch = tracing::dispatcher::get_default(|dispatch| dispatch.clone());
+            let barrier = Arc::new(Barrier::new(CONCURRENT_REQUESTERS));
+
+            let requesters = (0..CONCURRENT_REQUESTERS)
+                .map(|i| {
+                    let span_manager = span_manager.clone();
+                    let dispatch = dispatch.clone();
+                    let barrier = barrier.clone();
+
+                    std::thread::spawn(move || {
+                        tracing::dispatcher::with_default(&dispatch, || {
+                            let mut builder = SpanTreeRequest::builder(
+                                SpanLevel::Info,
+                                attrs(&format!("task_{i}")),
+                                None,
+                                None,
+                            );
+                            builder.with_parent(SpanLevel::Info, leaf_key);
+
+                            // Enter the manager together, so the parent span chain is
+                            // first-touched concurrently rather than one thread at a time.
+                            barrier.wait();
+                            span_manager.get_task_span(builder.build())
+                        })
+                    })
+                })
+                .collect::<Vec<_>>();
+
+            let parent_ids = requesters
+                .into_iter()
+                .map(|requester| {
+                    let task_span = requester
+                        .join()
+                        .expect("requester thread should not panic")
+                        .expect("concurrent first touch of a parent span should not fail");
+                    let task_span_id = task_span.id().expect("task span should be enabled");
+
+                    span_manager
+                        .task_spans
+                        .read_sync(&task_span_id, |_, managed| {
+                            managed.managed_parent_id.clone()
+                        })
+                        .expect("task span should be managed")
+                })
+                .collect();
+
+            (parent_ids, span_manager.parent_spans.len())
+        })
+    }
+
+    #[test]
+    fn concurrent_first_touch_of_parent_span_creates_it_once() {
+        // Hitting the race window depends on thread scheduling, so repeat the scenario
+        // against a fresh span manager each time.
+        for _ in 0..20 {
+            // Single level: aggregated test tasks create their member spans inside
+            // `run_task`, so several worker threads first-touch `PhaseExecuted::<phase>`.
+            let (parent_ids, managed_span_count) =
+                concurrent_first_touch(&[("phase", None)], "phase");
+            assert_eq!(
+                parent_ids.iter().collect::<HashSet<_>>().len(),
+                1,
+                "requesters must all share one parent span, got {parent_ids:?}"
+            );
+            // The manager's root plus the single `phase` span.
+            assert_eq!(managed_span_count, 2);
+
+            // Two levels: mirrors `NodeProcessed` under its aggregated test group, where the
+            // contended key's ancestor is first-touched concurrently as well.
+            let (parent_ids, managed_span_count) = concurrent_first_touch(
+                &[("group", None), ("node_processed", Some("group"))],
+                "node_processed",
+            );
+            assert_eq!(
+                parent_ids.iter().collect::<HashSet<_>>().len(),
+                1,
+                "requesters must all share one parent span, got {parent_ids:?}"
+            );
+            // The manager's root plus one span per chain level.
+            assert_eq!(managed_span_count, 3);
+        }
+    }
+
+    #[test]
+    fn node_group_closes_once_after_a_nested_aggregated_group() {
+        // Mirrors the shape `task_spans::populate_span_manager` registers for one
+        // ungrouped node plus one aggregated group of two members:
+        //
+        // all_nodes
+        //   ├─ np_plain
+        //   └─ agg_group
+        //        ├─ np_member_a
+        //        └─ np_member_b
+        //
+        // A parent's close counter is bumped once per closing *direct child*, so
+        // `all_nodes` expects one child per group, not one per member node. Counting
+        // members instead leaves it permanently short: it never closes, its end-of-run
+        // callbacks never fire, and nothing errors out.
+        const ALL_NODES_DIRECT_CHILDREN: u64 = 2;
+
+        let recorder = CloseRecorder::default();
+        let subscriber = tracing_subscriber::registry().with(recorder.clone());
+
+        let closed_while_running = tracing::subscriber::with_default(subscriber, || {
+            let root_span = tracing::info_span!("root");
+            let _root_scope = root_span.enter();
+
+            let span_manager = SpanManager::<(), ()>::new_empty();
+
+            register_counting_parent(&span_manager, "phase", None, 3);
+            register_counting_parent(&span_manager, "all_nodes", None, ALL_NODES_DIRECT_CHILDREN);
+            register_counting_parent(&span_manager, "agg_group", Some("all_nodes"), 2);
+            register_counting_parent(&span_manager, "np_plain", Some("all_nodes"), 1);
+            register_counting_parent(&span_manager, "np_member_a", Some("agg_group"), 1);
+            register_counting_parent(&span_manager, "np_member_b", Some("agg_group"), 1);
+
+            // One task span per node, shaped like `create_task_span_for_node`: parented by
+            // the phase span and merely following from the node's own grouping span.
+            let task_spans = ["np_plain", "np_member_a", "np_member_b"].map(|node_key| {
+                let mut builder =
+                    SpanTreeRequest::builder(SpanLevel::Debug, attrs(node_key), None, None);
+                builder.with_parent(SpanLevel::Info, "phase");
+                builder.add_related_span(SpanLevel::Info, node_key);
+
+                span_manager
+                    .get_task_span(builder.build())
+                    .expect("task span should be created")
+            });
+
+            for label in [
+                "all_nodes",
+                "agg_group",
+                "np_plain",
+                "np_member_a",
+                "np_member_b",
+            ] {
+                label_parent(&span_manager, &recorder, label);
+            }
+
+            for task_span in task_spans {
+                span_manager.handle_task_finished(task_span, &());
+            }
+
+            // Snapshot before the span manager is dropped. A parent whose counter never
+            // reaches its total is still closed by that drop, in the same relative order,
+            // so only a snapshot taken here proves it closed because its children did.
+            recorder.closed()
+        });
+
+        let expected_labels = HashSet::from([
+            "all_nodes",
+            "agg_group",
+            "np_plain",
+            "np_member_a",
+            "np_member_b",
+        ]);
+        let actual = closed_while_running
+            .into_iter()
+            .filter(|label| expected_labels.contains(label))
+            .collect::<Vec<_>>();
+
+        // Every span closes exactly once, members before their group and the group
+        // before the outer node group.
+        assert_eq!(
+            actual,
+            vec![
+                "np_plain",
+                "np_member_a",
+                "np_member_b",
+                "agg_group",
+                "all_nodes",
             ]
         );
     }

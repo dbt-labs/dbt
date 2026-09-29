@@ -1,15 +1,13 @@
-import { useMemo } from 'react';
-
+import { createElement, useMemo } from 'react';
 import {
-  Icon,
-  Ryecon,
-  RyeconHelp,
-  RyeconStatusError,
-  RyeconStatusSuccess,
-  RyeconStatusWarning,
-  Tooltip,
-} from '@dbt-labs/sourdough';
+  BadgeAlert,
+  BadgeCheck,
+  BadgeMinus,
+  BadgeX,
+  type LucideIcon,
+} from 'lucide-react';
 
+import { Tooltip } from '../../components/ui/Tooltip';
 import { truthy } from '../util/array';
 import { CollapsibleSection } from './CollapsibleSection';
 
@@ -26,11 +24,11 @@ enum TestResultStatus {
   error = 3,
 }
 
-const testResultStatusRyeconMap: Record<number, Ryecon> = {
-  0: RyeconHelp,
-  1: RyeconStatusSuccess,
-  2: RyeconStatusWarning,
-  3: RyeconStatusError,
+const testResultStatusIconMap: Record<number, LucideIcon> = {
+  0: BadgeMinus,
+  1: BadgeCheck,
+  2: BadgeAlert,
+  3: BadgeX,
 };
 
 // used to sort test results by severity
@@ -123,11 +121,9 @@ export const TestResultsSection = ({
                 content={tooltipMessage}
                 className="pointer-events-auto flex items-center"
               >
-                <Icon
-                  size="md"
-                  ryecon={testResultStatusRyeconMap[testResultStatus]}
-                  className="pointer-events-auto align-middle"
-                />
+                {createElement(testResultStatusIconMap[testResultStatus], {
+                  className: 'size-4 pointer-events-auto align-middle',
+                })}
                 <div className="sr-only">{tooltipMessage}</div>
               </Tooltip>
             </span>

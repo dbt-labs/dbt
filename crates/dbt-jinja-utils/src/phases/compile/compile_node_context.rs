@@ -11,7 +11,7 @@ use dbt_schemas::{
     schemas::{InternalDbtNodeAttributes, common::DbtMaterialization, telemetry::NodeType},
     state::{DbtRuntimeConfig, NodeResolverTracker, ResolverState},
 };
-use minijinja::constants::{CURRENT_EXECUTION_PHASE, CURRENT_PATH, CURRENT_SPAN};
+use minijinja::constants::{CURRENT_EXECUTION_PHASE, CURRENT_PATH, CURRENT_SPAN, DIALECT};
 use minijinja::{Value as MinijinjaValue, machinery::Span};
 use minijinja_contrib::modules::{py_datetime::datetime::PyDateTime, pytz::PytzTimezone};
 use std::{
@@ -323,6 +323,7 @@ where
     let source_function = SourceFunction::new_with_validation(
         node_resolver.clone(),
         model.common().package_name.clone(),
+        runtime_config.clone(),
         validation_config_with_depends_on,
     );
     let source_value = MinijinjaValue::from_object(source_function);
@@ -407,6 +408,17 @@ where
     ctx.insert(
         CURRENT_EXECUTION_PHASE.to_string(),
         MinijinjaValue::from("render"),
+    );
+
+    // A node that selected an adapter via `+adapter` renders against that
+    // adapter's dialect. Inserted into the node's own context so macro dispatch
+    // resolves per node. Always present now that the adapter is resolved at parse:
+    // an unannotated node carries the target default rather than nothing.
+    ctx.insert(
+        DIALECT.to_string(),
+        // `as_ref()` deliberately, not `to_string()`: the namespace is keyed
+        // with `as_ref()`, and for AdapterType those are separate strum impls.
+        MinijinjaValue::from(model.node_adapter().as_ref()),
     );
 
     // Today's caller still consumes `BTreeMap<String, MinijinjaValue>`. We

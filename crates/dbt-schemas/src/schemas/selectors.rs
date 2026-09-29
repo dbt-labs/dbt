@@ -123,6 +123,30 @@ impl<'de> Deserialize<'de> for SelectorValue {
     }
 }
 
+/// A method argument. Loading accepts any shape dbt Core's `Any`-typed `value` would;
+/// `Unsupported` defers the failure to resolution, like dbt Core does.
+#[derive(Debug, Clone, Serialize, UntaggedEnumDeserialize, DbtSchema)]
+#[serde(untagged)]
+pub enum SelectorMethodValue {
+    Scalar(SelectorValue),
+    Unsupported(Box<dbt_yaml::Value>),
+}
+
+impl SelectorMethodValue {
+    pub fn scalar(&self) -> Option<&SelectorValue> {
+        match self {
+            SelectorMethodValue::Scalar(v) => Some(v),
+            SelectorMethodValue::Unsupported(_) => None,
+        }
+    }
+}
+
+impl From<SelectorValue> for SelectorMethodValue {
+    fn from(v: SelectorValue) -> Self {
+        SelectorMethodValue::Scalar(v)
+    }
+}
+
 //
 // ---- top-level file -------------------------------------------------------------------------
 //
@@ -346,7 +370,7 @@ pub enum AtomExpr {
     Method(MethodAtomExpr),
     Exclude(ExcludeAtomExpr),
     /// Direct method name as key with value
-    MethodKey(BTreeMap<String, SelectorValue>),
+    MethodKey(BTreeMap<String, SelectorMethodValue>),
 }
 
 /// A *resolved* selector ⇒ the "include" (`select`) expression and the
@@ -365,6 +389,7 @@ pub struct SelectorEntry {
     pub include: SelectExpression, // the include expression (which may contain nested excludes)
     pub is_default: bool,          // original `default: true`
     pub description: Option<String>, // docs string from YAML
+    pub definition: SelectorDefinitionValue, // original parsed YAML definition for manifest parity
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, DbtSchema)]
@@ -375,7 +400,7 @@ pub struct MethodAtomExpr {
     /// `unit_test`, `version`. YAML-only: `selector` (references another named selector).
     /// Dot-notation adds a sub-argument: `config.materialized`, `config.schema`, etc.
     pub method: String,
-    pub value: SelectorValue,
+    pub value: SelectorMethodValue,
 
     // graph-walk flags (all optional / default = false)
     // SelectorDefaultSpec instead of bool so the JSON schema shows that

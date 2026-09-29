@@ -58,11 +58,51 @@ impl IntrospectiveValue {
         })
     }
 
-    fn wrap_leaf(value: Value) -> Value {
+    pub(crate) fn wrap_leaf(value: Value) -> Value {
         Value::from_object(IntrospectiveValue {
             inner: value,
             iterable: false,
         })
+    }
+
+    /// Unpacks this stub into exactly `count` tainted items for fixed-arity
+    /// destructuring (`{% set a, b = ... %}`, and each item of `{% for a, b
+    /// in list %}`), which -- unlike `enumerate()`'s "exactly one item"
+    /// loop-body model (see `iterable`'s doc comment) -- has a statically
+    /// known arity to satisfy.
+    ///
+    /// When the fabricated inner value already has exactly `count` real
+    /// items (e.g. `adapter.execute()`'s Parse-mode stub really is a
+    /// `(response, table)` pair of correctly-typed defaults, not bare
+    /// placeholders), wraps and returns those instead of discarding them --
+    /// this preserves fidelity for further Jinja-level attribute/method
+    /// access (which `get_value`/`call_method` already degrade gracefully
+    /// on regardless of what's really inside). It does *not* make the
+    /// result safe to `downcast_object` through, though: the wrapper
+    /// itself is what gets stored, not its contents, so native callers
+    /// that need the concrete type back out of a destructured item still
+    /// need their own `is_introspective_stub()` check before downcasting
+    /// (see e.g. `ResultStore::store_result`'s `agate_table` handling).
+    ///
+    /// Falls back to `count` tainted `undefined` leaves when the inner
+    /// value's real arity doesn't match `count` (including the common case
+    /// of an empty/scalar Parse-mode stub).
+    pub(crate) fn unpack(&self, count: usize) -> Vec<Value> {
+        if let Some(items) = self
+            .inner
+            .as_object()
+            .and_then(|o| o.try_iter())
+            .map(|it| it.collect::<Vec<_>>())
+            .filter(|items| items.len() == count)
+        {
+            return items
+                .into_iter()
+                .map(IntrospectiveValue::wrap_leaf)
+                .collect();
+        }
+        (0..count)
+            .map(|_| IntrospectiveValue::wrap_leaf(Value::UNDEFINED))
+            .collect()
     }
 }
 
@@ -419,6 +459,144 @@ mod tests {
     }
 
     #[test]
+    fn tuple_unpack_of_tainted_value_yields_tainted_items_instead_of_erroring() {
+        // Regression test: `{% set a, b = ... %}` compiles to the same
+        // `UnpackList` instruction used to unpack each `{% for a, b in
+        // list %}` item, but unlike a for-loop it requires an exact arity
+        // match. Before the fix, unpacking a tainted origin (whose
+        // `enumerate()` always reports exactly one item, see `iterable`'s
+        // doc comment) against any arity other than 1 failed with "cannot
+        // unpack: sequence of wrong length" -- e.g. dbt-adapters'
+        // `{% set res, table = adapter.execute(...) %}` in `statement()`.
+        let env = test_env();
+        let wrapped = IntrospectiveValue::wrap(Value::from_object(TestRelation));
+        let out = env
+            .render_str(
+                "{% set a, b = rel %}{{ is_tainted(a) }},{{ is_tainted(b) }}",
+                context! { rel => wrapped },
+                &[],
+            )
+            .unwrap();
+        assert_eq!(out, "True,True");
+    }
+
+    #[test]
+    fn and_short_circuit_respects_a_real_always_false_rhs() {
+        // Regression test: `is_incremental() and flags.WHICH != "lint"`. The
+        // LHS is a tainted stub whose fake default is falsy (Parse-mode: the
+        // relation doesn't exist), and the RHS is a *real*, always-false
+        // comparison (flags.WHICH really is "lint" during lint). In every
+        // real invocation this `and` is false, so a guarded
+        // `{% call statement() %}` must never run during lint.
+        //
+        // Before the fix, `and`'s short-circuit point (`JumpIfFalseOrPop`)
+        // decided whether to short-circuit purely from the tainted LHS's fake
+        // (falsy) value, without ever consulting branch-override -- so when a
+        // later exploration pass wanted to treat the LHS as truthy (to check
+        // the "is_incremental() is true" branch for real parse errors), it
+        // short-circuited on the LHS's *original* fake-falsy value regardless,
+        // and the real RHS was never evaluated as part of that exploration.
+        let env = test_env();
+        let out = env
+            .render_str(
+                "{% if incr and which != 'lint' %}RAN{% endif %}",
+                context! {
+                    incr => IntrospectiveValue::wrap(Value::from(false)),
+                    which => Value::from("lint"),
+                },
+                &taint_gate(),
+            )
+            .unwrap();
+        assert_eq!(out, "");
+    }
+
+    #[test]
+    fn or_short_circuit_takes_the_explored_branch_over_a_real_false_rhs() {
+        // Mirrors `and_short_circuit_respects_a_real_always_false_rhs` for
+        // `or`'s short-circuit point (`JumpIfTrueOrPop`). The tainted LHS's
+        // fake default is falsy, but exploration (`TaintGateListener`, like
+        // the production Symbolic listener) wants to check the "LHS is true"
+        // branch. `or` short-circuits once its LHS is true regardless of the
+        // RHS, so this must render as if the LHS really were true -- without
+        // this fix, the short-circuit point ignored exploration and used the
+        // fake-falsy value directly, continuing on to (and being decided by)
+        // a real, always-false RHS instead.
+        let env = test_env();
+        let out = env
+            .render_str(
+                "{% if incr or which == 'lint' %}RAN{% endif %}",
+                context! {
+                    incr => IntrospectiveValue::wrap(Value::from(false)),
+                    which => Value::from("nope"),
+                },
+                &taint_gate(),
+            )
+            .unwrap();
+        assert_eq!(out, "RAN");
+    }
+
+    #[test]
+    fn unpack_preserves_real_items_when_arity_matches() {
+        // Review follow-up on `tuple_unpack_of_tainted_value_yields_
+        // tainted_items_instead_of_erroring`: substituting bare `undefined`
+        // for every unpacked item would "kick the can down the road" for
+        // callers that need a *concrete* type back out, not just a taint
+        // marker -- e.g. `adapter.execute()`'s Parse-mode stub really is a
+        // `(response, table)` pair of correctly-typed defaults (not empty
+        // placeholders), and `{{ store_result(name, response=res,
+        // agate_table=table) }}` immediately downstream in `statement()`
+        // downcasts `table` to a concrete `AgateTable`. When the fabricated
+        // inner value's real arity already matches, unpack should hand
+        // back those real (tainted-leaf-wrapped) items instead of discarding
+        // them.
+        let wrapped = IntrospectiveValue {
+            inner: Value::from(vec![Value::from("a-response"), Value::from("a-table")]),
+            iterable: true,
+        };
+        let items = wrapped.unpack(2);
+        assert_eq!(items.len(), 2);
+        assert!(items.iter().all(|v| v.is_introspective_stub()));
+        assert_eq!(items[0].to_string(), "a-response");
+        assert_eq!(items[1].to_string(), "a-table");
+    }
+
+    #[test]
+    fn unpack_falls_back_to_undefined_leaves_when_arity_does_not_match() {
+        // The common Parse-mode case: an empty/scalar fabricated inner
+        // value can't supply `count` real items, so unpack must still
+        // produce exactly `count` tainted placeholders rather than
+        // erroring or under/over-supplying the stack.
+        let wrapped = IntrospectiveValue {
+            inner: Value::from(vec![Value::from("only-one")]),
+            iterable: true,
+        };
+        let items = wrapped.unpack(2);
+        assert_eq!(items.len(), 2);
+        assert!(items.iter().all(|v| v.is_introspective_stub()));
+        assert_eq!(items[0].to_string(), "");
+        assert_eq!(items[1].to_string(), "");
+    }
+
+    #[test]
+    fn slicing_a_tainted_value_propagates_taint_instead_of_erroring() {
+        // Regression test: `ops::slice` only understands `ObjectRepr::Seq`/
+        // `Iterable` (or scalars it knows how to index); a tainted value's
+        // fabricated inner value is usually neither (e.g. a `None` stub,
+        // `ObjectRepr::Plain`), which previously failed with "value of type
+        // plain object cannot be sliced" instead of propagating taint like
+        // every other operator.
+        let env = test_env();
+        let out = env
+            .render_str(
+                "{{ s[0:2] }}",
+                context! { s => IntrospectiveValue::wrap(Value::from(())) },
+                &taint_gate(),
+            )
+            .unwrap();
+        assert_eq!(out, "{{}}");
+    }
+
+    #[test]
     fn untainted_object_is_not_introspective_stub() {
         assert!(!Value::from_object(TestRelation).is_introspective_stub());
     }
@@ -562,6 +740,123 @@ select {{ pivot(vals) }} from t";
             )
             .unwrap();
         assert_eq!(out, "True");
+    }
+
+    #[test]
+    fn removing_an_absent_value_from_a_tainted_list_degrades_instead_of_erroring() {
+        // Regression test for a real production failure: a macro builds a
+        // column-order list from a tainted `adapter.get_columns_in_relation()`
+        // result (tainting the list itself, per
+        // `appending_a_tainted_item_taints_the_list`), then does
+        // `col_order.remove('_DBT_SOURCE_RELATION')` assuming that column is
+        // present. Because the list's real contents are unreliable once
+        // tainted, `remove()` can legitimately find nothing to remove and
+        // must degrade like every other introspective-stub operation
+        // (`IntrospectiveValue::call`/`call_method`) instead of raising a
+        // hard "value not found in list" render error.
+        let env = test_env();
+        let out = env
+            .render_str(
+                "{%- set cols = [] -%}\
+{%- for c in rel -%}\
+{%- set _ = cols.append(c) -%}\
+{%- endfor -%}\
+{%- set _ = cols.remove('not_actually_there') -%}\
+done",
+                context! { rel => IntrospectiveValue::wrap(Value::from_object(TestRelation)) },
+                &[],
+            )
+            .unwrap();
+        assert_eq!(out, "done");
+    }
+
+    #[test]
+    fn removing_an_absent_value_from_an_untainted_list_still_errors() {
+        // Contrast with the above: a plain (never-tainted) list must keep
+        // raising a hard error for a genuine "value not found" -- the new
+        // leniency in `remove_impl` only applies once the container has
+        // actually absorbed fabricated data.
+        let env = test_env();
+        let err = env
+            .render_str(
+                "{%- set cols = ['a', 'b'] -%}\
+{%- set _ = cols.remove('c') -%}\
+done",
+                context! {},
+                &[],
+            )
+            .unwrap_err();
+        assert_eq!(err.kind(), ErrorKind::InvalidOperation);
+    }
+
+    #[test]
+    fn calling_a_native_function_with_a_tainted_argument_degrades_instead_of_erroring() {
+        // Regression test for a real production failure: a macro sizes a
+        // `{% for i in range(results['col']|length) %}` loop off a value
+        // derived from an introspective query result. `|length` on a
+        // tainted operand short-circuits to the tainted operand itself
+        // (`ApplyFilter`'s override handling), which previously then hit
+        // `range()`'s real Rust implementation and failed to convert to
+        // `i32` with "cannot convert plain object to i32" -- a hard render
+        // error, unlike every other introspective-stub operation. Plain
+        // (non-macro) function calls now get the same override
+        // short-circuit filters/tests/`in` already have.
+        let env = test_env();
+        let out = env
+            .render_str(
+                "{%- set d = {} -%}\
+{%- for c in rel -%}\
+{%- set _ = d.update({'col': c}) -%}\
+{%- endfor -%}\
+{%- for i in range(d['col'] | length) -%}X{%- endfor -%}\
+done",
+                context! { rel => IntrospectiveValue::wrap(Value::from_object(TestRelation)) },
+                &taint_gate(),
+            )
+            .unwrap();
+        assert_eq!(out, "done");
+    }
+
+    #[test]
+    fn macro_call_with_a_tainted_argument_skips_the_body_instead_of_executing_it() {
+        // Regression test for a real user report: `dbt_utils.date_spine`
+        // passes a tainted `upper_bound` (force-tainted, per
+        // `is_known_introspective_macro`, since it came from a macro that
+        // touches `statement()`) into `dbt_utils.generate_series`, whose
+        // body calls `get_powers_of_two`, which raises
+        // `exceptions.raise_compiler_error("upper bound must be positive")`
+        // for a non-positive value (stood in for here by `fail()`, since
+        // `exceptions` lives in `dbt-jinja-utils`, which this crate doesn't
+        // depend on). A macro call used to always execute its body for real
+        // even with a tainted argument (see the removed
+        // `macro_call_still_executes_and_absorbs_taint_from_an_argument`),
+        // so this fabricated stand-in could actually reach that guard and
+        // fail the whole render -- a call the real run (with a live
+        // warehouse) would never make. Since a tainted argument means
+        // *everything* the macro could compute from it is equally
+        // unknowable, skipping the body outright (mirroring how a plain
+        // native function call already short-circuits on a tainted
+        // argument) avoids ever reaching a guard like this.
+        let mut env = test_env();
+        env.add_function("fail", |msg: String| -> Result<Value, Error> {
+            Err(Error::new(ErrorKind::InvalidOperation, msg))
+        });
+        let env_source = "\
+{%- macro boom(n) -%}\
+{%- if n <= 0 -%}\
+{{ fail(\"n must be positive\") }}\
+{%- endif -%}\
+ok\
+{%- endmacro -%}\
+select {{ boom(n) }} from t";
+        let out = env
+            .render_str(
+                env_source,
+                context! { n => IntrospectiveValue::wrap(Value::from(0)) },
+                &taint_gate(),
+            )
+            .unwrap();
+        assert_eq!(out, "select {{}} from t");
     }
 
     #[test]

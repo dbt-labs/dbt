@@ -6,6 +6,7 @@ use arrow::csv::ReaderBuilder;
 use arrow_schema::{DataType, Field, Schema};
 use dbt_agate::AgateTable;
 use dbt_schemas::schemas::dbt_column::ColumnMask;
+use dbt_schemas::schemas::serde::StringOrArrayOfStrings;
 use dbt_schemas::schemas::{
     common::PartitionConfig, common::*, dbt_column::DbtColumn, nodes::*, project::*,
 };
@@ -25,14 +26,16 @@ pub(crate) struct TestModelColumn {
 
 #[derive(Default)]
 pub(crate) struct TestModelConfig {
-    // This will be used once we actually implement liquid clustering
-    #[expect(dead_code)]
     pub auto_cluster: bool,
-    // This will be used once we actually implement liquid clustering
-    #[expect(dead_code)]
     pub cluster_by: Vec<String>,
     pub columns: Vec<TestModelColumn>,
+    /// Defaults to enforced for legacy component tests; set explicitly to `Some(false)` when a
+    /// test exercises the contract ownership boundary.
+    pub contract_enforced: Option<bool>,
     pub cron: Option<String>,
+    pub every: Option<String>,
+    pub on_update: bool,
+    pub at_most_every: Option<String>,
     pub partition_by: Vec<String>,
     pub persist_column_comments: bool,
     pub persist_relation_comments: bool,
@@ -40,6 +43,8 @@ pub(crate) struct TestModelConfig {
     /// definition.
     pub query: Option<String>,
     pub relation_comment: Option<String>,
+    pub row_filter_function: Option<String>,
+    pub row_filter_columns: Vec<String>,
     pub tags: IndexMap<String, String>,
     pub tbl_properties: IndexMap<String, String>,
     pub table_format: Option<String>,
@@ -53,6 +58,9 @@ pub(crate) fn create_mock_dbt_model(cfg: TestModelConfig) -> DbtModel {
     };
 
     let base_attrs = NodeBaseAttributes {
+        adapter: AdapterType::Snowflake,
+        propagate: Vec::new(),
+        effective_propagation_target: None,
         unrendered_config: Default::default(),
         database: "test_db".to_string(),
         schema: "test_schema".to_string(),
@@ -94,16 +102,27 @@ pub(crate) fn create_mock_dbt_model(cfg: TestModelConfig) -> DbtModel {
     };
 
     let wh_config = WarehouseSpecificNodeConfig {
-        tblproperties: Some(
+        tblproperties: Some(TblProperties(
             cfg.tbl_properties
                 .into_iter()
                 .map(|(k, v)| (k, dbt_yaml::Value::from(v)))
                 .collect(),
-        ),
+        )),
         partition_by: Some(PartitionConfig::List(cfg.partition_by)),
-        schedule: Some(Schedule::ScheduleConfig(ScheduleConfig {
+        liquid_clustered_by: (!cfg.cluster_by.is_empty())
+            .then_some(StringOrArrayOfStrings::ArrayOfStrings(cfg.cluster_by)),
+        auto_liquid_cluster: Some(cfg.auto_cluster),
+        schedule: (cfg.cron.is_some()
+            || cfg.time_zone.is_some()
+            || cfg.every.is_some()
+            || cfg.on_update
+            || cfg.at_most_every.is_some())
+        .then_some(Schedule::ScheduleConfig(ScheduleConfig {
             cron: cfg.cron,
             time_zone_value: cfg.time_zone,
+            every: cfg.every,
+            on_update: cfg.on_update.then_some(true),
+            at_most_every: cfg.at_most_every,
         })),
         databricks_tags: Some(
             cfg.tags
@@ -111,6 +130,12 @@ pub(crate) fn create_mock_dbt_model(cfg: TestModelConfig) -> DbtModel {
                 .map(|(k, v)| (k, YmlValue::from(v)))
                 .collect(),
         ),
+        row_filter: cfg.row_filter_function.map(|function| RowFilterConfig {
+            function: Some(function),
+            columns: Some(StringOrArrayOfStrings::ArrayOfStrings(
+                cfg.row_filter_columns,
+            )),
+        }),
         ..Default::default()
     };
 
@@ -118,6 +143,10 @@ pub(crate) fn create_mock_dbt_model(cfg: TestModelConfig) -> DbtModel {
 
     DbtModel {
         deprecated_config: ModelConfig {
+            contract: Some(DbtContract {
+                enforced: cfg.contract_enforced.unwrap_or(true),
+                ..Default::default()
+            }),
             table_format: cfg.table_format,
             __warehouse_specific_config__: wh_config,
             ..Default::default()

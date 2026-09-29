@@ -1,5 +1,4 @@
-import { Tooltip } from '@dbt-labs/sourdough';
-
+import { Tooltip } from '../../components/ui/Tooltip';
 import { formatAbsoluteLocalDate, formatDateCommon } from '../util/dateUtils';
 
 interface TimestampDisplayProps {

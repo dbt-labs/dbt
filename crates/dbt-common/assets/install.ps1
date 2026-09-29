@@ -524,13 +524,13 @@ function Show-AsciiArt {
     # This differs from the original install.sh because windows doesn't support ANSI escape codes
     Write-Host @"
 
- =====              =====    DBT  
-=========        =========  FUSION
+ =====              =====      
+=========        =========   DBT
  ===========    >========   ------
   ======================    ********************************************
-   ====================     *          FUSION ENGINE INSTALLED         *
-    ========--========      *                                          *
-     =====-    -=====                    Version: $Version
+   ====================     *               DBT INSTALLED              *
+    ========--========      *             Version: $Version            *
+     =====-    -=====                    
     ========--========      *                                          *
    ====================     *     Run 'dbt --help' to get started      *
   ======================    ********************************************

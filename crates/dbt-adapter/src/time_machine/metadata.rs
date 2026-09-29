@@ -49,7 +49,9 @@ use dbt_adapter_core::AdapterType;
 use dbt_common::cancellation::Cancellable;
 
 use crate::errors::{AdapterError, AdapterErrorKind, AdapterResult};
-use crate::metadata::{CatalogAndSchema, MetadataFreshness, RelationSchemaPair, RelationVec, UDF};
+use crate::metadata::{
+    CatalogAndSchema, FreshnessOverride, MetadataFreshness, RelationSchemaPair, RelationVec, UDF,
+};
 
 use super::event::{CatalogSchema, CatalogSchemas, MetadataCallArgs};
 use super::{global_recorder, global_replayer};
@@ -220,6 +222,18 @@ impl MetadataResultDeserialize for HashMap<String, AdapterResult<Arc<Schema>>> {
         }
 
         Ok(result)
+    }
+}
+
+impl MetadataResultSerialize for BTreeMap<String, bool> {
+    fn to_recording_json(&self) -> serde_json::Value {
+        serde_json::to_value(self).unwrap_or(serde_json::Value::Null)
+    }
+}
+
+impl MetadataResultDeserialize for BTreeMap<String, bool> {
+    fn from_recording_json(json: &serde_json::Value) -> Result<Self, String> {
+        serde_json::from_value(json.clone()).map_err(|e| e.to_string())
     }
 }
 
@@ -663,12 +677,73 @@ pub fn args_list_relations_in_parallel(
 }
 
 /// Create MetadataCallArgs for freshness.
-pub fn args_freshness(relations: impl IntoIterator<Item = impl AsRef<str>>) -> MetadataCallArgs {
+pub fn args_freshness(
+    relations: impl IntoIterator<Item = impl AsRef<str>>,
+    warehouse: Option<String>,
+) -> MetadataCallArgs {
     MetadataCallArgs::Freshness {
         relations: relations
             .into_iter()
             .map(|r| r.as_ref().to_string())
             .collect(),
+        warehouse,
+    }
+}
+
+/// Create MetadataCallArgs for relation-existence checks.
+pub fn args_relations_exist(
+    relations: impl IntoIterator<Item = impl AsRef<str>>,
+    warehouse: Option<String>,
+) -> MetadataCallArgs {
+    MetadataCallArgs::RelationsExist {
+        relations: relations
+            .into_iter()
+            .map(|r| r.as_ref().to_string())
+            .collect(),
+        warehouse,
+    }
+}
+
+/// Create MetadataCallArgs for freshness checks with source overrides.
+pub fn args_freshness_with_overrides(
+    relations: impl IntoIterator<Item = impl AsRef<str>>,
+    overrides: &BTreeMap<String, FreshnessOverride>,
+    warehouse: Option<String>,
+) -> MetadataCallArgs {
+    MetadataCallArgs::FreshnessWithOverrides {
+        relations: relations
+            .into_iter()
+            .map(|r| r.as_ref().to_string())
+            .collect(),
+        overrides: overrides
+            .iter()
+            .map(|(relation, override_)| {
+                let kind = match override_ {
+                    FreshnessOverride::Query(_) => "query",
+                    FreshnessOverride::Field(_) => "field",
+                };
+                (relation.clone(), kind.to_string())
+            })
+            .collect(),
+        warehouse,
+    }
+}
+
+/// Create MetadataCallArgs for schema-wide freshness.
+pub fn args_freshness_all_in_schema(
+    database: impl Into<String>,
+    schema: impl Into<String>,
+    relations: impl IntoIterator<Item = impl AsRef<str>>,
+    warehouse: Option<String>,
+) -> MetadataCallArgs {
+    MetadataCallArgs::FreshnessAllInSchema {
+        database: database.into(),
+        schema: schema.into(),
+        relations: relations
+            .into_iter()
+            .map(|r| r.as_ref().to_string())
+            .collect(),
+        warehouse,
     }
 }
 
@@ -839,12 +914,19 @@ mod tests {
 
     #[test]
     fn test_args_freshness() {
-        let args = args_freshness(["source.a.b", "source.c.d"]);
+        let args = args_freshness(
+            ["source.a.b", "source.c.d"],
+            Some("metadata_warehouse".to_string()),
+        );
 
         match args {
-            MetadataCallArgs::Freshness { relations } => {
+            MetadataCallArgs::Freshness {
+                relations,
+                warehouse,
+            } => {
                 assert_eq!(relations.len(), 2);
                 assert_eq!(relations[0], "source.a.b");
+                assert_eq!(warehouse, Some("metadata_warehouse".to_string()));
             }
             _ => panic!("Expected Freshness"),
         }

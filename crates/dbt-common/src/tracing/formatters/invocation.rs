@@ -39,10 +39,12 @@ const fn node_type_to_order(node_type: NodeType) -> u8 {
         NodeType::Analysis => 10,
         NodeType::Operation => 11,
         NodeType::UnitTest => 12,
-        NodeType::Function => 13,
-        NodeType::Macro => 14,
-        NodeType::DocsMacro => 15,
-        NodeType::Unspecified => 16,
+        // Grouped with the other validation resources rather than the build ones.
+        NodeType::Check => 13,
+        NodeType::Function => 14,
+        NodeType::Macro => 15,
+        NodeType::DocsMacro => 16,
+        NodeType::Unspecified => 17,
     }
 }
 
@@ -65,6 +67,7 @@ pub fn node_type_plural(node: NodeType) -> &'static str {
         NodeType::SavedQuery => "saved queries",
         NodeType::SemanticModel => "semantic models",
         NodeType::Function => "functions",
+        NodeType::Check => "checks",
     }
 }
 
@@ -80,12 +83,21 @@ struct InvocationOutcomeTotals {
     no_op: u64,
 }
 
+/// Test work the engine avoided on the user's behalf.
+#[derive(Debug)]
+struct TestOptimizationTotals {
+    statically_checked: u64,
+    aggregated_tests: u64,
+    aggregated_queries: u64,
+}
+
 #[derive(Debug)]
 struct InvocationMetricsSnapshot {
     warnings: u64,
     errors: u64,
     autofix: u64,
     outcomes: InvocationOutcomeTotals,
+    test_optimization: TestOptimizationTotals,
 }
 
 #[derive(Debug)]
@@ -163,6 +175,20 @@ fn collect_outcome_totals(data_provider: &DataProvider<'_>) -> InvocationOutcome
     }
 }
 
+fn collect_test_optimization_totals(data_provider: &DataProvider<'_>) -> TestOptimizationTotals {
+    TestOptimizationTotals {
+        statically_checked: data_provider.get_metric(FusionMetricKey::InvocationMetric(
+            InvocationMetricKey::StaticallyCheckedTests,
+        )),
+        aggregated_tests: data_provider.get_metric(FusionMetricKey::InvocationMetric(
+            InvocationMetricKey::AggregatedTests,
+        )),
+        aggregated_queries: data_provider.get_metric(FusionMetricKey::InvocationMetric(
+            InvocationMetricKey::AggregatedTestQueries,
+        )),
+    }
+}
+
 /// Collects invocation-level metrics exposed through the data provider for the Invocation span.
 fn collect_invocation_metrics(data_provider: &DataProvider<'_>) -> InvocationMetricsSnapshot {
     let warnings = data_provider.get_metric(FusionMetricKey::InvocationMetric(
@@ -176,12 +202,14 @@ fn collect_invocation_metrics(data_provider: &DataProvider<'_>) -> InvocationMet
     ));
 
     let outcomes = collect_outcome_totals(data_provider);
+    let test_optimization = collect_test_optimization_totals(data_provider);
 
     InvocationMetricsSnapshot {
         warnings,
         errors,
         autofix,
         outcomes,
+        test_optimization,
     }
 }
 
@@ -219,10 +247,26 @@ pub fn format_invocation_summary(
         metrics,
     };
 
+    let is_summary_command = SUMMARY_COMMANDS
+        .iter()
+        .any(|command| command.eq_ignore_ascii_case(summary.command));
+
     let mut lines = Vec::new();
 
     // Start with a blank line for spacing
     lines.push(String::new());
+
+    // Supplementary sections come before the headline block, so the verdict stays last.
+    if is_summary_command
+        && let Some(section) = format_test_optimization_section(
+            &summary.metrics.test_optimization,
+            max_line_width,
+            colorize,
+        )
+    {
+        lines.extend(section);
+        lines.push(String::new());
+    }
 
     // Insert a centered execution summary delimiter line
     let header = format_delimiter(" Execution Summary ", max_line_width, colorize);
@@ -230,10 +274,7 @@ pub fn format_invocation_summary(
 
     lines.push(format_status_line(&summary, colorize));
 
-    if SUMMARY_COMMANDS
-        .iter()
-        .any(|command| command.eq_ignore_ascii_case(summary.command))
-    {
+    if is_summary_command {
         if let Some(evaluated) = format_evaluated_line(data_provider, colorize) {
             lines.push(evaluated);
         }
@@ -342,6 +383,48 @@ fn format_evaluated_line(data_provider: &DataProvider<'_>, _colorize: bool) -> O
     Some(format!("Processed: {}", parts.join(" | ")))
 }
 
+/// Reports test work the engine avoided: statically proven tests and aggregated
+/// queries. Returns `None` when neither optimization did anything, so the whole
+/// section is absent by default.
+fn format_test_optimization_section(
+    totals: &TestOptimizationTotals,
+    max_line_width: Option<usize>,
+    colorize: bool,
+) -> Option<Vec<String>> {
+    // Body lines are intentionally unstyled in both colour modes.
+    let mut body = Vec::new();
+
+    if totals.statically_checked > 0 {
+        body.push(format!(
+            "{} statically checked (0 queries)",
+            count_text(totals.statically_checked, "test", "tests"),
+        ));
+    }
+
+    // Both counters are incremented together, so either alone being zero means
+    // they are inconsistent and reporting a saving would be misleading.
+    if totals.aggregated_tests > 0 && totals.aggregated_queries > 0 {
+        body.push(format!(
+            "{} batched (reduced to {})",
+            count_text(totals.aggregated_tests, "test", "tests"),
+            count_text(totals.aggregated_queries, "query", "queries"),
+        ));
+    }
+
+    if body.is_empty() {
+        return None;
+    }
+
+    let mut lines = vec![format_delimiter(
+        " Test Optimization ",
+        max_line_width,
+        colorize,
+    )];
+    lines.extend(body);
+
+    Some(lines)
+}
+
 fn format_result_line(outcomes: &InvocationOutcomeTotals, colorize: bool) -> Option<String> {
     if outcomes.total == 0 {
         return None;
@@ -396,6 +479,16 @@ fn colored_metric(value: u64, label: &str, colorize: bool, style: &Style) -> Str
     maybe_apply_color(style, &text, colorize)
 }
 
+fn count_text(value: u64, label_single: &str, label_plural: &str) -> String {
+    let word = if value == 1 {
+        label_single
+    } else {
+        label_plural
+    };
+
+    format!("{} {}", value, word)
+}
+
 fn colored_count(
     value: u64,
     label_single: &str,
@@ -403,14 +496,11 @@ fn colored_count(
     colorize: bool,
     style: &Style,
 ) -> String {
-    let word = if value == 1 {
-        label_single
-    } else {
-        label_plural
-    };
-
-    let text = format!("{} {}", value, word);
-    maybe_apply_color(style, &text, colorize)
+    maybe_apply_color(
+        style,
+        &count_text(value, label_single, label_plural),
+        colorize,
+    )
 }
 
 fn format_autofix_line(colorize: bool) -> String {
@@ -422,4 +512,83 @@ fn format_autofix_line(colorize: bool) -> String {
         "{suggestion_label} Run '{}' to see the latest fusion compatible packages. For compatibility errors, try the autofix script: {url}",
         command
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const WIDTH: Option<usize> = Some(60);
+
+    fn section(
+        statically_checked: u64,
+        aggregated_tests: u64,
+        aggregated_queries: u64,
+    ) -> Option<Vec<String>> {
+        format_test_optimization_section(
+            &TestOptimizationTotals {
+                statically_checked,
+                aggregated_tests,
+                aggregated_queries,
+            },
+            WIDTH,
+            false,
+        )
+    }
+
+    #[test]
+    fn test_optimization_section_absent_when_nothing_optimized() {
+        assert_eq!(section(0, 0, 0), None);
+    }
+
+    #[test]
+    fn test_optimization_section_static_only() {
+        let lines = section(3, 0, 0).expect("section should be present");
+        assert_eq!(lines.len(), 2);
+        assert_eq!(lines[1], "3 tests statically checked (0 queries)");
+        assert!(!lines.iter().any(|line| line.contains("batched")));
+    }
+
+    #[test]
+    fn test_optimization_section_aggregated_only() {
+        let lines = section(0, 8, 4).expect("section should be present");
+        assert_eq!(lines.len(), 2);
+        assert_eq!(lines[1], "8 tests batched (reduced to 4 queries)");
+        assert!(!lines.iter().any(|line| line.contains("statically")));
+    }
+
+    #[test]
+    fn test_optimization_section_both() {
+        let lines = section(4, 4, 2).expect("section should be present");
+        assert_eq!(lines.len(), 3);
+        assert_eq!(lines[1], "4 tests statically checked (0 queries)");
+        assert_eq!(lines[2], "4 tests batched (reduced to 2 queries)");
+    }
+
+    #[test]
+    fn test_optimization_section_singular_counts() {
+        let lines = section(1, 2, 1).expect("section should be present");
+        assert_eq!(lines[1], "1 test statically checked (0 queries)");
+        assert_eq!(lines[2], "2 tests batched (reduced to 1 query)");
+    }
+
+    #[test]
+    fn test_optimization_section_omits_aggregation_line_without_queries() {
+        let lines = section(1, 8, 0).expect("section should be present");
+        assert_eq!(lines.len(), 2);
+        assert_eq!(lines[1], "1 test statically checked (0 queries)");
+    }
+
+    #[test]
+    fn test_optimization_banner_matches_execution_summary_shape() {
+        let lines = section(1, 0, 0).expect("section should be present");
+        assert_eq!(
+            lines[0],
+            "==================== Test Optimization ====================="
+        );
+        assert_eq!(
+            lines[0].len(),
+            format_delimiter(" Execution Summary ", WIDTH, false).len()
+        );
+    }
 }

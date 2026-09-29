@@ -2,8 +2,14 @@
   {% set tags = config.get('databricks_tags') %}
   {% set model_columns = model.get('columns', []) %}
   {% set existing_columns = adapter.get_columns_in_relation(intermediate_relation) %}
-  {% set model_constraints = model.get('constraints', []) %}
-  {% set columns_and_constraints = adapter.parse_columns_and_constraints(existing_columns, model_columns, model_constraints) %}
+  {% set contract_config = config.get('contract') %}
+  {% set contract_enforced = contract_config and contract_config.enforced %}
+  {% if contract_enforced %}
+    {% set model_constraints = model.get('constraints', []) %}
+  {% else %}
+    {% set model_constraints = [] %}
+  {% endif %}
+  {% set columns_and_constraints = adapter.parse_columns_and_constraints(existing_columns, model_columns, model_constraints, contract_enforced, model.name) %}
   {% set target_relation = relation.enrich(columns_and_constraints[1]) %}
 
   {% call statement('main') %}
@@ -49,6 +55,7 @@
   {{ file_format_clause(catalog_relation) }}
   {{ databricks__options_clause(catalog_relation) }}
   {{ partition_cols(label="partitioned by") }}
+  {{ get_create_row_filter_clause(target_relation) }}
   {{ liquid_clustered_cols() }}
   {{ clustered_cols(label="clustered by") }}
   {{ location_clause(catalog_relation) }}
@@ -85,6 +92,7 @@
       {{ file_format_clause(catalog_relation) }}
       {{ databricks__options_clause(catalog_relation) }}
       {{ partition_cols(label="partitioned by") }}
+      {{ get_create_row_filter_clause(relation) }}
       {{ liquid_clustered_cols() }}
       {{ clustered_cols(label="clustered by") }}
       {{ location_clause(catalog_relation) }}

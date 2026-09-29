@@ -1,6 +1,8 @@
 use serde::{Deserialize, Serialize};
 use strum::{AsRefStr, Display, EnumIter, EnumString, IntoEnumIterator, IntoStaticStr};
 
+pub mod config_aliases;
+
 pub const NON_EXPERIMENTAL_ADAPTERS: &[AdapterType] = &[
     AdapterType::Snowflake,
     AdapterType::Bigquery,
@@ -81,15 +83,21 @@ pub enum AdapterType {
     Dremio,
     /// Oracle
     Oracle,
-    /// Alt
-    Alt,
+    /// The dbt lake compute engine.
+    ///
+    /// `lakecompute` is the name everywhere -- profiles.yml `type:`,
+    /// `+adapter:`, `adapters:` keys, catalogs.yml config blocks, the
+    /// manifest's `adapter_type`, and the Jinja dispatch dialect. `alt` and
+    /// `lake_compute`, its names before its two renames, are not accepted on
+    /// input; see `test_retired_names_are_not_accepted_on_input`.
+    LakeCompute,
 }
 
 impl AdapterType {
     /// Returns an iterator of `(AdapterType, &'static str)` pairs.
     ///
-    /// The string is the lowercased name of the variant. `Postgres` is
-    /// rendered as `"postgresql"`.
+    /// The string is the lowercased name of the variant, except `Postgres`,
+    /// which is rendered as `"postgresql"`.
     pub fn iter_with_names() -> impl Iterator<Item = (AdapterType, &'static str)> {
         Self::iter().map(|v| {
             let name: &'static str = match v {
@@ -98,6 +106,17 @@ impl AdapterType {
             };
             (v, name)
         })
+    }
+
+    /// Cap on concurrent database work for this adapter when the invocation
+    /// asks for none -- neither `--threads` nor a `threads:` in `profiles.yml`.
+    pub const fn default_max_threads(self) -> usize {
+        use AdapterType::*;
+        match self {
+            Snowflake => 48,
+            Redshift => 4,
+            _ => 48,
+        }
     }
 }
 
@@ -111,7 +130,7 @@ pub fn quote_char(adapter_type: AdapterType) -> char {
         Redshift => '"',
         Postgres | Salesforce => '"',
         Fabric => '"',
-        DuckDB | Alt => '"',
+        DuckDB | LakeCompute => '"',
         Athena | Trino | Starburst => '"',
         Datafusion => '"',
         // https://clickhouse.com/docs/sql-reference/syntax#identifiers
@@ -172,7 +191,7 @@ mod tests {
             ("sTarburst", AdapterType::Starburst),
             ("tRino", AdapterType::Trino),
             ("dAtafusion", AdapterType::Datafusion),
-            ("aLt", AdapterType::Alt),
+            ("lAkecompute", AdapterType::LakeCompute),
         ];
         for (input, expected) in cases {
             let res = input.parse::<AdapterType>();
@@ -194,6 +213,52 @@ mod tests {
         assert_eq!(pg.as_ref(), "postgres");
         let s: &'static str = pg.into();
         assert_eq!(s, "postgres");
+    }
+
+    /// `lakecompute` is the only name that leaves the process.
+    /// Display/AsRef/IntoStaticStr all have to agree on it, because the Jinja
+    /// dialect key is built from `as_ref()` in some places and `to_string()` in
+    /// others.
+    #[test]
+    fn test_lake_compute_renders_as_lake_compute() {
+        let lake_compute = AdapterType::LakeCompute;
+        assert_eq!(lake_compute.to_string(), "lakecompute");
+        assert_eq!(lake_compute.as_ref(), "lakecompute");
+        let s: &'static str = lake_compute.into();
+        assert_eq!(s, "lakecompute");
+
+        assert_eq!("lakecompute".parse::<AdapterType>().unwrap(), lake_compute);
+    }
+
+    /// `alt` and `lake_compute` were the external names before this adapter's
+    /// two renames, and neither is kept as an alias: both must fail to parse
+    /// rather than resolve silently, on both the strum and serde paths.
+    #[test]
+    fn test_retired_names_are_not_accepted_on_input() {
+        for retired in ["alt", "lake_compute"] {
+            assert!(
+                retired.parse::<AdapterType>().is_err(),
+                "`{retired}` must not parse as an adapter type"
+            );
+            assert!(
+                serde_json::from_str::<AdapterType>(&format!("\"{retired}\"")).is_err(),
+                "`{retired}` must not deserialize as an adapter type"
+            );
+        }
+    }
+
+    /// serde is a separate mechanism from strum and drives `+adapter:`, the
+    /// `adapters:` map key, and the manifest's `adapter_type`. It must land on
+    /// the same string.
+    #[test]
+    fn test_lake_compute_serde_round_trip() {
+        let json = serde_json::to_string(&AdapterType::LakeCompute).unwrap();
+        assert_eq!(json, "\"lakecompute\"");
+
+        assert_eq!(
+            serde_json::from_str::<AdapterType>("\"lakecompute\"").unwrap(),
+            AdapterType::LakeCompute
+        );
     }
 
     #[test]
@@ -219,7 +284,7 @@ mod tests {
                 (AdapterType::Datafusion, "datafusion"),
                 (AdapterType::Dremio, "dremio"),
                 (AdapterType::Oracle, "oracle"),
-                (AdapterType::Alt, "alt"),
+                (AdapterType::LakeCompute, "lakecompute"),
             ]
         );
     }
@@ -241,7 +306,7 @@ mod tests {
             AdapterType::Salesforce,
             AdapterType::Fabric,
             AdapterType::DuckDB,
-            AdapterType::Alt,
+            AdapterType::LakeCompute,
             AdapterType::Athena,
             AdapterType::Trino,
             AdapterType::Starburst,
@@ -263,5 +328,27 @@ mod tests {
         assert_eq!(ExecutionPhase::Analyze.as_str(), "analyze");
         assert_eq!(ExecutionPhase::Run.as_str(), "run");
         assert_eq!(DBT_EXECUTION_PHASES, ["render", "analyze", "run"]);
+    }
+}
+
+#[cfg(test)]
+mod dialect_string_tests {
+    use super::*;
+    use strum::IntoEnumIterator;
+
+    /// The Jinja dialect string is produced by `as_ref()` in some places and
+    /// `to_string()` in others (namespace keys vs. context values). `AdapterType`
+    /// derives both `Display` and `AsRefStr`, and `Postgres` carries a
+    /// `to_string`/`serialize` override — so if the two impls ever diverge,
+    /// per-dialect macro lookup would silently miss. Keep them identical.
+    #[test]
+    fn as_ref_and_display_agree_for_every_adapter() {
+        for adapter_type in AdapterType::iter() {
+            assert_eq!(
+                adapter_type.as_ref(),
+                adapter_type.to_string(),
+                "as_ref() and Display disagree for {adapter_type:?}; dialect keys would not match"
+            );
+        }
     }
 }

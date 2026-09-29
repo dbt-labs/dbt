@@ -1,13 +1,7 @@
 import { type FC, type JSX } from 'react';
+import { BadgeAlert, BadgeCheck, BadgeMinus } from 'lucide-react';
 
-import {
-  Link,
-  RyeconStatusError,
-  RyeconStatusSuccess,
-  RyeconStatusWarning,
-  SizeType,
-} from '@dbt-labs/sourdough';
-
+import { Link } from '../../components/ui/Link';
 import { toTitleCase } from '../util/string';
 import { TrustSignalMessage, TrustState } from '../util/trustSignals';
 import { trustIconMap } from './constants';
@@ -17,27 +11,32 @@ export const trustStateTraits: Record<
   { icon: JSX.Element; textColor: string }
 > = {
   healthy: {
-    icon: <RyeconStatusSuccess size="sm" />,
+    icon: <BadgeCheck className="size-3.5" />,
     textColor: 'text-fgSuccess',
   },
   caution: {
-    icon: <RyeconStatusWarning size="sm" />,
+    icon: <BadgeAlert className="size-3.5" />,
     textColor: 'text-fgWarning',
   },
   degraded: {
-    icon: <RyeconStatusError size="sm" />,
+    icon: <BadgeAlert className="size-3.5" />,
     textColor: 'text-fgDanger',
   },
   unknown: {
-    icon: <RyeconStatusError size="sm" />,
+    icon: <BadgeMinus className="size-3.5" />,
     textColor: 'text-fgDecorative',
   },
 };
 
+/** Matches sourdough's SizeType structurally (same string values) so it's
+ *  still assignable everywhere that type was used -- TypeScript checks
+ *  shape, not origin, for a plain string-literal union. */
+type SourdoughSize = 'xs' | 'sm' | 'md' | 'lg' | 'xl' | '2xl' | '3xl' | '4xl';
+
 type TrustSignalDescriptionProps = {
   trustState: TrustState;
   messages: TrustSignalMessage[];
-  size?: SizeType;
+  size?: SourdoughSize;
 };
 
 export const TrustSignalDescription: FC<TrustSignalDescriptionProps> = ({

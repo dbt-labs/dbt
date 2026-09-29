@@ -3,6 +3,7 @@
 use std::sync::Arc;
 
 use dbt_schemas::dbt_types::RelationType;
+use dbt_schemas::schemas::dbt_catalogs_v2::CatalogType;
 use dbt_schemas::schemas::relations::base::TableFormat;
 
 use crate::relation::{RelationConfig, RelationObject, do_create_relation};
@@ -142,8 +143,11 @@ impl TimeMachineSerializable for RelationObject {
             "is_materialized_view": self.is_materialized_view(),
             "is_cte": self.is_cte(),
             "is_dynamic_table": self.is_dynamic_table(),
+            "is_interactive_table": self.is_interactive_table(),
             "is_streaming_table": self.is_streaming_table(),
+            "is_metric_view": self.is_metric_view(),
             "is_delta": self.is_delta(),
+            "is_shallow_clone": self.is_shallow_clone(),
             "quote_policy": {
                 "database": quote_policy.database,
                 "schema": quote_policy.schema,
@@ -204,8 +208,12 @@ impl TimeMachineSerializable for RelationObject {
             Some(RelationType::CTE)
         } else if ext.bool_or("is_dynamic_table", false) {
             Some(RelationType::DynamicTable)
+        } else if ext.bool_or("is_interactive_table", false) {
+            Some(RelationType::InteractiveTable)
         } else if ext.bool_or("is_streaming_table", false) {
             Some(RelationType::StreamingTable)
+        } else if ext.bool_or("is_metric_view", false) {
+            Some(RelationType::MetricView)
         } else {
             None
         };
@@ -221,6 +229,7 @@ impl TimeMachineSerializable for RelationObject {
         .ok()?;
 
         relation.set_is_delta(Some(ext.bool_or("is_delta", false)));
+        relation.set_is_shallow_clone(Some(ext.bool_or("is_shallow_clone", false)));
 
         Some(RelationObject::new(relation.into()).into_value())
     }
@@ -257,7 +266,10 @@ impl TimeMachineSerializable for crate::catalog_relation::CatalogRelation {
             adapter_type,
             catalog_name: ext.opt_str("catalog_name"),
             integration_name: ext.opt_str("integration_name"),
-            catalog_type: ext.str_or("catalog_type", ""),
+            catalog_type: CatalogType::parse_from_str(
+                &ext.str_or("catalog_type", ""),
+                adapter_type,
+            ),
             table_format: if ext
                 .str_or("table_format", "")
                 .eq_ignore_ascii_case("iceberg")
@@ -270,6 +282,7 @@ impl TimeMachineSerializable for crate::catalog_relation::CatalogRelation {
             is_transient: ext.opt_bool("is_transient"),
             external_volume: ext.opt_str("external_volume"),
             catalog_database: ext.opt_str("catalog_database"),
+            lakehouse_catalog: ext.opt_str("lakehouse_catalog"),
             base_location: ext.opt_str("base_location"),
             file_format: ext.opt_str("file_format"),
         };
@@ -398,7 +411,7 @@ mod tests {
                 "comments": {"event_id": "A UUID for this event."},
                 "persist": true
             },
-            "column_tags": {"tags": {"event_id": {"sensitivity": "internal"}}},
+            "column_tags": {"set_column_tags": {"event_id": {"sensitivity": "internal"}}},
             "comment": {"comment": "An event sent when a purchase occurs.", "persist": true},
             "tags": {
                 "set_tags": {
@@ -430,7 +443,7 @@ mod tests {
             (
                 RelationType::View,
                 serde_json::json!({
-                    "column_tags": {"tags": {"id": {"sensitivity": "internal"}}}
+                    "column_tags": {"set_column_tags": {"id": {"sensitivity": "internal"}}}
                 }),
             ),
             (
@@ -444,6 +457,17 @@ mod tests {
                 serde_json::json!({
                     "comment": {"comment": "streaming events", "persist": true},
                     "partitioned_by": {"partition_by": ["event_date"]}
+                }),
+            ),
+            (
+                RelationType::MetricView,
+                serde_json::json!({
+                    "tags": {"set_tags": {"team": "analytics"}},
+                    "tblproperties": {
+                        "tblproperties": {"quality": "gold"},
+                        "pipeline_id": null
+                    },
+                    "query": {"query": "version: 1.1\nsource: orders"}
                 }),
             ),
         ];
@@ -580,12 +604,13 @@ mod tests {
             adapter_type: AdapterType::Snowflake,
             catalog_name: Some("my_catalog".to_string()),
             integration_name: Some("my_integration".to_string()),
-            catalog_type: "BUILT_IN".to_string(),
+            catalog_type: CatalogType::SnowflakeBuiltIn,
             table_format: TableFormat::Iceberg,
             adapter_properties: BTreeMap::from([("key1".to_string(), "value1".to_string())]),
             is_transient: Some(false),
             external_volume: Some("my_volume".to_string()),
             catalog_database: None,
+            lakehouse_catalog: None,
             base_location: Some("/path/to/data".to_string()),
             file_format: None,
         };
@@ -679,6 +704,43 @@ mod tests {
 
         // Verify adapter type is also restored from serialized data
         assert!(matches!(restored.adapter_type(), AdapterType::Snowflake));
+    }
+
+    /// The relation type survives replay only if it has both a serialized flag and a matching
+    /// arm in the reconstruction chain; without either one it silently comes back as `None`.
+    #[test]
+    fn test_relation_object_roundtrip_preserves_relation_type() {
+        use dbt_schemas::dbt_types::RelationType;
+
+        for relation_type in [
+            RelationType::Table,
+            RelationType::View,
+            RelationType::MaterializedView,
+            RelationType::DynamicTable,
+            RelationType::InteractiveTable,
+            RelationType::StreamingTable,
+            RelationType::MetricView,
+        ] {
+            let relation = do_create_relation(
+                AdapterType::Snowflake,
+                "MY_DB".to_string(),
+                "MY_SCHEMA".to_string(),
+                Some("my_table".to_string()),
+                Some(relation_type),
+                ResolvedQuoting::default(),
+            )
+            .unwrap();
+
+            let json = RelationObject::from(relation).to_time_machine_json();
+            let value = RelationObject::from_time_machine_json(&json, &ctx()).unwrap();
+            let restored = value.downcast_object::<RelationObject>().unwrap();
+
+            assert_eq!(
+                restored.relation_type(),
+                Some(relation_type),
+                "{relation_type:?} did not survive replay"
+            );
+        }
     }
 
     #[test]

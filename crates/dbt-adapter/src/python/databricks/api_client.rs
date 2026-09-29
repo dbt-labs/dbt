@@ -96,16 +96,14 @@ impl DatabricksApiClient {
         run_name: &str,
         job_spec: &serde_json::Value,
         timeout_seconds: u64,
+        additional_job_config: &serde_json::Value,
     ) -> AdapterResult<String> {
-        let capped_timeout = timeout_seconds.min(i64::MAX as u64);
-        let payload = json!({
-            "run_name": run_name,
-            "timeout_seconds": capped_timeout as i64,
-            "tasks": [job_spec.clone()],
-            "queue": {
-                "enabled": true
-            }
-        });
+        let payload = super::build_job_run_payload(
+            run_name,
+            job_spec.clone(),
+            timeout_seconds,
+            additional_job_config.clone(),
+        );
 
         let response: SubmitRunResponse = self.post_json("/api/2.1/jobs/runs/submit", payload)?;
         Ok(response.run_id.to_string())

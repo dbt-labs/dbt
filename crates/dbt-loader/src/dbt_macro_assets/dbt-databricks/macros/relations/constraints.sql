@@ -200,17 +200,23 @@
     {% endfor %}
 
     {% set joined_names = quoted_names|join(", ") %}
+    {% set pk_expression = constraint.get('expression') %}
 
     {% set name = constraint.get('name') %}
     {% if not name %}
       {% if local_md5 %}
         {{ exceptions.warn("Constraint of type " ~ type ~ " with no `name` provided. Generating hash instead for relation " ~ relation.identifier) }}
-        {%- set name = local_md5("primary_key;" ~ relation.identifier ~ ";" ~ column_names ~ ";") -%}
+        {%- set hash_input = "primary_key;" ~ relation.identifier ~ ";" ~ column_names ~ ";" -%}
+        {%- if pk_expression -%}
+          {%- set hash_input = hash_input ~ pk_expression ~ ";" -%}
+        {%- endif -%}
+        {%- set name = local_md5(hash_input) -%}
       {% else %}
         {{ exceptions.raise_compiler_error("Constraint of type " ~ type ~ " with no `name` provided, and no md5 utility.") }}
       {% endif %}
     {% endif %}
-    {% set stmt = "alter table " ~ relation.render() ~ " add constraint " ~ name ~ " primary key(" ~ joined_names ~ ");" %}
+    {% set pk_suffix = (" " ~ pk_expression) if pk_expression else "" %}
+    {% set stmt = "alter table " ~ relation.render() ~ " add constraint " ~ name ~ " primary key(" ~ joined_names ~ ")" ~ pk_suffix ~ ";" %}
     {% do statements.append(stmt) %}
   {% elif type == 'foreign_key' %}
 

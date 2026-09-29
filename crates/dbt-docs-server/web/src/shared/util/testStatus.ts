@@ -1,4 +1,8 @@
-import { TestStatus } from '@dbt-labs/dbt-dag';
+/** A test's raw last-run outcome, including `reused` (an execution detail,
+ *  not a pass/fail outcome) -- distinct from {@link TestStatusValue}, which
+ *  is the already-normalized display status with no `reused` case. Mirrors
+ *  dbt-dag's `TestStatus`. */
+export type TestStatus = 'pass' | 'error' | 'fail' | 'warn' | 'skipped' | 'reused';
 
 /**
  * Returns the display status for a test, mapping REUSED to the actual test

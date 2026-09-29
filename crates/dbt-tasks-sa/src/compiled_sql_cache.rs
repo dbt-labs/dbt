@@ -5,7 +5,7 @@ use dbt_common::{
     FsResult, MacroSpan,
     constants::DBT_COMPILED_DIR_NAME,
     io_args::IoArgs,
-    path::{get_snapshot_compiled_path, get_target_write_path},
+    path::{get_snapshot_write_path, get_target_write_path},
     stdfs,
 };
 use dbt_frontend_common::span::ReclassifySpan;
@@ -18,10 +18,10 @@ use serde::{Deserialize, Serialize};
 /// without re-rendering. `reclassify_spans` is `#[serde(default)]` purely as
 /// cheap insurance against a partial write.
 #[derive(Serialize, Deserialize)]
-struct CachedSpans {
-    macro_spans: Vec<MacroSpan>,
+pub struct CachedSpans {
+    pub macro_spans: Vec<MacroSpan>,
     #[serde(default)]
-    reclassify_spans: Vec<ReclassifySpan>,
+    pub reclassify_spans: Vec<ReclassifySpan>,
 }
 
 #[derive(Default)]
@@ -38,7 +38,7 @@ impl CompiledSqlCache for CompiledSqlCacheImpl {
         // (dbt-core#12693). We detect snapshots via the unique_id prefix because
         // CommonAttributes does not carry resource_type.
         if common.unique_id.starts_with("snapshot.") {
-            return get_snapshot_compiled_path(
+            return get_snapshot_write_path(
                 &io.out_dir.join(DBT_COMPILED_DIR_NAME),
                 &common.package_name,
                 &common.original_file_path,

@@ -8,9 +8,11 @@ use crate::release_version::semver_to_pep440;
 use crate::utils::{backoff, is_transient, require_https, sha256_hex};
 use anyhow::{Context, Result, anyhow, bail};
 use bytes::Bytes;
+use python_pkginfo::Metadata;
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::fs::File;
+use std::io::{Cursor, Read as _};
 use std::path::{Path, PathBuf};
 
 /// Embedded PEP 517 backend baked into every sdist.
@@ -34,6 +36,10 @@ struct AssetsManifest<'a> {
     name: &'a str,
     version: &'a str,
     base_url: &'a str,
+    /// Install-time notice the backend prints before downloading; see
+    /// [`install_notice`]. Absent for distributions that don't need one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    notice: Option<&'a str>,
     wheels: BTreeMap<&'a str, AssetEntry<'a>>,
 }
 
@@ -59,7 +65,8 @@ pub(crate) fn build_sdist(
 
     let pyproject = render_sdist_pyproject(spec, version_pep440);
     let pkg_info = render_metadata(spec, version_pep440);
-    let assets = render_assets_json(spec, version_pep440, base_url, wheels)?;
+    let notice = install_notice(&dist, version_pep440);
+    let assets = render_assets_json(spec, version_pep440, base_url, wheels, notice.as_deref())?;
 
     let entries: Vec<(String, Vec<u8>)> = vec![
         (format!("{root}/pyproject.toml"), pyproject.into_bytes()),
@@ -111,6 +118,7 @@ pub(crate) async fn build_release_sdist(
         let bytes = download(http, &url).await?;
         let digest = sha256_hex(bytes.as_ref());
         eprintln!("✓ {filename} ({} bytes, sha256={digest})", bytes.len());
+        check_wheel_metadata_agrees(spec, &filename, bytes.as_ref())?;
         wheels.push(WheelAsset {
             platform_tag,
             filename,
@@ -119,6 +127,71 @@ pub(crate) async fn build_release_sdist(
     }
 
     build_sdist(spec, &version_pep440, &wheels, base_url, out_dir)
+}
+
+/// Fails the release when the sdist's static metadata disagrees with a wheel it
+/// points at, in either direction. pip survives such a mismatch (it builds the
+/// wheel and reads the real metadata), but uv trusts the sdist's PKG-INFO and
+/// never re-checks — so a wrong `Requires-Python` installs on an unsupported
+/// interpreter and dies at import on an ABI symbol, and a missing `Requires-Dist`
+/// (in either direction) installs the wrong dependency set and dies on first run.
+fn check_wheel_metadata_agrees(spec: &Spec, filename: &str, wheel: &[u8]) -> Result<()> {
+    let Some(metadata) = wheel_metadata(wheel)
+        .with_context(|| format!("read METADATA from {filename}"))?
+        .map(|raw| Metadata::parse(&raw))
+        .transpose()
+        .with_context(|| format!("parse METADATA from {filename}"))?
+    else {
+        bail!("{filename} has no *.dist-info/METADATA");
+    };
+
+    let expected_python = spec.requires_python.as_deref();
+    let actual_python = metadata.requires_python.as_deref();
+    if actual_python != expected_python {
+        bail!(
+            "{filename} declares Requires-Python {actual:?} but the sdist says \
+             {expected:?}; point `--pyproject-dir` at the pyproject that built \
+             these wheels",
+            actual = actual_python.unwrap_or("(absent)"),
+            expected = expected_python.unwrap_or("(absent)"),
+        );
+    }
+
+    let expected_deps: std::collections::BTreeSet<&str> =
+        spec.dependencies.iter().map(|d| d.trim()).collect();
+    let actual_deps: std::collections::BTreeSet<&str> =
+        metadata.requires_dist.iter().map(|d| d.trim()).collect();
+    if expected_deps != actual_deps {
+        bail!(
+            "{filename}'s Requires-Dist disagrees with the sdist: sdist deps={:?}, \
+             wheel deps={:?}",
+            expected_deps,
+            actual_deps,
+        );
+    }
+    Ok(())
+}
+
+/// The `*.dist-info/METADATA` bytes from a wheel held in memory.
+fn wheel_metadata(wheel: &[u8]) -> Result<Option<Vec<u8>>> {
+    let mut archive = zip::ZipArchive::new(Cursor::new(wheel)).context("open wheel as zip")?;
+    let name = archive
+        .file_names()
+        .find(|n| {
+            n.ends_with("/METADATA")
+                && n.split('/')
+                    .next()
+                    .is_some_and(|d| d.ends_with(".dist-info"))
+        })
+        .map(str::to_string);
+    let Some(name) = name else {
+        return Ok(None);
+    };
+
+    let mut file = archive.by_name(&name)?;
+    let mut buf = Vec::new();
+    file.read_to_end(&mut buf)?;
+    Ok(Some(buf))
 }
 
 /// GETs `url`, retrying transient failures and 5xx. A 4xx (e.g. a missing wheel)
@@ -176,7 +249,68 @@ fn render_sdist_pyproject(spec: &Spec, version_pep440: &str) -> String {
     if let Some(rp) = &spec.requires_python {
         let _ = writeln!(out, "requires-python = {rp:?}");
     }
+    // Must mirror the downloaded wheel's deps: uv trusts sdist metadata rather
+    // than rebuilding to read the wheel's, so omitting these installs broken.
+    if !spec.dependencies.is_empty() {
+        out.push_str("dependencies = [\n");
+        for dep in &spec.dependencies {
+            let _ = writeln!(out, "  {dep:?},");
+        }
+        out.push_str("]\n");
+    }
     out
+}
+
+/// Normalized distribution name whose pre-releases carry the namespace notice.
+const NOTICE_DIST: &str = "dbt_core";
+
+/// Major version from which `dbt` / `dbt-oss` are the preferred names. `dbt-core`
+/// keeps shipping in parallel at this major; the notice is a pointer, not an EOL.
+const NOTICE_MAJOR_FLOOR: u64 = 2;
+
+/// Install-time notice embedded in the sdist manifest, printed by the backend
+/// before it downloads a wheel.
+///
+/// Only `dbt-core` 2.x *pre-releases* get one: a resolver never picks a
+/// pre-release on its own, so reaching this build means the user asked for it
+/// explicitly (`--pre`, or a `dbt-core==2.0.0rc…` pin) and should be pointed at
+/// the `dbt` / `dbt-oss` distributions instead.
+fn install_notice(dist: &str, version_pep440: &str) -> Option<String> {
+    if dist != NOTICE_DIST {
+        return None;
+    }
+    let (major, is_prerelease) = pep440_major_and_prerelease(version_pep440)?;
+    if major < NOTICE_MAJOR_FLOOR || !is_prerelease {
+        return None;
+    }
+    Some(format!(
+        "\
+========================================================================
+WARNING: you are installing a pre-release of `dbt-core` ({version_pep440}).
+
+Starting with 2.x, `dbt` and `dbt-oss` are the recommended package names
+going forward. Unless you specifically need the `dbt-core` name, install
+one of these instead:
+
+    pip install dbt
+    pip install dbt-oss    # Apache-2.0 licensed
+
+You are seeing this because you passed `--pre`, or pinned a version like
+`dbt-core=={version_pep440}`.
+========================================================================",
+    ))
+}
+
+/// Splits the `X.Y.Z[{a,b,rc}N | .devN]` versions [`semver_to_pep440`] emits
+/// into `(major, is_prerelease)`. `None` if the release segment isn't numeric.
+fn pep440_major_and_prerelease(version_pep440: &str) -> Option<(u64, bool)> {
+    let release_end = version_pep440
+        .find(|c: char| !c.is_ascii_digit() && c != '.')
+        .unwrap_or(version_pep440.len());
+    // `.devN` leaves the separating dot behind in the release segment.
+    let release = version_pep440[..release_end].trim_end_matches('.');
+    let major = release.split('.').next()?.parse().ok()?;
+    Some((major, release_end != version_pep440.len()))
 }
 
 fn render_assets_json(
@@ -184,6 +318,7 @@ fn render_assets_json(
     version_pep440: &str,
     base_url: &str,
     wheels: &[WheelAsset],
+    notice: Option<&str>,
 ) -> Result<String> {
     let mut map: BTreeMap<&str, AssetEntry> = BTreeMap::new();
     for w in wheels {
@@ -203,6 +338,7 @@ fn render_assets_json(
         name: &spec.wheel_name,
         version: version_pep440,
         base_url,
+        notice,
         wheels: map,
     };
     let mut json = serde_json::to_string_pretty(&manifest).context("serialize assets.json")?;
@@ -238,11 +374,16 @@ mod tests {
     use std::io::Read;
 
     fn sample_spec(dir: &Path) -> Spec {
+        named_spec(dir, "dbt-sa-cli")
+    }
+
+    fn named_spec(dir: &Path, name: &str) -> Spec {
         Spec {
-            wheel_name: "dbt-sa-cli".to_string(),
+            wheel_name: name.to_string(),
             pyproject_dir: dir.to_path_buf(),
             summary: Some("dbt fusion standalone analyzer CLI".to_string()),
             requires_python: Some(">=3.9".to_string()),
+            dependencies: vec!["mashumaro[msgpack]>=3.14".to_string()],
             classifiers: vec![],
             urls: vec![],
             authors: vec![],
@@ -265,6 +406,63 @@ mod tests {
             out.insert(name, body);
         }
         out
+    }
+
+    /// A wheel carrying `METADATA` with the given headers.
+    fn wheel_with_metadata(headers: &str) -> Vec<u8> {
+        use std::io::Write as _;
+        use zip::write::{SimpleFileOptions, ZipWriter};
+
+        let mut zip = ZipWriter::new(Cursor::new(Vec::new()));
+        zip.start_file(
+            "dbt_sa_cli-2.0.0a1.dist-info/METADATA",
+            SimpleFileOptions::default(),
+        )
+        .unwrap();
+        zip.write_all(
+            format!("Metadata-Version: 2.1\nName: dbt-sa-cli\nVersion: 2.0.0a1\n{headers}")
+                .as_bytes(),
+        )
+        .unwrap();
+        zip.finish().unwrap().into_inner()
+    }
+
+    #[test]
+    fn cross_check_accepts_a_wheel_that_agrees() {
+        let tmp = tempfile::tempdir().unwrap();
+        let spec = sample_spec(tmp.path());
+        let wheel = wheel_with_metadata(
+            "Requires-Python: >=3.9\nRequires-Dist: mashumaro[msgpack]>=3.14\n",
+        );
+
+        check_wheel_metadata_agrees(&spec, "w.whl", &wheel).unwrap();
+    }
+
+    #[test]
+    fn cross_check_rejects_a_narrower_requires_python() {
+        let tmp = tempfile::tempdir().unwrap();
+        let spec = sample_spec(tmp.path());
+        // The real defect: an sdist promising 3.9 in front of abi3-py310 wheels.
+        let wheel = wheel_with_metadata(
+            "Requires-Python: >=3.10\nRequires-Dist: mashumaro[msgpack]>=3.14\n",
+        );
+
+        let err = check_wheel_metadata_agrees(&spec, "w.whl", &wheel)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("Requires-Python"), "got: {err}");
+    }
+
+    #[test]
+    fn cross_check_rejects_a_wheel_missing_a_promised_dependency() {
+        let tmp = tempfile::tempdir().unwrap();
+        let spec = sample_spec(tmp.path());
+        let wheel = wheel_with_metadata("Requires-Python: >=3.9\n");
+
+        let err = check_wheel_metadata_agrees(&spec, "w.whl", &wheel)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("Requires-Dist"), "got: {err}");
     }
 
     #[test]
@@ -307,6 +505,16 @@ mod tests {
         assert!(pyproject.contains("name = \"dbt-sa-cli\""));
         assert!(pyproject.contains("version = \"2.0.0a1\""));
         assert!(pyproject.contains("requires-python = \">=3.9\""));
+        assert!(
+            pyproject.contains("\"mashumaro[msgpack]>=3.14\","),
+            "sdist pyproject dropped dependencies: {pyproject}"
+        );
+
+        let pkg_info = &files["dbt_sa_cli-2.0.0a1/PKG-INFO"];
+        assert!(
+            pkg_info.contains("Requires-Dist: mashumaro[msgpack]>=3.14"),
+            "sdist PKG-INFO dropped dependencies: {pkg_info}"
+        );
 
         let backend = &files["dbt_sa_cli-2.0.0a1/_dbt_sa_build/__init__.py"];
         assert!(backend.contains("def build_wheel("));
@@ -324,6 +532,35 @@ mod tests {
             assets["wheels"]["macosx_11_0_arm64"]["sha256"],
             "bb".repeat(32)
         );
+    }
+
+    #[test]
+    fn build_sdist_declares_wheel_dependencies() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        let mut spec = sample_spec(dir);
+        spec.wheel_name = "dbt-oss".to_string();
+        spec.requires_python = Some(">=3.10".to_string());
+        spec.dependencies = vec!["mashumaro[msgpack]>=3.14".to_string()];
+        let wheels = vec![WheelAsset {
+            platform_tag: "macosx_11_0_arm64".to_string(),
+            filename: "dbt_oss-2.0.0a1-cp310-abi3-macosx_11_0_arm64.whl".to_string(),
+            sha256_hex: "cc".repeat(32),
+        }];
+
+        let path = build_sdist(&spec, "2.0.0a1", &wheels, "https://example.com/dl/", dir).unwrap();
+        let files = read_targz(&path);
+
+        let pyproject = &files["dbt_oss-2.0.0a1/pyproject.toml"];
+        assert!(pyproject.contains("requires-python = \">=3.10\""));
+        assert!(
+            pyproject.contains("dependencies = [\n  \"mashumaro[msgpack]>=3.14\",\n]"),
+            "sdist pyproject must declare the wheel's deps, got:\n{pyproject}"
+        );
+
+        let pkg_info = &files["dbt_oss-2.0.0a1/PKG-INFO"];
+        assert!(pkg_info.contains("Requires-Dist: mashumaro[msgpack]>=3.14"));
+        assert!(pkg_info.contains("Requires-Python: >=3.10"));
     }
 
     #[test]
@@ -360,5 +597,99 @@ mod tests {
         }];
         let err = build_sdist(&spec, "2.0.0", &wheels, "http://example.com", dir).unwrap_err();
         assert!(err.to_string().contains("https"));
+    }
+
+    #[test]
+    fn install_notice_targets_dbt_core_prereleases() {
+        for version in ["2.0.0rc1", "2.0.0a4", "2.0.0b2", "2.0.0.dev5", "3.1.0rc2"] {
+            let notice = install_notice("dbt_core", version)
+                .unwrap_or_else(|| panic!("expected a notice for {version}"));
+            assert!(notice.contains(version), "{version} not named in notice");
+            assert!(notice.contains("pip install dbt\n"));
+            assert!(notice.contains("pip install dbt-oss"));
+        }
+        // Final releases, older majors, and the other distributions stay quiet.
+        assert!(install_notice("dbt_core", "2.0.0").is_none());
+        assert!(install_notice("dbt_core", "1.11.0rc1").is_none());
+        assert!(install_notice("dbt_oss", "2.0.0rc1").is_none());
+        assert!(install_notice("dbt_core_experimental_parser", "2.0.0rc1").is_none());
+    }
+
+    #[test]
+    fn pep440_major_and_prerelease_parses_lanes() {
+        assert_eq!(pep440_major_and_prerelease("2.0.0"), Some((2, false)));
+        assert_eq!(pep440_major_and_prerelease("2.0.0rc1"), Some((2, true)));
+        assert_eq!(pep440_major_and_prerelease("2.0.0a4"), Some((2, true)));
+        assert_eq!(pep440_major_and_prerelease("2.0.0b2"), Some((2, true)));
+        assert_eq!(pep440_major_and_prerelease("2.0.0.dev5"), Some((2, true)));
+        assert_eq!(pep440_major_and_prerelease("10.2.3"), Some((10, false)));
+        assert_eq!(pep440_major_and_prerelease("rc1"), None);
+    }
+
+    #[test]
+    fn build_sdist_embeds_notice_only_for_dbt_core_prereleases() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        let wheels = vec![WheelAsset {
+            platform_tag: "macosx_11_0_arm64".to_string(),
+            filename: "dbt_core-2.0.0rc1-cp310-abi3-macosx_11_0_arm64.whl".to_string(),
+            sha256_hex: "aa".repeat(32),
+        }];
+
+        let notice = manifest_notice(
+            &named_spec(dir, "dbt-core"),
+            "2.0.0rc1",
+            &wheels,
+            dir.join("pre"),
+        );
+        assert!(notice.unwrap().contains("pip install dbt-oss"));
+
+        // Only the pre-release lane and the name gate it; both other cases ship
+        // a manifest with no `notice` key at all.
+        assert!(
+            manifest_notice(
+                &named_spec(dir, "dbt-core"),
+                "2.0.0",
+                &wheels,
+                dir.join("final"),
+            )
+            .is_none()
+        );
+        assert!(
+            manifest_notice(
+                &named_spec(dir, "dbt-oss"),
+                "2.0.0rc1",
+                &wheels,
+                dir.join("oss"),
+            )
+            .is_none()
+        );
+    }
+
+    /// Builds an sdist into a fresh `out_dir` and reads back its manifest notice.
+    fn manifest_notice(
+        spec: &Spec,
+        version_pep440: &str,
+        wheels: &[WheelAsset],
+        out_dir: PathBuf,
+    ) -> Option<String> {
+        std::fs::create_dir_all(&out_dir).unwrap();
+        let path = build_sdist(
+            spec,
+            version_pep440,
+            wheels,
+            "https://example.com/dl",
+            &out_dir,
+        )
+        .unwrap();
+        let files = read_targz(&path);
+        let dist = normalize_wheel_name(&spec.wheel_name);
+        let assets: serde_json::Value = serde_json::from_str(
+            &files[&format!("{dist}-{version_pep440}/_dbt_sa_build/assets.json")],
+        )
+        .unwrap();
+        assets
+            .get("notice")
+            .map(|n| n.as_str().unwrap().to_string())
     }
 }

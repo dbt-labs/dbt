@@ -1,13 +1,11 @@
 import { useEffect, useMemo } from 'react';
 
-import type { ResourceTypeExplorer } from '@dbt-labs/dbt-dag';
-import { Badge, NotificationBanner, Pill } from '@dbt-labs/sourdough';
-
-import type { NodeSummary, SearchErrorCode } from '../api';
-import { SEARCHABLE_RESOURCE_TYPES } from '../api';
 import type { AssetFilters } from '../App';
+import { Badge } from '../components/ui/Badge';
+import { NotificationBanner } from '../components/ui/NotificationBanner';
+import { Pill } from '../components/ui/Pill';
 import { FEATURE_FLAGS } from '../lib/featureFlags';
-import { RESOURCE_TYPE_LABEL } from '../lib/resourceType';
+import { RESOURCE_TYPE_LABEL, type ResourceTypeExplorer } from '../lib/resourceType';
 import { isTelemetryInitialized, trackSearchPerformed } from '../lib/telemetry';
 import { paths } from '../routes';
 import type { Project } from '../shared';
@@ -27,6 +25,8 @@ import {
   toTitleCase,
   useSearch,
 } from '../shared';
+import type { NodeSummary, SearchErrorCode } from '../types';
+import { SEARCHABLE_RESOURCE_TYPES } from '../types';
 
 /** Page size for cross-type search — skeleton/fetch granularity. Mirrors the
  *  `useSearch` server-side default. */
@@ -38,7 +38,7 @@ interface Props {
   nodes: NodeSummary[];
   query: string;
   filters: AssetFilters;
-  onUpdateFiltersInPlace(next: AssetFilters): void;
+  onSetFilters(next: AssetFilters): void;
   /** Unused — peek drawer is hidden; search results navigate directly. */
   previewId: string | null;
   /** Unused — see above. */
@@ -46,10 +46,9 @@ interface Props {
 }
 
 /**
- * Maps the four documented `/api/v1/search` 400 codes to user-facing copy.
- * Unknown codes fall through to the raw `message` from the envelope so the
- * user still gets context if the backend adds a new code before the FE
- * catches up.
+ * Maps the four documented search-rejection codes to user-facing copy. Unknown
+ * codes fall through to the raw `message` so the user still gets context if the
+ * search layer adds a code this hasn't caught up with.
  */
 function formatSearchError(code: SearchErrorCode | string, message: string): string {
   switch (code) {
@@ -72,10 +71,10 @@ function buildExtras(hit: SearchHit) {
   return (
     <>
       {materialized && (
-        <Badge text={toTitleCase(materialized)} type="default" size="xs" />
+        <Badge text={toTitleCase(materialized)} variant="secondary" size="xs" />
       )}
-      {access && <Badge text={toTitleCase(access)} type="default" size="xs" />}
-      {sourceName && <Badge text={sourceName} type="default" size="xs" />}
+      {access && <Badge text={toTitleCase(access)} variant="secondary" size="xs" />}
+      {sourceName && <Badge text={sourceName} variant="secondary" size="xs" />}
     </>
   );
 }
@@ -115,7 +114,7 @@ function getActiveChips(filters: AssetFilters): ActiveChip[] {
   return chips;
 }
 
-export default function Search({ query, filters, onUpdateFiltersInPlace }: Props) {
+export default function Search({ query, filters, onSetFilters }: Props) {
   const searchArgs = useMemo<ListArgs<SearchFilter>>(
     () => ({
       filter: {
@@ -247,14 +246,14 @@ export default function Search({ query, filters, onUpdateFiltersInPlace }: Props
     !filters.resourceType.includes('model');
 
   const removeChip = (chip: ActiveChip) => {
-    onUpdateFiltersInPlace({
+    onSetFilters({
       ...filters,
       [chip.dimension]: filters[chip.dimension].filter((v) => v !== chip.value),
     });
   };
 
   const clearAllChips = () => {
-    onUpdateFiltersInPlace({
+    onSetFilters({
       ...filters,
       resourceType: [],
       modelingLayer: [],

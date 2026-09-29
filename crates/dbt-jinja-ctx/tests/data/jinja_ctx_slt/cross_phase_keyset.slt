@@ -189,11 +189,14 @@ run_node          <skip>
 
 # Callable Jinja values introduced by resolve_model. ref/source/function/
 # config exist on the per-model ctx and surface again at compile/run scope.
+# resolve_base carries config-only `ref` / `source` / `metric` / `function`
+# stand-ins (dbt-labs/fs#13819): nothing there can resolve a node, but naming
+# macros read `ref.config`.
 key ref
 ----
 load              <absent>
 resolve_globals   <absent>
-resolve_base      <absent>
+resolve_base      ref-stub
 resolve_model     ref-fn-stub
 compile_base      <skip>
 compile_node      <skip>
@@ -203,7 +206,7 @@ key source
 ----
 load              <absent>
 resolve_globals   <absent>
-resolve_base      <absent>
+resolve_base      source-stub
 resolve_model     source-fn-stub
 compile_base      <skip>
 compile_node      <skip>
@@ -213,8 +216,18 @@ key function
 ----
 load              <absent>
 resolve_globals   <absent>
-resolve_base      <absent>
+resolve_base      function-stub
 resolve_model     function-fn-stub
+compile_base      <skip>
+compile_node      <skip>
+run_node          <skip>
+
+key metric
+----
+load              <absent>
+resolve_globals   <absent>
+resolve_base      metric-stub
+resolve_model     metric-fn-stub
 compile_base      <skip>
 compile_node      <skip>
 run_node          <skip>

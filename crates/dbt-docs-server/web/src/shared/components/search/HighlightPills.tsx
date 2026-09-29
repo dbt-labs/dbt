@@ -1,7 +1,8 @@
 import { FC } from 'react';
 
-import { Badge, Link, Tooltip } from '@dbt-labs/sourdough';
-
+import { Badge } from '../../../components/ui/Badge';
+import { Link } from '../../../components/ui/Link';
+import { Tooltip } from '../../../components/ui/Tooltip';
 import { toTitleCase } from '../../util/string';
 import { BOLD_TAG_REGEX, SanitizeBoldText } from './BoldedText';
 import { MatchedField } from './types';
@@ -99,7 +100,7 @@ export const HighlightPills: FC<HighlightPillsProps> = ({
           }
           placement="bottom-start"
         >
-          <Badge text={getBadgeText(field, texts)} type="default" size="xs" />
+          <Badge text={getBadgeText(field, texts)} variant="secondary" size="xs" />
         </Tooltip>
       ))}
     </div>

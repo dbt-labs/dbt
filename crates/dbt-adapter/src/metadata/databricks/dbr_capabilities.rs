@@ -15,9 +15,12 @@ pub enum DbrCapability {
     Timestampdiff,
     Iceberg,
     CommentOnColumn,
+    /// Reference: https://github.com/databricks/dbt-databricks/blob/3caad339bb3e60b7c795684374c3c8a1d9042279/dbt/adapters/databricks/dbr_capabilities.py#L17
+    DescribeTableExtendedAsJson,
     JsonColumnMetadata,
     StreamingTableJsonMetadata,
     InsertByName,
+    InsertByNameReplaceWhere,
     ReplaceOn,
 }
 
@@ -27,9 +30,11 @@ impl DbrCapability {
             Self::Timestampdiff => "timestampdiff",
             Self::Iceberg => "iceberg",
             Self::CommentOnColumn => "comment_on_column",
+            Self::DescribeTableExtendedAsJson => "describe_table_extended_as_json",
             Self::JsonColumnMetadata => "json_column_metadata",
             Self::StreamingTableJsonMetadata => "streaming_table_json_metadata",
             Self::InsertByName => "insert_by_name",
+            Self::InsertByNameReplaceWhere => "insert_by_name_replace_where",
             Self::ReplaceOn => "replace_on",
         }
     }
@@ -39,9 +44,11 @@ impl DbrCapability {
             "timestampdiff",
             "iceberg",
             "comment_on_column",
+            "describe_table_extended_as_json",
             "json_column_metadata",
             "streaming_table_json_metadata",
             "insert_by_name",
+            "insert_by_name_replace_where",
             "replace_on",
         ]
     }
@@ -55,9 +62,11 @@ impl FromStr for DbrCapability {
             "timestampdiff" => Ok(Self::Timestampdiff),
             "iceberg" => Ok(Self::Iceberg),
             "comment_on_column" => Ok(Self::CommentOnColumn),
+            "describe_table_extended_as_json" => Ok(Self::DescribeTableExtendedAsJson),
             "json_column_metadata" => Ok(Self::JsonColumnMetadata),
             "streaming_table_json_metadata" => Ok(Self::StreamingTableJsonMetadata),
             "insert_by_name" => Ok(Self::InsertByName),
+            "insert_by_name_replace_where" => Ok(Self::InsertByNameReplaceWhere),
             "replace_on" => Ok(Self::ReplaceOn),
             _ => Err(format!(
                 "Unknown DBR capability: '{}'. Valid capabilities are: {}",
@@ -68,74 +77,68 @@ impl FromStr for DbrCapability {
     }
 }
 
-/// Specification for a DBR capability.
-#[derive(Clone, Debug)]
-pub struct CapabilitySpec {
-    /// Minimum DBR version (major, minor) required. Use (0, 0) for "any version".
-    pub min_version: (i64, i64),
-    /// Whether SQL warehouses support this capability. Default true.
-    pub sql_warehouse_supported: bool,
+/// A capability's version-gating constraint, expressed as a minimum DBR
+/// (major, minor) version, inclusive, plus whether SQL warehouses satisfy it.
+#[derive(Clone, Copy, Debug)]
+pub enum CapabilitySpec {
+    /// Satisfied on SQL warehouses (always treated as running the latest
+    /// DBR), and on classic clusters running DBR >= (major, minor).
+    WarehouseSupported(i64, i64),
+    /// Never satisfied on SQL warehouses, regardless of version. Satisfied
+    /// only on classic clusters running DBR >= (major, minor).
+    ClusterOnly(i64, i64),
 }
 
-/// Capability specifications from dbt-databricks.
+impl CapabilitySpec {
+    fn minimum_version(&self) -> (i64, i64) {
+        match self {
+            Self::WarehouseSupported(major, minor) | Self::ClusterOnly(major, minor) => {
+                (*major, *minor)
+            }
+        }
+    }
+}
+
 fn capability_spec(capability: DbrCapability) -> CapabilitySpec {
     match capability {
-        DbrCapability::Timestampdiff => CapabilitySpec {
-            min_version: (10, 4),
-            sql_warehouse_supported: true,
-        },
-        DbrCapability::Iceberg => CapabilitySpec {
-            min_version: (14, 3),
-            sql_warehouse_supported: true,
-        },
-        DbrCapability::CommentOnColumn => CapabilitySpec {
-            min_version: (16, 1),
-            sql_warehouse_supported: true,
-        },
-        DbrCapability::JsonColumnMetadata => CapabilitySpec {
-            min_version: (16, 2),
-            sql_warehouse_supported: true,
-        },
-        DbrCapability::StreamingTableJsonMetadata => CapabilitySpec {
-            min_version: (17, 1),
-            sql_warehouse_supported: false,
-        },
-        DbrCapability::InsertByName => CapabilitySpec {
-            min_version: (12, 2),
-            sql_warehouse_supported: true,
-        },
-        DbrCapability::ReplaceOn => CapabilitySpec {
-            min_version: (17, 1),
-            sql_warehouse_supported: true,
-        },
+        DbrCapability::Timestampdiff => CapabilitySpec::WarehouseSupported(10, 4),
+        DbrCapability::Iceberg => CapabilitySpec::WarehouseSupported(14, 3),
+        DbrCapability::CommentOnColumn => CapabilitySpec::WarehouseSupported(16, 1),
+        DbrCapability::DescribeTableExtendedAsJson => CapabilitySpec::WarehouseSupported(17, 3),
+        DbrCapability::JsonColumnMetadata => CapabilitySpec::WarehouseSupported(16, 2),
+        DbrCapability::StreamingTableJsonMetadata => CapabilitySpec::ClusterOnly(17, 1),
+        DbrCapability::InsertByName => CapabilitySpec::WarehouseSupported(12, 2),
+        // `BY NAME REPLACE WHERE` was added in DBR 18.0 (SPARK-54803); plain
+        // `BY NAME` retains its DBR 12.2 floor. v1 reference:
+        // https://github.com/databricks/dbt-databricks/blob/45351e11517d3f37c5ac7a736b5fcba453d3f368/dbt/adapters/databricks/dbr_capabilities.py#L63-L68
+        DbrCapability::InsertByNameReplaceWhere => CapabilitySpec::WarehouseSupported(18, 0),
+        DbrCapability::ReplaceOn => CapabilitySpec::WarehouseSupported(17, 1),
     }
 }
 
-/// Check if a capability is available for the given compute.
+/// The Databricks compute a capability is being evaluated against.
 ///
-/// - `dbr_version`: The DBR version tuple (major, minor). Use `EngineVersion::Unset` for SQL warehouses
-///   (treated as "latest" - all sql_warehouse_supported capabilities return true).
-/// - `is_sql_warehouse`: Whether this is a SQL warehouse (vs cluster).
-pub fn has_capability(
-    capability: DbrCapability,
-    dbr_version: EngineVersion,
-    is_sql_warehouse: bool,
-) -> bool {
-    let spec = capability_spec(capability);
+/// SQL warehouses are always treated as running the latest DBR, so whether a
+/// capability is available there is a fixed property of the capability
+/// itself (`CapabilitySpec::WarehouseSupported` vs `ClusterOnly`). Classic
+/// clusters report an actual DBR version, which may be unknown.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DbrComputeContext {
+    SqlWarehouse,
+    Cluster(EngineVersion),
+}
 
-    if is_sql_warehouse {
-        if !spec.sql_warehouse_supported {
-            return false;
+pub fn has_capability(capability: DbrCapability, context: DbrComputeContext) -> bool {
+    match context {
+        DbrComputeContext::SqlWarehouse => {
+            let spec = capability_spec(capability);
+            matches!(spec, CapabilitySpec::WarehouseSupported(..))
         }
-        // SQL warehouses are treated as having the latest version
-        return true;
+        DbrComputeContext::Cluster(EngineVersion::Unset) => false,
+        DbrComputeContext::Cluster(dbr_version) => {
+            let spec = capability_spec(capability);
+            let (major, minor) = spec.minimum_version();
+            dbr_version >= EngineVersion::Full(major, minor)
+        }
     }
-
-    // For clusters, we need a known version
-    if matches!(dbr_version, EngineVersion::Unset) {
-        return false;
-    }
-
-    let min_version = EngineVersion::Full(spec.min_version.0, spec.min_version.1);
-    dbr_version >= min_version
 }

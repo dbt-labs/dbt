@@ -1,8 +1,7 @@
 import { FC, useEffect, useRef } from 'react';
 import { twJoin } from 'tailwind-merge';
 
-import { Button, Sizes } from '@dbt-labs/sourdough';
-
+import { Button } from '../../../components/ui/Button';
 import { getUpgradeCopy, isUpgradeCopyVisible } from './copy';
 import {
   DecorateOutboundHref,
@@ -66,8 +65,8 @@ export const UpgradeRow: FC<Props> = ({
         <span className="min-w-0 flex-1 truncate text-fgDecorative">{label}</span>
         <span className="flex shrink-0 items-center gap-2">
           <Button
-            type="primary"
-            size={Sizes.sm}
+            variant="default"
+            size="sm"
             text={ctaLabel}
             onClick={() => {
               onUpsellEvent?.({

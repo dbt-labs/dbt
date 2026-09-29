@@ -119,13 +119,19 @@ pub fn execute(args: PypiPublishArgs) -> ExitCode {
         Some(dir) => pyproject::discover_at(dir),
         None => pyproject::discover(),
     };
-    let spec = match spec {
+    let mut spec = match spec {
         Ok(s) => s,
         Err(e) => {
             eprintln!("error: {e:#}");
             return ExitCode::from(2);
         }
     };
+    if let Some(dir) = &args.runtime_metadata_from {
+        if let Err(e) = spec.overlay_runtime_metadata(dir) {
+            eprintln!("error: --runtime-metadata-from: {e:#}");
+            return ExitCode::from(2);
+        }
+    }
     if let Some(v) = &args.version {
         if let Err(e) = validate_release_version(v) {
             eprintln!("error: --version {e:#}");

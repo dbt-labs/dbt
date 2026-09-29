@@ -41,7 +41,7 @@ mod tests {
     use std::io::Write;
     use tempfile::NamedTempFile;
 
-    #[tokio::test]
+    #[dbt_runtime::test]
     async fn test_custom_csv_mem_table() {
         // Create a temp CSV file
         let mut file = NamedTempFile::with_suffix(".csv").unwrap();

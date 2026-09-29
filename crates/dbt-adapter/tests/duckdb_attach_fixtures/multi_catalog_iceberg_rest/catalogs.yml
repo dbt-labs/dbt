@@ -7,11 +7,11 @@ catalogs:
     config:
       duckdb:
         endpoint: "https://rest-a.example.com"
-        attach_as: rest_a
+        catalog_database: rest_a
   - name: rest_demo
     type: iceberg_rest
     table_format: iceberg
     config:
       duckdb:
         warehouse: "demo_warehouse"
-        attach_as: "rest_demo"
+        catalog_database: "rest_demo"

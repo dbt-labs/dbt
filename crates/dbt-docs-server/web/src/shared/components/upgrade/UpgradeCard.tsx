@@ -1,17 +1,10 @@
 import { FC, useEffect, useRef } from 'react';
+import { ChevronUp, X } from 'lucide-react';
 import { twJoin } from 'tailwind-merge';
 
-import {
-  Button,
-  Icon,
-  InvisibleButton,
-  Link,
-  RyeconCaretUp,
-  RyeconClose,
-  RyeconColorDbt,
-  Sizes,
-} from '@dbt-labs/sourdough';
-
+import { Button } from '../../../components/ui/Button';
+import { InvisibleButton } from '../../../components/ui/InvisibleButton';
+import { Link } from '../../../components/ui/Link';
 import { getUpgradeCopy, isUpgradeCopyVisible } from './copy';
 import { CopyCommandSnippet } from './CopyCommandSnippet';
 import {
@@ -259,7 +252,7 @@ function InlineCard({
           className="inline-flex !w-auto shrink-0 items-center text-fgDecorative hover:text-fgMain"
           testId={testId ? `${testId}-dismiss` : undefined}
         >
-          <Icon ryecon={RyeconClose} size="sm" alt="" />
+          <X className="size-3.5" />
         </InvisibleButton>
       )}
     </div>
@@ -305,7 +298,7 @@ function BlockCard({
             className="inline-flex !w-auto shrink-0 items-center text-fgDecorative hover:text-fgMain"
             testId={testId ? `${testId}-dismiss` : undefined}
           >
-            <Icon ryecon={RyeconClose} size="sm" alt="" />
+            <X className="size-3.5" />
           </InvisibleButton>
         )}
       </div>
@@ -375,7 +368,6 @@ function RailCard({
           className="flex !w-auto min-w-0 flex-1 items-center gap-2 text-left text-fgMain"
           testId={testId ? `${testId}-toggle` : undefined}
         >
-          <Icon ryecon={RyeconColorDbt} size="xs" alt="" />
           <span className="min-w-0 flex-1 text-[13px] font-bold leading-[18px] text-fgMain">
             {spec.title}
           </span>
@@ -384,7 +376,7 @@ function RailCard({
               className="inline-flex shrink-0 items-center text-fgDecorative"
               aria-hidden
             >
-              <Icon ryecon={RyeconCaretUp} size="xs" alt="" />
+              <ChevronUp className="size-3" />
             </span>
           )}
         </InvisibleButton>
@@ -396,7 +388,7 @@ function RailCard({
             className="inline-flex !w-auto shrink-0 items-center text-fgDecorative hover:text-fgMain"
             testId={testId ? `${testId}-dismiss` : undefined}
           >
-            <Icon ryecon={RyeconClose} size="xs" alt="" />
+            <X className="size-3" />
           </InvisibleButton>
         )}
       </div>
@@ -449,8 +441,8 @@ function CtaForSpec({ spec, emit, decorate, fullWidth, testId }: CtaProps) {
   const { label, href } = spec.cta;
   return (
     <Button
-      type="primary"
-      size={Sizes.sm}
+      variant="default"
+      size="sm"
       text={label}
       className={fullWidth ? 'w-full justify-center' : undefined}
       onClick={() => {

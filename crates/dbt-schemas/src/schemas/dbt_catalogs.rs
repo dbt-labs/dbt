@@ -60,9 +60,59 @@ use std::collections::HashSet;
 use std::path::Path;
 use std::sync::OnceLock;
 
-use super::dbt_catalogs_v2::TableFormat;
+use super::dbt_catalogs_v2::{
+    CatalogType, PhysicalFormatResolver, PhysicalTableFormat, TableFormat,
+};
+use dbt_adapter_core::AdapterType;
 use dbt_common::{ErrorCode, FsResult, err, fs_err};
 use dbt_yaml::{self as yml};
+
+#[derive(Clone, Copy)]
+pub enum LoadedCatalogs<'a> {
+    None,
+    V1(&'a DbtCatalogs),
+    V2(&'a DbtCatalogs),
+}
+
+impl<'a> LoadedCatalogs<'a> {
+    pub fn catalog_names(&self) -> FsResult<Option<&'a [String]>> {
+        match self {
+            LoadedCatalogs::None => Ok(None),
+            LoadedCatalogs::V1(c) => Ok(Some(c.v1_catalog_names()?)),
+            LoadedCatalogs::V2(c) => Ok(Some(c.v2_catalog_names()?)),
+        }
+    }
+
+    pub fn has_catalog_name(&self, name: &str) -> FsResult<bool> {
+        Ok(self
+            .catalog_names()?
+            .is_some_and(|names| names.iter().any(|n| n == name)))
+    }
+
+    /// Whether a named v2 catalog requires Snowflake destination handling for a Lake Compute node.
+    pub fn catalog_requires_snowflake_propagation(&self, name: Option<&str>) -> FsResult<bool> {
+        match (self, name) {
+            (LoadedCatalogs::V2(catalogs), Some(name)) => Ok(catalogs
+                .v2_catalog_type(name)?
+                .is_some_and(|catalog_type| catalog_type.requires_snowflake_propagation())),
+            _ => Ok(false),
+        }
+    }
+}
+
+const CATALOG_DATABASE_PLATFORMS: &[AdapterType] = &[
+    AdapterType::DuckDB,
+    AdapterType::Snowflake,
+    AdapterType::Databricks,
+    AdapterType::Bigquery,
+];
+
+#[derive(Debug, Clone)]
+pub struct CatalogPlatformEntry<'a> {
+    pub adapter_type: AdapterType,
+    pub catalog_name: &'a str,
+    pub catalog_database: Option<&'a str>,
+}
 
 /// A validated catalogs.yml mapping.
 /// - Holds the raw YAML Mapping so external consumers can copy as needed.
@@ -71,6 +121,7 @@ use dbt_yaml::{self as yml};
 pub struct DbtCatalogs {
     pub repr: yml::Mapping,
     pub span: yml::Span,
+    v1_catalog_names: OnceLock<Vec<String>>,
     v2_catalog_names: OnceLock<Vec<String>>,
     v2_catalog_databases: OnceLock<Vec<String>>,
 }
@@ -80,6 +131,7 @@ impl DbtCatalogs {
         Self {
             repr,
             span,
+            v1_catalog_names: OnceLock::new(),
             v2_catalog_names: OnceLock::new(),
             v2_catalog_databases: OnceLock::new(),
         }
@@ -109,16 +161,76 @@ impl DbtCatalogs {
     }
 
     pub fn is_v2_catalog(&self, name: &str) -> FsResult<bool> {
+        Ok(self.v2_catalog_names()?.iter().any(|n| n == name))
+    }
+
+    pub fn v1_catalog_names(&self) -> FsResult<&[String]> {
+        if let Some(names) = self.v1_catalog_names.get() {
+            return Ok(names);
+        }
+        self.populate_v1_cache()?;
+        Ok(self.v1_catalog_names.get().unwrap())
+    }
+
+    pub fn v2_catalog_names(&self) -> FsResult<&[String]> {
         if let Some(names) = self.v2_catalog_names.get() {
-            return Ok(names.iter().any(|n| n == name));
+            return Ok(names);
         }
         self.populate_v2_caches()?;
-        Ok(self
-            .v2_catalog_names
-            .get()
-            .unwrap()
+        Ok(self.v2_catalog_names.get().unwrap())
+    }
+
+    pub fn platform_entries(&self) -> FsResult<impl Iterator<Item = CatalogPlatformEntry<'_>>> {
+        let view = self.view_v2()?;
+        Ok(view.catalogs.into_iter().flat_map(|catalog| {
+            CATALOG_DATABASE_PLATFORMS
+                .iter()
+                .filter_map(move |&adapter_type| {
+                    let block = catalog.config_block(adapter_type.as_ref())?;
+                    let catalog_database = block
+                        .get(yml::Value::from("catalog_database"))
+                        .and_then(|v| v.as_str())
+                        .map(str::trim)
+                        .filter(|s| !s.is_empty());
+                    Some(CatalogPlatformEntry {
+                        adapter_type,
+                        catalog_name: catalog.name,
+                        catalog_database,
+                    })
+                })
+        }))
+    }
+
+    pub fn catalogs_matching_database(
+        &self,
+        database: &str,
+        adapter_type: AdapterType,
+    ) -> FsResult<Vec<String>> {
+        debug_assert!(!database.trim().is_empty());
+        let names: Vec<&str> = self
+            .platform_entries()?
+            .filter(|entry| entry.adapter_type == adapter_type)
+            .filter_map(|entry| {
+                let alias = match adapter_type {
+                    AdapterType::DuckDB => entry.catalog_database.unwrap_or(entry.catalog_name),
+                    _ => entry.catalog_database?,
+                };
+                alias
+                    .eq_ignore_ascii_case(database)
+                    .then_some(entry.catalog_name)
+            })
+            .collect();
+
+        let view = self.view_v2()?;
+        Ok(view
+            .catalogs
             .iter()
-            .any(|n| n == name))
+            .filter(|catalog| {
+                names.contains(&catalog.name)
+                    && catalog.physical_table_format() != PhysicalTableFormat::Default
+            })
+            .map(|catalog| catalog.name.to_string())
+            .collect())
     }
 
     pub fn is_v2_catalog_database(&self, db: &str) -> FsResult<bool> {
@@ -134,17 +246,31 @@ impl DbtCatalogs {
             .any(|d| d == db))
     }
 
+    /// The v2 catalog type behind a `catalog_name`, if that name is a v2 catalog.
+    ///
+    /// Callers use this to ask capability questions about storage — which engines
+    /// can read it, and whose credentials reaching it requires. Both are properties
+    /// of the catalog *type*, not of anything a project declares.
+    pub fn v2_catalog_type(&self, name: &str) -> FsResult<Option<CatalogType>> {
+        Ok(self
+            .view_v2()?
+            .catalogs
+            .iter()
+            .find(|catalog| catalog.name == name)
+            .map(|catalog| catalog.catalog_type))
+    }
+
     /// Returns `(catalog_name, catalog_database)` for every v2 `iceberg_rest`
     /// catalog that declares a Snowflake `catalog_database` (the linked
     /// database write support is gated on).
     pub fn iceberg_rest_catalog_databases(&self) -> FsResult<Vec<(String, String)>> {
-        use super::dbt_catalogs_v2::V2CatalogType;
+        use super::dbt_catalogs_v2::CatalogType;
 
         let view = self.view_v2()?;
         Ok(view
             .catalogs
             .iter()
-            .filter(|c| c.catalog_type == V2CatalogType::IcebergRest)
+            .filter(|c| c.catalog_type == CatalogType::IcebergRest)
             .filter_map(|c| {
                 let db = c
                     .config_block("snowflake")?
@@ -154,6 +280,17 @@ impl DbtCatalogs {
                 (!db.is_empty()).then(|| (c.name.to_owned(), db.to_owned()))
             })
             .collect())
+    }
+
+    fn populate_v1_cache(&self) -> FsResult<()> {
+        let view = self.view()?;
+        let names: Vec<String> = view
+            .catalogs
+            .iter()
+            .map(|catalog| catalog.catalog_name.0.to_owned())
+            .collect();
+        self.v1_catalog_names.get_or_init(|| names);
+        Ok(())
     }
 
     // Both is_v2_catalog and is_v2_catalog_database share a single
@@ -186,70 +323,18 @@ impl DbtCatalogs {
     }
 }
 
-// If adding a new enum type, also add the expected string to match it
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CatalogType {
-    SnowflakeBuiltIn,
-    SnowflakeIcebergRest,
-    DatabricksHiveMetastore,
-    DatabricksUnity,
-    BigqueryBuiltIn,
-}
-
-impl CatalogType {
-    pub fn parse_strict(catalog_type_raw: &str) -> FsResult<Self> {
-        CATALOG_TYPES
-            .iter()
-            .find_map(|(name, ct)| catalog_type_raw.eq_ignore_ascii_case(name).then_some(*ct))
-            .ok_or_else(|| {
-                fs_err!(
-                    ErrorCode::InvalidConfig,
-                    "catalog_type '{}' invalid. choose one of ({})",
-                    catalog_type_raw,
-                    CATALOG_TYPE_OPTS
-                )
-            })
-    }
-
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            CatalogType::SnowflakeBuiltIn => "BUILT_IN",
-            CatalogType::SnowflakeIcebergRest => "ICEBERG_REST",
-            CatalogType::DatabricksHiveMetastore => "hive_metastore",
-            CatalogType::DatabricksUnity => "unity",
-            CatalogType::BigqueryBuiltIn => "biglake_metastore",
-        }
-    }
-}
-
-const CATALOG_TYPES: [(&str, CatalogType); 7] = [
+const V1_CATALOG_TYPES: [(&str, CatalogType); 7] = [
     ("built_in", CatalogType::SnowflakeBuiltIn),
     ("snowflake", CatalogType::SnowflakeBuiltIn),
-    ("rest", CatalogType::SnowflakeIcebergRest),
-    ("iceberg_rest", CatalogType::SnowflakeIcebergRest),
-    ("hive_metastore", CatalogType::DatabricksHiveMetastore),
-    ("unity", CatalogType::DatabricksUnity),
-    ("biglake_metastore", CatalogType::BigqueryBuiltIn),
+    ("rest", CatalogType::IcebergRest),
+    ("iceberg_rest", CatalogType::IcebergRest),
+    ("hive_metastore", CatalogType::HiveMetastore),
+    ("unity", CatalogType::Unity),
+    ("biglake_metastore", CatalogType::BiglakeMetastore),
 ];
 
-const CATALOG_TYPE_OPTS: &str =
+const V1_CATALOG_TYPE_OPTS: &str =
     "built_in|snowflake|rest|iceberg_rest|unity|hive_metastore|biglake_metastore";
-
-impl TableFormat {
-    fn parse(raw: &str) -> FsResult<Self> {
-        if raw.eq_ignore_ascii_case("iceberg") {
-            Ok(TableFormat::Iceberg)
-        } else if raw.eq_ignore_ascii_case("default") {
-            Ok(TableFormat::Default)
-        } else {
-            err!(
-                ErrorCode::InvalidConfig,
-                "table_format '{}' invalid (DEFAULT|ICEBERG)",
-                raw
-            )
-        }
-    }
-}
 
 #[derive(Debug, PartialEq)]
 pub enum FileFormat {
@@ -261,7 +346,7 @@ pub enum FileFormat {
 impl FileFormat {
     fn parse_file_format(s: &str, catalog_type: CatalogType) -> FsResult<FileFormat> {
         match catalog_type {
-            CatalogType::DatabricksHiveMetastore | CatalogType::DatabricksUnity => {
+            CatalogType::HiveMetastore | CatalogType::Unity => {
                 if s.eq_ignore_ascii_case("delta") {
                     Ok(FileFormat::Delta)
                 } else if s.eq_ignore_ascii_case("hudi") {
@@ -276,7 +361,7 @@ impl FileFormat {
                     )
                 }
             }
-            CatalogType::BigqueryBuiltIn => {
+            CatalogType::BiglakeMetastore => {
                 if s.eq_ignore_ascii_case("parquet") {
                     Ok(FileFormat::Delta)
                 } else {
@@ -287,11 +372,12 @@ impl FileFormat {
                     )
                 }
             }
-            CatalogType::SnowflakeBuiltIn | CatalogType::SnowflakeIcebergRest => err!(
+            CatalogType::SnowflakeBuiltIn | CatalogType::IcebergRest => err!(
                 ErrorCode::InvalidConfig,
                 "'file_format' is not supported for catalog type '{}'",
                 catalog_type.as_str()
             ),
+            _ => unreachable!("V1_CATALOG_TYPES never maps a raw type string onto this variant"),
         }
     }
 }
@@ -609,7 +695,7 @@ impl<'a> WriteIntegrationView<'a> {
 
         let catalog_type_raw =
             get_str(map, "catalog_type")?.ok_or_else(|| key_err("catalog_type", None))?;
-        let catalog_type = CATALOG_TYPES
+        let catalog_type = V1_CATALOG_TYPES
             .iter()
             .find_map(|(name, v)| catalog_type_raw.0.eq_ignore_ascii_case(name).then_some(*v))
             .ok_or_else(|| {
@@ -618,20 +704,17 @@ impl<'a> WriteIntegrationView<'a> {
                     hacky_yml_loc => Some(catalog_type_raw.1),
                     "catalog_type '{}' invalid. choose one of ({})",
                     catalog_type_raw.0,
-                    CATALOG_TYPE_OPTS
+                    V1_CATALOG_TYPE_OPTS
                 )
             })?;
 
         match catalog_type {
             CatalogType::SnowflakeBuiltIn => Self::from_snowflake_built_in(map, integration_name.0),
-            CatalogType::SnowflakeIcebergRest => {
-                Self::from_snowflake_iceberg_rest(map, integration_name.0)
-            }
-            CatalogType::DatabricksUnity => Self::from_databricks_unity(map, integration_name.0),
-            CatalogType::DatabricksHiveMetastore => {
-                Self::from_databricks_hms(map, integration_name.0)
-            }
-            CatalogType::BigqueryBuiltIn => Self::from_bigquery_built_in(map, integration_name.0),
+            CatalogType::IcebergRest => Self::from_snowflake_iceberg_rest(map, integration_name.0),
+            CatalogType::Unity => Self::from_databricks_unity(map, integration_name.0),
+            CatalogType::HiveMetastore => Self::from_databricks_hms(map, integration_name.0),
+            CatalogType::BiglakeMetastore => Self::from_bigquery_built_in(map, integration_name.0),
+            _ => unreachable!("V1_CATALOG_TYPES never maps a raw type string onto this variant"),
         }
     }
 
@@ -654,10 +737,7 @@ impl<'a> WriteIntegrationView<'a> {
         )?;
 
         let (table_format, table_format_span) = match get_str(map, "table_format")? {
-            Some((s, span)) => (
-                TableFormat::parse(s).map_err(|e| e.with_hacky_yml_location(Some(span.clone())))?,
-                span,
-            ),
+            Some((s, span)) => (TableFormat::parse_from_yaml(s, &span)?, span),
             None => return Err(key_err("table_format", None)),
         };
         if table_format != TableFormat::Iceberg {
@@ -749,10 +829,7 @@ impl<'a> WriteIntegrationView<'a> {
         )?;
 
         let (table_format, table_format_span) = match get_str(map, "table_format")? {
-            Some((s, span)) => (
-                TableFormat::parse(s).map_err(|e| e.with_hacky_yml_location(Some(span.clone())))?,
-                span,
-            ),
+            Some((s, span)) => (TableFormat::parse_from_yaml(s, &span)?, span),
             None => return Err(key_err("table_format", None)),
         };
         if table_format != TableFormat::Iceberg {
@@ -766,10 +843,7 @@ impl<'a> WriteIntegrationView<'a> {
 
         let adapter_properties = {
             if let Some((props, _span)) = get_map(map, "adapter_properties")? {
-                Some(parse_adapter_properties(
-                    props,
-                    CatalogType::SnowflakeIcebergRest,
-                )?)
+                Some(parse_adapter_properties(props, CatalogType::IcebergRest)?)
             } else {
                 None
             }
@@ -777,7 +851,7 @@ impl<'a> WriteIntegrationView<'a> {
 
         Ok(Self {
             integration_name,
-            catalog_type: CatalogType::SnowflakeIcebergRest,
+            catalog_type: CatalogType::IcebergRest,
             table_format,
             external_volume: None,
             file_format: None,
@@ -804,11 +878,7 @@ impl<'a> WriteIntegrationView<'a> {
                 Some((s, span)) => (s, span),
                 None => return Err(key_err("table_format", None)),
             };
-            (
-                TableFormat::parse(raw)
-                    .map_err(|e| e.with_hacky_yml_location(Some(span.clone())))?,
-                span,
-            )
+            (TableFormat::parse_from_yaml(raw, &span)?, span)
         };
         if table_format != TableFormat::Iceberg {
             return err!(
@@ -821,7 +891,7 @@ impl<'a> WriteIntegrationView<'a> {
 
         let file_format = {
             let parsed = match get_str(map, "file_format")? {
-                Some((s, span)) => FileFormat::parse_file_format(s, CatalogType::DatabricksUnity)
+                Some((s, span)) => FileFormat::parse_file_format(s, CatalogType::Unity)
                     .map_err(|e| e.with_hacky_yml_location(Some(span.clone())))?,
                 None => {
                     return err!(
@@ -847,10 +917,7 @@ impl<'a> WriteIntegrationView<'a> {
 
         let adapter_properties = {
             if let Some((props, _span)) = get_map(map, "adapter_properties")? {
-                Some(parse_adapter_properties(
-                    props,
-                    CatalogType::DatabricksUnity,
-                )?)
+                Some(parse_adapter_properties(props, CatalogType::Unity)?)
             } else {
                 None
             }
@@ -858,7 +925,7 @@ impl<'a> WriteIntegrationView<'a> {
 
         Ok(Self {
             integration_name,
-            catalog_type: CatalogType::DatabricksUnity,
+            catalog_type: CatalogType::Unity,
             table_format,
             external_volume: None,
             file_format,
@@ -880,10 +947,7 @@ impl<'a> WriteIntegrationView<'a> {
         )?;
 
         let (table_format, table_format_span) = match get_str(map, "table_format")? {
-            Some((s, span)) => (
-                TableFormat::parse(s).map_err(|e| e.with_hacky_yml_location(Some(span.clone())))?,
-                span,
-            ),
+            Some((s, span)) => (TableFormat::parse_from_yaml(s, &span)?, span),
             None => return Err(key_err("table_format", None)),
         };
         if table_format != TableFormat::Default {
@@ -897,7 +961,7 @@ impl<'a> WriteIntegrationView<'a> {
 
         let file_format = match get_str(map, "file_format")? {
             Some((s, span)) => Some(
-                FileFormat::parse_file_format(s, CatalogType::DatabricksHiveMetastore)
+                FileFormat::parse_file_format(s, CatalogType::HiveMetastore)
                     .map_err(|e| e.with_hacky_yml_location(Some(span)))?,
             ),
             None => {
@@ -912,10 +976,7 @@ impl<'a> WriteIntegrationView<'a> {
 
         let adapter_properties = {
             if let Some((props, _span)) = get_map(map, "adapter_properties")? {
-                Some(parse_adapter_properties(
-                    props,
-                    CatalogType::DatabricksHiveMetastore,
-                )?)
+                Some(parse_adapter_properties(props, CatalogType::HiveMetastore)?)
             } else {
                 None
             }
@@ -923,7 +984,7 @@ impl<'a> WriteIntegrationView<'a> {
 
         Ok(Self {
             integration_name,
-            catalog_type: CatalogType::DatabricksHiveMetastore,
+            catalog_type: CatalogType::HiveMetastore,
             table_format,
             external_volume: None,
             file_format,
@@ -950,10 +1011,7 @@ impl<'a> WriteIntegrationView<'a> {
         )?;
 
         let (table_format, table_format_span) = match get_str(map, "table_format")? {
-            Some((s, span)) => (
-                TableFormat::parse(s).map_err(|e| e.with_hacky_yml_location(Some(span.clone())))?,
-                span,
-            ),
+            Some((s, span)) => (TableFormat::parse_from_yaml(s, &span)?, span),
             None => {
                 return err!(
                     code => ErrorCode::InvalidConfig,
@@ -974,7 +1032,7 @@ impl<'a> WriteIntegrationView<'a> {
 
         let file_format = match get_str(map, "file_format")? {
             Some((s, span)) => Some(
-                FileFormat::parse_file_format(s, CatalogType::BigqueryBuiltIn)
+                FileFormat::parse_file_format(s, CatalogType::BiglakeMetastore)
                     .map_err(|e| e.with_hacky_yml_location(Some(span.clone())))?,
             ),
             None => {
@@ -1044,7 +1102,7 @@ impl<'a> WriteIntegrationView<'a> {
             if let Some((props, _span)) = get_map(map, "adapter_properties")? {
                 Some(parse_adapter_properties(
                     props,
-                    CatalogType::BigqueryBuiltIn,
+                    CatalogType::BiglakeMetastore,
                 )?)
             } else {
                 None
@@ -1053,7 +1111,7 @@ impl<'a> WriteIntegrationView<'a> {
 
         Ok(Self {
             integration_name,
-            catalog_type: CatalogType::BigqueryBuiltIn,
+            catalog_type: CatalogType::BiglakeMetastore,
             table_format,
             external_volume,
             file_format,
@@ -1139,7 +1197,7 @@ fn parse_adapter_properties<'a>(
                 },
             ))
         }
-        CatalogType::SnowflakeIcebergRest => {
+        CatalogType::IcebergRest => {
             check_unknown_keys(
                 properties,
                 &[
@@ -1167,7 +1225,7 @@ fn parse_adapter_properties<'a>(
                 iceberg_version: get_u32(properties, "iceberg_version")?.map(|(v, _)| v),
             }))
         }
-        CatalogType::BigqueryBuiltIn => {
+        CatalogType::BiglakeMetastore => {
             check_unknown_keys(
                 properties,
                 &[
@@ -1222,7 +1280,7 @@ fn parse_adapter_properties<'a>(
                 },
             ))
         }
-        CatalogType::DatabricksUnity => {
+        CatalogType::Unity => {
             check_unknown_keys(properties, &["location_root"], "adapter_properties(unity)")?;
             if let Some((loc, span)) = get_str(properties, "location_root")?
                 && loc.trim().is_empty()
@@ -1241,7 +1299,7 @@ fn parse_adapter_properties<'a>(
                 },
             ))
         }
-        CatalogType::DatabricksHiveMetastore => {
+        CatalogType::HiveMetastore => {
             if !properties.is_empty() {
                 let first_key_span = properties.keys().next().map(|k| k.span().clone());
                 return err!(
@@ -1253,6 +1311,7 @@ fn parse_adapter_properties<'a>(
             // unreachable in practice because caller only invokes this if adapter_properties exists
             Ok(AdapterPropsView::Empty)
         }
+        _ => unreachable!("V1_CATALOG_TYPES never maps a raw type string onto this variant"),
     }
 }
 
@@ -1380,7 +1439,7 @@ pub fn validate_catalogs(spec: &DbtCatalogsView<'_>, _path: &Path) -> FsResult<(
                 CatalogType::SnowflakeBuiltIn => { /* no non-structural constraints */ }
 
                 // === 6b. iceberg rest catalog type
-                CatalogType::SnowflakeIcebergRest => match &write_integration.adapter_properties {
+                CatalogType::IcebergRest => match &write_integration.adapter_properties {
                     Some(AdapterPropsView::SnowflakeRest(rest)) => {
                         match rest.catalog_linked_database {
                             Some(name) if !name.is_empty() => {}
@@ -1403,7 +1462,7 @@ pub fn validate_catalogs(spec: &DbtCatalogsView<'_>, _path: &Path) -> FsResult<(
                         );
                     }
                 },
-                CatalogType::DatabricksUnity => {
+                CatalogType::Unity => {
                     if let Some(AdapterPropsView::DatabricksUnity(properties)) =
                         &write_integration.adapter_properties
                     {
@@ -1429,7 +1488,7 @@ pub fn validate_catalogs(spec: &DbtCatalogsView<'_>, _path: &Path) -> FsResult<(
                     }
                 }
 
-                CatalogType::DatabricksHiveMetastore => {
+                CatalogType::HiveMetastore => {
                     if write_integration.adapter_properties.is_some() {
                         return err!(code => ErrorCode::InvalidConfig, hacky_yml_loc => Some(catalog.write_integrations.1.clone()),
                             "integration '{}': adapter_properties not allowed for hive_metastore",
@@ -1437,7 +1496,10 @@ pub fn validate_catalogs(spec: &DbtCatalogsView<'_>, _path: &Path) -> FsResult<(
                     }
                 }
 
-                CatalogType::BigqueryBuiltIn => { /* no non-structural constraints */ }
+                CatalogType::BiglakeMetastore => { /* no non-structural constraints */ }
+                _ => {
+                    unreachable!("V1_CATALOG_TYPES never maps a raw type string onto this variant")
+                }
             }
         }
     }
@@ -2896,6 +2958,43 @@ catalogs:
     }
 
     #[test]
+    fn v1_catalog_names_finds_all_names() {
+        let yaml = r#"
+catalogs:
+  - catalog_name: sf_native
+    active_write_integration: sf_native_int
+    write_integrations:
+      - name: sf_native_int
+        catalog_type: built_in
+        table_format: iceberg
+        external_volume: dbt_external_volume
+  - name: polaris
+    active_write_integration: polaris_int
+    write_integrations:
+      - name: polaris_int
+        catalog_type: iceberg_rest
+        table_format: iceberg
+"#;
+        let v: yml::Value = yml::from_str(yaml).unwrap();
+        let (repr, span) = match v {
+            yml::Value::Mapping(m, s) => (m, s),
+            _ => panic!("expected mapping"),
+        };
+        let c = DbtCatalogs::new(repr, span);
+        assert_eq!(
+            c.v1_catalog_names().unwrap(),
+            &["sf_native".to_string(), "polaris".to_string()]
+        );
+    }
+
+    #[test]
+    fn loaded_catalogs_none_has_no_catalog_names() {
+        let state = LoadedCatalogs::None;
+        assert_eq!(state.catalog_names().unwrap(), None);
+        assert!(!state.has_catalog_name("anything").unwrap());
+    }
+
+    #[test]
     fn is_v2_catalog_database_collects_snowflake_catalog_databases() {
         let c = make_v2_catalogs(
             r#"
@@ -3033,5 +3132,25 @@ catalogs:
 "#,
         );
         assert!(c.iceberg_rest_catalog_databases().unwrap().is_empty());
+    }
+
+    #[test]
+    fn catalogs_matching_database_default_table_format_is_excluded() {
+        let c = make_v2_catalogs(
+            r#"
+catalogs:
+  - name: horizon_plain
+    type: horizon
+    table_format: default
+    config:
+      duckdb:
+        endpoint: "https://horizon.example.com"
+        catalog_database: "horizon_db"
+"#,
+        );
+        let matches = c
+            .catalogs_matching_database("horizon_db", AdapterType::DuckDB)
+            .unwrap();
+        assert!(matches.is_empty(), "matches was: {matches:?}");
     }
 }

@@ -1,5 +1,4 @@
-import type { DropdownOption } from '@dbt-labs/sourdough';
-
+import type { DropdownOption } from '../components/ui/DropdownButton';
 import type { FacetValue } from '../shared';
 
 /** The leading "All" (no-filter) option shared by every facet dropdown. */

@@ -20,12 +20,13 @@ pub struct LoadArgs {
     pub profile: Option<String>,
     // The target within the profile to use for the dbt run
     pub target: Option<String>,
-    // The output to use for the alternate compute target (--x-alt-target)
-    pub x_alt_target: Option<String>,
     // Whether to update dependencies
     pub update_deps: bool,
     // The directory to load the dbt project from
     pub vars: BTreeMap<String, dbt_yaml::Value>,
+    /// AI coding agent(s) to install package skills for, from the CLI or
+    /// `DBT_ENGINE_AI_PROVIDER`. `None` means fall back to the project's `flags:`.
+    pub ai_provider: Option<Vec<String>>,
     /// Vars loaded from `vars.yml` at the root project (populated after the
     /// initial project load). Empty when no `vars.yml` is present.
     pub root_vars_from_file: BTreeMap<String, dbt_yaml::Value>,
@@ -62,6 +63,9 @@ pub struct LoadArgs {
     pub skip_private_deps: bool,
     /// How to load internal (embedded) dbt packages
     pub internal_package_mode: InternalPackageMode,
+    /// Whether resource files may carry a trailing Jinja template suffix
+    /// (`model.sql.j2`). Resolved from the root project's `flags:` block.
+    pub allow_jinja_file_extensions: bool,
 }
 
 impl LoadArgs {
@@ -74,8 +78,8 @@ impl LoadArgs {
             packages_install_path: arg.packages_install_path.clone(),
             internal_packages_install_path: arg.internal_packages_install_path.clone(),
             target: arg.target.clone(),
-            x_alt_target: arg.x_alt_target.clone(),
             update_deps: arg.update_deps,
+            ai_provider: arg.ai_provider.clone(),
             add_package: arg.add_package.clone(),
             upgrade: arg.upgrade,
             lock: arg.lock,
@@ -93,6 +97,7 @@ impl LoadArgs {
             prev_dbt_state: None,
             skip_private_deps: arg.skip_private_deps,
             internal_package_mode: arg.internal_package_mode.clone(),
+            allow_jinja_file_extensions: false,
         }
     }
 

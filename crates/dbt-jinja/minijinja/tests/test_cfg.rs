@@ -12,7 +12,10 @@ fn simple_cfg() {
         Instruction::LoadConst(2.into()),
         Instruction::Jump(5, Span::default()),
         Instruction::LoadConst(3.into()),
-        Instruction::Return { explicit: false },
+        Instruction::Return {
+            explicit: false,
+            arg_count: None,
+        },
     ];
 
     let cfg = build_cfg(&code);

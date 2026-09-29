@@ -6,6 +6,7 @@ export * from './executionInfo';
 export * from './facets';
 export * from './files';
 export * from './lineage';
+export * from './overview';
 export * from './project';
 export * from './search';
 export * from './status';

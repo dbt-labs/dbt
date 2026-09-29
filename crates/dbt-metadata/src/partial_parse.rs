@@ -66,7 +66,7 @@ use dbt_common::{
     ErrorCode, FsResult, fs_err,
     io_args::{EvalArgs, FsCommand, IoArgs},
     node_selector::{IndirectSelection, MethodName, SelectExpression},
-    path::DbtPath,
+    path::{DbtPath, resource_extension},
 };
 use dbt_jinja_vars::{DEFAULT_ENV_PLACEHOLDER, DbtVars};
 use dbt_schemas::{
@@ -86,7 +86,7 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-const INCREMENTAL_STATE_VERSION: u32 = 3;
+const INCREMENTAL_STATE_VERSION: u32 = 5;
 
 pub struct IncrementalState {
     pub version: u32,
@@ -218,11 +218,8 @@ impl IncrementalState {
                     // DocsPaths tracks all files in doc directories, but only .md changes
                     // require a full re-parse (SQL/YML in doc dirs are tracked by other kinds).
                     if is_docs_path
-                        && !Path::new(path_str)
-                            .extension()
-                            .and_then(|e| e.to_str())
-                            .map(|e| e.eq_ignore_ascii_case("md"))
-                            .unwrap_or(false)
+                        && !resource_extension(Path::new(path_str))
+                            .is_some_and(|e| e.eq_ignore_ascii_case("md"))
                     {
                         continue;
                     }
@@ -235,11 +232,8 @@ impl IncrementalState {
                         continue;
                     }
                     // File changed — only model/analysis .sql is safe for incremental.
-                    let is_sql = Path::new(path_str)
-                        .extension()
-                        .and_then(|e| e.to_str())
-                        .map(|e| e.eq_ignore_ascii_case("sql"))
-                        .unwrap_or(false);
+                    let is_sql = resource_extension(Path::new(path_str))
+                        .is_some_and(|e| e.eq_ignore_ascii_case("sql"));
                     if kind_safe_for_incremental && is_sql {
                         continue; // handled by incremental path
                     }
@@ -260,11 +254,8 @@ impl IncrementalState {
                 let is_docs_path = *kind == ResourcePathKind::DocsPaths;
                 for (path_str, saved_nanos) in files {
                     if is_docs_path
-                        && !Path::new(path_str)
-                            .extension()
-                            .and_then(|e| e.to_str())
-                            .map(|e| e.eq_ignore_ascii_case("md"))
-                            .unwrap_or(false)
+                        && !resource_extension(Path::new(path_str))
+                            .is_some_and(|e| e.eq_ignore_ascii_case("md"))
                     {
                         continue;
                     }
@@ -536,7 +527,11 @@ pub fn save_parse_state(
         version: INCREMENTAL_STATE_VERSION,
         dbt_version: &current_dbt_version(),
         project_name: packages.first().map_or("", |p| p.package_name.as_str()),
-        adapter_type: dbt_state.dbt_profile.db_config.adapter_type().into(),
+        adapter_type: dbt_state
+            .dbt_profile
+            .default_db_config()
+            .adapter_type()
+            .into(),
         profile_hash: &dbt_state.dbt_profile.blake3_hash(),
         profile_file_hash: &hash_file_at_path(&profile_file_path),
         project_file_hash: &hash_file_at_path(&project_file_path),
@@ -798,6 +793,8 @@ fn resolve_expr(
                 MethodName::Source => IndexLookupMethod::Source,
                 _ => return None,
             };
+            // A non-scalar `value:` has no index lookup; fall back to a full parse.
+            let value = criteria.value.as_str()?;
             let indirect = criteria.indirect.unwrap_or(default_indirect);
             // Eager and Buildable expand to include tests/unit_tests that depend on
             // the selected nodes (indirect selection).  Empty/Cautious do not.
@@ -808,7 +805,7 @@ fn resolve_expr(
             resolve_unique_ids_from_index(
                 out_dir,
                 method,
-                &criteria.value,
+                value,
                 criteria.parents_depth,
                 criteria.children_depth,
                 include_indirect,
@@ -904,6 +901,13 @@ pub fn load_parse_state_filtered_with_unique_ids(
 
     // Deserialise the JSON meta fields back into their typed forms.
     let dbt_profile: DbtProfile = serde_json::from_str(&loaded.dbt_profile_json).ok()?;
+    // A profile persisted by an older build, or a hand-edited artifact, can
+    // deserialize yet still violate the `default_adapter` ∈ `adapters` invariant
+    // that `db_config()` relies on. Treat that as a cache miss rather than
+    // letting it panic later.
+    if !dbt_profile.has_valid_adapters() {
+        return None;
+    }
     let vars: BTreeMap<String, IndexMap<String, DbtVars>> =
         serde_json::from_str(&loaded.vars_json).unwrap_or_default();
     let env_vars: HashMap<String, String> =
@@ -959,10 +963,70 @@ pub fn load_parse_state_filtered_with_unique_ids(
     })
 }
 
+/// Any file under `dirs` that is not in `recorded` (paths relative to `package_root`).
+///
+/// Additions are invisible to an mtime sweep of recorded files — a file that did not exist at the
+/// last parse has no recorded mtime to differ from — so detecting them needs a directory read.
+/// Only used for check paths, which hold a handful of files; see the caller for why.
+fn has_unrecorded_file(package_root: &Path, dirs: &[String], recorded: &HashSet<PathBuf>) -> bool {
+    let mut stack: Vec<PathBuf> = dirs.iter().map(|d| package_root.join(d)).collect();
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            match entry.file_type() {
+                Ok(ft) if ft.is_dir() => stack.push(path),
+                Ok(ft) if ft.is_file() => {
+                    // AppleDouble sidecars are never dbt assets and are excluded when the file
+                    // list is collected, so they must not count as additions here either.
+                    if entry
+                        .file_name()
+                        .to_str()
+                        .is_some_and(|n| n.starts_with("._"))
+                    {
+                        continue;
+                    }
+                    if path
+                        .strip_prefix(package_root)
+                        .is_ok_and(|rel| !recorded.contains(rel))
+                    {
+                        return true;
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    false
+}
+
 /// Returns `true` when every tracked file in the DbtPackage list has an unchanged mtime.
 /// Used by the partial-load fast path to skip the expensive WalkDir scan when nothing changed.
+///
+/// Also reports changed when a **check** file has been added. Added files are otherwise invisible
+/// here (nothing recorded to compare against), and while `compute_file_changeset` does catch them on
+/// the incremental path ("File count changed"), the fast path returns the cached state without ever
+/// reaching it. The effect was that adding a check and running `dbt check` silently did nothing —
+/// the check never ran and nothing said so. `dbt check` is the command that hits this, because it
+/// forces `write_metadata` and so enables the `--partial-load` fast path.
+///
+/// Scoped to check paths deliberately: they hold a handful of files, so reading them is cheap,
+/// whereas the point of this gate is to avoid walking the model tree. The same blind spot remains
+/// for other resource kinds under the fast path and wants the directory-mtime approach instead.
 pub fn dbt_packages_have_no_file_changes(packages: &[DbtPackage]) -> bool {
     for pkg in packages {
+        if let Some(check_paths) = pkg.dbt_project.check_paths.as_ref() {
+            let recorded: HashSet<PathBuf> = pkg
+                .all_paths
+                .get(&ResourcePathKind::CheckPaths)
+                .map(|files| files.iter().map(|(p, _)| p.to_path_buf()).collect())
+                .unwrap_or_default();
+            if has_unrecorded_file(&pkg.package_root_path, check_paths, &recorded) {
+                return false;
+            }
+        }
         for (kind, files) in &pkg.all_paths {
             // See needs_full_parse for why ProfilePaths must be skipped.
             if *kind == ResourcePathKind::ProfilePaths {
@@ -971,11 +1035,8 @@ pub fn dbt_packages_have_no_file_changes(packages: &[DbtPackage]) -> bool {
             let is_docs_path = *kind == ResourcePathKind::DocsPaths;
             for (dbt_path, saved_time) in files {
                 if is_docs_path
-                    && !dbt_path
-                        .extension()
-                        .and_then(|e| e.to_str())
-                        .map(|e| e.eq_ignore_ascii_case("md"))
-                        .unwrap_or(false)
+                    && !resource_extension(dbt_path.as_path())
+                        .is_some_and(|e| e.eq_ignore_ascii_case("md"))
                 {
                     continue;
                 }
@@ -1016,7 +1077,13 @@ pub fn reconstruct_package_metadata(snapshot: &PackageSnapshot) -> FsResult<DbtP
         })
         .collect();
 
-    let minimal_project_json = serde_json::json!({ "name": &snapshot.package_name });
+    // `check-paths` is carried through because the fast-path gate needs the configured directories
+    // to spot an *added* check file (see `dbt_packages_have_no_file_changes`). Without it the stub
+    // reports `None`, the gate silently skips its scan, and a newly added check never runs.
+    let minimal_project_json = serde_json::json!({
+        "name": &snapshot.package_name,
+        "check-paths": &snapshot.manifest_path_config.check_paths,
+    });
     let dbt_project = serde_json::from_value(minimal_project_json).map_err(|e| {
         fs_err!(
             ErrorCode::Generic,
@@ -1029,6 +1096,7 @@ pub fn reconstruct_package_metadata(snapshot: &PackageSnapshot) -> FsResult<DbtP
         package_root_path,
         dbt_properties: vec![],
         analysis_files: vec![],
+        check_files: vec![],
         model_sql_files: vec![],
         function_sql_files: vec![],
         macro_files: vec![],
@@ -1110,19 +1178,23 @@ mod tests {
 
     use super::*;
     use dbt_schemas::schemas::profiles::{DatafusionDbConfig, DbConfig};
+    use dbt_schemas::state::ProfileAdapter;
 
     fn test_profile() -> DbtProfile {
+        let db_config = DbConfig::Datafusion(Box::new(DatafusionDbConfig {
+            database: Some("testdb".into()),
+            schema: Some("public".into()),
+            execute: None,
+        }));
+        let default_adapter = db_config.adapter_type();
+        let adapters = IndexMap::from([(default_adapter, ProfileAdapter::single(db_config))]);
         DbtProfile {
             profile: "test".into(),
             target: "dev".into(),
             defer_to_target: None,
             allow_clones: true,
-            db_config: DbConfig::Datafusion(Box::new(DatafusionDbConfig {
-                database: Some("testdb".into()),
-                schema: Some("public".into()),
-                execute: None,
-            })),
-            alt_target_db_config: None,
+            adapters,
+            default_adapter,
             schema: "public".into(),
             database: "testdb".into(),
             relative_profile_path: PathBuf::from("profiles.yml"),
@@ -1200,6 +1272,7 @@ mod tests {
             package_root_path: PathBuf::from("/tmp/project"),
             dbt_properties: vec![],
             analysis_files: vec![],
+            check_files: vec![],
             model_sql_files: vec![],
             function_sql_files: vec![],
             macro_files: vec![],
@@ -1710,6 +1783,50 @@ mod tests {
         );
     }
 
+    /// A templated `.md.j2` doc used to be skipped outright, so an edited doc block
+    /// never invalidated the manifest. A templated `.sql.j2` model stays incremental-safe.
+    #[test]
+    fn needs_full_parse_sees_jinja_templated_files() {
+        let tmp = tempfile::tempdir().unwrap();
+        let models_dir = tmp.path().join("models");
+        std::fs::create_dir_all(&models_dir).unwrap();
+        let model_path = models_dir.join("c.sql.j2");
+        let docs_path = models_dir.join("doc.md.j2");
+        std::fs::write(&model_path, b"select 1").unwrap();
+        std::fs::write(&docs_path, b"{% docs d %}v1{% enddocs %}").unwrap();
+        let mtime_nanos = |path: &Path| {
+            system_time_to_nanos(std::fs::metadata(path).unwrap().modified().unwrap())
+        };
+
+        let mut state = test_state();
+        state.packages[0].package_root_path = tmp.path().to_str().unwrap().into();
+        state.packages[0].all_paths = HashMap::from([
+            (
+                ResourcePathKind::ModelPaths,
+                vec![("models/c.sql.j2".into(), mtime_nanos(&model_path))],
+            ),
+            (
+                ResourcePathKind::DocsPaths,
+                vec![("models/doc.md.j2".into(), mtime_nanos(&docs_path))],
+            ),
+        ]);
+
+        std::thread::sleep(Duration::from_millis(10));
+        std::fs::write(&model_path, b"select 2").unwrap();
+        assert_eq!(
+            state.needs_full_parse(),
+            None,
+            "templated model .sql.j2 modified → incremental (None)"
+        );
+
+        std::fs::write(&docs_path, b"{% docs d %}v2{% enddocs %}").unwrap();
+        assert_eq!(
+            state.needs_full_parse(),
+            Some("non-incremental file changed"),
+            "templated doc .md.j2 modified → full parse"
+        );
+    }
+
     #[test]
     fn needs_full_parse_new_file_not_detected() {
         // New files are not in all_paths, so needs_full_parse can't see them.
@@ -1725,6 +1842,76 @@ mod tests {
             state.needs_full_parse(),
             None,
             "new file not in all_paths — not detected, incremental path handles it"
+        );
+    }
+
+    /// Regression: the `--partial-load` fast path must not be taken when a check file was added.
+    ///
+    /// The mtime sweep only visits *recorded* files, so an added file leaves every recorded mtime
+    /// unchanged and the gate used to report "no changes". The fast path then returned the cached
+    /// state verbatim, never reaching `compute_file_changeset` (which does catch additions), so
+    /// adding a check and running `dbt check` silently ran nothing and said nothing.
+    #[test]
+    fn fast_path_gate_detects_an_added_check_file() {
+        use dbt_schemas::state::DbtPackage;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let checks_dir = tmp.path().join("checks");
+        std::fs::create_dir_all(&checks_dir).unwrap();
+        let existing = checks_dir.join("existing.sql");
+        std::fs::write(&existing, b"select 1 where false").unwrap();
+
+        let mut pkg = DbtPackage {
+            package_root_path: tmp.path().to_path_buf(),
+            ..Default::default()
+        };
+        pkg.dbt_project.check_paths = Some(vec!["checks".to_string()]);
+        pkg.all_paths = HashMap::from([(
+            ResourcePathKind::CheckPaths,
+            vec![(
+                DbtPath::from(Path::new("checks/existing.sql")),
+                std::fs::metadata(&existing).unwrap().modified().unwrap(),
+            )],
+        )]);
+
+        assert!(
+            dbt_packages_have_no_file_changes(std::slice::from_ref(&pkg)),
+            "only the recorded check file is present — fast path is valid"
+        );
+
+        std::fs::write(checks_dir.join("brand_new.sql"), b"select 1").unwrap();
+        assert!(
+            !dbt_packages_have_no_file_changes(std::slice::from_ref(&pkg)),
+            "an added check file must invalidate the fast path, or it never runs"
+        );
+    }
+
+    /// Regression: the reconstructed package must keep `check-paths`.
+    ///
+    /// `reconstruct_package_metadata` builds a stub `DbtProject`, and it used to carry only `name`.
+    /// The fast-path gate needs the configured check directories to notice an added check file, so a
+    /// stub reporting `None` made it skip that scan entirely and a newly added check silently never
+    /// ran. `fast_path_gate_detects_an_added_check_file` cannot catch this — it sets `check_paths`
+    /// itself, so it passed while the real path stayed broken.
+    #[test]
+    fn reconstructed_package_keeps_check_paths() {
+        let snapshot = PackageSnapshot {
+            package_root_path: "/tmp/proj".into(),
+            package_name: "proj".into(),
+            manifest_path_config: ManifestPathConfig {
+                check_paths: vec!["checks".to_string(), "extra_checks".to_string()],
+                ..Default::default()
+            },
+            all_paths: HashMap::new(),
+            dependencies: BTreeSet::new(),
+            is_local_dep: false,
+        };
+
+        let pkg = reconstruct_package_metadata(&snapshot).expect("reconstruct should succeed");
+        assert_eq!(
+            pkg.dbt_project.check_paths,
+            Some(vec!["checks".to_string(), "extra_checks".to_string()]),
+            "check-paths must survive reconstruction or the fast path cannot see added checks"
         );
     }
 
@@ -1747,7 +1934,7 @@ mod tests {
         SelectExpression::Atom(SelectionCriteria::new(
             method,
             vec![],
-            value.into(),
+            value,
             false,
             None,
             None,
@@ -1839,7 +2026,7 @@ mod tests {
                 dbt_common::node_selector::SelectionCriteria::new(
                     MethodName::Fqn,
                     vec![],
-                    "my_model".into(),
+                    "my_model",
                     true, // childrens_parents = @
                     None,
                     None,
@@ -1925,7 +2112,7 @@ mod tests {
                 dbt_common::node_selector::SelectionCriteria::new(
                     MethodName::Fqn,
                     vec![],
-                    name.into(),
+                    name,
                     false,
                     parents_depth,
                     children_depth,
@@ -2253,7 +2440,7 @@ mod tests {
             select: Some(SelectExpression::Atom(SelectionCriteria::new(
                 MethodName::Fqn,
                 vec![],
-                "my_*".into(),
+                "my_*",
                 false,
                 None,
                 None,
@@ -2665,7 +2852,8 @@ mod tests {
 
     // Build a PackageSnapshot where `all_paths` contains exactly one file at
     // `rel_path` (relative to `root`) with the given saved mtime.
-    // dir_mtimes is left empty — suitable for tests that don't need new-file detection.
+    // `manifest_path_config` is left default, so resource directories are unset — not suitable for
+    // tests that need added-file detection (see `fast_path_gate_detects_an_added_check_file`).
     fn pkg_with_file(
         root: &Path,
         kind: ResourcePathKind,
@@ -3537,6 +3725,7 @@ mod tests {
             )]),
             dbt_properties: vec![],
             analysis_files: vec![],
+            check_files: vec![],
             model_sql_files: vec![],
             function_sql_files: vec![],
             macro_files: vec![],
@@ -3574,6 +3763,7 @@ mod tests {
             )]),
             dbt_properties: vec![],
             analysis_files: vec![],
+            check_files: vec![],
             model_sql_files: vec![],
             function_sql_files: vec![],
             macro_files: vec![],
@@ -3837,7 +4027,7 @@ mod tests {
                 .first()
                 .map(|p| p.dbt_project.name.clone())
                 .unwrap_or_default(),
-            adapter_type: dbt_state.dbt_profile.db_config.adapter_type(),
+            adapter_type: dbt_state.dbt_profile.default_db_config().adapter_type(),
             nodes: Nodes::default(),
             disabled_nodes: Nodes::default(),
             macros: Macros::default(),
@@ -3860,6 +4050,7 @@ mod tests {
             nodes_with_access_errors: Default::default(),
             semantic_layer_spec_is_legacy: false,
             test_name_truncations: Default::default(),
+            user_defined_schema_registry: Default::default(),
         }
     }
 

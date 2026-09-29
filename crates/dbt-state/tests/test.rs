@@ -182,7 +182,7 @@ mod tests {
         Ok(())
     }
 
-    #[tokio::test]
+    #[dbt_runtime::test]
     async fn test_concurrent_cleanup_race_generic() {
         let Some(cache) = redis_cache_or_skip("", "test_concurrent_cleanup_race_generic").await
         else {
@@ -225,7 +225,7 @@ mod tests {
         assert!(cache.get_start(key).await.is_err());
     }
 
-    #[tokio::test]
+    #[dbt_runtime::test]
     async fn test_evaluate_dag() {
         let task_cache = Arc::new(TaskCacheNoop::new());
         let mut nodes: HashMap<&str, Vec<&str>> = HashMap::new();
@@ -237,7 +237,7 @@ mod tests {
         assert!(result.is_ok());
     }
 
-    #[tokio::test]
+    #[dbt_runtime::test]
     async fn test_evaluate_shared_dag() {
         let task_cache = Arc::new(TaskCacheNoop::new());
         let mut nodes: HashMap<&str, Vec<&str>> = HashMap::new();
@@ -252,7 +252,7 @@ mod tests {
         assert!(res.is_ok());
     }
 
-    // #[tokio::test]
+    // #[dbt_runtime::test]
     // async fn test_evaluate_dag_fs() {
     //     let task_cache = Arc::new(FileTaskManager::new("task_states".into()));
     //     let mut nodes: HashMap<&str, Vec<&str>> = HashMap::new();
@@ -264,7 +264,7 @@ mod tests {
     //     assert!(result.is_ok());
     // }
 
-    #[tokio::test]
+    #[dbt_runtime::test]
     async fn test_evaluate_dag_redis() {
         let Some(task_cache) = redis_cache_or_skip("", "test_evaluate_dag_redis").await else {
             return;
@@ -278,7 +278,7 @@ mod tests {
         assert!(result.is_ok());
     }
 
-    #[tokio::test]
+    #[dbt_runtime::test]
     async fn test_evaluate_dag_redis_independent() {
         let Some(task_cache1) =
             redis_cache_or_skip("", "test_evaluate_dag_redis_independent").await
@@ -309,7 +309,7 @@ mod tests {
         assert!(res2.unwrap().is_ok());
     }
 
-    #[tokio::test]
+    #[dbt_runtime::test]
     async fn test_evaluate_dag_redis_shared() {
         let Some(task_cache1) = redis_cache_or_skip("", "test_evaluate_dag_redis_shared").await
         else {
@@ -337,7 +337,7 @@ mod tests {
         assert!(res2.unwrap().is_ok());
     }
 
-    #[tokio::test]
+    #[dbt_runtime::test]
     async fn test_evaluate_dag_redis_mixed() {
         let Some(task_cache1) = redis_cache_or_skip("", "test_evaluate_dag_redis_mixed").await
         else {
@@ -381,7 +381,7 @@ mod tests {
         assert!(res2.unwrap().is_ok());
     }
 
-    #[tokio::test]
+    #[dbt_runtime::test]
     async fn test_redis_expiration() {
         let Some(task_cache) = redis_cache_or_skip("test_expire_", "test_redis_expiration").await
         else {
@@ -426,7 +426,7 @@ mod tests {
         println!("✅ Initial expiration set correctly: {initial_ttl} seconds");
     }
 
-    #[tokio::test]
+    #[dbt_runtime::test]
     async fn test_redis_get_info() {
         let Some(task_cache) = redis_cache_or_skip("test_get_info_", "test_redis_get_info").await
         else {

@@ -1,0 +1,12 @@
+---
+source: fs/sa/crates/dbt-jinja/minijinja/tests/test_parser.rs
+description: "{% set a, b, = 1, 2 %}"
+input_file: fs/sa/crates/dbt-jinja/minijinja/tests/parser-inputs/err_set_trailing_comma_before_assign.txt
+---
+Err(
+    Error {
+        kind: SyntaxError,
+        detail: "unexpected `=`, expected identifier",
+        name: "err_set_trailing_comma_before_assign.txt",
+    },
+)

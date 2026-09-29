@@ -17,4 +17,4 @@ catalogs:
         encrypted: true
         automatic_migration: true
         override_data_path: true
-        attach_as: "lake_full"
+        catalog_database: "lake_full"

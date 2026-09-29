@@ -2,10 +2,12 @@
 #![allow(clippy::too_many_arguments)]
 #![allow(clippy::type_complexity)]
 
-pub mod alt_propagation;
 pub mod context;
 pub mod context_factory;
 mod generate_run_results;
+pub mod lake_compute_catalog_attach;
+pub mod lake_compute_mdls;
+pub mod lake_compute_propagation;
 pub mod local_schema_builder;
 pub mod metricflow;
 pub mod pretty_table;
@@ -21,6 +23,7 @@ pub mod task;
 pub mod task_runner_hooks;
 pub mod task_spans;
 pub mod test_aggregation;
+pub mod unit_test_schema;
 pub mod utils;
 pub mod visitor;
 

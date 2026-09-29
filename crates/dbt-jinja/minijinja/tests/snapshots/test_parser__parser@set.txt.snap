@@ -1,6 +1,6 @@
 ---
 source: fs/sa/crates/dbt-jinja/minijinja/tests/test_parser.rs
-description: "{% set variable = value %}\n{% set (a, b) = (1, 2) %}\n{% set variable2 %}\n    this is the {{ body }}\n{% endset %}\n{% set variable3 | upper %}\n    this is the {{ body }} with filter\n{% endset %}"
+description: "{% set variable = value %}\n{% set (a, b) = (1, 2) %}\n{% set variable2 %}\n    this is the {{ body }}\n{% endset %}\n{% set variable3 | upper %}\n    this is the {{ body }} with filter\n{% endset %}\n{% set sources, campaigns =\n    ['facebook', 'google'],\n    ['search', 'display'],\n%}\n{% set a, b = 1, 2, %}\n{% set a, b, %}\n    tuple set block body\n{% endset %}\n{% set x = 1, %}"
 input_file: fs/sa/crates/dbt-jinja/minijinja/tests/parser-inputs/set.txt
 ---
 Ok(
@@ -60,8 +60,8 @@ Ok(
                         raw: "\n",
                     } @ 4:27-5:1,
                 ],
-                start_tag_span:  @ 3:1-3:3,
-                end_tag_span:  @ 5:1-5:3,
+                start_tag_span:  @ 3:1-3:20,
+                end_tag_span:  @ 5:1-5:13,
             } @ 3:1-5:13,
             EmitRaw {
                 raw: "\n",
@@ -90,9 +90,104 @@ Ok(
                         raw: " with filter\n",
                     } @ 7:27-8:1,
                 ],
-                start_tag_span:  @ 6:1-6:3,
-                end_tag_span:  @ 8:1-8:3,
+                start_tag_span:  @ 6:1-6:28,
+                end_tag_span:  @ 8:1-8:13,
             } @ 6:1-8:13,
+            EmitRaw {
+                raw: "\n",
+            } @ 8:13-9:1,
+            Set {
+                target: List {
+                    items: [
+                        Var {
+                            id: "sources",
+                        } @ 9:8-9:15,
+                        Var {
+                            id: "campaigns",
+                        } @ 9:17-9:26,
+                    ],
+                } @ 12:1-12:3,
+                expr: Tuple {
+                    items: [
+                        List {
+                            items: [
+                                Const {
+                                    value: 'facebook',
+                                } @ 10:6-10:16,
+                                Const {
+                                    value: 'google',
+                                } @ 10:18-10:26,
+                            ],
+                        } @ 10:5-10:27,
+                        List {
+                            items: [
+                                Const {
+                                    value: 'search',
+                                } @ 11:6-11:14,
+                                Const {
+                                    value: 'display',
+                                } @ 11:16-11:25,
+                            ],
+                        } @ 11:5-11:26,
+                    ],
+                } @ 12:1-12:3,
+            } @ 9:1-12:3,
+            EmitRaw {
+                raw: "\n",
+            } @ 12:3-13:1,
+            Set {
+                target: List {
+                    items: [
+                        Var {
+                            id: "a",
+                        } @ 13:8-13:9,
+                        Var {
+                            id: "b",
+                        } @ 13:11-13:12,
+                    ],
+                } @ 13:21-13:23,
+                expr: Tuple {
+                    items: [
+                        Const {
+                            value: 1,
+                        } @ 13:15-13:16,
+                        Const {
+                            value: 2,
+                        } @ 13:18-13:19,
+                    ],
+                } @ 13:21-13:23,
+            } @ 13:1-13:23,
+            EmitRaw {
+                raw: "\n",
+            } @ 13:23-14:1,
+            SetBlock {
+                target: Var {
+                    id: "a",
+                } @ 14:8-14:9,
+                filter: None,
+                body: [
+                    EmitRaw {
+                        raw: "\n    tuple set block body\n",
+                    } @ 14:16-16:1,
+                ],
+                start_tag_span:  @ 14:1-14:16,
+                end_tag_span:  @ 16:1-16:13,
+            } @ 14:1-16:13,
+            EmitRaw {
+                raw: "\n",
+            } @ 16:13-17:1,
+            Set {
+                target: Var {
+                    id: "x",
+                } @ 17:8-17:9,
+                expr: Tuple {
+                    items: [
+                        Const {
+                            value: 1,
+                        } @ 17:12-17:13,
+                    ],
+                } @ 17:15-17:17,
+            } @ 17:1-17:17,
         ],
-    } @ 1:1-8:13,
+    } @ 1:1-17:17,
 )

@@ -43,6 +43,7 @@ dbt-login = { workspace = true }
 dbt-metadata = { workspace = true }
 dbt-metadata-parquet = { workspace = true }
 dbt-parser = { workspace = true }
+dbt-runtime = { workspace = true }
 dbt-scheduler = { workspace = true }
 dbt-schema-store = { workspace = true }
 dbt-schemas = { workspace = true }
@@ -50,6 +51,7 @@ dbt-state = { workspace = true }
 dbt-tasks-core = { workspace = true }
 dbt-tasks-sa = { workspace = true }
 dbt-telemetry = { workspace = true }
+dbt-tracked-stmt = { workspace = true }
 dbt-vortex = { workspace = true }
 
 arrow = { workspace = true }
@@ -78,7 +80,6 @@ vortex-events = { workspace = true }
 [features]
 default = ["embed-ui"]
 embed-ui = ["dbt-docs-server/embed-ui"]
-openapi-ui = ["dbt-docs-server/openapi-ui"]
 
 [dev-dependencies]
 flate2 = { workspace = true }

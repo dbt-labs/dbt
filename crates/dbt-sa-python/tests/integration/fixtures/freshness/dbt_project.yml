@@ -1,0 +1,14 @@
+name: 'freshness'
+config-version: 2
+version: '0.1'
+
+profile: 'freshness'
+
+model-paths: ["models"]
+seed-paths: ["seeds"]
+clean-targets:
+  - "target"
+
+models:
+  freshness:
+    +materialized: table

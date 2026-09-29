@@ -25,6 +25,12 @@ pub struct StoredToken {
     pub access_token: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub refresh_token: Option<String>,
+    /// dbt platform account whose credential was exchanged for this token.
+    /// `None` for tokens not minted from a platform credential (standalone
+    /// browser login, client credentials) and for files written before this
+    /// field existed; such tokens are never invalidated on account change.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub platform_account_id: Option<String>,
 }
 
 impl StoredToken {
@@ -51,6 +57,7 @@ impl StoredToken {
             expires_at,
             access_token: response.access_token,
             refresh_token: response.refresh_token,
+            platform_account_id: None,
         })
     }
 }
@@ -133,12 +140,13 @@ impl TokenStore {
             RunCacheServiceError::Auth(format!("failed to serialize auth token: {err}"))
         })?;
 
-        let mut file = open_for_write(&self.path).await.map_err(|err| {
+        let write_err = |err| {
             RunCacheServiceError::Auth(format!("failed to write {}: {err}", self.path.display()))
-        })?;
-        file.write_all(json.as_bytes()).await.map_err(|err| {
-            RunCacheServiceError::Auth(format!("failed to write {}: {err}", self.path.display()))
-        })?;
+        };
+
+        let mut file = open_for_write(&self.path).await.map_err(&write_err)?;
+        file.write_all(json.as_bytes()).await.map_err(&write_err)?;
+        file.flush().await.map_err(&write_err)?;
         Ok(())
     }
 
@@ -188,6 +196,7 @@ mod tests {
             expires_at: Some(1_700_000_000.0),
             access_token: Some("access".to_string()),
             refresh_token: Some("refresh".to_string()),
+            platform_account_id: Some("42".to_string()),
         }
     }
 
@@ -196,14 +205,14 @@ mod tests {
         TokenStore::discover_from(Some(auth_home.to_string_lossy().into_owned()), None).unwrap()
     }
 
-    #[tokio::test]
+    #[dbt_runtime::test]
     async fn load_returns_none_when_missing() {
         let dir = TempDir::new().unwrap();
         let store = store_in(&dir);
         assert_eq!(store.load().await.unwrap(), None);
     }
 
-    #[tokio::test]
+    #[dbt_runtime::test]
     async fn save_then_load_round_trips() {
         let dir = TempDir::new().unwrap();
         let store = store_in(&dir);
@@ -211,7 +220,7 @@ mod tests {
         assert_eq!(store.load().await.unwrap(), Some(sample_token()));
     }
 
-    #[tokio::test]
+    #[dbt_runtime::test]
     async fn malformed_json_returns_none_and_deletes_file() {
         let dir = TempDir::new().unwrap();
         let store = store_in(&dir);
@@ -240,7 +249,7 @@ mod tests {
     }
 
     #[cfg(unix)]
-    #[tokio::test]
+    #[dbt_runtime::test]
     async fn saved_file_has_0600_permissions() {
         use std::os::unix::fs::PermissionsExt;
         let dir = TempDir::new().unwrap();
@@ -254,7 +263,7 @@ mod tests {
         assert_eq!(mode & 0o777, 0o600, "expected 0600, got {:o}", mode & 0o777);
     }
 
-    #[tokio::test]
+    #[dbt_runtime::test]
     async fn delete_removes_file() {
         let dir = TempDir::new().unwrap();
         let store = store_in(&dir);

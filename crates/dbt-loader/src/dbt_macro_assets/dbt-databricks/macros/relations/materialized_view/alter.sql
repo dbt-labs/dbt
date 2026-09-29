@@ -46,6 +46,18 @@
         {%- if tags and tags.set_tags and tags.set_tags != [] -%}
             {{ return_statements.append(alter_set_tags(relation, tags.set_tags)) }}
         {%- endif -%}
+
+        {#- Row filter handling - append SQL to list, don't execute -#}
+        {#- is_change guard prevents false alters when row_filter is unchanged -#}
+        {%- set row_filter = configuration_changes.changes.get("row_filter") -%}
+        {%- if row_filter and row_filter.is_change -%}
+          {%- if row_filter.should_unset -%}
+            {{ return_statements.append(alter_drop_row_filter(relation)) }}
+          {%- elif row_filter.function -%}
+            {{ return_statements.append(alter_set_row_filter(relation, row_filter)) }}
+          {%- endif -%}
+        {%- endif -%}
+
         {% do return(return_statements) %}
     {%- endif -%}
 {% endmacro %}
@@ -55,6 +67,6 @@
     {%- if refresh -%}
         -- Currently only schedule can be altered
         ALTER MATERIALIZED VIEW {{ relation.render() }}
-            {{ get_alter_sql_refresh_schedule(refresh.cron, refresh.time_zone_value, refresh.is_altered) -}}
+            {{ get_alter_sql_refresh_schedule(refresh) -}}
     {%- endif -%}
 {% endmacro %}

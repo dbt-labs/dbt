@@ -1,11 +1,31 @@
 use std::{collections::HashMap, sync::LazyLock};
 
 use crate::AdapterType;
+use chrono::{DateTime, NaiveDateTime};
 use dbt_common::{AdapterError, AdapterErrorKind, AdapterResult};
-use dbt_sql_utils::sql_split_statements;
+use dbt_frontend_common::Dialect;
+use dbt_sql_utils::{SqlToken as DialectToken, sql_lex_tokens, sql_split_statements};
 
 use super::tokenizer::{AbstractToken, Token, abstract_tokenize, tokenize};
 use regex::Regex;
+
+/// Normalize a pair of Python model payloads (the compiled `submit_python_job` code) so that
+/// semantically equivalent but textually different forms compare equal. Reuses the same Python
+/// canonicalizers `compare_sql` applies, in the same order. The main divergence this handles is
+/// dbt-autofix's `CustomKeyInConfigDeprecation` rewrite, which turns `dbt.config.get(<custom key>)`
+/// into `dbt.config.meta_get(...)` and moves the key from `config_dict` to `meta_dict`; both forms
+/// resolve the same value at runtime. Unlike `compare_sql`, this does no SQL parsing, so it is safe
+/// to run on raw Python model code.
+pub fn canonicalize_python_model_pair(actual: &str, expected: &str) -> (String, String) {
+    let actual = actual.replace("\r\n", "\n");
+    let expected = expected.replace("\r\n", "\n");
+    let actual = canonicalize_python_config_dict(&actual, &expected);
+    let actual = canonicalize_python_meta_get_calls(&actual);
+    let expected = canonicalize_python_meta_get_calls(&expected);
+    let actual = canonicalize_python_meta_dict(&actual);
+    let expected = canonicalize_python_meta_dict(&expected);
+    (actual, expected)
+}
 
 /// Compare two SQL strings using deviation and canonicalization checks before strict comparison,
 /// using adapter-specific canonicalization where applicable.
@@ -25,6 +45,14 @@ pub fn compare_sql(actual: &str, expected: &str, adapter_type: AdapterType) -> A
     let expected = canonicalize_typographic_quotes_in_dollar_quoted_strings(&expected);
     let actual = canonicalize_uuid_literals(&actual);
     let expected = canonicalize_uuid_literals(&expected);
+    let actual = canonicalize_dbt_version_literal(&actual);
+    let expected = canonicalize_dbt_version_literal(&expected);
+    let actual = canonicalize_compact_timestamp_predicate(&actual, adapter_type);
+    let expected = canonicalize_compact_timestamp_predicate(&expected, adapter_type);
+    let actual = canonicalize_run_started_at_literal(&actual);
+    let expected = canonicalize_run_started_at_literal(&expected);
+    let actual = canonicalize_yyyymmdd_batch_literals(&actual);
+    let expected = canonicalize_yyyymmdd_batch_literals(&expected);
     let actual = canonicalize_uuid_prefixed_test_unique_id_literals(&actual);
     let expected = canonicalize_uuid_prefixed_test_unique_id_literals(&expected);
     let actual = canonicalize_dbt_test_unique_id_literals(&actual);
@@ -37,6 +65,8 @@ pub fn compare_sql(actual: &str, expected: &str, adapter_type: AdapterType) -> A
     let expected = canonicalize_test_temp_relation_identifiers(&expected);
     let actual = canonicalize_dbt_model_tmp_suffix(&actual);
     let expected = canonicalize_dbt_model_tmp_suffix(&expected);
+    let actual = canonicalize_dbt_backup_timestamp_suffix(&actual);
+    let expected = canonicalize_dbt_backup_timestamp_suffix(&expected);
     let actual = canonicalize_elementary_metadata_pkg_version(&actual);
     let expected = canonicalize_elementary_metadata_pkg_version(&expected);
     let actual = canonicalize_python_config_dict(&actual, &expected);
@@ -59,6 +89,8 @@ pub fn compare_sql(actual: &str, expected: &str, adapter_type: AdapterType) -> A
     let expected = canonicalize_numeric_to_decimal(&expected);
     let actual = canonicalize_alter_table_set_tblproperties_order(&actual);
     let expected = canonicalize_alter_table_set_tblproperties_order(&expected);
+    let actual = canonicalize_alter_set_tags_order(&actual);
+    let expected = canonicalize_alter_set_tags_order(&expected);
 
     // Short-circuit: Elementary-generated SQL is allowed to drift across recorders/runners.
     // We only short-circuit when BOTH sides are clearly Elementary-originated.
@@ -1269,6 +1301,41 @@ fn canonicalize_alter_table_set_tblproperties_order(sql: &str) -> String {
     format!("{}{}{}", prefix, entries.join(" , "), suffix)
 }
 
+/// Canonicalize `ALTER TABLE ... SET TAGS (...)` by sorting the key-value
+/// entries alphabetically by key. dbt-databricks reads in `databricks_tags`
+/// keys nondeterministically if they are set in inline `config` blocks, so
+/// Fusion and dbt-databricks may emit them in a different order.
+fn canonicalize_alter_set_tags_order(sql: &str) -> String {
+    // Match: ALTER TABLE <name> SET TAGS (<entries>)
+    // Anchored to the full statement to avoid masking unrelated DDL.
+    static RE: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r"(?is)^(\s*ALTER\s+TABLE\s+.+?\s+SET\s+TAGS\s*\()(.+?)(\)\s*)$").unwrap()
+    });
+
+    let Some(caps) = RE.captures(sql) else {
+        return sql.to_string();
+    };
+
+    let prefix = &caps[1]; // "ALTER TABLE ... SET TAGS ("
+    let entries_raw = &caps[2]; // "'key1' = 'val1' , 'key2' = 'val2' , ..."
+    let suffix = &caps[3]; // ")"
+
+    // Extract 'key' = 'value' pairs via regex to avoid breaking on commas inside quoted values.
+    static ENTRY_RE: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"'(?:[^'\\]|\\.)*'\s*=\s*'(?:[^'\\]|\\.)*'").unwrap());
+
+    let mut entries: Vec<&str> = ENTRY_RE
+        .find_iter(entries_raw)
+        .map(|m| m.as_str())
+        .collect();
+    if entries.is_empty() {
+        return sql.to_string();
+    }
+    entries.sort();
+
+    format!("{}{}{}", prefix, entries.join(" , "), suffix)
+}
+
 /// NUMERIC and DECIMAL are SQL-standard synonyms. Fusion may emit one while the
 /// recording uses the other. Normalize `numeric(` → `decimal(` so comparisons succeed.
 fn canonicalize_numeric_to_decimal(sql: &str) -> String {
@@ -1337,15 +1404,36 @@ fn compare_sql_structurally(actual: &str, expected: &str, adapter_type: AdapterT
     }
 
     // 3) CREATE [OR REPLACE] <stuff> AS (<subquery>)
-    if let (Some((a_stuff, a_sub)), Some((b_stuff, b_sub))) =
+    if let (Some((a_stuff, a_sub, a_keywords)), Some((b_stuff, b_sub, b_keywords))) =
         (parse_create_as_subquery(&a), parse_create_as_subquery(&b))
     {
+        if a_keywords != b_keywords {
+            return false;
+        }
         return a_stuff == b_stuff && compare_sql(a_sub, b_sub, adapter_type).is_ok();
     }
 
     // 4) <sub1> union all <sub2> ... union all <sub_q>
     if let (Some(mut a_parts), Some(mut b_parts)) =
         (split_union_all_top_level(&a), split_union_all_top_level(&b))
+    {
+        if a_parts.len() > 1 && b_parts.len() > 1 && a_parts.len() == b_parts.len() {
+            // Key-less lexicographic sort for deterministic pairing
+            a_parts.sort();
+            b_parts.sort();
+
+            for (ax, bx) in a_parts.iter().zip(b_parts.iter()) {
+                if compare_sql(ax, bx, adapter_type).is_err() {
+                    return false;
+                }
+            }
+            return true;
+        }
+    }
+
+    // 4) <sub1> union <sub2> ... union <sub_q>
+    if let (Some(mut a_parts), Some(mut b_parts)) =
+        (split_union_top_level(&a), split_union_top_level(&b))
     {
         if a_parts.len() > 1 && b_parts.len() > 1 && a_parts.len() == b_parts.len() {
             // Key-less lexicographic sort for deterministic pairing
@@ -1741,9 +1829,60 @@ fn parse_with_clause(s: &str) -> Option<(Vec<(String, String)>, &str)> {
     }
 }
 
-fn split_union_all_top_level(s: &str) -> Option<Vec<&str>> {
+/// Removes comments and trims start and end.
+fn normalize_part(part: &str) -> String {
+    strip_sql_comments(part).trim_start().trim().to_string()
+}
+
+fn split_union_top_level(s: &str) -> Option<Vec<String>> {
     // Split on top-level "union all" (case-insensitive)
-    let mut parts: Vec<&str> = Vec::new();
+    let mut parts: Vec<String> = Vec::new();
+    let mut depth = 0usize;
+    let mut start = 0usize;
+    let lower = s.to_ascii_lowercase();
+    let mut iter = lower.char_indices().peekable();
+    while let Some((i, ch)) = iter.next() {
+        if ch == '(' {
+            depth += 1;
+            continue;
+        } else if ch == ')' {
+            depth = depth.saturating_sub(1);
+            continue;
+        }
+        if depth == 0 && lower[i..].starts_with("union") {
+            // ensure it is "union"
+            let k = i + "union".len();
+            // require at least one whitespace
+            let k_after_ws = skip_ws(&lower, k);
+            if k_after_ws > k {
+                // boundary found
+                let left = &s[start..i];
+                parts.push(normalize_part(left));
+                let next_i = k_after_ws;
+                start = next_i;
+                while let Some(&(peek_i, _)) = iter.peek() {
+                    if peek_i < next_i {
+                        iter.next();
+                    } else {
+                        break;
+                    }
+                }
+                continue;
+            }
+        }
+    }
+    // push final segment
+    let last = &s[start..];
+    if !parts.is_empty() {
+        parts.push(normalize_part(last));
+        return Some(parts);
+    }
+    None
+}
+
+fn split_union_all_top_level(s: &str) -> Option<Vec<String>> {
+    // Split on top-level "union all" (case-insensitive)
+    let mut parts: Vec<String> = Vec::new();
     let mut depth = 0usize;
     let mut start = 0usize;
     let lower = s.to_ascii_lowercase();
@@ -1763,8 +1902,8 @@ fn split_union_all_top_level(s: &str) -> Option<Vec<&str>> {
             let k_after_ws = skip_ws(&lower, k);
             if k_after_ws > k && lower[k_after_ws..].starts_with("all") {
                 // boundary found
-                let left = s[start..i].trim();
-                parts.push(left);
+                let left = &s[start..i];
+                parts.push(normalize_part(left));
                 // advance past "union all"
                 let next_i = k_after_ws + "all".len();
                 start = next_i;
@@ -1780,17 +1919,25 @@ fn split_union_all_top_level(s: &str) -> Option<Vec<&str>> {
         }
     }
     // push final segment
-    let last = s[start..].trim();
+    let last = &s[start..];
     if !parts.is_empty() {
-        parts.push(last);
+        parts.push(normalize_part(last));
         return Some(parts);
     }
     None
 }
 
-fn parse_create_as_subquery(s: &str) -> Option<(&str, &str)> {
-    // Recognize: CREATE [OR REPLACE] <stuff> AS (<subquery>)
-    // Case-insensitive for keywords; preserve exact <stuff> for equality check
+fn parse_create_as_subquery(s: &str) -> Option<(&str, &str, Vec<&str>)> {
+    // Recognize: CREATE [OR REPLACE] <stuff> AS (<subquery>)  or  CREATE [OR REPLACE] <stuff> AS <subquery>
+    // Case-insensitive for keywords; preserve exact <stuff> for equality check.
+    //
+    // The bare (unparenthesized) form matters because `AS (<subquery>)` and `AS <subquery>` are
+    // always semantically identical SQL, and not every code path that emits a `CREATE ... AS`
+    // statement wraps the body in parens -- e.g. dbt-core's hand-rolled `latest_version`
+    // pointer-view SQL is a bare `create or replace view X as select ...`, while a parametrized
+    // materialization macro might always wrap the body as `as (\n ... \n)`. This scan still
+    // prefers a parenthesized match when one exists (identical to the original behavior), and
+    // only falls back to the bare form when no `AS (` is found anywhere in the statement.
     let mut i = skip_ws(s, 0);
     i = eat_keyword_ci(s, i, "create")?;
     i = skip_ws(s, i);
@@ -1801,13 +1948,27 @@ fn parse_create_as_subquery(s: &str) -> Option<(&str, &str)> {
             i = k;
         } // if "or" not followed by "replace", keep original i (treat as not present)
     }
+
+    let mut keywords = Vec::new();
+
+    i = skip_ws(s, i);
+    if let Some(j) = eat_keyword_ci(s, i, "transient") {
+        keywords.push("transient");
+        i = skip_ws(s, j);
+    } else if let Some(j) = eat_keyword_ci(s, i, "temporary") {
+        keywords.push("temporary");
+        i = skip_ws(s, j);
+    }
+
     let stuff_start = i;
-    // Find 'as' followed by '(' (case-insensitive), not inside parentheses
+    // Find the wrapped form's 'as' followed by '(' (case-insensitive), not inside parentheses,
+    // while also tracking the last bare, whole-word top-level 'as' as a fallback.
     let lower = s.to_ascii_lowercase();
+    let is_word_char = |c: char| c.is_alphanumeric() || c == '_';
     let mut depth = 0usize;
-    let mut as_pos: Option<usize> = None;
-    let iter = lower.char_indices().peekable();
-    for (j, ch) in iter {
+    let mut wrapped_as_pos: Option<usize> = None;
+    let mut bare_as_pos: Option<usize> = None;
+    for (j, ch) in lower.char_indices() {
         if j < i {
             continue;
         }
@@ -1819,26 +1980,47 @@ fn parse_create_as_subquery(s: &str) -> Option<(&str, &str)> {
             continue;
         }
         if depth == 0 && lower[j..].starts_with("as") {
+            let prev_is_word = lower[..j].chars().next_back().is_some_and(is_word_char);
+            let next_is_word = lower[j + 2..].chars().next().is_some_and(is_word_char);
+            if prev_is_word || next_is_word {
+                continue; // part of a longer identifier (e.g. "alias"), not the keyword
+            }
             let mut k = j + 2;
             k = skip_ws(&lower, k);
             if k < lower.len() && (lower.as_bytes()[k] as char) == '(' {
-                as_pos = Some(j);
+                wrapped_as_pos = Some(j);
                 break;
             }
+            bare_as_pos = Some(j);
         }
     }
-    let as_pos = as_pos?;
+
+    if let Some(as_pos) = wrapped_as_pos {
+        let stuff = s[stuff_start..as_pos].trim();
+        let mut k = as_pos + 2;
+        k = skip_ws(s, k);
+        if k >= s.len() || s.as_bytes()[k] as char != '(' {
+            return None;
+        }
+        let open = k;
+        let close = find_matching_paren(s, open)?;
+        let sub = s[open + 1..close].trim();
+        return Some((stuff, sub, keywords));
+    }
+
+    let as_pos = bare_as_pos?;
     let stuff = s[stuff_start..as_pos].trim();
-    // Move to '('
     let mut k = as_pos + 2;
     k = skip_ws(s, k);
-    if k >= s.len() || s.as_bytes()[k] as char != '(' {
+    if k >= s.len() {
         return None;
     }
-    let open = k;
-    let close = find_matching_paren(s, open)?;
-    let sub = s[open + 1..close].trim();
-    Some((stuff, sub))
+    let sub = s[k..].trim();
+    let sub = sub.strip_suffix(';').unwrap_or(sub).trim();
+    if sub.is_empty() {
+        return None;
+    }
+    Some((stuff, sub, keywords))
 }
 
 /// Replace the payload of `ALTER SESSION SET QUERY_TAG = '...';` with a fixed placeholder,
@@ -1860,9 +2042,12 @@ fn canonicalize_query_tag(sql: &str) -> String {
 /// A lot of these are from {{ invocation_id }}. The value of the original invocation_id
 /// is available in manifest.json. We should consider using it in replay. TODO: Do this!
 fn canonicalize_uuid_literals(sql: &str) -> String {
-    // Case-insensitive UUID regex inside single quotes
+    // Case-insensitive UUID regex inside single quotes. Tolerates whitespace between the quote
+    // and the UUID (e.g. `' <uuid> '`), which some customer macros add around an
+    // `invocation_id`-derived audit-column literal. Regression: fs#14150.
     static UUID_RE: LazyLock<Regex> = LazyLock::new(|| {
-        Regex::new(r"(?i)'[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}'").unwrap()
+        Regex::new(r"(?i)'\s*[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\s*'")
+            .unwrap()
     });
     UUID_RE.replace_all(sql, "'UUID'").to_string()
 }
@@ -1900,6 +2085,227 @@ fn canonicalize_elementary_metadata_pkg_version(sql: &str) -> String {
     });
     RE.replace_all(sql, "'DBT_PKG_VERSION' as dbt_pkg_version")
         .to_string()
+}
+
+/// Case-insensitive substring check that avoids allocating a lowercased copy of `sql`.
+/// `needle` must be lowercase ASCII and non-empty.
+fn contains_ignore_ascii_case(haystack: &str, needle: &str) -> bool {
+    let needle = needle.as_bytes();
+    haystack
+        .as_bytes()
+        .windows(needle.len())
+        .any(|window| window.eq_ignore_ascii_case(needle))
+}
+
+// Replay-drift literal patterns: each matches a literal whose value is decided by the engine
+// build or the run's wall clock, never by the user's source, plus the SQL context that identifies
+// it. An alias or exact expression shape keeps these from rewriting unrelated literals.
+
+/// Matches a digit-leading quoted semver-ish literal, an optional `::type` cast, and the
+/// `as dbt_version` alias. The leading-digit requirement keeps it off unrelated string literals.
+static DBT_VERSION_LITERAL_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)'[0-9][0-9A-Za-z.+_-]*'(?P<cast>::[a-z_][a-z0-9_]*)?\s+as\s+dbt_version")
+        .unwrap()
+});
+
+/// Matches a quoted ISO-8601 timestamp (either `T` or space separator, optional `Z`/offset), an
+/// optional `::type` cast, and the `as [dbt_]run_started_at` alias.
+static RUN_STARTED_AT_LITERAL_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"(?i)'[0-9]{4}-[0-9]{2}-[0-9]{2}[T ][0-9:.]+(?:Z|[+-][0-9]{2}:?[0-9]{2})?'(?P<cast>::[a-z_][a-z0-9_]*)?\s+as\s+(?P<alias>dbt_run_started_at|run_started_at)",
+    )
+    .unwrap()
+});
+
+/// Replace a `dbt_version` literal with a fixed placeholder — the replay engine's version and
+/// the recorded engine's version differ by construction.
+/// Example: '2026.8.4+2f16d1c' as dbt_version -> 'DBT_VERSION' as dbt_version
+fn canonicalize_dbt_version_literal(sql: &str) -> String {
+    if !contains_ignore_ascii_case(sql, "dbt_version") {
+        return sql.to_string();
+    }
+    DBT_VERSION_LITERAL_RE
+        .replace_all(sql, "'DBT_VERSION'$cast as dbt_version")
+        .to_string()
+}
+
+/// Replace a `run_started_at`/`dbt_run_started_at` literal with a fixed placeholder — it's
+/// derived from the run's wall-clock time, so it only matches a recording under exact clock
+/// pinning.
+/// Example: '2026-08-09T16:01:19' as dbt_run_started_at -> 'RUN_STARTED_AT' as dbt_run_started_at
+fn canonicalize_run_started_at_literal(sql: &str) -> String {
+    if !contains_ignore_ascii_case(sql, "run_started_at") {
+        return sql.to_string();
+    }
+    RUN_STARTED_AT_LITERAL_RE
+        .replace_all(sql, "'RUN_STARTED_AT'$cast as $alias")
+        .to_string()
+}
+
+/// Replace the upper bound of the reported Snowflake temporary-view timestamp predicate when it
+/// equals the compact form of the statement's aliased `dbt_run_started_at` value.
+fn canonicalize_compact_timestamp_predicate(sql: &str, adapter_type: AdapterType) -> String {
+    match adapter_type {
+        AdapterType::Snowflake => {}
+        _ => return sql.to_string(),
+    }
+    if !contains_ignore_ascii_case(sql, "to_timestamp") {
+        return sql.to_string();
+    }
+
+    let Some(tokens) = sql_lex_tokens(sql, Dialect::Snowflake) else {
+        return sql.to_string();
+    };
+    let Some(view_body) = temporary_view_body_tokens(&tokens) else {
+        return sql.to_string();
+    };
+    let Some(compact_run_started_at) = compact_dbt_run_started_at(view_body) else {
+        return sql.to_string();
+    };
+
+    let mut rhs_spans = view_body
+        .windows(14)
+        .filter_map(|tokens| compact_timestamp_predicate_rhs(tokens, &compact_run_started_at))
+        .collect::<Vec<_>>();
+    if rhs_spans.is_empty() {
+        return sql.to_string();
+    }
+
+    let mut canonical = sql.to_string();
+    rhs_spans.sort_unstable();
+    for (start, end) in rhs_spans.into_iter().rev() {
+        canonical.replace_range(start..end, "'00000000000000'");
+    }
+    canonical
+}
+
+fn temporary_view_body_tokens(tokens: &[DialectToken]) -> Option<&[DialectToken]> {
+    const PREFIX: [&str; 5] = ["create", "or", "replace", "temporary", "view"];
+    if tokens.len() < PREFIX.len()
+        || !tokens
+            .iter()
+            .zip(PREFIX)
+            .all(|(token, expected)| token.text.eq_ignore_ascii_case(expected))
+    {
+        return None;
+    }
+
+    let as_index = tokens
+        .iter()
+        .enumerate()
+        .skip(PREFIX.len())
+        .find_map(|(index, token)| token.text.eq_ignore_ascii_case("as").then_some(index))?;
+    let open_index = as_index + 1;
+    if tokens.get(open_index)?.text != "(" {
+        return None;
+    }
+
+    let mut depth = 0usize;
+    for (index, token) in tokens.iter().enumerate().skip(open_index) {
+        match token.text.as_str() {
+            "(" => depth += 1,
+            ")" => {
+                depth = depth.checked_sub(1)?;
+                if depth == 0 {
+                    return Some(&tokens[open_index + 1..index]);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+fn compact_dbt_run_started_at(tokens: &[DialectToken]) -> Option<String> {
+    tokens.windows(3).find_map(|tokens| {
+        if !tokens[1].text.eq_ignore_ascii_case("as")
+            || !tokens[2].text.eq_ignore_ascii_case("dbt_run_started_at")
+        {
+            return None;
+        }
+        compact_iso_timestamp(single_quoted_literal(&tokens[0])?)
+    })
+}
+
+fn compact_iso_timestamp(value: &str) -> Option<String> {
+    let normalized = value.replacen(' ', "T", 1);
+    if let Ok(timestamp) = DateTime::parse_from_rfc3339(&normalized) {
+        return Some(timestamp.format("%Y%m%d%H%M%S").to_string());
+    }
+    NaiveDateTime::parse_from_str(&normalized, "%Y-%m-%dT%H:%M:%S%.f")
+        .ok()
+        .map(|timestamp| timestamp.format("%Y%m%d%H%M%S").to_string())
+}
+
+fn compact_timestamp_predicate_rhs(
+    tokens: &[DialectToken],
+    compact_run_started_at: &str,
+) -> Option<(usize, usize)> {
+    let punctuation = [
+        (2, "("),
+        (4, ","),
+        (6, ")"),
+        (7, "<"),
+        (9, "("),
+        (11, ","),
+        (13, ")"),
+    ];
+    if !tokens[0].text.eq_ignore_ascii_case("where")
+        || !tokens[1].text.eq_ignore_ascii_case("to_timestamp")
+        || !tokens[8].text.eq_ignore_ascii_case("to_timestamp")
+        || !punctuation
+            .iter()
+            .all(|(index, expected)| tokens[*index].text == *expected)
+    {
+        return None;
+    }
+
+    let lhs = single_quoted_literal(&tokens[3])?;
+    let lhs_format = single_quoted_literal(&tokens[5])?;
+    let rhs = single_quoted_literal(&tokens[10])?;
+    let rhs_format = single_quoted_literal(&tokens[12])?;
+    if lhs.len() != 14
+        || !lhs.bytes().all(|byte| byte.is_ascii_digit())
+        || rhs != compact_run_started_at
+        || !lhs_format.eq_ignore_ascii_case("YYYYMMDDHH24MISSFF3")
+        || !rhs_format.eq_ignore_ascii_case("YYYYMMDDHH24MISSFF3")
+    {
+        return None;
+    }
+    Some((tokens[10].start, tokens[10].end))
+}
+
+fn single_quoted_literal(token: &DialectToken) -> Option<&str> {
+    token.text.strip_prefix('\'')?.strip_suffix('\'')
+}
+
+/// Replace `YYYYMMDDHHMMSS`-derived batch id and archive path literals with fixed placeholders —
+/// like `run_started_at`, these are wall-clock derived and only match under exact clock pinning.
+/// Example: 20260808051943::number as etl_batch_id -> 00000000000000::number as etl_batch_id
+/// Example: archive/20260808_180232/ -> archive/00000000_000000/
+fn canonicalize_yyyymmdd_batch_literals(sql: &str) -> String {
+    let lower = sql.to_ascii_lowercase();
+    let mut out = sql.to_string();
+
+    if lower.contains("etl_batch_id") {
+        static BATCH_ID_RE: LazyLock<Regex> = LazyLock::new(|| {
+            Regex::new(r"(?i)\b[0-9]{14}\b(?P<cast>::[a-z_][a-z0-9_]*)?\s+as\s+etl_batch_id")
+                .unwrap()
+        });
+        out = BATCH_ID_RE
+            .replace_all(&out, "00000000000000$cast as etl_batch_id")
+            .to_string();
+    }
+
+    if lower.contains("archive/") {
+        static ARCHIVE_PATH_RE: LazyLock<Regex> =
+            LazyLock::new(|| Regex::new(r"(?i)(archive/)[0-9]{8}_[0-9]{6}(/)").unwrap());
+        out = ARCHIVE_PATH_RE
+            .replace_all(&out, "${1}00000000_000000${2}")
+            .to_string();
+    }
+
+    out
 }
 
 /// Public because `compare_sql` treats *any* two Elementary-originated statements as equal, so a
@@ -2194,6 +2600,29 @@ fn canonicalize_dbt_model_tmp_suffix(sql: &str) -> String {
     });
 
     RE.replace_all(sql, "${1}SUFFIX").to_string()
+}
+
+/// Canonicalize backup relation identifiers whose suffix is derived from the wall clock, such as
+/// the ones custom materializations build with `py_current_timestring()`:
+///   ANALYTICS.SCH.orders_DBT_BACKUP_20260824102757911107255
+///   ANALYTICS.SCH.orders__dbt_backup_20240101000000000000
+/// both become `..._DBT_BACKUP_TIMESTAMP`.
+///
+/// The recorded suffix is fixed at record time and replay regenerates it, so the identifiers can
+/// never match. This is intentionally narrow:
+/// - Only matches a `_dbt_backup_` marker (case-insensitive) immediately followed by digits.
+/// - Only matches a plausible `py_current_timestring()` value: a year in 2000-2100 followed by at
+///   least 8 more digits (the format is `%Y%m%d%H%M%S%f`, so the shortest real value is 14 digits).
+fn canonicalize_dbt_backup_timestamp_suffix(sql: &str) -> String {
+    // Fast-path: avoid regex work on the common case.
+    if !contains_ignore_ascii_case(sql, "_dbt_backup_") {
+        return sql.to_string();
+    }
+
+    static RE: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"(?i)(_dbt_backup_)(?:20[0-9]{2}|2100)[0-9]{8,}").unwrap());
+
+    RE.replace_all(sql, "${1}TIMESTAMP").to_string()
 }
 
 /// Check whether two SQL strings are identical modulo a top-level
@@ -3007,6 +3436,33 @@ mod tests {
     }
 
     #[test]
+    fn test_create_view_as_tolerates_asymmetric_wrapping_parens() {
+        // `AS (<subquery>)` and `AS <subquery>` are always semantically identical. Some code
+        // paths (e.g. dbt-core's hand-rolled `latest_version` pointer-view SQL) emit the bare
+        // form while others always wrap the body in parens -- see fs#13705.
+        let wrapped = "create or replace view db.sch.v as (\n    select * from db.sch.t\n  );";
+        let bare = "create or replace view db.sch.v as select * from db.sch.t";
+
+        compare_sql(wrapped, bare, AdapterType::Snowflake)
+            .expect("wrapped vs bare CREATE VIEW body should compare as equal");
+        compare_sql(bare, wrapped, AdapterType::Snowflake)
+            .expect("bare vs wrapped CREATE VIEW body should compare as equal (order-independent)");
+    }
+
+    #[test]
+    fn test_create_view_as_bare_form_still_detects_real_mismatches() {
+        // Guard against over-relaxing: two bare (unwrapped) bodies that are actually different
+        // must still be reported as a mismatch.
+        let actual = "create or replace view db.sch.v as select * from db.sch.t1";
+        let expected = "create or replace view db.sch.v as select * from db.sch.t2";
+
+        assert!(
+            compare_sql(actual, expected, AdapterType::Snowflake).is_err(),
+            "genuinely different bare CREATE VIEW bodies must not compare as equal"
+        );
+    }
+
+    #[test]
     fn test_bigquery_struct_field_order_drift_should_be_ignorable() {
         // Minimal repro for replay SQL mismatch when a query contains:
         //   to_json_string(struct(...))
@@ -3305,15 +3761,21 @@ qualify row_number() over (partition by billing_group_id, __as_of order by rn de
     }
 
     #[test]
+    fn test_split_union_top_level_splits_and_handles_unicode() {
+        // Regression test: previously this could panic if the scan index landed in the middle
+        // of a multi-byte UTF-8 char (e.g. “).
+        let sql = "select 1 as a /* “unicode” */ UNION      select 2 as b";
+        let parts = split_union_top_level(sql).expect("should split on top-level UNION");
+        assert_eq!(parts, vec!["select 1 as a", "select 2 as b"]);
+    }
+
+    #[test]
     fn test_split_union_all_top_level_splits_and_handles_unicode() {
         // Regression test: previously this could panic if the scan index landed in the middle
         // of a multi-byte UTF-8 char (e.g. “).
         let sql = "select 1 as a /* “unicode” */ UNION   ALL   select 2 as b";
         let parts = split_union_all_top_level(sql).expect("should split on top-level UNION ALL");
-        assert_eq!(
-            parts,
-            vec!["select 1 as a /* “unicode” */", "select 2 as b"]
-        );
+        assert_eq!(parts, vec!["select 1 as a", "select 2 as b"]);
     }
 
     #[test]
@@ -3613,9 +4075,9 @@ qualify row_number() over (partition by billing_group_id, __as_of order by rn de
 
     #[test]
     fn test_compare_sql_timestamp() {
-        let sql1 = r#"delete from ANALYTICS.intermediate.int_serp_trends 
+        let sql1 = r#"delete from ANALYTICS.intermediate.int_serp_trends
       where created_date >= '2025-09-10T18:07:45.449898-07:00'"#;
-        let sql2 = r#"delete from ANALYTICS.intermediate.int_serp_trends 
+        let sql2 = r#"delete from ANALYTICS.intermediate.int_serp_trends
       where created_date >= '2025-09-10T14:16:52.500487'"#;
         let result = compare_sql(sql1, sql2, AdapterType::Snowflake);
         assert!(
@@ -3722,9 +4184,9 @@ cast('test.dis_asko_servering.elementary_schema_changes_from_baseline_prs_dim_he
 
     #[test]
     fn test_compare_sql_timestamp_ignore_t() {
-        let sql1 = r#"delete from ANALYTICS.intermediate.int_serp_trends 
+        let sql1 = r#"delete from ANALYTICS.intermediate.int_serp_trends
       where created_date >= '2025-09-10T18:07:45.449898'"#;
-        let sql2 = r#"delete from ANALYTICS.intermediate.int_serp_trends 
+        let sql2 = r#"delete from ANALYTICS.intermediate.int_serp_trends
       where created_date >= '2025-09-1014:16:52.500487'"#;
         let result = compare_sql(sql1, sql2, AdapterType::Snowflake);
         assert!(
@@ -3735,9 +4197,9 @@ cast('test.dis_asko_servering.elementary_schema_changes_from_baseline_prs_dim_he
 
     #[test]
     fn test_compare_sql_timestamp_ignore_t2() {
-        let sql1 = r#"delete from ANALYTICS.intermediate.int_serp_trends 
+        let sql1 = r#"delete from ANALYTICS.intermediate.int_serp_trends
       where created_date >= '2025-09-10T18:07:45.449898'"#;
-        let sql2 = r#"delete from ANALYTICS.intermediate.int_serp_trends 
+        let sql2 = r#"delete from ANALYTICS.intermediate.int_serp_trends
       where created_date >= '2025-09-10 14:16:52.500487'"#;
         let result = compare_sql(sql1, sql2, AdapterType::Snowflake);
         assert!(
@@ -3828,7 +4290,7 @@ from aggregated
     fn test_comment_in_ephemeral_model() {
         let sql1 = r#"
 create or replace  temporary view DB.SCHEMA.model_name__dbt_tmp
-  
+
    as (
     with __dbt__cte__stg_source_a as (
 SELECT
@@ -3836,7 +4298,7 @@ SELECT
 FROM
   source_db.metadata.table_a
 ), __dbt__cte__stg_source_b as (
-SELECT 
+SELECT
   *
 FROM
   source_db.metadata.table_b
@@ -3847,17 +4309,17 @@ select * from (
 
 -- Do not allow a full refresh of this model
 
-  
+
 
 
 -- This model contains aggregated statistics
 -- Every day, the data is extracted and stored for analysis
 
 WITH aggregated_data AS (
-  SELECT 
+  SELECT
     entity_id
     , COUNT(DISTINCT field_name) as field_count
-  FROM 
+  FROM
     __dbt__cte__stg_source_a
   GROUP BY entity_id
 )
@@ -3871,7 +4333,7 @@ SELECT
   , CURRENT_DATE() AS snapshot_date
 FROM
   __dbt__cte__stg_source_b t
-LEFT OUTER JOIN 
+LEFT OUTER JOIN
   aggregated_data s ON t.entity_id = s.entity_id
 --EPHEMERAL-SELECT-WRAPPER-END
 )
@@ -3879,16 +4341,16 @@ LEFT OUTER JOIN
 "#;
         let sql2 = r#"
 create or replace  temporary view DB.SCHEMA.model_name__dbt_tmp
-  
-  
-  
-  
+
+
+
+
   as (
-    
+
 
 -- Do not allow a full refresh of this model
 
-  
+
 
 
 -- This model contains aggregated statistics
@@ -3900,15 +4362,15 @@ SELECT
 FROM
   source_db.metadata.table_a
 ),  __dbt__cte__stg_source_b as (
-SELECT 
+SELECT
   *
 FROM
   source_db.metadata.table_b
 ), aggregated_data AS (
-  SELECT 
+  SELECT
     entity_id
     , COUNT(DISTINCT field_name) as field_count
-  FROM 
+  FROM
     __dbt__cte__stg_source_a
   GROUP BY entity_id
 )
@@ -3922,7 +4384,7 @@ SELECT
   , CURRENT_DATE() AS snapshot_date
 FROM
   __dbt__cte__stg_source_b t
-LEFT OUTER JOIN 
+LEFT OUTER JOIN
   aggregated_data s ON t.entity_id = s.entity_id
   );
 "#;
@@ -4029,7 +4491,7 @@ where 1 = 0
 
 
 
-      
+
 
     merge
     into
@@ -4132,6 +4594,26 @@ WHERE
     }
 
     #[test]
+    fn test_compare_sql_whitespace_padded_uuid_literals_ignored() {
+        // Regression for fs#14150: some customer macros pad the UUID literal with spaces
+        // inside the quotes (e.g. an `invocation_id`-derived audit column), which the UUID
+        // regex previously required to hug the quotes with no interior whitespace.
+        let actual = r#"select * from (
+    select ' 01a050c0-a25d-75d1-bc8d-e46fde65bb69 '::varchar as idp_dbt_id
+) as __dbt_sbq where false limit 0"#;
+
+        let expected = r#"select * from (
+    select ' 66f899d8-7787-4998-8e66-ac219ca47493 '::varchar as idp_dbt_id
+) as __dbt_sbq where false limit 0"#;
+
+        let result = compare_sql(actual, expected, AdapterType::Snowflake);
+        assert!(
+            result.is_ok(),
+            "Whitespace-padded UUID literal differences should be ignored: {result:?}"
+        );
+    }
+
+    #[test]
     fn test_wrapper_diff_only_equivalence() {
         // Simple case: one side wraps the other in select * from ( ... )
         let with_cte = r#"
@@ -4190,16 +4672,972 @@ as (
 
     #[test]
     fn test_structural_union_ordering_equivalence() {
+        let actual = r#"create or replace   view EDP_SILVER_PROD.SHOPIFY.stg_order_line_refund
+
+
+
+
+  as (
+
+
+
+
+
+
+        select
+            olr.order_line_id,
+            ol.order_id,
+            ol.product_id,
+            ol.sku,
+            ol.variant_id,
+            'refund' as origin,
+            ol.price,
+            -1 * olr.quantity,
+            -1 * subtotal as line_total,
+            'FIBERON' as store,
+            olr._fivetran_synced as created_at
+        from "EDP_BRONZE_PROD"."SHOPIFY_FIBERON"."ORDER_LINE_REFUND" olr
+        left join "EDP_BRONZE_PROD"."SHOPIFY_FIBERON"."ORDER_LINE" ol on ol.id = olr.order_line_id
+
+            where
+                created_at > (
+                    select nvl(max(created_at), to_date('1900-01-01'))
+                    from "EDP_SILVER_PROD"."SHOPIFY"."ORDER_LINE"
+                    where store = 'FIBERON' and origin = 'refund'
+                )
+
+
+
+            union
+
+
+
+
+
+
+
+
+        select
+            olr.order_line_id,
+            ol.order_id,
+            ol.product_id,
+            ol.sku,
+            ol.variant_id,
+            'refund' as origin,
+            ol.price,
+            -1 * olr.quantity,
+            -1 * subtotal as line_total,
+            'FYPON' as store,
+            olr._fivetran_synced as created_at
+        from "EDP_BRONZE_PROD"."SHOPIFY_FYPON"."ORDER_LINE_REFUND" olr
+        left join "EDP_BRONZE_PROD"."SHOPIFY_FYPON"."ORDER_LINE" ol on ol.id = olr.order_line_id
+
+            where
+                created_at > (
+                    select nvl(max(created_at), to_date('1900-01-01'))
+                    from "EDP_SILVER_PROD"."SHOPIFY"."ORDER_LINE"
+                    where store = 'FYPON' and origin = 'refund'
+                )
+
+
+
+            union
+
+
+
+
+
+
+
+
+        select
+            olr.order_line_id,
+            ol.order_id,
+            ol.product_id,
+            ol.sku,
+            ol.variant_id,
+            'refund' as origin,
+            ol.price,
+            -1 * olr.quantity,
+            -1 * subtotal as line_total,
+            'LARSON' as store,
+            olr._fivetran_synced as created_at
+        from "EDP_BRONZE_PROD"."SHOPIFY_LARSON"."ORDER_LINE_REFUND" olr
+        left join "EDP_BRONZE_PROD"."SHOPIFY_LARSON"."ORDER_LINE" ol on ol.id = olr.order_line_id
+
+            where
+                created_at > (
+                    select nvl(max(created_at), to_date('1900-01-01'))
+                    from "EDP_SILVER_PROD"."SHOPIFY"."ORDER_LINE"
+                    where store = 'LARSON' and origin = 'refund'
+                )
+
+
+
+            union
+
+
+
+
+
+
+
+
+        select
+            olr.order_line_id,
+            ol.order_id,
+            ol.product_id,
+            ol.sku,
+            ol.variant_id,
+            'refund' as origin,
+            ol.price,
+            -1 * olr.quantity,
+            -1 * subtotal as line_total,
+            'MASTERLOCK' as store,
+            olr._fivetran_synced as created_at
+        from "EDP_BRONZE_PROD"."SHOPIFY_MASTERLOCK_STORE"."ORDER_LINE_REFUND" olr
+        left join "EDP_BRONZE_PROD"."SHOPIFY_MASTERLOCK_STORE"."ORDER_LINE" ol on ol.id = olr.order_line_id
+
+            where
+                created_at > (
+                    select nvl(max(created_at), to_date('1900-01-01'))
+                    from "EDP_SILVER_PROD"."SHOPIFY"."ORDER_LINE"
+                    where store = 'MASTERLOCK' and origin = 'refund'
+                )
+
+
+
+            union
+
+
+
+
+
+
+
+
+        select
+            olr.order_line_id,
+            ol.order_id,
+            ol.product_id,
+            ol.sku,
+            ol.variant_id,
+            'refund' as origin,
+            ol.price,
+            -1 * olr.quantity,
+            -1 * subtotal as line_total,
+            'MASTERLOCK_REPLACEMENTS_EU' as store,
+            olr._fivetran_synced as created_at
+        from "EDP_BRONZE_PROD"."SHOPIFY_MASTERLOCK_REPLACEMENTS"."ORDER_LINE_REFUND" olr
+        left join "EDP_BRONZE_PROD"."SHOPIFY_MASTERLOCK_REPLACEMENTS"."ORDER_LINE" ol on ol.id = olr.order_line_id
+
+            where
+                created_at > (
+                    select nvl(max(created_at), to_date('1900-01-01'))
+                    from "EDP_SILVER_PROD"."SHOPIFY"."ORDER_LINE"
+                    where store = 'MASTERLOCK_REPLACEMENTS_EU' and origin = 'refund'
+                )
+
+
+
+            union
+
+
+
+
+
+
+
+
+        select
+            olr.order_line_id,
+            ol.order_id,
+            ol.product_id,
+            ol.sku,
+            ol.variant_id,
+            'refund' as origin,
+            ol.price,
+            -1 * olr.quantity,
+            -1 * subtotal as line_total,
+            'MASTERLOCK_REPLACEMENTS_UK' as store,
+            olr._fivetran_synced as created_at
+        from "EDP_BRONZE_PROD"."SHOPIFY_MASTERLOCK_REPLACEMENTS_UK"."ORDER_LINE_REFUND" olr
+        left join "EDP_BRONZE_PROD"."SHOPIFY_MASTERLOCK_REPLACEMENTS_UK"."ORDER_LINE" ol on ol.id = olr.order_line_id
+
+            where
+                created_at > (
+                    select nvl(max(created_at), to_date('1900-01-01'))
+                    from "EDP_SILVER_PROD"."SHOPIFY"."ORDER_LINE"
+                    where store = 'MASTERLOCK_REPLACEMENTS_UK' and origin = 'refund'
+                )
+
+
+
+            union
+
+
+
+
+
+
+
+
+        select
+            olr.order_line_id,
+            ol.order_id,
+            ol.product_id,
+            ol.sku,
+            ol.variant_id,
+            'refund' as origin,
+            ol.price,
+            -1 * olr.quantity,
+            -1 * subtotal as line_total,
+            'MOEN' as store,
+            olr._fivetran_synced as created_at
+        from "EDP_BRONZE_PROD"."SHOPIFY_MOEN"."ORDER_LINE_REFUND" olr
+        left join "EDP_BRONZE_PROD"."SHOPIFY_MOEN"."ORDER_LINE" ol on ol.id = olr.order_line_id
+
+            where
+                created_at > (
+                    select nvl(max(created_at), to_date('1900-01-01'))
+                    from "EDP_SILVER_PROD"."SHOPIFY"."ORDER_LINE"
+                    where store = 'MOEN' and origin = 'refund'
+                )
+
+
+
+            union
+
+
+
+
+
+
+
+
+        select
+            olr.order_line_id,
+            ol.order_id,
+            ol.product_id,
+            ol.sku,
+            ol.variant_id,
+            'refund' as origin,
+            ol.price,
+            -1 * olr.quantity,
+            -1 * subtotal as line_total,
+            'SENTRYSAFE' as store,
+            olr._fivetran_synced as created_at
+        from "EDP_BRONZE_PROD"."SHOPIFY_SENTRYSAFE_STORE"."ORDER_LINE_REFUND" olr
+        left join "EDP_BRONZE_PROD"."SHOPIFY_SENTRYSAFE_STORE"."ORDER_LINE" ol on ol.id = olr.order_line_id
+
+            where
+                created_at > (
+                    select nvl(max(created_at), to_date('1900-01-01'))
+                    from "EDP_SILVER_PROD"."SHOPIFY"."ORDER_LINE"
+                    where store = 'SENTRYSAFE' and origin = 'refund'
+                )
+
+
+
+            union
+
+
+
+
+
+
+
+
+        select
+            olr.order_line_id,
+            ol.order_id,
+            ol.product_id,
+            ol.sku,
+            ol.variant_id,
+            'refund' as origin,
+            ol.price,
+            -1 * olr.quantity,
+            -1 * subtotal as line_total,
+            'SENTRYSAFE_OWNERSCLUB' as store,
+            olr._fivetran_synced as created_at
+        from "EDP_BRONZE_PROD"."SHOPIFY_SENTRYSAFE_OWNERS_CLUB"."ORDER_LINE_REFUND" olr
+        left join "EDP_BRONZE_PROD"."SHOPIFY_SENTRYSAFE_OWNERS_CLUB"."ORDER_LINE" ol on ol.id = olr.order_line_id
+
+            where
+                created_at > (
+                    select nvl(max(created_at), to_date('1900-01-01'))
+                    from "EDP_SILVER_PROD"."SHOPIFY"."ORDER_LINE"
+                    where store = 'SENTRYSAFE_OWNERSCLUB' and origin = 'refund'
+                )
+
+
+
+            union
+
+
+
+
+
+
+
+
+        select
+            olr.order_line_id,
+            ol.order_id,
+            ol.product_id,
+            ol.sku,
+            ol.variant_id,
+            'refund' as origin,
+            ol.price,
+            -1 * olr.quantity,
+            -1 * subtotal as line_total,
+            'SENTRYSAFE_REPLACEMENTS_CA' as store,
+            olr._fivetran_synced as created_at
+        from "EDP_BRONZE_PROD"."SHOPIFY_SENTRYSAFE_REPLACEMENTS_CA"."ORDER_LINE_REFUND" olr
+        left join "EDP_BRONZE_PROD"."SHOPIFY_SENTRYSAFE_REPLACEMENTS_CA"."ORDER_LINE" ol on ol.id = olr.order_line_id
+
+            where
+                created_at > (
+                    select nvl(max(created_at), to_date('1900-01-01'))
+                    from "EDP_SILVER_PROD"."SHOPIFY"."ORDER_LINE"
+                    where store = 'SENTRYSAFE_REPLACEMENTS_CA' and origin = 'refund'
+                )
+
+
+
+            union
+
+
+
+
+
+
+
+
+        select
+            olr.order_line_id,
+            ol.order_id,
+            ol.product_id,
+            ol.sku,
+            ol.variant_id,
+            'refund' as origin,
+            ol.price,
+            -1 * olr.quantity,
+            -1 * subtotal as line_total,
+            'SENTRYSAFE_REPLACEMENTS_US' as store,
+            olr._fivetran_synced as created_at
+        from "EDP_BRONZE_PROD"."SHOPIFY_SENTRYSAFE_REPLACEMENTS_US"."ORDER_LINE_REFUND" olr
+        left join "EDP_BRONZE_PROD"."SHOPIFY_SENTRYSAFE_REPLACEMENTS_US"."ORDER_LINE" ol on ol.id = olr.order_line_id
+
+            where
+                created_at > (
+                    select nvl(max(created_at), to_date('1900-01-01'))
+                    from "EDP_SILVER_PROD"."SHOPIFY"."ORDER_LINE"
+                    where store = 'SENTRYSAFE_REPLACEMENTS_US' and origin = 'refund'
+                )
+
+
+
+            union
+
+
+
+
+
+
+
+
+        select
+            olr.order_line_id,
+            ol.order_id,
+            ol.product_id,
+            ol.sku,
+            ol.variant_id,
+            'refund' as origin,
+            ol.price,
+            -1 * olr.quantity,
+            -1 * subtotal as line_total,
+            'THERMATRU' as store,
+            olr._fivetran_synced as created_at
+        from "EDP_BRONZE_PROD"."SHOPIFY_THERMATRU"."ORDER_LINE_REFUND" olr
+        left join "EDP_BRONZE_PROD"."SHOPIFY_THERMATRU"."ORDER_LINE" ol on ol.id = olr.order_line_id
+
+            where
+                created_at > (
+                    select nvl(max(created_at), to_date('1900-01-01'))
+                    from "EDP_SILVER_PROD"."SHOPIFY"."ORDER_LINE"
+                    where store = 'THERMATRU' and origin = 'refund'
+                )
+
+
+
+
+
+
+
+  );
+        "#;
+
+        let expected = r#"create or replace   view EDP_SILVER_PROD.SHOPIFY.stg_order_line_refund
+
+
+
+
+  as (
+
+
+
+
+
+
+        select
+            olr.order_line_id,
+            ol.order_id,
+            ol.product_id,
+            ol.sku,
+            ol.variant_id,
+            'refund' as origin,
+            ol.price,
+            -1 * olr.quantity,
+            -1 * subtotal as line_total,
+            'MASTERLOCK_REPLACEMENTS_EU' as store,
+            olr._fivetran_synced as created_at
+        from "EDP_BRONZE_PROD"."SHOPIFY_MASTERLOCK_REPLACEMENTS"."ORDER_LINE_REFUND" olr
+        left join "EDP_BRONZE_PROD"."SHOPIFY_MASTERLOCK_REPLACEMENTS"."ORDER_LINE" ol on ol.id = olr.order_line_id
+
+            where
+                created_at > (
+                    select nvl(max(created_at), to_date('1900-01-01'))
+                    from "EDP_SILVER_PROD"."SHOPIFY"."ORDER_LINE"
+                    where store = 'MASTERLOCK_REPLACEMENTS_EU' and origin = 'refund'
+                )
+
+
+
+            union
+
+
+
+
+
+
+
+
+        select
+            olr.order_line_id,
+            ol.order_id,
+            ol.product_id,
+            ol.sku,
+            ol.variant_id,
+            'refund' as origin,
+            ol.price,
+            -1 * olr.quantity,
+            -1 * subtotal as line_total,
+            'MASTERLOCK_REPLACEMENTS_UK' as store,
+            olr._fivetran_synced as created_at
+        from "EDP_BRONZE_PROD"."SHOPIFY_MASTERLOCK_REPLACEMENTS_UK"."ORDER_LINE_REFUND" olr
+        left join "EDP_BRONZE_PROD"."SHOPIFY_MASTERLOCK_REPLACEMENTS_UK"."ORDER_LINE" ol on ol.id = olr.order_line_id
+
+            where
+                created_at > (
+                    select nvl(max(created_at), to_date('1900-01-01'))
+                    from "EDP_SILVER_PROD"."SHOPIFY"."ORDER_LINE"
+                    where store = 'MASTERLOCK_REPLACEMENTS_UK' and origin = 'refund'
+                )
+
+
+
+            union
+
+
+
+
+
+
+
+
+        select
+            olr.order_line_id,
+            ol.order_id,
+            ol.product_id,
+            ol.sku,
+            ol.variant_id,
+            'refund' as origin,
+            ol.price,
+            -1 * olr.quantity,
+            -1 * subtotal as line_total,
+            'SENTRYSAFE' as store,
+            olr._fivetran_synced as created_at
+        from "EDP_BRONZE_PROD"."SHOPIFY_SENTRYSAFE_STORE"."ORDER_LINE_REFUND" olr
+        left join "EDP_BRONZE_PROD"."SHOPIFY_SENTRYSAFE_STORE"."ORDER_LINE" ol on ol.id = olr.order_line_id
+
+            where
+                created_at > (
+                    select nvl(max(created_at), to_date('1900-01-01'))
+                    from "EDP_SILVER_PROD"."SHOPIFY"."ORDER_LINE"
+                    where store = 'SENTRYSAFE' and origin = 'refund'
+                )
+
+
+
+            union
+
+
+
+
+
+
+
+
+        select
+            olr.order_line_id,
+            ol.order_id,
+            ol.product_id,
+            ol.sku,
+            ol.variant_id,
+            'refund' as origin,
+            ol.price,
+            -1 * olr.quantity,
+            -1 * subtotal as line_total,
+            'SENTRYSAFE_OWNERSCLUB' as store,
+            olr._fivetran_synced as created_at
+        from "EDP_BRONZE_PROD"."SHOPIFY_SENTRYSAFE_OWNERS_CLUB"."ORDER_LINE_REFUND" olr
+        left join "EDP_BRONZE_PROD"."SHOPIFY_SENTRYSAFE_OWNERS_CLUB"."ORDER_LINE" ol on ol.id = olr.order_line_id
+
+            where
+                created_at > (
+                    select nvl(max(created_at), to_date('1900-01-01'))
+                    from "EDP_SILVER_PROD"."SHOPIFY"."ORDER_LINE"
+                    where store = 'SENTRYSAFE_OWNERSCLUB' and origin = 'refund'
+                )
+
+
+
+            union
+
+
+
+
+
+
+
+
+        select
+            olr.order_line_id,
+            ol.order_id,
+            ol.product_id,
+            ol.sku,
+            ol.variant_id,
+            'refund' as origin,
+            ol.price,
+            -1 * olr.quantity,
+            -1 * subtotal as line_total,
+            'SENTRYSAFE_REPLACEMENTS_CA' as store,
+            olr._fivetran_synced as created_at
+        from "EDP_BRONZE_PROD"."SHOPIFY_SENTRYSAFE_REPLACEMENTS_CA"."ORDER_LINE_REFUND" olr
+        left join "EDP_BRONZE_PROD"."SHOPIFY_SENTRYSAFE_REPLACEMENTS_CA"."ORDER_LINE" ol on ol.id = olr.order_line_id
+
+            where
+                created_at > (
+                    select nvl(max(created_at), to_date('1900-01-01'))
+                    from "EDP_SILVER_PROD"."SHOPIFY"."ORDER_LINE"
+                    where store = 'SENTRYSAFE_REPLACEMENTS_CA' and origin = 'refund'
+                )
+
+
+
+            union
+
+
+
+
+
+
+
+
+        select
+            olr.order_line_id,
+            ol.order_id,
+            ol.product_id,
+            ol.sku,
+            ol.variant_id,
+            'refund' as origin,
+            ol.price,
+            -1 * olr.quantity,
+            -1 * subtotal as line_total,
+            'SENTRYSAFE_REPLACEMENTS_US' as store,
+            olr._fivetran_synced as created_at
+        from "EDP_BRONZE_PROD"."SHOPIFY_SENTRYSAFE_REPLACEMENTS_US"."ORDER_LINE_REFUND" olr
+        left join "EDP_BRONZE_PROD"."SHOPIFY_SENTRYSAFE_REPLACEMENTS_US"."ORDER_LINE" ol on ol.id = olr.order_line_id
+
+            where
+                created_at > (
+                    select nvl(max(created_at), to_date('1900-01-01'))
+                    from "EDP_SILVER_PROD"."SHOPIFY"."ORDER_LINE"
+                    where store = 'SENTRYSAFE_REPLACEMENTS_US' and origin = 'refund'
+                )
+
+
+
+            union
+
+
+
+
+
+
+
+
+        select
+            olr.order_line_id,
+            ol.order_id,
+            ol.product_id,
+            ol.sku,
+            ol.variant_id,
+            'refund' as origin,
+            ol.price,
+            -1 * olr.quantity,
+            -1 * subtotal as line_total,
+            'MASTERLOCK' as store,
+            olr._fivetran_synced as created_at
+        from "EDP_BRONZE_PROD"."SHOPIFY_MASTERLOCK_STORE"."ORDER_LINE_REFUND" olr
+        left join "EDP_BRONZE_PROD"."SHOPIFY_MASTERLOCK_STORE"."ORDER_LINE" ol on ol.id = olr.order_line_id
+
+            where
+                created_at > (
+                    select nvl(max(created_at), to_date('1900-01-01'))
+                    from "EDP_SILVER_PROD"."SHOPIFY"."ORDER_LINE"
+                    where store = 'MASTERLOCK' and origin = 'refund'
+                )
+
+
+
+            union
+
+
+
+
+
+
+
+
+        select
+            olr.order_line_id,
+            ol.order_id,
+            ol.product_id,
+            ol.sku,
+            ol.variant_id,
+            'refund' as origin,
+            ol.price,
+            -1 * olr.quantity,
+            -1 * subtotal as line_total,
+            'FIBERON' as store,
+            olr._fivetran_synced as created_at
+        from "EDP_BRONZE_PROD"."SHOPIFY_FIBERON"."ORDER_LINE_REFUND" olr
+        left join "EDP_BRONZE_PROD"."SHOPIFY_FIBERON"."ORDER_LINE" ol on ol.id = olr.order_line_id
+
+            where
+                created_at > (
+                    select nvl(max(created_at), to_date('1900-01-01'))
+                    from "EDP_SILVER_PROD"."SHOPIFY"."ORDER_LINE"
+                    where store = 'FIBERON' and origin = 'refund'
+                )
+
+
+
+            union
+
+
+
+
+
+
+
+
+        select
+            olr.order_line_id,
+            ol.order_id,
+            ol.product_id,
+            ol.sku,
+            ol.variant_id,
+            'refund' as origin,
+            ol.price,
+            -1 * olr.quantity,
+            -1 * subtotal as line_total,
+            'FYPON' as store,
+            olr._fivetran_synced as created_at
+        from "EDP_BRONZE_PROD"."SHOPIFY_FYPON"."ORDER_LINE_REFUND" olr
+        left join "EDP_BRONZE_PROD"."SHOPIFY_FYPON"."ORDER_LINE" ol on ol.id = olr.order_line_id
+
+            where
+                created_at > (
+                    select nvl(max(created_at), to_date('1900-01-01'))
+                    from "EDP_SILVER_PROD"."SHOPIFY"."ORDER_LINE"
+                    where store = 'FYPON' and origin = 'refund'
+                )
+
+
+
+            union
+
+
+
+
+
+
+
+
+        select
+            olr.order_line_id,
+            ol.order_id,
+            ol.product_id,
+            ol.sku,
+            ol.variant_id,
+            'refund' as origin,
+            ol.price,
+            -1 * olr.quantity,
+            -1 * subtotal as line_total,
+            'THERMATRU' as store,
+            olr._fivetran_synced as created_at
+        from "EDP_BRONZE_PROD"."SHOPIFY_THERMATRU"."ORDER_LINE_REFUND" olr
+        left join "EDP_BRONZE_PROD"."SHOPIFY_THERMATRU"."ORDER_LINE" ol on ol.id = olr.order_line_id
+
+            where
+                created_at > (
+                    select nvl(max(created_at), to_date('1900-01-01'))
+                    from "EDP_SILVER_PROD"."SHOPIFY"."ORDER_LINE"
+                    where store = 'THERMATRU' and origin = 'refund'
+                )
+
+
+
+            union
+
+
+
+
+
+
+
+
+        select
+            olr.order_line_id,
+            ol.order_id,
+            ol.product_id,
+            ol.sku,
+            ol.variant_id,
+            'refund' as origin,
+            ol.price,
+            -1 * olr.quantity,
+            -1 * subtotal as line_total,
+            'LARSON' as store,
+            olr._fivetran_synced as created_at
+        from "EDP_BRONZE_PROD"."SHOPIFY_LARSON"."ORDER_LINE_REFUND" olr
+        left join "EDP_BRONZE_PROD"."SHOPIFY_LARSON"."ORDER_LINE" ol on ol.id = olr.order_line_id
+
+            where
+                created_at > (
+                    select nvl(max(created_at), to_date('1900-01-01'))
+                    from "EDP_SILVER_PROD"."SHOPIFY"."ORDER_LINE"
+                    where store = 'LARSON' and origin = 'refund'
+                )
+
+
+
+            union
+
+
+
+
+
+
+
+
+        select
+            olr.order_line_id,
+            ol.order_id,
+            ol.product_id,
+            ol.sku,
+            ol.variant_id,
+            'refund' as origin,
+            ol.price,
+            -1 * olr.quantity,
+            -1 * subtotal as line_total,
+            'MOEN' as store,
+            olr._fivetran_synced as created_at
+        from "EDP_BRONZE_PROD"."SHOPIFY_MOEN"."ORDER_LINE_REFUND" olr
+        left join "EDP_BRONZE_PROD"."SHOPIFY_MOEN"."ORDER_LINE" ol on ol.id = olr.order_line_id
+
+            where
+                created_at > (
+                    select nvl(max(created_at), to_date('1900-01-01'))
+                    from "EDP_SILVER_PROD"."SHOPIFY"."ORDER_LINE"
+                    where store = 'MOEN' and origin = 'refund'
+                )
+
+
+
+
+
+
+
+  );
+        "#;
+
+        let result = compare_sql(actual, expected, AdapterType::Snowflake);
+        assert!(
+            result.is_ok(),
+            "Should treat union sets equal regardless of order within the CTE body"
+        );
+    }
+
+    #[test]
+    fn test_structural_union_ordering_equivalence_with_transient_extra_space() {
+        let actual = r#"create or replace transient  table EDP_SILVER_PROD.SHOPIFY.abandoned_checkout_deleted
+
+    as (
+
+select id as checkout_id, 'MOEN' as origin from "EDP_BRONZE_PROD"."SHOPIFY_MOEN"."ABANDONED_CHECKOUT"
+where _FIVETRAN_DELETED = 'TRUE'
+
+    union
+
+select id as checkout_id, 'LARSON' as origin from "EDP_BRONZE_PROD"."SHOPIFY_LARSON"."ABANDONED_CHECKOUT"
+where _FIVETRAN_DELETED = 'TRUE'
+
+    );"#;
+
+        let expected = r#"create or replace transient table EDP_SILVER_PROD.SHOPIFY.abandoned_checkout_deleted
+
+    as (
+
+select id as checkout_id, 'LARSON' as origin from "EDP_BRONZE_PROD"."SHOPIFY_LARSON"."ABANDONED_CHECKOUT"
+where _FIVETRAN_DELETED = 'TRUE'
+
+    union
+
+select id as checkout_id, 'MOEN' as origin from "EDP_BRONZE_PROD"."SHOPIFY_MOEN"."ABANDONED_CHECKOUT"
+where _FIVETRAN_DELETED = 'TRUE'
+
+    );"#;
+
+        let result = compare_sql(actual, expected, AdapterType::Snowflake);
+        assert!(
+            result.is_ok(),
+            "Should treat union sets equal regardless of order within the CTE body"
+        );
+    }
+
+    #[test]
+    fn test_structural_union_ordering_equivalence_with_temporary_extra_space() {
+        let actual = r#"create or replace temporary  table EDP_SILVER_PROD.SHOPIFY.abandoned_checkout_deleted
+
+    as (
+
+select id as checkout_id, 'MOEN' as origin from "EDP_BRONZE_PROD"."SHOPIFY_MOEN"."ABANDONED_CHECKOUT"
+where _FIVETRAN_DELETED = 'TRUE'
+
+    union
+
+select id as checkout_id, 'LARSON' as origin from "EDP_BRONZE_PROD"."SHOPIFY_LARSON"."ABANDONED_CHECKOUT"
+where _FIVETRAN_DELETED = 'TRUE'
+
+    );"#;
+
+        let expected = r#"create or replace temporary table EDP_SILVER_PROD.SHOPIFY.abandoned_checkout_deleted
+
+    as (
+
+select id as checkout_id, 'LARSON' as origin from "EDP_BRONZE_PROD"."SHOPIFY_LARSON"."ABANDONED_CHECKOUT"
+where _FIVETRAN_DELETED = 'TRUE'
+
+    union
+
+select id as checkout_id, 'MOEN' as origin from "EDP_BRONZE_PROD"."SHOPIFY_MOEN"."ABANDONED_CHECKOUT"
+where _FIVETRAN_DELETED = 'TRUE'
+
+    );"#;
+
+        let result = compare_sql(actual, expected, AdapterType::Snowflake);
+        assert!(
+            result.is_ok(),
+            "Should treat union sets equal regardless of order within the CTE body"
+        );
+    }
+
+    #[test]
+    fn test_structural_union_ordering_equivalence_with_dashdash_comment() {
+        let actual = r#"create or replace   view EDP_SILVER_PROD.SHOPIFY.stg_order_adjustment
+
+
+
+
+  as (
+    --
+
+        select order_id, amount, 'FIBERON' as store
+        from "EDP_BRONZE_PROD"."SHOPIFY_FIBERON"."ORDER_ADJUSTMENT"
+
+
+            union
+
+
+
+
+
+
+
+
+        select order_id, amount, 'FYPON' as store
+        from "EDP_BRONZE_PROD"."SHOPIFY_FYPON"."ORDER_ADJUSTMENT"
+
+  );"#;
+
+        let expected = r#"create or replace   view EDP_SILVER_PROD.SHOPIFY.stg_order_adjustment
+
+
+
+
+  as (
+    --
+
+        select order_id, amount, 'FYPON' as store
+        from "EDP_BRONZE_PROD"."SHOPIFY_FYPON"."ORDER_ADJUSTMENT"
+
+
+            union
+
+
+
+
+
+
+
+
+        select order_id, amount, 'FIBERON' as store
+        from "EDP_BRONZE_PROD"."SHOPIFY_FIBERON"."ORDER_ADJUSTMENT"
+
+  );"#;
+
+        let result = compare_sql(actual, expected, AdapterType::Snowflake);
+        assert!(
+            result.is_ok(),
+            "Should treat union sets equal regardless of order within the CTE body"
+        );
+    }
+
+    #[test]
+    fn test_structural_union_all_ordering_equivalence() {
         let actual = r#"select * from (
-        
+
 
 
 
 with filtered_information_schema_columns as (
-    
-    
+
+
         (
-    
+
 
     select
         upper(table_catalog || '.' || table_schema || '.' || table_name) as full_table_name,
@@ -4212,12 +5650,12 @@ with filtered_information_schema_columns as (
     where upper(table_schema) = upper('aftership')
 
 )
-        
+
             union all
-        
-    
+
+
         (
-    
+
 
     select
         upper(table_catalog || '.' || table_schema || '.' || table_name) as full_table_name,
@@ -4230,12 +5668,12 @@ with filtered_information_schema_columns as (
     where upper(table_schema) = upper('iamcurious_production_staging')
 
 )
-        
+
             union all
-        
-    
+
+
         (
-    
+
 
     select
         upper(table_catalog || '.' || table_schema || '.' || table_name) as full_table_name,
@@ -4248,12 +5686,12 @@ with filtered_information_schema_columns as (
     where upper(table_schema) = upper('google_ads')
 
 )
-        
+
             union all
-        
-    
+
+
         (
-    
+
 
     select
         upper(table_catalog || '.' || table_schema || '.' || table_name) as full_table_name,
@@ -4266,12 +5704,12 @@ with filtered_information_schema_columns as (
     where upper(table_schema) = upper('google_analytics')
 
 )
-        
+
             union all
-        
-    
+
+
         (
-    
+
 
     select
         upper(table_catalog || '.' || table_schema || '.' || table_name) as full_table_name,
@@ -4284,12 +5722,12 @@ with filtered_information_schema_columns as (
     where upper(table_schema) = upper('iamcurious_production')
 
 )
-        
+
             union all
-        
-    
+
+
         (
-    
+
 
     select
         upper(table_catalog || '.' || table_schema || '.' || table_name) as full_table_name,
@@ -4302,12 +5740,12 @@ with filtered_information_schema_columns as (
     where upper(table_schema) = upper('klaviyo')
 
 )
-        
+
             union all
-        
-    
+
+
         (
-    
+
 
     select
         upper(table_catalog || '.' || table_schema || '.' || table_name) as full_table_name,
@@ -4320,12 +5758,12 @@ with filtered_information_schema_columns as (
     where upper(table_schema) = upper('macroeconomic_data')
 
 )
-        
+
             union all
-        
-    
+
+
         (
-    
+
 
     select
         upper(table_catalog || '.' || table_schema || '.' || table_name) as full_table_name,
@@ -4338,12 +5776,12 @@ with filtered_information_schema_columns as (
     where upper(table_schema) = upper('mailchimp')
 
 )
-        
+
             union all
-        
-    
+
+
         (
-    
+
 
     select
         upper(table_catalog || '.' || table_schema || '.' || table_name) as full_table_name,
@@ -4356,12 +5794,12 @@ with filtered_information_schema_columns as (
     where upper(table_schema) = upper('predictions')
 
 )
-        
+
             union all
-        
-    
+
+
         (
-    
+
 
     select
         upper(table_catalog || '.' || table_schema || '.' || table_name) as full_table_name,
@@ -4374,12 +5812,12 @@ with filtered_information_schema_columns as (
     where upper(table_schema) = upper('mongodb')
 
 )
-        
+
             union all
-        
-    
+
+
         (
-    
+
 
     select
         upper(table_catalog || '.' || table_schema || '.' || table_name) as full_table_name,
@@ -4392,12 +5830,12 @@ with filtered_information_schema_columns as (
     where upper(table_schema) = upper('postgres_rds')
 
 )
-        
+
             union all
-        
-    
+
+
         (
-    
+
 
     select
         upper(table_catalog || '.' || table_schema || '.' || table_name) as full_table_name,
@@ -4410,12 +5848,12 @@ with filtered_information_schema_columns as (
     where upper(table_schema) = upper('iamcurious_schema')
 
 )
-        
+
             union all
-        
-    
+
+
         (
-    
+
 
     select
         upper(table_catalog || '.' || table_schema || '.' || table_name) as full_table_name,
@@ -4428,12 +5866,12 @@ with filtered_information_schema_columns as (
     where upper(table_schema) = upper('resmagic_api')
 
 )
-        
+
             union all
-        
-    
+
+
         (
-    
+
 
     select
         upper(table_catalog || '.' || table_schema || '.' || table_name) as full_table_name,
@@ -4446,12 +5884,12 @@ with filtered_information_schema_columns as (
     where upper(table_schema) = upper('returnly')
 
 )
-        
+
             union all
-        
-    
+
+
         (
-    
+
 
     select
         upper(table_catalog || '.' || table_schema || '.' || table_name) as full_table_name,
@@ -4464,12 +5902,12 @@ with filtered_information_schema_columns as (
     where upper(table_schema) = upper('sendgrid')
 
 )
-        
+
             union all
-        
-    
+
+
         (
-    
+
 
     select
         upper(table_catalog || '.' || table_schema || '.' || table_name) as full_table_name,
@@ -4482,12 +5920,12 @@ with filtered_information_schema_columns as (
     where upper(table_schema) = upper('shopify')
 
 )
-        
+
             union all
-        
-    
+
+
         (
-    
+
 
     select
         upper(table_catalog || '.' || table_schema || '.' || table_name) as full_table_name,
@@ -4500,12 +5938,12 @@ with filtered_information_schema_columns as (
     where upper(table_schema) = upper('information_schema')
 
 )
-        
+
             union all
-        
-    
+
+
         (
-    
+
 
     select
         upper(table_catalog || '.' || table_schema || '.' || table_name) as full_table_name,
@@ -4518,12 +5956,12 @@ with filtered_information_schema_columns as (
     where upper(table_schema) = upper('stripe')
 
 )
-        
+
             union all
-        
-    
+
+
         (
-    
+
 
     select
         upper(table_catalog || '.' || table_schema || '.' || table_name) as full_table_name,
@@ -4536,12 +5974,12 @@ with filtered_information_schema_columns as (
     where upper(table_schema) = upper('zendesk')
 
 )
-        
+
             union all
-        
-    
+
+
         (
-    
+
 
     select
         upper(table_catalog || '.' || table_schema || '.' || table_name) as full_table_name,
@@ -4554,12 +5992,12 @@ with filtered_information_schema_columns as (
     where upper(table_schema) = upper('zucc_meta')
 
 )
-        
+
             union all
-        
-    
+
+
         (
-    
+
 
     select
         upper(table_catalog || '.' || table_schema || '.' || table_name) as full_table_name,
@@ -4572,8 +6010,8 @@ with filtered_information_schema_columns as (
     where upper(table_schema) = upper('iamcurious_production_models')
 
 )
-        
-    
+
+
 
 
 )
@@ -4587,15 +6025,15 @@ where full_table_name is not null
         "#;
 
         let expected = r#"select * from (
-        
+
 
 
 
 with filtered_information_schema_columns as (
-    
-    
+
+
         (
-    
+
 
     select
         upper(table_catalog || '.' || table_schema || '.' || table_name) as full_table_name,
@@ -4608,12 +6046,12 @@ with filtered_information_schema_columns as (
     where upper(table_schema) = upper('aftership')
 
 )
-        
+
             union all
-        
-    
+
+
         (
-    
+
 
     select
         upper(table_catalog || '.' || table_schema || '.' || table_name) as full_table_name,
@@ -4626,12 +6064,12 @@ with filtered_information_schema_columns as (
     where upper(table_schema) = upper('iamcurious_production_staging')
 
 )
-        
+
             union all
-        
-    
+
+
         (
-    
+
 
     select
         upper(table_catalog || '.' || table_schema || '.' || table_name) as full_table_name,
@@ -4644,12 +6082,12 @@ with filtered_information_schema_columns as (
     where upper(table_schema) = upper('google_ads')
 
 )
-        
+
             union all
-        
-    
+
+
         (
-    
+
 
     select
         upper(table_catalog || '.' || table_schema || '.' || table_name) as full_table_name,
@@ -4662,12 +6100,12 @@ with filtered_information_schema_columns as (
     where upper(table_schema) = upper('google_analytics')
 
 )
-        
+
             union all
-        
-    
+
+
         (
-    
+
 
     select
         upper(table_catalog || '.' || table_schema || '.' || table_name) as full_table_name,
@@ -4680,12 +6118,12 @@ with filtered_information_schema_columns as (
     where upper(table_schema) = upper('iamcurious_production')
 
 )
-        
+
             union all
-        
-    
+
+
         (
-    
+
 
     select
         upper(table_catalog || '.' || table_schema || '.' || table_name) as full_table_name,
@@ -4698,12 +6136,12 @@ with filtered_information_schema_columns as (
     where upper(table_schema) = upper('klaviyo')
 
 )
-        
+
             union all
-        
-    
+
+
         (
-    
+
 
     select
         upper(table_catalog || '.' || table_schema || '.' || table_name) as full_table_name,
@@ -4716,12 +6154,12 @@ with filtered_information_schema_columns as (
     where upper(table_schema) = upper('macroeconomic_data')
 
 )
-        
+
             union all
-        
-    
+
+
         (
-    
+
 
     select
         upper(table_catalog || '.' || table_schema || '.' || table_name) as full_table_name,
@@ -4734,12 +6172,12 @@ with filtered_information_schema_columns as (
     where upper(table_schema) = upper('mailchimp')
 
 )
-        
+
             union all
-        
-    
+
+
         (
-    
+
 
     select
         upper(table_catalog || '.' || table_schema || '.' || table_name) as full_table_name,
@@ -4752,12 +6190,12 @@ with filtered_information_schema_columns as (
     where upper(table_schema) = upper('predictions')
 
 )
-        
+
             union all
-        
-    
+
+
         (
-    
+
 
     select
         upper(table_catalog || '.' || table_schema || '.' || table_name) as full_table_name,
@@ -4770,12 +6208,12 @@ with filtered_information_schema_columns as (
     where upper(table_schema) = upper('iamcurious_schema')
 
 )
-        
+
             union all
-        
-    
+
+
         (
-    
+
 
     select
         upper(table_catalog || '.' || table_schema || '.' || table_name) as full_table_name,
@@ -4788,12 +6226,12 @@ with filtered_information_schema_columns as (
     where upper(table_schema) = upper('returnly')
 
 )
-        
+
             union all
-        
-    
+
+
         (
-    
+
 
     select
         upper(table_catalog || '.' || table_schema || '.' || table_name) as full_table_name,
@@ -4806,12 +6244,12 @@ with filtered_information_schema_columns as (
     where upper(table_schema) = upper('sendgrid')
 
 )
-        
+
             union all
-        
-    
+
+
         (
-    
+
 
     select
         upper(table_catalog || '.' || table_schema || '.' || table_name) as full_table_name,
@@ -4824,12 +6262,12 @@ with filtered_information_schema_columns as (
     where upper(table_schema) = upper('information_schema')
 
 )
-        
+
             union all
-        
-    
+
+
         (
-    
+
 
     select
         upper(table_catalog || '.' || table_schema || '.' || table_name) as full_table_name,
@@ -4842,12 +6280,12 @@ with filtered_information_schema_columns as (
     where upper(table_schema) = upper('shopify')
 
 )
-        
+
             union all
-        
-    
+
+
         (
-    
+
 
     select
         upper(table_catalog || '.' || table_schema || '.' || table_name) as full_table_name,
@@ -4860,12 +6298,12 @@ with filtered_information_schema_columns as (
     where upper(table_schema) = upper('stripe')
 
 )
-        
+
             union all
-        
-    
+
+
         (
-    
+
 
     select
         upper(table_catalog || '.' || table_schema || '.' || table_name) as full_table_name,
@@ -4878,12 +6316,12 @@ with filtered_information_schema_columns as (
     where upper(table_schema) = upper('zendesk')
 
 )
-        
+
             union all
-        
-    
+
+
         (
-    
+
 
     select
         upper(table_catalog || '.' || table_schema || '.' || table_name) as full_table_name,
@@ -4896,12 +6334,12 @@ with filtered_information_schema_columns as (
     where upper(table_schema) = upper('zucc_meta')
 
 )
-        
+
             union all
-        
-    
+
+
         (
-    
+
 
     select
         upper(table_catalog || '.' || table_schema || '.' || table_name) as full_table_name,
@@ -4914,12 +6352,12 @@ with filtered_information_schema_columns as (
     where upper(table_schema) = upper('mongodb')
 
 )
-        
+
             union all
-        
-    
+
+
         (
-    
+
 
     select
         upper(table_catalog || '.' || table_schema || '.' || table_name) as full_table_name,
@@ -4932,12 +6370,12 @@ with filtered_information_schema_columns as (
     where upper(table_schema) = upper('postgres_rds')
 
 )
-        
+
             union all
-        
-    
+
+
         (
-    
+
 
     select
         upper(table_catalog || '.' || table_schema || '.' || table_name) as full_table_name,
@@ -4950,12 +6388,12 @@ with filtered_information_schema_columns as (
     where upper(table_schema) = upper('resmagic_api')
 
 )
-        
+
             union all
-        
-    
+
+
         (
-    
+
 
     select
         upper(table_catalog || '.' || table_schema || '.' || table_name) as full_table_name,
@@ -4968,8 +6406,8 @@ with filtered_information_schema_columns as (
     where upper(table_schema) = upper('iamcurious_production_models')
 
 )
-        
-    
+
+
 
 
 )
@@ -5004,9 +6442,9 @@ where full_table_name is not null
     fn test_compare_sql_elementary_pkg_version_drift_ignored() {
         let actual = r#"
 create or replace transient  table DB_FANANALYTICS.analytics_elementary_metadata.metadata
-    
-    
-    
+
+
+
     as (
 
 SELECT
@@ -5016,9 +6454,9 @@ SELECT
 "#;
         let expected = r#"
 create or replace transient table DB_FANANALYTICS.analytics_elementary_metadata.metadata
-    
-    
-    
+
+
+
     as (
 
 SELECT
@@ -5063,13 +6501,328 @@ SELECT
     }
 
     #[test]
+    fn test_compare_sql_dbt_version_literal_drift_ignored() {
+        // dbt1405: replay engine version and recorded engine version differ by construction.
+        let actual = "select current_timestamp() as ts, '2.0.0' as dbt_version";
+        let expected = "select current_timestamp() as ts, '2026.8.4+2f16d1c' as dbt_version";
+        let result = compare_sql(actual, expected, AdapterType::Snowflake);
+        assert!(
+            result.is_ok(),
+            "dbt_version literal drift should be ignored: {result:?}"
+        );
+    }
+
+    #[test]
+    fn test_compare_sql_run_started_at_literal_drift_ignored() {
+        // dbt1405: a customer macro deriving a literal from run_started_at differs when replay
+        // happens at a different wall-clock time than the recording.
+        let actual = "select '2026-08-09T16:01:19' as dbt_run_started_at";
+        let expected = "select '2026-08-09T16:00:26' as dbt_run_started_at";
+        let result = compare_sql(actual, expected, AdapterType::Snowflake);
+        assert!(
+            result.is_ok(),
+            "run_started_at literal drift should be ignored: {result:?}"
+        );
+    }
+
+    #[test]
+    fn test_compare_sql_dbt_version_literal_with_cast_drift_ignored() {
+        // dbt1405: same as above, but the literal is explicitly cast before the alias.
+        let actual = "select '2.0.0'::varchar as dbt_version";
+        let expected = "select '2026.8.4+2f16d1c'::varchar as dbt_version";
+        let result = compare_sql(actual, expected, AdapterType::Snowflake);
+        assert!(
+            result.is_ok(),
+            "dbt_version literal drift with a cast should be ignored: {result:?}"
+        );
+    }
+
+    #[test]
+    fn test_compare_sql_run_started_at_literal_with_cast_drift_ignored() {
+        // dbt1405: same as above, but the literal is explicitly cast before the alias.
+        let actual = "select '2026-08-09T16:01:19'::timestamp_ntz as dbt_run_started_at";
+        let expected = "select '2026-08-09T16:00:26'::timestamp_ntz as dbt_run_started_at";
+        let result = compare_sql(actual, expected, AdapterType::Snowflake);
+        assert!(
+            result.is_ok(),
+            "run_started_at literal drift with a cast should be ignored: {result:?}"
+        );
+    }
+
+    #[test]
+    fn test_compare_sql_etl_batch_id_literal_drift_ignored() {
+        // dbt1405: a customer macro deriving an etl_batch_id from the run's wall-clock time.
+        let actual = "select 20260808051943::number as etl_batch_id";
+        let expected = "select 20260808050939::number as etl_batch_id";
+        let result = compare_sql(actual, expected, AdapterType::Snowflake);
+        assert!(
+            result.is_ok(),
+            "etl_batch_id literal drift should be ignored: {result:?}"
+        );
+    }
+
+    #[test]
+    fn test_compare_sql_etl_batch_id_literal_with_other_cast_drift_ignored() {
+        // dbt1405: same as above, but cast to a type other than `number`.
+        let actual = "select 20260808051943::bigint as etl_batch_id";
+        let expected = "select 20260808050939::bigint as etl_batch_id";
+        let result = compare_sql(actual, expected, AdapterType::Snowflake);
+        assert!(
+            result.is_ok(),
+            "etl_batch_id literal drift with a non-number cast should be ignored: {result:?}"
+        );
+    }
+
+    #[test]
+    fn test_compare_sql_backup_relation_timestamp_suffix_drift_ignored() {
+        // dbt1405: a custom materialization naming its backup relation with
+        // `py_current_timestring()`, which replay re-evaluates, so the fresh suffix can never
+        // equal the recorded one. The 23-digit actual is what preview.212 rendered, before #13684
+        // fixed `%f` to Python's microsecond precision; masking has to cover both widths.
+        let actual = "CREATE OR REPLACE TABLE REPRO_DATABASE.REPRO_SCHEMA.backup_probe_DBT_BACKUP_20260824102757911107255\nCLONE REPRO_DATABASE.REPRO_SCHEMA.source_probe";
+        let expected = "CREATE OR REPLACE TABLE REPRO_DATABASE.REPRO_SCHEMA.backup_probe_DBT_BACKUP_20000101000000000000\nCLONE REPRO_DATABASE.REPRO_SCHEMA.source_probe";
+        let result = compare_sql(actual, expected, AdapterType::Snowflake);
+        assert!(
+            result.is_ok(),
+            "backup relation timestamp suffix drift should be ignored: {result:?}"
+        );
+    }
+
+    #[test]
+    fn test_compare_sql_backup_relation_lowercase_suffix_drift_ignored() {
+        // Same shape, but with the `__dbt_backup_` spelling dbt's own naming convention uses.
+        let actual = "create or replace table analytics.sch.orders__dbt_backup_20260824102757911107255 clone analytics.sch.orders";
+        let expected = "create or replace table analytics.sch.orders__dbt_backup_20240101000000000000 clone analytics.sch.orders";
+        let result = compare_sql(actual, expected, AdapterType::Snowflake);
+        assert!(
+            result.is_ok(),
+            "lowercase backup relation timestamp suffix drift should be ignored: {result:?}"
+        );
+    }
+
+    #[test]
+    fn test_compare_sql_backup_relation_source_drift_still_fails() {
+        // Guardrail: masking the suffix must not hide a different clone source.
+        let actual = "create or replace table analytics.sch.orders__dbt_backup_20260824102757911107255 clone analytics.sch.orders";
+        let expected = "create or replace table analytics.sch.orders__dbt_backup_20240101000000000000 clone analytics.sch.customers";
+        let result = compare_sql(actual, expected, AdapterType::Snowflake);
+        assert!(
+            result.is_err(),
+            "a different clone source must still be reported as a mismatch"
+        );
+    }
+
+    #[test]
+    fn test_compare_sql_backup_relation_non_timestamp_suffix_drift_still_fails() {
+        // Guardrail: only plausible `py_current_timestring()` values are masked, so a short
+        // numeric suffix (e.g. a user-chosen batch number) still has to match.
+        let actual = "create or replace table analytics.sch.orders__dbt_backup_17 clone analytics.sch.orders";
+        let expected = "create or replace table analytics.sch.orders__dbt_backup_42 clone analytics.sch.orders";
+        let result = compare_sql(actual, expected, AdapterType::Snowflake);
+        assert!(
+            result.is_err(),
+            "a non-timestamp backup suffix must still be reported as a mismatch"
+        );
+    }
+
+    fn compact_timestamp_temp_view(
+        run_started_at: &str,
+        alias: &str,
+        lhs: &str,
+        rhs: &str,
+        format: &str,
+    ) -> String {
+        format!(
+            "create or replace temporary view timestamp_predicate as (\n\
+             select '{run_started_at}' as {alias}\n\
+             where TO_TIMESTAMP('{lhs}', '{format}')\n\
+             < TO_TIMESTAMP('{rhs}', '{format}')\n\
+             )"
+        )
+    }
+
+    #[test]
+    fn test_compare_sql_unaliased_to_timestamp_literal_drift_ignored() {
+        let actual = compact_timestamp_temp_view(
+            "2026-08-24T18:03:17+00:00",
+            "dbt_run_started_at",
+            "20000101000000",
+            "20260824180317",
+            "YYYYMMDDHH24MISSFF3",
+        );
+        let expected = compact_timestamp_temp_view(
+            "2024-01-01T01:01:01+00:00",
+            "dbt_run_started_at",
+            "20000101000000",
+            "20240101010101",
+            "YYYYMMDDHH24MISSFF3",
+        );
+
+        let result = compare_sql(&actual, &expected, AdapterType::Snowflake);
+        assert!(
+            result.is_ok(),
+            "unaliased TO_TIMESTAMP literal drift should be ignored: {result:?}"
+        );
+    }
+
+    #[test]
+    fn test_compare_sql_unaliased_to_timestamp_other_format_drift_preserved() {
+        let actual = compact_timestamp_temp_view(
+            "2026-08-24T18:03:17+00:00",
+            "dbt_run_started_at",
+            "20000101",
+            "20260824",
+            "YYYYMMDD",
+        );
+        let expected = compact_timestamp_temp_view(
+            "2024-01-01T01:01:01+00:00",
+            "dbt_run_started_at",
+            "20000101",
+            "20240101",
+            "YYYYMMDD",
+        );
+
+        let result = compare_sql(&actual, &expected, AdapterType::Snowflake);
+        assert!(
+            result.is_err(),
+            "compact timestamp drift with another format should remain significant"
+        );
+    }
+
+    #[test]
+    fn test_compare_sql_unaliased_to_timestamp_fixed_cutoff_drift_preserved() {
+        let actual = compact_timestamp_temp_view(
+            "2026-08-24T18:03:17+00:00",
+            "dbt_run_started_at",
+            "20000101000000",
+            "20260824180317",
+            "YYYYMMDDHH24MISSFF3",
+        );
+        let expected = compact_timestamp_temp_view(
+            "2024-01-01T01:01:01+00:00",
+            "dbt_run_started_at",
+            "19990101000000",
+            "20240101010101",
+            "YYYYMMDDHH24MISSFF3",
+        );
+
+        let result = compare_sql(&actual, &expected, AdapterType::Snowflake);
+        assert!(
+            result.is_err(),
+            "fixed TO_TIMESTAMP predicate cutoff drift should remain significant"
+        );
+    }
+
+    #[test]
+    fn test_compare_sql_unaliased_to_timestamp_hardcoded_rhs_drift_preserved() {
+        let actual = compact_timestamp_temp_view(
+            "2026-08-24T18:03:17+00:00",
+            "dbt_run_started_at",
+            "20000101000000",
+            "20990101000000",
+            "YYYYMMDDHH24MISSFF3",
+        );
+        let expected = compact_timestamp_temp_view(
+            "2024-01-01T01:01:01+00:00",
+            "dbt_run_started_at",
+            "20000101000000",
+            "20980101000000",
+            "YYYYMMDDHH24MISSFF3",
+        );
+
+        let result = compare_sql(&actual, &expected, AdapterType::Snowflake);
+        assert!(
+            result.is_err(),
+            "hardcoded TO_TIMESTAMP upper-bound drift should remain significant"
+        );
+    }
+
+    #[test]
+    fn test_compare_sql_unaliased_to_timestamp_plain_alias_drift_preserved() {
+        let actual = compact_timestamp_temp_view(
+            "2026-08-24T18:03:17+00:00",
+            "run_started_at",
+            "20000101000000",
+            "20260824180317",
+            "YYYYMMDDHH24MISSFF3",
+        );
+        let expected = compact_timestamp_temp_view(
+            "2024-01-01T01:01:01+00:00",
+            "run_started_at",
+            "20000101000000",
+            "20240101010101",
+            "YYYYMMDDHH24MISSFF3",
+        );
+
+        let result = compare_sql(&actual, &expected, AdapterType::Snowflake);
+        assert!(
+            result.is_err(),
+            "TO_TIMESTAMP drift should bind only to dbt_run_started_at"
+        );
+    }
+
+    #[test]
+    fn test_compare_sql_unaliased_to_timestamp_drift_outside_temp_view_preserved() {
+        let actual = r#"
+select '2026-08-24T18:03:17+00:00' as dbt_run_started_at
+where TO_TIMESTAMP('20000101000000', 'YYYYMMDDHH24MISSFF3')
+  < TO_TIMESTAMP('20260824180317', 'YYYYMMDDHH24MISSFF3')"#;
+        let expected = r#"
+select '2024-01-01T01:01:01+00:00' as dbt_run_started_at
+where TO_TIMESTAMP('20000101000000', 'YYYYMMDDHH24MISSFF3')
+  < TO_TIMESTAMP('20240101010101', 'YYYYMMDDHH24MISSFF3')"#;
+
+        let result = compare_sql(actual, expected, AdapterType::Snowflake);
+        assert!(
+            result.is_err(),
+            "TO_TIMESTAMP drift outside temporary-view DDL should remain significant"
+        );
+    }
+
+    #[test]
+    fn test_compare_sql_unaliased_to_timestamp_drift_for_other_adapter_preserved() {
+        let actual = compact_timestamp_temp_view(
+            "2026-08-24T18:03:17+00:00",
+            "dbt_run_started_at",
+            "20000101000000",
+            "20260824180317",
+            "YYYYMMDDHH24MISSFF3",
+        );
+        let expected = compact_timestamp_temp_view(
+            "2024-01-01T01:01:01+00:00",
+            "dbt_run_started_at",
+            "20000101000000",
+            "20240101010101",
+            "YYYYMMDDHH24MISSFF3",
+        );
+
+        let result = compare_sql(&actual, &expected, AdapterType::Databricks);
+        assert!(
+            result.is_err(),
+            "TO_TIMESTAMP drift for a non-Snowflake adapter should remain significant"
+        );
+    }
+
+    #[test]
+    fn test_compare_sql_archive_stage_path_timestamp_drift_ignored() {
+        // dbt1405: a customer macro deriving an archival stage path from the run's wall-clock time.
+        let actual = "COPY FILES INTO '@DB.STG.TEMP_STAGE_FOR_ARCHIVAL/archive/20260808_180232/' FROM @DB.STG.TEMP_STAGE_FOR_ARCHIVAL";
+        let expected = "COPY FILES INTO '@DB.STG.TEMP_STAGE_FOR_ARCHIVAL/archive/20260808_180104/' FROM @DB.STG.TEMP_STAGE_FOR_ARCHIVAL";
+        let result = compare_sql(actual, expected, AdapterType::Snowflake);
+        assert!(
+            result.is_ok(),
+            "archive stage path timestamp drift should be ignored: {result:?}"
+        );
+    }
+
+    #[test]
     fn test_compare_sql_elementary_metadata_comment_ignored() {
-        let actual = r#"select metadata_hash 
+        let actual = r#"select metadata_hash
     from OPERATIONS_PRD.MFG_INSTRUMENTS.dbt_exposures
     order by metadata_hash
     /* --ELEMENTARY-METADATA-- {"invocation_id": "019ba036-aec2-71a3-8709-a31b68ced8b0", "command": "build", "package_name": "elementary", "resource_name": "dbt_exposures", "resource_type": "model"} --END-ELEMENTARY-METADATA-- */"#;
 
-        let expected = r#"select metadata_hash 
+        let expected = r#"select metadata_hash
     from OPERATIONS_PRD.MFG_INSTRUMENTS.dbt_exposures
     order by metadata_hash"#;
 
@@ -5461,12 +7214,12 @@ where 1 = 0";
     fn test_alter_table_set_tblproperties_order_independent() {
         // Fusion and dbt-databricks may emit the same tblproperties in different order.
         // The properties are a set of key-value pairs — ordering is not semantically meaningful.
-        let actual = r#"ALTER TABLE `dbt`.`dbt_staging`.`stg_aa_base_philosophy` SET 
-    tblproperties ('delta.columnMapping.mode' = 'name' , 'delta.enableChangeDataFeed' = 'true' 
+        let actual = r#"ALTER TABLE `dbt`.`dbt_staging`.`stg_aa_base_philosophy` SET
+    tblproperties ('delta.columnMapping.mode' = 'name' , 'delta.enableChangeDataFeed' = 'true'
     )"#;
 
-        let expected = r#"ALTER TABLE `dbt`.`dbt_staging`.`stg_aa_base_philosophy` SET 
-    tblproperties ('delta.enableChangeDataFeed' = 'true' , 'delta.columnMapping.mode' = 'name' 
+        let expected = r#"ALTER TABLE `dbt`.`dbt_staging`.`stg_aa_base_philosophy` SET
+    tblproperties ('delta.enableChangeDataFeed' = 'true' , 'delta.columnMapping.mode' = 'name'
     )"#;
 
         let result = compare_sql(actual, expected, AdapterType::Databricks);
@@ -5583,6 +7336,67 @@ def model(dbt, session):
             result.is_ok(),
             "Populated meta_dict + meta_get call sites should be treated as equivalent \
              to populated config_dict + get call sites: {result:?}"
+        );
+    }
+
+    #[test]
+    fn test_canonicalize_python_model_pair_config_meta_equivalent() {
+        // Databricks submit_python_job payload. dbt-autofix CustomKeyInConfigDeprecation rewrites
+        // `dbt.config.get(<custom key>)` to `meta_get(...)` and moves the key from config_dict to
+        // meta_dict. Fusion built the post-autofix source (meta_get + populated meta_dict), Core
+        // recorded the pre-autofix source (get + populated config_dict). canonicalize_python_model_pair
+        // must normalize the two to byte-equal so the exact compare in replay_submit_python_job passes.
+        let fusion = r#"
+def model(dbt, session):
+    start_year = int(dbt.config.meta_get("start_year", 2020))
+    end_year = int(dbt.config.meta_get("end_year", 2050))
+    return session.table("x")
+
+config_dict = {}
+meta_dict = {'start_year': 2020, 'end_year': 2050}
+
+class config:
+    def __init__(self, *args, **kwargs):
+        pass
+
+    @staticmethod
+    def get(key, default=None):
+        return config_dict.get(key, default)
+
+    @staticmethod
+    def meta_get(key, default=None):
+        return meta_dict.get(key, default)
+"#;
+
+        let core = r#"
+def model(dbt, session):
+    start_year = int(dbt.config.get("start_year", 2020))
+    end_year = int(dbt.config.get("end_year", 2050))
+    return session.table("x")
+
+config_dict = {'start_year': 2020, 'end_year': 2050}
+meta_dict = {}
+
+class config:
+    def __init__(self, *args, **kwargs):
+        pass
+
+    @staticmethod
+    def get(key, default=None):
+        return config_dict.get(key, default)
+
+    @staticmethod
+    def meta_get(key, default=None):
+        return meta_dict.get(key, default)
+"#;
+
+        // Also exercise line-ending divergence: a CRLF source (Windows) is preserved by Core
+        // and emitted as LF by Fusion, so every line would otherwise differ byte-for-byte.
+        let core_crlf = core.replace('\n', "\r\n");
+        let (a, e) = canonicalize_python_model_pair(fusion, &core_crlf);
+        assert_eq!(
+            a, e,
+            "config/meta forms and CRLF vs LF line endings should canonicalize equal"
         );
     }
 

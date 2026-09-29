@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { ModelSummary } from '../shared';
 import { renderWithProviders } from '../test/renderWithProviders';
+import { listSource } from '../test/wireFixtures';
 import { GenericFilterView } from './GenericFilterView';
 
 /** Local mirror of the REST list envelope this test mocks (the adapter maps it
@@ -90,11 +91,16 @@ describe('<GenericFilterView />', () => {
     expect(rft.dataset.initialDesc).toBe('true');
   });
 
-  it('threads sort into the list fetch (sort= in URL)', async () => {
-    const fetchSpy = vi.fn((_url: string) =>
-      Promise.resolve({ ok: true, json: () => Promise.resolve(EMPTY_LIST) }),
+  it('threads sort into the list request', async () => {
+    // Was an assertion on `sort=` in the URL. The sort now travels as a `ListSort` on
+    // the source call, so that is what this checks — same intent, no transport.
+    const fetchAssetList = vi.fn(
+      async (_args: { filter?: Record<string, unknown>; sort?: unknown }) => ({
+        items: [],
+        nextCursor: null,
+        totalCount: 0,
+      }),
     );
-    vi.stubGlobal('fetch', fetchSpy);
     renderWithProviders(
       <GenericFilterView<ModelSummary>
         label="Models"
@@ -103,11 +109,15 @@ describe('<GenericFilterView />', () => {
         columns={columns}
         sort={{ field: 'executed_at', desc: true }}
       />,
+      { source: listSource('model', EMPTY_LIST, { fetchAssetList } as never) },
     );
     await waitFor(() =>
       expect(
-        fetchSpy.mock.calls.some((c) =>
-          String(c[0]).includes('sort=executed_at%3Adesc'),
+        fetchAssetList.mock.calls.some(
+          (c) =>
+            (c[0] as { sort?: { field?: string; desc?: boolean } })?.sort?.field ===
+              'executed_at' &&
+            (c[0] as { sort?: { desc?: boolean } })?.sort?.desc === true,
         ),
       ).toBe(true),
     );

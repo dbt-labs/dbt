@@ -128,6 +128,34 @@ fn do_something() {
 
 Note that it is OK to do `panic!()` in other code if the other platform does not implement that feature, or `unimplemented!()` if we haven't done it for that platform yet.
 
+**Real example:** `adapter/mod.rs` used to register two Jinja-dispatched entrypoints, each hardcoded to one Snowflake relation type, sitting right next to `describe_relation` — a generic, adapter-agnostic name already used by BigQuery:
+
+```rust
+"describe_dynamic_table" => self.describe_dynamic_table(state, args),
+"describe_interactive_table" => self.describe_interactive_table(state, args),
+```
+
+Fixed (PR #13201, following up on #12664 review feedback) by keeping one Jinja-facing name and dispatching internally on adapter type and relation type, instead of on the Jinja method name:
+
+```rust
+if adapter.adapter_type() == AdapterType::Snowflake {
+    match relation.relation_type() {
+        Some(RelationType::DynamicTable) => adapter.describe_dynamic_table(/* ... */),
+        Some(RelationType::InteractiveTable) => adapter.describe_interactive_table(/* ... */),
+        other => Err(minijinja::Error::new(
+            minijinja::ErrorKind::InvalidOperation,
+            format!("describe_relation is not supported for relation type {other:?} on Snowflake"),
+        )),
+    }
+} else {
+    Ok(adapter.describe_relation(conn.as_mut(), &relation, Some(state))?
+        .map(Value::from_object)
+        .unwrap_or_else(none_value))
+}
+```
+
+The old per-type Rust methods stayed as private helpers called from the match arms — only the Jinja-facing dispatch surface needed to become generic, not the method bodies themselves.
+
 ### Code review - step 3: No SQL-processing utilities outside of `dbt-adapter-sql` or `dbt-adapter-keywords`
 
 If you find SQL keyword normalization/sanitization, statement splitting, keyword detection etc outside of the `dbt-adapter-sql` and `dbt-adapter-keywords` crates, suggest moving those there. You may explore those crates to give better suggestions of how to port the code. Example code that should live in these crates.

@@ -1,6 +1,7 @@
 import { FC, useState } from 'react';
 
-import { CodeSnippet, FloatingTab, FloatingTabs } from '@dbt-labs/sourdough';
+import { CodeSnippet } from '../../components/ui/CodeSnippet';
+import { FloatingTab, FloatingTabs } from '../../components/ui/FloatingTabs';
 
 type CodePreviewParams = {
   source: string;
@@ -20,26 +21,21 @@ export const CodePreview: FC<CodePreviewParams> = (params) => {
 
   return (
     <div className={params.classNames}>
-      <div className="mb-4 overflow-x-auto overflow-y-hidden">
-        <FloatingTabs>
-          <FloatingTab
-            text="Source"
-            id="source"
-            isActive={activeTab === 'source'}
-            onClick={() => setActiveTab('source')}
-            trackingId="explorer-source-code"
-          />
-          {params.compiled ? (
+      {params.compiled && (
+        <div className="mb-4 overflow-x-auto overflow-y-hidden">
+          <FloatingTabs
+            value={activeTab}
+            onValueChange={(value) => setActiveTab(value as CodeType)}
+          >
+            <FloatingTab text="Source" id="source" trackingId="explorer-source-code" />
             <FloatingTab
               text="Compiled"
               id="compiled"
-              isActive={activeTab === 'compiled'}
-              onClick={() => setActiveTab('compiled')}
               trackingId="explorer-compiled-code"
             />
-          ) : null}
-        </FloatingTabs>
-      </div>
+          </FloatingTabs>
+        </div>
+      )}
       {isLargeFile && (
         <div className="mb-3 rounded-md border border-borderWarning bg-bgWarningMuted p-3 text-sm text-fgWarning">
           This file is large ({(fileContents.length / 1024).toFixed(0)} KB) and may

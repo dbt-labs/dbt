@@ -1,8 +1,7 @@
 // Revisit whether or not we want to do this
 import { intersection } from 'lodash';
 
-import { ResourceType } from '@dbt-labs/dbt-dag';
-
+import type { ResourceType } from '../../lib/resourceType';
 import {
   ExposureHealthIssueType,
   HealthIssueType,

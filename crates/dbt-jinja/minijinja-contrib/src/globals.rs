@@ -110,6 +110,19 @@ impl Object for DictNamespace {
         }
     }
 
+    fn call_method(
+        self: &Arc<Self>,
+        state: &State<'_, '_>,
+        method: &str,
+        args: &[Value],
+        listeners: &[Rc<dyn RenderingEventListener>],
+    ) -> Result<Value, Error> {
+        if let Some(value) = self.get_value(&Value::from(method)) {
+            return value.call(state, args, listeners);
+        }
+        self.call(state, args, listeners)
+    }
+
     fn call(
         self: &Arc<Self>,
         _state: &State<'_, '_>,

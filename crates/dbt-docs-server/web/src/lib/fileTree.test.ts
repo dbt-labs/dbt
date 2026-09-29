@@ -73,7 +73,7 @@ describe('buildFileTreeItems', () => {
     );
     const leaf = result.items.find((i) => i.id === 'project/pkg/models/x.sql');
     expect(leaf?.data.iconOverride?.label).toBe('model');
-    expect(leaf?.data.iconOverride?.ryecon).toBeDefined();
+    expect(leaf?.data.iconOverride?.icon).toBeDefined();
   });
 
   it('deduplicates folder items shared across multiple files', () => {
@@ -122,7 +122,9 @@ describe('buildFileTreeItems', () => {
 
     const yamlDir = result.items.find((i) => i.id === 'project/pkg/models/_models.yml');
     expect(yamlDir?.data.pathType).toBe('directory');
-    expect(yamlDir?.data.iconOverride?.label).toBe('yaml');
+    // No icon override -- renders as a plain folder like any other node with
+    // children, not a resource/file-specific icon (matches dbt Platform prod).
+    expect(yamlDir?.data.iconOverride).toBeUndefined();
 
     expect(result.pathToUniqueId.get('project/pkg/models/_models.yml/t_one')).toBe(
       'test.pkg.t_one',
@@ -149,7 +151,7 @@ describe('buildFileTreeItems', () => {
       (i) => i.id === 'project/pkg/models/_models.yaml',
     );
     expect(yamlDir?.data.pathType).toBe('directory');
-    expect(yamlDir?.data.iconOverride?.label).toBe('yaml');
+    expect(yamlDir?.data.iconOverride).toBeUndefined();
   });
 
   it('keeps files from different packages in separate package roots', () => {

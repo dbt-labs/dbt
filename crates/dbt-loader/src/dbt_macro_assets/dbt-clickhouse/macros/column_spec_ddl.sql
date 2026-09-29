@@ -7,7 +7,10 @@
 
   {%- set yaml_columns = user_defined_columns.values() -%}
 
-  {%- set sql_file_provided_columns = adapter.get_column_schema_from_query(sql) -%}
+  {# Apply model query_settings so schema introspection matches runtime types
+     (e.g. Nullable results when join_use_nulls=1). Fixes #667. #}
+  {%- set query_settings = config.get('query_settings', {}) or {} -%}
+  {%- set sql_file_provided_columns = adapter.get_column_schema_from_query(sql, query_settings=query_settings) -%}
   {%- set sql_columns = adapter.format_columns(sql_file_provided_columns) -%}
 
   {%- if sql_columns|length != yaml_columns|length -%}

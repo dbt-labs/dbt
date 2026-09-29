@@ -7,4 +7,4 @@ catalogs:
     config:
       duckdb:
         warehouse: "demo_warehouse"
-        attach_as: "rest_demo"
+        catalog_database: "rest_demo"

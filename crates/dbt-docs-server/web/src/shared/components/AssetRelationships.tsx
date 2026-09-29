@@ -1,7 +1,7 @@
-import { useState } from 'react';
+import { createElement, useState } from 'react';
 
-import { DbtResourceIcon, getResourceType } from '@dbt-labs/dbt-dag';
-import { FloatingTabs } from '@dbt-labs/sourdough';
+import { FloatingTabs } from '../../components/ui/FloatingTabs';
+import { getResourceType, iconForType } from '../../lib/resourceType';
 
 export type RelationshipItem = {
   uniqueId: string;
@@ -35,10 +35,10 @@ function RelationshipList({
         const inner = (
           <>
             <span className="flex-0 m-1 h-4 w-4">
-              <DbtResourceIcon
-                resource={resourceType}
-                className="align-top text-current"
-              />
+              {createElement(iconForType(resourceType), {
+                className: 'align-top text-current',
+                size: 16,
+              })}
             </span>
             <span className="align-middle">{item.name}</span>
           </>
@@ -80,24 +80,15 @@ export function AssetRelationships({
         {noRelationships ? (
           <p className="italic text-fgDecorative">No relationships found.</p>
         ) : (
-          <FloatingTabs>
+          <FloatingTabs
+            value={activeTab}
+            onValueChange={(value) => setActiveTab(value as SubTab)}
+          >
             {dependsOn.length > 0 && (
-              <FloatingTabs.Tab
-                id="dependsOn"
-                isActive={activeTab === 'dependsOn'}
-                onClick={() => setActiveTab('dependsOn')}
-              >
-                Depends on
-              </FloatingTabs.Tab>
+              <FloatingTabs.Tab id="dependsOn">Depends on</FloatingTabs.Tab>
             )}
             {referencedBy.length > 0 && (
-              <FloatingTabs.Tab
-                id="referencedBy"
-                isActive={activeTab === 'referencedBy'}
-                onClick={() => setActiveTab('referencedBy')}
-              >
-                Referenced by
-              </FloatingTabs.Tab>
+              <FloatingTabs.Tab id="referencedBy">Referenced by</FloatingTabs.Tab>
             )}
           </FloatingTabs>
         )}

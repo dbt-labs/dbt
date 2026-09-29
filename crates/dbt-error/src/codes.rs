@@ -95,6 +95,7 @@ pub enum ErrorCode {
     FailedToLookupExistingTable = 1055,
 
     MissingTargetDirectory = 1056,
+    DeprecatedConfigKey = 1057,
     ColumnTypeMismatch = 1058,
     DuplicateConfigKey = 1059,
     UnusedConfigKey = 1060,
@@ -246,6 +247,86 @@ pub enum ErrorCode {
     SelectorError = 1600,
     NoNodesSelected = 1601,
     InvalidColumnSelector = 1602,
+    /// An externally supplied node set replaced the computed selection.
+    SelectionOverrideActive = 1603,
+    /// An externally supplied node set was available but not applicable to this command.
+    SelectionOverrideSkipped = 1604,
+    /// The nodes actually reported by the run differ from the externally supplied node set.
+    SelectionOverrideDivergence = 1605,
+
+    // --------------------------------------------------------------------------------------------
+    // Checks
+    //
+    // One code per outcome rather than a shared one: `warn_error_options` targets codes, so
+    // collapsing these onto `Generic` would mean upgrading or silencing a check outcome also
+    // upgrades or silences every unrelated `Generic` warning in the run.
+    /// A check found violations at `error` severity. Logged as an error.
+    CheckFailed = 1650,
+    /// A check found violations at `warn` severity.
+    CheckWarned = 1651,
+    /// A check had nothing in scope to evaluate.
+    CheckSkipped = 1652,
+    /// A check could not be evaluated (e.g. its query errored).
+    CheckEvaluationFailed = 1653,
+    /// The metadata a check reads is not on disk, so checks were skipped and the build
+    /// proceeded. Skipped rather than failed because this is infrastructure, not a verdict on the
+    /// project; `warn_error_options` can promote it where the gate must be mandatory.
+    ///
+    /// It was `CheckIndexUnavailable` while checks read `target/private/index`. They read the
+    /// parse metadata epochs directly now, so only the name changed -- the number is the same,
+    /// and an existing `warn_error_options` entry keeps working.
+    CheckMetadataUnavailable = 1654,
+    /// No longer emitted. The number is retained rather than reused so an old
+    /// `warn_error_options` entry stays inert instead of silently promoting something else.
+    ///
+    /// It reported the index being turned off as the reason the gate did not run, which was true
+    /// while checks read the index. They read the parse metadata now, so nothing about the index
+    /// decides whether a check runs -- `--skip-checks` does, and asking to skip is not warned
+    /// about. Reachable only through `--no-write-index`, which is hidden, so in practice this
+    /// code could only be met by a programmatic caller.
+    CheckIndexDisabled = 1655,
+
+    // --------------------------------------------------------------------------------------------
+    // Information schema
+    /// `target/info_schema/` is missing, unreadable, or will not open.
+    ///
+    /// Distinct from `InvalidArgument`, which this case used to report: `--info <view>` is a
+    /// well-formed request against state that has not been produced, so calling it a bad
+    /// argument sent people to check their flags, and made a missing artifact
+    /// indistinguishable from a typo'd option in anything that reads codes rather than prose.
+    /// The query itself keeps `InvalidArgument` -- an unknown view or a syntax error really is
+    /// the argument.
+    InfoSchemaUnavailable = 1656,
+    /// `--generate-info-schema` was asked for and the write failed, so `target/info_schema/`
+    /// is missing or holds the previous run's tables. A warning rather than an error: the
+    /// artifact is opt-in and nothing downstream reads it, so a failed write must not fail a
+    /// build that otherwise succeeded. Its own code so a project that depends on the artifact
+    /// -- a report, a scheduled query -- can promote just this with `warn_error_options`
+    /// instead of every `Generic` warning in the run.
+    InfoSchemaWriteFailed = 1657,
+    /// The information schema was written from a `parse`, so the columns only `compile`,
+    /// `run` or `build` fill are absent: compiled code, column types, column-level lineage
+    /// and runtime results. Reports a successful write, not a failure -- and separated from
+    /// `InfoSchemaWriteFailed` for that reason, since the two used one code and read
+    /// identically in a log.
+    InfoSchemaIncomplete = 1658,
+
+    // --------------------------------------------------------------------------------------------
+    // Project metadata index
+    //
+    // `target/private/index/` is not a user API and is not documented as one, but its *warnings*
+    // are user-visible and no longer opt-in: `--write-index` is hidden, and the index is implied
+    // on for `build`, `run` and `check` unless `--no-write-index` says otherwise. So a failure
+    // here reaches everyone, and "promote it in CI" is a reasonable thing to want without also
+    // promoting every `Generic` warning in the run.
+    /// The index could not be written, so features that read it have nothing current to read.
+    /// Checks are no longer among them: they read the parse metadata epochs, so a failed index
+    /// write leaves the gate running normally.
+    ///
+    /// The index's *parse-tier* advisory deliberately has no code and stays on `Generic`: it
+    /// fires only for `parse --write-index`, and `--write-index` is undocumented, so there is
+    /// nobody to target it. A code is worth adding when someone can act on it.
+    IndexWriteFailed = 1659,
 
     // --------------------------------------------------------------------------------------------
     // CLI errors
@@ -254,7 +335,31 @@ pub enum ErrorCode {
     DeprecatedOption = 1702,
     DeprecatedStaticAnalysisValue = 1703,
     NotSupportedWarnErrorOption = 1704,
+    /// No longer emitted. Retained so an existing `warn_error_options` entry naming it
+    /// keeps resolving instead of failing as an unknown code.
     DocsGenerateWarning = 1705,
+
+    // --------------------------------------------------------------------------------------------
+    // Agent skills
+    /// `ai_provider` names a harness dbt has no destination directory for.
+    UnknownAiProvider = 1800,
+    /// Skills were found but `ai_provider` is unset, so nothing was installed.
+    AiProviderUnset = 1801,
+    /// A `SKILL.md` is missing required frontmatter or its `name` doesn't match its directory.
+    InvalidSkill = 1802,
+    /// Two or more enabled skills resolve to the same install name, so they would
+    /// occupy the same directory. dbt fails rather than pick a winner; the user
+    /// disables all but one (or a maintainer renames), as with duplicate model names.
+    SkillNameCollision = 1803,
+    /// No longer emitted. Retained so an existing `warn_error_options` entry naming it
+    /// keeps resolving, and so the discriminant is not reused: dbt now recognizes its
+    /// own installs by their recorded metadata and reclaims them silently, rather than
+    /// warning that a copy was modified.
+    SkillModifiedByUser = 1804,
+    /// A skill directory dbt wanted to install into is already occupied.
+    SkillDestinationOccupied = 1805,
+    /// A `skill-paths` entry resolves outside the project that declared it.
+    SkillPathEscapesProject = 1806,
 
     // --------------------------------------------------------------------------------------------
     // Local execution

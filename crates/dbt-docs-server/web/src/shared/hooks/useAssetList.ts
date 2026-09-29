@@ -4,6 +4,7 @@ import { useMetadataDataSource } from '../context/MetadataDataProvider';
 import type { AssetFilter, ListArgs } from '../typings/args';
 import type { AssetSummary } from '../typings/domain/asset';
 import { listKey } from '../util/queryKeys';
+import { UNSUPPORTED_SURFACE_MESSAGE } from './unsupportedSurface';
 
 /** Server-side page size when the consumer omits `limit`. Mirrors dbt-docs-v2's
  *  retired `useResourceList`/`useModels` `PAGE_SIZE`. */
@@ -59,7 +60,11 @@ export function useAssetList<T extends AssetSummary = AssetSummary>(
     isFetchingNextPage: query.isFetchingNextPage,
     hasNextPage: query.hasNextPage,
     error: query.error,
-    errorMessage: query.error ? `Failed to load ${errorLabel ?? 'assets'}.` : null,
+    errorMessage: !supported
+      ? UNSUPPORTED_SURFACE_MESSAGE
+      : query.error
+        ? `Failed to load ${errorLabel ?? 'assets'}.`
+        : null,
     fetchNextPage: query.fetchNextPage,
   };
 }

@@ -8,6 +8,8 @@ Uses only the stdlib plus ``packaging`` (declared in pyproject build-requires).
 
 import hashlib
 import json
+import os
+import sys
 import time
 import urllib.error
 import urllib.request
@@ -43,6 +45,37 @@ def _select_wheel():
     )
 
 
+def _emit_notice():
+    """Print the manifest's install-time notice, if it carries one.
+
+    pip and uv run the build backend as a subprocess and only surface its output
+    when the build *fails*, so stderr alone would hide this from a normal
+    install. Writing to the controlling terminal as well is best-effort: with no
+    tty (CI, redirected output, Windows with no console) it just falls through to
+    stderr, where `-v` and the pip log still pick it up. Both land under `-v`,
+    which is better than the notice going unseen.
+    """
+    notice = _MANIFEST.get("notice")
+    if not notice:
+        return
+    text = "\n" + notice.rstrip("\n") + "\n"
+    sys.stderr.write(text)
+    sys.stderr.flush()
+    try:
+        with open(
+            "CONOUT$" if os.name == "nt" else "/dev/tty",
+            "w",
+            encoding="utf-8",
+            errors="replace",
+        ) as tty:
+            # uv repaints its progress lines over whatever sits at the cursor,
+            # clobbering the tail of the notice; the trailing blanks give that
+            # repaint something other than the text to clear.
+            tty.write(text + "\n\n\n")
+    except (OSError, ValueError):
+        pass
+
+
 def _fetch(url):
     last = None
     for attempt in range(1, _RETRIES + 1):
@@ -60,6 +93,7 @@ def _fetch(url):
 
 
 def build_wheel(wheel_directory, config_settings=None, metadata_directory=None):
+    _emit_notice()
     entry = _select_wheel()
     filename = entry["filename"]
     url = "{base}/{file}".format(base=_MANIFEST["base_url"].rstrip("/"), file=filename)

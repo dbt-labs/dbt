@@ -47,13 +47,6 @@ impl RenderTask {
 }
 
 impl Task for RenderTask {
-    fn run_task_with_backpressure<'a>(
-        &'a self,
-        ctx: &'a mut TaskRunnerCtx,
-    ) -> Pin<Box<dyn Future<Output = FsResult<NodeStatus>> + Send + 'a>> {
-        self.run_task(ctx)
-    }
-
     fn run_task<'a>(
         &'a self,
         ctx: &'a mut TaskRunnerCtx,

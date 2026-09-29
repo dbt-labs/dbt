@@ -85,6 +85,20 @@ fn test_set_append() {
 }
 
 #[test]
+fn test_if_condition_implied_tuple() {
+    let env = Environment::new();
+    let rv = env
+        .render_str(
+            r#"{% if target_name == "default","np" %}matched{% else %}missed{% endif %}"#,
+            context! { target_name => "other" },
+            &[],
+        )
+        .unwrap();
+
+    assert_eq!(rv, "matched");
+}
+
+#[test]
 fn test_macro_namespace_lookup() {
     let mut env = Environment::new();
     let mut macro_namespace_registry = ValueMap::new();
@@ -367,4 +381,27 @@ writing
   i
   am
   writing");
+}
+
+#[test]
+fn test_unrecognized_string_escapes_render_verbatim() {
+    let env = Environment::new();
+    for (template, expected) in [
+        (
+            r#"{% set pat = "'[+*\/=<> :;.,!?]+'" %}{{ pat }}"#,
+            r"'[+*\/=<> :;.,!?]+'",
+        ),
+        (r#"{{ "a/b" }}"#, "a/b"),
+        (r#"{{ "http://x.com/a/b" }}"#, "http://x.com/a/b"),
+        (r#"{{ "a/b\tc" }}"#, "a/b\tc"),
+        (r#"{{ "a/b\/c" }}"#, "a/b\\/c"),
+        (r#"{{ "a\/b" }}"#, r"a\/b"),
+        (r#"{{ 'a\/b' }}"#, r"a\/b"),
+        (r#"{{ "\\/" }}"#, r"\/"),
+        (r#"{{ "\d+" }}"#, r"\d+"),
+        (r#"{{ "a\'b\"c\\d" }}"#, r#"a'b"c\d"#),
+    ] {
+        let rv = env.render_str(template, context! {}, &[]).unwrap();
+        assert_eq!(rv, expected, "template: {template}");
+    }
 }

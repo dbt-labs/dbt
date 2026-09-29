@@ -41,9 +41,6 @@
   label. It would be nice to just pick a new one but eventually you do have to give up.
 #}
 {% macro clickhouse_escape_comment(comment) -%}
-  {% if clickhouse_is_before_version('21.9.2.17') %}
-    {% do exceptions.raise_compiler_error('Unsupported ClickHouse version for using heredoc syntax') %}
-  {% endif %}
   {% if comment is not string %}
     {% do exceptions.raise_compiler_error('cannot escape a non-string: ' ~ comment) %}
   {% endif %}

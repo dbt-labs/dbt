@@ -1,7 +1,0 @@
-kind: Features
-body: Add support for ClickHouse's index definition
-time: 2026-07-10T18:48:01.249229+02:00
-custom:
-    author: koletzilla
-    issue: "14583"
-    project: dbt-core

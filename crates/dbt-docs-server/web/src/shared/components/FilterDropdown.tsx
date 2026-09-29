@@ -1,4 +1,7 @@
-import { DropdownButton, type DropdownOption } from '@dbt-labs/sourdough';
+import {
+  DropdownButton,
+  type DropdownOption,
+} from '../../components/ui/DropdownButton';
 
 export interface FilterDropdownProps {
   options: DropdownOption[];

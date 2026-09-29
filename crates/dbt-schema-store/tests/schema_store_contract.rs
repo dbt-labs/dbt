@@ -195,14 +195,21 @@ fn persist_and_reload() {
         store
             .register_schema(&c, None, make_schema("amount"), false)
             .unwrap();
+        assert!(!store.schema_is_from_prior_invocation(&c));
         store.save(dir.path()).unwrap();
     }
 
     // Reload from the parquet epochs.
     let store2 = store_with_frontier(&dir, &c, "source.pkg.orders");
     assert!(store2.exists(&c), "entry must survive save/reload");
+    assert!(store2.schema_is_from_prior_invocation(&c));
     let entry = store2.get_schema(&c).unwrap();
     assert_eq!(entry.inner().field(0).name(), "amount");
+
+    store2
+        .register_schema(&c, None, make_schema("current_amount"), true)
+        .unwrap();
+    assert!(!store2.schema_is_from_prior_invocation(&c));
 }
 
 #[test]
@@ -587,7 +594,7 @@ fn clean_entries_produce_no_new_epoch() {
     store2.save(dir.path()).unwrap();
 
     // No dirty entries → no new epoch file written → still 1 file.
-    let remote_dir = dir.path().join("metadata/warehouse/schemas");
+    let remote_dir = dir.path().join("private/metadata/warehouse/schemas");
     let file_count = std::fs::read_dir(&remote_dir)
         .unwrap()
         .flatten()

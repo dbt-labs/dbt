@@ -13,6 +13,7 @@ import type { Distribution } from '../typings/domain/distribution';
 import type { Facets } from '../typings/domain/facets';
 import type { FileEntry } from '../typings/domain/files';
 import type { ColumnLineageResult, LineageGraph } from '../typings/domain/lineage';
+import type { ProjectOverview } from '../typings/domain/overview';
 import type { Project } from '../typings/domain/project';
 import type {
   SearchFacets,
@@ -60,7 +61,7 @@ export interface MetadataDataSource {
   fetchCapabilities?(): Promise<Capabilities>;
 
   /**
-   * Build identity of the backend (Fusion vs Core, login state). Distinct from
+   * Build identity of the backend (dbt v2 vs Core, login state). Distinct from
    * {@link fetchCapabilities}, which advertises feature support. A source
    * without a notion of distribution omits this.
    */
@@ -79,6 +80,14 @@ export interface MetadataDataSource {
    * that exposes it some other way) omits this.
    */
   fetchProject?(): Promise<Project>;
+
+  /**
+   * The project's `{% docs __overview__ %}` block — the markdown the docs landing
+   * page renders. Resolves `null` when no package defines one, which is the
+   * "render the built-in default" signal and is distinct from a rejection. No-arg
+   * aggregate. A source with no notion of project docs omits this.
+   */
+  fetchOverview?(): Promise<ProjectOverview | null>;
 
   /**
    * Flat list of every file-bearing resource in the project — the rows a file

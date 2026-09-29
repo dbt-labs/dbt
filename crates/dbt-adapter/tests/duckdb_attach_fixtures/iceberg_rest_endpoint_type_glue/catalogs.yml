@@ -1,0 +1,14 @@
+# Scenario: `endpoint_type: GLUE` on a generic iceberg_rest catalog, not a
+# `type: glue` one — DuckDB's Glue code path is selected by the endpoint type.
+# Exercises: the ':' source default and suppressed AUTHORIZATION_TYPE apply
+# here too.
+catalogs:
+  - name: glue_via_rest
+    type: iceberg_rest
+    table_format: iceberg
+    config:
+      duckdb:
+        endpoint_type: GLUE
+        catalog_database: "glue_rest_db"
+        secret: glue_s3
+        default_schema: "analytics"

@@ -3,7 +3,8 @@
 {% endmacro %}
 
 {%- macro databricks__optimize(relation) -%}
-  {%- if var('DATABRICKS_SKIP_OPTIMIZE', 'false')|lower != 'true' and
+  {%- if config.get('skip_optimize', false) | as_bool -%}
+  {%- elif var('DATABRICKS_SKIP_OPTIMIZE', 'false')|lower != 'true' and
         var('databricks_skip_optimize', 'false')|lower != 'true' and
         adapter.resolve_file_format(config) == 'delta' -%}
     {%- if (config.get('zorder', False) or config.get('liquid_clustered_by', False)) or config.get('auto_liquid_cluster', False) -%}

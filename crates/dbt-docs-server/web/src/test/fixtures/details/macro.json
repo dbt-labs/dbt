@@ -5,8 +5,8 @@
     "resource_type": "macro",
     "package_name": "dbt",
     "description": "",
-    "original_file_path": "dbt_internal_packages/dbt-adapters/macros/relations/get_relations_by_pattern_sql.sql",
-    "file_path": "macros/relations/get_relations_by_pattern_sql.sql",
+    "original_file_path": "models/get_relations_by_pattern_sql.sql",
+    "file_path": "models/get_relations_by_pattern_sql.sql",
     "patch_path": null,
     "macro_sql": "{% macro _bigquery__get_matching_schemata(schema_pattern, database) %}\n    {% if execute %}\n\n        {% set sql %}\n        select schema_name from {{ adapter.quote(database) }}.INFORMATION_SCHEMA.SCHEMATA\n        where lower(schema_name) like lower('{{ schema_pattern }}')\n        {% endset %}\n\n        {% set results=run_query(sql) %}\n\n        {% set schemata=results.columns['schema_name'].values() %}\n\n        {{ return(schemata) }}\n\n    {% else %}\n\n        {{ return([]) }}\n\n    {% endif %}\n\n\n{% endmacro %}",
     "arguments": [

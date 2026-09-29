@@ -67,6 +67,7 @@ tonic-prost-build = { workspace = true }
 arrow-array = { workspace = true }
 arrow-schema = { workspace = true }
 dbt-adapter-core = { workspace = true }
+dbt-runtime = { workspace = true }
 dbt-tasks-sa = { workspace = true }
 parking_lot = { workspace = true }
 tempfile = { workspace = true }

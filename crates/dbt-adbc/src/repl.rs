@@ -4,7 +4,7 @@ use std::{fs, slice};
 
 use adbc_core::{
     error::{Error, Result, Status},
-    options::{AdbcVersion, ObjectDepth},
+    options::{AdbcVersion, ObjectDepth, OptionStatement, OptionValue},
 };
 use arrow_array::RecordBatch;
 use arrow_schema::{Schema, SchemaRef};
@@ -139,6 +139,7 @@ pub struct ReplState {
     current_schema: Option<SchemaRef>,
     current_batches: Vec<RecordBatch>,
     current_batch_idx: usize,
+    pending_options: Vec<(String, String)>,
 }
 
 impl ReplState {
@@ -189,7 +190,20 @@ impl ReplState {
             current_schema: None,
             current_batches: Vec::new(),
             current_batch_idx: 0,
+            pending_options: Vec::new(),
         })
+    }
+
+    pub fn set_statement_option(&mut self, key: String, value: String) {
+        if let Some(existing) = self.pending_options.iter_mut().find(|(k, _)| *k == key) {
+            existing.1 = value;
+        } else {
+            self.pending_options.push((key, value));
+        }
+    }
+
+    pub fn pending_options(&self) -> &[(String, String)] {
+        &self.pending_options
     }
 
     pub fn execute_query(&mut self, query: &str) -> Result<(usize, usize)> {
@@ -199,6 +213,12 @@ impl ReplState {
 
         let conn = self.connection.as_mut();
         let mut stmt = conn.new_statement()?;
+        for (key, value) in std::mem::take(&mut self.pending_options) {
+            stmt.set_option(
+                OptionStatement::from(key.as_str()),
+                OptionValue::String(value),
+            )?;
+        }
         stmt.set_sql_query(query)?;
         let reader = stmt.execute()?;
 
@@ -262,6 +282,8 @@ enum Command {
     ShowBatch,
     GetObjects { identifier: Option<String> },
     GetSchema { identifier: String },
+    SetOption { key: String, value: String },
+    ShowOptions,
     Help,
     Quit,
     Invalid,
@@ -303,6 +325,23 @@ fn parse_command(line: &str) -> Option<Command> {
                 Some(rest.to_string())
             };
             Some(Command::GetObjects { identifier })
+        }
+        "so" | "set-option" => {
+            if rest.is_empty() {
+                return Some(Command::ShowOptions);
+            }
+            let (key, value) = match rest.split_once(['=', ' ', '\t']) {
+                Some((k, v)) => (k.trim(), v.trim_start().trim_start_matches('=').trim()),
+                None => return Some(Command::Invalid),
+            };
+            if key.is_empty() {
+                Some(Command::Invalid)
+            } else {
+                Some(Command::SetOption {
+                    key: key.to_string(),
+                    value: value.to_string(),
+                })
+            }
         }
         "gs" | "get-schema" => {
             if rest.is_empty() {
@@ -459,6 +498,9 @@ pub async fn run_repl(config_path: &Path, profile_name: &str) -> Result<()> {
                     "  :get-schema, :gs <a.b.c>       - Show the Arrow schema of the table identified by <catalog.schema.table>"
                 );
                 println!(
+                    "  :set-option, :so <key> <value> - Set a statement option applied to the next executed statement (also accepts <key>=<value>); with no arguments, list pending options"
+                );
+                println!(
                     "  :reload, :r                    - Reload the adbc driver from the config file"
                 );
                 println!("  :quit, :q                      - Exit the REPL");
@@ -533,6 +575,21 @@ pub async fn run_repl(config_path: &Path, profile_name: &str) -> Result<()> {
                 {
                     Ok(schema) => visualize_schema(Arc::new(schema)),
                     Err(e) => eprintln!("Error getting table schema: {e}"),
+                }
+            }
+            Some(Command::SetOption { key, value }) => {
+                state.set_statement_option(key.clone(), value.clone());
+                println!("Option '{key}' = '{value}' will be set on the next statement");
+            }
+            Some(Command::ShowOptions) => {
+                let options = state.pending_options();
+                if options.is_empty() {
+                    println!("No pending statement options");
+                } else {
+                    println!("Options for the next statement:");
+                    for (key, value) in options {
+                        println!("  {key} = {value}");
+                    }
                 }
             }
             Some(Command::ReloadDriver) => {

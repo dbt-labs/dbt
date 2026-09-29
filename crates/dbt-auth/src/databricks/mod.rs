@@ -1,4 +1,4 @@
-use crate::{AdapterConfig, Auth, AuthError, AuthOutcome};
+use crate::{AdapterConfig, Auth, AuthError, AuthWarningPrinter};
 use database::Builder as DatabaseBuilder;
 use dbt_yaml::Value;
 use std::borrow::Cow;
@@ -13,6 +13,11 @@ use dbt_adbc::{Backend, database, databricks};
 ///
 /// Ref: https://github.com/databricks/databricks-sql-go/blob/56b8a73b09908454e3070fe513ff2563c85ba214/connector.go#L214
 const USER_AGENT_NAME: &str = "dbt";
+const QUERY_TAG_OPTION_PREFIX: &str = "databricks.query_tag.";
+const DBT_CORE_VERSION: &str = "@@dbt_core_version";
+const DBT_MODEL_NAME: &str = "@@dbt_model_name";
+const DBT_MATERIALIZED: &str = "@@dbt_materialized";
+const RESERVED_QUERY_TAG_KEYS: [&str; 3] = [DBT_CORE_VERSION, DBT_MODEL_NAME, DBT_MATERIALIZED];
 
 /// Supported Databricks authentication types.
 /// When `auth_type` is absent, defaults to token-based (PAT) authentication.
@@ -63,7 +68,11 @@ enum DatabricksAuthIR<'a> {
 }
 
 impl<'a> DatabricksAuthIR<'a> {
-    pub fn apply(self, mut builder: DatabaseBuilder) -> Result<DatabaseBuilder, AuthError> {
+    pub fn apply(
+        self,
+        mut builder: DatabaseBuilder,
+        _warning_printer: &dyn AuthWarningPrinter,
+    ) -> Result<DatabaseBuilder, AuthError> {
         match self {
             Self::OAuthM2M {
                 client_id,
@@ -104,7 +113,10 @@ impl<'a> DatabricksAuthIR<'a> {
     }
 }
 
-fn parse_auth<'a>(config: &'a AdapterConfig) -> Result<DatabricksAuthIR<'a>, AuthError> {
+fn parse_auth<'a>(
+    config: &'a AdapterConfig,
+    _warning_printer: &dyn AuthWarningPrinter,
+) -> Result<DatabricksAuthIR<'a>, AuthError> {
     // FIXME: dbt-databricks historically has allowed garbage in the auth_type field and only responds to
     // auth_type 'oauth'. Everything else means token
     match DatabricksAuthType::from_config(config) {
@@ -163,6 +175,7 @@ fn parse_auth<'a>(config: &'a AdapterConfig) -> Result<DatabricksAuthIR<'a>, Aut
 fn apply_connection_args(
     config: &AdapterConfig,
     mut builder: DatabaseBuilder,
+    _warning_printer: &dyn AuthWarningPrinter,
 ) -> Result<DatabaseBuilder, AuthError> {
     let http_path = resolve_http_path(config)?;
 
@@ -174,6 +187,20 @@ fn apply_connection_args(
     builder.with_named_option(databricks::SCHEMA, config.require_string("schema")?)?;
     builder.with_named_option(databricks::CATALOG, config.require_string("database")?)?;
     builder.with_named_option(databricks::HTTP_PATH, http_path)?;
+    apply_query_tag_defaults(config, &mut builder)?;
+
+    // `connect_timeout` (seconds) is the documented Databricks connection timeout. Pass it to the
+    // driver as a real connection-establishment deadline so a cold-starting warehouse has time to
+    // come up instead of failing once the driver's fixed retry budget is exhausted. Formatted as a
+    // Go duration string the driver parses (e.g. "600s").
+    if let Some(secs) = config.get("connect_timeout").and_then(|v| v.as_i64()) {
+        if secs <= 0 {
+            return Err(AuthError::config(format!(
+                "connect_timeout must be a positive number of seconds, got {secs}"
+            )));
+        }
+        builder.with_named_option(databricks::CONNECT_TIMEOUT, format!("{secs}s"))?;
+    }
 
     // Azure SP: the tenant is a connection detail, not an auth credential, so it lives here
     // rather than in the auth IR. Resolve it (explicit `azure_tenant_id`, else discover from
@@ -187,6 +214,72 @@ fn apply_connection_args(
     }
 
     Ok(builder)
+}
+
+fn apply_query_tag_defaults(
+    config: &AdapterConfig,
+    builder: &mut DatabaseBuilder,
+) -> Result<(), AuthError> {
+    builder.with_named_option(
+        format!("{QUERY_TAG_OPTION_PREFIX}{DBT_CORE_VERSION}"),
+        env!("CARGO_PKG_VERSION"),
+    )?;
+
+    let Some(value) = config.get("query_tags") else {
+        return Ok(());
+    };
+    match value {
+        Value::Null(_) => Ok(()),
+        Value::String(query_tags, _) if query_tags.is_empty() => Ok(()),
+        Value::String(query_tags, _) => {
+            let query_tags: dbt_yaml::Mapping =
+                serde_json::from_str(query_tags).map_err(|error| {
+                    if error.classify() == serde_json::error::Category::Data {
+                        AuthError::config("query_tags must be a JSON object (dictionary)")
+                    } else {
+                        AuthError::config(format!("Invalid JSON in query_tags: {error}"))
+                    }
+                })?;
+            apply_query_tag_mapping(&query_tags, builder)
+        }
+        Value::Mapping(query_tags, _) => apply_query_tag_mapping(query_tags, builder),
+        _ => Err(AuthError::config(
+            "query_tags must be a JSON object (dictionary)",
+        )),
+    }
+}
+
+fn apply_query_tag_mapping(
+    query_tags: &dbt_yaml::Mapping,
+    builder: &mut DatabaseBuilder,
+) -> Result<(), AuthError> {
+    let mut reserved = query_tags
+        .keys()
+        .filter_map(Value::as_str)
+        .filter(|key| RESERVED_QUERY_TAG_KEYS.contains(key))
+        .collect::<Vec<_>>();
+    reserved.sort_unstable();
+    if !reserved.is_empty() {
+        return Err(AuthError::config(format!(
+            "Connection config: Cannot use reserved query tag keys: {}. Reserved keys are: {}",
+            reserved.join(", "),
+            RESERVED_QUERY_TAG_KEYS.join(", ")
+        )));
+    }
+
+    for (key, value) in query_tags {
+        let key = key.as_str().ok_or_else(|| {
+            AuthError::config("query_tags keys must be strings. Only string keys are supported.")
+        })?;
+        let value = value.as_str().ok_or_else(|| {
+            AuthError::config(format!(
+                "Connection config: query_tags values must be strings for key '{key}'. Only string values are supported."
+            ))
+        })?;
+        builder.with_named_option(format!("{QUERY_TAG_OPTION_PREFIX}{key}"), value.to_owned())?;
+    }
+
+    Ok(())
 }
 
 /// Resolve the Microsoft Entra ID tenant for an Azure Databricks workspace from the
@@ -238,15 +331,23 @@ fn parse_azure_tenant_from_location(location: &str) -> Result<String, AuthError>
         .ok_or_else(|| AuthError::config(format!("could not extract tenant id from '{location}'")))
 }
 
-pub struct DatabricksAuth;
+pub struct DatabricksAuth {
+    pub warning_printer: Box<dyn AuthWarningPrinter>,
+}
+
+impl DatabricksAuth {
+    pub fn new(warning_printer: Box<dyn AuthWarningPrinter>) -> Self {
+        Self { warning_printer }
+    }
+}
 
 impl Auth for DatabricksAuth {
     fn backend(&self) -> Backend {
         Backend::Databricks
     }
 
-    fn configure(&self, config: &AdapterConfig) -> Result<AuthOutcome, AuthError> {
-        crate::auth_configure_pipeline!(self.backend(), &config, parse_auth, apply_connection_args)
+    fn configure(&self, config: &AdapterConfig) -> Result<database::Builder, AuthError> {
+        crate::auth_configure_pipeline!(self, &config, parse_auth, apply_connection_args)
     }
 }
 
@@ -328,9 +429,13 @@ mod tests {
     }
 
     fn run_config_test(config: Mapping, expected: &[(&str, &str)]) -> Result<(), AuthError> {
-        let auth = DatabricksAuth {};
-        let builder = auth.configure(&AdapterConfig::new(config))?.builder;
-        assert_eq!(builder.clone().into_iter().count(), expected.len());
+        let auth = DatabricksAuth::new(Box::new(crate::NoopAuthWarningPrinter));
+        let builder = auth.configure(&AdapterConfig::new(config))?;
+        assert_eq!(builder.clone().into_iter().count(), expected.len() + 1);
+        assert_eq!(
+            other_option_value(&builder, "databricks.query_tag.@@dbt_core_version"),
+            Some(env!("CARGO_PKG_VERSION"))
+        );
 
         for &(key, expected_val) in expected {
             assert_eq!(
@@ -340,6 +445,186 @@ mod tests {
             );
         }
         Ok(())
+    }
+
+    #[test]
+    fn test_query_tags_string_installs_ordered_database_defaults() {
+        let mut config = base_config();
+        config.insert("token".into(), "T".into());
+        config.insert(
+            "query_tags".into(),
+            r#"{"z_team":"analytics","a_cost_center":"3000"}"#.into(),
+        );
+
+        let builder = DatabricksAuth::new(Box::new(crate::NoopAuthWarningPrinter))
+            .configure(&AdapterConfig::new(config))
+            .unwrap();
+        let query_tag_options = builder
+            .other
+            .iter()
+            .filter_map(|(option, _)| match option {
+                adbc_core::options::OptionDatabase::Other(name)
+                    if name.starts_with("databricks.query_tag.") =>
+                {
+                    Some(name.as_str())
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            query_tag_options,
+            [
+                "databricks.query_tag.@@dbt_core_version",
+                "databricks.query_tag.z_team",
+                "databricks.query_tag.a_cost_center",
+            ]
+        );
+        assert_eq!(
+            other_option_value(&builder, "databricks.query_tag.z_team"),
+            Some("analytics")
+        );
+    }
+
+    #[test]
+    fn test_query_tags_mapping_installs_database_defaults_without_coercion() {
+        let mut config = base_config();
+        config.insert("token".into(), "T".into());
+        config.insert(
+            "query_tags".into(),
+            YmlValue::mapping(Mapping::from_iter([
+                ("team".into(), "analytics".into()),
+                ("cost_center".into(), "3000".into()),
+            ])),
+        );
+
+        let builder = DatabricksAuth::new(Box::new(crate::NoopAuthWarningPrinter))
+            .configure(&AdapterConfig::new(config))
+            .unwrap();
+        let query_tag_options = builder
+            .other
+            .iter()
+            .filter_map(|(option, _)| match option {
+                adbc_core::options::OptionDatabase::Other(name)
+                    if name.starts_with(QUERY_TAG_OPTION_PREFIX) =>
+                {
+                    Some(name.as_str())
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            query_tag_options,
+            [
+                "databricks.query_tag.@@dbt_core_version",
+                "databricks.query_tag.team",
+                "databricks.query_tag.cost_center",
+            ]
+        );
+        assert_eq!(
+            other_option_value(&builder, "databricks.query_tag.team"),
+            Some("analytics")
+        );
+        assert_eq!(
+            other_option_value(&builder, "databricks.query_tag.cost_center"),
+            Some("3000")
+        );
+    }
+
+    #[test]
+    fn test_query_tags_null_and_empty_profiles_install_only_core_default() {
+        for query_tags in [
+            YmlValue::null(),
+            YmlValue::string(String::new()),
+            YmlValue::mapping(Mapping::new()),
+        ] {
+            let mut config = base_config();
+            config.insert("token".into(), "T".into());
+            config.insert("query_tags".into(), query_tags);
+
+            let builder = DatabricksAuth::new(Box::new(crate::NoopAuthWarningPrinter))
+                .configure(&AdapterConfig::new(config))
+                .unwrap();
+            let query_tag_options = builder
+                .other
+                .iter()
+                .filter_map(|(option, _)| match option {
+                    adbc_core::options::OptionDatabase::Other(name)
+                        if name.starts_with(QUERY_TAG_OPTION_PREFIX) =>
+                    {
+                        Some(name.as_str())
+                    }
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+
+            assert_eq!(
+                query_tag_options,
+                ["databricks.query_tag.@@dbt_core_version"]
+            );
+        }
+    }
+
+    #[test]
+    fn test_query_tags_database_defaults_reject_invalid_profile_values() {
+        let non_string_key: YmlValue = dbt_yaml::from_str("3000: analytics").unwrap();
+        for (query_tags, expected) in [
+            (
+                YmlValue::sequence(vec!["not".into(), "an-object".into()]),
+                "query_tags must be a JSON object (dictionary)",
+            ),
+            (
+                YmlValue::mapping(Mapping::from_iter([(
+                    "cost_center".into(),
+                    YmlValue::number(3000.into()),
+                )])),
+                "query_tags values must be strings for key 'cost_center'",
+            ),
+            (
+                YmlValue::mapping(Mapping::from_iter([(
+                    "@@dbt_model_name".into(),
+                    "override".into(),
+                )])),
+                "Cannot use reserved query tag keys: @@dbt_model_name",
+            ),
+            (
+                non_string_key,
+                "query_tags keys must be strings. Only string keys are supported.",
+            ),
+        ] {
+            let mut config = base_config();
+            config.insert("token".into(), "T".into());
+            config.insert("query_tags".into(), query_tags);
+
+            let error = DatabricksAuth::new(Box::new(crate::NoopAuthWarningPrinter))
+                .configure(&AdapterConfig::new(config))
+                .unwrap_err();
+            assert!(error.msg().contains(expected), "{}", error.msg());
+        }
+    }
+
+    #[test]
+    fn test_query_tags_database_defaults_reject_invalid_json_strings() {
+        for (query_tags, expected) in [
+            (
+                YmlValue::string(r#"["not","an","object"]"#.to_owned()),
+                "query_tags must be a JSON object (dictionary)",
+            ),
+            (
+                YmlValue::string(r#"{"invalid": json}"#.to_owned()),
+                "Invalid JSON in query_tags",
+            ),
+        ] {
+            let mut config = base_config();
+            config.insert("token".into(), "T".into());
+            config.insert("query_tags".into(), query_tags);
+
+            let error = DatabricksAuth::new(Box::new(crate::NoopAuthWarningPrinter))
+                .configure(&AdapterConfig::new(config))
+                .unwrap_err();
+            assert!(error.msg().contains(expected), "{}", error.msg());
+        }
     }
 
     #[test]
@@ -357,6 +642,62 @@ mod tests {
             (databricks::AUTH_TYPE, databricks::auth_type::PAT),
         ];
         run_config_test(config, &expected).unwrap();
+    }
+
+    #[test]
+    fn test_connect_timeout_maps_to_driver_option() {
+        // `connect_timeout` (seconds) becomes the driver connect-timeout option as a Go duration.
+        let mut config = base_config();
+        config.insert("token".into(), "T".into());
+        config.insert("connect_timeout".into(), YmlValue::from(600i64));
+
+        let expected = vec![
+            (databricks::TOKEN, "T"),
+            (databricks::SCHEMA, "S"),
+            (databricks::HOST, "H"),
+            (databricks::HTTP_PATH, "/sql/1.0/warehouses/warehouse-id"),
+            (databricks::CATALOG, "C"),
+            (databricks::USER_AGENT, USER_AGENT_NAME),
+            (databricks::CONNECT_TIMEOUT, "600s"),
+            (databricks::AUTH_TYPE, databricks::auth_type::PAT),
+        ];
+        run_config_test(config, &expected).unwrap();
+    }
+
+    #[test]
+    fn test_connect_timeout_absent_sets_no_option() {
+        // No `connect_timeout` in the profile => no connect-timeout option is emitted.
+        let mut config = base_config();
+        config.insert("token".into(), "T".into());
+
+        let expected = vec![
+            (databricks::TOKEN, "T"),
+            (databricks::SCHEMA, "S"),
+            (databricks::HOST, "H"),
+            (databricks::HTTP_PATH, "/sql/1.0/warehouses/warehouse-id"),
+            (databricks::CATALOG, "C"),
+            (databricks::USER_AGENT, USER_AGENT_NAME),
+            (databricks::AUTH_TYPE, databricks::auth_type::PAT),
+        ];
+        // run_config_test asserts the option count matches exactly, so CONNECT_TIMEOUT being
+        // absent from `expected` also proves the option was not set.
+        run_config_test(config, &expected).unwrap();
+    }
+
+    #[test]
+    fn test_connect_timeout_zero_or_negative_errors() {
+        for bad in [0i64, -5i64] {
+            let mut config = base_config();
+            config.insert("token".into(), "T".into());
+            config.insert("connect_timeout".into(), YmlValue::from(bad));
+
+            match run_config_test(config, &[]) {
+                Err(AuthError::Config(_)) => {}
+                other => {
+                    panic!("expected AuthError::Config for connect_timeout={bad}, got {other:?}")
+                }
+            }
+        }
     }
 
     #[test]
@@ -798,7 +1139,7 @@ mod tests {
             ("token".into(), "T".into()),
         ]);
 
-        let err = DatabricksAuth {}
+        let err = DatabricksAuth::new(Box::new(crate::NoopAuthWarningPrinter))
             .configure(&AdapterConfig::new(config))
             .expect_err("configure should fail");
         assert_eq!(err.msg(), "host is required");
@@ -813,7 +1154,7 @@ mod tests {
             ("token".into(), "T".into()),
         ]);
 
-        let err = DatabricksAuth {}
+        let err = DatabricksAuth::new(Box::new(crate::NoopAuthWarningPrinter))
             .configure(&AdapterConfig::new(config))
             .expect_err("configure should fail");
 
@@ -834,7 +1175,7 @@ mod tests {
             config.insert("token".into(), "T".into());
             config.remove(missing_key);
 
-            let err = DatabricksAuth {}
+            let err = DatabricksAuth::new(Box::new(crate::NoopAuthWarningPrinter))
                 .configure(&AdapterConfig::new(config))
                 .expect_err("configure should fail");
 
@@ -853,7 +1194,8 @@ mod tests {
             ("client_secret".into(), YmlValue::number(1i64.into())),
         ]);
 
-        let err = parse_auth(&AdapterConfig::new(config)).expect_err("expected parse_auth error");
+        let err = parse_auth(&AdapterConfig::new(config), &crate::NoopAuthWarningPrinter)
+            .expect_err("expected parse_auth error");
         match err {
             AuthError::YAML(e) => assert!(e.to_string().contains("missing field `client_secret`")),
             other => panic!("expected YAML missing-field error, got {other:?}"),
@@ -867,7 +1209,8 @@ mod tests {
             ("client_id".into(), YmlValue::bool(true)),
         ]);
 
-        let err = parse_auth(&AdapterConfig::new(config)).expect_err("expected parse_auth error");
+        let err = parse_auth(&AdapterConfig::new(config), &crate::NoopAuthWarningPrinter)
+            .expect_err("expected parse_auth error");
         match err {
             AuthError::YAML(e) => assert!(e.to_string().contains("missing field `client_id`")),
             other => panic!("expected YAML missing-field error, got {other:?}"),
@@ -882,6 +1225,48 @@ mod tests {
         let path = resolve_http_path(&config).expect("expected to resolve http_path from config");
 
         assert_eq!(path, "/sql/extra/warehouse");
+    }
+
+    #[test]
+    fn test_configure_fingerprint_differs_per_compute() {
+        // Each named compute must produce a distinct fingerprint, or the pool
+        // could reuse another compute's connection.
+        fn fingerprint_with(compute: Option<&str>) -> u64 {
+            let compute_config = Mapping::from_iter([
+                (
+                    "small".into(),
+                    Mapping::from_iter([("http_path".into(), "/sql/1.0/warehouses/small".into())])
+                        .into(),
+                ),
+                (
+                    "large".into(),
+                    Mapping::from_iter([("http_path".into(), "/sql/1.0/warehouses/large".into())])
+                        .into(),
+                ),
+            ]);
+            let mut mapping = base_config();
+            mapping.insert("token".into(), "T".into());
+            mapping.insert("compute".into(), compute_config.into());
+            if let Some(name) = compute {
+                mapping.insert("databricks_compute".into(), name.into());
+            }
+            let builder = DatabricksAuth::new(Box::new(crate::NoopAuthWarningPrinter))
+                .configure(&AdapterConfig::new(mapping))
+                .expect("configure should succeed");
+            let opts = builder.into_iter().collect::<Vec<_>>();
+            DatabaseBuilder::fingerprint(opts.iter()).as_u64()
+        }
+
+        let default_fp = fingerprint_with(None);
+        let small_fp = fingerprint_with(Some("small"));
+        let large_fp = fingerprint_with(Some("large"));
+
+        assert_ne!(
+            small_fp, large_fp,
+            "different named compute must yield different connection fingerprints"
+        );
+        assert_ne!(default_fp, small_fp);
+        assert_ne!(default_fp, large_fp);
     }
 
     #[test]

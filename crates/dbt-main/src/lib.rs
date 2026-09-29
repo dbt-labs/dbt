@@ -6,11 +6,10 @@ pub mod compilation;
 pub mod dbt_lib;
 pub mod driver;
 pub use driver::{DbtCompilationDriver, DbtTaskExecutionDriver};
+pub mod freshness;
 pub mod retry;
-pub mod source_freshness;
 pub mod vars;
 
-pub mod install_method;
 pub mod version_check;
 
 pub use dbt_clap_core::from_lib;
@@ -21,4 +20,6 @@ pub mod update;
 mod utils;
 
 mod main_impl;
-pub use main_impl::{prepare_cli_or_exit, print_trimmed_error, run_cli, run_cli_with_code};
+pub use main_impl::{
+    init_env_before_parse, prepare_cli_or_exit, print_trimmed_error, run_cli, run_cli_with_code,
+};

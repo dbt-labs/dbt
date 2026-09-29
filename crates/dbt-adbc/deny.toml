@@ -2,4 +2,5 @@
 multiple-versions = "allow"
 deny = [
   { crate = "dbt-common", reason = "dbt-adbc should be treated as an 'external' crate that wraps ADBC drivers with a more usable API" },
+  { crate = "dbt-runtime", reason = "dbt-adbc operations run on the dbt-runtime, but it shouldn't use the dbt-runtime for anything" },
 ]

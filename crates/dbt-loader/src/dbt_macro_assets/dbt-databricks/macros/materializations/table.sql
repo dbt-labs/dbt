@@ -15,7 +15,7 @@
     {% set staging_relation = make_staging_relation(target_relation) %}
 
     {{ run_pre_hooks() }}
-    
+
     {% call statement('main', language=language) %}
       {{ get_create_intermediate_table(intermediate_relation, compiled_code, language) }}
     {% endcall %}
@@ -27,7 +27,7 @@
       {% else %}
         {# DIVERGENCE BEGIN: upstream uses relation.type != 'table'. No
        dbt_version guard needed: v1 BaseRelation also exposes the `is_table` property. #}
-        {% if existing_relation and (not existing_relation.is_table or not (existing_relation.can_be_replaced and adapter.resolve_file_format(config) in ('delta', 'iceberg'))) -%}
+        {% if existing_relation and (existing_relation.is_shallow_clone or not existing_relation.is_table or not (existing_relation.can_be_replaced and adapter.resolve_file_format(config) in ('delta', 'iceberg'))) -%}
         {# DIVERGENCE END #}
           {{ adapter.drop_relation(existing_relation) }}
         {%- endif %}
@@ -37,6 +37,7 @@
 
     {% set should_revoke = should_revoke(existing_relation, full_refresh_mode=True) %}
     {{ apply_grants(target_relation, grant_config, should_revoke) }}
+    {% do optimize(target_relation) %}
 
     {% if language == 'python' %}
       {{ drop_relation_if_exists(intermediate_relation) }}
@@ -50,7 +51,7 @@
     -- create or replace table instead of dropping, so we don't have the table unavailable
     {# DIVERGENCE BEGIN: upstream uses existing_relation.type != 'table'. No
        dbt_version guard needed: v1 BaseRelation also exposes the `is_table` property. #}
-    {% if existing_relation and (not existing_relation.is_table or not (existing_relation.can_be_replaced and adapter.resolve_file_format(config) in ('delta', 'iceberg'))) -%}
+    {% if existing_relation and (existing_relation.is_shallow_clone or not existing_relation.is_table or not (existing_relation.can_be_replaced and adapter.resolve_file_format(config) in ('delta', 'iceberg'))) -%}
     {# DIVERGENCE END #}
       {{ adapter.drop_relation(existing_relation) }}
     {%- endif %}
@@ -67,6 +68,11 @@
       {% do apply_tblproperties(target_relation, tblproperties) %}
     {% endif %}
     {%- do apply_tags(target_relation, tags) -%}
+
+    {% set column_tags = adapter.get_column_tags_from_model(config.model) %}
+    {% if column_tags and column_tags.set_column_tags %}
+      {{ apply_column_tags(target_relation, column_tags) }}
+    {% endif %}
 
     {% do persist_docs(target_relation, model, for_relation=language=='python') %}
 

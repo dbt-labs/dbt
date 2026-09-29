@@ -6,7 +6,7 @@ use crate::relation::config_v2::{
     ComponentConfig, ComponentConfigLoader, SimpleComponentConfigImpl, diff, impl_loader,
 };
 use crate::relation::snowflake::config::{
-    DescribeDynamicTableResults, get_string_by_name_from_record_batch,
+    SnowflakeDescribeResults, get_string_by_name_from_record_batch,
 };
 
 pub(crate) const TYPE_NAME: &str = "scheduler";
@@ -27,8 +27,8 @@ fn new_component(scheduler: String) -> Scheduler {
     }
 }
 
-fn from_remote_state(results: &DescribeDynamicTableResults) -> AdapterResult<Scheduler> {
-    let batch = &results.dynamic_table;
+fn from_remote_state(results: &SnowflakeDescribeResults) -> AdapterResult<Scheduler> {
+    let batch = &results.record_batch;
     let scheduler = get_string_by_name_from_record_batch(batch, "scheduler")
         .ok()
         .and_then(|s| {
@@ -82,7 +82,7 @@ fn from_local_config(relation_config: &dyn InternalDbtNodeAttributes) -> Adapter
     Ok(new_component(scheduler))
 }
 
-impl_loader!(Scheduler, DescribeDynamicTableResults);
+impl_loader!(Scheduler, SnowflakeDescribeResults);
 
 #[cfg(test)]
 mod tests {

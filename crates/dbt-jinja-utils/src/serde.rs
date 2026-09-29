@@ -459,8 +459,8 @@ fn render_jinja_str<S: Serialize>(
         };
         return Ok((Value::string(result), Vec::new()));
     }
-    if check_single_expression_without_whitepsace_control(s) {
-        let compiled = env.compile_expression(&s[2..s.len() - 2])?;
+    if let Some(body) = single_expression_body(s) {
+        let compiled = env.compile_expression(body)?;
 
         let diagnostics =
             perform_typecheck(env, yaml_span, |funcsigns, builtins, listener, ctx| {
@@ -576,47 +576,41 @@ static RE_HAS_RENDER_CHARS: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(\{\{|\{\%|\{\#|%\}|#\}|\}\})").expect("valid regex"));
 
 /// Check if the input is a single Jinja expression without whitespace control.
-///
-/// Bare `{` / `}` in the body are allowed so that dict and set literals
-/// (`{{ {'a': 1} }}`, `{{ {1, 2, 3} }}`) take the typed evaluation path rather
-/// than being coerced to their Display form. Nested Jinja delimiters (`{{`,
-/// `}}`, `{%`, `%}`, `{#`, `#}`) inside the body still disqualify the input,
-/// which keeps multi-expression and statement-bearing templates on the string
-/// rendering path.
 pub fn check_single_expression_without_whitepsace_control(input: &str) -> bool {
-    if input.starts_with("{{-") || input.ends_with("-}}") {
-        return false;
-    }
-    if !input.starts_with("{{") || !input.ends_with("}}") || input.len() < 4 {
-        return false;
-    }
-    let body = &input[2..input.len() - 2];
-    // `}}}` ends with `}}` but its body ends with `}`, which the pairwise scan
-    // below misses. Fall through so the template renderer handles it correctly.
-    if body.ends_with('}') {
-        return false;
-    }
-    let bytes = body.as_bytes();
-    for i in 0..bytes.len().saturating_sub(1) {
-        if matches!(
-            &bytes[i..i + 2],
-            b"{{" | b"}}" | b"{%" | b"%}" | b"{#" | b"#}"
-        ) {
-            return false;
-        }
-    }
-    true
+    single_expression_body(input).is_some()
 }
 
-/// The inner expression of a single `{{ expr }}` string accepted by
-/// `check_single_expression_without_whitepsace_control`, or `None`.
+/// The inner expression of a single `{{ expr }}` string, or `None`.
+///
+/// Parses `input` as a full Jinja template and checks that it is structurally
+/// exactly one emitted expression, so nested dict/set literals (`{{ {'a': {'b': 1}} }}`)
+/// aren't confused with separate Jinja constructs (`{{ a }}{{ b }}`).
 pub fn single_expression_body(input: &str) -> Option<&str> {
-    check_single_expression_without_whitepsace_control(input).then(|| &input[2..input.len() - 2])
+    if input.starts_with("{{-") || input.ends_with("-}}") {
+        return None;
+    }
+    let template = minijinja::machinery::parse(
+        input,
+        "<expression>",
+        Default::default(),
+        Default::default(),
+    )
+    .ok()?;
+    let minijinja::machinery::ast::Stmt::Template(template) = template else {
+        return None;
+    };
+    match template.children.as_slice() {
+        [minijinja::machinery::ast::Stmt::EmitExpr(_)] => {
+            input.strip_prefix("{{")?.strip_suffix("}}")
+        }
+        _ => None,
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use dbt_schemas::schemas::properties::DbtPropertiesFile;
 
     #[test]
     fn test_check_single_expression_without_whitepsace_control() {
@@ -638,8 +632,14 @@ mod tests {
         assert!(check_single_expression_without_whitepsace_control(
             "{{ foo({'a': 1}) }}"
         ));
+        // Nested dict literals should be accepted (issue #13214).
         assert!(check_single_expression_without_whitepsace_control(
-            "{{ {1, 2, 3} }}"
+            "{{ {'warn_after': {'count': 1, 'period': 'day'}} }}"
+        ));
+        // A `{{`-like substring inside a string literal is not a nested Jinja
+        // delimiter and must not disqualify the expression.
+        assert!(check_single_expression_without_whitepsace_control(
+            "{{ 'a{{b' }}"
         ));
 
         assert!(!check_single_expression_without_whitepsace_control(
@@ -657,8 +657,14 @@ mod tests {
         assert!(!check_single_expression_without_whitepsace_control(
             "{{ foo }} suffix"
         ));
+        // This dialect has no set-literal syntax, so this never parses as a
+        // single expression regardless of the outer brace shape.
+        assert!(!check_single_expression_without_whitepsace_control(
+            "{{ {1, 2, 3} }}"
+        ));
 
-        // `}}}` body ends with `}`, missed by pairwise scan — must fall through to template renderer.
+        // Malformed/mismatched trailing delimiters must fall through to the
+        // template renderer rather than being accepted as a single expression.
         assert!(!check_single_expression_without_whitepsace_control(
             "{{ foo }}}"
         ));
@@ -685,5 +691,90 @@ mod tests {
             Value::Mapping(_, _) => {} // minimal structural check
             other => panic!("Expected top-level mapping, got: {:?}", other),
         }
+    }
+
+    /// `anchors:` as a sequence is the shape the field was originally modeled on;
+    /// it must keep working after widening the type to accept any YAML node.
+    #[test]
+    fn test_properties_file_anchors_as_a_sequence_still_parses() {
+        let file: DbtPropertiesFile = from_yaml_raw(
+            r#"
+version: 2
+anchors:
+  - &hx_base
+    name: hx_base
+    database: raw_prod
+sources:
+  - <<: *hx_base
+    name: entries
+    schema: pub
+    tables:
+      - name: entries
+"#,
+            None,
+            false,
+            None,
+        )
+        .expect("properties file should parse");
+        let sources = file.sources.expect("sources");
+        assert_eq!(sources.len(), 1);
+        assert_eq!(sources[0].database.as_deref(), Some("raw_prod"));
+    }
+
+    /// fs#14005: a mapping-shaped anchor holder previously failed deserialization of
+    /// the whole properties file with "invalid type: map, expected a sequence",
+    /// which silently discarded the `sources:` block below it.
+    #[test]
+    fn test_properties_file_anchors_as_a_mapping_parses_and_the_source_still_registers() {
+        let file: DbtPropertiesFile = from_yaml_raw(
+            r#"
+version: 2
+anchors:
+  base: &mapping_base
+    database: pub
+    schema: pub
+sources:
+  - name: catalog
+    <<: *mapping_base
+    tables:
+      - name: entries
+"#,
+            None,
+            false,
+            None,
+        )
+        .expect("properties file should parse");
+        let sources = file.sources.expect("sources");
+        assert_eq!(sources.len(), 1);
+        assert_eq!(sources[0].database.as_deref(), Some("pub"));
+        assert_eq!(sources[0].schema.as_deref(), Some("pub"));
+    }
+
+    /// fs#14005: an anchor with no wrapping key at all -- `anchors: &name {...}` --
+    /// is another non-sequence shape the same fix must accept.
+    #[test]
+    fn test_properties_file_anchors_as_a_bare_scalar_anchor_parses_and_the_source_still_registers()
+    {
+        let file: DbtPropertiesFile = from_yaml_raw(
+            r#"
+version: 2
+anchors: &scalar_base
+  database: pub
+  schema: pub
+sources:
+  - name: catalog_scalar
+    <<: *scalar_base
+    tables:
+      - name: entries
+"#,
+            None,
+            false,
+            None,
+        )
+        .expect("properties file should parse");
+        let sources = file.sources.expect("sources");
+        assert_eq!(sources.len(), 1);
+        assert_eq!(sources[0].database.as_deref(), Some("pub"));
+        assert_eq!(sources[0].schema.as_deref(), Some("pub"));
     }
 }

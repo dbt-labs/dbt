@@ -25,7 +25,7 @@ macro_rules! current_function_short_name {
         let mut name = type_name_of_val(f).strip_suffix("::f").unwrap_or("");
         // If this macro is used in a closure, the last path segment will be {{closure}}
         // but we want to ignore it
-        // Caveat: for example, this is the case if you use this macro in a a async test function annotated with #[tokio::test]
+        // Caveat: for example, this is the case if you use this macro in a a async test function annotated with #[dbt_runtime::test]
         while let Some(rest) = name.strip_suffix("::{{closure}}") {
             name = rest;
         }

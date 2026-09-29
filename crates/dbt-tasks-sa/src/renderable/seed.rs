@@ -19,7 +19,7 @@ pub fn run_seed_render(
     result_sender: Option<std::sync::mpsc::SyncSender<TaskResult>>,
 ) -> FsResult<NodeStatus> {
     let relation =
-        dbt_adapter::relation::create_relation_from_node(ctx.adapter_type(), node.as_ref(), None)?;
+        dbt_adapter::relation::create_relation_from_node(node.node_adapter(), node.as_ref(), None)?;
     let cfqn = relation.get_canonical_fqn()?;
     if !ctx.schema_cache.exists(&cfqn) {
         // Don't emit a new error — pre_register_seeds already logged it.

@@ -17,7 +17,7 @@ catalogs:
         endpoint: "https://rest.example.com"
         warehouse: "warehouse_name"
         secret: "iceberg_secret"
-        attach_as: "iceberg_db"
+        catalog_database: "iceberg_db"
         default_schema: "demo"
         max_table_staleness: "10 minutes"
         authorization_type: "OAUTH2"

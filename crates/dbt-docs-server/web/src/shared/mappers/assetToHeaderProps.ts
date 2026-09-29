@@ -1,5 +1,4 @@
-import type { ResourceTypeExplorer } from '@dbt-labs/dbt-dag';
-
+import type { ResourceTypeExplorer } from '../../lib/resourceType';
 import type { AssetHeaderProps } from '../components/AssetHeader';
 import type { Asset, Relation } from '../typings/domain/asset';
 

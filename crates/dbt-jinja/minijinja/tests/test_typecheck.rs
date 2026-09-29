@@ -51,17 +51,21 @@ impl TypecheckingEventListener for WarningCollector {
 
 /// Build the minimal typecheck context required by the type checker.
 /// The type checker expects TARGET_PACKAGE_NAME, ROOT_PACKAGE_NAME,
-/// and DBT_AND_ADAPTERS_NAMESPACE to be present.
+/// DBT_AND_ADAPTERS_NAMESPACE and `dialect` to be present.
 fn minimal_typecheck_context() -> BTreeMap<String, Value> {
     let mut ctx = BTreeMap::new();
     ctx.insert("TARGET_PACKAGE_NAME".to_string(), Value::from("test"));
     ctx.insert("ROOT_PACKAGE_NAME".to_string(), Value::from("test"));
-    // DBT_AND_ADAPTERS_NAMESPACE must be an object (ValueMap = IndexMap<Value, Value>).
-    let empty_map = indexmap::IndexMap::<Value, Value>::new();
+    // DBT_AND_ADAPTERS_NAMESPACE is `dialect -> (macro_name -> package)`; both
+    // levels are objects (ValueMap = IndexMap<Value, Value>).
+    let inner = indexmap::IndexMap::<Value, Value>::new();
+    let mut namespaces = indexmap::IndexMap::<Value, Value>::new();
+    namespaces.insert(Value::from("postgres"), Value::from_object(inner));
     ctx.insert(
         "DBT_AND_ADAPTERS_NAMESPACE".to_string(),
-        Value::from_object(empty_map),
+        Value::from_object(namespaces),
     );
+    ctx.insert("dialect".to_string(), Value::from("postgres"));
     ctx
 }
 

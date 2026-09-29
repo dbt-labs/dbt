@@ -1,5 +1,9 @@
 use std::borrow::Cow;
 
+use dbt_adbc::{Backend, database};
+
+use crate::{Auth, AuthError};
+
 pub use dbt_yaml::Value as YmlValue;
 
 // TODO(felipecrv): move this struct for generic use as it now has nothing specific to adapters
@@ -9,15 +13,11 @@ pub struct AdapterConfig {
     repr: dbt_yaml::Mapping,
 }
 
-fn yml_value_to_string<'a>(value: &'a YmlValue) -> Cow<'a, str> {
+pub(crate) fn yml_value_to_string<'a>(value: &'a YmlValue) -> Cow<'a, str> {
     // This function exists because `dbt_yaml::to_string` appends
     // a newline to the end of every string. And, less importantly, it
     // also copies values that are strings already.
     match value {
-        YmlValue::Null(_) => Cow::Borrowed("null"),
-        YmlValue::Bool(b, _) => Cow::Borrowed(if *b { "true" } else { "false" }),
-        YmlValue::Number(n, _) => Cow::Owned(n.to_string()),
-        YmlValue::String(s, _) => Cow::Borrowed(s),
         YmlValue::Sequence(_, _) | YmlValue::Mapping(_, _) => {
             let res = dbt_yaml::to_string(value);
             debug_assert!(
@@ -31,6 +31,7 @@ fn yml_value_to_string<'a>(value: &'a YmlValue) -> Cow<'a, str> {
             Cow::Owned(s)
         }
         YmlValue::Tagged(tagged_value, _) => yml_value_to_string(&tagged_value.value),
+        other => other.as_scalar_string().expect("is a scalar"),
     }
 }
 
@@ -101,6 +102,18 @@ impl AdapterConfig {
         self.get("use_dbt_cloud_credentials")
             .and_then(|v| v.as_bool())
             .unwrap_or(false)
+    }
+
+    pub fn build_connection_builder(
+        &self,
+        auth: &dyn Auth,
+        configure_cloud_database: impl FnOnce(Backend) -> Result<database::Builder, AuthError>,
+    ) -> Result<database::Builder, AuthError> {
+        if self.use_dbt_cloud_credentials() {
+            configure_cloud_database(auth.backend())
+        } else {
+            auth.configure(self)
+        }
     }
 }
 

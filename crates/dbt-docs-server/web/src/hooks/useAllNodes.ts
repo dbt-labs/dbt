@@ -1,12 +1,10 @@
-import { useEffect } from 'react';
-import { useInfiniteQuery } from '@tanstack/react-query';
+import { useQuery } from '@tanstack/react-query';
 
-import { api, type NodeSummary } from '../api';
-
-const NODE_PAGE_SIZE = 1000;
+import { useBootstrapData } from '../lib/bootstrapContext';
+import type { NodeSummary } from '../types';
 
 export interface UseAllNodesResult {
-  /** Null until the first page lands; grows progressively as pages auto-fetch. */
+  /** Null until the bootstrap read resolves. */
   nodes: NodeSummary[] | null;
   total: number | null;
   isPending: boolean;
@@ -14,34 +12,27 @@ export interface UseAllNodesResult {
 }
 
 /**
- * Load every node in the project, paging progressively. The effect auto-fetches
- * the next page as soon as the previous one lands, so `nodes.length` / `total`
- * gives the LocatePane a live progress signal while the full list streams in.
+ * Every node in the project, from one parquet read.
+ *
+ * `dbt.nodes_index` is exactly the nine columns this needs, so the whole project
+ * arrives in a single request that `main.tsx` started before React mounted. This
+ * used to page `GET /api/v1/nodes` a thousand rows at a time and auto-fetch the
+ * next as each landed, which is why callers still see a `total` — it is now just
+ * `nodes.length`, and there is no partial state to report progress on.
  */
 export function useAllNodes(): UseAllNodesResult {
-  const query = useInfiniteQuery({
-    queryKey: ['allNodes'],
-    queryFn: ({ pageParam }) => api.nodes({ limit: NODE_PAGE_SIZE, offset: pageParam }),
-    initialPageParam: 0,
-    getNextPageParam: (lastPage, allPages) => {
-      const loaded = allPages.reduce((n, p) => n + p.nodes.length, 0);
-      if (lastPage.nodes.length === 0) return undefined;
-      return loaded < lastPage.total ? loaded : undefined;
-    },
-    select: (data) => ({
-      nodes: data.pages.flatMap((p) => p.nodes),
-      total: data.pages[0]?.total ?? null,
-    }),
+  const bootstrap = useBootstrapData();
+  const query = useQuery({
+    queryKey: ['bootstrapNodes'],
+    // The promise is created once per page load, so this resolves immediately on any
+    // refetch — react-query is just how the result reaches the component tree.
+    queryFn: () => bootstrap,
+    staleTime: Infinity,
   });
-
-  const { hasNextPage, isFetchingNextPage, fetchNextPage, isError } = query;
-  useEffect(() => {
-    if (hasNextPage && !isFetchingNextPage && !isError) void fetchNextPage();
-  }, [hasNextPage, isFetchingNextPage, fetchNextPage, isError]);
 
   return {
     nodes: query.data?.nodes ?? null,
-    total: query.data?.total ?? null,
+    total: query.data?.nodes.length ?? null,
     isPending: query.isPending,
     error: query.error,
   };

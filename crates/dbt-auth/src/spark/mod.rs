@@ -1,4 +1,4 @@
-use crate::{AdapterConfig, Auth, AuthError, AuthOutcome, auth_configure_pipeline};
+use crate::{AdapterConfig, Auth, AuthError, AuthWarningPrinter, auth_configure_pipeline};
 use dbt_adbc::{Backend, database, spark};
 pub use dbt_yaml::Value as YmlValue;
 
@@ -76,7 +76,11 @@ fn apply_session_params(
 }
 
 impl<'a> SparkAuthIR<'a> {
-    pub fn apply(self, mut builder: database::Builder) -> Result<database::Builder, AuthError> {
+    pub fn apply(
+        self,
+        mut builder: database::Builder,
+        _warning_printer: &dyn AuthWarningPrinter,
+    ) -> Result<database::Builder, AuthError> {
         match self {
             SparkAuthIR::Thrift {
                 host,
@@ -178,7 +182,10 @@ impl<'a> SparkAuthIR<'a> {
     }
 }
 
-fn parse_auth<'a>(config: &'a AdapterConfig) -> Result<SparkAuthIR<'a>, AuthError> {
+fn parse_auth<'a>(
+    config: &'a AdapterConfig,
+    _warning_printer: &dyn AuthWarningPrinter,
+) -> Result<SparkAuthIR<'a>, AuthError> {
     let method = config
         .get_str("method")
         .ok_or_else(|| AuthError::config("'method' is a required Spark configuration"))?;
@@ -226,17 +233,13 @@ fn parse_auth<'a>(config: &'a AdapterConfig) -> Result<SparkAuthIR<'a>, AuthErro
                 ));
             };
 
-            let value = match value {
-                YmlValue::String(v, _) => v.to_string(),
-                YmlValue::Number(v, _) => v.to_string(),
-                _ => {
-                    return Err(AuthError::config(
-                        "'server_side_parameters' value must be string or number",
-                    ));
-                }
+            let Some(value) = value.as_scalar_string() else {
+                return Err(AuthError::config(
+                    "'server_side_parameters' value must be a scalar",
+                ));
             };
 
-            session_params.insert(key.as_str(), value);
+            session_params.insert(key.as_str(), value.into_owned());
         }
     }
 
@@ -350,19 +353,28 @@ fn parse_auth<'a>(config: &'a AdapterConfig) -> Result<SparkAuthIR<'a>, AuthErro
 fn apply_connection_args(
     _config: &AdapterConfig,
     builder: database::Builder,
+    _warning_printer: &dyn AuthWarningPrinter,
 ) -> Result<database::Builder, AuthError> {
     Ok(builder)
 }
 
-pub struct SparkAuth;
+pub struct SparkAuth {
+    pub warning_printer: Box<dyn AuthWarningPrinter>,
+}
+
+impl SparkAuth {
+    pub fn new(warning_printer: Box<dyn AuthWarningPrinter>) -> Self {
+        Self { warning_printer }
+    }
+}
 
 impl Auth for SparkAuth {
     fn backend(&self) -> Backend {
         Backend::Spark
     }
 
-    fn configure(&self, config: &AdapterConfig) -> Result<AuthOutcome, AuthError> {
-        auth_configure_pipeline!(self.backend(), &config, parse_auth, apply_connection_args)
+    fn configure(&self, config: &AdapterConfig) -> Result<database::Builder, AuthError> {
+        auth_configure_pipeline!(self, &config, parse_auth, apply_connection_args)
     }
 }
 
@@ -404,10 +416,9 @@ mod tests {
                 ),
             );
 
-            let builder = SparkAuth {}
+            let builder = SparkAuth::new(Box::new(crate::NoopAuthWarningPrinter))
                 .configure(&AdapterConfig::new(config))
-                .expect("configure")
-                .builder;
+                .expect("configure");
 
             assert_eq!(other_option_value(&builder, spark::AUTH_TYPE), Some(option));
         }
@@ -420,7 +431,7 @@ mod tests {
             ("method".into(), "thrift".into()),
             ("auth".into(), "invalid".into()),
         ]);
-        let err = SparkAuth {}
+        let err = SparkAuth::new(Box::new(crate::NoopAuthWarningPrinter))
             .configure(&AdapterConfig::new(config))
             .expect_err("configure should fail");
         assert_eq!(err.msg(), "invalid 'auth' for Spark Thrift");
@@ -440,10 +451,9 @@ mod tests {
                 ("auth".into(), auth.into()),
             ]);
 
-            let builder = SparkAuth {}
+            let builder = SparkAuth::new(Box::new(crate::NoopAuthWarningPrinter))
                 .configure(&AdapterConfig::new(config))
-                .expect("configure")
-                .builder;
+                .expect("configure");
 
             assert_eq!(other_option_value(&builder, spark::AUTH_TYPE), Some(option));
             assert_eq!(
@@ -460,7 +470,7 @@ mod tests {
             ("method".into(), "thrift".into()),
             ("auth".into(), "invalid".into()),
         ]);
-        let err = SparkAuth {}
+        let err = SparkAuth::new(Box::new(crate::NoopAuthWarningPrinter))
             .configure(&AdapterConfig::new(config))
             .expect_err("configure should fail");
         assert_eq!(err.msg(), "invalid 'auth' for Spark Thrift");
@@ -478,10 +488,9 @@ mod tests {
             ),
         ]);
 
-        let builder = SparkAuth {}
+        let builder = SparkAuth::new(Box::new(crate::NoopAuthWarningPrinter))
             .configure(&AdapterConfig::new(config))
-            .expect("configure")
-            .builder;
+            .expect("configure");
 
         assert_eq!(
             other_option_value(&builder, spark::livy::SESSION_TTL),
@@ -497,10 +506,9 @@ mod tests {
             ("auth".into(), "NONE".into()),
             ("user".into(), "myuser".into()),
         ]);
-        let builder = SparkAuth {}
+        let builder = SparkAuth::new(Box::new(crate::NoopAuthWarningPrinter))
             .configure(&AdapterConfig::new(config))
-            .expect("configure")
-            .builder;
+            .expect("configure");
         assert_eq!(
             other_option_value(&builder, spark::AUTH_TYPE),
             Some(spark::auth_type::NONE)
@@ -513,10 +521,9 @@ mod tests {
             ("password".into(), "mypass".into()),
             ("user".into(), "myuser".into()),
         ]);
-        let builder = SparkAuth {}
+        let builder = SparkAuth::new(Box::new(crate::NoopAuthWarningPrinter))
             .configure(&AdapterConfig::new(config))
-            .expect("configure")
-            .builder;
+            .expect("configure");
         assert_eq!(
             other_option_value(&builder, spark::AUTH_TYPE),
             Some(spark::auth_type::TOKEN)
@@ -542,10 +549,9 @@ mod tests {
                 config.insert("auth".into(), a.into());
             }
 
-            let builder = SparkAuth {}
+            let builder = SparkAuth::new(Box::new(crate::NoopAuthWarningPrinter))
                 .configure(&AdapterConfig::new(config))
-                .expect("configure")
-                .builder;
+                .expect("configure");
 
             assert_eq!(
                 other_option_value(&builder, spark::AUTH_TYPE),
@@ -565,10 +571,9 @@ mod tests {
             ("password".into(), "mypass".into()),
         ]);
 
-        let builder = SparkAuth {}
+        let builder = SparkAuth::new(Box::new(crate::NoopAuthWarningPrinter))
             .configure(&AdapterConfig::new(config))
-            .expect("configure")
-            .builder;
+            .expect("configure");
 
         assert_eq!(
             other_option_value(&builder, spark::AUTH_TYPE),
@@ -591,10 +596,9 @@ mod tests {
             ("user".into(), "myuser".into()),
         ]);
 
-        let builder = SparkAuth {}
+        let builder = SparkAuth::new(Box::new(crate::NoopAuthWarningPrinter))
             .configure(&AdapterConfig::new(config))
-            .expect("configure")
-            .builder;
+            .expect("configure");
 
         assert_eq!(
             other_option_value(&builder, spark::AUTH_TYPE),
@@ -619,10 +623,9 @@ mod tests {
             ("token".into(), "mytoken".into()),
         ]);
 
-        let builder = SparkAuth {}
+        let builder = SparkAuth::new(Box::new(crate::NoopAuthWarningPrinter))
             .configure(&AdapterConfig::new(config))
-            .expect("configure")
-            .builder;
+            .expect("configure");
 
         assert_eq!(
             other_option_value(&builder, spark::AUTH_TYPE),
@@ -642,7 +645,7 @@ mod tests {
             ("auth".into(), "TOKEN".into()),
         ]);
 
-        let err = SparkAuth {}
+        let err = SparkAuth::new(Box::new(crate::NoopAuthWarningPrinter))
             .configure(&AdapterConfig::new(config))
             .expect_err("configure should fail");
         assert!(err.msg().contains("'token' or 'password' required"));
@@ -656,7 +659,7 @@ mod tests {
             ("auth".into(), "KERBEROS".into()),
         ]);
 
-        let err = SparkAuth {}
+        let err = SparkAuth::new(Box::new(crate::NoopAuthWarningPrinter))
             .configure(&AdapterConfig::new(config))
             .expect_err("configure should fail");
         assert_eq!(err.msg(), "invalid 'auth' for Spark Connect");
@@ -670,7 +673,7 @@ mod tests {
             ("auth".into(), "NOSASL".into()),
             ("platform_hint".into(), "invalid".into()),
         ]);
-        let err = SparkAuth {}
+        let err = SparkAuth::new(Box::new(crate::NoopAuthWarningPrinter))
             .configure(&AdapterConfig::new(config))
             .expect_err("configure should fail");
         assert_eq!(err.msg(), "invalid platform hint");
@@ -684,7 +687,7 @@ mod tests {
             ("auth".into(), "BASIC".into()),
             ("platform_hint".into(), "aws_emr_serverless".into()),
         ]);
-        let err = SparkAuth {}
+        let err = SparkAuth::new(Box::new(crate::NoopAuthWarningPrinter))
             .configure(&AdapterConfig::new(config))
             .expect_err("configure should fail");
         assert!(
@@ -709,7 +712,7 @@ mod tests {
                 .into(),
             ),
         ]);
-        let err = SparkAuth {}
+        let err = SparkAuth::new(Box::new(crate::NoopAuthWarningPrinter))
             .configure(&AdapterConfig::new(config))
             .expect_err("configure should fail");
         assert!(err.msg().contains("AWS_SIGV4"));
@@ -723,7 +726,7 @@ mod tests {
             ("auth".into(), "AWS_SIGV4".into()),
             ("platform_hint".into(), "aws_emr_eks".into()),
         ]);
-        let err = SparkAuth {}
+        let err = SparkAuth::new(Box::new(crate::NoopAuthWarningPrinter))
             .configure(&AdapterConfig::new(config))
             .expect_err("configure should fail");
         assert!(err.msg().contains("spark.kubernetes.namespace"));
@@ -745,7 +748,7 @@ mod tests {
                 .into(),
             ),
         ]);
-        let err = SparkAuth {}
+        let err = SparkAuth::new(Box::new(crate::NoopAuthWarningPrinter))
             .configure(&AdapterConfig::new(config))
             .expect_err("configure should fail");
         assert!(err.msg().contains("TTL"));

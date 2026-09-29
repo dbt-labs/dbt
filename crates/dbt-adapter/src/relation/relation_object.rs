@@ -3,7 +3,7 @@ use dbt_common::{ErrorCode, FsError, FsResult, fs_err};
 use dbt_schemas::dbt_types::RelationType;
 use dbt_schemas::filter::RunFilter;
 use dbt_schemas::schemas::common::{DbtQuoting, ResolvedQuoting};
-use dbt_schemas::schemas::dbt_catalogs_v2::V2CatalogType;
+use dbt_schemas::schemas::dbt_catalogs_v2::CatalogType;
 use dbt_schemas::schemas::relations::base::BaseRelation;
 use dbt_schemas::schemas::serde::minijinja_value_to_typed_struct;
 use dbt_schemas::schemas::{DbtSource, InternalDbtNodeAttributes, InternalDbtNodeWrapper};
@@ -82,6 +82,15 @@ impl RelationObject {
         }
     }
 
+    /// Wraps a relation derived from this one, keeping this relation's run filter.
+    fn with_relation(&self, relation: Arc<dyn BaseRelation>) -> Self {
+        Self {
+            relation,
+            run_filter: self.run_filter.clone(),
+            event_time: self.event_time.clone(),
+        }
+    }
+
     pub fn has_filter(&self) -> bool {
         self.run_filter.is_some()
     }
@@ -112,12 +121,14 @@ impl RelationObject {
                 )
             })?
             .map(|v| {
-                minijinja_value_to_typed_struct::<TypedConstraint>(v).map_err(|e| {
-                    minijinja::Error::new(
-                        minijinja::ErrorKind::SerdeDeserializeError,
-                        format!("enrich constraint item: {e}"),
-                    )
-                })
+                v.downcast_object_ref::<TypedConstraint>()
+                    .cloned()
+                    .ok_or_else(|| {
+                        minijinja::Error::new(
+                            minijinja::ErrorKind::InvalidOperation,
+                            "enrich constraints must contain TypedConstraint objects",
+                        )
+                    })
             })
             .collect::<Result<Vec<_>, _>>()?;
         let enriched = dbx.enrich(&constraints);
@@ -137,12 +148,6 @@ impl RelationObject {
                 )
             })?;
         Ok(Value::from(dbx.render_constraints_for_create()))
-    }
-
-    /// Databricks: get create_constraints for get_column_and_constraints_sql
-    fn relation_create_constraints(self: &Arc<Self>) -> Option<Value> {
-        let dbx = self.relation.as_any().downcast_ref::<Relation>()?;
-        Some(Value::from_serialize(&dbx.create_constraints))
     }
 }
 
@@ -206,7 +211,7 @@ impl Object for RelationObject {
                 let identifier: Option<String> =
                     args.consume_optional_only_from_kwargs("identifier");
                 self.replace_path(database, schema, identifier)
-                    .map(|r| Value::from_object(RelationObject::new(r)))
+                    .map(|r| Value::from_object(self.with_relation(r)))
             }
             "get" => {
                 let mut args = ArgParser::new(args, None);
@@ -231,14 +236,14 @@ impl Object for RelationObject {
             }
             "without_identifier" => self
                 .without_identifier()
-                .map(|r| Value::from_object(RelationObject::new(r))),
+                .map(|r| Value::from_object(self.with_relation(r))),
             "include" => {
                 let mut args = ArgParser::new(args, None);
                 let database: Option<bool> = args.consume_optional_only_from_kwargs("database");
                 let schema: Option<bool> = args.consume_optional_only_from_kwargs("schema");
                 let identifier: Option<bool> = args.consume_optional_only_from_kwargs("identifier");
                 self.include(database, schema, identifier)
-                    .map(|r| Value::from_object(RelationObject::new(r)))
+                    .map(|r| Value::from_object(self.with_relation(r)))
             }
             "quote" => {
                 let mut args = ArgParser::new(args, None);
@@ -246,7 +251,7 @@ impl Object for RelationObject {
                 let schema: Option<bool> = args.consume_optional_only_from_kwargs("schema");
                 let identifier: Option<bool> = args.consume_optional_only_from_kwargs("identifier");
                 self.quote(database, schema, identifier)
-                    .map(|r| Value::from_object(RelationObject::new(r)))
+                    .map(|r| Value::from_object(self.with_relation(r)))
             }
             "incorporate" => {
                 let mut args = ArgParser::new(args, None);
@@ -262,7 +267,7 @@ impl Object for RelationObject {
                     }
                 });
                 self.incorporate(path, relation_type, location)
-                    .map(|r| Value::from_object(RelationObject::new(r)))
+                    .map(|r| Value::from_object(self.with_relation(r)))
             }
             "information_schema" => {
                 let iter = ArgsIter::new("information_schema", &["view_name"], args);
@@ -310,12 +315,8 @@ impl Object for RelationObject {
                     }
                 })
             }
-            "dynamic_table_config_changeset" => {
-                let iter = ArgsIter::new(
-                    "dynamic_table_config_changeset",
-                    &["relation_results", "relation_config"],
-                    args,
-                );
+            "dynamic_table_config_changeset" | "interactive_table_config_changeset" => {
+                let iter = ArgsIter::new(name, &["relation_results", "relation_config"], args);
                 let relation_results = iter.next_arg::<Value>()?;
                 let relation_config = iter.next_arg::<Value>()?;
                 iter.finish()?;
@@ -360,11 +361,31 @@ impl Object for RelationObject {
 
             Some("is_table") => Some(Value::from(self.is_table())),
             Some("is_delta") => Some(Value::from(self.is_delta())),
-            Some("create_constraints") => self.relation_create_constraints(),
+            Some("is_shallow_clone") => Some(Value::from(self.is_shallow_clone())),
+            Some("alter_constraints") => {
+                let dbx = self.relation.as_any().downcast_ref::<Relation>()?;
+                Some(Value::from_iter(
+                    dbx.alter_constraints
+                        .iter()
+                        .cloned()
+                        .map(Value::from_object),
+                ))
+            }
+            Some("create_constraints") => {
+                let dbx = self.relation.as_any().downcast_ref::<Relation>()?;
+                Some(Value::from_iter(
+                    dbx.create_constraints
+                        .iter()
+                        .cloned()
+                        .map(Value::from_object),
+                ))
+            }
             Some("is_view") => Some(Value::from(self.is_view())),
             Some("is_materialized_view") => Some(Value::from(self.is_materialized_view())),
+            Some("is_metric_view") => Some(Value::from(self.is_metric_view())),
             Some("is_streaming_table") => Some(Value::from(self.is_streaming_table())),
             Some("is_dynamic_table") => Some(Value::from(self.is_dynamic_table())),
+            Some("is_interactive_table") => Some(Value::from(self.is_interactive_table())),
             Some("is_iceberg_format") => Some(Value::from(self.is_iceberg_format())),
             Some("is_cte") => Some(Value::from(self.is_cte())),
             Some("is_pointer") => Some(Value::from(self.is_pointer())),
@@ -377,6 +398,9 @@ impl Object for RelationObject {
             }
             Some("Table") => Some(Value::from(RelationType::Table.to_string())),
             Some("DynamicTable") => Some(Value::from(RelationType::DynamicTable.to_string())),
+            Some("InteractiveTable") => {
+                Some(Value::from(RelationType::InteractiveTable.to_string()))
+            }
             Some("StreamingTable") => Some(Value::from(RelationType::StreamingTable.to_string())),
             // the Jinja logics `if resolved.render is defined and resolved.render is callable `
             // in `macro build_ref_function` depends on this
@@ -391,6 +415,12 @@ impl Object for RelationObject {
             Some("project") => Some(Value::from(self.database())),
             Some("dataset") => Some(Value::from(self.schema())),
 
+            // ClickHouse
+            Some("can_exchange") => Some(Value::from(self.can_exchange())),
+            Some("mvs_pointing_to_it") => Some(Value::from_serialize(self.mvs_pointing_to_it())),
+            Some("is_refreshable") => Some(Value::from(self.is_refreshable())),
+            Some("refreshable_append") => Some(Value::from(self.refreshable_append())),
+
             _ => None,
         }
     }
@@ -403,6 +433,7 @@ impl Object for RelationObject {
             "is_table",
             "is_view",
             "is_materialized_view",
+            "is_metric_view",
             "is_streaming_table",
             "is_cte",
             "is_pointer",
@@ -433,11 +464,62 @@ impl Object for RelationObject {
     }
 }
 
+/// Return relation components normalized for the effective target.
+pub fn canonical_relation_parts(
+    target: Option<AdapterType>,
+    database: &str,
+    schema: &str,
+    identifier: &str,
+) -> (String, String, String) {
+    if target == Some(AdapterType::Databricks) {
+        (
+            database.to_lowercase(),
+            schema.to_lowercase(),
+            identifier.to_lowercase(),
+        )
+    } else {
+        (
+            database.to_string(),
+            schema.to_string(),
+            identifier.to_string(),
+        )
+    }
+}
+
 /// Whether a Jinja value contains a parse-time relation placeholder.
 pub fn is_parse_time_relation(value: &Value) -> bool {
     value
         .downcast_object_ref::<RelationObject>()
         .is_some_and(RelationObject::is_parse_time)
+}
+
+/// Render a relation using the effective destination when one is present.
+/// Databricks-targeted rendering uses canonical, unquoted lower-case components; all
+/// other targets retain the adapter's normal relation rendering.
+pub fn render_effective_relation(
+    adapter_type: AdapterType,
+    database: &str,
+    schema: &str,
+    identifier: &str,
+    custom_quoting: ResolvedQuoting,
+    target: Option<AdapterType>,
+) -> FsResult<String> {
+    match target {
+        Some(AdapterType::Databricks) => {
+            let (database, schema, identifier) =
+                canonical_relation_parts(target, database, schema, identifier);
+            Ok(format!("{database}.{schema}.{identifier}"))
+        }
+        _ => create_relation(
+            adapter_type,
+            database.to_owned(),
+            schema.to_owned(),
+            Some(identifier.to_owned()),
+            None,
+            custom_quoting,
+        )
+        .map(|relation| relation.render_self_as_str()),
+    }
 }
 
 /// Creates a relation based on the adapter type
@@ -490,6 +572,17 @@ pub fn create_relation_from_source(
     custom_quoting: ResolvedQuoting,
     source: &DbtSource,
 ) -> FsResult<Box<dyn BaseRelation>> {
+    // A source's `catalog_name` (when configured) names the `catalogs.yml`
+    // entry this source is actually read through -- e.g. an AWS Glue
+    // catalog for dbt Compute. It takes over as the relation's leading
+    // identifier so `database` can stay a descriptive label instead of
+    // having to spell the catalog's own name (the old, implicit coupling).
+    let database = source
+        .__source_attr__
+        .catalog_name
+        .clone()
+        .unwrap_or(database);
+
     if adapter_type == AdapterType::DuckDB
         && let Some(external) = duckdb_external_location_for_source(source)?
     {
@@ -638,7 +731,7 @@ fn duckdb_local_filesystem_root(source: &DbtSource) -> Option<String> {
         .catalogs
         .iter()
         .find(|catalog| catalog.name.eq_ignore_ascii_case(catalog_name))?;
-    if catalog.catalog_type != V2CatalogType::LocalFilesystem {
+    if catalog.catalog_type != CatalogType::LocalFilesystem {
         return None;
     }
     let duckdb = catalog.config_block("duckdb")?;
@@ -667,6 +760,41 @@ fn looks_like_function_call(value: &str) -> bool {
         && value[..open_idx]
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
+#[derive(Debug)]
+struct QuotePolicyObject(ResolvedQuoting);
+
+impl Object for QuotePolicyObject {
+    fn call_method(
+        self: &Arc<Self>,
+        _state: &State,
+        name: &str,
+        args: &[Value],
+        _listeners: &[std::rc::Rc<dyn RenderingEventListener>],
+    ) -> Result<Value, minijinja::Error> {
+        match name {
+            "get_part" => {
+                let iter = ArgsIter::new("QuotePolicy.args", &[], args);
+                let name = iter.next_kwarg::<String>("name")?;
+                iter.finish()?;
+
+                match name.as_str() {
+                    "database" => Ok(Value::from(self.0.database)),
+                    "schema" => Ok(Value::from(self.0.schema)),
+                    "identifier" => Ok(Value::from(self.0.identifier)),
+                    _ => Err(minijinja::Error::new(
+                        minijinja::ErrorKind::InvalidArgument,
+                        format!("'{name}' is not a valid argument"),
+                    )),
+                }
+            }
+            _ => Err(minijinja::Error::new(
+                minijinja::ErrorKind::UnknownMethod,
+                format!("Unknown method on DefaultQuotePolicyObject: '{name}'"),
+            )),
+        }
+    }
 }
 
 /// A Wrapper type for StaticBaseRelation
@@ -741,6 +869,13 @@ impl Object for StaticBaseRelationObject {
                     })?;
                 Ok(Value::from_object(relation_config))
             }
+            "get_default_quote_policy" => {
+                let iter = ArgsIter::new("Relation.get_default_quote_policy", &[], args);
+                iter.finish()?;
+                Ok(Value::from_object(QuotePolicyObject(
+                    self.0.get_default_quoting(),
+                )))
+            }
             _ => Err(minijinja::Error::new(
                 minijinja::ErrorKind::UnknownMethod,
                 format!("Unknown method on StaticBaseRelationObject: '{name}'"),
@@ -763,6 +898,8 @@ pub trait StaticBaseRelation: fmt::Debug + Send + Sync {
     ) -> Result<Value, minijinja::Error>;
 
     fn get_adapter_type(&self) -> String;
+
+    fn get_default_quoting(&self) -> ResolvedQuoting;
 
     /// Create a new relation from the given arguments
     /// impl for api.Relation.create
@@ -832,8 +969,11 @@ pub trait StaticBaseRelation: fmt::Debug + Send + Sync {
 
 #[cfg(test)]
 mod tests {
+    use crate::relation::factory::create_static_relation;
+
     use super::*;
     use dbt_schemas::schemas::relations::DEFAULT_RESOLVED_QUOTING;
+    use minijinja_contrib::testing::jinja_assert;
 
     fn source_with_meta_location(location: &str) -> DbtSource {
         let mut source = DbtSource::default();
@@ -849,6 +989,38 @@ mod tests {
         source.__source_attr__.identifier = "orders".to_string();
         source.__source_attr__.source_name = "raw".to_string();
         source
+    }
+
+    #[test]
+    fn databricks_relation_policy_tests() {
+        assert_eq!(
+            canonical_relation_parts(Some(AdapterType::Databricks), "Cat", "Sch", "Tbl"),
+            ("cat".to_string(), "sch".to_string(), "tbl".to_string())
+        );
+        assert_eq!(
+            render_effective_relation(
+                AdapterType::LakeCompute,
+                "Cat",
+                "Sch",
+                "Tbl",
+                ResolvedQuoting::trues(),
+                Some(AdapterType::Databricks),
+            )
+            .unwrap(),
+            "cat.sch.tbl"
+        );
+        assert_eq!(
+            render_effective_relation(
+                AdapterType::Snowflake,
+                "Cat",
+                "Sch",
+                "Tbl",
+                ResolvedQuoting::falses(),
+                None,
+            )
+            .unwrap(),
+            "Cat.Sch.Tbl"
+        );
     }
 
     #[test]
@@ -887,6 +1059,102 @@ mod tests {
     }
 
     #[test]
+    fn source_catalog_name_overrides_database_in_relation() {
+        let mut source = source_with_meta_location("ignored/{name}.csv");
+        source.__source_attr__.catalog_name = Some("GLUE_SOURCE".to_string());
+
+        let relation = create_relation_from_source(
+            AdapterType::Snowflake,
+            "main".to_string(),
+            "raw".to_string(),
+            "orders".to_string(),
+            DEFAULT_RESOLVED_QUOTING,
+            &source,
+        )
+        .unwrap();
+
+        assert_eq!(
+            relation.render_self_as_str(),
+            "\"GLUE_SOURCE\".\"raw\".\"orders\""
+        );
+    }
+
+    #[test]
+    fn source_without_catalog_name_keeps_database() {
+        let source = source_with_meta_location("ignored/{name}.csv");
+
+        let relation = create_relation_from_source(
+            AdapterType::Snowflake,
+            "main".to_string(),
+            "raw".to_string(),
+            "orders".to_string(),
+            DEFAULT_RESOLVED_QUOTING,
+            &source,
+        )
+        .unwrap();
+
+        assert_eq!(relation.render_self_as_str(), "\"main\".\"raw\".\"orders\"");
+    }
+
+    #[test]
+    fn databricks_relation_exposes_constraints_to_jinja() {
+        let relation = Relation::new(
+            AdapterType::Databricks,
+            "main".to_string(),
+            "default".to_string(),
+            "child_model".to_string(),
+        )
+        .with_relation_type(RelationType::Table)
+        .with_quoting(DEFAULT_RESOLVED_QUOTING)
+        .enrich(&[
+            TypedConstraint::PrimaryKey {
+                name: Some("pk_id".to_string()),
+                columns: vec!["id".to_string()],
+                expression: None,
+            },
+            TypedConstraint::Check {
+                name: Some("check_id_positive".to_string()),
+                expression: "id > 0".to_string(),
+                columns: Some(vec!["id".to_string()]),
+            },
+        ]);
+
+        jinja_assert(
+            RelationObject::new(Arc::new(relation)),
+            r#"
+            {%- for c in obj.create_constraints %}
+            create {{ c.type }} | {{ c.render() }}
+            {%- endfor %}
+            {%- for c in obj.alter_constraints %}
+            alter {{ c.type }} | {{ c.render() }}
+            {%- endfor %}
+            "#,
+            r#"
+            create primary_key | CONSTRAINT pk_id PRIMARY KEY (id)
+            alter check | CONSTRAINT check_id_positive CHECK (id > 0)
+            "#,
+        );
+    }
+
+    #[test]
+    fn databricks_metric_view_relation_is_visible_to_jinja() {
+        let relation = Relation::new(
+            AdapterType::Databricks,
+            "main".to_string(),
+            "default".to_string(),
+            "order_metrics".to_string(),
+        )
+        .with_relation_type(RelationType::MetricView)
+        .with_quoting(DEFAULT_RESOLVED_QUOTING);
+
+        jinja_assert(
+            RelationObject::new(Arc::new(relation)),
+            "{{ obj.is_metric_view }} | {{ obj.type }}",
+            "True | metric_view",
+        );
+    }
+
+    #[test]
     fn do_create_relation_clickhouse_normalizes_database_to_empty_string() {
         let relation = do_create_relation(
             AdapterType::ClickHouse,
@@ -904,6 +1172,111 @@ mod tests {
 
         assert_eq!(relation.render_self_as_str(), "`analytics`.`events`");
         assert_eq!(relation.database(), Some(""));
+    }
+
+    #[test]
+    fn interactive_table_exposes_its_own_jinja_flag_and_type_name() {
+        let relation = do_create_relation(
+            AdapterType::Snowflake,
+            "d".to_string(),
+            "s".to_string(),
+            Some("i".to_string()),
+            Some(RelationType::InteractiveTable),
+            DEFAULT_RESOLVED_QUOTING,
+        )
+        .unwrap();
+        let relation = Arc::new(RelationObject::new(relation.into()));
+
+        for (key, expected) in [
+            ("is_interactive_table", true),
+            ("is_dynamic_table", false),
+            ("is_table", false),
+            ("is_view", false),
+        ] {
+            assert_eq!(
+                relation.get_value(&Value::from(key)),
+                Some(Value::from(expected)),
+                "{key}"
+            );
+        }
+
+        assert_eq!(
+            relation.get_value(&Value::from("InteractiveTable")),
+            Some(Value::from("interactive_table"))
+        );
+        assert_eq!(
+            relation.get_value(&Value::from("type")),
+            Some(Value::from("interactive_table"))
+        );
+    }
+
+    /// Asserts on `ErrorKind`, not the message: both this arm and the catch-all name the called
+    /// method in their message text, so a message-only assertion would pass either way.
+    #[test]
+    fn interactive_table_config_changeset_alias_is_reachable_by_name() {
+        let relation = do_create_relation(
+            AdapterType::Snowflake,
+            "d".to_string(),
+            "s".to_string(),
+            Some("i".to_string()),
+            Some(RelationType::InteractiveTable),
+            DEFAULT_RESOLVED_QUOTING,
+        )
+        .unwrap();
+        let relation = Arc::new(RelationObject::new(relation.into()));
+
+        let env = minijinja::Environment::new();
+        let state = env.empty_state();
+        let err = relation
+            .call_method(&state, "interactive_table_config_changeset", &[], &[])
+            .unwrap_err();
+
+        assert_eq!(err.kind(), minijinja::ErrorKind::MissingArgument, "{err}");
+    }
+
+    #[test]
+    fn derived_relations_keep_microbatch_filter() {
+        use chrono::{TimeZone, Utc};
+        use dbt_schemas::filter::Sample;
+
+        let relation = do_create_relation(
+            AdapterType::Snowflake,
+            "d".to_string(),
+            "s".to_string(),
+            Some("i".to_string()),
+            Some(RelationType::Table),
+            DEFAULT_RESOLVED_QUOTING,
+        )
+        .unwrap();
+        let relation = RelationObject::new_with_filter(
+            relation.into(),
+            RunFilter {
+                empty: false,
+                sample: Some(Sample {
+                    start: Some(Utc.with_ymd_and_hms(2026, 7, 13, 0, 0, 0).unwrap()),
+                    end: Some(Utc.with_ymd_and_hms(2026, 7, 14, 0, 0, 0).unwrap()),
+                }),
+            },
+            Some("event_date".to_string()),
+        );
+
+        jinja_assert(
+            relation,
+            r#"
+            {{ obj.include(database=false) }}
+            {{ obj.quote(identifier=false) }}
+            {{ obj.replace_path(identifier='j') }}
+            {{ obj.incorporate(path={'identifier': 'k'}) }}
+            {{ obj.without_identifier() }}
+            "#,
+            r#"
+            (select * from "s"."i" where event_date >= to_timestamp_tz('2026-07-13T00:00:00+00:00') and event_date < to_timestamp_tz('2026-07-14T00:00:00+00:00'))
+            (select * from "d"."s".i where event_date >= to_timestamp_tz('2026-07-13T00:00:00+00:00') and event_date < to_timestamp_tz('2026-07-14T00:00:00+00:00'))
+            (select * from "d"."s"."j" where event_date >= to_timestamp_tz('2026-07-13T00:00:00+00:00') and event_date < to_timestamp_tz('2026-07-14T00:00:00+00:00'))
+            (select * from "d"."s"."k" where event_date >= to_timestamp_tz('2026-07-13T00:00:00+00:00') and event_date < to_timestamp_tz('2026-07-14T00:00:00+00:00'))
+            (select * from "d"."s" where event_date >= to_timestamp_tz('2026-07-13T00:00:00+00:00') and event_date < to_timestamp_tz('2026-07-14T00:00:00+00:00'))
+            "#,
+        );
     }
 
     #[test]
@@ -996,6 +1369,237 @@ mod tests {
         assert_eq!(
             derived.relation_type(),
             Some(RelationType::MaterializedView)
+        );
+    }
+
+    #[test]
+    fn static_relation_snowflake_get_default_quote_policy_passes_with_get_part() {
+        let obj = create_static_relation(
+            AdapterType::Snowflake,
+            ResolvedQuoting {
+                database: true,
+                schema: false,
+                identifier: true,
+            },
+        )
+        .unwrap();
+
+        let env = minijinja::Environment::new();
+        let state = State::new_for_env(&env);
+
+        let result = obj
+            .call_method(&state, "get_default_quote_policy", &[], &[])
+            .unwrap();
+
+        let database = result
+            .call_method(&state, "get_part", &[Value::from("database")], &[])
+            .unwrap()
+            .is_true();
+        let schema = result
+            .call_method(&state, "get_part", &[Value::from("schema")], &[])
+            .unwrap()
+            .is_true();
+        let identifier = result
+            .call_method(&state, "get_part", &[Value::from("identifier")], &[])
+            .unwrap()
+            .is_true();
+
+        // snowflake defaults
+        assert!(!database);
+        assert!(!schema);
+        assert!(!identifier);
+    }
+
+    #[test]
+    fn static_relation_other_get_default_quote_policy_passes_with_get_part() {
+        let obj = create_static_relation(
+            AdapterType::Postgres,
+            ResolvedQuoting {
+                database: true,
+                schema: false,
+                identifier: true,
+            },
+        )
+        .unwrap();
+
+        let env = minijinja::Environment::new();
+        let state = State::new_for_env(&env);
+
+        let result = obj
+            .call_method(&state, "get_default_quote_policy", &[], &[])
+            .unwrap();
+
+        let database = result
+            .call_method(&state, "get_part", &[Value::from("database")], &[])
+            .unwrap()
+            .is_true();
+        let schema = result
+            .call_method(&state, "get_part", &[Value::from("schema")], &[])
+            .unwrap()
+            .is_true();
+        let identifier = result
+            .call_method(&state, "get_part", &[Value::from("identifier")], &[])
+            .unwrap()
+            .is_true();
+
+        // other defaults
+        assert!(database);
+        assert!(schema);
+        assert!(identifier);
+    }
+
+    #[test]
+    fn static_relation_get_default_quote_policy_fails_with_one_or_more_arguments() {
+        let obj = create_static_relation(
+            AdapterType::ClickHouse,
+            ResolvedQuoting {
+                database: true,
+                schema: true,
+                identifier: true,
+            },
+        )
+        .unwrap();
+
+        let env = minijinja::Environment::new();
+        let state = State::new_for_env(&env);
+
+        let result = obj
+            .call_method(
+                &state,
+                "get_default_quote_policy",
+                &[Value::from("bad arg")],
+                &[],
+            )
+            .unwrap_err();
+
+        assert_eq!(
+            result.detail().unwrap(),
+            "Relation.get_default_quote_policy() takes exactly zero positional arguments (1 given)"
+        );
+    }
+
+    #[test]
+    fn static_relation_get_default_quote_policy_with_get_part_should_fail() {
+        let obj = create_static_relation(
+            AdapterType::ClickHouse,
+            ResolvedQuoting {
+                database: true,
+                schema: false,
+                identifier: true,
+            },
+        )
+        .unwrap();
+
+        let env = minijinja::Environment::new();
+        let state = State::new_for_env(&env);
+
+        let result = obj
+            .call_method(&state, "get_default_quote_policy", &[], &[])
+            .unwrap();
+
+        let result_get_part = result
+            .call_method(&state, "get_part", &[], &[])
+            .unwrap_err();
+        assert_eq!(
+            result_get_part.detail().unwrap(),
+            "missing keyword argument 'name'"
+        );
+
+        let result_get_part = result
+            .call_method(
+                &state,
+                "get_part",
+                &[Value::from("schema"), Value::from("schema")],
+                &[],
+            )
+            .unwrap_err();
+        assert_eq!(
+            result_get_part.detail().unwrap(),
+            "QuotePolicy.args() takes from 0 to 1 positional arguments but 2 were given"
+        );
+
+        let result_get_part = result
+            .call_method(&state, "get_part", &[Value::from("bad")], &[])
+            .unwrap_err();
+        assert_eq!(
+            result_get_part.detail().unwrap(),
+            "'bad' is not a valid argument"
+        );
+    }
+
+    #[test]
+    fn clickhouse_relation_exposes_catalog_state_attributes() {
+        let relation = Relation::new(
+            AdapterType::ClickHouse,
+            None,
+            Some("analytics".to_string()),
+            Some("events".to_string()),
+        )
+        .with_relation_type(RelationType::Table)
+        .with_quoting(DEFAULT_RESOLVED_QUOTING)
+        .with_mvs_pointing_to_it(vec![BTreeMap::from([
+            ("schema".to_string(), "analytics".to_string()),
+            ("name".to_string(), "events_mv".to_string()),
+            ("sql".to_string(), "select 1".to_string()),
+        ])])
+        .with_is_refreshable(true)
+        .with_can_exchange(true)
+        .validate()
+        .unwrap();
+        let obj = Arc::new(RelationObject::new(Arc::new(relation)));
+
+        assert!(
+            obj.get_value(&Value::from("can_exchange"))
+                .unwrap()
+                .is_true()
+        );
+        let mvs = obj.get_value(&Value::from("mvs_pointing_to_it")).unwrap();
+        assert_eq!(mvs.len(), Some(1));
+        assert_eq!(
+            mvs.get_item_by_index(0)
+                .unwrap()
+                .get_attr("name")
+                .unwrap()
+                .as_str(),
+            Some("events_mv")
+        );
+        assert!(
+            obj.get_value(&Value::from("is_refreshable"))
+                .unwrap()
+                .is_true()
+        );
+        assert!(
+            !obj.get_value(&Value::from("refreshable_append"))
+                .unwrap()
+                .is_true()
+        );
+
+        let bare = Relation::new(
+            AdapterType::ClickHouse,
+            None,
+            Some("analytics".to_string()),
+            Some("plain".to_string()),
+        )
+        .validate()
+        .unwrap();
+        let bare = Arc::new(RelationObject::new(Arc::new(bare)));
+        assert_eq!(
+            bare.get_value(&Value::from("mvs_pointing_to_it"))
+                .unwrap()
+                .len(),
+            Some(0)
+        );
+        assert!(
+            !bare
+                .get_value(&Value::from("is_refreshable"))
+                .unwrap()
+                .is_true()
+        );
+        assert!(
+            !bare
+                .get_value(&Value::from("can_exchange"))
+                .unwrap()
+                .is_true()
         );
     }
 }

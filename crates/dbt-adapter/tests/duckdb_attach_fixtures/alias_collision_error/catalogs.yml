@@ -1,4 +1,4 @@
-# Scenario: Two catalogs whose attach_as sanitizes to the same alias.
+# Scenario: Two catalogs whose catalog_database sanitizes to the same alias.
 # Exercises: Configuration error emitted with the colliding alias name.
 catalogs:
   - name: first_rest
@@ -6,12 +6,12 @@ catalogs:
     table_format: iceberg
     config:
       duckdb:
-        attach_as: shared
+        catalog_database: shared
         endpoint: "https://rest-a.example.com"
   - name: second_rest
     type: iceberg_rest
     table_format: iceberg
     config:
       duckdb:
-        attach_as: shared
+        catalog_database: shared
         endpoint: "https://rest-b.example.com"

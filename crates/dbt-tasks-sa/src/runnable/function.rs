@@ -3,7 +3,7 @@ use dbt_common::constants::DBT_COMPILED_DIR_NAME;
 use dbt_common::path::get_target_write_path;
 use dbt_common::{FsResult, io_args::FsCommand, stats::NodeStatus, stdfs};
 use dbt_jinja_utils::utils::add_task_context;
-use dbt_schemas::schemas::{BatchResults, DbtFunction, InternalDbtNode};
+use dbt_schemas::schemas::{BatchResults, DbtFunction, InternalDbtNode, InternalDbtNodeAttributes};
 use dbt_tasks_core::context::TaskRunnerCtx;
 use dbt_tasks_core::task::TaskResult;
 
@@ -25,7 +25,7 @@ pub fn execute_function_remote(
     materialize_function(
         &sql_instruction.sql,
         function,
-        ctx.adapter_type(),
+        function.node_adapter(),
         ctx.runtime_config(),
         &ctx.inner.materialization_resolver,
         ctx.env.clone(),
@@ -97,7 +97,7 @@ pub fn execute_function_remote(
         match materialize_function(
             overload_sql,
             &overload_function,
-            ctx.adapter_type(),
+            overload_function.node_adapter(),
             ctx.runtime_config(),
             &ctx.inner.materialization_resolver,
             ctx.env.clone(),

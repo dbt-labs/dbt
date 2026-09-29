@@ -52,7 +52,6 @@ impl SemanticCategory {
             | "get_relations_without_caching"
             | "valid_snapshot_target"
             | "describe_relation"
-            | "describe_dynamic_table"
             | "get_column_schema_from_query"
             | "get_columns_in_select_sql"
             | "get_partitions_metadata"
@@ -64,7 +63,8 @@ impl SemanticCategory {
             | "has_dbr_capability"
             | "get_missing_columns"
             | "is_replaceable"
-            | "location_exists" => SemanticCategory::MetadataRead,
+            | "location_exists"
+            | "check_incremental_schema_changes" => SemanticCategory::MetadataRead,
 
             // Mutate database state (DDL/DML)
             "execute"
@@ -141,6 +141,8 @@ impl SemanticCategory {
             | "get_clickhouse_local_db_prefix"
             | "clickhouse_db_engine_clause"
             | "is_before_version"
+            | "is_at_or_after_version"
+            | "format_columns"
             | "supports_atomic_exchange"
             | "can_exchange"
             | "should_on_cluster"
@@ -151,8 +153,10 @@ impl SemanticCategory {
             | "filter_settings_by_engine"
             | "get_ch_database"
             | "get_credentials"
+            | "s3source_clause"
             | "get_csv_data"
-            | "table_format" => SemanticCategory::Pure,
+            | "table_format"
+            | "strip_trailing_statement_terminator" => SemanticCategory::Pure,
 
             _ => {
                 debug_assert!(
@@ -173,7 +177,11 @@ impl SemanticCategory {
             | "list_relations_sdf_schemas"
             | "list_relations_schemas_by_patterns"
             | "list_relations_in_parallel"
+            | "relations_exist"
             | "freshness"
+            | "freshness_with_overrides"
+            | "freshness_all_in_schema"
+            | "freshness_all_in_schemas"
             | "list_user_defined_functions"
             | "build_schemas_from_stats_sql"
             | "build_columns_from_get_columns"
@@ -238,6 +246,12 @@ mod tests {
             SemanticCategory::from_adapter_method("list_schemas"),
             SemanticCategory::MetadataRead
         );
+        // `describe_*` issues a read-only SHOW. An unregistered method falls through to
+        // `Write`, which would record a read as mutating during replay.
+        assert_eq!(
+            SemanticCategory::from_adapter_method("describe_relation"),
+            SemanticCategory::MetadataRead
+        );
 
         // Writes
         assert_eq!(
@@ -282,6 +296,14 @@ mod tests {
         );
         assert_eq!(
             SemanticCategory::from_metadata_method("freshness"),
+            SemanticCategory::MetadataRead
+        );
+        assert_eq!(
+            SemanticCategory::from_metadata_method("relations_exist"),
+            SemanticCategory::MetadataRead
+        );
+        assert_eq!(
+            SemanticCategory::from_metadata_method("freshness_all_in_schemas"),
             SemanticCategory::MetadataRead
         );
         assert_eq!(

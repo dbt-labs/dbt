@@ -7,6 +7,7 @@ use std::sync::{Arc, OnceLock};
 use chrono::{DateTime, Utc};
 
 use crate::functions::build_flat_graph;
+use crate::invocation_graph::invocation_graph;
 use crate::jinja_environment::JinjaEnv;
 use crate::phases::compile::DependencyValidationConfig;
 use dbt_adapter::Adapter;
@@ -19,7 +20,7 @@ use dbt_schemas::state::{DbtRuntimeConfig, NodeResolverTracker};
 use dbt_telemetry::NodeType;
 use minijinja::arg_utils::ArgParser;
 use minijinja::listener::RenderingEventListener;
-use minijinja::value::Object;
+use minijinja::value::{Object, ValueMap};
 use minijinja::{
     Error as MinijinjaError, ErrorKind as MinijinjaErrorKind, Value as MinijinjaValue,
 };
@@ -48,6 +49,7 @@ pub fn build_compile_base_ctx(
     defer_nodes: Option<&Nodes>,
     runtime_config: Arc<DbtRuntimeConfig>,
     namespace_keys: Vec<String>,
+    result_store: Option<ResultStore>,
 ) -> CompileBaseCtx {
     // Wrap each per-namespace search order as `Value::from(Vec<String>)` —
     // dispatch lookup downcasts to `Vec<String>` so the underlying Object
@@ -79,8 +81,11 @@ pub fn build_compile_base_ctx(
     builtins.insert("ref".to_string(), ref_value.clone());
 
     // Create source function
-    let source_function =
-        SourceFunction::new_unvalidated(node_resolver.clone(), package_name.to_owned());
+    let source_function = SourceFunction::new_unvalidated(
+        node_resolver.clone(),
+        package_name.to_owned(),
+        runtime_config.clone(),
+    );
     let source_value = MinijinjaValue::from_object(source_function);
     builtins.insert("source".to_string(), source_value.clone());
 
@@ -104,7 +109,7 @@ pub fn build_compile_base_ctx(
     let mut packages: BTreeSet<String> = runtime_config.dependencies.keys().cloned().collect();
     packages.insert(package_name.to_string());
 
-    let result_store = ResultStore::default();
+    let result_store = result_store.unwrap_or_default();
 
     let dbt_namespaces: BTreeMap<String, JinjaObject<DbtNamespace>> = namespace_keys
         .into_iter()
@@ -159,6 +164,7 @@ pub fn build_operation_context(
             defer_nodes,
             runtime_config,
             namespace_keys,
+            None,
         )
     });
     OperationCtx {
@@ -541,6 +547,7 @@ impl Object for RefFunction {
 pub struct SourceFunction {
     node_resolver: Arc<dyn NodeResolverTracker>,
     package_name: String,
+    runtime_config: Arc<DbtRuntimeConfig>,
     microbatch_context: Option<MicrobatchRefContext>,
     validation_config: DependencyValidationConfig,
 }
@@ -553,11 +560,13 @@ impl SourceFunction {
     pub fn new_with_microbatch_context(
         node_resolver: Arc<dyn NodeResolverTracker>,
         package_name: String,
+        runtime_config: Arc<DbtRuntimeConfig>,
         microbatch_context: MicrobatchRefContext,
     ) -> Self {
         Self {
             node_resolver,
             package_name,
+            runtime_config,
             microbatch_context: Some(microbatch_context),
             validation_config: DependencyValidationConfig::default(),
         }
@@ -570,10 +579,12 @@ impl SourceFunction {
     pub fn new_unvalidated(
         node_resolver: Arc<dyn NodeResolverTracker>,
         package_name: String,
+        runtime_config: Arc<DbtRuntimeConfig>,
     ) -> Self {
         Self {
             node_resolver,
             package_name,
+            runtime_config,
             microbatch_context: None,
             validation_config: DependencyValidationConfig::default(),
         }
@@ -583,11 +594,13 @@ impl SourceFunction {
     pub fn new_with_validation(
         node_resolver: Arc<dyn NodeResolverTracker>,
         package_name: String,
+        runtime_config: Arc<DbtRuntimeConfig>,
         validation_config: DependencyValidationConfig,
     ) -> Self {
         Self {
             node_resolver,
             package_name,
+            runtime_config,
             microbatch_context: None,
             validation_config,
         }
@@ -631,6 +644,14 @@ Or remove the source() from the model if it's unused."
 }
 
 impl Object for SourceFunction {
+    fn get_value(self: &Arc<Self>, key: &MinijinjaValue) -> Option<MinijinjaValue> {
+        match key.as_str()? {
+            "config" => Some(MinijinjaValue::from_dyn_object(self.runtime_config.clone())),
+            "function_name" => Some(MinijinjaValue::from("source")),
+            _ => None,
+        }
+    }
+
     fn call(
         self: &Arc<Self>,
         _state: &State<'_, '_>,
@@ -916,7 +937,15 @@ impl LazyFlatGraph {
 
     fn get_graph(&self) -> &MinijinjaValue {
         self.graph.get_or_init(|| {
-            MinijinjaValue::from(build_flat_graph(&self.nodes, self.defer_nodes.as_ref()))
+            // Seed the flat graph into the invocation-wide `graph` mapping
+            // rather than into a private map, so scratch state written by
+            // macros during parsing (and by other base contexts) survives.
+            // `update` merges, so only the derived flat-graph keys (`nodes`,
+            // `sources`, `macros`, …) are overwritten. dbt-labs/fs#13454.
+            let shared = invocation_graph();
+            let flat = build_flat_graph(&self.nodes, self.defer_nodes.as_ref());
+            shared.update(&ValueMap::from(flat));
+            MinijinjaValue::from_dyn_object(shared)
         })
     }
 }
@@ -1013,6 +1042,7 @@ mod tests {
             None,
             runtime_config,
             vec![],
+            None,
         );
 
         // Cleanup env to avoid side effects

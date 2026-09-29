@@ -1,5 +1,4 @@
-import { ResourceType } from '@dbt-labs/dbt-dag';
-
+import type { ResourceType } from '../../lib/resourceType';
 import {
   ExposureHealthIssueType,
   HealthIssueType,

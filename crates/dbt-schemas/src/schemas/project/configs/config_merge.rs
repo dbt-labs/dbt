@@ -12,8 +12,10 @@ use dbt_proc_macros::StringOrArrayNewtype;
 use dbt_yaml::{Spanned, Verbatim};
 use indexmap::IndexMap;
 use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
 
 use crate::schemas::common::{DbtQuoting, DocsConfig, Hooks, merge_meta, merge_tags, merge_vec};
+use crate::schemas::properties::model_properties::{DataTestState, ModelState};
 use crate::schemas::serde::{
     IndexesConfig, OmissibleGrantConfig, PrimaryKeyConfig, StringOrArrayOfStrings,
 };
@@ -115,12 +117,82 @@ impl DefaultTo for Option<DocsConfig> {
     }
 }
 
+/// Field-level merge: each `state:` key falls back to the parent layer only when
+/// this layer leaves it unset, so setting one key on a node does not drop the
+/// others configured at a less specific layer (#16135).
+impl DefaultTo for Option<ModelState> {
+    fn inherit_from(&mut self, parent: &Self) {
+        let Some(parent_state) = parent.as_ref() else {
+            return;
+        };
+        let Some(state) = self.as_mut() else {
+            *self = Some(parent_state.clone());
+            return;
+        };
+        // destructured so a new `ModelState` field fails to compile until merged here
+        let ModelState {
+            lag_tolerance,
+            require_fresh_data_from,
+            evaluate_volatile_sql,
+            pre_clone,
+            execute_hooks_on_any_reuse,
+            compare_unrendered_code,
+            ignore_external_modifications,
+        } = state;
+        *lag_tolerance = lag_tolerance
+            .take()
+            .or_else(|| parent_state.lag_tolerance.clone());
+        *require_fresh_data_from = require_fresh_data_from
+            .take()
+            .or_else(|| parent_state.require_fresh_data_from.clone());
+        *evaluate_volatile_sql = evaluate_volatile_sql.or(parent_state.evaluate_volatile_sql);
+        *pre_clone = pre_clone.take().or_else(|| parent_state.pre_clone.clone());
+        *execute_hooks_on_any_reuse =
+            execute_hooks_on_any_reuse.or(parent_state.execute_hooks_on_any_reuse);
+        *compare_unrendered_code = compare_unrendered_code.or(parent_state.compare_unrendered_code);
+        *ignore_external_modifications =
+            ignore_external_modifications.or(parent_state.ignore_external_modifications);
+    }
+}
+
+/// Field-level merge, as for [`Option<ModelState>`]: the subset of `state:` keys
+/// data tests support merges key by key rather than as a whole object.
+impl DefaultTo for Option<DataTestState> {
+    fn inherit_from(&mut self, parent: &Self) {
+        let Some(parent_state) = parent.as_ref() else {
+            return;
+        };
+        let Some(state) = self.as_mut() else {
+            *self = Some(parent_state.clone());
+            return;
+        };
+        let DataTestState {
+            require_fresh_data_from,
+            evaluate_volatile_sql,
+            compare_unrendered_code,
+        } = state;
+        *require_fresh_data_from = require_fresh_data_from
+            .take()
+            .or_else(|| parent_state.require_fresh_data_from.clone());
+        *evaluate_volatile_sql = evaluate_volatile_sql.or(parent_state.evaluate_volatile_sql);
+        *compare_unrendered_code = compare_unrendered_code.or(parent_state.compare_unrendered_code);
+    }
+}
+
 /// Meta merge: child keys win, missing keys fall back to parent.
 impl DefaultTo for Option<IndexMap<String, YmlValue>> {
     fn inherit_from(&mut self, parent: &Self) {
         *self = merge_meta(parent.clone(), self.take());
     }
 }
+
+/// Insertion-ordered `tblproperties` map.
+///
+/// Newtype over `IndexMap` so this field can implement `ReplaceIfNone`. A bare
+/// `Option<IndexMap<String, YmlValue>>` already uses union-merge (`meta`).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(transparent)]
+pub struct TblProperties(pub IndexMap<String, YmlValue>);
 
 // `#[derive(StringOrArrayNewtype)]` (defined in `dbt-proc-macros`) generates the
 // `AsStringOrArrayOfStrings` impl and shared accessors for newtypes wrapping
@@ -291,11 +363,14 @@ impl<T: Clone> ReplaceIfNone for Spanned<T> {}
 // Free-form YmlValue fields (e.g. ClickHouse dictionary `lifetime`/`range`/`update_lag`)
 // replace wholesale — no deep merge.
 impl ReplaceIfNone for YmlValue {}
+impl ReplaceIfNone for dbt_yaml::Timestamp {}
 
 // std collections used as replace-if-none fields.
-// BTreeMap<String, YmlValue> (replace-if-none) is distinct from
-// BTreeMap<Spanned<String>, String> (column_types, handled by special DefaultTo impl).
+// BTreeMap<String, YmlValue> is distinct from BTreeMap<Spanned<String>, String>
+// (column_types, handled by a special DefaultTo impl).
 impl ReplaceIfNone for BTreeMap<String, YmlValue> {}
+// See TblProperties: cannot use IndexMap<String, YmlValue> here (that type is meta).
+impl ReplaceIfNone for TblProperties {}
 impl<T: Clone> ReplaceIfNone for Vec<T> {}
 // IndexMap<String, String> for labels/resource_tags (replace-if-none).
 // IndexMap<String, YmlValue> for meta uses a custom merge — do NOT add ReplaceIfNone for it.
@@ -307,7 +382,12 @@ impl ReplaceIfNone for dbt_common::io_args::ComputeArg {}
 // crate::schemas::common types
 impl ReplaceIfNone for crate::schemas::common::Access {}
 impl ReplaceIfNone for crate::schemas::common::ClusterConfig {}
-impl ReplaceIfNone for crate::schemas::common::ComputePlatform {}
+impl ReplaceIfNone for dbt_adapter_core::AdapterType {}
+// `propagate` states a node's complete set of propagation targets, so a child's
+// list replaces the parent's rather than unioning with it -- matching `adapter`,
+// its single-valued sibling, not `Tags`.
+impl ReplaceIfNone for crate::schemas::serde::AdapterTypeOrArray {}
+impl ReplaceIfNone for crate::schemas::serde::RefreshableConfig {}
 impl ReplaceIfNone for crate::schemas::common::DbtBatchSize {}
 impl ReplaceIfNone for crate::schemas::common::DbtContract {}
 impl ReplaceIfNone for crate::schemas::common::DbtIncrementalStrategy {}
@@ -320,6 +400,7 @@ impl ReplaceIfNone for crate::schemas::common::OnSchemaChange {}
 impl ReplaceIfNone for crate::schemas::common::PartitionConfig {}
 impl ReplaceIfNone for crate::schemas::common::PersistDocsConfig {}
 impl ReplaceIfNone for crate::schemas::common::Schedule {}
+impl ReplaceIfNone for crate::schemas::common::RowFilterConfig {}
 impl ReplaceIfNone for crate::schemas::common::SchemaOrigin {}
 impl ReplaceIfNone for crate::schemas::common::Severity {}
 impl ReplaceIfNone for crate::schemas::common::StoreFailuresAs {}
@@ -339,10 +420,9 @@ impl ReplaceIfNone for crate::schemas::properties::Volatility {}
 
 // crate::schemas::properties::model_properties types
 impl ReplaceIfNone for crate::schemas::properties::model_properties::ModelFreshness {}
-impl ReplaceIfNone for crate::schemas::properties::model_properties::ModelState {}
-impl ReplaceIfNone for crate::schemas::properties::model_properties::DataTestState {}
 
 // Config-internal types
+impl ReplaceIfNone for crate::schemas::project::configs::check_config::SelectionFilterOn {}
 impl ReplaceIfNone for crate::schemas::project::configs::function_config::FunctionSnowflakeConfig {}
 impl ReplaceIfNone for crate::schemas::project::configs::model_config::DataLakeObjectCategory {}
 impl ReplaceIfNone for crate::schemas::project::configs::model_config::LatestVersionPointer {}

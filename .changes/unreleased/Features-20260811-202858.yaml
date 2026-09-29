@@ -1,7 +1,0 @@
-kind: Features
-body: Add relation-scoped catalog macro (get_catalog_relations) for ClickHouse, fixing catalog fetch failures with --write-catalog
-time: 2026-08-11T20:28:58.346067+02:00
-custom:
-    author: koletzilla
-    issue: "14585"
-    project: dbt-core

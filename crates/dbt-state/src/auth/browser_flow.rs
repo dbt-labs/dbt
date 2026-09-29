@@ -501,7 +501,7 @@ mod tests {
         stream.shutdown().await.unwrap();
     }
 
-    #[tokio::test]
+    #[dbt_runtime::test]
     async fn parses_code_and_state() {
         let (listener, addr) = bind_local().await;
         let handle = tokio::spawn(async move {
@@ -513,7 +513,7 @@ mod tests {
         assert_eq!(result.state, "expected-state");
     }
 
-    #[tokio::test]
+    #[dbt_runtime::test]
     async fn rejects_mismatched_state() {
         let (listener, addr) = bind_local().await;
         let handle = tokio::spawn(async move {
@@ -524,7 +524,7 @@ mod tests {
         assert!(err.to_string().contains("invalid OAuth state parameter"));
     }
 
-    #[tokio::test]
+    #[dbt_runtime::test]
     async fn surfaces_error_query_param() {
         let (listener, addr) = bind_local().await;
         let handle = tokio::spawn(async move {
@@ -540,7 +540,7 @@ mod tests {
         assert!(err.to_string().contains("User canceled"));
     }
 
-    #[tokio::test]
+    #[dbt_runtime::test]
     async fn times_out_when_no_request_arrives() {
         let (listener, _addr) = bind_local().await;
         let result = accept_one_redirect(&listener, "any", Duration::from_millis(100), None).await;
@@ -548,7 +548,7 @@ mod tests {
         assert!(err.to_string().contains("timed out"));
     }
 
-    #[tokio::test]
+    #[dbt_runtime::test]
     async fn abort_signal_returns_aborted() {
         let (listener, _addr) = bind_local().await;
         let (tx, rx) = tokio::sync::oneshot::channel::<()>();

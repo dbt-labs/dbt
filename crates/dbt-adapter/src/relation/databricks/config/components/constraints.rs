@@ -216,11 +216,11 @@ impl Constraints {
                     Ok(to_column),
                 ) = (
                     row.get_attr("constraint_name"),
-                    row.get_attr("column_name"),
-                    row.get_attr("parent_catalog_name"),
-                    row.get_attr("parent_schema_name"),
-                    row.get_attr("parent_table_name"),
-                    row.get_attr("parent_column_name"),
+                    row.get_attr("from_column"),
+                    row.get_attr("to_catalog"),
+                    row.get_attr("to_schema"),
+                    row.get_attr("to_table"),
+                    row.get_attr("to_column"),
                 ) && let (
                     Some(name_str),
                     Some(col_str),
@@ -318,6 +318,15 @@ impl Constraints {
     }
 
     fn from_local_config(relation_config: &dyn InternalDbtNodeAttributes) -> Self {
+        let contract_enforced = relation_config
+            .as_any()
+            .downcast_ref::<dbt_schemas::schemas::nodes::DbtModel>()
+            .and_then(|model| model.deprecated_config.contract.as_ref())
+            .is_some_and(|contract| contract.enforced);
+        if !contract_enforced {
+            return Self::default();
+        }
+
         let columns = &relation_config.base().columns;
 
         let model_constraints = if let Some(model) = relation_config
@@ -505,6 +514,7 @@ mod tests {
     use dbt_schemas::schemas::{
         common::{Constraint, ConstraintType},
         nodes::DbtModel,
+        properties::ModelConstraint,
     };
     use dbt_test_primitives::assert_contains;
     use indexmap::{IndexMap, IndexSet};
@@ -560,14 +570,14 @@ pk_composite,user_id"#,
     fn create_mock_foreign_key_constraints_table() -> AgateTable {
         let schema = Schema::new(vec![
             Field::new("constraint_name", DataType::Utf8, false),
-            Field::new("column_name", DataType::Utf8, false),
-            Field::new("parent_catalog_name", DataType::Utf8, false),
-            Field::new("parent_schema_name", DataType::Utf8, false),
-            Field::new("parent_table_name", DataType::Utf8, false),
-            Field::new("parent_column_name", DataType::Utf8, false),
+            Field::new("from_column", DataType::Utf8, false),
+            Field::new("to_catalog", DataType::Utf8, false),
+            Field::new("to_schema", DataType::Utf8, false),
+            Field::new("to_table", DataType::Utf8, false),
+            Field::new("to_column", DataType::Utf8, false),
         ]);
         let csv = io::Cursor::new(
-            r#"constraint_name,column_name,parent_catalog_name,parent_schema_name,parent_table_name,parent_column_name
+            r#"constraint_name,from_column,to_catalog,to_schema,to_table,to_column
 fk_user_org,org_id,main,default,organizations,id
 fk_composite,parent_id,main,default,parents,id
 fk_composite,parent_type,main,default,parents,type
@@ -593,6 +603,24 @@ fk_composite,parent_type,main,default,parents,type
                     ..Default::default()
                 })
                 .collect(),
+            ..Default::default()
+        };
+        test_helpers::create_mock_dbt_model(cfg)
+    }
+
+    fn create_mock_unenforced_dbt_model_with_constraints(
+        constraints: IndexMap<&str, Vec<Constraint>>,
+    ) -> DbtModel {
+        let cfg = test_helpers::TestModelConfig {
+            columns: constraints
+                .into_iter()
+                .map(|(name, constraints)| test_helpers::TestModelColumn {
+                    name: name.to_string(),
+                    constraints,
+                    ..Default::default()
+                })
+                .collect(),
+            contract_enforced: Some(false),
             ..Default::default()
         };
         test_helpers::create_mock_dbt_model(cfg)
@@ -821,6 +849,28 @@ fk_composite,parent_type,main,default,parents,type
     }
 
     #[test]
+    fn test_from_local_config_ignores_declared_constraints_when_contract_is_unenforced() {
+        let columns = IndexMap::from_iter([(
+            "id",
+            vec![Constraint {
+                type_: ConstraintType::NotNull,
+                ..Default::default()
+            }],
+        )]);
+        let mut mock_node = create_mock_unenforced_dbt_model_with_constraints(columns);
+        mock_node.__model_attr__.constraints = vec![ModelConstraint {
+            type_: ConstraintType::PrimaryKey,
+            columns: Some(vec!["id".to_string()]),
+            ..Default::default()
+        }];
+
+        let config = Constraints::from_local_config(&mock_node);
+
+        assert!(config.set_non_nulls.is_empty());
+        assert!(config.set_constraints.is_empty());
+    }
+
+    #[test]
     fn test_from_local_config_no_constraints() {
         let columns = IndexMap::new();
         let mock_node = create_mock_dbt_model_with_constraints(columns);
@@ -965,6 +1015,89 @@ fk_composite,parent_type,main,default,parents,type
         assert!(
             quoted_expr.contains(r#""user name""#),
             "Quoted identifiers should be preserved"
+        );
+    }
+
+    #[test]
+    fn test_as_json_path_produces_no_false_diff_vs_info_schema_path_for_constraints() {
+        use crate::metadata::databricks::describe_json::{
+            ForeignKeyConstraintRow, PrimaryKeyConstraintRow,
+        };
+        use crate::metadata::databricks::{
+            foreign_key_constraints_to_agate, primary_key_constraints_to_agate,
+        };
+
+        let info_schema_results = IndexMap::from([
+            (
+                DatabricksRelationMetadataKey::PrimaryKeyConstraints,
+                create_mock_primary_key_constraints_table(),
+            ),
+            (
+                DatabricksRelationMetadataKey::ForeignKeyConstraints,
+                create_mock_foreign_key_constraints_table(),
+            ),
+        ]);
+        let info_schema_config = Constraints::from_remote_state(&info_schema_results);
+
+        let pk_rows = vec![
+            PrimaryKeyConstraintRow {
+                constraint_name: "pk_users".to_string(),
+                column_name: "id".to_string(),
+            },
+            PrimaryKeyConstraintRow {
+                constraint_name: "pk_composite".to_string(),
+                column_name: "org_id".to_string(),
+            },
+            PrimaryKeyConstraintRow {
+                constraint_name: "pk_composite".to_string(),
+                column_name: "user_id".to_string(),
+            },
+        ];
+        let fk_rows = vec![
+            ForeignKeyConstraintRow {
+                constraint_name: "fk_user_org".to_string(),
+                from_column: "org_id".to_string(),
+                to_catalog: "main".to_string(),
+                to_schema: "default".to_string(),
+                to_table: "organizations".to_string(),
+                to_column: "id".to_string(),
+            },
+            ForeignKeyConstraintRow {
+                constraint_name: "fk_composite".to_string(),
+                from_column: "parent_id".to_string(),
+                to_catalog: "main".to_string(),
+                to_schema: "default".to_string(),
+                to_table: "parents".to_string(),
+                to_column: "id".to_string(),
+            },
+            ForeignKeyConstraintRow {
+                constraint_name: "fk_composite".to_string(),
+                from_column: "parent_type".to_string(),
+                to_catalog: "main".to_string(),
+                to_schema: "default".to_string(),
+                to_table: "parents".to_string(),
+                to_column: "type".to_string(),
+            },
+        ];
+        let as_json_results = IndexMap::from([
+            (
+                DatabricksRelationMetadataKey::PrimaryKeyConstraints,
+                primary_key_constraints_to_agate(&pk_rows).unwrap(),
+            ),
+            (
+                DatabricksRelationMetadataKey::ForeignKeyConstraints,
+                foreign_key_constraints_to_agate(&fk_rows).unwrap(),
+            ),
+        ]);
+        let as_json_config = Constraints::from_remote_state(&as_json_results);
+
+        assert!(
+            Constraints::diff_from(&as_json_config, Some(&info_schema_config)).is_none(),
+            "AS-JSON path should not produce a diff against the info_schema path for identical constraints"
+        );
+        assert!(
+            Constraints::diff_from(&info_schema_config, Some(&as_json_config)).is_none(),
+            "info_schema path should not produce a diff against the AS-JSON path for identical constraints"
         );
     }
 }

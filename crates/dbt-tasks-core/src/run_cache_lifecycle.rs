@@ -1,3 +1,4 @@
+use dbt_adapter::time_machine::is_replaying;
 use dbt_adapter_core::AdapterType;
 use dbt_cloud_config::ResolvedCloudConfig;
 use dbt_common::io_args::FsCommand;
@@ -8,6 +9,7 @@ use dbt_common::tracing::dbt_metrics::{FusionMetricKey, RunCacheServiceMetricKey
 use dbt_common::tracing::metrics::increment_metric;
 use dbt_common::{ErrorCode, FsResult, fs_err};
 use dbt_schemas::schemas::profiles::Execute;
+use dbt_schemas::state::DbtProfile;
 use dbt_state::metadata_cache::RunCacheMetadataCache;
 use dbt_state::service_client::{
     ClientVersionStatus, GrpcRunCacheServiceClient, RunCacheClientMetadata, RunCacheServiceClient,
@@ -16,6 +18,7 @@ use dbt_state::service_client::{
 };
 use dbt_state::service_config::RunCacheServiceConfig;
 use std::sync::Arc;
+use tokio::sync::OnceCell;
 
 use crate::RunTasksArgs;
 
@@ -32,15 +35,19 @@ pub struct RunCacheLifecycle {
     pub(crate) metadata: Arc<RunCacheMetadataCache>,
 }
 
+static SINGLETON: OnceCell<Arc<RunCacheLifecycle>> = OnceCell::const_new();
+
 impl RunCacheLifecycle {
     pub async fn initialize(
         arg: &RunTasksArgs,
         execute: Execute,
         adapter_type: AdapterType,
         cloud_config: Option<&ResolvedCloudConfig>,
+        active_profile: &DbtProfile,
     ) -> FsResult<Self> {
         let service =
-            initialize_run_cache_service(arg, execute, adapter_type, cloud_config).await?;
+            initialize_run_cache_service(arg, execute, adapter_type, cloud_config, active_profile)
+                .await?;
         let metadata_ttl_seconds = service
             .config
             .as_ref()
@@ -55,8 +62,38 @@ impl RunCacheLifecycle {
         })
     }
 
+    pub async fn get_or_initialize(
+        arg: &RunTasksArgs,
+        execute: Execute,
+        adapter_type: AdapterType,
+        cloud_config: Option<&ResolvedCloudConfig>,
+        active_profile: &DbtProfile,
+    ) -> FsResult<Arc<RunCacheLifecycle>> {
+        let run_cache_lifecycle = SINGLETON
+            .get_or_try_init(async || {
+                Self::initialize(arg, execute, adapter_type, cloud_config, active_profile)
+                    .await
+                    .map(Arc::new)
+            })
+            .await?
+            .clone();
+
+        Ok(run_cache_lifecycle)
+    }
+
     pub fn is_requested(&self) -> bool {
         self.service.requested
+    }
+
+    pub fn service_client(&self) -> Option<SharedRunCacheServiceClient> {
+        self.service.client.clone()
+    }
+
+    pub fn defer_to_target(&self, active_profile: &DbtProfile) -> Option<String> {
+        self.service
+            .config
+            .as_ref()
+            .map(|c| c.defer_to_target(active_profile))
     }
 }
 
@@ -65,6 +102,7 @@ async fn initialize_run_cache_service(
     execute: Execute,
     adapter_type: AdapterType,
     cloud_config: Option<&ResolvedCloudConfig>,
+    active_profile: &DbtProfile,
 ) -> FsResult<RunCacheServiceLifecycle> {
     if !should_initialize_run_cache_service(arg, execute, adapter_type) {
         increment_metric(
@@ -172,7 +210,7 @@ async fn initialize_run_cache_service(
             emit_info_log_message(format!(
                 "dbt State is enabled (endpoint {}, defer_to {})",
                 config.endpoint_uri(),
-                config.defer_to
+                config.defer_to_target(active_profile)
             ));
             let shared_client = shared_run_cache_service_client(client);
             Ok(RunCacheServiceLifecycle {
@@ -254,7 +292,13 @@ fn should_initialize_run_cache_service(
     execute: Execute,
     adapter_type: AdapterType,
 ) -> bool {
-    execute == Execute::Remote && adapter_supports_dbt_state(adapter_type) && arg.run_cache_service
+    // Never contact the live dbt State service while replaying a time-machine
+    // recording: replay must be fully reproducible from recorded events, with
+    // no network/auth dependency on the real service.
+    !is_replaying()
+        && execute == Execute::Remote
+        && adapter_supports_dbt_state(adapter_type)
+        && arg.run_cache_service
 }
 
 /// Returns true when the adapter is supported by the dbt State service.
@@ -283,25 +327,47 @@ pub fn run_cache_auto_defer_command(command: FsCommand) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use super::{
+        RunCacheLifecycle, RunCacheServiceLifecycle, RunTasksArgs, adapter_supports_dbt_state,
+        disconnected_run_cache_service, should_initialize_run_cache_service,
+        validate_client_version_for_initialization,
+    };
     use async_trait::async_trait;
     use dbt_adapter_core::AdapterType;
     use dbt_common::ErrorCode;
-    use dbt_schemas::schemas::profiles::Execute;
+    use dbt_schemas::IndexMap;
+    use dbt_schemas::schemas::profiles::{DbConfig, DuckDbConfig, Execute};
+    use dbt_schemas::state::{DbtProfile, ProfileAdapter};
+    use dbt_state::metadata_cache::RunCacheMetadataCache;
     use dbt_state::proto::query_cache::{
         ConfirmExecutionRequest, ConfirmExecutionResponse, SubmitSqlResponse, SubmitValuesRequest,
     };
+    use dbt_state::service_client::shared_run_cache_service_client;
     use dbt_state::service_client::{
         ClientVersionStatus, RunCacheServiceClient, RunCacheServiceError,
     };
     use dbt_state::service_config::RunCacheServiceConfig;
-
-    use super::{
-        RunTasksArgs, adapter_supports_dbt_state, disconnected_run_cache_service,
-        should_initialize_run_cache_service, validate_client_version_for_initialization,
-    };
+    use std::sync::Arc;
 
     fn args() -> RunTasksArgs {
         RunTasksArgs::default()
+    }
+
+    fn test_profile(target: &str, defer_to_target: Option<&str>) -> DbtProfile {
+        let db_config = DbConfig::DuckDB(Box::<DuckDbConfig>::default());
+        let default_adapter = db_config.adapter_type();
+        DbtProfile {
+            profile: "default".to_string(),
+            target: target.to_string(),
+            defer_to_target: defer_to_target.map(str::to_string),
+            allow_clones: true,
+            adapters: IndexMap::from([(default_adapter, ProfileAdapter::single(db_config))]),
+            default_adapter,
+            schema: "dbt_test".to_string(),
+            database: "db".to_string(),
+            relative_profile_path: std::path::PathBuf::new(),
+            threads: None,
+        }
     }
 
     fn requested_args() -> RunTasksArgs {
@@ -353,6 +419,50 @@ mod tests {
             Execute::Remote,
             AdapterType::DuckDB,
         ));
+    }
+
+    // Serializes tests that touch the process-global time-machine state
+    // (`GLOBAL_SESSION`/`GLOBAL_REPLAYER` in `dbt_adapter::time_machine`).
+    static TIME_MACHINE_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+    #[dbt_runtime::test]
+    async fn should_initialize_run_cache_service_is_false_while_replaying() {
+        use dbt_adapter::time_machine::{
+            EventReplayer, get_or_init_recording, get_or_init_replayer, reset_time_machine_globals,
+        };
+        use dbt_common::cancellation::CancellationToken;
+
+        let _guard = TIME_MACHINE_TEST_LOCK.lock().await;
+        reset_time_machine_globals().await.unwrap();
+
+        // Even with every other condition satisfied (service requested,
+        // remote compute, supported adapter), replay must always disable
+        // the live dbt State service.
+        assert!(should_initialize_run_cache_service(
+            &requested_args(),
+            Execute::Remote,
+            AdapterType::Snowflake,
+        ));
+
+        let dir = tempfile::tempdir().unwrap();
+        let handle = get_or_init_recording(
+            dir.path(),
+            "snowflake",
+            "test-invocation",
+            None,
+            CancellationToken::never_cancels(),
+        );
+        handle.shutdown().await.unwrap();
+        reset_time_machine_globals().await.unwrap();
+        get_or_init_replayer(|| Ok(Arc::new(EventReplayer::load(dir.path())?))).unwrap();
+
+        assert!(!should_initialize_run_cache_service(
+            &requested_args(),
+            Execute::Remote,
+            AdapterType::Snowflake,
+        ));
+
+        reset_time_machine_globals().await.unwrap();
     }
 
     #[test]
@@ -408,7 +518,7 @@ mod tests {
         }
     }
 
-    #[tokio::test]
+    #[dbt_runtime::test]
     async fn initialization_validation_auth_error_fails_closed() {
         let client = ValidationClient(RunCacheServiceError::Auth("bad credentials".to_string()));
 
@@ -420,7 +530,7 @@ mod tests {
         assert_eq!(err.code, ErrorCode::AuthFailed);
     }
 
-    #[tokio::test]
+    #[dbt_runtime::test]
     async fn initialization_validation_non_auth_error_fails_open_to_skipped() {
         let client = ValidationClient(RunCacheServiceError::Disabled);
 
@@ -480,5 +590,94 @@ mod tests {
         let client = ValidationClient(RunCacheServiceError::Disabled);
 
         assert!(super::validation_skipped_service_requested(&client));
+    }
+
+    #[test]
+    fn test_service_client_returns_none_without_a_client() {
+        let lifecycle = RunCacheLifecycle {
+            service: RunCacheServiceLifecycle {
+                requested: true,
+                config: Some(RunCacheServiceConfig::disabled()),
+                client: None,
+            },
+            metadata: Arc::new(RunCacheMetadataCache::with_ttl_seconds(0)),
+        };
+
+        assert!(lifecycle.service_client().is_none());
+    }
+
+    #[test]
+    fn test_service_client_returns_client() {
+        let client = shared_run_cache_service_client(DisabledValidationClient);
+        let lifecycle = RunCacheLifecycle {
+            service: RunCacheServiceLifecycle {
+                requested: true,
+                config: Some(RunCacheServiceConfig::disabled()),
+                client: Some(client),
+            },
+            metadata: Arc::new(RunCacheMetadataCache::with_ttl_seconds(0)),
+        };
+
+        assert!(lifecycle.service_client().is_some());
+    }
+    #[dbt_runtime::test]
+    async fn get_or_initialize_reuses_lifecycle() {
+        // initialize a run cache lifecycle when one currently does not exist
+        let first = RunCacheLifecycle::get_or_initialize(
+            &args(),
+            Execute::Sidecar,
+            AdapterType::Snowflake,
+            None,
+            &test_profile("dev", None),
+        )
+        .await
+        .unwrap();
+
+        // second call to get_or_initialize
+        let second = RunCacheLifecycle::get_or_initialize(
+            &args(),
+            Execute::Sidecar,
+            AdapterType::Snowflake,
+            None,
+            &test_profile("dev", None),
+        )
+        .await
+        .unwrap();
+
+        assert!(
+            Arc::ptr_eq(&first, &second),
+            "get_or_initialize must return the cached singleton, not re-initialize"
+        );
+    }
+
+    #[dbt_runtime::test]
+    async fn get_or_initialize_concurrent_callers() {
+        let handles: Vec<_> = (0..8)
+            .map(|_| {
+                tokio::spawn(async move {
+                    let arg = args();
+                    RunCacheLifecycle::get_or_initialize(
+                        &arg,
+                        Execute::Sidecar,
+                        AdapterType::Snowflake,
+                        None,
+                        &test_profile("dev", None),
+                    )
+                    .await
+                    .unwrap()
+                })
+            })
+            .collect();
+
+        let mut results = Vec::with_capacity(handles.len());
+        for handle in handles {
+            results.push(handle.await.unwrap());
+        }
+
+        let first = &results[0];
+        assert!(
+            results.iter().all(|r| Arc::ptr_eq(r, first)),
+            "concurrent callers must observe same singleton instance, not separate initializations"
+        )
     }
 }

@@ -21,7 +21,11 @@ use dbt_schemas::schemas::{
     DbtModelAttr, InternalDbtNode, IntrospectionKind,
     common::{Access, ResolvedQuoting},
     nodes::AdapterAttr,
-    project::{ModelConfig, ResolvableConfig},
+    project::{
+        ModelConfig, ResolvableConfig, WarningEmission, resolved_surface_key_status,
+        warn_and_strip_deprecated_warehouse_keys,
+    },
+    telemetry::NodeType,
 };
 use dbt_schemas::{
     dbt_types::RelationType,
@@ -50,7 +54,9 @@ use dbt_jinja_ctx::{
     JinjaObject, ParseExecute, ResolveModelCtx, to_jinja_btreemap, to_model_context_map,
 };
 
-use crate::{phases::MacroLookupContext, serde::into_typed_with_error};
+use crate::{
+    invocation_graph::invocation_graph, phases::MacroLookupContext, serde::into_typed_with_error,
+};
 
 use super::sql_resource::SqlResource;
 
@@ -58,6 +64,7 @@ use super::sql_resource::SqlResource;
 #[allow(clippy::too_many_arguments)]
 pub fn build_resolve_model_context<T: ResolvableConfig<T> + Serialize + 'static>(
     config: &T,
+    root_overlay_forces_enabled: bool,
     adapter_type: AdapterType,
     database: &str,
     schema: &str,
@@ -67,11 +74,13 @@ pub fn build_resolve_model_context<T: ResolvableConfig<T> + Serialize + 'static>
     root_project_name: &str,
     package_quoting: DbtQuoting,
     runtime_config: Arc<DbtRuntimeConfig>,
+    root_runtime_config: Arc<DbtRuntimeConfig>,
     sql_resources: Arc<Mutex<Vec<SqlResource<T>>>>,
     execute_exists: Arc<AtomicBool>,
     display_path: &Path,
     model_path: &Path,
     global_static_analysis: Option<StaticAnalysisKind>,
+    resource_type: Option<NodeType>,
 ) -> BTreeMap<String, MinijinjaValue> {
     // Create a relation for 'this' using config values
     let sql_resources_clone = sql_resources.clone();
@@ -104,7 +113,7 @@ pub fn build_resolve_model_context<T: ResolvableConfig<T> + Serialize + 'static>
         schema: schema.to_string(),
         adapter_type,
         sql_resources: sql_resources_clone,
-        runtime_config: runtime_config.clone(),
+        root_runtime_config: root_runtime_config.clone(),
         package_quoting,
     };
     let ref_value = MinijinjaValue::from_object(ref_function);
@@ -115,6 +124,7 @@ pub fn build_resolve_model_context<T: ResolvableConfig<T> + Serialize + 'static>
         database: database.to_string(),
         schema: schema.to_string(),
         sql_resources: sql_resources.clone(),
+        root_runtime_config: root_runtime_config.clone(),
         adapter_type,
         package_quoting,
     };
@@ -126,44 +136,20 @@ pub fn build_resolve_model_context<T: ResolvableConfig<T> + Serialize + 'static>
         database: database.to_string(),
         schema: schema.to_string(),
         sql_resources: sql_resources.clone(),
+        root_runtime_config: root_runtime_config.clone(),
         adapter_type,
         package_quoting,
     };
     let function_value = MinijinjaValue::from_object(function_function);
     builtins.insert("function".to_string(), function_value.clone());
 
-    let sql_resources_clone = sql_resources.clone();
-    let metric_value = MinijinjaValue::from_function(move |args: &[MinijinjaValue]| {
-        if args.is_empty() || args.len() > 3 {
-            return Err(MinijinjaError::new(
-                MinijinjaErrorKind::InvalidOperation,
-                "invalid number of arguments for metric macro",
-            ));
-        }
-        let mut parser = ArgParser::new(args, None);
-        // If there are two positional args, the first is the package name and the second is the model name
-        let arg0 = parser.get::<String>("")?;
-        let arg1 = parser.get_optional::<String>("");
-        let (package_name, metric_name) = match (arg0, arg1) {
-            (package_name, Some(metric_name)) => (Some(package_name), metric_name),
-            (metric_name, None) => (None, metric_name),
-        };
+    let metric_function = ResolveMetricFunction {
+        sql_resources: sql_resources.clone(),
+        root_runtime_config,
+    };
+    let metric_value = MinijinjaValue::from_object(metric_function);
+    builtins.insert("metric".to_string(), metric_value.clone());
 
-        // Push the SqlResource with all available information
-        sql_resources_clone
-            .lock()
-            .unwrap()
-            .push(SqlResource::Metric((
-                metric_name.clone(),
-                package_name.clone(),
-            )));
-
-        // Create and return the DbtMetricReference
-        Ok(MinijinjaValue::from_object(ParseMetricReference {
-            metric_name,
-            _package_name: package_name,
-        }))
-    });
     let package_dependency = if package_name == root_project_name {
         None
     } else {
@@ -174,17 +160,23 @@ pub fn build_resolve_model_context<T: ResolvableConfig<T> + Serialize + 'static>
     let is_enabled = config.get_enabled_with_default();
     let config_value = MinijinjaValue::from_object(ParseConfig {
         enabled: is_enabled,
+        root_overlay_forces_enabled,
         sql_resources: sql_resources.clone(),
         package_dependency: package_dependency.clone(),
         error_path: Some(display_path.to_path_buf()),
+        adapter_type,
+        resource_type,
     });
     builtins.insert(
         "config".to_string(),
         MinijinjaValue::from_object(ParseConfig {
             enabled: is_enabled,
+            root_overlay_forces_enabled,
             sql_resources,
             package_dependency,
             error_path: Some(display_path.to_path_buf()),
+            adapter_type,
+            resource_type,
         }),
     );
 
@@ -212,6 +204,11 @@ pub fn build_resolve_model_context<T: ResolvableConfig<T> + Serialize + 'static>
             schema: schema.to_string(),
             alias: model_name.to_string(),
             relation_name: None,
+            // A placeholder node built during parse, before `+adapter` is resolved;
+            // the target default is the only answer available here.
+            adapter: adapter_type,
+            propagate: Vec::new(),
+            effective_propagation_target: None,
             materialized: ModelConfig::default_materialized(),
             static_analysis: global_static_analysis.unwrap_or_default().into(),
             static_analysis_off_reason: None,
@@ -249,7 +246,6 @@ pub fn build_resolve_model_context<T: ResolvableConfig<T> + Serialize + 'static>
             contract: None,
             event_time: None,
             catalog_name: None,
-            alt_compute: None,
             table_format: None,
             sync: None,
             compiled_code: None,
@@ -271,7 +267,7 @@ pub fn build_resolve_model_context<T: ResolvableConfig<T> + Serialize + 'static>
     // (`get_view_options`, `get_config_from_model`, …) round-trips correctly.
     let config_yml = dbt_yaml::to_value(config)
         .expect("Failed to serialize merged node config to dbt_yaml::Value for parse model.config");
-    model_map.insert("config".to_owned(), yml_value_to_minijinja(config_yml));
+    model_map.insert("config".to_owned(), yml_value_to_minijinja(&config_yml));
     model_map.insert(
         "batch".to_owned(),
         MinijinjaValue::from_object(init_batch_context()),
@@ -296,7 +292,13 @@ pub fn build_resolve_model_context<T: ResolvableConfig<T> + Serialize + 'static>
         config: config_value,
         model: MinijinjaValue::from_dyn_object(to_model_context_map(model_map)),
         builtins: MinijinjaValue::from_object(builtins),
-        graph: MinijinjaValue::UNDEFINED,
+        // The invocation-wide `graph` mapping, empty at this point — matching
+        // dbt-core, where parse-time `graph` is `manifest.flat_graph` before
+        // `build_flat_graph()` has filled it in. Handing out the shared
+        // mapping (rather than `UNDEFINED`) is what lets a macro stash scratch
+        // state on `graph` during parsing and read it back from a later parse
+        // render or from a hook. dbt-labs/fs#13454.
+        graph: MinijinjaValue::from_dyn_object(invocation_graph()),
         store_result: MinijinjaValue::from_function(result_store.store_result()),
         load_result: MinijinjaValue::from_function(result_store.load_result()),
         store_raw_result: MinijinjaValue::from_function(result_store.store_raw_result()),
@@ -351,14 +353,16 @@ struct ResolveRefFunction<T: ResolvableConfig<T> + 'static> {
     schema: String,
     adapter_type: AdapterType,
     sql_resources: Arc<Mutex<Vec<SqlResource<T>>>>,
-    runtime_config: Arc<DbtRuntimeConfig>,
+    root_runtime_config: Arc<DbtRuntimeConfig>,
     package_quoting: DbtQuoting,
 }
 
 impl<T: ResolvableConfig<T>> Object for ResolveRefFunction<T> {
     fn get_value(self: &Arc<Self>, key: &MinijinjaValue) -> Option<MinijinjaValue> {
         match key.as_str()? {
-            "config" => Some(MinijinjaValue::from_dyn_object(self.runtime_config.clone())),
+            "config" => Some(MinijinjaValue::from_dyn_object(
+                self.root_runtime_config.clone(),
+            )),
             "function_name" => Some(MinijinjaValue::from("ref")),
             _ => None,
         }
@@ -434,12 +438,16 @@ struct ResolveSourceFunction<T: ResolvableConfig<T>> {
     schema: String,
     adapter_type: AdapterType,
     sql_resources: Arc<Mutex<Vec<SqlResource<T>>>>,
+    root_runtime_config: Arc<DbtRuntimeConfig>,
     package_quoting: DbtQuoting,
 }
 
 impl<T: ResolvableConfig<T>> Object for ResolveSourceFunction<T> {
     fn get_value(self: &Arc<Self>, key: &MinijinjaValue) -> Option<MinijinjaValue> {
         match key.as_str()? {
+            "config" => Some(MinijinjaValue::from_dyn_object(
+                self.root_runtime_config.clone(),
+            )),
             "function_name" => Some(MinijinjaValue::from("source")),
             _ => None,
         }
@@ -499,12 +507,16 @@ struct ResolveFunctionFunction<T: ResolvableConfig<T>> {
     schema: String,
     adapter_type: AdapterType,
     sql_resources: Arc<Mutex<Vec<SqlResource<T>>>>,
+    root_runtime_config: Arc<DbtRuntimeConfig>,
     package_quoting: DbtQuoting,
 }
 
 impl<T: ResolvableConfig<T>> Object for ResolveFunctionFunction<T> {
     fn get_value(self: &Arc<Self>, key: &MinijinjaValue) -> Option<MinijinjaValue> {
         match key.as_str()? {
+            "config" => Some(MinijinjaValue::from_dyn_object(
+                self.root_runtime_config.clone(),
+            )),
             "function_name" => Some(MinijinjaValue::from("function")),
             _ => None,
         }
@@ -574,6 +586,61 @@ impl<T: ResolvableConfig<T>> Object for ResolveFunctionFunction<T> {
     }
 }
 
+#[derive(Debug)]
+struct ResolveMetricFunction<T: ResolvableConfig<T>> {
+    sql_resources: Arc<Mutex<Vec<SqlResource<T>>>>,
+    root_runtime_config: Arc<DbtRuntimeConfig>,
+}
+
+impl<T: ResolvableConfig<T>> Object for ResolveMetricFunction<T> {
+    fn get_value(self: &Arc<Self>, key: &MinijinjaValue) -> Option<MinijinjaValue> {
+        match key.as_str()? {
+            "config" => Some(MinijinjaValue::from_dyn_object(
+                self.root_runtime_config.clone(),
+            )),
+            "function_name" => Some(MinijinjaValue::from("metric")),
+            _ => None,
+        }
+    }
+
+    fn call(
+        self: &Arc<Self>,
+        _state: &State<'_, '_>,
+        args: &[MinijinjaValue],
+        _listeners: &[Rc<dyn RenderingEventListener>],
+    ) -> Result<MinijinjaValue, MinijinjaError> {
+        if args.is_empty() || args.len() > 3 {
+            return Err(MinijinjaError::new(
+                MinijinjaErrorKind::InvalidOperation,
+                "invalid number of arguments for metric macro",
+            ));
+        }
+        let mut parser = ArgParser::new(args, None);
+        // If there are two positional args, the first is the package name and the second is the model name
+        let arg0 = parser.get::<String>("")?;
+        let arg1 = parser.get_optional::<String>("");
+        let (package_name, metric_name) = match (arg0, arg1) {
+            (package_name, Some(metric_name)) => (Some(package_name), metric_name),
+            (metric_name, None) => (None, metric_name),
+        };
+
+        // Push the SqlResource with all available information
+        self.sql_resources
+            .lock()
+            .unwrap()
+            .push(SqlResource::Metric((
+                metric_name.clone(),
+                package_name.clone(),
+            )));
+
+        // Create and return the DbtMetricReference
+        Ok(MinijinjaValue::from_object(ParseMetricReference {
+            metric_name,
+            _package_name: package_name,
+        }))
+    }
+}
+
 /// A struct that represents a parse metric reference object returned by the `metric` macro during parsing
 pub struct ParseMetricReference {
     /// Name of the metric, e.g. `metric('metric_name')`
@@ -638,10 +705,17 @@ pub struct ParseConfig<T: ResolvableConfig<T> + 'static> {
     pub sql_resources: Arc<Mutex<Vec<SqlResource<T>>>>,
     /// Whether the model is enabled (based on upstream config)
     pub enabled: bool,
+    /// Whether the root project's config overlay explicitly sets `enabled: true` for this node.
+    pub root_overlay_forces_enabled: bool,
     // Current package name
     pub package_dependency: Option<String>,
     /// Error path to be used for error reporting
     pub error_path: Option<PathBuf>,
+    /// The target's adapter type, used to canonicalize adapter config-key aliases.
+    /// [dbt-core's `credentials.translate_aliases`]
+    pub adapter_type: AdapterType,
+    /// `None` for resource types without warehouse fields.
+    pub resource_type: Option<NodeType>,
 }
 
 impl<T: ResolvableConfig<T>> ParseConfig<T> {
@@ -662,6 +736,20 @@ impl<T: ResolvableConfig<T>> ParseConfig<T> {
         } else {
             kwargs.get("enabled").unwrap().is_true()
         };
+        // Canonicalize adapter config-key aliases
+        let kwargs =
+            dbt_adapter_core::config_aliases::canonicalize_config_keys(self.adapter_type, kwargs)
+                .map_err(|dup| {
+                MinijinjaError::new(
+                    MinijinjaErrorKind::InvalidOperation,
+                    format!(
+                        "Config keys `{}` and `{}` both resolve to `{}` for adapter '{}'; a \
+                     project cannot set the same underlying config key two different ways in \
+                     the same place.",
+                        dup.key_a, dup.key_b, dup.canonical, self.adapter_type,
+                    ),
+                )
+            })?;
         // TODO: propgate span info for individual args
         let span = {
             let Span {
@@ -717,6 +805,19 @@ impl<T: ResolvableConfig<T>> ParseConfig<T> {
             mapping.insert(dbt_yaml::Value::String(key, span.clone()), value);
         }
 
+        // Dependency package configs are not actionable by the root project.
+        if self.package_dependency.is_none()
+            && let Some(resource_type) = self.resource_type
+        {
+            warn_and_strip_deprecated_warehouse_keys(
+                &mut mapping,
+                None,
+                resource_type,
+                WarningEmission::Emit,
+                |key| resolved_surface_key_status(resource_type, key),
+            );
+        }
+
         let yaml_value = dbt_yaml::Value::Mapping(mapping, span);
         let config: T = into_typed_with_error(
             yaml_value,
@@ -734,7 +835,9 @@ impl<T: ResolvableConfig<T>> ParseConfig<T> {
             .lock()
             .unwrap()
             .push(SqlResource::ConfigCall(Box::new(config)));
-        if !enabled {
+        // The root project's overlay outranks this inline config, so skipping the rest of the
+        // render would drop refs, rendered SQL and macro spans the enabled node still needs.
+        if !enabled && !self.root_overlay_forces_enabled {
             return Err(MinijinjaError::new(
                 MinijinjaErrorKind::DisabledModel,
                 "Model is disabled".to_string(),
@@ -925,6 +1028,7 @@ impl<T: ResolvableConfig<T>> Object for ResolveThisFunction<T> {
 #[cfg(test)]
 mod test {
     use super::*;
+    use dbt_schemas::schemas::common::DbtMaterialization;
     use dbt_schemas::schemas::relations::DEFAULT_DBT_QUOTING;
     use dbt_test_primitives::assert_contains;
     #[test]
@@ -938,6 +1042,7 @@ mod test {
             database: "test_db".to_string(),
             schema: "test_schema".to_string(),
             sql_resources,
+            root_runtime_config: Arc::new(DbtRuntimeConfig::default()),
             adapter_type: AdapterType::Postgres,
             package_quoting: DEFAULT_DBT_QUOTING,
         };
@@ -962,8 +1067,11 @@ mod test {
         ParseConfig {
             sql_resources: Arc::new(Mutex::new(Vec::new())),
             enabled: true,
+            root_overlay_forces_enabled: false,
             package_dependency: None,
             error_path: None,
+            adapter_type: AdapterType::Postgres,
+            resource_type: None,
         }
     }
 
@@ -1102,5 +1210,196 @@ mod test {
             .unwrap();
         let result2 = template2.render(minijinja::context!(), &[]).unwrap();
         assert_eq!(result2, "||");
+    }
+
+    /// fs#13424: `+target_catalog:` has no dedicated Fusion field (unlike `catalog`/`database`),
+    /// so it can only resolve via a raw config-key rename before typing -- which is exactly
+    /// what the inline `{{ config(...) }}` layer does. Canonicalizing `target_catalog` into
+    /// `target_database` (dbt-core's `Credentials._ALIASES`) here is what turns a previously
+    /// unrecognized key into a resolved one.
+    #[test]
+    fn test_parse_config_inline_target_catalog_alias_resolves_on_databricks_snapshot() {
+        use dbt_schemas::schemas::project::SnapshotConfig;
+
+        let sql_resources = Arc::new(Mutex::new(Vec::new()));
+        let config = ParseConfig::<SnapshotConfig> {
+            sql_resources: sql_resources.clone(),
+            enabled: true,
+            root_overlay_forces_enabled: false,
+            package_dependency: None,
+            error_path: None,
+            adapter_type: AdapterType::Databricks,
+            resource_type: None,
+        };
+
+        let mut env = minijinja::Environment::new();
+        env.add_global("config", MinijinjaValue::from_object(config));
+        let template = env
+            .template_from_str("{{ config(target_catalog='cat1') }}")
+            .unwrap();
+        template
+            .render(minijinja::context!(), &[])
+            .expect("`target_catalog` must not raise an unrecognized-key error");
+
+        let resources = sql_resources.lock().unwrap();
+        let SqlResource::ConfigCall(cfg) = resources.last().expect("config call recorded") else {
+            panic!("expected a ConfigCall resource");
+        };
+        assert_eq!(cfg.target_database, Some("cat1".to_string()));
+    }
+
+    #[test]
+    fn test_parse_config_inline_stale_warehouse_key_is_applied() {
+        use dbt_schemas::schemas::project::SnapshotConfig;
+
+        let sql_resources = Arc::new(Mutex::new(Vec::new()));
+        let config = ParseConfig::<SnapshotConfig> {
+            sql_resources: sql_resources.clone(),
+            enabled: true,
+            root_overlay_forces_enabled: false,
+            package_dependency: None,
+            error_path: None,
+            adapter_type: AdapterType::Snowflake,
+            resource_type: Some(NodeType::Snapshot),
+        };
+
+        let mut env = minijinja::Environment::new();
+        env.add_global("config", MinijinjaValue::from_object(config));
+        let template = env
+            .template_from_str("{{ config(jar_file_uri='gs://bucket/jar') }}")
+            .unwrap();
+        template.render(minijinja::context!(), &[]).unwrap();
+
+        let resources = sql_resources.lock().unwrap();
+        let SqlResource::ConfigCall(cfg) = resources.last().expect("config call recorded") else {
+            panic!("expected a ConfigCall resource");
+        };
+        assert_eq!(
+            cfg.__warehouse_specific_config__.jar_file_uri,
+            Some("gs://bucket/jar".to_string()),
+            "a Stale warehouse key must keep applying -- flipping this to a strip is the \
+             behavior change the canary exists to measure first"
+        );
+    }
+
+    #[test]
+    fn test_parse_config_inline_resource_type_none_never_strips() {
+        let sql_resources = Arc::new(Mutex::new(Vec::new()));
+        let config = ParseConfig::<ModelConfig> {
+            sql_resources: sql_resources.clone(),
+            enabled: true,
+            root_overlay_forces_enabled: false,
+            package_dependency: None,
+            error_path: None,
+            adapter_type: AdapterType::Snowflake,
+            resource_type: None,
+        };
+
+        let mut env = minijinja::Environment::new();
+        env.add_global("config", MinijinjaValue::from_object(config));
+        let template = env
+            .template_from_str("{{ config(materialized='table') }}")
+            .unwrap();
+        template.render(minijinja::context!(), &[]).unwrap();
+
+        let resources = sql_resources.lock().unwrap();
+        let SqlResource::ConfigCall(cfg) = resources.last().expect("config call recorded") else {
+            panic!("expected a ConfigCall resource");
+        };
+        assert_eq!(cfg.materialized, Some(DbtMaterialization::Table));
+    }
+
+    #[test]
+    fn test_parse_config_inline_dependency_package_keys_are_not_stripped() {
+        use dbt_schemas::schemas::project::SnapshotConfig;
+
+        let sql_resources = Arc::new(Mutex::new(Vec::new()));
+        let config = ParseConfig::<SnapshotConfig> {
+            sql_resources: sql_resources.clone(),
+            enabled: true,
+            root_overlay_forces_enabled: false,
+            package_dependency: Some("some_dependency".to_string()),
+            error_path: None,
+            adapter_type: AdapterType::Snowflake,
+            resource_type: Some(NodeType::Snapshot),
+        };
+
+        let mut env = minijinja::Environment::new();
+        env.add_global("config", MinijinjaValue::from_object(config));
+        let template = env
+            .template_from_str("{{ config(jar_file_uri='gs://bucket/jar') }}")
+            .unwrap();
+        template.render(minijinja::context!(), &[]).unwrap();
+
+        let resources = sql_resources.lock().unwrap();
+        let SqlResource::ConfigCall(cfg) = resources.last().expect("config call recorded") else {
+            panic!("expected a ConfigCall resource");
+        };
+        assert_eq!(
+            cfg.__warehouse_specific_config__.jar_file_uri,
+            Some("gs://bucket/jar".to_string()),
+            "a dependency package's own config() call must not be touched"
+        );
+    }
+
+    /// fs#13424: postgres' `dbname` -> `database` alias likewise has no dedicated field of its
+    /// own and resolves only via the same raw config-key rename.
+    #[test]
+    fn test_parse_config_inline_dbname_alias_resolves_on_postgres() {
+        let sql_resources = Arc::new(Mutex::new(Vec::new()));
+        let config = ParseConfig::<ModelConfig> {
+            sql_resources: sql_resources.clone(),
+            enabled: true,
+            root_overlay_forces_enabled: false,
+            package_dependency: None,
+            error_path: None,
+            adapter_type: AdapterType::Postgres,
+            resource_type: None,
+        };
+
+        let mut env = minijinja::Environment::new();
+        env.add_global("config", MinijinjaValue::from_object(config));
+        let template = env
+            .template_from_str("{{ config(dbname='pgdb') }}")
+            .unwrap();
+        template
+            .render(minijinja::context!(), &[])
+            .expect("`dbname` must not raise an unrecognized-key error");
+
+        let resources = sql_resources.lock().unwrap();
+        let SqlResource::ConfigCall(cfg) = resources.last().expect("config call recorded") else {
+            panic!("expected a ConfigCall resource");
+        };
+        assert_eq!(
+            cfg.database.clone().into_inner().flatten(),
+            Some("pgdb".to_string())
+        );
+    }
+
+    /// Two keys in the same inline `{{ config(...) }}` call that canonicalize to the same
+    /// field is a `DuplicateAliasError` in dbt-core (`Translator.translate_mapping`); Fusion
+    /// must reject it too rather than silently picking one.
+    #[test]
+    fn test_parse_config_inline_duplicate_alias_key_errors() {
+        let sql_resources = Arc::new(Mutex::new(Vec::new()));
+        let config = ParseConfig::<ModelConfig> {
+            sql_resources,
+            enabled: true,
+            root_overlay_forces_enabled: false,
+            package_dependency: None,
+            error_path: None,
+            adapter_type: AdapterType::Databricks,
+            resource_type: None,
+        };
+
+        let mut env = minijinja::Environment::new();
+        env.add_global("config", MinijinjaValue::from_object(config));
+        let template = env
+            .template_from_str("{{ config(catalog='a', database='b') }}")
+            .unwrap();
+        let err = template
+            .render(minijinja::context!(), &[])
+            .expect_err("`catalog` and `database` both resolving to `database` must error");
+        assert_contains!(err.to_string(), "database");
     }
 }

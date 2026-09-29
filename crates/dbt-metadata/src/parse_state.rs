@@ -64,21 +64,21 @@ use serde::{Deserialize, Serialize};
 
 use dbt_schemas::{
     schemas::{
-        DbtAnalysis, DbtExposure, DbtFunction, DbtModel, DbtSeed, DbtSnapshot, DbtSource, DbtTest,
-        DbtUnitTest, Nodes,
+        DbtAnalysis, DbtCheck, DbtExposure, DbtFunction, DbtModel, DbtSeed, DbtSnapshot, DbtSource,
+        DbtTest, DbtUnitTest, Nodes,
         common::ConstraintType,
         macros::{DbtDocsMacro, DbtMacro, MacroArgument},
-        manifest::{DbtMetric, DbtSavedQuery, DbtSemanticModel},
-        nodes::DbtGroup,
+        manifest::{DbtMetric, DbtOperation, DbtSavedQuery, DbtSemanticModel},
+        nodes::{DbtGroup, InternalDbtNodeAttributes},
     },
-    state::{DbtPackage, Macros, ManifestPathConfig, ResourcePathKind},
+    state::{DbtPackage, Macros, ManifestPathConfig, Operations, ResourcePathKind},
 };
 
 use crate::partial_parse::PackageSnapshot;
 
 // ── constants ─────────────────────────────────────────────────────────────────
 
-pub const CACHE_DIR_NAME: &str = "metadata/parse";
+pub const CACHE_DIR_NAME: &str = "private/metadata/parse";
 
 const SCHEMA_VERSION: u32 = 1;
 
@@ -382,7 +382,7 @@ fn node_fields() -> Vec<FieldRef> {
 
 fn node_row_from_trait<N>(uid: &str, node: &N, kind: &str, is_disabled: i32) -> NodeRow
 where
-    N: dbt_schemas::schemas::nodes::InternalDbtNode + Serialize,
+    N: dbt_schemas::schemas::nodes::InternalDbtNode + InternalDbtNodeAttributes + Serialize,
 {
     let c = node.common();
     let b = node.base();
@@ -413,6 +413,12 @@ where
         Some(b.alias.clone())
     };
     let group_name = node.get_group();
+    let access = node.get_access().map(|a| a.to_string());
+    let source = node.as_any().downcast_ref::<DbtSource>();
+    let identifier = source
+        .map(|s| s.__source_attr__.identifier.clone())
+        .or_else(|| alias.clone());
+    let source_name = source.map(|s| s.__source_attr__.source_name.clone());
     NodeRow {
         unique_id: uid.to_string(),
         is_disabled,
@@ -432,8 +438,44 @@ where
         schema,
         alias,
         relation_name: b.relation_name.clone(),
+        access,
         group_name,
+        source_name,
+        identifier,
         ..Default::default()
+    }
+}
+
+fn append_operation_rows(rows: &mut Vec<NodeRow>, operations_json: &str) {
+    let Ok(ops) = serde_json::from_str::<Operations>(operations_json) else {
+        return;
+    };
+    for op in ops.on_run_start.iter().chain(ops.on_run_end.iter()) {
+        let node: &DbtOperation = op;
+        rows.push(node_row_from_trait(
+            &node.__common_attr__.unique_id,
+            node,
+            "operation",
+            0,
+        ));
+    }
+}
+
+fn append_operation_alive(
+    rows: &mut Vec<dbt_metadata_parquet::parse_alive::AliveRow>,
+    operations_json: &str,
+    ingested_at: i64,
+) {
+    let Ok(ops) = serde_json::from_str::<Operations>(operations_json) else {
+        return;
+    };
+    for op in ops.on_run_start.iter().chain(ops.on_run_end.iter()) {
+        let node: &DbtOperation = op;
+        rows.push(dbt_metadata_parquet::parse_alive::AliveRow {
+            unique_id: node.__common_attr__.unique_id.clone(),
+            resource_type: "operation".to_string(),
+            ingested_at,
+        });
     }
 }
 
@@ -523,7 +565,12 @@ fn node_row_from_docs_macro(uid: &str, node: &DbtDocsMacro, is_disabled: i32) ->
 }
 
 #[allow(clippy::cognitive_complexity)]
-fn collect_all_rows(nodes: &Nodes, disabled_nodes: &Nodes, macros: &Macros) -> Vec<NodeRow> {
+fn collect_all_rows(
+    nodes: &Nodes,
+    disabled_nodes: &Nodes,
+    macros: &Macros,
+    operations_json: &str,
+) -> Vec<NodeRow> {
     let mut rows = Vec::new();
     macro_rules! push_trait {
         ($map:expr, $kind:literal, $dis:expr) => {
@@ -539,6 +586,7 @@ fn collect_all_rows(nodes: &Nodes, disabled_nodes: &Nodes, macros: &Macros) -> V
     push_trait!(&nodes.sources, "source", 0);
     push_trait!(&nodes.snapshots, "snapshot", 0);
     push_trait!(&nodes.analyses, "analysis", 0);
+    push_trait!(&nodes.checks, "check", 0);
     push_trait!(&nodes.exposures, "exposure", 0);
     push_trait!(&nodes.semantic_models, "semantic_model", 0);
     push_trait!(&nodes.metrics, "metric", 0);
@@ -557,6 +605,7 @@ fn collect_all_rows(nodes: &Nodes, disabled_nodes: &Nodes, macros: &Macros) -> V
     push_trait!(&disabled_nodes.sources, "source", 1);
     push_trait!(&disabled_nodes.snapshots, "snapshot", 1);
     push_trait!(&disabled_nodes.analyses, "analysis", 1);
+    push_trait!(&disabled_nodes.checks, "check", 1);
     push_trait!(&disabled_nodes.exposures, "exposure", 1);
     push_trait!(&disabled_nodes.semantic_models, "semantic_model", 1);
     push_trait!(&disabled_nodes.metrics, "metric", 1);
@@ -571,6 +620,7 @@ fn collect_all_rows(nodes: &Nodes, disabled_nodes: &Nodes, macros: &Macros) -> V
     for (uid, node) in macros.docs_macros.iter() {
         rows.push(node_row_from_docs_macro(uid, node, 0));
     }
+    append_operation_rows(&mut rows, operations_json);
     rows
 }
 
@@ -598,6 +648,7 @@ fn collect_delta_rows(
     push_if_changed!(&nodes.sources, "source", 0);
     push_if_changed!(&nodes.snapshots, "snapshot", 0);
     push_if_changed!(&nodes.analyses, "analysis", 0);
+    push_if_changed!(&nodes.checks, "check", 0);
     push_if_changed!(&nodes.exposures, "exposure", 0);
     push_if_changed!(&nodes.semantic_models, "semantic_model", 0);
     push_if_changed!(&nodes.metrics, "metric", 0);
@@ -620,6 +671,7 @@ fn collect_delta_rows(
     push_if_changed!(&disabled_nodes.sources, "source", 1);
     push_if_changed!(&disabled_nodes.snapshots, "snapshot", 1);
     push_if_changed!(&disabled_nodes.analyses, "analysis", 1);
+    push_if_changed!(&disabled_nodes.checks, "check", 1);
     push_if_changed!(&disabled_nodes.exposures, "exposure", 1);
     push_if_changed!(&disabled_nodes.semantic_models, "semantic_model", 1);
     push_if_changed!(&disabled_nodes.metrics, "metric", 1);
@@ -650,6 +702,7 @@ fn collect_alive_rows(
     nodes: &Nodes,
     disabled_nodes: &Nodes,
     macros: &Macros,
+    operations_json: &str,
     ingested_at: i64,
 ) -> Vec<dbt_metadata_parquet::parse_alive::AliveRow> {
     use dbt_metadata_parquet::parse_alive::AliveRow;
@@ -672,6 +725,7 @@ fn collect_alive_rows(
     push_alive!(&nodes.sources, "source");
     push_alive!(&nodes.snapshots, "snapshot");
     push_alive!(&nodes.analyses, "analysis");
+    push_alive!(&nodes.checks, "check");
     push_alive!(&nodes.exposures, "exposure");
     push_alive!(&nodes.semantic_models, "semantic_model");
     push_alive!(&nodes.metrics, "metric");
@@ -686,6 +740,7 @@ fn collect_alive_rows(
     push_alive!(&disabled_nodes.sources, "source");
     push_alive!(&disabled_nodes.snapshots, "snapshot");
     push_alive!(&disabled_nodes.analyses, "analysis");
+    push_alive!(&disabled_nodes.checks, "check");
     push_alive!(&disabled_nodes.exposures, "exposure");
     push_alive!(&disabled_nodes.semantic_models, "semantic_model");
     push_alive!(&disabled_nodes.metrics, "metric");
@@ -700,6 +755,7 @@ fn collect_alive_rows(
             ingested_at,
         });
     }
+    append_operation_alive(&mut rows, operations_json, ingested_at);
     rows
 }
 
@@ -1035,7 +1091,12 @@ pub fn save(args: &SaveArgs<'_>) -> Result<(), String> {
         None => {
             // Cold start: write epoch 0, remove any delta epochs.
             let tc = Instant::now();
-            let mut all_rows = collect_all_rows(args.nodes, args.disabled_nodes, args.macros);
+            let mut all_rows = collect_all_rows(
+                args.nodes,
+                args.disabled_nodes,
+                args.macros,
+                args.operations_json,
+            );
             for r in &mut all_rows {
                 r.ingested_at = args.ingested_at;
             }
@@ -1094,7 +1155,12 @@ pub fn save(args: &SaveArgs<'_>) -> Result<(), String> {
                 // `changed` get the current invocation timestamp.
                 let prior_ingested = read_ingested_at(&dir);
                 let tc = Instant::now();
-                let mut all_rows = collect_all_rows(args.nodes, args.disabled_nodes, args.macros);
+                let mut all_rows = collect_all_rows(
+                    args.nodes,
+                    args.disabled_nodes,
+                    args.macros,
+                    args.operations_json,
+                );
                 for r in &mut all_rows {
                     r.ingested_at = if changed.contains(&r.unique_id) {
                         args.ingested_at
@@ -1181,6 +1247,7 @@ pub fn save(args: &SaveArgs<'_>) -> Result<(), String> {
         args.nodes,
         args.disabled_nodes,
         args.macros,
+        args.operations_json,
         args.ingested_at,
     );
     let alive_path = dir.join("alive.parquet");
@@ -1576,6 +1643,7 @@ fn deserialize_into(
         "source" => deser!(nodes.sources, DbtSource),
         "snapshot" => deser!(nodes.snapshots, DbtSnapshot),
         "analysis" => deser!(nodes.analyses, DbtAnalysis),
+        "check" => deser!(nodes.checks, DbtCheck),
         "exposure" => deser!(nodes.exposures, DbtExposure),
         "semantic_model" => deser!(nodes.semantic_models, DbtSemanticModel),
         "metric" => deser!(nodes.metrics, DbtMetric),
@@ -2181,6 +2249,7 @@ mod tests {
             package_root_path: root.join(name),
             dbt_properties: vec![],
             analysis_files: vec![],
+            check_files: vec![],
             model_sql_files: vec![],
             function_sql_files: vec![],
             macro_files: vec![],
@@ -2203,6 +2272,7 @@ mod tests {
             package_root_path: internal_root,
             dbt_properties: vec![],
             analysis_files: vec![],
+            check_files: vec![],
             model_sql_files: vec![],
             function_sql_files: vec![],
             macro_files: vec![],

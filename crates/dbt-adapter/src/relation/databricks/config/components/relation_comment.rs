@@ -71,7 +71,11 @@ fn from_local_config(
         .unwrap_or(false);
 
     let comment_str = if persist {
-        relation_config.common().description.clone()
+        relation_config
+            .common()
+            .description
+            .clone()
+            .filter(|comment| !comment.is_empty())
     } else {
         None
     };
@@ -153,5 +157,16 @@ mod tests {
         let comment_config = from_local_config(&model).unwrap();
 
         assert_eq!(comment_config.value, None);
+    }
+
+    #[test]
+    fn test_from_local_config_empty_comment_persist() {
+        let model = create_mock_dbt_model(true, Some(""));
+        let comment_config = from_local_config(&model).unwrap();
+
+        assert_eq!(
+            comment_config.value, None,
+            "v1 normalizes an empty persisted description to no relation comment"
+        );
     }
 }

@@ -1,5 +1,5 @@
-import { Icon, RyeconSpinner } from '@dbt-labs/sourdough';
+import { LoaderCircle } from 'lucide-react';
 
 export const Spinner = () => {
-  return <Icon ryecon={RyeconSpinner} className="motion-safe:animate-spin" />;
+  return <LoaderCircle className="size-4 motion-safe:animate-spin" />;
 };

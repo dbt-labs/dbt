@@ -1,3 +1,4 @@
+use std::sync::Arc;
 use std::sync::atomic::AtomicPtr;
 
 use dbt_common::tracing::TelemetryHandle;
@@ -6,21 +7,21 @@ use dbt_common::tracing::error::TracingError;
 use dbt_common::tracing::noop_tracing_config_provider;
 
 pub struct TracingFeature {
-    pub config_provider: Box<dyn TracingConfigProvider>,
+    pub config_provider: Arc<dyn TracingConfigProvider>,
     shutdown_handle: AtomicPtr<TelemetryHandle>,
 }
 
 impl Default for TracingFeature {
     fn default() -> Self {
         Self {
-            config_provider: noop_tracing_config_provider(),
+            config_provider: noop_tracing_config_provider().into(),
             shutdown_handle: AtomicPtr::new(std::ptr::null_mut()),
         }
     }
 }
 
 impl TracingFeature {
-    pub fn with_config_provider(mut self, provider: Box<dyn TracingConfigProvider>) -> Self {
+    pub fn with_config_provider(mut self, provider: Arc<dyn TracingConfigProvider>) -> Self {
         self.config_provider = provider;
         self
     }

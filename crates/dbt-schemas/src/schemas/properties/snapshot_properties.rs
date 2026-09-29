@@ -1,5 +1,5 @@
 use dbt_common::io_args::StaticAnalysisOffReason;
-use dbt_yaml::DbtSchema;
+use dbt_yaml::{DbtSchema, Spanned};
 use serde::{Deserialize, Serialize};
 use serde_with::skip_serializing_none;
 
@@ -12,7 +12,7 @@ use crate::schemas::properties::GetConfig;
 #[derive(Deserialize, Serialize, Debug, Clone, DbtSchema)]
 pub struct SnapshotProperties {
     pub name: String,
-    pub relation: Option<String>,
+    pub relation: Option<Spanned<String>>,
     pub columns: Option<Vec<ColumnProperties>>,
     pub config: Option<SnapshotConfig>,
     pub data_tests: Option<Vec<DataTests>>,

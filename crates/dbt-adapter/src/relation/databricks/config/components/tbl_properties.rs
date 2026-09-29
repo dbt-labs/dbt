@@ -17,36 +17,6 @@ pub(crate) const TYPE_NAME: &str = "tblproperties";
 
 pub(crate) const PIPELINE_ID_KEY: &str = "pipelines.pipelineId";
 
-/// All of the following keys are ignoring by the diffing function
-///
-/// These are generally set by databricks and cannot be modified by the user
-const EQ_IGNORE_LIST: [&str; 24] = [
-    PIPELINE_ID_KEY,
-    "delta.enableChangeDataFeed",
-    "delta.minReaderVersion",
-    "delta.minWriterVersion",
-    "pipeline_internal.catalogType",
-    "pipelines.metastore.tableName",
-    "pipeline_internal.enzymeMode",
-    "clusterByAuto",
-    "clusteringColumns",
-    "delta.enableRowTracking",
-    "delta.feature.appendOnly",
-    "delta.feature.changeDataFeed",
-    "delta.feature.checkConstraints",
-    "delta.feature.domainMetadata",
-    "delta.feature.generatedColumns",
-    "delta.feature.invariants",
-    "delta.feature.rowTracking",
-    "delta.rowTracking.materializedRowCommitVersionColumnName",
-    "delta.rowTracking.materializedRowIdColumnName",
-    "spark.internal.pipelines.top_level_entry.user_specified_name",
-    "delta.columnMapping.maxColumnId",
-    "spark.sql.internal.pipelines.parentTableId",
-    "delta.enableDeletionVectors",
-    "delta.feature.deletionVectors",
-];
-
 /// Component for Databricks table properties.
 pub type TblProperties = SimpleComponentConfigImpl<IndexMap<String, String>>;
 
@@ -89,19 +59,18 @@ fn new_component(properties: IndexMap<String, String>) -> TblProperties {
 /// ```
 ///
 /// This is an asymmetric, one-directional comparison: a diff is reported only when the
-/// *desired* state has a non-ignored key/value pair that is missing or different in the
-/// *current* state. Keys present only in the current state (e.g. server-managed properties
-/// Databricks sets automatically) are ignored — a model that declares no opinion on
-/// `tblproperties` never produces a diff, regardless of what's already on the relation.
-/// The returned value is the full desired state (matching Python's `get_diff` returning `self`).
+/// *desired* state has a non-pipeline key/value pair that is missing or different in the
+/// *current* state. Fusion retains the pipeline ID for rendering but excludes it from comparison
+/// because dbt-databricks stores it separately from `tblproperties`. Keys present only in the
+/// current state are ignored, and the returned value is the full desired state (matching Python's
+/// `get_diff` returning `self`).
 fn diff(
     desired_state: &IndexMap<String, String>,
     current_state: &IndexMap<String, String>,
 ) -> Option<IndexMap<String, String>> {
-    let has_diff = desired_state.iter().any(|(k, v)| {
-        !EQ_IGNORE_LIST.contains(&k.as_str())
-            && current_state.get(k).map(|cv| cv != v).unwrap_or(true)
-    });
+    let has_diff = desired_state
+        .iter()
+        .any(|(k, v)| k.as_str() != PIPELINE_ID_KEY && current_state.get(k) != Some(v));
 
     if has_diff {
         Some(desired_state.clone())
@@ -121,9 +90,7 @@ fn from_remote_state(results: &DatabricksRelationMetadata) -> AdapterResult<TblP
             (row.get_item(&Value::from(0)), row.get_item(&Value::from(1)))
             && let (Some(key_str), Some(value_str)) = (key_val.as_str(), value_val.as_str())
         {
-            if key_str == PIPELINE_ID_KEY || !EQ_IGNORE_LIST.contains(&key_str) {
-                tblproperties.insert(key_str.to_string(), value_str.to_string());
-            }
+            tblproperties.insert(key_str.to_string(), value_str.to_string());
         }
     }
 
@@ -142,10 +109,16 @@ fn from_local_config(
     if let Some(databricks_attr) = &model.__adapter_attr__.databricks_attr
         && let Some(props_map) = &databricks_attr.tblproperties
     {
-        for (key, value) in props_map {
-            if let YmlValue::String(value_str, _) = value {
-                tblproperties.insert(key.clone(), value_str.clone());
-            }
+        for (key, value) in &props_map.0 {
+            let value_str = match value {
+                YmlValue::String(s, _) => s.clone(),
+                // A bare date/datetime scalar resolves to a Timestamp; render its
+                // canonical form, as it was a plain string before YAML 1.1
+                // timestamp resolution.
+                YmlValue::Timestamp(t, _) => t.to_string(),
+                _ => continue,
+            };
+            tblproperties.insert(key.clone(), value_str);
         }
     }
 
@@ -153,7 +126,7 @@ fn from_local_config(
         .deprecated_config
         .table_format
         .as_ref()
-        .is_some_and(|s| s == "iceberg");
+        .is_some_and(|s| s.eq_ignore_ascii_case("iceberg"));
 
     if is_iceberg {
         tblproperties.insert(
@@ -228,167 +201,130 @@ mod tests {
     }
 
     #[test]
-    fn test_diff_changed_databricks_keys() {
-        let prev = IndexMap::from_iter([
+    fn test_diff_ignores_pipeline_id_changes() {
+        let current = IndexMap::from_iter([
             (
                 "pipelines.pipelineId".to_string(),
                 "pipeline123".to_string(),
             ),
-            ("delta.enableChangeDataFeed".to_string(), "true".to_string()),
+            ("custom.property".to_string(), "value".to_string()),
         ]);
-        let next = IndexMap::from_iter([
-            (
-                "pipelines.pipelineId".to_string(),
-                "pipeline123456".to_string(),
-            ),
-            (
-                "delta.enableChangeDataFeed".to_string(),
-                "false".to_string(),
-            ),
-        ]);
-
-        let diff = diff(&next, &prev);
-        assert!(diff.is_none());
-    }
-
-    #[test]
-    fn test_diff_changed_custom_keys() {
-        let prev = IndexMap::from_iter([
-            (
-                "pipelines.pipelineId".to_string(),
-                "pipeline123".to_string(),
-            ),
-            ("custom.change".to_string(), "old".to_string()),
-            ("custom.drop".to_string(), "old".to_string()),
-        ]);
-        let next = IndexMap::from_iter([
-            (
-                "pipelines.pipelineId".to_string(),
-                "pipeline123456".to_string(),
-            ),
-            ("custom.change".to_string(), "new".to_string()),
-            ("custom.add".to_string(), "new".to_string()),
-        ]);
-
-        let diff = diff(&next, &prev).unwrap();
-
-        // diff returns the full desired state (matching Python's get_diff returning self)
-        assert_eq!(diff.len(), 3);
-        assert_eq!(
-            diff.get("pipelines.pipelineId").unwrap().as_str(),
-            "pipeline123456"
-        );
-        assert_eq!(diff.get("custom.change").unwrap().as_str(), "new");
-        assert_eq!(diff.get("custom.add").unwrap().as_str(), "new");
-    }
-
-    /// The model config has tblproperties:
-    ///   {"delta.enableChangeDataFeed": "true", "delta.columnMapping.mode": "name"}
-    ///
-    /// The existing table (SHOW TBLPROPERTIES) has those plus a few other properties
-    /// like delta.checkpoint.*, delta.parquet.*, etc.
-    ///
-    /// Python dbt-databricks's `get_diff` is a one-directional set difference
-    /// (`self.tblproperties.items() - other.tblproperties.items()`): it only reports a
-    /// diff when the *desired* state has a non-ignored key/value pair missing or different
-    /// in current. Extra keys present only in current (server-managed properties the model
-    /// never declared an opinion on) must be ignored. Here every non-ignored desired key
-    /// (`delta.columnMapping.mode`) matches current, so there is no diff even though current
-    /// has additional keys.
-    #[test]
-    fn test_diff_extra_current_keys_are_ignored() {
-        // Desired state: what from_local_config produces from the model config.
-        // Note: delta.enableChangeDataFeed is in the model config but will be
-        // filtered by EQ_IGNORE_LIST in the diff function.
         let desired = IndexMap::from_iter([
-            ("delta.enableChangeDataFeed".to_string(), "true".to_string()),
-            ("delta.columnMapping.mode".to_string(), "name".to_string()),
-        ]);
-
-        // Current state: what from_remote_state produces from SHOW TBLPROPERTIES.
-        // from_remote_state already filters EQ_IGNORE_LIST, so delta.enableChangeDataFeed
-        // is NOT here. But extra system properties (not in ignore list) ARE here.
-        let current = IndexMap::from_iter([
             (
-                "delta.checkpoint.writeStatsAsJson".to_string(),
-                "false".to_string(),
+                "pipelines.pipelineId".to_string(),
+                "pipeline123456".to_string(),
             ),
-            (
-                "delta.checkpoint.writeStatsAsStruct".to_string(),
-                "true".to_string(),
-            ),
-            ("delta.columnMapping.mode".to_string(), "name".to_string()),
-            (
-                "delta.parquet.compression.codec".to_string(),
-                "zstd".to_string(),
-            ),
-        ]);
-
-        // No diff: the only non-ignored desired key/value pair (delta.columnMapping.mode =
-        // "name") is present and identical in current. Extra current-only keys don't count.
-        let result = diff(&desired, &current);
-        assert!(
-            result.is_none(),
-            "Extra non-ignored keys present only in current state must not trigger a diff"
-        );
-    }
-
-    /// A model that declares no tblproperties opinion at all must never report a diff,
-    /// even when the existing relation already has server-managed properties set
-    /// (regression test for the bug that triggered spurious `apply_tblproperties` calls,
-    /// e.g. unnecessary `adapter.is_uniform` checks, for models that never configured
-    /// tblproperties).
-    #[test]
-    fn test_diff_empty_desired_never_reports_change() {
-        let desired = IndexMap::new();
-
-        let current = IndexMap::from_iter([
-            (
-                "delta.checkpoint.writeStatsAsJson".to_string(),
-                "false".to_string(),
-            ),
-            (
-                "delta.checkpoint.writeStatsAsStruct".to_string(),
-                "true".to_string(),
-            ),
-            ("delta.minReaderVersion".to_string(), "1".to_string()),
-            ("delta.minWriterVersion".to_string(), "2".to_string()),
+            ("custom.property".to_string(), "value".to_string()),
         ]);
 
         assert!(diff(&desired, &current).is_none());
     }
 
     #[test]
-    fn test_from_remote_state() {
+    fn test_diff_empty_and_some_exist() {
+        let desired = IndexMap::new();
+        let current = IndexMap::from_iter([("prop".to_string(), "1".to_string())]);
+
+        assert!(diff(&desired, &current).is_none());
+    }
+
+    #[test]
+    fn test_diff_some_new_and_empty_existing() {
+        let desired = IndexMap::from_iter([("prop".to_string(), "1".to_string())]);
+        let current = IndexMap::new();
+
+        assert_eq!(diff(&desired, &current), Some(desired));
+    }
+
+    #[test]
+    fn test_diff_mixed_case() {
+        let desired = IndexMap::from_iter([
+            ("prop".to_string(), "1".to_string()),
+            ("other".to_string(), "other".to_string()),
+        ]);
+        let current = IndexMap::from_iter([
+            ("prop".to_string(), "2".to_string()),
+            ("c".to_string(), "value".to_string()),
+        ]);
+
+        assert_eq!(diff(&desired, &current), Some(desired));
+    }
+
+    #[test]
+    fn test_diff_retains_already_applied_properties() {
+        let desired = IndexMap::from_iter([
+            ("a".to_string(), "1".to_string()),
+            ("c".to_string(), "1".to_string()),
+        ]);
+        let current = IndexMap::from_iter([("a".to_string(), "1".to_string())]);
+
+        assert_eq!(diff(&desired, &current), Some(desired));
+    }
+
+    #[test]
+    fn test_diff_no_changes() {
+        let desired = IndexMap::from_iter([("prop".to_string(), "1".to_string())]);
+        let current = desired.clone();
+
+        assert!(diff(&desired, &current).is_none());
+    }
+
+    #[test]
+    fn test_diff_ignores_server_set_properties() {
+        let desired = IndexMap::from_iter([("prop".to_string(), "1".to_string())]);
+        let current = IndexMap::from_iter([
+            ("prop".to_string(), "1".to_string()),
+            ("server.property".to_string(), "value".to_string()),
+        ]);
+
+        assert!(diff(&desired, &current).is_none());
+    }
+
+    #[test]
+    fn test_from_remote_state_retains_server_set_properties() {
         let table = create_mock_show_tblproperties_table(vec![
-            ("streaming.checkpointLocation", "/tmp/checkpoint"),
-            ("streaming.outputMode", "append"),
-            ("custom.property", "test_value"),
-            ("pipelines.pipelineId", "pipeline123"),
-            ("delta.enableChangeDataFeed", "true"), // Should be ignored
+            ("prop", "1"),
+            ("delta.enableChangeDataFeed", "true"),
         ]);
 
         let results = IndexMap::from([(DatabricksRelationMetadataKey::ShowTblProperties, table)]);
         let config = from_remote_state(&results).unwrap();
 
-        assert_eq!(config.value.len(), 4); // Ignores delta properties
+        let expected = IndexMap::<String, String>::from_iter([
+            ("prop".to_string(), "1".to_string()),
+            ("delta.enableChangeDataFeed".to_string(), "true".to_string()),
+        ]);
+
+        assert_eq!(config.value, expected);
+    }
+
+    #[test]
+    fn test_to_jinja_separates_pipeline_id_from_tblproperties() {
+        let properties = IndexMap::from_iter([
+            (PIPELINE_ID_KEY.to_string(), "pipeline123".to_string()),
+            ("prop".to_string(), "1".to_string()),
+        ]);
+
+        let value = to_jinja(&properties);
+        let tblproperties = value.get_attr("tblproperties").unwrap();
+
         assert_eq!(
-            config.value.get("streaming.checkpointLocation"),
-            Some(&"/tmp/checkpoint".to_string())
+            value.get_attr("pipeline_id").unwrap().as_str(),
+            Some("pipeline123")
         );
         assert_eq!(
-            config.value.get("streaming.outputMode"),
-            Some(&"append".to_string())
+            tblproperties
+                .get_item(&Value::from("prop"))
+                .unwrap()
+                .as_str(),
+            Some("1")
         );
-        assert_eq!(
-            config.value.get("custom.property"),
-            Some(&"test_value".to_string())
+        assert!(
+            tblproperties
+                .get_item(&Value::from(PIPELINE_ID_KEY))
+                .unwrap()
+                .is_undefined()
         );
-        assert_eq!(
-            config.value.get(PIPELINE_ID_KEY),
-            Some(&"pipeline123".to_string())
-        );
-        assert!(!config.value.contains_key("delta.enableChangeDataFeed"));
     }
 
     #[test]

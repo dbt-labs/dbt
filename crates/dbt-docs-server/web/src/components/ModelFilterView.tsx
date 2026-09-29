@@ -2,8 +2,6 @@ import { useMemo, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { type ColumnDef } from '@tanstack/react-table';
 
-import { resourceIconMap } from '@dbt-labs/dbt-dag';
-
 import { facetOptions, selectedFacetOption } from '../lib/facetOptions';
 import { makeNameCell } from '../lib/nameCell';
 import type { ListSort, ModelSummary } from '../shared';
@@ -83,7 +81,7 @@ export function ModelFilterView({ project, onPeek }: Props) {
 
   const columns = useMemo<ColumnDef<ModelSummary>[]>(
     () => [
-      makeNameCell<ModelSummary>(resourceIconMap.model, onPeek, (r) => r.uniqueId, {
+      makeNameCell<ModelSummary>(onPeek, (r) => r.uniqueId, {
         enableSorting: true,
       }),
       {

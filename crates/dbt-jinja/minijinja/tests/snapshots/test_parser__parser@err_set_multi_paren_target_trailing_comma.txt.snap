@@ -1,0 +1,12 @@
+---
+source: fs/sa/crates/dbt-jinja/minijinja/tests/test_parser.rs
+description: "{% set (a, b), (c, d, e), = (1, 2), (3, 4, 5), %}"
+input_file: fs/sa/crates/dbt-jinja/minijinja/tests/parser-inputs/err_set_multi_paren_target_trailing_comma.txt
+---
+Err(
+    Error {
+        kind: SyntaxError,
+        detail: "unexpected `,`, expected assignment operator",
+        name: "err_set_multi_paren_target_trailing_comma.txt",
+    },
+)

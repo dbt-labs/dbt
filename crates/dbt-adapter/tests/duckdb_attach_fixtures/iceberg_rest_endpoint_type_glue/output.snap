@@ -1,0 +1,5 @@
+---
+source: fs/sa/crates/dbt-adapter/tests/duckdb_attach.rs
+assertion_line: 60
+---
+ATTACH IF NOT EXISTS ':' AS glue_rest_db (TYPE ICEBERG, SECRET glue_s3, ENDPOINT_TYPE 'GLUE', DEFAULT_SCHEMA 'analytics', READ_ONLY false)

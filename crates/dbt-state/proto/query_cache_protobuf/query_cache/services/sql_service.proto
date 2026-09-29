@@ -34,6 +34,8 @@ message SubmitEnrichedSQLRequest {
   optional DbtNodeState dbt_node_state = 19;
   optional string default_schema = 20;
   bool compare_unrendered_code = 21;
+  optional string table_namespace = 22;
+  bool ignore_external_modifications = 23;
 }
 
 message SubmitValuesRequest {
@@ -48,6 +50,7 @@ message SubmitValuesRequest {
   optional TableProperties clone_table_properties = 9;
   optional int64 clone_chain_depth_limit = 10;
   optional DbtNodeState dbt_node_state = 11;
+  optional string table_namespace = 22;
 }
 
 message SubmitSQLResponse {

@@ -1,22 +1,16 @@
-import { FC, ReactNode } from 'react';
+import { createElement, FC, ReactNode } from 'react';
+import { Columns3, Folder, Server } from 'lucide-react';
 import { twJoin } from 'tailwind-merge';
 
+import { Link } from '../../../components/ui/Link';
+import { LoadingBlock } from '../../../components/ui/LoadingBlock';
+import { Tooltip } from '../../../components/ui/Tooltip';
 import {
-  DbtResourceIcon,
-  ResourceType,
-  ResourceTypeExplorer,
-  WarehouseType,
-} from '@dbt-labs/dbt-dag';
-import {
-  Icon,
-  Link,
-  LoadingBlock,
-  RyeconDatabaseEnvironment,
-  RyeconProjects,
-  RyeconTableColumn,
-  Tooltip,
-} from '@dbt-labs/sourdough';
-
+  iconForType,
+  type ResourceType,
+  type ResourceTypeExplorer,
+  type WarehouseType,
+} from '../../../lib/resourceType';
 import { TrustSignals } from '../../typings/trustSignals';
 import { toTitleCase } from '../../util/string';
 import { DataPlatformChip } from '../DataPlatformChip';
@@ -183,23 +177,25 @@ export const RichSearchResultItem: FC<RichItemParams | SkeletonItemParams> = (
           <div className="flex flex-wrap items-center gap-x-3 gap-y-1 truncate pt-3 text-fgAlt">
             {metadata?.projectName && (
               <span className="flex items-center gap-1">
-                <Icon ryecon={RyeconProjects} />
+                <Folder className="size-3.5" />
                 {metadata.projectName}
               </span>
             )}
             {metadata?.environmentType && (
               <span className="flex items-center gap-1">
-                <Icon ryecon={RyeconDatabaseEnvironment} />
+                <Server className="size-3.5" />
                 {toTitleCase(metadata.environmentType)}
               </span>
             )}
             <span className="flex items-center gap-1">
-              <DbtResourceIcon className="text-fgMain" resource={resourceType} />
+              {createElement(iconForType(resourceType), {
+                size: 16,
+              })}
               {toTitleCase(resourceType)}
             </span>
             {metadata?.numColumns != null && metadata.numColumns > 0 && (
               <span className="flex items-center gap-1">
-                <Icon ryecon={RyeconTableColumn} />
+                <Columns3 className="size-3.5" />
                 {metadata.numColumns} columns
               </span>
             )}

@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { type Identity } from '../api';
+import { type Identity } from '../types';
 import { decorateOutboundHref } from './outboundReferrer';
 import { initTelemetry, resetTelemetryForTests } from './telemetry';
 

@@ -21,6 +21,10 @@ pub struct TestEvaluationDetail {
     /// Whether this test passed by static checking instead of execution.
     #[prost(bool, optional, tag = "6")]
     pub statically_checked: ::core::option::Option<bool>,
+    /// unique_id of the batched test node whose single query produced this result.
+    /// Matches `QueryExecuted.unique_id` for that query. Unset when the test ran on its own.
+    #[prost(string, optional, tag = "7")]
+    pub batch_unique_id: ::core::option::Option<::prost::alloc::string::String>,
 }
 impl ::dbt_tracing::StaticName for TestEvaluationDetail {
     const FULL_NAME: &'static str = "v1.public.events.fusion.node.TestEvaluationDetail";
@@ -255,6 +259,11 @@ pub struct NodeEvaluated {
     /// This includes time spent waiting on internal backpressure.
     #[prost(uint64, optional, tag = "42")]
     pub idle_time_ms: ::core::option::Option<u64>,
+    /// Identifier of the dbt State execution decision that governed this node's
+    /// run-phase execution. Only set when the dbt State service was consulted and
+    /// returned an execution decision.
+    #[prost(string, optional, tag = "43")]
+    pub state_decision_id: ::core::option::Option<::prost::alloc::string::String>,
     /// Node type specific details (e.g. test fail counts, cache use reasons).
     #[prost(oneof = "node_evaluated::NodeOutcomeDetail", tags = "30, 31, 32, 33, 34")]
     pub node_outcome_detail: ::core::option::Option<node_evaluated::NodeOutcomeDetail>,
@@ -427,6 +436,15 @@ pub struct NodeProcessed {
     /// This includes time spent waiting on internal backpressure.
     #[prost(uint64, optional, tag = "45")]
     pub idle_time_ms: ::core::option::Option<u64>,
+    /// 1-based position of this node within the invocation, assigned in the order
+    /// nodes begin processing. Mirrors dbt core's `node_index`. Only set for nodes
+    /// in the selection set; ephemeral models never consume an index.
+    #[prost(uint32, optional, tag = "46")]
+    pub node_index: ::core::option::Option<u32>,
+    /// Total number of nodes in the selection set, the denominator of `node_index`.
+    /// Mirrors dbt core's `num_nodes`.
+    #[prost(uint32, optional, tag = "47")]
+    pub node_count_total: ::core::option::Option<u32>,
     /// Node type specific details (e.g. test fail counts, cache use reasons).
     #[prost(oneof = "node_processed::NodeOutcomeDetail", tags = "30, 31, 32, 33, 34")]
     pub node_outcome_detail: ::core::option::Option<node_processed::NodeOutcomeDetail>,
@@ -497,6 +515,7 @@ pub enum NodeType {
     SavedQuery = 13,
     SemanticModel = 14,
     Function = 15,
+    Check = 16,
 }
 impl NodeType {
     /// String value of the enum field names used in the ProtoBuf definition.
@@ -521,6 +540,7 @@ impl NodeType {
             Self::SavedQuery => "NODE_TYPE_SAVED_QUERY",
             Self::SemanticModel => "NODE_TYPE_SEMANTIC_MODEL",
             Self::Function => "NODE_TYPE_FUNCTION",
+            Self::Check => "NODE_TYPE_CHECK",
         }
     }
     /// Creates an enum from field names used in the ProtoBuf definition.
@@ -542,6 +562,7 @@ impl NodeType {
             "NODE_TYPE_SAVED_QUERY" => Some(Self::SavedQuery),
             "NODE_TYPE_SEMANTIC_MODEL" => Some(Self::SemanticModel),
             "NODE_TYPE_FUNCTION" => Some(Self::Function),
+            "NODE_TYPE_CHECK" => Some(Self::Check),
             _ => None,
         }
     }
@@ -771,6 +792,10 @@ pub enum NodeMaterialization {
     /// ONLY FOR SNOWFLAKE
     DynamicTable = 13,
     Function = 14,
+    /// ONLY FOR SNOWFLAKE
+    InteractiveTable = 15,
+    /// ONLY FOR DATABRICKS
+    MetricView = 16,
     Custom = 100,
 }
 impl NodeMaterialization {
@@ -795,6 +820,8 @@ impl NodeMaterialization {
             Self::StreamingTable => "NODE_MATERIALIZATION_STREAMING_TABLE",
             Self::DynamicTable => "NODE_MATERIALIZATION_DYNAMIC_TABLE",
             Self::Function => "NODE_MATERIALIZATION_FUNCTION",
+            Self::InteractiveTable => "NODE_MATERIALIZATION_INTERACTIVE_TABLE",
+            Self::MetricView => "NODE_MATERIALIZATION_METRIC_VIEW",
             Self::Custom => "NODE_MATERIALIZATION_CUSTOM",
         }
     }
@@ -816,6 +843,8 @@ impl NodeMaterialization {
             "NODE_MATERIALIZATION_STREAMING_TABLE" => Some(Self::StreamingTable),
             "NODE_MATERIALIZATION_DYNAMIC_TABLE" => Some(Self::DynamicTable),
             "NODE_MATERIALIZATION_FUNCTION" => Some(Self::Function),
+            "NODE_MATERIALIZATION_INTERACTIVE_TABLE" => Some(Self::InteractiveTable),
+            "NODE_MATERIALIZATION_METRIC_VIEW" => Some(Self::MetricView),
             "NODE_MATERIALIZATION_CUSTOM" => Some(Self::Custom),
             _ => None,
         }

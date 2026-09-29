@@ -4,7 +4,7 @@ use std::pin::Pin;
 use dbt_common::FsResult;
 use dbt_common::stats::NodeStatus;
 use dbt_jinja_utils::utils::add_task_context;
-use dbt_schemas::schemas::{DbtSnapshot, InternalDbtNode};
+use dbt_schemas::schemas::{DbtSnapshot, InternalDbtNode, InternalDbtNodeAttributes};
 use dbt_tasks_core::context::TaskRunnerCtx;
 use dbt_tasks_core::task::TaskOp;
 
@@ -21,29 +21,24 @@ impl Cloneable for DbtSnapshot {
             let mut base_context = ctx.inner.base_context.clone();
             add_task_context(&mut base_context, self.common(), &ctx.thread_id);
 
-            let adapter_type = ctx.adapter_type();
-            let max_threads = ctx.dbt_profile().threads;
+            let adapter_type = self.node_adapter();
             let node = self.clone();
             let ctx_inner = ctx.clone();
 
-            let result = TaskOp::BlockingWithConnection {
-                f: Box::new(move || {
-                    materialize_clone(
-                        &node,
-                        &node.deprecated_config,
-                        adapter_type,
-                        ctx_inner.runtime_config(),
-                        ctx_inner.defer_nodes(),
-                        &ctx_inner.inner.materialization_resolver,
-                        ctx_inner.env.clone(),
-                        &base_context,
-                        &ctx_inner.inner.arg.io,
-                        None,
-                    )
-                }),
-                adapter_type,
-                max_threads,
-            }
+            let result = TaskOp::Blocking(Box::new(move || {
+                materialize_clone(
+                    &node,
+                    &node.deprecated_config,
+                    adapter_type,
+                    ctx_inner.runtime_config(),
+                    ctx_inner.defer_nodes(),
+                    &ctx_inner.inner.materialization_resolver,
+                    ctx_inner.env.clone(),
+                    &base_context,
+                    &ctx_inner.inner.arg.io,
+                    None,
+                )
+            }))
             .run()
             .await??;
 

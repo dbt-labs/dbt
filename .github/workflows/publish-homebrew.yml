@@ -65,7 +65,7 @@ on:
           tarball by the build job).
         type: string
         required: false
-        default: "dbt-sa-cli"
+        default: "dbt"
       tarball_prefix:
         description: |
           Tarball filename prefix. Filenames are
@@ -107,10 +107,10 @@ on:
         type: boolean
         default: true
       binary_name:
-        description: "Name of the binary inside each tarball (default: dbt-sa-cli)."
+        description: "Name of the binary inside each tarball (default: dbt)."
         required: false
         type: string
-        default: "dbt-sa-cli"
+        default: "dbt"
       tarball_prefix:
         description: "Tarball filename prefix (default: dbt-core-)."
         required: false

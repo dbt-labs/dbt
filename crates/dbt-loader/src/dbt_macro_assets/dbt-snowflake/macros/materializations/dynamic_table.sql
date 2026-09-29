@@ -99,7 +99,8 @@
 
 {% macro snowflake__get_dynamic_table_configuration_changes(existing_relation, new_config) -%}
     {%- set _include_transient = new_config.get("transient") is not none -%}
-    {% set _existing_dynamic_table = adapter.describe_dynamic_table(existing_relation, _include_transient) %}
+    {# DIVERGENCE: core wraps adapter.describe_dynamic_table in a snowflake__describe_dynamic_table macro; Fusion dispatches every relation type through adapter.describe_relation in adapter_impl.rs, so there is no wrapper macro. #}
+    {% set _existing_dynamic_table = adapter.describe_relation(existing_relation, include_transient=_include_transient) %}
     {% set _configuration_changes = existing_relation.dynamic_table_config_changeset(_existing_dynamic_table, new_config.model) %}
     {% do return(_configuration_changes) %}
 {%- endmacro %}

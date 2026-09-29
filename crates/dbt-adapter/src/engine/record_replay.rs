@@ -22,6 +22,7 @@ use crate::sql_types::TypeOps;
 use crate::stmt_splitter::StmtSplitter;
 
 use super::adapter_engine::{AdapterEngine, Options};
+use super::adbc::assert_connection_on_pool_worker;
 
 static GENERATION: AtomicU64 = AtomicU64::new(1);
 
@@ -46,9 +47,10 @@ pub struct RecordReplayEngine {
 impl RecordReplayEngine {
     pub fn record(inner: Arc<dyn AdapterEngine>, recordings_path: PathBuf) -> Self {
         let generation = next_generation();
-        if adbc_record_replay::reset_counters(&recordings_path) {
-            crate::connection::drain_recycling_pool();
-        }
+        // A reset invalidates every connection from an earlier generation, and
+        // `fingerprint()` *is* the generation, so any cached one is discarded on
+        // the fingerprint mismatch when it is next borrowed.
+        adbc_record_replay::reset_counters(&recordings_path);
         Self {
             inner,
             recordings_path,
@@ -67,9 +69,10 @@ impl RecordReplayEngine {
         query_comment: Option<QueryCommentConfig>,
     ) -> Self {
         let generation = next_generation();
-        if adbc_record_replay::reset_counters(&recordings_path) {
-            crate::connection::drain_recycling_pool();
-        }
+        // A reset invalidates every connection from an earlier generation, and
+        // `fingerprint()` *is* the generation, so any cached one is discarded on
+        // the fingerprint mismatch when it is next borrowed.
+        adbc_record_replay::reset_counters(&recordings_path);
         Self {
             inner,
             recordings_path,
@@ -143,6 +146,12 @@ impl AdapterEngine for RecordReplayEngine {
         state: Option<&State>,
         node_id: Option<String>,
     ) -> dbt_common::AdapterResult<Box<dyn Connection>> {
+        // Same contract as the live engine (`AdbcEngine::new_connection`).
+        // Checked here rather than left to the `Mode::Record` delegation below,
+        // so replayed runs -- which never reach an inner engine -- catch an
+        // off-pool caller too.
+        assert_connection_on_pool_worker();
+
         match self.mode {
             Mode::Replay => {
                 let mut conn = ReplayConnection::new(
@@ -168,8 +177,12 @@ impl AdapterEngine for RecordReplayEngine {
             }
             Mode::Record => {
                 let inner = self.inner.new_connection(state, node_id.clone())?;
-                let mut conn =
-                    RecordConnection::new(self.recordings_path.clone(), inner, self.generation);
+                let mut conn = RecordConnection::new(
+                    self.recordings_path.clone(),
+                    inner,
+                    self.config.clone(),
+                    self.generation,
+                );
                 conn.set_recording_context(RecordingContext {
                     node_id,
                     metadata: false,
@@ -224,11 +237,93 @@ impl AdapterEngine for RecordReplayEngine {
 
 struct DbtSqlNormalizer;
 
+/// Matches the token name `mint_snowflake_catalog_credential` mints
+/// (`compute_platform.rs`'s `token_name`), e.g. `dbt_compute_1725000000000`.
+/// It embeds a real wall-clock millisecond timestamp, so record and replay
+/// runs never mint the literal same name -- mask it out for comparison the
+/// same way ephemeral warehouse names already are, below.
+static DBT_COMPUTE_TOKEN_NAME: std::sync::LazyLock<regex::Regex> =
+    std::sync::LazyLock::new(|| regex::Regex::new(r"dbt_compute_\d+").unwrap());
+
+/// Matches the quoted Snowflake username in `alter user "<user>" add/remove
+/// programmatic access token ...` (`mint_snowflake_catalog_credential` /
+/// `drop_minted_token` in `compute_platform.rs`). The user is whichever real
+/// Snowflake identity recorded the fixture, which will never match another
+/// engineer's identity or the `fake_user`/`FAKE_USER` fallback used at
+/// pure-replay time -- mask it out the same way as the timestamp above.
+/// Mirrors `cleanup_alter_user_identifier` in `adbc-record-replay`'s
+/// `naming.rs`, which does the same masking for the recording lookup key;
+/// this one is for the post-lookup text-equality check below.
+static ALTER_USER_IDENTIFIER: std::sync::LazyLock<regex::Regex> =
+    std::sync::LazyLock::new(|| regex::Regex::new(r#"(?i)(alter user )"[^"]+""#).unwrap());
+
+/// Matches the temp table names of the ClickHouse `EXCHANGE TABLES` capability
+/// probe (`can_exchange` in `metadata/clickhouse`), e.g.
+/// `__dbt_exchange_test_0_31337_1788805827133081759`. The suffix is a process
+/// id plus a wall-clock nanosecond timestamp, so record and replay runs never
+/// emit the literal same name -- mask it out the same way as the timestamp
+/// above. Mirrors `cleanup_exchange_probe_tables` in `adbc-record-replay`'s
+/// `naming.rs`, which does the same masking for the recording lookup key;
+/// this one is for the post-lookup text-equality check below.
+static EXCHANGE_PROBE_TABLE: std::sync::LazyLock<regex::Regex> =
+    std::sync::LazyLock::new(|| regex::Regex::new(r"__dbt_exchange_test_(\d+)_\d+_\d+").unwrap());
+
+/// Matches the quoted Snowflake username in `show user programmatic access
+/// tokens for user "<user>"` (`pat_hygiene_report` in `compute_platform.rs`).
+/// Mirrors `cleanup_show_user_pat_identifier` in `adbc-record-replay`'s
+/// `naming.rs`, which does the same masking for the recording lookup key;
+/// this one is for the post-lookup text-equality check below.
+static SHOW_USER_PAT_IDENTIFIER: std::sync::LazyLock<regex::Regex> =
+    std::sync::LazyLock::new(|| {
+        regex::Regex::new(r#"(?i)(show user programmatic access tokens for user )"[^"]+""#).unwrap()
+    });
+
+/// Matches `dbt debug`'s MDLS write/read-back probe table name
+/// (`__dbt_debug_probe_<nanos>`, `debug_mdls.rs`), e.g.
+/// `__dbt_debug_probe_1789002662171033000`. A fresh wall-clock nanosecond
+/// timestamp generated on every invocation, record or replay alike, so no
+/// two runs ever emit the literal same name -- mask it out the same way as
+/// the timestamp above. Mirrors `cleanup_debug_probe_table` in
+/// `adbc-record-replay`'s `naming.rs`, which does the same masking for the
+/// recording lookup key; this one is for the post-lookup text-equality
+/// check below.
+static DEBUG_PROBE_TABLE: std::sync::LazyLock<regex::Regex> =
+    std::sync::LazyLock::new(|| regex::Regex::new(r"__dbt_debug_probe_\d+").unwrap());
+
+/// Matches `dbt debug`'s Snowflake propagation probe table name
+/// (`__dbt_debug_propagation_<nanos>`, `debug_propagation.rs`). Same
+/// reasoning as `DEBUG_PROBE_TABLE` above: a fresh wall-clock nanosecond
+/// timestamp on every invocation, record or replay alike, so no two runs
+/// ever emit the literal same name -- mask it out for comparison. Mirrors
+/// `cleanup_debug_propagation_probe_table` in `adbc-record-replay`'s
+/// `naming.rs`, which does the same masking for the recording lookup key;
+/// this one is for the post-lookup text-equality check below.
+static DEBUG_PROPAGATION_PROBE_TABLE: std::sync::LazyLock<regex::Regex> =
+    std::sync::LazyLock::new(|| regex::Regex::new(r"__dbt_debug_propagation_\d+").unwrap());
+
 impl adbc_record_replay::SqlNormalizer for DbtSqlNormalizer {
     fn normalize(&self, sql: &str) -> String {
         use crate::sql::normalize::normalize_dbt_tmp_name;
         let normalized = normalize_dbt_tmp_name(sql);
         let collapsed = normalized.split_whitespace().collect::<Vec<_>>().join(" ");
+        let collapsed = DBT_COMPUTE_TOKEN_NAME
+            .replace_all(&collapsed, "dbt_compute_[MASKED_TS]")
+            .into_owned();
+        let collapsed = ALTER_USER_IDENTIFIER
+            .replace_all(&collapsed, r#"$1"[MASKED_USER]""#)
+            .into_owned();
+        let collapsed = EXCHANGE_PROBE_TABLE
+            .replace_all(&collapsed, "__dbt_exchange_test_${1}_[MASKED_ID]")
+            .into_owned();
+        let collapsed = SHOW_USER_PAT_IDENTIFIER
+            .replace_all(&collapsed, r#"$1"[MASKED_USER]""#)
+            .into_owned();
+        let collapsed = DEBUG_PROBE_TABLE
+            .replace_all(&collapsed, "__dbt_debug_probe_[MASKED_ID]")
+            .into_owned();
+        let collapsed = DEBUG_PROPAGATION_PROBE_TABLE
+            .replace_all(&collapsed, "__dbt_debug_propagation_[MASKED_ID]")
+            .into_owned();
         collapsed
             .replace("DBT_TESTING_ALT", "[MASKED_ALT_WH]")
             .replace("DBT_TESTING", "[MASKED_WH]")

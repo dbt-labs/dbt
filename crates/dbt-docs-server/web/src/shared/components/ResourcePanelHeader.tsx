@@ -1,7 +1,6 @@
 import { FC, ReactNode } from 'react';
 
-import { ResourceTypeExplorer } from '@dbt-labs/dbt-dag';
-
+import type { ResourceTypeExplorer } from '../../lib/resourceType';
 import { ResourceChip } from './ResourceChip';
 
 interface ResourcePanelHeaderProps {

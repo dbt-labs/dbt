@@ -7,6 +7,8 @@ members = [
   "crates/dbt-agate",
   "crates/dbt-auth",
   "crates/dbt-base",
+  "crates/dbt-runtime",
+  "crates/dbt-runtime-macros",
   "crates/dbt-clap-core",
   "crates/dbt-goldie",
   "crates/dbt-docs-core",
@@ -24,8 +26,10 @@ members = [
   "crates/dbt-tasks-core",
   "crates/dbt-tasks-sa",
   "crates/dbt-init",
+  "crates/dbt-profile-schemas",
   "crates/dbt-index-core",
   "crates/dbt-lineage-core",
+  "crates/dbt-lease",
   "crates/dbt-error",
   "crates/dbt-freshness",
   "crates/dbt-frontend-common",
@@ -44,7 +48,8 @@ members = [
   "crates/dbt-metadata",
   "crates/dbt-metadata-parquet",
   "crates/dbt-profile",
-  "crates/dbt-python",
+  "crates/dbt-python-core",
+  "crates/dbt-sa-python",
   "crates/dbt-state",
   "crates/dbt-schemas",
   "crates/dbt-schema-store",
@@ -55,15 +60,19 @@ members = [
   "crates/dbt-proc-macros",
 
   "crates/dbt-adapter",
+  "crates/dbt-adapter-engine",
   "crates/dbt-adapter-sql",
   "crates/dbt-ident",
   "crates/dbt-jinja-utils",
   "crates/dbt-main",
   "crates/dbt-dist",
+  "crates/dbt-dist-classify",
   "crates/dbt-sa-cli",
   "crates/dbt-adbc",
+  "crates/dbt-tracked-stmt",
   "crates/adbc-record-replay",
   "crates/dbt-deps",
+  "crates/dbt-skills",
   "crates/vortex-client",
   "crates/vortex-events",
   "crates/dbt-vortex",
@@ -85,8 +94,11 @@ members = [
 
   "crates/dbt-ci",
   "crates/dbt-login",
+  "crates/dbt-file-security",
   "crates/dbt-platform-auth",
+  "crates/dbt-platform",
 
+  # COPYBARA-END-PRIVATE
 ]
 exclude = [
   "wizard/wizard-app/src-tauri",
@@ -104,7 +116,7 @@ homepage = "https://getdbt.com"
 keywords = ["sql", "parquet", "json", "csv", "dbt"]
 license = "Apache-2.0"
 repository = "https://github.com/dbt-labs/dbt-core"
-version = "2.0.0-beta.1"
+version = "2.0.5"
 
 [patch.crates-io]
 
@@ -228,6 +240,7 @@ opt-level = 3
 # fs source available dependencies
 dbt-adapter = { path = "crates/dbt-adapter" }
 dbt-adapter-core = { path = "crates/dbt-adapter-core" }
+dbt-adapter-engine = { path = "crates/dbt-adapter-engine" }
 dbt-adapter-sql = { path = "crates/dbt-adapter-sql" }
 dbt-agate = { path = "crates/dbt-agate" }
 dbt-auth = { path = "crates/dbt-auth" }
@@ -244,12 +257,15 @@ dbt-defer = { path = "crates/dbt-defer" }
 dbt-deps = { path = "crates/dbt-deps" }
 dbt-df-providers = { path = "crates/dbt-df-providers" }
 dbt-dist = { path = "crates/dbt-dist" }
+dbt-dist-classify = { path = "crates/dbt-dist-classify" }
 dbt-docs-core = { path = "crates/dbt-docs-core" }
 dbt-docs-server = { path = "crates/dbt-docs-server", default-features = false }
 dbt-env = { path = "crates/dbt-env" }
 dbt-error = { path = "crates/dbt-error" }
+dbt-feature-fingerprint = { path = "crates/dbt-feature-fingerprint" }
 dbt-feature-gating = { path = "crates/dbt-feature-gating" }
 dbt-features = { path = "crates/dbt-features" }
+dbt-file-security = { path = "crates/dbt-file-security" }
 dbt-freshness = { path = "crates/dbt-freshness" }
 dbt-frontend-common = { path = "crates/dbt-frontend-common" }
 dbt-goldie = { path = "crates/dbt-goldie" }
@@ -261,16 +277,22 @@ dbt-jinja-ctx = { path = "crates/dbt-jinja-ctx" }
 dbt-jinja-filters = { path = "crates/dbt-jinja-filters" }
 dbt-jinja-utils = { path = "crates/dbt-jinja-utils" }
 dbt-jinja-vars = { path = "crates/dbt-jinja-vars" }
+dbt-lease = { path = "crates/dbt-lease" }
 dbt-lineage-core = { path = "crates/dbt-lineage-core" }
 dbt-loader = { path = "crates/dbt-loader" }
 dbt-login = { path = "crates/dbt-login" }
 dbt-main = { path = "crates/dbt-main", default-features = false }
 dbt-metricflow = { path = "crates/dbt-metricflow" }
 dbt-parser = { path = "crates/dbt-parser" }
+dbt-platform = { path = "crates/dbt-platform" }
 dbt-platform-auth = { path = "crates/dbt-platform-auth" }
 dbt-pretty-table = { path = "crates/dbt-pretty-table" }
 dbt-proc-macros = { path = "crates/dbt-proc-macros" }
 dbt-profile = { path = "crates/dbt-profile" }
+dbt-profile-schemas = { path = "crates/dbt-profile-schemas" }
+dbt-python-core = { path = "crates/dbt-python-core" }
+dbt-runtime = { path = "crates/dbt-runtime" }
+dbt-runtime-macros = { path = "crates/dbt-runtime-macros" }
 dbt-scheduler = { path = "crates/dbt-scheduler" }
 dbt-state = { path = "crates/dbt-state" }
 
@@ -279,6 +301,7 @@ dbt-metadata-parquet = { path = "crates/dbt-metadata-parquet" }
 dbt-schema-store = { path = "crates/dbt-schema-store" }
 dbt-schemas = { path = "crates/dbt-schemas" }
 dbt-selector-parser = { path = "crates/dbt-selector-parser" }
+dbt-skills = { path = "crates/dbt-skills" }
 dbt-tasks-core = { path = "crates/dbt-tasks-core" }
 dbt-tasks-sa = { path = "crates/dbt-tasks-sa" }
 dbt-telemetry = { path = "crates/dbt-telemetry" }
@@ -323,7 +346,7 @@ minijinja-contrib = { path = "crates/dbt-jinja/minijinja-contrib", features = [
 snowflake-api = { path = "crates/snowflake-rs/snowflake-api" }
 
 # serde
-dbt-yaml = { version = "0.9.6", features = [
+dbt-yaml = { version = "0.10.5", features = [
   "filename",
   "yaml_11",
   "schemars",
@@ -347,6 +370,7 @@ aws-sdk-codeartifact = "1.60.0"
 aws-sdk-ecr = "1.60.0"
 aws-sdk-s3 = "1.78.0"
 aws-sdk-secretsmanager = "1.63.0"
+aws-smithy-types = ">=1.4, <1.7.0"
 
 # arrow + parquet
 arrow = { version = "=56.0.0", features = ["prettyprint"] }
@@ -369,6 +393,7 @@ adbc-driver-manager = { git = "https://github.com/dbt-labs/arrow-adbc", package 
 adbc-ffi = { git = "https://github.com/dbt-labs/arrow-adbc", package = "adbc_ffi", version = "0.22.0", rev = "d2808cf465feb6efc54ee862cb63104803535adb" } # @ apache-arrow-adbc-22-rust
 adbc-record-replay = { path = "crates/adbc-record-replay" }
 dbt-adbc = { path = "crates/dbt-adbc" }
+dbt-tracked-stmt = { path = "crates/dbt-tracked-stmt" }
 
 # antlr for frontend
 dbt-antlr4 = { version = "2.0.2", features = [
@@ -495,7 +520,7 @@ xshell = "0.2.7"
 zip = "8.3.0"
 
 # async + threading
-astral-tokio-tar = { version = "0.5.6" }
+astral-tokio-tar = { version = "0.6.4" }
 async-compression = { version = "0.4", features = ["tokio", "gzip"] }
 async-trait = "0.1.83"
 crossbeam-queue = "0.3.12"

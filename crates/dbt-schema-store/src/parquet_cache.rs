@@ -5,8 +5,8 @@
 //!
 //! ```text
 //! target/
-//!   metadata/compile/schemas/{N}.parquet    ← compile-time schemas (no TTL)
-//!   metadata/warehouse/schemas/{N}.parquet  ← warehouse-fetched schemas (TTL)
+//!   private/metadata/compile/schemas/{N}.parquet    ← compile-time schemas (no TTL)
+//!   private/metadata/warehouse/schemas/{N}.parquet  ← warehouse-fetched schemas (TTL)
 //! ```
 //!
 //! Design:

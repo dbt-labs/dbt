@@ -239,13 +239,26 @@ impl ColumnStatic {
                 "BINARY" => "BINARY(1)",
                 _ => column_type,
             },
+            // ClickHouseColumn.TYPE_LABELS; unmatched types pass through verbatim.
+            // https://github.com/ClickHouse/dbt-clickhouse/blob/main/dbt/adapters/clickhouse/column.py#L13-L18
+            AdapterType::ClickHouse => match column_type.to_uppercase().as_str() {
+                "STRING" => "String",
+                "TIMESTAMP" => "DateTime",
+                "FLOAT" => "Float32",
+                "INTEGER" => "Int32",
+                _ => column_type,
+            },
             // https://github.com/dbt-labs/dbt-adapters/blob/fed0e2e7a2e252175dcc9caccbdd91d354ac6a9d/dbt-adapters/src/dbt/adapters/base/column.py#L24
             _ => match column_type.to_uppercase().as_str() {
                 "STRING" => "TEXT",
                 _ => column_type,
             },
         };
-        translated.to_string()
+        match self.0 {
+            // https://github.com/databricks/dbt-databricks/blob/45351e11517d3f37c5ac7a736b5fcba453d3f368/dbt/adapters/databricks/column.py#L24
+            AdapterType::Databricks => translated.to_lowercase(),
+            _ => translated.to_string(),
+        }
     }
 
     pub fn numeric_type(&self, dtype: &str, precision: Option<u64>, scale: Option<u64>) -> String {
@@ -266,10 +279,9 @@ impl ColumnStatic {
                 Some(size) => format!("STRING({size})"),
                 _ => "STRING".to_string(),
             },
-            AdapterType::ClickHouse => match size {
-                Some(size) => format!("FixedString({size})"),
-                _ => "String".to_string(),
-            },
+            // ClickHouseColumn.string_type ignores the size: always plain String,
+            // never FixedString (would break contract comparisons and ALTERs).
+            AdapterType::ClickHouse => "String".to_string(),
             _ => match size {
                 Some(size) => format!("character varying({size})"),
                 _ => "character varying".to_string(),
@@ -1050,7 +1062,9 @@ impl Column {
                 if self._nullable == Some(false) {
                     s.push_str(" NOT NULL");
                 }
-                if let Some(comment) = &self.comment {
+                if let Some(comment) = &self.comment
+                    && !comment.is_empty()
+                {
                     let escaped = comment.replace('\\', "\\\\").replace('\'', "\\'");
                     s.push_str(&format!(" COMMENT '{escaped}'"));
                 }
@@ -1234,6 +1248,26 @@ impl Into<Value> for Column {
 mod tests {
     use super::*;
 
+    /// ClickHouseColumn.TYPE_LABELS mapping (the array macros build
+    /// `emptyArray{type}` from it); unmatched types pass through.
+    #[test]
+    fn test_translate_type_clickhouse_type_labels() {
+        let col = ColumnStatic(AdapterType::ClickHouse);
+        assert_eq!(col.translate_type("string"), "String");
+        assert_eq!(col.translate_type("timestamp"), "DateTime");
+        assert_eq!(col.translate_type("float"), "Float32");
+        assert_eq!(col.translate_type("integer"), "Int32");
+        assert_eq!(col.translate_type("UInt64"), "UInt64");
+    }
+
+    /// string_type must never manufacture FixedString for ClickHouse.
+    #[test]
+    fn test_string_type_clickhouse_ignores_size() {
+        let col = ColumnStatic(AdapterType::ClickHouse);
+        assert_eq!(col.string_type(Some(256)), "String");
+        assert_eq!(col.string_type(None), "String");
+    }
+
     #[test]
     fn test_stripping_of_not_null_constraint() {
         let (dtype, _) =
@@ -1246,6 +1280,33 @@ mod tests {
 
         let (dtype, _) = Column::make_degenerate_types(AdapterType::Snowflake, "BLAH NOT NULL");
         assert_eq!(dtype, "BLAH");
+    }
+
+    #[test]
+    fn test_translate_type_lowercases_for_databricks_only() {
+        // Databricks lowercases translated types; the input type is preserved
+        // otherwise (DECIMAL(10, 2) does not match any rewrite rule).
+        assert_eq!(
+            ColumnStatic::new(AdapterType::Databricks).translate_type("DECIMAL(10, 2)"),
+            "decimal(10, 2)"
+        );
+
+        // Snowflake (and other adapters) preserve the original casing.
+        assert_eq!(
+            ColumnStatic::new(AdapterType::Snowflake).translate_type("DECIMAL(10, 2)"),
+            "DECIMAL(10, 2)"
+        );
+
+        // The rewrite still applies before lowercasing on Databricks.
+        assert_eq!(
+            ColumnStatic::new(AdapterType::Databricks).translate_type("LONG"),
+            "bigint"
+        );
+        // Spark shares the same rewrite but is not lowercased.
+        assert_eq!(
+            ColumnStatic::new(AdapterType::Spark).translate_type("LONG"),
+            "BIGINT"
+        );
     }
 
     #[test]
@@ -1287,6 +1348,36 @@ mod tests {
                 "{adapter:?} should double-quote identifiers"
             );
         }
+    }
+
+    #[test]
+    fn databricks_create_column_omits_empty_comment() {
+        let column = Column::new(
+            AdapterType::Databricks,
+            "id".to_string(),
+            "int".to_string(),
+            None,
+            None,
+            None,
+        )
+        .with_comment(Some(String::new()));
+
+        assert_eq!(column.render_for_create(), "`id` int");
+    }
+
+    #[test]
+    fn databricks_create_column_preserves_non_empty_comment() {
+        let column = Column::new(
+            AdapterType::Databricks,
+            "id".to_string(),
+            "int".to_string(),
+            None,
+            None,
+            None,
+        )
+        .with_comment(Some("documented".to_string()));
+
+        assert_eq!(column.render_for_create(), "`id` int COMMENT 'documented'");
     }
 
     #[test]
@@ -1558,5 +1649,82 @@ mod tests {
             Column::try_from_snowflake_raw_data_type("c", "VARCHAR(20) COLLATE 'en-ci'").unwrap();
         assert!(small.can_expand_to(&large).unwrap());
         assert!(!large.can_expand_to(&small).unwrap());
+    }
+
+    #[test]
+    fn test_render_for_create_omits_empty_comment() {
+        let no_comment = Column::new(
+            AdapterType::Databricks,
+            "col_a".to_string(),
+            "int".to_string(),
+            None,
+            None,
+            None,
+        )
+        .with_comment(None);
+        assert_eq!(no_comment.render_for_create(), "`col_a` int");
+
+        let empty_comment = Column::new(
+            AdapterType::Databricks,
+            "col_a".to_string(),
+            "int".to_string(),
+            None,
+            None,
+            None,
+        )
+        .with_comment(Some(String::new()));
+        assert_eq!(empty_comment.render_for_create(), "`col_a` int");
+
+        let with_comment = Column::new(
+            AdapterType::Databricks,
+            "col_b".to_string(),
+            "int".to_string(),
+            None,
+            None,
+            None,
+        )
+        .with_comment(Some("has a description".to_string()));
+        assert_eq!(
+            with_comment.render_for_create(),
+            "`col_b` int COMMENT 'has a description'"
+        );
+    }
+
+    #[test]
+    fn test_enrich_for_create_with_empty_description_renders_no_comment() {
+        let model_column = DbtColumn {
+            name: "col_a".to_string(),
+            description: Some(String::new()),
+            ..Default::default()
+        };
+        let enriched = Column::new(
+            AdapterType::Databricks,
+            "col_a".to_string(),
+            "int".to_string(),
+            None,
+            None,
+            None,
+        )
+        .enrich_for_create(Some(&model_column), false);
+        assert_eq!(enriched.render_for_create(), "`col_a` int");
+
+        let described = DbtColumn {
+            name: "col_b".to_string(),
+            description: Some("has a description".to_string()),
+            ..Default::default()
+        };
+        let enriched = Column::new(
+            AdapterType::Databricks,
+            "col_b".to_string(),
+            "int".to_string(),
+            None,
+            None,
+            None,
+        )
+        .enrich_for_create(Some(&described), true);
+        assert_eq!(
+            enriched.render_for_create(),
+            "`col_b` int NOT NULL COMMENT 'has a description'"
+        );
     }
 }

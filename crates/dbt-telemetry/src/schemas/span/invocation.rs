@@ -20,7 +20,7 @@ impl StaticTelemetryEvent for Invocation {
             self.process_info
                 .as_ref()
                 .map(|p| p.package.as_ref())
-                .unwrap_or("dbt-fusion"),
+                .unwrap_or("dbt"),
             self.invocation_id
         )
     }

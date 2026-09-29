@@ -77,6 +77,23 @@ impl Object for Macro {
         let extra_args = parsed_args.extra_args;
         let extra_kwargs = parsed_args.extra_kwargs;
 
+        // If any argument is already unknowable, so is everything this macro
+        // could possibly compute from it -- skip actually running the body
+        // (which cannot do better than guess) and taint the call outright,
+        // the same way a plain native function call already short-circuits
+        // on a tainted argument (`Instruction::CallFunction`). Unlike that
+        // case, this applies uniformly regardless of which VM instruction
+        // dispatches the call (bare name, `namespace.macro(...)`, or a macro
+        // value stored in a variable), since they all route through here.
+        if arg_values.iter().any(Value::is_introspective_stub)
+            || extra_args.iter().any(Value::is_introspective_stub)
+            || Value::from_object(extra_kwargs.clone()).is_introspective_stub()
+        {
+            return Ok(crate::value::introspective::IntrospectiveValue::wrap(
+                Value::UNDEFINED,
+            ));
+        }
+
         let caller = if self.caller_reference {
             Some(
                 extra_kwargs

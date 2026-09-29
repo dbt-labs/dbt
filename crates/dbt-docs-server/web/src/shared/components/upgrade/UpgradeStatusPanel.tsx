@@ -1,7 +1,8 @@
+import { X } from 'lucide-react';
 import { twJoin } from 'tailwind-merge';
 
-import { Button, Icon, InvisibleButton, RyeconClose, Sizes } from '@dbt-labs/sourdough';
-
+import { Button } from '../../../components/ui/Button';
+import { InvisibleButton } from '../../../components/ui/InvisibleButton';
 import { useLocalStorage } from '../../hooks/useLocalStorage';
 import { getUpgradeCopy, isUpgradeCopyVisible } from './copy';
 import {
@@ -139,7 +140,7 @@ export function UpgradeStatusPanel({
             className="inline-flex !w-auto shrink-0 items-center text-fgDecorative hover:text-fgMain"
             testId={testId ? `${testId}-dismiss` : undefined}
           >
-            <Icon ryecon={RyeconClose} size="sm" alt="" />
+            <X className="size-3.5" />
           </InvisibleButton>
         </div>
         {showHeading && (
@@ -148,8 +149,8 @@ export function UpgradeStatusPanel({
               Get more from dbt
             </h2>
             <Button
-              type="secondary"
-              size={Sizes.sm}
+              variant="outline"
+              size="sm"
               text="Need Enterprise? Contact sales."
               onClick={() =>
                 window.open(decorateOutboundHref(contactSalesUrl), '_blank')

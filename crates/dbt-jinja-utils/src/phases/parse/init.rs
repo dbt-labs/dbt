@@ -52,6 +52,10 @@ pub trait JinjaFactory: Send + Sync {
         target: &str,
         adapter_type: AdapterType,
         db_config: DbConfig,
+        // Every adapter type the active target declares. The default adapter's
+        // type is `adapter_type`; the rest are here so their internal macro
+        // packages are treated as internal and get their own namespace.
+        target_adapter_types: Vec<AdapterType>,
         package_quoting: DbtQuoting,
         macro_units: BTreeMap<String, Vec<MacroUnit>>,
         vars: BTreeMap<String, IndexMap<String, DbtVars>>,
@@ -69,6 +73,7 @@ pub trait JinjaFactory: Send + Sync {
             target,
             adapter_type,
             db_config,
+            target_adapter_types,
             package_quoting,
             macro_units,
             vars,
@@ -110,6 +115,7 @@ pub fn initialize_parse_jinja_environment(
     target: &str,
     adapter_type: AdapterType,
     db_config: DbConfig,
+    target_adapter_types: Vec<AdapterType>,
     package_quoting: DbtQuoting,
     macro_units: BTreeMap<String, Vec<MacroUnit>>,
     vars: BTreeMap<String, IndexMap<String, DbtVars>>,
@@ -171,12 +177,22 @@ pub fn initialize_parse_jinja_environment(
     let mut env = JinjaEnvBuilder::new()
         .with_undefined_behavior(minijinja::UndefinedBehavior::AllowAll)
         .with_adapter(adapter)
+        .with_extra_dialects(
+            target_adapter_types
+                .iter()
+                .map(|t| t.as_ref().to_string())
+                .collect(),
+        )
         .with_root_package(project_name.to_string())
         .with_globals(to_jinja_btreemap(&resolve_core))
         .with_warn_error_options(invocation_args.warn_error_options.clone())
         .with_io_args(io_args)
         .try_with_macros(MacroUnitsWrapper::new(macro_units))?
         .build();
+
+    // Checks render during parse, so `info_schema()` has to resolve here — not just in the check
+    // runner's environment, where it originally lived when checks were discovered at run time.
+    env.add_global("info_schema", crate::info_schema::make_info_schema_fn());
 
     // This ensures consistent quoting behavior for rendering same string in call block vs directly
     // example: {{ target.database }} vs {{ call statement(None, auto_begin=false, fetch_result=false) }}{{ target.database }}{{ endcall }}

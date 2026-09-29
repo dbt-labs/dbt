@@ -1,5 +1,6 @@
 use proc_macro2::{Span, TokenStream as TokenStream2};
 use quote::quote;
+use std::collections::{HashMap, HashSet};
 use syn::{
     Expr, Field, Fields, GenericArgument, Ident, LitBool, LitStr, PathArguments, Type, Variant,
     spanned::Spanned,
@@ -650,4 +651,313 @@ fn extract_generic_inner<'a>(ty: &'a Type, wrapper: &str) -> Option<&'a Type> {
         }
     }
     None
+}
+
+/// Generates warehouse-key applicability from `#[warehouse(...)]` attributes.
+/// Container groups use `#[warehouse(group(name, Variant, ...))]`.
+/// Field: `#[warehouse(valid(...), stale(...), invalid(...))]`. Unlisted resource types are
+/// `ResolvedOnly`: accepted by the shared resolved config, but not by `dbt_project.yml`.
+#[proc_macro_derive(WarehouseScope, attributes(warehouse))]
+pub fn derive_warehouse_scope(item: proc_macro::TokenStream) -> proc_macro::TokenStream {
+    let input = syn::parse_macro_input!(item as syn::ItemStruct);
+    let struct_name = &input.ident;
+
+    if !input.generics.params.is_empty() {
+        return syn::Error::new_spanned(
+            &input.generics,
+            "#[derive(WarehouseScope)] does not support generic structs -- the generated \
+             `impl` has no way to fill in the parameters",
+        )
+        .to_compile_error()
+        .into();
+    }
+
+    let named_fields = match &input.fields {
+        Fields::Named(f) => &f.named,
+        _ => {
+            return syn::Error::new_spanned(
+                &input.ident,
+                "#[derive(WarehouseScope)] requires a struct with named fields",
+            )
+            .to_compile_error()
+            .into();
+        }
+    };
+
+    let mut errors: Vec<syn::Error> = Vec::new();
+    let mut groups: HashMap<String, Vec<Ident>> = HashMap::new();
+
+    for attr in &input.attrs {
+        if !attr.path().is_ident("warehouse") {
+            continue;
+        }
+        let res = attr.parse_nested_meta(|meta| {
+            if meta.path.is_ident("group") {
+                let content;
+                syn::parenthesized!(content in meta.input);
+                let items = syn::punctuated::Punctuated::<Ident, syn::Token![,]>::parse_terminated(
+                    &content,
+                )?;
+                let mut iter = items.into_iter();
+                let Some(name) = iter.next() else {
+                    return Err(
+                        meta.error("group(...) requires a name followed by one or more variants")
+                    );
+                };
+                let variants: Vec<Ident> = iter.collect();
+                if variants.is_empty() {
+                    return Err(meta.error("group(...) requires at least one variant"));
+                }
+                if name
+                    .to_string()
+                    .chars()
+                    .next()
+                    .is_some_and(|c| c.is_ascii_uppercase())
+                {
+                    return Err(syn::Error::new_spanned(
+                        &name,
+                        "group names must start with a lowercase letter to distinguish them from \
+                         NodeType variants",
+                    ));
+                }
+                if groups.contains_key(&name.to_string()) {
+                    return Err(syn::Error::new_spanned(
+                        &name,
+                        format!(
+                            "duplicate group `{name}`; the second definition would silently \
+                             replace the first instead of being an error"
+                        ),
+                    ));
+                }
+                groups.insert(name.to_string(), variants);
+                Ok(())
+            } else {
+                Err(meta
+                    .error("unknown #[warehouse(...)] container attribute; expected `group(...)`"))
+            }
+        });
+        if let Err(e) = res {
+            errors.push(e);
+        }
+    }
+
+    let mut key_arms: Vec<TokenStream2> = Vec::new();
+    let mut key_names: Vec<String> = Vec::new();
+
+    for field in named_fields {
+        let Some(field_name) = &field.ident else {
+            continue;
+        };
+        key_names.push(field_name.to_string());
+        match warehouse_scope_field_arm(field, field_name, &groups) {
+            Ok(arm) => key_arms.push(arm),
+            Err(field_errors) => errors.extend(field_errors),
+        }
+    }
+
+    if let Some(combined) = errors.into_iter().reduce(|mut acc, e| {
+        acc.combine(e);
+        acc
+    }) {
+        return combined.to_compile_error().into();
+    }
+
+    let output = quote! {
+        impl #struct_name {
+            /// Returns `Unknown` when `key` is not a warehouse key.
+            pub fn key_status(
+                resource: ::dbt_telemetry::NodeType,
+                key: &str,
+            ) -> crate::schemas::project::configs::warehouse_scope::KeyStatus {
+                match key {
+                    #(#key_arms)*
+                    _ => crate::schemas::project::configs::warehouse_scope::KeyStatus::Unknown,
+                }
+            }
+
+            /// Every warehouse key this struct declares, in declaration order.
+            pub fn all_keys() -> &'static [&'static str] {
+                &[#(#key_names),*]
+            }
+        }
+    };
+
+    output.into()
+}
+
+/// Builds the `key_status` match arm for one field.
+fn warehouse_scope_field_arm(
+    field: &Field,
+    field_name: &Ident,
+    groups: &HashMap<String, Vec<Ident>>,
+) -> Result<TokenStream2, Vec<syn::Error>> {
+    let key_str = field_name.to_string();
+    let mut errors: Vec<syn::Error> = Vec::new();
+
+    let mut valid_items: Vec<Ident> = Vec::new();
+    let mut stale_items: Vec<Ident> = Vec::new();
+    let mut invalid_items: Vec<Ident> = Vec::new();
+    let mut has_warehouse_attr = false;
+
+    for attr in &field.attrs {
+        if !attr.path().is_ident("warehouse") {
+            continue;
+        }
+        has_warehouse_attr = true;
+        let res = attr.parse_nested_meta(|meta| {
+            if meta.path.is_ident("valid") {
+                let content;
+                syn::parenthesized!(content in meta.input);
+                let items = syn::punctuated::Punctuated::<Ident, syn::Token![,]>::parse_terminated(
+                    &content,
+                )?;
+                valid_items.extend(items);
+                Ok(())
+            } else if meta.path.is_ident("stale") {
+                let content;
+                syn::parenthesized!(content in meta.input);
+                let items = syn::punctuated::Punctuated::<Ident, syn::Token![,]>::parse_terminated(
+                    &content,
+                )?;
+                stale_items.extend(items);
+                Ok(())
+            } else if meta.path.is_ident("invalid") {
+                let content;
+                syn::parenthesized!(content in meta.input);
+                let items = syn::punctuated::Punctuated::<Ident, syn::Token![,]>::parse_terminated(
+                    &content,
+                )?;
+                invalid_items.extend(items);
+                Ok(())
+            } else {
+                Err(meta.error(
+                    "unknown #[warehouse(...)] field attribute; expected `valid(...)`, \
+                     `stale(...)`, or `invalid(...)`",
+                ))
+            }
+        });
+        if let Err(e) = res {
+            errors.push(e);
+        }
+    }
+
+    // Field names are the user-facing keys.
+    match field_has_serde_rename_or_alias(field) {
+        Ok(true) => errors.push(syn::Error::new_spanned(
+            field_name,
+            "this field carries #[serde(rename)]/alias -- the key reported to users would not \
+             match this field's ident; this derive assumes ident == key, so a renamed key must \
+             be handled explicitly",
+        )),
+        Ok(false) => {}
+        Err(e) => errors.push(e),
+    }
+
+    if !has_warehouse_attr {
+        errors.push(syn::Error::new_spanned(
+            field_name,
+            "this field has no #[warehouse(valid(...), stale(...), invalid(...))] attribute -- there is no \
+             container-level default, so applicability must be declared explicitly for every \
+             field rather than silently inherited from another field's",
+        ));
+    }
+
+    let (valid_variants, stale_variants, invalid_variants) = (
+        resolve_warehouse_items(valid_items, groups),
+        resolve_warehouse_items(stale_items, groups),
+        resolve_warehouse_items(invalid_items, groups),
+    );
+
+    for (left_name, left, right_name, right) in [
+        ("valid", &valid_variants, "stale", &stale_variants),
+        ("valid", &valid_variants, "invalid", &invalid_variants),
+        ("stale", &stale_variants, "invalid", &invalid_variants),
+    ] {
+        for variant in left {
+            if right.iter().any(|other| other == variant) {
+                errors.push(syn::Error::new_spanned(
+                    variant,
+                    format!(
+                        "`{variant}` appears in both `{left_name}(...)` and \
+                         `{right_name}(...)` for `{key_str}`"
+                    ),
+                ));
+            }
+        }
+    }
+
+    if !errors.is_empty() {
+        return Err(errors);
+    }
+
+    let valid_arm = if valid_variants.is_empty() {
+        quote! {}
+    } else {
+        quote! {
+            #(::dbt_telemetry::NodeType::#valid_variants)|* =>
+                crate::schemas::project::configs::warehouse_scope::KeyStatus::Valid,
+        }
+    };
+    let stale_arm = if stale_variants.is_empty() {
+        quote! {}
+    } else {
+        quote! {
+            #(::dbt_telemetry::NodeType::#stale_variants)|* =>
+                crate::schemas::project::configs::warehouse_scope::KeyStatus::Stale,
+        }
+    };
+    let invalid_arm = if invalid_variants.is_empty() {
+        quote! {}
+    } else {
+        quote! {
+            #(::dbt_telemetry::NodeType::#invalid_variants)|* =>
+                crate::schemas::project::configs::warehouse_scope::KeyStatus::Invalid,
+        }
+    };
+
+    Ok(quote! {
+        #key_str => match resource {
+            #valid_arm
+            #stale_arm
+            #invalid_arm
+            _ => crate::schemas::project::configs::warehouse_scope::KeyStatus::ResolvedOnly,
+        },
+    })
+}
+
+/// Returns whether serde changes the field's external name.
+fn field_has_serde_rename_or_alias(field: &Field) -> Result<bool, syn::Error> {
+    for attr in &field.attrs {
+        if !attr.path().is_ident("serde") {
+            continue;
+        }
+        let metas = attr.parse_args_with(
+            syn::punctuated::Punctuated::<syn::Meta, syn::Token![,]>::parse_terminated,
+        )?;
+        if metas
+            .iter()
+            .any(|meta| meta.path().is_ident("rename") || meta.path().is_ident("alias"))
+        {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+/// Resolves groups and removes duplicate variants.
+fn resolve_warehouse_items(items: Vec<Ident>, groups: &HashMap<String, Vec<Ident>>) -> Vec<Ident> {
+    let mut out: Vec<Ident> = Vec::new();
+    let mut seen: HashSet<String> = HashSet::new();
+    for item in items {
+        let expanded = match groups.get(&item.to_string()) {
+            Some(members) => members.clone(),
+            None => vec![item],
+        };
+        for variant in expanded {
+            if seen.insert(variant.to_string()) {
+                out.push(variant);
+            }
+        }
+    }
+    out
 }

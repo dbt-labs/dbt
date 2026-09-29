@@ -299,6 +299,16 @@ pub trait BaseRelation: BaseRelationProperties + Any + Send + Sync + fmt::Debug 
 
     fn set_is_delta(&mut self, is_delta: Option<bool>);
 
+    /// Helper: check if the relation is a Databricks shallow clone
+    fn is_shallow_clone(&self) -> bool {
+        false
+    }
+
+    fn set_is_shallow_clone(&mut self, is_shallow_clone: Option<bool>);
+
+    /// Set the relation's table format, when the adapter tracks one.
+    fn set_table_format(&mut self, table_format: Option<TableFormat>);
+
     /// Helper: check if the relation is a CTE
     fn is_cte(&self) -> bool {
         matches!(
@@ -325,6 +335,16 @@ pub trait BaseRelation: BaseRelationProperties + Any + Send + Sync + fmt::Debug 
     /// Helper: check if the relation is a dynamic table
     fn is_dynamic_table(&self) -> bool {
         matches!(self.relation_type(), Some(RelationType::DynamicTable))
+    }
+
+    /// Helper: check if the relation is an interactive table
+    fn is_interactive_table(&self) -> bool {
+        matches!(self.relation_type(), Some(RelationType::InteractiveTable))
+    }
+
+    /// Helper: check if the relation is a metric view
+    fn is_metric_view(&self) -> bool {
+        matches!(self.relation_type(), Some(RelationType::MetricView))
     }
 
     /// Helper: check if the relation is for a pointer table
@@ -501,7 +521,7 @@ pub trait BaseRelation: BaseRelationProperties + Any + Send + Sync + fmt::Debug 
         let rendered = self.render_self_as_str();
 
         let rendered = if run_filter.empty {
-            format!("(select * from {rendered} limit 0)")
+            format!("(select * from {rendered} where false limit 0)")
         } else {
             rendered
         };
@@ -545,7 +565,7 @@ pub trait BaseRelation: BaseRelationProperties + Any + Send + Sync + fmt::Debug 
             | AdapterType::Salesforce
             | AdapterType::Spark
             | AdapterType::DuckDB
-            | AdapterType::Alt
+            | AdapterType::LakeCompute
             | AdapterType::Fabric => (
                 start.map(|start| format!("{event_time} >= '{start}'")),
                 end.map(|end| format!("{event_time} < '{end}'")),
@@ -558,7 +578,21 @@ pub trait BaseRelation: BaseRelationProperties + Any + Send + Sync + fmt::Debug 
                 }),
                 end.map(|end| format!("{event_time} < parseDateTime64BestEffort('{end}', 9)")),
             ),
-            AdapterType::Exasol => todo!("Exasol"),
+            // Exasol TIMESTAMP literals take no time-zone offset; strip the
+            // (always +00:00) offset and 'T' from the UTC rfc3339 boundary.
+            AdapterType::Exasol => {
+                let to_exasol_ts = |s: &str| {
+                    let s = s
+                        .trim_end_matches("+00:00")
+                        .trim_end_matches('Z')
+                        .replace('T', " ");
+                    format!("TIMESTAMP '{s}'")
+                };
+                (
+                    start.map(|start| format!("{event_time} >= {}", to_exasol_ts(&start))),
+                    end.map(|end| format!("{event_time} < {}", to_exasol_ts(&end))),
+                )
+            }
             AdapterType::Starburst => todo!("Starburst"),
             AdapterType::Athena => todo!("Athena"),
             AdapterType::Trino => todo!("Trino"),
@@ -855,6 +889,28 @@ pub trait BaseRelation: BaseRelationProperties + Any + Send + Sync + fmt::Debug 
 
     /// Whether the relation is a temporary view (session-scoped).
     fn is_temporary(&self) -> bool {
+        false
+    }
+
+    /// ClickHouse relation state, stamped from the catalog (dbt-clickhouse
+    /// `ClickHouseRelation.can_exchange`).
+    fn can_exchange(&self) -> bool {
+        false
+    }
+
+    /// dbt-managed MVs writing into this relation, `{schema, name, sql}` entries
+    /// (`ClickHouseRelation.mvs_pointing_to_it`).
+    fn mvs_pointing_to_it(&self) -> &[BTreeMap<String, String>] {
+        &[]
+    }
+
+    /// `ClickHouseRelation.is_refreshable`
+    fn is_refreshable(&self) -> bool {
+        false
+    }
+
+    /// `ClickHouseRelation.refreshable_append`
+    fn refreshable_append(&self) -> bool {
         false
     }
 

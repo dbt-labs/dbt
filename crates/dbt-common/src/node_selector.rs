@@ -1,21 +1,19 @@
 //! Grammar for node selectors, used
 //!     for --select, --exclude
-//!     the result of evaluating --selectors .yml
+//!     leaf string values inside a --selectors YAML definitions
 //!     the result of normalizing any other node selection, e.g. --resource-types
 //!
-//! SelectExpression ::= AndSpecifiers | OrSpecifiers | AtomSpecifier
-//! OrSpecifiers   ::= (SelectExpression)(' '+(SelectExpression))*
-//! AndSpecifiers    ::= (SelectExpression)(','(SelectExpression)*)
-//! AtomSpecifier   ::= Identifier | AtPattern | PlusPattern
+//! OrSpecifiers  ::= AndSpecifiers (' '+ AndSpecifiers)*     # tokens already whitespace-split by Clap
+//! AndSpecifiers ::= AtomSpecifier (',' AtomSpecifier)*
+//! AtomSpecifier ::= '@'? (Digits? '+')? (Method ':')? Value ('+' Digits?)?
 //!
-//! All three version of Atom Specifiers are define by the RE
-//!     (?x)
-//!      ^(?:([0-9]*)\+)?       # Optional leading number followed by plus     # PlusPattern
-//!      (?:([a-zA-Z][a-zA-Z0-9._]*):)?                                        # Optional qualifier
-//!      ([^, +@]+)              # Identifier, anything but blank, comma, plus # Identifier
-//!      (?:\+([0-9]*))?$       # Optional trailing plus followed by number    # PlusPattern
-//!      |                      # OR
-//!      ^\@([A-Za-z0-9_]+)$                                                   # AtPattern
+//! The corresponding parser is in `parse_model_specifiers` / `parse_single_selector`
+//! and AtomSpecifier is recognized by the regex `RAW_SELECTOR_RE` with subsequent checks.
+//!
+//! Note that this is not a recursive grammar: CLI --select and --exclude
+//! can only be one level of OR over one level of AND.
+//! Arbitrary nesting of `SelectExpression::And`/`Or`/`Exclude` does exist as an AST shape,
+//! but can only be built from --selector YAML definitions.
 
 use dbt_yaml::JsonSchema;
 use regex::Regex;
@@ -104,13 +102,76 @@ impl MethodName {
     }
 }
 
+/// The thing to match. `Unsupported` holds a value dbt Core loads as `Any` but has no
+/// selection semantics for; resolving it errors instead of matching.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Deserialize)]
+#[serde(untagged)]
+pub enum SelectionValue {
+    Scalar(String),
+    Unsupported(Box<dbt_yaml::Value>),
+}
+
+impl SelectionValue {
+    pub fn as_str(&self) -> Option<&str> {
+        match self {
+            SelectionValue::Scalar(s) => Some(s),
+            SelectionValue::Unsupported(_) => None,
+        }
+    }
+
+    pub fn resolve(&self, method: MethodName) -> FsResult<&str> {
+        match self {
+            SelectionValue::Scalar(s) => Ok(s),
+            SelectionValue::Unsupported(y) => err!(
+                ErrorCode::SelectorError,
+                "selector method `{method}` was given a value with no selection semantics \
+                 ({y:?}); dbt Core would also only fail here once this selector is actually \
+                 resolved"
+            ),
+        }
+    }
+}
+
+impl fmt::Display for SelectionValue {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            SelectionValue::Scalar(s) => f.write_str(s),
+            SelectionValue::Unsupported(_) => f.write_str("<unsupported value>"),
+        }
+    }
+}
+
+impl From<String> for SelectionValue {
+    fn from(s: String) -> Self {
+        SelectionValue::Scalar(s)
+    }
+}
+
+impl From<&str> for SelectionValue {
+    fn from(s: &str) -> Self {
+        SelectionValue::Scalar(s.to_string())
+    }
+}
+
+impl PartialEq<str> for SelectionValue {
+    fn eq(&self, other: &str) -> bool {
+        self.as_str() == Some(other)
+    }
+}
+
+impl PartialEq<&str> for SelectionValue {
+    fn eq(&self, other: &&str) -> bool {
+        self.as_str() == Some(*other)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Deserialize)]
 pub struct SelectionCriteria {
     // qualifier + optional sub‑parts ("config.materialized" ⇒ method="config", args=["materialized"])
     pub method: MethodName,
     pub method_args: Vec<String>,
 
-    pub value: String, // the thing to match
+    pub value: SelectionValue, // the thing to match
 
     // graph‑walk modifiers
     pub childrens_parents: bool,     // `@`
@@ -128,7 +189,7 @@ impl SelectionCriteria {
     pub fn new(
         method: MethodName,
         method_args: Vec<String>,
-        value: String,
+        value: impl Into<SelectionValue>,
         childrens_parents: bool,
         parents_depth: Option<u32>,
         children_depth: Option<u32>,
@@ -138,7 +199,7 @@ impl SelectionCriteria {
         Self {
             method,
             method_args,
-            value,
+            value: value.into(),
             childrens_parents,
             parents_depth,
             children_depth,
@@ -172,7 +233,7 @@ impl fmt::Display for SelectionCriteria {
             result.push_str(&format!("{}:", self.method.to_string().to_lowercase()));
         }
 
-        result.push_str(&self.value);
+        result.push_str(&self.value.to_string());
 
         if let Some(depth) = self.children_depth {
             result.push('+');
@@ -275,13 +336,16 @@ pub fn convert_column_selectors_to_fqn(expr: SelectExpression) -> (SelectExpress
                 converted |= inner_changed;
             }
 
+            // `column:` is internal-only, so a non-scalar value never reaches here.
             if criteria.method == MethodName::Column {
-                converted = true;
-                let mut parts = criteria.value.rsplitn(2, '.');
-                let _column_part = parts.next().unwrap_or("");
-                let node_part = parts.next().unwrap_or("");
-                criteria.method = MethodName::Fqn;
-                criteria.value = node_part.to_string();
+                if let Some(value) = criteria.value.as_str() {
+                    converted = true;
+                    let mut parts = value.rsplitn(2, '.');
+                    let _column_part = parts.next().unwrap_or("");
+                    let node_part = parts.next().unwrap_or("").to_string();
+                    criteria.method = MethodName::Fqn;
+                    criteria.value = SelectionValue::Scalar(node_part);
+                }
             }
 
             (SelectExpression::Atom(criteria), converted)
@@ -320,40 +384,35 @@ pub fn convert_column_selectors_to_fqn(expr: SelectExpression) -> (SelectExpress
     }
 }
 
-/// Checks if a `SelectExpression` contains any `state:modified` or `state:new` selectors.
+/// Checks if a `SelectExpression` contains any `state:` selector, regardless of its value
+/// (`new`, `old`, `modified`, `modified.*`, `unmodified`, or anything else).
 ///
 /// This is useful for determining whether loading the manifest.json is required for
 /// a given selector. If the selector only uses methods like `source_status:fresher+`,
 /// then the manifest is not needed and we should not warn if it fails to load.
-pub fn contains_state_modified_or_new_selector(expr: &SelectExpression) -> bool {
+pub fn contains_state_selector(expr: &SelectExpression) -> bool {
     match expr {
         SelectExpression::Atom(criteria) => {
-            if criteria.method == MethodName::State {
-                let value_lower = criteria.value.to_lowercase();
-                value_lower.starts_with("modified") || value_lower.starts_with("new")
-            } else {
-                // Also check nested excludes
-                criteria
+            criteria.method == MethodName::State
+                || criteria
                     .exclude
                     .as_ref()
-                    .map(|e| contains_state_modified_or_new_selector(e))
-                    .unwrap_or(false)
-            }
+                    .is_some_and(|e| contains_state_selector(e))
         }
-        SelectExpression::And(expressions) | SelectExpression::Or(expressions) => expressions
-            .iter()
-            .any(contains_state_modified_or_new_selector),
-        SelectExpression::Exclude(expr) => contains_state_modified_or_new_selector(expr),
+        SelectExpression::And(expressions) | SelectExpression::Or(expressions) => {
+            expressions.iter().any(contains_state_selector)
+        }
+        SelectExpression::Exclude(expr) => contains_state_selector(expr),
     }
 }
 
-/// Checks if any of the provided optional select expressions contain `state:modified` or `state:new`.
+/// Checks if any of the provided optional select expressions contain a `state:` selector.
 pub fn selectors_require_manifest(
     select: Option<&SelectExpression>,
     exclude: Option<&SelectExpression>,
 ) -> bool {
-    let select_requires = select.is_some_and(contains_state_modified_or_new_selector);
-    let exclude_requires = exclude.is_some_and(contains_state_modified_or_new_selector);
+    let select_requires = select.is_some_and(contains_state_selector);
+    let exclude_requires = exclude.is_some_and(contains_state_selector);
     select_requires || exclude_requires
 }
 
@@ -475,11 +534,13 @@ pub fn parse_single_selector(raw: &str) -> FsResult<SelectionCriteria> {
     //           column:model.node123.col ✔
     //           column:node123.          ✘
     //---------------------------------------------------------------
+    let value_str = criteria.value.as_str().unwrap_or_default();
+
     if criteria.method == MethodName::Column {
         // we only need to make sure there is *some* column name
-        match criteria.value.rfind('.') {
+        match value_str.rfind('.') {
             // a dot exists and it's not the last char ⇒ we're good
-            Some(ix) if ix < criteria.value.len() - 1 => {}
+            Some(ix) if ix < value_str.len() - 1 => {}
             _ => {
                 return err!(ErrorCode::SelectorError, "Invalid selector spec: `{}`", raw);
             }
@@ -492,7 +553,7 @@ pub fn parse_single_selector(raw: &str) -> FsResult<SelectionCriteria> {
     //---------------------------------------------------------------
     if criteria.parents_depth.is_none()
         && criteria.children_depth.is_none()
-        && criteria.value.contains('+')
+        && value_str.contains('+')
     {
         return err!(
             ErrorCode::SelectorError,
@@ -613,7 +674,7 @@ mod tests {
             SelectionCriteria {
                 method: MethodName::Fqn,
                 method_args: vec![],
-                value: "identifier".to_string(),
+                value: SelectionValue::Scalar("identifier".to_string()),
                 childrens_parents: false,
                 parents_depth: None,
                 children_depth: None,
@@ -632,7 +693,7 @@ mod tests {
             SelectionCriteria {
                 method: MethodName::Fqn,
                 method_args: vec![],
-                value: "identifier".to_string(),
+                value: SelectionValue::Scalar("identifier".to_string()),
                 childrens_parents: true,
                 parents_depth: None,
                 children_depth: None,
@@ -651,7 +712,7 @@ mod tests {
             SelectionCriteria {
                 method: MethodName::Fqn,
                 method_args: vec![],
-                value: "identifier".to_string(),
+                value: SelectionValue::Scalar("identifier".to_string()),
                 childrens_parents: false,
                 parents_depth: Some(2),
                 children_depth: None,
@@ -670,7 +731,7 @@ mod tests {
             SelectionCriteria {
                 method: MethodName::Fqn,
                 method_args: vec![],
-                value: "identifier".to_string(),
+                value: SelectionValue::Scalar("identifier".to_string()),
                 childrens_parents: false,
                 parents_depth: None,
                 children_depth: Some(u32::MAX),
@@ -710,7 +771,7 @@ mod tests {
             SelectionCriteria {
                 method: MethodName::Fqn,
                 method_args: vec![],
-                value: "identifier".to_string(),
+                value: SelectionValue::Scalar("identifier".to_string()),
                 childrens_parents: false,
                 parents_depth: Some(u32::MAX),
                 children_depth: Some(u32::MAX),
@@ -730,7 +791,7 @@ mod tests {
             SelectionCriteria {
                 method: MethodName::Path,
                 method_args: vec![],
-                value: "identifier/rest".to_string(),
+                value: SelectionValue::Scalar("identifier/rest".to_string()),
                 childrens_parents: false,
                 parents_depth: Some(u32::MAX),
                 children_depth: Some(u32::MAX),
@@ -750,7 +811,7 @@ mod tests {
             SelectionCriteria {
                 method: MethodName::Fqn,
                 method_args: vec![],
-                value: "identifier".to_string(),
+                value: SelectionValue::Scalar("identifier".to_string()),
                 childrens_parents: false,
                 parents_depth: Some(5),
                 children_depth: Some(u32::MAX),
@@ -770,7 +831,7 @@ mod tests {
             SelectionCriteria {
                 method: MethodName::Fqn,
                 method_args: vec![],
-                value: "identifier".to_string(),
+                value: SelectionValue::Scalar("identifier".to_string()),
                 childrens_parents: false,
                 parents_depth: Some(u32::MAX),
                 children_depth: Some(6),
@@ -839,7 +900,7 @@ mod tests {
                         &SelectionCriteria {
                             method: MethodName::Fqn,
                             method_args: vec![],
-                            value: "identifier".to_string(),
+                            value: SelectionValue::Scalar("identifier".to_string()),
                             childrens_parents: false,
                             parents_depth: None,
                             children_depth: None,
@@ -852,7 +913,7 @@ mod tests {
                         &SelectionCriteria {
                             method: MethodName::Fqn,
                             method_args: vec![],
-                            value: "identifier".to_string(),
+                            value: SelectionValue::Scalar("identifier".to_string()),
                             childrens_parents: true,
                             parents_depth: None,
                             children_depth: None,
@@ -881,7 +942,7 @@ mod tests {
                         &SelectionCriteria {
                             method: MethodName::Fqn,
                             method_args: vec![],
-                            value: "identifier".to_string(),
+                            value: SelectionValue::Scalar("identifier".to_string()),
                             childrens_parents: false,
                             parents_depth: None,
                             children_depth: None,
@@ -894,7 +955,7 @@ mod tests {
                         &SelectionCriteria {
                             method: MethodName::Fqn,
                             method_args: vec![],
-                            value: "identifier".to_string(),
+                            value: SelectionValue::Scalar("identifier".to_string()),
                             childrens_parents: true,
                             parents_depth: None,
                             children_depth: None,
@@ -920,7 +981,7 @@ mod tests {
             SelectionCriteria {
                 method: MethodName::Column,
                 method_args: vec![],
-                value: "node123.foo_col".to_string(),
+                value: SelectionValue::Scalar("node123.foo_col".to_string()),
                 childrens_parents: false,
                 parents_depth: None,
                 children_depth: None,
@@ -940,7 +1001,7 @@ mod tests {
             SelectionCriteria {
                 method: MethodName::Column,
                 method_args: vec![],
-                value: "node123.foo_col".to_string(),
+                value: SelectionValue::Scalar("node123.foo_col".to_string()),
                 childrens_parents: false,
                 parents_depth: Some(u32::MAX),
                 children_depth: None,
@@ -960,7 +1021,7 @@ mod tests {
             SelectionCriteria {
                 method: MethodName::Column,
                 method_args: vec![],
-                value: "node123.foo_col".to_string(),
+                value: SelectionValue::Scalar("node123.foo_col".to_string()),
                 childrens_parents: false,
                 parents_depth: None,
                 children_depth: Some(u32::MAX),
@@ -981,7 +1042,7 @@ mod tests {
             SelectionCriteria {
                 method: MethodName::Column,
                 method_args: vec![],
-                value: "node123.foo_col".to_string(),
+                value: SelectionValue::Scalar("node123.foo_col".to_string()),
                 childrens_parents: false,
                 parents_depth: Some(u32::MAX),
                 children_depth: Some(u32::MAX),
@@ -1021,7 +1082,7 @@ mod tests {
                         &SelectionCriteria {
                             method: MethodName::Column,
                             method_args: vec![],
-                            value: "node123.foo_col".to_string(),
+                            value: SelectionValue::Scalar("node123.foo_col".to_string()),
                             childrens_parents: false,
                             parents_depth: None,
                             children_depth: Some(u32::MAX),
@@ -1034,7 +1095,7 @@ mod tests {
                         &SelectionCriteria {
                             method: MethodName::Column,
                             method_args: vec![],
-                            value: "node123.bar_col".to_string(),
+                            value: SelectionValue::Scalar("node123.bar_col".to_string()),
                             childrens_parents: false,
                             parents_depth: None,
                             children_depth: Some(u32::MAX),
@@ -1057,7 +1118,7 @@ mod tests {
         let criteria = SelectionCriteria {
             method: MethodName::Fqn,
             method_args: vec![],
-            value: "model_a".to_string(),
+            value: SelectionValue::Scalar("model_a".to_string()),
             childrens_parents: false,
             parents_depth: None,
             children_depth: Some(u32::MAX),
@@ -1070,7 +1131,7 @@ mod tests {
         let criteria_with_depth = SelectionCriteria {
             method: MethodName::Fqn,
             method_args: vec![],
-            value: "model_a".to_string(),
+            value: SelectionValue::Scalar("model_a".to_string()),
             childrens_parents: false,
             parents_depth: None,
             children_depth: Some(3),
@@ -1083,7 +1144,7 @@ mod tests {
         let criteria_parents = SelectionCriteria {
             method: MethodName::Fqn,
             method_args: vec![],
-            value: "model_a".to_string(),
+            value: SelectionValue::Scalar("model_a".to_string()),
             childrens_parents: false,
             parents_depth: Some(u32::MAX),
             children_depth: None,
@@ -1096,7 +1157,7 @@ mod tests {
         let criteria_both = SelectionCriteria {
             method: MethodName::Fqn,
             method_args: vec![],
-            value: "model_a".to_string(),
+            value: SelectionValue::Scalar("model_a".to_string()),
             childrens_parents: false,
             parents_depth: Some(u32::MAX),
             children_depth: Some(u32::MAX),
@@ -1134,6 +1195,40 @@ mod tests {
         assert_eq!(result.method, MethodName::Selector);
         assert_eq!(result.value, "my_selector");
         assert!(result.childrens_parents);
+        Ok(())
+    }
+
+    // Regression test for a gap flagged in review of the fix for dbt-core#15963
+    // (https://github.com/dbt-labs/fs/pull/14191#discussion_r3937827739): this used to only
+    // recognize values starting with `modified`/`new`, silently treating `state:old` and
+    // `state:unmodified` as not needing a comparison manifest even though dbt Core's
+    // `StateSelectorMethod.search` raises "Got a state selector method, but no comparison
+    // manifest" unconditionally for every `state:*` value.
+    #[test]
+    fn test_selectors_require_manifest_covers_every_state_value() -> FsResult<()> {
+        for value in [
+            "new",
+            "old",
+            "modified",
+            "modified.body",
+            "modified.configs",
+            "unmodified",
+        ] {
+            let criteria = parse_single_selector(&format!("state:{value}"))?;
+            let expr = SelectExpression::Atom(criteria);
+            assert!(
+                selectors_require_manifest(Some(&expr), None),
+                "state:{value} should require a comparison manifest"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_selectors_require_manifest_false_for_non_state_selector() -> FsResult<()> {
+        let criteria = parse_single_selector("tag:nightly")?;
+        let expr = SelectExpression::Atom(criteria);
+        assert!(!selectors_require_manifest(Some(&expr), None));
         Ok(())
     }
 }

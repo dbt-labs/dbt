@@ -1,4 +1,4 @@
-use crate::{AdapterConfig, Auth, AuthError, AuthOutcome, auth_configure_pipeline};
+use crate::{AdapterConfig, Auth, AuthError, AuthWarningPrinter, auth_configure_pipeline};
 use database::Builder as DatabaseBuilder;
 use dbt_adbc::{Backend, athena, database};
 
@@ -24,7 +24,11 @@ enum AthenaAuthIR<'a> {
 }
 
 impl<'a> AthenaAuthIR<'a> {
-    fn apply(self, mut builder: DatabaseBuilder) -> Result<DatabaseBuilder, AuthError> {
+    fn apply(
+        self,
+        mut builder: DatabaseBuilder,
+        _warning_printer: &dyn AuthWarningPrinter,
+    ) -> Result<DatabaseBuilder, AuthError> {
         match self {
             Self::Iam => {
                 builder.with_named_option(athena::AUTH_TYPE, athena::auth_type::IAM)?;
@@ -56,7 +60,7 @@ impl<'a> AthenaAuthIR<'a> {
     }
 }
 
-/// dbt-athena Python profile fields the dbt-fusion Athena backend doesn't yet
+/// dbt-athena Python profile fields the dbt Athena backend doesn't yet
 /// honor. Both lists are kept separate so the policy split (auth-affecting vs
 /// non-auth) is easy to revisit, but during initial rollout both are rejected.
 /// Tracked alongside Part 6 (#9460): full Glue/Iceberg/STS support.
@@ -93,7 +97,7 @@ fn reject_unsupported_fields(config: &AdapterConfig) -> Result<(), AuthError> {
     {
         if config.contains_key(field) {
             return Err(AuthError::config(format!(
-                "Athena profile field '{field}' is not yet supported by the dbt-fusion Athena \
+                "Athena profile field '{field}' is not yet supported by the dbt Athena \
                  backend; please remove it from your profile.",
             )));
         }
@@ -101,7 +105,10 @@ fn reject_unsupported_fields(config: &AdapterConfig) -> Result<(), AuthError> {
     Ok(())
 }
 
-fn parse_auth<'a>(config: &'a AdapterConfig) -> Result<AthenaAuthIR<'a>, AuthError> {
+fn parse_auth<'a>(
+    config: &'a AdapterConfig,
+    _warning_printer: &dyn AuthWarningPrinter,
+) -> Result<AthenaAuthIR<'a>, AuthError> {
     reject_unsupported_fields(config)?;
 
     // Auth path is inferred from which credential fields are set, matching
@@ -160,6 +167,7 @@ fn parse_auth<'a>(config: &'a AdapterConfig) -> Result<AthenaAuthIR<'a>, AuthErr
 fn apply_connection_args(
     config: &AdapterConfig,
     mut builder: DatabaseBuilder,
+    _warning_printer: &dyn AuthWarningPrinter,
 ) -> Result<DatabaseBuilder, AuthError> {
     let region = config
         .require_str("region_name")
@@ -192,15 +200,23 @@ fn apply_connection_args(
     Ok(builder)
 }
 
-pub struct AthenaAuth;
+pub struct AthenaAuth {
+    pub warning_printer: Box<dyn AuthWarningPrinter>,
+}
+
+impl AthenaAuth {
+    pub fn new(warning_printer: Box<dyn AuthWarningPrinter>) -> Self {
+        Self { warning_printer }
+    }
+}
 
 impl Auth for AthenaAuth {
     fn backend(&self) -> Backend {
         Backend::Athena
     }
 
-    fn configure(&self, config: &AdapterConfig) -> Result<AuthOutcome, AuthError> {
-        auth_configure_pipeline!(self.backend(), &config, parse_auth, apply_connection_args)
+    fn configure(&self, config: &AdapterConfig) -> Result<database::Builder, AuthError> {
+        auth_configure_pipeline!(self, &config, parse_auth, apply_connection_args)
     }
 }
 
@@ -220,10 +236,9 @@ mod tests {
 
     #[test]
     fn test_iam_default_method() {
-        let builder = AthenaAuth {}
+        let builder = AthenaAuth::new(Box::new(crate::NoopAuthWarningPrinter))
             .configure(&AdapterConfig::new(base_required()))
-            .expect("configure")
-            .builder;
+            .expect("configure");
 
         assert_eq!(other_option_value(&builder, athena::AUTH_TYPE), Some("iam"));
         assert_eq!(
@@ -254,10 +269,9 @@ mod tests {
         config.insert("aws_access_key_id".into(), "AKIAEXAMPLE".into());
         config.insert("aws_secret_access_key".into(), "secret".into());
 
-        let builder = AthenaAuth {}
+        let builder = AthenaAuth::new(Box::new(crate::NoopAuthWarningPrinter))
             .configure(&AdapterConfig::new(config))
-            .expect("configure")
-            .builder;
+            .expect("configure");
 
         assert_eq!(
             other_option_value(&builder, athena::AUTH_TYPE),
@@ -281,10 +295,9 @@ mod tests {
         config.insert("aws_secret_access_key".into(), "secret".into());
         config.insert("aws_session_token".into(), "token-xyz".into());
 
-        let builder = AthenaAuth {}
+        let builder = AthenaAuth::new(Box::new(crate::NoopAuthWarningPrinter))
             .configure(&AdapterConfig::new(config))
-            .expect("configure")
-            .builder;
+            .expect("configure");
 
         assert_eq!(
             other_option_value(&builder, athena::SESSION_TOKEN),
@@ -297,10 +310,9 @@ mod tests {
         let mut config = base_required();
         config.insert("aws_profile_name".into(), "my-profile".into());
 
-        let builder = AthenaAuth {}
+        let builder = AthenaAuth::new(Box::new(crate::NoopAuthWarningPrinter))
             .configure(&AdapterConfig::new(config))
-            .expect("configure")
-            .builder;
+            .expect("configure");
 
         assert_eq!(
             other_option_value(&builder, athena::AUTH_TYPE),
@@ -318,10 +330,9 @@ mod tests {
         config.insert("database".into(), "my_catalog".into());
         config.insert("work_group".into(), "analytics-wg".into());
 
-        let builder = AthenaAuth {}
+        let builder = AthenaAuth::new(Box::new(crate::NoopAuthWarningPrinter))
             .configure(&AdapterConfig::new(config))
-            .expect("configure")
-            .builder;
+            .expect("configure");
 
         assert_eq!(
             other_option_value(&builder, athena::CATALOG),
@@ -338,10 +349,9 @@ mod tests {
         let mut config = base_required();
         config.insert("catalog".into(), "my_catalog".into());
 
-        let builder = AthenaAuth {}
+        let builder = AthenaAuth::new(Box::new(crate::NoopAuthWarningPrinter))
             .configure(&AdapterConfig::new(config))
-            .expect("configure")
-            .builder;
+            .expect("configure");
 
         assert_eq!(
             other_option_value(&builder, athena::CATALOG),
@@ -355,10 +365,9 @@ mod tests {
         config.insert("database".into(), "canonical".into());
         config.insert("catalog".into(), "alias_value".into());
 
-        let builder = AthenaAuth {}
+        let builder = AthenaAuth::new(Box::new(crate::NoopAuthWarningPrinter))
             .configure(&AdapterConfig::new(config))
-            .expect("configure")
-            .builder;
+            .expect("configure");
 
         assert_eq!(
             other_option_value(&builder, athena::CATALOG),
@@ -371,7 +380,7 @@ mod tests {
         let mut config = base_required();
         config.remove("region_name");
 
-        let err = AthenaAuth {}
+        let err = AthenaAuth::new(Box::new(crate::NoopAuthWarningPrinter))
             .configure(&AdapterConfig::new(config))
             .expect_err("should require region_name");
         assert!(err.msg().contains("region_name"), "got: {}", err.msg());
@@ -382,7 +391,7 @@ mod tests {
         let mut config = base_required();
         config.remove("s3_staging_dir");
 
-        let err = AthenaAuth {}
+        let err = AthenaAuth::new(Box::new(crate::NoopAuthWarningPrinter))
             .configure(&AdapterConfig::new(config))
             .expect_err("should require s3_staging_dir");
         assert!(err.msg().contains("s3_staging_dir"), "got: {}", err.msg());
@@ -393,7 +402,7 @@ mod tests {
         let mut config = base_required();
         config.remove("schema");
 
-        let err = AthenaAuth {}
+        let err = AthenaAuth::new(Box::new(crate::NoopAuthWarningPrinter))
             .configure(&AdapterConfig::new(config))
             .expect_err("should require schema");
         assert!(err.msg().contains("schema"), "got: {}", err.msg());
@@ -404,7 +413,7 @@ mod tests {
         let mut config = base_required();
         config.insert("aws_access_key_id".into(), "AKIAEXAMPLE".into());
 
-        let err = AthenaAuth {}
+        let err = AthenaAuth::new(Box::new(crate::NoopAuthWarningPrinter))
             .configure(&AdapterConfig::new(config))
             .expect_err("should require aws_secret_access_key");
         assert!(
@@ -420,7 +429,7 @@ mod tests {
         config.insert("aws_access_key_id".into(), "".into());
         config.insert("aws_secret_access_key".into(), "secret".into());
 
-        let err = AthenaAuth {}
+        let err = AthenaAuth::new(Box::new(crate::NoopAuthWarningPrinter))
             .configure(&AdapterConfig::new(config))
             .expect_err("empty access_key_id should error");
         assert!(
@@ -435,7 +444,7 @@ mod tests {
         let mut config = base_required();
         config.insert("aws_profile_name".into(), "".into());
 
-        let err = AthenaAuth {}
+        let err = AthenaAuth::new(Box::new(crate::NoopAuthWarningPrinter))
             .configure(&AdapterConfig::new(config))
             .expect_err("empty profile name should error");
         assert!(err.msg().contains("aws_profile_name"), "got: {}", err.msg());
@@ -449,7 +458,7 @@ mod tests {
             "arn:aws:iam::123456789012:role/MyRole".into(),
         );
 
-        let err = AthenaAuth {}
+        let err = AthenaAuth::new(Box::new(crate::NoopAuthWarningPrinter))
             .configure(&AdapterConfig::new(config))
             .expect_err("assume_role_arn should be rejected");
         assert!(err.msg().contains("assume_role_arn"), "got: {}", err.msg());
@@ -464,7 +473,7 @@ mod tests {
             dbt_yaml::Value::number(3600i64.into()),
         );
 
-        let err = AthenaAuth {}
+        let err = AthenaAuth::new(Box::new(crate::NoopAuthWarningPrinter))
             .configure(&AdapterConfig::new(config))
             .expect_err("numeric assume_role_duration_seconds should be rejected");
         assert!(
@@ -479,7 +488,7 @@ mod tests {
         let mut config = base_required();
         config.insert("skip_workgroup_check".into(), dbt_yaml::Value::bool(true));
 
-        let err = AthenaAuth {}
+        let err = AthenaAuth::new(Box::new(crate::NoopAuthWarningPrinter))
             .configure(&AdapterConfig::new(config))
             .expect_err("boolean skip_workgroup_check should be rejected");
         assert!(
@@ -494,7 +503,7 @@ mod tests {
         let mut config = base_required();
         config.insert("s3_data_dir".into(), "s3://mybucket/data/".into());
 
-        let err = AthenaAuth {}
+        let err = AthenaAuth::new(Box::new(crate::NoopAuthWarningPrinter))
             .configure(&AdapterConfig::new(config))
             .expect_err("s3_data_dir should be rejected");
         assert!(err.msg().contains("s3_data_dir"), "got: {}", err.msg());

@@ -628,7 +628,7 @@ mod tests {
         assert_eq!(parsed.url, "https://tok@github.com/dbt-labs/dbt-utils.git");
     }
 
-    #[tokio::test]
+    #[dbt_runtime::test]
     async fn reset_download_dir_wipes_existing_content_and_recreates_dir() {
         let tmp = tempfile::tempdir().unwrap();
         let sentinel = tmp.path().join("leftover.txt");
@@ -641,7 +641,7 @@ mod tests {
         assert!(!sentinel.exists(), "old content must be gone");
     }
 
-    #[tokio::test]
+    #[dbt_runtime::test]
     async fn reset_download_dir_creates_missing_dir() {
         let tmp = tempfile::tempdir().unwrap();
         let missing = tmp.path().join("does-not-exist-yet");
@@ -694,7 +694,7 @@ mod tests {
     // (`download_git_like_package`, `install_git_like_package`) trim revisions
     // at the boundary so callers don't have to.
 
-    #[tokio::test]
+    #[dbt_runtime::test]
     async fn install_git_like_package_trims_sha_with_trailing_newline() {
         // Drive just far enough to observe the returned SHA is trimmed.
         // The actual git operation is expected to fail in this unit-test

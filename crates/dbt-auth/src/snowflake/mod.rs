@@ -1,11 +1,12 @@
-mod key_format;
+pub mod key_format;
 
-use crate::{AdapterConfig, Auth, AuthError, AuthOutcome, AuthWarningPrinter};
+use crate::{AdapterConfig, Auth, AuthError, AuthWarningPrinter};
 use database::Builder as DatabaseBuilder;
 use dbt_adbc::database::LogLevel;
 use dbt_adbc::{Backend, database, snowflake};
 
 use std::fs;
+use std::sync::Once;
 
 const APP_NAME: &str = "dbt";
 
@@ -23,6 +24,8 @@ const CONNECTION_PARAMS_STR: [&str; 9] = [
 ];
 
 const CONNECTION_PARAMS: [&str; 2] = ["port", "client_session_keep_alive"];
+
+const ACCEPTED_WORKLOAD_IDENTITY_PROVIDERS: [&str; 4] = ["OIDC", "AZURE", "GCP", "AWS"];
 
 /// Configuration values that are needed for an auth method in a dbt-snowflake profile.
 ///
@@ -83,8 +86,46 @@ fn validate_warehouse_auth_fields(config: &AdapterConfig) -> Result<(), AuthErro
     Ok(())
 }
 
-fn warn_ignored_auth_field(warnings: &mut Vec<String>, auth_method: &str, field: &str) {
-    warnings.push(format!(
+fn parse_workload_identity<'a>(
+    config: &'a AdapterConfig,
+) -> Result<SnowflakeAuthIR<'a>, AuthError> {
+    let provider = config.get_str("workload_identity_provider");
+    let provider_valid = provider.is_some_and(|p| {
+        ACCEPTED_WORKLOAD_IDENTITY_PROVIDERS
+            .iter()
+            .any(|accepted| accepted.eq_ignore_ascii_case(p))
+    });
+    if !provider_valid {
+        return Err(AuthError::config(format!(
+            "workload_identity_provider must be set to one of the following values if authenticator='workload_identity'!:\n{}\n\nProvided workload_identity_provider was '{}'",
+            ACCEPTED_WORKLOAD_IDENTITY_PROVIDERS.join(", "),
+            provider.unwrap_or_default(),
+        )));
+    }
+    let provider = provider.expect("validated above");
+
+    let entra_resource = config.get_str("workload_identity_entra_resource");
+    if entra_resource.is_some() && !provider.eq_ignore_ascii_case("AZURE") {
+        return Err(AuthError::config(
+            "workload_identity_entra_resource can only be set if workload_identity_provider is Azure",
+        ));
+    }
+
+    Ok(SnowflakeAuthIR::WorkloadIdentity {
+        provider,
+        entra_resource,
+        token: config.get_str("token"),
+    })
+}
+
+static WARN_3DES_KEY_ONCE: Once = Once::new();
+
+fn warn_ignored_auth_field(
+    warning_printer: &dyn AuthWarningPrinter,
+    auth_method: &str,
+    field: &str,
+) {
+    warning_printer.warn(&format!(
         "For Snowflake {auth_method} authentication, '{field}' will be ignored and can be safely removed from your profile."
     ));
 }
@@ -130,13 +171,19 @@ enum SnowflakeAuthIR<'a> {
         user: &'a str,
         token: &'a str,
     },
+    // AWS/GCP/AZURE fetch their own attestation from the local cloud metadata service.
+    WorkloadIdentity {
+        provider: &'a str,
+        entra_resource: Option<&'a str>,
+        token: Option<&'a str>,
+    },
 }
 
 impl<'a> SnowflakeAuthIR<'a> {
     pub fn apply(
         self,
-        warning_printer: &dyn AuthWarningPrinter,
         mut builder: DatabaseBuilder,
+        warning_printer: &dyn AuthWarningPrinter,
     ) -> Result<DatabaseBuilder, AuthError> {
         match self {
             Self::NativeOauth {
@@ -189,10 +236,12 @@ impl<'a> SnowflakeAuthIR<'a> {
                     let key_content = fs::read_to_string(path).map_err(|_| {
                         AuthError::config(format!("Could not read from key file: '{path}'"))
                     })?;
-                    builder.with_named_option(
-                        snowflake::JWT_PRIVATE_KEY_PKCS8_VALUE,
-                        key_format::normalize_key(warning_printer, &key_content)?,
-                    )?;
+                    let (normalized, status) = key_format::normalize_key(&key_content)?;
+                    if let key_format::SnowflakeKeypairStatus::Warn3Des(msg) = status {
+                        WARN_3DES_KEY_ONCE.call_once(|| warning_printer.warn(msg));
+                    }
+                    builder
+                        .with_named_option(snowflake::JWT_PRIVATE_KEY_PKCS8_VALUE, normalized)?;
                     builder.with_named_option(snowflake::JWT_PRIVATE_KEY_PKCS8_PASSWORD, pass)?;
                 } else {
                     builder.with_named_option(snowflake::JWT_PRIVATE_KEY, path)?;
@@ -206,10 +255,11 @@ impl<'a> SnowflakeAuthIR<'a> {
                 builder.with_username(user);
                 builder.with_password(ADBC_STUB_PASSWORD);
                 builder.with_named_option(snowflake::AUTH_TYPE, snowflake::auth_type::JWT)?;
-                builder.with_named_option(
-                    snowflake::JWT_PRIVATE_KEY_PKCS8_VALUE,
-                    key_format::normalize_key(warning_printer, private_key)?,
-                )?;
+                let (normalized, status) = key_format::normalize_key(private_key)?;
+                if let key_format::SnowflakeKeypairStatus::Warn3Des(msg) = status {
+                    WARN_3DES_KEY_ONCE.call_once(|| warning_printer.warn(msg));
+                }
+                builder.with_named_option(snowflake::JWT_PRIVATE_KEY_PKCS8_VALUE, normalized)?;
                 if let Some(pass) = passphrase {
                     builder.with_named_option(snowflake::JWT_PRIVATE_KEY_PKCS8_PASSWORD, pass)?;
                 }
@@ -237,6 +287,26 @@ impl<'a> SnowflakeAuthIR<'a> {
                 )?;
                 builder.with_named_option(snowflake::AUTH_TOKEN, token)?;
             }
+            Self::WorkloadIdentity {
+                provider,
+                entra_resource,
+                token,
+            } => {
+                builder.with_named_option(
+                    snowflake::AUTH_TYPE,
+                    snowflake::auth_type::WORKLOAD_IDENTITY,
+                )?;
+                builder.with_named_option(snowflake::WORKLOAD_IDENTITY_PROVIDER, provider)?;
+                if let Some(entra_resource) = entra_resource {
+                    builder.with_named_option(
+                        snowflake::WORKLOAD_IDENTITY_ENTRA_RESOURCE,
+                        entra_resource,
+                    )?;
+                }
+                if let Some(token) = token {
+                    builder.with_named_option(snowflake::AUTH_TOKEN, token)?;
+                }
+            }
         }
 
         Ok(builder)
@@ -246,16 +316,7 @@ impl<'a> SnowflakeAuthIR<'a> {
 #[allow(clippy::cognitive_complexity)]
 fn parse_auth<'a>(
     config: &'a AdapterConfig,
-) -> Result<(SnowflakeAuthIR<'a>, Vec<String>), AuthError> {
-    let mut warnings = Vec::new();
-    let ir = parse_auth_inner(config, &mut warnings)?;
-    Ok((ir, warnings))
-}
-
-#[allow(clippy::cognitive_complexity)]
-fn parse_auth_inner<'a>(
-    config: &'a AdapterConfig,
-    warnings: &mut Vec<String>,
+    warning_printer: &dyn AuthWarningPrinter,
 ) -> Result<SnowflakeAuthIR<'a>, AuthError> {
     // Case 1: Profile has `method`. We can do strict evaluation of their profiles.yml
     if let Some(method) = config.get_str("method") {
@@ -273,7 +334,7 @@ fn parse_auth_inner<'a>(
                     ));
                 }
                 if config.contains_key("password") {
-                    warn_ignored_auth_field(warnings, "keypair", "password");
+                    warn_ignored_auth_field(warning_printer, "keypair", "password");
                 }
 
                 let pk_path = config.get_str("private_key_path");
@@ -302,7 +363,7 @@ fn parse_auth_inner<'a>(
             }
             "sso" => {
                 if config.contains_key("password") {
-                    warn_ignored_auth_field(warnings, "SSO", "password");
+                    warn_ignored_auth_field(warning_printer, "SSO", "password");
                 }
 
                 config
@@ -314,10 +375,10 @@ fn parse_auth_inner<'a>(
             }
             "snowflake_oauth" => {
                 if config.contains_key("user") {
-                    warn_ignored_auth_field(warnings, "OAuth", "user");
+                    warn_ignored_auth_field(warning_printer, "OAuth", "user");
                 }
                 if config.contains_key("password") {
-                    warn_ignored_auth_field(warnings, "OAuth", "password");
+                    warn_ignored_auth_field(warning_printer, "OAuth", "password");
                 }
 
                 // TODO(versusfacit): update upstream to allow for refresh_token
@@ -379,10 +440,11 @@ fn parse_auth_inner<'a>(
                     AuthError::config("Snowflake PAT authentication requires 'token'.")
                 })?;
                 if config.contains_key("password") {
-                    warn_ignored_auth_field(warnings, "PAT", "password");
+                    warn_ignored_auth_field(warning_printer, "PAT", "password");
                 }
                 Ok(SnowflakeAuthIR::Pat { user, token })
             }
+            "workload_identity" => parse_workload_identity(config),
             unsupported_method => Err(AuthError::config(format!(
                 "Profile has unsupported authentication method {unsupported_method}"
             ))),
@@ -413,7 +475,7 @@ fn parse_auth_inner<'a>(
                             ));
                         }
                         if config.contains_key("password") {
-                            warn_ignored_auth_field(warnings, "keypair", "password");
+                            warn_ignored_auth_field(warning_printer, "keypair", "password");
                         }
 
                         Ok(SnowflakeAuthIR::KeypairPath {
@@ -429,7 +491,7 @@ fn parse_auth_inner<'a>(
                             ));
                         }
                         if config.contains_key("password") {
-                            warn_ignored_auth_field(warnings, "keypair", "password");
+                            warn_ignored_auth_field(warning_printer, "keypair", "password");
                         }
 
                         Ok(SnowflakeAuthIR::KeypairInline {
@@ -445,7 +507,7 @@ fn parse_auth_inner<'a>(
                             ));
                         }
                         if config.contains_key("password") {
-                            warn_ignored_auth_field(warnings, "keypair", "password");
+                            warn_ignored_auth_field(warning_printer, "keypair", "password");
                         }
 
                         // We found a passphrase, so we MUST find a key source to go with it
@@ -471,10 +533,10 @@ fn parse_auth_inner<'a>(
                     "oauth_client_id" | "oauth_client_secret" => {
                         // TODO(versusfacit): reenable warnings when possible
                         // if config.contains_key("user") {
-                        //     warn_ignored_auth_field(warnings, "OAuth", "user");
+                        //     warn_ignored_auth_field(warning_printer, "OAuth", "user");
                         // }
                         // if config.contains_key("password") {
-                        //     warn_ignored_auth_field(warnings, "OAuth", "password");
+                        //     warn_ignored_auth_field(warning_printer, "OAuth", "password");
                         // }
 
                         let cid = config.get_str("oauth_client_id");
@@ -499,7 +561,7 @@ fn parse_auth_inner<'a>(
                     "authenticator" => {
                         if value == "externalbrowser" {
                             if config.contains_key("password") {
-                                warn_ignored_auth_field(warnings, "SSO", "password");
+                                warn_ignored_auth_field(warning_printer, "SSO", "password");
                             }
 
                             config
@@ -512,10 +574,10 @@ fn parse_auth_inner<'a>(
                                 })
                         } else if value == "oauth" {
                             if config.contains_key("user") {
-                                warn_ignored_auth_field(warnings, "OAuth", "user");
+                                warn_ignored_auth_field(warning_printer, "OAuth", "user");
                             }
                             if config.contains_key("password") {
-                                warn_ignored_auth_field(warnings, "OAuth", "password");
+                                warn_ignored_auth_field(warning_printer, "OAuth", "password");
                             }
 
                             let cid = config.get_str("oauth_client_id");
@@ -559,9 +621,11 @@ fn parse_auth_inner<'a>(
                                 AuthError::config("Snowflake PAT authentication requires 'token'.")
                             })?;
                             if config.contains_key("password") {
-                                warn_ignored_auth_field(warnings, "PAT", "password");
+                                warn_ignored_auth_field(warning_printer, "PAT", "password");
                             }
                             Ok(SnowflakeAuthIR::Pat { user, token })
+                        } else if value == "workload_identity" {
+                            parse_workload_identity(config)
                         } else {
                             Err(AuthError::config(format!(
                                 "Unsupported authenticator: {value}"
@@ -585,6 +649,7 @@ fn parse_auth_inner<'a>(
 fn apply_connection_args(
     config: &AdapterConfig,
     mut builder: DatabaseBuilder,
+    _warning_printer: &dyn AuthWarningPrinter,
 ) -> Result<DatabaseBuilder, AuthError> {
     for key in CONNECTION_PARAMS_STR {
         if let Some(value) = config.get_str(key) {
@@ -618,7 +683,8 @@ fn apply_connection_args(
             }?;
         }
     }
-    builder.with_named_option(snowflake::APPLICATION_NAME, APP_NAME)?;
+    let application_name = config.get_str("application_name").unwrap_or(APP_NAME);
+    builder.with_named_option(snowflake::APPLICATION_NAME, application_name)?;
 
     // LOGIN_TIMEOUT defaults to 300s,
     // see https://github.com/dbt-labs/gosnowflake/blob/c1d9c4ea1fde32184cbce1f728a4db2ea0cec048/dsn.go         = 300 * time.Second // Timeout for retry for login EXCLUDING clientTimeout
@@ -655,7 +721,13 @@ fn apply_connection_args(
 }
 
 pub struct SnowflakeAuth {
-    pub(crate) warning_printer: Box<dyn AuthWarningPrinter>,
+    pub warning_printer: Box<dyn AuthWarningPrinter>,
+}
+
+impl SnowflakeAuth {
+    pub fn new(warning_printer: Box<dyn AuthWarningPrinter>) -> Self {
+        Self { warning_printer }
+    }
 }
 
 impl Auth for SnowflakeAuth {
@@ -663,18 +735,15 @@ impl Auth for SnowflakeAuth {
         Backend::Snowflake
     }
 
-    fn configure(&self, config: &AdapterConfig) -> Result<AuthOutcome, AuthError> {
-        let (auth_ir, warnings) = parse_auth(config)?;
-        let builder = database::Builder::new(self.backend());
-        let builder = auth_ir.apply(&*self.warning_printer, builder)?;
-        let builder = apply_connection_args(config, builder)?;
-        Ok(AuthOutcome { builder, warnings })
+    fn configure(&self, config: &AdapterConfig) -> Result<database::Builder, AuthError> {
+        crate::auth_configure_pipeline!(self, config, parse_auth, apply_connection_args)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::NoopAuthWarningPrinter;
     use crate::test_options::option_str_value;
     use adbc_core::options::OptionDatabase;
     use dbt_yaml::Mapping;
@@ -721,7 +790,7 @@ mod tests {
 
     fn assert_parse_auth_config_error(config: Mapping, expected_msg: &str) {
         let cfg = AdapterConfig::new(config);
-        let result = parse_auth(&cfg);
+        let result = parse_auth(&cfg, &NoopAuthWarningPrinter);
         match result {
             Err(AuthError::Config(msg)) => assert_eq!(msg, expected_msg),
             other => panic!("Expected AuthError::Config({expected_msg:?}), got {other:?}"),
@@ -730,7 +799,7 @@ mod tests {
 
     fn run_config_test(config: Mapping, expected: &[(&str, &str)]) {
         let auth = SnowflakeAuth {
-            warning_printer: Box::new(crate::NoopAuthWarningPrinter),
+            warning_printer: Box::new(NoopAuthWarningPrinter),
         };
         let auth_result = auth
             .configure(&AdapterConfig::new(config))
@@ -738,7 +807,7 @@ mod tests {
 
         let mut results = Mapping::default();
 
-        for (k, v) in auth_result.builder.into_iter() {
+        for (k, v) in auth_result.into_iter() {
             let key = match k {
                 OptionDatabase::Username => "user".to_owned(),
                 OptionDatabase::Password => "password".to_owned(),
@@ -804,6 +873,23 @@ mod tests {
     }
 
     #[test]
+    fn test_application_name_override() {
+        let mut config = base_config();
+        config.insert("application_name".into(), "custom_app".into());
+        let expected = [
+            ("user", "U"),
+            ("password", "P"),
+            (snowflake::ACCOUNT, "A"),
+            (snowflake::ROLE, "role"),
+            (snowflake::WAREHOUSE, "warehouse"),
+            (snowflake::APPLICATION_NAME, "custom_app"),
+            (snowflake::LOG_TRACING, "fatal"),
+            (snowflake::REQUEST_TIMEOUT, DEFAULT_REQUEST_TIMEOUT),
+        ];
+        run_config_test(config, &expected);
+    }
+
+    #[test]
     fn test_simple_pass_with_driver_log_level_override() {
         let mut config = base_config();
         config.insert("driver_log_level".into(), "debug".into());
@@ -825,7 +911,7 @@ mod tests {
         let mut config = base_config();
         config.insert("driver_log_level".into(), "bogus".into());
         let auth = SnowflakeAuth {
-            warning_printer: Box::new(crate::NoopAuthWarningPrinter),
+            warning_printer: Box::new(NoopAuthWarningPrinter),
         };
         let result = auth.configure(&AdapterConfig::new(config));
         match result {
@@ -1289,7 +1375,7 @@ mod tests {
         config.insert("token".into(), "should_be_refresh_token".into());
 
         let cfg = AdapterConfig::new(config);
-        let result = parse_auth(&cfg);
+        let result = parse_auth(&cfg, &NoopAuthWarningPrinter);
 
         assert!(
             matches!(result, Err(ref e) if matches!(e, AuthError::Config(_))),
@@ -1331,7 +1417,7 @@ mod tests {
     #[test]
     fn test_invalid_private_key_path() {
         let auth = SnowflakeAuth {
-            warning_printer: Box::new(crate::NoopAuthWarningPrinter),
+            warning_printer: Box::new(NoopAuthWarningPrinter),
         };
         let bad_path = "this_file_does_not_exist.p8";
 
@@ -1367,7 +1453,7 @@ mod tests {
         config.insert("token".into(), "token".into());
 
         let cfg = AdapterConfig::new(config);
-        let result = parse_auth(&cfg);
+        let result = parse_auth(&cfg, &NoopAuthWarningPrinter);
 
         assert!(
             matches!(result, Err(ref e) if matches!(e, AuthError::Config(_))),
@@ -1458,7 +1544,7 @@ mod tests {
         config.insert("authenticator".into(), "wrong".into());
 
         let cfg = AdapterConfig::new(config);
-        let result = parse_auth(&cfg);
+        let result = parse_auth(&cfg, &NoopAuthWarningPrinter);
 
         assert!(
             matches!(result, Err(ref e) if matches!(e, AuthError::Config(_))),
@@ -1537,7 +1623,7 @@ mod tests {
         config.insert("token".into(), "wrong_field".into());
 
         let cfg = AdapterConfig::new(config);
-        let result = parse_auth(&cfg);
+        let result = parse_auth(&cfg, &NoopAuthWarningPrinter);
 
         assert!(
             matches!(result, Err(ref e) if matches!(e, AuthError::Config(_))),
@@ -1560,7 +1646,7 @@ mod tests {
         // jwt intentionally missing
 
         let cfg = AdapterConfig::new(config);
-        let result = parse_auth(&cfg);
+        let result = parse_auth(&cfg, &NoopAuthWarningPrinter);
 
         assert!(
             matches!(result, Err(ref e) if matches!(e, AuthError::Config(_))),
@@ -1833,6 +1919,94 @@ mod tests {
             (snowflake::REQUEST_TIMEOUT, DEFAULT_REQUEST_TIMEOUT),
         ];
         run_config_test(config, &expected);
+    }
+
+    #[test]
+    fn test_workload_identity_authenticator() {
+        let mut config = base_config_without_user_password();
+        config.insert("authenticator".into(), "workload_identity".into());
+        config.insert("workload_identity_provider".into(), "azure".into());
+        config.insert(
+            "workload_identity_entra_resource".into(),
+            "app://123".into(),
+        );
+        config.insert("token".into(), "test_token".into());
+        let expected = [
+            (snowflake::ACCOUNT, "A"),
+            (snowflake::ROLE, "role"),
+            (snowflake::WAREHOUSE, "warehouse"),
+            (snowflake::APPLICATION_NAME, APP_NAME),
+            (
+                snowflake::AUTH_TYPE,
+                snowflake::auth_type::WORKLOAD_IDENTITY,
+            ),
+            (snowflake::WORKLOAD_IDENTITY_PROVIDER, "azure"),
+            (snowflake::WORKLOAD_IDENTITY_ENTRA_RESOURCE, "app://123"),
+            (snowflake::AUTH_TOKEN, "test_token"),
+            (snowflake::LOG_TRACING, "fatal"),
+            (snowflake::REQUEST_TIMEOUT, DEFAULT_REQUEST_TIMEOUT),
+        ];
+        run_config_test(config, &expected);
+    }
+
+    #[test]
+    fn test_workload_identity_method() {
+        let mut config = base_config_without_user_password();
+        config.insert("method".into(), "workload_identity".into());
+        config.insert("workload_identity_provider".into(), "OIDC".into());
+        let expected = [
+            (snowflake::ACCOUNT, "A"),
+            (snowflake::ROLE, "role"),
+            (snowflake::WAREHOUSE, "warehouse"),
+            (snowflake::APPLICATION_NAME, APP_NAME),
+            (
+                snowflake::AUTH_TYPE,
+                snowflake::auth_type::WORKLOAD_IDENTITY,
+            ),
+            (snowflake::WORKLOAD_IDENTITY_PROVIDER, "OIDC"),
+            (snowflake::LOG_TRACING, "fatal"),
+            (snowflake::REQUEST_TIMEOUT, DEFAULT_REQUEST_TIMEOUT),
+        ];
+        run_config_test(config, &expected);
+    }
+
+    #[test]
+    fn test_workload_identity_fails_without_provider() {
+        let mut config = base_config_without_user_password();
+        config.insert("authenticator".into(), "workload_identity".into());
+        assert_parse_auth_config_error(
+            config,
+            "workload_identity_provider must be set to one of the following values if authenticator='workload_identity'!:\nOIDC, AZURE, GCP, AWS\n\nProvided workload_identity_provider was ''",
+        );
+    }
+
+    #[test]
+    fn test_workload_identity_fails_with_invalid_provider() {
+        let mut config = base_config_without_user_password();
+        config.insert("authenticator".into(), "workload_identity".into());
+        config.insert(
+            "workload_identity_provider".into(),
+            "some_non_existent_cloud_provider".into(),
+        );
+        assert_parse_auth_config_error(
+            config,
+            "workload_identity_provider must be set to one of the following values if authenticator='workload_identity'!:\nOIDC, AZURE, GCP, AWS\n\nProvided workload_identity_provider was 'some_non_existent_cloud_provider'",
+        );
+    }
+
+    #[test]
+    fn test_workload_identity_fails_with_entra_resource_and_non_azure_provider() {
+        let mut config = base_config_without_user_password();
+        config.insert("authenticator".into(), "workload_identity".into());
+        config.insert("workload_identity_provider".into(), "aws".into());
+        config.insert(
+            "workload_identity_entra_resource".into(),
+            "app://123".into(),
+        );
+        assert_parse_auth_config_error(
+            config,
+            "workload_identity_entra_resource can only be set if workload_identity_provider is Azure",
+        );
     }
 
     #[test]

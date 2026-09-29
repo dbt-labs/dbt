@@ -1,3 +1,4 @@
+use dbt_adapter_core::AdapterType;
 use dbt_proc_macros::Resolvable;
 use dbt_yaml::{DbtSchema, Spanned};
 use indexmap::IndexMap;
@@ -20,6 +21,9 @@ use std::collections::btree_map::Iter;
 // NOTE: No #[skip_serializing_none] - we handle None serialization in serialize_with_mode
 #[derive(Deserialize, Serialize, Debug, Clone, DbtSchema)]
 pub struct ProjectAnalysisConfig {
+    #[serde(rename = "+adapter")]
+    #[schemars(with = "Option<String>")]
+    pub adapter: Option<AdapterType>,
     #[serde(default, rename = "+enabled", deserialize_with = "bool_or_string_bool")]
     pub enabled: Option<bool>,
     #[serde(rename = "+static_analysis")]
@@ -38,6 +42,7 @@ pub struct ProjectAnalysisConfig {
 impl Default for ProjectAnalysisConfig {
     fn default() -> Self {
         Self {
+            adapter: None,
             enabled: Some(true),
             static_analysis: Some(AnalysesConfig::default_static_analysis()),
             meta: None,
@@ -73,6 +78,10 @@ impl TypedRecursiveConfig for ProjectAnalysisConfig {
     Resolvable, DefaultTo, Deserialize, Serialize, Debug, Default, Clone, PartialEq, Eq, DbtSchema,
 )]
 pub struct AnalysesConfig {
+    // Internal placement hint; kept out of serialized config/telemetry output.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "Option<String>")]
+    pub adapter: Option<AdapterType>,
     #[resolved(promote, method = get_enabled_with_default)]
     #[serde(default, deserialize_with = "bool_or_string_bool")]
     pub enabled: Option<bool>,
@@ -90,6 +99,7 @@ pub struct AnalysesConfig {
 impl From<ProjectAnalysisConfig> for AnalysesConfig {
     fn from(config: ProjectAnalysisConfig) -> Self {
         Self {
+            adapter: config.adapter,
             enabled: config.enabled,
             static_analysis: config.static_analysis,
             meta: config.meta,
@@ -112,6 +122,10 @@ impl ResolvableConfig<AnalysesConfig> for AnalysesConfig {
 
     fn get_enabled_with_default(&self) -> bool {
         self.enabled.unwrap_or(true)
+    }
+
+    fn get_enabled(&self) -> Option<bool> {
+        self.enabled
     }
 
     fn disable(&mut self) {

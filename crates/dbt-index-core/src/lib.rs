@@ -28,7 +28,15 @@
 pub mod db;
 pub use db::{DBT_RT_TABLES, DBT_TABLES, write_views_sql};
 
+pub mod view_defs;
+
 pub mod ingest;
+
+pub mod info_schema;
+pub use info_schema::{
+    INFO_SCHEMA_DIR_NAME, INFO_SCHEMA_VERSION, Materializer, STAGING_DIR_NAME, versioned_dir,
+    write_info_schema,
+};
 
 pub mod parquet;
 pub use parquet::{IndexWriter, WriteMode};
@@ -46,7 +54,10 @@ pub mod column_lineage;
 pub mod freshness;
 pub mod provider;
 
-pub use backend::{Backend, BackendError, UnavailableBackend};
+pub use backend::{
+    Backend, BackendError, DuckDbInfoSchemaBackend, RegistrationReport, UnavailableBackend,
+    register_index_views, register_info_schema_views,
+};
 pub use column_impact::{
     ColumnImpactArgs, ColumnImpactNode, ColumnImpactProvider, UnavailableColumnImpact,
 };

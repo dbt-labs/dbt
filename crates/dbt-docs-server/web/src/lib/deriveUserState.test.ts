@@ -3,8 +3,8 @@ import { describe, expect, test } from 'vitest';
 import type { Distribution } from '../shared';
 import { deriveUserState } from './deriveUserState';
 
-const dist = (isFusion: boolean, isLoggedIn: boolean): Distribution => ({
-  isFusion,
+const dist = (isProprietary: boolean, isLoggedIn: boolean): Distribution => ({
+  isProprietary,
   isLoggedIn,
   version: '0.0.0',
 });
@@ -14,7 +14,7 @@ describe('deriveUserState', () => {
     expect(deriveUserState(null)).toBeNull();
   });
 
-  test('maps non-Fusion (Core) to core', () => {
+  test('maps non-dbt-v2 (Core) to core', () => {
     expect(deriveUserState(dist(false, false))).toBe('core');
   });
 
@@ -22,11 +22,11 @@ describe('deriveUserState', () => {
     expect(deriveUserState(dist(false, true))).toBe('core');
   });
 
-  test('maps Fusion + not logged in to proprietary-anon', () => {
+  test('maps dbt v2 + not logged in to proprietary-anon', () => {
     expect(deriveUserState(dist(true, false))).toBe('proprietary-anon');
   });
 
-  test('maps Fusion + logged in to proprietary-logged-in', () => {
+  test('maps dbt v2 + logged in to proprietary-logged-in', () => {
     expect(deriveUserState(dist(true, true))).toBe('proprietary-logged-in');
   });
 });

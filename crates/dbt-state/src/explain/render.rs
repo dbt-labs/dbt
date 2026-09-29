@@ -52,7 +52,9 @@ pub fn render_merged_explain_records(
                 .execution_decision_id
                 .as_deref()
                 .and_then(|id| messages_by_id.get(id).copied())
-                .map(|message| render_service_explain_message(&record.node_unique_id, message))
+                .map(|message| {
+                    render_service_explain_message(&record.node_unique_id, message, options.verbose)
+                })
                 .unwrap_or_else(|| record.render(options.verbose))
         })
         .collect::<Vec<_>>()
@@ -128,20 +130,28 @@ pub fn render_service_explain_messages(messages: &[ExplainMessageEntry]) -> Stri
 
     messages
         .iter()
-        .map(|message| render_service_explain_message(&message.execution_decision_id, message))
+        .map(|message| {
+            render_service_explain_message(&message.execution_decision_id, message, true)
+        })
         .collect::<Vec<_>>()
         .join("\n")
 }
 
-fn render_service_explain_message(label: &str, message: &ExplainMessageEntry) -> String {
+fn render_service_explain_message(
+    label: &str,
+    message: &ExplainMessageEntry,
+    verbose: bool,
+) -> String {
     let mut lines = vec![format!(
         "{} {} - {}",
         submit_sql_result_type_name(message.decision),
         label,
         message.decision_description
     )];
-    for line in &message.explain_lines {
-        render_service_explain_line(line, 1, &mut lines);
+    if verbose {
+        for line in &message.explain_lines {
+            render_service_explain_line(line, 1, &mut lines);
+        }
     }
     lines.join("\n")
 }

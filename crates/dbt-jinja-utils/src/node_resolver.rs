@@ -5,24 +5,25 @@ use std::{
     sync::Arc,
 };
 
-use chrono::Utc;
 use dbt_adapter::relation::{
-    RelationObject, create_relation, create_relation_from_node, create_relation_from_source,
+    RelationObject, canonical_relation_parts, create_relation, create_relation_from_node,
+    create_relation_from_source,
 };
 use dbt_adapter_core::AdapterType;
 use dbt_common::{
     CodeLocationWithFile, ErrorCode, FsError, FsResult, err, fs_err,
+    io_args::resolve_require_ref_searches_node_package_before_root,
     tracing::dbt_emit::{
-        emit_error_log_from_fs_error, emit_warn_log_from_fs_error, emit_warn_log_message,
+        emit_debug_log_message, emit_error_log_from_fs_error, emit_warn_log_from_fs_error,
+        emit_warn_log_message,
     },
-    unexpected_err,
 };
 use dbt_schemas::dbt_types::RelationType;
 use dbt_schemas::{
     filter::RunFilter,
     schemas::{
         DbtFunction, DbtSource, InternalDbtNodeAttributes, IntrospectionKind, Nodes,
-        common::{DbtMaterialization, DbtQuoting, parse_deprecation_date},
+        common::{DbtMaterialization, DbtQuoting, ResolvedQuoting},
         ref_and_source::{DbtRef, DbtSourceWrapper},
         telemetry::NodeType,
     },
@@ -31,6 +32,31 @@ use dbt_schemas::{
 use minijinja::{Value as MinijinjaValue, value::function_object::FunctionObject};
 
 type RefRecord = (String, MinijinjaValue, ModelStatus, Option<MinijinjaValue>);
+
+fn create_ref_relation(
+    node: &dyn InternalDbtNodeAttributes,
+    adapter_type: AdapterType,
+    run_filter: Option<RunFilter>,
+) -> FsResult<Box<dyn dbt_schemas::schemas::relations::base::BaseRelation>> {
+    if node.base().effective_propagation_target == Some(AdapterType::Databricks) {
+        let (database, schema, identifier) = canonical_relation_parts(
+            Some(AdapterType::Databricks),
+            &node.database(),
+            &node.schema(),
+            &node.alias(),
+        );
+        create_relation(
+            node.node_adapter(),
+            database,
+            schema,
+            Some(identifier),
+            Some(RelationType::from(node.materialized())),
+            ResolvedQuoting::falses(),
+        )
+    } else {
+        create_relation_from_node(adapter_type, node, run_filter)
+    }
+}
 
 fn downgraded_node_dependency_warning(
     error: &FsError,
@@ -45,6 +71,36 @@ fn downgraded_node_dependency_warning(
         FsError::new(ErrorCode::NodeNotFoundOrDisabled, error.to_string()).with_location(location),
         has_disabled_or_missing_dependency,
     ))
+}
+
+/// Search order for unqualified package resources.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum PackageSearchOrder {
+    /// Search the package containing the calling node first. Fusion's established
+    /// behavior, and the default when the flag is not set.
+    #[default]
+    NodePackageFirst,
+    /// Search the root project first, as dbt-core does by default.
+    RootFirst,
+}
+
+impl PackageSearchOrder {
+    /// Returns the search order configured by the `require_ref_searches_node_package_before_root`
+    /// behavior flag, honoring the `DBT_REQUIRE_REF_SEARCHES_NODE_PACKAGE_BEFORE_ROOT` environment
+    /// variable ahead of the root project's `flags:` block.
+    pub fn resolve(project_flags: Option<&dbt_yaml::Value>) -> Self {
+        Self::from_node_package_first(resolve_require_ref_searches_node_package_before_root(
+            project_flags,
+        ))
+    }
+
+    fn from_node_package_first(node_package_first: bool) -> Self {
+        if node_package_first {
+            Self::NodePackageFirst
+        } else {
+            Self::RootFirst
+        }
+    }
 }
 
 /// A wrapper around refs and sources with methods to get and insert refs and sources.
@@ -72,6 +128,8 @@ pub struct NodeResolver {
     pub renaming: BTreeMap<String, (String, String, String)>,
     /// Whether this is a compile or test command
     pub compile_or_test: bool,
+    /// Search order for unqualified `ref()`, `source()`, and `function()` calls.
+    pub package_search_order: PackageSearchOrder,
     /// Per-node introspection kind for O(1) lookup by unique_id.
     /// Populated during `set_defer_context`.
     pub node_introspections: HashMap<String, IntrospectionKind>,
@@ -93,6 +151,7 @@ impl NodeResolver {
         run_filter: RunFilter,
         renaming: BTreeMap<String, (String, String, String)>,
         compile_or_test: bool,
+        package_search_order: PackageSearchOrder,
     ) -> FsResult<Self> {
         let mut node_resolver = NodeResolver {
             root_package_name,
@@ -100,10 +159,25 @@ impl NodeResolver {
             run_filter,
             renaming,
             compile_or_test,
+            package_search_order,
             ..Default::default()
         };
         for (_, node) in nodes.iter() {
+            // A node's relation is rendered with *its own* adapter, not the
+            // target's default. `ref('x')` returns x's relation, and x lives in
+            // x's adapter's warehouse, so it must render with x's rules however it
+            // is referenced. Both inputs are per-node: the node carries its own
+            // quoting (resolved against its `+adapter` during resolve) and the
+            // adapter type decides `include_policy` -- DuckDB suppresses the
+            // database component for `main`/`memory` while others do not.
+            //
+            // Each relation stays cached one-per-node; only the adapter type used
+            // to build it changes.
+            let node_adapter_type = node.node_adapter();
+
             if let Some(source) = node.as_any().downcast_ref::<DbtSource>() {
+                // Sources have no `+adapter`: they are external data, so they take
+                // the target's default.
                 node_resolver.insert_source(
                     &node.common().package_name,
                     source,
@@ -111,17 +185,42 @@ impl NodeResolver {
                     ModelStatus::Enabled,
                 )?;
             } else if let Some(function) = node.as_any().downcast_ref::<DbtFunction>() {
-                node_resolver.insert_function(function, adapter_type, ModelStatus::Enabled)?;
+                node_resolver.insert_function(function, node_adapter_type, ModelStatus::Enabled)?;
             } else {
                 match node.resource_type() {
-                    NodeType::Model | NodeType::Snapshot | NodeType::Seed => {
-                        node_resolver.insert_ref(node, adapter_type, ModelStatus::Enabled, false)?
-                    }
+                    NodeType::Model | NodeType::Snapshot | NodeType::Seed => node_resolver
+                        .insert_ref(node, node_adapter_type, ModelStatus::Enabled, false)?,
                     _ => (),
                 }
             }
         }
         Ok(node_resolver)
+    }
+
+    fn search_packages(
+        &self,
+        maybe_target_package: Option<&str>,
+        maybe_node_package: Option<&str>,
+    ) -> Vec<Option<String>> {
+        match (maybe_target_package, maybe_node_package) {
+            (Some(target_package), _) => vec![Some(target_package.to_string())],
+            (None, None) => vec![None],
+            (None, Some(node_package)) if node_package == self.root_package_name => {
+                vec![Some(self.root_package_name.clone()), None]
+            }
+            (None, Some(node_package)) => match self.package_search_order {
+                PackageSearchOrder::NodePackageFirst => vec![
+                    Some(node_package.to_string()),
+                    Some(self.root_package_name.clone()),
+                    None,
+                ],
+                PackageSearchOrder::RootFirst => vec![
+                    Some(self.root_package_name.clone()),
+                    Some(node_package.to_string()),
+                    None,
+                ],
+            },
+        }
     }
 
     /// Merge another NodeResolver into this one, avoiding duplicates
@@ -283,7 +382,7 @@ impl NodeResolverTracker for NodeResolver {
         };
 
         let relation = RelationObject::new_with_filter(
-            create_relation_from_node(adapter_type, node, Some(self.run_filter.clone()))?.into(),
+            create_ref_relation(node, adapter_type, Some(self.run_filter.clone()))?.into(),
             self.run_filter.clone(),
             node.event_time(),
         )
@@ -509,22 +608,10 @@ impl NodeResolverTracker for NodeResolver {
     ) -> FsResult<RefRecord> {
         // Create a list of packages to search, where None means to
         // search non-package limited names
-        let root_package = Some(self.root_package_name.clone());
-        let search_packages = match (maybe_package_name, maybe_node_package_name) {
-            // If maybe_package_name is specified, only search that package
-            (Some(_), _) => vec![maybe_package_name],
-            // If maybe_node_package_name is specified, and this is the root package,
-            // search this package and the global refs
-            (None, Some(node_pkg)) if *node_pkg == self.root_package_name => {
-                vec![&root_package, &None]
-            }
-            // If maybe_node_package_name is specified, and this is not the root package,
-            // search this package, the root package, and then finally global refs
-            (None, Some(_)) => vec![maybe_node_package_name, &root_package, &None],
-            // If maybe_package_name and maybe_node_package_name are not specified,
-            // search only the global refs
-            (None, None) => vec![&None],
-        };
+        let search_packages = self.search_packages(
+            maybe_package_name.as_deref(),
+            maybe_node_package_name.as_deref(),
+        );
 
         // Construct possibly versioned ref_name
         let ref_name = format!(
@@ -600,89 +687,77 @@ impl NodeResolverTracker for NodeResolver {
         }
     }
 
-    /// Lookup a source by package name, source name, and table name
+    /// Lookup a source by the calling node's package name, source name, and table name
     fn lookup_source(
         &self,
-        package_name: &str,
+        node_package_name: &str,
         source_name: &str,
         table_name: &str,
     ) -> FsResult<(String, MinijinjaValue, ModelStatus)> {
-        // This might not be correct if there is overlap in source names amongst projects
         let source_table_name = format!("{source_name}.{table_name}");
-        let project_source_name = format!("{package_name}.{source_table_name}");
-        if let Some(res) = self.sources.get(&project_source_name) {
-            if res.len() != 1 {
-                return unexpected_err!("There should only be one entry for {project_source_name}");
-            }
-            let (_, _, status) = res[0].clone();
-            if status == ModelStatus::Disabled {
-                err!(
-                    ErrorCode::DisabledDependency,
-                    "Attempted to use disabled source '{}'",
-                    project_source_name
-                )
+        let mut disabled_source_name = None;
+        let mut search_source_names = Vec::new();
+        for maybe_package in self.search_packages(None, Some(node_package_name)) {
+            let search_source_name = if let Some(package_name) = maybe_package {
+                format!("{package_name}.{source_table_name}")
             } else {
-                Ok(res[0].clone())
+                source_table_name.clone()
+            };
+            search_source_names.push(search_source_name.clone());
+
+            if let Some(res) = self.sources.get(&search_source_name) {
+                let (enabled_sources, disabled_sources): (Vec<_>, Vec<_>) = res
+                    .iter()
+                    .partition(|(_, _, status)| *status != ModelStatus::Disabled);
+
+                if !disabled_sources.is_empty() && disabled_source_name.is_none() {
+                    disabled_source_name = Some(search_source_name.clone());
+                }
+
+                match enabled_sources.len() {
+                    1 => return Ok(enabled_sources[0].clone()),
+                    n if n > 1 => {
+                        return err!(
+                            ErrorCode::InvalidConfig,
+                            "Found ambiguous source('{}') pointing to multiple nodes: [{}]",
+                            source_table_name,
+                            res.iter()
+                                .map(|(r, _, _)| format!("'{r}'"))
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        );
+                    }
+                    _ => {}
+                };
             }
-        } else if let Some(res) = self.sources.get(&source_table_name) {
-            let enabled_sources: Vec<_> = res
-                .iter()
-                .filter(|(_, _, status)| *status != ModelStatus::Disabled)
-                .collect();
-            if enabled_sources.len() == 1 {
-                Ok(enabled_sources[0].clone())
-            } else if enabled_sources.is_empty() {
-                err!(
-                    ErrorCode::DisabledDependency,
-                    "Attempted to use disabled source '{}'",
-                    source_table_name
-                )
-            } else {
-                err!(
-                    ErrorCode::InvalidConfig,
-                    "Found ambiguous source('{}') pointing to multiple nodes: [{}]",
-                    source_table_name,
-                    res.iter()
-                        .map(|(r, _, _)| format!("'{r}'"))
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                )
-            }
-        } else {
-            err!(
+        }
+
+        match disabled_source_name {
+            Some(disabled_source_name) => err!(
+                ErrorCode::DisabledDependency,
+                "Attempted to use disabled source '{}'",
+                disabled_source_name
+            ),
+            None => err!(
                 ErrorCode::DependencyNotFound,
                 "Source '{}' not found in project. Searched for '{}'",
                 source_table_name,
-                table_name
-            )
+                search_source_names.join(", ")
+            ),
         }
     }
 
     /// Lookup a function by package name and function name
     fn lookup_function(
         &self,
-        maybe_package_name: &Option<String>,
+        target_package: &Option<String>,
         function_name: &str,
-        maybe_node_package_name: &Option<String>,
+        node_package: &Option<String>,
     ) -> FsResult<(String, MinijinjaValue, ModelStatus)> {
         // Create a list of packages to search, where None means to
         // search non-package limited names
-        let root_package = Some(self.root_package_name.clone());
-        let search_packages = match (maybe_package_name, maybe_node_package_name) {
-            // If maybe_package_name is specified, only search that package
-            (Some(_), _) => vec![maybe_package_name],
-            // If maybe_node_package_name is specified, and this is the root package,
-            // search this package and the global functions
-            (None, Some(node_pkg)) if *node_pkg == self.root_package_name => {
-                vec![&root_package, &None]
-            }
-            // If maybe_node_package_name is specified, and this is not the root package,
-            // search this package, the root package, and then finally global functions
-            (None, Some(_)) => vec![maybe_node_package_name, &root_package, &None],
-            // If maybe_package_name and maybe_node_package_name are not specified,
-            // search only the global functions
-            (None, None) => vec![&None],
-        };
+        let search_packages =
+            self.search_packages(target_package.as_deref(), node_package.as_deref());
 
         let mut enabled_function: Option<(String, MinijinjaValue, ModelStatus)> = None;
         let mut disabled_function: Option<(String, MinijinjaValue, ModelStatus)> = None;
@@ -789,7 +864,7 @@ impl NodeResolverTracker for NodeResolver {
         };
 
         let deferred_relation = RelationObject::new_with_filter(
-            create_relation_from_node(adapter_type, node, Some(self.run_filter.clone()))?.into(),
+            create_ref_relation(node, adapter_type, Some(self.run_filter.clone()))?.into(),
             self.run_filter.clone(),
             node.event_time(),
         )
@@ -961,14 +1036,17 @@ pub fn resolve_dependencies(
                     }
                 }
                 Err(e) => {
-                    // For tests and exposures, warn on missing or disabled dependencies instead of erroring
-                    if (is_test || is_exposure)
+                    // A test whose ref target is merely disabled is excluded silently:
+                    // dbt-core reports this at debug level only.
+                    if is_test && e.code == ErrorCode::DisabledDependency {
+                        has_disabled_or_missing_dependency = true;
+                        emit_debug_log_message(format!("{node_unique_id} ({location}): {e}"));
+                    } else if (is_test || is_exposure)
                         && let Some((warning, disable)) =
                             downgraded_node_dependency_warning(&e, location.clone())
                     {
-                        // Whether the dep is disabled or simply missing, the test must be
-                        // excluded — dbt-core issues NodeNotFoundOrDisabled in both cases and
-                        // never executes the test.
+                        // A missing target stays a user-visible warning, and the node is
+                        // still excluded.
                         has_disabled_or_missing_dependency = disable;
                         emit_warn_log_from_fs_error(warning);
                     } else {
@@ -1011,9 +1089,8 @@ pub fn resolve_dependencies(
                         && let Some((warning, disable)) =
                             downgraded_node_dependency_warning(&e, location.clone())
                     {
-                        // Whether the dep is disabled or simply missing, the test must be
-                        // excluded — dbt-core issues NodeNotFoundOrDisabled in both cases and
-                        // never executes the test.
+                        // Both cases exclude the test. Unlike its ref path, dbt-core warns for
+                        // a disabled source too, so this stays user-visible.
                         has_disabled_or_missing_dependency = disable;
                         emit_warn_log_from_fs_error(warning);
                     } else {
@@ -1042,7 +1119,7 @@ pub fn resolve_dependencies(
                 CodeLocationWithFile::default()
             };
 
-            match node_resolver.lookup_function(node_package_name_value, name, package) {
+            match node_resolver.lookup_function(package, name, node_package_name_value) {
                 Ok((dependency_id, _, _)) => {
                     if !node_base.depends_on.nodes.contains(&dependency_id) {
                         node_base.depends_on.nodes.push(dependency_id.clone());
@@ -1077,13 +1154,18 @@ pub fn resolve_dependencies(
         }
     }
 
-    // Second pass: move disabled tests and exposures to disabled_nodes
+    // Second pass: dbt-core disables such a test in place, so it stays in `nodes` with
+    // `enabled = false`. Mirrors the generic-test path in resolve_data_tests.rs.
     for test_id in &tests_to_disable {
-        if let Some(node) = nodes.tests.remove(test_id) {
-            disabled_nodes.tests.insert(test_id.clone(), node);
+        if let Some(node) = nodes.tests.get_mut(test_id) {
+            let test = Arc::make_mut(node);
+            test.__base_attr__.enabled = false;
+            test.deprecated_config.enabled = Some(false);
         }
     }
 
+    // Exposures still change buckets: dbt-core raises for them, and `retain_schedulable` omits
+    // NodeType::Exposure, so one disabled in place would still be selected and scheduled.
     for exposure_id in &exposures_to_disable {
         if let Some(node) = nodes.exposures.remove(exposure_id) {
             disabled_nodes.exposures.insert(exposure_id.clone(), node);
@@ -1212,14 +1294,14 @@ pub fn check_for_model_deprecations(nodes: &Nodes) {
     let mut deprecated_models: BTreeMap<String, DeprecatedModelInfo> = BTreeMap::new();
 
     for (uid, model) in &nodes.models {
-        if let Some(dep_date_str) = &model.__model_attr__.deprecation_date {
-            let is_past = parse_deprecation_date(dep_date_str)
-                .is_some_and(|deprecation_date| deprecation_date < Utc::now());
+        if let Some(ts) = &model.__model_attr__.deprecation_date {
+            // Instant comparison; a missing time/zone defaults to midnight UTC.
+            let is_past = *ts < dbt_yaml::Timestamp::utc_now();
             deprecated_models.insert(
                 uid.clone(),
                 DeprecatedModelInfo {
                     is_past,
-                    deprecation_date: dep_date_str.clone(),
+                    deprecation_date: ts.with_defaults().to_string(),
                     name: model.__common_attr__.name.clone(),
                     version: model.__model_attr__.version.as_ref().map(|v| v.to_string()),
                     latest_version: model
@@ -1337,10 +1419,14 @@ pub fn create_function_object_from_node(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use dbt_schemas::schemas::common::NodeDependsOn;
+    use dbt_schemas::schemas::common::{DbtQuoting, NodeDependsOn};
+    use dbt_schemas::schemas::manifest::{
+        DbtManifest, DbtNode, ManifestMetadata, ManifestModel, nodes_from_dbt_manifest,
+    };
     use dbt_schemas::schemas::nodes::{
         CommonAttributes, DbtModel, DbtModelAttr, NodeBaseAttributes,
     };
+    use dbt_schemas::state::Operations;
     use std::sync::Arc;
 
     /// Helper to create a minimal DbtModel with the given name, unique_id, and optional deprecation_date.
@@ -1366,11 +1452,399 @@ mod tests {
                 ..Default::default()
             },
             __model_attr__: DbtModelAttr {
-                deprecation_date: deprecation_date.map(|s| s.to_string()),
+                deprecation_date: deprecation_date.and_then(dbt_yaml::Timestamp::parse),
                 ..Default::default()
             },
             ..Default::default()
         })
+    }
+
+    const PACKAGE_SOURCE_ID: &str = "source.source_consumer.landing.source_feed";
+    const ROOT_SOURCE_ID: &str = "source.root_project.landing.source_feed";
+    const PACKAGE_FUNCTION_ID: &str = "function.source_consumer.shared";
+    const ROOT_FUNCTION_ID: &str = "function.root_project.shared";
+
+    fn insert_test_source(
+        node_resolver: &mut NodeResolver,
+        package_name: &str,
+        unique_id: &str,
+        status: ModelStatus,
+    ) {
+        for key in [
+            format!("{package_name}.landing.source_feed"),
+            "landing.source_feed".to_string(),
+        ] {
+            node_resolver.sources.entry(key).or_default().push((
+                unique_id.to_string(),
+                MinijinjaValue::UNDEFINED,
+                status,
+            ));
+        }
+    }
+
+    fn insert_test_function(node_resolver: &mut NodeResolver, package_name: &str, unique_id: &str) {
+        for key in [format!("{package_name}.shared"), "shared".to_string()] {
+            node_resolver.functions.entry(key).or_default().push((
+                unique_id.to_string(),
+                MinijinjaValue::UNDEFINED,
+                ModelStatus::Enabled,
+            ));
+        }
+    }
+
+    fn resolver_with_duplicate_source(package_search_order: PackageSearchOrder) -> NodeResolver {
+        let mut node_resolver = NodeResolver {
+            root_package_name: "root_project".to_string(),
+            package_search_order,
+            ..Default::default()
+        };
+        for (package_name, unique_id) in [
+            ("source_consumer", PACKAGE_SOURCE_ID),
+            ("root_project", ROOT_SOURCE_ID),
+        ] {
+            insert_test_source(
+                &mut node_resolver,
+                package_name,
+                unique_id,
+                ModelStatus::Enabled,
+            );
+        }
+        node_resolver
+    }
+
+    #[test]
+    fn databricks_relation_policy_tests() {
+        let mut model = make_model(
+            "model.root_project.orders",
+            "orders",
+            "root_project",
+            None,
+            vec![],
+        );
+        let base = &mut Arc::make_mut(&mut model).__base_attr__;
+        base.adapter = AdapterType::LakeCompute;
+        base.database = "Cat".to_string();
+        base.schema = "Sch".to_string();
+        base.alias = "Tbl".to_string();
+        base.effective_propagation_target = Some(AdapterType::Databricks);
+
+        let mut resolver = NodeResolver::default();
+        resolver
+            .insert_ref(
+                model.as_ref(),
+                AdapterType::LakeCompute,
+                ModelStatus::Enabled,
+                false,
+            )
+            .unwrap();
+        let (relation, deferred) = resolver
+            .lookup_self_relation("model.root_project.orders", "root_project", "orders", &None)
+            .unwrap();
+        assert_eq!(relation.to_string(), "cat.sch.tbl");
+        assert_eq!(
+            relation
+                .downcast_object_ref::<RelationObject>()
+                .expect("ref should be a relation object")
+                .inner()
+                .adapter_type(),
+            AdapterType::LakeCompute
+        );
+        assert!(
+            relation
+                .downcast_object_ref::<RelationObject>()
+                .expect("ref should be a relation object")
+                .inner()
+                .is_table()
+        );
+        assert!(deferred.is_none());
+
+        let mut snowflake_resolver = NodeResolver::default();
+        snowflake_resolver
+            .insert_ref(
+                model.as_ref(),
+                AdapterType::Snowflake,
+                ModelStatus::Enabled,
+                false,
+            )
+            .unwrap();
+        let (relation, deferred) = snowflake_resolver
+            .lookup_self_relation("model.root_project.orders", "root_project", "orders", &None)
+            .unwrap();
+        assert_eq!(
+            relation
+                .downcast_object_ref::<RelationObject>()
+                .expect("ref should be a relation object")
+                .inner()
+                .get_canonical_fqn()
+                .unwrap()
+                .to_string(),
+            "cat.sch.tbl"
+        );
+        assert!(deferred.is_none());
+    }
+
+    #[test]
+    fn deferred_manifest_databricks_ref_uses_lake_compute_canonical_namespace() {
+        let mut manifest = DbtManifest {
+            metadata: ManifestMetadata {
+                adapter_type: "snowflake".to_string(),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let mut manifest_model = ManifestModel::default();
+        manifest_model.__common_attr__.unique_id = "model.root_project.orders".to_string();
+        manifest_model.__common_attr__.name = "orders".to_string();
+        manifest_model.__common_attr__.package_name = "root_project".to_string();
+        manifest_model.__common_attr__.database = "Cat".to_string();
+        manifest_model.__common_attr__.schema = "Sch".to_string();
+        manifest_model.__base_attr__.alias = "Tbl".to_string();
+        manifest_model.__base_attr__.canonical_relation_adapter = Some(AdapterType::Databricks);
+
+        manifest.nodes = [(
+            "model.root_project.orders".to_string(),
+            DbtNode::Model(manifest_model),
+        )]
+        .into_iter()
+        .collect();
+        let model = nodes_from_dbt_manifest(
+            manifest,
+            DbtQuoting {
+                database: Some(false),
+                identifier: Some(false),
+                schema: Some(false),
+                snowflake_ignore_case: Some(false),
+            },
+        )
+        .models
+        .into_iter()
+        .next()
+        .map(|(_, model)| model)
+        .expect("manifest model should be rehydrated");
+        assert_eq!(model.node_adapter(), AdapterType::LakeCompute);
+
+        let mut resolver = NodeResolver::default();
+        resolver
+            .insert_ref(
+                model.as_ref(),
+                AdapterType::Snowflake,
+                ModelStatus::Enabled,
+                false,
+            )
+            .unwrap();
+        resolver
+            .update_ref_with_deferral(model.as_ref(), AdapterType::Snowflake, true)
+            .unwrap();
+
+        let (relation, deferred) = resolver
+            .lookup_self_relation("model.root_project.orders", "root_project", "orders", &None)
+            .unwrap();
+        let deferred = deferred.expect("deferred ref should be populated");
+        for value in [relation, deferred] {
+            assert_eq!(value.to_string(), "cat.sch.tbl");
+            let relation = value
+                .downcast_object_ref::<RelationObject>()
+                .expect("ref should be a relation object")
+                .inner();
+            assert_eq!(
+                relation.get_canonical_fqn().unwrap().to_string(),
+                "cat.sch.tbl"
+            );
+        }
+    }
+
+    #[test]
+    fn lookup_source_honors_package_search_order() {
+        for (package_search_order, expected) in [
+            (PackageSearchOrder::RootFirst, ROOT_SOURCE_ID),
+            (PackageSearchOrder::NodePackageFirst, PACKAGE_SOURCE_ID),
+        ] {
+            let node_resolver = resolver_with_duplicate_source(package_search_order);
+            let (unique_id, _, _) = node_resolver
+                .lookup_source("source_consumer", "landing", "source_feed")
+                .expect("source should resolve");
+            assert_eq!(unique_id, expected, "order: {package_search_order:?}");
+        }
+    }
+
+    #[test]
+    fn lookup_source_falls_through_disabled_root_definition() {
+        let mut node_resolver = NodeResolver {
+            root_package_name: "root_project".to_string(),
+            package_search_order: PackageSearchOrder::RootFirst,
+            ..Default::default()
+        };
+        insert_test_source(
+            &mut node_resolver,
+            "source_consumer",
+            PACKAGE_SOURCE_ID,
+            ModelStatus::Enabled,
+        );
+        insert_test_source(
+            &mut node_resolver,
+            "root_project",
+            ROOT_SOURCE_ID,
+            ModelStatus::Disabled,
+        );
+
+        let (unique_id, _, _) = node_resolver
+            .lookup_source("source_consumer", "landing", "source_feed")
+            .expect("the package's enabled source should still resolve");
+
+        assert_eq!(unique_id, PACKAGE_SOURCE_ID);
+    }
+
+    #[test]
+    fn lookup_ref_honors_package_search_order() {
+        let package_ref_id = "model.source_consumer.shared";
+        let root_ref_id = "model.root_project.shared";
+
+        let resolver = |package_search_order| {
+            let mut node_resolver = NodeResolver {
+                root_package_name: "root_project".to_string(),
+                package_search_order,
+                ..Default::default()
+            };
+            for (package_name, unique_id) in [
+                ("source_consumer", package_ref_id),
+                ("root_project", root_ref_id),
+            ] {
+                for key in [format!("{package_name}.shared"), "shared".to_string()] {
+                    node_resolver.refs.entry(key).or_default().push((
+                        unique_id.to_string(),
+                        MinijinjaValue::UNDEFINED,
+                        ModelStatus::Enabled,
+                        None,
+                    ));
+                }
+            }
+            node_resolver
+        };
+
+        let lookup = |node_resolver: &NodeResolver| {
+            node_resolver
+                .lookup_ref(&None, "shared", &None, &Some("source_consumer".to_string()))
+                .expect("ref should resolve")
+                .0
+        };
+
+        assert_eq!(
+            lookup(&resolver(PackageSearchOrder::NodePackageFirst)),
+            package_ref_id
+        );
+        assert_eq!(
+            lookup(&resolver(PackageSearchOrder::RootFirst)),
+            root_ref_id
+        );
+    }
+
+    #[test]
+    fn function_dependency_uses_runtime_search_order() {
+        let mut node_resolver = NodeResolver {
+            root_package_name: "root_project".to_string(),
+            package_search_order: PackageSearchOrder::RootFirst,
+            ..Default::default()
+        };
+        insert_test_function(&mut node_resolver, "source_consumer", PACKAGE_FUNCTION_ID);
+        insert_test_function(&mut node_resolver, "root_project", ROOT_FUNCTION_ID);
+
+        let mut model = make_model(
+            "model.source_consumer.consumer",
+            "consumer",
+            "source_consumer",
+            None,
+            vec![],
+        );
+        let base = &mut Arc::make_mut(&mut model).__base_attr__;
+        base.enabled = true;
+        base.functions = vec![DbtRef {
+            name: "shared".to_string(),
+            package: None,
+            version: None,
+            location: None,
+        }];
+
+        let model_id = model.__common_attr__.unique_id.clone();
+        let mut nodes = Nodes::default();
+        nodes.models.insert(model_id.clone(), model);
+        let mut disabled_nodes = Nodes::default();
+        let mut operations = Operations::default();
+
+        let errors = resolve_dependencies(
+            &mut nodes,
+            &mut disabled_nodes,
+            &mut operations,
+            &node_resolver,
+        );
+        assert!(errors.is_empty());
+
+        let runtime_id = node_resolver
+            .lookup_function(&None, "shared", &Some("source_consumer".to_string()))
+            .expect("function should resolve")
+            .0;
+        assert_eq!(runtime_id, ROOT_FUNCTION_ID);
+        assert_eq!(
+            nodes.models[&model_id].__base_attr__.depends_on.nodes,
+            vec![runtime_id]
+        );
+    }
+
+    #[test]
+    fn search_packages_mirrors_dbt_core_candidate_order() {
+        let mut node_resolver = NodeResolver {
+            root_package_name: "root_project".to_string(),
+            ..Default::default()
+        };
+
+        assert_eq!(
+            node_resolver.search_packages(Some("other_package"), Some("source_consumer")),
+            vec![Some("other_package".to_string())]
+        );
+        assert_eq!(node_resolver.search_packages(None, None), vec![None]);
+        assert_eq!(
+            node_resolver.search_packages(None, Some("root_project")),
+            vec![Some("root_project".to_string()), None]
+        );
+        // Default: the calling node's own package first
+        assert_eq!(
+            node_resolver.search_packages(None, Some("source_consumer")),
+            vec![
+                Some("source_consumer".to_string()),
+                Some("root_project".to_string()),
+                None
+            ]
+        );
+
+        // dbt-core's order, once the flag is turned off
+        node_resolver.package_search_order = PackageSearchOrder::RootFirst;
+        assert_eq!(
+            node_resolver.search_packages(None, Some("source_consumer")),
+            vec![
+                Some("root_project".to_string()),
+                Some("source_consumer".to_string()),
+                None
+            ]
+        );
+    }
+
+    // Flag/env precedence itself is covered by
+    // `resolve_require_ref_searches_node_package_before_root` in dbt-common's io_args,
+    // which has an injectable env lookup. Here we only pin the mapping onto the enum,
+    // and that the `Default` stays dbt-core's order.
+    #[test]
+    fn package_search_order_maps_resolved_flag() {
+        assert_eq!(
+            PackageSearchOrder::from_node_package_first(true),
+            PackageSearchOrder::NodePackageFirst
+        );
+        assert_eq!(
+            PackageSearchOrder::from_node_package_first(false),
+            PackageSearchOrder::RootFirst
+        );
+        assert_eq!(
+            PackageSearchOrder::default(),
+            PackageSearchOrder::NodePackageFirst
+        );
     }
 
     #[test]

@@ -89,6 +89,11 @@ export function projectKey(sourceId: string) {
   return [sourceId, 'project'] as const;
 }
 
+/** react-query key for the project's overview block. Prefixed by `sourceId`. */
+export function overviewKey(sourceId: string) {
+  return [sourceId, 'overview'] as const;
+}
+
 /** react-query key for the project's file list. Prefixed by `sourceId`. */
 export function filesKey(sourceId: string) {
   return [sourceId, 'files'] as const;

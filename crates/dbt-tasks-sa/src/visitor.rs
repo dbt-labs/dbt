@@ -85,14 +85,10 @@ impl SkipSet {
         task_node_idx: NodeIndex,
         dependents: &[HashSet<NodeIndex>],
         schedule: &DiGraph<Arc<dyn Task>, ()>,
-        infer_schemas: bool,
     ) -> SkippedNodes {
         let task = schedule
             .node_weight(task_node_idx)
             .expect("node do not exist");
-        if infer_schemas && task.task_type() == "analyze" {
-            return Vec::new();
-        }
         let work_node_id = task.work_node_id().to_string();
         let work_nodes = task.dbt_nodes();
 
@@ -230,7 +226,6 @@ impl SkipSet {
         schedule: &DiGraph<Arc<dyn Task>, ()>,
         fail_fast_flag: bool,
         reuse_downstream_tests: bool,
-        infer_schemas: bool,
     ) -> (SkippedNodes, SkippedNodes) {
         // `on_error: continue` — skip failure propagation so downstreams
         // keep running. Handles both `Ok(Errored)` (normal run failure) and
@@ -242,7 +237,7 @@ impl SkipSet {
         match result {
             Ok(node_status) => match node_status {
                 NodeStatus::Errored => (
-                    self.propagate_failure(task_idx, dependents, schedule, infer_schemas),
+                    self.propagate_failure(task_idx, dependents, schedule),
                     Vec::new(),
                 ),
                 NodeStatus::ReusedNoChanges(_)
@@ -271,7 +266,7 @@ impl SkipSet {
                 }
             },
             Err(_) => (
-                self.propagate_failure(task_idx, dependents, schedule, infer_schemas),
+                self.propagate_failure(task_idx, dependents, schedule),
                 Vec::new(),
             ),
         }
@@ -515,11 +510,7 @@ impl VisitStrategy {
                 // Note: this send may fail if the main loop gets terminated
                 // by should_cancel_compilation, in which case we simply
                 // ignore the error
-                if matches!(self, VisitStrategy::Parallel) {
-                    node.run_task_with_backpressure(&mut ctx).await
-                } else {
-                    node.run_task(&mut ctx).await
-                }
+                node.run_task(&mut ctx).await
             }
             // Instrument the task with the span and assign parent
             .instrument(task_span.clone()),
@@ -535,12 +526,6 @@ async fn visit(
     strategy: VisitStrategy,
     token: &CancellationToken,
 ) -> FsResult<()> {
-    // Drain connection on this thread left by inline metadata or hook work before this phase.
-    // TODO: This is just a stopgap to reduce the number of unrecycled connections.
-    // This call should be removed and instead all upstream connection bearing work should
-    // explictly clean up after itself.
-    dbt_adapter::connection::recycle_thread_local_connection();
-
     let mut slot_pool = WorkerSlotPool::new();
     // Work items yet to be started:
     let mut pending = strategy.new_pending_nodes(schedule)?;
@@ -719,7 +704,6 @@ async fn visit(
                 schedule,
                 ctx.inner.arg.fail_fast_flag,
                 should_reuse_downstream_tests(ctx),
-                ctx.inner.arg.infer_schemas,
             );
             if let Some(node) = maybe_node {
                 report_skipped_node_evaluations(ctx, node.as_ref(), &failed_nodes);
@@ -938,7 +922,6 @@ mod tests {
             &schedule,
             false,
             false,
-            false,
         );
 
         assert!(reused_nodes.is_empty());
@@ -959,7 +942,6 @@ mod tests {
             &schedule,
             false,
             true,
-            false,
         );
 
         assert_eq!(reused_nodes.len(), 1);

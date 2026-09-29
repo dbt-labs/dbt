@@ -76,11 +76,27 @@ pub(crate) mod diff {
         }
     }
 
+    /// Compare an optional string against its readback under a caller-supplied equality, for
+    /// components whose value survives Snowflake's normalization only up to that equality.
+    pub(crate) fn optional_by(
+        desired: &Option<String>,
+        current: &Option<String>,
+        eq: impl Fn(&str, &str) -> bool,
+    ) -> Option<Option<String>> {
+        let equal = match (desired, current) {
+            (Some(desired), Some(current)) => eq(desired, current),
+            (None, None) => true,
+            _ => false,
+        };
+        if equal { None } else { Some(desired.clone()) }
+    }
+
     /// The resulting diff contains only the keys:
     /// 1. that are present in the desired state but not the current state; or
     /// 2. whose value in the desired state does not match the current state.
     /// 3. whose value is not present in the desired state but it is in current state,
     ///    (new state assumes Default).
+    #[allow(dead_code)]
     pub(crate) fn changed_keys<K, V>(
         desired_state: &IndexMap<K, V>,
         current_state: &IndexMap<K, V>,
@@ -233,12 +249,14 @@ impl ComponentConfigChange {
 /// A function that evaluates a set of components that have been changed and returns whether or not
 /// those will require a full refresh
 pub(crate) type RequiresFullRefreshFn = fn(&IndexMap<&'static str, ComponentConfigChange>) -> bool;
+pub(crate) type CompleteChangesetKeyFn = fn(&'static str) -> Option<&'static str>;
 
 #[derive(Debug)]
 pub struct RelationConfig {
     adapter_type: AdapterType,
     components: IndexMap<&'static str, Box<dyn ComponentConfig>>,
     requires_full_refresh_fn: RequiresFullRefreshFn,
+    complete_changeset_key_fn: Option<CompleteChangesetKeyFn>,
 }
 
 impl RelationConfig {
@@ -254,7 +272,16 @@ impl RelationConfig {
                 .map(|cfg| (cfg.type_name(), cfg))
                 .collect(),
             requires_full_refresh_fn,
+            complete_changeset_key_fn: None,
         }
+    }
+
+    fn with_complete_changeset(
+        mut self,
+        complete_changeset_key_fn: Option<CompleteChangesetKeyFn>,
+    ) -> Self {
+        self.complete_changeset_key_fn = complete_changeset_key_fn;
+        self
     }
 
     pub(crate) fn adapter_type(&self) -> AdapterType {
@@ -276,6 +303,53 @@ impl RelationConfig {
             .map(|inner| inner.as_ref())
     }
 
+    fn complete_changeset(
+        &self,
+        mut changes: IndexMap<&'static str, ComponentConfigChange>,
+    ) -> IndexMap<&'static str, ComponentConfigChange> {
+        let Some(changeset_key) = self.complete_changeset_key_fn else {
+            return changes;
+        };
+        if changes.is_empty() {
+            return changes;
+        }
+
+        let mut complete = IndexMap::new();
+        for (type_name, desired_component) in &self.components {
+            let Some(key) = changeset_key(type_name) else {
+                continue;
+            };
+            let change = changes.shift_remove(type_name).unwrap_or_else(|| {
+                ComponentConfigChange::Some(
+                    desired_component
+                        .diff_from(None)
+                        .expect("a desired component with no current state must produce a change"),
+                )
+            });
+            complete.insert(key, change);
+        }
+        complete.extend(changes);
+        complete
+    }
+
+    fn sparse_diff(
+        &self,
+        current_state: &RelationConfig,
+    ) -> IndexMap<&'static str, ComponentConfigChange> {
+        let changed = self.components.iter().filter_map(|(type_name, desired)| {
+            desired
+                .diff_from(current_state.get(type_name))
+                .map(|diff| (*type_name, ComponentConfigChange::Some(diff)))
+        });
+        let dropped = current_state
+            .components
+            .keys()
+            .filter(|type_name| !self.components.contains_key(*type_name))
+            .map(|type_name| (*type_name, ComponentConfigChange::Drop));
+
+        changed.chain(dropped).collect()
+    }
+
     /// Get the diff that takes the current state to the desired state
     pub fn diff(
         desired_state: &RelationConfig,
@@ -283,27 +357,16 @@ impl RelationConfig {
     ) -> RelationComponentConfigChangeSet {
         debug_assert!(desired_state.adapter_type == current_state.adapter_type);
 
-        let mut diffs = IndexMap::new();
+        let diffs = desired_state.sparse_diff(current_state);
 
-        for (type_name, desired_component) in &desired_state.components {
-            let current_component = current_state.get(type_name);
+        let requires_full_refresh = (desired_state.requires_full_refresh_fn)(&diffs);
 
-            if let Some(diff) = desired_component.diff_from(current_component) {
-                let change = ComponentConfigChange::Some(diff);
-                diffs.insert(*type_name, change);
-            }
-        }
+        let diffs = desired_state.complete_changeset(diffs);
 
-        for type_name in current_state.components.keys() {
-            if desired_state.get(type_name).is_none() {
-                diffs.insert(*type_name, ComponentConfigChange::Drop);
-            }
-        }
-
-        RelationComponentConfigChangeSet::new(
+        RelationComponentConfigChangeSet::from_changes(
             desired_state.adapter_type,
             diffs,
-            desired_state.requires_full_refresh_fn,
+            requires_full_refresh,
         )
     }
 }
@@ -437,6 +500,7 @@ pub(crate) struct RelationConfigLoader<'a, R> {
     adapter_type: AdapterType,
     component_loaders: Vec<Box<dyn ComponentConfigLoader<R> + 'a>>,
     requires_full_refresh_fn: RequiresFullRefreshFn,
+    complete_changeset_key_fn: Option<CompleteChangesetKeyFn>,
 }
 
 impl<'a, R> RelationConfigLoader<'a, R> {
@@ -449,7 +513,25 @@ impl<'a, R> RelationConfigLoader<'a, R> {
             adapter_type,
             component_loaders: component_loaders.into_iter().collect(),
             requires_full_refresh_fn,
+            complete_changeset_key_fn: None,
         }
+    }
+
+    /// Include selected desired components when any component changed.
+    ///
+    /// Some adapter renderers rebuild a relation from a changeset and therefore
+    /// need complete desired state rather than only the components that differ.
+    pub(crate) fn with_complete_changeset(
+        mut self,
+        complete_changeset_key_fn: CompleteChangesetKeyFn,
+    ) -> Self {
+        self.complete_changeset_key_fn = Some(complete_changeset_key_fn);
+        self
+    }
+
+    fn relation_config(&self, components: Vec<Box<dyn ComponentConfig>>) -> RelationConfig {
+        RelationConfig::new(self.adapter_type, components, self.requires_full_refresh_fn)
+            .with_complete_changeset(self.complete_changeset_key_fn)
     }
 
     /// Load the current applied state for the relation and all its components given the remote state
@@ -460,11 +542,7 @@ impl<'a, R> RelationConfigLoader<'a, R> {
             .iter()
             .map(|l| l.from_remote_state(remote_state))
             .collect::<Result<Vec<_>, _>>()?;
-        Ok(RelationConfig::new(
-            self.adapter_type,
-            components,
-            self.requires_full_refresh_fn,
-        ))
+        Ok(self.relation_config(components))
     }
 
     /// Load the desired relation state from local dbt configs
@@ -478,11 +556,7 @@ impl<'a, R> RelationConfigLoader<'a, R> {
             .iter()
             .map(|l| l.from_local_config(relation_config))
             .collect::<Result<Vec<_>, _>>()?;
-        Ok(RelationConfig::new(
-            self.adapter_type,
-            components,
-            self.requires_full_refresh_fn,
-        ))
+        Ok(self.relation_config(components))
     }
 }
 
@@ -490,7 +564,8 @@ impl<'a, R> RelationConfigLoader<'a, R> {
 pub struct RelationComponentConfigChangeSet {
     adapter_type: AdapterType,
     changes: IndexMap<&'static str, ComponentConfigChange>,
-    requires_full_refresh_fn: RequiresFullRefreshFn,
+    requires_full_refresh: bool,
+    forced_full_refresh: bool,
 }
 
 impl RelationComponentConfigChangeSet {
@@ -499,11 +574,42 @@ impl RelationComponentConfigChangeSet {
         changes: impl Into<IndexMap<&'static str, ComponentConfigChange>>,
         requires_full_refresh_fn: RequiresFullRefreshFn,
     ) -> Self {
+        let changes = changes.into();
+        let requires_full_refresh = requires_full_refresh_fn(&changes);
+        Self::from_changes(adapter_type, changes, requires_full_refresh)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn new_with_requires_full_refresh(
+        adapter_type: AdapterType,
+        changes: impl Into<IndexMap<&'static str, ComponentConfigChange>>,
+        requires_full_refresh: bool,
+    ) -> Self {
+        Self::from_changes(adapter_type, changes.into(), requires_full_refresh)
+    }
+
+    fn from_changes(
+        adapter_type: AdapterType,
+        changes: IndexMap<&'static str, ComponentConfigChange>,
+        requires_full_refresh: bool,
+    ) -> Self {
         Self {
             adapter_type,
-            changes: changes.into(),
-            requires_full_refresh_fn,
+            changes,
+            requires_full_refresh,
+            forced_full_refresh: false,
         }
+    }
+
+    /// Require a full refresh regardless of what `requires_full_refresh_fn` concludes.
+    ///
+    /// `RequiresFullRefreshFn` sees only the changeset, and a component diff carries just the
+    /// desired value, so a transition that is only recognizable by comparing both
+    /// configuration states cannot be detected from inside it. The caller holding both
+    /// states decides those cases and marks the changeset here.
+    pub(crate) fn forcing_full_refresh(mut self) -> Self {
+        self.forced_full_refresh = true;
+        self
     }
 
     pub fn len(&self) -> usize {
@@ -530,7 +636,7 @@ impl RelationComponentConfigChangeSet {
 
     /// Whether applying this config to an existing table requires a full refresh
     pub fn requires_full_refresh(&self) -> bool {
-        (self.requires_full_refresh_fn)(&self.changes)
+        self.forced_full_refresh || self.requires_full_refresh
     }
 }
 

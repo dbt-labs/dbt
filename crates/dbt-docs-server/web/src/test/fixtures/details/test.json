@@ -1,24 +1,24 @@
 {
   "detail": {
-    "unique_id": "test.fishtown_internal_analytics.accepted_values_alerts_customer_activation_targets_alert_type__Activated__Risk__Activation_Delayed.8fdfe941f9",
-    "name": "accepted_values_alerts_customer_activation_targets_alert_type__Activated__Risk__Activation_Delayed",
+    "unique_id": "test.jaffle_shop.accepted_values_order_items_id.8fdfe941f9",
+    "name": "accepted_values_orders_status__placed__shipped__returned",
     "resource_type": "test",
-    "package_name": "fishtown_internal_analytics",
+    "package_name": "jaffle_shop",
     "description": "",
-    "original_file_path": "target/generic_tests/accepted_values_alerts_custome_64d42b8a1e0a1b9d135fc9b2b99146ed.sql",
+    "original_file_path": "models/accepted_values_orders_status.sql",
     "tags": [],
     "fqn": [
-      "fishtown_internal_analytics",
+      "jaffle_shop",
       "marts",
-      "internal_alerting",
-      "accepted_values_alerts_customer_activation_targets_alert_type__Activated__Risk__Activation_Delayed"
+      "orders",
+      "accepted_values_orders_status__placed__shipped__returned"
     ],
-    "file_path": "generic_tests/accepted_values_alerts_custome_64d42b8a1e0a1b9d135fc9b2b99146ed.sql",
+    "file_path": "models/accepted_values_orders_status.sql",
     "patch_path": null,
     "meta": null,
     "depends_on": [
       {
-        "unique_id": "model.fishtown_internal_analytics.alerts_customer_activation_targets",
+        "unique_id": "model.jaffle_shop.shipments_3",
         "edge_type": "ref"
       }
     ],
@@ -30,11 +30,11 @@
       "name": "accepted_values",
       "kwargs": {
         "column_name": "alert_type",
-        "model": "{{ get_where_subquery(ref('alerts_customer_activation_targets')) }}",
+        "model": "{{ get_where_subquery(ref('shipments_3')) }}",
         "values": [
-          "Activated",
+          "Placed",
           "Risk",
-          "Activation Delayed"
+          "Returned"
         ]
       }
     },
@@ -44,553 +44,553 @@
   "lineage": {
     "status": 200,
     "body": {
-      "root": "test.fishtown_internal_analytics.accepted_values_alerts_customer_activation_targets_alert_type__Activated__Risk__Activation_Delayed.8fdfe941f9",
+      "root": "test.jaffle_shop.accepted_values_order_items_id.8fdfe941f9",
       "max_depth": 3,
       "nodes": [
         {
           "depth": -3,
           "materialized": "table",
-          "name": "all_days",
+          "name": "tickets_9",
           "resource_type": "model",
-          "unique_id": "model.fishtown_internal_analytics.all_days"
+          "unique_id": "model.jaffle_shop.tickets_9"
         },
         {
           "depth": -3,
           "materialized": "table",
-          "name": "cloud_account_mappings",
+          "name": "channels_7",
           "resource_type": "model",
-          "unique_id": "model.fishtown_internal_analytics.cloud_account_mappings"
+          "unique_id": "model.jaffle_shop.channels_7"
         },
         {
           "depth": -3,
           "materialized": "table",
-          "name": "dbt_docs_sessions",
+          "name": "cohorts_8",
           "resource_type": "model",
-          "unique_id": "model.fishtown_internal_analytics.dbt_docs_sessions"
+          "unique_id": "model.jaffle_shop.cohorts_8"
         },
         {
           "depth": -3,
           "materialized": "table",
-          "name": "export_madkudu_events",
+          "name": "cohorts_7",
           "resource_type": "model",
-          "unique_id": "model.fishtown_internal_analytics.export_madkudu_events"
+          "unique_id": "model.jaffle_shop.cohorts_7"
         },
         {
           "depth": -3,
           "materialized": "table",
-          "name": "fct_abm_stage_events",
+          "name": "fct_invoices_8",
           "resource_type": "model",
-          "unique_id": "model.fishtown_internal_analytics.fct_abm_stage_events"
+          "unique_id": "model.jaffle_shop.fct_invoices_8"
         },
         {
           "depth": -3,
           "materialized": "table",
-          "name": "fct_cloud_canvas_sessions",
+          "name": "fct_campaigns_6",
           "resource_type": "model",
-          "unique_id": "model.fishtown_internal_analytics.fct_cloud_canvas_sessions"
+          "unique_id": "model.jaffle_shop.fct_campaigns_6"
         },
         {
           "depth": -3,
           "materialized": "table",
-          "name": "fct_cloud_ide_sessions",
+          "name": "fct_taxes_7",
           "resource_type": "model",
-          "unique_id": "model.fishtown_internal_analytics.fct_cloud_ide_sessions"
+          "unique_id": "model.jaffle_shop.fct_taxes_7"
         },
         {
           "depth": -3,
           "materialized": "table",
-          "name": "fct_cloud_insights_queries",
+          "name": "fct_sessions_6",
           "resource_type": "model",
-          "unique_id": "model.fishtown_internal_analytics.fct_cloud_insights_queries"
+          "unique_id": "model.jaffle_shop.fct_sessions_6"
         },
         {
           "depth": -3,
           "materialized": "table",
-          "name": "fct_cloud_subscription_transactions",
+          "name": "fct_products_3",
           "resource_type": "model",
-          "unique_id": "model.fishtown_internal_analytics.fct_cloud_subscription_transactions"
+          "unique_id": "model.jaffle_shop.fct_products_3"
         },
         {
           "depth": -3,
           "materialized": "table",
-          "name": "fct_cloud_users",
+          "name": "fct_categories_9",
           "resource_type": "model",
-          "unique_id": "model.fishtown_internal_analytics.fct_cloud_users"
+          "unique_id": "model.jaffle_shop.fct_categories_9"
         },
         {
           "depth": -3,
           "materialized": "table",
-          "name": "fct_dbt_copilot_generations",
+          "name": "fct_carts_5",
           "resource_type": "model",
-          "unique_id": "model.fishtown_internal_analytics.fct_dbt_copilot_generations"
+          "unique_id": "model.jaffle_shop.fct_carts_5"
         },
         {
           "depth": -3,
           "materialized": "table",
-          "name": "fct_opportunities",
+          "name": "fct_products_9",
           "resource_type": "model",
-          "unique_id": "model.fishtown_internal_analytics.fct_opportunities"
+          "unique_id": "model.jaffle_shop.fct_products_9"
         },
         {
           "depth": -3,
           "materialized": "table",
-          "name": "fct_opportunities_line_items",
+          "name": "fct_warehouses_5",
           "resource_type": "model",
-          "unique_id": "model.fishtown_internal_analytics.fct_opportunities_line_items"
+          "unique_id": "model.jaffle_shop.fct_warehouses_5"
         },
         {
           "depth": -3,
           "materialized": "table",
-          "name": "fct_vscode_extension_lsp_compiles_daily",
+          "name": "fct_page_views_2",
           "resource_type": "model",
-          "unique_id": "model.fishtown_internal_analytics.fct_vscode_extension_lsp_compiles_daily"
+          "unique_id": "model.jaffle_shop.fct_page_views_2"
         },
         {
           "depth": -3,
           "materialized": "table",
-          "name": "fct_vscode_extension_registrations",
+          "name": "fct_categories_3",
           "resource_type": "model",
-          "unique_id": "model.fishtown_internal_analytics.fct_vscode_extension_registrations"
-        },
-        {
-          "depth": -3,
-          "materialized": "incremental",
-          "name": "fct_web_pageviews",
-          "resource_type": "model",
-          "unique_id": "model.fishtown_internal_analytics.fct_web_pageviews"
-        },
-        {
-          "depth": -3,
-          "materialized": "table",
-          "name": "int__customer_arr_balances",
-          "resource_type": "model",
-          "unique_id": "model.fishtown_internal_analytics.int__customer_arr_balances"
-        },
-        {
-          "depth": -3,
-          "materialized": "table",
-          "name": "int__customer_oam_stage_summary",
-          "resource_type": "model",
-          "unique_id": "model.fishtown_internal_analytics.int__customer_oam_stage_summary"
+          "unique_id": "model.jaffle_shop.fct_categories_3"
         },
         {
           "depth": -3,
           "materialized": "incremental",
-          "name": "int_core__cloud_cli_daily",
+          "name": "fct_locations_9",
           "resource_type": "model",
-          "unique_id": "model.fishtown_internal_analytics.int_core__cloud_cli_daily"
+          "unique_id": "model.jaffle_shop.fct_locations_9"
         },
         {
           "depth": -3,
           "materialized": "table",
-          "name": "int_core__cloud_user_accounts_mesh_daily",
+          "name": "int_shipments_6",
           "resource_type": "model",
-          "unique_id": "model.fishtown_internal_analytics.int_core__cloud_user_accounts_mesh_daily"
+          "unique_id": "model.jaffle_shop.int_shipments_6"
         },
         {
           "depth": -3,
           "materialized": "table",
-          "name": "int_predicted_cloud_datawarehouse",
+          "name": "int_campaigns_4",
           "resource_type": "model",
-          "unique_id": "model.fishtown_internal_analytics.int_predicted_cloud_datawarehouse"
-        },
-        {
-          "depth": -3,
-          "materialized": "table",
-          "name": "int_salesforce__accounts_joined",
-          "resource_type": "model",
-          "unique_id": "model.fishtown_internal_analytics.int_salesforce__accounts_joined"
-        },
-        {
-          "depth": -3,
-          "materialized": "table",
-          "name": "int_stripe__customers_joined",
-          "resource_type": "model",
-          "unique_id": "model.fishtown_internal_analytics.int_stripe__customers_joined"
+          "unique_id": "model.jaffle_shop.int_campaigns_4"
         },
         {
           "depth": -3,
           "materialized": "incremental",
-          "name": "metadata_daily_user_activity",
+          "name": "int_taxes_6",
           "resource_type": "model",
-          "unique_id": "model.fishtown_internal_analytics.metadata_daily_user_activity"
+          "unique_id": "model.jaffle_shop.int_taxes_6"
         },
         {
           "depth": -3,
           "materialized": "table",
-          "name": "stg_cloud__accounts",
+          "name": "int_orders_2",
           "resource_type": "model",
-          "unique_id": "model.fishtown_internal_analytics.stg_cloud__accounts"
+          "unique_id": "model.jaffle_shop.int_orders_2"
         },
         {
           "depth": -3,
           "materialized": "table",
-          "name": "stg_cloud__accounts_snapshot_daily",
+          "name": "int_events_3",
           "resource_type": "model",
-          "unique_id": "model.fishtown_internal_analytics.stg_cloud__accounts_snapshot_daily"
+          "unique_id": "model.jaffle_shop.int_events_3"
         },
         {
           "depth": -3,
           "materialized": "table",
-          "name": "stg_cloud__audit_logs",
+          "name": "int_refunds_4",
           "resource_type": "model",
-          "unique_id": "model.fishtown_internal_analytics.stg_cloud__audit_logs"
+          "unique_id": "model.jaffle_shop.int_refunds_4"
         },
         {
           "depth": -3,
           "materialized": "table",
-          "name": "stg_cloud__user_licenses_snapshot_daily",
+          "name": "int_campaigns_5",
           "resource_type": "model",
-          "unique_id": "model.fishtown_internal_analytics.stg_cloud__user_licenses_snapshot_daily"
+          "unique_id": "model.jaffle_shop.int_campaigns_5"
+        },
+        {
+          "depth": -3,
+          "materialized": "incremental",
+          "name": "channels_5",
+          "resource_type": "model",
+          "unique_id": "model.jaffle_shop.channels_5"
+        },
+        {
+          "depth": -3,
+          "materialized": "table",
+          "name": "stg_plans_8",
+          "resource_type": "model",
+          "unique_id": "model.jaffle_shop.stg_plans_8"
+        },
+        {
+          "depth": -3,
+          "materialized": "table",
+          "name": "stg_channels_3",
+          "resource_type": "model",
+          "unique_id": "model.jaffle_shop.stg_channels_3"
+        },
+        {
+          "depth": -3,
+          "materialized": "table",
+          "name": "stg_supplies_8",
+          "resource_type": "model",
+          "unique_id": "model.jaffle_shop.stg_supplies_8"
+        },
+        {
+          "depth": -3,
+          "materialized": "table",
+          "name": "stg_categories_2",
+          "resource_type": "model",
+          "unique_id": "model.jaffle_shop.stg_categories_2"
         },
         {
           "depth": -3,
           "materialized": "view",
-          "name": "stg_metronome__customers",
+          "name": "stg_supplies_7",
           "resource_type": "model",
-          "unique_id": "model.fishtown_internal_analytics.stg_metronome__customers"
+          "unique_id": "model.jaffle_shop.stg_supplies_7"
         },
         {
           "depth": -3,
           "materialized": "view",
-          "name": "stg_okta__application_users",
+          "name": "stg_segments_5",
           "resource_type": "model",
-          "unique_id": "model.fishtown_internal_analytics.stg_okta__application_users"
+          "unique_id": "model.jaffle_shop.stg_segments_5"
         },
         {
           "depth": -3,
           "materialized": "view",
-          "name": "stg_salesforce__users",
+          "name": "stg_payments_8",
           "resource_type": "model",
-          "unique_id": "model.fishtown_internal_analytics.stg_salesforce__users"
+          "unique_id": "model.jaffle_shop.stg_payments_8"
         },
         {
           "depth": -2,
           "materialized": "table",
-          "name": "dim_customer_oam",
+          "name": "dim_revenue_9",
           "resource_type": "model",
-          "unique_id": "model.fishtown_internal_analytics.dim_customer_oam"
+          "unique_id": "model.jaffle_shop.dim_revenue_9"
         },
         {
           "depth": -2,
           "materialized": "table",
-          "name": "dim_customers",
+          "name": "dim_regions_9",
           "resource_type": "model",
-          "unique_id": "model.fishtown_internal_analytics.dim_customers"
+          "unique_id": "model.jaffle_shop.dim_regions_9"
         },
         {
           "depth": -2,
           "materialized": "table",
-          "name": "dim_salesforce_accounts",
+          "name": "dim_revenue_7",
           "resource_type": "model",
-          "unique_id": "model.fishtown_internal_analytics.dim_salesforce_accounts"
+          "unique_id": "model.jaffle_shop.dim_revenue_7"
         },
         {
           "depth": -2,
           "materialized": "table",
-          "name": "dim_salesforce_users",
+          "name": "dim_page_views_8",
           "resource_type": "model",
-          "unique_id": "model.fishtown_internal_analytics.dim_salesforce_users"
+          "unique_id": "model.jaffle_shop.dim_page_views_8"
         },
         {
           "depth": -2,
           "materialized": "table",
-          "name": "fct_account_license_seats",
+          "name": "fct_promotions_6",
           "resource_type": "model",
-          "unique_id": "model.fishtown_internal_analytics.fct_account_license_seats"
+          "unique_id": "model.jaffle_shop.fct_promotions_6"
         },
         {
           "depth": -2,
           "materialized": "table",
-          "name": "fct_cloud_user_account_activities",
+          "name": "fct_refunds_3",
           "resource_type": "model",
-          "unique_id": "model.fishtown_internal_analytics.fct_cloud_user_account_activities"
+          "unique_id": "model.jaffle_shop.fct_refunds_3"
         },
         {
           "depth": -1,
           "materialized": "table",
-          "name": "alerts_customer_activation_targets",
+          "name": "shipments_3",
           "resource_type": "model",
-          "unique_id": "model.fishtown_internal_analytics.alerts_customer_activation_targets"
+          "unique_id": "model.jaffle_shop.shipments_3"
         },
         {
           "depth": 0,
           "materialized": "test",
-          "name": "accepted_values_alerts_customer_activation_targets_alert_type__Activated__Risk__Activation_Delayed",
+          "name": "accepted_values_orders_status__placed__shipped__returned",
           "resource_type": "test",
-          "unique_id": "test.fishtown_internal_analytics.accepted_values_alerts_customer_activation_targets_alert_type__Activated__Risk__Activation_Delayed.8fdfe941f9"
+          "unique_id": "test.jaffle_shop.accepted_values_order_items_id.8fdfe941f9"
         }
       ],
       "edges": [
         {
           "edge_type": "ref",
-          "from_id": "model.fishtown_internal_analytics.alerts_customer_activation_targets",
-          "to_id": "test.fishtown_internal_analytics.accepted_values_alerts_customer_activation_targets_alert_type__Activated__Risk__Activation_Delayed.8fdfe941f9"
+          "from_id": "model.jaffle_shop.shipments_3",
+          "to_id": "test.jaffle_shop.accepted_values_order_items_id.8fdfe941f9"
         },
         {
           "edge_type": "ref",
-          "from_id": "model.fishtown_internal_analytics.all_days",
-          "to_id": "model.fishtown_internal_analytics.dim_customer_oam"
+          "from_id": "model.jaffle_shop.tickets_9",
+          "to_id": "model.jaffle_shop.dim_revenue_9"
         },
         {
           "edge_type": "ref",
-          "from_id": "model.fishtown_internal_analytics.all_days",
-          "to_id": "model.fishtown_internal_analytics.fct_account_license_seats"
+          "from_id": "model.jaffle_shop.tickets_9",
+          "to_id": "model.jaffle_shop.fct_promotions_6"
         },
         {
           "edge_type": "ref",
-          "from_id": "model.fishtown_internal_analytics.all_days",
-          "to_id": "model.fishtown_internal_analytics.fct_cloud_user_account_activities"
+          "from_id": "model.jaffle_shop.tickets_9",
+          "to_id": "model.jaffle_shop.fct_refunds_3"
         },
         {
           "edge_type": "ref",
-          "from_id": "model.fishtown_internal_analytics.all_days",
-          "to_id": "model.fishtown_internal_analytics.stg_cloud__accounts_snapshot_daily"
+          "from_id": "model.jaffle_shop.tickets_9",
+          "to_id": "model.jaffle_shop.stg_channels_3"
         },
         {
           "edge_type": "ref",
-          "from_id": "model.fishtown_internal_analytics.all_days",
-          "to_id": "model.fishtown_internal_analytics.stg_cloud__user_licenses_snapshot_daily"
+          "from_id": "model.jaffle_shop.tickets_9",
+          "to_id": "model.jaffle_shop.stg_categories_2"
         },
         {
           "edge_type": "ref",
-          "from_id": "model.fishtown_internal_analytics.cloud_account_mappings",
-          "to_id": "model.fishtown_internal_analytics.fct_cloud_user_account_activities"
+          "from_id": "model.jaffle_shop.channels_7",
+          "to_id": "model.jaffle_shop.fct_refunds_3"
         },
         {
           "edge_type": "ref",
-          "from_id": "model.fishtown_internal_analytics.cloud_account_mappings",
-          "to_id": "model.fishtown_internal_analytics.int_predicted_cloud_datawarehouse"
+          "from_id": "model.jaffle_shop.channels_7",
+          "to_id": "model.jaffle_shop.int_events_3"
         },
         {
           "edge_type": "ref",
-          "from_id": "model.fishtown_internal_analytics.cloud_account_mappings",
-          "to_id": "model.fishtown_internal_analytics.int_salesforce__accounts_joined"
+          "from_id": "model.jaffle_shop.channels_7",
+          "to_id": "model.jaffle_shop.int_refunds_4"
         },
         {
           "edge_type": "ref",
-          "from_id": "model.fishtown_internal_analytics.dbt_docs_sessions",
-          "to_id": "model.fishtown_internal_analytics.fct_cloud_user_account_activities"
+          "from_id": "model.jaffle_shop.cohorts_8",
+          "to_id": "model.jaffle_shop.fct_refunds_3"
         },
         {
           "edge_type": "ref",
-          "from_id": "model.fishtown_internal_analytics.dim_customer_oam",
-          "to_id": "model.fishtown_internal_analytics.alerts_customer_activation_targets"
+          "from_id": "model.jaffle_shop.dim_revenue_9",
+          "to_id": "model.jaffle_shop.shipments_3"
         },
         {
           "edge_type": "ref",
-          "from_id": "model.fishtown_internal_analytics.dim_customers",
-          "to_id": "model.fishtown_internal_analytics.alerts_customer_activation_targets"
+          "from_id": "model.jaffle_shop.dim_regions_9",
+          "to_id": "model.jaffle_shop.shipments_3"
         },
         {
           "edge_type": "ref",
-          "from_id": "model.fishtown_internal_analytics.dim_salesforce_accounts",
-          "to_id": "model.fishtown_internal_analytics.alerts_customer_activation_targets"
+          "from_id": "model.jaffle_shop.dim_revenue_7",
+          "to_id": "model.jaffle_shop.shipments_3"
         },
         {
           "edge_type": "ref",
-          "from_id": "model.fishtown_internal_analytics.dim_salesforce_users",
-          "to_id": "model.fishtown_internal_analytics.alerts_customer_activation_targets"
+          "from_id": "model.jaffle_shop.dim_page_views_8",
+          "to_id": "model.jaffle_shop.shipments_3"
         },
         {
           "edge_type": "ref",
-          "from_id": "model.fishtown_internal_analytics.export_madkudu_events",
-          "to_id": "model.fishtown_internal_analytics.dim_salesforce_accounts"
+          "from_id": "model.jaffle_shop.cohorts_7",
+          "to_id": "model.jaffle_shop.dim_revenue_7"
         },
         {
           "edge_type": "ref",
-          "from_id": "model.fishtown_internal_analytics.fct_abm_stage_events",
-          "to_id": "model.fishtown_internal_analytics.dim_salesforce_accounts"
+          "from_id": "model.jaffle_shop.fct_invoices_8",
+          "to_id": "model.jaffle_shop.dim_revenue_7"
         },
         {
           "edge_type": "ref",
-          "from_id": "model.fishtown_internal_analytics.fct_account_license_seats",
-          "to_id": "model.fishtown_internal_analytics.alerts_customer_activation_targets"
+          "from_id": "model.jaffle_shop.fct_promotions_6",
+          "to_id": "model.jaffle_shop.shipments_3"
         },
         {
           "edge_type": "ref",
-          "from_id": "model.fishtown_internal_analytics.fct_account_license_seats",
-          "to_id": "model.fishtown_internal_analytics.int__customer_oam_stage_summary"
+          "from_id": "model.jaffle_shop.fct_promotions_6",
+          "to_id": "model.jaffle_shop.int_campaigns_4"
         },
         {
           "edge_type": "ref",
-          "from_id": "model.fishtown_internal_analytics.fct_cloud_canvas_sessions",
-          "to_id": "model.fishtown_internal_analytics.fct_cloud_user_account_activities"
+          "from_id": "model.jaffle_shop.fct_campaigns_6",
+          "to_id": "model.jaffle_shop.fct_refunds_3"
         },
         {
           "edge_type": "ref",
-          "from_id": "model.fishtown_internal_analytics.fct_cloud_ide_sessions",
-          "to_id": "model.fishtown_internal_analytics.fct_cloud_user_account_activities"
+          "from_id": "model.jaffle_shop.fct_taxes_7",
+          "to_id": "model.jaffle_shop.fct_refunds_3"
         },
         {
           "edge_type": "ref",
-          "from_id": "model.fishtown_internal_analytics.fct_cloud_insights_queries",
-          "to_id": "model.fishtown_internal_analytics.fct_cloud_user_account_activities"
+          "from_id": "model.jaffle_shop.fct_sessions_6",
+          "to_id": "model.jaffle_shop.fct_refunds_3"
         },
         {
           "edge_type": "ref",
-          "from_id": "model.fishtown_internal_analytics.fct_cloud_subscription_transactions",
-          "to_id": "model.fishtown_internal_analytics.dim_customers"
+          "from_id": "model.jaffle_shop.fct_products_3",
+          "to_id": "model.jaffle_shop.dim_regions_9"
         },
         {
           "edge_type": "ref",
-          "from_id": "model.fishtown_internal_analytics.fct_cloud_user_account_activities",
-          "to_id": "model.fishtown_internal_analytics.alerts_customer_activation_targets"
+          "from_id": "model.jaffle_shop.fct_refunds_3",
+          "to_id": "model.jaffle_shop.shipments_3"
         },
         {
           "edge_type": "ref",
-          "from_id": "model.fishtown_internal_analytics.fct_cloud_user_account_activities",
-          "to_id": "model.fishtown_internal_analytics.int__customer_oam_stage_summary"
+          "from_id": "model.jaffle_shop.fct_refunds_3",
+          "to_id": "model.jaffle_shop.int_campaigns_4"
         },
         {
           "edge_type": "ref",
-          "from_id": "model.fishtown_internal_analytics.fct_cloud_users",
-          "to_id": "model.fishtown_internal_analytics.fct_cloud_user_account_activities"
+          "from_id": "model.jaffle_shop.fct_categories_9",
+          "to_id": "model.jaffle_shop.fct_refunds_3"
         },
         {
           "edge_type": "ref",
-          "from_id": "model.fishtown_internal_analytics.fct_dbt_copilot_generations",
-          "to_id": "model.fishtown_internal_analytics.fct_cloud_user_account_activities"
+          "from_id": "model.jaffle_shop.fct_carts_5",
+          "to_id": "model.jaffle_shop.fct_refunds_3"
         },
         {
           "edge_type": "ref",
-          "from_id": "model.fishtown_internal_analytics.fct_opportunities",
-          "to_id": "model.fishtown_internal_analytics.fct_account_license_seats"
+          "from_id": "model.jaffle_shop.fct_products_9",
+          "to_id": "model.jaffle_shop.fct_promotions_6"
         },
         {
           "edge_type": "ref",
-          "from_id": "model.fishtown_internal_analytics.fct_opportunities",
-          "to_id": "model.fishtown_internal_analytics.int_predicted_cloud_datawarehouse"
+          "from_id": "model.jaffle_shop.fct_products_9",
+          "to_id": "model.jaffle_shop.int_events_3"
         },
         {
           "edge_type": "ref",
-          "from_id": "model.fishtown_internal_analytics.fct_opportunities_line_items",
-          "to_id": "model.fishtown_internal_analytics.fct_account_license_seats"
+          "from_id": "model.jaffle_shop.fct_warehouses_5",
+          "to_id": "model.jaffle_shop.fct_promotions_6"
         },
         {
           "edge_type": "ref",
-          "from_id": "model.fishtown_internal_analytics.fct_vscode_extension_lsp_compiles_daily",
-          "to_id": "model.fishtown_internal_analytics.fct_cloud_user_account_activities"
+          "from_id": "model.jaffle_shop.fct_page_views_2",
+          "to_id": "model.jaffle_shop.fct_refunds_3"
         },
         {
           "edge_type": "ref",
-          "from_id": "model.fishtown_internal_analytics.fct_vscode_extension_registrations",
-          "to_id": "model.fishtown_internal_analytics.fct_cloud_user_account_activities"
+          "from_id": "model.jaffle_shop.fct_categories_3",
+          "to_id": "model.jaffle_shop.fct_refunds_3"
         },
         {
           "edge_type": "ref",
-          "from_id": "model.fishtown_internal_analytics.fct_web_pageviews",
-          "to_id": "model.fishtown_internal_analytics.fct_cloud_ide_sessions"
+          "from_id": "model.jaffle_shop.fct_locations_9",
+          "to_id": "model.jaffle_shop.fct_taxes_7"
         },
         {
           "edge_type": "ref",
-          "from_id": "model.fishtown_internal_analytics.fct_web_pageviews",
-          "to_id": "model.fishtown_internal_analytics.fct_cloud_user_account_activities"
+          "from_id": "model.jaffle_shop.fct_locations_9",
+          "to_id": "model.jaffle_shop.fct_refunds_3"
         },
         {
           "edge_type": "ref",
-          "from_id": "model.fishtown_internal_analytics.int__customer_arr_balances",
-          "to_id": "model.fishtown_internal_analytics.dim_customers"
+          "from_id": "model.jaffle_shop.int_shipments_6",
+          "to_id": "model.jaffle_shop.dim_regions_9"
         },
         {
           "edge_type": "ref",
-          "from_id": "model.fishtown_internal_analytics.int__customer_oam_stage_summary",
-          "to_id": "model.fishtown_internal_analytics.dim_customer_oam"
+          "from_id": "model.jaffle_shop.int_campaigns_4",
+          "to_id": "model.jaffle_shop.dim_revenue_9"
         },
         {
           "edge_type": "ref",
-          "from_id": "model.fishtown_internal_analytics.int_core__cloud_cli_daily",
-          "to_id": "model.fishtown_internal_analytics.fct_cloud_user_account_activities"
+          "from_id": "model.jaffle_shop.int_taxes_6",
+          "to_id": "model.jaffle_shop.fct_refunds_3"
         },
         {
           "edge_type": "ref",
-          "from_id": "model.fishtown_internal_analytics.int_core__cloud_user_accounts_mesh_daily",
-          "to_id": "model.fishtown_internal_analytics.fct_cloud_user_account_activities"
+          "from_id": "model.jaffle_shop.int_orders_2",
+          "to_id": "model.jaffle_shop.fct_refunds_3"
         },
         {
           "edge_type": "ref",
-          "from_id": "model.fishtown_internal_analytics.int_predicted_cloud_datawarehouse",
-          "to_id": "model.fishtown_internal_analytics.dim_salesforce_accounts"
+          "from_id": "model.jaffle_shop.int_events_3",
+          "to_id": "model.jaffle_shop.dim_revenue_7"
         },
         {
           "edge_type": "ref",
-          "from_id": "model.fishtown_internal_analytics.int_salesforce__accounts_joined",
-          "to_id": "model.fishtown_internal_analytics.dim_customer_oam"
+          "from_id": "model.jaffle_shop.int_refunds_4",
+          "to_id": "model.jaffle_shop.dim_revenue_9"
         },
         {
           "edge_type": "ref",
-          "from_id": "model.fishtown_internal_analytics.int_salesforce__accounts_joined",
-          "to_id": "model.fishtown_internal_analytics.dim_customers"
+          "from_id": "model.jaffle_shop.int_refunds_4",
+          "to_id": "model.jaffle_shop.dim_regions_9"
         },
         {
           "edge_type": "ref",
-          "from_id": "model.fishtown_internal_analytics.int_salesforce__accounts_joined",
-          "to_id": "model.fishtown_internal_analytics.dim_salesforce_accounts"
+          "from_id": "model.jaffle_shop.int_refunds_4",
+          "to_id": "model.jaffle_shop.dim_revenue_7"
         },
         {
           "edge_type": "ref",
-          "from_id": "model.fishtown_internal_analytics.int_salesforce__accounts_joined",
-          "to_id": "model.fishtown_internal_analytics.int_predicted_cloud_datawarehouse"
+          "from_id": "model.jaffle_shop.int_refunds_4",
+          "to_id": "model.jaffle_shop.int_events_3"
         },
         {
           "edge_type": "ref",
-          "from_id": "model.fishtown_internal_analytics.int_stripe__customers_joined",
-          "to_id": "model.fishtown_internal_analytics.cloud_account_mappings"
+          "from_id": "model.jaffle_shop.int_campaigns_5",
+          "to_id": "model.jaffle_shop.channels_7"
         },
         {
           "edge_type": "ref",
-          "from_id": "model.fishtown_internal_analytics.int_stripe__customers_joined",
-          "to_id": "model.fishtown_internal_analytics.dim_customers"
+          "from_id": "model.jaffle_shop.int_campaigns_5",
+          "to_id": "model.jaffle_shop.dim_regions_9"
         },
         {
           "edge_type": "ref",
-          "from_id": "model.fishtown_internal_analytics.metadata_daily_user_activity",
-          "to_id": "model.fishtown_internal_analytics.fct_cloud_user_account_activities"
+          "from_id": "model.jaffle_shop.channels_5",
+          "to_id": "model.jaffle_shop.fct_refunds_3"
         },
         {
           "edge_type": "ref",
-          "from_id": "model.fishtown_internal_analytics.stg_cloud__accounts",
-          "to_id": "model.fishtown_internal_analytics.cloud_account_mappings"
+          "from_id": "model.jaffle_shop.stg_plans_8",
+          "to_id": "model.jaffle_shop.channels_7"
         },
         {
           "edge_type": "ref",
-          "from_id": "model.fishtown_internal_analytics.stg_cloud__accounts",
-          "to_id": "model.fishtown_internal_analytics.fct_cloud_user_account_activities"
+          "from_id": "model.jaffle_shop.stg_plans_8",
+          "to_id": "model.jaffle_shop.fct_refunds_3"
         },
         {
           "edge_type": "ref",
-          "from_id": "model.fishtown_internal_analytics.stg_cloud__accounts",
-          "to_id": "model.fishtown_internal_analytics.fct_cloud_users"
+          "from_id": "model.jaffle_shop.stg_plans_8",
+          "to_id": "model.jaffle_shop.fct_categories_9"
         },
         {
           "edge_type": "ref",
-          "from_id": "model.fishtown_internal_analytics.stg_cloud__accounts_snapshot_daily",
-          "to_id": "model.fishtown_internal_analytics.fct_cloud_user_account_activities"
+          "from_id": "model.jaffle_shop.stg_channels_3",
+          "to_id": "model.jaffle_shop.fct_refunds_3"
         },
         {
           "edge_type": "ref",
-          "from_id": "model.fishtown_internal_analytics.stg_cloud__audit_logs",
-          "to_id": "model.fishtown_internal_analytics.fct_cloud_user_account_activities"
+          "from_id": "model.jaffle_shop.stg_supplies_8",
+          "to_id": "model.jaffle_shop.fct_refunds_3"
         },
         {
           "edge_type": "ref",
-          "from_id": "model.fishtown_internal_analytics.stg_cloud__user_licenses_snapshot_daily",
-          "to_id": "model.fishtown_internal_analytics.fct_cloud_user_account_activities"
+          "from_id": "model.jaffle_shop.stg_categories_2",
+          "to_id": "model.jaffle_shop.fct_refunds_3"
         },
         {
           "edge_type": "ref",
-          "from_id": "model.fishtown_internal_analytics.stg_metronome__customers",
-          "to_id": "model.fishtown_internal_analytics.dim_customers"
+          "from_id": "model.jaffle_shop.stg_supplies_7",
+          "to_id": "model.jaffle_shop.dim_regions_9"
         },
         {
           "edge_type": "ref",
-          "from_id": "model.fishtown_internal_analytics.stg_okta__application_users",
-          "to_id": "model.fishtown_internal_analytics.dim_salesforce_users"
+          "from_id": "model.jaffle_shop.stg_segments_5",
+          "to_id": "model.jaffle_shop.dim_page_views_8"
         },
         {
           "edge_type": "ref",
-          "from_id": "model.fishtown_internal_analytics.stg_salesforce__users",
-          "to_id": "model.fishtown_internal_analytics.dim_salesforce_users"
+          "from_id": "model.jaffle_shop.stg_payments_8",
+          "to_id": "model.jaffle_shop.dim_page_views_8"
         }
       ]
     }

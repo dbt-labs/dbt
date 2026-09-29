@@ -25,6 +25,7 @@ message CloneRequest {
   optional string clone_source_table_type = 8;
   optional TableProperties table_properties = 9;
   optional int64 clone_chain_depth_limit = 10;
+  optional string table_namespace = 11;
 }
 
 message CloneResponse {

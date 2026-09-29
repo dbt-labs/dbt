@@ -255,6 +255,7 @@ pub enum Instruction<'source> {
     #[cfg(feature = "macros")]
     Return {
         explicit: bool,
+        arg_count: Option<Option<u16>>,
     },
 
     /// True if the value is undefined

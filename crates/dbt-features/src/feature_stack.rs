@@ -1,15 +1,15 @@
 use std::fmt;
-use std::sync::Arc;
 
 use dbt_common::DiscreteEventEmitter;
-use dbt_login::LoginHooks;
 
 use crate::adapter::AdapterFeature;
 use crate::antlr_parser::AntlrParserFeature;
 use crate::cli::CliFeature;
 use crate::index::IndexFeature;
 use crate::jinja::JinjaFeature;
+use crate::lake_compute::LakeComputeFeature;
 use crate::loader::LoaderFeature;
+use crate::login::LoginFeature;
 use crate::metricflow::MetricflowFeature;
 use crate::resolver::ResolverFeature;
 use crate::sidecar::SidecarFeature;
@@ -20,6 +20,13 @@ use crate::tracing::TracingFeature;
 pub struct InstrumentationFeature {
     pub event_emitter: Box<dyn DiscreteEventEmitter>,
     // TODO: add more instrumentation services here
+}
+
+impl InstrumentationFeature {
+    fn configure(&mut self, config: &FeatureStackConfig) {
+        self.event_emitter
+            .configure(config.send_anonymous_usage_stats);
+    }
 }
 
 /// A feature stack is an object that can be initialized with containers of
@@ -57,9 +64,26 @@ pub struct FeatureStack {
     pub resolver: ResolverFeature,
     pub loader: LoaderFeature,
     pub jinja: JinjaFeature,
-    pub login_hooks: Arc<dyn LoginHooks>,
-    // TODO: add more features here
-    pub version_check_enabled: bool,
+    pub lake_compute: LakeComputeFeature,
+    pub login: LoginFeature,
+}
+
+/// Configuration that can only be known after [FeatureStack] is built.
+///
+/// For instance, we need the [CliFeature] to parse the CLI arguments to know if
+/// we should send anonymous usage stats or not. The [FeatureStack] should be
+/// constructred before everything else, so we need the ability to defer a
+/// small set of configuration knobs.
+#[derive(Default)]
+pub struct FeatureStackConfig {
+    pub send_anonymous_usage_stats: bool,
+}
+
+impl FeatureStack {
+    pub fn configure(mut self, config: &FeatureStackConfig) -> Self {
+        self.instrumentation.configure(config);
+        self
+    }
 }
 
 impl fmt::Debug for FeatureStack {

@@ -3,7 +3,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::{ErrorCode, collections::HashMap};
 use dbt_yaml::{Value, Verbatim};
 use serde::{Deserialize, Serialize, Serializer};
-use strum::{AsRefStr, EnumMessage};
+use strum::{AsRefStr, EnumMessage, IntoEnumIterator};
 
 mod legacy;
 
@@ -528,12 +528,7 @@ impl WarnErrorOptions {
         let matches = |value: &WarnErrorOptionValue| match value {
             WarnErrorOptionValue::LegacyGroup(LegacyWarnErrorGroupValue::All) => MatchType::All,
             WarnErrorOptionValue::LegacyGroup(LegacyWarnErrorGroupValue::Deprecations)
-                if matches!(
-                    error_code,
-                    ErrorCode::PackageRedirectDeprecation
-                        | ErrorCode::WEOIncludeExcludeDeprecation
-                        | ErrorCode::MalformedBlockName
-                ) =>
+                if matches_deprecations_group(error_code) =>
             {
                 MatchType::Group
             }
@@ -558,6 +553,13 @@ impl WarnErrorOptions {
             _ => MatchType::NotMatched,
         };
 
+        // Keep the canary warning-only unless the code is selected explicitly.
+        let implicit_warn_match = if error_code == ErrorCode::DeprecatedConfigKey {
+            MatchType::Group
+        } else {
+            MatchType::NotMatched
+        };
+
         let max_matches_and_verdict = [
             (
                 self.silence
@@ -572,7 +574,8 @@ impl WarnErrorOptions {
                     .iter()
                     .map(matches)
                     .max()
-                    .unwrap_or(MatchType::NotMatched),
+                    .unwrap_or(MatchType::NotMatched)
+                    .max(implicit_warn_match),
                 WarnErrorDecision::Retain,
             ),
             (
@@ -640,6 +643,25 @@ impl WarnErrorOptions {
             _ => WarnErrorDecision::Retain,
         }
     }
+}
+
+fn matches_deprecations_group(error_code: ErrorCode) -> bool {
+    matches!(
+        error_code,
+        ErrorCode::PackageRedirectDeprecation
+            | ErrorCode::WEOIncludeExcludeDeprecation
+            | ErrorCode::MalformedBlockName
+    )
+}
+
+/// Returns true if no dbt-core warning maps to this error code.
+///
+/// Derived from the legacy mapping rather than a hand-kept list, so a newly
+/// added code counts as Fusion-only until it is wired to a dbt-core event.
+pub fn is_fusion_only_warning(error_code: ErrorCode) -> bool {
+    !matches_deprecations_group(error_code)
+        && !SupportedLegacyWarnError::iter()
+            .any(|legacy| matches_legacy_error_code(legacy, error_code))
 }
 
 fn matches_legacy_error_code(legacy: SupportedLegacyWarnError, error_code: ErrorCode) -> bool {
@@ -723,6 +745,94 @@ fn matches_legacy_error_code(legacy: SupportedLegacyWarnError, error_code: Error
 mod tests {
     use super::*;
     use crate::ErrorCode;
+
+    /// Guards the derivation in [`is_fusion_only_warning`]: every legacy warning
+    /// wired to an error code must count as having a dbt-core counterpart.
+    #[test]
+    fn mapped_legacy_warnings_are_not_fusion_only() {
+        for legacy in SupportedLegacyWarnError::iter() {
+            for code in [
+                ErrorCode::JinjaWarn,
+                ErrorCode::NoNodesSelected,
+                ErrorCode::DeprecatedModel,
+                ErrorCode::PackageRedirectDeprecation,
+                ErrorCode::UnusedResourceConfigPath,
+                ErrorCode::ConstraintNotSupported,
+            ] {
+                if matches_legacy_error_code(legacy, code) {
+                    assert!(
+                        !is_fusion_only_warning(code),
+                        "{code:?} maps to legacy warning {legacy:?} and must not be Fusion-only"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn deprecations_group_codes_are_not_fusion_only() {
+        for code in [
+            ErrorCode::PackageRedirectDeprecation,
+            ErrorCode::WEOIncludeExcludeDeprecation,
+            ErrorCode::MalformedBlockName,
+        ] {
+            assert!(
+                !is_fusion_only_warning(code),
+                "{code:?} is a dbt-core deprecation"
+            );
+        }
+    }
+
+    #[test]
+    fn codes_without_a_legacy_mapping_are_fusion_only() {
+        for code in [
+            ErrorCode::PackageParsingCompatibility,
+            ErrorCode::UnusedConfigKey,
+        ] {
+            assert!(
+                is_fusion_only_warning(code),
+                "{code:?} has no dbt-core counterpart"
+            );
+        }
+    }
+
+    #[test]
+    fn deprecated_config_key_canary_is_not_escalated_by_warn_error() {
+        assert!(
+            is_fusion_only_warning(ErrorCode::DeprecatedConfigKey),
+            "DeprecatedConfigKey must stay Fusion-only while it is a canary"
+        );
+
+        let mut blanket_warn_error = WarnErrorOptions::default();
+        blanket_warn_error.add_all_to_error();
+        assert_eq!(
+            blanket_warn_error.decision_for_error_code(ErrorCode::DeprecatedConfigKey),
+            WarnErrorDecision::Retain,
+            "blanket --warn-error must not turn the canary into an error"
+        );
+
+        let silenced_by_name = WarnErrorOptions {
+            silence: vec![WarnErrorOptionValue::FusionCode(
+                ErrorCode::DeprecatedConfigKey as u16,
+            )],
+            ..Default::default()
+        };
+        assert_eq!(
+            silenced_by_name.decision_for_error_code(ErrorCode::DeprecatedConfigKey),
+            WarnErrorDecision::Silence,
+        );
+
+        let escalated_by_name = WarnErrorOptions {
+            error: vec![WarnErrorOptionValue::FusionCode(
+                ErrorCode::DeprecatedConfigKey as u16,
+            )],
+            ..Default::default()
+        };
+        assert_eq!(
+            escalated_by_name.decision_for_error_code(ErrorCode::DeprecatedConfigKey),
+            WarnErrorDecision::UpgradeToError,
+        );
+    }
 
     #[test]
     fn error_decision_honors_precedence() {

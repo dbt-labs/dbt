@@ -11,14 +11,14 @@ import type { Capabilities, Distribution } from '../shared';
  *     Sourced from `Capabilities.hasColumnLineage`.
  *   - `hasDbtState` — dbt State is already active for this project.
  *     Sourced from `Capabilities.hasDbtState`.
- *   - `isFusion` — running against the proprietary (Fusion) distribution
+ *   - `isProprietary` — running against the proprietary (dbt v2) distribution
  *     rather than dbt Core.
  *   - `isLoggedIn` — user has authenticated against the distribution.
  */
 export interface UpgradeCapabilities {
   hasCll: boolean;
   hasDbtState: boolean;
-  isFusion: boolean;
+  isProprietary: boolean;
   isLoggedIn: boolean;
 }
 
@@ -36,7 +36,7 @@ export function deriveUpgradeCapabilities(
   return {
     hasCll: capabilities.hasColumnLineage,
     hasDbtState: capabilities.hasDbtState,
-    isFusion: distInfo.isFusion,
+    isProprietary: distInfo.isProprietary,
     isLoggedIn: distInfo.isLoggedIn,
   };
 }

@@ -12,5 +12,5 @@ catalogs:
         warehouse: "horizon_wh"
         endpoint: "https://horizon.example.com/catalog"
         secret: "horizon_secret"
-        attach_as: "horizon_db"
+        catalog_database: "horizon_db"
         default_schema: "demo"

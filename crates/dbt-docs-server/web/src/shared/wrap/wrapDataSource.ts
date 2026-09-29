@@ -39,6 +39,7 @@ const FETCHERS = [
   'fetchDistribution',
   'fetchAssetCounts',
   'fetchProject',
+  'fetchOverview',
   'fetchFiles',
   'fetchSearch',
   'fetchSearchFacets',

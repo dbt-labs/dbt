@@ -34,6 +34,8 @@ const TEST_ALIAS: &str = "my_model";
 const TEST_RELATION_NAME: &str = "SOME_DB.SOME_SCHEMA.my_model";
 const TEST_REL_PATH: &str = "models/my_model.sql";
 const TEST_NODE_CHECKSUM: &str = "abcdef1234567890";
+const TEST_NODE_INDEX: u32 = 3;
+const TEST_NODE_COUNT_TOTAL: u32 = 7;
 
 /// Helper function to setup tracing with json compat layer and execute a closure
 /// that produces events. Returns the collected JSON output lines.
@@ -850,7 +852,7 @@ fn test_node_events() {
     };
 
     let setup = || {
-        let np_span = create_info_span(NodeProcessed::start(
+        let mut np_event = NodeProcessed::start(
             test_unique_id.clone(),
             TEST_ALIAS.to_string(),
             Some(TEST_DATABASE.to_string()),
@@ -866,7 +868,13 @@ fn test_node_events() {
             TEST_NODE_CHECKSUM.to_string(),
             true,
             None,
-        ));
+        );
+        // The span builder normally stamps these on; set them here so the emitted
+        // `index`/`total` are asserted against real values rather than the 0 fallback.
+        np_event.node_index = Some(TEST_NODE_INDEX);
+        np_event.node_count_total = Some(TEST_NODE_COUNT_TOTAL);
+
+        let np_span = create_info_span(np_event);
 
         // create NodeEvaluated spans for different phases that follow from NodeProcessed
         let render_ne_span = create_test_node_evaluated_span(ExecutionPhase::Render);
@@ -983,7 +991,9 @@ fn test_node_events() {
             "msg": format!("Started test {}.{}", TEST_SCHEMA, TEST_ALIAS),
         },
         "data": {
-            "node_info": expected_node_info("started", false)
+            "node_info": expected_node_info("started", false),
+            "index": TEST_NODE_INDEX,
+            "total": TEST_NODE_COUNT_TOTAL
         }
     });
 
@@ -1010,12 +1020,19 @@ fn test_node_events() {
             "name": "LogTestResult",
             "level": "info",
             "extra": {},
-            "msg": format!("   Skipped [-------] test  {} ({} - {}:1:0)", TEST_ALIAS, test_custom_mat.clone(), TEST_REL_PATH)
+            // Counter trails the line; a skipped node has no elapsed time, so the trailing
+            // field carries the counter alone.
+            "msg": format!(
+                "   Skipped test  {} ({} - {}:1:0) [{} of {}]",
+                TEST_ALIAS, test_custom_mat.clone(), TEST_REL_PATH, TEST_NODE_INDEX, TEST_NODE_COUNT_TOTAL
+            )
         },
         "data": {
             "node_info": expected_node_info("skipped", true),
             "status": "skipped",
             "execution_time": "<redacted::execution_time>",
+            "index": TEST_NODE_INDEX,
+            "total": TEST_NODE_COUNT_TOTAL,
         }
     });
 
@@ -1505,6 +1522,10 @@ fn test_freshness_result() {
                 None,
             );
             node_processed_event.source_name = Some(source_name.to_string());
+            // Normally stamped on by the span builder; set here so the emitted
+            // `index`/`total` are asserted against real values.
+            node_processed_event.node_index = Some(TEST_NODE_INDEX);
+            node_processed_event.node_count_total = Some(TEST_NODE_COUNT_TOTAL);
 
             // Set freshness outcome (warn) with age
             node_processed_event.node_outcome = NodeOutcome::Success as i32;
@@ -1541,7 +1562,9 @@ fn test_freshness_result() {
                     "status": "warn",
                     "execution_time": "<redacted::execution_time>",
                     "source_name": source_name,
-                    "table_name": table_name
+                    "table_name": table_name,
+                    "index": TEST_NODE_INDEX,
+                    "total": TEST_NODE_COUNT_TOTAL
                 }
             }),
             // LogStartLine (Q011)
@@ -1556,7 +1579,9 @@ fn test_freshness_result() {
                     "msg": format!("Started source {}.{}", source_name, table_name)
                 },
                 "data": {
-                    "node_info": expected_node_info("started")
+                    "node_info": expected_node_info("started"),
+                    "index": TEST_NODE_INDEX,
+                    "total": TEST_NODE_COUNT_TOTAL
                 }
             }),
             // NodeFinished (Q025) - must also be emitted for freshness nodes

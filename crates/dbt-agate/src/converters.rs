@@ -8,8 +8,8 @@ use arrow::compute::{CastOptions, cast_with_options};
 use arrow::datatypes::*;
 use arrow::util::display::FormatOptions;
 use arrow_array::{
-    Array, ArrowPrimitiveType, BooleanArray, GenericByteArray, GenericListArray, MapArray,
-    OffsetSizeTrait, StructArray,
+    Array, ArrowPrimitiveType, BooleanArray, GenericByteArray, GenericByteViewArray,
+    GenericListArray, MapArray, OffsetSizeTrait, StructArray,
 };
 use arrow_buffer::i256;
 use arrow_schema::ArrowError;
@@ -476,11 +476,50 @@ impl<O: OffsetSizeTrait> ArrayConverter for GenericByteArrayConverter<GenericBin
 
 type GenericStringArrayConverter<O> = GenericByteArrayConverter<GenericStringType<O>>;
 type StringArrayConverter = GenericStringArrayConverter<i32>;
-// type LargeStringArrayConverter = GenericStringArrayConverter<i64>;
+type LargeStringArrayConverter = GenericStringArrayConverter<i64>;
 
 type GenericBinaryArrayConverter<O> = GenericByteArrayConverter<GenericBinaryType<O>>;
 type BinaryArrayConverter = GenericBinaryArrayConverter<i32>;
-// type LargeBinaryArrayConverter = GenericBinaryArrayConverter<i64>;
+type LargeBinaryArrayConverter = GenericBinaryArrayConverter<i64>;
+// }}}
+
+// StringView and BinaryView {{{
+struct ByteViewArrayConverter<T: ByteViewType> {
+    array: GenericByteViewArray<T>,
+}
+
+impl<T: ByteViewType> ByteViewArrayConverter<T> {
+    pub fn new(array: &GenericByteViewArray<T>) -> Self {
+        Self {
+            array: array.clone(),
+        }
+    }
+}
+
+impl ArrayConverter for ByteViewArrayConverter<StringViewType> {
+    fn to_value(&self, idx: usize) -> Value {
+        if self.array.is_valid(idx) {
+            let value = self.array.value(idx);
+            Value::from(value)
+        } else {
+            Value::from(())
+        }
+    }
+}
+
+impl ArrayConverter for ByteViewArrayConverter<BinaryViewType> {
+    fn to_value(&self, idx: usize) -> Value {
+        if self.array.is_valid(idx) {
+            let value = self.array.value(idx);
+            Value::from(value)
+        } else {
+            Value::from(())
+        }
+    }
+}
+
+type StringViewArrayConverter = ByteViewArrayConverter<StringViewType>;
+type BinaryViewArrayConverter = ByteViewArrayConverter<BinaryViewType>;
 // }}}
 
 // List {{{
@@ -677,7 +716,11 @@ pub fn make_array_converter(array: &dyn Array) -> Result<Box<dyn ArrayConverter>
             array.as_primitive::<Decimal256Type>(),
         )),
         DataType::Utf8 => Box::new(StringArrayConverter::new(array.as_string())),
+        DataType::LargeUtf8 => Box::new(LargeStringArrayConverter::new(array.as_string::<i64>())),
         DataType::Binary => Box::new(BinaryArrayConverter::new(array.as_binary())),
+        DataType::LargeBinary => Box::new(LargeBinaryArrayConverter::new(array.as_binary::<i64>())),
+        DataType::Utf8View => Box::new(StringViewArrayConverter::new(array.as_string_view())),
+        DataType::BinaryView => Box::new(BinaryViewArrayConverter::new(array.as_binary_view())),
         DataType::Date32 => Box::new(PrimitiveArrayConverter::<Date32Type>::new(
             array.as_primitive::<Date32Type>(),
         )),
@@ -753,11 +796,11 @@ mod tests {
     use super::*;
     use arrow::compute::kernels::cast_utils::Parser as _;
     use arrow_array::{
-        ArrayRef, Date32Array, Date64Array, Decimal128Array, Decimal256Array, Float64Array,
-        Int32Array, Int64Array, LargeListArray, ListArray, StringArray, Time32MillisecondArray,
-        Time32SecondArray, Time64MicrosecondArray, Time64NanosecondArray,
-        TimestampMicrosecondArray, TimestampMillisecondArray, TimestampNanosecondArray,
-        TimestampSecondArray, UInt64Array,
+        ArrayRef, BinaryViewArray, Date32Array, Date64Array, Decimal128Array, Decimal256Array,
+        Float64Array, Int32Array, Int64Array, LargeBinaryArray, LargeListArray, LargeStringArray,
+        ListArray, StringArray, StringViewArray, Time32MillisecondArray, Time32SecondArray,
+        Time64MicrosecondArray, Time64NanosecondArray, TimestampMicrosecondArray,
+        TimestampMillisecondArray, TimestampNanosecondArray, TimestampSecondArray, UInt64Array,
         builder::{Int32Builder, ListBuilder, MapBuilder, StringBuilder, StructBuilder},
     };
 
@@ -939,6 +982,72 @@ mod tests {
         assert_eq!(
             result,
             vec![Value::from("Hello"), Value::from("World"), Value::from(())]
+        );
+    }
+
+    #[test]
+    fn test_large_string_values() {
+        let array: ArrayRef = Arc::new(LargeStringArray::from(vec![
+            Some("Hello"),
+            Some("World"),
+            None,
+        ]));
+        let result = arrow_to_values(&array).unwrap();
+        assert_eq!(
+            result,
+            vec![Value::from("Hello"), Value::from("World"), Value::from(())]
+        );
+    }
+
+    #[test]
+    fn test_large_binary_values() {
+        let array: ArrayRef = Arc::new(LargeBinaryArray::from(vec![
+            Some(b"ab".as_ref()),
+            None,
+            Some(b"cd".as_ref()),
+        ]));
+        // LargeBinary and Binary should convert identically to their i32 counterparts.
+        let small: ArrayRef = Arc::new(arrow_array::BinaryArray::from(vec![
+            Some(b"ab".as_ref()),
+            None,
+            Some(b"cd".as_ref()),
+        ]));
+        assert_eq!(
+            arrow_to_values(&array).unwrap(),
+            arrow_to_values(&small).unwrap()
+        );
+    }
+
+    #[test]
+    fn test_string_view_values() {
+        let array: ArrayRef = Arc::new(StringViewArray::from(vec![
+            Some("Hello"),
+            Some("World"),
+            None,
+        ]));
+        let result = arrow_to_values(&array).unwrap();
+        assert_eq!(
+            result,
+            vec![Value::from("Hello"), Value::from("World"), Value::from(())]
+        );
+    }
+
+    #[test]
+    fn test_binary_view_values() {
+        let array: ArrayRef = Arc::new(BinaryViewArray::from(vec![
+            Some(b"ab".as_ref()),
+            None,
+            Some(b"cd".as_ref()),
+        ]));
+        // BinaryView should convert identically to Binary.
+        let small: ArrayRef = Arc::new(arrow_array::BinaryArray::from(vec![
+            Some(b"ab".as_ref()),
+            None,
+            Some(b"cd".as_ref()),
+        ]));
+        assert_eq!(
+            arrow_to_values(&array).unwrap(),
+            arrow_to_values(&small).unwrap()
         );
     }
 

@@ -1,17 +1,13 @@
 import { QueryClient } from '@tanstack/react-query';
 
-import { ApiError } from './api';
-
-/** Shared QueryClient. Mirrors the defaults used by the sibling
- *  `dbt-explorer` package: never refetch on window focus, and retry up to
- *  three times — but never retry a 404, since a missing resource won't
- *  appear on a later attempt. */
+/** Shared QueryClient: never refetch on window focus, and retry up to three times.
+ *
+ *  There used to be a "never retry a 404" carve-out. Nothing raises a status code any
+ *  more — a missing resource comes back as `null` from the data source rather than as
+ *  a thrown error — so the only failures left to retry are the genuinely transient
+ *  ones: fetching a parquet artifact, or loading DuckDB-WASM from the CDN. */
 export const queryClient = new QueryClient({
   defaultOptions: {
-    queries: {
-      refetchOnWindowFocus: false,
-      retry: (numFailures, error) =>
-        error instanceof ApiError && error.status === 404 ? false : numFailures < 3,
-    },
+    queries: { refetchOnWindowFocus: false, retry: 3 },
   },
 });

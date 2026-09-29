@@ -14,14 +14,18 @@ const SCENARIOS: &[&str] = &[
     "ducklake_full_options",
     "ducklake_minimal",
     "empty_alias_error",
+    "glue_endpoint_type",
+    "glue_explicit_endpoint",
     "horizon_duckdb",
     "horizon_duckdb_user_overrides",
+    "iceberg_rest_endpoint_type_glue",
     "iceberg_rest_full_options",
     "iceberg_rest_minimal",
     "iceberg_rest_string_bool_options",
     "local_filesystem_no_attach",
     "multi_catalog_iceberg_rest",
     "multi_catalog_with_ducklake",
+    "s3_tables_endpoint_type",
     "unity_duckdb",
 ];
 

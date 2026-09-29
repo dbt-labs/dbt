@@ -2,6 +2,7 @@ import { fireEvent, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { renderWithProviders } from '../test/renderWithProviders';
+import { listSource } from '../test/wireFixtures';
 
 vi.mock('../shared', async (importOriginal) => {
   const mod = await importOriginal<typeof import('../shared')>();
@@ -36,62 +37,36 @@ vi.mock('../shared', async (importOriginal) => {
     ),
   };
 });
-vi.mock('@dbt-labs/dbt-dag', () => ({
-  resourceIconMap: new Proxy({}, { get: () => 'macro' }),
-}));
-vi.mock('@dbt-labs/sourdough', async (importOriginal) => {
-  const mod = await importOriginal<typeof import('@dbt-labs/sourdough')>();
-  return { ...mod, Icon: () => null };
-});
-
-interface MacroFacetsBody {
-  packages: { value: string; count: number | null }[];
-}
-
-function makeFetch(listData: unknown[], facets: MacroFacetsBody = { packages: [] }) {
-  return vi.fn((url: string) => {
-    const body = url.includes('facets')
-      ? facets
-      : {
-          data: listData,
-          page_info: {
-            total_count: listData.length,
-            has_next_page: false,
-            end_cursor: null,
-          },
-        };
-    return Promise.resolve({ ok: true, json: () => Promise.resolve(body) });
-  });
-}
-
 import { MacroFilterView } from './MacroFilterView';
 
 describe('<MacroFilterView />', () => {
   afterEach(() => vi.unstubAllGlobals());
 
   it('loads macros and shows total count', async () => {
-    vi.stubGlobal(
-      'fetch',
-      makeFetch([
-        {
-          unique_id: 'macro.pkg.generate_schema',
-          name: 'generate_schema',
-          resource_type: 'macro',
-          package_name: 'pkg',
-        },
-      ]),
-    );
     renderWithProviders(
       <MacroFilterView project={{ name: 'test_project' }} onPeek={vi.fn()} />,
+      {
+        source: listSource('macro', {
+          data: [
+            {
+              unique_id: 'macro.pkg.generate_schema',
+              name: 'generate_schema',
+              resource_type: 'macro',
+              package_name: 'pkg',
+            },
+          ],
+          page_info: { total_count: 1, has_next_page: false, end_cursor: null },
+        }),
+      },
     );
     await waitFor(() => expect(screen.getByText('Loaded 1 of 1')).toBeInTheDocument());
     expect(screen.getByText('Macros')).toBeInTheDocument();
   });
 
   it('shows empty state when no macros', async () => {
-    vi.stubGlobal('fetch', makeFetch([]));
     renderWithProviders(
       <MacroFilterView project={{ name: 'test_project' }} onPeek={vi.fn()} />,
+      { source: listSource('macro', { data: [] }) },
     );
     await waitFor(() =>
       expect(screen.getByText('No macros found.')).toBeInTheDocument(),
@@ -99,12 +74,24 @@ describe('<MacroFilterView />', () => {
   });
 
   it('renders package facet options and filters on selection', async () => {
-    const fetchSpy = makeFetch([], {
-      packages: [{ value: 'jaffle_shop', count: 5 }],
-    });
-    vi.stubGlobal('fetch', fetchSpy);
+    // This used to assert on the request URL. The mechanism is now a source call, so
+    // the assertion moves to the filter the view passes down — same intent, one less
+    // layer of indirection.
+    const fetchAssetList = vi.fn(
+      async (_args: { filter?: Record<string, unknown>; sort?: unknown }) => ({
+        items: [],
+        nextCursor: null,
+        totalCount: 0,
+      }),
+    );
+    const source = listSource('macro', { data: [] }, {
+      fetchAssetList,
+      fetchFacets: async () => ({ packages: [{ value: 'jaffle_shop', count: 5 }] }),
+    } as never);
+
     renderWithProviders(
       <MacroFilterView project={{ name: 'test_project' }} onPeek={vi.fn()} />,
+      { source },
     );
     await waitFor(() =>
       expect(
@@ -118,7 +105,11 @@ describe('<MacroFilterView />', () => {
 
     await waitFor(() =>
       expect(
-        fetchSpy.mock.calls.some((c) => String(c[0]).includes('package=jaffle_shop')),
+        fetchAssetList.mock.calls.some((c) =>
+          (c[0] as { filter?: { packages?: string[] } })?.filter?.packages?.includes(
+            'jaffle_shop',
+          ),
+        ),
       ).toBe(true),
     );
   });

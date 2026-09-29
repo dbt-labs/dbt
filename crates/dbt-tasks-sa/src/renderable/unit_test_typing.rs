@@ -198,3 +198,54 @@ impl SnowflakeTyping {
         matches!(data_type, DataType::List(field) if field.name() == "item" && Self::is_variant(field.data_type()))
     }
 }
+
+// --- DatabricksTyping ---
+
+#[non_exhaustive]
+pub struct DatabricksTyping {}
+
+impl DatabricksTyping {
+    pub fn is_timestamp_ntz(data_type: &DataType) -> bool {
+        matches!(data_type, DataType::FixedSizeList(field, 1) if field.name() == "timestamp_ntz")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_databricks_is_timestamp_ntz_matches_bare_name() {
+        let field = Arc::new(Field::new(
+            "timestamp_ntz",
+            DataType::Timestamp(TimeUnit::Nanosecond, None),
+            true,
+        ));
+        let data_type = DataType::FixedSizeList(field, 1);
+        assert!(DatabricksTyping::is_timestamp_ntz(&data_type));
+    }
+
+    #[test]
+    fn test_databricks_is_timestamp_ntz_rejects_plain_timestamp() {
+        let data_type = DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into()));
+        assert!(!DatabricksTyping::is_timestamp_ntz(&data_type));
+    }
+
+    #[test]
+    fn test_databricks_is_timestamp_ntz_rejects_other_distinct_types() {
+        let field = Arc::new(Field::new("geography", DataType::Utf8, true));
+        let data_type = DataType::FixedSizeList(field, 1);
+        assert!(!DatabricksTyping::is_timestamp_ntz(&data_type));
+    }
+
+    #[test]
+    fn test_databricks_is_timestamp_ntz_rejects_non_length_one_list() {
+        let field = Arc::new(Field::new(
+            "timestamp_ntz",
+            DataType::Timestamp(TimeUnit::Nanosecond, None),
+            true,
+        ));
+        let data_type = DataType::FixedSizeList(field, 2);
+        assert!(!DatabricksTyping::is_timestamp_ntz(&data_type));
+    }
+}

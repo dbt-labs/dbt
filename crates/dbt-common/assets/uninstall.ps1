@@ -9,7 +9,23 @@ param(
         }
         return $true
     })]
-    [string]$installLocation = "$env:USERPROFILE\.local\bin"
+    [string]$installLocation = "$env:USERPROFILE\.local\bin",
+
+    # Overrides installLocation\dbt.exe with the exact binary to remove --
+    # older callers that only pass installLocation assume the binary is
+    # always literally named dbt.exe, which isn't true for a renamed copy
+    # (e.g. the VS Code extension's dbtf.exe, to avoid colliding with a
+    # separate OSS dbt on PATH). Optional and additive so this script keeps
+    # working unchanged for any already-installed dbt that only knows about
+    # installLocation.
+    [Parameter()]
+    [ValidateScript({
+        if ($_ -and -not (Test-Path -Path $_ -IsValid)) {
+            throw "Path '$_' contains invalid characters"
+        }
+        return $true
+    })]
+    [string]$BinaryPath = ''
 )
 
 # Color support
@@ -132,10 +148,11 @@ function Set-InstallLocation {
 
 function Uninstall-dbt {
     param(
-        [string]$Location
+        [string]$Location,
+        [string]$ExplicitBinaryPath = ''
     )
 
-    $binaryPath = "$Location\dbt.exe"
+    $binaryPath = if ($ExplicitBinaryPath) { $ExplicitBinaryPath } else { "$Location\dbt.exe" }
 
     if (-not (Test-Path $binaryPath)) {
         Write-ErrorAndExit ('dbt not found at: ' + $binaryPath)
@@ -173,7 +190,7 @@ function main {
     $installLocation = Set-InstallLocation -Path $installLocation
 
     # Uninstall dbt
-    Uninstall-dbt -Location $installLocation
+    Uninstall-dbt -Location $installLocation -ExplicitBinaryPath $BinaryPath
 
     return
 }

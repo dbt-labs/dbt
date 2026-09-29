@@ -1,7 +1,0 @@
-kind: Features
-body: Add support for ClickHouse Dictionary materialization
-time: 2026-07-10T11:48:19.246454+02:00
-custom:
-    author: koletzilla
-    issue: "14580"
-    project: dbt-core

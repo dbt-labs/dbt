@@ -25,10 +25,20 @@ export function useSourceQuery<T>(opts: {
 }) {
   const source = useMetadataDataSource();
   const supported = opts.method in source;
-  return useQuery({
+  const query = useQuery({
     queryKey: opts.queryKey,
     queryFn: () => opts.call(source),
     enabled: supported && (opts.enabled ?? true),
     staleTime: opts.staleTime,
   });
+
+  // A disabled query stays `isPending` forever with `data` undefined, which is
+  // indistinguishable from "still loading" — so views render a spinner or an
+  // empty state that misattributes the cause. `isSupported` lets them say the
+  // honest thing instead. `isPending` is forced false because nothing is coming.
+  return {
+    ...query,
+    isSupported: supported,
+    isPending: supported ? query.isPending : false,
+  };
 }

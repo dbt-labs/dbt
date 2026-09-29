@@ -1,14 +1,10 @@
-import {
-  afterEach,
-  beforeEach,
-  describe,
-  expect,
-  it,
-  type MockInstance,
-  vi,
-} from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, type Mock, vi } from 'vitest';
 
-import { api, type Identity } from '../api';
+import type { AnalyticsEvent, Identity } from '../types';
+import {
+  type SiteBootstrap,
+  SUPPORTED_BOOTSTRAP_SCHEMA_VERSION,
+} from './siteBootstrap';
 import {
   getTelemetryContext,
   initTelemetry,
@@ -21,6 +17,38 @@ import {
   trackSearchPerformed,
   trackUpsellEvent,
 } from './telemetry';
+import { flushVortex, logEvent } from './vortexSink';
+
+// The sink is the seam under test here: this file asserts what telemetry *hands* the
+// producer, and `vortexSink.test.ts` covers what the producer does with it.
+vi.mock('./vortexSink', () => ({
+  logEvent: vi.fn(() => Promise.resolve()),
+  flushVortex: vi.fn(() => Promise.resolve()),
+}));
+
+/** A generated site's bootstrap. `flush` needs one — there is nowhere else to send. */
+function siteBootstrap(): SiteBootstrap {
+  return {
+    schema_version: SUPPORTED_BOOTSTRAP_SCHEMA_VERSION,
+    generated_at: '2026-08-08T18:00:00Z',
+    dbt_version: '2.0.0',
+    distribution: 'dbt',
+    is_logged_in: true,
+    duckdb_cdn_base: 'https://cdn.jsdelivr.net/npm/@duckdb/duckdb-wasm@1.32.0',
+    data_dir: 'index/',
+    telemetry: {
+      enabled: true,
+      dbt_cloud_account_identifier: '',
+      dbt_cloud_project_id: '',
+      dbt_cloud_environment_id: '',
+    },
+  };
+}
+
+/** Every event handed to the producer, in order. */
+function sentEvents(): AnalyticsEvent[] {
+  return (logEvent as Mock).mock.calls.map((call) => call[0] as AnalyticsEvent);
+}
 
 const ENABLED: Identity = { is_logged_in: true, analytics_enabled: true };
 const DISABLED: Identity = { is_logged_in: true, analytics_enabled: false };
@@ -68,47 +96,43 @@ describe('telemetry', () => {
 });
 
 describe('telemetry emission', () => {
-  let analytics: MockInstance<typeof api.analytics>;
-
   beforeEach(() => {
     vi.useFakeTimers();
-    analytics = vi
-      .spyOn(api, 'analytics')
-      .mockResolvedValue({ accepted: 1, skipped: 0 });
+    vi.mocked(logEvent).mockClear();
+    vi.mocked(flushVortex).mockClear();
+    window.__DBT_DOCS__ = siteBootstrap();
   });
 
   afterEach(() => {
     resetTelemetryForTests();
     vi.runOnlyPendingTimers();
     vi.useRealTimers();
-    vi.restoreAllMocks();
+    delete window.__DBT_DOCS__;
   });
 
   it('track is a no-op before init', () => {
     trackSearchPerformed({ search_query: 'x', result_count: 1 });
     vi.runAllTimers();
-    expect(analytics).not.toHaveBeenCalled();
+    expect(logEvent).not.toHaveBeenCalled();
   });
 
   it('track is a no-op after a consent-denied init', () => {
     initTelemetry(DISABLED);
     trackSearchPerformed({ search_query: 'x', result_count: 1 });
     vi.runAllTimers();
-    expect(analytics).not.toHaveBeenCalled();
+    expect(logEvent).not.toHaveBeenCalled();
   });
 
   it('injects is_logged_in and an anonymised context, then flushes a batch', () => {
     initTelemetry(ENABLED);
     trackSearchPerformed({ search_query: 'orders', result_count: 3 });
 
-    // Debounced — nothing posted until the flush timer fires.
-    expect(analytics).not.toHaveBeenCalled();
+    // Debounced — nothing sent until the flush timer fires.
+    expect(logEvent).not.toHaveBeenCalled();
     vi.runAllTimers();
 
-    expect(analytics).toHaveBeenCalledTimes(1);
-    const body = analytics.mock.calls[0][0] as { events: unknown[] };
-    expect(body.events).toHaveLength(1);
-    const event = body.events[0] as Record<string, unknown>;
+    expect(logEvent).toHaveBeenCalledTimes(1);
+    const event = sentEvents()[0] as unknown as Record<string, unknown>;
     expect(event.event_type).toBe('search_performed');
     expect(event.is_logged_in).toBe(true);
     const ctx = event.context as Record<string, unknown>;
@@ -128,9 +152,8 @@ describe('telemetry emission', () => {
     });
     vi.runAllTimers();
 
-    expect(analytics).toHaveBeenCalledTimes(1);
-    const body = analytics.mock.calls[0][0] as { events: unknown[] };
-    expect(body.events).toHaveLength(2);
+    // One flush, both events — the producer takes them individually.
+    expect(logEvent).toHaveBeenCalledTimes(2);
   });
 
   it('gives each event a distinct event_id but a shared session_id', () => {
@@ -139,33 +162,24 @@ describe('telemetry emission', () => {
     trackSearchPerformed({ search_query: 'b', result_count: 2 });
     vi.runAllTimers();
 
-    const events = (
-      analytics.mock.calls[0][0] as unknown as {
-        events: Array<{ context: Record<string, string> }>;
-      }
-    ).events;
-    expect(events[0].context.event_id).not.toBe(events[1].context.event_id);
-    expect(events[0].context.session_id).toBe(events[1].context.session_id);
+    const contexts = sentEvents().map((event) => event.context);
+    expect(contexts[0]?.event_id).not.toBe(contexts[1]?.event_id);
+    expect(contexts[0]?.session_id).toBe(contexts[1]?.session_id);
   });
 
-  it('flushes the queue on pagehide via sendBeacon', () => {
-    const sendBeacon = vi.fn().mockReturnValue(true);
-    vi.stubGlobal('navigator', { ...navigator, sendBeacon });
-
+  it('drains the queue through the producer on pagehide', () => {
     initTelemetry(ENABLED);
     trackSearchPerformed({ search_query: 'a', result_count: 1 });
     // Not yet flushed via the timer.
     window.dispatchEvent(new Event('pagehide'));
 
-    expect(sendBeacon).toHaveBeenCalledTimes(1);
-    const [path, blob] = sendBeacon.mock.calls[0];
-    expect(path).toBe('/api/v1/analytics/events');
-    expect(blob).toBeInstanceOf(Blob);
-    // The timer flush must not double-send after the beacon drained the queue.
-    vi.runAllTimers();
-    expect(analytics).not.toHaveBeenCalled();
+    expect(logEvent).toHaveBeenCalledTimes(1);
+    // A closing tab cannot await, so the producer is told to push what it has.
+    expect(flushVortex).toHaveBeenCalledTimes(1);
 
-    vi.unstubAllGlobals();
+    // The timer flush must not double-send after the exit path drained the queue.
+    vi.runAllTimers();
+    expect(logEvent).toHaveBeenCalledTimes(1);
   });
 
   it('resetTelemetryForTests clears the queue and session', () => {
@@ -176,7 +190,7 @@ describe('telemetry emission', () => {
     // The pending event is gone and telemetry is uninitialised again.
     expect(isTelemetryInitialized()).toBe(false);
     vi.runAllTimers();
-    expect(analytics).not.toHaveBeenCalled();
+    expect(logEvent).not.toHaveBeenCalled();
   });
 
   it.each([
@@ -252,9 +266,6 @@ describe('telemetry emission', () => {
     emit();
     vi.runAllTimers();
 
-    const event = (
-      analytics.mock.calls[0][0] as unknown as { events: Record<string, unknown>[] }
-    ).events[0];
-    expect(event).toMatchObject(expected);
+    expect(sentEvents()[0]).toMatchObject(expected);
   });
 });

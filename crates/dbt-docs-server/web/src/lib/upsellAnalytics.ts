@@ -4,7 +4,7 @@ import { trackReferralLinkClicked, trackUpsellEvent } from './telemetry';
 /**
  * Map a shared {@link UpsellAnalyticsEvent} from the metadata-shared upsell
  * components onto the docs-v2 analytics wire events. A single handler is wired
- * at every upsell render site (see App / LocatePane / CatalogHome / NodeDetail).
+ * at every upsell render site (see App / LocatePane / NodeDetail).
  *
  * The `clicked` action fans out: a CTA button carries `ctaLabel` →
  * `upsell_prompt_clicked`; an inline learn-more / external doc link carries

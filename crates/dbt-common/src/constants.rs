@@ -1,6 +1,6 @@
 // ----------------------------------------------------------------------------------------------
-// DBT FUSION
-pub const DBT_FUSION: &str = "dbt-fusion";
+// dbt brand name (shown in --version banners and JSON log lines)
+pub const DBT_BRAND_NAME: &str = "dbt";
 pub const DBT_SA_CLI: &str = "dbt-sa-cli";
 
 // ----------------------------------------------------------------------------------------------
@@ -28,6 +28,10 @@ pub const DBT_VARS_YML: &str = "vars.yml";
 //   │   └── other_files.sql
 //   ├── generic_tests/
 //   │   ├── test.sql
+//   ├── private/
+//   │   ├── index/          engine snapshot (not a user API)
+//   │   └── metadata/       epoch parquet (not a user API)
+//   ├── info_schema/        public queryable contract (opt-in)
 //   ├── manifest.json
 //   ├── catalog.json
 //   └── logs/
@@ -42,8 +46,14 @@ pub const DBT_MANIFEST_INFO: &str = "manifest.info";
 pub const DBT_SEMANTIC_MANIFEST_JSON: &str = "semantic_manifest.json";
 pub const DBT_CATALOG_JSON: &str = "catalog.json";
 pub const DBT_SOURCES_JSON: &str = "sources.json";
+pub const DBT_FRESHNESS_JSON: &str = "freshness.json";
 pub const DBT_COMPILED_DIR_NAME: &str = "compiled";
+/// Internal engine artifacts under `<target>/private/` — not a user API.
+pub const DBT_PRIVATE_DIR_NAME: &str = "private";
+pub const DBT_INDEX_DIR_NAME: &str = "index";
 pub const DBT_METADATA_DIR_NAME: &str = "metadata";
+pub const DBT_INFO_SCHEMA_DIR_NAME: &str = "info_schema";
+pub const DBT_INFO_SCHEMA_STAGING_DIR_NAME: &str = ".info_schema_staging";
 pub const DBT_EPHEMERAL_DIR_NAME: &str = "ephemeral";
 pub const DBT_HOOKS_DIR_NAME: &str = "hooks";
 pub const DBT_CTE_PREFIX: &str = "__dbt__cte__";
@@ -137,6 +147,26 @@ pub fn collect_dbt_custom_envs() -> std::collections::BTreeMap<String, String> {
         .collect()
 }
 
+/// `<target>/private/` — engine-internal artifacts, not a user API.
+pub fn default_private_dir(out_dir: impl AsRef<std::path::Path>) -> std::path::PathBuf {
+    out_dir.as_ref().join(DBT_PRIVATE_DIR_NAME)
+}
+
+/// `<target>/private/index/` — default snapshot index directory.
+pub fn default_index_dir(out_dir: impl AsRef<std::path::Path>) -> std::path::PathBuf {
+    default_private_dir(out_dir).join(DBT_INDEX_DIR_NAME)
+}
+
+/// `<target>/private/metadata/` — default epoch parquet directory.
+pub fn default_metadata_dir(out_dir: impl AsRef<std::path::Path>) -> std::path::PathBuf {
+    default_private_dir(out_dir).join(DBT_METADATA_DIR_NAME)
+}
+
+/// `<target>/metadata/` — default OTel telemetry parquet directory (public).
+pub fn default_telemetry_dir(out_dir: impl AsRef<std::path::Path>) -> std::path::PathBuf {
+    out_dir.as_ref().join(DBT_METADATA_DIR_NAME)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -174,6 +204,19 @@ mod tests {
         assert!(
             !envs.contains_key(VAR_NAME),
             "Full prefixed key should not appear. The prefix should be stripped"
+        );
+    }
+
+    #[test]
+    fn default_index_and_metadata_dirs_live_under_private() {
+        let out = std::path::Path::new("/repo/target");
+        assert_eq!(
+            default_index_dir(out),
+            std::path::PathBuf::from("/repo/target/private/index")
+        );
+        assert_eq!(
+            default_metadata_dir(out),
+            std::path::PathBuf::from("/repo/target/private/metadata")
         );
     }
 }

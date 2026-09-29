@@ -3,26 +3,13 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use axum::Router;
-use axum::routing::{get, post};
 use tracing::info;
 
 use crate::DocsServeArgs;
-
 use crate::assets::serve_assets;
-use crate::handlers::{
-    analytics, capabilities, column_lineage, distribution, exposures, files, groups, health,
-    identity, lineage, macros, metrics, models, nodes, project, saved_queries, search, seeds,
-    semantic_models, snapshots, sources, tests,
-};
-#[cfg(feature = "openapi-ui")]
-use crate::openapi::ApiDoc;
-#[cfg(not(feature = "openapi-ui"))]
-use crate::openapi::get_openapi_spec;
 use crate::providers::Providers;
-use crate::resolve_index_dir;
+use crate::resolve_info_schema_dir;
 use crate::state::AppState;
-#[cfg(feature = "openapi-ui")]
-use utoipa::OpenApi as _;
 
 /// Run the docs server. Must be called from within a tokio runtime —
 /// `dbt-main` already initialises one before dispatching commands, so
@@ -30,9 +17,9 @@ use utoipa::OpenApi as _;
 /// responsible for constructing the [`Providers`]; the SA crate itself
 /// never touches `dbt-index` or any other proprietary surface.
 pub async fn run_with_args(args: Arc<DocsServeArgs>, providers: Providers) -> io::Result<()> {
-    let index_dir = resolve_index_dir(&args);
+    let data_dir = resolve_info_schema_dir(&args);
     let state = Arc::new(AppState::new(
-        index_dir,
+        data_dir,
         providers,
         args.has_dbt_state,
         args.send_anonymous_usage_stats,
@@ -52,113 +39,35 @@ async fn serve_with_shutdown<F>(
 where
     F: Future<Output = ()> + Send + 'static,
 {
-    let app = Router::new()
-        .route("/api/v1/health", get(health::get_health))
-        .route("/api/v1/identity", get(identity::get_identity))
-        .route("/api/v1/capabilities", get(capabilities::get_capabilities))
-        .route("/api/v1/distribution", get(distribution::get_distribution))
-        .route("/api/v1/project", get(project::get_project))
-        .route("/api/v1/models", get(models::list_models))
-        .route("/api/v1/models/facets", get(models::list_model_facets))
-        .route("/api/v1/models/{unique_id}", get(models::get_model))
-        .route("/api/v1/sources", get(sources::list_sources))
-        .route("/api/v1/sources/facets", get(sources::list_source_facets))
-        .route("/api/v1/sources/{unique_id}", get(sources::get_source))
-        .route("/api/v1/groups", get(groups::list_groups))
-        .route("/api/v1/groups/facets", get(groups::list_group_facets))
-        .route("/api/v1/groups/{unique_id}", get(groups::get_group))
-        .route("/api/v1/macros", get(macros::list_macros))
-        .route("/api/v1/macros/facets", get(macros::list_macro_facets))
-        .route("/api/v1/macros/{unique_id}", get(macros::get_macro))
-        .route("/api/v1/metrics", get(metrics::list_metrics))
-        .route("/api/v1/metrics/facets", get(metrics::list_metric_facets))
-        .route("/api/v1/metrics/{unique_id}", get(metrics::get_metric))
-        .route(
-            "/api/v1/saved_queries",
-            get(saved_queries::list_saved_queries),
-        )
-        .route(
-            "/api/v1/saved_queries/facets",
-            get(saved_queries::list_saved_query_facets),
-        )
-        .route(
-            "/api/v1/saved_queries/{unique_id}",
-            get(saved_queries::get_saved_query),
-        )
-        .route("/api/v1/seeds", get(seeds::list_seeds))
-        .route("/api/v1/seeds/facets", get(seeds::list_seed_facets))
-        .route("/api/v1/seeds/{unique_id}", get(seeds::get_seed))
-        .route(
-            "/api/v1/semantic_models",
-            get(semantic_models::list_semantic_models),
-        )
-        .route(
-            "/api/v1/semantic_models/facets",
-            get(semantic_models::list_semantic_model_facets),
-        )
-        .route(
-            "/api/v1/semantic_models/{unique_id}",
-            get(semantic_models::get_semantic_model),
-        )
-        .route("/api/v1/snapshots", get(snapshots::list_snapshots))
-        .route(
-            "/api/v1/snapshots/facets",
-            get(snapshots::list_snapshot_facets),
-        )
-        .route(
-            "/api/v1/snapshots/{unique_id}",
-            get(snapshots::get_snapshot),
-        )
-        .route("/api/v1/tests", get(tests::list_tests))
-        .route("/api/v1/tests/facets", get(tests::list_test_facets))
-        .route("/api/v1/tests/{unique_id}", get(tests::get_test))
-        .route("/api/v1/exposures", get(exposures::list_exposures))
-        .route(
-            "/api/v1/exposures/facets",
-            get(exposures::list_exposure_facets),
-        )
-        .route(
-            "/api/v1/exposures/{unique_id}",
-            get(exposures::get_exposure),
-        )
-        .route("/api/v1/nodes", get(nodes::list_nodes))
-        .route("/api/v1/nodes/counts", get(nodes::list_node_counts))
-        .route("/api/v1/nodes/{unique_id}", get(nodes::get_node))
-        .route("/api/v1/files", get(files::list_files))
-        .route(
-            "/api/v1/nodes/{unique_id}/lineage",
-            get(lineage::get_lineage),
-        )
-        .route(
-            "/api/v1/nodes/{unique_id}/column-lineage",
-            get(column_lineage::get_column_lineage),
-        )
-        .route("/api/v1/search", get(search::search))
-        .route("/api/v1/search/facets", get(search::search_facets))
-        .route("/api/v1/analytics/events", post(analytics::post_events));
+    // No routes. The site is static: `index.html`, hashed assets, and the parquet
+    // the browser queries itself. Everything the `/api/v1/*` handlers used to compute
+    // now runs client-side against that parquet, so there is nothing left to serve but
+    // files.
+    let app = Router::new();
 
-    // With `openapi-ui`, `SwaggerUi::url(...)` below also serves the spec
-    // itself at this path, so the plain route is only added when that
-    // feature is off (registering both panics on overlapping routes).
-    #[cfg(not(feature = "openapi-ui"))]
-    let app = app.route("/api/v1/openapi.json", get(get_openapi_spec));
-
-    #[cfg(feature = "openapi-ui")]
-    let app = app.merge(
-        utoipa_swagger_ui::SwaggerUi::new("/api/v1/docs")
-            .url("/api/v1/openapi.json", ApiDoc::openapi()),
-    );
-
-    let app = app.fallback(serve_assets).with_state(state.clone());
+    // A generated site wins over the embedded bundle: it is the only source with
+    // the bootstrap injected and the parquet artifacts beside it.
+    let app = match args.site_dir.clone() {
+        Some(site_dir) => app.fallback(move |uri| {
+            let site_dir = site_dir.clone();
+            async move { crate::assets::serve_site_dir(&site_dir, uri).await }
+        }),
+        None => app.fallback(serve_assets),
+    }
+    .with_state(state.clone());
 
     let bind = format!("{}:{}", args.host, args.port);
     let listener = tokio::net::TcpListener::bind(&bind).await?;
     let local_addr = listener.local_addr()?;
     let url = format!("http://{local_addr}");
 
-    eprintln!("dbt docs serve: serving from {}", state.index_dir.display());
+    match &args.site_dir {
+        Some(site_dir) => eprintln!("dbt docs serve: serving site {}", site_dir.display()),
+        None => eprintln!("dbt docs serve: serving the embedded bundle (no generated site)"),
+    }
+    eprintln!("dbt docs serve: serving from {}", state.data_dir.display());
     eprintln!("dbt docs serve: listening on {url}");
-    info!(target: "dbt_docs_server", index_dir = %state.index_dir.display(), %url, "started");
+    info!(target: "dbt_docs_server", data_dir = %state.data_dir.display(), %url, "started");
 
     if !args.no_open {
         if let Err(err) = try_open_browser(&url) {
@@ -198,9 +107,8 @@ async fn shutdown_signal() {
         let _ = tokio::signal::ctrl_c().await;
     }
 
-    // TODO(META-7739): analytics events buffered in the Vortex producer's worker are
-    // not flushed on shutdown. Loss on Ctrl-C is acceptable (worker flushes every
-    // ~500ms); if that changes, call `log_proto_and_shutdown` on the analytics producer here.
+    // Nothing to flush on shutdown any more: analytics is emitted by the browser
+    // straight to the collector (ADR-10), so the server holds no buffered events.
     info!(
         target: "dbt_docs_server",
         grace_secs = SHUTDOWN_GRACE.as_secs(),

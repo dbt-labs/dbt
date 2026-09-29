@@ -30,4 +30,3 @@ Resolves #
 - [ ] I have run this code in development, and it appears to resolve the stated issue.
 - [ ] This PR includes tests, or tests are not required or relevant for this PR.
 - [ ] This PR has no interface changes (e.g., macros, CLI, logs, JSON artifacts, config files, adapter interface, etc.) or this PR has already received feedback and approval from Product or DX.
-- [ ] This PR includes [type annotations](https://docs.python.org/3/library/typing.html) for new and modified functions.

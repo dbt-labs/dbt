@@ -2,6 +2,7 @@ import { fireEvent, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { renderWithProviders } from '../test/renderWithProviders';
+import { listSource } from '../test/wireFixtures';
 
 vi.mock('../shared', async (importOriginal) => {
   const mod = await importOriginal<typeof import('../shared')>();
@@ -36,14 +37,6 @@ vi.mock('../shared', async (importOriginal) => {
     ),
   };
 });
-vi.mock('@dbt-labs/dbt-dag', () => ({
-  resourceIconMap: new Proxy({}, { get: () => 'test' }),
-}));
-vi.mock('@dbt-labs/sourdough', async (importOriginal) => {
-  const mod = await importOriginal<typeof import('@dbt-labs/sourdough')>();
-  return { ...mod, Icon: () => null };
-});
-
 const TESTS_RESPONSE = {
   data: [
     {
@@ -59,20 +52,7 @@ const TESTS_RESPONSE = {
   page_info: { total_count: 1, has_next_page: false, end_cursor: null },
 };
 
-interface TestFacetsBody {
-  results: { value: string; count: number | null }[];
-  test_types: { value: string; count: number | null }[];
-}
-
-const EMPTY_FACETS: TestFacetsBody = { results: [], test_types: [] };
-
 /** Branches on `/facets` so the list and facet endpoints get distinct bodies. */
-function makeFetch(listData: unknown, facets: TestFacetsBody = EMPTY_FACETS) {
-  return vi.fn((url: string) => {
-    const body = String(url).includes('facets') ? facets : listData;
-    return Promise.resolve({ ok: true, json: () => Promise.resolve(body) });
-  });
-}
 
 const EMPTY_LIST = {
   data: [],
@@ -85,18 +65,18 @@ describe('<TestFilterView />', () => {
   afterEach(() => vi.unstubAllGlobals());
 
   it('loads tests and shows total count', async () => {
-    vi.stubGlobal('fetch', makeFetch(TESTS_RESPONSE));
     renderWithProviders(
       <TestFilterView project={{ name: 'test_project' }} onPeek={vi.fn()} />,
+      { source: listSource('test', TESTS_RESPONSE) },
     );
     await waitFor(() => expect(screen.getByText('Loaded 1 of 1')).toBeInTheDocument());
     expect(screen.getByText('Tests')).toBeInTheDocument();
   });
 
   it('shows empty state when no tests', async () => {
-    vi.stubGlobal('fetch', makeFetch(EMPTY_LIST));
     renderWithProviders(
       <TestFilterView project={{ name: 'test_project' }} onPeek={vi.fn()} />,
+      { source: listSource('test', EMPTY_LIST) },
     );
     await waitFor(() =>
       expect(screen.getByText('No tests found.')).toBeInTheDocument(),
@@ -104,15 +84,16 @@ describe('<TestFilterView />', () => {
   });
 
   it('renders capitalized result/test-type facet options', async () => {
-    vi.stubGlobal(
-      'fetch',
-      makeFetch(EMPTY_LIST, {
-        results: [{ value: 'pass', count: 10 }],
-        test_types: [{ value: 'data', count: 7 }],
-      }),
-    );
     renderWithProviders(
       <TestFilterView project={{ name: 'test_project' }} onPeek={vi.fn()} />,
+      {
+        source: listSource('test', EMPTY_LIST, {
+          fetchFacets: async () => ({
+            results: [{ value: 'pass', count: 10 }],
+            testTypes: [{ value: 'data', count: 7 }],
+          }),
+        } as never),
+      },
     );
     await waitFor(() =>
       expect(screen.getByRole('option', { name: 'Pass (10)' })).toBeInTheDocument(),
@@ -121,13 +102,26 @@ describe('<TestFilterView />', () => {
   });
 
   it('re-issues the list with result= when a result is selected', async () => {
-    const fetchSpy = makeFetch(EMPTY_LIST, {
-      results: [{ value: 'pass', count: 10 }],
-      test_types: [],
-    });
-    vi.stubGlobal('fetch', fetchSpy);
+    // Was an assertion on the request URL; the mechanism is a source call now, so it
+    // asserts on the filter the view passes down instead.
+    const fetchAssetList = vi.fn(
+      async (_args: { filter?: Record<string, unknown>; sort?: unknown }) => ({
+        items: [],
+        nextCursor: null,
+        totalCount: 0,
+      }),
+    );
     renderWithProviders(
       <TestFilterView project={{ name: 'test_project' }} onPeek={vi.fn()} />,
+      {
+        source: listSource('test', EMPTY_LIST, {
+          fetchAssetList,
+          fetchFacets: async () => ({
+            results: [{ value: 'pass', count: 10 }],
+            testTypes: [],
+          }),
+        } as never),
+      },
     );
     await waitFor(() =>
       expect(screen.getByRole('option', { name: 'Pass (10)' })).toBeInTheDocument(),
@@ -139,7 +133,11 @@ describe('<TestFilterView />', () => {
 
     await waitFor(() =>
       expect(
-        fetchSpy.mock.calls.some((c) => String(c[0]).includes('result=pass')),
+        fetchAssetList.mock.calls.some((c) =>
+          (c[0] as { filter?: { results?: string[] } })?.filter?.results?.includes(
+            'pass',
+          ),
+        ),
       ).toBe(true),
     );
   });

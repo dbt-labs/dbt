@@ -16,6 +16,7 @@ DESCRIBE TABLE {{ relation.render() }}
 
 {% macro databricks__alter_relation_add_remove_columns(relation, add_columns, remove_columns) %}
   {% if remove_columns %}
+    {{ unset_column_tags(relation, remove_columns) }}
     {{ run_query_as(drop_columns_sql(relation, remove_columns), 'alter_relation_remove_columns', fetch_result=False) }}
   {% endif %}
 

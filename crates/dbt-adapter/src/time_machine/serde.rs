@@ -190,6 +190,14 @@ fn is_json_zero_value(v: &serde_json::Value) -> bool {
 /// forward compatibility when new fields with default values are added to
 /// serialization — old recordings without those fields still match.
 pub fn values_match(expected: &serde_json::Value, actual: &serde_json::Value) -> bool {
+    values_match_inner(expected, actual, false)
+}
+
+fn values_match_inner(
+    expected: &serde_json::Value,
+    actual: &serde_json::Value,
+    ignore_internal_model_fields: bool,
+) -> bool {
     match (expected, actual) {
         (serde_json::Value::Null, serde_json::Value::Null) => true,
         (serde_json::Value::Bool(a), serde_json::Value::Bool(b)) => a == b,
@@ -200,18 +208,44 @@ pub fn values_match(expected: &serde_json::Value, actual: &serde_json::Value) ->
             a == b || dbt_common::path::path_separator_eq(a, b)
         }
         (serde_json::Value::Array(a), serde_json::Value::Array(b)) => {
-            a.len() == b.len() && a.iter().zip(b.iter()).all(|(x, y)| values_match(x, y))
+            a.len() == b.len()
+                && a.iter()
+                    .zip(b.iter())
+                    .all(|(x, y)| values_match_inner(x, y, false))
         }
         (serde_json::Value::Object(a), serde_json::Value::Object(b)) => {
-            // Collect keys from both sides, ignoring __type__
-            let a_keys: std::collections::HashSet<_> =
-                a.keys().filter(|k| *k != "__type__").collect();
-            let b_keys: std::collections::HashSet<_> =
-                b.keys().filter(|k| *k != "__type__").collect();
+            // LazyModelWrapper and graph node maps carry the resolved adapter for internal
+            // consumers. It is not stable public model data, so tolerate its presence or absence
+            // during replay. Graph nodes are plain serialized maps and have no __type__ marker.
+            let is_lazy_model = [a, b].iter().any(|value| {
+                value
+                    .get("__type__")
+                    .and_then(serde_json::Value::as_str)
+                    .is_some_and(|type_name| type_name.ends_with("LazyModelWrapper"))
+            });
+            let is_graph_node = [a, b].iter().any(|value| {
+                value.get("resource_type").is_some() && value.get("unique_id").is_some()
+            });
+            let ignore_adapter = ignore_internal_model_fields || is_lazy_model || is_graph_node;
+            // Collect keys from both sides, ignoring __type__ and internal model fields.
+            let a_keys: std::collections::HashSet<_> = a
+                .keys()
+                .filter(|k| *k != "__type__" && (!ignore_adapter || *k != "adapter"))
+                .collect();
+            let b_keys: std::collections::HashSet<_> = b
+                .keys()
+                .filter(|k| *k != "__type__" && (!ignore_adapter || *k != "adapter"))
+                .collect();
 
             // Keys present in both must match
             for k in a_keys.intersection(&b_keys) {
-                if !values_match(a.get(*k).unwrap(), b.get(*k).unwrap()) {
+                let ignore_nested_adapter =
+                    (is_lazy_model || is_graph_node) && *k == "__base_attr__";
+                if !values_match_inner(
+                    a.get(*k).unwrap(),
+                    b.get(*k).unwrap(),
+                    ignore_nested_adapter,
+                ) {
                     return false;
                 }
             }
@@ -293,6 +327,56 @@ mod tests {
         let value = json_to_value(&json);
         assert_eq!(value.get_attr("a").unwrap().as_i64(), Some(1));
         assert_eq!(value.get_attr("b").unwrap().as_str(), Some("two"));
+    }
+
+    #[test]
+    fn test_values_match_ignores_lazy_model_adapter() {
+        let expected = serde_json::json!({
+            "__type__": "LazyModelWrapper",
+            "adapter": "snowflake",
+            "__base_attr__": {"adapter": "snowflake"},
+            "config": {"adapter": "snowflake"},
+            "name": "model"
+        });
+        let actual = serde_json::json!({
+            "__type__": "LazyModelWrapper",
+            "adapter": "bigquery",
+            "__base_attr__": {"adapter": "bigquery"},
+            "config": {"adapter": "snowflake"},
+            "name": "model"
+        });
+
+        assert!(values_match(&expected, &actual));
+
+        let mut nested_adapter_change = actual;
+        nested_adapter_change["config"]["adapter"] = serde_json::json!("databricks");
+        assert!(!values_match(&expected, &nested_adapter_change));
+    }
+
+    #[test]
+    fn test_values_match_ignores_graph_node_adapter() {
+        assert!(values_match(
+            &serde_json::json!({
+                "resource_type": "model",
+                "unique_id": "model.pkg.example",
+                "adapter": "snowflake",
+                "__base_attr__": {"adapter": "snowflake"}
+            }),
+            &serde_json::json!({
+                "resource_type": "model",
+                "unique_id": "model.pkg.example",
+                "adapter": "bigquery",
+                "__base_attr__": {"adapter": "bigquery"}
+            }),
+        ));
+    }
+
+    #[test]
+    fn test_values_match_does_not_ignore_adapter_for_other_objects() {
+        assert!(!values_match(
+            &serde_json::json!({"adapter": "snowflake"}),
+            &serde_json::json!({"adapter": "bigquery"}),
+        ));
     }
 
     #[test]

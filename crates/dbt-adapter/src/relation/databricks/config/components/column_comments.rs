@@ -2,12 +2,14 @@
 
 use crate::errors::AdapterResult;
 use crate::relation::config_v2::{
-    ComponentConfig, ComponentConfigLoader, SimpleComponentConfigImpl, diff, impl_loader,
+    ComponentConfig, ComponentConfigLoader, SimpleComponentConfigImpl, impl_loader,
 };
 use crate::relation::databricks::config::{
     DatabricksRelationMetadata, DatabricksRelationMetadataKey,
 };
 
+use dbt_common::ErrorCode;
+use dbt_common::tracing::dbt_emit::emit_warn_log_message;
 use dbt_schemas::schemas::InternalDbtNodeAttributes;
 use minijinja::value::{Value, ValueMap};
 
@@ -53,15 +55,36 @@ fn normalized_keys_diff(
     desired_state: &IndexMap<String, String>,
     current_state: &IndexMap<String, String>,
 ) -> Option<IndexMap<String, String>> {
-    diff::changed_keys(
-        &normalized_keys(desired_state),
-        &normalized_keys(current_state),
-    )
-    .map(|v| {
-        v.iter()
-            .map(|(k, v)| (k.to_string(), (*v).to_string()))
-            .collect()
-    })
+    // Only emit COMMENT ON for columns present in the desired (model) state whose
+    // comment differs from the current warehouse comment. Columns that exist
+    // remotely but are undocumented in the model are left untouched, never cleared.
+    // Reference: https://github.com/databricks/dbt-databricks/blob/main/dbt/adapters/databricks/relation_configs/column_comments.py
+    let desired = normalized_keys(desired_state);
+    let current = normalized_keys(current_state);
+
+    let missing: Vec<&str> = desired
+        .keys()
+        .filter(|k| !current.contains_key(k.as_str()))
+        .map(|k| k.as_str())
+        .collect();
+    if !missing.is_empty() {
+        emit_warn_log_message(
+            ErrorCode::JinjaWarn,
+            format!(
+                "The following columns are specified in the schema but are not present in the \
+                 database and will be skipped: {}",
+                missing.join(", ")
+            ),
+        );
+    }
+
+    let diff: IndexMap<String, String> = desired
+        .into_iter()
+        .filter(|(k, v)| current.get(k).is_some_and(|cur| cur != v))
+        .map(|(k, v)| (k, v.to_string()))
+        .collect();
+
+    if diff.is_empty() { None } else { Some(diff) }
 }
 
 fn new_component(column_comments: IndexMap<String, String>) -> ColumnComments {
@@ -407,7 +430,47 @@ email,string,\n\
     }
 
     #[test]
+    fn test_column_comments_diff_skips_column_missing_from_relation() {
+        let mut desired = IndexMap::new();
+        desired.insert("id".to_string(), "New primary key".to_string());
+        desired.insert("email".to_string(), "Email address".to_string());
+        let new_config = new_component(desired);
+
+        let mut current = IndexMap::new();
+        current.insert("id".to_string(), "Primary key".to_string());
+        let old_config = new_component(current);
+
+        let diff = ColumnComments::diff_from(&new_config, Some(&old_config));
+        assert!(diff.is_some());
+        let diff_config = diff.unwrap();
+        let diff_config = diff_config
+            .as_any()
+            .downcast_ref::<ColumnComments>()
+            .unwrap();
+        assert_eq!(diff_config.value.len(), 1);
+        assert_eq!(
+            diff_config.value.get("id"),
+            Some(&"New primary key".to_string())
+        );
+        assert!(!diff_config.value.contains_key("email"));
+    }
+
+    #[test]
+    fn test_column_comments_diff_all_columns_missing_returns_none() {
+        let mut desired = IndexMap::new();
+        desired.insert("ghost".to_string(), "not in relation".to_string());
+        let new_config = new_component(desired);
+
+        let old_config = new_component(IndexMap::new());
+
+        let diff = ColumnComments::diff_from(&new_config, Some(&old_config));
+        assert!(diff.is_none());
+    }
+
+    #[test]
     fn test_column_comments_diff_with_dropped_comment() {
+        // A comment present remotely but absent from the model is left untouched,
+        // so the diff is empty.
         let mut new_comments = IndexMap::new();
         new_comments.insert("id".to_string(), "Primary key".to_string());
         let new_config = new_component(new_comments);
@@ -418,6 +481,21 @@ email,string,\n\
         let old_config = new_component(old_comments);
 
         let diff = ColumnComments::diff_from(&new_config, Some(&old_config));
+        assert!(diff.is_none());
+    }
+
+    #[test]
+    fn test_column_comments_diff_explicit_clear() {
+        // Setting a documented column's comment to "" clears an existing remote comment.
+        let mut new_comments = IndexMap::new();
+        new_comments.insert("id".to_string(), "".to_string());
+        let new_config = new_component(new_comments);
+
+        let mut old_comments = IndexMap::new();
+        old_comments.insert("id".to_string(), "Primary key".to_string());
+        let old_config = new_component(old_comments);
+
+        let diff = ColumnComments::diff_from(&new_config, Some(&old_config));
         assert!(diff.is_some());
         let diff_config = diff.unwrap();
         let diff_config = diff_config
@@ -425,6 +503,6 @@ email,string,\n\
             .downcast_ref::<ColumnComments>()
             .unwrap();
         assert_eq!(diff_config.value.len(), 1);
-        assert_eq!(diff_config.value.get("name"), Some(&"".to_string()));
+        assert_eq!(diff_config.value.get("id"), Some(&"".to_string()));
     }
 }

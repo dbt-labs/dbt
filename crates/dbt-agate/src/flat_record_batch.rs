@@ -608,6 +608,16 @@ impl FlatRecordBatch {
             .map(|field| field.name())
     }
 
+    pub fn top_level_column_names(&self) -> impl Iterator<Item = &String> + '_ {
+        self.original
+            .as_ref()
+            .unwrap_or(&self.flat)
+            .schema_ref()
+            .fields()
+            .iter()
+            .map(|field| field.name())
+    }
+
     pub fn column_type(&self, idx: usize) -> &crate::DataType {
         &self.data_types[idx]
     }

@@ -18,7 +18,7 @@ workspace = true
 [features]
 default = []
 adbc-fuzzying = []
-repl = ["dialoguer", "clap", "dbt-pretty-table"]
+repl = ["dialoguer", "clap", "dbt-pretty-table", "tokio"]
 
 [dependencies]
 adbc-core = { workspace = true }
@@ -28,10 +28,8 @@ arrow-array = { workspace = true }
 arrow-schema = { workspace = true }
 atomic-wait = { version = "1.1.0" }
 base64 = { workspace = true }
-dbt-base = { workspace = true }
 dbt-fusion-workspace-hack = { version = "0.1" }
 dirs = { workspace = true }
-futures = { workspace = true }
 getrandom = "0.2.15"
 http = { workspace = true }
 ini = { workspace = true }
@@ -43,7 +41,7 @@ regex = { workspace = true }
 serde = { workspace = true }
 sha2 = { workspace = true }
 siphasher = { workspace = true }
-tokio = { workspace = true }
+tokio = { workspace = true, optional = true }
 toml = { workspace = true }
 tracing = { workspace = true }
 tracy-client = { workspace = true }

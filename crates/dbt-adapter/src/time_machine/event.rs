@@ -21,6 +21,8 @@ pub enum RecordedEvent {
     RunRemoteAdhoc(RunRemoteAdhocEvent),
     /// Cache invalidation decisions (recorded outcomes for replay)
     CacheInvalidation(CacheInvalidationEvent),
+    /// dbt State service "ready to clone" decisions (recorded outcomes for replay)
+    RunCacheClone(RunCacheCloneEvent),
 }
 
 impl RecordedEvent {
@@ -31,6 +33,7 @@ impl RecordedEvent {
             RecordedEvent::Sao(e) => &e.node_id,
             RecordedEvent::RunRemoteAdhoc(e) => &e.caller_id,
             RecordedEvent::CacheInvalidation(_) => "cache_invalidation",
+            RecordedEvent::RunCacheClone(e) => &e.node_id,
         }
     }
 
@@ -41,6 +44,7 @@ impl RecordedEvent {
             RecordedEvent::Sao(_) => 0,
             RecordedEvent::RunRemoteAdhoc(e) => e.seq,
             RecordedEvent::CacheInvalidation(_) => 0,
+            RecordedEvent::RunCacheClone(_) => 0,
         }
     }
 
@@ -52,6 +56,7 @@ impl RecordedEvent {
             RecordedEvent::Sao(e) => e.timestamp_ns,
             RecordedEvent::RunRemoteAdhoc(e) => e.timestamp_ns,
             RecordedEvent::CacheInvalidation(e) => e.timestamp_ns,
+            RecordedEvent::RunCacheClone(e) => e.timestamp_ns,
         }
     }
 }
@@ -124,8 +129,19 @@ pub struct SaoEvent {
     pub message: String,
     /// The hash of the node at the time of the skip decision
     pub stored_hash: String,
+    /// Cached data-test result, when the skip came from dbt State.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cached_test_result: Option<RecordedCachedTestResult>,
     /// Timestamp in nanoseconds since recording start
     pub timestamp_ns: u64,
+}
+
+/// Serializable cached data-test result for replay.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct RecordedCachedTestResult {
+    pub failures: i64,
+    pub should_warn: bool,
+    pub should_error: bool,
 }
 
 /// SAO status variants representing different skip reasons.
@@ -229,6 +245,49 @@ pub struct CacheInvalidationEvent {
     pub timestamp_ns: u64,
 }
 
+/// dbt State service "ready to clone" decision event.
+///
+/// Recorded when a node's execution is satisfied by cloning an existing
+/// relation instead of running its normal materialization SQL. During
+/// replay this decision is replayed directly instead of querying the live
+/// dbt State service (which can't be faithfully replayed): the recorded
+/// clone SQL is what actually gets matched against recorded `AdapterCallEvent`s,
+/// so a replayed node must be routed back through the same clone path rather
+/// than falling through to a normal Execute.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RunCacheCloneEvent {
+    /// Node unique_id
+    pub node_id: String,
+    /// Whether this clone happened before node rendering.
+    #[serde(default)]
+    pub dev_clone: bool,
+    /// The clone decision as it was made during recording
+    pub clone: RecordedRunCacheCloneDecision,
+    /// Timestamp in nanoseconds since recording start
+    pub timestamp_ns: u64,
+}
+
+/// Serializable projection of `RunCacheCloneDecision` (defined in
+/// `dbt-tasks-core`, which depends on this crate — not the other way
+/// around, hence this standalone recordable projection rather than
+/// deriving `Serialize`/`Deserialize` on the live type directly). Only
+/// carries the fields that actually drive clone execution/confirmation;
+/// purely informational/telemetry fields (e.g. the full protobuf
+/// `execution_results`/`explained_decision` structs) are intentionally
+/// dropped or reduced to the single flag consumers read (`is_stale`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RecordedRunCacheCloneDecision {
+    pub request_id: String,
+    pub clone_sqls: Vec<String>,
+    pub clone_source: String,
+    pub clone_target: String,
+    pub required_source_epoch: Option<i64>,
+    pub execution_runtime_ms: Option<i64>,
+    pub freshness_tolerance_seconds: u64,
+    pub is_stale: bool,
+    pub execution_decision_id: Option<String>,
+}
+
 /// Structured arguments for MetadataAdapter method calls.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
@@ -253,6 +312,39 @@ pub enum MetadataCallArgs {
     Freshness {
         /// List of relation FQNs being checked
         relations: Vec<String>,
+        /// Optional metadata warehouse
+        #[serde(default)]
+        warehouse: Option<String>,
+    },
+    /// Arguments for relation-existence checks
+    RelationsExist {
+        /// List of relation FQNs being checked
+        relations: Vec<String>,
+        /// Optional metadata warehouse
+        #[serde(default)]
+        warehouse: Option<String>,
+    },
+    /// Arguments for freshness checks with source overrides
+    FreshnessWithOverrides {
+        /// List of relation FQNs being checked
+        relations: Vec<String>,
+        /// Stable `(relation FQN, kind)` override entries
+        overrides: Vec<(String, String)>,
+        /// Optional metadata warehouse
+        #[serde(default)]
+        warehouse: Option<String>,
+    },
+    /// Arguments for schema-wide freshness checks
+    FreshnessAllInSchema {
+        /// Database containing the schema
+        database: String,
+        /// Schema being scanned
+        schema: String,
+        /// List of relation FQNs being checked
+        relations: Vec<String>,
+        /// Optional metadata warehouse
+        #[serde(default)]
+        warehouse: Option<String>,
     },
     /// Arguments for list_user_defined_functions
     ListUserDefinedFunctions {
@@ -390,6 +482,7 @@ mod tests {
             status: SaoStatus::ReusedNoChanges,
             message: "No new changes on any upstreams".to_string(),
             stored_hash: "abc123".to_string(),
+            cached_test_result: None,
             timestamp_ns: 12345,
         });
 
@@ -411,6 +504,7 @@ mod tests {
             },
             message: "Still within freshness period".to_string(),
             stored_hash: "def456".to_string(),
+            cached_test_result: None,
             timestamp_ns: 67890,
         });
 
@@ -440,8 +534,9 @@ mod tests {
             status: SaoStatus::ReusedCloned {
                 freshness_seconds: Some(3600),
             },
-            message: "Cloned from cached relation within freshness tolerance".to_string(),
+            message: "Cloned from other environment within tolerance".to_string(),
             stored_hash: "ghi789".to_string(),
+            cached_test_result: None,
             timestamp_ns: 67890,
         };
 

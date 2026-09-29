@@ -59,13 +59,18 @@ assert_eq!(
 
 ## Bumping an ADBC driver version
 
-See an example PR at [dbt-labs/fs#2166](https://github.com/dbt-labs/fs/pull/2166).
-To get the checksums into the source code, re-generate with
-`./scripts/gen_cdn_driver_checksums.sh`.
-
-If the checksums for the existing drivers change, something is very broken. You
-should be able to run the script and get the same checksums as before plus the
-new ones based on the new driver version list in the shell script.
+1. Get the target version: caller-provided, or the `DBT_VERSION` output of the
+   "Determine ADBC & dbt Version" job in the `Release ADBC` workflow run in `dbt-labs/fs`.
+2. Add `<backend>-<version>` to `drivers.toml`.
+3. Bump the matching `*_DRIVER_VERSION` const in `src/lib.rs`.
+4. Run `cargo run --bin adbc-sync -p dbt-adbc` to regenerate `checksums.rs` for real.
+   Only run this once the release artifacts exist on the CDN, or the new entries are
+   silently skipped (404) instead of hashed.
+5. Add a changelog entry with `changie new --kind Dependencies --body "..." --interactive=false`.
+   Not every driver bump has a dbt-core/fusion issue ticket, so `issue`/`author` are
+   often empty — see root `AGENTS.md` for the dummy-value-then-edit trick required to
+   get an empty string past `changie`'s non-interactive validation. We no longer add
+   changelogs to the `fs/sa/.changes` directory.
 
 ## Working on ADBC drivers
 

@@ -1,8 +1,8 @@
-import type { MetadataDataSource } from '../data-sources/MetadataDataSource';
-// Imported only so the `{@link REGISTRY_RESOURCE_TYPES}` reference below resolves;
-// eslint cannot see JSDoc links as usage.
+// Imported only so the `{@link LIST_REGISTRY}` reference below resolves; eslint
+// cannot see JSDoc links as usage.
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
-import { REGISTRY_RESOURCE_TYPES } from '../data-sources/rest/index';
+import { LIST_REGISTRY } from '../data-sources/duckdb/lists';
+import type { MetadataDataSource } from '../data-sources/MetadataDataSource';
 import type { AssetArgs } from '../typings/args';
 import type {
   Asset,
@@ -17,6 +17,7 @@ import type { Distribution } from '../typings/domain/distribution';
 import type { ExecutionInfo } from '../typings/domain/executionInfo';
 import type { Facets } from '../typings/domain/facets';
 import type { FileEntry } from '../typings/domain/files';
+import type { ProjectOverview } from '../typings/domain/overview';
 import type { Project } from '../typings/domain/project';
 import type { SearchFacets, SearchHit, SearchResult } from '../typings/domain/search';
 import type { Page } from '../typings/page';
@@ -136,9 +137,8 @@ function fakeBase(resourceType: ResourceType) {
 
 /**
  * Build a minimal valid {@link Asset} detail for any registry resource type.
- * Mirrors the real REST source's per-type coverage (derived from
- * {@link REGISTRY_RESOURCE_TYPES}) so a fake can stand in for any type the
- * source serves.
+ * Mirrors the real source's per-type coverage (derived from {@link LIST_REGISTRY})
+ * so a fake can stand in for any type the source serves.
  */
 export function makeFakeAsset(
   resourceType: ResourceType,
@@ -159,6 +159,7 @@ export function makeFakeAsset(
         sourceName: 'raw',
         identifier: 'fake',
         loader: null,
+        sourceDescription: null,
         freshness: null,
         relation: null,
         columns: [],
@@ -317,11 +318,14 @@ export function createFakeDataSource(
         }),
         fetchCapabilities: async (): Promise<Capabilities> => allFalseCapabilities(),
         fetchDistribution: async (): Promise<Distribution> => ({
-          isFusion: false,
+          isProprietary: false,
           isLoggedIn: false,
         }),
         fetchAssetCounts: async (): Promise<AssetCounts> => ({}),
         fetchProject: async (): Promise<Project> => makeFakeProject(),
+        // Null is the real "no authored overview" answer, not a missing stub —
+        // consumers render their own default from it.
+        fetchOverview: async (): Promise<ProjectOverview | null> => null,
         fetchFiles: async (): Promise<FileEntry[]> => [],
         fetchSearch: async (): Promise<SearchResult> => ({
           kind: 'ok',

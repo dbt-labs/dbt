@@ -135,6 +135,19 @@ jobs:
             *) echo "::error::Unexpected HTTP $code checking winget-pkgs for ${VERSION}"; exit 1 ;;
           esac
 
+      - name: Sync fork with upstream
+        if: ${{ !inputs.dry_run && steps.published.outputs.exists != 'true' }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.WINGET_PUBLISH_PAT }}
+        run: |
+          fork_owner=$(gh api user --jq .login)
+          if gh repo view "${fork_owner}/winget-pkgs" >/dev/null 2>&1; then
+            gh repo sync "${fork_owner}/winget-pkgs" --source microsoft/winget-pkgs --force
+          else
+            gh repo fork microsoft/winget-pkgs --clone=false --default-branch-only
+          fi
+
       - name: Submit to microsoft/winget-pkgs
         if: ${{ !inputs.dry_run && steps.published.outputs.exists != 'true' }}
         id: submit

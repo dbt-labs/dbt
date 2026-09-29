@@ -5,7 +5,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use crate::epoch_layers;
 
 // ---------------------------------------------------------------------------
-// Directory layout under target/metadata/
+// Directory layout under target/private/metadata/
 // ---------------------------------------------------------------------------
 
 pub const PARSE_NODES_SUBDIR: &str = "parse/nodes";
@@ -29,7 +29,7 @@ pub const RUN_CATALOG_STATS_SUBDIR: &str = "run/catalog_stats";
 // IngestState — tracks what epochs have been applied
 // ---------------------------------------------------------------------------
 
-/// Tracks what has been applied from `target/metadata/` into DuckDB.
+/// Tracks what has been applied from `target/private/metadata/` into DuckDB.
 ///
 /// ## Delta decision logic (per epoch directory)
 ///

@@ -1,9 +1,9 @@
 use crate::schemas::common::ConstraintType;
 use crate::schemas::common::DimensionValidityParams;
-use crate::schemas::common::ModelFreshnessRules;
 use crate::schemas::common::UpdatesOn;
 use crate::schemas::common::Versions;
 use crate::schemas::common::model_freshness_rules_or_duration;
+use crate::schemas::common::{FreshnessRules, ModelFreshnessRules};
 use crate::schemas::data_tests::DataTests;
 use crate::schemas::dbt_column::ColumnProperties;
 use crate::schemas::dbt_column::ColumnPropertiesDimensionType;
@@ -18,7 +18,7 @@ use crate::schemas::properties::MetricsProperties;
 use crate::schemas::properties::properties::GetConfig;
 use crate::schemas::semantic_layer::semantic_manifest::SemanticLayerElementConfig;
 use crate::schemas::serde::FloatOrString;
-use crate::schemas::serde::string_or_array;
+use crate::schemas::serde::{bool_or_string_bool, string_or_array};
 use dbt_common::io_args::StaticAnalysisOffReason;
 use dbt_yaml::{DbtSchema, Spanned};
 use serde::{Deserialize, Serialize};
@@ -57,7 +57,7 @@ pub struct ModelProperties {
     pub config: Option<ModelConfig>,
     pub constraints: Option<Vec<ModelConstraint>>,
     pub data_tests: Option<Vec<DataTests>>,
-    pub deprecation_date: Option<String>,
+    pub deprecation_date: Option<dbt_yaml::Timestamp>,
     pub description: Option<String>,
     pub identifier: Option<String>,
     pub latest_version: Option<FloatOrString>,
@@ -153,9 +153,45 @@ pub struct TimeSpineCustomGranularity {
 }
 
 #[skip_serializing_none]
-#[derive(Deserialize, Serialize, Debug, Clone, DbtSchema, PartialEq, Eq)]
+#[derive(Default, Deserialize, Serialize, Debug, Clone, DbtSchema, PartialEq, Eq)]
 pub struct ModelFreshness {
     pub build_after: Option<ModelFreshnessRules>,
+    pub warn_after: Option<FreshnessRules>,
+    pub error_after: Option<FreshnessRules>,
+    pub filter: Option<String>,
+    pub loaded_at_field: Option<String>,
+    pub loaded_at_query: Option<String>,
+}
+
+impl ModelFreshness {
+    /// True when SLA rules are set. Excludes `build_after`, a scheduling rule.
+    ///
+    /// An empty rule object (`warn_after: {}`) counts as absent, matching
+    /// `FreshnessRules::validate`'s F1 rule that an empty rule is equivalent to
+    /// omitting the key.
+    pub fn has_sla(&self) -> bool {
+        self.warn_after.as_ref().is_some_and(|r| !r.is_empty())
+            || self.error_after.as_ref().is_some_and(|r| !r.is_empty())
+    }
+
+    /// The subset of this config a downstream project may see, e.g. in a Mesh
+    /// publication artifact.
+    ///
+    /// `None` when there's no SLA to check (`has_sla` is false), so a
+    /// `build_after`-only config doesn't travel at all. `build_after` is a
+    /// local scheduling rule, not an SLA, and is cleared even when an SLA is
+    /// present: it names this project's own build cadence, which is
+    /// meaningless — and potentially confusing/leaky — to a consumer that
+    /// doesn't run this project's jobs.
+    pub fn for_publication(&self) -> Option<Self> {
+        if !self.has_sla() {
+            return None;
+        }
+        Some(Self {
+            build_after: None,
+            ..self.clone()
+        })
+    }
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone, DbtSchema, PartialEq, Eq)]
@@ -177,6 +213,8 @@ pub struct ModelState {
     #[serde(alias = "execute_hooks_on_reuse")]
     pub execute_hooks_on_any_reuse: Option<bool>,
     pub compare_unrendered_code: Option<bool>,
+    #[serde(default, deserialize_with = "bool_or_string_bool")]
+    pub ignore_external_modifications: Option<bool>,
 }
 
 impl PartialEq for ModelState {
@@ -190,6 +228,7 @@ impl PartialEq for ModelState {
             && self.pre_clone == other.pre_clone
             && self.execute_hooks_on_any_reuse == other.execute_hooks_on_any_reuse
             && self.compare_unrendered_code == other.compare_unrendered_code
+            && self.ignore_external_modifications == other.ignore_external_modifications
     }
 }
 
@@ -271,6 +310,7 @@ pub struct DerivedEntity {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::schemas::common::FreshnessPeriod;
     use dbt_yaml;
 
     #[test]
@@ -282,6 +322,7 @@ mod tests {
             pre_clone: None,
             execute_hooks_on_any_reuse: None,
             compare_unrendered_code: None,
+            ignore_external_modifications: None,
         };
         let other = ModelState {
             require_fresh_data_from: Some(UpdatesOn::Any),
@@ -290,6 +331,7 @@ mod tests {
             pre_clone: None,
             execute_hooks_on_any_reuse: None,
             compare_unrendered_code: None,
+            ignore_external_modifications: None,
         };
 
         assert_eq!(base, other);
@@ -304,6 +346,7 @@ mod tests {
             pre_clone: None,
             execute_hooks_on_any_reuse: None,
             compare_unrendered_code: None,
+            ignore_external_modifications: None,
         };
         let other = ModelState {
             require_fresh_data_from: Some(UpdatesOn::All),
@@ -312,6 +355,7 @@ mod tests {
             pre_clone: None,
             execute_hooks_on_any_reuse: None,
             compare_unrendered_code: None,
+            ignore_external_modifications: None,
         };
 
         assert_ne!(base, other);
@@ -347,6 +391,7 @@ execute_hooks_on_reuse: true
             pre_clone: None,
             execute_hooks_on_any_reuse: None,
             compare_unrendered_code: None,
+            ignore_external_modifications: None,
         };
         let other = ModelState {
             compare_unrendered_code: Some(true),
@@ -366,6 +411,131 @@ execute_hooks_on_reuse: true
         };
 
         assert_ne!(base_test, other_test);
+    }
+
+    #[test]
+    fn ignore_external_modifications_parses_and_participates_in_state_eq() {
+        let state: ModelState =
+            dbt_yaml::from_str("ignore_external_modifications: true\n").unwrap();
+        assert_eq!(state.ignore_external_modifications, Some(true));
+
+        let base = ModelState {
+            require_fresh_data_from: None,
+            lag_tolerance: None,
+            evaluate_volatile_sql: None,
+            pre_clone: None,
+            execute_hooks_on_any_reuse: None,
+            compare_unrendered_code: None,
+            ignore_external_modifications: None,
+        };
+        let other = ModelState {
+            ignore_external_modifications: Some(true),
+            ..base.clone()
+        };
+        assert_ne!(base, other);
+    }
+
+    #[test]
+    fn model_freshness_parses_sla_fields() {
+        let yaml = r#"
+warn_after:
+  count: 24
+  period: hour
+error_after:
+  count: 48
+  period: hour
+filter: "region = 'us'"
+loaded_at_field: updated_at
+loaded_at_query: "select max(updated_at) from {{ this }}"
+"#;
+        let freshness: ModelFreshness = dbt_yaml::from_str(yaml).unwrap();
+
+        assert!(freshness.build_after.is_none());
+        let warn_after = freshness.warn_after.expect("warn_after should parse");
+        assert_eq!(warn_after.count, Some(24));
+        assert_eq!(warn_after.period, Some(FreshnessPeriod::hour));
+        let error_after = freshness.error_after.expect("error_after should parse");
+        assert_eq!(error_after.count, Some(48));
+        assert_eq!(error_after.period, Some(FreshnessPeriod::hour));
+        assert_eq!(freshness.filter.as_deref(), Some("region = 'us'"));
+        assert_eq!(freshness.loaded_at_field.as_deref(), Some("updated_at"));
+        assert_eq!(
+            freshness.loaded_at_query.as_deref(),
+            Some("select max(updated_at) from {{ this }}")
+        );
+    }
+
+    #[test]
+    fn model_freshness_build_after_only_serializes_unchanged() {
+        let yaml = r#"
+build_after:
+  count: 1
+  period: day
+"#;
+        let freshness: ModelFreshness = dbt_yaml::from_str(yaml).unwrap();
+
+        assert!(freshness.warn_after.is_none());
+        assert!(freshness.error_after.is_none());
+        // SLA fields must not appear when unset.
+        assert_eq!(
+            dbt_yaml::to_string(&freshness).unwrap(),
+            "build_after:\n  count: 1\n  period: day\n  updates_on: null\n"
+        );
+    }
+
+    #[test]
+    fn empty_rule_object_is_not_an_sla() {
+        let yaml = r#"
+warn_after: {}
+"#;
+        let freshness: ModelFreshness = dbt_yaml::from_str(yaml).unwrap();
+        assert!(freshness.warn_after.is_some());
+        assert!(
+            !freshness.has_sla(),
+            "an empty rule object is equivalent to omitting the key"
+        );
+    }
+
+    #[test]
+    fn for_publication_is_none_without_an_sla() {
+        let build_after_only = ModelFreshness {
+            build_after: Some(ModelFreshnessRules {
+                count: Some(1),
+                period: Some(FreshnessPeriod::day),
+                updates_on: None,
+            }),
+            ..Default::default()
+        };
+        assert!(build_after_only.for_publication().is_none());
+        assert!(ModelFreshness::default().for_publication().is_none());
+    }
+
+    #[test]
+    fn for_publication_clears_build_after_but_keeps_the_sla() {
+        let freshness = ModelFreshness {
+            build_after: Some(ModelFreshnessRules {
+                count: Some(1),
+                period: Some(FreshnessPeriod::day),
+                updates_on: None,
+            }),
+            warn_after: Some(FreshnessRules {
+                count: Some(12),
+                period: Some(FreshnessPeriod::hour),
+            }),
+            loaded_at_field: Some("updated_at".to_string()),
+            ..Default::default()
+        };
+
+        let published = freshness
+            .for_publication()
+            .expect("has an SLA, so it should publish");
+
+        assert!(
+            published.build_after.is_none(),
+            "build_after is this project's own scheduling rule and must not leak to a downstream consumer"
+        );
+        assert_eq!(published.warn_after, freshness.warn_after);
+        assert_eq!(published.loaded_at_field, freshness.loaded_at_field);
     }
 
     #[test]

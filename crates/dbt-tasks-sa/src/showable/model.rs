@@ -61,7 +61,7 @@ impl Showable for DbtModel {
                                 .and_then(|r| r.lp_instruction.as_ref())
                                 .map(|lp| &lp.plan);
                             let relation =
-                                create_relation_from_node(ctx.adapter_type(), self, None)?;
+                                create_relation_from_node(self.node_adapter(), self, None)?;
                             let canonical_fqn = relation.get_canonical_fqn()?.to_string();
                             if let Some(result) = show_task_hooks.get_model_sidecar_sql(
                                 ctx,

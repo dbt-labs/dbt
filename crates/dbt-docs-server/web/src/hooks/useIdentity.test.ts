@@ -1,53 +1,43 @@
 import { renderHook, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import type { Identity } from '../api';
+import {
+  type SiteBootstrap,
+  SUPPORTED_BOOTSTRAP_SCHEMA_VERSION,
+} from '../lib/siteBootstrap';
 import { createQueryWrapper } from '../test/renderWithProviders';
+import type { Identity } from '../types';
 import { useIdentity } from './useIdentity';
 
-function jsonResponse(data: Identity) {
-  return { ok: true, json: () => Promise.resolve(data) };
+const CONSENT_DENIED: Identity = { is_logged_in: false, analytics_enabled: false };
+
+function siteBootstrap(overrides: Partial<SiteBootstrap> = {}): SiteBootstrap {
+  return {
+    schema_version: SUPPORTED_BOOTSTRAP_SCHEMA_VERSION,
+    generated_at: '2026-08-08T18:00:00Z',
+    dbt_version: '2.0.0',
+    distribution: 'dbt',
+    is_logged_in: true,
+    duckdb_cdn_base: 'https://cdn.jsdelivr.net/npm/@duckdb/duckdb-wasm@1.32.0',
+    data_dir: 'index/',
+    telemetry: {
+      enabled: true,
+      dbt_cloud_account_identifier: '',
+      dbt_cloud_project_id: '',
+      dbt_cloud_environment_id: '',
+    },
+    ...overrides,
+  };
 }
 
 describe('useIdentity', () => {
-  afterEach(() => vi.unstubAllGlobals());
-
-  it('resolves to the identity payload when analytics is enabled', async () => {
-    const identity: Identity = { is_logged_in: true, analytics_enabled: true };
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(() => Promise.resolve(jsonResponse(identity))),
-    );
-
-    const { result } = renderHook(() => useIdentity(), {
-      wrapper: createQueryWrapper(),
-    });
-
-    await waitFor(() => expect(result.current.data).toEqual(identity));
+  afterEach(() => {
+    delete window.__DBT_DOCS__;
+    vi.restoreAllMocks();
   });
 
-  it('passes through analytics_enabled: false', async () => {
-    const identity: Identity = { is_logged_in: true, analytics_enabled: false };
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(() => Promise.resolve(jsonResponse(identity))),
-    );
-
-    const { result } = renderHook(() => useIdentity(), {
-      wrapper: createQueryWrapper(),
-    });
-
-    await waitFor(() => expect(result.current.data).toEqual(identity));
-  });
-
-  it('fails closed to consent-denied on a non-200 response, warning to console', async () => {
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(() =>
-        Promise.resolve(new Response('nope', { status: 500, statusText: 'boom' })),
-      ),
-    );
+  it('reads consent and login state from the site bootstrap', async () => {
+    window.__DBT_DOCS__ = siteBootstrap();
 
     const { result } = renderHook(() => useIdentity(), {
       wrapper: createQueryWrapper(),
@@ -55,20 +45,17 @@ describe('useIdentity', () => {
 
     await waitFor(() =>
       expect(result.current.data).toEqual({
-        is_logged_in: false,
-        analytics_enabled: false,
+        is_logged_in: true,
+        analytics_enabled: true,
       }),
     );
-    expect(warn).toHaveBeenCalled();
-    warn.mockRestore();
   });
 
-  it('fails closed to consent-denied on a network error', async () => {
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(() => Promise.reject(new Error('network down'))),
-    );
+  it('passes through a denied consent flag', async () => {
+    window.__DBT_DOCS__ = siteBootstrap({
+      is_logged_in: true,
+      telemetry: { ...siteBootstrap().telemetry, enabled: false },
+    });
 
     const { result } = renderHook(() => useIdentity(), {
       wrapper: createQueryWrapper(),
@@ -76,11 +63,31 @@ describe('useIdentity', () => {
 
     await waitFor(() =>
       expect(result.current.data).toEqual({
-        is_logged_in: false,
+        is_logged_in: true,
         analytics_enabled: false,
       }),
     );
+  });
+
+  it('fails closed when there is no bootstrap to read', async () => {
+    const { result } = renderHook(() => useIdentity(), {
+      wrapper: createQueryWrapper(),
+    });
+
+    await waitFor(() => expect(result.current.data).toEqual(CONSENT_DENIED));
+  });
+
+  it('fails closed when the bootstrap schema is unrecognized', async () => {
+    // The payload claims consent, but its shape is from a version this build does not
+    // know — so `readSiteBootstrap` rejects it and consent must not be inferred.
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    window.__DBT_DOCS__ = siteBootstrap({ schema_version: 99 });
+
+    const { result } = renderHook(() => useIdentity(), {
+      wrapper: createQueryWrapper(),
+    });
+
+    await waitFor(() => expect(result.current.data).toEqual(CONSENT_DENIED));
     expect(warn).toHaveBeenCalled();
-    warn.mockRestore();
   });
 });

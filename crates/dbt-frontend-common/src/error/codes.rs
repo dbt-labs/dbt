@@ -87,6 +87,10 @@ pub enum ErrorCode {
     JinjaPadding = 175,
     QuotedLiteralStyleMismatch = 176,
     RequireImportCte = 177,
+    JoinConditionDisallowedOr = 178,
+    FilterColumnWrappedInFunction = 179,
+    LeadingWildcardLikePattern = 180,
+    HardCodedReference = 181,
 
     /// Generic catch-all error for all errors originating from the PySpark LP
     /// binder. The PySpark LP binder is different in that its input is a

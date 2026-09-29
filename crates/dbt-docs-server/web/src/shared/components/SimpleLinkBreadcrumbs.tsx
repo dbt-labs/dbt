@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useState } from 'react';
 import { twMerge } from 'tailwind-merge';
 
-import { Breadcrumb, Link } from '@dbt-labs/sourdough';
-
+import { type Breadcrumb } from '../../components/ui/Breadcrumb';
+import { Link } from '../../components/ui/Link';
 import { truthy } from '../util/array';
 
 interface SimpleLinkBreadcrumbsProps extends React.ComponentPropsWithoutRef<'span'> {

@@ -1,8 +1,9 @@
-use crate::{AdapterConfig, Auth, AuthError, AuthOutcome, auth_configure_pipeline};
+use crate::{AdapterConfig, Auth, AuthError, AuthWarningPrinter, auth_configure_pipeline};
 use database::Builder as DatabaseBuilder;
 use dbt_adbc::bigquery::auth_type;
 use dbt_adbc::{Backend, bigquery, database};
 use serde::{Deserialize, Serialize};
+use std::borrow::Cow;
 use std::path::Path;
 use url::Url;
 
@@ -23,7 +24,15 @@ struct KeyFileJson {
     pub client_x509_cert_url: String,
 }
 
-pub struct BigqueryAuth;
+pub struct BigqueryAuth {
+    pub warning_printer: Box<dyn AuthWarningPrinter>,
+}
+
+impl BigqueryAuth {
+    pub fn new(warning_printer: Box<dyn AuthWarningPrinter>) -> Self {
+        Self { warning_printer }
+    }
+}
 
 enum BigqueryAuthIR<'a> {
     /// Interactive `gcloud` login flow (driver default auth).
@@ -51,7 +60,11 @@ enum BigqueryAuthIR<'a> {
 }
 
 impl<'a> BigqueryAuthIR<'a> {
-    pub fn apply(self, mut builder: DatabaseBuilder) -> Result<DatabaseBuilder, AuthError> {
+    pub fn apply(
+        self,
+        mut builder: DatabaseBuilder,
+        _warning_printer: &dyn AuthWarningPrinter,
+    ) -> Result<DatabaseBuilder, AuthError> {
         match self {
             Self::Oauth => {
                 builder.with_named_option(bigquery::AUTH_TYPE, auth_type::DEFAULT)?;
@@ -126,9 +139,14 @@ impl<'a> BigqueryAuthIR<'a> {
 const SUPPORTED_TOKEN_ENDPOINT_TYPES: &[&str] = &["entra"];
 
 // The bigquery ADBC driver appends "bigquery/v2/" to the hostname provided
-// in `api_endpoint`. Here, we reject anything that isn't "http(s)://host[:port]/"
+// in `api_endpoint`.
+//
+// Here, we reject anything that can't be transformed into "http(s)://host[:port]/"
 // to fit that routine's preconditions.
-fn validate_api_endpoint(endpoint: &str) -> Result<(), AuthError> {
+fn validate_api_endpoint<'a>(
+    endpoint: &'a str,
+    warning_printer: &dyn AuthWarningPrinter,
+) -> Result<Cow<'a, str>, AuthError> {
     let url = Url::parse(endpoint).map_err(|_| {
         AuthError::config(format!(
             "'api_endpoint' must start with 'http://' or 'https://': {endpoint:?}"
@@ -141,22 +159,26 @@ fn validate_api_endpoint(endpoint: &str) -> Result<(), AuthError> {
         )));
     }
 
-    if !endpoint.ends_with('/') {
-        return Err(AuthError::config(format!(
-            "'api_endpoint' must end with a trailing '/': {endpoint:?}"
-        )));
-    }
-
     if url.path() != "/" || url.query().is_some() || url.fragment().is_some() {
         return Err(AuthError::config(format!(
             "'api_endpoint' must be a bare host (with optional port), e.g. 'https://your-proxy.example.com/': {endpoint:?}"
         )));
     }
 
-    Ok(())
+    if !endpoint.ends_with('/') {
+        warning_printer.warn(&format!(
+            "'api_endpoint' is missing a trailing '/', which dbt appends automatically. We suggest setting it to '{endpoint}/' instead."
+        ));
+        Ok(Cow::Owned(format!("{endpoint}/")))
+    } else {
+        Ok(Cow::Borrowed(endpoint))
+    }
 }
 
-fn parse_auth<'a>(config: &'a AdapterConfig) -> Result<BigqueryAuthIR<'a>, AuthError> {
+fn parse_auth<'a>(
+    config: &'a AdapterConfig,
+    _warning_printer: &dyn AuthWarningPrinter,
+) -> Result<BigqueryAuthIR<'a>, AuthError> {
     let method = config
         .get_str("method")
         .ok_or_else(|| AuthError::config("Missing required 'method' field in BigQuery config"))?;
@@ -313,6 +335,7 @@ fn resolve_impersonate_scopes(config: &AdapterConfig) -> String {
 fn apply_connection_args(
     config: &AdapterConfig,
     mut builder: DatabaseBuilder,
+    warning_printer: &dyn AuthWarningPrinter,
 ) -> Result<DatabaseBuilder, AuthError> {
     if let Some(project_id) = project_id(config)? {
         builder.with_named_option(bigquery::PROJECT_ID, project_id)?;
@@ -326,8 +349,8 @@ fn apply_connection_args(
     builder.with_named_option(bigquery::DATASET_ID, dataset_id)?;
 
     if let Some(api_endpoint) = config.get_str("api_endpoint") {
-        validate_api_endpoint(api_endpoint)?;
-        builder.with_named_option(bigquery::API_ENDPOINT, api_endpoint)?;
+        let api_endpoint = validate_api_endpoint(api_endpoint, warning_printer)?;
+        builder.with_named_option(bigquery::API_ENDPOINT, api_endpoint.as_ref())?;
     }
 
     if let Some(location) = config.get_str("location") {
@@ -393,8 +416,8 @@ impl Auth for BigqueryAuth {
         Backend::BigQuery
     }
 
-    fn configure(&self, config: &AdapterConfig) -> Result<AuthOutcome, AuthError> {
-        auth_configure_pipeline!(self.backend(), &config, parse_auth, apply_connection_args)
+    fn configure(&self, config: &AdapterConfig) -> Result<database::Builder, AuthError> {
+        auth_configure_pipeline!(self, &config, parse_auth, apply_connection_args)
     }
 }
 
@@ -461,9 +484,9 @@ mod tests {
     }
 
     fn try_configure(config: Mapping) -> Result<database::Builder, AuthError> {
-        let auth = BigqueryAuth {};
+        let auth = BigqueryAuth::new(Box::new(crate::NoopAuthWarningPrinter));
         let adapter_config = AdapterConfig::new(config);
-        auth.configure(&adapter_config).map(|r| r.builder)
+        auth.configure(&adapter_config)
     }
 
     #[test]
@@ -626,7 +649,7 @@ api_endpoint: https://definitely-not-bigquery.invalid/
     }
 
     #[test]
-    fn test_builder_from_auth_config_oauth_api_endpoint_rejects_missing_trailing_slash() {
+    fn test_builder_from_auth_config_oauth_api_endpoint_normalizes_missing_trailing_slash() {
         let yaml_doc = r#"
 database: my_db
 schema: my_schema
@@ -634,8 +657,11 @@ method: oauth
 api_endpoint: https://definitely-not-bigquery.invalid
 "#;
         let config = dbt_yaml::from_str::<Mapping>(yaml_doc).unwrap();
-        let err = try_configure(config).unwrap_err();
-        assert_contains!(err.msg(), "trailing '/'");
+        let builder = try_configure(config).unwrap();
+        assert_eq!(
+            other_option_value(&builder, bigquery::API_ENDPOINT).unwrap(),
+            "https://definitely-not-bigquery.invalid/"
+        );
     }
 
     #[test]

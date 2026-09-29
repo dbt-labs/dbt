@@ -1,5 +1,6 @@
 use dbt_adapter::Adapter;
-use dbt_adapter::relation::create_relation;
+use dbt_adapter::relation::render_effective_relation;
+use dbt_adapter_core::AdapterType;
 use dbt_common::{ErrorCode, FsError, fs_err};
 use dbt_common::{FsResult, constants::DBT_CTE_PREFIX, error::MacroSpan, stdfs};
 use dbt_frontend_common::{error::CodeLocation, span::Span};
@@ -46,8 +47,17 @@ pub const DBT_VERSION: &str = "2.0.0"; // easter egg jokes for now
 pub static ENV_VARS: LazyLock<Mutex<HashMap<String, String>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
-/// Cache for template lookups per (current_project, root_project, component)
-static TEMPLATE_CACHE: LazyLock<Mutex<HashMap<(String, String), String>>> =
+/// Key for [`TEMPLATE_CACHE`]: `(dialect, current_project, macro_name)`.
+///
+/// The dialect is part of the key because the final fallback resolves through the
+/// per-dialect internal-package namespace: two adapters can define the same
+/// unprefixed macro, so a Snowflake node and a DuckDB node must not share a
+/// cached answer.
+type TemplateCacheKey = (String, String, String);
+
+/// Cache for template lookups. See [`TemplateCacheKey`] for why the dialect is
+/// part of the key.
+static TEMPLATE_CACHE: LazyLock<Mutex<HashMap<TemplateCacheKey, String>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
 /// Matches local quoted or unquoted CTE definitions that use dbt's ephemeral CTE
@@ -426,6 +436,7 @@ pub fn render_sql(
             ctx,
             &listeners,
             &[],
+            None,
         )
         .map_err(|e| FsError::from_jinja_err(e, "Failed to render SQL"))?;
     for listener in listeners {
@@ -438,6 +449,9 @@ pub fn render_sql(
 /// Renders SQL with Jinja macros, using caller-provided listeners
 /// This allows callers to access listener state after rendering
 /// (e.g., for MangledRefWarningPrinter to check for mangled refs)
+///
+/// If `ast_visitor` is `Some`, this parse's AST is reused for it instead of parsing
+/// `sql` again.
 #[allow(clippy::too_many_arguments)]
 pub fn render_sql_with_listeners(
     sql: &str,
@@ -446,6 +460,7 @@ pub fn render_sql_with_listeners(
     listeners: &[Rc<dyn RenderingEventListener>],
     tokenizer_listeners: &[Rc<dyn minijinja::listener::TokenizerEventListener>],
     filename: &Path,
+    ast_visitor: Option<&mut dyn FnMut(&minijinja::compiler::ast::Stmt<'_>)>,
 ) -> FsResult<String> {
     let result = env
         .env
@@ -455,6 +470,7 @@ pub fn render_sql_with_listeners(
             ctx,
             listeners,
             tokenizer_listeners,
+            ast_visitor,
         )
         .map_err(|e| FsError::from_jinja_err(e, "Failed to render SQL"))?;
 
@@ -562,7 +578,16 @@ pub fn find_macro_template(
     root_project_name: &str,
     current_project_name: &str,
 ) -> FsResult<String> {
-    let cache_key = (current_project_name.to_string(), macro_name.to_string());
+    let dialect = env
+        .env
+        .get_dialect()
+        .and_then(|v| v.as_str().map(str::to_string))
+        .unwrap_or_else(|| "postgres".to_string());
+    let cache_key = (
+        dialect.clone(),
+        current_project_name.to_string(),
+        macro_name.to_string(),
+    );
 
     // Check cache first - return early if found
     if let Ok(cache) = TEMPLATE_CACHE.lock()
@@ -591,7 +616,7 @@ pub fn find_macro_template(
     }
 
     // Last attempt - check dbt internal package
-    let dbt_and_adapters = env.get_dbt_and_adapters_namespace();
+    let dbt_and_adapters = env.get_dbt_and_adapters_namespace(&dialect);
     if let Some(package) = dbt_and_adapters.get(&Value::from(macro_name)) {
         let template_name = format!("{package}.{macro_name}");
         if env.has_template(&template_name) {
@@ -698,18 +723,33 @@ pub fn generate_relation_name(
     identifier: &str,
     quote_config: ResolvedQuoting,
 ) -> FsResult<String> {
-    // Create relation using the adapter
-    match create_relation(
-        parse_adapter.adapter_type(),
-        database.to_owned(),
-        schema.to_owned(),
-        Some(identifier.to_owned()),
-        None, // relation_type
+    generate_relation_name_with_target(
+        parse_adapter,
+        database,
+        schema,
+        identifier,
         quote_config,
-    ) {
-        Ok(relation) => Ok(relation.render_self_as_str()),
-        Err(e) => Err(e),
-    }
+        None,
+    )
+}
+
+/// Generate a relation name using a node's resolved destination.
+pub fn generate_relation_name_with_target(
+    parse_adapter: Arc<Adapter>,
+    database: &str,
+    schema: &str,
+    identifier: &str,
+    quote_config: ResolvedQuoting,
+    target: Option<AdapterType>,
+) -> FsResult<String> {
+    render_effective_relation(
+        parse_adapter.adapter_type(),
+        database,
+        schema,
+        identifier,
+        quote_config,
+        target,
+    )
 }
 
 type NodeId = String;

@@ -1,7 +1,6 @@
 import { useState } from 'react';
+import { ChevronRight } from 'lucide-react';
 import { twJoin } from 'tailwind-merge';
-
-import { Icon, RyeconCaretRight } from '@dbt-labs/sourdough';
 
 type CollapsibleSectionProps = React.DetailedHTMLProps<
   React.HTMLAttributes<HTMLDivElement>,
@@ -56,13 +55,11 @@ export const CollapsibleSection = ({
             )}
           >
             {!disable && (
-              <Icon
+              <ChevronRight
                 className={twJoin(
                   isActuallyOpen ? 'rotate-90' : '',
-                  'pointer-events-none align-middle transition-transform',
+                  'pointer-events-none size-4 align-middle transition-transform',
                 )}
-                ryecon={RyeconCaretRight}
-                size="md"
               />
             )}
           </div>

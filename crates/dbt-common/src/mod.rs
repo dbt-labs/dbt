@@ -7,13 +7,9 @@ pub mod atomic;
 pub mod cancellation;
 pub mod constants;
 pub mod hashing;
-pub mod infer_schema_registry;
 pub mod io_utils;
 pub mod node_selector;
 pub mod pretty_string;
-pub mod relation_registry;
-pub mod seed_path_registry;
-pub mod source_lineage;
 pub mod static_analysis;
 pub mod stats;
 pub mod stdfs;
@@ -30,6 +26,7 @@ pub use dbt_error::{
 pub mod behavior_flags;
 pub mod embedded_install_scripts;
 pub mod fail_fast;
+pub mod infer_schema_registry;
 pub mod io_args;
 pub mod lease;
 pub mod once_cell_vars;
@@ -39,12 +36,14 @@ pub mod serde_utils;
 pub mod status_reporter;
 pub mod time;
 pub mod tracing;
+pub mod url;
+pub mod user_defined_schema_registry;
 pub mod warn_error_options;
 
 // Re-export span creation functions that were previously exported as macros
 pub use tracing::{
     create_debug_span, create_debug_span_with_parent, create_info_span,
-    create_info_span_with_parent, create_root_info_span,
+    create_info_span_with_parent, create_root_info_span, force_close_span,
 };
 
 mod discrete_event_emitter;

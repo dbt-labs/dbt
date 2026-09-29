@@ -5,7 +5,7 @@ use std::collections::HashSet;
 use crate::notices::{PackageNotice, PackageNoticeKind};
 use crate::package_listing::{PackageListing, UnpinnedPackage};
 use crate::package_resolver::ResolvedPackage;
-use crate::utils::{fusion_sha1_hash_packages, max_resolve_concurrency};
+use crate::{package_checksum::fusion_sha1_hash_packages, utils::max_resolve_concurrency};
 
 use crate::context::DepsOperationContext;
 
@@ -19,12 +19,16 @@ pub async fn compute_package_lock(
     );
     let mut dbt_packages_lock = DbtPackagesLock::default();
     let mut package_listing = PackageListing::new(ctx.io.clone(), ctx.vars.clone(), &ctx.notices)
-        .with_skip_private_deps(ctx.skip_private_deps);
+        .with_skip_private_deps(ctx.skip_private_deps)
+        .with_private_package_resolver(ctx.private_package_resolver.clone())
+        .with_cloud_config(ctx.cloud_config.clone());
     package_listing
         .hydrate_dbt_packages(dbt_packages, ctx.jinja_env)
         .await?;
     let mut final_listing = PackageListing::new(ctx.io.clone(), ctx.vars.clone(), &ctx.notices)
-        .with_skip_private_deps(ctx.skip_private_deps);
+        .with_skip_private_deps(ctx.skip_private_deps)
+        .with_private_package_resolver(ctx.private_package_resolver.clone())
+        .with_cloud_config(ctx.cloud_config.clone());
     resolve_packages(ctx, &mut final_listing, &mut package_listing).await?;
 
     let mut final_keys: Vec<_> = final_listing.packages.keys().cloned().collect();
@@ -70,7 +74,9 @@ async fn resolve_packages(
     package_listing: &mut PackageListing<'_>,
 ) -> FsResult<()> {
     let mut next_listing = PackageListing::new(ctx.io.clone(), ctx.vars.clone(), &ctx.notices)
-        .with_skip_private_deps(package_listing.skip_private_deps);
+        .with_skip_private_deps(package_listing.skip_private_deps)
+        .with_private_package_resolver(ctx.private_package_resolver.clone())
+        .with_cloud_config(ctx.cloud_config.clone());
 
     let mut keys: Vec<_> = package_listing.packages.keys().cloned().collect();
     keys.sort();

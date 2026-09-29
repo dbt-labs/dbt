@@ -12,6 +12,8 @@
 {% macro build_snapshot_staging_table(strategy, sql, target_relation) %}
     {% set tmp_relation = make_temp_relation(target_relation) %}
 
+    {{ drop_relation_if_exists(tmp_relation) }}
+
     {% set select = snapshot_staging_table(strategy, sql, target_relation) %}
 
     {% call statement('build_snapshot_staging_relation') %}
@@ -37,7 +39,7 @@
     {%- endfor %}
     from {{ target }}
     where dbt_scd_id not in (
-      select {{ source }}.dbt_scd_id from {{ source }}
+      select {{ source }}.dbt_scd_id from {{ source }} 
     )
   {% endcall %}
 

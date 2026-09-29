@@ -1,4 +1,4 @@
-import type { ResourceTypeExplorer } from '@dbt-labs/dbt-dag';
+import type { ResourceTypeExplorer } from '../../lib/resourceType';
 
 export const capitalizedResourceNames: Record<ResourceTypeExplorer, string> = {
   analysis: 'Analysis',

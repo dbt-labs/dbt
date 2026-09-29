@@ -1,5 +1,5 @@
 # **what?**
-# Cut a `dbt-sa-cli` release: bump version on a release branch, build the
+# Cut a `dbt` release: bump version on a release branch, build the
 # binary matrix via `cargo build`, pack each binary into a wheel via
 # `cargo ci pypi pack`, tag the build commit, publish to PyPI, create a
 # GitHub Release with the platform tarballs, and push a Homebrew formula
@@ -15,7 +15,7 @@
 # and serves tarballs straight from the GitHub Release.
 #
 # dbt-core itself, though, is the maturin abi3 extension wheel (CLI +
-# dbtRunner) built from `crates/dbt-python` — see **PyPI publishing** below.
+# dbtRunner) built from `crates/dbt-sa-python` — see **PyPI publishing** below.
 #
 # **when?**
 # Manual `workflow_dispatch` only — every release goes through
@@ -45,18 +45,27 @@
 # assembles an sdist pinning those filenames + sha256s; pip fetches the
 # matching wheel from the Release at install time. Runs with
 # `--environment prod`, authenticating with the repo-level `PYPI_API_TOKEN`
-# secret (passed to the tool as `DBT_PYPI_PROD_TOKEN`). Two distributions
-# are published — `dbt-core` and `dbt-core-experimental-parser` — selected
-# by the `release_target` input.
+# secret (passed to the tool as `DBT_PYPI_PROD_TOKEN`). Three distributions
+# are published — `dbt-core`, `dbt-core-experimental-parser`, and `dbt-oss`
+# — selected by the `release_target` input. Homebrew and winget publish
+# `dbt-core` specifically, so they're gated on the same input too.
 #
 # `dbt-core`'s wheels are built by `maturin build` in the `build` job
-# (abi3-py311, one cp311-abi3 wheel per platform) — not `cargo ci pypi pack`,
+# (abi3-py310, one cp310-abi3 wheel per platform) — not `cargo ci pypi pack`,
 # which only packs the standalone analyzer binary into `dbt-core-experimental-
-# parser`. `publish-pypi` passes `--python-tag cp311 --abi-tag abi3` for the
+# parser`. `publish-pypi` passes `--python-tag cp310 --abi-tag abi3` for the
 # dbt-core publish step so the sdist's manifest matches the maturin wheel
 # filenames actually sitting at the GitHub Release download URL (the default
 # `py3`/`none` tags are for the binary-CLI wheel, used for the parser publish
-# step instead).
+# step instead), and `--runtime-metadata-from crates/dbt-sa-python` so the
+# sdist declares those wheels' `requires-python`/dependencies while keeping
+# the root pyproject's descriptive metadata — uv trusts the sdist's PKG-INFO
+# for the former, and the PyPI project page renders from the latter.
+#
+# `dbt-oss` is the identical rebrand of `dbt-core` — same extension, only
+# `[project].name` differs — built by a second `maturin build` in the
+# `build` job and published with the same `cp310`/`abi3` tags. Its publish
+# step swaps `[project].name` in the root pyproject, like the parser's.
 #
 # **Homebrew publishing**
 # `publish-homebrew` renders `Formula/dbt-core.rb` from the SHA256SUMS the
@@ -64,7 +73,8 @@
 # dbt-labs/homebrew-dbt tap. Tap commits are GPG-signed by the build bot
 # (via FISHTOWN_BOT_GPG_*). Skipped for SemVer pre-releases and any tag
 # that isn't GitHub's current "Latest" release — protects against
-# downgrades from re-runs or hotfixes on older minors.
+# downgrades from re-runs or hotfixes on older minors. Also skipped unless
+# `release_target` is `all` or `core`.
 #
 # Dry-run (`inputs.dry_run = true`) skips tag push, PyPI publish, the
 # GitHub Release, and the Homebrew publish — build + pack still run so
@@ -109,6 +119,10 @@ on:
         description: "Release SemVer. OSS: X.Y.Z or X.Y.Z-{alpha|beta|rc|preview|dev}.N. GA proprietary: X.Y.Z only."
         required: true
         type: string
+      core_wheel_version:
+        description: "Optional dbt-core Python package SemVer (same format as version). Defaults to version; does not change the Rust build, release tag, dbt-oss, or parser version."
+        required: false
+        type: string
       dry_run:
         description: "Build and pack only — skip tag push, PyPI publish, GitHub Release, and Homebrew publish."
         required: false
@@ -125,14 +139,15 @@ on:
         type: string
         default: "main"
       release_target:
-        description: "Which package(s) to publish to PyPI. Pack always builds both; no effect on dry runs or Homebrew publish."
+        description: "Which package(s) to publish. Pack always builds all three. Also gates Homebrew and winget publish (dbt-core-specific), skipped unless 'all' or 'core'. No effect on dry runs."
         required: false
         type: choice
         options:
-          - both
+          - all
           - core
           - parser
-        default: both
+          - oss
+        default: all
 
 concurrency:
   group: >-
@@ -186,7 +201,7 @@ jobs:
       CARGO_INCREMENTAL: 0
       RUST_BACKTRACE: 1
       RUSTC_WRAPPER: sccache
-      BINARY_NAME: dbt-sa-cli
+      BINARY_NAME: dbt
       PACKAGE_NAME: dbt-core
     strategy:
       fail-fast: false
@@ -396,24 +411,57 @@ jobs:
           ls -la archives/
 
       # dbt-core is the maturin abi3 extension wheel (CLI + dbtRunner), not a
-      # packed binary. abi3-py311 → one cp311-abi3 wheel per platform, valid
-      # on any interpreter >= 3.11 (crates/dbt-python's own requires-python
+      # packed binary. abi3-py310 → one cp310-abi3 wheel per platform, valid
+      # on any interpreter >= 3.10 (crates/dbt-sa-python's own requires-python
       # floor). abi3 does NOT support older interpreters — maturin only
       # *warns* and silently falls back to a version-specific, non-abi3
       # cp3xx-cp3xx wheel if handed one, so `--interpreter` must resolve to
-      # an actual >=3.11 build or the release ships a wheel that's
-      # uninstallable everywhere (its own metadata says >=3.11, but the
+      # an actual >=3.10 build or the release ships a wheel that's
+      # uninstallable everywhere (its own metadata says >=3.10, but the
       # wheel tag says otherwise).
       #
-      # The manylinux containers bundle cp311 under /opt/python; the
-      # mac/windows runner images don't reliably ship 3.11 as `python3` (this
-      # bit us once already — the containers only had cp310 available), so
+      # The manylinux containers bundle cp310 under /opt/python; the
+      # mac/windows runner images don't reliably ship 3.10 as `python3`, so
       # those two pin it explicitly via actions/setup-python.
-      - name: Setup Python 3.11 (macOS/Windows)
+      - name: Setup Python 3.10 (macOS/Windows)
         if: ${{ matrix.container == '' }}
         uses: actions/setup-python@e797f83bcb11b83ae66e0230d6156d7c80228e7c # actions/setup-python@v6
         with:
-          python-version: "3.11"
+          python-version: "3.10"
+
+      # Runs after Setup Python above: on macOS/Windows legs, `python3` isn't
+      # guaranteed on PATH until setup-python has run (Windows runner images
+      # in particular don't reliably ship a `python3` shim).
+      - name: Validate dbt-core wheel version
+        id: core-wheel-version
+        if: inputs.core_wheel_version != ''
+        env:
+          CORE_WHEEL_VERSION: ${{ inputs.core_wheel_version }}
+        run: |
+          if [ -x /opt/python/cp310-cp310/bin/python ]; then
+            PY=/opt/python/cp310-cp310/bin/python
+          else
+            PY=python3
+          fi
+          "$PY" - <<'PY'
+          import os
+          import re
+
+          # Match the SemVer-to-PEP-440 conversion used by the sdist publisher.
+          version = os.environ["CORE_WHEEL_VERSION"]
+          number = r"(?:0|[1-9][0-9]*)"
+          match = re.fullmatch(
+              rf"({number}\.{number}\.{number})(?:-(alpha|beta|rc|preview|dev)\.({number}))?",
+              version,
+          )
+          if match is None:
+              raise SystemExit("core_wheel_version must be X.Y.Z or X.Y.Z-{alpha|beta|rc|preview|dev}.N")
+          base, lane, sequence = match.groups()
+          suffix = {"alpha": "a", "beta": "b", "rc": "rc", "preview": "rc", "dev": ".dev"}
+          version = base if lane is None else f"{base}{suffix[lane]}{sequence}"
+          with open(os.environ["GITHUB_OUTPUT"], "a") as output:
+              output.write(f"pep440={version}\n")
+          PY
 
       # A venv sidesteps the mac/windows runners' externally-managed system
       # Python (PEP 668), which rejects a plain `pip install maturin`
@@ -421,18 +469,24 @@ jobs:
       # install anything, unlike `maturin develop`), so the venv only needs
       # to hold the `maturin` CLI itself — `--interpreter "$PY"` is what
       # actually controls which Python's ABI the wheel targets.
+      # rust-cache restores `target/`; these wheel dirs aren't cargo-managed
+      # so nothing else prunes stale wheels left from a prior cached run.
+      - name: Clean stale wheel output dirs
+        run: rm -rf target/wheels target/wheels-oss
+
       - name: Build maturin wheel (dbt-core)
         env:
           TARGET: ${{ matrix.target }}
+          CORE_WHEEL_VERSION: ${{ steps.core-wheel-version.outputs.pep440 }}
         run: |
-          if [ -x /opt/python/cp311-cp311/bin/python ]; then
-            PY=/opt/python/cp311-cp311/bin/python
+          if [ -x /opt/python/cp310-cp310/bin/python ]; then
+            PY=/opt/python/cp310-cp310/bin/python
           else
             PY=python3
           fi
           # Belt-and-suspenders: fail loudly instead of letting maturin
           # silently downgrade to a version-specific, non-abi3 wheel.
-          "$PY" -c 'import sys; assert sys.version_info[:2] >= (3, 11), f"need Python >=3.11, got {sys.version}"'
+          "$PY" -c 'import sys; assert sys.version_info[:2] >= (3, 10), f"need Python >=3.10, got {sys.version}"'
 
           "$PY" -m venv .maturin-venv
           if [ "${{ runner.os }}" = "Windows" ]; then
@@ -441,12 +495,30 @@ jobs:
             VENV_BIN=".maturin-venv/bin"
           fi
           "$VENV_BIN/python" -m pip install --upgrade pip "maturin>=1.0,<2.0"
+
+          if [ -n "$CORE_WHEEL_VERSION" ]; then
+            PYPROJECT=crates/dbt-sa-python/pyproject.toml
+            sed "s/dynamic = \[\"version\"\]/version = \"$CORE_WHEEL_VERSION\"/" "$PYPROJECT" > "$PYPROJECT.tmp"
+            mv "$PYPROJECT.tmp" "$PYPROJECT"
+            # Guard against a silent no-op sed (exits 0 either way).
+            grep -qx "version = \"$CORE_WHEEL_VERSION\"" "$PYPROJECT"
+          fi
+
           "$VENV_BIN/maturin" build --release --locked \
             --target "$TARGET" \
             --interpreter "$PY" \
-            -m crates/dbt-python/Cargo.toml \
+            -m crates/dbt-sa-python/Cargo.toml \
             --out target/wheels
           ls -la target/wheels/
+
+          # Reused by the dbt-oss build below so it doesn't need to re-detect
+          # the interpreter/venv.
+          echo "MATURIN_PY=$PY" >> "$GITHUB_ENV"
+          echo "MATURIN_VENV_BIN=$VENV_BIN" >> "$GITHUB_ENV"
+
+      - name: Restore pyproject after dbt-core wheel
+        if: ${{ always() && inputs.core_wheel_version != '' }}
+        run: git -c safe.directory="$GITHUB_WORKSPACE" restore -- crates/dbt-sa-python/pyproject.toml
 
       - name: Upload binary artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # actions/upload-artifact@v4
@@ -469,9 +541,45 @@ jobs:
           path: target/wheels/*.whl
           if-no-files-found: error
 
+      # dbt-oss is an identical rebrand of dbt-core (same compiled extension,
+      # only [project].name differs) — swap it, rebuild (cache hits mean this
+      # just repackages, no recompile), restore. Python, not `sed -i`: BSD
+      # sed (macOS) and GNU sed disagree on `-i`. `$MATURIN_PY`, not `python3`:
+      # the manylinux container legs don't put Python on PATH by default.
+      # `grep -qx` asserts the swap actually landed, not just that some
+      # `name =` line exists.
+      - name: Rename pyproject for oss wheel
+        run: |
+          "$MATURIN_PY" -c 'import pathlib; p = pathlib.Path("crates/dbt-sa-python/pyproject.toml"); p.write_text(p.read_text().replace("name = \"dbt-core\"", "name = \"dbt-oss\"", 1))'
+          grep -qx 'name = "dbt-oss"' crates/dbt-sa-python/pyproject.toml
+
+      - name: Build maturin wheel (dbt-oss)
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          "$MATURIN_VENV_BIN/maturin" build --release --locked \
+            --target "$TARGET" \
+            --interpreter "$MATURIN_PY" \
+            -m crates/dbt-sa-python/Cargo.toml \
+            --out target/wheels-oss
+          ls -la target/wheels-oss/
+
+      - name: Restore pyproject name after oss wheel
+        if: always()
+        run: |
+          "$MATURIN_PY" -c 'import pathlib; p = pathlib.Path("crates/dbt-sa-python/pyproject.toml"); p.write_text(p.read_text().replace("name = \"dbt-oss\"", "name = \"dbt-core\"", 1))'
+          grep -qx 'name = "dbt-core"' crates/dbt-sa-python/pyproject.toml
+
+      - name: Upload wheel artifact (dbt-oss)
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # actions/upload-artifact@v4
+        with:
+          name: wheel-oss-${{ matrix.target }}
+          path: target/wheels-oss/*.whl
+          if-no-files-found: error
+
   # ------------------------------------------------------------------
   # Run the workspace test suite, then the dbt-python crate's pytest suite
-  # (crates/dbt-python) in the same job so both reuse the Rust
+  # (crates/dbt-sa-python) in the same job so both reuse the Rust
   # toolchain/sccache/protoc setup instead of paying for it twice. No
   # lint (ruff/mypy) — that's a PR-time check, not a release gate.
   # Parallel to `build` (both fan out from `prepare-release`) and gates
@@ -541,22 +649,22 @@ jobs:
       - name: Run tests
         run: cargo nextest run
 
-      # Pinned to 3.11 explicitly, same as the `build` job's maturin
+      # Pinned to 3.10 explicitly, same as the `build` job's maturin
       # invocation — this job's whole point is gating `pack` on a build of
       # the actual shipped artifact, so testing against anything other than
-      # the abi3 floor (crates/dbt-python's own requires-python) wouldn't
+      # the abi3 floor (crates/dbt-sa-python's own requires-python) wouldn't
       # actually exercise what gets published.
       - name: Setup Python
         uses: actions/setup-python@e797f83bcb11b83ae66e0230d6156d7c80228e7c # actions/setup-python@v6
         with:
-          python-version: "3.11"
+          python-version: "3.10"
 
       # Prepending .venv/bin to PATH lets every later step call `maturin`/
       # `pytest` directly instead of the full .venv/bin/... path. This
-      # doesn't require declaring maturin/pytest in crates/dbt-python's own
+      # doesn't require declaring maturin/pytest in crates/dbt-sa-python's own
       # pyproject.toml.
       - name: Create venv and install maturin + pytest
-        working-directory: crates/dbt-python
+        working-directory: crates/dbt-sa-python
         run: |
           python -m venv .venv
           .venv/bin/python -m pip install --upgrade pip "maturin>=1.0,<2.0" "pytest>=9.1"
@@ -567,12 +675,18 @@ jobs:
       # reconcile the lock rather than fail the run on dependency bookkeeping.
       # maturin develop also installs [project.dependencies] (mashumaro)
       # into .venv as part of installing the built wheel.
+      #
+      # --release matches the actual shipped wheel (the `build` job's own
+      # maturin invocation is also `--release`). A debug build here is not
+      # just slower to run -- `debug_assert!`s that are compiled out of the
+      # real artifact can fail here and nowhere else, exercising a code path
+      # end users never hit while still gating the release.
       - name: Build extension (maturin develop)
-        working-directory: crates/dbt-python
-        run: maturin develop
+        working-directory: crates/dbt-sa-python
+        run: maturin develop --release
 
       - name: pytest (dbt-python)
-        working-directory: crates/dbt-python
+        working-directory: crates/dbt-sa-python
         run: pytest
 
       - name: sccache stats
@@ -621,12 +735,11 @@ jobs:
       - name: List binaries
         run: ls -la binaries/
 
-      # Two distributions are produced by different mechanisms:
-      #   - dbt-core                     → maturin abi3 wheel, built in `build`
-      #                                    and downloaded here into target/wheels.
-      #   - dbt-core-experimental-parser → packed from the binary via
-      #                                    `cargo ci pypi pack` (unchanged).
-      - name: Download all wheels (dbt-core, maturin)
+      # dbt-core and dbt-oss are maturin wheels built in `build` (artifacts
+      # `wheel-<target>`/`wheel-oss-<target>`, both matched below);
+      # dbt-core-experimental-parser is packed from the binary further down
+      # via `cargo ci pypi pack`.
+      - name: Download all wheels (dbt-core, dbt-oss, maturin)
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # actions/download-artifact@v4
         with:
           path: target/wheels
@@ -743,8 +856,8 @@ jobs:
   # Release at install time. Authenticates with the repo-level
   # `PYPI_API_TOKEN`/`TEST_PYPI_API_TOKEN` secret depending on mode
   # (passed to the tool as `DBT_PYPI_PROD_TOKEN`/`DBT_PYPI_TEST_TOKEN`).
-  # `release_target` selects which of the two distributions (`dbt-core`,
-  # `dbt-core-experimental-parser`) to publish, in both modes.
+  # `release_target` selects which of the three distributions (`dbt-core`,
+  # `dbt-core-experimental-parser`, `dbt-oss`) to publish, in both modes.
   # ------------------------------------------------------------------
   publish-pypi:
     name: Publish to PyPI
@@ -790,18 +903,34 @@ jobs:
       # One --target per wheel uploaded to the Release; keep in lockstep with
       # the `build` job's matrix — each target's wheel is fetched and hashed.
       #
-      # dbt-core's wheels are maturin abi3 extension wheels (cp311-abi3), not
+      # dbt-core's wheels are maturin abi3 extension wheels (cp310-abi3), not
       # the binary CLI wheel (py3-none) `cargo ci pypi pack` produces — pass
       # the matching python/abi tags so the sdist manifest's filenames match
       # what's actually sitting at BASE_URL.
+      #
+      # No --project-dir: the workspace root carries the descriptive metadata
+      # the PyPI page renders from, and --runtime-metadata-from overlays just
+      # requires-python + dependencies from the crate maturin built (>=3.10 +
+      # mashumaro; the root says >=3.9, for the binary CLI wheel). uv trusts
+      # the sdist's PKG-INFO over the wheel's, so a mismatch installs broken —
+      # `cargo ci pypi publish` cross-checks both and fails the release.
+      - name: Prepend PyPI banner to README (dbt-core)
+        if: inputs.release_target == 'all' || inputs.release_target == 'core'
+        run: |
+          cat .github/dbt-core-pypi-banner.md README.md > README.md.tmp
+          mv README.md.tmp README.md
+
       - name: Publish (dbt-core)
-        if: inputs.release_target != 'parser'
+        if: inputs.release_target == 'all' || inputs.release_target == 'core'
+        env:
+          CORE_WHEEL_VERSION: ${{ inputs.core_wheel_version || needs.prepare-release.outputs.version }}
         run: |
           cargo ci pypi publish \
             --environment ${{ inputs.dry_run_with_test_pypi && 'test-pypi' || 'prod' }} \
-            --version "${{ needs.prepare-release.outputs.version }}" \
+            --version "$CORE_WHEEL_VERSION" \
             --download-base-url "$BASE_URL" \
-            --python-tag cp311 \
+            --runtime-metadata-from crates/dbt-sa-python \
+            --python-tag cp310 \
             --abi-tag abi3 \
             --target x86_64-unknown-linux-gnu \
             --target aarch64-unknown-linux-gnu \
@@ -809,14 +938,18 @@ jobs:
             --target aarch64-apple-darwin \
             --target x86_64-pc-windows-msvc
 
+      - name: Restore README after dbt-core publish
+        if: ${{ always() && (inputs.release_target == 'all' || inputs.release_target == 'core') }}
+        run: git -c safe.directory="$GITHUB_WORKSPACE" restore -- README.md
+
       - name: Rename pyproject for parser publish
-        if: inputs.release_target != 'core'
+        if: inputs.release_target == 'all' || inputs.release_target == 'parser'
         run: |
           sed -i 's/^name = "dbt-core"$/name = "dbt-core-experimental-parser"/' pyproject.toml
           grep '^name = ' pyproject.toml
 
       - name: Publish (dbt-core-experimental-parser)
-        if: inputs.release_target != 'core'
+        if: inputs.release_target == 'all' || inputs.release_target == 'parser'
         run: |
           cargo ci pypi publish \
             --environment ${{ inputs.dry_run_with_test_pypi && 'test-pypi' || 'prod' }} \
@@ -829,10 +962,53 @@ jobs:
             --target x86_64-pc-windows-msvc
 
       - name: Restore pyproject name after parser publish
-        if: ${{ always() && inputs.release_target != 'core' }}
+        if: ${{ always() && (inputs.release_target == 'all' || inputs.release_target == 'parser') }}
         run: |
           sed -i 's/^name = "dbt-core-experimental-parser"$/name = "dbt-core"/' pyproject.toml
           grep '^name = ' pyproject.toml
+
+      # dbt-oss is the identical rebrand of dbt-core (see the `build` job) —
+      # same tags, same --runtime-metadata-from. The name swap targets the
+      # root pyproject, like the parser's above: with no --project-dir that's
+      # where the sdist's name and descriptive metadata come from.
+      # `grep -qx` guards against a silent no-op `sed` (exits 0 either way).
+      - name: Rename pyproject for oss publish
+        if: inputs.release_target == 'all' || inputs.release_target == 'oss'
+        run: |
+          sed -i 's/^name = "dbt-core"$/name = "dbt-oss"/' pyproject.toml
+          grep -qx 'name = "dbt-oss"' pyproject.toml
+
+      - name: Prepend PyPI banner to README (dbt-oss)
+        if: inputs.release_target == 'all' || inputs.release_target == 'oss'
+        run: |
+          cat .github/dbt-oss-pypi-banner.md README.md > README.md.tmp
+          mv README.md.tmp README.md
+
+      - name: Publish (dbt-oss)
+        if: inputs.release_target == 'all' || inputs.release_target == 'oss'
+        run: |
+          cargo ci pypi publish \
+            --environment ${{ inputs.dry_run_with_test_pypi && 'test-pypi' || 'prod' }} \
+            --version "${{ needs.prepare-release.outputs.version }}" \
+            --download-base-url "$BASE_URL" \
+            --runtime-metadata-from crates/dbt-sa-python \
+            --python-tag cp310 \
+            --abi-tag abi3 \
+            --target x86_64-unknown-linux-gnu \
+            --target aarch64-unknown-linux-gnu \
+            --target x86_64-apple-darwin \
+            --target aarch64-apple-darwin \
+            --target x86_64-pc-windows-msvc
+
+      - name: Restore README after dbt-oss publish
+        if: ${{ always() && (inputs.release_target == 'all' || inputs.release_target == 'oss') }}
+        run: git -c safe.directory="$GITHUB_WORKSPACE" restore -- README.md
+
+      - name: Restore pyproject name after oss publish
+        if: ${{ always() && (inputs.release_target == 'all' || inputs.release_target == 'oss') }}
+        run: |
+          sed -i 's/^name = "dbt-oss"$/name = "dbt-core"/' pyproject.toml
+          grep -qx 'name = "dbt-core"' pyproject.toml
 
   # ------------------------------------------------------------------
   # Create the GitHub Release with all assets. Skipped on dry-run.
@@ -918,7 +1094,7 @@ jobs:
   publish-homebrew:
     needs: [prepare-release, github-release]
     # if: ${{ !inputs.dry_run && !inputs.dry_run_with_test_pypi && !contains(needs.prepare-release.outputs.version, '-') }}
-    if: ${{ !inputs.dry_run && !inputs.dry_run_with_test_pypi }}
+    if: ${{ !inputs.dry_run && !inputs.dry_run_with_test_pypi && (inputs.release_target == 'all' || inputs.release_target == 'core') }}
     uses: ./.github/workflows/publish-homebrew.yml
     with:
       version: ${{ needs.prepare-release.outputs.version }}
@@ -928,15 +1104,14 @@ jobs:
       # `ARCHIVE_BASE` template's `${PACKAGE_NAME}-` prefix. Hardcoded
       # because reusable-workflow `with:` blocks don't accept the `env`
       # context — keep these in lockstep with the build job manually.
-      binary_name: dbt-sa-cli
+      binary_name: dbt
       tarball_prefix: dbt-core-
     permissions:
       contents: read
     secrets: inherit
 
-  # Open a PR back to main with only the release commit's changelog delta
-  # (new `.changes/<version>.md`, regenerated CHANGELOG.md, deleted
-  # unreleased entries) — the version bump stays on the release branch.
+  # Open a PR back to main with the release commit's changelog delta and
+  # Cargo.toml version bump (Cargo.lock excluded — see below).
   changelog-backport:
     name: Backport changelog to main
     needs: [prepare-release, publish-pypi, github-release]
@@ -969,37 +1144,40 @@ jobs:
 
           REL="origin/${RELEASE_BRANCH}"
 
-          # Handle each part of the changelog delta with the right tool rather
-          # than one patch — main may be a different lineage than the release
-          # branch's parent, so the version bump never comes along and the
-          # batched-away entries may not even exist here.
+          # Handle each part of the delta with the right tool rather than one
+          # patch — main may be a different lineage than the release branch's
+          # parent, so the batched-away entries may not even exist here.
 
           # 1. The new release-notes file changie generated for this version.
           git checkout "$REL" -- ".changes/${VERSION}.md"
 
-          # 2. Remove the unreleased entries the release batched away, but only
-          #    those still present — main may never have had them, or a prior
-          #    backport already removed them (--ignore-unmatch, not an error).
-          #    Stay NUL-delimited end to end: changie names each entry after its
-          #    kind, so multi-word kinds ("Under the Hood", "Breaking Changes",
-          #    ...) yield paths with spaces that word-split under plain xargs and
-          #    would then be silently skipped by --ignore-unmatch.
+          # 2. The Cargo.toml version bump, patched like CHANGELOG.md below.
+          #    Cargo.lock is left alone; it regenerates on main's next build.
+          CARGO_PATCH="$(mktemp)"
+          git diff "${REL}~1" "$REL" -- Cargo.toml > "$CARGO_PATCH"
+          if [ -s "$CARGO_PATCH" ] && ! git apply --reverse --check "$CARGO_PATCH" 2>/dev/null; then
+            git apply --index --3way "$CARGO_PATCH"
+          fi
+
+          # 3. Remove the unreleased entries the release batched away, if still
+          #    present (--ignore-unmatch). NUL-delimited since changie's kind
+          #    names ("Under the Hood", ...) can contain spaces.
           DELETED_LIST="$(mktemp)"
           git diff -z --diff-filter=D --name-only "${REL}~1" "$REL" -- .changes/unreleased > "$DELETED_LIST"
           if [ -s "$DELETED_LIST" ]; then
             git rm -q --ignore-unmatch --pathspec-from-file="$DELETED_LIST" --pathspec-file-nul
           fi
 
-          # 3. Regenerated CHANGELOG.md, applied as a patch (not a copy) so
-          #    sections added to main concurrently survive — `--3way` merges,
-          #    and `--reverse --check` lets a re-run after merge skip cleanly.
+          # 4. Regenerated CHANGELOG.md, applied as a patch (not a copy) so
+          #    concurrent edits on main survive; --3way merges, and
+          #    --reverse --check skips cleanly on a re-run after merge.
           PATCH="$(mktemp)"
           git diff "${REL}~1" "$REL" -- CHANGELOG.md > "$PATCH"
           if [ -s "$PATCH" ] && ! git apply --reverse --check "$PATCH" 2>/dev/null; then
             git apply --index --3way "$PATCH"
           fi
 
-          git add -A .changes CHANGELOG.md
+          git add -A .changes CHANGELOG.md Cargo.toml
 
           # Nothing new relative to main (e.g. a prior backport PR already
           # merged before this re-run) — skip cleanly to stay idempotent.
@@ -1024,7 +1202,10 @@ jobs:
       - name: Open or update pull request
         if: steps.backport.outputs.skip != 'true'
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Not GITHUB_TOKEN: Actions won't trigger workflows from the
+          # events it creates, so the reverse sync in
+          # auto-public-pr-copybara.yml would never run for this PR.
+          GH_TOKEN: ${{ secrets.FS_SERVICE_PAT }}
           VERSION: ${{ needs.prepare-release.outputs.version }}
           PR_BRANCH: ${{ steps.backport.outputs.pr_branch }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
@@ -1044,12 +1225,11 @@ jobs:
             --body "$(cat <<EOF
           Backports the changelog generated by the \`v${VERSION}\` release back to main.
 
-          Contains only the changelog delta from the release commit:
+          Contains only the changelog delta and version bump from the release commit:
           - new \`.changes/${VERSION}.md\`
           - regenerated \`CHANGELOG.md\`
           - deletion of the \`.changes/unreleased/*.yaml\` entries \`changie batch\` consumed
-
-          The Cargo version bump is intentionally excluded — main keeps its own version.
+          - \`Cargo.toml\` version bump to \`${VERSION}\`
 
           Release workflow: ${RUN_URL}
           EOF
@@ -1086,7 +1266,8 @@ jobs:
   # Submits an updated dbtLabs.dbt-core manifest to microsoft/winget-pkgs
   # via `wingetcreate update` using the Windows installer archive from the
   # `github-release` job. Runs in parallel with `publish-homebrew`; both
-  # fan out from `github-release`.
+  # fan out from `github-release`. Also skipped unless `release_target`
+  # is `all` or `core`.
   #
   # PRE-STABLE PREVIEW WINDOW: pre-release versions are published too. Note
   # each preview opens a new upstream winget-pkgs PR and a permanent
@@ -1097,7 +1278,7 @@ jobs:
     # if: ${{ !contains(needs.prepare-release.outputs.version, '-') }}
     # dry_run cascades via github-release being skipped; dry_run_with_test_pypi
     # needs an explicit guard since github-release now runs in that mode too.
-    if: ${{ !inputs.dry_run_with_test_pypi }}
+    if: ${{ !inputs.dry_run_with_test_pypi && (inputs.release_target == 'all' || inputs.release_target == 'core') }}
     uses: ./.github/workflows/publish-winget.yml
     with:
       version: ${{ needs.prepare-release.outputs.version }}

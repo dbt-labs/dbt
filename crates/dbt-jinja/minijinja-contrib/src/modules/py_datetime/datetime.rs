@@ -14,6 +14,7 @@ use minijinja::{arg_utils::ArgParser, value::Object, value::ObjectRepr, Error, E
 
 use crate::modules::py_datetime::bound_method::BoundMethod;
 use crate::modules::py_datetime::date::PyDate;
+use crate::modules::py_datetime::find_microsecond_directive;
 use crate::modules::py_datetime::strptime;
 use crate::modules::py_datetime::time::PyTime;
 use crate::modules::py_datetime::timedelta::PyTimeDelta;
@@ -628,6 +629,14 @@ impl PyDateTime {
         }
     }
 
+    // convenience "fixed offset" constructor
+    pub fn new_fixed_offset(dt: DateTime<chrono::FixedOffset>) -> Self {
+        PyDateTime {
+            state: DateTimeState::FixedOffset(dt),
+            tzinfo: None,
+        }
+    }
+
     /// Return naive or aware's .year
     pub fn year(&self) -> Option<Value> {
         Some(Value::from(self.chrono_dt().year()))
@@ -685,20 +694,41 @@ impl PyDateTime {
                 "strftime requires one string argument",
             )
         })?;
+
+        // Python's `%f` is six zero-padded microsecond digits; chrono's `%f` is
+        // nine nanosecond digits. Format the surrounding pieces with chrono and
+        // write the microseconds ourselves.
         let mut formatted = String::new();
+        let mut remaining = fmt;
+        while let Some(pos) = find_microsecond_directive(remaining) {
+            self.format_into(&remaining[..pos], &mut formatted)?;
+            let microseconds = self.chrono_dt().nanosecond() / 1_000;
+            formatted.push_str(&format!("{microseconds:06}"));
+            remaining = &remaining[pos + "%f".len()..];
+        }
+        self.format_into(remaining, &mut formatted)?;
+
+        Ok(Value::from(formatted))
+    }
+
+    /// Append `fmt` formatted against this datetime to `out`. `fmt` is a slice of
+    /// a `strftime` format string with no `%f` conversion left in it.
+    fn format_into(&self, fmt: &str, out: &mut String) -> Result<(), Error> {
+        if fmt.is_empty() {
+            return Ok(());
+        }
         let result = match &self.state {
             DateTimeState::Naive(ndt) => {
                 // Python renders timezone directives as empty strings for naive datetimes.
                 let items = StrftimeItems::new(fmt)
                     .filter(|item| !is_timezone_item(item))
                     .collect::<Vec<_>>();
-                ndt.format_with_items(items.iter()).write_to(&mut formatted)
+                ndt.format_with_items(items.iter()).write_to(out)
             }
-            DateTimeState::Aware(adt) => adt.format(fmt).write_to(&mut formatted),
-            DateTimeState::FixedOffset(fdt) => fdt.format(fmt).write_to(&mut formatted),
+            DateTimeState::Aware(adt) => adt.format(fmt).write_to(out),
+            DateTimeState::FixedOffset(fdt) => fdt.format(fmt).write_to(out),
         };
-        result.map_err(|_| Error::new(ErrorKind::InvalidArgument, "invalid strftime format"))?;
-        Ok(Value::from(formatted))
+        result.map_err(|_| Error::new(ErrorKind::InvalidArgument, "invalid strftime format"))
     }
 
     /// Format with a custom date/time separator. `sep == 'T'` produces the

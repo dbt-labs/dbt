@@ -1,0 +1,5 @@
+[bans]
+multiple-versions = "allow"
+deny = [
+  { crate = "dbt-common", reason = "dbt-tracked-stmt should be treated as an 'external' crate that provides tracking and cancellation on top of dbt-adbc" },
+]

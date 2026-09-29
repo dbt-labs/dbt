@@ -45,6 +45,9 @@ pub struct FreshnessResultsMetadata {
 #[serde(rename_all = "snake_case")]
 pub struct FreshnessResultsNode {
     pub unique_id: String,
+    /// Populated only in `freshness.json`; `sources.json`'s shape must not change.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resource_type: Option<String>,
     pub max_loaded_at: DateTime<Utc>,
     pub snapshotted_at: DateTime<Utc>,
     pub max_loaded_at_time_ago_in_s: f64,
@@ -63,6 +66,51 @@ pub struct FreshnessResultsNode {
         serialize_with = "serialize_internal_dbt_node"
     )]
     pub node: Option<Arc<dyn InternalDbtNodeAttributes>>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn result_node(resource_type: Option<&str>) -> FreshnessResultsNode {
+        FreshnessResultsNode {
+            unique_id: "source.pkg.raw.orders".to_string(),
+            resource_type: resource_type.map(str::to_string),
+            max_loaded_at: DateTime::from_timestamp_nanos(0),
+            snapshotted_at: DateTime::from_timestamp_nanos(0),
+            max_loaded_at_time_ago_in_s: 0.0,
+            status: FreshnessStatus::Pass,
+            criteria: FreshnessDefinition::default(),
+            adapter_response: BTreeMap::new(),
+            timing: vec![],
+            thread_id: "Thread-1".to_string(),
+            execution_time: 0.0,
+            node: None,
+        }
+    }
+
+    /// Omitted entirely, not `null`: `sources.json` must stay byte-identical.
+    #[test]
+    fn resource_type_is_omitted_when_unset() {
+        let json = serde_json::to_string(&result_node(None)).unwrap();
+        assert!(
+            !json.contains("resource_type"),
+            "resource_type leaked into sources.json shape: {json}"
+        );
+    }
+
+    #[test]
+    fn resource_type_is_serialized_when_set() {
+        let json = serde_json::to_string(&result_node(Some("model"))).unwrap();
+        assert!(json.contains(r#""resource_type":"model""#), "got {json}");
+    }
+
+    #[test]
+    fn resource_type_defaults_to_none_when_absent() {
+        let json = serde_json::to_string(&result_node(None)).unwrap();
+        let parsed: FreshnessResultsNode = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.resource_type, None);
+    }
 }
 
 /// Represents the structure of the sources.json artifact.

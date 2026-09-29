@@ -2,7 +2,7 @@ import { screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { ResourceType } from '../shared';
-import { createRestDataSource } from '../shared/data-sources/rest';
+import { DETAIL_REGISTRY } from '../shared/data-sources/duckdb/details';
 import exposureFx from '../test/fixtures/details/exposure.json';
 import groupFx from '../test/fixtures/details/group.json';
 import macroFx from '../test/fixtures/details/macro.json';
@@ -18,14 +18,17 @@ import { renderWithProviders } from '../test/renderWithProviders';
 import { NodeDetail } from './NodeDetail';
 
 /**
- * Render coverage for the asset-detail page across every resource type the
- * index API serves. Each case drives the real production path — REST endpoint
- * response → the `fetchAsset` mapper → `NodeDetail` — so a mapper that mishandles
- * the server's response shape surfaces as a render failure here.
+ * Render coverage for the asset-detail page across every resource type the index
+ * serves. Each case drives the real production path — a projected row → the
+ * per-type mapper → `NodeDetail` — so a mapper that mishandles a row shape
+ * surfaces as a render failure here.
  *
- * Fixtures are captured verbatim from the dev-server endpoints (detail, lineage,
- * column-lineage) and replayed at their real HTTP statuses, so the test exercises
- * the actual endpoint contract rather than a hand-tailored payload.
+ * The fixtures started as captures from a real project, which is why they are
+ * unusually broad: hundreds of nodes, full lineage graphs, every optional field
+ * populated. That breadth is the point, and it is worth preserving. Their
+ * *contents* are synthetic and must stay that way — every identifier, description,
+ * owner, and URL has been replaced. This repository is published, so do not
+ * refresh these by re-capturing from a real project.
  */
 
 /** One captured set of endpoint responses for a single asset. */
@@ -79,10 +82,10 @@ describe('NodeDetail', () => {
   it.each(CASES)('renders the %s detail page', async (type, fx) => {
     vi.stubGlobal('fetch', stubFetch(fx));
 
-    const asset = await createRestDataSource().fetchAsset({
-      uniqueId: fx.detail.unique_id,
-      resourceType: type,
-    });
+    // Map the fixture through the same per-type mapper the real source uses, rather
+    // than round-tripping it through a source. Fewer moving parts, and it covers the
+    // mapping that actually ships.
+    const asset = DETAIL_REGISTRY[type]!.map(fx.detail as Record<string, unknown>);
     expect(asset).not.toBeNull();
 
     renderWithProviders(

@@ -13,11 +13,13 @@ use minijinja::State;
 use crate::adapter::adapter_impl::AdapterImpl;
 use crate::errors::adbc_error_to_adapter_error;
 use crate::formatter::SqlLiteralFormatter;
+use crate::metadata::bigquery;
 use crate::metadata::bigquery::is_bigquery_not_found_error;
 use crate::metadata::databricks::describe_table::DatabricksTableMetadata;
 use crate::metadata::{snowflake, try_canonicalize_bool_column_field};
 use crate::record_batch::RecordBatchExt;
 use crate::relation::Relation;
+use crate::relation::databricks::is_shallow_clone_type;
 use crate::relation::do_create_relation;
 use dbt_common::cancellation::CancellationToken;
 
@@ -67,10 +69,7 @@ pub fn get_relation(
         AdapterType::Spark => {
             spark_get_relation(adapter, state, ctx, conn, schema, identifier, token)
         }
-        AdapterType::DuckDB => duckdb_get_relation(
-            adapter, state, ctx, conn, database, schema, identifier, token,
-        ),
-        AdapterType::Alt => duckdb_get_relation(
+        AdapterType::DuckDB | AdapterType::LakeCompute => duckdb_get_relation(
             adapter, state, ctx, conn, database, schema, identifier, token,
         ),
         AdapterType::Fabric => fabric_get_relation(
@@ -89,6 +88,37 @@ pub fn get_relation(
         AdapterType::Oracle => todo!("Oracle"),
         AdapterType::Datafusion => todo!("Datafusion"),
     }
+}
+
+/// Parses an `INFORMATION_SCHEMA.ROUTINES`-shaped result batch into a
+/// [`Relation`].
+pub(crate) fn relation_from_routines_batch(
+    adapter: &AdapterImpl,
+    database: &str,
+    schema: &str,
+    identifier: &str,
+    batch: &arrow::record_batch::RecordBatch,
+) -> AdapterResult<Option<Relation>> {
+    if batch.num_rows() == 0 {
+        return Ok(None);
+    }
+
+    let column = batch.column_by_name("table_type").unwrap();
+    let string_array = column.as_any().downcast_ref::<StringArray>().unwrap();
+    let relation_type_name = string_array.value(0).to_uppercase();
+    let relation_type =
+        RelationType::from_adapter_type(adapter.adapter_type(), &relation_type_name);
+
+    Ok(Some(
+        Relation::new(
+            adapter.adapter_type(),
+            database.to_string(),
+            schema.to_string(),
+            identifier.to_string(),
+        )
+        .with_relation_type(relation_type)
+        .with_quoting(adapter.quoting()),
+    ))
 }
 
 // https://github.com/dbt-labs/dbt-adapters/blob/ace1709df001df4232a66f9d5f331a5fda4d3389/dbt-snowflake/src/dbt/include/snowflake/macros/adapters.sql#L138
@@ -119,8 +149,10 @@ fn snowflake_get_relation(
         identifier.to_uppercase()
     };
     // this is a case-insenstive search
+    let lit_fmt = SqlLiteralFormatter::new(adapter.adapter_type());
     let sql = format!(
-        "show objects like '{quoted_identifier}' in schema {quoted_database}.{quoted_schema}"
+        "show objects like {} in schema {quoted_database}.{quoted_schema}",
+        lit_fmt.format_str(&quoted_identifier)
     );
 
     let batch = match adapter
@@ -177,9 +209,21 @@ fn snowflake_get_relation(
     }
     let is_dynamic = is_dynamic_column.value(0);
 
+    // See `snowflake::relation_type_from_table_flags`'s doc.
+    let is_interactive = batch
+        .column_values::<StringArray>("is_interactive")
+        .ok()
+        .filter(|col| col.len() == 1)
+        .map(|col| col.value(0).to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| "n".to_string());
+
     let relation_type_name = kind_column.value(0);
     let relation_type = if relation_type_name.eq_ignore_ascii_case("table") {
-        Some(snowflake::relation_type_from_table_flags(is_dynamic)?)
+        Some(snowflake::relation_type_from_table_flags(
+            is_dynamic,
+            &is_interactive,
+        )?)
     } else if relation_type_name.eq_ignore_ascii_case("view") {
         Some(RelationType::View)
     } else {
@@ -243,6 +287,11 @@ fn bigquery_get_relation_via_adbc(
         Err(e) => {
             let adapter_err = adbc_error_to_adapter_error(e);
             if is_bigquery_not_found_error(&adapter_err) {
+                if adapter.engine().relation_cache().project_has_functions() {
+                    return bigquery::get_relation_routine_fallback(
+                        adapter, state, conn, database, schema, identifier, token,
+                    );
+                }
                 return Ok(None);
             } else {
                 return Err(adapter_err);
@@ -335,8 +384,7 @@ fn bigquery_get_relation(
         return Ok(None);
     }
 
-    let column = batch.column_by_name("table_type").unwrap();
-    let string_array = column.as_any().downcast_ref::<StringArray>().unwrap();
+    let string_array = batch.column_values::<StringArray>("table_type")?;
 
     let relation_type_name = string_array.value(0).to_uppercase();
     let relation_type = RelationType::from_adapter_type(AdapterType::Bigquery, &relation_type_name);
@@ -363,7 +411,7 @@ fn bigquery_get_relation(
 fn parse_describe_table_extended(
     adapter_type: AdapterType,
     batch: &arrow::record_batch::RecordBatch,
-) -> AdapterResult<(RelationType, bool, BTreeMap<String, String>)> {
+) -> AdapterResult<(RelationType, bool, bool, BTreeMap<String, String>)> {
     let col_names = batch.column_values::<StringArray>("col_name")?;
     let data_types = batch.column_values::<StringArray>("data_type")?;
 
@@ -397,8 +445,9 @@ fn parse_describe_table_extended(
         None => RelationType::Table,
     };
     let is_delta = provider_str.as_deref() == Some("delta");
+    let is_shallow_clone = type_str.as_deref().is_some_and(is_shallow_clone_type);
 
-    Ok((relation_type, is_delta, metadata_map))
+    Ok((relation_type, is_delta, is_shallow_clone, metadata_map))
 }
 
 fn spark_get_relation(
@@ -438,7 +487,7 @@ fn spark_get_relation(
         return Ok(None);
     }
 
-    let (relation_type, is_delta, metadata) =
+    let (relation_type, is_delta, is_shallow_clone, metadata) =
         parse_describe_table_extended(AdapterType::Spark, &batch)?;
 
     Ok(Some(Box::new(
@@ -451,7 +500,8 @@ fn spark_get_relation(
         .with_relation_type(Some(relation_type))
         .with_quoting(adapter.quoting())
         .with_metadata(Some(metadata))
-        .with_is_delta(is_delta),
+        .with_is_delta(is_delta)
+        .with_is_shallow_clone(is_shallow_clone),
     )))
 }
 
@@ -540,19 +590,30 @@ fn databricks_get_relation(
         return Ok(None);
     }
 
-    let (relation_type, is_delta, metadata) = if as_json_unsupported {
-        let (relation_type, is_delta, metadata_map) =
+    let (relation_type, is_delta, is_shallow_clone, metadata) = if as_json_unsupported {
+        let (relation_type, is_delta, is_shallow_clone, metadata_map) =
             parse_describe_table_extended(adapter.adapter_type(), &batch)?;
-        (Some(relation_type), is_delta, Some(metadata_map))
+        (
+            Some(relation_type),
+            is_delta,
+            is_shallow_clone,
+            Some(metadata_map),
+        )
     } else {
         debug_assert_eq!(batch.num_rows(), 1);
         let json_metadata = DatabricksTableMetadata::from_record_batch(Arc::new(batch))?;
         let is_delta = json_metadata.provider.as_deref() == Some("delta");
+        let is_shallow_clone = is_shallow_clone_type(&json_metadata.type_);
         let relation_type = Some(RelationType::from_adapter_type(
             adapter.adapter_type(),
             &json_metadata.type_,
         ));
-        (relation_type, is_delta, Some(json_metadata.into_metadata()))
+        (
+            relation_type,
+            is_delta,
+            is_shallow_clone,
+            Some(json_metadata.into_metadata()),
+        )
     };
 
     let db = if database.is_empty() {
@@ -571,7 +632,8 @@ fn databricks_get_relation(
         .with_relation_type(relation_type)
         .with_quoting(adapter.quoting())
         .with_metadata(metadata)
-        .with_is_delta(is_delta),
+        .with_is_delta(is_delta)
+        .with_is_shallow_clone(is_shallow_clone),
     )))
 }
 
@@ -628,8 +690,7 @@ LEFT JOIN materialized_views mv
         return Ok(None);
     }
 
-    let column = batch.column_by_name("object_type").unwrap();
-    let string_array = column.as_any().downcast_ref::<StringArray>().unwrap();
+    let string_array = batch.column_values::<StringArray>("object_type")?;
 
     if string_array.len() != 1 {
         return Err(AdapterError::new(
@@ -708,8 +769,7 @@ fn postgres_get_relation(
         return Ok(None);
     }
 
-    let column = batch.column_by_name("type").unwrap();
-    let string_array = column.as_any().downcast_ref::<StringArray>().unwrap();
+    let string_array = batch.column_values::<StringArray>("type")?;
 
     if string_array.len() != 1 {
         return Err(AdapterError::new(
@@ -748,8 +808,20 @@ fn exasol_get_relation(
     identifier: &str,
     token: CancellationToken,
 ) -> AdapterResult<Option<Box<dyn BaseRelation>>> {
-    let q_schema = schema.to_uppercase();
-    let q_ident = identifier.to_uppercase();
+    // Exasol folds unquoted identifiers to uppercase but stores quoted ones
+    // verbatim, so resolve to the stored case per the quoting policy and match
+    // exactly (as postgres_get_relation does). Single quotes doubled for safety.
+    let quoting = adapter.quoting();
+    let fold = |s: &str, quoted: bool| {
+        let folded = if quoted {
+            s.to_string()
+        } else {
+            s.to_uppercase()
+        };
+        folded.replace('\'', "''")
+    };
+    let q_schema = fold(schema, quoting.schema);
+    let q_ident = fold(identifier, quoting.identifier);
 
     let sql = format!(
         "select 'table' as \"type\" from sys.exa_all_tables \
@@ -765,8 +837,7 @@ fn exasol_get_relation(
         return Ok(None);
     }
 
-    let column = batch.column_by_name("type").unwrap();
-    let arr = column.as_any().downcast_ref::<StringArray>().unwrap();
+    let arr = batch.column_values::<StringArray>("type")?;
     let relation_type = match arr.value(0) {
         "table" => Some(RelationType::Table),
         "view" => Some(RelationType::View),
@@ -898,8 +969,7 @@ fn duckdb_get_relation(
         return Ok(None);
     }
 
-    let column = batch.column_by_name("type").unwrap();
-    let string_array = column.as_any().downcast_ref::<StringArray>().unwrap();
+    let string_array = batch.column_values::<StringArray>("type")?;
 
     if string_array.len() != 1 {
         return Err(AdapterError::new(
@@ -975,8 +1045,7 @@ fn fabric_get_relation(
         return Ok(None);
     }
 
-    let column = batch.column_by_name("TABLE_TYPE").unwrap();
-    let string_array = column.as_any().downcast_ref::<StringArray>().unwrap();
+    let string_array = batch.column_values::<StringArray>("TABLE_TYPE")?;
 
     if string_array.len() != 1 {
         return Err(AdapterError::new(
@@ -1013,12 +1082,20 @@ fn clickhouse_get_relation(
     identifier: &str,
     token: CancellationToken,
 ) -> AdapterResult<Option<Box<dyn BaseRelation>>> {
-    use crate::metadata::clickhouse::{build_get_relation_sql, relation_type_from_engine};
+    use crate::metadata::clickhouse::{
+        build_get_relation_sql, relation_type_from_engine, server_capabilities_over_connection,
+        with_catalog_state,
+    };
     use crate::record_batch::RecordBatchExt;
 
     // ClickHouse only has databases, not schemas — dbt `schema` maps to CH `database`.
     // dbt `database` is unused here.
     let sql = build_get_relation_sql(schema, identifier);
+
+    // Probe over the connection we already hold: the State-based entry would
+    // borrow a second thread-local connection and trip the nested-guard check.
+    let caps =
+        server_capabilities_over_connection(adapter.engine().as_ref(), ctx, conn, token.clone());
 
     let batch = adapter
         .engine()
@@ -1034,18 +1111,16 @@ fn clickhouse_get_relation(
             "Expected exactly one row for ClickHouse get_relation",
         ));
     }
-
-    let relation_type = Some(relation_type_from_engine(engines.value(0)));
-
-    let relation = do_create_relation(
+    let relation = Relation::new(
         adapter.adapter_type(),
-        database.to_string(),
-        schema.to_string(),
+        Some(database.to_string()),
+        Some(schema.to_string()),
         Some(identifier.to_string()),
-        relation_type,
-        adapter.quoting(),
-    )?;
-    Ok(Some(relation))
+    )
+    .with_relation_type(relation_type_from_engine(engines.value(0)))
+    .with_quoting(adapter.quoting());
+    let relation = with_catalog_state(relation, caps, &batch, 0)?;
+    Ok(Some(Box::new(relation) as Box<dyn BaseRelation>))
 }
 
 #[cfg(test)]
@@ -1081,10 +1156,11 @@ mod tests {
             ("Catalog", "spark_catalog"),
             ("Type", "VIEW"),
         ]);
-        let (relation_type, is_delta, _) =
+        let (relation_type, is_delta, is_shallow_clone, _) =
             parse_describe_table_extended(AdapterType::Spark, &batch).unwrap();
         assert_eq!(relation_type, RelationType::View);
         assert!(!is_delta);
+        assert!(!is_shallow_clone);
     }
 
     #[test]
@@ -1095,17 +1171,97 @@ mod tests {
             ("Type", "MANAGED"),
             ("Provider", "delta"),
         ]);
-        let (relation_type, is_delta, _) =
+        let (relation_type, is_delta, is_shallow_clone, _) =
             parse_describe_table_extended(AdapterType::Spark, &batch).unwrap();
         assert_eq!(relation_type, RelationType::Table);
         assert!(is_delta);
+        assert!(!is_shallow_clone);
     }
 
     #[test]
     fn spark_describe_defaults_to_table_when_type_missing() {
         let batch = describe_batch(&[("id", "int"), ("", ""), ("Catalog", "spark_catalog")]);
-        let (relation_type, _, _) =
+        let (relation_type, _, _, _) =
             parse_describe_table_extended(AdapterType::Spark, &batch).unwrap();
         assert_eq!(relation_type, RelationType::Table);
+    }
+
+    #[test]
+    fn databricks_describe_classifies_shallow_clone() {
+        let batch = describe_batch(&[
+            ("id", "int"),
+            ("", ""),
+            ("Type", "MANAGED_SHALLOW_CLONE"),
+            ("Provider", "delta"),
+        ]);
+        let (relation_type, is_delta, is_shallow_clone, _) =
+            parse_describe_table_extended(AdapterType::Databricks, &batch).unwrap();
+        assert_eq!(relation_type, RelationType::Table);
+        assert!(is_delta);
+        assert!(is_shallow_clone);
+    }
+
+    fn mock_bigquery_adapter() -> AdapterImpl {
+        AdapterImpl::new_mock(
+            AdapterType::Bigquery,
+            BTreeMap::new(),
+            dbt_schemas::schemas::relations::DEFAULT_RESOLVED_QUOTING,
+            Arc::new(crate::sql_types::DefaultTypeOps::new(AdapterType::Bigquery)),
+            Arc::new(crate::stmt_splitter::DefaultStmtSplitter),
+        )
+    }
+
+    fn routines_batch(routine_type: &str) -> RecordBatch {
+        let schema = Schema::new(vec![
+            Field::new("table_catalog", DataType::Utf8, false),
+            Field::new("table_schema", DataType::Utf8, false),
+            Field::new("table_name", DataType::Utf8, false),
+            Field::new("table_type", DataType::Utf8, false),
+        ]);
+        RecordBatch::try_new(
+            Arc::new(schema),
+            vec![
+                Arc::new(StringArray::from(vec!["my-proj"])),
+                Arc::new(StringArray::from(vec!["my_schema"])),
+                Arc::new(StringArray::from(vec!["add_one"])),
+                Arc::new(StringArray::from(vec![routine_type])),
+            ],
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn relation_from_routines_batch_resolves_function_row() {
+        let adapter = mock_bigquery_adapter();
+        let batch = routines_batch("FUNCTION");
+
+        let relation =
+            relation_from_routines_batch(&adapter, "my-proj", "my_schema", "add_one", &batch)
+                .unwrap()
+                .expect("a non-empty ROUTINES batch should resolve to Some(relation)");
+
+        assert_eq!(relation.relation_type(), Some(RelationType::Function));
+        assert_eq!(relation.database_as_resolved_str().unwrap(), "my-proj");
+        assert_eq!(relation.schema_as_resolved_str().unwrap(), "my_schema");
+        assert_eq!(relation.identifier_as_resolved_str().unwrap(), "add_one");
+    }
+
+    #[test]
+    fn relation_from_routines_batch_returns_none_when_batch_is_empty() {
+        let adapter = mock_bigquery_adapter();
+        let schema = Schema::new(vec![Field::new("table_type", DataType::Utf8, false)]);
+        let empty_batch = RecordBatch::try_new(
+            Arc::new(schema),
+            vec![Arc::new(StringArray::from(Vec::<&str>::new()))],
+        )
+        .unwrap();
+
+        // No matching row means the object truly doesn't exist (it's not a
+        // table/view either, since this is only reached as a fallback after
+        // that lookup already failed).
+        let result =
+            relation_from_routines_batch(&adapter, "my-proj", "my_schema", "add_one", &empty_batch)
+                .unwrap();
+        assert!(result.is_none());
     }
 }

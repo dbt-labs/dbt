@@ -6,7 +6,8 @@ use dbt_common::collections::DashMap;
 use dbt_common::io_args::FsCommand;
 use dbt_common::stats::Stat;
 use dbt_common::tracing::dbt_emit::{
-    emit_error_log_from_fs_error, emit_warn_log_from_fs_error, emit_warn_log_message,
+    emit_error_log_from_fs_error, emit_info_log_message, emit_warn_log_from_fs_error,
+    emit_warn_log_message,
 };
 use dbt_common::tracing::event_info::store_event_attributes;
 use dbt_common::{
@@ -30,9 +31,15 @@ use dbt_schemas::schemas::{InternalDbtNode, Nodes, StateArtifacts};
 
 use std::collections::HashMap;
 
+use dbt_schemas::schemas::selection_override::{
+    SelectionOverride, SelectionOverrideStats, compute_selection_override_stats, format_sample,
+};
+
 use crate::{
     args::SchedulerArgs,
-    node_selector::{filter_select_criteria, fnmatch},
+    node_selector::{
+        StateSelectorResults, filter_select_criteria_with_state_selector_results, fnmatch,
+    },
 };
 
 /// Schedule nodes based on selection criteria and dependencies.
@@ -45,6 +52,26 @@ use crate::{
 ///
 /// # Returns
 /// * `FsResult<Schedule<String>>` - Scheduled nodes with dependencies
+pub fn build_schedule(
+    arg: &SchedulerArgs,
+    nodes: &Nodes,
+    previous_state: Option<&StateArtifacts>,
+    resolved_selectors: &ResolvedSelector,
+    token: &CancellationToken,
+    adapter_type: AdapterType,
+) -> FsResult<Schedule<String>> {
+    build_schedule_with_state_selector_results(
+        arg,
+        nodes,
+        previous_state,
+        resolved_selectors,
+        None,
+        token,
+        adapter_type,
+    )
+}
+
+/// Build a schedule, optionally using externally evaluated state selector results.
 #[tracing::instrument(
     skip_all,
     fields(
@@ -54,15 +81,17 @@ use crate::{
         }),
     )
 )]
-pub fn build_schedule(
+pub fn build_schedule_with_state_selector_results(
     arg: &SchedulerArgs,
     nodes: &Nodes,
     previous_state: Option<&StateArtifacts>,
     resolved_selectors: &ResolvedSelector,
+    state_selector_results: Option<&StateSelectorResults>,
     token: &CancellationToken,
     adapter_type: AdapterType,
 ) -> FsResult<Schedule<String>> {
     token.check_cancellation()?;
+
     let deps = derive_deps(nodes, token)?;
 
     let (converted_include, include_had_columns) =
@@ -95,14 +124,16 @@ pub fn build_schedule(
     }
 
     // Get the schedule with all selectors applied
-    let schedule = schedule_graph(
+    let (schedule, _override_stats) = schedule_graph(
         &deps,
         nodes,
         previous_state,
         &converted_selectors,
+        state_selector_results,
         arg,
         adapter_type,
     )?;
+
     Ok(schedule)
 }
 
@@ -170,9 +201,10 @@ fn schedule_graph(
     nodes: &Nodes,
     previous_state: Option<&StateArtifacts>,
     resolved_selectors: &ResolvedSelector,
+    state_selector_results: Option<&StateSelectorResults>,
     args: &SchedulerArgs,
     adapter_type: AdapterType,
-) -> FsResult<Schedule<String>> {
+) -> FsResult<(Schedule<String>, Option<SelectionOverrideStats>)> {
     // Get fully expanded included nodes.
     // For `dbt show`, override indirect selection to Empty on every atom so that tests are
     // only included when they are explicitly selected
@@ -183,11 +215,12 @@ fn schedule_graph(
             } else {
                 include.clone()
             };
-            expand_selector(
+            expand_selector_with_state_selector_results(
                 &effective_include,
                 deps,
                 nodes,
                 previous_state,
+                state_selector_results,
                 adapter_type,
                 &resolved_selectors.selector_definitions,
             )?
@@ -197,11 +230,12 @@ fn schedule_graph(
 
     // Get fully expanded excluded nodes
     let excluded_nodes = match &resolved_selectors.exclude {
-        Some(exclude) => expand_selector(
+        Some(exclude) => expand_selector_with_state_selector_results(
             exclude,
             deps,
             nodes,
             previous_state,
+            state_selector_results,
             adapter_type,
             &resolved_selectors.selector_definitions,
         )?,
@@ -209,16 +243,10 @@ fn schedule_graph(
     };
 
     // Selected resources: this is dbt-core's concept of selected nodes, without filtering for
-    // sources, unused, extended_models, etc. For the compile command, exclude unit tests here so
-    // they never enter the schedule even if selectors or CLI resource-type filters would match
-    // them; dbt-core hard-excludes unit tests from compile selection.
+    // sources, unused, extended_models, etc.
     let mut selected_nodes: BTreeSet<String> = selected_nodes
         .into_iter()
-        .filter(|node| {
-            !(excluded_nodes.contains(node)
-                || args.exclude_unique_ids.contains(node)
-                || (args.command == FsCommand::Compile && nodes.unit_tests.contains_key(node)))
-        })
+        .filter(|node| !(excluded_nodes.contains(node) || args.exclude_unique_ids.contains(node)))
         .collect();
 
     // Greedy test exclusion: if ANY parent is explicitly excluded, exclude the test too
@@ -243,20 +271,6 @@ fn schedule_graph(
                 !unit_test.base().depends_on.nodes.iter().any(|dep| {
                     excluded_nodes.contains(dep) || args.exclude_unique_ids.contains(dep)
                 })
-            } else {
-                true
-            }
-        });
-    }
-
-    // Filter out models whose normalized SQL content is empty
-    // We detect this via the checksum computed during resolve: an empty normalized SQL
-    // produces the SHA256 hash of an empty string.
-    {
-        let empty_checksum = DbtChecksum::hash(b"");
-        selected_nodes.retain(|node_id| {
-            if let Some(model) = nodes.models.get(node_id) {
-                model.__common_attr__.checksum != empty_checksum
             } else {
                 true
             }
@@ -296,12 +310,42 @@ fn schedule_graph(
         });
     }
 
-    selected_nodes.retain(|node_id| {
-        !nodes.get_node(node_id).is_some_and(|node| {
-            matches!(node.resource_type(), NodeType::Test | NodeType::UnitTest)
-                && !node.base().enabled
-        })
-    });
+    // Everything above is the *selection* half: what the caller's selection inputs decide. An
+    // override replaces that half wholesale. It is still computed when an override wins, because
+    // the size of the selection this engine would have made is the measurement the override
+    // exists to produce.
+    let computed_selection = selected_nodes;
+
+    let (selected_nodes, override_stats) = match args.selection_override.as_ref() {
+        Some(over) => {
+            // Ids with no counterpart node here cannot be scheduled and must not travel further:
+            // the stages below would carry a phantom id into the sorted node list.
+            let matched: BTreeSet<String> = over
+                .ids()
+                .iter()
+                .filter(|id| nodes.get_node(id).is_some())
+                .cloned()
+                .collect();
+
+            let mut scheduled = matched.clone();
+            retain_schedulable(&mut scheduled, nodes, args);
+
+            let stats = compute_selection_override_stats(
+                over.ids(),
+                &computed_selection,
+                &matched,
+                &scheduled,
+                nodes,
+            );
+            emit_selection_override_report(over, &stats);
+            (scheduled, Some(stats))
+        }
+        None => {
+            let mut selected_nodes = computed_selection;
+            retain_schedulable(&mut selected_nodes, nodes, args);
+            (selected_nodes, None)
+        }
+    };
 
     let all_selected_nodes = selected_nodes.clone();
 
@@ -392,7 +436,94 @@ fn schedule_graph(
 
     // Only check invariants if this is not a list command
     schedule.debug_assert_invariants(nodes);
-    Ok(schedule)
+    Ok((schedule, override_stats))
+}
+
+/// Report that the selection was replaced, and by how much the two sets differ.
+///
+/// Emitted twice on purpose: warnings here are deferred to an end-of-run summary that is long on a
+/// real project, so the counters also go out immediately, where the replacement happens. The
+/// warning is what a collector scanning warn-or-worse groups on.
+///
+/// `unmatched` and `dropped_unschedulable` are triage gates, not diagnostics: both remove nodes the
+/// supplied set named, and a removed node changes `ref()` resolution for whatever survives
+/// downstream, which can manufacture a failure that looks genuine.
+fn emit_selection_override_report(over: &SelectionOverride, stats: &SelectionOverrideStats) {
+    let counters = format!(
+        "Selection replaced by an externally supplied node set from '{}': \
+         override_active=true injected={} matched={} unmatched={} \
+         fusion_would_select={} fusion_only={} dropped_unschedulable={}",
+        over.source().display(),
+        stats.injected,
+        stats.matched,
+        stats.unmatched,
+        stats.fusion_would_select,
+        stats.fusion_only,
+        stats.dropped_unschedulable,
+    );
+
+    // Immediate, in-place, for whoever is watching the run.
+    emit_info_log_message(&counters);
+
+    // Deferred and coded, for the end-of-run summary and for anything scanning warn-or-worse. The
+    // triage guidance rides this copy: it is the one a failure investigation comes back to.
+    let mut warning = counters;
+    if stats.unmatched > 0 {
+        warning.push_str(&format!(
+            "; no node here matches {}",
+            format_sample(&stats.unmatched_sample, stats.unmatched)
+        ));
+    }
+    if stats.dropped_unschedulable > 0 {
+        warning.push_str(&format!(
+            "; cannot be run here {}",
+            format_sample(
+                &stats.dropped_unschedulable_sample,
+                stats.dropped_unschedulable
+            )
+        ));
+    }
+    if stats.unmatched > 0 || stats.dropped_unschedulable > 0 {
+        warning.push_str(
+            ". Those nodes will not run, so a downstream failure may be an artifact of this \
+             replacement rather than a genuine defect.",
+        );
+    }
+
+    emit_warn_log_message(ErrorCode::SelectionOverrideActive, warning);
+}
+
+/// Drop nodes this engine structurally cannot run.
+///
+/// This is the *schedulability* half of `schedule_graph`'s filtering, kept apart from the
+/// *selection* half (which selection inputs decide). Selection is a choice; schedulability is a
+/// capability of this engine, so it applies to any incoming node set whatever its provenance.
+fn retain_schedulable(selected_nodes: &mut BTreeSet<String>, nodes: &Nodes, args: &SchedulerArgs) {
+    // For the compile command, exclude unit tests so they never enter the schedule even if
+    // selectors or CLI resource-type filters would match them; dbt-core hard-excludes unit tests
+    // from compile selection.
+    if args.command == FsCommand::Compile {
+        selected_nodes.retain(|node_id| !nodes.unit_tests.contains_key(node_id));
+    }
+
+    // Filter out models whose normalized SQL content is empty
+    // We detect this via the checksum computed during resolve: an empty normalized SQL
+    // produces the SHA256 hash of an empty string.
+    let empty_checksum = DbtChecksum::hash(b"");
+    selected_nodes.retain(|node_id| {
+        if let Some(model) = nodes.models.get(node_id) {
+            model.__common_attr__.checksum != empty_checksum
+        } else {
+            true
+        }
+    });
+
+    selected_nodes.retain(|node_id| {
+        !nodes.get_node(node_id).is_some_and(|node| {
+            matches!(node.resource_type(), NodeType::Test | NodeType::UnitTest)
+                && !node.base().enabled
+        })
+    });
 }
 
 // ------------------------------------------------------------------------------------------------
@@ -474,6 +605,7 @@ fn eval_selector(
     deps: &BTreeMap<String, BTreeSet<String>>,
     nodes: &Nodes,
     previous_state: Option<&StateArtifacts>,
+    state_selector_results: Option<&StateSelectorResults>,
     adapter_type: AdapterType,
     selector_defs: &HashMap<String, SelectorEntry>,
     resolution_stack: &mut Vec<String>,
@@ -489,6 +621,7 @@ fn eval_selector(
                     deps,
                     nodes,
                     previous_state,
+                    state_selector_results,
                     adapter_type,
                     selector_defs,
                     resolution_stack,
@@ -506,6 +639,7 @@ fn eval_selector(
                 deps,
                 nodes,
                 previous_state,
+                state_selector_results,
                 adapter_type,
                 selector_defs,
                 resolution_stack,
@@ -516,6 +650,7 @@ fn eval_selector(
                     deps,
                     nodes,
                     previous_state,
+                    state_selector_results,
                     adapter_type,
                     selector_defs,
                     resolution_stack,
@@ -529,6 +664,7 @@ fn eval_selector(
                 deps,
                 nodes,
                 previous_state,
+                state_selector_results,
                 adapter_type,
                 selector_defs,
                 resolution_stack,
@@ -547,6 +683,7 @@ fn eval_selector(
                     deps,
                     nodes,
                     previous_state,
+                    state_selector_results,
                     adapter_type,
                     selector_defs,
                     resolution_stack,
@@ -554,8 +691,13 @@ fn eval_selector(
             }
 
             // 1️⃣ base filter
-            let mut selected =
-                filter_select_criteria(nodes, criteria, previous_state, adapter_type)?;
+            let mut selected = filter_select_criteria_with_state_selector_results(
+                nodes,
+                criteria,
+                previous_state,
+                state_selector_results,
+                adapter_type,
+            )?;
 
             // 2️⃣ graph operators — multi-source traversal
             //
@@ -596,6 +738,7 @@ fn eval_selector(
                     deps,
                     nodes,
                     previous_state,
+                    state_selector_results,
                     adapter_type,
                     selector_defs,
                     resolution_stack,
@@ -619,11 +762,14 @@ fn eval_selector_method(
     deps: &BTreeMap<String, BTreeSet<String>>,
     nodes: &Nodes,
     previous_state: Option<&StateArtifacts>,
+    state_selector_results: Option<&StateSelectorResults>,
     adapter_type: AdapterType,
     selector_defs: &HashMap<String, SelectorEntry>,
     resolution_stack: &mut Vec<String>,
 ) -> FsResult<EvalResult> {
-    let pattern = &criteria.value;
+    let pattern = criteria
+        .value
+        .resolve(dbt_common::node_selector::MethodName::Selector)?;
 
     // fnmatch lookup: supports wildcards like `selector:model_*`
     let matching: Vec<(&String, &SelectorEntry)> = selector_defs
@@ -657,6 +803,7 @@ fn eval_selector_method(
             deps,
             nodes,
             previous_state,
+            state_selector_results,
             adapter_type,
             selector_defs,
             resolution_stack,
@@ -694,6 +841,7 @@ fn eval_selector_method(
             deps,
             nodes,
             previous_state,
+            state_selector_results,
             adapter_type,
             selector_defs,
             resolution_stack,
@@ -717,12 +865,34 @@ pub fn expand_selector(
     adapter_type: AdapterType,
     selector_defs: &HashMap<String, SelectorEntry>,
 ) -> FsResult<BTreeSet<String>> {
+    expand_selector_with_state_selector_results(
+        selector,
+        deps,
+        nodes,
+        previous_state,
+        None,
+        adapter_type,
+        selector_defs,
+    )
+}
+
+/// Expand a selector, optionally using externally evaluated state selector results.
+pub fn expand_selector_with_state_selector_results(
+    selector: &SelectExpression,
+    deps: &BTreeMap<String, BTreeSet<String>>,
+    nodes: &Nodes,
+    previous_state: Option<&StateArtifacts>,
+    state_selector_results: Option<&StateSelectorResults>,
+    adapter_type: AdapterType,
+    selector_defs: &HashMap<String, SelectorEntry>,
+) -> FsResult<BTreeSet<String>> {
     let mut resolution_stack = Vec::new();
     let res = eval_selector(
         selector,
         deps,
         nodes,
         previous_state,
+        state_selector_results,
         adapter_type,
         selector_defs,
         &mut resolution_stack,
@@ -1053,14 +1223,9 @@ fn expand_selection(
 
     // For BUILDABLE mode, get selected and all parents
     let selected_and_parents = if indirect_selection == IndirectSelection::Buildable {
-        let mut all = selected.clone();
-        // Add all ancestors
-        for node in selected.iter() {
-            let ancestors = upstream(deps, node, u32::MAX);
-            for (ancestor, _) in ancestors.iter() {
-                all.insert(ancestor.clone());
-            }
-        }
+        // One traversal over the shared ancestry rather than one per selected node
+        // (dbt-labs/fs#11359). `multi_source_bfs` includes its seeds.
+        let mut all = multi_source_bfs(deps, selected, u32::MAX);
         // Add all sources
         all.extend(nodes.sources.keys().cloned());
         all
@@ -1151,14 +1316,9 @@ fn incorporate_indirect_nodes(
             }
         }
         IndirectSelection::Buildable => {
-            let mut selected_and_parents = selected.clone();
-            // Add all ancestors
-            for node in selected.iter() {
-                let ancestors = upstream(deps, node, u32::MAX);
-                for (ancestor, _) in ancestors.iter() {
-                    selected_and_parents.insert(ancestor.clone());
-                }
-            }
+            // One traversal over the shared ancestry rather than one per selected node
+            // (dbt-labs/fs#11359). `multi_source_bfs` includes its seeds.
+            let selected_and_parents = multi_source_bfs(deps, &selected, u32::MAX);
 
             for node_id in indirect_nodes {
                 if let Some(node) = nodes.tests.get(&node_id) {
@@ -1181,49 +1341,34 @@ fn incorporate_indirect_nodes(
     selected
 }
 
-fn add_nodes(slice: BTreeMap<String, BTreeSet<String>>, nodes: &mut BTreeSet<String>) {
-    nodes.extend(slice.keys().cloned());
-    slice
-        .values()
-        .for_each(|set| nodes.extend(set.iter().cloned()));
-}
-
+/// The `@` operator: every descendant of `selected_nodes`, plus every ancestor of those
+/// descendants.
+///
+/// Three multi-source traversals, each O(V+E). The previous implementation reversed the
+/// whole graph once per selected node and then ran an independent single-source ancestor
+/// walk per leaf, which made `--select @model` take minutes (dbt-labs/fs#11359).
 fn collect_childrens_parents(
     deps: &BTreeMap<String, BTreeSet<String>>,
     selected_nodes: &BTreeSet<String>,
 ) -> BTreeSet<String> {
-    let mut desc = BTreeMap::new();
-    let mut selected = BTreeSet::new();
-    // Find all descendants of selected nodes
-    for node in selected_nodes {
-        if desc.contains_key(node) {
-            continue;
-        }
-        let descendants = downstream(deps, node, u32::MAX);
-        desc.extend(descendants);
-    }
-    // 2. find leaf nodes (nodes with no children) and get all their ancestors.
-    // A node is its own descendant, so the selected nodes are themselves leaf
-    // candidates: when a selected node has no children it produces no descendant
-    // edges in `desc` and would otherwise be dropped entirely (see #15280).
-    let leaf_nodes: BTreeSet<String> = desc
-        .keys()
-        .chain(desc.values().flatten())
-        .chain(selected_nodes)
-        .filter(|node| {
-            // A node is a leaf if it has no outgoing dependencies in the descendant graph
-            !desc.contains_key(*node) || desc.get(*node).is_none_or(|children| children.is_empty())
-        })
+    // `deps` maps a node to its parents; reverse it once to walk downwards.
+    let children = reverse(deps);
+
+    // 1. Every descendant of the selection. `multi_source_bfs` includes its seeds, so a
+    //    selected node with no children is retained rather than dropped (see #15280).
+    let descendants = multi_source_bfs(&children, selected_nodes, u32::MAX);
+
+    // 2. The leaves of that subgraph. Every child of a descendant is itself a descendant,
+    //    so "no children within the descendant subgraph" is just "no children at all".
+    let leaf_nodes: BTreeSet<String> = descendants
+        .iter()
+        .filter(|node| children.get(*node).is_none_or(|kids| kids.is_empty()))
         .cloned()
         .collect();
-    // Get each leaf plus all of its ancestors. The leaf is inserted explicitly
-    // because `upstream` only returns edges, which omit a leaf that has no
-    // ancestors (e.g. an isolated node).
-    for leaf in leaf_nodes {
-        add_nodes(upstream(deps, &leaf, u32::MAX), &mut selected);
-        selected.insert(leaf);
-    }
-    selected
+
+    // 3. Every leaf plus all of its ancestors, in one pass over the shared ancestry rather
+    //    than one pass per leaf. Seeds are included, so the leaves themselves are kept.
+    multi_source_bfs(deps, &leaf_nodes, u32::MAX)
 }
 
 /// Multi-source BFS: starting from every node in `seeds`, follow edges in
@@ -1260,52 +1405,6 @@ fn multi_source_bfs(
         frontier = next;
     }
     visited
-}
-
-/// collect every descendant within `max_depth` (inclusive)
-fn downstream(
-    deps: &BTreeMap<String, BTreeSet<String>>,
-    root: &str,
-    max_depth: u32,
-) -> BTreeMap<String, BTreeSet<String>> {
-    // 1. walk the graph in the opposite direction …
-    let rev = reverse(deps);
-    let slice_rev = upstream(&rev, root, max_depth);
-
-    // 2. … then flip it back so callers see the usual orientation
-    reverse(&slice_rev)
-}
-
-/// collect every ancestor within `max_depth` (inclusive)
-fn upstream(
-    deps: &BTreeMap<String, BTreeSet<String>>,
-    root: &str,
-    max_depth: u32,
-) -> BTreeMap<String, BTreeSet<String>> {
-    let mut out = BTreeMap::<String, BTreeSet<String>>::new();
-    if max_depth == 0 {
-        return out;
-    }
-
-    let mut frontier = vec![root.to_string()];
-    let mut depth = 0;
-
-    while !frontier.is_empty() && depth < max_depth {
-        depth += 1;
-        let mut next = Vec::<String>::new();
-
-        // record every (parent, child) pair in the current layer
-        for child in &frontier {
-            if let Some(parents) = deps.get(child) {
-                for parent in parents {
-                    out.entry(parent.clone()).or_default().insert(child.clone());
-                    next.push(parent.clone());
-                }
-            }
-        }
-        frontier = next;
-    }
-    out
 }
 
 /// Summarize statistics for scheduled nodes.
@@ -1464,7 +1563,6 @@ mod tests {
                         primary_key: vec![],
                         event_time: None,
                         catalog_name: None,
-                        alt_compute: None,
                         table_format: None,
                         sync: None,
                         compiled_code: None,
@@ -1644,16 +1742,18 @@ mod tests {
             resource_types: vec![],
             exclude_resource_types: vec![],
             exclude_unique_ids: Default::default(),
+            selection_override: None,
         };
         match schedule_graph(
             &deps,
             &nodes,
             None,
             &resolved_selectors,
+            None,
             &args,
             AdapterType::Bigquery,
         ) {
-            Ok(schedule) => schedule
+            Ok((schedule, _)) => schedule
                 .sorted_nodes
                 .iter()
                 .filter(|node| !schedule.frontier_nodes.contains(*node))
@@ -1697,16 +1797,18 @@ mod tests {
             resource_types: vec![],
             exclude_resource_types: vec![],
             exclude_unique_ids: Default::default(),
+            selection_override: None,
         };
         match schedule_graph(
             &deps,
             &nodes,
             None,
             &resolved_selectors,
+            None,
             &args,
             AdapterType::Bigquery,
         ) {
-            Ok(schedule) => schedule
+            Ok((schedule, _)) => schedule
                 .sorted_nodes
                 .iter()
                 .filter(|node| !schedule.frontier_nodes.contains(*node))
@@ -1792,6 +1894,97 @@ mod tests {
         let selected = BTreeSet::from(["a".to_string()]);
         let result = collect_childrens_parents(&deps, &selected);
         assert_eq!(result, BTreeSet::from(["a".to_string()]));
+    }
+
+    #[test]
+    fn test_collect_childrens_parents_diamond_counts_each_node_once() {
+        // A diamond: `top` reaches `bottom` by two distinct paths. The old
+        // implementation walked each path separately, which produced the right answer
+        // but did redundant work; this pins the answer so the rewrite is equivalent.
+        //
+        //     top -> left  -> bottom
+        //     top -> right -> bottom
+        let deps = BTreeMap::from([
+            ("top".to_string(), BTreeSet::new()),
+            ("left".to_string(), BTreeSet::from(["top".to_string()])),
+            ("right".to_string(), BTreeSet::from(["top".to_string()])),
+            (
+                "bottom".to_string(),
+                BTreeSet::from(["left".to_string(), "right".to_string()]),
+            ),
+        ]);
+
+        // `@top` -> descendants are everything; the only leaf is `bottom`; its ancestors
+        // are the rest.
+        let result = collect_childrens_parents(&deps, &BTreeSet::from(["top".to_string()]));
+        assert_eq!(
+            result,
+            BTreeSet::from([
+                "top".to_string(),
+                "left".to_string(),
+                "right".to_string(),
+                "bottom".to_string(),
+            ])
+        );
+
+        // `@left` -> descendants {left, bottom}; leaf `bottom`; its ancestors pull in
+        // `right` and `top`, which is the whole point of the `@` operator.
+        let result = collect_childrens_parents(&deps, &BTreeSet::from(["left".to_string()]));
+        assert_eq!(
+            result,
+            BTreeSet::from([
+                "top".to_string(),
+                "left".to_string(),
+                "right".to_string(),
+                "bottom".to_string(),
+            ])
+        );
+    }
+
+    #[test]
+    fn test_collect_childrens_parents_is_linear_on_deep_multi_path_dag() {
+        // Regression guard for dbt-labs/fs#11359.
+        //
+        // A "diamond ladder": every layer has two nodes, each depending on both nodes of
+        // the layer above, so the number of distinct top-to-bottom paths is 2^depth.
+        // The old code queued a node once per path reaching it, and ran one independent
+        // ancestor walk per leaf, making it O(paths) rather than O(V+E).
+        //
+        // The budget below is deliberately enormous relative to the real cost: this graph
+        // has 2 * DEPTH + 1 = 53 nodes, so the fixed traversal finishes in microseconds,
+        // while the old one needs ~2^26 frontier entries (measured at ~76s in a debug
+        // build). Anything in between means the traversal has regressed to per-path or
+        // per-leaf work. The assertion exists so that regression fails the suite instead
+        // of merely hanging -- nextest's default profile flags slow tests but does not
+        // terminate them.
+        const DEPTH: usize = 26;
+        const BUDGET: std::time::Duration = std::time::Duration::from_secs(30);
+
+        let mut deps: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+        deps.insert("root".to_string(), BTreeSet::new());
+        let mut prev = vec!["root".to_string()];
+        for layer in 0..DEPTH {
+            let cur: Vec<String> = (0..2).map(|i| format!("n{layer}_{i}")).collect();
+            for node in &cur {
+                deps.insert(node.clone(), prev.iter().cloned().collect());
+            }
+            prev = cur;
+        }
+
+        let started = std::time::Instant::now();
+        let result = collect_childrens_parents(&deps, &BTreeSet::from(["root".to_string()]));
+        let elapsed = started.elapsed();
+
+        // Everything is both a descendant of `root` and an ancestor of a bottom leaf.
+        assert_eq!(result.len(), deps.len(), "every node should be selected");
+        assert!(
+            elapsed < BUDGET,
+            "collect_childrens_parents took {elapsed:?} on a {}-node DAG; the traversal is \
+             no longer linear in the graph size (see dbt-labs/fs#11359)",
+            deps.len()
+        );
+        assert!(result.contains("root"));
+        assert!(result.contains(&format!("n{}_0", DEPTH - 1)));
     }
 
     #[test]
@@ -2300,7 +2493,6 @@ mod tests {
                     primary_key: vec![],
                     event_time: None,
                     catalog_name: None,
-                    alt_compute: None,
                     table_format: None,
                     sync: None,
                     compiled_code: None,
@@ -2421,6 +2613,7 @@ mod tests {
             resource_types: vec![],
             exclude_resource_types: vec![],
             exclude_unique_ids: Default::default(),
+            selection_override: None,
         };
 
         // Run scheduler
@@ -3022,11 +3215,13 @@ mod tests {
 
 #[cfg(test)]
 mod resource_type_filtering_tests {
+    use super::tests::create_select_expression;
     use super::*;
     use dbt_common::{
         cancellation::never_cancels,
         io_args::{ClapResourceType, FsCommand, IoArgs, StaticAnalysisKind},
     };
+    use dbt_schemas::schemas::selection_override::SelectionOverride;
     use dbt_schemas::schemas::{
         CommonAttributes, DbtModel, DbtModelAttr, DbtSeed, DbtSeedAttr, DbtTest, DbtUnitTest,
         IntrospectionKind, NodeBaseAttributes,
@@ -3035,6 +3230,7 @@ mod resource_type_filtering_tests {
         project::ModelConfig,
     };
     use indexmap::IndexMap;
+    use std::collections::HashSet;
     use std::sync::Arc;
 
     #[test]
@@ -3126,6 +3322,7 @@ mod resource_type_filtering_tests {
             resource_types: vec![],
             exclude_resource_types: vec![],
             exclude_unique_ids: Default::default(),
+            selection_override: None,
         };
 
         let schedule = build_schedule(
@@ -3188,7 +3385,6 @@ mod resource_type_filtering_tests {
                     state: None,
                     event_time: None,
                     catalog_name: None,
-                    alt_compute: None,
                     table_format: None,
                     sync: None,
                     compiled_code: None,
@@ -3250,6 +3446,7 @@ mod resource_type_filtering_tests {
             resource_types,
             exclude_resource_types: vec![],
             exclude_unique_ids: Default::default(),
+            selection_override: None,
         }
     }
 
@@ -3451,6 +3648,347 @@ mod resource_type_filtering_tests {
         .unwrap();
         assert!(schedule.selected_nodes.is_empty());
     }
+
+    // --------------------------------------------------------------------------------------
+    // Selection override: an externally supplied node set replacing the computed selection
+    // --------------------------------------------------------------------------------------
+
+    fn make_test_node(id: &str, depends_on: &[&str], enabled: bool) -> Arc<DbtTest> {
+        Arc::new(DbtTest {
+            __common_attr__: CommonAttributes {
+                name: id.to_string(),
+                package_name: "package".to_string(),
+                unique_id: id.to_string(),
+                ..Default::default()
+            },
+            __base_attr__: NodeBaseAttributes {
+                enabled,
+                depends_on: NodeDependsOn {
+                    nodes: depends_on.iter().map(|d| d.to_string()).collect(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            ..Default::default()
+        })
+    }
+
+    /// Nodes the override tests share: two models, two seeds, one test on `model.a`.
+    fn override_nodes() -> Nodes {
+        let mut nodes = basic_nodes();
+        nodes.tests.insert(
+            "test.a".to_string(),
+            make_test_node("test.a", &["model.a"], true),
+        );
+        nodes
+    }
+
+    fn override_args(over: Option<&[&str]>) -> SchedulerArgs {
+        SchedulerArgs {
+            selection_override: over
+                .map(|ids| SelectionOverride::from_ids(ids.iter().map(|s| s.to_string()), "test")),
+            ..make_scheduler_args(vec![])
+        }
+    }
+
+    fn schedule_for_override(
+        nodes: &Nodes,
+        args: &SchedulerArgs,
+        resolved_selectors: &ResolvedSelector,
+    ) -> (Schedule<String>, Option<SelectionOverrideStats>) {
+        let token = never_cancels();
+        let deps = derive_deps(nodes, &token).unwrap();
+        schedule_graph(
+            &deps,
+            nodes,
+            None,
+            resolved_selectors,
+            None,
+            args,
+            AdapterType::Bigquery,
+        )
+        .unwrap()
+    }
+
+    fn selected(schedule: &Schedule<String>) -> Vec<String> {
+        let mut ids: Vec<_> = schedule.selected_nodes.iter().cloned().collect();
+        ids.sort();
+        ids
+    }
+
+    fn select_only(expr: &str) -> ResolvedSelector {
+        ResolvedSelector {
+            include: Some(create_select_expression(expr)),
+            exclude: None,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn test_override_widens_a_narrower_computed_selection() {
+        // Under-selection direction: the computed selection is one model, the override asks for
+        // more than that, and the override wins.
+        let nodes = override_nodes();
+        let args = override_args(Some(&["model.a", "model.b", "seed.a"]));
+        let (schedule, stats) = schedule_for_override(&nodes, &args, &select_only("model.a"));
+
+        assert_eq!(selected(&schedule), vec!["model.a", "model.b", "seed.a"]);
+
+        let stats = stats.expect("override should report counters");
+        assert_eq!(stats.injected, 3);
+        assert_eq!(stats.matched, 3);
+        assert_eq!(stats.unmatched, 0);
+        assert_eq!(stats.dropped_unschedulable, 0);
+        // `model.a` alone, plus `test.a` pulled in indirectly.
+        assert_eq!(stats.fusion_would_select, 2);
+        // `test.a` is what this engine would have run and the override does not ask for.
+        assert_eq!(stats.fusion_only, 1);
+    }
+
+    #[test]
+    fn test_override_narrows_a_wider_computed_selection() {
+        // Over-selection direction, the shape that motivates the feature: the engine would run
+        // the whole project, the override asks for one node.
+        let nodes = override_nodes();
+        let args = override_args(Some(&["model.a"]));
+        let (schedule, stats) = schedule_for_override(
+            &nodes,
+            &args,
+            &ResolvedSelector {
+                include: None,
+                exclude: None,
+                ..Default::default()
+            },
+        );
+
+        assert_eq!(selected(&schedule), vec!["model.a"]);
+
+        let stats = stats.expect("override should report counters");
+        assert_eq!(stats.injected, 1);
+        assert_eq!(stats.matched, 1);
+        assert_eq!(stats.fusion_would_select, 5);
+        assert_eq!(stats.fusion_only, 4);
+    }
+
+    #[test]
+    fn test_override_to_the_empty_set_schedules_nothing() {
+        // An empty supplied set is a legitimate instruction, and it is the maximal
+        // over-selection case: distinguishable from "no override" only by the artifact existing.
+        let nodes = override_nodes();
+        let args = override_args(Some(&[]));
+        let (schedule, stats) = schedule_for_override(
+            &nodes,
+            &args,
+            &ResolvedSelector {
+                include: None,
+                exclude: None,
+                ..Default::default()
+            },
+        );
+
+        assert!(schedule.selected_nodes.is_empty());
+        let stats = stats.expect("override should report counters");
+        assert_eq!(stats.injected, 0);
+        assert_eq!(stats.fusion_would_select, 5);
+        assert_eq!(stats.fusion_only, 5);
+    }
+
+    #[test]
+    fn test_override_ignores_exclude() {
+        // `--exclude` is a selection input, so the override supersedes it: a node the exclude
+        // expression would remove is still scheduled.
+        let nodes = override_nodes();
+        let args = override_args(Some(&["model.a", "model.b"]));
+        let resolved_selectors = ResolvedSelector {
+            include: None,
+            exclude: Some(create_select_expression("model.b")),
+            ..Default::default()
+        };
+        let (schedule, _) = schedule_for_override(&nodes, &args, &resolved_selectors);
+        assert_eq!(selected(&schedule), vec!["model.a", "model.b"]);
+    }
+
+    #[test]
+    fn test_override_ignores_exclude_unique_ids() {
+        let nodes = override_nodes();
+        let args = SchedulerArgs {
+            exclude_unique_ids: HashSet::from(["model.b".to_string()]),
+            ..override_args(Some(&["model.a", "model.b"]))
+        };
+        let (schedule, _) = schedule_for_override(
+            &nodes,
+            &args,
+            &ResolvedSelector {
+                include: None,
+                exclude: None,
+                ..Default::default()
+            },
+        );
+        assert_eq!(selected(&schedule), vec!["model.a", "model.b"]);
+    }
+
+    #[test]
+    fn test_override_ignores_resource_type_filters() {
+        let nodes = override_nodes();
+        let args = SchedulerArgs {
+            resource_types: vec![ClapResourceType::Seed],
+            exclude_resource_types: vec![ClapResourceType::Model],
+            ..override_args(Some(&["model.a", "seed.a"]))
+        };
+        let (schedule, _) = schedule_for_override(
+            &nodes,
+            &args,
+            &ResolvedSelector {
+                include: None,
+                exclude: None,
+                ..Default::default()
+            },
+        );
+        assert_eq!(selected(&schedule), vec!["model.a", "seed.a"]);
+    }
+
+    #[test]
+    fn test_override_drops_unschedulable_nodes_and_counts_them() {
+        // Schedulability is a capability of this engine and applies to any incoming set. A
+        // disabled test and a model whose normalized SQL is empty are both reported rather than
+        // force-run: a supplied id for either is a divergence worth naming.
+        let mut nodes = override_nodes();
+        nodes.tests.insert(
+            "test.disabled".to_string(),
+            make_test_node("test.disabled", &["model.a"], false),
+        );
+        let (empty_id, empty_model) = make_model("model.empty");
+        let mut empty_model = (*empty_model).clone();
+        empty_model.__common_attr__.checksum = DbtChecksum::hash(b"");
+        nodes.models.insert(empty_id, Arc::new(empty_model));
+
+        let args = override_args(Some(&["model.a", "model.empty", "test.disabled"]));
+        let (schedule, stats) = schedule_for_override(
+            &nodes,
+            &args,
+            &ResolvedSelector {
+                include: None,
+                exclude: None,
+                ..Default::default()
+            },
+        );
+
+        assert_eq!(selected(&schedule), vec!["model.a"]);
+
+        let stats = stats.expect("override should report counters");
+        assert_eq!(stats.injected, 3);
+        assert_eq!(stats.matched, 3);
+        assert_eq!(stats.dropped_unschedulable, 2);
+        assert_eq!(
+            stats.dropped_unschedulable_sample,
+            vec!["model.empty".to_string(), "test.disabled".to_string()]
+        );
+    }
+
+    #[test]
+    fn test_override_with_unmatched_id_is_counted_not_fatal() {
+        // Node ids do not always survive the trip between engines. An id with no counterpart here
+        // is reported and skipped; it must not reach the scheduled set as a phantom node.
+        let nodes = override_nodes();
+        let args = override_args(Some(&["model.a", "model.does_not_exist"]));
+        let (schedule, stats) = schedule_for_override(
+            &nodes,
+            &args,
+            &ResolvedSelector {
+                include: None,
+                exclude: None,
+                ..Default::default()
+            },
+        );
+
+        assert_eq!(selected(&schedule), vec!["model.a"]);
+        assert!(
+            !schedule
+                .sorted_nodes
+                .contains(&"model.does_not_exist".to_string())
+        );
+
+        let stats = stats.expect("override should report counters");
+        assert_eq!(stats.injected, 2);
+        assert_eq!(stats.matched, 1);
+        assert_eq!(stats.unmatched, 1);
+        assert_eq!(
+            stats.unmatched_sample,
+            vec!["model.does_not_exist".to_string()]
+        );
+    }
+
+    /// `model.child` refs an ephemeral `model.eph`.
+    fn nodes_with_ephemeral_parent() -> Nodes {
+        let mut nodes = Nodes::default();
+
+        let (eph_id, eph) = make_model("model.eph");
+        let mut eph = (*eph).clone();
+        eph.__base_attr__.materialized = DbtMaterialization::Ephemeral;
+        nodes.models.insert(eph_id, Arc::new(eph));
+
+        let (child_id, child) = make_model("model.child");
+        let mut child = (*child).clone();
+        child.__base_attr__.depends_on = NodeDependsOn {
+            nodes: vec!["model.eph".to_string()],
+            ..Default::default()
+        };
+        nodes.models.insert(child_id, Arc::new(child));
+
+        nodes
+    }
+
+    #[test]
+    fn test_override_readds_ephemeral_ancestor_absent_from_the_supplied_set() {
+        // Ephemeral models are inlined as CTEs and so are never reported by a run, which means a
+        // supplied ran-set cannot name them. The existing ephemeral-ancestor expansion re-adds
+        // them, which is why the override is applied before that stage rather than after.
+        let nodes = nodes_with_ephemeral_parent();
+        let args = override_args(Some(&["model.child"]));
+        let (schedule, _) = schedule_for_override(
+            &nodes,
+            &args,
+            &ResolvedSelector {
+                include: None,
+                exclude: None,
+                ..Default::default()
+            },
+        );
+
+        assert_eq!(selected(&schedule), vec!["model.child", "model.eph"]);
+    }
+
+    #[test]
+    fn test_ephemeral_model_absent_from_the_override_is_not_unmatched() {
+        // The ephemeral model exists here, so its absence from the supplied set is not an
+        // unmatched id; `unmatched` counts only supplied ids with no counterpart node.
+        let nodes = nodes_with_ephemeral_parent();
+        let args = override_args(Some(&["model.child"]));
+        let (_, stats) = schedule_for_override(
+            &nodes,
+            &args,
+            &ResolvedSelector {
+                include: None,
+                exclude: None,
+                ..Default::default()
+            },
+        );
+
+        let stats = stats.expect("override should report counters");
+        assert_eq!(stats.injected, 1);
+        assert_eq!(stats.unmatched, 0);
+        assert!(stats.unmatched_sample.is_empty());
+    }
+
+    #[test]
+    fn test_no_override_leaves_the_computed_selection_alone() {
+        let nodes = override_nodes();
+        let args = override_args(None);
+        let (schedule, stats) = schedule_for_override(&nodes, &args, &select_only("model.a"));
+
+        assert_eq!(selected(&schedule), vec!["model.a", "test.a"]);
+        assert!(stats.is_none());
+    }
 }
 
 #[cfg(test)]
@@ -3516,7 +4054,6 @@ mod cycle_detection_tests {
                 state: None,
                 event_time: None,
                 catalog_name: None,
-                alt_compute: None,
                 table_format: None,
                 sync: None,
                 compiled_code: None,
@@ -3770,7 +4307,6 @@ mod cycle_detection_tests {
                 state: None,
                 event_time: None,
                 catalog_name: None,
-                alt_compute: None,
                 table_format: None,
                 sync: None,
                 compiled_code: None,
@@ -3819,7 +4355,6 @@ mod cycle_detection_tests {
                 state: None,
                 event_time: None,
                 catalog_name: None,
-                alt_compute: None,
                 table_format: None,
                 sync: None,
                 compiled_code: None,
@@ -3857,13 +4392,15 @@ mod cycle_detection_tests {
             resource_types: vec![],
             exclude_resource_types: vec![],
             exclude_unique_ids: Default::default(),
+            selection_override: None,
         };
 
-        let schedule = schedule_graph(
+        let (schedule, _) = schedule_graph(
             &deps,
             &nodes,
             None,
             &resolved_selectors,
+            None,
             &args,
             AdapterType::Bigquery,
         )
@@ -3921,7 +4458,6 @@ mod cycle_detection_tests {
                 state: None,
                 event_time: None,
                 catalog_name: None,
-                alt_compute: None,
                 table_format: None,
                 sync: None,
                 compiled_code: None,
@@ -3958,16 +4494,19 @@ mod cycle_detection_tests {
             resource_types: vec![],
             exclude_resource_types: vec![],
             exclude_unique_ids: Default::default(),
+            selection_override: None,
         };
         schedule_graph(
             deps,
             nodes,
             None,
             &resolved_selectors,
+            None,
             &args,
             AdapterType::Bigquery,
         )
         .unwrap()
+        .0
     }
 
     /// Nodes pulled in only by ephemeral-ancestor expansion: `selected_nodes - all_selected_nodes`.
@@ -4073,7 +4612,7 @@ mod selector_method_tests {
         common::{Access, DbtMaterialization, ResolvedQuoting},
         nodes::AdapterAttr,
         project::ModelConfig,
-        selectors::SelectorEntry,
+        selectors::{SelectorDefinitionValue, SelectorEntry},
     };
     use indexmap::IndexMap;
     use std::sync::Arc;
@@ -4181,6 +4720,15 @@ mod selector_method_tests {
         ))
     }
 
+    fn selector_entry(include: SelectExpression) -> SelectorEntry {
+        SelectorEntry {
+            include,
+            is_default: false,
+            description: None,
+            definition: SelectorDefinitionValue::String(String::new()),
+        }
+    }
+
     #[test]
     fn test_selector_method_basic_resolution() {
         let nodes = tagged_nodes();
@@ -4188,11 +4736,7 @@ mod selector_method_tests {
         let mut sel_defs = HashMap::new();
         sel_defs.insert(
             "nightly_models".to_string(),
-            SelectorEntry {
-                include: tag_selector("nightly"),
-                is_default: false,
-                description: None,
-            },
+            selector_entry(tag_selector("nightly")),
         );
 
         let mut stack = Vec::new();
@@ -4200,6 +4744,7 @@ mod selector_method_tests {
             &selector_atom("nightly_models"),
             &deps,
             &nodes,
+            None,
             None,
             AdapterType::Bigquery,
             &sel_defs,
@@ -4222,11 +4767,7 @@ mod selector_method_tests {
         // "core_models" selects tag:core → {model.a, model.c}
         sel_defs.insert(
             "core_models".to_string(),
-            SelectorEntry {
-                include: tag_selector("core"),
-                is_default: false,
-                description: None,
-            },
+            selector_entry(tag_selector("core")),
         );
 
         let mut stack = Vec::new();
@@ -4235,6 +4776,7 @@ mod selector_method_tests {
             &selector_atom_with_parents("core_models", 1),
             &deps,
             &nodes,
+            None,
             None,
             AdapterType::Bigquery,
             &sel_defs,
@@ -4264,6 +4806,7 @@ mod selector_method_tests {
             &deps,
             &nodes,
             None,
+            None,
             AdapterType::Bigquery,
             &sel_defs,
             &mut stack,
@@ -4281,28 +4824,15 @@ mod selector_method_tests {
         let deps = make_deps();
         let mut sel_defs = HashMap::new();
         // alpha references beta, beta references alpha
-        sel_defs.insert(
-            "alpha".to_string(),
-            SelectorEntry {
-                include: selector_atom("beta"),
-                is_default: false,
-                description: None,
-            },
-        );
-        sel_defs.insert(
-            "beta".to_string(),
-            SelectorEntry {
-                include: selector_atom("alpha"),
-                is_default: false,
-                description: None,
-            },
-        );
+        sel_defs.insert("alpha".to_string(), selector_entry(selector_atom("beta")));
+        sel_defs.insert("beta".to_string(), selector_entry(selector_atom("alpha")));
 
         let mut stack = Vec::new();
         let result = eval_selector(
             &selector_atom("alpha"),
             &deps,
             &nodes,
+            None,
             None,
             AdapterType::Bigquery,
             &sel_defs,
@@ -4322,19 +4852,11 @@ mod selector_method_tests {
         let mut sel_defs = HashMap::new();
         sel_defs.insert(
             "nightly_models".to_string(),
-            SelectorEntry {
-                include: tag_selector("nightly"),
-                is_default: false,
-                description: None,
-            },
+            selector_entry(tag_selector("nightly")),
         );
         sel_defs.insert(
             "nightly_seeds".to_string(),
-            SelectorEntry {
-                include: tag_selector("core"),
-                is_default: false,
-                description: None,
-            },
+            selector_entry(tag_selector("core")),
         );
 
         let mut stack = Vec::new();
@@ -4343,6 +4865,7 @@ mod selector_method_tests {
             &selector_atom("nightly_*"),
             &deps,
             &nodes,
+            None,
             None,
             AdapterType::Bigquery,
             &sel_defs,
@@ -4363,29 +4886,16 @@ mod selector_method_tests {
         let nodes = tagged_nodes();
         let deps = make_deps();
         let mut sel_defs = HashMap::new();
-        sel_defs.insert(
-            "base".to_string(),
-            SelectorEntry {
-                include: tag_selector("nightly"),
-                is_default: false,
-                description: None,
-            },
-        );
+        sel_defs.insert("base".to_string(), selector_entry(tag_selector("nightly")));
         // "derived" references "base"
-        sel_defs.insert(
-            "derived".to_string(),
-            SelectorEntry {
-                include: selector_atom("base"),
-                is_default: false,
-                description: None,
-            },
-        );
+        sel_defs.insert("derived".to_string(), selector_entry(selector_atom("base")));
 
         let mut stack = Vec::new();
         let result = eval_selector(
             &selector_atom("derived"),
             &deps,
             &nodes,
+            None,
             None,
             AdapterType::Bigquery,
             &sel_defs,

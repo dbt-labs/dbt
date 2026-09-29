@@ -1,9 +1,10 @@
 use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use dashmap::DashMap;
 use dbt_common::tracing::span_info::SpanStatusRecorder as _;
-use dbt_common::{FsResult, create_debug_span};
+use dbt_common::{FsResult, create_info_span};
 use dbt_schemas::schemas::relations::base::BaseRelation;
 use dbt_telemetry::GenericOpExecuted;
 use parking_lot::RwLock;
@@ -11,7 +12,7 @@ use tracing::Instrument as _;
 
 use crate::Adapter;
 use crate::{
-    metadata::{CatalogAndSchema, RelationVec},
+    metadata::{CatalogAndSchema, RELATION_CACHE_OP_ID, RelationVec},
     relation::BaseRelationConfig,
 };
 
@@ -85,6 +86,9 @@ pub struct RelationCache {
     /// `RelationCacheEntry` so the cache entry stays Clone-via-derive and
     /// graph state lives in one place. All mutation goes through `graph_lock`.
     graph: Arc<RwLock<RelationGraph>>,
+    /// Whether the project defines any function (UDF) nodes. Set once, before
+    /// the run starts.
+    project_has_functions: Arc<AtomicBool>,
 }
 
 #[derive(Debug, Default)]
@@ -93,6 +97,14 @@ struct RelationGraph {
 }
 
 impl RelationCache {
+    pub fn set_project_has_functions(&self, value: bool) {
+        self.project_has_functions.store(value, Ordering::Relaxed);
+    }
+
+    pub fn project_has_functions(&self) -> bool {
+        self.project_has_functions.load(Ordering::Relaxed)
+    }
+
     /// Retrieves a cached entry by relation
     pub fn get_relation(&self, relation: &dyn BaseRelation) -> Option<RelationCacheEntry> {
         let (schema_key, relation_key) = Self::get_relation_cache_keys(relation);
@@ -398,10 +410,14 @@ impl RelationCache {
 /// The [Adapter] must support [MetadataAdapter] as well
 ///
 /// Takes in an input of placeholder relations from which to hydrate schemas for
-/// if they are not already cached
+/// if they are not already cached.
+///
+/// `display_action` names this call's progress indicator; each caller uses a
+/// distinct label.
 pub async fn hydrate_relation_cache_if_not_already_cached(
     dummy_relations: &[Arc<dyn BaseRelation>],
     adapter: &Arc<Adapter>,
+    display_action: &str,
 ) -> FsResult<()> {
     if adapter.metadata_adapter().is_none() {
         return Ok(());
@@ -427,10 +443,18 @@ pub async fn hydrate_relation_cache_if_not_already_cached(
         return Ok(());
     }
 
-    let span = create_debug_span(GenericOpExecuted::new(
-        "hydrate_relation_cache".to_string(),
-        "downloading relations".to_string(),
-        Some(cache_misses.len() as u64),
+    // Adapters whose `supports_relation_progress()` is `false` (unimplemented stubs)
+    // never emit per-item spans; advertising a count for them would leave the bar
+    // stuck at 0/N.
+    let item_count_total = adapter
+        .metadata_adapter()
+        .is_some_and(|m| m.supports_relation_progress())
+        .then_some(cache_misses.len() as u64);
+
+    let span = create_info_span(GenericOpExecuted::new(
+        RELATION_CACHE_OP_ID.to_string(),
+        display_action.to_string(),
+        item_count_total,
     ));
 
     adapter
@@ -824,6 +848,51 @@ mod tests {
             "issue #943: uppercase schema 'NOTLIKETHIS' should find the relation that \
              Databricks returned with lowercase schema 'notlikethis'"
         );
+    }
+
+    #[test]
+    fn test_project_has_functions_defaults_false_and_is_settable() {
+        let cache = RelationCache::default();
+        assert!(!cache.project_has_functions());
+        cache.set_project_has_functions(true);
+        assert!(cache.project_has_functions());
+    }
+
+    #[test]
+    fn test_insert_relation_into_complete_schema() {
+        use crate::metadata::CatalogAndSchema;
+        use crate::relation::do_create_relation;
+
+        let bq_relation = |identifier: &str| -> Arc<dyn BaseRelation> {
+            do_create_relation(
+                AdapterType::Bigquery,
+                "my_project".to_string(),
+                "my_dataset".to_string(),
+                Some(identifier.to_string()),
+                None,
+                DEFAULT_RESOLVED_QUOTING,
+            )
+            .unwrap()
+            .into()
+        };
+
+        let cache = RelationCache::default();
+
+        let table = bq_relation("my_table");
+        cache.insert_schema(CatalogAndSchema::from(table.as_ref()), vec![table.clone()]);
+
+        let udf = bq_relation("add_one");
+        assert!(cache.contains_full_schema_for_relation(udf.as_ref()));
+        assert!(!cache.contains_relation(udf.as_ref()));
+
+        // Listing routines afterwards makes the UDF findable...
+        cache.insert_relation(udf.clone(), None);
+        assert!(cache.contains_relation(udf.as_ref()));
+        assert!(cache.get_relation(udf.as_ref()).is_some());
+
+        // ...without evicting the listed relations or clearing completeness.
+        assert!(cache.contains_relation(table.as_ref()));
+        assert!(cache.contains_full_schema_for_relation(udf.as_ref()));
     }
 
     /// Helpers + tests ported from

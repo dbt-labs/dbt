@@ -13,6 +13,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         proto_root.join("query_cache_protobuf/query_cache/services/client_telemetry_service.proto"),
         proto_root.join("query_cache_protobuf/query_cache/services/explain_service.proto"),
         proto_root.join("query_cache_protobuf/query_cache/services/health_service.proto"),
+        proto_root.join("query_cache_protobuf/query_cache/services/selector_service.proto"),
     ];
 
     println!("cargo:rerun-if-changed=build.rs");

@@ -4,8 +4,6 @@ use std::path::Path;
 use std::pin::Pin;
 use std::sync::Arc;
 
-use dbt_adapter::connection::{ConnectionBackpressure, ThreadLocalConnectionRecycleGuard};
-use dbt_adapter_core::AdapterType;
 use dbt_common::stats::NodeStatus;
 use dbt_common::{ErrorCode, FsResult, fs_err};
 use dbt_schemas::schemas::InternalDbtNodeAttributes;
@@ -72,7 +70,7 @@ impl From<TP> for ExecutionPhase {
 
 /// Awaitable scheduling dispatch for a single unit of work.
 ///
-/// Each variant handles its own thread pool dispatch (spawn_blocking, async, backpressure).
+/// Each variant handles its own thread pool dispatch (spawn_blocking, async).
 /// Use this to build purely functional pipelines where each step's output feeds the next:
 ///
 /// ```ignore
@@ -81,15 +79,10 @@ impl From<TP> for ExecutionPhase {
 /// let result = TaskOp::blocking(|| render(ctx, relations)).run().await??;
 /// ```
 pub enum TaskOp<T: Send + 'static> {
-    /// CPU-bound work, dispatched to `tokio::task::spawn_blocking`.
+    /// CPU-bound work, dispatched to `dbt_runtime::spawn_blocking`. A
+    /// connection the closure borrows stays in that worker's thread-local slot
+    /// for whatever runs there next.
     Blocking(Box<dyn FnOnce() -> T + Send>),
-    /// CPU-bound work that needs a DB connection.
-    /// Waits for connection backpressure, then dispatched to `spawn_blocking`.
-    BlockingWithConnection {
-        f: Box<dyn FnOnce() -> T + Send>,
-        adapter_type: AdapterType,
-        max_threads: Option<usize>,
-    },
 }
 
 impl<T: Send + 'static> TaskOp<T> {
@@ -107,24 +100,22 @@ impl<T: Send + 'static> TaskOp<T> {
     /// Execute this operation on the appropriate thread pool.
     pub async fn run(self) -> FsResult<T> {
         match self {
-            TaskOp::Blocking(f) => dbt_common::tracing::spawn_blocking_traced(f)
+            TaskOp::Blocking(f) => dbt_runtime::spawn_blocking(f)
                 .await
                 .map_err(|e| fs_err!(ErrorCode::Generic, "spawn_blocking join error: {}", e)),
-            TaskOp::BlockingWithConnection {
-                f,
-                adapter_type,
-                max_threads,
-            } => {
-                let _guard = ConnectionBackpressure::from_config(adapter_type, max_threads).await;
-                dbt_common::tracing::spawn_blocking_traced(Box::new(move || {
-                    let _recycle_guard = ThreadLocalConnectionRecycleGuard::new();
-                    f()
-                }))
-                .await
-                .map_err(|e| fs_err!(ErrorCode::Generic, "spawn_blocking join error: {}", e))
-            }
         }
     }
+}
+
+/// Identity of a set of dbt nodes that share a single query.
+#[derive(Debug)]
+pub struct AggregatedNodeGroup {
+    /// The group's synthetic unique_id, used as the group span key.
+    pub unique_id: String,
+    /// Generic test macro shared by every member of the group, e.g. `not_null`.
+    pub macro_name: String,
+    /// unique_id of the node the group's tests are attached to.
+    pub attached_node: String,
 }
 
 pub trait Task: Send + Sync {
@@ -132,22 +123,6 @@ pub trait Task: Send + Sync {
         &'a self,
         ctx: &'a mut TaskRunnerCtx,
     ) -> Pin<Box<dyn Future<Output = FsResult<NodeStatus>> + Send + 'a>>;
-
-    /// Apply backpressure to task scheduling.
-    ///
-    /// This tells the `tokio` runtime to poll for readiness later when demand
-    /// for database connections is below the maximum level we target.
-    fn run_task_with_backpressure<'a>(
-        &'a self,
-        ctx: &'a mut TaskRunnerCtx,
-    ) -> Pin<Box<dyn Future<Output = FsResult<NodeStatus>> + Send + 'a>> {
-        Box::pin(async move {
-            let backpressure =
-                ConnectionBackpressure::from_config(ctx.adapter_type(), ctx.dbt_profile().threads);
-            let _wake_next_on_drop = backpressure.await;
-            self.run_task(ctx).await
-        })
-    }
 
     fn resource_type(&self) -> NodeType;
 
@@ -162,6 +137,16 @@ pub trait Task: Send + Sync {
     /// Returns the task phase if applicable, otherwise None.
     /// As of today only the barrier task does not belong to a phase.
     fn task_phase(&self) -> Option<TP>;
+
+    /// Returns the identity of the aggregated query group whose nodes this task runs, if
+    /// any. `None` for every task whose nodes each get their own query.
+    ///
+    /// Nodes reported here are grouped under a shared span so consumers can treat the
+    /// group's lifetime as one unit. Only the task that actually issues the shared query
+    /// should report a group.
+    fn aggregated_node_group(&self) -> Option<AggregatedNodeGroup> {
+        None
+    }
 
     /// Returns telemetry (sub)tree request that task visitor should create for this task
     /// via span manager.

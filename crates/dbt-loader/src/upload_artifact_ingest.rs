@@ -602,6 +602,7 @@ mod tests {
                 token: "config-token".to_string(),
             }),
             project_id: Some("157".to_string()),
+            account_id: Some("123".to_string()),
             account_identifier: None,
             environment_id: Some("216".to_string()),
             defer_env_id: None,
@@ -627,7 +628,7 @@ mod tests {
         );
     }
 
-    #[tokio::test]
+    #[dbt_runtime::test]
     async fn test_build_artifact_zip() {
         let temp_dir = tempdir().unwrap();
         let manifest_path = temp_dir.path().join(DBT_MANIFEST_JSON);
@@ -664,7 +665,7 @@ mod tests {
         assert!(archive.by_name(DBT_DEFAULT_LOG_FILE_NAME).is_ok());
     }
 
-    #[tokio::test]
+    #[dbt_runtime::test]
     async fn test_build_artifact_zip_includes_log_file() {
         let temp_dir = tempdir().unwrap();
         let manifest_path = temp_dir.path().join(DBT_MANIFEST_JSON);
@@ -692,7 +693,7 @@ mod tests {
         assert!(archive.by_name(DBT_DEFAULT_LOG_FILE_NAME).is_ok());
     }
 
-    #[tokio::test]
+    #[dbt_runtime::test]
     async fn test_build_artifact_zip_succeeds_without_log_file() {
         let temp_dir = tempdir().unwrap();
         let manifest_path = temp_dir.path().join(DBT_MANIFEST_JSON);
@@ -712,7 +713,7 @@ mod tests {
         assert!(archive.by_name(DBT_DEFAULT_LOG_FILE_NAME).is_err());
     }
 
-    #[tokio::test]
+    #[dbt_runtime::test]
     async fn test_resolve_optional_artifact_path_returns_some_when_file_exists() {
         let temp_dir = tempdir().unwrap();
         let io = IoArgs {
@@ -727,7 +728,7 @@ mod tests {
         assert_eq!(result, Some(sources_path));
     }
 
-    #[tokio::test]
+    #[dbt_runtime::test]
     async fn test_resolve_optional_artifact_path_returns_none_when_missing() {
         let temp_dir = tempdir().unwrap();
         let io = IoArgs {
@@ -739,7 +740,7 @@ mod tests {
         assert!(result.is_none());
     }
 
-    #[tokio::test]
+    #[dbt_runtime::test]
     async fn test_resolve_optional_artifact_path_returns_none_for_empty_file() {
         let temp_dir = tempdir().unwrap();
         let io = IoArgs {
@@ -754,7 +755,7 @@ mod tests {
         assert!(result.is_none());
     }
 
-    #[tokio::test]
+    #[dbt_runtime::test]
     async fn test_resolve_artifact_paths_excludes_catalog_when_write_catalog_false() {
         let temp_dir = tempdir().unwrap();
         let io = IoArgs {
@@ -778,7 +779,7 @@ mod tests {
         assert!(paths.catalog_path.is_some());
     }
 
-    #[tokio::test]
+    #[dbt_runtime::test]
     async fn test_build_artifact_zip_with_sources_but_no_catalog() {
         let temp_dir = tempdir().unwrap();
         let manifest_path = temp_dir.path().join(DBT_MANIFEST_JSON);
@@ -807,7 +808,7 @@ mod tests {
         assert!(archive.by_name(DBT_CATALOG_JSON).is_err());
     }
 
-    #[tokio::test]
+    #[dbt_runtime::test]
     async fn test_resolve_log_path_prefers_otel_file() {
         let temp_dir = tempdir().unwrap();
         let log_dir = temp_dir.path();
@@ -827,7 +828,7 @@ mod tests {
         assert_eq!(result, Some(otel_file));
     }
 
-    #[tokio::test]
+    #[dbt_runtime::test]
     async fn test_resolve_log_path_falls_back_to_dbt_log() {
         let temp_dir = tempdir().unwrap();
         let log_dir = temp_dir.path();
@@ -844,7 +845,7 @@ mod tests {
         assert_eq!(result, Some(dbt_log));
     }
 
-    #[tokio::test]
+    #[dbt_runtime::test]
     async fn test_resolve_log_path_returns_none_when_no_files() {
         let temp_dir = tempdir().unwrap();
         let log_dir = temp_dir.path();
@@ -858,7 +859,7 @@ mod tests {
         assert!(result.is_none());
     }
 
-    #[tokio::test]
+    #[dbt_runtime::test]
     async fn test_resolve_log_path_skips_empty_files() {
         let temp_dir = tempdir().unwrap();
         let log_dir = temp_dir.path();
@@ -879,7 +880,7 @@ mod tests {
         assert!(result.is_none());
     }
 
-    #[tokio::test]
+    #[dbt_runtime::test]
     async fn test_build_artifact_zip_uses_source_filename_as_archive_name() {
         let temp_dir = tempdir().unwrap();
         let log_dir = temp_dir.path();

@@ -1,6 +1,5 @@
 import { type ReactNode } from 'react';
-
-import { Icon, RyeconHelp } from '@dbt-labs/sourdough';
+import { CircleQuestionMark } from 'lucide-react';
 
 import { SelectorLink } from './SelectorLink';
 
@@ -18,7 +17,7 @@ export function LineageEmptyState({ description, quickLinks }: Props) {
   return (
     <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 space-y-2 whitespace-nowrap rounded-md border border-borderMuted bg-bgMain p-6 text-center text-sm">
       <div>
-        <Icon ryecon={RyeconHelp} size="lg" className="text-fgBrand" />
+        <CircleQuestionMark className="size-5 text-fgBrand" />
       </div>
       <div className="text-lg text-fgMain">What are you looking for?</div>
       <div className="text-fgDecorative">{description}</div>

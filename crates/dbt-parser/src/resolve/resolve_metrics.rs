@@ -7,6 +7,7 @@ use crate::resolve::resolve_utils::extract_config_map;
 use crate::utils::{
     extract_resource_config_from_raw_project, get_node_fqn, get_original_file_path, get_unique_id,
 };
+use dbt_adapter_core::AdapterType;
 use dbt_common::io_args::{StaticAnalysisKind, StaticAnalysisOffReason};
 use dbt_common::path::DbtPath;
 use dbt_common::tracing::dbt_emit::{emit_error_log_from_fs_error, emit_error_log_message};
@@ -40,6 +41,7 @@ type ResolveMetricsResult = FsResult<(
 
 #[allow(clippy::too_many_arguments)]
 pub async fn resolve_metrics(
+    adapter_type: AdapterType,
     arg: &ResolveArgs,
     package: &DbtPackage,
     root_package: &DbtPackage,
@@ -56,13 +58,17 @@ pub async fn resolve_metrics(
     let mut seen_metric_names = HashSet::new();
 
     let dependency_package_name = dependency_package_name_from_ctx(env, base_ctx);
-    let raw_local_project_config =
-        extract_resource_config_from_raw_project(&package.raw_project_yml, "metrics");
+    let raw_local_project_config = extract_resource_config_from_raw_project(
+        &package.raw_project_yml,
+        "metrics",
+        adapter_type,
+    )?;
     let raw_root_project_cfg = if dependency_package_name.is_some() {
         Some(extract_resource_config_from_raw_project(
             &root_package.raw_project_yml,
             "metrics",
-        ))
+            adapter_type,
+        )?)
     } else {
         None
     };
@@ -70,6 +76,7 @@ pub async fn resolve_metrics(
         disallow_plus_prefix_from_flags(root_package.dbt_project.flags.as_ref());
 
     let (nested_metrics, nested_disabled_metrics) = resolve_nested_model_metrics(
+        adapter_type,
         arg,
         package,
         root_project_configs,
@@ -87,6 +94,7 @@ pub async fn resolve_metrics(
     disabled_metrics.extend(nested_disabled_metrics);
 
     let (top_level_metrics, top_level_disabled_metrics) = resolve_top_level_metrics(
+        adapter_type,
         arg,
         package,
         root_project_configs,
@@ -107,6 +115,7 @@ pub async fn resolve_metrics(
 
 #[allow(clippy::too_many_arguments)]
 pub fn resolve_nested_model_metrics(
+    adapter_type: AdapterType,
     arg: &ResolveArgs,
     package: &DbtPackage,
     root_project_configs: &RootProjectConfigs,
@@ -138,8 +147,10 @@ pub fn resolve_nested_model_metrics(
                 (),
                 dependency_package_name,
                 disallow_plus_prefix,
+                adapter_type,
             )
         },
+        adapter_type,
     )?;
 
     for (model_name, model_props) in typed_models_properties.iter() {
@@ -233,7 +244,8 @@ pub fn resolve_nested_model_metrics(
                     raw_properties_yml_config.as_ref(),
                     None,
                     false,
-                );
+                    adapter_type,
+                )?;
 
                 let dbt_metric = DbtMetric {
                     __common_attr__: CommonAttributes {
@@ -266,6 +278,11 @@ pub fn resolve_nested_model_metrics(
                         meta: metric_config.meta.clone().unwrap_or_default(),
                     },
                     __base_attr__: NodeBaseAttributes {
+                        // Not executed against a warehouse; records the target it parsed under.
+                        adapter: adapter_type,
+                        // This node type has no `+propagate` config; nothing is published.
+                        propagate: Vec::new(),
+                        effective_propagation_target: None,
                         database: "".to_string(),
                         schema: "".to_string(),
                         alias: "".to_string(),
@@ -335,6 +352,7 @@ pub fn resolve_nested_model_metrics(
 
 #[allow(clippy::too_many_arguments)]
 pub fn resolve_top_level_metrics(
+    adapter_type: AdapterType,
     arg: &ResolveArgs,
     package: &DbtPackage,
     root_project_configs: &RootProjectConfigs,
@@ -364,8 +382,10 @@ pub fn resolve_top_level_metrics(
                 (),
                 dependency_package_name,
                 disallow_plus_prefix,
+                adapter_type,
             )
         },
+        adapter_type,
     )?;
 
     for (metric_name, mpe) in minimal_metric_properties.iter() {
@@ -517,7 +537,8 @@ pub fn resolve_top_level_metrics(
             raw_properties_yml_config.as_ref(),
             None,
             false,
-        );
+            adapter_type,
+        )?;
 
         let dbt_metric = DbtMetric {
             __common_attr__: CommonAttributes {
@@ -550,6 +571,11 @@ pub fn resolve_top_level_metrics(
                 meta: metric_metric_config.meta.clone().unwrap_or_default(),
             },
             __base_attr__: NodeBaseAttributes {
+                // Not executed against a warehouse; records the target it parsed under.
+                adapter: adapter_type,
+                // This node type has no `+propagate` config; nothing is published.
+                propagate: Vec::new(),
+                effective_propagation_target: None,
                 database: "".to_string(),
                 schema: "".to_string(),
                 alias: "".to_string(),

@@ -1,11 +1,12 @@
 use dbt_common::path::DbtPath;
 use dbt_schemas::schemas::{
-    DbtModel, DbtSeed, DbtTest, InternalDbtNode, InternalDbtNodeAttributes, config_excluded_keys,
-    macros::DbtMacro,
+    DbtModel, DbtSeed, DbtTest, InternalDbtNode, InternalDbtNodeAttributes,
+    common::DbtMaterialization, config_excluded_keys, macros::DbtMacro,
 };
 use md5;
 use serde::Serialize;
 use serde_json::{Value as JsonValue, ser::Formatter, to_string};
+use sha2::{Digest, Sha256};
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs::File,
@@ -211,6 +212,56 @@ fn resolve_macro_tree<'a>(
     all_macros
 }
 
+/// Mirrors Python's `ModelNode.build_contract_checksum` (dbt-core/core/dbt/contracts/graph/nodes.py:687-709).
+fn build_contract_checksum(node: &DbtModel) -> Option<String> {
+    let contract = node.__model_attr__.contract.as_ref()?;
+
+    if let Some(checksum) = &contract.checksum {
+        return checksum
+            .as_str()
+            .map(str::to_owned)
+            .or_else(|| to_string(checksum).ok());
+    }
+
+    if !contract.enforced {
+        return None;
+    }
+
+    let mut contract_state = String::new();
+
+    let mut sorted_columns: Vec<_> = node.__base_attr__.columns.iter().collect();
+    sorted_columns.sort_by(|a, b| a.name.cmp(&b.name));
+
+    for column in sorted_columns {
+        contract_state.push('|');
+        contract_state.push_str(&column.name);
+
+        match &column.data_type {
+            Some(data_type) => contract_state.push_str(data_type),
+            None => contract_state.push_str("None"),
+        }
+        let constraints_str = to_string(&column.constraints).unwrap_or_else(|_| "[]".to_owned());
+        contract_state.push_str(&constraints_str);
+    }
+
+    let materialization = &node.__base_attr__.materialized;
+    let materialization_enforces_constraints = matches!(
+        materialization,
+        DbtMaterialization::Table | DbtMaterialization::Incremental
+    );
+
+    if materialization_enforces_constraints {
+        contract_state.push_str(&materialization.to_string());
+        let constraints_str =
+            to_string(&node.__model_attr__.constraints).unwrap_or_else(|_| "[]".to_owned());
+        contract_state.push_str(&constraints_str);
+    }
+
+    let mut hasher = Sha256::new();
+    hasher.update(contract_state.as_bytes());
+    Some(format!("{:x}", hasher.finalize()))
+}
+
 fn model_node_contract_hash(node: &DbtModel) -> String {
     //ref: https://github.com/fivetran/query-cache/blob/4ab87c72f2783c230905c5c75ec19eb76314069e/clients/dbt_state/src/dbt_state/node_hash_calculator.py#L152
     let fallback = "enforced:false";
@@ -220,17 +271,12 @@ fn model_node_contract_hash(node: &DbtModel) -> String {
         .contract
         .as_ref()
         .map(|contract| {
-            // Python interpolates the checksum into an f-string, so a string checksum must
-            // render bare. `to_string` would quote it.
-            let checksum_string = contract
-                .checksum
-                .as_ref()
-                .and_then(|c| c.as_str().map(str::to_owned).or_else(|| to_string(c).ok()));
-
-            if contract.enforced
-                && let Some(checksum) = checksum_string
-            {
-                format!("enforced:true|checksum:{checksum}")
+            if contract.enforced {
+                if let Some(checksum) = build_contract_checksum(node) {
+                    format!("enforced:true|checksum:{checksum}")
+                } else {
+                    fallback.to_owned()
+                }
             } else {
                 fallback.to_owned()
             }
@@ -267,8 +313,9 @@ fn model_node_ref_representation_hash(node: &DbtModel) -> Result<String, NodeHas
         JsonValue::from(
             node.__model_attr__
                 .deprecation_date
-                .as_deref()
-                .unwrap_or("None"),
+                .as_ref()
+                .map(|ts| ts.with_defaults().to_string())
+                .unwrap_or_else(|| "None".to_owned()),
         ),
     );
 
@@ -886,7 +933,9 @@ mod tests {
         }
 
         #[test]
-        fn model_node_contract_hash_enforced_without_checksum_matches_not_enforced() {
+        fn model_node_contract_hash_enforced_without_checksum_computes_checksum() {
+            // When enforced=true and no checksum is provided, build_contract_checksum computes one
+            // This differs from enforced=false which always returns the fallback hash
             let mut enforced_no_checksum = model_node(&["project", "models", "test_model"]);
             enforced_no_checksum.__model_attr__.contract = Some(DbtContract {
                 enforced: true,
@@ -901,10 +950,143 @@ mod tests {
                 ..Default::default()
             });
 
-            // Both collapse to the "enforced:false" state per query-cache's node_contract_hash.
-            assert_eq!(
+            // Enforced without checksum now computes a checksum, so it differs from not_enforced
+            assert_ne!(
                 model_node_contract_hash(&enforced_no_checksum),
                 model_node_contract_hash(&not_enforced_with_checksum)
+            );
+        }
+
+        #[test]
+        fn build_contract_checksum_returns_existing_checksum_if_present() {
+            let mut node = model_node(&["project", "models", "test_model"]);
+            node.__model_attr__.contract = Some(DbtContract {
+                enforced: true,
+                checksum: Some(YmlValue::string("existing_checksum".to_string())),
+                ..Default::default()
+            });
+
+            assert_eq!(
+                build_contract_checksum(&node),
+                Some("existing_checksum".to_string())
+            );
+        }
+
+        #[test]
+        fn build_contract_checksum_returns_none_if_not_enforced() {
+            let mut node = model_node(&["project", "models", "test_model"]);
+            node.__model_attr__.contract = Some(DbtContract {
+                enforced: false,
+                checksum: None,
+                ..Default::default()
+            });
+
+            assert_eq!(build_contract_checksum(&node), None);
+        }
+
+        #[test]
+        fn build_contract_checksum_computes_from_columns_when_enforced() {
+            let mut node = model_node(&["project", "models", "test_model"]);
+            node.__model_attr__.contract = Some(DbtContract {
+                enforced: true,
+                checksum: None,
+                ..Default::default()
+            });
+            node.__base_attr__.columns = vec![Arc::new(DbtColumn {
+                name: "id".to_string(),
+                data_type: Some("integer".to_string()),
+                constraints: vec![],
+                ..Default::default()
+            })];
+
+            let checksum = build_contract_checksum(&node);
+            assert!(checksum.is_some());
+            // The checksum should be a 64-character hex string (SHA256)
+            assert_eq!(checksum.as_ref().unwrap().len(), 64);
+        }
+
+        #[test]
+        fn build_contract_checksum_is_deterministic() {
+            let mut node1 = model_node(&["project", "models", "test_model"]);
+            node1.__model_attr__.contract = Some(DbtContract {
+                enforced: true,
+                checksum: None,
+                ..Default::default()
+            });
+            node1.__base_attr__.columns = vec![
+                Arc::new(DbtColumn {
+                    name: "id".to_string(),
+                    data_type: Some("integer".to_string()),
+                    constraints: vec![],
+                    ..Default::default()
+                }),
+                Arc::new(DbtColumn {
+                    name: "name".to_string(),
+                    data_type: Some("varchar".to_string()),
+                    constraints: vec![],
+                    ..Default::default()
+                }),
+            ];
+
+            let mut node2 = model_node(&["project", "models", "test_model"]);
+            node2.__model_attr__.contract = Some(DbtContract {
+                enforced: true,
+                checksum: None,
+                ..Default::default()
+            });
+            // Columns in different order should produce same checksum (sorted by name)
+            node2.__base_attr__.columns = vec![
+                Arc::new(DbtColumn {
+                    name: "name".to_string(),
+                    data_type: Some("varchar".to_string()),
+                    constraints: vec![],
+                    ..Default::default()
+                }),
+                Arc::new(DbtColumn {
+                    name: "id".to_string(),
+                    data_type: Some("integer".to_string()),
+                    constraints: vec![],
+                    ..Default::default()
+                }),
+            ];
+
+            assert_eq!(
+                build_contract_checksum(&node1),
+                build_contract_checksum(&node2)
+            );
+        }
+
+        #[test]
+        fn build_contract_checksum_differs_for_different_columns() {
+            let mut node1 = model_node(&["project", "models", "test_model"]);
+            node1.__model_attr__.contract = Some(DbtContract {
+                enforced: true,
+                checksum: None,
+                ..Default::default()
+            });
+            node1.__base_attr__.columns = vec![Arc::new(DbtColumn {
+                name: "id".to_string(),
+                data_type: Some("integer".to_string()),
+                constraints: vec![],
+                ..Default::default()
+            })];
+
+            let mut node2 = model_node(&["project", "models", "test_model"]);
+            node2.__model_attr__.contract = Some(DbtContract {
+                enforced: true,
+                checksum: None,
+                ..Default::default()
+            });
+            node2.__base_attr__.columns = vec![Arc::new(DbtColumn {
+                name: "id".to_string(),
+                data_type: Some("bigint".to_string()), // Different data type
+                constraints: vec![],
+                ..Default::default()
+            })];
+
+            assert_ne!(
+                build_contract_checksum(&node1),
+                build_contract_checksum(&node2)
             );
         }
 
@@ -933,7 +1115,7 @@ mod tests {
             let mut node = model_node(&["project", "models", "test_model"]);
             node.__model_attr__.latest_version = Some(StringOrInteger::Integer(2));
             node.__model_attr__.access = Access::Public;
-            node.__model_attr__.deprecation_date = Some("2025-12-31".to_string());
+            node.__model_attr__.deprecation_date = dbt_yaml::Timestamp::parse("2025-12-31");
 
             assert_eq!(model_node_ref_representation_hash(&node).unwrap().len(), 32);
         }

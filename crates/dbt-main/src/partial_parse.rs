@@ -5,7 +5,7 @@ use dbt_common::{FsResult, io_args::EvalArgs};
 use dbt_compilation::config::CompilationConfig;
 use dbt_compilation::core::DbtLoadedProject;
 use dbt_jinja_utils::JinjaFactory;
-use dbt_jinja_utils::node_resolver::NodeResolver;
+use dbt_jinja_utils::node_resolver::{NodeResolver, PackageSearchOrder};
 use dbt_metadata::{
     file_registry::CompleteStateWithKind,
     partial_parse::{
@@ -180,7 +180,7 @@ pub fn try_load_prev_compilation(
         warn_error_options: Default::default(),
     });
 
-    let adapter_type = dbt_state.dbt_profile.db_config.adapter_type();
+    let adapter_type = dbt_state.dbt_profile.default_db_config().adapter_type();
     let dbt_quoting = dbt_schemas::dbt_utils::resolve_package_quoting(
         *dbt_state.root_project().quoting,
         adapter_type,
@@ -201,10 +201,14 @@ pub fn try_load_prev_compilation(
         Default::default(),
         Default::default(),
         compile_or_test,
+        PackageSearchOrder::resolve(dbt_state.root_project().flags.as_ref()),
     ) {
         Ok(r) => Arc::new(r) as Arc<dyn NodeResolverTracker>,
         Err(_) => return (PrevCompilationResult::None, use_lazy_filter),
     };
+
+    let user_defined_schema_registry =
+        dbt_schemas::state::hydrate_user_defined_schema_registry(&state.nodes, adapter_type);
 
     let resolved_state = ResolverState {
         root_project_name: dbt_state.root_project_name().to_string(),
@@ -261,6 +265,7 @@ pub fn try_load_prev_compilation(
         nodes_with_access_errors: state.nodes_with_access_errors,
         semantic_layer_spec_is_legacy: false,
         test_name_truncations: Default::default(),
+        user_defined_schema_registry,
     };
 
     let loaded_project = DbtLoadedProject::from_parts(
@@ -279,6 +284,7 @@ pub fn try_load_prev_compilation(
         metricflow_server_client: None,
         catalog_artifact: None,
         previous_state: None,
+        run_cache_state_selector_args: None,
         invocation_id: uuid::Uuid::new_v4().to_string(),
         partial_load_filter_applied: false,
     });

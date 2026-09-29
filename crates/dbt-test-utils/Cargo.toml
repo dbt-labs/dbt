@@ -51,6 +51,7 @@ tracing = { workspace = true }
 walkdir = { workspace = true }
 
 [dev-dependencies]
+dbt-runtime = { workspace = true }
 pbjson-types = { workspace = true }
 
 [target.'cfg(windows)'.dependencies]

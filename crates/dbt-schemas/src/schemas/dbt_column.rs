@@ -1,5 +1,5 @@
 use indexmap::IndexMap;
-use std::{collections::BTreeMap, sync::Arc};
+use std::sync::Arc;
 
 use dbt_common::FsResult;
 use dbt_yaml::{DbtSchema, UntaggedEnumDeserialize};
@@ -13,8 +13,9 @@ use strum::Display;
 type YmlValue = dbt_yaml::Value;
 
 use crate::schemas::{
-    common::DimensionValidityParams, semantic_layer::semantic_manifest::SemanticLayerElementConfig,
-    serde::StringOrArrayOfStrings,
+    common::DimensionValidityParams,
+    semantic_layer::semantic_manifest::SemanticLayerElementConfig,
+    serde::{StringOrArrayOfStrings, StringOrMap, policy_tags_from_scalar_or_list},
 };
 
 use super::{common::Constraint, data_tests::DataTests};
@@ -47,11 +48,13 @@ pub struct DbtColumn {
     pub meta: IndexMap<String, YmlValue>,
     #[serde(default)]
     pub tags: Vec<String>,
-    pub policy_tags: Option<Vec<String>>,
+    pub policy_tags: Option<Vec<StringOrMap>>,
     pub classifiers: Option<Vec<String>>,
-    pub databricks_tags: Option<BTreeMap<String, YmlValue>>,
+    pub databricks_tags: Option<IndexMap<String, YmlValue>>,
     pub column_mask: Option<ColumnMask>,
     pub quote: Option<bool>,
+    pub codec: Option<String>,
+    pub ttl: Option<String>,
     #[serde(default, rename = "config")]
     pub deprecated_config: ColumnConfig,
     pub dimension: Option<ColumnPropertiesDimension>,
@@ -120,11 +123,14 @@ pub struct ColumnProperties {
     pub tests: Option<Vec<DataTests>>,
     pub data_tests: Option<Vec<DataTests>>,
     pub granularity: Option<Granularity>,
-    pub policy_tags: Option<Vec<String>>,
+    #[serde(default, deserialize_with = "policy_tags_from_scalar_or_list")]
+    pub policy_tags: Option<Vec<StringOrMap>>,
     pub classifiers: Option<Vec<String>>,
-    pub databricks_tags: Option<BTreeMap<String, YmlValue>>,
+    pub databricks_tags: Option<IndexMap<String, YmlValue>>,
     pub column_mask: Option<ColumnMask>,
     pub quote: Option<bool>,
+    pub codec: Option<String>,
+    pub ttl: Option<String>,
     pub config: Option<ColumnConfig>,
 
     pub entity: Option<Entity>,
@@ -147,13 +153,47 @@ pub struct VersionColumnProperties {
     pub tests: Option<Vec<DataTests>>,
     pub data_tests: Option<Vec<DataTests>>,
     pub granularity: Option<Granularity>,
-    pub policy_tags: Option<Vec<String>>,
-    pub databricks_tags: Option<BTreeMap<String, YmlValue>>,
+    #[serde(default, deserialize_with = "policy_tags_from_scalar_or_list")]
+    pub policy_tags: Option<Vec<StringOrMap>>,
+    pub classifiers: Option<Vec<String>>,
+    pub databricks_tags: Option<IndexMap<String, YmlValue>>,
     pub column_mask: Option<ColumnMask>,
     pub quote: Option<bool>,
+    pub codec: Option<String>,
+    pub ttl: Option<String>,
     pub config: Option<ColumnConfig>,
     pub entity: Option<Entity>,
     pub dimension: Option<ColumnPropertiesDimension>,
+}
+
+impl VersionColumnProperties {
+    /// A version column entry is a real column definition iff it carries a `name`. Entries without
+    /// one are the `include`/`exclude` inheritance directive, which is consumed by
+    /// [`ColumnInheritanceRules::from_version_column_props`] instead.
+    ///
+    /// Mirrors dbt-core's `UnparsedVersion.__post_init__` split of `columns` into
+    /// `_include_exclude` and `_unparsed_columns` (`dbt/contracts/graph/unparsed.py`).
+    pub fn to_column_properties(&self) -> Option<ColumnProperties> {
+        Some(ColumnProperties {
+            name: self.name.clone()?,
+            data_type: self.data_type.clone(),
+            description: self.description.clone(),
+            constraints: self.constraints.clone(),
+            tests: self.tests.clone(),
+            data_tests: self.data_tests.clone(),
+            granularity: self.granularity.clone(),
+            policy_tags: self.policy_tags.clone(),
+            classifiers: self.classifiers.clone(),
+            databricks_tags: self.databricks_tags.clone(),
+            column_mask: self.column_mask.clone(),
+            quote: self.quote,
+            codec: self.codec.clone(),
+            ttl: self.ttl.clone(),
+            config: self.config.clone(),
+            entity: self.entity.clone(),
+            dimension: self.dimension.clone(),
+        })
+    }
 }
 
 #[derive(Debug, Default, Deserialize, Serialize, Clone, DbtSchema, Eq, PartialEq)]
@@ -185,8 +225,9 @@ pub struct ColumnConfig {
     #[serde(default)]
     pub tags: Option<StringOrArrayOfStrings>,
     pub meta: Option<IndexMap<String, YmlValue>>,
-    pub databricks_tags: Option<BTreeMap<String, YmlValue>>,
-    pub policy_tags: Option<Vec<String>>,
+    pub databricks_tags: Option<IndexMap<String, YmlValue>>,
+    #[serde(default, deserialize_with = "policy_tags_from_scalar_or_list")]
+    pub policy_tags: Option<Vec<StringOrMap>>,
 }
 
 /// Represents column inheritance rules for a model version
@@ -196,56 +237,45 @@ pub struct ColumnInheritanceRules {
     excludes: Vec<String>,
 }
 
-impl ColumnInheritanceRules {
-    // Given a column block in a versioned model, return the includes and excludes for that model
-    pub fn from_version_columns(columns: &dbt_yaml::Value) -> Option<Self> {
-        if let dbt_yaml::Value::Sequence(cols, _) = columns {
-            for col in cols {
-                if let dbt_yaml::Value::Mapping(map, _) = col {
-                    // Only create inheritance rules if there's an include or exclude
-                    let include_key = dbt_yaml::Value::string("include".to_string());
-                    let exclude_key = dbt_yaml::Value::string("exclude".to_string());
-
-                    if map.contains_key(&include_key) || map.contains_key(&exclude_key) {
-                        let includes = map
-                            .get(&include_key)
-                            .map(|v| match v {
-                                dbt_yaml::Value::String(s, _) if s == "*" || s == "all" => {
-                                    Vec::new()
-                                } // Empty vec means include all
-                                dbt_yaml::Value::Sequence(arr, _) => arr
-                                    .iter()
-                                    .filter_map(|v| match v {
-                                        dbt_yaml::Value::String(s, _) => Some(s.clone()),
-                                        _ => None,
-                                    })
-                                    .collect(),
-                                dbt_yaml::Value::String(s, _) => vec![s.clone()],
-                                _ => Vec::new(),
-                            })
-                            .unwrap_or_default(); // Default to empty vec (include all)
-
-                        let excludes = map
-                            .get(&exclude_key)
-                            .map(|v| match v {
-                                dbt_yaml::Value::Sequence(arr, _) => arr
-                                    .iter()
-                                    .filter_map(|v| match v {
-                                        dbt_yaml::Value::String(s, _) => Some(s.clone()),
-                                        _ => None,
-                                    })
-                                    .collect(),
-                                dbt_yaml::Value::String(s, _) => vec![s.clone()],
-                                _ => Vec::new(),
-                            })
-                            .unwrap_or_default();
-
-                        return Some(ColumnInheritanceRules { includes, excludes });
-                    }
-                }
-            }
+/// dbt-core's default when a version supplies no `include`/`exclude` directive is
+/// `IncludeExclude(include="*")` — inherit every model-level column (see
+/// `UnparsedVersion.__post_init__` in `dbt/contracts/graph/unparsed.py`).
+///
+/// Making that dbt-core default the `Default` impl lets callers write
+/// `from_version_column_props(..).unwrap_or_default()` instead of hand-rolling the `None` arm,
+/// which is how dbt-labs/fs#13334 (every inherited column silently dropped) happened.
+impl Default for ColumnInheritanceRules {
+    fn default() -> Self {
+        Self {
+            includes: Vec::new(), // empty == include all
+            excludes: Vec::new(),
         }
-        None // No inheritance rules specified means use default (inherit all)
+    }
+}
+
+impl ColumnInheritanceRules {
+    /// Given the `columns:` list of a versioned model, return the include/exclude directive it
+    /// carries, or `None` when it carries none (in which case callers must use [`Default`], i.e.
+    /// inherit all).
+    ///
+    /// dbt-core reads the *first* directive entry and errors on a second one; Fusion takes the
+    /// first and ignores the rest.
+    pub fn from_version_column_props(columns: &[VersionColumnProperties]) -> Option<Self> {
+        let directive = columns
+            .iter()
+            .find(|col| col.include.is_some() || col.exclude.is_some())?;
+
+        let includes = match directive.include.as_ref() {
+            // `all` / `*` means include everything, represented as an empty `includes`.
+            Some(StringOrArrayOfStrings::String(s)) if s == "*" || s == "all" => Vec::new(),
+            Some(StringOrArrayOfStrings::String(s)) => vec![s.clone()],
+            Some(StringOrArrayOfStrings::ArrayOfStrings(names)) => names.clone(),
+            // `exclude` without `include` behaves as include-all-except.
+            None => Vec::new(),
+        };
+        let excludes = directive.exclude.clone().unwrap_or_default();
+
+        Some(ColumnInheritanceRules { includes, excludes })
     }
 
     /// given a column name, return true if it should be included in the tests based on the includes and excludes and inheritance rules
@@ -306,11 +336,10 @@ fn normalize_entity(
     }
 }
 
-/// Process columns by merging parent config with each column's config.
+/// Process column metadata locally and inherit resource tags when column tags are unset.
 /// Returns a Vec of DbtColumn references.
 pub fn process_columns(
     columns: Option<&Vec<ColumnProperties>>,
-    meta: Option<IndexMap<String, YmlValue>>,
     tags: Option<Vec<String>>,
 ) -> FsResult<Vec<DbtColumnRef>> {
     Ok(columns
@@ -325,13 +354,14 @@ pub fn process_columns(
                     .clone()
                     .map(|c| (c.meta, c.tags, c.databricks_tags, c.policy_tags))
                     .unwrap_or_default();
+                let column_meta = cp_meta.unwrap_or_default();
 
                 let col = Arc::new(DbtColumn {
                     name: cp.name.clone(),
                     data_type: cp.data_type.clone(),
                     description: cp.description.clone(),
                     constraints: cp.constraints.clone().unwrap_or_default(),
-                    meta: cp_meta.or_else(|| meta.clone()).unwrap_or_default(),
+                    meta: column_meta,
                     tags: cp_tags
                         .map(|t| t.into())
                         .or_else(|| tags.clone())
@@ -342,6 +372,8 @@ pub fn process_columns(
                     databricks_tags: cp.databricks_tags.clone().or(cp_databricks_tags),
                     column_mask: cp.column_mask.clone(),
                     quote: cp.quote,
+                    codec: cp.codec.clone(),
+                    ttl: cp.ttl.clone(),
                     deprecated_config: cp.config.clone().unwrap_or_default(),
                     dimension: normalize_dimension(
                         cp.dimension.clone(),
@@ -381,6 +413,8 @@ mod tests {
             databricks_tags: None,
             column_mask: None,
             quote: None,
+            codec: None,
+            ttl: None,
             config: None,
             entity: None,
             dimension: None,
@@ -399,7 +433,7 @@ mod tests {
             make_col("id", "Second definition (last wins)."),
         ];
 
-        let result = process_columns(Some(&cols), None, None).unwrap();
+        let result = process_columns(Some(&cols), None).unwrap();
 
         assert_eq!(result.len(), 2, "duplicate 'id' should be collapsed to one");
 
@@ -430,7 +464,7 @@ mod tests {
             },
         ));
 
-        let result = process_columns(Some(&vec![col]), None, None).unwrap();
+        let result = process_columns(Some(&vec![col]), None).unwrap();
         let dimension = result[0].dimension.as_ref().expect("dimension preserved");
         match dimension {
             ColumnPropertiesDimension::DimensionConfig(c) => {
@@ -439,6 +473,22 @@ mod tests {
             }
             other => panic!("expected DimensionConfig, got {other:?}"),
         }
+    }
+
+    /// ClickHouse `codec:`/`ttl:` on a schema.yml column must survive into
+    /// `DbtColumn` — contract DDL rendering and schema_changes read them there.
+    #[test]
+    fn test_process_columns_preserves_codec_and_ttl() {
+        let mut col = make_col("col_3", "Compressed column.");
+        col.codec = Some("ZSTD".to_string());
+        col.ttl = Some("created_at + INTERVAL 1 DAY".to_string());
+
+        let result = process_columns(Some(&vec![col]), None).unwrap();
+        assert_eq!(result[0].codec.as_deref(), Some("ZSTD"));
+        assert_eq!(
+            result[0].ttl.as_deref(),
+            Some("created_at + INTERVAL 1 DAY")
+        );
     }
 
     /// Bare-string `dimension: time` must pass through untouched — dbt-core
@@ -450,13 +500,97 @@ mod tests {
             ColumnPropertiesDimensionType::time,
         ));
 
-        let result = process_columns(Some(&vec![col]), None, None).unwrap();
+        let result = process_columns(Some(&vec![col]), None).unwrap();
         assert!(matches!(
             result[0].dimension,
             Some(ColumnPropertiesDimension::DimensionType(
                 ColumnPropertiesDimensionType::time
             ))
         ));
+    }
+
+    /// Regression for fs#13281: mapping-valued `policy_tags` entries must deserialize, not be rejected.
+    #[test]
+    fn test_column_properties_policy_tags_accepts_mixed_string_and_map_entries() {
+        let yaml = "\
+name: ssn
+policy_tags:
+  - projects/my-project/locations/us/taxonomies/1/policyTags/2
+  - masking_policy: mask_ssn
+    using_columns: [ssn]
+";
+        let parsed: ColumnProperties = dbt_yaml::from_str(yaml).unwrap();
+        let tags = parsed.policy_tags.expect("policy_tags preserved");
+        assert_eq!(tags.len(), 2);
+        match &tags[0] {
+            StringOrMap::StringValue(s) => {
+                assert_eq!(
+                    s,
+                    "projects/my-project/locations/us/taxonomies/1/policyTags/2"
+                );
+            }
+            StringOrMap::MapValue(_) => panic!("expected StringValue for first entry"),
+        }
+        match &tags[1] {
+            StringOrMap::MapValue(m) => {
+                assert_eq!(
+                    m.get("masking_policy").and_then(|v| v.as_str()),
+                    Some("mask_ssn")
+                );
+            }
+            StringOrMap::StringValue(_) => panic!("expected MapValue for second entry"),
+        }
+    }
+
+    #[test]
+    fn test_process_columns_keeps_config_meta_local() {
+        let yaml = r#"
+name: id
+config:
+  meta:
+    constraint: local
+    local_only: retained
+"#;
+        let column: ColumnProperties = dbt_yaml::from_str(yaml).unwrap();
+        let unconfigured = make_col("name", "No column metadata.");
+
+        let result = process_columns(Some(&vec![column, unconfigured]), None).unwrap();
+        let meta = &result[0].meta;
+        assert_eq!(
+            meta.get("constraint").and_then(|value| value.as_str()),
+            Some("local")
+        );
+        assert_eq!(
+            meta.get("local_only").and_then(|value| value.as_str()),
+            Some("retained")
+        );
+        assert_eq!(
+            result[0].deprecated_config.meta.as_ref(),
+            Some(meta),
+            "column.meta must expose its own config.meta"
+        );
+        assert!(
+            result[1].meta.is_empty(),
+            "a column without local metadata must not inherit model metadata"
+        );
+        assert!(result[1].deprecated_config.meta.is_none());
+    }
+
+    /// Regression for fs#13343: a scalar (non-list) `policy_tags` value must deserialize
+    /// as a single-element list, not be rejected.
+    #[test]
+    fn test_column_properties_policy_tags_accepts_scalar_string() {
+        let yaml = "\
+name: id
+policy_tags: governance.tags.PII
+";
+        let parsed: ColumnProperties = dbt_yaml::from_str(yaml).unwrap();
+        let tags = parsed.policy_tags.expect("policy_tags preserved");
+        assert_eq!(tags.len(), 1);
+        match &tags[0] {
+            StringOrMap::StringValue(s) => assert_eq!(s, "governance.tags.PII"),
+            StringOrMap::MapValue(_) => panic!("expected StringValue"),
+        }
     }
 }
 

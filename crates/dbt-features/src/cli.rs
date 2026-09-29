@@ -13,15 +13,22 @@ use uuid::Uuid;
 
 use dbt_adapter::Adapter;
 use dbt_clap_core::commands::{AbstractExtensionCommand, ExtensionCommandParser};
-use dbt_clap_core::{Cli, CliParser, CliParserFactory, CommonArgs, InitArgs, in_out_dir};
+use dbt_clap_core::{
+    Cli, CliParser, CliParserFactory, CommonArgs, InitArgs, SystemUpgradeDistributionArgs,
+    in_out_dir,
+};
 use dbt_cloud_config::ResolvedCloudConfig;
 use dbt_common::cancellation::{CancellationToken, CancellationTokenSource};
 use dbt_common::fail_fast::FailFast;
 use dbt_common::io_args::{EvalArgs, FsCommand, IoArgs, Phases, SystemArgs};
-use dbt_common::tracing::dbt_emit::{emit_error_log_from_fs_error, emit_error_log_message};
+use dbt_common::pretty_string::CYAN;
+use dbt_common::tracing::dbt_emit::{
+    emit_error_log_from_fs_error, emit_error_log_message, emit_warn_log_message,
+};
 use dbt_common::{ErrorCode, FsError, FsResult, fs_err};
 use dbt_compilation::config::CompilationConfig;
 use dbt_dag::schedule::Schedule;
+use dbt_dist::upgrade::exec_upgrade_distribution;
 use dbt_jinja_utils::jinja_environment::JinjaEnv;
 use dbt_schema_store::{CanonicalFqn, DataStoreTrait, SchemaStoreTrait};
 use dbt_schemas::schemas::{Nodes, StateArtifacts};
@@ -34,6 +41,7 @@ use crate::metricflow::MetricflowClient;
 
 pub struct CliFeature {
     pub command_name: &'static str,
+    pub version_check_enabled: bool,
     pub hooks: Box<dyn CliExtensionHooks>,
     pub cli_parser_factory: Arc<dyn CliParserFactory>,
     /// Global [CancelltionTokenSource] that can be used to signal cancellation to
@@ -48,6 +56,7 @@ pub struct CliFeature {
 
 pub struct CliFeatureBuilder {
     command_name: &'static str,
+    version_check_enabled: bool,
     hooks: Option<Box<dyn CliExtensionHooks>>,
     cli_parser_factory: Option<Arc<dyn CliParserFactory>>,
 }
@@ -56,9 +65,15 @@ impl CliFeatureBuilder {
     pub fn new(command_name: &'static str) -> Self {
         Self {
             command_name,
+            version_check_enabled: false,
             hooks: None,
             cli_parser_factory: None,
         }
+    }
+
+    pub fn version_check_enabled(mut self, enabled: bool) -> Self {
+        self.version_check_enabled = enabled;
+        self
     }
 
     pub fn hooks(mut self, hooks: Box<dyn CliExtensionHooks>) -> Self {
@@ -82,6 +97,7 @@ impl CliFeatureBuilder {
 
         CliFeature {
             command_name: self.command_name,
+            version_check_enabled: self.version_check_enabled,
             hooks,
             cli_parser_factory,
             cancellation_token_source: CancellationTokenSource::new(),
@@ -93,14 +109,16 @@ impl CliFeatureBuilder {
 #[derive(clap::Parser, Debug, Clone, Serialize, Deserialize)]
 #[command()]
 pub enum SystemCommand {
-    /// Informative-only update command for dbt Core 2.x.
+    /// Informative-only update command for dbt v2 OSS.
     #[clap(hide = true)]
     Update,
-    /// Informative-only uninstall command for dbt Core 2.x.
+    /// Informative-only uninstall command for dbt v2 OSS.
     #[clap(hide = true)]
     Uninstall,
     /// Preinstall all supported database drivers into the local cache
     InstallDrivers,
+    /// Upgrade a dbt v2 OSS installation to dbt v2 proprietary
+    UpgradeDistribution(SystemUpgradeDistributionArgs),
 }
 
 #[derive(Parser, Debug, Clone, Serialize, Deserialize)]
@@ -120,16 +138,36 @@ impl SystemMgmtArgs {
     }
 }
 
+/// Arguments for a command that requires the full dbt distribution and is
+/// stubbed out in dbt OSS. Any arguments are accepted and ignored, since the
+/// command never executes — it only reports that the full distribution is
+/// required.
+#[derive(Parser, Debug, Clone, Serialize, Deserialize)]
+pub struct MissingDistributionStubArgs {
+    #[arg(trailing_var_arg = true, allow_hyphen_values = true, hide = true)]
+    pub args: Vec<String>,
+}
+
+impl MissingDistributionStubArgs {
+    pub fn to_eval_args(&self, arg: SystemArgs, in_dir: &Path, out_dir: &Path) -> EvalArgs {
+        CommonArgs::default().to_eval_args(arg, in_dir, out_dir)
+    }
+}
+
 #[derive(clap::Subcommand, Debug, Clone)]
+#[allow(clippy::large_enum_variant)] // System is expected to be much larger than the stub variants.
 pub enum OSSExtensionCommand {
-    /// dbt Core 2.x system subcommand
+    /// dbt v2 OSS system subcommand
     System(SystemMgmtArgs),
+    /// Lint models (requires the full dbt distribution)
+    Lint(MissingDistributionStubArgs),
 }
 
 impl AbstractExtensionCommand for OSSExtensionCommand {
     fn name(&self) -> &'static str {
         match self {
             OSSExtensionCommand::System(_) => "system",
+            OSSExtensionCommand::Lint(_) => "lint",
         }
     }
 
@@ -153,7 +191,7 @@ impl AbstractExtensionCommand for OSSExtensionCommand {
 
     fn is_project_command(&self) -> bool {
         use OSSExtensionCommand::*;
-        !matches!(self, System(_))
+        !matches!(self, System(_) | Lint(_))
     }
 
     fn to_eval_args(&self, common_args: &CommonArgs, system_arg: SystemArgs) -> FsResult<EvalArgs> {
@@ -169,6 +207,7 @@ impl AbstractExtensionCommand for OSSExtensionCommand {
         let from_main = system_arg.from_main;
         let mut arg = match self {
             System(args) => args.to_eval_args(system_arg, &in_dir, &out_dir),
+            Lint(args) => args.to_eval_args(system_arg, &in_dir, &out_dir),
         };
         arg.from_main = from_main;
 
@@ -179,18 +218,25 @@ impl AbstractExtensionCommand for OSSExtensionCommand {
         use OSSExtensionCommand::*;
         match self {
             System(args) => args.common_args.clone(),
+            Lint(_) => CommonArgs::default(),
         }
     }
 
     fn stage(&self) -> Phases {
         use OSSExtensionCommand::*;
         match self {
-            System(_) => unreachable!("System command does not need a phase"),
+            System(_) | Lint(_) => {
+                unreachable!("stub command does not need a phase")
+            }
         }
     }
 
     fn as_command(&self) -> FsCommand {
-        FsCommand::System
+        use OSSExtensionCommand::*;
+        match self {
+            System(_) => FsCommand::System,
+            Lint(_) => FsCommand::Extension("lint"),
+        }
     }
 
     fn extend_cli_options(&self, _options: &mut Vec<String>) {
@@ -302,16 +348,6 @@ pub trait CliExtensionHooks: Send + Sync {
         Ok(())
     }
 
-    /// Returns a checker for verifying propagation from an alt/remote
-    /// compute target to the profile's native connection, for use during
-    /// `dbt debug`. Returning `None` (the default) means this build has no
-    /// such check available.
-    fn alt_propagation_checker(
-        &self,
-    ) -> Option<Arc<dyn dbt_tasks_core::alt_propagation::AltPropagationChecker>> {
-        None
-    }
-
     /// Called after tasks have been scheduled and run, but before manifest
     /// update and further phases.
     ///
@@ -383,7 +419,7 @@ pub trait CliExtensionHooks: Send + Sync {
         &self,
         arg: &EvalArgs,
         cli: &Cli,
-        jinja_env: Cow<'_, JinjaEnv>,
+        jinja_env: Arc<JinjaEnv>,
         augmented_resolved_state: &ResolverState,
         schedule: &Schedule<String>,
         adapter: Arc<Adapter>,
@@ -439,10 +475,21 @@ impl CliExtensionHooks for DefaultCliExtensionHooks {
         &self,
         cli: &Cli,
         _eval_arg: &EvalArgs,
-        _feature_stack: &Arc<FeatureStack>,
+        feature_stack: &Arc<FeatureStack>,
     ) -> FsResult<()> {
         use OSSExtensionCommand::*;
         match cli.extension_command::<OSSExtensionCommand>() {
+            Some(Lint(_)) => {
+                emit_warn_log_message(
+                    ErrorCode::NotSupported,
+                    format!(
+                        "This command requires the full dbt distribution, which is not installed.\n\
+                         install it with: {}",
+                        CYAN.apply_to("dbt system upgrade-distribution")
+                    ),
+                );
+                Err(FsError::exit_with_status(1))
+            }
             Some(System(args)) => {
                 match &args.command {
                     SystemCommand::Update => {
@@ -469,15 +516,24 @@ impl CliExtensionHooks for DefaultCliExtensionHooks {
                         emit_error_log_from_fs_error(*e);
                         Err(FsError::exit_with_status(1))
                     }
-                    SystemCommand::InstallDrivers => {
-                        dbt_adbc::pre_install_all_drivers().map_err(|install_err| {
+                    SystemCommand::InstallDrivers => dbt_adbc::pre_install_all_drivers(None)
+                        .map_err(|install_err| {
                             emit_error_log_message(
                                 ErrorCode::Generic,
                                 format!("Failed to install drivers: {}", install_err).as_str(),
                             );
                             FsError::exit_with_status(1)
-                        })
-                    }
+                        }),
+                    SystemCommand::UpgradeDistribution(args) => exec_upgrade_distribution(
+                        args.yes,
+                        args.package_manager.clone(),
+                        feature_stack.cli.command_name,
+                    )
+                    .await
+                    .map_err(|e| {
+                        emit_error_log_from_fs_error(*e);
+                        FsError::exit_with_status(1)
+                    }),
                 }?;
                 // handled the System command, signal to exit with success
                 Err(FsError::exit_with_status(0))
@@ -559,7 +615,7 @@ impl CliExtensionHooks for DefaultCliExtensionHooks {
         &self,
         _arg: &EvalArgs,
         _cli: &Cli,
-        _jinja_env: Cow<'_, JinjaEnv>,
+        _jinja_env: Arc<JinjaEnv>,
         _augmented_resolved_state: &ResolverState,
         _schedule: &Schedule<String>,
         _adapter: Arc<Adapter>,
@@ -636,5 +692,40 @@ mod tests {
 
         // `Cli::is_project_command` should delegate to the extension command.
         assert!(!cli.is_project_command());
+    }
+
+    fn root_help(parser: &CliParser) -> String {
+        parser
+            .try_parse_from(["dbt", "--help"])
+            .unwrap_err()
+            .to_string()
+    }
+
+    #[test]
+    fn distribution_stub_commands_are_visible_in_help_and_parseable() {
+        let parser = CliParser::new("dbt-core", "2.x", Box::new(OSSExtensionCommandParser));
+
+        let help = root_help(&parser);
+        assert!(help.contains("lint"), "got:\n{help}");
+
+        parser
+            .try_parse_from(["dbt", "lint"])
+            .expect("expected `[\"dbt\", \"lint\"]` to parse");
+
+        // Arguments are accepted and ignored, not rejected as unknown flags/files.
+        parser
+            .try_parse_from(["dbt", "lint", "models/foo.sql", "--fix"])
+            .expect("lint should accept and ignore trailing args");
+    }
+
+    #[test]
+    fn distribution_stub_commands_are_not_project_commands() {
+        let parser = CliParser::new("dbt-core", "2.x", Box::new(OSSExtensionCommandParser));
+
+        let cli = parser.try_parse_from(["dbt", "lint"]).unwrap();
+        assert!(
+            !cli.is_project_command(),
+            "lint should not require a project dir"
+        );
     }
 }

@@ -3,7 +3,7 @@ use dbt_schemas::schemas::{DbtModel, InternalDbtNodeAttributes};
 use minijinja::Value;
 
 use crate::relation::snowflake::config::{
-    DescribeDynamicTableResults, get_string_by_name_from_record_batch,
+    SnowflakeDescribeResults, get_string_by_name_from_record_batch,
 };
 use crate::{
     relation::config_v2::{
@@ -30,8 +30,8 @@ fn new_component(immutable_where: Option<String>) -> ImmutableWhere {
     }
 }
 
-fn from_remote_state(results: &DescribeDynamicTableResults) -> AdapterResult<ImmutableWhere> {
-    let batch = &results.dynamic_table;
+fn from_remote_state(results: &SnowflakeDescribeResults) -> AdapterResult<ImmutableWhere> {
+    let batch = &results.record_batch;
     // Snowflake returns "IMMUTABLE WHERE (expr)" — strip prefix/suffix to get bare expression.
     let immutable_where = get_string_by_name_from_record_batch(batch, "immutable_where")
         .ok()
@@ -75,7 +75,7 @@ fn from_local_config(
     Ok(new_component(snowflake_config.immutable_where.clone()))
 }
 
-impl_loader!(ImmutableWhere, DescribeDynamicTableResults);
+impl_loader!(ImmutableWhere, SnowflakeDescribeResults);
 
 #[cfg(test)]
 mod tests {

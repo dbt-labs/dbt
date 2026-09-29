@@ -1,11 +1,8 @@
-use std::{
-    borrow::Cow,
-    path::PathBuf,
-    sync::{Arc, RwLock},
-};
+use std::borrow::Cow;
+use std::path::PathBuf;
+use std::sync::Arc;
 
 use super::{
-    dbt_convert::log_level_filter_to_tracing,
     dbt_init::init_tracing_with_layers,
     fs_error_log::get_log_message,
     layers::{
@@ -14,22 +11,21 @@ use super::{
             build_json_compat_layer, build_json_compat_layer_with_background_writer,
         },
         query_log::build_query_log_layer_with_background_writer,
-        tui_layer::build_tui_layer,
+        tui_layer::{TuiConfig, build_tui_layer},
     },
-    middlewares::markdown_log_filter::TelemetryMarkdownLogFilter,
-    middlewares::metric_aggregator::TelemetryMetricAggregator,
-    middlewares::node_warn_outcome::TelemetryNodeWarnOutcome,
-    middlewares::warn_error_options::TelemetryWarnErrorOptionsMiddleware,
-    tracing_feature_handles::TracingConfigProvider,
+    middlewares::{
+        markdown_log_filter::TelemetryMarkdownLogFilter,
+        metric_aggregator::TelemetryMetricAggregator, node_warn_outcome::TelemetryNodeWarnOutcome,
+        warn_error_options::TelemetryWarnErrorOptionsMiddleware,
+    },
+    tracing_feature_handles::{FsTracingConfigProvider, TracingConfigProvider},
 };
-use crate::{
-    collections::HashSet, tracing::tracing_feature_handles::create_tracing_config_provider,
-};
+use crate::collections::HashSet;
 use crate::{
     constants::{
         DBT_DEFAULT_LOG_FILE_BACKUP_COUNT, DBT_DEFAULT_LOG_FILE_MAX_BYTES,
-        DBT_DEFAULT_LOG_FILE_NAME, DBT_DEFAULT_QUERY_LOG_FILE_NAME, DBT_FUSION, DBT_LOG_DIR_NAME,
-        DBT_METADATA_DIR_NAME, DBT_PROJECT_YML, DBT_TARGET_DIR_NAME,
+        DBT_DEFAULT_LOG_FILE_NAME, DBT_DEFAULT_QUERY_LOG_FILE_NAME, DBT_LOG_DIR_NAME,
+        DBT_PROJECT_YML, DBT_TARGET_DIR_NAME,
     },
     io_args::{FsCommand, IoArgs, LogFormat, ShowOptions},
     io_utils::determine_project_dir,
@@ -60,6 +56,8 @@ use tracing::level_filters::LevelFilter;
 pub struct FsTraceConfig {
     /// Name of the package emitting the telemetry, e.g. `dbt-cli` or `dbt-lsp`
     pub(super) package: &'static str,
+    /// User-facing CLI brand name shown in the version banner and JSON log lines.
+    pub(super) brand_name: &'static str,
     /// The command being executed, e.g. "run", "compile", "list"
     pub(super) command: FsCommand,
     /// Tracing level filter, which specifies maximum verbosity (inverse
@@ -92,39 +90,292 @@ pub struct FsTraceConfig {
     pub(super) export_to_otlp: bool,
     /// The log format being used
     pub(super) log_format: LogFormat,
+    /// File-specific log format (`--log-format-file`), overriding `log_format` for the on-disk log sink only.
+    pub(super) file_log_format: Option<LogFormat>,
     /// If True, enables separate query log file output
     pub(super) enable_query_log: bool,
     /// Show options controlling terminal/file output visibility
     pub(super) show_options: HashSet<ShowOptions>,
+    /// Whether non-result console output is suppressed.
+    pub(super) quiet: bool,
     /// Show all deprecations warnings/errors instead of one per package
     pub(super) show_all_deprecations: bool,
     /// The initial warn-error options loaded from CLI/env before project flags are resolved.
     pub(super) warn_error_options: WarnErrorOptions,
-    /// User-facing CLI brand name shown in the version banner and JSON log lines.
-    pub(super) command_name: &'static str,
+    /// Withholds upgrades of warnings with no dbt-core counterpart; set while replaying.
+    pub(super) skip_fusion_only_upgrades: bool,
 }
 
-impl Default for FsTraceConfig {
-    fn default() -> Self {
+/// Builder for [`FsTraceConfig`].
+///
+/// Every field except `package` has a default, and paths are resolved by
+/// [`FsTraceConfigBuilder::build`]:
+/// - `project_dir`: auto-detected if unset, falling back to the current working directory
+/// - `target_path`: defaults to `{project_dir}/target`
+/// - `log_path`: defaults to `{project_dir}/logs`; resolved against `project_dir` if relative
+/// - JSONL trace file: `{log_path}/{otel_file_name}`
+/// - Parquet trace file: `{target_path}/metadata/{otel_parquet_file_name}`
+///   (see [`crate::constants::default_telemetry_dir`])
+#[derive(Clone, Debug)]
+pub struct FsTraceConfigBuilder {
+    package: &'static str,
+    brand_name: &'static str,
+    command: FsCommand,
+    project_dir: Option<PathBuf>,
+    target_path: Option<PathBuf>,
+    log_path: Option<PathBuf>,
+    max_log_verbosity: LevelFilter,
+    max_file_log_verbosity: LevelFilter,
+    otel_file_name: Option<String>,
+    otel_parquet_file_name: Option<String>,
+    log_file_name: Option<String>,
+    log_file_max_bytes: u64,
+    invocation_id: uuid::Uuid,
+    parent_span_id: Option<u64>,
+    export_to_otlp: bool,
+    log_format: LogFormat,
+    file_log_format: Option<LogFormat>,
+    enable_query_log: bool,
+    show_options: HashSet<ShowOptions>,
+    quiet: bool,
+    show_all_deprecations: bool,
+    warn_error_options: WarnErrorOptions,
+    skip_fusion_only_upgrades: bool,
+}
+
+impl FsTraceConfigBuilder {
+    /// `package` identifies the package emitting telemetry, e.g. `dbt` or `dbt-lsp`.
+    pub fn new(package: &'static str, brand_name: &'static str) -> Self {
         Self {
-            package: "unknown",
+            package,
+            brand_name,
             command: FsCommand::Unset,
+            project_dir: None,
+            target_path: None,
+            log_path: None,
             max_log_verbosity: LevelFilter::INFO,
             max_file_log_verbosity: LevelFilter::DEBUG,
-            otel_file_path: None,
-            otel_parquet_file_path: None,
-            log_path: PathBuf::new(),
+            otel_file_name: None,
+            otel_parquet_file_name: None,
             log_file_name: None,
             log_file_max_bytes: DBT_DEFAULT_LOG_FILE_MAX_BYTES,
             invocation_id: uuid::Uuid::now_v7(),
             parent_span_id: None,
             export_to_otlp: false,
             log_format: LogFormat::Default,
+            file_log_format: None,
             enable_query_log: false,
             show_options: HashSet::default(),
+            quiet: false,
             show_all_deprecations: false,
             warn_error_options: WarnErrorOptions::default(),
-            command_name: DBT_FUSION,
+            skip_fusion_only_upgrades: false,
+        }
+    }
+
+    pub fn from_io_args(package: &'static str, brand_name: &'static str, io_args: &IoArgs) -> Self {
+        Self::new(package, brand_name)
+            .with_log_path(io_args.log_path.as_ref())
+            .with_max_log_verbosity(io_args.max_log_verbosity())
+            .with_max_file_log_verbosity(io_args.max_file_log_verbosity())
+            .with_otel_file_name(io_args.otel_file_name.as_deref())
+            .with_otel_parquet_file_name(io_args.otel_parquet_file_name())
+            .with_invocation_id(io_args.invocation_id)
+            .with_parent_span_id(io_args.otel_parent_span_id)
+            .with_export_to_otlp(io_args.export_to_otlp)
+            .with_log_format(io_args.log_format)
+            .with_file_log_format(io_args.log_format_file)
+            .with_show_options(io_args.show.clone())
+            .with_show_all_deprecations(io_args.show_all_deprecations)
+            .with_log_file_max_bytes(io_args.log_file_max_bytes)
+    }
+
+    /// The user-facing CLI brand name shown in the version banner and JSON log lines.
+    pub fn with_brand_name(mut self, brand_name: &'static str) -> Self {
+        self.brand_name = brand_name;
+        self
+    }
+
+    /// The command being executed, e.g. "run", "compile", "list".
+    pub fn with_command(mut self, command: FsCommand) -> Self {
+        self.command = command;
+        self
+    }
+
+    /// The dbt project directory. If unset, it is auto-detected using
+    /// `dbt_project.yml` as a marker, falling back to the current working directory.
+    pub fn with_project_dir(mut self, project_dir: Option<&PathBuf>) -> Self {
+        self.project_dir = project_dir.cloned();
+        self
+    }
+
+    /// The target directory, used for the Parquet trace output. Defaults to
+    /// `{project_dir}/target`.
+    pub fn with_target_path(mut self, target_path: Option<&PathBuf>) -> Self {
+        self.target_path = target_path.cloned();
+        self
+    }
+
+    /// The directory for log-related files. Defaults to `{project_dir}/logs`, and
+    /// is resolved relative to the project directory if relative.
+    pub fn with_log_path(mut self, log_path: Option<&PathBuf>) -> Self {
+        self.log_path = log_path.cloned();
+        self
+    }
+
+    /// Maximum verbosity (inverse of log level) for the tui & jsonl log sinks.
+    pub fn with_max_log_verbosity(mut self, max_log_verbosity: LevelFilter) -> Self {
+        self.max_log_verbosity = max_log_verbosity;
+        self
+    }
+
+    /// Maximum verbosity for the file log sink.
+    pub fn with_max_file_log_verbosity(mut self, max_file_log_verbosity: LevelFilter) -> Self {
+        self.max_file_log_verbosity = max_file_log_verbosity;
+        self
+    }
+
+    /// File name of the JSONL trace output, written to `{log_path}`. If unset,
+    /// the JSONL output layer is disabled.
+    pub fn with_otel_file_name(mut self, otel_file_name: Option<&str>) -> Self {
+        self.otel_file_name = otel_file_name.map(str::to_string);
+        self
+    }
+
+    /// File name of the Parquet trace output, written to `{target_path}/metadata`.
+    /// If unset, the Parquet output layer is disabled.
+    pub fn with_otel_parquet_file_name(mut self, otel_parquet_file_name: Option<&str>) -> Self {
+        self.otel_parquet_file_name = otel_parquet_file_name.map(str::to_string);
+        self
+    }
+
+    /// Custom name for the log file written to `{log_path}`. Defaults to `dbt.log`.
+    pub fn with_log_file_name(mut self, log_file_name: Option<&str>) -> Self {
+        self.log_file_name = log_file_name.map(str::to_string);
+        self
+    }
+
+    /// Max size in bytes for rotating file logs. `0` means no limit.
+    pub fn with_log_file_max_bytes(mut self, log_file_max_bytes: u64) -> Self {
+        self.log_file_max_bytes = log_file_max_bytes;
+        self
+    }
+
+    /// Invocation ID, used as trace ID for correlation.
+    pub fn with_invocation_id(mut self, invocation_id: uuid::Uuid) -> Self {
+        self.invocation_id = invocation_id;
+        self
+    }
+
+    /// Parent span ID for OpenTelemetry trace correlation, used as fallback when
+    /// creating root spans.
+    pub fn with_parent_span_id(mut self, parent_span_id: Option<u64>) -> Self {
+        self.parent_span_id = parent_span_id;
+        self
+    }
+
+    /// If true, traces are forwarded to the OTLP endpoints set via OTEL
+    /// environment variables.
+    pub fn with_export_to_otlp(mut self, export_to_otlp: bool) -> Self {
+        self.export_to_otlp = export_to_otlp;
+        self
+    }
+
+    /// The log format to use.
+    pub fn with_log_format(mut self, log_format: LogFormat) -> Self {
+        self.log_format = log_format;
+        self
+    }
+
+    /// The file-specific log format (`--log-format-file`), overriding
+    /// [`Self::with_log_format`] for the on-disk log sink only. When `None`, the
+    /// on-disk sink falls back to `log_format`.
+    pub fn with_file_log_format(mut self, file_log_format: Option<LogFormat>) -> Self {
+        self.file_log_format = file_log_format;
+        self
+    }
+
+    /// If true, a separate query log file is written.
+    pub fn with_query_log_enabled(mut self, enable_query_log: bool) -> Self {
+        self.enable_query_log = enable_query_log;
+        self
+    }
+
+    /// Show options controlling terminal/file output visibility.
+    pub fn with_show_options(mut self, show_options: HashSet<ShowOptions>) -> Self {
+        self.show_options = show_options;
+        self
+    }
+
+    /// Whether non-result console output is suppressed.
+    pub fn with_quiet(mut self, quiet: bool) -> Self {
+        self.quiet = quiet;
+        self
+    }
+
+    /// If true, show all deprecation warnings/errors instead of one per package.
+    pub fn with_show_all_deprecations(mut self, show_all_deprecations: bool) -> Self {
+        self.show_all_deprecations = show_all_deprecations;
+        self
+    }
+
+    /// The initial warn-error options from CLI/env, before project flags are resolved.
+    pub fn with_warn_error_options(mut self, warn_error_options: WarnErrorOptions) -> Self {
+        self.warn_error_options = warn_error_options;
+        self
+    }
+
+    /// Withholds upgrades of warnings with no dbt-core counterpart; set while replaying.
+    pub fn with_skip_fusion_only_upgrades(mut self, skip_fusion_only_upgrades: bool) -> Self {
+        self.skip_fusion_only_upgrades = skip_fusion_only_upgrades;
+        self
+    }
+
+    /// Resolves all paths and returns the configuration. This never fails: it
+    /// falls back to the current working directory if no project directory can
+    /// be determined.
+    pub fn build(self) -> FsTraceConfig {
+        let (in_dir, out_dir) =
+            calculate_trace_dirs(self.project_dir.as_ref(), self.target_path.as_ref());
+
+        // Resolve log directory path (base directory for auxiliary log files)
+        let log_dir_path = self.log_path.map_or_else(
+            || in_dir.join(DBT_LOG_DIR_NAME),
+            |log_path| {
+                if log_path.is_relative() {
+                    in_dir.join(log_path)
+                } else {
+                    log_path
+                }
+            },
+        );
+
+        FsTraceConfig {
+            package: self.package,
+            command: self.command,
+            max_log_verbosity: self.max_log_verbosity,
+            max_file_log_verbosity: self.max_file_log_verbosity,
+            otel_file_path: self
+                .otel_file_name
+                .map(|file_name| log_dir_path.join(file_name)),
+            otel_parquet_file_path: self
+                .otel_parquet_file_name
+                .map(|file_name| crate::constants::default_telemetry_dir(out_dir).join(file_name)),
+            log_path: log_dir_path,
+            log_file_name: self.log_file_name,
+            log_file_max_bytes: self.log_file_max_bytes,
+            invocation_id: self.invocation_id,
+            parent_span_id: self.parent_span_id,
+            export_to_otlp: self.export_to_otlp,
+            log_format: self.log_format,
+            file_log_format: self.file_log_format,
+            enable_query_log: self.enable_query_log,
+            show_options: self.show_options,
+            quiet: self.quiet,
+            show_all_deprecations: self.show_all_deprecations,
+            warn_error_options: self.warn_error_options,
+            skip_fusion_only_upgrades: self.skip_fusion_only_upgrades,
+            brand_name: self.brand_name,
         }
     }
 }
@@ -168,21 +419,19 @@ fn dbt_log_preprocessor_hook(record: &LogRecordInfo) -> Cow<'_, LogRecordInfo> {
 /// Builds the middleware pipeline shared by dbt tracing configurations.
 pub fn build_shared_middleware_layers(
     show_all_deprecations: bool,
-    warn_error_options: WarnErrorOptions,
-) -> (Vec<MiddlewareLayer>, Arc<RwLock<WarnErrorOptions>>) {
-    let (warn_error_options_middleware, warn_error_options) =
-        TelemetryWarnErrorOptionsMiddleware::new(warn_error_options);
+    config_provider: Arc<dyn TracingConfigProvider>,
+    skip_fusion_only_upgrades: bool,
+) -> Vec<MiddlewareLayer> {
+    let warn_error_options_middleware =
+        TelemetryWarnErrorOptionsMiddleware::new(config_provider, skip_fusion_only_upgrades);
 
-    (
-        vec![
-            Box::new(TelemetryMarkdownLogFilter),
-            Box::new(TelemetryParsingErrorFilter::new(show_all_deprecations)),
-            Box::new(warn_error_options_middleware),
-            Box::new(TelemetryNodeWarnOutcome),
-            Box::new(TelemetryMetricAggregator),
-        ],
-        warn_error_options,
-    )
+    vec![
+        Box::new(TelemetryMarkdownLogFilter),
+        Box::new(TelemetryParsingErrorFilter::new(show_all_deprecations)),
+        Box::new(warn_error_options_middleware),
+        Box::new(TelemetryNodeWarnOutcome),
+        Box::new(TelemetryMetricAggregator),
+    ]
 }
 
 /// Builds a JSONL file consumer with dbt log preprocessing.
@@ -269,19 +518,10 @@ pub fn build_file_log_consumer(
     Ok((Some(consumer), vec![shutdown_item], Some(file_log_path)))
 }
 
-pub fn build_tracing_config_provider(
-    warn_error_options: Arc<RwLock<WarnErrorOptions>>,
-    file_log_path: Option<PathBuf>,
-    command_name: &'static str,
-) -> Box<dyn TracingConfigProvider> {
-    create_tracing_config_provider(warn_error_options, file_log_path, command_name)
-}
-
 pub struct FsTraceLayers {
     middleware_layers: Vec<MiddlewareLayer>,
     consumer_layers: Vec<ConsumerLayer>,
     shutdown_items: Vec<TelemetryShutdownItem>,
-    tracing_config_provider: Box<dyn TracingConfigProvider>,
 }
 
 impl FsTraceLayers {
@@ -291,192 +531,43 @@ impl FsTraceLayers {
         Vec<MiddlewareLayer>,
         Vec<ConsumerLayer>,
         Vec<TelemetryShutdownItem>,
-        Box<dyn TracingConfigProvider>,
     ) {
         (
             self.middleware_layers,
             self.consumer_layers,
             self.shutdown_items,
-            self.tracing_config_provider,
         )
     }
 }
 
 impl FsTraceConfig {
-    /// Creates a new FsTraceConfig with explicit parameter control.
-    ///
-    /// This constructor provides full control over all tracing configuration options
-    /// and handles path resolution for trace output files.
-    ///
-    /// # Arguments
-    ///
-    /// * `package` - Static string identifying the package emitting telemetry (e.g., "dbt", "dbt-lsp")
-    /// * `command` - Command being executed (e.g., "run", "compile", "list")
-    /// * `project_dir` - Optional path to the dbt project directory. If None, attempts to auto-detect
-    ///   from current working directory using `dbt_project.yml` as a marker
-    /// * `target_path` - Optional path to the target directory for outputs. If None, defaults to
-    ///   `{project_dir}/target`. Target path is used for Parquet trace output.
-    /// * `log_path` - Optional custom path for log files. If None, uses `{project_dir}/logs`.
-    ///   If relative, resolved relative to `project_dir`
-    /// * `max_log_verbosity` - Maximum tracing level filter (higher = more verbose tracing output).
-    ///   This controls verbosity for TUI and JSONL log output
-    /// * `max_file_log_verbosity` - Maximum tracing level filter for file log output
-    /// * `otel_file_name` - Optional filename for JSONL trace output. If provided,
-    ///   creates trace file at `{log_path}/{otel_file_name}`
-    /// * `otel_parquet_file_name` - Optional filename for OpenTelemetry Parquet trace output.
-    ///   If provided, creates trace file at `{target_path}/metadata/{otel_parquet_file_name}`
-    /// * `invocation_id` - Unique identifier for this execution, used as trace ID for correlation
-    /// * `parent_span_id` - Optional parent span ID for OpenTelemetry trace correlation
-    /// * `export_to_otlp` - If true, enables forwarding traces to OTLP endpoints configured
-    ///   via OTEL environment variables
-    /// * `log_format` - The log format being used
-    /// * `enable_query_log` - If true, enables writing a separate query log file
-    /// * `show_options` - Set of ShowOptions controlling terminal/file output visibility
-    /// * `show_all_deprecations` - If true, show all deprecation warnings/errors instead of one per package
-    /// * `warn_error_options` - Initial warn-error options from CLI/env before project flags are resolved
-    /// * `log_file_name` - Optional custom name for the log file. If None, defaults to `dbt.log`.
-    ///   If Some, creates log file at `{log_path}/{log_file_name}`
-    /// * `log_file_max_bytes` - Max size for rotating file logs in bytes.
-    ///   `0` means no size limit.
-    ///
-    /// # Path Resolution
-    ///
-    /// The method resolves paths as follows:
-    /// - `project_dir`: Auto-detected if None, fallback to current working directory
-    /// - `target_path`: Defaults to `{project_dir}/target` if None
-    /// - Log files: `{log_path or project_dir/logs}/{otel_file_name}`
-    /// - Parquet files: `{target_path}/metadata/{otel_parquet_file_name}`
-    ///
-    #[allow(clippy::too_many_arguments)]
-    pub fn new(
-        package: &'static str,
-        command: FsCommand,
-        project_dir: Option<&PathBuf>,
-        target_path: Option<&PathBuf>,
-        log_path: Option<&PathBuf>,
-        max_log_verbosity: LevelFilter,
-        max_file_log_verbosity: LevelFilter,
-        otel_file_name: Option<&str>,
-        otel_parquet_file_name: Option<&str>,
-        invocation_id: uuid::Uuid,
-        parent_span_id: Option<u64>,
-        export_to_otlp: bool,
-        log_format: LogFormat,
-        enable_query_log: bool,
-        show_options: HashSet<ShowOptions>,
-        show_all_deprecations: bool,
-        warn_error_options: WarnErrorOptions,
-        log_file_name: Option<&str>,
-        log_file_max_bytes: u64,
-    ) -> Self {
-        let (in_dir, out_dir) = calculate_trace_dirs(project_dir, target_path);
+    pub fn create_config_provider(&self) -> Arc<dyn TracingConfigProvider> {
+        Arc::new(FsTracingConfigProvider::from_warn_error_options(
+            self.warn_error_options.clone(),
+        ))
+    }
 
-        // Resolve log directory path (base directory for auxiliary log files)
-        let log_dir_path = log_path.map_or_else(
-            || in_dir.join(DBT_LOG_DIR_NAME),
-            |log_path| {
-                if log_path.is_relative() {
-                    in_dir.join(log_path)
-                } else {
-                    log_path.clone()
-                }
-            },
-        );
-
-        Self {
-            package,
-            command,
-            max_log_verbosity,
-            max_file_log_verbosity,
-            otel_file_path: otel_file_name.map(|file_name| log_dir_path.join(file_name)),
-            otel_parquet_file_path: otel_parquet_file_name
-                .map(|file_name| out_dir.join(DBT_METADATA_DIR_NAME).join(file_name)),
-            log_path: log_dir_path,
-            log_file_name: log_file_name.map(|s| s.to_string()),
-            log_file_max_bytes,
-            invocation_id,
-            parent_span_id,
-            export_to_otlp,
-            log_format,
-            enable_query_log,
-            show_options,
-            show_all_deprecations,
-            warn_error_options,
-            command_name: DBT_FUSION,
+    fn tui_config(&self) -> TuiConfig {
+        TuiConfig {
+            show_options: self.show_options.clone(),
+            command: self.command,
+            quiet: self.quiet,
         }
-    }
-
-    /// Override the user-facing CLI brand name shown in the version banner and
-    /// JSON log lines.
-    pub fn with_command_name(mut self, command_name: &'static str) -> Self {
-        self.command_name = command_name;
-        self
-    }
-
-    /// Creates a new FsTraceConfig with proper path resolution.
-    /// This method never fails - it uses fallback logic for directory resolution.
-    ///
-    /// OTel parquet tracing is only enabled when explicitly requested via `--otel-parquet-file-name`.
-    pub fn new_from_io_args(
-        command: FsCommand,
-        project_dir: Option<&PathBuf>,
-        target_path: Option<&PathBuf>,
-        io_args: &IoArgs,
-        warn_error_options: Option<&WarnErrorOptions>,
-        package: &'static str,
-    ) -> Self {
-        let max_log_verbosity = io_args
-            .log_level
-            .map(|lf| log_level_filter_to_tracing(&lf))
-            .unwrap_or(LevelFilter::INFO);
-
-        let max_file_log_verbosity = io_args
-            .log_level_file
-            .map(|lf| log_level_filter_to_tracing(&lf))
-            .unwrap_or(LevelFilter::DEBUG);
-
-        // OTel parquet tracing is only enabled when explicitly requested via
-        // --otel-parquet-file-name. The write_metadata flag no longer auto-enables it.
-        let otel_parquet_file_name = io_args.otel_parquet_file_name.as_deref();
-
-        Self::new(
-            package,
-            command,
-            project_dir,
-            target_path,
-            io_args.log_path.as_ref(),
-            max_log_verbosity,
-            max_file_log_verbosity,
-            io_args.otel_file_name.as_deref(),
-            otel_parquet_file_name,
-            io_args.invocation_id,
-            io_args.otel_parent_span_id,
-            io_args.export_to_otlp,
-            io_args.log_format,
-            true, // Always enable query log for now
-            io_args.show.clone(),
-            io_args.show_all_deprecations,
-            warn_error_options.cloned().unwrap_or_default(),
-            None, // log_file_name - use default dbt.log
-            io_args.log_file_max_bytes,
-        )
     }
 
     /// Initializes tracing with the consumers configured for this CLI invocation.
     pub fn init(
         self,
-    ) -> FsResult<(
-        dbt_tracing::init::TelemetryHandle,
-        Box<dyn TracingConfigProvider>,
-    )> {
+        config_provider: Arc<dyn TracingConfigProvider>,
+    ) -> FsResult<dbt_tracing::init::TelemetryHandle> {
         let package = self.package;
         let fallback_trace_id = self.invocation_id.as_u128();
         let fallback_parent_span_id = self.parent_span_id;
         let max_log_verbosity = std::cmp::max(self.max_log_verbosity, self.max_file_log_verbosity);
-        let (middlewares, consumer_layers, shutdown_items, feature_handle) =
-            self.build_layers()?.into_parts();
+        let (middlewares, consumer_layers, shutdown_items) =
+            self.build_layers(config_provider)?.into_parts();
 
-        init_tracing_with_layers(
+        let telemetry_handle = init_tracing_with_layers(
             package,
             fallback_trace_id,
             fallback_parent_span_id,
@@ -484,19 +575,23 @@ impl FsTraceConfig {
             middlewares,
             consumer_layers,
             shutdown_items,
-            feature_handle,
-        )
+        )?;
+        Ok(telemetry_handle)
     }
 
     /// Builds the configured tracing layers and corresponding shutdown items.
     /// This method handles all path creation and file opening as needed.
     /// If no layers are configured, returns an empty layer and no shutdown items.
-    pub fn build_layers(&self) -> FsResult<FsTraceLayers> {
+    pub fn build_layers(
+        &self,
+        config_provider: Arc<dyn TracingConfigProvider>,
+    ) -> FsResult<FsTraceLayers> {
         let mut shutdown_items = Vec::new();
         let mut consumer_layers = Vec::new();
-        let (middleware_layers, warn_error_options) = build_shared_middleware_layers(
+        let middleware_layers = build_shared_middleware_layers(
             self.show_all_deprecations,
-            self.warn_error_options.clone(),
+            Arc::clone(&config_provider),
+            self.skip_fusion_only_upgrades,
         );
 
         // Create jsonl writer layer if file path provided
@@ -544,8 +639,7 @@ impl FsTraceConfig {
                 consumer_layers.push(build_tui_layer(
                     self.max_log_verbosity,
                     self.log_format,
-                    self.show_options.clone(),
-                    self.command,
+                    self.tui_config(),
                 ))
             }
             LogFormat::Json => {
@@ -555,7 +649,7 @@ impl FsTraceConfig {
                     self.max_log_verbosity,
                     self.invocation_id,
                     self.command,
-                    self.command_name,
+                    self.brand_name,
                 ))
             }
             LogFormat::Otel => {
@@ -575,23 +669,23 @@ impl FsTraceConfig {
             crate::stdfs::create_dir_all(&self.log_path)?;
         }
 
+        // File sink honours `--log-format-file` when set, otherwise uses `log_format`
         let (file_log_layer, mut file_log_shutdown_items, file_log_path) = build_file_log_consumer(
             self.max_file_log_verbosity,
             &self.log_path,
             self.log_file_name.as_deref(),
             self.log_file_max_bytes,
-            self.log_format,
+            self.file_log_format.unwrap_or(self.log_format),
             self.invocation_id,
             self.command,
-            self.command_name,
+            self.brand_name,
         )?;
         if let Some(file_log_layer) = file_log_layer {
             consumer_layers.push(file_log_layer);
         }
         shutdown_items.append(&mut file_log_shutdown_items);
 
-        let tracing_config_provider =
-            build_tracing_config_provider(warn_error_options, file_log_path, self.command_name);
+        config_provider.set_file_log_path(file_log_path);
 
         // Create query log writer layer (always enabled; internal-only event sink)
         if self.enable_query_log {
@@ -608,7 +702,7 @@ impl FsTraceConfig {
         // Create OTLP layer - if enabled and endpoint is set via env vars
         if self.export_to_otlp
             && let Some((otlp_layer, mut handles)) = build_otlp_layer(
-                OtlpResourceConfig::new(self.command_name, env!("CARGO_PKG_VERSION")),
+                OtlpResourceConfig::new(self.brand_name, env!("CARGO_PKG_VERSION")),
                 Some(dbt_log_preprocessor_hook),
             )
         {
@@ -620,7 +714,6 @@ impl FsTraceConfig {
             middleware_layers,
             consumer_layers,
             shutdown_items,
-            tracing_config_provider,
         })
     }
 }

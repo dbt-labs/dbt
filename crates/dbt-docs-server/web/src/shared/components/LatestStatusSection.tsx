@@ -1,20 +1,15 @@
 import {
-  Icon,
-  Link,
-  Ryecon,
-  RyeconFreshnessError,
-  RyeconFreshnessPassed,
-  RyeconFreshnessStale,
-  RyeconFreshnessUnknown,
-  RyeconHelp,
-  RyeconStatusError,
-  RyeconStatusReused,
-  RyeconStatusSkipped,
-  RyeconStatusSuccess,
-  RyeconStatusWarning,
-  Tooltip,
-} from '@dbt-labs/sourdough';
+  BadgeAlert,
+  BadgeCheck,
+  BadgeMinus,
+  BadgeX,
+  CircleMinus,
+  type LucideIcon,
+  Repeat,
+} from 'lucide-react';
 
+import { Link } from '../../components/ui/Link';
+import { Tooltip } from '../../components/ui/Tooltip';
 import { CollapsibleSection } from './CollapsibleSection';
 import { DetailsSection } from './SectionWithCard';
 import { TimestampDisplay } from './Timestamp';
@@ -29,24 +24,24 @@ export enum ResourceStatusResult {
   reused = 6,
 }
 
-export const runStatusResultRyeconMap: Record<ResourceStatusResult, Ryecon> = {
-  0: RyeconHelp,
-  1: RyeconStatusSuccess,
-  2: RyeconStatusWarning,
-  3: RyeconStatusError,
-  4: RyeconHelp,
-  5: RyeconStatusSkipped,
-  6: RyeconStatusReused,
+export const runStatusResultIconMap: Record<ResourceStatusResult, LucideIcon> = {
+  0: BadgeMinus,
+  1: BadgeCheck,
+  2: BadgeAlert,
+  3: BadgeX,
+  4: BadgeMinus,
+  5: CircleMinus,
+  6: Repeat,
 };
 
-export const freshnessStatusResultRyeconMap: Record<ResourceStatusResult, Ryecon> = {
-  0: RyeconFreshnessUnknown,
-  1: RyeconFreshnessPassed,
-  2: RyeconFreshnessStale,
-  3: RyeconFreshnessError,
-  4: RyeconFreshnessUnknown,
-  5: RyeconStatusSkipped,
-  6: RyeconStatusReused,
+export const freshnessStatusResultIconMap: Record<ResourceStatusResult, LucideIcon> = {
+  0: BadgeMinus,
+  1: BadgeCheck,
+  2: BadgeAlert,
+  3: BadgeX,
+  4: BadgeMinus,
+  5: CircleMinus,
+  6: Repeat,
 };
 
 export type ResourceStatusSectionProps = {
@@ -54,7 +49,7 @@ export type ResourceStatusSectionProps = {
   viewRunUrl?: string | null;
   shouldIndent: boolean;
   status: ResourceStatusResult;
-  statusIcon: Ryecon;
+  statusIcon: LucideIcon;
   tooltip: React.ReactNode;
 };
 
@@ -63,7 +58,7 @@ export const ResourceStatusSection = ({
   viewRunUrl,
   shouldIndent,
   status,
-  statusIcon,
+  statusIcon: StatusIcon,
   tooltip,
 }: ResourceStatusSectionProps) => (
   <CollapsibleSection
@@ -76,11 +71,7 @@ export const ResourceStatusSection = ({
   >
     <span className="flex items-center" data-testid={`resource-status-${status}`}>
       <Tooltip content={tooltip} className="pointer-events-auto flex items-center">
-        <Icon
-          size="md"
-          ryecon={statusIcon}
-          className="pointer-events-auto align-middle"
-        />
+        <StatusIcon className="pointer-events-auto size-4 align-middle" />
         <div className="sr-only">{tooltip}</div>
       </Tooltip>
     </span>
@@ -104,7 +95,7 @@ export type LatestStatusSectionDisplayProps = {
   checkCompletedAt?: string;
   checkCompletedAtUtc?: string;
   status: ResourceStatusResult;
-  statusIcon: Ryecon;
+  statusIcon: LucideIcon;
   tooltip: React.ReactNode;
   viewRunUrl?: string | null;
   shouldIndent?: boolean;

@@ -43,11 +43,29 @@ impl ResultStore {
             // agate_table: Optional["agate.Table"] = None
             let iter = ArgsIter::new("store_result", &["name", "response"], args);
             let name: String = iter.next_arg::<&str>()?.to_string();
-            let response = AdapterResponse::try_from(iter.next_arg::<Value>()?)?;
+            let response_value = iter.next_arg::<Value>()?;
+            let response = if response_value.is_introspective_stub() {
+                // A tainted value's real shape is unknowable and, even when
+                // its fabricated inner value happens to be a real
+                // `AdapterResponse` (see `IntrospectiveValue::unpack`), it
+                // never downcasts to one -- the taint wrapper itself is
+                // what's stored, not its contents. Degrade to a default
+                // response instead of erroring via `AdapterResponse::
+                // try_from`'s downcast/string fallback below.
+                AdapterResponse::default()
+            } else {
+                AdapterResponse::try_from(response_value)?
+            };
 
             let table: Option<Value> = iter.next_kwarg::<Option<Value>>("agate_table")?;
             let table = if let Some(t) = table {
-                if !t.is_none() {
+                if t.is_introspective_stub() {
+                    // Same rationale as `response` above: `.expect(
+                    // "agate_table")` below would otherwise hard-panic
+                    // instead of degrading gracefully, since a tainted
+                    // value can never downcast to a concrete `AgateTable`.
+                    Some(AgateTable::default())
+                } else if !t.is_none() {
                     Some((*t.downcast_object::<AgateTable>().expect("agate_table")).clone())
                 } else {
                     Some(AgateTable::default())
@@ -155,7 +173,14 @@ impl ResultStore {
                 response,
                 agate_table
                     .map(|t| {
-                        if !t.is_none() {
+                        if t.is_introspective_stub() {
+                            // See `store_result`'s identical check: a
+                            // tainted value never downcasts to a concrete
+                            // `AgateTable`, so `.expect("agate_table")`
+                            // below would otherwise hard-panic instead of
+                            // degrading gracefully.
+                            AgateTable::default()
+                        } else if !t.is_none() {
                             (*t.downcast_object::<AgateTable>().expect("agate_table")).clone()
                         } else {
                             AgateTable::default()
@@ -220,5 +245,36 @@ mod tests {
         // batch B loads its own (still-present) result, not A's consumed one.
         let v = load_named(&batch_b, "get_columns_in_relation").unwrap();
         assert!(!v.is_none());
+    }
+
+    /// Regression test: under `JinjaRenderMode::Symbolic`, `{% set res, table
+    /// = adapter.execute(...) %}` followed immediately by `{{
+    /// store_result(name, response=res, agate_table=table) }}` in
+    /// dbt-adapters' `statement()` macro feeds `store_result` a tainted
+    /// `IntrospectiveValue` for both `response` and `agate_table`. Before
+    /// this fix, `agate_table`'s `.expect("agate_table")` downcast
+    /// hard-panicked (a tainted value never downcasts to a concrete
+    /// `AgateTable`, no matter what its fabricated inner value looks like),
+    /// and `response`'s `AdapterResponse::try_from` returned a hard error.
+    /// Both must instead degrade to a default, matching how every other
+    /// operation on fabricated stub data in this taint system swallows
+    /// rather than fails.
+    #[test]
+    fn store_result_with_tainted_response_and_agate_table_does_not_panic() {
+        use crate::introspective_taint::IntrospectiveValue;
+
+        let store = ResultStore::default();
+        let store_result = store.store_result();
+        let tainted_response = IntrospectiveValue::wrap(Value::from("ok"));
+        let tainted_table = IntrospectiveValue::wrap(Value::from(()));
+        store_result(&[
+            Value::from("main"),
+            tainted_response,
+            Value::from(Kwargs::from_iter([("agate_table", tainted_table)])),
+        ])
+        .unwrap();
+
+        let loaded = load_named(&store, "main").unwrap();
+        assert!(!loaded.is_none());
     }
 }

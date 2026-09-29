@@ -12,7 +12,9 @@ use crate::runnable::test::{
     process_statically_checked_test_result, record_test_metric, record_test_span_with_detail,
     reported_test_verdict_from_components, status_with_warn_error_overrides,
 };
-use dbt_adapter::time_machine::{SaoStatus, global_recorder, global_replayer};
+use dbt_adapter::time_machine::{
+    RecordedCachedTestResult, SaoStatus, global_recorder, global_replayer, is_replaying,
+};
 use dbt_adapter_core::AdapterType;
 use dbt_common::constants::RUNNING;
 use dbt_common::stats::{NodeStatus, Stat};
@@ -52,16 +54,27 @@ use dbt_tasks_core::run_cache::run_cache_service::{
     CachedTestExecutionResult, RunCacheAfterSuccess, RunCacheCloneDecision, RunCacheCloneError,
     RunCacheReuseHookExecutor, RunCacheReuseHookPhase, RunCacheServiceDecision,
     clear_stale_missing_last_modified_epoch_for_node, confirm_run_cache_service_execution,
-    execute_run_cache_service_clone, insert_compiled_view_definition,
-    record_run_cache_service_execution, run_cache_service_before_execution,
-    should_execute_hooks_for_skip_reuse,
+    evict_node_metadata_for_untracked_rebuild, execute_run_cache_service_clone,
+    insert_compiled_view_definition, record_run_cache_clone_decision,
+    record_run_cache_service_execution, replay_dev_clone_decision, replay_run_cache_clone_decision,
+    run_cache_service_before_execution, should_execute_hooks_for_skip_reuse,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RunExecutionPath {
     Remote,
     SideCar,
-    AltCompute,
+    LakeCompute,
+}
+
+impl RunExecutionPath {
+    fn compute_mode(self) -> &'static str {
+        match self {
+            Self::Remote => "remote",
+            Self::SideCar => "local",
+            Self::LakeCompute => "lake_compute",
+        }
+    }
 }
 
 pub struct RunTask {
@@ -90,21 +103,12 @@ impl RunTask {
 
 impl Task for RunTask {
     // Backpressure applied granularly at the node level
-    fn run_task_with_backpressure<'a>(
-        &'a self,
-        ctx: &'a mut TaskRunnerCtx,
-    ) -> Pin<Box<dyn Future<Output = FsResult<NodeStatus>> + Send + 'a>> {
-        self.run_task(ctx)
-    }
-
     fn run_task<'a>(
         &'a self,
         ctx: &'a mut TaskRunnerCtx,
     ) -> Pin<Box<dyn Future<Output = FsResult<NodeStatus>> + Send + 'a>> {
         Box::pin(async move {
             let unique_id = self.node.unique_id();
-            let adapter_type = ctx.adapter_type();
-            let max_threads = ctx.dbt_profile().threads;
             let mut result_receiver = { self.result_receiver.lock().take() };
             let task_result = receive_task_result(&unique_id, &mut result_receiver)?;
             let start_time = chrono::Utc::now();
@@ -128,8 +132,17 @@ impl Task for RunTask {
                 reporter.show_progress(RUNNING, display_path.as_ref(), None);
             }
 
+            // During time-machine replay the dbt State service is always
+            // disabled (see `should_initialize_run_cache_service`), which
+            // would otherwise make this condition look identical to a normal
+            // run with the service off and incorrectly route nodes into the
+            // local SAO cache path — a branch that was never exercised during
+            // the original recording when the service was active. Replay
+            // must be driven solely by recorded events (see
+            // `maybe_replay_remote_run` / `maybe_replay_run_cache_clone`).
             let cache_enabled = self.execution_path == RunExecutionPath::Remote
                 && !ctx.inner.run_cache_ctx.run_cache_service_requested
+                && !is_replaying()
                 && ctx.inner.arg.run_cache_mode.write_cache()
                 && node_runs_with_cache(self.node.as_ref());
 
@@ -142,17 +155,39 @@ impl Task for RunTask {
                     .then_some(test),
                 None => None,
             };
-            let result = match (statically_checked_test, self.execution_path) {
+            // `LakeCompute` has a bypass-Jinja-materialization hook
+            // (`run_on_lake_compute`) for models, seeds, and tests -- tests
+            // need it too, not because they materialize anything, but because
+            // only that hook builds and attaches the per-statement
+            // `CATALOG_BUNDLE` option (`resolve_compute_write_target` /
+            // `catalog_bundle_json`) that tells a fresh LakeCompute worker
+            // connection which catalogs to attach. The generic `Remote` path's
+            // `adapter.execute()` always passes empty options
+            // (`adapter_engine.rs`'s `execute()` convenience wrapper), so a
+            // test downgraded to `Remote` would silently run with nothing
+            // attached beyond the connection's own baseline -- fine by
+            // accident for objects in the default MDLS namespace, wrong for
+            // anything needing a declared catalog. Every other node type that
+            // resolves onto `lakecompute` (a snapshot, ...) still has no
+            // bypass to offer and is downgraded as before.
+            let effective_execution_path = if self.execution_path == RunExecutionPath::LakeCompute
+                && !(self.node.as_any().is::<DbtModel>()
+                    || self.node.as_any().is::<DbtSeed>()
+                    || self.node.as_any().is::<DbtTest>())
+            {
+                RunExecutionPath::Remote
+            } else {
+                self.execution_path
+            };
+            let result = match (statically_checked_test, effective_execution_path) {
                 (Some(test), _) => {
                     let node_status =
                         process_statically_checked_test_result(test, ctx, start_time.into());
                     Ok(node_status)
                 }
                 (None, RunExecutionPath::Remote) => {
-                    // Step 0: Replay a cached SAO result if one was recorded
-                    if let Some(status) = maybe_replay_remote_run(&self.node.unique_id()) {
-                        return Ok(status);
-                    }
+                    // Step 0: Replay a cached result if one was recorded.
+                    let replayed_cache_decision = maybe_replay_remote_run(&self.node.unique_id());
 
                     // Nodes without a task_result (e.g. sources) go straight to execution
                     let Some(task_result) = task_result else {
@@ -173,14 +208,40 @@ impl Task for RunTask {
                     // `sao_guard`), or Disabled.
                     let run_cache_service_requested =
                         ctx.inner.run_cache_ctx.run_cache_service_requested;
-                    let decision = if run_cache_service_requested {
+                    let decision = if let Some(decision) = replayed_cache_decision {
+                        decision
+                    } else if is_replaying()
+                        && ctx
+                            .inner
+                            .run_cache_ctx
+                            .run_cache_dev_cloned_nodes
+                            .contains_key(&self.node.unique_id())
+                    {
+                        let status = replay_dev_clone_decision(&unique_id)
+                            .map(|clone| clone.replay_status())
+                            .unwrap_or(NodeStatus::ReusedCloned(None));
+                        RunCacheServiceDecision::Skip {
+                            status,
+                            sao_stored_hash: None,
+                            cached_test_result: None,
+                        }
+                    } else if let Some(clone) =
+                        replay_run_cache_clone_decision(&self.node.unique_id())
+                    {
+                        // Replaying a recorded Clone decision: route straight into the
+                        // Clone branch below so the clone SQL is re-executed and matched
+                        // against its own recorded `AdapterCallEvent`s, instead of
+                        // falling through to a normal Execute (which would generate
+                        // different SQL than what was actually recorded).
+                        RunCacheServiceDecision::Clone { clone }
+                    } else if run_cache_service_requested {
                         insert_compiled_view_definition(ctx, self.node.as_ref(), &task_result);
                         // Microbatch models make one per-model cache decision keyed to
                         // the run's event-time window. Resolve it here (fail open: a
                         // resolution error yields None and the service submit executes
                         // normally rather than risk a window-independent skip).
                         let microbatch_window = match try_get_microbatch_model(self.node.as_ref()) {
-                            Some(model) => match resolve_microbatch_window(model, ctx) {
+                            Some(model) => match resolve_microbatch_window(model, ctx).await {
                                 Ok(window) => Some(window),
                                 Err(e) => {
                                     emit_warn_log_message(
@@ -258,10 +319,11 @@ impl Task for RunTask {
                                     start_time.into(),
                                     Some(cached_status.failures),
                                     cached_status.stat_status.clone(),
-                                    Some("NO-OP - cached test result".to_string()),
+                                    Some(format!("NO-OP - {}", status.default_message())),
                                     ctx.thread_id,
                                 ),
                             );
+                            record_cached_test_skip(&unique_id, status, *cached_result);
                             cached_status.final_status
                         } else {
                             record_cache_skip(&unique_id, status, source);
@@ -285,13 +347,12 @@ impl Task for RunTask {
                                     ctx,
                                     self.node.as_ref(),
                                     clone,
-                                    adapter_type,
-                                    max_threads,
                                     Some(&task_result),
                                 )
                                 .await
                                 {
                                     Ok(status) => {
+                                        record_run_cache_clone_decision(&unique_id, clone);
                                         confirm_run_cache_service_execution(
                                             ctx,
                                             self.node.as_ref(),
@@ -338,7 +399,8 @@ impl Task for RunTask {
                                     self.node.clone(),
                                     ctx,
                                     &task_result,
-                                )?;
+                                )
+                                .await?;
                                 // An empty event window yields no batches, so the target
                                 // relation is never materialized on a first run. Mirror
                                 // dbt-core's `if not relations` guard: only create the
@@ -350,13 +412,9 @@ impl Task for RunTask {
                                         .into_iter()
                                         .map(|task| {
                                             let ctx = ctx.clone();
-                                            TaskOp::BlockingWithConnection {
-                                                f: Box::new(move || {
-                                                    execute_microbatch_batch(task, &ctx)
-                                                }),
-                                                adapter_type,
-                                                max_threads,
-                                            }
+                                            TaskOp::Blocking(Box::new(move || {
+                                                execute_microbatch_batch(task, &ctx)
+                                            }))
                                             .run()
                                             .instrument(batch_span.clone())
                                         })
@@ -387,26 +445,22 @@ impl Task for RunTask {
                                     );
                                     let model_clone = model.clone();
                                     let ctx_clone = ctx.clone();
-                                    TaskOp::BlockingWithConnection {
-                                        f: Box::new(move || {
-                                            let relations_map = materialize_latest_version_pointer(
-                                                &model_clone,
-                                                ctx_clone.adapter_type(),
-                                                ctx_clone.runtime_config(),
-                                                &ctx_clone.inner.materialization_resolver,
-                                                ctx_clone.env.clone(),
-                                                &base_context,
-                                                &ctx_clone.inner.arg.io,
-                                            )?;
-                                            let _ = cache_materialization_return_value(
-                                                ctx_clone.env,
-                                                &relations_map,
-                                            );
-                                            Ok::<(), Box<dbt_common::FsError>>(())
-                                        }),
-                                        adapter_type,
-                                        max_threads,
-                                    }
+                                    TaskOp::Blocking(Box::new(move || {
+                                        let relations_map = materialize_latest_version_pointer(
+                                            &model_clone,
+                                            model_clone.node_adapter(),
+                                            ctx_clone.runtime_config(),
+                                            &ctx_clone.inner.materialization_resolver,
+                                            ctx_clone.env.clone(),
+                                            &base_context,
+                                            &ctx_clone.inner.arg.io,
+                                        )?;
+                                        let _ = cache_materialization_return_value(
+                                            ctx_clone.env,
+                                            &relations_map,
+                                        );
+                                        Ok::<(), Box<dbt_common::FsError>>(())
+                                    }))
                                     .run()
                                     .await??;
                                 }
@@ -430,21 +484,15 @@ impl Task for RunTask {
                                 let ctx_inner = ctx.clone();
                                 let task_result_inner = task_result.clone();
                                 let node_inner = self.node.clone();
-                                let (status, result) = TaskOp::BlockingWithConnection {
-                                    f: Box::new(move || {
-                                        let unit_test = node_inner
-                                            .as_any()
-                                            .downcast_ref::<DbtUnitTest>()
-                                            .unwrap();
-                                        execute_unit_test_remote(
-                                            unit_test,
-                                            &ctx_inner,
-                                            &task_result_inner,
-                                        )
-                                    }),
-                                    adapter_type,
-                                    max_threads,
-                                }
+                                let (status, result) = TaskOp::Blocking(Box::new(move || {
+                                    let unit_test =
+                                        node_inner.as_any().downcast_ref::<DbtUnitTest>().unwrap();
+                                    execute_unit_test_remote(
+                                        unit_test,
+                                        &ctx_inner,
+                                        &task_result_inner,
+                                    )
+                                }))
                                 .run()
                                 .await??;
                                 if let Some(result) = result {
@@ -465,17 +513,13 @@ impl Task for RunTask {
                                 let ctx_inner = ctx.clone();
                                 let task_result_inner = task_result.clone();
                                 let node = self.node.clone();
-                                let res = TaskOp::BlockingWithConnection {
-                                    f: Box::new(move || {
-                                        execute_remote_node(
-                                            node.as_ref(),
-                                            &ctx_inner,
-                                            &task_result_inner,
-                                        )
-                                    }),
-                                    adapter_type,
-                                    max_threads,
-                                }
+                                let res = TaskOp::Blocking(Box::new(move || {
+                                    execute_remote_node(
+                                        node.as_ref(),
+                                        &ctx_inner,
+                                        &task_result_inner,
+                                    )
+                                }))
                                 .run()
                                 .await?;
                                 maybe_resolve_remote_seed_column_hint(res, self.node.as_ref(), ctx)
@@ -490,12 +534,12 @@ impl Task for RunTask {
                 }
                 (None, RunExecutionPath::SideCar) => {
                     self.task_hooks
-                        .run_alt_compute_sidecar(ctx, Arc::clone(&self.node), task_result.clone())
+                        .run_lake_compute_sidecar(ctx, Arc::clone(&self.node), task_result.clone())
                         .await
                 }
-                (None, RunExecutionPath::AltCompute) => {
+                (None, RunExecutionPath::LakeCompute) => {
                     self.task_hooks
-                        .run_on_alt_compute(ctx, Arc::clone(&self.node), task_result.clone())
+                        .run_on_lake_compute(ctx, Arc::clone(&self.node), task_result.clone())
                         .await
                 }
             };
@@ -565,7 +609,7 @@ impl Task for RunTask {
                         self.execution_path,
                         RunExecutionPath::Remote
                             | RunExecutionPath::SideCar
-                            | RunExecutionPath::AltCompute
+                            | RunExecutionPath::LakeCompute
                     ) {
                         emit_error_log_from_fs_error(*e);
                     }
@@ -598,7 +642,7 @@ impl Task for RunTask {
             // TODO: migrate this to Vortex tracing layer
             // TODO: migrate this to structured logger
             if ctx.inner.arg.io.send_anonymous_usage_stats {
-                emit_run_usage_stats(self.node.as_ref(), ctx, self.execution_path);
+                emit_run_usage_stats(self.node.as_ref(), ctx, effective_execution_path);
             }
 
             Ok(node_status)
@@ -627,20 +671,28 @@ impl Task for RunTask {
     }
 }
 
-fn maybe_replay_remote_run(unique_id: &str) -> Option<NodeStatus> {
-    // Check for SAO skip events during time machine replay.
-    // If this node was skipped due to SAO during recording, we should skip it during replay too.
+fn maybe_replay_remote_run(unique_id: &str) -> Option<RunCacheServiceDecision> {
+    // Check for cache skip events during time-machine replay. Cached data tests
+    // need their recorded result so the common skip path can rebuild their stats.
     let replayer = global_replayer()?;
     let sao_event = replayer.get_sao_event(unique_id)?;
-    Some(sao_event.to_node_status())
+    Some(RunCacheServiceDecision::Skip {
+        status: sao_event.to_node_status(),
+        sao_stored_hash: None,
+        cached_test_result: sao_event
+            .cached_test_result
+            .map(|result| CachedTestExecutionResult {
+                failures: result.failures,
+                should_warn: result.should_warn,
+                should_error: result.should_error,
+            }),
+    })
 }
 
 async fn execute_run_cache_service_clone_with_hooks(
     ctx: &TaskRunnerCtx,
     node: &dyn InternalDbtNodeAttributes,
     clone: &RunCacheCloneDecision,
-    adapter_type: AdapterType,
-    max_threads: Option<usize>,
     task_result: Option<&TaskResult>,
 ) -> Result<NodeStatus, RunCacheCloneError> {
     let hook_node = run_cache_clone_hook_node(node);
@@ -649,16 +701,7 @@ async fn execute_run_cache_service_clone_with_hooks(
         .is_some_and(RunCacheReuseHookNode::has_pre_hooks);
     let hook_executor =
         hook_node.map(|hook_node| build_reuse_hook_executor(ctx, node, task_result, hook_node));
-    execute_run_cache_service_clone(
-        ctx,
-        node,
-        clone,
-        adapter_type,
-        max_threads,
-        hook_executor,
-        pre_hooks_configured,
-    )
-    .await
+    execute_run_cache_service_clone(ctx, node, clone, hook_executor, pre_hooks_configured).await
 }
 
 async fn execute_hooks_for_run_cache_skip_reuse(
@@ -678,14 +721,10 @@ async fn execute_hooks_for_run_cache_skip_reuse(
     };
     let hook_executor = build_reuse_hook_executor(ctx, node, task_result, hook_node);
     let ctx_inner = ctx.clone();
-    TaskOp::BlockingWithConnection {
-        f: Box::new(move || {
-            hook_executor(&ctx_inner, RunCacheReuseHookPhase::Pre)?;
-            hook_executor(&ctx_inner, RunCacheReuseHookPhase::Post)
-        }),
-        adapter_type: ctx.adapter_type(),
-        max_threads: ctx.dbt_profile().threads,
-    }
+    TaskOp::Blocking(Box::new(move || {
+        hook_executor(&ctx_inner, RunCacheReuseHookPhase::Pre)?;
+        hook_executor(&ctx_inner, RunCacheReuseHookPhase::Post)
+    }))
     .run()
     .await??;
     Ok(())
@@ -772,20 +811,20 @@ fn execute_hook_node_blocking(
         RunCacheReuseHookNode::Model(model) => execute_node_hooks(
             model.as_ref(),
             &model.deprecated_config,
-            ctx.adapter_type(),
+            model.node_adapter(),
             ctx.runtime_config(),
             ctx.env.clone(),
             base_context,
             &ctx.inner.arg.io,
             sql,
-            model_hook_style(ctx.adapter_type(), &model.__base_attr__.materialized),
+            model_hook_style(model.node_adapter(), &model.__base_attr__.materialized),
             NodePathKind::Compiled,
             phase,
         ),
         RunCacheReuseHookNode::Snapshot(snapshot) => execute_node_hooks(
             snapshot.as_ref(),
             &snapshot.deprecated_config,
-            ctx.adapter_type(),
+            snapshot.node_adapter(),
             ctx.runtime_config(),
             ctx.env.clone(),
             base_context,
@@ -798,7 +837,7 @@ fn execute_hook_node_blocking(
         RunCacheReuseHookNode::Seed(seed) => execute_node_hooks(
             seed.as_ref(),
             &seed.deprecated_config,
-            ctx.adapter_type(),
+            seed.node_adapter(),
             ctx.runtime_config(),
             ctx.env.clone(),
             base_context,
@@ -833,6 +872,15 @@ async fn run_cache_after_success_action(
             // planned prefetch path.
             if ctx.inner.run_cache_ctx.run_cache_service_requested {
                 clear_stale_missing_last_modified_epoch_for_node(ctx, node);
+            }
+        }
+        RunCacheAfterSuccess::InvalidateFreshness => {
+            // The node rebuilt its target but no decision was sought and no
+            // execution will be recorded, so nothing refreshed the cached
+            // epoch. Drop it: the next submit that needs this relation takes
+            // the prefetch-miss path and re-reads it from the warehouse.
+            if ctx.inner.run_cache_ctx.run_cache_service_requested {
+                evict_node_metadata_for_untracked_rebuild(ctx, node);
             }
         }
         RunCacheAfterSuccess::Confirm(mut confirmation) => {
@@ -903,17 +951,23 @@ fn cached_data_test_status(
         result.should_error,
     );
     let status = status_with_warn_error_overrides(status, warn_error_options);
-    let stat_status = status.node_status();
+    let stat_status = match status.node_status() {
+        NodeStatus::TestPassed => {
+            NodeStatus::ReusedNoChanges("No new changes on any upstreams".to_string())
+        }
+        status => status,
+    };
+    let final_status = if stat_status == NodeStatus::TestPassed {
+        reused_status.clone()
+    } else {
+        stat_status.clone()
+    };
 
     CachedDataTestStatus {
         failures,
         status,
-        stat_status: stat_status.clone(),
-        final_status: if stat_status == NodeStatus::TestPassed {
-            reused_status.clone()
-        } else {
-            stat_status
-        },
+        stat_status,
+        final_status,
     }
 }
 
@@ -948,30 +1002,56 @@ fn record_cache_skip(unique_id: &str, task_status: &NodeStatus, source: &str) {
         return;
     };
 
-    let sao_status = match task_status {
-        NodeStatus::ReusedNoChanges(message) => Some((SaoStatus::ReusedNoChanges, message.clone())),
-        NodeStatus::ReusedStillFresh(message, freshness, last_updated) => Some((
+    if let Some((status, message)) = sao_status_for_task_status(task_status) {
+        recorder.record_sao_skip(unique_id, status, &message, source);
+    }
+}
+
+fn record_cached_test_skip(
+    unique_id: &str,
+    task_status: &NodeStatus,
+    result: CachedTestExecutionResult,
+) {
+    let Some(recorder) = global_recorder() else {
+        return;
+    };
+
+    if let Some((status, message)) = sao_status_for_task_status(task_status) {
+        recorder.record_sao_skip_with_test_result(
+            unique_id,
+            status,
+            &message,
+            "run-cache-service",
+            Some(RecordedCachedTestResult {
+                failures: result.failures,
+                should_warn: result.should_warn,
+                should_error: result.should_error,
+            }),
+        );
+    }
+}
+
+fn sao_status_for_task_status(task_status: &NodeStatus) -> Option<(SaoStatus, String)> {
+    Some(match task_status {
+        NodeStatus::ReusedNoChanges(message) => (SaoStatus::ReusedNoChanges, message.clone()),
+        NodeStatus::ReusedStillFresh(message, freshness, last_updated) => (
             SaoStatus::ReusedStillFresh {
                 freshness_seconds: *freshness,
                 last_updated_seconds: *last_updated,
             },
             message.clone(),
-        )),
+        ),
         NodeStatus::ReusedStillFreshNoChanges(message) => {
-            Some((SaoStatus::ReusedStillFreshNoChanges, message.clone()))
+            (SaoStatus::ReusedStillFreshNoChanges, message.clone())
         }
-        NodeStatus::ReusedCloned(freshness) => Some((
+        NodeStatus::ReusedCloned(freshness) => (
             SaoStatus::ReusedCloned {
                 freshness_seconds: *freshness,
             },
             task_status.default_message(),
-        )),
-        _ => None,
-    };
-
-    if let Some((status, message)) = sao_status {
-        recorder.record_sao_skip(unique_id, status, &message, source);
-    }
+        ),
+        _ => return None,
+    })
 }
 
 fn emit_run_usage_stats(
@@ -981,7 +1061,9 @@ fn emit_run_usage_stats(
 ) {
     let (maybe_incremental_strategy, is_contract_enforced, has_group, table_format, catalog_name) =
         match execution_path {
-            RunExecutionPath::Remote | RunExecutionPath::SideCar | RunExecutionPath::AltCompute => {
+            RunExecutionPath::Remote
+            | RunExecutionPath::SideCar
+            | RunExecutionPath::LakeCompute => {
                 if let Some(model) = node.as_any().downcast_ref::<DbtModel>() {
                     (
                         model
@@ -1021,6 +1103,7 @@ fn emit_run_usage_stats(
         table_format,
         catalog_name,
         catalog_type,
+        execution_path.compute_mode().to_string(),
     );
 }
 
@@ -1051,7 +1134,7 @@ fn resolve_catalog_type(catalog_name: Option<&str>) -> Option<String> {
             .catalogs
             .iter()
             .find(|catalog| catalog.name == catalog_name)?;
-        return Some(catalog.catalog_type.as_str().to_string());
+        return Some(catalog.catalog_type.as_str().to_lowercase());
     }
     let view = catalogs.view().ok()?;
     let catalog = view
@@ -1126,11 +1209,11 @@ async fn execute_remote_node_no_result(
 }
 
 /// Determine whether to prefer SQL over LP for local execution of a node.
-pub fn prefer_sql_for_node(node: &dyn InternalDbtNodeAttributes, ctx: &TaskRunnerCtx) -> bool {
+pub fn prefer_sql_for_node(node: &dyn InternalDbtNodeAttributes) -> bool {
     if node.as_any().is::<DbtSnapshot>() {
         true
     } else if node.as_any().is::<DbtModel>() {
-        ctx.adapter_type() == AdapterType::DuckDB
+        node.node_adapter() == AdapterType::DuckDB
     } else {
         false
     }
@@ -1169,6 +1252,14 @@ mod tests {
     use dbt_schemas::schemas::common::Hooks;
     use dbt_schemas::schemas::properties::ModelState;
     use dbt_yaml::Verbatim;
+    use std::time::SystemTime;
+
+    #[test]
+    fn compute_mode_matches_execution_path() {
+        assert_eq!(RunExecutionPath::Remote.compute_mode(), "remote");
+        assert_eq!(RunExecutionPath::SideCar.compute_mode(), "local");
+        assert_eq!(RunExecutionPath::LakeCompute.compute_mode(), "lake_compute");
+    }
 
     fn model_with_pre_hook_and_reuse_hook_config(
         execute_hooks_on_any_reuse: Option<bool>,
@@ -1182,6 +1273,7 @@ mod tests {
             pre_clone: None,
             execute_hooks_on_any_reuse,
             compare_unrendered_code: None,
+            ignore_external_modifications: None,
         });
         model.deprecated_config.pre_hook =
             Verbatim::from(Some(Hooks::String("select 1".to_string())));
@@ -1191,6 +1283,125 @@ mod tests {
     #[test]
     fn elapsed_millis_saturates_for_large_durations() {
         assert!(elapsed_millis(Instant::now()) >= 0);
+    }
+
+    // Serializes tests that touch the process-global time-machine state
+    // (`GLOBAL_SESSION`/`GLOBAL_REPLAYER` in `dbt_adapter::time_machine`).
+    static TIME_MACHINE_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+    #[dbt_runtime::test]
+    async fn run_cache_clone_decision_records_and_replays() {
+        use dbt_adapter::time_machine::{
+            EventReplayer, RecordedRunCacheCloneDecision, get_or_init_recording,
+            get_or_init_replayer, reset_time_machine_globals,
+        };
+        use dbt_common::cancellation::CancellationToken;
+        use dbt_tasks_core::run_cache::run_cache_service::record_dev_clone_decision;
+
+        let _guard = TIME_MACHINE_TEST_LOCK.lock().await;
+        reset_time_machine_globals().await.unwrap();
+
+        let dir = tempfile::tempdir().unwrap();
+        let handle = get_or_init_recording(
+            dir.path(),
+            "snowflake",
+            "test-invocation",
+            None,
+            CancellationToken::never_cancels(),
+        );
+
+        let decision = RunCacheCloneDecision::from_recorded(RecordedRunCacheCloneDecision {
+            request_id: "req-1".to_string(),
+            clone_sqls: vec!["create table t clone s".to_string()],
+            clone_source: "db.schema.source".to_string(),
+            clone_target: "db.schema.target".to_string(),
+            required_source_epoch: Some(123),
+            execution_runtime_ms: Some(456),
+            freshness_tolerance_seconds: 60,
+            is_stale: true,
+            execution_decision_id: Some("decision-1".to_string()),
+        });
+
+        record_run_cache_clone_decision("model.test.orders", &decision);
+        record_dev_clone_decision("model.test.orders", &decision);
+
+        handle.shutdown().await.unwrap();
+        reset_time_machine_globals().await.unwrap();
+        get_or_init_replayer(|| Ok(Arc::new(EventReplayer::load(dir.path())?))).unwrap();
+
+        let replayed = replay_run_cache_clone_decision("model.test.orders")
+            .expect("clone decision should be recorded and replayed");
+        assert_eq!(decision, replayed);
+
+        let replayed_dev = replay_dev_clone_decision("model.test.orders")
+            .expect("dev clone decision should be recorded and replayed");
+        assert_eq!(
+            replayed_dev.replay_status(),
+            NodeStatus::ReusedCloned(Some(60))
+        );
+
+        assert!(
+            replay_run_cache_clone_decision("model.test.unrelated").is_none(),
+            "should not replay a clone decision that was never recorded for this node"
+        );
+        reset_time_machine_globals().await.unwrap();
+    }
+
+    #[dbt_runtime::test]
+    async fn cached_data_test_result_records_and_replays() {
+        use dbt_adapter::time_machine::{
+            EventReplayer, get_or_init_recording, get_or_init_replayer, reset_time_machine_globals,
+        };
+        use dbt_common::cancellation::CancellationToken;
+
+        let _guard = TIME_MACHINE_TEST_LOCK.lock().await;
+        reset_time_machine_globals().await.unwrap();
+
+        let dir = tempfile::tempdir().unwrap();
+        let handle = get_or_init_recording(
+            dir.path(),
+            "snowflake",
+            "test-invocation",
+            None,
+            CancellationToken::never_cancels(),
+        );
+        global_recorder().unwrap().record_sao_skip_with_test_result(
+            "test.test_orders",
+            SaoStatus::ReusedNoChanges,
+            "No new changes",
+            "run-cache-service",
+            Some(RecordedCachedTestResult {
+                failures: 2,
+                should_warn: true,
+                should_error: false,
+            }),
+        );
+
+        handle.shutdown().await.unwrap();
+        reset_time_machine_globals().await.unwrap();
+        get_or_init_replayer(|| Ok(Arc::new(EventReplayer::load(dir.path())?))).unwrap();
+
+        let RunCacheServiceDecision::Skip {
+            status,
+            cached_test_result,
+            ..
+        } = maybe_replay_remote_run("test.test_orders").unwrap()
+        else {
+            panic!("expected a replayed cached test skip");
+        };
+        assert_eq!(
+            status,
+            NodeStatus::ReusedNoChanges("No new changes".to_string())
+        );
+        assert_eq!(
+            cached_test_result,
+            Some(CachedTestExecutionResult {
+                failures: 2,
+                should_warn: true,
+                should_error: false,
+            })
+        );
+        reset_time_machine_globals().await.unwrap();
     }
 
     #[test]
@@ -1211,9 +1422,41 @@ mod tests {
 
         assert_eq!(status.failures, 0);
         assert_eq!(status.status, TestExecutionStatus::Passed);
-        assert_eq!(status.stat_status, NodeStatus::TestPassed);
+        assert_eq!(
+            status.stat_status,
+            NodeStatus::ReusedNoChanges("No new changes on any upstreams".to_string())
+        );
+        let stat = Stat::new(
+            "test.project.cached_test".to_string(),
+            SystemTime::now(),
+            Some(status.failures),
+            status.stat_status.clone(),
+            None,
+            1,
+        );
+        assert_eq!(stat.result_status_string(), "reused");
         assert_eq!(status.final_status, reused_status);
         assert_eq!(status.status.metric_key(), None);
+    }
+
+    #[test]
+    fn cached_passing_data_test_uses_reused_status_for_test_passed_input() {
+        let status = cached_data_test_status(
+            &NodeStatus::TestPassed,
+            CachedTestExecutionResult {
+                failures: 0,
+                should_warn: false,
+                should_error: false,
+            },
+            Severity::Error,
+            &WarnErrorOptions::default(),
+        );
+
+        assert_eq!(
+            status.stat_status,
+            NodeStatus::ReusedNoChanges("No new changes on any upstreams".to_string())
+        );
+        assert_eq!(status.final_status, status.stat_status);
     }
 
     #[test]
@@ -1346,7 +1589,7 @@ mod tests {
 
         assert_eq!(status.failures, 2);
         assert_eq!(status.status, TestExecutionStatus::Passed);
-        assert_eq!(status.stat_status, NodeStatus::TestPassed);
+        assert_eq!(status.stat_status, reused_status);
         assert_eq!(status.final_status, reused_status);
         assert_eq!(status.status.metric_key(), None);
     }

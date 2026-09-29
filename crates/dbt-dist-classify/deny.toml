@@ -1,0 +1,8 @@
+[graph]
+exclude = ["dbt-fusion-workspace-hack"]
+
+[bans]
+multiple-versions = "allow"
+deny = [
+  { crate = "dbt-common", reason = "this crate exists specifically so version-string classification can be depended on without dbt-common's dependency tree" },
+]
