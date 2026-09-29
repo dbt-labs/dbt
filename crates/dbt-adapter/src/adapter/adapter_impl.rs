@@ -3790,8 +3790,20 @@ impl AdapterImpl {
     ) -> AdapterResult<Vec<Column>> {
         match self.inner_adapter() {
             Replay(_, replay) => replay.replay_get_columns_in_select_sql(state),
-            Impl(Bigquery, _) => {
-                self.get_column_schema_from_query(state, conn, ctx, sql, None, token)
+            // Unlike get_column_schema_from_query, dbt-bigquery does not flatten here: the
+            // result feeds CREATE TABLE column DDL, where STRUCTs must stay whole.
+            Impl(Bigquery, engine) => {
+                let batch = engine.execute(Some(state), conn, ctx, sql, token)?;
+                let schema = batch.schema();
+
+                let type_ops = engine.type_ops().as_ref();
+                let builder = ColumnBuilder::new(self.adapter_type());
+
+                schema
+                    .fields()
+                    .iter()
+                    .map(|field| builder.build(field, type_ops))
+                    .collect()
             }
             Impl(_, _) => unimplemented!("only available with BigQuery adapter"),
         }
