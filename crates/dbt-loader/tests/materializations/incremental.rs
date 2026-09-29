@@ -9,12 +9,14 @@ use minijinja::Value;
 use minijinja::dispatch_object::DispatchObject;
 
 use crate::macro_test_harness::{
-    MacroTestHarness, assert_executed_contains, default_mock_config, executed_sql,
+    MacroTestHarness, MacroTestHarnessBuilder, assert_executed_contains, default_mock_config,
+    executed_sql,
 };
 
 fn incremental_macro_name(adapter_type: AdapterType) -> &'static str {
     match adapter_type {
         AdapterType::Databricks => "materialization_incremental_databricks",
+        AdapterType::Bigquery => "materialization_incremental_bigquery",
         other => panic!("unsupported adapter for incremental materialization test: {other:?}"),
     }
 }
@@ -490,6 +492,127 @@ mod databricks {
     }
 
     mod append;
+}
+
+mod bigquery {
+    use super::*;
+    const ADAPTER: AdapterType = AdapterType::Bigquery;
+
+    fn builder() -> MacroTestHarnessBuilder {
+        MacroTestHarness::for_adapter(ADAPTER)
+            .load_all_macros()
+            .with_stub_functions()
+            .with_behavior_flag("use_catalogs_v2", false)
+    }
+
+    fn build_harness() -> MacroTestHarness {
+        build_harness_from(builder())
+    }
+
+    fn build_harness_from(builder: MacroTestHarnessBuilder) -> MacroTestHarness {
+        let harness = builder.build().expect("harness should build");
+
+        let mock = harness.mock();
+        // Unpartitioned model: `adapter.parse_partition_by(none)` returns none.
+        mock.on("parse_partition_by", |_| Ok(Value::from(())));
+        mock.on("build_catalog_relation", |_| {
+            Ok(Value::from_serialize(BTreeMap::from([(
+                "table_format",
+                "default",
+            )])))
+        });
+        mock.on("get_table_options", |_| {
+            Ok(Value::from(BTreeMap::<String, Value>::new()))
+        });
+        mock.on("is_replaceable", |_| Ok(Value::from(true)));
+        mock.on("drop_relation", |_| Ok(Value::UNDEFINED));
+
+        harness
+    }
+
+    fn render_with_existing(
+        harness: &MacroTestHarness,
+        existing: Option<RelationType>,
+        full_refresh: bool,
+    ) {
+        let existing = existing.map(|relation_type| {
+            harness.relation("TEST_DB", "TEST_SCHEMA", "my_incr", Some(relation_type))
+        });
+        harness.mock().on("get_relation", move |_| {
+            Ok(existing
+                .as_ref()
+                .map(|relation| RelationObject::new(Arc::clone(relation)).into_value())
+                .unwrap_or_else(|| Value::from(())))
+        });
+
+        let ctx = incremental_ctx_with_config(
+            harness,
+            incremental_config_with(Some("merge"), full_refresh),
+        );
+        render_incremental(harness, ADAPTER, ctx)
+            .unwrap_or_else(|e| panic!("BigQuery incremental materialization failed: {e:?}"));
+    }
+
+    fn main_create_sql(harness: &MacroTestHarness) -> String {
+        executed_sql(harness.mock())
+            .into_iter()
+            .find(|sql| sql.contains("table `TEST_DB`.`TEST_SCHEMA`.`my_incr`"))
+            .unwrap_or_else(|| panic!("no create statement for the target was executed"))
+    }
+
+    #[test]
+    fn no_existing_relation_creates_table_without_replace() {
+        let harness = build_harness();
+        render_with_existing(&harness, None, false);
+
+        harness
+            .mock()
+            .observed_calls()
+            .assert_not_called("drop_relation");
+        let sql = main_create_sql(&harness);
+        assert!(sql.contains("create table"), "{sql}");
+        assert!(!sql.contains("or replace"), "{sql}");
+    }
+
+    #[test]
+    fn existing_view_dropped_then_created_without_replace() {
+        let harness = build_harness();
+        render_with_existing(&harness, Some(RelationType::View), false);
+
+        harness
+            .mock()
+            .observed_calls()
+            .assert_called("drop_relation");
+        let sql = main_create_sql(&harness);
+        assert!(sql.contains("create table"), "{sql}");
+        assert!(!sql.contains("or replace"), "{sql}");
+    }
+
+    #[test]
+    fn project_override_without_replace_param_is_still_used() {
+        // A project `bigquery__create_table_as` written against the old signature
+        // keeps working: the unknown `replace` keyword is collected, not rejected.
+        let harness = build_harness_from(builder().with_macro(
+            "test_project",
+            "bigquery__create_table_as",
+            "{% macro bigquery__create_table_as(temporary, relation, compiled_code, language='sql') %}\
+             create or replace table {{ relation }} /* project override */ as ({{ compiled_code }})\
+             {% endmacro %}",
+        ));
+        render_with_existing(&harness, None, false);
+
+        let sql = main_create_sql(&harness);
+        assert!(sql.contains("/* project override */"), "{sql}");
+    }
+
+    #[test]
+    fn full_refresh_of_existing_table_replaces() {
+        let harness = build_harness();
+        render_with_existing(&harness, Some(RelationType::Table), true);
+
+        let sql = main_create_sql(&harness);
+        assert!(sql.contains("create or replace table"), "{sql}");
+    }
 }
 
 mod databricks_strategies {
