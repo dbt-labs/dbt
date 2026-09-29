@@ -60,11 +60,11 @@ fn force_closed_invocation_delivers_final_metrics_with_retained_child() {
             })
         });
 
-        force_close_span(&invocation);
+        force_close_span(invocation);
         // What the host does next: shut down its sinks. The invocation end must already be delivered.
         order.lock().unwrap().push("sink");
-        // The late native close of the invocation must not deliver its end a second time
-        drop(invocation);
+        // Releasing the retained child lets the invocation close natively, which must not
+        // deliver its end a second time
         drop(retained);
 
         let invocation_ends = ends

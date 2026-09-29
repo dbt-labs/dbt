@@ -257,7 +257,10 @@ pub fn create_root_info_span(attrs: impl Into<TelemetryAttributes>) -> tracing::
 ///
 /// A record that is already being delivered on another thread when the span is
 /// closed may still reach consumers after the span end.
-pub fn force_close_span(span: &tracing::Span) {
+///
+/// Takes the caller's handle, which is dropped after the close: nothing should
+/// be emitted under a span once it is force closed.
+pub fn force_close_span(span: tracing::Span) {
     // Recording any value on the marker field requests the close from the data layer
     span.record(CLOSE_SPAN_FIELD, true);
 }

@@ -116,7 +116,7 @@ fn force_close_of_nested_span_leaves_parent_open() {
             (inner, retained)
         });
 
-        force_close_span(&inner);
+        force_close_span(inner.clone());
         assert_eq!(end_names(&ends), vec!["inner"]);
 
         // Everything in the closed subtree is suppressed, including the late native closes
@@ -135,10 +135,8 @@ fn force_close_of_nested_span_leaves_parent_open() {
 
         // Closing the parent covers nested closable spans that are still open: their own
         // force close and native close are no-ops
-        force_close_span(&root);
-        force_close_span(&inner_2);
-        drop(inner_2);
-        drop(root);
+        force_close_span(root);
+        force_close_span(inner_2);
 
         assert_eq!(end_names(&ends), vec!["inner", "sibling", "root"]);
         assert_eq!(starts.lock().unwrap().len(), 5);
@@ -211,11 +209,11 @@ fn force_close_ends_root_once_and_suppresses_descendants_retained_by_another_thr
     retained_rx.recv().unwrap();
     assert_eq!(starts.lock().unwrap().len(), 3);
     tracing::subscriber::with_default(Arc::clone(&subscriber), || {
-        force_close_span(&root);
+        force_close_span(root.clone());
         assert_eq!(root_end_names(&ends), vec!["root"]);
 
         // Repeated close is a no-op
-        force_close_span(&root);
+        force_close_span(root.clone());
         root.in_scope(|| log(SUPPRESSED_CODE));
         drop(root);
     });
@@ -260,8 +258,7 @@ fn force_close_does_not_leak_late_work_into_reloaded_consumers() {
     tracing::subscriber::with_default(subscriber, || {
         let root_a = root_span("root-a");
         let retained = root_a.in_scope(|| child_span("retained-a"));
-        force_close_span(&root_a);
-        drop(root_a);
+        force_close_span(root_a);
         assert_eq!(root_end_names(&ends_a), vec!["root-a"]);
 
         let (consumer_b, starts_b, ends_b, logs_b) = TestLayer::new();
@@ -309,17 +306,16 @@ fn force_close_leaves_other_roots_and_natural_close_unchanged() {
         let retained = root_a.in_scope(|| child_span("retained"));
         let root_b = root_span("root-b");
 
-        force_close_span(&root_a);
+        force_close_span(root_a);
 
         // Only spans created via `create_root_info_span` can be force closed
         let child_b = root_b.in_scope(|| child_span("child-b"));
-        force_close_span(&child_b);
+        force_close_span(child_b.clone());
         child_b.in_scope(|| log(DELIVERED_CODE));
         drop(child_b);
         drop(root_b);
 
         drop(retained);
-        drop(root_a);
 
         assert_eq!(root_end_names(&ends), vec!["root-a", "root-b"]);
         assert_eq!(ends.lock().unwrap().len(), 3);
