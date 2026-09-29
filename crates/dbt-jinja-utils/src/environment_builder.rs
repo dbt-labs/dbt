@@ -524,6 +524,7 @@ mod tests {
     };
 
     use super::*;
+    use crate::{flags::Flags, invocation_args::InvocationArgs};
     use dbt_test_primitives::assert_contains;
     use insta::assert_snapshot;
 
@@ -566,6 +567,37 @@ mod tests {
             (Value::from("REPLAY".to_string()), Value::from(replay)),
             (Value::from("replay".to_string()), Value::from(replay)),
         ]))
+    }
+
+    #[test]
+    fn renders_event_time_flags_in_the_jinja_context() {
+        let invocation_args = InvocationArgs {
+            event_time_start: Some("2026-09-01".to_string()),
+            event_time_end: Some("2026-09-03".to_string()),
+            ..InvocationArgs::default()
+        };
+        let invocation_args_dict = invocation_args.to_dict();
+        let flags = Flags::from_invocation_args(invocation_args.to_dict());
+
+        let env = JinjaEnvBuilder::new()
+            .with_globals(BTreeMap::from([
+                (
+                    "invocation_args_dict".to_string(),
+                    Value::from_object(invocation_args_dict),
+                ),
+                ("flags".to_string(), Value::from_object(flags)),
+            ]))
+            .build();
+
+        let rendered = env
+            .render_str(
+                "{{ invocation_args_dict.event_time_start }}|{{ invocation_args_dict.event_time_end }}|{{ flags.EVENT_TIME_START }}|{{ flags.EVENT_TIME_END }}",
+                context! {},
+                &[],
+            )
+            .unwrap();
+
+        assert_eq!(rendered, "2026-09-01|2026-09-03|2026-09-01|2026-09-03");
     }
 
     #[test]
