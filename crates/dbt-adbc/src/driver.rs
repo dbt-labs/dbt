@@ -18,8 +18,13 @@ use std::{
     collections::HashMap, env, ffi::c_int, fmt, mem, path::Path, path::PathBuf, sync::LazyLock,
 };
 
+// NOTE: `env_var_bool` (used by the `DISABLE_CDN_DRIVER_CACHE` local-driver-override
+// check below) must be available unconditionally, not just in debug builds — see the
+// `try_load_driver_internal` match arm. The auto-rebuild-via-`make` machinery
+// (`rebuild_drivers`) stays debug-only, so its own imports stay gated.
+use crate::env_var::env_var_bool;
 #[cfg(debug_assertions)]
-use {crate::env_var::env_var_bool, std::io::ErrorKind, std::process::Command};
+use {std::io::ErrorKind, std::process::Command};
 
 mod builder;
 pub use builder::*;
@@ -269,6 +274,19 @@ fn find_adbc_libs_directory() -> Option<PathBuf> {
     #[cfg(debug_assertions)]
     const ARROW_HEIGHT_MAX: usize = 10;
 
+    // Explicit override, unconditional (works in release builds too): set this to the
+    // directory containing a local/custom ADBC driver (e.g. our replacement
+    // `libadbc_driver_spark.so`) when the running binary has no sibling `lib/` directory
+    // to walk up to — true for an installed PyPI wheel deep inside site-packages, where
+    // the walk-upward heuristic below (bounded to LIB_HEIGHT_MAX parents) would never
+    // reach it. Takes priority over everything else in this function.
+    if let Ok(override_dir) = env::var("ADBC_LIBS_DIRECTORY_OVERRIDE") {
+        let path = PathBuf::from(override_dir);
+        if path.is_dir() {
+            return Some(path);
+        }
+    }
+
     let starting_dir = env::current_exe().ok()?.parent()?.to_path_buf();
 
     #[cfg(debug_assertions)]
@@ -377,27 +395,40 @@ impl AdbcDriver {
                 Snowflake | BigQuery | Postgres | Databricks | Redshift | Spark | DuckDB
                 | DuckDBExtended | LakeCompute | Salesforce | SQLServer | ClickHouse,
             ) => {
-                #[cfg(debug_assertions)]
-                {
-                    // This option is only used during development of ADBC drivers to make sure
-                    // the drivers are not downloaded from the CDN and are instead loaded from
-                    // either the repo root lib/ directory or an arrow-adbc repo whose root is
-                    // a sibling to this fs repo.
-                    let disable_cdn_driver_cache =
-                        env_var_bool("DISABLE_CDN_DRIVER_CACHE")?.unwrap_or(false);
-                    if disable_cdn_driver_cache {
-                        eprintln!(
-                            "WARNING: {} ADBC driver is being loaded from {} in debug mode.",
-                            backend,
-                            ADBC_LIBS_DIRECTORY.as_ref().unwrap().display()
-                        );
-                        Bundled
-                    } else {
-                        load_strategy
+                // NOTE: originally this local-driver-override check (and the `Bundled`
+                // strategy it selects) was `#[cfg(debug_assertions)]`-only, i.e. compiled
+                // out of release builds entirely — meaning a release binary (like the
+                // installed PyPI dbt-oss wheel) had no supported way to load a local/custom
+                // ADBC driver, ever. Un-gated so `DISABLE_CDN_DRIVER_CACHE` also works in
+                // release builds: loads from the sibling `lib/` directory (or an arrow-adbc
+                // repo checkout) exactly like debug builds already did, or an explicit
+                // `ADBC_LIBS_DIRECTORY_OVERRIDE` path when neither is found relative to the
+                // running binary (e.g. an installed wheel with no sibling `lib/`).
+                let disable_cdn_driver_cache =
+                    env_var_bool("DISABLE_CDN_DRIVER_CACHE")?.unwrap_or(false);
+                if disable_cdn_driver_cache {
+                    match ADBC_LIBS_DIRECTORY.as_ref() {
+                        Some(libs_dir) => {
+                            eprintln!(
+                                "WARNING: {backend} ADBC driver is being loaded from {} \
+                                 (DISABLE_CDN_DRIVER_CACHE is set).",
+                                libs_dir.display()
+                            );
+                            Bundled
+                        }
+                        None => {
+                            return Err(Error::with_message_and_status(
+                                format!(
+                                    "DISABLE_CDN_DRIVER_CACHE is set but no local ADBC driver \
+                                     directory was found (no sibling `lib/` directory, no \
+                                     ADBC_REPOSITORY, and ADBC_LIBS_DIRECTORY_OVERRIDE is not \
+                                     set) for backend {backend}"
+                                ),
+                                Status::InvalidArguments,
+                            ));
+                        }
                     }
-                }
-                #[cfg(not(debug_assertions))]
-                {
+                } else {
                     load_strategy
                 }
             }
