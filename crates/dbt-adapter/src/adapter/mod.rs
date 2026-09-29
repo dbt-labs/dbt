@@ -377,11 +377,11 @@ impl Adapter {
             .map_err(into_fs_error)
             .map(|r| {
                 r.into_iter()
-                    .filter_map(|(k, v)| {
-                        if let Ok(relations) = v {
-                            Some((k, relations))
-                        } else {
-                            // XXX: Warnings are not shown right now since this is purely for performance
+                    .filter_map(|(k, v)| match v {
+                        Ok(relations) => Some((k, relations)),
+                        Err(e) => {
+                            // Left uncached, so callers do a per-relation lookup instead.
+                            tracing::warn!("relation_cache: listing schema {k} failed: {e}");
                             None
                         }
                     })
