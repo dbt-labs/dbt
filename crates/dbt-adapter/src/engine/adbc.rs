@@ -601,6 +601,18 @@ impl AdapterEngine for AdbcEngine {
         let mut conn = retry_policy
             .execute(config, connect)
             .map_err(|e| enrich_connection_error(self.adapter_type(), e, config))?;
+        // Relation listing only needs table names and types, which tables.list
+        // already returns. Without this, the driver issues one tables.get per
+        // table, which is slow for large datasets. Best-effort: drivers that
+        // predate the option reject it and keep listing with per-table lookups.
+        if self.adapter_type == AdapterType::Bigquery && !config.use_dbt_cloud_credentials() {
+            let _ = conn.set_option(
+                adbc_core::options::OptionConnection::Other(
+                    bigquery::GET_OBJECTS_SKIP_TABLE_METADATA.to_string(),
+                ),
+                adbc_core::options::OptionValue::String("true".to_string()),
+            );
+        }
         // Tag the connection with its config fingerprint and cache it on the
         // engine, so the pool reuses a connection only among engines with an
         // identical connection configuration.
