@@ -93,12 +93,14 @@ where
                     });
                 }
                 Some(Err(e)) => {
+                    let kind = if e.is_method_mismatch {
+                        AdapterErrorKind::ReplayMethodMismatch
+                    } else {
+                        AdapterErrorKind::Driver
+                    };
                     // Use the original error message so replay output matches the recording exactly.
                     let original_msg = e.recorded_error.unwrap_or(e.message);
-                    return Err(Cancellable::Error(AdapterError::new(
-                        AdapterErrorKind::Driver,
-                        original_msg,
-                    )));
+                    return Err(Cancellable::Error(AdapterError::new(kind, original_msg)));
                 }
                 None => {
                     // No matching recorded event found in replay mode.

@@ -33,7 +33,6 @@ use dbt_schemas::dbt_types::RelationType;
 use dbt_schemas::schemas::common::ResolvedQuoting;
 use dbt_schemas::schemas::legacy_catalog::*;
 use dbt_schemas::schemas::relations::base::*;
-use futures::StreamExt;
 use indexmap::IndexMap;
 use minijinja::State;
 use once_cell::sync::Lazy;
@@ -185,12 +184,6 @@ fn snowflake_schema_count_sql(database: &str, limit: usize) -> String {
         quote_identifier(database, AdapterType::Snowflake)
     )
 }
-
-/// Concurrency to use for the per-schema freshness fan-out when a dedicated
-/// metadata warehouse is configured but the engine does not expose a thread
-/// count (e.g. mock / sidecar engines). Keeps the fan-out bounded so a project
-/// with many schemas does not open an unbounded number of connections.
-const DEFAULT_SCHEMA_PREFETCH_FANOUT: usize = 4;
 
 // When prefetching last-modified metadata across several schemas we can either issue one broad
 // `table_schema IN (...)` scan or one pruned `table_schema = 'S'` point query per schema. A
@@ -911,49 +904,6 @@ impl SnowflakeMetadataAdapter {
                 freshness_group_dump(self, database, schema, relations, options, token.clone())
                     .await?,
             );
-        }
-        Ok(result)
-    }
-
-    /// Fetch per-schema dumps for a database concurrently on the dedicated
-    /// metadata warehouse, bounded by the engine's thread count. Each schema is
-    /// fail-open (a failed dump omits that schema).
-    async fn freshness_by_schema_fanout(
-        &self,
-        database: &str,
-        schemas: &BTreeMap<String, Vec<Arc<dyn BaseRelation>>>,
-        options: &MetadataQueryOptions,
-        token: CancellationToken,
-    ) -> Result<BTreeMap<String, MetadataFreshness>, Cancellable<AdapterError>> {
-        let fan_out = self
-            .adapter
-            .engine()
-            .threads()
-            .unwrap_or(DEFAULT_SCHEMA_PREFETCH_FANOUT)
-            .max(1);
-        // Build the per-schema futures in an explicit loop rather than
-        // `schemas.iter().map(...)`: a closure that returns a future borrowing its
-        // argument trips the higher-ranked-lifetime inference, whereas each call
-        // here binds concrete lifetimes.
-        let mut group_futures = Vec::with_capacity(schemas.len());
-        for (schema, relations) in schemas {
-            group_futures.push(freshness_group_dump(
-                self,
-                database,
-                schema,
-                relations,
-                options,
-                token.clone(),
-            ));
-        }
-        let groups: Vec<Result<BTreeMap<String, MetadataFreshness>, Cancellable<AdapterError>>> =
-            futures::stream::iter(group_futures)
-                .buffer_unordered(fan_out)
-                .collect()
-                .await;
-        let mut result = BTreeMap::new();
-        for group in groups {
-            result.extend(group?);
         }
         Ok(result)
     }
@@ -1752,7 +1702,16 @@ ORDER BY TABLE_CATALOG, TABLE_SCHEMA, TABLE_NAME, ORDINAL_POSITION"
                 let mut result: BTreeMap<String, MetadataFreshness> = BTreeMap::new();
                 for (database, schemas) in by_database {
                     let db_result = if has_metadata_warehouse {
-                        self.freshness_by_schema_fanout(&database, &schemas, options, token.clone())
+                        let groups = schemas
+                            .into_iter()
+                            .map(|(schema, relations)| ((database.clone(), schema), relations))
+                            .collect();
+                        let fan_out = self
+                            .adapter
+                            .engine()
+                            .threads()
+                            .unwrap_or(DEFAULT_SCHEMA_PREFETCH_FANOUT);
+                        freshness_by_schema_fanout(self, groups, options, token.clone(), fan_out)
                             .await
                     } else {
                         let use_broad = if options.adaptive_metadata_fetch {

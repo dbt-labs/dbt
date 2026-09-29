@@ -36,6 +36,8 @@ pub enum AdapterErrorKind {
     ReplayDataInvalid,
     /// Recorded replay data missing for requested operation
     ReplayDataMissing,
+    /// Replayed call's method name didn't match the next recorded event
+    ReplayMethodMismatch,
     /// SQL output did not match expected (conformance/build diff)
     SqlMismatch,
     /// Unexpected Database Ref
@@ -76,6 +78,7 @@ impl fmt::Display for AdapterErrorKind {
                 AdapterErrorKind::UnexpectedResult => "Unexpected Result",
                 AdapterErrorKind::ReplayDataInvalid => "Replay Data Invalid",
                 AdapterErrorKind::ReplayDataMissing => "Replay Data Missing",
+                AdapterErrorKind::ReplayMethodMismatch => "Replay Method Mismatch",
                 AdapterErrorKind::SqlMismatch => "SQL Mismatch",
                 AdapterErrorKind::UnexpectedDbReference => "Unexpected Database Reference",
                 AdapterErrorKind::Cancelled => "Cancelled",
@@ -105,6 +108,7 @@ impl From<AdapterErrorKind> for ErrorCode {
             AdapterErrorKind::UnexpectedResult => ErrorCode::ExecutorFailed,
             AdapterErrorKind::ReplayDataInvalid => ErrorCode::ReplayDataInvalid,
             AdapterErrorKind::ReplayDataMissing => ErrorCode::ReplayDataMissing,
+            AdapterErrorKind::ReplayMethodMismatch => ErrorCode::ReplayDataInvalid,
             AdapterErrorKind::SqlMismatch => ErrorCode::SqlMismatch,
             // When DB is configured incorrectly, e.g. RA3
             AdapterErrorKind::UnexpectedDbReference => ErrorCode::InvalidConfig,

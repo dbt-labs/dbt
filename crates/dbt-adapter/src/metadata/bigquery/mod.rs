@@ -9,7 +9,10 @@ use crate::metadata::*;
 use crate::query_ctx::query_ctx_from_state;
 use crate::record_batch::{RecordBatchExt, StructArrayExt};
 use crate::relation::Relation;
-use crate::time_machine::{args_freshness_with_overrides, with_time_machine_metadata_wrapper};
+use crate::time_machine::{
+    args_freshness, args_freshness_with_overrides, global_replayer,
+    with_time_machine_metadata_wrapper,
+};
 use crate::{AdapterEngine, AdapterResult};
 
 use arrow_array::*;
@@ -1603,6 +1606,65 @@ impl MetadataAdapter for BigqueryMetadataAdapter {
 
     fn supports_bulk_freshness_dump(&self) -> bool {
         true
+    }
+
+    /// Fetch schema-level freshness with bounded concurrency.
+    fn freshness_all_in_schemas<'a>(
+        &'a self,
+        relations: &'a [Arc<dyn BaseRelation>],
+        options: &'a MetadataQueryOptions,
+        token: CancellationToken,
+    ) -> AsyncAdapterResult<'a, BTreeMap<String, MetadataFreshness>> {
+        let groups = group_relations_by_resolved_database_schema(relations);
+        let fallback_groups = groups.clone();
+        let attempt_token = token.clone();
+        let attempt = with_time_machine_metadata_wrapper(
+            "global",
+            "freshness_all_in_schemas",
+            args_freshness(
+                relations.iter().map(|r| r.semantic_fqn()),
+                options.warehouse.clone(),
+            ),
+            async move {
+                let fan_out = self
+                    .adapter
+                    .engine()
+                    .threads()
+                    .unwrap_or(DEFAULT_SCHEMA_PREFETCH_FANOUT);
+                freshness_by_schema_fanout(self, groups, options, attempt_token, fan_out).await
+            },
+        );
+
+        Box::pin(async move {
+            match attempt.await {
+                Err(Cancellable::Error(err))
+                    if global_replayer().is_some()
+                        && matches!(
+                            err.kind(),
+                            AdapterErrorKind::ReplayDataMissing
+                                | AdapterErrorKind::ReplayMethodMismatch
+                        ) =>
+                {
+                    // Replay older recordings via their per-schema events.
+                    let mut result = BTreeMap::new();
+                    for ((database, schema), relations) in fallback_groups {
+                        result.extend(
+                            freshness_group_dump(
+                                self,
+                                &database,
+                                &schema,
+                                &relations,
+                                options,
+                                token.clone(),
+                            )
+                            .await?,
+                        );
+                    }
+                    Ok(result)
+                }
+                result => result,
+            }
+        })
     }
 
     fn freshness_all_in_schema_inner<'a>(
