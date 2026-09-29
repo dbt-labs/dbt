@@ -36,7 +36,6 @@ pub mod serde_utils;
 pub mod status_reporter;
 pub mod time;
 pub mod tracing;
-pub mod url;
 pub mod user_defined_schema_registry;
 pub mod warn_error_options;
 
