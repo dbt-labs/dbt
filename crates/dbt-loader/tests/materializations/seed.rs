@@ -55,9 +55,7 @@ fn build_seed_harness(materialization_v2: bool, rows: RecordBatch) -> MacroTestH
             ),
         ])),
     );
-    mock.on("commit", |_| Ok(Value::UNDEFINED));
     mock.on("add_query", |_| Ok(Value::UNDEFINED));
-    mock.on("drop_relation", |_| Ok(Value::UNDEFINED));
     mock.on("convert_type", |_| Ok(Value::from("string")));
     mock.on("quote_seed_column", |args| {
         Ok(args.first().cloned().unwrap_or(Value::UNDEFINED))
