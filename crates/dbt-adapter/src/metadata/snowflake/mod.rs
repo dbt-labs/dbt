@@ -1379,14 +1379,46 @@ impl MetadataAdapter for SnowflakeMetadataAdapter {
               -> AdapterResult<Arc<Schema>> {
             let (_, rendered) = key;
             let sql = format!("describe table {};", rendered);
-            let mut ctx = QueryCtx::new_metadata().with_desc("Get table schema");
-            if let Some(node_id) = unique_id.clone() {
-                ctx = ctx.with_node_id(&node_id);
-            }
-            if let Some(phase) = phase {
-                ctx = ctx.with_phase(phase.as_str());
-            }
-            let (_, table) = adapter.query(&ctx, conn, &sql, None, token_clone.clone())?;
+            let new_ctx = |desc: &str| {
+                let mut ctx = QueryCtx::new_metadata().with_desc(desc);
+                if let Some(node_id) = unique_id.clone() {
+                    ctx = ctx.with_node_id(&node_id);
+                }
+                if let Some(phase) = phase {
+                    ctx = ctx.with_phase(phase.as_str());
+                }
+                ctx
+            };
+            let ctx = new_ctx("Get table schema");
+            let table = match adapter.query(&ctx, conn, &sql, None, token_clone.clone()) {
+                Ok((_, table)) => table,
+                // `describe table` rejects streams; describe an empty select instead
+                // (neither statement advances the stream offset). Describe the select
+                // by its own query id, not last_query_id(): a proxy or middleware may
+                // run statements on the session in between.
+                Err(err) if is_describe_table_invalid_object_type(&err) => {
+                    let ctx = new_ctx("Get stream schema");
+                    // Keep cancellation; otherwise report the original describe-table error.
+                    let or_original = |e: AdapterError| {
+                        if e.kind() == AdapterErrorKind::Cancelled {
+                            e
+                        } else {
+                            err.clone()
+                        }
+                    };
+                    let select = format!("select * from {} limit 0;", rendered);
+                    let (response, _) = adapter
+                        .query(&ctx, conn, &select, None, token_clone.clone())
+                        .map_err(or_original)?;
+                    let query_id = response.query_id().ok_or_else(|| err.clone())?;
+                    let sql = format!("describe result '{}';", query_id);
+                    adapter
+                        .query(&ctx, conn, &sql, None, token_clone.clone())
+                        .map_err(or_original)?
+                        .1
+                }
+                Err(err) => return Err(err),
+            };
             let batch = table.original_record_batch();
             let schema = build_schema_from_desc_table(batch, adapter.engine().type_ops().as_ref())?;
             Ok(schema)
@@ -1905,6 +1937,11 @@ ORDER BY TABLE_CATALOG, TABLE_SCHEMA, TABLE_NAME, ORDINAL_POSITION"
     }
 }
 
+/// `describe table` on a Snowflake stream fails with `Invalid object type: 'TABLE'`.
+fn is_describe_table_invalid_object_type(err: &AdapterError) -> bool {
+    err.message().contains("Invalid object type: 'TABLE'")
+}
+
 /// reference: https://github.com/sdf-labs/sdf/blob/main/crates/sdf-cli/src/providers/database/snowflake.rs#L177-L178
 fn build_schema_from_desc_table(
     show_columns_result: Arc<RecordBatch>,
@@ -2103,6 +2140,20 @@ mod tests {
                 }
             }),
         )
+    }
+
+    #[test]
+    fn describe_table_invalid_object_type_matches_only_table_error() {
+        let err = |msg: &str| AdapterError::new(AdapterErrorKind::Driver, msg);
+        assert!(is_describe_table_invalid_object_type(&err(
+            "Unknown: SQL compilation error:\nInvalid object type: 'TABLE'."
+        )));
+        assert!(!is_describe_table_invalid_object_type(&err(
+            "SQL compilation error:\nTable 'DB.S.T' does not exist or not authorized."
+        )));
+        assert!(!is_describe_table_invalid_object_type(&err(
+            "SQL compilation error:\nInvalid object type: 'VIEW'."
+        )));
     }
 
     #[test]

@@ -1,0 +1,7 @@
+kind: Fixes
+body: Read column schemas of Snowflake stream sources instead of disabling static analysis for their downstream models
+time: 2026-09-27T12:00:00.000000+03:00
+custom:
+    author: alex-mirkin
+    issue: ""
+    project: dbt-core
