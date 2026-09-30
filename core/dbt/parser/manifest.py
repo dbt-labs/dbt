@@ -2637,12 +2637,19 @@ def write_semantic_manifest(manifest: Manifest, target_path: str) -> None:
 
 
 def write_manifest(manifest: Manifest, target_path: str, which: Optional[str] = None):
-    if get_flags().USE_V2_PARSER:
-        return
     file_name = MANIFEST_FILE_NAME
     path = os.path.join(target_path, file_name)
     manifest.write(path)
     add_artifact_produced(path)
+
+    # Under USE_V2_PARSER, semantic_manifest.json is already written by
+    # parse_with_v2 (copied straight from the v2 parser's own output) and
+    # must not be clobbered by a stale/differently-shaped one built here
+    # from the runtime Manifest. manifest.json itself has no such conflict:
+    # it still needs to be (re)written after compile/run so runtime-populated
+    # fields like compiled_code make it to disk.
+    if get_flags().USE_V2_PARSER:
+        return
 
     write_semantic_manifest(manifest=manifest, target_path=target_path)
 

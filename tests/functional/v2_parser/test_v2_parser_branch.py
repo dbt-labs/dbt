@@ -8,6 +8,7 @@ assert that dbt-core's load + dispatch logic round-trips through it
 correctly.
 """
 
+import json
 import shutil
 import stat
 import sys
@@ -16,7 +17,7 @@ from unittest import mock
 
 import pytest
 
-from dbt.tests.util import run_dbt
+from dbt.tests.util import read_file, run_dbt
 
 FAKE_PARSER_PY = '''\
 """Tiny stand-in for the v2 parser. Writes a stashed manifest.json into
@@ -157,3 +158,21 @@ class TestV2ParserBranch(V2ParserFixture):
         results = run_dbt(["parse"])
         assert results is not None
         assert "model.test.model_a" in results.nodes
+
+    def test_v2_branch_persists_compiled_code_after_compile(self, project, fake_parser):
+        """write_manifest()'s post-compile write must survive under
+        USE_V2_PARSER so compiled_code (populated in memory by the compile
+        task, after parse_with_v2 already wrote its own parse-time
+        manifest.json) makes it to the on-disk manifest."""
+        run_dbt(
+            [
+                "--use-v2-parser",
+                f"--v2-parser={fake_parser}",
+                "compile",
+            ]
+        )
+        manifest_path = Path(project.project_root) / "target" / "manifest.json"
+        manifest_data = json.loads(read_file(str(manifest_path)))
+        model_a = manifest_data["nodes"]["model.test.model_a"]
+        assert model_a["compiled_code"] is not None
+        assert "select 1 as id" in model_a["compiled_code"]
