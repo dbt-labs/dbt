@@ -1,0 +1,7 @@
+kind: Fixes
+body: Suppress DeprecatedReference and UpcomingReferenceDeprecation warnings on
+  a model that is itself already past its deprecation date
+time: 2026-06-01T10:30:00.000000-04:00
+custom:
+  Author: ondrejmlynarc
+  Issue: "12888"
