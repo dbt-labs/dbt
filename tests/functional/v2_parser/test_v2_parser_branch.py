@@ -8,7 +8,6 @@ assert that dbt-core's load + dispatch logic round-trips through it
 correctly.
 """
 
-import json
 import shutil
 import stat
 import sys
@@ -17,7 +16,7 @@ from unittest import mock
 
 import pytest
 
-from dbt.tests.util import read_file, run_dbt
+from dbt.tests.util import get_manifest, run_dbt
 
 FAKE_PARSER_PY = '''\
 """Tiny stand-in for the v2 parser. Writes a stashed manifest.json into
@@ -171,8 +170,7 @@ class TestV2ParserBranch(V2ParserFixture):
                 "compile",
             ]
         )
-        manifest_path = Path(project.project_root) / "target" / "manifest.json"
-        manifest_data = json.loads(read_file(str(manifest_path)))
-        model_a = manifest_data["nodes"]["model.test.model_a"]
-        assert model_a["compiled_code"] is not None
-        assert "select 1 as id" in model_a["compiled_code"]
+        manifest = get_manifest(project.project_root)
+        model_a = manifest.nodes["model.test.model_a"]
+        assert model_a.compiled_code is not None
+        assert "select 1 as id" in model_a.compiled_code

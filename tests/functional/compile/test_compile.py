@@ -63,21 +63,15 @@ class TestIntrospectFlag:
         with pytest.raises(DbtRuntimeError, match="connection never acquired for thread"):
             run_dbt(["compile", "--no-introspect"])
 
-
-class TestManifestCompiledCodeWritten:
-    """See tests/functional/v2_parser/test_v2_parser_branch.py for the
-    USE_V2_PARSER counterpart of this regression test."""
-
-    @pytest.fixture(scope="class")
-    def models(self):
-        return {
-            "first_model.sql": first_model_sql,
-        }
-
     def test_compiled_code_persisted_to_manifest(self, project):
-        # Read the on-disk manifest.json directly rather than via
-        # dbt.tests.util.get_manifest, which prefers partial_parse.msgpack
-        # (a parse-time artifact with no compiled_code) when present.
+        """See tests/functional/v2_parser/test_v2_parser_branch.py for the
+        USE_V2_PARSER counterpart of this regression test.
+
+        Reads target/manifest.json directly rather than via get_manifest(),
+        which prefers partial_parse.msgpack (a parse-time artifact with no
+        compiled_code) whenever it's present, as it always is after a
+        regular (non-v2-parser) compile.
+        """
         run_dbt(["compile"])
         manifest_data = json.loads(read_file("target", "manifest.json"))
         model = manifest_data["nodes"]["model.test.first_model"]
