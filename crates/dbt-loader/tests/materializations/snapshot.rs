@@ -171,3 +171,69 @@ mod bigquery {
         assert!(sql.contains("create or replace table"), "{sql}");
     }
 }
+
+mod databricks {
+    use super::*;
+
+    /// Both calls are no-ops on Databricks; dbt-databricks dropped them in #1691.
+    #[test]
+    fn first_build_skips_create_indexes_and_commit() {
+        let mut harness = build_harness(AdapterType::Databricks);
+        harness
+            .env_mut()
+            .env
+            .add_function("var", |_name: Value, default: Option<Value>| {
+                Ok(default.unwrap_or(Value::UNDEFINED))
+            });
+        let mock = harness.mock();
+        mock.on("get_relation", |_| Ok(Value::from(())));
+        mock.on("resolve_file_format", |_| Ok(Value::from("delta")));
+        mock.on("clean_sql", |args| {
+            Ok(args.first().cloned().unwrap_or(Value::UNDEFINED))
+        });
+        mock.on("is_uniform", |_| Ok(Value::from(false)));
+        mock.on("get_column_tags_from_model", |_| Ok(Value::UNDEFINED));
+
+        let config = snapshot_config();
+        let ctx = harness
+            .materialization_context("my_snapshot", SNAPSHOT_SQL)
+            .relation_type(RelationType::Table)
+            .config(Value::from_dyn_object(Arc::clone(&config)))
+            .with(
+                "context",
+                Value::from_object(MacroLookupContext::new(
+                    "test_project".to_string(),
+                    None,
+                    BTreeSet::from(["test_project".to_string()]),
+                )),
+            )
+            .with("model", snapshot_model())
+            .build();
+        harness
+            .render("{{ materialization_snapshot_databricks() }}", ctx)
+            .unwrap_or_else(|e| panic!("databricks snapshot materialization failed: {e:?}"));
+
+        let sql = executed_sql(mock);
+        assert!(
+            sql.iter()
+                .any(|s| s.contains("create") && s.contains("`my_snapshot`")),
+            "{sql:?}"
+        );
+        assert!(
+            !mock
+                .observed_calls()
+                .iter()
+                .any(|call| call.method == "commit"),
+            "snapshot must not call adapter.commit()"
+        );
+        // `default__create_indexes` is the only reader of the `indexes` config.
+        assert!(
+            !config
+                .observed_calls()
+                .iter()
+                .any(|call| call.method == "get"
+                    && call.args.first().and_then(|v| v.as_str()) == Some("indexes")),
+            "snapshot must not call create_indexes"
+        );
+    }
+}
