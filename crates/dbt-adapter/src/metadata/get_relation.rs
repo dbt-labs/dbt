@@ -82,7 +82,16 @@ pub fn get_relation(
             adapter, state, ctx, conn, database, schema, identifier, token,
         ),
         AdapterType::Starburst => todo!("Starburst"),
-        AdapterType::Athena => todo!("Athena"),
+        AdapterType::Athena => adapter
+            .athena_get_relation(state, ctx, conn, database, schema, identifier, token)?
+            .ok_or_else(|| {
+                AdapterError::new(
+                    AdapterErrorKind::NotSupported,
+                    format!(
+                        "get_relation is not implemented for Athena data catalogs outside Glue: {database}"
+                    ),
+                )
+            }),
         AdapterType::Trino => todo!("Trino"),
         AdapterType::Dremio => todo!("Dremio"),
         AdapterType::Oracle => todo!("Oracle"),

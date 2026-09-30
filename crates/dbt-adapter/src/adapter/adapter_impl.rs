@@ -870,6 +870,10 @@ impl AdapterImpl {
 
         let response = AdapterResponse::from_record_batch(&last_batch, self.adapter_type())
             .with_connection_info(self.adapter_type(), engine.as_ref());
+        let response = match self.adapter_type() {
+            Athena => response.with_athena_query_stats(sql),
+            _ => response,
+        };
 
         // Deduplicate column names to match dbt-core's behavior, which renames
         // duplicate columns to `col_2`, `col_3`, etc.
@@ -1175,6 +1179,11 @@ impl AdapterImpl {
     /// BigQueryAdapter https://github.com/dbt-labs/dbt-adapters/blob/0efd8d3d1081e1ab43e38797d5104f7b424a6284/dbt-bigquery/src/dbt/adapters/bigquery/impl.py#L299
     /// SnowflakeAdapter https://github.com/dbt-labs/dbt-adapters/blob/0efd8d3d1081e1ab43e38797d5104f7b424a6284/dbt-snowflake/src/dbt/adapters/snowflake/impl.py#L205
     pub fn list_schemas(&self, state: &State, database: &str) -> AdapterResult<Vec<String>> {
+        if self.athena_live()
+            && let Some(schemas) = self.athena_list_schemas(state, database)?
+        {
+            return Ok(schemas);
+        }
         match self.adapter_type() {
             Bigquery if self.mock_state().is_none() => {
                 // BigQuery lists datasets through the ADBC metadata API
@@ -1194,6 +1203,13 @@ impl AdapterImpl {
                 self.list_schemas_inner(result)
             }
         }
+    }
+
+    /// Whether an Athena metadata read goes to Glue: a live engine, not a mock or a replay.
+    fn athena_live(&self) -> bool {
+        self.adapter_type() == Athena
+            && self.mock_state().is_none()
+            && matches!(self.inner_adapter(), Impl(..))
     }
 
     fn list_schemas_via_adbc(&self, state: &State, database: &str) -> AdapterResult<Vec<String>> {
@@ -1726,6 +1742,12 @@ impl AdapterImpl {
             if let Some(exists) = self.schema_exists_from_trace(state, database, schema) {
                 return Ok(Value::from(exists));
             }
+        }
+
+        if self.athena_live()
+            && let Some(exists) = self.athena_check_schema_exists(state, database, schema)?
+        {
+            return Ok(Value::from(exists));
         }
 
         // Spark (Hive metastore) has no ANSI `information_schema`
@@ -2265,6 +2287,12 @@ impl AdapterImpl {
             // TODO: Should we add the schema that was fetched here to the schema cache
             // to avoid further remote lookups?
             Bigquery => self.bigquery_get_columns_in_relation_via_adbc(state, relation),
+            Athena if self.athena_live() => {
+                match self.athena_get_columns_in_relation(state, relation)? {
+                    Some(columns) => Ok(columns),
+                    None => self.get_columns_in_relation_via_macro(state, relation),
+                }
+            }
             _ => self.get_columns_in_relation_via_macro(state, relation),
         }
     }
@@ -4196,9 +4224,20 @@ impl AdapterImpl {
             Impl(Fabric, engine) => {
                 fabric::list_relations(engine.as_ref(), query_ctx, conn, db_schema, token)
             }
+            Impl(Athena, _) => self
+                .athena_list_relations(state, query_ctx, conn, db_schema, token)?
+                .ok_or_else(|| {
+                    AdapterError::new(
+                        AdapterErrorKind::NotSupported,
+                        format!(
+                            "list_relations_without_caching is not implemented for Athena data catalogs outside Glue: {}",
+                            db_schema.resolved_catalog
+                        ),
+                    )
+                }),
             Impl(
-                adapter_type @ (Postgres | Salesforce | ClickHouse | Exasol | Starburst | Athena
-                | Trino | Datafusion | Dremio | Oracle),
+                adapter_type @ (Postgres | Salesforce | ClickHouse | Exasol | Starburst | Trino
+                | Datafusion | Dremio | Oracle),
                 _,
             ) => {
                 let err = AdapterError::new(

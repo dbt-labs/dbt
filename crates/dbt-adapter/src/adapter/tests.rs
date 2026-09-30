@@ -4,11 +4,13 @@ use std::path::Path;
 use super::*;
 use crate::adapter::Adapter;
 use crate::adapter::adapter_impl::AdapterImpl;
+use crate::relation::do_create_relation;
 use crate::sql_types::DefaultTypeOps;
 use crate::stmt_splitter::DefaultStmtSplitter;
 use dbt_adapter_core::AdapterType;
 
 use dbt_common::cancellation::never_cancels;
+use dbt_schemas::dbt_types::RelationType;
 use dbt_schemas::schemas::relations::{DEFAULT_DBT_QUOTING, DEFAULT_RESOLVED_QUOTING};
 use indexmap::IndexMap;
 
@@ -708,4 +710,178 @@ fn test_check_schema_exists_tolerates_none_database() {
         message.contains("template not found") || message.contains("check_schema_exists"),
         "expected a macro-lookup failure past arg parsing, got: {message}"
     );
+}
+
+// -- Athena adapter methods (`adapter/athena`); the pure ones need no engine, so any
+// mock adapter type exercises the dispatch arms --
+
+#[test]
+fn athena_is_list_distinguishes_sequences() {
+    let adapter = make_duckdb_adapter();
+    let list = dispatch_test(&adapter, "is_list", &[Value::from(vec![1, 2])]).unwrap();
+    assert!(list.is_true());
+    let string = dispatch_test(&adapter, "is_list", &[Value::from("a, b")]).unwrap();
+    assert!(!string.is_true());
+}
+
+#[test]
+fn athena_format_value_for_partition_returns_value_and_operator() {
+    let adapter = make_duckdb_adapter();
+    let pair = dispatch_test(
+        &adapter,
+        "format_value_for_partition",
+        &[Value::from("it's"), Value::from("string")],
+    )
+    .unwrap();
+    let parts: Vec<String> = pair.try_iter().unwrap().map(|v| v.to_string()).collect();
+    assert_eq!(parts, vec!["'it''s'", "="]);
+
+    let null = dispatch_test(
+        &adapter,
+        "format_value_for_partition",
+        &[Value::from(()), Value::from("integer")],
+    )
+    .unwrap();
+    let parts: Vec<String> = null.try_iter().unwrap().map(|v| v.to_string()).collect();
+    assert_eq!(parts, vec!["null", " is "]);
+
+    let err = dispatch_test(
+        &adapter,
+        "format_value_for_partition",
+        &[Value::from(1), Value::from("double")],
+    )
+    .unwrap_err();
+    assert!(err.to_string().contains("Unsupported column type: double"));
+}
+
+#[test]
+fn athena_partition_key_formatting_and_bucketing() {
+    let adapter = make_duckdb_adapter();
+    let keys = dispatch_test(
+        &adapter,
+        "format_partition_keys",
+        &[Value::from(vec!["day(ts)", "bucket(id, 4)", "Region"])],
+    )
+    .unwrap();
+    assert_eq!(keys.as_str().unwrap(), "date_trunc('day', ts), id, region");
+
+    let key = dispatch_test(
+        &adapter,
+        "format_one_partition_key",
+        &[Value::from("MONTH(dt)")],
+    )
+    .unwrap();
+    assert_eq!(key.as_str().unwrap(), "date_trunc('month', dt)");
+
+    // Iceberg reference vector: murmur3(34) = 2017239379
+    let bucket = dispatch_test(
+        &adapter,
+        "murmur3_hash",
+        &[Value::from(34), Value::from(100)],
+    )
+    .unwrap();
+    assert_eq!(bucket.as_i64().unwrap(), 2017239379 % 100);
+}
+
+#[test]
+fn athena_persist_docs_reads_its_flags_as_truthiness() {
+    // `athena__persist_docs` hands over `... and model.columns`: a mapping, not a bool.
+    let adapter = make_duckdb_parse_adapter();
+    let relation = do_create_relation(
+        AdapterType::Athena,
+        "awsdatacatalog".to_string(),
+        "analytics".to_string(),
+        Some("events".to_string()),
+        Some(RelationType::Table),
+        DEFAULT_RESOLVED_QUOTING,
+    )
+    .unwrap();
+    let relation = RelationObject::new(Arc::from(relation)).into_value();
+    let columns = Value::from_iter([(
+        "customer_id",
+        Value::from_iter([("description", Value::from("Primary key."))]),
+    )]);
+    let model = Value::from_iter([("columns", columns.clone())]);
+    let result = dispatch_test(
+        &adapter,
+        "persist_docs_to_glue",
+        &[
+            relation,
+            model,
+            Value::from(true),
+            columns,
+            Value::from(true),
+        ],
+    )
+    .unwrap();
+    assert!(result.is_none());
+}
+
+#[test]
+fn athena_lake_formation_configs_are_no_ops_when_disabled_and_checked_when_malformed() {
+    let adapter = make_duckdb_adapter();
+    let relation = do_create_relation(
+        AdapterType::Athena,
+        "awsdatacatalog".to_string(),
+        "analytics".to_string(),
+        Some("events".to_string()),
+        Some(RelationType::Table),
+        DEFAULT_RESOLVED_QUOTING,
+    )
+    .unwrap();
+    let relation = RelationObject::new(Arc::from(relation)).into_value();
+
+    let disabled = Value::from_iter([("enabled", Value::from(false))]);
+    let result = dispatch_test(&adapter, "add_lf_tags", &[relation.clone(), disabled]).unwrap();
+    assert!(result.is_none());
+
+    let grants = Value::from_iter([(
+        "data_cell_filters",
+        Value::from_iter([
+            ("enabled", Value::from(false)),
+            ("filters", Value::from_iter::<[(&str, Value); 0]>([])),
+        ]),
+    )]);
+    let result = dispatch_test(&adapter, "apply_lf_grants", &[relation.clone(), grants]).unwrap();
+    assert!(result.is_none());
+
+    // `create_schema` hands over a schema-level relation; without lf_tags_database in
+    // the profile the call is a no-op.
+    let schema = do_create_relation(
+        AdapterType::Athena,
+        "awsdatacatalog".to_string(),
+        "analytics".to_string(),
+        None,
+        None,
+        DEFAULT_RESOLVED_QUOTING,
+    )
+    .unwrap();
+    let schema = RelationObject::new(Arc::from(schema)).into_value();
+    let result = dispatch_test(&adapter, "add_lf_tags_to_database", &[schema]).unwrap();
+    assert!(result.is_none());
+
+    // pydantic rejects a tag value that is not a string; so does the port.
+    let malformed = Value::from_iter([
+        ("enabled", Value::from(true)),
+        ("tags", Value::from_iter([("tier", Value::from(1))])),
+    ]);
+    let err = dispatch_test(&adapter, "add_lf_tags", &[relation, malformed]).unwrap_err();
+    assert!(err.to_string().contains("invalid lf_tags_config"), "{err}");
+}
+
+#[test]
+fn athena_generate_s3_location_requires_the_staging_dir() {
+    let adapter = make_duckdb_adapter();
+    let relation = do_create_relation(
+        AdapterType::Athena,
+        "awsdatacatalog".to_string(),
+        "analytics".to_string(),
+        Some("events".to_string()),
+        Some(RelationType::Table),
+        DEFAULT_RESOLVED_QUOTING,
+    )
+    .unwrap();
+    let relation = RelationObject::new(Arc::from(relation)).into_value();
+    let err = dispatch_test(&adapter, "generate_s3_location", &[relation]).unwrap_err();
+    assert!(err.to_string().contains("s3_staging_dir"));
 }

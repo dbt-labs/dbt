@@ -51,6 +51,9 @@ impl SemanticCategory {
             | "get_relations_by_pattern"
             | "get_relations_without_caching"
             | "valid_snapshot_target"
+            // Athena
+            | "get_glue_table_type"
+            | "is_work_group_output_location_enforced"
             | "describe_relation"
             | "get_column_schema_from_query"
             | "get_columns_in_select_sql"
@@ -84,7 +87,22 @@ impl SemanticCategory {
             | "grant_access_to"
             | "submit_python_job"
             | "assert_valid_snapshot_target_given_strategy"
-            | "update_tblproperties_for_uniform_iceberg" => SemanticCategory::Write,
+            | "update_tblproperties_for_uniform_iceberg"
+            // Athena
+            | "upload_seed_to_s3"
+            | "delete_from_s3"
+            | "clean_up_table"
+            | "clean_up_partitions"
+            | "delete_from_glue_catalog"
+            | "drop_glue_database"
+            | "expire_glue_table_versions"
+            | "swap_table"
+            | "persist_docs_to_glue"
+            | "add_lf_tags"
+            | "apply_lf_grants"
+            | "add_lf_tags_to_database"
+            | "run_query_with_partitions_limit_catching"
+            | "run_operation_with_potential_multiple_runs" => SemanticCategory::Write,
 
             // Internal bookkeeping only
             "cache_added" | "cache_dropped" | "cache_renamed" => SemanticCategory::Cache,
@@ -156,7 +174,15 @@ impl SemanticCategory {
             | "s3source_clause"
             | "get_csv_data"
             | "table_format"
-            | "strip_trailing_statement_terminator" => SemanticCategory::Pure,
+            | "strip_trailing_statement_terminator"
+            // Athena
+            | "is_list"
+            | "is_s3_tables_database"
+            | "format_value_for_partition"
+            | "format_one_partition_key"
+            | "format_partition_keys"
+            | "murmur3_hash"
+            | "generate_s3_location" => SemanticCategory::Pure,
 
             _ => {
                 debug_assert!(
