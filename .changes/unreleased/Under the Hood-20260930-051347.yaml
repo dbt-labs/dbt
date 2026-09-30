@@ -3,5 +3,5 @@ body: Run Databricks seeds through a single materialization path regardless of u
 time: 2026-09-30T05:13:47.295157+05:30
 custom:
     author: sd-db
-    issue: ""
+    issue: "16523"
     project: dbt-core
