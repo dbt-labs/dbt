@@ -1,0 +1,7 @@
+kind: Features
+body: Support DBT_ENGINE_SELECT and DBT_ENGINE_EXCLUDE environment variables
+time: 2026-09-30T11:13:57.949784+02:00
+custom:
+    author: fornwall
+    issue: "12193"
+    project: dbt-core
