@@ -9,6 +9,7 @@ from metricflow_semantic_interfaces.type_enums import (
 )
 
 from core.dbt.contracts.graph.semantic_manifest import SemanticManifest
+from dbt.artifacts.resources import MetricTimeWindow
 from dbt.contracts.graph.manifest import Manifest
 from tests.functional.assertions.test_runner import dbtTestRunner
 from tests.functional.semantic_models.fixtures import (
@@ -20,6 +21,7 @@ from tests.functional.semantic_models.fixtures import (
     metricflow_time_spine_sql,
     schema_yml_v2_conversion_metric_missing_base_metric,
     schema_yml_v2_cumulative_metric_missing_input_metric,
+    schema_yml_v2_cumulative_metric_with_window,
     schema_yml_v2_metric_with_doc_jinja,
     schema_yml_v2_metric_with_filter_dimension_jinja,
     schema_yml_v2_metric_with_input_metrics_filter_dimension_jinja,
@@ -606,6 +608,39 @@ class TestCumulativeMetricNoInputMetricFails:
         result = runner.invoke(["parse"])
         assert not result.success
         assert "input_metric is required for cumulative metrics." in str(result.exception)
+
+
+class TestCumulativeMetricWithWindowOnInputMetricParsingWorks:
+    """A v2 cumulative metric declaring `window` (rather than `grain_to_date`) on an
+    `input_metric` used to fail parsing: the parser copied `window` into the legacy,
+    top-level `type_params.window` field for every v2 metric, and semantic manifest
+    validation then mistook that self-populated field for deprecated, unnested v1 YAML
+    and rejected the metric.
+    """
+
+    @pytest.fixture(scope="class")
+    def models(self):
+        return {
+            "schema.yml": base_schema_yml_v2 + schema_yml_v2_cumulative_metric_with_window,
+            "fct_revenue.sql": fct_revenue_sql,
+            "metricflow_time_spine.sql": metricflow_time_spine_sql,
+        }
+
+    def test_cumulative_metric_with_window_parsing_works(self, project) -> None:
+        runner = dbtTestRunner()
+        result = runner.invoke(["parse"])
+        assert result.success
+        manifest = result.result
+
+        cumulative_metric = manifest.metrics["metric.test.cumulative_metric_with_window"]
+        assert cumulative_metric.type == MetricType.CUMULATIVE
+        # The legacy top-level field should stay unset for v2 YAML, which never has a
+        # `type_params` block to begin with.
+        assert cumulative_metric.type_params.window is None
+        assert cumulative_metric.type_params.cumulative_type_params.window == MetricTimeWindow(
+            count=7, granularity="day"
+        )
+        assert cumulative_metric.type_params.cumulative_type_params.metric.name == "simple_metric"
 
 
 class TestConversionMetricNoBaseMetricFails:
