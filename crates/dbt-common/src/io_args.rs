@@ -954,6 +954,7 @@ pub enum ClapResourceType {
     Metric,
     SavedQuery,
     Check,
+    Exposure,
 }
 
 impl Display for ClapResourceType {
@@ -971,6 +972,7 @@ impl Display for ClapResourceType {
             ClapResourceType::Metric => "metric",
             ClapResourceType::SavedQuery => "saved_query",
             ClapResourceType::Check => "check",
+            ClapResourceType::Exposure => "exposure",
         };
         write!(f, "{s}")
     }
@@ -991,6 +993,7 @@ impl From<&ClapResourceType> for NodeType {
             ClapResourceType::Metric => NodeType::Metric,
             ClapResourceType::SavedQuery => NodeType::SavedQuery,
             ClapResourceType::Check => NodeType::Check,
+            ClapResourceType::Exposure => NodeType::Exposure,
         }
     }
 }
@@ -1924,6 +1927,15 @@ pub fn validate_project_name(name: &str) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn clap_resource_type_exposure_maps_to_node_type() {
+        assert_eq!(ClapResourceType::Exposure.to_string(), "exposure");
+        assert_eq!(
+            NodeType::from(&ClapResourceType::Exposure),
+            NodeType::Exposure
+        );
+    }
 
     #[test]
     fn local_execution_backend_support_matrix() {
