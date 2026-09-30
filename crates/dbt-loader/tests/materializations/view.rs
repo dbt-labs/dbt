@@ -3,11 +3,14 @@ use std::sync::Arc;
 
 use dbt_adapter::relation::RelationObject;
 use dbt_adapter_core::AdapterType;
+use dbt_jinja_ctx::objects::run::HookConfig;
 use dbt_jinja_utils::mock_object::MockJinjaObject;
 use dbt_schemas::dbt_types::RelationType;
 use minijinja::Value;
 
-use crate::macro_test_harness::{MacroTestHarness, assert_executed_contains, default_mock_config};
+use crate::macro_test_harness::{
+    MacroTestHarness, assert_executed_contains, default_mock_config, executed_sql,
+};
 
 // ---------------------------------------------------------------------------
 // Shared helpers
@@ -205,6 +208,44 @@ mod databricks {
         let h = run_existing_table(ADAPTER);
         h.mock().observed_calls().assert_called("drop_relation");
         assert_executed_contains(h.mock(), "create or replace");
+    }
+
+    #[test]
+    fn transaction_false_hooks_follow_non_transactional_hooks_flag() {
+        for enabled in [false, true] {
+            let harness = build_view_harness(ADAPTER);
+            harness.set_behavior_flags([
+                ("use_materialization_v2", false),
+                ("use_non_transactional_hooks", enabled),
+            ]);
+            harness.mock().on("get_relation", |_| Ok(Value::from(())));
+            let hook = |sql: &str| {
+                Value::from_object(HookConfig {
+                    sql: sql.to_string(),
+                    transaction: false,
+                })
+            };
+            let ctx = harness
+                .materialization_context("my_view", "SELECT id, name FROM source_table")
+                .with("pre_hooks", Value::from(vec![hook("select 'pre'")]))
+                .with("post_hooks", Value::from(vec![hook("select 'post'")]))
+                .with("TARGET_PACKAGE_NAME", Value::from("test_project"))
+                .build();
+            render_view(&harness, ADAPTER, ctx).expect("v1 materialization should succeed");
+
+            let executed: Vec<String> = executed_sql(harness.mock())
+                .iter()
+                .map(|sql| sql.trim().to_string())
+                .collect();
+            assert!(executed.iter().any(|sql| sql.contains("create or replace")));
+            assert!(!executed.iter().any(|sql| sql == "commit;"));
+            if enabled {
+                assert_eq!(executed.first().unwrap(), "select 'pre'");
+                assert_eq!(executed.last().unwrap(), "select 'post'");
+            } else {
+                assert!(!executed.iter().any(|sql| sql.starts_with("select '")));
+            }
+        }
     }
 
     // -- use_materialization_v2 = true ----------------------------------
