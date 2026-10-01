@@ -24,7 +24,7 @@ use dbt_common::{
         DBT_CATALOG_JSON, DBT_COMPILED_DIR_NAME, DBT_MANIFEST_JSON, DBT_PROJECT_YML, ERROR,
         INSTALLING, VALIDATING, default_index_dir, default_metadata_dir,
     },
-    create_root_info_span, fs_err,
+    create_info_span, create_root_info_span, force_close_span, fs_err,
     io_args::{DisplayFormat, EvalArgs, ListOutputFormat, Phases, ShowOptions, SystemArgs},
     node_selector::IndirectSelection,
     path::get_target_write_path,
@@ -112,7 +112,10 @@ use crate::{
     },
     retry::{RETRIABLE_COMMANDS, RetryState},
     utils::{InvocationContext, write_catalog_stats_parquet, write_runtime_results_parquet},
-    vars::{validate_engine_env_vars, warn_unused_engine_env_vars},
+    vars::{
+        validate_engine_env_vars, warn_if_legacy_run_cache_mode_flag_used,
+        warn_unused_engine_env_vars,
+    },
 };
 
 // ------------------------------------------------------------------------------------------------
@@ -300,7 +303,7 @@ is false. This should not happen."
             // are sent, so we run it as a blocking tokio task.
             invocation_end_event(invocation_id, result_string, dbt_distribution, shutdown);
         })
-        .instrument(invocation_span)
+        .instrument(invocation_span.clone())
         .await
         .map_err(|e| {
             if e.is_cancelled() {
@@ -311,6 +314,11 @@ is false. This should not happen."
         })
         .unwrap();
     }
+
+    // End the invocation span now, rather than when its last handle is dropped: abandoned
+    // workers (e.g. catalog fetch) may still hold its descendants, and the invocation end
+    // (final metrics, execution summary) must be delivered before telemetry shuts down.
+    force_close_span(invocation_span);
 
     // Hand the captured artifacts (if any) to the caller. Phase-checkpoint
     // commands (parse, list, ...) signal success via Err(exit_status == 0) — a
@@ -337,6 +345,7 @@ async fn do_execute_fs(
     use CoreCommand::*;
 
     warn_unused_engine_env_vars();
+    warn_if_legacy_run_cache_mode_flag_used();
 
     // Current versions of rustls require us to explicitly install a default provider.
     // The default provider can only be installed once per process, so
@@ -1136,15 +1145,25 @@ impl<'a> AllPhasesExecutor<'a> {
 
         let retry_schedule = self.prepare_for_potential_retry()?;
 
-        // Implied index for `build`/`run`/`check` is EvalArgs-only (`Cli.to_eval_args`).
-        // `dbt retry` reconstructs `command` but keeps the `EvalArgs` produced from
-        // `Retry`, which did not get that default. Without it the parse-time check gate
-        // reads the previous invocation's index. Honor `--no-write-index` the same way
-        // the default does. Do not set `Cli.common_args.write_index`: that turns partial
-        // parse/load on, and a warm `dbt check --select <model>` unique_id-filters checks
-        // out of `ResolverState` (empty success).
+        // Gives a retried `build`/`check` the same default index a fresh invocation would get,
+        // when no metadata/index/catalog flag was passed explicitly. `dbt retry` reconstructs
+        // `command` but keeps the `EvalArgs` produced from `Retry`, which never went through
+        // `Cli::to_eval_args` and so never got that default. Honor `--no-write-index` the same
+        // way the default does. Do not set `Cli.common_args.write_index`: that turns partial
+        // parse/load on, and a warm `dbt check --select <model>` unique_id-filters checks out
+        // of `ResolverState` (empty success).
+        //
+        // Read `common_args.write_catalog`/`write_metadata` (raw flags), not `self.arg`'s
+        // (derived: `arg.write_metadata` folds in `effective_write_index()` and
+        // `generate_info_schema`, so it can already be `true` with neither flag passed
+        // explicitly). Mirrors `Cli::to_eval_args`, which skips this same default when
+        // `--write-catalog`/`--write-metadata` is explicit: the implied-index path sets
+        // `write_index_implied = true`, which gates the catalog fetch off below, so treating
+        // an explicit `--write-catalog` as implied here silently drops `catalog.json`.
         if matches!(self.arg.command, FsCommand::Build | FsCommand::Check)
             && !self.arg.write_index
+            && !self.cli.common_args.write_catalog
+            && !self.cli.common_args.write_metadata
             && !self.cli.common_args.no_write_index
         {
             let arg = self.arg.to_mut();
@@ -2888,10 +2907,6 @@ async fn fetch_catalog_data(
     let concurrency = batches.max(1); // this means max of (1 or batches)
     let mut handles = Vec::new();
 
-    // An `Id`, not a `Span`: holds no refcount, so it cannot keep the invocation alive.
-    // Only used for the `follows_from` link below; a stale `Id` is a no-op there.
-    let invocation_span_id = tracing::Span::current().id();
-
     for worker_id in 0..concurrency {
         let task_queue_clone = task_queue.clone();
         let relations_map_clone = relations_map.clone();
@@ -2906,45 +2921,7 @@ async fn fetch_catalog_data(
         let shared_results_clone = shared_results.clone();
         let shared_errors_clone = shared_errors.clone();
         let progress_tracker_clone = progress_tracker.clone();
-        let invocation_span_id_clone = invocation_span_id.clone();
-
-        // `Handle::spawn_blocking`, not the free `dbt_runtime::spawn_blocking`,
-        // and deliberately NOT `Span::current().enter()`ed inside the worker.
-        // The free function clones and enters the current span for the task's
-        // whole life; the `Handle` method captures none. The poll loop below
-        // abandons workers that blow past `WORKER_TIMEOUT` without joining them,
-        // so a worker can outlive this function. A live worker holding a handle
-        // to the invocation span (or any of its descendants) keeps that span's
-        // refcount above zero, so the subscriber never fires `on_close` for it
-        // -- and the end-of-invocation Execution Summary, which is emitted from
-        // `handle_invocation_end`, is silently dropped. Users saw a
-        // `--write-index`/`--write-catalog` build print "Fetched partial
-        // catalog.json results" and then simply stop, with no summary and no
-        // result counts (dbt-labs/fs#14424). Abandonment has to be total: these
-        // workers must not participate in the invocation's span lifetime.
-        //
-        // Dropping a blocking `JoinHandle` detaches rather than cancels, so
-        // abandonment still works. The pool's threads are built with
-        // `FS_DEFAULT_STACK_SIZE` (8 MiB, `main_impl.rs`), which is the stack
-        // these workers used to ask for themselves.
-        //
-        // ############################################################################
-        // # DO NOT COPY THIS PATTERN.                                                #
-        // #                                                                          #
-        // # CLI code running outside the invocation span is NOT allowed -- a lot of  #
-        // # things depend on that invariant. These workers are a deliberate, short-  #
-        // # term exception, tolerated only because an abandoned one would otherwise  #
-        // # pin the invocation span open (dbt-labs/fs#14424).                        #
-        // #                                                                          #
-        // # TODO(dbt-labs/fs#14598): once dbt-tracing can force a root span to shut  #
-        // # down, put these workers back under the invocation and delete the         #
-        // # independent root below.                                                  #
-        // ############################################################################
-        //
-        // A root rather than nothing at all: with no span context, the adapter's first
-        // span becomes an unnamed root and trips the data layer's `debug_assert!`, which
-        // panics the worker in debug builds.
-        let handle = dbt_runtime::Handle::current().spawn_blocking(move || -> FsResult<()> {
+        let handle = dbt_runtime::spawn_blocking(move || -> FsResult<()> {
             // Worker loop: process tasks until queue is empty
             loop {
                 let task = task_queue_clone.lock().unwrap().pop();
@@ -2992,28 +2969,21 @@ async fn fetch_catalog_data(
                     .map(|r| RelationObject::new(Arc::clone(r)).into_value())
                     .collect::<Vec<Value>>();
 
-                let db_schema = RelationObject::new(Arc::from(
-                    create_relation(
-                        adapter_type,
-                        database.to_string(),
-                        schema.clone(),
-                        maybe_region_clone.clone(), // hack for BQ
-                        None,
-                        ResolvedQuoting::default(),
-                    )?,
-                ))
+                let db_schema = RelationObject::new(Arc::from(create_relation(
+                    adapter_type,
+                    database.to_string(),
+                    schema.clone(),
+                    maybe_region_clone.clone(), // hack for BQ
+                    None,
+                    ResolvedQuoting::default(),
+                )?))
                 .into_value();
 
-                // Independent root -- see the DO NOT COPY banner on the spawn above.
-                // Dropped at the end of this iteration so tasks do not nest in each other.
-                let catalog_fetch_span = create_root_info_span(GenericOpExecuted::new(
+                let catalog_fetch_span = create_info_span(GenericOpExecuted::new(
                     "catalog_fetch".to_string(),
                     "fetching catalog".to_string(),
                     Some(relation_as_values.len() as u64),
                 ));
-                // A link, not a parent: keeps the span correlatable to the run without
-                // pinning it open.
-                catalog_fetch_span.follows_from(invocation_span_id_clone.clone());
                 let _catalog_fetch_span_guard = catalog_fetch_span.clone().entered();
 
                 // To avoid blowing up the query, we use the get_catalog macro for batches with more than 50 relations
@@ -3051,14 +3021,18 @@ async fn fetch_catalog_data(
                             shared_results_clone.lock().unwrap().push(record_batch);
                         }
                         Err(e) => {
-                            let msg = format!("[Non-critical] Issue processing catalog for schema '{database}.{schema}': {e}");
+                            let msg = format!(
+                                "[Non-critical] Issue processing catalog for schema '{database}.{schema}': {e}"
+                            );
                             record_span_status(&catalog_fetch_span, Some(&msg));
                             emit_info_log_message(&msg);
                             shared_errors_clone.lock().unwrap().push(msg);
                         }
                     },
                     Err(e) => {
-                        let msg = format!("[Non-critical] Issue fetching catalog for schema '{database}.{schema}': {e}");
+                        let msg = format!(
+                            "[Non-critical] Issue fetching catalog for schema '{database}.{schema}': {e}"
+                        );
                         record_span_status(&catalog_fetch_span, Some(&msg));
                         emit_info_log_message(&msg);
                         shared_errors_clone.lock().unwrap().push(msg);

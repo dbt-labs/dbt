@@ -256,8 +256,9 @@ pub fn extend_base_context_stateful_fn(
     base_context: &mut BTreeMap<String, MinijinjaValue>,
     root_project_name: &str,
     packages: BTreeSet<String>,
+    result_store: Option<ResultStore>,
 ) {
-    let result_store = ResultStore::default();
+    let result_store = result_store.unwrap_or_default();
     base_context.insert(
         "store_result".to_owned(),
         MinijinjaValue::from_function(result_store.store_result()),

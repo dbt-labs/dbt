@@ -16,6 +16,7 @@ mod adapter_engine;
 mod databricks_query_tags;
 pub use adapter_engine::AdapterEngine;
 pub use adapter_engine::Options;
+pub(crate) use databricks_query_tags::databricks_statement_options;
 
 mod concat_batches;
 

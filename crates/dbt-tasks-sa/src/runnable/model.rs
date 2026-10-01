@@ -207,7 +207,7 @@ async fn resolve_batch_window(
 ) -> FsResult<(MicrobatchBuilder, DateTime<Utc>, DateTime<Utc>, bool)> {
     let batch_builder = MicrobatchBuilder::from_config(
         model.deprecated_config.batch_size.clone(),
-        model.deprecated_config.begin.as_deref(),
+        model.deprecated_config.begin,
         model.deprecated_config.lookback,
     )?;
 

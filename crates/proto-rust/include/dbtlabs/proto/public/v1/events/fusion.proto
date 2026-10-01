@@ -369,6 +369,9 @@ message RunModel {
   // catalog label). empty string when the model does not use catalogs.yml.
   string catalog_type = 23;
   v1.public.common.vortex_telemetry_contexts.VortexTelemetryCommonContext common_context = 24;
+
+  // where the node was executed. one of "remote", "local", or "lake_compute".
+  string compute_mode = 25;
 }
 
 message Onboarding {

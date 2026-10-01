@@ -14,7 +14,7 @@ use dbt_jinja_ctx::{GlobalCore, JinjaObject, ResolveCore, to_jinja_btreemap};
 use dbt_jinja_vars::DbtVars;
 use dbt_schemas::schemas::{
     common::DbtQuoting,
-    dbt_catalogs::DbtCatalogs,
+    dbt_catalogs_deprecated::DbtCatalogs,
     profiles::{DbConfig, TargetContext},
 };
 use indexmap::IndexMap;

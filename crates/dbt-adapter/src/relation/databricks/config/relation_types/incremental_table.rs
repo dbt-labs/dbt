@@ -189,10 +189,7 @@ mod tests {
                         components::RelationTagsLoader.type_name(),
                         ComponentConfigChange::Some(
                             components::RelationTagsLoader::new_component_type_erased(
-                                IndexMap::from_iter([
-                                    ("a_tag".to_string(), "new".to_string()),
-                                    ("b_tag".to_string(), "old".to_string()),
-                                ]),
+                                IndexMap::from_iter([("a_tag".to_string(), "new".to_string())]),
                             ),
                         ),
                     ),
@@ -290,9 +287,6 @@ mod tests {
         <a_tag>
             new
         </a_tag>
-        <b_tag>
-            old
-        </b_tag>
     </set_tags>
 </tags>
 <row_filter>

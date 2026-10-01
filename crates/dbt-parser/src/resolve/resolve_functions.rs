@@ -16,6 +16,7 @@ use dbt_schemas::dbt_utils::resolve_package_quoting;
 use dbt_schemas::schemas::common::{Access, DbtMaterialization, DbtQuoting};
 use dbt_schemas::schemas::project::FunctionConfig;
 use dbt_schemas::schemas::project::ResolvedConfig;
+use dbt_schemas::schemas::telemetry::NodeType;
 use dbt_schemas::schemas::{AbsorbedOverload, DbtFunctionAttr};
 use dbt_schemas::{
     schemas::{
@@ -40,15 +41,16 @@ use crate::resolve::resolve_utils::{
     build_unrendered_config, extract_config_map, validate_node_adapter,
 };
 use crate::utils::{
-    RelationComponents, extract_resource_config_from_raw_project, parse_unrendered_config,
-    update_node_relation_components,
+    RelationComponents, extract_resource_config_from_raw_project, update_node_relation_components,
 };
 use crate::{
     args::ResolveArgs,
-    renderer::{SqlFileRenderResult, render_unresolved_sql_files},
+    renderer::{
+        SqlFileRenderResult, render_unresolved_sql_files,
+        strip_deprecated_warehouse_keys_from_properties,
+    },
     utils::{get_node_fqn, get_original_file_path, get_unique_id},
 };
-use dbt_common::tokiofs::read_to_string;
 
 use super::resolve_properties::MinimalPropertiesEntry;
 
@@ -126,6 +128,7 @@ pub async fn resolve_functions(
                 .as_ref()
                 .unwrap_or(&vec![])
                 .clone(),
+            resource_type: Some(NodeType::Function),
         }),
         jinja_env: env.clone(),
         runtime_config: runtime_config.clone(),
@@ -163,6 +166,12 @@ pub async fn resolve_functions(
                 Some((key.clone(), config_map))
             })
             .collect();
+
+    strip_deprecated_warehouse_keys_from_properties(
+        function_properties,
+        NodeType::Function,
+        dependency_package_name,
+    );
 
     let mut function_sql_resources_map =
         render_unresolved_sql_files::<FunctionConfig, FunctionProperties>(
@@ -234,6 +243,7 @@ pub async fn resolve_functions(
         properties: maybe_properties,
         status,
         patch_path,
+        raw_config_call_dict,
         ..
     } in function_sql_resources_map.into_iter()
     {
@@ -335,12 +345,6 @@ pub async fn resolve_functions(
                 .unwrap_or(&vec![]),
         );
 
-        // Capture inline `{{ config(...) }}` overrides from the function SQL file, Jinja preserved.
-        let raw_config_call_dict = read_to_string(dbt_asset.base_path.join(&dbt_asset.path))
-            .await
-            .ok()
-            .and_then(|sql| parse_unrendered_config(&sql, false));
-
         // Merge the four raw sources (project < root < schema.yml < inline) into the node's
         // `unrendered_config`. Functions do not support pre_hook/post_hook, so hook-name
         // normalization is disabled.
@@ -402,6 +406,7 @@ pub async fn resolve_functions(
                 // A function is not a relation, so there is nothing to bind into another
                 // platform's catalog: no `+propagate` config exists for this node type.
                 propagate: Vec::new(),
+                effective_propagation_target: None,
                 database: database.to_string(), // will be updated below
                 schema: schema.to_string(),     // will be updated below
                 alias: "".to_owned(),           // will be updated below

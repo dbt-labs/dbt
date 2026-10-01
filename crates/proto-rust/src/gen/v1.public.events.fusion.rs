@@ -441,6 +441,9 @@ pub struct RunModel {
     pub common_context: ::core::option::Option<
         super::super::common::vortex_telemetry_contexts::VortexTelemetryCommonContext,
     >,
+    /// where the node was executed. one of "remote", "local", or "lake_compute".
+    #[prost(string, tag = "25")]
+    pub compute_mode: ::prost::alloc::string::String,
 }
 impl ::prost::Name for RunModel {
     const NAME: &'static str = "RunModel";

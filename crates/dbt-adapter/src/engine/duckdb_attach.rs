@@ -1,4 +1,4 @@
-//! DuckDB v2-catalog `ATTACH` statement composition.
+//! DuckDB catalog `ATTACH` statement composition.
 //!
 //! Extracted from the generic `AdbcEngine` (`engine/adbc.rs`) so this
 //! DuckDB-specific logic is not hardcoded in the cross-adapter engine.
@@ -11,15 +11,15 @@ use std::collections::HashMap;
 
 use dbt_adapter_core::AdapterType;
 use dbt_common::AdapterResult;
-use dbt_schemas::schemas::dbt_catalogs_v2::{CatalogSpecV2View, CatalogType, DbtCatalogsV2View};
+use dbt_schemas::schemas::dbt_catalogs::{CatalogSpecView, CatalogType, DbtCatalogsView};
 
 use dbt_adapter_sql::ident::escape_string_literal;
 
 use crate::errors::{AdapterError, AdapterErrorKind};
 use crate::metadata::duckdb::{CatalogSpecDuckDbExt, attaches_via_iceberg_rest};
 
-/// Pure: compose the DuckDB v2-catalog ATTACH statements for a parsed
-/// `DbtCatalogsV2View`. Returns the statements in emission order, with a
+/// Pure: compose the DuckDB catalog ATTACH statements for a parsed
+/// `DbtCatalogsView`. Returns the statements in emission order, with a
 /// leading `INSTALL ducklake` prelude when any DuckLake catalog is present.
 ///
 /// Local filesystem catalogs intentionally do not emit ATTACH SQL; they provide
@@ -27,8 +27,8 @@ use crate::metadata::duckdb::{CatalogSpecDuckDbExt, attaches_via_iceberg_rest};
 ///
 /// Errors when alias sanitization produces an empty alias or a duplicate
 /// alias across catalogs.
-pub fn compose_v2_catalog_attach_stmts(
-    view: &DbtCatalogsV2View<'_>,
+pub fn compose_catalog_attach_stmts(
+    view: &DbtCatalogsView<'_>,
     platform: &str,
 ) -> AdapterResult<Vec<String>> {
     // INSTALL ducklake must lead all ATTACHes but we can't know it's needed until we've seen the catalogs
@@ -82,7 +82,7 @@ pub fn compose_v2_catalog_attach_stmts(
 /// The catalog's sanitized attach alias (via [`CatalogSpecDuckDbExt`], the same
 /// resolution metadata routing uses), or a Configuration error when nothing
 /// identifier-safe is left after sanitization.
-fn resolve_required_attach_alias(catalog: &CatalogSpecV2View<'_>) -> AdapterResult<String> {
+fn resolve_required_attach_alias(catalog: &CatalogSpecView<'_>) -> AdapterResult<String> {
     let alias = catalog.resolved_attach_alias().unwrap_or_default();
     if alias.is_empty() {
         return Err(AdapterError::new(
@@ -97,7 +97,7 @@ fn resolve_required_attach_alias(catalog: &CatalogSpecV2View<'_>) -> AdapterResu
 }
 
 fn build_duckdb_ducklake_attach_stmt(
-    catalog: &CatalogSpecV2View<'_>,
+    catalog: &CatalogSpecView<'_>,
     duckdb: &dbt_yaml::Mapping,
 ) -> AdapterResult<(String, String)> {
     let alias = resolve_required_attach_alias(catalog)?;
@@ -166,7 +166,7 @@ fn build_duckdb_ducklake_attach_stmt(
 }
 
 fn build_duckdb_catalog_attach_stmt(
-    catalog: &CatalogSpecV2View<'_>,
+    catalog: &CatalogSpecView<'_>,
     duckdb: &dbt_yaml::Mapping,
 ) -> AdapterResult<(String, String)> {
     let alias = resolve_required_attach_alias(catalog)?;

@@ -2,6 +2,9 @@
 //! referenced by the SQL being bound, which columns were confidently
 //! inferred from usage. Shared across every model bound in a run.
 //!
+//! Writers populate the registry during binding. Once binding finishes,
+//! consumers only read it; later analysis must not add inferred columns.
+//!
 //! Plan-tree-based column lineage (`dbt-lineage`) can't see these columns on
 //! its own: an inferred column becomes an opaque placeholder in the bound
 //! plan, with no real column reference left to trace back to its source.

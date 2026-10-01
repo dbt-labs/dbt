@@ -29,7 +29,7 @@ use dbt_common::cancellation::{CancellationToken, never_cancels};
 use dbt_common::{AdapterError, AdapterErrorKind, FsResult};
 use dbt_schemas::schemas::InternalDbtNodeWrapper;
 use dbt_schemas::schemas::common::{ClusterConfig, DbtQuoting, PartitionConfig};
-use dbt_schemas::schemas::dbt_catalogs::DbtCatalogs;
+use dbt_schemas::schemas::dbt_catalogs_deprecated::DbtCatalogs;
 use dbt_schemas::schemas::dbt_column::DbtColumn;
 use dbt_schemas::schemas::manifest::{BigqueryPartitionConfig, GrantAccessToTarget};
 use dbt_schemas::schemas::project::ModelConfig;
@@ -370,17 +370,18 @@ impl Adapter {
         let Some(metadata_adapter) = self.metadata_adapter() else {
             return Ok(());
         };
+        // report_progress: true — relation-cache hydration drives a progress bar.
         let collected_relations = metadata_adapter
-            .list_relations_in_parallel(db_schemas, self.cancellation_token())
+            .list_relations_in_parallel(db_schemas, self.cancellation_token(), true)
             .await
             .map_err(into_fs_error)
             .map(|r| {
                 r.into_iter()
-                    .filter_map(|(k, v)| {
-                        if let Ok(relations) = v {
-                            Some((k, relations))
-                        } else {
-                            // XXX: Warnings are not shown right now since this is purely for performance
+                    .filter_map(|(k, v)| match v {
+                        Ok(relations) => Some((k, relations)),
+                        Err(e) => {
+                            // Left uncached, so callers do a per-relation lookup instead.
+                            tracing::warn!("relation_cache: listing schema {k} failed: {e}");
                             None
                         }
                     })
@@ -1460,7 +1461,7 @@ impl Adapter {
                         // catalogs on each call.
                         let skip_schema_listing = match adapter.adapter_type() {
                             AdapterType::DuckDB => {
-                                duckdb::is_duckdb_v2_external_iceberg_catalog_database(
+                                duckdb::is_duckdb_external_iceberg_catalog_database(
                                     &resolved_catalog,
                                 )
                             }
@@ -1474,6 +1475,7 @@ impl Adapter {
                             let query_ctx = query_ctx_from_state(state)?
                                 .with_desc("get_relation > list_relations call");
                             let maybe_relations_list = adapter.list_relations(
+                                Some(state),
                                 &query_ctx,
                                 conn.as_mut(),
                                 &db_schema,
@@ -2500,6 +2502,7 @@ impl Adapter {
                 let mut conn =
                     adapter.borrow_tlocal_connection(Some(state), node_id_from_state(state))?;
                 let result = adapter.list_relations(
+                    Some(state),
                     &query_ctx,
                     conn.as_mut(),
                     &CatalogAndSchema::from(schema_relation.as_ref()),
@@ -2918,11 +2921,9 @@ impl Adapter {
                     _ => config
                         .__warehouse_specific_config__
                         .tblproperties
-                        .clone()
-                        .unwrap_or_default()
-                        .0
-                        .into_iter()
-                        .map(|(k, v)| (k, yml_value_to_minijinja(v)))
+                        .iter()
+                        .flat_map(|tp| tp.0.iter())
+                        .map(|(k, v)| (k.to_string(), yml_value_to_minijinja(v)))
                         .collect(),
                 };
 
@@ -3618,27 +3619,6 @@ impl Adapter {
         }
     }
 
-    /// Wrap backtick-rendered SQL identifiers on metric_view `source:` lines in
-    /// YAML double quotes. Other keys are left untouched.
-    ///
-    /// Only available with Databricks adapter.
-    #[tracing::instrument(skip_all, level = "trace")]
-    pub fn yaml_quote_backtick_values(
-        &self,
-        _state: &State,
-        args: &[Value],
-    ) -> Result<Value, minijinja::Error> {
-        match &self.inner {
-            Typed { adapter, .. } => {
-                let iter = ArgsIter::new("yaml_quote_backtick_values", &["yaml_body"], args);
-                let yaml_body = iter.next_arg::<&str>()?;
-                iter.finish()?;
-                Ok(Value::from(adapter.yaml_quote_backtick_values(yaml_body)?))
-            }
-            Parse(_) => unimplemented!("yaml_quote_backtick_values"),
-        }
-    }
-
     /// Used internally to attempt executing a Snowflake `use warehouse [name]` statement.
     #[tracing::instrument(skip(self), level = "trace")]
     pub fn use_warehouse(
@@ -4273,16 +4253,12 @@ impl Adapter {
             "strip_trailing_statement_terminator" => {
                 self.strip_trailing_statement_terminator(state, args)
             }
-            // yaml_body: str
-            "yaml_quote_backtick_values" => self.yaml_quote_backtick_values(state, args),
             "get_seed_file_path" => {
                 // model: dict (seed node)
                 let iter = ArgsIter::new(name, &["model"], args);
                 let model = iter.next_arg::<Value>()?;
                 iter.finish()?;
 
-                // Extract seed file path from the model
-                // The seed file path is root_path + original_file_path
                 let seed =
                     minijinja_value_to_typed_struct::<dbt_schemas::schemas::nodes::DbtSeed>(model)
                         .map_err(|e| {
@@ -4292,9 +4268,9 @@ impl Adapter {
                             )
                         })?;
 
-                let root_path = seed.__seed_attr__.root_path.unwrap_or_default();
-                let original_file_path = &seed.__common_attr__.original_file_path;
-                let full_path = root_path.join(original_file_path);
+                let full_path = seed
+                    .file_path_from_root()
+                    .unwrap_or_else(|| seed.__common_attr__.original_file_path.to_path_buf());
                 Ok(Value::from(full_path.display().to_string()))
             }
             "external_root" => {

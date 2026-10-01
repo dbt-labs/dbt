@@ -491,6 +491,18 @@ mod tests {
     }
 
     #[test]
+    fn test_normalize_compact_multi_unit_duration_phrase() {
+        // Long-running warehouse-bound models can render "in 4m28s" with no space between
+        // units, unlike the "in 2m 10s" form the other duration tests cover.
+        let line = " Succeeded model adapters_snowflake_dynamic_table.dt_copy_grants1 (dynamic_table) [16 of 18 in 4m28s]";
+        let postprocess_actual = postprocess_actual(line.to_string(), true);
+        assert_eq!(
+            " Succeeded model adapters_snowflake_dynamic_table.dt_copy_grants1 (dynamic_table) [index of 18 in duration]",
+            postprocess_actual
+        );
+    }
+
+    #[test]
     fn test_normalize_version_banner_for_every_brand() {
         // The banner's brand comes from the binary's `CliFeature::command_name`,
         // and the action column is right-aligned, hence the leading padding.

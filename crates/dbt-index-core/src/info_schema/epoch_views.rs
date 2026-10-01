@@ -410,7 +410,7 @@ fn cast_cols(spec: &TableSpec, bodies: &[(&str, String)]) -> Result<Vec<String>,
 fn json_entries(obj: &str) -> String {
     format!(
         "list_transform(list_zip(json_keys({obj}), json_extract({obj}, '$.*')), \
-         z -> struct_pack(key := struct_extract(z, 1), val := struct_extract(z, 2)))"
+         lambda z: struct_pack(key := struct_extract(z, 1), val := struct_extract(z, 2)))"
     )
 }
 
@@ -720,14 +720,14 @@ fn own_sql(
             let is_scope =
                 format!("json_type(q.val) = 'OBJECT' AND list_contains({installed}, q.key)");
             let own_vars = format!(
-                "list_filter({vars}, q -> NOT ({is_scope}))",
+                "list_filter({vars}, lambda q: NOT ({is_scope}))",
                 vars = json_entries("p.val"),
             );
             let list = format!(
                 "flatten(list_transform(\
-                 list_filter({packages}, p -> p.key NOT IN ({skip})), \
-                 p -> list_transform({own_vars}, \
-                 q -> struct_pack(package := p.key, name := q.key, value := {value}))))",
+                 list_filter({packages}, lambda p: p.key NOT IN ({skip})), \
+                 lambda p: list_transform({own_vars}, \
+                 lambda q: struct_pack(package := p.key, name := q.key, value := {value}))))",
                 packages = json_entries(&format!("{BASE}.vars_json")),
             );
             let cols = cast_cols(

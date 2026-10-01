@@ -1,0 +1,7 @@
+kind: Fixes
+body: 'Snowflake interactive_table: correct the dbt1005 message for an invalid cluster_by — every entry must be non-blank, not just one'
+time: 2026-09-10T09:56:37.121953+05:30
+custom:
+    author: itsnamangoyal
+    issue: ""
+    project: dbt-core

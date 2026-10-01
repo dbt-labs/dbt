@@ -373,6 +373,7 @@ impl GraphBuilder {
         drop(first_upstream_nodes_per_phase);
 
         // Add edges reflecting child render -> parent run / analyze for dynamic or none nodes
+        let overlapping_seeds = overlapping_source_to_seed(schedule, nodes);
         for (unique_id, _) in phase_to_nodes.get(&TP::Render).unwrap().iter() {
             // Unit tests are handled above for all of their dependncies, so skip here
             if unique_id.starts_with("unit_test.") {
@@ -406,7 +407,15 @@ impl GraphBuilder {
                 } else {
                     Some(TP::Analyze)
                 }
-            } else if phases.contains(&TP::Run) && buckets.in_baseline_or_off_closure(unique_id) {
+            } else if phases.contains(&TP::Run)
+                && (buckets.in_baseline_or_off_closure(unique_id)
+                    || frontier_render_needs_upstream_run(
+                        schedule,
+                        &reverse_deps,
+                        buckets,
+                        unique_id,
+                    ))
+            {
                 Some(TP::Run)
             } else {
                 Some(TP::Analyze)
@@ -415,6 +424,13 @@ impl GraphBuilder {
             if let Some(phase_to_dep) = maybe_phase_to_dep {
                 if let Some(deps) = schedule.deps.get(unique_id) {
                     for dep in deps {
+                        // An overlapping source has no Run task; the seed that materializes it
+                        // does, so wait on the seed instead.
+                        let dep = if phase_to_dep == TP::Run {
+                            overlapping_seeds.get(dep).unwrap_or(dep)
+                        } else {
+                            dep
+                        };
                         if let Some(dep_phases) = node_to_phases.get(dep)
                         && dep_phases.contains(&phase_to_dep)
                         // Never depend on baseline analyze
@@ -786,25 +802,17 @@ fn initialize_graph(
     )
 }
 
-/// Add seed Run → dependent Run edges for nodes that depend on overlapping sources.
-///
-/// When a model depends on a source that shares a `relation_name` with a seed,
-/// the seed must materialize first so the table exists when the model runs.
-/// Seed schemas are pre-registered before the graph, so only the Run→Run
-/// ordering matters here.
-fn add_overlapping_source_seed_edges(
-    graph: &mut DiGraph<Arc<dyn Task>, ()>,
+/// Map each overlapping source - a source whose `relation_name` is also a selected seed's -
+/// to the seed that materializes it. Empty when the schedule has no overlapping sources.
+fn overlapping_source_to_seed(
     schedule: &Schedule<String>,
     nodes: &Nodes,
-    node_indices: &BTreeMap<(TP, String), NodeIndex>,
-) {
+) -> BTreeMap<String, String> {
     if schedule.overlapping_sources.is_empty() {
-        return;
+        return BTreeMap::new();
     }
 
-    use std::collections::HashMap;
-
-    let relation_name_to_seed: HashMap<String, String> = nodes
+    let relation_name_to_seed: BTreeMap<&String, &String> = nodes
         .seeds
         .iter()
         .filter_map(|(seed_uid, seed_node)| {
@@ -812,36 +820,67 @@ fn add_overlapping_source_seed_edges(
                 .base()
                 .relation_name
                 .as_ref()
-                .map(|rn| (rn.clone(), seed_uid.clone()))
+                .map(|rn| (rn, seed_uid))
         })
         .collect();
 
-    // Pre-compute source_uid -> relation_name map for overlapping sources only.
-    let source_relation_names: HashMap<String, String> = schedule
+    schedule
         .overlapping_sources
         .iter()
         .filter_map(|source_uid| {
             let source_node = nodes.sources.get(source_uid)?;
-            let relation_name = source_node.base().relation_name.as_ref()?.clone();
-            Some((source_uid.clone(), relation_name))
+            let relation_name = source_node.base().relation_name.as_ref()?;
+            let seed_uid = relation_name_to_seed.get(relation_name)?;
+            Some((source_uid.clone(), (*seed_uid).clone()))
         })
-        .collect();
+        .collect()
+}
+
+/// A frontier node's render exists only to feed a selected unit test and it has no analyze of
+/// its own, so ask that unit test's bucket whether the render still probes the warehouse.
+fn frontier_render_needs_upstream_run(
+    schedule: &Schedule<String>,
+    reverse_deps: &HashMap<String, HashSet<String>>,
+    buckets: &dyn StaticAnalysisBuckets,
+    unique_id: &str,
+) -> bool {
+    schedule.frontier_nodes.contains(unique_id)
+        && reverse_deps.get(unique_id).is_some_and(|children| {
+            children.iter().any(|child| {
+                child.starts_with("unit_test.")
+                    && schedule.selected_nodes.contains(child)
+                    && buckets.in_baseline_or_off_closure(child)
+            })
+        })
+}
+
+/// Add seed Run -> dependent Run edges for nodes that depend on overlapping sources.
+///
+/// This makes the seed's table exist before the dependent runs. Ordering the dependent's
+/// *render* after the seed is handled in `build_phased_task_graph`.
+fn add_overlapping_source_seed_edges(
+    graph: &mut DiGraph<Arc<dyn Task>, ()>,
+    schedule: &Schedule<String>,
+    nodes: &Nodes,
+    node_indices: &BTreeMap<(TP, String), NodeIndex>,
+) {
+    let source_to_seed = overlapping_source_to_seed(schedule, nodes);
+    if source_to_seed.is_empty() {
+        return;
+    }
 
     // Add dependency edges.
     for unique_id in schedule.sorted_nodes.iter() {
         if let Some(deps) = schedule.deps.get(unique_id) {
             for dep_uid in deps {
                 // Check if this dependency is an overlapping source.
-                if let Some(relation_name) = source_relation_names.get(dep_uid) {
-                    // Find corresponding seed by relation_name.
-                    if let Some(seed_uid) = relation_name_to_seed.get(relation_name) {
-                        if let (Some(&from_idx), Some(&to_idx)) = (
-                            node_indices.get(&(TP::Run, seed_uid.clone())),
-                            node_indices.get(&(TP::Run, unique_id.clone())),
-                        ) {
-                            // Add seed Run -> dependent Run edge.
-                            graph.update_edge(from_idx, to_idx, ());
-                        }
+                if let Some(seed_uid) = source_to_seed.get(dep_uid) {
+                    if let (Some(&from_idx), Some(&to_idx)) = (
+                        node_indices.get(&(TP::Run, seed_uid.clone())),
+                        node_indices.get(&(TP::Run, unique_id.clone())),
+                    ) {
+                        // Add seed Run -> dependent Run edge.
+                        graph.update_edge(from_idx, to_idx, ());
                     }
                 }
             }

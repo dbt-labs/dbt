@@ -17,6 +17,8 @@ use crate::template::CompiledTemplate;
 use crate::template::TemplateConfig;
 
 type LoadFunc = dyn for<'a> Fn(&'a str) -> Result<Option<String>, Error> + Send + Sync;
+type LoadFuncWithFilename =
+    dyn for<'a> Fn(&'a str) -> Result<Option<(String, Option<String>)>, Error> + Send + Sync;
 
 /// Internal utility for dynamic template loading.
 ///
@@ -28,6 +30,7 @@ type LoadFunc = dyn for<'a> Fn(&'a str) -> Result<Option<String>, Error> + Send 
 pub(crate) struct LoaderStore<'source> {
     pub template_config: TemplateConfig,
     loader: Option<Arc<LoadFunc>>,
+    loader_with_filename: Option<Arc<LoadFuncWithFilename>>,
     owned_templates: MemoMap<Arc<str>, Arc<LoadedTemplate>>,
     borrowed_templates: BTreeMap<&'source str, Arc<CompiledTemplate<'source>>>,
     profile: CodeGenerationProfile,
@@ -78,6 +81,7 @@ impl<'source> LoaderStore<'source> {
         LoaderStore {
             template_config,
             loader: None,
+            loader_with_filename: None,
             owned_templates: MemoMap::default(),
             borrowed_templates: BTreeMap::default(),
             profile,
@@ -143,12 +147,17 @@ impl<'source> LoaderStore<'source> {
             let name: Arc<str> = name.into();
             self.owned_templates
                 .get_or_try_insert(&name.clone(), || -> Result<_, Error> {
-                    let loader_result = match self.loader {
-                        Some(ref loader) => ok!(loader(&name)),
-                        None => None,
+                    let loaded = if let Some(ref loader) = self.loader_with_filename {
+                        ok!(loader(&name))
+                    } else {
+                        match self.loader {
+                            Some(ref loader) => ok!(loader(&name)).map(|source| (source, None)),
+                            None => None,
+                        }
                     }
                     .ok_or_else(|| Error::new_not_found(&name));
-                    self.make_owned_template(name, ok!(loader_result), None, self.profile.clone())
+                    let (source, filename) = ok!(loaded);
+                    self.make_owned_template(name, source, filename, self.profile.clone())
                 })
                 .map(|x| x.borrow_dependent())
         }
@@ -159,6 +168,15 @@ impl<'source> LoaderStore<'source> {
         F: Fn(&str) -> Result<Option<String>, Error> + Send + Sync + 'static,
     {
         self.loader = Some(Arc::new(f));
+        self.loader_with_filename = None;
+    }
+
+    pub fn set_loader_with_filename<F>(&mut self, f: F)
+    where
+        F: Fn(&str) -> Result<Option<(String, Option<String>)>, Error> + Send + Sync + 'static,
+    {
+        self.loader_with_filename = Some(Arc::new(f));
+        self.loader = None;
     }
 
     fn make_owned_template(

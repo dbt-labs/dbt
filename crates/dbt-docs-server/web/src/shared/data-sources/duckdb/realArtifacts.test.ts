@@ -149,11 +149,8 @@ describe.skipIf(!ARTIFACTS)(
           encoding: 'utf8',
           stdio: ['pipe', 'pipe', 'pipe'],
         });
-        // A count on its own line means it bound and ran. Warnings are tolerated
-        // and arrive on stdout with ANSI colour: the search queries use the `->`
-        // lambda arrow, which the pinned duckdb-wasm requires and a newer CLI
-        // deprecates, so a strict match would fail on a query that is correct for
-        // the engine that will actually run it.
+        // A count on its own line means it bound and ran. Strip ANSI colour from
+        // warnings so they do not interfere with the result match.
         const plain = out.replace(/\u001b\[[0-9;]*m/g, '');
         expect(plain).toMatch(/^\d+$/m);
       });

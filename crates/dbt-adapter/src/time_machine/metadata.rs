@@ -90,12 +90,14 @@ where
                     });
                 }
                 Some(Err(e)) => {
+                    let kind = if e.is_method_mismatch {
+                        AdapterErrorKind::ReplayMethodMismatch
+                    } else {
+                        AdapterErrorKind::Driver
+                    };
                     // Use the original error message so replay output matches the recording exactly.
                     let original_msg = e.recorded_error.unwrap_or(e.message);
-                    return Err(Cancellable::Error(AdapterError::new(
-                        AdapterErrorKind::Driver,
-                        original_msg,
-                    )));
+                    return Err(Cancellable::Error(AdapterError::new(kind, original_msg)));
                 }
                 None => {
                     // No matching recorded event found in replay mode.
@@ -795,14 +797,16 @@ pub fn args_create_schemas_if_not_exists(
 mod tests {
     use super::*;
     use arrow_schema::{DataType, Field, TimeUnit};
+    use dbt_frontend_common::column_resolution::IdentifierCaseSensitivity;
 
     #[test]
     fn test_schema_result_serialization() {
         let mut map = HashMap::new();
-        let schema = Arc::new(Schema::new(vec![
+        let schema = Schema::new(vec![
             Field::new("id", DataType::Int64, false),
             Field::new("name", DataType::Utf8, true),
-        ]));
+        ]);
+        let schema = Arc::new(IdentifierCaseSensitivity::CaseInsensitive.apply_to_schema(&schema));
         map.insert("test.schema.table".to_string(), Ok(schema));
         map.insert(
             "test.schema.error".to_string(),
@@ -818,6 +822,15 @@ mod tests {
         // Check successful entry has schema
         let table_result = &obj["test.schema.table"];
         assert!(table_result.get("ok").is_some());
+
+        let deserialized: HashMap<String, AdapterResult<Arc<Schema>>> =
+            HashMap::from_recording_json(&json).expect("schema recording should deserialize");
+        assert_eq!(
+            IdentifierCaseSensitivity::from_field(
+                deserialized["test.schema.table"].as_ref().unwrap().field(0)
+            ),
+            Some(IdentifierCaseSensitivity::CaseInsensitive)
+        );
 
         // Check error entry
         let error_result = &obj["test.schema.error"];

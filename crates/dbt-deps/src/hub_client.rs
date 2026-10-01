@@ -3,7 +3,6 @@ use crate::semver::{Version, VersionSpecifier, versions_compatible};
 use dbt_common::{ErrorCode, FsResult, err, fs_err};
 use dbt_schemas::schemas::packages::DbtPackageEntry;
 use dbt_schemas::schemas::serde::StringOrArrayOfStrings;
-use reqwest::StatusCode;
 use reqwest_middleware::ClientWithMiddleware;
 use serde::Deserialize;
 use std::collections::{HashMap, HashSet};
@@ -174,8 +173,7 @@ impl HubClient {
                 let res = self.inner.client.get(&url).send().await.map_err(|e| {
                     fs_err!(
                         ErrorCode::RuntimeError,
-                        "Failed to get index from {url}; status: {}",
-                        e
+                        "Failed to get index from {url}: {e:#}"
                     )
                 })?;
                 if res.status().is_success() {
@@ -207,8 +205,7 @@ impl HubClient {
         let res = self.inner.client.get(&url).send().await.map_err(|e| {
             fs_err!(
                 ErrorCode::RuntimeError,
-                "Failed to get package from {url}; status: {}",
-                e.status().unwrap_or(StatusCode::INTERNAL_SERVER_ERROR)
+                "Failed to get package from {url}: {e:#}"
             )
         })?;
         if res.status().is_success() {

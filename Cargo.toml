@@ -69,6 +69,7 @@ members = [
   "crates/dbt-dist-classify",
   "crates/dbt-sa-cli",
   "crates/dbt-adbc",
+  "crates/dbt-artifact-download",
   "crates/dbt-tracked-stmt",
   "crates/adbc-record-replay",
   "crates/dbt-deps",
@@ -94,6 +95,7 @@ members = [
 
   "crates/dbt-ci",
   "crates/dbt-login",
+  "crates/dbt-file-security",
   "crates/dbt-platform-auth",
   "crates/dbt-platform",
 
@@ -115,7 +117,7 @@ homepage = "https://getdbt.com"
 keywords = ["sql", "parquet", "json", "csv", "dbt"]
 license = "Apache-2.0"
 repository = "https://github.com/dbt-labs/dbt-core"
-version = "2.0.0-rc.2"
+version = "2.0.5"
 
 [patch.crates-io]
 
@@ -264,6 +266,7 @@ dbt-error = { path = "crates/dbt-error" }
 dbt-feature-fingerprint = { path = "crates/dbt-feature-fingerprint" }
 dbt-feature-gating = { path = "crates/dbt-feature-gating" }
 dbt-features = { path = "crates/dbt-features" }
+dbt-file-security = { path = "crates/dbt-file-security" }
 dbt-freshness = { path = "crates/dbt-freshness" }
 dbt-frontend-common = { path = "crates/dbt-frontend-common" }
 dbt-goldie = { path = "crates/dbt-goldie" }
@@ -344,7 +347,7 @@ minijinja-contrib = { path = "crates/dbt-jinja/minijinja-contrib", features = [
 snowflake-api = { path = "crates/snowflake-rs/snowflake-api" }
 
 # serde
-dbt-yaml = { version = "0.9.6", features = [
+dbt-yaml = { version = "0.10.6", features = [
   "filename",
   "yaml_11",
   "schemars",
@@ -368,6 +371,7 @@ aws-sdk-codeartifact = "1.60.0"
 aws-sdk-ecr = "1.60.0"
 aws-sdk-s3 = "1.78.0"
 aws-sdk-secretsmanager = "1.63.0"
+aws-smithy-types = ">=1.4, <1.7.0"
 
 # arrow + parquet
 arrow = { version = "=56.0.0", features = ["prettyprint"] }
@@ -390,6 +394,7 @@ adbc-driver-manager = { git = "https://github.com/dbt-labs/arrow-adbc", package 
 adbc-ffi = { git = "https://github.com/dbt-labs/arrow-adbc", package = "adbc_ffi", version = "0.22.0", rev = "d2808cf465feb6efc54ee862cb63104803535adb" } # @ apache-arrow-adbc-22-rust
 adbc-record-replay = { path = "crates/adbc-record-replay" }
 dbt-adbc = { path = "crates/dbt-adbc" }
+dbt-artifact-download = { path = "crates/dbt-artifact-download" }
 dbt-tracked-stmt = { path = "crates/dbt-tracked-stmt" }
 
 # antlr for frontend

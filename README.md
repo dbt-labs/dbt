@@ -1,10 +1,8 @@
 <p align="center">
-  <img width="750" alt="dbt logo" src="https://github.com/user-attachments/assets/26b0c2cd-70c1-4aa2-b66a-cda491ffa99c" />
+  <img width="750" alt="dbt logo" src="assets/dbt-logo-full.png" />
 </p>
 <p align="center">
-  <a href="https://github.com/dbt-labs/dbt-core/actions/workflows/main.yml">
-    <img src="https://github.com/dbt-labs/dbt-core/actions/workflows/main.yml/badge.svg?event=push" alt="CI Badge"/>
-  </a>
+  <a href="https://github.com/dbt-labs/dbt/actions/workflows/ci.yml?query=branch%3Amain"><img src="https://github.com/dbt-labs/dbt/actions/workflows/ci.yml/badge.svg?branch=main&amp;event=push" alt="dbt CI status"/></a>
 </p>
 
 > [!WARNING]
@@ -16,8 +14,6 @@
 ![architecture](https://raw.githubusercontent.com/dbt-labs/dbt/202cb7e51e218c7b29eb3b11ad058bd56b7739de/etc/dbt-transform.png)
 
 ## About dbt v2.0
-
-> 🚧 dbt v2.0 is in beta. Behavior, APIs, and on-disk formats may change before the stable release.
 
 dbt v2.0 is engineered for performance at scale. It parses, compiles, and runs projects in a fraction of the time compared to v1. The source code in this repository is available to everyone under the standard Apache 2.0 license. [dbt](https://docs.getdbt.com/docs/introduction) is a distribution of the dbt repository with dbt-specific customizations released under a [dbt product license](https://www.getdbt.com/dbt-fusion-engine-license-agreement).
 
@@ -49,7 +45,7 @@ Analysts using dbt can transform their data by simply writing select statements,
 
 These select statements, or "models", form a dbt project. Models frequently build on top of one another – dbt makes it easy to [manage relationships](https://docs.getdbt.com/docs/ref) between models, and [visualize these relationships](https://docs.getdbt.com/docs/documentation), as well as assure the quality of your transformations through [testing](https://docs.getdbt.com/docs/testing).
 
-![dbt dag](https://raw.githubusercontent.com/dbt-labs/dbt/6c6649f9129d5d108aa3b0526f634cd8f3a9d1ed/etc/dbt-dag.png)
+![dbt dag](assets/dbt-dag.png)
 
 ## Getting started
 

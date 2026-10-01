@@ -21,7 +21,7 @@ pub struct WhitespaceConfig {
 pub struct Tokenizer<'s> {
     stack: Vec<LexerState>,
     source: &'s str,
-    filename: &'s str,
+    filename: String,
     current_line: u32,
     current_col: u32,
     current_offset: usize,
@@ -291,7 +291,7 @@ impl<'s> Tokenizer<'s> {
     /// Creates a new tokenizer.
     pub fn new(
         input: &'s str,
-        filename: &'s str,
+        filename: &str,
         in_expr: bool,
         syntax_config: SyntaxConfig,
         whitespace_config: WhitespaceConfig,
@@ -309,7 +309,7 @@ impl<'s> Tokenizer<'s> {
     /// Creates a new tokenizer that notifies listeners as tokens are emitted.
     pub fn new_with_tokenizer_listeners(
         input: &'s str,
-        filename: &'s str,
+        filename: &str,
         in_expr: bool,
         syntax_config: SyntaxConfig,
         whitespace_config: WhitespaceConfig,
@@ -326,7 +326,7 @@ impl<'s> Tokenizer<'s> {
         }
         Tokenizer {
             source,
-            filename,
+            filename: filename.to_string(),
             stack: vec![if in_expr {
                 LexerState::Variable
             } else {
@@ -348,7 +348,7 @@ impl<'s> Tokenizer<'s> {
 
     /// Returns the current filename.
     pub fn filename(&self) -> &str {
-        self.filename
+        &self.filename
     }
 
     /// Produces the next token from the tokenizer.
@@ -396,6 +396,15 @@ impl<'s> Tokenizer<'s> {
     pub fn notify_malformed_block_name(&self, kind: BlockNameKind, name: &str, span: &Span) {
         for listener in &self.source_listeners {
             listener.on_malformed_block_name(kind, name, span);
+        }
+    }
+
+    fn notify_trimmed_whitespace(&self, span: &Span) {
+        if span.start_offset == span.end_offset {
+            return;
+        }
+        for listener in &self.source_listeners {
+            listener.on_trimmed_whitespace(span);
         }
     }
 
@@ -465,7 +474,7 @@ impl<'s> Tokenizer<'s> {
             span.end_offset += 1;
         }
         let err = Error::new(ErrorKind::SyntaxError, msg);
-        err.with_span(Path::new(self.filename), &span)
+        err.with_span(Path::new(&self.filename), &span)
     }
 
     fn eat_number(&mut self) -> Result<(Token<'s>, Span), Error> {
@@ -653,7 +662,9 @@ impl<'s> Tokenizer<'s> {
         }
         if self.trim_leading_whitespace {
             self.trim_leading_whitespace = false;
+            let trim_start = self.loc();
             self.skip_whitespace();
+            self.notify_trimmed_whitespace(&self.span(trim_start));
         }
         let old_loc = self.loc();
         let (lead, span) =
@@ -668,7 +679,9 @@ impl<'s> Tokenizer<'s> {
                             let trimmed = lstrip_block(peeked);
                             let lead = self.advance(trimmed.len());
                             let span = self.span(old_loc);
+                            let trim_start = self.loc();
                             self.advance(peeked.len() - trimmed.len());
+                            self.notify_trimmed_whitespace(&self.span(trim_start));
                             (lead, span)
                         }
                         Whitespace::Default | Whitespace::Preserve => {
@@ -679,7 +692,9 @@ impl<'s> Tokenizer<'s> {
                             let trimmed = peeked.trim_end();
                             let lead = self.advance(trimmed.len());
                             let span = self.span(old_loc);
+                            let trim_start = self.loc();
                             self.advance(peeked.len() - trimmed.len());
+                            self.notify_trimmed_whitespace(&self.span(trim_start));
                             (lead, span)
                         }
                     }
