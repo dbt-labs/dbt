@@ -30,10 +30,11 @@ fn relation_database(arg: Option<&Value>) -> Option<String> {
 }
 
 fn build_harness(
+    adapter_type: AdapterType,
     iceberg_database: &'static str,
     ducklake_database: &'static str,
 ) -> MacroTestHarness {
-    let mut harness = MacroTestHarness::for_adapter(AdapterType::DuckDB)
+    let mut harness = MacroTestHarness::for_adapter(adapter_type)
         .load_all_macros()
         .with_stub_functions()
         .build()
@@ -91,9 +92,8 @@ fn build_harness(
     harness
 }
 
-#[test]
-fn create_table_as_quotes_only_columns_marked_quote_true() {
-    let harness = build_harness("iceberg_demo", "ducklake_demo");
+fn create_table_as_quotes_only_columns_marked_quote_true(adapter_type: AdapterType) {
+    let harness = build_harness(adapter_type, "iceberg_demo", "ducklake_demo");
     harness.mock().on("build_catalog_relation", |_| {
         Ok(catalog_relation("direct_create"))
     });
@@ -178,9 +178,8 @@ fn create_table_as_quotes_only_columns_marked_quote_true() {
     );
 }
 
-#[test]
-fn get_columns_in_relation_uses_describe_for_iceberg_relations() {
-    let harness = build_harness("iceberg_demo", "ducklake_demo");
+fn get_columns_in_relation_uses_describe_for_iceberg_relations(adapter_type: AdapterType) {
+    let harness = build_harness(adapter_type, "iceberg_demo", "ducklake_demo");
     let relation = harness.relation("iceberg_demo", "main", "orders", Some(RelationType::Table));
     let ctx = BTreeMap::from([(
         "relation".to_string(),
@@ -202,9 +201,8 @@ fn get_columns_in_relation_uses_describe_for_iceberg_relations() {
     );
 }
 
-#[test]
-fn drop_relation_omits_cascade_for_iceberg_relations() {
-    let harness = build_harness("iceberg_demo", "ducklake_demo");
+fn drop_relation_omits_cascade_for_iceberg_relations(adapter_type: AdapterType) {
+    let harness = build_harness(adapter_type, "iceberg_demo", "ducklake_demo");
     let relation = harness.relation("iceberg_demo", "main", "orders", Some(RelationType::Table));
     let ctx = BTreeMap::from([(
         "relation".to_string(),
@@ -223,9 +221,8 @@ fn drop_relation_omits_cascade_for_iceberg_relations() {
     );
 }
 
-#[test]
-fn rename_relation_alters_iceberg_without_committing_connection() {
-    let harness = build_harness("iceberg_demo", "ducklake_demo");
+fn rename_relation_alters_iceberg_without_committing_connection(adapter_type: AdapterType) {
+    let harness = build_harness(adapter_type, "iceberg_demo", "ducklake_demo");
     let from_relation = harness.relation(
         "iceberg_demo",
         "main",
@@ -271,17 +268,21 @@ fn rename_relation_alters_iceberg_without_committing_connection() {
     );
 }
 
-fn render_table_materialization(write_strategy: &'static str) -> MacroTestHarness {
-    render_table_materialization_with_columns(write_strategy, BTreeMap::new())
+fn render_table_materialization(
+    adapter_type: AdapterType,
+    write_strategy: &'static str,
+) -> MacroTestHarness {
+    render_table_materialization_with_columns(adapter_type, write_strategy, BTreeMap::new())
 }
 
 /// `user_columns` populates the model's yaml `columns:` block, keyed by column
 /// name — this is what the `direct_create` column list consults for `quote:`.
 fn render_table_materialization_with_columns(
+    adapter_type: AdapterType,
     write_strategy: &'static str,
     user_columns: BTreeMap<String, Value>,
 ) -> MacroTestHarness {
-    let harness = build_harness("iceberg_demo", "ducklake_demo");
+    let harness = build_harness(adapter_type, "iceberg_demo", "ducklake_demo");
     harness
         .mock()
         .on("table_format", |_| Ok(Value::from("iceberg")));
@@ -336,9 +337,8 @@ fn render_table_materialization_with_columns(
     harness
 }
 
-#[test]
-fn table_materialization_writes_iceberg_target_directly() {
-    let harness = render_table_materialization("direct_create");
+fn table_materialization_writes_iceberg_target_directly(adapter_type: AdapterType) {
+    let harness = render_table_materialization(adapter_type, "direct_create");
 
     harness
         .mock()
@@ -371,9 +371,8 @@ fn table_materialization_writes_iceberg_target_directly() {
 /// `get_column_schema_from_query`, so those columns carry no `quote:` flag of
 /// their own. Undeclared columns must be emitted bare rather than quoted
 /// unconditionally, matching every other adapter's DDL.
-#[test]
-fn table_materialization_does_not_quote_undeclared_column_names() {
-    let harness = render_table_materialization("direct_create");
+fn table_materialization_does_not_quote_undeclared_column_names(adapter_type: AdapterType) {
+    let harness = render_table_materialization(adapter_type, "direct_create");
     let executed = executed_sql(harness.mock()).join("\n");
 
     assert!(
@@ -390,8 +389,7 @@ fn table_materialization_does_not_quote_undeclared_column_names() {
 /// model's yaml `columns:` block, so declaring `quote: true` still quotes.
 /// Without this the fix would be indistinguishable from always emitting
 /// `col.name`.
-#[test]
-fn table_materialization_quotes_column_names_flagged_in_yaml() {
+fn table_materialization_quotes_column_names_flagged_in_yaml(adapter_type: AdapterType) {
     let user_columns = BTreeMap::from([(
         "id".to_string(),
         Value::from_serialize(BTreeMap::from([
@@ -399,7 +397,8 @@ fn table_materialization_quotes_column_names_flagged_in_yaml() {
             ("quote".to_string(), Value::from(true)),
         ])),
     )]);
-    let harness = render_table_materialization_with_columns("direct_create", user_columns);
+    let harness =
+        render_table_materialization_with_columns(adapter_type, "direct_create", user_columns);
     let executed = executed_sql(harness.mock()).join("\n");
 
     assert!(
@@ -412,11 +411,10 @@ fn table_materialization_quotes_column_names_flagged_in_yaml() {
     );
 }
 
-#[test]
-fn table_materialization_ctas_in_place_for_staged_create_opt_in() {
+fn table_materialization_ctas_in_place_for_staged_create_opt_in(adapter_type: AdapterType) {
     // `stage_create_tables: true` (duckdb-iceberg#1017) → direct_create_as_select:
     // CTAS straight into the target, still no temp-table + rename dance.
-    let harness = render_table_materialization("direct_create_as_select");
+    let harness = render_table_materialization(adapter_type, "direct_create_as_select");
 
     harness
         .mock()
@@ -440,3 +438,57 @@ fn table_materialization_ctas_in_place_for_staged_create_opt_in() {
         "staged-create opt-in should not create-then-insert, got: {executed}"
     );
 }
+
+/// Runs every test above once per adapter that uses the DuckDB macro package:
+/// DuckDB itself, and GizmoSQL, a DuckDB-backed server that inherits
+/// `dbt-duckdb` through the dispatch chain, so the two cannot drift apart.
+macro_rules! duckdb_macro_tests {
+    ($module:ident, $adapter_type:expr) => {
+        mod $module {
+            use super::*;
+
+            #[test]
+            fn create_table_as_quotes_only_columns_marked_quote_true() {
+                super::create_table_as_quotes_only_columns_marked_quote_true($adapter_type);
+            }
+
+            #[test]
+            fn get_columns_in_relation_uses_describe_for_iceberg_relations() {
+                super::get_columns_in_relation_uses_describe_for_iceberg_relations($adapter_type);
+            }
+
+            #[test]
+            fn drop_relation_omits_cascade_for_iceberg_relations() {
+                super::drop_relation_omits_cascade_for_iceberg_relations($adapter_type);
+            }
+
+            #[test]
+            fn rename_relation_alters_iceberg_without_committing_connection() {
+                super::rename_relation_alters_iceberg_without_committing_connection($adapter_type);
+            }
+
+            #[test]
+            fn table_materialization_writes_iceberg_target_directly() {
+                super::table_materialization_writes_iceberg_target_directly($adapter_type);
+            }
+
+            #[test]
+            fn table_materialization_does_not_quote_undeclared_column_names() {
+                super::table_materialization_does_not_quote_undeclared_column_names($adapter_type);
+            }
+
+            #[test]
+            fn table_materialization_quotes_column_names_flagged_in_yaml() {
+                super::table_materialization_quotes_column_names_flagged_in_yaml($adapter_type);
+            }
+
+            #[test]
+            fn table_materialization_ctas_in_place_for_staged_create_opt_in() {
+                super::table_materialization_ctas_in_place_for_staged_create_opt_in($adapter_type);
+            }
+        }
+    };
+}
+
+duckdb_macro_tests!(duckdb, AdapterType::DuckDB);
+duckdb_macro_tests!(gizmosql, AdapterType::GizmoSQL);

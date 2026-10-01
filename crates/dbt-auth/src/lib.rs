@@ -16,6 +16,7 @@ mod duckdb;
 mod exasol;
 #[cfg(test)]
 mod flock;
+mod gizmosql;
 mod lake_compute;
 mod postgres;
 mod redshift;
@@ -87,6 +88,7 @@ pub fn auth_for_backend_with_warnings(
         Backend::ClickHouse => Box::new(clickhouse::ClickHouseAuth::new(warning_printer)),
         Backend::Athena => Box::new(athena::AthenaAuth::new(warning_printer)),
         Backend::Exasol => Box::new(exasol::ExasolAuth::new(warning_printer)),
+        Backend::GizmoSQL => Box::new(gizmosql::GizmoSQLAuth::new(warning_printer)),
         Backend::Generic { .. } => unimplemented!("generic backend authentication"),
     }
 }

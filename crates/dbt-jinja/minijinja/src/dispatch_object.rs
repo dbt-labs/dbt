@@ -359,6 +359,9 @@ pub fn get_adapter_prefixes(dialect: &str) -> Vec<String> {
         // `AdapterType::LakeCompute` renders as `lakecompute`; lake compute defines no
         // macros of its own and inherits DuckDB's.
         "lakecompute" => prefixes.push("duckdb".to_string()),
+        // GizmoSQL is a DuckDB-backed server: `gizmosql__` macros override only what
+        // differs from DuckDB, and everything else falls through to `duckdb__`.
+        "gizmosql" => prefixes.push("duckdb".to_string()),
         // Add other adapter hierarchies as needed
         _ => {}
     }
@@ -425,6 +428,8 @@ pub fn get_internal_packages(dialect: &str) -> Vec<String> {
         "databricks" => internal_packages.push("dbt_spark".to_string()),
         // See `get_adapter_prefixes`: lake compute has no macro package of its own.
         "lakecompute" => internal_packages.push("dbt_duckdb".to_string()),
+        // See `get_adapter_prefixes`: GizmoSQL inherits DuckDB's macro package.
+        "gizmosql" => internal_packages.push("dbt_duckdb".to_string()),
         // Add other adapter hierarchies as needed
         _ => {}
     }

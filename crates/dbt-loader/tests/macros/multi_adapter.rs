@@ -75,6 +75,45 @@ fn hooks_ctx() -> BTreeMap<String, Value> {
 
 const TEMPLATE: &str = "{{ run_hooks(hooks, inside_transaction=False) }}";
 
+/// One environment serving Snowflake (the target default) plus GizmoSQL, which
+/// inherits DuckDB's macro package the same way lake compute does.
+fn snowflake_plus_gizmosql() -> MacroTestHarness {
+    MacroTestHarness::for_adapter(AdapterType::Snowflake)
+        .with_extra_adapters([AdapterType::GizmoSQL])
+        .load_all_macros()
+        .with_macro("dbt", "statement", STATEMENT_STUB)
+        .with_macro("dbt", "render", RENDER_STUB)
+        .build()
+        .expect("harness should build")
+}
+
+#[test]
+fn gizmosql_node_gets_duckdbs_run_hooks_override() {
+    let harness = snowflake_plus_gizmosql();
+    let rendered = harness
+        .render_for(AdapterType::GizmoSQL, TEMPLATE, hooks_ctx())
+        .expect("render should succeed");
+
+    assert!(
+        rendered.contains("select 1"),
+        "the hook itself should still run, got: {rendered:?}"
+    );
+    assert!(
+        !rendered.contains("commit;"),
+        "a GizmoSQL node must get DuckDB's `run_hooks` through the inheritance \
+         chain (`gizmosql` -> `duckdb` -> `default`). Rendered: {rendered:?}"
+    );
+
+    let as_snowflake = harness
+        .render(TEMPLATE, hooks_ctx())
+        .expect("render should succeed");
+    assert!(
+        as_snowflake.contains("commit;"),
+        "a Snowflake node in the same environment must keep `dbt-adapters`' \
+         `run_hooks`. Rendered: {as_snowflake:?}"
+    );
+}
+
 #[test]
 fn lake_compute_node_gets_duckdbs_run_hooks_override() {
     let harness = snowflake_plus_lake_compute();

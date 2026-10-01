@@ -121,7 +121,8 @@ pub fn max_identifier_length(adapter_type: AdapterType) -> Option<NonZero<usize>
             Some(unsafe { NonZero::new_unchecked(127) })
         }
         Snowflake | Bigquery | Databricks | Spark | DuckDB | Salesforce | Fabric | ClickHouse
-        | Exasol | Athena | Starburst | Trino | Datafusion | Dremio | Oracle | LakeCompute => None,
+        | Exasol | GizmoSQL | Athena | Starburst | Trino | Datafusion | Dremio | Oracle
+        | LakeCompute => None,
     }
 }
 
@@ -140,7 +141,7 @@ pub const fn canonical_quote(backend: AdapterType) -> QuotingStyle {
     use AdapterType::*;
     match backend {
         Bigquery | Databricks | Spark | Athena => QuotingStyle::Backtick,
-        ClickHouse | Exasol | Snowflake | Redshift | Postgres | Salesforce | DuckDB => {
+        ClickHouse | Exasol | Snowflake | Redshift | Postgres | Salesforce | DuckDB | GizmoSQL => {
             QuotingStyle::Double
         }
         // https://learn.microsoft.com/en-us/sql/t-sql/statements/set-quoted-identifier-transact-sql?view=sql-server-ver17
@@ -177,7 +178,8 @@ pub fn is_valid_ident_char(c: char, backend: AdapterType) -> bool {
             | Dremio
             | Oracle
             | LakeCompute
-            | Exasol => c.is_alphanumeric() || c == '_',
+            | Exasol
+            | GizmoSQL => c.is_alphanumeric() || c == '_',
     }
 }
 

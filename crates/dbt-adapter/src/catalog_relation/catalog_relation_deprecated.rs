@@ -19,7 +19,9 @@ impl CatalogRelation {
             // Lake compute is DuckDB-backed for relation-building purposes;
             // the deprecated catalogs.yml shape never supported per-catalog DuckDB
             // selection either, so this mirrors the DuckDB arm exactly.
-            AdapterType::DuckDB | AdapterType::LakeCompute => {
+            // GizmoSQL is a remote DuckDB and shares DuckDB's macros, which read
+            // `duckdb_write_strategy` off this relation.
+            AdapterType::DuckDB | AdapterType::LakeCompute | AdapterType::GizmoSQL => {
                 Ok(Self::default_catalog_relation_duckdb())
             }
             _ => Err(AdapterError::new(

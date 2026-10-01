@@ -22,6 +22,7 @@ const ADAPTERS: &[AdapterType] = &[
     AdapterType::Snowflake,
     AdapterType::Databricks,
     AdapterType::DuckDB,
+    AdapterType::GizmoSQL,
     // overrides
     AdapterType::Bigquery,
     AdapterType::Fabric,
