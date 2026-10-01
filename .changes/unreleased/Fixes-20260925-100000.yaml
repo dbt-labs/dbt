@@ -1,0 +1,10 @@
+kind: Fixes
+body: state:modified now detects changes to configs inherited from outer project
+  directories for merge-behavior fields (grants, meta, tags, pre/post hooks, ...).
+  Previously the unrendered config kept only the innermost scope's value for these
+  fields, so inherited changes that altered a node's effective config (e.g. switching
+  an inherited grant from replace to additive) were silently missed.
+time: 2026-09-25T10:00:00.000000-04:00
+custom:
+    Author: goingforstudying-ctrl
+    Issue: "16438"
