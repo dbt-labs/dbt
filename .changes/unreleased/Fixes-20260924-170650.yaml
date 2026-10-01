@@ -1,0 +1,7 @@
+kind: Fixes
+body: Match BigQuery snapshot check columns without regard to case to avoid false row changes.
+time: 2026-09-24T17:06:50.753645+05:30
+custom:
+    author: itsnamangoyal
+    issue: ""
+    project: dbt-core

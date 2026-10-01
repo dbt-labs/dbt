@@ -8,6 +8,23 @@ use minijinja::Value;
 use crate::macro_test_harness::{MacroTestHarness, default_mock_config};
 
 #[test]
+fn snapshot_check_cols_keeps_exact_case_matching() {
+    let harness = MacroTestHarness::for_adapter(AdapterType::Snowflake)
+        .load_all_macros()
+        .build()
+        .expect("harness should build");
+
+    let rendered = harness
+        .render(
+            "{{ 'found' if adapter.dispatch('snapshot_check_column_exists', 'dbt')('dice_change_hash', ['DICE_CHANGE_HASH']) else 'missing' }}|{{ 'found' if adapter.dispatch('snapshot_check_column_exists', 'dbt')('DICE_CHANGE_HASH', ['DICE_CHANGE_HASH']) else 'missing' }}",
+            BTreeMap::<String, Value>::new(),
+        )
+        .expect("snapshot column check should render");
+
+    assert_eq!(rendered.trim(), "missing|found");
+}
+
+#[test]
 fn python_table_tmp_relation_type_is_allowed() {
     let harness = MacroTestHarness::for_adapter(AdapterType::Snowflake)
         .load_all_macros()
