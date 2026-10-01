@@ -301,4 +301,50 @@ mod tests {
         assert_eq!(stat.status_string(), "Warn");
         assert_eq!(stat.result_status_string(), "warn");
     }
+
+    #[test]
+    fn test_get_execution_duration_subtracts_idle() {
+        let start = SystemTime::now();
+        let end = start + Duration::from_secs(10);
+        let stat = Stat {
+            unique_id: "model.my_project.my_model".to_string(),
+            num_rows: None,
+            rows_affected: None,
+            idle_time_ms: Some(3000),
+            start_time: start,
+            end_time: end,
+            status: NodeStatus::Succeeded,
+            thread_id: "Thread-1 (worker)".to_string(),
+            message: None,
+        };
+
+        assert_eq!(
+            stat.get_execution_duration(),
+            Duration::from_secs(7),
+            "execution duration should subtract connection-limit idle time"
+        );
+    }
+
+    #[test]
+    fn test_get_execution_duration_clamps_to_zero() {
+        let start = SystemTime::now();
+        let end = start + Duration::from_secs(10);
+        let stat = Stat {
+            unique_id: "model.my_project.my_model".to_string(),
+            num_rows: None,
+            rows_affected: None,
+            idle_time_ms: Some(20000),
+            start_time: start,
+            end_time: end,
+            status: NodeStatus::Succeeded,
+            thread_id: "Thread-1 (worker)".to_string(),
+            message: None,
+        };
+
+        assert_eq!(
+            stat.get_execution_duration(),
+            Duration::ZERO,
+            "execution duration should clamp to zero when idle time exceeds duration"
+        );
+    }
 }
