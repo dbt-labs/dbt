@@ -11,6 +11,25 @@
     {% if config.get('fast', true) %}
         {% set seed_file_path = adapter.get_seed_file_path(model) %}
         {% set delimiter = config.get('delimiter', ',') %}
+        {# DIVERGENCE BEGIN: Fusion appends the seed's already-parsed rows over
+           the connection (Arrow bulk ingest) instead of having DuckDB `COPY`
+           the CSV from the dbt host's disk, which a remote or sandboxed
+           database (e.g. MotherDuck with `saas_mode`) cannot read. Gate on
+           `dbt_version` (Fusion reports `2.x`, Python dbt-core `1.x`) so the
+           Python adapter keeps upstream's COPY. #}
+        {% if dbt_version.startswith('2.') %}
+            {% do adapter.load_dataframe(
+                model['database'],
+                model['schema'],
+                model['alias'],
+                seed_file_path,
+                agate_table,
+                config.get('column_types', {}),
+                delimiter,
+            ) %}
+            {{ return('-- ' ~ (agate_table.rows | length) ~ ' rows appended to ' ~ this.render() ~ ' via Arrow bulk ingest') }}
+        {% endif %}
+        {# DIVERGENCE END #}
         {% set sql %}
           COPY {{ this.render() }} FROM '{{ seed_file_path }}' (FORMAT CSV, HEADER TRUE, DELIMITER '{{ delimiter }}')
         {% endset %}

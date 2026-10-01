@@ -440,3 +440,76 @@ fn table_materialization_ctas_in_place_for_staged_create_opt_in() {
         "staged-create opt-in should not create-then-insert, got: {executed}"
     );
 }
+
+fn render_load_csv_rows(dbt_version: &str) -> (MacroTestHarness, String) {
+    let harness = build_harness("iceberg_demo", "ducklake_demo");
+    harness.mock().on("get_seed_file_path", |_| {
+        Ok(Value::from("/tmp/jobs/run/seeds/raw_orders.csv"))
+    });
+    harness
+        .mock()
+        .on("load_dataframe", |_| Ok(Value::UNDEFINED));
+    harness.mock().on("add_query", |_| Ok(Value::UNDEFINED));
+
+    let model = Value::from_serialize(BTreeMap::from([
+        ("database", "md_db"),
+        ("schema", "main"),
+        ("alias", "raw_orders"),
+    ]));
+    let agate_table = Value::from_serialize(BTreeMap::from([
+        ("column_names", Value::from_serialize(["id", "status"])),
+        (
+            "rows",
+            Value::from_serialize(vec![
+                vec![Value::from(1), Value::from("placed")],
+                vec![Value::from(2), Value::from("shipped")],
+            ]),
+        ),
+    ]));
+    let ctx = harness
+        .materialization_context("raw_orders", "")
+        .relation_type(RelationType::Table)
+        .with("model", model)
+        .with("agate_table", agate_table)
+        .with("dbt_version", Value::from(dbt_version))
+        .build();
+
+    let rendered = harness
+        .render("{{ duckdb__load_csv_rows(model, agate_table) }}", ctx)
+        .expect("render should succeed");
+    (harness, rendered)
+}
+
+#[test]
+fn load_csv_rows_fast_path_ingests_rows_over_the_connection() {
+    // The seed CSV lives on the dbt host's disk; a remote/sandboxed database
+    // (MotherDuck with saas_mode) can't `COPY ... FROM` it, so Fusion sends the
+    // parsed rows over the connection instead.
+    let (harness, rendered) = render_load_csv_rows("2.0.0");
+
+    let calls = harness.mock().observed_calls();
+    let load = calls
+        .to("load_dataframe")
+        .next()
+        .expect("fast seed load should call adapter.load_dataframe");
+    let target: Vec<_> = load.args.iter().take(3).map(|v| v.to_string()).collect();
+    assert_eq!(target, ["md_db", "main", "raw_orders"]);
+    calls.assert_not_called("add_query");
+    assert!(
+        !rendered.contains("COPY"),
+        "Fusion must not COPY the seed from a local file, got: {rendered}"
+    );
+}
+
+#[test]
+fn load_csv_rows_fast_path_keeps_copy_outside_fusion() {
+    let (harness, rendered) = render_load_csv_rows("1.10.0");
+
+    let calls = harness.mock().observed_calls();
+    calls.assert_not_called("load_dataframe");
+    calls.assert_called("add_query");
+    assert!(
+        rendered.contains("COPY") && rendered.contains("/tmp/jobs/run/seeds/raw_orders.csv"),
+        "Python dbt-core should keep upstream's COPY, got: {rendered}"
+    );
+}

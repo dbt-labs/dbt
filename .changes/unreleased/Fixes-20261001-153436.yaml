@@ -1,0 +1,7 @@
+kind: Fixes
+body: DuckDB seeds now load rows over the connection via Arrow bulk ingest instead of reading the CSV from local disk, so seeds work on MotherDuck with saas_mode and other databases that can't read the dbt host's filesystem.
+time: 2026-10-01T15:34:36.732301141-07:00
+custom:
+    author: dataders claude
+    issue: ''
+    project: dbt-core

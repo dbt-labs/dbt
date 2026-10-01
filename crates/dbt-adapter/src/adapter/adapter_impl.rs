@@ -49,7 +49,7 @@ use crate::stmt_splitter::StmtSplitter;
 use crate::value::*;
 use crate::{AdapterResult, load_catalogs, python};
 
-use adbc_core::options::OptionValue;
+use adbc_core::options::{OptionStatement, OptionValue};
 use arrow::array::{BooleanArray, RecordBatch, StringArray};
 use arrow_array::{Array as _, ArrayRef, Decimal128Array};
 use arrow_ipc::writer::StreamWriter;
@@ -3620,10 +3620,39 @@ impl AdapterImpl {
 
                 Ok(none_value())
             }
+            DuckDB => {
+                // Append the seed's already-parsed rows over the connection via
+                // ADBC bulk ingest instead of having the database read the CSV
+                // file itself: the file lives on the dbt host's disk, which a
+                // remote or sandboxed database (e.g. MotherDuck with
+                // `saas_mode`) cannot read. The target table has already been
+                // created (with any `column_types` overrides) by the seed
+                // materialization; the appender casts each column to it.
+                if self.engine().is_mock() {
+                    return Ok(none_value());
+                }
+                let mut stmt = conn.new_statement().map_err(adbc_error_to_adapter_error)?;
+                for (key, value) in [
+                    (OptionStatement::TargetCatalog, database),
+                    (OptionStatement::TargetDbSchema, schema),
+                    (OptionStatement::TargetTable, table_name),
+                    (OptionStatement::IngestMode, "adbc.ingest.mode.append"),
+                ] {
+                    stmt.set_option(key, OptionValue::String(value.to_string()))
+                        .map_err(adbc_error_to_adapter_error)?;
+                }
+                // A replayed statement has no live driver to bind to; the
+                // recorded result is keyed off the statement alone.
+                if !self.engine().is_replay() {
+                    stmt.bind(agate_table.original_record_batch().as_ref().clone())
+                        .map_err(adbc_error_to_adapter_error)?;
+                }
+                stmt.execute_update().map_err(adbc_error_to_adapter_error)?;
+                Ok(none_value())
+            }
             Salesforce => todo!("load_dataframe() for the Salesforce adapter"),
-            Postgres | Snowflake | Databricks | Redshift | Spark | DuckDB | LakeCompute
-            | Fabric | ClickHouse | Exasol | Starburst | Athena | Trino | Datafusion | Dremio
-            | Oracle => {
+            Postgres | Snowflake | Databricks | Redshift | Spark | LakeCompute | Fabric
+            | ClickHouse | Exasol | Starburst | Athena | Trino | Datafusion | Dremio | Oracle => {
                 unimplemented!("only available with BigQuery or Salesforce adapter")
             }
         }
