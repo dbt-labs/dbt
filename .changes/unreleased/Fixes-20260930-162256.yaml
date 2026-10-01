@@ -1,0 +1,6 @@
+kind: Fixes
+body: Fix compiled_code not persisted to manifest.json when using --use-v2-parser
+time: 2026-09-30T16:22:56.592106-06:00
+custom:
+    Author: aiguofer
+    Issue: ""
