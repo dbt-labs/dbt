@@ -1,0 +1,6 @@
+kind: Fixes
+body: Fix v2 simple metrics in installed packages depending on a semantic model unique ID namespaced to the root project instead of the package that defines it
+time: 2026-10-01T10:24:29.230779-04:00
+custom:
+    Author: fivetran-jamie
+    Issue: "16142"

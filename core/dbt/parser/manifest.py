@@ -2250,10 +2250,22 @@ def _process_metric_node(
                         f"Simple metric `{metric.name}` must be attached to a semantic model.",
                         node=metric,
                     )
-                unique_id = (
-                    f"{NodeType.SemanticModel}.{current_project}.{semantic_model_dependency}"
+                target_semantic_model = manifest.resolve_semantic_model(
+                    target_semantic_model_name=semantic_model_dependency,
+                    current_project=current_project,
+                    node_package=metric.package_name,
                 )
-                metric.depends_on.add_node(unique_id)
+                if target_semantic_model is None:
+                    raise dbt.exceptions.ParsingError(
+                        f"The semantic model `{semantic_model_dependency}` does not exist but was referenced.",
+                        node=metric,
+                    )
+                if target_semantic_model.config.enabled is False:
+                    raise dbt.exceptions.ParsingError(
+                        f"Simple metric `{metric.name}` is attached to disabled semantic model `{target_semantic_model.name}`.",
+                        node=metric,
+                    )
+                metric.depends_on.add_node(target_semantic_model.unique_id)
             if metric.type is MetricType.CUMULATIVE:
                 cumulative_type_params = metric.type_params.cumulative_type_params
                 input_metric = (

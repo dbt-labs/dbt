@@ -417,6 +417,58 @@ class SavedQueryLookup(dbtClassMixin):
         return manifest.saved_queries[unique_id]
 
 
+class SemanticModelLookup(dbtClassMixin):
+    """Lookup utility for finding SemanticModel nodes by their own name"""
+
+    def __init__(self, manifest: "Manifest") -> None:
+        self.storage: Dict[str, Dict[PackageName, UniqueID]] = {}
+        self.populate(manifest)
+
+    def get_unique_id(
+        self, search_name: str, package: Optional[PackageName]
+    ) -> Optional[UniqueID]:
+        return find_unique_id_for_package(self.storage, search_name, package)
+
+    def find(
+        self, search_name: str, package: Optional[PackageName], manifest: "Manifest"
+    ) -> Optional[SemanticModel]:
+        unique_id = self.get_unique_id(search_name, package)
+        if unique_id is not None:
+            return self.perform_lookup(unique_id, manifest)
+        return None
+
+    def add(self, semantic_model: SemanticModel) -> None:
+        if semantic_model.search_name not in self.storage:
+            self.storage[semantic_model.search_name] = {}
+
+        self.storage[semantic_model.search_name][semantic_model.package_name] = (
+            semantic_model.unique_id
+        )
+
+    def populate(self, manifest: "Manifest") -> None:
+        for semantic_model in manifest.semantic_models.values():
+            self.add(semantic_model)
+        for disabled in manifest.disabled.values():
+            for node in disabled:
+                if isinstance(node, SemanticModel):
+                    self.add(node)
+
+    def perform_lookup(self, unique_id: UniqueID, manifest: "Manifest") -> SemanticModel:
+        enabled_semantic_model: Optional[SemanticModel] = manifest.semantic_models.get(unique_id)
+        disabled_semantic_model: Optional[List] = manifest.disabled.get(unique_id)
+
+        if isinstance(enabled_semantic_model, SemanticModel):
+            return enabled_semantic_model
+        elif disabled_semantic_model is not None and isinstance(
+            disabled_semantic_model[0], SemanticModel
+        ):
+            return disabled_semantic_model[0]
+        else:
+            raise dbt_common.exceptions.DbtInternalError(
+                f"Semantic model `{unique_id}` found in cache but not found in manifest"
+            )
+
+
 class SemanticModelByMeasureLookup(dbtClassMixin):
     """Lookup utility for finding SemanticModel by measure
 
@@ -1026,6 +1078,9 @@ class Manifest(MacroMethods, dbtClassMixin):
     _semantic_model_by_measure_lookup: Optional[SemanticModelByMeasureLookup] = field(
         default=None, metadata={"serialize": lambda x: None, "deserialize": lambda x: None}
     )
+    _semantic_model_lookup: Optional[SemanticModelLookup] = field(
+        default=None, metadata={"serialize": lambda x: None, "deserialize": lambda x: None}
+    )
     _disabled_lookup: Optional[DisabledLookup] = field(
         default=None, metadata={"serialize": lambda x: None, "deserialize": lambda x: None}
     )
@@ -1433,6 +1488,13 @@ class Manifest(MacroMethods, dbtClassMixin):
             self._semantic_model_by_measure_lookup = SemanticModelByMeasureLookup(self)
         return self._semantic_model_by_measure_lookup
 
+    @property
+    def semantic_model_lookup(self) -> SemanticModelLookup:
+        """Gets (and creates if necessary) the lookup utility for getting SemanticModels by name"""
+        if self._semantic_model_lookup is None:
+            self._semantic_model_lookup = SemanticModelLookup(self)
+        return self._semantic_model_lookup
+
     def rebuild_ref_lookup(self) -> None:
         self._ref_lookup = RefableLookup(self)
 
@@ -1623,6 +1685,24 @@ class Manifest(MacroMethods, dbtClassMixin):
             semantic_model = self.semantic_model_by_measure_lookup.find(
                 target_measure_name, pkg, self
             )
+            # need to return it even if it's disabled so know it's not fully missing
+            if semantic_model is not None:
+                return semantic_model
+
+        return None
+
+    def resolve_semantic_model(
+        self,
+        target_semantic_model_name: str,
+        current_project: str,
+        node_package: str,
+        target_package: Optional[str] = None,
+    ) -> Optional[SemanticModel]:
+        """Tries to find the SemanticModel by its own name, scoped like a ref()"""
+        candidates = _packages_to_search(current_project, node_package, target_package)
+
+        for pkg in candidates:
+            semantic_model = self.semantic_model_lookup.find(target_semantic_model_name, pkg, self)
             # need to return it even if it's disabled so know it's not fully missing
             if semantic_model is not None:
                 return semantic_model
@@ -1966,6 +2046,7 @@ class Manifest(MacroMethods, dbtClassMixin):
             self._ref_lookup,
             self._metric_lookup,
             self._semantic_model_by_measure_lookup,
+            self._semantic_model_lookup,
             self._disabled_lookup,
             self._analysis_lookup,
             self._singular_test_lookup,
