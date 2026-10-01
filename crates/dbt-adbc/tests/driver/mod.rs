@@ -166,26 +166,7 @@ mod tests {
                     .with_password(password);
                 Ok(builder)
             }
-            Backend::GizmoSQL => {
-                let mut builder = database::Builder::new(backend);
-                let uri = env::var("ADBC_GIZMOSQL_URI")
-                    .unwrap_or_else(|_| "gizmosql://localhost:31337".to_owned());
-                let username = env::var("ADBC_GIZMOSQL_USERNAME")
-                    .unwrap_or_else(|_| "gizmosql_username".to_owned());
-                let password = env::var("ADBC_GIZMOSQL_PASSWORD")
-                    .unwrap_or_else(|_| "gizmosql_password".to_owned());
-                let tls_skip_verify =
-                    env::var("ADBC_GIZMOSQL_TLS_SKIP_VERIFY").unwrap_or_else(|_| "true".to_owned());
-                builder
-                    .with_parse_uri(uri)?
-                    .with_username(username)
-                    .with_password(password)
-                    .with_named_option(
-                        "adbc.flight.sql.client_option.tls_skip_verify",
-                        tls_skip_verify,
-                    )?;
-                Ok(builder)
-            }
+            Backend::GizmoSQL => database_builder_for_gizmosql(),
             Backend::Generic { .. } => unimplemented!("generic backend database builder in tests"),
         }?;
         if backend == Backend::Snowflake {
@@ -193,6 +174,27 @@ mod tests {
                 .with_named_option(snowflake::LOG_TRACING, LogLevel::Warn.to_string())?;
         }
         Ok(database_builder)
+    }
+
+    fn database_builder_for_gizmosql() -> Result<database::Builder> {
+        let mut builder = database::Builder::new(Backend::GizmoSQL);
+        let uri = env::var("ADBC_GIZMOSQL_URI")
+            .unwrap_or_else(|_| "gizmosql://localhost:31337".to_owned());
+        let username =
+            env::var("ADBC_GIZMOSQL_USERNAME").unwrap_or_else(|_| "gizmosql_username".to_owned());
+        let password =
+            env::var("ADBC_GIZMOSQL_PASSWORD").unwrap_or_else(|_| "gizmosql_password".to_owned());
+        let tls_skip_verify =
+            env::var("ADBC_GIZMOSQL_TLS_SKIP_VERIFY").unwrap_or_else(|_| "true".to_owned());
+        builder
+            .with_parse_uri(uri)?
+            .with_username(username)
+            .with_password(password)
+            .with_named_option(
+                "adbc.flight.sql.client_option.tls_skip_verify",
+                tls_skip_verify,
+            )?;
+        Ok(builder)
     }
 
     fn database_builder_for_duckdb_file(path: &str) -> Result<database::Builder> {

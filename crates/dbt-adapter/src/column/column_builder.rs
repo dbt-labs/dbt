@@ -66,16 +66,8 @@ impl ColumnBuilder {
                 numeric_precision,
                 numeric_scale,
             ),
-            DuckDB => Column::new(
-                DuckDB,
-                name,
-                dtype,
-                char_size,
-                numeric_precision,
-                numeric_scale,
-            ),
-            GizmoSQL => Column::new(
-                GizmoSQL,
+            DuckDB | GizmoSQL => Column::new(
+                self.adapter_type,
                 name,
                 dtype,
                 char_size,

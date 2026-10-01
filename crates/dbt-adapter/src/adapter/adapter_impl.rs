@@ -1928,24 +1928,16 @@ impl AdapterImpl {
 
         // platform-specific features.
         match self.adapter_type() {
-            DuckDB => match name {
-                "motherduck" => Ok(Some(duckdb_is_motherduck(self.engine().get_config()))),
-                _ => {
-                    emit_warn_log_message(
-                        ErrorCode::InvalidArgument,
-                        format!("Unrecognized feature: {name} for {} adapter", DuckDB),
-                    );
-                    Ok(None)
-                }
-            },
             // GizmoSQL runs the DuckDB macros, which probe `motherduck`; a GizmoSQL
             // server is never MotherDuck.
-            GizmoSQL => match name {
-                "motherduck" => Ok(Some(false)),
+            adapter_type @ (DuckDB | GizmoSQL) => match name {
+                "motherduck" => Ok(Some(
+                    adapter_type == DuckDB && duckdb_is_motherduck(self.engine().get_config()),
+                )),
                 _ => {
                     emit_warn_log_message(
                         ErrorCode::InvalidArgument,
-                        format!("Unrecognized feature: {name} for {} adapter", GizmoSQL),
+                        format!("Unrecognized feature: {name} for {adapter_type} adapter"),
                     );
                     Ok(None)
                 }
@@ -2929,13 +2921,13 @@ impl AdapterImpl {
             (Redshift, Check) => NotSupported,
             (Redshift, Custom) => NotSupported,
 
-            // DuckDB - follows Postgres
-            (DuckDB, NotNull) => Enforced,
-            (DuckDB, ForeignKey) => Enforced,
-            (DuckDB, Unique) => NotEnforced,
-            (DuckDB, PrimaryKey) => NotEnforced,
-            (DuckDB, Check) => NotSupported,
-            (DuckDB, Custom) => NotSupported,
+            // DuckDB - follows Postgres (GizmoSQL is a DuckDB server)
+            (DuckDB | GizmoSQL, NotNull) => Enforced,
+            (DuckDB | GizmoSQL, ForeignKey) => Enforced,
+            (DuckDB | GizmoSQL, Unique) => NotEnforced,
+            (DuckDB | GizmoSQL, PrimaryKey) => NotEnforced,
+            (DuckDB | GizmoSQL, Check) => NotSupported,
+            (DuckDB | GizmoSQL, Custom) => NotSupported,
 
             // Lake compute - follows DuckDB
             (LakeCompute, NotNull) => Enforced,
@@ -2944,14 +2936,6 @@ impl AdapterImpl {
             (LakeCompute, PrimaryKey) => NotEnforced,
             (LakeCompute, Check) => NotSupported,
             (LakeCompute, Custom) => NotSupported,
-
-            // GizmoSQL - follows DuckDB
-            (GizmoSQL, NotNull) => Enforced,
-            (GizmoSQL, ForeignKey) => Enforced,
-            (GizmoSQL, Unique) => NotEnforced,
-            (GizmoSQL, PrimaryKey) => NotEnforced,
-            (GizmoSQL, Check) => NotSupported,
-            (GizmoSQL, Custom) => NotSupported,
 
             // Fabric
             (Fabric, Check) => NotSupported,
@@ -4219,10 +4203,7 @@ impl AdapterImpl {
             Impl(DuckDB, engine) => {
                 duckdb::list_relations(engine.as_ref(), query_ctx, conn, db_schema, token)
             }
-            Impl(LakeCompute, engine) => {
-                duckdb::list_relations(engine.as_ref(), query_ctx, conn, db_schema, token)
-            }
-            Impl(GizmoSQL, engine) => {
+            Impl(LakeCompute | GizmoSQL, engine) => {
                 duckdb::list_relations(engine.as_ref(), query_ctx, conn, db_schema, token)
             }
             Impl(Fabric, engine) => {

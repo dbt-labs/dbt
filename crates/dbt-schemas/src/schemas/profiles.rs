@@ -348,19 +348,7 @@ impl DbConfig {
                 "query_timeout",
                 "idle_timeout",
             ],
-            // `password` is deliberately absent: these keys reach `dbt debug`'s
-            // connection display, which must not print credentials.
-            AdapterType::GizmoSQL => &[
-                "host",
-                "port",
-                "username",
-                "database",
-                "schema",
-                "use_encryption",
-                "tls_skip_verify",
-                "auth_type",
-                "external_root",
-            ],
+            AdapterType::GizmoSQL => GIZMOSQL_CONNECTION_KEYS,
             AdapterType::ClickHouse => &[
                 "database",
                 "schema",
@@ -1415,6 +1403,20 @@ pub struct ExasolDbConfig {
     pub threads: Option<StringOrInteger>,
 }
 
+/// `password` is deliberately absent: these keys reach `dbt debug`'s connection
+/// display, which must not print credentials.
+const GIZMOSQL_CONNECTION_KEYS: &[&str] = &[
+    "host",
+    "port",
+    "username",
+    "database",
+    "schema",
+    "use_encryption",
+    "tls_skip_verify",
+    "auth_type",
+    "external_root",
+];
+
 /// GizmoSQL adapter configuration.
 ///
 /// GizmoSQL is an Arrow Flight SQL server backed by DuckDB. Field names and
@@ -2004,6 +2006,44 @@ fn missing(field: &str) -> String {
 
 // This target context is only to be used in rendering yml's
 // See: https://docs.getdbt.com/reference/dbt-jinja-functions/target
+fn gizmosql_target_context(
+    config: GizmoSQLDbConfig,
+    adapter_type: String,
+) -> Result<TargetContext, String> {
+    Ok(TargetContext::GizmoSQL(GizmoSQLTargetEnv {
+        // Unlike Exasol there is no sensible default host, and the auth
+        // layer requires one, so fail at profile load rather than later.
+        host: config
+            .host
+            .filter(|host| !host.is_empty())
+            .ok_or_else(|| missing("host"))?,
+        port: config.port,
+        username: config.username,
+        __common__: CommonTargetContext {
+            // The DuckDB catalog name on the server cannot be derived
+            // offline (unlike DuckDB's file path), so it must be given.
+            database: config
+                .database
+                .filter(|database| !database.is_empty())
+                .ok_or_else(|| missing("database"))?,
+            schema: config.schema.unwrap_or_else(|| "main".to_string()),
+            type_: adapter_type,
+            threads: match config.threads {
+                Some(StringOrInteger::String(threads)) => Some(
+                    threads
+                        .parse::<u16>()
+                        .map_err(|_| "threads must be a positive integer".to_string())?,
+                ),
+                Some(StringOrInteger::Integer(threads)) => Some(
+                    u16::try_from(threads)
+                        .map_err(|_| "threads must be a positive integer".to_string())?,
+                ),
+                None => None,
+            },
+        },
+    }))
+}
+
 impl TryFrom<DbConfig> for TargetContext {
     type Error = String;
 
@@ -2314,39 +2354,7 @@ impl TryFrom<DbConfig> for TargetContext {
                 },
             })),
 
-            DbConfig::GizmoSQL(config) => Ok(TargetContext::GizmoSQL(GizmoSQLTargetEnv {
-                // Unlike Exasol there is no sensible default host, and the auth
-                // layer requires one, so fail at profile load rather than later.
-                host: config
-                    .host
-                    .clone()
-                    .filter(|host| !host.is_empty())
-                    .ok_or_else(|| missing("host"))?,
-                port: config.port.clone(),
-                username: config.username.clone(),
-                __common__: CommonTargetContext {
-                    // The DuckDB catalog name on the server cannot be derived
-                    // offline (unlike DuckDB's file path), so it must be given.
-                    database: config
-                        .database
-                        .filter(|database| !database.is_empty())
-                        .ok_or_else(|| missing("database"))?,
-                    schema: config.schema.unwrap_or_else(|| "main".to_string()),
-                    type_: adapter_type,
-                    threads: match config.threads {
-                        Some(StringOrInteger::String(threads)) => Some(
-                            threads
-                                .parse::<u16>()
-                                .map_err(|_| "threads must be a positive integer".to_string())?,
-                        ),
-                        Some(StringOrInteger::Integer(threads)) => Some(
-                            u16::try_from(threads)
-                                .map_err(|_| "threads must be a positive integer".to_string())?,
-                        ),
-                        None => None,
-                    },
-                },
-            })),
+            DbConfig::GizmoSQL(config) => gizmosql_target_context(*config, adapter_type),
 
             DbConfig::ClickHouse(config) => Ok(TargetContext::ClickHouse(ClickHouseTargetEnv {
                 driver: config.driver.clone(),

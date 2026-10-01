@@ -29,11 +29,6 @@ fn relation_database(arg: Option<&Value>) -> Option<String> {
         .and_then(|v| v.as_str().map(str::to_string))
 }
 
-/// Adapters that run the DuckDB macro package: DuckDB itself, and GizmoSQL, a
-/// DuckDB-backed server that inherits `dbt-duckdb` through the dispatch chain.
-/// Every test below runs once per adapter so the two cannot drift apart.
-const DUCKDB_MACRO_ADAPTERS: [AdapterType; 2] = [AdapterType::DuckDB, AdapterType::GizmoSQL];
-
 fn build_harness(
     adapter_type: AdapterType,
     iceberg_database: &'static str,
@@ -97,195 +92,180 @@ fn build_harness(
     harness
 }
 
-#[test]
-fn create_table_as_quotes_only_columns_marked_quote_true() {
-    for adapter_type in DUCKDB_MACRO_ADAPTERS {
-        let harness = build_harness(adapter_type, "iceberg_demo", "ducklake_demo");
-        harness.mock().on("build_catalog_relation", |_| {
-            Ok(catalog_relation("direct_create"))
-        });
-        // `quoted` mirrors real `Column::quoted()` under DuckDB's default resolved
-        // quoting (identifier quoting on): always pre-quoted, regardless of any
-        // per-column `quote` config.
-        harness.mock().on("get_column_schema_from_query", |_| {
-            Ok(Value::from_serialize(vec![
-                BTreeMap::from([
-                    ("name", Value::from("id")),
-                    ("quoted", Value::from("\"id\"")),
-                    ("dtype", Value::from("integer")),
-                ]),
+fn create_table_as_quotes_only_columns_marked_quote_true(adapter_type: AdapterType) {
+    let harness = build_harness(adapter_type, "iceberg_demo", "ducklake_demo");
+    harness.mock().on("build_catalog_relation", |_| {
+        Ok(catalog_relation("direct_create"))
+    });
+    // `quoted` mirrors real `Column::quoted()` under DuckDB's default resolved
+    // quoting (identifier quoting on): always pre-quoted, regardless of any
+    // per-column `quote` config.
+    harness.mock().on("get_column_schema_from_query", |_| {
+        Ok(Value::from_serialize(vec![
+            BTreeMap::from([
+                ("name", Value::from("id")),
+                ("quoted", Value::from("\"id\"")),
+                ("dtype", Value::from("integer")),
+            ]),
+            BTreeMap::from([
+                ("name", Value::from("MixedCase")),
+                ("quoted", Value::from("\"MixedCase\"")),
+                ("dtype", Value::from("varchar")),
+            ]),
+        ]))
+    });
+    harness.mock().on("quote", |args| {
+        let identifier = args.first().and_then(|v| v.as_str()).unwrap_or_default();
+        Ok(Value::from(format!("\"{identifier}\"")))
+    });
+
+    let model = Value::from_serialize(BTreeMap::from([
+        ("alias".to_string(), Value::from("orders")),
+        (
+            "unique_id".to_string(),
+            Value::from("model.test_project.orders"),
+        ),
+        (
+            "columns".to_string(),
+            Value::from_serialize(BTreeMap::from([(
+                "MixedCase",
                 BTreeMap::from([
                     ("name", Value::from("MixedCase")),
-                    ("quoted", Value::from("\"MixedCase\"")),
-                    ("dtype", Value::from("varchar")),
+                    ("quote", Value::from(true)),
                 ]),
-            ]))
-        });
-        harness.mock().on("quote", |args| {
-            let identifier = args.first().and_then(|v| v.as_str()).unwrap_or_default();
-            Ok(Value::from(format!("\"{identifier}\"")))
-        });
+            )])),
+        ),
+    ]));
 
-        let model = Value::from_serialize(BTreeMap::from([
-            ("alias".to_string(), Value::from("orders")),
-            (
-                "unique_id".to_string(),
-                Value::from("model.test_project.orders"),
-            ),
-            (
-                "columns".to_string(),
-                Value::from_serialize(BTreeMap::from([(
-                    "MixedCase",
-                    BTreeMap::from([
-                        ("name", Value::from("MixedCase")),
-                        ("quote", Value::from(true)),
-                    ]),
-                )])),
-            ),
-        ]));
+    let ctx = harness
+        .materialization_context("orders", "select 1 as id, 2 as mixedcase")
+        .relation_type(RelationType::Table)
+        .with("model", model)
+        .with("dbt_version", Value::from("2.0.0"))
+        .build();
 
-        let ctx = harness
-            .materialization_context("orders", "select 1 as id, 2 as mixedcase")
-            .relation_type(RelationType::Table)
-            .with("model", model)
-            .with("dbt_version", Value::from("2.0.0"))
-            .build();
+    let rendered = harness
+        .render(
+            "{{ duckdb__create_table_as(false, this, compiled_code) }}",
+            ctx,
+        )
+        .expect("render should succeed");
 
-        let rendered = harness
-            .render(
-                "{{ duckdb__create_table_as(false, this, compiled_code) }}",
-                ctx,
-            )
-            .expect("render should succeed");
+    // `compiled_code` (the select statement) is passed through verbatim by the
+    // macro, so assert only on the column lists the macro itself generates
+    // (the `create table (...)` and `insert into (...)` clauses), not on
+    // anything that could leak in from the query body.
+    assert!(
+        rendered.contains("\"MixedCase\" varchar"),
+        "column configured with quote: true should be quoted in the create-table column list, got: {rendered}"
+    );
+    assert!(
+        rendered.contains("id integer") && !rendered.contains("\"id\" integer"),
+        "column without quote: true should remain unquoted in the create-table column list, got: {rendered}"
+    );
 
-        // `compiled_code` (the select statement) is passed through verbatim by the
-        // macro, so assert only on the column lists the macro itself generates
-        // (the `create table (...)` and `insert into (...)` clauses), not on
-        // anything that could leak in from the query body.
-        assert!(
-            rendered.contains("\"MixedCase\" varchar"),
-            "column configured with quote: true should be quoted in the create-table column list, got: {rendered}"
-        );
-        assert!(
-            rendered.contains("id integer") && !rendered.contains("\"id\" integer"),
-            "column without quote: true should remain unquoted in the create-table column list, got: {rendered}"
-        );
-
-        let insert_clause = rendered
-            .split("insert into")
-            .nth(1)
-            .expect("rendered SQL should contain an insert into clause");
-        assert!(
-            insert_clause.contains("\"MixedCase\""),
-            "column configured with quote: true should be quoted in the insert column list, got: {insert_clause}"
-        );
-        assert!(
-            !insert_clause.contains("\"id\""),
-            "column without quote: true should remain unquoted in the insert column list, got: {insert_clause}"
-        );
-    }
+    let insert_clause = rendered
+        .split("insert into")
+        .nth(1)
+        .expect("rendered SQL should contain an insert into clause");
+    assert!(
+        insert_clause.contains("\"MixedCase\""),
+        "column configured with quote: true should be quoted in the insert column list, got: {insert_clause}"
+    );
+    assert!(
+        !insert_clause.contains("\"id\""),
+        "column without quote: true should remain unquoted in the insert column list, got: {insert_clause}"
+    );
 }
 
-#[test]
-fn get_columns_in_relation_uses_describe_for_iceberg_relations() {
-    for adapter_type in DUCKDB_MACRO_ADAPTERS {
-        let harness = build_harness(adapter_type, "iceberg_demo", "ducklake_demo");
-        let relation =
-            harness.relation("iceberg_demo", "main", "orders", Some(RelationType::Table));
-        let ctx = BTreeMap::from([(
-            "relation".to_string(),
-            RelationObject::new(relation).into_value(),
-        )]);
+fn get_columns_in_relation_uses_describe_for_iceberg_relations(adapter_type: AdapterType) {
+    let harness = build_harness(adapter_type, "iceberg_demo", "ducklake_demo");
+    let relation = harness.relation("iceberg_demo", "main", "orders", Some(RelationType::Table));
+    let ctx = BTreeMap::from([(
+        "relation".to_string(),
+        RelationObject::new(relation).into_value(),
+    )]);
 
-        harness
-            .render("{{ duckdb__get_columns_in_relation(relation) }}", ctx)
-            .expect("render should succeed");
+    harness
+        .render("{{ duckdb__get_columns_in_relation(relation) }}", ctx)
+        .expect("render should succeed");
 
-        let executed = executed_sql(harness.mock()).join("\n");
-        assert!(
-            executed.contains("from (describe"),
-            "Iceberg relations should use DESCRIBE, got: {executed}"
-        );
-        assert!(
-            !executed.contains("information_schema.columns"),
-            "Iceberg relations should not use information_schema.columns, got: {executed}"
-        );
-    }
+    let executed = executed_sql(harness.mock()).join("\n");
+    assert!(
+        executed.contains("from (describe"),
+        "Iceberg relations should use DESCRIBE, got: {executed}"
+    );
+    assert!(
+        !executed.contains("information_schema.columns"),
+        "Iceberg relations should not use information_schema.columns, got: {executed}"
+    );
 }
 
-#[test]
-fn drop_relation_omits_cascade_for_iceberg_relations() {
-    for adapter_type in DUCKDB_MACRO_ADAPTERS {
-        let harness = build_harness(adapter_type, "iceberg_demo", "ducklake_demo");
-        let relation =
-            harness.relation("iceberg_demo", "main", "orders", Some(RelationType::Table));
-        let ctx = BTreeMap::from([(
-            "relation".to_string(),
-            RelationObject::new(relation).into_value(),
-        )]);
+fn drop_relation_omits_cascade_for_iceberg_relations(adapter_type: AdapterType) {
+    let harness = build_harness(adapter_type, "iceberg_demo", "ducklake_demo");
+    let relation = harness.relation("iceberg_demo", "main", "orders", Some(RelationType::Table));
+    let ctx = BTreeMap::from([(
+        "relation".to_string(),
+        RelationObject::new(relation).into_value(),
+    )]);
 
-        harness
-            .render("{{ duckdb__drop_relation(relation) }}", ctx)
-            .expect("render should succeed");
+    harness
+        .render("{{ duckdb__drop_relation(relation) }}", ctx)
+        .expect("render should succeed");
 
-        assert_executed_contains(harness.mock(), "drop table if exists");
-        let executed = executed_sql(harness.mock()).join("\n");
-        assert!(
-            !executed.contains("cascade"),
-            "Iceberg drop should omit CASCADE, got: {executed}"
-        );
-    }
+    assert_executed_contains(harness.mock(), "drop table if exists");
+    let executed = executed_sql(harness.mock()).join("\n");
+    assert!(
+        !executed.contains("cascade"),
+        "Iceberg drop should omit CASCADE, got: {executed}"
+    );
 }
 
-#[test]
-fn rename_relation_alters_iceberg_without_committing_connection() {
-    for adapter_type in DUCKDB_MACRO_ADAPTERS {
-        let harness = build_harness(adapter_type, "iceberg_demo", "ducklake_demo");
-        let from_relation = harness.relation(
-            "iceberg_demo",
-            "main",
-            "orders__dbt_tmp",
-            Some(RelationType::Table),
-        );
-        let to_relation =
-            harness.relation("regular_demo", "main", "orders", Some(RelationType::Table));
-        let ctx = BTreeMap::from([
-            (
-                "from_relation".to_string(),
-                RelationObject::new(from_relation).into_value(),
-            ),
-            (
-                "to_relation".to_string(),
-                RelationObject::new(to_relation).into_value(),
-            ),
-        ]);
+fn rename_relation_alters_iceberg_without_committing_connection(adapter_type: AdapterType) {
+    let harness = build_harness(adapter_type, "iceberg_demo", "ducklake_demo");
+    let from_relation = harness.relation(
+        "iceberg_demo",
+        "main",
+        "orders__dbt_tmp",
+        Some(RelationType::Table),
+    );
+    let to_relation = harness.relation("regular_demo", "main", "orders", Some(RelationType::Table));
+    let ctx = BTreeMap::from([
+        (
+            "from_relation".to_string(),
+            RelationObject::new(from_relation).into_value(),
+        ),
+        (
+            "to_relation".to_string(),
+            RelationObject::new(to_relation).into_value(),
+        ),
+    ]);
 
-        harness
-            .render(
-                "{{ duckdb__rename_relation(from_relation, to_relation) }}",
-                ctx,
-            )
-            .expect("render should succeed");
+    harness
+        .render(
+            "{{ duckdb__rename_relation(from_relation, to_relation) }}",
+            ctx,
+        )
+        .expect("render should succeed");
 
-        // Fusion connections are shared across nodes, so the iceberg rename must NOT
-        // commit the connection; it relies on DuckDB autocommit (auto_begin=False).
-        let calls = harness.mock().observed_calls();
-        assert!(
-            !calls.iter().any(|call| call.method == "commit"),
-            "iceberg rename must not commit the shared connection: {calls:?}"
-        );
-        drop(calls);
+    // Fusion connections are shared across nodes, so the iceberg rename must NOT
+    // commit the connection; it relies on DuckDB autocommit (auto_begin=False).
+    let calls = harness.mock().observed_calls();
+    assert!(
+        !calls.iter().any(|call| call.method == "commit"),
+        "iceberg rename must not commit the shared connection: {calls:?}"
+    );
+    drop(calls);
 
-        let executed = executed_sql(harness.mock()).join("\n");
-        assert!(
-            executed.contains("alter table"),
-            "rename should use ALTER TABLE RENAME, got: {executed}"
-        );
-        assert!(
-            !executed.contains("create table") && !executed.contains("drop table"),
-            "rename should not use DROP/CREATE fallback, got: {executed}"
-        );
-    }
+    let executed = executed_sql(harness.mock()).join("\n");
+    assert!(
+        executed.contains("alter table"),
+        "rename should use ALTER TABLE RENAME, got: {executed}"
+    );
+    assert!(
+        !executed.contains("create table") && !executed.contains("drop table"),
+        "rename should not use DROP/CREATE fallback, got: {executed}"
+    );
 }
 
 fn render_table_materialization(
@@ -357,116 +337,158 @@ fn render_table_materialization_with_columns(
     harness
 }
 
-#[test]
-fn table_materialization_writes_iceberg_target_directly() {
-    for adapter_type in DUCKDB_MACRO_ADAPTERS {
-        let harness = render_table_materialization(adapter_type, "direct_create");
+fn table_materialization_writes_iceberg_target_directly(adapter_type: AdapterType) {
+    let harness = render_table_materialization(adapter_type, "direct_create");
 
-        harness
-            .mock()
-            .observed_calls()
-            .assert_not_called("rename_relation");
-        harness
-            .mock()
-            .observed_calls()
-            .assert_not_called("get_relation");
-        let executed = executed_sql(harness.mock()).join("\n");
-        assert!(
-            executed.contains("create table"),
-            "Iceberg table materialization should create the target relation, got: {executed}"
-        );
-        assert!(
-            !executed.contains("__dbt_tmp"),
-            "Iceberg table materialization should not use an intermediate relation, got: {executed}"
-        );
-        assert!(
-            executed.contains("insert into"),
-            "Iceberg table materialization should create then insert, got: {executed}"
-        );
-        assert!(
-            !executed.contains(" as ("),
-            "Iceberg table materialization should not use CTAS, got: {executed}"
-        );
-    }
+    harness
+        .mock()
+        .observed_calls()
+        .assert_not_called("rename_relation");
+    harness
+        .mock()
+        .observed_calls()
+        .assert_not_called("get_relation");
+    let executed = executed_sql(harness.mock()).join("\n");
+    assert!(
+        executed.contains("create table"),
+        "Iceberg table materialization should create the target relation, got: {executed}"
+    );
+    assert!(
+        !executed.contains("__dbt_tmp"),
+        "Iceberg table materialization should not use an intermediate relation, got: {executed}"
+    );
+    assert!(
+        executed.contains("insert into"),
+        "Iceberg table materialization should create then insert, got: {executed}"
+    );
+    assert!(
+        !executed.contains(" as ("),
+        "Iceberg table materialization should not use CTAS, got: {executed}"
+    );
 }
 
 /// The `direct_create` branch derives its column list from the SELECT via
 /// `get_column_schema_from_query`, so those columns carry no `quote:` flag of
 /// their own. Undeclared columns must be emitted bare rather than quoted
 /// unconditionally, matching every other adapter's DDL.
-#[test]
-fn table_materialization_does_not_quote_undeclared_column_names() {
-    for adapter_type in DUCKDB_MACRO_ADAPTERS {
-        let harness = render_table_materialization(adapter_type, "direct_create");
-        let executed = executed_sql(harness.mock()).join("\n");
+fn table_materialization_does_not_quote_undeclared_column_names(adapter_type: AdapterType) {
+    let harness = render_table_materialization(adapter_type, "direct_create");
+    let executed = executed_sql(harness.mock()).join("\n");
 
-        assert!(
-            executed.contains("id integer"),
-            "column spec should name the column unquoted, got: {executed}"
-        );
-        assert!(
-            !executed.contains("\"id\""),
-            "undeclared column name must not be quoted in generated DDL, got: {executed}"
-        );
-    }
+    assert!(
+        executed.contains("id integer"),
+        "column spec should name the column unquoted, got: {executed}"
+    );
+    assert!(
+        !executed.contains("\"id\""),
+        "undeclared column name must not be quoted in generated DDL, got: {executed}"
+    );
 }
 
 /// Counterpart to the above: the `quote:` flag is looked up by name in the
 /// model's yaml `columns:` block, so declaring `quote: true` still quotes.
 /// Without this the fix would be indistinguishable from always emitting
 /// `col.name`.
-#[test]
-fn table_materialization_quotes_column_names_flagged_in_yaml() {
-    for adapter_type in DUCKDB_MACRO_ADAPTERS {
-        let user_columns = BTreeMap::from([(
-            "id".to_string(),
-            Value::from_serialize(BTreeMap::from([
-                ("name".to_string(), Value::from("id")),
-                ("quote".to_string(), Value::from(true)),
-            ])),
-        )]);
-        let harness =
-            render_table_materialization_with_columns(adapter_type, "direct_create", user_columns);
-        let executed = executed_sql(harness.mock()).join("\n");
+fn table_materialization_quotes_column_names_flagged_in_yaml(adapter_type: AdapterType) {
+    let user_columns = BTreeMap::from([(
+        "id".to_string(),
+        Value::from_serialize(BTreeMap::from([
+            ("name".to_string(), Value::from("id")),
+            ("quote".to_string(), Value::from(true)),
+        ])),
+    )]);
+    let harness =
+        render_table_materialization_with_columns(adapter_type, "direct_create", user_columns);
+    let executed = executed_sql(harness.mock()).join("\n");
 
-        assert!(
-            executed.contains("\"id\" integer"),
-            "column flagged `quote: true` should be quoted, got: {executed}"
-        );
-        assert!(
-            executed.contains("insert into"),
-            "expected the create-then-insert path, got: {executed}"
-        );
-    }
+    assert!(
+        executed.contains("\"id\" integer"),
+        "column flagged `quote: true` should be quoted, got: {executed}"
+    );
+    assert!(
+        executed.contains("insert into"),
+        "expected the create-then-insert path, got: {executed}"
+    );
 }
 
-#[test]
-fn table_materialization_ctas_in_place_for_staged_create_opt_in() {
-    for adapter_type in DUCKDB_MACRO_ADAPTERS {
-        // `stage_create_tables: true` (duckdb-iceberg#1017) → direct_create_as_select:
-        // CTAS straight into the target, still no temp-table + rename dance.
-        let harness = render_table_materialization(adapter_type, "direct_create_as_select");
+fn table_materialization_ctas_in_place_for_staged_create_opt_in(adapter_type: AdapterType) {
+    // `stage_create_tables: true` (duckdb-iceberg#1017) → direct_create_as_select:
+    // CTAS straight into the target, still no temp-table + rename dance.
+    let harness = render_table_materialization(adapter_type, "direct_create_as_select");
 
-        harness
-            .mock()
-            .observed_calls()
-            .assert_not_called("rename_relation");
-        harness
-            .mock()
-            .observed_calls()
-            .assert_not_called("get_relation");
-        let executed = executed_sql(harness.mock()).join("\n");
-        assert!(
-            !executed.contains("__dbt_tmp"),
-            "staged-create opt-in should not use an intermediate relation, got: {executed}"
-        );
-        assert!(
-            executed.contains(" as ("),
-            "staged-create opt-in should CTAS the target, got: {executed}"
-        );
-        assert!(
-            !executed.contains("insert into"),
-            "staged-create opt-in should not create-then-insert, got: {executed}"
-        );
-    }
+    harness
+        .mock()
+        .observed_calls()
+        .assert_not_called("rename_relation");
+    harness
+        .mock()
+        .observed_calls()
+        .assert_not_called("get_relation");
+    let executed = executed_sql(harness.mock()).join("\n");
+    assert!(
+        !executed.contains("__dbt_tmp"),
+        "staged-create opt-in should not use an intermediate relation, got: {executed}"
+    );
+    assert!(
+        executed.contains(" as ("),
+        "staged-create opt-in should CTAS the target, got: {executed}"
+    );
+    assert!(
+        !executed.contains("insert into"),
+        "staged-create opt-in should not create-then-insert, got: {executed}"
+    );
 }
+
+/// Runs every test above once per adapter that uses the DuckDB macro package:
+/// DuckDB itself, and GizmoSQL, a DuckDB-backed server that inherits
+/// `dbt-duckdb` through the dispatch chain, so the two cannot drift apart.
+macro_rules! duckdb_macro_tests {
+    ($module:ident, $adapter_type:expr) => {
+        mod $module {
+            use super::*;
+
+            #[test]
+            fn create_table_as_quotes_only_columns_marked_quote_true() {
+                super::create_table_as_quotes_only_columns_marked_quote_true($adapter_type);
+            }
+
+            #[test]
+            fn get_columns_in_relation_uses_describe_for_iceberg_relations() {
+                super::get_columns_in_relation_uses_describe_for_iceberg_relations($adapter_type);
+            }
+
+            #[test]
+            fn drop_relation_omits_cascade_for_iceberg_relations() {
+                super::drop_relation_omits_cascade_for_iceberg_relations($adapter_type);
+            }
+
+            #[test]
+            fn rename_relation_alters_iceberg_without_committing_connection() {
+                super::rename_relation_alters_iceberg_without_committing_connection($adapter_type);
+            }
+
+            #[test]
+            fn table_materialization_writes_iceberg_target_directly() {
+                super::table_materialization_writes_iceberg_target_directly($adapter_type);
+            }
+
+            #[test]
+            fn table_materialization_does_not_quote_undeclared_column_names() {
+                super::table_materialization_does_not_quote_undeclared_column_names($adapter_type);
+            }
+
+            #[test]
+            fn table_materialization_quotes_column_names_flagged_in_yaml() {
+                super::table_materialization_quotes_column_names_flagged_in_yaml($adapter_type);
+            }
+
+            #[test]
+            fn table_materialization_ctas_in_place_for_staged_create_opt_in() {
+                super::table_materialization_ctas_in_place_for_staged_create_opt_in($adapter_type);
+            }
+        }
+    };
+}
+
+duckdb_macro_tests!(duckdb, AdapterType::DuckDB);
+duckdb_macro_tests!(gizmosql, AdapterType::GizmoSQL);

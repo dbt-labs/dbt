@@ -574,32 +574,7 @@ impl AdapterEngine for AdbcEngine {
         let (mut database, fingerprint) = self.load_driver_and_configure_database(config)?;
         let connect = || {
             let mut builder = connection::Builder::default();
-            match self.adapter_type {
-                // dbclient.py `_set_client_database` parity; ensure_database
-                // guarantees it exists.
-                AdapterType::ClickHouse => {
-                    if let Some(schema) = super::clickhouse::target_schema(config) {
-                        builder.with_option(
-                            adbc_core::options::OptionConnection::CurrentSchema,
-                            schema.as_ref(),
-                        )?;
-                    }
-                }
-                // dbt-gizmosql (Python) parity: the profile's `database` is the
-                // DuckDB catalog made current for the Flight SQL session, so
-                // unqualified names in user SQL resolve against it.
-                AdapterType::GizmoSQL => {
-                    if let Some(catalog) = config.get_string("database")
-                        && !catalog.is_empty()
-                    {
-                        builder.with_option(
-                            adbc_core::options::OptionConnection::CurrentCatalog,
-                            catalog.as_ref(),
-                        )?;
-                    }
-                }
-                _ => {}
-            }
+            set_session_defaults(self.adapter_type, config, &mut builder)?;
             builder.build(&mut database)
         };
         let retry_policy = ConnectionRetryPolicy::new(self.adapter_type(), config);
@@ -666,6 +641,34 @@ impl AdapterEngine for AdbcEngine {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/// Per-adapter options applied to every new connection before it is built.
+fn set_session_defaults(
+    adapter_type: AdapterType,
+    config: &AdapterConfig,
+    builder: &mut connection::Builder,
+) -> adbc_core::error::Result<()> {
+    use adbc_core::options::OptionConnection::{CurrentCatalog, CurrentSchema};
+    match adapter_type {
+        // dbclient.py `_set_client_database` parity; ensure_database
+        // guarantees it exists.
+        AdapterType::ClickHouse => {
+            if let Some(schema) = super::clickhouse::target_schema(config) {
+                builder.with_option(CurrentSchema, schema.as_ref())?;
+            }
+        }
+        // dbt-gizmosql (Python) parity: the profile's `database` is the DuckDB
+        // catalog made current for the Flight SQL session, so unqualified names
+        // in user SQL resolve against it.
+        AdapterType::GizmoSQL => {
+            if let Some(catalog) = config.get_string("database").filter(|c| !c.is_empty()) {
+                builder.with_option(CurrentCatalog, catalog.as_ref())?;
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
 
 /// Enrich connection errors with adapter-specific hints where possible.
 fn enrich_connection_error(

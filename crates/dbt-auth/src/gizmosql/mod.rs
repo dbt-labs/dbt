@@ -61,32 +61,14 @@ impl<'a> GizmoSQLAuthIR<'a> {
                 tls_skip_verify,
                 auth_type,
             } => {
-                // `gizmosql://` is the driver's own URI scheme: TLS by default, with
-                // `?transport=tcp` for plaintext. Using it rather than the underlying
-                // `grpc+tls://` / `grpc+tcp://` forms keeps the transport a driver
-                // concern.
-                let mut uri = format!("gizmosql://{host}:{port}");
-                if !use_encryption {
-                    uri.push_str("?transport=tcp");
-                }
-                builder.with_parse_uri(uri)?;
-
-                if auth_type.as_deref() == Some(AUTH_TYPE_EXTERNAL) {
-                    // The OAuth/SSO flow supplies the credentials itself (the driver
-                    // presents the identity token as basic auth); anything in the
-                    // profile would be ignored, so never send it and say so.
-                    if username.is_some() || password.is_some() {
-                        warning_printer.warn(
-                            "GizmoSQL: 'username' and 'password' are ignored when \
-                             auth_type is 'external'",
-                        );
-                    }
-                } else if let Some(username) = username {
-                    builder.with_username(username.as_ref());
-                    // Flight SQL basic auth always sends a password; an empty one
-                    // matches the Python adapter's behavior.
-                    builder.with_password(password.as_deref().unwrap_or(""));
-                }
+                builder.with_parse_uri(connection_uri(host, &port, use_encryption))?;
+                apply_credentials(
+                    &mut builder,
+                    username,
+                    password,
+                    auth_type.as_deref(),
+                    warning_printer,
+                );
 
                 if tls_skip_verify {
                     builder.with_named_option(OPTION_TLS_SKIP_VERIFY, "true")?;
@@ -99,6 +81,40 @@ impl<'a> GizmoSQLAuthIR<'a> {
         }
 
         Ok(builder)
+    }
+}
+
+/// `gizmosql://` is the driver's own URI scheme: TLS by default, with
+/// `?transport=tcp` for plaintext. Using it rather than the underlying
+/// `grpc+tls://` / `grpc+tcp://` forms keeps the transport a driver concern.
+fn connection_uri(host: &str, port: &str, use_encryption: bool) -> String {
+    let transport = if use_encryption { "" } else { "?transport=tcp" };
+    format!("gizmosql://{host}:{port}{transport}")
+}
+
+fn apply_credentials(
+    builder: &mut DatabaseBuilder,
+    username: Option<Cow<'_, str>>,
+    password: Option<Cow<'_, str>>,
+    auth_type: Option<&str>,
+    warning_printer: &dyn AuthWarningPrinter,
+) {
+    if auth_type == Some(AUTH_TYPE_EXTERNAL) {
+        // The OAuth/SSO flow supplies the credentials itself (the driver presents
+        // the identity token as basic auth); anything in the profile would be
+        // ignored, so never send it and say so.
+        if username.is_some() || password.is_some() {
+            warning_printer.warn(
+                "GizmoSQL: 'username' and 'password' are ignored when auth_type is 'external'",
+            );
+        }
+        return;
+    }
+    if let Some(username) = username {
+        builder.with_username(username.as_ref());
+        // Flight SQL basic auth always sends a password; an empty one matches the
+        // Python adapter's behavior.
+        builder.with_password(password.as_deref().unwrap_or(""));
     }
 }
 
@@ -135,6 +151,17 @@ fn get_flag_or_alias(
     }
 }
 
+/// `auth_type` is optional; when present it must name a supported flow.
+fn parse_auth_type(config: &AdapterConfig) -> Result<Option<Cow<'_, str>>, AuthError> {
+    let auth_type = config.get_string("auth_type");
+    match auth_type.as_deref() {
+        None | Some(AUTH_TYPE_PASSWORD | AUTH_TYPE_EXTERNAL) => Ok(auth_type),
+        Some(other) => Err(AuthError::config(format!(
+            "GizmoSQL 'auth_type' must be '{AUTH_TYPE_PASSWORD}' or '{AUTH_TYPE_EXTERNAL}', got '{other}'"
+        ))),
+    }
+}
+
 fn parse_auth<'a>(
     config: &'a AdapterConfig,
     _warning_printer: &dyn AuthWarningPrinter,
@@ -166,15 +193,7 @@ fn parse_auth<'a>(
         false,
     )?;
 
-    let auth_type = config.get_string("auth_type");
-    if let Some(auth_type) = &auth_type
-        && auth_type != AUTH_TYPE_PASSWORD
-        && auth_type != AUTH_TYPE_EXTERNAL
-    {
-        return Err(AuthError::config(format!(
-            "GizmoSQL 'auth_type' must be '{AUTH_TYPE_PASSWORD}' or '{AUTH_TYPE_EXTERNAL}', got '{auth_type}'"
-        )));
-    }
+    let auth_type = parse_auth_type(config)?;
 
     if auth_type.as_deref() != Some(AUTH_TYPE_EXTERNAL) && username.is_none() {
         return Err(AuthError::config(
@@ -234,6 +253,12 @@ mod tests {
         GizmoSQLAuth::new(Box::new(crate::NoopAuthWarningPrinter))
             .configure(&AdapterConfig::new(config))
             .expect("configure")
+    }
+
+    fn configure_err(config: Mapping) -> AuthError {
+        GizmoSQLAuth::new(Box::new(crate::NoopAuthWarningPrinter))
+            .configure(&AdapterConfig::new(config))
+            .expect_err("configure should fail")
     }
 
     /// Collects warnings into a shared log so tests can assert on them.
@@ -441,53 +466,42 @@ use_encryption: false
 
     #[test]
     fn test_invalid_auth_type_returns_error() {
-        let result = GizmoSQLAuth::new(Box::new(crate::NoopAuthWarningPrinter)).configure(
-            &AdapterConfig::new(Mapping::from_iter([
-                ("host".into(), "localhost".into()),
-                ("username".into(), "dbt".into()),
-                ("auth_type".into(), "kerberos".into()),
-            ])),
-        );
-        let err = result.expect_err("invalid auth_type must fail");
+        let err = configure_err(Mapping::from_iter([
+            ("host".into(), "localhost".into()),
+            ("username".into(), "dbt".into()),
+            ("auth_type".into(), "kerberos".into()),
+        ]));
         assert_contains!(err.msg(), "auth_type");
     }
 
     #[test]
     fn test_invalid_boolean_returns_error() {
-        let result = GizmoSQLAuth::new(Box::new(crate::NoopAuthWarningPrinter)).configure(
-            &AdapterConfig::new(Mapping::from_iter([
-                ("host".into(), "localhost".into()),
-                ("username".into(), "dbt".into()),
-                ("use_encryption".into(), "maybe".into()),
-            ])),
-        );
-        assert!(result.is_err());
+        let err = configure_err(Mapping::from_iter([
+            ("host".into(), "localhost".into()),
+            ("username".into(), "dbt".into()),
+            ("use_encryption".into(), "maybe".into()),
+        ]));
+        assert_contains!(err.msg(), "use_encryption");
     }
 
     #[test]
     fn test_missing_host_returns_error() {
-        let result = GizmoSQLAuth::new(Box::new(crate::NoopAuthWarningPrinter)).configure(
-            &AdapterConfig::new(Mapping::from_iter([("username".into(), "dbt".into())])),
-        );
-        assert!(result.is_err());
+        let err = configure_err(Mapping::from_iter([("username".into(), "dbt".into())]));
+        assert_contains!(err.msg(), "'host'");
     }
 
     #[test]
     fn test_missing_username_returns_error() {
-        let result = GizmoSQLAuth::new(Box::new(crate::NoopAuthWarningPrinter)).configure(
-            &AdapterConfig::new(Mapping::from_iter([("host".into(), "localhost".into())])),
-        );
-        assert!(result.is_err());
+        let err = configure_err(Mapping::from_iter([("host".into(), "localhost".into())]));
+        assert_contains!(err.msg(), "'username'");
     }
 
     #[test]
     fn test_empty_username_returns_error() {
-        let result = GizmoSQLAuth::new(Box::new(crate::NoopAuthWarningPrinter)).configure(
-            &AdapterConfig::new(Mapping::from_iter([
-                ("host".into(), "localhost".into()),
-                ("username".into(), "".into()),
-            ])),
-        );
-        assert!(result.is_err());
+        let err = configure_err(Mapping::from_iter([
+            ("host".into(), "localhost".into()),
+            ("username".into(), "".into()),
+        ]));
+        assert_contains!(err.msg(), "'username'");
     }
 }

@@ -3,6 +3,9 @@ use dbt_common::{ErrorCode, FsResult, fs_err};
 use dbt_schemas::schemas::profiles::GizmoSQLDbConfig;
 use dbt_schemas::schemas::serde::StringOrInteger;
 
+const AUTH_TYPE_PASSWORD: &str = "password";
+const AUTH_TYPE_EXTERNAL: &str = "external";
+
 impl InteractiveSetup for GizmoSQLDbConfig {
     fn get_fields() -> Vec<ConfigField> {
         vec![
@@ -27,7 +30,7 @@ impl InteractiveSetup for GizmoSQLDbConfig {
             ConfigField::select(
                 "auth_type",
                 "Authentication (password, or external for the OAuth/SSO browser flow)",
-                vec!["password", "external"],
+                vec![AUTH_TYPE_PASSWORD, AUTH_TYPE_EXTERNAL],
                 0,
             ),
             ConfigField::input("username", "Username")
@@ -75,67 +78,16 @@ impl InteractiveSetup for GizmoSQLDbConfig {
 
     fn set_field(&mut self, field_name: &str, value: FieldValue) -> FsResult<()> {
         match field_name {
-            "host" => {
-                if let FieldValue::String(val) = value {
-                    self.host = Some(val);
-                }
-            }
-            "port" => match value {
-                FieldValue::String(val) => {
-                    if let Ok(port) = val.parse::<i64>() {
-                        self.port = Some(StringOrInteger::Integer(port));
-                    }
-                }
-                FieldValue::Integer(val) => {
-                    self.port = Some(StringOrInteger::Integer(val));
-                }
-                _ => {}
-            },
-            "auth_type" => match value {
-                FieldValue::Integer(index) => {
-                    self.auth_type =
-                        Some(if index == 1 { "external" } else { "password" }.to_string());
-                }
-                FieldValue::String(val) => {
-                    self.auth_type = Some(val);
-                }
-                _ => {}
-            },
-            "username" => {
-                if let FieldValue::String(val) = value {
-                    self.username = Some(val);
-                }
-            }
-            "password" => {
-                if let FieldValue::String(val) = value {
-                    self.password = Some(val);
-                }
-            }
-            "database" => {
-                if let FieldValue::String(val) = value {
-                    self.database = Some(val);
-                }
-            }
-            "schema" => {
-                if let FieldValue::String(val) = value {
-                    self.schema = Some(val);
-                }
-            }
-            "use_encryption" => {
-                if let FieldValue::Boolean(val) = value {
-                    self.use_encryption = Some(val);
-                }
-            }
-            "tls_skip_verify" => {
-                if let FieldValue::Boolean(val) = value {
-                    self.tls_skip_verify = Some(val);
-                }
-            }
-            "external_root" => {
-                if let FieldValue::String(val) = value {
-                    self.external_root = Some(val);
-                }
-            }
+            "host" => set_if_some(&mut self.host, as_string(value)),
+            "port" => set_if_some(&mut self.port, as_port(value)),
+            "auth_type" => set_if_some(&mut self.auth_type, as_auth_type(value)),
+            "username" => set_if_some(&mut self.username, as_string(value)),
+            "password" => set_if_some(&mut self.password, as_string(value)),
+            "database" => set_if_some(&mut self.database, as_string(value)),
+            "schema" => set_if_some(&mut self.schema, as_string(value)),
+            "use_encryption" => set_if_some(&mut self.use_encryption, as_bool(value)),
+            "tls_skip_verify" => set_if_some(&mut self.tls_skip_verify, as_bool(value)),
+            "external_root" => set_if_some(&mut self.external_root, as_string(value)),
             _ => {
                 return Err(fs_err!(
                     ErrorCode::InvalidArgument,
@@ -154,10 +106,13 @@ impl InteractiveSetup for GizmoSQLDbConfig {
                 StringOrInteger::String(s) => FieldValue::String(s.clone()),
                 StringOrInteger::Integer(i) => FieldValue::Integer(*i),
             }),
-            "auth_type" => self
-                .auth_type
-                .as_deref()
-                .map(|auth_type| FieldValue::Integer(if auth_type == "external" { 1 } else { 0 })),
+            "auth_type" => self.auth_type.as_deref().map(|auth_type| {
+                FieldValue::Integer(if auth_type == AUTH_TYPE_EXTERNAL {
+                    1
+                } else {
+                    0
+                })
+            }),
             "username" => self
                 .username
                 .as_ref()
@@ -198,6 +153,47 @@ impl InteractiveSetup for GizmoSQLDbConfig {
     }
 }
 
+/// Overwrite `slot` only when the prompt produced a value of the right type, so a
+/// mismatched answer leaves any existing profile value in place.
+fn set_if_some<T>(slot: &mut Option<T>, value: Option<T>) {
+    if value.is_some() {
+        *slot = value;
+    }
+}
+
+fn as_string(value: FieldValue) -> Option<String> {
+    match value {
+        FieldValue::String(val) => Some(val),
+        _ => None,
+    }
+}
+
+fn as_bool(value: FieldValue) -> Option<bool> {
+    match value {
+        FieldValue::Boolean(val) => Some(val),
+        _ => None,
+    }
+}
+
+fn as_port(value: FieldValue) -> Option<StringOrInteger> {
+    match value {
+        FieldValue::String(val) => val.parse::<i64>().ok().map(StringOrInteger::Integer),
+        FieldValue::Integer(val) => Some(StringOrInteger::Integer(val)),
+        _ => None,
+    }
+}
+
+/// The select prompt answers with an option index (`0` password, `1` external);
+/// an existing profile supplies the name itself.
+fn as_auth_type(value: FieldValue) -> Option<String> {
+    match value {
+        FieldValue::Integer(1) => Some(AUTH_TYPE_EXTERNAL.to_string()),
+        FieldValue::Integer(_) => Some(AUTH_TYPE_PASSWORD.to_string()),
+        FieldValue::String(val) => Some(val),
+        _ => None,
+    }
+}
+
 pub fn setup_gizmosql_profile(
     existing_config: Option<&GizmoSQLDbConfig>,
 ) -> FsResult<Box<GizmoSQLDbConfig>> {
@@ -209,4 +205,57 @@ pub fn setup_gizmosql_profile(
     }
 
     Ok(Box::new(config))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn set_field_maps_prompt_answers_onto_the_config() {
+        let mut config = GizmoSQLDbConfig::default();
+        config
+            .set_field("host", FieldValue::String("localhost".to_string()))
+            .unwrap();
+        config
+            .set_field("port", FieldValue::String("31337".to_string()))
+            .unwrap();
+        config
+            .set_field("auth_type", FieldValue::Integer(1))
+            .unwrap();
+        config
+            .set_field("use_encryption", FieldValue::Boolean(false))
+            .unwrap();
+
+        assert_eq!(config.host.as_deref(), Some("localhost"));
+        assert_eq!(config.port, Some(StringOrInteger::Integer(31337)));
+        assert_eq!(config.auth_type.as_deref(), Some(AUTH_TYPE_EXTERNAL));
+        assert_eq!(config.use_encryption, Some(false));
+    }
+
+    #[test]
+    fn set_field_keeps_existing_value_on_mismatched_answer() {
+        let mut config = GizmoSQLDbConfig {
+            host: Some("gizmosql.example.com".to_string()),
+            port: Some(StringOrInteger::Integer(31337)),
+            ..Default::default()
+        };
+        config.set_field("host", FieldValue::Boolean(true)).unwrap();
+        config
+            .set_field("port", FieldValue::String("not-a-port".to_string()))
+            .unwrap();
+
+        assert_eq!(config.host.as_deref(), Some("gizmosql.example.com"));
+        assert_eq!(config.port, Some(StringOrInteger::Integer(31337)));
+    }
+
+    #[test]
+    fn set_field_rejects_unknown_fields() {
+        let mut config = GizmoSQLDbConfig::default();
+        assert!(
+            config
+                .set_field("warehouse", FieldValue::String("x".to_string()))
+                .is_err()
+        );
+    }
 }
