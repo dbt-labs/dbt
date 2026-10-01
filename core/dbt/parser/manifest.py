@@ -2632,7 +2632,9 @@ def enrich_manifest_with_plugin_artifacts(manifest: Manifest, project_name: str)
 
 def write_semantic_manifest(manifest: Manifest, target_path: str) -> None:
     semantic_manifest = SemanticManifest(manifest)
-    semantic_manifest.write_json_to_file(os.path.join(target_path, SEMANTIC_MANIFEST_FILE_NAME))
+    semantic_manifest_path = os.path.join(target_path, SEMANTIC_MANIFEST_FILE_NAME)
+    semantic_manifest.write_json_to_file(semantic_manifest_path)
+    add_artifact_produced(semantic_manifest_path)
     semantic_manifest.write_osi_document_to_file(os.path.join(target_path, OSI_DOCUMENT_FILE_NAME))
 
 
