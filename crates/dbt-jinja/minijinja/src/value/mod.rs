@@ -473,6 +473,31 @@ pub(crate) enum ValueRepr {
     Object(DynObject),
 }
 
+/// Formats a string like Python's `repr()`.
+fn write_py_repr_str(f: &mut fmt::Formatter<'_>, s: &str) -> fmt::Result {
+    // Prefer single quotes, but switch to double quotes if that avoids having
+    // to escape a quote character, matching Python's own preference.
+    let quote = if s.contains('\'') && !s.contains('"') {
+        '"'
+    } else {
+        '\''
+    };
+    write!(f, "{quote}")?;
+    for c in s.chars() {
+        match c {
+            '\\' => write!(f, "\\\\")?,
+            '\n' => write!(f, "\\n")?,
+            '\r' => write!(f, "\\r")?,
+            '\t' => write!(f, "\\t")?,
+            c if c == quote => write!(f, "\\{c}")?,
+            // Other ASCII control characters render as \xHH, like Python's repr.
+            c if (c as u32) < 0x20 || c as u32 == 0x7f => write!(f, "\\x{:02x}", c as u32)?,
+            c => write!(f, "{c}")?,
+        }
+    }
+    write!(f, "{quote}")
+}
+
 impl fmt::Debug for ValueRepr {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -485,22 +510,8 @@ impl fmt::Debug for ValueRepr {
             ValueRepr::Invalid(ref val) => write!(f, "<invalid value: {val}>"),
             ValueRepr::U128(val) => fmt::Debug::fmt(&{ val.0 }, f),
             ValueRepr::I128(val) => fmt::Debug::fmt(&{ val.0 }, f),
-            ValueRepr::String(val, _) => {
-                // Use double quotes if string contains single quotes, like Python
-                if val.contains('\'') {
-                    write!(f, "\"{val}\"")
-                } else {
-                    write!(f, "'{val}'")
-                }
-            }
-            ValueRepr::SmallStr(val) => {
-                let s = val.as_str();
-                if s.contains('\'') {
-                    write!(f, "\"{s}\"")
-                } else {
-                    write!(f, "'{s}'")
-                }
-            }
+            ValueRepr::String(val, _) => write_py_repr_str(f, val),
+            ValueRepr::SmallStr(val) => write_py_repr_str(f, val.as_str()),
             ValueRepr::Bytes(val) => {
                 write!(f, "b'")?;
                 for &b in val.iter() {

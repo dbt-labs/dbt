@@ -419,7 +419,7 @@ pub trait CliExtensionHooks: Send + Sync {
         &self,
         arg: &EvalArgs,
         cli: &Cli,
-        jinja_env: Cow<'_, JinjaEnv>,
+        jinja_env: Arc<JinjaEnv>,
         augmented_resolved_state: &ResolverState,
         schedule: &Schedule<String>,
         adapter: Arc<Adapter>,
@@ -516,15 +516,14 @@ impl CliExtensionHooks for DefaultCliExtensionHooks {
                         emit_error_log_from_fs_error(*e);
                         Err(FsError::exit_with_status(1))
                     }
-                    SystemCommand::InstallDrivers => {
-                        dbt_adbc::pre_install_all_drivers().map_err(|install_err| {
+                    SystemCommand::InstallDrivers => dbt_adbc::pre_install_all_drivers(None)
+                        .map_err(|install_err| {
                             emit_error_log_message(
                                 ErrorCode::Generic,
                                 format!("Failed to install drivers: {}", install_err).as_str(),
                             );
                             FsError::exit_with_status(1)
-                        })
-                    }
+                        }),
                     SystemCommand::UpgradeDistribution(args) => exec_upgrade_distribution(
                         args.yes,
                         args.package_manager.clone(),
@@ -616,7 +615,7 @@ impl CliExtensionHooks for DefaultCliExtensionHooks {
         &self,
         _arg: &EvalArgs,
         _cli: &Cli,
-        _jinja_env: Cow<'_, JinjaEnv>,
+        _jinja_env: Arc<JinjaEnv>,
         _augmented_resolved_state: &ResolverState,
         _schedule: &Schedule<String>,
         _adapter: Arc<Adapter>,

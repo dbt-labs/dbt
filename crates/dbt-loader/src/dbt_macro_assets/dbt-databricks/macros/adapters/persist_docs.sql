@@ -47,9 +47,14 @@
     {{ run_query_as(alter_relation_comment_sql(relation, model.description), 'alter_relation_comment', fetch_result=False) }}
   {% endif %}
   {% if for_columns and config.persist_column_docs() and model.columns %}
+    {#- DIVERGENCE BEGIN: This section diverges with our pin to dbt-databricks v1.12.4.
+      It was added in Fusion in https://github.com/dbt-labs/fs/pull/12094, and to
+      dbt-databricks in https://github.com/databricks/dbt-databricks/pull/1563.
+      dbt-databricks will catch up with us in v1.13. -#}
     {%- set existing_columns = adapter.get_columns_in_relation(relation) -%}
     {%- set existing_column_names = existing_columns | map(attribute='name') | list -%}
     {%- set valid_columns = validate_doc_columns(relation, model.columns, existing_column_names, case_insensitive=true) -%}
+    {#- DIVERGENCE END -#}
     {%- set columns_to_persist_docs = adapter.get_persist_doc_columns(existing_columns, valid_columns) -%}
     {{ alter_column_comment(relation, columns_to_persist_docs) }}
   {% endif %}

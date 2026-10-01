@@ -31,7 +31,7 @@
 {%- endmacro %}
 
 {% macro databricks__get_alter_metric_view_as_sql(relation, yaml_content) %}
-{%- set yaml_body = adapter.yaml_quote_backtick_values(yaml_content) -%}
+{%- set yaml_body = databricks__yaml_quote_backtick_values(yaml_content) -%}
 alter view {{ relation.render() }} as $$
 {{ yaml_body }}
 $$

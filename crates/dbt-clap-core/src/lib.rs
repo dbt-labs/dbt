@@ -437,6 +437,16 @@ got {:?}, expected an instance of {}",
             Command::Extension(ext_cmd) => ext_cmd.to_eval_args(&common_args, system_arg)?,
         };
         arg.from_main = from_main;
+        // Must be derived from the caller's *original* `--static-analysis`
+        // value, before the force-to-strict override just below can
+        // overwrite it for local execution — otherwise `baseline` could
+        // never survive to be observed here. `unwrap_or_default()` because
+        // omitting `--static-analysis` leaves `arg.static_analysis` as
+        // `None`, not `Some(Baseline)`, even though baseline is the actual
+        // default behavior everywhere else it's consulted.
+        arg.infer_schemas_and_typeless = arg.static_analysis.unwrap_or_default()
+            == StaticAnalysisKind::Baseline
+            && arg.write_lineage;
         if arg.local_execution_backend != LocalExecutionBackendKind::Remote {
             arg.static_analysis = Some(StaticAnalysisKind::Strict);
         }
@@ -787,7 +797,8 @@ pub struct SeedArgs {
 
     /// The mode to use for dbt State. Cannot be used with --force-node-selection
     #[arg(
-        long,
+        long = "state-mode",
+        alias = "run-cache-mode",
         default_value = "read-write",
         conflicts_with = "force_node_selection"
     )]
@@ -1019,7 +1030,8 @@ pub struct SnapshotArgs {
 
     /// The mode to use for dbt State. Cannot be used with --force-node-selection
     #[arg(
-        long,
+        long = "state-mode",
+        alias = "run-cache-mode",
         default_value = "read-write",
         conflicts_with = "force_node_selection"
     )]
@@ -1074,7 +1086,8 @@ pub struct TestArgs {
 
     /// The mode to use for dbt State. Cannot be used with --force-node-selection
     #[arg(
-        long,
+        long = "state-mode",
+        alias = "run-cache-mode",
         default_value = "read-write",
         conflicts_with = "force_node_selection"
     )]
@@ -1162,7 +1175,8 @@ pub struct BuildArgs {
 
     /// The mode to use for dbt State. Cannot be used with --force-node-selection
     #[arg(
-        long,
+        long = "state-mode",
+        alias = "run-cache-mode",
         default_value = "read-write",
         conflicts_with = "force_node_selection"
     )]
@@ -1315,7 +1329,8 @@ pub struct RunArgs {
 
     /// The mode to use for dbt State. Cannot be used with --force-node-selection
     #[arg(
-        long,
+        long = "state-mode",
+        alias = "run-cache-mode",
         default_value = "read-write",
         conflicts_with = "force_node_selection"
     )]
@@ -1854,7 +1869,7 @@ pub struct CommonArgs {
     #[arg(
         global = true,
         long,
-        env = "DBT_AI_PROVIDER",
+        env = "DBT_ENGINE_AI_PROVIDER",
         num_args(1..),
         value_delimiter = ',',
         help_heading = help_headings::PROJECT,
@@ -2029,14 +2044,14 @@ pub struct CommonArgs {
     /// Write the dbt information schema to target/info_schema/: a queryable
     /// parquet layer over your project's metadata. With --static-analysis strict,
     /// also writes column types and column-level lineage.
-    #[arg(global = true, long = "generate-info-schema", default_value_t=false, action = ArgAction::SetTrue, env = "DBT_GENERATE_INFO_SCHEMA", value_parser = BoolishValueParser::new(), help_heading = help_headings::ARTIFACTS)]
+    #[arg(global = true, long = "generate-info-schema", default_value_t=false, action = ArgAction::SetTrue, env = "DBT_ENGINE_GENERATE_INFO_SCHEMA", value_parser = BoolishValueParser::new(), help_heading = help_headings::ARTIFACTS)]
     pub generate_info_schema: bool,
 
     /// Directory for information schema parquet output (default: <target>/info_schema/)
     #[arg(
         global = true,
         long,
-        env = "DBT_INFO_SCHEMA_DIR",
+        env = "DBT_ENGINE_INFO_SCHEMA_DIR",
         help_heading = help_headings::ARTIFACTS,
         hide_short_help = true
     )]
@@ -2130,7 +2145,7 @@ pub struct CommonArgs {
     pub otel_file_name: Option<String>,
 
     /// Set 'otel-parquet-file-name' for the current run, overriding 'DBT_OTEL_PARQUET_FILE_NAME'.
-    /// If set, OTEL telemetry will be written to `$target_path/private/metadata/otel-parquet-file-name` in Parquet format.
+    /// If set, OTEL telemetry will be written to `$target_path/metadata/otel-parquet-file-name` in Parquet format.
     #[arg(
         global = true,
         long = "otel-parquet-file-name",
@@ -2806,9 +2821,9 @@ impl CommonArgs {
                 Some(10)
             },
             from_main: false,
-            // `threads` controls connection backpressure and rendering
-            // parallelism. Sequential task execution is requested via the
-            // separate `no_parallel` flag below.
+            // `threads` caps the `dbt-runtime` blocking pool, and with it both
+            // warehouse concurrency and rendering parallelism. Sequential task
+            // execution is requested via the separate `no_parallel` flag below.
             num_threads: self.threads,
             no_parallel: self.no_parallel,
             select: select_option,
@@ -2908,6 +2923,9 @@ impl CommonArgs {
             task_cache_url: self.task_cache_url.clone(),
             static_analysis: None,
             full_refresh: false,
+            // Derived later in `Cli::to_eval_args` from the caller's
+            // original `--static-analysis`/`--write-lineage` values.
+            infer_schemas_and_typeless: false,
             store_failures: self.store_failures,
             check_all: false,
             sample_renaming: BTreeMap::new(),
@@ -3766,6 +3784,23 @@ mod tests {
             eval_args.exclude_resource_types,
             vec![ClapResourceType::Model]
         );
+    }
+
+    #[test]
+    fn list_command_supports_exposure_resource_type() {
+        let cmd = parse_core_command(&["list", "--resource-type", "exposure"]);
+
+        let CoreCommand::List(args) = &cmd else {
+            panic!("expected CoreCommand::List, got {cmd:?}");
+        };
+        assert_eq!(args.resource_type, Some(vec![ClapResourceType::Exposure]));
+
+        let eval_args = args.to_eval_args(
+            test_system_args(FsCommand::List),
+            Path::new("/tmp/in"),
+            Path::new("/tmp/out"),
+        );
+        assert_eq!(eval_args.resource_types, vec![ClapResourceType::Exposure]);
     }
 
     #[test]

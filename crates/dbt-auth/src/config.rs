@@ -18,10 +18,6 @@ pub(crate) fn yml_value_to_string<'a>(value: &'a YmlValue) -> Cow<'a, str> {
     // a newline to the end of every string. And, less importantly, it
     // also copies values that are strings already.
     match value {
-        YmlValue::Null(_) => Cow::Borrowed("null"),
-        YmlValue::Bool(b, _) => Cow::Borrowed(if *b { "true" } else { "false" }),
-        YmlValue::Number(n, _) => Cow::Owned(n.to_string()),
-        YmlValue::String(s, _) => Cow::Borrowed(s),
         YmlValue::Sequence(_, _) | YmlValue::Mapping(_, _) => {
             let res = dbt_yaml::to_string(value);
             debug_assert!(
@@ -35,6 +31,7 @@ pub(crate) fn yml_value_to_string<'a>(value: &'a YmlValue) -> Cow<'a, str> {
             Cow::Owned(s)
         }
         YmlValue::Tagged(tagged_value, _) => yml_value_to_string(&tagged_value.value),
+        other => other.as_scalar_string().expect("is a scalar"),
     }
 }
 

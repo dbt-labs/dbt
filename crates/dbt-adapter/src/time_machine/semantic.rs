@@ -115,7 +115,6 @@ impl SemanticCategory {
             | "generate_unique_temporary_table_suffix"
             | "parse_columns_and_constraints"
             | "clean_sql"
-            | "yaml_quote_backtick_values"
             | "get_common_options"
             | "get_table_options"
             | "get_view_options"

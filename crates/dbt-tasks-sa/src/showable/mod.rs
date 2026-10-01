@@ -21,6 +21,7 @@ use dbt_schemas::schemas::{InternalDbtNodeAttributes, Nodes};
 use dbt_tasks_core::context::TaskRunnerCtx;
 use dbt_tasks_core::pretty_table::from_pretty_table_error;
 use dbt_tasks_core::show_task_hooks::ShowTaskHooks;
+use dbt_tasks_core::task::TaskOp;
 use dbt_tasks_core::task::TaskResult;
 use dbt_tasks_core::task::{TP, Task};
 use dbt_telemetry::{ShowDataOutput, ShowDataOutputFormat};
@@ -80,25 +81,26 @@ where
 
     let filename = PathBuf::from(format!("show-{unique_id}"));
 
-    let final_rendered_sql = if use_worker_backend {
-        // Worker backend applies limit separately via run_query_batches; render the query as-is.
-        render_sql(
-            &query,
-            &ctx.env,
-            &compile_ctx,
-            &*ctx.rendering_listener_factory,
-            &filename,
-        )?
-    } else {
-        // Non-worker path: delegate limit handling to the adapter-aware get_show_sql macro,
-        // which dispatches to adapter-specific limit syntax (e.g. FETCH FIRST n ROWS ONLY for Fabric).
-        render_sql(
-            "{{ get_show_sql(compiled_code, none, show_limit) }}",
-            &ctx.env,
-            &compile_ctx,
-            &*ctx.rendering_listener_factory,
-            &filename,
-        )?
+    // `get_show_sql` dispatches by adapter and a project can override it with a
+    // macro that reaches the adapter, so this render goes to the blocking pool:
+    // every database connection must be created by a `dbt-runtime` worker thread.
+    let final_rendered_sql = {
+        let template = if use_worker_backend {
+            // Worker backend applies limit separately via run_query_batches; render the query as-is.
+            query.clone()
+        } else {
+            // Non-worker path: delegate limit handling to the adapter-aware get_show_sql macro,
+            // which dispatches to adapter-specific limit syntax (e.g. FETCH FIRST n ROWS ONLY for Fabric).
+            "{{ get_show_sql(compiled_code, none, show_limit) }}".to_owned()
+        };
+        let env = Arc::clone(&ctx.env);
+        let listener_factory = Arc::clone(&ctx.rendering_listener_factory);
+        let filename = filename.clone();
+        TaskOp::Blocking(Box::new(move || {
+            render_sql(&template, &env, &compile_ctx, &*listener_factory, &filename)
+        }))
+        .run()
+        .await??
     };
     let macro_spans = ctx.rendering_listener_factory.drain_macro_spans(&filename);
 

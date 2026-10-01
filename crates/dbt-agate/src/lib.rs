@@ -9,7 +9,7 @@ use im::HashSet;
 
 use minijinja::arg_utils::ArgsIter;
 use minijinja::listener::RenderingEventListener;
-use minijinja::value::{Enumerator, Object, ObjectRepr};
+use minijinja::value::{Enumerator, Object, ObjectRepr, ValueKind};
 use minijinja::{ErrorKind, State, Value, assert_nullary_args};
 
 mod column;
@@ -233,7 +233,13 @@ impl fmt::Display for Tuple {
                 write!(f, ", ")?;
             }
             let value = self.get(i as isize).unwrap();
-            write!(f, "{value}")?;
+            // Match Python's tuple repr: string elements are quoted (fs#14243), everything
+            // else renders the same as its own Display (numbers, bools, None, nested objects).
+            if matches!(value.kind(), ValueKind::String) {
+                write!(f, "{value:?}")?;
+            } else {
+                write!(f, "{value}")?;
+            }
         }
         if len == 1 {
             write!(f, ",")?;
@@ -902,6 +908,32 @@ mod tests {
         );
     }
 
+    /// Regression for fs#14243: `query_to_list`-style macros stringify a single-column query
+    /// result tuple directly (e.g. via a `|replace(",)", ")")` filter) to build SQL like
+    /// `('2026-08-24 08:31:03.684529+00')`. Python's tuple `repr()` quotes string elements;
+    /// this must too, or the generated SQL is missing its string-literal quotes entirely.
+    #[test]
+    fn tuple_display_quotes_string_elements_like_python_repr() {
+        assert_eq!(
+            tuple(vec![Value::from("2026-08-24 08:31:03.684529+00")]).to_string(),
+            "('2026-08-24 08:31:03.684529+00',)"
+        );
+        // Non-string elements are unaffected -- numbers/bools/None still render bare.
+        assert_eq!(
+            tuple(vec![Value::from("a"), Value::from(1), Value::from(true)]).to_string(),
+            "('a', 1, True)"
+        );
+        // A string containing a single quote switches to double quotes, matching
+        // `ValueRepr`'s own Debug (Python repr) behavior for strings.
+        assert_eq!(tuple(vec![Value::from("it's")]).to_string(), "(\"it's\",)");
+        // A string containing both quote characters can't just switch quote style --
+        // the embedded `'` must be escaped instead, or the literal breaks (fs#14245).
+        assert_eq!(
+            tuple(vec![Value::from("it's \"great\"")]).to_string(),
+            r#"('it\'s "great"',)"#
+        );
+    }
+
     #[test]
     fn test_tuple() {
         let values = vec![Value::from(2), Value::from("biscoito")];
@@ -963,10 +995,10 @@ mod tests {
         ]);
 
         assert!(!sample.is_empty());
-        assert_eq!(sample.to_string(), "(a, b, a, c)");
+        assert_eq!(sample.to_string(), "('a', 'b', 'a', 'c')");
         assert_eq!(
             Value::from_dyn_object(Arc::new(sample.clone_repr())).to_string(),
-            "(a, b, a, c)"
+            "('a', 'b', 'a', 'c')"
         );
         assert_eq!(sample.count(&Value::from("a")), 2);
         assert_eq!(sample.count(&Value::from("missing")), 0);

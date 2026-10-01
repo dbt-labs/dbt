@@ -18,6 +18,7 @@ arrow-schema = { workspace = true, features = ["canonical_extension_types"] }
 bitflags = { workspace = true }
 dbt-base = { workspace = true }
 dbt-fusion-workspace-hack = { version = "0.1" }
+dbt-runtime = { workspace = true }
 dbt-yaml = { workspace = true }
 erased-serde = { workspace = true }
 opentelemetry = { workspace = true }

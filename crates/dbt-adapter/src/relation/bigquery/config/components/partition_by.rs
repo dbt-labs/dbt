@@ -38,8 +38,9 @@ fn from_remote_state(schema: &Schema) -> AdapterResult<PartitionBy> {
 
         let data_type = schema
             .fields()
-            .find(&field_name)
-            .map(|(_, field)| {
+            .iter()
+            .find(|field| field.name().eq_ignore_ascii_case(&field_name))
+            .map(|field| {
                 dbt_adapter_sql::types::original_type_string(
                     dbt_adapter_core::AdapterType::Bigquery,
                     field,
@@ -169,6 +170,39 @@ mod tests {
             partition_by: Some(pb.clone()),
             ..Default::default()
         });
+        let loaded = from_remote_state(&driver_data).unwrap();
+        assert_eq!(loaded.value, Some(pb))
+    }
+
+    #[test]
+    fn from_remote_state_with_case_insensitive_time_partition_field() {
+        let pb = BigqueryPartitionConfig {
+            field: "date".to_string(),
+            data_type: "DATE".to_string(),
+            __inner__: BigqueryPartitionConfigInner::Time(TimeConfig {
+                granularity: "DAY".to_string(),
+                time_ingestion_partitioning: false,
+            }),
+            copy_partitions: false,
+        };
+        let driver_data = make_driver_data(TestTableConfig {
+            partition_by: Some(pb.clone()),
+            ..Default::default()
+        });
+        let fields = driver_data
+            .fields()
+            .iter()
+            .map(|field| {
+                let field = field.as_ref().clone();
+                if field.name() == "date" {
+                    std::sync::Arc::new(field.with_name("Date"))
+                } else {
+                    std::sync::Arc::new(field)
+                }
+            })
+            .collect::<Vec<_>>();
+        let driver_data = Schema::new_with_metadata(fields, driver_data.metadata().clone());
+
         let loaded = from_remote_state(&driver_data).unwrap();
         assert_eq!(loaded.value, Some(pb))
     }

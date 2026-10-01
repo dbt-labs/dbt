@@ -432,7 +432,7 @@ fn test_parse_mode_accepts_mistyped_args_list_relations_without_caching() {
     assert!(result.try_iter().unwrap().next().is_none());
 }
 
-#[test]
+#[dbt_runtime::worker_test]
 fn test_get_relation_dispatch_spark_absent_database() {
     // Exercises the full `"get_relation"` arm of `call_method_impl` (arg parsing + per-adapter
     // database resolution + handoff to `get_relation`) for the absent-database (`none`) case,
@@ -589,7 +589,7 @@ fn test_parse_mode_non_introspective_method_is_not_tainted() {
     assert!(!result.is_introspective_stub());
 }
 
-#[test]
+#[dbt_runtime::worker_test]
 fn test_typed_mode_execute_result_is_not_tainted() {
     let adapter = make_duckdb_adapter();
     let result = call_method_test(&adapter, "execute", &[Value::from("select 1")]).unwrap();

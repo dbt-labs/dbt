@@ -25,6 +25,7 @@ dbt-env = { workspace = true }
 dbt-frontend-common = { workspace = true }
 dbt-handles = { workspace = true }
 dbt-platform-auth = { workspace = true }
+dbt-runtime = { workspace = true }
 dbt-schema-store = { workspace = true }
 dbt-schemas = { workspace = true }
 dbt-sql-keywords = { workspace = true }
@@ -42,8 +43,6 @@ arrow-json = { workspace = true }
 arrow-schema = { workspace = true }
 base64 = { workspace = true }
 chrono = { workspace = true }
-crossbeam-skiplist = { workspace = true }
-crossbeam-utils = { workspace = true }
 dashmap = { workspace = true }
 dbt-fusion-workspace-hack = { version = "0.1" }
 fancy-regex = { workspace = true }
@@ -57,7 +56,7 @@ once_cell = { workspace = true }
 parking_lot = { workspace = true }
 paste = { workspace = true }
 regex = { workspace = true }
-scc = { workspace = true }
+
 serde = { workspace = true }
 serde_json = { workspace = true }
 similar = { workspace = true }

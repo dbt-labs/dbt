@@ -1,21 +1,19 @@
 //! Grammar for node selectors, used
 //!     for --select, --exclude
-//!     the result of evaluating --selectors .yml
+//!     leaf string values inside a --selectors YAML definitions
 //!     the result of normalizing any other node selection, e.g. --resource-types
 //!
-//! SelectExpression ::= AndSpecifiers | OrSpecifiers | AtomSpecifier
-//! OrSpecifiers   ::= (SelectExpression)(' '+(SelectExpression))*
-//! AndSpecifiers    ::= (SelectExpression)(','(SelectExpression)*)
-//! AtomSpecifier   ::= Identifier | AtPattern | PlusPattern
+//! OrSpecifiers  ::= AndSpecifiers (' '+ AndSpecifiers)*     # tokens already whitespace-split by Clap
+//! AndSpecifiers ::= AtomSpecifier (',' AtomSpecifier)*
+//! AtomSpecifier ::= '@'? (Digits? '+')? (Method ':')? Value ('+' Digits?)?
 //!
-//! All three version of Atom Specifiers are define by the RE
-//!     (?x)
-//!      ^(?:([0-9]*)\+)?       # Optional leading number followed by plus     # PlusPattern
-//!      (?:([a-zA-Z][a-zA-Z0-9._]*):)?                                        # Optional qualifier
-//!      ([^, +@]+)              # Identifier, anything but blank, comma, plus # Identifier
-//!      (?:\+([0-9]*))?$       # Optional trailing plus followed by number    # PlusPattern
-//!      |                      # OR
-//!      ^\@([A-Za-z0-9_]+)$                                                   # AtPattern
+//! The corresponding parser is in `parse_model_specifiers` / `parse_single_selector`
+//! and AtomSpecifier is recognized by the regex `RAW_SELECTOR_RE` with subsequent checks.
+//!
+//! Note that this is not a recursive grammar: CLI --select and --exclude
+//! can only be one level of OR over one level of AND.
+//! Arbitrary nesting of `SelectExpression::And`/`Or`/`Exclude` does exist as an AST shape,
+//! but can only be built from --selector YAML definitions.
 
 use dbt_yaml::JsonSchema;
 use regex::Regex;

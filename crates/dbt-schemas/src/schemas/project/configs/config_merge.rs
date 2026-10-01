@@ -137,6 +137,7 @@ impl DefaultTo for Option<ModelState> {
             pre_clone,
             execute_hooks_on_any_reuse,
             compare_unrendered_code,
+            ignore_external_modifications,
         } = state;
         *lag_tolerance = lag_tolerance
             .take()
@@ -149,6 +150,8 @@ impl DefaultTo for Option<ModelState> {
         *execute_hooks_on_any_reuse =
             execute_hooks_on_any_reuse.or(parent_state.execute_hooks_on_any_reuse);
         *compare_unrendered_code = compare_unrendered_code.or(parent_state.compare_unrendered_code);
+        *ignore_external_modifications =
+            ignore_external_modifications.or(parent_state.ignore_external_modifications);
     }
 }
 
@@ -360,6 +363,7 @@ impl<T: Clone> ReplaceIfNone for Spanned<T> {}
 // Free-form YmlValue fields (e.g. ClickHouse dictionary `lifetime`/`range`/`update_lag`)
 // replace wholesale — no deep merge.
 impl ReplaceIfNone for YmlValue {}
+impl ReplaceIfNone for dbt_yaml::Timestamp {}
 
 // std collections used as replace-if-none fields.
 // BTreeMap<String, YmlValue> is distinct from BTreeMap<Spanned<String>, String>

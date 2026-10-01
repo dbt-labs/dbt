@@ -8,7 +8,7 @@ use crate::run_cache::run_cache_request::{
 use crate::run_cache::run_cache_service::{
     RunCacheCloneDecision, clone_chain_depth_limit_for_adapter,
     confirm_run_cache_service_execution, execute_run_cache_service_clone, has_metadata_address,
-    legacy_freshness, run_cache_metadata_query_options,
+    legacy_freshness, run_cache_dialect, run_cache_metadata_query_options,
 };
 use crate::run_cache::run_cache_service::{record_dev_clone_decision, replay_dev_clone_decision};
 use dbt_adapter::errors::{AdapterErrorKind, Cancellable};
@@ -38,17 +38,7 @@ pub async fn maybe_run_dev_clone_for_node(ctx: &TaskRunnerCtx, node_id: &str) {
         let Some(clone) = replay_dev_clone_decision(node_id) else {
             return;
         };
-        match execute_run_cache_service_clone(
-            ctx,
-            node.as_ref(),
-            &clone,
-            node.node_adapter(),
-            ctx.dbt_profile().threads,
-            None,
-            false,
-        )
-        .await
-        {
+        match execute_run_cache_service_clone(ctx, node.as_ref(), &clone, None, false).await {
             Ok(_) => {
                 finish_dev_clone(
                     ctx,
@@ -122,17 +112,7 @@ pub async fn maybe_run_dev_clone_for_node(ctx: &TaskRunnerCtx, node_id: &str) {
     };
 
     let clone = RunCacheCloneDecision::from_response(&ready_to_clone, 0);
-    match execute_run_cache_service_clone(
-        ctx,
-        node.as_ref(),
-        &clone,
-        node.node_adapter(),
-        ctx.dbt_profile().threads,
-        None,
-        false,
-    )
-    .await
-    {
+    match execute_run_cache_service_clone(ctx, node.as_ref(), &clone, None, false).await {
         Ok(_) => {
             record_dev_clone_decision(node_id, &clone);
             finish_dev_clone(
@@ -461,7 +441,7 @@ async fn prepare_dev_clone_request(
 
     let request = CloneRequestInput {
         target_table: target_table.clone(),
-        dialect: ctx.default_adapter_type().to_string(),
+        dialect: run_cache_dialect(ctx),
         default_catalog: candidate.local().database(),
         execution_type: candidate.execution_type(&ctx.inner.materialization_resolver)?,
         clone_source_table: clone_source_table.clone(),
@@ -698,6 +678,7 @@ mod tests {
             pre_clone: Some(StatePreClone::Always),
             execute_hooks_on_any_reuse: None,
             compare_unrendered_code: None,
+            ignore_external_modifications: None,
         });
         let candidate = DevCloneCandidate::Model {
             local: Arc::new(local),
@@ -768,6 +749,7 @@ mod tests {
             pre_clone: Some(StatePreClone::IfMissing),
             execute_hooks_on_any_reuse: None,
             compare_unrendered_code: None,
+            ignore_external_modifications: None,
         });
         let candidate = DevCloneCandidate::Snapshot {
             local: Arc::new(local),

@@ -1,7 +1,0 @@
-kind: Features
-body: '[ClickHouse] Connection-level settings (profile custom_settings plus v1-parity synchronous-operation defaults), default database wired to the profile schema, literal ''?'' in SQL, and dbt identified as `dbt/<version>` in the HTTP User-Agent (`system.query_log.http_user_agent`), via the new adbc_clickhouse driver'
-time: 2026-08-31T14:26:32.305892+02:00
-custom:
-    author: koletzilla
-    issue: "14585"
-    project: dbt-core

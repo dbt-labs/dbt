@@ -185,9 +185,14 @@ const KEEP_ALIVE: Duration = Duration::from_secs(10);
 /// Panics if no pool handle is set for the current thread; see
 /// [`Handle::enter`].
 ///
-/// In particular this panics inside a blocking task, which is a deliberate
+/// ~In particular this panics inside a blocking task, which is a deliberate
 /// choice: worker threads must not enter their own pool because this would
-/// lead to deadlocks.
+/// lead to deadlocks.~
+///
+/// XXX(felipecrv): we want to be in a position where panic'ing on blocking
+/// tasks, but unfortunately, that's is not possible yet due to async spawns
+/// from blocking tasks. Once this is fixed across the codebase we can remove
+/// this comment and have the intended behavior.
 #[track_caller]
 pub fn spawn_blocking<F, R>(func: F) -> JoinHandle<R>
 where

@@ -1,6 +1,6 @@
 use dbt_common::{ErrorCode, FsResult, fs_err};
 use dbt_profile::{ProfileEnvironment, resolve_with_env};
-use dbt_schemas::schemas::profiles::{DbConfig, DbTargets};
+use dbt_schemas::schemas::profiles::{DbConfig, DbTargets, canonicalize_bigquery_region_alias};
 
 use dbt_schemas::schemas::serde::yaml_to_fs_error;
 use dbt_yaml;
@@ -62,8 +62,9 @@ pub fn load_db_config<P: AsRef<Path>>(
     let resolved = resolve_with_env(&penv, profile_path.as_ref(), TEST_PROFILE, Some(target))
         .map_err(|e| fs_err!(ErrorCode::InvalidConfig, "{}", e))?;
 
-    let credentials_value =
-        dbt_yaml::Value::Mapping(resolved.credentials, dbt_yaml::Span::default());
+    let mut credentials = resolved.credentials;
+    canonicalize_bigquery_region_alias(&mut credentials);
+    let credentials_value = dbt_yaml::Value::Mapping(credentials, dbt_yaml::Span::default());
     let mut db_config: DbConfig = dbt_yaml::from_value(credentials_value).map_err(|e| {
         fs_err!(
             ErrorCode::InvalidConfig,

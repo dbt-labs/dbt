@@ -6,7 +6,6 @@ use std::sync::Arc;
 use arrow_array::RecordBatch;
 use arrow_schema::Schema;
 use dbt_adapter_core::AdapterType;
-use dbt_adbc::semaphore::Semaphore;
 use dbt_adbc::*;
 use dbt_agate::hashers::IdentityBuildHasher;
 use dbt_auth::{AdapterConfig, Auth, AuthError};
@@ -61,8 +60,6 @@ pub struct AdbcEngine {
     config: AdapterConfig,
     /// Lazily initialized databases
     configured_databases: RwLock<DatabaseMap>,
-    /// Semaphore for limiting the number of concurrent connections
-    semaphore: Arc<Semaphore>,
     /// Resolved quoting policy
     quoting: ResolvedQuoting,
     /// Query comment config
@@ -108,11 +105,6 @@ impl AdbcEngine {
         threads: Option<usize>,
         dbt_cloud_project_id: Option<String>,
     ) -> Self {
-        let permits = if mode.has_real_connections() {
-            threads.map(|t| (t as u32).max(1)).unwrap_or(u32::MAX)
-        } else {
-            u32::MAX
-        };
         let behavior = make_behavior(adapter_type, &behavior_flag_overrides);
         Self {
             adapter_type,
@@ -120,7 +112,6 @@ impl AdbcEngine {
             config,
             quoting,
             configured_databases: RwLock::new(DatabaseMap::default()),
-            semaphore: Arc::new(Semaphore::new(permits)),
             type_ops,
             splitter,
             query_comment,
@@ -225,7 +216,6 @@ impl AdbcEngine {
 
         // This will load the "flock" driver if load_strategy is Remote.
         let mut driver = driver::Builder::new(backend, load_strategy)
-            .with_semaphore(Arc::clone(&self.semaphore))
             .try_load()
             .map_err(adbc_error_to_adapter_error)?;
 
@@ -319,10 +309,7 @@ impl AdbcEngine {
         }
 
         builder.with_named_option("dbt_cloud.token", credential.token())?;
-        builder.with_named_option(
-            "dbt_cloud.host",
-            flock_driver_host(credential.account_host())?,
-        )?;
+        builder.with_named_option("dbt_cloud.host", credential.account_host())?;
         builder.with_named_option("dbt_cloud.account_id", credential.account_id().to_string())?;
         if let Some(project_id) = project_id {
             builder.with_named_option("dbt_cloud.project_id", project_id)?;
@@ -340,8 +327,8 @@ impl AdbcEngine {
         let mut all_stmts = dbt_auth::generate_duckdb_init_sql(config)
             .map_err(crate::errors::auth_error_to_adapter_error)?;
 
-        // Append v2 catalog-driven ATTACH statements for DuckDB REST catalogs
-        all_stmts.extend(self.generate_v2_catalog_attach_stmts()?);
+        // Append catalog-driven ATTACH statements for DuckDB REST catalogs
+        all_stmts.extend(self.generate_catalog_attach_stmts()?);
 
         if all_stmts.is_empty() {
             return Ok(());
@@ -363,13 +350,13 @@ impl AdbcEngine {
         Ok(())
     }
 
-    /// Build v2 catalog-driven `ATTACH IF NOT EXISTS` statements for DuckDB
+    /// Build catalog-driven `ATTACH IF NOT EXISTS` statements for DuckDB
     /// Horizon, Glue, Iceberg REST, Unity Catalog, and DuckLake catalogs.
     ///
-    /// Reads the global catalogs v2 state, extracts every catalog that has a
+    /// Reads the global catalogs state, extracts every catalog that has a
     /// `config.duckdb` block, and emits one ATTACH per catalog. Duplicate
     /// aliases (after sanitization) are rejected with an error.
-    fn generate_v2_catalog_attach_stmts(&self) -> AdapterResult<Vec<String>> {
+    fn generate_catalog_attach_stmts(&self) -> AdapterResult<Vec<String>> {
         use crate::load_catalogs;
 
         if !load_catalogs::fetch_use_catalogs_v2() {
@@ -378,7 +365,7 @@ impl AdbcEngine {
         let Some(catalogs) = load_catalogs::fetch_catalogs() else {
             return Ok(Vec::new());
         };
-        let Ok(view) = catalogs.view_v2() else {
+        let Ok(view) = catalogs.view() else {
             return Ok(Vec::new());
         };
         // The compute engine attaches via each catalog's `lake_compute`
@@ -389,20 +376,8 @@ impl AdbcEngine {
         } else {
             AdapterType::DuckDB.as_ref()
         };
-        super::duckdb_attach::compose_v2_catalog_attach_stmts(&view, platform)
+        super::duckdb_attach::compose_catalog_attach_stmts(&view, platform)
     }
-}
-
-/// The flock-adbc driver connects through a dedicated `dwg.` (data warehouse
-/// gateway) subdomain that only exists for flock traffic — every other
-/// consumer of `credential.account_host()` (Cloud Config gRPC, the identify
-/// service, `dbt_cloud.yml` matching, OAuth) must keep using the bare host.
-fn flock_driver_host(account_host: &str) -> Result<String, AuthError> {
-    if account_host.split('.').any(|label| label == "dwg") {
-        return Ok(account_host.to_string());
-    }
-    dbt_common::url::insert_gateway_label(account_host, "dwg")
-        .map_err(|e| AuthError::config(format!("invalid dbt Cloud host {account_host:?}: {e}")))
 }
 
 /// Ignored under dbt-platform brokered credentials — per-model routing
@@ -425,6 +400,61 @@ pub(crate) fn resolve_connection_config<'a>(
         }
         _ => Cow::Borrowed(base_config),
     }
+}
+
+/// Asserts that the caller is running on a dbt-runtime pool worker, as every
+/// connection-opening path must.
+///
+/// When this assertion is violated, it means that a database connection
+/// (consequently database work) is being performed in code that is not
+/// triggered by a `dbt_runtime::spawn_blocking` call and this is a BUG.
+///
+/// This is a bug because to enforce `--threads` and in general, not overload
+/// the databases with dbt work, we must run all the jinja and database work
+/// in the dbt-runtime thread-pool.
+pub(super) fn assert_connection_on_pool_worker() {
+    if cfg!(debug_assertions) && !dbt_runtime::is_pool_worker() {
+        off_pool_connection_bug();
+    }
+}
+
+/// Reports the off-pool connection bug detected in [`AdbcEngine::new_connection`]
+/// and unwinds.
+///
+/// Panics rather than aborts so the report survives a test harness: the dbt-cli
+/// suite `dup2`s both stdout and stderr to files while the CLI runs, so an
+/// `abort()` here left nothing behind but `signal 6 (SIGABRT)` -- the message
+/// went to a file the harness only dumps when it catches a panic. Unwinding
+/// gets that dump *and* carries the reason as the panic payload.
+#[cold]
+#[inline(never)]
+fn off_pool_connection_bug() -> ! {
+    let thread = std::thread::current();
+    let name = thread.name().unwrap_or("<unnamed>").to_owned();
+    let report = format!(
+        "database connections MUST only be created by dbt-runtime worker threads, \
+         but this one was created on thread `{name}` ({:?}).\n\
+         \n\
+         All jinja and database work has to run on the dbt-runtime blocking pool: \
+         connections are thread-locals of its workers, which is what makes \
+         `--threads` bound the work reaching the warehouse. Fix the caller, not \
+         this assertion -- and see the frame below the adapter for which caller \
+         that is:\n\
+         \n\
+         - production code in an `async fn`: move the call into \
+         `dbt_runtime::spawn_blocking(..)` (or `TaskOp::Blocking`) and await it\n\
+         - a synchronous `#[test]`: use `#[dbt_runtime::worker_test]`\n\
+         - an `async` test: keep `#[dbt_runtime::test]` and dispatch the adapter \
+         call with `dbt_runtime::spawn_blocking(..).await`\n\
+         - a test helper that already hops threads: have the *helper* call \
+         `dbt_runtime::testing::block_on_worker`",
+        thread.id()
+    );
+    // Written here as well as raised: a `catch_unwind` between this frame and
+    // the top would otherwise be free to swallow the whole report.
+    let bt = std::backtrace::Backtrace::force_capture();
+    eprintln!("FATAL: {report}\n{bt}");
+    panic!("{report}");
 }
 
 impl AdapterEngine for AdbcEngine {
@@ -483,6 +513,8 @@ impl AdapterEngine for AdbcEngine {
         state: Option<&State>,
         _node_id: Option<String>,
     ) -> AdapterResult<Box<dyn Connection>> {
+        assert_connection_on_pool_worker();
+
         match &self.mode {
             EngineMode::Mock => {
                 emit_trace_event(|| {
@@ -558,6 +590,18 @@ impl AdapterEngine for AdbcEngine {
         let mut conn = retry_policy
             .execute(config, connect)
             .map_err(|e| enrich_connection_error(self.adapter_type(), e, config))?;
+        // Relation listing only needs table names and types, which tables.list
+        // already returns. Without this, the driver issues one tables.get per
+        // table, which is slow for large datasets. Best-effort: drivers that
+        // predate the option reject it and keep listing with per-table lookups.
+        if self.adapter_type == AdapterType::Bigquery && !config.use_dbt_cloud_credentials() {
+            let _ = conn.set_option(
+                adbc_core::options::OptionConnection::Other(
+                    bigquery::GET_OBJECTS_SKIP_TABLE_METADATA.to_string(),
+                ),
+                adbc_core::options::OptionValue::String("true".to_string()),
+            );
+        }
         // Tag the connection with its config fingerprint and cache it on the
         // engine, so the pool reuses a connection only among engines with an
         // identical connection configuration.
@@ -778,7 +822,7 @@ mod cloud_credential_tests {
         );
         assert_eq!(
             opt_string(&opts, "dbt_cloud.host"),
-            Some("ab123.dwg.us1.dbt.com".to_string())
+            Some("ab123.us1.dbt.com".to_string())
         );
         assert_eq!(
             opt_string(&opts, "dbt_cloud.account_id"),
@@ -808,47 +852,18 @@ mod cloud_credential_tests {
     }
 
     #[test]
-    fn pat_credential_dbt_cloud_host_gets_dwg_label_without_mutating_account_host() {
+    fn pat_credential_dbt_cloud_host_uses_account_host_as_is() {
         let credential = Credential::Pat {
             token: "dbtu_pat_token".to_string(),
             account_host: "ab123.us1.dbt.com".to_string(),
             account_id: 99,
         };
-        // Confirm the credential's own account_host is left bare — only the
-        // driver option gets the flock-specific "dwg" gateway label inserted.
-        assert_eq!(credential.account_host(), "ab123.us1.dbt.com");
         let builder = AdbcEngine::apply_cloud_credential(Backend::Snowflake, Ok(credential), None)
             .expect("should succeed");
         let opts: Vec<_> = builder.into_iter().collect();
         assert_eq!(
             opt_string(&opts, "dbt_cloud.host"),
-            Some("ab123.dwg.us1.dbt.com".to_string())
-        );
-    }
-
-    #[test]
-    fn pat_credential_dbt_cloud_host_is_not_double_prefixed() {
-        let credential = Credential::Pat {
-            token: "dbtu_pat_token".to_string(),
-            account_host: "ab123.dwg.us1.dbt.com".to_string(),
-            account_id: 99,
-        };
-        let builder = AdbcEngine::apply_cloud_credential(Backend::Snowflake, Ok(credential), None)
-            .expect("should succeed");
-        let opts: Vec<_> = builder.into_iter().collect();
-        assert_eq!(
-            opt_string(&opts, "dbt_cloud.host"),
-            Some("ab123.dwg.us1.dbt.com".to_string())
-        );
-    }
-
-    #[test]
-    fn flock_driver_host_mc() {
-        // Representative account-prefixed case; exhaustive host-shape coverage
-        // for `insert_gateway_label` lives in `dbt_common::url`.
-        assert_eq!(
-            super::flock_driver_host("acme.dbt.com").unwrap(),
-            "acme.dwg.dbt.com"
+            Some("ab123.us1.dbt.com".to_string())
         );
     }
 
@@ -930,7 +945,7 @@ mod cloud_credential_tests {
         );
         assert_eq!(
             opt_string(&opts, "dbt_cloud.host"),
-            Some("seeded.dwg.us1.dbt.com".to_string())
+            Some("seeded.us1.dbt.com".to_string())
         );
         assert_eq!(
             opt_string(&opts, "dbt_cloud.account_id"),

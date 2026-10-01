@@ -37,8 +37,6 @@ use std::collections::{BTreeMap, HashMap};
 use std::future;
 use std::sync::Arc;
 
-const MAX_CONNECTIONS: usize = 4;
-
 pub struct ExasolMetadataAdapter {
     adapter: AdapterImpl,
 }
@@ -192,10 +190,7 @@ impl MetadataAdapter for ExasolMetadataAdapter {
             .map(|relation| (relation.semantic_fqn(), relation.render_self_as_str()))
             .collect();
 
-        let factory = Box::new(AdapterConnectionFactory::new(
-            self.adapter.engine().clone(),
-            Some(MAX_CONNECTIONS),
-        ));
+        let factory = Box::new(AdapterConnectionFactory::new(self.adapter.engine().clone()));
 
         let adapter = self.adapter.clone();
         let token_clone = token.clone();
@@ -267,10 +262,15 @@ impl MetadataAdapter for ExasolMetadataAdapter {
         create_schemas_if_not_exists(&self.adapter, self, state, catalog_schemas)
     }
 
+    fn supports_relation_progress(&self) -> bool {
+        false
+    }
+
     fn list_relations_in_parallel_inner(
         &self,
         _db_schemas: &[CatalogAndSchema],
         _token: CancellationToken,
+        _report_progress: bool,
     ) -> AsyncAdapterResult<'_, BTreeMap<CatalogAndSchema, AdapterResult<RelationVec>>> {
         // Cache hydration not implemented: dbt falls back to per-relation
         // `list_relations_without_caching` / `get_relation` macros.

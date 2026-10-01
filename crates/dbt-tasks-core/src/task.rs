@@ -4,8 +4,6 @@ use std::path::Path;
 use std::pin::Pin;
 use std::sync::Arc;
 
-use dbt_adapter::connection::{ConnectionBackpressure, ThreadLocalConnectionRecycleGuard};
-use dbt_adapter_core::AdapterType;
 use dbt_common::stats::NodeStatus;
 use dbt_common::{ErrorCode, FsResult, fs_err};
 use dbt_schemas::schemas::InternalDbtNodeAttributes;
@@ -72,7 +70,7 @@ impl From<TP> for ExecutionPhase {
 
 /// Awaitable scheduling dispatch for a single unit of work.
 ///
-/// Each variant handles its own thread pool dispatch (spawn_blocking, async, backpressure).
+/// Each variant handles its own thread pool dispatch (spawn_blocking, async).
 /// Use this to build purely functional pipelines where each step's output feeds the next:
 ///
 /// ```ignore
@@ -81,15 +79,10 @@ impl From<TP> for ExecutionPhase {
 /// let result = TaskOp::blocking(|| render(ctx, relations)).run().await??;
 /// ```
 pub enum TaskOp<T: Send + 'static> {
-    /// CPU-bound work, dispatched to `tokio::task::spawn_blocking`.
+    /// CPU-bound work, dispatched to `dbt_runtime::spawn_blocking`. A
+    /// connection the closure borrows stays in that worker's thread-local slot
+    /// for whatever runs there next.
     Blocking(Box<dyn FnOnce() -> T + Send>),
-    /// CPU-bound work that needs a DB connection.
-    /// Waits for connection backpressure, then dispatched to `spawn_blocking`.
-    BlockingWithConnection {
-        f: Box<dyn FnOnce() -> T + Send>,
-        adapter_type: AdapterType,
-        max_threads: Option<usize>,
-    },
 }
 
 impl<T: Send + 'static> TaskOp<T> {
@@ -107,22 +100,9 @@ impl<T: Send + 'static> TaskOp<T> {
     /// Execute this operation on the appropriate thread pool.
     pub async fn run(self) -> FsResult<T> {
         match self {
-            TaskOp::Blocking(f) => dbt_common::tracing::spawn_blocking_traced(f)
+            TaskOp::Blocking(f) => dbt_runtime::spawn_blocking(f)
                 .await
                 .map_err(|e| fs_err!(ErrorCode::Generic, "spawn_blocking join error: {}", e)),
-            TaskOp::BlockingWithConnection {
-                f,
-                adapter_type,
-                max_threads,
-            } => {
-                let _guard = ConnectionBackpressure::from_config(adapter_type, max_threads).await;
-                dbt_common::tracing::spawn_blocking_traced(Box::new(move || {
-                    let _recycle_guard = ThreadLocalConnectionRecycleGuard::new();
-                    f()
-                }))
-                .await
-                .map_err(|e| fs_err!(ErrorCode::Generic, "spawn_blocking join error: {}", e))
-            }
         }
     }
 }
@@ -143,29 +123,6 @@ pub trait Task: Send + Sync {
         &'a self,
         ctx: &'a mut TaskRunnerCtx,
     ) -> Pin<Box<dyn Future<Output = FsResult<NodeStatus>> + Send + 'a>>;
-
-    fn adapter_type(&self) -> Option<AdapterType> {
-        None
-    }
-
-    /// Apply backpressure to task scheduling.
-    ///
-    /// This tells the `tokio` runtime to poll for readiness later when demand
-    /// for database connections is below the maximum level we target.
-    fn run_task_with_backpressure<'a>(
-        &'a self,
-        ctx: &'a mut TaskRunnerCtx,
-    ) -> Pin<Box<dyn Future<Output = FsResult<NodeStatus>> + Send + 'a>> {
-        Box::pin(async move {
-            let backpressure = ConnectionBackpressure::from_config(
-                self.adapter_type()
-                    .unwrap_or_else(|| ctx.default_adapter_type()),
-                ctx.dbt_profile().threads,
-            );
-            let _wake_next_on_drop = backpressure.await;
-            self.run_task(ctx).await
-        })
-    }
 
     fn resource_type(&self) -> NodeType;
 

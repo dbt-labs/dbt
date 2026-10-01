@@ -207,6 +207,40 @@ pub fn parse_target_connections(
     raw: &dbt_yaml::Value,
     penv: &ProfileEnvironment,
 ) -> Result<Vec<AdapterConnections>> {
+    parse_connections(profile, target, raw, penv, ResolutionMode::Credentials)
+}
+
+#[derive(Clone, Copy)]
+pub(crate) enum ResolutionMode {
+    Credentials,
+    Metadata,
+}
+
+impl ResolutionMode {
+    fn render(self, raw: &dbt_yaml::Value, penv: &ProfileEnvironment) -> Result<dbt_yaml::Mapping> {
+        match (self, raw.as_mapping()) {
+            (Self::Metadata, Some(mapping)) => {
+                let selection = mapping
+                    .iter()
+                    .filter(|(key, _)| {
+                        matches!(key.as_str(), Some(TYPE_KEY | NAME_KEY | DEFAULT_KEY))
+                    })
+                    .map(|(key, value)| (key.clone(), value.clone()))
+                    .collect::<dbt_yaml::Mapping>();
+                render_target(&dbt_yaml::Value::from(selection), penv)
+            }
+            _ => render_target(raw, penv),
+        }
+    }
+}
+
+pub(crate) fn parse_connections(
+    profile: &str,
+    target: &str,
+    raw: &dbt_yaml::Value,
+    penv: &ProfileEnvironment,
+    mode: ResolutionMode,
+) -> Result<Vec<AdapterConnections>> {
     let raw_connections: Vec<dbt_yaml::Value> = match raw {
         dbt_yaml::Value::Sequence(entries, _) => entries.clone(),
         dbt_yaml::Value::Mapping(mapping, _) => {
@@ -215,7 +249,7 @@ pub fn parse_target_connections(
                 // two-entry list it stands in for.
                 Some((primary, lake_compute)) => vec![primary, lake_compute],
                 // The ordinary legacy shape: the whole block is one connection.
-                None => return parse_legacy_target(raw, penv),
+                None => return parse_legacy_target(raw, penv, mode),
             }
         }
         _ => {
@@ -235,7 +269,8 @@ pub fn parse_target_connections(
 
     let mut adapters: Vec<AdapterConnections> = Vec::new();
     for (index, entry) in raw_connections.iter().enumerate() {
-        let (adapter_type, connection) = parse_connection(profile, target, index, entry, penv)?;
+        let (adapter_type, connection) =
+            parse_connection(profile, target, index, entry, penv, mode)?;
 
         match adapters.iter_mut().find(|a| a.adapter_type == adapter_type) {
             Some(adapter) => {
@@ -293,6 +328,7 @@ fn parse_connection(
     index: usize,
     entry: &dbt_yaml::Value,
     penv: &ProfileEnvironment,
+    mode: ResolutionMode,
 ) -> Result<(String, TargetConnection)> {
     if !matches!(entry, dbt_yaml::Value::Mapping(_, _)) {
         return Err(ProfileError::ConnectionNotMapping {
@@ -305,7 +341,7 @@ fn parse_connection(
     // Render first so `name`, `default` and `type` may all be templated, then
     // split the two list-only keys out of what becomes the connection config.
     // `type:` stays in: it is what `DbConfig` is tagged by.
-    let mut credentials = render_target(entry, penv)?;
+    let mut credentials = mode.render(entry, penv)?;
 
     let adapter_type = credentials
         .get(TYPE_KEY)
@@ -361,8 +397,9 @@ fn parse_connection(
 fn parse_legacy_target(
     raw: &dbt_yaml::Value,
     penv: &ProfileEnvironment,
+    mode: ResolutionMode,
 ) -> Result<Vec<AdapterConnections>> {
-    let mut credentials = render_target(raw, penv)?;
+    let mut credentials = mode.render(raw, penv)?;
     let adapter_type = credentials
         .get(TYPE_KEY)
         .and_then(|v| v.as_str())

@@ -24,7 +24,7 @@ use dbt_common::{
         DBT_CATALOG_JSON, DBT_COMPILED_DIR_NAME, DBT_MANIFEST_JSON, DBT_PROJECT_YML, ERROR,
         INSTALLING, VALIDATING, default_index_dir, default_metadata_dir,
     },
-    create_root_info_span, fs_err,
+    create_info_span, create_root_info_span, force_close_span, fs_err,
     io_args::{DisplayFormat, EvalArgs, ListOutputFormat, Phases, ShowOptions, SystemArgs},
     node_selector::IndirectSelection,
     path::get_target_write_path,
@@ -93,8 +93,8 @@ use dbt_tasks_core::{
 use dbt_tasks_sa::base_context::build_base_context;
 use dbt_telemetry::ArtifactType;
 use dbt_telemetry::{
-    CompiledCodeInline, NodeOutcome, NodeSkipReason, ProgressMessage, ShowDataOutput,
-    ShowDataOutputFormat, ShowResult, TestOutcome,
+    CompiledCodeInline, GenericOpExecuted, NodeOutcome, NodeSkipReason, ProgressMessage,
+    ShowDataOutput, ShowDataOutputFormat, ShowResult, TestOutcome,
 };
 
 use dbt_vortex::vortex_producer_is_running;
@@ -112,7 +112,10 @@ use crate::{
     },
     retry::{RETRIABLE_COMMANDS, RetryState},
     utils::{InvocationContext, write_catalog_stats_parquet, write_runtime_results_parquet},
-    vars::{validate_engine_env_vars, warn_unused_engine_env_vars},
+    vars::{
+        validate_engine_env_vars, warn_if_legacy_run_cache_mode_flag_used,
+        warn_unused_engine_env_vars,
+    },
 };
 
 // ------------------------------------------------------------------------------------------------
@@ -300,7 +303,7 @@ is false. This should not happen."
             // are sent, so we run it as a blocking tokio task.
             invocation_end_event(invocation_id, result_string, dbt_distribution, shutdown);
         })
-        .instrument(invocation_span)
+        .instrument(invocation_span.clone())
         .await
         .map_err(|e| {
             if e.is_cancelled() {
@@ -311,6 +314,11 @@ is false. This should not happen."
         })
         .unwrap();
     }
+
+    // End the invocation span now, rather than when its last handle is dropped: abandoned
+    // workers (e.g. catalog fetch) may still hold its descendants, and the invocation end
+    // (final metrics, execution summary) must be delivered before telemetry shuts down.
+    force_close_span(invocation_span);
 
     // Hand the captured artifacts (if any) to the caller. Phase-checkpoint
     // commands (parse, list, ...) signal success via Err(exit_status == 0) — a
@@ -337,6 +345,7 @@ async fn do_execute_fs(
     use CoreCommand::*;
 
     warn_unused_engine_env_vars();
+    warn_if_legacy_run_cache_mode_flag_used();
 
     // Current versions of rustls require us to explicitly install a default provider.
     // The default provider can only be installed once per process, so
@@ -1108,14 +1117,27 @@ impl<'a> AllPhasesExecutor<'a> {
         if let Command::Core(Show(show_args)) = &self.cli.command
             && show_queries_info_schema(show_args)
         {
-            dbt_tasks_sa::show_info::run_show_info_schema(
-                show_args.info.as_deref(),
-                show_args.inline.as_deref(),
-                &self.arg.metadata_dir(),
-                self.arg.format,
-                self.arg.limit,
-                token.clone(),
-            )?;
+            let info = show_args.info.clone();
+            let inline = show_args.inline.clone();
+            let metadata_dir = self.arg.metadata_dir();
+            let format = self.arg.format;
+            let limit = self.arg.limit;
+            let token = token.clone();
+            // Reads the parse metadata through a DuckDB adapter, so it runs on
+            // a `dbt-runtime` worker: every database connection must be created
+            // by one.
+            dbt_runtime::spawn_blocking(move || {
+                dbt_tasks_sa::show_info::run_show_info_schema(
+                    info.as_deref(),
+                    inline.as_deref(),
+                    &metadata_dir,
+                    format,
+                    limit,
+                    token,
+                )
+            })
+            .await
+            .map_err(|e| fs_err!(ErrorCode::Generic, "spawn_blocking join error: {e}"))??;
             return Ok(());
         }
 
@@ -1123,15 +1145,25 @@ impl<'a> AllPhasesExecutor<'a> {
 
         let retry_schedule = self.prepare_for_potential_retry()?;
 
-        // Implied index for `build`/`run`/`check` is EvalArgs-only (`Cli.to_eval_args`).
-        // `dbt retry` reconstructs `command` but keeps the `EvalArgs` produced from
-        // `Retry`, which did not get that default. Without it the parse-time check gate
-        // reads the previous invocation's index. Honor `--no-write-index` the same way
-        // the default does. Do not set `Cli.common_args.write_index`: that turns partial
-        // parse/load on, and a warm `dbt check --select <model>` unique_id-filters checks
-        // out of `ResolverState` (empty success).
+        // Gives a retried `build`/`check` the same default index a fresh invocation would get,
+        // when no metadata/index/catalog flag was passed explicitly. `dbt retry` reconstructs
+        // `command` but keeps the `EvalArgs` produced from `Retry`, which never went through
+        // `Cli::to_eval_args` and so never got that default. Honor `--no-write-index` the same
+        // way the default does. Do not set `Cli.common_args.write_index`: that turns partial
+        // parse/load on, and a warm `dbt check --select <model>` unique_id-filters checks out
+        // of `ResolverState` (empty success).
+        //
+        // Read `common_args.write_catalog`/`write_metadata` (raw flags), not `self.arg`'s
+        // (derived: `arg.write_metadata` folds in `effective_write_index()` and
+        // `generate_info_schema`, so it can already be `true` with neither flag passed
+        // explicitly). Mirrors `Cli::to_eval_args`, which skips this same default when
+        // `--write-catalog`/`--write-metadata` is explicit: the implied-index path sets
+        // `write_index_implied = true`, which gates the catalog fetch off below, so treating
+        // an explicit `--write-catalog` as implied here silently drops `catalog.json`.
         if matches!(self.arg.command, FsCommand::Build | FsCommand::Check)
             && !self.arg.write_index
+            && !self.cli.common_args.write_catalog
+            && !self.cli.common_args.write_metadata
             && !self.cli.common_args.no_write_index
         {
             let arg = self.arg.to_mut();
@@ -1321,8 +1353,20 @@ impl<'a> AllPhasesExecutor<'a> {
                         selection_active,
                         schedule.selected_nodes.iter(),
                     );
-                    let outcome =
-                        run_parse_time_checks(&named, &self.arg.metadata_dir(), scope.as_ref(), 5);
+                    // Checks query the parse metadata through a DuckDB
+                    // adapter, so they run on a `dbt-runtime` worker: every
+                    // database connection must be created by one.
+                    let outcome = {
+                        let metadata_dir = self.arg.metadata_dir();
+                        let scope = scope.clone();
+                        dbt_runtime::spawn_blocking(move || {
+                            run_parse_time_checks(&named, &metadata_dir, scope.as_ref(), 5)
+                        })
+                        .await
+                        .map_err(|e| {
+                            fs_err!(ErrorCode::Generic, "spawn_blocking join error: {e}")
+                        })?
+                    };
 
                     // A selector that matched nothing is one fact about the invocation, not one
                     // fact per check: twenty checks produced twenty identical `CheckSkipped`
@@ -2877,127 +2921,126 @@ async fn fetch_catalog_data(
         let shared_results_clone = shared_results.clone();
         let shared_errors_clone = shared_errors.clone();
         let progress_tracker_clone = progress_tracker.clone();
+        let handle = dbt_runtime::spawn_blocking(move || -> FsResult<()> {
+            // Worker loop: process tasks until queue is empty
+            loop {
+                let task = task_queue_clone.lock().unwrap().pop();
+                let Some((database, schema)) = task else {
+                    // No available work - remove from progress tracker and exit
+                    progress_tracker_clone.lock().unwrap().remove(&worker_id);
+                    break;
+                };
+                let schema_clone = schema.clone();
 
-        // Deliberately NOT `Span::current().enter()`ed inside the worker. The poll loop below
-        // abandons workers that blow past `WORKER_TIMEOUT` without joining them, so a worker can
-        // outlive this function. A live thread holding a handle to the invocation span (or any of
-        // its descendants) keeps that span's refcount above zero, so the subscriber never fires
-        // `on_close` for it -- and the end-of-invocation Execution Summary, which is emitted from
-        // `handle_invocation_end`, is silently dropped. Users saw a `--write-index`/`--write-catalog`
-        // build print "Fetched partial catalog.json results" and then simply stop, with no summary
-        // and no result counts (dbt-labs/fs#14424). Abandonment has to be total: these threads must
-        // not participate in the invocation's span lifetime.
-        let handle = std::thread::Builder::new()
-            .stack_size(8 * 1024 * 1024)
-            .spawn(move || -> FsResult<()> {
-                // Worker loop: process tasks until queue is empty
-                loop {
-                    let task = task_queue_clone.lock().unwrap().pop();
-                    let Some((database, schema)) = task else {
-                        // No available work - remove from progress tracker and exit
-                        progress_tracker_clone.lock().unwrap().remove(&worker_id);
-                        break;
-                    };
-                    let schema_clone = schema.clone();
+                // Update progress tracker with current schema and timestamp
+                progress_tracker_clone
+                    .lock()
+                    .unwrap()
+                    .insert(worker_id, (schema_clone.clone(), Instant::now()));
 
-                    // Update progress tracker with current schema and timestamp
-                    progress_tracker_clone
-                        .lock()
-                        .unwrap()
-                        .insert(worker_id, (schema_clone.clone(), Instant::now()));
+                // CRITICAL: Create a fresh ResultStore for EACH schema iteration to ensure
+                // complete isolation. The `run_query` macro uses a hardcoded name "run_query_statement"
+                // for store_result/load_result. By creating a fresh ResultStore for each schema,
+                // we ensure that:
+                // 1. No state leaks between different schemas processed by the same worker
+                // 2. No possibility of race conditions with other workers
+                // 3. Each macro invocation has a completely clean ResultStore
+                let iteration_result_store = ResultStore::default();
+                let mut iteration_context = base_context.clone();
+                iteration_context.insert(
+                    "store_result".to_owned(),
+                    Value::from_function(iteration_result_store.store_result()),
+                );
+                iteration_context.insert(
+                    "load_result".to_owned(),
+                    Value::from_function(iteration_result_store.load_result()),
+                );
+                iteration_context.insert(
+                    "store_raw_result".to_owned(),
+                    Value::from_function(iteration_result_store.store_raw_result()),
+                );
 
-                    // CRITICAL: Create a fresh ResultStore for EACH schema iteration to ensure
-                    // complete isolation. The `run_query` macro uses a hardcoded name "run_query_statement"
-                    // for store_result/load_result. By creating a fresh ResultStore for each schema,
-                    // we ensure that:
-                    // 1. No state leaks between different schemas processed by the same worker
-                    // 2. No possibility of race conditions with other workers
-                    // 3. Each macro invocation has a completely clean ResultStore
-                    let iteration_result_store = ResultStore::default();
-                    let mut iteration_context = base_context.clone();
-                    iteration_context.insert(
-                        "store_result".to_owned(),
-                        Value::from_function(iteration_result_store.store_result()),
-                    );
-                    iteration_context.insert(
-                        "load_result".to_owned(),
-                        Value::from_function(iteration_result_store.load_result()),
-                    );
-                    iteration_context.insert(
-                        "store_raw_result".to_owned(),
-                        Value::from_function(iteration_result_store.store_raw_result()),
-                    );
+                // Lookup relations for this schema
+                let rels = relations_map_clone
+                    .get(&(database.clone(), schema.clone()))
+                    .expect("schema must exist in relations map");
+                let relation_as_values = rels
+                    .iter()
+                    .map(|r| RelationObject::new(Arc::clone(r)).into_value())
+                    .collect::<Vec<Value>>();
 
-                    // Lookup relations for this schema
-                    let rels = relations_map_clone
-                        .get(&(database.clone(), schema.clone()))
-                        .expect("schema must exist in relations map");
-                    let relation_as_values = rels
-                        .iter()
-                        .map(|r| RelationObject::new(Arc::clone(r)).into_value())
-                        .collect::<Vec<Value>>();
+                let db_schema = RelationObject::new(Arc::from(create_relation(
+                    adapter_type,
+                    database.to_string(),
+                    schema.clone(),
+                    maybe_region_clone.clone(), // hack for BQ
+                    None,
+                    ResolvedQuoting::default(),
+                )?))
+                .into_value();
 
-                    let db_schema = RelationObject::new(Arc::from(
-                        create_relation(
-                            adapter_type,
-                            database.to_string(),
-                            schema.clone(),
-                            maybe_region_clone.clone(), // hack for BQ
-                            None,
-                            ResolvedQuoting::default(),
-                        )?,
-                    ))
-                    .into_value();
+                let catalog_fetch_span = create_info_span(GenericOpExecuted::new(
+                    "catalog_fetch".to_string(),
+                    "fetching catalog".to_string(),
+                    Some(relation_as_values.len() as u64),
+                ));
+                let _catalog_fetch_span_guard = catalog_fetch_span.clone().entered();
 
-                    // To avoid blowing up the query, we use the get_catalog macro for batches with more than 50 relations
-                    let jinja_result: FsResult<Value> = if relation_as_values.len() > 50 {
-                        let args = vec![
-                            Value::from_serialize(db_schema),
-                            Value::from_serialize(vec![schema.clone()]),
-                        ];
-                        get_catalog_by_relations(
-                            &jinja_env_clone,
-                            "get_catalog",
-                            &project_name_owned,
-                            &project_name_owned,
-                            &iteration_context,
-                            &args,
-                        )
-                    } else {
-                        let args = vec![
-                            Value::from_serialize(db_schema),
-                            Value::from_serialize(relation_as_values.clone()),
-                        ];
-                        get_catalog_by_relations(
-                            &jinja_env_clone,
-                            "get_catalog_relations",
-                            &project_name_owned,
-                            &project_name_owned,
-                            &iteration_context,
-                            &args,
-                        )
-                    };
-                    match jinja_result {
-                        Ok(v) => match convert_macro_result_to_record_batch(&v) {
-                            Ok(record_batch) => {
-                                shared_results_clone.lock().unwrap().push(record_batch);
-                            }
-                            Err(e) => {
-                                let msg = format!("[Non-critical] Issue processing catalog for schema '{database}.{schema}': {e}");
-                                emit_info_log_message(&msg);
-                                shared_errors_clone.lock().unwrap().push(msg);
-                            }
-                        },
+                // To avoid blowing up the query, we use the get_catalog macro for batches with more than 50 relations
+                let jinja_result: FsResult<Value> = if relation_as_values.len() > 50 {
+                    let args = vec![
+                        Value::from_serialize(db_schema),
+                        Value::from_serialize(vec![schema.clone()]),
+                    ];
+                    get_catalog_by_relations(
+                        &jinja_env_clone,
+                        "get_catalog",
+                        &project_name_owned,
+                        &project_name_owned,
+                        &iteration_context,
+                        &args,
+                    )
+                } else {
+                    let args = vec![
+                        Value::from_serialize(db_schema),
+                        Value::from_serialize(relation_as_values.clone()),
+                    ];
+                    get_catalog_by_relations(
+                        &jinja_env_clone,
+                        "get_catalog_relations",
+                        &project_name_owned,
+                        &project_name_owned,
+                        &iteration_context,
+                        &args,
+                    )
+                };
+                match jinja_result {
+                    Ok(v) => match convert_macro_result_to_record_batch(&v) {
+                        Ok(record_batch) => {
+                            record_span_status(&catalog_fetch_span, None);
+                            shared_results_clone.lock().unwrap().push(record_batch);
+                        }
                         Err(e) => {
-                            let msg = format!("[Non-critical] Issue fetching catalog for schema '{database}.{schema}': {e}");
+                            let msg = format!(
+                                "[Non-critical] Issue processing catalog for schema '{database}.{schema}': {e}"
+                            );
+                            record_span_status(&catalog_fetch_span, Some(&msg));
                             emit_info_log_message(&msg);
                             shared_errors_clone.lock().unwrap().push(msg);
                         }
+                    },
+                    Err(e) => {
+                        let msg = format!(
+                            "[Non-critical] Issue fetching catalog for schema '{database}.{schema}': {e}"
+                        );
+                        record_span_status(&catalog_fetch_span, Some(&msg));
+                        emit_info_log_message(&msg);
+                        shared_errors_clone.lock().unwrap().push(msg);
                     }
                 }
-                Ok(())
-            })
-            .expect("failed to spawn worker thread");
+            }
+            Ok(())
+        });
         handles.push(handle);
     }
 
@@ -3010,8 +3053,15 @@ async fn fetch_catalog_data(
 
         let tracker_snapshot = progress_tracker.lock().unwrap().clone();
 
-        // All workers finished normally
-        if tracker_snapshot.is_empty() {
+        // All workers finished normally.
+        //
+        // The queue check is not redundant with the tracker: a worker only
+        // appears in the tracker once it has claimed a task, and workers are now
+        // pool tasks, so with fewer pool threads than workers the ones still
+        // queued have claimed nothing. An empty tracker alone would read that as
+        // "everything finished" on the first tick and report a full catalog
+        // built from zero batches.
+        if tracker_snapshot.is_empty() && task_queue.lock().unwrap().is_empty() {
             emit_info_log_message("Fetched full catalog.json results");
             break;
         }

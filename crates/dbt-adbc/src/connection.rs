@@ -4,7 +4,6 @@
 
 use core::fmt;
 use std::collections::HashSet;
-use std::sync::Arc;
 
 use crate::driver_manager::ManagedConnection as ManagedAdbcConnection;
 use adbc_core::options;
@@ -16,7 +15,6 @@ use adbc_core::{
 use arrow_array::RecordBatchReader;
 use arrow_schema::Schema;
 
-use crate::semaphore::Semaphore;
 use crate::statement::AdbcStatement;
 use crate::{Backend, Statement};
 
@@ -386,7 +384,6 @@ impl fmt::Debug for dyn Connection {
 pub(crate) struct AdbcConnection(
     pub(crate) Backend,
     pub(crate) ManagedAdbcConnection,
-    pub(crate) Option<Arc<Semaphore>>,
     /// Generation of the engine that created this connection (0 if untagged).
     pub(crate) u64,
 );
@@ -397,22 +394,13 @@ impl fmt::Debug for AdbcConnection {
     }
 }
 
-impl Drop for AdbcConnection {
-    fn drop(&mut self) {
-        // TODO(backpressure): re-enable once re-entrancy is handled.
-        // if let Some(semaphore) = &self.2 {
-        //     semaphore.unguarded_release();
-        // }
-    }
-}
-
 impl Connection for AdbcConnection {
     fn fingerprint(&self) -> u64 {
-        self.3
+        self.2
     }
 
     fn set_fingerprint(&mut self, fingerprint: u64) {
-        self.3 = fingerprint;
+        self.2 = fingerprint;
     }
 
     fn new_statement(&mut self) -> Result<Box<dyn Statement>> {

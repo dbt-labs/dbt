@@ -64,13 +64,6 @@ impl AggregatedTestRenderTask {
 impl Task for AggregatedTestRenderTask {
     // The inner `RenderTask` acquires the connection gate itself and declines
     // the default outer guard, so this wrapper must decline it too.
-    fn run_task_with_backpressure<'a>(
-        &'a self,
-        ctx: &'a mut TaskRunnerCtx,
-    ) -> Pin<Box<dyn Future<Output = FsResult<NodeStatus>> + Send + 'a>> {
-        self.run_task(ctx)
-    }
-
     fn run_task<'a>(
         &'a self,
         ctx: &'a mut TaskRunnerCtx,

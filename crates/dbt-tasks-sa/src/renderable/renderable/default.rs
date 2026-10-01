@@ -17,7 +17,7 @@ use dbt_jinja_utils::utils::{
 use dbt_scheduler::instructions::SqlInstruction;
 use dbt_schemas::schemas::common::DbtMaterialization;
 use dbt_schemas::schemas::properties::UnitTestOverrides;
-use dbt_schemas::schemas::{InternalDbtNodeAttributes, IntrospectionKind, NodePathKind};
+use dbt_schemas::schemas::{InternalDbtNodeAttributes, NodePathKind};
 use dbt_tasks_core::context::TaskRunnerCtx;
 use dbt_tasks_core::task::TaskOp;
 use dbt_telemetry::{CompiledCode, NodeType};
@@ -34,9 +34,6 @@ pub async fn run_default_render(
     result_sender: Option<std::sync::mpsc::SyncSender<TaskResult>>,
     local_exec_unit_test_overrides: Option<UnitTestOverrides>,
 ) -> FsResult<NodeStatus> {
-    let adapter_type = node.node_adapter();
-    let max_threads = ctx.dbt_profile().threads;
-    let bypass = bypass_backpressure(node.introspection(), *node.static_analysis_enabled());
     let render_step = Box::new(move || {
         let mut ctx = ctx;
         let res = render_default(&node, &mut ctx, &local_exec_unit_test_overrides);
@@ -48,17 +45,7 @@ pub async fn run_default_render(
             &result_sender,
         )
     });
-    if bypass {
-        TaskOp::Blocking(render_step).run().await?
-    } else {
-        TaskOp::BlockingWithConnection {
-            f: render_step,
-            adapter_type,
-            max_threads,
-        }
-        .run()
-        .await?
-    }
+    TaskOp::Blocking(render_step).run().await?
 }
 
 fn render_default(
@@ -229,19 +216,6 @@ fn emit_compiled_code(
     );
 }
 
-/// Returns `true` when the node can render without acquiring a warehouse
-/// connection, allowing it to bypass connection backpressure.
-///
-/// A node bypasses backpressure when:
-/// - It has no introspection at all, or
-/// - Its introspection is safe and static analysis is enabled (so the warehouse is not needed)
-pub(crate) fn bypass_backpressure(
-    introspection: IntrospectionKind,
-    static_analysis_enabled: bool,
-) -> bool {
-    introspection.is_none() || (introspection.is_safe() && static_analysis_enabled)
-}
-
 /// Render a Python model without Jinja processing
 fn render_python_model(
     node: &Arc<dyn InternalDbtNodeAttributes>,
@@ -289,44 +263,4 @@ fn render_python_model(
         },
         config_map,
     ))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn none_always_bypasses() {
-        assert!(bypass_backpressure(IntrospectionKind::None, false));
-        assert!(bypass_backpressure(IntrospectionKind::None, true));
-    }
-
-    #[test]
-    fn upstream_schema_bypasses_only_with_static_analysis() {
-        assert!(bypass_backpressure(IntrospectionKind::UpstreamSchema, true));
-        assert!(!bypass_backpressure(
-            IntrospectionKind::UpstreamSchema,
-            false
-        ));
-    }
-
-    #[test]
-    fn unsafe_kinds_never_bypass() {
-        for kind in [
-            IntrospectionKind::Execute,
-            IntrospectionKind::This,
-            IntrospectionKind::InternalSchema,
-            IntrospectionKind::ExternalSchema,
-            IntrospectionKind::Unknown,
-        ] {
-            assert!(
-                !bypass_backpressure(kind, false),
-                "{kind:?} with sa=false should not bypass"
-            );
-            assert!(
-                !bypass_backpressure(kind, true),
-                "{kind:?} with sa=true should not bypass"
-            );
-        }
-    }
 }

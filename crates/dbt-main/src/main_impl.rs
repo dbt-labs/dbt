@@ -142,18 +142,23 @@ pub fn run_cli_with_code(cli: Box<Cli>, arg: SystemArgs, feature_stack: Arc<Feat
         .config
         .apply_configuration(&cli.common_args());
 
-    // Bounded blocking pool for jinja rendering and database work.
+    // See also: `set_runtime_max_parallelism`.
     let dbt_rt = dbt_runtime::builder::Builder::new()
-        .max_blocking_threads(if arg.no_parallel { 1 } else { 48 })
+        .max_blocking_threads(if arg.no_parallel {
+            1
+        } else {
+            dbt_runtime::builder::DEFAULT_MAX_BLOCKING_THREADS
+        })
         .thread_stack_size(FS_DEFAULT_STACK_SIZE)
         .build();
 
     // Setup tokio runtime and set stack-size to 8MB
     // DO NOT USE Rayon, it is not compatible with Tokio
 
-    // Only `--no-parallel` pins the tokio runtime to a single worker.
-    // `--threads` is exclusively the adapter connection-backpressure knob
-    // and does not affect the runtime.
+    // Only `--no-parallel` pins the tokio runtime to a single worker. The
+    // blocking pool above starts with a default cap because `threads` is not
+    // resolved yet; `set_runtime_max_parallelism` lowers it to `threads` once
+    // the profile is loaded.
     let tokio_rt = if arg.no_parallel {
         let dbt_rt_handle = dbt_rt.handle().clone();
         tokio::runtime::Builder::new_multi_thread()

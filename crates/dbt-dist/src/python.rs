@@ -2,7 +2,6 @@ use std::{
     io::Write,
     ops,
     path::{Path, PathBuf},
-    range::Range,
 };
 
 use dbt_common::{
@@ -1032,7 +1031,7 @@ impl PythonManifest {
         let replacements = matches
             .into_iter()
             .map(|m| ManifestReplacement {
-                range_replace: Range {
+                range_replace: ops::Range {
                     start: m.version_range.start,
                     end: m.version_range.end,
                 },
@@ -1086,14 +1085,14 @@ impl PythonManifest {
         let mut replacements = Vec::with_capacity(matches.len() * 3);
         for m in matches {
             replacements.push(ManifestReplacement {
-                range_replace: Range {
+                range_replace: ops::Range {
                     start: m.name_range.start,
                     end: m.name_range.end,
                 },
                 replacement: new_spec.name.clone(),
             });
             replacements.push(ManifestReplacement {
-                range_replace: Range {
+                range_replace: ops::Range {
                     start: m.version_range.start,
                     end: m.version_range.end,
                 },
@@ -1109,7 +1108,7 @@ impl PythonManifest {
             // identity and any existing extras are still valid.
             if let Some(extras_range) = m.extras_range {
                 replacements.push(ManifestReplacement {
-                    range_replace: Range {
+                    range_replace: ops::Range {
                         start: extras_range.start,
                         end: extras_range.end,
                     },
@@ -1166,7 +1165,7 @@ impl ManifestReplacements {
         // the ones sharing a line so that line renders as one `-`/`+` pair.
         let mut edited_lines: Vec<(usize, Vec<&ManifestReplacement>)> = Vec::new();
         for r in ordered {
-            let range: ops::Range<usize> = r.range_replace.into();
+            let range = r.range_replace.clone();
             if text.get(range.clone()).is_none() {
                 return err!(
                     ErrorCode::Unexpected,
@@ -1242,7 +1241,7 @@ impl ManifestReplacements {
                 // valid.
                 let mut new_line = old_line.to_string();
                 for r in sharing_line.iter().rev() {
-                    let range: ops::Range<usize> = r.range_replace.into();
+                    let range = r.range_replace.clone();
                     new_line.replace_range(
                         range.start - line.start..range.end - line.start,
                         &r.replacement,
@@ -1348,7 +1347,7 @@ impl ManifestReplacements {
         let mut ordered: Vec<&ManifestReplacement> = self.replacements.iter().collect();
         ordered.sort_by_key(|r| std::cmp::Reverse(r.range_replace.start));
         for r in ordered {
-            let range: ops::Range<usize> = r.range_replace.into();
+            let range = r.range_replace.clone();
             if text.get(range.clone()).is_none() {
                 return err!(
                     ErrorCode::Unexpected,
@@ -1379,7 +1378,7 @@ impl ManifestReplacements {
 #[derive(Debug)]
 pub struct ManifestReplacement {
     // The half-open range of bytes to replace
-    range_replace: Range<usize>,
+    range_replace: ops::Range<usize>,
     replacement: String,
 }
 
@@ -2141,7 +2140,7 @@ mod tests {
             );
             let replacements = ManifestReplacements {
                 replacements: vec![ManifestReplacement {
-                    range_replace: Range { start: 9, end: 25 },
+                    range_replace: ops::Range { start: 9, end: 25 },
                     replacement: "1.5.0".into(),
                 }],
                 source_checksum: manifest.checksum_sha256,
@@ -2162,7 +2161,7 @@ mod tests {
             let manifest = manifest_with(tmp.path(), "requirements.txt", "dbt-core==1.2.3\n");
             let replacements = ManifestReplacements {
                 replacements: vec![ManifestReplacement {
-                    range_replace: Range { start: 16, end: 16 },
+                    range_replace: ops::Range { start: 16, end: 16 },
                     replacement: "other-package==0.1.0\n".into(),
                 }],
                 source_checksum: manifest.checksum_sha256,
@@ -2225,11 +2224,11 @@ mod tests {
             let replacements = ManifestReplacements {
                 replacements: vec![
                     ManifestReplacement {
-                        range_replace: Range { start: 27, end: 32 },
+                        range_replace: ops::Range { start: 27, end: 32 },
                         replacement: "9.9.9".into(),
                     },
                     ManifestReplacement {
-                        range_replace: Range { start: 10, end: 15 },
+                        range_replace: ops::Range { start: 10, end: 15 },
                         replacement: "1.10.0".into(),
                     },
                 ],

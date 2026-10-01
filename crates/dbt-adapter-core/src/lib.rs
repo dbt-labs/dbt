@@ -107,6 +107,17 @@ impl AdapterType {
             (v, name)
         })
     }
+
+    /// Cap on concurrent database work for this adapter when the invocation
+    /// asks for none -- neither `--threads` nor a `threads:` in `profiles.yml`.
+    pub const fn default_max_threads(self) -> usize {
+        use AdapterType::*;
+        match self {
+            Snowflake => 48,
+            Redshift => 4,
+            _ => 48,
+        }
+    }
 }
 
 pub fn quote_char(adapter_type: AdapterType) -> char {

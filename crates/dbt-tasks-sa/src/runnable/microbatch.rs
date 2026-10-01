@@ -315,7 +315,7 @@ pub fn build_event_time_mapping(
     mapping
 }
 
-pub fn is_incremental(
+pub async fn is_incremental(
     model: &DbtModel,
     full_refresh: bool,
     adapter_type: AdapterType,
@@ -324,12 +324,6 @@ pub fn is_incremental(
     if full_refresh {
         return false;
     }
-
-    let state = jinja_env.new_state_with_context(BTreeMap::new());
-    let adapter = match jinja_env.get_base_adapter() {
-        Some(a) => a,
-        None => return false,
-    };
 
     let relation = match create_relation_from_node(adapter_type, model, None) {
         Ok(rel) => rel,
@@ -341,19 +335,35 @@ pub fn is_incremental(
             return false;
         }
     };
+    // Owned, so the coordinates can cross to the worker without the relation.
+    let database = relation.database().unwrap_or_default().to_string();
+    let schema = relation.schema().unwrap_or_default().to_string();
+    let identifier = relation.identifier().unwrap_or_default().to_string();
 
-    adapter
-        .get_relation(
-            &state,
-            relation.database().unwrap_or_default(),
-            relation.schema().unwrap_or_default(),
-            relation.identifier().unwrap_or_default(),
-            false,
-        )
-        .ok()
-        .filter(|v| !v.is_none())
-        .and_then(|v| downcast_value_to_dyn_base_relation(&v).ok())
-        .is_some_and(|rel| rel.is_table())
+    // `get_relation` asks the warehouse whether the target already exists, so
+    // it opens a connection and has to run on a `dbt-runtime` worker. The
+    // `State` is built there too: it borrows the environment and is not `Send`.
+    let existing_table = dbt_runtime::spawn_blocking(move || {
+        let Some(adapter) = jinja_env.get_base_adapter() else {
+            return false;
+        };
+        let state = jinja_env.new_state_with_context(BTreeMap::new());
+        adapter
+            .get_relation(&state, &database, &schema, &identifier, false)
+            .ok()
+            .filter(|v| !v.is_none())
+            .and_then(|v| downcast_value_to_dyn_base_relation(&v).ok())
+            .is_some_and(|rel| rel.is_table())
+    })
+    .await;
+
+    match existing_table {
+        Ok(is_table) => is_table,
+        Err(e) => {
+            warn!("Failed to check for an existing target relation: {e}. Starting fresh.");
+            false
+        }
+    }
 }
 
 #[cfg(test)]

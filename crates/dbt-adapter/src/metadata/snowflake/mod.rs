@@ -29,18 +29,18 @@ use dbt_common::cancellation::Cancellable;
 use dbt_common::cancellation::CancellationToken;
 use dbt_common::tracing::dbt_emit::{emit_debug_log_message, emit_warn_log_message};
 use dbt_frontend_common::Dialect;
+use dbt_frontend_common::column_resolution::IdentifierCaseSensitivity;
 use dbt_schemas::dbt_types::RelationType;
 use dbt_schemas::schemas::common::ResolvedQuoting;
 use dbt_schemas::schemas::legacy_catalog::*;
 use dbt_schemas::schemas::relations::base::*;
-use futures::StreamExt;
 use indexmap::IndexMap;
 use minijinja::State;
 use once_cell::sync::Lazy;
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt::Display;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 const SNOWFLAKE_METADATA_NODE_ID: &str = "snowflake-metadata";
 
@@ -52,7 +52,7 @@ fn metadata_warehouse_error(err: impl Display) -> AdapterError {
 /// to once per *physical connection* rather than once per query.
 ///
 /// `MapReduce` workers reuse a single connection across many tasks in a batch
-/// before recycling it, so switching the warehouse inside the per-task closure
+/// before handing it back, so switching the warehouse inside the per-task closure
 /// re-issues `use warehouse` before and after every task on a reused
 /// connection. Wrapping the factory instead moves
 /// the switch to `new_connection` (once, when the connection is first obtained
@@ -131,11 +131,12 @@ impl ConnectionFactory for MetadataWarehouseConnectionFactory {
     }
 
     fn recycle_connection(&self, mut conn: Box<dyn Connection>) {
-        // These connections go back into the global recycling pool shared with
-        // unrelated jobs. A failed restore leaves the connection stuck on the
-        // metadata warehouse, so drop it instead of recycling it — otherwise an
-        // unrelated node could silently inherit the metadata warehouse. Mirrors
-        // `reset_node_overrides` in dbt-tasks-sa/src/materialize.rs.
+        // These connections go back into the worker thread's slot, where the
+        // next node to run there picks them up. A failed restore leaves the
+        // connection stuck on the metadata warehouse, so drop it instead —
+        // otherwise an unrelated node could silently inherit the metadata
+        // warehouse. Mirrors `reset_node_overrides` in
+        // dbt-tasks-sa/src/materialize.rs.
         if self.active_warehouse().is_some() {
             if let Err(e) = (self.restore_warehouse)(conn.as_mut()) {
                 tracing::warn!(
@@ -145,10 +146,6 @@ impl ConnectionFactory for MetadataWarehouseConnectionFactory {
             }
         }
         self.inner.recycle_connection(conn);
-    }
-
-    fn connection_limit(&self) -> u32 {
-        self.inner.connection_limit()
     }
 }
 
@@ -188,12 +185,6 @@ fn snowflake_schema_count_sql(database: &str, limit: usize) -> String {
         quote_identifier(database, AdapterType::Snowflake)
     )
 }
-
-/// Concurrency to use for the per-schema freshness fan-out when a dedicated
-/// metadata warehouse is configured but the engine does not expose a thread
-/// count (e.g. mock / sidecar engines). Keeps the fan-out bounded so a project
-/// with many schemas does not open an unbounded number of connections.
-const DEFAULT_SCHEMA_PREFETCH_FANOUT: usize = 4;
 
 // When prefetching last-modified metadata across several schemas we can either issue one broad
 // `table_schema IN (...)` scan or one pruned `table_schema = 'S'` point query per schema. A
@@ -553,12 +544,16 @@ pub fn list_relations(
 
 pub struct SnowflakeMetadataAdapter {
     pub adapter: AdapterImpl,
+    identifier_case_sensitivity: Mutex<HashMap<String, Option<IdentifierCaseSensitivity>>>,
 }
 
 impl SnowflakeMetadataAdapter {
     pub fn new(engine: Arc<dyn AdapterEngine>) -> Self {
         let adapter = AdapterImpl::new(engine, None);
-        Self { adapter }
+        Self {
+            adapter,
+            identifier_case_sensitivity: Mutex::new(HashMap::new()),
+        }
     }
 
     fn freshness_inner_with_options(
@@ -584,10 +579,7 @@ impl SnowflakeMetadataAdapter {
             self.adapter.clone(),
             metadata_warehouse,
             token.clone(),
-            Box::new(AdapterConnectionFactory::new(
-                self.adapter.engine().clone(),
-                self.adapter.engine().threads(),
-            )),
+            Box::new(AdapterConnectionFactory::new(self.adapter.engine().clone())),
         ));
 
         let adapter = self.adapter.clone();
@@ -665,7 +657,6 @@ impl SnowflakeMetadataAdapter {
         }
 
         let engine = self.adapter.engine().clone();
-        let threads = engine.threads();
 
         // Run the bulk and per-override queries through one MapReduce pass so
         // they share the same connection-factory threadpool — same parallelism
@@ -675,7 +666,7 @@ impl SnowflakeMetadataAdapter {
             self.adapter.clone(),
             metadata_warehouse,
             token.clone(),
-            Box::new(AdapterConnectionFactory::new(engine, threads)),
+            Box::new(AdapterConnectionFactory::new(engine)),
         ));
         type Acc = BTreeMap<String, MetadataFreshness>;
 
@@ -757,11 +748,14 @@ impl SnowflakeMetadataAdapter {
         map_reduce.run(Arc::new(tasks), token)
     }
 
+    /// `report_progress`: when `true`, each per-schema fetch is wrapped in a
+    /// progress span for the caller's progress bar.
     fn list_relations_in_parallel_inner_with_options(
         &self,
         db_schemas: &[CatalogAndSchema],
         options: &MetadataQueryOptions,
         token: CancellationToken,
+        report_progress: bool,
     ) -> AsyncAdapterResult<'static, BTreeMap<CatalogAndSchema, AdapterResult<RelationVec>>> {
         type Acc = BTreeMap<CatalogAndSchema, AdapterResult<RelationVec>>;
         let metadata_warehouse = options.warehouse.clone();
@@ -769,10 +763,7 @@ impl SnowflakeMetadataAdapter {
             self.adapter.clone(),
             metadata_warehouse,
             token.clone(),
-            Box::new(AdapterConnectionFactory::new(
-                self.adapter.engine().clone(),
-                self.adapter.engine().threads(),
-            )),
+            Box::new(AdapterConnectionFactory::new(self.adapter.engine().clone())),
         ));
 
         let adapter = self.adapter.clone();
@@ -782,7 +773,11 @@ impl SnowflakeMetadataAdapter {
                           db_schema: &CatalogAndSchema|
               -> AdapterResult<Vec<Arc<dyn BaseRelation>>> {
             let query_ctx = QueryCtx::default().with_desc("list_relations_in_parallel");
-            adapter.list_relations(&query_ctx, conn, db_schema, token_clone.clone())
+            with_relation_list_item_span(
+                report_progress.then_some(RELATION_CACHE_OP_ID),
+                &db_schema.to_string(),
+                || adapter.list_relations(None, &query_ctx, conn, db_schema, token_clone.clone()),
+            )
         };
 
         let reduce_f = move |acc: &mut Acc,
@@ -837,10 +832,7 @@ impl SnowflakeMetadataAdapter {
             adapter.clone(),
             None,
             token_clone.clone(),
-            Box::new(AdapterConnectionFactory::new(
-                adapter.engine().clone(),
-                adapter.engine().threads(),
-            )),
+            Box::new(AdapterConnectionFactory::new(adapter.engine().clone())),
         ));
 
         let map_f = move |conn: &'_ mut dyn Connection, _: &()| -> AdapterResult<usize> {
@@ -917,49 +909,6 @@ impl SnowflakeMetadataAdapter {
                 freshness_group_dump(self, database, schema, relations, options, token.clone())
                     .await?,
             );
-        }
-        Ok(result)
-    }
-
-    /// Fetch per-schema dumps for a database concurrently on the dedicated
-    /// metadata warehouse, bounded by the engine's thread count. Each schema is
-    /// fail-open (a failed dump omits that schema).
-    async fn freshness_by_schema_fanout(
-        &self,
-        database: &str,
-        schemas: &BTreeMap<String, Vec<Arc<dyn BaseRelation>>>,
-        options: &MetadataQueryOptions,
-        token: CancellationToken,
-    ) -> Result<BTreeMap<String, MetadataFreshness>, Cancellable<AdapterError>> {
-        let fan_out = self
-            .adapter
-            .engine()
-            .threads()
-            .unwrap_or(DEFAULT_SCHEMA_PREFETCH_FANOUT)
-            .max(1);
-        // Build the per-schema futures in an explicit loop rather than
-        // `schemas.iter().map(...)`: a closure that returns a future borrowing its
-        // argument trips the higher-ranked-lifetime inference, whereas each call
-        // here binds concrete lifetimes.
-        let mut group_futures = Vec::with_capacity(schemas.len());
-        for (schema, relations) in schemas {
-            group_futures.push(freshness_group_dump(
-                self,
-                database,
-                schema,
-                relations,
-                options,
-                token.clone(),
-            ));
-        }
-        let groups: Vec<Result<BTreeMap<String, MetadataFreshness>, Cancellable<AdapterError>>> =
-            futures::stream::iter(group_futures)
-                .buffer_unordered(fan_out)
-                .collect()
-                .await;
-        let mut result = BTreeMap::new();
-        for group in groups {
-            result.extend(group?);
         }
         Ok(result)
     }
@@ -1051,10 +1000,7 @@ impl SnowflakeMetadataAdapter {
             adapter.clone(),
             metadata_warehouse,
             token_clone.clone(),
-            Box::new(AdapterConnectionFactory::new(
-                adapter.engine().clone(),
-                adapter.engine().threads(),
-            )),
+            Box::new(AdapterConnectionFactory::new(adapter.engine().clone())),
         ));
         type Acc = BTreeMap<String, MetadataFreshness>;
 
@@ -1337,10 +1283,7 @@ impl MetadataAdapter for SnowflakeMetadataAdapter {
             })
             .collect::<Vec<_>>();
 
-        let factory = Box::new(AdapterConnectionFactory::new(
-            self.adapter.engine().clone(),
-            self.adapter.engine().threads(),
-        ));
+        let factory = Box::new(AdapterConnectionFactory::new(self.adapter.engine().clone()));
 
         let adapter = self.adapter.clone();
         let token_clone = token.clone();
@@ -1432,10 +1375,7 @@ impl MetadataAdapter for SnowflakeMetadataAdapter {
             .map(|relation| (relation.semantic_fqn(), relation.render_self_as_str()))
             .collect();
 
-        let factory = Box::new(AdapterConnectionFactory::new(
-            self.adapter.engine().clone(),
-            self.adapter.engine().threads(),
-        ));
+        let factory = Box::new(AdapterConnectionFactory::new(self.adapter.engine().clone()));
 
         let adapter = self.adapter.clone();
         let token_clone = token.clone();
@@ -1473,6 +1413,104 @@ impl MetadataAdapter for SnowflakeMetadataAdapter {
             None,
             token,
         )
+    }
+
+    fn enrich_relation_schemas<'a>(
+        &'a self,
+        relations: &'a [Arc<dyn BaseRelation>],
+        schemas: HashMap<String, AdapterResult<Arc<Schema>>>,
+        token: CancellationToken,
+    ) -> AsyncAdapterResult<'a, HashMap<String, AdapterResult<Arc<Schema>>>> {
+        let relation_databases = relations
+            .iter()
+            .filter_map(|relation| {
+                relation
+                    .database()
+                    .map(|database| (relation.semantic_fqn(), database.to_string()))
+            })
+            .collect::<HashMap<_, _>>();
+        let databases = relation_databases
+            .values()
+            .cloned()
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>();
+
+        if databases.is_empty() {
+            return Box::pin(async move { Ok(schemas) });
+        }
+
+        let cached_policies = self.identifier_case_sensitivity.lock().unwrap().clone();
+        let missing_databases = databases
+            .into_iter()
+            .filter(|database| !cached_policies.contains_key(database))
+            .collect::<Vec<_>>();
+        if missing_databases.is_empty() {
+            let policies = cached_policies
+                .into_iter()
+                .filter_map(|(database, policy)| policy.map(|policy| (database, policy)))
+                .collect();
+            return Box::pin(async move {
+                Ok(apply_identifier_case_sensitivity(
+                    schemas,
+                    &relation_databases,
+                    &policies,
+                ))
+            });
+        }
+
+        let factory = Box::new(AdapterConnectionFactory::new(self.adapter.engine().clone()));
+        let adapter = self.adapter.clone();
+        let query_token = token.clone();
+        let map_f = move |conn: &'_ mut dyn Connection,
+                          database: &String|
+              -> AdapterResult<Option<IdentifierCaseSensitivity>> {
+            discover_database_identifier_case_sensitivity(
+                &adapter,
+                conn,
+                database,
+                query_token.clone(),
+            )
+        };
+        let reduce_f =
+            |acc: &mut HashMap<String, Option<IdentifierCaseSensitivity>>,
+             database: String,
+             result: AdapterResult<Option<IdentifierCaseSensitivity>>| {
+                match result {
+                    Ok(case_sensitivity) => {
+                        acc.insert(database, case_sensitivity);
+                    }
+                    Err(error) if error.kind() == AdapterErrorKind::Cancelled => {
+                        return Err(Cancellable::Error(error));
+                    }
+                    // Identifier metadata is an optional enrichment. An unavailable
+                    // capability must not make an otherwise valid schema fetch fail.
+                    Err(error) => emit_debug_log_message(format!(
+                        "Identifier policy discovery failed for database {database}: {error}; \
+                         using default identifier resolution"
+                    )),
+                }
+                Ok(())
+            };
+        let map_reduce = MapReduce::new(factory, Box::new(map_f), Box::new(reduce_f), None);
+
+        Box::pin(async move {
+            let discovered_policies = map_reduce.run(Arc::new(missing_databases), token).await?;
+            self.identifier_case_sensitivity
+                .lock()
+                .unwrap()
+                .extend(discovered_policies.clone());
+            let policies = cached_policies
+                .into_iter()
+                .chain(discovered_policies)
+                .filter_map(|(database, policy)| policy.map(|policy| (database, policy)))
+                .collect();
+            Ok(apply_identifier_case_sensitivity(
+                schemas,
+                &relation_databases,
+                &policies,
+            ))
+        })
     }
 
     /// List relations schemas by patterns (use information schema query)
@@ -1525,10 +1563,7 @@ ORDER BY TABLE_CATALOG, TABLE_SCHEMA, TABLE_NAME, ORDINAL_POSITION"
                 )
             });
 
-        let factory = Box::new(AdapterConnectionFactory::new(
-            self.adapter.engine().clone(),
-            self.adapter.engine().threads(),
-        ));
+        let factory = Box::new(AdapterConnectionFactory::new(self.adapter.engine().clone()));
 
         // map_f runs the queries, reduce_f decodes the result set and builds the schemas
         let adapter = self.adapter.clone();
@@ -1680,10 +1715,7 @@ ORDER BY TABLE_CATALOG, TABLE_SCHEMA, TABLE_NAME, ORDINAL_POSITION"
             adapter.clone(),
             metadata_warehouse,
             token_clone.clone(),
-            Box::new(AdapterConnectionFactory::new(
-                adapter.engine().clone(),
-                adapter.engine().threads(),
-            )),
+            Box::new(AdapterConnectionFactory::new(adapter.engine().clone())),
         ));
         type Acc = BTreeMap<String, MetadataFreshness>;
 
@@ -1773,7 +1805,16 @@ ORDER BY TABLE_CATALOG, TABLE_SCHEMA, TABLE_NAME, ORDINAL_POSITION"
                 let mut result: BTreeMap<String, MetadataFreshness> = BTreeMap::new();
                 for (database, schemas) in by_database {
                     let db_result = if has_metadata_warehouse {
-                        self.freshness_by_schema_fanout(&database, &schemas, options, token.clone())
+                        let groups = schemas
+                            .into_iter()
+                            .map(|(schema, relations)| ((database.clone(), schema), relations))
+                            .collect();
+                        let fan_out = self
+                            .adapter
+                            .engine()
+                            .threads()
+                            .unwrap_or(DEFAULT_SCHEMA_PREFETCH_FANOUT);
+                        freshness_by_schema_fanout(self, groups, options, token.clone(), fan_out)
                             .await
                     } else {
                         let use_broad = if options.adaptive_metadata_fetch {
@@ -1845,11 +1886,13 @@ ORDER BY TABLE_CATALOG, TABLE_SCHEMA, TABLE_NAME, ORDINAL_POSITION"
         &self,
         db_schemas: &[CatalogAndSchema],
         token: CancellationToken,
+        report_progress: bool,
     ) -> AsyncAdapterResult<'_, BTreeMap<CatalogAndSchema, AdapterResult<RelationVec>>> {
         self.list_relations_in_parallel_inner_with_options(
             db_schemas,
             &MetadataQueryOptions::default(),
             token,
+            report_progress,
         )
     }
 
@@ -1867,8 +1910,9 @@ ORDER BY TABLE_CATALOG, TABLE_SCHEMA, TABLE_NAME, ORDINAL_POSITION"
             .collect::<Vec<_>>();
 
         let future = async move {
+            // report_progress: false — existence checks don't drive a progress bar.
             let listed = self
-                .list_relations_in_parallel_inner_with_options(&db_schemas, options, token)
+                .list_relations_in_parallel_inner_with_options(&db_schemas, options, token, false)
                 .await?;
             let mut result = BTreeMap::new();
 
@@ -1938,10 +1982,7 @@ ORDER BY TABLE_CATALOG, TABLE_SCHEMA, TABLE_NAME, ORDINAL_POSITION"
 
         let script = build_view_definition_script(&fqns);
 
-        let factory = Box::new(AdapterConnectionFactory::new(
-            self.adapter.engine().clone(),
-            self.adapter.engine().threads(),
-        ));
+        let factory = Box::new(AdapterConnectionFactory::new(self.adapter.engine().clone()));
 
         let adapter = self.adapter.clone();
         let token_clone = token.clone();
@@ -1965,6 +2006,78 @@ ORDER BY TABLE_CATALOG, TABLE_SCHEMA, TABLE_NAME, ORDINAL_POSITION"
         let map_reduce = MapReduce::new(factory, Box::new(map_f), Box::new(reduce_f), None);
         map_reduce.run(Arc::new(vec![script]), token)
     }
+}
+
+fn discover_database_identifier_case_sensitivity(
+    adapter: &AdapterImpl,
+    conn: &mut dyn Connection,
+    database: &str,
+    token: CancellationToken,
+) -> AdapterResult<Option<IdentifierCaseSensitivity>> {
+    let show_sql = format!(
+        "show databases like {};",
+        snowflake_schema_literal(database)
+    );
+    let show_ctx = QueryCtx::new_metadata().with_desc("Get database kind");
+    let (_, databases) = adapter.query(&show_ctx, conn, &show_sql, None, token.clone())?;
+    let batch = lowercase_column_names(databases.original_record_batch().as_ref());
+    let names = batch.column_values::<StringArray>("name")?;
+    let kinds = batch.column_values::<StringArray>("kind")?;
+    let is_catalog_linked = (0..batch.num_rows()).any(|index| {
+        names.value(index) == database
+            && kinds
+                .value(index)
+                .eq_ignore_ascii_case("CATALOG-LINKED DATABASE")
+    });
+    if !is_catalog_linked {
+        return Ok(None);
+    }
+
+    let config_sql = format!(
+        "select system$get_catalog_linked_database_config({}) as \"config\";",
+        snowflake_schema_literal(database)
+    );
+    let config_ctx = QueryCtx::new_metadata().with_desc("Get identifier resolution policy");
+    let (_, config) = adapter.query(&config_ctx, conn, &config_sql, None, token)?;
+    let batch = lowercase_column_names(config.original_record_batch().as_ref());
+    let configs = batch.column_values::<StringArray>("config")?;
+
+    Ok((batch.num_rows() == 1)
+        .then(|| parse_identifier_case_sensitivity(configs.value(0)))
+        .flatten())
+}
+
+fn parse_identifier_case_sensitivity(config: &str) -> Option<IdentifierCaseSensitivity> {
+    let config: serde_json::Value = serde_json::from_str(config).ok()?;
+    match config.get("catalog_case_sensitivity")?.as_str()? {
+        value if value.eq_ignore_ascii_case("CASE_INSENSITIVE") => {
+            Some(IdentifierCaseSensitivity::CaseInsensitive)
+        }
+        value if value.eq_ignore_ascii_case("CASE_SENSITIVE") => {
+            Some(IdentifierCaseSensitivity::CaseSensitive)
+        }
+        _ => None,
+    }
+}
+
+fn apply_identifier_case_sensitivity(
+    schemas: HashMap<String, AdapterResult<Arc<Schema>>>,
+    relation_databases: &HashMap<String, String>,
+    policies: &HashMap<String, IdentifierCaseSensitivity>,
+) -> HashMap<String, AdapterResult<Arc<Schema>>> {
+    schemas
+        .into_iter()
+        .map(|(semantic_fqn, schema)| {
+            let policy = relation_databases
+                .get(&semantic_fqn)
+                .and_then(|database| policies.get(database));
+            let schema = match (schema, policy) {
+                (Ok(schema), Some(policy)) => Ok(Arc::new(policy.apply_to_schema(schema.as_ref()))),
+                (schema, _) => schema,
+            };
+            (semantic_fqn, schema)
+        })
+        .collect()
 }
 
 /// reference: https://github.com/sdf-labs/sdf/blob/main/crates/sdf-cli/src/providers/database/snowflake.rs#L177-L178
@@ -2119,7 +2232,70 @@ mod tests {
     use super::*;
     use crate::engine::NoopConnection;
     use arrow_schema::{DataType, Field};
-    use std::sync::Mutex;
+
+    #[test]
+    fn parses_catalog_linked_database_identifier_case_sensitivity() {
+        assert_eq!(
+            parse_identifier_case_sensitivity(r#"{"catalog_case_sensitivity":"CASE_INSENSITIVE"}"#),
+            Some(IdentifierCaseSensitivity::CaseInsensitive)
+        );
+        assert_eq!(
+            parse_identifier_case_sensitivity(r#"{"catalog_case_sensitivity":"CASE_SENSITIVE"}"#),
+            Some(IdentifierCaseSensitivity::CaseSensitive)
+        );
+        assert_eq!(parse_identifier_case_sensitivity("{}"), None);
+    }
+
+    #[test]
+    fn applies_identifier_policy_only_to_relations_from_the_matching_database() {
+        let schemas = HashMap::from([
+            (
+                "catalog_linked.schema.table".to_string(),
+                Ok(Arc::new(Schema::new(vec![Field::new(
+                    "id",
+                    DataType::Int64,
+                    false,
+                )]))),
+            ),
+            (
+                "native.schema.table".to_string(),
+                Ok(Arc::new(Schema::new(vec![Field::new(
+                    "ID",
+                    DataType::Int64,
+                    false,
+                )]))),
+            ),
+        ]);
+        let relation_databases = HashMap::from([
+            (
+                "catalog_linked.schema.table".to_string(),
+                "catalog_linked".to_string(),
+            ),
+            ("native.schema.table".to_string(), "native".to_string()),
+        ]);
+        let policies = HashMap::from([(
+            "catalog_linked".to_string(),
+            IdentifierCaseSensitivity::CaseInsensitive,
+        )]);
+
+        let schemas = apply_identifier_case_sensitivity(schemas, &relation_databases, &policies);
+
+        assert_eq!(
+            IdentifierCaseSensitivity::from_field(
+                schemas["catalog_linked.schema.table"]
+                    .as_ref()
+                    .unwrap()
+                    .field(0)
+            ),
+            Some(IdentifierCaseSensitivity::CaseInsensitive)
+        );
+        assert_eq!(
+            IdentifierCaseSensitivity::from_field(
+                schemas["native.schema.table"].as_ref().unwrap().field(0)
+            ),
+            None
+        );
+    }
 
     struct FakeConnectionFactory {
         recycled: Arc<Mutex<u32>>,
@@ -2137,10 +2313,6 @@ mod tests {
 
         fn recycle_connection(&self, _conn: Box<dyn Connection>) {
             *self.recycled.lock().unwrap() += 1;
-        }
-
-        fn connection_limit(&self) -> u32 {
-            4
         }
     }
 

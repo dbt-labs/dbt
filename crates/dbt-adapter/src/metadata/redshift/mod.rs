@@ -490,10 +490,7 @@ impl ListRelationsSchemasStrategy for RedshiftListRelationsSchemasStrategy {
     ) -> AsyncAdapterResult<'static, HashMap<String, AdapterResult<Arc<Schema>>>> {
         type Acc = HashMap<String, AdapterResult<Arc<Schema>>>;
 
-        let factory = Box::new(AdapterConnectionFactory::new(
-            self.adapter.engine().clone(),
-            self.adapter.engine().threads(),
-        ));
+        let factory = Box::new(AdapterConnectionFactory::new(self.adapter.engine().clone()));
 
         let adapter = self.adapter.clone();
         let token_clone = token.clone();
@@ -685,10 +682,7 @@ impl RedshiftFreshnessStrategy {
         // name → (epoch_ms, is_view)
         type MapResult = HashMap<String, (i64, bool)>;
 
-        let factory = Box::new(AdapterConnectionFactory::new(
-            self.adapter.engine().clone(),
-            self.adapter.engine().threads(),
-        ));
+        let factory = Box::new(AdapterConnectionFactory::new(self.adapter.engine().clone()));
 
         let adapter = self.adapter.clone();
         let token_clone = token.clone();
@@ -835,10 +829,7 @@ impl RedshiftFreshnessStrategy {
         }
         let keys: Vec<(String, String)> = relations_by_schema.keys().cloned().collect();
 
-        let factory = Box::new(AdapterConnectionFactory::new(
-            self.adapter.engine().clone(),
-            self.adapter.engine().threads(),
-        ));
+        let factory = Box::new(AdapterConnectionFactory::new(self.adapter.engine().clone()));
         let adapter = self.adapter.clone();
         let token_clone = token.clone();
 
@@ -1466,10 +1457,7 @@ impl MetadataAdapter for RedshiftMetadataAdapter {
         let relations_owned: Vec<Arc<dyn BaseRelation>> = relations.to_vec();
         let token_clone = token.clone();
 
-        let factory = Box::new(AdapterConnectionFactory::new(
-            self.adapter.engine().clone(),
-            self.adapter.engine().threads(),
-        ));
+        let factory = Box::new(AdapterConnectionFactory::new(self.adapter.engine().clone()));
 
         // Use MapReduce with a single item to get a managed connection.
         let map_f =
@@ -1531,12 +1519,10 @@ impl MetadataAdapter for RedshiftMetadataAdapter {
         &self,
         db_schemas: &[CatalogAndSchema],
         token: CancellationToken,
+        report_progress: bool,
     ) -> AsyncAdapterResult<'_, BTreeMap<CatalogAndSchema, AdapterResult<RelationVec>>> {
         type Acc = BTreeMap<CatalogAndSchema, AdapterResult<RelationVec>>;
-        let factory = Box::new(AdapterConnectionFactory::new(
-            self.adapter.engine().clone(),
-            self.adapter.engine().threads(),
-        ));
+        let factory = Box::new(AdapterConnectionFactory::new(self.adapter.engine().clone()));
 
         let adapter = self.adapter.clone();
         let token_clone = token.clone();
@@ -1545,7 +1531,11 @@ impl MetadataAdapter for RedshiftMetadataAdapter {
                           db_schema: &CatalogAndSchema|
               -> AdapterResult<Vec<Arc<dyn BaseRelation>>> {
             let query_ctx = QueryCtx::default().with_desc("list_relations_in_parallel");
-            adapter.list_relations(&query_ctx, conn, db_schema, token_clone.clone())
+            with_relation_list_item_span(
+                report_progress.then_some(RELATION_CACHE_OP_ID),
+                &db_schema.to_string(),
+                || adapter.list_relations(None, &query_ctx, conn, db_schema, token_clone.clone()),
+            )
         };
 
         let reduce_f = move |acc: &mut Acc,
@@ -1578,10 +1568,7 @@ impl MetadataAdapter for RedshiftMetadataAdapter {
         }
         let jobs: Vec<(String, BTreeSet<String>)> = jobs.into_iter().collect();
 
-        let factory = Box::new(AdapterConnectionFactory::new(
-            self.adapter.engine().clone(),
-            self.adapter.engine().threads(),
-        ));
+        let factory = Box::new(AdapterConnectionFactory::new(self.adapter.engine().clone()));
         let adapter = self.adapter.clone();
         let token_clone = token.clone();
 

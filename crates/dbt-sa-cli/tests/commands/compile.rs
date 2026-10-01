@@ -3,7 +3,7 @@ use dbt_test_utils::task::{ProjectEnv, TaskSeq};
 
 use crate::common::TaskSeqExt;
 
-#[tokio::test]
+#[dbt_runtime::test]
 async fn compile_inline_quiet_preserves_sql() -> FsResult<()> {
     let env = ProjectEnv::immutable_sa("tests/data/hello_world")?;
 
@@ -15,7 +15,7 @@ async fn compile_inline_quiet_preserves_sql() -> FsResult<()> {
     Ok(())
 }
 
-#[tokio::test]
+#[dbt_runtime::test]
 async fn compile_inline_show_none_suppresses_sql() -> FsResult<()> {
     let env = ProjectEnv::immutable_sa("tests/data/hello_world")?;
 

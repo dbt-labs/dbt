@@ -31,6 +31,7 @@ use once_cell::sync::Lazy;
 use regex::Regex;
 
 use crate::adapter::adapter_impl::AdapterImpl;
+use crate::engine::databricks_statement_options;
 use crate::errors::{AdapterError, AdapterResult, AsyncAdapterResult};
 use crate::metadata::CatalogAndSchema;
 use crate::metadata::databricks::dbr_capabilities::DbrComputeContext;
@@ -65,6 +66,7 @@ pub(crate) mod version;
 // Reference: https://github.com/databricks/dbt-databricks/blob/92f1442faabe0fce6f0375b95e46ebcbfcea4c67/dbt/include/databricks/macros/adapters/metadata.sql
 pub fn list_relations(
     engine: &dyn AdapterEngine,
+    state: Option<&State>,
     ctx: &QueryCtx,
     conn: &'_ mut dyn Connection,
     db_schema: &CatalogAndSchema,
@@ -101,7 +103,8 @@ WHERE table_catalog = '{}'
                             &db_schema.resolved_catalog.to_lowercase(),
                             &db_schema.resolved_schema.to_lowercase());
 
-    let batch = engine.execute(None, conn, ctx, &sql, token)?;
+    let options = databricks_statement_options(engine.adapter_type(), state)?;
+    let batch = engine.execute_with_options(None, ctx, conn, &sql, options, true, token)?;
 
     if batch.num_rows() == 0 {
         return Ok(Vec::new());
@@ -322,6 +325,11 @@ pub(crate) fn row_filters_metadata_table(rows: &[RowFilterRow]) -> AdapterResult
     )
 }
 
+/// Cached result of the engine-version query, shared by
+/// [`DatabricksMetadataAdapter::engine_version`] and
+/// [`DatabricksMetadataAdapter::engine_version_with_conn`].
+static CACHED_ENGINE_VERSION: OnceLock<AdapterResult<EngineVersion>> = OnceLock::new();
+
 pub struct DatabricksMetadataAdapter {
     adapter: AdapterImpl,
 }
@@ -344,13 +352,30 @@ impl DatabricksMetadataAdapter {
         node_id: Option<String>,
         token: CancellationToken,
     ) -> AdapterResult<EngineVersion> {
-        static CACHED_ENGINE_VERSION: OnceLock<AdapterResult<EngineVersion>> = OnceLock::new();
-
         CACHED_ENGINE_VERSION
             .get_or_init(move || {
                 let query_ctx = QueryCtx::default().with_desc("get_engine_version adapter call");
                 let mut conn = self.adapter.borrow_tlocal_connection(None, node_id)?;
                 Self::get_engine_version(&self.adapter, &query_ctx, conn.as_mut(), token)
+            })
+            .clone()
+    }
+
+    /// [`Self::engine_version`] for a caller that already holds a connection.
+    ///
+    /// A `MapReduce` map function is handed the worker's connection, so
+    /// borrowing the thread-local again would open a second one and trip the
+    /// nested-guard assertion. It shares the cache with [`Self::engine_version`]:
+    /// the query runs once per process, for whichever of the two asks first.
+    fn engine_version_with_conn(
+        adapter: &AdapterImpl,
+        conn: &mut dyn Connection,
+        token: CancellationToken,
+    ) -> AdapterResult<EngineVersion> {
+        CACHED_ENGINE_VERSION
+            .get_or_init(|| {
+                let query_ctx = QueryCtx::default().with_desc("get_engine_version adapter call");
+                Self::get_engine_version(adapter, &query_ctx, conn, token)
             })
             .clone()
     }
@@ -1120,8 +1145,7 @@ impl DatabricksMetadataAdapter {
         let (bulk_relations, override_targets) = partition_override_relations(relations, overrides);
 
         let engine = self.adapter.engine().clone();
-        let threads = engine.threads();
-        let factory = Box::new(AdapterConnectionFactory::new(engine, threads));
+        let factory = Box::new(AdapterConnectionFactory::new(engine));
 
         type Acc = BTreeMap<String, MetadataFreshness>;
         let mut tasks: Vec<FreshnessTask> = Vec::new();
@@ -1324,17 +1348,7 @@ impl MetadataAdapter for DatabricksMetadataAdapter {
     ) -> AsyncAdapterResult<'_, HashMap<String, AdapterResult<Arc<Schema>>>> {
         type Acc = HashMap<String, AdapterResult<Arc<Schema>>>;
 
-        let engine_version = match self.engine_version(unique_id.clone(), token.clone()) {
-            Ok(version) => Some(version),
-            Err(e) => {
-                return Box::pin(future::ready(Err(Cancellable::Error(e))));
-            }
-        };
-
-        let factory = Box::new(AdapterConnectionFactory::new(
-            self.adapter.engine().clone(),
-            self.adapter.engine().threads(),
-        ));
+        let factory = Box::new(AdapterConnectionFactory::new(self.adapter.engine().clone()));
 
         let adapter = self.adapter.clone();
         let token_clone = token.clone();
@@ -1368,16 +1382,19 @@ impl MetadataAdapter for DatabricksMetadataAdapter {
             let is_external_system =
                 relation.is_system() && matches!(relation_type, Some(RelationType::External));
 
+            // The engine version costs a query, so it is only asked for when a
+            // branch actually needs it -- and it is asked with `conn`, the
+            // connection this worker was handed.
             let as_json_unsupported = match adapter.adapter_type() {
                 AdapterType::Databricks => {
                     is_external_system
-                        || engine_version
-                            .map(|v| v < EngineVersion::Full(16, 2))
-                            .unwrap_or(false)
+                        || Self::engine_version_with_conn(&adapter, conn, token_clone.clone())?
+                            < EngineVersion::Full(16, 2)
                 }
-                AdapterType::Spark => engine_version
-                    .map(|v| v < EngineVersion::Full(4, 0))
-                    .unwrap_or(false),
+                AdapterType::Spark => {
+                    Self::engine_version_with_conn(&adapter, conn, token_clone.clone())?
+                        < EngineVersion::Full(4, 0)
+                }
                 _ => unreachable!(),
             };
 
@@ -1455,10 +1472,7 @@ impl MetadataAdapter for DatabricksMetadataAdapter {
 
         type Acc = BTreeMap<String, MetadataFreshness>;
 
-        let factory = Box::new(AdapterConnectionFactory::new(
-            self.adapter.engine().clone(),
-            self.adapter.engine().threads(),
-        ));
+        let factory = Box::new(AdapterConnectionFactory::new(self.adapter.engine().clone()));
 
         let adapter = self.adapter.clone();
         let token_clone = token.clone();
@@ -1513,12 +1527,10 @@ impl MetadataAdapter for DatabricksMetadataAdapter {
         &self,
         db_schemas: &[CatalogAndSchema],
         token: CancellationToken,
+        report_progress: bool,
     ) -> AsyncAdapterResult<'_, BTreeMap<CatalogAndSchema, AdapterResult<RelationVec>>> {
         type Acc = BTreeMap<CatalogAndSchema, AdapterResult<RelationVec>>;
-        let factory = Box::new(AdapterConnectionFactory::new(
-            self.adapter.engine().clone(),
-            self.adapter.engine().threads(),
-        ));
+        let factory = Box::new(AdapterConnectionFactory::new(self.adapter.engine().clone()));
 
         let adapter = self.adapter.clone();
         let token_clone = token.clone();
@@ -1526,7 +1538,11 @@ impl MetadataAdapter for DatabricksMetadataAdapter {
                           db_schema: &CatalogAndSchema|
               -> AdapterResult<Vec<Arc<dyn BaseRelation>>> {
             let query_ctx = QueryCtx::default().with_desc("list_relations_in_parallel (UC)");
-            adapter.list_relations(&query_ctx, conn, db_schema, token_clone.clone())
+            with_relation_list_item_span(
+                report_progress.then_some(RELATION_CACHE_OP_ID),
+                &db_schema.to_string(),
+                || adapter.list_relations(None, &query_ctx, conn, db_schema, token_clone.clone()),
+            )
         };
 
         let reduce_f = move |acc: &mut Acc,
@@ -1593,10 +1609,7 @@ impl MetadataAdapter for DatabricksMetadataAdapter {
             out
         };
 
-        let factory = Box::new(AdapterConnectionFactory::new(
-            self.adapter.engine().clone(),
-            self.adapter.engine().threads(),
-        ));
+        let factory = Box::new(AdapterConnectionFactory::new(self.adapter.engine().clone()));
 
         let adapter = self.adapter.clone();
         let token_clone = token.clone();
@@ -1703,10 +1716,7 @@ impl MetadataAdapter for DatabricksMetadataAdapter {
         let adapter = self.adapter.clone();
         let token_clone = token.clone();
         type Acc = BTreeMap<String, MetadataFreshness>;
-        let factory = Box::new(AdapterConnectionFactory::new(
-            adapter.engine().clone(),
-            adapter.engine().threads(),
-        ));
+        let factory = Box::new(AdapterConnectionFactory::new(adapter.engine().clone()));
         let map_f = move |conn: &'_ mut dyn Connection,
                           relation: &Arc<dyn BaseRelation>|
               -> AdapterResult<Option<MetadataFreshness>> {

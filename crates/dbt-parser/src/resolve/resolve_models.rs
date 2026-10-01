@@ -12,15 +12,16 @@ use crate::renderer::RenderCtxInner;
 use crate::renderer::SqlFileRenderResult;
 use crate::renderer::collect_adapter_identifiers_detect_unsafe;
 use crate::renderer::render_unresolved_sql_files;
+use crate::renderer::strip_deprecated_warehouse_keys_from_properties;
 use crate::resolve::resolve_utils::build_unrendered_config;
 use crate::resolve::resolve_utils::err_resource_name_has_spaces;
 use crate::resolve::resolve_utils::extract_config_map;
+use crate::utils::RawProjectConfig;
 use crate::utils::RelationComponents;
 use crate::utils::extract_resource_config_from_raw_project;
 use crate::utils::get_node_fqn;
 use crate::utils::get_original_file_path;
 use crate::utils::get_unique_id;
-use crate::utils::parse_unrendered_config;
 use crate::utils::update_node_relation_components;
 use crate::validation::check_node_static_analysis;
 
@@ -34,11 +35,11 @@ use dbt_common::error::AbstractLocation;
 use dbt_common::fs_err;
 use dbt_common::io_args::StaticAnalysisKind;
 use dbt_common::io_args::StaticAnalysisOffReason;
-use dbt_common::path::DbtPath;
-use dbt_common::tokiofs::read_to_string;
+use dbt_common::path::{DbtPath, node_name_from_path, resource_extension};
 use dbt_common::tracing::dbt_emit::emit_error_log_from_fs_error;
 use dbt_common::tracing::dbt_emit::emit_warn_log_from_fs_error;
 use dbt_common::tracing::dbt_emit::emit_warn_log_message;
+use dbt_common::tracing::event_info::store_event_attributes;
 use dbt_jinja_utils::jinja_environment::JinjaEnv;
 use dbt_jinja_utils::listener::JinjaTypeCheckingEventListenerFactory;
 use dbt_jinja_utils::node_resolver::NodeResolver;
@@ -53,6 +54,8 @@ use dbt_schemas::schemas::NodeBaseAttributes;
 use dbt_schemas::schemas::TimeSpine;
 use dbt_schemas::schemas::TimeSpinePrimaryColumn;
 use dbt_schemas::schemas::common::Access;
+use dbt_schemas::schemas::telemetry::NodeType;
+use dbt_telemetry::GenericOpExecuted;
 use indexmap::IndexMap;
 
 use dbt_schemas::schemas::common::DbtMaterialization;
@@ -62,7 +65,8 @@ use dbt_schemas::schemas::common::ModelFreshnessRules;
 use dbt_schemas::schemas::common::NodeDependsOn;
 use dbt_schemas::schemas::common::OnSchemaChange;
 use dbt_schemas::schemas::common::Versions;
-use dbt_schemas::schemas::dbt_catalogs::{DbtCatalogs, LoadedCatalogs};
+use dbt_schemas::schemas::common::normalize_sql;
+use dbt_schemas::schemas::dbt_catalogs_deprecated::{DbtCatalogs, LoadedCatalogs};
 use dbt_schemas::schemas::dbt_column::ColumnInheritanceRules;
 use dbt_schemas::schemas::dbt_column::ColumnProperties;
 use dbt_schemas::schemas::dbt_column::DbtColumnRef;
@@ -84,6 +88,7 @@ use dbt_schemas::state::GenericTestAsset;
 use dbt_schemas::state::ModelStatus;
 use dbt_schemas::state::NodeResolverTracker;
 use dbt_schemas::state::ResourcePathKind;
+use dbt_schemas::state::resolve_effective_propagation_target;
 use dbt_yaml::Spanned;
 use minijinja::MacroSpans;
 use minijinja::constants::CURRENT_PATH;
@@ -195,7 +200,6 @@ pub async fn resolve_models(
     let mut models: HashMap<String, Arc<DbtModel>> = HashMap::new();
     let mut models_with_execute: HashMap<String, DbtModel> = HashMap::new();
     let mut disabled_models: HashMap<String, Arc<DbtModel>> = HashMap::new();
-    let mut node_names = HashSet::new();
     let mut rendering_results: HashMap<String, (String, MacroSpans)> = HashMap::new();
     let dependency_package_name = dependency_package_name_from_ctx(&env, base_ctx);
 
@@ -256,6 +260,7 @@ pub async fn resolve_models(
                 .as_ref()
                 .unwrap_or(&vec![])
                 .clone(),
+            resource_type: Some(NodeType::Model),
         }),
         jinja_env: env.clone(),
         runtime_config: runtime_config.clone(),
@@ -307,13 +312,17 @@ pub async fn resolve_models(
             })
             .collect();
 
+    // Preserve raw properties before validation for state comparison.
+    strip_deprecated_warehouse_keys_from_properties(
+        &mut models_properties_sans_semantics,
+        NodeType::Model,
+        dependency_package_name,
+    );
+
     // Split SQL and Python models for different processing paths
     let (sql_files, python_files): (Vec<_>, Vec<_>) =
         package.model_sql_files.iter().cloned().partition(|asset| {
-            asset
-                .path
-                .extension()
-                .and_then(|ext| ext.to_str())
+            resource_extension(&asset.path)
                 .map(|ext| ext.eq_ignore_ascii_case("sql"))
                 .unwrap_or(true)
         });
@@ -356,11 +365,176 @@ pub async fn resolve_models(
 
     // Initialize a counter struct to track the version of each model
     let mut duplicates = Vec::new();
+
+    build_model_nodes(
+        arg,
+        package,
+        adapter_quoting,
+        root_package,
+        &models_properties_sans_semantics,
+        &raw_local_project_config,
+        raw_root_project_models_cfg.as_ref(),
+        &raw_schema_yml_configs,
+        &raw_test_configs,
+        model_sql_resources_map,
+        database,
+        schema,
+        default_adapter,
+        package_name,
+        dependency_package_name,
+        &env,
+        base_ctx,
+        collected_generic_tests,
+        test_name_truncations,
+        seen_generic_test_paths,
+        node_resolver,
+        jinja_type_checking_event_listener_factory,
+        &mut models,
+        &mut models_with_execute,
+        &mut disabled_models,
+        &mut rendering_results,
+        &mut duplicates,
+    )
+    .await?;
+
+    // In incremental and lazy-load runs, model_sql_files only contains changed/new
+    // files — unchanged models are skipped by the build cache. Build the full set of
+    // known model names from all_paths (always a complete filesystem scan, pre-filter)
+    // so we don't fire spurious NoNodeForYamlKey warnings for models that exist on
+    // disk but weren't re-parsed this run.
+    let all_known_model_names: HashSet<&str> = package
+        .all_paths
+        .get(&ResourcePathKind::ModelPaths)
+        .map(|paths| {
+            paths
+                .iter()
+                .filter_map(|(p, _)| node_name_from_path(p.as_path()))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    for (model_name, mpe) in models_properties_sans_semantics.iter() {
+        // Skip until we support better error messages for versioned models
+        if mpe.version_info.is_some() {
+            continue;
+        }
+        if !mpe.schema_value.is_null() && !all_known_model_names.contains(model_name.as_str()) {
+            let err = fs_err!(
+                code =>ErrorCode::NoNodeForYamlKey,
+                loc => mpe.relative_path.clone(),
+                "Unused schema.yml entry for model '{}'",
+                model_name,
+            );
+            emit_warn_log_from_fs_error(*err);
+        }
+    }
+
+    // Report duplicates
+    if !duplicates.is_empty() {
+        let mut errs = Vec::new();
+        for (_, model_name, maybe_version, path) in duplicates {
+            let msg = if let Some(version) = maybe_version {
+                format!("Found duplicate model '{model_name}' with version '{version}'")
+            } else {
+                format!("Found duplicate model '{model_name}'")
+            };
+            let err = fs_err!(
+                code => ErrorCode::InvalidConfig,
+                loc => path.clone(),
+                "{}",
+                msg,
+            );
+            errs.push(err);
+        }
+        while let Some(err) = errs.pop() {
+            if errs.is_empty() {
+                return Err(err);
+            }
+            emit_error_log_from_fs_error(*err);
+        }
+    }
+
+    // Second pass to capture all identifiers with the appropriate context
+    // `models_with_execute` should never have overlapping Arc pointers with `models` and `disabled_models`
+    // otherwise make_mut will clone the inner model, and the modifications inside this function call will be lost
+    let models_rest = collect_adapter_identifiers_detect_unsafe(
+        arg,
+        models_with_execute,
+        node_resolver,
+        env,
+        default_adapter,
+        package_name,
+        &root_package.dbt_project.name,
+        runtime_config,
+        token,
+    )
+    .await?;
+
+    models.extend(
+        models_rest
+            .into_iter()
+            .map(|(v, _)| (v.__common_attr__.unique_id.to_string(), Arc::new(v))),
+    );
+    Ok((models, rendering_results, disabled_models))
+}
+
+/// Builds a `DbtModel` node for each rendered model file, routing it into `models`,
+/// `models_with_execute`, or `disabled_models` and registering its ref on `node_resolver`.
+///
+/// Factored out of [`resolve_models`] so the stage span can be created by `instrument`
+/// and stay entered across the loop's await points, making everything the loop emits a
+/// child of it.
+#[allow(
+    clippy::cognitive_complexity,
+    clippy::expect_fun_call,
+    clippy::too_many_arguments
+)]
+#[tracing::instrument(
+    level = "debug",
+    skip_all,
+    fields(
+        _e = ?store_event_attributes(GenericOpExecuted::new(
+            format!("resolve.build_model_nodes.{package_name}"),
+            "building model nodes".to_string(),
+            None,
+        )),
+    )
+)]
+async fn build_model_nodes(
+    arg: &ResolveArgs,
+    package: &DbtPackage,
+    adapter_quoting: &IndexMap<AdapterType, DbtQuoting>,
+    root_package: &DbtPackage,
+    models_properties_sans_semantics: &BTreeMap<String, MinimalPropertiesEntry>,
+    raw_local_project_config: &RawProjectConfig,
+    raw_root_project_models_cfg: Option<&RawProjectConfig>,
+    raw_schema_yml_configs: &BTreeMap<String, BTreeMap<String, dbt_yaml::Value>>,
+    raw_test_configs: &BTreeMap<String, TestUnrenderedConfigs>,
+    model_sql_resources_map: Vec<SqlFileRenderResult<ModelConfig, ModelProperties>>,
+    database: &str,
+    schema: &str,
+    default_adapter: AdapterType,
+    package_name: &str,
+    dependency_package_name: Option<&str>,
+    env: &JinjaEnv,
+    base_ctx: &BTreeMap<String, minijinja::Value>,
+    collected_generic_tests: &mut Vec<GenericTestAsset>,
+    test_name_truncations: &mut HashMap<String, String>,
+    seen_generic_test_paths: &mut HashMap<PathBuf, String>,
+    node_resolver: &mut NodeResolver,
+    jinja_type_checking_event_listener_factory: Arc<dyn JinjaTypeCheckingEventListenerFactory>,
+    models: &mut HashMap<String, Arc<DbtModel>>,
+    models_with_execute: &mut HashMap<String, DbtModel>,
+    disabled_models: &mut HashMap<String, Arc<DbtModel>>,
+    rendering_results: &mut HashMap<String, (String, MacroSpans)>,
+    duplicates: &mut Vec<(String, String, Option<String>, PathBuf)>,
+) -> FsResult<()> {
+    let mut node_names = HashSet::new();
     let catalogs = load_catalogs::fetch_catalogs();
     let use_catalogs_v2 = load_catalogs::fetch_use_catalogs_v2();
     let catalogs_state = match catalogs.as_deref() {
-        Some(c) if use_catalogs_v2 => LoadedCatalogs::V2(c),
-        Some(c) => LoadedCatalogs::V1(c),
+        Some(c) if use_catalogs_v2 => LoadedCatalogs::Active(c),
+        Some(c) => LoadedCatalogs::Deprecated(c),
         None => LoadedCatalogs::None,
     };
 
@@ -376,22 +550,16 @@ pub async fn resolve_models(
         render_error_deferred,
         patch_path,
         macro_dependencies,
+        raw_config_call_dict,
     } in model_sql_resources_map.into_iter()
     {
-        let ref_name = dbt_asset.path.file_stem().unwrap().to_str().unwrap();
+        let ref_name = node_name_from_path(&dbt_asset.path).unwrap();
 
         if ref_name.contains(' ') {
             return Err(err_resource_name_has_spaces(ref_name, &dbt_asset.path));
         }
 
         let mut model_config = model_config_resolved;
-
-        // Capture inline SQL config overrides (from `{{ config(...) }}`) separately.
-        // This should include only values explicitly set in the SQL file, not inherited defaults.
-        let raw_config_call_dict = read_to_string(dbt_asset.base_path.join(&dbt_asset.path))
-            .await
-            .ok()
-            .and_then(|sql| parse_unrendered_config(&sql, false));
 
         // A model is an ad-hoc inline model iff it lives in the dedicated "" package.
         let is_inline_file = package_name.is_empty();
@@ -589,11 +757,9 @@ pub async fn resolve_models(
         validate_merge_update_columns_xor(&model_config, &dbt_asset.path)?;
         validate_compute(model_config.compute, &dbt_asset.path)?;
         // `--adapter` overrides the authored `+adapter`, as a flag should. No
-        // *precondition* is checked here: parse resolves every node in the project
+        // precondition is checked here: parse resolves every node in the project
         // while only selected nodes run, so one checked here would reject nodes the
-        // invocation never touches. See `resolve_compute_write_target`. The gate
-        // below is a different thing -- it refuses a config the run has not opted in
-        // to at all, which is true wherever that config is written.
+        // invocation never touches. See `resolve_compute_write_target`.
         validate_node_adapter(model_config.adapter, &dbt_asset.path)?;
         let resolved_node_adapter = arg.adapter_override.or(model_config.adapter);
         validate_interactive_table_config(
@@ -747,8 +913,8 @@ pub async fn resolve_models(
         // correctly (suppress-only phantom diff, cleared by Stage 2).
         let unrendered_config = build_unrendered_config(
             &fqn,
-            &raw_local_project_config,
-            raw_root_project_models_cfg.as_ref(),
+            raw_local_project_config,
+            raw_root_project_models_cfg,
             raw_schema_yml_configs.get(ref_name),
             raw_config_call_dict.as_ref(),
             true,
@@ -774,6 +940,19 @@ pub async fn resolve_models(
             .map(Into::into)
             .unwrap_or_default();
         let selected_adapter = resolved_node_adapter.unwrap_or(default_adapter);
+        let catalog_requires_snowflake = catalogs_state
+            .catalog_requires_snowflake_propagation(model_config.catalog_name.as_deref())?;
+        let effective_propagation_target = (selected_adapter == AdapterType::LakeCompute)
+            .then(|| {
+                arg.profile_adapter_types.as_deref().and_then(|adapters| {
+                    resolve_effective_propagation_target(
+                        &selected_propagate,
+                        adapters,
+                        catalog_requires_snowflake,
+                    )
+                })
+            })
+            .flatten();
         model_config.quoting = resolve_package_quoting(
             Some(match adapter_quoting.get(&selected_adapter) {
                 Some(authored) => model_config.quoting.filled_from(authored),
@@ -819,6 +998,7 @@ pub async fn resolve_models(
             __base_attr__: NodeBaseAttributes {
                 adapter: selected_adapter,
                 propagate: selected_propagate,
+                effective_propagation_target,
                 database: database.to_string(), // will be updated below
                 schema: schema.to_string(),     // will be updated below
                 alias: "".to_owned(),           // will be updated below
@@ -988,7 +1168,7 @@ pub async fn resolve_models(
         // update model components using the generate_relation_components function
         update_node_relation_components(
             &mut dbt_model,
-            &env,
+            env,
             &root_package.dbt_project.name,
             package_name,
             base_ctx,
@@ -1087,85 +1267,7 @@ pub async fn resolve_models(
         }
     }
 
-    // In incremental and lazy-load runs, model_sql_files only contains changed/new
-    // files — unchanged models are skipped by the build cache. Build the full set of
-    // known model names from all_paths (always a complete filesystem scan, pre-filter)
-    // so we don't fire spurious NoNodeForYamlKey warnings for models that exist on
-    // disk but weren't re-parsed this run.
-    let all_known_model_names: HashSet<&str> = package
-        .all_paths
-        .get(&ResourcePathKind::ModelPaths)
-        .map(|paths| {
-            paths
-                .iter()
-                .filter_map(|(p, _)| p.as_path().file_stem()?.to_str())
-                .collect()
-        })
-        .unwrap_or_default();
-
-    for (model_name, mpe) in models_properties_sans_semantics.iter() {
-        // Skip until we support better error messages for versioned models
-        if mpe.version_info.is_some() {
-            continue;
-        }
-        if !mpe.schema_value.is_null() && !all_known_model_names.contains(model_name.as_str()) {
-            let err = fs_err!(
-                code =>ErrorCode::NoNodeForYamlKey,
-                loc => mpe.relative_path.clone(),
-                "Unused schema.yml entry for model '{}'",
-                model_name,
-            );
-            emit_warn_log_from_fs_error(*err);
-        }
-    }
-
-    // Report duplicates
-    if !duplicates.is_empty() {
-        let mut errs = Vec::new();
-        for (_, model_name, maybe_version, path) in duplicates {
-            let msg = if let Some(version) = maybe_version {
-                format!("Found duplicate model '{model_name}' with version '{version}'")
-            } else {
-                format!("Found duplicate model '{model_name}'")
-            };
-            let err = fs_err!(
-                code => ErrorCode::InvalidConfig,
-                loc => path.clone(),
-                "{}",
-                msg,
-            );
-            errs.push(err);
-        }
-        while let Some(err) = errs.pop() {
-            if errs.is_empty() {
-                return Err(err);
-            }
-            emit_error_log_from_fs_error(*err);
-        }
-    }
-
-    // Second pass to capture all identifiers with the appropriate context
-    // `models_with_execute` should never have overlapping Arc pointers with `models` and `disabled_models`
-    // otherwise make_mut will clone the inner model, and the modifications inside this function call will be lost
-    let models_rest = collect_adapter_identifiers_detect_unsafe(
-        arg,
-        models_with_execute,
-        node_resolver,
-        env,
-        default_adapter,
-        package_name,
-        &root_package.dbt_project.name,
-        runtime_config,
-        token,
-    )
-    .await?;
-
-    models.extend(
-        models_rest
-            .into_iter()
-            .map(|(v, _)| (v.__common_attr__.unique_id.to_string(), Arc::new(v))),
-    );
-    Ok((models, rendering_results, disabled_models))
+    Ok(())
 }
 
 /// Per-version overrides for a versioned model, resolved against the top-level
@@ -1188,7 +1290,7 @@ struct ResolvedVersionedFields {
     description: String,
     constraints: Vec<ModelConstraint>,
     /// Per-version only; no fallback to top-level (dbt-core parity).
-    deprecation_date: Option<String>,
+    deprecation_date: Option<dbt_yaml::Timestamp>,
     /// Non-empty, non-parseable access string supplied at the version level. `Versions::access`
     /// (`common.rs`) is typed `Option<String>` rather than `Option<Access>` for the same reason:
     /// serde would reject `access: ""` as an unknown variant before we can apply dbt-core's
@@ -1232,11 +1334,10 @@ fn resolve_versioned_fields(
     // itself; for versioned children only the per-version value applies (no
     // inheritance from the top-level).
     let deprecation_date = if maybe_version.is_some() {
-        version_match.and_then(|v| v.deprecation_date.clone())
+        version_match.and_then(|v| v.deprecation_date)
     } else {
-        properties.deprecation_date.clone()
-    }
-    .map(|raw| dbt_schemas::schemas::common::normalize_deprecation_date(&raw));
+        properties.deprecation_date
+    };
 
     // dbt-core validates `unparsed_version.access` (raising `InvalidAccessTypeError` on a bad
     // value) and then discards it unconditionally (GT2 — see the struct doc above). Fusion parses
@@ -1400,7 +1501,7 @@ fn validate_interactive_table_cluster_by(
             let err = fs_err!(
                 code => ErrorCode::InvalidConfig,
                 loc => path.to_path_buf(),
-                "interactive_table models require `cluster_by` to name at least one non-blank column; `CREATE INTERACTIVE TABLE` without `CLUSTER BY`, or with only blank entries, is rejected by Snowflake (010405)",
+                "interactive_table models require every `cluster_by` entry to be non-blank; `CREATE INTERACTIVE TABLE` without `CLUSTER BY`, with no entries, or with any blank entry, is rejected by Snowflake (010405)",
             );
             return Err(err);
         }
@@ -1542,7 +1643,8 @@ fn process_python_models(
         // Analyze Python AST to extract dbt function calls
         // Use the Python model source to compute the model checksum. This is used by `state:*`
         // selectors (e.g. `state:modified`) when comparing to a deferred/previous-state manifest.
-        let checksum = dbt_schemas::schemas::common::DbtChecksum::hash(source.as_bytes());
+        let checksum =
+            dbt_schemas::schemas::common::DbtChecksum::hash(normalize_sql(&source).as_bytes());
         let python_file_info: PythonFileInfo<ModelConfig> = match analyze_python_file(
             &python_asset.path,
             &source,
@@ -1617,6 +1719,8 @@ fn process_python_models(
             render_error_deferred: false,
             patch_path,
             macro_dependencies: Vec::new(),
+            // Python models have no Jinja `{{ config(...) }}` call to extract.
+            raw_config_call_dict: None,
         };
 
         results.push(python_result);
@@ -1880,7 +1984,7 @@ mod tests {
     use dbt_schemas::schemas::common::{
         DbtMaterialization, FreshnessPeriod, FreshnessRules, ModelFreshnessRules,
     };
-    use dbt_schemas::schemas::dbt_catalogs::DbtCatalogs;
+    use dbt_schemas::schemas::dbt_catalogs_deprecated::DbtCatalogs;
     use dbt_schemas::schemas::properties::ModelFreshness;
     use dbt_schemas::schemas::serde::NodeVersion;
     use std::path::Path;
@@ -2396,7 +2500,7 @@ mod interactive_table_validation_tests {
         let resolved = resolve(cfg);
         assert_rejects_with(
             validate_interactive_table_cluster_by(&resolved, &test_path()),
-            "require `cluster_by`",
+            "require every `cluster_by` entry to be non-blank",
         );
     }
 
@@ -2416,7 +2520,7 @@ mod interactive_table_validation_tests {
         let resolved = resolve(cfg);
         assert_rejects_with(
             validate_interactive_table_cluster_by(&resolved, &test_path()),
-            "name at least one non-blank column",
+            "require every `cluster_by` entry to be non-blank",
         );
     }
 
@@ -2427,7 +2531,7 @@ mod interactive_table_validation_tests {
         let resolved = resolve(cfg);
         assert_rejects_with(
             validate_interactive_table_cluster_by(&resolved, &test_path()),
-            "name at least one non-blank column",
+            "require every `cluster_by` entry to be non-blank",
         );
     }
 
@@ -2439,7 +2543,7 @@ mod interactive_table_validation_tests {
         let resolved = resolve(cfg);
         assert_rejects_with(
             validate_interactive_table_cluster_by(&resolved, &test_path()),
-            "name at least one non-blank column",
+            "require every `cluster_by` entry to be non-blank",
         );
     }
 
@@ -2455,7 +2559,7 @@ mod interactive_table_validation_tests {
         let resolved = resolve(cfg);
         assert_rejects_with(
             validate_interactive_table_cluster_by(&resolved, &test_path()),
-            "name at least one non-blank column",
+            "require every `cluster_by` entry to be non-blank",
         );
     }
 
@@ -2681,7 +2785,7 @@ mod interactive_table_validation_tests {
                 AdapterType::Snowflake,
                 &test_path(),
             ),
-            "require `cluster_by`",
+            "require every `cluster_by` entry to be non-blank",
         );
     }
 

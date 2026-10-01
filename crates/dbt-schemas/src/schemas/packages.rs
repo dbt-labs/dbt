@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, HashMap, HashSet},
     fmt::Display,
     path::{Path, PathBuf},
 };
@@ -10,9 +10,26 @@ use serde::{Deserialize, Serialize};
 // Type aliases for clarity
 type YmlValue = dbt_yaml::Value;
 
+#[derive(Debug, Serialize, UntaggedEnumDeserialize, Clone, DbtSchema, PartialEq, Eq, Hash)]
+#[serde(untagged)]
+pub enum EnvironmentRef {
+    Id(i64),
+    Name(String),
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, DbtSchema)]
+pub struct MeshEnvironmentRoute {
+    pub in_this_project_environment: EnvironmentRef,
+    pub use_upstream_environment: EnvironmentRef,
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone, DbtSchema)]
 pub struct UpstreamProject {
     pub name: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub mesh_environment_routing: Vec<MeshEnvironmentRoute>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_upstream_environment: Option<EnvironmentRef>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Default, DbtSchema)]
@@ -260,7 +277,7 @@ impl DbtPackagesLock {
     }
 
     pub fn has_duplicate_package_names(&self) -> bool {
-        let mut seen = std::collections::HashSet::new();
+        let mut seen = HashSet::new();
         self.packages.iter().any(|p| !seen.insert(p.package_name()))
     }
 }

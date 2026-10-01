@@ -1,5 +1,6 @@
 use dbt_adapter::Adapter;
-use dbt_adapter::relation::create_relation;
+use dbt_adapter::relation::render_effective_relation;
+use dbt_adapter_core::AdapterType;
 use dbt_common::{ErrorCode, FsError, fs_err};
 use dbt_common::{FsResult, constants::DBT_CTE_PREFIX, error::MacroSpan, stdfs};
 use dbt_frontend_common::{error::CodeLocation, span::Span};
@@ -435,6 +436,7 @@ pub fn render_sql(
             ctx,
             &listeners,
             &[],
+            None,
         )
         .map_err(|e| FsError::from_jinja_err(e, "Failed to render SQL"))?;
     for listener in listeners {
@@ -447,6 +449,9 @@ pub fn render_sql(
 /// Renders SQL with Jinja macros, using caller-provided listeners
 /// This allows callers to access listener state after rendering
 /// (e.g., for MangledRefWarningPrinter to check for mangled refs)
+///
+/// If `ast_visitor` is `Some`, this parse's AST is reused for it instead of parsing
+/// `sql` again.
 #[allow(clippy::too_many_arguments)]
 pub fn render_sql_with_listeners(
     sql: &str,
@@ -455,6 +460,7 @@ pub fn render_sql_with_listeners(
     listeners: &[Rc<dyn RenderingEventListener>],
     tokenizer_listeners: &[Rc<dyn minijinja::listener::TokenizerEventListener>],
     filename: &Path,
+    ast_visitor: Option<&mut dyn FnMut(&minijinja::compiler::ast::Stmt<'_>)>,
 ) -> FsResult<String> {
     let result = env
         .env
@@ -464,6 +470,7 @@ pub fn render_sql_with_listeners(
             ctx,
             listeners,
             tokenizer_listeners,
+            ast_visitor,
         )
         .map_err(|e| FsError::from_jinja_err(e, "Failed to render SQL"))?;
 
@@ -564,6 +571,17 @@ pub fn get_catalog_by_relations(
     Ok(result)
 }
 
+fn template_exists(env: &JinjaEnv, name: &str) -> FsResult<bool> {
+    match env.env.get_template(name) {
+        Ok(_) => Ok(true),
+        Err(error) if error.kind() == ErrorKind::TemplateNotFound => Ok(false),
+        Err(error) => Err(Box::new(FsError::from_jinja_err(
+            error,
+            "Failed to load template",
+        ))),
+    }
+}
+
 /// Find the template for a given macro
 pub fn find_macro_template(
     env: &JinjaEnv,
@@ -590,7 +608,7 @@ pub fn find_macro_template(
     }
     // First try - check the current project
     let template_name = format!("{current_project_name}.{macro_name}");
-    if env.has_template(&template_name) {
+    if template_exists(env, &template_name)? {
         // Cache and return
         if let Ok(mut cache) = TEMPLATE_CACHE.lock() {
             cache.insert(cache_key, template_name.clone());
@@ -600,7 +618,7 @@ pub fn find_macro_template(
 
     // Second try - check the root project
     let template_name = format!("{root_project_name}.{macro_name}");
-    if env.has_template(&template_name) {
+    if template_exists(env, &template_name)? {
         // Cache and return
         if let Ok(mut cache) = TEMPLATE_CACHE.lock() {
             cache.insert(cache_key, template_name.clone());
@@ -612,7 +630,7 @@ pub fn find_macro_template(
     let dbt_and_adapters = env.get_dbt_and_adapters_namespace(&dialect);
     if let Some(package) = dbt_and_adapters.get(&Value::from(macro_name)) {
         let template_name = format!("{package}.{macro_name}");
-        if env.has_template(&template_name) {
+        if template_exists(env, &template_name)? {
             // Cache and return
             if let Ok(mut cache) = TEMPLATE_CACHE.lock() {
                 cache.insert(cache_key, template_name.clone());
@@ -716,18 +734,33 @@ pub fn generate_relation_name(
     identifier: &str,
     quote_config: ResolvedQuoting,
 ) -> FsResult<String> {
-    // Create relation using the adapter
-    match create_relation(
-        parse_adapter.adapter_type(),
-        database.to_owned(),
-        schema.to_owned(),
-        Some(identifier.to_owned()),
-        None, // relation_type
+    generate_relation_name_with_target(
+        parse_adapter,
+        database,
+        schema,
+        identifier,
         quote_config,
-    ) {
-        Ok(relation) => Ok(relation.render_self_as_str()),
-        Err(e) => Err(e),
-    }
+        None,
+    )
+}
+
+/// Generate a relation name using a node's resolved destination.
+pub fn generate_relation_name_with_target(
+    parse_adapter: Arc<Adapter>,
+    database: &str,
+    schema: &str,
+    identifier: &str,
+    quote_config: ResolvedQuoting,
+    target: Option<AdapterType>,
+) -> FsResult<String> {
+    render_effective_relation(
+        parse_adapter.adapter_type(),
+        database,
+        schema,
+        identifier,
+        quote_config,
+        target,
+    )
 }
 
 type NodeId = String;
@@ -866,9 +899,25 @@ mod tests {
     use crate::listener::DefaultRenderingEventListener;
 
     use super::{
-        inject_ctes_into_existing_with, raw_source_spans_to_macro_span_vec,
+        find_macro_template, inject_ctes_into_existing_with, raw_source_spans_to_macro_span_vec,
         shift_macro_spans_after_insertion,
     };
+    use crate::jinja_environment::JinjaEnv;
+
+    #[test]
+    fn malformed_macro_does_not_fall_back_to_another_package() {
+        let mut env = Environment::new();
+        env.set_loader_with_filename(|name| match name {
+            "current.bad_macro" => Ok(Some(("{{".into(), Some("current.sql".into())))),
+            "root.bad_macro" => Ok(Some(("valid".into(), Some("root.sql".into())))),
+            _ => Ok(None),
+        });
+        let env = JinjaEnv::new(env);
+        super::clear_template_cache();
+
+        assert!(find_macro_template(&env, "bad_macro", "root", "current").is_err());
+        super::clear_template_cache();
+    }
 
     #[test]
     fn injects_ctes_into_existing_with_chain() {

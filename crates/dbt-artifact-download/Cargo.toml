@@ -1,0 +1,25 @@
+[package]
+name = "dbt-artifact-download"
+description = "Authenticated artifact downloads with reloadable source selection"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+aws-config = { workspace = true }
+aws-sdk-s3 = { workspace = true }
+dbt-fusion-workspace-hack = { version = "0.1" }
+percent-encoding = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+url = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+tracing-subscriber = { workspace = true }

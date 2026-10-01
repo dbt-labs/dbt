@@ -141,7 +141,7 @@ export const DETAIL_REGISTRY: Partial<Record<ResourceType, DetailSpec>> = {
     // Freshness is flat here and nested by the caller, matching the wire shape the
     // mapper expects.
     sql: (uniqueId) => `
-SELECT ${NODE_BASE}, n.source_name, n.loader,
+SELECT ${NODE_BASE}, n.source_name, n.loader, n.source_description,
        sf.status, CAST(sf.snapshotted_at AS VARCHAR) AS snapshotted_at,
        CAST(sf.max_loaded_at AS VARCHAR) AS max_loaded_at
 FROM dbt.sources n

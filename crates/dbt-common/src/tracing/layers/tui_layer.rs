@@ -454,6 +454,25 @@ fn format_unique_id_as_progress_item(unique_id: &str) -> String {
     format!("{resource_type}:{name}")
 }
 
+/// Routes `resolve()`'s stage spans (`operation_id` prefixed `resolve.`) onto Parse's bar
+/// context line instead of a standalone spinner.
+fn resolve_stage_context_label(op: &GenericOpExecuted) -> Option<String> {
+    const PACKAGE_SCOPED_PREFIXES: [&str; 2] =
+        ["resolve.build_model_nodes.", "resolve.resolve_data_tests."];
+
+    if !op.operation_id.starts_with("resolve.") {
+        return None;
+    }
+
+    for prefix in PACKAGE_SCOPED_PREFIXES {
+        if let Some(package_name) = op.operation_id.strip_prefix(prefix) {
+            return Some(format!("{} ({package_name})", op.display_action));
+        }
+    }
+
+    Some(op.display_action.clone())
+}
+
 impl TelemetryConsumer for TuiLayer {
     fn is_span_enabled(&self, span: &SpanStartInfo) -> bool {
         span.attributes
@@ -840,7 +859,10 @@ impl TuiLayer {
         };
 
         match phase_enum {
-            ExecutionPhase::Render | ExecutionPhase::Analyze | ExecutionPhase::Run => {
+            ExecutionPhase::Render
+            | ExecutionPhase::Analyze
+            | ExecutionPhase::Run
+            | ExecutionPhase::Parse => {
                 progress.start_bar(ProgressId::Phase(phase_enum), total, progress_text);
             }
             ExecutionPhase::LoadProject => {
@@ -863,7 +885,6 @@ impl TuiLayer {
                 progress.start_spinner(ProgressId::GenericOp(load_op_id), progress_text);
             }
             ExecutionPhase::Clean
-            | ExecutionPhase::Parse
             | ExecutionPhase::Schedule
             | ExecutionPhase::TaskGraphBuild
             | ExecutionPhase::Debug
@@ -896,8 +917,11 @@ impl TuiLayer {
         };
 
         match phase_enum {
-            // Close contextual progress bar for render, analyze, run phases
-            ExecutionPhase::Render | ExecutionPhase::Analyze | ExecutionPhase::Run => {
+            // Close contextual progress bar for render, analyze, run, parse phases
+            ExecutionPhase::Render
+            | ExecutionPhase::Analyze
+            | ExecutionPhase::Run
+            | ExecutionPhase::Parse => {
                 progress.remove_bar(&ProgressId::Phase(phase_enum));
             }
             // Use spinner for phases without progress total
@@ -917,7 +941,6 @@ impl TuiLayer {
                 }
             }
             ExecutionPhase::Clean
-            | ExecutionPhase::Parse
             | ExecutionPhase::Schedule
             | ExecutionPhase::TaskGraphBuild
             | ExecutionPhase::Debug
@@ -1553,15 +1576,13 @@ impl TuiLayer {
             return;
         }
 
-        // Show the file on the phase's progress indicator. Keyed on the asset's own
-        // phase so this is a no-op for phases that register no spinner.
+        // In interactive mode, the bar's contextual item is the only per-asset
+        // feedback; we ignore this span's severity level and only check show
+        // options for the text-mode line below.
         if let Some(ref progress) = self.progress {
-            progress.add_spinner_context(&ProgressId::Phase(asset.phase()), &asset.display_path);
+            progress.add_bar_context(&ProgressId::Phase(asset.phase()), &asset.display_path);
+            return;
         }
-
-        // TODO: This is temporary legacy rendering for parse progress and should
-        // be replaced with the new end-span rendering (matching file log) once fully migrated.
-        // We ignore this span severity level and only check show options for progress.
 
         if !should_show_progress_message(asset.phase(), &self.show_options) {
             return;
@@ -1587,11 +1608,10 @@ impl TuiLayer {
             return;
         }
 
-        progress.finish_spinner_context(
-            &ProgressId::Phase(asset.phase()),
-            &asset.display_path,
-            Some("parsed"),
-        );
+        // No status counter: the parse bar's `pos/len` already counts parsed assets, and a
+        // second "N parsed" beside it can only disagree, since the total is an estimate the
+        // position clamps to.
+        progress.finish_bar_context(&ProgressId::Phase(asset.phase()), &asset.display_path, None);
     }
 
     fn handle_deps_all_packages_installing_start(&self, ev: &DepsAllPackagesInstalled) {
@@ -1872,6 +1892,11 @@ impl TuiLayer {
     fn handle_generic_op_start(&self, span: &SpanStartInfo, op: &GenericOpExecuted) {
         // Handle progress bars in interactive mode
         if let Some(ref progress) = self.progress {
+            if let Some(label) = resolve_stage_context_label(op) {
+                progress.add_bar_context(&ProgressId::Phase(ExecutionPhase::Parse), &label);
+                return;
+            }
+
             // Create action text for the progress bar or spinner
             let progress_text =
                 right_align_action(capitalize_first_letter(op.display_action.as_str()).into());
@@ -1930,19 +1955,24 @@ impl TuiLayer {
     fn handle_generic_op_end(&self, span: &SpanEndInfo, op: &GenericOpExecuted) {
         // Handle progress bars in interactive mode
         if let Some(ref progress) = self.progress {
-            // Get whether this op uses a bar or spinner and remove from tracking
-            let is_bar_entry = self.generic_op_is_bar.remove_sync(&op.operation_id);
-
-            let progress_id = ProgressId::GenericOp(op.operation_id.clone());
-            if let Some((_, is_bar)) = is_bar_entry {
-                if is_bar {
-                    progress.remove_bar(&progress_id);
-                } else {
-                    progress.remove_spinner(&progress_id);
-                }
+            if let Some(label) = resolve_stage_context_label(op) {
+                progress.remove_bar_context(&ProgressId::Phase(ExecutionPhase::Parse), &label);
+                return;
             } else {
-                #[cfg(debug_assertions)]
-                panic!("A non existing id was used to end a generic operation span!");
+                // Get whether this op uses a bar or spinner and remove from tracking
+                let is_bar_entry = self.generic_op_is_bar.remove_sync(&op.operation_id);
+
+                let progress_id = ProgressId::GenericOp(op.operation_id.clone());
+                if let Some((_, is_bar)) = is_bar_entry {
+                    if is_bar {
+                        progress.remove_bar(&progress_id);
+                    } else {
+                        progress.remove_spinner(&progress_id);
+                    }
+                } else {
+                    #[cfg(debug_assertions)]
+                    panic!("A non existing id was used to end a generic operation span!");
+                }
             }
 
             // Progress is transient, so we fall through to allow end line be printed in interactive mode

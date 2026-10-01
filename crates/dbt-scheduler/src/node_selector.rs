@@ -754,11 +754,13 @@ fn match_config_recursive(
         match &val {
             YmlValue::String(s, _) => Ok(fnmatch(pattern, s)),
             YmlValue::Bool(b, _) => Ok(pattern.eq_ignore_ascii_case(&b.to_string())),
+            YmlValue::Timestamp(t, _) => Ok(fnmatch(pattern, &t.to_string())),
             YmlValue::Number(n, _) => Ok(n.to_string() == *pattern),
-            YmlValue::Sequence(arr, _) => Ok(arr
-                .iter()
-                .filter_map(YmlValue::as_str)
-                .any(|s| fnmatch(pattern, s))),
+            YmlValue::Sequence(arr, _) => Ok(arr.iter().any(|v| match v {
+                YmlValue::String(s, _) => fnmatch(pattern, s),
+                YmlValue::Timestamp(t, _) => fnmatch(pattern, &t.to_string()),
+                _ => false,
+            })),
             YmlValue::Mapping(..) => match_config_recursive(pattern, args, val, args_index + 1),
             _ => Ok(false),
         }

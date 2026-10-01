@@ -9,7 +9,10 @@ use crate::metadata::*;
 use crate::query_ctx::query_ctx_from_state;
 use crate::record_batch::{RecordBatchExt, StructArrayExt};
 use crate::relation::Relation;
-use crate::time_machine::{args_freshness_with_overrides, with_time_machine_metadata_wrapper};
+use crate::time_machine::{
+    args_freshness, args_freshness_with_overrides, global_replayer,
+    with_time_machine_metadata_wrapper,
+};
 use crate::{AdapterEngine, AdapterResult};
 
 use arrow_array::*;
@@ -56,7 +59,7 @@ pub fn list_relations(
     db_schema: &CatalogAndSchema,
     token: CancellationToken,
 ) -> AdapterResult<Vec<Arc<dyn BaseRelation>>> {
-    let relations = list_relations_via_adbc(engine, conn, db_schema)?;
+    let listing = list_relations_via_adbc(engine, conn, db_schema);
     let connection_project = engine
         .config("execution_project")
         .or_else(|| engine.config("project"))
@@ -66,7 +69,7 @@ pub fn list_relations(
     let is_cross_project =
         connection_project.is_some_and(|project| project.as_ref() != target_project);
 
-    verify_empty_adbc_listing(relations, is_cross_project, || {
+    verify_adbc_listing(listing, is_cross_project, || {
         list_relations_via_information_schema(engine, ctx, conn, db_schema, token)
     })
 }
@@ -163,23 +166,28 @@ WHERE
     Ok(result)
 }
 
-fn verify_empty_adbc_listing<F>(
-    relations: Vec<Arc<dyn BaseRelation>>,
+fn verify_adbc_listing<F>(
+    listing: AdapterResult<Vec<Arc<dyn BaseRelation>>>,
     is_cross_project: bool,
     fallback: F,
 ) -> AdapterResult<Vec<Arc<dyn BaseRelation>>>
 where
     F: FnOnce() -> AdapterResult<Vec<Arc<dyn BaseRelation>>>,
 {
-    // BigQuery GetObjects exposes only the connection project as a catalog, so a
-    // different target project produces an empty result. Verify emptiness with
-    // the target-qualified metadata query before the caller records the schema
-    // as complete.
-    // https://github.com/dbt-labs/bigquery-adbc/blob/c87c401a934c71783862dface246252d84f9d2e6/go/connection.go#L106-L123
-    if is_cross_project && relations.is_empty() {
-        fallback()
-    } else {
-        Ok(relations)
+    match listing {
+        // BigQuery GetObjects exposes only the connection project as a catalog, so a
+        // different target project produces an empty result. Verify emptiness with
+        // the target-qualified metadata query before the caller records the schema
+        // as complete.
+        // https://github.com/dbt-labs/bigquery-adbc/blob/c87c401a934c71783862dface246252d84f9d2e6/go/connection.go#L106-L123
+        Ok(relations) if is_cross_project && relations.is_empty() => fallback(),
+        Ok(relations) => Ok(relations),
+        // GetObjects reads metadata per table, so one table dropped mid-listing
+        // fails the dataset; the fallback query is one consistent snapshot.
+        Err(e) => match classify_listing_failure(&e) {
+            ListingFailure::Unverified => fallback().map_err(|_| e),
+            ListingFailure::EmptySchema | ListingFailure::Fatal => Err(e),
+        },
     }
 }
 
@@ -909,10 +917,7 @@ impl BigqueryMetadataAdapter {
     ) -> AsyncAdapterResult<'_, BTreeMap<String, MetadataFreshness>> {
         type Acc = BTreeMap<String, MetadataFreshness>;
 
-        let factory = Box::new(AdapterConnectionFactory::new(
-            self.adapter.engine().clone(),
-            self.adapter.engine().threads(),
-        ));
+        let factory = Box::new(AdapterConnectionFactory::new(self.adapter.engine().clone()));
         let adapter_for_map = self.adapter.clone();
         let token_clone = token.clone();
         let map_f = move |conn: &mut dyn Connection, task: &FreshnessTask| {
@@ -1284,10 +1289,7 @@ impl MetadataAdapter for BigqueryMetadataAdapter {
         // All results are accumulated in an unordered map
         type Acc = HashMap<String, AdapterResult<Arc<Schema>>>;
 
-        let factory = Box::new(AdapterConnectionFactory::new(
-            self.adapter.engine().clone(),
-            self.adapter.engine().threads(),
-        ));
+        let factory = Box::new(AdapterConnectionFactory::new(self.adapter.engine().clone()));
         let node_id = unique_id.or_else(|| Some("sources".to_string()));
 
         let adapter = self.adapter.clone();
@@ -1337,7 +1339,9 @@ impl MetadataAdapter for BigqueryMetadataAdapter {
                     .map_err(adbc_error_to_adapter_error)?;
                 let mut schema_builder = SchemaBuilder::from(schema.fields());
 
-                if let Some(time_partitioning_type) = schema.metadata().get("TimePartitioning.Type")
+                if schema.metadata().get("TimePartitioning.Field").is_none()
+                    && let Some(time_partitioning_type) =
+                        schema.metadata().get("TimePartitioning.Type")
                 {
                     schema_builder.push(Field::new(
                         "_PARTITIONTIME",
@@ -1434,12 +1438,10 @@ impl MetadataAdapter for BigqueryMetadataAdapter {
         &self,
         db_schemas: &[CatalogAndSchema],
         token: CancellationToken,
+        report_progress: bool,
     ) -> AsyncAdapterResult<'_, BTreeMap<CatalogAndSchema, AdapterResult<RelationVec>>> {
         type Acc = BTreeMap<CatalogAndSchema, AdapterResult<RelationVec>>;
-        let factory = Box::new(AdapterConnectionFactory::new(
-            self.adapter.engine().clone(),
-            self.adapter.engine().threads(),
-        ));
+        let factory = Box::new(AdapterConnectionFactory::new(self.adapter.engine().clone()));
 
         let adapter = self.adapter.clone();
         let token_clone = token.clone();
@@ -1450,7 +1452,11 @@ impl MetadataAdapter for BigqueryMetadataAdapter {
             // Deviation from core: we cannot use `list_tables` as this is not supported from ADBC
             // Pagination is handled in the ADBC driver
             let query_ctx = QueryCtx::default().with_desc("list_relations_in_parallel");
-            adapter.list_relations(&query_ctx, conn, db_schema, token_clone.clone())
+            with_relation_list_item_span(
+                report_progress.then_some(RELATION_CACHE_OP_ID),
+                &db_schema.to_string(),
+                || adapter.list_relations(None, &query_ctx, conn, db_schema, token_clone.clone()),
+            )
         };
 
         let reduce_f = move |acc: &mut Acc,
@@ -1462,15 +1468,20 @@ impl MetadataAdapter for BigqueryMetadataAdapter {
                     acc.insert(db_schema, Ok(relations));
                     Ok(())
                 }
-                Err(e) => {
-                    if is_bigquery_not_found_error(&e) {
+                Err(e) => match classify_listing_failure(&e) {
+                    ListingFailure::EmptySchema => {
                         acc.insert(db_schema, Ok(Vec::new()));
                         Ok(())
-                    } else {
-                        // Other errors should be propagated
-                        Err(Cancellable::Error(e))
                     }
-                }
+                    // Caching this as a complete, empty schema would make every
+                    // relation in it look absent.
+                    ListingFailure::Unverified => {
+                        acc.insert(db_schema, Err(e));
+                        Ok(())
+                    }
+                    // Other errors should be propagated
+                    ListingFailure::Fatal => Err(Cancellable::Error(e)),
+                },
             }
         };
 
@@ -1534,10 +1545,7 @@ impl MetadataAdapter for BigqueryMetadataAdapter {
                 .push(table);
         }
 
-        let factory = Box::new(AdapterConnectionFactory::new(
-            self.adapter.engine().clone(),
-            self.adapter.engine().threads(),
-        ));
+        let factory = Box::new(AdapterConnectionFactory::new(self.adapter.engine().clone()));
 
         let adapter = self.adapter.clone();
         let token_clone = token.clone();
@@ -1600,6 +1608,65 @@ impl MetadataAdapter for BigqueryMetadataAdapter {
         true
     }
 
+    /// Fetch schema-level freshness with bounded concurrency.
+    fn freshness_all_in_schemas<'a>(
+        &'a self,
+        relations: &'a [Arc<dyn BaseRelation>],
+        options: &'a MetadataQueryOptions,
+        token: CancellationToken,
+    ) -> AsyncAdapterResult<'a, BTreeMap<String, MetadataFreshness>> {
+        let groups = group_relations_by_resolved_database_schema(relations);
+        let fallback_groups = groups.clone();
+        let attempt_token = token.clone();
+        let attempt = with_time_machine_metadata_wrapper(
+            "global",
+            "freshness_all_in_schemas",
+            args_freshness(
+                relations.iter().map(|r| r.semantic_fqn()),
+                options.warehouse.clone(),
+            ),
+            async move {
+                let fan_out = self
+                    .adapter
+                    .engine()
+                    .threads()
+                    .unwrap_or(DEFAULT_SCHEMA_PREFETCH_FANOUT);
+                freshness_by_schema_fanout(self, groups, options, attempt_token, fan_out).await
+            },
+        );
+
+        Box::pin(async move {
+            match attempt.await {
+                Err(Cancellable::Error(err))
+                    if global_replayer().is_some()
+                        && matches!(
+                            err.kind(),
+                            AdapterErrorKind::ReplayDataMissing
+                                | AdapterErrorKind::ReplayMethodMismatch
+                        ) =>
+                {
+                    // Replay older recordings via their per-schema events.
+                    let mut result = BTreeMap::new();
+                    for ((database, schema), relations) in fallback_groups {
+                        result.extend(
+                            freshness_group_dump(
+                                self,
+                                &database,
+                                &schema,
+                                &relations,
+                                options,
+                                token.clone(),
+                            )
+                            .await?,
+                        );
+                    }
+                    Ok(result)
+                }
+                result => result,
+            }
+        })
+    }
+
     fn freshness_all_in_schema_inner<'a>(
         &'a self,
         database: &'a str,
@@ -1621,10 +1688,7 @@ impl MetadataAdapter for BigqueryMetadataAdapter {
         let sql = build_schema_freshness_query(database, schema);
         let relations = relations.to_vec();
         let adapter = self.adapter.clone();
-        let factory = Box::new(AdapterConnectionFactory::new(
-            adapter.engine().clone(),
-            adapter.engine().threads(),
-        ));
+        let factory = Box::new(AdapterConnectionFactory::new(adapter.engine().clone()));
         type Acc = BTreeMap<String, MetadataFreshness>;
 
         let token_clone = token.clone();
@@ -1687,6 +1751,9 @@ impl MetadataAdapter for BigqueryMetadataAdapter {
 /// arrow-adbc stringifies the raw SDK error instead, so both of its variants
 /// read `googleapi: Error 404: Not found: …`.
 ///
+/// The dataset listing (`GetObjects`) emits this arrow-adbc form too,
+/// table-scoped and with `kind() == Driver`, when a table is dropped mid-listing.
+///
 /// TODO: match on the ADBC status instead — bigquery-adbc already reports
 /// `StatusNotFound` for both — once the driver migration is complete.
 pub fn is_bigquery_not_found_error(e: &AdapterError) -> bool {
@@ -1700,6 +1767,35 @@ pub fn is_bigquery_not_found_error(e: &AdapterError) -> bool {
         || msg.contains("404 Not Found:")
         // bigquery-adbc, query job
         || msg.contains("notFound:")
+}
+
+/// Whether a BigQuery not-found names a whole dataset or project rather than
+/// one table. Only these are safe to record as a verified-empty schema.
+fn is_container_scoped_not_found(e: &AdapterError) -> bool {
+    let msg = e.message();
+    msg.contains("Not found: Dataset") || msg.contains("Not found: Project")
+}
+
+/// How a failed dataset listing should be recorded for the relation cache.
+#[derive(Debug, PartialEq)]
+enum ListingFailure {
+    /// The dataset or project is missing, so "no relations" is the true answer.
+    EmptySchema,
+    /// The listing did not complete, so its contents are unknown.
+    Unverified,
+    /// Not a not-found: propagate.
+    Fatal,
+}
+
+fn classify_listing_failure(e: &AdapterError) -> ListingFailure {
+    if !is_bigquery_not_found_error(e) {
+        ListingFailure::Fatal
+    } else if is_container_scoped_not_found(e) {
+        ListingFailure::EmptySchema
+    } else {
+        // Default to unverified: an unrecognised not-found may be table-scoped.
+        ListingFailure::Unverified
+    }
 }
 
 /// Fallback when object is not found in `INFORMATION_SCHEMA.TABLES`
@@ -1803,7 +1899,7 @@ mod tests {
 
     #[test]
     fn cross_project_adbc_miss_uses_target_qualified_fallback() {
-        let relations = verify_empty_adbc_listing(Vec::new(), true, || {
+        let relations = verify_adbc_listing(Ok(Vec::new()), true, || {
             Ok(vec![bq_rel(
                 "target-project",
                 "analytics",
@@ -1820,7 +1916,7 @@ mod tests {
 
     #[test]
     fn same_project_empty_adbc_relation_listing_remains_authoritative() {
-        let relations = verify_empty_adbc_listing(Vec::new(), false, || {
+        let relations = verify_adbc_listing(Ok(Vec::new()), false, || {
             panic!("same-project listing should not use the fallback")
         })
         .unwrap();
@@ -1830,8 +1926,12 @@ mod tests {
 
     #[test]
     fn nonempty_adbc_relation_listing_remains_authoritative() {
-        let relations = verify_empty_adbc_listing(
-            vec![bq_rel("connection-project", "analytics", "adbc_table")],
+        let relations = verify_adbc_listing(
+            Ok(vec![bq_rel(
+                "connection-project",
+                "analytics",
+                "adbc_table",
+            )]),
             true,
             || {
                 Ok(vec![bq_rel(
@@ -1849,7 +1949,7 @@ mod tests {
 
     #[test]
     fn empty_adbc_relation_listing_returns_fallback_error() {
-        let error = verify_empty_adbc_listing(Vec::new(), true, || {
+        let error = verify_adbc_listing(Ok(Vec::new()), true, || {
             Err(AdapterError::new(
                 AdapterErrorKind::SqlExecution,
                 "target-qualified metadata is unavailable",
@@ -1858,6 +1958,139 @@ mod tests {
         .expect_err("fallback error should be returned");
 
         assert_eq!(error.kind(), AdapterErrorKind::SqlExecution);
+    }
+
+    fn table_scoped_not_found() -> AdapterError {
+        AdapterError::new(
+            AdapterErrorKind::UnexpectedResult,
+            "[bq] Could not get metadata for table `proj`.`dataset`.`tbl`: \
+             404 Not Found: Not found: Table proj:dataset.tbl",
+        )
+    }
+
+    fn dataset_scoped_not_found() -> AdapterError {
+        AdapterError::new(
+            AdapterErrorKind::UnexpectedResult,
+            "[bq] Could not complete job: notFound: Not found: Dataset \
+             proj:dataset was not found in location US ()",
+        )
+    }
+
+    #[test]
+    fn classify_listing_failure_maps_documented_message_forms() {
+        // Every form in `test_is_bigquery_not_found_error` and in the
+        // `is_bigquery_not_found_error` doc comment, pinned to its outcome.
+        let cases = [
+            // arrow-adbc, table-scoped.
+            (
+                "googleapi: Error 404: Not found: Table proj:dataset.tbl, notFound",
+                ListingFailure::Unverified,
+            ),
+            // bigquery-adbc metadata lookup, table-scoped.
+            (
+                "[bq] Could not get metadata for table `proj`.`dataset`.`tbl`: \
+                 404 Not Found: Not found: Table proj:dataset.tbl",
+                ListingFailure::Unverified,
+            ),
+            // arrow-adbc, container-scoped: the only safe empty-schema case.
+            (
+                "googleapi: Error 404: Not found: Dataset proj:dataset was not found \
+                 in location US, notFound",
+                ListingFailure::EmptySchema,
+            ),
+            // bigquery-adbc query job, container-scoped.
+            (
+                "[bq] Could not complete job: notFound: Not found: Dataset \
+                 proj:dataset was not found in location US ()",
+                ListingFailure::EmptySchema,
+            ),
+            // Not a not-found at all.
+            (
+                "googleapi: Error 403: Access Denied, accessDenied",
+                ListingFailure::Fatal,
+            ),
+            (
+                "[bq] Could not complete job: invalidQuery: Syntax error (query)",
+                ListingFailure::Fatal,
+            ),
+        ];
+
+        for (msg, expected) in cases {
+            let e = AdapterError::new(AdapterErrorKind::UnexpectedResult, msg);
+            assert_eq!(classify_listing_failure(&e), expected, "{msg}");
+        }
+
+        // The form observed live on the dataset-listing path: arrow-adbc
+        // spelling, kind Driver, identifiers genericised.
+        let observed = AdapterError::new(
+            AdapterErrorKind::Driver,
+            "[BigQuery] googleapi: Error 404: Not found: Table proj:dataset.tbl, notFound",
+        );
+        assert_eq!(
+            classify_listing_failure(&observed),
+            ListingFailure::Unverified
+        );
+    }
+
+    #[test]
+    fn unrecognised_not_found_defaults_to_unverified() {
+        // A kind-only not-found carries no scope, so it must not cache an empty
+        // schema: this is the shape that silently recreated incremental models.
+        let typed = AdapterError::new(AdapterErrorKind::NotFound, "table missing");
+        assert_eq!(classify_listing_failure(&typed), ListingFailure::Unverified);
+
+        // An unrecognised message shape defaults the same way.
+        let unknown = AdapterError::new(
+            AdapterErrorKind::UnexpectedResult,
+            "[bq] Could not list tables: 404 Not Found: the object is gone",
+        );
+        assert_eq!(
+            classify_listing_failure(&unknown),
+            ListingFailure::Unverified
+        );
+    }
+
+    #[test]
+    fn unverified_listing_error_uses_fallback() {
+        let relations = verify_adbc_listing(Err(table_scoped_not_found()), false, || {
+            Ok(vec![bq_rel(
+                "target-project",
+                "analytics",
+                "existing_table",
+            )])
+        })
+        .unwrap();
+
+        assert_eq!(relations.len(), 1);
+        assert_eq!(relations[0].identifier_as_str().unwrap(), "existing_table");
+    }
+
+    #[test]
+    fn unverified_listing_error_survives_a_failing_fallback() {
+        let error = verify_adbc_listing(Err(table_scoped_not_found()), false, || {
+            Err(AdapterError::new(
+                AdapterErrorKind::SqlExecution,
+                "INFORMATION_SCHEMA is not readable",
+            ))
+        })
+        .expect_err("the original not-found should be returned");
+
+        // The original error is kept so the caller still classifies as Unverified.
+        assert_eq!(error.kind(), AdapterErrorKind::UnexpectedResult);
+        assert_eq!(classify_listing_failure(&error), ListingFailure::Unverified);
+    }
+
+    #[test]
+    fn dataset_scoped_listing_error_propagates_without_fallback() {
+        let error = verify_adbc_listing(Err(dataset_scoped_not_found()), true, || {
+            panic!("a dataset-scoped miss should not use the fallback")
+        })
+        .expect_err("the dataset-scoped miss should propagate");
+
+        assert_eq!(
+            classify_listing_failure(&error),
+            ListingFailure::EmptySchema
+        );
     }
 
     fn freshness_batch(rows: &[(&str, &str, Option<i64>, bool)]) -> RecordBatch {

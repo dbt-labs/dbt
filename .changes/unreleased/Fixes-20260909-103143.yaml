@@ -1,0 +1,7 @@
+kind: Fixes
+body: Implement TableRepr methods index_of_value_in_column and count_occurrences_of_value_in_column to fix Fusion panic in dbt_utils.get_query_results_as_dict()
+time: 2026-09-09T10:31:43.792892+02:00
+custom:
+    author: Jules-G1
+    issue: "16263"
+    project: dbt

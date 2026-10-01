@@ -153,10 +153,13 @@ fn apply_node_overrides(
 
 /// Reset the per-node connection overrides (`USE` database / `use warehouse`) after a
 /// materialization. If a reset fails the connection is stuck in the wrong scope, so drop it
-/// (do NOT recycle) so no other node inherits it, then fail this node loudly with a clear
+/// (do NOT leave it in the thread-local slot) so no other node inherits it, then fail this
+/// node loudly with a clear
 /// error; the run continues on other nodes.
 ///
-/// TODO: redundant once the recycling pool is segregated by config fingerprint.
+/// The fingerprint check in `borrow_tlocal_connection_impl` does not help here:
+/// the connection's *configuration* is unchanged, only its session scope is
+/// wrong.
 fn reset_node_overrides(
     adapter: &Adapter,
     unique_id: &str,
