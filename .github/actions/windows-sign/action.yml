@@ -1,0 +1,72 @@
+name: "Sign Windows Binaries"
+description: "Signs Windows binaries with dbt Labs certificate"
+
+inputs:
+  directory:
+    description: "Directory containing binaries to sign"
+    required: true
+  filenames:
+    description: "Space-separated list of filenames to sign"
+    required: true
+  certificate-b64:
+    description: "Base64 encoded signing certificate"
+    required: true
+  certificate-password:
+    description: "Password for the signing certificate"
+    required: true
+  certificates-path:
+    description: "Path to directory containing certificate files"
+    required: true
+
+runs:
+  using: "composite"
+  steps:
+    - name: "Setup private certificate"
+      shell: bash
+      run: |
+        echo "${{ inputs.certificate-b64 }}" | base64 --decode > /c/dbt_labs_inc-private.pfx
+
+    - name: "Setup certificate chain"
+      shell: pwsh
+      run: |
+        # import private cert into user store
+        $pwd = ConvertTo-SecureString -String "${{ inputs.certificate-password }}" -Force -AsPlainText
+        Import-PfxCertificate -Password $pwd -FilePath "C:\dbt_labs_inc-private.pfx" -CertStoreLocation Cert:\CurrentUser\My
+
+        # import public certs into whole machine
+        Import-Certificate -FilePath "${{ inputs.certificates-path }}/dbt_labs_inc.crt" -CertStoreLocation Cert:\CurrentUser\TrustedPublisher
+        Import-Certificate -FilePath "${{ inputs.certificates-path }}/intermediate.crt" -CertStoreLocation Cert:\CurrentUser\CA
+        Import-Certificate -FilePath "${{ inputs.certificates-path }}/root.crt" -CertStoreLocation Cert:\CurrentUser\Root
+
+    - name: "Setup signtool"
+      shell: pwsh
+      run: |
+        # Find and add Windows SDK signtool to path
+        echo "C:\Program Files (x86)\Windows Kits\10\bin\10.0.19041.0\x64" >> $env:GITHUB_PATH
+        echo "C:\Program Files (x86)\Windows Kits\10\bin\x64" >> $env:GITHUB_PATH
+
+        # Verify signtool is available after path update
+        if (Get-Command signtool.exe -ErrorAction SilentlyContinue) {
+          Write-Host "✅ Signtool is available in PATH"
+          Write-Host "Signtool location: $(Get-Command signtool.exe).Path"
+        } else {
+          Write-Host "❌ Signtool not found in PATH"
+          Write-Host "Searching for signtool on system..."
+          $signtoolPaths = Get-ChildItem -Path "C:\Program Files (x86)\Windows Kits" -Recurse -Filter "signtool.exe" -ErrorAction SilentlyContinue
+          foreach ($path in $signtoolPaths) {
+            Write-Host "Found signtool at: $($path.FullName)"
+            echo "$($path.DirectoryName)" >> $env:GITHUB_PATH
+            break
+          }
+        }
+
+    - name: "Sign & Verify binaries"
+      shell: pwsh
+      run: |
+        $filenames = "${{ inputs.filenames }}".Trim() -split ' ' | Where-Object { $_ }
+        foreach ($filename in $filenames) {
+          $filepath = Join-Path "${{ inputs.directory }}" $filename
+          Write-Host "Signing $filepath"
+          signtool sign /tr "http://timestamp.digicert.com" /td SHA256 /fd SHA256 /n "Dbt Labs, Inc." $filepath
+          signtool verify /pa $filepath
+        }

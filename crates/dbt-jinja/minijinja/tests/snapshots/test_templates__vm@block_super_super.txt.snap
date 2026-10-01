@@ -1,0 +1,9 @@
+---
+source: minijinja/tests/test_templates.rs
+description: "{% extends \"simple2_layout.txt\" %}\n{% block title %}[{{ super() }}]{% endblock %}"
+info: {}
+input_file: minijinja/tests/inputs/block_super_super.txt
+---
+<title>[(default title)]</title>
+default body
+

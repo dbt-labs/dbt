@@ -1,0 +1,13 @@
+---
+source: minijinja/tests/test_templates.rs
+description: "{{ unsafe }}\n{% autoescape true %}{{ unsafe }}{% endautoescape %}\n{% autoescape false %}{{ unsafe }}{% endautoescape %}\n{% autoescape \"html\" %}{{ unsafe }}{% endautoescape %}\n{% autoescape \"none\" %}{{ unsafe }}{% endautoescape %}"
+info:
+  unsafe: "<foo>"
+input_file: minijinja/tests/inputs/autoescape.txt
+---
+<foo>
+&lt;foo&gt;
+<foo>
+&lt;foo&gt;
+<foo>
+

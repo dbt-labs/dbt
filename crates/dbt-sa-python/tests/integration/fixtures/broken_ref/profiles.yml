@@ -1,0 +1,9 @@
+# Never reaches the warehouse: resolution fails first.
+broken_ref:
+  target: duckdb_mem
+  outputs:
+    duckdb_mem:
+      type: duckdb
+      path: ':memory:'
+      threads: 1
+      schema: main

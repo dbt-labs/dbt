@@ -1,0 +1,12 @@
+---
+source: fs/sa/crates/dbt-jinja/minijinja/tests/test_parser.rs
+description: "{{ (,)}}"
+input_file: fs/sa/crates/dbt-jinja/minijinja/tests/parser-inputs/invalid_tuple.txt
+---
+Err(
+    Error {
+        kind: SyntaxError,
+        detail: "unexpected `,`",
+        name: "invalid_tuple.txt",
+    },
+)

@@ -1,0 +1,83 @@
+syntax = "proto3";
+package v1.public.events.fusion.query;
+
+option go_package = "github.com/dbt-labs/proto-golang/v1/public/events/fusion/query";
+
+import "dbtlabs/proto/public/v1/events/fusion/phase/phase.proto";
+
+// Outcome of a query execution
+enum QueryOutcome {
+  // Default value. Should only be set on unfinished spans
+  QUERY_OUTCOME_UNSPECIFIED = 0;
+
+  // Successfully executed the query.
+  QUERY_OUTCOME_SUCCESS = 1;
+
+  // Failed with an error type (individual errors reported as separate events).
+  // If set, `node_error_type` with also be set to indicate the type of error.
+  QUERY_OUTCOME_ERROR = 2;
+
+  // Query was canceled (e.g. user-initiated cancellation).
+  QUERY_OUTCOME_CANCELED = 3;
+}
+
+message QueryExecuted {
+  // Raw SQL string that was executed. May be obfuscated.
+  string sql = 1;
+
+  // Blake3, 16-bytes hash of the raw SQL string encoded as hex.
+  string sql_hash = 2;
+
+  // Type of the adapter (e.g. "snowflake", "bigquery", "postgres", etc.)
+  string adapter_type = 3;
+
+  // Optional human-readable description of the query.
+  optional string query_description = 4;
+
+  // Database provided query ID for the executed query, if available.
+  optional string query_id = 5;
+
+  // unique_id of the node that generated this query. Some queries may not be associated with a single node.
+  optional string unique_id = 6;
+
+  // Outcome for this query execution.
+  QueryOutcome query_outcome = 7;
+
+  // Execution phase during which this query was evaluated, if available
+  optional v1.public.events.fusion.phase.ExecutionPhase phase = 8;
+
+  // Granular error information for failed queries.
+
+  // Arbitrary adapter defined error message
+  optional string query_error_adapter_message = 9;
+
+  // Arbitrary adapter (vendor) defined error code
+  optional int32 query_error_vendor_code = 10;
+
+  // Legacy dbt core event code: E016 or E017
+  string dbt_core_event_code = 11;
+}
+
+// Time spent waiting for connection concurrency limits to allow a node to proceed.
+message ConnectionLimitWait {
+  // Number of active nodes in task runner. Empty unless trace log level is set.
+  optional uint32 active_nodes = 1;
+
+  // Number of active adapter connections. Empty unless trace log level is set.
+  optional uint32 active_connections = 2;
+}
+
+// Event emitted when an adapter connection is opened. Only emitted at trace log level.
+message AdapterConnectionOpen {
+  // Adapter type name
+  string adapter_type = 1;
+
+  // Adapter backend (driver) name
+  string adapter_backend = 2;
+}
+
+// Event emitted when an adapter connection is closed. Only emitted at trace log level.
+message AdapterConnectionClose {
+  // Debug representation of the adapter connection being closed.
+  string repr = 1;
+}

@@ -1,0 +1,8 @@
+{
+  "var": "foo"
+}
+---
+{% extends "var_setting_layout.txt" %}
+{% block test %}before: {% set var = "from self" %}{{ var }}
+{{ super() }}
+after: {{ var }}{% endblock %}

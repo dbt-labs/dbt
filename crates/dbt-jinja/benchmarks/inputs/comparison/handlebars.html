@@ -1,0 +1,28 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>{{ title }} | Hello</title>
+<link rel="stylesheet" href="styles/index.css">
+<body>
+  <header>
+    <h1>Hello</h1>
+    <nav>
+      <ul class="nav">
+        {{#with site}}
+          {{#each item}}
+            <li><a href="{{ url }}"{{#if is_active }} class="active"{{/if}}>{{ upper title }}</a>
+          {{/each}}
+        {{/with}}
+      </ul>
+    </nav>
+  </header>
+  <main>
+    <ul>
+    {{#each items }}
+      <li>{{@index}}: {{ upper this }}</li>
+    {{/each}}
+    </ul>
+  </main>
+  <footer>
+    {{> footer.html}}
+  </footer>
+</body>

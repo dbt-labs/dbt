@@ -1,6 +1,0 @@
-name: early_hooks
-version: '1.0'
-config-version: 2
-on-run-start:
-  - create table {{ var('test_create_table') }} as (select 1 as id)
-  - create table {{ var('test_create_second_table') }} as (select 3 as id)

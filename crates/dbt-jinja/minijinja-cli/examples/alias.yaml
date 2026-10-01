@@ -1,0 +1,9 @@
+dict1: &dict1_anchor
+  key1: value1
+
+dict2: &dict2_anchor
+  key2: value2
+
+dict3:
+  <<: [*dict1_anchor, *dict2_anchor]
+  key3: value3

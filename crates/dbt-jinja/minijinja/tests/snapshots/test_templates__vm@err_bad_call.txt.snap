@@ -1,0 +1,24 @@
+---
+source: fs/sa/crates/dbt-jinja/minijinja/tests/test_templates.rs
+description: "This is {{ an_unknown_function() }}!"
+info:
+  __minijinja_current_path: err_bad_call.txt
+  __minijinja_current_span:
+    end_col: 1
+    end_line: 1
+    end_offset: 0
+    start_col: 1
+    start_line: 1
+    start_offset: 0
+input_file: fs/sa/crates/dbt-jinja/minijinja/tests/inputs/err_bad_call.txt
+---
+!!!ERROR!!!
+
+Error {
+    kind: UnknownFunction,
+    detail: "Jinja macro or function `an_unknown_function` is unknown",
+    name: "err_bad_call.txt",
+}
+
+unknown function: Jinja macro or function `an_unknown_function` is unknown
+(in err_bad_call.txt:1:9)

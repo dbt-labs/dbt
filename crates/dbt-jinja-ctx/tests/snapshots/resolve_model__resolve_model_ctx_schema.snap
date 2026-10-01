@@ -1,0 +1,108 @@
+---
+source: fs/sa/crates/dbt-jinja-ctx/tests/resolve_model.rs
+expression: schema
+---
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "ResolveModelCtx",
+  "description": "Per-model overlay layered onto [`ResolveBaseCtx`] for each model SQL render. Today's `build_resolve_model_context<T>` populates this 1:1 — 17 keys total, same field-key strings (including the underscore-decorated `__dbt_target_unique_id__` / `__dbt_current_path__` / `__dbt_current_span__` constants).\n\nEvery `Object`-typed field is typed [`MinijinjaValue`] (wrapped at construction site via `MinijinjaValue::from_object(...)` / `MinijinjaValue::from_function(closure)`) rather than a concrete type going through serde. Two reasons:\n\n1. The Object impls (`ResolveRefFunction<T>`, `ParseConfig<T>`, `ResolveSourceFunction<T>`, `ResolveFunctionFunction<T>`, `ResolveMetricFunction<T>`, `ParseExecute`, `ParseMetricReference`, `MacroLookupContext`) live in `dbt-jinja-utils`; this crate can't depend on them. A later PR moves them here and tightens to `JinjaObject<…>`. 2. `builtins` is constructed via `Value::from_object(BTreeMap<String, MinijinjaValue>)` and downstream code downcasts via `.downcast_ref::<BTreeMap<String, MinijinjaValue>>()`. Going through serde would produce a `MutableMap<Value, Value>` instead and silently break the downcast — same trap PR 3 hit with `MACRO_DISPATCH_ORDER`'s `Vec<String>` values.",
+  "type": "object",
+  "required": [
+    "TARGET_UNIQUE_ID",
+    "__minijinja_current_path",
+    "__minijinja_current_span",
+    "builtins",
+    "config",
+    "context",
+    "execute",
+    "function",
+    "graph",
+    "load_result",
+    "metric",
+    "model",
+    "ref",
+    "source",
+    "store_raw_result",
+    "store_result",
+    "this"
+  ],
+  "properties": {
+    "TARGET_UNIQUE_ID": {
+      "description": "`{{ TARGET_UNIQUE_ID }}` — `<package>.<model_name>` identifier. Key string matches `minijinja::constants::TARGET_UNIQUE_ID`.",
+      "type": "string"
+    },
+    "__minijinja_current_path": {
+      "description": "`{{ __minijinja_current_path }}` — display path of the rendering `.sql` file. Key string matches `minijinja::constants::CURRENT_PATH`.",
+      "type": "string"
+    },
+    "__minijinja_current_span": {
+      "description": "`{{ __minijinja_current_span }}` — span at the start of rendering (typically `minijinja::machinery::Span::default()`). Key string matches `minijinja::constants::CURRENT_SPAN`.\n\nWrapped as `MinijinjaValue::from_serialize(Span::default())` at the call site rather than typed as the concrete `Span` here, because the `Span` type lives in `minijinja::machinery` (private to the runtime) and we want to keep this crate's view of it opaque."
+    },
+    "builtins": {
+      "description": "`{{ builtins.* }}` — `BTreeMap<String, MinijinjaValue>` Object holding `ref` / `source` / `function` / `metric` / `config`. Compile/run-phase code downcasts this to `BTreeMap<String, MinijinjaValue>` to overlay per-node validations."
+    },
+    "config": {
+      "description": "`{{ config(...) }}` — `ParseConfig<T>` Object."
+    },
+    "context": {
+      "description": "`{{ context }}` — `MacroLookupContext` Object for `context['name']` macro dispatch.",
+      "allOf": [
+        {
+          "$ref": "#/definitions/JinjaObject<dbt_jinja_ctx::objects::lookup::MacroLookupContext>"
+        }
+      ]
+    },
+    "execute": {
+      "description": "`{{ execute }}` — `ParseExecute(AtomicBool)` Object that records when the model truthy-tests it during parse; used to gate static analysis.",
+      "allOf": [
+        {
+          "$ref": "#/definitions/JinjaObject<dbt_jinja_ctx::objects::parse::ParseExecute>"
+        }
+      ]
+    },
+    "function": {
+      "description": "`{{ function(...) }}` — `ResolveFunctionFunction<T>` Object."
+    },
+    "graph": {
+      "description": "`{{ graph }}` — the invocation-wide mutable mapping, empty at parse-model scope; the flat graph is merged into that same mapping at compile time. Mirrors dbt-core, where `graph` is `manifest.flat_graph`: one dict for the whole invocation, `{}` until `build_flat_graph()` runs, so macros can use it as scratch state throughout. dbt-labs/fs#13454."
+    },
+    "load_result": {
+      "description": "`{{ load_result(...) }}` — `ResultStore`-backed closure."
+    },
+    "metric": {
+      "description": "`{{ metric(...) }}` — `ResolveMetricFunction<T>` Object that records `SqlResource::Metric`."
+    },
+    "model": {
+      "description": "`{{ model.* }}` — mutable dict-compatible Object backing the parse-time stub model dict (built via `convert_yml_to_value_map` plus a serialized merged config). Downstream adapter code reads via `state.lookup(\"model\").get_attr(...)`."
+    },
+    "ref": {
+      "description": "`{{ ref(...) }}` — `ResolveRefFunction<T>` Object that records each resolved ref into the shared `sql_resources` vec."
+    },
+    "source": {
+      "description": "`{{ source(...) }}` — `ResolveSourceFunction<T>` Object."
+    },
+    "store_raw_result": {
+      "description": "`{{ store_raw_result(...) }}` — `ResultStore`-backed closure."
+    },
+    "store_result": {
+      "description": "`{{ store_result(...) }}` — `ResultStore`-backed closure."
+    },
+    "this": {
+      "description": "`{{ this }}` — `ResolveThisFunction<T>` Object delegating to a constructed `RelationObject`."
+    }
+  },
+  "definitions": {
+    "JinjaObject<dbt_jinja_ctx::objects::lookup::MacroLookupContext>": {
+      "description": "Opaque Jinja-callable object backed by `dbt_jinja_ctx::objects::lookup::MacroLookupContext`.",
+      "type": "object",
+      "x-jinja-object": true,
+      "x-jinja-object-type": "dbt_jinja_ctx::objects::lookup::MacroLookupContext"
+    },
+    "JinjaObject<dbt_jinja_ctx::objects::parse::ParseExecute>": {
+      "description": "Opaque Jinja-callable object backed by `dbt_jinja_ctx::objects::parse::ParseExecute`.",
+      "type": "object",
+      "x-jinja-object": true,
+      "x-jinja-object-type": "dbt_jinja_ctx::objects::parse::ParseExecute"
+    }
+  }
+}

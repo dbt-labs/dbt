@@ -1,0 +1,11 @@
+{
+  "upper": 1
+}
+---
+{% with f = range %}{% for x in f(upper) %}{{ debug() }}{% endfor %}{% endwith %}
+---
+{{ debug(none) }}
+---
+{{ debug(true, false, 42) }}
+---
+{{ debug([debug, 42]) }}

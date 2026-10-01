@@ -1,0 +1,50 @@
+---
+source: crates/dbt-jinja/minijinja/tests/test_templates.rs
+description: "{% for item in seq %}\n  {{ item }} ({{ loop.index }} of {{ loop.length }})\n    first={{ loop.first }}\n    last={{ loop.last }}\n    revindex={{ loop.revindex }}\n    revindex0={{ loop.revindex0 }}\n    cycle={{ loop.cycle(\"odd\", \"even\") }}\n    previtem={{ loop.previtem }}\n    nextitem={{ loop.nextitem }}\n{% endfor %}"
+info:
+  __minijinja_current_path: loop_string.txt
+  __minijinja_current_span:
+    end_col: 1
+    end_line: 1
+    end_offset: 0
+    start_col: 1
+    start_line: 1
+    start_offset: 0
+  seq: abcd
+input_file: crates/dbt-jinja/minijinja/tests/inputs/loop_string.txt
+---
+  a (1 of 4)
+    first=True
+    last=False
+    revindex=4
+    revindex0=3
+    cycle=odd
+    previtem=
+    nextitem=b
+
+  b (2 of 4)
+    first=False
+    last=False
+    revindex=3
+    revindex0=2
+    cycle=even
+    previtem=a
+    nextitem=c
+
+  c (3 of 4)
+    first=False
+    last=False
+    revindex=2
+    revindex0=1
+    cycle=odd
+    previtem=b
+    nextitem=d
+
+  d (4 of 4)
+    first=False
+    last=True
+    revindex=1
+    revindex0=0
+    cycle=even
+    previtem=c
+    nextitem=

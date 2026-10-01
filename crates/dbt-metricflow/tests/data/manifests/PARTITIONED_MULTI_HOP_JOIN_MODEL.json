@@ -1,0 +1,479 @@
+{
+  "metrics": [
+    {
+      "config": null,
+      "description": "txn_count",
+      "filter": null,
+      "label": null,
+      "metadata": null,
+      "name": "txn_count",
+      "time_granularity": null,
+      "type": "simple",
+      "type_params": {
+        "conversion_type_params": null,
+        "cumulative_type_params": null,
+        "denominator": null,
+        "expr": "txn_count",
+        "fill_nulls_with": null,
+        "grain_to_date": null,
+        "input_measures": [],
+        "is_private": false,
+        "join_to_timespine": false,
+        "measure": null,
+        "metric_aggregation_params": {
+          "agg": "sum",
+          "agg_params": null,
+          "agg_time_dimension": "ds",
+          "expr": "txn_count",
+          "non_additive_dimension": null,
+          "semantic_model": "account_month_txns"
+        },
+        "metrics": null,
+        "numerator": null,
+        "window": null
+      }
+    },
+    {
+      "config": null,
+      "description": "third_hop_count",
+      "filter": null,
+      "label": null,
+      "metadata": null,
+      "name": "third_hop_count",
+      "time_granularity": null,
+      "type": "simple",
+      "type_params": {
+        "conversion_type_params": null,
+        "cumulative_type_params": null,
+        "denominator": null,
+        "expr": "customer_third_hop_id",
+        "fill_nulls_with": null,
+        "grain_to_date": null,
+        "input_measures": [],
+        "is_private": false,
+        "join_to_timespine": false,
+        "measure": null,
+        "metric_aggregation_params": {
+          "agg": "count_distinct",
+          "agg_params": null,
+          "agg_time_dimension": "third_hop_ds",
+          "expr": "customer_third_hop_id",
+          "non_additive_dimension": null,
+          "semantic_model": "third_hop_table"
+        },
+        "metrics": null,
+        "numerator": null,
+        "window": null
+      }
+    },
+    {
+      "config": null,
+      "description": "paraguayan_customers",
+      "filter": {
+        "where_filters": [
+          {
+            "where_sql_template": "{{ Dimension('customer_other_data__country') }} = 'paraguay'"
+          }
+        ]
+      },
+      "label": null,
+      "metadata": null,
+      "name": "paraguayan_customers",
+      "time_granularity": null,
+      "type": "simple",
+      "type_params": {
+        "conversion_type_params": null,
+        "cumulative_type_params": null,
+        "denominator": null,
+        "expr": "1",
+        "fill_nulls_with": null,
+        "grain_to_date": null,
+        "input_measures": [],
+        "is_private": false,
+        "join_to_timespine": false,
+        "measure": null,
+        "metric_aggregation_params": {
+          "agg": "count",
+          "agg_params": null,
+          "agg_time_dimension": "acquired_ds",
+          "expr": "1",
+          "non_additive_dimension": null,
+          "semantic_model": "customer_other_data"
+        },
+        "metrics": null,
+        "numerator": null,
+        "window": null
+      }
+    }
+  ],
+  "project_configuration": {
+    "dsi_package_version": {
+      "major_version": "0",
+      "minor_version": "0",
+      "patch_version": "0"
+    },
+    "metadata": null,
+    "time_spine_table_configurations": [],
+    "time_spines": [
+      {
+        "custom_granularities": [],
+        "node_relation": {
+          "alias": "mf_time_spine",
+          "database": null,
+          "relation_name": null,
+          "schema_name": "main"
+        },
+        "primary_column": {
+          "name": "ds",
+          "time_granularity": "day"
+        }
+      }
+    ]
+  },
+  "saved_queries": [],
+  "semantic_models": [
+    {
+      "config": null,
+      "defaults": {
+        "agg_time_dimension": "ds"
+      },
+      "description": "account_month_txns",
+      "dimensions": [
+        {
+          "config": null,
+          "description": null,
+          "expr": null,
+          "is_partition": false,
+          "label": null,
+          "metadata": null,
+          "name": "ds",
+          "type": "time",
+          "type_params": {
+            "time_granularity": "day",
+            "validity_params": null
+          }
+        },
+        {
+          "config": null,
+          "description": null,
+          "expr": null,
+          "is_partition": true,
+          "label": null,
+          "metadata": null,
+          "name": "ds_partitioned",
+          "type": "time",
+          "type_params": {
+            "time_granularity": "day",
+            "validity_params": null
+          }
+        }
+      ],
+      "entities": [
+        {
+          "config": null,
+          "description": null,
+          "expr": "account_id",
+          "label": null,
+          "metadata": null,
+          "name": "account_id",
+          "role": null,
+          "type": "primary"
+        }
+      ],
+      "label": null,
+      "measures": [
+        {
+          "agg": "sum",
+          "agg_params": null,
+          "agg_time_dimension": null,
+          "config": null,
+          "create_metric": false,
+          "description": null,
+          "expr": "txn_count",
+          "label": null,
+          "name": "txn_count",
+          "non_additive_dimension": null
+        }
+      ],
+      "metadata": null,
+      "name": "account_month_txns",
+      "node_relation": {
+        "alias": "account_month_txns",
+        "database": null,
+        "relation_name": "\"main\".\"account_month_txns\"",
+        "schema_name": "main"
+      },
+      "primary_entity": "account"
+    },
+    {
+      "config": null,
+      "defaults": null,
+      "description": "bridge_table",
+      "dimensions": [
+        {
+          "config": null,
+          "description": null,
+          "expr": null,
+          "is_partition": false,
+          "label": null,
+          "metadata": null,
+          "name": "extra_dim",
+          "type": "categorical",
+          "type_params": null
+        },
+        {
+          "config": null,
+          "description": null,
+          "expr": null,
+          "is_partition": true,
+          "label": null,
+          "metadata": null,
+          "name": "ds_partitioned",
+          "type": "time",
+          "type_params": {
+            "time_granularity": "day",
+            "validity_params": null
+          }
+        }
+      ],
+      "entities": [
+        {
+          "config": null,
+          "description": null,
+          "expr": "account_id",
+          "label": null,
+          "metadata": null,
+          "name": "account_id",
+          "role": null,
+          "type": "foreign"
+        },
+        {
+          "config": null,
+          "description": null,
+          "expr": "customer_id",
+          "label": null,
+          "metadata": null,
+          "name": "customer_id",
+          "role": null,
+          "type": "foreign"
+        }
+      ],
+      "label": null,
+      "measures": [],
+      "metadata": null,
+      "name": "bridge_table",
+      "node_relation": {
+        "alias": "bridge_table",
+        "database": null,
+        "relation_name": "\"main\".\"bridge_table\"",
+        "schema_name": "main"
+      },
+      "primary_entity": null
+    },
+    {
+      "config": null,
+      "defaults": null,
+      "description": "customer_table",
+      "dimensions": [
+        {
+          "config": null,
+          "description": null,
+          "expr": null,
+          "is_partition": false,
+          "label": null,
+          "metadata": null,
+          "name": "customer_name",
+          "type": "categorical",
+          "type_params": null
+        },
+        {
+          "config": null,
+          "description": null,
+          "expr": null,
+          "is_partition": false,
+          "label": null,
+          "metadata": null,
+          "name": "customer_atomic_weight",
+          "type": "categorical",
+          "type_params": null
+        },
+        {
+          "config": null,
+          "description": null,
+          "expr": null,
+          "is_partition": true,
+          "label": null,
+          "metadata": null,
+          "name": "ds_partitioned",
+          "type": "time",
+          "type_params": {
+            "time_granularity": "day",
+            "validity_params": null
+          }
+        }
+      ],
+      "entities": [
+        {
+          "config": null,
+          "description": null,
+          "expr": "customer_id",
+          "label": null,
+          "metadata": null,
+          "name": "customer_id",
+          "role": null,
+          "type": "primary"
+        }
+      ],
+      "label": null,
+      "measures": [],
+      "metadata": null,
+      "name": "customer_table",
+      "node_relation": {
+        "alias": "customer_table",
+        "database": null,
+        "relation_name": "\"main\".\"customer_table\"",
+        "schema_name": "main"
+      },
+      "primary_entity": null
+    },
+    {
+      "config": null,
+      "defaults": {
+        "agg_time_dimension": "acquired_ds"
+      },
+      "description": "customer_other_data",
+      "dimensions": [
+        {
+          "config": null,
+          "description": null,
+          "expr": null,
+          "is_partition": false,
+          "label": null,
+          "metadata": null,
+          "name": "country",
+          "type": "categorical",
+          "type_params": null
+        },
+        {
+          "config": null,
+          "description": null,
+          "expr": null,
+          "is_partition": false,
+          "label": null,
+          "metadata": null,
+          "name": "acquired_ds",
+          "type": "time",
+          "type_params": {
+            "time_granularity": "day",
+            "validity_params": null
+          }
+        }
+      ],
+      "entities": [
+        {
+          "config": null,
+          "description": null,
+          "expr": "customer_id",
+          "label": null,
+          "metadata": null,
+          "name": "customer_id",
+          "role": null,
+          "type": "foreign"
+        },
+        {
+          "config": null,
+          "description": null,
+          "expr": "customer_third_hop_id",
+          "label": null,
+          "metadata": null,
+          "name": "customer_third_hop_id",
+          "role": null,
+          "type": "foreign"
+        }
+      ],
+      "label": null,
+      "measures": [
+        {
+          "agg": "count",
+          "agg_params": null,
+          "agg_time_dimension": null,
+          "config": null,
+          "create_metric": false,
+          "description": null,
+          "expr": "1",
+          "label": null,
+          "name": "paraguayan_customers_count",
+          "non_additive_dimension": null
+        }
+      ],
+      "metadata": null,
+      "name": "customer_other_data",
+      "node_relation": {
+        "alias": "customer_other_data",
+        "database": null,
+        "relation_name": "\"main\".\"customer_other_data\"",
+        "schema_name": "main"
+      },
+      "primary_entity": null
+    },
+    {
+      "config": null,
+      "defaults": {
+        "agg_time_dimension": "third_hop_ds"
+      },
+      "description": "third_hop_table",
+      "dimensions": [
+        {
+          "config": null,
+          "description": null,
+          "expr": null,
+          "is_partition": false,
+          "label": null,
+          "metadata": null,
+          "name": "third_hop_ds",
+          "type": "time",
+          "type_params": {
+            "time_granularity": "day",
+            "validity_params": null
+          }
+        }
+      ],
+      "entities": [
+        {
+          "config": null,
+          "description": null,
+          "expr": "customer_third_hop_id",
+          "label": null,
+          "metadata": null,
+          "name": "customer_third_hop_id",
+          "role": null,
+          "type": "primary"
+        }
+      ],
+      "label": null,
+      "measures": [
+        {
+          "agg": "count_distinct",
+          "agg_params": null,
+          "agg_time_dimension": null,
+          "config": null,
+          "create_metric": false,
+          "description": null,
+          "expr": "customer_third_hop_id",
+          "label": null,
+          "name": "third_hop_count",
+          "non_additive_dimension": null
+        }
+      ],
+      "metadata": null,
+      "name": "third_hop_table",
+      "node_relation": {
+        "alias": "third_hop_table",
+        "database": null,
+        "relation_name": "\"main\".\"third_hop_table\"",
+        "schema_name": "main"
+      },
+      "primary_entity": "third_hop"
+    }
+  ]
+}

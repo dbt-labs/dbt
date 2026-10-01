@@ -1,0 +1,5 @@
+{}
+---
+{% macro foo(bar.baz) %}
+  ...
+{% endmacro %}

@@ -1,0 +1,25 @@
+{
+  "posts": [
+    {"city": "Vienna", "text": "First post in Vienna"},
+    {"city": "London", "text": "First post in London"},
+    {"city": "Vienna", "text": "Second post in Vienna"},
+    {"city": "vienna", "text": "First post in lowercase Vienna"},
+    {"text": "no city!?"}
+  ]
+}
+---
+{%- for city, posts in posts|groupby("city", default="No City") %}
+  - {{ city }}:
+    {%- for post in posts %}
+    - {{ post.text }}
+    {%- endfor %}
+{%- endfor %}
+--
+{%- for group in posts|groupby(attribute="city", case_sensitive=true) %}
+  - {{ group.grouper }}:
+    {%- for post in group.list %}
+    - {{ post.text }}
+    {%- endfor %}
+{%- endfor %}
+--
+{{ (posts|groupby("city", default="AAA"))[0] }}

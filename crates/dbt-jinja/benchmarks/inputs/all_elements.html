@@ -1,0 +1,38 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>{% block title %}{% endblock %} | Hello</title>
+<link rel="stylesheet" href="{{ 'styles/index.css'|asset_url }}">
+{# this is a comment #}
+<body>
+{% block html_body %}
+  <header>
+    <h1>Hello</h1>
+    <nav>
+      <ul class="nav">
+        {% for item in site.nav %}
+          <li><a href="{{ item.url }}"{% if item.is_active %} class="active"{% endif %}>{{ item.title|upper }}</a>
+        {% endfor %}
+      </ul>
+    </nav>
+  </header>
+  <main>
+    {% block body %}
+      <ul>
+      {% for item in items %}
+        <li>{{ loop.index }}: {{ item|upper }}</li>
+      {% endfor %}
+      </ul>
+    {% endblock %}
+  </main>
+  <footer>
+    {% block footer %}
+      {% with copyright=current_year() %}
+        {% include "footer.html" %}
+      {% endwith %}
+    {% endblock %}
+  </footer>
+  {% if DEBUG %}
+    <pre class="debug">{{ debug() }}</pre>
+  {% endif %}
+{% endblock html_body %}
+</body>

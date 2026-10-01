@@ -1,0 +1,40 @@
+# Self-hosted dbt docs server.
+#
+# Point DBT_TARGET_PATH at a project's `target/` dir containing
+# target/index/*.parquet (from `dbt --write-index <run|build|compile>`), then
+# open http://localhost:8580. Use an absolute path — relative resolves against
+# this file's dir.
+#
+#   DBT_TARGET_PATH=/abs/path/to/project/target docker compose up --build
+#
+# The image tracks the newest dbt release carrying a Linux binary. Pin one with
+# DBT_VERSION=2.0.0-beta.2 (and see the note in the Dockerfile about build
+# caching: `--build-arg`/`--no-cache` is what re-resolves `latest`).
+
+services:
+  dbt-docs-server:
+    build:
+      # Downloads the released dbt binary; COPYs no source, so the context is
+      # empty (see .dockerignore).
+      context: .
+      dockerfile: Dockerfile
+      args:
+        DBT_VERSION: ${DBT_VERSION:-latest}
+    image: dbt-docs-server
+    ports:
+      - "${DBT_DOCS_PORT:-8580}:8580"
+    volumes:
+      # Parquet artifacts, read-only (server reads /data/target/index/).
+      - "${DBT_TARGET_PATH:-./target}:/data/target:ro"
+      # Cache the ADBC DuckDB driver: downloaded once, offline after.
+      - dbt-adbc-cache:/var/cache/dbt
+    # Already defaulted in the image; kept explicit for discoverability.
+    environment:
+      DBT_DOCS_HOST: "0.0.0.0"
+      DBT_DOCS_PORT: "8580"
+      DBT_DOCS_TARGET_PATH: "/data/target"
+    restart: unless-stopped
+    # The image ships a HEALTHCHECK (HEAD /), inherited here.
+
+volumes:
+  dbt-adbc-cache:

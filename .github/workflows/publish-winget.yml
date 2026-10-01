@@ -1,0 +1,208 @@
+# **what?**
+# Bump the published `dbtLabs.dbt-core` winget manifest to a new version
+# and submit a PR to `microsoft/winget-pkgs`.
+#
+# **why?**
+# Distribute dbt-core via winget so users can `winget install dbt-core`.
+#
+# **when?**
+# - workflow_call: invoked by release-v2.yml after `github-release` for
+#   non-prerelease versions. The GitHub Release must already host the
+#   Windows `.zip`.
+# - workflow_dispatch: ad-hoc manual run against an existing release.
+#
+# **how?**
+# `wingetcreate update <id> --version V --urls URL` updates the latest
+# published manifest from `microsoft/winget-pkgs`, rewriting the version +
+# installer URL and re-hashing the zip. With `--submit`, wingetcreate
+# pushes a branch to the **PAT user's personal fork** of
+# `microsoft/winget-pkgs` (auto-created if absent) and opens a PR upstream.
+#
+# Description / publisher / license / tags / moniker / binary_name all
+# carry over from the seed manifest already on upstream — they're
+# inherited, not threaded through CLI flags.
+#
+# Dry-run path uses `--out` instead of `--submit`, so manifests land in a
+# local dir and are uploaded as a workflow artifact.
+#
+# wingetcreate is Windows-only (ships as `WingetCreateCLI.exe` from
+# `microsoft/winget-create` releases), so this workflow runs on
+# `windows-latest` even though every other release publisher runs on
+# Ubuntu.
+#
+# Submit requires `secrets.WINGET_PUBLISH_PAT`; needs `public_repo` scope.
+# wingetcreate submits from `<pat-owner>/winget-pkgs`.
+
+name: Publish winget manifests
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        description: "Version string (e.g. 2.0.0)"
+        type: string
+        required: true
+      dry_run:
+        description: "If true, render manifests locally without submitting upstream."
+        type: boolean
+        required: false
+        default: false
+
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "SemVer to publish (e.g. 2.0.0). Do NOT include the leading `v`."
+        required: true
+        type: string
+      dry_run:
+        description: "If true, render manifests locally but do NOT submit upstream."
+        required: false
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+# Workflow-level so both publish-winget (windows) and notify-winget-pr (ubuntu) see it.
+env:
+  PACKAGE_IDENTIFIER: dbtLabs.dbt-core
+
+jobs:
+  publish-winget:
+    name: wingetcreate update + submit
+    runs-on: windows-latest
+    timeout-minutes: 15
+    outputs:
+      pr_url: ${{ steps.submit.outputs.pr_url }}
+      pr_number: ${{ steps.submit.outputs.pr_number }}
+    env:
+      VERSION: ${{ inputs.version }}
+    steps:
+      - name: Compute installer URL and release date
+        shell: bash
+        run: |
+          echo "INSTALLER_URL=https://github.com/dbt-labs/dbt-core/releases/download/v${VERSION}/dbt-core-${VERSION}-x86_64-pc-windows-msvc.zip" >> "$GITHUB_ENV"
+          echo "RELEASE_DATE=$(date -u +%Y-%m-%d)" >> "$GITHUB_ENV"
+
+      - name: Install wingetcreate
+        shell: pwsh
+        run: |
+          Invoke-WebRequest https://aka.ms/wingetcreate/latest -OutFile wingetcreate.exe
+
+      - name: Render manifests (dry-run)
+        if: ${{ inputs.dry_run }}
+        shell: pwsh
+        env:
+          # Authenticates wingetcreate's API reads to avoid the anonymous rate limit.
+          WINGET_PUBLISH_PAT: ${{ secrets.WINGET_PUBLISH_PAT }}
+        run: |
+          Write-Host "→ $env:INSTALLER_URL"
+          .\wingetcreate.exe update $env:PACKAGE_IDENTIFIER `
+            --version $env:VERSION `
+            --urls $env:INSTALLER_URL `
+            --release-date $env:RELEASE_DATE `
+            --token $env:WINGET_PUBLISH_PAT `
+            --out manifests-out
+          Write-Host "---rendered manifests---"
+          Get-ChildItem -Recurse manifests-out
+
+      - name: Upload rendered manifests
+        if: ${{ inputs.dry_run }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: winget-manifests-${{ inputs.version }}
+          path: manifests-out/
+
+      # wingetcreate has no "nothing changed" detection — it opens a PR (or
+      # errors) on every submit. This workflow only ever changes the version
+      # + installer URL/hash, all deterministic from VERSION, so if the
+      # version dir already exists upstream there is nothing for us to submit.
+      # Skip it to avoid a redundant PR on re-runs.
+      - name: Check if version already published
+        if: ${{ !inputs.dry_run }}
+        id: published
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          url="https://api.github.com/repos/microsoft/winget-pkgs/contents/manifests/d/dbtLabs/dbt-core/${VERSION}"
+          code=$(curl -sS -o /dev/null -w "%{http_code}" \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" "$url")
+          case "$code" in
+            200) echo "Version ${VERSION} already published — skipping submit."; echo "exists=true" >> "$GITHUB_OUTPUT" ;;
+            404) echo "Version ${VERSION} not yet published — will submit."; echo "exists=false" >> "$GITHUB_OUTPUT" ;;
+            *) echo "::error::Unexpected HTTP $code checking winget-pkgs for ${VERSION}"; exit 1 ;;
+          esac
+
+      - name: Sync fork with upstream
+        if: ${{ !inputs.dry_run && steps.published.outputs.exists != 'true' }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.WINGET_PUBLISH_PAT }}
+        run: |
+          fork_owner=$(gh api user --jq .login)
+          if gh repo view "${fork_owner}/winget-pkgs" >/dev/null 2>&1; then
+            gh repo sync "${fork_owner}/winget-pkgs" --source microsoft/winget-pkgs --force
+          else
+            gh repo fork microsoft/winget-pkgs --clone=false --default-branch-only
+          fi
+
+      - name: Submit to microsoft/winget-pkgs
+        if: ${{ !inputs.dry_run && steps.published.outputs.exists != 'true' }}
+        id: submit
+        shell: pwsh
+        env:
+          WINGET_PUBLISH_PAT: ${{ secrets.WINGET_PUBLISH_PAT }}
+        run: |
+          Write-Host "→ $env:INSTALLER_URL"
+          # Tee keeps the live log; $LASTEXITCODE still reflects the native exe
+          # (Tee-Object is a cmdlet and does not overwrite it).
+          .\wingetcreate.exe update $env:PACKAGE_IDENTIFIER `
+            --version $env:VERSION `
+            --urls $env:INSTALLER_URL `
+            --release-date $env:RELEASE_DATE `
+            --submit `
+            --token $env:WINGET_PUBLISH_PAT 2>&1 | Tee-Object -Variable out
+          $code = $LASTEXITCODE
+          if ($code -ne 0) { Write-Error "wingetcreate submit failed (exit $code)"; exit $code }
+          # Anchor on the PR URL shape, not the localizable log prose.
+          $joined = $out | Out-String
+          $matched = [regex]::Matches($joined, 'https://github\.com/microsoft/winget-pkgs/pull/(\d+)')
+          if ($matched.Count -eq 0) {
+            Write-Error "Submit succeeded but no winget-pkgs PR URL found in output"; exit 1
+          }
+          $last = $matched[$matched.Count - 1]
+          "pr_url=$($last.Value)" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          "pr_number=$($last.Groups[1].Value)" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          Write-Host "Captured winget PR: $($last.Value)"
+
+  notify-winget-pr:
+    name: Notify Slack (winget PR opened)
+    needs: [publish-winget]
+    if: ${{ !inputs.dry_run && needs.publish-winget.outputs.pr_url != '' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      # Post the winget-pkgs PR link to Slack so on-call can review it.
+      # A Slack outage shouldn't fail the release workflow, so don't let this step fail the job.
+      - name: Post Slack message
+        continue-on-error: true
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WINGET_WEBHOOK_URL }}
+          VERSION: ${{ inputs.version }}
+          PR_URL: ${{ needs.publish-winget.outputs.pr_url }}
+        run: |
+          text=":package: New winget PR opened for \`${PACKAGE_IDENTIFIER}\` \`${VERSION}\`: ${PR_URL}"
+          resp=$(jq -n --arg t "$text" '{text: $t, unfurl_links: false}' | \
+            curl -sS -X POST "$SLACK_WEBHOOK_URL" \
+              -H "Content-type: application/json; charset=utf-8" \
+              --data @-)
+          # Incoming webhooks return "ok" as plain text on success
+          if [ "$resp" != "ok" ]; then
+            echo "::error::Slack webhook failed: $resp"
+            exit 1
+          fi
+          echo "Posted winget PR alert: $PR_URL"

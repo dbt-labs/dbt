@@ -1,0 +1,115 @@
+# **what?**
+# Post a Slack notification when a PR is labeled `community`
+
+# **why?**
+# Give the internal team real-time visibility into new community contributions
+# so they can be triaged and assigned promptly. PRs that close a heavily
+# upvoted issue are flagged high-priority in the Slack message.
+
+# **when?**
+# When the `community` label is applied to a pull request
+# (label is applied automatically by community-label.yml for PRs from outside core-group)
+
+name: Notify Slack on community PR
+
+on:
+  # pull_request_target required since community PRs come from forks
+  pull_request_target:
+    types: [labeled]
+
+defaults:
+  run:
+    shell: bash
+
+permissions:
+  contents: read
+  # needed to read the linked issue's upvote (reaction) count via the API
+  issues: read
+  pull-requests: read
+
+jobs:
+  notify-community-pr:
+    name: Post to Slack
+    # Only fire when the label being applied is `community`
+    # Skip bots
+    if: |
+      github.event.label.name == 'community'
+      && github.event.pull_request.user.type != 'Bot'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Post Slack message
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_CORE_PR_CHANNEL_URL }}
+          GH_TOKEN: ${{ github.token }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          OWNER: ${{ github.repository_owner }}
+          REPO_NAME: ${{ github.event.repository.name }}
+          REPO: ${{ github.repository }}
+          # PRs whose linked issue has >= this many upvotes are flagged high-priority
+          UPVOTE_THRESHOLD: "10"
+        run: |
+          if [ -z "$SLACK_WEBHOOK_URL" ]; then
+            echo "::error::SLACK_CORE_PR_CHANNEL_URL secret is not set"
+            exit 1
+          fi
+
+          # Highest \ud83d\udc4d (THUMBS_UP) count across all issues this PR closes; 0 if none linked
+          upvotes=$(gh api graphql \
+            -F owner="$OWNER" -F repo="$REPO_NAME" -F pr="$PR_NUMBER" \
+            -f query='
+              query($owner: String!, $repo: String!, $pr: Int!) {
+                repository(owner: $owner, name: $repo) {
+                  pullRequest(number: $pr) {
+                    closingIssuesReferences(first: 20) {
+                      nodes { reactions(content: THUMBS_UP) { totalCount } }
+                    }
+                  }
+                }
+              }' \
+            --jq '[.data.repository.pullRequest.closingIssuesReferences.nodes[].reactions.totalCount] | max // 0')
+
+          if [ "$upvotes" -ge "$UPVOTE_THRESHOLD" ]; then
+            high_priority=true
+          else
+            high_priority=false
+          fi
+          echo "Linked-issue upvotes: ${upvotes} (threshold ${UPVOTE_THRESHOLD}, high_priority=${high_priority})"
+
+          resp=$(jq -n \
+            --arg repo    "$REPO" \
+            --arg title   "$PR_TITLE" \
+            --arg url     "$PR_URL" \
+            --arg author  "$PR_AUTHOR" \
+            --arg number  "$PR_NUMBER" \
+            --arg upvotes "$upvotes" \
+            --argjson hp  "$high_priority" \
+            '{
+              text: ((if $hp then ":rotating_light: High-priority community PR on " else "New community PR on " end) + $repo),
+              blocks: [
+                {
+                  type: "section",
+                  text: {
+                    type: "mrkdwn",
+                    text: (
+                      (if $hp then ":rotating_light: *High-priority community PR* \u2014 `" else ":earth_asia: *New community PR* \u2014 `" end)
+                      + $repo + "`\n*<" + $url + "|#" + $number + " " + $title + ">*\nOpened by: *" + $author + "*"
+                      + (if $hp then "\n:fire: Linked issue has *" + $upvotes + "* \ud83d\udc4d upvotes" else "" end)
+                    )
+                  }
+                }
+              ]
+            }' | \
+            curl -sS -X POST "$SLACK_WEBHOOK_URL" \
+              -H "Content-type: application/json" \
+              --data @-)
+
+          # Incoming webhooks return "ok" as plain text on success
+          if [ "$resp" != "ok" ]; then
+            echo "::error::Slack webhook failed: $resp"
+            exit 1
+          fi
+          echo "Posted community PR alert for #${PR_NUMBER}"

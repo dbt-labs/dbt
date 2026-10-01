@@ -1,0 +1,11 @@
+---
+source: minijinja/tests/test_templates.rs
+description: "{% if value %}\n  was true\n{% else %}\n  was false\n{% endif %}"
+info:
+  value: false
+input_file: minijinja/tests/inputs/if_cond_else.txt
+---
+
+  was false
+
+

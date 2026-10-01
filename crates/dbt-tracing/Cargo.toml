@@ -1,0 +1,61 @@
+[package]
+name = "dbt-tracing"
+version.workspace = true
+homepage.workspace = true
+repository.workspace = true
+authors.workspace = true
+description.workspace = true
+license.workspace = true
+keywords.workspace = true
+edition.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+arrow = { workspace = true, features = ["canonical_extension_types"] }
+arrow-schema = { workspace = true, features = ["canonical_extension_types"] }
+bitflags = { workspace = true }
+dbt-base = { workspace = true }
+dbt-fusion-workspace-hack = { version = "0.1" }
+dbt-runtime = { workspace = true }
+dbt-yaml = { workspace = true }
+erased-serde = { workspace = true }
+opentelemetry = { workspace = true }
+opentelemetry-otlp = { workspace = true }
+opentelemetry-semantic-conventions = { workspace = true }
+opentelemetry_sdk = { workspace = true }
+parquet = { workspace = true }
+rand = { workspace = true }
+scc = { workspace = true }
+schemars = { workspace = true }
+serde = { workspace = true }
+serde_arrow = { workspace = true }
+serde_json = { workspace = true }
+serde_repr = { workspace = true }
+strum = { workspace = true, features = ["derive"] }
+tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+uuid = { workspace = true, features = ["v7"] }
+
+# This is used for test API's that fake telemetry value types. It needs to be
+# defined as optional here so we can expose it in the `test-utils` feature, so
+# other crates using these API's in tests can enable the feature without getting
+# a compile error.
+fake = { workspace = true, optional = true }
+
+[dev-dependencies]
+bytes = { workspace = true }
+fake = { workspace = true }
+tempfile = { workspace = true }
+
+[features]
+# Test-only helpers - exposes `fake::Dummy` derives on telemetry value types so
+# dependents can fake them in their own tests.
+test-utils = ["fake"]
+
+[lib]
+name = "dbt_tracing"
+path = "src/lib.rs"
+doctest = false

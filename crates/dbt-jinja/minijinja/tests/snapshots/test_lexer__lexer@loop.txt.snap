@@ -1,0 +1,38 @@
+---
+source: minijinja/tests/test_lexer.rs
+description: "<ul>\n{% for item in sequence %}\n    <li>{{ item }}</li>\n{% endfor %}\n</ul>"
+input_file: minijinja/tests/lexer-inputs/loop.txt
+---
+TemplateData("<ul>\n")
+  "<ul>\n"
+BlockStart
+  "{%"
+Ident("for")
+  "for"
+Ident("item")
+  "item"
+Ident("in")
+  "in"
+Ident("sequence")
+  "sequence"
+BlockEnd
+  "%}"
+TemplateData("\n    <li>")
+  "\n    <li>"
+VariableStart
+  "{{"
+Ident("item")
+  "item"
+VariableEnd
+  "}}"
+TemplateData("</li>\n")
+  "</li>\n"
+BlockStart
+  "{%"
+Ident("endfor")
+  "endfor"
+BlockEnd
+  "%}"
+TemplateData("\n</ul>")
+  "\n</ul>"
+

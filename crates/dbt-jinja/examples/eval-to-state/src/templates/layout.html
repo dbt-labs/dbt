@@ -1,0 +1,12 @@
+<!doctype html>
+<title>{% block title %}{% endblock %} | My Site</title>
+<nav>
+  <ul>
+    <li><a href="{{ site_url }}/index.html">Index</a></li>
+    <li><a href="{{ site_url }}/about.html">About</a></li>
+  </ul>
+</nav>
+{%- set global_variable = 42 %}
+<div class="content">
+  {% block body %}{% endblock %}
+</div>

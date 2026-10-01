@@ -1,0 +1,12 @@
+---
+source: fs/sa/crates/dbt-jinja/minijinja/tests/test_parser.rs
+description: "{% for loop in seq %}\n  ...\n{% endfor %}"
+input_file: fs/sa/crates/dbt-jinja/minijinja/tests/parser-inputs/err_invalid_var_assignment.txt
+---
+Err(
+    Error {
+        kind: SyntaxError,
+        detail: "cannot assign to reserved variable name loop",
+        name: "err_invalid_var_assignment.txt",
+    },
+)

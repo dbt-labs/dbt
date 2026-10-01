@@ -1,0 +1,19 @@
+{{ [1, 2, 3] }}
+{{ (1, 2, 3) }}
+{{ (1,) }}
+{{ () }}
+{{ 1, 2 }}
+{{ 1, }}
+{{ (1, 2, 3,) }}                 {# trailing comma after last element #}
+{{ ( (1, 2), (3, 4) ) }}         {# tuple of two 2‑tuples #}
+{{ ("a", 42, true) }}            {# mixed types: str, int, bool #}
+{{ (1 + 2, 3 * 4) }}             {# tuple elements can be any expression #}
+{{ ((1,),) }}                    {# outer tuple containing a *singleton* tuple #}
+{{ [ (1, 2), () ] }}             {# list that contains two tuples #}
+{{ ('nested', ('tuple', 123), []) }}  {# deeply‑nested structures #}
+{{ (1,
+     2,
+     3) }}                       {# line‑breaks and extra whitespace #}
+{{ (1 ,
+   2 , 3 , ) }}                 {# whitespace variants + trailing comma #}
+{{ ((), ((),), (((),),),) }}     {# crazy nesting to stress the parser #}

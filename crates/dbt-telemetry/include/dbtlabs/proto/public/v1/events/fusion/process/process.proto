@@ -1,0 +1,19 @@
+syntax = "proto3";
+package v1.public.events.fusion.process;
+
+option go_package = "github.com/dbt-labs/proto-golang/v1/public/events/fusion/process";
+
+// Process-wide attributes for a telemetry-emitting process.
+message Process {
+  // Name of the emitting package, e.g. "dbt" or "dbt-lsp".
+  string package = 3;
+
+  // Version of the emitting package, e.g. "v2.0.0".
+  string version = 4;
+
+  // Host operating system, e.g. "linux", "darwin", "windows".
+  string host_os = 5;
+
+  // Host architecture, e.g. "x86_64", "aarch64".
+  string host_arch = 6;
+}

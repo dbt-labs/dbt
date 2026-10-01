@@ -91,6 +91,8 @@ jobs:
     steps:
       - name: "Check out the repository"
         uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # actions/checkout@v5
+        with:
+          ref: 1.latest
 
       - name: "Set up Python 3.11"
         uses: actions/setup-python@e797f83bcb11b83ae66e0230d6156d7c80228e7c # actions/setup-python@v6
@@ -142,6 +144,8 @@ jobs:
     steps:
       - name: "Check out the repository"
         uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # actions/checkout@v5
+        with:
+          ref: 1.latest
 
       - name: "Import build bot GPG key"
         id: import-gpg
@@ -209,7 +213,7 @@ jobs:
           author: "Github Build Bot <buildbot@dbtlabs.com>"
           committer: "Github Build Bot <buildbot@dbtlabs.com>"
           branch: update-test-durations
-          base: main
+          base: 1.latest
           delete-branch: true
           title: "Update test durations for pytest-split"
           body: |
@@ -232,6 +236,8 @@ jobs:
     steps:
       - name: "Check out the repository"
         uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # actions/checkout@v5
+        with:
+          ref: 1.latest
 
       - name: "Wait for CI to start"
         run: |
@@ -252,6 +258,8 @@ jobs:
     steps:
       - name: "Check out the repository"
         uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # actions/checkout@v5
+        with:
+          ref: 1.latest
 
       - name: "Merge PR"
         run: |

@@ -1,0 +1,24 @@
+---
+source: fs/sa/crates/dbt-jinja/minijinja/tests/test_templates.rs
+description: "{{ foo @ }}"
+info:
+  __minijinja_current_path: err_unexpected_character.txt
+  __minijinja_current_span:
+    start_line: 1
+    start_col: 1
+    start_offset: 0
+    end_line: 1
+    end_col: 1
+    end_offset: 0
+input_file: fs/sa/crates/dbt-jinja/minijinja/tests/inputs/err_unexpected_character.txt
+---
+!!!SYNTAX ERROR!!!
+
+Error {
+    kind: SyntaxError,
+    detail: "unexpected character",
+    name: "err_unexpected_character.txt",
+}
+
+syntax error: unexpected character
+(in err_unexpected_character.txt:1:8)

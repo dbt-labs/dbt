@@ -1,0 +1,24 @@
+[package]
+name = "dbt-vortex"
+version.workspace = true
+homepage.workspace = true
+repository.workspace = true
+authors.workspace = true
+license.workspace = true
+keywords.workspace = true
+edition.workspace = true
+
+[dependencies]
+dbt-fusion-workspace-hack = { version = "0.1" }
+
+prost = { workspace = true }
+serde = { workspace = true }
+vortex-client = { workspace = true }
+
+[lib]
+name = "dbt_vortex"
+path = "src/lib.rs"
+doctest = false
+
+[lints]
+workspace = true

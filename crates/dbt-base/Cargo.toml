@@ -1,0 +1,28 @@
+[package]
+authors.workspace = true
+description = "Shared, light-weight baseline utilities for dbt Fusion"
+edition.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+license.workspace = true
+name = "dbt-base"
+repository.workspace = true
+version.workspace = true
+
+[lints]
+workspace = true
+
+[features]
+# Note: never add this to the default feature set!
+stable-hasher = []
+
+
+[dependencies]
+dbt-fusion-workspace-hack = { version = "0.1" }
+# Note: this crate is the root of fusion dependency graph, avoid adding more
+# dependencies here if possible.
+
+[lib]
+doctest = true
+name = "dbt_base"
+path = "src/lib.rs"

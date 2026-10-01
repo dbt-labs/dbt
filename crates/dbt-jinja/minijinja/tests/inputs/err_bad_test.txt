@@ -1,0 +1,7 @@
+{"seq": [1, 2, 3]}
+---
+{% for item in seq %}
+  {% if item is reallyEven %}
+    {{ item }}
+  {% endif %}
+{% endfor %}

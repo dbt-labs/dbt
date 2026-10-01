@@ -1,0 +1,63 @@
+[package]
+name = "dbt-test-utils"
+version.workspace = true
+authors.workspace = true
+description.workspace = true
+edition.workspace = true
+license.workspace = true
+keywords.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+arrow = { workspace = true }
+async-trait = { workspace = true }
+base64 = { workspace = true }
+bytes = { workspace = true }
+dbt-clap-core = { workspace = true }
+dbt-cloud-config = { workspace = true }
+dbt-common = { workspace = true }
+dbt-features = { workspace = true }
+dbt-fusion-workspace-hack = { version = "0.1" }
+dbt-main = { workspace = true }
+dbt-profile = { workspace = true }
+dbt-schemas = { workspace = true }
+dbt-telemetry = { workspace = true }
+dbt-test-containers = { workspace = true }
+dbt-test-primitives = { workspace = true }
+dbt-tracing = { workspace = true }
+dbt-yaml = { workspace = true }
+diffy = { workspace = true }
+dirs = { workspace = true }
+dotenvy = { workspace = true }
+futures = { workspace = true }
+ignore = { version = "0.4" }
+itertools = { workspace = true }
+libc = "0.2.170"
+merge = { workspace = true }
+once_cell = { workspace = true }
+parquet = { workspace = true }
+pretty_assertions = { version = "1.4.1" }
+proto-rust = { workspace = true }
+regex = { workspace = true }
+rusqlite = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+tempfile = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+walkdir = { workspace = true }
+
+[dev-dependencies]
+dbt-runtime = { workspace = true }
+pbjson-types = { workspace = true }
+
+[target.'cfg(windows)'.dependencies]
+winapi = { version = "0.3", features = ["fileapi"] }
+
+[lib]
+name = "dbt_test_utils"
+doctest = false
+path = "src/mod.rs"

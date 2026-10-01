@@ -1,0 +1,163 @@
+name: Tests
+
+on: [push, pull_request]
+
+jobs:
+  test-latest:
+    name: Test on Latest Stable
+    runs-on: ${{ vars.UBUNTU_RUNNER }}
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Check
+        run: make check
+      - name: Test
+        run: make test
+
+  test-nightly:
+    name: Test on nightly
+    runs-on: ${{ vars.UBUNTU_RUNNER }}
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly
+      - uses: Swatinem/rust-cache@v2
+      - name: Wipe Cargo.lock
+        run: rm Cargo.lock
+      - name: Check
+        run: make check
+      - name: Test
+        run: make test
+
+  test-32bit:
+    name: Check on 1.63.0 (32bit)
+    runs-on: ${{ vars.UBUNTU_RUNNER }}
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.63.0
+          targets: armv5te-unknown-linux-gnueabi
+      - uses: Swatinem/rust-cache@v2
+      - name: Install Cross Deps
+        run: |
+          sudo apt-get update --fix-missing
+          sudo apt-get install -y gcc-arm-linux-gnueabi libc6-dev-armel-cross
+      - name: Restore Cargo.lock
+        run: cp Cargo.lock.msrv Cargo.lock
+      - name: Check
+        run: cargo check --all-features -p minijinja --target armv5te-unknown-linux-gnueabi
+
+  test-fuel-feature:
+    name: Check on 1.63.0 (fuel feature)
+    runs-on: ${{ vars.UBUNTU_RUNNER }}
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.63.0
+      - uses: Swatinem/rust-cache@v2
+      - name: Restore Cargo.lock
+        run: cp Cargo.lock.msrv Cargo.lock
+      - name: Check
+        run: cargo check --no-default-features -p minijinja --features fuel
+
+  test-stable:
+    name: Test on 1.63.0
+    runs-on: ${{ vars.UBUNTU_RUNNER }}
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.63.0
+      - uses: Swatinem/rust-cache@v2
+      - name: Restore Cargo.lock
+        run: cp Cargo.lock.msrv Cargo.lock
+      - name: Test
+        run: make test-msrv
+
+  test-no-lock:
+    name: Test on Latest (No Lock)
+    runs-on: ${{ vars.UBUNTU_RUNNER }}
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Remove Cargo.lock
+        run: rm Cargo.lock
+      - name: Test
+        run: make test
+
+  test-wasi:
+    name: Test on WASI
+    runs-on: ${{ vars.UBUNTU_RUNNER }}
+ 
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+          targets: wasm32-wasi
+      - uses: Swatinem/rust-cache@v2
+      - name: Install WasmTime
+        run: |
+          curl -LO https://github.com/bytecodealliance/wasmtime/releases/download/v13.0.0/wasmtime-v13.0.0-x86_64-linux.tar.xz
+          tar xvf wasmtime-v13.0.0-x86_64-linux.tar.xz
+          echo `pwd`/wasmtime-v13.0.0-x86_64-linux >> $GITHUB_PATH
+      - name: Test
+        run: make wasi-test
+
+  test-python:
+    name: Test on Python binding
+    runs-on: ${{ vars.UBUNTU_RUNNER }}
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Test
+        run: make python-test
+  
+  test-cli-linux:
+    name: Test CLI Linux
+    runs-on: ${{ vars.UBUNTU_RUNNER }}
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Check
+        run: make check-cli
+      - name: Test
+        run: make test-cli
+  
+  test-cli-windows:
+    name: Test CLI Windows
+    runs-on: ${{ vars.WINDOWS_RUNNER }}
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Check
+        run: make check-cli
+      - name: Test
+        run: make test-cli

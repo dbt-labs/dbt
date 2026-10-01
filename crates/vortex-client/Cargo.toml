@@ -1,0 +1,36 @@
+[package]
+name = "vortex-client"
+version.workspace = true
+homepage.workspace = true
+repository.workspace = true
+authors.workspace = true
+license.workspace = true
+keywords.workspace = true
+edition.workspace = true
+
+[features]
+default = []
+scheduling-tests = []
+
+[dependencies]
+proto-rust = { path = "../proto-rust" }
+
+dbt-fusion-workspace-hack = { version = "0.1" }
+http = { workspace = true }
+pbjson-types = { workspace = true }
+prost = { workspace = true }
+rand = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+ureq = { workspace = true }
+uuid = { workspace = true }
+
+
+[lib]
+name = "vortex_client"
+path = "src/lib.rs"
+doctest = false
+
+[lints]
+workspace = true

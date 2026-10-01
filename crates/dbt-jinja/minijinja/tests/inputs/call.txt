@@ -1,0 +1,6 @@
+{
+  "upper": 10
+}
+---
+{% with f = range %}{% for x in f(upper) %}[{{ x }}]{% endfor %}{% endwith %}
+{% for k, v in dict(a=1, b=2, c=3)|dictsort %}[{{ k }}:{{ v }}]{% endfor %}

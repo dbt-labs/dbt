@@ -1,0 +1,105 @@
+syntax = "proto3";
+
+package v1.public.events.mcp;
+option go_package = "github.com/dbt-labs/proto-golang/v1/public/events/mcp";
+
+import "dbtlabs/proto/public/v1/common/vortex_options.proto";
+import "dbtlabs/proto/public/v1/events/vortex.proto";
+import "dbtlabs/proto/public/v1/common/vortex_telemetry_contexts.proto";
+
+import "google/protobuf/struct.proto";
+
+
+message ToolCalled {
+  option (v1.public.common.vortex_namespace) = VORTEX_ICEBERG_NAMESPACE_TELEMETRY;
+  option (v1.public.common.vortex_enabled) = true;
+  v1.events.vortex.VortexMessageEnrichment enrichment = 1;
+
+  // event_id is the unique identifier for this event. It is a generated UUID.
+  string event_id = 2;
+
+  // The start of the tool call in milliseconds since the Unix epoch
+  int64 start_time_ms = 3;
+
+  // The end of the tool call in milliseconds since the Unix epoch
+  int64 end_time_ms = 4;
+
+  // The name of the tool, e.g. get_dimentions, dbt build, get_mart_models
+  string tool_name = 5;
+
+  // The arguments supplied to the tool, e.g. a list of metrics or a dbt CLI selector
+  map<string, string> arguments = 6;
+
+  // An error message if the call fails
+  string error_message = 7;
+
+  // The user can optionally set their dev environment id to use tools like the execute_sql
+  string dbt_cloud_environment_id_dev = 8;
+
+  // The user can optionally set their prod environment id to use tools like list_metrics
+  string dbt_cloud_environment_id_prod = 9;
+
+  // The user can optionally set their user id to use tools like execute_sql
+  string dbt_cloud_user_id = 10;
+
+  // The user id found at ~/.dbt/.user.yml if present
+  string local_user_id = 11;
+
+  // The dbt Cloud host that the user configured
+  string host = 12;
+
+  // The multicell account prefix that the user configured: https://docs.getdbt.com/docs/cloud/about-cloud/access-regions-ip-addresses
+  string multicell_account_prefix = 13;
+
+  // Common dbt Platform context
+  v1.public.common.vortex_telemetry_contexts.VortexTelemetryDbtCloudContext ctx = 14;
+
+  // The version of dbt_mcp being used (e.g. 0.8.2)
+  string dbt_mcp_version = 15;
+
+  // How the instance of dbt-mcp was authenticated. Only applicable to local MCP (e.g. env-vars, oauth, null)
+  string authentication_method = 16;
+
+  // The trace that this tool call is associated with, i.e., the tools it is called with for a single user message. Only applicable to tool calls within an agent run in the dbt Platform.
+  string trace_id = 17;
+
+  // The list of disabled toolsets from the DISABLE_* environment variables or x-dbt-disable-toolsets header.
+  repeated string disabled_toolsets = 18;
+
+  // This list of disabled tools from the DISABLE_TOOLS environment variable or x-dbt-disable-tools header.
+  repeated string disabled_tools = 19;
+
+  // Indicates where this request is coming from with the user_agent header. This is only relevant for remote MCP. For local MCP, the user_agent can be attained from the enrichment field.
+  string user_agent = 20;
+
+  // Attribution identifier for tracking. Uses the format "type__value" (e.g. "thread_id__<x-dbt-copilot-thread-id>"). Only applicable to tool calls within an agent run in the dbt Platform.
+  string attribution_id = 21;
+  v1.public.common.vortex_telemetry_contexts.VortexTelemetryCommonContext common_context = 22;
+
+  // Estimated number of tokens in the serialized tool arguments (the tool call input).
+  // Approximate: produced by a single reference tokenizer server-side, not the calling
+  // client's actual tokenizer. See token_estimation_method for how it was derived.
+  int64 request_token_estimate = 23;
+
+  // Estimated number of tokens in the serialized tool response payload (the tool call
+  // output). Approximate in the same way as request_token_estimate.
+  int64 response_token_estimate = 24;
+
+  // How the token estimates were produced, e.g. "tiktoken/o200k_base" or "char_div_4".
+  // Lets consumers treat the estimates as approximate and know when the method changed.
+  string token_estimation_method = 25;
+
+  // The LLM model the calling client used, when known (e.g. "claude-sonnet-4-5"). Populated
+  // for tool calls within an agent run in the dbt Platform, where the model is resolved
+  // server-side. Blank for remote and local MCP, where the client's model is not known to
+  // the server.
+  string llm_model = 26;
+
+  // Exact character count of the serialized tool arguments. Deterministic and
+  // tokenizer-independent — the durable primitive behind request_token_estimate.
+  int64 request_char_count = 27;
+
+  // Exact character count of the serialized tool response payload. Deterministic and
+  // tokenizer-independent — the durable primitive behind response_token_estimate.
+  int64 response_char_count = 28;
+}

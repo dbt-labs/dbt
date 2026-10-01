@@ -1,0 +1,20 @@
+---
+source: minijinja/tests/test_lexer.rs
+description: "before {% raw %} this is a {{ raw }} {% block %} {% endraw %} after\n\nbefore {%- raw %} this is a {{ raw }} {% block %} {% endraw -%} after\n\nbefore {%- raw -%} this is a {{ raw }} {% block %} {%- endraw -%} after"
+input_file: minijinja/tests/lexer-inputs/raw.txt
+---
+TemplateData("before ")
+  "before "
+TemplateData(" this is a {{ raw }} {% block %} ")
+  " this is a {{ raw }} {% block %} "
+TemplateData(" after\n\nbefore")
+  " after\n\nbefore"
+TemplateData(" this is a {{ raw }} {% block %} ")
+  " this is a {{ raw }} {% block %} "
+TemplateData("after\n\nbefore")
+  "after\n\nbefore"
+TemplateData("this is a {{ raw }} {% block %}")
+  " this is a {{ raw }} {% block %} "
+TemplateData("after")
+  "after"
+

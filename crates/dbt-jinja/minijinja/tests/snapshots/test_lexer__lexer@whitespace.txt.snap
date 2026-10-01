@@ -1,0 +1,31 @@
+---
+source: crates/dbt-jinja/minijinja/tests/test_lexer.rs
+description: "foo {{- bar -}} baz {{ blah }} blub\nfoo {#- comment -#} baz {# blah #} blub"
+input_file: crates/dbt-jinja/minijinja/tests/lexer-inputs/whitespace.txt
+---
+TemplateData("foo")
+  "foo"
+VariableStart
+  "{{-"
+Ident("bar")
+  "bar"
+VariableEnd
+  "-}} "
+TemplateData("baz ")
+  "baz "
+VariableStart
+  "{{"
+Ident("blah")
+  "blah"
+VariableEnd
+  "}}"
+TemplateData(" blub\nfoo")
+  " blub\nfoo"
+Comment
+  "{#- comment -#}"
+TemplateData("baz ")
+  "baz "
+Comment
+  "{# blah #}"
+TemplateData(" blub")
+  " blub"

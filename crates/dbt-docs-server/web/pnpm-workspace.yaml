@@ -1,0 +1,8 @@
+# Not a real workspace — this file exists only to carry `overrides`, which pnpm 11
+# no longer reads from the `pnpm` field in package.json. Declaring them here keeps
+# the install identical on pnpm 10 and 11.
+#
+# zod: sourdough resolves 3.24.2 while other transitive deps want ^3.25.x. Without
+# the override both copies install and both end up in the bundle.
+overrides:
+  zod: ^3.25.76

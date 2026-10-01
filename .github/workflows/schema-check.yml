@@ -22,7 +22,7 @@ on:
       target_branch:
         description: "The branch to check against"
         type: string
-        default: "main"
+        default: "1.latest"
         required: true
 
 # no special access is needed

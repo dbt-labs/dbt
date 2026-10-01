@@ -1,115 +1,38 @@
-# Byte-compiled / optimized / DLL files
-__pycache__/
-*.py[cod]
-*$py.class
-
-# C extensions
-*.so
-
-# Distribution / packaging
-.Python
-env*/
-dbt_env/
-build/
-!tests/functional/build
-!core/dbt/docs/build
-develop-eggs/
-dist/
-dist-*/
-downloads/
-eggs/
-.eggs/
-lib/
-lib64/
-parts/
-sdist/
-var/
-*.egg-info/
-.installed.cfg
-*.egg
-.mypy_cache/
-.dmypy.json
-logs/
-.user.yml
-profiles.yml
-
-# PyInstaller
-#  Usually these files are written by a python script from a template
-#  before PyInstaller builds the exe, so as to inject date/other infos into it.
-*.manifest
-*.spec
-
-# Installer logs
-pip-log.txt
-pip-delete-this-directory.txt
-
-# Unit test / coverage reports
-htmlcov/
-.tox/
-.coverage
-.coverage.*
-.cache
-.env
-nosetests.xml
-coverage.xml
-*,cover
-.hypothesis/
-test.env
-makefile.test.env
-*.pytest_cache/
-
-# Unit test artifacts
-index.html
-
-
-# Translations
-*.mo
-*.pot
-
-# Django stuff:
-*.log
-
-# Sphinx documentation
-docs/_build/
-
-# PyBuilder
+# Ignore anything in any directory called target
 target/
+dbt_packages/
+dbt_internal_packages/
+# Ignore only the top-level datasets directory
+/datasets
+# Ignore antlr directories
+.antlr
+*.jar
+dist/
 
-# Ipython Notebook
-.ipynb_checkpoints
-
-# Emacs
-*~
-
-# Sublime Text
-*.sublime-*
-
-# Vim
-*.sw*
-
-# Pyenv
-.python-version
-
-# Vim
-*.sw*
-
-# pycharm
-.idea/
-venv/
-.venv*/
-
-# AWS credentials
-.aws/
-
-# MacOS
 .DS_Store
+.github/workflows/.secrets
 
-# vscode
-.vscode/
-*.code-workspace
+# dbt artifacts
+.user.yml
+dbt.log
+query_log.sql
+log_output/
+logs/
 
-# poetry
-poetry.lock
+scratch/
 
-# asdf
-.tool-versions
+# pre-compiled libraries (e.g. ADBC/ODBC drivers)
+*.so
+*.dylib
+*.dll
+
+# vim
+*.swp
+
+# jetbrains
+.idea/
+
+#redis
+dump.rdb
+
+AGENTS.local.md

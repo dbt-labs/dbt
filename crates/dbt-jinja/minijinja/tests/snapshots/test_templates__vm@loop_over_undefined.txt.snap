@@ -1,0 +1,8 @@
+---
+source: minijinja/tests/test_templates.rs
+description: "[{% for item in seq %}{% endfor %}]"
+info: {}
+input_file: minijinja/tests/inputs/loop_over_undefined.txt
+---
+[]
+

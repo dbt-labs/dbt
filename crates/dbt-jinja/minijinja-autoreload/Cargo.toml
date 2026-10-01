@@ -1,0 +1,28 @@
+[package]
+name = "minijinja-autoreload"
+version = "2.5.0"
+edition = "2018"
+license = "Apache-2.0"
+authors = ["Armin Ronacher <armin.ronacher@active-4.com>"]
+description = "auto reload support for MiniJinja"
+homepage = "https://github.com/mitsuhiko/minijinja"
+repository = "https://github.com/mitsuhiko/minijinja"
+keywords = ["jinja", "jinja2", "templates", "autoreload"]
+readme = "README.md"
+rust-version = "1.70"
+
+[package.metadata.docs.rs]
+rustdoc-args = ["--cfg", "docsrs", "--html-in-header", "doc-header.html"]
+
+[features]
+default = ["watch-fs"]
+watch-fs = ["notify"]
+
+[dependencies]
+minijinja = { version = "2.5.0", path = "../minijinja", default-features = false }
+notify = { version = ">=5.0.0,<8.0.0", optional = true, default-features = false, features = [
+  "macos_fsevent",
+] }
+
+[dev-dependencies]
+minijinja = { version = "2.5.0", path = "../minijinja", features = ["loader"] }

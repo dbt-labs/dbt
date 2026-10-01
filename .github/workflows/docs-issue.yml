@@ -1,11 +1,11 @@
 # **what?**
-# Open an issue in docs.getdbt.com when an issue is labeled `user docs` and closed as completed
+# Open an issue in docs.getdbt.com when an issue is labeled `action:needs-docs` and closed as completed
 
 # **why?**
 # To reduce barriers for keeping docs up to date
 
 # **when?**
-# When an issue is labeled `user docs` and is closed as completed.  Can be labeled before or after the issue is closed.
+# When an issue is labeled `action:needs-docs` and is closed as completed.  Can be labeled before or after the issue is closed.
 
 
 name: Open issues in docs.getdbt.com repo when an issue is labeled
@@ -24,7 +24,7 @@ permissions:
 
 jobs:
   get_pr_info:
-    # we only want to run this when the issue is closed as completed and the label `user docs` has been assigned.
+    # we only want to run this when the issue is closed as completed and the label `action:needs-docs` has been assigned.
     # If this logic does not exist in this workflow, it runs the
     # risk of duplicaton of issues being created due to merge and label both triggering this workflow to run and neither having
     # generating the comment before the other runs.  This lives here instead of the shared workflow because this is where we
@@ -32,7 +32,7 @@ jobs:
     if: |
       (github.event.issue.state == 'closed' &&
        github.event.issue.state_reason == 'completed' &&
-       contains( github.event.issue.labels.*.name, 'user docs'))
+       contains( github.event.issue.labels.*.name, 'action:needs-docs'))
     runs-on: ubuntu-latest
     outputs:
       pr_url: ${{ steps.find_pr.outputs.pr_url }}

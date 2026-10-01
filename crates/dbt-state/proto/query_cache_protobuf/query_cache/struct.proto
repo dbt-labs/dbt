@@ -1,0 +1,28 @@
+syntax = "proto3";
+
+package com.fivetran.query_cache;
+
+// The copy of google.protobuf.Struct but with support for integer values
+message Struct {
+  map<string, Value> fields = 1;
+}
+
+message Value {
+  oneof kind {
+    NullValue null_value = 1;
+    double double_value = 2;
+    int64 int_value = 3;
+    string string_value = 4;
+    bool bool_value = 5;
+    Struct struct_value = 6;
+    ListValue list_value = 7;
+  }
+}
+
+enum NullValue {
+  NULL_VALUE = 0;
+}
+
+message ListValue {
+  repeated Value values = 1;
+}

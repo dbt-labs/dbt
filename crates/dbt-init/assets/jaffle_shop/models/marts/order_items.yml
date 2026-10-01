@@ -1,0 +1,41 @@
+models:
+  - name: order_items
+    columns:
+      - name: order_item_id
+        data_tests:
+          - not_null
+          - unique
+      - name: order_id
+        data_tests:
+          - relationships:
+              arguments:
+                to: ref('orders')
+                field: order_id
+unit_tests:
+  - name: test_supply_costs_sum_correctly
+    description: "Test that the counts of drinks and food orders convert to booleans properly."
+    model: order_items
+    given:
+      - input: ref('stg_supplies')
+        rows:
+          - {product_id: 1, supply_cost: 4.50}
+          - {product_id: 2, supply_cost: 3.50}
+          - {product_id: 2, supply_cost: 5.00}
+      - input: ref('stg_products')
+        rows:
+          - {product_id: 1}
+          - {product_id: 2}
+      - input: ref('stg_order_items')
+        rows:
+          - {order_id: 1, product_id: 1}
+          - {order_id: 2, product_id: 2}
+          - {order_id: 2, product_id: 2}
+      - input: ref('stg_orders')
+        rows:
+          - {order_id: 1}
+          - {order_id: 2}
+    expect:
+      rows:
+        - {order_id: 1, product_id: 1, supply_cost: 4.50}
+        - {order_id: 2, product_id: 2, supply_cost: 8.50}
+        - {order_id: 2, product_id: 2, supply_cost: 8.50}

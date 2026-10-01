@@ -1,0 +1,9 @@
+---
+source: minijinja/tests/test_templates.rs
+description: "<h1>{{ unsafe }}</h1>"
+info:
+  unsafe: "<foo>"
+input_file: minijinja/tests/inputs/escaping.html
+---
+<h1>&lt;foo&gt;</h1>
+

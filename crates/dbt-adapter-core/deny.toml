@@ -1,0 +1,10 @@
+[graph]
+exclude = ["dbt-fusion-workspace-hack"]
+
+[bans]
+multiple-versions = "allow"
+deny = [
+  { crate = "dbt-common", reason = "dbt-adapter-core should be idenpendent of dbt-common" },
+  { crate = "dbt-frontend-common", reason = "if you need Dialect, add your code to adapter.rs in dbt-common" },
+  { crate = "arrow", reason = "if you need Arrow, your code should be in dbt-adapter not dbt-adapter-core" },
+]

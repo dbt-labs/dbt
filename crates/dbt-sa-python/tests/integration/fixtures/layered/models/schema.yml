@@ -1,0 +1,16 @@
+version: 2
+
+models:
+  - name: stg_people
+    config:
+      tags: ['staging']
+    columns:
+      - name: id
+        data_tests: [not_null, unique]
+
+  - name: mart_people
+    config:
+      tags: ['mart']
+    columns:
+      - name: id
+        data_tests: [not_null, unique]

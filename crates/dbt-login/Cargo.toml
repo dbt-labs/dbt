@@ -1,0 +1,41 @@
+[package]
+name = "dbt-login"
+version.workspace = true
+homepage.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "dbt login command extensible via hooks"
+license.workspace = true
+keywords.workspace = true
+edition.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+dbt-common = { workspace = true }
+dbt-fusion-workspace-hack = { version = "0.1" }
+dbt-platform-auth = { workspace = true }
+dbt-schemas = { workspace = true }
+dbt-state = { workspace = true }
+dbt-yaml = { workspace = true }
+vortex-events = { workspace = true }
+
+async-trait = { workspace = true }
+base64 = { workspace = true }
+console = { workspace = true }
+dialoguer = { workspace = true }
+dirs = { workspace = true }
+open = { workspace = true }
+reqwest = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+url = { workspace = true }
+uuid = { workspace = true }
+
+[lib]
+name = "dbt_login"
+path = "src/lib.rs"
+doctest = false

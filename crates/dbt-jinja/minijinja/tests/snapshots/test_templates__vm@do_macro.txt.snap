@@ -1,0 +1,11 @@
+---
+source: minijinja/tests/test_templates.rs
+description: "{% macro dialog(title) %}Dialog is {{ title }}{% endmacro %}\n\nShould be empty: {% do dialog(title=\"Hello World\") %}\nShould show: {{ dialog(title=\"Hello World\") }}"
+info: {}
+input_file: minijinja/tests/inputs/do_macro.txt
+---
+
+
+Should be empty: 
+Should show: Dialog is Hello World
+

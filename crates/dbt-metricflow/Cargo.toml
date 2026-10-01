@@ -1,0 +1,31 @@
+[package]
+name = "dbt-metricflow"
+version.workspace = true
+edition = "2024"
+license.workspace = true
+repository.workspace = true
+description = "MetricFlow semantic query compiler. Translates metric queries into executable SQL"
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "dbt-metricflow"
+path = "src/bin/dbt_metricflow.rs"
+
+[dependencies]
+dbt-fusion-workspace-hack = { version = "0.1" }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+arrow-array = { workspace = true }
+arrow-ipc = { workspace = true }
+arrow-schema = { workspace = true }
+dbt-adbc = { workspace = true }
+dbt-auth = { workspace = true }
+dbt-profile = { workspace = true }
+dirs = { workspace = true }
+parquet = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+tempfile = { workspace = true }

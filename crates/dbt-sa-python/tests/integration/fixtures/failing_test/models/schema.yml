@@ -1,0 +1,8 @@
+version: 2
+
+models:
+  - name: dupes
+    columns:
+      # dupes has id=1 twice, so this test always fails with exactly 1 failure.
+      - name: id
+        data_tests: [unique]

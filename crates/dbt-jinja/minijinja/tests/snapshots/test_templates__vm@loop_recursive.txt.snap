@@ -1,0 +1,53 @@
+---
+source: minijinja/tests/test_templates.rs
+description: "<ul class=\"nav\">\n{% for item in nav recursive %}\n  <li><a href={{ item.link }}\">{{ item.title }}</a>{%\n    if item.children %}<ul>{{ loop(item.children) }}</ul>{% endif %}</li>\n{% endfor %}\n</ul>\n\n<ul class=\"nav\">\n{% for item in nav recursive %}\n  <li><a href={{ item.link }}\">{{ item.title }}</a>{%\n    if item.children %}<ul>{{ loop(item.children)|upper }}</ul>{% endif %}</li>\n{% endfor %}\n</ul>"
+info:
+  nav:
+    - link: /
+      title: Index
+    - children:
+        - children:
+            - link: /docs/installation/quickstart
+              title: Quickstart
+            - link: /docs/installation/advanced
+              title: Advanced
+          link: /docs/installation
+          title: Installation
+        - link: /docs/faq
+          title: FAQ
+      link: /docs
+      title: Docs
+input_file: minijinja/tests/inputs/loop_recursive.txt
+---
+<ul class="nav">
+
+  <li><a href=/">Index</a></li>
+
+  <li><a href=/docs">Docs</a><ul>
+  <li><a href=/docs/installation">Installation</a><ul>
+  <li><a href=/docs/installation/quickstart">Quickstart</a></li>
+
+  <li><a href=/docs/installation/advanced">Advanced</a></li>
+</ul></li>
+
+  <li><a href=/docs/faq">FAQ</a></li>
+</ul></li>
+
+</ul>
+
+<ul class="nav">
+
+  <li><a href=/">Index</a></li>
+
+  <li><a href=/docs">Docs</a><ul>
+  <LI><A HREF=/DOCS/INSTALLATION">INSTALLATION</A><UL>
+  <LI><A HREF=/DOCS/INSTALLATION/QUICKSTART">QUICKSTART</A></LI>
+
+  <LI><A HREF=/DOCS/INSTALLATION/ADVANCED">ADVANCED</A></LI>
+</UL></LI>
+
+  <LI><A HREF=/DOCS/FAQ">FAQ</A></LI>
+</ul></li>
+
+</ul>
+

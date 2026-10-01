@@ -1,0 +1,40 @@
+---
+source: fs/sa/crates/dbt-jinja-ctx/tests/load_ctx.rs
+assertion_line: 107
+expression: schema
+---
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "LoadCtx",
+  "description": "Env globals for the load phase. Today this is `GlobalCore` verbatim; the outer struct exists so future load-only fields can be added without disturbing the shared core, and so phase-specific JsonSchema names (`LoadCtx`) appear in the generated schema artefacts.",
+  "type": "object",
+  "required": [
+    "flags",
+    "run_started_at",
+    "target"
+  ],
+  "properties": {
+    "flags": {
+      "description": "`{{ flags }}` — CLI + project flags. At load this wraps a plain `BTreeMap<String, Value>` (`Value::from_serialize`); at parse it wraps the `Flags` Object (`Value::from_object`). Either wrapping round-trips through serde with Object identity preserved via the minijinja `VALUE_HANDLES` smuggle path."
+    },
+    "run_started_at": {
+      "description": "`{{ run_started_at }}` — UTC datetime of the dbt invocation.",
+      "allOf": [
+        {
+          "$ref": "#/definitions/JinjaObject<minijinja_contrib::modules::py_datetime::datetime::PyDateTime>"
+        }
+      ]
+    },
+    "target": {
+      "description": "`{{ target }}` — connection metadata (profile name, database, schema, adapter type, …)."
+    }
+  },
+  "definitions": {
+    "JinjaObject<minijinja_contrib::modules::py_datetime::datetime::PyDateTime>": {
+      "description": "Opaque Jinja-callable object backed by `minijinja_contrib::modules::py_datetime::datetime::PyDateTime`.",
+      "type": "object",
+      "x-jinja-object": true,
+      "x-jinja-object-type": "minijinja_contrib::modules::py_datetime::datetime::PyDateTime"
+    }
+  }
+}

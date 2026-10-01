@@ -1,0 +1,44 @@
+---
+source: fs/sa/crates/dbt-jinja/minijinja/tests/test_parser.rs
+description: "<ul>\n{% for item in seq %}\n    <li>{{ item }}</li>\n{% endfor %}\n</ul>"
+input_file: fs/sa/crates/dbt-jinja/minijinja/tests/parser-inputs/for_loop.txt
+---
+Ok(
+    Template {
+        children: [
+            EmitRaw {
+                raw: "<ul>\n",
+            } @ 1:1-2:1,
+            ForLoop {
+                target: Var {
+                    id: "item",
+                } @ 2:8-2:12,
+                iter: Var {
+                    id: "seq",
+                } @ 2:16-2:19,
+                filter_expr: None,
+                recursive: false,
+                body: [
+                    EmitRaw {
+                        raw: "\n    <li>",
+                    } @ 2:22-3:9,
+                    EmitExpr {
+                        expr: Var {
+                            id: "item",
+                        } @ 3:9-3:19,
+                    } @ 3:9-3:19,
+                    EmitRaw {
+                        raw: "</li>\n",
+                    } @ 3:19-4:1,
+                ],
+                else_body: [],
+                start_tag_span:  @ 2:1-2:22,
+                else_tag_span: None,
+                end_tag_span:  @ 4:1-4:13,
+            } @ 2:1-4:13,
+            EmitRaw {
+                raw: "\n</ul>",
+            } @ 4:13-5:6,
+        ],
+    } @ 1:1-5:6,
+)

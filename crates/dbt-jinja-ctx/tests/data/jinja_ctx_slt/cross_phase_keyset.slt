@@ -1,0 +1,290 @@
+# Cross-phase key-set documentation.
+#
+# This file is the living source-of-truth for "which Jinja key appears in
+# which ctx struct's serialized output." Fixtures populated so far:
+#   * load              (PR 1) — load env globals
+#   * resolve_globals   (PR 2) — parse env globals
+#   * resolve_base      (PR 3) — parse per-render base ctx
+#   * resolve_model     (PR 4) — parse per-render per-model overlay ctx
+# Future PRs will flip the remaining `<skip>` placeholders.
+#
+# IMPORTANT: each phase column reflects ONLY what that ctx struct serializes.
+# At parse render time, Jinja sees `resolve_globals + resolve_base` (or
+# `resolve_globals + resolve_model` per-model) layered together — so a key
+# being `<absent>` in `resolve_model` means "not added by the per-model
+# overlay" (it may still be visible via env globals from `resolve_globals`,
+# or via the resolve_base layer for non-model renders).
+
+# `target` / `flags` / `run_started_at` / `project_name` / `var` etc. live in
+# env globals (resolve_globals) — neither per-render ctx re-emits them.
+key target.name
+----
+load              dev
+resolve_globals   dev
+resolve_base      <absent>
+resolve_model     <absent>
+compile_base      <skip>
+compile_node      <skip>
+run_node          <skip>
+
+key flags.FULL_REFRESH
+----
+load              false
+resolve_globals   false
+resolve_base      <absent>
+resolve_model     <absent>
+compile_base      <skip>
+compile_node      <skip>
+run_node          <skip>
+
+key run_started_at
+----
+load              <object>
+resolve_globals   <object>
+resolve_base      <absent>
+resolve_model     <absent>
+compile_base      <skip>
+compile_node      <skip>
+run_node          <skip>
+
+key project_name
+----
+load              <absent>
+resolve_globals   my_project
+resolve_base      <absent>
+resolve_model     <absent>
+compile_base      <skip>
+compile_node      <skip>
+run_node          <skip>
+
+key env.name
+----
+load              <absent>
+resolve_globals   dev
+resolve_base      <absent>
+resolve_model     <absent>
+compile_base      <skip>
+compile_node      <skip>
+run_node          <skip>
+
+key var
+----
+load              <absent>
+resolve_globals   <object>
+resolve_base      <absent>
+resolve_model     <absent>
+compile_base      <skip>
+compile_node      <skip>
+run_node          <skip>
+
+key database
+----
+load              <absent>
+resolve_globals   analytics
+resolve_base      <absent>
+resolve_model     <absent>
+compile_base      <skip>
+compile_node      <skip>
+run_node          <skip>
+
+key schema
+----
+load              <absent>
+resolve_globals   public
+resolve_base      <absent>
+resolve_model     <absent>
+compile_base      <skip>
+compile_node      <skip>
+run_node          <skip>
+
+key invocation_id
+----
+load              <absent>
+resolve_globals   11111111-2222-3333-4444-555555555555
+resolve_base      <absent>
+resolve_model     <absent>
+compile_base      <skip>
+compile_node      <skip>
+run_node          <skip>
+
+key write
+----
+load              <absent>
+resolve_globals   null
+resolve_base      <absent>
+resolve_model     <absent>
+compile_base      <skip>
+compile_node      <skip>
+run_node          <skip>
+
+# `execute` is a per-render concept. resolve_base emits a literal `false`
+# bool. resolve_model emits a real `ParseExecute` Object whose `is_true()`
+# flips an AtomicBool when truthy-tested — round-tripped through serde via
+# `JinjaObject<ParseExecute>` so dispatch identity holds.
+key execute
+----
+load              <absent>
+resolve_globals   <absent>
+resolve_base      false
+resolve_model     <object>
+compile_base      <skip>
+compile_node      <skip>
+run_node          <skip>
+
+# `node` lives on resolve_base only as a literal `Value::NONE`. resolve_model
+# does NOT emit `node` — instead it emits `model` (the per-model dict), which
+# is a structurally different concept.
+key node
+----
+load              <absent>
+resolve_globals   <absent>
+resolve_base      null
+resolve_model     <absent>
+compile_base      <skip>
+compile_node      <skip>
+run_node          <skip>
+
+# `connection_name`, `MACRO_DISPATCH_ORDER`, `TARGET_PACKAGE_NAME`, `doc`,
+# `dbt`-namespace are resolve_base additions; resolve_model does NOT
+# re-emit them (they overlay-merge from resolve_base at render time).
+key connection_name
+----
+load              <absent>
+resolve_globals   <absent>
+resolve_base      ""
+resolve_model     <absent>
+compile_base      <skip>
+compile_node      <skip>
+run_node          <skip>
+
+key TARGET_PACKAGE_NAME
+----
+load              <absent>
+resolve_globals   <absent>
+resolve_base      my_project
+resolve_model     <absent>
+compile_base      <skip>
+compile_node      <skip>
+run_node          <skip>
+
+key doc
+----
+load              <absent>
+resolve_globals   <absent>
+resolve_base      <present>
+resolve_model     <absent>
+compile_base      <skip>
+compile_node      <skip>
+run_node          <skip>
+
+key dbt
+----
+load              <absent>
+resolve_globals   <absent>
+resolve_base      <object>
+resolve_model     <absent>
+compile_base      <skip>
+compile_node      <skip>
+run_node          <skip>
+
+# Callable Jinja values introduced by resolve_model. ref/source/function/
+# config exist on the per-model ctx and surface again at compile/run scope.
+# resolve_base carries config-only `ref` / `source` / `metric` / `function`
+# stand-ins (dbt-labs/fs#13819): nothing there can resolve a node, but naming
+# macros read `ref.config`.
+key ref
+----
+load              <absent>
+resolve_globals   <absent>
+resolve_base      ref-stub
+resolve_model     ref-fn-stub
+compile_base      <skip>
+compile_node      <skip>
+run_node          <skip>
+
+key source
+----
+load              <absent>
+resolve_globals   <absent>
+resolve_base      source-stub
+resolve_model     source-fn-stub
+compile_base      <skip>
+compile_node      <skip>
+run_node          <skip>
+
+key function
+----
+load              <absent>
+resolve_globals   <absent>
+resolve_base      function-stub
+resolve_model     function-fn-stub
+compile_base      <skip>
+compile_node      <skip>
+run_node          <skip>
+
+key metric
+----
+load              <absent>
+resolve_globals   <absent>
+resolve_base      metric-stub
+resolve_model     metric-fn-stub
+compile_base      <skip>
+compile_node      <skip>
+run_node          <skip>
+
+key config
+----
+load              <absent>
+resolve_globals   <absent>
+resolve_base      <absent>
+resolve_model     config-stub
+compile_base      <skip>
+compile_node      <skip>
+run_node          <skip>
+
+key this
+----
+load              <absent>
+resolve_globals   <absent>
+resolve_base      <absent>
+resolve_model     this-stub
+compile_base      <skip>
+compile_node      <skip>
+run_node          <skip>
+
+# Per-model identifiers + path/span markers — resolve_model only.
+key TARGET_UNIQUE_ID
+----
+load              <absent>
+resolve_globals   <absent>
+resolve_base      <absent>
+resolve_model     my_project.dbt_columns
+compile_base      <skip>
+compile_node      <skip>
+run_node          <skip>
+
+# `model` is `from_object(BTreeMap<String, MinijinjaValue>)`. Dot-walk into
+# it returns the inner entries — covered exhaustively by
+# resolve_model_basics.slt and the `model_downcasts_to_btreemap_string_value`
+# Rust regression test.
+key model.name
+----
+load              <absent>
+resolve_globals   <absent>
+resolve_base      <absent>
+resolve_model     dbt_columns
+compile_base      <skip>
+compile_node      <skip>
+run_node          <skip>
+
+# `builtins` is the per-model overlay map of ref/source/function/config
+# values. Compile/run-node code downcasts this to BTreeMap<String, Value>.
+key builtins.ref
+----
+load              <absent>
+resolve_globals   <absent>
+resolve_base      <absent>
+resolve_model     ref-fn-stub
+compile_base      <skip>
+compile_node      <skip>
+run_node          <skip>

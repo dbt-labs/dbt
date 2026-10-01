@@ -1,0 +1,22 @@
+---
+source: fs/sa/crates/dbt-jinja/minijinja/tests/test_parser.rs
+description: "Hello {{ world }}!"
+input_file: fs/sa/crates/dbt-jinja/minijinja/tests/parser-inputs/simple.txt
+---
+Ok(
+    Template {
+        children: [
+            EmitRaw {
+                raw: "Hello ",
+            } @ 1:1-1:7,
+            EmitExpr {
+                expr: Var {
+                    id: "world",
+                } @ 1:7-1:18,
+            } @ 1:7-1:18,
+            EmitRaw {
+                raw: "!",
+            } @ 1:18-1:19,
+        ],
+    } @ 1:1-1:19,
+)

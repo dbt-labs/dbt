@@ -1,0 +1,11 @@
+{%- with next_class = cycler(["odd", "even"]) %}
+  <ul class="{{ magic.make_class("ul") }}">
+  {%- for char in seq %}
+    <li class={{ next_class() }}>{{ char }}</li>
+  {%- endfor %}
+  </ul>
+{%- endwith %}
+
+{%- for item in real_iter %}
+  - {{ item }} ({{ loop.index }} from {{ loop.length|default("?") }})
+{%- endfor %}

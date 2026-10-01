@@ -1,0 +1,22 @@
+---
+source: crates/dbt-jinja/minijinja/tests/test_templates.rs
+description: "{% macro info(a, b) %}\n  closure: {{ closure }}\n  name: {{ caller.name }}\n  args: {{ caller.arguments }}\n  caller: {{ caller.caller }}\n  a: {{ a }}\n  b: {{ b }}\n  result: {{ caller(a, b) }}\n{% endmacro %}\n\n{% set closure = \"other closure\" %}\n{% call(a, b) info(1, 2) %}{{ [a, b, closure] }}{% endcall %}"
+info:
+  __minijinja_current_path: macro_caller_methods.txt
+  __minijinja_current_span:
+    end_col: 1
+    end_line: 1
+    end_offset: 0
+    start_col: 1
+    start_line: 1
+    start_offset: 0
+  closure: original closure
+input_file: crates/dbt-jinja/minijinja/tests/inputs/macro_caller_methods.txt
+---
+  closure: other closure
+  name: caller
+  args: ('a', 'b')
+  caller: False
+  a: 1
+  b: 2
+  result: [1, 2, 'other closure']

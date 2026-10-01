@@ -1,0 +1,123 @@
+{
+  "word": "Bird",
+  "word_with_spaces": " Spacebird\n",
+  "three_words": "bird and dinosaur",
+  "list": [
+    1,
+    2,
+    3
+  ],
+  "objects": [
+    {"name": "b"},
+    {"name": "a"}
+  ],
+  "other_list": [1, 4, 2, 9, 111],
+  "map": {
+    "a": "b",
+    "c": "d"
+  },
+  "scary_html": "<>&'"
+}
+---
+lower: {{ word|lower }}
+upper: {{ word|upper }}
+title: {{ word|title }}
+title-sentence: {{ "the bIrd, is The:word"|title }}
+title-three-words: {{ three_words|title }}
+capitalize: {{ word|capitalize }}
+capitalize-three-words: {{ three_words|capitalize }}
+replace: {{ word|replace("B", "th") }}
+replace: {{ "DW_test" | replace("DW_", "", 1)}}
+escape: {{ "<"|escape }}
+e: {{ "<"|e }}
+double-escape: {{ "<"|escape|escape }}
+safe: {{ "<"|safe|escape }}
+list-length: {{ list|length }}
+list-from-list: {{ list|list }}
+list-from-map: {{ map|list }}
+list-from-word: {{ word|list }}
+list-from-undefined: {{ undefined|list }}
+bool-empty-string: {{ ""|bool }}
+bool-non-empty-string: {{ "hello"|bool }}
+bool-empty-list: {{ []|bool }}
+bool-non-empty-list: {{ [42]|bool }}
+bool-undefined: {{ undefined|bool }}
+map-length: {{ map|length }}
+string-length: {{ word|length }}
+string-count: {{ word|count }}
+reverse-list: {{ list|reverse }}
+reverse-string: {{ word|reverse }}
+trim: |{{ word_with_spaces|trim }}|
+trim-bird: {{ word|trim("Bd") }}
+join-default: {{ list|join }}
+join-pipe: {{ list|join("|") }}
+join_string: {{ word|join('-') }}
+default: {{ undefined|default == "" }}
+default-value: {{ undefined|default(42) }}
+first-list: {{ list|first }}
+first-word: {{ word|first }}
+first-undefined: {{ []|first is undefined }}
+last-list: {{ list|last }}
+last-word: {{ word|last }}
+last-undefined: {{ []|first is undefined }}
+min: {{ other_list|min }}
+max: {{ other_list|max }}
+sort: {{ other_list|sort }}
+sort-reverse: {{ other_list|sort(reverse=true) }}
+sort-case-insensitive: {{ ["B", "a", "C", "z"]|sort }}
+sort-case-sensitive: {{ ["B", "a", "C", "z"]|sort(case_sensitive=true) }}
+sort-case-insensitive-mixed: {{ [0, 1, "true", "false", "True", "False", true, false]|sort }}
+sort-case-sensitive-mixed: {{ [0, 1, "true", "false", "True", "False", true, false]|sort(case_sensitive=true) }}
+sort-attribute {{ objects|sort(attribute="name") }}
+d: {{ undefined|d == "" }}
+json: {{ map|tojson }}
+json-pretty: {{ map|tojson(true) }}
+json-scary-html: {{ scary_html|tojson }}
+urlencode: {{ "hello world/foo-bar_baz.txt"|urlencode }}
+urlencode-kv: {{ dict(a="x y", b=2, c=3, d=None)|urlencode }}
+batch: {{ range(10)|batch(3) }}
+batch-fill: {{ range(10)|batch(3, '-') }}
+slice: {{ range(10)|slice(3) }}
+slice-fill: {{ range(10)|slice(3, '-') }}
+items: {{ dict(a=1)|items }}
+indent: {{ "foo\nbar\nbaz"|indent(2)|tojson }}
+indent-first-line: {{ "foo\nbar\nbaz"|indent(2, true)|tojson }}
+int-abs: {{ -42|abs }}
+float-abs: {{ -42.5|abs }}
+int-round: {{ 42|round }}
+float-round: {{ 42.5|round }}
+float-round-prec2: {{ 42.512345|round(2) }}
+float-round-ceil: {{ 42.512345|round(0, 'ceil') }}
+float-round-floor: {{ 42.512345|round(0, 'floor') }}
+float-round-common: {{ 42.512345|round(0, 'common') }}
+select-odd: {{ [1, 2, 3, 4, 5, 6]|select("odd") }}
+select-truthy: {{ [undefined, null, 0, 42, 23, "", "aha"]|select }}
+reject-truthy: {{ [undefined, null, 0, 42, 23, "", "aha"]|reject }}
+reject-odd: {{ [1, 2, 3, 4, 5, 6]|reject("odd") }}
+select-attr: {{ [dict(active=true, key=1), dict(active=false, key=2)]|selectattr("active") }}
+reject-attr: {{ [dict(active=true, key=1), dict(active=false, key=2)]|rejectattr("active") }}
+select-attr: {{ [dict(active=true, key=1), dict(active=false, key=2)]|selectattr("key", "even") }}
+reject-attr: {{ [dict(active=true, key=1), dict(active=false, key=2)]|rejectattr("key", "even") }}
+map-maps: {{ [-1, -2, 3, 4, -5]|map("abs") }}
+map-attr: {{ [dict(a=1), dict(a=2), {}]|map(attribute='a', default=None) }}
+map-attr-undefined: {{ [dict(a=1), dict(a=2), {}]|map(attribute='a', default=definitely_undefined) }}
+map-attr-deep: {{ [dict(a=[1]), dict(a=[2]), dict(a=[])]|map(attribute='a.0', default=None) }}
+map-attr-int: {{ [[1], [1, 2]]|map(attribute=1, default=999) }}
+attr-filter: {{ map|attr("a") }}
+unique-filter: {{ [1, 1, 1, 4, 3, 0, 0, 5]|unique }}
+unique-filter-ci: {{ ["a", "A", "b", "c", "b", "D", "d"]|unique }}
+unique-filter-cs: {{ ["a", "A", "b", "c", "b", "D", "d"]|unique(case_sensitive=true) }}
+unique-attr-filter: {{ [{'x': 1}, {'x': 1, 'y': 2}, {'x': 2}]|unique }}
+pprint-filter: {{ objects|pprint }}
+int-filter: {{ true|int }}, {{ "42"|int }}, {{ "-23"|int }}, {{ 42.0|int }}, {{ 42.42|int }}, {{ "42.42"|int }}
+float-filter: {{ true|float }}, {{ "42"|float }}, {{ "-23.5"|float }}, {{ 42.5|float }}
+split: {{ three_words|split|list }}
+split-at-and: {{ three_words|split(" and ")|list }}
+split-n-ws: {{ three_words|split(none, 1)|list }}
+split-n-d: {{ three_words|split("d", 1)|list }}
+split-n-ws-filter-empty: {{ "  foo    bar baz  "|split(none, 1)|list }}
+sum: {{ range(10)|sum }}
+sum-empty: {{ []|sum }}
+sum-float: {{ [0.5, 1.0]|sum }}
+lines: {{ "foo\nbar\r\nbaz"|lines }}
+string: {{ [1|string, 2|string] }}

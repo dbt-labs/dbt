@@ -1,0 +1,28 @@
+[package]
+name = "dbt-csv"
+authors.workspace = true
+description = "Custom CSV reader with configurable schema inference (fork of arrow-csv)"
+edition.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+license.workspace = true
+repository.workspace = true
+version.workspace = true
+
+[dependencies]
+arrow-array = { workspace = true }
+arrow-cast = { workspace = true }
+arrow-schema = { workspace = true }
+chrono = { workspace = true }
+csv = "1.3"
+csv-core = "0.1"
+dbt-fusion-workspace-hack = { version = "0.1" }
+dbt-ident = { workspace = true }
+regex = { workspace = true }
+
+[dev-dependencies]
+arrow-buffer = { workspace = true }
+tempfile = { workspace = true }
+
+[lints]
+workspace = true

@@ -1,0 +1,3 @@
+{% set title = "The Title" %}
+{% macro helper(a, b) %}{{ [a, b, c] }}{% endmacro %}
+Should not show up

@@ -1,0 +1,14 @@
+{"closure": "original closure"}
+---
+{% macro info(a, b) %}
+  closure: {{ closure }}
+  name: {{ caller.name }}
+  args: {{ caller.arguments }}
+  caller: {{ caller.caller }}
+  a: {{ a }}
+  b: {{ b }}
+  result: {{ caller(a, b) }}
+{% endmacro %}
+
+{% set closure = "other closure" %}
+{% call(a, b) info(1, 2) %}{{ [a, b, closure] }}{% endcall %}

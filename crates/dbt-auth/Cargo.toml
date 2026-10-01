@@ -1,0 +1,44 @@
+[package]
+name = "dbt-auth"
+description = "Auth methods for database drivers used by dbt"
+version.workspace = true
+homepage.workspace = true
+repository.workspace = true
+authors.workspace = true
+license.workspace = true
+keywords.workspace = true
+edition.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+dbt-adbc = { workspace = true }
+dbt-yaml = { workspace = true }
+
+adbc-core = { workspace = true }
+base64 = { workspace = true }
+dbt-fusion-workspace-hack = { version = "0.1" }
+once_cell = { workspace = true }
+percent-encoding = "2.3.1"
+pkcs8 = { workspace = true }
+rsa = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+shellexpand = { workspace = true }
+thiserror = { workspace = true }
+ureq = { workspace = true }
+url = { workspace = true }
+
+[dev-dependencies]
+arrow-array = { workspace = true }
+arrow-schema = { workspace = true }
+dbt-cloud-config = { workspace = true }
+dbt-test-primitives = { workspace = true }
+tempfile = { workspace = true }
+test-with = { version = "0.14.7", default-features = false }
+
+[lib]
+name = "dbt_auth"
+path = "src/lib.rs"
+doctest = false

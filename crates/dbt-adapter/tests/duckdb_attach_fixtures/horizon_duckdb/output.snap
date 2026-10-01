@@ -1,0 +1,5 @@
+---
+source: fs/sa/crates/dbt-adapter/src/engine/duckdb_attach.rs
+input_file: fs/sa/crates/dbt-adapter/src/engine/xdbc/fixtures/horizon_duckdb/catalogs.yml
+---
+ATTACH IF NOT EXISTS 'horizon_wh' AS horizon_db (TYPE ICEBERG, SECRET horizon_secret, ENDPOINT 'https://horizon.example.com/catalog', DEFAULT_SCHEMA 'demo', READ_ONLY false, AUTHORIZATION_TYPE 'OAUTH2', ACCESS_DELEGATION_MODE 'VENDED_CREDENTIALS', STAGE_CREATE_TABLES false, DISABLE_MULTI_TABLE_COMMIT true, SKIP_CREATE_TABLE_METADATA_UPDATES true, REMOVE_FILES_ON_DELETE false)

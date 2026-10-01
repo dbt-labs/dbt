@@ -1,0 +1,9 @@
+<!doctype html>
+<title>Syntax Highlight Example</title>
+<h1>Syntax Highlight Example</h1>
+{% set SYNTAX_THEME = "base16-ocean.light" %}
+{% call highlight('rust') %}
+fn main() {
+    println!("Hello World!");
+}
+{% endcall %}

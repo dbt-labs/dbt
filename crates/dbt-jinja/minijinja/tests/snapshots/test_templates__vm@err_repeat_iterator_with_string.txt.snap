@@ -1,0 +1,24 @@
+---
+source: fs/sa/crates/dbt-jinja/minijinja/tests/test_templates.rs
+description: "{{ [1, 2, 3] * \"3\" }}"
+info:
+  __minijinja_current_path: err_repeat_iterator_with_string.txt
+  __minijinja_current_span:
+    end_col: 1
+    end_line: 1
+    end_offset: 0
+    start_col: 1
+    start_line: 1
+    start_offset: 0
+input_file: fs/sa/crates/dbt-jinja/minijinja/tests/inputs/err_repeat_iterator_with_string.txt
+---
+!!!ERROR!!!
+
+Error {
+    kind: InvalidOperation,
+    detail: "strings can only be multiplied with integers",
+    name: "err_repeat_iterator_with_string.txt",
+}
+
+invalid operation: strings can only be multiplied with integers
+(in err_repeat_iterator_with_string.txt:1:1)

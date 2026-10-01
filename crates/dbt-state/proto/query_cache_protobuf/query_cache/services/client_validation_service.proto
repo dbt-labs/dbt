@@ -1,0 +1,15 @@
+syntax = "proto3";
+
+package com.fivetran.query_cache;
+
+service ClientValidation {
+  rpc ValidateClientVersion(ValidateClientVersionRequest) returns (ValidateClientVersionResponse);
+}
+
+message ValidateClientVersionRequest {
+  string dbt_run_cache_version = 1;
+ }
+
+message ValidateClientVersionResponse {
+  bool is_supported = 1;
+}

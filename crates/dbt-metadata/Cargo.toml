@@ -1,0 +1,48 @@
+[package]
+name = "dbt-metadata"
+version.workspace = true
+homepage.workspace = true
+repository.workspace = true
+authors.workspace = true
+description.workspace = true
+license.workspace = true
+keywords.workspace = true
+edition.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+dbt-adapter = { workspace = true }
+dbt-adapter-core = { workspace = true }
+dbt-common = { workspace = true }
+dbt-jinja-vars = { workspace = true }
+dbt-metadata-parquet = { workspace = true }
+dbt-schemas = { workspace = true }
+dbt-yaml = { workspace = true }
+
+arrow = { workspace = true }
+blake3 = { workspace = true }
+chrono = { workspace = true }
+chrono-tz = { workspace = true }
+gix = { workspace = true }
+gix-discover = { workspace = true }
+hex = { workspace = true }
+indexmap = { workspace = true }
+minijinja = { workspace = true }
+parquet = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_arrow = { workspace = true }
+serde_json = { workspace = true }
+
+dbt-fusion-workspace-hack = { version = "0.1" }
+
+[dev-dependencies]
+dbt-test-primitives = { workspace = true }
+tempfile = { workspace = true }
+tokio = { workspace = true }
+
+[lib]
+name = "dbt_metadata"
+path = "src/lib.rs"
+doctest = false

@@ -1,0 +1,73 @@
+---
+source: crates/dbt-jinja/minijinja/tests/test_lexer.rs
+description: "{# useless comment #}\n{{ foo.bar[baz].blah }}\n{{ {\"foo\": \"bar\"}.test }}\n{{ [1, 2, 3].test }}"
+input_file: crates/dbt-jinja/minijinja/tests/lexer-inputs/attrs.txt
+---
+Comment
+  "{# useless comment #}"
+TemplateData("\n")
+  "\n"
+VariableStart
+  "{{"
+Ident("foo")
+  "foo"
+Dot
+  "."
+Ident("bar")
+  "bar"
+BracketOpen
+  "["
+Ident("baz")
+  "baz"
+BracketClose
+  "]"
+Dot
+  "."
+Ident("blah")
+  "blah"
+VariableEnd
+  "}}"
+TemplateData("\n")
+  "\n"
+VariableStart
+  "{{"
+BraceOpen
+  "{"
+Str("foo")
+  "\"foo\""
+Colon
+  ":"
+Str("bar")
+  "\"bar\""
+BraceClose
+  "}"
+Dot
+  "."
+Ident("test")
+  "test"
+VariableEnd
+  "}}"
+TemplateData("\n")
+  "\n"
+VariableStart
+  "{{"
+BracketOpen
+  "["
+Int(1)
+  "1"
+Comma
+  ","
+Int(2)
+  "2"
+Comma
+  ","
+Int(3)
+  "3"
+BracketClose
+  "]"
+Dot
+  "."
+Ident("test")
+  "test"
+VariableEnd
+  "}}"

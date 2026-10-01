@@ -1,0 +1,10 @@
+---
+source: minijinja/tests/test_templates.rs
+description: "<title>{% block title %}{% endblock %}</title>\n{% block body %}{{ var }}{% endblock body %}"
+info:
+  var: foo
+input_file: minijinja/tests/inputs/block.txt
+---
+<title></title>
+foo
+

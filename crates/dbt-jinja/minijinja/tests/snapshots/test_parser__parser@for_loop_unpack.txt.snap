@@ -1,0 +1,44 @@
+---
+source: fs/sa/crates/dbt-jinja/minijinja/tests/test_parser.rs
+description: "{% for (a, b), c in seq %}...{% endfor %}"
+input_file: fs/sa/crates/dbt-jinja/minijinja/tests/parser-inputs/for_loop_unpack.txt
+---
+Ok(
+    Template {
+        children: [
+            ForLoop {
+                target: List {
+                    items: [
+                        List {
+                            items: [
+                                Var {
+                                    id: "a",
+                                } @ 1:9-1:10,
+                                Var {
+                                    id: "b",
+                                } @ 1:12-1:13,
+                            ],
+                        } @ 1:9-1:13,
+                        Var {
+                            id: "c",
+                        } @ 1:16-1:17,
+                    ],
+                } @ 1:8-1:17,
+                iter: Var {
+                    id: "seq",
+                } @ 1:21-1:24,
+                filter_expr: None,
+                recursive: false,
+                body: [
+                    EmitRaw {
+                        raw: "...",
+                    } @ 1:27-1:30,
+                ],
+                else_body: [],
+                start_tag_span:  @ 1:1-1:27,
+                else_tag_span: None,
+                end_tag_span:  @ 1:30-1:42,
+            } @ 1:1-1:42,
+        ],
+    } @ 1:1-1:42,
+)

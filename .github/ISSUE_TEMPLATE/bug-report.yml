@@ -1,12 +1,14 @@
-name: 🐞 Bug
-description: Report a bug or an issue you've found with dbt
-title: "[Bug] <title>"
-labels: ["bug", "triage"]
+name: 🐞 Bug (dbt 1.x)
+description: Report a bug or issue you've found in dbt Core 1.x
+title: "[1.x Bug] <title>"
+labels: ["bug", "v1", "type:bug", "status:triage", "engine:v1"]
 body:
   - type: markdown
     attributes:
       value: |
         Thanks for taking the time to fill out this bug report!
+
+        This template is for bugs in dbt Core 1.x. For bugs in dbt v2.x (the Core or Fusion distributions), use the "🐞 Bug (dbt v2.x)" template instead.
   - type: checkboxes
     attributes:
       label: Is this a new bug in dbt-core?

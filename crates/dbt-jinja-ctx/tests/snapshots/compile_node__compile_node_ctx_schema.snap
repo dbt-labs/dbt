@@ -1,0 +1,138 @@
+---
+source: fs/sa/crates/dbt-jinja-ctx/tests/compile_node.rs
+expression: schema
+---
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "CompileNodeCtx",
+  "description": "Per-node compile-time overlay layered onto [`CompileBaseCtx`] for each node SQL render. Today's `build_compile_node_context_inner<T>` populates this 1:1 — same field-key strings (including the underscore-decorated `__minijinja_current_path` / `__minijinja_current_span` / `__dbt_current_execution_phase__` constants).\n\nAt construction, the calling renderer first builds `CompileBaseCtx`, then overlays a `CompileNodeCtx` on top. Several keys (`config`, `ref`, `source`, `function`, `builtins`, `context`) are intentionally re-emitted on the overlay — they shadow the base entries with validated per-node variants.\n\nThe `base` field is the typed composition seam: when `Some`, the full context (base + per-node overlay) can be passed directly to `render_named_str<S: Serialize>` without a `BTreeMap` intermediate — per-node fields shadow the flattened base keys because they appear later in serde's field order. When `None` (today's path), the overlay is serialized alone via `to_jinja_btreemap` and `.extend()`-ed onto the caller's `base_context.clone()`.\n\nAll Object-typed slots are typed [`MinijinjaValue`] for the same reasons as [`crate::ResolveModelCtx`]: their concrete impls live in `dbt-jinja-utils` / `dbt-adapter`, and `model` / `builtins` are constructed via `Value::from_object(BTreeMap<String, MinijinjaValue>)` which downstream code downcasts.",
+  "type": "object",
+  "required": [
+    "TARGET_PACKAGE_NAME",
+    "TARGET_UNIQUE_ID",
+    "__dbt_current_execution_phase__",
+    "__minijinja_current_path",
+    "__minijinja_current_span",
+    "builtins",
+    "config",
+    "context",
+    "database",
+    "function",
+    "identifier",
+    "load_result",
+    "model",
+    "ref",
+    "schema",
+    "source",
+    "store_raw_result",
+    "store_result",
+    "this"
+  ],
+  "properties": {
+    "MACRO_DISPATCH_ORDER": {
+      "description": "`{{ MACRO_DISPATCH_ORDER }}` — per-package dispatch order map. Same downcast contract as [`crate::ResolveBaseCtx::macro_dispatch_order`]: each value MUST be `MinijinjaValue::from(Vec<String>)` constructed at the call site, NOT a serde-serialized `Vec<String>`.",
+      "type": "object",
+      "additionalProperties": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      }
+    },
+    "TARGET_PACKAGE_NAME": {
+      "description": "`{{ TARGET_PACKAGE_NAME }}` — local project name. Key string matches `minijinja::constants::TARGET_PACKAGE_NAME`.",
+      "type": "string"
+    },
+    "TARGET_UNIQUE_ID": {
+      "description": "`{{ TARGET_UNIQUE_ID }}` — node's `<package>.<name>` identifier. Key string matches `minijinja::constants::TARGET_UNIQUE_ID`.",
+      "type": "string"
+    },
+    "__dbt_current_execution_phase__": {
+      "description": "`{{ __dbt_current_execution_phase__ }}` — `\"render\"` at compile. Key string matches `minijinja::constants::CURRENT_EXECUTION_PHASE`.",
+      "type": "string"
+    },
+    "__minijinja_current_path": {
+      "description": "`{{ __minijinja_current_path }}` — display path of the rendering `.sql` file. Key string matches `minijinja::constants::CURRENT_PATH`.",
+      "type": "string"
+    },
+    "__minijinja_current_span": {
+      "description": "`{{ __minijinja_current_span }}` — span at the start of rendering (typically `minijinja::machinery::Span::default()`). Key string matches `minijinja::constants::CURRENT_SPAN`."
+    },
+    "builtins": {
+      "description": "`{{ builtins.* }}` — `BTreeMap<String, MinijinjaValue>` Object holding `ref` / `source` / `function`. Compile-node-context code downcasts this back to `BTreeMap<String, MinijinjaValue>` when overlaying validated variants per-node, so the underlying Object type must be exactly that."
+    },
+    "config": {
+      "description": "`{{ config(...) }}` — `CompileConfig` Object backed by the node's validated, dot-walkable config map. Shadows [`CompileBaseCtx::config`] (`DummyConfig`)."
+    },
+    "connection_name": {
+      "description": "`{{ connection_name }}` — empty string at base scope.",
+      "type": "string"
+    },
+    "context": {
+      "description": "`{{ context }}` — `MacroLookupContext` Object for `context['name']` macro dispatch.",
+      "allOf": [
+        {
+          "$ref": "#/definitions/JinjaObject<dbt_jinja_ctx::objects::lookup::MacroLookupContext>"
+        }
+      ]
+    },
+    "database": {
+      "description": "`{{ database }}` — model's adapter database.",
+      "type": "string"
+    },
+    "dbt_metadata_envs": {
+      "description": "`{{ dbt_metadata_envs }}` — `BTreeMap<String, MinijinjaValue>` Object (string-valued) populated from the OS `DBT_ENV_CUSTOM_ENV_*` vars."
+    },
+    "execute": {
+      "description": "`{{ execute }}` — `true` at compile/run (flipped from `false` at parse).",
+      "type": "boolean"
+    },
+    "function": {
+      "description": "`{{ function(...) }}` — unvalidated `FunctionFunction` Object."
+    },
+    "graph": {
+      "description": "`{{ graph }}` — `LazyFlatGraph` Object that builds the flat graph on first attribute access; lives in `dbt-jinja-utils` for now."
+    },
+    "identifier": {
+      "description": "`{{ identifier }}` — model's adapter alias (NOT name; alias is the truncated form that fits OS path limits).",
+      "type": "string"
+    },
+    "load_result": {
+      "description": "`{{ load_result(...) }}` — `ResultStore`-backed closure."
+    },
+    "model": {
+      "description": "`{{ model.* }}` — mutable dict-compatible model object built from `convert_yml_to_value_map(model.serialize())` plus a `batch` entry. The run-time context replaces `batch` with the real microbatch context."
+    },
+    "node": {
+      "description": "`{{ node }}` — `Value::NONE` at base scope; populated per-node."
+    },
+    "ref": {
+      "description": "`{{ ref(...) }}` — unvalidated `RefFunction` Object (validated variant overlaid per-node)."
+    },
+    "schema": {
+      "description": "`{{ schema }}` — model's adapter schema.",
+      "type": "string"
+    },
+    "source": {
+      "description": "`{{ source(...) }}` — unvalidated `SourceFunction` Object."
+    },
+    "store_raw_result": {
+      "description": "`{{ store_raw_result(...) }}` — `ResultStore`-backed closure."
+    },
+    "store_result": {
+      "description": "`{{ store_result(...) }}` — `ResultStore`-backed closure."
+    },
+    "this": {
+      "description": "`{{ this }}` — `RelationObject` Object (or deferred-relation `RelationObject` for unsafe nodes with deferred state available)."
+    }
+  },
+  "additionalProperties": true,
+  "definitions": {
+    "JinjaObject<dbt_jinja_ctx::objects::lookup::MacroLookupContext>": {
+      "description": "Opaque Jinja-callable object backed by `dbt_jinja_ctx::objects::lookup::MacroLookupContext`.",
+      "type": "object",
+      "x-jinja-object": true,
+      "x-jinja-object-type": "dbt_jinja_ctx::objects::lookup::MacroLookupContext"
+    }
+  }
+}

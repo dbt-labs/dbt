@@ -1,0 +1,140 @@
+syntax = "proto3";
+
+package v1.public.events.litellm_gateway;
+option go_package = "github.com/dbt-labs/proto-golang/v1/public/events/litellm_gateway";
+
+import "google/protobuf/timestamp.proto";
+import "dbtlabs/proto/public/v1/common/vortex_options.proto";
+import "dbtlabs/proto/public/v1/events/vortex.proto";
+import "dbtlabs/proto/public/v1/common/vortex_telemetry_contexts.proto";
+
+// Emitted on every LLM request completion (success or failure) by the litellm gateway.
+message LiteLlmRequestCompleted {
+  option (v1.public.common.vortex_namespace) = VORTEX_ICEBERG_NAMESPACE_TELEMETRY;
+  option (v1.public.common.vortex_enabled) = true;
+
+  v1.events.vortex.VortexMessageEnrichment enrichment = 1;
+
+  LiteLlmActor actor = 2;
+  // "llm_request_completed" or "llm_request_failed".
+  string event_type = 3;
+  // Pod/deployment identifier (e.g. "litellm-549bf484d9-cs58d").
+  string installation_id = 4;
+  google.protobuf.Timestamp occurred_at = 5;
+  LiteLlmRequest request = 6;
+  LiteLlmModel model = 7;
+  LiteLlmLatency latency = 8;
+  LiteLlmUsage usage = 9;
+  // Populated only on failure events.
+  optional LiteLlmError error = 10;
+  // Wizard session/turn attribution from x-codex-turn-metadata.
+  optional LiteLlmWizardAttribution wizard_attribution = 11;
+  // Cost information derived from LiteLLM response_cost.
+  optional LiteLlmCost cost = 12;
+  // Event classification for billing and analytics.
+  optional LiteLlmClassification classification = 13;
+  // "local" (BYOK sidecar) or "hosted" (Helm-deployed proxy).
+  string deployment_mode = 14;
+  v1.public.common.vortex_telemetry_contexts.VortexTelemetryCommonContext common_context = 15;
+}
+
+message LiteLlmActor {
+  // SHA-256 hash of the API key used for the request.
+  string api_key_hash = 1;
+  // dbt Cloud account ID (from team_id on the virtual key).
+  optional int64 account_id = 2;
+  // dbt Cloud user ID (from key metadata).
+  optional int64 user_id = 3;
+  // Global dbt Cloud account identifier slug (from /api/v2/accounts/{id}/).
+  optional string account_identifier = 4;
+}
+
+message LiteLlmRequest {
+  // LiteLLM call type (e.g. "acompletion", "aresponses").
+  string call_type = 1;
+  // ChatCompletion response ID.
+  string id = 2;
+  // Internal LiteLLM correlation ID.
+  string litellm_call_id = 3;
+  // "success" or "failure".
+  string status = 4;
+  // Whether the request was streamed.
+  bool stream = 5;
+  // Distributed trace ID for request correlation.
+  string trace_id = 6;
+}
+
+message LiteLlmModel {
+  // Full provider endpoint URL.
+  optional string api_base = 1;
+  // Logical model group (e.g. "claude-opus-4-7").
+  string model_group = 2;
+  // Internal model deployment ID.
+  string model_id = 3;
+  // LLM provider name (e.g. "bedrock", "openai").
+  string provider = 4;
+  // Model as requested by the caller (e.g. "bedrock/us.anthropic.claude-opus-4-7").
+  string requested_model = 5;
+}
+
+message LiteLlmLatency {
+  // Unix timestamp when the request started.
+  double start_time = 1;
+  // Unix timestamp when the response completed.
+  double end_time = 2;
+  // Total response time in seconds.
+  double response_time_seconds = 3;
+}
+
+message LiteLlmUsage {
+  int64 prompt_tokens = 1;
+  int64 completion_tokens = 2;
+  int64 total_tokens = 3;
+  // Anthropic prompt caching: tokens written to cache.
+  int64 cache_creation_input_tokens = 4;
+  // Anthropic prompt caching: tokens read from cache.
+  int64 cache_read_input_tokens = 5;
+  // OpenAI-style cached prompt tokens.
+  int64 cached_tokens = 6;
+}
+
+message LiteLlmError {
+  // Exception class name (e.g. "BadRequestError").
+  optional string error_class = 1;
+  // Provider error code.
+  optional string error_code = 2;
+  // Human-readable error description.
+  optional string error_message = 3;
+  // Provider that returned the error.
+  optional string llm_provider = 4;
+}
+
+message LiteLlmWizardAttribution {
+  // Wizard session ID from x-codex-turn-metadata.
+  string wizard_session_id = 1;
+  // Wizard turn ID from x-codex-turn-metadata.
+  string wizard_turn_id = 2;
+  // Thread source (e.g. "cli", "vscode", "cloud").
+  optional string wizard_thread_source = 3;
+  // Unix timestamp in milliseconds when the turn started.
+  optional int64 wizard_turn_started_at_unix_ms = 4;
+  // Whether the WIZARD_INTERNAL env var was set for this session.
+  bool is_wizard_internal = 5;
+}
+
+message LiteLlmCost {
+  // Cost in USD as reported by LiteLLM.
+  double response_cost_usd = 1;
+  // How the cost was determined: "calculated", "non_billable", "missing_usage", "pricing_failed".
+  string cost_status = 2;
+  // Explanation when cost_status is not "calculated" (e.g. failure debug info).
+  optional string cost_reason = 3;
+}
+
+message LiteLlmClassification {
+  // Deprecated: billability should be determined downstream from event_type,
+  // deployment_mode, and model metadata. Always sent as false.
+  bool is_billable_request = 1 [deprecated = true];
+  // Event subtype for analytics: "completion", "websocket_lifecycle".
+  string event_subtype = 2;
+}

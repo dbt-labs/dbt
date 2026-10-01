@@ -1,0 +1,105 @@
+syntax = "proto3";
+package v1.public.events.fusion.invocation;
+
+import "dbtlabs/proto/public/v1/events/fusion/process/process.proto";
+
+option go_package = "github.com/dbt-labs/proto-golang/v1/public/events/fusion/invocation";
+
+// Aggregate invocation metrics.
+message InvocationMetrics {
+  optional uint64 total_errors = 1;
+  optional uint64 total_warnings = 2;
+  optional uint64 autofix_suggestions = 3;
+
+  // Counts of nodes processed by node type (e.g., "model", "test", "seed").
+  // Key is the lowercase node type name.
+  map<string, uint64> node_type_counts = 4;
+
+  // Counts of node outcomes by status category.
+  // Keys are: "success", "warn", "error", "reused", "skipped", "canceled", "no_op".
+  // Only non-zero counts are included.
+  map<string, uint64> status_counts = 5;
+}
+
+// Structured evaluation arguments for the invocation.
+message InvocationEvalArgs {
+  // The dbt command executed, e.g. "run", "test", "build".
+  string command = 1;
+
+  /* Common args */
+
+  // The profile directory to load the profiles from
+  optional string profiles_dir = 2;
+  // The directory to install packages
+  optional string packages_install_path = 3;
+  // dbt target, e.g. "dev", "prod"
+  optional string target = 4;
+  // Profile name used for the invocation
+  optional string profile = 5;
+  // Vars to pass to the jinja environment. JSON blob string.
+  string vars = 6;
+  // Limiting number of shown rows. None means no limit; --limit -1 to remove limit
+  optional uint64 limit = 7;
+  // The number of threads to use
+  optional uint64 num_threads = 8;
+  // yaml selector
+  optional string selector = 9;
+  // Select nodes to operate on
+  repeated string select = 10;
+  // Select nodes to exclude from selected nodes
+  repeated string exclude = 11;
+  // Indirect selection mode
+  optional string indirect_selection = 12;
+  // Show output keys
+  repeated string output_keys = 13;
+  // Resource types to filter by
+  repeated string resource_types = 14;
+  // Exclude nodes of a specific type
+  repeated string exclude_resource_types = 15;
+  // Debug flag
+  optional bool debug = 16;
+  // Logging format
+  optional string log_format = 17;
+  // Minimum severity for console/log file
+  optional string log_level = 18;
+  // 'log-path' for the current run, overriding 'DBT_LOG_PATH'.
+  optional string log_path = 19;
+  // The output directory for all produced assets
+  optional string target_path = 20;
+  // The directory to load the dbt project from
+  optional string project_dir = 21;
+  // Suppress all non-error logging to stdout
+  optional bool quiet = 22;
+  // Write JSON artifacts to disk
+  optional bool write_json = 23;
+  // Write a catalog.json file to the target directory
+  optional bool write_catalog = 24;
+  // Whether dbt State management (auto-deferral) is enabled for this invocation,
+  // resolved from --manage-state, DBT_ENGINE_MANAGE_STATE, or `flags.manage_state`
+  // in dbt_project.yml / user settings.
+  optional bool manage_state = 25;
+}
+
+// Invocation event holding identifying info and flattened attributes.
+message Invocation {
+  // UUID string for the invocation id, either as passed in via args or generated (UUIDv7 in that case).
+  // Note, that `trace_id` is the same value stored as bytes and generally preferred
+  // for correlation with other events as it is present on all telemetry records.
+  string invocation_id = 1;
+
+  // Raw command string as executed.
+  string raw_command = 2;
+
+  // Structured evaluation arguments.
+  InvocationEvalArgs eval_args = 3;
+
+  // Process-wide attributes.
+  v1.public.events.fusion.process.Process process_info = 4;
+
+  // Aggregate invocation metrics.
+  InvocationMetrics metrics = 5;
+
+  // Optional parent span ID for trace correlation.
+  // This allows linking this invocation to an external trace.
+  optional uint64 parent_span_id = 6;
+}

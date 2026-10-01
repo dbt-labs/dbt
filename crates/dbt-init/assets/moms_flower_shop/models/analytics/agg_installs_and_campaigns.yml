@@ -1,0 +1,21 @@
+version: 2
+
+models:
+  - name: agg_installs_and_campaigns
+    description: |
+      Daily aggregated install metrics by campaign and platform.
+      This is a simple aggregation that provides daily counts of distinct installs
+      grouped by campaign and platform for trend analysis.
+    columns:
+      - name: install_date
+        description: Date of installation
+        tests:
+          - not_null
+      - name: campaign_name
+        description: Marketing campaign name (or 'organic' for non-campaign installs)
+      - name: platform
+        description: Platform where the app was installed (iOS, Android, etc.)
+      - name: distinct_installs
+        description: Count of distinct customer installs for this date/campaign/platform combination
+        tests:
+          - not_null

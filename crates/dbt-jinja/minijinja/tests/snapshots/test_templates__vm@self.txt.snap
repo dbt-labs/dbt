@@ -1,0 +1,10 @@
+---
+source: minijinja/tests/test_templates.rs
+description: "1:[{% block title %}{{ var }}{% endblock %}]\n2:({{ self.title() }})"
+info:
+  var: foobar
+input_file: minijinja/tests/inputs/self.txt
+---
+1:[foobar]
+2:(foobar)
+

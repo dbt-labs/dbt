@@ -1,0 +1,36 @@
+[package]
+name = "minijinja-fuzz"
+version = "0.0.0"
+authors = ["Automatically generated"]
+publish = false
+edition = "2018"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+arbitrary = { version = "1.1.6", features = ["derive"] }
+libfuzzer-sys = "0.4"
+minijinja = { path = "../minijinja", features = ["json", "urlencode", "fuel"] }
+serde = { version = "1.0.145", features = ["derive"] }
+
+# Prevent this from interfering with workspaces
+[workspace]
+members = ["."]
+
+[profile.release]
+debug = true
+overflow-checks = true
+debug-assertions = true
+
+[[bin]]
+name = "add_template"
+path = "fuzz_targets/add_template.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "render"
+path = "fuzz_targets/render.rs"
+test = false
+doc = false

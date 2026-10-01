@@ -1,0 +1,17 @@
+---
+source: minijinja/tests/test_templates.rs
+description: "{% extends \"simple_layout_2.txt\" %}\n\n{% block fragment %}\nThis should appear\n{{ super() }}\n{{ super()|upper }}\n{% endblock %}"
+info:
+  var: foo
+input_file: minijinja/tests/fragment-inputs/fragment_super_super.txt
+---
+
+This should appear
+(
+From parent
+)
+(
+FROM PARENT
+)
+
+

@@ -1,0 +1,76 @@
+[package]
+name = "dbt-adbc"
+description = "Wrapper to ADBC (Arrow Database Connectivity)"
+version.workspace = true
+homepage.workspace = true
+repository.workspace = true
+authors.workspace = true
+license.workspace = true
+keywords.workspace = true
+edition.workspace = true
+
+[lib]
+doctest = false
+
+[lints]
+workspace = true
+
+[features]
+default = []
+adbc-fuzzying = []
+repl = ["dialoguer", "clap", "dbt-pretty-table", "tokio"]
+
+[dependencies]
+adbc-core = { workspace = true }
+adbc-driver-manager = { workspace = true }
+adbc-ffi = { workspace = true }
+arrow-array = { workspace = true }
+arrow-schema = { workspace = true }
+atomic-wait = { version = "1.1.0" }
+base64 = { workspace = true }
+dbt-fusion-workspace-hack = { version = "0.1" }
+dirs = { workspace = true }
+getrandom = "0.2.15"
+http = { workspace = true }
+ini = { workspace = true }
+libloading = { version = "0.8" }
+parking_lot = { workspace = true }
+percent-encoding = "2.3.1"
+rand = { workspace = true }
+regex = { workspace = true }
+serde = { workspace = true }
+sha2 = { workspace = true }
+siphasher = { workspace = true }
+tokio = { workspace = true, optional = true }
+toml = { workspace = true }
+tracing = { workspace = true }
+tracy-client = { workspace = true }
+ureq = { workspace = true }
+url = { workspace = true }
+zstd-safe = { workspace = true }
+
+[dev-dependencies]
+test-with = { version = "0.14.7", default-features = false }
+
+[[bin]]
+name = "adbc-sync"
+path = "src/bin/adbc_sync.rs"
+
+[[bin]]
+name = "dbt-adbc-repl"
+path = "src/bin/repl.rs"
+required-features = ["repl"]
+
+[dependencies.dbt-pretty-table]
+optional = true
+path = "../dbt-pretty-table"
+
+[dependencies.dialoguer]
+features = ["history"]
+optional = true
+version = "0.11.0"
+
+[dependencies.clap]
+features = ["derive"]
+optional = true
+version = "4.4"

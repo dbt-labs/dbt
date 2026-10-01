@@ -1,0 +1,24 @@
+---
+source: fs/sa/crates/dbt-jinja/minijinja/tests/test_templates.rs
+description: "{{ dict(d) }}\n{{ dict(x=1, y=2) }}\n{{ dict(d, c=3)}}\n{% for _ in [1] %}{{ dict(loop, extra=2)|dictsort }}{% endfor %}\n{{ dict([('a', 1), ('b', 2), ('c', 3)]) }}\n{{ {'a':'b'}.pop('a') }}\n{{ {}.pop('a','b') }}"
+info:
+  __minijinja_current_path: dict.txt
+  __minijinja_current_span:
+    start_line: 1
+    start_col: 1
+    start_offset: 0
+    end_line: 1
+    end_col: 1
+    end_offset: 0
+  d:
+    a: 1
+    b: 2
+input_file: fs/sa/crates/dbt-jinja/minijinja/tests/inputs/dict.txt
+---
+{'a': 1, 'b': 2}
+{'x': 1, 'y': 2}
+{'a': 1, 'b': 2, 'c': 3}
+[('depth', 1), ('depth0', 0), ('extra', 2), ('first', True), ('index', 1), ('index0', 0), ('last', True), ('length', 1), ('nextitem', undefined), ('previtem', undefined), ('revindex', 1), ('revindex0', 0)]
+{'a': 1, 'b': 2, 'c': 3}
+b
+b

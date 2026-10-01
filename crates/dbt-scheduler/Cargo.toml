@@ -1,0 +1,41 @@
+[package]
+name = "dbt-scheduler"
+version.workspace = true
+homepage.workspace = true
+repository.workspace = true
+authors.workspace = true
+description.workspace = true
+license.workspace = true
+keywords.workspace = true
+edition.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+dbt-adapter = { workspace = true }
+dbt-adapter-core = { workspace = true }
+dbt-common = { workspace = true }
+dbt-dag = { workspace = true }
+dbt-frontend-common = { workspace = true }
+dbt-schemas = { workspace = true }
+dbt-yaml = { workspace = true }
+
+clean-path = { workspace = true }
+datafusion-expr = { workspace = true }
+glob = { workspace = true }
+indexmap = { workspace = true }
+
+dbt-fusion-workspace-hack = { version = "0.1" }
+tracing = { workspace = true }
+
+[dev-dependencies]
+chrono = { workspace = true }
+dbt-test-primitives = { workspace = true }
+serde_json = { workspace = true }
+tempfile = { workspace = true }
+
+[lib]
+name = "dbt_scheduler"
+path = "src/mod.rs"
+doctest = false

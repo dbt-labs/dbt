@@ -1,0 +1,25 @@
+---
+source: fs/sa/crates/dbt-jinja/minijinja/tests/test_templates.rs
+description: "[{% for item in seq %}{% endfor %}]"
+info:
+  __minijinja_current_path: loop_over_non_iterable.txt
+  __minijinja_current_span:
+    end_col: 1
+    end_line: 1
+    end_offset: 0
+    start_col: 1
+    start_line: 1
+    start_offset: 0
+  seq: 42
+input_file: fs/sa/crates/dbt-jinja/minijinja/tests/inputs/loop_over_non_iterable.txt
+---
+!!!ERROR!!!
+
+Error {
+    kind: InvalidOperation,
+    detail: "number is not iterable",
+    name: "loop_over_non_iterable.txt",
+}
+
+invalid operation: number is not iterable
+(in loop_over_non_iterable.txt:1:2)

@@ -1,0 +1,29 @@
+---
+source: crates/dbt-jinja/minijinja/tests/test_lexer.rs
+description: "{% for item in seq -%}\n  {{ item }}{% endfor %}"
+input_file: crates/dbt-jinja/minijinja/tests/lexer-inputs/block-filter.txt
+---
+BlockStart
+  "{%"
+Ident("for")
+  "for"
+Ident("item")
+  "item"
+Ident("in")
+  "in"
+Ident("seq")
+  "seq"
+BlockEnd
+  "-%}\n  "
+VariableStart
+  "{{"
+Ident("item")
+  "item"
+VariableEnd
+  "}}"
+BlockStart
+  "{%"
+Ident("endfor")
+  "endfor"
+BlockEnd
+  "%}"

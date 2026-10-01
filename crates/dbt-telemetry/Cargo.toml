@@ -1,0 +1,57 @@
+[package]
+name = "dbt-telemetry"
+version.workspace = true
+homepage.workspace = true
+repository.workspace = true
+authors.workspace = true
+description.workspace = true
+license.workspace = true
+keywords.workspace = true
+edition.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+arrow-schema = { workspace = true, features = ["canonical_extension_types"] }
+dbt-fusion-workspace-hack = { version = "0.1" }
+dbt-tracing = { workspace = true }
+dbt-yaml = { workspace = true }
+pbjson = { workspace = true }
+prost = { workspace = true }
+prost-types = { workspace = true }
+proto-rust-macros = { workspace = true }
+schemars = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_repr = { workspace = true }
+serde_with = { workspace = true }
+strum = { workspace = true, features = ["derive"] }
+tracing = { workspace = true }
+uuid = { workspace = true }
+
+# This is used for test API's in the registry. It needs to be defined as optional here
+# so we can expose it in the `test-utils` feature, so other crates using these API's
+# in tests can enable the feature without getting a compile error.
+fake = { workspace = true, optional = true }
+
+[dev-dependencies]
+arrow = { workspace = true, features = ["canonical_extension_types"] }
+fake = { workspace = true }
+# Enables `fake::Dummy` derives on telemetry value types moved to dbt-tracing
+# (e.g. SeverityNumber) so this crate's own tests can fake them.
+dbt-tracing = { workspace = true, features = ["test-utils"] }
+# Used for round-trip testing of serialization
+bytes = { workspace = true }
+parquet = { workspace = true }
+
+[features]
+# Test-only helpers in the registry - this allows tests in dbt-telemetry-private.
+# Forwards to `dbt-tracing/test-utils` so transitive fakers (dbt-telemetry-private,
+# dbt-common) get the `fake::Dummy` derives on telemetry value types moved there.
+test-utils = ["fake", "dbt-tracing/test-utils"]
+
+[lib]
+name = "dbt_telemetry"
+path = "src/lib.rs"
+doctest = false

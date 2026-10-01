@@ -1,0 +1,66 @@
+---
+source: minijinja-cli/tests/test_basic.rs
+info:
+  program: minijinja-cli
+  args:
+    - "--help"
+---
+success: true
+exit_code: 0
+----- stdout -----
+minijinja-cli is a command line tool to render or evaluate jinja2 templates.
+
+Pass a template and optionally a file with template variables to render it to stdout.
+
+Usage: minijinja-cli [OPTIONS] [TEMPLATE_FILE] [DATA_FILE]
+
+Arguments:
+  [TEMPLATE_FILE]  Path to the input template [default: -]
+  [DATA_FILE]      Path to the data file
+
+Options:
+      --config-file <PATH>          Alternative path to the config file.
+  -f, --format <FORMAT>             The format of the input data [possible values: auto, cbor, ini,
+                                    json, querystring, toml, yaml]
+  -D, --define <EXPR>               Defines an input variable (key=value / key:=json_value)
+  -t, --template <TEMPLATE_STRING>  Render a string template
+  -o, --output <FILENAME>           Path to the output file [default: -]
+      --select <SELECTOR>           Select a subset of the input data
+      --print-config                Print out the loaded config
+  -h, --help                        Print short help (short texts)
+      --long-help                   Print long help (extended, long explanation texts)
+      --syntax-help                 Print syntax help (primer on Jinja2/MiniJinja syntax)
+  -V, --version                     Print version
+
+Template Behavior:
+  -a, --autoescape <MODE>  Reconfigures autoescape behavior [possible values: auto, html, json,
+                           none]
+      --strict             Disallow undefined variables in templates
+  -n, --no-newline         Do not output a trailing newline
+      --trim-blocks        Enable the trim-blocks flag
+      --lstrip-blocks      Enable the lstrip-blocks flag
+      --py-compat          Enables improved Python compatibility
+  -s, --syntax <PAIR>      Changes a syntax feature (feature=value) [possible features: block-start,
+                           block-end, variable-start, variable-end, comment-start, comment-end,
+                           line-statement-prefix, line-statement-comment]
+      --env                Pass environment variables as ENV to the template
+
+Security:
+      --no-include        Disallow includes and extending
+      --safe-path <PATH>  Only allow includes from this path
+      --fuel <AMOUNT>     Configures the maximum fuel
+
+Advanced:
+  -E, --expr <EXPR>      Evaluates an template expression
+      --expr-out <MODE>  The expression output mode [possible values: print, json, json-pretty,
+                         status]
+      --dump <KIND>      Dump internals of a template [possible values: instructions, ast, tokens]
+      --repl             Starts the repl with the given data
+
+Shell Support:
+      --generate-completion <SH>  Generate a completion script for the given shell [possible values:
+                                  bash, elvish, fig, fish, nushell, powershell, zsh]
+
+For a short help use --help, for extended help --long-help, and for help on syntax --syntax-help.
+
+----- stderr -----

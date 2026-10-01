@@ -1,0 +1,13 @@
+---
+source: minijinja/tests/test_templates.rs
+description: "{% if two > one and two < three %}\n  test\n{% endif %}"
+info:
+  one: 1
+  three: 3
+  two: 2
+input_file: minijinja/tests/inputs/cmp.txt
+---
+
+  test
+
+

@@ -1,0 +1,16 @@
+---
+source: fs/sa/crates/dbt-jinja/minijinja/tests/test_parser.rs
+description: "{{ \"foo\\u2603bar\" }}"
+input_file: fs/sa/crates/dbt-jinja/minijinja/tests/parser-inputs/string_unescape.txt
+---
+Ok(
+    Template {
+        children: [
+            EmitExpr {
+                expr: Const {
+                    value: 'foo☃bar',
+                } @ 1:1-1:21,
+            } @ 1:1-1:21,
+        ],
+    } @ 1:1-1:21,
+)

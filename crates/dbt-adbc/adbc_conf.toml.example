@@ -1,0 +1,12 @@
+[spark-connect]
+backend = "spark"
+path = "/path/to/libadbc_driver_spark.dylib"
+# Generic ADBC driver parameters
+"spark.host" = "localhost"
+"spark.port" = "15002"
+"spark.api" = "connect"
+"spark.auth_type" = "none"
+"username" = "lucas"
+
+[default]
+# The default profile will be used if you don't pass --profile

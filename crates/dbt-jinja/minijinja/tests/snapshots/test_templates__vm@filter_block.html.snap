@@ -1,0 +1,9 @@
+---
+source: minijinja/tests/test_templates.rs
+description: "{% filter escape %}<p>{{ value }}</p>{% endfilter %}"
+info:
+  value: foo < bar
+input_file: minijinja/tests/inputs/filter_block.html
+---
+<p>foo &lt; bar</p>
+

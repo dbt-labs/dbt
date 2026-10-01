@@ -1,0 +1,12 @@
+---
+source: minijinja/tests/test_lexer.rs
+description: "<ul>\n  {% raw %}\n    <li>{{ item }}</li>\n  {% endraw %}\n</ul>"
+input_file: minijinja/tests/lexer-inputs/lstrip-blocks-raw.txt
+---
+TemplateData("<ul>\n")
+  "<ul>\n"
+TemplateData("    <li>{{ item }}</li>\n")
+  "\n    <li>{{ item }}</li>\n  "
+TemplateData("</ul>")
+  "</ul>"
+

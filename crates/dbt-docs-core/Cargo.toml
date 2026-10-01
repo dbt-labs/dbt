@@ -1,0 +1,21 @@
+[package]
+name = "dbt-docs-core"
+version.workspace = true
+homepage.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "Shared traits and types for dbt docs providers."
+license.workspace = true
+keywords.workspace = true
+edition.workspace = true
+
+[lints]
+workspace = true
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+dbt-fusion-workspace-hack = { version = "0.1" }
+dbt-index-core = { workspace = true }
+serde = { workspace = true, features = ["derive"] }

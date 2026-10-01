@@ -1,0 +1,7 @@
+---
+source: minijinja/tests/test_templates.rs
+description: "{% for item in range(10) -%}\n  {%- if item is odd %}{% continue %}{% endif %}\n  {%- if item > 5 %}{% break %}{% endif %}\n  {{- item }}\n{%- endfor %}"
+info: {}
+input_file: minijinja/tests/inputs/loop_controls.txt
+---
+024

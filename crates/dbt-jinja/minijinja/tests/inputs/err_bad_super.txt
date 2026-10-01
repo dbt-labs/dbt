@@ -1,0 +1,7 @@
+{}
+---
+{% extends "bad_basic_block.txt" %}
+{% block title %}My Title{% endblock %}
+{% block body %}
+  Changed stuff goes here. {{ super() }}
+{% endblock %}

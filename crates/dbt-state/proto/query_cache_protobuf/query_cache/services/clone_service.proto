@@ -1,0 +1,71 @@
+syntax = "proto3";
+
+package com.fivetran.query_cache;
+
+import "query_cache_protobuf/query_cache/shared.proto";
+import "query_cache_protobuf/query_cache/struct.proto";
+
+service Clone {
+  rpc RegisterClone(CloneRequest) returns (CloneResponse);
+}
+
+message TableProperties {
+  optional int32 hours_to_expiration = 1;
+  optional int32 partition_expiration_days = 2;
+}
+
+message CloneRequest {
+  string target_table = 1;
+  string dialect = 2;
+  string default_catalog = 3;
+  ModelExecutionType execution_type = 4;
+  string clone_source_table = 5;
+  optional int64 clone_source_last_modified_epoch = 6;
+  map<string, string> labels = 7;
+  optional string clone_source_table_type = 8;
+  optional TableProperties table_properties = 9;
+  optional int64 clone_chain_depth_limit = 10;
+  optional string table_namespace = 11;
+}
+
+message CloneResponse {
+  ReadyToCloneResponse ready_to_clone = 3;
+  UnableToCloneResponse unable_to_clone = 4;
+
+  oneof response {
+    ReadyToCloneResponse ready_to_clone_v1 = 1 [deprecated = true];
+    UntrackableCloneResponse untrackable_clone = 2 [deprecated = true];
+  }
+}
+
+message ReadyToCloneResponse {
+  reserved 9;
+
+  string request_id = 1;
+  string last_modified_query = 2 [deprecated = true];
+  repeated string clone_sqls = 3;
+  string clone_source = 4;
+  string clone_target = 5;
+  ExplainedDecision explained_decision = 6;
+  map<string, NodeFuncMapping> transformed_nodes_by_query = 7;
+  optional int64 clone_required_last_modified_epoch = 8;
+  Struct clone_execution_results = 10;
+  optional int64 execution_runtime_ms = 11;
+  optional string execution_decision_id = 12;
+}
+
+message UntrackableCloneResponse {
+  option deprecated = true;
+
+  repeated string clone_sqls = 1;
+  string clone_source = 2;
+  string clone_target = 3;
+  ExplainedDecision explained_decision = 4;
+  map<string, NodeFuncMapping> transformed_nodes_by_query = 5;
+}
+
+message UnableToCloneResponse {
+  string clone_source = 1;
+  string clone_target = 2;
+  ExplainedDecision explained_decision = 3;
+}

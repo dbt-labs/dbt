@@ -1,0 +1,25 @@
+[package]
+name = "proto-rust-macros"
+version.workspace = true
+homepage.workspace = true
+repository.workspace = true
+authors.workspace = true
+description.workspace = true
+license.workspace = true
+keywords.workspace = true
+edition.workspace = true
+
+[lints]
+workspace = true
+
+[lib]
+name = "proto_rust_macros"
+path = "src/lib.rs"
+proc-macro = true
+doctest = false
+
+[dependencies]
+dbt-fusion-workspace-hack = { version = "0.1" }
+proc-macro2 = "1.0"
+quote = "1.0"
+syn = { version = "2.0", features = ["full", "extra-traits"] }

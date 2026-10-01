@@ -1,0 +1,11 @@
+---
+source: minijinja/tests/test_templates.rs
+description: "{% extends \"fragment_in_parent.txt\" %}\n{% block other %}\nShouldn't show up\n{% endblock %}"
+info:
+  var: foo
+input_file: minijinja/tests/fragment-inputs/fragment_from_parent.txt
+---
+
+  Should show up
+
+

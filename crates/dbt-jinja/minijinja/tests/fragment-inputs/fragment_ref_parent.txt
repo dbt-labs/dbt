@@ -1,0 +1,9 @@
+{
+  "var": "foo"
+}
+---
+{% extends "var_referencing_layout.txt" %}
+
+{% block item_block %}
+  [{{ item }}]
+{% endblock %}

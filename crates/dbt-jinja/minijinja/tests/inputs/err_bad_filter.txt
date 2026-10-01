@@ -1,0 +1,5 @@
+{}
+---
+{% for item in 42|slice(4) %}
+  - {{ item }}
+{% endfor %}

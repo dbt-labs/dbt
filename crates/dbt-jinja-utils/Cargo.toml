@@ -1,0 +1,61 @@
+[package]
+name = "dbt-jinja-utils"
+version.workspace = true
+homepage.workspace = true
+repository.workspace = true
+authors.workspace = true
+description.workspace = true
+license.workspace = true
+keywords.workspace = true
+edition.workspace = true
+
+[lib]
+name = "dbt_jinja_utils"
+path = "src/lib.rs"
+doctest = false
+
+[features]
+testing = []
+
+[lints]
+workspace = true
+
+[dependencies]
+dbt-adapter = { workspace = true }
+dbt-adapter-core = { workspace = true }
+dbt-agate = { workspace = true }
+dbt-classification-types = { workspace = true }
+dbt-common = { workspace = true }
+dbt-frontend-common = { workspace = true }
+dbt-jinja-ctx = { workspace = true }
+dbt-jinja-filters = { workspace = true }
+dbt-jinja-vars = { workspace = true }
+dbt-schemas = { workspace = true }
+dbt-telemetry = { workspace = true }
+
+arrow = { workspace = true }
+chrono = { workspace = true }
+chrono-tz = { workspace = true }
+dashmap = { workspace = true }
+dbt-yaml = { workspace = true }
+indexmap = { workspace = true, features = ["serde"] }
+itertools = { workspace = true }
+md5 = { workspace = true }
+minijinja = { workspace = true }
+minijinja-contrib = { workspace = true }
+regex = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sqlparser = { workspace = true }
+tracy-client = { workspace = true }
+uuid = { workspace = true }
+
+dbt-fusion-workspace-hack = { version = "0.1" }
+
+[dev-dependencies]
+dbt-test-primitives = { workspace = true }
+dbt-test-utils = { workspace = true }
+dbt-tracing = { workspace = true, features = ["test-utils"] }
+insta = { version = "1.38.0", features = ["glob", "serde"] }
+tempfile = { workspace = true }
+tracing = { workspace = true }

@@ -1,0 +1,37 @@
+{
+  "map": {
+    "foo": 1,
+    "bar": 2,
+    "baz": 100,
+    "Blafasel": "aha"
+  }
+}
+---
+key implied:
+{%- for key, value in map|dictsort %}
+* {{ key }}: {{ value }}
+{%- endfor %}
+key explicit:
+{%- for key, value in map|dictsort(by="key") %}
+* {{ key }}: {{ value }}
+{%- endfor %}
+value:
+{%- for key, value in map|dictsort(by="value") %}
+* {{ key }}: {{ value }}
+{%- endfor %}
+reverse:
+{%- for key, value in map|dictsort(reverse=true) %}
+* {{ key }}: {{ value }}
+{%- endfor %}
+case_sensitive:
+{%- for key, value in map|dictsort(case_sensitive=true) %}
+* {{ key }}: {{ value }}
+{%- endfor %}
+case_sensitive_positional:
+{%- for key, value in map|dictsort(true) %}
+* {{ key }}: {{ value }}
+{%- endfor %}
+case_sensitive_by_value_positional:
+{%- for key, value in map|dictsort(true, 'value') %}
+* {{ key }}: {{ value }}
+{%- endfor %}

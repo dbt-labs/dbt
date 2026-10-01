@@ -1,0 +1,8 @@
+---
+source: minijinja/tests/test_templates.rs
+description: "{%- from \"call_macro.txt\" import call %}\n{%- macro my_macro(value) %}[{{ value }}]{% endmacro %}\n{{- call(my_macro, 42) }}"
+info: {}
+input_file: minijinja/tests/inputs/macro_calling_macro.txt
+---
+[42]
+

@@ -1,0 +1,244 @@
+# **what?**
+# Render Formula/dbt-core.rb from the SHA256SUMS manifest attached to a
+# GitHub Release and push it to the shared dbt-labs/homebrew-dbt tap.
+#
+# **why?**
+# Distribute dbt-core via Homebrew so users can `brew install dbt-core`.
+#
+# **when?**
+# - workflow_call: invoked by release-v2.yml after `github-release`
+#   uploads the SHA256SUMS manifest + per-target tarballs to the release.
+# - workflow_dispatch: ad-hoc manual run against an existing release.
+#
+# **how?**
+# `gh release download <tag> --pattern SHA256SUMS` pulls the manifest,
+# `cargo ci homebrew render --sha256sums` picks the 4 brew-supported
+# tarballs out of it (wheels/zips/windows are silently skipped), and
+# `cargo ci homebrew publish` clones the tap, copies the rendered
+# formula, signs the commit with the build-bot GPG key, and pushes.
+#
+# Tarballs are served straight from GitHub Releases — no CDN involved.
+# The formula and the fs `dbt` formula share the dbt-labs/homebrew-dbt
+# tap; both install `bin/dbt`, so each declares `conflicts_with` on the
+# other.
+
+name: Publish Homebrew formula
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        description: "Version string (e.g. 2.0.0)"
+        type: string
+        required: true
+      tag:
+        description: "Release tag (e.g. v2.0.0)"
+        type: string
+        required: true
+      dry_run:
+        description: "If true, render but pass --dry-run to publish (no push)."
+        type: boolean
+        required: false
+        default: false
+      url_template:
+        description: |
+          URL template; must contain `{filename}`. Used as the per-tarball
+          download URL in the rendered formula. Defaults to the GitHub
+          Release download URL for `inputs.tag` on dbt-labs/dbt-core.
+        type: string
+        required: false
+        default: "https://github.com/dbt-labs/dbt-core/releases/download/v{version}/{filename}"
+      tap_repo:
+        description: "Tap repo to push the formula to."
+        type: string
+        required: false
+        default: "https://github.com/dbt-labs/homebrew-dbt.git"
+      tap_branch:
+        description: "Branch on the tap repo."
+        type: string
+        required: false
+        default: "main"
+      binary_name:
+        description: |
+          Name of the binary inside each tarball. Must match
+          `release-v2.yml`'s `BINARY_NAME` env (the file staged into the
+          tarball by the build job).
+        type: string
+        required: false
+        default: "dbt"
+      tarball_prefix:
+        description: |
+          Tarball filename prefix. Filenames are
+          `{tarball_prefix}{version}-{target}.tar.gz`. Must match
+          `release-v2.yml`'s `${PACKAGE_NAME}-` (the `ARCHIVE_BASE`
+          template the build job uses).
+        type: string
+        required: false
+        default: "dbt-core-"
+
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "SemVer to render (e.g. 2.0.0). Do NOT include the leading `v`."
+        required: true
+        type: string
+      tag:
+        description: "Release tag to download SHA256SUMS from (defaults to `v<version>`)."
+        required: false
+        type: string
+      url_template:
+        description: "URL template; must contain `{filename}`."
+        required: false
+        type: string
+        default: "https://github.com/dbt-labs/dbt-core/releases/download/v{version}/{filename}"
+      tap_repo:
+        description: "Tap repo to push the formula to."
+        required: false
+        type: string
+        default: "https://github.com/dbt-labs/homebrew-dbt.git"
+      tap_branch:
+        description: "Branch on the tap repo."
+        required: false
+        type: string
+        default: "main"
+      dry_run:
+        description: "If true, render + show diff but do NOT push."
+        required: false
+        type: boolean
+        default: true
+      binary_name:
+        description: "Name of the binary inside each tarball (default: dbt)."
+        required: false
+        type: string
+        default: "dbt"
+      tarball_prefix:
+        description: "Tarball filename prefix (default: dbt-core-)."
+        required: false
+        type: string
+        default: "dbt-core-"
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash --noprofile --norc -euo pipefail {0}
+
+jobs:
+  # ── DISABLED DURING PRE-STABLE PREVIEW WINDOW ────────────────────────
+  # The preflight "is this the latest release" guard is turned off so every
+  # release (including pre-releases) publishes to the tap. RESTORE AT FIRST
+  # 2.x STABLE: uncomment this job AND the `needs: preflight` + `if:` lines
+  # on publish-homebrew below (all together, or the workflow is invalid).
+  # Repo-wide "latest" is correct again once a 2.x stable ships — it
+  # outranks the Python 1.x line by semver.
+  #
+  # Guard: only publish the formula when this tag is GitHub's "latest"
+  # release. Protects against:
+  #   - Re-running an older release pipeline (re-uploads assets but
+  #     "latest" stays on the newer tag — formula isn't downgraded).
+  #   - Hotfix on an older minor after a newer minor has shipped.
+  #   - Manual workflow_dispatch against an older version.
+  # GitHub auto-marks the highest-semver non-prerelease release as latest;
+  # an ops user can also flip it manually as a kill switch.
+  # preflight:
+  #   name: Check this tag is the latest release
+  #   runs-on: ubuntu-latest
+  #   outputs:
+  #     is_latest: ${{ steps.check.outputs.is_latest }}
+  #   steps:
+  #     - name: Resolve latest release tag
+  #       id: check
+  #       env:
+  #         GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+  #         TAG: ${{ inputs.tag || format('v{0}', inputs.version) }}
+  #       run: |
+  #         LATEST_TAG=$(gh release view \
+  #           --repo "${{ github.repository }}" \
+  #           --json tagName --jq .tagName)
+  #         if [ "$TAG" = "$LATEST_TAG" ]; then
+  #           echo "is_latest=true" >> "$GITHUB_OUTPUT"
+  #           echo "✓ $TAG is the latest release; proceeding."
+  #         else
+  #           echo "is_latest=false" >> "$GITHUB_OUTPUT"
+  #           echo "::notice::Skipping brew publish: $TAG is not the latest release ($LATEST_TAG)."
+  #         fi
+
+  publish-homebrew:
+    name: Render + publish formula
+    # needs: preflight
+    # if: needs.preflight.outputs.is_latest == 'true'
+    runs-on: ${{ vars.UBUNTU_RUNNER_32 }}
+    env:
+      TAP_REPO: ${{ inputs.tap_repo }}
+      TAP_BRANCH: ${{ inputs.tap_branch }}
+      URL_TEMPLATE: ${{ inputs.url_template }}
+      TAG: ${{ inputs.tag || format('v{0}', inputs.version) }}
+    steps:
+      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # actions/checkout@v4
+
+      - name: Download SHA256SUMS from GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release download "$TAG" \
+            --repo "${{ github.repository }}" \
+            --pattern SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry and dbt-ci build
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # Swatinem/rust-cache@v2.9.1
+        with:
+          shared-key: cargo-ci-tool
+          cache-targets: "true"
+
+      # Imports the build-bot GPG key and pins git identity to match its UID
+      # so the tap commit is signed and shows as Verified on GitHub. Reuses
+      # the same secrets + identity as update-test-durations.yml.
+      - name: Import build bot GPG key
+        uses: crazy-max/ghaction-import-gpg@2dc316deee8e90f13e1a351ab510b4d5bc0c82cd # crazy-max/ghaction-import-gpg@v7
+        with:
+          gpg_private_key: ${{ secrets.FISHTOWN_BOT_GPG_PRIVATE_KEY }}
+          passphrase: ${{ secrets.FISHTOWN_BOT_GPG_PASSPHRASE }}
+          git_config_global: true
+          git_user_signingkey: true
+          git_commit_gpgsign: true
+          git_committer_name: "Github Build Bot"
+          git_committer_email: "buildbot@dbtlabs.com"
+
+      - name: Render Homebrew formula
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          cargo ci homebrew render \
+            --sha256sums SHA256SUMS \
+            --version "$VERSION" \
+            --url-template "$URL_TEMPLATE" \
+            --formula-name dbt-core \
+            --install-as dbt \
+            --binary-name "${{ inputs.binary_name }}" \
+            --conflicts-with dbt \
+            --tarball-prefix "${{ inputs.tarball_prefix }}" \
+            --out dbt-core.rb
+          echo "---rendered Formula/dbt-core.rb---"
+          cat dbt-core.rb
+
+      - name: Publish formula to tap
+        env:
+          HOMEBREW_TAP_REPO_TOKEN: ${{ secrets.FISHTOWN_BOT_PAT }}
+          VERSION: ${{ inputs.version }}
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          DRY_RUN_FLAG=""
+          if [ "$DRY_RUN" = "true" ]; then
+            DRY_RUN_FLAG="--dry-run"
+          fi
+          cargo ci homebrew publish \
+            --formula dbt-core.rb \
+            --tap-repo "$TAP_REPO" \
+            --tap-branch "$TAP_BRANCH" \
+            --version "$VERSION" \
+            $DRY_RUN_FLAG

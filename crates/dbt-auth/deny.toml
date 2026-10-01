@@ -1,0 +1,9 @@
+[graph]
+exclude-dev = true
+
+[bans]
+multiple-versions = "allow"
+deny = [
+  { crate = "dbt-common", reason = "inject dependencies or extract the dbt-common code you need to its own crate and add that focused crate as a dependency instead" },
+  { crate = "dbt-schemas", reason = "dbt-auth is designed to be a leaf crate operating directly on yaml mappings. avoid dependencies to dbt-schemas" },
+]

@@ -1,0 +1,37 @@
+---
+source: fs/sa/crates/dbt-jinja/minijinja/tests/test_templates.rs
+description: "{% for a in seq %}\n  This fails in the include: {% include \"a_plus_b.txt\" %}\n{% endfor %}"
+info:
+  __minijinja_current_path: err_in_include.txt
+  __minijinja_current_span:
+    end_col: 1
+    end_line: 1
+    end_offset: 0
+    start_col: 1
+    start_line: 1
+    start_offset: 0
+  b: []
+  seq:
+    - 1
+    - 2
+    - 3
+input_file: fs/sa/crates/dbt-jinja/minijinja/tests/inputs/err_in_include.txt
+---
+!!!ERROR!!!
+
+Error {
+    kind: BadInclude,
+    detail: "error in \"a_plus_b.txt\"",
+    name: "err_in_include.txt",
+    source: Error {
+        kind: InvalidOperation,
+        detail: "tried to use + operator on unsupported types number and sequence",
+        name: "err_in_include.txt",
+    },
+}
+
+could not render include: error in "a_plus_b.txt"
+(in err_in_include.txt:2:30)
+
+caused by: invalid operation: tried to use + operator on unsupported types number and sequence
+(in err_in_include.txt:1:28)

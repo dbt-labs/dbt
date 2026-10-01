@@ -1,0 +1,2 @@
+<title>{% block title %}default title{% endblock %}</title>
+{% block body %}default body{% endblock %}

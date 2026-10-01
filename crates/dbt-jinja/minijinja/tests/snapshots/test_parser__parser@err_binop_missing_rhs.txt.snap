@@ -1,0 +1,12 @@
+---
+source: fs/sa/crates/dbt-jinja/minijinja/tests/test_parser.rs
+description: "{{ foo / }}"
+input_file: fs/sa/crates/dbt-jinja/minijinja/tests/parser-inputs/err_binop_missing_rhs.txt
+---
+Err(
+    Error {
+        kind: SyntaxError,
+        detail: "unexpected end of variable block",
+        name: "err_binop_missing_rhs.txt",
+    },
+)

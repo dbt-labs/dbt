@@ -1,0 +1,122 @@
+syntax = "proto3";
+
+package v1.public.events.canvas;
+option go_package = "github.com/dbt-labs/proto-golang/v1/public/events/canvas";
+
+import "dbtlabs/proto/public/v1/common/vortex_options.proto";
+import "dbtlabs/proto/public/v1/common/vortex_telemetry_contexts.proto";
+import "dbtlabs/proto/public/v1/events/vortex.proto";
+
+// Kind of payload being handed off to Canvas.
+enum CanvasHandoffPayloadKind {
+  CANVAS_HANDOFF_PAYLOAD_KIND_UNSPECIFIED = 0;
+  CANVAS_HANDOFF_PAYLOAD_KIND_DIFF = 1;          // before+after (agent edit)
+  CANVAS_HANDOFF_PAYLOAD_KIND_SINGLE_MODEL = 2;  // single model (no diff)
+}
+
+// Reason a parseSql call failed inside the Canvas read-only route.
+enum CanvasHandoffParseFailureReason {
+  CANVAS_HANDOFF_PARSE_FAILURE_REASON_UNSPECIFIED = 0;
+  CANVAS_HANDOFF_PARSE_FAILURE_REASON_INVALID_SQL = 1;
+  CANVAS_HANDOFF_PARSE_FAILURE_REASON_UNSUPPORTED_NODE_TYPE = 2;
+  CANVAS_HANDOFF_PARSE_FAILURE_REASON_OTHER = 3;
+}
+
+// Which side of an inline diff failed to parse.
+enum CanvasHandoffDiffSide {
+  CANVAS_HANDOFF_DIFF_SIDE_UNSPECIFIED = 0;
+  CANVAS_HANDOFF_DIFF_SIDE_BEFORE = 1;
+  CANVAS_HANDOFF_DIFF_SIDE_AFTER = 2;
+}
+
+// Fired when the "Open in Canvas" CTA is rendered in the EditFileCallRenderer
+// DiffCard (LD flag on, path eligible, validate_sql passed).
+message OpenInCanvasCtaShown {
+  option (v1.public.common.vortex_namespace) = VORTEX_ICEBERG_NAMESPACE_TELEMETRY;
+  option (v1.public.common.vortex_enabled) = true;
+  v1.events.vortex.VortexMessageEnrichment enrichment = 1;
+  v1.public.common.vortex_telemetry_contexts.VortexTelemetryDbtCloudContext ctx = 2;
+
+  // The dbt project file path that triggered the CTA (e.g. "models/foo.sql").
+  string file_path = 3;
+  CanvasHandoffPayloadKind payload_kind = 4;
+  v1.public.common.vortex_telemetry_contexts.VortexTelemetryCommonContext common_context = 5;
+}
+
+// Fired when the user clicks the "Open in Canvas" CTA.
+message OpenInCanvasCtaClicked {
+  option (v1.public.common.vortex_namespace) = VORTEX_ICEBERG_NAMESPACE_TELEMETRY;
+  option (v1.public.common.vortex_enabled) = true;
+  v1.events.vortex.VortexMessageEnrichment enrichment = 1;
+  v1.public.common.vortex_telemetry_contexts.VortexTelemetryDbtCloudContext ctx = 2;
+
+  string file_path = 3;
+  CanvasHandoffPayloadKind payload_kind = 4;
+  v1.public.common.vortex_telemetry_contexts.VortexTelemetryCommonContext common_context = 5;
+}
+
+// Fired when the CTA is hidden because validate_sql returned invalid.
+// error_message is captured for analysis of why the agent's SQL is failing validation.
+message OpenInCanvasCtaSuppressed {
+  option (v1.public.common.vortex_namespace) = VORTEX_ICEBERG_NAMESPACE_TELEMETRY;
+  option (v1.public.common.vortex_enabled) = true;
+  v1.events.vortex.VortexMessageEnrichment enrichment = 1;
+  v1.public.common.vortex_telemetry_contexts.VortexTelemetryDbtCloudContext ctx = 2;
+
+  string file_path = 3;
+  // Free-form error returned by validate_sql.
+  string error_message = 4;
+  v1.public.common.vortex_telemetry_contexts.VortexTelemetryCommonContext common_context = 5;
+}
+
+// Fired in the Canvas read-only route when parseSql succeeds.
+message OpenInCanvasHandoffSucceeded {
+  option (v1.public.common.vortex_namespace) = VORTEX_ICEBERG_NAMESPACE_TELEMETRY;
+  option (v1.public.common.vortex_enabled) = true;
+  v1.events.vortex.VortexMessageEnrichment enrichment = 1;
+  v1.public.common.vortex_telemetry_contexts.VortexTelemetryDbtCloudContext ctx = 2;
+
+  string file_path = 3;
+  CanvasHandoffPayloadKind payload_kind = 4;
+  v1.public.common.vortex_telemetry_contexts.VortexTelemetryCommonContext common_context = 5;
+}
+
+// Fired in the Canvas read-only route when parseSql fails.
+message OpenInCanvasHandoffFailed {
+  option (v1.public.common.vortex_namespace) = VORTEX_ICEBERG_NAMESPACE_TELEMETRY;
+  option (v1.public.common.vortex_enabled) = true;
+  v1.events.vortex.VortexMessageEnrichment enrichment = 1;
+  v1.public.common.vortex_telemetry_contexts.VortexTelemetryDbtCloudContext ctx = 2;
+
+  string file_path = 3;
+  CanvasHandoffPayloadKind payload_kind = 4;
+  CanvasHandoffParseFailureReason reason = 5;
+  // Raw error string for debugging — complements the typed reason above.
+  string error_message = 6;
+  v1.public.common.vortex_telemetry_contexts.VortexTelemetryCommonContext common_context = 7;
+}
+
+// Fired when the user clicks the inline "Canvas" tab in the diff card.
+message DiffCardCanvasTabClicked {
+  option (v1.public.common.vortex_namespace) = VORTEX_ICEBERG_NAMESPACE_TELEMETRY;
+  option (v1.public.common.vortex_enabled) = true;
+  v1.events.vortex.VortexMessageEnrichment enrichment = 1;
+  v1.public.common.vortex_telemetry_contexts.VortexTelemetryDbtCloudContext ctx = 2;
+
+  string file_path = 3;
+  v1.public.common.vortex_telemetry_contexts.VortexTelemetryCommonContext common_context = 4;
+}
+
+// Fired when the inline diff fails to parse on either side.
+message DiffCardCanvasParseFailed {
+  option (v1.public.common.vortex_namespace) = VORTEX_ICEBERG_NAMESPACE_TELEMETRY;
+  option (v1.public.common.vortex_enabled) = true;
+  v1.events.vortex.VortexMessageEnrichment enrichment = 1;
+  v1.public.common.vortex_telemetry_contexts.VortexTelemetryDbtCloudContext ctx = 2;
+
+  string file_path = 3;
+  CanvasHandoffDiffSide side = 4;
+  CanvasHandoffParseFailureReason reason = 5;
+  string error_message = 6;
+  v1.public.common.vortex_telemetry_contexts.VortexTelemetryCommonContext common_context = 7;
+}

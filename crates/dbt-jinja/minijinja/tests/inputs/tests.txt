@@ -1,0 +1,61 @@
+{
+  "two": 2,
+  "two_dot_two": 2.2,
+  "seq": [
+    1,
+    2,
+    3
+  ],
+  "map": {
+    "foo": "bar"
+  },
+  "string": "aha"
+}
+---
+even: {{ two is even }}
+odd: {{ two is odd }}
+undefined: {{ two is undefined }}
+defined: {{ two is defined }}
+undefined2: {{ ohwell is undefined }}
+defined2: {{ ohwell is defined }}
+none: {{ none is none }}
+not-none: {{ 42 is not none }}
+number-int: {{ two is number }}
+number-float: {{ two_dot_two is number }}
+integer-int: {{ 42 is integer }}
+integer-float: {{ 42.0 is integer }}
+float-int: {{ 42 is float }}
+float-float: {{ 42.0 is float }}
+not-seq: {{ two is sequence }}
+seq: {{ seq is sequence }}
+reverse-not-seq: {{ seq|reverse is sequence }}
+iterable: {{ seq is iterable }}
+iterable-reverse: {{ seq|reverse is iterable }}
+string-iterable: {{ string is iterable }}
+not-iterable: {{ two is iterable }}
+not-map: {{ two is mapping }}
+map: {{ map is mapping }}
+string: {{ string is string }}
+not-string: {{ mapping is string }}
+starts-with-a: {{ string is startingwith('a') }}
+starts-with-a-noparen: {{ string is startingwith 'a' }}
+ends-with-ha: {{ string is endingwith('ha') }}
+ends-with-ha-noparen: {{ string is endingwith 'ha' }}
+not-safe: {{ "foo" is safe }}
+safe: {{ "foo"|escape is safe }}
+is-true: {{ true is true }} | {{ 42 is true }}
+is-false: {{ false is false }} | {{ 0 is false }}
+is-filter: {{ 'escape' is filter }} | {{ 'unknown-filter' is filter }}
+is-test: {{ 'safe' is test }} | {{ 'unknown-test' is test }}
+is-boolean: {{ true is boolean }} | {{ 42 is boolean }}
+is-divisibleby: {{ 42 is divisibleby(2) }} | {{ 41 is divisibleby(2) }}
+is-divisibleby-noparen: {{ 42 is divisibleby(2) }} | {{ 41 is divisibleby 2 }}
+is-lower: {{ "foo" is lower }} | {{ "FOO" is lower }}
+is-upper: {{ "foo" is upper }} | {{ "FOO" is upper }}
+seq-same-as: {{ [1, 2, 3] is sameas([1, 2, 3]) }}
+seq-same-as-noparen: {{ [1, 2, 3] is sameas [1, 2, 3] }}
+const-same-as: {{ true is sameas(true) }}
+const-same-as-noparen: {{ true is sameas true }}
+int-same-as: {{ 1 is sameas(1.0) }}
+int-same-as-noparen: {{ 1 is sameas 1.0 }}
+neg-int-same-as-noparen: {{ -1 is sameas -1 }}

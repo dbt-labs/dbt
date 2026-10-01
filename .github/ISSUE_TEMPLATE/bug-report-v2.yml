@@ -1,0 +1,101 @@
+name: 🐞 Bug (dbt v2.x)
+description: Report a bug or issue you've found in dbt v2.x (Core or Fusion distributions)
+title: "[v2 Bug] <title>"
+labels: ["bug", "v2", "type:bug", "status:triage", "engine:v2"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to fill out this bug report!
+
+        This template is for bugs in dbt v2.x (either the Core or Fusion distribution). For bugs in dbt Core 1.x, use the "🐞 Bug" template instead.
+  - type: checkboxes
+    attributes:
+      label: Is this a new bug in dbt v2.x compared to the latest version of dbt 1.x?
+      description: >
+        In other words, is this an error, flaw, failure, or fault in our software?
+
+        If this is a regression (something that used to work in an older version), describe that in the steps to reproduce.
+
+        Please search to see if an issue already exists for the bug you encountered.
+      options:
+        - label: I believe this is a new bug in dbt v2.x
+          required: true
+        - label: I have searched the existing issues and could not find a duplicate
+          required: true
+  - type: textarea
+    attributes:
+      label: Current Behavior
+      description: A concise description of what you're experiencing.
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: Expected Behavior
+      description: A concise description of what you expected to happen.
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: Steps To Reproduce
+      description: |
+        Steps to reproduce the behavior. The best way to help is a minimal reproducible example — a small dbt project or model snippet that triggers the issue.
+      placeholder: |
+        1. Create a model with...
+        2. Run `dbt run`
+        3. See error...
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant log output
+      description: |
+        If applicable, paste relevant log output. You can find logs in stdout, `logs/dbt.log`, or the VS Code Output pane under "dbt output" or "dbt Language Server".
+      render: shell
+    validations:
+      required: false
+  - type: textarea
+    attributes:
+      label: Environment
+      description: |
+        Please fill in your environment details.
+      value: |
+        - OS:
+        - CPU: (x86 or ARM)
+        - dbt distribution and version: (`dbt --version`)
+      render: markdown
+    validations:
+      required: false
+  - type: dropdown
+    id: adapter
+    attributes:
+      label: Which database adapter are you using?
+      description: Select all that apply. If adapter-specific, we'll apply the corresponding label automatically.
+      multiple: true
+      options:
+        - snowflake
+        - databricks
+        - bigquery
+        - postgres
+        - redshift
+        - duckdb
+        - clickhouse
+        - other (describe in Additional Context)
+    validations:
+      required: false
+  - type: checkboxes
+    attributes:
+      label: Is this a discrepancy vs. dbt 1.x?
+      description: Does this behavior work correctly in dbt 1.x but not in dbt v2.x?
+      options:
+        - label: "Yes — this works in dbt 1.x but not in dbt v2.x"
+  - type: textarea
+    attributes:
+      label: Additional Context
+      description: |
+        Links, references, screenshots, or anything else that will give us more context.
+
+        Tip: You can attach images or log files by clicking this area and dragging files in.
+    validations:
+      required: false

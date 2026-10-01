@@ -1,0 +1,5 @@
+{"seq": [1, 2, 3], "b": []}
+---
+{% for a in seq %}
+  This fails in the include: {% include "a_plus_b.txt" %}
+{% endfor %}

@@ -1,0 +1,33 @@
+[package]
+name = "dbt-adapter-engine"
+version.workspace = true
+homepage.workspace = true
+repository.workspace = true
+authors.workspace = true
+description.workspace = true
+license.workspace = true
+keywords.workspace = true
+edition.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+dbt-adbc = { workspace = true }
+dbt-base = { workspace = true }
+dbt-fusion-workspace-hack = { version = "0.1" }
+dbt-runtime = { workspace = true }
+
+futures = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+tracy-client = { workspace = true }
+
+[dev-dependencies]
+adbc-core = { workspace = true }
+dbt-runtime = { workspace = true }
+
+[lib]
+name = "dbt_adapter_engine"
+path = "src/lib.rs"
+doctest = false

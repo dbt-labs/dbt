@@ -1,0 +1,4 @@
+{}
+---
+{% extends "simple_layout.txt" %}
+{% block title %}{{ missing_function() }}{% endblock %}

@@ -1,0 +1,7 @@
+{
+  "var": "foo"
+}
+---
+<title>{% block title %}Shouldn't show up{% endblock %}</title>
+{% block fragment %}{{ var }}{% endblock fragment %}
+Also shouldn't show up

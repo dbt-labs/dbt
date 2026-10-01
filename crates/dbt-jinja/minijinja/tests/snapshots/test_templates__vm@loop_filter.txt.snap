@@ -1,0 +1,24 @@
+---
+source: minijinja/tests/test_templates.rs
+description: "{%- for item in seq if item is even and loop is undefined %}\n- {{ item }} ({{ loop.index }} / {{ loop.length }})\n{%- endfor %}"
+info:
+  seq:
+    - 1
+    - 2
+    - 3
+    - 4
+    - 5
+    - 6
+    - 7
+    - 8
+    - 9
+    - 10
+input_file: minijinja/tests/inputs/loop_filter.txt
+---
+
+- 2 (1 / 5)
+- 4 (2 / 5)
+- 6 (3 / 5)
+- 8 (4 / 5)
+- 10 (5 / 5)
+

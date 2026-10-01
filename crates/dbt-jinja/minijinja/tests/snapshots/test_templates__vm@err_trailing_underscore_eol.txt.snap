@@ -1,0 +1,24 @@
+---
+source: fs/sa/crates/dbt-jinja/minijinja/tests/test_templates.rs
+description: "{{ 10_\n+ 42 }}"
+info:
+  __minijinja_current_path: err_trailing_underscore_eol.txt
+  __minijinja_current_span:
+    start_line: 1
+    start_col: 1
+    start_offset: 0
+    end_line: 1
+    end_col: 1
+    end_offset: 0
+input_file: fs/sa/crates/dbt-jinja/minijinja/tests/inputs/err_trailing_underscore_eol.txt
+---
+!!!SYNTAX ERROR!!!
+
+Error {
+    kind: SyntaxError,
+    detail: "unexpected identifier, expected end of variable block",
+    name: "err_trailing_underscore_eol.txt",
+}
+
+syntax error: unexpected identifier, expected end of variable block
+(in err_trailing_underscore_eol.txt:1:6)

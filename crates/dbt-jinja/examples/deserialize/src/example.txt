@@ -1,0 +1,4 @@
+Path: {{ path }}
+Parent: {{ path|dirname }}
+Point as Point: {{ point }}
+Point as Tuple: {{ point|point_as_tuple }}

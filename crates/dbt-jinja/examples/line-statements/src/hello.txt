@@ -1,0 +1,7 @@
+## this is a line comment
+<ul>
+  # for item in seq
+    ## again another comment here.  Removed entirely
+    <li>{{ item }}
+  # endfor
+</ul>

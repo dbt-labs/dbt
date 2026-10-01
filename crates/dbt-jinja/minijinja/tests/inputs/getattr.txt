@@ -1,0 +1,9 @@
+{
+  "user": {
+    "name": "Peter",
+    "is_active": true
+  }
+}
+---
+name: {{ user.name }}
+active: {{ user.is_active }}

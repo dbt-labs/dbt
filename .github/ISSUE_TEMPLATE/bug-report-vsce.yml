@@ -1,0 +1,101 @@
+name: 🐞📟 VS Code Extension Bug
+description: Report a bug with the dbt VS Code extension
+title: "[VSCE] [Bug] <title>"
+labels: ["bug", "vsce", "v2", "type:bug", "status:triage", "area:vscode", "engine:v2"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to fill out this bug report!
+
+        **This template is for bugs in the dbt VS Code extension** (IntelliSense, go-to-definition, lineage, build menu, etc.).
+        For CLI/compiler bugs, please use the "🐞 Bug (dbt v2.x)" template instead.
+  - type: checkboxes
+    attributes:
+      label: Is this a new bug in the VS Code extension?
+      description: >
+        1. Is this an error in the VS Code extension, not the CLI? Use the dbt v2.x bug template for CLI issues.
+
+        2. Is this an error, flaw, or fault — not a regression, feature request, or confusing-but-working behavior?
+
+        3. Please search to see if an issue already exists.
+      options:
+        - label: I believe this is a new bug in the VS Code extension, not the dbt Fusion CLI
+          required: true
+        - label: I have searched the existing issues and could not find a duplicate
+          required: true
+  - type: textarea
+    attributes:
+      label: Current Behavior
+      description: A concise description of what you're experiencing.
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: Expected Behavior
+      description: A concise description of what you expected to happen.
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: Troubleshooting
+      description: "Does the bug consistently occur? Does it go away after running `Developer: Reload Window`?"
+    validations:
+      required: false
+  - type: textarea
+    attributes:
+      label: Steps To Reproduce
+      description: |
+        Steps to reproduce the behavior. A minimal dbt project or model snippet that triggers the issue is ideal.
+      placeholder: |
+        1. Open a dbt project in VS Code
+        2. Open model file...
+        3. See error / missing IntelliSense / etc.
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant log output
+      description: |
+        Paste relevant output from the VS Code Output pane. Use the dropdown to select "dbt output" or "dbt Language Server".
+      render: shell
+    validations:
+      required: false
+  - type: textarea
+    attributes:
+      label: Environment
+      description: |
+        Please fill in your environment details.
+      value: |
+        - OS:
+        - VS Code / Cursor: (Help → About, e.g. "VSCode: 1.96.2")
+        - dbt Fusion extension: (hover over "dbt" in the bottom taskbar)
+        - dbt Fusion CLI: (`dbt --version`)
+        - Adapter:
+      render: markdown
+    validations:
+      required: false
+  - type: dropdown
+    id: bug_area
+    attributes:
+      label: Which area of the extension is affected?
+      multiple: true
+      options:
+        - IntelliSense / SQL validation / go-to-definition / references
+        - Model lineage / DAG view
+        - Build menu / run commands / compiled SQL
+        - Preview models
+        - Initial setup / authentication
+        - other (describe in Additional Context)
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: Additional Context
+      description: |
+        Links, references, screenshots, or anything else that will give us more context.
+
+        Tip: You can attach images or log files by clicking this area and dragging files in.
+    validations:
+      required: false

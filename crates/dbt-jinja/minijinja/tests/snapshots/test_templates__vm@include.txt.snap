@@ -1,0 +1,13 @@
+---
+source: minijinja/tests/test_templates.rs
+description: "Before\n{% with variable=42 %}\n  {% include template %}\n{% endwith %}\nAfter"
+info:
+  template: simple_include.txt
+input_file: minijinja/tests/inputs/include.txt
+---
+Before
+
+  Hello 42 from included template!
+
+After
+

@@ -1,0 +1,29 @@
+---
+source: minijinja/tests/test_templates.rs
+description: "{% with a=foo, b=bar %}\n  {{ a }}|{{ b }}|{{ other }}\n{% endwith %}\n\n{% with (a, b, (c,)) = tuple %}\n  {{ a }}|{{ b }}|{{ c }}\n{% endwith %}\n\n{% with ((a,), b, c) = tuple2 %}\n  {{ a }}|{{ b }}|{{ c }}\n{% endwith %}"
+info:
+  bar: 23
+  foo: 42
+  other: 11
+  tuple:
+    - 1
+    - 2
+    - - 3
+  tuple2:
+    - - 1
+    - 2
+    - 3
+input_file: minijinja/tests/inputs/with.txt
+---
+
+  42|23|11
+
+
+
+  1|2|3
+
+
+
+  1|2|3
+
+

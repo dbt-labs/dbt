@@ -1,0 +1,25 @@
+---
+source: crates/dbt-jinja/minijinja/tests/test_templates.rs
+description: "{% macro render_dialog(title, class='dialog') -%}\n    <div class=\"{{ class }}\">\n        <h2>{{ title }}</h2>\n        <div class=\"contents\">\n            {{ caller() }}\n        </div>\n    </div>\n{%- endmacro %}\n\n{% call render_dialog('Hello World') %}\n    This is a simple dialog rendered by using a macro and\n    a call block.\n{% endcall %}\n\ncaller: {{ render_dialog.caller }}"
+info:
+  __minijinja_current_path: macro_caller.txt
+  __minijinja_current_span:
+    end_col: 1
+    end_line: 1
+    end_offset: 0
+    start_col: 1
+    start_line: 1
+    start_offset: 0
+input_file: crates/dbt-jinja/minijinja/tests/inputs/macro_caller.txt
+---
+<div class="dialog">
+        <h2>Hello World</h2>
+        <div class="contents">
+            
+    This is a simple dialog rendered by using a macro and
+    a call block.
+
+        </div>
+    </div>
+
+caller: True

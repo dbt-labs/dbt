@@ -1,0 +1,10 @@
+---
+source: minijinja/tests/test_templates.rs
+description: "{% macro first(param) %}first: {{ second(param )}}{% endmacro %}\n{% macro second(param) %}second: {{ param }}{% endmacro %}\n{{ first(42) }}"
+info: {}
+input_file: minijinja/tests/inputs/macro_hoisting.txt
+---
+
+
+first: second: 42
+

@@ -1,0 +1,9 @@
+---
+source: minijinja/tests/test_templates.rs
+description: "Hello {{ name }}!"
+info:
+  name: World
+input_file: minijinja/tests/inputs/hello.txt
+---
+Hello World!
+

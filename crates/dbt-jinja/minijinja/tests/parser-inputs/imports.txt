@@ -1,0 +1,9 @@
+{% from "foo.html" import a, b %}
+{% from "foo.html" import a %}
+{% from "foo.html" import a as b %}
+{% from "foo.html" import a as b, b as c %}
+{% from "foo.html" import a, b, %}
+{% from "foo.html" import a, %}
+{% from "foo.html" import a as b, %}
+{% from "foo.html" import a as b, b as c, %}
+{% import "foo.html" as x %}

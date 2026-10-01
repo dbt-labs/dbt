@@ -1,0 +1,41 @@
+[package]
+authors.workspace = true
+description = "Release-pipeline commands for dbt-fusion: bump-cargo-version, pypi pack, pypi publish."
+edition.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+license.workspace = true
+name = "dbt-ci"
+publish = false
+repository.workspace = true
+version.workspace = true
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "dbt-ci"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = { workspace = true }
+aws-config = { workspace = true }
+aws-sdk-codeartifact = { workspace = true }
+aws-smithy-types = { workspace = true }
+base64 = { workspace = true }
+bytes = { workspace = true }
+clap = { workspace = true }
+dbt-fusion-workspace-hack = { version = "0.1" }
+flate2 = { workspace = true }
+hex = { workspace = true }
+md5 = { workspace = true }
+python-pkginfo = "0.6"
+reqwest = { workspace = true, features = ["multipart"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+tar = { workspace = true }
+tempfile = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+toml_edit = { workspace = true }
+zip = { workspace = true }

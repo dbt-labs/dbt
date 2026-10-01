@@ -1,0 +1,18 @@
+{
+  "word": "bird",
+  "the_sentence": "bird is the word",
+  "the_words": [
+    "bird",
+    "not bird"
+  ],
+  "the_map": {
+    "bird": "the word"
+  }
+}
+---
+{{ word in the_sentence }}
+{{ word in the_words }}
+{{ word in the_map }}
+{{ word not in the_sentence }}
+{{ word not in the_words }}
+{{ word not in the_map }}

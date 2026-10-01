@@ -1,0 +1,196 @@
+syntax = "proto3";
+
+// Vortex events for the Beacon copilot surface (dbt-ui authoring). Today this
+// only contains split-pane events; future Beacon events should be added here.
+package v1.public.events.beacon;
+option go_package = "github.com/dbt-labs/proto-golang/v1/public/events/beacon";
+
+import "dbtlabs/proto/public/v1/common/vortex_options.proto";
+import "dbtlabs/proto/public/v1/common/vortex_telemetry_contexts.proto";
+import "dbtlabs/proto/public/v1/events/vortex.proto";
+
+// Which view is active in the Beacon side pane.
+enum BeaconSplitPaneViewKind {
+  BEACON_SPLIT_PANE_VIEW_KIND_UNSPECIFIED = 0;
+  BEACON_SPLIT_PANE_VIEW_KIND_DIFF = 1;
+  BEACON_SPLIT_PANE_VIEW_KIND_CANVAS = 2;
+  BEACON_SPLIT_PANE_VIEW_KIND_INSIGHT = 3;
+}
+
+// What surface triggered the side pane to open.
+enum BeaconSplitPaneOpenSource {
+  BEACON_SPLIT_PANE_OPEN_SOURCE_UNSPECIFIED = 0;
+  // The "Open" button on the in-chat DiffMessage. Also covers the
+  // whole-card / icon click target and the auto-open on a pending edit
+  // approval — all map back to the same DiffMessage surface and a single
+  // source value is sufficient.
+  BEACON_SPLIT_PANE_OPEN_SOURCE_DIFF_MESSAGE = 1;
+  // An "Open in Canvas" CTA in chat (e.g. on a model preview / handoff card).
+  BEACON_SPLIT_PANE_OPEN_SOURCE_CANVAS_CTA = 2;
+}
+
+// Why the side pane closed. Distinguishes user-initiated closes from the
+// automatic close that fires when the user switches chat threads.
+enum BeaconSplitPaneCloseReason {
+  BEACON_SPLIT_PANE_CLOSE_REASON_UNSPECIFIED = 0;
+  // The user clicked the close (X) button in the pane header.
+  BEACON_SPLIT_PANE_CLOSE_REASON_USER_CLICKED_CLOSE = 1;
+  // The active chat thread changed and the pane was closed automatically so
+  // the previous thread's diff doesn't read as the new thread's diff.
+  BEACON_SPLIT_PANE_CLOSE_REASON_CHAT_THREAD_CHANGED = 2;
+  // Fallback for cases where the pane closed but no specific reason was
+  // captured (e.g. provider unmount during navigation).
+  BEACON_SPLIT_PANE_CLOSE_REASON_PANE_UNMOUNTED = 3;
+}
+
+// Outcome of the parseSql calls fired by the side pane's Canvas view.
+enum BeaconCanvasParseStatus {
+  BEACON_CANVAS_PARSE_STATUS_UNSPECIFIED = 0;
+  BEACON_CANVAS_PARSE_STATUS_SUCCESS = 1;
+  BEACON_CANVAS_PARSE_STATUS_ERROR = 2;
+}
+
+// Which side of the diff failed to parse. BEFORE-only failure is non-fatal
+// (the pane falls back to a single-DAG view of the after content) so it is
+// reported as NONE rather than as its own value.
+enum BeaconCanvasParseFailedSide {
+  BEACON_CANVAS_PARSE_FAILED_SIDE_UNSPECIFIED = 0;
+  // No failure — the parse succeeded.
+  BEACON_CANVAS_PARSE_FAILED_SIDE_NONE = 1;
+  // The after-edit parse failed; the canvas view is unavailable.
+  BEACON_CANVAS_PARSE_FAILED_SIDE_AFTER = 2;
+  // Both before and after parses failed.
+  BEACON_CANVAS_PARSE_FAILED_SIDE_BOTH = 3;
+}
+
+// Which kickout destination the user clicked from a Beacon DiffCard or the
+// side pane "Open in..." menu. Canvas is intentionally excluded — the
+// Studio→Canvas kickout is already tracked via the OpenInCanvasCta* events
+// in canvas.proto.
+enum BeaconKickoutTarget {
+  BEACON_KICKOUT_TARGET_UNSPECIFIED = 0;
+  // The dbt platform editor (labeled "Editor" inside Studio, "Studio" when
+  // Beacon is embedded full-screen — same destination, label flips on the
+  // surface).
+  BEACON_KICKOUT_TARGET_EDITOR = 1;
+  // The dbt platform Catalog page for the file's node.
+  BEACON_KICKOUT_TARGET_CATALOG = 2;
+}
+
+// Which surface the kickout was clicked from.
+enum BeaconKickoutSurface {
+  BEACON_KICKOUT_SURFACE_UNSPECIFIED = 0;
+  // The inline DiffCard rendered in the chat transcript.
+  BEACON_KICKOUT_SURFACE_INLINE_DIFF_CARD = 1;
+  // The "Open in..." menu in the side pane header.
+  BEACON_KICKOUT_SURFACE_SIDE_PANE = 2;
+}
+
+// Fired when the Beacon side pane opens (CopilotSidePaneContext.open()).
+// Gated on the ve-2061-beacon-split-pane LD flag.
+message BeaconSplitPaneOpened {
+  option (v1.public.common.vortex_namespace) = VORTEX_ICEBERG_NAMESPACE_TELEMETRY;
+  option (v1.public.common.vortex_enabled) = true;
+
+  v1.events.vortex.VortexMessageEnrichment enrichment = 1;
+  v1.public.common.vortex_telemetry_contexts.VortexTelemetryDbtCloudContext ctx = 2;
+
+  // Which view was opened.
+  BeaconSplitPaneViewKind view_kind = 3;
+  // What surface triggered the open.
+  BeaconSplitPaneOpenSource source = 4;
+  // dbt project file path shown in the pane (for diff view; empty for views
+  // that don't have a single file).
+  string file_path = 5;
+  v1.public.common.vortex_telemetry_contexts.VortexTelemetryCommonContext common_context = 6;
+}
+
+// Fired when the Beacon side pane closes (CopilotSidePaneContext.close()).
+message BeaconSplitPaneClosed {
+  option (v1.public.common.vortex_namespace) = VORTEX_ICEBERG_NAMESPACE_TELEMETRY;
+  option (v1.public.common.vortex_enabled) = true;
+
+  v1.events.vortex.VortexMessageEnrichment enrichment = 1;
+  v1.public.common.vortex_telemetry_contexts.VortexTelemetryDbtCloudContext ctx = 2;
+
+  // Which view was active when the user closed the pane.
+  BeaconSplitPaneViewKind view_kind = 3;
+  // Why the pane closed — user-initiated close vs. automatic close from a
+  // chat-thread change, etc.
+  BeaconSplitPaneCloseReason close_reason = 4;
+  v1.public.common.vortex_telemetry_contexts.VortexTelemetryCommonContext common_context = 5;
+}
+
+// Fired when the user switches between views inside the side pane via the
+// SegmentedButton toggle (e.g. Diff <-> Canvas). The pane stays open.
+message BeaconSplitPaneViewToggled {
+  option (v1.public.common.vortex_namespace) = VORTEX_ICEBERG_NAMESPACE_TELEMETRY;
+  option (v1.public.common.vortex_enabled) = true;
+
+  v1.events.vortex.VortexMessageEnrichment enrichment = 1;
+  v1.public.common.vortex_telemetry_contexts.VortexTelemetryDbtCloudContext ctx = 2;
+
+  // The view that was active before the toggle.
+  BeaconSplitPaneViewKind from_view_kind = 3;
+  // The view the user toggled to.
+  BeaconSplitPaneViewKind to_view_kind = 4;
+  v1.public.common.vortex_telemetry_contexts.VortexTelemetryCommonContext common_context = 5;
+}
+
+// Fired when the side pane's Canvas parse (`useCanvasParse`) settles. Covers
+// both success and failure outcomes so a single event powers conversion
+// (success / total) and failure-rate analytics. Emitted at most once per
+// distinct (projectId, environmentId, before, after) input set.
+message BeaconCanvasParseCompleted {
+  option (v1.public.common.vortex_namespace) = VORTEX_ICEBERG_NAMESPACE_TELEMETRY;
+  option (v1.public.common.vortex_enabled) = true;
+
+  v1.events.vortex.VortexMessageEnrichment enrichment = 1;
+  v1.public.common.vortex_telemetry_contexts.VortexTelemetryDbtCloudContext ctx = 2;
+
+  // dbt project file path the parse was run for.
+  string file_path = 3;
+  // Outcome of the parse — success vs. error.
+  BeaconCanvasParseStatus status = 4;
+  // Which side failed when status = ERROR. NONE when status = SUCCESS.
+  BeaconCanvasParseFailedSide failed_side = 5;
+  // Error message surfaced from parseSql when status = ERROR. Empty otherwise.
+  string error_message = 6;
+  // Character count of the pre-edit ("before") SQL fed into parseSql. Zero
+  // when no before content was provided (new file).
+  uint32 before_char_count = 7;
+  // Character count of the post-edit ("after") SQL fed into parseSql.
+  uint32 after_char_count = 8;
+  // True when the before parse also succeeded and the pane rendered a
+  // DAG-diff; false when the pane fell back to a single-DAG view of the
+  // after content. Only meaningful when status = SUCCESS.
+  bool parsed_before = 9;
+  // Wall-clock duration of the parseSql round-trip in milliseconds (start to
+  // settle). Captured via performance.now().
+  uint32 duration_ms = 10;
+  v1.public.common.vortex_telemetry_contexts.VortexTelemetryCommonContext common_context = 11;
+}
+
+// Fired when the user clicks a kickout destination (Open in Editor, Open in
+// Catalog) from either the inline DiffCard or the side pane's "Open in..."
+// menu. Canvas kickouts are tracked separately via OpenInCanvasCtaClicked in
+// canvas.proto and are intentionally not duplicated here.
+message BeaconKickoutClicked {
+  option (v1.public.common.vortex_namespace) = VORTEX_ICEBERG_NAMESPACE_TELEMETRY;
+  option (v1.public.common.vortex_enabled) = true;
+
+  v1.events.vortex.VortexMessageEnrichment enrichment = 1;
+  v1.public.common.vortex_telemetry_contexts.VortexTelemetryDbtCloudContext ctx = 2;
+
+  // dbt project file path the kickout was clicked against.
+  string file_path = 3;
+  // Destination the user kicked out to.
+  BeaconKickoutTarget target = 4;
+  // Which surface the kickout was clicked from.
+  BeaconKickoutSurface surface = 5;
+  // The active view in the side pane when the kickout was clicked. Only
+  // meaningful when surface = SIDE_PANE; for INLINE_DIFF_CARD callsites this
+  // will be UNSPECIFIED.
+  BeaconSplitPaneViewKind active_view = 6;
+  v1.public.common.vortex_telemetry_contexts.VortexTelemetryCommonContext common_context = 7;
+}

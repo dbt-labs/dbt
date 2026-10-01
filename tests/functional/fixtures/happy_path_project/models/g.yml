@@ -1,9 +1,0 @@
-groups:
-  - name: finance
-    description: description
-    config:
-      meta:
-        custom_field: value
-    owner:
-      # one of 'name' or 'email' is required;
-      email: finance@jaffleshop.com

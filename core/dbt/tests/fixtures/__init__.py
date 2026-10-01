@@ -1,1 +1,0 @@
-# dbt.tests.fixtures directory

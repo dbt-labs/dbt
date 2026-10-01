@@ -1,0 +1,24 @@
+---
+source: fs/sa/crates/dbt-jinja/minijinja/tests/test_templates.rs
+description: "{% continue %}"
+info:
+  __minijinja_current_path: err_toplevel_continue.txt
+  __minijinja_current_span:
+    start_line: 1
+    start_col: 1
+    start_offset: 0
+    end_line: 1
+    end_col: 1
+    end_offset: 0
+input_file: fs/sa/crates/dbt-jinja/minijinja/tests/inputs/err_toplevel_continue.txt
+---
+!!!SYNTAX ERROR!!!
+
+Error {
+    kind: SyntaxError,
+    detail: "'continue' must be placed inside a loop",
+    name: "err_toplevel_continue.txt",
+}
+
+syntax error: 'continue' must be placed inside a loop
+(in err_toplevel_continue.txt:1:1)

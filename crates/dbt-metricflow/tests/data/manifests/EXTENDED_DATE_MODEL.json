@@ -1,0 +1,326 @@
+{
+  "metrics": [
+    {
+      "config": null,
+      "description": "bookings",
+      "filter": null,
+      "label": null,
+      "metadata": null,
+      "name": "bookings",
+      "time_granularity": null,
+      "type": "simple",
+      "type_params": {
+        "conversion_type_params": null,
+        "cumulative_type_params": null,
+        "denominator": null,
+        "expr": "booking",
+        "fill_nulls_with": null,
+        "grain_to_date": null,
+        "input_measures": [],
+        "is_private": false,
+        "join_to_timespine": false,
+        "measure": null,
+        "metric_aggregation_params": {
+          "agg": "sum",
+          "agg_params": null,
+          "agg_time_dimension": "ds",
+          "expr": "booking",
+          "non_additive_dimension": null,
+          "semantic_model": "bookings_extended"
+        },
+        "metrics": null,
+        "numerator": null,
+        "window": null
+      }
+    },
+    {
+      "config": null,
+      "description": "unique_listings_booked",
+      "filter": null,
+      "label": null,
+      "metadata": null,
+      "name": "unique_listings_booked",
+      "time_granularity": null,
+      "type": "simple",
+      "type_params": {
+        "conversion_type_params": null,
+        "cumulative_type_params": null,
+        "denominator": null,
+        "expr": "listing_id",
+        "fill_nulls_with": null,
+        "grain_to_date": null,
+        "input_measures": [],
+        "is_private": false,
+        "join_to_timespine": false,
+        "measure": null,
+        "metric_aggregation_params": {
+          "agg": "count_distinct",
+          "agg_params": null,
+          "agg_time_dimension": "ds",
+          "expr": "listing_id",
+          "non_additive_dimension": null,
+          "semantic_model": "bookings_extended"
+        },
+        "metrics": null,
+        "numerator": null,
+        "window": null
+      }
+    },
+    {
+      "config": null,
+      "description": "bookings_monthly",
+      "filter": null,
+      "label": null,
+      "metadata": null,
+      "name": "bookings_monthly",
+      "time_granularity": "month",
+      "type": "simple",
+      "type_params": {
+        "conversion_type_params": null,
+        "cumulative_type_params": null,
+        "denominator": null,
+        "expr": "bookings_monthly",
+        "fill_nulls_with": null,
+        "grain_to_date": null,
+        "input_measures": [],
+        "is_private": false,
+        "join_to_timespine": false,
+        "measure": null,
+        "metric_aggregation_params": {
+          "agg": "sum",
+          "agg_params": null,
+          "agg_time_dimension": "ds",
+          "expr": "bookings_monthly",
+          "non_additive_dimension": null,
+          "semantic_model": "bookings_extended_monthly"
+        },
+        "metrics": null,
+        "numerator": null,
+        "window": null
+      }
+    }
+  ],
+  "project_configuration": {
+    "dsi_package_version": {
+      "major_version": "0",
+      "minor_version": "0",
+      "patch_version": "0"
+    },
+    "metadata": null,
+    "time_spine_table_configurations": [],
+    "time_spines": [
+      {
+        "custom_granularities": [],
+        "node_relation": {
+          "alias": "mf_time_spine",
+          "database": null,
+          "relation_name": null,
+          "schema_name": "main"
+        },
+        "primary_column": {
+          "name": "ds",
+          "time_granularity": "day"
+        }
+      }
+    ]
+  },
+  "saved_queries": [],
+  "semantic_models": [
+    {
+      "config": null,
+      "defaults": {
+        "agg_time_dimension": "ds"
+      },
+      "description": "bookings_extended",
+      "dimensions": [
+        {
+          "config": null,
+          "description": null,
+          "expr": null,
+          "is_partition": false,
+          "label": null,
+          "metadata": null,
+          "name": "ds",
+          "type": "time",
+          "type_params": {
+            "time_granularity": "day",
+            "validity_params": null
+          }
+        },
+        {
+          "config": null,
+          "description": null,
+          "expr": null,
+          "is_partition": false,
+          "label": null,
+          "metadata": null,
+          "name": "is_instant",
+          "type": "categorical",
+          "type_params": null
+        }
+      ],
+      "entities": [
+        {
+          "config": null,
+          "description": null,
+          "expr": "listing_id",
+          "label": null,
+          "metadata": null,
+          "name": "listing",
+          "role": null,
+          "type": "foreign"
+        }
+      ],
+      "label": null,
+      "measures": [
+        {
+          "agg": "sum",
+          "agg_params": null,
+          "agg_time_dimension": null,
+          "config": null,
+          "create_metric": false,
+          "description": null,
+          "expr": "booking",
+          "label": null,
+          "name": "bookings",
+          "non_additive_dimension": null
+        },
+        {
+          "agg": "count_distinct",
+          "agg_params": null,
+          "agg_time_dimension": null,
+          "config": null,
+          "create_metric": false,
+          "description": null,
+          "expr": "listing_id",
+          "label": null,
+          "name": "unique_listings_booked",
+          "non_additive_dimension": null
+        }
+      ],
+      "metadata": null,
+      "name": "bookings_extended",
+      "node_relation": {
+        "alias": "fct_bookings_extended",
+        "database": null,
+        "relation_name": "\"main\".\"fct_bookings_extended\"",
+        "schema_name": "main"
+      },
+      "primary_entity": "booking"
+    },
+    {
+      "config": null,
+      "defaults": null,
+      "description": "listings_extended",
+      "dimensions": [
+        {
+          "config": null,
+          "description": null,
+          "expr": null,
+          "is_partition": false,
+          "label": null,
+          "metadata": null,
+          "name": "listing_creation_ds",
+          "type": "time",
+          "type_params": {
+            "time_granularity": "day",
+            "validity_params": null
+          }
+        }
+      ],
+      "entities": [
+        {
+          "config": null,
+          "description": null,
+          "expr": "listing_id",
+          "label": null,
+          "metadata": null,
+          "name": "listing",
+          "role": null,
+          "type": "primary"
+        }
+      ],
+      "label": null,
+      "measures": [],
+      "metadata": null,
+      "name": "listings_extended",
+      "node_relation": {
+        "alias": "dim_listings_extended",
+        "database": null,
+        "relation_name": "\"main\".\"dim_listings_extended\"",
+        "schema_name": "main"
+      },
+      "primary_entity": null
+    },
+    {
+      "config": null,
+      "defaults": {
+        "agg_time_dimension": "ds"
+      },
+      "description": "bookings_extended_monthly",
+      "dimensions": [
+        {
+          "config": null,
+          "description": null,
+          "expr": null,
+          "is_partition": false,
+          "label": null,
+          "metadata": null,
+          "name": "ds",
+          "type": "time",
+          "type_params": {
+            "time_granularity": "month",
+            "validity_params": null
+          }
+        },
+        {
+          "config": null,
+          "description": null,
+          "expr": null,
+          "is_partition": false,
+          "label": null,
+          "metadata": null,
+          "name": "is_instant",
+          "type": "categorical",
+          "type_params": null
+        }
+      ],
+      "entities": [
+        {
+          "config": null,
+          "description": null,
+          "expr": "listing_id",
+          "label": null,
+          "metadata": null,
+          "name": "listing",
+          "role": null,
+          "type": "foreign"
+        }
+      ],
+      "label": null,
+      "measures": [
+        {
+          "agg": "sum",
+          "agg_params": null,
+          "agg_time_dimension": null,
+          "config": null,
+          "create_metric": false,
+          "description": null,
+          "expr": "bookings_monthly",
+          "label": null,
+          "name": "bookings_monthly",
+          "non_additive_dimension": null
+        }
+      ],
+      "metadata": null,
+      "name": "bookings_extended_monthly",
+      "node_relation": {
+        "alias": "fct_bookings_extended_monthly",
+        "database": null,
+        "relation_name": "\"main\".\"fct_bookings_extended_monthly\"",
+        "schema_name": "main"
+      },
+      "primary_entity": "booking_monthly"
+    }
+  ]
+}

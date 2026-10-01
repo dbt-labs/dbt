@@ -1,0 +1,27 @@
+---
+source: fs/sa/crates/dbt-jinja/minijinja/tests/test_templates.rs
+description: "{{ seq[42][23] }}"
+info:
+  __minijinja_current_path: err_undefined_item.txt
+  __minijinja_current_span:
+    end_col: 1
+    end_line: 1
+    end_offset: 0
+    start_col: 1
+    start_line: 1
+    start_offset: 0
+  seq:
+    - 1
+    - 2
+    - 3
+input_file: fs/sa/crates/dbt-jinja/minijinja/tests/inputs/err_undefined_item.txt
+---
+!!!ERROR!!!
+
+Error {
+    kind: UndefinedError,
+    name: "err_undefined_item.txt",
+}
+
+undefined value
+(in err_undefined_item.txt:1:1)

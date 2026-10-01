@@ -1,0 +1,9 @@
+# Scenario: Bare DuckLake catalog with no options.
+# Exercises: ATTACH 'ducklake:<metadata_path>' with no parens; INSTALL ducklake prelude.
+catalogs:
+  - name: lake_demo
+    type: ducklake
+    table_format: iceberg
+    config:
+      duckdb:
+        metadata_path: "metadata.db"

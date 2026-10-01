@@ -1,0 +1,26 @@
+---
+source: fs/sa/crates/dbt-jinja/minijinja/tests/test_parser.rs
+description: "{% if expr1 %}\n    branch 1\n{% endif %}"
+input_file: fs/sa/crates/dbt-jinja/minijinja/tests/parser-inputs/if_cond_simple.txt
+---
+Ok(
+    Template {
+        children: [
+            IfCond {
+                expr: Var {
+                    id: "expr1",
+                } @ 1:7-1:12,
+                true_body: [
+                    EmitRaw {
+                        raw: "\n    branch 1\n",
+                    } @ 1:15-3:1,
+                ],
+                false_body: [],
+                start_tag_kind: BlockStart,
+                start_tag_span:  @ 1:1-1:15,
+                else_tag_span: None,
+                end_tag_span:  @ 3:1-3:12,
+            } @ 1:1-3:12,
+        ],
+    } @ 1:1-3:12,
+)

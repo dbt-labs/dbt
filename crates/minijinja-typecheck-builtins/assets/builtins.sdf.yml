@@ -1,0 +1,1330 @@
+---
+alias:
+  id: TARGET_PACKAGE_NAME
+  type: string
+---
+alias:
+  id: TARGET_UNIQUE_ID
+  type: string
+---
+object:
+  id: adapter
+  attributes:
+    - name: get_relation
+      type: adapter.get_relation
+    - name: dispatch
+      type: adapter.dispatch
+    - name: standardize_grants_dict
+      type: adapter.standardize_grants_dict
+    - name: type
+      type: adapter.type
+    - name: get_column_schema_from_query
+      type: adapter.get_column_schema_from_query
+    - name: quote
+      type: adapter.quote
+    - name: commit
+      type: adapter.commit
+    - name: get_columns_in_relation
+      type: adapter.get_columns_in_relation
+    - name: rename_relation
+      type: adapter.rename_relation
+    - name: execute
+      type: adapter.execute
+    - name: get_incremental_strategy_macro
+      type: adapter.get_incremental_strategy_macro
+    - name: expand_target_column_types
+      type: adapter.expand_target_column_types
+    - name: drop_relation
+      type: adapter.drop_relation
+    - name: quote_seed_column
+      type: adapter.quote_seed_column
+    - name: convert_type
+      type: adapter.convert_type
+    - name: truncate_relation
+      type: adapter.truncate_relation
+    - name: add_query
+      type: adapter.add_query
+    - name: assert_valid_snapshot_target_given_strategy
+      type: adapter.assert_valid_snapshot_target_given_strategy
+    - name: get_hard_deletes_behavior
+      type: adapter.get_hard_deletes_behavior
+    - name: get_missing_columns
+      type: adapter.get_missing_columns
+    - name: render_raw_columns_constraints
+      type: adapter.render_raw_columns_constraints
+    - name: render_raw_model_constraints
+      type: adapter.render_raw_model_constraints
+---
+object:
+  id: adapter.render_raw_model_constraints
+  call:
+    arguments:
+      - name: raw_constraints
+        type: model.constraints
+        is-optional: false
+    return-type: list[string]
+---
+object:
+  id: adapter.render_raw_columns_constraints
+  call:
+    arguments:
+      - name: raw_columns
+        type: dict[string, api.column]
+        is-optional: false
+    return-type: list[string]
+---
+object:
+  id: adapter.get_missing_columns
+  call:
+    arguments:
+      - name: from_relation
+        type: relation
+        is-optional: false
+      - name: to_relation
+        type: relation
+        is-optional: false
+    return-type: list[base_column]
+---
+object:
+  id: adapter.get_hard_deletes_behavior
+  call:
+    arguments:
+      - name: config
+        type: config
+        is-optional: false
+    return-type: string
+---
+object:
+  id: adapter.assert_valid_snapshot_target_given_strategy
+  call:
+    arguments:
+      - name: target_relation
+        type: relation
+        is-optional: false
+      - name: columns
+        type: list[base_column]
+        is-optional: false
+      - name: strategy
+        type: strategy
+        is-optional: false
+    return-type: none
+---
+object:
+  id: adapter.add_query
+  call:
+    arguments:
+      - name: sql
+        type: string
+        is-optional: false
+      - name: bindings
+        type: list[ANY]
+        is-optional: true
+      - name: abridge_sql_log
+        type: optional[bool]
+        is-optional: true
+      - name: auto_begin
+        type: optional[bool]
+        is-optional: true
+    return-type: string
+---
+object:
+  id: adapter.commit
+  call:
+    arguments: []
+    return-type: none
+---
+object:
+  id: adapter.convert_type
+  call:
+    arguments:
+      - name: agate_table
+        type: agate_table
+        is-optional: false
+      - name: index
+        type: integer
+        is-optional: false
+    return-type: string
+---
+object:
+  id: adapter.drop_relation
+  call:
+    arguments:
+      - name: relation
+        type: relation
+        is-optional: false
+    return-type: string
+---
+object:
+  id: adapter.execute
+  call:
+    arguments:
+      - name: compiled_code
+        type: string
+        is-optional: false
+      - name: auto_begin
+        type: optional[bool]
+        is-optional: true
+      - name: fetch
+        type: optional[bool]
+        is-optional: true
+    return-type: tuple[ANY, agate_table]
+---
+object:
+  id: adapter.expand_target_column_types
+  call:
+    arguments:
+      - name: from_relation
+        type: relation
+        is-optional: false
+      - name: to_relation
+        type: relation
+        is-optional: false
+    return-type: string
+---
+object:
+  id: adapter.get_column_schema_from_query
+  call:
+    arguments:
+      - name: select_sql
+        type: string
+        is-optional: false
+      - name: select_sql_header
+        type: optional[string]
+        is-optional: true
+    return-type: list[base_column]
+---
+object:
+  id: adapter.get_columns_in_relation
+  call:
+    arguments:
+      - name: relation
+        type: relation
+        is-optional: false
+    return-type: list[base_column]
+---
+object:
+  id: adapter.get_incremental_strategy_macro
+  call:
+    arguments:
+      - name: context
+        type: context
+        is-optional: false
+      - name: incremental_strategy
+        type: optional[string]
+        is-optional: false
+    return-type: >-
+      (
+        struct{
+          target_relation: relation,
+          temp_relation: relation,
+          unique_key: optional[string],
+          dest_columns: list[base_column],
+          incremental_predicates: optional[string]
+        }
+      ) -> string
+---
+object:
+  id: adapter.commit
+  call:
+    arguments: []
+    return-type: none
+---
+object:
+  id: adapter.execute
+  call:
+    arguments:
+      - name: compiled_code
+        type: string
+        is-optional: false
+      - name: auto_begin
+        type: optional[bool]
+        is-optional: true
+      - name: fetch
+        type: optional[bool]
+        is-optional: true
+    return-type: tuple[ANY, agate_table]
+---
+object:
+  id: adapter.get_column_schema_from_query
+  call:
+    arguments:
+      - name: select_sql
+        type: string
+        is-optional: false
+      - name: select_sql_header
+        type: optional[string]
+        is-optional: true
+    return-type: list[base_column]
+---
+object:
+  id: adapter.get_relation
+  call:
+    arguments:
+      - name: database
+        type: string
+        is-optional: false
+      - name: schema
+        type: string
+        is-optional: false
+      - name: identifier
+        type: string
+        is-optional: false
+    return-type: optional[relation]
+---
+object:
+  id: adapter.quote
+  call:
+    arguments:
+      - name: value
+        type: string|base_column
+        is-optional: false
+    return-type: string
+---
+object:
+  id: adapter.quote_seed_column
+  call:
+    arguments:
+      - name: column_name
+        type: string
+        is-optional: false
+      - name: quote_config
+        type: optional[string]
+        is-optional: true
+    return-type: string
+---
+object:
+  id: adapter.rename_relation
+  call:
+    arguments:
+      - name: old_relation
+        type: relation
+        is-optional: false
+      - name: new_relation
+        type: relation
+        is-optional: false
+    return-type: none
+---
+object:
+  id: adapter.standardize_grants_dict
+  call:
+    arguments:
+      - name: grants_dict
+        type: agate_table
+        is-optional: false
+    return-type: "struct{return_val: ANY}"
+---
+object:
+  id: adapter.truncate_relation
+  call:
+    arguments:
+      - name: relation
+        type: relation
+        is-optional: false
+    return-type: string
+---
+object:
+  id: adapter.type
+  call:
+    arguments: []
+    return-type: string
+---
+object:
+  id: agate_table
+  attributes:
+    - name: columns
+      type: list[api.column]
+    - name: column_names
+      type: list[string]
+    - name: __iter__
+      type: agate_table.__iter__
+    - name: rows
+      type: list[ANY]
+---
+object:
+  id: agate_table.__iter__
+  call:
+    arguments: []
+    return-type: api.column
+---
+object:
+  id: api
+  attributes:
+    - name: Column
+      type: api.Column
+    - name: Relation
+      type: relation
+---
+object:
+  id: api.Column
+  attributes:
+    - name: from_description
+      type: api.Column.from_description
+    - name: translate_type
+      type: api.Column.translate_type
+  call:
+    arguments: []
+    return-type: api.column
+---
+object:
+  id: api.Column.translate_type
+  call:
+    arguments:
+      - name: data_type
+        type: string
+        is-optional: false
+    return-type: string
+---
+object:
+  id: api.Column.from_description
+  call:
+    arguments:
+      - name: description
+        type: string
+        is-optional: false
+      - name: raw_data_type
+        type: string
+        is-optional: false
+    return-type: api.column
+---
+alias:
+  id: api.column
+  type: >-
+    struct{
+      name: string,
+      data_type: string,
+      quote: string,
+      type: string
+    }
+---
+object:
+  id: caller
+  call:
+    arguments: []
+    return-type: string
+---
+object:
+  id: cast
+  call:
+    arguments:
+      - name: value
+        type: string
+        is-optional: false
+      - name: type
+        type: string
+        is-optional: false
+    return-type: string
+---
+object:
+  id: base_column
+  inherit-from: >-
+    struct{
+      name: string,
+      column: string,
+      dtype: string,
+      data_type: string,
+      char_size: optional[integer],
+      numeric_precision: optional[integer],
+      numeric_scale: optional[integer],
+      quoted: string
+    }
+  attributes:
+    - name: can_expand_to
+      type: base_column.can_expand_to
+---
+object:
+  id: base_column.can_expand_to
+  call:
+    arguments:
+      - name: other_column
+        type: optional[base_column]
+        is-optional: true
+    return-type: bool
+---
+alias:
+  id: compiled_code
+  type: string
+---
+object:
+  id: config
+  attributes:
+    - name: set
+      type: config.set
+    - name: persist_relation_docs
+      type: config.persist_relation_docs
+    - name: persist_column_docs
+      type: config.persist_column_docs
+  inherit-from: >-
+    struct{
+      indexes: list[dict[string, string]],
+      full_refresh: bool,
+      store_failures: bool,
+      unique_key: list[string]|string,
+      updated_at: string,
+      on_schema_change: string,
+      grants: dict[string, list[string]],
+      incremental_strategy: string,
+      contract: struct{enforced: bool},
+      predicates: string,
+      incremental_predicates: string,
+      merge_update_columns: list[string],
+      merge_exclude_columns: list[string],
+      sql_header: string,
+      on_configuration_change: string,
+      snapshot_table_column_names: struct{
+        dbt_valid_to: string,
+        dbt_valid_from: string,
+        dbt_scd_id: string,
+        dbt_updated_at: string,
+        dbt_is_deleted: string
+      },
+      snapshot_meta_column_names: struct{
+        dbt_valid_to: string,
+        dbt_valid_from: string,
+        dbt_scd_id: string,
+        dbt_updated_at: string,
+        dbt_is_deleted: string
+      },
+      dbt_valid_to_current: string,
+      strategy: string,
+      check_cols: list[string]|string,
+      fail_calc: string,
+      warn_if: string,
+      error_if: string,
+      package: string,
+      name: string,
+      version: string,
+      store_failures_as: string,
+      limit: integer,
+      expected_rows: list[ANY],
+      expected_sql: string,
+      query_tag: string,
+      model: model,
+      tmp_relation_type: optional[string]
+    }
+---
+object:
+  id: config.persist_column_docs
+  call:
+    arguments: []
+    return-type: none
+---
+object:
+  id: config.persist_relation_docs
+  call:
+    arguments: []
+    return-type: none
+---
+object:
+  id: config.set
+  call:
+    arguments:
+      - name: key
+        type: string
+        is-optional: false
+      - name: value
+        type: string
+        is-optional: false
+    return-type: none
+---
+alias:
+  id: context
+  type: dict[string, ANY]
+---
+alias:
+  id: database
+  type: string
+---
+alias:
+  id: defer_relation
+  type: relation
+---
+object:
+  id: diff_of_two_dicts
+  call:
+    arguments:
+      - name: dict1
+        type: dict[string, ANY]
+        is-optional: false
+      - name: dict2
+        type: dict[string, ANY]
+        is-optional: false
+    return-type: dict[string, ANY]
+---
+object:
+  id: env_var
+  call:
+    arguments:
+      - name: name
+        type: string
+        is-optional: false
+    return-type: string
+---
+object:
+  id: exceptions
+  attributes:
+    - name: raise_not_implemented
+      type: exceptions.raise_not_implemented
+    - name: raise_compiler_error
+      type: exceptions.raise_compiler_error
+    - name: column_type_missing
+      type: exceptions.column_type_missing
+    - name: warn
+      type: exceptions.warn
+    - name: raise_fail_fast_error
+      type: exceptions.raise_fail_fast_error
+    - name: relation_wrong_type
+      type: exceptions.relation_wrong_type
+    - name: raise_contract_error
+      type: exceptions.raise_contract_error
+---
+object:
+  id: exceptions.raise_contract_error
+  call:
+    arguments:
+      - name: yaml_columns
+        type: list[ANY]
+        is-optional: false
+      - name: sql_columns
+        type: list[ANY]
+        is-optional: false
+    return-type: none
+---
+object:
+  id: exceptions.column_type_missing
+  call:
+    arguments:
+      - name: column_names
+        type: list[string]
+        is-optional: false
+    return-type: none
+---
+object:
+  id: exceptions.relation_wrong_type
+  call:
+    arguments:
+      - name: relation_names
+        type: relation
+        is-optional: false
+      - name: expected_type
+        type: string
+        is-optional: false
+    return-type: none
+---
+object:
+  id: exceptions.raise_compiler_error
+  call:
+    arguments:
+      - name: message
+        type: string
+        is-optional: false
+      - name: model
+        type: optional[model]
+        is-optional: true
+    return-type: none
+---
+object:
+  id: exceptions.raise_fail_fast_error
+  call:
+    arguments:
+      - name: message
+        type: string
+        is-optional: false
+    return-type: none
+---
+object:
+  id: exceptions.raise_not_implemented
+  call:
+    arguments:
+      - name: message
+        type: string
+        is-optional: false
+    return-type: none
+---
+object:
+  id: exceptions.warn
+  call:
+    arguments:
+      - name: message
+        type: string
+        is-optional: false
+    return-type: none
+---
+alias:
+  id: execute
+  type: bool
+---
+object:
+  id: flags
+  attributes:
+    - name: FULL_REFRESH
+      type: bool
+    - name: STORE_FAILURES
+      type: bool
+    - name: WHICH
+      type: string
+---
+alias:
+  id: hook
+  type: "struct{sql: string, transaction: bool}"
+---
+alias:
+  id: identifier
+  type: string
+---
+object:
+  id: information_schema
+  attributes:
+    - name: database
+      type: string
+    - name: schema
+      type: string
+    - name: replace
+      type: information_schema.replace
+---
+object:
+  id: information_schema.replace
+  call:
+    arguments:
+      - name: information_schema_view
+        type: string
+        is-optional: false
+    return-type: information_schema
+---
+object:
+  id: join
+  call:
+    arguments:
+      - name: iterable
+        type: list[string]
+        is-optional: false
+      - name: separator
+        type: string
+        is-optional: false
+    return-type: string
+---
+alias:
+  id: kwargs
+  type: dict[string, ANY]
+---
+object:
+  id: length
+  call:
+    arguments:
+      - name: value
+        type: list[ANY] | string | agate_table
+        is-optional: false
+    return-type: integer
+---
+object:
+  id: load_agate_table
+  call:
+    arguments: []
+    return-type: agate_table
+---
+object:
+  id: load_result
+  call:
+    arguments:
+      - name: name
+        type: string
+        is-optional: false
+    return-type: ANY
+---
+object:
+  id: load_relation
+  call:
+    arguments:
+      - name: name
+        type: relation
+        is-optional: false
+    return-type: optional[relation]
+---
+object:
+  id: log
+  call:
+    arguments:
+      - name: message
+        type: string
+        is-optional: false
+      - name: info
+        type: optional[bool]
+        is-optional: true
+    return-type: none
+---
+object:
+  id: loop
+  attributes:
+    - name: first
+      type: bool
+    - name: last
+      type: bool
+    - name: index0
+      type: integer
+    - name: index
+      type: integer
+---
+object:
+  id: lower
+  call:
+    arguments:
+      - name: value
+        type: string
+        is-optional: false
+    return-type: string
+---
+alias:
+  id: model
+  type: >-
+    struct{
+      description: string,
+      columns: dict[string, api.column],
+      batch: optional[model.batch],
+      unique_id: string,
+      config: model.config,
+      language: string,
+      alias: string,
+      version: string,
+      latest_version: string,
+      name: string,
+      database: string,
+      schema: string,
+      compiled_code: string,
+      refs: list[config],
+      constraints: model.constraints,
+      resource_type: string
+    }
+---
+alias:
+  id: model.constraints
+  type: >-
+    struct{
+      type: string,
+      expression: optional[string],
+      name: string,
+      to: optional[string],
+      to_columns: optional[list[string]],
+      columns: optional[list[string]],
+      warn_unsupported: optional[bool],
+      warn_unenforced: optional[bool]
+    }
+---
+alias:
+  id: model.batch
+  type: >-
+    struct{
+      id: string,
+      event_time_start: optional[string],
+      event_time_end: optional[string]
+    }
+---
+alias:
+  id: model.config
+  type: >-
+    struct{
+      materialized: string,
+      column_types: dict[string, string],
+      quote_columns: string
+    }
+---
+object:
+  id: modules
+  attributes:
+    - name: datetime
+      type: modules.datetime
+---
+object:
+  id: modules.datetime
+  attributes:
+    - name: datetime
+      type: modules.datetime.datetime
+    - name: date
+      type: modules.datetime.date
+    - name: time
+      type: modules.datetime.time
+    - name: timedelta
+      type: modules.datetime.timedelta
+    - name: tzinfo
+      type: modules.datetime.tzinfo
+---
+object:
+  id: modules.datetime.date
+  attributes: []
+---
+object:
+  id: modules.datetime.datetime
+  attributes:
+    - name: strptime
+      type: modules.datetime.datetime.strptime
+    - name: now
+      type: modules.datetime.datetime.now
+---
+object:
+  id: modules.datetime.datetime.now
+  call:
+    arguments: []
+    return-type: timestamp
+---
+object:
+  id: modules.datetime.datetime.strptime
+  call:
+    arguments:
+      - name: date_str
+        type: string
+        is-optional: false
+      - name: date_fmt
+        type: string
+        is-optional: false
+    return-type: timestamp
+---
+object:
+  id: modules.datetime.time
+  attributes: []
+---
+object:
+  id: modules.datetime.timedelta
+  attributes:
+    - name: days
+      type: integer
+  call:
+    arguments:
+      - name: days
+        type: optional[integer]
+        is-optional: true
+      - name: seconds
+        type: optional[integer]
+        is-optional: true
+      - name: microseconds
+        type: optional[integer]
+        is-optional: true
+    return-type: modules.datetime.timedelta
+---
+object:
+  id: modules.datetime.tzinfo
+  attributes: []
+---
+object:
+  id: node
+  attributes:
+    - name: name
+      type: string
+    - name: version
+      type: string
+    - name: database
+      type: string
+    - name: schema
+      type: string
+    - name: alias
+      type: string
+---
+alias:
+  id: post_hooks
+  type: list[hook]
+---
+alias:
+  id: pre_hooks
+  type: list[hook]
+---
+object:
+  id: range
+  call:
+    arguments:
+      - name: start
+        type: integer
+        is-optional: false
+      - name: end
+        type: optional[integer]
+        is-optional: true
+    return-type: list[integer]
+---
+object:
+  id: ref
+  call:
+    arguments:
+      - name: name
+        type: string
+        is-optional: false
+      - name: value
+        type: ANY
+        is-optional: true
+    return-type: string
+---
+object:
+  id: relation
+  inherit-from: >-
+    struct{
+      name: string,
+      database: string,
+      schema: string,
+      identifier: string,
+      table: string,
+      type: string,
+      is_table: bool,
+      is_view: bool,
+      is_materialized_view: bool,
+      is_cte: bool,
+      is_pointer: bool,
+      can_be_renamed: bool,
+      can_be_replaced: bool,
+      MaterializedView: string,
+      DynamicTable: string,
+      InteractiveTable: string,
+      test_chained: optional[string],
+      is_iceberg_format: bool,
+      is_dynamic_table: bool,
+      is_interactive_table: bool,
+      is_metric_view: bool
+    }
+  attributes:
+    - name: include
+      type: relation.include
+    - name: incorporate
+      type: relation.incorporate
+    - name: render
+      type: relation.render
+    - name: create
+      type: relation.create
+    - name: without_identifier
+      type: relation.without_identifier
+    - name: scd_args
+      type: relation.scd_args
+    - name: get_ddl_prefix_for_alter
+      type: relation.get_ddl_prefix_for_alter
+    - name: from_config
+      type: relation.from_config
+---
+object:
+  id: relation.from_config
+  call:
+    arguments:
+      - name: config
+        type: model
+        is-optional: false
+    return-type: snowflake_node_config
+---
+object:
+  id: relation.get_ddl_prefix_for_alter
+  call:
+    arguments: []
+    return-type: string
+---
+object:
+  id: relation.scd_args
+  call:
+    arguments:
+      - name: primary_key
+        type: list[string]|string
+        is-optional: false
+      - name: updated_at
+        type: string
+        is-optional: false
+    return-type: list[string]
+---
+object:
+  id: relation.create
+  call:
+    arguments:
+      - name: database
+        type: optional[string]
+        is-optional: true
+      - name: schema
+        type: optional[string]
+        is-optional: true
+      - name: identifier
+        type: optional[string]
+        is-optional: true
+      - name: type
+        type: optional[string]
+        is-optional: true
+      - name: table_format
+        type: optional[string]
+        is-optional: true
+    return-type: relation
+---
+object:
+  id: relation.include
+  call:
+    arguments:
+      - name: database
+        type: optional[bool]
+        is-optional: true
+      - name: schema
+        type: optional[bool]
+        is-optional: true
+      - name: identifier
+        type: optional[bool]
+        is-optional: true
+    return-type: relation
+---
+object:
+  id: relation.incorporate
+  call:
+    arguments:
+      - name: path
+        type: optional[dict[string, string]]
+        is-optional: true
+      - name: type
+        type: optional[string]
+        is-optional: true
+    return-type: relation
+---
+object:
+  id: relation.render
+  call:
+    arguments: []
+    return-type: string
+---
+object:
+  id: relation.without_identifier
+  call:
+    arguments: []
+    return-type: relation
+---
+object:
+  id: render
+  call:
+    arguments:
+      - name: value
+        type: optional[string]
+        is-optional: false
+    return-type: string
+---
+object:
+  id: replace
+  call:
+    arguments:
+      - name: value
+        type: string
+        is-optional: false
+      - name: old
+        type: string
+        is-optional: false
+      - name: new
+        type: string
+        is-optional: false
+      - name: count
+        type: optional[integer]
+        is-optional: true
+    return-type: string
+---
+alias:
+  id: schema
+  type: string
+---
+object:
+  id: source
+  call:
+    arguments:
+      - name: name
+        type: string
+        is-optional: false
+      - name: value
+        type: ANY
+        is-optional: true
+    return-type: string
+---
+alias:
+  id: sql
+  type: string
+---
+object:
+  id: store_raw_result
+  call:
+    arguments:
+      - name: name
+        type: string
+        is-optional: false
+      - name: message
+        type: optional[string]
+        is-optional: true
+      - name: code
+        type: optional[string]
+        is-optional: true
+      - name: rows_affected
+        type: optional[string]
+        is-optional: true
+      - name: agate_table
+        type: optional[agate_table]
+        is-optional: true
+    return-type: none
+---
+object:
+  id: store_result
+  call:
+    arguments:
+      - name: name
+        type: string
+        is-optional: false
+      - name: response
+        type: optional[string]
+        is-optional: true
+      - name: agate_table
+        type: optional[agate_table]
+        is-optional: true
+    return-type: none
+---
+object:
+  id: string
+  call:
+    arguments:
+      - name: value
+        type: ANY
+        is-optional: false
+    return-type: string
+---
+object:
+  id: submit_python_job
+  call:
+    arguments:
+      - name: model
+        type: model
+        is-optional: false
+      - name: compiled_code
+        type: string
+        is-optional: false
+    return-type: none
+---
+alias:
+  id: target
+  type: relation
+---
+alias:
+  id: this
+  type: relation
+---
+object:
+  id: tojson
+  call:
+    arguments:
+      - name: value
+        type: ANY
+        is-optional: false
+    return-type: string
+---
+object:
+  id: trim
+  call:
+    arguments:
+      - name: value
+        type: string
+        is-optional: false
+      - name: chars
+        type: optional[string]
+        is-optional: true
+    return-type: string
+---
+object:
+  id: is_list
+  call:
+    arguments:
+      - name: value
+        type: ANY
+        is-optional: false
+    return-type: bool
+---
+object:
+  id: upper
+  call:
+    arguments:
+      - name: value
+        type: string
+        is-optional: false
+    return-type: string
+---
+object:
+  id: write
+  call:
+    arguments:
+      - name: value
+        type: string
+        is-optional: false
+    return-type: none
+---
+object:
+  id: strategy
+  attributes:
+    - name: hard_deletes
+      type: string
+    - name: unique_key
+      type: list[string]
+    - name: updated_at
+      type: string
+    - name: row_changed
+      type: string
+    - name: scd_id
+      type: string
+---
+object:
+  id: snapshot_get_time
+  call:
+    arguments: []
+    return-type: string
+---
+alias:
+  id: test_to_be_removed
+  type: >-
+    struct{
+      key: optional[relation]
+    }
+---
+object:
+  id: namespace
+  call:
+    arguments:
+      - name: paginated_results
+        type: optional[list[ANY]]
+        is-optional: true
+      - name: watermark
+        type: optional[ANY]
+        is-optional: true
+    return-type: "struct{dbt_updated_at_data_type: ANY, column_added: bool}"
+---
+object:
+  id: get_columns_in_query
+  call:
+    arguments:
+      - name: query
+        type: string
+        is-optional: false
+    return-type: list[base_column]
+---
+alias:
+  id: query_columns
+  type: list[base_column]
+---
+alias:
+  id: row_number
+  type: integer
+---
+object:
+  id: snowflake_node_config
+  attributes:
+    - name: requires_full_refresh
+      type: bool
+    - name: target_lag
+      type: optional[target_lag]
+    - name: snowflake_warehouse
+      type: optional[snowflake_warehouse]
+    - name: catalog
+      type: catalog
+    - name: refresh_mode
+      type: optional[string]
+    - name: initialize
+      type: optional[string]
+---
+object:
+  id: snowflake_warehouse
+  attributes:
+    - name: context
+      type: string
+---
+object:
+  id: target_lag
+  attributes:
+    - name: context
+      type: string
+---
+object:
+  id: catalog
+  attributes:
+    - name: table_format
+      type: string

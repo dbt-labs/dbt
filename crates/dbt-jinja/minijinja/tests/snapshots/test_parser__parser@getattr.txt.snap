@@ -1,0 +1,22 @@
+---
+source: fs/sa/crates/dbt-jinja/minijinja/tests/test_parser.rs
+description: "{{ foo.bar.baz }}"
+input_file: fs/sa/crates/dbt-jinja/minijinja/tests/parser-inputs/getattr.txt
+---
+Ok(
+    Template {
+        children: [
+            EmitExpr {
+                expr: GetAttr {
+                    expr: GetAttr {
+                        expr: Var {
+                            id: "foo",
+                        } @ 1:4-1:7,
+                        name: "bar",
+                    } @ 1:4-1:11,
+                    name: "baz",
+                } @ 1:1-1:18,
+            } @ 1:1-1:18,
+        ],
+    } @ 1:1-1:18,
+)

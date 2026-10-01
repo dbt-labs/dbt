@@ -1,0 +1,147 @@
+syntax = "proto3";
+
+package v1.public.events.dbt_index;
+option go_package = "github.com/dbt-labs/proto-golang/v1/public/events/dbt_index";
+
+import "dbtlabs/proto/public/v1/common/vortex_options.proto";
+import "dbtlabs/proto/public/v1/events/vortex.proto";
+import "dbtlabs/proto/public/v1/common/vortex_telemetry_contexts.proto";
+
+// CLI invocation lifecycle event. Each dbt-index command emits a start/end
+// pair linked by invocation_id. Tracks activation (installs), engagement
+// (WAP via distinct project_id/week), and command performance.
+message DbtIndexInvocation {
+  option (v1.public.common.vortex_namespace) = VORTEX_ICEBERG_NAMESPACE_TELEMETRY;
+  option (v1.public.common.vortex_enabled) = true;
+
+  // Server-side enrichment (IP geolocation, client platform).
+  v1.events.vortex.VortexMessageEnrichment enrichment = 1;
+
+  // Unique identifier for this event.
+  string event_id = 2;
+
+  // Links start and end events for the same command execution.
+  string invocation_id = 3;
+
+  // "start" or "end".
+  string progress = 4;
+
+  // Subcommand name (e.g. "ingest", "query", "serve"). Not full CLI args.
+  string command = 5;
+
+  // Exit status: "ok" or "error". Only set on end events.
+  string result_type = 6;
+
+  // Wall-clock execution time in milliseconds. Only set on end events.
+  int64 execution_time_ms = 7;
+
+  // dbt-index binary version.
+  string version = 8;
+
+  // Pseudonymous UUID from ~/.dbt/.user.yml cookie.
+  string user_id = 9;
+
+  // MD5 hash of the dbt project name (not the actual name).
+  string project_id = 10;
+
+  // Operating system: "macos", "linux", or "windows".
+  string os = 11;
+
+  // dbt project name (raw, not hashed). From manifest metadata.
+  string project_name = 12;
+
+  // Adapter type (e.g. "snowflake", "bigquery"). From manifest metadata.
+  string adapter_type = 13;
+
+  // dbt version that produced the artifacts. From manifest metadata.
+  string dbt_version = 14;
+
+  // dbt Cloud account ID. From ~/.dbt/dbt_cloud.yml.
+  string account_id = 15;
+
+  // dbt Cloud account host / subdomain (e.g. "cloud.getdbt.com"). From ~/.dbt/dbt_cloud.yml.
+  string account_host = 16;
+
+  // dbt Cloud project ID (numeric). From ~/.dbt/dbt_cloud.yml.
+  string cloud_project_id = 17;
+
+  // Global account identifier. From dbt Cloud admin API.
+  string account_identifier = 18;
+  v1.public.common.vortex_telemetry_contexts.VortexTelemetryCommonContext common_context = 19;
+}
+
+// Resource counts emitted once per ingest. Captures project size for
+// segmentation of WAP and performance metrics.
+message DbtIndexResourceCounts {
+  option (v1.public.common.vortex_namespace) = VORTEX_ICEBERG_NAMESPACE_TELEMETRY;
+  option (v1.public.common.vortex_enabled) = true;
+
+  // Server-side enrichment (IP geolocation, client platform).
+  v1.events.vortex.VortexMessageEnrichment enrichment = 1;
+
+  // Unique identifier for this event.
+  string event_id = 2;
+
+  // Foreign key to the ingest DbtIndexInvocation.
+  string invocation_id = 3;
+
+  // Count of models in the project.
+  int32 models = 4;
+
+  // Count of tests in the project.
+  int32 tests = 5;
+
+  // Count of sources in the project.
+  int32 sources = 6;
+
+  // Count of snapshots in the project.
+  int32 snapshots = 7;
+
+  // Count of seeds in the project.
+  int32 seeds = 8;
+
+  // Whether catalog.json was present during ingest.
+  bool has_catalog = 9;
+
+  // Whether run_results.json was present during ingest.
+  bool has_run_results = 10;
+
+  // Count of exposures in the project.
+  int32 exposures = 11;
+
+  // Count of metrics in the project.
+  int32 metrics = 12;
+
+  // Count of groups in the project.
+  int32 groups = 13;
+
+  // Count of semantic models in the project.
+  int32 semantic_models = 14;
+  v1.public.common.vortex_telemetry_contexts.VortexTelemetryCommonContext common_context = 15;
+}
+
+// MCP tool call event from dbt-index serve mode. Each row represents one
+// tool call made by an AI agent through the MCP server.
+message DbtIndexToolCall {
+  option (v1.public.common.vortex_namespace) = VORTEX_ICEBERG_NAMESPACE_TELEMETRY;
+  option (v1.public.common.vortex_enabled) = true;
+
+  // Server-side enrichment (IP geolocation, client platform).
+  v1.events.vortex.VortexMessageEnrichment enrichment = 1;
+
+  // Unique identifier for this event.
+  string event_id = 2;
+
+  // Foreign key to the serve DbtIndexInvocation.
+  string invocation_id = 3;
+
+  // The MCP tool that was called (e.g. "query", "search", "node", "lineage").
+  string tool_name = 4;
+
+  // Whether the tool call returned an error.
+  bool is_error = 5;
+
+  // Wall-clock time of the tool call in milliseconds.
+  int64 execution_time_ms = 6;
+  v1.public.common.vortex_telemetry_contexts.VortexTelemetryCommonContext common_context = 7;
+}

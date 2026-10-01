@@ -1,0 +1,109 @@
+---
+source: fs/sa/crates/dbt-jinja-ctx/tests/operation.rs
+expression: schema
+---
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "OperationCtx",
+  "description": "Operation-scope render context (REPL, `run-operation`, pre-compile macro evaluation): a [`CompileBaseCtx`] plus a no-op `DummyConfig` to absorb `config(...)` calls where there is no node config. Node contexts carry their own validated `config`, so it lives here rather than on the base.",
+  "type": "object",
+  "required": [
+    "MACRO_DISPATCH_ORDER",
+    "TARGET_PACKAGE_NAME",
+    "builtins",
+    "config",
+    "connection_name",
+    "context",
+    "dbt_metadata_envs",
+    "execute",
+    "function",
+    "graph",
+    "load_result",
+    "node",
+    "ref",
+    "source",
+    "store_result"
+  ],
+  "properties": {
+    "MACRO_DISPATCH_ORDER": {
+      "description": "`{{ MACRO_DISPATCH_ORDER }}` — per-package dispatch order map. Same downcast contract as [`crate::ResolveBaseCtx::macro_dispatch_order`]: each value MUST be `MinijinjaValue::from(Vec<String>)` constructed at the call site, NOT a serde-serialized `Vec<String>`.",
+      "type": "object",
+      "additionalProperties": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      }
+    },
+    "TARGET_PACKAGE_NAME": {
+      "description": "`{{ TARGET_PACKAGE_NAME }}` — local project name. Key string matches `minijinja::constants::TARGET_PACKAGE_NAME`.",
+      "type": "string"
+    },
+    "builtins": {
+      "description": "`{{ builtins.* }}` — `BTreeMap<String, MinijinjaValue>` Object holding `ref` / `source` / `function`. Compile-node-context code downcasts this back to `BTreeMap<String, MinijinjaValue>` when overlaying validated variants per-node, so the underlying Object type must be exactly that."
+    },
+    "config": {
+      "description": "`{{ config(...) }}` — no-op for macro renders without a current node. Calling `config(...)` returns `\"\"`; `config.get(...)` returns `None`.",
+      "allOf": [
+        {
+          "$ref": "#/definitions/JinjaObject<dbt_jinja_ctx::objects::compile::DummyConfig>"
+        }
+      ]
+    },
+    "connection_name": {
+      "description": "`{{ connection_name }}` — empty string at base scope.",
+      "type": "string"
+    },
+    "context": {
+      "description": "`{{ context }}` — `MacroLookupContext` Object for `context['name']` macro dispatch.",
+      "allOf": [
+        {
+          "$ref": "#/definitions/JinjaObject<dbt_jinja_ctx::objects::lookup::MacroLookupContext>"
+        }
+      ]
+    },
+    "dbt_metadata_envs": {
+      "description": "`{{ dbt_metadata_envs }}` — `BTreeMap<String, MinijinjaValue>` Object (string-valued) populated from the OS `DBT_ENV_CUSTOM_ENV_*` vars."
+    },
+    "execute": {
+      "description": "`{{ execute }}` — `true` at compile/run (flipped from `false` at parse).",
+      "type": "boolean"
+    },
+    "function": {
+      "description": "`{{ function(...) }}` — unvalidated `FunctionFunction` Object."
+    },
+    "graph": {
+      "description": "`{{ graph }}` — `LazyFlatGraph` Object that builds the flat graph on first attribute access; lives in `dbt-jinja-utils` for now."
+    },
+    "load_result": {
+      "description": "`{{ load_result(...) }}` — `ResultStore`-backed closure."
+    },
+    "node": {
+      "description": "`{{ node }}` — `Value::NONE` at base scope; populated per-node."
+    },
+    "ref": {
+      "description": "`{{ ref(...) }}` — unvalidated `RefFunction` Object (validated variant overlaid per-node)."
+    },
+    "source": {
+      "description": "`{{ source(...) }}` — unvalidated `SourceFunction` Object."
+    },
+    "store_result": {
+      "description": "`{{ store_result(...) }}` — `ResultStore`-backed closure."
+    }
+  },
+  "additionalProperties": true,
+  "definitions": {
+    "JinjaObject<dbt_jinja_ctx::objects::compile::DummyConfig>": {
+      "description": "Opaque Jinja-callable object backed by `dbt_jinja_ctx::objects::compile::DummyConfig`.",
+      "type": "object",
+      "x-jinja-object": true,
+      "x-jinja-object-type": "dbt_jinja_ctx::objects::compile::DummyConfig"
+    },
+    "JinjaObject<dbt_jinja_ctx::objects::lookup::MacroLookupContext>": {
+      "description": "Opaque Jinja-callable object backed by `dbt_jinja_ctx::objects::lookup::MacroLookupContext`.",
+      "type": "object",
+      "x-jinja-object": true,
+      "x-jinja-object-type": "dbt_jinja_ctx::objects::lookup::MacroLookupContext"
+    }
+  }
+}

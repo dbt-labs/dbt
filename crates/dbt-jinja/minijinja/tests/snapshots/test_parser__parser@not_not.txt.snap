@@ -1,0 +1,170 @@
+---
+source: fs/sa/crates/dbt-jinja/minijinja/tests/test_parser.rs
+description: "{{ not x }}\n{{ not not x }}\n{{ not not not x }}\n{{ not true }}\n{{ not not true }}\n{{ not not false }}\n{{ config(enabled=not not foo) }}\n{{ not (not x) }}\n{{ not not x and y }}\n{{ x or not not y }}"
+input_file: fs/sa/crates/dbt-jinja/minijinja/tests/parser-inputs/not_not.txt
+---
+Ok(
+    Template {
+        children: [
+            EmitExpr {
+                expr: UnaryOp {
+                    op: Not,
+                    expr: Var {
+                        id: "x",
+                    } @ 1:8-1:9,
+                } @ 1:1-1:12,
+            } @ 1:1-1:12,
+            EmitRaw {
+                raw: "\n",
+            } @ 1:12-2:1,
+            EmitExpr {
+                expr: UnaryOp {
+                    op: Not,
+                    expr: UnaryOp {
+                        op: Not,
+                        expr: Var {
+                            id: "x",
+                        } @ 2:12-2:13,
+                    } @ 2:8-2:13,
+                } @ 2:1-2:16,
+            } @ 2:1-2:16,
+            EmitRaw {
+                raw: "\n",
+            } @ 2:16-3:1,
+            EmitExpr {
+                expr: UnaryOp {
+                    op: Not,
+                    expr: UnaryOp {
+                        op: Not,
+                        expr: UnaryOp {
+                            op: Not,
+                            expr: Var {
+                                id: "x",
+                            } @ 3:16-3:17,
+                        } @ 3:12-3:17,
+                    } @ 3:8-3:17,
+                } @ 3:1-3:20,
+            } @ 3:1-3:20,
+            EmitRaw {
+                raw: "\n",
+            } @ 3:20-4:1,
+            EmitExpr {
+                expr: UnaryOp {
+                    op: Not,
+                    expr: Const {
+                        value: True,
+                    } @ 4:8-4:12,
+                } @ 4:1-4:15,
+            } @ 4:1-4:15,
+            EmitRaw {
+                raw: "\n",
+            } @ 4:15-5:1,
+            EmitExpr {
+                expr: UnaryOp {
+                    op: Not,
+                    expr: UnaryOp {
+                        op: Not,
+                        expr: Const {
+                            value: True,
+                        } @ 5:12-5:16,
+                    } @ 5:8-5:16,
+                } @ 5:1-5:19,
+            } @ 5:1-5:19,
+            EmitRaw {
+                raw: "\n",
+            } @ 5:19-6:1,
+            EmitExpr {
+                expr: UnaryOp {
+                    op: Not,
+                    expr: UnaryOp {
+                        op: Not,
+                        expr: Const {
+                            value: False,
+                        } @ 6:12-6:17,
+                    } @ 6:8-6:17,
+                } @ 6:1-6:20,
+            } @ 6:1-6:20,
+            EmitRaw {
+                raw: "\n",
+            } @ 6:20-7:1,
+            EmitExpr {
+                expr: Call {
+                    expr: Var {
+                        id: "config",
+                    } @ 7:4-7:10,
+                    args: [
+                        Kwarg(
+                            "enabled",
+                            UnaryOp {
+                                op: Not,
+                                expr: UnaryOp {
+                                    op: Not,
+                                    expr: Var {
+                                        id: "foo",
+                                    } @ 7:27-7:30,
+                                } @ 7:23-7:30,
+                            } @ 7:19-7:30,
+                        ),
+                    ],
+                } @ 7:1-7:34,
+            } @ 7:1-7:34,
+            EmitRaw {
+                raw: "\n",
+            } @ 7:34-8:1,
+            EmitExpr {
+                expr: UnaryOp {
+                    op: Not,
+                    expr: UnaryOp {
+                        op: Not,
+                        expr: Var {
+                            id: "x",
+                        } @ 8:13-8:14,
+                    } @ 8:9-8:14,
+                } @ 8:1-8:18,
+            } @ 8:1-8:18,
+            EmitRaw {
+                raw: "\n",
+            } @ 8:18-9:1,
+            EmitExpr {
+                expr: BinOp {
+                    op: ScAnd,
+                    left: UnaryOp {
+                        op: Not,
+                        expr: UnaryOp {
+                            op: Not,
+                            expr: Var {
+                                id: "x",
+                            } @ 9:12-9:13,
+                        } @ 9:8-9:13,
+                    } @ 9:4-9:13,
+                    right: Var {
+                        id: "y",
+                    } @ 9:18-9:19,
+                } @ 9:1-9:22,
+            } @ 9:1-9:22,
+            EmitRaw {
+                raw: "\n",
+            } @ 9:22-10:1,
+            EmitExpr {
+                expr: BinOp {
+                    op: ScOr,
+                    left: Var {
+                        id: "x",
+                    } @ 10:4-10:5,
+                    right: UnaryOp {
+                        op: Not,
+                        expr: UnaryOp {
+                            op: Not,
+                            expr: Var {
+                                id: "y",
+                            } @ 10:17-10:18,
+                        } @ 10:13-10:18,
+                    } @ 10:9-10:18,
+                } @ 10:1-10:21,
+            } @ 10:1-10:21,
+            EmitRaw {
+                raw: "\n",
+            } @ 10:21-11:1,
+        ],
+    } @ 1:1-11:1,
+)

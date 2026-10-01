@@ -1,0 +1,33 @@
+[package]
+name = "dbt-profile"
+description = "Lightweight dbt profiles.yml resolver with Jinja env_var/var support"
+version.workspace = true
+homepage.workspace = true
+repository.workspace = true
+authors.workspace = true
+license.workspace = true
+keywords.workspace = true
+edition.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+dbt-fusion-workspace-hack = { version = "0.1" }
+dbt-jinja-filters = { workspace = true }
+dbt-jinja-vars = { workspace = true }
+dbt-yaml = { workspace = true }
+dirs = { workspace = true }
+minijinja = { workspace = true }
+regex = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+
+[lib]
+name = "dbt_profile"
+path = "src/lib.rs"
+doctest = false

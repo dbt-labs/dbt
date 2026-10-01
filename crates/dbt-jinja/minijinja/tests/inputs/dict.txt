@@ -1,0 +1,11 @@
+{
+  "d": {"a": 1, "b": 2}
+}
+---
+{{ dict(d) }}
+{{ dict(x=1, y=2) }}
+{{ dict(d, c=3)}}
+{% for _ in [1] %}{{ dict(loop, extra=2)|dictsort }}{% endfor %}
+{{ dict([('a', 1), ('b', 2), ('c', 3)]) }}
+{{ {'a':'b'}.pop('a') }}
+{{ {}.pop('a','b') }}

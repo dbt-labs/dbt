@@ -1,0 +1,35 @@
+fixed:
+  type: fabricspark
+prompts:
+  _choose_authentication_method:
+    livy:
+      _fixed_method: livy
+      workspaceid:
+        hint: GUID of the workspace. Open the workspace from fabric.microsoft.com and copy the workspace url
+      lakehouse:
+        hint: Name of the Lakehouse in the workspace that you want to connect to
+      lakehouseid:
+        hint: GUID of the lakehouse, which can be extracted from url when you open lakehouse artifact from fabric.microsoft.com
+      endpoint:
+        default: https://api.fabric.microsoft.com/v1
+      auth:
+        default: CLI
+        hint: Use CLI (az login) for interactive execution or SPN for automation
+      client_id:
+        hint: Use when SPN auth is used.
+      client_scrent:
+        hint: Use when SPN auth is used.
+      tenant_id:
+        hint: Use when SPN auth is used.
+      connect_retries:
+        default: 0
+        type: 'int'
+      connect_timeout:
+        default: 10
+        type: 'int'    
+  schema:
+    hint: 'default schema that dbt will build objects in'
+  threads:
+    hint: '1 or more'
+    type: 'int'
+    default: 1

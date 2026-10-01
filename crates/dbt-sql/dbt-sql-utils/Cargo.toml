@@ -1,0 +1,31 @@
+[package]
+authors.workspace = true
+description.workspace = true
+edition.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+license.workspace = true
+name = "dbt-sql-utils"
+repository.workspace = true
+version.workspace = true
+
+[lints]
+workspace = true
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+dbt-antlr4 = { workspace = true }
+minijinja = { workspace = true }
+
+dbt-frontend-common = { workspace = true }
+dbt-fusion-workspace-hack = { version = "0.1" }
+dbt-lexer-bigquery = { workspace = true }
+dbt-lexer-databricks = { workspace = true }
+dbt-lexer-redshift = { workspace = true }
+dbt-lexer-snowflake = { workspace = true }
+dbt-lexer-trino = { workspace = true }
+
+[dev-dependencies]
+strum = { workspace = true }

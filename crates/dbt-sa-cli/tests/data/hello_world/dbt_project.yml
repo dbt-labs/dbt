@@ -1,0 +1,25 @@
+name: 'hello_world'
+
+config-version: 2
+version: '0.1'
+
+profile: 'hello_world'
+
+model-paths: ["models"]
+clean-targets:
+  - "target"
+  - "dbt_modules"
+  - "logs"
+
+require-dbt-version: [">=1.0.0", "<2.0.0"]
+
+models:
+  hello_world:
+    +materialized: table
+    +docs:
+      node_color: 'gold'
+    +meta:
+      staging:
+        +materialized: view
+        +docs:
+          node_color: 'silver'

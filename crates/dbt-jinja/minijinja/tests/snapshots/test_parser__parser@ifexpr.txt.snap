@@ -1,0 +1,40 @@
+---
+source: fs/sa/crates/dbt-jinja/minijinja/tests/test_parser.rs
+description: "{{ a if b else c }}\n{{ a if b }}"
+input_file: fs/sa/crates/dbt-jinja/minijinja/tests/parser-inputs/ifexpr.txt
+---
+Ok(
+    Template {
+        children: [
+            EmitExpr {
+                expr: IfExpr {
+                    test_expr: Var {
+                        id: "b",
+                    } @ 1:9-1:10,
+                    true_expr: Var {
+                        id: "a",
+                    } @ 1:4-1:5,
+                    false_expr: Some(
+                        Var {
+                            id: "c",
+                        } @ 1:16-1:17,
+                    ),
+                } @ 1:1-1:20,
+            } @ 1:1-1:20,
+            EmitRaw {
+                raw: "\n",
+            } @ 1:20-2:1,
+            EmitExpr {
+                expr: IfExpr {
+                    test_expr: Var {
+                        id: "b",
+                    } @ 2:9-2:10,
+                    true_expr: Var {
+                        id: "a",
+                    } @ 2:4-2:5,
+                    false_expr: None,
+                } @ 2:1-2:13,
+            } @ 2:1-2:13,
+        ],
+    } @ 1:1-2:13,
+)

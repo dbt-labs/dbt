@@ -1,0 +1,10 @@
+# Scenario: Local filesystem catalog with DuckDB external file settings.
+# Exercises: local_filesystem catalogs from PR #9733 do not emit DuckDB ATTACH DDL.
+catalogs:
+  - name: local_files
+    type: local_filesystem
+    table_format: default
+    config:
+      duckdb:
+        root_path: data/raw
+        file_format: parquet

@@ -1,0 +1,416 @@
+---
+source: fs/sa/crates/dbt-jinja/minijinja/tests/test_templates.rs
+description: "{% include \"self-include.txt\" %}"
+info:
+  __minijinja_current_path: err_self_include.txt
+  __minijinja_current_span:
+    end_col: 1
+    end_line: 1
+    end_offset: 0
+    start_col: 1
+    start_line: 1
+    start_offset: 0
+input_file: fs/sa/crates/dbt-jinja/minijinja/tests/inputs/err_self_include.txt
+---
+!!!ERROR!!!
+
+Error {
+    kind: BadInclude,
+    detail: "error in \"self-include.txt\"",
+    name: "err_self_include.txt",
+    source: Error {
+        kind: BadInclude,
+        detail: "error in \"self-include.txt\"",
+        name: "err_self_include.txt",
+        source: Error {
+            kind: BadInclude,
+            detail: "error in \"self-include.txt\"",
+            name: "err_self_include.txt",
+            source: Error {
+                kind: BadInclude,
+                detail: "error in \"self-include.txt\"",
+                name: "err_self_include.txt",
+                source: Error {
+                    kind: BadInclude,
+                    detail: "error in \"self-include.txt\"",
+                    name: "err_self_include.txt",
+                    source: Error {
+                        kind: BadInclude,
+                        detail: "error in \"self-include.txt\"",
+                        name: "err_self_include.txt",
+                        source: Error {
+                            kind: BadInclude,
+                            detail: "error in \"self-include.txt\"",
+                            name: "err_self_include.txt",
+                            source: Error {
+                                kind: BadInclude,
+                                detail: "error in \"self-include.txt\"",
+                                name: "err_self_include.txt",
+                                source: Error {
+                                    kind: BadInclude,
+                                    detail: "error in \"self-include.txt\"",
+                                    name: "err_self_include.txt",
+                                    source: Error {
+                                        kind: BadInclude,
+                                        detail: "error in \"self-include.txt\"",
+                                        name: "err_self_include.txt",
+                                        source: Error {
+                                            kind: BadInclude,
+                                            detail: "error in \"self-include.txt\"",
+                                            name: "err_self_include.txt",
+                                            source: Error {
+                                                kind: BadInclude,
+                                                detail: "error in \"self-include.txt\"",
+                                                name: "err_self_include.txt",
+                                                source: Error {
+                                                    kind: BadInclude,
+                                                    detail: "error in \"self-include.txt\"",
+                                                    name: "err_self_include.txt",
+                                                    source: Error {
+                                                        kind: BadInclude,
+                                                        detail: "error in \"self-include.txt\"",
+                                                        name: "err_self_include.txt",
+                                                        source: Error {
+                                                            kind: BadInclude,
+                                                            detail: "error in \"self-include.txt\"",
+                                                            name: "err_self_include.txt",
+                                                            source: Error {
+                                                                kind: BadInclude,
+                                                                detail: "error in \"self-include.txt\"",
+                                                                name: "err_self_include.txt",
+                                                                source: Error {
+                                                                    kind: BadInclude,
+                                                                    detail: "error in \"self-include.txt\"",
+                                                                    name: "err_self_include.txt",
+                                                                    source: Error {
+                                                                        kind: BadInclude,
+                                                                        detail: "error in \"self-include.txt\"",
+                                                                        name: "err_self_include.txt",
+                                                                        source: Error {
+                                                                            kind: BadInclude,
+                                                                            detail: "error in \"self-include.txt\"",
+                                                                            name: "err_self_include.txt",
+                                                                            source: Error {
+                                                                                kind: BadInclude,
+                                                                                detail: "error in \"self-include.txt\"",
+                                                                                name: "err_self_include.txt",
+                                                                                source: Error {
+                                                                                    kind: BadInclude,
+                                                                                    detail: "error in \"self-include.txt\"",
+                                                                                    name: "err_self_include.txt",
+                                                                                    source: Error {
+                                                                                        kind: BadInclude,
+                                                                                        detail: "error in \"self-include.txt\"",
+                                                                                        name: "err_self_include.txt",
+                                                                                        source: Error {
+                                                                                            kind: BadInclude,
+                                                                                            detail: "error in \"self-include.txt\"",
+                                                                                            name: "err_self_include.txt",
+                                                                                            source: Error {
+                                                                                                kind: BadInclude,
+                                                                                                detail: "error in \"self-include.txt\"",
+                                                                                                name: "err_self_include.txt",
+                                                                                                source: Error {
+                                                                                                    kind: BadInclude,
+                                                                                                    detail: "error in \"self-include.txt\"",
+                                                                                                    name: "err_self_include.txt",
+                                                                                                    source: Error {
+                                                                                                        kind: BadInclude,
+                                                                                                        detail: "error in \"self-include.txt\"",
+                                                                                                        name: "err_self_include.txt",
+                                                                                                        source: Error {
+                                                                                                            kind: BadInclude,
+                                                                                                            detail: "error in \"self-include.txt\"",
+                                                                                                            name: "err_self_include.txt",
+                                                                                                            source: Error {
+                                                                                                                kind: BadInclude,
+                                                                                                                detail: "error in \"self-include.txt\"",
+                                                                                                                name: "err_self_include.txt",
+                                                                                                                source: Error {
+                                                                                                                    kind: BadInclude,
+                                                                                                                    detail: "error in \"self-include.txt\"",
+                                                                                                                    name: "err_self_include.txt",
+                                                                                                                    source: Error {
+                                                                                                                        kind: BadInclude,
+                                                                                                                        detail: "error in \"self-include.txt\"",
+                                                                                                                        name: "err_self_include.txt",
+                                                                                                                        source: Error {
+                                                                                                                            kind: BadInclude,
+                                                                                                                            detail: "error in \"self-include.txt\"",
+                                                                                                                            name: "err_self_include.txt",
+                                                                                                                            source: Error {
+                                                                                                                                kind: BadInclude,
+                                                                                                                                detail: "error in \"self-include.txt\"",
+                                                                                                                                name: "err_self_include.txt",
+                                                                                                                                source: Error {
+                                                                                                                                    kind: BadInclude,
+                                                                                                                                    detail: "error in \"self-include.txt\"",
+                                                                                                                                    name: "err_self_include.txt",
+                                                                                                                                    source: Error {
+                                                                                                                                        kind: BadInclude,
+                                                                                                                                        detail: "error in \"self-include.txt\"",
+                                                                                                                                        name: "err_self_include.txt",
+                                                                                                                                        source: Error {
+                                                                                                                                            kind: BadInclude,
+                                                                                                                                            detail: "error in \"self-include.txt\"",
+                                                                                                                                            name: "err_self_include.txt",
+                                                                                                                                            source: Error {
+                                                                                                                                                kind: BadInclude,
+                                                                                                                                                detail: "error in \"self-include.txt\"",
+                                                                                                                                                name: "err_self_include.txt",
+                                                                                                                                                source: Error {
+                                                                                                                                                    kind: BadInclude,
+                                                                                                                                                    detail: "error in \"self-include.txt\"",
+                                                                                                                                                    name: "err_self_include.txt",
+                                                                                                                                                    source: Error {
+                                                                                                                                                        kind: BadInclude,
+                                                                                                                                                        detail: "error in \"self-include.txt\"",
+                                                                                                                                                        name: "err_self_include.txt",
+                                                                                                                                                        source: Error {
+                                                                                                                                                            kind: BadInclude,
+                                                                                                                                                            detail: "error in \"self-include.txt\"",
+                                                                                                                                                            name: "err_self_include.txt",
+                                                                                                                                                            source: Error {
+                                                                                                                                                                kind: BadInclude,
+                                                                                                                                                                detail: "error in \"self-include.txt\"",
+                                                                                                                                                                name: "err_self_include.txt",
+                                                                                                                                                                source: Error {
+                                                                                                                                                                    kind: BadInclude,
+                                                                                                                                                                    detail: "error in \"self-include.txt\"",
+                                                                                                                                                                    name: "err_self_include.txt",
+                                                                                                                                                                    source: Error {
+                                                                                                                                                                        kind: BadInclude,
+                                                                                                                                                                        detail: "error in \"self-include.txt\"",
+                                                                                                                                                                        name: "err_self_include.txt",
+                                                                                                                                                                        source: Error {
+                                                                                                                                                                            kind: BadInclude,
+                                                                                                                                                                            detail: "error in \"self-include.txt\"",
+                                                                                                                                                                            name: "err_self_include.txt",
+                                                                                                                                                                            source: Error {
+                                                                                                                                                                                kind: BadInclude,
+                                                                                                                                                                                detail: "error in \"self-include.txt\"",
+                                                                                                                                                                                name: "err_self_include.txt",
+                                                                                                                                                                                source: Error {
+                                                                                                                                                                                    kind: BadInclude,
+                                                                                                                                                                                    detail: "error in \"self-include.txt\"",
+                                                                                                                                                                                    name: "err_self_include.txt",
+                                                                                                                                                                                    source: Error {
+                                                                                                                                                                                        kind: BadInclude,
+                                                                                                                                                                                        detail: "error in \"self-include.txt\"",
+                                                                                                                                                                                        name: "err_self_include.txt",
+                                                                                                                                                                                        source: Error {
+                                                                                                                                                                                            kind: BadInclude,
+                                                                                                                                                                                            detail: "error in \"self-include.txt\"",
+                                                                                                                                                                                            name: "err_self_include.txt",
+                                                                                                                                                                                            source: Error {
+                                                                                                                                                                                                kind: BadInclude,
+                                                                                                                                                                                                detail: "error in \"self-include.txt\"",
+                                                                                                                                                                                                name: "err_self_include.txt",
+                                                                                                                                                                                                source: Error {
+                                                                                                                                                                                                    kind: BadInclude,
+                                                                                                                                                                                                    detail: "error in \"self-include.txt\"",
+                                                                                                                                                                                                    name: "err_self_include.txt",
+                                                                                                                                                                                                    source: Error {
+                                                                                                                                                                                                        kind: InvalidOperation,
+                                                                                                                                                                                                        detail: "recursion limit exceeded",
+                                                                                                                                                                                                        name: "err_self_include.txt",
+                                                                                                                                                                                                    },
+                                                                                                                                                                                                },
+                                                                                                                                                                                            },
+                                                                                                                                                                                        },
+                                                                                                                                                                                    },
+                                                                                                                                                                                },
+                                                                                                                                                                            },
+                                                                                                                                                                        },
+                                                                                                                                                                    },
+                                                                                                                                                                },
+                                                                                                                                                            },
+                                                                                                                                                        },
+                                                                                                                                                    },
+                                                                                                                                                },
+                                                                                                                                            },
+                                                                                                                                        },
+                                                                                                                                    },
+                                                                                                                                },
+                                                                                                                            },
+                                                                                                                        },
+                                                                                                                    },
+                                                                                                                },
+                                                                                                            },
+                                                                                                        },
+                                                                                                    },
+                                                                                                },
+                                                                                            },
+                                                                                        },
+                                                                                    },
+                                                                                },
+                                                                            },
+                                                                        },
+                                                                    },
+                                                                },
+                                                            },
+                                                        },
+                                                    },
+                                                },
+                                            },
+                                        },
+                                    },
+                                },
+                            },
+                        },
+                    },
+                },
+            },
+        },
+    },
+}
+
+could not render include: error in "self-include.txt"
+(in err_self_include.txt:1:1)
+
+caused by: could not render include: error in "self-include.txt"
+(in err_self_include.txt:1:1)
+
+caused by: could not render include: error in "self-include.txt"
+(in err_self_include.txt:1:1)
+
+caused by: could not render include: error in "self-include.txt"
+(in err_self_include.txt:1:1)
+
+caused by: could not render include: error in "self-include.txt"
+(in err_self_include.txt:1:1)
+
+caused by: could not render include: error in "self-include.txt"
+(in err_self_include.txt:1:1)
+
+caused by: could not render include: error in "self-include.txt"
+(in err_self_include.txt:1:1)
+
+caused by: could not render include: error in "self-include.txt"
+(in err_self_include.txt:1:1)
+
+caused by: could not render include: error in "self-include.txt"
+(in err_self_include.txt:1:1)
+
+caused by: could not render include: error in "self-include.txt"
+(in err_self_include.txt:1:1)
+
+caused by: could not render include: error in "self-include.txt"
+(in err_self_include.txt:1:1)
+
+caused by: could not render include: error in "self-include.txt"
+(in err_self_include.txt:1:1)
+
+caused by: could not render include: error in "self-include.txt"
+(in err_self_include.txt:1:1)
+
+caused by: could not render include: error in "self-include.txt"
+(in err_self_include.txt:1:1)
+
+caused by: could not render include: error in "self-include.txt"
+(in err_self_include.txt:1:1)
+
+caused by: could not render include: error in "self-include.txt"
+(in err_self_include.txt:1:1)
+
+caused by: could not render include: error in "self-include.txt"
+(in err_self_include.txt:1:1)
+
+caused by: could not render include: error in "self-include.txt"
+(in err_self_include.txt:1:1)
+
+caused by: could not render include: error in "self-include.txt"
+(in err_self_include.txt:1:1)
+
+caused by: could not render include: error in "self-include.txt"
+(in err_self_include.txt:1:1)
+
+caused by: could not render include: error in "self-include.txt"
+(in err_self_include.txt:1:1)
+
+caused by: could not render include: error in "self-include.txt"
+(in err_self_include.txt:1:1)
+
+caused by: could not render include: error in "self-include.txt"
+(in err_self_include.txt:1:1)
+
+caused by: could not render include: error in "self-include.txt"
+(in err_self_include.txt:1:1)
+
+caused by: could not render include: error in "self-include.txt"
+(in err_self_include.txt:1:1)
+
+caused by: could not render include: error in "self-include.txt"
+(in err_self_include.txt:1:1)
+
+caused by: could not render include: error in "self-include.txt"
+(in err_self_include.txt:1:1)
+
+caused by: could not render include: error in "self-include.txt"
+(in err_self_include.txt:1:1)
+
+caused by: could not render include: error in "self-include.txt"
+(in err_self_include.txt:1:1)
+
+caused by: could not render include: error in "self-include.txt"
+(in err_self_include.txt:1:1)
+
+caused by: could not render include: error in "self-include.txt"
+(in err_self_include.txt:1:1)
+
+caused by: could not render include: error in "self-include.txt"
+(in err_self_include.txt:1:1)
+
+caused by: could not render include: error in "self-include.txt"
+(in err_self_include.txt:1:1)
+
+caused by: could not render include: error in "self-include.txt"
+(in err_self_include.txt:1:1)
+
+caused by: could not render include: error in "self-include.txt"
+(in err_self_include.txt:1:1)
+
+caused by: could not render include: error in "self-include.txt"
+(in err_self_include.txt:1:1)
+
+caused by: could not render include: error in "self-include.txt"
+(in err_self_include.txt:1:1)
+
+caused by: could not render include: error in "self-include.txt"
+(in err_self_include.txt:1:1)
+
+caused by: could not render include: error in "self-include.txt"
+(in err_self_include.txt:1:1)
+
+caused by: could not render include: error in "self-include.txt"
+(in err_self_include.txt:1:1)
+
+caused by: could not render include: error in "self-include.txt"
+(in err_self_include.txt:1:1)
+
+caused by: could not render include: error in "self-include.txt"
+(in err_self_include.txt:1:1)
+
+caused by: could not render include: error in "self-include.txt"
+(in err_self_include.txt:1:1)
+
+caused by: could not render include: error in "self-include.txt"
+(in err_self_include.txt:1:1)
+
+caused by: could not render include: error in "self-include.txt"
+(in err_self_include.txt:1:1)
+
+caused by: could not render include: error in "self-include.txt"
+(in err_self_include.txt:1:1)
+
+caused by: could not render include: error in "self-include.txt"
+(in err_self_include.txt:1:1)
+
+caused by: could not render include: error in "self-include.txt"
+(in err_self_include.txt:1:1)
+
+caused by: could not render include: error in "self-include.txt"
+(in err_self_include.txt:1:1)
+
+caused by: invalid operation: recursion limit exceeded
+(in err_self_include.txt:1:1)

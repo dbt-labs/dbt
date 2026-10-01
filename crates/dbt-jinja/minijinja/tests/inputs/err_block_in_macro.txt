@@ -1,0 +1,5 @@
+{}
+---
+{% macro two_args(a, b) %}
+  {% block foo %}{% endblock %}
+{% endmacro %}

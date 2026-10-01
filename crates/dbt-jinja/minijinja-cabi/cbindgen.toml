@@ -1,0 +1,23 @@
+language = "C"
+header = """/*
+ * MiniJinja for C
+ *
+ * Copyright 2024 Armin Ronacher. MIT License.
+ */"""
+include_guard = "_minijinja_h_included"
+pragma_once = true
+no_includes = true
+sys_includes = ["stdint.h", "stddef.h", "stdbool.h"]
+cpp_compat = true
+documentation_style = "c"
+documentation_length = "short"
+after_includes = """
+
+#ifndef MINIJINJA_API
+#  define MINIJINJA_API
+#endif
+"""
+
+[fn]
+prefix = "MINIJINJA_API"
+sort_by = "Name"

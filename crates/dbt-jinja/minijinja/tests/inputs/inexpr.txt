@@ -1,0 +1,12 @@
+{
+  "seq": [
+    1,
+    2,
+    3
+  ]
+}
+---
+{{ 1 in seq }}
+{{ "missing" in seq }}
+{{ 1 not in seq }}
+{{ "missing" not in seq }}

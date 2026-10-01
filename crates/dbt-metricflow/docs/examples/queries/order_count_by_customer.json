@@ -1,0 +1,4 @@
+{
+  "metrics": ["order_count"],
+  "group_by": ["Entity('customer')"]
+}

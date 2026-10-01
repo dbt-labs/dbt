@@ -1,0 +1,8 @@
+---
+source: crates/dbt-jinja/minijinja/tests/test_templates.rs
+description: "{%- include \"example_macro.txt\" %}\n{%- set d = \"should never show up\" %}\n{{ example(1, 2, 3) }}\n{{ example(1, 2) }}"
+info: {}
+input_file: crates/dbt-jinja/minijinja/tests/inputs/macro_include.txt
+---
+[1, 2, 3, 'closure']
+[1, 2, 'default', 'closure']

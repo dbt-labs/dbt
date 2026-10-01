@@ -1,0 +1,3 @@
+{}
+---
+{{ undefined_value.attr }}

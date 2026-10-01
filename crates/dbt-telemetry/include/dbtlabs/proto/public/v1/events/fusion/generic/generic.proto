@@ -1,0 +1,50 @@
+syntax = "proto3";
+package v1.public.events.fusion.generic;
+option go_package = "github.com/dbt-labs/proto-golang/v1/public/events/fusion/generic";
+
+// Note: These events are for operations whose API is not yet stabilized.
+// They provide a generic progress tracking mechanism that can be used
+// by various commands without requiring dedicated structured events.
+
+// An event used for spans that represent the execution of an operation
+// that doesn't have a stable API and/or dedicated event type with
+// structured fields yet.
+message GenericOpExecuted {
+  // Identifier for this operation type (e.g., "format", "lint")
+  // Used as unique ID for associating child items
+  string operation_id = 1;
+
+  // Display action text in lowercase (e.g., "formatting", "linting").
+  //
+  // Note: this may be capitalized when rendered and/or combined with
+  // other text (e.g., "Started formatting 3 items...")
+  string display_action = 2;
+
+  // Total count of items (enables progress bar if > 0, otherwise spinner)
+  optional uint64 item_count_total = 3;
+}
+
+// An event used for spans emitted for each item processed as part of a
+// GenericOpExecuted operation.
+message GenericOpItemProcessed {
+  // Must match the parent GenericOpExecuted.operation_id
+  // Used to look up UID from the global mapping
+  string operation_id = 1;
+
+  // Action text in lowercase (e.g., "formatting", "linting").
+  // for in-progress display.
+  //
+  // Note: this may be capitalized when rendered and/or combined with
+  // other text (e.g., "Started formatting {target}")
+  string display_in_progress_action = 2;
+  
+  // Action text in lowercase (e.g., "formatted", "linted").
+  // for on-success display.
+  //
+  // Note: this may be capitalized when rendered and/or combined with
+  // other text (e.g., "Formatted {target}")
+  string display_on_success_action = 3;
+
+  // Display name shown in progress bar context (e.g., file path)
+  string target = 4;
+}

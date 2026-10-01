@@ -1,0 +1,69 @@
+syntax = "proto3";
+package v1.public.common;
+option go_package = "github.com/dbt-labs/proto-golang/v1/public/common";
+
+import "google/protobuf/descriptor.proto";
+
+// the set of valid namespaces in the iceberg catalog.
+enum VortexIcebergNamespace {
+  // owner: Zach Brown
+  VORTEX_ICEBERG_NAMESPACE_UNSPECIFIED = 0;
+
+  // owner: Brandon Cole
+  VORTEX_ICEBERG_NAMESPACE_COST_MONITORING = 1;
+
+  // owner: Lukas Schulte
+  VORTEX_ICEBERG_NAMESPACE_FUSION = 2;
+
+  // owner: Zach Brown
+  VORTEX_ICEBERG_NAMESPACE_TELEMETRY = 3;
+
+  // owner: Zach Brown
+  // This is strictly for dead letter queue events and internal use only.
+  VORTEX_ICEBERG_NAMESPACE_DLQ = 4;
+
+  // owner: Zeeshan Qureshi
+  VORTEX_ICEBERG_NAMESPACE_MANTLE = 5;
+
+    // owner: Vadim Rybak
+  VORTEX_ICEBERG_NAMESPACE_CODEX = 6;
+}
+
+extend google.protobuf.MessageOptions {
+  // the namespace to write within the iceberg catalog. it must
+  // be one of the valid values above. adding a new namespace
+  // requires an approval from the vortex team.
+  //
+  // if not set, this will default to a namespace called `catchall`.
+  // this is not called `default` because that is a common reserved
+  // keyword in many query engines.
+  optional VortexIcebergNamespace vortex_namespace = 60011;
+
+  // the table name to write within the specified namespace.
+  // this should only be set in rare circumstances, such as
+  // when a proto is renamed but we want to
+  optional string vortex_table_name = 60012;
+
+  // the field identifier in the message that vortex should use
+  // to partition the message. by default, this will be the
+  // `vortex_event_created_at` field, to ensure that we correctly
+  // partition late-arriving events.
+  //
+  // this means that when querying the iceberg table downstream,
+  // queries will be _much_ more efficient when filtering on this
+  // field.
+  //
+  // if you override this, it's recommended that you choose a
+  // timestamp field.
+  optional uint32 vortex_partition_field = 60013;
+
+  // if true, this event should be written to the iceberg table.
+  // if false, this event should be ignored.
+  // default behavior is to treat as true.
+  optional bool vortex_write_to_iceberg = 60015;
+
+  // if true, this event can be ingested by vortex.
+  // if false, vortex will not accept this event or create a table.
+  // default behavior is to treat as false.
+  optional bool vortex_enabled = 60016;
+}

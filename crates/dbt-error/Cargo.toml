@@ -1,0 +1,56 @@
+[package]
+name = "dbt-error"
+version.workspace = true
+homepage.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "Error handling types and utilities for the dbt ecosystem"
+license.workspace = true
+keywords.workspace = true
+edition.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+# Frontend errors auto-conversion
+dbt-frontend-common = { workspace = true }
+dbt-proc-macros = { workspace = true }
+
+# Cancellation error conversion
+dbt-base = { workspace = true }
+dbt-runtime = { workspace = true }
+dbt-tracing = { workspace = true }
+
+# Core dependencies needed by error types
+arrow = { workspace = true }
+datafusion-common = { workspace = true }
+datafusion-expr = { workspace = true }
+minijinja = { workspace = true }
+parquet = { workspace = true }
+reqwest = { workspace = true }
+
+# Basic utilities
+int-enum = { workspace = true }
+itertools = { workspace = true }
+pathdiff = { workspace = true }
+regex = { workspace = true }
+strum = { workspace = true }
+strum_macros = { workspace = true }
+
+# Serialization
+dbt-yaml = { workspace = true }
+schemars = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# Async errors
+dbt-fusion-workspace-hack = { version = "0.1" }
+tokio = { workspace = true }
+
+[target.'cfg(windows)'.dependencies]
+# Used to provide better canonical paths on Windows
+dunce = "1.0.5"
+
+[lib]
+doctest = false

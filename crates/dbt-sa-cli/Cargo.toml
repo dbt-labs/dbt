@@ -1,0 +1,35 @@
+[package]
+authors.workspace = true
+description.workspace = true
+edition.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+license.workspace = true
+name = "dbt-sa-cli"
+repository.workspace = true
+version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+dbt-clap-core = { workspace = true }
+dbt-common = { workspace = true }
+dbt-features = { workspace = true }
+dbt-fusion-workspace-hack = { version = "0.1" }
+dbt-main = { workspace = true }
+
+[features]
+default = ["embed-ui"]
+embed-ui = ["dbt-main/embed-ui"]
+
+[dev-dependencies]
+dbt-runtime = { workspace = true }
+dbt-test-primitives = { workspace = true }
+dbt-test-utils = { workspace = true }
+tokio = { workspace = true, features = ["full"] }
+
+[[bin]]
+doctest = false
+name = "dbt"
+path = "src/main.rs"

@@ -1,0 +1,7 @@
+---
+source: crates/jinja/minijinja/tests/test_templates.rs
+description: "{% macro two_args(a, b) %}\n  {{ a }} and {{ b }}\n{% endmacro %}\n{{ two_args(c=42, d=23) }}"
+info: {}
+input_file: crates/jinja/minijinja/tests/inputs/err_too_many_macro_kwargs2.txt
+---
+   and

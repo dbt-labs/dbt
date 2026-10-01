@@ -1,0 +1,32 @@
+[package]
+name = "dbt-schema-store"
+authors.workspace = true
+description.workspace = true
+edition.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+license.workspace = true
+repository.workspace = true
+version.workspace = true
+
+[dependencies]
+arrow = { workspace = true }
+arrow-schema = { workspace = true }
+async-trait = { workspace = true }
+base64 = { workspace = true }
+bimap = { workspace = true }
+dbt-common = { workspace = true }
+dbt-fusion-workspace-hack = { version = "0.1" }
+dbt-ident = { workspace = true }
+futures = { workspace = true }
+parquet = { workspace = true }
+scc = { workspace = true }
+serde = { workspace = true }
+serde_arrow = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+
+[lints]
+workspace = true

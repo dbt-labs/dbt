@@ -1,0 +1,53 @@
+[package]
+name = "dbt-features"
+version.workspace = true
+homepage.workspace = true
+repository.workspace = true
+authors.workspace = true
+description.workspace = true
+license.workspace = true
+keywords.workspace = true
+edition.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+dbt-adapter = { workspace = true }
+dbt-adbc = { workspace = true }
+dbt-clap-core = { workspace = true }
+dbt-cloud-config = { workspace = true }
+dbt-common = { workspace = true }
+dbt-compilation = { workspace = true }
+dbt-dag = { workspace = true }
+dbt-deps = { workspace = true }
+dbt-dist = { workspace = true }
+dbt-docs-server = { workspace = true }
+dbt-env = { workspace = true }
+dbt-frontend-common = { workspace = true }
+dbt-fusion-workspace-hack = { version = "0.1" }
+dbt-index-core = { workspace = true }
+dbt-jinja-utils = { workspace = true }
+dbt-lineage-core = { workspace = true }
+dbt-loader = { workspace = true }
+dbt-login = { workspace = true }
+dbt-metadata-parquet = { workspace = true }
+dbt-parser = { workspace = true }
+dbt-schema-store = { workspace = true }
+dbt-schemas = { workspace = true }
+dbt-tasks-core = { workspace = true }
+dbt-tasks-sa = { workspace = true }
+
+async-trait = { workspace = true }
+chrono = { workspace = true }
+clap = { workspace = true, features = ["derive"] }
+minijinja = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+uuid = { workspace = true }
+vortex-events = { workspace = true }
+
+[lib]
+name = "dbt_features"
+path = "src/mod.rs"
+doctest = false

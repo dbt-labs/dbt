@@ -1,0 +1,15 @@
+name: Pyright
+
+on: [push, pull_request]
+
+jobs:
+  pyright:
+    name: Pyright
+    runs-on: ${{ vars.UBUNTU_RUNNER }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v4
+        with:
+          python-version: '3.9'
+      - name: Run pyright
+        run: make python-type-check

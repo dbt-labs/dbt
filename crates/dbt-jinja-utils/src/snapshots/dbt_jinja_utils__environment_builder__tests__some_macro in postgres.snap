@@ -1,0 +1,5 @@
+---
+source: crates/dbt-jinja-utils/src/environment_builder.rs
+expression: "\"some_macro in a_package\""
+---
+some_macro in a_package

@@ -1,0 +1,21 @@
+{
+  "line_statement_prefix": "#"
+}
+---
+<ul>
+  # for item in seq
+    <li>{{ item }}</li>
+  # endfor
+</ul>
+
+<ul>
+  # for item in [(
+    1, 2
+  ), (3, 4)]
+    <li>{{ item
+      }}</li>  # not a line statement {{ var }} # not a line statement
+  # endfor
+</ul>
+
+# block foo
+# endblock

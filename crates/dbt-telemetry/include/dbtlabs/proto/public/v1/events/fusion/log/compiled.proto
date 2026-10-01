@@ -1,0 +1,27 @@
+syntax = "proto3";
+package v1.public.events.fusion.log;
+
+option go_package = "github.com/dbt-labs/proto-golang/v1/public/events/fusion/log";
+
+// Log event that carries compiled SQL for a project node.
+//
+// `sql` may contain user data and may be scrubbed when sensitive telemetry
+// collection is disabled.
+message CompiledCode {
+  // Path to the compiled SQL file, relative to project root (`in_dir`).
+  string relative_path = 1;
+
+  // Compiled SQL text. May be scrubbed.
+  string sql = 2;
+
+  // Globally unique dbt node identifier.
+  string unique_id = 3;
+
+  // Display node name for compatibility output.
+  string node_name = 4;
+}
+
+// Log event that carries inline compiled SQL code.
+message CompiledCodeInline {
+  string sql = 1;
+}

@@ -1,6 +1,0 @@
-macros:
-  - name: some_macro
-    description: a description
-    config:
-      meta:
-        owner: "person@gmail.com"

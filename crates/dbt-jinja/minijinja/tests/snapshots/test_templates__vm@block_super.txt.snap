@@ -1,0 +1,10 @@
+---
+source: minijinja/tests/test_templates.rs
+description: "{% extends template %}\n{% block title %}[{{ super() }}]{% endblock %}\n{% block body %}{{ super()|upper }}{% endblock %}"
+info:
+  template: simple_layout.txt
+input_file: minijinja/tests/inputs/block_super.txt
+---
+<title>[default title]</title>
+DEFAULT BODY
+

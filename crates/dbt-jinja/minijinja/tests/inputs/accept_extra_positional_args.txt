@@ -1,0 +1,6 @@
+{}
+---
+{% macro two_args(a, b) %}
+  {{ a }} and {{ b }}
+{% endmacro %}
+{{ two_args(1, 2, 3) }}

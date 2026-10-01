@@ -1,0 +1,10 @@
+---
+source: crates/dbt-jinja/minijinja/tests/test_templates.rs
+description: "{% macro foo(a, b, c, d) %}{{ [a, b, c, d] }}{% endmacro -%}\n{{ foo(1, 2, 3) }}\n{{ foo({\"blub\": \"blah\"}) }}\n{{ foo(a=1, b=2, c=3) }}\n{{ foo(a=1, b=2, c=3, d=4) }}"
+info: {}
+input_file: crates/dbt-jinja/minijinja/tests/inputs/macro_kwargs.txt
+---
+[1, 2, 3, undefined]
+[{'blub': 'blah'}, undefined, undefined, undefined]
+[1, 2, 3, undefined]
+[1, 2, 3, 4]

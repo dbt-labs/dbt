@@ -1,0 +1,72 @@
+version: 2
+
+seeds:
+  - name: raw_customers
+    description: Raw customer data from the mobile app
+    columns:
+      - name: id
+        description: Unique customer identifier
+        tests:
+          - unique
+          - not_null
+      - name: first_name
+        description: Customer's first name
+      - name: last_name
+        description: Customer's last name
+      - name: email
+        description: Customer's email address
+        tests:
+          - unique
+      - name: gender
+        description: Customer's gender
+      - name: address_id
+        description: Reference to address
+
+  - name: raw_addresses
+    description: Address information for customers
+    columns:
+      - name: address_id
+        description: Unique address identifier
+        tests:
+          - unique
+          - not_null
+      - name: full_address
+        description: Complete address string
+      - name: state
+        description: State abbreviation
+      - name: city
+        description: City name
+
+  - name: raw_inapp_events
+    description: Raw in-app events from mobile application
+    columns:
+      - name: event_id
+        description: Unique event identifier
+        tests:
+          - unique
+          - not_null
+      - name: customer_id
+        description: Customer who triggered the event
+      - name: event_time
+        description: Unix timestamp of the event
+      - name: event_name
+        description: Type of event
+      - name: platform
+        description: Platform where event occurred
+
+  - name: raw_marketing_campaign_events
+    description: Marketing campaign events and costs
+    columns:
+      - name: event_id
+        description: Unique marketing event identifier
+      - name: campaign_id
+        description: Campaign identifier
+      - name: campaign_name
+        description: Campaign name
+      - name: c_name
+        description: Campaign type
+      - name: event_time
+        description: Unix timestamp of the event
+      - name: cost
+        description: Cost of the marketing event
+

@@ -1,0 +1,65 @@
+# **what?**
+# Immediately labels a dbt v2 issue as awaiting release when it is closed.
+
+# **why?**
+# Support customers subscribe to issues to track fixes. When an issue closes
+# (fix merged), they need to know it's not live yet — average ~1 week to release.
+# dbt-core now hosts both v1 and v2 issues, so this only runs for v2: v1 follows
+# a different release cadence and is not tracked by this automation.
+
+# **when?**
+# Whenever a v2 issue in dbt-labs/dbt-core is closed as completed.
+
+name: "Release Tracker: Awaiting Release"
+
+on:
+  issues:
+    types: [closed]
+
+permissions:
+  issues: write
+
+jobs:
+  label-awaiting-release:
+    name: "Label issue as awaiting release"
+    runs-on: ubuntu-latest
+    # Skip if:
+    #   - not a v2 issue (v1 has a different release cadence)
+    #   - closed as won't-fix / not planned
+    #   - title starts with [EPIC] (epics are not individual fix issues)
+    #   - already has any release/* label (idempotent)
+    if: |
+      github.event.issue.state_reason == 'completed' &&
+      contains(toJson(github.event.issue.labels.*.name), '"v2"') &&
+      !startsWith(github.event.issue.title, '[EPIC]') &&
+      !contains(toJson(github.event.issue.labels.*.name), 'release/awaiting-release') &&
+      !contains(toJson(github.event.issue.labels.*.name), 'release/released') &&
+      !contains(toJson(github.event.issue.labels.*.name), 'release/rolled-back')
+    steps:
+      - uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea  # actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const issue = context.issue.number;
+
+            await github.rest.issues.addLabels({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: issue,
+              labels: ['release/awaiting-release'],
+            });
+
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: issue,
+              body: [
+                '## Fix Merged — Awaiting Release',
+                '',
+                'This issue has been resolved and the fix is merged, but it has not yet shipped in a release.',
+                '',
+                'Releases typically go out within **~1 week**. We\'ll update this issue with the exact version once it\'s live.',
+                '',
+                'Subscribe to this issue to get notified when the fix is available.',
+              ].join('\n'),
+            });

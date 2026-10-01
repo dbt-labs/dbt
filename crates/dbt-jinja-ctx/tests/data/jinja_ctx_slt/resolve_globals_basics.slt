@@ -1,0 +1,69 @@
+# Resolve-phase env-globals fixture sanity: every Jinja key registered on the
+# parse env (which compile + run reuse without re-registering) resolves to the
+# expected value.
+#
+# Fixture: tests/jinja_ctx_slt.rs::fixture_resolve_core
+#   project_name           = my_project
+#   target / env           = { name=dev, schema=public, database=analytics }
+#   flags                  = { FULL_REFRESH=false, STORE_FAILURES=false, INTROSPECT=true }
+#   var                    = ConfiguredVar Object (empty maps)
+#   invocation_args_dict   = { debug=false }
+#   invocation_id          = 11111111-2222-3333-4444-555555555555
+#   database / schema      = analytics / public
+#   write                  = None
+
+key project_name
+----
+resolve_globals  my_project
+
+key target.name
+----
+resolve_globals  dev
+
+key target.schema
+----
+resolve_globals  public
+
+key env.database
+----
+resolve_globals  analytics
+
+key flags.FULL_REFRESH
+----
+resolve_globals  false
+
+key flags.INTROSPECT
+----
+resolve_globals  true
+
+key invocation_args_dict.debug
+----
+resolve_globals  false
+
+key invocation_id
+----
+resolve_globals  11111111-2222-3333-4444-555555555555
+
+key database
+----
+resolve_globals  analytics
+
+key schema
+----
+resolve_globals  public
+
+# `var` is a ConfiguredVar Object; .slt only checks Object presence.
+# Identity downcasts live in the regular Rust unit test below.
+key var
+----
+resolve_globals  <object>
+
+# `run_started_at` is a JinjaObject<PyDateTime>; same as load.
+key run_started_at
+----
+resolve_globals  <object>
+
+# `write` is always None at parse — Value::NONE serializes to JSON null.
+key write
+----
+resolve_globals  null

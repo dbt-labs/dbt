@@ -1,0 +1,5 @@
+{}
+---
+{% macro first(param) %}first: {{ second(param )}}{% endmacro %}
+{% macro second(param) %}second: {{ param }}{% endmacro %}
+{{ first(42) }}

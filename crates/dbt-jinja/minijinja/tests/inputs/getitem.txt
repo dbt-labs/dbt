@@ -1,0 +1,14 @@
+{
+  "items": [
+    "first_item",
+    "middle_item",
+    "last_item"
+  ],
+  "user": {
+    "name": "Peter"
+  }
+}
+---
+first: {{ items[0] }}
+last: {{ items[-1] }}
+name: {{ user["name"] }}

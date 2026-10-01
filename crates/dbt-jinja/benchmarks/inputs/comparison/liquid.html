@@ -1,0 +1,26 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>{{ title|escape }} | Hello</title>
+<link rel="stylesheet" href="styles/index.css">
+<body>
+  <header>
+    <h1>Hello</h1>
+    <nav>
+      <ul class="nav">
+        {% for item in site.nav %}
+          <li><a href="{{ item.url|escape }}"{% if item.is_active %} class="active"{% endif %}>{{ item.title|upcase|escape }}</a>
+        {% endfor %}
+      </ul>
+    </nav>
+  </header>
+  <main>
+    <ul>
+    {% for item in items %}
+      <li>{{ forloop.index|escape }}: {{ item|upcase|escape }}</li>
+    {% endfor %}
+    </ul>
+  </main>
+  <footer>
+    {% include "footer.html" %}
+  </footer>
+</body>

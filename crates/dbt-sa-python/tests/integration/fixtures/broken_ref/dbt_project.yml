@@ -1,0 +1,9 @@
+name: 'broken_ref'
+config-version: 2
+version: '0.1'
+
+profile: 'broken_ref'
+
+model-paths: ["models"]
+clean-targets:
+  - "target"

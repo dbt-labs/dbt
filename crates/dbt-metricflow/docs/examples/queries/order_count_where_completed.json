@@ -1,0 +1,4 @@
+{
+  "metrics": ["order_count"],
+  "where": ["{{ Dimension('status') }} = 'completed'"]
+}

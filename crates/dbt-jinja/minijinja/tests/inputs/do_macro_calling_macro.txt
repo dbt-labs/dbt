@@ -1,0 +1,5 @@
+{}
+---
+{%- from "call_macro.txt" import call %}
+{%- macro my_macro(value) %}[{{ value }}]{% endmacro %}
+nothing should show: {% do call(my_macro, 42) %}

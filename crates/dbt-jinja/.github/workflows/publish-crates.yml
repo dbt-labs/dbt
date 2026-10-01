@@ -1,0 +1,21 @@
+name: Publish Crates
+
+on:
+  push:
+    tags:
+      - '**[0-9]+.[0-9]+.[0-9]+*'
+  pull_request:
+
+jobs:
+  publish-crates:
+    name: Publish to crates.io
+    runs-on: ${{ vars.UBUNTU_RUNNER }}
+    env:
+      CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+    if: ${{ !github.event.pull_request }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: swatinem/rust-cache@v2
+      - name: Publish
+        run: |
+          ./scripts/publish-all.sh

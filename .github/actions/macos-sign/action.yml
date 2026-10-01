@@ -1,0 +1,174 @@
+name: "Sign macOS Binaries"
+description: "Signs macOS binaries with dbt Labs certificate"
+
+inputs:
+  directory:
+    description: "Directory containing binaries to sign"
+    required: true
+  # we need to use a list of files because for fs we're signing executables without extensions while for adbc we're signing dylibs
+  filenames:
+    description: "Space-separated list of filenames to sign"
+    required: true
+  certificate-base64:
+    description: "Base64 encoded Apple certificate"
+    required: true
+  p12-base64:
+    description: "Base64 encoded P12 certificate"
+    required: true
+  p12-password:
+    description: "Password for P12 certificate"
+    required: true
+  keychain-password:
+    description: "Password for temporary keychain"
+    required: true
+  disable-library-validation:
+    description: "Allow the signed executable to load third-party libraries under hardened runtime"
+    required: false
+    default: "false"
+  pyinstaller-bundles:
+    description: "Space-separated filenames that are PyInstaller onedir bundles and require nested Mach-O signing"
+    required: false
+    default: ""
+
+runs:
+  using: "composite"
+  steps:
+    - name: "Set unique keychain name"
+      id: set-keychain-name
+      shell: bash
+      run: |
+        echo "KEYCHAIN_NAME=build-${GITHUB_RUN_ID}.keychain" >> $GITHUB_ENV
+
+    - name: "Setup keychain and certificates"
+      shell: bash
+      run: |
+        # Create keychain
+        security create-keychain -p "${{ inputs.keychain-password }}" $KEYCHAIN_NAME
+        security default-keychain -s $KEYCHAIN_NAME
+        security unlock-keychain -p "${{ inputs.keychain-password }}" $KEYCHAIN_NAME
+
+        # Disable keychain lock timeout
+        security set-keychain-settings $KEYCHAIN_NAME
+
+        # Import certificate and p12 to keychain
+        echo "${{ inputs.certificate-base64 }}" | base64 --decode > certificate.cer
+        echo "${{ inputs.p12-base64 }}" | base64 --decode > certificate.p12
+
+        # Add certificate to keychain
+        security import certificate.cer -k $KEYCHAIN_NAME -T /usr/bin/codesign
+        security import certificate.p12 -k $KEYCHAIN_NAME -P "${{ inputs.p12-password }}" -T /usr/bin/codesign
+
+        # Allow codesign to access the keychain
+        security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "${{ inputs.keychain-password }}" $KEYCHAIN_NAME
+
+        # Add keychain to search list
+        security list-keychains -d user -s "$KEYCHAIN_NAME" $(security list-keychains -d user | sed 's/[",]//g')
+
+        # (Optional) Debug: List identities
+        security find-identity -v "$KEYCHAIN_NAME"
+
+    - name: "Sign binaries"
+      shell: bash
+      run: |
+        sign_one() {
+          local path="$1"
+          echo "Signing $path"
+          echo "File type for $path:"
+          file "$path"
+
+          local sign_args=(
+            --force
+            -s "Developer ID Application: dbt Labs, Inc (4NRB68BYA2)"
+            --options runtime
+          )
+
+          # Fusion needs to run custom ADBC drivers and some of these
+          # drivers, in turn, might also need to load their own extensions
+          # (e.g. the DuckDB driver loading Motherduck extensions). To
+          # achieve this we disable the requirement that all libraries
+          # loaded by Fusion be signed by dbt Labs, Inc.
+          if [[ "${{ inputs.disable-library-validation }}" == "true" ]]; then
+            sign_args+=(--entitlements "${{ github.action_path }}/disable-library-validation.entitlements")
+          fi
+
+          /usr/bin/codesign "${sign_args[@]}" "$path"
+          /usr/bin/codesign -vvv --deep --strict "$path"
+        }
+
+        sign_pyinstaller_bundle() {
+          local dir="$1"
+          local main_exe="$dir/$(basename "$dir")"
+
+          if [[ ! -f "$main_exe" ]]; then
+            echo "::error::Expected PyInstaller onedir executable at $main_exe"
+            exit 1
+          fi
+
+          echo "Signing nested Mach-O files under $dir"
+          local deferred_paths=()
+          while IFS= read -r -d '' path; do
+            if [[ "$path" == "$main_exe" ]]; then
+              continue
+            fi
+            if file -b "$path" | grep -q 'Mach-O'; then
+              # PyInstaller's copied Python framework can invalidate the
+              # top-level _internal/Python signature if framework binaries are
+              # signed afterward. Defer it until the other nested binaries are
+              # sealed, while still signing the actual entrypoint last.
+              if [[ "$path" == "$dir/_internal/Python" ]]; then
+                deferred_paths+=("$path")
+                continue
+              fi
+              sign_one "$path"
+            fi
+          done < <(find "$dir" -type f -print0)
+
+          for path in "${deferred_paths[@]}"; do
+            sign_one "$path"
+          done
+          sign_one "$main_exe"
+        }
+
+        for filename in ${{ inputs.filenames }}; do
+          echo "Processing file $filename"
+          ls -la "${{ inputs.directory }}"
+          filepath="${{ inputs.directory }}/$filename"
+
+          if [[ -d "$filepath" && " ${{ inputs.pyinstaller-bundles }} " == *" $filename "* ]]; then
+            sign_pyinstaller_bundle "$filepath"
+          else
+            sign_one "$filepath"
+          fi
+        done
+
+    - name: "Delete keychain"
+      if: always()
+      shell: bash
+      run: |
+        security delete-keychain $KEYCHAIN_NAME
+
+    # Create a notarization package (optional but recommended)
+    # Currently disabled
+    # - name: "Notarize macOS binaries (currently disabled)"
+    #   shell: bash
+    #   env:
+    #     APPLE_ID: secrets.APPLE_ID
+    #     APPLE_APP_SPECIFIC_PASSWORD: secrets.APPLE_APP_SPECIFIC_PASSWORD
+    #     APPLE_TEAM_ID: secrets.APPLE_TEAM_ID
+    #   run: |
+    #     for filename in ${{ inputs.filenames }}; do
+    #       filepath="${{ inputs.directory }}/$filename"
+
+    #       # Create a ZIP for notarization
+    #       ditto -c -k --keepParent "$filepath" "${filepath}-notarize.zip"
+
+    #       # Submit for notarization
+    #       xcrun notarytool submit "${filepath}-notarize.zip" \
+    #         --apple-id "$APPLE_ID" \
+    #         --password "$APPLE_APP_SPECIFIC_PASSWORD" \
+    #         --team-id "$APPLE_TEAM_ID" \
+    #         --wait
+
+    #       # Staple the notarization ticket
+    #       xcrun stapler staple "$filepath"
+    #     done

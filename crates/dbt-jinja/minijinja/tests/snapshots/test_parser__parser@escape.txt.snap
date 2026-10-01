@@ -1,0 +1,44 @@
+---
+source: fs/sa/crates/dbt-jinja/minijinja/tests/test_parser.rs
+description: "{{'\\'' ~ 'foo'}}\n{{'\\'' ~ \"foo\"}}\n{{\"\\'\"}}"
+input_file: fs/sa/crates/dbt-jinja/minijinja/tests/parser-inputs/escape.txt
+---
+Ok(
+    Template {
+        children: [
+            EmitExpr {
+                expr: BinOp {
+                    op: Concat,
+                    left: Const {
+                        value: "'",
+                    } @ 1:3-1:7,
+                    right: Const {
+                        value: 'foo',
+                    } @ 1:10-1:15,
+                } @ 1:1-1:17,
+            } @ 1:1-1:17,
+            EmitRaw {
+                raw: "\n",
+            } @ 1:17-2:1,
+            EmitExpr {
+                expr: BinOp {
+                    op: Concat,
+                    left: Const {
+                        value: "'",
+                    } @ 2:3-2:7,
+                    right: Const {
+                        value: 'foo',
+                    } @ 2:10-2:15,
+                } @ 2:1-2:17,
+            } @ 2:1-2:17,
+            EmitRaw {
+                raw: "\n",
+            } @ 2:17-3:1,
+            EmitExpr {
+                expr: Const {
+                    value: "'",
+                } @ 3:1-3:9,
+            } @ 3:1-3:9,
+        ],
+    } @ 1:1-3:9,
+)

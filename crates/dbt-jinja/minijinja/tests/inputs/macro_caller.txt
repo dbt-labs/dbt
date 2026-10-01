@@ -1,0 +1,17 @@
+{}
+---
+{% macro render_dialog(title, class='dialog') -%}
+    <div class="{{ class }}">
+        <h2>{{ title }}</h2>
+        <div class="contents">
+            {{ caller() }}
+        </div>
+    </div>
+{%- endmacro %}
+
+{% call render_dialog('Hello World') %}
+    This is a simple dialog rendered by using a macro and
+    a call block.
+{% endcall %}
+
+caller: {{ render_dialog.caller }}

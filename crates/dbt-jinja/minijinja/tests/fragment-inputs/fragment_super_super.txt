@@ -1,0 +1,11 @@
+{
+  "var": "foo"
+}
+---
+{% extends "simple_layout_2.txt" %}
+
+{% block fragment %}
+This should appear
+{{ super() }}
+{{ super()|upper }}
+{% endblock %}

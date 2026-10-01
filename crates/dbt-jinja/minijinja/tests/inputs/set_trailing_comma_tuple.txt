@@ -1,0 +1,18 @@
+{}
+---
+Scalar (no comma):
+{% set scalar = 1 %}{{ scalar }}
+
+Single value with trailing comma (must be a 1-tuple, not the bare scalar):
+{% set one_tuple = 1, %}{{ one_tuple }}
+{{ one_tuple[0] }}
+{% for v in one_tuple %}{{ v }}{% endfor %}
+
+Two values, no trailing comma (tuple):
+{% set two_tuple = 1, 2 %}{{ two_tuple }}
+
+Two values, trailing comma (same tuple, comma is just a terminator):
+{% set two_tuple_trailing = 1, 2, %}{{ two_tuple_trailing }}
+
+List literal for contrast (mutable list, must render differently from the tuple):
+{% set lit_list = [1, 2] %}{{ lit_list }}

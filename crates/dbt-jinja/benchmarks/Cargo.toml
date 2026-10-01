@@ -1,0 +1,32 @@
+[package]
+name = "benchmarks"
+version = "0.1.0"
+edition = "2018"
+
+[features]
+speedups = ["minijinja/speedups"]
+
+[dependencies]
+askama = "0.12.1"
+handlebars = "5.1.2"
+liquid = "0.26.1"
+minijinja = { path = "../minijinja", default-features = false, features = [
+  "unstable_machinery",
+  "multi_template",
+  "builtins",
+  "serde",
+] }
+rinja = "0.3.4"
+serde = { workspace = true }
+tera = "1.17.1"
+
+[dev-dependencies]
+criterion = { version = "0.5.1", features = ["html_reports"] }
+
+[[bench]]
+name = "templates"
+harness = false
+
+[[bench]]
+name = "comparison"
+harness = false

@@ -1,0 +1,13 @@
+{
+  "hello": "Hällo Wörld",
+  "intrange": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+}
+---
+{{ hello[0] }}
+{{ hello[3] }}
+{{ hello[-1] }}
+{{ hello[999] is undefined }}
+{{ intrange[0] }}
+{{ intrange[3] }}
+{{ intrange[-1] }}
+{{ intrange[999] is undefined }}

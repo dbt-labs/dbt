@@ -1,0 +1,9 @@
+{
+  "template": "simple_include.txt"
+}
+---
+Before
+{% with variable=42 %}
+  {% include template %}
+{% endwith %}
+After

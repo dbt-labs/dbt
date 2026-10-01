@@ -1,0 +1,24 @@
+---
+source: fs/sa/crates/dbt-jinja/minijinja/tests/test_templates.rs
+description: "{% block body %}\n  There is no super block.\n  {{ super() }}\n{% endblock %}"
+info:
+  __minijinja_current_path: err_no_super_block.txt
+  __minijinja_current_span:
+    end_col: 1
+    end_line: 1
+    end_offset: 0
+    start_col: 1
+    start_line: 1
+    start_offset: 0
+input_file: fs/sa/crates/dbt-jinja/minijinja/tests/inputs/err_no_super_block.txt
+---
+!!!ERROR!!!
+
+Error {
+    kind: InvalidOperation,
+    detail: "no parent block exists",
+    name: "err_no_super_block.txt",
+}
+
+invalid operation: no parent block exists
+(in err_no_super_block.txt:3:3)

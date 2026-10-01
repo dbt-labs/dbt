@@ -1,0 +1,176 @@
+---
+source: fs/sa/crates/dbt-jinja/minijinja/tests/test_templates.rs
+description: "{% with f = range %}{% for x in f(upper) %}{{ debug() }}{% endfor %}{% endwith %}\n---\n{{ debug(none) }}\n---\n{{ debug(true, false, 42) }}\n---\n{{ debug([debug, 42]) }}"
+info:
+  __minijinja_current_path: debug.txt
+  __minijinja_current_span:
+    start_line: 1
+    start_col: 1
+    start_offset: 0
+    end_line: 1
+    end_col: 1
+    end_offset: 0
+  upper: 1
+input_file: fs/sa/crates/dbt-jinja/minijinja/tests/inputs/debug.txt
+---
+State {
+    name: "debug.txt",
+    current_block: None,
+    auto_escape: None,
+    ctx: {
+        "x": 0,
+        "loop": Loop {
+            len: Some(
+                1,
+            ),
+            idx: 0,
+            depth: 0,
+        },
+        "f": minijinja::functions::builtins::range,
+        "__minijinja_current_path": 'debug.txt',
+        "__minijinja_current_span": {
+            'start_line': 1,
+            'start_col': 1,
+            'start_offset': 0,
+            'end_line': 1,
+            'end_col': 1,
+            'end_offset': 0,
+        },
+        "one_shot_iterator": <iterator>,
+        "upper": 1,
+    },
+    env: Environment {
+        globals: {
+            "debug": minijinja::functions::builtins::debug,
+            "dict": minijinja::functions::builtins::dict,
+            "get_args": test_templates::test_vm::{{closure}}::{{closure}},
+            "namespace": minijinja::functions::builtins::namespace,
+            "range": minijinja::functions::builtins::range,
+        },
+        tests: [
+            "!=",
+            "<",
+            "<=",
+            "==",
+            ">",
+            ">=",
+            "boolean",
+            "defined",
+            "divisibleby",
+            "endingwith",
+            "eq",
+            "equalto",
+            "escaped",
+            "even",
+            "false",
+            "filter",
+            "float",
+            "ge",
+            "greaterthan",
+            "gt",
+            "has_method",
+            "in",
+            "int",
+            "integer",
+            "iterable",
+            "le",
+            "lessthan",
+            "lower",
+            "lt",
+            "mapping",
+            "ne",
+            "none",
+            "number",
+            "odd",
+            "safe",
+            "sameas",
+            "sequence",
+            "startingwith",
+            "string",
+            "test",
+            "true",
+            "undefined",
+            "upper",
+        ],
+        filters: [
+            "abs",
+            "attr",
+            "batch",
+            "bool",
+            "capitalize",
+            "count",
+            "d",
+            "default",
+            "dictsort",
+            "e",
+            "escape",
+            "first",
+            "float",
+            "format",
+            "groupby",
+            "indent",
+            "int",
+            "is_list",
+            "items",
+            "join",
+            "last",
+            "length",
+            "lines",
+            "list",
+            "lower",
+            "map",
+            "max",
+            "min",
+            "pprint",
+            "reject",
+            "rejectattr",
+            "replace",
+            "reverse",
+            "round",
+            "safe",
+            "select",
+            "selectattr",
+            "slice",
+            "sort",
+            "split",
+            "string",
+            "sum",
+            "title",
+            "tojson",
+            "trim",
+            "unique",
+            "upper",
+            "urlencode",
+        ],
+        templates: [
+            "a_plus_b.txt",
+            "bad_basic_block.txt",
+            "call_macro.txt",
+            "debug.txt",
+            "example_macro.txt",
+            "include_with_var_and_macro.txt",
+            "layout_with_var.txt",
+            "self-extends.txt",
+            "self-include.txt",
+            "simple2_layout.txt",
+            "simple_include.txt",
+            "simple_layout.txt",
+            "super_with_html.html",
+            "var_referencing_layout.txt",
+            "var_setting_layout.txt",
+        ],
+    },
+}
+---
+None
+---
+[
+    True,
+    False,
+    42,
+]
+---
+[
+    minijinja::functions::builtins::debug,
+    42,
+]

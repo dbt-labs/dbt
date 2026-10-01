@@ -1,0 +1,4 @@
+{}
+---
+{% macro no_caller() %}{% endmacro %}
+{% call no_caller() %}...{% endcall %}

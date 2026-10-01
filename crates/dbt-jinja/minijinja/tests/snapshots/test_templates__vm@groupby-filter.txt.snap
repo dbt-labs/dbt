@@ -1,0 +1,36 @@
+---
+source: crates/dbt-jinja/minijinja/tests/test_templates.rs
+description: "{%- for city, posts in posts|groupby(\"city\", default=\"No City\") %}\n  - {{ city }}:\n    {%- for post in posts %}\n    - {{ post.text }}\n    {%- endfor %}\n{%- endfor %}\n--\n{%- for group in posts|groupby(attribute=\"city\", case_sensitive=true) %}\n  - {{ group.grouper }}:\n    {%- for post in group.list %}\n    - {{ post.text }}\n    {%- endfor %}\n{%- endfor %}\n--\n{{ (posts|groupby(\"city\", default=\"AAA\"))[0] }}"
+info:
+  posts:
+    - city: Vienna
+      text: First post in Vienna
+    - city: London
+      text: First post in London
+    - city: Vienna
+      text: Second post in Vienna
+    - city: vienna
+      text: First post in lowercase Vienna
+    - text: no city!?
+input_file: crates/dbt-jinja/minijinja/tests/inputs/groupby-filter.txt
+---
+  - London:
+    - First post in London
+  - No City:
+    - no city!?
+  - vienna:
+    - First post in Vienna
+    - Second post in Vienna
+    - First post in lowercase Vienna
+--
+  - :
+    - no city!?
+  - London:
+    - First post in London
+  - Vienna:
+    - First post in Vienna
+    - Second post in Vienna
+  - vienna:
+    - First post in lowercase Vienna
+--
+('AAA', ({'text': 'no city!?'},))

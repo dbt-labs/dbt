@@ -1,0 +1,179 @@
+syntax = "proto3";
+
+package v1.public.fields.common_types;
+option go_package = "github.com/dbt-labs/proto-golang/v1/public/fields/common_types";
+
+import "google/protobuf/timestamp.proto";
+
+// Common event info
+message EventInfo {
+    string name = 1;
+    string code = 2;
+    string msg = 3;
+    string level = 4;
+    string invocation_id = 5;
+    int32 pid = 6;
+    string thread = 7;
+    google.protobuf.Timestamp ts = 8;
+    map<string, string> extra = 9;
+    string category = 10;
+}
+
+// GenericMessage, used for deserializing only
+message GenericMessage {
+    EventInfo info = 1;
+}
+
+// D - Deprecations
+
+// D018
+message BehaviorChangeEvent {
+    string flag_name = 1;
+    string flag_source = 2;
+    string description = 3;
+    string docs_url = 4;
+}
+
+message BehaviorChangeEventMsg {
+    EventInfo info = 1;
+    BehaviorChangeEvent data = 2;
+}
+
+// D041
+message GetMetaKeyDeprecation {
+    string meta_key = 1;
+}
+
+message GetMetaKeyDeprecationMsg {
+    EventInfo info = 1;
+    GetMetaKeyDeprecation data = 2;
+}
+
+// M - Deps generation
+
+// M020
+message RetryExternalCall {
+    int32 attempt = 1;
+    int32 max = 2;
+}
+
+message RetryExternalCallMsg {
+    EventInfo info = 1;
+    RetryExternalCall data = 2;
+}
+
+// M021
+message RecordRetryException {
+    string exc = 1;
+}
+
+message RecordRetryExceptionMsg {
+    EventInfo info = 1;
+    RecordRetryException data = 2;
+}
+
+// Q - Node execution
+
+// Q047
+message GetMetaKeyWarning {
+    string meta_key = 1;
+}
+
+message GetMetaKeyWarningMsg {
+    EventInfo info = 1;
+    GetMetaKeyWarning data = 2;
+}
+
+// Z - Misc
+
+// Z005
+message SystemCouldNotWrite {
+    string path = 1;
+    string reason = 2;
+    string exc = 3;
+}
+
+message SystemCouldNotWriteMsg {
+    EventInfo info = 1;
+    SystemCouldNotWrite data = 2;
+}
+
+// Z006
+message SystemExecutingCmd {
+    repeated string cmd = 1;
+}
+
+message SystemExecutingCmdMsg {
+    EventInfo info = 1;
+    SystemExecutingCmd data = 2;
+}
+
+// Z007
+message SystemStdOut{
+    string bmsg = 1;
+}
+
+message SystemStdOutMsg {
+    EventInfo info = 1;
+    SystemStdOut data = 2;
+}
+
+// Z008
+message SystemStdErr {
+    string bmsg = 1;
+}
+
+message SystemStdErrMsg {
+    EventInfo info = 1;
+    SystemStdErr data = 2;
+}
+
+// Z009
+message SystemReportReturnCode {
+    int32 returncode = 1;
+}
+
+message SystemReportReturnCodeMsg {
+    EventInfo info = 1;
+    SystemReportReturnCode data = 2;
+}
+
+// Z017
+message Formatting {
+    string msg = 1;
+}
+
+message FormattingMsg {
+    EventInfo info = 1;
+    Formatting data = 2;
+}
+
+// Z050
+message Note {
+    string msg = 1;
+}
+
+message NoteMsg {
+    EventInfo info = 1;
+    Note data = 2;
+}
+
+// Z052
+message PrintEvent {
+    string msg = 1;
+}
+
+message PrintEventMsg {
+    EventInfo info = 1;
+    PrintEvent data = 2;
+}
+
+// Z053
+message RecordReplayIssue {
+    string msg = 1;
+}
+
+message RecordReplayIssueMsg {
+    EventInfo info = 1;
+    RecordReplayIssue data = 2;
+}

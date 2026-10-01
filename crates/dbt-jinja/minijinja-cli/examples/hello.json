@@ -1,0 +1,9 @@
+{
+    "name": "World",
+    "count": 3,
+    "list": [
+        "foo",
+        "bar",
+        "baz"
+    ]
+}

@@ -1,0 +1,22 @@
+syntax = "proto3";
+package v1.public.events.fusion.artifact;
+
+option go_package = "github.com/dbt-labs/proto-golang/v1/public/events/fusion/artifact";
+
+// Known artifact types written by dbt
+enum ArtifactType {
+  ARTIFACT_TYPE_UNSPECIFIED = 0;
+  ARTIFACT_TYPE_MANIFEST = 1;
+  ARTIFACT_TYPE_SEMANTIC_MANIFEST = 2;
+  ARTIFACT_TYPE_CATALOG = 3;
+  ARTIFACT_TYPE_SOURCES = 4;
+  ARTIFACT_TYPE_FRESHNESS = 5;
+}
+
+// Event emitted when an artifact is written to disk.
+message ArtifactWritten {
+  // The path to the artifact relative to the project root.
+  string relative_path = 1;
+  // Type of the artifact written.
+  ArtifactType artifact_type = 2;
+}

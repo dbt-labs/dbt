@@ -1,0 +1,11 @@
+# Scenario: AWS Glue reached through the `endpoint_type: GLUE` shortcut.
+# Exercises: ENDPOINT_TYPE emission, the ':' source default, and no
+# AUTHORIZATION_TYPE (DuckDB derives SigV4 from the endpoint type itself).
+catalogs:
+  - name: aws_glue
+    type: glue
+    table_format: iceberg
+    config:
+      duckdb:
+        endpoint_type: GLUE
+        secret: glue_s3

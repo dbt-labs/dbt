@@ -1,7 +1,7 @@
 name: ✨ Feature
 description: Propose a straightforward extension of dbt functionality
 title: "[Feature] <title>"
-labels: ["enhancement", "triage"]
+labels: ["enhancement", "type:feature", "status:triage"]
 body:
   - type: markdown
     attributes:
@@ -24,6 +24,19 @@ body:
           required: true
         - label: I am requesting a straightforward extension of existing dbt functionality, rather than a Big Idea better suited to a discussion
           required: true
+  - type: dropdown
+    id: version
+    attributes:
+      label: Which version of dbt is this feature for?
+      description: >
+        This helps us route the request. dbt v2.x covers the Core and Fusion distributions.
+        A maintainer will apply the corresponding label after triage.
+      options:
+        - dbt v2.x (Core or Fusion)
+        - dbt 1.x
+        - Not sure / both
+    validations:
+      required: true
   - type: textarea
     attributes:
       label: Describe the feature

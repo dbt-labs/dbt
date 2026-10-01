@@ -1,0 +1,9 @@
+{
+  "value": false
+}
+---
+{% if value %}
+  was true
+{% else %}
+  was false
+{% endif %}

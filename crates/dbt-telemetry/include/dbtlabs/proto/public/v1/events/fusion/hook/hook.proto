@@ -1,0 +1,61 @@
+syntax = "proto3";
+package v1.public.events.fusion.hook;
+
+import "dbtlabs/proto/public/v1/events/fusion/phase/phase.proto";
+
+option go_package = "github.com/dbt-labs/proto-golang/v1/public/events/fusion/hook";
+
+// Hook type indicating which hook this is
+enum HookType {
+  HOOK_TYPE_UNSPECIFIED = 0;
+  // on-run-start hook configured in the project
+  HOOK_TYPE_ON_RUN_START = 1;
+  // on-run-end hook configured in the project
+  HOOK_TYPE_ON_RUN_END = 2;
+  // pre-hook executed before a specific node
+  HOOK_TYPE_PRE_HOOK = 3;
+  // post-hook executed after a specific node
+  HOOK_TYPE_POST_HOOK = 4;
+}
+
+// Hook outcome for a single hook execution
+enum HookOutcome {
+  HOOK_OUTCOME_UNSPECIFIED = 0;
+  // Hook completed successfully
+  HOOK_OUTCOME_SUCCESS = 1;
+  // Hook failed with an error
+  HOOK_OUTCOME_ERROR = 2;
+  // Hook was canceled (e.g. user-initiated cancellation)
+  HOOK_OUTCOME_CANCELED = 3;  
+}
+
+// Span event tracking execution of a single hook (operation).
+// Maps to dbt-core's LogHookStartLine (Q032) and LogHookEndLine (Q033) events.
+message HookProcessed {
+  // Package name that owns this hook.
+  string package_name = 1;
+  
+  // Hook name (applicable for on-run-start/on-run-end hooks)
+  optional string name = 2;
+
+  // Type of hook being executed
+  HookType hook_type = 3;
+
+  // 0-based index in the execution order of this hook category (for example, within on-run-start).
+  // This index is global across dependencies and current project.
+  uint32 hook_index = 4;
+  
+  // unique_id of the associated node (for pre/post hooks)
+  // unique_id of the hook itself for on-run-start/on-run-end hooks
+  string unique_id = 5;
+  
+  // Outcome of the hook execution
+  HookOutcome hook_outcome = 6;
+
+  // Legacy dbt core event code. Set to Q032 for start, Q033 for end.
+  string dbt_core_event_code = 7;
+
+  // Execution phase in which this hook ran.
+  v1.public.events.fusion.phase.ExecutionPhase phase = 8;
+
+}

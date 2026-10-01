@@ -1,0 +1,540 @@
+syntax = "proto3";
+
+package v1.public.events.fusion;
+
+import "dbtlabs/proto/public/v1/common/vortex_options.proto";
+import "dbtlabs/proto/public/v1/events/vortex.proto";
+import "dbtlabs/proto/public/v1/common/vortex_telemetry_contexts.proto";
+
+option go_package = "github.com/dbt-labs/proto-golang/v1/public/events/fusion";
+
+/*
+   RFC 2119 Expectations for using these events:
+
+   1. When the Fusion process starts it MUST emit the `Invocation` event once at the start of the process before any other events
+      a. The `invocation_id` field MUST be set to a globally unique ID
+      b. All fields that have a `Required` comment MUST be set
+      c. All other fields without a `Required` comment MAY be set and are optional if they can be found
+   2. After the Fusion emits the `Invocation` event it MAY emit the `v1.events.fusion.CloudInvocation` at the start of the process before any other events
+   3. Fusion MUST emit a `RunModel` event for every model in the project that is part of the Node Selector
+      a. Fusion MAY omit `RunModel` events for nodes that are not part of the Node Selector used https://docs.getdbt.com/reference/node-selection/syntax
+*/
+
+// Adapter Info Event is responsible for foundational adapter information.
+message AdapterInfo {
+  option (v1.public.common.vortex_namespace) = VORTEX_ICEBERG_NAMESPACE_TELEMETRY;
+  option (v1.public.common.vortex_enabled) = true;
+
+  // This field is a toggle to enable enrichment of the message by the Vortex service.
+  v1.events.vortex.VortexMessageEnrichment enrichment = 1;
+
+  // event_id is the unique identifier for this event. It is a generated UUID.
+  string event_id = 2;
+
+  // A foreign key to the Invocation message that was emitted at the
+  // start of the fusion process.
+  // Required.
+  string invocation_id = 3;
+
+  // adapter_type is the plain string name for the dbt adapter that's used by the
+  // project. Examples could include: "bigquery", "snowflake", "redshift", "postgres", etc.
+  string adapter_type = 4;
+
+  // adapter_unique_id is the unique identifier of a project's warehouse credentials.
+  // For supported warehouses, we create an MD5 hash of the connection string.
+  // The specific string varies per adapter_type.
+  string adapter_unique_id = 5;
+  v1.public.common.vortex_telemetry_contexts.VortexTelemetryCommonContext common_context = 6;
+}
+
+// Adapter Info V2 Event was created when we needed to collect more information
+// about the adapter. Unlike AdapterInfo above, this event is tied to RunModel
+// events. Here we're able to collect adapter-specific information at the
+// individual model level. This was first created when we started to collect
+// information on which models were Iceberg-powered.
+message AdapterInfoV2 {
+  option (v1.public.common.vortex_namespace) = VORTEX_ICEBERG_NAMESPACE_TELEMETRY;
+  option (v1.public.common.vortex_enabled) = true;
+
+  // This field is a toggle to enable enrichment of the message by the Vortex service.
+  v1.events.vortex.VortexMessageEnrichment enrichment = 1;
+
+  // event_id is the unique identifier for this event. It is a generated UUID.
+  string event_id = 2;
+
+  // A foreign key to the RunModel message that was emitted at each instance
+  // of an individual model being run.
+  string run_model_id = 3;
+
+  // This reflects the adapter name used when they ran a given model.
+  string adapter_name = 4;
+
+  // This reflects the simplified semantic version of an adapter that was used
+  // when they ran a given model. ex. 1.9.0
+  string base_adapter_version = 5;
+
+  // This reflects the full adapter version used when they ran a given model.
+  string adapter_version = 6;
+
+  // This is a flexible key-value pair that can be used to store any additional
+  // model adapter information. Today this is used to store two pieces of
+  // information: the model_adapter_type (the adapter_name that was used for
+  // that specific model) and the model_adapter_table_format (Iceberg or
+  // something else).
+  map<string, string> model_adapter_details = 7;
+  v1.public.common.vortex_telemetry_contexts.VortexTelemetryCommonContext common_context = 8;
+}
+
+// Invocation Event is emitted by dbt when a user runs a command and begins to
+// emit basic environment information out that can be referred to later on by
+// other events that are emitted. This event then fires off a second time when
+// the invocation has completed. Upon completion, we get more information about
+// the end state of this action.
+message Invocation {
+  option (v1.public.common.vortex_namespace) = VORTEX_ICEBERG_NAMESPACE_TELEMETRY;
+  option (v1.public.common.vortex_enabled) = true;
+
+  // This field is a toggle to enable enrichment of the message by the Vortex service.
+  v1.events.vortex.VortexMessageEnrichment enrichment = 1;
+
+  // event_id is the unique identifier for this event. It is a generated UUID.
+  // Required.
+  string event_id = 2;
+
+  // This is the globally unique identifier for this invocation event.
+  // It is emitted once during the lifetime of the fusion process at the
+  // beginning and referred to by other messages using this ID.
+  // Required.
+  string invocation_id = 3;
+
+  // project_id is the MD5 hash of the project name that's supplied in the
+  // dbt_project.yml file. This is originally the primary identifier for our anonymous
+  // usage tracking. Today we couple this with the AdapterInfo adapter_unique_id.
+  string project_id = 4;
+
+  // user_id is the UUID generated to identify a unique user. We store a cookie
+  // or token in the user's local directory which we use to maintain user information
+  // across sessions. This is usually found in ~/.dbt/.user.yml.
+  string user_id = 5;
+
+  // The full string of the command that was run.
+  string command = 6;
+
+  // A string that indicates whether the event represents the start or end of an
+  // invocation. The valid values for this are:
+  //
+  //  start
+  //  end
+  //  invalid
+  //  ok
+  //
+  string progress = 7;
+
+  // The version of dbt that was used to run this command.
+  string version = 8;
+
+  // The exit state of an invocation's start or end event. The valid values for this are:
+  //
+  //  started
+  //  ok
+  //  invalid_profile
+  //  error
+  //
+  string result_type = 9;
+
+  // The SHA of the git commit of the dbt project being run if it is found.
+  // If there are changes that aren't committed we may also want to have a
+  // git_commit_dirty boolean to indicate there are some staged or unstaged
+  // changes.  In the RunModel message there is also a hashed_contents which
+  // gives a hash of the model being run which may be finer granularity than
+  // at a project level.
+  string git_commit_sha = 10;
+
+  // The distribution of dbt that was used to run this command.
+  string distribution = 11;
+  v1.public.common.vortex_telemetry_contexts.VortexTelemetryCommonContext common_context = 12;
+}
+
+// Invocation Environment Event is the primary way we are able to associate
+// invocation telemetry data with our dbt Cloud information. Values are supplied
+// here whenever dbt is run in a cloud environment.
+message InvocationEnv {
+  option (v1.public.common.vortex_namespace) = VORTEX_ICEBERG_NAMESPACE_TELEMETRY;
+  option (v1.public.common.vortex_enabled) = true;
+
+  // This field is a toggle to enable enrichment of the message by the Vortex service.
+  v1.events.vortex.VortexMessageEnrichment enrichment = 1;
+
+  // event_id is the unique identifier for this event. It is a generated UUID.
+  string event_id = 2;
+
+  // A foreign key to the Invocation message that was emitted at the
+  // start of the fusion process.
+  string invocation_id = 3;
+
+  // This is a string that indicates the environment in which the invocation is
+  // running. Our primary use case here is to pass along dbt Cloud context with
+  // the invocation event so we can associate the invocation with a specific
+  // dbt Cloud activity and account. Different cloud services have used different
+  // string formats and IDs provided.
+  string environment = 4;
+  v1.public.common.vortex_telemetry_contexts.VortexTelemetryCommonContext common_context = 5;
+}
+
+// Package Install Event is emitted when dbt deps (or other commands that
+// trigger packages to be installed) is run.
+message PackageInstall {
+  option (v1.public.common.vortex_namespace) = VORTEX_ICEBERG_NAMESPACE_TELEMETRY;
+  option (v1.public.common.vortex_enabled) = true;
+
+  // This field is a toggle to enable enrichment of the message by the Vortex service.
+  v1.events.vortex.VortexMessageEnrichment enrichment = 1;
+
+  // event_id is the unique identifier for this event. It is a generated UUID.
+  string event_id = 2;
+
+  // A foreign key to the Invocation message that was emitted at the
+  // start of the fusion process.
+  string invocation_id = 3;
+
+  // plain string name of a pakage that was installed. This is often the same
+  // or similar to the git repository name of that package.
+  string name = 4;
+
+  // plain string source of the package. This is also referred to as the
+  // installation method in our internal analytics. This is based on the syntax
+  //used in packages.yml file.
+  string source = 5;
+
+  // either a semantic version of the package (if installed through the hub) or
+  // a git commit hash (if installed through git).
+  string version = 6;
+  v1.public.common.vortex_telemetry_contexts.VortexTelemetryCommonContext common_context = 7;
+}
+
+// Resource Counts Events fire after an invocation event to give a count of all
+// the resources that were used in the invocation. Note that this includes all
+// the resources in the active project, including those from installed packages
+// and (in the case of macros) from the global dbt project. This will show all
+// resources available, regardless of if they are run or not.
+message ResourceCounts {
+  option (v1.public.common.vortex_namespace) = VORTEX_ICEBERG_NAMESPACE_TELEMETRY;
+  option (v1.public.common.vortex_enabled) = true;
+
+  // This field is a toggle to enable enrichment of the message by the Vortex service.
+  v1.events.vortex.VortexMessageEnrichment enrichment = 1;
+
+  // event_id is the unique identifier for this event. It is a generated UUID.
+  string event_id = 2;
+
+  // A foreign key to the Invocation message that was emitted at the
+  // start of the fusion process.
+  string invocation_id = 3;
+
+  // total count of models in the project.
+  int32 models = 4;
+
+  // total count of data tests (originally just tests) in the project.
+  int32 tests = 5;
+
+  // total count of snapshots in the project.
+  int32 snapshots = 6;
+
+  // total count of analysis queries in the project.
+  int32 analyses = 7;
+
+  // total count of macros in the project.
+  int32 macros = 8;
+
+  // total count of operations in the project.
+  int32 operations = 9;
+
+  // total count of seeds in the project.
+  int32 seeds = 10;
+
+  // total count of sources in the project.
+  int32 sources = 11;
+
+  // total count of exposures in the project.
+  int32 exposures = 12;
+
+  // total count of metrics in the project.
+  int32 metrics = 13;
+
+  // total count of groups in the project.
+  int32 groups = 14;
+
+  // total count of unit tests in the project.
+  int32 unit_tests = 15;
+
+  // total count of semantic models in the project.
+  int32 semantic_models = 16;
+
+  // total count of saved queries in the project.
+  int32 saved_queries = 17;
+
+  // total count of catalogs in the project.
+  int32 catalogs = 18;
+  v1.public.common.vortex_telemetry_contexts.VortexTelemetryCommonContext common_context = 19;
+}
+
+// Run Model Event will be emitted when Fusion runs a model or skips a model because
+// it determines it does not need to be run. The Account Identifier and Project Identifier
+// can be found by joining this message on the Invocation message specified in the invocation_id
+// field.
+message RunModel {
+  option (v1.public.common.vortex_namespace) = VORTEX_ICEBERG_NAMESPACE_TELEMETRY;
+  option (v1.public.common.vortex_enabled) = true;
+
+  // This field is a toggle to enable enrichment of the message by the Vortex service.
+  v1.events.vortex.VortexMessageEnrichment enrichment = 1;
+  // event_id is the unique identifier for this event. It is a generated UUID.
+  string event_id = 2;
+
+  // A foreign key to the Invocation message that was emitted at the
+  // start of the fusion process.
+  string invocation_id = 3;
+
+  // the numerical index of that model with respect to the total models being run
+  int32 index = 4;
+
+  // the total number of models being run in this invocation
+  int32 total = 5;
+
+  // the time it took for a model to execute in seconds. This should mirror what
+  // is displayed in the dbt output logs next to each model.
+  double execution_time = 6;
+
+  // success or failure status of that model's run. This mirrors what is displayed
+  // in the dbt output logs next to each model. Ex. "SUCCESS 1", "INSERT 1", "INSERT 23", etc.
+  string run_status = 7;
+
+  // whether or not the model was skipped. If the run was skipped the reason it was
+  // skipped is indicated by the value of the run_skipped_reason field.
+  bool run_skipped = 8;
+
+  // the materialization strategy used for that model
+  string model_materialization = 9;
+
+  // the incremental strategy used for that model (ex. append, merge, etc.)
+  string model_incremental_strategy = 10;
+
+  // unique identifier for the model (I believe an MD5 hash of the model name)
+  string model_id = 11;
+
+  // MD5 hash of the model's contents. This is used to determine if the model
+  // has changed since the last time it was run.
+  string hashed_contents = 12;
+
+  // the language used to write the model (ex. sql, python)
+  string language = 13;
+
+  // whether or not the model is in a group
+  bool has_group = 14;
+
+  // whether or not the model is contract enforced
+  bool contract_enforced = 15;
+
+  // the access level of the model (ex. public, private, etc.)
+  string access = 16;
+
+  // whether or not the model is versioned
+  bool versioned = 17;
+
+  // A reason for why the model was skipped. The valid values for this are:
+  //
+  //  cost_avoidance
+  //  upstream_failed
+  //
+  string run_skipped_reason = 18;
+
+  // A globally unique ID that is emitted at each instance of an individual
+  // model being run.
+  string run_model_id = 19;
+
+  // The resource type of the node (model, test, etc.)
+  string resource_type = 20;
+
+  // the table format used for the model (ex. "default", "iceberg")
+  // empty string when not applicable (non-model nodes)
+  string table_format = 21;
+
+  // the catalog name from catalogs.yml, if the model opted into a write integration.
+  // empty string when the model does not use catalogs.yml.
+  string catalog_name = 22;
+
+  // the catalog type of the model's active write integration in catalogs.yml
+  // (ex. "iceberg_rest", "unity", "glue", "built_in", "biglake_metastore").
+  // this is the catalog backend kind, distinct from catalog_name (the user-chosen
+  // catalog label). empty string when the model does not use catalogs.yml.
+  string catalog_type = 23;
+  v1.public.common.vortex_telemetry_contexts.VortexTelemetryCommonContext common_context = 24;
+
+  // where the node was executed. one of "remote", "local", or "lake_compute".
+  string compute_mode = 25;
+}
+
+message Onboarding {
+  option (v1.public.common.vortex_namespace) = VORTEX_ICEBERG_NAMESPACE_TELEMETRY;
+  option (v1.public.common.vortex_enabled) = true;
+
+  // This field is a toggle to enable enrichment of the message by the Vortex service.
+  v1.events.vortex.VortexMessageEnrichment enrichment = 1;
+
+  // Unique identifier for this event (UUID).
+  // Required.
+  string event_id = 2;
+
+  // Globally unique identifier for the fusion invocation.
+  // Required.
+  string invocation_id = 3;
+
+  // Onboarding semantics.
+  OnboardingScreen screen = 4; // Which screen/step
+  OnboardingAction action = 5; // What happened on that screen
+  bool success = 6; // Only for RUN_FINISHED/STEP_COMPLETED; ignored otherwise
+
+  // user_id is the UUID generated to identify a unique user. We store a cookie
+  // or token in the user's local directory which we use to maintain user information
+  // across sessions. This is usually found in ~/.dbt/.user.yml.
+  string user_id = 7;
+  v1.public.common.vortex_telemetry_contexts.VortexTelemetryCommonContext common_context = 8;
+}
+
+enum OnboardingScreen {
+  SCREEN_UNSPECIFIED = 0;
+  WELCOME = 1;
+  PROFILE_CHECK = 2;
+  PROFILE_FOUND = 3;
+  PROFILE_SETUP = 4;
+  LINK_ACCOUNT = 5;
+  DBT_PARSE = 6;
+  PARSE_ERROR_AUTOFIX = 7;
+  DBT_PARSE_RETRY = 8;
+  PARSE_ERROR_FAIL = 9;
+  COMPILE_NO_SA = 10;
+  COMPILE_NO_SA_FAIL = 11;
+  COMPILE = 12;
+  COMPILE_FAIL = 13;
+  SUCCESS = 14;
+  AGENTIC_AUTOFIX = 15;
+  TRY_AGENTIC_AUTOFIX = 16;
+  DOWNLOAD_AGENTS_MD = 17;
+  COMPILE_SA_BASELINE = 18;
+  COMPILE_SA_BASELINE_SUCCESS = 19;
+  LOGIN = 20;
+}
+
+enum OnboardingAction {
+  ACTION_UNSPECIFIED = 0;
+  INITIATED = 1; // flow start (WELCOME)
+  SCREEN_SHOWN = 2; // screen displayed
+  RUN_STARTED = 3; // parse/compile began
+  RUN_FINISHED = 4; // parse/compile ended (use success)
+  STEP_COMPLETED = 5; // checkpoint reached (use success)
+  STEP_FAILED = 6; // explicit failure
+}
+
+// Login Event is emitted when the user runs `dbt login`. It captures whether
+// the attempt succeeded and, when possible, identity context derived from the
+// JWT or the local user cookie.
+message Login {
+  option (v1.public.common.vortex_namespace) = VORTEX_ICEBERG_NAMESPACE_TELEMETRY;
+  option (v1.public.common.vortex_enabled) = true;
+
+  // This field is a toggle to enable enrichment of the message by the Vortex service.
+  v1.events.vortex.VortexMessageEnrichment enrichment = 1;
+
+  // Unique identifier for this event (UUID). Required.
+  string event_id = 2;
+
+  // Globally unique identifier for the fusion invocation. Required.
+  string invocation_id = 3;
+
+  // Whether the login attempt succeeded.
+  bool success = 4;
+
+  // Which OAuth flow completed the login. LOGIN_TYPE_UNSPECIFIED on failure.
+  LoginType login_type = 5;
+
+  // User cookie UUID from ~/.dbt/.user.yml.
+  string user_cookie = 6;
+
+  // MD5 hash of the project name from dbt_project.yml.
+  // Absent if run outside a dbt project.
+  optional string project_id = 7;
+
+  // Platform user ID from the "sub" JWT claim.
+  // Absent if no JWT is available.
+  optional uint64 platform_user_id = 8;
+
+  // Platform tenant account ID from the "https://dbt.com/account_id" JWT claim.
+  // Absent if no JWT is available.
+  optional uint64 platform_account_id = 9;
+
+  // Platform account identifier from the "https://dbt.com/account_identifier" JWT claim.
+  // Absent if no JWT is available or the claim is absent.
+  optional string platform_account_identifier = 10;
+
+  v1.public.common.vortex_telemetry_contexts.VortexTelemetryCommonContext common_context = 11;
+
+  optional LoginErrorCode error_code = 12;
+  optional string error_message = 13;
+}
+
+enum LoginType {
+  LOGIN_TYPE_UNSPECIFIED = 0;
+  PLATFORM = 1;
+  STATE = 2;
+}
+
+// LoginErrorCode should mirror dbt_platform_auth::AuthError in the fs codebase.
+// This enum need not track the internal "Aborted" variant of that error enum because
+// it is an internal variant that is only used to signal that either the platform or
+// dbt state login callback was aborted because the other callback completed.
+enum LoginErrorCode {
+    NOT_AUTHENTICATED = 0;
+    AUTHENTICATION_EXPIRED = 1;
+    INACCESSIBLE_SOURCE = 2;
+    MALFORMED_CONFIG = 3;
+    INTERACTIVE_FAILURE = 4;
+    INADEQUATE_SCOPES = 5;
+    REFRESH_FAILED = 6;
+}
+
+// StaticAnalysisInvocation is emitted once per invocation when static
+// analysis propagation completes, capturing the maximum SA level in use
+// and per-level node counts.
+message StaticAnalysisInvocation {
+  option (v1.public.common.vortex_namespace) = VORTEX_ICEBERG_NAMESPACE_TELEMETRY;
+  option (v1.public.common.vortex_enabled) = true;
+
+  // This field is a toggle to enable enrichment of the message by the Vortex service.
+  v1.events.vortex.VortexMessageEnrichment enrichment = 1;
+
+  // Unique identifier for this event (UUID). Required.
+  string event_id = 2;
+
+  // Globally unique identifier for the fusion invocation. Required.
+  string invocation_id = 3;
+
+  // MD5 hash of the project name from dbt_project.yml.
+  string project_id = 4;
+
+  // Maximum static analysis level used across all scheduled nodes:
+  // "strict", "baseline", "off", or "" when no nodes were scheduled.
+  string max_static_analysis_level = 5;
+
+  // Originating caller: "cli" or an extension name (e.g. "lsp").
+  string source = 6;
+
+  // Count of nodes running strict static analysis after propagation.
+  int32 strict_node_count = 7;
+
+  // Count of nodes running baseline static analysis after propagation.
+  int32 baseline_node_count = 8;
+
+  // Count of nodes with static analysis off after propagation.
+  int32 off_node_count = 9;
+  v1.public.common.vortex_telemetry_contexts.VortexTelemetryCommonContext common_context = 10;
+}

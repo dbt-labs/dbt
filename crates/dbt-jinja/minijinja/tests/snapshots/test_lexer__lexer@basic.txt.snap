@@ -1,0 +1,16 @@
+---
+source: minijinja/tests/test_lexer.rs
+description: "Hello {{ name }}!"
+input_file: minijinja/tests/lexer-inputs/basic.txt
+---
+TemplateData("Hello ")
+  "Hello "
+VariableStart
+  "{{"
+Ident("name")
+  "name"
+VariableEnd
+  "}}"
+TemplateData("!")
+  "!"
+

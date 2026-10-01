@@ -1,0 +1,24 @@
+---
+source: fs/sa/crates/dbt-jinja/minijinja/tests/test_templates.rs
+description: "{% block foo %}{% endblock %}\n{% block foo %}{% endblock %}"
+info:
+  __minijinja_current_path: err_block_twice.txt
+  __minijinja_current_span:
+    start_line: 1
+    start_col: 1
+    start_offset: 0
+    end_line: 1
+    end_col: 1
+    end_offset: 0
+input_file: fs/sa/crates/dbt-jinja/minijinja/tests/inputs/err_block_twice.txt
+---
+!!!SYNTAX ERROR!!!
+
+Error {
+    kind: SyntaxError,
+    detail: "block 'foo' defined twice",
+    name: "err_block_twice.txt",
+}
+
+syntax error: block 'foo' defined twice
+(in err_block_twice.txt:2:14)

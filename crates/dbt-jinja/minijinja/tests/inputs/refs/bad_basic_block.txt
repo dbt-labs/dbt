@@ -1,0 +1,4 @@
+<title>{% block title %}default title{% endblock %}</title>
+{% block body %}
+  {{ missing_function() }}
+{% endblock %}

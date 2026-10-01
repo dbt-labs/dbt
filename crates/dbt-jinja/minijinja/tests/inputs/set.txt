@@ -1,0 +1,47 @@
+{
+  "foo": "root value"
+}
+---
+Basic:
+{{ foo }}
+{% set foo = "new value" %}
+{{ foo }}
+{% with %}
+  {% set foo = "new value 2" %}
+  {{ foo }}
+{% endwith %}
+{{ foo }}
+
+Into Loop:
+{% for item in [1, 2, 3] %}
+  {{ item }}
+  {% set item = item * 2 %}
+  {{ item }}
+{% endfor %}
+
+Conditional:
+{% if true %}{% set foo = "was true" %}{% endif %}
+{{ foo }}
+
+Multiline:
+{% set multiline = "
+hello
+world" %}
+{{ multiline }}
+
+Multiline:
+{% set multiline = "hello
+world" %}
+{{ multiline }}
+
+Block:
+{% set var %}This is a {{ foo }}{% endset %}
+[{{ var }}]
+
+Filter block
+{% set upper_var | upper %}This is a {{ foo }}{% endset %}
+[{{ upper_var }}]
+
+Set with +
+{% set set_plus = "hello" + "world" %}
+{{ set_plus }}

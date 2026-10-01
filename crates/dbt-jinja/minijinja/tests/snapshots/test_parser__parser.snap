@@ -1,0 +1,71 @@
+---
+source: crates/jinja/minijinja/tests/test_parser.rs
+description: "{{ {\"foo\": \"bar\"} }}\n\n{{ config(\n        tags=['elementary-tests'],\n        meta={\"elementary\": {\"include\": false}}\n    ) }}"
+input_file: crates/jinja/minijinja/tests/parser-inputs/map.txt
+---
+Ok(
+    Template {
+        children: [
+            EmitExpr {
+                expr: Map {
+                    keys: [
+                        Const {
+                            value: "foo",
+                        } @ 1:5-1:10,
+                    ],
+                    values: [
+                        Const {
+                            value: "bar",
+                        } @ 1:12-1:17,
+                    ],
+                } @ 1:1-1:21,
+            } @ 1:1-1:21,
+            EmitRaw {
+                raw: "\n\n",
+            } @ 1:21-3:1,
+            EmitExpr {
+                expr: Call {
+                    expr: Var {
+                        id: "config",
+                    } @ 3:4-3:10,
+                    args: [
+                        Kwarg(
+                            "tags",
+                            List {
+                                items: [
+                                    Const {
+                                        value: "elementary-tests",
+                                    } @ 4:15-4:33,
+                                ],
+                            } @ 4:14-4:34,
+                        ),
+                        Kwarg(
+                            "meta",
+                            Map {
+                                keys: [
+                                    Const {
+                                        value: "elementary",
+                                    } @ 5:15-5:27,
+                                ],
+                                values: [
+                                    Map {
+                                        keys: [
+                                            Const {
+                                                value: "include",
+                                            } @ 5:30-5:39,
+                                        ],
+                                        values: [
+                                            Const {
+                                                value: false,
+                                            } @ 5:41-5:46,
+                                        ],
+                                    } @ 5:14-5:47,
+                                ],
+                            } @ 5:14-5:48,
+                        ),
+                    ],
+                } @ 3:1-6:9,
+            } @ 3:1-6:9,
+        ],
+    } @ 0:0-6:9,
+)

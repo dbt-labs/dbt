@@ -1,0 +1,18 @@
+[package]
+name = "dbt-ident"
+version.workspace = true
+homepage.workspace = true
+repository.workspace = true
+authors.workspace = true
+description.workspace = true
+license.workspace = true
+keywords.workspace = true
+edition.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+dbt-fusion-workspace-hack = { version = "0.1" }
+serde = { workspace = true }
+ustr = { workspace = true }

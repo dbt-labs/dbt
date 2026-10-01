@@ -1,0 +1,39 @@
+name: 'moms_flower_shop'
+version: '1.0.0'
+config-version: 2
+
+# This setting configures which "profile" dbt uses for this project.
+profile: __PROFILE_NAME__
+
+# These configurations specify where dbt should look for different types of files.
+# The `model-paths` config, for example, states that models in this project can be
+# found in the "models/" directory. You probably won't need to change these!
+model-paths: ["models"]
+analysis-paths: ["analyses"]
+test-paths: ["tests"]
+seed-paths: ["seeds"]
+macro-paths: ["macros"]
+snapshot-paths: ["snapshots"]
+
+target-path: "target"  # directory which will store compiled SQL files
+clean-targets:         # directories to be removed by `dbt clean`
+  - "target"
+  - "dbt_packages"
+
+# Configuring models
+# Full documentation: https://docs.getdbt.com/reference/model-configs
+
+models:
+  moms_flower_shop:
+    +static_analysis: strict
+    # Config indicated by + and applies to all files under models/example/
+    staging:
+      +materialized: view
+      +schema: staging
+    analytics:
+      +materialized: table
+      +schema: analytics
+
+seeds:
+  moms_flower_shop:
+    +schema: raw

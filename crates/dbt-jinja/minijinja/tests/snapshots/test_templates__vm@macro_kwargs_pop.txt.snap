@@ -1,0 +1,18 @@
+---
+source: fs/sa/crates/dbt-jinja/minijinja/tests/test_templates.rs
+assertion_line: 99
+description: "{% macro test_pop() -%}\n{%- set extracted = kwargs.pop('my_key', 'default') -%}\n{{ extracted }}|{{ kwargs }}\n{%- endmacro -%}\n{{ test_pop(my_key='test_value', other='remaining') }}\n{{ test_pop(other_key='other') }}\n{{ test_pop() }}"
+info:
+  __minijinja_current_path: macro_kwargs_pop.txt
+  __minijinja_current_span:
+    start_line: 1
+    start_col: 1
+    start_offset: 0
+    end_line: 1
+    end_col: 1
+    end_offset: 0
+input_file: fs/sa/crates/dbt-jinja/minijinja/tests/inputs/macro_kwargs_pop.txt
+---
+test_value|{'other': 'remaining'}
+default|{'other_key': 'other'}
+default|{}

@@ -1,0 +1,93 @@
+---
+source: fs/sa/crates/dbt-jinja-ctx/tests/resolve_core.rs
+assertion_line: 145
+expression: schema
+---
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "ResolveCore",
+  "description": "Globals registered on the **parse** `JinjaEnv`. Flattens [`GlobalCore`] (so `run_started_at`/`target`/`flags` are shared with load) and adds 8 parse-only fields. Compile and run reuse the parse env without re-registering globals.\n\n11 keys total in the registered globals map, 1:1 with the `BTreeMap` that `initialize_parse_jinja_environment` historically built. Field order on serialization: `GlobalCore` keys first (run_started_at, target, flags), then parse-specific fields in the order below.",
+  "type": "object",
+  "required": [
+    "env",
+    "flags",
+    "invocation_args_dict",
+    "invocation_id",
+    "project_name",
+    "run_started_at",
+    "target",
+    "var",
+    "write"
+  ],
+  "properties": {
+    "database": {
+      "description": "`{{ database }}` — default database from the resolved target.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "env": {
+      "description": "`{{ env }}` — alias of `target`. Both keys point to the same `Arc<BTreeMap<…>>` payload."
+    },
+    "flags": {
+      "description": "`{{ flags }}` — CLI + project flags. At load this wraps a plain `BTreeMap<String, Value>` (`Value::from_serialize`); at parse it wraps the `Flags` Object (`Value::from_object`). Either wrapping round-trips through serde with Object identity preserved via the minijinja `VALUE_HANDLES` smuggle path."
+    },
+    "invocation_args_dict": {
+      "description": "`{{ invocation_args_dict }}` — flattened CLI / project-flag dict computed by `invocation_args_to_dict` in the parse init.",
+      "type": "object",
+      "additionalProperties": true
+    },
+    "invocation_id": {
+      "description": "`{{ invocation_id }}` — UUID identifying this invocation.",
+      "type": "string"
+    },
+    "project_name": {
+      "description": "`{{ project_name }}` — root project name.",
+      "type": "string"
+    },
+    "run_started_at": {
+      "description": "`{{ run_started_at }}` — UTC datetime of the dbt invocation.",
+      "allOf": [
+        {
+          "$ref": "#/definitions/JinjaObject<minijinja_contrib::modules::py_datetime::datetime::PyDateTime>"
+        }
+      ]
+    },
+    "schema": {
+      "description": "`{{ schema }}` — default schema from the resolved target.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "target": {
+      "description": "`{{ target }}` — connection metadata (profile name, database, schema, adapter type, …)."
+    },
+    "var": {
+      "description": "`{{ var }}` — Jinja-side `var(…)` callable.",
+      "allOf": [
+        {
+          "$ref": "#/definitions/JinjaObject<dbt_jinja_vars::configured_var::ConfiguredVar>"
+        }
+      ]
+    },
+    "write": {
+      "description": "`{{ write }}` — always `MinijinjaValue::NONE` at parse; populated at run by the run-phase ctx."
+    }
+  },
+  "definitions": {
+    "JinjaObject<dbt_jinja_vars::configured_var::ConfiguredVar>": {
+      "description": "Opaque Jinja-callable object backed by `dbt_jinja_vars::configured_var::ConfiguredVar`.",
+      "type": "object",
+      "x-jinja-object": true,
+      "x-jinja-object-type": "dbt_jinja_vars::configured_var::ConfiguredVar"
+    },
+    "JinjaObject<minijinja_contrib::modules::py_datetime::datetime::PyDateTime>": {
+      "description": "Opaque Jinja-callable object backed by `minijinja_contrib::modules::py_datetime::datetime::PyDateTime`.",
+      "type": "object",
+      "x-jinja-object": true,
+      "x-jinja-object-type": "minijinja_contrib::modules::py_datetime::datetime::PyDateTime"
+    }
+  }
+}

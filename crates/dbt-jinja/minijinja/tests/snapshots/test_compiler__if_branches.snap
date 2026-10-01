@@ -1,0 +1,18 @@
+---
+source: fs/sa/crates/dbt-jinja/minijinja/tests/test_compiler.rs
+expression: "&c.finish()"
+---
+(
+    [
+        00000 | Lookup("false",  @ 1:1-1:1)  [line 0],
+        00001 | JumpIfFalse(4,  @ 1:1-1:1),
+        00002 | EmitRaw("nope1",  @ 1:1-1:1),
+        00003 | Jump(9,  @ 1:1-1:1),
+        00004 | Lookup("nil",  @ 1:1-1:1),
+        00005 | JumpIfFalse(8,  @ 1:1-1:1),
+        00006 | EmitRaw("nope1",  @ 1:1-1:1),
+        00007 | Jump(9,  @ 1:1-1:1),
+        00008 | EmitRaw("yes",  @ 1:1-1:1),
+    ],
+    {},
+)

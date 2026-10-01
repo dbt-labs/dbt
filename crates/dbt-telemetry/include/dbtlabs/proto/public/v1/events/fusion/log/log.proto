@@ -1,0 +1,135 @@
+syntax = "proto3";
+package v1.public.events.fusion.log;
+option go_package = "github.com/dbt-labs/proto-golang/v1/public/events/fusion/log";
+
+import "dbtlabs/proto/public/v1/events/fusion/compat/otlp.proto";
+import "dbtlabs/proto/public/v1/events/fusion/phase/phase.proto";
+
+// Generic event for log messages that do not cary special meaning
+// or additional metadata beyond the standard fields
+message LogMessage {
+  // Optional fusion error/warning code
+  optional uint32 code = 1;
+
+  // Optional fusion error/warning code variant name (e.g. "Generic").
+  optional string code_name = 16;
+
+  // Optional legacy dbt-core code (e.g. "Z048") if this event has a strict mapping to a dbt core event.
+  optional string dbt_core_event_code = 2;
+
+  // Original severity before user up/down-grade configuration applied.
+  v1.public.events.fusion.compat.SeverityNumber original_severity_number = 3;
+  string original_severity_text = 4;
+
+  // If this log message is emitted in the context of a specific node,
+  // this field should be set to the node's unique id.
+  optional string unique_id = 5;
+
+  // Fusion source code file name where the log was created. Only available in debug builds.
+  optional string file = 6;
+
+  // Fusion source code file line number where the log was created. Only available in debug builds.
+  optional uint32 line = 7;
+
+  // Execution phase (if known) during which this log was emitted.
+  optional v1.public.events.fusion.phase.ExecutionPhase phase = 8;
+
+  // Package name of the project dependency for which this log was emitted. Not set for the root project.
+  optional string package_name = 9;
+
+  // Relative path to the project file where this log message originated.
+  optional string relative_path = 10;
+
+  // 1-indexed line number in the project file where this log message originated.
+  optional uint32 code_line = 11;
+
+  // 0-indexed column number in the project file where this log message originated.
+  optional uint32 code_column = 12;
+
+  // Optional expanded (compiled) file location for this log message.
+  optional string expanded_relative_path = 13;
+  optional uint32 expanded_line = 14;
+  optional uint32 expanded_column = 15;
+}
+
+// Event emitted when user explicitly logs messages via jinja's print() or log() functions.
+// This event maps to dbt-core's JinjaLogInfo (I061-I063) events.
+message UserLogMessage {
+  // True if this message was emitted via print(), false if via log()
+  bool is_print = 1;
+
+  // Legacy dbt-core event code:
+  // - "I062" (JinjaLogInfo) for log info level
+  // - "I063" (JinjaLogDebug) for log debug level
+  // - "I061" (JinjaLogWarning) for log warning level
+  // - "Z052" (PrintEvent) for print statements
+  string dbt_core_event_code = 2;
+
+  // If this log message is emitted in the context of a specific node,
+  // this field should be set to the node's unique FQN.
+  optional string unique_id = 3;
+
+  // Execution phase (if known) during which this log was emitted.
+  optional v1.public.events.fusion.phase.ExecutionPhase phase = 4;
+
+  // Package name (project or dependency) from which this log was emitted.
+  optional string package_name = 5;
+
+  // Location within the SQL/Jinja file where print() or log() was called.
+  // Line number (1-indexed) of the print/log call in the SQL file.
+  optional uint32 line = 6;
+
+  // Column number (0-indexed) of the print/log call in the SQL file.
+  optional uint32 column = 7;
+
+  // Relative path to the SQL file containing the print/log call.
+  optional string relative_path = 8;
+}
+
+// A variation of a log message indicating execution progress. Unlike regular
+// log messages, progress messages specify an action and a target, as well
+// as optional description.
+// Used by various commands (debug, deps, etc.) to report progress steps.
+message ProgressMessage {
+  // Optional legacy dbt-core code (e.g. "Z047" for DebugCmdOut) if this event has a strict mapping to a dbt core event.
+  optional string dbt_core_event_code = 1;
+
+  // The action being performed (e.g., "Debugging", "Loading").
+  string action = 2;
+
+  // The text describing the target of the action (e.g., "project", "dependencies").
+  string target = 3;
+
+  // Optional additional description providing more context.
+  optional string description = 4;
+
+  // If this progress message is emitted in the context of a specific node,
+  // this field should be set to the node's unique id.
+  optional string unique_id = 5;
+
+  // Fusion source code file name where the log was created. Only available in debug builds.
+  optional string file = 6;
+
+  // Fusion source code file line number where the log was created. Only available in debug builds.
+  optional uint32 line = 7;
+
+  // Execution phase (if known) during which this log was emitted.
+  optional v1.public.events.fusion.phase.ExecutionPhase phase = 8;
+}
+
+// Event emitted when comparing nodes/configs for state modification details.
+message StateModifiedDiff {
+  // If this log message is emitted in the context of a specific node,
+  // this field should be set to the node's unique id.
+  optional string unique_id = 1;
+
+  // Node type or comparison category being evaluated.
+  string node_type_or_category = 2;
+
+  // Name of the specific comparison check.
+  string check = 3;
+
+  // Optional self/other values for the failed check.
+  optional string self_value = 4;
+  optional string other_value = 5;
+}

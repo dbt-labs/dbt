@@ -1,0 +1,44 @@
+---
+source: fs/sa/crates/dbt-jinja/minijinja/tests/test_parser.rs
+description: "{{ [1, 2, foo] }}\n{{ [1, 2, 3,] }}"
+input_file: fs/sa/crates/dbt-jinja/minijinja/tests/parser-inputs/list.txt
+---
+Ok(
+    Template {
+        children: [
+            EmitExpr {
+                expr: List {
+                    items: [
+                        Const {
+                            value: 1,
+                        } @ 1:5-1:6,
+                        Const {
+                            value: 2,
+                        } @ 1:8-1:9,
+                        Var {
+                            id: "foo",
+                        } @ 1:11-1:14,
+                    ],
+                } @ 1:1-1:18,
+            } @ 1:1-1:18,
+            EmitRaw {
+                raw: "\n",
+            } @ 1:18-2:1,
+            EmitExpr {
+                expr: List {
+                    items: [
+                        Const {
+                            value: 1,
+                        } @ 2:5-2:6,
+                        Const {
+                            value: 2,
+                        } @ 2:8-2:9,
+                        Const {
+                            value: 3,
+                        } @ 2:11-2:12,
+                    ],
+                } @ 2:1-2:17,
+            } @ 2:1-2:17,
+        ],
+    } @ 1:1-2:17,
+)

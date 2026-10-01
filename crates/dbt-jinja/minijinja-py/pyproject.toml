@@ -1,0 +1,40 @@
+[build-system]
+requires = ["maturin>=1.5"]
+build-backend = "maturin"
+
+[project]
+name = "minijinja"
+version = "2.5.0"
+description = "An experimental Python binding of the Rust MiniJinja template engine."
+requires-python = ">=3.8"
+license = { file = "LICENSE" }
+authors = [{ name = "Armin Ronacher", email = "armin.ronacher@active-4.com" }]
+maintainers = [
+  { name = "Armin Ronacher", email = "armin.ronacher@active-4.com" },
+]
+keywords = ["jinja", "template-engine"]
+classifiers = [
+  "Programming Language :: Rust",
+  "Programming Language :: Python :: Implementation :: CPython",
+  "Programming Language :: Python :: Implementation :: PyPy",
+  "Environment :: Web Environment",
+  "License :: OSI Approved :: Apache Software License",
+  "Topic :: Text Processing :: Markup :: HTML",
+  "Topic :: Internet :: WWW/HTTP :: Dynamic Content",
+]
+
+[project.urls]
+Repository = "https://github.com/mitsuhiko/minijinja"
+"Issue Tracker" = "https://github.com/mitsuhiko/minijinja/issues"
+"Donate" = "https://github.com/sponsors/mitsuhiko"
+
+[tool.maturin]
+module-name = "minijinja._lowlevel"
+python-source = "python"
+strip = true
+
+[tool.pyright]
+include = ["python/**/*.pyi"]
+exclude = ["python/**/*.py"]
+typeCheckingMode = "strict"
+pythonVersion = "3.9"

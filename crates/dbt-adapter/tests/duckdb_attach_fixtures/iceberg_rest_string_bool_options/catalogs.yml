@@ -1,0 +1,13 @@
+# Scenario: boolean ATTACH options written as YAML strings ("true"/"false"),
+# which schema validation accepts via try_get_bool.
+# Exercises: generation parses them with the same leniency — read_only: "true"
+# must emit READ_ONLY true (not silently fall back to the read-write default).
+catalogs:
+  - name: rest_string_bools
+    type: iceberg_rest
+    table_format: iceberg
+    config:
+      duckdb:
+        endpoint: "https://rest.example.com"
+        read_only: "true"
+        support_nested_namespaces: "false"

@@ -1,0 +1,14 @@
+syntax = "proto3";
+package v1.public.events.fusion.compat;
+option go_package = "github.com/dbt-labs/proto-golang/v1/public/events/fusion/compat";
+
+// Subset of OTLP LogRecord.SeverityNumber used by fusion.
+enum SeverityNumber {
+  // Default value. Should not be used.
+  SEVERITY_NUMBER_UNSPECIFIED = 0;
+  SEVERITY_NUMBER_TRACE = 1;
+  SEVERITY_NUMBER_DEBUG = 5;
+  SEVERITY_NUMBER_INFO = 9;
+  SEVERITY_NUMBER_WARN = 13;
+  SEVERITY_NUMBER_ERROR = 17;
+}

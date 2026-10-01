@@ -1,0 +1,36 @@
+[package]
+authors.workspace = true
+description.workspace = true
+edition.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+license.workspace = true
+name = "dbt-defer"
+repository.workspace = true
+version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+dbt-adapter = { workspace = true }
+dbt-adapter-core = { workspace = true }
+dbt-common = { workspace = true }
+dbt-dag = { workspace = true }
+dbt-fusion-workspace-hack = { version = "0.1" }
+dbt-jinja-utils = { workspace = true }
+dbt-loader = { workspace = true }
+dbt-scheduler = { workspace = true }
+dbt-schema-store = { workspace = true }
+dbt-schemas = { workspace = true }
+dbt-state = { workspace = true }
+dbt-tasks-core = { workspace = true }
+dbt-telemetry = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+dbt-jinja-utils = { workspace = true }
+
+[lib]
+doctest = false
+name = "dbt_defer"

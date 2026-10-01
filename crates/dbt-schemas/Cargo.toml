@@ -1,0 +1,52 @@
+[package]
+name = "dbt-schemas"
+version.workspace = true
+homepage.workspace = true
+repository.workspace = true
+authors.workspace = true
+description.workspace = true
+license.workspace = true
+keywords.workspace = true
+edition.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+blake3 = { workspace = true }
+chrono = { workspace = true }
+chrono-tz = { workspace = true }
+datafusion-common = { workspace = true }
+dbt-adapter-core = { workspace = true }
+dbt-common = { workspace = true }
+dbt-frontend-common = { workspace = true }
+dbt-fusion-workspace-hack = { version = "0.1" }
+dbt-jinja-vars = { workspace = true }
+dbt-proc-macros = { workspace = true }
+dbt-schema-store = { workspace = true }
+dbt-telemetry = { workspace = true }
+dbt-tracing = { workspace = true }
+dbt-yaml = { workspace = true }
+dirs = { workspace = true }
+hex = { workspace = true }
+humantime = { workspace = true }
+indexmap = { workspace = true, features = ["serde"] }
+md5 = { workspace = true }
+merge = { workspace = true }
+minijinja = { workspace = true, features = ["unstable_machinery_serde"] }
+minijinja-contrib = { workspace = true }
+pathdiff = { workspace = true }
+schemars = { workspace = true }
+serde = { workspace = true, features = ["rc"] }
+serde_derive = { workspace = true }
+serde_json = { workspace = true }
+serde_with = { workspace = true }
+sha2 = { workspace = true }
+strum = { workspace = true, features = ["derive"] }
+url = { workspace = true }
+
+
+[lib]
+name = "dbt_schemas"
+path = "src/lib.rs"
+doctest = false

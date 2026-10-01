@@ -1,0 +1,27 @@
+---
+source: crates/dbt-jinja/minijinja/tests/test_templates.rs
+description: "{{ word in the_sentence }}\n{{ word in the_words }}\n{{ word in the_map }}\n{{ word not in the_sentence }}\n{{ word not in the_words }}\n{{ word not in the_map }}"
+info:
+  __minijinja_current_path: in.txt
+  __minijinja_current_span:
+    end_col: 1
+    end_line: 1
+    end_offset: 0
+    start_col: 1
+    start_line: 1
+    start_offset: 0
+  the_map:
+    bird: the word
+  the_sentence: bird is the word
+  the_words:
+    - bird
+    - not bird
+  word: bird
+input_file: crates/dbt-jinja/minijinja/tests/inputs/in.txt
+---
+True
+True
+True
+False
+False
+False

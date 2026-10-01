@@ -1,0 +1,6 @@
+{
+  "metrics": ["revenue"],
+  "group_by": ["TimeDimension('metric_time', 'day')"],
+  "order_by": ["-metric_time"],
+  "limit": 2
+}

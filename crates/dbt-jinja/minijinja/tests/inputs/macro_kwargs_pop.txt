@@ -1,0 +1,9 @@
+{}
+---
+{% macro test_pop() -%}
+{%- set extracted = kwargs.pop('my_key', 'default') -%}
+{{ extracted }}|{{ kwargs }}
+{%- endmacro -%}
+{{ test_pop(my_key='test_value', other='remaining') }}
+{{ test_pop(other_key='other') }}
+{{ test_pop() }}

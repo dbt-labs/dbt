@@ -1,0 +1,13 @@
+// This file is auto generated from a MiniJinja template
+
+struct {{ struct_name|safe }} {
+    pub x: f32,
+    pub y: f32,
+}
+
+const BUILD_CWD: &str = {{ build_cwd }};
+const POINTS: [{{ struct_name|safe }}; {{ points|length }}] = [
+    {% for x, y in points %}
+    {{ struct_name|safe }} { x: {{ x }}, y: {{ y }} },
+    {% endfor %}
+];

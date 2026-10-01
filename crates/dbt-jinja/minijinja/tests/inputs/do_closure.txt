@@ -1,0 +1,5 @@
+{}
+---
+{% macro other_macro() %}23{% endmacro %}
+{% macro foo() %}[{% do other_macro() %}]{% endmacro %}
+Should not show output of other_macro: {{ foo() }}

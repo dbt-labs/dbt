@@ -1,0 +1,9 @@
+---
+source: minijinja/tests/test_templates.rs
+description: "{% extends template %}\n{% set var = \"the value from the child\" %}"
+info:
+  template: layout_with_var.txt
+input_file: minijinja/tests/inputs/extends_set.txt
+---
+the value from the child
+

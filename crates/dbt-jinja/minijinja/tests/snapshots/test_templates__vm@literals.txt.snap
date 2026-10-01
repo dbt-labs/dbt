@@ -1,0 +1,25 @@
+---
+source: crates/dbt-jinja/minijinja/tests/test_templates.rs
+description: "{{ true }}\n{{ false }}\n{{ null }}\n{{ 1.0 }}\n{{ 2 }}\n{{ [1, 2, 3] }}\n{{ {\"foo\": \"bar\"} }}\n{{ -9223372036854775808 }}\n{{ -170141183460469231731687303715884105728 }}\n{{ 170141183460469231731687303715884105727 }}\n{{ 340282366920938463463374607431768211455 }}"
+info:
+  __minijinja_current_path: literals.txt
+  __minijinja_current_span:
+    end_col: 1
+    end_line: 1
+    end_offset: 0
+    start_col: 1
+    start_line: 1
+    start_offset: 0
+input_file: crates/dbt-jinja/minijinja/tests/inputs/literals.txt
+---
+True
+False
+
+1.0
+2
+[1, 2, 3]
+{'foo': 'bar'}
+-9223372036854775808
+170141183460469231731687303715884105728
+170141183460469231731687303715884105727
+340282366920938463463374607431768211455

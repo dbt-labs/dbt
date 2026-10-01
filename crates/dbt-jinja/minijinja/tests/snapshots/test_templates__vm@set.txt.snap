@@ -1,0 +1,59 @@
+---
+source: minijinja/tests/test_templates.rs
+description: "Basic:\n{{ foo }}\n{% set foo = \"new value\" %}\n{{ foo }}\n{% with %}\n  {% set foo = \"new value 2\" %}\n  {{ foo }}\n{% endwith %}\n{{ foo }}\n\nInto Loop:\n{% for item in [1, 2, 3] %}\n  {{ item }}\n  {% set item = item * 2 %}\n  {{ item }}\n{% endfor %}\n\nConditional:\n{% if true %}{% set foo = \"was true\" %}{% endif %}\n{{ foo }}\n\nMultiline:\n{% set multiline = \"\nhello\nworld\" %}\n{{ multiline }}\n\nMultiline:\n{% set multiline = \"hello\nworld\" %}\n{{ multiline }}\n\nBlock:\n{% set var %}This is a {{ foo }}{% endset %}\n[{{ var }}]\n\nFilter block\n{% set upper_var | upper %}This is a {{ foo }}{% endset %}\n[{{ upper_var }}]\n\nSet with +\n{% set set_plus = \"hello\" + \"world\" %}\n{{ set_plus }}"
+info:
+  foo: root value
+input_file: minijinja/tests/inputs/set.txt
+---
+Basic:
+root value
+
+new value
+
+  
+  new value 2
+
+new value
+
+Into Loop:
+
+  1
+  
+  2
+
+  2
+  
+  4
+
+  3
+  
+  6
+
+
+Conditional:
+
+was true
+
+Multiline:
+
+
+hello
+world
+
+Multiline:
+
+hello
+world
+
+Block:
+
+[This is a was true]
+
+Filter block
+
+[THIS IS A WAS TRUE]
+
+Set with +
+
+helloworld
+

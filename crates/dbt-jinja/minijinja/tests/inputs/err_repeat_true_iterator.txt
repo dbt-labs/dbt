@@ -1,0 +1,4 @@
+{
+}
+---
+{{ one_shot_iterator * 3 }}

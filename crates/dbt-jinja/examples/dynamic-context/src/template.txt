@@ -1,0 +1,6 @@
+pid: {{ pid }}
+current_dir: {{ cwd }}
+env:
+  {%- for key, value in env|dictsort %}
+  {{ key }}: {{ value }}
+  {%- endfor %}

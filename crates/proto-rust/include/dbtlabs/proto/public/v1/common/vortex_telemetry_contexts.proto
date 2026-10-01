@@ -1,0 +1,64 @@
+syntax = "proto3";
+
+package v1.public.common.vortex_telemetry_contexts;
+option go_package = "github.com/dbt-labs/proto-golang/v1/public/common/vortex_telemetry_contexts";
+
+import "dbtlabs/proto/public/v1/events/vortex.proto";
+
+message VortexTelemetryDbtCloudContext {
+  // event_id is the unique identifier for this event. It is a generated UUID.
+  string event_id = 1;
+
+  // feature/product name emitting the telemetry event
+  string feature = 2;
+
+  // The snowplow domain session ID. This can be used to join these events with snowplow events.
+  string snowplow_domain_session_id = 3;
+
+  // The snowplow domain user ID. This can be used to join these events with snowplow events.
+  string snowplow_domain_user_id = 4;
+
+  // A session ID that can be used to correlate events that were emmitted by the same
+  // user during the same session.
+  string session_id = 5;
+
+  // The URL of the page the user was on when telemetry event was sent
+  string referrer_url = 6;
+
+  // dbt Cloud account ID
+  string dbt_cloud_account_id = 7;
+  // dbt Cloud account identifier
+  string dbt_cloud_account_identifier = 8;
+  // dbt Cloud project ID
+  string dbt_cloud_project_id = 9;
+  // dbt Cloud environment ID
+  string dbt_cloud_environment_id = 10;
+  // dbt Cloud user ID
+  string dbt_cloud_user_id = 11;
+
+  // // TODO: We are still deciding whether to add this here, to the enrichment, or to the event itself.
+  // // The name of the action that was taken by the user.
+  // // Currently, this is freeform but we are considering the type url, ex. v1.public.events.insights.PageLoad
+  // string action_name = 12;
+}
+
+
+// VortexTelemetryCommonContext is the standard context that must be included in all
+// vortex-enabled events as a field named common_context.
+// It provides a consistent way to identify the account, project,
+// environment, and user across all telemetry events, enabling reliable dashboards
+// and incident investigation. Fields may be empty when they are not applicable (e.g.
+// environment_id for Fusion events that have no dbt platform environment association).
+message VortexTelemetryCommonContext {
+  // account identifier tied to the event
+  string account_identifier = 1;
+  
+  //project id tied to the event
+  string project_id = 2;
+
+  //dbt Cloud environment ID
+  string environment_id = 3;
+
+  // user identifier tied to the event
+  string user_id = 4;
+}

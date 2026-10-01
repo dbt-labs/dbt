@@ -1,0 +1,41 @@
+syntax = "proto3";
+package v1.public.events.fusion.log;
+
+option go_package = "github.com/dbt-labs/proto-golang/v1/public/events/fusion/log";
+
+// Output format for list command
+enum ShowDataOutputFormat {
+  SHOW_DATA_OUTPUT_FORMAT_UNSPECIFIED = 0;
+  SHOW_DATA_OUTPUT_FORMAT_TEXT = 1;
+  SHOW_DATA_OUTPUT_FORMAT_CSV = 2;
+  SHOW_DATA_OUTPUT_FORMAT_TSV = 3;
+  SHOW_DATA_OUTPUT_FORMAT_JSON = 4;
+  SHOW_DATA_OUTPUT_FORMAT_NDJSON = 5;
+  SHOW_DATA_OUTPUT_FORMAT_YML = 6;
+}
+
+// Event emitted when displaying inline data (e.g., from show command).
+// This event replaces the dbt-core ShowNode event (Q041) for inline data display.
+message ShowDataOutput {
+  // Format of the output
+  ShowDataOutputFormat output_format = 1;
+
+  // The data in the specified format (e.g., pretty-printed table)
+  string content = 2;
+  
+  // Name of the node being shown (e.g., "my_model" or "inline")
+  string node_name = 3;
+
+  // Whether this is an inline/ad-hoc query (true) or a defined node (false)
+  bool is_inline = 4;
+
+  // The unique_id of the node being shown (e.g., "model.my_project.my_model").
+  // Unset for ad-hoc queries
+  optional string unique_id = 5;
+
+  // Column names for the data
+  repeated string columns = 6;
+
+  // Legacy dbt core event code for backward compatibility (always "Q041")
+  string dbt_core_event_code = 7;
+}

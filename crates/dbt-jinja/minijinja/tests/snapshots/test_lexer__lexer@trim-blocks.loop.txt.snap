@@ -1,0 +1,34 @@
+---
+source: minijinja/tests/test_lexer.rs
+description: "{% for item in seq %}\n  {{ item }}\n{% endfor %}"
+input_file: minijinja/tests/lexer-inputs/trim-blocks.loop.txt
+---
+BlockStart
+  "{%"
+Ident("for")
+  "for"
+Ident("item")
+  "item"
+Ident("in")
+  "in"
+Ident("seq")
+  "seq"
+BlockEnd
+  "%}"
+TemplateData("  ")
+  "  "
+VariableStart
+  "{{"
+Ident("item")
+  "item"
+VariableEnd
+  "}}"
+TemplateData("\n")
+  "\n"
+BlockStart
+  "{%"
+Ident("endfor")
+  "endfor"
+BlockEnd
+  "%}"
+

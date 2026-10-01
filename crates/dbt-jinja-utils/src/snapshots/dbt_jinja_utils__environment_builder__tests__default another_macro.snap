@@ -1,0 +1,6 @@
+---
+source: crates/dbt-jinja-utils/src/environment_builder.rs
+expression: "\"default another_macro\""
+snapshot_kind: text
+---
+default another_macro

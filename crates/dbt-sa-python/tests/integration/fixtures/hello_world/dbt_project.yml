@@ -1,0 +1,15 @@
+name: 'hello_world'
+config-version: 2
+version: '0.1'
+
+profile: 'hello_world'
+
+model-paths: ["models"]
+clean-targets:
+  - "target"
+  - "dbt_modules"
+  - "logs"
+
+models:
+  hello_world:
+    +materialized: table

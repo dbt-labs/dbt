@@ -1,0 +1,14 @@
+<!doctype html>
+<title>{{ page_title|title }}</title>
+<h1 id="{{ page_title|slugify }}">{{ page_title|title }}</h1>
+<ul>
+{%- for item in get_nav() %}
+  <li><a href="{{ item.href }}">{{ item.title|upper }}</a></li>
+{%- endfor %}
+</ul>
+<pre>
+  {{ "-*- "|repeat(10) }}
+</pre>
+<footer>
+  &copy; Copyright {{ year }}
+</footer>

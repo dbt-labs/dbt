@@ -1,0 +1,38 @@
+version: 2
+
+models:
+  - name: platform_performance_metrics
+    description: |
+      Platform comparison metrics for installs, engagement, and revenue.
+      Provides a comprehensive view of each platform's performance including
+      install counts, user engagement, revenue metrics, and conversion rates.
+    columns:
+      - name: platform
+        description: Platform identifier (iOS, Android, Web, etc.)
+        tests:
+          - unique
+          - not_null
+      - name: total_installs
+        description: Total number of app installs on this platform
+      - name: campaigns_used
+        description: Number of distinct campaigns that drove installs to this platform
+      - name: engaged_users
+        description: Number of distinct users who had at least one event
+      - name: total_events
+        description: Total number of events across all users on this platform
+      - name: active_days
+        description: Number of distinct days with at least one event
+      - name: paying_customers
+        description: Number of distinct users who made at least one purchase
+      - name: total_purchases
+        description: Total number of purchase transactions
+      - name: total_revenue
+        description: Total revenue generated on this platform
+      - name: install_to_paying_rate
+        description: Percentage of installs that converted to paying customers
+      - name: avg_events_per_install
+        description: Average number of events per install
+      - name: avg_revenue_per_paying_customer
+        description: Average revenue per paying customer
+      - name: platform_active_days
+        description: Number of days between first and last install on this platform

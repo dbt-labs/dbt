@@ -1,6 +1,0 @@
-name: late_hooks
-version: '1.0'
-config-version: 2
-on-run-start:
-  - insert into {{ var('test_create_table') }} values (2)
-  - insert into {{ var('test_create_second_table') }} values (4)

@@ -1,0 +1,5 @@
+{}
+---
+Before
+{% include ["missing_template1.txt", "missing_template2.txt"] %}
+After

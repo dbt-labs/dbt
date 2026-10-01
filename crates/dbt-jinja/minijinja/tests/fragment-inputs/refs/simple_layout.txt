@@ -1,0 +1,9 @@
+Shouldn't show up
+{% block fragment %}
+From parent
+{% endblock %}
+Also shouldn't show up
+
+{% block other %}
+  This too shouldn't appear
+{% endblock %}

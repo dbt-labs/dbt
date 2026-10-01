@@ -1,0 +1,146 @@
+---
+source: fs/sa/crates/dbt-jinja/minijinja/tests/test_templates.rs
+description: "lower: {{ word|lower }}\nupper: {{ word|upper }}\ntitle: {{ word|title }}\ntitle-sentence: {{ \"the bIrd, is The:word\"|title }}\ntitle-three-words: {{ three_words|title }}\ncapitalize: {{ word|capitalize }}\ncapitalize-three-words: {{ three_words|capitalize }}\nreplace: {{ word|replace(\"B\", \"th\") }}\nreplace: {{ \"DW_test\" | replace(\"DW_\", \"\", 1)}}\nescape: {{ \"<\"|escape }}\ne: {{ \"<\"|e }}\ndouble-escape: {{ \"<\"|escape|escape }}\nsafe: {{ \"<\"|safe|escape }}\nlist-length: {{ list|length }}\nlist-from-list: {{ list|list }}\nlist-from-map: {{ map|list }}\nlist-from-word: {{ word|list }}\nlist-from-undefined: {{ undefined|list }}\nbool-empty-string: {{ \"\"|bool }}\nbool-non-empty-string: {{ \"hello\"|bool }}\nbool-empty-list: {{ []|bool }}\nbool-non-empty-list: {{ [42]|bool }}\nbool-undefined: {{ undefined|bool }}\nmap-length: {{ map|length }}\nstring-length: {{ word|length }}\nstring-count: {{ word|count }}\nreverse-list: {{ list|reverse }}\nreverse-string: {{ word|reverse }}\ntrim: |{{ word_with_spaces|trim }}|\ntrim-bird: {{ word|trim(\"Bd\") }}\njoin-default: {{ list|join }}\njoin-pipe: {{ list|join(\"|\") }}\njoin_string: {{ word|join('-') }}\ndefault: {{ undefined|default == \"\" }}\ndefault-value: {{ undefined|default(42) }}\nfirst-list: {{ list|first }}\nfirst-word: {{ word|first }}\nfirst-undefined: {{ []|first is undefined }}\nlast-list: {{ list|last }}\nlast-word: {{ word|last }}\nlast-undefined: {{ []|first is undefined }}\nmin: {{ other_list|min }}\nmax: {{ other_list|max }}\nsort: {{ other_list|sort }}\nsort-reverse: {{ other_list|sort(reverse=true) }}\nsort-case-insensitive: {{ [\"B\", \"a\", \"C\", \"z\"]|sort }}\nsort-case-sensitive: {{ [\"B\", \"a\", \"C\", \"z\"]|sort(case_sensitive=true) }}\nsort-case-insensitive-mixed: {{ [0, 1, \"true\", \"false\", \"True\", \"False\", true, false]|sort }}\nsort-case-sensitive-mixed: {{ [0, 1, \"true\", \"false\", \"True\", \"False\", true, false]|sort(case_sensitive=true) }}\nsort-attribute {{ objects|sort(attribute=\"name\") }}\nd: {{ undefined|d == \"\" }}\njson: {{ map|tojson }}\njson-pretty: {{ map|tojson(true) }}\njson-scary-html: {{ scary_html|tojson }}\nurlencode: {{ \"hello world/foo-bar_baz.txt\"|urlencode }}\nurlencode-kv: {{ dict(a=\"x y\", b=2, c=3, d=None)|urlencode }}\nbatch: {{ range(10)|batch(3) }}\nbatch-fill: {{ range(10)|batch(3, '-') }}\nslice: {{ range(10)|slice(3) }}\nslice-fill: {{ range(10)|slice(3, '-') }}\nitems: {{ dict(a=1)|items }}\nindent: {{ \"foo\\nbar\\nbaz\"|indent(2)|tojson }}\nindent-first-line: {{ \"foo\\nbar\\nbaz\"|indent(2, true)|tojson }}\nint-abs: {{ -42|abs }}\nfloat-abs: {{ -42.5|abs }}\nint-round: {{ 42|round }}\nfloat-round: {{ 42.5|round }}\nfloat-round-prec2: {{ 42.512345|round(2) }}\nfloat-round-ceil: {{ 42.512345|round(0, 'ceil') }}\nfloat-round-floor: {{ 42.512345|round(0, 'floor') }}\nfloat-round-common: {{ 42.512345|round(0, 'common') }}\nselect-odd: {{ [1, 2, 3, 4, 5, 6]|select(\"odd\") }}\nselect-truthy: {{ [undefined, null, 0, 42, 23, \"\", \"aha\"]|select }}\nreject-truthy: {{ [undefined, null, 0, 42, 23, \"\", \"aha\"]|reject }}\nreject-odd: {{ [1, 2, 3, 4, 5, 6]|reject(\"odd\") }}\nselect-attr: {{ [dict(active=true, key=1), dict(active=false, key=2)]|selectattr(\"active\") }}\nreject-attr: {{ [dict(active=true, key=1), dict(active=false, key=2)]|rejectattr(\"active\") }}\nselect-attr: {{ [dict(active=true, key=1), dict(active=false, key=2)]|selectattr(\"key\", \"even\") }}\nreject-attr: {{ [dict(active=true, key=1), dict(active=false, key=2)]|rejectattr(\"key\", \"even\") }}\nmap-maps: {{ [-1, -2, 3, 4, -5]|map(\"abs\") }}\nmap-attr: {{ [dict(a=1), dict(a=2), {}]|map(attribute='a', default=None) }}\nmap-attr-undefined: {{ [dict(a=1), dict(a=2), {}]|map(attribute='a', default=definitely_undefined) }}\nmap-attr-deep: {{ [dict(a=[1]), dict(a=[2]), dict(a=[])]|map(attribute='a.0', default=None) }}\nmap-attr-int: {{ [[1], [1, 2]]|map(attribute=1, default=999) }}\nattr-filter: {{ map|attr(\"a\") }}\nunique-filter: {{ [1, 1, 1, 4, 3, 0, 0, 5]|unique }}\nunique-filter-ci: {{ [\"a\", \"A\", \"b\", \"c\", \"b\", \"D\", \"d\"]|unique }}\nunique-filter-cs: {{ [\"a\", \"A\", \"b\", \"c\", \"b\", \"D\", \"d\"]|unique(case_sensitive=true) }}\nunique-attr-filter: {{ [{'x': 1}, {'x': 1, 'y': 2}, {'x': 2}]|unique }}\npprint-filter: {{ objects|pprint }}\nint-filter: {{ true|int }}, {{ \"42\"|int }}, {{ \"-23\"|int }}, {{ 42.0|int }}, {{ 42.42|int }}, {{ \"42.42\"|int }}\nfloat-filter: {{ true|float }}, {{ \"42\"|float }}, {{ \"-23.5\"|float }}, {{ 42.5|float }}\nsplit: {{ three_words|split|list }}\nsplit-at-and: {{ three_words|split(\" and \")|list }}\nsplit-n-ws: {{ three_words|split(none, 1)|list }}\nsplit-n-d: {{ three_words|split(\"d\", 1)|list }}\nsplit-n-ws-filter-empty: {{ \"  foo    bar baz  \"|split(none, 1)|list }}\nsum: {{ range(10)|sum }}\nsum-empty: {{ []|sum }}\nsum-float: {{ [0.5, 1.0]|sum }}\nlines: {{ \"foo\\nbar\\r\\nbaz\"|lines }}\nstring: {{ [1|string, 2|string] }}"
+info:
+  __minijinja_current_path: filters.txt
+  __minijinja_current_span:
+    start_line: 1
+    start_col: 1
+    start_offset: 0
+    end_line: 1
+    end_col: 1
+    end_offset: 0
+  list:
+    - 1
+    - 2
+    - 3
+  map:
+    a: b
+    c: d
+  objects:
+    - name: b
+    - name: a
+  other_list:
+    - 1
+    - 4
+    - 2
+    - 9
+    - 111
+  scary_html: "<>&'"
+  three_words: bird and dinosaur
+  word: Bird
+  word_with_spaces: " Spacebird\n"
+input_file: fs/sa/crates/dbt-jinja/minijinja/tests/inputs/filters.txt
+---
+lower: bird
+upper: BIRD
+title: Bird
+title-sentence: The Bird, Is The:Word
+title-three-words: Bird And Dinosaur
+capitalize: Bird
+capitalize-three-words: Bird and dinosaur
+replace: third
+replace: test
+escape: &lt;
+e: &lt;
+double-escape: &lt;
+safe: <
+list-length: 3
+list-from-list: [1, 2, 3]
+list-from-map: ['a', 'c']
+list-from-word: ['B', 'i', 'r', 'd']
+list-from-undefined: []
+bool-empty-string: False
+bool-non-empty-string: True
+bool-empty-list: False
+bool-non-empty-list: True
+bool-undefined: False
+map-length: 2
+string-length: 4
+string-count: 4
+reverse-list: (3, 2, 1)
+reverse-string: driB
+trim: |Spacebird|
+trim-bird: ir
+join-default: 123
+join-pipe: 1|2|3
+join_string: B-i-r-d
+default: True
+default-value: 42
+first-list: 1
+first-word: B
+first-undefined: True
+last-list: 3
+last-word: d
+last-undefined: True
+min: 1
+max: 111
+sort: [1, 2, 4, 9, 111]
+sort-reverse: [111, 9, 4, 2, 1]
+sort-case-insensitive: ['a', 'B', 'C', 'z']
+sort-case-sensitive: ['B', 'C', 'a', 'z']
+sort-case-insensitive-mixed: [False, True, 0, 1, 'false', 'False', 'true', 'True']
+sort-case-sensitive-mixed: [False, True, 0, 1, 'False', 'True', 'false', 'true']
+sort-attribute [{'name': 'a'}, {'name': 'b'}]
+d: True
+json: {"a": "b", "c": "d"}
+json-pretty: {
+  "a": "b",
+  "c": "d"
+}
+json-scary-html: "\u003c\u003e\u0026\u0027"
+urlencode: hello%20world/foo-bar_baz.txt
+urlencode-kv: a=x%20y&b=2&c=3
+batch: ((0, 1, 2), (3, 4, 5), (6, 7, 8), (9,))
+batch-fill: ((0, 1, 2), (3, 4, 5), (6, 7, 8), (9, '-', '-'))
+slice: ((0, 1, 2, 3), (4, 5, 6), (7, 8, 9))
+slice-fill: ((0, 1, 2, 3), (4, 5, 6, '-'), (7, 8, 9, '-'))
+items: [('a', 1)]
+indent: "foo\n  bar\n  baz"
+indent-first-line: "  foo\n  bar\n  baz"
+int-abs: 42
+float-abs: 42.5
+int-round: 42
+float-round: 43.0
+float-round-prec2: 42.51
+float-round-ceil: 43.0
+float-round-floor: 42.0
+float-round-common: 43.0
+select-odd: (1, 3, 5)
+select-truthy: (42, 23, 'aha')
+reject-truthy: (undefined, undefined, 0, '')
+reject-odd: (2, 4, 6)
+select-attr: ({'active': True, 'key': 1},)
+reject-attr: ({'active': False, 'key': 2},)
+select-attr: ({'active': False, 'key': 2},)
+reject-attr: ({'active': True, 'key': 1},)
+map-maps: (1, 2, 3, 4, 5)
+map-attr: (1, 2, None)
+map-attr-undefined: (1, 2, undefined)
+map-attr-deep: (1, 2, None)
+map-attr-int: (999, 2)
+attr-filter: b
+unique-filter: (1, 4, 3, 0, 5)
+unique-filter-ci: ('a', 'b', 'c', 'D')
+unique-filter-cs: ('a', 'A', 'b', 'c', 'D', 'd')
+unique-attr-filter: ({'x': 1}, {'x': 1, 'y': 2}, {'x': 2})
+pprint-filter: [
+    {
+        'name': 'b',
+    },
+    {
+        'name': 'a',
+    },
+]
+int-filter: 1, 42, -23, 42, 42, 42
+float-filter: 1.0, 42.0, -23.5, 42.5
+split: ['bird', 'and', 'dinosaur']
+split-at-and: ['bird', 'dinosaur']
+split-n-ws: ['bird', 'and dinosaur']
+split-n-d: ['bir', ' and dinosaur']
+split-n-ws-filter-empty: ['foo', 'bar baz  ']
+sum: 45
+sum-empty: 0
+sum-float: 1.5
+lines: ('foo', 'bar', 'baz')
+string: ['1', '2']

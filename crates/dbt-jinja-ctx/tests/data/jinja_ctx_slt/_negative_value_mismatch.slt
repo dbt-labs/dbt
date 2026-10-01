@@ -1,0 +1,8 @@
+# Negative-control fixture for the harness self-test.
+# Run only by `slt_harness_reports_value_mismatch`. Do NOT add real
+# cross-phase coverage here — this file exists to verify the harness panics
+# with a useful message when expectations don't match.
+
+key target.name
+----
+load     not-dev

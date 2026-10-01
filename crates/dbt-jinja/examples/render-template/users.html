@@ -1,0 +1,7 @@
+<!doctype html>
+<title>User List</title>
+<ul>
+  {%- for user in users %}
+  <li>{{ user.id }}: {{ user.name }}
+  {%- endfor %}
+</ul>

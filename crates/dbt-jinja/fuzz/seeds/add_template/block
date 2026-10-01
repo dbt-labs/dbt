@@ -1,0 +1,1 @@
+{% block title %}Hello {{ title }}{% endblock %}

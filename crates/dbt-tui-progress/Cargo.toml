@@ -1,0 +1,27 @@
+[package]
+name = "dbt-tui-progress"
+version.workspace = true
+homepage.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "Terminal progress bar controller wrapping indicatif for TUI layers"
+license.workspace = true
+keywords.workspace = true
+edition.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+console = { workspace = true }
+counter = { workspace = true }
+dbt-fusion-workspace-hack = { version = "0.1" }
+indicatif = { workspace = true }
+itertools = { workspace = true }
+scc = { workspace = true }
+unicode-segmentation = { workspace = true }
+
+[lib]
+name = "dbt_tui_progress"
+path = "src/lib.rs"
+doctest = false

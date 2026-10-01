@@ -1,0 +1,17 @@
+[package]
+name = "dbt-test-primitives"
+description.workspace = true
+version.workspace = true
+homepage.workspace = true
+repository.workspace = true
+authors.workspace = true
+license.workspace = true
+keywords.workspace = true
+edition.workspace = true
+
+[lints]
+workspace = true
+
+# COPYBARA-BEGIN-PRIVATE
+[dependencies]
+dbt-fusion-workspace-hack = { version = "0.1" }

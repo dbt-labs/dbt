@@ -1,0 +1,33 @@
+syntax = "proto3";
+package v1.public.events.fusion.log;
+
+option go_package = "github.com/dbt-labs/proto-golang/v1/public/events/fusion/log";
+
+// Output format for ShowResult content.
+enum ShowResultOutputFormat {
+  SHOW_RESULT_OUTPUT_FORMAT_UNSPECIFIED = 0;
+  // Pretty-printed text format suitable for terminal display.
+  SHOW_RESULT_OUTPUT_FORMAT_TEXT = 1;
+}
+
+// Event emitted when displaying verbose/diagnostic output controlled by --show flag.
+// This includes internal structures like manifests, schedules, stats, task graphs, etc.
+message ShowResult {
+  // Format of the output content.
+  ShowResultOutputFormat output_format = 1;
+
+  // The content to display in the specified format.
+  string content = 2;
+
+  // Type/category of the result being shown (e.g., "manifest", "schedule", "stats").
+  // This is expected to be a short identifier.
+  string result_type = 3;
+
+  // Title to display above the content. This should NOT include ANSI color codes -
+  // coloring is applied by the output layers.
+  string title = 4;
+
+  // The unique_id of the node for which information is being shown, if applicable.
+  // Unset for non-node-specific results like manifest or schedule.
+  optional string unique_id = 5;
+}

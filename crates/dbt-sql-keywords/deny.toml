@@ -1,0 +1,10 @@
+[graph]
+exclude = ["dbt-fusion-workspace-hack"]
+
+[bans]
+deny = [
+  { crate = "dbt-common", reason = "dbt-sql-keywords only contains keyword data and simple helpers; keep it dependency-free" },
+  { crate = "dbt-base", reason = "dbt-sql-keywords only contains keyword data and simple helpers; keep it dependency-free" },
+  { crate = "dbt-adapter-core", reason = "dbt-sql-keywords only contains keyword data and simple helpers; keep it dependency-free" },
+  { crate = "dbt-adbc", reason = "dbt-sql-keywords only contains keyword data and simple helpers; keep it dependency-free" },
+]

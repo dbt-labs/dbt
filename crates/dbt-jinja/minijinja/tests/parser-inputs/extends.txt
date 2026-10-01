@@ -1,0 +1,3 @@
+{% extends "layout.html" %}
+{% block title %}new title{% endblock %}
+{% block body %}new body{% endblock %}

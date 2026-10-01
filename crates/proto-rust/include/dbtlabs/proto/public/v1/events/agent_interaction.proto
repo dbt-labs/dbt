@@ -1,0 +1,109 @@
+syntax = "proto3";
+
+package v1.public.events.agent_interaction;
+option go_package = "github.com/dbt-labs/proto-golang/v1/public/events/agent_interaction";
+
+import "dbtlabs/proto/public/v1/common/vortex_options.proto";
+import "dbtlabs/proto/public/v1/common/vortex_telemetry_contexts.proto";
+import "dbtlabs/proto/public/v1/events/vortex.proto";
+
+
+// As of 2025/05, enums are not handled properly with Vortex
+// so we document possible values in comments but use string fields.
+
+// Possible values for AgentToolCallPermissionCheck.response_type:
+//   "approved"       - user approved the tool call
+//   "rejected"       - user rejected the tool call
+//   "approved_session" - user approved the tool for the rest of the session
+
+// Fired when a user approves or rejects a tool call proposed by the agent.
+message AgentToolCallPermissionCheck {
+  option (v1.public.common.vortex_namespace) = VORTEX_ICEBERG_NAMESPACE_TELEMETRY;
+  option (v1.public.common.vortex_enabled) = true;
+
+  // Server enrichment for this event
+  v1.events.vortex.VortexMessageEnrichment enrichment = 1;
+
+  // dbt Cloud context
+  v1.public.common.vortex_telemetry_contexts.VortexTelemetryDbtCloudContext ctx = 2;
+
+  // Identifies a single agent request/trace (a conversation consists of multiple traces)
+  string copilot_request_id = 3;
+
+  // Agent thread for multi-turn correlation
+  string thread_id = 4;
+
+  // Which tool was proposed (e.g. "write_file", "execute_sql")
+  string tool_name = 5;
+
+  // JSON-encoded tool call parameters
+  string tool_parameters = 6;
+
+  // User's decision; see response_type values documented above
+  string response_type = 7;
+
+  // Model-generated tool call identifier (e.g. "toolu_01abc...")
+  // Unique per tool invocation within a run; useful for deduplication
+  // and joining with backend ToolCalled events.
+  string call_id = 8;
+  v1.public.common.vortex_telemetry_contexts.VortexTelemetryCommonContext common_context = 9;
+}
+
+message AgentToolCallPresented {
+  option (v1.public.common.vortex_namespace) = VORTEX_ICEBERG_NAMESPACE_TELEMETRY;
+  option (v1.public.common.vortex_enabled) = true;
+
+  v1.events.vortex.VortexMessageEnrichment enrichment = 1;
+  v1.public.common.vortex_telemetry_contexts.VortexTelemetryDbtCloudContext ctx = 2;
+  string copilot_request_id = 3;
+  string thread_id = 4;
+  string tool_name = 5;
+  string call_id = 6;
+  string agent_mode = 7;
+  string skill_name = 8;          // populated only when tool_name = "load_dbt_skill"
+  int64 skills_available_count = 9;
+  v1.public.common.vortex_telemetry_contexts.VortexTelemetryCommonContext common_context = 10;
+}
+
+// Fires when execution begins. A Started without a matching Completed indicates the tool ran but never returned.
+message AgentToolCallStarted {
+  option (v1.public.common.vortex_namespace) = VORTEX_ICEBERG_NAMESPACE_TELEMETRY;
+  option (v1.public.common.vortex_enabled) = true;
+
+  v1.events.vortex.VortexMessageEnrichment enrichment = 1;
+  v1.public.common.vortex_telemetry_contexts.VortexTelemetryDbtCloudContext ctx = 2;
+  string copilot_request_id = 3;
+  string thread_id = 4;
+  string tool_name = 5;
+  string call_id = 6;
+  string agent_mode = 7;
+  string skill_name = 8;
+  bool auto_allowed = 9;
+  v1.public.common.vortex_telemetry_contexts.VortexTelemetryCommonContext common_context = 10;
+}
+
+// Possible values for AgentToolCallCompleted.status:
+//   "success" - tool ran to completion
+//   "error"   - tool returned an error
+//   "timeout" - tool exceeded its execution budget
+message AgentToolCallCompleted {
+  option (v1.public.common.vortex_namespace) = VORTEX_ICEBERG_NAMESPACE_TELEMETRY;
+  option (v1.public.common.vortex_enabled) = true;
+
+  v1.events.vortex.VortexMessageEnrichment enrichment = 1;
+  v1.public.common.vortex_telemetry_contexts.VortexTelemetryDbtCloudContext ctx = 2;
+  string copilot_request_id = 3;
+  string thread_id = 4;
+  string tool_name = 5;
+  string call_id = 6;
+  string agent_mode = 7;
+  string skill_name = 8;
+  string status = 9;
+  optional int64 output_length = 10;
+  optional string error_message = 11;
+  bool auto_allowed = 12;
+  // Server-generated id correlating to backend command execution.
+  // Populated only for invoke_dbt, run_autofix, run_dbt_index.
+  optional string command_id = 13;
+  v1.public.common.vortex_telemetry_contexts.VortexTelemetryCommonContext common_context = 14;
+}

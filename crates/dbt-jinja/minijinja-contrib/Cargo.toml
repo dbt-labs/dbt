@@ -1,0 +1,62 @@
+[package]
+name = "minijinja-contrib"
+version = "2.5.0"
+edition = "2021"
+license = "Apache-2.0"
+authors = ["Armin Ronacher <armin.ronacher@active-4.com>"]
+description = "Extra utilities for MiniJinja"
+homepage = "https://github.com/mitsuhiko/minijinja"
+repository = "https://github.com/mitsuhiko/minijinja"
+keywords = ["jinja", "jinja2", "templates"]
+readme = "README.md"
+rust-version = "1.80"
+
+[package.metadata.docs.rs]
+rustdoc-args = ["--cfg", "docsrs", "--html-in-header", "doc-header.html"]
+all-features = true
+
+[features]
+default = []
+pycompat = ["minijinja/builtins"]
+testing = []
+datetime = ["time"]
+timezone = ["time-tz"]
+rand = ["dep:rand"]
+wordcount = ["unicode_categories"]
+wordwrap = ["textwrap"]
+unicode_wordwrap = [
+  "wordwrap",
+  "textwrap/unicode-linebreak",
+  "textwrap/unicode-width",
+]
+
+[dependencies]
+chrono = { version = "0.4.26", features = ["serde"] }
+chrono-tz = { workspace = true }
+dbt-fusion-workspace-hack = { version = "0.1" }
+fancy-regex = { workspace = true }
+iana-time-zone = { workspace = true }
+indexmap = { workspace = true }
+minijinja = { workspace = true }
+rand = { version = "0.8.5", optional = true, default-features = false, features = [
+  "std",
+  "std_rng",
+  "small_rng",
+] }
+regex = { workspace = true }
+serde = "1.0.164"
+textwrap = { version = "0.16.1", optional = true, default-features = false, features = [
+  "smawk",
+] }
+time = { version = "0.3.35", optional = true, features = [
+  "serde",
+  "formatting",
+  "parsing",
+] }
+time-tz = { version = "2.0.0", features = ["db"], optional = true }
+unicode_categories = { version = "0.1.1", optional = true }
+
+
+[dev-dependencies]
+insta = { version = "1.38.0", features = ["glob", "serde"] }
+similar-asserts = "1.4.2"

@@ -1,0 +1,14 @@
+name: 'layered'
+config-version: 2
+version: '0.1'
+
+profile: 'layered'
+
+model-paths: ["models"]
+seed-paths: ["seeds"]
+clean-targets:
+  - "target"
+
+models:
+  layered:
+    +materialized: table

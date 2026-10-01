@@ -1,0 +1,2 @@
+{% extends "layout.txt" %}
+{% block body %}Hello {{ name }}!{% endblock %}

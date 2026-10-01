@@ -1,0 +1,57 @@
+[package]
+authors.workspace = true
+description.workspace = true
+edition.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+license.workspace = true
+name = "dbt-parser"
+repository.workspace = true
+version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+dbt-adapter = { workspace = true }
+dbt-adapter-core = { workspace = true }
+dbt-common = { workspace = true }
+dbt-dag = { workspace = true }
+dbt-frontend-common = { workspace = true }
+dbt-jinja-utils = { workspace = true }
+dbt-schemas = { workspace = true }
+dbt-selector-parser = { workspace = true }
+dbt-telemetry = { workspace = true }
+pathdiff = { workspace = true }
+
+chrono = { workspace = true }
+chrono-tz = { workspace = true }
+csv = { workspace = true }
+dbt-yaml = { workspace = true }
+indexmap = { workspace = true }
+itertools = { workspace = true }
+md5 = { workspace = true }
+minijinja = { workspace = true }
+num_cpus = { workspace = true }
+regex = { workspace = true }
+ruff_python_ast = { git = "https://github.com/astral-sh/ruff", tag = "0.8.4" }
+ruff_python_parser = { git = "https://github.com/astral-sh/ruff", tag = "0.8.4" }
+ruff_text_size = { git = "https://github.com/astral-sh/ruff", tag = "0.8.4" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+
+dbt-fusion-workspace-hack = { version = "0.1" }
+tracing = { workspace = true }
+
+[dev-dependencies]
+dbt-runtime = { workspace = true }
+dbt-test-primitives = { workspace = true }
+dbt-tracing = { workspace = true, features = ["test-utils"] }
+serde = { workspace = true }
+tempfile = { workspace = true }
+
+[lib]
+doctest = true
+name = "dbt_parser"
+path = "src/lib.rs"

@@ -1,0 +1,10 @@
+---
+source: minijinja/tests/test_templates.rs
+description: "{% macro other_macro() %}23{% endmacro %}\n{% macro foo() %}[{% do other_macro() %}]{% endmacro %}\nShould not show output of other_macro: {{ foo() }}"
+info: {}
+input_file: minijinja/tests/inputs/do_closure.txt
+---
+
+
+Should not show output of other_macro: []
+

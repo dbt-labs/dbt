@@ -1,0 +1,33 @@
+---
+source: fs/sa/crates/dbt-jinja/minijinja/tests/test_parser.rs
+description: "<title>{% block title %}{% endblock %}</title>\n{% block body %}\n    foo\n{% endblock body %}"
+input_file: fs/sa/crates/dbt-jinja/minijinja/tests/parser-inputs/block.txt
+---
+Ok(
+    Template {
+        children: [
+            EmitRaw {
+                raw: "<title>",
+            } @ 1:1-1:8,
+            Block {
+                name: "title",
+                body: [],
+                start_tag_span:  @ 1:8-1:25,
+                end_tag_span:  @ 1:25-1:39,
+            } @ 1:8-1:39,
+            EmitRaw {
+                raw: "</title>\n",
+            } @ 1:39-2:1,
+            Block {
+                name: "body",
+                body: [
+                    EmitRaw {
+                        raw: "\n    foo\n",
+                    } @ 2:17-4:1,
+                ],
+                start_tag_span:  @ 2:1-2:17,
+                end_tag_span:  @ 4:1-4:20,
+            } @ 2:1-4:20,
+        ],
+    } @ 1:1-4:20,
+)

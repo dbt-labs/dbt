@@ -1,0 +1,113 @@
+---
+source: minijinja/tests/test_lexer.rs
+description: "<ul>\n  # for item in seq\n    <li>{{ item }}</li>\n  # endfor\n</ul>\n\n<ul>\n  # for item in [(\n    1, 2\n  ), (3, 4)]\n    <li>{{ item\n      }}</li>  # not a line statement {{ var }} # not a line statement\n  # endfor\n</ul>\n\n# block foo\n# endblock"
+input_file: minijinja/tests/lexer-inputs/line-statement.txt
+---
+TemplateData("<ul>\n")
+  "<ul>\n"
+BlockStart
+  "#"
+Ident("for")
+  "for"
+Ident("item")
+  "item"
+Ident("in")
+  "in"
+Ident("seq")
+  "seq"
+BlockEnd
+  "\n"
+TemplateData("    <li>")
+  "    <li>"
+VariableStart
+  "{{"
+Ident("item")
+  "item"
+VariableEnd
+  "}}"
+TemplateData("</li>\n")
+  "</li>\n"
+BlockStart
+  "#"
+Ident("endfor")
+  "endfor"
+BlockEnd
+  "\n"
+TemplateData("</ul>\n\n<ul>\n")
+  "</ul>\n\n<ul>\n"
+BlockStart
+  "#"
+Ident("for")
+  "for"
+Ident("item")
+  "item"
+Ident("in")
+  "in"
+BracketOpen
+  "["
+ParenOpen
+  "("
+Int(1)
+  "1"
+Comma
+  ","
+Int(2)
+  "2"
+ParenClose
+  ")"
+Comma
+  ","
+ParenOpen
+  "("
+Int(3)
+  "3"
+Comma
+  ","
+Int(4)
+  "4"
+ParenClose
+  ")"
+BracketClose
+  "]"
+BlockEnd
+  "\n"
+TemplateData("    <li>")
+  "    <li>"
+VariableStart
+  "{{"
+Ident("item")
+  "item"
+VariableEnd
+  "}}"
+TemplateData("</li>  # not a line statement ")
+  "</li>  # not a line statement "
+VariableStart
+  "{{"
+Ident("var")
+  "var"
+VariableEnd
+  "}}"
+TemplateData(" # not a line statement\n")
+  " # not a line statement\n"
+BlockStart
+  "#"
+Ident("endfor")
+  "endfor"
+BlockEnd
+  "\n"
+TemplateData("</ul>\n\n")
+  "</ul>\n\n"
+BlockStart
+  "#"
+Ident("block")
+  "block"
+Ident("foo")
+  "foo"
+BlockEnd
+  "\n"
+BlockStart
+  "#"
+Ident("endblock")
+  "endblock"
+BlockEnd
+  ""

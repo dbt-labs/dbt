@@ -1,0 +1,10 @@
+{
+  "lstrip_blocks": true,
+  "trim_blocks": true
+}
+---
+<ul>
+  {% raw %}
+    <li>{{ item }}</li>
+  {% endraw %}
+</ul>

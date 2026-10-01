@@ -1,0 +1,46 @@
+{
+  "nav": [
+    {
+      "link": "/",
+      "title": "Index"
+    },
+    {
+      "link": "/docs",
+      "title": "Docs",
+      "children": [
+        {
+          "link": "/docs/installation",
+          "title": "Installation",
+          "children": [
+            {
+              "link": "/docs/installation/quickstart",
+              "title": "Quickstart"
+            },
+            {
+              "link": "/docs/installation/advanced",
+              "title": "Advanced"
+            }
+          ]
+        },
+        {
+          "link": "/docs/faq",
+          "title": "FAQ"
+        }
+      ]
+    }
+  ]
+}
+---
+<ul class="nav">
+{% for item in nav recursive %}
+  <li><a href={{ item.link }}">{{ item.title }}</a>{%
+    if item.children %}<ul>{{ loop(item.children) }}</ul>{% endif %}</li>
+{% endfor %}
+</ul>
+
+<ul class="nav">
+{% for item in nav recursive %}
+  <li><a href={{ item.link }}">{{ item.title }}</a>{%
+    if item.children %}<ul>{{ loop(item.children)|upper }}</ul>{% endif %}</li>
+{% endfor %}
+</ul>

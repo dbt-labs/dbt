@@ -1,0 +1,83 @@
+---
+source: crates/dbt-jinja/minijinja/tests/test_lexer.rs
+description: "{{ with_int(42, -42) }}\n{{ with_float(1.5, -1.5) }}\n{{ with_string(\"string\") }}\n{{ validate.any[a, b, c] }}"
+input_file: crates/dbt-jinja/minijinja/tests/lexer-inputs/things.txt
+---
+VariableStart
+  "{{"
+Ident("with_int")
+  "with_int"
+ParenOpen
+  "("
+Int(42)
+  "42"
+Comma
+  ","
+Minus
+  "-"
+Int(42)
+  "42"
+ParenClose
+  ")"
+VariableEnd
+  "}}"
+TemplateData("\n")
+  "\n"
+VariableStart
+  "{{"
+Ident("with_float")
+  "with_float"
+ParenOpen
+  "("
+Float(1.5)
+  "1.5"
+Comma
+  ","
+Minus
+  "-"
+Float(1.5)
+  "1.5"
+ParenClose
+  ")"
+VariableEnd
+  "}}"
+TemplateData("\n")
+  "\n"
+VariableStart
+  "{{"
+Ident("with_string")
+  "with_string"
+ParenOpen
+  "("
+Str("string")
+  "\"string\""
+ParenClose
+  ")"
+VariableEnd
+  "}}"
+TemplateData("\n")
+  "\n"
+VariableStart
+  "{{"
+Ident("validate")
+  "validate"
+Dot
+  "."
+Ident("any")
+  "any"
+BracketOpen
+  "["
+Ident("a")
+  "a"
+Comma
+  ","
+Ident("b")
+  "b"
+Comma
+  ","
+Ident("c")
+  "c"
+BracketClose
+  "]"
+VariableEnd
+  "}}"

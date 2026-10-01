@@ -1,0 +1,19 @@
+name: CODEOWNERS Coverage Check
+permissions:
+  contents: read
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  validate-codeowners:
+    if: github.actor != 'dependabot[bot]'
+    runs-on: ${{ vars.UBUNTU_RUNNER }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mszostok/codeowners-validator@v0.7.2
+        with:
+          github_access_token: "${{ secrets.OWNERS_VALIDATOR_GITHUB_SECRET }}"
+          checks: "owners,duppatterns"
+          experimental_checks: "notowned"

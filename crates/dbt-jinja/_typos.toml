@@ -1,0 +1,9 @@
+[default]
+extend-ignore-identifiers-re = ["workd", "entit", "FoO", "mis", "flate"]
+
+[default.extend-words]
+# these are false positives in data/examples
+ridiculus = "ridiculus"
+facilisi = "facilisi"
+Facilisi = "Facilisi"
+nam = "nam"

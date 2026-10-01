@@ -1,0 +1,12 @@
+---
+source: fs/sa/crates/dbt-jinja/minijinja/tests/test_compiler.rs
+expression: "&c.finish()"
+---
+(
+    [
+        00000 | LoadConst('a')  [line 0],
+        00001 | LoadConst(42),
+        00002 | StringConcat( @ 1:1-1:1),
+    ],
+    {},
+)

@@ -1,0 +1,28 @@
+name: Publish To PyPI
+
+on:
+  push:
+    tags:
+      - '**[0-9]+.[0-9]+.[0-9]+*'
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  publish-pypi:
+    name: Publish to pypi.org
+    runs-on: ${{ vars.UBUNTU_RUNNER }}
+    env:
+      MATURIN_PYPI_TOKEN: ${{ secrets.PYPI_API_TOKEN }}
+    if: ${{ !github.event.pull_request }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: wheels
+      - name: Publish to PyPI
+        uses: PyO3/maturin-action@v1
+        with:
+          command: upload
+          args: --non-interactive --skip-existing minijinja-*

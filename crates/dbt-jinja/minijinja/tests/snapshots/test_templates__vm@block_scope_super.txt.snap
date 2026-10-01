@@ -1,0 +1,11 @@
+---
+source: minijinja/tests/test_templates.rs
+description: "{% extends \"var_setting_layout.txt\" %}\n{% block test %}before: {% set var = \"from self\" %}{{ var }}\n{{ super() }}\nafter: {{ var }}{% endblock %}"
+info:
+  var: foo
+input_file: minijinja/tests/inputs/block_scope_super.txt
+---
+before: from self
+inside: from super
+after: from self
+

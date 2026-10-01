@@ -1,0 +1,42 @@
+[package]
+name = "dbt-index-core"
+version.workspace = true
+homepage.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "Provider interfaces for dbt-index."
+license.workspace = true
+keywords.workspace = true
+edition.workspace = true
+
+[lints]
+workspace = true
+
+[lib]
+path = "src/lib.rs"
+
+[features]
+# The `info_schema::bench` harness is a measurement tool, not part of the
+# shipped library. It is compiled only under `cfg(test)` or when a consumer opts
+# in with this feature (the dbt-cli e2e benchmark does, via dev-dependencies).
+bench = []
+
+[dependencies]
+adbc-core = { workspace = true }
+arrow-array = { workspace = true }
+arrow-buffer = { workspace = true }
+arrow-cast = { workspace = true }
+arrow-schema = { workspace = true }
+arrow-select = { workspace = true }
+chrono = { workspace = true }
+dbt-adbc = { workspace = true }
+dbt-fusion-workspace-hack = { version = "0.1" }
+parquet = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_arrow = { workspace = true }
+serde_json = { workspace = true }
+simd-json = { version = "0.14", features = ["serde_impl"] }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

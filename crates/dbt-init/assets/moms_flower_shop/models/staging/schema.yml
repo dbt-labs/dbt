@@ -1,0 +1,106 @@
+version: 2
+
+models:
+  - name: stg_inapp_events
+    description: Cleaned and transformed in-app events with proper timestamp formatting
+    config:
+      primary_key: event_id
+    columns:
+      - name: event_id
+        description: Unique identifier for the event
+
+        tests:
+          - unique
+          - not_null
+      - name: customer_id
+        description: Customer who triggered the event
+      - name: event_time
+        description: Timestamp when the event occurred (converted from Unix)
+      - name: event_name
+        description: Name of the event
+      - name: platform
+        description: Platform where the event occurred
+
+  - name: stg_marketing_campaigns
+    description: Aggregated marketing campaign data with duration and spend metrics
+    columns:
+      - name: campaign_id
+        description: Unique campaign identifier
+        tests:
+          - unique
+          - not_null
+      - name: campaign_name
+        description: Name of the marketing campaign
+      - name: campaign_type
+        description: Type of campaign
+      - name: start_time
+        description: Campaign start time
+      - name: end_time
+        description: Campaign end time
+      - name: campaign_duration
+        description: Number of events in the campaign
+      - name: total_campaign_spent
+        description: Total amount spent on the campaign
+
+  - name: stg_app_installs
+    description: >
+      This table is a staging table which adds campaign information
+      to app install events (alternative version with different join logic)
+    columns:
+      - name: event_id
+        description: Unique identifier for the install event
+      - name: customer_id
+        description: Customer who installed the app
+      - name: install_time
+        description: When the app was installed
+      - name: platform
+        description: Platform where the app was installed
+      - name: campaign_id
+        description: Associated marketing campaign (-1 for organic)
+      - name: campaign_name
+        description: Campaign name (organic for non-campaign installs)
+      - name: campaign_type
+        description: Type of campaign (organic for non-campaign installs)
+
+  - name: stg_customers
+    description: Customer information enriched with marketing and address data
+    columns:
+      - name: customer_id
+        description: Unique customer identifier
+        tests:
+          - unique
+          - not_null
+      - name: first_name
+        description: Customer's first name
+      - name: last_name
+        description: Customer's last name
+      - name: full_name
+        description: Customer's full name (concatenated)
+      - name: email
+        description: Customer's email address
+      - name: gender
+        description: Customer's gender
+      - name: campaign_id
+        description: Associated marketing campaign
+      - name: campaign_name
+        description: Marketing campaign name
+      - name: campaign_type
+        description: Marketing campaign type
+      - name: address_id
+        description: Associated address identifier
+      - name: full_address
+        description: Complete address
+      - name: state
+        description: State abbreviation
+
+  - name: stg_installs_per_campaign
+    description: Aggregated install counts by campaign
+    columns:
+      - name: campaign_id
+        description: Campaign identifier
+        tests:
+          - unique
+          - not_null
+      - name: total_num_installs
+        description: Total number of installs for this campaign
+

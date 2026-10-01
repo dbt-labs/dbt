@@ -1,0 +1,7 @@
+{
+  "var": "foo"
+}
+---
+{{ var }}
+{% block test %}{% set var = "bar" %}{{ var }}{% endblock %}
+{{ var }}

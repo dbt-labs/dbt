@@ -1,0 +1,43 @@
+[package]
+name = "dbt-init"
+version.workspace = true
+homepage.workspace = true
+repository.workspace = true
+authors.workspace = true
+description.workspace = true
+license.workspace = true
+keywords.workspace = true
+edition.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+dbt-adapter-core = { workspace = true }
+dbt-cloud-api = { workspace = true }
+dbt-cloud-config = { workspace = true }
+dbt-common = { workspace = true }
+dbt-error = { workspace = true }
+dbt-jinja-utils = { workspace = true }
+dbt-loader = { workspace = true }
+dbt-profile-schemas = { workspace = true }
+dbt-schemas = { workspace = true }
+
+dialoguer = { workspace = true }
+dirs = { workspace = true }
+merge = { workspace = true }
+reqwest = { workspace = true }
+
+dbt-yaml = { workspace = true }
+
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+
+rust-embed = { workspace = true }
+
+dbt-fusion-workspace-hack = { version = "0.1" }
+
+[lib]
+name = "dbt_init"
+path = "src/mod.rs"
+doctest = false

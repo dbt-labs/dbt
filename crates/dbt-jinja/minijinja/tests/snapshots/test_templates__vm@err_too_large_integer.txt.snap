@@ -1,0 +1,24 @@
+---
+source: fs/sa/crates/dbt-jinja/minijinja/tests/test_templates.rs
+description: "{{ 10234237582375823572357238572385723582375827582375238572385723857238572385723523758 }}"
+info:
+  __minijinja_current_path: err_too_large_integer.txt
+  __minijinja_current_span:
+    start_line: 1
+    start_col: 1
+    start_offset: 0
+    end_line: 1
+    end_col: 1
+    end_offset: 0
+input_file: fs/sa/crates/dbt-jinja/minijinja/tests/inputs/err_too_large_integer.txt
+---
+!!!SYNTAX ERROR!!!
+
+Error {
+    kind: SyntaxError,
+    detail: "invalid integer (too large)",
+    name: "err_too_large_integer.txt",
+}
+
+syntax error: invalid integer (too large)
+(in err_too_large_integer.txt:1:87)

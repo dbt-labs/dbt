@@ -1,0 +1,5 @@
+---
+source: fs/sa/crates/dbt-adapter/src/engine/xdbc/duckdb_attach_snapshot_tests.rs
+input_file: fs/sa/crates/dbt-adapter/src/engine/xdbc/fixtures/iceberg_rest_minimal/catalogs.yml
+---
+ATTACH IF NOT EXISTS 'demo_warehouse' AS rest_demo (TYPE ICEBERG, READ_ONLY false)

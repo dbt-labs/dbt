@@ -1,0 +1,2 @@
+[alias]
+ci = "run --quiet --package dbt-ci --"

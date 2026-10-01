@@ -1,0 +1,5 @@
+{%- include "./include.txt" %}
+{%- for _ in range(count or 1) %}
+Hello {{ name }}!
+{%- endfor %}
+List: {{ list|join("|") }}

@@ -1,0 +1,27 @@
+[package]
+name = "dbt-pretty-table"
+description = "Pretty-printing of Arrow RecordBatch data as tables, CSV, JSON, YAML"
+version.workspace = true
+homepage.workspace = true
+repository.workspace = true
+authors.workspace = true
+license.workspace = true
+keywords.workspace = true
+edition.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+arrow = { workspace = true }
+arrow-schema = { workspace = true }
+comfy-table = { workspace = true }
+dbt-fusion-workspace-hack = { version = "0.1" }
+dbt-yaml = { workspace = true }
+serde_json = { workspace = true }
+term_size = { workspace = true }
+
+[lib]
+name = "dbt_pretty_table"
+path = "src/lib.rs"
+doctest = false

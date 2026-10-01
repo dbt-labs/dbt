@@ -1,0 +1,11 @@
+# In-memory duckdb: a real adapter, no credentials, nothing to clean up.
+# The target is indirected through target_env_var so a test can point this project
+# at another adapter — test_unimplemented_adapter_is_not_fatal uses datafusion.
+hello_world:
+  target: '{{ env_var("target_env_var", "duckdb_mem") }}'
+  outputs:
+    duckdb_mem:
+      type: duckdb
+      path: ':memory:'
+      threads: 1
+      schema: main

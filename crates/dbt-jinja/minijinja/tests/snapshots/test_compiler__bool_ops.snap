@@ -1,0 +1,14 @@
+---
+source: fs/sa/crates/dbt-jinja/minijinja/tests/test_compiler.rs
+expression: "&c.finish()"
+---
+(
+    [
+        00000 | Lookup("first",  @ 1:1-1:1)  [line 0],
+        00001 | JumpIfFalseOrPop(5,  @ 1:1-1:1),
+        00002 | Lookup("second",  @ 1:1-1:1),
+        00003 | JumpIfTrueOrPop(5,  @ 1:1-1:1),
+        00004 | Lookup("third",  @ 1:1-1:1),
+    ],
+    {},
+)

@@ -1,0 +1,9 @@
+{
+  "foo": 42,
+  "bar": 23
+}
+---
+{% macro dialog(title) %}Dialog is {{ title }}{% endmacro %}
+
+Should be empty: {% do dialog(title="Hello World") if foo > bar %}
+Should show: {{ dialog(title="Hello World") }}

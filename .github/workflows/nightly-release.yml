@@ -27,7 +27,7 @@ defaults:
     shell: bash
 
 env:
-  RELEASE_BRANCH: "main"
+  RELEASE_BRANCH: "1.latest"
 
 jobs:
   aggregate-release-data:

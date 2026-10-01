@@ -1,0 +1,2652 @@
+syntax = "proto3";
+
+package v1.public.fields.core_types;
+option go_package = "github.com/dbt-labs/proto-golang/v1/public/fields/core_types";
+
+import "google/protobuf/timestamp.proto";
+import "google/protobuf/struct.proto";
+
+// Common event info
+message CoreEventInfo {
+    string name = 1;
+    string code = 2;
+    string msg = 3;
+    string level = 4;
+    string invocation_id = 5;
+    int32 pid = 6;
+    string thread = 7;
+    google.protobuf.Timestamp ts = 8;
+    map<string, string> extra = 9;
+    string category = 10;
+}
+
+// NodeRelation
+message NodeRelation {
+    string database = 10;
+    string schema = 11;
+    string alias = 12;
+    string relation_name = 13;
+}
+
+// NodeInfo
+message NodeInfo {
+    string node_path = 1;
+    string node_name = 2;
+    string unique_id = 3;
+    string resource_type = 4;
+    string materialized = 5;
+    string node_status = 6;
+    string node_started_at = 7;
+    string node_finished_at = 8;
+    google.protobuf.Struct meta = 9;
+    NodeRelation node_relation = 10;
+    string node_checksum = 11;
+}
+
+// TimingInfoMsg
+message TimingInfoMsg {
+    string name = 1;
+    google.protobuf.Timestamp started_at = 2;
+    google.protobuf.Timestamp completed_at = 3;
+}
+
+// RunResult
+message RunResultMsg {
+    string status = 1;
+    string message = 2;
+    repeated TimingInfoMsg timing_info = 3;
+    string thread = 4;
+    float execution_time = 5;
+    google.protobuf.Struct adapter_response = 6;
+    int32 num_failures = 7;
+    optional string state_decision_id = 8;
+}
+
+//ColumnType
+message ColumnType {
+    string column_name = 1;
+    string previous_column_type = 2;
+    string current_column_type = 3;
+}
+
+// ColumnConstraint
+message ColumnConstraint {
+    string column_name = 1;
+    string constraint_name = 2;
+    string constraint_type = 3;
+}
+
+// ModelConstraint
+message ModelConstraint {
+    string constraint_name = 1;
+    string constraint_type = 2;
+    repeated string columns = 3;
+}
+
+// A - Pre-project loading
+
+// A001
+message MainReportVersion {
+    string version = 1;
+    int32 log_version = 2;
+}
+
+message MainReportVersionMsg {
+    CoreEventInfo info = 1;
+    MainReportVersion data = 2;
+}
+
+// A002
+message MainReportArgs {
+    map<string, string> args = 1;
+}
+
+message MainReportArgsMsg {
+    CoreEventInfo info = 1;
+    MainReportArgs data = 2;
+}
+
+// A003
+message MainTrackingUserState {
+    string user_state = 1;
+}
+
+message MainTrackingUserStateMsg {
+    CoreEventInfo info = 1;
+    MainTrackingUserState data = 2;
+}
+
+// A004
+message MergedFromState {
+    int32 num_merged = 1;
+    repeated string sample = 2;
+}
+
+message MergedFromStateMsg {
+    CoreEventInfo info = 1;
+    MergedFromState data = 2;
+}
+
+// A005
+message MissingProfileTarget {
+    string profile_name = 1;
+    string target_name = 2;
+}
+
+message MissingProfileTargetMsg {
+    CoreEventInfo info = 1;
+    MissingProfileTarget data = 2;
+}
+
+// Skipped A006, A007
+
+// A008
+message InvalidOptionYAML {
+    string option_name = 1;
+}
+
+message InvalidOptionYAMLMsg {
+    CoreEventInfo info = 1;
+    InvalidOptionYAML data = 2;
+}
+
+// A009
+message LogDbtProjectError {
+    string exc = 1;
+}
+
+message LogDbtProjectErrorMsg {
+    CoreEventInfo info = 1;
+    LogDbtProjectError data = 2;
+}
+
+// Skipped A010
+
+// A011
+message LogDbtProfileError {
+    string exc = 1;
+    repeated string profiles = 2;
+}
+
+message LogDbtProfileErrorMsg {
+    CoreEventInfo info = 1;
+    LogDbtProfileError data = 2;
+}
+
+// Skipped A012, A013, A014, A015, A016
+
+// A017
+message StarterProjectPath {
+    string dir = 1;
+}
+
+message StarterProjectPathMsg {
+    CoreEventInfo info = 1;
+    StarterProjectPath data = 2;
+}
+
+// A018
+message ConfigFolderDirectory {
+    string dir = 1;
+}
+
+message ConfigFolderDirectoryMsg {
+    CoreEventInfo info = 1;
+    ConfigFolderDirectory data = 2;
+}
+
+// A019
+message NoSampleProfileFound {
+    string adapter = 1;
+}
+
+message NoSampleProfileFoundMsg {
+    CoreEventInfo info = 1;
+    NoSampleProfileFound data = 2;
+}
+
+// A020
+message ProfileWrittenWithSample {
+    string name = 1;
+    string path = 2;
+}
+
+message ProfileWrittenWithSampleMsg {
+    CoreEventInfo info = 1;
+    ProfileWrittenWithSample data = 2;
+}
+
+// A021
+message ProfileWrittenWithTargetTemplateYAML {
+    string name = 1;
+    string path = 2;
+}
+
+message ProfileWrittenWithTargetTemplateYAMLMsg {
+    CoreEventInfo info = 1;
+    ProfileWrittenWithTargetTemplateYAML data = 2;
+}
+
+// A022
+message ProfileWrittenWithProjectTemplateYAML {
+    string name = 1;
+    string path = 2;
+}
+
+message ProfileWrittenWithProjectTemplateYAMLMsg {
+    CoreEventInfo info = 1;
+    ProfileWrittenWithProjectTemplateYAML data = 2;
+}
+
+// A023
+message SettingUpProfile {
+}
+
+message SettingUpProfileMsg {
+    CoreEventInfo info = 1;
+    SettingUpProfile data = 2;
+}
+
+// A024
+message InvalidProfileTemplateYAML {
+}
+
+message InvalidProfileTemplateYAMLMsg {
+    CoreEventInfo info = 1;
+    InvalidProfileTemplateYAML data = 2;
+}
+
+// A025
+message ProjectNameAlreadyExists {
+    string name = 1;
+}
+
+message ProjectNameAlreadyExistsMsg {
+    CoreEventInfo info = 1;
+    ProjectNameAlreadyExists data = 2;
+}
+
+// A026
+message ProjectCreated {
+    string project_name = 1;
+    string docs_url = 2;
+    string slack_url = 3;
+}
+
+message ProjectCreatedMsg {
+    CoreEventInfo info = 1;
+    ProjectCreated data = 2;
+}
+
+// D - Deprecation
+
+// D001
+message PackageRedirectDeprecation {
+    string old_name = 1;
+    string new_name = 2;
+}
+
+message PackageRedirectDeprecationMsg {
+    CoreEventInfo info = 1;
+    PackageRedirectDeprecation data = 2;
+}
+
+// D002
+message PackageInstallPathDeprecation {
+}
+
+message PackageInstallPathDeprecationMsg {
+    CoreEventInfo info = 1;
+    PackageInstallPathDeprecation data = 2;
+}
+
+// D003
+message ConfigSourcePathDeprecation {
+    string deprecated_path = 1;
+    string exp_path = 2;
+}
+
+message ConfigSourcePathDeprecationMsg {
+    CoreEventInfo info = 1;
+    ConfigSourcePathDeprecation data = 2;
+}
+
+// D004
+message ConfigDataPathDeprecation {
+    string deprecated_path = 1;
+    string exp_path = 2;
+}
+
+message ConfigDataPathDeprecationMsg {
+    CoreEventInfo info = 1;
+    ConfigDataPathDeprecation data = 2;
+}
+
+// D006
+message MetricAttributesRenamed {
+    string metric_name = 1;
+}
+
+message MetricAttributesRenamedMsg {
+    CoreEventInfo info = 1;
+    MetricAttributesRenamed data = 2;
+}
+
+// D007
+message ExposureNameDeprecation {
+    string exposure = 1;
+}
+
+message ExposureNameDeprecationMsg {
+    CoreEventInfo info = 1;
+    ExposureNameDeprecation data = 2;
+}
+
+// D008
+message InternalDeprecation {
+    string name = 1;
+    string reason = 2;
+    string suggested_action = 3;
+    string version = 4;
+}
+
+message InternalDeprecationMsg {
+    CoreEventInfo info = 1;
+    InternalDeprecation data = 2;
+}
+
+// D009
+message EnvironmentVariableRenamed {
+    string old_name = 1;
+    string new_name = 2;
+}
+
+message EnvironmentVariableRenamedMsg {
+    CoreEventInfo info = 1;
+    EnvironmentVariableRenamed data = 2;
+}
+
+// D010
+message ConfigLogPathDeprecation {
+    string deprecated_path = 1;
+}
+
+message ConfigLogPathDeprecationMsg {
+    CoreEventInfo info = 1;
+    ConfigLogPathDeprecation data = 2;
+}
+
+// D011
+message ConfigTargetPathDeprecation {
+    string deprecated_path = 1;
+}
+
+message ConfigTargetPathDeprecationMsg {
+    CoreEventInfo info = 1;
+    ConfigTargetPathDeprecation data = 2;
+}
+
+// D012
+message TestsConfigDeprecation {
+    string deprecated_path = 1;
+    string exp_path = 2;
+}
+
+message TestsConfigDeprecationMsg {
+    CoreEventInfo info = 1;
+    TestsConfigDeprecation data = 2;
+}
+
+// D013
+message ProjectFlagsMovedDeprecation {
+}
+
+message ProjectFlagsMovedDeprecationMsg {
+    CoreEventInfo info = 1;
+    ProjectFlagsMovedDeprecation data = 2;
+}
+
+// D014
+message SpacesInResourceNameDeprecation {
+    string unique_id = 1;
+    string level = 2;
+}
+
+message SpacesInResourceNameDeprecationMsg {
+    CoreEventInfo info = 1;
+    SpacesInResourceNameDeprecation data = 2;
+}
+
+// D015
+message ResourceNamesWithSpacesDeprecation {
+    int32 count_invalid_names = 1;
+    bool show_debug_hint = 2;
+    string level = 3;
+}
+
+message ResourceNamesWithSpacesDeprecationMsg {
+    CoreEventInfo info = 1;
+    ResourceNamesWithSpacesDeprecation data = 2;
+}
+
+// D016
+message PackageMaterializationOverrideDeprecation {
+    string package_name = 1;
+    string materialization_name = 2;
+}
+
+message PackageMaterializationOverrideDeprecationMsg {
+    CoreEventInfo info = 1;
+    PackageMaterializationOverrideDeprecation data = 2;
+}
+
+// D017
+message SourceFreshnessProjectHooksNotRun {}
+
+message SourceFreshnessProjectHooksNotRunMsg {
+    CoreEventInfo info = 1;
+    SourceFreshnessProjectHooksNotRun data = 2;
+}
+
+// D018
+message MFTimespineWithoutYamlConfigurationDeprecation {}
+
+message MFTimespineWithoutYamlConfigurationDeprecationMsg {
+    CoreEventInfo info = 1;
+    MFTimespineWithoutYamlConfigurationDeprecation data = 2;
+}
+
+// D019
+message MFCumulativeTypeParamsDeprecation {}
+
+message MFCumulativeTypeParamsDeprecationMsg {
+    CoreEventInfo info = 1;
+    MFCumulativeTypeParamsDeprecation data = 2;
+}
+
+// D020
+message MicrobatchMacroOutsideOfBatchesDeprecation {}
+
+message MicrobatchMacroOutsideOfBatchesDeprecationMsg {
+    CoreEventInfo info = 1;
+    MicrobatchMacroOutsideOfBatchesDeprecation data = 2;
+}
+
+// Skipping D021. It belonged to the now deleted PackageRedirectDeprecationSummaryMsg.
+
+// D022
+message GenericJSONSchemaValidationDeprecation {
+    string violation = 1;
+    string file = 2;
+    string key_path = 3;
+}
+
+message GenericJSONSchemaValidationDeprecationMsg {
+    CoreEventInfo info = 1;
+    GenericJSONSchemaValidationDeprecation data = 2;
+}
+
+// D023
+message UnexpectedJinjaBlockDeprecation {
+    string msg = 1;
+    string file = 2;
+}
+
+message UnexpectedJinjaBlockDeprecationMsg {
+    CoreEventInfo info = 1;
+    UnexpectedJinjaBlockDeprecation data = 2;
+}
+
+// D024
+message DuplicateYAMLKeysDeprecation {
+    string duplicate_description = 1;
+    string file = 2;
+}
+
+message DuplicateYAMLKeysDeprecationMsg {
+    CoreEventInfo info = 1;
+    DuplicateYAMLKeysDeprecation data = 2;
+}
+
+// D025
+message CustomTopLevelKeyDeprecation {
+    string msg = 1;
+    string file = 2;
+}
+
+message CustomTopLevelKeyDeprecationMsg {
+    CoreEventInfo info = 1;
+    CustomTopLevelKeyDeprecation data = 2;
+}
+
+// D026
+message CustomKeyInConfigDeprecation {
+    string key = 1;
+    string file = 2;
+    string key_path = 3;
+}
+
+message CustomKeyInConfigDeprecationMsg {
+    CoreEventInfo info = 1;
+    CustomKeyInConfigDeprecation data = 2;
+}
+
+// D027
+message CustomKeyInObjectDeprecation {
+    string key = 1;
+    string file = 2;
+    string key_path = 3;
+}
+
+message CustomKeyInObjectDeprecationMsg {
+    CoreEventInfo info = 1;
+    CustomKeyInObjectDeprecation data = 2;
+}
+
+// D028
+message DeprecationSummary {
+    string event_name = 1;
+    string event_code = 2;
+    int32 occurrences = 3;
+}
+
+message DeprecationsSummary {
+    repeated DeprecationSummary summaries = 1;
+    bool show_all_hint = 2;
+}
+
+message DeprecationsSummaryMsg {
+    CoreEventInfo info = 1;
+    DeprecationsSummary data = 2;
+}
+
+// D029
+message CustomOutputPathInSourceFreshnessDeprecation {
+    string path = 1;
+}
+
+message CustomOutputPathInSourceFreshnessDeprecationMsg {
+    CoreEventInfo info = 1;
+    CustomOutputPathInSourceFreshnessDeprecation data = 2;
+}
+
+// D030
+message PropertyMovedToConfigDeprecation {
+    string key = 1;
+    string file = 2;
+    string key_path = 3;
+}
+
+message PropertyMovedToConfigDeprecationMsg {
+    CoreEventInfo info = 1;
+    PropertyMovedToConfigDeprecation data = 2;
+}
+
+// D031
+message WEOIncludeExcludeDeprecation {
+    bool found_include = 1;
+    bool found_exclude = 2;
+}
+
+message WEOIncludeExcludeDeprecationMsg {
+    CoreEventInfo info = 1;
+    WEOIncludeExcludeDeprecation data = 2;
+}
+
+// D032
+message ModelParamUsageDeprecation {}
+
+message ModelParamUsageDeprecationMsg {
+    CoreEventInfo info = 1;
+    ModelParamUsageDeprecation data = 2;
+}
+
+// D033
+message ResourceTypesParamUsageDeprecation {}
+
+message ResourceTypesParamUsageDeprecationMsg {
+    CoreEventInfo info = 1;
+    ResourceTypesParamUsageDeprecation data = 2;
+}
+
+// D034
+message ModulesItertoolsUsageDeprecation {}
+
+message ModulesItertoolsUsageDeprecationMsg {
+    CoreEventInfo info = 1;
+    ModulesItertoolsUsageDeprecation data = 2;
+}
+
+// D035
+message SourceOverrideDeprecation {
+    string source_name = 1;
+    string file = 2;
+}
+
+message SourceOverrideDeprecationMsg {
+    CoreEventInfo info = 1;
+    SourceOverrideDeprecation data = 2;
+}
+
+// D036
+message EnvironmentVariableNamespaceDeprecation {
+    string env_var = 1;
+    string reserved_prefix = 2;
+}
+
+message EnvironmentVariableNamespaceDeprecationMsg {
+    CoreEventInfo info = 1;
+    EnvironmentVariableNamespaceDeprecation data = 2;
+}
+
+// D037
+message MissingPlusPrefixDeprecation {
+    string key = 1;
+    string file = 2;
+    string key_path = 3;
+}
+
+message MissingPlusPrefixDeprecationMsg {
+    CoreEventInfo info = 1;
+    MissingPlusPrefixDeprecation data = 2;
+}
+
+// unused
+message ArgsPropertyInGenericTestDeprecation {
+    string file = 1;
+}
+
+message ArgsPropertyInGenericTestDeprecationMsg {
+    CoreEventInfo info = 1;
+    ArgsPropertyInGenericTestDeprecation data = 2;
+}
+
+
+// D038
+message ArgumentsPropertyInGenericTestDeprecation {
+    string test_name = 1;
+}
+
+message ArgumentsPropertyInGenericTestDeprecationMsg {
+    CoreEventInfo info = 1;
+    ArgumentsPropertyInGenericTestDeprecation data = 2;
+}
+
+// D039
+message MissingArgumentsPropertyInGenericTestDeprecation {
+    string test_name = 1;
+}
+
+message MissingArgumentsPropertyInGenericTestDeprecationMsg {
+    CoreEventInfo info = 1;
+    MissingArgumentsPropertyInGenericTestDeprecation data = 2;
+}
+
+// D040
+message DuplicateNameDistinctNodeTypesDeprecation {
+    string resource_name = 1;
+    string package_name = 2;
+    string unique_id1 = 3;
+    string unique_id2 = 4;
+}
+
+message DuplicateNameDistinctNodeTypesDeprecationMsg {
+    CoreEventInfo info = 1;
+    DuplicateNameDistinctNodeTypesDeprecation data = 2;
+}
+
+
+// D041 -- used in dbt_common
+
+
+// D042
+message TimeDimensionsRequireGranularityDeprecation {
+    string msg = 1;
+}
+
+message TimeDimensionsRequireGranularityDeprecationMsg {
+    CoreEventInfo info = 1;
+    TimeDimensionsRequireGranularityDeprecation data = 2;
+}
+
+
+// D043
+message GenericSemanticLayerDeprecation {
+    string msg = 1;
+}
+
+message GenericSemanticLayerDeprecationMsg {
+    CoreEventInfo info = 1;
+    GenericSemanticLayerDeprecation data = 2;
+}
+
+// D044
+message GenerateSchemaNameNullValueDeprecation {
+    string resource_unique_id = 1;
+}
+
+message GenerateSchemaNameNullValueDeprecationMsg {
+    CoreEventInfo info = 1;
+    GenerateSchemaNameNullValueDeprecation data = 2;
+}
+
+// D045
+message UnknownFlagsDeprecation {
+    repeated string flag_names = 1;
+}
+
+message UnknownFlagsDeprecationMsg {
+    CoreEventInfo info = 1;
+    UnknownFlagsDeprecation data = 2;
+}
+
+// I065
+message DeprecatedModel {
+    string model_name = 1;
+    string model_version = 2;
+    string deprecation_date = 3;
+}
+
+message DeprecatedModelMsg {
+    CoreEventInfo info = 1;
+    DeprecatedModel data = 2;
+}
+
+
+// I - Project parsing
+
+// I001
+message InputFileDiffError {
+    string category = 1;
+    string file_id = 2;
+}
+
+message InputFileDiffErrorMsg {
+    CoreEventInfo info = 1;
+    InputFileDiffError data = 2;
+}
+
+// Skipping I002, I003, I004, I005, I006, I007
+
+// I008
+message InvalidValueForField {
+    string field_name = 1;
+    string field_value = 2;
+}
+
+message InvalidValueForFieldMsg {
+    CoreEventInfo info = 1;
+    InvalidValueForField data = 2;
+}
+
+// I009
+message ValidationWarning {
+    string resource_type = 1;
+    string field_name = 2;
+    string node_name = 3;
+}
+
+message ValidationWarningMsg {
+    CoreEventInfo info = 1;
+    ValidationWarning data = 2;
+}
+
+// I010
+message ParsePerfInfoPath {
+    string path = 1;
+}
+
+message ParsePerfInfoPathMsg {
+    CoreEventInfo info = 1;
+    ParsePerfInfoPath data = 2;
+}
+
+// Skipping I013
+
+// I014
+message PartialParsingErrorProcessingFile {
+    string file = 1;
+}
+
+message PartialParsingErrorProcessingFileMsg {
+    CoreEventInfo info = 1;
+    PartialParsingErrorProcessingFile data = 2;
+}
+
+// I016
+message PartialParsingError {
+    map<string, string> exc_info = 1;
+}
+
+message PartialParsingErrorMsg {
+    CoreEventInfo info = 1;
+    PartialParsingError data = 2;
+}
+
+// I017
+message PartialParsingSkipParsing {
+}
+
+message PartialParsingSkipParsingMsg {
+    CoreEventInfo info = 1;
+    PartialParsingSkipParsing data = 2;
+}
+
+// Skipped I018, I019, I020, I021, I022, I023
+
+// I024
+message UnableToPartialParse {
+    string reason = 1;
+}
+
+message UnableToPartialParseMsg {
+    CoreEventInfo info = 1;
+    UnableToPartialParse data = 2;
+}
+
+// I025
+message StateCheckVarsHash {
+    string checksum = 1;
+    string vars = 2;
+    string profile = 3;
+    string target = 4;
+    string version = 5;
+}
+
+message StateCheckVarsHashMsg {
+    CoreEventInfo info = 1;
+    StateCheckVarsHash data = 2;
+}
+
+// Skipped I026, I027
+
+
+// I028
+message PartialParsingNotEnabled {
+}
+
+message PartialParsingNotEnabledMsg {
+    CoreEventInfo info = 1;
+    PartialParsingNotEnabled data = 2;
+}
+
+// I029
+message ParsedFileLoadFailed {
+    string path = 1;
+    string exc = 2;
+    string exc_info = 3;
+}
+
+message ParsedFileLoadFailedMsg {
+    CoreEventInfo info = 1;
+    ParsedFileLoadFailed data = 2;
+}
+
+// Skipping I030 - I039
+
+// I040
+message PartialParsingEnabled {
+    int32 deleted = 1;
+    int32 added = 2;
+    int32 changed = 3;
+}
+
+message PartialParsingEnabledMsg {
+    CoreEventInfo info = 1;
+    PartialParsingEnabled data = 2;
+}
+
+// I041
+message PartialParsingFile {
+    string file_id = 1;
+    string operation = 2;
+}
+
+message PartialParsingFileMsg {
+    CoreEventInfo info = 1;
+    PartialParsingFile data = 2;
+}
+
+// Skipped I042, I043, I044, I045, I046, I047, I048, I049
+
+// I050
+message InvalidDisabledTargetInTestNode {
+    string resource_type_title = 1;
+    string unique_id = 2;
+    string original_file_path = 3;
+    string target_kind = 4;
+    string target_name = 5;
+    string target_package = 6;
+}
+
+message InvalidDisabledTargetInTestNodeMsg {
+    CoreEventInfo info = 1;
+    InvalidDisabledTargetInTestNode data = 2;
+}
+
+// I051
+message UnusedResourceConfigPath {
+    repeated string unused_config_paths = 1;
+}
+
+message UnusedResourceConfigPathMsg {
+    CoreEventInfo info = 1;
+    UnusedResourceConfigPath data = 2;
+}
+
+// I052
+message SeedIncreased {
+    string package_name = 1;
+    string name = 2;
+}
+
+message SeedIncreasedMsg {
+    CoreEventInfo info = 1;
+    SeedIncreased data = 2;
+}
+
+// I053
+message SeedExceedsLimitSamePath {
+    string package_name = 1;
+    string name = 2;
+}
+
+message SeedExceedsLimitSamePathMsg {
+    CoreEventInfo info = 1;
+    SeedExceedsLimitSamePath data = 2;
+}
+
+// I054
+message SeedExceedsLimitAndPathChanged {
+    string package_name = 1;
+    string name = 2;
+}
+
+message SeedExceedsLimitAndPathChangedMsg {
+    CoreEventInfo info = 1;
+    SeedExceedsLimitAndPathChanged data = 2;
+}
+
+// I055
+message SeedExceedsLimitChecksumChanged {
+    string package_name = 1;
+    string name = 2;
+    string checksum_name = 3;
+}
+
+message SeedExceedsLimitChecksumChangedMsg {
+    CoreEventInfo info = 1;
+    SeedExceedsLimitChecksumChanged data = 2;
+}
+
+// I056
+message UnusedTables {
+    repeated string unused_tables = 1;
+}
+
+message UnusedTablesMsg {
+    CoreEventInfo info = 1;
+    UnusedTables data = 2;
+}
+
+// I057
+message WrongResourceSchemaFile {
+    string patch_name = 1;
+    string resource_type = 2;
+    string plural_resource_type = 3;
+    string yaml_key = 4;
+    string file_path = 5;
+}
+
+message WrongResourceSchemaFileMsg {
+    CoreEventInfo info = 1;
+    WrongResourceSchemaFile data = 2;
+}
+
+// I058
+message NoNodeForYamlKey {
+    string patch_name = 1;
+    string yaml_key = 2;
+    string file_path = 3;
+}
+
+message NoNodeForYamlKeyMsg {
+    CoreEventInfo info = 1;
+    NoNodeForYamlKey data = 2;
+}
+
+// I059
+message MacroNotFoundForPatch {
+    string patch_name = 1;
+}
+
+message MacroNotFoundForPatchMsg {
+    CoreEventInfo info = 1;
+    MacroNotFoundForPatch data = 2;
+}
+
+// I060
+message NodeNotFoundOrDisabled {
+    string original_file_path = 1;
+    string unique_id = 2;
+    string resource_type_title = 3;
+    string target_name = 4;
+    string target_kind = 5;
+    string target_package = 6;
+    string disabled = 7;
+}
+
+message NodeNotFoundOrDisabledMsg {
+    CoreEventInfo info = 1;
+    NodeNotFoundOrDisabled data = 2;
+}
+
+// I061
+message JinjaLogWarning {
+    NodeInfo node_info = 1;
+    string msg = 2;
+}
+
+message JinjaLogWarningMsg {
+    CoreEventInfo info = 1;
+    JinjaLogWarning data = 2;
+}
+
+// I062
+message JinjaLogInfo {
+    NodeInfo node_info = 1;
+    string msg = 2;
+}
+
+message  JinjaLogInfoMsg {
+    CoreEventInfo info = 1;
+    JinjaLogInfo data = 2;
+}
+
+// I063
+message JinjaLogDebug {
+    NodeInfo node_info = 1;
+    string msg = 2;
+}
+
+message JinjaLogDebugMsg {
+    CoreEventInfo info = 1;
+    JinjaLogDebug data = 2;
+}
+
+// I064
+message UnpinnedRefNewVersionAvailable {
+    NodeInfo node_info = 1;
+    string ref_node_name  = 2;
+    string ref_node_package = 3;
+    string ref_node_version = 4;
+    string ref_max_version = 5;
+}
+
+message UnpinnedRefNewVersionAvailableMsg {
+    CoreEventInfo info = 1;
+    UnpinnedRefNewVersionAvailable data = 2;
+}
+
+// I066
+message UpcomingReferenceDeprecation {
+    string model_name = 1;
+    string ref_model_package = 2;
+    string ref_model_name = 3;
+    string ref_model_version = 4;
+    string ref_model_latest_version = 5;
+    string ref_model_deprecation_date = 6;
+}
+
+message UpcomingReferenceDeprecationMsg {
+    CoreEventInfo info = 1;
+    UpcomingReferenceDeprecation data = 2;
+}
+
+// I067
+message DeprecatedReference {
+    string model_name = 1;
+    string ref_model_package = 2;
+    string ref_model_name = 3;
+    string ref_model_version = 4;
+    string ref_model_latest_version = 5;
+    string ref_model_deprecation_date = 6;
+}
+
+message DeprecatedReferenceMsg {
+    CoreEventInfo info = 1;
+    DeprecatedReference data = 2;
+}
+
+// I068
+message UnsupportedConstraintMaterialization {
+    string materialized = 1;
+}
+
+message UnsupportedConstraintMaterializationMsg {
+    CoreEventInfo info = 1;
+    UnsupportedConstraintMaterialization data = 2;
+}
+
+// I069
+message ParseInlineNodeError{
+    NodeInfo node_info = 1;
+    string exc = 2;
+}
+
+message ParseInlineNodeErrorMsg {
+    CoreEventInfo info = 1;
+    ParseInlineNodeError data = 2;
+}
+
+// I070
+message SemanticValidationFailure {
+    string msg = 2;
+}
+
+message SemanticValidationFailureMsg {
+    CoreEventInfo info = 1;
+    SemanticValidationFailure data = 2;
+}
+
+// I071
+message UnversionedBreakingChange {
+    repeated string breaking_changes = 1;
+    string model_name = 2;
+    string model_file_path = 3;
+    bool contract_enforced_disabled = 4;
+    repeated string columns_removed = 5;
+    repeated ColumnType column_type_changes = 6;
+    repeated ColumnConstraint enforced_column_constraint_removed = 7;
+    repeated ModelConstraint enforced_model_constraint_removed = 8;
+    repeated string materialization_changed = 9;
+}
+
+message UnversionedBreakingChangeMsg {
+    CoreEventInfo info = 1;
+    UnversionedBreakingChange data = 2;
+}
+
+// I072
+message WarnStateTargetEqual {
+    string state_path = 1;
+}
+
+message WarnStateTargetEqualMsg {
+    CoreEventInfo info = 1;
+    WarnStateTargetEqual data = 2;
+}
+
+// I073
+message FreshnessConfigProblem {
+    string msg = 1;
+}
+
+message FreshnessConfigProblemMsg {
+    CoreEventInfo info = 1;
+    FreshnessConfigProblem data = 2;
+}
+
+
+// I074
+message MicrobatchModelNoEventTimeInputs {
+    string model_name = 1;
+}
+
+message MicrobatchModelNoEventTimeInputsMsg {
+    CoreEventInfo info = 1;
+    MicrobatchModelNoEventTimeInputs data = 2;
+}
+
+
+// I075
+message InvalidConcurrentBatchesConfig {
+    int32 num_models = 1;
+    string adapter_type = 2;
+}
+
+message InvalidConcurrentBatchesConfigMsg {
+    CoreEventInfo info = 1;
+    InvalidConcurrentBatchesConfig data = 2;
+}
+
+// I076
+message InvalidMacroAnnotation {
+    string msg = 1;
+    string macro_unique_id = 2;
+    string macro_file_path = 3;
+}
+
+message InvalidMacroAnnotationMsg {
+    CoreEventInfo info = 1;
+    InvalidMacroAnnotation data = 2;
+}
+
+
+// I077
+message PackageNodeDependsOnRootProjectNode {
+    string node_name = 1;
+    string package_name = 2;
+    string root_project_unique_id = 3;
+}
+
+message PackageNodeDependsOnRootProjectNodeMsg {
+    CoreEventInfo info = 1;
+    PackageNodeDependsOnRootProjectNode data = 2;
+}
+
+// I078
+message MFConverterIssue {
+    string issue_type = 1;
+    string element_name = 2;
+    string converter_name = 3;
+}
+
+message MFConverterIssueMsg {
+    CoreEventInfo info = 1;
+    MFConverterIssue data = 2;
+}
+
+
+// M - Deps generation
+
+// M001
+message GitSparseCheckoutSubdirectory {
+    string subdir = 1;
+}
+
+message GitSparseCheckoutSubdirectoryMsg {
+    CoreEventInfo info = 1;
+    GitSparseCheckoutSubdirectory data = 2;
+}
+
+// M002
+message GitProgressCheckoutRevision {
+    string revision = 1;
+}
+
+message GitProgressCheckoutRevisionMsg {
+    CoreEventInfo info = 1;
+    GitProgressCheckoutRevision data = 2;
+}
+
+// M003
+message GitProgressUpdatingExistingDependency {
+    string dir = 1;
+}
+
+message GitProgressUpdatingExistingDependencyMsg {
+    CoreEventInfo info = 1;
+    GitProgressUpdatingExistingDependency data = 2;
+}
+
+// M004
+message GitProgressPullingNewDependency {
+    string dir = 1;
+}
+
+message GitProgressPullingNewDependencyMsg {
+    CoreEventInfo info = 1;
+    GitProgressPullingNewDependency data = 2;
+}
+
+// M005
+message GitNothingToDo {
+    string sha = 1;
+}
+
+message GitNothingToDoMsg {
+    CoreEventInfo info = 1;
+    GitNothingToDo data = 2;
+}
+
+// M006
+message GitProgressUpdatedCheckoutRange {
+    string start_sha = 1;
+    string end_sha = 2;
+}
+
+message GitProgressUpdatedCheckoutRangeMsg {
+    CoreEventInfo info = 1;
+    GitProgressUpdatedCheckoutRange data = 2;
+}
+
+// M007
+message GitProgressCheckedOutAt {
+    string end_sha = 1;
+}
+
+message GitProgressCheckedOutAtMsg {
+    CoreEventInfo info = 1;
+    GitProgressCheckedOutAt data = 2;
+}
+
+// M008
+message RegistryProgressGETRequest {
+    string url = 1;
+}
+
+message RegistryProgressGETRequestMsg {
+    CoreEventInfo info = 1;
+    RegistryProgressGETRequest data = 2;
+}
+
+// M009
+message RegistryProgressGETResponse {
+    string url = 1;
+    int32 resp_code = 2;
+}
+
+message RegistryProgressGETResponseMsg {
+   CoreEventInfo info = 1;
+    RegistryProgressGETResponse data = 2;
+}
+
+// M010
+message SelectorReportInvalidSelector {
+    string valid_selectors = 1;
+    string spec_method = 2;
+    string raw_spec = 3;
+}
+
+message SelectorReportInvalidSelectorMsg {
+    CoreEventInfo info = 1;
+    SelectorReportInvalidSelector data = 2;
+}
+
+// Skipped M011 and M012
+
+// M013
+message DepsNoPackagesFound {
+}
+
+message DepsNoPackagesFoundMsg {
+    CoreEventInfo info = 1;
+    DepsNoPackagesFound data = 2;
+}
+
+// M014
+message DepsStartPackageInstall {
+    string package_name = 1;
+}
+
+message DepsStartPackageInstallMsg {
+    CoreEventInfo info = 1;
+    DepsStartPackageInstall data = 2;
+}
+
+// M015
+message DepsInstallInfo {
+    string version_name = 1;
+}
+
+message DepsInstallInfoMsg {
+    CoreEventInfo info = 1;
+    DepsInstallInfo data = 2;
+}
+
+// M016
+message DepsUpdateAvailable {
+    string version_latest = 1;
+}
+
+message DepsUpdateAvailableMsg {
+    CoreEventInfo info = 1;
+    DepsUpdateAvailable data = 2;
+}
+
+// M017
+message DepsUpToDate {
+}
+
+message DepsUpToDateMsg {
+    CoreEventInfo info = 1;
+    DepsUpToDate data = 2;
+}
+
+// M018
+message DepsListSubdirectory {
+    string subdirectory = 1;
+}
+
+message DepsListSubdirectoryMsg {
+    CoreEventInfo info = 1;
+    DepsListSubdirectory data = 2;
+}
+
+// M019
+message DepsNotifyUpdatesAvailable {
+    repeated string packages = 1;
+}
+
+message DepsNotifyUpdatesAvailableMsg {
+    CoreEventInfo info = 1;
+    DepsNotifyUpdatesAvailable data = 2;
+}
+
+// M022
+message RegistryIndexProgressGETRequest {
+    string url = 1;
+}
+
+message RegistryIndexProgressGETRequestMsg {
+    CoreEventInfo info = 1;
+    RegistryIndexProgressGETRequest data = 2;
+}
+
+// M023
+message RegistryIndexProgressGETResponse {
+    string url = 1;
+    int32 resp_code = 2;
+}
+
+message RegistryIndexProgressGETResponseMsg {
+    CoreEventInfo info = 1;
+    RegistryIndexProgressGETResponse data = 2;
+}
+
+// M024
+message RegistryResponseUnexpectedType {
+    string response = 1;
+}
+
+message RegistryResponseUnexpectedTypeMsg {
+    CoreEventInfo info = 1;
+    RegistryResponseUnexpectedType data = 2;
+}
+
+// M025
+message RegistryResponseMissingTopKeys {
+    string response = 1;
+}
+
+message RegistryResponseMissingTopKeysMsg {
+    CoreEventInfo info = 1;
+    RegistryResponseMissingTopKeys data = 2;
+}
+
+// M026
+message RegistryResponseMissingNestedKeys {
+    string response = 1;
+}
+
+message RegistryResponseMissingNestedKeysMsg {
+    CoreEventInfo info = 1;
+    RegistryResponseMissingNestedKeys data = 2;
+}
+
+// M027
+message RegistryResponseExtraNestedKeys {
+    string response = 1;
+}
+
+message RegistryResponseExtraNestedKeysMsg {
+    CoreEventInfo info = 1;
+    RegistryResponseExtraNestedKeys data = 2;
+}
+
+// M028
+message DepsSetDownloadDirectory {
+    string path = 1;
+}
+
+message DepsSetDownloadDirectoryMsg {
+    CoreEventInfo info = 1;
+    DepsSetDownloadDirectory data = 2;
+}
+
+// M029
+message DepsUnpinned {
+    string revision = 1;
+    string git = 2;
+}
+
+message DepsUnpinnedMsg {
+    CoreEventInfo info = 1;
+    DepsUnpinned data = 2;
+}
+
+// M030
+message NoNodesForSelectionCriteria {
+    string spec_raw = 1;
+}
+
+message NoNodesForSelectionCriteriaMsg {
+    CoreEventInfo info = 1;
+    NoNodesForSelectionCriteria data = 2;
+}
+
+// M031
+message DepsLockUpdating{
+    string lock_filepath = 1;
+}
+
+message DepsLockUpdatingMsg{
+    CoreEventInfo info = 1;
+    DepsLockUpdating data = 2;
+}
+
+// M032
+message DepsAddPackage{
+    string package_name = 1;
+    string version = 2;
+    string packages_filepath = 3;
+}
+
+message DepsAddPackageMsg{
+    CoreEventInfo info = 1;
+    DepsAddPackage data = 2;
+}
+
+//M033
+message DepsFoundDuplicatePackage{
+    map<string, string> removed_package = 1;
+}
+
+message DepsFoundDuplicatePackageMsg{
+    CoreEventInfo info = 1;
+    DepsFoundDuplicatePackage data = 2;
+}
+
+//M034
+message DepsVersionMissing{
+    string source = 1;
+}
+
+message DepsVersionMissingMsg{
+    CoreEventInfo info = 1;
+    DepsVersionMissing data = 2;
+}
+
+//M035
+message DepsScrubbedPackageName{
+    string package_name = 1;
+}
+
+message DepsScrubbedPackageNameMsg{
+    CoreEventInfo info = 1;
+    DepsScrubbedPackageName data = 2;
+}
+
+// P - Artifacts
+
+// P001
+message ArtifactWritten {
+    string artifact_type = 1;
+    string artifact_path = 2;
+}
+
+message ArtifactWrittenMsg {
+    CoreEventInfo info = 1;
+    ArtifactWritten data = 2;
+}
+
+// Q - Node execution
+
+// Q001
+message RunningOperationCaughtError {
+    string exc = 1;
+}
+
+message RunningOperationCaughtErrorMsg {
+    CoreEventInfo info = 1;
+    RunningOperationCaughtError data = 2;
+}
+
+// Q002
+message CompileComplete {
+}
+
+message CompileCompleteMsg {
+    CoreEventInfo info = 1;
+    CompileComplete data = 2;
+}
+
+// Q003
+message FreshnessCheckComplete {
+}
+
+message FreshnessCheckCompleteMsg {
+    CoreEventInfo info = 1;
+    FreshnessCheckComplete data = 2;
+}
+
+// Q004
+message SeedHeader {
+    string header = 1;
+}
+
+message SeedHeaderMsg {
+    CoreEventInfo info = 1;
+    SeedHeader data = 2;
+}
+
+// Skipped Q005
+
+// Q006
+message SQLRunnerException {
+    string exc = 1;
+    string exc_info = 2;
+    NodeInfo node_info = 3;
+}
+
+message SQLRunnerExceptionMsg {
+    CoreEventInfo info = 1;
+    SQLRunnerException data = 2;
+}
+
+message Group {
+    string name = 1;
+    string package_name = 3;
+    map<string, string> owner = 7;
+}
+
+// Q007
+message LogTestResult {
+    NodeInfo node_info = 1;
+    string name = 2;
+    string status = 3;
+    int32 index = 4;
+    int32 num_models = 5;
+    float execution_time = 6;
+    int32 num_failures = 7;
+    Group group = 8;
+    string attached_node = 9;
+}
+
+message LogTestResultMsg {
+    CoreEventInfo info = 1;
+    LogTestResult data = 2;
+}
+
+// Q008
+message LogNodeResult {
+    NodeInfo node_info = 1;
+    string description = 2;
+    string status = 3;
+    int32 index = 4;
+    int32 total = 5;
+    float execution_time = 6;
+    string msg = 7;
+}
+
+message LogNodeResultMsg {
+    CoreEventInfo info = 1;
+    LogNodeResult data = 2;
+}
+
+// Skipped Q009, Q010
+
+
+// Q011
+message LogStartLine {
+    NodeInfo node_info = 1;
+    string description = 2;
+    int32 index = 3;
+    int32 total = 4;
+}
+
+message LogStartLineMsg {
+    CoreEventInfo info = 1;
+    LogStartLine data = 2;
+}
+
+// Q012
+message LogModelResult {
+    NodeInfo node_info = 1;
+    string description = 2;
+    string status = 3;
+    int32 index = 4;
+    int32 total = 5;
+    float execution_time = 6;
+    Group group = 7;
+}
+
+message LogModelResultMsg {
+    CoreEventInfo info = 1;
+    LogModelResult data = 2;
+}
+
+// skipped Q013, Q014
+
+// Q015
+message LogSnapshotResult {
+    NodeInfo node_info = 1;
+    string description = 2;
+    string status = 3;
+    int32 index = 4;
+    int32 total = 5;
+    float execution_time = 6;
+    map<string, string> cfg = 7;
+    string result_message = 8;
+    Group group = 9;
+}
+
+message LogSnapshotResultMsg {
+    CoreEventInfo info = 1;
+    LogSnapshotResult data = 2;
+}
+
+// Q016
+message LogSeedResult {
+    NodeInfo node_info = 1;
+    string status = 2;
+    string result_message = 3;
+    int32 index = 4;
+    int32 total = 5;
+    float execution_time = 6;
+    string schema = 7;
+    string relation = 8;
+    Group group = 9;
+}
+
+message LogSeedResultMsg {
+    CoreEventInfo info = 1;
+    LogSeedResult data = 2;
+}
+
+// Skipped Q017
+
+// Q018
+message LogFreshnessResult {
+    string status = 1;
+    NodeInfo node_info = 2;
+    int32 index = 3;
+    int32 total = 4;
+    float execution_time = 5;
+    string source_name = 6;
+    string table_name = 7;
+}
+
+message LogFreshnessResultMsg {
+    CoreEventInfo info = 1;
+    LogFreshnessResult data = 2;
+}
+
+// Q019
+message LogNodeNoOpResult {
+    NodeInfo node_info = 1;
+    string description = 2;
+    string status = 3;
+    int32 index = 4;
+    int32 total = 5;
+    float execution_time = 6;
+}
+
+message LogNodeNoOpResultMsg {
+    CoreEventInfo info = 1;
+    LogNodeNoOpResult data = 2;
+}
+
+
+// Skipped Q020, Q021
+
+
+// Q022
+message LogCancelLine {
+    string conn_name = 1;
+}
+
+message LogCancelLineMsg {
+    CoreEventInfo info = 1;
+    LogCancelLine data = 2;
+}
+
+// Q023
+message DefaultSelector {
+    string name = 1;
+}
+
+message DefaultSelectorMsg {
+    CoreEventInfo info = 1;
+    DefaultSelector data = 2;
+}
+
+// Q024
+message NodeStart {
+    NodeInfo node_info = 1;
+}
+
+message NodeStartMsg {
+    CoreEventInfo info = 1;
+    NodeStart data = 2;
+}
+
+// Q025
+message NodeFinished {
+    NodeInfo node_info = 1;
+    RunResultMsg run_result = 2;
+}
+
+message NodeFinishedMsg {
+    CoreEventInfo info = 1;
+    NodeFinished data = 2;
+}
+
+// Q026
+message QueryCancelationUnsupported {
+    string type = 1;
+}
+
+message QueryCancelationUnsupportedMsg {
+    CoreEventInfo info = 1;
+    QueryCancelationUnsupported data = 2;
+}
+
+// Q027
+message ConcurrencyLine {
+    int32 num_threads = 1;
+    string target_name = 2;
+    int32 node_count = 3;
+}
+
+message ConcurrencyLineMsg {
+    CoreEventInfo info = 1;
+    ConcurrencyLine data = 2;
+}
+
+// Q029
+message WritingInjectedSQLForNode {
+    NodeInfo node_info = 1;
+}
+
+message WritingInjectedSQLForNodeMsg {
+    CoreEventInfo info = 1;
+    WritingInjectedSQLForNode data = 2;
+}
+
+// Q030
+message NodeCompiling {
+    NodeInfo node_info = 1;
+}
+
+message NodeCompilingMsg {
+    CoreEventInfo info = 1;
+    NodeCompiling data = 2;
+}
+
+// Q031
+message NodeExecuting {
+    NodeInfo node_info = 1;
+}
+
+message NodeExecutingMsg {
+    CoreEventInfo info = 1;
+    NodeExecuting data = 2;
+}
+
+// Q032
+message LogHookStartLine {
+    NodeInfo node_info = 1;
+    string statement = 2;
+    int32 index = 3;
+    int32 total = 4;
+}
+
+message LogHookStartLineMsg {
+    CoreEventInfo info = 1;
+    LogHookStartLine data = 2;
+}
+
+// Q033
+message LogHookEndLine {
+    NodeInfo node_info = 1;
+    string statement = 2;
+    string status = 3;
+    int32 index = 4;
+    int32 total = 5;
+    float execution_time = 6;
+}
+
+message LogHookEndLineMsg {
+    CoreEventInfo info = 1;
+    LogHookEndLine data = 2;
+}
+
+// Q034
+message SkippingDetails {
+    NodeInfo node_info = 1;
+    string resource_type = 2;
+    string schema = 3;
+    string node_name = 4;
+    int32 index = 5;
+    int32 total = 6;
+    Group group = 7;
+}
+
+message SkippingDetailsMsg {
+    CoreEventInfo info = 1;
+    SkippingDetails data = 2;
+}
+
+// Q035
+message NothingToDo {
+}
+
+message NothingToDoMsg {
+    CoreEventInfo info = 1;
+    NothingToDo data = 2;
+}
+
+// Q036
+message RunningOperationUncaughtError {
+    string exc = 1;
+}
+
+message RunningOperationUncaughtErrorMsg {
+    CoreEventInfo info = 1;
+    RunningOperationUncaughtError data = 2;
+}
+
+// Q037
+message EndRunResult {
+    repeated RunResultMsg results = 1;
+    float elapsed_time = 2;
+    google.protobuf.Timestamp generated_at = 3;
+    bool success = 4;
+}
+
+message EndRunResultMsg {
+    CoreEventInfo info = 1;
+    EndRunResult data = 2;
+}
+
+// Q038
+message NoNodesSelected {
+}
+
+message NoNodesSelectedMsg {
+    CoreEventInfo info = 1;
+    NoNodesSelected data = 2;
+}
+
+// Q039
+message CommandCompleted {
+    string command = 1;
+    bool success = 2;
+    google.protobuf.Timestamp completed_at = 3;
+    float elapsed = 4;
+}
+
+message CommandCompletedMsg {
+    CoreEventInfo info = 1;
+    CommandCompleted data = 2;
+}
+
+// Q041
+message ShowNode {
+    string node_name = 1;
+    string preview = 2;
+    bool is_inline = 3;
+    string output_format = 4;
+    string unique_id = 5;
+    bool quiet = 6;
+}
+
+message ShowNodeMsg {
+    CoreEventInfo info = 1;
+    ShowNode data = 2;
+}
+
+// Q042
+message CompiledNode {
+    string node_name = 1;
+    string compiled = 2;
+    bool is_inline = 3;
+    string output_format = 4;
+    string unique_id = 5;
+    bool quiet = 6;
+}
+
+message CompiledNodeMsg {
+    CoreEventInfo info = 1;
+    CompiledNode data = 2;
+}
+
+// Q043
+message SnapshotTimestampWarning {
+    string snapshot_time_data_type = 1;
+    string updated_at_data_type = 2;
+}
+
+message SnapshotTimestampWarningMsg {
+    CoreEventInfo info = 1;
+    SnapshotTimestampWarning data = 2;
+}
+
+// Q044
+message MicrobatchExecutionDebug {
+    string msg = 1;
+}
+
+message MicrobatchExecutionDebugMsg {
+    CoreEventInfo info = 1;
+    MicrobatchExecutionDebug data = 2;
+}
+
+// Q045
+message LogStartBatch {
+    NodeInfo node_info = 1;
+    string description = 2;
+    int32 batch_index = 3;
+    int32 total_batches = 4;
+}
+
+message LogStartBatchMsg {
+    CoreEventInfo info = 1;
+    LogStartBatch data = 2;
+}
+
+// Q046
+message LogBatchResult {
+    NodeInfo node_info = 1;
+    string description = 2;
+    string status = 3;
+    int32 batch_index = 4;
+    int32 total_batches = 5;
+    float execution_time = 6;
+    Group group = 7;
+}
+
+message LogBatchResultMsg {
+    CoreEventInfo info = 1;
+    LogBatchResult data = 2;
+}
+
+// Q047
+message LogFunctionResult {
+    NodeInfo node_info = 1;
+    string description = 2;
+    string status = 3;
+    int32 index = 4;
+    int32 total = 5;
+    float execution_time = 6;
+    Group group = 7;
+}
+
+message LogFunctionResultMsg {
+    CoreEventInfo info = 1;
+    LogFunctionResult data = 2;
+}
+
+// Q048
+message LogStartOverload {
+    NodeInfo node_info = 1;
+    string description = 2;
+    int32 overload_index = 3;
+    int32 total_overloads = 4;
+}
+
+message LogStartOverloadMsg {
+    CoreEventInfo info = 1;
+    LogStartOverload data = 2;
+}
+
+// Q049
+message LogOverloadResult {
+    NodeInfo node_info = 1;
+    string description = 2;
+    string status = 3;
+    int32 overload_index = 4;
+    int32 total_overloads = 5;
+    float execution_time = 6;
+    Group group = 7;
+}
+
+message LogOverloadResultMsg {
+    CoreEventInfo info = 1;
+    LogOverloadResult data = 2;
+}
+
+// Q050
+message V2ParserStart {
+    string v2_parser_command = 1;
+    string project_name = 2;
+}
+
+message V2ParserStartMsg {
+    CoreEventInfo info = 1;
+    V2ParserStart data = 2;
+}
+
+// Q051
+message V2ParserEnd {
+    string status = 1;
+    float execution_time = 2;
+    string error_class = 3;
+    int32 exit_code = 4;
+    string project_name = 5;
+}
+
+message V2ParserEndMsg {
+    CoreEventInfo info = 1;
+    V2ParserEnd data = 2;
+}
+
+// W - Node testing
+
+// Skipped W001
+
+// W002
+message CatchableExceptionOnRun {
+    NodeInfo node_info = 1;
+    string exc = 2;
+    string exc_info = 3;
+}
+
+message CatchableExceptionOnRunMsg {
+    CoreEventInfo info = 1;
+    CatchableExceptionOnRun data = 2;
+}
+
+// W003
+message InternalErrorOnRun {
+    string build_path = 1;
+    string exc = 2;
+    NodeInfo node_info = 3;
+}
+
+message InternalErrorOnRunMsg {
+    CoreEventInfo info = 1;
+    InternalErrorOnRun data = 2;
+}
+
+// W004
+message GenericExceptionOnRun {
+    string build_path = 1;
+    string unique_id = 2;
+    string exc = 3;
+    NodeInfo node_info = 4;
+}
+
+message GenericExceptionOnRunMsg {
+    CoreEventInfo info = 1;
+    GenericExceptionOnRun data = 2;
+}
+
+// W005
+message NodeConnectionReleaseError {
+    string node_name = 1;
+    string exc = 2;
+    string exc_info = 3;
+}
+
+message NodeConnectionReleaseErrorMsg {
+    CoreEventInfo info = 1;
+    NodeConnectionReleaseError data = 2;
+}
+
+// W006
+message FoundStats {
+    string stat_line = 1;
+}
+
+message FoundStatsMsg {
+    CoreEventInfo info = 1;
+    FoundStats data = 2;
+}
+
+// Z - Misc
+
+// Z001
+message MainKeyboardInterrupt {
+}
+
+message MainKeyboardInterruptMsg {
+    CoreEventInfo info = 1;
+    MainKeyboardInterrupt data = 2;
+}
+
+// Z002
+message MainEncounteredError {
+    string exc = 1;
+}
+
+message MainEncounteredErrorMsg {
+    CoreEventInfo info = 1;
+    MainEncounteredError data = 2;
+}
+
+// Z003
+message MainStackTrace {
+    string stack_trace = 1;
+}
+
+message MainStackTraceMsg {
+    CoreEventInfo info = 1;
+    MainStackTrace data = 2;
+}
+
+// skipping Z004
+
+
+// Z010
+message TimingInfoCollected {
+    NodeInfo node_info = 1;
+    TimingInfoMsg timing_info = 2;
+}
+
+message TimingInfoCollectedMsg {
+    CoreEventInfo info = 1;
+    TimingInfoCollected data = 2;
+}
+
+// Z011
+message LogDebugStackTrace {
+    string exc_info = 1;
+}
+
+message LogDebugStackTraceMsg {
+    CoreEventInfo info = 1;
+    LogDebugStackTrace data = 2;
+}
+
+// Z012
+message CheckCleanPath {
+    string path = 1;
+}
+
+message CheckCleanPathMsg {
+    CoreEventInfo info = 1;
+    CheckCleanPath data = 2;
+}
+
+// Z013
+message ConfirmCleanPath {
+    string path = 1;
+}
+
+message ConfirmCleanPathMsg {
+    CoreEventInfo info = 1;
+    ConfirmCleanPath data = 2;
+}
+
+// Z014
+message ProtectedCleanPath {
+    string path = 1;
+}
+
+message ProtectedCleanPathMsg {
+    CoreEventInfo info = 1;
+    ProtectedCleanPath data = 2;
+}
+
+// Z015
+message FinishedCleanPaths {
+}
+
+message FinishedCleanPathsMsg {
+    CoreEventInfo info = 1;
+    FinishedCleanPaths data = 2;
+}
+
+// Z016
+message OpenCommand {
+    string open_cmd = 1;
+    string profiles_dir = 2;
+}
+
+message OpenCommandMsg {
+    CoreEventInfo info = 1;
+    OpenCommand data = 2;
+}
+
+
+// Z018
+message ServingDocsPort {
+    string address = 1;
+    int32 port = 2;
+}
+
+message ServingDocsPortMsg {
+    CoreEventInfo info = 1;
+    ServingDocsPort data = 2;
+}
+
+// Z019
+message ServingDocsAccessInfo {
+    string port = 1;
+}
+
+message ServingDocsAccessInfoMsg {
+    CoreEventInfo info = 1;
+    ServingDocsAccessInfo data = 2;
+}
+
+// Z020
+message ServingDocsExitInfo {
+}
+
+message ServingDocsExitInfoMsg {
+    CoreEventInfo info = 1;
+    ServingDocsExitInfo data = 2;
+}
+
+// Z021
+message RunResultWarning {
+    string resource_type = 1;
+    string node_name = 2;
+    string path = 3;
+    NodeInfo node_info = 4;
+    Group group = 5;
+}
+
+message RunResultWarningMsg {
+    CoreEventInfo info = 1;
+    RunResultWarning data = 2;
+}
+
+// Z022
+message RunResultFailure {
+    string resource_type = 1;
+    string node_name = 2;
+    string path = 3;
+    NodeInfo node_info = 4;
+    Group group = 5;
+}
+
+message RunResultFailureMsg {
+    CoreEventInfo info = 1;
+    RunResultFailure data = 2;
+}
+
+// Z023
+message StatsLine {
+    map<string, int32> stats = 1;
+}
+
+message StatsLineMsg {
+    CoreEventInfo info = 1;
+    StatsLine data = 2;
+}
+
+// Z024
+message RunResultError {
+    string msg = 1;
+    NodeInfo node_info = 2;
+    Group group = 3;
+}
+
+message RunResultErrorMsg {
+    CoreEventInfo info = 1;
+    RunResultError data = 2;
+}
+
+// Z025
+message RunResultErrorNoMessage {
+    string status = 1;
+    NodeInfo node_info = 2;
+}
+
+message RunResultErrorNoMessageMsg {
+    CoreEventInfo info = 1;
+    RunResultErrorNoMessage data = 2;
+}
+
+// Z026
+message SQLCompiledPath {
+    string path = 1;
+    NodeInfo node_info = 2;
+}
+
+message SQLCompiledPathMsg {
+    CoreEventInfo info = 1;
+    SQLCompiledPath data = 2;
+}
+
+// Z027
+message CheckNodeTestFailure {
+    string relation_name = 1;
+    NodeInfo node_info = 2;
+}
+
+message CheckNodeTestFailureMsg {
+    CoreEventInfo info = 1;
+    CheckNodeTestFailure data = 2;
+}
+
+// Skipped Z028, Z029
+
+// Z030
+message EndOfRunSummary {
+    int32 num_errors = 1;
+    int32 num_warnings = 2;
+    bool keyboard_interrupt = 3;
+    int32 num_partial_success = 4;
+}
+
+message EndOfRunSummaryMsg {
+    CoreEventInfo info = 1;
+    EndOfRunSummary data = 2;
+}
+
+// Skipped Z031, Z032
+
+// Z033
+message MarkSkippedChildren {
+    string unique_id = 1;
+    string status = 2;
+    RunResultMsg run_result = 3;
+}
+
+message MarkSkippedChildrenMsg {
+    CoreEventInfo info = 1;
+    MarkSkippedChildren data = 2;
+}
+
+// Z034
+message LogSkipBecauseError {
+    string schema = 1;
+    string relation = 2;
+    int32 index = 3;
+    int32 total = 4;
+    string status = 5;
+    Group group = 6;
+}
+
+message LogSkipBecauseErrorMsg {
+    CoreEventInfo info = 1;
+    LogSkipBecauseError data = 2;
+}
+
+// Z036
+message EnsureGitInstalled {
+}
+
+message EnsureGitInstalledMsg {
+    CoreEventInfo info = 1;
+    EnsureGitInstalled data = 2;
+}
+
+// Z037
+message DepsCreatingLocalSymlink {
+}
+
+message DepsCreatingLocalSymlinkMsg {
+    CoreEventInfo info = 1;
+    DepsCreatingLocalSymlink data = 2;
+}
+
+// Z038
+message DepsSymlinkNotAvailable {
+}
+
+message DepsSymlinkNotAvailableMsg {
+    CoreEventInfo info = 1;
+    DepsSymlinkNotAvailable data = 2;
+}
+
+// Z039
+message DisableTracking {
+}
+
+message DisableTrackingMsg {
+    CoreEventInfo info = 1;
+    DisableTracking data = 2;
+}
+
+// Z040
+message SendingEvent {
+    string kwargs = 1;
+}
+
+message SendingEventMsg {
+    CoreEventInfo info = 1;
+    SendingEvent data = 2;
+}
+
+// Z041
+message SendEventFailure {
+}
+
+message SendEventFailureMsg {
+    CoreEventInfo info = 1;
+    SendEventFailure data = 2;
+}
+
+// Z042
+message FlushEvents {
+}
+
+message FlushEventsMsg {
+    CoreEventInfo info = 1;
+    FlushEvents data = 2;
+}
+
+// Z043
+message FlushEventsFailure {
+}
+
+message FlushEventsFailureMsg {
+    CoreEventInfo info = 1;
+    FlushEventsFailure data = 2;
+}
+
+// Z044
+message TrackingInitializeFailure {
+    string exc_info = 1;
+}
+
+message TrackingInitializeFailureMsg {
+    CoreEventInfo info = 1;
+    TrackingInitializeFailure data = 2;
+}
+
+// Skipped Z045
+
+// Z046
+message RunResultWarningMessage {
+    string msg = 1;
+    NodeInfo node_info = 2;
+}
+
+message RunResultWarningMessageMsg {
+    CoreEventInfo info = 1;
+    RunResultWarningMessage data = 2;
+}
+
+// Z047
+message DebugCmdOut {
+    string msg = 1;
+}
+
+message DebugCmdOutMsg {
+    CoreEventInfo info = 1;
+    DebugCmdOut data = 2;
+}
+
+// Z048
+message DebugCmdResult {
+    string msg = 1;
+}
+
+message DebugCmdResultMsg {
+    CoreEventInfo info = 1;
+    DebugCmdResult data = 2;
+}
+
+// Z049
+message ListCmdOut {
+    string msg = 1;
+}
+
+message ListCmdOutMsg {
+    CoreEventInfo info = 1;
+    ListCmdOut data = 2;
+}
+
+
+// Z051
+message ResourceReport {
+    string command_name = 2;
+    bool command_success = 3;
+    float command_wall_clock_time = 4;
+    // The process_* metrics reflect the resource consumption of the process as
+    // a whole when the command completes. When dbt is being used as a library,
+    // these will reflect the resource consumption of the host process as a whole,
+    // rather than the resources used exclusively by the command.
+    float process_user_time = 5;
+    float process_kernel_time = 6;
+    int64 process_mem_max_rss = 7;
+    int64 process_in_blocks = 8;
+    int64 process_out_blocks = 9;
+}
+
+message ResourceReportMsg {
+    CoreEventInfo info = 1;
+    ResourceReport data = 2;
+}
+
+// Z052
+message ObservabilityMetric {
+    string label = 1;
+    float value = 2;
+    repeated string tags = 3;
+    string debug_message = 4;
+}
+
+message ObservabilityMetricMsg {
+    CoreEventInfo info = 1;
+    ObservabilityMetric data = 2;
+}
+
+// Z061
+message ArtifactUploadError {
+    string msg = 1;
+}
+
+message ArtifactUploadErrorMsg {
+    CoreEventInfo info = 1;
+    ArtifactUploadError data = 2;
+}
+
+// Z062
+message ArtifactUploadSuccess {
+    string msg = 1;
+}
+
+message ArtifactUploadSuccessMsg {
+    CoreEventInfo info = 1;
+    ArtifactUploadSuccess data = 2;
+}
+
+// Z063
+message ArtifactUploadSkipped {
+    string msg = 1;
+}
+
+message ArtifactUploadSkippedMsg {
+    CoreEventInfo info = 1;
+    ArtifactUploadSkipped data = 2;
+}
+
+// Z064
+message SelectExcludeIgnoredWithSelectorWarning {
+    string msg = 1;
+}
+
+message SelectExcludeIgnoredWithSelectorWarningMsg {
+    CoreEventInfo info = 1;
+    SelectExcludeIgnoredWithSelectorWarning data = 2;
+}
+

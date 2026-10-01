@@ -1,0 +1,11 @@
+---
+source: minijinja/tests/test_templates.rs
+description: "{{ a ~ b }}\n{{ a + b }}\n{{ a[0] + a[1:] }}"
+info:
+  a: foo
+  b: bar
+---
+foobar
+foobar
+foo
+

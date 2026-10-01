@@ -1,0 +1,46 @@
+version: 2
+
+models:
+  - name: campaign_roi_dashboard
+    description: |
+      Executive dashboard view of campaign ROI metrics.
+      A simplified view that joins data from multiple analytics models to provide
+      a high-level overview of campaign performance, retention, and ROI.
+      Uses view materialization for real-time data.
+    config:
+      materialized: view
+      tags: ['dashboard', 'executive']
+    columns:
+      - name: campaign_id
+        description: Unique campaign identifier
+        tests:
+          - not_null
+      - name: campaign_name
+        description: Marketing campaign name
+      - name: campaign_type
+        description: Type of campaign (social, search, display, etc.)
+      - name: total_installs
+        description: Total number of installs from this campaign
+      - name: total_spend
+        description: Total amount spent on this campaign
+      - name: return_on_ad_spend
+        description: Revenue divided by spend (ROAS)
+      - name: day_7_retention_rate
+        description: Percentage of users still active 7 days after install
+      - name: day_30_retention_rate
+        description: Percentage of users still active 30 days after install
+      - name: avg_ltv
+        description: Average lifetime value per customer from this campaign
+      - name: ltv_to_cac_ratio
+        description: |
+          Lifetime value to customer acquisition cost ratio.
+          Values >= 3 are considered excellent, >= 2 good, >= 1 fair.
+      - name: customer_monetization_rate
+        description: Percentage of acquired customers who generated revenue
+      - name: campaign_grade
+        description: |
+          Overall campaign performance grade:
+          - Excellent: LTV/CAC >= 3 AND 30-day retention >= 40%
+          - Good: LTV/CAC >= 2 AND 30-day retention >= 30%
+          - Fair: LTV/CAC >= 1 AND 30-day retention >= 20%
+          - Poor: Below fair thresholds

@@ -1,0 +1,1094 @@
+{
+  "detail": {
+    "unique_id": "group.jaffle_shop.signups_7",
+    "name": "signups_7",
+    "resource_type": "group",
+    "package_name": null,
+    "description": "",
+    "original_file_path": null,
+    "tags": [],
+    "owner": {
+      "name": "Analytics Team",
+      "email": "analytics@example.com",
+      "slack": null,
+      "github": null
+    },
+    "meta": null,
+    "models": [
+      {
+        "unique_id": "model.jaffle_shop.dim_campaigns_8",
+        "name": "dim_campaigns_8",
+        "database_name": "analytics",
+        "schema_name": "public",
+        "contract_enforced": false
+      },
+      {
+        "unique_id": "model.jaffle_shop.dim_currencies_9",
+        "name": "dim_currencies_9",
+        "database_name": "analytics",
+        "schema_name": "public",
+        "contract_enforced": false
+      },
+      {
+        "unique_id": "model.jaffle_shop.dim_events_8",
+        "name": "dim_events_8",
+        "database_name": "analytics",
+        "schema_name": "public",
+        "contract_enforced": false
+      },
+      {
+        "unique_id": "model.jaffle_shop.dim_locations_6",
+        "name": "dim_locations_6",
+        "database_name": "analytics",
+        "schema_name": "public",
+        "contract_enforced": false
+      },
+      {
+        "unique_id": "model.jaffle_shop.dim_discounts_5",
+        "name": "dim_discounts_5",
+        "database_name": "analytics",
+        "schema_name": "public",
+        "contract_enforced": false
+      },
+      {
+        "unique_id": "model.jaffle_shop.dim_channels_8",
+        "name": "dim_channels_8",
+        "database_name": "analytics",
+        "schema_name": "public",
+        "contract_enforced": false
+      },
+      {
+        "unique_id": "model.jaffle_shop.dim_payments_6",
+        "name": "dim_payments_6",
+        "database_name": "analytics",
+        "schema_name": "public",
+        "contract_enforced": false
+      },
+      {
+        "unique_id": "model.jaffle_shop.dim_page_views_7",
+        "name": "dim_page_views_7",
+        "database_name": "analytics",
+        "schema_name": "public",
+        "contract_enforced": false
+      },
+      {
+        "unique_id": "model.jaffle_shop.dim_campaigns_9",
+        "name": "dim_campaigns_9",
+        "database_name": "analytics",
+        "schema_name": "public",
+        "contract_enforced": false
+      },
+      {
+        "unique_id": "model.jaffle_shop.dim_customers_4",
+        "name": "dim_customers_4",
+        "database_name": "analytics",
+        "schema_name": "public",
+        "contract_enforced": false
+      },
+      {
+        "unique_id": "model.jaffle_shop.dim_revenue_8",
+        "name": "dim_revenue_8",
+        "database_name": "analytics",
+        "schema_name": "public",
+        "contract_enforced": false
+      },
+      {
+        "unique_id": "model.jaffle_shop.dim_features_6",
+        "name": "dim_features_6",
+        "database_name": "analytics",
+        "schema_name": "public",
+        "contract_enforced": false
+      },
+      {
+        "unique_id": "model.jaffle_shop.fct_order_items_4",
+        "name": "fct_order_items_4",
+        "database_name": "analytics",
+        "schema_name": "public",
+        "contract_enforced": false
+      },
+      {
+        "unique_id": "model.jaffle_shop.fct_signups_8",
+        "name": "fct_signups_8",
+        "database_name": "analytics",
+        "schema_name": "public",
+        "contract_enforced": false
+      },
+      {
+        "unique_id": "model.jaffle_shop.fct_order_items_9",
+        "name": "fct_order_items_9",
+        "database_name": "analytics",
+        "schema_name": "public",
+        "contract_enforced": false
+      },
+      {
+        "unique_id": "model.jaffle_shop.fct_discounts_3",
+        "name": "fct_discounts_3",
+        "database_name": "analytics",
+        "schema_name": "public",
+        "contract_enforced": false
+      },
+      {
+        "unique_id": "model.jaffle_shop.fct_products_3",
+        "name": "fct_products_3",
+        "database_name": "analytics",
+        "schema_name": "public",
+        "contract_enforced": false
+      },
+      {
+        "unique_id": "model.jaffle_shop.fct_discounts_7",
+        "name": "fct_discounts_7",
+        "database_name": "analytics",
+        "schema_name": "public",
+        "contract_enforced": false
+      },
+      {
+        "unique_id": "model.jaffle_shop.fct_products_5",
+        "name": "fct_products_5",
+        "database_name": "analytics",
+        "schema_name": "public",
+        "contract_enforced": false
+      },
+      {
+        "unique_id": "model.jaffle_shop.fct_shipments_1",
+        "name": "fct_shipments_1",
+        "database_name": "analytics",
+        "schema_name": "public",
+        "contract_enforced": false
+      },
+      {
+        "unique_id": "model.jaffle_shop.fct_supplies_4",
+        "name": "fct_supplies_4",
+        "database_name": "analytics",
+        "schema_name": "public",
+        "contract_enforced": false
+      },
+      {
+        "unique_id": "model.jaffle_shop.fct_page_views_6",
+        "name": "fct_page_views_6",
+        "database_name": "analytics",
+        "schema_name": "public",
+        "contract_enforced": true
+      },
+      {
+        "unique_id": "model.jaffle_shop.fct_returns_8",
+        "name": "fct_returns_8",
+        "database_name": "analytics",
+        "schema_name": "public",
+        "contract_enforced": false
+      },
+      {
+        "unique_id": "model.jaffle_shop.fct_suppliers_5",
+        "name": "fct_suppliers_5",
+        "database_name": "analytics",
+        "schema_name": "public",
+        "contract_enforced": false
+      },
+      {
+        "unique_id": "model.jaffle_shop.fct_supplies_5",
+        "name": "fct_supplies_5",
+        "database_name": "analytics",
+        "schema_name": "public",
+        "contract_enforced": false
+      },
+      {
+        "unique_id": "model.jaffle_shop.fct_segments_1",
+        "name": "fct_segments_1",
+        "database_name": "analytics",
+        "schema_name": "public",
+        "contract_enforced": false
+      },
+      {
+        "unique_id": "model.jaffle_shop.fct_taxes_2",
+        "name": "fct_taxes_2",
+        "database_name": "analytics",
+        "schema_name": "public",
+        "contract_enforced": false
+      },
+      {
+        "unique_id": "model.jaffle_shop.fct_supplies_2",
+        "name": "fct_supplies_2",
+        "database_name": "analytics",
+        "schema_name": "public",
+        "contract_enforced": false
+      },
+      {
+        "unique_id": "model.jaffle_shop.fct_events",
+        "name": "fct_events",
+        "database_name": "analytics",
+        "schema_name": "public",
+        "contract_enforced": false
+      },
+      {
+        "unique_id": "model.jaffle_shop.fct_sessions_1",
+        "name": "fct_sessions_1",
+        "database_name": "analytics",
+        "schema_name": "public",
+        "contract_enforced": false
+      },
+      {
+        "unique_id": "model.jaffle_shop.fct_features_1",
+        "name": "fct_features_1",
+        "database_name": "analytics",
+        "schema_name": "public",
+        "contract_enforced": false
+      },
+      {
+        "unique_id": "model.jaffle_shop.fct_usage_1",
+        "name": "fct_usage_1",
+        "database_name": "analytics",
+        "schema_name": "public",
+        "contract_enforced": false
+      },
+      {
+        "unique_id": "model.jaffle_shop.fct_events_2",
+        "name": "fct_events_2",
+        "database_name": "analytics",
+        "schema_name": "public",
+        "contract_enforced": false
+      },
+      {
+        "unique_id": "model.jaffle_shop.fct_taxes_1",
+        "name": "fct_taxes_1",
+        "database_name": "analytics",
+        "schema_name": "public",
+        "contract_enforced": false
+      },
+      {
+        "unique_id": "model.jaffle_shop.fct_channels_6",
+        "name": "fct_channels_6",
+        "database_name": "analytics",
+        "schema_name": "public",
+        "contract_enforced": false
+      },
+      {
+        "unique_id": "model.jaffle_shop.fct_tickets_5",
+        "name": "fct_tickets_5",
+        "database_name": "analytics",
+        "schema_name": "public",
+        "contract_enforced": false
+      },
+      {
+        "unique_id": "model.jaffle_shop.fct_suppliers_2",
+        "name": "fct_suppliers_2",
+        "database_name": "analytics",
+        "schema_name": "public",
+        "contract_enforced": false
+      },
+      {
+        "unique_id": "model.jaffle_shop.fct_refunds_7",
+        "name": "fct_refunds_7",
+        "database_name": "analytics",
+        "schema_name": "public",
+        "contract_enforced": false
+      },
+      {
+        "unique_id": "model.jaffle_shop.fct_warehouses_4",
+        "name": "fct_warehouses_4",
+        "database_name": "analytics",
+        "schema_name": "public",
+        "contract_enforced": false
+      },
+      {
+        "unique_id": "model.jaffle_shop.fct_usage_6",
+        "name": "fct_usage_6",
+        "database_name": "analytics",
+        "schema_name": "public",
+        "contract_enforced": false
+      },
+      {
+        "unique_id": "model.jaffle_shop.fct_plans_5",
+        "name": "fct_plans_5",
+        "database_name": "analytics",
+        "schema_name": "public",
+        "contract_enforced": false
+      },
+      {
+        "unique_id": "model.jaffle_shop.fct_discounts_2",
+        "name": "fct_discounts_2",
+        "database_name": "analytics",
+        "schema_name": "public",
+        "contract_enforced": false
+      },
+      {
+        "unique_id": "model.jaffle_shop.fct_reviews_3",
+        "name": "fct_reviews_3",
+        "database_name": "analytics",
+        "schema_name": "public",
+        "contract_enforced": false
+      },
+      {
+        "unique_id": "model.jaffle_shop.fct_regions_6",
+        "name": "fct_regions_6",
+        "database_name": "analytics",
+        "schema_name": "public",
+        "contract_enforced": false
+      },
+      {
+        "unique_id": "model.jaffle_shop.fct_carts_7",
+        "name": "fct_carts_7",
+        "database_name": "analytics",
+        "schema_name": "public",
+        "contract_enforced": false
+      },
+      {
+        "unique_id": "model.jaffle_shop.fct_signups_6",
+        "name": "fct_signups_6",
+        "database_name": "analytics",
+        "schema_name": "public",
+        "contract_enforced": false
+      },
+      {
+        "unique_id": "model.jaffle_shop.fct_locations_2",
+        "name": "fct_locations_2",
+        "database_name": "analytics",
+        "schema_name": "public",
+        "contract_enforced": false
+      },
+      {
+        "unique_id": "model.jaffle_shop.fct_payments_2",
+        "name": "fct_payments_2",
+        "database_name": "analytics",
+        "schema_name": "public",
+        "contract_enforced": false
+      },
+      {
+        "unique_id": "model.jaffle_shop.fct_promotions_4",
+        "name": "fct_promotions_4",
+        "database_name": "analytics",
+        "schema_name": "public",
+        "contract_enforced": false
+      },
+      {
+        "unique_id": "model.jaffle_shop.fct_refunds_1",
+        "name": "fct_refunds_1",
+        "database_name": "analytics",
+        "schema_name": "public",
+        "contract_enforced": false
+      },
+      {
+        "unique_id": "model.jaffle_shop.fct_carts_1",
+        "name": "fct_carts_1",
+        "database_name": "analytics",
+        "schema_name": "public",
+        "contract_enforced": false
+      },
+      {
+        "unique_id": "model.jaffle_shop.fct_invoices_7",
+        "name": "fct_invoices_7",
+        "database_name": "analytics",
+        "schema_name": "public",
+        "contract_enforced": false
+      },
+      {
+        "unique_id": "model.jaffle_shop.fct_supplies_3",
+        "name": "fct_supplies_3",
+        "database_name": "analytics",
+        "schema_name": "public",
+        "contract_enforced": false
+      },
+      {
+        "unique_id": "model.jaffle_shop.fct_signups_2",
+        "name": "fct_signups_2",
+        "database_name": "analytics",
+        "schema_name": "public",
+        "contract_enforced": false
+      },
+      {
+        "unique_id": "model.jaffle_shop.fct_sessions_2",
+        "name": "fct_sessions_2",
+        "database_name": "analytics",
+        "schema_name": "public",
+        "contract_enforced": false
+      },
+      {
+        "unique_id": "model.jaffle_shop.fct_supplies_9",
+        "name": "fct_supplies_9",
+        "database_name": "analytics",
+        "schema_name": "public",
+        "contract_enforced": false
+      },
+      {
+        "unique_id": "model.jaffle_shop.fct_currencies_8",
+        "name": "fct_currencies_8",
+        "database_name": "analytics",
+        "schema_name": "public",
+        "contract_enforced": false
+      },
+      {
+        "unique_id": "model.jaffle_shop.fct_usage_4",
+        "name": "fct_usage_4",
+        "database_name": "analytics",
+        "schema_name": "public",
+        "contract_enforced": false
+      },
+      {
+        "unique_id": "model.jaffle_shop.fct_trials_2",
+        "name": "fct_trials_2",
+        "database_name": "analytics",
+        "schema_name": "public",
+        "contract_enforced": false
+      },
+      {
+        "unique_id": "model.jaffle_shop.fct_tickets_7",
+        "name": "fct_tickets_7",
+        "database_name": "analytics",
+        "schema_name": "public",
+        "contract_enforced": false
+      },
+      {
+        "unique_id": "model.jaffle_shop.int_suppliers_3",
+        "name": "int_suppliers_3",
+        "database_name": "analytics",
+        "schema_name": "public",
+        "contract_enforced": false
+      },
+      {
+        "unique_id": "model.jaffle_shop.int_locations_4",
+        "name": "int_locations_4",
+        "database_name": "analytics",
+        "schema_name": "public",
+        "contract_enforced": false
+      },
+      {
+        "unique_id": "model.jaffle_shop.int_warehouses_2",
+        "name": "int_warehouses_2",
+        "database_name": "analytics",
+        "schema_name": "public",
+        "contract_enforced": false
+      },
+      {
+        "unique_id": "model.jaffle_shop.int_events_4",
+        "name": "int_events_4",
+        "database_name": "analytics",
+        "schema_name": "public",
+        "contract_enforced": false
+      },
+      {
+        "unique_id": "model.jaffle_shop.int_promotions_2",
+        "name": "int_promotions_2",
+        "database_name": "analytics",
+        "schema_name": "public",
+        "contract_enforced": false
+      },
+      {
+        "unique_id": "model.jaffle_shop.int_campaigns_2",
+        "name": "int_campaigns_2",
+        "database_name": "analytics",
+        "schema_name": "public",
+        "contract_enforced": false
+      },
+      {
+        "unique_id": "model.jaffle_shop.int_shipments_6",
+        "name": "int_shipments_6",
+        "database_name": "analytics",
+        "schema_name": "public",
+        "contract_enforced": false
+      },
+      {
+        "unique_id": "model.jaffle_shop.int_trials_6",
+        "name": "int_trials_6",
+        "database_name": "analytics",
+        "schema_name": "public",
+        "contract_enforced": false
+      },
+      {
+        "unique_id": "model.jaffle_shop.int_signups_4",
+        "name": "int_signups_4",
+        "database_name": "analytics",
+        "schema_name": "public",
+        "contract_enforced": false
+      },
+      {
+        "unique_id": "model.jaffle_shop.int_shipments_7",
+        "name": "int_shipments_7",
+        "database_name": "analytics",
+        "schema_name": "public",
+        "contract_enforced": false
+      },
+      {
+        "unique_id": "model.jaffle_shop.int_features_5",
+        "name": "int_features_5",
+        "database_name": "analytics",
+        "schema_name": "public",
+        "contract_enforced": false
+      },
+      {
+        "unique_id": "model.jaffle_shop.int_refunds_2",
+        "name": "int_refunds_2",
+        "database_name": "analytics",
+        "schema_name": "public",
+        "contract_enforced": false
+      },
+      {
+        "unique_id": "model.jaffle_shop.int_customers_2",
+        "name": "int_customers_2",
+        "database_name": "analytics",
+        "schema_name": "public",
+        "contract_enforced": false
+      },
+      {
+        "unique_id": "model.jaffle_shop.int_channels_4",
+        "name": "int_channels_4",
+        "database_name": "analytics",
+        "schema_name": "public",
+        "contract_enforced": false
+      },
+      {
+        "unique_id": "model.jaffle_shop.int_locations_5",
+        "name": "int_locations_5",
+        "database_name": "analytics",
+        "schema_name": "public",
+        "contract_enforced": false
+      },
+      {
+        "unique_id": "model.jaffle_shop.int_locations_3",
+        "name": "int_locations_3",
+        "database_name": "analytics",
+        "schema_name": "public",
+        "contract_enforced": false
+      },
+      {
+        "unique_id": "model.jaffle_shop.int_renewals_6",
+        "name": "int_renewals_6",
+        "database_name": "analytics",
+        "schema_name": "public",
+        "contract_enforced": false
+      },
+      {
+        "unique_id": "model.jaffle_shop.int_carts_3",
+        "name": "int_carts_3",
+        "database_name": "analytics",
+        "schema_name": "public",
+        "contract_enforced": false
+      },
+      {
+        "unique_id": "model.jaffle_shop.int_order_items_1",
+        "name": "int_order_items_1",
+        "database_name": "analytics",
+        "schema_name": "public",
+        "contract_enforced": false
+      },
+      {
+        "unique_id": "model.jaffle_shop.int_page_views_1",
+        "name": "int_page_views_1",
+        "database_name": "analytics",
+        "schema_name": "public",
+        "contract_enforced": false
+      },
+      {
+        "unique_id": "model.jaffle_shop.int_events_1",
+        "name": "int_events_1",
+        "database_name": "analytics",
+        "schema_name": "public",
+        "contract_enforced": false
+      },
+      {
+        "unique_id": "model.jaffle_shop.int_reviews_1",
+        "name": "int_reviews_1",
+        "database_name": "analytics",
+        "schema_name": "public",
+        "contract_enforced": false
+      },
+      {
+        "unique_id": "model.jaffle_shop.int_payments_3",
+        "name": "int_payments_3",
+        "database_name": "analytics",
+        "schema_name": "public",
+        "contract_enforced": false
+      },
+      {
+        "unique_id": "model.jaffle_shop.int_channels_1",
+        "name": "int_channels_1",
+        "database_name": "analytics",
+        "schema_name": "public",
+        "contract_enforced": false
+      },
+      {
+        "unique_id": "model.jaffle_shop.int_regions_4",
+        "name": "int_regions_4",
+        "database_name": "analytics",
+        "schema_name": "public",
+        "contract_enforced": false
+      },
+      {
+        "unique_id": "model.jaffle_shop.int_signups_1",
+        "name": "int_signups_1",
+        "database_name": "analytics",
+        "schema_name": "public",
+        "contract_enforced": false
+      },
+      {
+        "unique_id": "model.jaffle_shop.int_tickets_3",
+        "name": "int_tickets_3",
+        "database_name": "analytics",
+        "schema_name": "public",
+        "contract_enforced": false
+      },
+      {
+        "unique_id": "model.jaffle_shop.int_payments_4",
+        "name": "int_payments_4",
+        "database_name": "analytics",
+        "schema_name": "public",
+        "contract_enforced": false
+      },
+      {
+        "unique_id": "model.jaffle_shop.int_payments_5",
+        "name": "int_payments_5",
+        "database_name": "analytics",
+        "schema_name": "public",
+        "contract_enforced": false
+      },
+      {
+        "unique_id": "model.jaffle_shop.int_sessions_5",
+        "name": "int_sessions_5",
+        "database_name": "analytics",
+        "schema_name": "public",
+        "contract_enforced": false
+      },
+      {
+        "unique_id": "model.jaffle_shop.int_channels_2",
+        "name": "int_channels_2",
+        "database_name": "analytics",
+        "schema_name": "public",
+        "contract_enforced": false
+      },
+      {
+        "unique_id": "model.jaffle_shop.int_revenue_1",
+        "name": "int_revenue_1",
+        "database_name": "analytics",
+        "schema_name": "public",
+        "contract_enforced": false
+      },
+      {
+        "unique_id": "model.jaffle_shop.int_cohorts_6",
+        "name": "int_cohorts_6",
+        "database_name": "analytics",
+        "schema_name": "public",
+        "contract_enforced": false
+      },
+      {
+        "unique_id": "model.jaffle_shop.int_renewals_2",
+        "name": "int_renewals_2",
+        "database_name": "analytics",
+        "schema_name": "public",
+        "contract_enforced": false
+      },
+      {
+        "unique_id": "model.jaffle_shop.int_regions_2",
+        "name": "int_regions_2",
+        "database_name": "analytics",
+        "schema_name": "public",
+        "contract_enforced": false
+      },
+      {
+        "unique_id": "model.jaffle_shop.int_cohorts_2",
+        "name": "int_cohorts_2",
+        "database_name": "analytics",
+        "schema_name": "public",
+        "contract_enforced": false
+      },
+      {
+        "unique_id": "model.jaffle_shop.int_revenue_2",
+        "name": "int_revenue_2",
+        "database_name": "analytics",
+        "schema_name": "public",
+        "contract_enforced": false
+      },
+      {
+        "unique_id": "model.jaffle_shop.int_sessions_3",
+        "name": "int_sessions_3",
+        "database_name": "analytics",
+        "schema_name": "public",
+        "contract_enforced": false
+      },
+      {
+        "unique_id": "model.jaffle_shop.int_plans_3",
+        "name": "int_plans_3",
+        "database_name": "analytics",
+        "schema_name": "public",
+        "contract_enforced": false
+      },
+      {
+        "unique_id": "model.jaffle_shop.int_payments_9",
+        "name": "int_payments_9",
+        "database_name": "analytics",
+        "schema_name": "public",
+        "contract_enforced": false
+      },
+      {
+        "unique_id": "model.jaffle_shop.int_plans_7",
+        "name": "int_plans_7",
+        "database_name": "analytics",
+        "schema_name": "public",
+        "contract_enforced": false
+      },
+      {
+        "unique_id": "model.jaffle_shop.int_trials_1",
+        "name": "int_trials_1",
+        "database_name": "analytics",
+        "schema_name": "public",
+        "contract_enforced": false
+      },
+      {
+        "unique_id": "model.jaffle_shop.int_page_views_3",
+        "name": "int_page_views_3",
+        "database_name": "analytics",
+        "schema_name": "public",
+        "contract_enforced": false
+      },
+      {
+        "unique_id": "model.jaffle_shop.int_features_3",
+        "name": "int_features_3",
+        "database_name": "analytics",
+        "schema_name": "public",
+        "contract_enforced": false
+      },
+      {
+        "unique_id": "model.jaffle_shop.int_sessions_4",
+        "name": "int_sessions_4",
+        "database_name": "analytics",
+        "schema_name": "public",
+        "contract_enforced": false
+      },
+      {
+        "unique_id": "model.jaffle_shop.int_categories_1",
+        "name": "int_categories_1",
+        "database_name": "analytics",
+        "schema_name": "public",
+        "contract_enforced": false
+      },
+      {
+        "unique_id": "model.jaffle_shop.int_trials_4",
+        "name": "int_trials_4",
+        "database_name": "analytics",
+        "schema_name": "public",
+        "contract_enforced": false
+      },
+      {
+        "unique_id": "model.jaffle_shop.int_currencies_6",
+        "name": "int_currencies_6",
+        "database_name": "analytics",
+        "schema_name": "public",
+        "contract_enforced": false
+      },
+      {
+        "unique_id": "model.jaffle_shop.int_suppliers_9",
+        "name": "int_suppliers_9",
+        "database_name": "analytics",
+        "schema_name": "public",
+        "contract_enforced": false
+      },
+      {
+        "unique_id": "model.jaffle_shop.int_segments_6",
+        "name": "int_segments_6",
+        "database_name": "analytics",
+        "schema_name": "public",
+        "contract_enforced": false
+      },
+      {
+        "unique_id": "model.jaffle_shop.int_revenue_3",
+        "name": "int_revenue_3",
+        "database_name": "analytics",
+        "schema_name": "public",
+        "contract_enforced": false
+      },
+      {
+        "unique_id": "model.jaffle_shop.int_discounts_4",
+        "name": "int_discounts_4",
+        "database_name": "analytics",
+        "schema_name": "public",
+        "contract_enforced": false
+      },
+      {
+        "unique_id": "model.jaffle_shop.int_invoices_4",
+        "name": "int_invoices_4",
+        "database_name": "analytics",
+        "schema_name": "public",
+        "contract_enforced": false
+      },
+      {
+        "unique_id": "model.jaffle_shop.int_cohorts",
+        "name": "int_cohorts",
+        "database_name": "analytics",
+        "schema_name": "public",
+        "contract_enforced": false
+      },
+      {
+        "unique_id": "model.jaffle_shop.int_invoices_2",
+        "name": "int_invoices_2",
+        "database_name": "analytics",
+        "schema_name": "public",
+        "contract_enforced": false
+      },
+      {
+        "unique_id": "model.jaffle_shop.int_usage_3",
+        "name": "int_usage_3",
+        "database_name": "analytics",
+        "schema_name": "public",
+        "contract_enforced": false
+      },
+      {
+        "unique_id": "model.jaffle_shop.int_campaigns_5",
+        "name": "int_campaigns_5",
+        "database_name": "analytics",
+        "schema_name": "public",
+        "contract_enforced": false
+      },
+      {
+        "unique_id": "model.jaffle_shop.int_tickets_4",
+        "name": "int_tickets_4",
+        "database_name": "analytics",
+        "schema_name": "public",
+        "contract_enforced": false
+      },
+      {
+        "unique_id": "model.jaffle_shop.int_shipments_2",
+        "name": "int_shipments_2",
+        "database_name": "analytics",
+        "schema_name": "public",
+        "contract_enforced": false
+      },
+      {
+        "unique_id": "model.jaffle_shop.int_signups_5",
+        "name": "int_signups_5",
+        "database_name": "analytics",
+        "schema_name": "public",
+        "contract_enforced": false
+      },
+      {
+        "unique_id": "model.jaffle_shop.int_regions_1",
+        "name": "int_regions_1",
+        "database_name": "analytics",
+        "schema_name": "public",
+        "contract_enforced": false
+      },
+      {
+        "unique_id": "model.jaffle_shop.int_returns_2",
+        "name": "int_returns_2",
+        "database_name": "analytics",
+        "schema_name": "public",
+        "contract_enforced": false
+      },
+      {
+        "unique_id": "model.jaffle_shop.int_campaigns_3",
+        "name": "int_campaigns_3",
+        "database_name": "analytics",
+        "schema_name": "public",
+        "contract_enforced": false
+      },
+      {
+        "unique_id": "model.jaffle_shop.int_refunds_8",
+        "name": "int_refunds_8",
+        "database_name": "analytics",
+        "schema_name": "public",
+        "contract_enforced": false
+      },
+      {
+        "unique_id": "model.jaffle_shop.carts_8",
+        "name": "carts_8",
+        "database_name": "analytics",
+        "schema_name": "public",
+        "contract_enforced": false
+      },
+      {
+        "unique_id": "model.jaffle_shop.locations_1",
+        "name": "locations_1",
+        "database_name": "analytics",
+        "schema_name": "public",
+        "contract_enforced": false
+      },
+      {
+        "unique_id": "model.jaffle_shop.carts_6",
+        "name": "carts_6",
+        "database_name": "analytics",
+        "schema_name": "public",
+        "contract_enforced": false
+      },
+      {
+        "unique_id": "model.jaffle_shop.segments_4",
+        "name": "segments_4",
+        "database_name": "analytics",
+        "schema_name": "public",
+        "contract_enforced": false
+      },
+      {
+        "unique_id": "model.jaffle_shop.tickets_6",
+        "name": "tickets_6",
+        "database_name": "analytics",
+        "schema_name": "public",
+        "contract_enforced": false
+      },
+      {
+        "unique_id": "model.jaffle_shop.regions_5",
+        "name": "regions_5",
+        "database_name": "analytics",
+        "schema_name": "public",
+        "contract_enforced": false
+      },
+      {
+        "unique_id": "model.jaffle_shop.orders_8",
+        "name": "orders_8",
+        "database_name": "analytics",
+        "schema_name": "public",
+        "contract_enforced": false
+      },
+      {
+        "unique_id": "model.jaffle_shop.customers_7",
+        "name": "customers_7",
+        "database_name": "analytics",
+        "schema_name": "public",
+        "contract_enforced": false
+      },
+      {
+        "unique_id": "model.jaffle_shop.usage_7",
+        "name": "usage_7",
+        "database_name": "analytics",
+        "schema_name": "public",
+        "contract_enforced": false
+      },
+      {
+        "unique_id": "model.jaffle_shop.order_items_8",
+        "name": "order_items_8",
+        "database_name": "analytics",
+        "schema_name": "public",
+        "contract_enforced": false
+      },
+      {
+        "unique_id": "model.jaffle_shop.plans_6",
+        "name": "plans_6",
+        "database_name": "analytics",
+        "schema_name": "public",
+        "contract_enforced": false
+      },
+      {
+        "unique_id": "model.jaffle_shop.orders_3",
+        "name": "orders_3",
+        "database_name": "analytics",
+        "schema_name": "public",
+        "contract_enforced": false
+      },
+      {
+        "unique_id": "model.jaffle_shop.reviews_6",
+        "name": "reviews_6",
+        "database_name": "analytics",
+        "schema_name": "public",
+        "contract_enforced": false
+      },
+      {
+        "unique_id": "model.jaffle_shop.products_8",
+        "name": "products_8",
+        "database_name": "analytics",
+        "schema_name": "public",
+        "contract_enforced": false
+      },
+      {
+        "unique_id": "model.jaffle_shop.segments",
+        "name": "segments",
+        "database_name": "analytics",
+        "schema_name": "public",
+        "contract_enforced": false
+      },
+      {
+        "unique_id": "model.jaffle_shop.signups_3",
+        "name": "rpt_orders_by_region",
+        "database_name": "analytics",
+        "schema_name": "public",
+        "contract_enforced": false
+      },
+      {
+        "unique_id": "model.jaffle_shop.trials_3",
+        "name": "rpt_orders_by_region",
+        "database_name": "analytics",
+        "schema_name": "public",
+        "contract_enforced": false
+      },
+      {
+        "unique_id": "model.jaffle_shop.order_items_2",
+        "name": "order_items_2",
+        "database_name": "analytics",
+        "schema_name": "public",
+        "contract_enforced": false
+      },
+      {
+        "unique_id": "model.jaffle_shop.plans_2",
+        "name": "plans_2",
+        "database_name": "analytics",
+        "schema_name": "public",
+        "contract_enforced": false
+      },
+      {
+        "unique_id": "model.jaffle_shop.reviews_2",
+        "name": "reviews_2",
+        "database_name": "analytics",
+        "schema_name": "public",
+        "contract_enforced": false
+      },
+      {
+        "unique_id": "model.jaffle_shop.trials",
+        "name": "trials",
+        "database_name": "analytics",
+        "schema_name": "public",
+        "contract_enforced": false
+      },
+      {
+        "unique_id": "model.jaffle_shop.invoices_1",
+        "name": "invoices_1",
+        "database_name": "analytics",
+        "schema_name": "public",
+        "contract_enforced": false
+      },
+      {
+        "unique_id": "model.jaffle_shop.renewals_1",
+        "name": "renewals_1",
+        "database_name": "analytics",
+        "schema_name": "public",
+        "contract_enforced": false
+      },
+      {
+        "unique_id": "model.jaffle_shop.cohorts_1",
+        "name": "cohorts_1",
+        "database_name": "analytics",
+        "schema_name": "public",
+        "contract_enforced": false
+      },
+      {
+        "unique_id": "model.jaffle_shop.order_items_3",
+        "name": "order_items_3",
+        "database_name": "analytics",
+        "schema_name": "public",
+        "contract_enforced": false
+      },
+      {
+        "unique_id": "model.jaffle_shop.categories_8",
+        "name": "categories_8",
+        "database_name": "analytics",
+        "schema_name": "public",
+        "contract_enforced": false
+      },
+      {
+        "unique_id": "model.jaffle_shop.tickets_8",
+        "name": "tickets_8",
+        "database_name": "analytics",
+        "schema_name": "public",
+        "contract_enforced": false
+      }
+    ],
+    "model_count": 151,
+    "truncated": false,
+    "ingested_at": "2026-06-25 19:37:36.814064-04"
+  },
+  "lineage": {
+    "status": 404,
+    "body": {
+      "error": "node group.jaffle_shop.signups_7 not found"
+    }
+  },
+  "columnLineage": {
+    "status": 412,
+    "body": {
+      "code": "column_lineage_unavailable",
+      "message": "Column-level lineage is not available in this distribution + artifact set.",
+      "upgrade_path": "Run `dbt --use-index <run|build|compile>` with static analysis enabled, in a distribution that ships the column-lineage provider."
+    }
+  }
+}

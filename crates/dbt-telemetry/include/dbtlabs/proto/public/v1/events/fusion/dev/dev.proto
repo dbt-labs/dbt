@@ -1,0 +1,43 @@
+syntax = "proto3";
+package v1.public.events.fusion.dev;
+
+option go_package = "github.com/dbt-labs/proto-golang/v1/public/events/fusion/dev";
+
+// General debug value holder for developer spans.
+message DebugValue {
+  oneof value {
+    double float64 = 1;
+    bool bool = 4;
+    string string = 5;
+    bytes bytes = 6;
+  }
+}
+
+// Special event emitted only at TRACE level, and disabled by default.
+// Used for troubleshooting complex bugs in Fusion itself.
+message CallTrace {
+  // Internal developer span name, often a function/method.
+  string name = 1;
+
+  // File name where the span was created.
+  optional string file = 2;
+
+  // Line number in the file where the span was created.
+  optional uint32 line = 3;
+
+  // Arbitrary extra structured data.
+  map<string, DebugValue> extra = 4;
+}
+
+// Unknown span placeholder used as a fallback. Presence of this
+// event in the stream indicates a bug in the telemetry instrumentation.
+message Unknown {
+  // Inferred name, often a function/method.
+  string name = 1;
+
+  // File name where the span was created.
+  string file = 2;
+
+  // Line number in the file where the span was created.
+  uint32 line = 3;
+}

@@ -1,0 +1,500 @@
+index,address_id,full_address,street_number,street_name,state,city
+0,1,4 Northfield Road,4,Northfield Road,CA,Los Angeles
+1,2,51093 Meadow Valley Lane,51093,Meadow Valley Lane,CA,Los Angeles
+2,3,02 Donald Road,2,Donald Road,CA,Los Angeles
+3,4,304 Bayside Parkway,304,Bayside Parkway,CA,Los Angeles
+4,5,8436 High Crossing Alley,8436,High Crossing Alley,CA,Los Angeles
+5,6,71 6th Point,71,6th Point,CA,Los Angeles
+6,7,3 Ruskin Center,3,Ruskin Center,CA,Los Angeles
+7,8,37612 Morningstar Lane,37612,Morningstar Lane,CA,Los Angeles
+8,9,22217 Michigan Crossing,22217,Michigan Crossing,CA,Los Angeles
+9,10,28 Lighthouse Bay Street,28,Lighthouse Bay Street,CA,Los Angeles
+10,11,21 Granby Crossing,21,Granby Crossing,CA,Los Angeles
+11,12,3119 Superior Point,3119,Superior Point,CA,Los Angeles
+12,13,61 Kingsford Avenue,61,Kingsford Avenue,CA,Los Angeles
+13,14,701 Prairie Rose Lane,701,Prairie Rose Lane,CA,Los Angeles
+14,15,685 Stang Drive,685,Stang Drive,CA,Los Angeles
+15,16,5894 Thompson Terrace,5894,Thompson Terrace,CA,Los Angeles
+16,17,55 Sutteridge Plaza,55,Sutteridge Plaza,CA,Los Angeles
+17,18,42 Columbus Drive,42,Columbus Drive,CA,Los Angeles
+18,19,0628 Mandrake Terrace,628,Mandrake Terrace,CA,Los Angeles
+19,20,9229 Dennis Trail,9229,Dennis Trail,CA,Los Angeles
+20,21,96962 Pearson Park,96962,Pearson Park,CA,Los Angeles
+21,22,7 Del Mar Pass,7,Del Mar Pass,CA,Los Angeles
+22,23,502 Walton Street,502,Walton Street,CA,Los Angeles
+23,24,8911 Declaration Place,8911,Declaration Place,CA,Los Angeles
+24,25,7 Derek Place,7,Derek Place,CA,Los Angeles
+25,26,497 Sundown Road,497,Sundown Road,CA,Los Angeles
+26,27,022 Monument Plaza,22,Monument Plaza,CA,Los Angeles
+27,28,07877 Carberry Way,7877,Carberry Way,CA,Los Angeles
+28,29,01127 Oakridge Junction,1127,Oakridge Junction,CA,Los Angeles
+29,30,2340 American Street,2340,American Street,CA,Los Angeles
+30,31,258 Almo Way,258,Almo Way,CA,Los Angeles
+31,32,54 Independence Plaza,54,Independence Plaza,CA,Los Angeles
+32,33,4745 Logan Point,4745,Logan Point,CA,Los Angeles
+33,34,0 Tony Lane,0,Tony Lane,CA,Los Angeles
+34,35,1 Reindahl Court,1,Reindahl Court,CA,Los Angeles
+35,36,92 Everett Pass,92,Everett Pass,CA,Los Angeles
+36,37,27 Homewood Drive,27,Homewood Drive,CA,Los Angeles
+37,38,53 Prentice Park,53,Prentice Park,CA,Los Angeles
+38,39,6 Sundown Trail,6,Sundown Trail,CA,Los Angeles
+39,40,54 Colorado Pass,54,Colorado Pass,CA,Los Angeles
+40,41,845 Summerview Parkway,845,Summerview Parkway,CA,Los Angeles
+41,42,46 Transport Trail,46,Transport Trail,CA,Los Angeles
+42,43,58 Thompson Crossing,58,Thompson Crossing,CA,Los Angeles
+43,44,459 Almo Lane,459,Almo Lane,CA,Los Angeles
+44,45,1 Morningstar Hill,1,Morningstar Hill,CA,Los Angeles
+45,46,1 Emmet Circle,1,Emmet Circle,CA,Los Angeles
+46,47,56 Namekagon Street,56,Namekagon Street,CA,Los Angeles
+47,48,37 Warbler Center,37,Warbler Center,CA,Los Angeles
+48,49,9912 Meadow Ridge Way,9912,Meadow Ridge Way,CA,Los Angeles
+49,50,08529 Meadow Valley Point,8529,Meadow Valley Point,CA,Los Angeles
+50,51,1 Michigan Road,1,Michigan Road,CA,Los Angeles
+51,52,1 Summerview Terrace,1,Summerview Terrace,CA,Los Angeles
+52,53,5 Packers Junction,5,Packers Junction,CA,Los Angeles
+53,54,60 Graedel Crossing,60,Graedel Crossing,CA,Los Angeles
+54,55,8 Eastlawn Trail,8,Eastlawn Trail,CA,Los Angeles
+55,56,04605 Amoth Terrace,4605,Amoth Terrace,CA,Los Angeles
+56,57,86 Mifflin Place,86,Mifflin Place,CA,Los Angeles
+57,58,12 Forest Dale Parkway,12,Forest Dale Parkway,CA,Los Angeles
+58,59,63351 Westridge Terrace,63351,Westridge Terrace,CA,Los Angeles
+59,60,248 Acker Parkway,248,Acker Parkway,CA,Los Angeles
+60,61,87247 Buell Trail,87247,Buell Trail,CA,Los Angeles
+61,62,00262 Duke Crossing,262,Duke Crossing,CA,Los Angeles
+62,63,35 Nancy Court,35,Nancy Court,CA,Los Angeles
+63,64,7 Gale Circle,7,Gale Circle,CA,Los Angeles
+64,65,7 Bonner Avenue,7,Bonner Avenue,CA,Los Angeles
+65,66,4182 Wayridge Crossing,4182,Wayridge Crossing,CA,Los Angeles
+66,67,667 Ridge Oak Junction,667,Ridge Oak Junction,CA,Los Angeles
+67,68,995 Spaight Circle,995,Spaight Circle,CA,Los Angeles
+68,69,46364 La Follette Court,46364,La Follette Court,CA,Los Angeles
+69,70,79 Monica Alley,79,Monica Alley,CA,Los Angeles
+70,71,283 8th Park,283,8th Park,CA,Los Angeles
+71,72,4 Carberry Drive,4,Carberry Drive,CA,Los Angeles
+72,73,2 Bartelt Crossing,2,Bartelt Crossing,CA,Los Angeles
+73,74,84520 Mariners Cove Avenue,84520,Mariners Cove Avenue,CA,Los Angeles
+74,75,8239 Heath Circle,8239,Heath Circle,CA,Los Angeles
+75,76,5739 Towne Avenue,5739,Towne Avenue,CA,Los Angeles
+76,77,20494 Hallows Alley,20494,Hallows Alley,CA,Los Angeles
+77,78,81102 Kings Drive,81102,Kings Drive,CA,Los Angeles
+78,79,2 Washington Pass,2,Washington Pass,CA,Los Angeles
+79,80,8 Novick Drive,8,Novick Drive,CA,Los Angeles
+80,81,6613 Roxbury Place,6613,Roxbury Place,CA,Los Angeles
+81,82,7 Columbus Avenue,7,Columbus Avenue,CA,Los Angeles
+82,83,79615 Fallview Parkway,79615,Fallview Parkway,CA,Los Angeles
+83,84,48329 Waywood Parkway,48329,Waywood Parkway,CA,Los Angeles
+84,85,55 Anderson Plaza,55,Anderson Plaza,CA,Los Angeles
+85,86,7 Corscot Center,7,Corscot Center,CA,Los Angeles
+86,87,632 Riverside Pass,632,Riverside Pass,CA,Los Angeles
+87,88,5 Village Trail,5,Village Trail,CA,Los Angeles
+88,89,68430 Bellgrove Point,68430,Bellgrove Point,CA,Los Angeles
+89,90,38 Tony Court,38,Tony Court,CA,Los Angeles
+90,91,7 Bashford Center,7,Bashford Center,CA,Los Angeles
+91,92,3974 Orin Alley,3974,Orin Alley,CA,Los Angeles
+92,93,566 Cherokee Lane,566,Cherokee Lane,CA,Los Angeles
+93,94,791 Boyd Terrace,791,Boyd Terrace,CA,Los Angeles
+94,95,56 Twin Pines Point,56,Twin Pines Point,CA,Los Angeles
+95,96,942 Clyde Gallagher Way,942,Clyde Gallagher Way,CA,Los Angeles
+96,97,18 Brown Way,18,Brown Way,CA,Los Angeles
+97,98,0 Welch Circle,0,Welch Circle,CA,Los Angeles
+98,99,01957 Welch Hill,1957,Welch Hill,CA,Los Angeles
+99,100,748 Memorial Park,748,Memorial Park,CA,Los Angeles
+100,101,9803 Macpherson Hill,9803,Macpherson Hill,CA,Los Angeles
+101,102,726 Rockefeller Court,726,Rockefeller Court,CA,Los Angeles
+102,103,257 Hallows Place,257,Hallows Place,CA,Los Angeles
+103,104,2 Schmedeman Way,2,Schmedeman Way,CA,Los Angeles
+104,105,4 Goodland Lane,4,Goodland Lane,CA,Los Angeles
+105,106,7 Chinook Way,7,Chinook Way,CA,Los Angeles
+106,107,42219 Village Center,42219,Village Center,CA,Los Angeles
+107,108,7023 Holmberg Trail,7023,Holmberg Trail,CA,Los Angeles
+108,109,61016 Commercial Alley,61016,Commercial Alley,CA,Los Angeles
+109,110,70 La Follette Court,70,La Follette Court,CA,Los Angeles
+110,111,1449 Kinsman Pass,1449,Kinsman Pass,CA,Los Angeles
+111,112,247 Debra Plaza,247,Debra Plaza,CA,Los Angeles
+112,113,84 Lawn Lane,84,Lawn Lane,CA,Los Angeles
+113,114,8 Corben Avenue,8,Corben Avenue,CA,Los Angeles
+114,115,79559 Northport Drive,79559,Northport Drive,CA,Los Angeles
+115,116,79 Anzinger Crossing,79,Anzinger Crossing,CA,Los Angeles
+116,117,20 Hoard Lane,20,Hoard Lane,CA,Los Angeles
+117,118,4604 Dorton Hill,4604,Dorton Hill,CA,Los Angeles
+118,119,396 Upham Point,396,Upham Point,CA,Los Angeles
+119,120,894 Summerview Court,894,Summerview Court,CA,Los Angeles
+120,121,0 Melby Plaza,0,Melby Plaza,CA,Los Angeles
+121,122,585 Hanover Court,585,Hanover Court,CA,Los Angeles
+122,123,372 2nd Parkway,372,2nd Parkway,CA,Los Angeles
+123,124,148 Scoville Way,148,Scoville Way,CA,Los Angeles
+124,125,71 Red Cloud Court,71,Red Cloud Court,CA,Los Angeles
+125,126,3882 Pepper Wood Parkway,3882,Pepper Wood Parkway,CA,Los Angeles
+126,127,6488 Fair Oaks Road,6488,Fair Oaks Road,CA,Los Angeles
+127,128,1243 Petterle Hill,1243,Petterle Hill,CA,Los Angeles
+128,129,91131 Bonner Crossing,91131,Bonner Crossing,CA,Los Angeles
+129,130,8 Straubel Lane,8,Straubel Lane,CA,Los Angeles
+130,131,182 Kim Road,182,Kim Road,CA,Los Angeles
+131,132,436 Southridge Trail,436,Southridge Trail,CA,Los Angeles
+132,133,20046 Coleman Trail,20046,Coleman Trail,CA,Los Angeles
+133,134,9 Scoville Center,9,Scoville Center,CA,Los Angeles
+134,135,15 Aberg Park,15,Aberg Park,CA,Los Angeles
+135,136,72 Randy Terrace,72,Randy Terrace,CA,Los Angeles
+136,137,0966 Troy Junction,966,Troy Junction,CA,Los Angeles
+137,138,22 Spohn Circle,22,Spohn Circle,CA,Los Angeles
+138,139,63 Cambridge Park,63,Cambridge Park,CA,Los Angeles
+139,140,0 Ramsey Court,0,Ramsey Court,CA,Los Angeles
+140,141,408 Logan Lane,408,Logan Lane,CA,Los Angeles
+141,142,967 Erie Trail,967,Erie Trail,CA,Los Angeles
+142,143,9 David Crossing,9,David Crossing,CA,Los Angeles
+143,144,19 Merry Parkway,19,Merry Parkway,CA,Los Angeles
+144,145,10 Katie Pass,10,Katie Pass,CA,Los Angeles
+145,146,4206 Novick Drive,4206,Novick Drive,CA,Los Angeles
+146,147,7669 Forest Crossing,7669,Forest Crossing,CA,Los Angeles
+147,148,68493 Dawn Alley,68493,Dawn Alley,CA,Los Angeles
+148,149,3 Holy Cross Crossing,3,Holy Cross Crossing,CA,Los Angeles
+149,150,96 Packers Way,96,Packers Way,CA,Los Angeles
+150,151,42 Washington Point,42,Washington Point,CA,Los Angeles
+151,152,6 Loeprich Hill,6,Loeprich Hill,CA,Los Angeles
+152,153,88527 Loftsgordon Way,88527,Loftsgordon Way,CA,Los Angeles
+153,154,616 Stoughton Crossing,616,Stoughton Crossing,CA,Los Angeles
+154,155,961 Spaight Park,961,Spaight Park,CA,Los Angeles
+155,156,6747 Pawling Street,6747,Pawling Street,CA,Los Angeles
+156,157,564 Hauk Place,564,Hauk Place,CA,Los Angeles
+157,158,52 Glacier Hill Drive,52,Glacier Hill Drive,CA,Los Angeles
+158,159,5 Anhalt Road,5,Anhalt Road,CA,Los Angeles
+159,160,65546 Mallard Center,65546,Mallard Center,CA,Los Angeles
+160,161,1777 Claremont Place,1777,Claremont Place,CA,Los Angeles
+161,162,3 American Ash Alley,3,American Ash Alley,CA,Los Angeles
+162,163,3 Vermont Plaza,3,Vermont Plaza,CA,Los Angeles
+163,164,7 Basil Plaza,7,Basil Plaza,CA,Los Angeles
+164,165,82404 Hoepker Plaza,82404,Hoepker Plaza,CA,Los Angeles
+165,166,2767 Stoughton Plaza,2767,Stoughton Plaza,CA,Los Angeles
+166,167,44886 Park Meadow Plaza,44886,Park Meadow Plaza,CA,Los Angeles
+167,168,88866 Porter Street,88866,Porter Street,CA,Los Angeles
+168,169,76716 Clyde Gallagher Court,76716,Clyde Gallagher Court,CA,Los Angeles
+169,170,431 Montana Drive,431,Montana Drive,CA,Los Angeles
+170,171,87 Upham Plaza,87,Upham Plaza,CA,Los Angeles
+171,172,2798 2nd Drive,2798,2nd Drive,CA,Los Angeles
+172,173,265 Towne Trail,265,Towne Trail,CA,Los Angeles
+173,174,0 Dawn Way,0,Dawn Way,CA,Los Angeles
+174,175,24221 Lake View Drive,24221,Lake View Drive,CA,Los Angeles
+175,176,78 Hagan Alley,78,Hagan Alley,CA,Los Angeles
+176,177,997 Continental Parkway,997,Continental Parkway,CA,Los Angeles
+177,178,7 Laurel Hill,7,Laurel Hill,CA,Los Angeles
+178,179,96477 Service Street,96477,Service Street,CA,Los Angeles
+179,180,26888 Briar Crest Hill,26888,Briar Crest Hill,CA,Los Angeles
+180,181,4 High Crossing Pass,4,High Crossing Pass,CA,Los Angeles
+181,182,1988 Sunnyside Trail,1988,Sunnyside Trail,CA,Los Angeles
+182,183,19999 Truax Park,19999,Truax Park,CA,Los Angeles
+183,184,5429 Dottie Terrace,5429,Dottie Terrace,CA,Los Angeles
+184,185,9 Veith Point,9,Veith Point,CA,Los Angeles
+185,186,670 Spaight Street,670,Spaight Street,CA,Los Angeles
+186,187,5 Melby Terrace,5,Melby Terrace,CA,Los Angeles
+187,188,20189 Autumn Leaf Place,20189,Autumn Leaf Place,CA,Los Angeles
+188,189,32 Mifflin Drive,32,Mifflin Drive,CA,Los Angeles
+189,190,1981 Russell Lane,1981,Russell Lane,CA,Los Angeles
+190,191,282 Truax Trail,282,Truax Trail,CA,Los Angeles
+191,192,37 Porter Crossing,37,Porter Crossing,CA,Los Angeles
+192,193,30122 Forster Road,30122,Forster Road,CA,Los Angeles
+193,194,52291 Sachtjen Plaza,52291,Sachtjen Plaza,CA,Los Angeles
+194,195,11 Ilene Trail,11,Ilene Trail,CA,Los Angeles
+195,196,6 Cherokee Hill,6,Cherokee Hill,CA,Los Angeles
+196,197,94610 Hooker Pass,94610,Hooker Pass,CA,Los Angeles
+197,198,14199 Service Plaza,14199,Service Plaza,CA,Los Angeles
+198,199,963 3rd Circle,963,3rd Circle,CA,Los Angeles
+199,200,498 Moose Hill,498,Moose Hill,CA,Los Angeles
+200,201,70988 Emmet Alley,70988,Emmet Alley,CA,Los Angeles
+201,202,0334 Sundown Way,334,Sundown Way,CA,Los Angeles
+202,203,1 Gulseth Pass,1,Gulseth Pass,CA,Los Angeles
+203,204,07 Delaware Road,7,Delaware Road,CA,Los Angeles
+204,205,34 Luster Center,34,Luster Center,CA,Los Angeles
+205,206,514 Merchant Way,514,Merchant Way,CA,Los Angeles
+206,207,38 Alpine Center,38,Alpine Center,CA,Los Angeles
+207,208,193 Algoma Pass,193,Algoma Pass,CA,Los Angeles
+208,209,3518 Glendale Court,3518,Glendale Court,CA,Los Angeles
+209,210,80012 Anhalt Way,80012,Anhalt Way,CA,Los Angeles
+210,211,52 Porter Hill,52,Porter Hill,CA,Los Angeles
+211,212,4 Sutherland Junction,4,Sutherland Junction,CA,Los Angeles
+212,213,4065 Randy Way,4065,Randy Way,CA,Los Angeles
+213,214,10353 Spaight Plaza,10353,Spaight Plaza,CA,Los Angeles
+214,215,9 Cambridge Circle,9,Cambridge Circle,CA,Los Angeles
+215,216,50 Riverside Center,50,Riverside Center,CA,Los Angeles
+216,217,225 Declaration Center,225,Declaration Center,CA,Los Angeles
+217,218,799 Mcbride Center,799,Mcbride Center,CA,Los Angeles
+218,219,5 Forest Dale Street,5,Forest Dale Street,CA,Los Angeles
+219,220,9923 Barnett Park,9923,Barnett Park,CA,Los Angeles
+220,221,86 Weeping Birch Center,86,Weeping Birch Center,CA,Los Angeles
+221,222,368 Hoffman Point,368,Hoffman Point,CA,Los Angeles
+222,223,343 Hooker Place,343,Hooker Place,CA,Los Angeles
+223,224,2 Corry Trail,2,Corry Trail,CA,Los Angeles
+224,225,0 Corscot Center,0,Corscot Center,CA,Los Angeles
+225,226,49437 Blaine Drive,49437,Blaine Drive,CA,Los Angeles
+226,227,4451 Moulton Center,4451,Moulton Center,CA,Los Angeles
+227,228,56986 Sachtjen Court,56986,Sachtjen Court,CA,Los Angeles
+228,229,6 Declaration Drive,6,Declaration Drive,CA,Los Angeles
+229,230,35 Westridge Avenue,35,Westridge Avenue,CA,Los Angeles
+230,231,59 Division Court,59,Division Court,CA,Los Angeles
+231,232,6 East Avenue,6,East Avenue,CA,Los Angeles
+232,233,673 Florence Alley,673,Florence Alley,CA,Los Angeles
+233,234,5823 Ilene Court,5823,Ilene Court,CA,Los Angeles
+234,235,3318 Hanson Pass,3318,Hanson Pass,CA,Los Angeles
+235,236,67 Valley Edge Crossing,67,Valley Edge Crossing,CA,Los Angeles
+236,237,46072 4th Trail,46072,4th Trail,CA,Los Angeles
+237,238,7171 Fisk Road,7171,Fisk Road,CA,Los Angeles
+238,239,8645 Eliot Lane,8645,Eliot Lane,CA,Los Angeles
+239,240,5443 Meadow Ridge Hill,5443,Meadow Ridge Hill,CA,Los Angeles
+240,241,9041 Merrick Drive,9041,Merrick Drive,CA,Los Angeles
+241,242,3 American Terrace,3,American Terrace,CA,Los Angeles
+242,243,4745 John Wall Junction,4745,John Wall Junction,CA,Los Angeles
+243,244,184 Harbort Street,184,Harbort Street,CA,Los Angeles
+244,245,49 Buena Vista Terrace,49,Buena Vista Terrace,CA,Los Angeles
+245,246,3221 Redwing Circle,3221,Redwing Circle,CA,Los Angeles
+246,247,0 Schurz Alley,0,Schurz Alley,CA,Los Angeles
+247,248,617 Grim Drive,617,Grim Drive,CA,Los Angeles
+248,249,3207 Mccormick Circle,3207,Mccormick Circle,CA,Los Angeles
+249,250,9457 Northland Center,9457,Northland Center,CA,Los Angeles
+250,251,49205 Burning Wood Point,49205,Burning Wood Point,CA,Los Angeles
+251,252,4 Main Drive,4,Main Drive,CA,Los Angeles
+252,253,6 Emmet Avenue,6,Emmet Avenue,CA,Los Angeles
+253,254,3 Derek Hill,3,Derek Hill,CA,Los Angeles
+254,255,3 Tennessee Park,3,Tennessee Park,CA,Los Angeles
+255,256,72 Macpherson Road,72,Macpherson Road,CA,Los Angeles
+256,257,80 Colorado Lane,80,Colorado Lane,CA,Los Angeles
+257,258,0930 Hintze Trail,930,Hintze Trail,CA,Los Angeles
+258,259,9308 Del Sol Hill,9308,Del Sol Hill,CA,Los Angeles
+259,260,127 Memorial Center,127,Memorial Center,CA,Los Angeles
+260,261,78659 Doe Crossing Pass,78659,Doe Crossing Pass,CA,Los Angeles
+261,262,0 Pleasure Alley,0,Pleasure Alley,CA,Los Angeles
+262,263,55918 Stephen Pass,55918,Stephen Pass,CA,Los Angeles
+263,264,0718 Farwell Court,718,Farwell Court,CA,Los Angeles
+264,265,690 Kings Way,690,Kings Way,CA,Los Angeles
+265,266,9 Kings Junction,9,Kings Junction,CA,Los Angeles
+266,267,6 Dawn Circle,6,Dawn Circle,CA,Los Angeles
+267,268,727 School Junction,727,School Junction,CA,Los Angeles
+268,269,1196 Vernon Junction,1196,Vernon Junction,CA,Los Angeles
+269,270,8835 Morningstar Court,8835,Morningstar Court,CA,Los Angeles
+270,271,9937 La Follette Terrace,9937,La Follette Terrace,CA,Los Angeles
+271,272,1 Parkside Crossing,1,Parkside Crossing,CA,Los Angeles
+272,273,5791 Fairview Avenue,5791,Fairview Avenue,CA,Los Angeles
+273,274,56 Kenwood Crossing,56,Kenwood Crossing,CA,Los Angeles
+274,275,2962 Oak Circle,2962,Oak Circle,CA,Los Angeles
+275,276,1 Melrose Park,1,Melrose Park,CA,Los Angeles
+276,277,25 Grayhawk Park,25,Grayhawk Park,CA,Los Angeles
+277,278,3987 Coolidge Road,3987,Coolidge Road,CA,Los Angeles
+278,279,62572 Redwing Way,62572,Redwing Way,CA,Los Angeles
+279,280,7653 Johnson Court,7653,Johnson Court,CA,Los Angeles
+280,281,42891 Forster Point,42891,Forster Point,CA,Los Angeles
+281,282,0 Huxley Drive,0,Huxley Drive,CA,Los Angeles
+282,283,88 Golf Pass,88,Golf Pass,CA,Los Angeles
+283,284,52 Susan Way,52,Susan Way,CA,Los Angeles
+284,285,710 Monterey Avenue,710,Monterey Avenue,CA,Los Angeles
+285,286,54 Iowa Park,54,Iowa Park,CA,Los Angeles
+286,287,45241 Sundown Drive,45241,Sundown Drive,CA,Los Angeles
+287,288,03197 Ruskin Alley,3197,Ruskin Alley,CA,Los Angeles
+288,289,58367 Dryden Plaza,58367,Dryden Plaza,CA,Los Angeles
+289,290,24191 Little Fleur Avenue,24191,Little Fleur Avenue,CA,Los Angeles
+290,291,37 Huxley Way,37,Huxley Way,CA,Los Angeles
+291,292,3087 Steensland Drive,3087,Steensland Drive,CA,Los Angeles
+292,293,3 Rockefeller Avenue,3,Rockefeller Avenue,CA,Los Angeles
+293,294,64 Main Way,64,Main Way,CA,Los Angeles
+294,295,2 Corry Lane,2,Corry Lane,CA,Los Angeles
+295,296,734 Maple Way,734,Maple Way,CA,Los Angeles
+296,297,48 Farwell Street,48,Farwell Street,CA,Los Angeles
+297,298,29520 Scofield Street,29520,Scofield Street,CA,Los Angeles
+298,299,7 4th Park,7,4th Park,CA,Los Angeles
+299,300,0 Grim Alley,0,Grim Alley,CA,Los Angeles
+300,301,9 Mendota Parkway,9,Mendota Parkway,CA,Los Angeles
+301,302,5 Homewood Road,5,Homewood Road,CA,Los Angeles
+302,303,69807 Victoria Terrace,69807,Victoria Terrace,CA,Los Angeles
+303,304,68 Washington Pass,68,Washington Pass,CA,Los Angeles
+304,305,06 Kensington Avenue,6,Kensington Avenue,CA,Los Angeles
+305,306,2401 Butternut Circle,2401,Butternut Circle,CA,Los Angeles
+306,307,7 Everett Court,7,Everett Court,CA,Los Angeles
+307,308,6 Schmedeman Street,6,Schmedeman Street,CA,Los Angeles
+308,309,7264 Vahlen Circle,7264,Vahlen Circle,CA,Los Angeles
+309,310,0 Daystar Way,0,Daystar Way,CA,Los Angeles
+310,311,311 Riverside Hill,311,Riverside Hill,CA,Los Angeles
+311,312,4121 Schurz Crossing,4121,Schurz Crossing,CA,Los Angeles
+312,313,63416 Arrowood Place,63416,Arrowood Place,CA,Los Angeles
+313,314,0 Homewood Crossing,0,Homewood Crossing,CA,Los Angeles
+314,315,95 Dawn Hill,95,Dawn Hill,CA,Los Angeles
+315,316,75 Melvin Terrace,75,Melvin Terrace,CA,Los Angeles
+316,317,99 Corry Road,99,Corry Road,CA,Los Angeles
+317,318,55 Dryden Point,55,Dryden Point,CA,Los Angeles
+318,319,31065 Sloan Hill,31065,Sloan Hill,CA,Los Angeles
+319,320,3 Roth Hill,3,Roth Hill,CA,Los Angeles
+320,321,4 Mayfield Circle,4,Mayfield Circle,CA,Los Angeles
+321,322,18405 Cardinal Pass,18405,Cardinal Pass,CA,Los Angeles
+322,323,9803 Badeau Avenue,9803,Badeau Avenue,CA,Los Angeles
+323,324,70 Petterle Way,70,Petterle Way,CA,Los Angeles
+324,325,722 Heffernan Plaza,722,Heffernan Plaza,CA,Los Angeles
+325,326,1392 Novick Road,1392,Novick Road,CA,Los Angeles
+326,327,60718 School Park,60718,School Park,CA,Los Angeles
+327,328,760 Lighthouse Bay Way,760,Lighthouse Bay Way,CA,Los Angeles
+328,329,626 Coolidge Plaza,626,Coolidge Plaza,CA,Los Angeles
+329,330,962 Sundown Parkway,962,Sundown Parkway,CA,Los Angeles
+330,331,89 Lakeland Pass,89,Lakeland Pass,CA,Los Angeles
+331,332,3 Spohn Center,3,Spohn Center,CA,Los Angeles
+332,333,26851 Londonderry Hill,26851,Londonderry Hill,CA,Los Angeles
+333,334,75134 Jay Alley,75134,Jay Alley,CA,Los Angeles
+334,335,6588 Dryden Lane,6588,Dryden Lane,CA,Los Angeles
+335,336,60966 Harper Parkway,60966,Harper Parkway,CA,Los Angeles
+336,337,644 Canary Terrace,644,Canary Terrace,CA,Los Angeles
+337,338,51777 Schiller Circle,51777,Schiller Circle,CA,Los Angeles
+338,339,2 Meadow Vale Road,2,Meadow Vale Road,CA,Los Angeles
+339,340,29 Warner Lane,29,Warner Lane,CA,Los Angeles
+340,341,0031 8th Way,31,8th Way,CA,Los Angeles
+341,342,98743 Nancy Court,98743,Nancy Court,CA,Los Angeles
+342,343,4 Havey Lane,4,Havey Lane,CA,Los Angeles
+343,344,5 Kingsford Street,5,Kingsford Street,CA,Los Angeles
+344,345,4490 Hooker Circle,4490,Hooker Circle,CA,Los Angeles
+345,346,872 Grover Center,872,Grover Center,CA,Los Angeles
+346,347,171 Hayes Park,171,Hayes Park,CA,Los Angeles
+347,348,841 Melrose Place,841,Melrose Place,CA,Los Angeles
+348,349,0718 Mallory Center,718,Mallory Center,CA,Los Angeles
+349,350,93441 Moland Alley,93441,Moland Alley,CA,Los Angeles
+350,351,3 Tony Street,3,Tony Street,CA,Los Angeles
+351,352,04 Delaware Lane,4,Delaware Lane,CA,Los Angeles
+352,353,07029 Lakeland Avenue,7029,Lakeland Avenue,CA,Los Angeles
+353,354,32794 West Hill,32794,West Hill,CA,Los Angeles
+354,355,1 Annamark Center,1,Annamark Center,CA,Los Angeles
+355,356,389 Brickson Park Avenue,389,Brickson Park Avenue,CA,Los Angeles
+356,357,9445 Manitowish Court,9445,Manitowish Court,CA,Los Angeles
+357,358,74 Harbort Place,74,Harbort Place,CA,Los Angeles
+358,359,30169 Homewood Plaza,30169,Homewood Plaza,CA,Los Angeles
+359,360,886 Scofield Circle,886,Scofield Circle,CA,Los Angeles
+360,361,60 Crescent Oaks Street,60,Crescent Oaks Street,CA,Los Angeles
+361,362,1 Lakewood Pass,1,Lakewood Pass,CA,Los Angeles
+362,363,67 Steensland Court,67,Steensland Court,CA,Los Angeles
+363,364,95905 Golf View Parkway,95905,Golf View Parkway,CA,Los Angeles
+364,365,02106 Warrior Lane,2106,Warrior Lane,CA,Los Angeles
+365,366,8624 Huxley Plaza,8624,Huxley Plaza,CA,Los Angeles
+366,367,9617 Miller Road,9617,Miller Road,CA,Los Angeles
+367,368,6473 Pawling Hill,6473,Pawling Hill,CA,Los Angeles
+368,369,25 Weeping Birch Point,25,Weeping Birch Point,CA,Los Angeles
+369,370,538 Monterey Pass,538,Monterey Pass,CA,Los Angeles
+370,371,1738 Veith Terrace,1738,Veith Terrace,CA,Los Angeles
+371,372,892 Spenser Plaza,892,Spenser Plaza,CA,Los Angeles
+372,373,10 Northland Court,10,Northland Court,CA,Los Angeles
+373,374,2847 Schurz Junction,2847,Schurz Junction,CA,Los Angeles
+374,375,2 Huxley Center,2,Huxley Center,CA,Los Angeles
+375,376,73 Dawn Pass,73,Dawn Pass,CA,Los Angeles
+376,377,7599 Monument Crossing,7599,Monument Crossing,CA,Los Angeles
+377,378,0 Hudson Street,0,Hudson Street,CA,Los Angeles
+378,379,6 Golf Place,6,Golf Place,CA,Los Angeles
+379,380,6912 Pearson Center,6912,Pearson Center,CA,Los Angeles
+380,381,48 Bartelt Drive,48,Bartelt Drive,CA,Los Angeles
+381,382,64 Fallview Place,64,Fallview Place,CA,Los Angeles
+382,383,33 Prairieview Street,33,Prairieview Street,CA,Los Angeles
+383,384,37 Dunning Point,37,Dunning Point,CA,Los Angeles
+384,385,576 Bartelt Hill,576,Bartelt Hill,CA,Los Angeles
+385,386,708 Loeprich Place,708,Loeprich Place,CA,Los Angeles
+386,387,83691 Kinsman Court,83691,Kinsman Court,CA,Los Angeles
+387,388,895 Ridge Oak Trail,895,Ridge Oak Trail,CA,Los Angeles
+388,389,25674 Merrick Court,25674,Merrick Court,CA,Los Angeles
+389,390,4524 Grover Place,4524,Grover Place,CA,Los Angeles
+390,391,9291 Norway Maple Hill,9291,Norway Maple Hill,CA,Los Angeles
+391,392,51008 Prentice Place,51008,Prentice Place,CA,Los Angeles
+392,393,946 Veith Park,946,Veith Park,CA,Los Angeles
+393,394,5126 Lyons Way,5126,Lyons Way,CA,Los Angeles
+394,395,89 Arrowood Court,89,Arrowood Court,CA,Los Angeles
+395,396,5 Prairieview Terrace,5,Prairieview Terrace,CA,Los Angeles
+396,397,48591 Blaine Park,48591,Blaine Park,CA,Los Angeles
+397,398,68 Forest Run Parkway,68,Forest Run Parkway,CA,Los Angeles
+398,399,50 Esch Crossing,50,Esch Crossing,CA,Los Angeles
+399,400,530 Jenifer Court,530,Jenifer Court,CA,Los Angeles
+400,401,372 Bobwhite Crossing,372,Bobwhite Crossing,CA,Los Angeles
+401,402,69 Fairview Pass,69,Fairview Pass,CA,Los Angeles
+402,403,3437 Huxley Crossing,3437,Huxley Crossing,CA,Los Angeles
+403,404,9 Main Avenue,9,Main Avenue,CA,Los Angeles
+404,405,0926 Continental Drive,926,Continental Drive,CA,Los Angeles
+405,406,758 Tennyson Court,758,Tennyson Court,CA,Los Angeles
+406,407,8 Shelley Point,8,Shelley Point,CA,Los Angeles
+407,408,4399 Delaware Plaza,4399,Delaware Plaza,CA,Los Angeles
+408,409,0 Sloan Drive,0,Sloan Drive,CA,Los Angeles
+409,410,73 Dayton Terrace,73,Dayton Terrace,CA,Los Angeles
+410,411,9 Golden Leaf Center,9,Golden Leaf Center,CA,Los Angeles
+411,412,113 Stuart Lane,113,Stuart Lane,CA,Los Angeles
+412,413,81597 High Crossing Parkway,81597,High Crossing Parkway,CA,Los Angeles
+413,414,8 Ridgeway Circle,8,Ridgeway Circle,CA,Los Angeles
+414,415,7 Michigan Circle,7,Michigan Circle,CA,Los Angeles
+415,416,22387 4th Street,22387,4th Street,CA,Los Angeles
+416,417,8476 Brickson Park Road,8476,Brickson Park Road,CA,Los Angeles
+417,418,73691 Prairie Rose Lane,73691,Prairie Rose Lane,CA,Los Angeles
+418,419,53 Calypso Court,53,Calypso Court,CA,Los Angeles
+419,420,6827 Larry Court,6827,Larry Court,CA,Los Angeles
+420,421,1512 Eggendart Lane,1512,Eggendart Lane,CA,Los Angeles
+421,422,1066 Hoffman Center,1066,Hoffman Center,CA,Los Angeles
+422,423,7 Sutteridge Center,7,Sutteridge Center,CA,Los Angeles
+423,424,7 Main Junction,7,Main Junction,CA,Los Angeles
+424,425,32420 Russell Pass,32420,Russell Pass,CA,Los Angeles
+425,426,292 Gateway Circle,292,Gateway Circle,CA,Los Angeles
+426,427,106 Hazelcrest Center,106,Hazelcrest Center,CA,Los Angeles
+427,428,07 Nobel Park,7,Nobel Park,CA,Los Angeles
+428,429,85 Barby Point,85,Barby Point,CA,Los Angeles
+429,430,39129 Green Alley,39129,Green Alley,CA,Los Angeles
+430,431,44 Drewry Drive,44,Drewry Drive,CA,Los Angeles
+431,432,98 Sachs Terrace,98,Sachs Terrace,CA,Los Angeles
+432,433,8444 Reindahl Hill,8444,Reindahl Hill,CA,Los Angeles
+433,434,5 North Avenue,5,North Avenue,CA,Los Angeles
+434,435,86 Johnson Point,86,Johnson Point,CA,Los Angeles
+435,436,16100 Sommers Place,16100,Sommers Place,CA,Los Angeles
+436,437,251 Harper Park,251,Harper Park,CA,Los Angeles
+437,438,11 Moose Junction,11,Moose Junction,CA,Los Angeles
+438,439,254 Katie Hill,254,Katie Hill,CA,Los Angeles
+439,440,02 Cherokee Junction,2,Cherokee Junction,CA,Los Angeles
+440,441,4061 Knutson Circle,4061,Knutson Circle,CA,Los Angeles
+441,442,22574 Basil Avenue,22574,Basil Avenue,CA,Los Angeles
+442,443,9 Anzinger Drive,9,Anzinger Drive,CA,Los Angeles
+443,444,09962 Carberry Alley,9962,Carberry Alley,CA,Los Angeles
+444,445,80835 Kensington Pass,80835,Kensington Pass,CA,Los Angeles
+445,446,4340 Arrowood Street,4340,Arrowood Street,CA,Los Angeles
+446,447,19 Harbort Plaza,19,Harbort Plaza,CA,Los Angeles
+447,448,778 Bunker Hill Lane,778,Bunker Hill Lane,CA,Los Angeles
+448,449,7486 Bonner Terrace,7486,Bonner Terrace,CA,Los Angeles
+449,450,04135 Graceland Lane,4135,Graceland Lane,CA,Los Angeles
+450,451,04 Butterfield Parkway,4,Butterfield Parkway,CA,Los Angeles
+451,452,39 Donald Lane,39,Donald Lane,CA,Los Angeles
+452,453,6914 Carioca Way,6914,Carioca Way,CA,Los Angeles
+453,454,13943 Kensington Pass,13943,Kensington Pass,CA,Los Angeles
+454,455,6 Debra Center,6,Debra Center,CA,Los Angeles
+455,456,8 Knutson Circle,8,Knutson Circle,CA,Los Angeles
+456,457,31 Sloan Center,31,Sloan Center,CA,Los Angeles
+457,458,39 Heffernan Drive,39,Heffernan Drive,CA,Los Angeles
+458,459,866 West Plaza,866,West Plaza,CA,Los Angeles
+459,460,23 Delaware Way,23,Delaware Way,CA,Los Angeles
+460,461,062 Becker Junction,62,Becker Junction,CA,Los Angeles
+461,462,7784 Duke Park,7784,Duke Park,CA,Los Angeles
+462,463,7 Mayer Place,7,Mayer Place,CA,Los Angeles
+463,464,32595 Anderson Trail,32595,Anderson Trail,CA,Los Angeles
+464,465,7556 Clemons Way,7556,Clemons Way,CA,Los Angeles
+465,466,856 1st Trail,856,1st Trail,CA,Los Angeles
+466,467,40145 Elmside Hill,40145,Elmside Hill,CA,Los Angeles
+467,468,9478 Old Shore Street,9478,Old Shore Street,CA,Los Angeles
+468,469,91969 Hanson Hill,91969,Hanson Hill,CA,Los Angeles
+469,470,30 Eagan Parkway,30,Eagan Parkway,CA,Los Angeles
+470,471,54082 Gerald Road,54082,Gerald Road,CA,Los Angeles
+471,472,888 Golf Road,888,Golf Road,CA,Los Angeles
+472,473,0 Dexter Alley,0,Dexter Alley,CA,Los Angeles
+473,474,97371 Eliot Place,97371,Eliot Place,CA,Los Angeles
+474,475,7930 Corscot Circle,7930,Corscot Circle,CA,Los Angeles
+475,476,38 Grasskamp Trail,38,Grasskamp Trail,CA,Los Angeles
+476,477,161 Main Junction,161,Main Junction,CA,Los Angeles
+477,478,37 Miller Court,37,Miller Court,CA,Los Angeles
+478,479,6161 Dayton Park,6161,Dayton Park,CA,Los Angeles
+479,480,4584 Toban Lane,4584,Toban Lane,CA,Los Angeles
+480,481,61658 Lindbergh Plaza,61658,Lindbergh Plaza,CA,Los Angeles
+481,482,31043 Manley Lane,31043,Manley Lane,CA,Los Angeles
+482,483,0396 Rusk Parkway,396,Rusk Parkway,CA,Los Angeles
+483,484,1849 Surrey Center,1849,Surrey Center,CA,Los Angeles
+484,485,1 Ludington Pass,1,Ludington Pass,CA,Los Angeles
+485,486,32 Lake View Lane,32,Lake View Lane,CA,Los Angeles
+486,487,1337 Roxbury Road,1337,Roxbury Road,CA,Los Angeles
+487,488,8848 Drewry Hill,8848,Drewry Hill,CA,Los Angeles
+488,489,2617 Darwin Circle,2617,Darwin Circle,CA,Los Angeles
+489,490,3380 Stone Corner Court,3380,Stone Corner Court,CA,Los Angeles
+490,491,3394 Schiller Parkway,3394,Schiller Parkway,CA,Los Angeles
+491,492,9 Fulton Trail,9,Fulton Trail,CA,Los Angeles
+492,493,5276 Gale Road,5276,Gale Road,CA,Los Angeles
+493,494,68 Hermina Street,68,Hermina Street,CA,Los Angeles
+494,495,64 Loomis Terrace,64,Loomis Terrace,CA,Los Angeles
+495,496,99 Pepper Wood Way,99,Pepper Wood Way,CA,Los Angeles
+496,497,0 Forest Dale Way,0,Forest Dale Way,CA,Los Angeles
+497,498,0373 Loftsgordon Road,373,Loftsgordon Road,CA,Los Angeles
+498,499,91332 Columbus Alley,91332,Columbus Alley,CA,Los Angeles

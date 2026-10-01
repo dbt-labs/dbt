@@ -5,33 +5,49 @@ versionHeaderPath: ""
 changelogPath: CHANGELOG.md
 versionExt: md
 envPrefix: "CHANGIE_"
-versionFormat: '## dbt-core {{.Version}} - {{.Time.Format "January 02, 2006"}}'
-kindFormat: '### {{.Kind}}'
+versionFormat: |-
+  ## {{.Version}}
+
+  Released {{.Time.Format "January 02, 2006"}}
+kindFormat: "### {{.Kind}}"
+
+custom:
+  - key: issue
+    label: "[Optional] dbt-core issue number (separated by a single space if multiple)"
+    type: string
+    required: false
+  - key: author
+    label: "[Optional] Author's GitHub handle without the @ symbol (separated by a single space if multiple)"
+    type: string
+    required: false
+
+# Change format: optional issue links only. The project field is retained in the
+# change files (for the internal changelog) but not rendered here. Issue links
+# are only rendered for dbt-core changes and only when an issue number is present.
 changeFormat: |-
   {{- $IssueList := list }}
-  {{- $changes := splitList " " $.Custom.Issue }}
-  {{- range $issueNbr := $changes }}
-    {{- $changeLink := "[#nbr](https://github.com/dbt-labs/dbt-core/issues/nbr)" | replace "nbr" $issueNbr }}
-    {{- $IssueList = append $IssueList $changeLink  }}
+  {{- if eq $.Custom.project "dbt-core" }}
+  {{- range $issueNbr := splitList " " $.Custom.issue }}
+    {{- if $issueNbr }}
+      {{- $changeLink := "[#nbr](https://github.com/dbt-labs/dbt-core/issues/nbr)" | replace "nbr" $issueNbr }}
+      {{- $IssueList = append $IssueList $changeLink  }}
+    {{- end -}}
   {{- end -}}
-  - {{.Body}} ({{ range $index, $element := $IssueList }}{{if $index}}, {{end}}{{$element}}{{end}})
+  {{- end -}}
+  - {{.Body}}{{if $IssueList}} ({{ range $index, $element := $IssueList }}{{if $index}}, {{end}}{{$element}}{{end}}){{end}}
 
 kinds:
   - label: Breaking Changes
   - label: Features
   - label: Fixes
-  - label: Docs
-    changeFormat: |-
-      {{- $IssueList := list }}
-      {{- $changes := splitList " " $.Custom.Issue }}
-      {{- range $issueNbr := $changes }}
-        {{- $changeLink := "[dbt-docs/#nbr](https://github.com/dbt-labs/dbt-docs/issues/nbr)" | replace "nbr" $issueNbr }}
-        {{- $IssueList = append $IssueList $changeLink }}
-      {{- end -}}
-      - {{.Body}} ({{ range $index, $element := $IssueList }}{{if $index}}, {{end}}{{$element}}{{end}})
   - label: Under the Hood
   - label: Dependencies
   - label: Security
+
+# these changelogs are always for dbt-core
+post:
+  - key: project
+    value: dbt-core
 
 newlines:
   afterChangelogHeader: 1
@@ -40,51 +56,42 @@ newlines:
   beforeKind: 1
   endOfVersion: 1
 
-custom:
-  - key: Author
-    label: GitHub Username(s) (separated by a single space if multiple)
-    type: string
-    minLength: 3
-  - key: Issue
-    label: GitHub Issue Number (separated by a single space if multiple)
-    type: string
-    minLength: 1
-
+# Contributors section (mirrors fs). Set FUSION_TEAM (space-separated handles)
+# to exclude maintainers; otherwise all non-bot authors are listed. Issue links
+# resolve to the dbt-core repo, matching changeFormat above.
 footerFormat: |
   {{- $contributorDict := dict }}
-  {{- /* ensure we always skip snyk and dependabot */}}
-  {{- $bots := list "dependabot[bot]" "snyk-bot"}}
-  {{- range $change := .Changes }}
-    {{- $authorList := splitList " " $change.Custom.Author }}
-    {{- /* loop through all authors for a single changelog */}}
-    {{- range $author := $authorList }}
-      {{- $authorLower := lower $author }}
-      {{- /* we only want to include non-bot contributors */}}
-      {{- if not (has $authorLower $bots)}}
-        {{- $changeList := splitList " " $change.Custom.Author }}
-          {{- $IssueList := list }}
-          {{- $changeLink := $change.Kind }}
-          {{- $changes := splitList " " $change.Custom.Issue }}
-          {{- range $issueNbr := $changes }}
-            {{- $changeLink := "[#nbr](https://github.com/dbt-labs/dbt-core/issues/nbr)" | replace "nbr" $issueNbr }}
-            {{- $IssueList = append $IssueList $changeLink  }}
-          {{- end }}
-          {{- /* check if this contributor has other changes associated with them already */}}
-          {{- if hasKey $contributorDict $author }}
-            {{- $contributionList := get $contributorDict $author }}
-            {{- $contributionList = concat $contributionList $IssueList  }}
-            {{- $contributorDict := set $contributorDict $author $contributionList }}
-          {{- else }}
-            {{- $contributionList := $IssueList }}
-            {{- $contributorDict := set $contributorDict $author $contributionList }}
-          {{- end }}
-        {{- end}}
-    {{- end}}
+  {{- $fusion_team_env := default "" .Env.FUSION_TEAM }}
+  {{- $fusion_team := splitList " " $fusion_team_env }}
+  {{- $maintainers := list "dependabot[bot]"}}
+  {{- range $team_member := $fusion_team }}
+    {{- $maintainers = append $maintainers (lower $team_member) }}
   {{- end }}
-  {{- /* no indentation here for formatting so the final markdown doesn't have unneeded indentations */}}
+  {{- range $change := .Changes }}
+    {{- $authorList := splitList " " $change.Custom.author }}
+    {{- range $author := $authorList }}
+      {{- if and $author (not (has (lower $author) $maintainers)) }}
+        {{- $IssueList := list }}
+        {{- if eq $change.Custom.project "dbt-core" }}
+        {{- range $issueNbr := splitList " " $change.Custom.issue }}
+          {{- if $issueNbr }}
+            {{- $changeLink := "[#nbr](https://github.com/dbt-labs/dbt-core/issues/nbr)" | replace "nbr" $issueNbr }}
+            {{- $IssueList = append $IssueList $changeLink }}
+          {{- end }}
+        {{- end }}
+        {{- end }}
+        {{- if hasKey $contributorDict $author }}
+          {{- $contributorDict = set $contributorDict $author (concat (get $contributorDict $author) $IssueList) }}
+        {{- else }}
+          {{- $contributorDict = set $contributorDict $author $IssueList }}
+        {{- end }}
+      {{- end }}
+    {{- end }}
+  {{- end }}
   {{- if $contributorDict}}
   ### Contributors
-  {{- range $k,$v := $contributorDict }}
-  - [@{{$k}}](https://github.com/{{$k}}) ({{ range $index, $element := $v }}{{if $index}}, {{end}}{{$element}}{{end}})
+  {{- range $k := (keys $contributorDict | sortAlpha) }}
+  {{- $v := get $contributorDict $k }}
+  - [@{{$k}}](https://github.com/{{$k}}){{if $v}} ({{ range $index, $element := $v }}{{if $index}}, {{end}}{{$element}}{{end}}){{end}}
   {{- end }}
   {{- end }}

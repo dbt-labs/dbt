@@ -1,0 +1,15 @@
+{
+    "one": 1,
+    "two": 2,
+    "nine": 9
+}
+---
+{{ get_args(1, 2, 3, 4, 5, 6, 7, 8, 9) }}
+{{ get_args(1, 2, 3, *[4, 5, 6], 7, 8, 9) }}
+{{ get_args(one, 2, 3, 4, 5, 6, 7, 8, 9) }}
+{{ get_args(1, 2, 3, *[4, 5, 6], 7, 8, nine) }}
+{{ get_args(1, 2, one=1, two=two) }}
+{{ get_args(1, 2, one=1, **dict(two=two)) }}
+{{ get_args(1, *[2], one=1, **dict(two=two)) }}
+{{ get_args(1, 2, *[3], *[4], **{8: 8, 9: 9})}}
+{{ get_args(1, 2, *[3], *[4], **{8: 8, nine: nine})}}

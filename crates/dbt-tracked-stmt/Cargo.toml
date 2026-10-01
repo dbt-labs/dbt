@@ -1,0 +1,26 @@
+[package]
+name = "dbt-tracked-stmt"
+description = "Process-global tracking of in-flight ADBC statements so they can be cancelled"
+version.workspace = true
+homepage.workspace = true
+repository.workspace = true
+authors.workspace = true
+license.workspace = true
+keywords.workspace = true
+edition.workspace = true
+
+[lib]
+doctest = false
+
+[lints]
+workspace = true
+
+[dependencies]
+dbt-adbc = { workspace = true }
+dbt-base = { workspace = true }
+dbt-fusion-workspace-hack = { version = "0.1" }
+
+adbc-core = { workspace = true }
+arrow-array = { workspace = true }
+arrow-schema = { workspace = true }
+crossbeam-skiplist = { workspace = true }

@@ -1,0 +1,86 @@
+name: 🧠 SQL understanding issue
+description: dbt Fusion doesn't recognize a function, flags valid SQL as an error, infers the wrong column type, or produces incorrect lineage
+title: "[SQL] <title>"
+labels: ["bug", "SQL_understanding", "v2", "type:bug", "status:triage", "area:static-analysis", "engine:v2"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this template for issues where dbt Fusion engine **fails to understand valid SQL** — things like unrecognized functions, incorrect type inference, unexpected parse errors, or wrong static analysis results.
+
+        For runtime errors or behavioral bugs unrelated to SQL analysis, use the "🐞 Bug (dbt v2.x)" template instead.
+  - type: checkboxes
+    attributes:
+      label: Before you submit
+      options:
+        - label: I have searched the existing issues and could not find a duplicate
+          required: true
+  - type: textarea
+    attributes:
+      label: SQL that dbt Fusion doesn't understand
+      description: Paste a minimal SQL snippet that reproduces the issue. Smaller is better.
+      render: sql
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: What dbt Fusion does
+      description: What error, warning, or incorrect result does dbt Fusion produce?
+      render: shell
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: What you expected
+      description: What should dbt Fusion do with this SQL?
+    validations:
+      required: true
+  - type: dropdown
+    id: category
+    attributes:
+      label: What kind of SQL understanding issue is this?
+      multiple: true
+      options:
+        - Unrecognized or unsupported function
+        - Incorrect type inference
+        - Parse error on valid SQL
+        - Wrong column lineage / ref resolution
+        - Macro or Jinja compilation
+        - Other (describe in Additional Context)
+    validations:
+      required: false
+  - type: dropdown
+    id: adapter
+    attributes:
+      label: Which database adapter are you using?
+      description: Dialect-specific SQL (e.g. Snowflake QUALIFY, BigQuery STRUCT) often requires adapter context.
+      multiple: true
+      options:
+        - snowflake
+        - databricks
+        - bigquery
+        - postgres
+        - redshift
+        - duckdb
+        - other (describe in Additional Context)
+    validations:
+      required: false
+  - type: checkboxes
+    attributes:
+      label: Does this SQL execute correctly with the `--static-analysis off` flag, or when run by dbt Core?
+      options:
+        - label: "Yes — this SQL is accepted by the warehouse"
+  - type: textarea
+    attributes:
+      label: Environment
+      value: |
+        - dbt Fusion version: (`dbt --version`)
+      render: markdown
+    validations:
+      required: false
+  - type: textarea
+    attributes:
+      label: Additional Context
+      description: Links, references, or anything else that will help us reproduce this.
+    validations:
+      required: false

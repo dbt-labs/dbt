@@ -1,0 +1,5 @@
+{}
+---
+{% for char in "abcdefg" -%}
+  {{ char }}
+{% endfor %}

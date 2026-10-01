@@ -1,0 +1,567 @@
+syntax = "proto3";
+
+package v1.public.events.dbt_wizard;
+option go_package = "github.com/dbt-labs/proto-golang/v1/public/events/dbt_wizard";
+
+import "dbtlabs/proto/public/v1/common/vortex_options.proto";
+import "dbtlabs/proto/public/v1/events/vortex.proto";
+import "dbtlabs/proto/public/v1/common/vortex_telemetry_contexts.proto";
+
+enum DbtWizardToolOutcome {
+  DBT_WIZARD_TOOL_OUTCOME_UNSPECIFIED = 0;
+  // The tool completed successfully.
+  DBT_WIZARD_TOOL_OUTCOME_SUCCEEDED = 1;
+  // The invocation could not be constructed or routed.
+  DBT_WIZARD_TOOL_OUTCOME_REJECTED = 2;
+  // Policy or a pre-execution hook prevented execution.
+  DBT_WIZARD_TOOL_OUTCOME_BLOCKED = 3;
+  // Execution was attempted but failed.
+  DBT_WIZARD_TOOL_OUTCOME_FAILED = 4;
+  // The attempt was interrupted or never reached a normal terminal result.
+  DBT_WIZARD_TOOL_OUTCOME_ABORTED = 5;
+}
+
+// Emitted once at session start and once at session end.
+message DbtWizardSession {
+  option (v1.public.common.vortex_namespace) = VORTEX_ICEBERG_NAMESPACE_TELEMETRY;
+  option (v1.public.common.vortex_enabled) = true;
+
+  v1.events.vortex.VortexMessageEnrichment enrichment = 1;
+  // Unique identifier for this event.
+  string event_id = 2;
+  // Session correlation ID (thread_id).
+  string session_id = 3;
+  // "start" or "end".
+  string progress = 4;
+  // Client name: "cli", "vscode", "desktop", "mcp_server".
+  string session_source = 5;
+  // Model slug (e.g. "claude-sonnet-4-20250514").
+  string model = 6;
+  // dbt-wizard binary version.
+  string version = 7;
+  // Operating system: "macos", "linux", "windows".
+  string os = 8;
+  // CPU architecture: "aarch64", "x86_64".
+  string arch = 9;
+  // Authenticated dbt Cloud user ID (JWT sub claim); falls back to anonymous
+  // UUID from ~/.dbt/.user.yml when unauthenticated.
+  string user_id = 10;
+  // 0 on start; total session wall-clock time on end.
+  int64 duration_ms = 11;
+  // Empty on start; "completed", "failed", or "interrupted" on end.
+  string result_type = 12;
+  // 0 on start; total turn count on end.
+  int32 turn_count = 13;
+  // 0 on start; cumulative token usage on end.
+  int64 total_tokens = 14;
+  // Numeric dbt Cloud account ID (from JWT claims or dbt_cloud.yml).
+  string account_id = 15;
+  // Global dbt Cloud account identifier slug (from /api/v2/accounts/{id}/).
+  string account_identifier = 16;
+  // Whether the WIZARD_INTERNAL env var was set for this session.
+  bool is_wizard_internal = 17;
+  // The anonymous UUID from ~/.dbt/.user.yml. Always populated regardless of
+  // auth state, enabling a join between pre-auth and post-auth events.
+  string anonymous_id = 18;
+  v1.public.common.vortex_telemetry_contexts.VortexTelemetryCommonContext common_context = 19;
+}
+
+// Emitted once per turn completion.
+message DbtWizardTurn {
+  option (v1.public.common.vortex_namespace) = VORTEX_ICEBERG_NAMESPACE_TELEMETRY;
+  option (v1.public.common.vortex_enabled) = true;
+
+  v1.events.vortex.VortexMessageEnrichment enrichment = 1;
+  // Unique identifier for this event.
+  string event_id = 2;
+  // Session correlation ID (thread_id).
+  string session_id = 3;
+  // Turn correlation ID.
+  string turn_id = 4;
+  // Model slug used for this turn.
+  string model = 5;
+  // Turn outcome: "completed", "failed", "interrupted".
+  string status = 6;
+  // Turn wall-clock duration.
+  int64 duration_ms = 7;
+  // Token usage breakdown.
+  int64 input_tokens = 8;
+  int64 cached_input_tokens = 9;
+  int64 output_tokens = 10;
+  int64 reasoning_output_tokens = 11;
+  int64 total_tokens = 12;
+  // Number of tool calls made during this turn.
+  int32 tool_call_count = 13;
+  // Whether this is the first turn in the session.
+  bool is_first_turn = 14;
+  // Collaboration mode: "Default", "Plan", etc.
+  string collaboration_mode = 15;
+  // Whether the WIZARD_INTERNAL env var was set for this session.
+  bool is_wizard_internal = 16;
+  v1.public.common.vortex_telemetry_contexts.VortexTelemetryCommonContext common_context = 17;
+}
+
+// Emitted once per tool attempt after it reaches a terminal outcome.
+// Tool argument names and values are not captured.
+message DbtWizardToolUse {
+  option (v1.public.common.vortex_namespace) = VORTEX_ICEBERG_NAMESPACE_TELEMETRY;
+  option (v1.public.common.vortex_enabled) = true;
+
+  v1.events.vortex.VortexMessageEnrichment enrichment = 1;
+  // Unique identifier for this event.
+  string event_id = 2;
+  // Session correlation ID (thread_id).
+  string session_id = 3;
+  // Turn correlation ID.
+  string turn_id = 4;
+  // Tool category: one of "builtin", "mcp", "hosted", or "unknown".
+  string tool_type = 5;
+  // Registered canonical flattened tool name (e.g.
+  // "mcp__dbt_index__search"); unrecognized model-controlled names are emitted
+  // as "<unknown>".
+  string tool_name = 6;
+  // Whether the tool call resulted in an error.
+  bool is_error = 7;
+  // Tool execution wall-clock time.
+  int64 execution_time_ms = 8;
+  // Whether the WIZARD_INTERNAL env var was set for this session.
+  bool is_wizard_internal = 9;
+  v1.public.common.vortex_telemetry_contexts.VortexTelemetryCommonContext common_context = 10;
+  // Model/provider call correlation identifier.
+  string call_id = 11;
+  // Call origin: "direct" or "code_mode".
+  string call_source = 12;
+  // Unix timestamp in milliseconds when the attempt was first observed.
+  int64 call_observed_at_ms = 13;
+  // Terminal outcome of the tool attempt.
+  DbtWizardToolOutcome outcome = 14;
+  // Elapsed wall-clock time from first observing the tool attempt through its
+  // terminal outcome, including queueing, hooks, and execution.
+  int64 attempt_duration_ms = 15;
+}
+
+// Emitted immediately at binary launch, before onboarding or thread creation.
+message DbtWizardCliStarted {
+  option (v1.public.common.vortex_namespace) = VORTEX_ICEBERG_NAMESPACE_TELEMETRY;
+  option (v1.public.common.vortex_enabled) = true;
+
+  v1.events.vortex.VortexMessageEnrichment enrichment = 1;
+  string event_id = 2;
+  // Anonymous UUID from ~/.dbt/.user.yml (created on first run).
+  string user_id = 3;
+  // dbt Cloud account ID (empty if unauthenticated).
+  string account_id = 4;
+  string account_identifier = 5;
+  string version = 6;
+  string os = 7;
+  string arch = 8;
+  // Whether this is the first time the binary has run (no .user.yml existed).
+  bool is_first_run = 9;
+  // How the app was launched: "cli", "vscode", "desktop", "mcp_server".
+  string launch_source = 10;
+  // Unix timestamp of launch.
+  int64 launched_at = 11;
+  // Whether the WIZARD_INTERNAL env var was set for this session.
+  bool is_wizard_internal = 12;
+  // The anonymous UUID from ~/.dbt/.user.yml. Always populated regardless of
+  // auth state, enabling a join between pre-auth and post-auth events.
+  string anonymous_id = 13;
+  v1.public.common.vortex_telemetry_contexts.VortexTelemetryCommonContext common_context = 14;
+  // Sandbox mode from the --sandbox flag: "read-only", "workspace-write",
+  // "danger-full-access". Empty if the flag was not passed.
+  string sandbox_policy = 15;
+  // Approval policy from CLI flags: "untrusted", "on-failure", "on-request",
+  // "granular", "never" (yolo mode). Empty if not specified.
+  string approval_policy = 16;
+  // Model slug passed via --model flag (empty if not specified).
+  string model = 17;
+}
+
+// Emitted once per onboarding step transition.
+message DbtWizardOnboarding {
+  option (v1.public.common.vortex_namespace) = VORTEX_ICEBERG_NAMESPACE_TELEMETRY;
+  option (v1.public.common.vortex_enabled) = true;
+
+  v1.events.vortex.VortexMessageEnrichment enrichment = 1;
+  string event_id = 2;
+  string user_id = 3;
+  string account_id = 4;
+  string account_identifier = 5;
+  // Step name: "auth", "trust_directory", "dbt_project_setup", "provider_setup".
+  string step = 6;
+  // Step outcome: "started", "completed", "skipped", "abandoned".
+  string step_status = 7;
+  // Time spent on this step.
+  int64 step_duration_ms = 8;
+  // First time user ever onboards (no prior .user.yml).
+  bool is_first_run = 9;
+  string version = 10;
+  string os = 11;
+  string arch = 12;
+  // Auth step: "dbt_platform" | "api_key" | "chatgpt"
+  string auth_method = 13;
+  // Provider step: "anthropic" | "openai" | "bedrock" | "azure" | "snowflake" | "dbt"
+  string provider_configured = 14;
+  // Trust step: "trust" | "deny"
+  string trust_decision = 15;
+  // dbt project step: whether a dbt_project.yml was found
+  bool dbt_project_detected = 16;
+  // Position in the flow (0-based)
+  int32 step_index = 17;
+  // Total steps shown to this user
+  int32 total_steps_shown = 18;
+  // Whether the WIZARD_INTERNAL env var was set for this session.
+  bool is_wizard_internal = 19;
+  // The anonymous UUID from ~/.dbt/.user.yml. Always populated regardless of
+  // auth state, enabling a join between pre-auth and post-auth events.
+  string anonymous_id = 20;
+  v1.public.common.vortex_telemetry_contexts.VortexTelemetryCommonContext common_context = 21;
+}
+
+// Emitted at subagent start and end to track full lifecycle.
+message DbtWizardSubAgent {
+  option (v1.public.common.vortex_namespace) = VORTEX_ICEBERG_NAMESPACE_TELEMETRY;
+  option (v1.public.common.vortex_enabled) = true;
+
+  v1.events.vortex.VortexMessageEnrichment enrichment = 1;
+  string event_id = 2;
+  // Parent session (the main thread_id).
+  string session_id = 3;
+  // The subagent's own thread_id.
+  string subagent_thread_id = 4;
+  // "review" | "compact" | "thread_spawn" | "memory_consolidation" | "other"
+  string subagent_source = 5;
+  string model = 6;
+  // "start" | "end"
+  string progress = 7;
+  // Only on "end": "completed" | "failed" | "interrupted"
+  string status = 8;
+  // 0 on start; populated on end.
+  int64 duration_ms = 9;
+  int32 turn_count = 10;
+  int64 total_tokens = 11;
+  // Nesting depth (0 = direct child of main session).
+  int32 depth = 12;
+  string user_id = 13;
+  string account_id = 14;
+  string account_identifier = 15;
+  // Whether the WIZARD_INTERNAL env var was set for this session.
+  bool is_wizard_internal = 16;
+  // The anonymous UUID from ~/.dbt/.user.yml. Always populated regardless of
+  // auth state, enabling a join between pre-auth and post-auth events.
+  string anonymous_id = 17;
+  v1.public.common.vortex_telemetry_contexts.VortexTelemetryCommonContext common_context = 18;
+}
+
+// Emitted on structured errors (sidecar crashes, provider auth failures, panics).
+message DbtWizardError {
+  option (v1.public.common.vortex_namespace) = VORTEX_ICEBERG_NAMESPACE_TELEMETRY;
+  option (v1.public.common.vortex_enabled) = true;
+
+  v1.events.vortex.VortexMessageEnrichment enrichment = 1;
+  string event_id = 2;
+  // Empty if error occurs before session starts.
+  string session_id = 3;
+  // "sidecar_startup" | "provider_auth" | "turn_failure" | "panic" | "connection_lost" | "sandbox"
+  string error_category = 4;
+  // Structured code: "health_timeout", "401", "connection_refused", etc. When
+  // error_category is "sandbox": "denied", "timeout", "signal_<N>",
+  // "seccomp_install", "seccomp_backend", "landlock_restrict".
+  string error_code = 5;
+  // Rust error type name (no message content).
+  string error_class = 6;
+  // "litellm_sidecar" | "app_server" | "tui" | "core" | "provider" | "sandbox"
+  string component = 7;
+  // "anthropic" | "openai" | "bedrock" | "" if not provider-related.
+  string provider = 8;
+  string model = 9;
+  bool is_recoverable = 10;
+  int32 retry_count = 11;
+  string version = 12;
+  string os = 13;
+  string arch = 14;
+  string user_id = 15;
+  string account_id = 16;
+  string account_identifier = 17;
+  int64 occurred_at = 18;
+  // Whether the WIZARD_INTERNAL env var was set for this session.
+  bool is_wizard_internal = 19;
+  // The anonymous UUID from ~/.dbt/.user.yml. Always populated regardless of
+  // auth state, enabling a join between pre-auth and post-auth events.
+  string anonymous_id = 20;
+  v1.public.common.vortex_telemetry_contexts.VortexTelemetryCommonContext common_context = 21;
+}
+
+// Emitted when a user submits feedback via /feedback.
+message DbtWizardFeedback {
+  option (v1.public.common.vortex_namespace) = VORTEX_ICEBERG_NAMESPACE_TELEMETRY;
+  option (v1.public.common.vortex_enabled) = true;
+
+  v1.events.vortex.VortexMessageEnrichment enrichment = 1;
+  // Unique identifier for this event.
+  string event_id = 2;
+  // Session correlation ID (thread_id).
+  string session_id = 3;
+  // Feedback category: "bad_result", "good_result", "bug", "safety_check", "other".
+  string category = 4;
+  // Optional user-provided note describing the feedback.
+  string reason = 5;
+  // Deprecated; feedback no longer uploads logs.
+  bool include_logs = 6 [deprecated = true];
+  // Authenticated dbt Cloud user ID (JWT sub claim); falls back to anonymous
+  // UUID from ~/.dbt/.user.yml when unauthenticated.
+  string user_id = 7;
+  // Numeric dbt Cloud account ID (from JWT claims or dbt_cloud.yml).
+  string account_id = 8;
+  // Global dbt Cloud account identifier slug (from /api/v2/accounts/{id}/).
+  string account_identifier = 9;
+  // dbt-wizard binary version.
+  string version = 10;
+  // Operating system: "macos", "linux", "windows".
+  string os = 11;
+  // CPU architecture: "aarch64", "x86_64".
+  string arch = 12;
+  // Turn correlation ID (which turn the feedback is about).
+  string turn_id = 13;
+  // Model slug active during the session (e.g. "claude-sonnet-4-6").
+  string model = 14;
+  // Whether the WIZARD_INTERNAL env var was set for this session.
+  bool is_wizard_internal = 15;
+  // The anonymous UUID from ~/.dbt/.user.yml. Always populated regardless of
+  // auth state, enabling a join between pre-auth and post-auth events.
+  string anonymous_id = 16;
+  v1.public.common.vortex_telemetry_contexts.VortexTelemetryCommonContext common_context = 17;
+}
+
+// Emitted whenever a thread's effective permission mode changes: the approval
+// policy, the sandbox/permission profile, or where approvals are routed.
+//
+// The first observation for a thread establishes the baseline with
+// change_source = "initial" (emitted when settings are first applied, i.e. the
+// thread's first turn or first explicit override), then one event per
+// subsequent change. This makes in-session permission changes observable,
+// unlike sandbox toggles which are only visible as CLI flags at launch.
+message DbtWizardPermissionMode {
+  option (v1.public.common.vortex_namespace) = VORTEX_ICEBERG_NAMESPACE_TELEMETRY;
+  option (v1.public.common.vortex_enabled) = true;
+
+  v1.events.vortex.VortexMessageEnrichment enrichment = 1;
+  // Unique identifier for this event.
+  string event_id = 2;
+  // Session correlation ID (thread_id).
+  string session_id = 3;
+  // What triggered the change: "initial" for the baseline, or
+  // "settings_update" for a subsequent change.
+  string change_source = 4;
+  // Approval policy after the change: "untrusted", "on-failure", "on-request",
+  // "granular", "never" (yolo mode).
+  string approval_policy = 5;
+  // Approval policy before the change; empty when change_source is
+  // "initial".
+  string previous_approval_policy = 6;
+  // Sandbox mode after the change: "read_only", "workspace_write",
+  // "full_access", "external_sandbox".
+  string sandbox_policy = 7;
+  // Sandbox mode before the change; empty when change_source is
+  // "initial".
+  string previous_sandbox_policy = 8;
+  // Permission profile id after the change, such as ":read-only",
+  // ":workspace", ":danger-full-access", or a user-defined profile id.
+  string permission_profile = 9;
+  // Permission profile id before the change; empty when change_source is
+  // "initial".
+  string previous_permission_profile = 10;
+  // Whether the sandbox permits network access after the change.
+  bool sandbox_network_access = 11;
+  // Where approval requests are routed: "user" or "guardian_subagent".
+  string approvals_reviewer = 12;
+  // Whether the mode after the change bypasses all approvals
+  // (approval_policy = "never" and sandbox_policy = "full_access"). Convenience
+  // flag for measuring yolo-mode adoption.
+  bool is_full_access = 13;
+  // Model slug active on the thread (e.g. "claude-sonnet-4-6").
+  string model = 14;
+  // Client name: "cli", "vscode", "desktop", "mcp_server".
+  string session_source = 15;
+  // Unix timestamp in milliseconds when the change was applied.
+  int64 changed_at_ms = 16;
+  // Authenticated dbt Cloud user ID (JWT sub claim); falls back to anonymous
+  // UUID from ~/.dbt/.user.yml when unauthenticated.
+  string user_id = 17;
+  // Numeric dbt Cloud account ID (from JWT claims or dbt_cloud.yml).
+  string account_id = 18;
+  // Global dbt Cloud account identifier slug (from /api/v2/accounts/{id}/).
+  string account_identifier = 19;
+  // dbt-wizard binary version.
+  string version = 20;
+  // Operating system: "macos", "linux", "windows".
+  string os = 21;
+  // CPU architecture: "aarch64", "x86_64".
+  string arch = 22;
+  // Whether the WIZARD_INTERNAL env var was set for this session.
+  bool is_wizard_internal = 23;
+  // The anonymous UUID from ~/.dbt/.user.yml. Always populated regardless of
+  // auth state, enabling a join between pre-auth and post-auth events.
+  string anonymous_id = 24;
+  v1.public.common.vortex_telemetry_contexts.VortexTelemetryCommonContext common_context = 25;
+}
+
+// Emitted on every model-provider credential validation probe, from both the
+// onboarding flow and the settings flow, plus a follow-up event when the user
+// dismisses a failure and proceeds anyway.
+message DbtWizardProviderValidation {
+  option (v1.public.common.vortex_namespace) = VORTEX_ICEBERG_NAMESPACE_TELEMETRY;
+  option (v1.public.common.vortex_enabled) = true;
+
+  v1.events.vortex.VortexMessageEnrichment enrichment = 1;
+  // Unique identifier for this event.
+  string event_id = 2;
+  // Authenticated dbt Cloud user ID (JWT sub claim); falls back to anonymous
+  // UUID from ~/.dbt/.user.yml when unauthenticated.
+  string user_id = 3;
+  // Numeric dbt Cloud account ID (from JWT claims or dbt_cloud.yml).
+  string account_id = 4;
+  // Global dbt Cloud account identifier slug (from /api/v2/accounts/{id}/).
+  string account_identifier = 5;
+  // Provider id: "anthropic", "openai", "azure", "bedrock", "gemini",
+  // "snowflake", "databricks", "dbt".
+  string provider = 6;
+  // Validation outcome: "success" or "failure".
+  string outcome = 7;
+  // On failure: "auth_invalid", "network_error", "rate_limited",
+  // "endpoint_invalid", "model_not_available", or "unknown". Empty on success.
+  string error_category = 8;
+  // Which UI surface fired the validation: "onboarding" or "settings".
+  string flow = 9;
+  // True when the user dismissed the failure inline and proceeded anyway.
+  // Always false on success and on the initial failure event; the follow-up
+  // event with continued_anyway = true is what signals the user's choice.
+  bool continued_anyway = 10;
+  // dbt-wizard binary version.
+  string version = 11;
+  // Operating system: "macos", "linux", "windows".
+  string os = 12;
+  // CPU architecture: "aarch64", "x86_64".
+  string arch = 13;
+  // Whether the WIZARD_INTERNAL env var was set for this session.
+  bool is_wizard_internal = 14;
+  // The anonymous UUID from ~/.dbt/.user.yml. Always populated regardless of
+  // auth state, enabling a join between pre-auth and post-auth events.
+  string anonymous_id = 15;
+  v1.public.common.vortex_telemetry_contexts.VortexTelemetryCommonContext common_context = 16;
+}
+
+// Emitted when the Wizard desktop app opens as the anonymous behavioral
+// counterpart of the WizardAppOpened Amplitude event; distinct from the CLI
+// lifecycle telemetry in DbtWizardSession and DbtWizardTurn.
+message DbtWizardAppOpened {
+  option (v1.public.common.vortex_namespace) = VORTEX_ICEBERG_NAMESPACE_TELEMETRY;
+  option (v1.public.common.vortex_enabled) = true;
+
+  v1.events.vortex.VortexMessageEnrichment enrichment = 1;
+  string event_id = 2;
+  string anonymous_id = 3;
+  v1.public.common.vortex_telemetry_contexts.VortexTelemetryCommonContext common_context = 4;
+}
+
+// Emitted when the Wizard desktop app resolves a route as the anonymous
+// behavioral counterpart of the WizardRouteViewed Amplitude event; distinct
+// from the CLI lifecycle telemetry in DbtWizardSession and DbtWizardTurn.
+message DbtWizardAppRouteViewed {
+  option (v1.public.common.vortex_namespace) = VORTEX_ICEBERG_NAMESPACE_TELEMETRY;
+  option (v1.public.common.vortex_enabled) = true;
+
+  v1.events.vortex.VortexMessageEnrichment enrichment = 1;
+  string event_id = 2;
+  string anonymous_id = 3;
+  string route = 4;
+  v1.public.common.vortex_telemetry_contexts.VortexTelemetryCommonContext common_context = 5;
+}
+
+// Emitted when the Wizard desktop app opens a panel as the anonymous
+// behavioral counterpart of the WizardPanelOpened Amplitude event; distinct
+// from the CLI lifecycle telemetry in DbtWizardSession and DbtWizardTurn.
+message DbtWizardAppPanelOpened {
+  option (v1.public.common.vortex_namespace) = VORTEX_ICEBERG_NAMESPACE_TELEMETRY;
+  option (v1.public.common.vortex_enabled) = true;
+
+  v1.events.vortex.VortexMessageEnrichment enrichment = 1;
+  string event_id = 2;
+  string anonymous_id = 3;
+  string surface = 4;
+  string panel = 5;
+  v1.public.common.vortex_telemetry_contexts.VortexTelemetryCommonContext common_context = 6;
+}
+
+// Emitted after the Wizard desktop app creates a worktree as the anonymous
+// behavioral counterpart of the WizardWorktreeCreated Amplitude event;
+// distinct from the CLI lifecycle telemetry in DbtWizardSession and
+// DbtWizardTurn.
+message DbtWizardAppWorktreeCreated {
+  option (v1.public.common.vortex_namespace) = VORTEX_ICEBERG_NAMESPACE_TELEMETRY;
+  option (v1.public.common.vortex_enabled) = true;
+
+  v1.events.vortex.VortexMessageEnrichment enrichment = 1;
+  string event_id = 2;
+  string anonymous_id = 3;
+  v1.public.common.vortex_telemetry_contexts.VortexTelemetryCommonContext common_context = 4;
+}
+
+// Emitted after the Wizard desktop app creates a pull request as the anonymous
+// behavioral counterpart of the WizardPrCreated Amplitude event; distinct
+// from the CLI lifecycle telemetry in DbtWizardSession and DbtWizardTurn.
+message DbtWizardAppPrCreated {
+  option (v1.public.common.vortex_namespace) = VORTEX_ICEBERG_NAMESPACE_TELEMETRY;
+  option (v1.public.common.vortex_enabled) = true;
+
+  v1.events.vortex.VortexMessageEnrichment enrichment = 1;
+  string event_id = 2;
+  string anonymous_id = 3;
+  bool draft = 4;
+  v1.public.common.vortex_telemetry_contexts.VortexTelemetryCommonContext common_context = 5;
+}
+
+// Emitted when the Wizard desktop app changes a setting as the anonymous
+// behavioral counterpart of the WizardSettingChanged Amplitude event;
+// distinct from the CLI lifecycle telemetry in DbtWizardSession and
+// DbtWizardTurn.
+message DbtWizardAppSettingChanged {
+  option (v1.public.common.vortex_namespace) = VORTEX_ICEBERG_NAMESPACE_TELEMETRY;
+  option (v1.public.common.vortex_enabled) = true;
+
+  v1.events.vortex.VortexMessageEnrichment enrichment = 1;
+  string event_id = 2;
+  string anonymous_id = 3;
+  string setting = 4;
+  v1.public.common.vortex_telemetry_contexts.VortexTelemetryCommonContext common_context = 5;
+}
+
+// Emitted when the Wizard desktop app starts a user-visible session as the
+// anonymous behavioral counterpart of the WizardSessionStarted Amplitude
+// event; distinct from the CLI lifecycle telemetry in DbtWizardSession and
+// DbtWizardTurn.
+message DbtWizardAppSessionStarted {
+  option (v1.public.common.vortex_namespace) = VORTEX_ICEBERG_NAMESPACE_TELEMETRY;
+  option (v1.public.common.vortex_enabled) = true;
+
+  v1.events.vortex.VortexMessageEnrichment enrichment = 1;
+  string event_id = 2;
+  string anonymous_id = 3;
+  string mode = 4;
+  string provider = 5;
+  string model = 6;
+  v1.public.common.vortex_telemetry_contexts.VortexTelemetryCommonContext common_context = 7;
+}
+
+// Emitted when the Wizard desktop app accepts a user message as the anonymous
+// behavioral counterpart of the WizardMessageSent Amplitude event; distinct
+// from the CLI lifecycle telemetry in DbtWizardSession and DbtWizardTurn.
+message DbtWizardAppMessageSent {
+  option (v1.public.common.vortex_namespace) = VORTEX_ICEBERG_NAMESPACE_TELEMETRY;
+  option (v1.public.common.vortex_enabled) = true;
+
+  v1.events.vortex.VortexMessageEnrichment enrichment = 1;
+  string event_id = 2;
+  string anonymous_id = 3;
+  v1.public.common.vortex_telemetry_contexts.VortexTelemetryCommonContext common_context = 4;
+}

@@ -1,0 +1,22 @@
+[package]
+name = "dbt-cloud-api"
+version.workspace = true
+homepage.workspace = true
+repository.workspace = true
+authors.workspace = true
+description.workspace = true
+license.workspace = true
+keywords.workspace = true
+edition.workspace = true
+
+
+[dependencies]
+dbt-fusion-workspace-hack = { version = "0.1" }
+reqwest = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_repr = { workspace = true }
+url = { workspace = true }
+
+[lints]
+workspace = true

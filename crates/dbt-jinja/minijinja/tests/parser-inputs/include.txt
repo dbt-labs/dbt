@@ -1,0 +1,6 @@
+{% include "foo.txt" %}
+{% include "foo.txt" with context %}
+{% include "foo.txt" without context %}
+{% include "foo.txt" ignore missing with context %}
+{% include "foo.txt" ignore missing without context %}
+{% include "foo.txt" ignore missing %}

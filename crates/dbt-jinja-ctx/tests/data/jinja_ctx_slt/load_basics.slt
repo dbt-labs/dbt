@@ -1,0 +1,37 @@
+# Load-phase fixture sanity: every Jinja key registered on the load env
+# resolves to the expected value.
+#
+# Fixture: tests/jinja_ctx_slt.rs::fixture_load_ctx
+#   target  = { name=dev, schema=public, database=analytics }
+#   flags   = { FULL_REFRESH=false, STORE_FAILURES=false, INTROSPECT=true }
+
+key target.name
+----
+load     dev
+
+key target.schema
+----
+load     public
+
+key target.database
+----
+load     analytics
+
+key flags.FULL_REFRESH
+----
+load     false
+
+key flags.STORE_FAILURES
+----
+load     false
+
+key flags.INTROSPECT
+----
+load     true
+
+# `run_started_at` is a JinjaObject<PyDateTime>; the .slt harness only checks
+# the round-trip preserved an Object — full identity assertions live in the
+# regular Rust unit test (`run_started_at_preserves_pydatetime_object_identity`).
+key run_started_at
+----
+load     <object>

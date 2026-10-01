@@ -1,0 +1,23 @@
+---
+source: fs/sa/crates/dbt-jinja/minijinja/tests/test_parser.rs
+description: "{% autoescape false %}foo{% endautoescape %}"
+input_file: fs/sa/crates/dbt-jinja/minijinja/tests/parser-inputs/autoescape.txt
+---
+Ok(
+    Template {
+        children: [
+            AutoEscape {
+                enabled: Const {
+                    value: False,
+                } @ 1:15-1:20,
+                body: [
+                    EmitRaw {
+                        raw: "foo",
+                    } @ 1:23-1:26,
+                ],
+                start_tag_span:  @ 1:1-1:23,
+                end_tag_span:  @ 1:26-1:45,
+            } @ 1:1-1:45,
+        ],
+    } @ 1:1-1:45,
+)

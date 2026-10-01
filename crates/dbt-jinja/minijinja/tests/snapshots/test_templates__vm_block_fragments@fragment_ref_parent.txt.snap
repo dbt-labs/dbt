@@ -1,0 +1,23 @@
+---
+source: minijinja/tests/test_templates.rs
+description: "{% extends \"var_referencing_layout.txt\" %}\n\n{% block item_block %}\n  [{{ item }}]\n{% endblock %}"
+info:
+  var: foo
+input_file: minijinja/tests/fragment-inputs/fragment_ref_parent.txt
+---
+
+  
+    
+  [1]
+
+  
+    
+  [2]
+
+  
+    
+  [3]
+
+  
+
+

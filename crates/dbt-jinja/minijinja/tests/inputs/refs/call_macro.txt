@@ -1,0 +1,1 @@
+{% macro call(other, arg) %}{{ other(arg) }}{% endmacro %}

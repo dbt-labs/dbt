@@ -1,0 +1,30 @@
+---
+source: crates/dbt-jinja/minijinja/tests/test_templates.rs
+description: "{{ \"World\"[0] == \"W\" }}\n{{ \"W\" == \"W\" }}\n{{ 1.0 == 1 }}\n{{ 1 != 2 }}\n{{ none == none }}\n{{ undefined == undefined }}\n{{ true == true }}\n{{ 1 == true }}\n{{ 0 == false }}\n{{ 1 != 0 }}\n{{ \"a\" < \"b\" }}\n{{ \"a\"[0] < \"b\" }}\n{{ false < true }}\n{{ 0 < true }}\n{{ [0, 0] == [0, 0] }}\n{{ [\"a\"] == [\"a\"[0]] }}"
+info:
+  __minijinja_current_path: coerce.txt
+  __minijinja_current_span:
+    end_col: 1
+    end_line: 1
+    end_offset: 0
+    start_col: 1
+    start_line: 1
+    start_offset: 0
+input_file: crates/dbt-jinja/minijinja/tests/inputs/coerce.txt
+---
+True
+True
+True
+True
+True
+True
+True
+True
+True
+True
+True
+True
+True
+False
+True
+True

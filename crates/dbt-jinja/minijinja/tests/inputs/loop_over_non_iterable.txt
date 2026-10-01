@@ -1,0 +1,5 @@
+{
+    "seq": 42
+}
+---
+[{% for item in seq %}{% endfor %}]

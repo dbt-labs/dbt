@@ -1,0 +1,5 @@
+{% macro foo() %}...{% endmacro %}
+{% macro foo(a, b) %}...{% endmacro %}
+{% macro foo(a, b=42) %}...{% endmacro %}
+{% macro foo(a, b,) %}...{% endmacro %}
+{% macro foo(a, b=42,) %}...{% endmacro %}

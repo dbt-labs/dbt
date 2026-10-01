@@ -1,0 +1,62 @@
+---
+source: fs/sa/crates/dbt-jinja/minijinja/tests/test_parser.rs
+description: "{% include \"foo.txt\" %}\n{% include \"foo.txt\" with context %}\n{% include \"foo.txt\" without context %}\n{% include \"foo.txt\" ignore missing with context %}\n{% include \"foo.txt\" ignore missing without context %}\n{% include \"foo.txt\" ignore missing %}"
+input_file: fs/sa/crates/dbt-jinja/minijinja/tests/parser-inputs/include.txt
+---
+Ok(
+    Template {
+        children: [
+            Include {
+                name: Const {
+                    value: 'foo.txt',
+                } @ 1:12-1:21,
+                ignore_missing: false,
+            } @ 1:1-1:24,
+            EmitRaw {
+                raw: "\n",
+            } @ 1:24-2:1,
+            Include {
+                name: Const {
+                    value: 'foo.txt',
+                } @ 2:12-2:21,
+                ignore_missing: false,
+            } @ 2:1-2:37,
+            EmitRaw {
+                raw: "\n",
+            } @ 2:37-3:1,
+            Include {
+                name: Const {
+                    value: 'foo.txt',
+                } @ 3:12-3:21,
+                ignore_missing: false,
+            } @ 3:1-3:40,
+            EmitRaw {
+                raw: "\n",
+            } @ 3:40-4:1,
+            Include {
+                name: Const {
+                    value: 'foo.txt',
+                } @ 4:12-4:21,
+                ignore_missing: true,
+            } @ 4:1-4:52,
+            EmitRaw {
+                raw: "\n",
+            } @ 4:52-5:1,
+            Include {
+                name: Const {
+                    value: 'foo.txt',
+                } @ 5:12-5:21,
+                ignore_missing: true,
+            } @ 5:1-5:55,
+            EmitRaw {
+                raw: "\n",
+            } @ 5:55-6:1,
+            Include {
+                name: Const {
+                    value: 'foo.txt',
+                } @ 6:12-6:21,
+                ignore_missing: true,
+            } @ 6:1-6:39,
+        ],
+    } @ 1:1-6:39,
+)

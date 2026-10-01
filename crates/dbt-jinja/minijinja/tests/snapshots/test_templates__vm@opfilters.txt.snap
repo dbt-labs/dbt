@@ -1,0 +1,20 @@
+---
+source: crates/dbt-jinja/minijinja/tests/test_templates.rs
+description: "{{ objects|selectattr(\"val\", \"==\", 2)|map(attribute=\"name\") }}\n{{ objects|selectattr(\"val\", \"!=\", 2)|map(attribute=\"name\") }}\n{{ objects|selectattr(\"val\", \">\", 2)|map(attribute=\"name\") }}\n{{ objects|selectattr(\"val\", \">=\", 2)|map(attribute=\"name\") }}\n{{ objects|selectattr(\"val\", \"<\", 2)|map(attribute=\"name\") }}\n{{ objects|selectattr(\"val\", \"<=\", 2)|map(attribute=\"name\") }}\n{{ objects|selectattr(\"val\", \"in\", [1, 3])|map(attribute=\"name\") }}"
+info:
+  objects:
+    - name: One
+      val: 1
+    - name: Two
+      val: 2
+    - name: Three
+      val: 3
+input_file: crates/dbt-jinja/minijinja/tests/inputs/opfilters.txt
+---
+('Two',)
+('One', 'Three')
+('Three',)
+('Two', 'Three')
+('One',)
+('One', 'Two')
+('One', 'Three')

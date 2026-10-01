@@ -1,0 +1,44 @@
+name: Label Adapter from Issue Form
+
+on:
+  issues:
+    types: [opened]
+
+permissions:
+  issues: write
+
+jobs:
+  label-adapter:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Apply adapter label based on form selection
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const body = context.payload.issue.body || '';
+
+            // GitHub renders issue form multi-select dropdowns as a comma-separated
+            // string on a single line directly beneath the field's ### heading.
+            // If this regex stops matching after a GitHub rendering change, check:
+            // https://docs.github.com/en/communities/using-templates-to-encourage-useful-issues-and-pull-requests/syntax-for-githubs-form-schema
+            const match = body.match(/### Which database adapter are you using\?\n\n([^\n#]+)/);
+            if (!match) return;
+
+            const selected = match[1]
+              .split(',')
+              .map(s => s.trim().toLowerCase())
+              .filter(Boolean);
+
+            // "other (describe in additional context)" is intentionally excluded from
+            // validAdapters — it will be silently dropped, which is the desired behavior.
+            const validAdapters = ['snowflake', 'databricks', 'bigquery', 'postgres', 'redshift', 'duckdb', 'clickhouse'];
+            const labels = selected.filter(s => validAdapters.includes(s));
+
+            if (labels.length > 0) {
+              await github.rest.issues.addLabels({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                labels: [...labels, 'area:adapters'],
+              });
+            }

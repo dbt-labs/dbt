@@ -1,0 +1,5 @@
+---
+source: fs/sa/crates/dbt-adapter/tests/duckdb_attach.rs
+assertion_line: 60
+---
+ATTACH IF NOT EXISTS 'arn:aws:s3tables:us-east-1:123456789012:bucket/demo-bucket' AS s3_tables_db (TYPE ICEBERG, SECRET s3_tables_secret, ENDPOINT_TYPE 'S3_TABLES', READ_ONLY false)

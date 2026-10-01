@@ -1,0 +1,5 @@
+---
+source: fs/sa/crates/dbt-adapter/src/engine/duckdb_attach.rs
+input_file: fs/sa/crates/dbt-adapter/src/engine/xdbc/fixtures/iceberg_rest_string_bool_options/catalogs.yml
+---
+ATTACH IF NOT EXISTS 'rest_string_bools' AS rest_string_bools (TYPE ICEBERG, ENDPOINT 'https://rest.example.com', SUPPORT_NESTED_NAMESPACES false, READ_ONLY true)

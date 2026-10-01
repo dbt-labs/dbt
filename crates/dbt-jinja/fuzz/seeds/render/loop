@@ -1,0 +1,3 @@
+{% for key, value in dict %}
+  {{ loop.index0 }} -> {{ key }}: {{ value }}
+{% endfor %}

@@ -1,7 +1,7 @@
 name: 🛠️ Implementation
 description: This is an implementation ticket intended for use by the maintainers of dbt-core
 title: "[<project>] <title>"
-labels: ["user docs"]
+labels: ["action:needs-docs"]
 body:
   - type: markdown
     attributes:
@@ -11,7 +11,7 @@ body:
       label: Housekeeping
       description: >
         A couple friendly reminders:
-          1. Remove the `user docs` label if the scope of this work does not require changes to https://docs.getdbt.com/docs: no end-user interface (e.g. yml spec, CLI, error messages, etc) or functional changes
+          1. Remove the `action:needs-docs` label if the scope of this work does not require changes to https://docs.getdbt.com/docs: no end-user interface (e.g. yml spec, CLI, error messages, etc) or functional changes
           2. Link any blocking issues in the "Blocked on" field under the "Core devs & maintainers" project.
       options:
         - label: I am a maintainer of dbt-core

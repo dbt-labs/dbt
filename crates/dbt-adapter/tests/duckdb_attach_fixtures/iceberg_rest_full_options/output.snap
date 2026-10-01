@@ -1,0 +1,5 @@
+---
+source: fs/sa/crates/dbt-adapter/src/engine/xdbc/duckdb_attach_snapshot_tests.rs
+input_file: fs/sa/crates/dbt-adapter/src/engine/xdbc/fixtures/iceberg_rest_full_options/catalogs.yml
+---
+ATTACH IF NOT EXISTS 'warehouse_name' AS iceberg_db (TYPE ICEBERG, SECRET iceberg_secret, ENDPOINT 'https://rest.example.com', DEFAULT_SCHEMA 'demo', MAX_TABLE_STALENESS '10 minutes', AUTHORIZATION_TYPE 'OAUTH2', ACCESS_DELEGATION_MODE 'VENDED_CREDENTIALS', SUPPORT_NESTED_NAMESPACES false, PURGE_REQUESTED false, READ_ONLY true, ENCODE_ENTIRE_PREFIX true)

@@ -1,0 +1,15 @@
+# The SPA source lives here, alongside a committed `dist/` so that every build of
+# `dbt-docs-server` embeds a working bundle without needing a JS toolchain.
+# Rebuild with `pnpm build` and commit `dist/` in the same change as any source edit.
+node_modules/
+.vite/
+
+# Both the repo root and `fs/sa/.gitignore` exclude `dist/` everywhere. Re-include
+# this committed bundle — this negation is load-bearing, removing it silently
+# un-tracks the embedded SPA — but keep sourcemaps out.
+!dist/
+dist/**/*.map
+
+# Storybook build output. Unlike `dist/`, this is a developer tool and is never
+# embedded in the binary, so it stays untracked.
+storybook-static/

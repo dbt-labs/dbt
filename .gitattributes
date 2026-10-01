@@ -1,6 +1,0 @@
-core/dbt/task/docs/index.html binary
-tests/functional/artifacts/data/state/*/manifest.json binary
-core/dbt/docs/build/html/searchindex.js binary
-core/dbt/docs/build/html/index.html binary
-performance/runner/Cargo.lock binary
-core/dbt/events/types_pb2.py binary

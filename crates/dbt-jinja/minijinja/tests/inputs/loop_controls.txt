@@ -1,0 +1,7 @@
+{}
+---
+{% for item in range(10) -%}
+  {%- if item is odd %}{% continue %}{% endif %}
+  {%- if item > 5 %}{% break %}{% endif %}
+  {{- item }}
+{%- endfor %}

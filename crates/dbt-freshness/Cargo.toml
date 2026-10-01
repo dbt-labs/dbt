@@ -1,0 +1,48 @@
+[package]
+name = "dbt-freshness"
+version.workspace = true
+homepage.workspace = true
+repository.workspace = true
+authors.workspace = true
+description.workspace = true
+license.workspace = true
+keywords.workspace = true
+edition.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+dbt-adapter = { workspace = true }
+dbt-adapter-core = { workspace = true }
+dbt-agate = { workspace = true }
+dbt-common = { workspace = true }
+dbt-dag = { workspace = true }
+dbt-jinja-ctx = { workspace = true }
+dbt-jinja-utils = { workspace = true }
+dbt-metadata-parquet = { workspace = true }
+dbt-schemas = { workspace = true }
+dbt-tasks-core = { workspace = true }
+dbt-telemetry = { workspace = true }
+itertools = { workspace = true }
+
+arrow = { workspace = true }
+chrono = { workspace = true }
+datafusion-common = { workspace = true }
+humantime = { workspace = true }
+minijinja = { workspace = true }
+pathdiff = { workspace = true }
+serde_json = { workspace = true }
+uuid = { workspace = true }
+
+dbt-fusion-workspace-hack = { version = "0.1" }
+tracing = { workspace = true }
+
+[dev-dependencies]
+chrono-tz = { workspace = true }
+tempfile = { workspace = true }
+
+[lib]
+name = "dbt_freshness"
+path = "src/mod.rs"
+doctest = false

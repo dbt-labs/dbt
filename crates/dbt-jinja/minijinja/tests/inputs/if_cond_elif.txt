@@ -1,0 +1,12 @@
+{
+  "value": false,
+  "other_value": false
+}
+---
+{% if value %}
+  first branch
+{% elif other_value %}
+  second branch
+{% else %}
+  else
+{% endif %}

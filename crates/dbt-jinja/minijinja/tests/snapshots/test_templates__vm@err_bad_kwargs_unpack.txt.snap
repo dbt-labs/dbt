@@ -1,0 +1,22 @@
+---
+source: fs/sa/crates/dbt-jinja/minijinja/tests/test_templates.rs
+description: "{{ get_args(**[1, 2, 3]) }}"
+info:
+  __minijinja_current_path: err_bad_kwargs_unpack.txt
+  __minijinja_current_span:
+    end_col: 1
+    end_line: 1
+    end_offset: 0
+    start_col: 1
+    start_line: 1
+    start_offset: 0
+input_file: fs/sa/crates/dbt-jinja/minijinja/tests/inputs/err_bad_kwargs_unpack.txt
+---
+!!!ERROR!!!
+
+Error {
+    kind: InvalidOperation,
+    detail: "attempted to apply keyword arguments from non map (got sequence)",
+}
+
+invalid operation: attempted to apply keyword arguments from non map (got sequence)

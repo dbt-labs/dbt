@@ -1,0 +1,17 @@
+---
+source: minijinja/tests/test_templates.rs
+description: "{% extends \"super_with_html.html\" %}\n{% block body %}\n  <p>New Content</p>\n  {{ super() }}\n  {{ super()|upper }}\n{% endblock %}"
+info:
+  var: foo
+input_file: minijinja/tests/inputs/block_super.html
+---
+
+  <p>New Content</p>
+  
+  <p>Default Content</p>
+
+  
+  &lt;P&gt;DEFAULT CONTENT&lt;&#x2f;P&gt;
+
+
+

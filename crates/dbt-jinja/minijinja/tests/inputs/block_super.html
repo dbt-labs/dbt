@@ -1,0 +1,10 @@
+{
+  "var": "foo"
+}
+---
+{% extends "super_with_html.html" %}
+{% block body %}
+  <p>New Content</p>
+  {{ super() }}
+  {{ super()|upper }}
+{% endblock %}

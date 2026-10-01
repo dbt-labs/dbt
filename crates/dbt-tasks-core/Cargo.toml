@@ -1,0 +1,61 @@
+[package]
+name = "dbt-tasks-core"
+version.workspace = true
+homepage.workspace = true
+repository.workspace = true
+authors.workspace = true
+description.workspace = true
+license.workspace = true
+keywords.workspace = true
+edition.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+async-trait = { workspace = true }
+dbt-adapter = { workspace = true }
+dbt-adapter-core = { workspace = true }
+dbt-adapter-sql = { workspace = true }
+dbt-adbc = { workspace = true }
+dbt-cloud-config = { workspace = true }
+dbt-common = { workspace = true }
+dbt-dag = { workspace = true }
+dbt-frontend-common = { workspace = true }
+dbt-fusion-workspace-hack = { version = "0.1" }
+dbt-jinja-utils = { workspace = true }
+dbt-pretty-table = { workspace = true }
+dbt-runtime = { workspace = true }
+dbt-scheduler = { workspace = true }
+dbt-schema-store = { workspace = true }
+dbt-schemas = { workspace = true }
+dbt-state = { workspace = true }
+dbt-telemetry = { workspace = true }
+dbt-tracing = { workspace = true }
+dbt-yaml = { workspace = true }
+
+arrow = { workspace = true }
+arrow-schema = { workspace = true }
+blake3 = { workspace = true }
+chrono = { workspace = true }
+datafusion-common = { workspace = true }
+datafusion-expr = { workspace = true }
+futures = { workspace = true }
+humantime = { workspace = true }
+minijinja = { workspace = true }
+parking_lot = { workspace = true }
+petgraph = { workspace = true }
+regex = { workspace = true }
+scc = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+chrono-tz = { workspace = true }
+dbt-test-primitives = { workspace = true }
+indexmap = { workspace = true }
+tempfile = { workspace = true }
+tonic = { workspace = true }
+tracing-subscriber = { workspace = true }

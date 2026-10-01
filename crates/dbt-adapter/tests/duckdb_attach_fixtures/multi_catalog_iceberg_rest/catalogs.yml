@@ -1,0 +1,17 @@
+# Scenario: Two catalogs of the same type, no DuckLake.
+# Exercises: emission order preserved; NO `INSTALL ducklake` prelude.
+catalogs:
+  - name: rest_a
+    type: iceberg_rest
+    table_format: iceberg
+    config:
+      duckdb:
+        endpoint: "https://rest-a.example.com"
+        catalog_database: rest_a
+  - name: rest_demo
+    type: iceberg_rest
+    table_format: iceberg
+    config:
+      duckdb:
+        warehouse: "demo_warehouse"
+        catalog_database: "rest_demo"

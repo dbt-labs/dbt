@@ -1,0 +1,23 @@
+---
+source: crates/dbt-jinja/minijinja/tests/test_lexer.rs
+description: "<ul>\n  {# for item in seq #}\n    <li>{{ item }}</li>\n  {# endfor #}\n</ul>"
+input_file: crates/dbt-jinja/minijinja/tests/lexer-inputs/lstrip-blocks-comment.txt
+---
+TemplateData("<ul>\n")
+  "<ul>\n"
+Comment
+  "{# for item in seq #}\n"
+TemplateData("    <li>")
+  "    <li>"
+VariableStart
+  "{{"
+Ident("item")
+  "item"
+VariableEnd
+  "}}"
+TemplateData("</li>\n")
+  "</li>\n"
+Comment
+  "{# endfor #}\n"
+TemplateData("</ul>")
+  "</ul>"

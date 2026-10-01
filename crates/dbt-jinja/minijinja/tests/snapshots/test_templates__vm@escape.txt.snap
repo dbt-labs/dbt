@@ -1,0 +1,16 @@
+---
+source: minijinja/tests/test_templates.rs
+description: "{{'\\'' ~ 'foo'}}\n{{'\\'' ~ x ~ '\\''}}\n{{\"\\'\" ~ x ~ '\\''}}\n{{\"\\'\" ~ x ~ '\\''}}\n{{\"\nhello world\"}}\n{{\"hello\nworld\"}}"
+info:
+  x: hello
+input_file: minijinja/tests/inputs/escape.txt
+---
+'foo
+'hello'
+'hello'
+'hello'
+
+hello world
+hello
+world
+

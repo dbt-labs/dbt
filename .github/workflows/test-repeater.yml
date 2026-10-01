@@ -17,7 +17,7 @@ on:
         description: "Branch to check out"
         type: string
         required: true
-        default: "main"
+        default: "1.latest"
       test_path:
         description: "Path to single test to run (ex: tests/functional/retry/test_retry.py::TestRetry::test_fail_fast)"
         type: string

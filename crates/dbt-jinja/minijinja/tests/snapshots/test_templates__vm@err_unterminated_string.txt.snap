@@ -1,0 +1,24 @@
+---
+source: fs/sa/crates/dbt-jinja/minijinja/tests/test_templates.rs
+description: "{{ \"this string is missing a closing quote"
+info:
+  __minijinja_current_path: err_unterminated_string.txt
+  __minijinja_current_span:
+    start_line: 1
+    start_col: 1
+    start_offset: 0
+    end_line: 1
+    end_col: 1
+    end_offset: 0
+input_file: fs/sa/crates/dbt-jinja/minijinja/tests/inputs/err_unterminated_string.txt
+---
+!!!SYNTAX ERROR!!!
+
+Error {
+    kind: SyntaxError,
+    detail: "unexpected end of string",
+    name: "err_unterminated_string.txt",
+}
+
+syntax error: unexpected end of string
+(in err_unterminated_string.txt:1:43)

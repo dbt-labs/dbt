@@ -1,0 +1,26 @@
+[package]
+name = "minijinja-py"
+version = "2.5.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+[lib]
+name = "minijinja_py"
+crate-type = ["cdylib"]
+
+[dependencies]
+minijinja = { version = "2.5.0", path = "../minijinja", features = [
+  "loader",
+  "json",
+  "urlencode",
+  "fuel",
+  "preserve_order",
+  "speedups",
+  "custom_syntax",
+] }
+once_cell = { workspace = true }
+pyo3 = { version = "0.22.6", features = [
+  "extension-module",
+  "serde",
+  "abi3-py38",
+] }

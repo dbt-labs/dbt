@@ -1,0 +1,238 @@
+---
+source: minijinja/tests/test_lexer.rs
+description: "{{ true }}\n{{ false }}\n{{ null }}\n{{ 1.0 }}\n{{ 1_000.0 }}\n{{ 2 }}\n{{ 2_000 }}\n{{ [1, 2, 3] }}\n{{ {\"foo\": \"bar\"} }}\n{{ -9223372036854775808 }}\n{{ -9_223_372_036_854_775_808 }}\n{{ -170141183460469231731687303715884105728 }}\n{{ 170141183460469231731687303715884105727 }}\n{{ 340282366920938463463374607431768211455 }}\n{{ 0b1111 }}\n{{ 0B1001 }}\n{{ 0o777 }}\n{{ 0O777 }}\n{{ 0O7_77 }}\n{{ 0xdeadbeef }}\n{{ 0XDEADBEEF }}\n{{ 0XDEAD_BEEF }}\n{{ 1e2 }}\n{{ 1e_2 }}\n{{ 1_1e+_2 }}\n{{ 1_1e-_2 }}"
+input_file: minijinja/tests/lexer-inputs/literals.txt
+---
+VariableStart
+  "{{"
+Ident("true")
+  "true"
+VariableEnd
+  "}}"
+TemplateData("\n")
+  "\n"
+VariableStart
+  "{{"
+Ident("false")
+  "false"
+VariableEnd
+  "}}"
+TemplateData("\n")
+  "\n"
+VariableStart
+  "{{"
+Ident("null")
+  "null"
+VariableEnd
+  "}}"
+TemplateData("\n")
+  "\n"
+VariableStart
+  "{{"
+Float(1.0)
+  "1.0"
+VariableEnd
+  "}}"
+TemplateData("\n")
+  "\n"
+VariableStart
+  "{{"
+Float(1000.0)
+  "1_000.0"
+VariableEnd
+  "}}"
+TemplateData("\n")
+  "\n"
+VariableStart
+  "{{"
+Int(2)
+  "2"
+VariableEnd
+  "}}"
+TemplateData("\n")
+  "\n"
+VariableStart
+  "{{"
+Int(2000)
+  "2_000"
+VariableEnd
+  "}}"
+TemplateData("\n")
+  "\n"
+VariableStart
+  "{{"
+BracketOpen
+  "["
+Int(1)
+  "1"
+Comma
+  ","
+Int(2)
+  "2"
+Comma
+  ","
+Int(3)
+  "3"
+BracketClose
+  "]"
+VariableEnd
+  "}}"
+TemplateData("\n")
+  "\n"
+VariableStart
+  "{{"
+BraceOpen
+  "{"
+Str("foo")
+  "\"foo\""
+Colon
+  ":"
+Str("bar")
+  "\"bar\""
+BraceClose
+  "}"
+VariableEnd
+  "}}"
+TemplateData("\n")
+  "\n"
+VariableStart
+  "{{"
+Minus
+  "-"
+Int(9223372036854775808)
+  "9223372036854775808"
+VariableEnd
+  "}}"
+TemplateData("\n")
+  "\n"
+VariableStart
+  "{{"
+Minus
+  "-"
+Int(9223372036854775808)
+  "9_223_372_036_854_775_808"
+VariableEnd
+  "}}"
+TemplateData("\n")
+  "\n"
+VariableStart
+  "{{"
+Minus
+  "-"
+Int128(170141183460469231731687303715884105728)
+  "170141183460469231731687303715884105728"
+VariableEnd
+  "}}"
+TemplateData("\n")
+  "\n"
+VariableStart
+  "{{"
+Int128(170141183460469231731687303715884105727)
+  "170141183460469231731687303715884105727"
+VariableEnd
+  "}}"
+TemplateData("\n")
+  "\n"
+VariableStart
+  "{{"
+Int128(340282366920938463463374607431768211455)
+  "340282366920938463463374607431768211455"
+VariableEnd
+  "}}"
+TemplateData("\n")
+  "\n"
+VariableStart
+  "{{"
+Int(15)
+  "0b1111"
+VariableEnd
+  "}}"
+TemplateData("\n")
+  "\n"
+VariableStart
+  "{{"
+Int(9)
+  "0B1001"
+VariableEnd
+  "}}"
+TemplateData("\n")
+  "\n"
+VariableStart
+  "{{"
+Int(511)
+  "0o777"
+VariableEnd
+  "}}"
+TemplateData("\n")
+  "\n"
+VariableStart
+  "{{"
+Int(511)
+  "0O777"
+VariableEnd
+  "}}"
+TemplateData("\n")
+  "\n"
+VariableStart
+  "{{"
+Int(511)
+  "0O7_77"
+VariableEnd
+  "}}"
+TemplateData("\n")
+  "\n"
+VariableStart
+  "{{"
+Int(3735928559)
+  "0xdeadbeef"
+VariableEnd
+  "}}"
+TemplateData("\n")
+  "\n"
+VariableStart
+  "{{"
+Int(3735928559)
+  "0XDEADBEEF"
+VariableEnd
+  "}}"
+TemplateData("\n")
+  "\n"
+VariableStart
+  "{{"
+Int(3735928559)
+  "0XDEAD_BEEF"
+VariableEnd
+  "}}"
+TemplateData("\n")
+  "\n"
+VariableStart
+  "{{"
+Float(100.0)
+  "1e2"
+VariableEnd
+  "}}"
+TemplateData("\n")
+  "\n"
+VariableStart
+  "{{"
+Float(100.0)
+  "1e_2"
+VariableEnd
+  "}}"
+TemplateData("\n")
+  "\n"
+VariableStart
+  "{{"
+Float(1100.0)
+  "1_1e+_2"
+VariableEnd
+  "}}"
+TemplateData("\n")
+  "\n"
+VariableStart
+  "{{"
+Float(0.11)
+  "1_1e-_2"
+VariableEnd
+  "}}"
+

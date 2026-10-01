@@ -1,0 +1,413 @@
+{
+  "metrics": [
+    {
+      "config": null,
+      "description": "bookings",
+      "filter": null,
+      "label": null,
+      "metadata": null,
+      "name": "bookings",
+      "time_granularity": null,
+      "type": "simple",
+      "type_params": {
+        "conversion_type_params": null,
+        "cumulative_type_params": null,
+        "denominator": null,
+        "expr": "1",
+        "fill_nulls_with": null,
+        "grain_to_date": null,
+        "input_measures": [],
+        "is_private": false,
+        "join_to_timespine": false,
+        "measure": null,
+        "metric_aggregation_params": {
+          "agg": "sum",
+          "agg_params": null,
+          "agg_time_dimension": "ds",
+          "expr": "1",
+          "non_additive_dimension": null,
+          "semantic_model": "bookings_source"
+        },
+        "metrics": null,
+        "numerator": null,
+        "window": null
+      }
+    },
+    {
+      "config": null,
+      "description": "family_bookings",
+      "filter": {
+        "where_filters": [
+          {
+            "where_sql_template": "{{ Dimension('listing__capacity') }} >= 3"
+          }
+        ]
+      },
+      "label": null,
+      "metadata": null,
+      "name": "family_bookings",
+      "time_granularity": null,
+      "type": "simple",
+      "type_params": {
+        "conversion_type_params": null,
+        "cumulative_type_params": null,
+        "denominator": null,
+        "expr": "1",
+        "fill_nulls_with": null,
+        "grain_to_date": null,
+        "input_measures": [],
+        "is_private": false,
+        "join_to_timespine": false,
+        "measure": null,
+        "metric_aggregation_params": {
+          "agg": "sum",
+          "agg_params": null,
+          "agg_time_dimension": "ds",
+          "expr": "1",
+          "non_additive_dimension": null,
+          "semantic_model": "bookings_source"
+        },
+        "metrics": null,
+        "numerator": null,
+        "window": null
+      }
+    },
+    {
+      "config": null,
+      "description": "potentially_lux_bookings",
+      "filter": {
+        "where_filters": [
+          {
+            "where_sql_template": "{{ Dimension('listing__is_lux') }} OR {{ Dimension('listing__is_lux') }} IS NULL"
+          }
+        ]
+      },
+      "label": null,
+      "metadata": null,
+      "name": "potentially_lux_bookings",
+      "time_granularity": null,
+      "type": "simple",
+      "type_params": {
+        "conversion_type_params": null,
+        "cumulative_type_params": null,
+        "denominator": null,
+        "expr": "1",
+        "fill_nulls_with": null,
+        "grain_to_date": null,
+        "input_measures": [],
+        "is_private": false,
+        "join_to_timespine": false,
+        "measure": null,
+        "metric_aggregation_params": {
+          "agg": "sum",
+          "agg_params": null,
+          "agg_time_dimension": "ds",
+          "expr": "1",
+          "non_additive_dimension": null,
+          "semantic_model": "bookings_source"
+        },
+        "metrics": null,
+        "numerator": null,
+        "window": null
+      }
+    }
+  ],
+  "project_configuration": {
+    "dsi_package_version": {
+      "major_version": "0",
+      "minor_version": "0",
+      "patch_version": "0"
+    },
+    "metadata": null,
+    "time_spine_table_configurations": [],
+    "time_spines": [
+      {
+        "custom_granularities": [],
+        "node_relation": {
+          "alias": "mf_time_spine",
+          "database": null,
+          "relation_name": null,
+          "schema_name": "main"
+        },
+        "primary_column": {
+          "name": "ds",
+          "time_granularity": "day"
+        }
+      }
+    ]
+  },
+  "saved_queries": [],
+  "semantic_models": [
+    {
+      "config": null,
+      "defaults": {
+        "agg_time_dimension": "ds"
+      },
+      "description": "bookings_source",
+      "dimensions": [
+        {
+          "config": null,
+          "description": null,
+          "expr": null,
+          "is_partition": false,
+          "label": null,
+          "metadata": null,
+          "name": "is_instant",
+          "type": "categorical",
+          "type_params": null
+        },
+        {
+          "config": null,
+          "description": null,
+          "expr": null,
+          "is_partition": false,
+          "label": null,
+          "metadata": null,
+          "name": "ds",
+          "type": "time",
+          "type_params": {
+            "time_granularity": "day",
+            "validity_params": null
+          }
+        }
+      ],
+      "entities": [
+        {
+          "config": null,
+          "description": null,
+          "expr": "listing_id",
+          "label": null,
+          "metadata": null,
+          "name": "listing",
+          "role": null,
+          "type": "foreign"
+        },
+        {
+          "config": null,
+          "description": null,
+          "expr": "guest_id",
+          "label": null,
+          "metadata": null,
+          "name": "guest",
+          "role": null,
+          "type": "foreign"
+        }
+      ],
+      "label": null,
+      "measures": [
+        {
+          "agg": "sum",
+          "agg_params": null,
+          "agg_time_dimension": null,
+          "config": null,
+          "create_metric": false,
+          "description": null,
+          "expr": "1",
+          "label": null,
+          "name": "bookings",
+          "non_additive_dimension": null
+        }
+      ],
+      "metadata": null,
+      "name": "bookings_source",
+      "node_relation": {
+        "alias": "fct_bookings",
+        "database": null,
+        "relation_name": "\"main\".\"fct_bookings\"",
+        "schema_name": "main"
+      },
+      "primary_entity": "booking"
+    },
+    {
+      "config": null,
+      "defaults": null,
+      "description": "listings",
+      "dimensions": [
+        {
+          "config": null,
+          "description": null,
+          "expr": null,
+          "is_partition": false,
+          "label": null,
+          "metadata": null,
+          "name": "capacity",
+          "type": "categorical",
+          "type_params": null
+        },
+        {
+          "config": null,
+          "description": null,
+          "expr": null,
+          "is_partition": false,
+          "label": null,
+          "metadata": null,
+          "name": "is_lux",
+          "type": "categorical",
+          "type_params": null
+        }
+      ],
+      "entities": [
+        {
+          "config": null,
+          "description": null,
+          "expr": "listing_id",
+          "label": null,
+          "metadata": null,
+          "name": "listing",
+          "role": null,
+          "type": "primary"
+        },
+        {
+          "config": null,
+          "description": null,
+          "expr": "user_id",
+          "label": null,
+          "metadata": null,
+          "name": "user",
+          "role": null,
+          "type": "foreign"
+        }
+      ],
+      "label": null,
+      "measures": [],
+      "metadata": null,
+      "name": "listings",
+      "node_relation": {
+        "alias": "dim_listings",
+        "database": null,
+        "relation_name": "\"main\".\"dim_listings\"",
+        "schema_name": "main"
+      },
+      "primary_entity": null,
+      "validity_params": {
+        "is_valid_from": "active_from",
+        "is_valid_to": "active_to"
+      }
+    },
+    {
+      "config": null,
+      "defaults": null,
+      "description": "scd_users_latest",
+      "dimensions": [
+        {
+          "config": null,
+          "description": null,
+          "expr": null,
+          "is_partition": false,
+          "label": null,
+          "metadata": null,
+          "name": "home_state_latest",
+          "type": "categorical",
+          "type_params": null
+        }
+      ],
+      "entities": [
+        {
+          "config": null,
+          "description": null,
+          "expr": "user_id",
+          "label": null,
+          "metadata": null,
+          "name": "user",
+          "role": null,
+          "type": "primary"
+        }
+      ],
+      "label": null,
+      "measures": [],
+      "metadata": null,
+      "name": "scd_users_latest",
+      "node_relation": {
+        "alias": "dim_users_latest",
+        "database": null,
+        "relation_name": "\"main\".\"dim_users_latest\"",
+        "schema_name": "main"
+      },
+      "primary_entity": null
+    },
+    {
+      "config": null,
+      "defaults": null,
+      "description": "scd_lux_listing_mapping",
+      "dimensions": [],
+      "entities": [
+        {
+          "config": null,
+          "description": null,
+          "expr": "listing_id",
+          "label": null,
+          "metadata": null,
+          "name": "listing",
+          "role": null,
+          "type": "primary"
+        },
+        {
+          "config": null,
+          "description": null,
+          "expr": "lux_listing_id",
+          "label": null,
+          "metadata": null,
+          "name": "lux_listing",
+          "role": null,
+          "type": "foreign"
+        }
+      ],
+      "label": null,
+      "measures": [],
+      "metadata": null,
+      "name": "scd_lux_listing_mapping",
+      "node_relation": {
+        "alias": "dim_lux_listing_id_mapping",
+        "database": null,
+        "relation_name": "\"main\".\"dim_lux_listing_id_mapping\"",
+        "schema_name": "main"
+      },
+      "primary_entity": null
+    },
+    {
+      "config": null,
+      "defaults": null,
+      "description": "lux_listings",
+      "dimensions": [
+        {
+          "config": null,
+          "description": null,
+          "expr": null,
+          "is_partition": false,
+          "label": null,
+          "metadata": null,
+          "name": "is_confirmed_lux",
+          "type": "categorical",
+          "type_params": null
+        }
+      ],
+      "entities": [
+        {
+          "config": null,
+          "description": null,
+          "expr": "lux_listing_id",
+          "label": null,
+          "metadata": null,
+          "name": "lux_listing",
+          "role": null,
+          "type": "primary"
+        }
+      ],
+      "label": null,
+      "measures": [],
+      "metadata": null,
+      "name": "lux_listings",
+      "node_relation": {
+        "alias": "dim_lux_listings",
+        "database": null,
+        "relation_name": "\"main\".\"dim_lux_listings\"",
+        "schema_name": "main"
+      },
+      "primary_entity": null,
+      "validity_params": {
+        "is_valid_from": "valid_from",
+        "is_valid_to": "valid_to"
+      }
+    }
+  ]
+}

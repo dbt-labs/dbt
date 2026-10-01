@@ -1,0 +1,9 @@
+[graph]
+exclude = ["dbt-fusion-workspace-hack"]
+
+[bans]
+multiple-versions = "allow"
+deny = [
+  { crate = "dbt-common", reason = "dbt-pretty-table must not depend on dbt-common to avoid circular dependencies" },
+  { crate = "dbt-error", reason = "dbt-pretty-table should use its own Error type, not dbt-error" },
+]

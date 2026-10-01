@@ -1,0 +1,14 @@
+syntax = "proto3";
+package v1.public.events.fusion.update;
+
+option go_package = "github.com/dbt-labs/proto-golang/v1/public/events/fusion/update";
+
+// Self update attempt event.
+message PackageUpdate {
+  // Update dbt to this version (e.g. 1.2.3) [default: latest version]
+  string version = 1;
+  // Package to update (e.g. dbt) [default: dbt]
+  string package = 2;
+  // The discovered path to the dbt executable
+  optional string exe_path = 3;
+}

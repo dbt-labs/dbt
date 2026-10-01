@@ -1,0 +1,6 @@
+{
+  "template": "layout_with_var.txt"
+}
+---
+{% extends template %}
+{% set var = "the value from the child" %}

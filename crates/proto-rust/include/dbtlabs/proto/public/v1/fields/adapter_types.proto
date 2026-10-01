@@ -1,0 +1,530 @@
+syntax = "proto3";
+
+package v1.public.fields.adapter_types;
+option go_package = "github.com/dbt-labs/proto-golang/v1/public/fields/adapter_types";
+
+import "google/protobuf/timestamp.proto";
+import "google/protobuf/struct.proto";
+
+// Common event info
+message AdapterCommonEventInfo {
+    string name = 1;
+    string code = 2;
+    string msg = 3;
+    string level = 4;
+    string invocation_id = 5;
+    int32 pid = 6;
+    string thread = 7;
+    google.protobuf.Timestamp ts = 8;
+    map<string, string> extra = 9;
+    string category = 10;
+}
+
+// AdapterNodeRelation
+message AdapterNodeRelation {
+    string database = 10;
+    string schema = 11;
+    string alias = 12;
+    string relation_name = 13;
+}
+
+// NodeInfo
+message AdapterNodeInfo {
+    string node_path = 1;
+    string node_name = 2;
+    string unique_id = 3;
+    string resource_type = 4;
+    string materialized = 5;
+    string node_status = 6;
+    string node_started_at = 7;
+    string node_finished_at = 8;
+    google.protobuf.Struct meta = 9;
+    AdapterNodeRelation node_relation = 10;
+    string node_checksum = 11;
+}
+
+// ReferenceKey
+message ReferenceKeyMsg {
+    string database = 1;
+    string schema = 2;
+    string identifier = 3;
+}
+
+// D - Deprecations
+
+// D005
+message AdapterDeprecationWarning {
+    string old_name = 1;
+    string new_name = 2;
+}
+
+message AdapterDeprecationWarningMsg {
+    AdapterCommonEventInfo info = 1;
+    AdapterDeprecationWarning data = 2;
+}
+
+// D012
+message CollectFreshnessReturnSignature {
+}
+
+message CollectFreshnessReturnSignatureMsg {
+    AdapterCommonEventInfo info = 1;
+    CollectFreshnessReturnSignature data = 2;
+}
+
+// E - DB Adapter
+
+// E001
+message AdapterEventDebug {
+    AdapterNodeInfo node_info = 1;
+    string name = 2;
+    string base_msg = 3;
+    google.protobuf.ListValue args = 4;
+}
+
+message AdapterEventDebugMsg {
+    AdapterCommonEventInfo info = 1;
+    AdapterEventDebug data = 2;
+}
+
+// E002
+message AdapterEventInfo {
+    AdapterNodeInfo node_info = 1;
+    string name = 2;
+    string base_msg = 3;
+    google.protobuf.ListValue args = 4;
+}
+
+message AdapterEventInfoMsg {
+    AdapterCommonEventInfo info = 1;
+    AdapterEventInfo data = 2;
+}
+
+// E003
+message AdapterEventWarning {
+    AdapterNodeInfo node_info = 1;
+    string name = 2;
+    string base_msg = 3;
+    google.protobuf.ListValue args = 4;
+}
+
+message AdapterEventWarningMsg {
+    AdapterCommonEventInfo info = 1;
+    AdapterEventWarning data = 2;
+}
+
+// E004
+message AdapterEventError {
+    AdapterNodeInfo node_info = 1;
+    string name = 2;
+    string base_msg = 3;
+    google.protobuf.ListValue args = 4;
+    string exc_info = 5;
+}
+
+message AdapterEventErrorMsg {
+    AdapterCommonEventInfo info = 1;
+    AdapterEventError data = 2;
+}
+
+// E005
+message NewConnection {
+    AdapterNodeInfo node_info = 1;
+    string conn_type = 2;
+    string conn_name = 3;
+}
+
+message NewConnectionMsg {
+    AdapterCommonEventInfo info = 1;
+    NewConnection data = 2;
+}
+
+// E006
+message ConnectionReused {
+    string conn_name = 1;
+    string orig_conn_name = 2;
+}
+
+message ConnectionReusedMsg {
+    AdapterCommonEventInfo info = 1;
+    ConnectionReused data = 2;
+}
+
+// E007
+message ConnectionLeftOpenInCleanup {
+    string conn_name = 1;
+}
+
+message ConnectionLeftOpenInCleanupMsg {
+    AdapterCommonEventInfo info = 1;
+    ConnectionLeftOpenInCleanup data = 2;
+}
+
+// E008
+message ConnectionClosedInCleanup {
+    string conn_name = 1;
+}
+
+message ConnectionClosedInCleanupMsg {
+    AdapterCommonEventInfo info = 1;
+    ConnectionClosedInCleanup data = 2;
+}
+
+// E009
+message RollbackFailed {
+    AdapterNodeInfo node_info = 1;
+    string conn_name = 2;
+    string exc_info = 3;
+}
+
+message RollbackFailedMsg {
+    AdapterCommonEventInfo info = 1;
+    RollbackFailed data = 2;
+}
+
+// E010
+message ConnectionClosed {
+    AdapterNodeInfo node_info = 1;
+    string conn_name = 2;
+}
+
+message ConnectionClosedMsg {
+    AdapterCommonEventInfo info = 1;
+    ConnectionClosed data = 2;
+}
+
+// E011
+message ConnectionLeftOpen {
+    AdapterNodeInfo node_info = 1;
+    string conn_name = 2;
+}
+
+message ConnectionLeftOpenMsg {
+    AdapterCommonEventInfo info = 1;
+    ConnectionLeftOpen data = 2;
+}
+
+// E012
+message Rollback {
+    AdapterNodeInfo node_info = 1;
+    string conn_name = 2;
+}
+
+message RollbackMsg {
+    AdapterCommonEventInfo info = 1;
+    Rollback data = 2;
+}
+
+// E013
+message CacheMiss {
+    string conn_name = 1;
+    string database = 2;
+    string schema = 3;
+}
+
+message CacheMissMsg {
+    AdapterCommonEventInfo info = 1;
+    CacheMiss data = 2;
+}
+
+// E014
+message ListRelations {
+    string database = 1;
+    string schema = 2;
+    repeated ReferenceKeyMsg relations = 3;
+}
+
+message ListRelationsMsg {
+    AdapterCommonEventInfo info = 1;
+    ListRelations data = 2;
+}
+
+// E015
+message ConnectionUsed {
+    AdapterNodeInfo node_info = 1;
+    string conn_type = 2;
+    string conn_name = 3;
+}
+
+message ConnectionUsedMsg {
+    AdapterCommonEventInfo info = 1;
+    ConnectionUsed data = 2;
+}
+
+// E016
+message SQLQuery {
+    AdapterNodeInfo node_info = 1;
+    string conn_name = 2;
+    string sql = 3;
+}
+
+message SQLQueryMsg {
+    AdapterCommonEventInfo info = 1;
+    SQLQuery data = 2;
+}
+
+// E017
+message SQLQueryStatus {
+    AdapterNodeInfo node_info = 1;
+    string status = 2;
+    float elapsed = 3;
+    string query_id = 4;
+}
+
+message SQLQueryStatusMsg {
+    AdapterCommonEventInfo info = 1;
+    SQLQueryStatus data = 2;
+}
+
+// E018
+message SQLCommit {
+    AdapterNodeInfo node_info = 1;
+    string conn_name = 2;
+}
+
+message SQLCommitMsg {
+    AdapterCommonEventInfo info = 1;
+    SQLCommit data = 2;
+}
+
+// E019
+message ColTypeChange {
+    string orig_type = 1;
+    string new_type = 2;
+    ReferenceKeyMsg table = 3;
+}
+
+message ColTypeChangeMsg {
+    AdapterCommonEventInfo info = 1;
+    ColTypeChange data = 2;
+}
+
+// E020
+message SchemaCreation {
+    ReferenceKeyMsg relation = 1;
+}
+
+message SchemaCreationMsg {
+    AdapterCommonEventInfo info = 1;
+    SchemaCreation data = 2;
+}
+
+// E021
+message SchemaDrop {
+    ReferenceKeyMsg relation = 1;
+}
+
+message SchemaDropMsg {
+    AdapterCommonEventInfo info = 1;
+    SchemaDrop data = 2;
+}
+
+// E022
+message CacheAction {
+    string action = 1;
+    ReferenceKeyMsg ref_key = 2;
+    ReferenceKeyMsg ref_key_2 = 3;
+    ReferenceKeyMsg ref_key_3 = 4;
+    repeated ReferenceKeyMsg ref_list = 5;
+}
+
+message CacheActionMsg {
+    AdapterCommonEventInfo info = 1;
+    CacheAction data = 2;
+}
+
+// Skipping E023, E024, E025, E026, E027, E028, E029, E0230
+
+// E031
+message CacheDumpGraph {
+    map<string, string> dump = 1;
+    string before_after = 2;
+    string action = 3;
+}
+
+message CacheDumpGraphMsg {
+    AdapterCommonEventInfo info = 1;
+    CacheDumpGraph data = 2;
+}
+
+
+// Skipping E032, E033, E034
+
+
+
+// E034
+message AdapterRegistered {
+    string adapter_name = 1;
+    string adapter_version = 2;
+}
+
+message AdapterRegisteredMsg {
+    AdapterCommonEventInfo info = 1;
+    AdapterRegistered data = 2;
+}
+
+// E035
+message AdapterImportError {
+    string exc = 1;
+}
+
+message AdapterImportErrorMsg {
+    AdapterCommonEventInfo info = 1;
+    AdapterImportError data = 2;
+}
+
+// E036
+message PluginLoadError {
+    string exc_info = 1;
+}
+
+message PluginLoadErrorMsg {
+    AdapterCommonEventInfo info = 1;
+    PluginLoadError data = 2;
+}
+
+// E037
+message NewConnectionOpening {
+    AdapterNodeInfo node_info = 1;
+    string connection_state = 2;
+}
+
+message NewConnectionOpeningMsg {
+    AdapterCommonEventInfo info = 1;
+    NewConnectionOpening data = 2;
+}
+
+// E038
+message CodeExecution {
+    string conn_name = 1;
+    string code_content = 2;
+}
+
+message CodeExecutionMsg {
+    AdapterCommonEventInfo info = 1;
+    CodeExecution data = 2;
+}
+
+// E039
+message CodeExecutionStatus {
+    string status = 1;
+    float elapsed = 2;
+}
+
+message CodeExecutionStatusMsg {
+    AdapterCommonEventInfo info = 1;
+    CodeExecutionStatus data = 2;
+}
+
+// E040
+message CatalogGenerationError {
+    string exc = 1;
+}
+
+message CatalogGenerationErrorMsg {
+    AdapterCommonEventInfo info = 1;
+    CatalogGenerationError data = 2;
+}
+
+// E041
+message WriteCatalogFailure {
+    int32 num_exceptions = 1;
+}
+
+message WriteCatalogFailureMsg {
+    AdapterCommonEventInfo info = 1;
+    WriteCatalogFailure data = 2;
+}
+
+// E042
+message CatalogWritten {
+    string path = 1;
+}
+
+message CatalogWrittenMsg {
+    AdapterCommonEventInfo info = 1;
+    CatalogWritten data = 2;
+}
+
+// E043
+message CannotGenerateDocs {
+}
+
+message CannotGenerateDocsMsg {
+    AdapterCommonEventInfo info = 1;
+    CannotGenerateDocs data = 2;
+}
+
+// E044
+message BuildingCatalog {
+}
+
+message BuildingCatalogMsg {
+    AdapterCommonEventInfo info = 1;
+    BuildingCatalog data = 2;
+}
+
+// E045
+message DatabaseErrorRunningHook {
+    string hook_type = 1;
+}
+
+message DatabaseErrorRunningHookMsg {
+    AdapterCommonEventInfo info = 1;
+    DatabaseErrorRunningHook data = 2;
+}
+
+// E046
+message HooksRunning {
+    int32 num_hooks = 1;
+    string hook_type = 2;
+}
+
+message HooksRunningMsg {
+    AdapterCommonEventInfo info = 1;
+    HooksRunning data = 2;
+}
+
+// E047
+message FinishedRunningStats {
+    string stat_line = 1;
+    string execution = 2;
+    float execution_time = 3;
+}
+
+message FinishedRunningStatsMsg {
+    AdapterCommonEventInfo info = 1;
+    FinishedRunningStats data = 2;
+}
+
+// E048
+message ConstraintNotEnforced {
+    string constraint = 1;
+    string adapter = 2;
+}
+
+message ConstraintNotEnforcedMsg {
+    AdapterCommonEventInfo info = 1;
+    ConstraintNotEnforced data = 2;
+}
+
+// E049
+message ConstraintNotSupported {
+    string constraint = 1;
+    string adapter = 2;
+}
+
+message ConstraintNotSupportedMsg {
+    AdapterCommonEventInfo info = 1;
+    ConstraintNotSupported data = 2;
+}
+
+// E050
+message TypeCodeNotFound {
+    int32 type_code = 1;
+}
+
+message TypeCodeNotFoundMsg {
+    AdapterCommonEventInfo info = 1;
+    TypeCodeNotFound data = 2;
+}

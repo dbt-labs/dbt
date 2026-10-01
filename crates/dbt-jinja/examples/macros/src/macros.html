@@ -1,0 +1,4 @@
+{% macro render_input(name, value, type="text") -%}
+  <input name="{{ name }}" value="{{ value }}" type="{{ type }}">
+{%- endmacro %}
+{% set alias = render_input %}

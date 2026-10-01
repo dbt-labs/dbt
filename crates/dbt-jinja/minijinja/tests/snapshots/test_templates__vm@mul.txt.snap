@@ -1,0 +1,12 @@
+---
+source: crates/dbt-jinja/minijinja/tests/test_templates.rs
+description: "{{ range(3) * 3 }}\n{{ \"foo\" * 3 }}\n{{ [1, 2] * 2 }}\n{{ [1, 2, 3, 4][:2] * 2 }}\n{{ 2 * [1, 2] }}\n{{ 2 * \"foo\" }}"
+info: {}
+input_file: crates/dbt-jinja/minijinja/tests/inputs/mul.txt
+---
+(0, 1, 2, 0, 1, 2, 0, 1, 2)
+foofoofoo
+(1, 2, 1, 2)
+(1, 2, 1, 2)
+(1, 2, 1, 2)
+foofoo

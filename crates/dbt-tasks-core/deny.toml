@@ -1,0 +1,13 @@
+[graph]
+exclude = ["dbt-fusion-workspace-hack"]
+all-features = false
+no-default-features = false
+
+# Only check normal dependencies, not dev-dependencies
+exclude-dev = true
+
+[bans]
+multiple-versions = "allow"
+deny = [
+  { crate = "dbt-features", reason = "dbt-tasks-core must not depend on dbt-features (dbt-features depends on dbt-tasks-core)" },
+]

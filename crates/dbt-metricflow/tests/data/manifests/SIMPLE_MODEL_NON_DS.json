@@ -1,0 +1,201 @@
+{
+  "metrics": [
+    {
+      "config": null,
+      "description": "bookings",
+      "filter": null,
+      "label": null,
+      "metadata": null,
+      "name": "bookings",
+      "time_granularity": null,
+      "type": "simple",
+      "type_params": {
+        "conversion_type_params": null,
+        "cumulative_type_params": null,
+        "denominator": null,
+        "expr": "1",
+        "fill_nulls_with": null,
+        "grain_to_date": null,
+        "input_measures": [],
+        "is_private": false,
+        "join_to_timespine": false,
+        "measure": null,
+        "metric_aggregation_params": {
+          "agg": "sum",
+          "agg_params": null,
+          "agg_time_dimension": "dt",
+          "expr": "1",
+          "non_additive_dimension": null,
+          "semantic_model": "bookings_source"
+        },
+        "metrics": null,
+        "numerator": null,
+        "window": null
+      }
+    }
+  ],
+  "project_configuration": {
+    "dsi_package_version": {
+      "major_version": "0",
+      "minor_version": "0",
+      "patch_version": "0"
+    },
+    "metadata": null,
+    "time_spine_table_configurations": [],
+    "time_spines": [
+      {
+        "custom_granularities": [],
+        "node_relation": {
+          "alias": "mf_time_spine",
+          "database": null,
+          "relation_name": null,
+          "schema_name": "main"
+        },
+        "primary_column": {
+          "name": "ds",
+          "time_granularity": "day"
+        }
+      }
+    ]
+  },
+  "saved_queries": [],
+  "semantic_models": [
+    {
+      "config": null,
+      "defaults": {
+        "agg_time_dimension": "dt"
+      },
+      "description": "bookings_source",
+      "dimensions": [
+        {
+          "config": null,
+          "description": null,
+          "expr": null,
+          "is_partition": false,
+          "label": null,
+          "metadata": null,
+          "name": "dt",
+          "type": "time",
+          "type_params": {
+            "time_granularity": "day",
+            "validity_params": null
+          }
+        },
+        {
+          "config": null,
+          "description": null,
+          "expr": null,
+          "is_partition": false,
+          "label": null,
+          "metadata": null,
+          "name": "is_instant",
+          "type": "categorical",
+          "type_params": null
+        }
+      ],
+      "entities": [
+        {
+          "config": null,
+          "description": null,
+          "expr": "listing_id",
+          "label": null,
+          "metadata": null,
+          "name": "listing",
+          "role": null,
+          "type": "foreign"
+        },
+        {
+          "config": null,
+          "description": null,
+          "expr": "guest_id",
+          "label": null,
+          "metadata": null,
+          "name": "guest",
+          "role": null,
+          "type": "foreign"
+        }
+      ],
+      "label": null,
+      "measures": [
+        {
+          "agg": "sum",
+          "agg_params": null,
+          "agg_time_dimension": null,
+          "config": null,
+          "create_metric": false,
+          "description": null,
+          "expr": "1",
+          "label": null,
+          "name": "bookings",
+          "non_additive_dimension": null
+        }
+      ],
+      "metadata": null,
+      "name": "bookings_source",
+      "node_relation": {
+        "alias": "fct_bookings_dt",
+        "database": null,
+        "relation_name": "\"main\".\"fct_bookings_dt\"",
+        "schema_name": "main"
+      },
+      "primary_entity": "booking"
+    },
+    {
+      "config": null,
+      "defaults": {
+        "agg_time_dimension": "ds"
+      },
+      "description": "listings_latest",
+      "dimensions": [
+        {
+          "config": null,
+          "description": null,
+          "expr": "created_at",
+          "is_partition": false,
+          "label": null,
+          "metadata": null,
+          "name": "ds",
+          "type": "time",
+          "type_params": {
+            "time_granularity": "day",
+            "validity_params": null
+          }
+        },
+        {
+          "config": null,
+          "description": null,
+          "expr": "country",
+          "is_partition": false,
+          "label": null,
+          "metadata": null,
+          "name": "country_latest",
+          "type": "categorical",
+          "type_params": null
+        }
+      ],
+      "entities": [
+        {
+          "config": null,
+          "description": null,
+          "expr": "listing_id",
+          "label": null,
+          "metadata": null,
+          "name": "listing",
+          "role": null,
+          "type": "primary"
+        }
+      ],
+      "label": null,
+      "measures": [],
+      "metadata": null,
+      "name": "listings_latest",
+      "node_relation": {
+        "alias": "dim_listings_latest",
+        "database": null,
+        "relation_name": "\"main\".\"dim_listings_latest\"",
+        "schema_name": "main"
+      },
+      "primary_entity": null
+    }
+  ]
+}

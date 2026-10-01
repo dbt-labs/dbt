@@ -1,0 +1,21 @@
+---
+source: fs/sa/crates/dbt-jinja/minijinja/tests/test_templates.rs
+description: "{%- set ns = namespace() %}\n{%- set ns.foo = 0 %}\n{%- for count in range(10) %}\n  {%- set ns.foo = ns.foo + count %}\n{%- endfor %}\n{{- ns }}\n---\n{% set ns.foo = namespace() %}\n{%- set ns.foo.bar = 42 %}\n{{- ns }}\n---\n{% set ns = namespace(found=true) %}\n{{- ns }}\n---\n{% set ns = namespace({\"found\": true}) %}\n{{- ns }}"
+info:
+  __minijinja_current_path: namespace.txt
+  __minijinja_current_span:
+    start_line: 1
+    start_col: 1
+    start_offset: 0
+    end_line: 1
+    end_col: 1
+    end_offset: 0
+input_file: fs/sa/crates/dbt-jinja/minijinja/tests/inputs/namespace.txt
+---
+{'foo': 45}
+---
+{'foo': {'bar': 42}}
+---
+{'found': True}
+---
+{'found': True}

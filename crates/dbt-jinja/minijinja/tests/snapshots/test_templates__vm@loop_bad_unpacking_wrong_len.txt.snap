@@ -1,0 +1,34 @@
+---
+source: fs/sa/crates/dbt-jinja/minijinja/tests/test_templates.rs
+description: "<ul>\n{% for a, b in seq %}\n  <li>{{ a }}: {{ b }}\n{% endfor %}\n</ul>"
+info:
+  __minijinja_current_path: loop_bad_unpacking_wrong_len.txt
+  __minijinja_current_span:
+    end_col: 1
+    end_line: 1
+    end_offset: 0
+    start_col: 1
+    start_line: 1
+    start_offset: 0
+  seq:
+    - - 1
+      - 2
+      - 3
+    - - 2
+      - 3
+      - 4
+    - - 3
+      - 4
+      - 5
+input_file: fs/sa/crates/dbt-jinja/minijinja/tests/inputs/loop_bad_unpacking_wrong_len.txt
+---
+!!!ERROR!!!
+
+Error {
+    kind: CannotUnpack,
+    detail: "sequence of wrong length (expected 2, got 3)",
+    name: "loop_bad_unpacking_wrong_len.txt",
+}
+
+cannot unpack: sequence of wrong length (expected 2, got 3)
+(in loop_bad_unpacking_wrong_len.txt:2:8)

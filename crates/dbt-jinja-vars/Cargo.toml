@@ -1,0 +1,28 @@
+[package]
+name = "dbt-jinja-vars"
+description = "Shared env_var, Var, VarFunction, and ConfiguredVar for dbt Jinja contexts"
+version.workspace = true
+homepage.workspace = true
+repository.workspace = true
+authors.workspace = true
+license.workspace = true
+keywords.workspace = true
+edition.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+chrono = { workspace = true }
+dbt-fusion-workspace-hack = { version = "0.1" }
+dbt-yaml = { workspace = true }
+indexmap = { workspace = true, features = ["serde"] }
+minijinja = { workspace = true }
+minijinja-contrib = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+
+[lib]
+name = "dbt_jinja_vars"
+path = "src/lib.rs"
+doctest = false

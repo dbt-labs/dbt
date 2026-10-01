@@ -1,0 +1,28 @@
+---
+source: fs/sa/crates/dbt-jinja/minijinja/tests/test_templates.rs
+description: "{% for item in seq %}\n  {{ ((item + 4) * (3 - [])) + 4 - 2 }}\n{% endfor %}"
+info:
+  __minijinja_current_path: err_bad_nested_subtraction.txt
+  __minijinja_current_span:
+    end_col: 1
+    end_line: 1
+    end_offset: 0
+    start_col: 1
+    start_line: 1
+    start_offset: 0
+  seq:
+    - 1
+    - 2
+    - 3
+input_file: fs/sa/crates/dbt-jinja/minijinja/tests/inputs/err_bad_nested_subtraction.txt
+---
+!!!ERROR!!!
+
+Error {
+    kind: InvalidOperation,
+    detail: "tried to use - operator on unsupported types number and sequence",
+    name: "err_bad_nested_subtraction.txt",
+}
+
+invalid operation: tried to use - operator on unsupported types number and sequence
+(in err_bad_nested_subtraction.txt:2:21)

@@ -3,6 +3,9 @@ contact_links:
   - name: Documentation
     url: https://github.com/dbt-labs/docs.getdbt.com/issues/new/choose
     about: Problems and issues with dbt product documentation hosted on docs.getdbt.com. Issues for markdown files within this repo, such as README, should be opened using the "Code docs" template.
+  - name: dbt v2.x docs
+    url: https://docs.getdbt.com/docs/fusion
+    about: Check the docs before filing — your answer may already be there.
   - name: Ask the community for help
     url: https://github.com/dbt-labs/docs.getdbt.com/discussions
     about: Need help troubleshooting? Check out our guide on how to ask
@@ -12,6 +15,6 @@ contact_links:
   - name: Participate in Discussions
     url: https://github.com/dbt-labs/dbt-core/discussions
     about: Do you have a Big Idea for dbt? Read open discussions, or start a new one
-  - name: Create an issue for adapters
+  - name: Create an issue for v1.x adapters
     url: https://github.com/dbt-labs/dbt-adapters/issues/new/choose
     about: Report a bug or request a feature for an adapter

@@ -1,0 +1,43 @@
+[package]
+name = "dbt-compilation"
+version.workspace = true
+homepage.workspace = true
+repository.workspace = true
+authors.workspace = true
+description.workspace = true
+license.workspace = true
+keywords.workspace = true
+edition.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+dbt-adapter = { workspace = true }
+dbt-adapter-core = { workspace = true }
+dbt-adbc = { workspace = true }
+dbt-clap-core = { workspace = true }
+dbt-cloud-config = { workspace = true }
+dbt-common = { workspace = true }
+dbt-dag = { workspace = true }
+dbt-defer = { workspace = true }
+dbt-deps = { workspace = true }
+dbt-error = { workspace = true }
+dbt-fusion-workspace-hack = { version = "0.1" }
+dbt-jinja-utils = { workspace = true }
+dbt-loader = { workspace = true }
+dbt-metadata = { workspace = true }
+dbt-parser = { workspace = true }
+dbt-schema-store = { workspace = true }
+dbt-schemas = { workspace = true }
+dbt-tasks-core = { workspace = true }
+dbt-yaml = { workspace = true }
+
+arrow-schema = { workspace = true }
+async-trait = { workspace = true }
+tracing = { workspace = true }
+
+[lib]
+name = "dbt_compilation"
+path = "src/lib.rs"
+doctest = false

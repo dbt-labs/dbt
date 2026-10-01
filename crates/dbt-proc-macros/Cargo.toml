@@ -1,0 +1,25 @@
+[package]
+name = "dbt-proc-macros"
+version.workspace = true
+homepage.workspace = true
+repository.workspace = true
+authors.workspace = true
+description.workspace = true
+license.workspace = true
+keywords.workspace = true
+edition.workspace = true
+
+[lints]
+workspace = true
+
+[lib]
+name = "dbt_proc_macros"
+path = "src/lib.rs"
+proc-macro = true
+doctest = false
+
+[dependencies]
+dbt-fusion-workspace-hack = { version = "0.1" }
+proc-macro2 = "1"
+quote = "1.0"
+syn = "2.0"

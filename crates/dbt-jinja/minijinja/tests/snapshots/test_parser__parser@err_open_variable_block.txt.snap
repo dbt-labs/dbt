@@ -1,0 +1,11 @@
+---
+source: fs/sa/crates/dbt-jinja/minijinja/tests/test_parser.rs
+description: "Hello {{ world"
+input_file: fs/sa/crates/dbt-jinja/minijinja/tests/parser-inputs/err_open_variable_block.txt
+---
+Err(
+    Error {
+        kind: SyntaxError,
+        detail: "unexpected end of input, expected end of variable block",
+    },
+)

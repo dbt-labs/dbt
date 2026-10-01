@@ -1,0 +1,24 @@
+---
+source: fs/sa/crates/dbt-jinja/minijinja/tests/test_templates.rs
+description: "{% macro no_caller() %}{% endmacro %}\n{% call no_caller() %}...{% endcall %}"
+info:
+  __minijinja_current_path: err_unexpected_caller_macro.txt
+  __minijinja_current_span:
+    end_col: 1
+    end_line: 1
+    end_offset: 0
+    start_col: 1
+    start_line: 1
+    start_offset: 0
+input_file: fs/sa/crates/dbt-jinja/minijinja/tests/inputs/err_unexpected_caller_macro.txt
+---
+!!!ERROR!!!
+
+Error {
+    kind: TooManyArguments,
+    detail: "macro does not accept caller argument",
+    name: "err_unexpected_caller_macro.txt",
+}
+
+too many arguments: macro does not accept caller argument
+(in err_unexpected_caller_macro.txt:2:9)

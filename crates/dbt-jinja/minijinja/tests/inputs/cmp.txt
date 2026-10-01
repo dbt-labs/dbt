@@ -1,0 +1,9 @@
+{
+  "one": 1,
+  "two": 2,
+  "three": 3
+}
+---
+{% if two > one and two < three %}
+  test
+{% endif %}

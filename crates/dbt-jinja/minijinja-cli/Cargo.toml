@@ -1,0 +1,103 @@
+[package]
+name = "minijinja-cli"
+version = "2.5.0"
+edition = "2021"
+license = "Apache-2.0"
+authors = ["Armin Ronacher <armin.ronacher@active-4.com>"]
+description = "Command Line Utility to render MiniJinja/Jinja2 templates"
+homepage = "https://github.com/mitsuhiko/minijinja"
+repository = "https://github.com/mitsuhiko/minijinja"
+keywords = ["jinja", "jinja2", "templates", "cli"]
+readme = "README.md"
+rust-version = "1.65"
+
+[features]
+default = [
+  "toml",
+  "yaml",
+  "querystring",
+  "cbor",
+  "datetime",
+  "json5",
+  "repl",
+  "completions",
+  "unicode",
+  "ini",
+  "contrib",
+  "preserve_order",
+]
+yaml = ["serde_yml"]
+querystring = ["serde_qs"]
+cbor = ["ciborium"]
+datetime = ["minijinja-contrib/datetime", "minijinja-contrib/timezone"]
+json5 = ["serde_json5"]
+repl = ["rustyline"]
+completions = ["clap_complete", "clap_complete_nushell", "clap_complete_fig"]
+unicode = ["minijinja/unicode"]
+ini = ["configparser"]
+contrib = ["minijinja-contrib"]
+toml = ["dep:toml", "home"]
+preserve_order = ["minijinja/preserve_order"]
+
+[dependencies]
+anyhow = "1.0.74"
+ciborium = { version = "0.2.1", optional = true }
+clap = { version = "4.3.21", default-features = false, features = [
+  "std",
+  "cargo",
+  "help",
+  "wrap_help",
+  "usage",
+  "error-context",
+] }
+clap_complete = { version = "4", optional = true }
+clap_complete_fig = { version = "4", optional = true }
+clap_complete_nushell = { version = "4", optional = true }
+configparser = { version = "3.1.0", optional = true }
+home = { version = "0.5.9", optional = true }
+minijinja = { version = "=2.5.0", path = "../minijinja", features = [
+  "loader",
+  "json",
+  "urlencode",
+  "fuel",
+  "unstable_machinery",
+  "custom_syntax",
+  "loop_controls",
+] }
+minijinja-contrib = { version = "=2.5.0", optional = true, path = "../minijinja-contrib", features = [
+  "pycompat",
+  "datetime",
+  "timezone",
+  "rand",
+  "unicode_wordwrap",
+  "wordcount",
+] }
+rustyline = { version = "14.0.0", optional = true }
+serde = { version = "1.0.183", features = ["derive", "rc"] }
+serde_json = "1.0.105"
+serde_json5 = { version = "0.1.0", optional = true }
+serde_qs = { version = "0.12.0", optional = true }
+serde_yml = { version = "0.0.10", optional = true }
+tempfile = "3.9.0"
+toml = { version = "0.7.6", optional = true }
+
+[target.'cfg(windows)'.dependencies]
+dunce = "1.0.4"
+
+[build-dependencies]
+clap = { version = "4.5.10", default-features = false, features = [
+  "std",
+  "cargo",
+  "help",
+  "usage",
+  "error-context",
+] }
+clap_complete = { version = "4", optional = true }
+clap_complete_fig = { version = "4", optional = true }
+clap_complete_nushell = { version = "4", optional = true }
+clap_mangen = "0.2"
+
+[dev-dependencies]
+insta = { version = "1.38.0", features = ["filters"] }
+insta-cmd = "0.6.0"
+tempfile = "3.9.0"

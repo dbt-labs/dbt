@@ -1,0 +1,6 @@
+---
+source: crates/dbt-jinja-utils/src/environment_builder.rs
+expression: "\"postgres two\""
+snapshot_kind: text
+---
+postgres two

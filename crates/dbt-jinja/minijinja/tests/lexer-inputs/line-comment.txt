@@ -1,0 +1,14 @@
+{
+  "line_statement_prefix": "#",
+  "line_comment_prefix": "##"
+}
+---
+## this is a comment
+## that shall disappear entirely
+<ul>
+  # for item in seq
+    <li>{{ item }}</li>  ## this is another line comment
+
+  # endfor
+</ul>
+## trailing comment

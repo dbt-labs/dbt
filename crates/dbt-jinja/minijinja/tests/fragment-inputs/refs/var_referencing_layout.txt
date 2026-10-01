@@ -1,0 +1,11 @@
+Shouldn't show up
+{% block fragment %}
+  {% for item in [1, 2, 3] %}
+    {% block item_block %}{{ item }}{% endblock %}
+  {% endfor %}
+{% endblock %}
+Also shouldn't show up
+
+{% block other %}
+  This too shouldn't appear
+{% endblock %}

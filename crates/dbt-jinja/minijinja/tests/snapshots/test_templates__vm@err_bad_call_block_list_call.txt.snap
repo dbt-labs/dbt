@@ -1,0 +1,24 @@
+---
+source: fs/sa/crates/dbt-jinja/minijinja/tests/test_templates.rs
+description: "{% call [1, 2, 3] %}...{% endcall %}"
+info:
+  __minijinja_current_path: err_bad_call_block_list_call.txt
+  __minijinja_current_span:
+    start_line: 1
+    start_col: 1
+    start_offset: 0
+    end_line: 1
+    end_col: 1
+    end_offset: 0
+input_file: fs/sa/crates/dbt-jinja/minijinja/tests/inputs/err_bad_call_block_list_call.txt
+---
+!!!SYNTAX ERROR!!!
+
+Error {
+    kind: SyntaxError,
+    detail: "expected call expression in call block, got list literal",
+    name: "err_bad_call_block_list_call.txt",
+}
+
+syntax error: expected call expression in call block, got list literal
+(in err_bad_call_block_list_call.txt:1:19)

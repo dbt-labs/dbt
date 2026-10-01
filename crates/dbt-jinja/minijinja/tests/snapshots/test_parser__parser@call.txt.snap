@@ -1,0 +1,142 @@
+---
+source: fs/sa/crates/dbt-jinja/minijinja/tests/test_parser.rs
+description: "{{ super() }}\n{{ loop.cycle(1, 2) }}\n{{ self.foo() }}\n{{ foo(1, 2, a=3, b=4) }}\n{{ trailing(1, 2,) }}\n{{ trailing_kwarg(1, 2, a=3,) }}"
+input_file: fs/sa/crates/dbt-jinja/minijinja/tests/parser-inputs/call.txt
+---
+Ok(
+    Template {
+        children: [
+            EmitExpr {
+                expr: Call {
+                    expr: Var {
+                        id: "super",
+                    } @ 1:4-1:9,
+                    args: [],
+                } @ 1:1-1:14,
+            } @ 1:1-1:14,
+            EmitRaw {
+                raw: "\n",
+            } @ 1:14-2:1,
+            EmitExpr {
+                expr: Call {
+                    expr: GetAttr {
+                        expr: Var {
+                            id: "loop",
+                        } @ 2:4-2:8,
+                        name: "cycle",
+                    } @ 2:4-2:14,
+                    args: [
+                        Pos(
+                            Const {
+                                value: 1,
+                            } @ 2:15-2:16,
+                        ),
+                        Pos(
+                            Const {
+                                value: 2,
+                            } @ 2:18-2:19,
+                        ),
+                    ],
+                } @ 2:1-2:23,
+            } @ 2:1-2:23,
+            EmitRaw {
+                raw: "\n",
+            } @ 2:23-3:1,
+            EmitExpr {
+                expr: Call {
+                    expr: GetAttr {
+                        expr: Var {
+                            id: "self",
+                        } @ 3:4-3:8,
+                        name: "foo",
+                    } @ 3:4-3:12,
+                    args: [],
+                } @ 3:1-3:17,
+            } @ 3:1-3:17,
+            EmitRaw {
+                raw: "\n",
+            } @ 3:17-4:1,
+            EmitExpr {
+                expr: Call {
+                    expr: Var {
+                        id: "foo",
+                    } @ 4:4-4:7,
+                    args: [
+                        Pos(
+                            Const {
+                                value: 1,
+                            } @ 4:8-4:9,
+                        ),
+                        Pos(
+                            Const {
+                                value: 2,
+                            } @ 4:11-4:12,
+                        ),
+                        Kwarg(
+                            "a",
+                            Const {
+                                value: 3,
+                            } @ 4:16-4:17,
+                        ),
+                        Kwarg(
+                            "b",
+                            Const {
+                                value: 4,
+                            } @ 4:21-4:22,
+                        ),
+                    ],
+                } @ 4:1-4:26,
+            } @ 4:1-4:26,
+            EmitRaw {
+                raw: "\n",
+            } @ 4:26-5:1,
+            EmitExpr {
+                expr: Call {
+                    expr: Var {
+                        id: "trailing",
+                    } @ 5:4-5:12,
+                    args: [
+                        Pos(
+                            Const {
+                                value: 1,
+                            } @ 5:13-5:14,
+                        ),
+                        Pos(
+                            Const {
+                                value: 2,
+                            } @ 5:16-5:17,
+                        ),
+                    ],
+                } @ 5:1-5:22,
+            } @ 5:1-5:22,
+            EmitRaw {
+                raw: "\n",
+            } @ 5:22-6:1,
+            EmitExpr {
+                expr: Call {
+                    expr: Var {
+                        id: "trailing_kwarg",
+                    } @ 6:4-6:18,
+                    args: [
+                        Pos(
+                            Const {
+                                value: 1,
+                            } @ 6:19-6:20,
+                        ),
+                        Pos(
+                            Const {
+                                value: 2,
+                            } @ 6:22-6:23,
+                        ),
+                        Kwarg(
+                            "a",
+                            Const {
+                                value: 3,
+                            } @ 6:27-6:28,
+                        ),
+                    ],
+                } @ 6:1-6:33,
+            } @ 6:1-6:33,
+        ],
+    } @ 1:1-6:33,
+)

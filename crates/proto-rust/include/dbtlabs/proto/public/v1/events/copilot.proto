@@ -1,0 +1,267 @@
+syntax = "proto3";
+
+package v1.public.events.copilot;
+option go_package = "github.com/dbt-labs/proto-golang/v1/public/events/copilot";
+
+import "dbtlabs/proto/public/v1/common/vortex_options.proto";
+import "dbtlabs/proto/public/v1/common/vortex_telemetry_contexts.proto";
+import "dbtlabs/proto/public/v1/events/vortex.proto";
+
+
+// As of 2025/05, enums are not handled properly with Vortex
+// so we document possible values in comments but use string fields.
+
+// Possible values for CopilotGenerationComplete.key_type:
+//   "KEY_TYPE_OPENAI_DBT_MANAGED"
+//   "KEY_TYPE_BYOK_OPENAI"
+//   "KEY_TYPE_BYOK_AZURE_OPENAI"
+//   "KEY_TYPE_BYOK_ANTHROPIC"
+
+// Fired when an AI code generation request completes (success or failure).
+// Covers all Copilot actions: generate docs, tests, semantic models, metrics,
+// inline SQL, text-to-SQL, and agent runs.
+message CopilotGenerationComplete {
+  option (v1.public.common.vortex_namespace) = VORTEX_ICEBERG_NAMESPACE_TELEMETRY;
+  option (v1.public.common.vortex_enabled) = true;
+
+  // Server enrichment for this event
+  v1.events.vortex.VortexMessageEnrichment enrichment = 1;
+
+  // dbt Cloud context (account_id, user_id, project_id, etc.)
+  v1.public.common.vortex_telemetry_contexts.VortexTelemetryDbtCloudContext ctx = 2;
+
+  // Unique identifier for this generation request; natural dedup key
+  string copilot_request_id = 3;
+
+  // Conversation thread for multi-turn correlation
+  string thread_id = 4;
+
+  // LLM provider (e.g. "openai", "azure_openai", "anthropic")
+  string model_provider = 5;
+
+  // Model identifier (e.g. "gpt-4o", "claude-sonnet-4-20250514")
+  string model_version = 6;
+
+  // Client application name (e.g. "studio", "vscode", "cloud-cli")
+  string app_name = 7;
+
+  // What triggered the generation (e.g. "user", "auto")
+  string copilot_trigger = 8;
+
+  // Which Copilot action ran (e.g. "generate_documentation", "text_to_sql", "agent")
+  string copilot_action = 9;
+
+  // Whether the generation encountered an error
+  bool has_error = 10;
+
+  // Error message if has_error is true
+  optional string error_message = 11;
+
+  // Whether the project has a custom style guide configured
+  bool has_custom_styleguide = 12;
+
+  // Prompt template version hash
+  string prompt_version = 13;
+
+  // Prompt template name
+  string prompt_name = 14;
+
+  // Prompt template variation (e.g. A/B test variant)
+  string prompt_variation = 15;
+
+  // Input tokens sent to the LLM
+  optional int64 tokens_in_prompt = 16;
+
+  // Output tokens received from the LLM
+  optional int64 tokens_in_response = 17;
+
+  // Total tokens (input + output)
+  optional int64 tokens_total = 18;
+
+  // End-to-end latency in milliseconds
+  optional int64 latency_ms = 19;
+
+  // IDE/develop session identifier
+  optional string ide_session_id = 20;
+
+  // API key type; see key_type values documented above
+  string key_type = 21;
+
+  // Input tokens where prompt cache was created (cache miss, Anthropic)
+  optional int64 cache_creation_input_tokens = 22;
+
+  // Input tokens served from prompt cache (cache hit)
+  optional int64 cache_read_input_tokens = 23;
+
+  // Chain-of-thought tokens not included in the response
+  optional int64 reasoning_output_tokens = 24;
+
+  // Time to first token in milliseconds. Unset when not streaming.
+  optional int64 first_token_ms = 25;
+  v1.public.common.vortex_telemetry_contexts.VortexTelemetryCommonContext common_context = 26;
+}
+
+
+// Fired once per LLM call within an agent loop.
+// Allows per-call token and latency attribution when a single copilot_request_id
+// triggers multiple LLM invocations (e.g. a dev agent loop).
+// Links back to the parent CopilotGenerationComplete via copilot_request_id.
+message CopilotLlmCall {
+  option (v1.public.common.vortex_namespace) = VORTEX_ICEBERG_NAMESPACE_TELEMETRY;
+  option (v1.public.common.vortex_enabled) = true;
+
+  // Server enrichment for this event
+  v1.events.vortex.VortexMessageEnrichment enrichment = 1;
+
+  // dbt Cloud context (account_id, user_id, project_id, etc.)
+  v1.public.common.vortex_telemetry_contexts.VortexTelemetryDbtCloudContext ctx = 2;
+
+  // Identifies the parent agent run; foreign key to CopilotGenerationComplete
+  string copilot_request_id = 3;
+
+  // Conversation thread for multi-turn correlation
+  string thread_id = 4;
+
+  // LLM provider (e.g. "openai", "azure_openai", "anthropic")
+  string model_provider = 5;
+
+  // Model identifier (e.g. "gpt-4o", "claude-sonnet-4-20250514")
+  string model_version = 6;
+
+  // Client application name (e.g. "studio", "vscode", "cloud-cli")
+  string app_name = 7;
+
+  // Which Copilot action this call belongs to (e.g. "run_langgraph_agent")
+  string copilot_action = 8;
+
+  // API key type used for this call. String representation of the
+  // DbtCopilotGenerationComplete.KeyType enum (private proto); valid values
+  // are the same as CopilotGenerationComplete.key_type documented above.
+  // Enums are not yet handled properly in Vortex, so the enum name is
+  // serialised to a string at the call site rather than using an enum field.
+  string key_type = 9;
+
+  // Zero-based index of this LLM call within the agent loop
+  optional int32 call_index = 10;
+
+  // Input tokens sent to the LLM for this call
+  optional int64 tokens_input = 11;
+
+  // Output tokens received from the LLM for this call
+  optional int64 tokens_output = 12;
+
+  // Total tokens (input + output)
+  optional int64 tokens_total = 13;
+
+  // Latency of this specific LLM call in milliseconds
+  optional int64 latency_ms = 14;
+
+  // Input tokens where prompt cache was created (cache miss, Anthropic)
+  optional int64 cache_creation_input_tokens = 15;
+
+  // Input tokens served from prompt cache (cache hit)
+  optional int64 cache_read_input_tokens = 16;
+
+  // Chain-of-thought tokens not included in the response
+  optional int64 reasoning_output_tokens = 17;
+
+  // Time to first token in milliseconds. Unset when not streaming.
+  optional int64 first_token_ms = 18;
+
+  // Purpose of this call within the parent run:
+  //   "generation"  - user-facing agent/generation turn (default when unset)
+  //   "compaction"  - context-compaction summarization call
+  // Unset is treated as "generation", so calls emitted before this field
+  // existed count as generation turns. Lets downstream models keep compaction
+  // out of turn counts while still pricing its token cost.
+  optional string call_purpose = 19;
+  v1.public.common.vortex_telemetry_contexts.VortexTelemetryCommonContext common_context = 20;
+}
+
+
+// Possible values for CompactionApplied.strategy:
+//   "tool_result_clearing"  - dropped stale tool outputs; no LLM call made
+//   "summarization"         - summarized the conversation via an LLM call
+
+// Possible values for CompactionApplied.trigger:
+//   "automatic"    - fired by the context-size threshold
+//   "user_forced"  - explicitly requested by the user
+
+// Fired when context compaction runs within an agent run. Emitted for every
+// compaction, including tool_result_clearing which makes no LLM call, so it
+// captures compaction frequency and effectiveness the summarizer's
+// CopilotLlmCall alone cannot. Each strategy fires at most once per run, so
+// copilot_request_id is the key: it identifies the run and joins a
+// "summarization" event to the priced summarizer CopilotLlmCall (the single
+// row tagged call_purpose="compaction" in that run).
+message CompactionApplied {
+  option (v1.public.common.vortex_namespace) = VORTEX_ICEBERG_NAMESPACE_TELEMETRY;
+  option (v1.public.common.vortex_enabled) = true;
+
+  // Server enrichment for this event
+  v1.events.vortex.VortexMessageEnrichment enrichment = 1;
+
+  // dbt Cloud context (account_id, user_id, project_id, etc.)
+  v1.public.common.vortex_telemetry_contexts.VortexTelemetryDbtCloudContext ctx = 2;
+
+  // Identifies the parent agent run; foreign key to CopilotGenerationComplete.
+  // Also the cost join key: a "summarization" event maps 1:1 to the run's single
+  // CopilotLlmCall tagged call_purpose="compaction".
+  string copilot_request_id = 3;
+
+  // Conversation thread for multi-turn correlation
+  string thread_id = 4;
+
+  // Which compaction strategy ran; see strategy values documented above
+  string strategy = 5;
+
+  // What triggered this compaction; see trigger values documented above
+  string trigger = 6;
+
+  // Approximate context size before compaction, in the middleware's working
+  // token estimate (count_tokens_approximately), the same space as
+  // compaction_threshold_used. Not provider-billed tokens; the summarizer's real cost is
+  // on its CopilotLlmCall.
+  optional int64 tokens_before = 7;
+
+  // Approximate context size after compaction, same estimate space as
+  // tokens_before. tokens_before minus tokens_after is the context reclaimed.
+  optional int64 tokens_after = 8;
+
+  // Working token limit that triggered automatic compaction, same estimate
+  // space as tokens_before/after. Per model (derived from the context window;
+  // conservative fallback for opaque/BYOK models). Unset when user_forced.
+  optional int64 compaction_threshold_used = 9;
+  v1.public.common.vortex_telemetry_contexts.VortexTelemetryCommonContext common_context = 10;
+}
+
+
+// Possible values for CopilotUserAcceptance.response_type:
+//   "accepted"  - user accepted the suggestion as-is
+//   "rejected"  - user rejected the suggestion
+//   "edited"    - user modified the suggestion before accepting
+
+// Fired when a user responds to a Copilot suggestion.
+message CopilotUserAcceptance {
+  option (v1.public.common.vortex_namespace) = VORTEX_ICEBERG_NAMESPACE_TELEMETRY;
+  option (v1.public.common.vortex_enabled) = true;
+
+  // Server enrichment for this event
+  v1.events.vortex.VortexMessageEnrichment enrichment = 1;
+
+  // dbt Cloud context
+  v1.public.common.vortex_telemetry_contexts.VortexTelemetryDbtCloudContext ctx = 2;
+
+  // The generation request this acceptance responds to
+  string copilot_request_id = 3;
+
+  // Conversation thread for multi-turn correlation
+  string thread_id = 4;
+
+  // User's decision; see response_type values documented above
+  string response_type = 5;
+
+  // Optional free-text feedback comment from the user. Unset when no feedback provided.
+  optional string feedback_text = 6;
+  v1.public.common.vortex_telemetry_contexts.VortexTelemetryCommonContext common_context = 7;
+}

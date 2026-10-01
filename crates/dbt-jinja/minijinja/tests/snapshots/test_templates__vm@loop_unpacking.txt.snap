@@ -1,0 +1,21 @@
+---
+source: minijinja/tests/test_templates.rs
+description: "<ul>\n{% for op, (a, b) in seq %}\n  <li>{{ a }} {{ op }} {{ b }} = ?\n{% endfor %}\n</ul>"
+info:
+  seq:
+    - - +
+      - - 1
+        - 2
+    - - "-"
+      - - 3
+        - 4
+input_file: minijinja/tests/inputs/loop_unpacking.txt
+---
+<ul>
+
+  <li>1 + 2 = ?
+
+  <li>3 - 4 = ?
+
+</ul>
+

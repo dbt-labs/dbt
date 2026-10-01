@@ -1,0 +1,61 @@
+# Resolve-phase per-render per-model ctx fixture sanity. Today's
+# `build_resolve_model_context<T>` returns this exact set of keys.
+#
+# Fixture: tests/jinja_ctx_slt.rs::fixture_resolve_model_ctx
+#   this / ref / source / function / metric / config — Object stand-ins
+#   model = { name=dbt_columns, package_name=my_project }   <-- from_object Map
+#   builtins = { ref, source }                              <-- from_object Map
+#   graph = UNDEFINED
+#   store_result / load_result / store_raw_result — closure stand-ins
+#   execute = false (ParseExecute Object stand-in)
+#   context — MacroLookupContext stand-in
+#   TARGET_UNIQUE_ID = my_project.dbt_columns
+#   __minijinja_current_path = models/dbt_columns.sql
+#   __minijinja_current_span = Span::default() serialized
+
+key TARGET_UNIQUE_ID
+----
+resolve_model  my_project.dbt_columns
+
+key __minijinja_current_path
+----
+resolve_model  models/dbt_columns.sql
+
+key graph
+----
+resolve_model  <absent>
+
+# `model` is a from_object(BTreeMap<String, MinijinjaValue>) — `.get_attr(...)`
+# walks into it just like a regular dict. dot-walk should return the inner
+# entries.
+key model.name
+----
+resolve_model  dbt_columns
+
+key model.package_name
+----
+resolve_model  my_project
+
+# `builtins` is the per-model overlay map of ref/source/function/config
+# values. Same shape as `model`.
+key builtins.ref
+----
+resolve_model  ref-fn-stub
+
+key builtins.source
+----
+resolve_model  source-fn-stub
+
+# `execute` at parse-model is a real `ParseExecute` Object — round-tripped
+# through serde via `JinjaObject<ParseExecute>`. The Object is what the
+# real parse-phase orchestrator reads after rendering to detect whether
+# the model truthy-tested `execute`.
+key execute
+----
+resolve_model  <object>
+
+# `context` at parse-model is a real `MacroLookupContext` Object —
+# round-tripped through serde via `JinjaObject<MacroLookupContext>`.
+key context
+----
+resolve_model  <object>

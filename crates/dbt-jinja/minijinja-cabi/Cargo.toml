@@ -1,0 +1,13 @@
+[package]
+name = "minijinja-cabi"
+version = "2.5.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+minijinja = { version = "2.5.0", path = "../minijinja", features = [
+  "loader",
+  "custom_syntax",
+] }

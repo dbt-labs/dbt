@@ -1,0 +1,15 @@
+<!doctype html>
+<title>Demo</title>
+{%- import "macros.html" as all_macros %}
+{%- from "macros.html" import render_input %}
+<form action="" method="post">
+  <dl>
+    <dt>Username</dt>
+    <dd>{{ render_input("username", username) }}</dd>
+    <dt>Password</dt>
+    <dd>{{ render_input("password", type="password") }}</dd>
+  </dl>
+</form>
+<!--
+  Declared macros: {{ all_macros|safe }}
+-->

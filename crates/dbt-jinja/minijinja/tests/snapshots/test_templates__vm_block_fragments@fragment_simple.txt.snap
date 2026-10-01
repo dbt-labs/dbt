@@ -1,0 +1,9 @@
+---
+source: minijinja/tests/test_templates.rs
+description: "<title>{% block title %}Shouldn't show up{% endblock %}</title>\n{% block fragment %}{{ var }}{% endblock fragment %}\nAlso shouldn't show up"
+info:
+  var: foo
+input_file: minijinja/tests/fragment-inputs/fragment_simple.txt
+---
+foo
+

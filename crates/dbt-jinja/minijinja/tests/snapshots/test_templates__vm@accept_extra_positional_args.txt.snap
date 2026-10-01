@@ -1,0 +1,7 @@
+---
+source: crates/jinja/minijinja/tests/test_templates.rs
+description: "{% macro two_args(a, b) %}\n  {{ a }} and {{ b }}\n{% endmacro %}\n{{ two_args(1, 2, 3) }}"
+info: {}
+input_file: accept_extra_positional_args.txt
+---
+  1 and 2

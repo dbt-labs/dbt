@@ -1,0 +1,10 @@
+{
+  "lstrip_blocks": true,
+  "trim_blocks": true
+}
+---
+<ul>
+  {# for item in seq #}
+    <li>{{ item }}</li>
+  {# endfor #}
+</ul>

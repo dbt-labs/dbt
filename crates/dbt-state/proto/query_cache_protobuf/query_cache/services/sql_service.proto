@@ -1,0 +1,101 @@
+syntax = "proto3";
+
+package com.fivetran.query_cache;
+
+import "query_cache_protobuf/query_cache/shared.proto";
+import "query_cache_protobuf/query_cache/struct.proto";
+import "query_cache_protobuf/query_cache/services/clone_service.proto";
+
+service SQL {
+  rpc SubmitEnrichedSQL(SubmitEnrichedSQLRequest) returns (SubmitSQLResponse);
+  rpc SubmitValues(SubmitValuesRequest) returns (SubmitSQLResponse);
+  rpc SubmitEnrichedSQLSpeculative(SubmitEnrichedSQLRequest) returns (SubmitSQLSpeculativeResponse);
+}
+
+message SubmitEnrichedSQLRequest {
+  reserved 9, 10;
+
+  optional string target_table = 1;
+  string dialect = 2;
+  string default_catalog = 3;
+  ModelExecutionType execution_type = 4;
+  string sql = 5;
+  repeated TableModifiedInfo tables = 6;
+  repeated QueryDependency query_dependencies = 7;
+  map<string, string> semantic_extras = 8;
+  int64 freshness_tolerance_seconds = 11;
+  repeated string lenient_dependencies = 12;
+  bool tolerate_nondeterminism = 13;
+  map<string, string> labels = 14;
+  optional int64 clone_time_travel_limit = 15;
+  optional TableProperties clone_table_properties = 16;
+  StaleUpstreamPolicy stale_upstream_policy = 17;
+  optional int64 clone_chain_depth_limit = 18;
+  optional DbtNodeState dbt_node_state = 19;
+  optional string default_schema = 20;
+  bool compare_unrendered_code = 21;
+  optional string table_namespace = 22;
+  bool ignore_external_modifications = 23;
+}
+
+message SubmitValuesRequest {
+  string target_table = 1;
+  string dialect = 2;
+  string default_catalog = 3;
+  string values_hash = 4;
+  map<string, string> semantic_extras = 5;
+  optional int64 last_modified_epoch = 6;
+  map<string, string> labels = 7;
+  optional int64 clone_time_travel_limit = 8;
+  optional TableProperties clone_table_properties = 9;
+  optional int64 clone_chain_depth_limit = 10;
+  optional DbtNodeState dbt_node_state = 11;
+  optional string table_namespace = 22;
+}
+
+message SubmitSQLResponse {
+  reserved 1;
+
+  oneof response {
+    ReadyToExecuteResponse ready_to_execute = 2;
+    SkipExecutionResponse skip_execution = 3;
+    ReadyToCloneResponse ready_to_clone = 4;
+  }
+}
+
+message QueryHashMatchMetadataInfo {
+  bool semantic_hash_match = 1;
+  bool data_hash_match = 2;
+}
+
+message ReadyToExecuteResponse {
+  string request_id = 1;
+  string last_modified_query = 2 [deprecated = true];
+  ExplainedDecision explained_decision = 3;
+  map<string, NodeFuncMapping> transformed_nodes_by_query = 4;
+  optional QueryHashMatchMetadataInfo query_hash_metadata_info = 5;
+  optional string execution_decision_id = 6;
+}
+
+message SkipExecutionResponse {
+  reserved 3;
+
+  ExplainedDecision explained_decision = 1;
+  map<string, NodeFuncMapping> transformed_nodes_by_query = 2;
+  Struct execution_results = 4;
+  optional int64 execution_runtime_ms = 5;
+  optional string execution_decision_id = 6;
+}
+
+message ReadyToExecuteUntrackedResponse {}
+
+message UndecidedResponse {}
+
+message SubmitSQLSpeculativeResponse {
+  oneof response {
+    ReadyToExecuteUntrackedResponse ready_to_execute_untracked = 1;
+    SkipExecutionResponse skip_execution = 2;
+    ReadyToCloneResponse ready_to_clone = 3;
+    UndecidedResponse undecided = 4;
+  }
+}

@@ -1,0 +1,109 @@
+name: Copybara - Auto Public PR Migration
+
+# **what?**
+# When a PR is opened against dbt-core, trigger the reverse Copybara sync that
+# mirrors the change into a PR on the private dbt-labs/fs repo (the dbt_core_pr
+# profile, which moves the root Rust tree into fs/sa/).
+#
+# **why?**
+# dbt-core is the public, copybara-synced mirror of fs/sa. Contributions that
+# land here need to flow back into fs so the two stay in sync.
+#
+# **when?**
+# On PRs targeting `main` (open/reopen/synchronize/ready_for_review). Legacy
+# branches like `1.latest` have no copybara baseline, so the `branches` filter
+# below skips them. Draft PRs are skipped to avoid syncing work-in-progress;
+# the `ready_for_review` event re-triggers dispatch when a draft is marked
+# ready. PRs from public forks must carry the `ci:approve-public-fork-ci`
+# label before the secret-bearing dispatch runs; it's stripped on each push
+# so updates require re-approval.
+# `labeled` is filtered down to that one label so unrelated labels don't
+# re-dispatch.
+
+on:
+  pull_request_target:
+    types: [opened, reopened, synchronize, labeled, ready_for_review]
+    branches:
+      - main
+    paths-ignore:
+      # Mirror the dbt_core_pr copybara profile's excludes: .github and the
+      # private-anchored .rs files that cannot safely round-trip back to fs.
+      - '.github/**'
+      - 'crates/dbt-parser/src/resolver.rs'
+      - 'crates/dbt-deps/src/private_package.rs'
+      - 'crates/dbt-loader/src/load_packages.rs'
+      - 'crates/dbt-loader/src/loader.rs'
+      - 'crates/dbt-loader/src/mod.rs'
+
+# Only run this once per PR at a time. Only a new push supersedes an earlier
+# run, so the `labeled` run cla-bot's `cla:yes` triggers can't cancel — and
+# then skip — the `opened` run's dispatch.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.number }}
+  cancel-in-progress: ${{ github.event.action == 'synchronize' }}
+
+permissions: {}
+
+env:
+  CI_LABEL: "ci:approve-public-fork-ci"
+
+jobs:
+  check_run_approval:
+    # Job-level `if` cannot read `env`, so CI_LABEL is spelled out here.
+    if: >-
+      github.event.action != 'labeled'
+      || (github.event.label.name == 'ci:approve-public-fork-ci'
+          && github.event.pull_request.head.repo.full_name != github.repository)
+    permissions:
+      pull-requests: write
+      contents: read
+    runs-on: ubuntu-latest
+    steps:
+      - name: "If the event is to synchronize, remove the label from the PR"
+        if: ${{ github.event_name == 'pull_request_target' && (github.event.action == 'synchronize' || github.event.action == 'reopened') && github.event.pull_request.head.repo.full_name != github.repository && contains(github.event.pull_request.labels.*.name, env.CI_LABEL) }}
+        run: |
+          echo "Synchronizing PR, removing '${{ env.CI_LABEL }}' label"
+          gh pr edit ${{ github.event.pull_request.number }} --remove-label ${{ env.CI_LABEL }} --repo ${{ github.repository }}
+          msg="All pull request updates require re-approval of CI. No CI will be run."
+          echo "::error::$msg"
+          exit 1
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: "Check that forks have the '${{ env.CI_LABEL }}' label"
+        if: ${{ github.event.pull_request.head.repo.full_name != github.repository && !contains(github.event.pull_request.labels.*.name, env.CI_LABEL) }}
+        run: |
+          msg="Pull request is from a public fork but does not have the '${{ env.CI_LABEL }}' label. No CI will be run."
+          echo "::error::$msg"
+          exit 1
+
+  dispatch:
+    needs: check_run_approval
+    if: github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - name: Check for syncable changes
+        id: check
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          excluded=(".github/" ".changes/")
+          files=$(gh pr diff ${{ github.event.number }} --name-only --repo ${{ github.repository }})
+          for prefix in "${excluded[@]}"; do
+            files=$(echo "$files" | grep -v "^$prefix" || true)
+          done
+          echo "should_dispatch=$([ -n "$files" ] && echo true || echo false)" >> $GITHUB_OUTPUT
+
+      - name: Trigger dbt-core PR Copybara sync in fs
+        if: steps.check.outputs.should_dispatch == 'true'
+        run: |
+          curl -L \
+            -X POST \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer ${{ secrets.FS_SERVICE_PAT }}" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            https://api.github.com/repos/dbt-labs/fs/dispatches \
+            -d "{\"event_type\": \"dbt-core-pr-copybara-trigger\", \"client_payload\": {\"copybara_pr\": \"${{ github.event.number }}\"}}"

@@ -1,0 +1,5 @@
+{
+  "metrics": ["revenue"],
+  "group_by": ["TimeDimension('metric_time', 'day')"],
+  "time_constraint": ["2024-01-01", "2024-01-02"]
+}

@@ -1,0 +1,16 @@
+[package]
+name = "dbt-cloud-config"
+version.workspace = true
+homepage.workspace = true
+repository.workspace = true
+authors.workspace = true
+description.workspace = true
+license.workspace = true
+keywords.workspace = true
+edition.workspace = true
+
+[dependencies]
+dbt-fusion-workspace-hack = { version = "0.1" }
+dbt-schemas = { workspace = true }
+dbt-yaml = { workspace = true }
+dirs = { workspace = true }

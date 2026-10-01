@@ -1,0 +1,48 @@
+[package]
+name = "dbt-docs-server"
+version.workspace = true
+homepage.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "Generates and serves dbt docs v2 as a static site over parquet artifacts written by --write-index"
+license.workspace = true
+keywords.workspace = true
+edition.workspace = true
+
+[lints]
+workspace = true
+
+[lib]
+path = "src/lib.rs"
+
+[features]
+default = ["embed-ui"]
+# Bake the SPA bundle into the binary at compile time. The bundle is
+# read from `web/dist/` (committed in-repo; rebuild from dbt-ui and copy
+# in as needed).
+embed-ui = ["dep:rust-embed"]
+
+[dependencies]
+dbt-docs-core = { workspace = true }
+dbt-fusion-workspace-hack = { version = "0.1" }
+dbt-index-core = { workspace = true }
+
+arrow-array = { workspace = true }
+arrow-schema = { workspace = true }
+axum = { workspace = true }
+chrono = { workspace = true }
+http = { workspace = true }
+mime_guess = { version = "2.0" }
+rust-embed = { workspace = true, features = [
+  "interpolate-folder-path",
+], optional = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+dbt-runtime = { workspace = true }
+# tokio macros + rt-multi-thread already enabled by the workspace dep above.
+tempfile = { workspace = true }

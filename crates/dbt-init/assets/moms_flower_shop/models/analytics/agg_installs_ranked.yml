@@ -1,0 +1,43 @@
+version: 2
+
+models:
+  - name: agg_installs_ranked
+    description: |
+      Campaign install rankings with performance tiers and percentiles.
+      Ranks all campaigns by install volume and segments them into performance tiers
+      (Top Performer, Above Average, Below Average, Low Performer) based on percentile rankings.
+      Includes aggregate statistics for each performance tier.
+    columns:
+      - name: campaign_id
+        description: Unique campaign identifier
+        tests:
+          - not_null
+      - name: total_num_installs
+        description: Total number of installs for this campaign
+        tests:
+          - not_null
+      - name: install_rank
+        description: Rank by install volume (1 = highest number of installs)
+      - name: install_percentile
+        description: Percentile ranking (0.0 to 1.0) based on install volume
+      - name: performance_tier
+        description: |
+          Performance category: 
+          - Top Performer (>= 75th percentile)
+          - Above Average (50th-75th percentile)
+          - Below Average (25th-50th percentile)
+          - Low Performer (< 25th percentile)
+      - name: campaigns_in_tier
+        description: Number of campaigns in the same performance tier
+      - name: tier_total_installs
+        description: Total installs across all campaigns in this tier
+      - name: tier_avg_installs
+        description: Average installs for campaigns in this tier
+      - name: tier_min_installs
+        description: Minimum installs in this tier
+      - name: tier_max_installs
+        description: Maximum installs in this tier
+      - name: pct_of_tier_avg
+        description: Campaign's installs as percentage of tier average
+      - name: pct_of_total_installs
+        description: Campaign's installs as percentage of all installs

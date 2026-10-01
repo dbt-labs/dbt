@@ -1,0 +1,52 @@
+models:
+  - name: orders
+    description: Order overview data mart, offering key details for each order inlcluding if it's a customer's first order and a food vs. drink item breakdown. One row per order.
+    data_tests:
+      - dbt_utils.expression_is_true:
+          arguments:
+            expression: "order_items_subtotal = subtotal"
+      - dbt_utils.expression_is_true:
+          arguments:
+            expression: "order_total = subtotal + tax_paid"
+    columns:
+      - name: order_id
+        description: The unique key of the orders mart.
+        data_tests:
+          - not_null
+          - unique
+      - name: customer_id
+        description: The foreign key relating to the customer who placed the order.
+        data_tests:
+          - relationships:
+              arguments:
+                to: ref('stg_customers')
+                field: customer_id
+      - name: order_total
+        description: The total amount of the order in USD including tax.
+      - name: order_date
+        description: The date the order was placed.
+      - name: order_cost
+        description: The sum of supply expenses to fulfill the order.
+      - name: is_food_order
+        description: A boolean indicating if this order included any food items.
+      - name: is_drink_order
+        description: A boolean indicating if this order included any drink items.
+
+unit_tests:
+  - name: test_order_items_compute_to_bools_correctly
+    description: "Test that the counts of drinks and food orders convert to booleans properly."
+    model: orders
+    given:
+      - input: ref('order_items')
+        rows:
+          - {order_id: 1, order_item_id: 1, is_drink_item: false, is_food_item: true}
+          - {order_id: 1, order_item_id: 2, is_drink_item: true, is_food_item: false}
+          - {order_id: 2, order_item_id: 3, is_drink_item: false, is_food_item: true}
+      - input: ref('stg_orders')
+        rows:
+          - {order_id: 1}
+          - {order_id: 2}
+    expect:
+      rows:
+        - {order_id: 1, count_food_items: 1, count_drink_items: 1, is_drink_order: true, is_food_order: true}
+        - {order_id: 2, count_food_items: 1, count_drink_items: 0, is_drink_order: false, is_food_order: true}

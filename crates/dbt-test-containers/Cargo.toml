@@ -1,0 +1,43 @@
+[package]
+name = "dbt-test-containers"
+version.workspace = true
+authors.workspace = true
+description.workspace = true
+edition.workspace = true
+license.workspace = true
+keywords.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+bollard = "0.18.1"
+clap = { workspace = true, optional = true }
+dbt-common = { workspace = true }
+dbt-fusion-workspace-hack = { version = "0.1" }
+flate2 = "1.0.28"
+futures-core = { workspace = true }
+futures-util = { workspace = true }
+regex = { workspace = true }
+tar = "0.4.40"
+thiserror = "2.0.12"
+tokio = { workspace = true }
+walkdir = { workspace = true }
+
+
+# Only if not windows
+[target.'cfg(not(windows))'.dependencies]
+uzers = "0.12.1"
+
+[features]
+start-db-deps = ["dep:clap"]
+
+[lib]
+name = "dbt_test_containers"
+doctest = false
+path = "src/mod.rs"
+
+[[bin]]
+name = "dbt-test-containers-start-db"
+path = "src/start_db.rs"
+required-features = ["start-db-deps"]

@@ -1,0 +1,11 @@
+---
+source: minijinja/tests/test_templates.rs
+description: "Before\n{% include template ignore missing %}\nAfter"
+info:
+  template: missing_template.txt
+input_file: minijinja/tests/inputs/include_ignore_missing.txt
+---
+Before
+
+After
+

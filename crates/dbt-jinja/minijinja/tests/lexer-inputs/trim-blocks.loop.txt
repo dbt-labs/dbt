@@ -1,0 +1,7 @@
+{
+  "trim_blocks": true
+}
+---
+{% for item in seq %}
+  {{ item }}
+{% endfor %}

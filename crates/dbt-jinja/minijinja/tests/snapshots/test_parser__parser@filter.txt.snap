@@ -1,0 +1,126 @@
+---
+source: fs/sa/crates/dbt-jinja/minijinja/tests/test_parser.rs
+description: "{{ foo|bar(1, 2)|baz }}\n{{ foo|bar(1, 2,) }}\n{{ foo|bar(1, 2, a=1) }}\n{{ foo|bar(1, 2, a=1,) }}"
+input_file: fs/sa/crates/dbt-jinja/minijinja/tests/parser-inputs/filter.txt
+---
+Ok(
+    Template {
+        children: [
+            EmitExpr {
+                expr: Filter {
+                    name: "baz",
+                    expr: Some(
+                        Filter {
+                            name: "bar",
+                            expr: Some(
+                                Var {
+                                    id: "foo",
+                                } @ 1:4-1:7,
+                            ),
+                            args: [
+                                Pos(
+                                    Const {
+                                        value: 1,
+                                    } @ 1:12-1:13,
+                                ),
+                                Pos(
+                                    Const {
+                                        value: 2,
+                                    } @ 1:15-1:16,
+                                ),
+                            ],
+                        } @ 1:8-1:17,
+                    ),
+                    args: [],
+                } @ 1:1-1:24,
+            } @ 1:1-1:24,
+            EmitRaw {
+                raw: "\n",
+            } @ 1:24-2:1,
+            EmitExpr {
+                expr: Filter {
+                    name: "bar",
+                    expr: Some(
+                        Var {
+                            id: "foo",
+                        } @ 2:4-2:7,
+                    ),
+                    args: [
+                        Pos(
+                            Const {
+                                value: 1,
+                            } @ 2:12-2:13,
+                        ),
+                        Pos(
+                            Const {
+                                value: 2,
+                            } @ 2:15-2:16,
+                        ),
+                    ],
+                } @ 2:1-2:21,
+            } @ 2:1-2:21,
+            EmitRaw {
+                raw: "\n",
+            } @ 2:21-3:1,
+            EmitExpr {
+                expr: Filter {
+                    name: "bar",
+                    expr: Some(
+                        Var {
+                            id: "foo",
+                        } @ 3:4-3:7,
+                    ),
+                    args: [
+                        Pos(
+                            Const {
+                                value: 1,
+                            } @ 3:12-3:13,
+                        ),
+                        Pos(
+                            Const {
+                                value: 2,
+                            } @ 3:15-3:16,
+                        ),
+                        Kwarg(
+                            "a",
+                            Const {
+                                value: 1,
+                            } @ 3:20-3:21,
+                        ),
+                    ],
+                } @ 3:1-3:25,
+            } @ 3:1-3:25,
+            EmitRaw {
+                raw: "\n",
+            } @ 3:25-4:1,
+            EmitExpr {
+                expr: Filter {
+                    name: "bar",
+                    expr: Some(
+                        Var {
+                            id: "foo",
+                        } @ 4:4-4:7,
+                    ),
+                    args: [
+                        Pos(
+                            Const {
+                                value: 1,
+                            } @ 4:12-4:13,
+                        ),
+                        Pos(
+                            Const {
+                                value: 2,
+                            } @ 4:15-4:16,
+                        ),
+                        Kwarg(
+                            "a",
+                            Const {
+                                value: 1,
+                            } @ 4:20-4:21,
+                        ),
+                    ],
+                } @ 4:1-4:26,
+            } @ 4:1-4:26,
+        ],
+    } @ 1:1-4:26,
+)

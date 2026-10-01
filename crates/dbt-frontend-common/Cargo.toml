@@ -1,0 +1,34 @@
+[package]
+name = "dbt-frontend-common"
+version.workspace = true
+homepage.workspace = true
+repository.workspace = true
+authors.workspace = true
+description.workspace = true
+license.workspace = true
+keywords.workspace = true
+edition.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+arrow = { workspace = true }
+arrow-schema = { workspace = true }
+counter = { workspace = true }
+datafusion-common = { workspace = true }
+datafusion-expr = { workspace = true }
+dbt-adapter-core = { workspace = true }
+dbt-antlr4 = { workspace = true }
+dbt-fusion-workspace-hack = { version = "0.1" }
+dbt-ident = { workspace = true }
+enum-map = { workspace = true }
+int-enum = { workspace = true }
+itertools = { workspace = true }
+linked-hash-map = { workspace = true, features = ["serde_impl"] }
+regex = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+stringmetrics = { workspace = true }
+strum = { workspace = true }
+strum_macros = { workspace = true }

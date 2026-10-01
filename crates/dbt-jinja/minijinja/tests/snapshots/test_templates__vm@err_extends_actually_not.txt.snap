@@ -1,0 +1,11 @@
+---
+source: minijinja/tests/test_templates.rs
+description: "before\n{% if not_true %}\n  {% extends \"something.html\" %}\n{% endif %}\nand after"
+info:
+  not_true: false
+input_file: minijinja/tests/inputs/err_extends_actually_not.txt
+---
+before
+
+and after
+

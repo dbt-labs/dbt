@@ -1,0 +1,24 @@
+---
+source: fs/sa/crates/dbt-jinja/minijinja/tests/test_templates.rs
+description: "{% for item in 42|slice(4) %}\n  - {{ item }}\n{% endfor %}"
+info:
+  __minijinja_current_path: err_bad_filter.txt
+  __minijinja_current_span:
+    end_col: 1
+    end_line: 1
+    end_offset: 0
+    start_col: 1
+    start_line: 1
+    start_offset: 0
+input_file: fs/sa/crates/dbt-jinja/minijinja/tests/inputs/err_bad_filter.txt
+---
+!!!ERROR!!!
+
+Error {
+    kind: InvalidOperation,
+    detail: "number is not iterable",
+    name: "err_bad_filter.txt",
+}
+
+invalid operation: number is not iterable
+(in err_bad_filter.txt:1:19)

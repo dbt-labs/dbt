@@ -1,0 +1,11 @@
+---
+source: minijinja/tests/test_templates.rs
+description: "{%- macro before_closure() %}{{ closure }}{% endmacro %}\n{%- set closure = 1 %}\n{%- macro after_closure() %}{{ closure }}{% endmacro %}\n{%- set closure = 2 %}\n{%- macro after_closure_reset() %}{{ closure }}{% endmacro %}\n{{ before_closure() }}\n{{ after_closure() }}\n{{ after_closure_reset() }}"
+info: {}
+input_file: minijinja/tests/inputs/macro_closure_behavior.txt
+---
+
+2
+2
+2
+

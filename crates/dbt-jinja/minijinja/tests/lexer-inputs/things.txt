@@ -1,0 +1,6 @@
+{}
+---
+{{ with_int(42, -42) }}
+{{ with_float(1.5, -1.5) }}
+{{ with_string("string") }}
+{{ validate.any[a, b, c] }}

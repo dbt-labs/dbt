@@ -1,0 +1,27 @@
+syntax = "proto3";
+package v1.public.events.fusion.asset;
+
+option go_package = "github.com/dbt-labs/proto-golang/v1/public/events/fusion/asset";
+
+import "dbtlabs/proto/public/v1/events/fusion/phase/phase.proto";
+
+// Span event tracking parsing of a single asset.
+message AssetParsed {
+  // Package name that owns this asset.
+  string package_name = 1;
+
+  // Asset name (typically the file stem).
+  string name = 2;
+
+  // Path to the asset relative to the project root.
+  string relative_path = 3;
+
+  // Display path used for CLI progress output.
+  string display_path = 4;
+
+  // Unique identifier for this asset when available.
+  optional string unique_id = 5;
+
+  // Execution phase for this event.
+  v1.public.events.fusion.phase.ExecutionPhase phase = 6;
+}

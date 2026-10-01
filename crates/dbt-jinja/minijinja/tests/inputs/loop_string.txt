@@ -1,0 +1,14 @@
+{
+  "seq": "abcd"
+}
+---
+{% for item in seq %}
+  {{ item }} ({{ loop.index }} of {{ loop.length }})
+    first={{ loop.first }}
+    last={{ loop.last }}
+    revindex={{ loop.revindex }}
+    revindex0={{ loop.revindex0 }}
+    cycle={{ loop.cycle("odd", "even") }}
+    previtem={{ loop.previtem }}
+    nextitem={{ loop.nextitem }}
+{% endfor %}

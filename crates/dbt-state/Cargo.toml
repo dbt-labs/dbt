@@ -1,0 +1,74 @@
+[package]
+name = "dbt-state"
+version.workspace = true
+homepage.workspace = true
+repository.workspace = true
+authors.workspace = true
+description.workspace = true
+license.workspace = true
+keywords.workspace = true
+edition.workspace = true
+
+[lints]
+workspace = true
+
+[lib]
+name = "dbt_state"
+path = "src/mod.rs"
+
+
+[dependencies]
+dbt-adapter = { workspace = true }
+dbt-cloud-config = { workspace = true }
+dbt-common = { workspace = true }
+dbt-frontend-common = { workspace = true }
+dbt-fusion-workspace-hack = { version = "0.1" }
+dbt-jinja-utils = { workspace = true }
+dbt-parser = { workspace = true }
+dbt-platform-auth = { workspace = true }
+dbt-profile = { workspace = true }
+dbt-schemas = { workspace = true }
+dbt-telemetry = { workspace = true }
+dbt-yaml = { workspace = true }
+
+async-trait = { workspace = true }
+base64 = { workspace = true }
+chrono = { workspace = true }
+crossbeam-queue = { workspace = true }
+dashmap = { workspace = true }
+dirs = { workspace = true }
+gcloud-auth = { workspace = true }
+glob = { workspace = true }
+jsonwebtoken = { workspace = true }
+md5 = { workspace = true }
+minijinja = { workspace = true }
+open = { workspace = true }
+prost = { workspace = true }
+prost-types = { workspace = true }
+rand = { workspace = true }
+redis = { workspace = true }
+reqwest = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+thiserror = { workspace = true }
+token-source = { workspace = true }
+tokio = { workspace = true }
+tonic = { workspace = true }
+tonic-prost = { workspace = true }
+tracing = { workspace = true }
+url = { workspace = true }
+uuid = { workspace = true }
+
+[build-dependencies]
+tonic-prost-build = { workspace = true }
+
+[dev-dependencies]
+arrow-array = { workspace = true }
+arrow-schema = { workspace = true }
+dbt-adapter-core = { workspace = true }
+dbt-runtime = { workspace = true }
+dbt-tasks-sa = { workspace = true }
+parking_lot = { workspace = true }
+tempfile = { workspace = true }
+wiremock = "0.6"

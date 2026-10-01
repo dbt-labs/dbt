@@ -1,0 +1,86 @@
+syntax = "proto3";
+package v1.public.events.fusion.phase;
+
+option go_package = "github.com/dbt-labs/proto-golang/v1/public/events/fusion/phase";
+
+// A superset of all possible phases across all dbt commands.
+// Note that not all phases are relevant to all commands.
+enum ExecutionPhase {
+  // Do not use.
+  EXECUTION_PHASE_UNSPECIFIED = 0;
+
+  /* Build/run flow phases */
+
+  // Cleaning output folders (e.g. the target directory)
+  EXECUTION_PHASE_CLEAN = 10;
+
+  // dbt Project loading: analyzing dbt_project, profiles.yml and scanning files
+  EXECUTION_PHASE_LOAD_PROJECT = 20;
+
+  // Parsing and macro name resolution of all dbt files
+  EXECUTION_PHASE_PARSE = 30;
+
+  // Schedule nodes based on selection criteria and dependencies.
+  EXECUTION_PHASE_SCHEDULE = 40;
+
+  // Run dbt-compare macros against selected nodes
+  EXECUTION_PHASE_COMPARE = 45;
+
+  // Initializing the adapter (warehouse connection and configuration)
+  EXECUTION_PHASE_INIT_ADAPTER = 50;
+
+  // Handling deferral. Fetching state source schemas from remote, hydrating relation, and schema cache
+  EXECUTION_PHASE_DEFER_HYDRATION = 60;
+
+  // Hydration of schemas for static analysis
+  EXECUTION_PHASE_SCHEMA_HYDRATION = 65;
+
+  // Building the task graph from the schedule
+  EXECUTION_PHASE_TASK_GRAPH_BUILD = 70;
+
+  // Hydration of cached models, seeds, snapshots and sources
+  EXECUTION_PHASE_NODE_CACHE_HYDRATION = 80;
+
+  // Render SQL (also called `compile` in dbt core)
+  EXECUTION_PHASE_RENDER = 90;
+
+  // SQL static analysis
+  EXECUTION_PHASE_ANALYZE = 100;
+
+  // Execution against the target database
+  EXECUTION_PHASE_RUN = 110;
+
+  /* Phases for other commands */
+
+  // Freshness analysis of sources and models
+  EXECUTION_PHASE_FRESHNESS_ANALYSIS = 120;
+
+  // Analysis of individual node lineages
+  EXECUTION_PHASE_LINEAGE = 130;
+
+  // Debugging connection correctness and availability to the warehouse
+  EXECUTION_PHASE_DEBUG = 140;
+
+  // Executing on-run-start hooks at the start of supported dbt commands
+  EXECUTION_PHASE_ON_RUN_START = 150;
+
+  // Executing on-run-end hooks at the end of supported dbt commands
+  EXECUTION_PHASE_ON_RUN_END = 160;
+}
+
+// Top-level event for reporting a build phase, with optional details.
+message PhaseExecuted {
+  // The current phase of execution.
+  ExecutionPhase phase = 1;
+
+  // Optional count of total individual items within the phase (nodes or hooks).
+  optional uint64 node_count_total = 2;
+
+  // Optional count of skipped items within the phase.
+  // Skipped means NODE_OUTCOME_SKIPPED for node phases and HOOK_OUTCOME_SKIPPED for hook phases.
+  optional uint64 node_count_skipped = 3;
+
+  // Optional count of errored items within the phase.
+  // Error means NODE_OUTCOME_ERROR for node phases and HOOK_OUTCOME_ERROR for hook phases.
+  optional uint64 node_count_error = 4;
+}

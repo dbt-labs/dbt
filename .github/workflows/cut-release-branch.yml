@@ -1,9 +1,9 @@
 # **what?**
 # Cuts the `*.latest` branch, bumps dependencies on it, cleans up all files in `.changes/unreleased`
-# and `.changes/previous verion on main and bumps main to the input version.
+# and `.changes/previous` version on 1.latest and bumps 1.latest to the input version.
 
 # **why?**
-# Clean up the main branch after a release branch is cut and automate cutting the release branch.
+# Clean up the 1.latest branch after a release branch is cut and automate cutting the release branch.
 # Generally reduces the workload of engineers and reducing error.
 
 # **when?**
@@ -21,7 +21,7 @@
 #     uses: dbt-labs/actions/.github/workflows/cut-release-branch.yml@main
 #     with:
 #       new_branch_name: 1.7.latest
-#       PR_title: "Cleanup main after cutting new 1.7.latest branch"
+#       PR_title: "Cleanup 1.latest after cutting new 1.7.latest branch"
 #       PR_body: "All adapter PRs will fail CI until the dbt-core PR has been merged due to release version conflicts."
 #     secrets:
 #       FISHTOWN_BOT_PAT: ${{ secrets.FISHTOWN_BOT_PAT }}
@@ -50,7 +50,7 @@ permissions:
 
 env:
   PYTHON_TARGET_VERSION: "3.10"
-  PR_TITLE: "Cleanup main after cutting new ${{ inputs.new_branch_name }} branch"
+  PR_TITLE: "Cleanup 1.latest after cutting new ${{ inputs.new_branch_name }} branch"
   PR_BODY: "All adapter PRs will fail CI until the dbt-core PR has been merged due to release version conflicts."
 
 jobs:
@@ -65,7 +65,7 @@ jobs:
           echo "PR_body:                ${{ env.PR_BODY }}"
 
   create_temp_branch:
-    name: "Create Temp branch off main"
+    name: "Create Temp branch off 1.latest"
     runs-on: ubuntu-latest
     outputs:
       temp_branch_name: ${{ steps.variables.outputs.BRANCH_NAME }}
@@ -74,12 +74,12 @@ jobs:
       - name: "Set Branch Value"
         id: variables
         run: |
-          echo "BRANCH_NAME=cutting_release_branch/main_cleanup_$GITHUB_RUN_ID" >> $GITHUB_OUTPUT
+          echo "BRANCH_NAME=cutting_release_branch/1_latest_cleanup_$GITHUB_RUN_ID" >> $GITHUB_OUTPUT
 
       - name: "Checkout ${{ github.repository }}"
         uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # actions/checkout@v4
         with:
-          ref: "main"
+          ref: "1.latest"
           token: ${{ secrets.FISHTOWN_BOT_PAT }}
 
       - name: "Create PR Branch"
@@ -167,7 +167,7 @@ jobs:
           git config user.email "$email"
           git status
           git add .
-          git commit -m "Clean up changelog on main"
+          git commit -m "Clean up changelog on 1.latest"
           git push
 
       - name: "[Notification] Changelog cleaned up"
@@ -267,7 +267,7 @@ jobs:
           git push
 
   open_pr:
-    name: "Open PR Against main"
+    name: "Open PR Against 1.latest"
     needs: ["cleanup_changelog", "create_temp_branch", "cleanup"]
     runs-on: ubuntu-latest
     outputs:
@@ -308,7 +308,7 @@ jobs:
       - name: "Open Pull Request"
         id: create_pr
         run: |
-          pr_url=$(gh pr create -B main -H ${{ needs.create_temp_branch.outputs.temp_branch_name }} -l "Skip Changelog" -t "${{ steps.pr_title.outputs.pr_title }}" -b "${{ steps.pr_body_branch.outputs.pr_full_body }}")
+          pr_url=$(gh pr create -B 1.latest -H ${{ needs.create_temp_branch.outputs.temp_branch_name }} -l "Skip Changelog" -t "${{ steps.pr_title.outputs.pr_title }}" -b "${{ steps.pr_body_branch.outputs.pr_full_body }}")
           echo "pr_url=$pr_url" >> $GITHUB_OUTPUT
         env:
           GH_TOKEN: ${{ secrets.FISHTOWN_BOT_PAT }}
@@ -319,7 +319,7 @@ jobs:
           echo "::notice title="Pull Request Opened": $title::$message"
 
   cut_new_branch:
-    # don't cut the new branch until we're done opening the PR against main
+    # don't cut the new branch until we're done opening the PR against 1.latest
     name: "Cut New Branch ${{ inputs.new_branch_name }}"
     needs: [open_pr]
     runs-on: ubuntu-latest
@@ -328,6 +328,10 @@ jobs:
       - name: "Checkout ${{ github.repository }}"
         uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # actions/checkout@v4
         with:
+          # Cut the new release branch from 1.latest (Python). Without this the
+          # checkout defaults to the dispatched ref, which is main (Rust) by default
+          # in the "Use workflow from" dropdown post-cutover.
+          ref: "1.latest"
           token: ${{ secrets.FISHTOWN_BOT_PAT }}
           fetch-depth: 0
 

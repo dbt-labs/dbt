@@ -1,7 +1,0 @@
-name: 'package_macro_overrides'
-version: '1.0'
-config-version: 2
-
-profile: 'default'
-
-macro-paths: ["macros"]

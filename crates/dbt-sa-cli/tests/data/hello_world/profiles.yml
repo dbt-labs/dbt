@@ -1,0 +1,46 @@
+hello_world:
+  target: '{{ env_var("target_env_var", "snowflake_local") }}'
+  outputs:
+    duckdb_mem:
+      type: duckdb
+      path: ":memory:"
+      schema: main
+      threads: 1
+    datafusion:
+      type: datafusion
+      database: js
+      schema: pub
+    snowflake_local:
+      type: snowflake
+      database: js
+      schema: pub
+      # these shouldn't be necessary, but they are today
+      warehouse: compute_wh
+      user: admin
+      password: admin
+      account: snowflake.local
+      connect_timeout: 1
+      role: accountadmin
+    snowflake_remote:
+      type: snowflake
+      database: js
+      schema: pub
+      # these shouldn't be necessary, but they are today
+      warehouse: compute_wh
+      user: admin
+      password: admin
+      account: snowflake.local
+      connect_timeout: 1
+      role: accountadmin
+    snowflake_env_var:
+      type: snowflake
+      database: js
+      schema: pub
+      # this env var should not be evaluated 
+      warehouse: "{{ env_var('this_does_not_exist') }}"
+      user: admin
+      password: admin
+      account: snowflake.local
+      connect_timeout: 1
+      role: accountadmin
+  

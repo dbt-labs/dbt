@@ -1,0 +1,14 @@
+[graph]
+exclude = ["dbt-fusion-workspace-hack"]
+
+[bans]
+multiple-versions = "allow"
+deny = [
+  # dbt-adapter must not depend on sqlparser directly; SQL parsing lives in
+  # dbt-tasks-sa (sql/dialect.rs, extract_sources.rs). sqlparser is still
+  # pulled in transitively via datafusion, so those parents are allowed.
+  { crate = "sqlparser", wrappers = [
+    "datafusion-common",
+    "datafusion-expr",
+  ], reason = "dbt-adapter must not depend on sqlparser directly; SQL parsing lives in dbt-tasks-sa" },
+]

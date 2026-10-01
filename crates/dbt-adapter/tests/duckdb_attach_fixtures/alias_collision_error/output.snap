@@ -1,0 +1,5 @@
+---
+source: fs/sa/crates/dbt-adapter/src/engine/xdbc/duckdb_attach_snapshot_tests.rs
+input_file: fs/sa/crates/dbt-adapter/src/engine/xdbc/fixtures/alias_collision_error/catalogs.yml
+---
+error: Configuration: Configuration Error: Catalog 'second_rest' duckdb attach alias 'shared' collides with catalog 'first_rest'

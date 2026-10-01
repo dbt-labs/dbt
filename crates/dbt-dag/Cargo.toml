@@ -1,0 +1,27 @@
+[package]
+name = "dbt-dag"
+version.workspace = true
+homepage.workspace = true
+repository.workspace = true
+authors.workspace = true
+description.workspace = true
+license.workspace = true
+keywords.workspace = true
+edition.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+dbt-common = { workspace = true }
+dbt-fusion-workspace-hack = { version = "0.1" }
+dbt-schemas = { workspace = true }
+dbt-yaml = { workspace = true }
+itertools = { workspace = true }
+serde_json = { workspace = true }
+
+
+[lib]
+name = "dbt_dag"
+path = "src/mod.rs"
+doctest = false

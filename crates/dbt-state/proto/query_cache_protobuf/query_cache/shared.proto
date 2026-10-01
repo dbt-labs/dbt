@@ -1,0 +1,90 @@
+syntax = "proto3";
+
+package com.fivetran.query_cache;
+
+enum ModelExecutionType {
+  UNSPECIFIED = 0;
+  FULL = 1;
+  APPEND = 2;
+  MERGE = 3;
+  INSERT_OVERWRITE = 4;
+  DELETE_INSERT = 5;
+  MICROBATCH = 6;
+  SNAPSHOT = 7;
+  DBT_DATA_TEST = 8;
+  VALUES = 9;
+  VIEW = 10;
+  DBT_CUSTOM = 11;
+}
+
+message TableModifiedInfo {
+  string name = 1;
+  optional int64 last_modified_epoch = 2;
+}
+
+message QueryDependency {
+  string name = 1;
+  string query = 2;
+
+  /* these are used to qualify any unqualified object references within the query */
+  string default_catalog = 3;
+  string default_schema = 4;
+}
+
+enum RejectionReason {
+  NO_FINGERPRINT_MATCH = 0 [deprecated=true];
+  TARGET_TABLE_MISMATCH = 1;
+  EXECUTION_TYPE_MISMATCH = 2;
+  EXECUTION_TYPE_NOT_FULL = 3;
+  TARGET_TABLE_DOES_NOT_EXIST = 4;
+  FORCED_NOT_ELIGIBLE = 5;
+  NO_SUITABLE_MATCH_FOUND = 6;
+  TARGET_TABLE_MATCH = 7;
+  LATEST_QUERY_HASH_NOT_MATCH = 8;
+  OUTSIDE_TIME_TRAVEL_WINDOW = 9;
+  CLONE_CHAIN_LIMIT_EXCEEDED = 10;
+}
+
+enum SubmitSQLResultType {
+  reserved 2;
+
+  SKIP_EXECUTION = 0;
+  READY_TO_EXECUTE = 1;
+  READY_TO_CLONE = 3;
+  UNKNOWN = 4;
+}
+
+enum StaleUpstreamPolicy {
+  ANY = 0;
+  ALL = 1;
+}
+
+message ExplainedDecision {
+  SubmitSQLResultType decision = 1;
+  optional RejectionReason skip_rejection_reason = 2;
+  optional RejectionReason clone_rejection_reason = 3;
+  bool is_stale = 4;
+  string decision_description = 5;
+}
+
+message NodeFuncMapping {
+  map<string, string> node_to_func = 1;
+}
+
+message DbtNodeState {
+  reserved 8, 14;
+
+  string node_unique_id = 1;
+  string target_name = 2;
+  string project_name = 3;
+  string resource_type = 4;
+  string node_hash = 5;
+  optional string node_body_hash = 6;
+  optional string node_configs_hash = 7;
+  optional string node_persisted_descriptions_hash = 9;
+  optional string node_macros_hash = 10;
+  optional string node_contract_hash = 11;
+  string profile_name = 12;
+  optional string project_id = 13;
+  optional string node_database_representation = 15;
+}

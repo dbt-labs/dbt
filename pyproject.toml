@@ -1,30 +1,23 @@
-# Root-level pyproject.toml for tool configurations
-# Packaging configuration is in core/pyproject.toml
-# This file exists so tools like mypy and black can find their config when run from root
-
-[tool.mypy]
-# TODO: widen range of files as we fix issues
-files = 'core/dbt'
-mypy_path = "third-party-stubs/"
-namespace_packages = true
-
-[tool.black]
-line-length = 99
-target-version = ['py38']
-
-# flake8 config is in .flake8 (flake8 4.0.1 has limited pyproject.toml support).  Add here when we add support for flake8 >=5
-
-[tool.isort]
-profile = "black"
-extend_skip_glob = [
-    ".github/*",
-    "third-party-stubs/*",
-    "scripts/*",
+[project]
+name = "dbt-core"
+dynamic = ["version"]
+description = "Build analytics the way engineers build applications"
+authors = [{ name = "dbt Labs", email = "info@dbtlabs.com" }]
+readme = "README.md"
+license = "Apache-2.0"
+requires-python = ">=3.9"
+classifiers = [
+  "Programming Language :: Rust",
+  "Development Status :: 3 - Alpha",
+  "Operating System :: Microsoft :: Windows",
+  "Operating System :: MacOS :: MacOS X",
+  "Operating System :: POSIX :: Linux",
+  "Intended Audience :: Developers",
+  "Topic :: Software Development :: Build Tools",
 ]
-known_first_party = [
-    "dbt",
-    "dbt_adapters",
-    "dbt_common",
-    "dbt_extractor",
-    "dbt_semantic_interfaces",
-]
+
+[project.urls]
+Homepage = "https://getdbt.com"
+Repository = "https://github.com/dbt-labs/dbt-core"
+Issues = "https://github.com/dbt-labs/dbt-core/issues"
+Documentation = "https://docs.getdbt.com"

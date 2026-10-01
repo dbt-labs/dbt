@@ -1,0 +1,34 @@
+[package]
+name = "dbt-jinja-ctx"
+description = "Typed Jinja contexts for dbt-fusion phase environments"
+version.workspace = true
+homepage.workspace = true
+repository.workspace = true
+authors.workspace = true
+license.workspace = true
+keywords.workspace = true
+edition.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+chrono = { workspace = true }
+chrono-tz = { workspace = true }
+dbt-fusion-workspace-hack = { version = "0.1" }
+dbt-handles = { workspace = true }
+dbt-jinja-vars = { workspace = true }
+indexmap = { workspace = true, features = ["serde"] }
+minijinja = { workspace = true }
+minijinja-contrib = { workspace = true }
+schemars = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+insta = { version = "1.38.0", features = ["json", "yaml"] }
+
+[lib]
+name = "dbt_jinja_ctx"
+path = "src/lib.rs"
+doctest = false

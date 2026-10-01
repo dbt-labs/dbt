@@ -1,0 +1,6 @@
+{}
+---
+{% block body %}
+  There is no super block.
+  {{ super() }}
+{% endblock %}

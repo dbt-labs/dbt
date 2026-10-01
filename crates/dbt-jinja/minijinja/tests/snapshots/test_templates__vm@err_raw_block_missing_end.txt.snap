@@ -1,0 +1,24 @@
+---
+source: fs/sa/crates/dbt-jinja/minijinja/tests/test_templates.rs
+description: "{% raw %}this raw block is missing an end tag"
+info:
+  __minijinja_current_path: err_raw_block_missing_end.txt
+  __minijinja_current_span:
+    start_line: 1
+    start_col: 1
+    start_offset: 0
+    end_line: 1
+    end_col: 1
+    end_offset: 0
+input_file: fs/sa/crates/dbt-jinja/minijinja/tests/inputs/err_raw_block_missing_end.txt
+---
+!!!SYNTAX ERROR!!!
+
+Error {
+    kind: SyntaxError,
+    detail: "unexpected end of raw block",
+    name: "err_raw_block_missing_end.txt",
+}
+
+syntax error: unexpected end of raw block
+(in err_raw_block_missing_end.txt:1:46)

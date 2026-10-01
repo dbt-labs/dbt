@@ -1,0 +1,10 @@
+---
+source: minijinja/tests/test_templates.rs
+description: "{%- extends template %}\n{%- macro foo() %}inside foo{% endmacro %}\n{%- block title %}{{ foo() }}{% endblock %}\n{%- block body %}new body{% endblock %}"
+info:
+  template: simple_layout.txt
+input_file: minijinja/tests/inputs/macro_extends.txt
+---
+<title>inside foo</title>
+new body
+

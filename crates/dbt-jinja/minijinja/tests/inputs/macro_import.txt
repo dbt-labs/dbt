@@ -1,0 +1,6 @@
+{"c": "The C Variable"}
+---
+{% from "include_with_var_and_macro.txt" import title, helper, missing -%}
+missing: {{ missing }}
+title: {{ title }}
+helper: {{ helper("a", "b") }}

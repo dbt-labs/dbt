@@ -1,0 +1,50 @@
+# Resolve-phase per-render base ctx fixture sanity. Today's
+# `build_resolve_context` returns this exact set of keys.
+#
+# Fixture: tests/jinja_ctx_slt.rs::fixture_resolve_base_ctx
+#   doc                       = stub MinijinjaValue (real DocMacro at runtime)
+#   MACRO_DISPATCH_ORDER      = { dbt: [dbt] }
+#   TARGET_PACKAGE_NAME       = my_project
+#   execute                   = false (flips true at compile/run)
+#   context.project_name      = my_project
+#   node                      = NONE (populated per-model)
+#   connection_name           = "" (empty at base scope)
+#   dbt_namespaces            = { dbt: <DbtNamespace Object> } <-- flattened to top-level
+
+key TARGET_PACKAGE_NAME
+----
+resolve_base  my_project
+
+key execute
+----
+resolve_base  false
+
+key context.project_name
+----
+resolve_base  my_project
+
+key connection_name
+----
+resolve_base  ""
+
+key node
+----
+resolve_base  null
+
+# `dbt_namespaces` is `#[serde(flatten)]` over a Map → each entry gets
+# promoted to its own top-level key. The map field name itself MUST NOT
+# leak through. Each value is a real `DbtNamespace` Object — round-tripped
+# through serde via `JinjaObject<DbtNamespace>` so dispatch identity holds.
+key dbt
+----
+resolve_base  <object>
+
+key dbt_namespaces
+----
+resolve_base  <absent>
+
+# `MACRO_DISPATCH_ORDER` is a typed `BTreeMap<String, Vec<String>>`; .slt
+# can dot-walk into it.
+key MACRO_DISPATCH_ORDER.dbt
+----
+resolve_base  <present>

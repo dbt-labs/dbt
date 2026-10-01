@@ -1,0 +1,20 @@
+---
+source: minijinja/tests/test_templates.rs
+description: "<ul>\n{% for item in seq %}\n    <li>{{ item }}</li>\n{% endfor %}\n</ul>"
+info:
+  seq:
+    - 1
+    - 2
+    - 3
+input_file: minijinja/tests/inputs/loop.txt
+---
+<ul>
+
+    <li>1</li>
+
+    <li>2</li>
+
+    <li>3</li>
+
+</ul>
+

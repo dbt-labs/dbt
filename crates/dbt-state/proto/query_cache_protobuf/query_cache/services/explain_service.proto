@@ -1,0 +1,51 @@
+syntax = "proto3";
+
+package com.fivetran.query_cache;
+
+import "query_cache_protobuf/query_cache/shared.proto";
+
+service Explain {
+  rpc GetExplainMessages(GetExplainMessagesRequest) returns (GetExplainMessagesResponse);
+}
+
+enum ExplainMarker {
+  EM_UNSPECIFIED = 0;
+  SUCCESS = 1;
+  FAIL = 2;
+  INFO = 3;
+}
+
+enum ExplainBadge {
+  EB_UNSPECIFIED = 0;
+  FRESH = 1;
+  WITHIN_TOLERANCE = 2;
+  OUTDATED = 3;
+  NODE_QUERY_CHANGED = 4;
+  NODE_QUERY_UNCHANGED = 5;
+  UPSTREAM_QUERY_CHANGED = 6;
+  UPSTREAM_QUERY_UNCHANGED = 7;
+  TARGET_TABLE_EXISTS = 8;
+}
+
+
+message ExplainLine {
+  string text = 1;
+  optional ExplainMarker marker = 2;
+  optional ExplainBadge badge = 3;
+  repeated ExplainLine children = 4;
+}
+
+message ExplainMessageEntry {
+  string execution_decision_id = 1;
+  SubmitSQLResultType decision = 2;
+  string decision_description = 3;
+  repeated ExplainLine explain_lines = 4;
+}
+
+message GetExplainMessagesRequest {
+  repeated string execution_decision_ids = 1;
+}
+
+message GetExplainMessagesResponse {
+  repeated ExplainMessageEntry messages = 1;
+}

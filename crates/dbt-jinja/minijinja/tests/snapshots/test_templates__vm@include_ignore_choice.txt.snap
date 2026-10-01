@@ -1,0 +1,11 @@
+---
+source: minijinja/tests/test_templates.rs
+description: "Before\n{% include [\"missing_template.txt\", template] %}\nAfter"
+info:
+  template: simple_include.txt
+input_file: minijinja/tests/inputs/include_ignore_choice.txt
+---
+Before
+Hello  from included template!
+After
+

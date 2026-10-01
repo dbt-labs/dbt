@@ -1,0 +1,103 @@
+syntax = "proto3";
+
+package com.fivetran.query_cache;
+
+import "query_cache_protobuf/query_cache/shared.proto";
+import "query_cache_protobuf/query_cache/struct.proto";
+
+service Execution {
+  rpc ConfirmExecution(ConfirmExecutionRequest) returns (ConfirmExecutionResponse);
+  rpc RecordExecutions(RecordExecutionsRequest) returns (RecordExecutionsResponse);
+  rpc ResolveDeferredRelations(ResolveDeferredRelationsRequest) returns (ResolveDeferredRelationsResponse);
+}
+
+message ConfirmExecutionRequest {
+  reserved 5;
+
+  string request_id = 1;
+  optional int64 last_modified_epoch = 2;
+  bool failed_to_clone = 3;
+
+  /* database-specific type of what just got created */
+  optional string table_type = 4;
+
+  Struct execution_results = 6;
+  optional int64 execution_runtime_ms = 7;
+  map<string, string> labels = 8;
+}
+
+message ConfirmExecutionResponse {
+  bool success = 1;
+  string request_id = 2;
+}
+
+// Records the outcome of one or more already-executed queries directly into
+// the cache state, bypassing cache-candidate lookup and the Submit/Confirm
+// round-trip. Used to hydrate state with historical execution data. The
+// whole batch is processed atomically — any failure rolls back all records.
+message RecordExecutionsRequest {
+  repeated ExecutionRecord records = 1;
+}
+
+message ExecutionRecord {
+  ExecutionOutcome outcome = 1;
+
+  oneof input {
+    SQLExecution enriched_sql = 2;
+    ValuesExecution values = 3;
+  }
+}
+
+// Mirrors SubmitEnrichedSQLRequest minus cache-decision-only fields.
+message SQLExecution {
+  optional string target_table = 1;
+  string dialect = 2;
+  string default_catalog = 3;
+  ModelExecutionType execution_type = 4;
+  string sql = 5;
+  repeated TableModifiedInfo tables = 6;
+  repeated QueryDependency query_dependencies = 7;
+  map<string, string> semantic_extras = 8;
+  map<string, string> labels = 9;
+  optional DbtNodeState dbt_node_state = 10;
+  optional string default_schema = 11;
+  bool from_speculative_submit = 12;
+  optional string table_namespace = 13;
+}
+
+// Mirrors SubmitValuesRequest minus cache-decision-only fields. Note that
+// last_modified_epoch lives on ExecutionOutcome, not here.
+message ValuesExecution {
+  string target_table = 1;
+  string dialect = 2;
+  string default_catalog = 3;
+  string values_hash = 4;
+  map<string, string> semantic_extras = 5;
+  map<string, string> labels = 6;
+  optional DbtNodeState dbt_node_state = 7;
+  optional string table_namespace = 14;
+}
+
+message ExecutionOutcome {
+  optional int64 last_modified_epoch = 1;
+  optional string table_type = 2;
+  Struct execution_results = 3;
+  optional int64 execution_runtime_ms = 4;
+}
+
+message RecordExecutionsResponse {
+  uint32 records_stored = 1;
+}
+
+
+message ResolveDeferredRelationsRequest {
+  string profile_name = 1;
+  string target_name = 2; // defer-to target
+  string project_name = 3;
+  optional string project_id = 4;
+  repeated string node_unique_ids = 5;
+}
+
+message ResolveDeferredRelationsResponse {
+  map<string, string> fqn_by_unique_id = 1;
+}

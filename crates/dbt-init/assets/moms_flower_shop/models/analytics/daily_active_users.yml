@@ -1,0 +1,29 @@
+version: 2
+
+models:
+  - name: daily_active_users
+    description: |
+      Daily, weekly, and monthly active user metrics by platform.
+      Provides DAU (Daily Active Users), WAU (Weekly Active Users), and MAU (Monthly Active Users)
+      metrics along with event counts and engagement statistics.
+    columns:
+      - name: event_date
+        description: Date of activity
+        tests:
+          - not_null
+      - name: platform
+        description: Platform (iOS, Android, etc.)
+        tests:
+          - not_null
+      - name: daily_active_users
+        description: Count of distinct users who had at least one event on this date
+        tests:
+          - not_null
+      - name: total_events
+        description: Total number of events that occurred on this date
+      - name: avg_events_per_user
+        description: Average number of events per active user on this date
+      - name: weekly_active_users
+        description: Count of distinct users active during the week containing this date
+      - name: monthly_active_users
+        description: Count of distinct users active during the month containing this date

@@ -1,0 +1,29 @@
+version: 2
+
+models:
+  - name: geographic_analysis
+    description: |
+      Geographic analysis of customer behavior and revenue by state.
+      Provides state-level metrics for installs, revenue, and conversion rates
+      to identify high-performing geographic markets.
+    columns:
+      - name: state
+        description: US state abbreviation (CA, NY, TX, etc.)
+        tests:
+          - not_null
+      - name: total_installs
+        description: Total number of app installs from customers in this state
+      - name: unique_campaigns
+        description: Number of distinct campaigns that acquired users in this state
+      - name: paying_customers
+        description: Number of customers in this state who made at least one purchase
+      - name: total_purchases
+        description: Total number of purchase transactions from this state
+      - name: total_revenue
+        description: Total revenue generated from customers in this state
+      - name: conversion_rate
+        description: Percentage of installs that converted to paying customers
+      - name: revenue_per_install
+        description: Average revenue generated per install in this state
+      - name: avg_customer_value
+        description: Average lifetime value per paying customer in this state

@@ -1,0 +1,200 @@
+syntax = "proto3";
+
+package v1.public.events.insights;
+option go_package = "github.com/dbt-labs/proto-golang/v1/public/events/insights";
+
+import "dbtlabs/proto/public/v1/common/vortex_telemetry_contexts.proto";
+import "dbtlabs/proto/public/v1/common/vortex_options.proto";
+import "dbtlabs/proto/public/v1/events/vortex.proto";
+
+
+message PageLoad {
+  option (v1.public.common.vortex_namespace) = VORTEX_ICEBERG_NAMESPACE_TELEMETRY;
+  option (v1.public.common.vortex_enabled) = true;
+  v1.events.vortex.VortexMessageEnrichment enrichment = 1;
+  v1.public.common.vortex_telemetry_contexts.VortexTelemetryDbtCloudContext ctx = 2;
+  v1.public.common.vortex_telemetry_contexts.VortexTelemetryCommonContext common_context = 3;
+}
+
+message CatalogLiteOpen {
+  option (v1.public.common.vortex_namespace) = VORTEX_ICEBERG_NAMESPACE_TELEMETRY;
+  option (v1.public.common.vortex_enabled) = true;
+  v1.events.vortex.VortexMessageEnrichment enrichment = 1;
+  v1.public.common.vortex_telemetry_contexts.VortexTelemetryDbtCloudContext ctx = 2;
+  v1.public.common.vortex_telemetry_contexts.VortexTelemetryCommonContext common_context = 3;
+}
+
+message QueryHistoryOpen {
+  option (v1.public.common.vortex_namespace) = VORTEX_ICEBERG_NAMESPACE_TELEMETRY;
+  option (v1.public.common.vortex_enabled) = true;
+  v1.events.vortex.VortexMessageEnrichment enrichment = 1;
+  v1.public.common.vortex_telemetry_contexts.VortexTelemetryDbtCloudContext ctx = 2;
+  v1.public.common.vortex_telemetry_contexts.VortexTelemetryCommonContext common_context = 3;
+}
+
+message BookmarksOpen {
+  option (v1.public.common.vortex_namespace) = VORTEX_ICEBERG_NAMESPACE_TELEMETRY;
+  option (v1.public.common.vortex_enabled) = true;
+  v1.events.vortex.VortexMessageEnrichment enrichment = 1;
+  v1.public.common.vortex_telemetry_contexts.VortexTelemetryDbtCloudContext ctx = 2;
+  v1.public.common.vortex_telemetry_contexts.VortexTelemetryCommonContext common_context = 3;
+}
+
+message BookmarksOpenDetails {
+  option (v1.public.common.vortex_namespace) = VORTEX_ICEBERG_NAMESPACE_TELEMETRY;
+  option (v1.public.common.vortex_enabled) = true;
+  v1.events.vortex.VortexMessageEnrichment enrichment = 1;
+  v1.public.common.vortex_telemetry_contexts.VortexTelemetryDbtCloudContext ctx = 2;
+  v1.public.common.vortex_telemetry_contexts.VortexTelemetryCommonContext common_context = 3;
+}
+
+message BookmarksEditDetails {
+  option (v1.public.common.vortex_namespace) = VORTEX_ICEBERG_NAMESPACE_TELEMETRY;
+  option (v1.public.common.vortex_enabled) = true;
+  v1.events.vortex.VortexMessageEnrichment enrichment = 1;
+  v1.public.common.vortex_telemetry_contexts.VortexTelemetryDbtCloudContext ctx = 2;
+  v1.public.common.vortex_telemetry_contexts.VortexTelemetryCommonContext common_context = 3;
+}
+
+message VersionHistoryOpen {
+  option (v1.public.common.vortex_namespace) = VORTEX_ICEBERG_NAMESPACE_TELEMETRY;
+  option (v1.public.common.vortex_enabled) = true;
+  v1.events.vortex.VortexMessageEnrichment enrichment = 1;
+  v1.public.common.vortex_telemetry_contexts.VortexTelemetryDbtCloudContext ctx = 2;
+  v1.public.common.vortex_telemetry_contexts.VortexTelemetryCommonContext common_context = 3;
+}
+
+message CopilotOpen {
+  option (v1.public.common.vortex_namespace) = VORTEX_ICEBERG_NAMESPACE_TELEMETRY;
+  option (v1.public.common.vortex_enabled) = true;
+  v1.events.vortex.VortexMessageEnrichment enrichment = 1;
+  v1.public.common.vortex_telemetry_contexts.VortexTelemetryDbtCloudContext ctx = 2;
+  v1.public.common.vortex_telemetry_contexts.VortexTelemetryCommonContext common_context = 3;
+}
+
+message CopilotCreateChat {
+  option (v1.public.common.vortex_namespace) = VORTEX_ICEBERG_NAMESPACE_TELEMETRY;
+  option (v1.public.common.vortex_enabled) = true;
+  v1.events.vortex.VortexMessageEnrichment enrichment = 1;
+  v1.public.common.vortex_telemetry_contexts.VortexTelemetryDbtCloudContext ctx = 2;
+  v1.public.common.vortex_telemetry_contexts.VortexTelemetryCommonContext common_context = 3;
+}
+
+message CopilotAddCode {
+  option (v1.public.common.vortex_namespace) = VORTEX_ICEBERG_NAMESPACE_TELEMETRY;
+  option (v1.public.common.vortex_enabled) = true;
+  v1.events.vortex.VortexMessageEnrichment enrichment = 1;
+  v1.public.common.vortex_telemetry_contexts.VortexTelemetryDbtCloudContext ctx = 2;
+  string copilot_request_id = 3;
+  v1.public.common.vortex_telemetry_contexts.VortexTelemetryCommonContext common_context = 4;
+}
+
+message CopilotFeedbackGood {
+  option (v1.public.common.vortex_namespace) = VORTEX_ICEBERG_NAMESPACE_TELEMETRY;
+  option (v1.public.common.vortex_enabled) = true;
+  v1.events.vortex.VortexMessageEnrichment enrichment = 1;
+  v1.public.common.vortex_telemetry_contexts.VortexTelemetryDbtCloudContext ctx = 2;
+  string copilot_request_id = 4;
+  v1.public.common.vortex_telemetry_contexts.VortexTelemetryCommonContext common_context = 5;
+}
+
+message CopilotFeedbackBad {
+  option (v1.public.common.vortex_namespace) = VORTEX_ICEBERG_NAMESPACE_TELEMETRY;
+  option (v1.public.common.vortex_enabled) = true;
+  v1.events.vortex.VortexMessageEnrichment enrichment = 1;
+  v1.public.common.vortex_telemetry_contexts.VortexTelemetryDbtCloudContext ctx = 2;
+  string copilot_request_id = 3;
+  v1.public.common.vortex_telemetry_contexts.VortexTelemetryCommonContext common_context = 4;
+}
+
+message ChartsOpen {
+  option (v1.public.common.vortex_namespace) = VORTEX_ICEBERG_NAMESPACE_TELEMETRY;
+  option (v1.public.common.vortex_enabled) = true;
+  v1.events.vortex.VortexMessageEnrichment enrichment = 1;
+  v1.public.common.vortex_telemetry_contexts.VortexTelemetryDbtCloudContext ctx = 2;
+  v1.public.common.vortex_telemetry_contexts.VortexTelemetryCommonContext common_context = 3;
+}
+
+message ChartsConfigOpen {
+  option (v1.public.common.vortex_namespace) = VORTEX_ICEBERG_NAMESPACE_TELEMETRY;
+  option (v1.public.common.vortex_enabled) = true;
+  v1.events.vortex.VortexMessageEnrichment enrichment = 1;
+  v1.public.common.vortex_telemetry_contexts.VortexTelemetryDbtCloudContext ctx = 2;
+  v1.public.common.vortex_telemetry_contexts.VortexTelemetryCommonContext common_context = 3;
+}
+
+message ShareCreateLink {
+  option (v1.public.common.vortex_namespace) = VORTEX_ICEBERG_NAMESPACE_TELEMETRY;
+  option (v1.public.common.vortex_enabled) = true;
+  v1.events.vortex.VortexMessageEnrichment enrichment = 1;
+  v1.public.common.vortex_telemetry_contexts.VortexTelemetryDbtCloudContext ctx = 2;
+  v1.public.common.vortex_telemetry_contexts.VortexTelemetryCommonContext common_context = 3;
+}
+
+message ShareOpenLink {
+  option (v1.public.common.vortex_namespace) = VORTEX_ICEBERG_NAMESPACE_TELEMETRY;
+  option (v1.public.common.vortex_enabled) = true;
+  v1.events.vortex.VortexMessageEnrichment enrichment = 1;
+  v1.public.common.vortex_telemetry_contexts.VortexTelemetryDbtCloudContext ctx = 2;
+  v1.public.common.vortex_telemetry_contexts.VortexTelemetryCommonContext common_context = 3;
+}
+
+message ShareCopyToNewQuery {
+  option (v1.public.common.vortex_namespace) = VORTEX_ICEBERG_NAMESPACE_TELEMETRY;
+  option (v1.public.common.vortex_enabled) = true;
+  v1.events.vortex.VortexMessageEnrichment enrichment = 1;
+  v1.public.common.vortex_telemetry_contexts.VortexTelemetryDbtCloudContext ctx = 2;
+  v1.public.common.vortex_telemetry_contexts.VortexTelemetryCommonContext common_context = 3;
+}
+
+message CsvDownload {
+  option (v1.public.common.vortex_namespace) = VORTEX_ICEBERG_NAMESPACE_TELEMETRY;
+  option (v1.public.common.vortex_enabled) = true;
+  v1.events.vortex.VortexMessageEnrichment enrichment = 1;
+  v1.public.common.vortex_telemetry_contexts.VortexTelemetryDbtCloudContext ctx = 2;
+  int32 file_size_bytes = 3;
+  v1.public.common.vortex_telemetry_contexts.VortexTelemetryCommonContext common_context = 4;
+}
+
+message RunQuery {
+  option (v1.public.common.vortex_namespace) = VORTEX_ICEBERG_NAMESPACE_TELEMETRY;
+  option (v1.public.common.vortex_enabled) = true;
+  v1.events.vortex.VortexMessageEnrichment enrichment = 1;
+  v1.public.common.vortex_telemetry_contexts.VortexTelemetryDbtCloudContext ctx = 2;
+  string sql = 3;
+  string error = 4;
+  v1.public.common.vortex_telemetry_contexts.VortexTelemetryCommonContext common_context = 5;
+}
+
+message HandoffOpenSqlInStudio {
+  option (v1.public.common.vortex_namespace) = VORTEX_ICEBERG_NAMESPACE_TELEMETRY;
+  option (v1.public.common.vortex_enabled) = true;
+  v1.events.vortex.VortexMessageEnrichment enrichment = 1;
+  v1.public.common.vortex_telemetry_contexts.VortexTelemetryDbtCloudContext ctx = 2;
+  v1.public.common.vortex_telemetry_contexts.VortexTelemetryCommonContext common_context = 3;
+}
+
+message HandoffOpenSqlInCanvas {
+  option (v1.public.common.vortex_namespace) = VORTEX_ICEBERG_NAMESPACE_TELEMETRY;
+  option (v1.public.common.vortex_enabled) = true;
+  v1.events.vortex.VortexMessageEnrichment enrichment = 1;
+  v1.public.common.vortex_telemetry_contexts.VortexTelemetryDbtCloudContext ctx = 2;
+  v1.public.common.vortex_telemetry_contexts.VortexTelemetryCommonContext common_context = 3;
+}
+
+message HandoffOpenModelInCatalog {
+  option (v1.public.common.vortex_namespace) = VORTEX_ICEBERG_NAMESPACE_TELEMETRY;
+  option (v1.public.common.vortex_enabled) = true;
+  v1.events.vortex.VortexMessageEnrichment enrichment = 1;
+  v1.public.common.vortex_telemetry_contexts.VortexTelemetryDbtCloudContext ctx = 2;
+  v1.public.common.vortex_telemetry_contexts.VortexTelemetryCommonContext common_context = 3;
+}
+
+message Acknowledge2025LaunchTrialBanner {
+  option (v1.public.common.vortex_namespace) = VORTEX_ICEBERG_NAMESPACE_TELEMETRY;
+  option (v1.public.common.vortex_enabled) = true;
+  v1.events.vortex.VortexMessageEnrichment enrichment = 1;
+  v1.public.common.vortex_telemetry_contexts.VortexTelemetryDbtCloudContext ctx = 2;
+  v1.public.common.vortex_telemetry_contexts.VortexTelemetryCommonContext common_context = 3;
+}
+

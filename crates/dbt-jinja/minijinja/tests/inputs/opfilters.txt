@@ -1,0 +1,24 @@
+{
+  "objects": [
+    {
+      "val": 1,
+      "name": "One"
+    },
+    {
+      "val": 2,
+      "name": "Two"
+    },
+    {
+      "val": 3,
+      "name": "Three"
+    }
+  ]
+}
+---
+{{ objects|selectattr("val", "==", 2)|map(attribute="name") }}
+{{ objects|selectattr("val", "!=", 2)|map(attribute="name") }}
+{{ objects|selectattr("val", ">", 2)|map(attribute="name") }}
+{{ objects|selectattr("val", ">=", 2)|map(attribute="name") }}
+{{ objects|selectattr("val", "<", 2)|map(attribute="name") }}
+{{ objects|selectattr("val", "<=", 2)|map(attribute="name") }}
+{{ objects|selectattr("val", "in", [1, 3])|map(attribute="name") }}

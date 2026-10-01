@@ -28,4 +28,7 @@ jobs:
     uses: dbt-labs/actions/.github/workflows/release-branch-tests.yml@main
     with:
       workflows_to_run: '["main.yml"]'
+      # After cutover, `main` is the Rust branch and should not have Python CI run against it.
+      include_main: false
+      include_branches: '["1.latest"]'
     secrets: inherit

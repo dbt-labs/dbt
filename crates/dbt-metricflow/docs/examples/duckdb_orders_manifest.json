@@ -1,0 +1,261 @@
+{
+  "semantic_models": [
+    {
+      "name": "orders",
+      "description": "Orders used by the documentation examples",
+      "node_relation": {
+        "alias": "orders",
+        "schema_name": "main",
+        "database": null,
+        "relation_name": "\"main\".\"orders\""
+      },
+      "defaults": {
+        "agg_time_dimension": "ordered_at"
+      },
+      "primary_entity": "order",
+      "entities": [
+        {
+          "name": "order",
+          "type": "primary",
+          "expr": "order_id"
+        },
+        {
+          "name": "customer",
+          "type": "foreign",
+          "expr": "customer_id"
+        }
+      ],
+      "measures": [
+        {
+          "name": "order_count",
+          "agg": "sum",
+          "expr": "1"
+        },
+        {
+          "name": "revenue",
+          "agg": "sum",
+          "expr": "amount"
+        }
+      ],
+      "dimensions": [
+        {
+          "name": "ordered_at",
+          "type": "time",
+          "expr": "ordered_at",
+          "type_params": {
+            "time_granularity": "day"
+          }
+        },
+        {
+          "name": "status",
+          "type": "categorical",
+          "expr": "status"
+        }
+      ]
+    }
+  ],
+  "metrics": [
+    {
+      "name": "order_count",
+      "description": "All orders in scope",
+      "type": "simple",
+      "filter": null,
+      "type_params": {
+        "measure": null,
+        "input_measures": [],
+        "numerator": null,
+        "denominator": null,
+        "expr": "1",
+        "window": null,
+        "grain_to_date": null,
+        "metrics": null,
+        "conversion_type_params": null,
+        "cumulative_type_params": null,
+        "join_to_timespine": false,
+        "fill_nulls_with": null,
+        "is_private": false,
+        "metric_aggregation_params": {
+          "semantic_model": "orders",
+          "agg": "sum",
+          "agg_params": null,
+          "agg_time_dimension": "ordered_at",
+          "non_additive_dimension": null,
+          "expr": "1"
+        }
+      }
+    },
+    {
+      "name": "revenue",
+      "description": "Sum of amount in scope",
+      "type": "simple",
+      "filter": null,
+      "type_params": {
+        "measure": null,
+        "input_measures": [],
+        "numerator": null,
+        "denominator": null,
+        "expr": "amount",
+        "window": null,
+        "grain_to_date": null,
+        "metrics": null,
+        "conversion_type_params": null,
+        "cumulative_type_params": null,
+        "join_to_timespine": false,
+        "fill_nulls_with": null,
+        "is_private": false,
+        "metric_aggregation_params": {
+          "semantic_model": "orders",
+          "agg": "sum",
+          "agg_params": null,
+          "agg_time_dimension": "ordered_at",
+          "non_additive_dimension": null,
+          "expr": "amount"
+        }
+      }
+    },
+    {
+      "name": "completed_order_count",
+      "description": "Orders whose status is completed",
+      "type": "simple",
+      "filter": {
+        "where_filters": [
+          {
+            "where_sql_template": "{{ Dimension('status') }} = 'completed'"
+          }
+        ]
+      },
+      "type_params": {
+        "measure": null,
+        "input_measures": [],
+        "numerator": null,
+        "denominator": null,
+        "expr": "1",
+        "window": null,
+        "grain_to_date": null,
+        "metrics": null,
+        "conversion_type_params": null,
+        "cumulative_type_params": null,
+        "join_to_timespine": false,
+        "fill_nulls_with": null,
+        "is_private": false,
+        "metric_aggregation_params": {
+          "semantic_model": "orders",
+          "agg": "sum",
+          "agg_params": null,
+          "agg_time_dimension": "ordered_at",
+          "non_additive_dimension": null,
+          "expr": "1"
+        }
+      }
+    },
+    {
+      "name": "average_order_value",
+      "description": "Revenue divided by order count",
+      "type": "derived",
+      "filter": null,
+      "type_params": {
+        "measure": null,
+        "input_measures": [],
+        "numerator": null,
+        "denominator": null,
+        "expr": "revenue / order_count",
+        "window": null,
+        "grain_to_date": null,
+        "metrics": [
+          {
+            "name": "revenue",
+            "filter": null,
+            "alias": null,
+            "offset_window": null,
+            "offset_to_grain": null
+          },
+          {
+            "name": "order_count",
+            "filter": null,
+            "alias": null,
+            "offset_window": null,
+            "offset_to_grain": null
+          }
+        ],
+        "conversion_type_params": null,
+        "cumulative_type_params": null,
+        "join_to_timespine": false,
+        "fill_nulls_with": null,
+        "is_private": false,
+        "metric_aggregation_params": null
+      }
+    },
+    {
+      "name": "completion_rate",
+      "description": "Completed orders divided by all orders",
+      "type": "ratio",
+      "filter": null,
+      "type_params": {
+        "measure": null,
+        "input_measures": [],
+        "numerator": {
+          "name": "completed_order_count",
+          "filter": null,
+          "alias": null,
+          "offset_window": null,
+          "offset_to_grain": null
+        },
+        "denominator": {
+          "name": "order_count",
+          "filter": null,
+          "alias": null,
+          "offset_window": null,
+          "offset_to_grain": null
+        },
+        "expr": null,
+        "window": null,
+        "grain_to_date": null,
+        "metrics": null,
+        "conversion_type_params": null,
+        "cumulative_type_params": null,
+        "join_to_timespine": false,
+        "fill_nulls_with": null,
+        "is_private": false,
+        "metric_aggregation_params": null
+      }
+    },
+    {
+      "name": "trailing_2_day_revenue",
+      "description": "Revenue over the last two days",
+      "type": "cumulative",
+      "filter": null,
+      "type_params": {
+        "measure": null,
+        "input_measures": [],
+        "numerator": null,
+        "denominator": null,
+        "expr": null,
+        "window": null,
+        "grain_to_date": null,
+        "metrics": null,
+        "conversion_type_params": null,
+        "cumulative_type_params": {
+          "window": {
+            "count": 2,
+            "granularity": "day"
+          },
+          "grain_to_date": null
+        },
+        "join_to_timespine": false,
+        "fill_nulls_with": null,
+        "is_private": false,
+        "metric_aggregation_params": {
+          "semantic_model": "orders",
+          "agg": "sum",
+          "agg_params": null,
+          "agg_time_dimension": "ordered_at",
+          "non_additive_dimension": null,
+          "expr": "amount"
+        }
+      }
+    }
+  ],
+  "project_configuration": {
+    "time_spines": []
+  }
+}

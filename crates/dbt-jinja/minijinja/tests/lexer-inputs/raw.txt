@@ -1,0 +1,7 @@
+{}
+---
+before {% raw %} this is a {{ raw }} {% block %} {% endraw %} after
+
+before {%- raw %} this is a {{ raw }} {% block %} {% endraw -%} after
+
+before {%- raw -%} this is a {{ raw }} {% block %} {%- endraw -%} after

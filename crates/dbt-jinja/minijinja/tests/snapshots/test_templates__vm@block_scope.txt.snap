@@ -1,0 +1,11 @@
+---
+source: minijinja/tests/test_templates.rs
+description: "{{ var }}\n{% block test %}{% set var = \"bar\" %}{{ var }}{% endblock %}\n{{ var }}"
+info:
+  var: foo
+input_file: minijinja/tests/inputs/block_scope.txt
+---
+foo
+bar
+foo
+

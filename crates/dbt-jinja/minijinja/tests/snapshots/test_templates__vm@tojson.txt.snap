@@ -1,0 +1,35 @@
+---
+source: fs/sa/crates/dbt-jinja/minijinja/tests/test_templates.rs
+description: "{{ [1, 2, 3]|tojson }}\n{{ [1, 2, 3]|tojson(true) }}\n{{ [1, 2, 3]|tojson(indent=4) }}\n{{ [1, 2, 3]|tojson(1) }}\n{{ [1, 2, 3]|tojson(8) }}"
+info:
+  __minijinja_current_path: tojson.txt
+  __minijinja_current_span:
+    start_line: 1
+    start_col: 1
+    start_offset: 0
+    end_line: 1
+    end_col: 1
+    end_offset: 0
+input_file: fs/sa/crates/dbt-jinja/minijinja/tests/inputs/tojson.txt
+---
+[1, 2, 3]
+[
+  1,
+  2,
+  3
+]
+[
+    1,
+    2,
+    3
+]
+[
+ 1,
+ 2,
+ 3
+]
+[
+        1,
+        2,
+        3
+]

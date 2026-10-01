@@ -1,0 +1,46 @@
+##
+##       BIG FAT NOTE:
+##
+##                  This is the clippy configuration for the `dbt-schemas` crate.
+##
+##                  Clippy does *not* inherit configuration files in parent directories!!
+##                  (https://github.com/rust-lang/rust-clippy/issues/7353) 
+##                  This file overrides any clippy.toml further up in the directory
+##                  structure and must be fully self-contained. Any shared
+##                  configuration must be duplicated here and manually synced.
+##
+##
+
+[[disallowed-methods]]
+path = "arrow::compute::cast"
+reason = """Default Arrow cast behavior is to swallow errors (safe: true). \
+  Always use cast_with_options even if the default behavior is desired. \
+  datafusion::common::format::DEFAULT_CAST_OPTIONS is a reasonable default for cast options."""
+
+[[disallowed-methods]]
+path = "std::fs::canonicalize"
+reason = "Standard library canonicalize breaks Datafusion on Windows. Use dbt_common::stdfs::canonicalize instead."
+
+[[disallowed-methods]]
+path = "std::path::Path::canonicalize"
+reason = "Standard library canonicalize breaks Datafusion on Windows. Use dbt_common::stdfs::canonicalize instead."
+
+[[disallowed-methods]]
+path = "std::env::set_var"
+reason = "Did you forget to comment out `set_var(\"GOLDIE_UPDATE\", \"1\")`? This is used to ad-hoc update the golden files for a specific test in your local dev environment, but should not be committed to source control -- if you forget to remove it, it will essentially nullify the test in CI. Note: this lint is *only* meant to catch stray GOLDIE_UPDATE usages, if you're setting a different env var then you should exempt the statement by `#[allow(clippy::disallowed_methods)]`."
+
+[[disallowed-types]]
+path = "std::collections::HashMap"
+reason = "Use dbt_common::collections::HashMap instead of std::collections::HashMap for deterministic and reproducible test baselines on debug builds."
+
+[[disallowed-types]]
+path = "std::collections::HashSet"
+reason = "Use dbt_common::collections::HashSet instead of std::collections::HashSet for deterministic and reproducible test baselines on debug builds."
+
+[[disallowed-types]]
+path = "dashmap::DashMap"
+reason = "Use dbt_common::collections::DashMap instead of dashmap::DashMap for deterministic and reproducible test baselines on debug builds."
+
+[[disallowed-types]]
+path = "scc::HashMap"
+reason = "Use dbt_common::collections::SccHashMap instead of scc::HashMap for deterministic and reproducible test baselines on debug builds."

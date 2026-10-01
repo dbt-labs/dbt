@@ -1,0 +1,30 @@
+{
+    "top_level": [
+        {
+            "children": [
+                {
+                    "children": []
+                },
+                {
+                    "children": []
+                }
+            ]
+        },
+        {
+            "children": [
+                {
+                    "children": []
+                }
+            ]
+        }
+    ]
+}
+---
+{%- macro nest(children) -%}
+    <nest>
+    {%- for child in children -%}
+        <child>{{ nest(child.children) }}</child>
+    {%- endfor -%}
+    </nest>
+{%- endmacro -%}
+{{ nest(top_level) }}

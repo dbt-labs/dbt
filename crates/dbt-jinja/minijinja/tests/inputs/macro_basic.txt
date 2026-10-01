@@ -1,0 +1,11 @@
+{}
+---
+{% macro add(a, b) %}{{ a }}|{{ b }}{% endmacro -%}
+{{ add(1, 2) }}
+{{ add(a=1, b=2) }}
+{{ add(b=2, a=1) }}
+{{ add(1, b=2) }}
+{{ add.name }}
+{{ add.arguments }}
+{{ add.caller }}
+{{ add }}

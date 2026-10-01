@@ -1,0 +1,27 @@
+fixed:
+  type: redshift
+prompts:
+  host:
+    hint: 'hostname.region.redshift.amazonaws.com'
+  port:
+    default: 5439
+    type: 'int'
+  user:
+    hint: 'dev username'
+  _choose_authentication_method:
+    password:
+      password:
+        hint: 'dev password'
+        hide_input: true
+    iam:
+      _fixed_method: iam
+    iam_role:
+      _fixed_method: iam_role
+  dbname:
+    hint: 'default database that dbt will build objects in'
+  schema:
+    hint: 'default schema that dbt will build objects in'
+  threads:
+    hint: '1 or more'
+    type: 'int'
+    default: 1

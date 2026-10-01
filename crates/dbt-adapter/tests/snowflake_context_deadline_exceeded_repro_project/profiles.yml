@@ -1,0 +1,16 @@
+
+local:
+  outputs:
+    snowflake:
+      type: snowflake
+      host: '127.0.0.1'
+      port: "9999"                  # must match blackhole port
+      protocol: http                # required — default is https
+      account: 'stub-account'
+      user: 'stub-user'
+      password: 'stub-password'
+      role: 'stub-role'
+      warehouse: 'stub-warehouse'
+      database: 'stub-database'
+      schema: "stub-schema"
+      driver_log_level: trace

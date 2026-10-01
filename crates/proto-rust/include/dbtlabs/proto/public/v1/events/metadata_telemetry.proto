@@ -1,0 +1,64 @@
+syntax = "proto3";
+
+package v1.public.events.metadata_telemetry;
+option go_package = "github.com/dbt-labs/proto-golang/v1/public/events/metadata_telemetry";
+
+import "dbtlabs/proto/public/v1/common/vortex_options.proto";
+import "dbtlabs/proto/public/v1/common/vortex_telemetry_contexts.proto";
+import "dbtlabs/proto/public/v1/events/vortex.proto";
+
+// As of 2025/05, enums are not handled properly with Vortex
+// so we will be documenting them but not using them in the proto
+enum HandoffFrom {
+  HANDOFF_FROM_UNSPECIFIED = 0;
+  HANDOFF_FROM_CATALOG = 1;
+}
+
+enum HandoffTo {
+  HANDOFF_TO_UNSPECIFIED = 0;
+  HANDOFF_TO_CATALOG = 1;
+  HANDOFF_TO_IDE = 2;
+  HANDOFF_TO_CANVAS = 3;
+  HANDOFF_TO_INSIGHTS = 4;
+}
+
+enum HandoffAssetType {
+  HANDOFF_ASSET_TYPE_UNSPECIFIED = 0;
+  HANDOFF_ASSET_TYPE_DBT_MODEL = 1;
+  HANDOFF_ASSET_TYPE_DBT_SOURCE = 2;
+  HANDOFF_ASSET_TYPE_DBT_SNAPSHOT = 3;
+  HANDOFF_ASSET_TYPE_DBT_SEED = 4;
+  HANDOFF_ASSET_TYPE_DBT_METRIC = 5;
+  HANDOFF_ASSET_TYPE_DBT_SAVED_QUERY = 6;
+  HANDOFF_ASSET_TYPE_DATA_WAREHOUSE_TABLE = 7;
+  HANDOFF_ASSET_TYPE_DATA_WAREHOUSE_VIEW = 8;
+}
+
+message Handoff {
+  option (v1.public.common.vortex_namespace) = VORTEX_ICEBERG_NAMESPACE_TELEMETRY;
+  option (v1.public.common.vortex_enabled) = true;
+
+  // Server enrichment for this event
+  v1.events.vortex.VortexMessageEnrichment enrichment = 1;
+
+  // dbt Cloud Context around this request
+  v1.public.common.vortex_telemetry_contexts.VortexTelemetryDbtCloudContext context = 2;
+
+  // There are fields below that would have been defined as enums but Vortex doesn't support enums well
+
+  // originating feature; see HandoffFrom for possible values
+  string handoff_from = 3;
+
+  // target feature; see HandoffTo for possible values
+  string handoff_to = 4;
+
+  // true if this completes the handoff experience
+  bool is_final_handoff_action = 5;
+
+  // applicable only if a handoff has different types, ex. 'Catalog -> Canvas' handoff can 'create' or 'edit'
+  string handoff_action = 6;
+
+  // asset type of resource being handed off; see HandoffAssetType for possible values
+  string asset_type = 7;
+  v1.public.common.vortex_telemetry_contexts.VortexTelemetryCommonContext common_context = 8;
+}

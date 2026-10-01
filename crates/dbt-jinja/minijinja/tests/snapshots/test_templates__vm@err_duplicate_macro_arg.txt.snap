@@ -1,0 +1,24 @@
+---
+source: fs/sa/crates/dbt-jinja/minijinja/tests/test_templates.rs
+description: "{% macro two_args(a, b) %}\n  {{ a }} and {{ b }}\n{% endmacro %}\n{{ two_args(1, a=2) }}"
+info:
+  __minijinja_current_path: err_duplicate_macro_arg.txt
+  __minijinja_current_span:
+    end_col: 1
+    end_line: 1
+    end_offset: 0
+    start_col: 1
+    start_line: 1
+    start_offset: 0
+input_file: fs/sa/crates/dbt-jinja/minijinja/tests/inputs/err_duplicate_macro_arg.txt
+---
+!!!ERROR!!!
+
+Error {
+    kind: TooManyArguments,
+    detail: "duplicate argument `a`",
+    name: "err_duplicate_macro_arg.txt",
+}
+
+too many arguments: duplicate argument `a`
+(in err_duplicate_macro_arg.txt:4:1)

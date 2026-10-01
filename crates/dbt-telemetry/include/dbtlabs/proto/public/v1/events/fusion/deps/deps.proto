@@ -1,0 +1,57 @@
+syntax = "proto3";
+package v1.public.events.fusion.deps;
+
+option go_package = "github.com/dbt-labs/proto-golang/v1/public/events/fusion/deps";
+
+// Type of package source
+enum PackageType {
+  PACKAGE_TYPE_UNSPECIFIED = 0;
+  PACKAGE_TYPE_HUB = 1;
+  PACKAGE_TYPE_GIT = 2;
+  PACKAGE_TYPE_LOCAL = 3;
+  PACKAGE_TYPE_PRIVATE = 4;
+  PACKAGE_TYPE_TARBALL = 5;
+}
+
+// Span emitted for each individual `deps add` call.
+// This corresponds to dbt-core's `DepsAddPackage` (M032) event.
+message DepsAddPackage {
+  // The name of the package that was installed
+  string package_name = 1;
+
+  // The type of the package source
+  PackageType package_type = 2;
+
+  // Optional version of the package (for hub packages, this is semantic version; for git/private, this is commit SHA)
+  optional string package_version = 3;
+
+  // Legacy dbt core event code for backward compatibility (always "M032")
+  string dbt_core_event_code = 4;
+}
+
+// Span emitted for each individual package installation during the deps command.
+// This corresponds to dbt-core's `DepsStartPackageInstall` (M014) &
+// `DepsInstallInfo` (M015) event for span start and end respectively.
+message DepsPackageInstalled {
+  // The name of the package that was installed. The name may not be known at span start.
+  optional string package_name = 1;
+
+  // The type of the package source
+  PackageType package_type = 2;
+
+  // Optional version of the package (for hub packages, this is semantic version; for git/private, this is commit SHA)
+  optional string package_version = 3;
+
+  // Optional scrubbed URL or path (for git, local, tarball packages)
+  optional string package_url_or_path = 4;
+
+  // Legacy dbt core event code for backward compatibility ("M014" for start, "M015" for end)
+  string dbt_core_event_code = 5;
+}
+
+// Span emitted for the entire project dependencies installation process.
+// This is the parent span that encompasses all individual `DepsPackageInstalled` spans.
+message DepsAllPackagesInstalled {
+  // Total number of packages to be installed
+  uint64 package_count = 1;
+}

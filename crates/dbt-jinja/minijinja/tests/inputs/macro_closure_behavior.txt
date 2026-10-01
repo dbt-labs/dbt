@@ -1,0 +1,10 @@
+{}
+---
+{%- macro before_closure() %}{{ closure }}{% endmacro %}
+{%- set closure = 1 %}
+{%- macro after_closure() %}{{ closure }}{% endmacro %}
+{%- set closure = 2 %}
+{%- macro after_closure_reset() %}{{ closure }}{% endmacro %}
+{{ before_closure() }}
+{{ after_closure() }}
+{{ after_closure_reset() }}

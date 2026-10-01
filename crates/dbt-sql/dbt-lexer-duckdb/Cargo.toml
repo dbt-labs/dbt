@@ -1,0 +1,20 @@
+[package]
+authors.workspace = true
+description = "Generated Antlr lexer for the DuckDB dialect"
+edition.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+license.workspace = true
+name = "dbt-lexer-duckdb"
+repository.workspace = true
+version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+dbt-antlr4 = { workspace = true }
+dbt-fusion-workspace-hack = { version = "0.1" }
+
+[lib]
+doctest = false

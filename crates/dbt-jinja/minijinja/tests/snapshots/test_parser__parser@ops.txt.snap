@@ -1,0 +1,34 @@
+---
+source: fs/sa/crates/dbt-jinja/minijinja/tests/test_parser.rs
+description: "{{ foo and bar or baz == true }}"
+input_file: fs/sa/crates/dbt-jinja/minijinja/tests/parser-inputs/ops.txt
+---
+Ok(
+    Template {
+        children: [
+            EmitExpr {
+                expr: BinOp {
+                    op: ScOr,
+                    left: BinOp {
+                        op: ScAnd,
+                        left: Var {
+                            id: "foo",
+                        } @ 1:4-1:7,
+                        right: Var {
+                            id: "bar",
+                        } @ 1:12-1:15,
+                    } @ 1:4-1:15,
+                    right: BinOp {
+                        op: Eq,
+                        left: Var {
+                            id: "baz",
+                        } @ 1:19-1:22,
+                        right: Const {
+                            value: True,
+                        } @ 1:26-1:30,
+                    } @ 1:16-1:30,
+                } @ 1:1-1:33,
+            } @ 1:1-1:33,
+        ],
+    } @ 1:1-1:33,
+)

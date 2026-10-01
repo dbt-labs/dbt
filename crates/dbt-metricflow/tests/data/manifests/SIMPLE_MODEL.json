@@ -1,0 +1,5155 @@
+{
+  "metrics": [
+    {
+      "config": null,
+      "description": "bookings",
+      "filter": null,
+      "label": null,
+      "metadata": null,
+      "name": "bookings",
+      "time_granularity": null,
+      "type": "simple",
+      "type_params": {
+        "conversion_type_params": null,
+        "cumulative_type_params": null,
+        "denominator": null,
+        "expr": "1",
+        "fill_nulls_with": null,
+        "grain_to_date": null,
+        "input_measures": [],
+        "is_private": false,
+        "join_to_timespine": false,
+        "measure": null,
+        "metric_aggregation_params": {
+          "agg": "sum",
+          "agg_params": null,
+          "agg_time_dimension": "ds",
+          "expr": "1",
+          "non_additive_dimension": null,
+          "semantic_model": "bookings_source"
+        },
+        "metrics": null,
+        "numerator": null,
+        "window": null
+      }
+    },
+    {
+      "config": null,
+      "description": "instant_bookings",
+      "filter": null,
+      "label": null,
+      "metadata": null,
+      "name": "instant_bookings",
+      "time_granularity": null,
+      "type": "simple",
+      "type_params": {
+        "conversion_type_params": null,
+        "cumulative_type_params": null,
+        "denominator": null,
+        "expr": "is_instant",
+        "fill_nulls_with": null,
+        "grain_to_date": null,
+        "input_measures": [],
+        "is_private": false,
+        "join_to_timespine": false,
+        "measure": null,
+        "metric_aggregation_params": {
+          "agg": "sum_boolean",
+          "agg_params": null,
+          "agg_time_dimension": "ds",
+          "expr": "is_instant",
+          "non_additive_dimension": null,
+          "semantic_model": "bookings_source"
+        },
+        "metrics": null,
+        "numerator": null,
+        "window": null
+      }
+    },
+    {
+      "config": null,
+      "description": "booking_value",
+      "filter": null,
+      "label": null,
+      "metadata": null,
+      "name": "booking_value",
+      "time_granularity": null,
+      "type": "simple",
+      "type_params": {
+        "conversion_type_params": null,
+        "cumulative_type_params": null,
+        "denominator": null,
+        "expr": "booking_value",
+        "fill_nulls_with": null,
+        "grain_to_date": null,
+        "input_measures": [],
+        "is_private": false,
+        "join_to_timespine": false,
+        "measure": null,
+        "metric_aggregation_params": {
+          "agg": "sum",
+          "agg_params": null,
+          "agg_time_dimension": "ds",
+          "expr": "booking_value",
+          "non_additive_dimension": null,
+          "semantic_model": "bookings_source"
+        },
+        "metrics": null,
+        "numerator": null,
+        "window": null
+      }
+    },
+    {
+      "config": null,
+      "description": "max_booking_value",
+      "filter": null,
+      "label": null,
+      "metadata": null,
+      "name": "max_booking_value",
+      "time_granularity": null,
+      "type": "simple",
+      "type_params": {
+        "conversion_type_params": null,
+        "cumulative_type_params": null,
+        "denominator": null,
+        "expr": "booking_value",
+        "fill_nulls_with": null,
+        "grain_to_date": null,
+        "input_measures": [],
+        "is_private": false,
+        "join_to_timespine": false,
+        "measure": null,
+        "metric_aggregation_params": {
+          "agg": "max",
+          "agg_params": null,
+          "agg_time_dimension": "ds",
+          "expr": "booking_value",
+          "non_additive_dimension": null,
+          "semantic_model": "bookings_source"
+        },
+        "metrics": null,
+        "numerator": null,
+        "window": null
+      }
+    },
+    {
+      "config": null,
+      "description": "min_booking_value",
+      "filter": null,
+      "label": null,
+      "metadata": null,
+      "name": "min_booking_value",
+      "time_granularity": null,
+      "type": "simple",
+      "type_params": {
+        "conversion_type_params": null,
+        "cumulative_type_params": null,
+        "denominator": null,
+        "expr": "booking_value",
+        "fill_nulls_with": null,
+        "grain_to_date": null,
+        "input_measures": [],
+        "is_private": false,
+        "join_to_timespine": false,
+        "measure": null,
+        "metric_aggregation_params": {
+          "agg": "min",
+          "agg_params": null,
+          "agg_time_dimension": "ds",
+          "expr": "booking_value",
+          "non_additive_dimension": null,
+          "semantic_model": "bookings_source"
+        },
+        "metrics": null,
+        "numerator": null,
+        "window": null
+      }
+    },
+    {
+      "config": null,
+      "description": "bookers",
+      "filter": null,
+      "label": null,
+      "metadata": null,
+      "name": "bookers",
+      "time_granularity": null,
+      "type": "simple",
+      "type_params": {
+        "conversion_type_params": null,
+        "cumulative_type_params": null,
+        "denominator": null,
+        "expr": "guest_id",
+        "fill_nulls_with": null,
+        "grain_to_date": null,
+        "input_measures": [],
+        "is_private": false,
+        "join_to_timespine": false,
+        "measure": null,
+        "metric_aggregation_params": {
+          "agg": "count_distinct",
+          "agg_params": null,
+          "agg_time_dimension": "ds",
+          "expr": "guest_id",
+          "non_additive_dimension": null,
+          "semantic_model": "bookings_source"
+        },
+        "metrics": null,
+        "numerator": null,
+        "window": null
+      }
+    },
+    {
+      "config": null,
+      "description": "average_booking_value",
+      "filter": null,
+      "label": null,
+      "metadata": null,
+      "name": "average_booking_value",
+      "time_granularity": null,
+      "type": "simple",
+      "type_params": {
+        "conversion_type_params": null,
+        "cumulative_type_params": null,
+        "denominator": null,
+        "expr": "booking_value",
+        "fill_nulls_with": null,
+        "grain_to_date": null,
+        "input_measures": [],
+        "is_private": false,
+        "join_to_timespine": false,
+        "measure": null,
+        "metric_aggregation_params": {
+          "agg": "average",
+          "agg_params": null,
+          "agg_time_dimension": "ds",
+          "expr": "booking_value",
+          "non_additive_dimension": null,
+          "semantic_model": "bookings_source"
+        },
+        "metrics": null,
+        "numerator": null,
+        "window": null
+      }
+    },
+    {
+      "config": null,
+      "description": "referred_bookings",
+      "filter": null,
+      "label": null,
+      "metadata": null,
+      "name": "referred_bookings",
+      "time_granularity": null,
+      "type": "simple",
+      "type_params": {
+        "conversion_type_params": null,
+        "cumulative_type_params": null,
+        "denominator": null,
+        "expr": "referrer_id",
+        "fill_nulls_with": null,
+        "grain_to_date": null,
+        "input_measures": [],
+        "is_private": false,
+        "join_to_timespine": false,
+        "measure": null,
+        "metric_aggregation_params": {
+          "agg": "count",
+          "agg_params": null,
+          "agg_time_dimension": "ds",
+          "expr": "referrer_id",
+          "non_additive_dimension": null,
+          "semantic_model": "bookings_source"
+        },
+        "metrics": null,
+        "numerator": null,
+        "window": null
+      }
+    },
+    {
+      "config": null,
+      "description": "instant_booking_value",
+      "filter": {
+        "where_filters": [
+          {
+            "where_sql_template": "{{ Dimension('booking__is_instant') }}"
+          }
+        ]
+      },
+      "label": null,
+      "metadata": null,
+      "name": "instant_booking_value",
+      "time_granularity": null,
+      "type": "simple",
+      "type_params": {
+        "conversion_type_params": null,
+        "cumulative_type_params": null,
+        "denominator": null,
+        "expr": "booking_value",
+        "fill_nulls_with": null,
+        "grain_to_date": null,
+        "input_measures": [],
+        "is_private": false,
+        "join_to_timespine": false,
+        "measure": null,
+        "metric_aggregation_params": {
+          "agg": "sum",
+          "agg_params": null,
+          "agg_time_dimension": "ds",
+          "expr": "booking_value",
+          "non_additive_dimension": null,
+          "semantic_model": "bookings_source"
+        },
+        "metrics": null,
+        "numerator": null,
+        "window": null
+      }
+    },
+    {
+      "config": null,
+      "description": "views",
+      "filter": null,
+      "label": null,
+      "metadata": null,
+      "name": "views",
+      "time_granularity": null,
+      "type": "simple",
+      "type_params": {
+        "conversion_type_params": null,
+        "cumulative_type_params": null,
+        "denominator": null,
+        "expr": "1",
+        "fill_nulls_with": null,
+        "grain_to_date": null,
+        "input_measures": [],
+        "is_private": false,
+        "join_to_timespine": false,
+        "measure": null,
+        "metric_aggregation_params": {
+          "agg": "sum",
+          "agg_params": null,
+          "agg_time_dimension": "ds",
+          "expr": "1",
+          "non_additive_dimension": null,
+          "semantic_model": "views_source"
+        },
+        "metrics": null,
+        "numerator": null,
+        "window": null
+      }
+    },
+    {
+      "config": null,
+      "description": "listings",
+      "filter": null,
+      "label": null,
+      "metadata": null,
+      "name": "listings",
+      "time_granularity": null,
+      "type": "simple",
+      "type_params": {
+        "conversion_type_params": null,
+        "cumulative_type_params": null,
+        "denominator": null,
+        "expr": "1",
+        "fill_nulls_with": null,
+        "grain_to_date": null,
+        "input_measures": [],
+        "is_private": false,
+        "join_to_timespine": false,
+        "measure": null,
+        "metric_aggregation_params": {
+          "agg": "sum",
+          "agg_params": null,
+          "agg_time_dimension": "ds",
+          "expr": "1",
+          "non_additive_dimension": null,
+          "semantic_model": "listings_latest"
+        },
+        "metrics": null,
+        "numerator": null,
+        "window": null
+      }
+    },
+    {
+      "config": null,
+      "description": "largest_listing",
+      "filter": null,
+      "label": null,
+      "metadata": null,
+      "name": "largest_listing",
+      "time_granularity": null,
+      "type": "simple",
+      "type_params": {
+        "conversion_type_params": null,
+        "cumulative_type_params": null,
+        "denominator": null,
+        "expr": "capacity",
+        "fill_nulls_with": null,
+        "grain_to_date": null,
+        "input_measures": [],
+        "is_private": false,
+        "join_to_timespine": false,
+        "measure": null,
+        "metric_aggregation_params": {
+          "agg": "max",
+          "agg_params": null,
+          "agg_time_dimension": "ds",
+          "expr": "capacity",
+          "non_additive_dimension": null,
+          "semantic_model": "listings_latest"
+        },
+        "metrics": null,
+        "numerator": null,
+        "window": null
+      }
+    },
+    {
+      "config": null,
+      "description": "smallest_listing",
+      "filter": null,
+      "label": null,
+      "metadata": null,
+      "name": "smallest_listing",
+      "time_granularity": null,
+      "type": "simple",
+      "type_params": {
+        "conversion_type_params": null,
+        "cumulative_type_params": null,
+        "denominator": null,
+        "expr": "capacity",
+        "fill_nulls_with": null,
+        "grain_to_date": null,
+        "input_measures": [],
+        "is_private": false,
+        "join_to_timespine": false,
+        "measure": null,
+        "metric_aggregation_params": {
+          "agg": "min",
+          "agg_params": null,
+          "agg_time_dimension": "ds",
+          "expr": "capacity",
+          "non_additive_dimension": null,
+          "semantic_model": "listings_latest"
+        },
+        "metrics": null,
+        "numerator": null,
+        "window": null
+      }
+    },
+    {
+      "config": null,
+      "description": "identity_verifications",
+      "filter": null,
+      "label": null,
+      "metadata": null,
+      "name": "identity_verifications",
+      "time_granularity": null,
+      "type": "simple",
+      "type_params": {
+        "conversion_type_params": null,
+        "cumulative_type_params": null,
+        "denominator": null,
+        "expr": "1",
+        "fill_nulls_with": null,
+        "grain_to_date": null,
+        "input_measures": [],
+        "is_private": false,
+        "join_to_timespine": false,
+        "measure": null,
+        "metric_aggregation_params": {
+          "agg": "sum",
+          "agg_params": null,
+          "agg_time_dimension": "ds",
+          "expr": "1",
+          "non_additive_dimension": null,
+          "semantic_model": "id_verifications"
+        },
+        "metrics": null,
+        "numerator": null,
+        "window": null
+      }
+    },
+    {
+      "config": null,
+      "description": "revenue",
+      "filter": null,
+      "label": null,
+      "metadata": null,
+      "name": "revenue",
+      "time_granularity": null,
+      "type": "simple",
+      "type_params": {
+        "conversion_type_params": null,
+        "cumulative_type_params": null,
+        "denominator": null,
+        "expr": "revenue",
+        "fill_nulls_with": null,
+        "grain_to_date": null,
+        "input_measures": [],
+        "is_private": false,
+        "join_to_timespine": false,
+        "measure": null,
+        "metric_aggregation_params": {
+          "agg": "sum",
+          "agg_params": null,
+          "agg_time_dimension": "ds",
+          "expr": "revenue",
+          "non_additive_dimension": null,
+          "semantic_model": "revenue"
+        },
+        "metrics": null,
+        "numerator": null,
+        "window": null
+      }
+    },
+    {
+      "config": null,
+      "description": "account_balance",
+      "filter": null,
+      "label": null,
+      "metadata": null,
+      "name": "account_balance",
+      "time_granularity": null,
+      "type": "simple",
+      "type_params": {
+        "conversion_type_params": null,
+        "cumulative_type_params": null,
+        "denominator": null,
+        "expr": "account_balance",
+        "fill_nulls_with": null,
+        "grain_to_date": null,
+        "input_measures": [],
+        "is_private": false,
+        "join_to_timespine": false,
+        "measure": null,
+        "metric_aggregation_params": {
+          "agg": "sum",
+          "agg_params": null,
+          "agg_time_dimension": "ds",
+          "expr": "account_balance",
+          "non_additive_dimension": null,
+          "semantic_model": "accounts_source"
+        },
+        "metrics": null,
+        "numerator": null,
+        "window": null
+      }
+    },
+    {
+      "config": null,
+      "description": "booking_payments",
+      "filter": null,
+      "label": null,
+      "metadata": null,
+      "name": "booking_payments",
+      "time_granularity": null,
+      "type": "simple",
+      "type_params": {
+        "conversion_type_params": null,
+        "cumulative_type_params": null,
+        "denominator": null,
+        "expr": "booking_value",
+        "fill_nulls_with": null,
+        "grain_to_date": null,
+        "input_measures": [],
+        "is_private": false,
+        "join_to_timespine": false,
+        "measure": null,
+        "metric_aggregation_params": {
+          "agg": "sum",
+          "agg_params": null,
+          "agg_time_dimension": "paid_at",
+          "expr": "booking_value",
+          "non_additive_dimension": null,
+          "semantic_model": "bookings_source"
+        },
+        "metrics": null,
+        "numerator": null,
+        "window": null
+      }
+    },
+    {
+      "config": null,
+      "description": "new_users",
+      "filter": null,
+      "label": null,
+      "metadata": null,
+      "name": "new_users",
+      "time_granularity": null,
+      "type": "simple",
+      "type_params": {
+        "conversion_type_params": null,
+        "cumulative_type_params": null,
+        "denominator": null,
+        "expr": "1",
+        "fill_nulls_with": null,
+        "grain_to_date": null,
+        "input_measures": [],
+        "is_private": false,
+        "join_to_timespine": false,
+        "measure": null,
+        "metric_aggregation_params": {
+          "agg": "sum",
+          "agg_params": null,
+          "agg_time_dimension": "created_at",
+          "expr": "1",
+          "non_additive_dimension": null,
+          "semantic_model": "users_ds_source"
+        },
+        "metrics": null,
+        "numerator": null,
+        "window": null
+      }
+    },
+    {
+      "config": null,
+      "description": "bookings_where_listing_high_value",
+      "filter": {
+        "where_filters": [
+          {
+            "where_sql_template": "{{ Metric('booking_value', ['listing']) }} > 1000"
+          }
+        ]
+      },
+      "label": null,
+      "metadata": null,
+      "name": "bookings_where_listing_high_value",
+      "time_granularity": null,
+      "type": "simple",
+      "type_params": {
+        "conversion_type_params": null,
+        "cumulative_type_params": null,
+        "denominator": null,
+        "expr": "1",
+        "fill_nulls_with": null,
+        "grain_to_date": null,
+        "input_measures": [],
+        "is_private": false,
+        "join_to_timespine": false,
+        "measure": null,
+        "metric_aggregation_params": {
+          "agg": "sum",
+          "agg_params": null,
+          "agg_time_dimension": "ds",
+          "expr": "1",
+          "non_additive_dimension": null,
+          "semantic_model": "bookings_source"
+        },
+        "metrics": null,
+        "numerator": null,
+        "window": null
+      }
+    },
+    {
+      "config": null,
+      "description": "booking_fees",
+      "filter": null,
+      "label": null,
+      "metadata": null,
+      "name": "booking_fees",
+      "time_granularity": null,
+      "type": "derived",
+      "type_params": {
+        "conversion_type_params": null,
+        "cumulative_type_params": null,
+        "denominator": null,
+        "expr": "booking_value * 0.05",
+        "fill_nulls_with": null,
+        "grain_to_date": null,
+        "input_measures": [],
+        "is_private": false,
+        "join_to_timespine": false,
+        "measure": null,
+        "metric_aggregation_params": null,
+        "metrics": [
+          {
+            "alias": null,
+            "filter": null,
+            "name": "booking_value",
+            "offset_to_grain": null,
+            "offset_window": null
+          }
+        ],
+        "numerator": null,
+        "window": null
+      }
+    },
+    {
+      "config": null,
+      "description": "booking_fees_per_booker",
+      "filter": null,
+      "label": null,
+      "metadata": null,
+      "name": "booking_fees_per_booker",
+      "time_granularity": null,
+      "type": "derived",
+      "type_params": {
+        "conversion_type_params": null,
+        "cumulative_type_params": null,
+        "denominator": null,
+        "expr": "booking_value * 0.05 / bookers",
+        "fill_nulls_with": null,
+        "grain_to_date": null,
+        "input_measures": [],
+        "is_private": false,
+        "join_to_timespine": false,
+        "measure": null,
+        "metric_aggregation_params": null,
+        "metrics": [
+          {
+            "alias": null,
+            "filter": null,
+            "name": "booking_value",
+            "offset_to_grain": null,
+            "offset_window": null
+          },
+          {
+            "alias": null,
+            "filter": null,
+            "name": "bookers",
+            "offset_to_grain": null,
+            "offset_window": null
+          }
+        ],
+        "numerator": null,
+        "window": null
+      }
+    },
+    {
+      "config": null,
+      "description": "views_times_booking_value",
+      "filter": null,
+      "label": null,
+      "metadata": null,
+      "name": "views_times_booking_value",
+      "time_granularity": null,
+      "type": "derived",
+      "type_params": {
+        "conversion_type_params": null,
+        "cumulative_type_params": null,
+        "denominator": null,
+        "expr": "booking_value * views",
+        "fill_nulls_with": null,
+        "grain_to_date": null,
+        "input_measures": [],
+        "is_private": false,
+        "join_to_timespine": false,
+        "measure": null,
+        "metric_aggregation_params": null,
+        "metrics": [
+          {
+            "alias": null,
+            "filter": null,
+            "name": "booking_value",
+            "offset_to_grain": null,
+            "offset_window": null
+          },
+          {
+            "alias": null,
+            "filter": null,
+            "name": "views",
+            "offset_to_grain": null,
+            "offset_window": null
+          }
+        ],
+        "numerator": null,
+        "window": null
+      }
+    },
+    {
+      "config": null,
+      "description": "non_referred_bookings_pct",
+      "filter": null,
+      "label": null,
+      "metadata": null,
+      "name": "non_referred_bookings_pct",
+      "time_granularity": null,
+      "type": "derived",
+      "type_params": {
+        "conversion_type_params": null,
+        "cumulative_type_params": null,
+        "denominator": null,
+        "expr": "(bookings - ref_bookings) * 1.0 / bookings",
+        "fill_nulls_with": null,
+        "grain_to_date": null,
+        "input_measures": [],
+        "is_private": false,
+        "join_to_timespine": false,
+        "measure": null,
+        "metric_aggregation_params": null,
+        "metrics": [
+          {
+            "alias": "ref_bookings",
+            "filter": null,
+            "name": "referred_bookings",
+            "offset_to_grain": null,
+            "offset_window": null
+          },
+          {
+            "alias": null,
+            "filter": null,
+            "name": "bookings",
+            "offset_to_grain": null,
+            "offset_window": null
+          }
+        ],
+        "numerator": null,
+        "window": null
+      }
+    },
+    {
+      "config": null,
+      "description": "booking_value_sub_instant",
+      "filter": null,
+      "label": null,
+      "metadata": null,
+      "name": "booking_value_sub_instant",
+      "time_granularity": null,
+      "type": "derived",
+      "type_params": {
+        "conversion_type_params": null,
+        "cumulative_type_params": null,
+        "denominator": null,
+        "expr": "booking_value - instant_booking_value",
+        "fill_nulls_with": null,
+        "grain_to_date": null,
+        "input_measures": [],
+        "is_private": false,
+        "join_to_timespine": false,
+        "measure": null,
+        "metric_aggregation_params": null,
+        "metrics": [
+          {
+            "alias": null,
+            "filter": null,
+            "name": "instant_booking_value",
+            "offset_to_grain": null,
+            "offset_window": null
+          },
+          {
+            "alias": null,
+            "filter": null,
+            "name": "booking_value",
+            "offset_to_grain": null,
+            "offset_window": null
+          }
+        ],
+        "numerator": null,
+        "window": null
+      }
+    },
+    {
+      "config": null,
+      "description": "booking_value_sub_instant_add_10",
+      "filter": null,
+      "label": null,
+      "metadata": null,
+      "name": "booking_value_sub_instant_add_10",
+      "time_granularity": null,
+      "type": "derived",
+      "type_params": {
+        "conversion_type_params": null,
+        "cumulative_type_params": null,
+        "denominator": null,
+        "expr": "booking_value_sub_instant + 10",
+        "fill_nulls_with": null,
+        "grain_to_date": null,
+        "input_measures": [],
+        "is_private": false,
+        "join_to_timespine": false,
+        "measure": null,
+        "metric_aggregation_params": null,
+        "metrics": [
+          {
+            "alias": null,
+            "filter": null,
+            "name": "booking_value_sub_instant",
+            "offset_to_grain": null,
+            "offset_window": null
+          }
+        ],
+        "numerator": null,
+        "window": null
+      }
+    },
+    {
+      "config": null,
+      "description": "bookings_growth_1_day",
+      "filter": null,
+      "label": null,
+      "metadata": null,
+      "name": "bookings_growth_1_day",
+      "time_granularity": null,
+      "type": "derived",
+      "type_params": {
+        "conversion_type_params": null,
+        "cumulative_type_params": null,
+        "denominator": null,
+        "expr": "bookings - bookings_1_day_ago",
+        "fill_nulls_with": null,
+        "grain_to_date": null,
+        "input_measures": [],
+        "is_private": false,
+        "join_to_timespine": false,
+        "measure": null,
+        "metric_aggregation_params": null,
+        "metrics": [
+          {
+            "alias": null,
+            "filter": null,
+            "name": "bookings",
+            "offset_to_grain": null,
+            "offset_window": null
+          },
+          {
+            "alias": "bookings_1_day_ago",
+            "filter": null,
+            "name": "bookings",
+            "offset_to_grain": null,
+            "offset_window": "1 day"
+          }
+        ],
+        "numerator": null,
+        "window": null
+      }
+    },
+    {
+      "config": null,
+      "description": "bookings_growth_since_start_of_month",
+      "filter": null,
+      "label": null,
+      "metadata": null,
+      "name": "bookings_growth_since_start_of_month",
+      "time_granularity": null,
+      "type": "derived",
+      "type_params": {
+        "conversion_type_params": null,
+        "cumulative_type_params": null,
+        "denominator": null,
+        "expr": "bookings - bookings_at_start_of_month",
+        "fill_nulls_with": null,
+        "grain_to_date": null,
+        "input_measures": [],
+        "is_private": false,
+        "join_to_timespine": false,
+        "measure": null,
+        "metric_aggregation_params": null,
+        "metrics": [
+          {
+            "alias": null,
+            "filter": null,
+            "name": "bookings",
+            "offset_to_grain": null,
+            "offset_window": null
+          },
+          {
+            "alias": "bookings_at_start_of_month",
+            "filter": null,
+            "name": "bookings",
+            "offset_to_grain": "month",
+            "offset_window": null
+          }
+        ],
+        "numerator": null,
+        "window": null
+      }
+    },
+    {
+      "config": null,
+      "description": "bookings_per_booker",
+      "filter": null,
+      "label": null,
+      "metadata": null,
+      "name": "bookings_per_booker",
+      "time_granularity": null,
+      "type": "ratio",
+      "type_params": {
+        "conversion_type_params": null,
+        "cumulative_type_params": null,
+        "denominator": {
+          "alias": null,
+          "filter": null,
+          "name": "bookers",
+          "offset_to_grain": null,
+          "offset_window": null
+        },
+        "expr": null,
+        "fill_nulls_with": null,
+        "grain_to_date": null,
+        "input_measures": [],
+        "is_private": false,
+        "join_to_timespine": false,
+        "measure": null,
+        "metric_aggregation_params": null,
+        "metrics": null,
+        "numerator": {
+          "alias": null,
+          "filter": null,
+          "name": "bookings",
+          "offset_to_grain": null,
+          "offset_window": null
+        },
+        "window": null
+      }
+    },
+    {
+      "config": null,
+      "description": "bookings_per_view",
+      "filter": null,
+      "label": null,
+      "metadata": null,
+      "name": "bookings_per_view",
+      "time_granularity": null,
+      "type": "ratio",
+      "type_params": {
+        "conversion_type_params": null,
+        "cumulative_type_params": null,
+        "denominator": {
+          "alias": null,
+          "filter": null,
+          "name": "views",
+          "offset_to_grain": null,
+          "offset_window": null
+        },
+        "expr": null,
+        "fill_nulls_with": null,
+        "grain_to_date": null,
+        "input_measures": [],
+        "is_private": false,
+        "join_to_timespine": false,
+        "measure": null,
+        "metric_aggregation_params": null,
+        "metrics": null,
+        "numerator": {
+          "alias": null,
+          "filter": null,
+          "name": "bookings",
+          "offset_to_grain": null,
+          "offset_window": null
+        },
+        "window": null
+      }
+    },
+    {
+      "config": null,
+      "description": "bookings_per_listing",
+      "filter": null,
+      "label": null,
+      "metadata": null,
+      "name": "bookings_per_listing",
+      "time_granularity": null,
+      "type": "ratio",
+      "type_params": {
+        "conversion_type_params": null,
+        "cumulative_type_params": null,
+        "denominator": {
+          "alias": null,
+          "filter": null,
+          "name": "listings",
+          "offset_to_grain": null,
+          "offset_window": null
+        },
+        "expr": null,
+        "fill_nulls_with": null,
+        "grain_to_date": null,
+        "input_measures": [],
+        "is_private": false,
+        "join_to_timespine": false,
+        "measure": null,
+        "metric_aggregation_params": null,
+        "metrics": null,
+        "numerator": {
+          "alias": null,
+          "filter": null,
+          "name": "bookings",
+          "offset_to_grain": null,
+          "offset_window": null
+        },
+        "window": null
+      }
+    },
+    {
+      "config": null,
+      "description": "bookings_per_dollar",
+      "filter": null,
+      "label": null,
+      "metadata": null,
+      "name": "bookings_per_dollar",
+      "time_granularity": null,
+      "type": "ratio",
+      "type_params": {
+        "conversion_type_params": null,
+        "cumulative_type_params": null,
+        "denominator": {
+          "alias": null,
+          "filter": null,
+          "name": "booking_value",
+          "offset_to_grain": null,
+          "offset_window": null
+        },
+        "expr": null,
+        "fill_nulls_with": null,
+        "grain_to_date": null,
+        "input_measures": [],
+        "is_private": false,
+        "join_to_timespine": false,
+        "measure": null,
+        "metric_aggregation_params": null,
+        "metrics": null,
+        "numerator": {
+          "alias": null,
+          "filter": null,
+          "name": "bookings",
+          "offset_to_grain": null,
+          "offset_window": null
+        },
+        "window": null
+      }
+    },
+    {
+      "config": null,
+      "description": "trailing_2_months_revenue",
+      "filter": null,
+      "label": null,
+      "metadata": null,
+      "name": "trailing_2_months_revenue",
+      "time_granularity": null,
+      "type": "cumulative",
+      "type_params": {
+        "conversion_type_params": null,
+        "cumulative_type_params": {
+          "grain_to_date": null,
+          "period_agg": "first",
+          "window": {
+            "count": 2,
+            "granularity": "month"
+          }
+        },
+        "denominator": null,
+        "expr": null,
+        "fill_nulls_with": null,
+        "grain_to_date": null,
+        "input_measures": [],
+        "is_private": false,
+        "join_to_timespine": false,
+        "measure": null,
+        "metric_aggregation_params": {
+          "agg": "sum",
+          "agg_params": null,
+          "agg_time_dimension": "ds",
+          "expr": "revenue",
+          "non_additive_dimension": null,
+          "semantic_model": "revenue"
+        },
+        "metrics": null,
+        "numerator": null,
+        "window": null
+      }
+    },
+    {
+      "config": null,
+      "description": "revenue_all_time",
+      "filter": null,
+      "label": null,
+      "metadata": null,
+      "name": "revenue_all_time",
+      "time_granularity": null,
+      "type": "cumulative",
+      "type_params": {
+        "conversion_type_params": null,
+        "cumulative_type_params": {
+          "grain_to_date": null,
+          "period_agg": "first",
+          "window": null
+        },
+        "denominator": null,
+        "expr": null,
+        "fill_nulls_with": null,
+        "grain_to_date": null,
+        "input_measures": [],
+        "is_private": false,
+        "join_to_timespine": false,
+        "measure": null,
+        "metric_aggregation_params": {
+          "agg": "sum",
+          "agg_params": null,
+          "agg_time_dimension": "ds",
+          "expr": "revenue",
+          "non_additive_dimension": null,
+          "semantic_model": "revenue"
+        },
+        "metrics": null,
+        "numerator": null,
+        "window": null
+      }
+    },
+    {
+      "config": null,
+      "description": "revenue_mtd",
+      "filter": null,
+      "label": null,
+      "metadata": null,
+      "name": "revenue_mtd",
+      "time_granularity": null,
+      "type": "cumulative",
+      "type_params": {
+        "conversion_type_params": null,
+        "cumulative_type_params": {
+          "grain_to_date": "month",
+          "period_agg": "first",
+          "window": null
+        },
+        "denominator": null,
+        "expr": null,
+        "fill_nulls_with": null,
+        "grain_to_date": null,
+        "input_measures": [],
+        "is_private": false,
+        "join_to_timespine": false,
+        "measure": null,
+        "metric_aggregation_params": {
+          "agg": "sum",
+          "agg_params": null,
+          "agg_time_dimension": "ds",
+          "expr": "revenue",
+          "non_additive_dimension": null,
+          "semantic_model": "revenue"
+        },
+        "metrics": null,
+        "numerator": null,
+        "window": null
+      }
+    },
+    {
+      "config": null,
+      "description": "cumulative_bookings",
+      "filter": null,
+      "label": null,
+      "metadata": null,
+      "name": "cumulative_bookings",
+      "time_granularity": null,
+      "type": "cumulative",
+      "type_params": {
+        "conversion_type_params": null,
+        "cumulative_type_params": {
+          "grain_to_date": null,
+          "period_agg": "first",
+          "window": null
+        },
+        "denominator": null,
+        "expr": null,
+        "fill_nulls_with": null,
+        "grain_to_date": null,
+        "input_measures": [],
+        "is_private": false,
+        "join_to_timespine": false,
+        "measure": null,
+        "metric_aggregation_params": {
+          "agg": "sum",
+          "agg_params": null,
+          "agg_time_dimension": "ds",
+          "expr": "1",
+          "non_additive_dimension": null,
+          "semantic_model": "bookings_source"
+        },
+        "metrics": null,
+        "numerator": null,
+        "window": null
+      }
+    },
+    {
+      "config": null,
+      "description": "every_2_days_bookers",
+      "filter": null,
+      "label": null,
+      "metadata": null,
+      "name": "every_2_days_bookers",
+      "time_granularity": null,
+      "type": "cumulative",
+      "type_params": {
+        "conversion_type_params": null,
+        "cumulative_type_params": {
+          "grain_to_date": null,
+          "period_agg": "first",
+          "window": {
+            "count": 2,
+            "granularity": "day"
+          }
+        },
+        "denominator": null,
+        "expr": null,
+        "fill_nulls_with": null,
+        "grain_to_date": null,
+        "input_measures": [],
+        "is_private": false,
+        "join_to_timespine": false,
+        "measure": null,
+        "metric_aggregation_params": {
+          "agg": "count_distinct",
+          "agg_params": null,
+          "agg_time_dimension": "ds",
+          "expr": "guest_id",
+          "non_additive_dimension": null,
+          "semantic_model": "bookings_source"
+        },
+        "metrics": null,
+        "numerator": null,
+        "window": null
+      }
+    },
+    {
+      "config": null,
+      "description": "bookings_fill_nulls_no_spine",
+      "filter": null,
+      "label": null,
+      "metadata": null,
+      "name": "bookings_fill_nulls_no_spine",
+      "time_granularity": null,
+      "type": "simple",
+      "type_params": {
+        "conversion_type_params": null,
+        "cumulative_type_params": null,
+        "denominator": null,
+        "expr": "1",
+        "fill_nulls_with": 0,
+        "grain_to_date": null,
+        "input_measures": [],
+        "is_private": false,
+        "join_to_timespine": false,
+        "measure": null,
+        "metric_aggregation_params": {
+          "agg": "sum",
+          "agg_params": null,
+          "agg_time_dimension": "ds",
+          "expr": "1",
+          "non_additive_dimension": null,
+          "semantic_model": "bookings_source"
+        },
+        "metrics": null,
+        "numerator": null,
+        "window": null
+      }
+    },
+    {
+      "config": null,
+      "description": "bookings_join_to_time_spine",
+      "filter": null,
+      "label": null,
+      "metadata": null,
+      "name": "bookings_join_to_time_spine",
+      "time_granularity": null,
+      "type": "simple",
+      "type_params": {
+        "conversion_type_params": null,
+        "cumulative_type_params": null,
+        "denominator": null,
+        "expr": "1",
+        "fill_nulls_with": null,
+        "grain_to_date": null,
+        "input_measures": [],
+        "is_private": false,
+        "join_to_timespine": true,
+        "measure": null,
+        "metric_aggregation_params": {
+          "agg": "sum",
+          "agg_params": null,
+          "agg_time_dimension": "ds",
+          "expr": "1",
+          "non_additive_dimension": null,
+          "semantic_model": "bookings_source"
+        },
+        "metrics": null,
+        "numerator": null,
+        "window": null
+      }
+    },
+    {
+      "config": null,
+      "description": "bookings_fill_nulls_with_spine",
+      "filter": null,
+      "label": null,
+      "metadata": null,
+      "name": "bookings_fill_nulls_with_spine",
+      "time_granularity": null,
+      "type": "simple",
+      "type_params": {
+        "conversion_type_params": null,
+        "cumulative_type_params": null,
+        "denominator": null,
+        "expr": "1",
+        "fill_nulls_with": 0,
+        "grain_to_date": null,
+        "input_measures": [],
+        "is_private": false,
+        "join_to_timespine": true,
+        "measure": null,
+        "metric_aggregation_params": {
+          "agg": "sum",
+          "agg_params": null,
+          "agg_time_dimension": "ds",
+          "expr": "1",
+          "non_additive_dimension": null,
+          "semantic_model": "bookings_source"
+        },
+        "metrics": null,
+        "numerator": null,
+        "window": null
+      }
+    },
+    {
+      "config": null,
+      "description": "revenue_fill_nulls_with_spine",
+      "filter": null,
+      "label": null,
+      "metadata": null,
+      "name": "revenue_fill_nulls_with_spine",
+      "time_granularity": null,
+      "type": "simple",
+      "type_params": {
+        "conversion_type_params": null,
+        "cumulative_type_params": null,
+        "denominator": null,
+        "expr": "revenue",
+        "fill_nulls_with": 0,
+        "grain_to_date": null,
+        "input_measures": [],
+        "is_private": false,
+        "join_to_timespine": true,
+        "measure": null,
+        "metric_aggregation_params": {
+          "agg": "sum",
+          "agg_params": null,
+          "agg_time_dimension": "ds",
+          "expr": "revenue",
+          "non_additive_dimension": null,
+          "semantic_model": "revenue"
+        },
+        "metrics": null,
+        "numerator": null,
+        "window": null
+      }
+    },
+    {
+      "config": null,
+      "description": "visits",
+      "filter": null,
+      "label": null,
+      "metadata": null,
+      "name": "visits",
+      "time_granularity": null,
+      "type": "simple",
+      "type_params": {
+        "conversion_type_params": null,
+        "cumulative_type_params": null,
+        "denominator": null,
+        "expr": "1",
+        "fill_nulls_with": null,
+        "grain_to_date": null,
+        "input_measures": [],
+        "is_private": false,
+        "join_to_timespine": false,
+        "measure": null,
+        "metric_aggregation_params": {
+          "agg": "count",
+          "agg_params": null,
+          "agg_time_dimension": "ds",
+          "expr": "1",
+          "non_additive_dimension": null,
+          "semantic_model": "visits_source"
+        },
+        "metrics": null,
+        "numerator": null,
+        "window": null
+      }
+    },
+    {
+      "config": null,
+      "description": "buys",
+      "filter": null,
+      "label": null,
+      "metadata": null,
+      "name": "buys",
+      "time_granularity": null,
+      "type": "simple",
+      "type_params": {
+        "conversion_type_params": null,
+        "cumulative_type_params": null,
+        "denominator": null,
+        "expr": "1",
+        "fill_nulls_with": null,
+        "grain_to_date": null,
+        "input_measures": [],
+        "is_private": false,
+        "join_to_timespine": false,
+        "measure": null,
+        "metric_aggregation_params": {
+          "agg": "count",
+          "agg_params": null,
+          "agg_time_dimension": "ds",
+          "expr": "1",
+          "non_additive_dimension": null,
+          "semantic_model": "buys_source"
+        },
+        "metrics": null,
+        "numerator": null,
+        "window": null
+      }
+    },
+    {
+      "config": null,
+      "description": "visit_buy_conversion_rate_7days",
+      "filter": null,
+      "label": null,
+      "metadata": null,
+      "name": "visit_buy_conversion_rate_7days",
+      "time_granularity": null,
+      "type": "conversion",
+      "type_params": {
+        "conversion_type_params": {
+          "base_measure": {
+            "name": "visits"
+          },
+          "calculation": "conversion_rate",
+          "constant_properties": [],
+          "conversion_measure": {
+            "name": "buys"
+          },
+          "entity": "user",
+          "window": {
+            "count": 7,
+            "granularity": "day"
+          }
+        },
+        "cumulative_type_params": null,
+        "denominator": null,
+        "expr": null,
+        "fill_nulls_with": null,
+        "grain_to_date": null,
+        "input_measures": [],
+        "is_private": false,
+        "join_to_timespine": false,
+        "measure": null,
+        "metric_aggregation_params": null,
+        "metrics": null,
+        "numerator": null,
+        "window": null
+      }
+    },
+    {
+      "config": null,
+      "description": "visit_buy_conversions_7days",
+      "filter": null,
+      "label": null,
+      "metadata": null,
+      "name": "visit_buy_conversions_7days",
+      "time_granularity": null,
+      "type": "conversion",
+      "type_params": {
+        "conversion_type_params": {
+          "base_measure": {
+            "name": "visits"
+          },
+          "calculation": "conversions",
+          "constant_properties": [],
+          "conversion_measure": {
+            "name": "buys"
+          },
+          "entity": "user",
+          "window": {
+            "count": 7,
+            "granularity": "day"
+          }
+        },
+        "cumulative_type_params": null,
+        "denominator": null,
+        "expr": null,
+        "fill_nulls_with": null,
+        "grain_to_date": null,
+        "input_measures": [],
+        "is_private": false,
+        "join_to_timespine": false,
+        "measure": null,
+        "metric_aggregation_params": null,
+        "metrics": null,
+        "numerator": null,
+        "window": null
+      }
+    },
+    {
+      "config": null,
+      "description": "visit_buy_conversion_rate_unbounded",
+      "filter": null,
+      "label": null,
+      "metadata": null,
+      "name": "visit_buy_conversion_rate_unbounded",
+      "time_granularity": null,
+      "type": "conversion",
+      "type_params": {
+        "conversion_type_params": {
+          "base_measure": {
+            "name": "visits"
+          },
+          "calculation": "conversion_rate",
+          "constant_properties": [],
+          "conversion_measure": {
+            "name": "buys"
+          },
+          "entity": "user",
+          "window": null
+        },
+        "cumulative_type_params": null,
+        "denominator": null,
+        "expr": null,
+        "fill_nulls_with": null,
+        "grain_to_date": null,
+        "input_measures": [],
+        "is_private": false,
+        "join_to_timespine": false,
+        "measure": null,
+        "metric_aggregation_params": null,
+        "metrics": null,
+        "numerator": null,
+        "window": null
+      }
+    },
+    {
+      "config": null,
+      "description": "visit_buy_conversion_rate_by_session",
+      "filter": null,
+      "label": null,
+      "metadata": null,
+      "name": "visit_buy_conversion_rate_by_session",
+      "time_granularity": null,
+      "type": "conversion",
+      "type_params": {
+        "conversion_type_params": {
+          "base_measure": {
+            "name": "visits"
+          },
+          "calculation": "conversion_rate",
+          "constant_properties": [
+            {
+              "base_property": "session_id",
+              "conversion_property": "session_id"
+            }
+          ],
+          "conversion_measure": {
+            "name": "buys"
+          },
+          "entity": "user",
+          "window": {
+            "count": 7,
+            "granularity": "day"
+          }
+        },
+        "cumulative_type_params": null,
+        "denominator": null,
+        "expr": null,
+        "fill_nulls_with": null,
+        "grain_to_date": null,
+        "input_measures": [],
+        "is_private": false,
+        "join_to_timespine": false,
+        "measure": null,
+        "metric_aggregation_params": null,
+        "metrics": null,
+        "numerator": null,
+        "window": null
+      }
+    },
+    {
+      "config": null,
+      "description": "total_account_balance_first_day",
+      "filter": null,
+      "label": null,
+      "metadata": null,
+      "name": "total_account_balance_first_day",
+      "time_granularity": null,
+      "type": "simple",
+      "type_params": {
+        "conversion_type_params": null,
+        "cumulative_type_params": null,
+        "denominator": null,
+        "expr": "account_balance",
+        "fill_nulls_with": null,
+        "grain_to_date": null,
+        "input_measures": [],
+        "is_private": false,
+        "join_to_timespine": false,
+        "measure": null,
+        "metric_aggregation_params": {
+          "agg": "sum",
+          "agg_params": null,
+          "agg_time_dimension": "ds",
+          "expr": "account_balance",
+          "non_additive_dimension": {
+            "name": "ds",
+            "window_choice": "min",
+            "window_groupings": []
+          },
+          "semantic_model": "accounts_source"
+        },
+        "metrics": null,
+        "numerator": null,
+        "window": null
+      }
+    },
+    {
+      "config": null,
+      "description": "current_account_balance_by_user",
+      "filter": null,
+      "label": null,
+      "metadata": null,
+      "name": "current_account_balance_by_user",
+      "time_granularity": null,
+      "type": "simple",
+      "type_params": {
+        "conversion_type_params": null,
+        "cumulative_type_params": null,
+        "denominator": null,
+        "expr": "account_balance",
+        "fill_nulls_with": null,
+        "grain_to_date": null,
+        "input_measures": [],
+        "is_private": false,
+        "join_to_timespine": false,
+        "measure": null,
+        "metric_aggregation_params": {
+          "agg": "sum",
+          "agg_params": null,
+          "agg_time_dimension": "ds",
+          "expr": "account_balance",
+          "non_additive_dimension": {
+            "name": "ds",
+            "window_choice": "max",
+            "window_groupings": [
+              "user"
+            ]
+          },
+          "semantic_model": "accounts_source"
+        },
+        "metrics": null,
+        "numerator": null,
+        "window": null
+      }
+    },
+    {
+      "config": null,
+      "description": "derived_shared_alias_1a",
+      "filter": null,
+      "label": null,
+      "metadata": null,
+      "name": "derived_shared_alias_1a",
+      "time_granularity": null,
+      "type": "derived",
+      "type_params": {
+        "conversion_type_params": null,
+        "cumulative_type_params": null,
+        "denominator": null,
+        "expr": "shared_alias - 10",
+        "fill_nulls_with": null,
+        "grain_to_date": null,
+        "input_measures": [],
+        "is_private": false,
+        "join_to_timespine": false,
+        "measure": null,
+        "metric_aggregation_params": null,
+        "metrics": [
+          {
+            "alias": "shared_alias",
+            "filter": null,
+            "name": "bookings",
+            "offset_to_grain": null,
+            "offset_window": null
+          }
+        ],
+        "numerator": null,
+        "window": null
+      }
+    },
+    {
+      "config": null,
+      "description": "derived_shared_alias_1b",
+      "filter": null,
+      "label": null,
+      "metadata": null,
+      "name": "derived_shared_alias_1b",
+      "time_granularity": null,
+      "type": "derived",
+      "type_params": {
+        "conversion_type_params": null,
+        "cumulative_type_params": null,
+        "denominator": null,
+        "expr": "shared_alias - 100",
+        "fill_nulls_with": null,
+        "grain_to_date": null,
+        "input_measures": [],
+        "is_private": false,
+        "join_to_timespine": false,
+        "measure": null,
+        "metric_aggregation_params": null,
+        "metrics": [
+          {
+            "alias": "shared_alias",
+            "filter": null,
+            "name": "bookings",
+            "offset_to_grain": null,
+            "offset_window": null
+          }
+        ],
+        "numerator": null,
+        "window": null
+      }
+    },
+    {
+      "config": null,
+      "description": "derived_shared_alias_2",
+      "filter": null,
+      "label": null,
+      "metadata": null,
+      "name": "derived_shared_alias_2",
+      "time_granularity": null,
+      "type": "derived",
+      "type_params": {
+        "conversion_type_params": null,
+        "cumulative_type_params": null,
+        "denominator": null,
+        "expr": "shared_alias + 10",
+        "fill_nulls_with": null,
+        "grain_to_date": null,
+        "input_measures": [],
+        "is_private": false,
+        "join_to_timespine": false,
+        "measure": null,
+        "metric_aggregation_params": null,
+        "metrics": [
+          {
+            "alias": "shared_alias",
+            "filter": null,
+            "name": "instant_bookings",
+            "offset_to_grain": null,
+            "offset_window": null
+          }
+        ],
+        "numerator": null,
+        "window": null
+      }
+    },
+    {
+      "config": null,
+      "description": "booking_value_for_non_null_listing_id",
+      "filter": {
+        "where_filters": [
+          {
+            "where_sql_template": "{{ Entity('listing') }} IS NOT NULL"
+          }
+        ]
+      },
+      "label": null,
+      "metadata": null,
+      "name": "booking_value_for_non_null_listing_id",
+      "time_granularity": null,
+      "type": "simple",
+      "type_params": {
+        "conversion_type_params": null,
+        "cumulative_type_params": null,
+        "denominator": null,
+        "expr": "booking_value",
+        "fill_nulls_with": null,
+        "grain_to_date": null,
+        "input_measures": [],
+        "is_private": false,
+        "join_to_timespine": false,
+        "measure": null,
+        "metric_aggregation_params": {
+          "agg": "sum",
+          "agg_params": null,
+          "agg_time_dimension": "ds",
+          "expr": "booking_value",
+          "non_additive_dimension": null,
+          "semantic_model": "bookings_source"
+        },
+        "metrics": null,
+        "numerator": null,
+        "window": null
+      }
+    },
+    {
+      "config": null,
+      "description": "lux_listings",
+      "filter": {
+        "where_filters": [
+          {
+            "where_sql_template": "{{ Dimension('listing__is_lux_latest') }}"
+          }
+        ]
+      },
+      "label": null,
+      "metadata": null,
+      "name": "lux_listings",
+      "time_granularity": null,
+      "type": "simple",
+      "type_params": {
+        "conversion_type_params": null,
+        "cumulative_type_params": null,
+        "denominator": null,
+        "expr": "1",
+        "fill_nulls_with": null,
+        "grain_to_date": null,
+        "input_measures": [],
+        "is_private": false,
+        "join_to_timespine": false,
+        "measure": null,
+        "metric_aggregation_params": {
+          "agg": "count",
+          "agg_params": null,
+          "agg_time_dimension": "ds",
+          "expr": "1",
+          "non_additive_dimension": null,
+          "semantic_model": "listings_latest"
+        },
+        "metrics": null,
+        "numerator": null,
+        "window": null
+      }
+    },
+    {
+      "config": null,
+      "description": "booking_value_per_view",
+      "filter": null,
+      "label": null,
+      "metadata": null,
+      "name": "booking_value_per_view",
+      "time_granularity": null,
+      "type": "derived",
+      "type_params": {
+        "conversion_type_params": null,
+        "cumulative_type_params": null,
+        "denominator": null,
+        "expr": "booking_value / NULLIF(views, 0)",
+        "fill_nulls_with": null,
+        "grain_to_date": null,
+        "input_measures": [],
+        "is_private": false,
+        "join_to_timespine": false,
+        "measure": null,
+        "metric_aggregation_params": null,
+        "metrics": [
+          {
+            "alias": null,
+            "filter": null,
+            "name": "booking_value",
+            "offset_to_grain": null,
+            "offset_window": null
+          },
+          {
+            "alias": null,
+            "filter": null,
+            "name": "views",
+            "offset_to_grain": null,
+            "offset_window": null
+          }
+        ],
+        "numerator": null,
+        "window": null
+      }
+    },
+    {
+      "config": null,
+      "description": "bookings_growth_2_weeks",
+      "filter": null,
+      "label": null,
+      "metadata": null,
+      "name": "bookings_growth_2_weeks",
+      "time_granularity": null,
+      "type": "derived",
+      "type_params": {
+        "conversion_type_params": null,
+        "cumulative_type_params": null,
+        "denominator": null,
+        "expr": "bookings - bookings_2_weeks_ago",
+        "fill_nulls_with": null,
+        "grain_to_date": null,
+        "input_measures": [],
+        "is_private": false,
+        "join_to_timespine": false,
+        "measure": null,
+        "metric_aggregation_params": null,
+        "metrics": [
+          {
+            "alias": null,
+            "filter": null,
+            "name": "bookings",
+            "offset_to_grain": null,
+            "offset_window": null
+          },
+          {
+            "alias": "bookings_2_weeks_ago",
+            "filter": null,
+            "name": "bookings",
+            "offset_to_grain": null,
+            "offset_window": "14 days"
+          }
+        ],
+        "numerator": null,
+        "window": null
+      }
+    },
+    {
+      "config": null,
+      "description": "bookings_5_day_lag",
+      "filter": null,
+      "label": null,
+      "metadata": null,
+      "name": "bookings_5_day_lag",
+      "time_granularity": null,
+      "type": "derived",
+      "type_params": {
+        "conversion_type_params": null,
+        "cumulative_type_params": null,
+        "denominator": null,
+        "expr": "bookings_5_days_ago",
+        "fill_nulls_with": null,
+        "grain_to_date": null,
+        "input_measures": [],
+        "is_private": false,
+        "join_to_timespine": false,
+        "measure": null,
+        "metric_aggregation_params": null,
+        "metrics": [
+          {
+            "alias": "bookings_5_days_ago",
+            "filter": null,
+            "name": "bookings",
+            "offset_to_grain": null,
+            "offset_window": "5 days"
+          }
+        ],
+        "numerator": null,
+        "window": null
+      }
+    },
+    {
+      "config": null,
+      "description": "bookings_offset_one_alien_day",
+      "filter": null,
+      "label": null,
+      "metadata": null,
+      "name": "bookings_offset_one_alien_day",
+      "time_granularity": null,
+      "type": "derived",
+      "type_params": {
+        "conversion_type_params": null,
+        "cumulative_type_params": null,
+        "denominator": null,
+        "expr": "bookings_offset_one_alien_day",
+        "fill_nulls_with": null,
+        "grain_to_date": null,
+        "input_measures": [],
+        "is_private": false,
+        "join_to_timespine": false,
+        "measure": null,
+        "metric_aggregation_params": null,
+        "metrics": [
+          {
+            "alias": "bookings_offset_one_alien_day",
+            "filter": null,
+            "name": "bookings",
+            "offset_to_grain": null,
+            "offset_window": "1 alien_day"
+          }
+        ],
+        "numerator": null,
+        "window": null
+      }
+    },
+    {
+      "config": null,
+      "description": "bookings_month_start_compared_to_1_month_prior",
+      "filter": null,
+      "label": null,
+      "metadata": null,
+      "name": "bookings_month_start_compared_to_1_month_prior",
+      "time_granularity": null,
+      "type": "derived",
+      "type_params": {
+        "conversion_type_params": null,
+        "cumulative_type_params": null,
+        "denominator": null,
+        "expr": "month_start_bookings - bookings_1_month_ago",
+        "fill_nulls_with": null,
+        "grain_to_date": null,
+        "input_measures": [],
+        "is_private": false,
+        "join_to_timespine": false,
+        "measure": null,
+        "metric_aggregation_params": null,
+        "metrics": [
+          {
+            "alias": "month_start_bookings",
+            "filter": null,
+            "name": "bookings",
+            "offset_to_grain": "month",
+            "offset_window": null
+          },
+          {
+            "alias": "bookings_1_month_ago",
+            "filter": null,
+            "name": "bookings",
+            "offset_to_grain": null,
+            "offset_window": "1 month"
+          }
+        ],
+        "numerator": null,
+        "window": null
+      }
+    },
+    {
+      "config": null,
+      "description": "booking_fees_last_week_per_booker_this_week",
+      "filter": null,
+      "label": null,
+      "metadata": null,
+      "name": "booking_fees_last_week_per_booker_this_week",
+      "time_granularity": null,
+      "type": "derived",
+      "type_params": {
+        "conversion_type_params": null,
+        "cumulative_type_params": null,
+        "denominator": null,
+        "expr": "booking_value * 0.05 / bookers",
+        "fill_nulls_with": null,
+        "grain_to_date": null,
+        "input_measures": [],
+        "is_private": false,
+        "join_to_timespine": false,
+        "measure": null,
+        "metric_aggregation_params": null,
+        "metrics": [
+          {
+            "alias": "booking_value",
+            "filter": null,
+            "name": "booking_value",
+            "offset_to_grain": null,
+            "offset_window": "1 week"
+          },
+          {
+            "alias": null,
+            "filter": null,
+            "name": "bookers",
+            "offset_to_grain": null,
+            "offset_window": null
+          }
+        ],
+        "numerator": null,
+        "window": null
+      }
+    },
+    {
+      "config": null,
+      "description": "instant_plus_non_referred_bookings_pct",
+      "filter": null,
+      "label": null,
+      "metadata": null,
+      "name": "instant_plus_non_referred_bookings_pct",
+      "time_granularity": null,
+      "type": "derived",
+      "type_params": {
+        "conversion_type_params": null,
+        "cumulative_type_params": null,
+        "denominator": null,
+        "expr": "non_referred + (instant * 1.0 / bookings)",
+        "fill_nulls_with": null,
+        "grain_to_date": null,
+        "input_measures": [],
+        "is_private": false,
+        "join_to_timespine": false,
+        "measure": null,
+        "metric_aggregation_params": null,
+        "metrics": [
+          {
+            "alias": "non_referred",
+            "filter": null,
+            "name": "non_referred_bookings_pct",
+            "offset_to_grain": null,
+            "offset_window": null
+          },
+          {
+            "alias": "instant",
+            "filter": null,
+            "name": "instant_bookings",
+            "offset_to_grain": null,
+            "offset_window": null
+          },
+          {
+            "alias": null,
+            "filter": null,
+            "name": "bookings",
+            "offset_to_grain": null,
+            "offset_window": null
+          }
+        ],
+        "numerator": null,
+        "window": null
+      }
+    },
+    {
+      "config": null,
+      "description": "bookings_per_lux_listing_derived",
+      "filter": null,
+      "label": null,
+      "metadata": null,
+      "name": "bookings_per_lux_listing_derived",
+      "time_granularity": null,
+      "type": "derived",
+      "type_params": {
+        "conversion_type_params": null,
+        "cumulative_type_params": null,
+        "denominator": null,
+        "expr": "bookings * 1.0 / NULLIF(lux_listing, 0)",
+        "fill_nulls_with": null,
+        "grain_to_date": null,
+        "input_measures": [],
+        "is_private": false,
+        "join_to_timespine": false,
+        "measure": null,
+        "metric_aggregation_params": null,
+        "metrics": [
+          {
+            "alias": null,
+            "filter": null,
+            "name": "bookings",
+            "offset_to_grain": null,
+            "offset_window": null
+          },
+          {
+            "alias": "lux_listing",
+            "filter": {
+              "where_filters": [
+                {
+                  "where_sql_template": "{{ Dimension('listing__is_lux_latest') }}"
+                }
+              ]
+            },
+            "name": "listings",
+            "offset_to_grain": null,
+            "offset_window": null
+          }
+        ],
+        "numerator": null,
+        "window": null
+      }
+    },
+    {
+      "config": null,
+      "description": "every_2_days_bookers_2_days_ago",
+      "filter": null,
+      "label": null,
+      "metadata": null,
+      "name": "every_2_days_bookers_2_days_ago",
+      "time_granularity": null,
+      "type": "derived",
+      "type_params": {
+        "conversion_type_params": null,
+        "cumulative_type_params": null,
+        "denominator": null,
+        "expr": "every_2_days_bookers_2_days_ago",
+        "fill_nulls_with": null,
+        "grain_to_date": null,
+        "input_measures": [],
+        "is_private": false,
+        "join_to_timespine": false,
+        "measure": null,
+        "metric_aggregation_params": null,
+        "metrics": [
+          {
+            "alias": "every_2_days_bookers_2_days_ago",
+            "filter": null,
+            "name": "every_2_days_bookers",
+            "offset_to_grain": null,
+            "offset_window": "2 days"
+          }
+        ],
+        "numerator": null,
+        "window": null
+      }
+    },
+    {
+      "config": null,
+      "description": "bookings_fill_nulls_with_0",
+      "filter": null,
+      "label": null,
+      "metadata": null,
+      "name": "bookings_fill_nulls_with_0",
+      "time_granularity": null,
+      "type": "simple",
+      "type_params": {
+        "conversion_type_params": null,
+        "cumulative_type_params": null,
+        "denominator": null,
+        "expr": "1",
+        "fill_nulls_with": 0,
+        "grain_to_date": null,
+        "input_measures": [],
+        "is_private": false,
+        "join_to_timespine": true,
+        "measure": null,
+        "metric_aggregation_params": {
+          "agg": "sum",
+          "agg_params": null,
+          "agg_time_dimension": "ds",
+          "expr": "1",
+          "non_additive_dimension": null,
+          "semantic_model": "bookings_source"
+        },
+        "metrics": null,
+        "numerator": null,
+        "window": null
+      }
+    },
+    {
+      "config": null,
+      "description": "bookings_fill_nulls_with_0_without_time_spine",
+      "filter": null,
+      "label": null,
+      "metadata": null,
+      "name": "bookings_fill_nulls_with_0_without_time_spine",
+      "time_granularity": null,
+      "type": "simple",
+      "type_params": {
+        "conversion_type_params": null,
+        "cumulative_type_params": null,
+        "denominator": null,
+        "expr": "1",
+        "fill_nulls_with": 0,
+        "grain_to_date": null,
+        "input_measures": [],
+        "is_private": false,
+        "join_to_timespine": false,
+        "measure": null,
+        "metric_aggregation_params": {
+          "agg": "sum",
+          "agg_params": null,
+          "agg_time_dimension": "ds",
+          "expr": "1",
+          "non_additive_dimension": null,
+          "semantic_model": "bookings_source"
+        },
+        "metrics": null,
+        "numerator": null,
+        "window": null
+      }
+    },
+    {
+      "config": null,
+      "description": "every_two_days_bookers_fill_nulls_with_0",
+      "filter": null,
+      "label": null,
+      "metadata": null,
+      "name": "every_two_days_bookers_fill_nulls_with_0",
+      "time_granularity": null,
+      "type": "cumulative",
+      "type_params": {
+        "conversion_type_params": null,
+        "cumulative_type_params": {
+          "grain_to_date": null,
+          "period_agg": "first",
+          "window": {
+            "count": 2,
+            "granularity": "day"
+          }
+        },
+        "denominator": null,
+        "expr": null,
+        "fill_nulls_with": 0,
+        "grain_to_date": null,
+        "input_measures": [],
+        "is_private": false,
+        "join_to_timespine": true,
+        "measure": null,
+        "metric_aggregation_params": {
+          "agg": "count_distinct",
+          "agg_params": null,
+          "agg_time_dimension": "ds",
+          "expr": "guest_id",
+          "non_additive_dimension": null,
+          "semantic_model": "bookings_source"
+        },
+        "metrics": null,
+        "numerator": null,
+        "window": null
+      }
+    },
+    {
+      "config": null,
+      "description": "bookings_growth_2_weeks_fill_nulls_with_0_for_non_offset",
+      "filter": null,
+      "label": null,
+      "metadata": null,
+      "name": "bookings_growth_2_weeks_fill_nulls_with_0_for_non_offset",
+      "time_granularity": null,
+      "type": "derived",
+      "type_params": {
+        "conversion_type_params": null,
+        "cumulative_type_params": null,
+        "denominator": null,
+        "expr": "bookings_fill_nulls_with_0 - bookings_2_weeks_ago",
+        "fill_nulls_with": null,
+        "grain_to_date": null,
+        "input_measures": [],
+        "is_private": false,
+        "join_to_timespine": false,
+        "measure": null,
+        "metric_aggregation_params": null,
+        "metrics": [
+          {
+            "alias": null,
+            "filter": null,
+            "name": "bookings_fill_nulls_with_0",
+            "offset_to_grain": null,
+            "offset_window": null
+          },
+          {
+            "alias": "bookings_2_weeks_ago",
+            "filter": null,
+            "name": "bookings",
+            "offset_to_grain": null,
+            "offset_window": "14 days"
+          }
+        ],
+        "numerator": null,
+        "window": null
+      }
+    },
+    {
+      "config": null,
+      "description": "bookings_offset_once",
+      "filter": null,
+      "label": null,
+      "metadata": null,
+      "name": "bookings_offset_once",
+      "time_granularity": null,
+      "type": "derived",
+      "type_params": {
+        "conversion_type_params": null,
+        "cumulative_type_params": null,
+        "denominator": null,
+        "expr": "2 * bookings",
+        "fill_nulls_with": null,
+        "grain_to_date": null,
+        "input_measures": [],
+        "is_private": false,
+        "join_to_timespine": false,
+        "measure": null,
+        "metric_aggregation_params": null,
+        "metrics": [
+          {
+            "alias": null,
+            "filter": null,
+            "name": "bookings",
+            "offset_to_grain": null,
+            "offset_window": "5 days"
+          }
+        ],
+        "numerator": null,
+        "window": null
+      }
+    },
+    {
+      "config": null,
+      "description": "bookings_offset_twice",
+      "filter": null,
+      "label": null,
+      "metadata": null,
+      "name": "bookings_offset_twice",
+      "time_granularity": null,
+      "type": "derived",
+      "type_params": {
+        "conversion_type_params": null,
+        "cumulative_type_params": null,
+        "denominator": null,
+        "expr": "2 * bookings_offset_once",
+        "fill_nulls_with": null,
+        "grain_to_date": null,
+        "input_measures": [],
+        "is_private": false,
+        "join_to_timespine": false,
+        "measure": null,
+        "metric_aggregation_params": null,
+        "metrics": [
+          {
+            "alias": "bookings_offset_once",
+            "filter": null,
+            "name": "bookings_offset_once",
+            "offset_to_grain": null,
+            "offset_window": "2 days"
+          }
+        ],
+        "numerator": null,
+        "window": null
+      }
+    },
+    {
+      "config": null,
+      "description": "booking_fees_since_start_of_month",
+      "filter": null,
+      "label": null,
+      "metadata": null,
+      "name": "booking_fees_since_start_of_month",
+      "time_granularity": null,
+      "type": "derived",
+      "type_params": {
+        "conversion_type_params": null,
+        "cumulative_type_params": null,
+        "denominator": null,
+        "expr": "booking_fees - booking_fees_start_of_month",
+        "fill_nulls_with": null,
+        "grain_to_date": null,
+        "input_measures": [],
+        "is_private": false,
+        "join_to_timespine": false,
+        "measure": null,
+        "metric_aggregation_params": null,
+        "metrics": [
+          {
+            "alias": "booking_fees_start_of_month",
+            "filter": null,
+            "name": "booking_fees",
+            "offset_to_grain": "month",
+            "offset_window": null
+          },
+          {
+            "alias": null,
+            "filter": null,
+            "name": "booking_fees",
+            "offset_to_grain": null,
+            "offset_window": null
+          }
+        ],
+        "numerator": null,
+        "window": null
+      }
+    },
+    {
+      "config": null,
+      "description": "active_listings",
+      "filter": {
+        "where_filters": [
+          {
+            "where_sql_template": "{{ Metric('bookings', ['listing']) }} > 2"
+          }
+        ]
+      },
+      "label": null,
+      "metadata": null,
+      "name": "active_listings",
+      "time_granularity": null,
+      "type": "simple",
+      "type_params": {
+        "conversion_type_params": null,
+        "cumulative_type_params": null,
+        "denominator": null,
+        "expr": "1",
+        "fill_nulls_with": null,
+        "grain_to_date": null,
+        "input_measures": [],
+        "is_private": false,
+        "join_to_timespine": false,
+        "measure": null,
+        "metric_aggregation_params": {
+          "agg": "count",
+          "agg_params": null,
+          "agg_time_dimension": "ds",
+          "expr": "1",
+          "non_additive_dimension": null,
+          "semantic_model": "listings_latest"
+        },
+        "metrics": null,
+        "numerator": null,
+        "window": null
+      }
+    },
+    {
+      "config": null,
+      "description": "popular_listing_bookings_per_booker",
+      "filter": {
+        "where_filters": [
+          {
+            "where_sql_template": "{{ Metric('views', ['listing']) }} > 10"
+          }
+        ]
+      },
+      "label": null,
+      "metadata": null,
+      "name": "popular_listing_bookings_per_booker",
+      "time_granularity": null,
+      "type": "ratio",
+      "type_params": {
+        "conversion_type_params": null,
+        "cumulative_type_params": null,
+        "denominator": {
+          "alias": null,
+          "filter": null,
+          "name": "listings",
+          "offset_to_grain": null,
+          "offset_window": null
+        },
+        "expr": null,
+        "fill_nulls_with": null,
+        "grain_to_date": null,
+        "input_measures": [],
+        "is_private": false,
+        "join_to_timespine": false,
+        "measure": null,
+        "metric_aggregation_params": null,
+        "metrics": null,
+        "numerator": {
+          "alias": null,
+          "filter": null,
+          "name": "listings",
+          "offset_to_grain": null,
+          "offset_window": null
+        },
+        "window": null
+      }
+    },
+    {
+      "config": null,
+      "description": "account_conversions",
+      "filter": null,
+      "label": null,
+      "metadata": null,
+      "name": "account_conversions",
+      "time_granularity": null,
+      "type": "simple",
+      "type_params": {
+        "conversion_type_params": null,
+        "cumulative_type_params": null,
+        "denominator": null,
+        "expr": "1",
+        "fill_nulls_with": null,
+        "grain_to_date": null,
+        "input_measures": [],
+        "is_private": false,
+        "join_to_timespine": false,
+        "measure": null,
+        "metric_aggregation_params": {
+          "agg": "sum",
+          "agg_params": null,
+          "agg_time_dimension": "created_at",
+          "expr": "1",
+          "non_additive_dimension": null,
+          "semantic_model": "conversions_source"
+        },
+        "metrics": null,
+        "numerator": null,
+        "window": null
+      }
+    },
+    {
+      "config": null,
+      "description": "account_signups",
+      "filter": null,
+      "label": null,
+      "metadata": null,
+      "name": "account_signups",
+      "time_granularity": null,
+      "type": "simple",
+      "type_params": {
+        "conversion_type_params": null,
+        "cumulative_type_params": null,
+        "denominator": null,
+        "expr": "1",
+        "fill_nulls_with": null,
+        "grain_to_date": null,
+        "input_measures": [],
+        "is_private": false,
+        "join_to_timespine": false,
+        "measure": null,
+        "metric_aggregation_params": {
+          "agg": "sum",
+          "agg_params": null,
+          "agg_time_dimension": "created_at",
+          "expr": "1",
+          "non_additive_dimension": null,
+          "semantic_model": "signups_source"
+        },
+        "metrics": null,
+        "numerator": null,
+        "window": null
+      }
+    },
+    {
+      "config": null,
+      "description": "archived_users",
+      "filter": null,
+      "label": null,
+      "metadata": null,
+      "name": "archived_users",
+      "time_granularity": null,
+      "type": "simple",
+      "type_params": {
+        "conversion_type_params": null,
+        "cumulative_type_params": null,
+        "denominator": null,
+        "expr": "1",
+        "fill_nulls_with": null,
+        "grain_to_date": null,
+        "input_measures": [],
+        "is_private": false,
+        "join_to_timespine": false,
+        "measure": null,
+        "metric_aggregation_params": {
+          "agg": "sum",
+          "agg_params": null,
+          "agg_time_dimension": "archived_at",
+          "expr": "1",
+          "non_additive_dimension": null,
+          "semantic_model": "users_ds_source"
+        },
+        "metrics": null,
+        "numerator": null,
+        "window": null
+      }
+    },
+    {
+      "config": null,
+      "description": "subdaily_join_to_time_spine_metric",
+      "filter": null,
+      "label": null,
+      "metadata": null,
+      "name": "subdaily_join_to_time_spine_metric",
+      "time_granularity": null,
+      "type": "simple",
+      "type_params": {
+        "conversion_type_params": null,
+        "cumulative_type_params": null,
+        "denominator": null,
+        "expr": "1",
+        "fill_nulls_with": null,
+        "grain_to_date": null,
+        "input_measures": [],
+        "is_private": false,
+        "join_to_timespine": true,
+        "measure": null,
+        "metric_aggregation_params": {
+          "agg": "sum",
+          "agg_params": null,
+          "agg_time_dimension": "archived_at",
+          "expr": "1",
+          "non_additive_dimension": null,
+          "semantic_model": "users_ds_source"
+        },
+        "metrics": null,
+        "numerator": null,
+        "window": null
+      }
+    },
+    {
+      "config": null,
+      "description": "subdaily_offset_window_metric",
+      "filter": null,
+      "label": null,
+      "metadata": null,
+      "name": "subdaily_offset_window_metric",
+      "time_granularity": null,
+      "type": "derived",
+      "type_params": {
+        "conversion_type_params": null,
+        "cumulative_type_params": null,
+        "denominator": null,
+        "expr": "archived_users",
+        "fill_nulls_with": null,
+        "grain_to_date": null,
+        "input_measures": [],
+        "is_private": false,
+        "join_to_timespine": false,
+        "measure": null,
+        "metric_aggregation_params": null,
+        "metrics": [
+          {
+            "alias": "archived_users",
+            "filter": null,
+            "name": "archived_users",
+            "offset_to_grain": null,
+            "offset_window": "1 hour"
+          }
+        ],
+        "numerator": null,
+        "window": null
+      }
+    },
+    {
+      "config": null,
+      "description": "subdaily_offset_grain_to_date_metric",
+      "filter": null,
+      "label": null,
+      "metadata": null,
+      "name": "subdaily_offset_grain_to_date_metric",
+      "time_granularity": null,
+      "type": "derived",
+      "type_params": {
+        "conversion_type_params": null,
+        "cumulative_type_params": null,
+        "denominator": null,
+        "expr": "archived_users",
+        "fill_nulls_with": null,
+        "grain_to_date": null,
+        "input_measures": [],
+        "is_private": false,
+        "join_to_timespine": false,
+        "measure": null,
+        "metric_aggregation_params": null,
+        "metrics": [
+          {
+            "alias": "archived_users",
+            "filter": null,
+            "name": "archived_users",
+            "offset_to_grain": "hour",
+            "offset_window": null
+          }
+        ],
+        "numerator": null,
+        "window": null
+      }
+    },
+    {
+      "config": null,
+      "description": "bookings_plus_views_plus_listings",
+      "filter": null,
+      "label": null,
+      "metadata": null,
+      "name": "bookings_plus_views_plus_listings",
+      "time_granularity": null,
+      "type": "derived",
+      "type_params": {
+        "conversion_type_params": null,
+        "cumulative_type_params": null,
+        "denominator": null,
+        "expr": "bookings + views + listings",
+        "fill_nulls_with": null,
+        "grain_to_date": null,
+        "input_measures": [],
+        "is_private": false,
+        "join_to_timespine": false,
+        "measure": null,
+        "metric_aggregation_params": null,
+        "metrics": [
+          {
+            "alias": null,
+            "filter": null,
+            "name": "bookings",
+            "offset_to_grain": null,
+            "offset_window": null
+          },
+          {
+            "alias": null,
+            "filter": null,
+            "name": "views",
+            "offset_to_grain": null,
+            "offset_window": null
+          },
+          {
+            "alias": null,
+            "filter": null,
+            "name": "listings",
+            "offset_to_grain": null,
+            "offset_window": null
+          }
+        ],
+        "numerator": null,
+        "window": null
+      }
+    },
+    {
+      "config": null,
+      "description": "fill_nulls_derived_test",
+      "filter": null,
+      "label": null,
+      "metadata": null,
+      "name": "fill_nulls_derived_test",
+      "time_granularity": null,
+      "type": "derived",
+      "type_params": {
+        "conversion_type_params": null,
+        "cumulative_type_params": null,
+        "denominator": null,
+        "expr": "bookings_fill_nulls_with_0 + views",
+        "fill_nulls_with": null,
+        "grain_to_date": null,
+        "input_measures": [],
+        "is_private": false,
+        "join_to_timespine": false,
+        "measure": null,
+        "metric_aggregation_params": null,
+        "metrics": [
+          {
+            "alias": null,
+            "filter": null,
+            "name": "bookings_fill_nulls_with_0",
+            "offset_to_grain": null,
+            "offset_window": null
+          },
+          {
+            "alias": null,
+            "filter": null,
+            "name": "views",
+            "offset_to_grain": null,
+            "offset_window": null
+          }
+        ],
+        "numerator": null,
+        "window": null
+      }
+    },
+    {
+      "config": null,
+      "description": "booking_value_p99",
+      "filter": null,
+      "label": null,
+      "metadata": null,
+      "name": "booking_value_p99",
+      "time_granularity": null,
+      "type": "simple",
+      "type_params": {
+        "conversion_type_params": null,
+        "cumulative_type_params": null,
+        "denominator": null,
+        "expr": "booking_value",
+        "fill_nulls_with": null,
+        "grain_to_date": null,
+        "input_measures": [],
+        "is_private": false,
+        "join_to_timespine": false,
+        "measure": null,
+        "metric_aggregation_params": {
+          "agg": "percentile",
+          "agg_params": {
+            "percentile": 0.99
+          },
+          "agg_time_dimension": "ds",
+          "expr": "booking_value",
+          "non_additive_dimension": null,
+          "semantic_model": "bookings_source"
+        },
+        "metrics": null,
+        "numerator": null,
+        "window": null
+      }
+    },
+    {
+      "config": null,
+      "description": "discrete_booking_value_p99",
+      "filter": null,
+      "label": null,
+      "metadata": null,
+      "name": "discrete_booking_value_p99",
+      "time_granularity": null,
+      "type": "simple",
+      "type_params": {
+        "conversion_type_params": null,
+        "cumulative_type_params": null,
+        "denominator": null,
+        "expr": "booking_value",
+        "fill_nulls_with": null,
+        "grain_to_date": null,
+        "input_measures": [],
+        "is_private": false,
+        "join_to_timespine": false,
+        "measure": null,
+        "metric_aggregation_params": {
+          "agg": "percentile",
+          "agg_params": {
+            "percentile": 0.99,
+            "use_discrete_percentile": true
+          },
+          "agg_time_dimension": "ds",
+          "expr": "booking_value",
+          "non_additive_dimension": null,
+          "semantic_model": "bookings_source"
+        },
+        "metrics": null,
+        "numerator": null,
+        "window": null
+      }
+    },
+    {
+      "config": null,
+      "description": "approximate_continuous_booking_value_p99",
+      "filter": null,
+      "label": null,
+      "metadata": null,
+      "name": "approximate_continuous_booking_value_p99",
+      "time_granularity": null,
+      "type": "simple",
+      "type_params": {
+        "conversion_type_params": null,
+        "cumulative_type_params": null,
+        "denominator": null,
+        "expr": "booking_value",
+        "fill_nulls_with": null,
+        "grain_to_date": null,
+        "input_measures": [],
+        "is_private": false,
+        "join_to_timespine": false,
+        "measure": null,
+        "metric_aggregation_params": {
+          "agg": "approximate_continuous",
+          "agg_params": {
+            "percentile": 0.99
+          },
+          "agg_time_dimension": "ds",
+          "expr": "booking_value",
+          "non_additive_dimension": null,
+          "semantic_model": "bookings_source"
+        },
+        "metrics": null,
+        "numerator": null,
+        "window": null
+      }
+    },
+    {
+      "config": null,
+      "description": "approximate_discrete_booking_value_p99",
+      "filter": null,
+      "label": null,
+      "metadata": null,
+      "name": "approximate_discrete_booking_value_p99",
+      "time_granularity": null,
+      "type": "simple",
+      "type_params": {
+        "conversion_type_params": null,
+        "cumulative_type_params": null,
+        "denominator": null,
+        "expr": "booking_value",
+        "fill_nulls_with": null,
+        "grain_to_date": null,
+        "input_measures": [],
+        "is_private": false,
+        "join_to_timespine": false,
+        "measure": null,
+        "metric_aggregation_params": {
+          "agg": "approximate_discrete",
+          "agg_params": {
+            "percentile": 0.99
+          },
+          "agg_time_dimension": "ds",
+          "expr": "booking_value",
+          "non_additive_dimension": null,
+          "semantic_model": "bookings_source"
+        },
+        "metrics": null,
+        "numerator": null,
+        "window": null
+      }
+    },
+    {
+      "config": null,
+      "description": "double_counted_delayed_bookings",
+      "filter": null,
+      "label": null,
+      "metadata": null,
+      "name": "double_counted_delayed_bookings",
+      "time_granularity": null,
+      "type": "derived",
+      "type_params": {
+        "conversion_type_params": null,
+        "cumulative_type_params": null,
+        "denominator": null,
+        "expr": "delayed_bookings * 2",
+        "fill_nulls_with": null,
+        "grain_to_date": null,
+        "input_measures": [],
+        "is_private": false,
+        "join_to_timespine": false,
+        "measure": null,
+        "metric_aggregation_params": null,
+        "metrics": [
+          {
+            "alias": "delayed_bookings",
+            "filter": {
+              "where_filters": [
+                {
+                  "where_sql_template": "NOT {{ Dimension('booking__is_instant') }}"
+                }
+              ]
+            },
+            "name": "bookings",
+            "offset_to_grain": null,
+            "offset_window": null
+          }
+        ],
+        "numerator": null,
+        "window": null
+      }
+    },
+    {
+      "config": null,
+      "description": "every_two_days_bookers",
+      "filter": null,
+      "label": null,
+      "metadata": null,
+      "name": "every_two_days_bookers",
+      "time_granularity": null,
+      "type": "cumulative",
+      "type_params": {
+        "conversion_type_params": null,
+        "cumulative_type_params": {
+          "grain_to_date": null,
+          "period_agg": "first",
+          "window": {
+            "count": 2,
+            "granularity": "day"
+          }
+        },
+        "denominator": null,
+        "expr": null,
+        "fill_nulls_with": null,
+        "grain_to_date": null,
+        "input_measures": [],
+        "is_private": false,
+        "join_to_timespine": false,
+        "measure": null,
+        "metric_aggregation_params": {
+          "agg": "count_distinct",
+          "agg_params": null,
+          "agg_time_dimension": "ds",
+          "expr": "guest_id",
+          "non_additive_dimension": null,
+          "semantic_model": "bookings_source"
+        },
+        "metrics": null,
+        "numerator": null,
+        "window": null
+      }
+    },
+    {
+      "config": null,
+      "description": "instant_booking_fraction_of_max_value",
+      "filter": null,
+      "label": null,
+      "metadata": null,
+      "name": "instant_booking_fraction_of_max_value",
+      "time_granularity": null,
+      "type": "ratio",
+      "type_params": {
+        "conversion_type_params": null,
+        "cumulative_type_params": null,
+        "denominator": {
+          "alias": null,
+          "filter": null,
+          "name": "max_booking_value",
+          "offset_to_grain": null,
+          "offset_window": null
+        },
+        "expr": null,
+        "fill_nulls_with": null,
+        "grain_to_date": null,
+        "input_measures": [],
+        "is_private": false,
+        "join_to_timespine": false,
+        "measure": null,
+        "metric_aggregation_params": null,
+        "metrics": null,
+        "numerator": {
+          "alias": null,
+          "filter": {
+            "where_filters": [
+              {
+                "where_sql_template": "{{ Dimension('booking__is_instant') }}"
+              }
+            ]
+          },
+          "name": "average_booking_value",
+          "offset_to_grain": null,
+          "offset_window": null
+        },
+        "window": null
+      }
+    },
+    {
+      "config": null,
+      "description": "instant_booking_value_ratio",
+      "filter": null,
+      "label": null,
+      "metadata": null,
+      "name": "instant_booking_value_ratio",
+      "time_granularity": null,
+      "type": "ratio",
+      "type_params": {
+        "conversion_type_params": null,
+        "cumulative_type_params": null,
+        "denominator": {
+          "alias": null,
+          "filter": null,
+          "name": "booking_value",
+          "offset_to_grain": null,
+          "offset_window": null
+        },
+        "expr": null,
+        "fill_nulls_with": null,
+        "grain_to_date": null,
+        "input_measures": [],
+        "is_private": false,
+        "join_to_timespine": false,
+        "measure": null,
+        "metric_aggregation_params": null,
+        "metrics": null,
+        "numerator": {
+          "alias": "booking_value_with_is_instant_constraint",
+          "filter": {
+            "where_filters": [
+              {
+                "where_sql_template": "{{ Dimension('booking__is_instant') }}"
+              }
+            ]
+          },
+          "name": "booking_value",
+          "offset_to_grain": null,
+          "offset_window": null
+        },
+        "window": null
+      }
+    },
+    {
+      "config": null,
+      "description": "instant_bookings_with_measure_filter",
+      "filter": {
+        "where_filters": [
+          {
+            "where_sql_template": "{{ Dimension('booking__is_instant') }}"
+          },
+          {
+            "where_sql_template": "{{ Entity('listing') }} IS NOT NULL"
+          }
+        ]
+      },
+      "label": null,
+      "metadata": null,
+      "name": "instant_bookings_with_measure_filter",
+      "time_granularity": null,
+      "type": "simple",
+      "type_params": {
+        "conversion_type_params": null,
+        "cumulative_type_params": null,
+        "denominator": null,
+        "expr": "1",
+        "fill_nulls_with": null,
+        "grain_to_date": null,
+        "input_measures": [],
+        "is_private": false,
+        "join_to_timespine": true,
+        "measure": null,
+        "metric_aggregation_params": {
+          "agg": "sum",
+          "agg_params": null,
+          "agg_time_dimension": "ds",
+          "expr": "1",
+          "non_additive_dimension": null,
+          "semantic_model": "bookings_source"
+        },
+        "metrics": null,
+        "numerator": null,
+        "window": null
+      }
+    },
+    {
+      "config": null,
+      "description": "lux_booking_fraction_of_max_value",
+      "filter": null,
+      "label": null,
+      "metadata": null,
+      "name": "lux_booking_fraction_of_max_value",
+      "time_granularity": null,
+      "type": "ratio",
+      "type_params": {
+        "conversion_type_params": null,
+        "cumulative_type_params": null,
+        "denominator": {
+          "alias": null,
+          "filter": null,
+          "name": "max_booking_value",
+          "offset_to_grain": null,
+          "offset_window": null
+        },
+        "expr": null,
+        "fill_nulls_with": null,
+        "grain_to_date": null,
+        "input_measures": [],
+        "is_private": false,
+        "join_to_timespine": false,
+        "measure": null,
+        "metric_aggregation_params": null,
+        "metrics": null,
+        "numerator": {
+          "alias": null,
+          "filter": {
+            "where_filters": [
+              {
+                "where_sql_template": "{{ Dimension('listing__is_lux_latest') }}"
+              }
+            ]
+          },
+          "name": "average_booking_value",
+          "offset_to_grain": null,
+          "offset_window": null
+        },
+        "window": null
+      }
+    },
+    {
+      "config": null,
+      "description": "lux_booking_value_rate_expr",
+      "filter": null,
+      "label": null,
+      "metadata": null,
+      "name": "lux_booking_value_rate_expr",
+      "time_granularity": null,
+      "type": "derived",
+      "type_params": {
+        "conversion_type_params": null,
+        "cumulative_type_params": null,
+        "denominator": null,
+        "expr": "average_booking_value * bookings / NULLIF(booking_value, 0)",
+        "fill_nulls_with": null,
+        "grain_to_date": null,
+        "input_measures": [],
+        "is_private": false,
+        "join_to_timespine": false,
+        "measure": null,
+        "metric_aggregation_params": null,
+        "metrics": [
+          {
+            "alias": null,
+            "filter": {
+              "where_filters": [
+                {
+                  "where_sql_template": "{{ Dimension('listing__is_lux_latest') }}"
+                }
+              ]
+            },
+            "name": "average_booking_value",
+            "offset_to_grain": null,
+            "offset_window": null
+          },
+          {
+            "alias": null,
+            "filter": {
+              "where_filters": [
+                {
+                  "where_sql_template": "{{ Dimension('listing__is_lux_latest') }}"
+                }
+              ]
+            },
+            "name": "bookings",
+            "offset_to_grain": null,
+            "offset_window": null
+          },
+          {
+            "alias": null,
+            "filter": null,
+            "name": "booking_value",
+            "offset_to_grain": null,
+            "offset_window": null
+          }
+        ],
+        "numerator": null,
+        "window": null
+      }
+    },
+    {
+      "config": null,
+      "description": "median_booking_value",
+      "filter": null,
+      "label": null,
+      "metadata": null,
+      "name": "median_booking_value",
+      "time_granularity": null,
+      "type": "simple",
+      "type_params": {
+        "conversion_type_params": null,
+        "cumulative_type_params": null,
+        "denominator": null,
+        "expr": "booking_value",
+        "fill_nulls_with": null,
+        "grain_to_date": null,
+        "input_measures": [],
+        "is_private": false,
+        "join_to_timespine": false,
+        "measure": null,
+        "metric_aggregation_params": {
+          "agg": "median",
+          "agg_params": null,
+          "agg_time_dimension": "ds",
+          "expr": "booking_value",
+          "non_additive_dimension": null,
+          "semantic_model": "bookings_source"
+        },
+        "metrics": null,
+        "numerator": null,
+        "window": null
+      }
+    },
+    {
+      "config": null,
+      "description": "regional_starting_balance_ratios",
+      "filter": null,
+      "label": null,
+      "metadata": null,
+      "name": "regional_starting_balance_ratios",
+      "time_granularity": null,
+      "type": "ratio",
+      "type_params": {
+        "conversion_type_params": null,
+        "cumulative_type_params": null,
+        "denominator": {
+          "alias": "east_coast_balance_first_day",
+          "filter": {
+            "where_filters": [
+              {
+                "where_sql_template": "{{ Dimension('user__home_state_latest') }} IN ('MD', 'NY', 'TX')"
+              }
+            ]
+          },
+          "name": "total_account_balance_first_day",
+          "offset_to_grain": null,
+          "offset_window": null
+        },
+        "expr": null,
+        "fill_nulls_with": null,
+        "grain_to_date": null,
+        "input_measures": [],
+        "is_private": false,
+        "join_to_timespine": false,
+        "measure": null,
+        "metric_aggregation_params": null,
+        "metrics": null,
+        "numerator": {
+          "alias": "west_coast_balance_first_day",
+          "filter": {
+            "where_filters": [
+              {
+                "where_sql_template": "{{ Dimension('user__home_state_latest') }} IN ('CA', 'HI', 'WA')"
+              }
+            ]
+          },
+          "name": "total_account_balance_first_day",
+          "offset_to_grain": null,
+          "offset_window": null
+        },
+        "window": null
+      }
+    },
+    {
+      "config": null,
+      "description": "simple_subdaily_metric_default_day",
+      "filter": null,
+      "label": null,
+      "metadata": null,
+      "name": "simple_subdaily_metric_default_day",
+      "time_granularity": null,
+      "type": "simple",
+      "type_params": {
+        "conversion_type_params": null,
+        "cumulative_type_params": null,
+        "denominator": null,
+        "expr": "1",
+        "fill_nulls_with": null,
+        "grain_to_date": null,
+        "input_measures": [],
+        "is_private": false,
+        "join_to_timespine": false,
+        "measure": null,
+        "metric_aggregation_params": {
+          "agg": "sum",
+          "agg_params": null,
+          "agg_time_dimension": "archived_at",
+          "expr": "1",
+          "non_additive_dimension": null,
+          "semantic_model": "users_ds_source"
+        },
+        "metrics": null,
+        "numerator": null,
+        "window": null
+      }
+    },
+    {
+      "config": null,
+      "description": "simple_subdaily_metric_default_hour",
+      "filter": null,
+      "label": null,
+      "metadata": null,
+      "name": "simple_subdaily_metric_default_hour",
+      "time_granularity": "hour",
+      "type": "simple",
+      "type_params": {
+        "conversion_type_params": null,
+        "cumulative_type_params": null,
+        "denominator": null,
+        "expr": "1",
+        "fill_nulls_with": null,
+        "grain_to_date": null,
+        "input_measures": [],
+        "is_private": false,
+        "join_to_timespine": false,
+        "measure": null,
+        "metric_aggregation_params": {
+          "agg": "sum",
+          "agg_params": null,
+          "agg_time_dimension": "archived_at",
+          "expr": "1",
+          "non_additive_dimension": null,
+          "semantic_model": "users_ds_source"
+        },
+        "metrics": null,
+        "numerator": null,
+        "window": null
+      }
+    },
+    {
+      "config": null,
+      "description": "subdaily_cumulative_window_metric",
+      "filter": null,
+      "label": null,
+      "metadata": null,
+      "name": "subdaily_cumulative_window_metric",
+      "time_granularity": null,
+      "type": "cumulative",
+      "type_params": {
+        "conversion_type_params": null,
+        "cumulative_type_params": {
+          "grain_to_date": null,
+          "period_agg": "first",
+          "window": {
+            "count": 3,
+            "granularity": "hour"
+          }
+        },
+        "denominator": null,
+        "expr": null,
+        "fill_nulls_with": null,
+        "grain_to_date": null,
+        "input_measures": [],
+        "is_private": false,
+        "join_to_timespine": false,
+        "measure": null,
+        "metric_aggregation_params": {
+          "agg": "sum",
+          "agg_params": null,
+          "agg_time_dimension": "archived_at",
+          "expr": "1",
+          "non_additive_dimension": null,
+          "semantic_model": "users_ds_source"
+        },
+        "metrics": null,
+        "numerator": null,
+        "window": null
+      }
+    },
+    {
+      "config": null,
+      "description": "subdaily_cumulative_grain_to_date_metric",
+      "filter": null,
+      "label": null,
+      "metadata": null,
+      "name": "subdaily_cumulative_grain_to_date_metric",
+      "time_granularity": null,
+      "type": "cumulative",
+      "type_params": {
+        "conversion_type_params": null,
+        "cumulative_type_params": {
+          "grain_to_date": "hour",
+          "period_agg": "first",
+          "window": null
+        },
+        "denominator": null,
+        "expr": null,
+        "fill_nulls_with": null,
+        "grain_to_date": null,
+        "input_measures": [],
+        "is_private": false,
+        "join_to_timespine": false,
+        "measure": null,
+        "metric_aggregation_params": {
+          "agg": "sum",
+          "agg_params": null,
+          "agg_time_dimension": "archived_at",
+          "expr": "1",
+          "non_additive_dimension": null,
+          "semantic_model": "users_ds_source"
+        },
+        "metrics": null,
+        "numerator": null,
+        "window": null
+      }
+    },
+    {
+      "config": null,
+      "description": "total_account_balance_first_day_of_month",
+      "filter": null,
+      "label": null,
+      "metadata": null,
+      "name": "total_account_balance_first_day_of_month",
+      "time_granularity": null,
+      "type": "simple",
+      "type_params": {
+        "conversion_type_params": null,
+        "cumulative_type_params": null,
+        "denominator": null,
+        "expr": "account_balance",
+        "fill_nulls_with": null,
+        "grain_to_date": null,
+        "input_measures": [],
+        "is_private": false,
+        "join_to_timespine": false,
+        "measure": null,
+        "metric_aggregation_params": {
+          "agg": "sum",
+          "agg_params": null,
+          "agg_time_dimension": "ds_month",
+          "expr": "account_balance",
+          "non_additive_dimension": {
+            "name": "ds_month",
+            "window_choice": "min",
+            "window_groupings": []
+          },
+          "semantic_model": "accounts_source"
+        },
+        "metrics": null,
+        "numerator": null,
+        "window": null
+      }
+    },
+    {
+      "config": null,
+      "description": "trailing_2_months_revenue_sub_10",
+      "filter": null,
+      "label": null,
+      "metadata": null,
+      "name": "trailing_2_months_revenue_sub_10",
+      "time_granularity": null,
+      "type": "derived",
+      "type_params": {
+        "conversion_type_params": null,
+        "cumulative_type_params": null,
+        "denominator": null,
+        "expr": "t2mr - 10",
+        "fill_nulls_with": null,
+        "grain_to_date": null,
+        "input_measures": [],
+        "is_private": false,
+        "join_to_timespine": false,
+        "measure": null,
+        "metric_aggregation_params": null,
+        "metrics": [
+          {
+            "alias": "t2mr",
+            "filter": null,
+            "name": "trailing_2_months_revenue",
+            "offset_to_grain": null,
+            "offset_window": null
+          }
+        ],
+        "numerator": null,
+        "window": null
+      }
+    },
+    {
+      "config": null,
+      "description": "visit_buy_conversion_rate",
+      "filter": null,
+      "label": null,
+      "metadata": null,
+      "name": "visit_buy_conversion_rate",
+      "time_granularity": null,
+      "type": "conversion",
+      "type_params": {
+        "conversion_type_params": {
+          "base_measure": {
+            "name": "visits"
+          },
+          "calculation": "conversion_rate",
+          "constant_properties": [],
+          "conversion_measure": {
+            "name": "buys"
+          },
+          "entity": "user",
+          "window": null
+        },
+        "cumulative_type_params": null,
+        "denominator": null,
+        "expr": null,
+        "fill_nulls_with": null,
+        "grain_to_date": null,
+        "input_measures": [],
+        "is_private": false,
+        "join_to_timespine": false,
+        "measure": null,
+        "metric_aggregation_params": null,
+        "metrics": null,
+        "numerator": null,
+        "window": null
+      }
+    }
+  ],
+  "project_configuration": {
+    "dsi_package_version": {
+      "major_version": "0",
+      "minor_version": "0",
+      "patch_version": "0"
+    },
+    "metadata": null,
+    "time_spine_table_configurations": [],
+    "time_spines": [
+      {
+        "custom_granularities": [
+          {
+            "column_name": "alien_day",
+            "name": "alien_day"
+          }
+        ],
+        "node_relation": {
+          "alias": "mf_time_spine",
+          "database": null,
+          "relation_name": null,
+          "schema_name": "main"
+        },
+        "primary_column": {
+          "name": "ds",
+          "time_granularity": "day"
+        }
+      },
+      {
+        "custom_granularities": [],
+        "node_relation": {
+          "alias": "mf_time_spine_hour",
+          "database": null,
+          "relation_name": null,
+          "schema_name": "main"
+        },
+        "primary_column": {
+          "name": "ts",
+          "time_granularity": "hour"
+        }
+      },
+      {
+        "custom_granularities": [],
+        "node_relation": {
+          "alias": "mf_time_spine_second",
+          "database": null,
+          "relation_name": null,
+          "schema_name": "main"
+        },
+        "primary_column": {
+          "name": "ts",
+          "time_granularity": "second"
+        }
+      }
+    ]
+  },
+  "saved_queries": [
+    {
+      "description": "Booking-related metrics that are of the highest priority.",
+      "exports": [],
+      "label": null,
+      "metadata": null,
+      "name": "p0_booking",
+      "query_params": {
+        "group_by": [
+          "TimeDimension('metric_time', 'day')",
+          "Dimension('listing__capacity_latest')"
+        ],
+        "limit": null,
+        "metrics": [
+          "bookings",
+          "instant_bookings"
+        ],
+        "order_by": [],
+        "where": [
+          "{{ Dimension('listing__capacity_latest') }} > 3"
+        ]
+      },
+      "tags": []
+    }
+  ],
+  "semantic_models": [
+    {
+      "config": null,
+      "defaults": {
+        "agg_time_dimension": "ds"
+      },
+      "description": "bookings_source",
+      "dimensions": [
+        {
+          "config": null,
+          "description": null,
+          "expr": null,
+          "is_partition": false,
+          "label": null,
+          "metadata": null,
+          "name": "is_instant",
+          "type": "categorical",
+          "type_params": null
+        },
+        {
+          "config": null,
+          "description": null,
+          "expr": null,
+          "is_partition": false,
+          "label": null,
+          "metadata": null,
+          "name": "ds",
+          "type": "time",
+          "type_params": {
+            "time_granularity": "day",
+            "validity_params": null
+          }
+        },
+        {
+          "config": null,
+          "description": null,
+          "expr": null,
+          "is_partition": true,
+          "label": null,
+          "metadata": null,
+          "name": "ds_partitioned",
+          "type": "time",
+          "type_params": {
+            "time_granularity": "day",
+            "validity_params": null
+          }
+        },
+        {
+          "config": null,
+          "description": null,
+          "expr": null,
+          "is_partition": false,
+          "label": null,
+          "metadata": null,
+          "name": "paid_at",
+          "type": "time",
+          "type_params": {
+            "time_granularity": "day",
+            "validity_params": null
+          }
+        }
+      ],
+      "entities": [
+        {
+          "config": null,
+          "description": null,
+          "expr": "listing_id",
+          "label": null,
+          "metadata": null,
+          "name": "listing",
+          "role": null,
+          "type": "foreign"
+        },
+        {
+          "config": null,
+          "description": null,
+          "expr": "guest_id",
+          "label": null,
+          "metadata": null,
+          "name": "guest",
+          "role": null,
+          "type": "foreign"
+        },
+        {
+          "config": null,
+          "description": null,
+          "expr": "host_id",
+          "label": null,
+          "metadata": null,
+          "name": "host",
+          "role": null,
+          "type": "foreign"
+        }
+      ],
+      "label": null,
+      "measures": [
+        {
+          "agg": "sum",
+          "agg_params": null,
+          "agg_time_dimension": null,
+          "config": null,
+          "create_metric": false,
+          "description": null,
+          "expr": "1",
+          "label": null,
+          "name": "bookings",
+          "non_additive_dimension": null
+        },
+        {
+          "agg": "sum_boolean",
+          "agg_params": null,
+          "agg_time_dimension": null,
+          "config": null,
+          "create_metric": false,
+          "description": null,
+          "expr": "is_instant",
+          "label": null,
+          "name": "instant_bookings",
+          "non_additive_dimension": null
+        },
+        {
+          "agg": "sum",
+          "agg_params": null,
+          "agg_time_dimension": null,
+          "config": null,
+          "create_metric": false,
+          "description": null,
+          "expr": null,
+          "label": null,
+          "name": "booking_value",
+          "non_additive_dimension": null
+        },
+        {
+          "agg": "max",
+          "agg_params": null,
+          "agg_time_dimension": null,
+          "config": null,
+          "create_metric": false,
+          "description": null,
+          "expr": "booking_value",
+          "label": null,
+          "name": "max_booking_value",
+          "non_additive_dimension": null
+        },
+        {
+          "agg": "min",
+          "agg_params": null,
+          "agg_time_dimension": null,
+          "config": null,
+          "create_metric": false,
+          "description": null,
+          "expr": "booking_value",
+          "label": null,
+          "name": "min_booking_value",
+          "non_additive_dimension": null
+        },
+        {
+          "agg": "count_distinct",
+          "agg_params": null,
+          "agg_time_dimension": null,
+          "config": null,
+          "create_metric": false,
+          "description": null,
+          "expr": "guest_id",
+          "label": null,
+          "name": "bookers",
+          "non_additive_dimension": null
+        },
+        {
+          "agg": "average",
+          "agg_params": null,
+          "agg_time_dimension": null,
+          "config": null,
+          "create_metric": false,
+          "description": null,
+          "expr": "booking_value",
+          "label": null,
+          "name": "average_booking_value",
+          "non_additive_dimension": null
+        },
+        {
+          "agg": "sum",
+          "agg_params": null,
+          "agg_time_dimension": "paid_at",
+          "config": null,
+          "create_metric": false,
+          "description": null,
+          "expr": "booking_value",
+          "label": null,
+          "name": "booking_payments",
+          "non_additive_dimension": null
+        },
+        {
+          "agg": "count",
+          "agg_params": null,
+          "agg_time_dimension": null,
+          "config": null,
+          "create_metric": false,
+          "description": null,
+          "expr": "referrer_id",
+          "label": null,
+          "name": "referred_bookings",
+          "non_additive_dimension": null
+        },
+        {
+          "agg": "median",
+          "agg_params": null,
+          "agg_time_dimension": null,
+          "config": null,
+          "create_metric": false,
+          "description": null,
+          "expr": "booking_value",
+          "label": null,
+          "name": "median_booking_value",
+          "non_additive_dimension": null
+        },
+        {
+          "agg": "percentile",
+          "agg_params": null,
+          "agg_time_dimension": null,
+          "config": null,
+          "create_metric": false,
+          "description": null,
+          "expr": "booking_value",
+          "label": null,
+          "name": "booking_value_p99",
+          "non_additive_dimension": null
+        },
+        {
+          "agg": "percentile",
+          "agg_params": null,
+          "agg_time_dimension": null,
+          "config": null,
+          "create_metric": false,
+          "description": null,
+          "expr": "booking_value",
+          "label": null,
+          "name": "discrete_booking_value_p99",
+          "non_additive_dimension": null
+        }
+      ],
+      "metadata": null,
+      "name": "bookings_source",
+      "node_relation": {
+        "alias": "fct_bookings",
+        "database": null,
+        "relation_name": "\"main\".\"fct_bookings\"",
+        "schema_name": "main"
+      },
+      "primary_entity": "booking"
+    },
+    {
+      "config": null,
+      "defaults": {
+        "agg_time_dimension": "ds"
+      },
+      "description": "listings_latest",
+      "dimensions": [
+        {
+          "config": null,
+          "description": null,
+          "expr": "created_at",
+          "is_partition": false,
+          "label": null,
+          "metadata": null,
+          "name": "ds",
+          "type": "time",
+          "type_params": {
+            "time_granularity": "day",
+            "validity_params": null
+          }
+        },
+        {
+          "config": null,
+          "description": null,
+          "expr": null,
+          "is_partition": false,
+          "label": null,
+          "metadata": null,
+          "name": "created_at",
+          "type": "time",
+          "type_params": {
+            "time_granularity": "day",
+            "validity_params": null
+          }
+        },
+        {
+          "config": null,
+          "description": null,
+          "expr": "country",
+          "is_partition": false,
+          "label": null,
+          "metadata": null,
+          "name": "country_latest",
+          "type": "categorical",
+          "type_params": null
+        },
+        {
+          "config": null,
+          "description": null,
+          "expr": "is_lux",
+          "is_partition": false,
+          "label": null,
+          "metadata": null,
+          "name": "is_lux_latest",
+          "type": "categorical",
+          "type_params": null
+        },
+        {
+          "config": null,
+          "description": null,
+          "expr": "capacity",
+          "is_partition": false,
+          "label": null,
+          "metadata": null,
+          "name": "capacity_latest",
+          "type": "categorical",
+          "type_params": null
+        }
+      ],
+      "entities": [
+        {
+          "config": null,
+          "description": null,
+          "expr": "listing_id",
+          "label": null,
+          "metadata": null,
+          "name": "listing",
+          "role": null,
+          "type": "primary"
+        },
+        {
+          "config": null,
+          "description": null,
+          "expr": "user_id",
+          "label": null,
+          "metadata": null,
+          "name": "user",
+          "role": null,
+          "type": "foreign"
+        }
+      ],
+      "label": null,
+      "measures": [
+        {
+          "agg": "sum",
+          "agg_params": null,
+          "agg_time_dimension": null,
+          "config": null,
+          "create_metric": false,
+          "description": null,
+          "expr": "1",
+          "label": null,
+          "name": "listings",
+          "non_additive_dimension": null
+        },
+        {
+          "agg": "max",
+          "agg_params": null,
+          "agg_time_dimension": null,
+          "config": null,
+          "create_metric": false,
+          "description": null,
+          "expr": "capacity",
+          "label": null,
+          "name": "largest_listing",
+          "non_additive_dimension": null
+        },
+        {
+          "agg": "min",
+          "agg_params": null,
+          "agg_time_dimension": null,
+          "config": null,
+          "create_metric": false,
+          "description": null,
+          "expr": "capacity",
+          "label": null,
+          "name": "smallest_listing",
+          "non_additive_dimension": null
+        }
+      ],
+      "metadata": null,
+      "name": "listings_latest",
+      "node_relation": {
+        "alias": "dim_listings_latest",
+        "database": null,
+        "relation_name": "\"main\".\"dim_listings_latest\"",
+        "schema_name": "main"
+      },
+      "primary_entity": null
+    },
+    {
+      "config": null,
+      "defaults": {
+        "agg_time_dimension": "ds"
+      },
+      "description": "views_source",
+      "dimensions": [
+        {
+          "config": null,
+          "description": null,
+          "expr": null,
+          "is_partition": false,
+          "label": null,
+          "metadata": null,
+          "name": "ds",
+          "type": "time",
+          "type_params": {
+            "time_granularity": "day",
+            "validity_params": null
+          }
+        },
+        {
+          "config": null,
+          "description": null,
+          "expr": null,
+          "is_partition": true,
+          "label": null,
+          "metadata": null,
+          "name": "ds_partitioned",
+          "type": "time",
+          "type_params": {
+            "time_granularity": "day",
+            "validity_params": null
+          }
+        }
+      ],
+      "entities": [
+        {
+          "config": null,
+          "description": null,
+          "expr": "listing_id",
+          "label": null,
+          "metadata": null,
+          "name": "listing",
+          "role": null,
+          "type": "foreign"
+        },
+        {
+          "config": null,
+          "description": null,
+          "expr": "user_id",
+          "label": null,
+          "metadata": null,
+          "name": "user",
+          "role": null,
+          "type": "foreign"
+        }
+      ],
+      "label": null,
+      "measures": [
+        {
+          "agg": "sum",
+          "agg_params": null,
+          "agg_time_dimension": null,
+          "config": null,
+          "create_metric": false,
+          "description": null,
+          "expr": "1",
+          "label": null,
+          "name": "views",
+          "non_additive_dimension": null
+        }
+      ],
+      "metadata": null,
+      "name": "views_source",
+      "node_relation": {
+        "alias": "fct_views",
+        "database": null,
+        "relation_name": "\"main\".\"fct_views\"",
+        "schema_name": "main"
+      },
+      "primary_entity": "view"
+    },
+    {
+      "config": null,
+      "defaults": null,
+      "description": "users_latest",
+      "dimensions": [
+        {
+          "config": null,
+          "description": null,
+          "expr": "ds",
+          "is_partition": false,
+          "label": null,
+          "metadata": null,
+          "name": "ds_latest",
+          "type": "time",
+          "type_params": {
+            "time_granularity": "day",
+            "validity_params": null
+          }
+        },
+        {
+          "config": null,
+          "description": null,
+          "expr": null,
+          "is_partition": false,
+          "label": null,
+          "metadata": null,
+          "name": "home_state_latest",
+          "type": "categorical",
+          "type_params": null
+        }
+      ],
+      "entities": [
+        {
+          "config": null,
+          "description": null,
+          "expr": "user_id",
+          "label": null,
+          "metadata": null,
+          "name": "user",
+          "role": null,
+          "type": "primary"
+        }
+      ],
+      "label": null,
+      "measures": [],
+      "metadata": null,
+      "name": "users_latest",
+      "node_relation": {
+        "alias": "dim_users_latest",
+        "database": null,
+        "relation_name": "\"main\".\"dim_users_latest\"",
+        "schema_name": "main"
+      },
+      "primary_entity": null
+    },
+    {
+      "config": null,
+      "defaults": {
+        "agg_time_dimension": "created_at"
+      },
+      "description": "users_ds_source",
+      "dimensions": [
+        {
+          "config": null,
+          "description": null,
+          "expr": null,
+          "is_partition": false,
+          "label": null,
+          "metadata": null,
+          "name": "ds",
+          "type": "time",
+          "type_params": {
+            "time_granularity": "day",
+            "validity_params": null
+          }
+        },
+        {
+          "config": null,
+          "description": null,
+          "expr": null,
+          "is_partition": false,
+          "label": null,
+          "metadata": null,
+          "name": "created_at",
+          "type": "time",
+          "type_params": {
+            "time_granularity": "day",
+            "validity_params": null
+          }
+        },
+        {
+          "config": null,
+          "description": null,
+          "expr": null,
+          "is_partition": true,
+          "label": null,
+          "metadata": null,
+          "name": "ds_partitioned",
+          "type": "time",
+          "type_params": {
+            "time_granularity": "day",
+            "validity_params": null
+          }
+        },
+        {
+          "config": null,
+          "description": null,
+          "expr": null,
+          "is_partition": false,
+          "label": null,
+          "metadata": null,
+          "name": "home_state",
+          "type": "categorical",
+          "type_params": null
+        },
+        {
+          "config": null,
+          "description": null,
+          "expr": null,
+          "is_partition": false,
+          "label": null,
+          "metadata": null,
+          "name": "archived_at",
+          "type": "time",
+          "type_params": {
+            "time_granularity": "hour",
+            "validity_params": null
+          }
+        },
+        {
+          "config": null,
+          "description": null,
+          "expr": null,
+          "is_partition": false,
+          "label": null,
+          "metadata": null,
+          "name": "last_profile_edit_ts",
+          "type": "time",
+          "type_params": {
+            "time_granularity": "millisecond",
+            "validity_params": null
+          }
+        },
+        {
+          "config": null,
+          "description": null,
+          "expr": null,
+          "is_partition": false,
+          "label": null,
+          "metadata": null,
+          "name": "last_login_ts",
+          "type": "time",
+          "type_params": {
+            "time_granularity": "minute",
+            "validity_params": null
+          }
+        },
+        {
+          "config": null,
+          "description": null,
+          "expr": null,
+          "is_partition": false,
+          "label": null,
+          "metadata": null,
+          "name": "bio_added_ts",
+          "type": "time",
+          "type_params": {
+            "time_granularity": "second",
+            "validity_params": null
+          }
+        }
+      ],
+      "entities": [
+        {
+          "config": null,
+          "description": null,
+          "expr": "user_id",
+          "label": null,
+          "metadata": null,
+          "name": "user",
+          "role": null,
+          "type": "primary"
+        }
+      ],
+      "label": null,
+      "measures": [
+        {
+          "agg": "sum",
+          "agg_params": null,
+          "agg_time_dimension": null,
+          "config": null,
+          "create_metric": false,
+          "description": null,
+          "expr": "1",
+          "label": null,
+          "name": "new_users",
+          "non_additive_dimension": null
+        },
+        {
+          "agg": "sum",
+          "agg_params": null,
+          "agg_time_dimension": "archived_at",
+          "config": null,
+          "create_metric": false,
+          "description": null,
+          "expr": "1",
+          "label": null,
+          "name": "archived_users",
+          "non_additive_dimension": null
+        }
+      ],
+      "metadata": null,
+      "name": "users_ds_source",
+      "node_relation": {
+        "alias": "dim_users",
+        "database": null,
+        "relation_name": "\"main\".\"dim_users\"",
+        "schema_name": "main"
+      },
+      "primary_entity": "user"
+    },
+    {
+      "config": null,
+      "defaults": {
+        "agg_time_dimension": "ds"
+      },
+      "description": "revenue",
+      "dimensions": [
+        {
+          "config": null,
+          "description": null,
+          "expr": "created_at",
+          "is_partition": false,
+          "label": null,
+          "metadata": null,
+          "name": "ds",
+          "type": "time",
+          "type_params": {
+            "time_granularity": "day",
+            "validity_params": null
+          }
+        }
+      ],
+      "entities": [
+        {
+          "config": null,
+          "description": null,
+          "expr": "user_id",
+          "label": null,
+          "metadata": null,
+          "name": "user",
+          "role": null,
+          "type": "foreign"
+        }
+      ],
+      "label": null,
+      "measures": [
+        {
+          "agg": "sum",
+          "agg_params": null,
+          "agg_time_dimension": null,
+          "config": null,
+          "create_metric": false,
+          "description": null,
+          "expr": "revenue",
+          "label": null,
+          "name": "txn_revenue",
+          "non_additive_dimension": null
+        }
+      ],
+      "metadata": null,
+      "name": "revenue",
+      "node_relation": {
+        "alias": "fct_revenue",
+        "database": null,
+        "relation_name": "\"main\".\"fct_revenue\"",
+        "schema_name": "main"
+      },
+      "primary_entity": "revenue_instance"
+    },
+    {
+      "config": null,
+      "defaults": {
+        "agg_time_dimension": "ds"
+      },
+      "description": "accounts_source",
+      "dimensions": [
+        {
+          "config": null,
+          "description": null,
+          "expr": null,
+          "is_partition": false,
+          "label": null,
+          "metadata": null,
+          "name": "ds",
+          "type": "time",
+          "type_params": {
+            "time_granularity": "day",
+            "validity_params": null
+          }
+        },
+        {
+          "config": null,
+          "description": null,
+          "expr": "ds_month",
+          "is_partition": false,
+          "label": null,
+          "metadata": null,
+          "name": "ds_month",
+          "type": "time",
+          "type_params": {
+            "time_granularity": "month",
+            "validity_params": null
+          }
+        },
+        {
+          "config": null,
+          "description": null,
+          "expr": null,
+          "is_partition": false,
+          "label": null,
+          "metadata": null,
+          "name": "account_type",
+          "type": "categorical",
+          "type_params": null
+        }
+      ],
+      "entities": [
+        {
+          "config": null,
+          "description": null,
+          "expr": "user_id",
+          "label": null,
+          "metadata": null,
+          "name": "user",
+          "role": null,
+          "type": "foreign"
+        }
+      ],
+      "label": null,
+      "measures": [
+        {
+          "agg": "sum",
+          "agg_params": null,
+          "agg_time_dimension": null,
+          "config": null,
+          "create_metric": false,
+          "description": null,
+          "expr": null,
+          "label": null,
+          "name": "account_balance",
+          "non_additive_dimension": null
+        },
+        {
+          "agg": "sum",
+          "agg_params": null,
+          "agg_time_dimension": null,
+          "config": null,
+          "create_metric": false,
+          "description": null,
+          "expr": "account_balance",
+          "label": null,
+          "name": "total_account_balance_first_day",
+          "non_additive_dimension": {
+            "name": "ds",
+            "window_choice": "min",
+            "window_groupings": []
+          }
+        },
+        {
+          "agg": "sum",
+          "agg_params": null,
+          "agg_time_dimension": null,
+          "config": null,
+          "create_metric": false,
+          "description": null,
+          "expr": "account_balance",
+          "label": null,
+          "name": "current_account_balance_by_user",
+          "non_additive_dimension": {
+            "name": "ds",
+            "window_choice": "max",
+            "window_groupings": [
+              "user"
+            ]
+          }
+        },
+        {
+          "agg": "sum",
+          "agg_params": null,
+          "agg_time_dimension": "ds_month",
+          "config": null,
+          "create_metric": false,
+          "description": null,
+          "expr": "account_balance",
+          "label": null,
+          "name": "total_account_balance_first_day_of_month",
+          "non_additive_dimension": {
+            "name": "ds_month",
+            "window_choice": "min",
+            "window_groupings": []
+          }
+        }
+      ],
+      "metadata": null,
+      "name": "accounts_source",
+      "node_relation": {
+        "alias": "fct_accounts",
+        "database": null,
+        "relation_name": "\"main\".\"fct_accounts\"",
+        "schema_name": "main"
+      },
+      "primary_entity": "account"
+    },
+    {
+      "config": null,
+      "defaults": {
+        "agg_time_dimension": "ds"
+      },
+      "description": "id_verifications",
+      "dimensions": [
+        {
+          "config": null,
+          "description": null,
+          "expr": null,
+          "is_partition": false,
+          "label": null,
+          "metadata": null,
+          "name": "ds",
+          "type": "time",
+          "type_params": {
+            "time_granularity": "day",
+            "validity_params": null
+          }
+        },
+        {
+          "config": null,
+          "description": null,
+          "expr": null,
+          "is_partition": true,
+          "label": null,
+          "metadata": null,
+          "name": "ds_partitioned",
+          "type": "time",
+          "type_params": {
+            "time_granularity": "day",
+            "validity_params": null
+          }
+        },
+        {
+          "config": null,
+          "description": null,
+          "expr": null,
+          "is_partition": false,
+          "label": null,
+          "metadata": null,
+          "name": "verification_type",
+          "type": "categorical",
+          "type_params": null
+        }
+      ],
+      "entities": [
+        {
+          "config": null,
+          "description": null,
+          "expr": "verification_id",
+          "label": null,
+          "metadata": null,
+          "name": "verification",
+          "role": null,
+          "type": "primary"
+        },
+        {
+          "config": null,
+          "description": null,
+          "expr": "user_id",
+          "label": null,
+          "metadata": null,
+          "name": "user",
+          "role": null,
+          "type": "foreign"
+        }
+      ],
+      "label": null,
+      "measures": [
+        {
+          "agg": "sum",
+          "agg_params": null,
+          "agg_time_dimension": null,
+          "config": null,
+          "create_metric": false,
+          "description": null,
+          "expr": "1",
+          "label": null,
+          "name": "identity_verifications",
+          "non_additive_dimension": null
+        }
+      ],
+      "metadata": null,
+      "name": "id_verifications",
+      "node_relation": {
+        "alias": "fct_id_verifications",
+        "database": null,
+        "relation_name": "\"main\".\"fct_id_verifications\"",
+        "schema_name": "main"
+      },
+      "primary_entity": null
+    },
+    {
+      "config": null,
+      "defaults": {
+        "agg_time_dimension": "ds"
+      },
+      "description": "visits_source",
+      "dimensions": [
+        {
+          "config": null,
+          "description": null,
+          "expr": null,
+          "is_partition": false,
+          "label": null,
+          "metadata": null,
+          "name": "ds",
+          "type": "time",
+          "type_params": {
+            "time_granularity": "day",
+            "validity_params": null
+          }
+        },
+        {
+          "config": null,
+          "description": null,
+          "expr": null,
+          "is_partition": false,
+          "label": null,
+          "metadata": null,
+          "name": "referrer_id",
+          "type": "categorical",
+          "type_params": null
+        }
+      ],
+      "entities": [
+        {
+          "config": null,
+          "description": null,
+          "expr": "user_id",
+          "label": null,
+          "metadata": null,
+          "name": "user",
+          "role": null,
+          "type": "foreign"
+        },
+        {
+          "config": null,
+          "description": null,
+          "expr": "session_id",
+          "label": null,
+          "metadata": null,
+          "name": "session",
+          "role": null,
+          "type": "foreign"
+        }
+      ],
+      "label": null,
+      "measures": [
+        {
+          "agg": "count",
+          "agg_params": null,
+          "agg_time_dimension": null,
+          "config": null,
+          "create_metric": false,
+          "description": null,
+          "expr": "1",
+          "label": null,
+          "name": "visits",
+          "non_additive_dimension": null
+        }
+      ],
+      "metadata": null,
+      "name": "visits_source",
+      "node_relation": {
+        "alias": "fct_visits",
+        "database": null,
+        "relation_name": "\"main\".\"fct_visits\"",
+        "schema_name": "main"
+      },
+      "primary_entity": "visit"
+    },
+    {
+      "config": null,
+      "defaults": {
+        "agg_time_dimension": "ds"
+      },
+      "description": "buys_source",
+      "dimensions": [
+        {
+          "config": null,
+          "description": null,
+          "expr": null,
+          "is_partition": false,
+          "label": null,
+          "metadata": null,
+          "name": "ds",
+          "type": "time",
+          "type_params": {
+            "time_granularity": "day",
+            "validity_params": null
+          }
+        }
+      ],
+      "entities": [
+        {
+          "config": null,
+          "description": null,
+          "expr": "user_id",
+          "label": null,
+          "metadata": null,
+          "name": "user",
+          "role": null,
+          "type": "foreign"
+        }
+      ],
+      "label": null,
+      "measures": [
+        {
+          "agg": "count",
+          "agg_params": null,
+          "agg_time_dimension": null,
+          "config": null,
+          "create_metric": false,
+          "description": null,
+          "expr": "1",
+          "label": null,
+          "name": "buys",
+          "non_additive_dimension": null
+        }
+      ],
+      "metadata": null,
+      "name": "buys_source",
+      "node_relation": {
+        "alias": "fct_buys",
+        "database": null,
+        "relation_name": "\"main\".\"fct_buys\"",
+        "schema_name": "main"
+      },
+      "primary_entity": "buy"
+    },
+    {
+      "config": null,
+      "defaults": null,
+      "description": "companies",
+      "dimensions": [
+        {
+          "config": null,
+          "description": null,
+          "expr": null,
+          "is_partition": false,
+          "label": null,
+          "metadata": null,
+          "name": "company_name",
+          "type": "categorical",
+          "type_params": null
+        }
+      ],
+      "entities": [
+        {
+          "config": null,
+          "description": null,
+          "expr": "company_id",
+          "label": null,
+          "metadata": null,
+          "name": "company",
+          "role": null,
+          "type": "primary"
+        },
+        {
+          "config": null,
+          "description": null,
+          "expr": "user_id",
+          "label": null,
+          "metadata": null,
+          "name": "user",
+          "role": null,
+          "type": "unique"
+        }
+      ],
+      "label": null,
+      "measures": [],
+      "metadata": null,
+      "name": "companies",
+      "node_relation": {
+        "alias": "dim_companies",
+        "database": null,
+        "relation_name": "\"main\".\"dim_companies\"",
+        "schema_name": "main"
+      },
+      "primary_entity": null
+    },
+    {
+      "config": null,
+      "defaults": null,
+      "description": "company_regions",
+      "dimensions": [
+        {
+          "config": null,
+          "description": null,
+          "expr": null,
+          "is_partition": false,
+          "label": null,
+          "metadata": null,
+          "name": "region_name",
+          "type": "categorical",
+          "type_params": null
+        }
+      ],
+      "entities": [
+        {
+          "config": null,
+          "description": null,
+          "expr": "region_id",
+          "label": null,
+          "metadata": null,
+          "name": "region",
+          "role": null,
+          "type": "primary"
+        },
+        {
+          "config": null,
+          "description": null,
+          "expr": "company_id",
+          "label": null,
+          "metadata": null,
+          "name": "company",
+          "role": null,
+          "type": "foreign"
+        }
+      ],
+      "label": null,
+      "measures": [],
+      "metadata": null,
+      "name": "company_regions",
+      "node_relation": {
+        "alias": "dim_company_regions",
+        "database": null,
+        "relation_name": "\"main\".\"dim_company_regions\"",
+        "schema_name": "main"
+      },
+      "primary_entity": null
+    },
+    {
+      "config": null,
+      "defaults": null,
+      "description": "lux_listing_mapping",
+      "dimensions": [],
+      "entities": [
+        {
+          "config": null,
+          "description": null,
+          "expr": "listing_id",
+          "label": null,
+          "metadata": null,
+          "name": "listing",
+          "role": null,
+          "type": "primary"
+        },
+        {
+          "config": null,
+          "description": null,
+          "expr": "lux_listing_id",
+          "label": null,
+          "metadata": null,
+          "name": "lux_listing",
+          "role": null,
+          "type": "foreign"
+        }
+      ],
+      "label": null,
+      "measures": [],
+      "metadata": null,
+      "name": "lux_listing_mapping",
+      "node_relation": {
+        "alias": "dim_lux_listing_id_mapping",
+        "database": null,
+        "relation_name": "\"main\".\"dim_lux_listing_id_mapping\"",
+        "schema_name": "main"
+      },
+      "primary_entity": null
+    },
+    {
+      "config": null,
+      "defaults": {
+        "agg_time_dimension": "created_at"
+      },
+      "description": "conversions_source",
+      "dimensions": [
+        {
+          "config": null,
+          "description": null,
+          "expr": null,
+          "is_partition": false,
+          "label": null,
+          "metadata": null,
+          "name": "created_at",
+          "type": "time",
+          "type_params": {
+            "time_granularity": "day",
+            "validity_params": null
+          }
+        },
+        {
+          "config": null,
+          "description": null,
+          "expr": null,
+          "is_partition": false,
+          "label": null,
+          "metadata": null,
+          "name": "channel",
+          "type": "categorical",
+          "type_params": null
+        }
+      ],
+      "entities": [],
+      "label": null,
+      "measures": [
+        {
+          "agg": "sum",
+          "agg_params": null,
+          "agg_time_dimension": null,
+          "config": null,
+          "create_metric": false,
+          "description": null,
+          "expr": "1",
+          "label": null,
+          "name": "conversions",
+          "non_additive_dimension": null
+        }
+      ],
+      "metadata": null,
+      "name": "conversions_source",
+      "node_relation": {
+        "alias": "fct_conversions",
+        "database": null,
+        "relation_name": "\"main\".\"fct_conversions\"",
+        "schema_name": "main"
+      },
+      "primary_entity": "converted_account"
+    },
+    {
+      "config": null,
+      "defaults": {
+        "agg_time_dimension": "created_at"
+      },
+      "description": "signups_source",
+      "dimensions": [
+        {
+          "config": null,
+          "description": null,
+          "expr": null,
+          "is_partition": false,
+          "label": null,
+          "metadata": null,
+          "name": "created_at",
+          "type": "time",
+          "type_params": {
+            "time_granularity": "day",
+            "validity_params": null
+          }
+        },
+        {
+          "config": null,
+          "description": null,
+          "expr": null,
+          "is_partition": false,
+          "label": null,
+          "metadata": null,
+          "name": "source",
+          "type": "categorical",
+          "type_params": null
+        }
+      ],
+      "entities": [],
+      "label": null,
+      "measures": [
+        {
+          "agg": "sum",
+          "agg_params": null,
+          "agg_time_dimension": null,
+          "config": null,
+          "create_metric": false,
+          "description": null,
+          "expr": "1",
+          "label": null,
+          "name": "signups",
+          "non_additive_dimension": null
+        }
+      ],
+      "metadata": null,
+      "name": "signups_source",
+      "node_relation": {
+        "alias": "fct_signups",
+        "database": null,
+        "relation_name": "\"main\".\"fct_signups\"",
+        "schema_name": "main"
+      },
+      "primary_entity": "signup_account"
+    }
+  ]
+}

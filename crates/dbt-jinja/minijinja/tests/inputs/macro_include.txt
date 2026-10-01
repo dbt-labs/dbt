@@ -1,0 +1,6 @@
+{}
+---
+{%- include "example_macro.txt" %}
+{%- set d = "should never show up" %}
+{{ example(1, 2, 3) }}
+{{ example(1, 2) }}

@@ -1,0 +1,24 @@
+---
+source: fs/sa/crates/dbt-jinja/minijinja/tests/test_templates.rs
+description: "{{ one_shot_iterator * 3 }}"
+info:
+  __minijinja_current_path: err_repeat_true_iterator.txt
+  __minijinja_current_span:
+    end_col: 1
+    end_line: 1
+    end_offset: 0
+    start_col: 1
+    start_line: 1
+    start_offset: 0
+input_file: fs/sa/crates/dbt-jinja/minijinja/tests/inputs/err_repeat_true_iterator.txt
+---
+!!!ERROR!!!
+
+Error {
+    kind: InvalidOperation,
+    detail: "cannot repeat unsized iterables",
+    name: "err_repeat_true_iterator.txt",
+}
+
+invalid operation: cannot repeat unsized iterables
+(in err_repeat_true_iterator.txt:1:1)

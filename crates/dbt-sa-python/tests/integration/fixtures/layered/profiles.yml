@@ -1,0 +1,11 @@
+# On-disk, because the catalog tests build in one invocation and read relations
+# back in the next. The path is relative, so it lands in whichever project dir
+# the caller is in — see the `invoke` fixture, which chdirs per invocation.
+layered:
+  target: duckdb_file
+  outputs:
+    duckdb_file:
+      type: duckdb
+      path: db.db
+      threads: 1
+      schema: main

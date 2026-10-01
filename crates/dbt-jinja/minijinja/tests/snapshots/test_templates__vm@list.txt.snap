@@ -1,0 +1,8 @@
+---
+source: minijinja/tests/test_templates.rs
+description: "{{ [1, 2, 3]|length }}"
+info: {}
+input_file: minijinja/tests/inputs/list.txt
+---
+3
+

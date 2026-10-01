@@ -1,0 +1,28 @@
+syntax = "proto3";
+
+package v1.public.events.fusion_onboarding;
+option go_package = "github.com/dbt-labs/proto-golang/v1/public/events/fusion_onboarding";
+
+import "dbtlabs/proto/public/v1/common/vortex_options.proto";
+import "dbtlabs/proto/public/v1/common/vortex_telemetry_contexts.proto";
+import "dbtlabs/proto/public/v1/events/vortex.proto";
+
+// ReadinessDebugSessionOpened is emitted by cloud-ui when a user on a project
+// in the Fusion Readiness Flow clicks to enter Studio in the run-once debug
+// session. This event is used to exclude Fusion-override Studio sessions from
+// Fusion Onboarding metrics: any Fusion user-override session from this
+// user+project on this day is considered a Readiness trial, not real onboarding.
+message ReadinessDebugSessionOpened {
+  option (v1.public.common.vortex_namespace) = VORTEX_ICEBERG_NAMESPACE_TELEMETRY;
+  option (v1.public.common.vortex_enabled) = true;
+
+  v1.events.vortex.VortexMessageEnrichment enrichment = 1;
+  v1.public.common.vortex_telemetry_contexts.VortexTelemetryDbtCloudContext ctx = 2;
+
+  // The debug action the user selected. Known values:
+  //   "debug_in_studio"              — "Debug in Studio" button
+  //   "debug_in_studio_with_copilot" — "Debug in Studio with Copilot" button
+  // Additional values may be added as new debug options are introduced.
+  string action = 3;
+  v1.public.common.vortex_telemetry_contexts.VortexTelemetryCommonContext common_context = 4;
+}

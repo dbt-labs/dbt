@@ -1,0 +1,20 @@
+[package]
+name = "dbt-lineage-core"
+version.workspace = true
+homepage.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "Core lineage interfaces and types."
+license.workspace = true
+keywords.workspace = true
+edition.workspace = true
+
+[lints]
+workspace = true
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+dbt-fusion-workspace-hack = { version = "0.1" }
+dbt-scheduler = { workspace = true }

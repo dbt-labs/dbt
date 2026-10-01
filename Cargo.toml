@@ -1,0 +1,722 @@
+
+[workspace]
+members = [
+
+  # Source Available
+  "crates/dbt-test-primitives",
+  "crates/dbt-agate",
+  "crates/dbt-auth",
+  "crates/dbt-base",
+  "crates/dbt-runtime",
+  "crates/dbt-runtime-macros",
+  "crates/dbt-clap-core",
+  "crates/dbt-goldie",
+  "crates/dbt-docs-core",
+  "crates/dbt-docs-server",
+  "crates/dbt-adapter-core",
+  "crates/dbt-common",
+  "crates/dbt-compilation",
+  "crates/dbt-csv",
+  "crates/dbt-pretty-table",
+  "crates/dbt-cloud-api",
+  "crates/dbt-cloud-config",
+  "crates/dbt-df-providers",
+  "crates/dbt-classification-types",
+  "crates/dbt-features",
+  "crates/dbt-tasks-core",
+  "crates/dbt-tasks-sa",
+  "crates/dbt-init",
+  "crates/dbt-profile-schemas",
+  "crates/dbt-index-core",
+  "crates/dbt-lineage-core",
+  "crates/dbt-lease",
+  "crates/dbt-error",
+  "crates/dbt-freshness",
+  "crates/dbt-frontend-common",
+  "crates/dbt-jinja/minijinja",
+  "crates/minijinja-typecheck-builtins",
+  "crates/dbt-jinja/minijinja-contrib",
+  "crates/dbt-dag",
+  "crates/dbt-defer",
+  "crates/dbt-loader",
+  "crates/dbt-test-containers",
+  "crates/dbt-parser",
+  "crates/dbt-handles",
+  "crates/dbt-jinja-ctx",
+  "crates/dbt-jinja-filters",
+  "crates/dbt-jinja-vars",
+  "crates/dbt-metadata",
+  "crates/dbt-metadata-parquet",
+  "crates/dbt-profile",
+  "crates/dbt-python-core",
+  "crates/dbt-sa-python",
+  "crates/dbt-state",
+  "crates/dbt-schemas",
+  "crates/dbt-schema-store",
+  "crates/dbt-telemetry",
+  "crates/dbt-tracing",
+  "crates/dbt-selector-parser",
+  "crates/dbt-scheduler",
+  "crates/dbt-proc-macros",
+
+  "crates/dbt-adapter",
+  "crates/dbt-adapter-engine",
+  "crates/dbt-adapter-sql",
+  "crates/dbt-ident",
+  "crates/dbt-jinja-utils",
+  "crates/dbt-main",
+  "crates/dbt-dist",
+  "crates/dbt-dist-classify",
+  "crates/dbt-sa-cli",
+  "crates/dbt-adbc",
+  "crates/dbt-artifact-download",
+  "crates/dbt-tracked-stmt",
+  "crates/adbc-record-replay",
+  "crates/dbt-deps",
+  "crates/dbt-skills",
+  "crates/vortex-client",
+  "crates/vortex-events",
+  "crates/dbt-vortex",
+  "crates/proto-rust",
+  "crates/proto-rust-macros",
+  "crates/dbt-env",
+  "crates/dbt-test-utils",
+  "crates/dbt-tui-progress",
+  "crates/dbt-metricflow",
+  "crates/dbt-sql-keywords",
+
+  "crates/dbt-sql/dbt-lexer-bigquery",
+  "crates/dbt-sql/dbt-lexer-databricks",
+  "crates/dbt-sql/dbt-lexer-duckdb",
+  "crates/dbt-sql/dbt-lexer-redshift",
+  "crates/dbt-sql/dbt-lexer-snowflake",
+  "crates/dbt-sql/dbt-lexer-trino",
+  "crates/dbt-sql/dbt-sql-utils",
+
+  "crates/dbt-ci",
+  "crates/dbt-login",
+  "crates/dbt-file-security",
+  "crates/dbt-platform-auth",
+  "crates/dbt-platform",
+
+  # COPYBARA-END-PRIVATE
+]
+exclude = [
+  "wizard/wizard-app/src-tauri",
+  "wizard/dbt-codex",
+  "wizard/wizard-ui",
+]
+
+resolver = "2"
+
+[workspace.package]
+authors = ["dbt Labs <info@getdbt.com>"]
+description = "Fusion: A fast dbt engine, SQL compiler, local development framework, and in-memory analytical database"
+edition = "2024"
+homepage = "https://getdbt.com"
+keywords = ["sql", "parquet", "json", "csv", "dbt"]
+license = "Apache-2.0"
+repository = "https://github.com/dbt-labs/dbt-core"
+version = "2.0.5"
+
+[patch.crates-io]
+
+# ============================= ring build.rs workaround ===========================
+#
+# ring 0.17.14 contains a rogue `build.rs` that forces a full rebuild of our
+# entire workspace on every `cargo xtask` invocation, which completely ruins
+# developer experience. As a workaround, we fork ring 0.17.14 and backport the
+# `build.rs` fix.
+#
+# This is a *temporary* workaround until upstream pushes a new release
+# containing the fix.
+#
+# For more context, see: https://github.com/briansmith/ring/issues/2454
+ring = { git = "https://github.com/sdf-labs/ring.git", rev = "3c35ce0b7e1bd9fe83180b19eda21d302e0b5006" }
+# ==================================================================================
+
+# We currently need a fork of apache/arrow-datafusion with a few patches.
+# However, note that we declare dependencies in our crates with the same version
+# numbers as crates.io / the upstream repository.
+# See https://doc.rust-lang.org/cargo/reference/overriding-dependencies.html#the-patch-section
+datafusion-common = { git = "https://github.com/sdf-labs/datafusion", rev = "c0627e28fdd64ad1e33e3e8f3d6515c7ecb886ed" } # @ sdf/50
+datafusion-expr = { git = "https://github.com/sdf-labs/datafusion", rev = "c0627e28fdd64ad1e33e3e8f3d6515c7ecb886ed" } # @ sdf/50
+datafusion = { git = "https://github.com/sdf-labs/datafusion", rev = "c0627e28fdd64ad1e33e3e8f3d6515c7ecb886ed" } # @ sdf/50
+datafusion-catalog = { git = "https://github.com/sdf-labs/datafusion", rev = "c0627e28fdd64ad1e33e3e8f3d6515c7ecb886ed" } # @ sdf/50
+
+
+# sqlparser
+sqlparser = { git = "https://github.com/sdf-labs/datafusion-sqlparser-rs", rev = "36843ce564b129a0e0a15b58997d8c132b7ce6d4" } # @ sdf/0.58.0
+# OR, when working locally
+# sqlparser = { path = "../datafusion-sqlparser-rs" }
+
+# All arrow dependencies (run `cargo tree --prefix none | grep ^arrow | cut -d ' ' -f1 | sort -u` to get this list)
+arrow-flight = { git = "https://github.com/sdf-labs/arrow-rs", rev = "e4924d7d6d07bb12ba6628e595f9f58c2c02c9a1" } # @ sdf/56.0.0
+arrow = { git = "https://github.com/sdf-labs/arrow-rs", rev = "e4924d7d6d07bb12ba6628e595f9f58c2c02c9a1" } # @ sdf/56.0.0
+arrow-arith = { git = "https://github.com/sdf-labs/arrow-rs", rev = "e4924d7d6d07bb12ba6628e595f9f58c2c02c9a1" } # @ sdf/56.0.0
+arrow-array = { git = "https://github.com/sdf-labs/arrow-rs", rev = "e4924d7d6d07bb12ba6628e595f9f58c2c02c9a1" } # @ sdf/56.0.0
+arrow-buffer = { git = "https://github.com/sdf-labs/arrow-rs", rev = "e4924d7d6d07bb12ba6628e595f9f58c2c02c9a1" } # @ sdf/56.0.0
+arrow-cast = { git = "https://github.com/sdf-labs/arrow-rs", rev = "e4924d7d6d07bb12ba6628e595f9f58c2c02c9a1" } # @ sdf/56.0.0
+arrow-csv = { git = "https://github.com/sdf-labs/arrow-rs", rev = "e4924d7d6d07bb12ba6628e595f9f58c2c02c9a1" } # @ sdf/56.0.0
+arrow-data = { git = "https://github.com/sdf-labs/arrow-rs", rev = "e4924d7d6d07bb12ba6628e595f9f58c2c02c9a1" } # @ sdf/56.0.0
+arrow-ipc = { git = "https://github.com/sdf-labs/arrow-rs", rev = "e4924d7d6d07bb12ba6628e595f9f58c2c02c9a1" } # @ sdf/56.0.0
+arrow-json = { git = "https://github.com/sdf-labs/arrow-rs", rev = "e4924d7d6d07bb12ba6628e595f9f58c2c02c9a1" } # @ sdf/56.0.0
+arrow-ord = { git = "https://github.com/sdf-labs/arrow-rs", rev = "e4924d7d6d07bb12ba6628e595f9f58c2c02c9a1" } # @ sdf/56.0.0
+arrow-row = { git = "https://github.com/sdf-labs/arrow-rs", rev = "e4924d7d6d07bb12ba6628e595f9f58c2c02c9a1" } # @ sdf/56.0.0
+arrow-schema = { git = "https://github.com/sdf-labs/arrow-rs", rev = "e4924d7d6d07bb12ba6628e595f9f58c2c02c9a1" } # @ sdf/56.0.0
+arrow-select = { git = "https://github.com/sdf-labs/arrow-rs", rev = "e4924d7d6d07bb12ba6628e595f9f58c2c02c9a1" } # @ sdf/56.0.0
+arrow-string = { git = "https://github.com/sdf-labs/arrow-rs", rev = "e4924d7d6d07bb12ba6628e595f9f58c2c02c9a1" } # @ sdf/56.0.0
+# OR, when working locally
+# arrow = { path = "../arrow-rs/arrow" }
+# arrow-arith = { path = "../arrow-rs/arrow-arith" }
+# arrow-array = { path = "../arrow-rs/arrow-array" }
+# arrow-buffer = { path = "../arrow-rs/arrow-buffer" }
+# arrow-cast = { path = "../arrow-rs/arrow-cast" }
+# arrow-csv = { path = "../arrow-rs/arrow-csv" }
+# arrow-data = { path = "../arrow-rs/arrow-data" }
+# arrow-ipc = { path = "../arrow-rs/arrow-ipc" }
+# arrow-json = { path = "../arrow-rs/arrow-json" }
+# arrow-ord = { path = "../arrow-rs/arrow-ord" }
+# arrow-row = { path = "../arrow-rs/arrow-row" }
+# arrow-schema = { path = "../arrow-rs/arrow-schema" }
+# arrow-select = { path = "../arrow-rs/arrow-select" }
+# arrow-string = { path = "../arrow-rs/arrow-string" }
+
+[profile.dev]
+# Keep debug info in separate .dwo files rather than bundling into the binary.
+# This significantly speeds up incremental linking on Linux because the linker
+# has far less data to process.
+split-debuginfo = "unpacked"
+
+[profile.dev.package."*"]
+# Enable basic optimizations for all non-member dependencies. This greatly
+# speeds up test times, with no loss of debuggability.
+opt-level = 1
+
+[profile.dev.package.sdf-frontend]
+# This is a quick workaround to reign in the compiled size of sdf-frontend, which
+# as of e522a37f2a7e56c6ba3479dcb2de957f3561eb7e exceeded the 4GB file limit
+# making the whole unbuidable on Windows.
+# FIXME: remove this once sdf-frontend is broken up
+debug = 1
+
+[profile.dev.build-override]
+# Some libraries (e.g. syn, proc-macro2 and all their dependencies) are compiled
+# *for* the build, and also dependend by tests (because we have proc-macro crates).
+# Tests compile with debug symbols enabled, otherwise debug symbols are disabled by default.
+# Force debug symbols to be always enabled to increase cache reuse between `cargo xtask`
+# and `cargo build/run --bin` invocations.
+debug = true
+
+# Release Profiles https://doc.rust-lang.org/book/ch14-01-release-profiles.html
+# To run: cargo build --release
+[profile.release]
+opt-level = 3
+# Link-time optimization: whole-program analysis (across crate boundaries etc.)
+# during the link step. ThinLTO is drastically more efficient (in terms of
+# build time and parallelism) than what one gets with "yes". See
+# http://blog.llvm.org/2016/06/thinlto-scalable-and-incremental-lto.html
+lto = "thin"
+# Parallel compilation within a crate. See:
+# https://doc.rust-lang.org/cargo/reference/profiles.html#codegen-units
+codegen-units = 1
+
+# Used for Linux builds. Symbols are extracted by the CI build script.
+[profile.relwithdebinfo]
+debug = true
+inherits = "release"
+strip = false
+
+# Profile for CI runs
+[profile.ci]
+inherits = "dev"
+opt-level = 3
+
+[workspace.dependencies]
+# These crates should be used by workspace members using `workspace = true`.
+# We only want to specify the versions once.
+# https://doc.rust-lang.org/cargo/reference/specifying-dependencies.html#inheriting-a-dependency-from-a-workspace
+
+
+# fs source available dependencies
+dbt-adapter = { path = "crates/dbt-adapter" }
+dbt-adapter-core = { path = "crates/dbt-adapter-core" }
+dbt-adapter-engine = { path = "crates/dbt-adapter-engine" }
+dbt-adapter-sql = { path = "crates/dbt-adapter-sql" }
+dbt-agate = { path = "crates/dbt-agate" }
+dbt-auth = { path = "crates/dbt-auth" }
+dbt-base = { path = "crates/dbt-base" }
+dbt-clap-core = { path = "crates/dbt-clap-core" }
+dbt-classification-types = { path = "crates/dbt-classification-types" }
+dbt-cloud-api = { path = "crates/dbt-cloud-api" }
+dbt-cloud-config = { path = "crates/dbt-cloud-config" }
+dbt-common = { path = "crates/dbt-common" }
+dbt-compilation = { path = "crates/dbt-compilation" }
+dbt-csv = { path = "crates/dbt-csv" }
+dbt-dag = { path = "crates/dbt-dag" }
+dbt-defer = { path = "crates/dbt-defer" }
+dbt-deps = { path = "crates/dbt-deps" }
+dbt-df-providers = { path = "crates/dbt-df-providers" }
+dbt-dist = { path = "crates/dbt-dist" }
+dbt-dist-classify = { path = "crates/dbt-dist-classify" }
+dbt-docs-core = { path = "crates/dbt-docs-core" }
+dbt-docs-server = { path = "crates/dbt-docs-server", default-features = false }
+dbt-env = { path = "crates/dbt-env" }
+dbt-error = { path = "crates/dbt-error" }
+dbt-feature-fingerprint = { path = "crates/dbt-feature-fingerprint" }
+dbt-feature-gating = { path = "crates/dbt-feature-gating" }
+dbt-features = { path = "crates/dbt-features" }
+dbt-file-security = { path = "crates/dbt-file-security" }
+dbt-freshness = { path = "crates/dbt-freshness" }
+dbt-frontend-common = { path = "crates/dbt-frontend-common" }
+dbt-goldie = { path = "crates/dbt-goldie" }
+dbt-handles = { path = "crates/dbt-handles" }
+dbt-ident = { path = "crates/dbt-ident" }
+dbt-index-core = { path = "crates/dbt-index-core" }
+dbt-init = { path = "crates/dbt-init" }
+dbt-jinja-ctx = { path = "crates/dbt-jinja-ctx" }
+dbt-jinja-filters = { path = "crates/dbt-jinja-filters" }
+dbt-jinja-utils = { path = "crates/dbt-jinja-utils" }
+dbt-jinja-vars = { path = "crates/dbt-jinja-vars" }
+dbt-lease = { path = "crates/dbt-lease" }
+dbt-lineage-core = { path = "crates/dbt-lineage-core" }
+dbt-loader = { path = "crates/dbt-loader" }
+dbt-login = { path = "crates/dbt-login" }
+dbt-main = { path = "crates/dbt-main", default-features = false }
+dbt-metricflow = { path = "crates/dbt-metricflow" }
+dbt-parser = { path = "crates/dbt-parser" }
+dbt-platform = { path = "crates/dbt-platform" }
+dbt-platform-auth = { path = "crates/dbt-platform-auth" }
+dbt-pretty-table = { path = "crates/dbt-pretty-table" }
+dbt-proc-macros = { path = "crates/dbt-proc-macros" }
+dbt-profile = { path = "crates/dbt-profile" }
+dbt-profile-schemas = { path = "crates/dbt-profile-schemas" }
+dbt-python-core = { path = "crates/dbt-python-core" }
+dbt-runtime = { path = "crates/dbt-runtime" }
+dbt-runtime-macros = { path = "crates/dbt-runtime-macros" }
+dbt-scheduler = { path = "crates/dbt-scheduler" }
+dbt-state = { path = "crates/dbt-state" }
+
+dbt-metadata = { path = "crates/dbt-metadata" }
+dbt-metadata-parquet = { path = "crates/dbt-metadata-parquet" }
+dbt-schema-store = { path = "crates/dbt-schema-store" }
+dbt-schemas = { path = "crates/dbt-schemas" }
+dbt-selector-parser = { path = "crates/dbt-selector-parser" }
+dbt-skills = { path = "crates/dbt-skills" }
+dbt-tasks-core = { path = "crates/dbt-tasks-core" }
+dbt-tasks-sa = { path = "crates/dbt-tasks-sa" }
+dbt-telemetry = { path = "crates/dbt-telemetry" }
+dbt-test-containers = { path = "crates/dbt-test-containers" }
+dbt-test-primitives = { path = "crates/dbt-test-primitives" }
+dbt-test-utils = { path = "crates/dbt-test-utils" }
+dbt-tracing = { path = "crates/dbt-tracing" }
+dbt-tui-progress = { path = "crates/dbt-tui-progress" }
+dbt-vortex = { path = "crates/dbt-vortex" }
+proto-rust = { path = "crates/proto-rust" }
+proto-rust-macros = { path = "crates/proto-rust-macros" }
+vortex-client = { path = "crates/vortex-client" }
+vortex-events = { path = "crates/vortex-events" }
+
+dbt-lexer-bigquery = { path = "crates/dbt-sql/dbt-lexer-bigquery" }
+dbt-lexer-databricks = { path = "crates/dbt-sql/dbt-lexer-databricks" }
+dbt-lexer-duckdb = { path = "crates/dbt-sql/dbt-lexer-duckdb" }
+dbt-lexer-redshift = { path = "crates/dbt-sql/dbt-lexer-redshift" }
+dbt-lexer-snowflake = { path = "crates/dbt-sql/dbt-lexer-snowflake" }
+dbt-lexer-trino = { path = "crates/dbt-sql/dbt-lexer-trino" }
+dbt-sql-keywords = { path = "crates/dbt-sql-keywords" }
+dbt-sql-utils = { path = "crates/dbt-sql/dbt-sql-utils" }
+
+# jinja dependencies
+minijinja-typecheck-builtins = { path = "crates/minijinja-typecheck-builtins" }
+
+minijinja = { path = "crates/dbt-jinja/minijinja", features = [
+  "loader",
+  "custom_syntax",
+  "preserve_order",
+  "unicode",
+] }
+minijinja-contrib = { path = "crates/dbt-jinja/minijinja-contrib", features = [
+  "pycompat",
+  "datetime",
+  "timezone",
+  "rand",
+  "unicode_wordwrap",
+  "wordcount",
+] }
+# snowflake-rs fork:
+snowflake-api = { path = "crates/snowflake-rs/snowflake-api" }
+
+# serde
+dbt-yaml = { version = "0.10.6", features = [
+  "filename",
+  "yaml_11",
+  "schemars",
+  "flatten_dunder",
+] }
+erased-serde = "0.4.9"
+rmp-serde = "1.3.0"
+serde = { version = "1.0.147", default-features = false, features = ["derive"] }
+serde_derive = "1.0.215"
+serde_json = "1.0.133"
+serde_repr = "0.1.20"
+serde_with = "3.12.0"
+serde_yaml2 = "0.1.3"
+
+toml = { version = "0.9.10" }
+toml_edit = { version = "0.25.5" }
+
+# cloud providers
+aws-config = { version = "1.1.7", features = ["behavior-version-latest"] }
+aws-sdk-codeartifact = "1.60.0"
+aws-sdk-ecr = "1.60.0"
+aws-sdk-s3 = "1.78.0"
+aws-sdk-secretsmanager = "1.63.0"
+aws-smithy-types = ">=1.4, <1.7.0"
+
+# arrow + parquet
+arrow = { version = "=56.0.0", features = ["prettyprint"] }
+arrow-array = { version = "=56.0.0" }
+arrow-buffer = { version = "=56.0.0" }
+arrow-cast = { version = "=56.0.0" }
+arrow-csv = { version = "=56.0.0" }
+arrow-data = { version = "=56.0.0" }
+arrow-flight = { version = "=56.0.0" }
+arrow-ipc = { version = "=56.0.0" }
+arrow-json = { version = "=56.0.0" }
+arrow-schema = { version = "=56.0.0", features = ["serde"] }
+arrow-select = { version = "=56.0.0" }
+parquet = { version = "=56.0.0" }
+serde_arrow = { version = "0.13.6", features = ["arrow-56"] }
+
+# adbc
+adbc-core = { git = "https://github.com/dbt-labs/arrow-adbc", package = "adbc_core", version = "0.22.0", rev = "d2808cf465feb6efc54ee862cb63104803535adb" } # @ apache-arrow-adbc-22-rust
+adbc-driver-manager = { git = "https://github.com/dbt-labs/arrow-adbc", package = "adbc_driver_manager", version = "0.22.0", rev = "d2808cf465feb6efc54ee862cb63104803535adb" } # @ apache-arrow-adbc-22-rust
+adbc-ffi = { git = "https://github.com/dbt-labs/arrow-adbc", package = "adbc_ffi", version = "0.22.0", rev = "d2808cf465feb6efc54ee862cb63104803535adb" } # @ apache-arrow-adbc-22-rust
+adbc-record-replay = { path = "crates/adbc-record-replay" }
+dbt-adbc = { path = "crates/dbt-adbc" }
+dbt-artifact-download = { path = "crates/dbt-artifact-download" }
+dbt-tracked-stmt = { path = "crates/dbt-tracked-stmt" }
+
+# antlr for frontend
+dbt-antlr4 = { version = "2.0.2", features = [
+  "arena-allocation-limit",
+  "recursion-limit",
+  "stacker",
+] }
+
+# datafusion
+
+# Note: the following line has been removed to discourage dependency on the
+# `datafusion` (aka `datafusion-core`) crate: the `datafusion` crate is an
+# aggregation crate that pulls in and re-exports symbols from the other, finer
+# grained datafusion-xxx crates, while adding some APIs for the datafusion
+# execution runtime. However, it builds much slower than the individual crates.
+# Therefore, only a select few crates (specifically, those that have to interact
+# with the datafusion runtime) should depend on the `datafusion` crate, for all
+# other crates, you should prefer using the individual datafusion-xxx crates
+# directly whenever possible.
+
+datafusion = { version = "50.3.0", default-features = false }
+datafusion-catalog = { version = "50.3.0" }
+datafusion-common = { version = "50.3.0", default-features = false, features = [
+  "object_store",
+  "parquet",
+] }
+datafusion-expr = { version = "50.3.0" }
+datafusion-functions = { version = "50.3.0", default-features = false, features = [
+  "crypto_expressions",
+  "datetime_expressions",
+  "encoding_expressions",
+  "math_expressions",
+  "regex_expressions",
+  "string_expressions",
+  "unicode_expressions",
+] }
+datafusion-functions-aggregate = { version = "50.3.0" }
+datafusion-functions-nested = { version = "50.3.0" }
+datafusion-functions-window = { version = "50.3.0" }
+datafusion-physical-expr = { version = "50.3.0" }
+datafusion-physical-plan = { version = "50.3.0" }
+datafusion-sql = { version = "50.3.0" }
+sqlparser = { version = "0.58.0" }
+
+# uuid
+uuid = { version = "1.16.0", features = ["v4", "serde"] }
+
+# networking & cache
+redis = { version = "0.31.0", features = [
+  "cluster",
+  "cluster-async",
+  "tls-rustls",
+  "tls-rustls-insecure",
+  "tokio-comp",
+  "tokio-rustls-comp",
+] }
+rustls = { version = "0.23.27" }
+rustls-platform-verifier = { version = "0.6", default-features = false }
+# replace default-tls in default features with rustls-tls
+reqwest = { version = "0.12.9", default-features = false, features = [
+  "charset",
+  "gzip",
+  "http2",
+  "json",
+  "rustls-tls",
+  "macos-system-configuration",
+] }
+# latest version depended on by the version of reqwest-retry in use
+gcloud-auth = { version = "1.1.1", default-features = false, features = [
+  "rustls-tls",
+  "jwt-aws-lc-rs",
+] }
+http = { version = "1.2.0", default-features = false }
+reqwest-middleware = { version = "0.4.2" }
+reqwest-retry = { version = "0.7.0" }
+reqwest-sse = { version = "0.1.0" }
+rmcp = { version = "1.4", features = ["server", "macros", "transport-io"] }
+token-source = "1.0.0"
+ureq = { version = "3.0.11", default-features = false, features = [
+  "gzip",
+  "json",
+  "rustls",
+  "platform-verifier",
+] }
+
+# lazy static
+lazy_static = "1.4"
+
+# type derived macros
+enum-map = "2.7.3"
+int-enum = "1.1"
+strum = "0.27.2"
+strum_macros = "0.27.2"
+
+# macros
+paste = "1.0.15"
+scopeguard = { version = "1.2.0" }
+
+# io stuff
+clean-path = "0.2.1"
+console = "0.16.3"
+csv = { version = "1.1", default-features = false }
+dialoguer = "0.12.0"
+diffy = { version = "0.4.2" }
+dirs = "6.0.0"
+dotenvy = "0.15"
+flate2 = "1.0.28"
+gix = { version = "0.72.1", default-features = false, features = ["revision"] }
+gix-discover = "0.40.1"
+glob = "0.3.2"
+ignore = "0.4.23"
+num_cpus = "1.16.0"
+pathdiff = "0.2.3"
+run_script = "0.11.0"
+rust-embed = { version = "8.5.0" }
+schemars = { version = "0.8.22", features = ["indexmap2"] }
+shellexpand = "3.1.1"
+stringmetrics = "2.2.2"
+tar = "0.4.40"
+tempfile = "3.2.0"
+term_size = "0.3.1"
+walkdir = "2.4.0"
+xshell = "0.2.7"
+zip = "8.3.0"
+
+# async + threading
+astral-tokio-tar = { version = "0.6.4" }
+async-compression = { version = "0.4", features = ["tokio", "gzip"] }
+async-trait = "0.1.83"
+crossbeam-queue = "0.3.12"
+crossbeam-skiplist = "0.1.3"
+crossbeam-utils = "0.8"
+futures = "0.3.31"
+futures-core = "0.3"
+futures-lite = "2.0"
+futures-util = "0.3"
+once_cell = "1.18"
+parking_lot = { version = "0.12.3" }
+tokio = { version = "1.41.1", features = [
+  "fs",
+  "io-util",
+  "macros",
+  "net",
+  "process",
+  "rt-multi-thread",
+  "signal",
+  "sync",
+  "time",
+] }
+tokio-stream = "0.1.17"
+tokio-util = { version = "0.7", features = ["io", "compat"] }
+
+# atomic
+arc-swap = { version = "1.7.1" }
+
+# pretty
+comfy-table = { version = "7.1.1" }
+indicatif = { version = "0.18.4" }
+
+# repl
+rustyline = { version = "15.0.0", default-features = false, features = [
+  "derive",
+] }
+
+# datatypes and algos
+base64 = "0.22.1"
+bigdecimal = "0.4.7"
+bimap = "0.6.3"
+bitflags = "2.9.4"
+blake3 = "1.5.0"
+bollard = "0.18.1"
+chrono = { version = "0.4.41", features = ["std", "clock", "serde"] }
+chrono-tz = { version = "0.10" }
+clap = { version = "4.4.4", features = ["derive"] }
+clap_complete = "4.5"
+counter = "0.6.0"
+dashmap = "6.1.0"
+fancy-regex = "0.14.0"
+fs2 = "0.4"
+hex = { version = "0.4.3" }
+humantime = "2.1.0"
+iana-time-zone = { version = "0.1.62" }
+im = "15.1.0"
+indexmap = "2.2.3"
+ini = "1.3.0"
+itertools = "0.14.0"
+libc = "0.2"
+linked-hash-map = "0.5.6"
+linked_hash_set = "0.1.4"
+md5 = "0.7.0"
+normalize-path = "0.2.1"
+num-integer = "0.1.46"
+percent-encoding = "2.3.1"
+petgraph = "0.8.1"
+pkcs8 = { version = "0.10", features = ["pkcs5", "3des"] }
+rand = "0.9.0"
+regex = "1.11.1"
+rsa = "0.9"
+rust-lapper = "1.1.0"
+scc = "3.1.2"
+sha2 = "0.10.8"
+similar = "2.6"
+siphasher = { version = "1.0.1" }
+url = "2.5.4"
+ustr = "1.0.0"
+weak-table = "0.3.2"
+zstd-safe = "7"
+
+# testing
+fake = { version = "4.4.0", features = ["derive", "uuid", "time"] }
+indoc = "2.0.6"
+merge = { version = "0.2.0" }
+mockito = "1.2"
+pretty_assertions = { version = "1.4.1" }
+sqllogictest = "0.26.0"
+
+# protobuf
+bytes = "1.10.1"
+pbjson = "0.8.0"
+pbjson-build = "0.8.0"
+pbjson-types = "0.8.0"
+prost = "0.14"
+prost-build = "0.14"
+prost-types = "0.14"
+pyo3 = { version = "0.29", features = ["extension-module"] }
+
+# jsonschema
+jsonschema-valid = "0.5.2"
+
+# phf
+phf = { version = "0.11" }
+phf_shared = { version = "0.11" }
+
+# error handling
+anyhow = { version = "1.0.74" }
+thiserror = "2"
+
+# logging
+env_logger = "0.10" # To be removed
+
+# tracing (observability)
+# Versioning warning: dbt-labs/fs#6993 tried upgrading to tracing 0.1.43
+# and tracing-subscriber 0.3.22 for upstream perf improvements, but was
+# closed after the newer versions showed consistent degradation. Do not retry
+# that version pair casually. Any tracing/tracing-subscriber update needs
+# explicit local parse/compile/build/show perf testing beyond CI perf tests,
+# which are flaky at the time of writing.
+tracing = "0.1.41"
+tracing-subscriber = { version = "0.3.20", features = ["env-filter", "json"] }
+
+# proc macro dependencies
+prettyplease = "0.2"
+proc-macro2 = "1"
+quote = "1"
+syn = { version = "2", features = ["full"] }
+
+# gRPC dependencies
+tonic = { version = "0.14.1", features = ["transport", "tls-native-roots"] }
+tonic-build = "0.14.1"
+tonic-prost = "0.14.1"
+tonic-prost-build = "0.14.1"
+
+# Security and cryptography dependencies
+ed25519-dalek = { version = "2", features = ["pkcs8", "pem"] }
+jsonwebtoken = { version = "9", features = ["use_pem"] }
+
+# OpenTelemetry (optional embedded OTLP exporter for traces, see dbt-common)
+# Keep the 0.30 OpenTelemetry crates in lockstep. opentelemetry-proto 0.30.1
+# changed its generated structs from prost 0.13 to prost 0.14 while
+# opentelemetry-otlp 0.30.0 still used prost 0.13, breaking fresh resolves;
+# see dbt-labs/fs#5773 and open-telemetry/opentelemetry-rust#3169. The exact
+# proto pin is a 0.30-line workaround, not a restriction on fs using prost 0.14.
+# Any OpenTelemetry update must test a fresh Cargo.lock resolve plus OTLP
+# exporter serialization/shutdown behavior.
+opentelemetry = "0.30.0"
+opentelemetry-otlp = "0.30.0"
+opentelemetry-proto = "=0.30.0"
+opentelemetry-semantic-conventions = "0.30.0"
+opentelemetry_sdk = "0.30.0"
+
+# tracing (local profiling)
+# Compile with --features "tracy-client/enable" to enable integration with the
+# Tracy profiler: https://github.com/wolfpld/tracy
+rusqlite = { version = "0.38", features = ["bundled"] }
+tracy-client = { version = "=0.18.0", default-features = false }
+unicode-segmentation = "1.12"
+
+# axum dependency
+axum = "0.8.5"
+tower = "0.5.2"
+tower-http = { version = "0.6", features = ["trace"] }
+utoipa = { version = "5", features = ["axum_extras"] }
+utoipa-swagger-ui = { version = "9", features = ["axum", "vendored"] }
+
+# system browser opener
+open = "5"
+
+# When updating these lints mind that some crates may not inherit form workspace
+# Use only "warn" in this section if you want to deny a lint. CI run will turn these
+# into deny, and we don't want to disallow local compilation of "dirty" code.
+
+[workspace.lints.clippy]
+# TODO(serramatutu): We should enable "missing_lints_inheritance" when it lands in Rust stable.
+# See: https://github.com/rust-lang/cargo/pull/16588
+# missing_lints_inheritance = "warn"
+dbg_macro = "warn"
+cognitive_complexity = "warn"
+used_underscore_binding = "warn"
+redundant_clone = "warn"
+inefficient_to_string = "warn"
+or_fun_call = "warn"
+unnecessary_lazy_evaluations = "warn"
+collapsible_if = "allow"
+too_many_arguments = "allow"
+# we have many structs that start with a parameter-less constructor,
+# but quickly grow to take more injected dependencies. If we start with
+# a Default::default() constructor, people (and Claude) get the
+# twisted idea that they should still maintain the Default::default()
+# instead of always taking the injected dependencies as parameters.
+new_without_default = "allow"
+
+[workspace.lints.rust]
+unused_qualifications = "warn"
+#unused_crate_dependencies = "warn"

@@ -1,0 +1,384 @@
+syntax = "proto3";
+
+package v1.public.fields.vscode_types;
+option go_package = "github.com/dbt-labs/proto-golang/v1/public/fields/vscode_types";
+
+// User information
+message User {
+    // source used to get credentials for the user (dbt_cloud.yml, web)
+    string credentials_source = 1;
+
+    // dbt cloud user id, can be null if the user is not registered
+    string dbt_cloud_user_id = 2;
+
+    // dbt cloud hostname, can be null if the user is not registered
+    string dbt_cloud_hostname = 3;
+
+    // registration state as reported by the vscode extension
+    string registration_state = 4;
+
+    // dbt cloud account identifier (globally unique, starts with "act_")
+    string dbt_cloud_account_identifier = 5;
+}
+
+// Editor and extension information
+message Editor {
+    // session id (reported by the editor)
+    string session_id = 1;
+
+    // machine id (reported by the editor)
+    string machine_id = 2;
+
+    // hashed mac address (reported by the editor)
+    string mac_machine_id = 3;
+
+    // version of the dbt extension
+    string extension_version = 4;
+
+    // editor name (reported by the editor)
+    string editor_name = 5;
+
+    // editor version (reported by the editor)
+    string editor_version = 6;
+
+}
+
+// User state enum
+enum UserState {
+    // User is not registered
+    USER_STATE_UNREGISTERED = 0;
+    
+    // User is registered but not verified
+    USER_STATE_REGISTERED = 1;
+    
+    // User is registered and verified
+    USER_STATE_VERIFIED = 2;
+    
+    // User's registration has expired
+    USER_STATE_EXPIRED = 3;
+    
+    // Error occurred during verification
+    USER_STATE_VERIFICATION_ERROR = 4;
+
+    // Error occurred during verification
+    USER_STATE_SESSION_EXPIRED = 5;
+}
+
+message CompileError {
+    // Error message
+    string message = 1;
+    // Error codes: https://github.com/dbt-labs/fs/blob/main/fs/sa/crates/dbt-common/src/error/codes.rs
+    int32 code = 2;
+}
+
+// Compile type enum
+enum CompileType {
+    // Full compile
+    FULL = 0;
+    
+    // Speculative compile
+    SPECULATIVE = 1;
+}
+
+enum CompileCause {
+    // Compile was caused by a user saving a file
+    COMPILE_CAUSE_DID_SAVE = 0;
+
+    // Compile was caused by an expliict compile command sent to the LSP
+    COMPILE_CAUSE_COMPILE_LSP_COMMAND = 1;
+    
+    // Compile was caused by a request to refresh sources for a project
+    COMPILE_CAUSE_REFRESH_SOURCES = 2;
+}
+
+// How registration was triggered/determined at click time
+enum RegistrationTriggerMethod {
+    REGISTRATION_TRIGGER_METHOD_UNSPECIFIED = 0;
+    // Registration will use credentials from dbt_cloud.yml file
+    REGISTRATION_TRIGGER_METHOD_DBT_CLOUD_YML = 1;
+    // Registration will proceed via web browser
+    REGISTRATION_TRIGGER_METHOD_WEB = 2;
+}
+
+// Categorizes how a compare operation failed
+enum CompareFailureMode {
+    // Default/unspecified
+    COMPARE_FAILURE_MODE_UNSPECIFIED = 0;
+
+    // No state manifest configured (missing --state, --defer-state, or dbt Cloud auth)
+    COMPARE_FAILURE_MODE_NO_STATE_CONFIGURED = 1;
+
+    // The compare subcommand is not available (e.g. not licensed)
+    COMPARE_FAILURE_MODE_COMPARE_SUBCOMMAND_DOES_NOT_EXIST = 2;
+
+    // The model build step failed before compare could run
+    COMPARE_FAILURE_MODE_BUILD_FAILED = 3;
+
+    // Any other unexpected failure
+    COMPARE_FAILURE_MODE_OTHER = 4;
+
+    // The compare command exited without an error but produced no diff rows.
+    // Reported with compare_success = false so analytics can segment empty runs
+    // from runs that produced actual diffs; user-facing UX shows a friendly empty panel.
+    COMPARE_FAILURE_MODE_EMPTY_RESULTS = 5;
+}
+
+// Actual registration method used (known at completion/error)
+enum RegistrationMethod {
+    REGISTRATION_METHOD_UNSPECIFIED = 0;
+    // Registration completed using dbt_cloud.yml file
+    REGISTRATION_METHOD_DBT_CLOUD_YML = 1;
+    // Registration completed via OAuth flow (web)
+    REGISTRATION_METHOD_OAUTH = 2;
+    // Registration completed via registration code flow (web)
+    REGISTRATION_METHOD_REGISTRATION_CODE = 3;
+}
+
+// Outcome of a Model Docs panel cloud-enrichment attempt.
+// One value is emitted per ExtensionModelDocsEnrichmentCompleted event.
+enum ModelDocsEnrichmentOutcome {
+    MODEL_DOCS_ENRICHMENT_OUTCOME_UNSPECIFIED = 0;
+    MODEL_DOCS_ENRICHMENT_OUTCOME_SUCCEEDED = 1;
+    MODEL_DOCS_ENRICHMENT_OUTCOME_SKIPPED_NO_MANIFEST = 2;
+    MODEL_DOCS_ENRICHMENT_OUTCOME_SKIPPED_NO_CREDENTIALS = 3;
+    MODEL_DOCS_ENRICHMENT_OUTCOME_FAILED_PROJECT_RESOLUTION = 4;
+    MODEL_DOCS_ENRICHMENT_OUTCOME_FAILED_OTHER = 5;
+}    
+    
+// Type of user interaction within the lineage panel
+enum LineageInteractionType {
+    LINEAGE_INTERACTION_TYPE_UNSPECIFIED = 0;
+
+    // Node interactions
+    // User single-clicked a node in the graph
+    LINEAGE_INTERACTION_TYPE_SELECT_NODE = 1;
+    // User opened the file backing a node (double-click or context menu)
+    LINEAGE_INTERACTION_TYPE_OPEN_FILE = 2;
+    // User refocused the graph on a specific node
+    LINEAGE_INTERACTION_TYPE_REFOCUS_ON_NODE = 3;
+    // User requested upstream-only view for a node
+    LINEAGE_INTERACTION_TYPE_SHOW_UPSTREAM = 4;
+    // User requested downstream-only view for a node
+    LINEAGE_INTERACTION_TYPE_SHOW_DOWNSTREAM = 5;
+
+    // Grain switches
+    // User switched from project lineage to column lineage
+    LINEAGE_INTERACTION_TYPE_SWITCH_TO_COLUMN_LINEAGE = 6;
+    // User switched back from column lineage to project lineage
+    LINEAGE_INTERACTION_TYPE_SWITCH_TO_PROJECT_LINEAGE = 7;
+
+    // Toolbar actions
+    // User applied a custom selector from the toolbar
+    LINEAGE_INTERACTION_TYPE_SELECTOR_APPLIED = 8;
+    // User changed the active lens
+    LINEAGE_INTERACTION_TYPE_LENS_CHANGED = 9;
+    // User toggled the legend panel
+    LINEAGE_INTERACTION_TYPE_LEGEND_TOGGLED = 10;
+    // User zoomed in via the toolbar
+    LINEAGE_INTERACTION_TYPE_ZOOM_IN = 11;
+    // User zoomed out via the toolbar
+    LINEAGE_INTERACTION_TYPE_ZOOM_OUT = 12;
+    // User reset the graph view to fit
+    LINEAGE_INTERACTION_TYPE_RESET_VIEW = 13;
+}
+
+// Current grain shown in the lineage panel
+enum LineageGrain {
+    LINEAGE_GRAIN_UNSPECIFIED = 0;
+    // Project-level lineage (nodes are dbt resources)
+    LINEAGE_GRAIN_PROJECT = 1;
+    // Column-level lineage
+    LINEAGE_GRAIN_COLUMN = 2;
+}
+
+// Which lineage UI emitted the event
+enum LineageSurface {
+    LINEAGE_SURFACE_UNSPECIFIED = 0;
+    // The full lineage graph panel
+    LINEAGE_SURFACE_GRAPH_PANEL = 1;
+    // A lineage tree view in the launchpad
+    LINEAGE_SURFACE_LAUNCHPAD_TREE = 2;
+}
+
+// Step in the Get Started onboarding panel
+enum GetStartedStepId {
+    GET_STARTED_STEP_ID_UNSPECIFIED = 0;
+    GET_STARTED_STEP_ID_INSTALL_FUSION = 1;
+    GET_STARTED_STEP_ID_OPEN_PROJECT = 2;
+    GET_STARTED_STEP_ID_CHECK_COMPATIBILITY = 3;
+    GET_STARTED_STEP_ID_REGISTER = 4;
+    GET_STARTED_STEP_ID_INSTALL_WIZARD = 5;
+}
+
+// Status of a Get Started onboarding step
+enum GetStartedStepStatus {
+    GET_STARTED_STEP_STATUS_UNSPECIFIED = 0;
+    GET_STARTED_STEP_STATUS_PENDING = 1;
+    GET_STARTED_STEP_STATUS_IN_PROGRESS = 2;
+    GET_STARTED_STEP_STATUS_COMPLETED = 3;
+}
+
+// Type of interaction with the Get Started onboarding panel
+enum GetStartedInteractionType {
+    GET_STARTED_INTERACTION_TYPE_UNSPECIFIED = 0;
+    // CTA clicks
+    GET_STARTED_INTERACTION_TYPE_INSTALL_FUSION_CLICKED = 1;
+    GET_STARTED_INTERACTION_TYPE_OPEN_PROJECT_CLICKED = 2;
+    GET_STARTED_INTERACTION_TYPE_CHECK_COMPATIBILITY_CLICKED = 3;
+    GET_STARTED_INTERACTION_TYPE_REGISTER_NOW_CLICKED = 4;
+    GET_STARTED_INTERACTION_TYPE_MIGRATE_WITH_AGENT_CLICKED = 5;
+    // Step state transitions
+    GET_STARTED_INTERACTION_TYPE_STEP_COMPLETED = 6;
+    GET_STARTED_INTERACTION_TYPE_ALL_STEPS_COMPLETED = 7;
+    GET_STARTED_INTERACTION_TYPE_INSTALL_WIZARD_CLICKED = 8;
+    GET_STARTED_INTERACTION_TYPE_SKIP_WIZARD_CLICKED = 9;
+}
+
+// Status of a Query Results panel query at completion.
+enum QueryCompletionStatus {
+    QUERY_COMPLETION_STATUS_UNSPECIFIED = 0;
+    // Query ran and returned results without errors.
+    QUERY_COMPLETION_STATUS_SUCCESS = 1;
+    // Query ran but returned an error.
+    QUERY_COMPLETION_STATUS_FAILED = 2;
+    // User cancelled the query before it completed.
+    QUERY_COMPLETION_STATUS_CANCELLED = 3;
+    // Query never ran because the target file is invalid (e.g., not part of an open dbt project).
+    QUERY_COMPLETION_STATUS_INVALID = 4;
+}
+
+// Which entry point initiated a Query Results panel query.
+enum QueryOrigin {
+    QUERY_ORIGIN_UNSPECIFIED = 0;
+    // Triggered by Preview File on a model/SQL file.
+    QUERY_ORIGIN_PREVIEW_FILE = 1;
+    // Triggered by Preview CTE within a model.
+    QUERY_ORIGIN_PREVIEW_CTE = 2;
+    // Triggered by Preview on a user-selected SQL fragment rather than the
+    // whole file. Both paths run through the single dbt.previewFile command.
+    QUERY_ORIGIN_PREVIEW_SELECTION = 3;
+}
+
+// Type of user interaction with the Query Results panel after results render.
+enum QueryResultInteractionType {
+    QUERY_RESULT_INTERACTION_TYPE_UNSPECIFIED = 0;
+    // User sorted the result table by clicking a column header.
+    QUERY_RESULT_INTERACTION_TYPE_SORT = 1;
+    // User copied a single cell value via context menu.
+    QUERY_RESULT_INTERACTION_TYPE_COPY_CELL = 2;
+    // User copied the entire result set as CSV.
+    QUERY_RESULT_INTERACTION_TYPE_COPY_ALL_CSV = 3;
+    // User opened the result set in a new editor tab.
+    QUERY_RESULT_INTERACTION_TYPE_OPEN_IN_EDITOR = 4;
+    // First scroll within a single result set (subsequent scrolls are not reported).
+    QUERY_RESULT_INTERACTION_TYPE_SCROLL = 5;
+}
+
+// Distinguishes passive impressions of a trial-light CTA from active denials of a gated action.
+enum TrialLightGateKind {
+    TRIAL_LIGHT_GATE_KIND_UNSPECIFIED = 0;
+    // A CTA/banner was rendered to the user (e.g. compare or catalog panel CTA).
+    TRIAL_LIGHT_GATE_KIND_CTA_IMPRESSION = 1;
+    // The user invoked a gated action that was blocked (e.g. rename, column lineage).
+    TRIAL_LIGHT_GATE_KIND_ACTION_BLOCKED = 2;
+}
+
+// Why an OAuth session was adopted from the on-disk session file.
+enum OAuthSessionAdoptTrigger {
+    OAUTH_SESSION_ADOPT_TRIGGER_UNSPECIFIED = 0;
+    // Adopted during extension activation (loadAndSync).
+    OAUTH_SESSION_ADOPT_TRIGGER_ACTIVATION = 1;
+    // Adopted just before a refresh because the file held a fresher session (syncFromFile).
+    OAUTH_SESSION_ADOPT_TRIGGER_REFRESH_SYNC = 2;
+}
+
+// Why an OAuth session was persisted to the on-disk session file.
+enum OAuthSessionPersistTrigger {
+    OAUTH_SESSION_PERSIST_TRIGGER_UNSPECIFIED = 0;
+    // Persisted after a successful OAuth callback (handleCallback).
+    OAUTH_SESSION_PERSIST_TRIGGER_CALLBACK = 1;
+    // Persisted after a successful network refresh (refreshAccessToken).
+    OAUTH_SESSION_PERSIST_TRIGGER_REFRESH = 2;
+    // Persisted during activation because SecretStorage had tokens but no file slot existed.
+    OAUTH_SESSION_PERSIST_TRIGGER_ACTIVATION_MIGRATION = 3;
+}
+
+// Outcome of the OAuth session file load attempt at activation.
+enum OAuthSessionFileActionAtActivation {
+    OAUTH_SESSION_FILE_ACTION_AT_ACTIVATION_UNSPECIFIED = 0;
+    // No session file present at activation.
+    OAUTH_SESSION_FILE_ACTION_AT_ACTIVATION_NO_FILE = 1;
+    // File present with our client_id slot; SecretStorage was updated from the file.
+    OAUTH_SESSION_FILE_ACTION_AT_ACTIVATION_ADOPTED = 2;
+    // File present without our slot; SecretStorage tokens were written to the file.
+    OAUTH_SESSION_FILE_ACTION_AT_ACTIVATION_MIGRATED = 3;
+    // File present without our slot, and no migratable secrets; nothing changed.
+    OAUTH_SESSION_FILE_ACTION_AT_ACTIVATION_NO_ACTION = 4;
+    // File present with a newer schema version; we refused to read or overwrite it.
+    OAUTH_SESSION_FILE_ACTION_AT_ACTIVATION_WRONG_VERSION = 5;
+}
+
+// What a language-feature request resolved to. Classified on the client from
+// the target file path, because getProjectInfo does not expose model-paths or
+// macro-paths. Projects that rename the conventional directories land in
+// LSP_RESOURCE_TYPE_UNKNOWN.
+enum LspResourceType {
+    LSP_RESOURCE_TYPE_UNSPECIFIED = 0;
+    LSP_RESOURCE_TYPE_MODEL = 1;
+    LSP_RESOURCE_TYPE_SOURCE = 2;
+    LSP_RESOURCE_TYPE_MACRO = 3;
+    LSP_RESOURCE_TYPE_DOC_BLOCK = 4;
+    LSP_RESOURCE_TYPE_SEED = 5;
+    LSP_RESOURCE_TYPE_SNAPSHOT = 6;
+    LSP_RESOURCE_TYPE_TEST = 7;
+    // Target did not match any known convention.
+    LSP_RESOURCE_TYPE_UNKNOWN = 8;
+}
+
+// Which kind of completion the user accepted. Derived on the client from the
+// CompletionItemKind plus the item's `detail`; the raw `detail` string is never
+// transmitted because it embeds source names.
+enum CompletionCategory {
+    COMPLETION_CATEGORY_UNSPECIFIED = 0;
+    COMPLETION_CATEGORY_MODEL_REF = 1;
+    COMPLETION_CATEGORY_SOURCE = 2;
+    COMPLETION_CATEGORY_MACRO = 3;
+    COMPLETION_CATEGORY_DOC_BLOCK = 4;
+    COMPLETION_CATEGORY_WAREHOUSE_FUNCTION = 5;
+    COMPLETION_CATEGORY_JINJA_SNIPPET = 6;
+    COMPLETION_CATEGORY_COLUMN_FIELD = 7;
+    COMPLETION_CATEGORY_OTHER = 8;
+}
+
+// Which dbt sub-command a run/build/test invocation launched.
+enum DbtCommandKind {
+    DBT_COMMAND_KIND_UNSPECIFIED = 0;
+    DBT_COMMAND_KIND_RUN = 1;
+    DBT_COMMAND_KIND_BUILD = 2;
+    DBT_COMMAND_KIND_TEST = 3;
+    DBT_COMMAND_KIND_CLEAN = 4;
+    DBT_COMMAND_KIND_DEPS = 5;
+}
+
+// How a dbt command invocation ended. CANCELLED corresponds to an undefined
+// exit code (cancelled or never launched), which has no int32 representation.
+enum DbtCommandOutcome {
+    DBT_COMMAND_OUTCOME_UNSPECIFIED = 0;
+    DBT_COMMAND_OUTCOME_SUCCEEDED = 1;
+    DBT_COMMAND_OUTCOME_FAILED = 2;
+    // The user abandoned a task that had already launched.
+    DBT_COMMAND_OUTCOME_CANCELLED = 3;
+    // The task layer refused the invocation and nothing ever launched -- e.g.
+    // no active editor, or a file outside any dbt project. Distinct from
+    // CANCELLED: this is the extension declining, not the user abandoning, and
+    // conflating them would make "how often do users abandon runs"
+    // indistinguishable from "how often did we fail to resolve a project".
+    DBT_COMMAND_OUTCOME_SKIPPED = 4;
+}
+
+// Whether a dbt command targeted a single model or the whole project.
+enum DbtCommandScope {
+    DBT_COMMAND_SCOPE_UNSPECIFIED = 0;
+    DBT_COMMAND_SCOPE_MODEL = 1;
+    DBT_COMMAND_SCOPE_PROJECT = 2;
+}

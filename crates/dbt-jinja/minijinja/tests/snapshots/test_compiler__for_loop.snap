@@ -1,0 +1,16 @@
+---
+source: fs/sa/crates/dbt-jinja/minijinja/tests/test_compiler.rs
+expression: "&c.finish()"
+---
+(
+    [
+        00000 | Lookup("items",  @ 1:1-1:1)  [line 0],
+        00001 | PushLoop(1,  @ 1:1-1:1),
+        00002 | Iterate(5,  @ 1:1-1:1),
+        00003 | Emit( @ 1:1-1:1),
+        00004 | Jump(2,  @ 1:1-1:1),
+        00005 | PopFrame,
+        00006 | EmitRaw("!",  @ 1:1-1:1),
+    ],
+    {},
+)

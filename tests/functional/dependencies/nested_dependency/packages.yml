@@ -1,3 +1,0 @@
-packages:
-  - package: godatadriven/dbt_date
-    version: ">=0.10.0"

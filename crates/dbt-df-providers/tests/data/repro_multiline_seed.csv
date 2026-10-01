@@ -1,0 +1,150 @@
+ID,_FIVETRAN_SYNCED,CREATED_AT,CLIENT_TYPE,NAME,ACTIVE,SCOPES,UPDATED_AT,_FIVETRAN_DELETED,CLIENT_INFO,ALLOWED_DOMAINS,REDIRECT_URIS,OPIN_INFO,THEME_ID,CLIENT_PROVIDER_DATA_ITEMS,PLATFORM,DELETED
+xxxxxxxxxxxxxxxxxxxxxxxx-xxxxxxxxxxxxxxxxxx,xxxx-xx-xx xx:xx:xxxxx xxx,xxxx-xx-xx xx:xx:xxxxx xxx,xxxx,xxxxx xxxxxxx + xxxxxxxx,xxxx,"[
+  ""xxxxxxx"",
+  ""xxxxxx"",
+  ""xxxxx"",
+  ""xxxxxxx""
+]",xxxx-xx-xx xx:xx:xxxxx xxx,xxxxx,{},"[
+  ""xxxx://xxxx.xxx.xxx"",
+  ""xxxxx://xxxx.xxx.xxx"",
+  ""xxxxx://xxxx-xxxxxxxx-xxx.xxx.xxx"",
+  ""xxxxx://xxxx-xxxxxxxx-xx.xxx.xxx""
+]","[
+  ""xxxxxxxx-xxx-xxx://xxxxxxxxxxxxx"",
+  ""xxxxx://xxx-xx-xxx-xxx-xxxxxxx.xxx/xxxxxx/xx/xxxxxxxxxxxxx"",
+  ""xxxxx://xxx-xx-xxx-xxx.xxxxxxx.xxx/xxxxxx/xx/xxxxxxxxxxxxxxx""
+]",,xxx-xxxxxxxx-xxxxxx,[],xxx,
+xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx_xxxxxxxxxx,xxxx-xx-xx xx:xx:xxxxx xxx,xxxx-xx-xx xx:xx:xxxxx xxx,xxxxxxx,xxx xx xxxx,xxxx,,xxxx-xx-xx xx:xx:xxxxx xxx,xxxxx,{},,"[
+  ""xxxxx://xxxx.xxxxxxxxxxx.xxx/xxx/xxxx/xxxxxxxx/xxxxx"",
+  ""xxxxx://xxxxxxxxxxx.xxx/xxx/xxxx/xxxxxxxx/xxxxx""
+]",,,[],xxx xxxxxxx,
+xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx,xxxx-xx-xx xx:xx:xxxxx xxx,xxxx-xx-xx xx:xx:xxxxx xxx,xx,xxxxx-xxxx-xxx-xxxx-xxxxxx-,xxxx,,xxxx-xx-xx xx:xx:xxxxx xxx,xxxxx,,,,,,,,
+xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx_xxxxxxx,xxxx-xx-xx xx:xx:xxxxx xxx,xxxx-xx-xx xx:xx:xxxxx xxx,xx,xxxxx-xxxx-xxxx_xxxxxx_x,xxxx,,xxxx-xx-xx xx:xx:xxxxx xxx,xxxxx,,,,,,,,
+xxxxxxxxxxxxxxxxxxxxxx_xxxxxxxxxxxx_xxxxxxx,xxxx-xx-xx xx:xx:xxxxx xxx,xxxx-xx-xx xx:xx:xxxxx xxx,xx,xxxxx-xxxx-xxx-xxxxxx-xxxx-xxxxxx-xxxxxxxxxxxx,xxxx,,xxxx-xx-xx xx:xx:xxxxx xxx,xxxxx,,,,,,,,
+xxxxxxxxxx-xxxxxxxxxxxxxxxxxxxxxxxxxxxxx-xx,xxxx-xx-xx xx:xx:xxxxx xxx,xxxx-xx-xx xx:xx:xxxxx xxx,xx,xxxxx-xxxx-xxx---xxxxxx-xxxx-xx-xxx---xxx,xxxx,,xxxx-xx-xx xx:xx:xxxxx xxx,xxxxx,,,,,,,,
+x_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx,xxxx-xx-xx xx:xx:xxxxx xxx,xxxx-xx-xx xx:xx:xxxxx xxx,xx,xxxxx-xxxx-xxx-xxxxxx-xxxxxx-xxxxxxxxxxxx,xxxx,,xxxx-xx-xx xx:xx:xxxxx xxx,xxxxx,,,,,,,,
+xxxxxxxxxxxxxxx_xxxxxxxxx_xxxxxxxxxxxxxx-xx,xxxx-xx-xx xx:xx:xxxxx xxx,xxxx-xx-xx xx:xx:xxxxx xxx,xx,xxxxx-xxxx-xxx-xx---xxxxxx-xxxxxx-xxxxxxxxxx-xxxxxxx-xxxxx,xxxx,,xxxx-xx-xx xx:xx:xxxxx xxx,xxxxx,,,,,,,,
+xxxxxxxxxxxxxxxxxxxxxxxxxxxxx-xxxxxxxxxxxxx,xxxx-xx-xx xx:xx:xxxxx xxx,xxxx-xx-xx xx:xx:xxxxx xxx,xx,xxxxx-xxxx-xxx-xx---xxxxxx-xxxxxx-xxxxxxxxxx-xxxxxxx-xxxxxxxxx,xxxx,,xxxx-xx-xx xx:xx:xxxxx xxx,xxxxx,,,,,,,,
+xxx_xxxxxxxxxxx_xxxxxxxxxxxxxxxxxxxxx_xxxxx,xxxx-xx-xx xx:xx:xxxxx xxx,xxxx-xx-xx xx:xx:xxxxx xxx,xx,xxxxx-xxxx-xxx-xx---xxxxxx-xxxxxx-xxxxxxxxxx-xxxxxxx-xxxxx,xxxx,,xxxx-xx-xx xx:xx:xxxxx xxx,xxxxx,,,,,,,,
+xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx_-xx,xxxx-xx-xx xx:xx:xxxxx xxx,xxxx-xx-xx xx:xx:xxxxx xxx,xx,xxxxx-xxxx-xxx-xxxxxx-xxxx-xxxxxx-xxxxxxxxxxxx,xxxx,,xxxx-xx-xx xx:xx:xxxxx xxx,xxxxx,,,,,,,,
+xxxxxxxxxxxxxxxx-x_xxxxxxxxxxxxxxxxxxxxxxxx,xxxx-xx-xx xx:xx:xxxxx xxx,xxxx-xx-xx xx:xx:xxxxx xxx,xx,xxxxx-xxxx-xxx-xx---xxxxxx-xxxxxx-xxxxxxxxxx-xxxxxxx-xxxxx,xxxx,,xxxx-xx-xx xx:xx:xxxxx xxx,xxxxx,,,,,,,,
+xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx,xxxx-xx-xx xx:xx:xxxxx xxx,xxxx-xx-xx xx:xx:xxxxx xxx,xxxxxxx,xxxxxxxxxx xxxxxxxxxx,xxxx,"[
+  ""xxxxxxx:xxxxxx"",
+  ""xxxxxxx"",
+  ""xxxxxxx:xxxxxx"",
+  ""xxxxxxx:xxxx"",
+  ""xxxxxx"",
+  ""xxxxx"",
+  ""xxxxxxx""
+]",xxxx-xx-xx xx:xx:xxxxx xxx,xxxxx,{},,"[
+  ""xxxxx://xxxxxx.xxxxxxxxxxx.xxxxxxxxx.xxxx/xxxx/xxxxx-xxxxx/xxxxxxxx"",
+  ""xxxxx://xxxxxx.xxxxxxxxxxx.xxxxxxxxx.xxxx/xxxx/xxxxx-xxxxx/xxxxxxxx""
+]",,,[],xxx xxxxxxx,
+xxxxxxxxxxxxxxx_xxxxxxxxxxxxxxxxxxxxxx_xxxx,xxxx-xx-xx xx:xx:xxxxx xxx,xxxx-xx-xx xx:xx:xxxxx xxx,xx,xxxxx-xxxx-xxx-xx---xxxxxx-xxxx-xxxxxx-xx-xxxx,xxxx,,xxxx-xx-xx xx:xx:xxxxx xxx,xxxxx,,,,,,,,
+xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx,xxxx-xx-xx xx:xx:xxxxx xxx,xxxx-xx-xx xx:xx:xxxxx xxx,xxxxxxx,xxxx xxxxxx xxxxxxxxxx,xxxx,"[
+  ""xxxxxx"",
+  ""xxxxx"",
+  ""xxxxxxx"",
+  ""xxxxxxx"",
+  ""xxxxxxx:xxxxxx"",
+  ""xxxxxxx:xxxx"",
+  ""xxxxxxx:xxxxxx""
+]",xxxx-xx-xx xx:xx:xxxxx xxx,xxxxx,{},,"[
+  ""xxxxx://xxxxxx.xxxxxxxxxxx.xxxxxxxxx.xxxx/xxxx/xxxxx-xxxxx/xxxxxxxx"",
+  ""xxxxx://xxxxxx.xxxxxxxxxxx.xxxxxxxxx.xxxx/xxxx/xxxxx-xxxxx/xxxxxxxx""
+]",,,[],xxx xxxxxxx,
+xx_xxxxxxxxxxxxxxxxxxxxxxxxxx-xxxxxxxxxxxxx,xxxx-xx-xx xx:xx:xxxxx xxx,xxxx-xx-xx xx:xx:xxxxx xxx,xxxxxxx,xxxx xxxxxxxxx,xxxx,"[
+  ""xxxxxx"",
+  ""xxxxx"",
+  ""xxxxxxx"",
+  ""xxxxxxx"",
+  ""xxxxxxx:xxxxxx"",
+  ""xxxxxxx:xxxx"",
+  ""xxxxxxx:xxxxxx""
+]",xxxx-xx-xx xx:xx:xxxxx xxx,xxxxx,{},,"[
+  ""xxxxx://xxxxxx.xxxxxxxxxxx.xxxxxxxxx.xxxx/xxxx/xxxxx-xxxxx/xxxxxxxx"",
+  ""xxxxx://xxxxxx.xxxxxxxxxxx.xxxxxxxxx.xxxx/xxxx/xxxxx-xxxxx/xxxxxxxx""
+]",,,[],xxx,
+xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx_xxxxxxxxxx,xxxx-xx-xx xx:xx:xxxxx xxx,xxxx-xx-xx xx:xx:xxxxx xxx,xxxx,xxxxxxxx xxxxxxxxxxxx,xxxx,,xxxx-xx-xx xx:xx:xxxxx xxx,xxxxx,{},,,,,"[
+  {
+    ""xxxxxxxx"": ""xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx_xxxxxxxxxx"",
+    ""xxxxxxxxx"": ""xxxx-xx-xxxxx:xx:xx.xxxx"",
+    ""xxxxxxx"": xxxxx,
+    ""xxxxxxxxxx"": """",
+    ""xxxxxxx"": xxxxx,
+    ""xxxxxxxxx"": ""xxxx-xx-xxxxx:xx:xx.xxxx""
+  }
+]",xxx xxxxxxx,
+xxxxxxxxxxxx-xxxxxxxx_xxxxxxx-_xxxxxxxxxxxx,xxxx-xx-xx xx:xx:xxxxx xxx,xxxx-xx-xx xx:xx:xxxxx xxx,xxxxxxx,xxxxxxxxx,xxxx,"[
+  ""xxxxxx"",
+  ""xxxxx"",
+  ""xxxxxxx""
+]",xxxx-xx-xx xx:xx:xxxxx xxx,xxxxx,"{
+  ""xxxxxxxx"": xxxx
+}",,,,,,,
+xxxxxxxxxxxxxxxxxxxxxxxxxxxxx-xxxxxxxxxxxxx,xxxx-xx-xx xx:xx:xxxxx xxx,,,,,,xxxx-xx-xx xx:xx:xxxxx xxx,xxxxx,,,"[
+  ""xxxxx://xxx_xxxxxx/xxxxxxx/xxxxxxxx"",
+  ""xxxxx://xxx_xxxxxx/xxxx"",
+  ""xxxxx://xxxxxx/xxxxxxx/xxxxxxxx"",
+  ""xxxxx%xx%xx%xxxxxxxx%xxxxxxxxx%xxxxxxxxxx"",
+  ""xxxxx://xxxxxx/xxxx""
+]",,,,,
+x-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx,xxxx-xx-xx xx:xx:xxxxx xxx,xxxx-xx-xx xx:xx:xxxxx xxx,,xxxx-xxxx-xxx-xx-xxxxxx,xxxx,"[
+  ""xxxxxx"",
+  ""xxxxx"",
+  ""xxxxxxx""
+]",xxxx-xx-xx xx:xx:xxxxx xxx,xxxxx,,,,,,,,
+xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx-xxxx,xxxx-xx-xx xx:xx:xxxxx xxx,,xxxx,,,,xxxx-xx-xx xx:xx:xxxxx xxx,xxxxx,{},,"[
+  ""xxxxxxxx-xxx-xxx://xxxxxxxxxxxxx"",
+  ""xxxxx://xxx-xxxx-xxx-xxx.xxxxxxx.xxx/xxxxxx/xx/xxxxxxxxxxxxx"",
+  ""xxxxx://xxx-xxxx-xxx-xxx.xxxxxxx.xxx/xxxxxx/xx/xxxxxxxxxxxxxxx""
+]",,,,,
+xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx,xxxx-xx-xx xx:xx:xxxxx xxx,xxxx-xx-xx xx:xx:xxxxx xxx,xxxxxxx,xxxxxxxx,xxxxx,"[
+  ""xxxxxx"",
+  ""xxxxx"",
+  ""xxxxxxx""
+]",xxxx-xx-xx xx:xx:xxxxx xxx,xxxxx,,,"[
+  ""xxxxx://xxxxxxx.xxxx.xxx/xxxxxxxxxx/xx-xxxxxxxx""
+]",,xxx-xxxxxxxx-xxxx-xxx,,,
+xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx,xxxx-xx-xx xx:xx:xxxxx xxx,xxxx-xx-xx xx:xx:xxxxx xxx,xxxx,xx xxxxxxxx xxx,xxxx,"[
+  ""xxxxxx"",
+  ""xxxxx"",
+  ""xxxxxxx""
+]",xxxx-xx-xx xx:xx:xxxxx xxx,xxxxx,"{
+  ""xxxxxx"": ""xxx"",
+  ""xxxxxxxxxxx"": ""xxx""
+}",,,,,[],xxx,
+xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx-xxxx,xxxx-xx-xx xx:xx:xxxxx xxx,xxxx-xx-xx xx:xx:xxxxx xxx,xxxxxxx,xxxxxx,xxxx,,xxxx-xx-xx xx:xx:xxxxx xxx,xxxxx,"{
+  ""xxxxxxxxxxxxx"": ""xxxxxxx"",
+  ""xxxxxxxxxxxxxxxxxxxxxx"": ""x""
+}",,,,,"[
+  {
+    ""xxxxxxxx"": ""xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx-xxxx"",
+    ""xxxxxxxxx"": ""xxxx-xx-xxxxx:xx:xx.xxxx"",
+    ""xxxxxxx"": xxxxx,
+    ""xxxxxxxxxx"": ""xxxxxxxxxxxx"",
+    ""xxxxxxx"": xxxxx,
+    ""xxxxxxxxx"": ""xxxx-xx-xxxxx:xx:xx.xxxx""
+  }
+]",xxxxx xx,
+xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx-xxxxxxxxxxx,xxxx-xx-xx xx:xx:xxxxx xxx,xxxx-xx-xx xx:xx:xxxxx xxx,xxxxxxxx,x-xxxxxx xxx xxx,xxxx,,xxxx-xx-xx xx:xx:xxxxx xxx,xxxxx,"{
+  ""xxxxxx"": ""xxx""
+}",[],[],,,,xxx,
+xxxxxx-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx,xxxx-xx-xx xx:xx:xxxxx xxx,xxxx-xx-xx xx:xx:xxxxx xxx,xxxxxxxx,x-xxxxxx xxx xxxxxxx,xxxx,,xxxx-xx-xx xx:xx:xxxxx xxx,xxxxx,"{
+  ""xxxxxx"": ""xxx""
+}",[],[],,,,xxxxxxx,
+xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx-x,xxxx-xx-xx xx:xx:xxxxx xxx,xxxx-xx-xx xx:xx:xxxxx xxx,xxxxxxxx,x-xxxxxx xxx xxx,xxxx,,xxxx-xx-xx xx:xx:xxxxx xxx,xxxxx,"{
+  ""xxxxxx"": ""xxx""
+}",[],[],,,,xxx,
+xx-xxxxx_-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx,xxxx-xx-xx xx:xx:xxxxx xxx,xxxx-xx-xx xx:xx:xxxxx xxx,xxxx,xxx xxxxxxxx xxxxx xxxxxxx,xxxx,"[
+  ""xxxxxx"",
+  ""xxxxx"",
+  ""xxxxxxx""
+]",xxxx-xx-xx xx:xx:xxxxx xxx,xxxxx,"{
+  ""xxxxxx"": ""xxx"",
+  ""xxxxxxxxxxx"": ""xxx""
+}",[],"[
+  ""xxxxxxxx-xxx-xxx://xxxxxxxxxxxxx"",
+  ""xxxxx://xxx-xxxx-xxx-xxx.xxxxxxx.xxx/xxxxxx/xx/xxxxxxxxxxxxx"",
+  ""xxxxx://xxx-xxxx-xxx-xxx.xxxxxxx.xxx/xxxxxx/xx/xxxxxxxxxxxxxxx""
+]",,xxx-xxxxxxx-xxxxxx,,xxx,

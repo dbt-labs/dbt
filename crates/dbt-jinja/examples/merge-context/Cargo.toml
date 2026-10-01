@@ -1,0 +1,13 @@
+[package]
+name = "merge-context"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+minijinja = { path = "../../minijinja" }
+minijinja-contrib = { path = "../../minijinja-contrib", features = [
+  "datetime",
+] }

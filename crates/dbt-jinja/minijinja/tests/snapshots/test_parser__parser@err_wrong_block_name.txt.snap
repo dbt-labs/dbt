@@ -1,0 +1,12 @@
+---
+source: fs/sa/crates/dbt-jinja/minijinja/tests/test_parser.rs
+description: "{% block foo %}\n    here\n{% endblock bar %}"
+input_file: fs/sa/crates/dbt-jinja/minijinja/tests/parser-inputs/err_wrong_block_name.txt
+---
+Err(
+    Error {
+        kind: SyntaxError,
+        detail: "mismatching name on block. Got `bar`, expected `foo`",
+        name: "err_wrong_block_name.txt",
+    },
+)

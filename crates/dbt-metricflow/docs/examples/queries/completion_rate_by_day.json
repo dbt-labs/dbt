@@ -1,0 +1,4 @@
+{
+  "metrics": ["completion_rate"],
+  "group_by": ["TimeDimension('metric_time', 'day')"]
+}

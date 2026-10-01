@@ -1,0 +1,11 @@
+{{ not x }}
+{{ not not x }}
+{{ not not not x }}
+{{ not true }}
+{{ not not true }}
+{{ not not false }}
+{{ config(enabled=not not foo) }}
+{{ not (not x) }}
+{{ not not x and y }}
+{{ x or not not y }}
+

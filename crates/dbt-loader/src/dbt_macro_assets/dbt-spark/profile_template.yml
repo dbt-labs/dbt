@@ -1,0 +1,42 @@
+fixed:
+  type: spark
+prompts:
+  host:
+    hint: yourorg.sparkhost.com
+  _choose_authentication_method:
+    odbc:
+      _fixed_method: odbc
+      driver:
+        hint: 'path/to/driver'
+      _choose_endpoint_or_cluster:
+        endpoint:
+          endpoint:
+            hint: 'endpoint ID'
+        cluster:
+          cluster:
+            hint: 'cluster ID'
+      token:
+        hint: 'abc123'
+        hide_input: true
+    http:
+      _fixed_method: http
+      token:
+        hint: 'abc123'
+        hide_input: true
+      connect_timeout:
+        default: 10
+        type: 'int'
+      connect_retries:
+        default: 0
+        type: 'int'
+    thrift:
+      _fixed_method: thrift
+  port:
+    default: 443
+    type: 'int'
+  schema:
+    hint: 'default schema that dbt will build objects in'
+  threads:
+    hint: '1 or more'
+    type: 'int'
+    default: 1

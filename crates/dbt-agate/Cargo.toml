@@ -1,0 +1,40 @@
+[package]
+name = "dbt-agate"
+description = "dbt Agate port to Rust and minijinja"
+version.workspace = true
+homepage.workspace = true
+repository.workspace = true
+authors.workspace = true
+license.workspace = true
+keywords.workspace = true
+edition.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+arrow = { workspace = true }
+arrow-array = { workspace = true }
+arrow-buffer = { workspace = true }
+arrow-data = { workspace = true }
+arrow-schema = { workspace = true }
+
+chrono = { workspace = true }
+chrono-tz = { workspace = true }
+dbt-fusion-workspace-hack = { version = "0.1" }
+im = { workspace = true }
+minijinja = { workspace = true, features = ["loader", "deserialization"] }
+minijinja-contrib = { workspace = true, features = [
+  "pycompat",
+  "datetime",
+  "timezone",
+  "rand",
+  "unicode_wordwrap",
+  "wordcount",
+] }
+siphasher = { workspace = true }
+
+[lib]
+name = "dbt_agate"
+path = "src/lib.rs"
+doctest = false

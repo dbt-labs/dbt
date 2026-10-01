@@ -1,0 +1,18 @@
+---
+source: crates/dbt-jinja/minijinja/tests/test_templates.rs
+description: "{{ get_args(1, 2, 3, 4, 5, 6, 7, 8, 9) }}\n{{ get_args(1, 2, 3, *[4, 5, 6], 7, 8, 9) }}\n{{ get_args(one, 2, 3, 4, 5, 6, 7, 8, 9) }}\n{{ get_args(1, 2, 3, *[4, 5, 6], 7, 8, nine) }}\n{{ get_args(1, 2, one=1, two=two) }}\n{{ get_args(1, 2, one=1, **dict(two=two)) }}\n{{ get_args(1, *[2], one=1, **dict(two=two)) }}\n{{ get_args(1, 2, *[3], *[4], **{8: 8, 9: 9})}}\n{{ get_args(1, 2, *[3], *[4], **{8: 8, nine: nine})}}"
+info:
+  nine: 9
+  one: 1
+  two: 2
+input_file: crates/dbt-jinja/minijinja/tests/inputs/calls-and-literals.txt
+---
+(1, 2, 3, 4, 5, 6, 7, 8, 9)
+(1, 2, 3, 4, 5, 6, 7, 8, 9)
+(1, 2, 3, 4, 5, 6, 7, 8, 9)
+(1, 2, 3, 4, 5, 6, 7, 8, 9)
+(1, 2, {'one': 1, 'two': 2})
+(1, 2, {'one': 1, 'two': 2})
+(1, 2, {'one': 1, 'two': 2})
+(1, 2, 3, 4, {8: 8, 9: 9})
+(1, 2, 3, 4, {8: 8, 9: 9})

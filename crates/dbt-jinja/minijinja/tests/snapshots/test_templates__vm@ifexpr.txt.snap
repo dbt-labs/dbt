@@ -1,0 +1,19 @@
+---
+source: crates/dbt-jinja/minijinja/tests/test_templates.rs
+description: "{{ 42 if something_true else 23 }}\n{{ 42 if not something_true else 23 }}\n{{ 42 if not something_true }}\n{{ (42 if not something_true) is undefined }}"
+info:
+  __minijinja_current_path: ifexpr.txt
+  __minijinja_current_span:
+    end_col: 1
+    end_line: 1
+    end_offset: 0
+    start_col: 1
+    start_line: 1
+    start_offset: 0
+  something_true: true
+input_file: crates/dbt-jinja/minijinja/tests/inputs/ifexpr.txt
+---
+42
+23
+
+True

@@ -1,0 +1,7 @@
+{% extends "layout.html" %}
+{% macro utility() %}Global var is {{ global_variable}}{% endmacro %}
+{% block title %}Index{% endblock %}
+{% block body %}
+Hello from index.html
+{{ utility() }}
+{% endblock %}

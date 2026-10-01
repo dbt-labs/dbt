@@ -1,0 +1,48 @@
+---
+source: fs/sa/crates/dbt-jinja/minijinja/tests/test_parser.rs
+description: "{% filter foo|bar(1, 2)|baz %}...{% endfilter %}"
+input_file: fs/sa/crates/dbt-jinja/minijinja/tests/parser-inputs/filter_block.txt
+---
+Ok(
+    Template {
+        children: [
+            FilterBlock {
+                filter: Filter {
+                    name: "baz",
+                    expr: Some(
+                        Filter {
+                            name: "bar",
+                            expr: Some(
+                                Filter {
+                                    name: "foo",
+                                    expr: None,
+                                    args: [],
+                                } @ 1:11-1:14,
+                            ),
+                            args: [
+                                Pos(
+                                    Const {
+                                        value: 1,
+                                    } @ 1:19-1:20,
+                                ),
+                                Pos(
+                                    Const {
+                                        value: 2,
+                                    } @ 1:22-1:23,
+                                ),
+                            ],
+                        } @ 1:15-1:24,
+                    ),
+                    args: [],
+                } @ 1:25-1:28,
+                body: [
+                    EmitRaw {
+                        raw: "...",
+                    } @ 1:31-1:34,
+                ],
+                start_tag_span:  @ 1:1-1:31,
+                end_tag_span:  @ 1:34-1:49,
+            } @ 1:1-1:49,
+        ],
+    } @ 1:1-1:49,
+)

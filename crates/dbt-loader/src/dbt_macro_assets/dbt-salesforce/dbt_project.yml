@@ -1,0 +1,4 @@
+config-version: 2
+name: dbt_salesforce
+
+macro-paths: ["macros"]

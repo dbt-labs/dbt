@@ -82,6 +82,22 @@ jobs:
     outputs:
       use_hatch: ${{ steps.use_hatch.outputs.use_hatch }}
     steps:
+      - name: "Guard: refuse to release from main"
+        # Post-cutover, `main` is the Rust branch. Python releases must target `1.latest`
+        # (or a `*.latest` release branch). This guard prevents a dispatch that resolves to
+        # `main` from packaging Rust source as a Python wheel. We normalize common spellings
+        # (`refs/heads/main`, `origin/main`) before comparing so the guard can't be bypassed
+        # with an alternate ref. The input is read via env to avoid shell injection.
+        env:
+          TARGET_BRANCH: ${{ inputs.target_branch }}
+        run: |
+          normalized="${TARGET_BRANCH#refs/heads/}"
+          normalized="${normalized#origin/}"
+          if [ "$normalized" = "main" ]; then
+            echo "::error title=Invalid target_branch::Releases cannot be cut from 'main' (Rust). Use '1.latest' or a '*.latest' release branch instead."
+            exit 1
+          fi
+
       - name: "[DEBUG] Print Variables"
         run: |
           echo Inputs
@@ -191,6 +207,7 @@ jobs:
       version_number: ${{ inputs.version_number }}
       test_run: ${{ inputs.test_run }}
       use_hatch: ${{ needs.job-setup.outputs.use_hatch == 'true' }} # workflow outputs are strings...
+      package_name: dbt-core
 
     secrets:
       PYPI_API_TOKEN: ${{ secrets.PYPI_API_TOKEN }}

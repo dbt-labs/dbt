@@ -1,0 +1,9 @@
+---
+source: minijinja/tests/test_templates.rs
+description: "{% filter upper %}{{ egg }}{% endfilter %}"
+info:
+  egg: Humpty Dumpty sat on a wall
+input_file: minijinja/tests/inputs/filter_block.txt
+---
+HUMPTY DUMPTY SAT ON A WALL
+

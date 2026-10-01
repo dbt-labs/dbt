@@ -1,0 +1,17 @@
+name: Clippy
+
+on: [push, pull_request]
+
+jobs:
+  build:
+    runs-on: ${{ vars.UBUNTU_RUNNER }}
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: Swatinem/rust-cache@v2
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+          components: clippy, rustfmt
+      - name: Run clippy
+        run: make lint

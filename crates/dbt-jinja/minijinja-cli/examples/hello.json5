@@ -1,0 +1,10 @@
+/* json5 supports comments */
+{
+    "name": "World",
+    "count": 3,
+    "list": [
+        "foo",
+        "bar",
+        "baz"
+    ]
+}

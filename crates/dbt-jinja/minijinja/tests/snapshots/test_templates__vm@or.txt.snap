@@ -1,0 +1,10 @@
+---
+source: minijinja/tests/test_templates.rs
+description: "{{ 42 or 23 }}\n{{ 0 or 23 }}\n{{ none or 23 }}"
+info: {}
+input_file: minijinja/tests/inputs/or.txt
+---
+42
+23
+23
+

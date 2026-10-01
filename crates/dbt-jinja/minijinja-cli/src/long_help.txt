@@ -1,0 +1,17 @@
+Most of the functionality is handled via options, but there are two positional arguments that refer to files.  The first is the path to the template, the second to the data file (template context).  Either one of them can be set to '-' to read from stdin.  Reading from stdin is the default for the template, but only one (template or data file) can be set to stdin at simultaneously.
+
+Various file formats are supported for the template context, the exact formats depend on the features enabled at compilation time.
+
+Configuration is loaded from $HOME/minijinja.toml and environment variables, before being overridden by command line options.  The environment variables are documented with the options that they correspond to.  Note that flags (boolean values) are reconfigured with true/false or 1/0 respectively.  For instance --no-include corresponds to MINIJINJA_INCLUDE=false.  Not all options can be configured from environment variables or config options.
+
+Examples:
+
+    minijinja-cli hello.j2 hello.json
+
+    minijinja-cli -Dvariable=value hello.j2
+
+    minijinja-cli --strict --env hello.j2
+
+    minijinja-cli --template="Hello {{ name }}!" -Dname=World
+
+    minijinja-cli --expr "1 + 1"

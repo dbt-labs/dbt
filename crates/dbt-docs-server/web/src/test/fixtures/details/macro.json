@@ -1,0 +1,42 @@
+{
+  "detail": {
+    "unique_id": "macro.dbt._bigquery__get_matching_schemata",
+    "name": "_bigquery__get_matching_schemata",
+    "resource_type": "macro",
+    "package_name": "dbt",
+    "description": "",
+    "original_file_path": "models/get_relations_by_pattern_sql.sql",
+    "file_path": "models/get_relations_by_pattern_sql.sql",
+    "patch_path": null,
+    "macro_sql": "{% macro _bigquery__get_matching_schemata(schema_pattern, database) %}\n    {% if execute %}\n\n        {% set sql %}\n        select schema_name from {{ adapter.quote(database) }}.INFORMATION_SCHEMA.SCHEMATA\n        where lower(schema_name) like lower('{{ schema_pattern }}')\n        {% endset %}\n\n        {% set results=run_query(sql) %}\n\n        {% set schemata=results.columns['schema_name'].values() %}\n\n        {{ return(schemata) }}\n\n    {% else %}\n\n        {{ return([]) }}\n\n    {% endif %}\n\n\n{% endmacro %}",
+    "arguments": [
+      {
+        "is_optional": false,
+        "name": "schema_pattern"
+      },
+      {
+        "is_optional": false,
+        "name": "database"
+      }
+    ],
+    "depends_on": [],
+    "docs_show": true,
+    "supported_languages": [],
+    "meta": {},
+    "created_at": null
+  },
+  "lineage": {
+    "status": 404,
+    "body": {
+      "error": "node macro.dbt._bigquery__get_matching_schemata not found"
+    }
+  },
+  "columnLineage": {
+    "status": 412,
+    "body": {
+      "code": "column_lineage_unavailable",
+      "message": "Column-level lineage is not available in this distribution + artifact set.",
+      "upgrade_path": "Run `dbt --use-index <run|build|compile>` with static analysis enabled, in a distribution that ships the column-lineage provider."
+    }
+  }
+}

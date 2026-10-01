@@ -1,0 +1,10 @@
+---
+source: crates/dbt-jinja/minijinja/tests/test_templates.rs
+description: "{% from \"include_with_var_and_macro.txt\" import title, helper, missing -%}\nmissing: {{ missing }}\ntitle: {{ title }}\nhelper: {{ helper(\"a\", \"b\") }}"
+info:
+  c: The C Variable
+input_file: crates/dbt-jinja/minijinja/tests/inputs/macro_import.txt
+---
+missing: 
+title: The Title
+helper: ['a', 'b', 'The C Variable']

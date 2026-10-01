@@ -1,0 +1,6 @@
+{}
+---
+{% macro dialog(title) %}Dialog is {{ title }}{% endmacro %}
+
+Should be empty: {% do dialog(title="Hello World") %}
+Should show: {{ dialog(title="Hello World") }}

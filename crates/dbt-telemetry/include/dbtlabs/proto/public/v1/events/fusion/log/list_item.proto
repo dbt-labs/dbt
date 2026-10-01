@@ -1,0 +1,26 @@
+syntax = "proto3";
+package v1.public.events.fusion.log;
+
+option go_package = "github.com/dbt-labs/proto-golang/v1/public/events/fusion/log";
+
+// Output format for list command
+enum ListOutputFormat {
+  LIST_OUTPUT_FORMAT_UNSPECIFIED = 0;
+  LIST_OUTPUT_FORMAT_JSON = 1;
+  LIST_OUTPUT_FORMAT_SELECTOR = 2;
+  LIST_OUTPUT_FORMAT_NAME = 3;
+  LIST_OUTPUT_FORMAT_PATH = 4;
+}
+
+// Event emitted for each item in a list command output.
+// This event replaces the dbt-core PrintEvent (Z052) for list operations.
+message ListItemOutput {
+  // Format of the output
+  ListOutputFormat output_format = 1;
+
+  // The actual content of the list item being displayed
+  string content = 2;
+
+  // The unique_id of the node being listed (e.g., "model.my_project.my_model")
+  optional string unique_id = 3;
+}

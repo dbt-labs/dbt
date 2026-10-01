@@ -1,0 +1,7 @@
+{
+  "template": "simple_include.txt"
+}
+---
+Before
+{% include ["missing_template.txt", template] %}
+After

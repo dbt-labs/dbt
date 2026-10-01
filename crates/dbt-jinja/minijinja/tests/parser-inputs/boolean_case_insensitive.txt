@@ -1,0 +1,6 @@
+{{ TRUE }}
+{{ FALSE }}
+{{ TRUE == true }}
+{{ FALSE == false }}
+{{ config(enabled=TRUE) }}
+{{ config(enabled=FALSE) }} 

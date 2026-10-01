@@ -1,0 +1,24 @@
+---
+source: fs/sa/crates/dbt-jinja/minijinja/tests/test_templates.rs
+description: "{% with foo.bar = 42 %}\n  ...\n{% endwith %}"
+info:
+  __minijinja_current_path: err_bad_dotted_assign_with.txt
+  __minijinja_current_span:
+    start_line: 1
+    start_col: 1
+    start_offset: 0
+    end_line: 1
+    end_col: 1
+    end_offset: 0
+input_file: fs/sa/crates/dbt-jinja/minijinja/tests/inputs/err_bad_dotted_assign_with.txt
+---
+!!!SYNTAX ERROR!!!
+
+Error {
+    kind: SyntaxError,
+    detail: "unexpected `.`, expected assignment operator",
+    name: "err_bad_dotted_assign_with.txt",
+}
+
+syntax error: unexpected `.`, expected assignment operator
+(in err_bad_dotted_assign_with.txt:1:12)

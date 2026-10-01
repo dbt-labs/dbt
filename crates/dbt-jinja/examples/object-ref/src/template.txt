@@ -1,0 +1,10 @@
+version: {{ config.version }}
+nested: {{ config.nested }}
+cwd: {{ utils.get_cwd() }}
+{%- for item in items %}
+- {{ item }}
+{%- endfor %}
+
+string out:
+| {{ items }}
+| {{ config }}

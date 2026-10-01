@@ -1,0 +1,35 @@
+version: 2
+
+models:
+  - name: hourly_event_patterns
+    description: |
+      Hour-of-day and day-of-week event pattern analysis.
+      Identifies peak usage hours and patterns across different days of the week
+      for each event type and platform combination.
+    columns:
+      - name: event_hour
+        description: Hour of day (0-23, where 0 is midnight)
+        tests:
+          - not_null
+      - name: day_of_week
+        description: Day of week as number (0-6, where 0 is Sunday)
+        tests:
+          - not_null
+      - name: day_name
+        description: Name of the day (Sunday, Monday, Tuesday, etc.)
+      - name: platform
+        description: Platform where events occurred
+        tests:
+          - not_null
+      - name: event_name
+        description: Type of event (install, purchase, view_item, etc.)
+        tests:
+          - not_null
+      - name: avg_unique_users
+        description: Average number of unique users per hour across all dates
+      - name: avg_event_count
+        description: Average number of events per hour across all dates
+      - name: total_events
+        description: Total number of events for this hour/day/platform/event combination
+      - name: is_peak_hour
+        description: Boolean flag indicating if this is the peak hour for this event type/platform

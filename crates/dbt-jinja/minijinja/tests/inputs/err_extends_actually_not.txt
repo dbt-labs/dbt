@@ -1,0 +1,9 @@
+{
+  "not_true": false
+}
+---
+before
+{% if not_true %}
+  {% extends "something.html" %}
+{% endif %}
+and after

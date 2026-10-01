@@ -1,0 +1,21 @@
+[package]
+name = "dbt-handles"
+description = "Lightweight std-only dyn-trait handles shared between dbt-jinja-ctx and the crates that implement them"
+version.workspace = true
+homepage.workspace = true
+repository.workspace = true
+authors.workspace = true
+license.workspace = true
+keywords.workspace = true
+edition.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+dbt-fusion-workspace-hack = { version = "0.1" }
+
+[lib]
+name = "dbt_handles"
+path = "src/lib.rs"
+doctest = false

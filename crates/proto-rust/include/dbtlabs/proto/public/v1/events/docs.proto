@@ -1,0 +1,506 @@
+syntax = "proto3";
+
+package v1.public.events.docs;
+option go_package = "github.com/dbt-labs/proto-golang/v1/public/events/docs";
+
+import "dbtlabs/proto/public/v1/common/vortex_options.proto";
+import "dbtlabs/proto/public/v1/common/vortex_telemetry_contexts.proto";
+import "dbtlabs/proto/public/v1/events/vortex.proto";
+
+// dbt docs v2 server-side analytics events (META-7739).
+//
+// As of 2025/05, enums are not handled properly with Vortex (they are
+// converted to Int32 in Iceberg, losing the label). So we document the
+// possible value sets as `enum` types below for reference, but the message
+// fields are typed as `string`.
+//
+// WIRE-VALUE CONTRACT: each `string` enum field below carries the lowercase
+// dbt domain code used throughout the codebase (dbt-ui docs-v2 + the docs
+// server share dbt's resource_type / facet vocabulary), NOT the Amplitude
+// Display label. The canonical wire value is the snake_case form of the enum
+// value with its `<ENUM>_` prefix stripped — e.g.
+//   RESOURCE_TYPE_SAVED_QUERY -> "saved_query"
+//   FILTER_TYPE_TEST_RESULT   -> "test_result"
+//   VIEW_LEVEL_DETAIL         -> "detail"
+// Producers MUST emit that exact string; consumers match on it. The values
+// whose wire string is NOT a mechanical snake_case of the name (UpsellTrack,
+// LineageType) carry an explicit `// wire: "..."` trailing comment.
+//
+// NOTE: as of 2025/06 no producer emits these yet — the docs server has the
+// Vortex client + analytics flags wired but not these events. The values below
+// are derived from the dbt-ui docs-v2 source (the UI domain vocab the server
+// will serialize); confirm when the producer lands.
+
+// see ResourceViewed.resource_type / LineageViewed.resource_type / FilterApplied.resource_type
+// Wire values are dbt resource_type codes (snake_case): "model", "source",
+// "seed", "test", "exposure", "metric", "semantic_model", "macro", "snapshot",
+// "saved_query", "analysis", "group", "other". (dbt-ui metadata-shared
+// `ResourceType` in typings/domain/asset.ts.)
+enum ResourceType {
+  RESOURCE_TYPE_UNSPECIFIED = 0;
+  RESOURCE_TYPE_MODEL = 1;
+  RESOURCE_TYPE_SOURCE = 2;
+  RESOURCE_TYPE_SEED = 3;
+  RESOURCE_TYPE_TEST = 4;
+  RESOURCE_TYPE_EXPOSURE = 5;
+  RESOURCE_TYPE_METRIC = 6;
+  RESOURCE_TYPE_SEMANTIC_MODEL = 7;
+  RESOURCE_TYPE_MACRO = 8;
+  RESOURCE_TYPE_SNAPSHOT = 9;
+  RESOURCE_TYPE_SAVED_QUERY = 10;
+  RESOURCE_TYPE_ANALYSIS = 11;
+  RESOURCE_TYPE_GROUP = 12;
+  RESOURCE_TYPE_OTHER = 13;
+}
+
+// see ResourceViewed.view_level
+enum ViewLevel {
+  VIEW_LEVEL_UNSPECIFIED = 0;
+  VIEW_LEVEL_LIST = 1;
+  VIEW_LEVEL_DETAIL = 2;
+}
+
+// see LineageViewed.lineage_type
+enum LineageType {
+  LINEAGE_TYPE_UNSPECIFIED = 0;
+  LINEAGE_TYPE_MODEL_LEVEL = 1;   // wire: "model"  (model-level / DAG lineage — LineageView)
+  LINEAGE_TYPE_COLUMN_LEVEL = 2;  // wire: "column" (column-level lineage / CLL — ColumnLineageView)
+}
+
+// see FilterApplied.filter_type
+enum FilterType {
+  // wire = snake_case (matches dbt-ui facet dropdown ids: "database", "schema",
+  // "test_result", "test_type").
+  FILTER_TYPE_UNSPECIFIED = 0;
+  FILTER_TYPE_DATABASE = 1;
+  FILTER_TYPE_SCHEMA = 2;
+  FILTER_TYPE_TEST_RESULT = 3;
+  FILTER_TYPE_TEST_TYPE = 4;
+  FILTER_TYPE_OTHER = 5;
+}
+
+// see UpsellPrompt*.upsell_track / AccountLoggedIn.upsell_track
+// Wire values are the dbt-ui `UpgradeHookKind` strings (camelCase, NOT
+// snake_case — see metadata-shared upgrade/types.ts). Covers all five UI
+// upsell hooks.
+enum UpsellTrack {
+  UPSELL_TRACK_UNSPECIFIED = 0;
+  UPSELL_TRACK_COLUMN_LEVEL_LINEAGE = 1;  // wire: "columnLineage"
+  UPSELL_TRACK_DBT_STATE = 2;             // wire: "dbtState"
+  UPSELL_TRACK_DBT_PLATFORM = 3;          // wire: "platform"
+  UPSELL_TRACK_MESH = 4;                  // wire: "mesh"
+  UPSELL_TRACK_QUERY_HISTORY = 5;         // wire: "queryHistory"
+  UPSELL_TRACK_OTHER = 6;                 // wire: "other"
+}
+
+// see UpsellPromptDisplayed.prompt_format
+enum PromptFormat {
+  PROMPT_FORMAT_UNSPECIFIED = 0;
+  PROMPT_FORMAT_BANNER = 1;
+  PROMPT_FORMAT_MODULE = 2;
+  PROMPT_FORMAT_TOOLTIP = 3;
+  PROMPT_FORMAT_INLINE_CTA = 4;
+}
+
+// see UpsellPromptClicked.cta_label
+// Wire = snake_case code. The VISIBLE button/link text differs and is NOT the
+// wire value (dbt-ui copy.ts: "Reduce my build costs." and
+// "Learn more about generating CLL." are sentence-cased with trailing periods;
+// the contact-sales CTA renders as "Upgrade"). Emit the stable code, not label.
+enum CtaLabel {
+  CTA_LABEL_UNSPECIFIED = 0;
+  CTA_LABEL_REDUCE_MY_BUILD_COSTS = 1;
+  CTA_LABEL_LEARN_MORE_ABOUT_CLL = 2;
+  CTA_LABEL_DOWNLOAD_FUSION = 3;
+  CTA_LABEL_CONTACT_SALES = 4;
+  CTA_LABEL_OTHER = 5;
+}
+
+// see UpsellPromptDismissed.dismiss_method
+enum DismissMethod {
+  DISMISS_METHOD_UNSPECIFIED = 0;
+  DISMISS_METHOD_CLOSE_BUTTON = 1;
+  DISMISS_METHOD_COLLAPSE = 2;
+  DISMISS_METHOD_NAVIGATED_AWAY = 3;
+}
+
+// see ReferralLinkClicked.link_destination
+enum LinkDestination {
+  LINK_DESTINATION_UNSPECIFIED = 0;
+  LINK_DESTINATION_DOCUMENTATION = 1;
+  LINK_DESTINATION_DBT_STATE_DOCS = 2;
+  LINK_DESTINATION_PLATFORM_SIGNUP = 3;
+  LINK_DESTINATION_LEARN_MORE = 4;
+  LINK_DESTINATION_EXTERNAL = 5;
+}
+
+// see ErrorEncountered.error_category
+// Provisional set — values are inferred from the workbook, not yet confirmed
+// against real error handling. Extend with new categories rather than adding
+// new error events.
+enum ErrorCategory {
+  ERROR_CATEGORY_UNSPECIFIED = 0;
+  ERROR_CATEGORY_LOGIN_FAILURE = 1;
+  ERROR_CATEGORY_RESOURCE_LOAD_FAILURE = 2;
+  ERROR_CATEGORY_LINEAGE_GENERATION_FAILURE = 3;
+  ERROR_CATEGORY_API_TIMEOUT = 4;
+  ERROR_CATEGORY_ARTIFACT_PARSE_ERROR = 5;
+}
+
+// Fired when a docs v2 site is opened.
+message DocsSiteOpened {
+  option (v1.public.common.vortex_namespace) = VORTEX_ICEBERG_NAMESPACE_TELEMETRY;
+  option (v1.public.common.vortex_enabled) = true;
+
+  // Server enrichment for this event
+  v1.events.vortex.VortexMessageEnrichment enrichment = 1;
+
+  // dbt Cloud Context around this request
+  v1.public.common.vortex_telemetry_contexts.VortexTelemetryDbtCloudContext context = 2;
+
+  // whether the viewer is authenticated when the event fires: true once the
+  // user has run `dbt login` (OSS auth). Distinct from
+  // context.dbt_cloud_user_id (dbt Cloud account identity) — neither implies
+  // the other. (required: producer must populate)
+  bool is_logged_in = 3;
+
+  // version of dbt running the docs v2 server (workbook: "version being run").
+  // Confirm against producer impl — if it instead reflects the version that
+  // generated the docs artifacts, keep that wording but make it explicit.
+  string dbt_version = 4;
+
+  // number of resources in the project
+  int64 project_resource_count = 5;
+
+  // name of the running dbt distribution serving docs v2 (e.g. "oss").
+  // Mirrors DistInfo.name from the docs server GET /api/v1/distribution
+  // endpoint. (required: producer must populate)
+  string distribution = 6;
+  v1.public.common.vortex_telemetry_contexts.VortexTelemetryCommonContext common_context = 7;
+}
+
+// Fired when a resource is viewed (list or detail).
+message ResourceViewed {
+  option (v1.public.common.vortex_namespace) = VORTEX_ICEBERG_NAMESPACE_TELEMETRY;
+  option (v1.public.common.vortex_enabled) = true;
+
+  // Server enrichment for this event
+  v1.events.vortex.VortexMessageEnrichment enrichment = 1;
+
+  // dbt Cloud Context around this request
+  v1.public.common.vortex_telemetry_contexts.VortexTelemetryDbtCloudContext context = 2;
+
+  // whether the viewer is authenticated when the event fires: true once the
+  // user has run `dbt login` (OSS auth). Distinct from
+  // context.dbt_cloud_user_id (dbt Cloud account identity) — neither implies
+  // the other. (required: producer must populate)
+  bool is_logged_in = 3;
+
+  // type of resource viewed; see ResourceType for possible values
+  // (required: producer must populate)
+  string resource_type = 4;
+
+  // granularity of the view; see ViewLevel for possible values
+  // (required: producer must populate)
+  string view_level = 5;
+
+  // opaque resource identifier (no PII)
+  string resource_id = 6;
+
+  // name of the running dbt distribution serving docs v2 (e.g. "oss").
+  // Mirrors DistInfo.name from the docs server GET /api/v1/distribution
+  // endpoint. (required: producer must populate)
+  string distribution = 7;
+  v1.public.common.vortex_telemetry_contexts.VortexTelemetryCommonContext common_context = 8;
+}
+
+// Fired when lineage is viewed for a resource.
+message LineageViewed {
+  option (v1.public.common.vortex_namespace) = VORTEX_ICEBERG_NAMESPACE_TELEMETRY;
+  option (v1.public.common.vortex_enabled) = true;
+
+  // Server enrichment for this event
+  v1.events.vortex.VortexMessageEnrichment enrichment = 1;
+
+  // dbt Cloud Context around this request
+  v1.public.common.vortex_telemetry_contexts.VortexTelemetryDbtCloudContext context = 2;
+
+  // whether the viewer is authenticated when the event fires: true once the
+  // user has run `dbt login` (OSS auth). Distinct from
+  // context.dbt_cloud_user_id (dbt Cloud account identity) — neither implies
+  // the other. (required: producer must populate)
+  bool is_logged_in = 3;
+
+  // type of lineage rendered; see LineageType for possible values
+  // (required: producer must populate)
+  string lineage_type = 4;
+
+  // type of resource the lineage is rooted at; see ResourceType for possible values
+  string resource_type = 5;
+
+  // opaque resource identifier (no PII)
+  string resource_id = 6;
+
+  // name of the running dbt distribution serving docs v2 (e.g. "oss").
+  // Mirrors DistInfo.name from the docs server GET /api/v1/distribution
+  // endpoint. (required: producer must populate)
+  string distribution = 7;
+  v1.public.common.vortex_telemetry_contexts.VortexTelemetryCommonContext common_context = 8;
+}
+
+// Fired when a search is performed.
+message SearchPerformed {
+  option (v1.public.common.vortex_namespace) = VORTEX_ICEBERG_NAMESPACE_TELEMETRY;
+  option (v1.public.common.vortex_enabled) = true;
+
+  // Server enrichment for this event
+  v1.events.vortex.VortexMessageEnrichment enrichment = 1;
+
+  // dbt Cloud Context around this request
+  v1.public.common.vortex_telemetry_contexts.VortexTelemetryDbtCloudContext context = 2;
+
+  // whether the viewer is authenticated when the event fires: true once the
+  // user has run `dbt login` (OSS auth). Distinct from
+  // context.dbt_cloud_user_id (dbt Cloud account identity) — neither implies
+  // the other. (required: producer must populate)
+  bool is_logged_in = 3;
+
+  // free-text search query (server-side required for Q4 analytics; flag to PMM/privacy
+  // before exposing publicly — hashing/omission is a follow-up)
+  string search_query = 4;
+
+  // number of results returned for the query
+  int64 result_count = 5;
+
+  // name of the running dbt distribution serving docs v2 (e.g. "oss").
+  // Mirrors DistInfo.name from the docs server GET /api/v1/distribution
+  // endpoint. (required: producer must populate)
+  string distribution = 6;
+  v1.public.common.vortex_telemetry_contexts.VortexTelemetryCommonContext common_context = 7;
+}
+
+// Fired when a filter is applied to a resource list.
+message FilterApplied {
+  option (v1.public.common.vortex_namespace) = VORTEX_ICEBERG_NAMESPACE_TELEMETRY;
+  option (v1.public.common.vortex_enabled) = true;
+
+  // Server enrichment for this event
+  v1.events.vortex.VortexMessageEnrichment enrichment = 1;
+
+  // dbt Cloud Context around this request
+  v1.public.common.vortex_telemetry_contexts.VortexTelemetryDbtCloudContext context = 2;
+
+  // whether the viewer is authenticated when the event fires: true once the
+  // user has run `dbt login` (OSS auth). Distinct from
+  // context.dbt_cloud_user_id (dbt Cloud account identity) — neither implies
+  // the other. (required: producer must populate)
+  bool is_logged_in = 3;
+
+  // type of resource being filtered; see ResourceType for possible values
+  string resource_type = 4;
+
+  // dimension being filtered on; see FilterType for possible values
+  string filter_type = 5;
+
+  // value applied for the filter
+  string filter_value = 6;
+
+  // name of the running dbt distribution serving docs v2 (e.g. "oss").
+  // Mirrors DistInfo.name from the docs server GET /api/v1/distribution
+  // endpoint. (required: producer must populate)
+  string distribution = 7;
+  v1.public.common.vortex_telemetry_contexts.VortexTelemetryCommonContext common_context = 8;
+}
+
+// Fired when an upsell prompt is displayed.
+message UpsellPromptDisplayed {
+  option (v1.public.common.vortex_namespace) = VORTEX_ICEBERG_NAMESPACE_TELEMETRY;
+  option (v1.public.common.vortex_enabled) = true;
+
+  // Server enrichment for this event
+  v1.events.vortex.VortexMessageEnrichment enrichment = 1;
+
+  // dbt Cloud Context around this request
+  v1.public.common.vortex_telemetry_contexts.VortexTelemetryDbtCloudContext context = 2;
+
+  // whether the viewer is authenticated when the event fires: true once the
+  // user has run `dbt login` (OSS auth). Distinct from
+  // context.dbt_cloud_user_id (dbt Cloud account identity) — neither implies
+  // the other. (required: producer must populate)
+  bool is_logged_in = 3;
+
+  // upsell campaign track; see UpsellTrack for possible values
+  // (required: producer must populate)
+  string upsell_track = 4;
+
+  // presentation format of the prompt; see PromptFormat for possible values
+  string prompt_format = 5;
+
+  // location in the UI where the prompt was shown
+  string prompt_location = 6;
+
+  // name of the running dbt distribution serving docs v2 (e.g. "oss").
+  // Mirrors DistInfo.name from the docs server GET /api/v1/distribution
+  // endpoint. (required: producer must populate)
+  string distribution = 7;
+  v1.public.common.vortex_telemetry_contexts.VortexTelemetryCommonContext common_context = 8;
+}
+
+// Fired when an upsell prompt is clicked.
+message UpsellPromptClicked {
+  option (v1.public.common.vortex_namespace) = VORTEX_ICEBERG_NAMESPACE_TELEMETRY;
+  option (v1.public.common.vortex_enabled) = true;
+
+  // Server enrichment for this event
+  v1.events.vortex.VortexMessageEnrichment enrichment = 1;
+
+  // dbt Cloud Context around this request
+  v1.public.common.vortex_telemetry_contexts.VortexTelemetryDbtCloudContext context = 2;
+
+  // whether the viewer is authenticated when the event fires: true once the
+  // user has run `dbt login` (OSS auth). Distinct from
+  // context.dbt_cloud_user_id (dbt Cloud account identity) — neither implies
+  // the other. (required: producer must populate)
+  bool is_logged_in = 3;
+
+  // upsell campaign track; see UpsellTrack for possible values
+  // (required: producer must populate)
+  string upsell_track = 4;
+
+  // CTA button label clicked; see CtaLabel for possible values
+  string cta_label = 5;
+
+  // referral code attached to the CTA
+  string referral_code = 6;
+
+  // name of the running dbt distribution serving docs v2 (e.g. "oss").
+  // Mirrors DistInfo.name from the docs server GET /api/v1/distribution
+  // endpoint. (required: producer must populate)
+  string distribution = 7;
+  v1.public.common.vortex_telemetry_contexts.VortexTelemetryCommonContext common_context = 8;
+}
+
+// Fired when an upsell prompt is dismissed.
+message UpsellPromptDismissed {
+  option (v1.public.common.vortex_namespace) = VORTEX_ICEBERG_NAMESPACE_TELEMETRY;
+  option (v1.public.common.vortex_enabled) = true;
+
+  // Server enrichment for this event
+  v1.events.vortex.VortexMessageEnrichment enrichment = 1;
+
+  // dbt Cloud Context around this request
+  v1.public.common.vortex_telemetry_contexts.VortexTelemetryDbtCloudContext context = 2;
+
+  // whether the viewer is authenticated when the event fires: true once the
+  // user has run `dbt login` (OSS auth). Distinct from
+  // context.dbt_cloud_user_id (dbt Cloud account identity) — neither implies
+  // the other. (required: producer must populate)
+  bool is_logged_in = 3;
+
+  // upsell campaign track; see UpsellTrack for possible values
+  // (required: producer must populate)
+  string upsell_track = 4;
+
+  // how the prompt was dismissed; see DismissMethod for possible values
+  string dismiss_method = 5;
+
+  // name of the running dbt distribution serving docs v2 (e.g. "oss").
+  // Mirrors DistInfo.name from the docs server GET /api/v1/distribution
+  // endpoint. (required: producer must populate)
+  string distribution = 6;
+  v1.public.common.vortex_telemetry_contexts.VortexTelemetryCommonContext common_context = 7;
+}
+
+// Fired when a referral link is clicked.
+message ReferralLinkClicked {
+  option (v1.public.common.vortex_namespace) = VORTEX_ICEBERG_NAMESPACE_TELEMETRY;
+  option (v1.public.common.vortex_enabled) = true;
+
+  // Server enrichment for this event
+  v1.events.vortex.VortexMessageEnrichment enrichment = 1;
+
+  // dbt Cloud Context around this request
+  v1.public.common.vortex_telemetry_contexts.VortexTelemetryDbtCloudContext context = 2;
+
+  // whether the viewer is authenticated when the event fires: true once the
+  // user has run `dbt login` (OSS auth). Distinct from
+  // context.dbt_cloud_user_id (dbt Cloud account identity) — neither implies
+  // the other. (required: producer must populate)
+  bool is_logged_in = 3;
+
+  // referral code attached to the link
+  string referral_code = 4;
+
+  // destination of the referral link; see LinkDestination for possible values
+  string link_destination = 5;
+
+  // name of the running dbt distribution serving docs v2 (e.g. "oss").
+  // Mirrors DistInfo.name from the docs server GET /api/v1/distribution
+  // endpoint. (required: producer must populate)
+  string distribution = 6;
+  v1.public.common.vortex_telemetry_contexts.VortexTelemetryCommonContext common_context = 7;
+}
+
+// Fired when an account logs in.
+message AccountLoggedIn {
+  option (v1.public.common.vortex_namespace) = VORTEX_ICEBERG_NAMESPACE_TELEMETRY;
+  option (v1.public.common.vortex_enabled) = true;
+
+  // Server enrichment for this event
+  v1.events.vortex.VortexMessageEnrichment enrichment = 1;
+
+  // dbt Cloud Context around this request
+  v1.public.common.vortex_telemetry_contexts.VortexTelemetryDbtCloudContext context = 2;
+
+  // whether the viewer is authenticated when the event fires: true once the
+  // user has run `dbt login` (OSS auth). Distinct from
+  // context.dbt_cloud_user_id (dbt Cloud account identity) — neither implies
+  // the other. (required: producer must populate)
+  bool is_logged_in = 3;
+
+  // whether the login was triggered by an upsell prompt
+  bool triggered_by_prompt = 4;
+
+  // upsell campaign track that triggered the login; see UpsellTrack for possible values
+  string upsell_track = 5;
+
+  // name of the running dbt distribution serving docs v2 (e.g. "oss").
+  // Mirrors DistInfo.name from the docs server GET /api/v1/distribution
+  // endpoint. (required: producer must populate)
+  string distribution = 6;
+  v1.public.common.vortex_telemetry_contexts.VortexTelemetryCommonContext common_context = 7;
+}
+
+// Fired when an error is encountered.
+message ErrorEncountered {
+  option (v1.public.common.vortex_namespace) = VORTEX_ICEBERG_NAMESPACE_TELEMETRY;
+  option (v1.public.common.vortex_enabled) = true;
+
+  // Server enrichment for this event
+  v1.events.vortex.VortexMessageEnrichment enrichment = 1;
+
+  // dbt Cloud Context around this request
+  v1.public.common.vortex_telemetry_contexts.VortexTelemetryDbtCloudContext context = 2;
+
+  // whether the viewer is authenticated when the event fires: true once the
+  // user has run `dbt login` (OSS auth). Distinct from
+  // context.dbt_cloud_user_id (dbt Cloud account identity) — neither implies
+  // the other. (required: producer must populate)
+  bool is_logged_in = 3;
+
+  // category of the error; see ErrorCategory for possible values
+  // (required: producer must populate)
+  string error_category = 4;
+
+  // error message (no PII)
+  string error_message = 5;
+
+  // name of the field associated with the error, if any
+  string field_name = 6;
+
+  // name of the running dbt distribution serving docs v2 (e.g. "oss").
+  // Mirrors DistInfo.name from the docs server GET /api/v1/distribution
+  // endpoint. (required: producer must populate)
+  string distribution = 7;
+  v1.public.common.vortex_telemetry_contexts.VortexTelemetryCommonContext common_context = 8;
+}

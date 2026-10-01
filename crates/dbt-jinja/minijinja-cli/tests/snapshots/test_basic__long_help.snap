@@ -1,0 +1,319 @@
+---
+source: minijinja-cli/tests/test_basic.rs
+info:
+  program: minijinja-cli
+  args:
+    - "--long-help"
+---
+success: true
+exit_code: 0
+----- stdout -----
+minijinja-cli is a command line tool to render or evaluate jinja2 templates.
+
+Most of the functionality is handled via options, but there are two positional arguments that refer
+to files.  The first is the path to the template, the second to the data file (template context).
+Either one of them can be set to '-' to read from stdin.  Reading from stdin is the default for the
+template, but only one (template or data file) can be set to stdin at simultaneously.
+
+Various file formats are supported for the template context, the exact formats depend on the
+features enabled at compilation time.
+
+Configuration is loaded from $HOME/minijinja.toml and environment variables, before being overridden
+by command line options.  The environment variables are documented with the options that they
+correspond to.  Note that flags (boolean values) are reconfigured with true/false or 1/0
+respectively.  For instance --no-include corresponds to MINIJINJA_INCLUDE=false.  Not all options
+can be configured from environment variables or config options.
+
+Examples:
+
+    minijinja-cli hello.j2 hello.json
+
+    minijinja-cli -Dvariable=value hello.j2
+
+    minijinja-cli --strict --env hello.j2
+
+    minijinja-cli --template="Hello {{ name }}!" -Dname=World
+
+    minijinja-cli --expr "1 + 1"
+
+Usage: minijinja-cli [OPTIONS] [TEMPLATE_FILE] [DATA_FILE]
+
+Arguments:
+  [TEMPLATE_FILE]
+          This is the path to the input template in MiniJinja/Jinja2 syntax.  If not provided this
+          defaults to '-' which means the template is loaded from stdin.  When the format is set to
+          'auto' which is the default, the extension of the filename is used to detect the format.
+          
+          This argument can be set to an empty string when --template is provided to allow a data
+          file to be supplied.
+          
+          [default: -]
+
+  [DATA_FILE]
+          Path to the data file in the given format.
+          
+          The data file is used to supply the context (variables) to the template. Various file
+          formats are supported.  When data is read from stdin (by using '-' as file name), --format
+          must be specified as auto detection is based on file extensions.
+
+Options:
+      --config-file <PATH>
+          Sets an alternative path to the config file.  By default the config file is loaded from
+          $HOME/.minijinja.toml.
+          
+          To see the possible config values use --print-config which will print the current state of
+          the config.
+          
+          [env var: MINIJINJA_CONFIG_FILE]
+
+  -f, --format <FORMAT>
+          Sets the format of the input data.
+          
+          The following formats are supported (and the default detected file extensions):
+          
+          - auto
+          - cbor (CBOR): *.cbor
+          - ini (INI / Config): *.ini, *.conf, *.config, *.properties
+          - json (JSON / JSON5): *.json, *.json5
+          - querystring (Query String / Form Encoded): *.qs
+          - toml (TOML): *.toml
+          - yaml (YAML 1.2): *.yaml, *.yml
+          
+          Auto detection (auto) is unavailable when stdin is used as input format.
+          
+          For most formats the mapping is pretty straight forward as you expect.  The only format
+          worth calling out is INI where the unnamed section is always called 'default' instead (in
+          contrast to TOML which leaves it toplevel).
+          
+          [env var: MINIJINJA_FORMAT]
+          
+          [possible values: auto, cbor, ini, json, querystring, toml, yaml]
+
+  -D, --define <EXPR>
+          This defines an input variable for the template.  This is used in addition to the input
+          data file.  It supports three forms: key defines a single bool, key=value defines a string
+          value, key:=json_value defines a JSON/YAML value.  The latter is useful to define strings,
+          integers or simple array literals.  It can be supplied multiple times to set more than one
+          value.
+          
+          Examples:
+          -D name=Peter       defines a basic string
+          -D user_id:=42      defines an integer
+          -D is_active:=true  defines a boolean
+          -D is_true          shortform to define true boolean
+
+  -t, --template <TEMPLATE_STRING>
+          Renders a template from a string instead of the file given.
+          
+          This can be used as an alternative to the template file that is normally passed. Note that
+          this is different to --expr which evaluates expressions instead.
+          
+          Example: minijinja-cli --template='Hello {{ name }}' -Dname=World
+
+  -o, --output <FILENAME>
+          Path to the output file instead of stdout.
+          
+          By default templates will be rendered to stdout, but this can be used to directly write
+          into a target file instead.  The --no-newline flag can be used to disable the printing of
+          the trailing newline.  Files will be written atomically.  This means that if template
+          evaluation fails the original file remains.
+          
+          [default: -]
+
+      --select <SELECTOR>
+          Select a subset of the input data with a path expression.
+          
+          By default the input file is fed directly as context.  You can however also select a
+          sub-section of this file.  For instance if you have a TOML file where all variables are
+          placed in the values section you normally need to reference the values like so:
+          
+          {{ values.key }}
+          
+          If you however invoke minijinja-cli with --select=values you can directly reference the
+          keys:
+          
+          {{ key }}
+          
+          You can use dotted paths to select into sub sections (eg: --select=values.0.box).
+
+      --print-config
+          Print out the loaded config
+
+  -h, --help
+          Print short help (short texts)
+
+      --long-help
+          Print long help (extended, long explanation texts)
+
+      --syntax-help
+          Print syntax help (primer on Jinja2/MiniJinja syntax)
+
+  -V, --version
+          Print version
+
+Template Behavior:
+  -a, --autoescape <MODE>
+          Reconfigures autoescape behavior.  The default is 'auto' which means that the file
+          extension sets the auto escaping mode.
+          
+          html means that variables are escaped to HTML5 and XML rules.  json means that output is
+          safe for both JSON and YAML rules (eg: strings are formatted as JSON strings etc.).  none
+          disables escaping entirely.
+          
+          [env var: MINIJINJA_AUTOESCAPE]
+          
+          [possible values: auto, html, json, none]
+
+      --strict
+          Disallow undefined variables in templates instead of rendering empty strings.
+          
+          By default a template will allow a singular undefined access.  This means that for
+          instance an unknown attribute to an object will render an empty string.  To disable that
+          you can use the strict mode in which case all undefined attributes will error instead.
+          
+          [env var: MINIJINJA_STRICT]
+
+  -n, --no-newline
+          Do not output a trailing newline after template evaluation.
+          
+          By default minijinja-cli will render a trailing newline when rendering.  This flag can be
+          used to disable that.
+          
+          [env var: MINIJINJA_NEWLINE]
+
+      --trim-blocks
+          Enable the trim-blocks flag.
+          
+          This flag controls the trim-blocks template syntax feature.  When enabled trailing
+          whitespace including one newline is removed after a block tag.
+          
+          [env var: MINIJINJA_TRIM_BLOCKS]
+
+      --lstrip-blocks
+          Enable the lstrip-blocks flag.
+          
+          This flag controls the lstrip-blocks template syntax feature.  When enabled leading
+          whitespace is removed before a block tag.
+          
+          [env var: MINIJINJA_LSTRIP_BLOCKS]
+
+      --py-compat
+          Enables improved Python compatibility for templates.
+          
+          Enabling this adds methods such as dict.keys and some common others.  This is useful when
+          rendering templates that should be shared with Jinja2.
+          
+          [env var: MINIJINJA_PY_COMPAT]
+
+  -s, --syntax <PAIR>
+          Changes a syntax feature.
+          
+          This allows reconfiguring syntax delimiters.  The flag can be provided multiple times.
+          Each time it's feature=value where feature is the name of the syntax delimiter to change.
+          The following list is the full list of syntax features that can be reconfigured and the
+          default value:
+          
+          block-start={%
+          block-end=%}
+          variable-start={{
+          variable-end=}}
+          comment-start={#
+          comment-end=%}
+          line-statement-prefix=
+          line-statement-comment=
+          
+          Example: minijinja-cli -svariable-start='${' -svariable-end='}'
+          
+          For environment variable usage split multiple config strings with whitespace.
+          
+          [env var: MINIJINJA_SYNTAX]
+
+      --env
+          Pass environment variables to the template and make them available under the ENV variable
+          within the template.
+          
+          [env var: MINIJINJA_ENV]
+
+Security:
+      --no-include
+          Disallow includes and extending for security reasons.
+          
+          When this is enabled all inclusions and template extension features are disabled entirely.
+          An alternative to disabling includes is to use the --safe-path feature which allows white
+          listing individual folders instead.
+          
+          [env var: MINIJINJA_INCLUDE]
+
+      --safe-path <PATH>
+          Only allow includes from this path.
+          
+          This can be used to better control where includes and layout extensions can load templates
+          from.  This can be supplied multiple times.
+          
+          When the environment variable is used to control this, use ':' to split multiple paths on
+          Unix and ';' on Windows (analog to the PATH environment variable).
+          
+          [env var: MINIJINJA_SAFE_PATH]
+
+      --fuel <AMOUNT>
+          Sets the maximum fuel a template can consume.
+          
+          When fuel is set, every instruction consumes a certain amount of fuel. Usually 1, some
+          will consume no fuel. By default the engine has the fuel feature disabled (0). To turn on
+          fuel set something like 50000 which will allow 50.000 instructions to execute before
+          running out of fuel.
+          
+          This is useful as a basic security feature in CI pipelines or similar.
+          
+          [env var: MINIJINJA_FUEL]
+
+Advanced:
+  -E, --expr <EXPR>
+          Evalues a template expression instead of rendering a template.
+          
+          The value to the parameter is a template expression that is evaluated with the context of
+          the template and the result is emitted according to --expr-out.  The default output mode
+          is to print the result of the expression to stdout.
+          
+          Example: minijinja-cli --expr='1 < 10'
+
+      --expr-out <MODE>
+          Sets the expression output mode for --expr.
+          
+          This defaults to 'print' which means that the expression's result is written to stdout.
+          'json' (and 'json-pretty') does mostly the same but writes the result as JSON result
+          instead with one as a one-liner, the second in prett printing. 'status' exits the program
+          with the result as a status code.  If the result is not a number it will first convert the
+          result into a bool and then exits as 0 if it was true, 1 otherwise.
+          
+          [env var: MINIJINJA_EXPR_OUT]
+          
+          [possible values: print, json, json-pretty, status]
+
+      --dump <KIND>
+          Dump internals of a template to stdout.
+          
+          This feature is primarily useful to debug what is going on in a MiniJinja template.
+          'instructions' will dump out the bytecode that the engine generated, 'ast' dumps out the
+          AST in a text only format and 'tokens' will print a line per token of the template after
+          lexing.
+          
+          [possible values: instructions, ast, tokens]
+
+      --repl
+          Starts the read-eval loop with the given input data.
+          
+          This allows basic experimentation of MiniJinja expressions with some input data.
+
+Shell Support:
+      --generate-completion <SH>
+          Generate a completion script for the given shell and print it to stdout.
+          
+          This completion script can be added to your shell startup to provide completions for the
+          minijinja-cli command.
+          
+          [possible values: bash, elvish, fig, fish, nushell, powershell, zsh]
+
+For a short help use --help, for extended help --long-help, and for help on syntax --syntax-help.
+
+----- stderr -----

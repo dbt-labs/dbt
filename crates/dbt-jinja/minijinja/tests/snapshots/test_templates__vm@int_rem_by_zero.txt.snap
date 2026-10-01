@@ -1,0 +1,24 @@
+---
+source: fs/sa/crates/dbt-jinja/minijinja/tests/test_templates.rs
+description: "{{ 10 % 0 }}"
+info:
+  __minijinja_current_path: int_rem_by_zero.txt
+  __minijinja_current_span:
+    end_col: 1
+    end_line: 1
+    end_offset: 0
+    start_col: 1
+    start_line: 1
+    start_offset: 0
+input_file: fs/sa/crates/dbt-jinja/minijinja/tests/inputs/int_rem_by_zero.txt
+---
+!!!ERROR!!!
+
+Error {
+    kind: InvalidOperation,
+    detail: "unable to calculate 10 % 0",
+    name: "int_rem_by_zero.txt",
+}
+
+invalid operation: unable to calculate 10 % 0
+(in int_rem_by_zero.txt:1:1)

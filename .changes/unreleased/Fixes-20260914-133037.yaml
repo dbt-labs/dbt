@@ -1,0 +1,7 @@
+kind: Fixes
+body: Make insert_gateway_label idempotent so gateway host resolution no-ops when the label is already present, instead of relying on a caller-side guard
+time: 2026-09-14T13:30:37.208841-06:00
+custom:
+    author: aiguofer
+    issue: ""
+    project: dbt-core

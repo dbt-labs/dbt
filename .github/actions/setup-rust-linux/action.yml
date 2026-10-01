@@ -1,0 +1,62 @@
+name: "Set up Rust (Linux)"
+description: "Installs the Rust toolchain, sccache, protoc, and restores the cargo cache for a Linux CI job"
+
+inputs:
+  cache-key:
+    description: "Distinguishes this job's cargo/target cache from other jobs'. Jobs that build the same artifacts should share a key."
+    required: true
+  components:
+    description: "Space-separated extra rustup components to install (e.g. `clippy`)"
+    required: false
+    default: ""
+  protoc-version:
+    description: "Protocol Buffer Compiler version. Keep in sync with the release workflow so cached protoc installs are interchangeable."
+    required: false
+    default: "29.4"
+
+runs:
+  using: "composite"
+  steps:
+    - name: Install Rust
+      uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # dtolnay/rust-toolchain@stable
+      with:
+        components: ${{ inputs.components }}
+
+    - name: Cache cargo registry and target
+      uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # Swatinem/rust-cache@v2.9.1
+      with:
+        key: ${{ inputs.cache-key }}
+
+    - name: Setup sccache
+      uses: mozilla-actions/sccache-action@7d986dd989559c6ecdb630a3fd2557667be217ad # mozilla-actions/sccache-action@v0.0.9
+      with:
+        version: "v0.12.0"
+
+    - name: Install Protocol Buffer Compiler
+      shell: bash
+      env:
+        PB_VERSION: ${{ inputs.protoc-version }}
+      run: |
+        if command -v protoc &> /dev/null; then
+          echo "protoc already installed: $(protoc --version)"
+          exit 0
+        fi
+        if [ -x "/tmp/protoc/bin/protoc" ]; then
+          echo "protoc found in /tmp/protoc/bin"
+          echo "/tmp/protoc/bin" >> $GITHUB_PATH
+          /tmp/protoc/bin/protoc --version
+          exit 0
+        fi
+        echo "Installing Protocol Buffer Compiler..."
+        case "$(uname -m)" in
+          x86_64) PB_ARCH="x86_64" ;;
+          aarch64|arm64) PB_ARCH="aarch_64" ;;
+          *) echo "::error::Unsupported arch: $(uname -m)"; exit 1 ;;
+        esac
+        PB_URL="https://github.com/protocolbuffers/protobuf/releases/download/v$PB_VERSION/protoc-$PB_VERSION-linux-$PB_ARCH.zip"
+        curl -LsSf $PB_URL -o /tmp/protoc.zip
+        rm -rf /tmp/protoc
+        unzip -o /tmp/protoc.zip -d /tmp/protoc
+        echo "/tmp/protoc/bin" >> $GITHUB_PATH
+        /tmp/protoc/bin/protoc --version
+        rm /tmp/protoc.zip

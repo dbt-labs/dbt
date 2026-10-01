@@ -1,0 +1,19 @@
+{
+  "hello": "Hällo Wörld",
+  "intrange": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+}
+---
+{{ hello[:] }}
+{{ hello[1:] }}
+{{ hello[1:-1] }}
+{{ hello[::2] }}
+{{ hello[2:10] }}
+{{ hello[2:10:2] }}
+{{ intrange[:] }}
+{{ intrange[1:] }}
+{{ intrange[1:-1] }}
+{{ intrange[::2] }}
+{{ intrange[2:10] }}
+{{ intrange[2:10:2] }}
+{{ intrange[2:10][0] }}
+{{ intrange[2:10][2:][0] }}

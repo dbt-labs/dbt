@@ -1,0 +1,12 @@
+---
+source: fs/sa/crates/dbt-jinja/minijinja/tests/test_parser.rs
+description: "{% block foo bar"
+input_file: fs/sa/crates/dbt-jinja/minijinja/tests/parser-inputs/err_open_block.txt
+---
+Err(
+    Error {
+        kind: SyntaxError,
+        detail: "unexpected identifier, expected end of block",
+        name: "err_open_block.txt",
+    },
+)

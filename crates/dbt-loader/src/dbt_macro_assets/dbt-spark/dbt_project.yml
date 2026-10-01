@@ -1,0 +1,4 @@
+name: dbt_spark
+config-version: 2
+
+macro-paths: ["macros"]

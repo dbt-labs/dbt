@@ -1,0 +1,24 @@
+---
+source: fs/sa/crates/dbt-jinja/minijinja/tests/test_templates.rs
+description: "{{ namespace(42) }}"
+info:
+  __minijinja_current_path: namespace_bad.txt
+  __minijinja_current_span:
+    end_col: 1
+    end_line: 1
+    end_offset: 0
+    start_col: 1
+    start_line: 1
+    start_offset: 0
+input_file: fs/sa/crates/dbt-jinja/minijinja/tests/inputs/namespace_bad.txt
+---
+!!!ERROR!!!
+
+Error {
+    kind: InvalidOperation,
+    detail: "expected object or keyword arguments, got number",
+    name: "namespace_bad.txt",
+}
+
+invalid operation: expected object or keyword arguments, got number
+(in namespace_bad.txt:1:1)

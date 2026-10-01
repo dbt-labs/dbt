@@ -1,0 +1,3 @@
+{% block fragment %}
+  Should show up
+{% endblock %}

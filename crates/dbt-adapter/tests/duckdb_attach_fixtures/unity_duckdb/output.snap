@@ -1,0 +1,5 @@
+---
+source: fs/sa/crates/dbt-adapter/src/engine/duckdb_attach.rs
+input_file: fs/sa/crates/dbt-adapter/src/engine/xdbc/fixtures/unity_duckdb/catalogs.yml
+---
+ATTACH IF NOT EXISTS 'unity_wh' AS unity_db (TYPE ICEBERG, ENDPOINT 'https://dbc-example.cloud.databricks.com/api/2.1/unity-catalog/iceberg', DEFAULT_SCHEMA 'demo', READ_ONLY false, DISABLE_MULTI_TABLE_COMMIT true)

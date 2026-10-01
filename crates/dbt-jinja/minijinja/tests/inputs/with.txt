@@ -1,0 +1,31 @@
+{
+  "foo": 42,
+  "bar": 23,
+  "other": 11,
+  "tuple": [
+    1,
+    2,
+    [
+      3
+    ]
+  ],
+  "tuple2": [
+    [
+      1
+    ],
+    2,
+    3
+  ]
+}
+---
+{% with a=foo, b=bar %}
+  {{ a }}|{{ b }}|{{ other }}
+{% endwith %}
+
+{% with (a, b, (c,)) = tuple %}
+  {{ a }}|{{ b }}|{{ c }}
+{% endwith %}
+
+{% with ((a,), b, c) = tuple2 %}
+  {{ a }}|{{ b }}|{{ c }}
+{% endwith %}
