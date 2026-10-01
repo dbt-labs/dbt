@@ -5,6 +5,9 @@ All adapter macros are currently maintained in:
 
 ## Changelog
 
+### [2026-09-30]
+  - dbt-databricks: snapshot no-op create_indexes/commit removal from databricks/dbt-databricks#1691 (commit 814415294a7b5ff4cc6be33ba2da6ca858c4d6c7)
+
 ### [2026-08-19]
   - dbt-databricks: view full-refresh precedence from commit 45351e11517d3f37c5ac7a736b5fcba453d3f368
 
