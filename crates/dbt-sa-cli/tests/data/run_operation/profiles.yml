@@ -1,0 +1,8 @@
+run_operation:
+  target: duckdb_mem
+  outputs:
+    duckdb_mem:
+      type: duckdb
+      path: ":memory:"
+      schema: main
+      threads: 1

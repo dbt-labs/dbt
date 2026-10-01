@@ -10,7 +10,7 @@ use dbt_test_utils::task::{
     CommandFn, ExecuteAndCompare, G_DBT_TEST_UTILS_FEATURE_STACK, TaskSeq, fs_cmd_vec,
 };
 
-fn make_fs_command_fn() -> Arc<CommandFn> {
+pub fn make_fs_command_fn() -> Arc<CommandFn> {
     let feature_stack = G_DBT_TEST_UTILS_FEATURE_STACK.get_or_init(|| {
         Arc::new(|tracing_config| {
             let tracing = TracingFeature::default().with_config_provider(tracing_config);
@@ -42,7 +42,7 @@ fn make_fs_command_fn() -> Arc<CommandFn> {
     )
 }
 
-fn make_fs_cmd_vec(command: impl AsRef<str>) -> Vec<String> {
+pub fn make_fs_cmd_vec(command: impl AsRef<str>) -> Vec<String> {
     let mut command = fs_cmd_vec(command.as_ref());
     command.push("--no-send-anonymous-usage-stats".to_string());
     command.push("--no-version-check".to_string());
