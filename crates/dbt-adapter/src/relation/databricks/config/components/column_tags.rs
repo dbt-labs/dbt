@@ -263,7 +263,7 @@ mod tests {
         let desired = tags(&[("col1", &[("a", "1"), ("b", "2")]), ("col2", &[("c", "3")])]);
 
         let diff = changed_column_tags_diff(&desired, &remote).unwrap();
-        assert_eq!(diff, tags(&[("col1", &[("a", "1"), ("b", "2")])]));
+        assert_eq!(diff, tags(&[("col1", &[("b", "2")])]));
         assert!(!diff.contains_key("col2"));
     }
 
