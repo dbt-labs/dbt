@@ -44,17 +44,13 @@
   {% else %}
     {{ run_hooks(pre_hooks) }}
 
-    -- If there's a table with the same name and we weren't told to full refresh,
-    -- that's an error. If we were told to full refresh, drop it. This behavior differs
-    -- for Snowflake and BigQuery, so multiple dispatch is used.
     {%- if existing_relation is not none and not existing_relation.is_view -%}
-      {{ handle_existing_table(should_full_refresh(), existing_relation) }}
+      {{ execute_multiple_statements(get_replace_sql(existing_relation, target_relation, sql)) }}
+    {%- else -%}
+      {% call statement('main') -%}
+        {{ get_create_view_as_sql(target_relation, sql) }}
+      {%- endcall %}
     {%- endif -%}
-
-    -- build model
-    {% call statement('main') -%}
-      {{ get_create_view_as_sql(target_relation, sql) }}
-    {%- endcall %}
 
     {% set should_revoke = should_revoke(exists_as_view, full_refresh_mode=True) %}
     {% do apply_grants(target_relation, grant_config, should_revoke=True) %}
