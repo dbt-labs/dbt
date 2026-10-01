@@ -315,7 +315,7 @@ hints_enabled = _create_option_and_track_env_var(
 
 no_full_refresh = _create_option_and_track_env_var(
     "--no-full-refresh",
-    envvar="DBT_NO_FULL_REFRESH",
+    envvar="DBT_ENGINE_NO_FULL_REFRESH",
     help="If specified, dbt compile will treat incremental models as running incrementally (is_incremental() returns True), without querying the database.",
     is_flag=True,
 )
