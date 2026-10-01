@@ -63,6 +63,24 @@ class TestIntrospectFlag:
         with pytest.raises(DbtRuntimeError, match="connection never acquired for thread"):
             run_dbt(["compile", "--no-introspect"])
 
+    @pytest.mark.v2_parser_parity
+    def test_compiled_code_persisted_to_manifest(self, project, parser_mode):
+        """See tests/functional/v2_parser/test_v2_parser_branch.py for the
+        dedicated USE_V2_PARSER subprocess/argv coverage; this test adds
+        [core]/[v2_self] parity coverage for the same regression.
+
+        Reads target/manifest.json directly rather than via get_manifest(),
+        which prefers partial_parse.msgpack when present. That's true for
+        [core] (a parse-time artifact with no compiled_code) but not
+        [v2_self] (parse_with_v2 deletes the msgpack), so a single assertion
+        needs a read path that behaves the same under both modes.
+        """
+        run_dbt_for_mode(parser_mode, ["compile"])
+        manifest_data = json.loads(read_file("target", "manifest.json"))
+        model = manifest_data["nodes"]["model.test.first_model"]
+        assert model["compiled_code"] is not None
+        assert "select 1 as fun" in model["compiled_code"]
+
 
 class TestEphemeralModels:
     @pytest.fixture(scope="class")
