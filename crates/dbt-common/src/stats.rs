@@ -311,22 +311,25 @@ mod tests {
         assert_eq!(stat.result_status_string(), "warn");
     }
 
-    #[test]
-    fn test_get_execution_duration_subtracts_idle() {
+    fn stat_with_idle(idle_time_ms: u64) -> Stat {
         let start = SystemTime::now();
         let end = start + Duration::from_secs(10);
-        let stat = Stat {
+        Stat {
             unique_id: "model.my_project.my_model".to_string(),
             num_rows: None,
             rows_affected: None,
-            idle_time_ms: Some(3000),
+            idle_time_ms: Some(idle_time_ms),
             start_time: start,
             end_time: end,
             status: NodeStatus::Succeeded,
             thread_id: "Thread-1 (worker)".to_string(),
             message: None,
-        };
+        }
+    }
 
+    #[test]
+    fn test_get_execution_duration_subtracts_idle() {
+        let stat = stat_with_idle(3000);
         assert_eq!(
             stat.get_execution_duration(),
             Duration::from_secs(7),
@@ -336,20 +339,7 @@ mod tests {
 
     #[test]
     fn test_get_execution_duration_clamps_to_zero() {
-        let start = SystemTime::now();
-        let end = start + Duration::from_secs(10);
-        let stat = Stat {
-            unique_id: "model.my_project.my_model".to_string(),
-            num_rows: None,
-            rows_affected: None,
-            idle_time_ms: Some(20000),
-            start_time: start,
-            end_time: end,
-            status: NodeStatus::Succeeded,
-            thread_id: "Thread-1 (worker)".to_string(),
-            message: None,
-        };
-
+        let stat = stat_with_idle(20000);
         assert_eq!(
             stat.get_execution_duration(),
             Duration::ZERO,
