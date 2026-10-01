@@ -907,9 +907,9 @@ mod tests {
     #[test]
     fn malformed_macro_does_not_fall_back_to_another_package() {
         let mut env = Environment::new();
-        env.set_loader_with_filename(|name| match name {
-            "current.bad_macro" => Ok(Some(("{{".into(), Some("current.sql".into())))),
-            "root.bad_macro" => Ok(Some(("valid".into(), Some("root.sql".into())))),
+        env.set_loader(|name| match name {
+            "current.bad_macro" => Ok(Some(("{{".to_string(), Some("current.sql".into())))),
+            "root.bad_macro" => Ok(Some(("valid".to_string(), Some("root.sql".into())))),
             _ => Ok(None),
         });
         let env = JinjaEnv::new(env);
