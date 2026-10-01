@@ -3,5 +3,5 @@ body: Keep BigQuery STRUCT columns whole in get_columns_in_select_sql so ingesti
 time: 2026-09-30T10:48:12.439661-04:00
 custom:
     author: dandres2929
-    issue: ""
+    issue: "16549"
     project: dbt-core
