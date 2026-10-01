@@ -172,6 +172,7 @@ pub(crate) fn make_local_config(cfg: TestTableConfig) -> DbtModel {
     let base_attrs = NodeBaseAttributes {
         adapter: AdapterType::Snowflake,
         propagate: Vec::new(),
+        effective_propagation_target: None,
         database: "test_db".to_string(),
         schema: "test_schema".to_string(),
         alias: "test_table".to_string(),

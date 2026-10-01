@@ -25,7 +25,7 @@ use dbt_scheduler::instructions::SqlInstruction;
 use dbt_schemas::schemas::DbtTest;
 use dbt_schemas::schemas::common::Severity;
 use dbt_schemas::schemas::{InternalDbtNode, InternalDbtNodeAttributes, NodePathKind};
-use dbt_tasks_core::context::TaskRunnerCtx;
+use dbt_tasks_core::context::{BlockingTaskCtx, TaskRunnerCtx};
 use dbt_tasks_core::pretty_table::from_pretty_table_error;
 use dbt_tasks_core::run_cache::run_cache_service::CachedTestExecutionResult;
 use dbt_tasks_core::span_manager::SpanTreeRequest;
@@ -143,7 +143,7 @@ pub fn record_test_metric(status: TestExecutionStatus) {
 }
 
 pub fn insert_test_run_stat(
-    ctx: &TaskRunnerCtx,
+    ctx: &BlockingTaskCtx,
     unique_id: String,
     start: SystemTime,
     failures: usize,
@@ -475,7 +475,7 @@ impl AggregatedTestRunRemoteTask {
         });
 
         insert_test_run_stat(
-            ctx,
+            &ctx.blocking_ctx(),
             unique_id.to_string(),
             SystemTime::now(),
             result.failures,
@@ -596,7 +596,7 @@ pub fn execute_test_remote(
     let result = execute_test_remote_inner(test, ctx, sql_instruction, &base_context)?;
 
     // Process test result (metrics, stats, telemetry)
-    process_test_result(test, ctx, start, result)
+    process_test_result(test, &ctx.blocking_ctx(), start, result)
 }
 
 /// Execute test via traditional warehouse/remote execution
@@ -677,7 +677,7 @@ fn execute_test_remote_inner(
 /// Process test execution result and record metrics/stats
 pub fn process_test_result(
     test: &DbtTest,
-    ctx: &TaskRunnerCtx,
+    ctx: &BlockingTaskCtx,
     start: SystemTime,
     result: TestReportedResult,
 ) -> FsResult<NodeStatus> {

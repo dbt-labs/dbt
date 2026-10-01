@@ -95,6 +95,8 @@ pub struct RunTasksArgs {
     pub long_living: bool,
     /// Whether to perform a full refresh (rebuild incremental models from scratch)
     pub full_refresh: bool,
+    /// Bind without a catalog; assume referenced tables/columns exist and infer schemas from usage.
+    pub infer_schemas_and_typeless: bool,
     /// Whether to run with `--empty` (creates relations with schema only, no data).
     pub empty: bool,
     /// If specified, the end datetime dbt uses to filter microbatch model inputs (exclusive).
@@ -174,6 +176,7 @@ impl RunTasksArgs {
             local_execution_backend: arg.local_execution_backend,
             long_living: arg.long_living,
             full_refresh: arg.full_refresh,
+            infer_schemas_and_typeless: arg.infer_schemas_and_typeless,
             event_time_start: arg.event_time_start.clone(),
             event_time_end: arg.event_time_end.clone(),
             sample: arg.sample.clone(),

@@ -46,7 +46,7 @@
     {{ liquid_clustered_cols() }}
     {{ get_create_sql_comment(comment) }}
     {{ get_create_sql_tblproperties(tblproperties) }}
-    {{ get_create_sql_refresh_schedule(refresh.cron, refresh.time_zone_value) }}
+    {{ get_create_sql_refresh_schedule(refresh) }}
   as
     {{ sql }}
 {% endmacro %}

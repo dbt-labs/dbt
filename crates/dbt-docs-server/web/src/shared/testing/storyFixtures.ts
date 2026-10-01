@@ -153,6 +153,7 @@ export function storySource(overrides: Partial<SourceAsset> = {}): SourceAsset {
     sourceName: 'raw',
     identifier: 'customers',
     loader: 'fivetran',
+    sourceDescription: 'Raw customer data landed by Fivetran, one table per entity.',
     freshness: {
       warnAfter: { count: 12, period: 'hour' },
       errorAfter: { count: 24, period: 'hour' },

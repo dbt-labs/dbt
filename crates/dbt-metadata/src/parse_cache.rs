@@ -24,7 +24,7 @@
 /// of tracking individual file impacts exceeds the cost of a clean full resolve.
 const INCREMENTAL_CACHE_FILE_THRESHOLD: usize = 100;
 
-use dbt_common::path::DbtPath;
+use dbt_common::path::{DbtPath, resource_extension};
 use dbt_common::{
     FsResult,
     constants::{
@@ -166,7 +166,7 @@ pub fn add_all_unchanged_nodes(resolved_state: &mut ResolverState, cached_nodes:
 type DbtNodeRef = Arc<dyn InternalDbtNodeAttributes>;
 
 fn is_sql_file_path(path: &Path) -> bool {
-    path.extension() == Some(OsStr::new("sql"))
+    resource_extension(path) == Some("sql")
 }
 
 fn is_yml_file_path(path: &Path) -> bool {

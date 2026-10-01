@@ -1,6 +1,7 @@
 pub mod auth;
 pub mod explain;
 pub mod hash;
+pub mod materialization;
 pub mod metadata_cache;
 pub mod node_session;
 pub mod proto;
@@ -13,4 +14,5 @@ pub mod service_config;
 pub mod task_cache;
 pub mod task_cache_noop;
 pub mod task_cache_redis;
+pub mod telemetry;
 pub mod view_traversal;

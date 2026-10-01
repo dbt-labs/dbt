@@ -2,6 +2,7 @@ use std::time::Duration;
 
 use dbt_common::FsResult;
 use dbt_common::cancellation::CancellationToken;
+use dbt_common::io_args::ReplayMode;
 use dbt_schemas::schemas::profiles::DbConfig;
 
 /// Outcome of a successful MDLS write + read-back round trip. Any failure of
@@ -48,6 +49,7 @@ pub trait LakeComputeMdlsChecker: Send + Sync {
         &self,
         native_db_config: &DbConfig,
         lake_compute_db_config: &DbConfig,
+        replay: Option<&ReplayMode>,
         database: &str,
         schema: &str,
         project_name: Option<&str>,

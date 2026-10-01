@@ -116,7 +116,8 @@ fn component_from_recorded(
                 partition_by,
             ))
         }
-        // {"cron": str|null, "time_zone_value": str|null, ...}
+        // {"cron": str|null, "time_zone_value": str|null, "every": str|null,
+        //  "on_update": bool, "at_most_every": str|null, ...}
         components::refresh::TYPE_NAME => {
             let cron: Option<String> = val
                 .get("cron")
@@ -126,9 +127,24 @@ fn component_from_recorded(
                 .get("time_zone_value")
                 .and_then(|v| serde_json::from_value(v.clone()).ok())
                 .unwrap_or_default();
+            let every: Option<String> = val
+                .get("every")
+                .and_then(|v| serde_json::from_value(v.clone()).ok())
+                .unwrap_or_default();
+            let on_update: bool = val
+                .get("on_update")
+                .and_then(|v| serde_json::from_value(v.clone()).ok())
+                .unwrap_or_default();
+            let at_most_every: Option<String> = val
+                .get("at_most_every")
+                .and_then(|v| serde_json::from_value(v.clone()).ok())
+                .unwrap_or_default();
             Some(components::RefreshLoader::new_component_type_erased(
                 cron,
                 time_zone_value,
+                every,
+                on_update,
+                at_most_every,
             ))
         }
         // {"query": str}

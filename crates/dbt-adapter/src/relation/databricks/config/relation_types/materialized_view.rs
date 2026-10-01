@@ -200,6 +200,9 @@ mod tests {
                                 components::RefreshLoader::new_component_type_erased(
                                     Some("*/60 * * * *".to_string()),
                                     Some("UTC".to_string()),
+                                    None,
+                                    false,
+                                    None,
                                 ),
                             ),
                         ),
@@ -231,6 +234,18 @@ mod tests {
     <time_zone_value>
         UTC
     </time_zone_value>
+    <every>
+        None
+    </every>
+    <on_update>
+        False
+    </on_update>
+    <at_most_every>
+        None
+    </at_most_every>
+    <auto_refreshed>
+        False
+    </auto_refreshed>
     <is_altered>
         True
     </is_altered>

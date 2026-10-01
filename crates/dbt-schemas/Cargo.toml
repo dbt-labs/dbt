@@ -16,6 +16,7 @@ workspace = true
 blake3 = { workspace = true }
 chrono = { workspace = true }
 chrono-tz = { workspace = true }
+datafusion-common = { workspace = true }
 dbt-adapter-core = { workspace = true }
 dbt-common = { workspace = true }
 dbt-frontend-common = { workspace = true }
@@ -42,6 +43,7 @@ serde_json = { workspace = true }
 serde_with = { workspace = true }
 sha2 = { workspace = true }
 strum = { workspace = true, features = ["derive"] }
+url = { workspace = true }
 
 
 [lib]

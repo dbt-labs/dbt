@@ -629,6 +629,14 @@ impl PyDateTime {
         }
     }
 
+    // convenience "fixed offset" constructor
+    pub fn new_fixed_offset(dt: DateTime<chrono::FixedOffset>) -> Self {
+        PyDateTime {
+            state: DateTimeState::FixedOffset(dt),
+            tzinfo: None,
+        }
+    }
+
     /// Return naive or aware's .year
     pub fn year(&self) -> Option<Value> {
         Some(Value::from(self.chrono_dt().year()))

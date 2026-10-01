@@ -1,45 +1,45 @@
-# Contributing to dbt Core
+# Contributing to dbt
 
-There are many ways to contribute to the ongoing development of dbt Core, including code, discussions, and issues. We encourage you to first read our higher-level document: "[Expectations for Open Source Contributors](https://docs.getdbt.com/community/resources/oss-expectations)".
+There are many ways to contribute to the ongoing development of dbt, including code, discussions, and issues. We encourage you to first read our higher-level document: "[Expectations for Open Source Contributors](https://docs.getdbt.com/community/resources/oss-expectations)".
 
 ### Notes
 * **Adapters** - All adapter jinja logic is maintained in this repository. Please open up an issue here.
-* **Database Drivers** - dbt Core uses the next generation ADBC protocol to submit queries. 
+* **Database Drivers** - dbt uses the next generation ADBC protocol to submit queries. 
   * **For Snowflake** - please see the [Go Arrow Snowflake Driver](https://github.com/apache/arrow-adbc/tree/main/go/adbc/driver/snowflake)
   * **For BigQuery** - please see the [Go Arrow BigQuery Driver](https://github.com/apache/arrow-adbc/tree/main/go/adbc/driver/bigquery)
   * **For Postgres** - please see the [C Arrow Postgres Driver](https://github.com/dbt-labs/arrow-adbc/tree/main/c/driver/postgresql)
   
 * **Branches** - All pull requests from community contributors should target the main branch (default). If the change is needed as a patch for a minor version of dbt that has already been released (or is already a release candidate), a maintainer will backport the changes in your PR to the release branch.
-* **Releases** - While dbt Core v2.0 is in beta, new releases will include fixes and new features. Versions will be labelled `2.0.0-beta.1`, `2.0.0-beta.2`, etc. Before filing a bug, please ensure that you have the latest release installed. 
+* **Releases** - New releases will include fixes and new features. Before filing a bug, please ensure that you have the latest release installed. 
 
 ### Setting up an environment
 
 #### Tools
-dbt Core is written in Rust. Please make sure that you have the [rust toolchain installed](https://www.rust-lang.org/tools/install), along with the preferred testing utility [Nextest](https://nexte.st/). 
+dbt is written in Rust. Please make sure that you have the [rust toolchain installed](https://www.rust-lang.org/tools/install), along with the preferred testing utility [Nextest](https://nexte.st/). 
 
 1. [Install Rust](https://www.rust-lang.org/tools/install)
 2. Install the testing framework used for all tests & testbench configuration [Nextest](https://nexte.st/docs/installation/pre-built-binaries/)
-3. Clone the repository `git clone https://github.com/dbt-labs/dbt-core.git`
-4. `cd dbt-core`
+3. Clone the repository `git clone https://github.com/dbt-labs/dbt.git`
+4. `cd dbt`
 5. `cargo build` for a debug build. `cargo build --release` for a release build
 
 *There are no virtual environments needed!*
 
 
-## Making a Change to dbt Core
+## Making a Change to dbt
 After you're done making your code change, make sure:
 - your code is formatted: `cargo fmt`
 - all tests pass: `cargo nextest run`
 - all lints pass: `cargo clippy --all-targets --all-features`.
 - you have manually verified it works with a local build of dbt against a real project
 
-Then, open a pull request against the current development branch, `main`. A dbt Core maintainer will triage the PR and, once it's on the right track, assign a reviewer. They may suggest code revisions for style or clarity, or request that you add test(s).
+Then, open a pull request against the current development branch, `main`. A dbt maintainer will triage the PR and, once it's on the right track, assign a reviewer. They may suggest code revisions for style or clarity, or request that you add test(s).
 
-Once your PR has been approved, a maintainer will take it from there and shepherd your changes into dbt Core. And that's it! Happy developing 🎉
+Once your PR has been approved, a maintainer will take it from there and shepherd your changes into dbt. And that's it! Happy developing 🎉
 
 ## What happens after you open a pull request
 
-dbt Core is developed through dbt Labs' internal build and review process, and this repository is kept in sync with it automatically. You don't need to do anything special for this — but it's worth knowing, because it explains the labels, comments, and status checks you'll see on your PR.
+dbt is developed through dbt Labs' internal build and review process, and this repository is kept in sync with it automatically. You don't need to do anything special for this — but it's worth knowing, because it explains the labels, comments, and status checks you'll see on your PR.
 
 1. **Your PR is triaged.** PRs opened by community members are automatically labeled `community`, and during triage they're marked `source:community` to note the change came from an external contributor. A maintainer reviews the change and, once it's on the right track, assigns a reviewer.
 
@@ -72,4 +72,4 @@ changie new
 
 Commit the file that's created and your changelog entry is complete!
 
-You don't need to worry about which `dbt-core` version your change will go into. Just create the changelog entry with `changie`, and open your PR against the `main` branch. All merged changes will be included in the next release of `dbt-core`.  If a changelog is not required, a maintainer can add the label `Skip Changelog` to bypass this requirement.
+You don't need to worry about which `dbt` version your change will go into. Just create the changelog entry with `changie`, and open your PR against the `main` branch. All merged changes will be included in the next release of `dbt`.  If a changelog is not required, a maintainer can add the label `Skip Changelog` to bypass this requirement.

@@ -5,12 +5,14 @@ use crate::dbt_project_config::ProjectConfigResolver;
 use crate::resolve::resolve_properties::MinimalPropertiesEntry;
 use crate::sql_file_info::SqlFileInfo;
 use crate::utils::{
-    get_node_fqn, get_snapshot_fqn, register_duplicate_resource, trigger_duplicate_errors,
+    extract_unrendered_config_from_ast, get_node_fqn, get_snapshot_fqn, parse_unrendered_config,
+    register_duplicate_resource, trigger_duplicate_errors,
 };
 use dbt_adapter_core::AdapterType;
 use dbt_common::cancellation::CancellationToken;
 use dbt_common::constants::{DBT_SNAPSHOTS_DIR_NAME, DBT_TARGET_DIR_NAME, PARSING};
 use dbt_common::io_args::{FsCommand, IoArgs, StaticAnalysisKind};
+use dbt_common::path::node_name_from_path;
 use dbt_common::tokiofs::read_to_string;
 use dbt_common::tracing::dbt_emit::{
     emit_debug_log_message, emit_error_log_from_fs_error, emit_warn_log_from_fs_error,
@@ -32,18 +34,23 @@ use dbt_jinja_utils::serde::into_typed_with_jinja_error_context;
 use dbt_jinja_utils::silence_base_context;
 use dbt_jinja_utils::utils::{render_sql, render_sql_with_listeners};
 use dbt_schemas::schemas::common::{DbtChecksum, DbtQuoting, Hooks, normalize_sql};
-use dbt_schemas::schemas::project::{ResolvableConfig, ResolvedConfig};
+use dbt_schemas::schemas::project::{
+    ResolvableConfig, ResolvedConfig, WarningEmission, resolved_surface_key_status,
+    warn_and_strip_deprecated_warehouse_keys,
+};
 use dbt_schemas::schemas::properties::GetConfig;
 use dbt_schemas::schemas::telemetry::NodeType;
 use dbt_schemas::schemas::{InternalDbtNodeAttributes, IntrospectionKind, Nodes};
 use dbt_schemas::state::{DbtAsset, DbtRuntimeConfig, ModelStatus};
 use dbt_telemetry::AssetParsed;
+use std::cell::RefCell;
 use std::fmt::Debug;
 use std::rc::Rc;
 use tracing::Instrument as _;
 
 use dbt_frontend_common::error::CodeLocation;
 use dbt_jinja_utils::phases::parse::sql_resource::SqlResource;
+use minijinja::compiler::meta::{StaticFunctionCall, find_string_arg_calls};
 use minijinja::constants::{TARGET_PACKAGE_NAME, TARGET_UNIQUE_ID};
 use minijinja::{MacroSpans, Value as MinijinjaValue};
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -79,6 +86,11 @@ pub struct SqlFileRenderResult<T: ResolvableConfig<T>, S> {
     pub patch_path: Option<PathBuf>,
     /// Macro unique_ids that were invoked during rendering (for `depends_on.macros`).
     pub macro_dependencies: Vec<String>,
+    /// Raw (unrendered) kwargs from any `{{ config(...) }}` call(s) in the rendered source,
+    /// extracted from the same Jinja parse used to render it (see [`extract_unrendered_config_from_ast`]).
+    /// `None` for sources that were never rendered from their own file's raw text (e.g. the
+    /// rewritten block-style snapshot stub, whose caller re-derives this from the original file).
+    pub raw_config_call_dict: Option<BTreeMap<String, dbt_yaml::Value>>,
 }
 
 /// Whether `command` is one of the commands that defer a render error to
@@ -135,6 +147,50 @@ fn extract_model_config<T: ResolvableConfig<T>, S: GetConfig<T> + Debug>(
     Ok(Some(maybe_model))
 }
 
+/// Applies warehouse-key validation to one root-project `config:` block.
+pub(crate) fn strip_warehouse_keys_in_config_block(
+    schema_value: &mut dbt_yaml::Value,
+    context: &str,
+    resource: NodeType,
+    dependency_package_name: Option<&str>,
+    warning_emission: WarningEmission,
+) {
+    if dependency_package_name.is_some() {
+        return;
+    }
+    let Some(config_mapping) = schema_value
+        .get_mut("config")
+        .and_then(dbt_yaml::Value::as_mapping_mut)
+    else {
+        return;
+    };
+    warn_and_strip_deprecated_warehouse_keys(
+        config_mapping,
+        Some(context),
+        resource,
+        warning_emission,
+        |key| resolved_surface_key_status(resource, key),
+    );
+}
+
+/// Applies warehouse-key validation before properties are typed.
+pub(crate) fn strip_deprecated_warehouse_keys_from_properties(
+    node_properties: &mut BTreeMap<String, MinimalPropertiesEntry>,
+    resource: NodeType,
+    dependency_package_name: Option<&str>,
+) {
+    for mpe in node_properties.values_mut() {
+        let context = mpe.name.clone();
+        strip_warehouse_keys_in_config_block(
+            &mut mpe.schema_value,
+            &context,
+            resource,
+            dependency_package_name,
+            WarningEmission::Emit,
+        );
+    }
+}
+
 /// Appends `source()` calls discovered by static AST analysis to
 /// `sql_resources`, keyed by `(source_name, table_name)`.
 ///
@@ -143,21 +199,12 @@ fn extract_model_config<T: ResolvableConfig<T>, S: GetConfig<T> + Debug>(
 /// `{% if is_incremental() %}` or `{% if execute %}` would otherwise be missing
 /// from the model's dependencies and never have its schema fetched
 /// (dbt-fusion #1660). Sources with non-literal arguments cannot be resolved
-/// statically and are left to render-driven discovery.
+/// statically and are left to render-driven discovery. `discovered` comes from
+/// the AST the caller already parsed, not a fresh parse of `sql`.
 fn augment_sql_resources_with_static_sources<T: ResolvableConfig<T>>(
-    sql: &str,
-    display_path: &Path,
-    jinja_env: &JinjaEnv,
+    discovered: Vec<StaticFunctionCall>,
     sql_resources: &Arc<Mutex<Vec<SqlResource<T>>>>,
 ) {
-    let filename = display_path.to_string_lossy();
-    // Parse failure here is non-fatal: the render above already succeeded.
-    let Ok(discovered) = jinja_env
-        .env
-        .find_static_string_arg_calls(&filename, sql, &["source"])
-    else {
-        return;
-    };
     if discovered.is_empty() {
         return;
     }
@@ -209,7 +256,7 @@ where
         args, package_name, ..
     } = &**inner;
 
-    let ref_name = dbt_asset.path.file_stem().unwrap().to_str().unwrap();
+    let ref_name = node_name_from_path(&dbt_asset.path).unwrap();
 
     let display_path = if dbt_asset.base_path == args.io.out_dir
         && dbt_asset.path.starts_with(DBT_SNAPSHOTS_DIR_NAME)
@@ -296,6 +343,7 @@ where
         package_quoting,
         uses_snapshot_fqn,
         defer_render_errors_to_compile,
+        resource_type,
     } = &**inner;
 
     token.check_cancellation()?;
@@ -356,8 +404,13 @@ where
 
     // Early exit: the root overlay has the highest precedence for dependency packages, so if it
     // explicitly disables this node no inline `{{ config(...) }}` call can re-enable it.
-    // Skip the SQL file read and Jinja rendering entirely.
+    // Skip Jinja rendering entirely, but still statically extract unrendered_config from the raw
+    // file (a single, cheap parse) so a disabled node's manifest entry stays accurate.
     if config_resolver.is_disabled_by_root_overlay(&fqn) {
+        let raw_config_call_dict = read_to_string(dbt_asset.base_path.join(&dbt_asset.path))
+            .await
+            .ok()
+            .and_then(|sql| parse_unrendered_config(&sql, *uses_snapshot_fqn));
         return Ok(Some(SqlFileRenderResult {
             asset: dbt_asset.clone(),
             sql_file_info: SqlFileInfo::default(),
@@ -372,6 +425,7 @@ where
                 .get(ref_name)
                 .map(|mpe| mpe.relative_path.clone()),
             macro_dependencies: Vec::new(),
+            raw_config_call_dict,
         }));
     }
 
@@ -409,6 +463,7 @@ where
         &display_path,
         &model_path,
         args.static_analysis,
+        *resource_type,
     ));
 
     if let Some(status_reporter) = &args.io.status_reporter {
@@ -455,6 +510,17 @@ where
     let macro_dep_listener = Rc::new(dbt_jinja_utils::listener::MacroDependencyListener::new());
     listeners.push(macro_dep_listener.clone());
 
+    // Populated by `ast_visitor` below, reusing the AST from the compile it's passed into.
+    let raw_config_call_dict_cell: RefCell<Option<BTreeMap<String, dbt_yaml::Value>>> =
+        RefCell::new(None);
+    // Populated by `ast_visitor` below; see `augment_sql_resources_with_static_sources`.
+    let static_source_calls_cell: RefCell<Vec<StaticFunctionCall>> = RefCell::new(Vec::new());
+    let mut ast_visitor = |ast: &minijinja::compiler::ast::Stmt<'_>| {
+        *raw_config_call_dict_cell.borrow_mut() =
+            extract_unrendered_config_from_ast(ast, *uses_snapshot_fqn, sql.as_bytes());
+        *static_source_calls_cell.borrow_mut() = find_string_arg_calls(ast, &["source"]);
+    };
+
     let (sql_file_info, resolved_config, status, rendered_sql, macro_spans, macro_dependencies) =
         match render_sql_with_listeners(
             &sql,
@@ -463,17 +529,11 @@ where
             &listeners,
             &[],
             &display_path,
+            Some(&mut ast_visitor),
         ) {
             Ok(rendered_sql) => {
-                // A `source()` inside a Jinja branch that evaluates to false
-                // during this `execute=false` render is never observed by the
-                // render-driven `SqlResource` collection above. Walk the
-                // template AST to recover any such sources so their schemas
-                // are still fetched (dbt-fusion #1660).
                 augment_sql_resources_with_static_sources(
-                    &sql,
-                    &display_path,
-                    jinja_env,
+                    static_source_calls_cell.into_inner(),
                     &sql_resources,
                 );
 
@@ -634,6 +694,7 @@ where
         };
 
     let (status, render_error_deferred) = status;
+    let raw_config_call_dict = raw_config_call_dict_cell.into_inner();
 
     // Only check for duplicate resource definitions for enabled models to match dbt-core behavior.
     if status == ModelStatus::Enabled
@@ -665,6 +726,7 @@ where
             .get(ref_name)
             .map(|mpe| mpe.relative_path.clone()),
         macro_dependencies,
+        raw_config_call_dict,
     }))
 }
 
@@ -701,6 +763,8 @@ pub struct RenderCtxInner<T: ResolvableConfig<T>> {
     /// Keep parse-failed runnable nodes available for selection so compilation
     /// reports the error only when the command selects that node.
     pub defer_render_errors_to_compile: bool,
+    /// `None` for resource types without warehouse fields.
+    pub resource_type: Option<NodeType>,
 }
 
 /// Outer context for rendering sql files
@@ -750,7 +814,7 @@ pub async fn render_unresolved_sql_files<
             let chunk_vec = chunk.to_vec();
             let mut chunk_props = BTreeMap::new();
             for dbt_asset in &chunk_vec {
-                let ref_name = dbt_asset.path.file_stem().unwrap().to_str().unwrap();
+                let ref_name = node_name_from_path(&dbt_asset.path).unwrap();
                 if let Some(entry) = node_properties.get(ref_name) {
                     chunk_props.insert(ref_name.to_string(), entry.clone());
                 }
@@ -1159,5 +1223,181 @@ mod tests {
                 "{command:?} should not defer render errors to compile"
             );
         }
+    }
+
+    /// Regression test for dbt-fusion #1660 / fs#15321: `source()` calls that sit in a Jinja
+    /// branch which evaluates to `false` during the `execute=false` discovery render must still
+    /// be recovered from the AST, and this must not depend on a second, independent parse of the
+    /// SQL — `discovered` here comes from the same `find_string_arg_calls` walk the renderer now
+    /// feeds from its single `ast_visitor` parse.
+    #[test]
+    fn augment_sql_resources_with_static_sources_recovers_source_in_dead_branch() {
+        use dbt_schemas::schemas::project::ModelConfig;
+        use minijinja::compiler::parser::Parser;
+        use minijinja::machinery::WhitespaceConfig;
+        use minijinja::syntax::SyntaxConfig;
+
+        let sql = "\
+            {% if execute %}{{ source('observed_pkg', 'observed_tbl') }}{% endif %}\n\
+            {% if is_incremental() %}{{ source('dead_pkg', 'dead_tbl') }}{% endif %}\n\
+            select 1";
+
+        let mut parser = Parser::new(
+            sql,
+            "model.sql",
+            false,
+            #[allow(clippy::default_constructed_unit_structs)]
+            SyntaxConfig::builder().build().unwrap(),
+            WhitespaceConfig::default(),
+        );
+        let ast = parser.parse().expect("valid jinja");
+        let discovered = find_string_arg_calls(&ast, &["source"]);
+
+        // Only the render-observed source is present beforehand, mirroring what
+        // `render_sql_with_listeners`'s listener-driven collection would have added for a
+        // successful `execute=false` render of the `is_incremental()` branch above.
+        let sql_resources: Arc<Mutex<Vec<SqlResource<ModelConfig>>>> =
+            Arc::new(Mutex::new(vec![SqlResource::Source((
+                "observed_pkg".to_string(),
+                "observed_tbl".to_string(),
+                CodeLocation::default(),
+            ))]));
+
+        augment_sql_resources_with_static_sources(discovered, &sql_resources);
+
+        let resources = sql_resources.lock().unwrap();
+        assert!(
+            resources.iter().any(|r| matches!(
+                r,
+                SqlResource::StaticSource((name, table, _))
+                    if name == "dead_pkg" && table == "dead_tbl"
+            )),
+            "source() in the dead branch should be recovered as a StaticSource: {resources:?}"
+        );
+        assert_eq!(
+            resources
+                .iter()
+                .filter(
+                    |r| matches!(r, SqlResource::Source((name, table, _)) if name == "observed_pkg" && table == "observed_tbl")
+                )
+                .count(),
+            1,
+            "the already-observed source must not be duplicated: {resources:?}"
+        );
+        assert!(
+            !resources.iter().any(|r| matches!(
+                r,
+                SqlResource::StaticSource((name, table, _))
+                    if name == "observed_pkg" && table == "observed_tbl"
+            )),
+            "an already-observed source must not also gain a StaticSource entry: {resources:?}"
+        );
+    }
+
+    fn mpe_with_config(yaml: &str) -> MinimalPropertiesEntry {
+        MinimalPropertiesEntry {
+            name: "my_node".to_string(),
+            name_span: dbt_yaml::Span::zero(),
+            relative_path: PathBuf::new(),
+            schema_value: dbt_yaml::from_str(yaml).unwrap(),
+            table_value: None,
+            version_info: None,
+            duplicate_paths: vec![],
+        }
+    }
+
+    #[test]
+    fn stale_warehouse_key_in_config_block_is_kept() {
+        let mut node_properties = BTreeMap::new();
+        node_properties.insert(
+            "my_snapshot".to_string(),
+            mpe_with_config(
+                r#"
+                name: my_snapshot
+                config:
+                  strategy: timestamp
+                  jar_file_uri: "gs://bucket/jar"
+                  partition_by:
+                    field: created_at
+                "#,
+            ),
+        );
+
+        strip_deprecated_warehouse_keys_from_properties(
+            &mut node_properties,
+            NodeType::Snapshot,
+            None,
+        );
+
+        let config = node_properties["my_snapshot"]
+            .schema_value
+            .get("config")
+            .unwrap();
+        assert!(
+            config.get("jar_file_uri").is_some(),
+            "a Stale warehouse key must keep applying -- the canary must not change behavior"
+        );
+        assert!(
+            config.get("partition_by").is_some(),
+            "a Valid warehouse key must survive untouched"
+        );
+        assert!(
+            config.get("strategy").is_some(),
+            "a non-warehouse field must be untouched"
+        );
+    }
+
+    #[test]
+    fn dependency_package_config_block_is_untouched() {
+        let mut node_properties = BTreeMap::new();
+        node_properties.insert(
+            "my_snapshot".to_string(),
+            mpe_with_config(
+                r#"
+                name: my_snapshot
+                config:
+                  jar_file_uri: "gs://bucket/jar"
+                "#,
+            ),
+        );
+
+        strip_deprecated_warehouse_keys_from_properties(
+            &mut node_properties,
+            NodeType::Snapshot,
+            Some("some_dependency"),
+        );
+
+        assert!(
+            node_properties["my_snapshot"]
+                .schema_value
+                .get("config")
+                .and_then(|c| c.get("jar_file_uri"))
+                .is_some(),
+            "a dependency package's config block must not be touched"
+        );
+    }
+
+    #[test]
+    fn absent_config_block_is_a_no_op() {
+        let mut node_properties = BTreeMap::new();
+        node_properties.insert("no_config".to_string(), mpe_with_config("name: no_config"));
+        node_properties.insert(
+            "no_properties".to_string(),
+            MinimalPropertiesEntry {
+                name: "no_properties".to_string(),
+                name_span: dbt_yaml::Span::zero(),
+                relative_path: PathBuf::new(),
+                schema_value: dbt_yaml::Value::null(),
+                table_value: None,
+                version_info: None,
+                duplicate_paths: vec![],
+            },
+        );
+
+        strip_deprecated_warehouse_keys_from_properties(
+            &mut node_properties,
+            NodeType::Model,
+            None,
+        );
     }
 }

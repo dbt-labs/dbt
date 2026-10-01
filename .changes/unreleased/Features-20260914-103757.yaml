@@ -1,0 +1,7 @@
+kind: Features
+body: '[Lake Compute] Read AWS Databricks Unity Catalog tables using Databricks profile PAT/OAuth M2M credentials, declaration-aware validation, and `dbt debug` attach parity. Existing fs `catalogs.yml` entries continue to use `type: unity`. Existing local Unity attach options in `config.lakecompute` must move to `config.duckdb`; Lake Compute access is read-only and Unity model writes are unsupported.'
+time: 2026-09-14T10:37:57.850503-07:00
+custom:
+    author: vincent.chan
+    issue: ''
+    project: dbt-core

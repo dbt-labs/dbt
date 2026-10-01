@@ -24,6 +24,7 @@ windows = { version = "0.61", features = [
 [dependencies]
 dbt-adapter = { workspace = true }
 dbt-adapter-core = { workspace = true }
+dbt-artifact-download = { workspace = true }
 dbt-clap-core = { workspace = true }
 dbt-common = { workspace = true }
 dbt-compilation = { workspace = true }

@@ -1104,6 +1104,15 @@ impl SqlType {
             DataType::Time32(_) | DataType::Time64(_) => {
                 unreachable!("unexpected time unit in Arrow data type: {data_type:?}")
             }
+            // BigQuery TIMESTAMP represents an absolute instant without a
+            // time-zone suffix in its SQL spelling. Arrow's time zone marks
+            // that distinction from BigQuery DATETIME.
+            DataType::Timestamp(_, Some(_)) if backend == AdapterType::Bigquery => {
+                SqlType::Timestamp {
+                    precision: None,
+                    time_zone_spec: TimeZoneSpec::Unspecified,
+                }
+            }
             DataType::Timestamp(TimeUnit::Second, tz) => SqlType::Timestamp {
                 precision: None,
                 time_zone_spec: if tz.is_some() {
@@ -1395,6 +1404,17 @@ impl SqlType {
             // Bigquery floats are 64-bit
             // https://cloud.google.com/bigquery/docs/reference/standard-sql/data-types#floating_point_types
             (Bigquery, Real | Float(_) | Double) => DataType::Float64,
+
+            // Arrow has no native JSON or GEOGRAPHY types. Preserve their
+            // BigQuery identity using the distinct-type encoding understood by
+            // the adapter and fixture-rendering layers instead of collapsing
+            // both to Utf8.
+            (Bigquery, Json) => {
+                DataType::FixedSizeList(Arc::new(Field::new("json", DataType::Utf8, true)), 1)
+            }
+            (Bigquery, Geography(_)) => {
+                DataType::FixedSizeList(Arc::new(Field::new("geography", DataType::Utf8, true)), 1)
+            }
             // }}}
 
             // Databricks {{{

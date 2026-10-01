@@ -15,7 +15,10 @@ use dbt_common::{
         metrics::increment_metric,
     },
 };
-use dbt_compilation::{core::DbtLoadedProject, schema_hydration::SchemaHydrationState};
+use dbt_compilation::{
+    core::{AdapterConnectionMode, DbtLoadedProject},
+    schema_hydration::SchemaHydrationState,
+};
 use dbt_dag::{deps_mgmt::reverse, schedule::Schedule};
 use dbt_defer::DeferState;
 use dbt_features::feature_stack::FeatureStack;
@@ -804,6 +807,7 @@ use crate::partial_parse::{
 };
 use dbt_compilation::traits::{CompilationCache, CompiledProject};
 use dbt_state::selector::RunCacheStateSelectorArgs;
+use dbt_state::telemetry::SharedEventOrder;
 
 impl DbtProjectCompilation {
     fn dbt_state(&self) -> Arc<DbtState> {
@@ -1945,6 +1949,11 @@ impl DbtProjectCompilation {
             token,
             sidecar_client.clone(),
             execute_mode,
+            if arg.infer_schemas_and_typeless {
+                AdapterConnectionMode::Offline
+            } else {
+                AdapterConnectionMode::AllowRemote
+            },
         )?;
         let adapter = if let Some(adapter_override) = arg
             .adapter_override
@@ -2033,6 +2042,7 @@ impl DbtProjectCompilation {
             let run_task_args_copy = run_task_args.clone();
             let adapter_type = resolved_state.adapter_type;
             let cloud_config = resolved_state.cloud_config.clone();
+            let dbt_profile = resolved_state.dbt_profile.clone();
 
             DeferState::load(
                 arg,
@@ -2049,6 +2059,7 @@ impl DbtProjectCompilation {
                         execute_mode,
                         adapter_type,
                         cloud_config.as_ref(),
+                        &dbt_profile,
                     )
                     .await
                 },
@@ -2316,6 +2327,7 @@ impl DbtProjectCompilation {
             execute_mode,
             resolved_state.adapter_type,
             resolved_state.cloud_config.as_ref(),
+            &resolved_state.dbt_profile,
         )
         .await?;
 
@@ -2357,6 +2369,8 @@ impl DbtProjectCompilation {
                     .register_seeds_for_selected_ids(run_task_args.as_ref(), &schedule)
                     .await?;
 
+                let shared_event_order =
+                    run_cache_state_selector_args.map(|args| args.shared_event_order.clone());
                 let ctx = task_runner
                     .create_context(
                         Arc::clone(&run_task_args),
@@ -2365,6 +2379,7 @@ impl DbtProjectCompilation {
                         base_context.clone(),
                         schedule.clone(),
                         freshness_results,
+                        shared_event_order,
                     )
                     .await?;
 
@@ -2699,6 +2714,11 @@ async fn write_catalog(
         token,
         None,
         execute,
+        if arg.infer_schemas_and_typeless {
+            AdapterConnectionMode::Offline
+        } else {
+            AdapterConnectionMode::AllowRemote
+        },
     )?;
     let mut jinja_env = Arc::unwrap_or_clone(jinja_env.clone());
     configure_compile_and_run_jinja_environment(&mut jinja_env, adapter.clone());
@@ -2929,6 +2949,7 @@ async fn create_run_cache_state_selector_args(
         execute_mode,
         resolved_state.adapter_type,
         cloud_config,
+        &resolved_state.dbt_profile,
     )
     .await?;
 
@@ -2947,6 +2968,7 @@ async fn create_run_cache_state_selector_args(
         project_id,
         macros: resolved_state.macros.macros.clone(),
         project_root: DbtPath::from(project_root),
+        shared_event_order: SharedEventOrder::new(),
     }))
 }
 

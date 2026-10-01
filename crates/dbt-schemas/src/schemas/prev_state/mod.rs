@@ -2560,6 +2560,7 @@ mod tests {
                         pre_clone: None,
                         execute_hooks_on_any_reuse: None,
                         compare_unrendered_code: None,
+                        ignore_external_modifications: None,
                     })
                 }),
             ),
@@ -2673,7 +2674,7 @@ mod tests {
             (
                 "begin",
                 ExcludeKind::Relevant,
-                Box::new(|n| n.deprecated_config.begin = Some("2024-01-01".to_string())),
+                Box::new(|n| n.deprecated_config.begin = dbt_yaml::Timestamp::parse("2024-01-01")),
             ),
             (
                 "persist_docs",
@@ -2835,6 +2836,7 @@ mod tests {
                         pre_clone: None,
                         execute_hooks_on_any_reuse: None,
                         compare_unrendered_code: None,
+                        ignore_external_modifications: None,
                     })
                 }),
             ),

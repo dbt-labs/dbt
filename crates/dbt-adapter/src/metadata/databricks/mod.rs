@@ -31,6 +31,7 @@ use once_cell::sync::Lazy;
 use regex::Regex;
 
 use crate::adapter::adapter_impl::AdapterImpl;
+use crate::engine::databricks_statement_options;
 use crate::errors::{AdapterError, AdapterResult, AsyncAdapterResult};
 use crate::metadata::CatalogAndSchema;
 use crate::metadata::databricks::dbr_capabilities::DbrComputeContext;
@@ -65,6 +66,7 @@ pub(crate) mod version;
 // Reference: https://github.com/databricks/dbt-databricks/blob/92f1442faabe0fce6f0375b95e46ebcbfcea4c67/dbt/include/databricks/macros/adapters/metadata.sql
 pub fn list_relations(
     engine: &dyn AdapterEngine,
+    state: Option<&State>,
     ctx: &QueryCtx,
     conn: &'_ mut dyn Connection,
     db_schema: &CatalogAndSchema,
@@ -101,7 +103,8 @@ WHERE table_catalog = '{}'
                             &db_schema.resolved_catalog.to_lowercase(),
                             &db_schema.resolved_schema.to_lowercase());
 
-    let batch = engine.execute(None, conn, ctx, &sql, token)?;
+    let options = databricks_statement_options(engine.adapter_type(), state)?;
+    let batch = engine.execute_with_options(None, ctx, conn, &sql, options, true, token)?;
 
     if batch.num_rows() == 0 {
         return Ok(Vec::new());
@@ -1524,6 +1527,7 @@ impl MetadataAdapter for DatabricksMetadataAdapter {
         &self,
         db_schemas: &[CatalogAndSchema],
         token: CancellationToken,
+        report_progress: bool,
     ) -> AsyncAdapterResult<'_, BTreeMap<CatalogAndSchema, AdapterResult<RelationVec>>> {
         type Acc = BTreeMap<CatalogAndSchema, AdapterResult<RelationVec>>;
         let factory = Box::new(AdapterConnectionFactory::new(self.adapter.engine().clone()));
@@ -1534,7 +1538,11 @@ impl MetadataAdapter for DatabricksMetadataAdapter {
                           db_schema: &CatalogAndSchema|
               -> AdapterResult<Vec<Arc<dyn BaseRelation>>> {
             let query_ctx = QueryCtx::default().with_desc("list_relations_in_parallel (UC)");
-            adapter.list_relations(&query_ctx, conn, db_schema, token_clone.clone())
+            with_relation_list_item_span(
+                report_progress.then_some(RELATION_CACHE_OP_ID),
+                &db_schema.to_string(),
+                || adapter.list_relations(None, &query_ctx, conn, db_schema, token_clone.clone()),
+            )
         };
 
         let reduce_f = move |acc: &mut Acc,
