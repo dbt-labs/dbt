@@ -135,23 +135,15 @@ impl InvocationArgs {
     pub fn from_eval_args(arg: &EvalArgs) -> Self {
         let log_level = arg.log_level.unwrap_or(LogLevel::Info);
 
-        let log_level_file = arg.log_level_file.unwrap_or(log_level);
-
-        let log_format = arg.log_format;
-        let log_format_file = arg.log_format_file.unwrap_or(log_format);
-
         InvocationArgs {
             invocation_command: arg.command.as_str().to_string(),
             vars: arg
                 .vars
                 .iter()
-                .map(|(k, v)| {
-                    let value = Value::from_serialize(v);
-                    (k.clone(), value)
-                })
+                .map(|(k, v)| (k.clone(), Value::from_serialize(v)))
                 .collect(),
-            select: arg.select.clone().map(|select| select.to_string()),
-            exclude: arg.exclude.clone().map(|exclude| exclude.to_string()),
+            select: arg.select.as_ref().map(ToString::to_string),
+            exclude: arg.exclude.as_ref().map(ToString::to_string),
             profiles_dir: arg
                 .profiles_dir
                 .clone()
@@ -176,10 +168,10 @@ impl InvocationArgs {
                 .display()
                 .to_string(),
             debug: arg.debug,
-            log_format: log_format.to_string(),
-            log_format_file: log_format_file.to_string(),
+            log_format: arg.log_format.to_string(),
+            log_format_file: arg.log_format_file.unwrap_or(arg.log_format).to_string(),
             log_level: log_level.to_string(),
-            log_level_file: log_level_file.to_string(),
+            log_level_file: arg.log_level_file.unwrap_or(log_level).to_string(),
             log_path: arg
                 .log_path
                 .clone()
@@ -280,30 +272,7 @@ impl InvocationArgs {
             Value::from(self.send_anonymous_usage_stats),
         );
         dict.insert("WRITE_JSON".to_string(), Value::from(self.write_json));
-        dict.insert("FULL_REFRESH".to_string(), Value::from(self.full_refresh));
-        dict.insert(
-            "STORE_FAILURES".to_string(),
-            Value::from(self.store_failures),
-        );
-        dict.insert("FAVOR_STATE".to_string(), Value::from(self.favor_state));
-        dict.insert("EMPTY".to_string(), Value::from(self.empty));
-        if let Some(event_time_end) = &self.event_time_end {
-            dict.insert(
-                "EVENT_TIME_END".to_string(),
-                Value::from(event_time_end.clone()),
-            );
-        }
-        if let Some(event_time_start) = &self.event_time_start {
-            dict.insert(
-                "EVENT_TIME_START".to_string(),
-                Value::from(event_time_start.clone()),
-            );
-        }
-        dict.insert("REPLAY".to_string(), Value::from(self.replay.is_some()));
-        dict.insert(
-            "USE_V2_COMPATIBLE_PACKAGE_DOWNLOADS".to_string(),
-            Value::from(self.use_v2_compatible_package_downloads),
-        );
+        self.insert_runtime_flags(&mut dict);
 
         // !!HACK!!: Inject a lower case version of the upper-case keys, for use
         // in `invocation_args_dict` -- we do this because this method is
@@ -321,6 +290,27 @@ impl InvocationArgs {
                 }
             })
             .collect()
+    }
+
+    fn insert_runtime_flags(&self, dict: &mut BTreeMap<String, Value>) {
+        dict.insert("FULL_REFRESH".to_string(), Value::from(self.full_refresh));
+        dict.insert(
+            "STORE_FAILURES".to_string(),
+            Value::from(self.store_failures),
+        );
+        dict.insert("FAVOR_STATE".to_string(), Value::from(self.favor_state));
+        dict.insert("EMPTY".to_string(), Value::from(self.empty));
+        if let Some(value) = &self.event_time_end {
+            dict.insert("EVENT_TIME_END".to_string(), Value::from(value.clone()));
+        }
+        if let Some(value) = &self.event_time_start {
+            dict.insert("EVENT_TIME_START".to_string(), Value::from(value.clone()));
+        }
+        dict.insert("REPLAY".to_string(), Value::from(self.replay.is_some()));
+        dict.insert(
+            "USE_V2_COMPATIBLE_PACKAGE_DOWNLOADS".to_string(),
+            Value::from(self.use_v2_compatible_package_downloads),
+        );
     }
 
     /// Set the number of threads to use.
