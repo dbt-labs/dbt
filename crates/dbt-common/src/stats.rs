@@ -85,6 +85,9 @@ pub struct Stat {
     /// Rows affected by the warehouse DML (e.g. `CREATE TABLE AS SELECT`).
     /// Set from the NodeEvaluated OTel span after execution; `None` for views.
     pub rows_affected: Option<i64>,
+    /// Connection-limit wait time accumulated on the NodeEvaluated span.
+    /// Subtracted from wall-clock duration to report net execution time.
+    pub idle_time_ms: Option<u64>,
     pub start_time: SystemTime,
     pub end_time: SystemTime,
     pub status: NodeStatus,
@@ -108,6 +111,7 @@ impl Stat {
             unique_id,
             num_rows,
             rows_affected: None,
+            idle_time_ms: None,
             start_time,
             end_time,
             status,
@@ -120,6 +124,11 @@ impl Stat {
         self.end_time
             .duration_since(self.start_time)
             .unwrap_or_default()
+    }
+
+    pub fn get_execution_duration(&self) -> Duration {
+        let idle = Duration::from_millis(self.idle_time_ms.unwrap_or_default());
+        self.get_duration().saturating_sub(idle)
     }
 
     pub fn format_time(system_time: SystemTime) -> String {
