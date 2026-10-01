@@ -1821,15 +1821,6 @@ impl Value {
         Ok(rv)
     }
 
-    #[cfg(feature = "builtins")]
-    pub(crate) fn get_path_or_default(&self, path: &str, default: &Value) -> Value {
-        match self.get_path(path) {
-            Err(_) => default.clone(),
-            Ok(val) if val.is_undefined() => default.clone(),
-            Ok(val) => val,
-        }
-    }
-
     /// Creates a value from a tuple.
     ///
     /// This is the preferred way to create a tuple value. For single-element tuples,
