@@ -16,16 +16,18 @@ from unittest import mock
 
 import pytest
 
-from dbt.tests.util import run_dbt
+from dbt.tests.util import get_manifest, run_dbt
 
 FAKE_PARSER_PY = '''\
-"""Tiny stand-in for the v2 parser. Writes a stashed manifest.json into
-whatever --target-path argument we receive (defaults to ./target)."""
+"""Tiny stand-in for the v2 parser. Writes stashed manifest.json (and, if
+present, semantic_manifest.json) into whatever --target-path argument we
+receive (defaults to ./target)."""
 import os
 import shutil
 import sys
 
 STASH = {stash!r}
+SEMANTIC_STASH = {semantic_stash!r}
 
 
 def main(argv):
@@ -39,11 +41,15 @@ def main(argv):
         # ignore everything else
     os.makedirs(target_path, exist_ok=True)
     shutil.copy(STASH, os.path.join(target_path, "manifest.json"))
+    if os.path.exists(SEMANTIC_STASH):
+        shutil.copy(SEMANTIC_STASH, os.path.join(target_path, "semantic_manifest.json"))
 
 
 if __name__ == "__main__":
     main(sys.argv[1:])
 '''
+
+SEMANTIC_MANIFEST_SENTINEL = '{"sentinel": "v2-parser-stash"}'
 
 MODEL_A_SQL = """
 select 1 as id
@@ -86,7 +92,12 @@ class V2ParserFixture:
     def fake_parser(self, project, tmp_path_factory):
         """Seed a real manifest.json via core's parser, then build a fake
         v2 parser binary (Python script + thin platform-specific wrapper)
-        that copies the stash into <target>/manifest.json on invocation."""
+        that copies the stash into <target>/manifest.json on invocation.
+
+        Also stashes a sentinel semantic_manifest.json, distinguishable from
+        anything write_semantic_manifest() would generate, so tests can prove
+        parse_with_v2's copy of the v2 parser's own semantic_manifest.json
+        survives untouched."""
         run_dbt(["parse"])
         seed_path = Path(project.project_root) / "target" / "manifest.json"
         assert seed_path.exists(), "core parse failed to produce manifest.json"
@@ -95,12 +106,18 @@ class V2ParserFixture:
         stash = stash_dir / "manifest.json"
         shutil.copy(seed_path, stash)
 
-        # Wipe the real manifest so we can prove the fake produced it.
+        semantic_stash = stash_dir / "semantic_manifest.json"
+        semantic_stash.write_text(SEMANTIC_MANIFEST_SENTINEL)
+
+        # Wipe the real manifests so we can prove the fake produced them.
         seed_path.unlink()
+        (Path(project.project_root) / "target" / "semantic_manifest.json").unlink(missing_ok=True)
 
         bin_dir = tmp_path_factory.mktemp("v2_bin")
         py_script = bin_dir / "fake_parser.py"
-        py_script.write_text(FAKE_PARSER_PY.format(stash=str(stash)))
+        py_script.write_text(
+            FAKE_PARSER_PY.format(stash=str(stash), semantic_stash=str(semantic_stash))
+        )
 
         python = sys.executable
         if sys.platform == "win32":
@@ -157,3 +174,37 @@ class TestV2ParserBranch(V2ParserFixture):
         results = run_dbt(["parse"])
         assert results is not None
         assert "model.test.model_a" in results.nodes
+
+    def test_v2_branch_persists_compiled_code_after_compile(self, project, fake_parser):
+        """write_manifest()'s post-compile write must survive under
+        USE_V2_PARSER so compiled_code (populated in memory by the compile
+        task, after parse_with_v2 already wrote its own parse-time
+        manifest.json) makes it to the on-disk manifest."""
+        run_dbt(
+            [
+                "--use-v2-parser",
+                f"--v2-parser={fake_parser}",
+                "compile",
+            ]
+        )
+        manifest = get_manifest(project.project_root)
+        model_a = manifest.nodes["model.test.model_a"]
+        assert model_a.compiled_code is not None
+        assert "select 1 as id" in model_a.compiled_code
+
+    def test_v2_branch_preserves_semantic_manifest_after_compile(self, project, fake_parser):
+        """write_manifest()'s USE_V2_PARSER guard exists specifically to avoid
+        clobbering the semantic_manifest.json that parse_with_v2 already
+        copied from the v2 parser's own output (core/dbt/parser/v2.py:85-93).
+        Without the guard, the post-compile write_manifest() call would
+        regenerate semantic_manifest.json from the runtime Manifest,
+        silently discarding whatever the v2 parser emitted."""
+        run_dbt(
+            [
+                "--use-v2-parser",
+                f"--v2-parser={fake_parser}",
+                "compile",
+            ]
+        )
+        semantic_manifest_path = Path(project.project_root) / "target" / "semantic_manifest.json"
+        assert semantic_manifest_path.read_text() == SEMANTIC_MANIFEST_SENTINEL
