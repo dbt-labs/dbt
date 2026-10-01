@@ -8,7 +8,7 @@ use crate::run_cache::run_cache_request::{
 use crate::run_cache::run_cache_service::{
     RunCacheCloneDecision, clone_chain_depth_limit_for_adapter,
     confirm_run_cache_service_execution, execute_run_cache_service_clone, has_metadata_address,
-    legacy_freshness, run_cache_metadata_query_options,
+    legacy_freshness, run_cache_dialect, run_cache_metadata_query_options,
 };
 use crate::run_cache::run_cache_service::{record_dev_clone_decision, replay_dev_clone_decision};
 use dbt_adapter::errors::{AdapterErrorKind, Cancellable};
@@ -441,7 +441,7 @@ async fn prepare_dev_clone_request(
 
     let request = CloneRequestInput {
         target_table: target_table.clone(),
-        dialect: ctx.default_adapter_type().to_string(),
+        dialect: run_cache_dialect(ctx),
         default_catalog: candidate.local().database(),
         execution_type: candidate.execution_type(&ctx.inner.materialization_resolver)?,
         clone_source_table: clone_source_table.clone(),

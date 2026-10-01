@@ -14,4 +14,5 @@ pub mod service_config;
 pub mod task_cache;
 pub mod task_cache_noop;
 pub mod task_cache_redis;
+pub mod telemetry;
 pub mod view_traversal;

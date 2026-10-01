@@ -39,6 +39,19 @@ fn test_dynamic() {
 }
 
 #[test]
+fn test_dynamic_loader_filename() {
+    let mut env = Environment::new();
+    env.set_undefined_behavior(minijinja::UndefinedBehavior::Strict);
+    env.set_loader_with_filename(|name| match name {
+        "broken" => Ok(Some(("{%".into(), Some("broken.sql".into())))),
+        _ => Ok(None),
+    });
+    let err = env.get_template("broken").unwrap_err();
+    assert_ne!(err.kind(), minijinja::ErrorKind::TemplateNotFound);
+    assert!(err.to_string().contains("broken.sql"), "{err}");
+}
+
+#[test]
 fn test_source_replace_static() {
     let mut env = Environment::new();
     env.add_template_owned("a", "1", None).unwrap();

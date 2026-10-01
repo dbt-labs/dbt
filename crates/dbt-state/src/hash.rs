@@ -313,8 +313,9 @@ fn model_node_ref_representation_hash(node: &DbtModel) -> Result<String, NodeHas
         JsonValue::from(
             node.__model_attr__
                 .deprecation_date
-                .as_deref()
-                .unwrap_or("None"),
+                .as_ref()
+                .map(|ts| ts.with_defaults().to_string())
+                .unwrap_or_else(|| "None".to_owned()),
         ),
     );
 
@@ -1114,7 +1115,7 @@ mod tests {
             let mut node = model_node(&["project", "models", "test_model"]);
             node.__model_attr__.latest_version = Some(StringOrInteger::Integer(2));
             node.__model_attr__.access = Access::Public;
-            node.__model_attr__.deprecation_date = Some("2025-12-31".to_string());
+            node.__model_attr__.deprecation_date = dbt_yaml::Timestamp::parse("2025-12-31");
 
             assert_eq!(model_node_ref_representation_hash(&node).unwrap().len(), 32);
         }

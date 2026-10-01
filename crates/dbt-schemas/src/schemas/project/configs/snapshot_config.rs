@@ -201,6 +201,12 @@ pub struct ProjectSnapshotConfig {
     pub cluster_by: Option<ClusterConfig>,
     #[serde(
         default,
+        rename = "+enable_change_history",
+        deserialize_with = "bool_or_string_bool"
+    )]
+    pub enable_change_history: Option<bool>,
+    #[serde(
+        default,
         rename = "+enable_refresh",
         deserialize_with = "bool_or_string_bool"
     )]
@@ -450,6 +456,7 @@ impl TypedRecursiveConfig for ProjectSnapshotConfig {
             || self.tmp_relation_type.is_some()
             || self.transient.is_some()
             || self.cluster_by.is_some()
+            || self.enable_change_history.is_some()
             || self.enable_refresh.is_some()
             || self.grant_access_to.is_some()
             || self.hours_to_expiration.is_present()
@@ -787,6 +794,7 @@ impl From<ProjectSnapshotConfig> for SnapshotConfig {
                 enable_list_inference: None,
                 intermediate_format: None,
                 storage_uri: None,
+                enable_change_history: config.enable_change_history,
 
                 file_format: config.file_format,
                 catalog_name: config.catalog_name,
@@ -945,6 +953,7 @@ impl From<SnapshotConfig> for ProjectSnapshotConfig {
                 .partition_expiration_days,
             grant_access_to: config.__warehouse_specific_config__.grant_access_to,
             partitions: config.__warehouse_specific_config__.partitions,
+            enable_change_history: config.__warehouse_specific_config__.enable_change_history,
             enable_refresh: config.__warehouse_specific_config__.enable_refresh,
             refresh_interval_minutes: config
                 .__warehouse_specific_config__
@@ -1097,6 +1106,10 @@ impl ConfigKeys for SnapshotConfig {
 
         field_names
     }
+}
+
+impl crate::schemas::project::configs::warehouse_scope::WarehouseConfigResource for SnapshotConfig {
+    const NODE_TYPE: dbt_telemetry::NodeType = dbt_telemetry::NodeType::Snapshot;
 }
 
 #[cfg(test)]

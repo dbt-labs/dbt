@@ -12,6 +12,7 @@ use crate::renderer::RenderCtxInner;
 use crate::renderer::SqlFileRenderResult;
 use crate::renderer::collect_adapter_identifiers_detect_unsafe;
 use crate::renderer::render_unresolved_sql_files;
+use crate::renderer::strip_deprecated_warehouse_keys_from_properties;
 use crate::resolve::resolve_utils::build_unrendered_config;
 use crate::resolve::resolve_utils::err_resource_name_has_spaces;
 use crate::resolve::resolve_utils::extract_config_map;
@@ -53,6 +54,7 @@ use dbt_schemas::schemas::NodeBaseAttributes;
 use dbt_schemas::schemas::TimeSpine;
 use dbt_schemas::schemas::TimeSpinePrimaryColumn;
 use dbt_schemas::schemas::common::Access;
+use dbt_schemas::schemas::telemetry::NodeType;
 use dbt_telemetry::GenericOpExecuted;
 use indexmap::IndexMap;
 
@@ -64,7 +66,7 @@ use dbt_schemas::schemas::common::NodeDependsOn;
 use dbt_schemas::schemas::common::OnSchemaChange;
 use dbt_schemas::schemas::common::Versions;
 use dbt_schemas::schemas::common::normalize_sql;
-use dbt_schemas::schemas::dbt_catalogs::{DbtCatalogs, LoadedCatalogs};
+use dbt_schemas::schemas::dbt_catalogs_deprecated::{DbtCatalogs, LoadedCatalogs};
 use dbt_schemas::schemas::dbt_column::ColumnInheritanceRules;
 use dbt_schemas::schemas::dbt_column::ColumnProperties;
 use dbt_schemas::schemas::dbt_column::DbtColumnRef;
@@ -258,6 +260,7 @@ pub async fn resolve_models(
                 .as_ref()
                 .unwrap_or(&vec![])
                 .clone(),
+            resource_type: Some(NodeType::Model),
         }),
         jinja_env: env.clone(),
         runtime_config: runtime_config.clone(),
@@ -308,6 +311,13 @@ pub async fn resolve_models(
                 )
             })
             .collect();
+
+    // Preserve raw properties before validation for state comparison.
+    strip_deprecated_warehouse_keys_from_properties(
+        &mut models_properties_sans_semantics,
+        NodeType::Model,
+        dependency_package_name,
+    );
 
     // Split SQL and Python models for different processing paths
     let (sql_files, python_files): (Vec<_>, Vec<_>) =
@@ -523,8 +533,8 @@ async fn build_model_nodes(
     let catalogs = load_catalogs::fetch_catalogs();
     let use_catalogs_v2 = load_catalogs::fetch_use_catalogs_v2();
     let catalogs_state = match catalogs.as_deref() {
-        Some(c) if use_catalogs_v2 => LoadedCatalogs::V2(c),
-        Some(c) => LoadedCatalogs::V1(c),
+        Some(c) if use_catalogs_v2 => LoadedCatalogs::Active(c),
+        Some(c) => LoadedCatalogs::Deprecated(c),
         None => LoadedCatalogs::None,
     };
 
@@ -1280,7 +1290,7 @@ struct ResolvedVersionedFields {
     description: String,
     constraints: Vec<ModelConstraint>,
     /// Per-version only; no fallback to top-level (dbt-core parity).
-    deprecation_date: Option<String>,
+    deprecation_date: Option<dbt_yaml::Timestamp>,
     /// Non-empty, non-parseable access string supplied at the version level. `Versions::access`
     /// (`common.rs`) is typed `Option<String>` rather than `Option<Access>` for the same reason:
     /// serde would reject `access: ""` as an unknown variant before we can apply dbt-core's
@@ -1324,11 +1334,10 @@ fn resolve_versioned_fields(
     // itself; for versioned children only the per-version value applies (no
     // inheritance from the top-level).
     let deprecation_date = if maybe_version.is_some() {
-        version_match.and_then(|v| v.deprecation_date.clone())
+        version_match.and_then(|v| v.deprecation_date)
     } else {
-        properties.deprecation_date.clone()
-    }
-    .map(|raw| dbt_schemas::schemas::common::normalize_deprecation_date(&raw));
+        properties.deprecation_date
+    };
 
     // dbt-core validates `unparsed_version.access` (raising `InvalidAccessTypeError` on a bad
     // value) and then discards it unconditionally (GT2 — see the struct doc above). Fusion parses
@@ -1975,7 +1984,7 @@ mod tests {
     use dbt_schemas::schemas::common::{
         DbtMaterialization, FreshnessPeriod, FreshnessRules, ModelFreshnessRules,
     };
-    use dbt_schemas::schemas::dbt_catalogs::DbtCatalogs;
+    use dbt_schemas::schemas::dbt_catalogs_deprecated::DbtCatalogs;
     use dbt_schemas::schemas::properties::ModelFreshness;
     use dbt_schemas::schemas::serde::NodeVersion;
     use std::path::Path;

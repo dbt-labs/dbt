@@ -257,6 +257,16 @@ impl<'source> Environment<'source> {
         self.templates.set_loader(f);
     }
 
+    /// Registers a loader that returns template source and an optional source filename.
+    #[cfg(feature = "loader")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "loader")))]
+    pub fn set_loader_with_filename<F>(&mut self, f: F)
+    where
+        F: Fn(&str) -> Result<Option<(String, Option<String>)>, Error> + Send + Sync + 'static,
+    {
+        self.templates.set_loader_with_filename(f);
+    }
+
     /// Preserve the trailing newline when rendering templates.
     ///
     /// The default is `false`, which causes a single newline, if present, to be

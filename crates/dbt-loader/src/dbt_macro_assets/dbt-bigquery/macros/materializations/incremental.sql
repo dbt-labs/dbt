@@ -28,7 +28,7 @@
 
 {% endmacro %}
 
-{% macro bq_create_table_as(partition_by, temporary, relation, compiled_code, language='sql') %}
+{% macro bq_create_table_as(partition_by, temporary, relation, compiled_code, language='sql', replace=true) %}
   {%- set _dbt_max_partition = declare_dbt_max_partition(this, partition_by, compiled_code, language) -%}
   {% if partition_by.time_ingestion_partitioning and language == 'python' %}
     {% do exceptions.raise_compiler_error(
@@ -36,10 +36,10 @@
     ) %}
   {% elif partition_by.time_ingestion_partitioning and language == 'sql' %}
     {#-- Create the table before inserting data as ingestion time partitioned tables can't be created with the transformed data --#}
-    {% do run_query(create_table_as(temporary, relation, compiled_code)) %}
+    {% do run_query(bq_create_table_as_with_replace(temporary, relation, compiled_code, replace=replace)) %}
     {{ return(_dbt_max_partition + bq_insert_into_ingestion_time_partitioned_table_sql(relation, compiled_code)) }}
   {% else %}
-    {{ return(_dbt_max_partition + create_table_as(temporary, relation, compiled_code, language)) }}
+    {{ return(_dbt_max_partition + bq_create_table_as_with_replace(temporary, relation, compiled_code, language, replace=replace)) }}
   {% endif %}
 {% endmacro %}
 
@@ -104,15 +104,17 @@
         {% do exceptions.raise_compiler_error(wrong_strategy_msg) %}
 
   {% elif existing_relation is none %}
+      {#-- The relation cache says the target does not exist, still emit `create table`, so that a inconsistent
+           cache causes errors instead of replacing a live table silently --#}
       {%- call statement('main', language=language) -%}
-        {{ bq_create_table_as(partition_by, False, target_relation, compiled_code, language) }}
+        {{ bq_create_table_as(partition_by, False, target_relation, compiled_code, language, replace=false) }}
       {%- endcall -%}
 
   {% elif existing_relation.is_view %}
       {#-- There's no way to atomically replace a view with a table on BQ --#}
       {{ adapter.drop_relation(existing_relation) }}
       {%- call statement('main', language=language) -%}
-        {{ bq_create_table_as(partition_by, False, target_relation, compiled_code, language) }}
+        {{ bq_create_table_as(partition_by, False, target_relation, compiled_code, language, replace=false) }}
       {%- endcall -%}
 
   {% elif full_refresh_mode %}

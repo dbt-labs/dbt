@@ -1,4 +1,3 @@
-use std::collections::BTreeMap;
 use std::{fmt, marker::PhantomData};
 
 use crate::dashmap::DashMap;
@@ -19,7 +18,11 @@ fn convert_yml_value(yml: YmlValue) -> minijinja::Value {
             let mut value_map = ValueMap::new();
             for (k, v) in map {
                 value_map.insert(
-                    minijinja::Value::from(k.as_str().expect("key is not a string").to_string()),
+                    minijinja::Value::from(
+                        k.as_scalar_string()
+                            .expect("mapping key is not a scalar")
+                            .as_ref(),
+                    ),
                     convert_yml_value(v),
                 );
             }
@@ -35,27 +38,6 @@ fn convert_yml_value(yml: YmlValue) -> minijinja::Value {
     }
 }
 
-/// Converts a [dbt_yaml::Value] to a [BTreeMap<String, Value>]
-pub fn convert_yml_to_map(yml: YmlValue) -> BTreeMap<String, minijinja::Value> {
-    match yml {
-        YmlValue::Mapping(map, _) => {
-            let mut value_map = BTreeMap::new();
-            for (k, v) in map {
-                value_map.insert(
-                    k.as_str().expect("key is not a string").to_string(),
-                    convert_yml_value(v),
-                );
-            }
-            value_map
-        }
-        _ => {
-            let mut map = BTreeMap::new();
-            map.insert("value".to_string(), convert_yml_value(yml));
-            map
-        }
-    }
-}
-
 /// Converts a [dbt_yaml::Value] to a [DashMap<String, Value>]
 pub fn convert_yml_to_dash_map(yml: YmlValue) -> DashMap<String, minijinja::Value> {
     match yml {
@@ -63,7 +45,9 @@ pub fn convert_yml_to_dash_map(yml: YmlValue) -> DashMap<String, minijinja::Valu
             let value_map = DashMap::default();
             for (k, v) in map {
                 value_map.insert(
-                    k.as_str().expect("key is not a string").to_string(),
+                    k.as_scalar_string()
+                        .expect("mapping key is not a scalar")
+                        .into_owned(),
                     convert_yml_value(v),
                 );
             }
@@ -88,7 +72,11 @@ fn convert_yml_value_ordered(yml: YmlValue) -> minijinja::Value {
             let mut value_map = ValueMap::new();
             for (k, v) in map {
                 value_map.insert(
-                    minijinja::Value::from(k.as_str().expect("key is not a string").to_string()),
+                    minijinja::Value::from(
+                        k.as_scalar_string()
+                            .expect("mapping key is not a scalar")
+                            .as_ref(),
+                    ),
                     convert_yml_value(v),
                 );
             }
@@ -112,7 +100,9 @@ pub fn convert_yml_to_value_map(yml: YmlValue) -> IndexMap<String, minijinja::Va
             let mut value_map = IndexMap::with_capacity(map.len());
             for (k, v) in map {
                 value_map.insert(
-                    k.as_str().expect("key is not a string").to_string(),
+                    k.as_scalar_string()
+                        .expect("mapping key is not a scalar")
+                        .into_owned(),
                     convert_yml_value_ordered(v),
                 );
             }

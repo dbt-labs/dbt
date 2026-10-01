@@ -72,7 +72,7 @@ use dbt_schemas::schemas::common::DbtMaterialization;
 use dbt_schemas::schemas::common::ResolvedQuoting;
 use dbt_schemas::schemas::common::{ClusterConfig, Constraint, ConstraintSupport, PartitionConfig};
 use dbt_schemas::schemas::common::{ConstraintType, normalize_quote};
-use dbt_schemas::schemas::dbt_catalogs_v2::CatalogType;
+use dbt_schemas::schemas::dbt_catalogs::CatalogType;
 use dbt_schemas::schemas::dbt_column::{DbtColumn, DbtColumnRef};
 use dbt_schemas::schemas::manifest::BigqueryPartitionConfig;
 use dbt_schemas::schemas::profiles::DuckDBPathInfo;
@@ -4024,14 +4024,26 @@ impl AdapterImpl {
         common_attr: &CommonAttributes,
     ) -> AdapterResult<IndexMap<String, Value>> {
         match self.adapter_type() {
-            Bigquery => Ok(
-                metadata::bigquery::object_options::get_common_table_options_value(
-                    state,
-                    config,
-                    common_attr,
-                    false,
-                ),
-            ),
+            Bigquery => {
+                if config
+                    .__warehouse_specific_config__
+                    .enable_change_history
+                    .unwrap_or(false)
+                {
+                    return Err(AdapterError::new(
+                        AdapterErrorKind::Configuration,
+                        "`enable_change_history` is not supported for views on BigQuery.",
+                    ));
+                }
+                Ok(
+                    metadata::bigquery::object_options::get_common_table_options_value(
+                        state,
+                        config,
+                        common_attr,
+                        false,
+                    ),
+                )
+            }
             Postgres | Snowflake | Databricks | Redshift | Salesforce | Spark | DuckDB
             | LakeCompute | Fabric | ClickHouse | Exasol | Starburst | Athena | Trino
             | Datafusion | Dremio | Oracle => {
@@ -8244,5 +8256,27 @@ mod tests {
             .redact_credentials("copy into target_table WITH (credential ('KEY' = 'V'))")
             .expect_err("non-Databricks adapters must reject this");
         assert_eq!(err.kind(), AdapterErrorKind::NotSupported);
+    }
+
+    #[test]
+    fn bigquery_view_options_reject_enable_change_history() {
+        let adapter = AdapterImpl::new(engine(Bigquery), None);
+        let env = Environment::new();
+        let state = State::new_for_env(&env);
+        let common_attr = CommonAttributes::default();
+
+        let mut config = ModelConfig::default();
+        config.__warehouse_specific_config__.enable_change_history = Some(true);
+        let err = adapter
+            .get_view_options(&state, config.clone(), &common_attr)
+            .expect_err("views must reject enable_change_history: true");
+        assert_eq!(err.kind(), AdapterErrorKind::Configuration);
+
+        config.__warehouse_specific_config__.enable_change_history = Some(false);
+        assert!(
+            adapter
+                .get_view_options(&state, config, &common_attr)
+                .is_ok()
+        );
     }
 }

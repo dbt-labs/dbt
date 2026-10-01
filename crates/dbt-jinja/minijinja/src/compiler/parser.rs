@@ -136,7 +136,7 @@ impl<'a> TokenStream<'a> {
     /// Tokenize a template
     pub fn new(
         source: &'a str,
-        filename: &'a str,
+        filename: &str,
         in_expr: bool,
         syntax_config: SyntaxConfig,
         whitespace_config: WhitespaceConfig,
@@ -154,7 +154,7 @@ impl<'a> TokenStream<'a> {
     /// Tokenize a template and notify listeners.
     pub fn new_with_tokenizer_listeners(
         source: &'a str,
-        filename: &'a str,
+        filename: &str,
         in_expr: bool,
         syntax_config: SyntaxConfig,
         whitespace_config: WhitespaceConfig,
@@ -298,7 +298,7 @@ impl<'a> Parser<'a> {
     /// it must be `true`.
     pub fn new(
         source: &'a str,
-        filename: &'a str,
+        filename: &str,
         in_expr: bool,
         syntax_config: SyntaxConfig,
         whitespace_config: WhitespaceConfig,
@@ -316,7 +316,7 @@ impl<'a> Parser<'a> {
     /// Creates a new parser that notifies listeners as source tokens are emitted.
     pub fn new_with_tokenizer_listeners(
         source: &'a str,
-        filename: &'a str,
+        filename: &str,
         in_expr: bool,
         syntax_config: SyntaxConfig,
         whitespace_config: WhitespaceConfig,
@@ -2364,7 +2364,7 @@ impl<'a> Parser<'a> {
 /// Parses a template.
 pub fn parse<'source>(
     source: &'source str,
-    filename: &'source str,
+    filename: &str,
     syntax_config: SyntaxConfig,
     whitespace_config: WhitespaceConfig,
 ) -> Result<ast::Stmt<'source>, Error> {
@@ -2374,7 +2374,7 @@ pub fn parse<'source>(
 /// Parses a template and notifies listeners as source tokens are emitted.
 pub fn parse_with_listeners<'source>(
     source: &'source str,
-    filename: &'source str,
+    filename: &str,
     syntax_config: SyntaxConfig,
     whitespace_config: WhitespaceConfig,
     source_listeners: &[Rc<dyn TokenizerEventListener>],

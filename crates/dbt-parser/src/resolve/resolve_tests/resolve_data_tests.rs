@@ -8,6 +8,7 @@ use crate::renderer::RenderCtxInner;
 use crate::renderer::SqlFileRenderResult;
 use crate::renderer::collect_adapter_identifiers_detect_unsafe;
 use crate::renderer::render_unresolved_sql_files;
+use crate::renderer::strip_deprecated_warehouse_keys_from_properties;
 use crate::resolve::resolve_properties::MinimalPropertiesEntry;
 use crate::resolve::resolve_tests::persist_generic_data_tests::format_node_unique_id;
 use crate::resolve::resolve_utils::{
@@ -64,6 +65,7 @@ use dbt_schemas::schemas::properties::ModelProperties;
 use dbt_schemas::schemas::ref_and_source::DbtRef;
 use dbt_schemas::schemas::ref_and_source::DbtSourceWrapper;
 use dbt_schemas::schemas::serde::StringOrArrayOfStrings;
+use dbt_schemas::schemas::telemetry::NodeType;
 use dbt_schemas::schemas::{
     AdapterAttr, CommonAttributes, DbtTest, InternalDbtNode, NodeBaseAttributes,
 };
@@ -460,11 +462,18 @@ pub async fn resolve_data_tests(
             schema: schema.to_string(),
             // tests can be defined in any yaml config
             resource_paths: package.dbt_project.all_source_paths(),
+            resource_type: Some(NodeType::Test),
         }),
         jinja_env: env.clone(),
         runtime_config: runtime_config.clone(),
         root_runtime_config: root_runtime_config.clone(),
     };
+
+    strip_deprecated_warehouse_keys_from_properties(
+        test_properties,
+        NodeType::Test,
+        dependency_package_name,
+    );
 
     let mut test_sql_resources_map =
         render_unresolved_sql_files::<DataTestConfig, DataTestProperties>(

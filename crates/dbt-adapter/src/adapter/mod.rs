@@ -29,7 +29,7 @@ use dbt_common::cancellation::{CancellationToken, never_cancels};
 use dbt_common::{AdapterError, AdapterErrorKind, FsResult};
 use dbt_schemas::schemas::InternalDbtNodeWrapper;
 use dbt_schemas::schemas::common::{ClusterConfig, DbtQuoting, PartitionConfig};
-use dbt_schemas::schemas::dbt_catalogs::DbtCatalogs;
+use dbt_schemas::schemas::dbt_catalogs_deprecated::DbtCatalogs;
 use dbt_schemas::schemas::dbt_column::DbtColumn;
 use dbt_schemas::schemas::manifest::{BigqueryPartitionConfig, GrantAccessToTarget};
 use dbt_schemas::schemas::project::ModelConfig;
@@ -377,11 +377,11 @@ impl Adapter {
             .map_err(into_fs_error)
             .map(|r| {
                 r.into_iter()
-                    .filter_map(|(k, v)| {
-                        if let Ok(relations) = v {
-                            Some((k, relations))
-                        } else {
-                            // XXX: Warnings are not shown right now since this is purely for performance
+                    .filter_map(|(k, v)| match v {
+                        Ok(relations) => Some((k, relations)),
+                        Err(e) => {
+                            // Left uncached, so callers do a per-relation lookup instead.
+                            tracing::warn!("relation_cache: listing schema {k} failed: {e}");
                             None
                         }
                     })
@@ -1460,7 +1460,7 @@ impl Adapter {
                         // catalogs on each call.
                         let skip_schema_listing = match adapter.adapter_type() {
                             AdapterType::DuckDB => {
-                                duckdb::is_duckdb_v2_external_iceberg_catalog_database(
+                                duckdb::is_duckdb_external_iceberg_catalog_database(
                                     &resolved_catalog,
                                 )
                             }
@@ -2918,11 +2918,9 @@ impl Adapter {
                     _ => config
                         .__warehouse_specific_config__
                         .tblproperties
-                        .clone()
-                        .unwrap_or_default()
-                        .0
-                        .into_iter()
-                        .map(|(k, v)| (k, yml_value_to_minijinja(v)))
+                        .iter()
+                        .flat_map(|tp| tp.0.iter())
+                        .map(|(k, v)| (k.to_string(), yml_value_to_minijinja(v)))
                         .collect(),
                 };
 
@@ -4258,8 +4256,6 @@ impl Adapter {
                 let model = iter.next_arg::<Value>()?;
                 iter.finish()?;
 
-                // Extract seed file path from the model
-                // The seed file path is root_path + original_file_path
                 let seed =
                     minijinja_value_to_typed_struct::<dbt_schemas::schemas::nodes::DbtSeed>(model)
                         .map_err(|e| {
@@ -4269,9 +4265,9 @@ impl Adapter {
                             )
                         })?;
 
-                let root_path = seed.__seed_attr__.root_path.unwrap_or_default();
-                let original_file_path = &seed.__common_attr__.original_file_path;
-                let full_path = root_path.join(original_file_path);
+                let full_path = seed
+                    .file_path_from_root()
+                    .unwrap_or_else(|| seed.__common_attr__.original_file_path.to_path_buf());
                 Ok(Value::from(full_path.display().to_string()))
             }
             "external_root" => {

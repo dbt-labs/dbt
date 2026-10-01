@@ -436,9 +436,10 @@ impl<'source> CompiledTemplate<'source> {
         // the parser/compiler combination can create constants in which case
         // we can probably benefit from the value optimization a bit.
         let _guard = value::value_optimization();
+        let source_name = filename.as_deref().unwrap_or(name);
         let ast = ok!(parse_with_listeners(
             source,
-            name,
+            source_name,
             config.syntax_config.clone(),
             config.ws_config,
             source_listeners,

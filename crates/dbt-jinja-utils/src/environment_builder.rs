@@ -228,9 +228,10 @@ impl JinjaEnvBuilder {
         let mut internal_packages_macros: BTreeMap<String, BTreeMap<String, Value>> =
             BTreeMap::new(); // package_name → {macro_name → info}
         let mut function_registry = FunctionRegistry::new(); // macro_name → DynObject
+        let mut macro_sources = BTreeMap::new();
 
         // Process all macros
-        for (package_name, macro_units) in macros.macros.clone() {
+        for (package_name, macro_units) in &macros.macros {
             // Add package to namespace registry.
             //
             // Stored as a map keyed by macro name rather than a sequence: the hot
@@ -282,14 +283,11 @@ impl JinjaEnvBuilder {
                 let macro_name = macro_unit.info.name.clone();
                 let template_name = format!("{package_name}.{macro_name}");
 
-                // Add to environment and template registry
-                self.env
-                    .add_template_owned(
-                        template_name.clone(),
-                        macro_unit.sql.clone(),
-                        Some(filename.clone()),
-                    )
-                    .map_err(|e| FsError::from_jinja_err(e, "Failed to add template"))?;
+                // Register sources for lazy compilation. Most macros are never used by a project.
+                macro_sources.insert(
+                    template_name.clone(),
+                    (macro_unit.sql, Some(filename.clone())),
+                );
 
                 let funcsign = match macro_unit.info.funcsign.clone() {
                     Some(funcsign) => {
@@ -375,6 +373,8 @@ impl JinjaEnvBuilder {
             }
         }
 
+        self.env
+            .set_loader_with_filename(move |name| Ok(macro_sources.get(name).cloned()));
         self.function_registry = Arc::new(function_registry);
         AdapterDispatchFunction::instance().set_function_registry(self.function_registry.clone());
 
