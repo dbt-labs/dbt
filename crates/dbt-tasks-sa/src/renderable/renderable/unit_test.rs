@@ -1282,8 +1282,8 @@ fn discover_given_relations(
         given_relations.push((fqn_string, relation));
     }
 
-    // Static-analysis-off incremental tests normally hydrate the existing model
-    // relation. An `is_incremental: false` override instead uses compiled SQL.
+    // Incremental tests read the existing model relation's schema; fetch it if uncached.
+    // An `is_incremental: false` override instead uses compiled SQL.
     let model_unique_id = get_unique_id(
         &ut.__unit_test_attr__.model,
         &ut.__common_attr__.package_name,
@@ -1295,21 +1295,24 @@ fn discover_given_relations(
     );
     let resolver_state = ctx.resolver_state();
     let use_compiled_schema_for_incremental = use_compiled_schema_for_incremental(ctx, ut)?;
-    let should_fetch_expected_schema =
-        resolver_state
-            .nodes
-            .get_node(&model_unique_id)
-            .is_some_and(|node| {
-                node.materialized() == DbtMaterialization::Incremental
-                    && is_static_analysis_off_or_baseline(node.static_analysis().into_inner())
-                    && !use_compiled_schema_for_incremental
-            });
+    let tested_model = resolver_state.nodes.get_node(&model_unique_id);
+    let should_fetch_expected_schema = tested_model.is_some_and(|node| {
+        node.materialized() == DbtMaterialization::Incremental
+            && !use_compiled_schema_for_incremental
+    });
+    let model_static_analysis_off = tested_model.is_some_and(|node| {
+        is_static_analysis_off_or_baseline(node.static_analysis().into_inner())
+    });
 
     if should_fetch_expected_schema
         && let Some(expect_relation) = ctx.try_get_relation_from_node(&model_unique_id)
     {
-        let schema_relation =
-            check_defer_relation(&model_unique_id, ctx).unwrap_or_else(|| expect_relation.clone());
+        // Must match the relation `render_unit_test` reads for this mode.
+        let schema_relation = if model_static_analysis_off {
+            check_defer_relation(&model_unique_id, ctx).unwrap_or_else(|| expect_relation.clone())
+        } else {
+            expect_relation
+        };
         let canonical_fqn = schema_relation.get_canonical_fqn()?;
         if force_refetch || !ctx.schema_cache.exists(&canonical_fqn) {
             relations_to_fetch.push(RelationToFetch {
