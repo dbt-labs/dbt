@@ -162,6 +162,19 @@ fn parse_auth_type(config: &AdapterConfig) -> Result<Option<Cow<'_, str>>, AuthE
     }
 }
 
+/// `username` is canonical (matching the Python adapter's `GizmoSQLCredentials`);
+/// `user` and `pass` are accepted as aliases. An empty username counts as absent.
+fn parse_credentials(config: &AdapterConfig) -> (Option<Cow<'_, str>>, Option<Cow<'_, str>>) {
+    let username = config
+        .get_string("username")
+        .or_else(|| config.get_string("user"))
+        .filter(|u| !u.is_empty());
+    let password = config
+        .get_string("password")
+        .or_else(|| config.get_string("pass"));
+    (username, password)
+}
+
 fn parse_auth<'a>(
     config: &'a AdapterConfig,
     _warning_printer: &dyn AuthWarningPrinter,
@@ -175,15 +188,7 @@ fn parse_auth<'a>(
         .get_string("port")
         .unwrap_or(Cow::Borrowed(DEFAULT_PORT));
 
-    // `username` is canonical (matching the Python adapter's `GizmoSQLCredentials`);
-    // `user` is accepted as an alias.
-    let username = config
-        .get_string("username")
-        .or_else(|| config.get_string("user"))
-        .filter(|u| !u.is_empty());
-    let password = config
-        .get_string("password")
-        .or_else(|| config.get_string("pass"));
+    let (username, password) = parse_credentials(config);
 
     let use_encryption = get_flag_or_alias(config, "use_encryption", "use_tls", true)?;
     let tls_skip_verify = get_flag_or_alias(
