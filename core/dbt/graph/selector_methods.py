@@ -108,10 +108,19 @@ def is_selected_node(fqn: List[str], node_selector: str, is_versioned: bool) -> 
         # rest of the fqn, this is 100% backwards compatible with the old behavior of
         # encountering a wildcard but more expressive in naturally allowing you to
         # match the rest of the fqn with more advanced patterns
-        return fnmatch(
+        if fnmatch(
             ".".join(flat_fqn[slurp_from_ix:]),
             ".".join(node_selector.split(".")[slurp_from_ix:]),
-        )
+        ):
+            return True
+        # A bare wildcard selector (no dot) should also match against just the
+        # fqn's leaf segment, regardless of how deeply the node is nested. For
+        # versioned models, the leaf segment is the version tag (e.g. "v4"),
+        # so match against the model name segment (fqn[-2]) instead.
+        if "." not in node_selector:
+            leaf = fqn[-2] if is_versioned else fqn[-1]
+            return fnmatch(leaf, node_selector)
+        return False
 
     # if we get all the way down here, then the node is a match
     return True

@@ -1,0 +1,6 @@
+kind: Fixes
+body: Bare wildcard FQN selectors (e.g. `-s "f_*"`) now match nested models regardless of subfolder depth
+time: 2026-09-17T22:46:07.566507+05:30
+custom:
+    Author: itsnamangoyal
+    Issue: ""
