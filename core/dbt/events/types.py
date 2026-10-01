@@ -2072,9 +2072,10 @@ class SnapshotTimestampWarning(WarnLevel):
 
     def message(self) -> str:
         msg = (
-            f"Data type of snapshot table timestamp columns ({self.snapshot_time_data_type}) "
-            f"doesn't match derived column 'updated_at' ({self.updated_at_data_type}). "
-            "Please update snapshot config 'updated_at'."
+            f"Data type of snapshot table hard-delete timestamps ({self.snapshot_time_data_type}) "
+            f"does not match its 'updated_at'-derived timestamp columns ({self.updated_at_data_type}). "
+            "Values written when closing out deleted rows will be implicitly converted. "
+            "Override the 'snapshot_get_time' macro in your project to emit a matching type."
         )
         return warning_tag(msg)
 
