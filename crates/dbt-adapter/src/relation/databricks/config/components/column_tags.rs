@@ -298,7 +298,7 @@ mod tests {
         ]);
 
         assert_eq!(
-            merge_tags_diff(&desired, &existing),
+            changed_column_tags_diff(&desired, &existing),
             Some(IndexMap::from([(
                 "col1".to_string(),
                 IndexMap::from([("moved".to_string(), "new".to_string())]),
