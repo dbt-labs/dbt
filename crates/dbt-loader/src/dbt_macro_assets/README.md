@@ -5,6 +5,9 @@ All adapter macros are currently maintained in:
 
 ## Changelog
 
+### [2026-09-30]
+  - dbt-databricks: seed single materialization path from databricks/dbt-databricks#1690 (commit a9e368fa88d5fda1ee0e3eeb34732737ff57162c)
+
 ### [2026-08-19]
   - dbt-databricks: view full-refresh precedence from commit 45351e11517d3f37c5ac7a736b5fcba453d3f368
 
