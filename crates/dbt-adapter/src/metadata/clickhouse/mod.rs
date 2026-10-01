@@ -64,21 +64,153 @@ fn refreshable_marker_columns(col: &str, agg: &str) -> String {
     )
 }
 
-pub(crate) fn build_get_relation_sql(schema: &str, identifier: &str) -> String {
+/// Profile keys relations need at creation time, registered once from
+/// `AdapterImpl::new` (`ClickHouseRelation.create_from` reads them off the credentials).
+#[derive(Debug, Clone, Default)]
+pub struct ClickHouseConnectionInfo {
+    pub cluster: Option<String>,
+    pub database_engine: String,
+}
+
+static CONNECTION_INFO: std::sync::OnceLock<ClickHouseConnectionInfo> = std::sync::OnceLock::new();
+
+/// First registration wins.
+pub fn register_connection_info(cluster: Option<String>, database_engine: Option<String>) {
+    let _ = CONNECTION_INFO.set(ClickHouseConnectionInfo {
+        cluster: cluster.filter(|c| !c.trim().is_empty()),
+        database_engine: database_engine.unwrap_or_default(),
+    });
+}
+
+pub fn connection_info() -> Option<&'static ClickHouseConnectionInfo> {
+    CONNECTION_INFO.get()
+}
+
+/// relation.py `ClickHouseRelation.get_on_cluster`.
+pub fn get_on_cluster(cluster: &str, database_engine: &str) -> bool {
+    !cluster.trim().is_empty() && !database_engine.to_lowercase().contains("replicated")
+}
+
+/// `can_on_cluster` for relations built outside the catalog paths (relation.py `create_from`).
+pub fn default_can_on_cluster() -> bool {
+    connection_info().is_some_and(|info| {
+        info.cluster
+            .as_deref()
+            .is_some_and(|cluster| get_on_cluster(cluster, &info.database_engine))
+    })
+}
+
+/// impl.py `get_clickhouse_cluster_name`: the profile `cluster`, double-quoted for DDL.
+pub fn cluster_name(configured: Option<&str>) -> Option<String> {
+    configured
+        .filter(|c| !c.trim().is_empty())
+        .map(|c| format!("\"{c}\""))
+}
+
+/// impl.py `get_clickhouse_local_suffix` (credentials default `local`).
+pub fn local_suffix(configured: Option<&str>) -> String {
+    match configured.unwrap_or("local") {
+        "" => String::new(),
+        suffix if suffix.starts_with('_') => suffix.to_string(),
+        suffix => format!("_{suffix}"),
+    }
+}
+
+/// impl.py `get_clickhouse_local_db_prefix`.
+pub fn local_db_prefix(configured: Option<&str>) -> String {
+    match configured.unwrap_or("") {
+        "" => String::new(),
+        prefix if prefix.ends_with('_') => prefix.to_string(),
+        prefix => format!("{prefix}_"),
+    }
+}
+
+/// impl.py `clickhouse_db_engine_clause`.
+pub fn db_engine_clause(configured: Option<&str>) -> String {
+    match configured {
+        Some(engine) if !engine.is_empty() => format!("ENGINE {engine}"),
+        _ => String::new(),
+    }
+}
+
+/// impl.py `can_exchange(schema, rel_type)`; a failed `system.databases` lookup counts
+/// as "cannot" (`get_ch_database` swallows the error).
+pub fn can_exchange(
+    adapter: &AdapterImpl,
+    state: &State,
+    schema: &str,
+    rel_type: &str,
+    token: CancellationToken,
+) -> bool {
+    if rel_type != "table"
+        || schema.is_empty()
+        || !server_capabilities(adapter, state, token.clone()).atomic_exchange
+    {
+        return false;
+    }
+    let sql = format!(
+        "SELECT engine AS v FROM system.databases WHERE name = '{}'",
+        escape_clickhouse_string_literal(schema)
+    );
+    scalar_probe(
+        &mut |sql| probe_query(adapter, state, sql, token.clone()),
+        &sql,
+    )
+    .is_some_and(|engine| engine_can_atomic_exchange(&engine))
+}
+
+/// The `clickhouse__list_relations_without_caching` query. With a profile `cluster` it reads
+/// `clusterAllReplicas(<cluster>, system.tables)`, so relations living only on other nodes are
+/// found and `is_on_cluster` is real; `identifier` narrows it to one relation for `get_relation`.
+pub(crate) fn build_list_relations_sql(
+    schema: &str,
+    identifier: Option<&str>,
+    cluster: Option<&str>,
+) -> String {
     let escaped_database = escape_clickhouse_string_literal(schema);
-    let escaped_identifier = escape_clickhouse_string_literal(identifier);
-    let refreshable_columns = refreshable_marker_columns("create_table_query", "");
+    let identifier_filter = identifier
+        .map(|identifier| {
+            format!(
+                " AND t.name = '{}'",
+                escape_clickhouse_string_literal(identifier)
+            )
+        })
+        .unwrap_or_default();
+    let (source, is_on_cluster) = match cluster_name(cluster) {
+        Some(cluster) => (
+            format!("clusterAllReplicas({cluster}, system.tables)"),
+            "if(count(DISTINCT t._shard_num) > 1, 'true', 'false')",
+        ),
+        None => ("system.tables".to_string(), "'false'"),
+    };
+    let refreshable_columns = refreshable_marker_columns("t.create_table_query", "max");
+    // arrayDistinct: over clusterAllReplicas every replica contributes a row per table, which
+    // would repeat each MV once per replica.
     format!(
-        "SELECT engine, name, \
-                (SELECT engine FROM system.databases WHERE name = '{escaped_database}') AS database_engine, \
-                (SELECT toJSONString(groupArray(map('schema', database, 'name', name, 'sql', as_select))) \
-                 FROM system.tables \
-                 WHERE engine = 'MaterializedView' AND create_table_query LIKE '%TO %' \
-                   AND replaceRegexpOne(create_table_query, {MV_TARGET_FQN_REGEX_SQL}) = '{escaped_database}.{escaped_identifier}') AS mvs_pointing_to_it, \
-                {refreshable_columns} \
-         FROM system.tables \
-         WHERE database = '{escaped_database}' \
-           AND name = '{escaped_identifier}'",
+        "WITH mv_sources AS ( \
+            SELECT name AS mv_name, \
+                   database AS mv_database, \
+                   any(as_select) AS mv_sql, \
+                   any(replaceRegexpOne(create_table_query, {MV_TARGET_FQN_REGEX_SQL})) AS target_fqn \
+            FROM {source} \
+            WHERE engine = 'MaterializedView' AND create_table_query LIKE '%TO %' \
+            GROUP BY mv_name, mv_database \
+         ) \
+         SELECT t.database AS table_database, \
+                t.name AS table_name, \
+                t.engine AS table_type, \
+                db.engine AS database_engine, \
+                toJSONString(arrayDistinct(groupArrayIf( \
+                    map('schema', mv_sources.mv_database, 'name', mv_sources.mv_name, 'sql', mv_sources.mv_sql), \
+                    mv_sources.mv_name != '' \
+                ))) AS mvs_pointing_to_it, \
+                {refreshable_columns}, \
+                {is_on_cluster} AS is_on_cluster \
+         FROM {source} AS t \
+         JOIN system.databases AS db ON t.database = db.name \
+         LEFT JOIN mv_sources ON mv_sources.target_fqn = concat(t.database, '.', t.name) \
+         WHERE t.database = '{escaped_database}'{identifier_filter} \
+         GROUP BY table_database, table_name, table_type, database_engine"
     )
 }
 
@@ -99,21 +231,26 @@ pub(crate) fn parse_mvs_pointing_to_it(json: &str) -> Vec<BTreeMap<String, Strin
     serde_json::from_str::<Vec<BTreeMap<String, String>>>(json).unwrap_or_default()
 }
 
-/// Stamps the state columns shared by [`build_get_relation_sql`] and [`list_relations`]
+/// Stamps the state columns of a [`build_list_relations_sql`] row
 /// (impl.py `list_relations_without_caching`).
 pub(crate) fn with_catalog_state(
     relation: Relation,
     caps: &ClickHouseCapabilities,
+    cluster: Option<&str>,
     batch: &RecordBatch,
     row: usize,
 ) -> AdapterResult<Relation> {
     let column = |name: &str| batch.column_values::<StringArray>(name);
-    let database_engines = column("database_engine")?;
-    let can_exchange = relation.relation_type.is_some_and(|relation_type| {
-        relation_can_exchange(caps, relation_type, database_engines.value(row))
-    });
+    let database_engine = column("database_engine")?.value(row).to_string();
+    let can_exchange = relation
+        .relation_type
+        .is_some_and(|relation_type| relation_can_exchange(caps, relation_type, &database_engine));
+    let can_on_cluster = (cluster_name(cluster).is_some()
+        || column("is_on_cluster")?.value(row) == "true")
+        && database_engine != "Replicated";
     relation
         .with_can_exchange(can_exchange)
+        .with_can_on_cluster(Some(can_on_cluster))
         .with_mvs_pointing_to_it(parse_mvs_pointing_to_it(
             column("mvs_pointing_to_it")?.value(row),
         ))
@@ -431,33 +568,8 @@ pub fn list_relations(
     token: CancellationToken,
 ) -> AdapterResult<Vec<Arc<dyn BaseRelation>>> {
     // ClickHouse only has databases, no schemas — we map dbt `schema` to CH `database`.
-    let escaped_database = escape_clickhouse_string_literal(&db_schema.resolved_schema);
-    let refreshable_columns = refreshable_marker_columns("t.create_table_query", "max");
-    let sql = format!(
-        "WITH mv_sources AS ( \
-            SELECT name AS mv_name, \
-                   database AS mv_database, \
-                   any(as_select) AS mv_sql, \
-                   any(replaceRegexpOne(create_table_query, {MV_TARGET_FQN_REGEX_SQL})) AS target_fqn \
-            FROM system.tables \
-            WHERE engine = 'MaterializedView' AND create_table_query LIKE '%TO %' \
-            GROUP BY mv_name, mv_database \
-         ) \
-         SELECT t.database AS table_database, \
-                t.name AS table_name, \
-                t.engine AS table_type, \
-                db.engine AS database_engine, \
-                toJSONString(groupArrayIf( \
-                    map('schema', mv_sources.mv_database, 'name', mv_sources.mv_name, 'sql', mv_sources.mv_sql), \
-                    mv_sources.mv_name != '' \
-                )) AS mvs_pointing_to_it, \
-                {refreshable_columns} \
-         FROM system.tables AS t \
-         JOIN system.databases AS db ON t.database = db.name \
-         LEFT JOIN mv_sources ON mv_sources.target_fqn = concat(t.database, '.', t.name) \
-         WHERE t.database = '{escaped_database}' \
-         GROUP BY table_database, table_name, table_type, database_engine"
-    );
+    let cluster = engine.config("cluster");
+    let sql = build_list_relations_sql(&db_schema.resolved_schema, None, cluster.as_deref());
 
     let caps = server_capabilities_over_connection(engine, ctx, conn, token.clone());
 
@@ -481,7 +593,7 @@ pub fn list_relations(
         )
         .with_relation_type(relation_type_from_engine(table_types.value(i)))
         .with_quoting(engine.quoting());
-        let relation = with_catalog_state(relation, caps, &batch, i)?;
+        let relation = with_catalog_state(relation, caps, cluster.as_deref(), &batch, i)?;
 
         relations.push(Arc::new(relation) as Arc<dyn BaseRelation>);
     }
@@ -1839,24 +1951,14 @@ mod tests {
 
     /// ClickHouse's `system.tables` is case-sensitive on `database` and `name`
     #[test]
-    fn build_get_relation_sql_passes_names_through_verbatim() {
-        let sql = build_get_relation_sql("Mixed_Case", "Stg_Customers");
+    fn list_relations_sql_passes_names_through_verbatim() {
+        let sql = build_list_relations_sql("Mixed_Case", Some("Stg_Customers"), None);
         assert!(
-            sql.ends_with(
-                "FROM system.tables WHERE database = 'Mixed_Case' AND name = 'Stg_Customers'"
-            ),
+            sql.contains("WHERE t.database = 'Mixed_Case' AND t.name = 'Stg_Customers' GROUP BY"),
             "got: {sql}"
         );
-        assert!(
-            sql.contains(
-                "(SELECT engine FROM system.databases WHERE name = 'Mixed_Case') AS database_engine"
-            ),
-            "got: {sql}"
-        );
-        assert!(
-            sql.contains("= 'Mixed_Case.Stg_Customers') AS mvs_pointing_to_it"),
-            "got: {sql}"
-        );
+        assert!(sql.contains("FROM system.tables AS t"), "got: {sql}");
+        assert!(sql.contains("'false' AS is_on_cluster"), "got: {sql}");
         assert!(
             sql.contains("' REFRESH ')) > 0, 'true', 'false') AS is_refreshable"),
             "got: {sql}"
@@ -1865,20 +1967,40 @@ mod tests {
             sql.contains("' APPEND')) > 0, 'true', 'false') AS refreshable_append"),
             "got: {sql}"
         );
+
+        let sql = build_list_relations_sql("db", None, None);
+        assert!(
+            sql.contains("WHERE t.database = 'db' GROUP BY"),
+            "got: {sql}"
+        );
+    }
+
+    #[test]
+    fn list_relations_sql_reads_every_replica_when_a_cluster_is_configured() {
+        let sql = build_list_relations_sql("db", None, Some("test_shard"));
+        assert_eq!(
+            sql.matches("FROM clusterAllReplicas(\"test_shard\", system.tables)")
+                .count(),
+            2,
+            "got: {sql}"
+        );
+        assert!(!sql.contains("FROM system.tables"), "got: {sql}");
+        assert!(
+            sql.contains("if(count(DISTINCT t._shard_num) > 1, 'true', 'false') AS is_on_cluster"),
+            "got: {sql}"
+        );
+        let sql = build_list_relations_sql("db", None, Some("  "));
+        assert!(sql.contains("FROM system.tables AS t"), "got: {sql}");
     }
 
     /// Embedded `'` and `\` must be backslash-escaped per
     /// <https://clickhouse.com/docs/en/sql-reference/syntax#string>, otherwise
     /// the literal terminates early or trails an unbalanced backslash.
     #[test]
-    fn build_get_relation_sql_escapes_quotes_and_backslashes() {
-        let sql = build_get_relation_sql("a'b", r"c\d");
+    fn list_relations_sql_escapes_quotes_and_backslashes() {
+        let sql = build_list_relations_sql("a'b", Some(r"c\d"), None);
         assert!(
-            sql.ends_with(r"FROM system.tables WHERE database = 'a\'b' AND name = 'c\\d'"),
-            "got: {sql}"
-        );
-        assert!(
-            sql.contains(r"= 'a\'b.c\\d') AS mvs_pointing_to_it"),
+            sql.contains(r"WHERE t.database = 'a\'b' AND t.name = 'c\\d' GROUP BY"),
             "got: {sql}"
         );
     }
@@ -1886,7 +2008,41 @@ mod tests {
     #[test]
     fn mv_target_regex_has_no_literal_question_mark() {
         assert!(!MV_TARGET_FQN_REGEX_SQL.contains('?'));
-        assert!(!build_get_relation_sql("db", "t").contains('?'));
+        assert!(!build_list_relations_sql("db", Some("t"), Some("c")).contains('?'));
+    }
+
+    /// relation.py `ClickHouseRelation.get_on_cluster`
+    #[test]
+    fn get_on_cluster_mirrors_python() {
+        assert!(get_on_cluster("my_cluster", ""));
+        assert!(get_on_cluster("my_cluster", "Atomic"));
+        assert!(!get_on_cluster("", ""));
+        assert!(!get_on_cluster("   ", "Atomic"));
+        assert!(!get_on_cluster("my_cluster", "Replicated"));
+        assert!(!get_on_cluster("my_cluster", "replicated('/db','s','r')"));
+    }
+
+    /// impl.py cluster getters
+    #[test]
+    fn profile_getters_mirror_python() {
+        assert_eq!(cluster_name(Some("c1")).as_deref(), Some("\"c1\""));
+        assert_eq!(cluster_name(Some("")), None);
+        assert_eq!(cluster_name(Some(" ")), None);
+        assert_eq!(cluster_name(None), None);
+
+        assert_eq!(local_suffix(None), "_local");
+        assert_eq!(local_suffix(Some("local")), "_local");
+        assert_eq!(local_suffix(Some("_shard")), "_shard");
+        assert_eq!(local_suffix(Some("")), "");
+
+        assert_eq!(local_db_prefix(None), "");
+        assert_eq!(local_db_prefix(Some("")), "");
+        assert_eq!(local_db_prefix(Some("shard")), "shard_");
+        assert_eq!(local_db_prefix(Some("shard_")), "shard_");
+
+        assert_eq!(db_engine_clause(None), "");
+        assert_eq!(db_engine_clause(Some("")), "");
+        assert_eq!(db_engine_clause(Some("Replicated")), "ENGINE Replicated");
     }
 
     #[test]

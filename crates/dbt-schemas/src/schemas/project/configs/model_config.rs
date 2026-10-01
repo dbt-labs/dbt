@@ -605,6 +605,15 @@ pub struct ProjectModelConfig {
     // list of `{name, query}` maps rendered as `ADD PROJECTION` by table.sql
     #[serde(rename = "+projections")]
     pub projections: Option<Vec<YmlValue>>,
+    // distributed materializations
+    #[serde(rename = "+sharding_key")]
+    pub sharding_key: Option<String>,
+    #[serde(
+        default,
+        rename = "+disable_on_cluster",
+        deserialize_with = "bool_or_string_bool"
+    )]
+    pub disable_on_cluster: Option<bool>,
     // incremental materialization
     #[serde(
         default,
@@ -1154,6 +1163,8 @@ impl From<ProjectModelConfig> for ModelConfig {
                 settings: config.settings,
                 query_settings: config.query_settings,
                 projections: config.projections,
+                sharding_key: config.sharding_key,
+                disable_on_cluster: config.disable_on_cluster,
                 inserts_only: config.inserts_only,
                 connection_overrides: config.connection_overrides,
                 fields: config.fields,
@@ -1384,6 +1395,8 @@ impl From<ModelConfig> for ProjectModelConfig {
             settings: config.__warehouse_specific_config__.settings,
             query_settings: config.__warehouse_specific_config__.query_settings,
             projections: config.__warehouse_specific_config__.projections,
+            sharding_key: config.__warehouse_specific_config__.sharding_key,
+            disable_on_cluster: config.__warehouse_specific_config__.disable_on_cluster,
             inserts_only: config.__warehouse_specific_config__.inserts_only,
             connection_overrides: config.__warehouse_specific_config__.connection_overrides,
             fields: config.__warehouse_specific_config__.fields,

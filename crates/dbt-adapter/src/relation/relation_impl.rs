@@ -88,75 +88,54 @@ impl StaticBaseRelation for RelationStatic {
     }
 
     fn create(&self, args: &[Value]) -> Result<Value, minijinja::Error> {
-        match self.adapter_type {
+        let iter = ArgsIter::new("Relation.create", &[], args);
+        let database = iter.next_kwarg::<Option<String>>("database")?;
+        let schema = iter.next_kwarg::<Option<String>>("schema")?;
+        let identifier = iter.next_kwarg::<Option<String>>("identifier")?;
+        let relation_type = iter
+            .next_kwarg::<Option<String>>("type")?
+            .map(|s| RelationType::from(s.as_str()));
+        let quoting = iter
+            .next_kwarg::<Option<Value>>("quote_policy")?
+            .and_then(|v| DbtQuoting::deserialize(v).ok())
+            .map(|v| ResolvedQuoting {
+                database: v.database.unwrap_or_default(),
+                identifier: v.identifier.unwrap_or_default(),
+                schema: v.schema.unwrap_or_default(),
+            })
+            .unwrap_or(self.quoting);
+        let relation = Relation::new(self.adapter_type, database, schema, identifier)
+            .with_relation_type(relation_type)
+            .with_quoting(quoting);
+
+        let relation = match self.adapter_type {
             AdapterType::Snowflake => {
-                let iter = ArgsIter::new("Relation.create", &[], args);
-                let database: Option<String> = iter.next_kwarg::<Option<String>>("database")?;
-                let schema: Option<String> = iter.next_kwarg::<Option<String>>("schema")?;
-                let identifier: Option<String> = iter.next_kwarg::<Option<String>>("identifier")?;
-                let relation_type: Option<String> = iter.next_kwarg::<Option<String>>("type")?;
-                let custom_quoting: Option<Value> =
-                    iter.next_kwarg::<Option<Value>>("quote_policy")?;
-                let table_format: Option<String> =
-                    iter.next_kwarg::<Option<String>>("table_format")?;
+                let table_format = iter.next_kwarg::<Option<String>>("table_format")?;
                 let _ = iter.trailing_kwargs()?;
-
-                let custom_quoting = custom_quoting
-                    .and_then(|v| DbtQuoting::deserialize(v).ok())
-                    .map(|v| ResolvedQuoting {
-                        database: v.database.unwrap_or_default(),
-                        identifier: v.identifier.unwrap_or_default(),
-                        schema: v.schema.unwrap_or_default(),
-                    })
-                    .unwrap_or(self.quoting);
-
                 let table_format = match table_format.as_deref() {
                     Some(s) if s.eq_ignore_ascii_case("iceberg") => TableFormat::Iceberg,
                     _ => TableFormat::Default,
                 };
-
-                let relation = Relation::new(AdapterType::Snowflake, database, schema, identifier)
-                    .with_relation_type(relation_type.map(|s| RelationType::from(s.as_str())))
-                    .with_quoting(custom_quoting)
-                    .with_table_format(table_format)
-                    .validate()?;
-                let rel = RelationObject::new(Arc::new(relation));
-                Ok(Value::from_object(rel))
+                relation.with_table_format(table_format)
+            }
+            AdapterType::ClickHouse => {
+                let temporary = iter.next_kwarg::<Option<bool>>("temporary")?;
+                // ClickHouseRelation.create extras, stamped by clickhouse__get_or_create_relation
+                let can_exchange = iter.next_kwarg::<Option<bool>>("can_exchange")?;
+                let can_on_cluster = iter.next_kwarg::<Option<bool>>("can_on_cluster")?;
+                iter.finish()?;
+                relation
+                    .with_temporary(temporary.unwrap_or(false))
+                    .with_can_exchange(can_exchange.unwrap_or(false))
+                    .with_can_on_cluster(can_on_cluster)
             }
             _ => {
-                let iter = ArgsIter::new("Relation.create", &[], args);
-                let database = iter.next_kwarg::<Option<String>>("database")?;
-                let schema = iter.next_kwarg::<Option<String>>("schema")?;
-                let identifier = iter.next_kwarg::<Option<String>>("identifier")?;
-                let relation_type = iter.next_kwarg::<Option<Value>>("type")?;
-                let custom_quoting = iter.next_kwarg::<Option<Value>>("quote_policy")?;
                 let temporary = iter.next_kwarg::<Option<bool>>("temporary")?;
                 iter.finish()?;
-
-                let custom_quoting = custom_quoting
-                    .and_then(|v| DbtQuoting::deserialize(v).ok())
-                    .map(|v| ResolvedQuoting {
-                        database: v.database.unwrap_or_default(),
-                        identifier: v.identifier.unwrap_or_default(),
-                        schema: v.schema.unwrap_or_default(),
-                    });
-
-                self.try_new(
-                    database,
-                    schema,
-                    identifier,
-                    relation_type.and_then(|v: Value| {
-                        if v.is_none() || v.is_undefined() {
-                            None
-                        } else {
-                            Some(RelationType::from(v.as_str().unwrap_or_default()))
-                        }
-                    }),
-                    custom_quoting,
-                    temporary,
-                )
+                relation.with_temporary(temporary.unwrap_or(false))
             }
-        }
+        };
+        Ok(RelationObject::new(Arc::new(relation.validate()?)).into_value())
     }
 }
 
@@ -205,6 +184,9 @@ pub struct Relation {
     pub temporary: bool,
     /// ClickHouse catalog state; see [`BaseRelation::can_exchange`] and siblings.
     pub can_exchange: bool,
+    /// None = not stamped (catalog/kwargs/`disable_on_cluster`): resolved from the profile
+    /// when read, since relations are built before the adapter registers its connection info.
+    pub can_on_cluster: Option<bool>,
     pub mvs_pointing_to_it: Vec<BTreeMap<String, String>>,
     pub is_refreshable: bool,
     pub refreshable_append: bool,
@@ -367,6 +349,7 @@ impl Relation {
             alter_constraints: Vec::new(),
             temporary: false,
             can_exchange: false,
+            can_on_cluster: None,
             mvs_pointing_to_it: Vec::new(),
             is_refreshable: false,
             refreshable_append: false,
@@ -417,6 +400,11 @@ impl Relation {
 
     pub fn with_can_exchange(mut self, can_exchange: bool) -> Self {
         self.can_exchange = can_exchange;
+        self
+    }
+
+    pub fn with_can_on_cluster(mut self, can_on_cluster: Option<bool>) -> Self {
+        self.can_on_cluster = can_on_cluster;
         self
     }
 
@@ -494,6 +482,7 @@ impl Relation {
             alter_constraints: Vec::default(),
             temporary: false,
             can_exchange: false,
+            can_on_cluster: None,
             mvs_pointing_to_it: Vec::new(),
             is_refreshable: false,
             refreshable_append: false,
@@ -748,6 +737,7 @@ impl BaseRelation for Relation {
         .with_is_shallow_clone(self.is_shallow_clone)
         .with_temporary(self.temporary)
         .with_can_exchange(self.can_exchange)
+        .with_can_on_cluster(self.can_on_cluster)
         .with_mvs_pointing_to_it(self.mvs_pointing_to_it.clone())
         .with_is_refreshable(self.is_refreshable)
         .with_refreshable_append(self.refreshable_append)
@@ -778,6 +768,7 @@ impl BaseRelation for Relation {
         .with_is_shallow_clone(self.is_shallow_clone)
         .with_temporary(self.temporary)
         .with_can_exchange(self.can_exchange)
+        .with_can_on_cluster(self.can_on_cluster)
         .with_mvs_pointing_to_it(self.mvs_pointing_to_it.clone())
         .with_is_refreshable(self.is_refreshable)
         .with_refreshable_append(self.refreshable_append)
@@ -825,6 +816,13 @@ impl BaseRelation for Relation {
 
     fn can_exchange(&self) -> bool {
         self.can_exchange
+    }
+
+    fn can_on_cluster(&self) -> bool {
+        self.can_on_cluster.unwrap_or_else(|| {
+            self.adapter_type == AdapterType::ClickHouse
+                && crate::metadata::clickhouse::default_can_on_cluster()
+        })
     }
 
     fn mvs_pointing_to_it(&self) -> &[BTreeMap<String, String>] {
@@ -1285,6 +1283,7 @@ impl BaseRelation for Relation {
             .with_temporary(self.temporary)
             .with_table_format(self.table_format)
             .with_can_exchange(self.can_exchange)
+            .with_can_on_cluster(self.can_on_cluster)
             .with_mvs_pointing_to_it(self.mvs_pointing_to_it.clone())
             .with_is_refreshable(self.is_refreshable)
             .with_refreshable_append(self.refreshable_append)
@@ -2154,6 +2153,7 @@ mod tests {
 
     mod snowflake {
         use super::*;
+        use minijinja::value::Kwargs;
 
         #[test]
         fn test_create_via_static_base_relation() {
@@ -2175,6 +2175,145 @@ mod tests {
             let relation = relation.downcast_object::<RelationObject>().unwrap();
             assert_eq!(relation.inner().render_self_as_str(), r#""d"."s"."i""#);
             assert_eq!(relation.relation_type().unwrap(), RelationType::Table);
+        }
+
+        fn create(adapter_type: AdapterType, args: &[Value]) -> Result<Relation, minijinja::Error> {
+            RelationStatic {
+                adapter_type,
+                quoting: DEFAULT_RESOLVED_QUOTING,
+            }
+            .create(args)
+            .map(|v| {
+                v.downcast_object::<RelationObject>()
+                    .unwrap()
+                    .inner()
+                    .as_any()
+                    .downcast_ref::<Relation>()
+                    .unwrap()
+                    .clone()
+            })
+        }
+
+        #[test]
+        fn test_create_kwargs_keep_snowflake_semantics() {
+            let relation = create(
+                AdapterType::Snowflake,
+                &[Value::from(Kwargs::from_iter([
+                    ("database", Value::from("d")),
+                    ("schema", Value::from("s")),
+                    ("identifier", Value::from("i")),
+                    ("type", Value::from("view")),
+                    (
+                        "quote_policy",
+                        Value::from(BTreeMap::from([
+                            ("database", false),
+                            ("identifier", true),
+                            ("schema", true),
+                        ])),
+                    ),
+                    ("table_format", Value::from("ICEBERG")),
+                    // Snowflake ignores kwargs it does not know, `temporary` included
+                    ("temporary", Value::from(true)),
+                    ("something_else", Value::from(1)),
+                ]))],
+            )
+            .unwrap();
+            assert_eq!(relation.render_self_as_str(), r#"d."s"."i""#);
+            assert_eq!(relation.relation_type, Some(RelationType::View));
+            assert_eq!(relation.table_format, TableFormat::Iceberg);
+            assert!(!relation.temporary);
+        }
+
+        #[test]
+        fn test_create_positional_table_format_is_sixth() {
+            let relation = create(
+                AdapterType::Snowflake,
+                &[
+                    Value::from("d"),
+                    Value::from("s"),
+                    Value::from("i"),
+                    Value::from("table"),
+                    Value::from("{database: true, identifier: true, schema: true}"),
+                    Value::from("iceberg"),
+                ],
+            )
+            .unwrap();
+            assert_eq!(relation.table_format, TableFormat::Iceberg);
+            assert!(!relation.temporary);
+        }
+
+        #[test]
+        fn test_create_type_none_and_default_quoting() {
+            let relation = create(
+                AdapterType::Snowflake,
+                &[Value::from(Kwargs::from_iter([
+                    ("database", Value::from("d")),
+                    ("schema", Value::from("s")),
+                    ("identifier", Value::from("i")),
+                    ("type", Value::from(())),
+                ]))],
+            )
+            .unwrap();
+            assert_eq!(relation.relation_type, None);
+            assert_eq!(relation.table_format, TableFormat::Default);
+            assert_eq!(relation.render_self_as_str(), r#""d"."s"."i""#);
+        }
+
+        #[test]
+        fn test_create_generic_adapter_rejects_unknown_kwargs_and_honors_temporary() {
+            let err = create(
+                AdapterType::Postgres,
+                &[Value::from(Kwargs::from_iter([
+                    ("schema", Value::from("s")),
+                    ("identifier", Value::from("i")),
+                    ("table_format", Value::from("iceberg")),
+                ]))],
+            )
+            .unwrap_err();
+            assert!(err.to_string().contains("table_format"), "got: {err}");
+
+            let relation = create(
+                AdapterType::Postgres,
+                &[
+                    Value::from("d"),
+                    Value::from("s"),
+                    Value::from("i"),
+                    Value::from("table"),
+                    Value::from("{database: true, identifier: true, schema: true}"),
+                    Value::from(true),
+                ],
+            )
+            .unwrap();
+            assert!(relation.temporary);
+            assert_eq!(relation.relation_type, Some(RelationType::Table));
+        }
+
+        #[test]
+        fn test_create_clickhouse_catalog_kwargs() {
+            let relation = create(
+                AdapterType::ClickHouse,
+                &[Value::from(Kwargs::from_iter([
+                    ("schema", Value::from("s")),
+                    ("identifier", Value::from("i")),
+                    ("type", Value::from("table")),
+                    ("can_exchange", Value::from(true)),
+                    ("can_on_cluster", Value::from(false)),
+                ]))],
+            )
+            .unwrap();
+            assert!(relation.can_exchange);
+            assert_eq!(relation.can_on_cluster, Some(false));
+
+            let err = create(
+                AdapterType::ClickHouse,
+                &[Value::from(Kwargs::from_iter([
+                    ("schema", Value::from("s")),
+                    ("identifier", Value::from("i")),
+                    ("table_format", Value::from("iceberg")),
+                ]))],
+            )
+            .unwrap_err();
+            assert!(err.to_string().contains("table_format"), "got: {err}");
         }
 
         fn snowflake_relation(relation_type: RelationType, table_format: TableFormat) -> Relation {

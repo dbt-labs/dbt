@@ -2463,6 +2463,51 @@ impl AdapterImpl {
         }
     }
 
+    /// ClickHouse `adapter.get_clickhouse_cluster_name()` — see [`metadata::clickhouse::cluster_name`].
+    pub fn get_clickhouse_cluster_name(&self) -> Option<String> {
+        metadata::clickhouse::cluster_name(self.get_db_config("cluster").as_deref())
+    }
+
+    /// ClickHouse `adapter.get_clickhouse_local_suffix()` — see [`metadata::clickhouse::local_suffix`].
+    pub fn get_clickhouse_local_suffix(&self) -> String {
+        metadata::clickhouse::local_suffix(self.get_db_config("local_suffix").as_deref())
+    }
+
+    /// ClickHouse `adapter.get_clickhouse_local_db_prefix()` — see [`metadata::clickhouse::local_db_prefix`].
+    pub fn get_clickhouse_local_db_prefix(&self) -> String {
+        metadata::clickhouse::local_db_prefix(self.get_db_config("local_db_prefix").as_deref())
+    }
+
+    /// ClickHouse `adapter.clickhouse_db_engine_clause()` — see [`metadata::clickhouse::db_engine_clause`].
+    pub fn clickhouse_db_engine_clause(&self) -> String {
+        metadata::clickhouse::db_engine_clause(self.get_db_config("database_engine").as_deref())
+    }
+
+    /// ClickHouse `adapter.should_on_cluster(materialized, engine)` (impl.py ignores both
+    /// arguments) — see [`metadata::clickhouse::get_on_cluster`].
+    pub fn should_on_cluster(&self) -> bool {
+        metadata::clickhouse::get_on_cluster(
+            self.get_db_config("cluster").as_deref().unwrap_or(""),
+            self.get_db_config("database_engine")
+                .as_deref()
+                .unwrap_or(""),
+        )
+    }
+
+    /// ClickHouse `adapter.can_exchange(schema, rel_type)` — see [`metadata::clickhouse::can_exchange`].
+    pub fn can_exchange(
+        &self,
+        state: &State,
+        schema: &str,
+        rel_type: &str,
+        token: CancellationToken,
+    ) -> bool {
+        match self.inner_adapter() {
+            Impl(..) => metadata::clickhouse::can_exchange(self, state, schema, rel_type, token),
+            Replay(..) => false,
+        }
+    }
+
     /// BaseAdapter https://github.com/dbt-labs/dbt-adapters/blob/0efd8d3d1081e1ab43e38797d5104f7b424a6284/dbt-adapters/src/dbt/adapters/base/impl.py#L1231
     pub fn convert_type(
         &self,
