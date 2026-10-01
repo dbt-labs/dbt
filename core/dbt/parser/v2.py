@@ -30,6 +30,7 @@ from dbt.contracts.graph.manifest import Manifest
 from dbt.events.types import V2ParserEnd, V2ParserStart
 from dbt.exceptions import V2ParserError, V2ParserSchemaError, V2ParserVersionError
 from dbt.flags import get_flags
+from dbt.utils.artifact_upload import add_artifact_produced
 from dbt_common import ui
 from dbt_common.events.base_types import EventLevel
 from dbt_common.events.functions import fire_event, get_invocation_id
@@ -88,9 +89,9 @@ def parse_with_v2(
                 project_target_path.mkdir(parents=True, exist_ok=True)
                 semantic_manifest_path = handoff / "semantic_manifest.json"
                 if semantic_manifest_path.exists():
-                    shutil.copyfile(
-                        semantic_manifest_path, project_target_path / "semantic_manifest.json"
-                    )
+                    target_semantic_manifest_path = project_target_path / "semantic_manifest.json"
+                    shutil.copyfile(semantic_manifest_path, target_semantic_manifest_path)
+                    add_artifact_produced(str(target_semantic_manifest_path))
     except (
         V2ParserVersionError,
         V2ParserSchemaError,
