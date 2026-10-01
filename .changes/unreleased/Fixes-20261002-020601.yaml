@@ -1,0 +1,7 @@
+kind: Fixes
+body: Expose graph.groups entries with the same fields as manifest.json, so group.name and group.owner are available in Jinja
+time: 2026-10-02T02:06:01.6050011+05:30
+custom:
+    author: yvaishalirao
+    issue: "16550"
+    project: dbt-core
