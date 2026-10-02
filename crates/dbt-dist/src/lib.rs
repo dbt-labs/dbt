@@ -28,6 +28,17 @@ use crate::proc::{GRACE_WAIT, NORMAL_WAIT, ProcessOutput, real_run};
 use crate::python::PythonManifestFormat;
 pub use crate::python::PythonPackageManager;
 
+/// Set on every subprocess spawned by discovery (see `crate::proc::run_with_timeouts`).
+/// A `dbt` that sees this set is itself the target of a delegated
+/// `get-distribution-info` probe (see [`run_dbt_internal`]) and must answer for
+/// itself unconditionally, instead of re-classifying its `path` argument and
+/// potentially delegating again. This bounds delegation to exactly one
+/// subprocess hop even when the target is a shim/dispatcher that execs a different binary:
+/// such a shim's canonical path never matches [`env::current_exe()`],
+/// so [`is_current_executable`] can't catch it. Without this guard each hop
+/// to a shim could spawn another subprocess causing infinite recursion.
+pub(crate) const DELEGATED_PROBE_ENV: &str = "DBT_INTERNAL_DIST_INFO_DELEGATED_PROBE";
+
 /// Entry point for discovering [`DistInfo`] about one or more `dbt`
 /// installations.
 pub enum DistInfoDiscovery<'a> {
@@ -981,6 +992,14 @@ fn is_current_executable(file_path: &Path) -> bool {
 }
 
 fn get_at_path(file_path: &Path, command_name: &str) -> FsResult<DistInfo> {
+    get_at_path_with_ctx(&DiscoveryContext::real(), file_path, command_name)
+}
+
+fn get_at_path_with_ctx(
+    ctx: &DiscoveryContext,
+    file_path: &Path,
+    command_name: &str,
+) -> FsResult<DistInfo> {
     if !is_executable(file_path) {
         return err!(
             ErrorCode::FileNotFound,
@@ -989,11 +1008,10 @@ fn get_at_path(file_path: &Path, command_name: &str) -> FsResult<DistInfo> {
         );
     }
 
-    if is_current_executable(file_path) {
+    if is_current_executable(file_path) || (ctx.env)(DELEGATED_PROBE_ENV).is_some() {
         return get_current(command_name);
     }
 
-    let ctx = DiscoveryContext::real();
     let classified = classify_path(file_path);
 
     // Only a native v2 binary can possibly understand `internal
@@ -1003,12 +1021,12 @@ fn get_at_path(file_path: &Path, command_name: &str) -> FsResult<DistInfo> {
     // Python-based `dbt-core` this roughly halves the interpreter-startup
     // cost paid per PATH entry.
     if classified.kind == FileKind::NativeBinary {
-        if let Some(dist_info) = introspect_for_dist_info(&ctx, file_path) {
+        if let Some(dist_info) = introspect_for_dist_info(ctx, file_path) {
             return Ok(dist_info);
         }
     }
 
-    discover_dist_info_from_legacy_dbt(&ctx, classified)
+    discover_dist_info_from_legacy_dbt(ctx, classified)
 }
 
 // Given a path to a dbt executable, try running `dbt internal
@@ -2452,6 +2470,30 @@ Plugins:
         // spawn again, forever.
         let current = env::current_exe().unwrap();
         let result = get_at_path(&current, "dbt-core").unwrap();
+        assert_eq!(result.generation, Generation::V2);
+        assert_eq!(result.distribution, Some(Distribution::Oss));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn get_at_path_treats_delegated_probe_env_as_terminal() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let exe = dir.path().join("dbt");
+        std::fs::write(&exe, b"#!/bin/sh\nexit 0\n").unwrap();
+        std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let env = |name: &str| (name == DELEGATED_PROBE_ENV).then(|| "1".to_string());
+        let run = |_: &str, _: &[&str]| -> Option<ProcessOutput> {
+            panic!("a delegated probe must not spawn another subprocess")
+        };
+        let ctx = DiscoveryContext {
+            env: &env,
+            run: &run,
+        };
+
+        let result = get_at_path_with_ctx(&ctx, &exe, "dbt-core").unwrap();
         assert_eq!(result.generation, Generation::V2);
         assert_eq!(result.distribution, Some(Distribution::Oss));
     }
