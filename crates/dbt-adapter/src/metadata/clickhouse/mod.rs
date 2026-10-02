@@ -65,20 +65,28 @@ fn refreshable_marker_columns(col: &str, agg: &str) -> String {
 }
 
 /// Profile keys relations need at creation time (relation.py `create_from` reads them off the
-/// credentials); published when the ADBC engine is built, before any macro renders.
+/// credentials). Every ClickHouse engine publishes its own at construction, before any macro
+/// renders, so each invocation of a long-lived process sees its profile; concurrent invocations
+/// with different ClickHouse profiles would still share the value.
 #[derive(Debug, Clone, Default)]
 pub struct ClickHouseConnectionInfo {
     pub cluster: Option<String>,
     pub database_engine: String,
 }
 
-static CONNECTION_INFO: std::sync::OnceLock<ClickHouseConnectionInfo> = std::sync::OnceLock::new();
+static CONNECTION_INFO: std::sync::RwLock<ClickHouseConnectionInfo> =
+    std::sync::RwLock::new(ClickHouseConnectionInfo {
+        cluster: None,
+        database_engine: String::new(),
+    });
 
 pub fn register_connection_info(cluster: Option<String>, database_engine: Option<String>) {
-    let _ = CONNECTION_INFO.set(ClickHouseConnectionInfo {
+    *CONNECTION_INFO
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = ClickHouseConnectionInfo {
         cluster: cluster.filter(|c| !c.trim().is_empty()),
         database_engine: database_engine.unwrap_or_default(),
-    });
+    };
 }
 
 /// relation.py `ClickHouseRelation.get_on_cluster`.
@@ -88,11 +96,12 @@ pub fn get_on_cluster(cluster: &str, database_engine: &str) -> bool {
 
 /// `can_on_cluster` for relations built outside the catalog paths (relation.py `create_from`).
 pub fn default_can_on_cluster() -> bool {
-    CONNECTION_INFO.get().is_some_and(|info| {
-        info.cluster
-            .as_deref()
-            .is_some_and(|cluster| get_on_cluster(cluster, &info.database_engine))
-    })
+    let info = CONNECTION_INFO
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    info.cluster
+        .as_deref()
+        .is_some_and(|cluster| get_on_cluster(cluster, &info.database_engine))
 }
 
 /// impl.py `get_clickhouse_cluster_name`: the profile `cluster`, double-quoted for DDL.
