@@ -43,6 +43,7 @@ use dbt_common::tracing::event_info::store_event_attributes;
 use dbt_jinja_utils::jinja_environment::JinjaEnv;
 use dbt_jinja_utils::listener::JinjaTypeCheckingEventListenerFactory;
 use dbt_jinja_utils::node_resolver::NodeResolver;
+use dbt_jinja_utils::phases::build_target_context_map;
 use dbt_jinja_utils::utils::dependency_package_name_from_ctx;
 use dbt_schemas::dbt_utils::resolve_package_quoting;
 use dbt_schemas::schemas::CommonAttributes;
@@ -74,6 +75,7 @@ use dbt_schemas::schemas::dbt_column::VersionColumnProperties;
 use dbt_schemas::schemas::dbt_column::process_columns;
 use dbt_schemas::schemas::manifest::semantic_model::NodeRelation;
 use dbt_schemas::schemas::nodes::AdapterAttr;
+use dbt_schemas::schemas::profiles::TargetContext;
 use dbt_schemas::schemas::project::DbtProject;
 use dbt_schemas::schemas::project::ModelConfig;
 use dbt_schemas::schemas::project::ResolvedModelConfig;
@@ -83,6 +85,7 @@ use dbt_schemas::schemas::properties::ModelProperties;
 use dbt_schemas::schemas::ref_and_source::{DbtRef, DbtSourceWrapper};
 use dbt_schemas::schemas::serde::NodeVersion;
 use dbt_schemas::state::DbtPackage;
+use dbt_schemas::state::DbtProfile;
 use dbt_schemas::state::DbtRuntimeConfig;
 use dbt_schemas::state::GenericTestAsset;
 use dbt_schemas::state::ModelStatus;
@@ -161,6 +164,55 @@ fn parse_source_from_constraint(to: &str) -> Option<(String, String)> {
     Some((src.to_string(), tbl.to_string()))
 }
 
+struct AdapterRelationContext {
+    database: String,
+    schema: String,
+    base_ctx: BTreeMap<String, minijinja::Value>,
+}
+
+fn adapter_relation_context(
+    profile: &DbtProfile,
+    adapter_type: AdapterType,
+    base_ctx: &BTreeMap<String, minijinja::Value>,
+) -> FsResult<AdapterRelationContext> {
+    let config = profile.adapter(adapter_type).ok_or_else(|| {
+        fs_err!(
+            ErrorCode::InvalidConfig,
+            "no profile connection is configured for adapter '{adapter_type}'"
+        )
+    })?;
+    let target_context = TargetContext::try_from(config.clone())
+        .map_err(|e| fs_err!(ErrorCode::InvalidConfig, "{e}"))?;
+    let target_context = Arc::new(build_target_context_map(
+        &profile.profile,
+        &profile.target,
+        target_context,
+    ));
+    let mut adapter_base_ctx = base_ctx.clone();
+    adapter_base_ctx.insert(
+        "target".to_string(),
+        minijinja::Value::from_serialize(Arc::clone(&target_context)),
+    );
+    adapter_base_ctx.insert(
+        "env".to_string(),
+        minijinja::Value::from_serialize(target_context),
+    );
+    adapter_base_ctx.insert(
+        "database".to_string(),
+        minijinja::Value::from(config.get_database().cloned()),
+    );
+    adapter_base_ctx.insert(
+        "schema".to_string(),
+        minijinja::Value::from(config.get_schema().cloned()),
+    );
+
+    Ok(AdapterRelationContext {
+        database: config.get_database_or_default(),
+        schema: config.get_schema().cloned().unwrap_or_default(),
+        base_ctx: adapter_base_ctx,
+    })
+}
+
 #[allow(
     clippy::cognitive_complexity,
     clippy::expect_fun_call,
@@ -181,6 +233,7 @@ pub async fn resolve_models(
     database: &str,
     schema: &str,
     default_adapter: AdapterType,
+    profile: &DbtProfile,
     package_name: &str,
     env: Arc<JinjaEnv>,
     base_ctx: &BTreeMap<String, minijinja::Value>,
@@ -380,6 +433,7 @@ pub async fn resolve_models(
         database,
         schema,
         default_adapter,
+        profile,
         package_name,
         dependency_package_name,
         &env,
@@ -514,6 +568,7 @@ async fn build_model_nodes(
     database: &str,
     schema: &str,
     default_adapter: AdapterType,
+    profile: &DbtProfile,
     package_name: &str,
     dependency_package_name: Option<&str>,
     env: &JinjaEnv,
@@ -530,6 +585,7 @@ async fn build_model_nodes(
     duplicates: &mut Vec<(String, String, Option<String>, PathBuf)>,
 ) -> FsResult<()> {
     let mut node_names = HashSet::new();
+    let mut adapter_relation_contexts = HashMap::new();
     let catalogs = load_catalogs::fetch_catalogs();
     let use_catalogs_v2 = load_catalogs::fetch_use_catalogs_v2();
     let catalogs_state = match catalogs.as_deref() {
@@ -953,6 +1009,15 @@ async fn build_model_nodes(
                 })
             })
             .flatten();
+        if !adapter_relation_contexts.contains_key(&selected_adapter) {
+            adapter_relation_contexts.insert(
+                selected_adapter,
+                adapter_relation_context(profile, selected_adapter, base_ctx)?,
+            );
+        }
+        let relation_context = adapter_relation_contexts
+            .get(&selected_adapter)
+            .expect("selected adapter relation context was inserted");
         model_config.quoting = resolve_package_quoting(
             Some(match adapter_quoting.get(&selected_adapter) {
                 Some(authored) => model_config.quoting.filled_from(authored),
@@ -999,10 +1064,10 @@ async fn build_model_nodes(
                 adapter: selected_adapter,
                 propagate: selected_propagate,
                 effective_propagation_target,
-                database: database.to_string(), // will be updated below
-                schema: schema.to_string(),     // will be updated below
-                alias: "".to_owned(),           // will be updated below
-                relation_name: None,            // will be updated below
+                database: relation_context.database.clone(), // will be updated below
+                schema: relation_context.schema.clone(),     // will be updated below
+                alias: "".to_owned(),                        // will be updated below
+                relation_name: None,                         // will be updated below
                 enabled: model_config.enabled,
                 compute: model_config.compute,
                 extended_model: false,
@@ -1151,7 +1216,7 @@ async fn build_model_nodes(
             },
             __adapter_attr__: AdapterAttr::from_config_and_dialect(
                 &model_config.__warehouse_specific_config__,
-                default_adapter,
+                selected_adapter,
             ),
             // Derived from the model config
             deprecated_config: model_config.clone().into(),
@@ -1171,9 +1236,9 @@ async fn build_model_nodes(
             env,
             &root_package.dbt_project.name,
             package_name,
-            base_ctx,
+            &relation_context.base_ctx,
             &components,
-            default_adapter,
+            selected_adapter,
         )?;
 
         // Update time_spine node_relation with the resolved relation components
@@ -1192,7 +1257,7 @@ async fn build_model_nodes(
                 };
             }
         }
-        match node_resolver.insert_ref(&dbt_model, default_adapter, status, false) {
+        match node_resolver.insert_ref(&dbt_model, selected_adapter, status, false) {
             Ok(_) => (),
             Err(e) => {
                 let err_with_loc = e.with_location(dbt_asset.path.clone());
@@ -1976,8 +2041,9 @@ fn apply_model_freshness_loaded_at_override(
 #[cfg(test)]
 mod tests {
     use super::{
-        apply_model_freshness_loaded_at_override, parse_ref_from_constraint,
-        parse_source_from_constraint, validate_database_not_catalog, validate_model_freshness_sla,
+        adapter_relation_context, apply_model_freshness_loaded_at_override,
+        parse_ref_from_constraint, parse_source_from_constraint, validate_database_not_catalog,
+        validate_model_freshness_sla,
     };
     use dbt_adapter_core::AdapterType;
     use dbt_common::{ErrorCode, FsResult};
@@ -1985,9 +2051,14 @@ mod tests {
         DbtMaterialization, FreshnessPeriod, FreshnessRules, ModelFreshnessRules,
     };
     use dbt_schemas::schemas::dbt_catalogs_deprecated::DbtCatalogs;
+    use dbt_schemas::schemas::profiles::DuckDbConfig;
     use dbt_schemas::schemas::properties::ModelFreshness;
     use dbt_schemas::schemas::serde::NodeVersion;
-    use std::path::Path;
+    use dbt_schemas::state::{DbtProfile, ProfileAdapter};
+    use indexmap::IndexMap;
+    use minijinja::Value;
+    use std::collections::BTreeMap;
+    use std::path::{Path, PathBuf};
 
     fn sla_freshness() -> ModelFreshness {
         ModelFreshness {
@@ -2004,6 +2075,51 @@ mod tests {
         materialized: DbtMaterialization,
     ) -> FsResult<()> {
         validate_model_freshness_sla(freshness, &materialized, Path::new("models/m.sql"))
+    }
+
+    #[test]
+    fn non_default_adapter_uses_its_profile_namespace() {
+        let duckdb = DuckDbConfig {
+            path: Some("md:dbt_multi_adapter".to_string()),
+            schema: Some("analytics".to_string()),
+            ..Default::default()
+        };
+        let profile = DbtProfile {
+            profile: "multi_adapter".to_string(),
+            target: "dev".to_string(),
+            defer_to_target: None,
+            allow_clones: true,
+            adapters: IndexMap::from([(
+                AdapterType::DuckDB,
+                ProfileAdapter::single(duckdb.into()),
+            )]),
+            default_adapter: AdapterType::DuckDB,
+            schema: "analytics".to_string(),
+            database: "dbt_multi_adapter".to_string(),
+            relative_profile_path: PathBuf::new(),
+            threads: None,
+        };
+        let base_ctx = BTreeMap::from([(
+            "target".to_string(),
+            Value::from_serialize(BTreeMap::from([
+                ("database", "wrong_default"),
+                ("schema", "wrong_default"),
+            ])),
+        )]);
+
+        let context = adapter_relation_context(&profile, AdapterType::DuckDB, &base_ctx).unwrap();
+
+        assert_eq!(context.database, "dbt_multi_adapter");
+        assert_eq!(context.schema, "analytics");
+        let target = context.base_ctx.get("target").unwrap();
+        assert_eq!(
+            target.get_attr("database").unwrap().as_str(),
+            Some("dbt_multi_adapter")
+        );
+        assert_eq!(
+            target.get_attr("schema").unwrap().as_str(),
+            Some("analytics")
+        );
     }
 
     #[test]

@@ -20,7 +20,7 @@ use dbt_jinja_utils::phases::compile::DependencyValidationConfig;
 use dbt_jinja_utils::phases::run::RunConfig;
 use dbt_jinja_utils::phases::{MicrobatchRefContext, RefFunction, SourceFunction};
 use dbt_jinja_utils::utils::inject_and_persist_ephemeral_models;
-use dbt_schemas::schemas::{DbtModel, InternalDbtNode};
+use dbt_schemas::schemas::{DbtModel, InternalDbtNode, InternalDbtNodeAttributes};
 use dbt_schemas::state::{DbtRuntimeConfig, NodeResolverTracker};
 use minijinja::Value;
 use minijinja::value::ValueMap;
@@ -65,27 +65,33 @@ pub fn extend_microbatch_node_context(
         .cloned()
         .collect::<BTreeSet<_>>();
 
-    let microbatch_ref = Value::from_object(RefFunction::new_with_microbatch_context(
-        node_resolver.clone(),
-        model.__common_attr__.package_name.clone(),
-        runtime_config.clone().into(),
-        DependencyValidationConfig::new_for_node(model)
-            .validate()
-            .allow_dependencies(allowed_deps.iter()),
-        microbatch_ctx.clone(),
-        model.common().unique_id.clone(),
-    ));
+    let microbatch_ref = Value::from_object(
+        RefFunction::new_with_microbatch_context(
+            node_resolver.clone(),
+            model.__common_attr__.package_name.clone(),
+            runtime_config.clone().into(),
+            DependencyValidationConfig::new_for_node(model)
+                .validate()
+                .allow_dependencies(allowed_deps.iter()),
+            microbatch_ctx.clone(),
+            model.common().unique_id.clone(),
+        )
+        .with_consumer_adapter(model.node_adapter()),
+    );
 
     // Insert the microbatch-aware ref into context
     jinja_context.insert("ref".to_string(), microbatch_ref.clone());
 
     // Replace the source function with one that has microbatch context
-    let microbatch_source = Value::from_object(SourceFunction::new_with_microbatch_context(
-        node_resolver,
-        model.__common_attr__.package_name.clone(),
-        runtime_config.clone().into(),
-        microbatch_ctx,
-    ));
+    let microbatch_source = Value::from_object(
+        SourceFunction::new_with_microbatch_context(
+            node_resolver,
+            model.__common_attr__.package_name.clone(),
+            runtime_config.clone().into(),
+            microbatch_ctx,
+        )
+        .with_consumer_adapter(model.node_adapter()),
+    );
 
     // Insert the microbatch-aware source into context
     jinja_context.insert("source".to_string(), microbatch_source.clone());

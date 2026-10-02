@@ -3,6 +3,8 @@ use std::collections::BTreeMap;
 use dbt_schemas::schemas::profiles::TargetContext;
 use minijinja::value::Value as MinijinjaValue;
 
+/// Convert a typed profile target into the mapping exposed to Jinja as
+/// `target` and `env`.
 pub fn build_target_context_map(
     profile: &str,
     target: &str,
