@@ -537,9 +537,15 @@ impl ColumnBuilder {
 
     /// Athena columns.
     ///
-    /// Structurally identical to the Exasol path: every adapter-specific
-    /// decision is delegated to `sql_types`, which already carries an Athena
-    /// entry (`ATHENA_KEYS`). Nothing here hard-codes a type name.
+    /// Every adapter-specific decision is delegated to `sql_types`, which
+    /// already carries an Athena entry (`ATHENA_KEYS`). Nothing here
+    /// hard-codes a type name.
+    ///
+    /// The type text comes from the driver's `ATHENA:type` field metadata when
+    /// present. The driver maps several Athena types to one Arrow type
+    /// (`timestamp` and `timestamp with time zone` to the same timestamp,
+    /// `decimal` and nested types to strings), so rendering from the Arrow type
+    /// would make a contract accept `varchar` for a `decimal` column.
     fn build_athena(field: &FieldRef, type_ops: &dyn TypeOps) -> Column {
         use AdapterType::Athena;
         let data_type = field.data_type();
@@ -555,13 +561,19 @@ impl ColumnBuilder {
             }
         };
 
-        let mut rendered_type = String::new();
-        if type_ops
-            .format_arrow_type_as_sql(data_type, field.is_nullable(), &mut rendered_type)
-            .is_err()
-        {
-            rendered_type = data_type.to_string();
-        }
+        let rendered_type = match original_type_string(Athena, field) {
+            Some(type_text) if !type_text.is_empty() => type_text.into_owned(),
+            _ => {
+                let mut rendered_type = String::new();
+                if type_ops
+                    .format_arrow_type_as_sql(data_type, field.is_nullable(), &mut rendered_type)
+                    .is_err()
+                {
+                    rendered_type = data_type.to_string();
+                }
+                rendered_type
+            }
+        };
 
         Column::new(
             Athena,
@@ -682,6 +694,52 @@ mod tests {
         assert_eq!(column.numeric_precision(), Some(18));
         assert_eq!(column.numeric_scale(), Some(4));
         assert_eq!(column.char_size(), None);
+    }
+
+    fn athena_field(name: &str, data_type: DataType, athena_type: Option<&str>) -> FieldRef {
+        let mut field = Field::new(name, data_type, true);
+        if let Some(athena_type) = athena_type {
+            let metadata = HashMap::from([(
+                metadata_sql_type_key(AdapterType::Athena).to_string(),
+                athena_type.to_string(),
+            )]);
+            field = field.with_metadata(metadata);
+        }
+        Arc::new(field)
+    }
+
+    #[test]
+    fn test_build_athena_uses_driver_type_metadata() {
+        let builder = ColumnBuilder::new(AdapterType::Athena);
+        let type_ops = DefaultTypeOps::new(AdapterType::Athena);
+        let cases = [
+            (
+                DataType::Timestamp(arrow_schema::TimeUnit::Microsecond, None),
+                "timestamp with time zone",
+            ),
+            (DataType::Utf8, "decimal"),
+            (DataType::Utf8, "array"),
+        ];
+        for (data_type, athena_type) in cases {
+            let field = athena_field("c", data_type, Some(athena_type));
+            let column = builder.build(&field, &type_ops).unwrap();
+            assert_eq!(column.dtype(), athena_type);
+        }
+    }
+
+    #[test]
+    fn test_build_athena_without_metadata_renders_arrow_type() {
+        let builder = ColumnBuilder::new(AdapterType::Athena);
+        let type_ops = DefaultTypeOps::new(AdapterType::Athena);
+        let mut arrow_rendered = String::new();
+        type_ops
+            .format_arrow_type_as_sql(&DataType::Utf8, true, &mut arrow_rendered)
+            .unwrap();
+        for athena_type in [None, Some("")] {
+            let field = athena_field("c", DataType::Utf8, athena_type);
+            let column = builder.build(&field, &type_ops).unwrap();
+            assert_eq!(column.dtype(), arrow_rendered);
+        }
     }
 
     #[test]

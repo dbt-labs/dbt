@@ -36,3 +36,18 @@
       {{ exceptions.column_type_missing(column_names=col_err) }}
     {%- endif -%}
 {% endmacro %}
+
+{#- default__get_empty_subquery_sql ends with `where false limit 0`. With LIMIT 0,
+    Athena reports the Glue type of a table column in the result metadata instead
+    of the engine type: an Iceberg `timestamp(6) with time zone` column comes back
+    as `timestamp`, and a contract on it fails (dbt-labs/dbt#15731). `where false`
+    alone keeps the engine type and still scans no data. -#}
+{% macro athena__get_empty_subquery_sql(select_sql, select_sql_header=none) %}
+    {%- if select_sql_header is not none -%}
+    {{ select_sql_header }}
+    {%- endif -%}
+    select * from (
+        {{ select_sql }}
+    ) as __dbt_sbq
+    where false
+{% endmacro %}
