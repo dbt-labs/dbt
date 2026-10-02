@@ -80,93 +80,76 @@ impl ColumnBuilder {
     }
 
     fn append_from_row(&mut self, row: &MySqlRow, idx: usize) {
-        match self {
-            ColumnBuilder::Bool(b) => append_bool(b, row, idx),
-            ColumnBuilder::Int8(b) => append_opt!(b, row, idx, i8),
-            ColumnBuilder::Int16(b) => append_opt!(b, row, idx, i16),
-            ColumnBuilder::Int32(b) => append_opt!(b, row, idx, i32),
-            ColumnBuilder::Int64(b) => append_opt!(b, row, idx, i64),
-            ColumnBuilder::UInt8(b) => append_opt!(b, row, idx, u8),
-            ColumnBuilder::UInt16(b) => append_opt!(b, row, idx, u16),
-            ColumnBuilder::UInt32(b) => append_opt!(b, row, idx, u32),
-            ColumnBuilder::UInt64(b) => append_opt!(b, row, idx, u64),
-            ColumnBuilder::Float32(b) => append_opt!(b, row, idx, f32),
-            ColumnBuilder::Float64(b) => append_opt!(b, row, idx, f64),
-            ColumnBuilder::String(b) => match get_as_string(row, idx) {
-                Some(val) => b.append_value(val),
-                None => b.append_null(),
-            },
+        macro_rules! append_cases {
+            ($self:expr, $row:expr, $idx:expr, $($variant:ident => $ty:ty),*) => {
+                match $self {
+                    ColumnBuilder::Bool(b) => append_bool(b, $row, $idx),
+                    $(ColumnBuilder::$variant(b) => append_opt!(b, $row, $idx, $ty),)*
+                    ColumnBuilder::String(b) => match get_as_string($row, $idx) {
+                        Some(val) => b.append_value(val),
+                        None => b.append_null(),
+                    },
+                }
+            };
         }
+        append_cases!(
+            self, row, idx,
+            Int8 => i8,
+            Int16 => i16,
+            Int32 => i32,
+            Int64 => i64,
+            UInt8 => u8,
+            UInt16 => u16,
+            UInt32 => u32,
+            UInt64 => u64,
+            Float32 => f32,
+            Float64 => f64
+        );
     }
 
     fn finish(self) -> ArrayRef {
-        match self {
-            ColumnBuilder::Bool(mut b) => Arc::new(b.finish()),
-            ColumnBuilder::Int8(mut b) => Arc::new(b.finish()),
-            ColumnBuilder::Int16(mut b) => Arc::new(b.finish()),
-            ColumnBuilder::Int32(mut b) => Arc::new(b.finish()),
-            ColumnBuilder::Int64(mut b) => Arc::new(b.finish()),
-            ColumnBuilder::UInt8(mut b) => Arc::new(b.finish()),
-            ColumnBuilder::UInt16(mut b) => Arc::new(b.finish()),
-            ColumnBuilder::UInt32(mut b) => Arc::new(b.finish()),
-            ColumnBuilder::UInt64(mut b) => Arc::new(b.finish()),
-            ColumnBuilder::Float32(mut b) => Arc::new(b.finish()),
-            ColumnBuilder::Float64(mut b) => Arc::new(b.finish()),
-            ColumnBuilder::String(mut b) => Arc::new(b.finish()),
+        macro_rules! finish_arms {
+            ($b:expr, $($variant:ident),*) => {
+                match $b {
+                    $(ColumnBuilder::$variant(mut b) => Arc::new(b.finish()),)*
+                }
+            };
         }
+        finish_arms!(
+            self, Bool, Int8, Int16, Int32, Int64, UInt8, UInt16, UInt32, UInt64, Float32,
+            Float64, String
+        )
     }
 }
 
-fn try_get_num_or_bool(row: &MySqlRow, idx: usize) -> Option<String> {
-    row.try_get::<Option<i64>, _>(idx)
-        .ok()
-        .flatten()
-        .map(|v| v.to_string())
-        .or_else(|| {
-            row.try_get::<Option<f64>, _>(idx)
-                .ok()
-                .flatten()
-                .map(|v| v.to_string())
-        })
-        .or_else(|| {
-            row.try_get::<Option<bool>, _>(idx)
-                .ok()
-                .flatten()
-                .map(|v| v.to_string())
-        })
-}
-
-fn try_get_temporal(row: &MySqlRow, idx: usize) -> Option<String> {
-    row.try_get::<Option<chrono::NaiveDateTime>, _>(idx)
-        .ok()
-        .flatten()
-        .map(|v| v.to_string())
-        .or_else(|| {
-            row.try_get::<Option<chrono::NaiveDate>, _>(idx)
-                .ok()
-                .flatten()
-                .map(|v| v.to_string())
-        })
-        .or_else(|| {
-            row.try_get::<Option<chrono::NaiveTime>, _>(idx)
-                .ok()
-                .flatten()
-                .map(|v| v.to_string())
-        })
+macro_rules! try_get_as_string {
+    ($row:expr, $idx:expr, $($ty:ty),*) => {
+        $(
+            if let Ok(Some(v)) = $row.try_get::<Option<$ty>, _>($idx) {
+                return Some(v.to_string());
+            }
+        )*
+    };
 }
 
 fn get_as_string(row: &MySqlRow, idx: usize) -> Option<String> {
-    row.try_get::<Option<String>, _>(idx)
-        .ok()
-        .flatten()
-        .or_else(|| try_get_num_or_bool(row, idx))
-        .or_else(|| try_get_temporal(row, idx))
-        .or_else(|| {
-            row.try_get::<Option<Vec<u8>>, _>(idx)
-                .ok()
-                .flatten()
-                .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
-        })
+    if let Ok(Some(s)) = row.try_get::<Option<String>, _>(idx) {
+        return Some(s);
+    }
+    try_get_as_string!(
+        row,
+        idx,
+        i64,
+        f64,
+        bool,
+        chrono::NaiveDateTime,
+        chrono::NaiveDate,
+        chrono::NaiveTime
+    );
+    if let Ok(Some(bytes)) = row.try_get::<Option<Vec<u8>>, _>(idx) {
+        return Some(String::from_utf8_lossy(&bytes).into_owned());
+    }
+    None
 }
 
 pub fn mysql_rows_to_record_batch(rows: &[MySqlRow]) -> Result<RecordBatch> {
