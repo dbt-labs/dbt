@@ -418,9 +418,13 @@ impl Object for RelationObject {
             // ClickHouse
             Some("can_exchange") => Some(Value::from(self.can_exchange())),
             Some("can_on_cluster") => Some(Value::from(self.can_on_cluster())),
-            // relation.py `should_on_cluster`: databases (no identifier) always go ON CLUSTER
+            // relation.py `should_on_cluster`: databases (no identifier) always go ON CLUSTER.
+            // `without_identifier()` only clears the path here (dbt-core also flips the include
+            // policy), so check both.
             Some("should_on_cluster") => Some(Value::from(
-                !self.include_policy().identifier || self.can_on_cluster(),
+                self.identifier().is_none()
+                    || !self.include_policy().identifier
+                    || self.can_on_cluster(),
             )),
             Some("mvs_pointing_to_it") => Some(Value::from_serialize(self.mvs_pointing_to_it())),
             Some("is_refreshable") => Some(Value::from(self.is_refreshable())),
@@ -1182,6 +1186,29 @@ mod tests {
             RelationObject::new(Arc::new(relation)),
             "{{ obj.is_metric_view }} | {{ obj.type }}",
             "True | metric_view",
+        );
+    }
+
+    #[test]
+    fn clickhouse_identifier_less_relation_should_go_on_cluster() {
+        let relation = Relation::new(
+            AdapterType::ClickHouse,
+            String::new(),
+            "analytics".to_string(),
+            "events".to_string(),
+        )
+        .with_can_on_cluster(Some(false));
+        let database = relation.without_identifier().unwrap();
+
+        jinja_assert(
+            RelationObject::new(Arc::new(relation)),
+            "{{ obj.should_on_cluster }}",
+            "False",
+        );
+        jinja_assert(
+            RelationObject::new(database),
+            "{{ obj.should_on_cluster }}",
+            "True",
         );
     }
 
