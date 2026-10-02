@@ -196,6 +196,7 @@ fn new_operation(
                 &operation.__common_attr__.original_file_path,
                 &PathBuf::new(),
                 global_static_analysis,
+                None,
             ));
 
             // Set TARGET_PACKAGE_NAME for var lookups

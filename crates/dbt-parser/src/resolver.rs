@@ -36,7 +36,7 @@ use dbt_schemas::schemas::properties::{
 use dbt_schemas::schemas::{DbtModel, DbtSeed, DbtSource, InternalDbtNode, Nodes};
 use dbt_telemetry::GenericOpExecuted;
 
-use dbt_schemas::schemas::dbt_catalogs::DbtCatalogs;
+use dbt_schemas::schemas::dbt_catalogs_deprecated::DbtCatalogs;
 
 use crate::args::ResolveArgs;
 use crate::dbt_project_config::{RootProjectConfigs, build_root_project_configs};
@@ -468,6 +468,7 @@ pub async fn resolve(
 
     resolver_hooks.post_resolve(
         &arg.io,
+        adapter_type,
         &mut nodes,
         root_project_name,
         root_project_quoting,
@@ -1195,9 +1196,9 @@ pub async fn resolve_inner(
 }
 
 fn catalog_is_lake_compute_reachable(catalogs: &DbtCatalogs, name: &str) -> FsResult<bool> {
-    use dbt_schemas::schemas::dbt_catalogs_v2::CatalogType;
+    use dbt_schemas::schemas::dbt_catalogs::CatalogType;
 
-    let view = catalogs.view_v2()?;
+    let view = catalogs.view()?;
     // Catalog names are validated as unique before resolution, so this lookup
     // has at most one matching declaration.
     let Some(catalog) = view.catalogs.iter().find(|catalog| catalog.name == name) else {
@@ -1895,7 +1896,7 @@ mod tests {
     /// exhaustively so that adding a `CatalogType` has to answer it.
     #[test]
     fn lake_compute_reads_open_catalogs_and_not_engine_owned_ones() {
-        use dbt_schemas::schemas::dbt_catalogs_v2::CatalogType;
+        use dbt_schemas::schemas::dbt_catalogs::CatalogType;
 
         for readable in [
             CatalogType::Horizon,
@@ -1923,7 +1924,7 @@ mod tests {
 
     #[test]
     fn lake_compute_catalog_reachability_is_resolved_here() {
-        use dbt_schemas::schemas::dbt_catalogs::DbtCatalogs;
+        use dbt_schemas::schemas::dbt_catalogs_deprecated::DbtCatalogs;
 
         use super::catalog_is_lake_compute_reachable;
 
@@ -2084,7 +2085,7 @@ mod tests {
         use std::sync::Arc;
 
         use dbt_adapter_core::AdapterType;
-        use dbt_schemas::schemas::dbt_catalogs::DbtCatalogs;
+        use dbt_schemas::schemas::dbt_catalogs_deprecated::DbtCatalogs;
         use dbt_schemas::schemas::{CommonAttributes, DbtModel, DbtSeed, DbtSource, Nodes};
 
         use super::check_compute_platform_upstreams;

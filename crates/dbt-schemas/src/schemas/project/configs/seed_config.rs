@@ -185,6 +185,12 @@ pub struct ProjectSeedConfig {
         deserialize_with = "u64_or_string_u64"
     )]
     pub partition_expiration_days: Option<u64>,
+    #[serde(
+        default,
+        rename = "+enable_change_history",
+        deserialize_with = "bool_or_string_bool"
+    )]
+    pub enable_change_history: Option<bool>,
     #[serde(rename = "+grant_access_to")]
     pub grant_access_to: Option<Vec<GrantAccessToTarget>>,
     #[serde(rename = "+partitions")]
@@ -379,6 +385,7 @@ impl TypedRecursiveConfig for ProjectSeedConfig {
             || self.kms_key_name.is_some()
             || self.require_partition_filter.is_some()
             || self.partition_expiration_days.is_some()
+            || self.enable_change_history.is_some()
             || self.grant_access_to.is_some()
             || self.partitions.is_some()
             || self.enable_refresh.is_some()
@@ -561,6 +568,7 @@ impl From<ProjectSeedConfig> for SeedConfig {
                 enable_list_inference: None,
                 intermediate_format: None,
                 storage_uri: None,
+                enable_change_history: config.enable_change_history,
                 file_format: config.file_format,
                 catalog_name: config.catalog_name,
                 location_root: config.location_root,
@@ -715,6 +723,7 @@ impl From<SeedConfig> for ProjectSeedConfig {
             partition_expiration_days: config
                 .__warehouse_specific_config__
                 .partition_expiration_days,
+            enable_change_history: config.__warehouse_specific_config__.enable_change_history,
             grant_access_to: config.__warehouse_specific_config__.grant_access_to,
             partitions: config.__warehouse_specific_config__.partitions,
             enable_refresh: config.__warehouse_specific_config__.enable_refresh,
@@ -843,6 +852,10 @@ impl ConfigKeys for SeedConfig {
 
         field_names
     }
+}
+
+impl crate::schemas::project::configs::warehouse_scope::WarehouseConfigResource for SeedConfig {
+    const NODE_TYPE: dbt_telemetry::NodeType = dbt_telemetry::NodeType::Seed;
 }
 
 #[cfg(test)]

@@ -13,7 +13,7 @@ use std::{
 use crate::schemas::{
     DbtSource, InternalDbtNode, InternalDbtNodeAttributes, Nodes, ResolvedCloudConfig,
     common::{DbtQuoting, ResolvedQuoting},
-    dbt_catalogs::DbtCatalogs,
+    dbt_catalogs_deprecated::DbtCatalogs,
     macros::{DbtDocsMacro, DbtMacro},
     manifest::{DbtOperation, DbtSelector},
     profiles::DbConfig,

@@ -1,5 +1,5 @@
 use dbt_adapter::{Adapter, column::ColumnStatic, relation::factory::create_static_relation};
-use dbt_common::{ErrorCode, FsError, FsResult, fs_err};
+use dbt_common::{FsError, FsResult};
 use minijinja::{
     Environment, Error as MinijinjaError, State, Template, UndefinedBehavior, Value,
     listener::RenderingEventListener,
@@ -284,20 +284,8 @@ impl JinjaEnv {
         self.env.set_undefined_behavior(behavior);
     }
 
-    /// Check if a template exists.
-    pub fn has_template(&self, name: &str) -> bool {
-        self.env.get_template(name).is_ok()
-    }
-
     /// Get a template from the environment.
     pub fn get_template(&self, name: &str) -> FsResult<JinjaTemplate<'_, '_>> {
-        if !self.has_template(name) {
-            return Err(fs_err!(
-                ErrorCode::JinjaError,
-                "Template not found: {}",
-                name
-            ));
-        }
         let result = self
             .env
             .get_template(name)

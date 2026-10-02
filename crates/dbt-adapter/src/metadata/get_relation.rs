@@ -915,7 +915,7 @@ fn duckdb_get_relation(
 
     if !schema.is_empty()
         && !identifier.is_empty()
-        && crate::metadata::duckdb::is_duckdb_v2_external_iceberg_catalog_database(database)
+        && crate::metadata::duckdb::is_duckdb_external_iceberg_catalog_database(database)
     {
         // DuckDB's information_schema can omit or misreport Iceberg REST
         // attached-catalog tables. A targeted DESCRIBE is the narrow fallback:

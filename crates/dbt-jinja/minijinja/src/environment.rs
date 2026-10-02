@@ -229,6 +229,10 @@ impl<'source> Environment<'source> {
     /// it's stored on the environment.  This means the loader is only invoked
     /// once per template name.
     ///
+    /// The returned source can be a plain [`String`], or a
+    /// `(source, Some(filename))` tuple to attach the file the source was
+    /// loaded from.  The filename is used in error spans.
+    ///
     /// For loading templates from the file system, you can use the
     /// [`path_loader`](crate::path_loader) function.
     ///
@@ -240,7 +244,7 @@ impl<'source> Environment<'source> {
     ///     let mut env = Environment::new();
     ///     env.set_loader(|name| {
     ///         if name == "layout.html" {
-    ///             Ok(Some("...".into()))
+    ///             Ok(Some("...".to_string()))
     ///         } else {
     ///             Ok(None)
     ///         }
@@ -250,9 +254,10 @@ impl<'source> Environment<'source> {
     /// ```
     #[cfg(feature = "loader")]
     #[cfg_attr(docsrs, doc(cfg(feature = "loader")))]
-    pub fn set_loader<F>(&mut self, f: F)
+    pub fn set_loader<F, R>(&mut self, f: F)
     where
-        F: Fn(&str) -> Result<Option<String>, Error> + Send + Sync + 'static,
+        F: Fn(&str) -> Result<Option<R>, Error> + Send + Sync + 'static,
+        R: Into<crate::LoadedTemplateSource>,
     {
         self.templates.set_loader(f);
     }

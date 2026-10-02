@@ -578,6 +578,7 @@ impl From<ProjectDataTestConfig> for DataTestConfig {
                 enable_list_inference: None,
                 intermediate_format: None,
                 storage_uri: None,
+                enable_change_history: None,
 
                 file_format: config.file_format,
                 catalog_name: config.catalog_name,
@@ -887,6 +888,10 @@ impl ConfigKeys for DataTestConfig {
 
         field_names
     }
+}
+
+impl crate::schemas::project::configs::warehouse_scope::WarehouseConfigResource for DataTestConfig {
+    const NODE_TYPE: dbt_telemetry::NodeType = dbt_telemetry::NodeType::Test;
 }
 
 #[cfg(test)]

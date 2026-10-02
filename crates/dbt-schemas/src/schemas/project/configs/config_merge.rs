@@ -363,6 +363,7 @@ impl<T: Clone> ReplaceIfNone for Spanned<T> {}
 // Free-form YmlValue fields (e.g. ClickHouse dictionary `lifetime`/`range`/`update_lag`)
 // replace wholesale — no deep merge.
 impl ReplaceIfNone for YmlValue {}
+impl ReplaceIfNone for dbt_yaml::Timestamp {}
 
 // std collections used as replace-if-none fields.
 // BTreeMap<String, YmlValue> is distinct from BTreeMap<Spanned<String>, String>

@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::ffi::OsString;
 use std::io::{Read as _, Write as _};
 use std::path::{Path, PathBuf};
@@ -286,36 +287,62 @@ pub fn format_driver_url(backend_name: &str, triplet: DriverTriplet) -> String {
 ///
 /// ${FOLDERID_LocalAppData}/com.getdbt/adbc/x86_64-pc-windows-msvc/adbc_driver_snowflake-0.17.0+dbt0.0.1.dll
 pub fn format_driver_path(name: &str, triplet: DriverTriplet) -> Result<PathBuf, InstallError> {
+    format_driver_path_in(None, name, triplet)
+}
+
+/// Format the full path to the driver file (`${cache_dir}/com.getdbt/adbc/...`).
+///
+/// Like [format_driver_path], but `cache_dir` (when given) is used instead of
+/// the default OS cache directory.
+pub fn format_driver_path_in(
+    cache_dir: Option<&Path>,
+    name: &str,
+    triplet: DriverTriplet,
+) -> Result<PathBuf, InstallError> {
     const APP_ID: &str = "com.getdbt";
-    dirs::cache_dir()
-        .map(|cache_dir| {
-            let driver_relpath = format!(
-                "{}-{}/{}",
-                triplet.arch,
-                triplet.os,
-                DriverFilenameDisplay { name, triplet }
-            );
-            cache_dir.join(APP_ID).join("adbc").join(driver_relpath)
-        })
-        .ok_or(InstallError::DetermineCacheDir)
+    let cache_dir = match cache_dir {
+        Some(dir) => Cow::Borrowed(dir),
+        None => dirs::cache_dir()
+            .map(Cow::Owned)
+            .ok_or(InstallError::DetermineCacheDir)?,
+    };
+    let driver_relpath = format!(
+        "{}-{}/{}",
+        triplet.arch,
+        triplet.os,
+        DriverFilenameDisplay { name, triplet }
+    );
+    Ok(cache_dir.join(APP_ID).join("adbc").join(driver_relpath))
 }
 
 /// ADBC users can call this function to pre-install the driver for the given backend.
 ///
 /// Instead of relying on the automatic installation at connection creation time.
-pub fn pre_install_driver(http_agent: &ureq::Agent, backend: Backend) -> Result<(), InstallError> {
+pub fn pre_install_driver(
+    http_agent: &ureq::Agent,
+    backend: Backend,
+    cache_dir: Option<&Path>,
+) -> Result<(), InstallError> {
     if !is_installable_driver(backend) {
         return Ok(());
     }
     let (backend_name, triplet) = driver_parameters(backend);
-    install_driver_internal(http_agent, backend_name, triplet)
+    install_driver_internal(http_agent, backend_name, triplet, cache_dir)
 }
 
 /// Pre-install all supported drivers for the current platform.
-pub fn pre_install_all_drivers() -> Result<(), InstallError> {
+///
+/// Drivers are installed under `${cache_dir}/com.getdbt/...`.
+/// When `cache_dir` is `None`, the OS cache directory is used (see
+/// [format_driver_path]).
+pub fn pre_install_all_drivers(cache_dir: Option<&Path>) -> Result<(), InstallError> {
+    let cache_dir = cache_dir
+        .map(std::path::absolute)
+        .transpose()
+        .map_err(InstallError::Io)?;
     let http_agent = build_http_agent();
     for backend in INSTALLABLE_DRIVERS.iter() {
-        pre_install_driver(&http_agent, *backend)?;
+        pre_install_driver(&http_agent, *backend, cache_dir.as_deref())?;
     }
     Ok(())
 }
@@ -432,8 +459,9 @@ pub fn install_driver_internal(
     http_agent: &ureq::Agent,
     backend_name: &str,
     triplet: DriverTriplet,
+    cache_dir: Option<&Path>,
 ) -> Result<(), InstallError> {
-    let full_driver_path = format_driver_path(backend_name, triplet)?;
+    let full_driver_path = format_driver_path_in(cache_dir, backend_name, triplet)?;
     let url = format_driver_url(backend_name, triplet);
     let checksum = find_expected_checksum(backend_name, triplet);
     download_zst_driver_file(http_agent, &url, &full_driver_path, checksum)
@@ -776,6 +804,14 @@ mod tests {
             dbt_cache_dir.display(),
         ));
         assert_eq!(path, expected);
+
+        let custom =
+            format_driver_path_in(Some(Path::new("/opt/cache")), "snowflake", triplet).unwrap();
+        assert_eq!(
+            custom,
+            Path::new("/opt/cache/com.getdbt/adbc/x86_64-manylinux_2_17-linux-gnu")
+                .join("libadbc_driver_snowflake-0.17.0+dbt0.2.0.so")
+        );
     }
 
     #[test]

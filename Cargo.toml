@@ -69,6 +69,7 @@ members = [
   "crates/dbt-dist-classify",
   "crates/dbt-sa-cli",
   "crates/dbt-adbc",
+  "crates/dbt-artifact-download",
   "crates/dbt-tracked-stmt",
   "crates/adbc-record-replay",
   "crates/dbt-deps",
@@ -348,7 +349,7 @@ minijinja-contrib = { path = "crates/dbt-jinja/minijinja-contrib", features = [
 snowflake-api = { path = "crates/snowflake-rs/snowflake-api" }
 
 # serde
-dbt-yaml = { version = "0.9.6", features = [
+dbt-yaml = { version = "0.10.6", features = [
   "filename",
   "yaml_11",
   "schemars",
@@ -395,6 +396,7 @@ adbc-driver-manager = { git = "https://github.com/dbt-labs/arrow-adbc", package 
 adbc-ffi = { git = "https://github.com/dbt-labs/arrow-adbc", package = "adbc_ffi", version = "0.22.0", rev = "d2808cf465feb6efc54ee862cb63104803535adb" } # @ apache-arrow-adbc-22-rust
 adbc-record-replay = { path = "crates/adbc-record-replay" }
 dbt-adbc = { path = "crates/dbt-adbc" }
+dbt-artifact-download = { path = "crates/dbt-artifact-download" }
 dbt-tracked-stmt = { path = "crates/dbt-tracked-stmt" }
 
 # antlr for frontend

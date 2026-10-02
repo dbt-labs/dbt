@@ -460,6 +460,7 @@ impl From<ProjectUnitTestConfig> for UnitTestConfig {
                 enable_list_inference: None,
                 intermediate_format: None,
                 storage_uri: None,
+                enable_change_history: None,
 
                 file_format: config.file_format,
                 catalog_name: config.catalog_name,
@@ -694,6 +695,10 @@ impl ResolvableConfig<UnitTestConfig> for UnitTestConfig {
 impl ConfigKeys for UnitTestConfig {
     // The default implementation from the trait will handle
     // extracting field names via serialization automatically
+}
+
+impl crate::schemas::project::configs::warehouse_scope::WarehouseConfigResource for UnitTestConfig {
+    const NODE_TYPE: dbt_telemetry::NodeType = dbt_telemetry::NodeType::UnitTest;
 }
 
 #[cfg(test)]

@@ -3787,6 +3787,23 @@ mod tests {
     }
 
     #[test]
+    fn list_command_supports_exposure_resource_type() {
+        let cmd = parse_core_command(&["list", "--resource-type", "exposure"]);
+
+        let CoreCommand::List(args) = &cmd else {
+            panic!("expected CoreCommand::List, got {cmd:?}");
+        };
+        assert_eq!(args.resource_type, Some(vec![ClapResourceType::Exposure]));
+
+        let eval_args = args.to_eval_args(
+            test_system_args(FsCommand::List),
+            Path::new("/tmp/in"),
+            Path::new("/tmp/out"),
+        );
+        assert_eq!(eval_args.resource_types, vec![ClapResourceType::Exposure]);
+    }
+
+    #[test]
     fn nested_source_freshness_command_is_sources_only() {
         let cmd = parse_core_command(&["source", "freshness", "--select", "raw_orders"]);
 

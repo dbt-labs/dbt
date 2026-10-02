@@ -107,7 +107,7 @@ pub struct ProjectModelConfig {
     #[serde(rename = "+batch_size")]
     pub batch_size: Option<DbtBatchSize>,
     #[serde(rename = "+begin")]
-    pub begin: Option<String>,
+    pub begin: Option<dbt_yaml::Timestamp>,
     #[serde(default, rename = "+bind", deserialize_with = "bool_or_string_bool")]
     pub bind: Option<bool>,
     #[serde(rename = "+buckets")]
@@ -372,6 +372,12 @@ pub struct ProjectModelConfig {
     pub intermediate_format: Option<String>,
     #[serde(rename = "+storage_uri")]
     pub storage_uri: Option<String>,
+    #[serde(
+        default,
+        rename = "+enable_change_history",
+        deserialize_with = "bool_or_string_bool"
+    )]
+    pub enable_change_history: Option<bool>,
     #[serde(rename = "+merge_exclude_columns")]
     pub merge_exclude_columns: Option<StringOrArrayOfStrings>,
     #[serde(rename = "+merge_update_columns")]
@@ -781,6 +787,7 @@ impl TypedRecursiveConfig for ProjectModelConfig {
             || self.enable_list_inference.is_some()
             || self.intermediate_format.is_some()
             || self.storage_uri.is_some()
+            || self.enable_change_history.is_some()
             || self.merge_exclude_columns.is_some()
             || self.merge_update_columns.is_some()
             || self.merge_with_schema_evolution.is_some()
@@ -903,7 +910,7 @@ pub struct ModelConfig {
     pub batch_size: Option<DbtBatchSize>,
     #[resolved(promote, default = 1)]
     pub lookback: Option<i32>,
-    pub begin: Option<String>,
+    pub begin: Option<dbt_yaml::Timestamp>,
     pub persist_docs: Option<PersistDocsConfig>,
     #[serde(alias = "post-hook")]
     pub post_hook: Verbatim<Option<Hooks>>,
@@ -1114,6 +1121,7 @@ impl From<ProjectModelConfig> for ModelConfig {
                 enable_list_inference: config.enable_list_inference,
                 intermediate_format: config.intermediate_format,
                 storage_uri: config.storage_uri,
+                enable_change_history: config.enable_change_history,
                 incremental_apply_config_changes: config.incremental_apply_config_changes,
                 persist_constraints: config.persist_constraints,
                 use_safer_relation_operations: config.use_safer_relation_operations,
@@ -1311,6 +1319,7 @@ impl From<ModelConfig> for ProjectModelConfig {
             enable_list_inference: config.__warehouse_specific_config__.enable_list_inference,
             intermediate_format: config.__warehouse_specific_config__.intermediate_format,
             storage_uri: config.__warehouse_specific_config__.storage_uri,
+            enable_change_history: config.__warehouse_specific_config__.enable_change_history,
             copy_grants: config.__warehouse_specific_config__.copy_grants,
             copy_tags: config.__warehouse_specific_config__.copy_tags,
             secure: config.__warehouse_specific_config__.secure,
@@ -1960,6 +1969,10 @@ impl ConfigKeys for ModelConfig {
 
         field_names
     }
+}
+
+impl crate::schemas::project::configs::warehouse_scope::WarehouseConfigResource for ModelConfig {
+    const NODE_TYPE: dbt_telemetry::NodeType = dbt_telemetry::NodeType::Model;
 }
 
 // Helper function to compare on_schema_change fields, treating None and default OnSchemaChange as equivalent

@@ -1,3 +1,4 @@
+pub mod column_resolution;
 pub mod constraint;
 pub mod dialect;
 pub mod error;
