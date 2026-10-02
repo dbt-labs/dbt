@@ -40,14 +40,20 @@ use std::collections::{BTreeMap, HashMap};
 use std::future;
 use std::sync::Arc;
 
+/// Bundles the engine, query context, and cancellation token for `list_relations`
+/// so the function signature stays within CodeScene's argument-count threshold.
+pub struct ListRelationsCtx<'a> {
+    pub engine: &'a dyn AdapterEngine,
+    pub query_ctx: &'a QueryCtx,
+    pub token: CancellationToken,
+}
+
 pub fn list_relations(
-    engine: &dyn AdapterEngine,
-    ctx: &QueryCtx,
-    conn: &'_ mut dyn Connection,
+    ctx: &mut ListRelationsCtx<'_>,
+    conn: &mut dyn Connection,
     db_schema: &CatalogAndSchema,
-    token: CancellationToken,
 ) -> AdapterResult<Vec<Arc<dyn BaseRelation>>> {
-    let schema = if engine.quoting().schema {
+    let schema = if ctx.engine.quoting().schema {
         db_schema.resolved_schema.clone()
     } else {
         db_schema.resolved_schema.to_lowercase()
@@ -60,7 +66,7 @@ pub fn list_relations(
         dbt_adapter_sql::ident::escape_string_literal(&schema, AdapterType::SingleStore),
     );
 
-    let batch = engine.execute(None, conn, ctx, &sql, token)?;
+    let batch = ctx.engine.execute(None, conn, ctx.query_ctx, &sql, ctx.token.clone())?;
 
     if batch.num_rows() == 0 {
         return Ok(Vec::new());
@@ -80,12 +86,12 @@ pub fn list_relations(
         };
 
         let relation = do_create_relation(
-            engine.adapter_type(),
+            ctx.engine.adapter_type(),
             schema_name.to_string(),
             schema_name.to_string(),
             Some(name.to_string()),
             Some(relation_type),
-            engine.quoting(),
+            ctx.engine.quoting(),
         )
         .map_err(|e| AdapterError::new(AdapterErrorKind::Internal, e.to_string()))?;
 
@@ -498,12 +504,18 @@ impl MetadataAdapter for SingleStoreMetadataAdapter {
                           db_schema: &CatalogAndSchema|
               -> AdapterResult<Vec<Arc<dyn BaseRelation>>> {
             let query_ctx = QueryCtx::default().with_desc("list_relations_in_parallel");
+            let mut lr_ctx = ListRelationsCtx {
+                engine: adapter.engine().as_ref(),
+                query_ctx: &query_ctx,
+                token: token_clone.clone(),
+            };
             with_relation_list_item_span(
                 report_progress.then_some(RELATION_CACHE_OP_ID),
                 &db_schema.to_string(),
-                || adapter.list_relations(None, &query_ctx, conn, db_schema, token_clone.clone()),
+                || list_relations(&mut lr_ctx, conn, db_schema),
             )
         };
+
 
         let reduce_f = move |acc: &mut Acc,
                              db_schema: CatalogAndSchema,

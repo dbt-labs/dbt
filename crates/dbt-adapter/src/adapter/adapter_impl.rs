@@ -4279,8 +4279,14 @@ impl AdapterImpl {
                 fabric::list_relations(engine.as_ref(), query_ctx, conn, db_schema, token)
             }
             Impl(SingleStore, engine) => {
-                singlestore::list_relations(engine.as_ref(), query_ctx, conn, db_schema, token)
+                let mut lr_ctx = singlestore::ListRelationsCtx {
+                    engine: engine.as_ref(),
+                    query_ctx,
+                    token,
+                };
+                singlestore::list_relations(&mut lr_ctx, conn, db_schema)
             }
+
             Impl(
                 adapter_type @ (Postgres | Salesforce | ClickHouse | Exasol | Starburst | Athena
                 | Trino | Datafusion | Dremio | Oracle),
