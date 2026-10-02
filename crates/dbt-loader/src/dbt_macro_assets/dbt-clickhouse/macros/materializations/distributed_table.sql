@@ -4,8 +4,8 @@
      {% do exceptions.raise_compiler_error('To use distributed materialization setting insert_distributed_sync should be set to 1') %}
   {% endif %}
 
-  {%- set local_suffix = get_clickhouse_local_suffix() -%}
-  {%- set local_db_prefix = get_clickhouse_local_db_prefix() -%}
+  {%- set local_suffix = adapter.get_clickhouse_local_suffix() -%}
+  {%- set local_db_prefix = adapter.get_clickhouse_local_db_prefix() -%}
 
   {%- set existing_relation = load_cached_relation(this) -%}
   {%- set target_relation = this.incorporate(type='table') -%}
@@ -14,6 +14,10 @@
   {% if on_cluster.strip() == '' %}
      {% do exceptions.raise_compiler_error('To use distributed materialization cluster setting in dbt profile must be set') %}
   {% endif %}
+
+  {# Distributed materializations drop relations before recreating them, so surface
+     projection config errors here rather than mid-rebuild #}
+  {% do validate_projections() %}
 
   {% set existing_relation_local = existing_relation.incorporate(path={"identifier": this.identifier + local_suffix, "schema": local_db_prefix + this.schema}) if existing_relation is not none else none %}
   {% set target_relation_local = target_relation.incorporate(path={"identifier": this.identifier + local_suffix, "schema": local_db_prefix + this.schema}) if target_relation is not none else none %}
@@ -80,7 +84,7 @@
 {% endmaterialization %}
 
 {% macro create_distributed_table(relation, local_relation) %}
-    {%- set cluster = get_clickhouse_cluster_name() -%}
+    {%- set cluster = adapter.get_clickhouse_cluster_name() -%}
    {% if cluster is none %}
         {% do exceptions.raise_compiler_error('Cluster name should be defined for using distributed materializations, current is None') %}
     {% endif %}
@@ -101,7 +105,7 @@
 {% macro create_empty_table_from_relation(relation, source_relation, sql=none) -%}
   {%- set sql_header = config.get('sql_header', none) -%}
   {%- if sql -%}
-    {%- set columns = adapter.get_column_schema_from_query(sql) | list -%}
+    {%- set columns = adapter.get_column_schema_from_query(sql, query_settings=config.get('query_settings', {})) | list -%}
   {%- else -%}
     {%- set columns = adapter.get_columns_in_relation(source_relation) | list -%}
   {%- endif -%}
@@ -118,13 +122,11 @@
     {% if config.get('projections') %}
       {% set projections = config.get('projections') %}
       {% for projection in projections %}
-        , PROJECTION {{ projection.get("name") }} (
-            {{ projection.get("query") }}
-        )
+        , {{ clickhouse_projection_ddl(projection) }}
       {% endfor %}
   {% endif %}
   )
-
+  
   {{ engine_clause() }}
   {{ order_cols(label="order by") }}
   {{ primary_key_clause(label="primary key") }}

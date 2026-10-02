@@ -112,20 +112,23 @@ fn build_model_context_fields<S: Serialize>(
     let base_attr = node.base();
     let resource_type = node.resource_type();
     // Create a relation for 'this' using config values
-    let this_relation = dbt_adapter::relation::RelationObject::new(Arc::from(
-        dbt_adapter::relation::do_create_relation(
-            adapter_type,
-            base_attr.database.clone(),
-            base_attr.schema.clone(),
-            Some(base_attr.alias.clone()),
-            None,
-            base_attr.quoting,
-        )
-        .unwrap(),
-    ))
-    .into_value();
+    let mut this_relation = dbt_adapter::relation::do_create_relation(
+        adapter_type,
+        base_attr.database.clone(),
+        base_attr.schema.clone(),
+        Some(base_attr.alias.clone()),
+        None,
+        base_attr.quoting,
+    )
+    .unwrap();
 
     let config_yml = dbt_yaml::to_value(deprecated_config).expect("Failed to serialize object");
+
+    if adapter_type == AdapterType::ClickHouse {
+        dbt_adapter::relation::apply_clickhouse_node_config(&mut this_relation, &config_yml);
+    }
+    let this_relation =
+        dbt_adapter::relation::RelationObject::new(Arc::from(this_relation)).into_value();
 
     // `ModelConfig`/`SeedConfig`/`SnapshotConfig` serialize hooks under the underscored
     // name; `FunctionConfig` doubles as its own manifest type and so uses dbt-core's

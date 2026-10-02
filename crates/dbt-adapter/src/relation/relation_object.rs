@@ -417,6 +417,15 @@ impl Object for RelationObject {
 
             // ClickHouse
             Some("can_exchange") => Some(Value::from(self.can_exchange())),
+            Some("can_on_cluster") => Some(Value::from(self.can_on_cluster())),
+            // relation.py `should_on_cluster`: databases (no identifier) always go ON CLUSTER.
+            // `without_identifier()` only clears the path here (dbt-core also flips the include
+            // policy), so check both.
+            Some("should_on_cluster") => Some(Value::from(
+                self.identifier().is_none()
+                    || !self.include_policy().identifier
+                    || self.can_on_cluster(),
+            )),
             Some("mvs_pointing_to_it") => Some(Value::from_serialize(self.mvs_pointing_to_it())),
             Some("is_refreshable") => Some(Value::from(self.is_refreshable())),
             Some("refreshable_append") => Some(Value::from(self.refreshable_append())),
@@ -608,14 +617,40 @@ pub fn create_relation_from_node(
     node: &dyn InternalDbtNodeAttributes,
     _sample_config: Option<RunFilter>,
 ) -> FsResult<Box<dyn BaseRelation>> {
-    create_relation(
+    let mut relation = create_relation(
         adapter_type,
         node.database(),
         node.schema(),
         Some(node.base().alias.clone()), // all identifiers are consolidated to alias in InternalDbtNode
         Some(RelationType::from(node.materialized())),
         node.quoting(),
-    )
+    )?;
+    if adapter_type == AdapterType::ClickHouse {
+        apply_clickhouse_node_config(&mut relation, &node.serialized_config());
+    }
+    Ok(relation)
+}
+
+/// relation.py `ClickHouseRelation.create_from`: the per-model `disable_on_cluster` opt-out.
+pub fn apply_clickhouse_node_config(
+    relation: &mut Box<dyn BaseRelation>,
+    config: &dbt_yaml::Value,
+) {
+    let disable = config
+        .get("disable_on_cluster")
+        .or_else(|| {
+            config
+                .get("__warehouse_specific_config__")
+                .and_then(|wh| wh.get("disable_on_cluster"))
+        })
+        .is_some_and(|v| match v {
+            dbt_yaml::Value::Bool(b, _) => *b,
+            dbt_yaml::Value::String(s, _) => s.eq_ignore_ascii_case("true"),
+            _ => false,
+        });
+    if disable && let Some(inner) = relation.as_any().downcast_ref::<Relation>() {
+        *relation = Box::new(inner.clone().with_can_on_cluster(Some(false)));
+    }
 }
 
 fn duckdb_external_location_for_source(source: &DbtSource) -> FsResult<Option<String>> {
@@ -1151,6 +1186,29 @@ mod tests {
             RelationObject::new(Arc::new(relation)),
             "{{ obj.is_metric_view }} | {{ obj.type }}",
             "True | metric_view",
+        );
+    }
+
+    #[test]
+    fn clickhouse_identifier_less_relation_should_go_on_cluster() {
+        let relation = Relation::new(
+            AdapterType::ClickHouse,
+            String::new(),
+            "analytics".to_string(),
+            "events".to_string(),
+        )
+        .with_can_on_cluster(Some(false));
+        let database = relation.without_identifier().unwrap();
+
+        jinja_assert(
+            RelationObject::new(Arc::new(relation)),
+            "{{ obj.should_on_cluster }}",
+            "False",
+        );
+        jinja_assert(
+            RelationObject::new(database),
+            "{{ obj.should_on_cluster }}",
+            "True",
         );
     }
 

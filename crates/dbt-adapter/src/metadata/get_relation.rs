@@ -1083,14 +1083,15 @@ fn clickhouse_get_relation(
     token: CancellationToken,
 ) -> AdapterResult<Option<Box<dyn BaseRelation>>> {
     use crate::metadata::clickhouse::{
-        build_get_relation_sql, relation_type_from_engine, server_capabilities_over_connection,
+        build_list_relations_sql, relation_type_from_engine, server_capabilities_over_connection,
         with_catalog_state,
     };
     use crate::record_batch::RecordBatchExt;
 
     // ClickHouse only has databases, not schemas — dbt `schema` maps to CH `database`.
     // dbt `database` is unused here.
-    let sql = build_get_relation_sql(schema, identifier);
+    let cluster = adapter.get_db_config("cluster");
+    let sql = build_list_relations_sql(schema, Some(identifier), cluster.as_deref());
 
     // Probe over the connection we already hold: the State-based entry would
     // borrow a second thread-local connection and trip the nested-guard check.
@@ -1104,7 +1105,7 @@ fn clickhouse_get_relation(
         return Ok(None);
     }
 
-    let engines = batch.column_values::<StringArray>("engine")?;
+    let engines = batch.column_values::<StringArray>("table_type")?;
     if engines.len() != 1 {
         return Err(AdapterError::new(
             AdapterErrorKind::UnexpectedResult,
@@ -1119,7 +1120,7 @@ fn clickhouse_get_relation(
     )
     .with_relation_type(relation_type_from_engine(engines.value(0)))
     .with_quoting(adapter.quoting());
-    let relation = with_catalog_state(relation, caps, &batch, 0)?;
+    let relation = with_catalog_state(relation, &caps, cluster.as_deref(), &batch, 0)?;
     Ok(Some(Box::new(relation) as Box<dyn BaseRelation>))
 }
 

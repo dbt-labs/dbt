@@ -853,6 +853,8 @@ impl From<ProjectSnapshotConfig> for SnapshotConfig {
                 settings: None,
                 query_settings: None,
                 projections: None,
+                sharding_key: None,
+                disable_on_cluster: None,
                 inserts_only: None,
                 connection_overrides: None,
                 fields: None,
