@@ -3,6 +3,32 @@ use dbt_common::{ErrorCode, FsResult, fs_err};
 use dbt_schemas::schemas::profiles::SingleStoreDbConfig;
 use dbt_schemas::schemas::serde::StringOrInteger;
 
+fn parse_string_field(value: FieldValue) -> Option<String> {
+    match value {
+        FieldValue::String(val) if !val.is_empty() => Some(val),
+        _ => None,
+    }
+}
+
+fn parse_port_field(value: FieldValue) -> Option<StringOrInteger> {
+    match value {
+        FieldValue::Integer(val) => Some(StringOrInteger::Integer(val)),
+        FieldValue::String(val) => val.parse::<i64>().ok().map(StringOrInteger::Integer),
+        _ => None,
+    }
+}
+
+fn parse_bool_field(value: FieldValue) -> Option<bool> {
+    match value {
+        FieldValue::Boolean(val) => Some(val),
+        FieldValue::String(val) => Some(!matches!(
+            val.to_ascii_lowercase().as_str(),
+            "false" | "0" | "no" | "off"
+        )),
+        _ => None,
+    }
+}
+
 impl InteractiveSetup for SingleStoreDbConfig {
     fn get_fields() -> Vec<ConfigField> {
         vec![
@@ -63,58 +89,15 @@ impl InteractiveSetup for SingleStoreDbConfig {
 
     fn set_field(&mut self, field_name: &str, value: FieldValue) -> FsResult<()> {
         match field_name {
-            "host" => {
-                if let FieldValue::String(val) = value {
-                    self.host = Some(val);
-                }
-            }
-            "user" => {
-                if let FieldValue::String(val) = value {
-                    self.user = Some(val);
-                }
-            }
-            "password" => {
-                if let FieldValue::String(val) = value {
-                    self.password = Some(val);
-                }
-            }
-            "port" => {
-                if let FieldValue::String(val) = value {
-                    if let Ok(port) = val.parse::<i64>() {
-                        self.port = Some(StringOrInteger::Integer(port));
-                    }
-                } else if let FieldValue::Integer(val) = value {
-                    self.port = Some(StringOrInteger::Integer(val));
-                }
-            }
-            "database" => {
-                if let FieldValue::String(val) = value {
-                    self.database = Some(val);
-                }
-            }
-            "schema" => {
-                if let FieldValue::String(val) = value {
-                    if !val.is_empty() {
-                        self.schema = Some(val);
-                    }
-                }
-            }
-            "ssl_mode" | "sslmode" => {
-                if let FieldValue::String(val) = value {
-                    if !val.is_empty() {
-                        self.ssl_mode = Some(val);
-                    }
-                }
-            }
+            "host" => self.host = parse_string_field(value),
+            "user" => self.user = parse_string_field(value),
+            "password" => self.password = parse_string_field(value),
+            "port" => self.port = parse_port_field(value),
+            "database" => self.database = parse_string_field(value),
+            "schema" => self.schema = parse_string_field(value),
+            "ssl_mode" | "sslmode" => self.ssl_mode = parse_string_field(value),
             "allow_cleartext_plugin" | "cleartext_plugin" => {
-                if let FieldValue::Boolean(val) = value {
-                    self.allow_cleartext_plugin = Some(val);
-                } else if let FieldValue::String(val) = value {
-                    self.allow_cleartext_plugin = Some(!matches!(
-                        val.to_ascii_lowercase().as_str(),
-                        "false" | "0" | "no" | "off"
-                    ));
-                }
+                self.allow_cleartext_plugin = parse_bool_field(value)
             }
             _ => {
                 return Err(fs_err!(

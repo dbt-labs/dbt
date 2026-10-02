@@ -36,7 +36,6 @@ use dbt_schemas::schemas::{
 use indexmap::IndexMap;
 use minijinja::State;
 
-use std::collections::btree_map::Entry;
 use std::collections::{BTreeMap, HashMap};
 use std::future;
 use std::sync::Arc;
@@ -96,6 +95,147 @@ pub fn list_relations(
     Ok(relations)
 }
 
+fn create_catalog_table(
+    catalog: &str,
+    schema: &str,
+    table: &str,
+    data_type: &str,
+    comment: &str,
+    owner: &str,
+) -> CatalogTable {
+    let metadata = TableMetadata {
+        materialization_type: data_type.to_string(),
+        schema: schema.to_string(),
+        name: table.to_string(),
+        database: Some(catalog.to_string()),
+        comment: match comment {
+            "" => None,
+            _ => Some(comment.to_string()),
+        },
+        owner: Some(owner.to_string()),
+    };
+
+    let no_stats = CatalogNodeStats {
+        id: "has_stats".to_string(),
+        label: "Has Stats?".to_string(),
+        value: serde_json::Value::Bool(false),
+        description: Some("Indicates whether there are statistics for this table".to_string()),
+        include: false,
+    };
+
+    CatalogTable {
+        metadata,
+        columns: IndexMap::new(),
+        stats: BTreeMap::from([("has_stats".to_string(), no_stats)]),
+        unique_id: None,
+    }
+}
+
+fn create_column_metadata(
+    name: &str,
+    index: i128,
+    data_type: &str,
+    comment: &str,
+) -> ColumnMetadata {
+    ColumnMetadata {
+        name: name.to_string(),
+        index,
+        data_type: data_type.to_string(),
+        comment: match comment {
+            "" => None,
+            _ => Some(comment.to_string()),
+        },
+    }
+}
+
+fn extract_timestamp_secs(col: &dyn Array, row: usize) -> Option<i64> {
+    if col.is_null(row) {
+        return None;
+    }
+    if let Some(i64_col) = col.as_any().downcast_ref::<Int64Array>() {
+        return Some(i64_col.value(row));
+    }
+    if let Some(ts_col) = col.as_any().downcast_ref::<TimestampSecondArray>() {
+        return Some(ts_col.value(row));
+    }
+    None
+}
+
+fn parse_freshness_batch(
+    batch: &RecordBatch,
+    table_entries: &[(String, String)],
+) -> AdapterResult<Vec<(String, MetadataFreshness)>> {
+    if batch.num_rows() == 0 {
+        return Ok(Vec::new());
+    }
+
+    let names = batch.column_values::<StringArray>("table_name")?;
+    let types = batch.column_values::<StringArray>("table_type")?;
+    let timestamps_col = batch.column_by_name("last_modified");
+
+    let mut results = Vec::with_capacity(batch.num_rows());
+    for i in 0..batch.num_rows() {
+        let name = names.value(i);
+        let is_view = types.value(i).eq_ignore_ascii_case("view");
+
+        let Some((_, fqn)) = table_entries
+            .iter()
+            .find(|(n, _)| n.eq_ignore_ascii_case(name))
+        else {
+            continue;
+        };
+
+        let Some(ts_col) = timestamps_col else {
+            continue;
+        };
+
+        let Some(ts_secs) = extract_timestamp_secs(ts_col.as_ref(), i) else {
+            continue;
+        };
+
+        results.push((fqn.clone(), MetadataFreshness::from_secs(ts_secs, is_view)?));
+    }
+
+    Ok(results)
+}
+
+fn build_freshness_sql(schema: &str, table_names: &[String]) -> String {
+    let escaped_schema =
+        dbt_adapter_sql::ident::escape_string_literal(schema, AdapterType::SingleStore);
+    let table_names_in = table_names
+        .iter()
+        .map(|name| {
+            format!(
+                "'{}'",
+                dbt_adapter_sql::ident::escape_string_literal(name, AdapterType::SingleStore)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+
+    format!(
+        "SELECT table_name, table_type, \
+         UNIX_TIMESTAMP(COALESCE(update_time, create_time)) AS last_modified \
+         FROM information_schema.tables \
+         WHERE table_schema = '{escaped_schema}' \
+           AND table_name IN ({table_names_in})"
+    )
+}
+
+fn query_schema_freshness(
+    engine: &dyn AdapterEngine,
+    conn: &mut dyn Connection,
+    schema: &str,
+    table_entries: &[(String, String)],
+    token: CancellationToken,
+) -> AdapterResult<Vec<(String, MetadataFreshness)>> {
+    let names: Vec<String> = table_entries.iter().map(|(n, _)| n.clone()).collect();
+    let sql = build_freshness_sql(schema, &names);
+    let ctx = QueryCtx::default().with_desc("Extracting freshness from information schema");
+    let batch = engine.execute(None, conn, &ctx, &sql, token)?;
+    parse_freshness_batch(&batch, table_entries)
+}
+
 pub struct SingleStoreMetadataAdapter {
     adapter: AdapterImpl,
 }
@@ -134,50 +274,33 @@ impl MetadataAdapter for SingleStoreMetadataAdapter {
         let mut result = BTreeMap::<String, CatalogTable>::new();
 
         for i in 0..table_catalogs.len() {
-            let catalog = table_catalogs.value(i);
-            let schema = table_schemas.value(i);
-            let table = table_names.value(i);
-            let data_type = data_types.value(i);
-            let comment = comments.value(i);
+            let fully_qualified_name = format!(
+                "{}.{}.{}",
+                table_catalogs.value(i),
+                table_schemas.value(i),
+                table_names.value(i)
+            )
+            .to_lowercase();
+
+            if result.contains_key(&fully_qualified_name) {
+                continue;
+            }
+
             let owner = table_owners
                 .map(|col| if col.is_null(i) { "" } else { col.value(i) })
                 .unwrap_or("");
 
-            let fully_qualified_name = format!("{catalog}.{schema}.{table}").to_lowercase();
-
-            let entry = result.entry(fully_qualified_name.clone());
-
-            if matches!(entry, Entry::Vacant(_)) {
-                let node_metadata = TableMetadata {
-                    materialization_type: data_type.to_string(),
-                    schema: schema.to_string(),
-                    name: table.to_string(),
-                    database: Some(catalog.to_string()),
-                    comment: match comment {
-                        "" => None,
-                        _ => Some(comment.to_string()),
-                    },
-                    owner: Some(owner.to_string()),
-                };
-
-                let no_stats = CatalogNodeStats {
-                    id: "has_stats".to_string(),
-                    label: "Has Stats?".to_string(),
-                    value: serde_json::Value::Bool(false),
-                    description: Some(
-                        "Indicates whether there are statistics for this table".to_string(),
-                    ),
-                    include: false,
-                };
-
-                let node = CatalogTable {
-                    metadata: node_metadata,
-                    columns: IndexMap::new(),
-                    stats: BTreeMap::from([("has_stats".to_string(), no_stats)]),
-                    unique_id: None,
-                };
-                result.insert(fully_qualified_name.clone(), node);
-            }
+            result.insert(
+                fully_qualified_name,
+                create_catalog_table(
+                    table_catalogs.value(i),
+                    table_schemas.value(i),
+                    table_names.value(i),
+                    data_types.value(i),
+                    comments.value(i),
+                    owner,
+                ),
+            );
         }
         Ok(result)
     }
@@ -202,30 +325,25 @@ impl MetadataAdapter for SingleStoreMetadataAdapter {
         let mut columns_by_relation = BTreeMap::new();
 
         for i in 0..table_catalogs.len() {
-            let catalog = table_catalogs.value(i);
-            let schema = table_schemas.value(i);
-            let table = table_names.value(i);
-
-            let fully_qualified_name = format!("{catalog}.{schema}.{table}").to_lowercase();
+            let fully_qualified_name = format!(
+                "{}.{}.{}",
+                table_catalogs.value(i),
+                table_schemas.value(i),
+                table_names.value(i)
+            )
+            .to_lowercase();
 
             let column_name = column_names.value(i);
-            let column_index = column_indices.value(i);
-            let column_type = column_types.value(i);
-            let column_comment = column_comments.value(i);
-
-            let column = ColumnMetadata {
-                name: column_name.to_string(),
-                index: column_index,
-                data_type: column_type.to_string(),
-                comment: match column_comment {
-                    "" => None,
-                    _ => Some(column_comment.to_string()),
-                },
-            };
+            let column = create_column_metadata(
+                column_name,
+                column_indices.value(i),
+                column_types.value(i),
+                column_comments.value(i),
+            );
 
             columns_by_relation
-                .entry(fully_qualified_name.clone())
-                .or_insert(BTreeMap::new())
+                .entry(fully_qualified_name)
+                .or_insert_with(BTreeMap::new)
                 .insert(column_name.to_string(), column);
         }
         Ok(columns_by_relation)
@@ -312,8 +430,6 @@ impl MetadataAdapter for SingleStoreMetadataAdapter {
 
         type Acc = BTreeMap<String, MetadataFreshness>;
 
-        // Group relations by schema so we can batch the information_schema query per schema.
-        // SingleStore: database == schema. We issue one query per schema with a WHERE IN clause.
         let mut by_schema: BTreeMap<String, Vec<(String, String)>> = BTreeMap::new();
         for relation in relations {
             let schema = relation.schema_as_str().unwrap_or_default().to_string();
@@ -323,106 +439,27 @@ impl MetadataAdapter for SingleStoreMetadataAdapter {
         }
 
         let factory = Box::new(AdapterConnectionFactory::new(self.adapter.engine().clone()));
-
-        let adapter = self.adapter.clone();
+        let engine = self.adapter.engine().clone();
         let token_clone = token.clone();
-
-        // Flatten into tasks: (schema, Vec<(identifier, fqn)>)
         let tasks: Vec<(String, Vec<(String, String)>)> = by_schema.into_iter().collect();
 
         let map_f = move |conn: &'_ mut dyn Connection,
                           task: &(String, Vec<(String, String)>)|
               -> AdapterResult<Vec<(String, MetadataFreshness)>> {
-            let (schema, table_entries) = task;
-            let escaped_schema =
-                dbt_adapter_sql::ident::escape_string_literal(schema, AdapterType::SingleStore);
-
-            // Build IN clause for table names
-            let table_names_in = table_entries
-                .iter()
-                .map(|(name, _)| {
-                    format!(
-                        "'{}'",
-                        dbt_adapter_sql::ident::escape_string_literal(
-                            name,
-                            AdapterType::SingleStore
-                        )
-                    )
-                })
-                .collect::<Vec<_>>()
-                .join(", ");
-
-            // information_schema.tables has UPDATE_TIME (NULL for tables never updated).
-            // Fall back to CREATE_TIME when UPDATE_TIME is NULL.
-            // TABLE_TYPE tells us if it's a view.
-            let sql = format!(
-                "SELECT table_name, table_type, \
-                 UNIX_TIMESTAMP(COALESCE(update_time, create_time)) AS last_modified \
-                 FROM information_schema.tables \
-                 WHERE table_schema = '{escaped_schema}' \
-                   AND table_name IN ({table_names_in})"
-            );
-
-            let ctx = QueryCtx::default().with_desc("Extracting freshness from information schema");
-            let batch = adapter
-                .engine()
-                .execute(None, conn, &ctx, &sql, token_clone.clone())?;
-
-            if batch.num_rows() == 0 {
-                return Ok(vec![]);
-            }
-
-            let names = batch.column_values::<StringArray>("table_name")?;
-            let types = batch.column_values::<StringArray>("table_type")?;
-            // UNIX_TIMESTAMP returns a numeric — try as Int64 first, then fall back
-            let timestamps_raw = batch.column_by_name("last_modified");
-
-            let mut results = Vec::with_capacity(batch.num_rows());
-            for i in 0..batch.num_rows() {
-                let name = names.value(i);
-                let is_view = types.value(i).eq_ignore_ascii_case("view");
-
-                // Map back to semantic FQN
-                let fqn = table_entries
-                    .iter()
-                    .find(|(n, _)| n.eq_ignore_ascii_case(name))
-                    .map(|(_, fqn)| fqn.clone());
-
-                let Some(fqn) = fqn else { continue };
-
-                if let Some(ts_col) = timestamps_raw {
-                    // Try i64 (BIGINT / INT) first
-                    let ts_secs =
-                        if let Some(i64_col) = ts_col.as_any().downcast_ref::<Int64Array>() {
-                            if i64_col.is_null(i) {
-                                continue;
-                            }
-                            i64_col.value(i)
-                        } else if let Some(ts_col) =
-                            ts_col.as_any().downcast_ref::<TimestampSecondArray>()
-                        {
-                            if ts_col.is_null(i) {
-                                continue;
-                            }
-                            ts_col.value(i)
-                        } else {
-                            // Unknown type for timestamp column; skip this row
-                            continue;
-                        };
-
-                    let freshness = MetadataFreshness::from_secs(ts_secs, is_view)?;
-                    results.push((fqn, freshness));
-                }
-            }
-            Ok(results)
+            query_schema_freshness(
+                engine.as_ref(),
+                conn,
+                &task.0,
+                &task.1,
+                token_clone.clone(),
+            )
         };
 
         let reduce_f = move |acc: &mut Acc,
                              _task: (String, Vec<(String, String)>),
                              result: AdapterResult<Vec<(String, MetadataFreshness)>>|
               -> Result<(), Cancellable<AdapterError>> {
-            let rows = result.map_err(Cancellable::Error)?;
-            for (fqn, freshness) in rows {
+            for (fqn, freshness) in result.map_err(Cancellable::Error)? {
                 acc.insert(fqn, freshness);
             }
             Ok(())

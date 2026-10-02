@@ -13,6 +13,21 @@ impl SingleStoreAuth {
     }
 }
 
+fn apply_ssl_option(
+    builder: &mut database::Builder,
+    query_params: &mut Vec<String>,
+    name: &str,
+    param_name: &str,
+    value: Option<impl AsRef<str>>,
+) -> Result<(), AuthError> {
+    if let Some(val) = value {
+        let s = val.as_ref();
+        query_params.push(format!("{param_name}={s}"));
+        builder.with_named_option(name, s.to_string())?;
+    }
+    Ok(())
+}
+
 impl Auth for SingleStoreAuth {
     fn backend(&self) -> Backend {
         Backend::SingleStore
@@ -37,28 +52,27 @@ impl Auth for SingleStoreAuth {
         let ssl_mode = config
             .get_string("ssl_mode")
             .or_else(|| config.get_string("sslmode"));
-        if let Some(ref mode) = ssl_mode {
-            query_params.push(format!("ssl-mode={mode}"));
-            builder.with_named_option("ssl_mode", mode.to_string())?;
-        }
+        apply_ssl_option(&mut builder, &mut query_params, "ssl_mode", "ssl-mode", ssl_mode)?;
 
         let ssl_ca = config
             .get_string("ssl_ca")
             .or_else(|| config.get_string("sslrootcert"));
-        if let Some(ref ca) = ssl_ca {
-            query_params.push(format!("ssl-ca={ca}"));
-            builder.with_named_option("ssl_ca", ca.to_string())?;
-        }
+        apply_ssl_option(&mut builder, &mut query_params, "ssl_ca", "ssl-ca", ssl_ca)?;
 
-        if let Some(cert) = config.get_string("ssl_cert") {
-            query_params.push(format!("ssl-cert={cert}"));
-            builder.with_named_option("ssl_cert", cert.to_string())?;
-        }
-
-        if let Some(key) = config.get_string("ssl_key") {
-            query_params.push(format!("ssl-key={key}"));
-            builder.with_named_option("ssl_key", key.to_string())?;
-        }
+        apply_ssl_option(
+            &mut builder,
+            &mut query_params,
+            "ssl_cert",
+            "ssl-cert",
+            config.get_string("ssl_cert"),
+        )?;
+        apply_ssl_option(
+            &mut builder,
+            &mut query_params,
+            "ssl_key",
+            "ssl-key",
+            config.get_string("ssl_key"),
+        )?;
 
         let allow_cleartext_plugin = config
             .get_bool("allow_cleartext_plugin")
