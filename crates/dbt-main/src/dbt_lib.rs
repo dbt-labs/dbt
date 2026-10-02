@@ -546,7 +546,14 @@ async fn do_execute_fs(
             env!("CARGO_PKG_VERSION").to_string(),
         ));
 
-        return execute_clean_command(eval_arg, &clean_args.files, token).await;
+        return match execute_clean_command(eval_arg, &clean_args.files, token).await {
+            Ok(()) => Ok(()),
+            Err(e) if e.exit_status().is_some() => Err(e),
+            Err(e) => {
+                emit_error_log_from_fs_error(*e);
+                Err(FsError::exit_with_status(1))
+            }
+        };
     }
     // Handle project specific commands
     let hooks_factory = Arc::clone(&feature_stack.task_runner.hooks_factory);

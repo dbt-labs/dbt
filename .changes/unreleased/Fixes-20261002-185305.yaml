@@ -1,0 +1,7 @@
+kind: Fixes
+body: dbt clean with a profile that is not in profiles.yml now prints the profile error and reports the failure in the execution summary, instead of printing success with exit code 1
+time: 2026-10-02T18:53:05.662109-03:00
+custom:
+    author: luc-pimentel
+    issue: "16534"
+    project: dbt-core
