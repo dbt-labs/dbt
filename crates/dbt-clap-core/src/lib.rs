@@ -919,7 +919,8 @@ pub struct ShowArgs {
 
     /// Query a dbt information schema view (e.g. `models`, `dag_nodes`) instead of
     /// the warehouse. Equivalent to `--inline "select * from {{ info_schema('<view>') }}"`.
-    /// Requires a prior `dbt parse|compile|run|build --generate-info-schema`.
+    /// Needs metadata from a prior `dbt build|run|check`, or
+    /// `dbt parse|compile --generate-info-schema`.
     #[arg(long, value_name = "VIEW", conflicts_with_all = ["inline", "adapter", "query_id"])]
     pub info: Option<String>,
 
