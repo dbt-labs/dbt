@@ -337,6 +337,7 @@ impl Default for Flags {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::invocation_args::InvocationArgs;
 
     #[test]
     fn from_project_flags_preserves_authored_keys() {
@@ -382,5 +383,24 @@ mod tests {
         )]));
         assert_eq!(flags.lookup("full_refresh"), Some(Value::from(true)));
         assert_eq!(flags.lookup("FULL_REFRESH"), Some(Value::from(false)));
+    }
+
+    #[test]
+    fn invocation_event_time_flags_are_available_to_jinja() {
+        let invocation_args = InvocationArgs {
+            event_time_start: Some("2026-09-01".to_string()),
+            event_time_end: Some("2026-09-03".to_string()),
+            ..InvocationArgs::default()
+        };
+        let flags = Flags::from_invocation_args(invocation_args.to_dict());
+
+        assert_eq!(
+            flags.lookup("EVENT_TIME_START"),
+            Some(Value::from("2026-09-01"))
+        );
+        assert_eq!(
+            flags.lookup("EVENT_TIME_END"),
+            Some(Value::from("2026-09-03"))
+        );
     }
 }

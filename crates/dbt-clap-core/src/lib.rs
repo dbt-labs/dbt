@@ -3199,7 +3199,57 @@ pub fn from_lib(cli: &Cli) -> SystemArgs {
 
 #[cfg(test)]
 mod tests {
+    use std::{
+        env,
+        ffi::OsString,
+        sync::{Mutex, MutexGuard},
+    };
+
     use super::*;
+
+    const EVENT_TIME_START_ENV: &str = "DBT_EVENT_TIME_START";
+    const EVENT_TIME_END_ENV: &str = "DBT_EVENT_TIME_END";
+    static EVENT_TIME_ENV_MUTEX: Mutex<()> = Mutex::new(());
+
+    struct EventTimeEnvGuard {
+        _lock: MutexGuard<'static, ()>,
+        saved: [(&'static str, Option<OsString>); 2],
+    }
+
+    impl EventTimeEnvGuard {
+        fn new(start: &str, end: &str) -> Self {
+            let lock = EVENT_TIME_ENV_MUTEX
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            let saved = [
+                (EVENT_TIME_START_ENV, env::var_os(EVENT_TIME_START_ENV)),
+                (EVENT_TIME_END_ENV, env::var_os(EVENT_TIME_END_ENV)),
+            ];
+
+            unsafe {
+                #[allow(clippy::disallowed_methods)]
+                env::set_var(EVENT_TIME_START_ENV, start);
+                #[allow(clippy::disallowed_methods)]
+                env::set_var(EVENT_TIME_END_ENV, end);
+            }
+
+            Self { _lock: lock, saved }
+        }
+    }
+
+    impl Drop for EventTimeEnvGuard {
+        fn drop(&mut self) {
+            for (var, value) in &self.saved {
+                unsafe {
+                    #[allow(clippy::disallowed_methods)]
+                    match value {
+                        Some(value) => env::set_var(var, value),
+                        None => env::remove_var(var),
+                    }
+                }
+            }
+        }
+    }
 
     struct NoopParser;
 
@@ -3738,6 +3788,74 @@ mod tests {
             Command::Core(cmd) => cmd,
             Command::Extension(_) => panic!("expected a core command"),
         }
+    }
+
+    #[test]
+    fn event_time_flags_parse_from_cli_and_flow_to_eval_args() {
+        let _env_lock = EVENT_TIME_ENV_MUTEX
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let cmd = parse_core_command(&[
+            "compile",
+            "--event-time-start",
+            "2026-09-01",
+            "--event-time-end",
+            "2026-09-03",
+        ]);
+        let CoreCommand::Compile(args) = cmd else {
+            panic!("expected CoreCommand::Compile");
+        };
+
+        let eval_args = args.to_eval_args(
+            test_system_args(FsCommand::Compile),
+            Path::new("/tmp/in"),
+            Path::new("/tmp/out"),
+        );
+
+        assert_eq!(eval_args.event_time_start.as_deref(), Some("2026-09-01"));
+        assert_eq!(eval_args.event_time_end.as_deref(), Some("2026-09-03"));
+    }
+
+    #[test]
+    fn event_time_flags_parse_from_environment_and_flow_to_eval_args() {
+        let _env_guard = EventTimeEnvGuard::new("2026-09-01", "2026-09-03");
+
+        let cmd = parse_core_command(&["compile"]);
+        let CoreCommand::Compile(args) = cmd else {
+            panic!("expected CoreCommand::Compile");
+        };
+        let eval_args = args.to_eval_args(
+            test_system_args(FsCommand::Compile),
+            Path::new("/tmp/in"),
+            Path::new("/tmp/out"),
+        );
+
+        assert_eq!(eval_args.event_time_start.as_deref(), Some("2026-09-01"));
+        assert_eq!(eval_args.event_time_end.as_deref(), Some("2026-09-03"));
+    }
+
+    #[test]
+    fn event_time_cli_values_take_precedence_over_environment() {
+        let _env_guard = EventTimeEnvGuard::new("2026-08-01", "2026-08-03");
+
+        let cmd = parse_core_command(&[
+            "compile",
+            "--event-time-start",
+            "2026-09-01",
+            "--event-time-end",
+            "2026-09-03",
+        ]);
+        let CoreCommand::Compile(args) = cmd else {
+            panic!("expected CoreCommand::Compile");
+        };
+        let eval_args = args.to_eval_args(
+            test_system_args(FsCommand::Compile),
+            Path::new("/tmp/in"),
+            Path::new("/tmp/out"),
+        );
+
+        assert_eq!(eval_args.event_time_start.as_deref(), Some("2026-09-01"));
+        assert_eq!(eval_args.event_time_end.as_deref(), Some("2026-09-03"));
     }
 
     #[test]
