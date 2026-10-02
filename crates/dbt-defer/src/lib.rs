@@ -685,24 +685,37 @@ fn infer_deferred_producer_adapter_with_catalogs(
     }
 
     let state_database = deferred_node.database();
-    let mut matching_adapters = [
+    let resolved_databases: Vec<_> = [
         AdapterType::DuckDB,
         AdapterType::Snowflake,
         AdapterType::Databricks,
     ]
     .into_iter()
-    .filter(|adapter_type| {
-        resolve_catalog_database(catalogs, catalog_name, *adapter_type)
-            .is_ok_and(|database| database.eq_ignore_ascii_case(&state_database))
-    });
-    let Some(inferred) = matching_adapters.next() else {
-        return local_adapter;
-    };
-    if matching_adapters.next().is_some() {
-        local_adapter
-    } else {
-        inferred
-    }
+    .filter_map(|adapter_type| {
+        resolve_catalog_database(catalogs, catalog_name, adapter_type)
+            .ok()
+            .map(|database| (adapter_type, database))
+    })
+    .collect();
+
+    unique_matching_adapter(&resolved_databases, |database| database == state_database)
+        .or_else(|| {
+            unique_matching_adapter(&resolved_databases, |database| {
+                database.eq_ignore_ascii_case(&state_database)
+            })
+        })
+        .unwrap_or(local_adapter)
+}
+
+fn unique_matching_adapter(
+    resolved_databases: &[(AdapterType, String)],
+    matches: impl Fn(&str) -> bool,
+) -> Option<AdapterType> {
+    let mut adapters = resolved_databases
+        .iter()
+        .filter_map(|(adapter, database)| matches(database).then_some(*adapter));
+    let adapter = adapters.next()?;
+    adapters.next().is_none().then_some(adapter)
 }
 
 /// Apply deferral to a single node: rewrite Jinja `ref()` to render the
@@ -1357,6 +1370,50 @@ catalogs:
                 Some(&catalogs),
             ),
             AdapterType::Snowflake
+        );
+    }
+
+    #[test]
+    fn deferral_prefers_exact_catalog_database_matches_before_case_folding() {
+        let yaml: dbt_yaml::Value = dbt_yaml::from_str(
+            r#"
+catalogs:
+  - name: shared
+    type: iceberg_rest
+    table_format: iceberg
+    config:
+      snowflake:
+        catalog_database: SHARED
+      duckdb:
+        endpoint: https://example.com/catalog
+        warehouse: shared
+        catalog_database: shared
+"#,
+        )
+        .unwrap();
+        let catalogs = DbtCatalogs::new(yaml.as_mapping().unwrap().clone(), yaml.span().clone());
+        let mut deferred_node =
+            (*make_underlying_model("model.test.orders", "orders", "analytics")).clone();
+        deferred_node.__model_attr__.catalog_name = Some("shared".to_string());
+
+        deferred_node.__base_attr__.database = "SHARED".to_string();
+        assert_eq!(
+            infer_deferred_producer_adapter_with_catalogs(
+                AdapterType::DuckDB,
+                &deferred_node,
+                Some(&catalogs),
+            ),
+            AdapterType::Snowflake
+        );
+
+        deferred_node.__base_attr__.database = "shared".to_string();
+        assert_eq!(
+            infer_deferred_producer_adapter_with_catalogs(
+                AdapterType::Snowflake,
+                &deferred_node,
+                Some(&catalogs),
+            ),
+            AdapterType::DuckDB
         );
     }
 
