@@ -13,19 +13,20 @@ impl SingleStoreAuth {
     }
 }
 
-fn apply_ssl_option(
-    builder: &mut database::Builder,
-    query_params: &mut Vec<String>,
-    name: &str,
-    param_name: &str,
-    value: Option<impl AsRef<str>>,
-) -> Result<(), AuthError> {
-    if let Some(val) = value {
-        let s = val.as_ref();
-        query_params.push(format!("{param_name}={s}"));
-        builder.with_named_option(name, s.to_string())?;
+struct UriConfig<'a> {
+    builder: &'a mut database::Builder,
+    query_params: &'a mut Vec<String>,
+}
+
+impl UriConfig<'_> {
+    fn add_option(&mut self, opt: &str, param: &str, value: Option<impl AsRef<str>>) -> Result<(), AuthError> {
+        if let Some(val) = value {
+            let s = val.as_ref();
+            self.query_params.push(format!("{param}={s}"));
+            self.builder.with_named_option(opt, s.to_string())?;
+        }
+        Ok(())
     }
-    Ok(())
 }
 
 impl Auth for SingleStoreAuth {
@@ -48,31 +49,23 @@ impl Auth for SingleStoreAuth {
         let mut uri = format!("mysql://{encoded_user}:{encoded_password}@{host}:{port}/{dbname}");
 
         let mut query_params = Vec::new();
+        let mut uri_cfg = UriConfig {
+            builder: &mut builder,
+            query_params: &mut query_params,
+        };
 
         let ssl_mode = config
             .get_string("ssl_mode")
             .or_else(|| config.get_string("sslmode"));
-        apply_ssl_option(&mut builder, &mut query_params, "ssl_mode", "ssl-mode", ssl_mode)?;
+        uri_cfg.add_option("ssl_mode", "ssl-mode", ssl_mode)?;
 
         let ssl_ca = config
             .get_string("ssl_ca")
             .or_else(|| config.get_string("sslrootcert"));
-        apply_ssl_option(&mut builder, &mut query_params, "ssl_ca", "ssl-ca", ssl_ca)?;
+        uri_cfg.add_option("ssl_ca", "ssl-ca", ssl_ca)?;
 
-        apply_ssl_option(
-            &mut builder,
-            &mut query_params,
-            "ssl_cert",
-            "ssl-cert",
-            config.get_string("ssl_cert"),
-        )?;
-        apply_ssl_option(
-            &mut builder,
-            &mut query_params,
-            "ssl_key",
-            "ssl-key",
-            config.get_string("ssl_key"),
-        )?;
+        uri_cfg.add_option("ssl_cert", "ssl-cert", config.get_string("ssl_cert"))?;
+        uri_cfg.add_option("ssl_key", "ssl-key", config.get_string("ssl_key"))?;
 
         let allow_cleartext_plugin = config
             .get_bool("allow_cleartext_plugin")

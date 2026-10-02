@@ -193,6 +193,15 @@ mod tests {
         );
     }
 
+    fn check_not_keyword_if_absent(lists: &KeywordLists<'_>, candidate: &str) {
+        let is_any_kw = lists.reserved.contains(&candidate)
+            || lists.strict_non_reserved.contains(&candidate)
+            || lists.non_reserved.contains(&candidate);
+        if !is_any_kw {
+            assert_is_not_keyword(lists, candidate);
+        }
+    }
+
     #[test]
     fn test_is_keyword_ignore_ascii_case() {
         for lists in &KEYWORD_LISTS {
@@ -208,20 +217,8 @@ mod tests {
             for kw in lists.reserved {
                 assert_is_keyword(lists, kw, kw);
                 assert_is_keyword(lists, kw.to_ascii_lowercase().as_str(), kw);
-                let not_kw = format!("X{kw}");
-                if !lists.reserved.contains(&not_kw.as_str())
-                    && !lists.strict_non_reserved.contains(&not_kw.as_str())
-                    && !lists.non_reserved.contains(&not_kw.as_str())
-                {
-                    assert_is_not_keyword(lists, &not_kw);
-                }
-                let not_kw = format!("{kw}X");
-                if !lists.reserved.contains(&not_kw.as_str())
-                    && !lists.strict_non_reserved.contains(&not_kw.as_str())
-                    && !lists.non_reserved.contains(&not_kw.as_str())
-                {
-                    assert_is_not_keyword(lists, &not_kw);
-                }
+                check_not_keyword_if_absent(lists, &format!("X{kw}"));
+                check_not_keyword_if_absent(lists, &format!("{kw}X"));
                 let not_kw = format!("☃{kw}☃");
                 assert_is_not_keyword(lists, &not_kw);
             }
