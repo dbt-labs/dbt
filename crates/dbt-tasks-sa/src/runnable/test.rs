@@ -229,8 +229,12 @@ impl AggregatedTestRunRemoteTask {
         )
     }
 
-    fn build_base_context(&self, ctx: &TaskRunnerCtx) -> BTreeMap<String, MinijinjaValue> {
-        let mut base_context = ctx.inner.base_context.clone();
+    fn build_base_context(
+        &self,
+        ctx: &TaskRunnerCtx,
+    ) -> FsResult<BTreeMap<String, MinijinjaValue>> {
+        let mut base_context =
+            ctx.base_context_for_adapter(self.group.aggregated_test.node_adapter())?;
         base_context.insert(
             TARGET_PACKAGE_NAME.to_string(),
             MinijinjaValue::from(self.group.aggregated_test.common().package_name.clone()),
@@ -243,7 +247,7 @@ impl AggregatedTestRunRemoteTask {
             DBT_AGGREGATED_GENERIC_TEST_CONTEXT.to_string(),
             MinijinjaValue::from(Vec::<String>::new()),
         );
-        base_context
+        Ok(base_context)
     }
 
     async fn receive_sql_instruction(&self) -> FsResult<SqlInstruction> {
@@ -364,10 +368,11 @@ impl AggregatedTestRunRemoteTask {
             }
         }
 
-        let base_context = self.build_base_context(ctx);
+        let base_context = self.build_base_context(ctx)?;
         let sql_instruction = self.receive_sql_instruction().await?;
 
         let adapter_type = self.group.aggregated_test.node_adapter();
+        let jinja_env = ctx.jinja_env_for_adapter(adapter_type)?;
         let test = self.group.aggregated_test.clone();
         let ctx_inner = ctx.clone();
 
@@ -380,7 +385,7 @@ impl AggregatedTestRunRemoteTask {
                     adapter_type,
                     ctx_inner.runtime_config(),
                     &ctx_inner.inner.materialization_resolver,
-                    ctx_inner.env.clone(),
+                    jinja_env,
                     &base_context,
                     &ctx_inner.inner.arg.io,
                 )
@@ -579,7 +584,7 @@ pub fn execute_test_remote(
 ) -> FsResult<NodeStatus> {
     let start = SystemTime::now();
     let unique_id = &test.common().unique_id;
-    let mut base_context = ctx.inner.base_context.clone();
+    let mut base_context = ctx.base_context_for_adapter(test.node_adapter())?;
 
     add_task_context(&mut base_context, test.common(), &ctx.thread_id);
 
@@ -611,6 +616,7 @@ fn execute_test_remote_inner(
     // path. The runner framework turns the returned Err into NodeStatus::Errored
     // and records it. Severity is only consulted for successfully-returned
     // results below.
+    let jinja_env = ctx.jinja_env_for_adapter(test.node_adapter())?;
     let (test_results, failing_rows_opt, main_response) = materialize_test(
         &sql_instruction.sql,
         test,
@@ -618,7 +624,7 @@ fn execute_test_remote_inner(
         test.node_adapter(),
         ctx.runtime_config(),
         &ctx.inner.materialization_resolver,
-        ctx.env.clone(),
+        jinja_env,
         base_context,
         &ctx.inner.arg.io,
     )?;

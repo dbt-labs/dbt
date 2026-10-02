@@ -82,7 +82,7 @@ fn render_default(
         ));
     }
 
-    let mut base_context = ctx.inner.base_context.clone();
+    let mut base_context = ctx.base_context_for_adapter(node.node_adapter())?;
 
     add_task_context(&mut base_context, node.common(), &ctx.thread_id);
 

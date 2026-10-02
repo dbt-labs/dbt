@@ -80,7 +80,7 @@ pub async fn prepare_microbatch_batches(
     ctx: &TaskRunnerCtx,
     task_result: &TaskResult,
 ) -> FsResult<Vec<Vec<MicrobatchExecUnit>>> {
-    let mut base_context = ctx.inner.base_context.clone();
+    let mut base_context = ctx.base_context_for_adapter(node.node_adapter())?;
 
     add_task_context(&mut base_context, node.common(), &ctx.thread_id);
 
@@ -218,8 +218,8 @@ async fn resolve_batch_window(
         .deprecated_config
         .full_refresh
         .unwrap_or(ctx.inner.arg.full_refresh);
-    let is_incremental =
-        is_incremental(model, full_refresh, model.node_adapter(), ctx.env.clone()).await;
+    let jinja_env = ctx.jinja_env_for_adapter(model.node_adapter())?;
+    let is_incremental = is_incremental(model, full_refresh, model.node_adapter(), jinja_env).await;
 
     let end_time = batch_builder.build_end_time(ctx.inner.arg.event_time_end.clone())?;
     let start_time = batch_builder.build_start_time(
@@ -288,13 +288,14 @@ pub fn execute_microbatch_batch(mb_unit: MicrobatchExecUnit, ctx: &TaskRunnerCtx
         );
     }
 
+    let jinja_env = ctx.jinja_env_for_adapter(model.node_adapter())?;
     match materialize_microbatch_model(
         &mb_unit.raw_sql,
         model,
         ctx.node_resolver(),
         ctx.runtime_config(),
         &ctx.inner.materialization_resolver,
-        ctx.env.clone(),
+        Arc::clone(&jinja_env),
         &mb_unit.batch_ctx,
         model.node_adapter(),
         ctx_for_batch,
@@ -307,7 +308,7 @@ pub fn execute_microbatch_batch(mb_unit: MicrobatchExecUnit, ctx: &TaskRunnerCtx
                     .main_adapter_responses
                     .insert(model.__common_attr__.unique_id.clone(), main_response);
             }
-            let _ = cache_materialization_return_value(ctx.env.clone(), &relations_map);
+            let _ = cache_materialization_return_value(jinja_env, &relations_map);
             Ok(())
         }
         Err(e) => Err(e),
@@ -319,7 +320,7 @@ pub fn execute_model_remote(
     ctx: &TaskRunnerCtx,
     task_result: &TaskResult,
 ) -> FsResult<NodeStatus> {
-    let mut base_context = ctx.inner.base_context.clone();
+    let mut base_context = ctx.base_context_for_adapter(model.node_adapter())?;
 
     add_task_context(&mut base_context, model.common(), &ctx.thread_id);
 
@@ -334,6 +335,7 @@ pub fn execute_model_remote(
         .config_map
         .get("sql_header")
         .map(|v| v.value().clone());
+    let jinja_env = ctx.jinja_env_for_adapter(model.node_adapter())?;
 
     // Traditional warehouse execution via Jinja materialization macros
     match materialize_model(
@@ -342,7 +344,7 @@ pub fn execute_model_remote(
         model.node_adapter(),
         ctx.runtime_config(),
         &ctx.inner.materialization_resolver,
-        ctx.env.clone(),
+        Arc::clone(&jinja_env),
         &base_context,
         &ctx.inner.arg.io,
         sql_header,
@@ -353,7 +355,7 @@ pub fn execute_model_remote(
                     .main_adapter_responses
                     .insert(model.__common_attr__.unique_id.clone(), main_response);
             }
-            let _ = cache_materialization_return_value(ctx.env.clone(), &relations_map);
+            let _ = cache_materialization_return_value(Arc::clone(&jinja_env), &relations_map);
         }
         Err(e) => {
             return Err(e);
@@ -367,11 +369,11 @@ pub fn execute_model_remote(
             model.node_adapter(),
             ctx.runtime_config(),
             &ctx.inner.materialization_resolver,
-            ctx.env.clone(),
+            Arc::clone(&jinja_env),
             &base_context,
             &ctx.inner.arg.io,
         )?;
-        let _ = cache_materialization_return_value(ctx.env.clone(), &relations_map);
+        let _ = cache_materialization_return_value(jinja_env, &relations_map);
     }
 
     let mut had_warning = false;

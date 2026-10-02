@@ -2214,6 +2214,7 @@ impl DbtProjectCompilation {
                         &jinja_env,
                         &base_context,
                         &arg.io,
+                        adapter.adapter_type(),
                     )
                     .await?;
                     let unique_id = format!(
