@@ -63,5 +63,5 @@
 {% endmacro %}
 
 {% macro singlestore__bool_or(expression) -%}
-    sum({{ expression }})
+    max({{ expression }})
 {%- endmacro %}

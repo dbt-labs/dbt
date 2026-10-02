@@ -1631,6 +1631,16 @@ pub struct SingleStoreDbConfig {
     pub threads: Option<StringOrInteger>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub retries: Option<StringOrInteger>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(alias = "sslmode")]
+    pub ssl_mode: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(alias = "sslrootcert")]
+    pub ssl_ca: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ssl_cert: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ssl_key: Option<String>,
 }
 
 #[derive(Serialize, DbtSchema)]
@@ -1871,6 +1881,14 @@ pub struct SingleStoreTargetEnv {
     pub port: StringOrInteger,
     pub database: String,
     pub schema: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ssl_mode: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ssl_ca: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ssl_cert: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ssl_key: Option<String>,
     pub __common__: CommonTargetContext,
 }
 
@@ -2322,6 +2340,10 @@ impl TryFrom<DbConfig> for TargetContext {
                     port: config.port.unwrap_or(StringOrInteger::Integer(3306)),
                     database: database.clone(),
                     schema: schema.clone(),
+                    ssl_mode: config.ssl_mode,
+                    ssl_ca: config.ssl_ca,
+                    ssl_cert: config.ssl_cert,
+                    ssl_key: config.ssl_key,
                     __common__: CommonTargetContext {
                         database,
                         schema,

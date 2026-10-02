@@ -176,6 +176,7 @@ impl ProfileSetup {
             AdapterType::Postgres,
             AdapterType::Redshift,
             AdapterType::Fabric,
+            AdapterType::SingleStore,
         ]
     }
 

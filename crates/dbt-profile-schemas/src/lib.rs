@@ -9,6 +9,7 @@ mod exasol_config;
 mod fabric_config;
 mod postgres_config;
 mod redshift_config;
+mod singlestore_config;
 mod snowflake_config;
 
 pub mod common;
@@ -16,6 +17,7 @@ pub mod headless;
 pub mod profile;
 
 pub use headless::apply_values;
+pub use singlestore_config::setup_singlestore_profile;
 
 pub struct ProfileSetup {
     adapter_type: AdapterType,
@@ -127,7 +129,9 @@ impl ProfileSetup {
                 todo!("setup_oracle_profile")
             }
             SingleStore => {
-                todo!("setup_singlestore_profile")
+                let c0 = unwrap_db_config!(SingleStore);
+                let c1 = setup_singlestore_profile(c0.map(Box::as_ref))?;
+                Ok(DbConfig::SingleStore(c1))
             }
             LakeCompute => {
                 let _c0 = unwrap_db_config!(LakeCompute);
