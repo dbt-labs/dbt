@@ -350,6 +350,35 @@ impl AdbcEngine {
         Ok(())
     }
 
+    /// Apply DuckDB statements whose effects are scoped to a connection.
+    ///
+    /// Database setup runs through a temporary connection above. DuckDB `SET`
+    /// and `USE` statements do not carry over to connections subsequently
+    /// checked out by the adapter, so replay only those statements here.
+    fn apply_duckdb_connection_init_sql(
+        &self,
+        conn: &mut dyn Connection,
+        config: &AdapterConfig,
+    ) -> AdapterResult<()> {
+        let all_stmts = dbt_auth::generate_duckdb_init_sql(config)
+            .map_err(crate::errors::auth_error_to_adapter_error)?;
+        for sql in all_stmts
+            .iter()
+            .filter(|sql| is_duckdb_connection_init_sql(sql))
+        {
+            let mut stmt = conn.new_statement().map_err(adbc_error_to_adapter_error)?;
+            stmt.set_sql_query(sql)
+                .map_err(adbc_error_to_adapter_error)?;
+            let _ = stmt.execute_update().map_err(|e| {
+                adbc_error_to_adapter_error(adbc_core::error::Error::with_message_and_status(
+                    format!("DuckDB connection init SQL failed: {e}"),
+                    adbc_core::error::Status::Internal,
+                ))
+            })?;
+        }
+        Ok(())
+    }
+
     /// Build catalog-driven `ATTACH IF NOT EXISTS` statements for DuckDB
     /// Horizon, Glue, Iceberg REST, Unity Catalog, and DuckLake catalogs.
     ///
@@ -602,6 +631,9 @@ impl AdapterEngine for AdbcEngine {
                 adbc_core::options::OptionValue::String("true".to_string()),
             );
         }
+        if self.adapter_type == AdapterType::DuckDB {
+            self.apply_duckdb_connection_init_sql(conn.as_mut(), config)?;
+        }
         // Tag the connection with its config fingerprint and cache it on the
         // engine, so the pool reuses a connection only among engines with an
         // identical connection configuration.
@@ -650,6 +682,11 @@ impl AdapterEngine for AdbcEngine {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+fn is_duckdb_connection_init_sql(sql: &str) -> bool {
+    (sql.starts_with("SET ") && !sql.starts_with("SET motherduck_token "))
+        || sql.starts_with("USE ")
+}
 
 /// Enrich connection errors with adapter-specific hints where possible.
 fn enrich_connection_error(
@@ -765,6 +802,22 @@ mod tests {
             Cow::Borrowed(_) => {
                 panic!("expected an overridden config with the compute override applied")
             }
+        }
+    }
+
+    #[test]
+    fn duckdb_connection_init_replays_only_connection_scoped_statements() {
+        for sql in ["SET unsafe_enable_version_guessing = true", "USE analytics"] {
+            assert!(is_duckdb_connection_init_sql(sql), "{sql}");
+        }
+        for sql in [
+            "SET motherduck_token = 'secret'",
+            "INSTALL iceberg",
+            "LOAD iceberg",
+            "CREATE OR REPLACE SECRET unity_token (TYPE iceberg)",
+            "ATTACH IF NOT EXISTS 'workspace' AS duck_shared",
+        ] {
+            assert!(!is_duckdb_connection_init_sql(sql), "{sql}");
         }
     }
 }

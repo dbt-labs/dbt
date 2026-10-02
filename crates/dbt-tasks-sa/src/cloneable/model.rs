@@ -18,13 +18,15 @@ impl Cloneable for DbtModel {
         ctx: &'a mut TaskRunnerCtx,
     ) -> Pin<Box<dyn Future<Output = FsResult<NodeStatus>> + Send + 'a>> {
         Box::pin(async move {
-            let mut base_context = ctx.inner.base_context.clone();
+            let mut base_context = ctx.base_context_for_adapter(self.node_adapter())?;
 
             add_task_context(&mut base_context, self.common(), &ctx.thread_id);
 
             let adapter_type = self.node_adapter();
+            let jinja_env = ctx.jinja_env_for_adapter(adapter_type)?;
             let node = self.clone();
             let ctx_inner = ctx.clone();
+            let materialize_env = jinja_env.clone();
 
             let result = TaskOp::Blocking(Box::new(move || {
                 materialize_clone(
@@ -34,7 +36,7 @@ impl Cloneable for DbtModel {
                     ctx_inner.runtime_config(),
                     ctx_inner.defer_nodes(),
                     &ctx_inner.inner.materialization_resolver,
-                    ctx_inner.env.clone(),
+                    materialize_env,
                     &base_context,
                     &ctx_inner.inner.arg.io,
                     None,
@@ -43,7 +45,7 @@ impl Cloneable for DbtModel {
             .run()
             .await??;
 
-            let _ = cache_materialization_return_value(ctx.env.clone(), &result);
+            let _ = cache_materialization_return_value(jinja_env, &result);
 
             Ok(NodeStatus::Succeeded)
         })

@@ -30,6 +30,7 @@ tracing = { workspace = true }
 
 [dev-dependencies]
 dbt-jinja-utils = { workspace = true }
+dbt-yaml = { workspace = true }
 
 [lib]
 doctest = false

@@ -2,11 +2,12 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::Path;
 use std::sync::Arc;
 
-use dbt_adapter::Adapter;
 use dbt_adapter::cache::hydrate_relation_cache_if_not_already_cached;
+use dbt_adapter::catalog_relation::resolve_catalog_database;
 use dbt_adapter::errors::into_fs_error;
 use dbt_adapter::metadata::CatalogAndSchema;
 use dbt_adapter::relation::{create_relation, create_relation_from_node};
+use dbt_adapter::{Adapter, AdapterStore, load_catalogs};
 use dbt_adapter_core::AdapterType;
 use dbt_common::create_info_span;
 use dbt_common::io_args::EvalArgs;
@@ -27,9 +28,10 @@ use dbt_schemas::schemas::OnManifestLoadFailure;
 use dbt_schemas::schemas::StateArtifacts;
 use dbt_schemas::schemas::common::DbtMaterialization;
 use dbt_schemas::schemas::common::ResolvedQuoting;
+use dbt_schemas::schemas::dbt_catalogs::DbtCatalogs;
 use dbt_schemas::schemas::relations::base::BaseRelation;
 use dbt_schemas::schemas::semantic_layer::semantic_manifest::SemanticManifest;
-use dbt_schemas::schemas::{InternalDbtNode, InternalDbtNodeAttributes};
+use dbt_schemas::schemas::{DbtModel, DbtSeed, InternalDbtNode, InternalDbtNodeAttributes};
 use dbt_schemas::state::{NodeResolverTracker, ResolverState};
 use dbt_state::run_cache_defer::RunCacheProfileResolver;
 use dbt_tasks_core::run_cache_lifecycle::RunCacheLifecycle;
@@ -57,6 +59,7 @@ pub struct DeferState {
     pub state_artifacts: Option<Arc<StateArtifacts>>,
     pub defer_nodes: Option<Nodes>,
     pub deferred_unique_ids: HashMap<CanonicalFqn, String>,
+    pub adapter_store: Option<Arc<AdapterStore>>,
 }
 
 impl DeferState {
@@ -69,6 +72,7 @@ impl DeferState {
     pub async fn load(
         arg: &EvalArgs,
         adapter: Arc<Adapter>,
+        adapter_store: Arc<AdapterStore>,
         schedule: &Schedule<String>,
         resolved_state: &mut ResolverState,
         jinja_env: &JinjaEnv,
@@ -160,7 +164,15 @@ impl DeferState {
         }
 
         let deferred: HashMap<CanonicalFqn, String> = if let Some(ref mut nodes) = nodes {
-            let deferred = defer_common(arg, resolved_state, nodes, schedule, &adapter).await?;
+            let deferred = defer_common(
+                arg,
+                resolved_state,
+                nodes,
+                schedule,
+                &adapter,
+                &adapter_store,
+            )
+            .await?;
             rewrite_recorded_relation_calls_with_deferral(resolved_state, &deferred.relation_remap);
             deferred.deferred_unique_ids
         } else {
@@ -171,6 +183,7 @@ impl DeferState {
             state_artifacts: state,
             defer_nodes: nodes,
             deferred_unique_ids: deferred,
+            adapter_store: Some(adapter_store),
         })
     }
 
@@ -237,13 +250,21 @@ pub async fn defer_common(
     defer_nodes: &mut Nodes,
     schedule: &Schedule<String>,
     adapter: &Arc<Adapter>,
+    adapter_store: &Arc<AdapterStore>,
 ) -> FsResult<DeferralUpdate> {
     let span = create_info_span(PhaseExecuted::start_general(ExecutionPhase::DeferHydration));
 
-    defer_common_inner(arg, resolver_state, defer_nodes, schedule, adapter)
-        .instrument(span.clone())
-        .await
-        .record_status(&span)
+    defer_common_inner(
+        arg,
+        resolver_state,
+        defer_nodes,
+        schedule,
+        adapter,
+        adapter_store,
+    )
+    .instrument(span.clone())
+    .await
+    .record_status(&span)
 }
 
 async fn defer_common_inner(
@@ -252,6 +273,7 @@ async fn defer_common_inner(
     defer_nodes: &mut Nodes,
     schedule: &Schedule<String>,
     adapter: &Arc<Adapter>,
+    adapter_store: &Arc<AdapterStore>,
 ) -> FsResult<DeferralUpdate> {
     // Handle compare command specially
     if arg.command == FsCommand::Extension("compare") {
@@ -331,7 +353,7 @@ async fn defer_common_inner(
     // Apply favor_state filtering
     if !arg.favor_state {
         refs_to_update =
-            filter_by_relation_availability(&refs_to_update, resolver_state, adapter).await;
+            filter_by_relation_availability(&refs_to_update, resolver_state, adapter_store).await?;
     }
 
     let deferred = update_refs_and_sources_with_deferral(
@@ -354,6 +376,7 @@ pub async fn defer_sa_upstreams(
     deferred: &mut HashMap<CanonicalFqn, String>,
     schedule: &Schedule<String>,
     adapter: &Arc<Adapter>,
+    adapter_store: &Arc<AdapterStore>,
 ) -> FsResult<HashMap<CanonicalFqn, Arc<dyn BaseRelation>>> {
     if arg.command != FsCommand::Compile {
         // Only compile commands need SA-dependent deferral
@@ -437,7 +460,7 @@ pub async fn defer_sa_upstreams(
     // Apply favor_state filtering for phase 2 candidates
     if !arg.favor_state && !refs_to_update.is_empty() {
         refs_to_update =
-            filter_by_relation_availability(&refs_to_update, resolver_state, adapter).await;
+            filter_by_relation_availability(&refs_to_update, resolver_state, adapter_store).await?;
     }
 
     // Update refs and extend deferred map
@@ -462,68 +485,92 @@ enum AvailabilityCandidate {
     Function(Box<dyn BaseRelation>),
 }
 
-async fn filter_by_relation_availability(
+#[derive(Default)]
+struct AdapterAvailabilityCandidates {
+    by_unique_id: HashMap<String, AvailabilityCandidate>,
+    relations: Vec<Arc<dyn BaseRelation>>,
+    function_schemas: BTreeMap<String, BTreeSet<String>>,
+}
+
+fn collect_availability_candidates(
     refs_to_update: &BTreeSet<String>,
-    resolver_state: &ResolverState,
-    adapter: &Arc<Adapter>,
-) -> BTreeSet<String> {
-    let mut dep_id_to_candidate: HashMap<String, AvailabilityCandidate> = HashMap::new();
-    let mut relation_candidates = Vec::new();
-    let mut catalog_schemas: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    nodes: &Nodes,
+) -> HashMap<AdapterType, AdapterAvailabilityCandidates> {
+    let mut candidates_by_adapter: HashMap<AdapterType, AdapterAvailabilityCandidates> =
+        HashMap::new();
 
     refs_to_update.iter().for_each(|dep_id| {
-        let Some(node) = resolver_state.nodes.get_node(dep_id) else {
+        let Some(node) = nodes.get_node(dep_id) else {
             return;
         };
+        let adapter_type = node.node_adapter();
+        let candidates = candidates_by_adapter.entry(adapter_type).or_default();
         if matches!(node.resource_type(), NodeType::Function) {
-            let Some(dbt_function) = resolver_state.nodes.functions.get(dep_id) else {
+            let Some(dbt_function) = nodes.functions.get(dep_id) else {
                 return;
             };
-            let Ok(relation) =
-                create_relation_from_node(adapter.adapter_type(), dbt_function.as_ref(), None)
+            let Ok(relation) = create_relation_from_node(adapter_type, dbt_function.as_ref(), None)
             else {
                 return;
             };
             let cs = CatalogAndSchema::from(relation.as_ref());
-            catalog_schemas
+            candidates
+                .function_schemas
                 .entry(cs.resolved_catalog)
                 .or_default()
                 .insert(cs.resolved_schema);
-            dep_id_to_candidate.insert(dep_id.clone(), AvailabilityCandidate::Function(relation));
+            candidates
+                .by_unique_id
+                .insert(dep_id.clone(), AvailabilityCandidate::Function(relation));
             return;
         }
 
-        let Ok(relation) = create_relation_from_node(adapter.adapter_type(), node, None) else {
+        let Ok(relation) = create_relation_from_node(adapter_type, node, None) else {
             return;
         };
         let relation: Arc<dyn BaseRelation> = relation.into();
-        relation_candidates.push(relation.clone());
-        dep_id_to_candidate.insert(dep_id.clone(), AvailabilityCandidate::Relation(relation));
+        candidates.relations.push(relation.clone());
+        candidates
+            .by_unique_id
+            .insert(dep_id.clone(), AvailabilityCandidate::Relation(relation));
     });
+    candidates_by_adapter
+}
 
-    let _ = hydrate_relation_cache_if_not_already_cached(
-        &relation_candidates,
-        adapter,
-        "downloading deferred relations",
-    )
-    .await;
-    let available_functions = query_available_functions(&catalog_schemas, adapter).await;
-
-    let relation_cache = adapter.engine().relation_cache();
-    dep_id_to_candidate
-        .into_iter()
-        .filter_map(|(dep_id, candidate)| match candidate {
-            AvailabilityCandidate::Relation(relation) => {
-                let relation_schema = CatalogAndSchema::from(&relation);
-                let schema_is_cached = relation_cache.contains_full_schema(&relation_schema);
-                let cache_has_relation = relation_cache.contains_relation(relation.as_ref());
-                (schema_is_cached && !cache_has_relation).then_some(dep_id)
-            }
-            AvailabilityCandidate::Function(relation) => {
-                (!available_functions.contains(&relation.semantic_fqn())).then_some(dep_id)
-            }
-        })
-        .collect()
+async fn filter_by_relation_availability(
+    refs_to_update: &BTreeSet<String>,
+    resolver_state: &ResolverState,
+    adapter_store: &Arc<AdapterStore>,
+) -> FsResult<BTreeSet<String>> {
+    let candidates_by_adapter =
+        collect_availability_candidates(refs_to_update, &resolver_state.nodes);
+    let mut unavailable = BTreeSet::new();
+    for (adapter_type, candidates) in candidates_by_adapter {
+        let adapter = adapter_store.get(adapter_type)?;
+        let _ = hydrate_relation_cache_if_not_already_cached(
+            &candidates.relations,
+            &adapter,
+            "downloading deferred relations",
+        )
+        .await;
+        let available_functions =
+            query_available_functions(&candidates.function_schemas, &adapter).await;
+        let relation_cache = adapter.engine().relation_cache();
+        unavailable.extend(candidates.by_unique_id.into_iter().filter_map(
+            |(dep_id, candidate)| match candidate {
+                AvailabilityCandidate::Relation(relation) => {
+                    let relation_schema = CatalogAndSchema::from(&relation);
+                    let schema_is_cached = relation_cache.contains_full_schema(&relation_schema);
+                    let cache_has_relation = relation_cache.contains_relation(relation.as_ref());
+                    (schema_is_cached && !cache_has_relation).then_some(dep_id)
+                }
+                AvailabilityCandidate::Function(relation) => {
+                    (!available_functions.contains(&relation.semantic_fqn())).then_some(dep_id)
+                }
+            },
+        ));
+    }
+    Ok(unavailable)
 }
 
 /// Query the metadata adapter for functions that actually exist in the relevant schemas.
@@ -607,6 +654,70 @@ fn should_defer_base_attr(node: &dyn InternalDbtNodeAttributes, is_frontier: boo
     }
 }
 
+fn infer_deferred_producer_adapter(
+    local_adapter: AdapterType,
+    deferred_node: &dyn InternalDbtNodeAttributes,
+) -> AdapterType {
+    let catalogs = load_catalogs::fetch_catalogs();
+    infer_deferred_producer_adapter_with_catalogs(local_adapter, deferred_node, catalogs.as_deref())
+}
+
+fn infer_deferred_producer_adapter_with_catalogs(
+    local_adapter: AdapterType,
+    deferred_node: &dyn InternalDbtNodeAttributes,
+    catalogs: Option<&DbtCatalogs>,
+) -> AdapterType {
+    let catalog_name = if let Some(model) = deferred_node.as_any().downcast_ref::<DbtModel>() {
+        model.__model_attr__.catalog_name.as_deref()
+    } else if let Some(seed) = deferred_node.as_any().downcast_ref::<DbtSeed>() {
+        seed.__seed_attr__.catalog_name.as_deref()
+    } else {
+        None
+    };
+    let Some(catalog_name) = catalog_name else {
+        return local_adapter;
+    };
+    let Some(catalogs) = catalogs else {
+        return local_adapter;
+    };
+    if catalogs.view().is_err() {
+        return local_adapter;
+    }
+
+    let state_database = deferred_node.database();
+    let resolved_databases: Vec<_> = [
+        AdapterType::DuckDB,
+        AdapterType::Snowflake,
+        AdapterType::Databricks,
+    ]
+    .into_iter()
+    .filter_map(|adapter_type| {
+        resolve_catalog_database(catalogs, catalog_name, adapter_type)
+            .ok()
+            .map(|database| (adapter_type, database))
+    })
+    .collect();
+
+    unique_matching_adapter(&resolved_databases, |database| database == state_database)
+        .or_else(|| {
+            unique_matching_adapter(&resolved_databases, |database| {
+                database.eq_ignore_ascii_case(&state_database)
+            })
+        })
+        .unwrap_or(local_adapter)
+}
+
+fn unique_matching_adapter(
+    resolved_databases: &[(AdapterType, String)],
+    matches: impl Fn(&str) -> bool,
+) -> Option<AdapterType> {
+    let mut adapters = resolved_databases
+        .iter()
+        .filter_map(|(adapter, database)| matches(database).then_some(*adapter));
+    let adapter = adapters.next()?;
+    adapters.next().is_none().then_some(adapter)
+}
+
 /// Apply deferral to a single node: rewrite Jinja `ref()` to render the
 /// deferred FQN, and (when [`should_defer_base_attr`] says so) rewrite the
 /// local node's `__base_attr__.{database,schema}` to match.
@@ -626,11 +737,19 @@ fn apply_deferral_to_node<N>(
     deferred_node: &N,
     adapter_type: AdapterType,
     is_frontier: bool,
-) -> FsResult<()>
+) -> FsResult<AdapterType>
 where
     N: InternalDbtNode + InternalDbtNodeAttributes + Clone,
 {
-    node_resolver.update_ref_with_deferral(deferred_node, adapter_type, is_frontier)?;
+    // Manifests do not persist a per-node adapter. Prefer an unambiguous
+    // adapter encoded by the deferred catalog database; otherwise the matching
+    // local node is the best available signal.
+    let producer_adapter = local_nodes
+        .get(unique_id)
+        .map(|node| node.node_adapter())
+        .map(|local_adapter| infer_deferred_producer_adapter(local_adapter, deferred_node))
+        .unwrap_or(adapter_type);
+    node_resolver.update_ref_with_deferral(deferred_node, producer_adapter, is_frontier)?;
     if should_defer_base_attr(deferred_node, is_frontier)
         && let Some(node) = local_nodes.get_mut(unique_id)
     {
@@ -640,7 +759,7 @@ where
         base.database = deferred_base.database.clone();
         base.schema = deferred_base.schema.clone();
     }
-    Ok(())
+    Ok(producer_adapter)
 }
 
 fn update_refs_and_sources_with_deferral(
@@ -662,7 +781,7 @@ fn update_refs_and_sources_with_deferral(
         let current_relation = resolver_state
             .nodes
             .get_node(dep_id)
-            .and_then(|node| create_relation_from_node(adapter.adapter_type(), node, None).ok())
+            .and_then(|node| create_relation_from_node(node.node_adapter(), node, None).ok())
             .map(Arc::<dyn BaseRelation>::from);
 
         // Try to find the node in any of the defer collections and apply the
@@ -671,7 +790,7 @@ fn update_refs_and_sources_with_deferral(
         // `__base_attr__.{database,schema}`. Per-kind rules live on
         // `should_defer_base_attr`'s doc comment.
         let relation = if let Some(defer_model) = defer_nodes.models.get(dep_id) {
-            apply_deferral_to_node(
+            let producer_adapter = apply_deferral_to_node(
                 node_resolver,
                 &mut resolver_state.nodes.models,
                 dep_id,
@@ -679,9 +798,9 @@ fn update_refs_and_sources_with_deferral(
                 adapter.adapter_type(),
                 is_frontier,
             )?;
-            create_relation_from_node(adapter.adapter_type(), defer_model.as_ref(), None)?
+            create_relation_from_node(producer_adapter, defer_model.as_ref(), None)?
         } else if let Some(defer_seed) = defer_nodes.seeds.get(dep_id) {
-            apply_deferral_to_node(
+            let producer_adapter = apply_deferral_to_node(
                 node_resolver,
                 &mut resolver_state.nodes.seeds,
                 dep_id,
@@ -689,9 +808,9 @@ fn update_refs_and_sources_with_deferral(
                 adapter.adapter_type(),
                 is_frontier,
             )?;
-            create_relation_from_node(adapter.adapter_type(), defer_seed.as_ref(), None)?
+            create_relation_from_node(producer_adapter, defer_seed.as_ref(), None)?
         } else if let Some(defer_snapshot) = defer_nodes.snapshots.get(dep_id) {
-            apply_deferral_to_node(
+            let producer_adapter = apply_deferral_to_node(
                 node_resolver,
                 &mut resolver_state.nodes.snapshots,
                 dep_id,
@@ -699,9 +818,9 @@ fn update_refs_and_sources_with_deferral(
                 adapter.adapter_type(),
                 is_frontier,
             )?;
-            create_relation_from_node(adapter.adapter_type(), defer_snapshot.as_ref(), None)?
+            create_relation_from_node(producer_adapter, defer_snapshot.as_ref(), None)?
         } else if let Some(defer_function) = defer_nodes.functions.get(dep_id) {
-            apply_deferral_to_node(
+            let producer_adapter = apply_deferral_to_node(
                 node_resolver,
                 &mut resolver_state.nodes.functions,
                 dep_id,
@@ -709,7 +828,7 @@ fn update_refs_and_sources_with_deferral(
                 adapter.adapter_type(),
                 is_frontier,
             )?;
-            create_relation_from_node(adapter.adapter_type(), defer_function.as_ref(), None)?
+            create_relation_from_node(producer_adapter, defer_function.as_ref(), None)?
         } else {
             continue;
         };
@@ -909,10 +1028,10 @@ pub async fn update_ref_lookups_from_state(
     resolver_state: &mut ResolverState,
     defer_nodes: &Nodes,
     already_deferred_unique_ids: &HashSet<String>,
-    adapter: &Arc<Adapter>,
+    adapter_store: &Arc<AdapterStore>,
     favor_state: bool,
 ) -> FsResult<()> {
-    let adapter_type = adapter.adapter_type();
+    let adapter_type = adapter_store.default_adapter()?.adapter_type();
 
     // Collect local keys first (immutable borrow) before taking mutable node_resolver.
     let local_models: HashSet<String> = resolver_state.nodes.models.keys().cloned().collect();
@@ -946,30 +1065,59 @@ pub async fn update_ref_lookups_from_state(
     let to_defer = if favor_state {
         candidates
     } else {
-        filter_by_relation_availability(&candidates, resolver_state, adapter).await
+        filter_by_relation_availability(&candidates, resolver_state, adapter_store).await?
     };
+    let producer_adapters: HashMap<_, _> = to_defer
+        .iter()
+        .filter_map(|uid| {
+            resolver_state
+                .nodes
+                .get_node(uid)
+                .map(|node| (uid.clone(), node.node_adapter()))
+        })
+        .collect();
 
     let node_resolver = Arc::get_mut(&mut resolver_state.node_resolver)
         .expect("Expected mutable reference to node_resolver for update_ref_lookups_from_state");
 
     for (uid, node) in &defer_nodes.models {
         if to_defer.contains(uid) {
-            node_resolver.update_ref_with_deferral(node.as_ref(), adapter_type, true)?;
+            let producer_adapter = producer_adapters
+                .get(uid)
+                .copied()
+                .map(|local_adapter| infer_deferred_producer_adapter(local_adapter, node.as_ref()))
+                .unwrap_or(adapter_type);
+            node_resolver.update_ref_with_deferral(node.as_ref(), producer_adapter, true)?;
         }
     }
     for (uid, node) in &defer_nodes.seeds {
         if to_defer.contains(uid) {
-            node_resolver.update_ref_with_deferral(node.as_ref(), adapter_type, true)?;
+            let producer_adapter = producer_adapters
+                .get(uid)
+                .copied()
+                .map(|local_adapter| infer_deferred_producer_adapter(local_adapter, node.as_ref()))
+                .unwrap_or(adapter_type);
+            node_resolver.update_ref_with_deferral(node.as_ref(), producer_adapter, true)?;
         }
     }
     for (uid, node) in &defer_nodes.snapshots {
         if to_defer.contains(uid) {
-            node_resolver.update_ref_with_deferral(node.as_ref(), adapter_type, true)?;
+            let producer_adapter = producer_adapters
+                .get(uid)
+                .copied()
+                .map(|local_adapter| infer_deferred_producer_adapter(local_adapter, node.as_ref()))
+                .unwrap_or(adapter_type);
+            node_resolver.update_ref_with_deferral(node.as_ref(), producer_adapter, true)?;
         }
     }
     for (uid, node) in &defer_nodes.functions {
         if to_defer.contains(uid) {
-            node_resolver.update_ref_with_deferral(node.as_ref(), adapter_type, true)?;
+            let producer_adapter = producer_adapters
+                .get(uid)
+                .copied()
+                .map(|local_adapter| infer_deferred_producer_adapter(local_adapter, node.as_ref()))
+                .unwrap_or(adapter_type);
+            node_resolver.update_ref_with_deferral(node.as_ref(), producer_adapter, true)?;
         }
     }
     Ok(())
@@ -1055,7 +1203,7 @@ mod tests {
     };
     use dbt_schemas::schemas::project::SavedQueryConfig;
     use dbt_schemas::schemas::{CommonAttributes, NodeBaseAttributes};
-    use dbt_schemas::state::NodeResolverTracker;
+    use dbt_schemas::state::{ModelStatus, NodeResolverTracker};
 
     fn create_common_attr(name: &str) -> CommonAttributes {
         CommonAttributes {
@@ -1140,6 +1288,157 @@ mod tests {
             },
             ..Default::default()
         })
+    }
+
+    #[test]
+    fn deferral_uses_the_local_nodes_adapter_for_legacy_state() {
+        let unique_id = "model.test.orders";
+        let mut local_node = (*make_underlying_model(unique_id, "orders", "analytics")).clone();
+        local_node.__base_attr__.adapter = AdapterType::DuckDB;
+        let mut deferred_node = local_node.clone();
+        deferred_node.__base_attr__.adapter = AdapterType::Snowflake;
+
+        let mut resolver = NodeResolver::default();
+        resolver
+            .insert_ref(
+                &local_node,
+                AdapterType::DuckDB,
+                ModelStatus::Enabled,
+                false,
+            )
+            .unwrap();
+        let mut local_nodes = BTreeMap::from([(unique_id.to_string(), Arc::new(local_node))]);
+
+        let producer_adapter = apply_deferral_to_node(
+            &mut resolver,
+            &mut local_nodes,
+            unique_id,
+            &deferred_node,
+            AdapterType::Snowflake,
+            true,
+        )
+        .unwrap();
+
+        assert_eq!(producer_adapter, AdapterType::DuckDB);
+    }
+
+    #[test]
+    fn deferral_infers_changed_adapters_from_state_catalog_databases() {
+        let yaml: dbt_yaml::Value = dbt_yaml::from_str(
+            r#"
+catalogs:
+  - name: shared
+    type: iceberg_rest
+    table_format: iceberg
+    config:
+      snowflake:
+        catalog_database: SNOWFLAKE_SHARED
+      duckdb:
+        endpoint: https://example.com/catalog
+        warehouse: shared
+        catalog_database: duck_shared
+"#,
+        )
+        .unwrap();
+        let catalogs = DbtCatalogs::new(yaml.as_mapping().unwrap().clone(), yaml.span().clone());
+        let mut deferred_node =
+            (*make_underlying_model("model.test.orders", "orders", "analytics")).clone();
+        deferred_node.__base_attr__.database = "SNOWFLAKE_SHARED".to_string();
+        deferred_node.__base_attr__.adapter = AdapterType::DuckDB;
+        deferred_node.__model_attr__.catalog_name = Some("shared".to_string());
+
+        assert_eq!(
+            infer_deferred_producer_adapter_with_catalogs(
+                AdapterType::DuckDB,
+                &deferred_node,
+                Some(&catalogs),
+            ),
+            AdapterType::Snowflake
+        );
+
+        let mut deferred_seed = DbtSeed {
+            __common_attr__: create_common_attr("seed.test.orders"),
+            __base_attr__: create_base_attr("orders"),
+            ..Default::default()
+        };
+        deferred_seed.__base_attr__.database = "SNOWFLAKE_SHARED".to_string();
+        deferred_seed.__seed_attr__.catalog_name = Some("shared".to_string());
+        assert_eq!(
+            infer_deferred_producer_adapter_with_catalogs(
+                AdapterType::DuckDB,
+                &deferred_seed,
+                Some(&catalogs),
+            ),
+            AdapterType::Snowflake
+        );
+    }
+
+    #[test]
+    fn deferral_prefers_exact_catalog_database_matches_before_case_folding() {
+        let yaml: dbt_yaml::Value = dbt_yaml::from_str(
+            r#"
+catalogs:
+  - name: shared
+    type: iceberg_rest
+    table_format: iceberg
+    config:
+      snowflake:
+        catalog_database: SHARED
+      duckdb:
+        endpoint: https://example.com/catalog
+        warehouse: shared
+        catalog_database: shared
+"#,
+        )
+        .unwrap();
+        let catalogs = DbtCatalogs::new(yaml.as_mapping().unwrap().clone(), yaml.span().clone());
+        let mut deferred_node =
+            (*make_underlying_model("model.test.orders", "orders", "analytics")).clone();
+        deferred_node.__model_attr__.catalog_name = Some("shared".to_string());
+
+        deferred_node.__base_attr__.database = "SHARED".to_string();
+        assert_eq!(
+            infer_deferred_producer_adapter_with_catalogs(
+                AdapterType::DuckDB,
+                &deferred_node,
+                Some(&catalogs),
+            ),
+            AdapterType::Snowflake
+        );
+
+        deferred_node.__base_attr__.database = "shared".to_string();
+        assert_eq!(
+            infer_deferred_producer_adapter_with_catalogs(
+                AdapterType::Snowflake,
+                &deferred_node,
+                Some(&catalogs),
+            ),
+            AdapterType::DuckDB
+        );
+    }
+
+    #[test]
+    fn availability_candidates_are_grouped_by_node_adapter() {
+        let duckdb_id = "model.test.duckdb_orders";
+        let snowflake_id = "model.test.snowflake_orders";
+        let mut duckdb = (*make_underlying_model(duckdb_id, "duckdb_orders", "analytics")).clone();
+        duckdb.__base_attr__.adapter = AdapterType::DuckDB;
+        let mut snowflake =
+            (*make_underlying_model(snowflake_id, "snowflake_orders", "analytics")).clone();
+        snowflake.__base_attr__.adapter = AdapterType::Snowflake;
+        let mut nodes = Nodes::default();
+        nodes.models.insert(duckdb_id.to_string(), Arc::new(duckdb));
+        nodes
+            .models
+            .insert(snowflake_id.to_string(), Arc::new(snowflake));
+
+        let candidates = collect_availability_candidates(
+            &BTreeSet::from([duckdb_id.to_string(), snowflake_id.to_string()]),
+            &nodes,
+        );
+
+        assert_eq!(candidates[&AdapterType::DuckDB].by_unique_id.len(), 1);
+        assert_eq!(candidates[&AdapterType::Snowflake].by_unique_id.len(), 1);
     }
 
     fn make_saved_query(
@@ -1458,8 +1757,8 @@ mod tests {
         }
     }
 
-    fn make_plain_seed(name: &str) -> dbt_schemas::schemas::DbtSeed {
-        dbt_schemas::schemas::DbtSeed {
+    fn make_plain_seed(name: &str) -> DbtSeed {
+        DbtSeed {
             __common_attr__: create_common_attr(name),
             __base_attr__: create_base_attr(name),
             ..Default::default()
@@ -1567,10 +1866,8 @@ mod tests {
         sorted_nodes: &[String],
         frontier_nodes: &BTreeSet<String>,
     ) -> NodeResolver {
-        let mut resolver = NodeResolver {
-            compile_or_test,
-            ..Default::default()
-        };
+        let mut resolver = NodeResolver::default();
+        resolver.compile_or_test = compile_or_test;
 
         let mut node_introspections = HashMap::new();
         let mut has_analyzed_schema = HashSet::new();

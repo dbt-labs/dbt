@@ -437,12 +437,15 @@ impl Task for RunTask {
                                         ctx.runtime_config(),
                                     )
                                 {
-                                    let mut base_context = ctx.inner.base_context.clone();
+                                    let mut base_context =
+                                        ctx.base_context_for_adapter(model.node_adapter())?;
                                     add_task_context(
                                         &mut base_context,
                                         model.common(),
                                         &ctx.thread_id,
                                     );
+                                    let jinja_env =
+                                        ctx.jinja_env_for_adapter(model.node_adapter())?;
                                     let model_clone = model.clone();
                                     let ctx_clone = ctx.clone();
                                     TaskOp::Blocking(Box::new(move || {
@@ -451,12 +454,12 @@ impl Task for RunTask {
                                             model_clone.node_adapter(),
                                             ctx_clone.runtime_config(),
                                             &ctx_clone.inner.materialization_resolver,
-                                            ctx_clone.env.clone(),
+                                            jinja_env.clone(),
                                             &base_context,
                                             &ctx_clone.inner.arg.io,
                                         )?;
                                         let _ = cache_materialization_return_value(
-                                            ctx_clone.env,
+                                            jinja_env,
                                             &relations_map,
                                         );
                                         Ok::<(), Box<dbt_common::FsError>>(())
@@ -700,7 +703,7 @@ async fn execute_run_cache_service_clone_with_hooks(
         .as_ref()
         .is_some_and(RunCacheReuseHookNode::has_pre_hooks);
     let hook_executor =
-        hook_node.map(|hook_node| build_reuse_hook_executor(ctx, node, task_result, hook_node));
+        hook_node.map(|hook_node| build_reuse_hook_executor(task_result, hook_node));
     execute_run_cache_service_clone(ctx, node, clone, hook_executor, pre_hooks_configured).await
 }
 
@@ -719,7 +722,7 @@ async fn execute_hooks_for_run_cache_skip_reuse(
     let Some(hook_node) = run_cache_reuse_hook_node(node, service_default) else {
         return Ok(());
     };
-    let hook_executor = build_reuse_hook_executor(ctx, node, task_result, hook_node);
+    let hook_executor = build_reuse_hook_executor(task_result, hook_node);
     let ctx_inner = ctx.clone();
     TaskOp::Blocking(Box::new(move || {
         hook_executor(&ctx_inner, RunCacheReuseHookPhase::Pre)?;
@@ -776,17 +779,13 @@ impl RunCacheReuseHookNode {
 }
 
 fn build_reuse_hook_executor(
-    ctx: &TaskRunnerCtx,
-    node: &dyn InternalDbtNodeAttributes,
     task_result: Option<&TaskResult>,
     hook_node: RunCacheReuseHookNode,
 ) -> RunCacheReuseHookExecutor {
-    let mut base_context = ctx.inner.base_context.clone();
-    add_task_context(&mut base_context, node.common(), &ctx.thread_id);
     let sql = task_result.map(|task_result| task_result.sql_instruction.sql.clone());
     Arc::new(move |ctx, phase| {
         let sql = sql.as_deref();
-        execute_hook_node_blocking(&hook_node, ctx, &base_context, sql, phase)
+        execute_hook_node_blocking(&hook_node, ctx, sql, phase)
     })
 }
 
@@ -799,7 +798,6 @@ fn hooks_are_configured(hooks: &Option<dbt_schemas::schemas::common::Hooks>) -> 
 fn execute_hook_node_blocking(
     hook_node: &RunCacheReuseHookNode,
     ctx: &TaskRunnerCtx,
-    base_context: &std::collections::BTreeMap<String, minijinja::Value>,
     sql: Option<&str>,
     phase: RunCacheReuseHookPhase,
 ) -> FsResult<()> {
@@ -807,14 +805,22 @@ fn execute_hook_node_blocking(
         RunCacheReuseHookPhase::Pre => NodeHookPhase::Pre,
         RunCacheReuseHookPhase::Post => NodeHookPhase::Post,
     };
+    let (adapter_type, common) = match hook_node {
+        RunCacheReuseHookNode::Model(model) => (model.node_adapter(), model.common()),
+        RunCacheReuseHookNode::Snapshot(snapshot) => (snapshot.node_adapter(), snapshot.common()),
+        RunCacheReuseHookNode::Seed(seed) => (seed.node_adapter(), seed.common()),
+    };
+    let mut base_context = ctx.base_context_for_adapter(adapter_type)?;
+    add_task_context(&mut base_context, common, &ctx.thread_id);
+    let jinja_env = ctx.jinja_env_for_adapter(adapter_type)?;
     match hook_node {
         RunCacheReuseHookNode::Model(model) => execute_node_hooks(
             model.as_ref(),
             &model.deprecated_config,
             model.node_adapter(),
             ctx.runtime_config(),
-            ctx.env.clone(),
-            base_context,
+            jinja_env.clone(),
+            &base_context,
             &ctx.inner.arg.io,
             sql,
             model_hook_style(model.node_adapter(), &model.__base_attr__.materialized),
@@ -826,8 +832,8 @@ fn execute_hook_node_blocking(
             &snapshot.deprecated_config,
             snapshot.node_adapter(),
             ctx.runtime_config(),
-            ctx.env.clone(),
-            base_context,
+            jinja_env.clone(),
+            &base_context,
             &ctx.inner.arg.io,
             sql,
             NodeHookStyle::SplitTransaction,
@@ -839,8 +845,8 @@ fn execute_hook_node_blocking(
             &seed.deprecated_config,
             seed.node_adapter(),
             ctx.runtime_config(),
-            ctx.env.clone(),
-            base_context,
+            jinja_env,
+            &base_context,
             &ctx.inner.arg.io,
             None,
             NodeHookStyle::SplitTransaction,

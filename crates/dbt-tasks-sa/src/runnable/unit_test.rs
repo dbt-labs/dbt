@@ -30,7 +30,7 @@ pub fn execute_unit_test_remote(
     task_result: &TaskResult,
 ) -> FsResult<(NodeStatus, Option<UnitTestExecutionResult>)> {
     let start = SystemTime::now();
-    let mut base_context = ctx.inner.base_context.clone();
+    let mut base_context = ctx.base_context_for_adapter(unit_test.node_adapter())?;
     let unique_id = &unit_test.common().unique_id;
 
     add_task_context(&mut base_context, unit_test.common(), &ctx.thread_id);
@@ -82,6 +82,7 @@ fn execute_unit_test_remote_inner(
     base_context: &BTreeMap<String, Value>,
 ) -> FsResult<UnitTestExecutionResult> {
     let unique_id = &unit_test.common().unique_id;
+    let jinja_env = ctx.jinja_env_for_adapter(unit_test.node_adapter())?;
 
     match materialize_unit_test_fast_pass(
         &sql_instruction.sql,
@@ -91,7 +92,7 @@ fn execute_unit_test_remote_inner(
         // non-default model must not materialize as the default.
         unit_test.node_adapter(),
         ctx.runtime_config(),
-        ctx.env.clone(),
+        jinja_env,
         base_context,
         &ctx.inner.arg.io,
     ) {
