@@ -1,0 +1,6 @@
+kind: Under the Hood
+body: Use uv as the Hatch installer for the default and ci environments
+time: 2026-08-11T14:16:49.000000000Z
+custom:
+    Author: pgoslatara
+    Issue: "15885"
