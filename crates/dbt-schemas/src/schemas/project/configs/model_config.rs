@@ -853,13 +853,17 @@ impl TypedRecursiveConfig for ProjectModelConfig {
             || self.primary_key.is_some()
             || self.category.is_some()
             || self.sync.is_some()
-            || self.storage_type.is_some()
-            || self.reference.is_some()
-            || self.shard_key.is_some()
-            || self.sort_key.is_some()
-            || self.unique_table_key.is_some()
-            || self.fulltext_key.is_some()
+            || has_singlestore_fields(self)
     }
+}
+
+fn has_singlestore_fields(config: &ProjectModelConfig) -> bool {
+    config.storage_type.is_some()
+        || config.reference.is_some()
+        || config.shard_key.is_some()
+        || config.sort_key.is_some()
+        || config.unique_table_key.is_some()
+        || config.fulltext_key.is_some()
 }
 
 #[derive(

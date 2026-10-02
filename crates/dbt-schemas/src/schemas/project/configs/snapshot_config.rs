@@ -41,7 +41,7 @@ use crate::schemas::serde::PartitionsConfig;
 use crate::schemas::serde::StringOrArrayOfStrings;
 use crate::schemas::serde::bool_or_string_bool;
 use crate::schemas::serde::{
-    IndexesConfig, PrimaryKeyConfig, StringOrInteger, event_time_or_map_to_string,
+    IndexesConfig, StringOrInteger, event_time_or_map_to_string,
     f64_or_string_f64, hours_to_expiration_or_string_omissible, u64_or_string_u64,
 };
 use dbt_common::serde_utils::Omissible;
@@ -842,43 +842,7 @@ impl From<ProjectSnapshotConfig> for SnapshotConfig {
 
                 indexes: config.indexes,
                 unlogged: config.unlogged,
-
-                // snapshot is unsupported for Salesforce yet
-                primary_key: PrimaryKeyConfig::default(),
-                category: None,
-
-                // SingleStore
-                storage_type: None,
-                reference: None,
-                shard_key: None,
-                sort_key: None,
-                unique_table_key: None,
-                fulltext_key: None,
-
-                engine: None,
-                order_by: None,
-                ttl: None,
-                settings: None,
-                query_settings: None,
-                projections: None,
-                inserts_only: None,
-                connection_overrides: None,
-                fields: None,
-                source_type: None,
-                url: None,
-                format: None,
-                layout: None,
-                lifetime: None,
-                range: None,
-                table: None,
-                update_field: None,
-                update_lag: None,
-                definer: None,
-                sql_security: None,
-                refreshable: None,
-                catchup: None,
-                mv_on_schema_change: None,
-                repopulate_from_mvs_on_full_refresh: None,
+                ..Default::default()
             },
         }
     }

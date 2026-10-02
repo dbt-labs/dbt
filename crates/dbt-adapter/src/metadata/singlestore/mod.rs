@@ -101,24 +101,26 @@ pub fn list_relations(
     Ok(relations)
 }
 
-fn create_catalog_table(
-    catalog: &str,
-    schema: &str,
-    table: &str,
-    data_type: &str,
-    comment: &str,
-    owner: &str,
-) -> CatalogTable {
+struct CatalogTableMeta<'a> {
+    catalog: &'a str,
+    schema: &'a str,
+    table: &'a str,
+    data_type: &'a str,
+    comment: &'a str,
+    owner: &'a str,
+}
+
+fn create_catalog_table(meta: CatalogTableMeta<'_>) -> CatalogTable {
     let metadata = TableMetadata {
-        materialization_type: data_type.to_string(),
-        schema: schema.to_string(),
-        name: table.to_string(),
-        database: Some(catalog.to_string()),
-        comment: match comment {
+        materialization_type: meta.data_type.to_string(),
+        schema: meta.schema.to_string(),
+        name: meta.table.to_string(),
+        database: Some(meta.catalog.to_string()),
+        comment: match meta.comment {
             "" => None,
-            _ => Some(comment.to_string()),
+            _ => Some(meta.comment.to_string()),
         },
-        owner: Some(owner.to_string()),
+        owner: Some(meta.owner.to_string()),
     };
 
     let no_stats = CatalogNodeStats {
@@ -304,14 +306,14 @@ impl MetadataAdapter for SingleStoreMetadataAdapter {
 
             result.insert(
                 fully_qualified_name,
-                create_catalog_table(
-                    table_catalogs.value(i),
-                    table_schemas.value(i),
-                    table_names.value(i),
-                    data_types.value(i),
-                    comments.value(i),
+                create_catalog_table(CatalogTableMeta {
+                    catalog: table_catalogs.value(i),
+                    schema: table_schemas.value(i),
+                    table: table_names.value(i),
+                    data_type: data_types.value(i),
+                    comment: comments.value(i),
                     owner,
-                ),
+                }),
             );
         }
         Ok(result)

@@ -239,7 +239,6 @@ impl Dialect {
     /// unquoted identifier in this dialect.
     pub fn is_valid_identifier_char(&self, c: char) -> bool {
         match self {
-            Dialect::Sdf | Dialect::Trino => c.is_alphanumeric() || c == '_',
             Dialect::Bigquery => c.is_alphanumeric() || ['_', '-', '$', ':'].contains(&c),
             Dialect::Snowflake => {
                 // TODO: revert this once
@@ -247,7 +246,6 @@ impl Dialect {
                 // c.is_alphanumeric() || ['_', '`', '@'].contains(&c)
                 c != '.' && c != self.quote_char() && !c.is_whitespace() && c != '/' && c != ';'
             }
-            Dialect::Redshift => c.is_alphanumeric() || c == '_',
             Dialect::SingleStore => c.is_alphanumeric() || c == '_' || c == '$',
             _ => c.is_alphanumeric() || c == '_',
         }

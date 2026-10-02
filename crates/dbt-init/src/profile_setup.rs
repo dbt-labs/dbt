@@ -416,15 +416,7 @@ impl ProfileSetup {
             AdapterType::Datafusion => todo!("Datafusion"),
             AdapterType::Dremio => todo!("Dremio"),
             AdapterType::Oracle => todo!("Oracle"),
-            AdapterType::SingleStore => {
-                let singlestore_config = match existing_config {
-                    Some(DbConfig::SingleStore(config)) => Some(config),
-                    _ => None,
-                };
-                DbConfig::SingleStore(setup_singlestore_profile(
-                    singlestore_config.map(Box::as_ref),
-                )?)
-            }
+            AdapterType::SingleStore => setup_singlestore_db_config(existing_config)?,
         };
 
         let mut outputs = HashMap::new();
@@ -435,6 +427,19 @@ impl ProfileSetup {
             outputs,
         })
     }
+}
+
+fn setup_singlestore_db_config(existing_config: Option<&DbConfig>) -> FsResult<DbConfig> {
+    let singlestore_config = match existing_config {
+        Some(DbConfig::SingleStore(config)) => Some(config),
+        _ => None,
+    };
+    Ok(DbConfig::SingleStore(setup_singlestore_profile(
+        singlestore_config.map(Box::as_ref),
+    )?))
+}
+
+impl ProfileSetup {
 
     /// Write or update a single profile block in the appropriate profiles.yml,
     /// preserving existing content, order, and comments.
