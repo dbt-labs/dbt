@@ -45,11 +45,12 @@ use crate::render_constraint::{render_column_constraint, warn_constraint_support
 use crate::response::AdapterResponse;
 use crate::snapshots::SnapshotStrategy;
 use crate::sql_types::TypeOps;
+use crate::statement::DBT_NODE_ID;
 use crate::stmt_splitter::StmtSplitter;
 use crate::value::*;
 use crate::{AdapterResult, load_catalogs, python};
 
-use adbc_core::options::OptionValue;
+use adbc_core::options::{OptionStatement, OptionValue};
 use arrow::array::{BooleanArray, RecordBatch, StringArray};
 use arrow_array::{Array as _, ArrayRef, Decimal128Array};
 use arrow_ipc::writer::StreamWriter;
@@ -3620,10 +3621,47 @@ impl AdapterImpl {
 
                 Ok(none_value())
             }
+            DuckDB => {
+                // Read the CSV here and append its rows over the connection via
+                // ADBC bulk ingest instead of having the database read the
+                // file itself: the file lives on the dbt host's disk, which a
+                // remote or sandboxed database (e.g. MotherDuck with
+                // `saas_mode`) cannot read. The target table has already been
+                // created (with any `column_types` overrides) by the seed
+                // materialization; the appender casts each text value to it.
+                if self.engine().is_mock() {
+                    return Ok(none_value());
+                }
+                let mut stmt = conn.new_statement().map_err(adbc_error_to_adapter_error)?;
+                for (key, value) in
+                    duckdb_seed_ingest_options(ctx.node_id(), database, schema, table_name)
+                {
+                    stmt.set_option(key, value)
+                        .map_err(adbc_error_to_adapter_error)?;
+                }
+                // A replayed statement has no live driver to bind to; the
+                // recorded result is keyed off the statement alone.
+                if !self.engine().is_replay() {
+                    let column_names: Vec<String> = agate_table
+                        .original_record_batch()
+                        .schema()
+                        .fields()
+                        .iter()
+                        .map(|field| field.name().clone())
+                        .collect();
+                    let rows = crate::seed::read_seed_csv_as_text(
+                        file_path,
+                        field_delimiter,
+                        &column_names,
+                    )?;
+                    stmt.bind(rows).map_err(adbc_error_to_adapter_error)?;
+                }
+                stmt.execute_update().map_err(adbc_error_to_adapter_error)?;
+                Ok(none_value())
+            }
             Salesforce => todo!("load_dataframe() for the Salesforce adapter"),
-            Postgres | Snowflake | Databricks | Redshift | Spark | DuckDB | LakeCompute
-            | Fabric | ClickHouse | Exasol | Starburst | Athena | Trino | Datafusion | Dremio
-            | Oracle => {
+            Postgres | Snowflake | Databricks | Redshift | Spark | LakeCompute | Fabric
+            | ClickHouse | Exasol | Starburst | Athena | Trino | Datafusion | Dremio | Oracle => {
                 unimplemented!("only available with BigQuery or Salesforce adapter")
             }
         }
@@ -5323,6 +5361,29 @@ fn bigquery_reservation_from_state(state: &State) -> Option<String> {
         .ok()?
         .as_str()
         .map(|s| s.to_owned())
+}
+
+/// Statement options for appending a seed into `database.schema.table_name`
+/// via ADBC bulk ingest. The node id keys the statement to its node, as the
+/// engine does for every other statement, so recordings don't collide
+/// across seeds.
+fn duckdb_seed_ingest_options(
+    node_id: Option<&String>,
+    database: &str,
+    schema: &str,
+    table_name: &str,
+) -> Vec<(OptionStatement, OptionValue)> {
+    let node_id = node_id.map(|id| (OptionStatement::Other(DBT_NODE_ID.to_string()), id.as_str()));
+    node_id
+        .into_iter()
+        .chain([
+            (OptionStatement::TargetCatalog, database),
+            (OptionStatement::TargetDbSchema, schema),
+            (OptionStatement::TargetTable, table_name),
+            (OptionStatement::IngestMode, "adbc.ingest.mode.append"),
+        ])
+        .map(|(key, value)| (key, OptionValue::String(value.to_string())))
+        .collect()
 }
 
 /// List of possible builtin strategies for adapters.
@@ -8278,5 +8339,33 @@ mod tests {
                 .get_view_options(&state, config, &common_attr)
                 .is_ok()
         );
+    }
+
+    #[test]
+    fn duckdb_seed_ingest_options_key_statement_to_node() {
+        let node_id = "seed.proj.raw_orders".to_string();
+        let options = duckdb_seed_ingest_options(Some(&node_id), "md_db", "main", "raw_orders");
+        let rendered: Vec<String> = options
+            .iter()
+            .map(|(key, value)| {
+                let OptionValue::String(value) = value else {
+                    panic!("expected string option, got {value:?}");
+                };
+                format!("{}={value}", key.as_ref())
+            })
+            .collect();
+        assert_eq!(
+            rendered,
+            [
+                "dbt.node_id=seed.proj.raw_orders",
+                "adbc.ingest.target_catalog=md_db",
+                "adbc.ingest.target_db_schema=main",
+                "adbc.ingest.target_table=raw_orders",
+                "adbc.ingest.mode=adbc.ingest.mode.append",
+            ]
+        );
+
+        let without_node = duckdb_seed_ingest_options(None, "md_db", "main", "raw_orders");
+        assert_eq!(without_node.len(), 4);
     }
 }
