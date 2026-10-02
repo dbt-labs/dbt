@@ -131,6 +131,19 @@ pub fn try_load_prev_compilation(
         return (PrevCompilationResult::None, use_lazy_filter);
     }
 
+    if state
+        .nodes
+        .models
+        .values()
+        .any(|model| model.__model_attr__.catalog_name.is_some())
+    {
+        tracing::debug!(
+            "Partial parse: catalog-backed models require catalogs.yml relation routing; \
+             falling back to full parse"
+        );
+        return (PrevCompilationResult::FullParse, use_lazy_filter);
+    }
+
     if let Some(reason) = state.needs_full_parse() {
         tracing::debug!("Partial parse: {reason}, falling back to full parse");
         return (PrevCompilationResult::FullParse, use_lazy_filter);
