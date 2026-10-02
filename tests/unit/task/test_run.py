@@ -7,13 +7,14 @@ from unittest import mock
 from unittest.mock import MagicMock, patch
 
 import pytest
-from opentelemetry import trace
-from opentelemetry.trace.status import StatusCode
-from psycopg2 import DatabaseError
-from pytest_mock import MockerFixture
-
-from core.dbt.task.run import MicrobatchBatchRunner
 from dbt.adapters.contracts.connection import AdapterResponse
+from dbt.adapters.planning import (
+    DirectReplaceTable,
+    IncrementalMaterializationPlan,
+    MaterializationStatementStrategy,
+    PlanProvenance,
+    SnapshotMaterializationPlan,
+)
 from dbt.adapters.postgres import PostgresAdapter
 from dbt.artifacts.resources.base import FileHash
 from dbt.artifacts.resources.types import NodeType, RunHookType
@@ -30,7 +31,13 @@ from dbt.contracts.graph.nodes import Exposure, HookNode, ModelNode
 from dbt.events.types import LogModelResult
 from dbt.exceptions import DbtRuntimeError
 from dbt.flags import get_flags, set_from_args
-from dbt.task.run import MicrobatchModelRunner, ModelRunner, RunTask, _get_adapter_info
+from dbt.task.run import (
+    MicrobatchModelRunner,
+    ModelRunner,
+    NativeMaterializationExecution,
+    RunTask,
+    _get_adapter_info,
+)
 from dbt.task.runnable import _rows_affected
 from dbt.tests.util import safe_set_invocation_context
 from dbt.version import __version__
@@ -38,6 +45,12 @@ from dbt_common.events.base_types import EventLevel
 from dbt_common.events.event_catcher import EventCatcher
 from dbt_common.events.event_manager_client import add_callback_to_manager
 from dbt_common.invocation import get_invocation_id
+from opentelemetry import trace
+from opentelemetry.trace.status import StatusCode
+from psycopg2 import DatabaseError
+from pytest_mock import MockerFixture
+
+from core.dbt.task.run import MicrobatchBatchRunner
 
 
 @pytest.mark.parametrize(
@@ -56,10 +69,10 @@ def test_run_task_cancel_connections(
     def mock_run_queue(*args, **kwargs):
         raise exception_to_raise("Test exception")
 
-    with patch.object(RunTask, "run_queue", mock_run_queue), patch.object(
-        RunTask, "_cancel_connections"
-    ) as mock_cancel_connections:
-
+    with (
+        patch.object(RunTask, "run_queue", mock_run_queue),
+        patch.object(RunTask, "_cancel_connections") as mock_cancel_connections,
+    ):
         set_from_args(Namespace(write_json=False), None)
         task = RunTask(
             get_flags(),
@@ -74,8 +87,9 @@ def test_run_task_cancel_connections(
 def test_run_task_preserve_edges():
     mock_node_selector = MagicMock()
     mock_spec = MagicMock()
-    with patch.object(RunTask, "get_node_selector", return_value=mock_node_selector), patch.object(
-        RunTask, "get_selection_spec", return_value=mock_spec
+    with (
+        patch.object(RunTask, "get_node_selector", return_value=mock_node_selector),
+        patch.object(RunTask, "get_selection_spec", return_value=mock_spec),
     ):
         task = RunTask(get_flags(), None, None)
         task.get_graph_queue()
@@ -136,6 +150,176 @@ class TestModelRunner:
         add_callback_to_manager(catcher.catch)
         return catcher
 
+    @pytest.mark.parametrize(
+        "unique_id,language,uses_native",
+        [
+            ("macro.dbt.materialization_table_default", "sql", True),
+            ("macro.dbt.materialization_view_default", "sql", True),
+            ("macro.dbt.materialization_snapshot_default", "sql", True),
+            ("macro.project.materialization_table_default", "sql", False),
+            ("macro.project.materialization_view_default", "sql", False),
+            ("macro.project.materialization_snapshot_default", "sql", False),
+            ("macro.dbt_spark.materialization_snapshot_spark", "sql", False),
+            ("macro.dbt.materialization_table_postgres", "sql", False),
+            ("macro.dbt.materialization_table_default", "python", False),
+        ],
+    )
+    def test_native_materialization_only_claims_exact_builtin_sql_lifecycles(
+        self,
+        model_runner: ModelRunner,
+        unique_id: str,
+        language: str,
+        uses_native: bool,
+    ) -> None:
+        model = mock.Mock(language=language)
+        materialization_macro = mock.Mock(unique_id=unique_id)
+
+        executor = model_runner._get_native_materialization(
+            model, materialization_macro
+        )
+
+        assert (executor is not None) is uses_native
+
+    def test_native_incremental_execution_requires_adapter_opt_in(
+        self, model_runner: ModelRunner
+    ) -> None:
+        model = mock.Mock(language="sql")
+        materialization_macro = mock.Mock(
+            unique_id="macro.dbt.materialization_incremental_default"
+        )
+        model_runner.adapter = mock.Mock(spec=[])
+
+        assert (
+            model_runner._get_native_materialization(model, materialization_macro)
+            is None
+        )
+
+        incremental_plan = IncrementalMaterializationPlan(
+            materialization_macro_id=materialization_macro.unique_id,
+            provenance=(PlanProvenance("test.incremental", "adapter opted in"),),
+        )
+        model_runner.adapter = mock.Mock(spec=["plan_incremental_materialization"])
+        model_runner.adapter.plan_incremental_materialization.return_value = (
+            incremental_plan
+        )
+
+        execution = model_runner._get_native_materialization(
+            model, materialization_macro
+        )
+
+        assert execution is not None
+        assert execution.plan is incremental_plan
+
+    def test_adapter_table_plan_selects_semantic_execution(
+        self, model_runner: ModelRunner
+    ) -> None:
+        table_plan = DirectReplaceTable(
+            statement=MaterializationStatementStrategy.NO_AUTO_BEGIN,
+            provenance=(PlanProvenance("test.table", "adapter opted in"),),
+        )
+        model_runner.adapter = mock.Mock(
+            spec=[
+                "plan_table_materialization",
+                "resolve_table_materialization_existing_relation",
+                "resolve_table_materialization_relation",
+            ]
+        )
+        model_runner.adapter.plan_table_materialization.return_value = table_plan
+        model = mock.Mock(language="sql")
+        materialization_macro = mock.Mock(
+            unique_id="macro.dbt_snowflake.materialization_table_snowflake"
+        )
+
+        execution = model_runner._get_native_materialization(
+            model, materialization_macro
+        )
+
+        assert execution is not None
+        assert execution.plan is table_plan
+        model_runner.adapter.plan_table_materialization.assert_called_once_with(
+            materialization_macro.unique_id,
+            "sql",
+            model,
+        )
+
+    def test_adapter_incremental_plan_selects_incremental_executor(
+        self, model_runner: ModelRunner
+    ) -> None:
+        incremental_plan = IncrementalMaterializationPlan(
+            materialization_macro_id="macro.dbt_databricks.materialization_incremental_databricks",
+            provenance=(PlanProvenance("test.incremental", "adapter opted in"),),
+        )
+        model_runner.adapter = mock.Mock(
+            spec=[
+                "plan_table_materialization",
+                "plan_incremental_materialization",
+            ]
+        )
+        model_runner.adapter.plan_table_materialization.return_value = None
+        model_runner.adapter.plan_incremental_materialization.return_value = (
+            incremental_plan
+        )
+        model = mock.Mock(language="sql")
+        materialization_macro = mock.Mock(
+            unique_id="macro.dbt_databricks.materialization_incremental_databricks"
+        )
+
+        execution = model_runner._get_native_materialization(
+            model, materialization_macro
+        )
+
+        assert execution is not None
+        assert execution.plan is incremental_plan
+
+    @pytest.mark.parametrize("strategy", ["custom_strategy", "package.timestamp"])
+    def test_custom_snapshot_strategy_falls_back_to_jinja(
+        self,
+        model_runner: ModelRunner,
+        strategy: str,
+    ) -> None:
+        config = mock.Mock()
+        config.get.side_effect = lambda name, default=None: {
+            "strategy": strategy,
+        }.get(name, default)
+        context = {
+            "config": config,
+            "build_snapshot_staging_table": mock.Mock(),
+        }
+        plan = SnapshotMaterializationPlan(
+            materialization_macro_id="macro.dbt.materialization_snapshot_default",
+            provenance=(PlanProvenance("test.snapshot", "adapter opted in"),),
+        )
+
+        result = model_runner._execute_native_materialization(
+            execution=NativeMaterializationExecution(plan),
+            model=mock.Mock(),
+            context=context,
+        )
+
+        assert result is None
+
+    def test_snapshot_staging_builder_override_falls_back_to_jinja(
+        self, model_runner: ModelRunner
+    ) -> None:
+        config = mock.Mock()
+        config.get.side_effect = lambda name, default=None: {
+            "strategy": "timestamp",
+        }.get(name, default)
+        helper = mock.Mock()
+        helper.macro.unique_id = "macro.project.build_snapshot_staging_table"
+        plan = SnapshotMaterializationPlan(
+            materialization_macro_id="macro.dbt.materialization_snapshot_default",
+            provenance=(PlanProvenance("test.snapshot", "adapter opted in"),),
+        )
+
+        result = model_runner._execute_native_materialization(
+            execution=NativeMaterializationExecution(plan),
+            model=mock.Mock(),
+            context={"config": config, "build_snapshot_staging_table": helper},
+        )
+
+        assert result is None
+
     def test_print_result_line(
         self,
         log_model_result_catcher: EventCatcher,
@@ -146,7 +330,9 @@ class TestModelRunner:
         model_runner.print_result_line(run_result)
         assert len(log_model_result_catcher.caught_events) == 1
         assert log_model_result_catcher.caught_events[0].info.level == EventLevel.INFO
-        assert log_model_result_catcher.caught_events[0].data.status == run_result.message
+        assert (
+            log_model_result_catcher.caught_events[0].data.status == run_result.message
+        )
 
         # reset event catcher
         log_model_result_catcher.flush()
@@ -194,10 +380,16 @@ class TestModelRunner:
         )
 
         source_relation = FakeRelation(
-            database="dbt", schema="dbt_schema", identifier="versioned_model_v2", type="table"
+            database="dbt",
+            schema="dbt_schema",
+            identifier="versioned_model_v2",
+            type="table",
         )
         pointer_relation = FakeRelation(
-            database="dbt", schema="dbt_schema", identifier="versioned_model", type="view"
+            database="dbt",
+            schema="dbt_schema",
+            identifier="versioned_model",
+            type="view",
         )
 
         model_runner.adapter = mocker.Mock()
@@ -208,10 +400,12 @@ class TestModelRunner:
         )
 
         mocker.patch(
-            "dbt.task.run.generate_runtime_model_context", return_value={"context_macro_stack": []}
+            "dbt.task.run.generate_runtime_model_context",
+            return_value={"context_macro_stack": []},
         )
         mocker.patch(
-            "dbt.task.run.MacroGenerator", return_value=mocker.Mock(return_value={"relations": []})
+            "dbt.task.run.MacroGenerator",
+            return_value=mocker.Mock(return_value={"relations": []}),
         )
         mocker.patch.object(
             model_runner, "_materialization_relations", return_value=[pointer_relation]
@@ -252,11 +446,16 @@ class TestModelRunner:
         model.latest_version = 2
         model.config = ModelConfig(
             materialized="table",
-            latest_version_pointer=LatestVersionPointer(enabled=True, alias="latest_alias"),
+            latest_version_pointer=LatestVersionPointer(
+                enabled=True, alias="latest_alias"
+            ),
         )
 
         source_relation = FakeRelation(
-            database="dbt", schema="dbt_schema", identifier="versioned_model_v2", type="table"
+            database="dbt",
+            schema="dbt_schema",
+            identifier="versioned_model_v2",
+            type="table",
         )
         pointer_relation = FakeRelation(
             database="dbt", schema="dbt_schema", identifier="latest_alias", type="view"
@@ -276,7 +475,8 @@ class TestModelRunner:
             "dbt.task.run.generate_runtime_model_context", return_value=mock_context
         )
         mocker.patch(
-            "dbt.task.run.MacroGenerator", return_value=mocker.Mock(return_value={"relations": []})
+            "dbt.task.run.MacroGenerator",
+            return_value=mocker.Mock(return_value={"relations": []}),
         )
         mocker.patch.object(
             model_runner, "_materialization_relations", return_value=[pointer_relation]
@@ -327,7 +527,9 @@ class TestModelRunner:
         model.latest_version = latest_version
         model.config = ModelConfig(
             materialized="table",
-            latest_version_pointer=LatestVersionPointer(enabled=latest_version_pointer_enabled),
+            latest_version_pointer=LatestVersionPointer(
+                enabled=latest_version_pointer_enabled
+            ),
         )
 
         model_runner.adapter = mocker.Mock()
@@ -384,7 +586,10 @@ class TestModelRunner:
         model.config.persist_docs = {"relation": True}
 
         source_relation = FakeRelation(
-            database="dbt", schema="dbt_schema", identifier="versioned_model_v2", type="table"
+            database="dbt",
+            schema="dbt_schema",
+            identifier="versioned_model_v2",
+            type="table",
         )
 
         model_runner.adapter = mocker.Mock()
@@ -395,10 +600,12 @@ class TestModelRunner:
         )
 
         mock_generate_context = mocker.patch(
-            "dbt.task.run.generate_runtime_model_context", return_value={"context_macro_stack": []}
+            "dbt.task.run.generate_runtime_model_context",
+            return_value={"context_macro_stack": []},
         )
         mocker.patch(
-            "dbt.task.run.MacroGenerator", return_value=mocker.Mock(return_value={"relations": []})
+            "dbt.task.run.MacroGenerator",
+            return_value=mocker.Mock(return_value={"relations": []}),
         )
         mocker.patch.object(model_runner, "_materialization_relations", return_value=[])
 
@@ -435,11 +642,16 @@ class TestModelRunner:
         model.latest_version = 2
         model.config = ModelConfig(
             materialized="table",
-            latest_version_pointer=LatestVersionPointer(enabled=True, alias="versioned_model_v2"),
+            latest_version_pointer=LatestVersionPointer(
+                enabled=True, alias="versioned_model_v2"
+            ),
         )
 
         source_relation = FakeRelation(
-            database="dbt", schema="dbt_schema", identifier="versioned_model_v2", type="table"
+            database="dbt",
+            schema="dbt_schema",
+            identifier="versioned_model_v2",
+            type="table",
         )
 
         model_runner.adapter = mocker.Mock()
@@ -486,7 +698,9 @@ class TestModelRunner:
         model.config = ModelConfig(
             materialized="table",
             # pointer resolves to "versioned_model_v2"; alias differs only by case
-            latest_version_pointer=LatestVersionPointer(enabled=True, alias="versioned_model_v2"),
+            latest_version_pointer=LatestVersionPointer(
+                enabled=True, alias="versioned_model_v2"
+            ),
         )
 
         source_relation = FakeRelation(
@@ -625,7 +839,9 @@ class TestMicrobatchModelRunner:
         model_runner.adapter.Relation.create_from.return_value = RelationInfo()
 
         if has_relation:
-            model_runner.adapter.get_relation.return_value = Relation(type=relation_type)
+            model_runner.adapter.get_relation.return_value = Relation(
+                type=relation_type
+            )
         else:
             model_runner.adapter.get_relation.return_value = None
 
@@ -634,7 +850,9 @@ class TestMicrobatchModelRunner:
 
         # Create model with configs
         model = model_runner.node
-        model.config = ModelConfig(materialized=materialized, full_refresh=full_refresh_config)
+        model.config = ModelConfig(
+            materialized=materialized, full_refresh=full_refresh_config
+        )
 
         # Assert result of _is_incremental
         assert model_runner._is_incremental(model) == expectation
@@ -762,7 +980,6 @@ class TestMicrobatchModelRunner:
 
 
 class TestRunTask:
-
     @pytest.fixture(autouse=True)
     def before_each(self, monkeypatch, otel_spans):
         self.span_exporter = otel_spans
@@ -817,8 +1034,12 @@ class TestRunTask:
         expected_result: Union[RunStatus, Type[Exception]],
         expected_span_status: StatusCode,
     ):
-        mocker.patch("dbt.task.run.RunTask.get_hooks_by_type").return_value = [hook_node]
-        mocker.patch("dbt.task.run.RunTask.get_hook_sql").return_value = hook_node.raw_code
+        mocker.patch("dbt.task.run.RunTask.get_hooks_by_type").return_value = [
+            hook_node
+        ]
+        mocker.patch(
+            "dbt.task.run.RunTask.get_hook_sql"
+        ).return_value = hook_node.raw_code
 
         flags = mock.Mock()
         flags.state = None
@@ -871,7 +1092,9 @@ class TestRunTask:
             assert child_span.attributes.get("name") == hook_node.name
             assert child_span.attributes.get("hook_index") == 1
             assert child_span.attributes.get("unique_id") == hook_node.unique_id
-            expected_child_outcome = "error" if error_to_raise is not None else "success"
+            expected_child_outcome = (
+                "error" if error_to_raise is not None else "success"
+            )
             assert child_span.attributes.get("hook_outcome") == expected_child_outcome
             expected_child_status = (
                 StatusCode.ERROR if error_to_raise is not None else StatusCode.OK
@@ -922,8 +1145,12 @@ class TestRunTask:
     ):
         # With the gate off, safe_run_hooks must emit no spans even when hooks run.
         monkeypatch.setattr("dbt.task.runnable._otel_enabled", lambda: False)
-        mocker.patch("dbt.task.run.RunTask.get_hooks_by_type").return_value = [hook_node]
-        mocker.patch("dbt.task.run.RunTask.get_hook_sql").return_value = hook_node.raw_code
+        mocker.patch("dbt.task.run.RunTask.get_hooks_by_type").return_value = [
+            hook_node
+        ]
+        mocker.patch(
+            "dbt.task.run.RunTask.get_hook_sql"
+        ).return_value = hook_node.raw_code
 
         flags = mock.Mock()
         flags.state = None
@@ -932,7 +1159,9 @@ class TestRunTask:
         run_task = RunTask(args=flags, config=runtime_config, manifest=manifest)
 
         adapter = mock.Mock()
-        adapter.execute = mock.Mock(return_value=(AdapterResponse(_message="Success"), None))
+        adapter.execute = mock.Mock(
+            return_value=(AdapterResponse(_message="Success"), None)
+        )
 
         result = run_task.safe_run_hooks(
             adapter=adapter,
@@ -950,7 +1179,9 @@ class TestRunTask:
         model_runner: ModelRunner,
         run_result: RunResult,
     ):
-        mocker.patch("dbt.task.run.ModelRunner.run_with_hooks").return_value = run_result
+        mocker.patch(
+            "dbt.task.run.ModelRunner.run_with_hooks"
+        ).return_value = run_result
         flags = mock.Mock()
         flags.state = None
         flags.defer_state = None
@@ -988,7 +1219,9 @@ class TestRunTask:
             batch_results=None,
             node=run_result.node,
         )
-        mocker.patch("dbt.task.run.ModelRunner.run_with_hooks").return_value = run_result_error
+        mocker.patch(
+            "dbt.task.run.ModelRunner.run_with_hooks"
+        ).return_value = run_result_error
 
         flags = mock.Mock()
         flags.state = None
@@ -1105,7 +1338,9 @@ class TestRunTask:
             hook_node,
             hook_node2,
         ]
-        mocker.patch("dbt.task.run.RunTask.get_hook_sql").return_value = hook_node.raw_code
+        mocker.patch(
+            "dbt.task.run.RunTask.get_hook_sql"
+        ).return_value = hook_node.raw_code
 
         flags = mock.Mock()
         flags.state = None
@@ -1231,7 +1466,9 @@ class TestRunTask:
             captured["name"] = getattr(current, "name", None)
             return mock.Mock(results=[])
 
-        mocker.patch.object(RunTask, "execute_with_hooks", side_effect=fake_execute_with_hooks)
+        mocker.patch.object(
+            RunTask, "execute_with_hooks", side_effect=fake_execute_with_hooks
+        )
 
         run_task.run()
 
