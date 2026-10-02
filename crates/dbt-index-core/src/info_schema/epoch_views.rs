@@ -527,17 +527,15 @@ fn project_snapshot(present: &[&'static str]) -> String {
 /// inference.
 ///
 /// `None` for a table not covered yet, which `generate` reports as skipped.
-fn node_columns_sql(
-    spec: &TableSpec,
-    present: &[&'static str],
-    alive_exists: bool,
-    header: &impl Fn(&[&str]) -> String,
-) -> Result<ViewSql, IndexError> {
-    let alive = |col: &str| {
-        alive_exists
-            .then(|| format!("{col} IN (SELECT unique_id FROM dbt_internal.epoch_parse_alive)"))
-    };
-    let parse = merge_side(
+fn node_columns_parse_side(present: &[&'static str], alive_exists: bool) -> String {
+    let mut wheres = vec!["unique_id IS NOT NULL".to_string()];
+    if alive_exists {
+        wheres.push(
+            "unique_id IN (SELECT unique_id FROM dbt_internal.epoch_parse_alive)".to_string(),
+        );
+    }
+
+    merge_side(
         "epoch_parse_columns",
         present,
         &[
@@ -551,13 +549,22 @@ fn node_columns_sql(
             ("COALESCE(tags, [])", "tags", "VARCHAR[]"),
             ("ingested_at", "ingested_at", "TIMESTAMP WITH TIME ZONE"),
         ],
-        &["unique_id IS NOT NULL".to_string()]
-            .into_iter()
-            .chain(alive("unique_id"))
-            .collect::<Vec<_>>(),
+        &wheres,
         None,
-    );
-    let compile = merge_side(
+    )
+}
+fn node_columns_compile_side(present: &[&'static str], alive_exists: bool) -> String {
+    let mut wheres = vec![
+        "unique_id IS NOT NULL".to_string(),
+        "column_name IS NOT NULL".to_string(),
+    ];
+    if alive_exists {
+        wheres.push(
+            "unique_id IN (SELECT unique_id FROM dbt_internal.epoch_parse_alive)".to_string(),
+        );
+    }
+
+    merge_side(
         "epoch_compile_columns",
         present,
         &[
@@ -569,16 +576,22 @@ fn node_columns_sql(
             ("COALESCE(classifiers, [])", "classifiers", "VARCHAR[]"),
             ("ingested_at", "ingested_at", "TIMESTAMP WITH TIME ZONE"),
         ],
-        &[
-            "unique_id IS NOT NULL".to_string(),
-            "column_name IS NOT NULL".to_string(),
-        ]
-        .into_iter()
-        .chain(alive("unique_id"))
-        .collect::<Vec<_>>(),
+        &wheres,
         Some("unique_id, lower(column_name)"),
-    );
-    let catalog = merge_side(
+    )
+}
+fn node_columns_catalog_side(present: &[&'static str], alive_exists: bool) -> String {
+    let mut wheres = vec![
+        "unique_id IS NOT NULL".to_string(),
+        "column_name IS NOT NULL".to_string(),
+    ];
+    if alive_exists {
+        wheres.push(
+            "unique_id IN (SELECT unique_id FROM dbt_internal.epoch_parse_alive)".to_string(),
+        );
+    }
+
+    merge_side(
         "epoch_catalog_columns",
         present,
         &[
@@ -589,16 +602,12 @@ fn node_columns_sql(
             ("catalog_comment", "catalog_comment", "VARCHAR"),
             ("ingested_at", "ingested_at", "TIMESTAMP WITH TIME ZONE"),
         ],
-        &[
-            "unique_id IS NOT NULL".to_string(),
-            "column_name IS NOT NULL".to_string(),
-        ]
-        .into_iter()
-        .chain(alive("unique_id"))
-        .collect::<Vec<_>>(),
+        &wheres,
         Some("unique_id, column_name"),
-    );
-    let cols = cast_cols(
+    )
+}
+fn node_columns_cols(spec: &TableSpec) -> Result<Vec<String>, IndexError> {
+    cast_cols(
         spec,
         &[
             ("node_unique_id", format!("{BASE}.unique_id")),
@@ -615,7 +624,20 @@ fn node_columns_sql(
             ("comment", format!("{BASE}.catalog_comment")),
             ("ingested_at", format!("{BASE}.ingested_at")),
         ],
-    )?;
+    )
+}
+
+fn node_columns_sql(
+    spec: &TableSpec,
+    present: &[&'static str],
+    alive_exists: bool,
+    header: &impl Fn(&[&str]) -> String,
+) -> Result<ViewSql, IndexError> {
+    let parse = node_columns_parse_side(present, alive_exists);
+    let compile = node_columns_compile_side(present, alive_exists);
+    let catalog = node_columns_catalog_side(present, alive_exists);
+
+    let cols = node_columns_cols(spec)?;
     let list: Vec<&str> = cols.iter().map(String::as_str).collect();
     // `label`, `expression`, `quote`, `granularity`, `meta` and `tests`
     // are left to `cast_cols`' typed nulls. `parse/columns` carries
