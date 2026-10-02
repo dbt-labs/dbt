@@ -146,7 +146,7 @@ def preflight(func):
 
         # Profiling
         if flags.RECORD_TIMING_INFO:
-            ctx.with_resource(profiler(enable=True, outfile=flags.RECORD_TIMING_INFO))
+            ctx.with_resource(profiler(outfile=flags.RECORD_TIMING_INFO))
 
         # Adapter management
         ctx.with_resource(adapter_management())
