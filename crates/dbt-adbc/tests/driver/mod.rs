@@ -145,8 +145,8 @@ mod tests {
 
     fn build_clickhouse_database() -> Result<database::Builder> {
         let mut builder = database::Builder::new(Backend::ClickHouse);
-        let uri = env::var("ADBC_CLICKHOUSE_URI")
-            .unwrap_or_else(|_| "http://localhost:8123".to_owned());
+        let uri =
+            env::var("ADBC_CLICKHOUSE_URI").unwrap_or_else(|_| "http://localhost:8123".to_owned());
         let username =
             env::var("ADBC_CLICKHOUSE_USERNAME").unwrap_or_else(|_| "default".to_owned());
         let password = env::var("ADBC_CLICKHOUSE_PASSWORD").unwrap_or_default();
@@ -159,12 +159,10 @@ mod tests {
 
     fn build_exasol_database() -> Result<database::Builder> {
         let mut builder = database::Builder::new(Backend::Exasol);
-        let uri = env::var("ADBC_EXASOL_URI")
-            .unwrap_or_else(|_| "exasol://localhost:8563".to_owned());
-        let username =
-            env::var("ADBC_EXASOL_USERNAME").unwrap_or_else(|_| "sys".to_owned());
-        let password =
-            env::var("ADBC_EXASOL_PASSWORD").unwrap_or_else(|_| "exasol".to_owned());
+        let uri =
+            env::var("ADBC_EXASOL_URI").unwrap_or_else(|_| "exasol://localhost:8563".to_owned());
+        let username = env::var("ADBC_EXASOL_USERNAME").unwrap_or_else(|_| "sys".to_owned());
+        let password = env::var("ADBC_EXASOL_PASSWORD").unwrap_or_else(|_| "exasol".to_owned());
         let validate_cert =
             env::var("ADBC_EXASOL_VALIDATE_CERT").unwrap_or_else(|_| "0".to_owned());
         let uri = if uri.contains("validateservercertificate") {

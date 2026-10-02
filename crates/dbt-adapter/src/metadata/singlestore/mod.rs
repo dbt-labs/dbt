@@ -10,6 +10,7 @@
 //!
 //! Relation-cache hydration is implemented via `list_relations_in_parallel_inner`
 //! using the shared MapReduce pattern with `list_relations`.
+pub mod sql_types;
 
 use crate::AdapterEngine;
 use crate::adapter::adapter_impl::AdapterImpl;
@@ -66,7 +67,9 @@ pub fn list_relations(
         dbt_adapter_sql::ident::escape_string_literal(&schema, AdapterType::SingleStore),
     );
 
-    let batch = ctx.engine.execute(None, conn, ctx.query_ctx, &sql, ctx.token.clone())?;
+    let batch = ctx
+        .engine
+        .execute(None, conn, ctx.query_ctx, &sql, ctx.token.clone())?;
 
     if batch.num_rows() == 0 {
         return Ok(Vec::new());
@@ -460,13 +463,7 @@ impl MetadataAdapter for SingleStoreMetadataAdapter {
         let map_f = move |conn: &'_ mut dyn Connection,
                           task: &(String, Vec<(String, String)>)|
               -> AdapterResult<Vec<(String, MetadataFreshness)>> {
-            query_schema_freshness(
-                engine.as_ref(),
-                conn,
-                &task.0,
-                &task.1,
-                token_clone.clone(),
-            )
+            query_schema_freshness(engine.as_ref(), conn, &task.0, &task.1, token_clone.clone())
         };
 
         let reduce_f = move |acc: &mut Acc,
@@ -517,7 +514,6 @@ impl MetadataAdapter for SingleStoreMetadataAdapter {
                 || list_relations(&mut lr_ctx, conn, db_schema),
             )
         };
-
 
         let reduce_f = move |acc: &mut Acc,
                              db_schema: CatalogAndSchema,

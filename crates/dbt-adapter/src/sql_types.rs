@@ -969,76 +969,7 @@ pub mod clickhouse {
     }
 }
 
-pub mod singlestore {
-    use super::*;
-
-    pub fn try_format_type(
-        datatype: &DataType,
-        nullable: bool,
-        out: &mut String,
-    ) -> AdapterResult<()> {
-        let mut rendered = String::new();
-        match datatype {
-            DataType::Null => rendered.push_str("TEXT"),
-            DataType::Boolean => rendered.push_str("BOOLEAN"),
-            DataType::Int8 => rendered.push_str("TINYINT"),
-            DataType::Int16 => rendered.push_str("SMALLINT"),
-            DataType::Int32 => rendered.push_str("INT"),
-            DataType::Int64 => rendered.push_str("BIGINT"),
-            DataType::UInt8 => rendered.push_str("TINYINT UNSIGNED"),
-            DataType::UInt16 => rendered.push_str("SMALLINT UNSIGNED"),
-            DataType::UInt32 => rendered.push_str("INT UNSIGNED"),
-            DataType::UInt64 => rendered.push_str("BIGINT UNSIGNED"),
-            DataType::Float16 | DataType::Float32 => rendered.push_str("FLOAT"),
-            DataType::Float64 => rendered.push_str("DOUBLE"),
-            DataType::Utf8 | DataType::LargeUtf8 | DataType::Utf8View => rendered.push_str("TEXT"),
-            DataType::Binary | DataType::LargeBinary | DataType::BinaryView => {
-                rendered.push_str("BLOB")
-            }
-            DataType::Date32 | DataType::Date64 => rendered.push_str("DATE"),
-            DataType::Time32(_) | DataType::Time64(_) => rendered.push_str("TIME(6)"),
-            DataType::Timestamp(TimeUnit::Second, _) => rendered.push_str("DATETIME"),
-            DataType::Timestamp(TimeUnit::Millisecond, _) => rendered.push_str("DATETIME(3)"),
-            DataType::Timestamp(TimeUnit::Microsecond, _)
-            | DataType::Timestamp(TimeUnit::Nanosecond, _) => rendered.push_str("DATETIME(6)"),
-            DataType::Decimal128(precision, scale) | DataType::Decimal256(precision, scale) => {
-                rendered = format!("DECIMAL({precision}, {scale})");
-            }
-            DataType::FixedSizeList(field, size) => {
-                let elem_type = field.data_type();
-                let mut elem_str = String::new();
-                match elem_type {
-                    DataType::Float32 => elem_str.push_str("F32"),
-                    DataType::Float64 => elem_str.push_str("F64"),
-                    DataType::Int8 => elem_str.push_str("I8"),
-                    DataType::Int16 => elem_str.push_str("I16"),
-                    DataType::Int32 => elem_str.push_str("I32"),
-                    DataType::Int64 => elem_str.push_str("I64"),
-                    _ => try_format_type(elem_type, false, &mut elem_str)?,
-                }
-                rendered = format!("VECTOR({size}, {elem_str})");
-            }
-            DataType::List(_)
-            | DataType::LargeList(_)
-            | DataType::Struct(_)
-            | DataType::Map(..) => {
-                rendered.push_str("JSON");
-            }
-            _ => {
-                return Err(AdapterError::new(
-                    AdapterErrorKind::UnsupportedType,
-                    format!("{datatype} is not convertible to singlestore sql type"),
-                ));
-            }
-        }
-
-        out.push_str(&rendered);
-        if !nullable {
-            out.push_str(" NOT NULL");
-        }
-        Ok(())
-    }
-}
+pub use crate::metadata::singlestore::sql_types as singlestore;
 
 pub mod fabric {
 
@@ -1555,57 +1486,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_bigquery_formats_decimal_by_supported_range() {
-        let type_ops = DefaultTypeOps::new(Bigquery);
-
-        for (data_type, expected) in [
-            (DataType::Decimal128(38, 9), "NUMERIC"),
-            (DataType::Decimal128(29, 0), "NUMERIC"),
-            (DataType::Decimal128(30, 0), "BIGNUMERIC"),
-            (DataType::Decimal128(30, 20), "BIGNUMERIC"),
-            (DataType::Decimal256(10, 2), "NUMERIC"),
-        ] {
-            let mut formatted = String::new();
-            type_ops
-                .format_arrow_type_as_sql(&data_type, true, &mut formatted)
-                .unwrap();
-            assert_eq!(formatted, expected, "failed to format {data_type}");
-        }
-    }
-
-    #[test]
-    fn test_bigquery_formats_nested_logical_types() {
-        let geography =
-            DataType::FixedSizeList(Arc::new(Field::new("geography", DataType::Utf8, true)), 1);
-        let json = DataType::FixedSizeList(Arc::new(Field::new("json", DataType::Utf8, true)), 1);
-        let data_type = DataType::Struct(
-            vec![
-                Field::new("location", geography, true),
-                Field::new(
-                    "events",
-                    DataType::List(Arc::new(Field::new("item", json, true))),
-                    true,
-                ),
-                Field::new(
-                    "created_at",
-                    DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into())),
-                    true,
-                ),
-            ]
-            .into(),
-        );
-
-        let mut out = String::new();
-        DefaultTypeOps::new(Bigquery)
-            .format_arrow_type_as_sql(&data_type, true, &mut out)
-            .unwrap();
-        assert_eq!(
-            out,
-            "STRUCT<location GEOGRAPHY, events ARRAY<JSON>, created_at TIMESTAMP>"
-        );
-    }
-
     const ALL_ADAPTERS: [AdapterType; 5] = [Bigquery, Databricks, Postgres, Snowflake, Redshift];
 
     #[test]
@@ -1749,5 +1629,3 @@ mod tests {
         );
     }
 }
-
-

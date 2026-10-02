@@ -50,13 +50,21 @@ fn do_sql_find_statement_delimiters<'input, 'arena>(
         _ => dialect_dispatch!(dbt_lexer_trino, trinolexer),
     };
 
+    tokens_to_statement_spans(token_stream, semi_colon, unpaired_token)
+}
+
+fn tokens_to_statement_spans<'a, T: Token + ?Sized + 'a>(
+    token_stream: impl IntoIterator<Item = &'a T>,
+    semi_colon: i32,
+    unpaired_token: i32,
+) -> Vec<Span> {
     let mut result = vec![];
     let mut start_token = None;
     let mut last_token = None;
     let mut unpaired_token_found = false;
     for token in token_stream {
         if start_token.is_none() {
-            start_token = Some(token.clone());
+            start_token = Some(token);
         }
         if !unpaired_token_found {
             if token.get_channel() == 0 && token.get_token_type() == semi_colon {

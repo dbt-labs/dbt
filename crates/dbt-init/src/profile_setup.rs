@@ -327,7 +327,6 @@ impl ProfileSetup {
 }
 
 impl ProfileSetup {
-
     /// Write or update a single profile block in the appropriate profiles.yml,
     /// preserving existing content, order, and comments.
     pub fn write_profile(&self, profile_name: &str, profile: &ProfileTarget) -> FsResult<()> {

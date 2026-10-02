@@ -20,9 +20,9 @@ use crate::schemas::project::configs::common::WarehouseSpecificNodeConfig;
 use crate::schemas::project::configs::config_merge::{Tags, TblProperties};
 use crate::schemas::project::{ResolvableConfig, TypedRecursiveConfig};
 use crate::schemas::serde::{
-    IndexesConfig, PartitionsConfig, StringOrArrayOfStrings, StringOrInteger,
-    bool_or_string_bool, event_time_or_map_to_string, f64_or_string_f64,
-    hours_to_expiration_or_string_omissible, u64_or_string_u64,
+    IndexesConfig, PartitionsConfig, StringOrArrayOfStrings, StringOrInteger, bool_or_string_bool,
+    event_time_or_map_to_string, f64_or_string_f64, hours_to_expiration_or_string_omissible,
+    u64_or_string_u64,
 };
 use dbt_proc_macros::DefaultTo;
 

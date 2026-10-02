@@ -546,61 +546,7 @@ pub trait BaseRelation: BaseRelationProperties + Any + Send + Sync + fmt::Debug 
         };
 
         // render the filter conditions
-        let (start, end) = match self.adapter_type() {
-            // See: https://github.com/dbt-labs/dbt-adapters/blob/221923bf60efc6a099681a82be89e86bef587f55/dbt-snowflake/src/dbt/adapters/snowflake/relation.py#L201
-            AdapterType::Snowflake => (
-                start.map(|start| format!("{event_time} >= to_timestamp_tz('{start}')")),
-                end.map(|end| format!("{event_time} < to_timestamp_tz('{end}')")),
-            ),
-
-            // See: https://github.com/dbt-labs/dbt-adapters/blob/221923bf60efc6a099681a82be89e86bef587f55/dbt-bigquery/src/dbt/adapters/bigquery/relation.py#L124
-            AdapterType::Bigquery => (
-                start.map(|start| format!("cast({event_time} as timestamp) >= '{start}'")),
-                end.map(|end| format!("cast({event_time} as timestamp) < '{end}'")),
-            ),
-
-            AdapterType::Postgres
-            | AdapterType::Databricks
-            | AdapterType::Redshift
-            | AdapterType::Salesforce
-            | AdapterType::Spark
-            | AdapterType::DuckDB
-            | AdapterType::LakeCompute
-            | AdapterType::Fabric
-            | AdapterType::SingleStore => (
-                start.map(|start| format!("{event_time} >= '{start}'")),
-                end.map(|end| format!("{event_time} < '{end}'")),
-            ),
-            // ClickHouse: parseDateTime64BestEffort preserves sub-second boundaries
-            // for DateTime64 event-time columns.
-            AdapterType::ClickHouse => (
-                start.map(|start| {
-                    format!("{event_time} >= parseDateTime64BestEffort('{start}', 9)")
-                }),
-                end.map(|end| format!("{event_time} < parseDateTime64BestEffort('{end}', 9)")),
-            ),
-            // Exasol TIMESTAMP literals take no time-zone offset; strip the
-            // (always +00:00) offset and 'T' from the UTC rfc3339 boundary.
-            AdapterType::Exasol => {
-                let to_exasol_ts = |s: &str| {
-                    let s = s
-                        .trim_end_matches("+00:00")
-                        .trim_end_matches('Z')
-                        .replace('T', " ");
-                    format!("TIMESTAMP '{s}'")
-                };
-                (
-                    start.map(|start| format!("{event_time} >= {}", to_exasol_ts(&start))),
-                    end.map(|end| format!("{event_time} < {}", to_exasol_ts(&end))),
-                )
-            }
-            AdapterType::Starburst => todo!("Starburst"),
-            AdapterType::Athena => todo!("Athena"),
-            AdapterType::Trino => todo!("Trino"),
-            AdapterType::Datafusion => todo!("Datafusion"),
-            AdapterType::Dremio => todo!("Dremio"),
-            AdapterType::Oracle => todo!("Oracle"),
-        };
+        let (start, end) = render_event_time_bounds(self.adapter_type(), event_time, start, end);
 
         // create the filter expression
         let filter = match (start, end) {
@@ -923,4 +869,71 @@ pub trait BaseRelation: BaseRelationProperties + Any + Send + Sync + fmt::Debug 
     ) -> Result<Value, MinijinjaError> {
         unimplemented!("Available only for BigQuery and Redshift")
     }
+}
+
+fn render_event_time_bounds(
+    adapter: AdapterType,
+    event_time: &str,
+    start: Option<String>,
+    end: Option<String>,
+) -> (Option<String>, Option<String>) {
+    match adapter {
+        // See: https://github.com/dbt-labs/dbt-adapters/blob/221923bf60efc6a099681a82be89e86bef587f55/dbt-snowflake/src/dbt/adapters/snowflake/relation.py#L201
+        AdapterType::Snowflake => (
+            start.map(|start| format!("{event_time} >= to_timestamp_tz('{start}')")),
+            end.map(|end| format!("{event_time} < to_timestamp_tz('{end}')")),
+        ),
+
+        // See: https://github.com/dbt-labs/dbt-adapters/blob/221923bf60efc6a099681a82be89e86bef587f55/dbt-bigquery/src/dbt/adapters/bigquery/relation.py#L124
+        AdapterType::Bigquery => (
+            start.map(|start| format!("cast({event_time} as timestamp) >= '{start}'")),
+            end.map(|end| format!("cast({event_time} as timestamp) < '{end}'")),
+        ),
+
+        AdapterType::Postgres
+        | AdapterType::Databricks
+        | AdapterType::Redshift
+        | AdapterType::Salesforce
+        | AdapterType::Spark
+        | AdapterType::DuckDB
+        | AdapterType::LakeCompute
+        | AdapterType::Fabric
+        | AdapterType::SingleStore => (
+            start.map(|start| format!("{event_time} >= '{start}'")),
+            end.map(|end| format!("{event_time} < '{end}'")),
+        ),
+        // ClickHouse: parseDateTime64BestEffort preserves sub-second boundaries
+        // for DateTime64 event-time columns.
+        AdapterType::ClickHouse => (
+            start.map(|start| format!("{event_time} >= parseDateTime64BestEffort('{start}', 9)")),
+            end.map(|end| format!("{event_time} < parseDateTime64BestEffort('{end}', 9)")),
+        ),
+        // Exasol TIMESTAMP literals take no time-zone offset; strip the
+        // (always +00:00) offset and 'T' from the UTC rfc3339 boundary.
+        AdapterType::Exasol => exasol_event_time_bounds(event_time, start, end),
+        adapter @ (AdapterType::Starburst
+        | AdapterType::Athena
+        | AdapterType::Trino
+        | AdapterType::Datafusion
+        | AdapterType::Dremio
+        | AdapterType::Oracle) => todo!("{adapter}"),
+    }
+}
+
+fn exasol_event_time_bounds(
+    event_time: &str,
+    start: Option<String>,
+    end: Option<String>,
+) -> (Option<String>, Option<String>) {
+    let to_exasol_ts = |s: &str| {
+        let s = s
+            .trim_end_matches("+00:00")
+            .trim_end_matches('Z')
+            .replace('T', " ");
+        format!("TIMESTAMP '{s}'")
+    };
+    (
+        start.map(|start| format!("{event_time} >= {}", to_exasol_ts(&start))),
+        end.map(|end| format!("{event_time} < {}", to_exasol_ts(&end))),
+    )
 }

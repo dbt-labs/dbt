@@ -19,7 +19,12 @@ struct UriConfig<'a> {
 }
 
 impl UriConfig<'_> {
-    fn add_option(&mut self, opt: &str, param: &str, value: Option<impl AsRef<str>>) -> Result<(), AuthError> {
+    fn add_option(
+        &mut self,
+        opt: &str,
+        param: &str,
+        value: Option<impl AsRef<str>>,
+    ) -> Result<(), AuthError> {
         if let Some(val) = value {
             let s = val.as_ref();
             self.query_params.push(format!("{param}={s}"));
