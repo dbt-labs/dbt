@@ -32,6 +32,9 @@ use dbt_jinja_ctx::{
     to_jinja_btreemap, to_model_context_map,
 };
 
+use super::super::compile_and_run_context::{
+    bind_ref_to_node, bind_resolution_functions, bind_source_to_node,
+};
 use super::run_config::RunConfig;
 use dbt_schemas::schemas::project::ConfigKeys;
 
@@ -473,6 +476,8 @@ pub fn build_run_node_context<S: Serialize>(
 ) -> (BTreeMap<String, MinijinjaValue>, ResultStore) {
     // Downcast the base `builtins` Object to its concrete map here so the
     // shared overlay builder receives a typed map (no downcast on its side).
+    let mut base_context = base_context.clone();
+    bind_resolution_functions(&mut base_context, adapter_type, &node.common().unique_id);
     let base_builtins = base_context.get("builtins").map(downcast_builtins_map);
     let (overlay, result_store) = build_run_node_overlay(
         node,
@@ -486,7 +491,7 @@ pub fn build_run_node_context<S: Serialize>(
         packages,
     );
 
-    let mut context = base_context.clone();
+    let mut context = base_context;
     context.extend(to_jinja_btreemap(&overlay));
     (context, result_store)
 }
@@ -513,7 +518,12 @@ pub fn build_run_node_ctx<S: Serialize>(
 ) -> RunNodeCtx {
     // `CompileBaseCtx::builtins` is a `MinijinjaValue` (Jinja-facing Object
     // slot), so downcast it to the concrete map for the shared overlay builder.
-    let base_builtins = downcast_builtins_map(&base.builtins);
+    let mut base = base.clone();
+    base.ref_fn = bind_ref_to_node(&base.ref_fn, adapter_type, &node.common().unique_id);
+    base.source = bind_source_to_node(&base.source, adapter_type);
+    let mut base_builtins = downcast_builtins_map(&base.builtins);
+    bind_resolution_functions(&mut base_builtins, adapter_type, &node.common().unique_id);
+    base.builtins = MinijinjaValue::from_object(base_builtins.clone());
     let (mut overlay, _result_store) = build_run_node_overlay(
         node,
         deprecated_config,
@@ -525,13 +535,16 @@ pub fn build_run_node_ctx<S: Serialize>(
         sql_header,
         packages,
     );
-    overlay.base = Some(base.clone());
+    overlay.base = Some(base);
     overlay
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::node_resolver::NodeResolver;
+    use crate::phases::{RefFunction, SourceFunction};
+    use dbt_schemas::state::DbtRuntimeConfig;
     use serde_json::json;
 
     fn column_data_type<'a>(model: &'a YmlValue, column_name: &str) -> &'a str {
@@ -541,6 +554,57 @@ mod tests {
             .and_then(|column| column.get("data_type"))
             .and_then(|data_type| data_type.as_str())
             .expect("column data_type should exist")
+    }
+
+    #[test]
+    fn hook_resolution_functions_are_bound_to_the_running_node() {
+        let resolver = Arc::new(NodeResolver::default());
+        let runtime_config = Arc::new(DbtRuntimeConfig::default());
+        let ref_function = MinijinjaValue::from_object(RefFunction::new_unvalidated(
+            resolver.clone(),
+            "test".to_string(),
+            runtime_config.clone(),
+        ));
+        let source_function = MinijinjaValue::from_object(SourceFunction::new_unvalidated(
+            resolver,
+            "test".to_string(),
+            runtime_config,
+        ));
+        let builtins = BTreeMap::from([
+            ("ref".to_string(), ref_function.clone()),
+            ("source".to_string(), source_function.clone()),
+        ]);
+        let mut context = BTreeMap::from([
+            ("ref".to_string(), ref_function),
+            ("source".to_string(), source_function),
+            (
+                "builtins".to_string(),
+                MinijinjaValue::from_object(builtins),
+            ),
+        ]);
+
+        bind_resolution_functions(&mut context, AdapterType::DuckDB, "model.test.consumer");
+
+        let assert_bound = |values: &BTreeMap<String, MinijinjaValue>| {
+            let ref_function = values["ref"]
+                .as_object()
+                .and_then(|object| object.downcast_ref::<RefFunction>())
+                .expect("ref should remain a RefFunction");
+            assert_eq!(
+                ref_function.consumer_binding(),
+                (Some(AdapterType::DuckDB), "model.test.consumer")
+            );
+            let source_function = values["source"]
+                .as_object()
+                .and_then(|object| object.downcast_ref::<SourceFunction>())
+                .expect("source should remain a SourceFunction");
+            assert_eq!(
+                source_function.consumer_adapter(),
+                Some(AdapterType::DuckDB)
+            );
+        };
+        assert_bound(&context);
+        assert_bound(&downcast_builtins_map(&context["builtins"]));
     }
 
     #[test]

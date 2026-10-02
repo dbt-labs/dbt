@@ -1,6 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
+use dbt_adapter_core::AdapterType;
 use dbt_common::{
     ErrorCode, FsError, FsResult,
     constants::{DBT_CTE_PREFIX, DBT_EPHEMERAL_DIR_NAME},
@@ -13,7 +14,7 @@ use dbt_jinja_utils::{
     jinja_environment::JinjaEnv,
     listener::{DefaultRenderingEventListenerFactory, RenderingEventListenerFactory},
     phases::{
-        MacroLookupContext,
+        MacroLookupContext, bind_resolution_functions,
         compile::{DependencyValidationConfig, build_compile_node_context},
         run::{WriteConfig, extend_base_context_stateful_fn},
     },
@@ -46,6 +47,7 @@ pub async fn run_operation_inline_sql(
     jinja_env: &Arc<JinjaEnv>,
     base_context: &BTreeMap<String, Value>,
     io_args: &IoArgs,
+    adapter_type: AdapterType,
 ) -> FsResult<String> {
     if sql.trim().is_empty() {
         return Err(fs_err!(
@@ -55,6 +57,7 @@ pub async fn run_operation_inline_sql(
     }
 
     let mut ctx = base_context.clone();
+    bind_resolution_functions(&mut ctx, adapter_type, "operation.inline_query");
     ctx.insert(
         TARGET_PACKAGE_NAME.to_string(),
         Value::from(resolver_state.root_project_name.clone()),
@@ -260,6 +263,11 @@ pub async fn run_operation_on_run(
 
     // Get the base context
     let mut operation_ctx = base_context.clone();
+    bind_resolution_functions(
+        &mut operation_ctx,
+        operation.node_adapter(),
+        &operation.__common_attr__.unique_id,
+    );
     operation_ctx.insert(
         TARGET_PACKAGE_NAME.to_string(),
         Value::from(operation.__common_attr__.package_name.clone()),

@@ -15,21 +15,25 @@ use dbt_adapter::AdapterStore;
 use dbt_adapter::relation::create_relation_from_node;
 use dbt_adapter::response::AdapterResponse;
 use dbt_adapter_core::AdapterType;
-use dbt_common::FsResult;
 use dbt_common::collections::{DashMap, SccHashMap};
 use dbt_common::io_args::OptimizeTestsOptions;
 use dbt_common::path::DbtPath;
 use dbt_common::stats::{NodeStatus, Stat};
+use dbt_common::{ErrorCode, FsResult, fs_err};
 use dbt_dag::schedule::Schedule;
 use dbt_frontend_common::sources_extractor::SourcesExtractor;
 use dbt_jinja_utils::jinja_environment::{JinjaEnv, adapter_api_value};
 use dbt_jinja_utils::phases::compile::{
     DependencyValidationConfig, build_compile_node_context_inner,
 };
+use dbt_jinja_utils::phases::{
+    build_target_context_map, configure_compile_and_run_jinja_environment,
+};
 use dbt_schema_store::{DataStoreTrait, SchemaStoreTrait};
 use dbt_schemas::materialization_resolver::MaterializationResolver;
 use dbt_schemas::schemas::common::UpdatesOn;
 use dbt_schemas::schemas::nodes::TestMetadata;
+use dbt_schemas::schemas::profiles::TargetContext;
 use dbt_schemas::schemas::relations::base::BaseRelation;
 use dbt_schemas::schemas::{BatchResults, InternalDbtNode, InternalDbtNodeAttributes, Nodes};
 use dbt_schemas::state::{DbtProfile, DbtRuntimeConfig, NodeResolverTracker, ResolverState};
@@ -192,6 +196,10 @@ pub struct TaskRunnerCtxInner {
     /// executes it, rather than re-deriving one from the profile. Its
     /// `default_adapter_type()` is what an unannotated node runs on.
     pub adapter_store: Arc<AdapterStore>,
+    /// Per-adapter Jinja environments for execution. The shared environment is
+    /// bound to the command's base adapter; non-default nodes need the same
+    /// macros and globals with `adapter`, `api`, and `dialect` rebound.
+    pub adapter_envs: DashMap<AdapterType, Arc<JinjaEnv>>,
     pub sources_extractor: Arc<dyn SourcesExtractor>,
     pub dbt_profile: Arc<DbtProfile>,
     pub runtime_config: Arc<DbtRuntimeConfig>,
@@ -281,6 +289,7 @@ impl TaskRunnerCtxInner {
             materialization_resolver: Arc::new(materialization_resolver),
             root_project_name: resolver_state.root_project_name.clone(),
             adapter_store,
+            adapter_envs: DashMap::default(),
             sources_extractor,
             dbt_profile: Arc::new(resolver_state.dbt_profile.clone()),
             runtime_config: resolver_state.runtime_config.clone(),
@@ -475,6 +484,74 @@ impl TaskRunnerCtx {
     /// executes a given adapter type; see [`AdapterStore`].
     pub fn adapter_store(&self) -> &Arc<AdapterStore> {
         &self.inner.adapter_store
+    }
+
+    /// Return an execution environment bound to `adapter_type`.
+    ///
+    /// Environments are immutable after construction and cached by adapter, so
+    /// parallel nodes share one correctly bound environment without mutating the
+    /// command-wide base environment.
+    pub fn jinja_env_for_adapter(&self, adapter_type: AdapterType) -> FsResult<Arc<JinjaEnv>> {
+        if self
+            .env
+            .get_adapter_ref()
+            .is_some_and(|adapter| adapter.adapter_type() == adapter_type)
+        {
+            return Ok(Arc::clone(&self.env));
+        }
+
+        if let Some(env) = self.inner.adapter_envs.get(&adapter_type) {
+            return Ok(Arc::clone(env.value()));
+        }
+
+        let adapter = self.adapter_store().get(adapter_type)?;
+        let mut env = self.env.as_ref().clone();
+        configure_compile_and_run_jinja_environment(&mut env, adapter);
+        let env = Arc::new(env);
+        self.inner
+            .adapter_envs
+            .insert(adapter_type, Arc::clone(&env));
+        Ok(env)
+    }
+
+    /// Return the command base context with profile-derived values rebound to
+    /// the adapter executing a node.
+    pub fn base_context_for_adapter(
+        &self,
+        adapter_type: AdapterType,
+    ) -> FsResult<BTreeMap<String, Value>> {
+        if adapter_type == self.default_adapter_type() {
+            return Ok(self.inner.base_context.clone());
+        }
+
+        let config = self.dbt_profile().adapter(adapter_type).ok_or_else(|| {
+            fs_err!(
+                ErrorCode::InvalidConfig,
+                "no profile connection is configured for adapter '{adapter_type}'"
+            )
+        })?;
+        let target_context = TargetContext::try_from(config.clone())
+            .map_err(|e| fs_err!(ErrorCode::InvalidConfig, "{e}"))?;
+        let target_context = Arc::new(build_target_context_map(
+            &self.dbt_profile().profile,
+            &self.dbt_profile().target,
+            target_context,
+        ));
+        let mut base_context = self.inner.base_context.clone();
+        base_context.insert(
+            "target".to_string(),
+            Value::from_serialize(Arc::clone(&target_context)),
+        );
+        base_context.insert("env".to_string(), Value::from_serialize(target_context));
+        base_context.insert(
+            "database".to_string(),
+            Value::from(config.get_database().cloned()),
+        );
+        base_context.insert(
+            "schema".to_string(),
+            Value::from(config.get_schema().cloned()),
+        );
+        Ok(base_context)
     }
 
     pub fn extended_ctx<T: ExtendedCtx + 'static>(&self) -> Option<&T> {
