@@ -1,0 +1,7 @@
+kind: Fixes
+body: Preserve model and column constraints in dbt information schema output
+time: 2026-10-01T00:00:00-05:00
+custom:
+  author: adiranjan25
+  issue: "16553"
+  project: dbt-core
