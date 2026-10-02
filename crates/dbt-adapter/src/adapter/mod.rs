@@ -4277,175 +4277,151 @@ impl Adapter {
             "strip_trailing_statement_terminator" => {
                 self.strip_trailing_statement_terminator(state, args)
             }
-            "get_seed_file_path" => {
-                // model: dict (seed node)
-                let iter = ArgsIter::new(name, &["model"], args);
-                let model = iter.next_arg::<Value>()?;
-                iter.finish()?;
-
-                let seed =
-                    minijinja_value_to_typed_struct::<dbt_schemas::schemas::nodes::DbtSeed>(model)
-                        .map_err(|e| {
-                            minijinja::Error::new(
-                                minijinja::ErrorKind::SerdeDeserializeError,
-                                format!("get_seed_file_path: Failed to deserialize DbtSeed: {e}"),
-                            )
-                        })?;
-
-                let full_path = seed
-                    .file_path_from_root()
-                    .unwrap_or_else(|| seed.__common_attr__.original_file_path.to_path_buf());
-                Ok(Value::from(full_path.display().to_string()))
-            }
-            "external_root" => {
-                // (no args)
-                let iter = ArgsIter::new(name, &[], args);
-                iter.finish()?;
-                self.external_root(state)
-            }
+            "get_seed_file_path" => self.get_seed_file_path_impl(args),
+            "external_root" => self.external_root_impl(state, args),
             "external_write_options" => self.external_write_options(state, args),
             "external_read_location" => self.external_read_location(state, args),
             "location_exists" => self.location_exists(state, args),
             // ---- ClickHouse adapter method stubs (MVP) ----
-            // These methods are called from ClickHouse Jinja macros. They are
-            // registered for all adapters (they only run when the dispatch
-            // hits a ClickHouse macro), but they return conservative defaults
-            // so behavior matches "no cluster, no special engine, current
-            // server version, cannot exchange tables atomically".
-            "clickhouse_db_engine_clause" => {
-                // (no args) -> "" (skip "ENGINE = ..." in CREATE DATABASE)
-                Ok(Value::from(""))
-            }
-            "get_clickhouse_cluster_name" => {
-                // (no args) -> None (no ON CLUSTER usage)
-                Ok(Value::from(()))
-            }
-            "get_model_settings" => {
-                // model: dict, engine: str = "MergeTree" -> SETTINGS section of CREATE DDL
-                self.get_model_settings(state, args)
-            }
-            "get_model_query_settings" => {
-                // model: dict -> SETTINGS clause appended to CREATE TABLE ... AS (SELECT ...)
-                self.get_model_query_settings(state, args)
-            }
-            "is_before_version" => {
-                // version: str -> bool (server version < given version)
-                self.is_before_version(state, args)
-            }
-            "is_at_or_after_version" => {
-                // version: str -> bool (server version >= given version)
-                self.is_at_or_after_version(state, args)
-            }
-            "s3source_clause" => {
-                // config_name: str, s3_model_config: dict, bucket: str, path: str, fmt: str,
-                // structure: str|list|dict, aws_access_key_id: str, aws_secret_access_key: str,
-                // role_arn: str, compression: str = '', external_id: str = ''
-                // -> s3(...) table function clause
-                self.s3source_clause(state, args)
-            }
-            "format_columns" => {
-                // columns: List[Column] -> List[dict] of {name, data_type}
-                let iter = ArgsIter::new("format_columns", &["columns"], args);
-                let columns = iter.next_arg::<&Value>()?;
-                iter.finish()?;
-                Ok(clickhouse::format_columns(columns))
-            }
-            "can_exchange" => {
-                // schema: str, type: str -> false (don't use EXCHANGE TABLES)
-                Ok(Value::from(false))
-            }
-            "should_on_cluster" => {
-                // materialized: str, engine_clause: str -> false
-                Ok(Value::from(false))
-            }
+            "clickhouse_db_engine_clause" => Ok(Value::from("")),
+            "get_clickhouse_cluster_name" => Ok(Value::from(())),
+            "get_model_settings" => self.get_model_settings(state, args),
+            "get_model_query_settings" => self.get_model_query_settings(state, args),
+            "is_before_version" => self.is_before_version(state, args),
+            "is_at_or_after_version" => self.is_at_or_after_version(state, args),
+            "s3source_clause" => self.s3source_clause(state, args),
+            "format_columns" => self.format_columns_impl(args),
+            "can_exchange" => Ok(Value::from(false)),
+            "should_on_cluster" => Ok(Value::from(false)),
             "calculate_incremental_strategy" => {
-                // strategy: str -> str (''/'default' resolves to delete_insert or legacy; '+' -> '_')
-                let iter = ArgsIter::new("calculate_incremental_strategy", &["strategy"], args);
-                let strategy = iter.next_arg::<Option<&str>>()?;
-                iter.finish()?;
-                match &self.inner {
-                    Typed { adapter, .. } => {
-                        Ok(Value::from(adapter.calculate_incremental_strategy(
-                            state,
-                            strategy,
-                            self.cancellation_token.clone(),
-                        )))
-                    }
-                    Parse(_) => Ok(Value::from(clickhouse::calculate_incremental_strategy(
-                        strategy, false,
-                    ))),
-                }
+                self.calculate_incremental_strategy_impl(state, args)
             }
-            "validate_incremental_strategy" => {
-                // strategy: str, predicates: list, unique_key: str, partition_by: str -> None (raises on invalid combos)
-                let iter = ArgsIter::new(
-                    "validate_incremental_strategy",
-                    &["strategy", "predicates", "unique_key", "partition_by"],
-                    args,
-                );
-                let strategy = iter.next_arg::<&str>()?;
-                let predicates = iter.next_arg::<&Value>()?;
-                let unique_key = iter.next_arg::<&Value>()?;
-                let partition_by = iter.next_arg::<&Value>()?;
-                iter.finish()?;
-                match &self.inner {
-                    Typed { adapter, .. } => {
-                        adapter.validate_incremental_strategy(
-                            state,
-                            strategy,
-                            predicates.is_true(),
-                            unique_key.is_true(),
-                            partition_by.is_true(),
-                            self.cancellation_token.clone(),
-                        )?;
-                        Ok(none_value())
-                    }
-                    Parse(_) => Ok(none_value()),
-                }
-            }
+            "validate_incremental_strategy" => self.validate_incremental_strategy_impl(state, args),
             "check_incremental_schema_changes" => {
-                // on_schema_change: str, existing: Relation, target_sql: str, materialization: str = 'incremental', query_settings: dict = None -> ClickHouseColumnChanges | none
                 self.check_incremental_schema_changes(state, args)
             }
             "filter_settings_by_engine" => {
-                // model: dict, settings: str -> str
                 Ok(args.get(1).cloned().unwrap_or_else(|| Value::from("")))
             }
-            "get_ch_database" => {
-                // schema: str -> str (CH database = schema in 2-part naming)
-                Ok(args.first().cloned().unwrap_or_else(|| Value::from("")))
-            }
-            "get_csv_data" => {
-                let table = args
-                    .first()
-                    .ok_or_else(|| {
-                        minijinja::Error::new(
-                            minijinja::ErrorKind::MissingArgument,
-                            "get_csv_data requires agate_table argument",
-                        )
-                    })?
-                    .downcast_object::<AgateTable>()
-                    .ok_or_else(|| {
-                        minijinja::Error::new(
-                            minijinja::ErrorKind::InvalidOperation,
-                            "get_csv_data: argument must be an AgateTable",
-                        )
-                    })?;
-                self.get_csv_data(table)
-            }
+            "get_ch_database" => Ok(args.first().cloned().unwrap_or_else(|| Value::from(""))),
+            "get_csv_data" => self.get_csv_data_impl(args),
             "get_credentials" => self.get_credentials(args),
-            "render_equals" => {
-                let iter = ArgsIter::new(name, &["expr1", "expr2"], args);
-                let expr1 = iter.next_arg::<&str>()?;
-                let expr2 = iter.next_arg::<&str>()?;
-                iter.finish()?;
-                self.render_equals(state, expr1, expr2)
-            }
+            "render_equals" => self.render_equals_impl(state, args),
             _ => Err(minijinja::Error::new(
                 minijinja::ErrorKind::UnknownMethod,
                 format!("Unknown method on adapter object: '{name}'"),
             )),
         }
+    }
+
+    fn get_seed_file_path_impl(&self, args: &[Value]) -> Result<Value, minijinja::Error> {
+        let iter = ArgsIter::new("get_seed_file_path", &["model"], args);
+        let model = iter.next_arg::<Value>()?;
+        iter.finish()?;
+
+        let seed = minijinja_value_to_typed_struct::<dbt_schemas::schemas::nodes::DbtSeed>(model)
+            .map_err(|e| {
+            minijinja::Error::new(
+                minijinja::ErrorKind::SerdeDeserializeError,
+                format!("get_seed_file_path: Failed to deserialize DbtSeed: {e}"),
+            )
+        })?;
+
+        let full_path = seed
+            .file_path_from_root()
+            .unwrap_or_else(|| seed.__common_attr__.original_file_path.to_path_buf());
+        Ok(Value::from(full_path.display().to_string()))
+    }
+
+    fn external_root_impl(&self, state: &State, args: &[Value]) -> Result<Value, minijinja::Error> {
+        let iter = ArgsIter::new("external_root", &[], args);
+        iter.finish()?;
+        self.external_root(state)
+    }
+
+    fn format_columns_impl(&self, args: &[Value]) -> Result<Value, minijinja::Error> {
+        let iter = ArgsIter::new("format_columns", &["columns"], args);
+        let columns = iter.next_arg::<&Value>()?;
+        iter.finish()?;
+        Ok(clickhouse::format_columns(columns))
+    }
+
+    fn calculate_incremental_strategy_impl(
+        &self,
+        state: &State,
+        args: &[Value],
+    ) -> Result<Value, minijinja::Error> {
+        let iter = ArgsIter::new("calculate_incremental_strategy", &["strategy"], args);
+        let strategy = iter.next_arg::<Option<&str>>()?;
+        iter.finish()?;
+        match &self.inner {
+            Typed { adapter, .. } => Ok(Value::from(adapter.calculate_incremental_strategy(
+                state,
+                strategy,
+                self.cancellation_token.clone(),
+            ))),
+            Parse(_) => Ok(Value::from(clickhouse::calculate_incremental_strategy(
+                strategy, false,
+            ))),
+        }
+    }
+
+    fn validate_incremental_strategy_impl(
+        &self,
+        state: &State,
+        args: &[Value],
+    ) -> Result<Value, minijinja::Error> {
+        let iter = ArgsIter::new(
+            "validate_incremental_strategy",
+            &["strategy", "predicates", "unique_key", "partition_by"],
+            args,
+        );
+        let strategy = iter.next_arg::<&str>()?;
+        let predicates = iter.next_arg::<&Value>()?;
+        let unique_key = iter.next_arg::<&Value>()?;
+        let partition_by = iter.next_arg::<&Value>()?;
+        iter.finish()?;
+        match &self.inner {
+            Typed { adapter, .. } => {
+                adapter.validate_incremental_strategy(
+                    state,
+                    strategy,
+                    predicates.is_true(),
+                    unique_key.is_true(),
+                    partition_by.is_true(),
+                    self.cancellation_token.clone(),
+                )?;
+                Ok(none_value())
+            }
+            Parse(_) => Ok(none_value()),
+        }
+    }
+
+    fn get_csv_data_impl(&self, args: &[Value]) -> Result<Value, minijinja::Error> {
+        let table = args
+            .first()
+            .ok_or_else(|| {
+                minijinja::Error::new(
+                    minijinja::ErrorKind::MissingArgument,
+                    "get_csv_data requires agate_table argument",
+                )
+            })?
+            .downcast_object::<AgateTable>()
+            .ok_or_else(|| {
+                minijinja::Error::new(
+                    minijinja::ErrorKind::InvalidOperation,
+                    "get_csv_data: argument must be an AgateTable",
+                )
+            })?;
+        self.get_csv_data(table)
+    }
+
+    fn render_equals_impl(&self, state: &State, args: &[Value]) -> Result<Value, minijinja::Error> {
+        let iter = ArgsIter::new("render_equals", &["expr1", "expr2"], args);
+        let expr1 = iter.next_arg::<&str>()?;
+        let expr2 = iter.next_arg::<&str>()?;
+        iter.finish()?;
+        self.render_equals(state, expr1, expr2)
     }
 
     /// ClickHouse: `adapter.get_credentials(connection_overrides)` — connection

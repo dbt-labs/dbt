@@ -27,9 +27,9 @@ use dbt_proc_macros::Resolvable;
 
 use crate::schemas::project::{ResolvableConfig, TypedRecursiveConfig};
 use crate::schemas::serde::{
-    IndexesConfig, PartitionsConfig, QueryTag, StringOrArrayOfStrings,
-    StringOrInteger, bool_or_string_bool, f64_or_string_f64,
-    hours_to_expiration_or_string_omissible, u64_or_string_u64,
+    IndexesConfig, PartitionsConfig, QueryTag, StringOrArrayOfStrings, StringOrInteger,
+    bool_or_string_bool, f64_or_string_f64, hours_to_expiration_or_string_omissible,
+    u64_or_string_u64,
 };
 
 pub const DEFAULT_DATA_TEST_ERROR_IF: &str = "!= 0";

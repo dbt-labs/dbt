@@ -2020,15 +2020,7 @@ impl TryFrom<DbConfig> for TargetContext {
                         database,
                         schema: config.schema.ok_or_else(|| missing("schema"))?,
                         type_: adapter_type,
-                        threads: match config.threads {
-                            Some(StringOrInteger::String(threads)) => {
-                                Some(threads.parse::<u16>().map_err(|_| {
-                                    "threads must be a positive integer".to_string()
-                                })?)
-                            }
-                            Some(StringOrInteger::Integer(threads)) => Some(threads as u16),
-                            None => None,
-                        },
+                        threads: parse_threads_config(config.threads.as_ref())?,
                     },
                     proxy_host: None,
                     proxy_port: None,
@@ -2044,15 +2036,7 @@ impl TryFrom<DbConfig> for TargetContext {
                         database,
                         schema: config.schema.ok_or_else(|| missing("schema"))?,
                         type_: adapter_type,
-                        threads: match config.threads {
-                            Some(StringOrInteger::String(threads)) => {
-                                Some(threads.parse::<u16>().map_err(|_| {
-                                    "threads must be a positive integer".to_string()
-                                })?)
-                            }
-                            Some(StringOrInteger::Integer(threads)) => Some(threads as u16),
-                            None => None,
-                        },
+                        threads: parse_threads_config(config.threads.as_ref())?,
                     },
                 }))
             }
@@ -2199,53 +2183,21 @@ impl TryFrom<DbConfig> for TargetContext {
                 },
             })),
 
-            DbConfig::DuckDB(config) => Ok(TargetContext::DuckDB(DuckDbTargetEnv {
-                path: config.path.clone(),
-                __common__: CommonTargetContext {
-                    // Derive database name from path if not explicitly set (same logic as get_database())
-                    database: config.database.clone().unwrap_or_else(|| {
-                        DuckDBPathInfo::parse_path(config.path.as_deref())
-                            .database
-                            .to_owned()
-                    }),
-                    schema: config.schema.unwrap_or_else(|| "main".to_string()),
-                    type_: adapter_type,
-                    threads: match config.threads {
-                        Some(StringOrInteger::String(threads)) => Some(
-                            threads
-                                .parse::<u16>()
-                                .map_err(|_| "threads must be a positive integer".to_string())?,
-                        ),
-                        Some(StringOrInteger::Integer(threads)) => Some(threads as u16),
-                        None => None,
-                    },
-                },
-            })),
+            DbConfig::DuckDB(config) => Ok(TargetContext::DuckDB(build_duckdb_target_env(
+                config.path,
+                config.database,
+                config.schema,
+                config.threads,
+                adapter_type,
+            )?)),
 
-            DbConfig::LakeCompute(config) => {
-                Ok(TargetContext::DuckDB(DuckDbTargetEnv {
-                    path: config.path.clone(),
-                    __common__: CommonTargetContext {
-                        // Derive database name from path if not explicitly set (same logic as get_database())
-                        database: config.database.clone().unwrap_or_else(|| {
-                            DuckDBPathInfo::parse_path(config.path.as_deref())
-                                .database
-                                .to_owned()
-                        }),
-                        schema: config.schema.unwrap_or_else(|| "main".to_string()),
-                        type_: adapter_type,
-                        threads: match config.threads {
-                            Some(StringOrInteger::String(threads)) => {
-                                Some(threads.parse::<u16>().map_err(|_| {
-                                    "threads must be a positive integer".to_string()
-                                })?)
-                            }
-                            Some(StringOrInteger::Integer(threads)) => Some(threads as u16),
-                            None => None,
-                        },
-                    },
-                }))
-            }
+            DbConfig::LakeCompute(config) => Ok(TargetContext::DuckDB(build_duckdb_target_env(
+                config.path,
+                config.database,
+                config.schema,
+                config.threads,
+                adapter_type,
+            )?)),
 
             DbConfig::Spark(config) => Ok(TargetContext::Spark(SparkTargetEnv {
                 method: config.method.ok_or_else(|| missing("method"))?,
@@ -2320,15 +2272,7 @@ impl TryFrom<DbConfig> for TargetContext {
                     database: String::new(),
                     schema: config.schema.clone().ok_or_else(|| missing("schema"))?,
                     type_: adapter_type,
-                    threads: match config.threads {
-                        Some(StringOrInteger::String(threads)) => Some(
-                            threads
-                                .parse::<u16>()
-                                .map_err(|_| "threads must be a positive integer".to_string())?,
-                        ),
-                        Some(StringOrInteger::Integer(threads)) => Some(threads as u16),
-                        None => None,
-                    },
+                    threads: parse_threads_config(config.threads.as_ref())?,
                 },
             })),
 
@@ -2337,6 +2281,44 @@ impl TryFrom<DbConfig> for TargetContext {
             )),
         }
     }
+}
+
+fn parse_threads_config(threads: Option<&StringOrInteger>) -> Result<Option<u16>, String> {
+    match threads {
+        Some(StringOrInteger::String(threads)) => Some(
+            threads
+                .parse::<u16>()
+                .map_err(|_| "threads must be a positive integer".to_string()),
+        )
+        .transpose(),
+        Some(StringOrInteger::Integer(threads)) => Some(
+            u16::try_from(*threads).map_err(|_| "threads must be a positive integer".to_string()),
+        )
+        .transpose(),
+        None => Ok(None),
+    }
+}
+
+fn build_duckdb_target_env(
+    path: Option<String>,
+    database: Option<String>,
+    schema: Option<String>,
+    threads: Option<StringOrInteger>,
+    adapter_type: String,
+) -> Result<DuckDbTargetEnv, String> {
+    Ok(DuckDbTargetEnv {
+        path: path.clone(),
+        __common__: CommonTargetContext {
+            database: database.unwrap_or_else(|| {
+                DuckDBPathInfo::parse_path(path.as_deref())
+                    .database
+                    .to_owned()
+            }),
+            schema: schema.unwrap_or_else(|| "main".to_string()),
+            type_: adapter_type,
+            threads: parse_threads_config(threads.as_ref())?,
+        },
+    })
 }
 
 fn try_from_singlestore_config(
@@ -2362,15 +2344,7 @@ fn try_from_singlestore_config(
             database,
             schema,
             type_: adapter_type,
-            threads: match config.threads {
-                Some(StringOrInteger::String(threads)) => Some(
-                    threads
-                        .parse::<u16>()
-                        .map_err(|_| "threads must be a positive integer".to_string())?,
-                ),
-                Some(StringOrInteger::Integer(threads)) => Some(threads as u16),
-                None => None,
-            },
+            threads: parse_threads_config(config.threads.as_ref())?,
         },
     })
 }

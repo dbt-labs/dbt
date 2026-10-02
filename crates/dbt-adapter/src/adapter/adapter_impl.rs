@@ -4229,25 +4229,7 @@ impl AdapterImpl {
         match self.inner_adapter() {
             Replay(_, replay) => replay.replay_list_relations(query_ctx, conn, db_schema),
             Impl(adapter_type, engine) if engine.is_sidecar() => {
-                let client = engine.sidecar_client().unwrap();
-                let query_database = db_schema.resolved_catalog.clone();
-                let query_schema = db_schema.resolved_schema.clone();
-                let relation_infos =
-                    client.list_relations(&engine.quoting(), &query_database, &query_schema)?;
-                let mut relations: Vec<Arc<dyn BaseRelation>> =
-                    Vec::with_capacity(relation_infos.len());
-                for (database, schema, name, rel_type) in relation_infos {
-                    let relation = crate::relation::do_create_relation(
-                        adapter_type,
-                        database,
-                        schema,
-                        Some(name),
-                        Some(rel_type),
-                        self.quoting(),
-                    )?;
-                    relations.push(relation.into());
-                }
-                Ok(relations)
+                self.list_relations_sidecar(adapter_type, engine.as_ref(), db_schema)
             }
             Impl(Snowflake, engine) => {
                 snowflake::list_relations(engine.as_ref(), query_ctx, conn, db_schema, token)
@@ -4266,10 +4248,7 @@ impl AdapterImpl {
             Impl(Redshift, engine) => {
                 redshift::list_relations(engine.as_ref(), query_ctx, conn, db_schema, token)
             }
-            Impl(DuckDB, engine) => {
-                duckdb::list_relations(engine.as_ref(), query_ctx, conn, db_schema, token)
-            }
-            Impl(LakeCompute, engine) => {
+            Impl(DuckDB | LakeCompute, engine) => {
                 duckdb::list_relations(engine.as_ref(), query_ctx, conn, db_schema, token)
             }
             Impl(Fabric, engine) => {
@@ -4298,6 +4277,32 @@ impl AdapterImpl {
                 Err(err)
             }
         }
+    }
+
+    fn list_relations_sidecar(
+        &self,
+        adapter_type: AdapterType,
+        engine: &dyn AdapterEngine,
+        db_schema: &CatalogAndSchema,
+    ) -> AdapterResult<Vec<Arc<dyn BaseRelation>>> {
+        let client = engine.sidecar_client().unwrap();
+        let query_database = db_schema.resolved_catalog.clone();
+        let query_schema = db_schema.resolved_schema.clone();
+        let relation_infos =
+            client.list_relations(&engine.quoting(), &query_database, &query_schema)?;
+        let mut relations: Vec<Arc<dyn BaseRelation>> = Vec::with_capacity(relation_infos.len());
+        for (database, schema, name, rel_type) in relation_infos {
+            let relation = crate::relation::do_create_relation(
+                adapter_type,
+                database,
+                schema,
+                Some(name),
+                Some(rel_type),
+                self.quoting(),
+            )?;
+            relations.push(relation.into());
+        }
+        Ok(relations)
     }
 
     /// Per-adapter dependency-graph discovery for the relation cache. Adapters

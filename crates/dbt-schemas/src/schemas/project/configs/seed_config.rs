@@ -37,9 +37,8 @@ use crate::schemas::serde::PartitionsConfig;
 use crate::schemas::serde::StringOrArrayOfStrings;
 use crate::schemas::serde::bool_or_string_bool;
 use crate::schemas::serde::{
-    IndexesConfig, StringOrInteger, column_types_map,
-    event_time_or_map_to_string, f64_or_string_f64, hours_to_expiration_or_string_omissible,
-    u64_or_string_u64,
+    IndexesConfig, StringOrInteger, column_types_map, event_time_or_map_to_string,
+    f64_or_string_f64, hours_to_expiration_or_string_omissible, u64_or_string_u64,
 };
 use dbt_common::serde_utils::Omissible;
 use dbt_proc_macros::DefaultTo;
