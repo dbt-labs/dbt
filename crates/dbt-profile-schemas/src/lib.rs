@@ -126,6 +126,9 @@ impl ProfileSetup {
             Oracle => {
                 todo!("setup_oracle_profile")
             }
+            SingleStore => {
+                todo!("setup_singlestore_profile")
+            }
             LakeCompute => {
                 let _c0 = unwrap_db_config!(LakeCompute);
                 // TODO: Create proper lake compute profile setup

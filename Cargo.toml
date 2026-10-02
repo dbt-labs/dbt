@@ -92,6 +92,7 @@ members = [
   "crates/dbt-sql/dbt-lexer-redshift",
   "crates/dbt-sql/dbt-lexer-snowflake",
   "crates/dbt-sql/dbt-lexer-trino",
+  "crates/dbt-sql/dbt-lexer-singlestore",
   "crates/dbt-sql/dbt-sql-utils",
 
   "crates/dbt-ci",
@@ -322,6 +323,7 @@ dbt-lexer-bigquery = { path = "crates/dbt-sql/dbt-lexer-bigquery" }
 dbt-lexer-databricks = { path = "crates/dbt-sql/dbt-lexer-databricks" }
 dbt-lexer-duckdb = { path = "crates/dbt-sql/dbt-lexer-duckdb" }
 dbt-lexer-redshift = { path = "crates/dbt-sql/dbt-lexer-redshift" }
+dbt-lexer-singlestore = { path = "crates/dbt-sql/dbt-lexer-singlestore" }
 dbt-lexer-snowflake = { path = "crates/dbt-sql/dbt-lexer-snowflake" }
 dbt-lexer-trino = { path = "crates/dbt-sql/dbt-lexer-trino" }
 dbt-sql-base = { path = "crates/dbt-sql-base" }

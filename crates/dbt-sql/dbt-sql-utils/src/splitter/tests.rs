@@ -33,6 +33,18 @@ fn test_sql_split_statements() {
         do_sql_split_statements("/* before */ select 1 /* after */", None),
         vec!["/* before */ select 1 /* after */"]
     );
+
+    // SingleStore statement splitting with backticks and :> operator
+    assert_eq!(
+        do_sql_split_statements(
+            "SELECT `col;name` :> signed FROM `tab`; SELECT '42' :> int;",
+            Some(Dialect::SingleStore),
+        ),
+        vec![
+            "SELECT `col;name` :> signed FROM `tab`",
+            " SELECT '42' :> int"
+        ]
+    );
 }
 
 fn is_empty(sql: &str, dialect: Dialect) -> bool {

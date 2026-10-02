@@ -1,0 +1,4 @@
+name: dbt_singlestore
+version: "1.0.0"
+
+macro-paths: ["macros"]
