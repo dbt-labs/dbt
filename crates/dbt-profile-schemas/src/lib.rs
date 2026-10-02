@@ -8,6 +8,7 @@ pub mod headless;
 pub mod postgres_config;
 pub mod profile;
 pub mod redshift_config;
+pub mod singlestore_config;
 pub mod snowflake_config;
 
 // Re-export the commonly used items so a single `use dbt_profile_schemas::*`
@@ -23,6 +24,7 @@ pub use exasol_config::setup_exasol_profile;
 pub use fabric_config::setup_fabric_profile;
 pub use postgres_config::setup_postgres_profile;
 pub use redshift_config::setup_redshift_profile;
+pub use singlestore_config::setup_singlestore_profile;
 pub use snowflake_config::setup_snowflake_profile;
 
 pub use headless::{adapter_fields, apply_values, build_profile_target, supported_adapters};

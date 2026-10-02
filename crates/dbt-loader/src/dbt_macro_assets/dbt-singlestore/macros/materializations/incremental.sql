@@ -63,12 +63,16 @@
     {%- set target = arg_dict["target_relation"] -%}
     {%- set source = arg_dict["temp_relation"] -%}
     {%- set dest_columns = arg_dict["dest_columns"] -%}
+    {%- set incremental_predicates = arg_dict.get("incremental_predicates", none) -%}
     {%- set dest_cols_csv = get_quoted_csv(dest_columns | map(attribute="name")) -%}
 
     insert into {{ target }} ({{ dest_cols_csv }})
     (
         select {{ dest_cols_csv }}
         from {{ source }}
+        {%- if incremental_predicates %}
+        where {{ incremental_predicates | join(' and ') }}
+        {%- endif %}
     );
 {% endmacro %}
 
@@ -84,6 +88,7 @@
     {%- set source = arg_dict["temp_relation"] -%}
     {%- set dest_columns = arg_dict["dest_columns"] -%}
     {%- set unique_key = arg_dict["unique_key"] -%}
+    {%- set incremental_predicates = arg_dict.get("incremental_predicates", none) -%}
     {%- set col_names = dest_columns | map(attribute='name') | list -%}
 
     {%- if not unique_key -%}
@@ -110,12 +115,18 @@
             insert into {{ target }} ({{ dest_cols_csv }})
             select {{ dest_cols_csv }}
             from {{ source }}
+            {%- if incremental_predicates %}
+            where {{ incremental_predicates | join(' and ') }}
+            {%- endif %}
             on duplicate key update
                 {{ update_assignments | join(',\n        ') }};
         {%- else -%}
             insert ignore into {{ target }} ({{ dest_cols_csv }})
             select {{ dest_cols_csv }}
-            from {{ source }};
+            from {{ source }}
+            {%- if incremental_predicates %}
+            where {{ incremental_predicates | join(' and ') }}
+            {%- endif %};
         {%- endif -%}
     {%- endif -%}
 {% endmacro %}

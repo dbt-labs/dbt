@@ -34,6 +34,10 @@ impl Driver for SingleStoreDriver {
         let mut user = None;
         let mut password = None;
         let mut database = None;
+        let mut ssl_mode = None;
+        let mut ssl_ca = None;
+        let mut ssl_cert = None;
+        let mut ssl_key = None;
 
         for (k, v) in opts {
             match k {
@@ -68,13 +72,33 @@ impl Driver for SingleStoreDriver {
                             database = Some(s);
                         }
                     }
+                    "ssl_mode" | "sslmode" => {
+                        if let OptionValue::String(s) = v {
+                            ssl_mode = Some(s);
+                        }
+                    }
+                    "ssl_ca" | "sslrootcert" => {
+                        if let OptionValue::String(s) = v {
+                            ssl_ca = Some(s);
+                        }
+                    }
+                    "ssl_cert" => {
+                        if let OptionValue::String(s) = v {
+                            ssl_cert = Some(s);
+                        }
+                    }
+                    "ssl_key" => {
+                        if let OptionValue::String(s) = v {
+                            ssl_key = Some(s);
+                        }
+                    }
                     _ => {}
                 },
                 _ => {}
             }
         }
 
-        let connect_options = if let Some(uri) = uri_str {
+        let mut connect_options = if let Some(uri) = uri_str {
             uri.parse::<MySqlConnectOptions>().map_err(|e| {
                 Error::with_message_and_status(
                     format!("Failed to parse SingleStore connection URI '{uri}': {e}"),
@@ -100,6 +124,32 @@ impl Driver for SingleStoreDriver {
             }
             opts
         };
+
+        if let Some(mode) = ssl_mode {
+            let ssl_mode_enum = match mode.to_ascii_lowercase().as_str() {
+                "disabled" => super::sqlx::mysql::MySqlSslMode::Disabled,
+                "preferred" => super::sqlx::mysql::MySqlSslMode::Preferred,
+                "required" => super::sqlx::mysql::MySqlSslMode::Required,
+                "verify_ca" | "verifyca" => super::sqlx::mysql::MySqlSslMode::VerifyCa,
+                "verify_identity" | "verifyidentity" => {
+                    super::sqlx::mysql::MySqlSslMode::VerifyIdentity
+                }
+                _ => super::sqlx::mysql::MySqlSslMode::Required,
+            };
+            connect_options = connect_options.ssl_mode(ssl_mode_enum);
+        }
+
+        if let Some(ca) = ssl_ca {
+            connect_options = connect_options.ssl_ca(std::path::Path::new(&ca));
+        }
+
+        if let Some(cert) = ssl_cert {
+            connect_options = connect_options.ssl_client_cert(std::path::Path::new(&cert));
+        }
+
+        if let Some(key) = ssl_key {
+            connect_options = connect_options.ssl_client_key(std::path::Path::new(&key));
+        }
 
         Ok(Box::new(SingleStoreDatabase::new(
             connect_options,

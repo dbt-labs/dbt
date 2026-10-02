@@ -1,6 +1,9 @@
 {% macro singlestore__generate_schema_name(custom_schema_name, node) -%}
     {# In SingleStore, databases and schemas are synonymous. All objects reside within target.schema. #}
     {%- set default_schema = target.schema -%}
+    {%- if custom_schema_name is not none and custom_schema_name | trim != default_schema and node is not none -%}
+        {{ log("SingleStore: custom schema '" ~ custom_schema_name ~ "' for model '" ~ node.name ~ "' mapped to table prefix within database '" ~ default_schema ~ "'.", info=False) }}
+    {%- endif -%}
     {{ default_schema }}
 {%- endmacro %}
 
