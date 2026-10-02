@@ -1,0 +1,7 @@
+kind: Fixes
+body: Normalize function YAML name to lowercase to prevent silent no-op patch when name casing doesn't match SQL filename
+time: 2026-06-06T10:51:36.822208+05:30
+custom:
+    author: AnuragRaut08
+    issue: "15203"
+    project: dbt-fusion
