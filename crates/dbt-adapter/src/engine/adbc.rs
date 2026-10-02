@@ -107,7 +107,7 @@ impl AdbcEngine {
     ) -> Self {
         let behavior = make_behavior(adapter_type, &behavior_flag_overrides);
         if adapter_type == AdapterType::ClickHouse {
-            super::clickhouse::register_connection_info(&config);
+            super::clickhouse::register_engine(&config);
         }
         Self {
             adapter_type,

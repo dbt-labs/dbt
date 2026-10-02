@@ -15,14 +15,17 @@ pub(crate) fn target_schema(config: &AdapterConfig) -> Option<Cow<'_, str>> {
     config.get_string("schema").filter(|s| !s.is_empty())
 }
 
-/// Publish the profile keys relations need (see [`clickhouse::register_connection_info`]).
-/// Run by [`super::AdbcEngine`] at construction so `ON CLUSTER` is decided before any macro
-/// renders, including a `run-operation` whose first statement is DDL.
-pub(crate) fn register_connection_info(config: &AdapterConfig) {
+/// A ClickHouse engine was built: publish the profile keys relations need (see
+/// [`clickhouse::register_connection_info`]) and forget the previous engine's server probe
+/// (see [`clickhouse::reset_capabilities`]). Run by [`super::AdbcEngine`] at construction so
+/// `ON CLUSTER` is decided before any macro renders, including a `run-operation` whose first
+/// statement is DDL.
+pub(crate) fn register_engine(config: &AdapterConfig) {
     clickhouse::register_connection_info(
         config.get_str("cluster").map(str::to_owned),
         config.get_str("database_engine").map(str::to_owned),
     );
+    clickhouse::reset_capabilities();
 }
 
 /// Mirrors dbclient.py `_ensure_database`: the server rejects every request
