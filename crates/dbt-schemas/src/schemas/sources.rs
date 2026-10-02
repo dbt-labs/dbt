@@ -111,6 +111,12 @@ mod tests {
         let parsed: FreshnessResultsNode = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.resource_type, None);
     }
+
+    #[test]
+    fn status_uses_the_sources_v3_schema_value() {
+        let json = serde_json::to_value(result_node(None)).unwrap();
+        assert_eq!(json["status"], "pass");
+    }
 }
 
 /// Represents the structure of the sources.json artifact.

@@ -88,7 +88,7 @@ def test_freshness_schema_decodes_a_sources_payload():
                     "max_loaded_at": "2020-01-02T00:00:00Z",
                     "snapshotted_at": "2026-01-01T00:00:00Z",
                     "max_loaded_at_time_ago_in_s": 1.0,
-                    "status": "Pass",
+                    "status": "pass",
                     "criteria": {
                         "error_after": {"count": 24, "period": "hour"},
                         "warn_after": {"count": 12, "period": "hour"},
