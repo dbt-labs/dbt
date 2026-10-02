@@ -154,7 +154,14 @@ impl SchemaHydrator for DefaultSchemaHydrator {
             );
         }
 
+        let adapter_store = defer_state.adapter_store.clone();
         if let Some(defer_nodes) = defer_state.defer_nodes.as_mut() {
+            let adapter_store = adapter_store.as_ref().ok_or_else(|| {
+                dbt_common::fs_err!(
+                    ErrorCode::Unexpected,
+                    "defer state has nodes but no adapter store"
+                )
+            })?;
             let relation_remap = dbt_defer::defer_sa_upstreams(
                 arg,
                 resolved_state,
@@ -162,6 +169,7 @@ impl SchemaHydrator for DefaultSchemaHydrator {
                 &mut defer_state.deferred_unique_ids,
                 schedule,
                 &self.adapter,
+                adapter_store,
             )
             .await?;
             token.check_cancellation()?;
