@@ -166,13 +166,7 @@ mod tests {
                     .with_password(password);
                 Ok(builder)
             }
-            Backend::SingleStore => {
-                let mut builder = database::Builder::new(backend);
-                let uri = env::var("ADBC_SINGLESTORE_URI")
-                    .unwrap_or_else(|_| "singlestore://root:root@localhost:3306/test".to_owned());
-                builder.with_parse_uri(uri)?;
-                Ok(builder)
-            }
+            Backend::SingleStore => build_singlestore_database(),
             Backend::Generic { .. } => unimplemented!("generic backend database builder in tests"),
         }?;
         if backend == Backend::Snowflake {
@@ -180,6 +174,14 @@ mod tests {
                 .with_named_option(snowflake::LOG_TRACING, LogLevel::Warn.to_string())?;
         }
         Ok(database_builder)
+    }
+
+    fn build_singlestore_database() -> Result<database::Builder> {
+        let mut builder = database::Builder::new(Backend::SingleStore);
+        let uri = env::var("ADBC_SINGLESTORE_URI")
+            .unwrap_or_else(|_| "singlestore://root:root@localhost:3306/test".to_owned());
+        builder.with_parse_uri(uri)?;
+        Ok(builder)
     }
 
     fn database_builder_for_duckdb_file(path: &str) -> Result<database::Builder> {
