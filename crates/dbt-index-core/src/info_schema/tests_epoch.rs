@@ -633,3 +633,57 @@ fn each_check_view_offers_exactly_its_declared_columns() {
     }
     assert!(seen > 0, "no parse-safe view was published to compare");
 }
+
+/// Column constraints declared in schema YAML are carried by `parse/columns`.
+/// The epoch-view path must preserve that JSON through the parse/compile/catalog
+/// merge and expose it as `dbt.node_columns.constraints`.
+#[test]
+fn parse_column_constraints_reach_node_columns_view() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let metadata_dir = tmp.path();
+
+    let parse_columns_dir = metadata_dir.join(PARSE_COLUMNS_SUBDIR);
+    std::fs::create_dir_all(&parse_columns_dir).expect("create parse columns dir");
+
+    let mut db = Db::open_memory().expect("open_memory");
+
+    let path = parse_columns_dir.join("v1_0.parquet");
+    db.execute_update(&format!(
+        "COPY (
+            SELECT
+                'model.pkg.orders'::VARCHAR AS unique_id,
+                'order_id'::VARCHAR AS column_name,
+                'Order identifier'::VARCHAR AS description,
+                'BIGINT'::VARCHAR AS declared_type,
+                true::BOOLEAN AS is_primary_key,
+                '[{{\"type\":\"primary_key\"}}]'::VARCHAR AS constraints,
+                NULL::VARCHAR AS meta,
+                []::VARCHAR[] AS tags,
+                NULL::VARCHAR AS granularity,
+                TIMESTAMPTZ '2026-01-01 00:00:00+00' AS ingested_at
+        ) TO '{}' (FORMAT parquet)",
+        path.display()
+    ))
+    .expect("write parse columns parquet");
+
+    let generated = epoch_views::generate(metadata_dir).expect("generate");
+
+    for stmt in &generated.statements {
+        db.execute_update(stmt)
+            .unwrap_or_else(|e| panic!("executing\n{stmt}\n{e}"));
+    }
+
+    let rows = db
+        .execute_query(
+            "SELECT constraints
+             FROM dbt.node_columns
+             WHERE node_unique_id = 'model.pkg.orders'
+               AND column_name = 'order_id'",
+        )
+        .expect("query node_columns");
+
+    assert_eq!(rows.iter().map(|b| b.num_rows()).sum::<usize>(), 1);
+
+    let value = cell_to_string(&rows[0], 0, 0);
+    assert_eq!(value, r#"[{"type":"primary_key"}]"#);
+}

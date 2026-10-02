@@ -889,7 +889,13 @@ const NODES: &[(&str, EpochExpr)] = &[
     ("pre_hook", EpochExpr::Null),
     ("post_hook", EpochExpr::Null),
     ("grants", EpochExpr::Null),
-    ("node_constraints", EpochExpr::Null),
+    (
+        "node_constraints",
+        EpochExpr::SqlJson(
+            "COALESCE(json_extract(t.payload, '$.__model_attr__.constraints'), \
+         json_extract(t.payload, '$.constraints'))",
+        ),
+    ),
     ("time_spine", EpochExpr::Null),
     ("ai_context", EpochExpr::Null),
     ("loaded_at_query", EpochExpr::Null),
@@ -1589,5 +1595,15 @@ mod tests {
         for (table, cols) in &by_table {
             println!("\n-- {} ({})\n{}", table, cols.len(), cols.join(", "));
         }
+    }
+    #[test]
+    fn node_constraints_are_read_from_model_payload() {
+        let expr = epoch_expr("nodes", "node_constraints")
+            .expect("node_constraints must have an epoch mapping");
+
+        assert!(
+            !matches!(expr, EpochExpr::Null),
+            "node_constraints is present in model payloads and must not be mapped to NULL"
+        );
     }
 }
