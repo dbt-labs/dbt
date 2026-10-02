@@ -5442,12 +5442,24 @@ pub(crate) fn adapter_specific_behavior_flags(adapter_type: AdapterType) -> Vec<
                 None,
             );
 
+            // https://github.com/databricks/dbt-databricks/pull/1693
+            let use_non_transactional_hooks = BehaviorFlag::new(
+                "use_non_transactional_hooks",
+                false,
+                Some(
+                    "Hooks configured with `transaction: false` (including `before_begin` and `after_commit`) are being skipped. Databricks does not wrap models in a transaction; enable this flag to run these hooks in their outside-transaction position without an extra COMMIT.",
+                ),
+                None,
+                None,
+            );
+
             vec![
                 use_user_folder_for_python,
                 use_materialization_v2,
                 use_replace_on_for_insert_overwrite,
                 use_managed_iceberg,
                 use_describe_as_json_for_relation_metadata,
+                use_non_transactional_hooks,
             ]
         }
         Bigquery => {
