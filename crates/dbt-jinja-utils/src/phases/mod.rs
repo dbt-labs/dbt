@@ -10,3 +10,4 @@ pub use compile_and_run_context::{
     build_operation_context, build_operation_context_btreemap,
     configure_compile_and_run_jinja_environment,
 };
+pub use utils::build_target_context_map;
