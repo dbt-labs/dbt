@@ -27,9 +27,8 @@ impl ColumnBuilder {
             Bigquery => Ok(Self::build_bigquery(field, type_ops)),
             Databricks | Spark => Self::build_databricks(field, type_ops),
             Redshift => Ok(Self::build_redshift(field, type_ops)),
-            Postgres | Salesforce | DuckDB | LakeCompute => {
-                Self::build_postgres_like(field, type_ops)
-            }
+            Postgres | Salesforce => Self::build_postgres_like(field, type_ops),
+            DuckDB | LakeCompute => Self::build_duckdb(field, type_ops),
             Fabric => Ok(Self::build_fabric(field, type_ops)),
             ClickHouse => Self::build_clickhouse(field, type_ops),
             Exasol => Ok(Self::build_exasol(field, type_ops)),
@@ -521,6 +520,43 @@ impl ColumnBuilder {
         ))
     }
 
+    /// Unlike [Self::build_postgres_like], this renders `DataType::Timestamp`
+    /// through the real formatter instead of a hardcoded "datetime" string,
+    /// so a `WITH TIME ZONE` column keeps that information through the
+    /// column round-trip instead of being collapsed to a naive timestamp.
+    fn build_duckdb(field: &FieldRef, type_ops: &dyn TypeOps) -> AdapterResult<Column> {
+        let adapter_type = type_ops.adapter_type();
+        let data_type_ref = field.data_type();
+        let mut rendered_type = String::new();
+        type_ops.format_arrow_type_as_sql(
+            data_type_ref,
+            field.is_nullable(),
+            &mut rendered_type,
+        )?;
+        if !field.is_nullable() {
+            rendered_type.push_str(" not null");
+        }
+
+        let (numeric_precision, numeric_scale) = {
+            let precision_scale = sql_types::numeric_precision_scale(adapter_type, data_type_ref)
+                .ok()
+                .flatten();
+            match precision_scale {
+                Some((p, Some(s))) => (Some(p as u64), Some(s as u64)),
+                Some((p, None)) => (Some(p as u64), None),
+                None => (None, None),
+            }
+        };
+        Ok(Column::new(
+            adapter_type,
+            field.name().to_string(),
+            rendered_type,
+            None, // char_size
+            numeric_precision,
+            numeric_scale,
+        ))
+    }
+
     fn build_exasol(field: &FieldRef, type_ops: &dyn TypeOps) -> Column {
         use AdapterType::Exasol;
         let data_type = field.data_type();
@@ -630,6 +666,27 @@ mod tests {
         assert_eq!(column.numeric_precision(), Some(18));
         assert_eq!(column.numeric_scale(), Some(4));
         assert_eq!(column.char_size(), None);
+    }
+
+    #[test]
+    fn test_build_duckdb_timestamp_defers_to_type_ops() {
+        // https://github.com/dbt-labs/dbt/issues/16470
+        // build_postgres_like hardcodes any DataType::Timestamp to the
+        // literal string "datetime", discarding precision and timezone.
+        // DuckDB must go through the real formatter instead so a `WITH TIME
+        // ZONE` column round-trips correctly.
+        let field = Arc::new(Field::new(
+            "ts_tz",
+            DataType::Timestamp(arrow_schema::TimeUnit::Microsecond, Some("UTC".into())),
+            true,
+        ));
+
+        let builder = ColumnBuilder::new(AdapterType::DuckDB);
+        let type_ops = DefaultTypeOps::new(AdapterType::DuckDB);
+        let column = builder.build(&field, &type_ops).unwrap();
+
+        assert_eq!(column.name(), "ts_tz");
+        assert_ne!(column.dtype(), "datetime");
     }
 
     #[test]
