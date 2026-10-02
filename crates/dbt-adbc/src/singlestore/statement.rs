@@ -63,9 +63,29 @@ impl Statement for SingleStoreStatement {
         let conn_arc = self.conn.clone();
         let sql = self.sql.clone();
 
-        let rows = block_on(async {
+        let (rows, fallback_schema) = block_on(async {
+            use sqlx_core::column::Column;
+            use sqlx_core::executor::Executor;
+            use sqlx_core::type_info::TypeInfo;
             let mut conn = conn_arc.lock().await;
-            super::sqlx::query(&sql).fetch_all(&mut *conn).await
+            let rows = super::sqlx::query(&sql).fetch_all(&mut *conn).await?;
+            let fallback = if rows.is_empty() {
+                conn.describe(&sql).await.ok().map(|desc| {
+                    let fields = desc
+                        .columns()
+                        .iter()
+                        .map(|c| {
+                            let (_, dt) =
+                                super::convert::ColumnBuilder::from_type_name(c.type_info().name());
+                            arrow_schema::Field::new(c.name(), dt, true)
+                        })
+                        .collect::<Vec<_>>();
+                    Arc::new(Schema::new(fields))
+                })
+            } else {
+                None
+            };
+            Ok::<_, sqlx_core::Error>((rows, fallback))
         })
         .map_err(|e| {
             Error::with_message_and_status(
@@ -74,7 +94,12 @@ impl Statement for SingleStoreStatement {
             )
         })?;
 
-        let batch = mysql_rows_to_record_batch(&rows)?;
+        let batch = if rows.is_empty() && fallback_schema.is_some() {
+            let schema = fallback_schema.unwrap();
+            RecordBatch::new_empty(schema)
+        } else {
+            mysql_rows_to_record_batch(&rows)?
+        };
         let schema = batch.schema();
         let iter = RecordBatchIterator::new(vec![Ok(batch)].into_iter(), schema);
         Ok(Box::new(iter))

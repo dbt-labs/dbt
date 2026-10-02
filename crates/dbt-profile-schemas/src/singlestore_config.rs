@@ -106,6 +106,16 @@ impl InteractiveSetup for SingleStoreDbConfig {
                     }
                 }
             }
+            "allow_cleartext_plugin" | "cleartext_plugin" => {
+                if let FieldValue::Boolean(val) = value {
+                    self.allow_cleartext_plugin = Some(val);
+                } else if let FieldValue::String(val) = value {
+                    self.allow_cleartext_plugin = Some(!matches!(
+                        val.to_ascii_lowercase().as_str(),
+                        "false" | "0" | "no" | "off"
+                    ));
+                }
+            }
             _ => {
                 return Err(fs_err!(
                     ErrorCode::InvalidArgument,
@@ -138,6 +148,9 @@ impl InteractiveSetup for SingleStoreDbConfig {
                 .ssl_mode
                 .as_ref()
                 .map(|v| FieldValue::String(v.clone())),
+            "allow_cleartext_plugin" | "cleartext_plugin" => {
+                self.allow_cleartext_plugin.map(FieldValue::Boolean)
+            }
             _ => None,
         }
     }
@@ -151,6 +164,7 @@ impl InteractiveSetup for SingleStoreDbConfig {
             "database" => self.database.is_some(),
             "schema" => self.schema.is_some(),
             "ssl_mode" | "sslmode" => self.ssl_mode.is_some(),
+            "allow_cleartext_plugin" | "cleartext_plugin" => self.allow_cleartext_plugin.is_some(),
             _ => false,
         }
     }

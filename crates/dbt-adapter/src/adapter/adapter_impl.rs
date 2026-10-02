@@ -2969,12 +2969,16 @@ impl AdapterImpl {
             (ClickHouse, Check) => Enforced,
             (ClickHouse, NotNull | Unique | PrimaryKey | ForeignKey | Custom) => NotSupported,
 
+            // SingleStore
+            (SingleStore, NotNull) => Enforced,
+            (SingleStore, PrimaryKey) => Enforced,
+            (SingleStore, Unique) => Enforced,
+            (SingleStore, ForeignKey) => NotSupported,
+            (SingleStore, Check) => NotSupported,
+            (SingleStore, Custom) => NotSupported,
+
             // Salesforce
-            (
-                Salesforce | Spark | Starburst | Athena | Trino | Datafusion | Dremio | Oracle
-                | SingleStore,
-                _,
-            ) => {
+            (Salesforce | Spark | Starburst | Athena | Trino | Datafusion | Dremio | Oracle, _) => {
                 unimplemented!("constraint support not implemented")
             }
         }

@@ -6,7 +6,7 @@ use arrow_array::{ArrayRef, RecordBatch};
 use arrow_schema::{DataType, Field, Schema};
 use std::sync::Arc;
 
-enum ColumnBuilder {
+pub(crate) enum ColumnBuilder {
     Bool(BooleanBuilder),
     Int8(Int8Builder),
     Int16(Int16Builder),
@@ -22,7 +22,7 @@ enum ColumnBuilder {
 }
 
 impl ColumnBuilder {
-    fn from_type_name(type_name: &str) -> (Self, DataType) {
+    pub(crate) fn from_type_name(type_name: &str) -> (Self, DataType) {
         let upper = type_name.to_ascii_uppercase();
         match upper.as_str() {
             "BOOLEAN" => (
