@@ -2332,39 +2332,47 @@ impl TryFrom<DbConfig> for TargetContext {
                 },
             })),
 
-            DbConfig::SingleStore(config) => {
-                let database = config
-                    .database
-                    .ok_or_else(|| missing("database or dbname"))?;
-                let schema = config.schema.unwrap_or_else(|| database.clone());
-                Ok(TargetContext::SingleStore(SingleStoreTargetEnv {
-                    host: config.host.ok_or_else(|| missing("host"))?,
-                    user: config.user.ok_or_else(|| missing("user"))?,
-                    port: config.port.unwrap_or(StringOrInteger::Integer(3306)),
-                    database: database.clone(),
-                    schema: schema.clone(),
-                    ssl_mode: config.ssl_mode,
-                    ssl_ca: config.ssl_ca,
-                    ssl_cert: config.ssl_cert,
-                    ssl_key: config.ssl_key,
-                    __common__: CommonTargetContext {
-                        database,
-                        schema,
-                        type_: adapter_type,
-                        threads: match config.threads {
-                            Some(StringOrInteger::String(threads)) => {
-                                Some(threads.parse::<u16>().map_err(|_| {
-                                    "threads must be a positive integer".to_string()
-                                })?)
-                            }
-                            Some(StringOrInteger::Integer(threads)) => Some(threads as u16),
-                            None => None,
-                        },
-                    },
-                }))
-            }
+            DbConfig::SingleStore(config) => Ok(TargetContext::SingleStore(
+                try_from_singlestore_config(*config, adapter_type)?,
+            )),
         }
     }
+}
+
+fn try_from_singlestore_config(
+    config: SingleStoreDbConfig,
+    adapter_type: String,
+) -> Result<SingleStoreTargetEnv, String> {
+    let missing = |field: &str| format!("Missing required field in singlestore profile: {field}");
+    let database = config
+        .database
+        .ok_or_else(|| missing("database or dbname"))?;
+    let schema = config.schema.unwrap_or_else(|| database.clone());
+    Ok(SingleStoreTargetEnv {
+        host: config.host.ok_or_else(|| missing("host"))?,
+        user: config.user.ok_or_else(|| missing("user"))?,
+        port: config.port.unwrap_or(StringOrInteger::Integer(3306)),
+        database: database.clone(),
+        schema: schema.clone(),
+        ssl_mode: config.ssl_mode,
+        ssl_ca: config.ssl_ca,
+        ssl_cert: config.ssl_cert,
+        ssl_key: config.ssl_key,
+        __common__: CommonTargetContext {
+            database,
+            schema,
+            type_: adapter_type,
+            threads: match config.threads {
+                Some(StringOrInteger::String(threads)) => Some(
+                    threads
+                        .parse::<u16>()
+                        .map_err(|_| "threads must be a positive integer".to_string())?,
+                ),
+                Some(StringOrInteger::Integer(threads)) => Some(threads as u16),
+                None => None,
+            },
+        },
+    })
 }
 
 #[cfg(test)]

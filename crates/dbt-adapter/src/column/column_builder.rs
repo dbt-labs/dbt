@@ -52,48 +52,7 @@ impl ColumnBuilder {
     ) -> Column {
         use AdapterType::*;
         match self.adapter_type {
-            Postgres => Column::new(
-                Postgres,
-                name,
-                dtype,
-                char_size,
-                numeric_precision,
-                numeric_scale,
-            ),
-            DuckDB => Column::new(
-                DuckDB,
-                name,
-                dtype,
-                char_size,
-                numeric_precision,
-                numeric_scale,
-            ),
-            LakeCompute => Column::new(
-                LakeCompute,
-                name,
-                dtype,
-                char_size,
-                numeric_precision,
-                numeric_scale,
-            ),
-            Snowflake => Column::new(
-                Snowflake,
-                name,
-                dtype,
-                char_size,
-                numeric_precision,
-                numeric_scale,
-            ),
-            // TODO: BigQuery fields
             Bigquery => Column::new_bigquery(name, dtype, &[], mode.unwrap_or_default()),
-            Redshift => Column::new(
-                Redshift,
-                name,
-                dtype,
-                char_size,
-                numeric_precision,
-                numeric_scale,
-            ),
             Databricks | Spark => Column::new(
                 self.adapter_type,
                 name,
@@ -103,38 +62,14 @@ impl ColumnBuilder {
                 None, // numeric_scale
             ),
             Salesforce => todo!("Salesforce column creation not implemented yet"),
-            ClickHouse => Column::new(
-                ClickHouse,
-                name,
-                dtype,
-                char_size,
-                numeric_precision,
-                numeric_scale,
-            ),
-            Exasol => Column::new(
-                Exasol,
-                name,
-                dtype,
-                char_size,
-                numeric_precision,
-                numeric_scale,
-            ),
             Starburst => todo!("Starburst"),
             Athena => todo!("Athena"),
             Trino => todo!("Trino"),
             Dremio => todo!("Dremio"),
             Oracle => todo!("Oracle"),
             Datafusion => todo!("Datafusion"),
-            Fabric => Column::new(
-                Fabric,
-                name,
-                dtype,
-                char_size,
-                numeric_precision,
-                numeric_scale,
-            ),
-            SingleStore => Column::new(
-                SingleStore,
+            _ => Column::new(
+                self.adapter_type,
                 name,
                 dtype,
                 char_size,

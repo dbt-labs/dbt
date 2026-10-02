@@ -2610,6 +2610,32 @@ impl<'source> Parser<'source> {
         Ok(sql_type)
     }
 
+    fn parse_int_signedness(
+        &mut self,
+        signed: SqlType,
+        unsigned: SqlType,
+    ) -> Result<SqlType, ParseError<'source>> {
+        let _ = self.precision::<usize>()?;
+        if self.match_word("UNSIGNED") {
+            Ok(unsigned)
+        } else {
+            Ok(signed)
+        }
+    }
+
+    fn parse_vector(&mut self, backend: AdapterType) -> Result<SqlType, ParseError<'source>> {
+        self.expect(Token::LParen)?;
+        let dim = self.next_int::<usize>()?;
+        let elem = if self.match_(Token::Comma) {
+            let inner = self.parse_inner(backend)?;
+            Some(Box::new(inner))
+        } else {
+            None
+        };
+        self.expect(Token::RParen)?;
+        Ok(SqlType::Vector(dim, elem))
+    }
+
     /// Parse the SQL type string without consuming the entire string.
     ///
     /// The goal of this function is to create the `SqlType` instance that better represents
@@ -2664,63 +2690,32 @@ impl<'source> Parser<'source> {
                 } else if eqi(w, "BOOLEAN") || eqi(w, "BOOL") {
                     SqlType::Boolean
                 } else if eqi(w, "TINYINT") || eqi(w, "BYTEINT") || eqi(w, "INT1") {
-                    let _ = self.precision::<usize>()?;
-                    if self.match_word("UNSIGNED") {
-                        SqlType::UTinyInt
-                    } else {
-                        SqlType::TinyInt
-                    }
+                    self.parse_int_signedness(SqlType::TinyInt, SqlType::UTinyInt)?
                 } else if eqi(w, "SMALLINT")
                     || (eqi(w, "INT2") || eqi(w, "SMALLSERIAL") || eqi(w, "SERIAL2"))
                 {
-                    let _ = self.precision::<usize>()?;
-                    if self.match_word("UNSIGNED") {
-                        SqlType::USmallInt
-                    } else {
-                        SqlType::SmallInt
-                    }
+                    self.parse_int_signedness(SqlType::SmallInt, SqlType::USmallInt)?
                 } else if eqi(w, "MEDIUMINT") || eqi(w, "MIDDLEINT") || eqi(w, "INT3") {
-                    let _ = self.precision::<usize>()?;
-                    if self.match_word("UNSIGNED") {
-                        SqlType::UInteger
-                    } else {
-                        SqlType::Integer
-                    }
+                    self.parse_int_signedness(SqlType::Integer, SqlType::UInteger)?
                 } else if eqi(w, "INTEGER")
                     || eqi(w, "INT")
                     || eqi(w, "INT4")
                     || eqi(w, "SERIAL")
                     || eqi(w, "SERIAL4")
                 {
-                    let _ = self.precision::<usize>()?;
-                    if self.match_word("UNSIGNED") {
-                        SqlType::UInteger
-                    } else {
-                        SqlType::Integer
-                    }
+                    self.parse_int_signedness(SqlType::Integer, SqlType::UInteger)?
                 } else if eqi(w, "INT8") {
                     if backend == ClickHouse {
                         SqlType::TinyInt // ClickHouse: Int8 = 8-bits
                     } else {
-                        let _ = self.precision::<usize>()?;
-                        if self.match_word("UNSIGNED") {
-                            SqlType::UBigInt
-                        } else {
-                            // In standard SQL, INT8 = 8 bytes (64 bits)
-                            SqlType::BigInt
-                        }
+                        self.parse_int_signedness(SqlType::BigInt, SqlType::UBigInt)?
                     }
                 } else if eqi(w, "BIGINT")
                     || eqi(w, "INT64") // DuckDB, ClickHouse...
                     || eqi(w, "BIGSERIAL")
                     || eqi(w, "SERIAL8")
                 {
-                    let _ = self.precision::<usize>()?;
-                    if self.match_word("UNSIGNED") {
-                        SqlType::UBigInt
-                    } else {
-                        SqlType::BigInt // 64 bits
-                    }
+                    self.parse_int_signedness(SqlType::BigInt, SqlType::UBigInt)?
                 } else if eqi(w, "HUGEINT") || eqi(w, "INT128") {
                     SqlType::HugeInt // DuckDB: 128-bit signed integer
                 } else if eqi(w, "UINT8") {
@@ -3091,16 +3086,7 @@ impl<'source> Parser<'source> {
                     let srid = self.srid()?;
                     SqlType::Geography(srid.map(str::to_string))
                 } else if eqi(w, "VECTOR") {
-                    self.expect(Token::LParen)?;
-                    let dim = self.next_int::<usize>()?;
-                    let elem = if self.match_(Token::Comma) {
-                        let inner = self.parse_inner(backend)?;
-                        Some(Box::new(inner))
-                    } else {
-                        None
-                    };
-                    self.expect(Token::RParen)?;
-                    SqlType::Vector(dim, elem)
+                    self.parse_vector(backend)?
                 } else if eqi(w, "ARRAY") {
                     let (left, right) = match backend {
                         Snowflake | ClickHouse => (Token::LParen, Token::RParen),

@@ -324,6 +324,9 @@ impl ProfileSetup {
             outputs,
         })
     }
+}
+
+impl ProfileSetup {
 
     /// Write or update a single profile block in the appropriate profiles.yml,
     /// preserving existing content, order, and comments.

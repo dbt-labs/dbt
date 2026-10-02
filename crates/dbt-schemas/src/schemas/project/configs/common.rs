@@ -439,18 +439,18 @@ pub struct WarehouseSpecificNodeConfig {
     pub primary_key_config: Option<StringOrArrayOfStrings>,
 
     // SingleStore
-    #[warehouse(valid(materializing))]
+    #[warehouse(valid(Model))]
     pub storage_type: Option<String>,
     #[serde(default, deserialize_with = "bool_or_string_bool")]
-    #[warehouse(valid(materializing))]
+    #[warehouse(valid(Model))]
     pub reference: Option<bool>,
-    #[warehouse(valid(materializing))]
+    #[warehouse(valid(Model))]
     pub shard_key: Option<StringOrArrayOfStrings>,
-    #[warehouse(valid(materializing))]
+    #[warehouse(valid(Model))]
     pub sort_key: Option<StringOrArrayOfStrings>,
-    #[warehouse(valid(materializing))]
+    #[warehouse(valid(Model))]
     pub unique_table_key: Option<StringOrArrayOfStrings>,
-    #[warehouse(valid(materializing))]
+    #[warehouse(valid(Model))]
     pub fulltext_key: Option<StringOrArrayOfStrings>,
 }
 
@@ -726,6 +726,12 @@ pub fn same_warehouse_config(
     let sort_key_eq = self_wh.sort_key == other_wh.sort_key;
     let unique_table_key_eq = self_wh.unique_table_key == other_wh.unique_table_key;
     let fulltext_key_eq = self_wh.fulltext_key == other_wh.fulltext_key;
+    let singlestore_eq = storage_type_eq
+        && reference_eq
+        && shard_key_eq
+        && sort_key_eq
+        && unique_table_key_eq
+        && fulltext_key_eq;
 
     let result = partition_by_eq
         && cluster_by_eq
@@ -827,12 +833,7 @@ pub fn same_warehouse_config(
         && catchup_eq
         && mv_on_schema_change_eq
         && repopulate_from_mvs_on_full_refresh_eq
-        && storage_type_eq
-        && reference_eq
-        && shard_key_eq
-        && sort_key_eq
-        && unique_table_key_eq
-        && fulltext_key_eq;
+        && singlestore_eq;
 
     if !result {
         log_state_mod_diff(

@@ -792,6 +792,23 @@ impl AdapterImpl {
         borrow_tlocal_connection(self.engine().as_ref(), state, node_id)
     }
 
+    fn normalize_statement_for_adapter(s: &str, adapter_type: AdapterType) -> Cow<'_, str> {
+        if adapter_type == SingleStore {
+            Cow::Owned(
+                s.replace(
+                    "--EPHEMERAL-SELECT-WRAPPER-START",
+                    "-- EPHEMERAL-SELECT-WRAPPER-START",
+                )
+                .replace(
+                    "--EPHEMERAL-SELECT-WRAPPER-END",
+                    "-- EPHEMERAL-SELECT-WRAPPER-END",
+                ),
+            )
+        } else {
+            Cow::Borrowed(s)
+        }
+    }
+
     /// Helper method for execute
     #[allow(clippy::too_many_arguments)]
     #[inline(always)]
@@ -826,22 +843,7 @@ impl AdapterImpl {
         let statements = all_stmts
             .into_iter()
             .filter(|stmt| !splitter.is_empty(stmt, adapter_type))
-            .map(|s| {
-                if adapter_type == SingleStore {
-                    Cow::Owned(
-                        s.replace(
-                            "--EPHEMERAL-SELECT-WRAPPER-START",
-                            "-- EPHEMERAL-SELECT-WRAPPER-START",
-                        )
-                        .replace(
-                            "--EPHEMERAL-SELECT-WRAPPER-END",
-                            "-- EPHEMERAL-SELECT-WRAPPER-END",
-                        ),
-                    )
-                } else {
-                    Cow::Borrowed(s)
-                }
-            })
+            .map(|s| Self::normalize_statement_for_adapter(s, adapter_type))
             .collect::<Vec<_>>();
         if statements.is_empty() {
             return Ok((AdapterResponse::default(), AgateTable::default()));
