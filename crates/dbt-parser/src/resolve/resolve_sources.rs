@@ -467,12 +467,8 @@ pub async fn resolve_sources(
             &raw_identifier,
         );
 
-        let parse_adapter = jinja_env
-            .get_adapter()
-            .expect("Failed to get parse adapter");
-
         let relation_name =
-            generate_relation_name(parse_adapter, &database, &schema, &identifier, quoting)?;
+            generate_relation_name(adapter_type, &database, &schema, &identifier, quoting)?;
 
         let columns = if let Some(ref cols) = table.columns {
             process_columns(

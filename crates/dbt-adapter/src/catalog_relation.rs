@@ -23,6 +23,66 @@ use crate::metadata::duckdb::CatalogSpecDuckDbExt;
 
 mod catalog_relation_deprecated;
 
+/// Resolve the database/catalog identifier through which an adapter addresses a
+/// logical v2 catalog.
+///
+/// Cross-adapter refs preserve the producer's schema and identifier but replace
+/// its leading component with this consumer-specific value.
+pub fn resolve_catalog_database(
+    catalogs: &DbtCatalogs,
+    catalog_name: &str,
+    adapter_type: AdapterType,
+) -> AdapterResult<String> {
+    let view = catalogs.view().map_err(|error| {
+        AdapterError::new(
+            AdapterErrorKind::Configuration,
+            format!("Could not read catalogs.yml v2: {error}"),
+        )
+    })?;
+    let catalog = view
+        .catalogs
+        .iter()
+        .find(|catalog| catalog.name == catalog_name)
+        .ok_or_else(|| {
+            AdapterError::new(
+                AdapterErrorKind::Configuration,
+                format!("Catalog '{catalog_name}' is not declared in catalogs.yml"),
+            )
+        })?;
+
+    match adapter_type {
+        AdapterType::DuckDB => catalog.resolved_attach_alias().ok_or_else(|| {
+            AdapterError::new(
+                AdapterErrorKind::Configuration,
+                format!("Catalog '{catalog_name}' does not declare a DuckDB config block"),
+            )
+        }),
+        AdapterType::Snowflake | AdapterType::Databricks => {
+            let platform = adapter_type.as_ref();
+            let block = catalog.config_block(platform).ok_or_else(|| {
+                AdapterError::new(
+                    AdapterErrorKind::Configuration,
+                    format!("Catalog '{catalog_name}' does not declare config.{platform}"),
+                )
+            })?;
+            Ok(block
+                .get(YmlValue::from("catalog_database"))
+                .and_then(YmlValue::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .unwrap_or(catalog.name)
+                .to_string())
+        }
+        _ => Err(AdapterError::new(
+            AdapterErrorKind::Configuration,
+            format!(
+                "Catalog relation routing is not supported for adapter '{}'",
+                adapter_type.as_ref()
+            ),
+        )),
+    }
+}
+
 /// How DuckDB must write a table for this relation's catalog / table format.
 ///
 /// One named state replaces the `supports_stage_create` × `is_iceberg` boolean
@@ -1924,19 +1984,27 @@ impl CatalogRelation {
         let table_format = catalog.table_format;
 
         let endpoint = get_yaml_str(duckdb, "endpoint").map(|s| s.to_string());
+        let endpoint_type = get_yaml_str(duckdb, "endpoint_type").map(|s| s.to_string());
         let warehouse = get_yaml_str(duckdb, "warehouse").map(|s| s.to_string());
         let secret = get_yaml_str(duckdb, "secret").map(|s| s.to_string());
         let alias = catalog.resolved_attach_alias().unwrap_or_default();
 
-        let Some(endpoint) = endpoint else {
+        if endpoint.is_none() && endpoint_type.is_none() {
             return Err(AdapterError::new(
                 AdapterErrorKind::Configuration,
-                format!("Catalog '{catalog_name}' duckdb config requires 'endpoint'"),
+                format!(
+                    "Catalog '{catalog_name}' duckdb config requires 'endpoint' or 'endpoint_type'"
+                ),
             ));
-        };
+        }
 
         let mut adapter_properties = BTreeMap::new();
-        adapter_properties.insert("endpoint".to_string(), endpoint);
+        if let Some(endpoint) = endpoint {
+            adapter_properties.insert("endpoint".to_string(), endpoint);
+        }
+        if let Some(endpoint_type) = endpoint_type {
+            adapter_properties.insert("endpoint_type".to_string(), endpoint_type);
+        }
         if let Some(warehouse) = warehouse {
             adapter_properties.insert("warehouse".to_string(), warehouse);
         }
@@ -3168,6 +3236,35 @@ catalogs:
         );
         // No secret specified
         assert!(!r.adapter_properties.contains_key("secret"));
+    }
+
+    #[test]
+    fn duckdb_iceberg_rest_lake_formation_builds_relation() {
+        let catalogs = load_catalogs_yaml(
+            r#"
+catalogs:
+  - name: lake_formation
+    type: iceberg_rest
+    table_format: iceberg
+    config:
+      duckdb:
+        endpoint_type: GLUE
+"#,
+        );
+        let conf = json!({ "catalog_name": "lake_formation" });
+        let m = model(AdapterType::DuckDB, conf);
+
+        let r = from_model_config_and_catalogs_default(AdapterType::DuckDB, &m, Arc::new(catalogs))
+            .unwrap();
+
+        assert_eq!(r.catalog_type, CatalogType::IcebergRest);
+        assert_eq!(
+            r.adapter_properties
+                .get("endpoint_type")
+                .map(|s| s.as_str()),
+            Some("GLUE")
+        );
+        assert!(!r.adapter_properties.contains_key("endpoint"));
     }
 
     #[test]

@@ -452,12 +452,20 @@ pub async fn resolve(
 
     // A model on a non-`default` compute platform requires each of its upstreams
     // to be reachable through a catalog (see `check_compute_platform_upstreams`).
-    let catalogs = if load_catalogs::fetch_use_catalogs_v2() {
-        dbt_state.catalogs.as_deref()
+    let loaded_catalogs = if load_catalogs::fetch_use_catalogs_v2() {
+        dbt_state
+            .catalogs
+            .clone()
+            .or_else(load_catalogs::fetch_catalogs)
     } else {
         None
     };
-    check_compute_platform_upstreams(&nodes, catalogs)?;
+    check_compute_platform_upstreams(&nodes, loaded_catalogs.as_deref())?;
+    check_multi_adapter_catalog_edges_with_operations(
+        &nodes,
+        &operations,
+        loaded_catalogs.as_deref(),
+    )?;
 
     // Check access
     let nodes_with_access_errors = check_access(&nodes, &all_runtime_configs);
@@ -953,6 +961,7 @@ pub async fn resolve_inner(
         database,
         schema,
         adapter_type,
+        &dbt_state.dbt_profile,
         package_name,
         jinja_env.clone(),
         &base_ctx,
@@ -1448,6 +1457,167 @@ pub fn check_compute_platform_upstreams(
             catalogs,
         )?;
     }
+    Ok(())
+}
+
+/// Validate physical model refs that cross between DuckDB and another adapter.
+///
+/// Native relations remain valid until an adapter boundary actually consumes
+/// them. At that boundary, the producer must be a table in a named v2 catalog
+/// that declares access for both adapters.
+pub fn check_multi_adapter_catalog_edges(
+    nodes: &Nodes,
+    catalogs: Option<&DbtCatalogs>,
+) -> FsResult<()> {
+    for (_, consumer) in nodes.iter() {
+        if !matches!(
+            consumer.resource_type(),
+            NodeType::Model
+                | NodeType::Snapshot
+                | NodeType::Test
+                | NodeType::UnitTest
+                | NodeType::Analysis
+                | NodeType::Function
+                | NodeType::Check
+        ) {
+            continue;
+        }
+        validate_multi_adapter_dependencies(consumer, nodes, catalogs)?;
+    }
+
+    Ok(())
+}
+
+fn check_multi_adapter_catalog_edges_with_operations(
+    nodes: &Nodes,
+    operations: &Operations,
+    catalogs: Option<&DbtCatalogs>,
+) -> FsResult<()> {
+    check_multi_adapter_catalog_edges(nodes, catalogs)?;
+    for operation in operations
+        .on_run_start
+        .iter()
+        .chain(operations.on_run_end.iter())
+    {
+        validate_multi_adapter_dependencies(&**operation, nodes, catalogs)?;
+    }
+    Ok(())
+}
+
+fn validate_multi_adapter_dependencies(
+    consumer: &dyn InternalDbtNodeAttributes,
+    nodes: &Nodes,
+    catalogs: Option<&DbtCatalogs>,
+) -> FsResult<()> {
+    let consumer_id = &consumer.common().unique_id;
+    let consumer_adapter = consumer.node_adapter();
+    for producer_id in &consumer.base().depends_on.nodes {
+        let Some(producer) = nodes.get_node(producer_id) else {
+            continue;
+        };
+        let producer_adapter = producer.node_adapter();
+        if producer.resource_type() == NodeType::Source {
+            // Sources do not execute on an adapter, but a catalog-backed source
+            // still needs a readable namespace on the consuming adapter.
+            let crosses_duckdb_boundary = producer_adapter != consumer_adapter
+                && (producer_adapter == AdapterType::DuckDB
+                    || consumer_adapter == AdapterType::DuckDB);
+            if crosses_duckdb_boundary
+                && let Some(source) = producer.as_any().downcast_ref::<DbtSource>()
+                && let Some(catalog_name) = source.__source_attr__.catalog_name.as_deref()
+            {
+                let Some(catalogs) = catalogs else {
+                    return Err(fs_err!(
+                        ErrorCode::InvalidConfig,
+                        "Cannot resolve source '{}' through catalog '{}' for adapter '{}' because \
+                         catalogs.yml v2 is unavailable",
+                        producer_id,
+                        catalog_name,
+                        consumer_adapter.as_ref(),
+                    ));
+                };
+                dbt_adapter::catalog_relation::resolve_catalog_database(
+                    catalogs,
+                    catalog_name,
+                    consumer_adapter,
+                )
+                .map_err(|error| {
+                    fs_err!(
+                        ErrorCode::InvalidConfig,
+                        "Cannot resolve source '{}' through catalog '{}' for adapter '{}': {error}",
+                        producer_id,
+                        catalog_name,
+                        consumer_adapter.as_ref(),
+                    )
+                })?;
+            }
+            continue;
+        }
+        if producer_adapter == consumer_adapter
+            || (producer_adapter != AdapterType::DuckDB && consumer_adapter != AdapterType::DuckDB)
+        {
+            continue;
+        }
+
+        let Some(producer_model) = nodes.models.get(producer_id) else {
+            return Err(fs_err!(
+                ErrorCode::InvalidConfig,
+                "Cross-adapter ref from '{}' ({}) to '{}' ({}) is not supported for producer \
+                 resource type '{:?}'; the initial DuckDB bridge supports SQL table models only",
+                producer_id,
+                producer_adapter.as_ref(),
+                consumer_id,
+                consumer_adapter.as_ref(),
+                producer.resource_type(),
+            ));
+        };
+
+        if producer_model.__base_attr__.materialized != DbtMaterialization::Table
+            || producer_model.__common_attr__.language.as_deref() == Some("python")
+        {
+            return Err(fs_err!(
+                ErrorCode::InvalidConfig,
+                "Cross-adapter ref from '{}' ({}) to '{}' ({}) requires the producer to be a \
+                 SQL table; found materialization '{}' with language '{}'",
+                producer_id,
+                producer_adapter.as_ref(),
+                consumer_id,
+                consumer_adapter.as_ref(),
+                producer_model.__base_attr__.materialized,
+                producer_model
+                    .__common_attr__
+                    .language
+                    .as_deref()
+                    .unwrap_or("sql")
+            ));
+        }
+
+        let Some(catalog_name) = producer_model.__model_attr__.catalog_name.as_deref() else {
+            return Err(fs_err!(
+                ErrorCode::InvalidConfig,
+                "Cross-adapter ref from '{}' ({}) to '{}' ({}) requires the producer to set \
+                 catalog_name to a shared catalogs.yml v2 entry",
+                producer_id,
+                producer_adapter.as_ref(),
+                consumer_id,
+                consumer_adapter.as_ref()
+            ));
+        };
+        let Some(catalogs) = catalogs else {
+            return Err(fs_err!(
+                ErrorCode::InvalidConfig,
+                "Cross-adapter ref from '{}' ({}) to '{}' ({}) uses catalog_name '{}', but no \
+                 catalogs.yml was loaded",
+                producer_id,
+                producer_adapter.as_ref(),
+                consumer_id,
+                consumer_adapter.as_ref(),
+                catalog_name
+            ));
+        };
+        catalogs.validate_adapter_bridge(catalog_name, producer_adapter, consumer_adapter)?;
+    }
+
     Ok(())
 }
 
@@ -2361,5 +2531,248 @@ mod tests {
             Arc::new(make_seed(AdapterType::Snowflake, None)),
         );
         assert!(check_compute_platform_upstreams(&nodes, None).is_err());
+    }
+
+    #[test]
+    fn adapter_toggle_requires_a_bridge_only_when_the_edge_crosses_adapters() {
+        use std::sync::Arc;
+
+        use dbt_adapter_core::AdapterType;
+        use dbt_schemas::schemas::CommonAttributes;
+        use dbt_schemas::schemas::common::DbtMaterialization;
+        use dbt_schemas::schemas::dbt_catalogs::DbtCatalogs;
+        use dbt_schemas::schemas::{DbtModel, Nodes};
+
+        use super::check_multi_adapter_catalog_edges;
+
+        let producer_id = "model.test.producer";
+        let consumer_id = "model.test.consumer";
+        let model =
+            |id: &str, adapter: AdapterType, catalog_name: Option<&str>, dependencies: &[&str]| {
+                let mut model = DbtModel {
+                    __common_attr__: CommonAttributes {
+                        unique_id: id.to_string(),
+                        name: id.rsplit('.').next().unwrap_or(id).to_string(),
+                        package_name: "test".to_string(),
+                        language: Some("sql".to_string()),
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                };
+                model.__base_attr__.adapter = adapter;
+                model.__base_attr__.materialized = DbtMaterialization::Table;
+                model.__base_attr__.depends_on.nodes =
+                    dependencies.iter().map(|id| (*id).to_string()).collect();
+                model.__model_attr__.catalog_name = catalog_name.map(str::to_string);
+                model
+            };
+        let run = |producer_adapter, consumer_adapter, catalog_name, catalogs| {
+            let mut nodes = Nodes::default();
+            nodes.models.insert(
+                producer_id.to_string(),
+                Arc::new(model(producer_id, producer_adapter, catalog_name, &[])),
+            );
+            nodes.models.insert(
+                consumer_id.to_string(),
+                Arc::new(model(consumer_id, consumer_adapter, None, &[producer_id])),
+            );
+            check_multi_adapter_catalog_edges(&nodes, catalogs)
+        };
+
+        assert!(
+            run(AdapterType::Snowflake, AdapterType::Snowflake, None, None).is_ok(),
+            "same-adapter native refs do not need a bridge"
+        );
+        assert!(
+            run(AdapterType::Snowflake, AdapterType::DuckDB, None, None).is_err(),
+            "toggling only the consumer to DuckDB creates a bridge requirement"
+        );
+
+        let yaml: dbt_yaml::Value = dbt_yaml::from_str(
+            r#"
+catalogs:
+  - name: shared
+    type: iceberg_rest
+    table_format: iceberg
+    config:
+      snowflake:
+        catalog_database: SHARED
+      duckdb:
+        endpoint: https://example.com/catalog
+        warehouse: shared
+        catalog_database: shared
+"#,
+        )
+        .unwrap();
+        let span = yaml.span().clone();
+        let catalogs = DbtCatalogs::new(yaml.as_mapping().unwrap().clone(), span);
+        assert!(
+            run(
+                AdapterType::Snowflake,
+                AdapterType::DuckDB,
+                Some("shared"),
+                Some(&catalogs)
+            )
+            .is_ok(),
+            "a declared Iceberg REST catalog carries the toggled edge"
+        );
+    }
+
+    #[test]
+    fn duckdb_consumers_can_depend_on_sources() {
+        use std::sync::Arc;
+
+        use dbt_adapter_core::AdapterType;
+        use dbt_schemas::schemas::common::DbtMaterialization;
+        use dbt_schemas::schemas::dbt_catalogs::DbtCatalogs;
+        use dbt_schemas::schemas::{CommonAttributes, DbtModel, DbtSource, Nodes};
+
+        use super::check_multi_adapter_catalog_edges;
+
+        let source_id = "source.test.raw.events";
+        let mut source = DbtSource {
+            __common_attr__: CommonAttributes {
+                unique_id: source_id.to_string(),
+                name: "events".to_string(),
+                package_name: "test".to_string(),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        source.__base_attr__.adapter = AdapterType::Snowflake;
+
+        let mut consumer = DbtModel {
+            __common_attr__: CommonAttributes {
+                unique_id: "model.test.consumer".to_string(),
+                name: "consumer".to_string(),
+                package_name: "test".to_string(),
+                language: Some("sql".to_string()),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        consumer.__base_attr__.adapter = AdapterType::DuckDB;
+        consumer.__base_attr__.materialized = DbtMaterialization::Table;
+        consumer.__base_attr__.depends_on.nodes = vec![source_id.to_string()];
+
+        let mut nodes = Nodes::default();
+        nodes
+            .sources
+            .insert(source_id.to_string(), Arc::new(source));
+        nodes.models.insert(
+            consumer.__common_attr__.unique_id.clone(),
+            Arc::new(consumer),
+        );
+
+        assert!(check_multi_adapter_catalog_edges(&nodes, None).is_ok());
+
+        let mut catalog_source = nodes.sources[source_id].as_ref().clone();
+        catalog_source.__source_attr__.catalog_name = Some("shared".to_string());
+        nodes
+            .sources
+            .insert(source_id.to_string(), Arc::new(catalog_source));
+        let yaml: dbt_yaml::Value = dbt_yaml::from_str(
+            r#"
+catalogs:
+  - name: shared
+    type: iceberg_rest
+    table_format: iceberg
+    config:
+      snowflake:
+        catalog_database: SNOWFLAKE_SHARED
+"#,
+        )
+        .unwrap();
+        let catalogs = DbtCatalogs::new(yaml.as_mapping().unwrap().clone(), yaml.span().clone());
+        assert!(
+            check_multi_adapter_catalog_edges(&nodes, Some(&catalogs)).is_err(),
+            "a catalog-backed source must be readable by its DuckDB consumer"
+        );
+
+        let yaml: dbt_yaml::Value = dbt_yaml::from_str(
+            r#"
+catalogs:
+  - name: shared
+    type: iceberg_rest
+    table_format: iceberg
+    config:
+      snowflake:
+        catalog_database: SNOWFLAKE_SHARED
+      duckdb:
+        endpoint: https://example.com/catalog
+        warehouse: shared
+        catalog_database: duck_shared
+"#,
+        )
+        .unwrap();
+        let catalogs = DbtCatalogs::new(yaml.as_mapping().unwrap().clone(), yaml.span().clone());
+        assert!(
+            check_multi_adapter_catalog_edges(&nodes, Some(&catalogs)).is_ok(),
+            "a catalog-backed source with a DuckDB namespace should be accepted"
+        );
+    }
+
+    #[test]
+    fn native_duckdb_output_is_allowed_until_another_adapter_refs_it() {
+        use std::sync::Arc;
+
+        use dbt_adapter_core::AdapterType;
+        use dbt_schemas::schemas::CommonAttributes;
+        use dbt_schemas::schemas::common::DbtMaterialization;
+        use dbt_schemas::schemas::{DbtModel, Nodes};
+
+        use super::check_multi_adapter_catalog_edges;
+
+        let mut producer = DbtModel {
+            __common_attr__: CommonAttributes {
+                unique_id: "model.test.duckdb_native".to_string(),
+                name: "duckdb_native".to_string(),
+                package_name: "test".to_string(),
+                language: Some("sql".to_string()),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        producer.__base_attr__.adapter = AdapterType::DuckDB;
+        producer.__base_attr__.materialized = DbtMaterialization::Table;
+
+        let mut nodes = Nodes::default();
+        let producer_id = producer.__common_attr__.unique_id.clone();
+        nodes.models.insert(producer_id, Arc::new(producer));
+        assert!(check_multi_adapter_catalog_edges(&nodes, None).is_ok());
+    }
+
+    #[test]
+    fn glue_bridge_error_points_to_lake_formation_iceberg_rest() {
+        use dbt_adapter_core::AdapterType;
+        use dbt_schemas::schemas::dbt_catalogs::DbtCatalogs;
+
+        let yaml: dbt_yaml::Value = dbt_yaml::from_str(
+            r#"
+catalogs:
+  - name: lake_formation
+    type: glue
+    table_format: iceberg
+    config:
+      snowflake:
+        catalog_database: GLUE
+      duckdb:
+        endpoint_type: GLUE
+"#,
+        )
+        .unwrap();
+        let span = yaml.span().clone();
+        let catalogs = DbtCatalogs::new(yaml.as_mapping().unwrap().clone(), span);
+
+        let err = catalogs
+            .validate_adapter_bridge(
+                "lake_formation",
+                AdapterType::Snowflake,
+                AdapterType::DuckDB,
+            )
+            .unwrap_err();
+        let message = err.to_string();
+        assert!(message.contains("Lake Formation"));
+        assert!(message.contains("iceberg_rest"));
     }
 }
