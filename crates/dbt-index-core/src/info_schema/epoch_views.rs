@@ -808,6 +808,7 @@ fn own_sql(
                     // the empty string, which is a value the join can match on.
                     ("COALESCE(column_name, '')", "column_name", "VARCHAR"),
                     ("declared_type", "declared_type", "VARCHAR"),
+                    ("constraints", "column_constraints", "VARCHAR"),
                     ("description", "description", "VARCHAR"),
                     ("COALESCE(tags, [])", "tags", "VARCHAR[]"),
                     ("ingested_at", "ingested_at", "TIMESTAMP WITH TIME ZONE"),
@@ -870,6 +871,7 @@ fn own_sql(
                     ("data_type_actual", format!("{BASE}.catalog_type")),
                     ("data_type", format!("{BASE}.data_type")),
                     ("description", format!("{BASE}.description")),
+                    ("constraints", format!("{BASE}.column_constraints")),
                     ("tags", format!("{BASE}.tags")),
                     ("classifiers", format!("{BASE}.classifiers")),
                     ("comment", format!("{BASE}.catalog_comment")),
@@ -877,10 +879,10 @@ fn own_sql(
                 ],
             )?;
             let list: Vec<&str> = cols.iter().map(String::as_str).collect();
-            // `label`, `expression`, `quote`, `granularity`, `meta`, `constraints`
-            // and `tests` are left to `cast_cols`' typed nulls. `parse/columns`
-            // carries `meta`, `constraints` and `granularity`, but
-            // `write_parse_columns` does not read them.
+            // `label`, `expression`, `quote`, `granularity`, `meta` and `tests`
+            // are left to `cast_cols`' typed nulls. `parse/columns` carries
+            // `constraints`, which is preserved as `column_constraints`; `meta`
+            // and `granularity` are not currently read by `write_parse_columns`.
             let sql = format!(
                 "{}FROM (\n\
                  \x20 SELECT\n\
@@ -889,6 +891,7 @@ fn own_sql(
                  \x20   COALESCE(k.column_index, m.column_index) AS column_index,\n\
                  \x20   m.declared_type AS declared_type,\n\
                  \x20   m.inferred_type AS inferred_type,\n\
+                 \x20   m.column_constraints AS column_constraints,\n\
                  \x20   k.catalog_type AS catalog_type,\n\
                  \x20   CASE WHEN k.unique_id IS NULL THEN NULL\n\
                  \x20        WHEN k.catalog_type IS NOT NULL THEN k.catalog_type\n\
@@ -905,6 +908,7 @@ fn own_sql(
                  \x20     c.column_index AS column_index,\n\
                  \x20     p.declared_type AS declared_type,\n\
                  \x20     c.inferred_type AS inferred_type,\n\
+                 \x20     p.column_constraints AS column_constraints,\n\
                  \x20     COALESCE(c.description, p.description) AS description,\n\
                  \x20     COALESCE(p.tags, []) AS tags,\n\
                  \x20     COALESCE(c.classifiers, []) AS classifiers,\n\

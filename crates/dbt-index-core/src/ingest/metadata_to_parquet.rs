@@ -2122,6 +2122,7 @@ fn write_parse_columns(
             let uid_col = str_col(batch, "unique_id");
             let col_col = str_col(batch, "column_name");
             let type_col = str_col(batch, "declared_type");
+            let constraints_col = str_col(batch, "constraints");
             let desc_col = str_col(batch, "description");
             let tags_col = list_col_batch(batch, "tags");
             let ts_col = i64_col(batch, "ingested_at");
@@ -2141,6 +2142,7 @@ fn write_parse_columns(
                     "unique_id": uid,
                     "column_name": get_str(col_col, i).unwrap_or_default(),
                     "declared_type": get_str(type_col, i),
+                    "column_constraints": get_str(constraints_col, i),
                     "description": get_str(desc_col, i),
                     "tags": tags,
                     // Placeholder; the real (declared ∪ propagated) classifiers
@@ -3598,7 +3600,7 @@ mod tests {
     use super::{
         CATALOG_COLUMNS_SUBDIR, COMPILE_COLUMNS_SUBDIR, IngestState, extract_json_field_raw,
         project_var_rows, read_parquet_batches, trim_model_payload, write_catalog_columns,
-        write_compile_columns,
+        write_compile_columns, write_parse_columns,
     };
     use crate::parquet::IndexWriter;
 
@@ -3777,6 +3779,52 @@ mod tests {
         assert_eq!(rows, 6);
     }
 
+    /// A `parse/columns` epoch containing one column with declared constraints.
+    fn write_parse_columns_epoch(dir: &std::path::Path) {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("unique_id", DataType::Utf8, false),
+            Field::new("column_name", DataType::Utf8, false),
+            Field::new("description", DataType::Utf8, true),
+            Field::new("declared_type", DataType::Utf8, true),
+            Field::new("constraints", DataType::Utf8, true),
+            Field::new(
+                "tags",
+                DataType::List(Arc::new(Field::new("item", DataType::Utf8, true))),
+                false,
+            ),
+            Field::new(
+                "ingested_at",
+                DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into())),
+                true,
+            ),
+        ]));
+
+        let constraints = r#"[{"type":"not_null"}]"#;
+
+        let tags = super::empty_list_array(1);
+
+        let batch = RecordBatch::try_new(
+            Arc::clone(&schema),
+            vec![
+                Arc::new(StringArray::from(vec!["model.p.a"])),
+                Arc::new(StringArray::from(vec!["id"])),
+                Arc::new(StringArray::from(vec![Some("primary key")])),
+                Arc::new(StringArray::from(vec![Some("INTEGER")])),
+                Arc::new(StringArray::from(vec![Some(constraints)])),
+                tags,
+                Arc::new(TimestampMicrosecondArray::from(vec![0i64]).with_timezone("UTC")),
+            ],
+        )
+        .expect("parse columns batch");
+
+        std::fs::create_dir_all(dir).expect("epoch dir");
+        let out = std::fs::File::create(dir.join("v1_0.parquet")).expect("epoch file");
+        let mut writer =
+            parquet::arrow::ArrowWriter::try_new(out, schema, None).expect("epoch writer");
+        writer.write(&batch).expect("epoch write");
+        writer.close().expect("epoch close");
+    }
+
     /// A `compile/columns` epoch holding one row per `(unique_id, column_name)`.
     fn write_compile_columns_epoch(dir: &std::path::Path, file: &str, rows: &[(&str, &str)]) {
         let schema = Arc::new(Schema::new(vec![
@@ -3812,6 +3860,41 @@ mod tests {
             parquet::arrow::ArrowWriter::try_new(out, schema, None).expect("epoch writer");
         writer.write(&batch).expect("epoch write");
         writer.close().expect("epoch close");
+    }
+    /// Parse-column constraints survive materialization into
+    /// `dbt.node_columns.column_constraints`.
+    #[test]
+    fn parse_column_constraints_reach_materialized_node_columns() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let metadata_dir = tmp.path().join("metadata");
+
+        write_parse_columns_epoch(&metadata_dir.join(super::PARSE_COLUMNS_SUBDIR));
+
+        let index_dir = tmp.path().join("index");
+        let mut writer = IndexWriter::new(&index_dir).expect("writer");
+        let mut state = IngestState::default();
+
+        let kept = write_parse_columns(
+            &mut writer,
+            &metadata_dir,
+            &mut state,
+            "2026-08-25T00:00:00Z",
+            true,
+            None,
+        )
+        .expect("write parse columns");
+
+        assert_eq!(kept, 1);
+
+        let written = read_parquet_batches(&index_dir.join("dbt.node_columns.parquet"))
+            .expect("read node_columns");
+
+        assert_eq!(written.iter().map(|b| b.num_rows()).sum::<usize>(), 1);
+
+        let batch = &written[0];
+        let constraints = super::str_col(batch, "column_constraints").expect("column_constraints");
+
+        assert_eq!(constraints.value(0), r#"[{"type":"not_null"}]"#);
     }
 
     /// A cold ingest reading several epochs at once applies the group rule itself.
