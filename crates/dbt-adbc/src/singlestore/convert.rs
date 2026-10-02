@@ -21,6 +21,25 @@ pub(crate) enum ColumnBuilder {
     String(StringBuilder),
 }
 
+macro_rules! append_opt {
+    ($builder:expr, $row:expr, $idx:expr, $ty:ty) => {
+        match $row.try_get::<Option<$ty>, _>($idx) {
+            Ok(Some(v)) => $builder.append_value(v),
+            _ => $builder.append_null(),
+        }
+    };
+}
+
+fn append_bool(b: &mut BooleanBuilder, row: &MySqlRow, idx: usize) {
+    if let Ok(Some(v)) = row.try_get::<Option<bool>, _>(idx) {
+        b.append_value(v);
+    } else if let Ok(Some(v)) = row.try_get::<Option<i8>, _>(idx) {
+        b.append_value(v != 0);
+    } else {
+        b.append_null();
+    }
+}
+
 impl ColumnBuilder {
     pub(crate) fn from_type_name(type_name: &str) -> (Self, DataType) {
         let upper = type_name.to_ascii_uppercase();
@@ -62,92 +81,21 @@ impl ColumnBuilder {
 
     fn append_from_row(&mut self, row: &MySqlRow, idx: usize) {
         match self {
-            ColumnBuilder::Bool(b) => {
-                if let Ok(Some(v)) = row.try_get::<Option<bool>, _>(idx) {
-                    b.append_value(v);
-                } else if let Ok(Some(v)) = row.try_get::<Option<i8>, _>(idx) {
-                    b.append_value(v != 0);
-                } else {
-                    b.append_null();
-                }
-            }
-            ColumnBuilder::Int8(b) => {
-                if let Ok(Some(v)) = row.try_get::<Option<i8>, _>(idx) {
-                    b.append_value(v);
-                } else {
-                    b.append_null();
-                }
-            }
-            ColumnBuilder::Int16(b) => {
-                if let Ok(Some(v)) = row.try_get::<Option<i16>, _>(idx) {
-                    b.append_value(v);
-                } else {
-                    b.append_null();
-                }
-            }
-            ColumnBuilder::Int32(b) => {
-                if let Ok(Some(v)) = row.try_get::<Option<i32>, _>(idx) {
-                    b.append_value(v);
-                } else {
-                    b.append_null();
-                }
-            }
-            ColumnBuilder::Int64(b) => {
-                if let Ok(Some(v)) = row.try_get::<Option<i64>, _>(idx) {
-                    b.append_value(v);
-                } else {
-                    b.append_null();
-                }
-            }
-            ColumnBuilder::UInt8(b) => {
-                if let Ok(Some(v)) = row.try_get::<Option<u8>, _>(idx) {
-                    b.append_value(v);
-                } else {
-                    b.append_null();
-                }
-            }
-            ColumnBuilder::UInt16(b) => {
-                if let Ok(Some(v)) = row.try_get::<Option<u16>, _>(idx) {
-                    b.append_value(v);
-                } else {
-                    b.append_null();
-                }
-            }
-            ColumnBuilder::UInt32(b) => {
-                if let Ok(Some(v)) = row.try_get::<Option<u32>, _>(idx) {
-                    b.append_value(v);
-                } else {
-                    b.append_null();
-                }
-            }
-            ColumnBuilder::UInt64(b) => {
-                if let Ok(Some(v)) = row.try_get::<Option<u64>, _>(idx) {
-                    b.append_value(v);
-                } else {
-                    b.append_null();
-                }
-            }
-            ColumnBuilder::Float32(b) => {
-                if let Ok(Some(v)) = row.try_get::<Option<f32>, _>(idx) {
-                    b.append_value(v);
-                } else {
-                    b.append_null();
-                }
-            }
-            ColumnBuilder::Float64(b) => {
-                if let Ok(Some(v)) = row.try_get::<Option<f64>, _>(idx) {
-                    b.append_value(v);
-                } else {
-                    b.append_null();
-                }
-            }
-            ColumnBuilder::String(b) => {
-                if let Some(val) = get_as_string(row, idx) {
-                    b.append_value(val);
-                } else {
-                    b.append_null();
-                }
-            }
+            ColumnBuilder::Bool(b) => append_bool(b, row, idx),
+            ColumnBuilder::Int8(b) => append_opt!(b, row, idx, i8),
+            ColumnBuilder::Int16(b) => append_opt!(b, row, idx, i16),
+            ColumnBuilder::Int32(b) => append_opt!(b, row, idx, i32),
+            ColumnBuilder::Int64(b) => append_opt!(b, row, idx, i64),
+            ColumnBuilder::UInt8(b) => append_opt!(b, row, idx, u8),
+            ColumnBuilder::UInt16(b) => append_opt!(b, row, idx, u16),
+            ColumnBuilder::UInt32(b) => append_opt!(b, row, idx, u32),
+            ColumnBuilder::UInt64(b) => append_opt!(b, row, idx, u64),
+            ColumnBuilder::Float32(b) => append_opt!(b, row, idx, f32),
+            ColumnBuilder::Float64(b) => append_opt!(b, row, idx, f64),
+            ColumnBuilder::String(b) => match get_as_string(row, idx) {
+                Some(val) => b.append_value(val),
+                None => b.append_null(),
+            },
         }
     }
 

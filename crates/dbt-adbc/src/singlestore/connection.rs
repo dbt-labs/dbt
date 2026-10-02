@@ -22,6 +22,21 @@ impl SingleStoreConnection {
             _semaphore: semaphore,
         }
     }
+
+    fn exec_sql(&self, sql: &str, action: &str) -> Result<()> {
+        let conn_arc = self.conn.clone();
+        block_on(async {
+            let mut conn = conn_arc.lock().await;
+            super::sqlx::query(sql).execute(&mut *conn).await
+        })
+        .map_err(|e| {
+            Error::with_message_and_status(
+                format!("Failed to {action} transaction in SingleStore: {e}"),
+                Status::IO,
+            )
+        })?;
+        Ok(())
+    }
 }
 
 impl Connection for SingleStoreConnection {
@@ -34,33 +49,11 @@ impl Connection for SingleStoreConnection {
     }
 
     fn commit(&mut self) -> Result<()> {
-        let conn_arc = self.conn.clone();
-        block_on(async {
-            let mut conn = conn_arc.lock().await;
-            super::sqlx::query("COMMIT").execute(&mut *conn).await
-        })
-        .map_err(|e| {
-            Error::with_message_and_status(
-                format!("Failed to commit transaction in SingleStore: {e}"),
-                Status::IO,
-            )
-        })?;
-        Ok(())
+        self.exec_sql("COMMIT", "commit")
     }
 
     fn rollback(&mut self) -> Result<()> {
-        let conn_arc = self.conn.clone();
-        block_on(async {
-            let mut conn = conn_arc.lock().await;
-            super::sqlx::query("ROLLBACK").execute(&mut *conn).await
-        })
-        .map_err(|e| {
-            Error::with_message_and_status(
-                format!("Failed to rollback transaction in SingleStore: {e}"),
-                Status::IO,
-            )
-        })?;
-        Ok(())
+        self.exec_sql("ROLLBACK", "rollback")
     }
 
     fn set_option(&mut self, _key: OptionConnection, _value: OptionValue) -> Result<()> {
