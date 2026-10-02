@@ -91,10 +91,35 @@ mod tests {
                     .with_named_option(TOKEN, token)?;
                 Ok(builder)
             }
-            Backend::Athena => build_athena_database(),
+            Backend::Athena => {
+                let mut builder = database::Builder::new(backend);
+                let region = env::var("ATHENA_REGION").unwrap();
+                let catalog = env::var("ATHENA_CATALOG").unwrap();
+                let schema = env::var("ATHENA_SCHEMA").unwrap();
+                let s3_staging_dir = env::var("ATHENA_S3_STAGING_DIR").unwrap();
+                builder
+                    .with_named_option(athena::REGION, region)?
+                    .with_named_option(athena::CATALOG, catalog)?
+                    .with_named_option(athena::SCHEMA, schema)?
+                    .with_named_option(athena::S3_STAGING_DIR, s3_staging_dir)?;
+                if let Ok(work_group) = env::var("ATHENA_WORK_GROUP") {
+                    builder.with_named_option(athena::WORK_GROUP, work_group)?;
+                }
+                Ok(builder)
+            }
             Backend::Spark => todo!("Spark is WIP"),
             Backend::SQLServer => todo!("SQL Server is WIP"),
-            Backend::Salesforce => build_salesforce_database(),
+            Backend::Salesforce => {
+                let mut builder = database::Builder::new(backend);
+                builder.with_named_option(salesforce::AUTH_TYPE, salesforce::auth_type::JWT)?;
+
+                builder.with_named_option(salesforce::LOGIN_URL, "https://login.salesforce.com")?;
+                builder.with_named_option(salesforce::USERNAME, "test@example.com")?;
+                builder.with_named_option(salesforce::CLIENT_ID, "1")?;
+                builder.with_named_option(salesforce::JWT_PRIVATE_KEY, "test")?;
+
+                Ok(builder)
+            }
             Backend::DuckDB | Backend::DuckDBExtended => {
                 let mut builder = database::Builder::new(backend);
                 let database_path = ":memory:".to_string();
@@ -104,9 +129,50 @@ mod tests {
             Backend::LakeCompute => {
                 unimplemented!("LakeCompute backend database builder in tests")
             }
-            Backend::ClickHouse => build_clickhouse_database(),
-            Backend::Exasol => build_exasol_database(),
-            Backend::SingleStore => build_singlestore_database(),
+            Backend::ClickHouse => {
+                let mut builder = database::Builder::new(backend);
+                let uri = env::var("ADBC_CLICKHOUSE_URI")
+                    .unwrap_or_else(|_| "http://localhost:8123".to_owned());
+                let username =
+                    env::var("ADBC_CLICKHOUSE_USERNAME").unwrap_or_else(|_| "default".to_owned());
+                let password = env::var("ADBC_CLICKHOUSE_PASSWORD").unwrap_or_default();
+                builder
+                    .with_parse_uri(uri)?
+                    .with_username(username)
+                    .with_password(password);
+                Ok(builder)
+            }
+            Backend::Exasol => {
+                let mut builder = database::Builder::new(backend);
+                let uri = env::var("ADBC_EXASOL_URI")
+                    .unwrap_or_else(|_| "exasol://localhost:8563".to_owned());
+                let username =
+                    env::var("ADBC_EXASOL_USERNAME").unwrap_or_else(|_| "sys".to_owned());
+                let password =
+                    env::var("ADBC_EXASOL_PASSWORD").unwrap_or_else(|_| "exasol".to_owned());
+                let validate_cert =
+                    env::var("ADBC_EXASOL_VALIDATE_CERT").unwrap_or_else(|_| "0".to_owned());
+                // Append certificate validation param if not already in URI
+                let uri = if uri.contains("validateservercertificate") {
+                    uri
+                } else if uri.contains('?') {
+                    format!("{uri}&validateservercertificate={validate_cert}")
+                } else {
+                    format!("{uri}?validateservercertificate={validate_cert}")
+                };
+                builder
+                    .with_parse_uri(uri)?
+                    .with_username(username)
+                    .with_password(password);
+                Ok(builder)
+            }
+            Backend::SingleStore => {
+                let mut builder = database::Builder::new(backend);
+                let uri = env::var("ADBC_SINGLESTORE_URI")
+                    .unwrap_or_else(|_| "singlestore://root:root@localhost:3306/test".to_owned());
+                builder.with_parse_uri(uri)?;
+                Ok(builder)
+            }
             Backend::Generic { .. } => unimplemented!("generic backend database builder in tests"),
         }?;
         if backend == Backend::Snowflake {
@@ -114,77 +180,6 @@ mod tests {
                 .with_named_option(snowflake::LOG_TRACING, LogLevel::Warn.to_string())?;
         }
         Ok(database_builder)
-    }
-
-    fn build_athena_database() -> Result<database::Builder> {
-        let mut builder = database::Builder::new(Backend::Athena);
-        let region = env::var("ATHENA_REGION").unwrap();
-        let catalog = env::var("ATHENA_CATALOG").unwrap();
-        let schema = env::var("ATHENA_SCHEMA").unwrap();
-        let s3_staging_dir = env::var("ATHENA_S3_STAGING_DIR").unwrap();
-        builder
-            .with_named_option(athena::REGION, region)?
-            .with_named_option(athena::CATALOG, catalog)?
-            .with_named_option(athena::SCHEMA, schema)?
-            .with_named_option(athena::S3_STAGING_DIR, s3_staging_dir)?;
-        if let Ok(work_group) = env::var("ATHENA_WORK_GROUP") {
-            builder.with_named_option(athena::WORK_GROUP, work_group)?;
-        }
-        Ok(builder)
-    }
-
-    fn build_salesforce_database() -> Result<database::Builder> {
-        let mut builder = database::Builder::new(Backend::Salesforce);
-        builder.with_named_option(salesforce::AUTH_TYPE, salesforce::auth_type::JWT)?;
-        builder.with_named_option(salesforce::LOGIN_URL, "https://login.salesforce.com")?;
-        builder.with_named_option(salesforce::USERNAME, "test@example.com")?;
-        builder.with_named_option(salesforce::CLIENT_ID, "1")?;
-        builder.with_named_option(salesforce::JWT_PRIVATE_KEY, "test")?;
-        Ok(builder)
-    }
-
-    fn build_clickhouse_database() -> Result<database::Builder> {
-        let mut builder = database::Builder::new(Backend::ClickHouse);
-        let uri =
-            env::var("ADBC_CLICKHOUSE_URI").unwrap_or_else(|_| "http://localhost:8123".to_owned());
-        let username =
-            env::var("ADBC_CLICKHOUSE_USERNAME").unwrap_or_else(|_| "default".to_owned());
-        let password = env::var("ADBC_CLICKHOUSE_PASSWORD").unwrap_or_default();
-        builder
-            .with_parse_uri(uri)?
-            .with_username(username)
-            .with_password(password);
-        Ok(builder)
-    }
-
-    fn build_exasol_database() -> Result<database::Builder> {
-        let mut builder = database::Builder::new(Backend::Exasol);
-        let uri =
-            env::var("ADBC_EXASOL_URI").unwrap_or_else(|_| "exasol://localhost:8563".to_owned());
-        let username = env::var("ADBC_EXASOL_USERNAME").unwrap_or_else(|_| "sys".to_owned());
-        let password = env::var("ADBC_EXASOL_PASSWORD").unwrap_or_else(|_| "exasol".to_owned());
-        let validate_cert =
-            env::var("ADBC_EXASOL_VALIDATE_CERT").unwrap_or_else(|_| "0".to_owned());
-        let uri = if uri.contains("validateservercertificate") {
-            uri
-        } else if uri.contains('?') {
-            format!("{uri}&validateservercertificate={validate_cert}")
-        } else {
-            format!("{uri}?validateservercertificate={validate_cert}")
-        };
-        builder
-            .with_parse_uri(uri)?
-            .with_username(username)
-            .with_password(password);
-        Ok(builder)
-    }
-
-    fn build_singlestore_database() -> Result<database::Builder> {
-        let mut builder = database::Builder::new(Backend::SingleStore);
-        let uri = env::var("ADBC_SINGLESTORE_URI")
-            .unwrap_or_else(|_| "singlestore://root:root@localhost:3306/test".to_owned());
-        builder.with_parse_uri(uri)?;
-        Ok(builder)
     }
 
     fn database_builder_for_duckdb_file(path: &str) -> Result<database::Builder> {

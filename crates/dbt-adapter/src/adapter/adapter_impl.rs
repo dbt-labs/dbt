@@ -729,9 +729,7 @@ impl AdapterImpl {
         use DbtIncrementalStrategy::*;
 
         match self.adapter_type() {
-            Postgres | DuckDB | LakeCompute | SingleStore => {
-                &[Append, DeleteInsert, Merge, Microbatch]
-            }
+            Postgres | DuckDB | LakeCompute | SingleStore => &[Append, DeleteInsert, Merge, Microbatch],
             Snowflake => &[Append, DeleteInsert, InsertOverwrite, Merge, Microbatch],
             Bigquery => &[Append],
             Databricks => &[
@@ -875,13 +873,13 @@ impl AdapterImpl {
         }
 
         let mut last_batch = None;
-        for sql in &statements {
+        for sql in statements {
             last_batch = Some(execute_query_with_retry(
                 engine.clone(),
                 state,
                 conn,
                 ctx,
-                sql.as_ref(),
+                &sql,
                 1,
                 &options,
                 fetch,
@@ -2157,11 +2155,13 @@ impl AdapterImpl {
             // "macro does not exist" error
             Athena | ClickHouse | Datafusion | Dremio | DuckDB | LakeCompute | Exasol | Fabric
             | Oracle | Postgres | Redshift | Salesforce | Snowflake | Spark | Starburst | Trino
-            | SingleStore => execute_macro(
-                state,
-                &[RelationObject::new(relation.to_owned()).into_value()],
-                "get_columns_in_relation",
-            ),
+            | SingleStore => {
+                execute_macro(
+                    state,
+                    &[RelationObject::new(relation.to_owned()).into_value()],
+                    "get_columns_in_relation",
+                )
+            }
         };
 
         macro_result
@@ -4229,7 +4229,25 @@ impl AdapterImpl {
         match self.inner_adapter() {
             Replay(_, replay) => replay.replay_list_relations(query_ctx, conn, db_schema),
             Impl(adapter_type, engine) if engine.is_sidecar() => {
-                self.list_relations_sidecar(adapter_type, engine.as_ref(), db_schema)
+                let client = engine.sidecar_client().unwrap();
+                let query_database = db_schema.resolved_catalog.clone();
+                let query_schema = db_schema.resolved_schema.clone();
+                let relation_infos =
+                    client.list_relations(&engine.quoting(), &query_database, &query_schema)?;
+                let mut relations: Vec<Arc<dyn BaseRelation>> =
+                    Vec::with_capacity(relation_infos.len());
+                for (database, schema, name, rel_type) in relation_infos {
+                    let relation = crate::relation::do_create_relation(
+                        adapter_type,
+                        database,
+                        schema,
+                        Some(name),
+                        Some(rel_type),
+                        self.quoting(),
+                    )?;
+                    relations.push(relation.into());
+                }
+                Ok(relations)
             }
             Impl(Snowflake, engine) => {
                 snowflake::list_relations(engine.as_ref(), query_ctx, conn, db_schema, token)
@@ -4248,7 +4266,10 @@ impl AdapterImpl {
             Impl(Redshift, engine) => {
                 redshift::list_relations(engine.as_ref(), query_ctx, conn, db_schema, token)
             }
-            Impl(DuckDB | LakeCompute, engine) => {
+            Impl(DuckDB, engine) => {
+                duckdb::list_relations(engine.as_ref(), query_ctx, conn, db_schema, token)
+            }
+            Impl(LakeCompute, engine) => {
                 duckdb::list_relations(engine.as_ref(), query_ctx, conn, db_schema, token)
             }
             Impl(Fabric, engine) => {
@@ -4262,7 +4283,6 @@ impl AdapterImpl {
                 };
                 singlestore::list_relations(&mut lr_ctx, conn, db_schema)
             }
-
             Impl(
                 adapter_type @ (Postgres | Salesforce | ClickHouse | Exasol | Starburst | Athena
                 | Trino | Datafusion | Dremio | Oracle),
@@ -4277,32 +4297,6 @@ impl AdapterImpl {
                 Err(err)
             }
         }
-    }
-
-    fn list_relations_sidecar(
-        &self,
-        adapter_type: AdapterType,
-        engine: &dyn AdapterEngine,
-        db_schema: &CatalogAndSchema,
-    ) -> AdapterResult<Vec<Arc<dyn BaseRelation>>> {
-        let client = engine.sidecar_client().unwrap();
-        let query_database = db_schema.resolved_catalog.clone();
-        let query_schema = db_schema.resolved_schema.clone();
-        let relation_infos =
-            client.list_relations(&engine.quoting(), &query_database, &query_schema)?;
-        let mut relations: Vec<Arc<dyn BaseRelation>> = Vec::with_capacity(relation_infos.len());
-        for (database, schema, name, rel_type) in relation_infos {
-            let relation = crate::relation::do_create_relation(
-                adapter_type,
-                database,
-                schema,
-                Some(name),
-                Some(rel_type),
-                self.quoting(),
-            )?;
-            relations.push(relation.into());
-        }
-        Ok(relations)
     }
 
     /// Per-adapter dependency-graph discovery for the relation cache. Adapters

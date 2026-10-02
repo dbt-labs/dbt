@@ -385,12 +385,19 @@ impl AdbcDriver {
         driver
     }
 
-    fn resolve_final_load_strategy(
-        load_strategy: LoadStrategy,
+    fn try_load_driver_internal(
         backend: Backend,
-    ) -> Result<LoadStrategy> {
+        adbc_version: AdbcVersion,
+        load_strategy: LoadStrategy,
+    ) -> Result<ManagedAdbcDriver> {
         use Backend::*;
         use LoadStrategy::*;
+        if backend == SingleStore {
+            return Err(Error::with_message_and_status(
+                "SingleStore uses native driver, not ADBC",
+                Status::NotImplemented,
+            ));
+        }
         let final_strategy = match (load_strategy, backend) {
             // CDN strategy for drivers published to the dbt Labs CDN.
             (
@@ -439,22 +446,6 @@ impl AdbcDriver {
                 | DuckDBExtended | LakeCompute | Salesforce | SQLServer | ClickHouse,
             ) => load_strategy,
         };
-        Ok(final_strategy)
-    }
-
-    fn try_load_driver_internal(
-        backend: Backend,
-        adbc_version: AdbcVersion,
-        load_strategy: LoadStrategy,
-    ) -> Result<ManagedAdbcDriver> {
-        if backend == Backend::SingleStore {
-            return Err(Error::with_message_and_status(
-                "SingleStore uses native driver, not ADBC",
-                Status::NotImplemented,
-            ));
-        }
-        use LoadStrategy::*;
-        let final_strategy = Self::resolve_final_load_strategy(load_strategy, backend)?;
 
         match final_strategy {
             CdnCache => Self::try_load_driver_through_cdn_cache(backend, adbc_version),
