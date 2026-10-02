@@ -39,6 +39,16 @@ use minijinja_contrib::modules::py_datetime::datetime::PyDateTime;
 pub const INLINE_SQL_NAME: &str = "inline_query";
 const INLINE_SQL_PAYLOAD_VAR: &str = "__dbt_inline_sql_payload__";
 
+fn bind_operation_resolution_context(
+    base_context: &BTreeMap<String, Value>,
+    adapter_type: AdapterType,
+    unique_id: &str,
+) -> BTreeMap<String, Value> {
+    let mut context = base_context.clone();
+    bind_resolution_functions(&mut context, adapter_type, unique_id);
+    context
+}
+
 /// Renders an ad-hoc SQL/Jinja string (`ref`/`source`/`var`/`target` available)
 /// and executes it via `{% call statement(...) %}`; returns the rendered SQL.
 pub async fn run_operation_inline_sql(
@@ -56,8 +66,8 @@ pub async fn run_operation_inline_sql(
         ));
     }
 
-    let mut ctx = base_context.clone();
-    bind_resolution_functions(&mut ctx, adapter_type, "operation.inline_query");
+    let mut ctx =
+        bind_operation_resolution_context(base_context, adapter_type, "operation.inline_query");
     ctx.insert(
         TARGET_PACKAGE_NAME.to_string(),
         Value::from(resolver_state.root_project_name.clone()),
@@ -262,9 +272,8 @@ pub async fn run_operation_on_run(
     }
 
     // Get the base context
-    let mut operation_ctx = base_context.clone();
-    bind_resolution_functions(
-        &mut operation_ctx,
+    let mut operation_ctx = bind_operation_resolution_context(
+        base_context,
         operation.node_adapter(),
         &operation.__common_attr__.unique_id,
     );
@@ -607,5 +616,139 @@ fn search_resolved_macro(
         Some((template_name, macro_name.to_string()))
     } else {
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use dbt_jinja_utils::{
+        node_resolver::{NodeResolver, PackageSearchOrder},
+        phases::{RefFunction, SourceFunction},
+    };
+    use dbt_schemas::{
+        filter::RunFilter,
+        schemas::{
+            CommonAttributes, DbtModel, DbtSource, NodeBaseAttributes, Nodes,
+            common::DbtMaterialization,
+        },
+        state::DbtRuntimeConfig,
+    };
+    use std::path::Path;
+
+    #[test]
+    fn operation_context_routes_refs_and_sources_through_the_consumer_adapter() {
+        struct CatalogCleanup;
+        impl Drop for CatalogCleanup {
+            fn drop(&mut self) {
+                dbt_adapter::load_catalogs::clear_catalogs();
+            }
+        }
+
+        let yaml: dbt_yaml::Value = dbt_yaml::from_str(
+            r#"
+catalogs:
+  - name: shared
+    type: iceberg_rest
+    table_format: iceberg
+    config:
+      snowflake:
+        catalog_database: SNOWFLAKE_SHARED
+      duckdb:
+        endpoint: https://example.com/catalog
+        warehouse: shared
+        catalog_database: duck_shared
+"#,
+        )
+        .unwrap();
+        dbt_adapter::load_catalogs::load_catalogs(yaml, Path::new("catalogs.yml"), None).unwrap();
+        let _cleanup = CatalogCleanup;
+
+        let mut model = DbtModel {
+            __common_attr__: CommonAttributes {
+                unique_id: "model.test.orders".to_string(),
+                name: "orders".to_string(),
+                package_name: "test".to_string(),
+                ..Default::default()
+            },
+            __base_attr__: NodeBaseAttributes {
+                adapter: AdapterType::Snowflake,
+                database: "SNOWFLAKE_SHARED".to_string(),
+                schema: "analytics".to_string(),
+                alias: "orders".to_string(),
+                materialized: DbtMaterialization::Table,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        model.__model_attr__.catalog_name = Some("shared".to_string());
+
+        let mut source = DbtSource {
+            __common_attr__: CommonAttributes {
+                unique_id: "source.test.raw.events".to_string(),
+                name: "events".to_string(),
+                package_name: "test".to_string(),
+                ..Default::default()
+            },
+            __base_attr__: NodeBaseAttributes {
+                adapter: AdapterType::Snowflake,
+                database: "SNOWFLAKE_SHARED".to_string(),
+                schema: "raw".to_string(),
+                alias: "events".to_string(),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        source.__source_attr__.source_name = "raw".to_string();
+        source.__source_attr__.catalog_name = Some("shared".to_string());
+
+        let mut nodes = Nodes::default();
+        nodes.models.insert(model.unique_id(), Arc::new(model));
+        nodes.sources.insert(source.unique_id(), Arc::new(source));
+        let resolver = Arc::new(
+            NodeResolver::from_dbt_nodes(
+                &nodes,
+                AdapterType::Snowflake,
+                "test".to_string(),
+                None,
+                RunFilter::default(),
+                BTreeMap::new(),
+                false,
+                PackageSearchOrder::NodePackageFirst,
+            )
+            .unwrap(),
+        );
+
+        let runtime_config = Arc::new(DbtRuntimeConfig::default());
+        let ref_function = Value::from_object(RefFunction::new_unvalidated(
+            resolver.clone(),
+            "test".to_string(),
+            runtime_config.clone(),
+        ));
+        let source_function = Value::from_object(SourceFunction::new_unvalidated(
+            resolver,
+            "test".to_string(),
+            runtime_config,
+        ));
+        let base_context = BTreeMap::from([
+            ("ref".to_string(), ref_function),
+            ("source".to_string(), source_function),
+        ]);
+        let context = bind_operation_resolution_context(
+            &base_context,
+            AdapterType::DuckDB,
+            "operation.test.hook",
+        );
+        let env = JinjaEnv::new(minijinja::Environment::new());
+
+        let rendered = env
+            .render_str(
+                "{{ ref('orders') }}|{{ source('raw', 'events') }}",
+                &context,
+                &[],
+            )
+            .unwrap();
+        assert!(rendered.contains("duck_shared"), "{rendered}");
+        assert!(!rendered.contains("SNOWFLAKE_SHARED"), "{rendered}");
     }
 }
