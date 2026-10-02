@@ -16,8 +16,9 @@ use dbt_common::{
     warn_error_options::{WarnErrorDecision, WarnErrorOptions},
 };
 use dbt_schemas::schemas::manifest::{
-    defer_relation_for_model, defer_relation_for_seed, defer_relation_for_snapshot,
+    ManifestGroup, defer_relation_for_model, defer_relation_for_seed, defer_relation_for_snapshot,
 };
+use dbt_schemas::schemas::nodes::DbtGroup;
 use dbt_schemas::schemas::{InternalDbtNode, Nodes};
 use dbt_telemetry::UserLogMessage;
 use minijinja::{
@@ -1358,6 +1359,17 @@ fn inject_defer_relation<L>(
 
 /// Builds a flat graph for use in a compile context, using
 /// a serialized manifest and restricting to particular keys
+fn serialize_group(group: &DbtGroup) -> Value {
+    let mut serialized = dbt_yaml::to_value(ManifestGroup::from(group.clone())).unwrap_or_default();
+    if let YmlValue::Mapping(ref mut map, _) = serialized {
+        map.insert(
+            YmlValue::string("resource_type".to_string()),
+            YmlValue::string("group".to_string()),
+        );
+    }
+    Value::from_serialize(serialized)
+}
+
 pub fn build_flat_graph(nodes: &Nodes, defer_nodes: Option<&Nodes>) -> MutableMap {
     let mut graph = ValueMap::new();
     let nodes_insert: BTreeMap<String, Value> = nodes
@@ -1526,7 +1538,7 @@ pub fn build_flat_graph(nodes: &Nodes, defer_nodes: Option<&Nodes>) -> MutableMa
     let groups_insert: BTreeMap<String, Value> = nodes
         .groups
         .iter()
-        .map(|(unique_id, group)| (unique_id.clone(), Value::from_serialize(Arc::as_ref(group))))
+        .map(|(unique_id, group)| (unique_id.clone(), serialize_group(group)))
         .collect();
     graph.insert(Value::from("groups"), Value::from_serialize(groups_insert));
     let metrics_insert: BTreeMap<String, Value> = nodes
@@ -2054,6 +2066,40 @@ mod tests {
                 "expected graph.{key} to be non-empty"
             );
         }
+    }
+
+    #[test]
+    fn build_flat_graph_groups_match_manifest_shape() {
+        use dbt_schemas::schemas::manifest::common::DbtOwner;
+        use dbt_schemas::schemas::nodes::{DbtGroup, DbtGroupAttr};
+
+        let mut group = DbtGroup {
+            __group_attr__: DbtGroupAttr {
+                owner: DbtOwner {
+                    name: Some("Finance Team".to_string()),
+                    ..Default::default()
+                },
+            },
+            ..Default::default()
+        };
+        group.__common_attr__.name = "finance".to_string();
+        group.__common_attr__.unique_id = "group.pkg.finance".to_string();
+
+        let mut nodes = Nodes::default();
+        nodes
+            .groups
+            .insert("group.pkg.finance".to_string(), Arc::new(group));
+
+        let mut env = Environment::new();
+        env.add_global("graph", Value::from_object(build_flat_graph(&nodes, None)));
+        let output = env
+            .render_str(
+                "{% set g = graph.groups['group.pkg.finance'] %}{{ g.name }}|{{ g.unique_id }}|{{ g.resource_type }}|{{ g.owner.name }}",
+                (),
+                &[],
+            )
+            .unwrap();
+        assert_eq!(output, "finance|group.pkg.finance|group|Finance Team");
     }
 
     /// Regression test for https://github.com/dbt-labs/dbt-fusion/issues/1366:
