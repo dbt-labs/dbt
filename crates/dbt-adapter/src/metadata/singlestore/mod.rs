@@ -236,6 +236,12 @@ fn query_schema_freshness(
     parse_freshness_batch(&batch, table_entries)
 }
 
+fn is_missing_database_error(e: &AdapterError) -> bool {
+    const PATTERNS: &[&str] = &["doesn't exist", "does not exist", "Unknown database"];
+    let msg = e.message();
+    PATTERNS.iter().any(|pattern| msg.contains(pattern))
+}
+
 pub struct SingleStoreMetadataAdapter {
     adapter: AdapterImpl,
 }
@@ -512,10 +518,7 @@ impl MetadataAdapter for SingleStoreMetadataAdapter {
                     // If the schema (database) doesn't exist, treat as empty —
                     // matches the behaviour of other adapters and prevents hard
                     // failures when schemas are created lazily.
-                    if e.message().contains("doesn't exist")
-                        || e.message().contains("does not exist")
-                        || e.message().contains("Unknown database")
-                    {
+                    if is_missing_database_error(&e) {
                         acc.insert(db_schema, Ok(Vec::new()));
                         Ok(())
                     } else {

@@ -439,12 +439,18 @@ pub struct WarehouseSpecificNodeConfig {
     pub primary_key_config: Option<StringOrArrayOfStrings>,
 
     // SingleStore
+    #[warehouse(valid(materializing))]
     pub storage_type: Option<String>,
     #[serde(default, deserialize_with = "bool_or_string_bool")]
+    #[warehouse(valid(materializing))]
     pub reference: Option<bool>,
+    #[warehouse(valid(materializing))]
     pub shard_key: Option<StringOrArrayOfStrings>,
+    #[warehouse(valid(materializing))]
     pub sort_key: Option<StringOrArrayOfStrings>,
+    #[warehouse(valid(materializing))]
     pub unique_table_key: Option<StringOrArrayOfStrings>,
+    #[warehouse(valid(materializing))]
     pub fulltext_key: Option<StringOrArrayOfStrings>,
 }
 

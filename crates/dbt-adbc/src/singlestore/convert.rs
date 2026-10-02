@@ -117,32 +117,30 @@ impl ColumnBuilder {
     }
 }
 
+fn try_get_num_or_bool(row: &MySqlRow, idx: usize) -> Option<String> {
+    row.try_get::<Option<i64>, _>(idx).ok().flatten().map(|v| v.to_string())
+        .or_else(|| row.try_get::<Option<f64>, _>(idx).ok().flatten().map(|v| v.to_string()))
+        .or_else(|| row.try_get::<Option<bool>, _>(idx).ok().flatten().map(|v| v.to_string()))
+}
+
+fn try_get_temporal(row: &MySqlRow, idx: usize) -> Option<String> {
+    row.try_get::<Option<chrono::NaiveDateTime>, _>(idx).ok().flatten().map(|v| v.to_string())
+        .or_else(|| row.try_get::<Option<chrono::NaiveDate>, _>(idx).ok().flatten().map(|v| v.to_string()))
+        .or_else(|| row.try_get::<Option<chrono::NaiveTime>, _>(idx).ok().flatten().map(|v| v.to_string()))
+}
+
 fn get_as_string(row: &MySqlRow, idx: usize) -> Option<String> {
-    if let Ok(val) = row.try_get::<Option<String>, _>(idx) {
-        return val;
-    }
-    if let Ok(val) = row.try_get::<Option<i64>, _>(idx) {
-        return val.map(|v| v.to_string());
-    }
-    if let Ok(val) = row.try_get::<Option<f64>, _>(idx) {
-        return val.map(|v| v.to_string());
-    }
-    if let Ok(val) = row.try_get::<Option<bool>, _>(idx) {
-        return val.map(|v| v.to_string());
-    }
-    if let Ok(val) = row.try_get::<Option<chrono::NaiveDateTime>, _>(idx) {
-        return val.map(|v| v.to_string());
-    }
-    if let Ok(val) = row.try_get::<Option<chrono::NaiveDate>, _>(idx) {
-        return val.map(|v| v.to_string());
-    }
-    if let Ok(val) = row.try_get::<Option<chrono::NaiveTime>, _>(idx) {
-        return val.map(|v| v.to_string());
-    }
-    if let Ok(val) = row.try_get::<Option<Vec<u8>>, _>(idx) {
-        return val.map(|bytes: Vec<u8>| String::from_utf8_lossy(&bytes).into_owned());
-    }
-    None
+    row.try_get::<Option<String>, _>(idx)
+        .ok()
+        .flatten()
+        .or_else(|| try_get_num_or_bool(row, idx))
+        .or_else(|| try_get_temporal(row, idx))
+        .or_else(|| {
+            row.try_get::<Option<Vec<u8>>, _>(idx)
+                .ok()
+                .flatten()
+                .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
+        })
 }
 
 pub fn mysql_rows_to_record_batch(rows: &[MySqlRow]) -> Result<RecordBatch> {
