@@ -1,0 +1,7 @@
+kind: Fixes
+body: Preserve nested BigQuery column descriptions and policy tags when persisting documentation.
+time: 2026-09-27T22:04:31.141461405+02:00
+custom:
+    author: fornwall
+    issue: "16487"
+    project: dbt-core
