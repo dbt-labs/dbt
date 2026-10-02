@@ -30,6 +30,7 @@ from dbt.contracts.graph.nodes import Exposure, HookNode, ModelNode
 from dbt.events.types import LogModelResult
 from dbt.exceptions import DbtRuntimeError
 from dbt.flags import get_flags, set_from_args
+from dbt.materializations.incremental.executor import IncrementalMaterializationExecutor
 from dbt.task.run import MicrobatchModelRunner, ModelRunner, RunTask, _get_adapter_info
 from dbt.task.runnable import _rows_affected
 from dbt.tests.util import safe_set_invocation_context
@@ -135,6 +136,49 @@ class TestModelRunner:
         catcher = EventCatcher(event_to_catch=LogModelResult)
         add_callback_to_manager(catcher.catch)
         return catcher
+
+    @pytest.mark.parametrize(
+        "unique_id,language,uses_python",
+        [
+            ("macro.dbt.materialization_table_default", "sql", True),
+            ("macro.project.materialization_table_default", "sql", False),
+            ("macro.dbt.materialization_table_postgres", "sql", False),
+            ("macro.dbt.materialization_table_default", "python", False),
+        ],
+    )
+    def test_python_materialization_executor_only_claims_exact_builtin_sql_table(
+        self,
+        model_runner: ModelRunner,
+        unique_id: str,
+        language: str,
+        uses_python: bool,
+    ) -> None:
+        model = mock.Mock(language=language)
+        materialization_macro = mock.Mock(unique_id=unique_id)
+
+        executor = model_runner._get_python_materialization_executor(model, materialization_macro)
+
+        assert (executor is not None) is uses_python
+
+    def test_python_incremental_executor_requires_typed_adapter_contract(
+        self, model_runner: ModelRunner
+    ) -> None:
+        model = mock.Mock(language="sql")
+        materialization_macro = mock.Mock(
+            unique_id="macro.dbt.materialization_incremental_default"
+        )
+        model_runner.adapter = mock.Mock(spec=[])
+
+        assert (
+            model_runner._get_python_materialization_executor(model, materialization_macro) is None
+        )
+
+        model_runner.adapter = mock.Mock(
+            spec=list(IncrementalMaterializationExecutor.REQUIRED_ADAPTER_METHODS)
+        )
+        executor = model_runner._get_python_materialization_executor(model, materialization_macro)
+
+        assert executor is IncrementalMaterializationExecutor
 
     def test_print_result_line(
         self,
