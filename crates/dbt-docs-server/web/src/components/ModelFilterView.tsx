@@ -20,7 +20,7 @@ const SORT_COLS: Record<string, string> = {
   executed_at: 'executed_at',
 };
 
-interface Props {
+interface ModelFilterViewProps {
   project: Project;
   onPeek(uniqueId: string): void;
 }
@@ -28,7 +28,7 @@ interface Props {
 /** Thin adapter over {@link GenericFilterView}: adds the model facet dropdowns,
  *  the `?modeling_layer=` deep-link, and server-side sort. The shell
  *  (breadcrumb/header/table) lives in GenericFilterView. */
-export function ModelFilterView({ project, onPeek }: Props) {
+export function ModelFilterView({ project, onPeek }: ModelFilterViewProps) {
   const [sort, setSort] = useState<ListSort | undefined>(undefined);
 
   // Modeling layer lives in the URL so the home "Show marts" CTA
