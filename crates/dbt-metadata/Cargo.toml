@@ -28,6 +28,7 @@ chrono-tz = { workspace = true }
 gix = { workspace = true }
 gix-discover = { workspace = true }
 hex = { workspace = true }
+ignore = { workspace = true }
 indexmap = { workspace = true }
 minijinja = { workspace = true }
 parquet = { workspace = true }

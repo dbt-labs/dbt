@@ -78,6 +78,7 @@ use dbt_schemas::{
         ResolverState, ResourcePathKind,
     },
 };
+use ignore::gitignore::{Gitignore, GitignoreBuilder};
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 use std::{
@@ -714,7 +715,8 @@ pub fn unique_id_filter_for_dirty(io: &IoArgs) -> Option<HashSet<String>> {
     resolve_dirty_unique_ids_from_index(&io.out_dir, None, Some(u32::MAX), true)
 }
 
-/// Build a `SelectExpression` for `--dirty`: `seed_id+ seed_id+ ...` (Or of `fqn:id+` atoms).
+/// Build a `SelectExpression` for `--dirty`: `seed_id+ seed_id+ ...` (Or of `fqn:id+` atoms),
+/// plus `path:<file>+` for added files.
 ///
 /// The scheduler applies this exactly like `--select 'ewe+'` — ancestors are loaded for dep
 /// closure but only the dirty nodes and their descendants are scheduled/run.
@@ -722,25 +724,33 @@ pub fn unique_id_filter_for_dirty(io: &IoArgs) -> Option<HashSet<String>> {
 pub fn dirty_select_expression(io: &IoArgs) -> Option<SelectExpression> {
     use crate::index_resolution::dirty_seed_ids_from_index;
     use dbt_common::node_selector::SelectionCriteria;
-    let seeds = dirty_seed_ids_from_index(&io.out_dir)?;
-    if seeds.is_empty() {
-        return None;
-    }
+    let (seeds, added_paths) = dirty_seed_ids_from_index(&io.out_dir)?;
+    let atom = |method: MethodName, value: String| {
+        SelectExpression::Atom(SelectionCriteria::new(
+            method,
+            vec![],
+            value,
+            false,
+            None,
+            Some(u32::MAX), // children_depth = ewe+
+            None,
+            None,
+        ))
+    };
+    let mut seeds: Vec<String> = seeds.into_iter().collect();
+    seeds.sort();
     let atoms: Vec<SelectExpression> = seeds
         .into_iter()
-        .map(|uid| {
-            SelectExpression::Atom(SelectionCriteria::new(
-                MethodName::Fqn,
-                vec![],
-                uid,
-                false,
-                None,
-                Some(u32::MAX), // children_depth = ewe+
-                None,
-                None,
-            ))
-        })
+        .map(|uid| atom(MethodName::Fqn, uid))
+        .chain(
+            added_paths
+                .into_iter()
+                .map(|path| atom(MethodName::Path, path)),
+        )
         .collect();
+    if atoms.is_empty() {
+        return None;
+    }
     if atoms.len() == 1 {
         Some(atoms.into_iter().next().unwrap())
     } else {
@@ -963,67 +973,103 @@ pub fn load_parse_state_filtered_with_unique_ids(
     })
 }
 
-/// Any file under `dirs` that is not in `recorded` (paths relative to `package_root`).
+/// The files under `dirs` that are not in `recorded` (paths relative to `package_root`).
 ///
-/// Additions are invisible to an mtime sweep of recorded files — a file that did not exist at the
-/// last parse has no recorded mtime to differ from — so detecting them needs a directory read.
-/// Only used for check paths, which hold a handful of files; see the caller for why.
-fn has_unrecorded_file(package_root: &Path, dirs: &[String], recorded: &HashSet<PathBuf>) -> bool {
-    let mut stack: Vec<PathBuf> = dirs.iter().map(|d| package_root.join(d)).collect();
-    while let Some(dir) = stack.pop() {
+/// Additions are invisible to an mtime sweep of recorded files - a file that did not exist at the
+/// last parse has no recorded mtime to differ from - so detecting them needs a directory read.
+/// The skips below mirror the loader's file collection: anything it never collects has no recorded
+/// entry either, and would otherwise look like an addition on every single run.
+pub(crate) fn unrecorded_files(
+    package_root: &Path,
+    dirs: &[String],
+    recorded: &HashSet<PathBuf>,
+) -> Vec<PathBuf> {
+    // A missing `.dbtignore` ignores nothing; malformed lines are skipped, the valid ones apply.
+    let dbtignore = {
+        let mut builder = GitignoreBuilder::new(package_root);
+        let _ = builder.add(package_root.join(".dbtignore"));
+        builder.build().unwrap_or_else(|_| Gitignore::empty())
+    };
+    // `is_root` marks a configured resource directory: the loader drops its immediate `fixtures`
+    // child (collected under `FixturePaths` instead), so that directory is scanned as its own root.
+    let mut stack: Vec<(PathBuf, bool)> =
+        dirs.iter().map(|d| (package_root.join(d), true)).collect();
+    let mut unrecorded = Vec::new();
+    while let Some((dir, is_root)) = stack.pop() {
+        // The loader's walk also applies `.dbtignore` to the resource directory itself.
+        if is_root
+            && dir
+                .strip_prefix(package_root)
+                .is_ok_and(|rel| dbtignore.matched(rel, true).is_ignore())
+        {
+            continue;
+        }
         let Ok(entries) = std::fs::read_dir(&dir) else {
             continue;
         };
         for entry in entries.flatten() {
             let path = entry.path();
+            let Ok(rel) = path.strip_prefix(package_root) else {
+                continue;
+            };
             match entry.file_type() {
-                Ok(ft) if ft.is_dir() => stack.push(path),
-                Ok(ft) if ft.is_file() => {
-                    // AppleDouble sidecars are never dbt assets and are excluded when the file
-                    // list is collected, so they must not count as additions here either.
-                    if entry
-                        .file_name()
-                        .to_str()
-                        .is_some_and(|n| n.starts_with("._"))
+                Ok(ft) if ft.is_dir() => {
+                    if (is_root && entry.file_name() == *"fixtures")
+                        || dbtignore.matched(rel, true).is_ignore()
                     {
                         continue;
                     }
-                    if path
-                        .strip_prefix(package_root)
-                        .is_ok_and(|rel| !recorded.contains(rel))
+                    stack.push((path, false));
+                }
+                // As in the loader, a file symlink counts as a file; symlinked dirs are not walked.
+                Ok(ft) if ft.is_file() || (ft.is_symlink() && path.is_file()) => {
+                    // dbt-core's `[!.#~]*` discovery pattern (also skips macOS `._` sidecars).
+                    if entry
+                        .file_name()
+                        .as_encoded_bytes()
+                        .first()
+                        .is_some_and(|byte| matches!(byte, b'.' | b'#' | b'~'))
+                        || dbtignore.matched(rel, false).is_ignore()
                     {
-                        return true;
+                        continue;
+                    }
+                    if !recorded.contains(rel) {
+                        unrecorded.push(rel.to_path_buf());
                     }
                 }
                 _ => {}
             }
         }
     }
-    false
+    unrecorded
 }
 
-/// Returns `true` when every tracked file in the DbtPackage list has an unchanged mtime.
-/// Used by the partial-load fast path to skip the expensive WalkDir scan when nothing changed.
-///
-/// Also reports changed when a **check** file has been added. Added files are otherwise invisible
-/// here (nothing recorded to compare against), and while `compute_file_changeset` does catch them on
-/// the incremental path ("File count changed"), the fast path returns the cached state without ever
-/// reaching it. The effect was that adding a check and running `dbt check` silently did nothing —
-/// the check never ran and nothing said so. `dbt check` is the command that hits this, because it
-/// forces `write_metadata` and so enables the `--partial-load` fast path.
-///
-/// Scoped to check paths deliberately: they hold a handful of files, so reading them is cheap,
-/// whereas the point of this gate is to avoid walking the model tree. The same blind spot remains
-/// for other resource kinds under the fast path and wants the directory-mtime approach instead.
+/// Returns `true` when no recorded file changed mtime or was deleted, and `unrecorded_files`
+/// finds none added under a configured resource directory. Additions are checked against the
+/// union of recorded paths across kinds, since one file can be recorded under several
+/// (`models/x.sql` is also a docs path by default).
 pub fn dbt_packages_have_no_file_changes(packages: &[DbtPackage]) -> bool {
     for pkg in packages {
-        if let Some(check_paths) = pkg.dbt_project.check_paths.as_ref() {
+        let mut scan_roots = pkg.dbt_project.all_source_paths();
+        scan_roots.extend(pkg.dbt_project.check_paths.iter().flatten().cloned());
+        scan_roots.extend(pkg.dbt_project.docs_paths.iter().flatten().cloned());
+        // Unit-test fixtures are collected from `<test-path>/fixtures`; see `collect_paths`.
+        scan_roots.extend(pkg.dbt_project.test_paths.iter().flatten().map(|p| {
+            PathBuf::from(p)
+                .join("fixtures")
+                .to_string_lossy()
+                .into_owned()
+        }));
+        scan_roots.sort();
+        scan_roots.dedup();
+        if !scan_roots.is_empty() {
             let recorded: HashSet<PathBuf> = pkg
                 .all_paths
-                .get(&ResourcePathKind::CheckPaths)
-                .map(|files| files.iter().map(|(p, _)| p.to_path_buf()).collect())
-                .unwrap_or_default();
-            if has_unrecorded_file(&pkg.package_root_path, check_paths, &recorded) {
+                .values()
+                .flatten()
+                .map(|(p, _)| p.to_path_buf())
+                .collect();
+            if !unrecorded_files(&pkg.package_root_path, &scan_roots, &recorded).is_empty() {
                 return false;
             }
         }
@@ -1077,12 +1123,21 @@ pub fn reconstruct_package_metadata(snapshot: &PackageSnapshot) -> FsResult<DbtP
         })
         .collect();
 
-    // `check-paths` is carried through because the fast-path gate needs the configured directories
-    // to spot an *added* check file (see `dbt_packages_have_no_file_changes`). Without it the stub
-    // reports `None`, the gate silently skips its scan, and a newly added check never runs.
+    // The resource directories are carried through because the fast-path gate needs them to spot
+    // an *added* file (see `dbt_packages_have_no_file_changes`). Without them the stub reports
+    // `None`, the gate silently skips its scan, and newly added resources are never loaded.
+    let paths = &snapshot.manifest_path_config;
     let minimal_project_json = serde_json::json!({
         "name": &snapshot.package_name,
-        "check-paths": &snapshot.manifest_path_config.check_paths,
+        "model-paths": &paths.model_paths,
+        "seed-paths": &paths.seed_paths,
+        "snapshot-paths": &paths.snapshot_paths,
+        "test-paths": &paths.test_paths,
+        "check-paths": &paths.check_paths,
+        "analysis-paths": &paths.analysis_paths,
+        "function-paths": &paths.function_paths,
+        "macro-paths": &paths.macro_paths,
+        "docs-paths": &paths.docs_paths,
     });
     let dbt_project = serde_json::from_value(minimal_project_json).map_err(|e| {
         fs_err!(
@@ -1135,7 +1190,7 @@ mod tests {
     //!     walk       = +model or model+ (graph-walk modifier)
     //!
     //! Outcome column:
-    //!   fast-path     = partial-load skips WalkDir entirely (dbt_packages_have_no_file_changes)
+    //!   fast-path     = prev reused, loader walk skipped (dbt_packages_have_no_file_changes)
     //!   Incremental   = prev compilation reused; only changed nodes re-resolved
     //!   FullParse     = cache discarded; full fresh parse
     //!   NoFilesChanged = no WalkDir result change; prev compilation returned as-is
@@ -1845,73 +1900,164 @@ mod tests {
         );
     }
 
-    /// Regression: the `--partial-load` fast path must not be taken when a check file was added.
-    ///
-    /// The mtime sweep only visits *recorded* files, so an added file leaves every recorded mtime
-    /// unchanged and the gate used to report "no changes". The fast path then returned the cached
-    /// state verbatim, never reaching `compute_file_changeset` (which does catch additions), so
-    /// adding a check and running `dbt check` silently ran nothing and said nothing.
+    /// Regression: an added file of any kind must invalidate the fast path, seen through the
+    /// reconstructed package the gate really gets (a path config dropped there hides that kind).
     #[test]
-    fn fast_path_gate_detects_an_added_check_file() {
-        use dbt_schemas::state::DbtPackage;
-
+    fn reconstructed_package_gate_detects_an_added_file_per_kind() {
         let tmp = tempfile::tempdir().unwrap();
-        let checks_dir = tmp.path().join("checks");
-        std::fs::create_dir_all(&checks_dir).unwrap();
-        let existing = checks_dir.join("existing.sql");
-        std::fs::write(&existing, b"select 1 where false").unwrap();
-
-        let mut pkg = DbtPackage {
-            package_root_path: tmp.path().to_path_buf(),
-            ..Default::default()
-        };
-        pkg.dbt_project.check_paths = Some(vec!["checks".to_string()]);
-        pkg.all_paths = HashMap::from([(
-            ResourcePathKind::CheckPaths,
-            vec![(
-                DbtPath::from(Path::new("checks/existing.sql")),
-                std::fs::metadata(&existing).unwrap().modified().unwrap(),
-            )],
-        )]);
-
-        assert!(
-            dbt_packages_have_no_file_changes(std::slice::from_ref(&pkg)),
-            "only the recorded check file is present — fast path is valid"
-        );
-
-        std::fs::write(checks_dir.join("brand_new.sql"), b"select 1").unwrap();
-        assert!(
-            !dbt_packages_have_no_file_changes(std::slice::from_ref(&pkg)),
-            "an added check file must invalidate the fast path, or it never runs"
-        );
-    }
-
-    /// Regression: the reconstructed package must keep `check-paths`.
-    ///
-    /// `reconstruct_package_metadata` builds a stub `DbtProject`, and it used to carry only `name`.
-    /// The fast-path gate needs the configured check directories to notice an added check file, so a
-    /// stub reporting `None` made it skip that scan entirely and a newly added check silently never
-    /// ran. `fast_path_gate_detects_an_added_check_file` cannot catch this — it sets `check_paths`
-    /// itself, so it passed while the real path stayed broken.
-    #[test]
-    fn reconstructed_package_keeps_check_paths() {
+        // `tests/fixtures` has no path config of its own; the gate derives it from `test-paths`.
+        let kinds = [
+            ("models", ResourcePathKind::ModelPaths),
+            ("seeds", ResourcePathKind::SeedPaths),
+            ("snapshots", ResourcePathKind::SnapshotPaths),
+            ("tests", ResourcePathKind::TestPaths),
+            ("analyses", ResourcePathKind::AnalysisPaths),
+            ("macros", ResourcePathKind::MacroPaths),
+            ("functions", ResourcePathKind::FunctionPaths),
+            ("checks", ResourcePathKind::CheckPaths),
+            ("docs", ResourcePathKind::DocsPaths),
+            ("tests/fixtures", ResourcePathKind::FixturePaths),
+        ];
+        let all_paths: HashMap<_, _> = kinds
+            .iter()
+            .map(|(dir, kind)| {
+                let rel = format!("{dir}/existing.sql");
+                let mtime = write_file(&tmp.path().join(&rel), b"select 1");
+                (kind.clone(), vec![(rel, system_time_to_nanos(mtime))])
+            })
+            .collect();
+        let paths = |dir: &str| vec![dir.to_string()];
         let snapshot = PackageSnapshot {
-            package_root_path: "/tmp/proj".into(),
+            package_root_path: tmp.path().to_str().unwrap().into(),
             package_name: "proj".into(),
             manifest_path_config: ManifestPathConfig {
-                check_paths: vec!["checks".to_string(), "extra_checks".to_string()],
+                model_paths: paths("models"),
+                seed_paths: paths("seeds"),
+                snapshot_paths: paths("snapshots"),
+                test_paths: paths("tests"),
+                analysis_paths: paths("analyses"),
+                macro_paths: paths("macros"),
+                function_paths: paths("functions"),
+                check_paths: paths("checks"),
+                docs_paths: paths("docs"),
                 ..Default::default()
             },
-            all_paths: HashMap::new(),
+            all_paths,
             dependencies: BTreeSet::new(),
             is_local_dep: false,
         };
-
         let pkg = reconstruct_package_metadata(&snapshot).expect("reconstruct should succeed");
-        assert_eq!(
-            pkg.dbt_project.check_paths,
-            Some(vec!["checks".to_string(), "extra_checks".to_string()]),
-            "check-paths must survive reconstruction or the fast path cannot see added checks"
+        let unchanged = || dbt_packages_have_no_file_changes(std::slice::from_ref(&pkg));
+
+        assert!(
+            unchanged(),
+            "only the recorded files are present - fast path is valid"
+        );
+        for (dir, _) in &kinds {
+            let added = tmp.path().join(dir).join("brand_new.sql");
+            std::fs::write(&added, b"select 2").unwrap();
+            assert!(
+                !unchanged(),
+                "{dir}: an added file must invalidate the fast path"
+            );
+            std::fs::remove_file(&added).unwrap();
+        }
+    }
+
+    /// Package with one recorded file under `dir`, and `dir` set as the matching path config.
+    fn pkg_with_resource_dir(
+        root: &Path,
+        project_key: &str,
+        kind: ResourcePathKind,
+        dir: &str,
+        file_name: &str,
+    ) -> DbtPackage {
+        let dir_path = root.join(dir);
+        std::fs::create_dir_all(&dir_path).unwrap();
+        let existing = dir_path.join(file_name);
+        std::fs::write(&existing, b"select 1").unwrap();
+
+        DbtPackage {
+            dbt_project: serde_json::from_value(
+                serde_json::json!({ "name": "p", project_key: [dir] }),
+            )
+            .unwrap(),
+            package_root_path: root.to_path_buf(),
+            all_paths: HashMap::from([(
+                kind,
+                vec![(
+                    DbtPath::from(Path::new(&format!("{dir}/{file_name}"))),
+                    std::fs::metadata(&existing).unwrap().modified().unwrap(),
+                )],
+            )]),
+            ..Default::default()
+        }
+    }
+
+    /// The scan must skip exactly what the loader's file collection skips. Anything else has no
+    /// recorded entry to match, so it would look like an addition on every run and the fast path
+    /// would be lost for good - silently, since there is nothing to report.
+    #[test]
+    fn fast_path_gate_matches_loader_file_collection() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut pkg = pkg_with_resource_dir(
+            tmp.path(),
+            "model-paths",
+            ResourcePathKind::ModelPaths,
+            "models",
+            "m.sql",
+        );
+        let models = tmp.path().join("models");
+        std::fs::write(
+            tmp.path().join(".dbtignore"),
+            b"models/ignored.sql\nanalyses/\n",
+        )
+        .unwrap();
+
+        for uncollected in [".DS_Store", "._m.sql", "#m.sql", "~m.sql", "ignored.sql"] {
+            std::fs::write(models.join(uncollected), b"select 2").unwrap();
+            assert!(
+                dbt_packages_have_no_file_changes(std::slice::from_ref(&pkg)),
+                "{uncollected} is never collected, so it must not count as an addition"
+            );
+            std::fs::remove_file(models.join(uncollected)).unwrap();
+        }
+
+        // `<resource-dir>/fixtures` is dropped from that directory's file list by the loader.
+        let fixtures = models.join("fixtures");
+        std::fs::create_dir_all(&fixtures).unwrap();
+        std::fs::write(fixtures.join("fix.csv"), b"id\n1\n").unwrap();
+        assert!(
+            dbt_packages_have_no_file_changes(std::slice::from_ref(&pkg)),
+            "a fixtures/ child of a resource directory is not collected under that kind"
+        );
+
+        // The loader applies `.dbtignore` to a resource directory itself, too.
+        pkg.dbt_project.analysis_paths = Some(vec!["analyses".to_string()]);
+        std::fs::create_dir_all(tmp.path().join("analyses")).unwrap();
+        std::fs::write(tmp.path().join("analyses").join("a.sql"), b"select 2").unwrap();
+        assert!(
+            dbt_packages_have_no_file_changes(std::slice::from_ref(&pkg)),
+            "a file under a dbtignored resource directory must not count as an addition"
+        );
+
+        // The loader collects a symlink to a file, so an added one is an addition.
+        #[cfg(unix)]
+        {
+            let link = models.join("linked.sql");
+            std::fs::write(tmp.path().join("outside.sql"), b"select 2").unwrap();
+            std::os::unix::fs::symlink(tmp.path().join("outside.sql"), &link).unwrap();
+            assert!(
+                !dbt_packages_have_no_file_changes(std::slice::from_ref(&pkg)),
+                "an added symlinked model must invalidate the fast path"
+            );
+            std::fs::remove_file(&link).unwrap();
+        }
+
+        std::fs::write(models.join("m2.sql"), b"select 2").unwrap();
+        assert!(
+            !dbt_packages_have_no_file_changes(std::slice::from_ref(&pkg)),
+            "a real addition alongside the skipped files must still be caught"
         );
     }
 
@@ -2852,8 +2998,8 @@ mod tests {
 
     // Build a PackageSnapshot where `all_paths` contains exactly one file at
     // `rel_path` (relative to `root`) with the given saved mtime.
-    // `manifest_path_config` is left default, so resource directories are unset — not suitable for
-    // tests that need added-file detection (see `fast_path_gate_detects_an_added_check_file`).
+    // `manifest_path_config` is left default, so resource directories are unset: not suitable for
+    // added-file detection (see `reconstructed_package_gate_detects_an_added_file_per_kind`).
     fn pkg_with_file(
         root: &Path,
         kind: ResourcePathKind,

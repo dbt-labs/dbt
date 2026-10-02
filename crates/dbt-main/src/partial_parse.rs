@@ -92,11 +92,8 @@ pub fn try_load_prev_compilation(
     };
 
     // When a --select is present but the unique_id filter resolved to None (selector
-    // matched nothing in the cached index — possibly because the index is stale and the
-    // selected node is brand-new), disable the lazy-filter fast path.  The fast path
-    // only checks mtimes of files it already knows about and cannot detect new files;
-    // without this guard it would silently return an empty result instead of letting
-    // initialize() run WalkDir and discover the new node.
+    // matched nothing in the cached index, possibly a brand-new node), disable the lazy-filter
+    // fast path. Belt-and-braces: the fast path itself now declines when a file was added.
     let use_lazy_filter = if use_lazy_filter
         && eval.select.is_some()
         && !has_dirty
@@ -295,8 +292,8 @@ pub fn try_load_prev_compilation(
     )
 }
 
-/// --partial-load fast path: if all file mtimes are unchanged since the last parse, skip
-/// the expensive WalkDir scan inside DbtLoadedProject::load entirely.
+/// --partial-load fast path: if no recorded file changed or was deleted and none was added
+/// since the last parse, reuse the previous compilation and skip DbtLoadedProject::load.
 ///
 /// Returns `Some(compilation)` if the fast path applies, `None` to fall through.
 /// On `None`, `maybe_prev` is left untouched so the caller can still pass it to `initialize()`.
