@@ -232,8 +232,16 @@ function BaseDagCanvas({
  *  store rather than taking it as props. Also owns the hop-bar's upstream/downstream
  *  state, since both directions ultimately feed the one fetch below. */
 export function BaseDag({ rootUniqueId, topBarLeft, onRecenter, onNodeClick }: Props) {
-  const [upstreamHops, setUpstreamHops] = useState(DEFAULT_HOPS);
-  const [downstreamHops, setDownstreamHops] = useState(DEFAULT_HOPS);
+  // Inline and fullscreen lineage mount separate DAGs. Reuse the current root's
+  // requested depths so switching surfaces preserves scope, even during a fetch.
+  const [upstreamHops, setUpstreamHops] = useState(() => {
+    const state = useLineageStore.getState();
+    return state.rootUniqueId === rootUniqueId ? state.upstreamDepth : DEFAULT_HOPS;
+  });
+  const [downstreamHops, setDownstreamHops] = useState(() => {
+    const state = useLineageStore.getState();
+    return state.rootUniqueId === rootUniqueId ? state.downstreamDepth : DEFAULT_HOPS;
+  });
   // Recentering (from a Groups pill, or any other future "make this the root"
   // action) always lands on a fresh 1+/+1 -- without this, hops from the
   // previous root would silently carry over, since BaseDag doesn't remount

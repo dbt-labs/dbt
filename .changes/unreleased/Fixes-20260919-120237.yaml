@@ -1,0 +1,7 @@
+kind: Fixes
+body: Preserve lineage hop counts when expanding or closing the dbt docs DAG for the same resource.
+time: 2026-09-19T12:02:37.452982+01:00
+custom:
+    author: ernestoongaro
+    issue: "16379"
+    project: dbt-core
