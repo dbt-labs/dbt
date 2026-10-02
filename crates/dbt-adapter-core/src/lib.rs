@@ -21,6 +21,7 @@ pub const STATIC_ANALYSIS_SUPPORTED_ADAPTERS: &[AdapterType] = &[
     AdapterType::Databricks,
     AdapterType::Spark,
     AdapterType::DuckDB,
+    AdapterType::SingleStore,
 ];
 
 /// Adapters that support concurrent execution of microbatch models.

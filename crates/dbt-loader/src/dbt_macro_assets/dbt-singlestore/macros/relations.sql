@@ -19,6 +19,20 @@
 
   {%- set create_definition_list = [] -%}
 
+  {%- set contract_config = config.get('contract') -%}
+  {%- if contract_config and contract_config.enforced and (not temporary) -%}
+    {{ get_assert_columns_equivalent(compiled_code) }}
+    {%- set raw_column_constraints = adapter.render_raw_columns_constraints(raw_columns=model['columns']) -%}
+    {%- set raw_model_constraints = adapter.render_raw_model_constraints(raw_constraints=model['constraints']) -%}
+    {%- for c in raw_column_constraints -%}
+      {%- do create_definition_list.append(c) -%}
+    {%- endfor -%}
+    {%- for c in raw_model_constraints -%}
+      {%- do create_definition_list.append(c) -%}
+    {%- endfor -%}
+    {%- set compiled_code = get_select_subquery(compiled_code) -%}
+  {%- endif -%}
+
   {%- if not temporary and primary_key | length -%}
     {%- set quoted_pk = [] -%}
     {%- for col in primary_key -%}
@@ -53,6 +67,8 @@
         {%- do quoted_shk.append(adapter.quote(col)) -%}
       {%- endfor -%}
       {%- do create_definition_list.append('SHARD KEY (' ~ quoted_shk | join(', ') ~ ')') -%}
+    {%- elif not reference and not primary_key | length -%}
+      {%- do create_definition_list.append('SHARD KEY ()') -%}
     {%- endif -%}
 
     {%- if unique_table_key | length and unique_table_key != primary_key -%}
@@ -82,11 +98,7 @@
 
   {%- set table_type = '' -%}
   {%- if temporary -%}
-    {%- if sort_key | length -%}
-      {%- set table_type = 'temporary' -%}
-    {%- else -%}
-      {%- set table_type = 'rowstore temporary' -%}
-    {%- endif -%}
+    {%- set table_type = 'rowstore' -%}
   {%- elif storage_type | lower == 'rowstore' -%}
     {%- set table_type = 'rowstore' -%}
   {%- endif -%}
@@ -105,6 +117,10 @@
 
   {{ sql_header if sql_header is not none }}
 
+  {% if temporary -%}
+    drop table if exists {{ relation.render() }};
+  {%- endif %}
+
   create {{ table_type }} table {{ relation.render() }}
     {% if create_definition_str | length %}{{ create_definition_str }}{% endif %}
     {{ charset_str }}
@@ -115,6 +131,10 @@
 {% macro singlestore__create_view_as(relation, sql) -%}
   {%- set sql_header = config.get('sql_header', none) -%}
   {{ sql_header if sql_header is not none }}
+  {%- set contract_config = config.get('contract') -%}
+  {%- if contract_config and contract_config.enforced -%}
+    {{ get_assert_columns_equivalent(sql) }}
+  {%- endif -%}
   create view {{ relation.render() }} as
     {{ singlestore__strip_db_limit_aliases(sql) }}
 {%- endmacro %}
@@ -154,6 +174,12 @@
   {% call statement('rename_relation') -%}
     alter table {{ from_relation.render() }} rename to {{ to_relation.render() }}
   {%- endcall %}
+{%- endmacro %}
+
+{% macro singlestore__alter_column_type(relation, column_name, new_column_type) -%}
+  {% call statement('alter_column_type') %}
+    alter table {{ relation.render() }} modify column {{ adapter.quote(column_name) }} {{ new_column_type }}
+  {% endcall %}
 {%- endmacro %}
 
 {% macro singlestore__check_schema_exists(information_schema, schema) -%}
@@ -203,3 +229,49 @@
   {% set table = load_result('get_columns_in_relation').table %}
   {{ return(sql_convert_columns_in_relation(table)) }}
 {%- endmacro %}
+
+{% macro singlestore__get_assert_columns_equivalent(sql) -%}
+  {%- set user_defined_columns = model['columns'] -%}
+
+  {%- if not user_defined_columns -%}
+      {{ exceptions.raise_contract_error([], []) }}
+  {%- endif -%}
+
+  {%- set yaml_columns = user_defined_columns.values() | list -%}
+  {%- set sql_file_provided_columns = get_column_schema_from_query(sql, config.get('sql_header', none)) -%}
+  {%- set sql_columns = format_columns(sql_file_provided_columns) -%}
+
+  {%- if sql_columns|length != yaml_columns|length -%}
+    {%- do exceptions.raise_contract_error(yaml_columns, sql_columns) -%}
+  {%- endif -%}
+
+  {%- for sql_col in sql_columns -%}
+    {%- set yaml_col = [] -%}
+    {%- for this_col in yaml_columns -%}
+      {%- if this_col['name'] | lower == sql_col['name'] | lower -%}
+        {%- do yaml_col.append(this_col) -%}
+        {%- break -%}
+      {%- endif -%}
+    {%- endfor -%}
+    {%- if not yaml_col -%}
+      {#-- Column with name not found in yaml #}
+      {%- do exceptions.raise_contract_error(yaml_columns, sql_columns) -%}
+    {%- endif -%}
+
+    {# Check data types #}
+    {%- set sql_type = sql_col['data_type'] | lower | trim -%}
+    {%- set yaml_type = yaml_col[0]['data_type'] | lower | trim -%}
+    {%- set yaml_base = yaml_type.split('(')[0] | trim -%}
+
+    {%- set is_int_match = (sql_type in ['int', 'integer', 'int(11)']) and (yaml_base in ['int', 'integer', 'int(11)']) -%}
+    {%- set is_bigint_match = (sql_type in ['bigint', 'bigint(20)']) and (yaml_base in ['bigint', 'bigint(20)']) -%}
+    {%- set is_text_match = (sql_type in ['text', 'varchar', 'string', 'char', 'longtext', 'mediumtext']) and (yaml_base in ['text', 'varchar', 'string', 'char', 'longtext', 'mediumtext', 'date']) -%}
+    {%- set is_date_match = (sql_type in ['date', 'datetime', 'timestamp']) and (yaml_base in ['date', 'datetime', 'timestamp']) -%}
+    {%- set is_exact_match = (sql_type == yaml_base or sql_type == yaml_type) -%}
+
+    {%- if not (is_exact_match or is_int_match or is_bigint_match or is_text_match or is_date_match) -%}
+      {%- do exceptions.raise_contract_error(yaml_columns, sql_columns) -%}
+    {%- endif -%}
+  {%- endfor -%}
+{%- endmacro %}
+

@@ -60,6 +60,12 @@ impl Auth for SingleStoreAuth {
             builder.with_named_option("ssl_key", key.to_string())?;
         }
 
+        let allow_cleartext_plugin = config
+            .get_bool("allow_cleartext_plugin")
+            .or_else(|| config.get_bool("cleartext_plugin"))
+            .unwrap_or(true);
+        builder.with_named_option("allow_cleartext_plugin", allow_cleartext_plugin.to_string())?;
+
         if !query_params.is_empty() {
             uri.push('?');
             uri.push_str(&query_params.join("&"));

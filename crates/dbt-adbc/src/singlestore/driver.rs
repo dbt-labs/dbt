@@ -38,6 +38,7 @@ impl Driver for SingleStoreDriver {
         let mut ssl_ca = None;
         let mut ssl_cert = None;
         let mut ssl_key = None;
+        let mut allow_cleartext_plugin = true;
 
         for (k, v) in opts {
             match k {
@@ -92,6 +93,16 @@ impl Driver for SingleStoreDriver {
                             ssl_key = Some(s);
                         }
                     }
+                    "allow_cleartext_plugin" | "cleartext_plugin" => match v {
+                        OptionValue::Int(i) => allow_cleartext_plugin = i != 0,
+                        OptionValue::String(s) => {
+                            allow_cleartext_plugin = !matches!(
+                                s.to_ascii_lowercase().as_str(),
+                                "false" | "0" | "no" | "off"
+                            );
+                        }
+                        _ => {}
+                    },
                     _ => {}
                 },
                 _ => {}
@@ -150,6 +161,8 @@ impl Driver for SingleStoreDriver {
         if let Some(key) = ssl_key {
             connect_options = connect_options.ssl_client_key(std::path::Path::new(&key));
         }
+
+        connect_options = connect_options.enable_cleartext_plugin(allow_cleartext_plugin);
 
         Ok(Box::new(SingleStoreDatabase::new(
             connect_options,

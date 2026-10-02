@@ -1641,6 +1641,9 @@ pub struct SingleStoreDbConfig {
     pub ssl_cert: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ssl_key: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(alias = "cleartext_plugin")]
+    pub allow_cleartext_plugin: Option<bool>,
 }
 
 #[derive(Serialize, DbtSchema)]

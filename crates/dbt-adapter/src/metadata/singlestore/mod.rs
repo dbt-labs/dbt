@@ -14,15 +14,19 @@
 use crate::AdapterEngine;
 use crate::adapter::adapter_impl::AdapterImpl;
 use crate::connection::AdapterConnectionFactory;
+use crate::errors::{
+    AdapterError, AdapterErrorKind, AdapterResult, AsyncAdapterResult, Cancellable,
+};
 use crate::metadata::*;
 use crate::record_batch::RecordBatchExt;
 use crate::relation::do_create_relation;
-use arrow_array::{Array, Decimal128Array, Int64Array, RecordBatch, StringArray, TimestampSecondArray};
+use arrow_array::{
+    Array, Decimal128Array, Int64Array, RecordBatch, StringArray, TimestampSecondArray,
+};
 use arrow_schema::Schema;
 use dbt_adapter_core::{AdapterType, ExecutionPhase};
 use dbt_adapter_engine::MapReduce;
 use dbt_adbc::{Connection, QueryCtx};
-use crate::errors::{AdapterError, AdapterErrorKind, AdapterResult, AsyncAdapterResult, Cancellable};
 use dbt_common::cancellation::CancellationToken;
 use dbt_schemas::dbt_types::RelationType;
 use dbt_schemas::schemas::{
@@ -330,10 +334,8 @@ impl MetadataAdapter for SingleStoreMetadataAdapter {
                           task: &(String, Vec<(String, String)>)|
               -> AdapterResult<Vec<(String, MetadataFreshness)>> {
             let (schema, table_entries) = task;
-            let escaped_schema = dbt_adapter_sql::ident::escape_string_literal(
-                schema,
-                AdapterType::SingleStore,
-            );
+            let escaped_schema =
+                dbt_adapter_sql::ident::escape_string_literal(schema, AdapterType::SingleStore);
 
             // Build IN clause for table names
             let table_names_in = table_entries
@@ -362,7 +364,9 @@ impl MetadataAdapter for SingleStoreMetadataAdapter {
             );
 
             let ctx = QueryCtx::default().with_desc("Extracting freshness from information schema");
-            let batch = adapter.engine().execute(None, conn, &ctx, &sql, token_clone.clone())?;
+            let batch = adapter
+                .engine()
+                .execute(None, conn, &ctx, &sql, token_clone.clone())?;
 
             if batch.num_rows() == 0 {
                 return Ok(vec![]);
@@ -388,24 +392,23 @@ impl MetadataAdapter for SingleStoreMetadataAdapter {
 
                 if let Some(ts_col) = timestamps_raw {
                     // Try i64 (BIGINT / INT) first
-                    let ts_secs = if let Some(i64_col) =
-                        ts_col.as_any().downcast_ref::<Int64Array>()
-                    {
-                        if i64_col.is_null(i) {
+                    let ts_secs =
+                        if let Some(i64_col) = ts_col.as_any().downcast_ref::<Int64Array>() {
+                            if i64_col.is_null(i) {
+                                continue;
+                            }
+                            i64_col.value(i)
+                        } else if let Some(ts_col) =
+                            ts_col.as_any().downcast_ref::<TimestampSecondArray>()
+                        {
+                            if ts_col.is_null(i) {
+                                continue;
+                            }
+                            ts_col.value(i)
+                        } else {
+                            // Unknown type for timestamp column; skip this row
                             continue;
-                        }
-                        i64_col.value(i)
-                    } else if let Some(ts_col) =
-                        ts_col.as_any().downcast_ref::<TimestampSecondArray>()
-                    {
-                        if ts_col.is_null(i) {
-                            continue;
-                        }
-                        ts_col.value(i)
-                    } else {
-                        // Unknown type for timestamp column; skip this row
-                        continue;
-                    };
+                        };
 
                     let freshness = MetadataFreshness::from_secs(ts_secs, is_view)?;
                     results.push((fqn, freshness));
