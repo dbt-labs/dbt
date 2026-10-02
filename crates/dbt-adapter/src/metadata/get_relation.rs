@@ -1120,7 +1120,7 @@ fn clickhouse_get_relation(
     )
     .with_relation_type(relation_type_from_engine(engines.value(0)))
     .with_quoting(adapter.quoting());
-    let relation = with_catalog_state(relation, caps, cluster.as_deref(), &batch, 0)?;
+    let relation = with_catalog_state(relation, &caps, cluster.as_deref(), &batch, 0)?;
     Ok(Some(Box::new(relation) as Box<dyn BaseRelation>))
 }
 

@@ -65,9 +65,7 @@ fn refreshable_marker_columns(col: &str, agg: &str) -> String {
 }
 
 /// Profile keys relations need at creation time (relation.py `create_from` reads them off the
-/// credentials). Every ClickHouse engine publishes its own at construction, before any macro
-/// renders, so each invocation of a long-lived process sees its profile; concurrent invocations
-/// with different ClickHouse profiles would still share the value.
+/// credentials). Published by [`register_engine`].
 #[derive(Debug, Clone, Default)]
 pub struct ClickHouseConnectionInfo {
     pub cluster: Option<String>,
@@ -80,13 +78,18 @@ static CONNECTION_INFO: std::sync::RwLock<ClickHouseConnectionInfo> =
         database_engine: String::new(),
     });
 
-pub fn register_connection_info(cluster: Option<String>, database_engine: Option<String>) {
+/// A ClickHouse engine was built: publish its [`ClickHouseConnectionInfo`] and drop the
+/// previous engine's [`ClickHouseCapabilities`] probe. Runs before any macro renders, so each
+/// invocation of a long-lived process sees its own profile and probes its own server;
+/// concurrent invocations with different ClickHouse profiles would still share both.
+pub fn register_engine(cluster: Option<String>, database_engine: Option<String>) {
     *CONNECTION_INFO
         .write()
         .unwrap_or_else(std::sync::PoisonError::into_inner) = ClickHouseConnectionInfo {
         cluster: cluster.filter(|c| !c.trim().is_empty()),
         database_engine: database_engine.unwrap_or_default(),
     };
+    CLICKHOUSE_CAPABILITIES.reset();
 }
 
 /// relation.py `ClickHouseRelation.get_on_cluster`.
@@ -597,7 +600,7 @@ pub fn list_relations(
         )
         .with_relation_type(relation_type_from_engine(table_types.value(i)))
         .with_quoting(engine.quoting());
-        let relation = with_catalog_state(relation, caps, cluster.as_deref(), &batch, i)?;
+        let relation = with_catalog_state(relation, &caps, cluster.as_deref(), &batch, i)?;
 
         relations.push(Arc::new(relation) as Arc<dyn BaseRelation>);
     }
@@ -677,9 +680,9 @@ fn build_schema_from_clickhouse_describe(
     Ok(Arc::new(schema))
 }
 
-/// ClickHouse server capabilities, probed once per process and reused for every
-/// model/thread afterwards (as the Python client does at connection init, and
-/// for `atomic_exchange` behind a process-global lock).
+/// ClickHouse server capabilities, probed once per engine and reused for every
+/// model/thread of that invocation (as the Python client does at connection
+/// init, and for `atomic_exchange` behind a process-global lock).
 #[derive(Debug, Clone)]
 pub struct ClickHouseCapabilities {
     /// `SELECT version()` result; empty when the probe failed (callers treat
@@ -975,17 +978,68 @@ pub(crate) fn query_settings_clause(query_settings: Option<&Value>) -> String {
     }
 }
 
-static CLICKHOUSE_CAPABILITIES: std::sync::OnceLock<ClickHouseCapabilities> =
-    std::sync::OnceLock::new();
+/// The current engine's probe result. The probe runs under `probe_lock` only, never under
+/// `slot`: the probe's own statements read `slot` through [`statement_options`], so holding it
+/// while probing would self-deadlock. Concurrent first callers still wait for the one probe.
+struct CapabilitiesCache {
+    probe_lock: std::sync::Mutex<()>,
+    slot: std::sync::RwLock<Option<Arc<ClickHouseCapabilities>>>,
+}
 
-/// Return the server capabilities, probing only on the very first call
-/// process-wide (concurrent callers block until it completes).
+impl CapabilitiesCache {
+    const fn new() -> Self {
+        Self {
+            probe_lock: std::sync::Mutex::new(()),
+            slot: std::sync::RwLock::new(None),
+        }
+    }
+
+    fn get_or_probe(
+        &self,
+        probe: impl FnOnce() -> ClickHouseCapabilities,
+    ) -> Arc<ClickHouseCapabilities> {
+        if let Some(caps) = self.probed() {
+            return caps;
+        }
+        let _probing = self
+            .probe_lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(caps) = self.probed() {
+            return caps;
+        }
+        let caps = Arc::new(probe());
+        *self
+            .slot
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Arc::clone(&caps));
+        caps
+    }
+
+    /// The probe result, or None — for callers that must not trigger the probe themselves.
+    fn probed(&self) -> Option<Arc<ClickHouseCapabilities>> {
+        self.slot
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
+    fn reset(&self) {
+        *self
+            .slot
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+    }
+}
+
+static CLICKHOUSE_CAPABILITIES: CapabilitiesCache = CapabilitiesCache::new();
+
 pub fn server_capabilities(
     adapter: &AdapterImpl,
     state: &State,
     token: CancellationToken,
-) -> &'static ClickHouseCapabilities {
-    CLICKHOUSE_CAPABILITIES.get_or_init(|| {
+) -> Arc<ClickHouseCapabilities> {
+    CLICKHOUSE_CAPABILITIES.get_or_probe(|| {
         probe_capabilities(adapter.engine().as_ref(), |sql| {
             probe_query(adapter, state, sql, token.clone())
         })
@@ -999,8 +1053,8 @@ pub fn server_capabilities_over_connection(
     ctx: &QueryCtx,
     conn: &mut dyn Connection,
     token: CancellationToken,
-) -> &'static ClickHouseCapabilities {
-    CLICKHOUSE_CAPABILITIES.get_or_init(|| {
+) -> Arc<ClickHouseCapabilities> {
+    CLICKHOUSE_CAPABILITIES.get_or_probe(|| {
         probe_capabilities(engine, |sql| {
             engine.execute(None, conn, ctx, sql, token.clone()).ok()
         })
@@ -1028,17 +1082,12 @@ fn probe_capabilities(
     }
 }
 
-/// The probed capabilities, or None — for callers that must not trigger the
-/// probe themselves.
-fn capabilities_if_probed() -> Option<&'static ClickHouseCapabilities> {
-    CLICKHOUSE_CAPABILITIES.get()
-}
-
 /// dbclient.py parity: after the lightweight-deletes probe finds
 /// `ND_MUTATION_SETTING` disabled but overridable, every statement carries it
 /// as a driver setting (Python adds it to the per-request `_conn_settings`).
 pub(crate) fn statement_options() -> Option<(String, adbc_core::options::OptionValue)> {
-    capabilities_if_probed()
+    CLICKHOUSE_CAPABILITIES
+        .probed()
         .filter(|caps| caps.nd_mutation_override)
         .map(|_| {
             (
@@ -2024,6 +2073,39 @@ mod tests {
         assert!(!get_on_cluster("   ", "Atomic"));
         assert!(!get_on_cluster("my_cluster", "Replicated"));
         assert!(!get_on_cluster("my_cluster", "replicated('/db','s','r')"));
+    }
+
+    /// One probe per engine: repeated calls reuse it, a reset (new engine) probes again.
+    #[test]
+    fn capabilities_cache_probes_once_until_reset() {
+        let cache = CapabilitiesCache::new();
+        let probes = std::sync::atomic::AtomicUsize::new(0);
+        let probe = |nd_mutation_override| {
+            probes.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            ClickHouseCapabilities {
+                server_version: "26.3.1.1".to_string(),
+                atomic_exchange: true,
+                has_lw_deletes: true,
+                use_lw_deletes: false,
+                nd_mutation_override,
+            }
+        };
+
+        assert!(cache.probed().is_none());
+        let first = cache.get_or_probe(|| {
+            // `statement_options` reads the cache while the probe's own statements run.
+            assert!(cache.probed().is_none());
+            probe(true)
+        });
+        let again = cache.get_or_probe(|| probe(false));
+        assert!(Arc::ptr_eq(&first, &again));
+        assert!(cache.probed().is_some_and(|caps| caps.nd_mutation_override));
+        assert_eq!(probes.load(std::sync::atomic::Ordering::SeqCst), 1);
+
+        cache.reset();
+        assert!(cache.probed().is_none());
+        assert!(!cache.get_or_probe(|| probe(false)).nd_mutation_override);
+        assert_eq!(probes.load(std::sync::atomic::Ordering::SeqCst), 2);
     }
 
     /// impl.py cluster getters

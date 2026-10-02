@@ -15,11 +15,11 @@ pub(crate) fn target_schema(config: &AdapterConfig) -> Option<Cow<'_, str>> {
     config.get_string("schema").filter(|s| !s.is_empty())
 }
 
-/// Publish the profile keys relations need (see [`clickhouse::register_connection_info`]).
-/// Run by [`super::AdbcEngine`] at construction so `ON CLUSTER` is decided before any macro
-/// renders, including a `run-operation` whose first statement is DDL.
-pub(crate) fn register_connection_info(config: &AdapterConfig) {
-    clickhouse::register_connection_info(
+/// [`clickhouse::register_engine`] with the profile keys. Run by [`super::AdbcEngine`] at
+/// construction so `ON CLUSTER` is decided before any macro renders, including a
+/// `run-operation` whose first statement is DDL.
+pub(crate) fn register_engine(config: &AdapterConfig) {
+    clickhouse::register_engine(
         config.get_str("cluster").map(str::to_owned),
         config.get_str("database_engine").map(str::to_owned),
     );
