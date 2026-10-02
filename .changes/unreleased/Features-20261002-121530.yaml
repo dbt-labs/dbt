@@ -1,0 +1,7 @@
+kind: Features
+body: Support `dimension()` in exposure `depends_on` so exposures depend on the semantic
+    models that define the dimensions they use
+time: 2026-10-02T12:15:30.000000+09:00
+custom:
+    Author: dtaniwaki
+    Issue: "16377"
