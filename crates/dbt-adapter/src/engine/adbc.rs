@@ -106,6 +106,9 @@ impl AdbcEngine {
         dbt_cloud_project_id: Option<String>,
     ) -> Self {
         let behavior = make_behavior(adapter_type, &behavior_flag_overrides);
+        if adapter_type == AdapterType::ClickHouse {
+            super::clickhouse::register_connection_info(&config);
+        }
         Self {
             adapter_type,
             auth,
@@ -245,7 +248,7 @@ impl AdbcEngine {
                         let mut conn = database
                             .new_connection()
                             .map_err(adbc_error_to_adapter_error)?;
-                        super::clickhouse::configure_database(conn.as_mut(), config)?
+                        super::clickhouse::ensure_database(conn.as_mut(), config)?
                     }
                     _ => {}
                 }

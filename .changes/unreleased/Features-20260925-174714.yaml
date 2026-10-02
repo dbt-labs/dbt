@@ -1,5 +1,5 @@
 kind: Features
-body: '[ClickHouse] Cluster support: ON CLUSTER DDL for every relation when the profile sets cluster (honoring database_engine: Replicated and the per-model disable_on_cluster opt-out), distributed_table / distributed_incremental materializations with sharding_key, local_suffix and local_db_prefix, and a cluster-aware catalog that finds relations living on other replicas.'
+body: '[ClickHouse] Adds cluster support and distributed_table / distributed_incremental materializations.'
 time: 2026-09-25T17:47:14.000265+02:00
 custom:
     author: koletzilla

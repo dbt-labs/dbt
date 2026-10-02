@@ -64,8 +64,8 @@ fn refreshable_marker_columns(col: &str, agg: &str) -> String {
     )
 }
 
-/// Profile keys relations need at creation time, registered once from
-/// `AdapterImpl::new` (`ClickHouseRelation.create_from` reads them off the credentials).
+/// Profile keys relations need at creation time (relation.py `create_from` reads them off the
+/// credentials); published when the ADBC engine is built, before any macro renders.
 #[derive(Debug, Clone, Default)]
 pub struct ClickHouseConnectionInfo {
     pub cluster: Option<String>,
@@ -74,16 +74,11 @@ pub struct ClickHouseConnectionInfo {
 
 static CONNECTION_INFO: std::sync::OnceLock<ClickHouseConnectionInfo> = std::sync::OnceLock::new();
 
-/// First registration wins.
 pub fn register_connection_info(cluster: Option<String>, database_engine: Option<String>) {
     let _ = CONNECTION_INFO.set(ClickHouseConnectionInfo {
         cluster: cluster.filter(|c| !c.trim().is_empty()),
         database_engine: database_engine.unwrap_or_default(),
     });
-}
-
-pub fn connection_info() -> Option<&'static ClickHouseConnectionInfo> {
-    CONNECTION_INFO.get()
 }
 
 /// relation.py `ClickHouseRelation.get_on_cluster`.
@@ -93,7 +88,7 @@ pub fn get_on_cluster(cluster: &str, database_engine: &str) -> bool {
 
 /// `can_on_cluster` for relations built outside the catalog paths (relation.py `create_from`).
 pub fn default_can_on_cluster() -> bool {
-    connection_info().is_some_and(|info| {
+    CONNECTION_INFO.get().is_some_and(|info| {
         info.cluster
             .as_deref()
             .is_some_and(|cluster| get_on_cluster(cluster, &info.database_engine))
