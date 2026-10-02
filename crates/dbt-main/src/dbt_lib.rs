@@ -618,7 +618,7 @@ pub async fn execute_setup_and_all_phases(
 
 /// Emits version information as a progress message.
 /// In debug builds, includes additional details like git hash and build time.
-fn emit_version_info(eval_arg: &EvalArgs, command_name: &str) -> FsResult<()> {
+fn emit_version_info(_eval_arg: &EvalArgs, command_name: &str) -> FsResult<()> {
     // current_exe errors when running in dbt-cloud
     // https://github.com/rust-lang/rust/issues/46090
     #[cfg(debug_assertions)]
@@ -632,7 +632,7 @@ fn emit_version_info(eval_arg: &EvalArgs, command_name: &str) -> FsResult<()> {
         // Convert SystemTime to DateTime<Local>
         let datetime: DateTime<Local> = DateTime::from(modified_time);
         let formatted_time = datetime.format("%Y-%m-%d %H:%M:%S").to_string();
-        if eval_arg.from_main {
+        if _eval_arg.from_main {
             let git_hash = git_version!(fallback = "unknown");
             let build_time = format!(
                 "{} ({} {})",
