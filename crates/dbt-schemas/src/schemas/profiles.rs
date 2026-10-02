@@ -45,8 +45,7 @@ pub enum DbConfig {
     Bigquery(Box<BigqueryDbConfig>),
     Trino(Box<TrinoDbConfig>),
     Datafusion(Box<DatafusionDbConfig>),
-    // SqlServer,
-    // SingleStore,
+    SingleStore(Box<SingleStoreDbConfig>),
     Spark(Box<SparkDbConfig>),
     Databricks(Box<DatabricksDbConfig>),
     Salesforce(Box<SalesforceDbConfig>),
@@ -109,6 +108,7 @@ impl_from_db_config!(DuckDB, DuckDbConfig);
 impl_from_db_config!(Fabric, FabricDbConfig);
 impl_from_db_config!(Exasol, ExasolDbConfig);
 impl_from_db_config!(ClickHouse, ClickHouseDbConfig);
+impl_from_db_config!(SingleStore, SingleStoreDbConfig);
 
 /// Resolves BigQuery's `compute_region` / legacy `dataproc_region` alias in a raw profiles.yml
 /// mapping, before it's parsed into a typed `DbConfig`.
@@ -164,6 +164,7 @@ impl DbConfig {
             DbConfig::Fabric(config) => config.host.as_deref(),
             DbConfig::Exasol(config) => config.host.as_deref(),
             DbConfig::ClickHouse(config) => config.host.as_deref(),
+            DbConfig::SingleStore(config) => config.host.as_deref(),
         }
     }
 
@@ -373,6 +374,7 @@ impl DbConfig {
                 "sync_request_timeout",
                 "compress_block_size",
             ],
+            AdapterType::SingleStore => &["host", "port", "user", "database", "schema", "threads"],
         }
     }
 
@@ -408,6 +410,7 @@ impl DbConfig {
             DbConfig::LakeCompute(config) => dbt_yaml::to_value(config),
             DbConfig::Exasol(config) => dbt_yaml::to_value(config),
             DbConfig::ClickHouse(config) => dbt_yaml::to_value(config),
+            DbConfig::SingleStore(config) => dbt_yaml::to_value(config),
         }
     }
 
@@ -427,6 +430,7 @@ impl DbConfig {
             DbConfig::Exasol(..) => AdapterType::Exasol,
             DbConfig::ClickHouse(..) => AdapterType::ClickHouse,
             DbConfig::LakeCompute(..) => AdapterType::LakeCompute,
+            DbConfig::SingleStore(..) => AdapterType::SingleStore,
         }
     }
 
@@ -446,6 +450,7 @@ impl DbConfig {
             DbConfig::Exasol(config) => config.database.as_ref(),
             DbConfig::ClickHouse(config) => config.database.as_ref(),
             DbConfig::LakeCompute(config) => config.database.as_ref(),
+            DbConfig::SingleStore(config) => config.database.as_ref(),
         }
     }
 
@@ -486,6 +491,7 @@ impl DbConfig {
             DbConfig::Fabric(config) => config.schema.as_ref(),
             DbConfig::Exasol(config) => config.schema.as_ref(),
             DbConfig::ClickHouse(config) => config.schema.as_ref(),
+            DbConfig::SingleStore(config) => config.schema.as_ref().or(config.database.as_ref()),
         }
     }
 
@@ -505,6 +511,7 @@ impl DbConfig {
             DbConfig::Exasol(config) => config.threads.as_ref(),
             DbConfig::ClickHouse(config) => config.threads.as_ref(),
             DbConfig::LakeCompute(config) => config.threads.as_ref(),
+            DbConfig::SingleStore(config) => config.threads.as_ref(),
         }
     }
 
@@ -524,6 +531,7 @@ impl DbConfig {
             DbConfig::Exasol(config) => config.threads = threads,
             DbConfig::ClickHouse(config) => config.threads = threads,
             DbConfig::LakeCompute(config) => config.threads = threads,
+            DbConfig::SingleStore(config) => config.threads = threads,
         }
     }
 
@@ -1605,6 +1613,26 @@ fn default_clickhouse_compress_block_size() -> Option<i64> {
     Some(1_048_576)
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default, DbtSchema, Merge)]
+#[merge(strategy = merge_strategies_extend::overwrite_option)]
+#[serde(rename_all = "snake_case")]
+pub struct SingleStoreDbConfig {
+    pub host: Option<String>,
+    pub port: Option<StringOrInteger>,
+    pub user: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub password: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(alias = "dbname")]
+    pub database: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub schema: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub threads: Option<StringOrInteger>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub retries: Option<StringOrInteger>,
+}
+
 #[derive(Serialize, DbtSchema)]
 #[serde(untagged)]
 #[serde(rename_all = "snake_case")]
@@ -1623,6 +1651,7 @@ pub enum TargetContext {
     Fabric(FabricTargetEnv),
     Exasol(ExasolTargetEnv),
     ClickHouse(ClickHouseTargetEnv),
+    SingleStore(SingleStoreTargetEnv),
     // Add other variants as needed
 }
 
@@ -1831,6 +1860,17 @@ pub struct ClickHouseTargetEnv {
     pub allow_automatic_deduplication: Option<bool>,
     pub local_suffix: Option<String>,
     pub local_db_prefix: Option<String>,
+    pub __common__: CommonTargetContext,
+}
+
+#[derive(Serialize, DbtSchema)]
+#[serde(rename_all = "snake_case")]
+pub struct SingleStoreTargetEnv {
+    pub host: String,
+    pub user: String,
+    pub port: StringOrInteger,
+    pub database: String,
+    pub schema: String,
     pub __common__: CommonTargetContext,
 }
 
@@ -2270,6 +2310,34 @@ impl TryFrom<DbConfig> for TargetContext {
                     },
                 },
             })),
+
+            DbConfig::SingleStore(config) => {
+                let database = config
+                    .database
+                    .ok_or_else(|| missing("database or dbname"))?;
+                let schema = config.schema.unwrap_or_else(|| database.clone());
+                Ok(TargetContext::SingleStore(SingleStoreTargetEnv {
+                    host: config.host.ok_or_else(|| missing("host"))?,
+                    user: config.user.ok_or_else(|| missing("user"))?,
+                    port: config.port.unwrap_or(StringOrInteger::Integer(3306)),
+                    database: database.clone(),
+                    schema: schema.clone(),
+                    __common__: CommonTargetContext {
+                        database,
+                        schema,
+                        type_: adapter_type,
+                        threads: match config.threads {
+                            Some(StringOrInteger::String(threads)) => {
+                                Some(threads.parse::<u16>().map_err(|_| {
+                                    "threads must be a positive integer".to_string()
+                                })?)
+                            }
+                            Some(StringOrInteger::Integer(threads)) => Some(threads as u16),
+                            None => None,
+                        },
+                    },
+                }))
+            }
         }
     }
 }

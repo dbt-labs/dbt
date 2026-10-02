@@ -580,6 +580,24 @@ pub struct ProjectModelConfig {
     #[serde(rename = "+category")]
     pub category: Option<DataLakeObjectCategory>,
 
+    // SingleStore
+    #[serde(rename = "+storage_type")]
+    pub storage_type: Option<String>,
+    #[serde(
+        default,
+        rename = "+reference",
+        deserialize_with = "bool_or_string_bool"
+    )]
+    pub reference: Option<bool>,
+    #[serde(rename = "+shard_key")]
+    pub shard_key: Option<StringOrArrayOfStrings>,
+    #[serde(rename = "+sort_key")]
+    pub sort_key: Option<StringOrArrayOfStrings>,
+    #[serde(rename = "+unique_table_key")]
+    pub unique_table_key: Option<StringOrArrayOfStrings>,
+    #[serde(rename = "+fulltext_key")]
+    pub fulltext_key: Option<StringOrArrayOfStrings>,
+
     /// Schema synchronization configuration
     #[serde(rename = "+sync")]
     pub sync: Option<SyncConfig>,
@@ -828,6 +846,12 @@ impl TypedRecursiveConfig for ProjectModelConfig {
             || self.primary_key.is_some()
             || self.category.is_some()
             || self.sync.is_some()
+            || self.storage_type.is_some()
+            || self.reference.is_some()
+            || self.shard_key.is_some()
+            || self.sort_key.is_some()
+            || self.unique_table_key.is_some()
+            || self.fulltext_key.is_some()
     }
 }
 
@@ -1140,6 +1164,14 @@ impl From<ProjectModelConfig> for ModelConfig {
                 primary_key: config.primary_key,
                 category: config.category,
 
+                // SingleStore
+                storage_type: config.storage_type,
+                reference: config.reference,
+                shard_key: config.shard_key,
+                sort_key: config.sort_key,
+                unique_table_key: config.unique_table_key,
+                fulltext_key: config.fulltext_key,
+
                 engine: config.engine,
                 order_by: config.order_by,
                 ttl: config.ttl,
@@ -1368,6 +1400,13 @@ impl From<ModelConfig> for ProjectModelConfig {
             unique_tmp_table_suffix: config.__warehouse_specific_config__.unique_tmp_table_suffix,
             primary_key: config.__warehouse_specific_config__.primary_key,
             category: config.__warehouse_specific_config__.category,
+            // SingleStore
+            storage_type: config.__warehouse_specific_config__.storage_type,
+            reference: config.__warehouse_specific_config__.reference,
+            shard_key: config.__warehouse_specific_config__.shard_key,
+            sort_key: config.__warehouse_specific_config__.sort_key,
+            unique_table_key: config.__warehouse_specific_config__.unique_table_key,
+            fulltext_key: config.__warehouse_specific_config__.fulltext_key,
             sync: config.sync,
             engine: config.__warehouse_specific_config__.engine,
             order_by: config.__warehouse_specific_config__.order_by,

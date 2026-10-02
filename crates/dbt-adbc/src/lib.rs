@@ -49,6 +49,7 @@ pub mod databricks;
 pub mod lake_compute;
 pub mod redshift;
 pub mod salesforce;
+pub mod singlestore;
 pub mod snowflake;
 pub mod spark;
 

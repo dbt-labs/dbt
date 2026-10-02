@@ -20,5 +20,6 @@ pub const SUPPORTED_DIALECTS: &[Dialect] = &[
     Dialect::Databricks,
     Dialect::Redshift,
     Dialect::Snowflake,
+    Dialect::SingleStore,
     Dialect::Trino,
 ];

@@ -1,0 +1,21 @@
+[package]
+authors.workspace = true
+description = "Lexer for the SingleStore dialect"
+edition.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+license.workspace = true
+name = "dbt-lexer-singlestore"
+repository.workspace = true
+version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+dbt-antlr4 = { workspace = true }
+dbt-fusion-workspace-hack = { version = "0.1" }
+dbt-lexer-databricks = { workspace = true }
+
+[lib]
+doctest = false

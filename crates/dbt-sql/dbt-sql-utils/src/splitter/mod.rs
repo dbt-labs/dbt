@@ -46,6 +46,7 @@ fn do_sql_find_statement_delimiters<'input, 'arena>(
         Dialect::Redshift => dialect_dispatch!(dbt_lexer_redshift, redshiftlexer),
         Dialect::Snowflake => dialect_dispatch!(dbt_lexer_snowflake, snowflakelexer),
         Dialect::Databricks => dialect_dispatch!(dbt_lexer_databricks, databrickslexer),
+        Dialect::SingleStore => dialect_dispatch!(dbt_lexer_singlestore, singlestorelexer),
         _ => dialect_dispatch!(dbt_lexer_trino, trinolexer),
     };
 
@@ -374,6 +375,7 @@ pub fn is_empty_or_comment_only(statement: &str, dialect: Dialect) -> bool {
         Redshift => dialect_dispatch!(dbt_lexer_redshift, redshiftlexer),
         Snowflake => dialect_dispatch!(dbt_lexer_snowflake, snowflakelexer),
         Databricks => dialect_dispatch!(dbt_lexer_databricks, databrickslexer),
+        SingleStore => dialect_dispatch!(dbt_lexer_singlestore, singlestorelexer),
         Trino => dialect_dispatch!(dbt_lexer_trino, trinolexer),
         _ => {
             // Fallback to Trino (in release builds) lexer for not fully supported dialects.

@@ -415,6 +415,7 @@ impl ProfileSetup {
             AdapterType::Datafusion => todo!("Datafusion"),
             AdapterType::Dremio => todo!("Dremio"),
             AdapterType::Oracle => todo!("Oracle"),
+            AdapterType::SingleStore => todo!("SingleStore"),
         };
 
         let mut outputs = HashMap::new();

@@ -456,6 +456,8 @@ pub enum SqlType {
     Variant,
     /// VOID
     Void,
+    /// SingleStore VECTOR(dimension, element_type)
+    Vector(usize, Option<Box<SqlType>>),
     /// Other SQL types that are not explicitly defined.
     ///
     /// This is useful in situations where we can treat the SQL type as an
@@ -816,6 +818,61 @@ impl SqlType {
             }
             // }}}
 
+            // SingleStore {{{
+            (SingleStore, Boolean) => write!(out, "BOOLEAN"),
+            (SingleStore, TinyInt) => write!(out, "TINYINT"),
+            (SingleStore, SmallInt) => write!(out, "SMALLINT"),
+            (SingleStore, Integer) => write!(out, "INT"),
+            (SingleStore, BigInt) => write!(out, "BIGINT"),
+            (SingleStore, UTinyInt) => write!(out, "TINYINT UNSIGNED"),
+            (SingleStore, USmallInt) => write!(out, "SMALLINT UNSIGNED"),
+            (SingleStore, UInteger) => write!(out, "INT UNSIGNED"),
+            (SingleStore, UBigInt) => write!(out, "BIGINT UNSIGNED"),
+            (SingleStore, Real | Float(_)) => write!(out, "FLOAT"),
+            (SingleStore, Double) => write!(out, "DOUBLE"),
+            (SingleStore, Char(None)) => write!(out, "CHAR"),
+            (SingleStore, Char(Some(n))) => write!(out, "CHAR({n})"),
+            (SingleStore, Varchar(None, _)) => write!(out, "TEXT"),
+            (SingleStore, Varchar(Some(n), _)) => write!(out, "VARCHAR({n})"),
+            (SingleStore, Text | Clob) => write!(out, "TEXT"),
+            (SingleStore, Blob | Binary(None)) => write!(out, "BLOB"),
+            (SingleStore, Binary(Some(n))) => write!(out, "VARBINARY({n})"),
+            (SingleStore, Date(_)) => write!(out, "DATE"),
+            (SingleStore, DateTime) => write!(out, "DATETIME(6)"),
+            (
+                SingleStore,
+                Timestamp {
+                    precision: Some(p), ..
+                },
+            ) => write!(out, "TIMESTAMP({p})"),
+            (
+                SingleStore,
+                Timestamp {
+                    precision: None, ..
+                },
+            ) => write!(out, "TIMESTAMP(6)"),
+            (
+                SingleStore,
+                Time {
+                    precision: Some(p), ..
+                },
+            ) => write!(out, "TIME({p})"),
+            (
+                SingleStore,
+                Time {
+                    precision: None, ..
+                },
+            ) => write!(out, "TIME(6)"),
+            (SingleStore, Json | Jsonb) => write!(out, "JSON"),
+            (SingleStore, Geography(_)) => write!(out, "GEOGRAPHY"),
+            (SingleStore, Vector(dim, None)) => write!(out, "VECTOR({dim})"),
+            (SingleStore, Vector(dim, Some(elem))) => {
+                write!(out, "VECTOR({dim}, ")?;
+                elem.write(backend, out)?;
+                write!(out, ")")
+            }
+            // }}}
+
             // Generic SQL / Fallback logic {{{
             (_, Boolean) => write!(out, "BOOLEAN"),
             (_, TinyInt) => write!(out, "TINYINT"),
@@ -1045,6 +1102,12 @@ impl SqlType {
             (ClickHouse, Variant) => write!(out, "Dynamic"),
             (_, Variant) => write!(out, "VARIANT"),
             (_, Void) => write!(out, "VOID"),
+            (_, Vector(dim, None)) => write!(out, "VECTOR({dim})"),
+            (_, Vector(dim, Some(elem))) => {
+                write!(out, "VECTOR({dim}, ")?;
+                elem.write(backend, out)?;
+                write!(out, ")")
+            }
             (_, Other(s)) => write!(out, "{s}"),
             // }}}
         }
@@ -1204,6 +1267,10 @@ impl SqlType {
             | DataType::LargeList(_)
             | DataType::ListView(_)
             | DataType::LargeListView(_) => SqlType::Array(None), // XXX
+            DataType::FixedSizeList(field, size) if backend == AdapterType::SingleStore => {
+                let inner = Self::from_arrow_type(backend, field.data_type());
+                SqlType::Vector(*size as usize, Some(Box::new(inner)))
+            }
             DataType::FixedSizeList(_, _) => SqlType::Other("ARRAY".to_string()),
             DataType::Struct(fields) => {
                 let mut sql_fields = Vec::with_capacity(fields.len());
@@ -1415,6 +1482,11 @@ impl SqlType {
             (Bigquery, Geography(_)) => {
                 DataType::FixedSizeList(Arc::new(Field::new("geography", DataType::Utf8, true)), 1)
             }
+            // }}}
+
+            // SingleStore {{{
+            (SingleStore, Numeric(None) | BigNumeric(None)) => DataType::Decimal128(10, 0),
+            (SingleStore, DateTime) => DataType::Timestamp(TimeUnit::Microsecond, None),
             // }}}
 
             // Databricks {{{
@@ -1790,6 +1862,14 @@ impl SqlType {
                 DataType::List(Arc::new(inner_field))
             }
             (_, Array(None)) => DataType::List(Arc::new(Field::new("item", DataType::Utf8, true))),
+            (_, Vector(dim, elem)) => {
+                let inner_ty = elem
+                    .as_ref()
+                    .map(|inner| inner.pick_best_arrow_type(backend))
+                    .unwrap_or(DataType::Float32);
+                let inner_field = Field::new("item", inner_ty, false);
+                DataType::FixedSizeList(Arc::new(inner_field), *dim as i32)
+            }
             (_, Struct(fields)) => {
                 let arrow_fields = match fields {
                     Some(struct_fields) => {
@@ -1898,6 +1978,7 @@ const BIGQUERY_KEYS: [&str; 2] = ["BIGQUERY:type", "type_text"];
 const DATABRICKS_KEYS: [&str; 2] = ["DBX:type", "type_text"];
 const REDSHIFT_KEYS: [&str; 2] = ["REDSHIFT:type", "type_text"];
 const DUCKDB_KEYS: [&str; 2] = ["DUCKDB:type", "type_text"];
+const SINGLESTORE_KEYS: [&str; 2] = ["SINGLESTORE:type", "type_text"];
 const CLICKHOUSE_KEYS: [&str; 2] = ["CLICKHOUSE:type", "type_text"];
 const EXASOL_KEYS: [&str; 2] = ["EXASOL:type", "type_text"];
 const SPARK_KEYS: [&str; 2] = ["SPARK:type", "type_text"];
@@ -1916,6 +1997,7 @@ fn metadata_type_candidate_keys(backend: AdapterType) -> &'static [&'static str]
         AdapterType::Spark => &SPARK_KEYS,
         AdapterType::Redshift => &REDSHIFT_KEYS,
         AdapterType::DuckDB | AdapterType::LakeCompute => &DUCKDB_KEYS,
+        AdapterType::SingleStore => &SINGLESTORE_KEYS,
         AdapterType::Fabric => &SQLSERVER_KEYS,
         AdapterType::ClickHouse => &CLICKHOUSE_KEYS,
         AdapterType::Athena => &ATHENA_KEYS,
@@ -2567,38 +2649,78 @@ impl<'source> Parser<'source> {
             | Token::LAngle
             | Token::RAngle
             | Token::Comma
-            | Token::Colon => {
+            | Token::Colon
+            | Token::ColonAngle
+            | Token::ExclamationColonAngle => {
                 return Err(ParseError::Unexpected(tok));
             }
             Token::Word(w) => {
-                if eqi(w, "BOOLEAN") || eqi(w, "BOOL") {
+                if eqi(w, "SIGNED") {
+                    let _ = self.match_word("INTEGER") || self.match_word("INT");
+                    SqlType::BigInt
+                } else if eqi(w, "UNSIGNED") {
+                    let _ = self.match_word("INTEGER") || self.match_word("INT");
+                    SqlType::UBigInt
+                } else if eqi(w, "BOOLEAN") || eqi(w, "BOOL") {
                     SqlType::Boolean
-                } else if eqi(w, "TINYINT") || eqi(w, "BYTEINT") {
-                    SqlType::TinyInt
+                } else if eqi(w, "TINYINT") || eqi(w, "BYTEINT") || eqi(w, "INT1") {
+                    let _ = self.precision::<usize>()?;
+                    if self.match_word("UNSIGNED") {
+                        SqlType::UTinyInt
+                    } else {
+                        SqlType::TinyInt
+                    }
                 } else if eqi(w, "SMALLINT")
                     || (eqi(w, "INT2") || eqi(w, "SMALLSERIAL") || eqi(w, "SERIAL2"))
                 {
-                    SqlType::SmallInt
+                    let _ = self.precision::<usize>()?;
+                    if self.match_word("UNSIGNED") {
+                        SqlType::USmallInt
+                    } else {
+                        SqlType::SmallInt
+                    }
+                } else if eqi(w, "MEDIUMINT") || eqi(w, "MIDDLEINT") || eqi(w, "INT3") {
+                    let _ = self.precision::<usize>()?;
+                    if self.match_word("UNSIGNED") {
+                        SqlType::UInteger
+                    } else {
+                        SqlType::Integer
+                    }
                 } else if eqi(w, "INTEGER")
                     || eqi(w, "INT")
                     || eqi(w, "INT4")
                     || eqi(w, "SERIAL")
                     || eqi(w, "SERIAL4")
                 {
-                    SqlType::Integer
+                    let _ = self.precision::<usize>()?;
+                    if self.match_word("UNSIGNED") {
+                        SqlType::UInteger
+                    } else {
+                        SqlType::Integer
+                    }
                 } else if eqi(w, "INT8") {
                     if backend == ClickHouse {
                         SqlType::TinyInt // ClickHouse: Int8 = 8-bits
                     } else {
-                        // In standard SQL, INT8 = 8 bytes (64 bits)
-                        SqlType::BigInt
+                        let _ = self.precision::<usize>()?;
+                        if self.match_word("UNSIGNED") {
+                            SqlType::UBigInt
+                        } else {
+                            // In standard SQL, INT8 = 8 bytes (64 bits)
+                            SqlType::BigInt
+                        }
                     }
                 } else if eqi(w, "BIGINT")
                     || eqi(w, "INT64") // DuckDB, ClickHouse...
                     || eqi(w, "BIGSERIAL")
                     || eqi(w, "SERIAL8")
                 {
-                    SqlType::BigInt // 64 bits
+                    let _ = self.precision::<usize>()?;
+                    if self.match_word("UNSIGNED") {
+                        SqlType::UBigInt
+                    } else {
+                        SqlType::BigInt // 64 bits
+                    }
                 } else if eqi(w, "HUGEINT") || eqi(w, "INT128") {
                     SqlType::HugeInt // DuckDB: 128-bit signed integer
                 } else if eqi(w, "UINT8") {
@@ -2653,12 +2775,20 @@ impl<'source> Parser<'source> {
                     } else {
                         SqlType::Float(None)
                     }
-                } else if eqi(w, "FLOAT32") {
-                    // ClickHouse: Float32 (32-bit IEEE 754 floating-point)
+                } else if eqi(w, "FLOAT32") || eqi(w, "F32") {
+                    // ClickHouse: Float32 (32-bit IEEE 754 floating-point), SingleStore: F32
                     SqlType::Real
-                } else if eqi(w, "FLOAT64") && backend == ClickHouse {
-                    // ClickHouse: Float64 (64-bit IEEE 754 floating-point)
+                } else if (eqi(w, "FLOAT64") && backend == ClickHouse) || eqi(w, "F64") {
+                    // ClickHouse: Float64 (64-bit IEEE 754 floating-point), SingleStore: F64
                     SqlType::Double
+                } else if eqi(w, "I8") {
+                    SqlType::TinyInt
+                } else if eqi(w, "I16") {
+                    SqlType::SmallInt
+                } else if eqi(w, "I32") {
+                    SqlType::Integer
+                } else if eqi(w, "I64") {
+                    SqlType::BigInt
                 } else if eqi(w, "BFLOAT16") || eqi(w, "FLOAT16") {
                     SqlType::HalfFloat
                 } else if eqi(w, "FLOAT8") || eqi(w, "FLOAT64") {
@@ -2674,6 +2804,7 @@ impl<'source> Parser<'source> {
                     || eqi(w, "NUMBER")
                     // Snowflake and Databricks support DEC
                     || eqi(w, "DEC")
+                    || eqi(w, "FIXED")
                 {
                     let precision_and_scale = self.precision_and_scale()?;
                     SqlType::Numeric(precision_and_scale)
@@ -2717,11 +2848,19 @@ impl<'source> Parser<'source> {
                     // ClickHouse: FixedString(N) - fixed-length string
                     let len = self.precision()?;
                     SqlType::Char(len)
-                } else if eqi(w, "TEXT") {
+                } else if eqi(w, "TEXT")
+                    || eqi(w, "TINYTEXT")
+                    || eqi(w, "MEDIUMTEXT")
+                    || eqi(w, "LONGTEXT")
+                {
                     SqlType::Text
                 } else if eqi(w, "CLOB") {
                     SqlType::Clob
-                } else if eqi(w, "BLOB") {
+                } else if eqi(w, "BLOB")
+                    || eqi(w, "TINYBLOB")
+                    || eqi(w, "MEDIUMBLOB")
+                    || eqi(w, "LONGBLOB")
+                {
                     SqlType::Blob
                 } else if eqi(w, "BINARY") {
                     if self.match_word("LARGE") {
@@ -2753,6 +2892,9 @@ impl<'source> Parser<'source> {
                     SqlType::Date(bit_width)
                 } else if eqi(w, "DATE32") {
                     SqlType::Date(Some(32)) // ClickHouse: Date32
+                } else if eqi(w, "YEAR") {
+                    let _ = self.precision::<usize>()?;
+                    SqlType::SmallInt
                 } else if eqi(w, "TIME") {
                     let precision = self.precision()?;
                     let time_zone_spec = self.time_zone_spec()?;
@@ -2945,9 +3087,20 @@ impl<'source> Parser<'source> {
                 } else if eqi(w, "GEOMETRY") {
                     let srid = self.srid()?;
                     SqlType::Geometry(srid.map(str::to_string))
-                } else if eqi(w, "GEOGRAPHY") {
+                } else if eqi(w, "GEOGRAPHY") || eqi(w, "GEOGRAPHYPOINT") {
                     let srid = self.srid()?;
                     SqlType::Geography(srid.map(str::to_string))
+                } else if eqi(w, "VECTOR") {
+                    self.expect(Token::LParen)?;
+                    let dim = self.next_int::<usize>()?;
+                    let elem = if self.match_(Token::Comma) {
+                        let inner = self.parse_inner(backend)?;
+                        Some(Box::new(inner))
+                    } else {
+                        None
+                    };
+                    self.expect(Token::RParen)?;
+                    SqlType::Vector(dim, elem)
                 } else if eqi(w, "ARRAY") {
                     let (left, right) = match backend {
                         Snowflake | ClickHouse => (Token::LParen, Token::RParen),

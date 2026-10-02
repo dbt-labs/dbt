@@ -18,6 +18,7 @@ pub const BIGQUERY_METADATA_SQL_TYPE_KEY: &str = "Type";
 pub const SNOWFLAKE_METADATA_SQL_TYPE_KEY: &str = "DATA_TYPE";
 pub const FABRIC_METADATA_SQL_TYPE_KEY: &str = "DATA_TYPE";
 pub const CLICKHOUSE_METADATA_SQL_TYPE_KEY: &str = "data_type";
+pub const SINGLESTORE_METADATA_SQL_TYPE_KEY: &str = "SINGLESTORE:type";
 
 /// An Arrow schema containing SDF types
 #[derive(Clone)]
@@ -187,6 +188,7 @@ impl TypeOps for DefaultTypeOps {
             Postgres | Salesforce => postgres::try_format_type(data_type, nullable, out),
             Fabric => fabric::try_format_type(data_type, nullable, out),
             ClickHouse => clickhouse::try_format_type(data_type, nullable, out),
+            SingleStore => singlestore::try_format_type(data_type, nullable, out),
             _ => {
                 if adapter_type == Bigquery && matches!(data_type, DataType::Timestamp(_, Some(_)))
                 {
@@ -342,7 +344,7 @@ impl DefaultTypeOps {
                 _,
             ) => match adapter_type {
                 Bigquery => "int64",
-                Databricks => "bigint",
+                Databricks | SingleStore => "bigint",
                 _ => "integer",
             },
 
@@ -353,6 +355,7 @@ impl DefaultTypeOps {
                 Fabric => "real",
                 // Exasol float type is DOUBLE PRECISION (no float8 alias).
                 Exasol => "DOUBLE PRECISION",
+                SingleStore => "float",
                 _ => "float8",
             },
 
@@ -366,6 +369,7 @@ impl DefaultTypeOps {
                 Fabric => "float",
                 // Exasol float type is DOUBLE PRECISION (no float8 alias).
                 Exasol => "DOUBLE PRECISION",
+                SingleStore => "double",
                 _ => "float8",
             },
 
@@ -384,6 +388,8 @@ impl DefaultTypeOps {
                 (Fabric, _) => "float",
                 (Databricks, 1..) => "double",
                 (Databricks, ..=0) => "bigint",
+                (SingleStore, 1..) => "double",
+                (SingleStore, ..=0) => "bigint",
                 // Exasol: fractional -> DOUBLE PRECISION; zero/negative scale
                 // falls through to "integer" (a valid DECIMAL(18,0) alias).
                 (Exasol, 1..) => "DOUBLE PRECISION",
@@ -408,6 +414,7 @@ impl DefaultTypeOps {
                 Databricks => "timestamp",
                 Fabric => "datetime2(6)",
                 Exasol => "timestamp",
+                SingleStore => "datetime(6)",
                 _ => "timestamp without time zone",
             },
 
@@ -573,6 +580,7 @@ pub const fn get_field_sql_type_metadata_key(adapter_type: AdapterType) -> &'sta
         AdapterType::Dremio => todo!(),
         AdapterType::Oracle => todo!(),
         AdapterType::Datafusion => todo!(),
+        AdapterType::SingleStore => SINGLESTORE_METADATA_SQL_TYPE_KEY,
     }
 }
 
@@ -620,7 +628,7 @@ impl SdfSchemaBuilder {
             }
             // no evidence that these drivers store comments in metadata, but just in case
             Postgres | Snowflake | Salesforce | Fabric | ClickHouse | Exasol | Starburst
-            | Athena | Trino | Dremio | Oracle | Datafusion => {
+            | Athena | Trino | Dremio | Oracle | Datafusion | SingleStore => {
                 metadata.get(ARROW_FIELD_COMMENT_METADATA_KEY)
             }
         };
@@ -657,7 +665,8 @@ impl SdfSchemaBuilder {
         use AdapterType::*;
         match self.adapter_type {
             Bigquery | Redshift | Databricks | Spark | DuckDB | LakeCompute | Fabric
-            | ClickHouse | Exasol | Starburst | Athena | Trino | Dremio | Oracle | Datafusion => {
+            | ClickHouse | Exasol | Starburst | Athena | Trino | Dremio | Oracle | Datafusion
+            | SingleStore => {
                 let original_fields = self.original.fields();
                 let mut sdf_fields = Vec::with_capacity(original_fields.len());
                 for field in original_fields {
@@ -910,6 +919,77 @@ pub mod clickhouse {
     }
 }
 
+pub mod singlestore {
+    use super::*;
+
+    pub fn try_format_type(
+        datatype: &DataType,
+        nullable: bool,
+        out: &mut String,
+    ) -> AdapterResult<()> {
+        let mut rendered = String::new();
+        match datatype {
+            DataType::Null => rendered.push_str("TEXT"),
+            DataType::Boolean => rendered.push_str("BOOLEAN"),
+            DataType::Int8 => rendered.push_str("TINYINT"),
+            DataType::Int16 => rendered.push_str("SMALLINT"),
+            DataType::Int32 => rendered.push_str("INT"),
+            DataType::Int64 => rendered.push_str("BIGINT"),
+            DataType::UInt8 => rendered.push_str("TINYINT UNSIGNED"),
+            DataType::UInt16 => rendered.push_str("SMALLINT UNSIGNED"),
+            DataType::UInt32 => rendered.push_str("INT UNSIGNED"),
+            DataType::UInt64 => rendered.push_str("BIGINT UNSIGNED"),
+            DataType::Float16 | DataType::Float32 => rendered.push_str("FLOAT"),
+            DataType::Float64 => rendered.push_str("DOUBLE"),
+            DataType::Utf8 | DataType::LargeUtf8 | DataType::Utf8View => rendered.push_str("TEXT"),
+            DataType::Binary | DataType::LargeBinary | DataType::BinaryView => {
+                rendered.push_str("BLOB")
+            }
+            DataType::Date32 | DataType::Date64 => rendered.push_str("DATE"),
+            DataType::Time32(_) | DataType::Time64(_) => rendered.push_str("TIME(6)"),
+            DataType::Timestamp(TimeUnit::Second, _) => rendered.push_str("DATETIME"),
+            DataType::Timestamp(TimeUnit::Millisecond, _) => rendered.push_str("DATETIME(3)"),
+            DataType::Timestamp(TimeUnit::Microsecond, _)
+            | DataType::Timestamp(TimeUnit::Nanosecond, _) => rendered.push_str("DATETIME(6)"),
+            DataType::Decimal128(precision, scale) | DataType::Decimal256(precision, scale) => {
+                rendered = format!("DECIMAL({precision}, {scale})");
+            }
+            DataType::FixedSizeList(field, size) => {
+                let elem_type = field.data_type();
+                let mut elem_str = String::new();
+                match elem_type {
+                    DataType::Float32 => elem_str.push_str("F32"),
+                    DataType::Float64 => elem_str.push_str("F64"),
+                    DataType::Int8 => elem_str.push_str("I8"),
+                    DataType::Int16 => elem_str.push_str("I16"),
+                    DataType::Int32 => elem_str.push_str("I32"),
+                    DataType::Int64 => elem_str.push_str("I64"),
+                    _ => try_format_type(elem_type, false, &mut elem_str)?,
+                }
+                rendered = format!("VECTOR({size}, {elem_str})");
+            }
+            DataType::List(_)
+            | DataType::LargeList(_)
+            | DataType::Struct(_)
+            | DataType::Map(..) => {
+                rendered.push_str("JSON");
+            }
+            _ => {
+                return Err(AdapterError::new(
+                    AdapterErrorKind::UnsupportedType,
+                    format!("{datatype} is not convertible to singlestore sql type"),
+                ));
+            }
+        }
+
+        out.push_str(&rendered);
+        if !nullable {
+            out.push_str(" NOT NULL");
+        }
+        Ok(())
+    }
+}
+
 pub mod fabric {
 
     use arrow_schema::DataType;
@@ -998,7 +1078,8 @@ pub const fn max_varchar_size(adapter_type: AdapterType) -> Option<usize> {
         Snowflake => Some(16_777_216),
         Redshift => Some(256),
         Postgres | Bigquery | Databricks | Salesforce | Spark | DuckDB | LakeCompute | Fabric
-        | ClickHouse | Exasol | Starburst | Athena | Trino | Dremio | Oracle | Datafusion => None,
+        | ClickHouse | Exasol | Starburst | Athena | Trino | Dremio | Oracle | Datafusion
+        | SingleStore => None,
     }
 }
 
@@ -1009,7 +1090,8 @@ pub const fn max_varbinary_size(adapter_type: AdapterType) -> Option<usize> {
         Redshift => Some(65_535),
         // TODO: define limits for more systems
         Postgres | Bigquery | Databricks | Salesforce | Spark | DuckDB | LakeCompute | Fabric
-        | ClickHouse | Exasol | Starburst | Athena | Trino | Dremio | Oracle | Datafusion => None,
+        | ClickHouse | Exasol | Starburst | Athena | Trino | Dremio | Oracle | Datafusion
+        | SingleStore => None,
     }
 }
 
@@ -1594,5 +1676,77 @@ mod tests {
             convert_type(&DataType::Time64(TimeUnit::Microsecond), Exasol),
             "timestamp"
         );
+    }
+
+    #[test]
+    fn test_singlestore_type_formatting_and_parsing() {
+        let type_ops = DefaultTypeOps(SingleStore);
+
+        // Layer B: Type formatter testing
+        let format = |dt: &DataType| -> String {
+            let mut out = String::new();
+            type_ops
+                .format_arrow_type_as_sql(dt, true, &mut out)
+                .unwrap();
+            out
+        };
+
+        assert_eq!(format(&DataType::Float32), "FLOAT");
+        assert_eq!(format(&DataType::Float64), "DOUBLE");
+        assert_eq!(format(&DataType::Int8), "TINYINT");
+        assert_eq!(format(&DataType::Int16), "SMALLINT");
+        assert_eq!(format(&DataType::Int32), "INT");
+        assert_eq!(format(&DataType::Int64), "BIGINT");
+        assert_eq!(format(&DataType::UInt8), "TINYINT UNSIGNED");
+        assert_eq!(format(&DataType::UInt16), "SMALLINT UNSIGNED");
+        assert_eq!(format(&DataType::UInt32), "INT UNSIGNED");
+        assert_eq!(format(&DataType::UInt64), "BIGINT UNSIGNED");
+        assert_eq!(format(&DataType::Utf8), "TEXT");
+        assert_eq!(format(&DataType::LargeUtf8), "TEXT");
+        assert_eq!(format(&DataType::Binary), "BLOB");
+        assert_eq!(format(&DataType::Date32), "DATE");
+        assert_eq!(format(&DataType::Time64(TimeUnit::Microsecond)), "TIME(6)");
+        assert_eq!(
+            format(&DataType::Timestamp(TimeUnit::Microsecond, None)),
+            "DATETIME(6)"
+        );
+        assert_eq!(format(&DataType::Decimal128(18, 4)), "DECIMAL(18, 4)");
+
+        // SingleStore VECTOR formatting
+        let vector_f32 =
+            DataType::FixedSizeList(Arc::new(Field::new("item", DataType::Float32, false)), 1536);
+        assert_eq!(format(&vector_f32), "VECTOR(1536, F32)");
+
+        let vector_f64 =
+            DataType::FixedSizeList(Arc::new(Field::new("item", DataType::Float64, false)), 768);
+        assert_eq!(format(&vector_f64), "VECTOR(768, F64)");
+
+        let vector_i8 =
+            DataType::FixedSizeList(Arc::new(Field::new("item", DataType::Int8, false)), 128);
+        assert_eq!(format(&vector_i8), "VECTOR(128, I8)");
+
+        // Metadata key
+        assert_eq!(
+            get_field_sql_type_metadata_key(SingleStore),
+            SINGLESTORE_METADATA_SQL_TYPE_KEY
+        );
+
+        // Layer A: Type parser testing via TypeOps
+        let (dt, nullable) = type_ops.parse_into_nullable_arrow_type("signed").unwrap();
+        assert!(nullable);
+        assert_eq!(dt, DataType::Int64);
+
+        let (dt, _) = type_ops.parse_into_nullable_arrow_type("unsigned").unwrap();
+        assert_eq!(dt, DataType::UInt64);
+
+        let (dt, _) = type_ops
+            .parse_into_nullable_arrow_type("int(11) unsigned")
+            .unwrap();
+        assert_eq!(dt, DataType::UInt32);
+
+        let (dt, _) = type_ops
+            .parse_into_nullable_arrow_type("vector(1536, f32)")
+            .unwrap();
+        assert_eq!(dt, vector_f32);
     }
 }

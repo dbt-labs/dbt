@@ -11,6 +11,7 @@ pub fn reserved_keywords(backend: AdapterType) -> &'static [&'static str] {
         Redshift => redshift::RESERVED_KEYWORDS,
         DuckDB => duckdb::RESERVED_KEYWORDS,
         Trino => trino::RESERVED_KEYWORDS,
+        SingleStore => singlestore::RESERVED_KEYWORDS,
         // TODO: fill in other dialects' keywords and define a default fallback
         _ => &[],
     }
@@ -27,6 +28,7 @@ pub fn strict_non_reserved_keywords(backend: AdapterType) -> &'static [&'static 
         Redshift => redshift::STRICT_NON_RESERVED_KEYWORDS,
         DuckDB => duckdb::STRICT_NON_RESERVED_KEYWORDS,
         Trino => trino::STRICT_NON_RESERVED_KEYWORDS,
+        SingleStore => singlestore::STRICT_NON_RESERVED_KEYWORDS,
         // TODO: fill in other dialects' keywords and define a default fallback
         _ => &[],
     }
@@ -44,6 +46,7 @@ pub fn non_reserved_keywords(backend: AdapterType) -> &'static [&'static str] {
         Redshift => redshift::NON_RESERVED_KEYWORDS,
         DuckDB => duckdb::NON_RESERVED_KEYWORDS,
         Trino => trino::NON_RESERVED_KEYWORDS,
+        SingleStore => singlestore::NON_RESERVED_KEYWORDS,
         _ => &[],
     }
 }

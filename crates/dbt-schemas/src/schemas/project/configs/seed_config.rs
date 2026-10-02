@@ -612,6 +612,14 @@ impl From<ProjectSeedConfig> for SeedConfig {
                 primary_key: PrimaryKeyConfig::default(),
                 category: None,
 
+                // SingleStore
+                storage_type: None,
+                reference: None,
+                shard_key: None,
+                sort_key: None,
+                unique_table_key: None,
+                fulltext_key: None,
+
                 engine: None,
                 order_by: None,
                 ttl: None,

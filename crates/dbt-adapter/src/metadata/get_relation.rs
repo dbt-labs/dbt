@@ -87,6 +87,9 @@ pub fn get_relation(
         AdapterType::Dremio => todo!("Dremio"),
         AdapterType::Oracle => todo!("Oracle"),
         AdapterType::Datafusion => todo!("Datafusion"),
+        AdapterType::SingleStore => singlestore_get_relation(
+            adapter, state, ctx, conn, database, schema, identifier, token,
+        ),
     }
 }
 
@@ -1121,6 +1124,76 @@ fn clickhouse_get_relation(
     .with_quoting(adapter.quoting());
     let relation = with_catalog_state(relation, caps, &batch, 0)?;
     Ok(Some(Box::new(relation) as Box<dyn BaseRelation>))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn singlestore_get_relation(
+    adapter: &AdapterImpl,
+    state: &State,
+    ctx: &QueryCtx,
+    conn: &'_ mut dyn Connection,
+    database: &str,
+    schema: &str,
+    identifier: &str,
+    token: CancellationToken,
+) -> AdapterResult<Option<Box<dyn BaseRelation>>> {
+    let query_schema = if adapter.quoting().schema {
+        schema.to_string()
+    } else {
+        schema.to_lowercase()
+    };
+
+    let query_identifier = if adapter.quoting().identifier {
+        identifier.to_string()
+    } else {
+        identifier.to_lowercase()
+    };
+
+    let sql = format!(
+        r#"
+            select
+                case table_type
+                    when 'VIEW' then 'view'
+                    else 'table'
+                end as `type`
+            from information_schema.tables
+            where table_schema = '{query_schema}'
+              and table_name = '{query_identifier}'
+        "#
+    );
+
+    let batch = adapter
+        .engine()
+        .execute(Some(state), conn, ctx, &sql, token)?;
+    if batch.num_rows() == 0 {
+        return Ok(None);
+    }
+
+    let column = batch.column_by_name("type").unwrap();
+    let string_array = column.as_any().downcast_ref::<StringArray>().unwrap();
+
+    if string_array.len() != 1 {
+        return Err(AdapterError::new(
+            AdapterErrorKind::UnexpectedResult,
+            "Did not find 'type' for a relation",
+        ));
+    }
+
+    let relation_type = match string_array.value(0) {
+        "table" => Some(RelationType::Table),
+        "view" => Some(RelationType::View),
+        _ => return invalid_value!("Unsupported relation type {}", string_array.value(0)),
+    };
+
+    let relation = do_create_relation(
+        adapter.adapter_type(),
+        database.to_string(),
+        schema.to_string(),
+        Some(identifier.to_string()),
+        relation_type,
+        adapter.quoting(),
+    )?;
+    Ok(Some(relation))
 }
 
 #[cfg(test)]

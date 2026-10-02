@@ -136,6 +136,7 @@ pub(crate) mod metadata_adapter;
 pub(crate) mod postgres;
 pub(crate) mod redshift;
 pub(crate) mod salesforce;
+pub(crate) mod singlestore;
 pub mod snowflake; // XXX: temporarily pub before the refactor is complete
 pub(crate) mod spark;
 pub(crate) mod view_definition;

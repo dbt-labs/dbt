@@ -300,6 +300,15 @@ pub struct WarehouseSpecificNodeConfig {
     pub partition_by_config: Option<StringOrArrayOfStrings>,
     pub distribute_by_config: Option<StringOrArrayOfStrings>,
     pub primary_key_config: Option<StringOrArrayOfStrings>,
+
+    // SingleStore
+    pub storage_type: Option<String>,
+    #[serde(default, deserialize_with = "bool_or_string_bool")]
+    pub reference: Option<bool>,
+    pub shard_key: Option<StringOrArrayOfStrings>,
+    pub sort_key: Option<StringOrArrayOfStrings>,
+    pub unique_table_key: Option<StringOrArrayOfStrings>,
+    pub fulltext_key: Option<StringOrArrayOfStrings>,
 }
 
 impl ResolvedConfig for WarehouseSpecificNodeConfig {
@@ -564,6 +573,12 @@ pub fn same_warehouse_config(
     let mv_on_schema_change_eq = self_wh.mv_on_schema_change == other_wh.mv_on_schema_change;
     let repopulate_from_mvs_on_full_refresh_eq =
         self_wh.repopulate_from_mvs_on_full_refresh == other_wh.repopulate_from_mvs_on_full_refresh;
+    let storage_type_eq = self_wh.storage_type == other_wh.storage_type;
+    let reference_eq = self_wh.reference == other_wh.reference;
+    let shard_key_eq = self_wh.shard_key == other_wh.shard_key;
+    let sort_key_eq = self_wh.sort_key == other_wh.sort_key;
+    let unique_table_key_eq = self_wh.unique_table_key == other_wh.unique_table_key;
+    let fulltext_key_eq = self_wh.fulltext_key == other_wh.fulltext_key;
 
     let result = partition_by_eq
         && cluster_by_eq
@@ -663,7 +678,13 @@ pub fn same_warehouse_config(
         && refreshable_eq
         && catchup_eq
         && mv_on_schema_change_eq
-        && repopulate_from_mvs_on_full_refresh_eq;
+        && repopulate_from_mvs_on_full_refresh_eq
+        && storage_type_eq
+        && reference_eq
+        && shard_key_eq
+        && sort_key_eq
+        && unique_table_key_eq
+        && fulltext_key_eq;
 
     if !result {
         log_state_mod_diff(
@@ -1460,6 +1481,54 @@ pub fn same_warehouse_config(
                     Some((
                         format!("{:?}", &self_wh.repopulate_from_mvs_on_full_refresh),
                         format!("{:?}", &other_wh.repopulate_from_mvs_on_full_refresh),
+                    )),
+                ),
+                (
+                    "storage_type",
+                    storage_type_eq,
+                    Some((
+                        format!("{:?}", &self_wh.storage_type),
+                        format!("{:?}", &other_wh.storage_type),
+                    )),
+                ),
+                (
+                    "reference",
+                    reference_eq,
+                    Some((
+                        format!("{:?}", &self_wh.reference),
+                        format!("{:?}", &other_wh.reference),
+                    )),
+                ),
+                (
+                    "shard_key",
+                    shard_key_eq,
+                    Some((
+                        format!("{:?}", &self_wh.shard_key),
+                        format!("{:?}", &other_wh.shard_key),
+                    )),
+                ),
+                (
+                    "sort_key",
+                    sort_key_eq,
+                    Some((
+                        format!("{:?}", &self_wh.sort_key),
+                        format!("{:?}", &other_wh.sort_key),
+                    )),
+                ),
+                (
+                    "unique_table_key",
+                    unique_table_key_eq,
+                    Some((
+                        format!("{:?}", &self_wh.unique_table_key),
+                        format!("{:?}", &other_wh.unique_table_key),
+                    )),
+                ),
+                (
+                    "fulltext_key",
+                    fulltext_key_eq,
+                    Some((
+                        format!("{:?}", &self_wh.fulltext_key),
+                        format!("{:?}", &other_wh.fulltext_key),
                     )),
                 ),
             ],
