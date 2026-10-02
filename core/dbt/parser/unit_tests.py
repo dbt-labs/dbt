@@ -133,7 +133,7 @@ class UnitTestManifestLoader:
                 "original_file_path": unit_test_node.original_file_path,
                 "config": ModelConfig(materialized="ephemeral"),
                 "database": original_input_node.database,
-                "alias": original_input_node.identifier,
+                "alias": original_input_node.name,  # use model name not alias to prevent duplicate CTEs when two upstream models share the same alias (fixes #10740)
                 "schema": original_input_node.schema,
                 "fqn": original_input_node.fqn,
                 "checksum": FileHash.empty(),
