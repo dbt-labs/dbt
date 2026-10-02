@@ -1772,3 +1772,153 @@ fn test_parse_column_description() {
     assert_eq!(col.name.unwrap().as_ref(), "price");
     assert!(matches!(col.sql_type, Numeric(Some((10, Some(2))))));
 }
+
+#[test]
+fn test_singlestore_types() {
+    use arrow_schema::Field;
+
+    // SingleStore CAST targets: SIGNED -> Int64, UNSIGNED -> UInt64
+    let (ty, nullable) = SqlType::parse(SingleStore, "signed").unwrap();
+    assert!(nullable);
+    assert_eq!(ty.pick_best_arrow_type(SingleStore), DataType::Int64);
+
+    let (ty, _) = SqlType::parse(SingleStore, "SIGNED INTEGER").unwrap();
+    assert_eq!(ty.pick_best_arrow_type(SingleStore), DataType::Int64);
+
+    let (ty, _) = SqlType::parse(SingleStore, "signed int").unwrap();
+    assert_eq!(ty.pick_best_arrow_type(SingleStore), DataType::Int64);
+
+    let (ty, _) = SqlType::parse(SingleStore, "unsigned").unwrap();
+    assert_eq!(ty.pick_best_arrow_type(SingleStore), DataType::UInt64);
+
+    let (ty, _) = SqlType::parse(SingleStore, "UNSIGNED INT").unwrap();
+    assert_eq!(ty.pick_best_arrow_type(SingleStore), DataType::UInt64);
+
+    // Integers with display widths and unsigned
+    let (ty, _) = SqlType::parse(SingleStore, "INT(11)").unwrap();
+    assert_eq!(ty.pick_best_arrow_type(SingleStore), DataType::Int32);
+
+    let (ty, _) = SqlType::parse(SingleStore, "INT(11) UNSIGNED").unwrap();
+    assert_eq!(ty.pick_best_arrow_type(SingleStore), DataType::UInt32);
+
+    let (ty, _) = SqlType::parse(SingleStore, "TINYINT(1)").unwrap();
+    assert_eq!(ty.pick_best_arrow_type(SingleStore), DataType::Int8);
+
+    let (ty, _) = SqlType::parse(SingleStore, "TINYINT(1) UNSIGNED").unwrap();
+    assert_eq!(ty.pick_best_arrow_type(SingleStore), DataType::UInt8);
+
+    let (ty, _) = SqlType::parse(SingleStore, "SMALLINT(6)").unwrap();
+    assert_eq!(ty.pick_best_arrow_type(SingleStore), DataType::Int16);
+
+    let (ty, _) = SqlType::parse(SingleStore, "SMALLINT UNSIGNED").unwrap();
+    assert_eq!(ty.pick_best_arrow_type(SingleStore), DataType::UInt16);
+
+    let (ty, _) = SqlType::parse(SingleStore, "MEDIUMINT(9)").unwrap();
+    assert_eq!(ty.pick_best_arrow_type(SingleStore), DataType::Int32);
+
+    let (ty, _) = SqlType::parse(SingleStore, "BIGINT(20)").unwrap();
+    assert_eq!(ty.pick_best_arrow_type(SingleStore), DataType::Int64);
+
+    let (ty, _) = SqlType::parse(SingleStore, "BIGINT(20) UNSIGNED").unwrap();
+    assert_eq!(ty.pick_best_arrow_type(SingleStore), DataType::UInt64);
+
+    // INT1 - INT8 aliases
+    let (ty, _) = SqlType::parse(SingleStore, "INT1").unwrap();
+    assert_eq!(ty.pick_best_arrow_type(SingleStore), DataType::Int8);
+    let (ty, _) = SqlType::parse(SingleStore, "INT2").unwrap();
+    assert_eq!(ty.pick_best_arrow_type(SingleStore), DataType::Int16);
+    let (ty, _) = SqlType::parse(SingleStore, "INT3").unwrap();
+    assert_eq!(ty.pick_best_arrow_type(SingleStore), DataType::Int32);
+    let (ty, _) = SqlType::parse(SingleStore, "INT4").unwrap();
+    assert_eq!(ty.pick_best_arrow_type(SingleStore), DataType::Int32);
+    let (ty, _) = SqlType::parse(SingleStore, "INT8").unwrap();
+    assert_eq!(ty.pick_best_arrow_type(SingleStore), DataType::Int64);
+
+    // YEAR
+    let (ty, _) = SqlType::parse(SingleStore, "YEAR(4)").unwrap();
+    assert_eq!(ty.pick_best_arrow_type(SingleStore), DataType::Int16);
+
+    // Floats and Decimals
+    let (ty, _) = SqlType::parse(SingleStore, "FLOAT").unwrap();
+    assert_eq!(ty.pick_best_arrow_type(SingleStore), DataType::Float32);
+
+    let (ty, _) = SqlType::parse(SingleStore, "DOUBLE").unwrap();
+    assert_eq!(ty.pick_best_arrow_type(SingleStore), DataType::Float64);
+
+    let (ty, _) = SqlType::parse(SingleStore, "DECIMAL(18, 4)").unwrap();
+    assert_eq!(
+        ty.pick_best_arrow_type(SingleStore),
+        DataType::Decimal128(18, 4)
+    );
+
+    let (ty, _) = SqlType::parse(SingleStore, "FIXED(10, 2)").unwrap();
+    assert_eq!(
+        ty.pick_best_arrow_type(SingleStore),
+        DataType::Decimal128(10, 2)
+    );
+
+    // Date & Time
+    let (ty, _) = SqlType::parse(SingleStore, "DATETIME").unwrap();
+    assert_eq!(
+        ty.pick_best_arrow_type(SingleStore),
+        DataType::Timestamp(TimeUnit::Microsecond, None)
+    );
+
+    let (ty, _) = SqlType::parse(SingleStore, "DATETIME(6)").unwrap();
+    assert_eq!(
+        ty.pick_best_arrow_type(SingleStore),
+        DataType::Timestamp(TimeUnit::Microsecond, None)
+    );
+
+    // Text & JSON
+    let (ty, _) = SqlType::parse(SingleStore, "JSON").unwrap();
+    assert_eq!(ty.pick_best_arrow_type(SingleStore), DataType::Utf8);
+
+    let (ty, _) = SqlType::parse(SingleStore, "LONGTEXT").unwrap();
+    assert_eq!(ty.pick_best_arrow_type(SingleStore), DataType::Utf8);
+
+    let (ty, _) = SqlType::parse(SingleStore, "LONGBLOB").unwrap();
+    assert_eq!(ty.pick_best_arrow_type(SingleStore), DataType::Binary);
+
+    let (ty, _) = SqlType::parse(SingleStore, "GEOGRAPHYPOINT").unwrap();
+    assert_eq!(ty.pick_best_arrow_type(SingleStore), DataType::Utf8);
+
+    // VECTOR
+    let (ty, _) = SqlType::parse(SingleStore, "VECTOR(1536)").unwrap();
+    assert_eq!(
+        ty.pick_best_arrow_type(SingleStore),
+        DataType::FixedSizeList(Arc::new(Field::new("item", DataType::Float32, false)), 1536)
+    );
+
+    let (ty, _) = SqlType::parse(SingleStore, "VECTOR(1536, F32)").unwrap();
+    assert_eq!(
+        ty.pick_best_arrow_type(SingleStore),
+        DataType::FixedSizeList(Arc::new(Field::new("item", DataType::Float32, false)), 1536)
+    );
+
+    let (ty, _) = SqlType::parse(SingleStore, "VECTOR(768, F64)").unwrap();
+    assert_eq!(
+        ty.pick_best_arrow_type(SingleStore),
+        DataType::FixedSizeList(Arc::new(Field::new("item", DataType::Float64, false)), 768)
+    );
+
+    let (ty, _) = SqlType::parse(SingleStore, "VECTOR(128, I8)").unwrap();
+    assert_eq!(
+        ty.pick_best_arrow_type(SingleStore),
+        DataType::FixedSizeList(Arc::new(Field::new("item", DataType::Int8, false)), 128)
+    );
+
+    // Column description parsing
+    let col = SqlType::parse_column_description(
+        SingleStore,
+        "`embedding` VECTOR(1536, F32) NOT NULL",
+        false,
+    )
+    .unwrap();
+    assert_eq!(col.name.unwrap().as_ref(), "embedding");
+    assert!(!col.nullable);
+    assert_eq!(
+        col.sql_type.pick_best_arrow_type(SingleStore),
+        DataType::FixedSizeList(Arc::new(Field::new("item", DataType::Float32, false)), 1536)
+    );
+}

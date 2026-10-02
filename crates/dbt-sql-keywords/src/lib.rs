@@ -10,6 +10,7 @@ pub mod duckdb;
 pub mod exasol;
 pub mod mssql;
 pub mod redshift;
+pub mod singlestore;
 pub mod snowflake;
 pub mod trino;
 
@@ -82,7 +83,7 @@ mod tests {
         pub non_reserved: &'a [&'static str],
     }
 
-    static KEYWORD_LISTS: [KeywordLists; 8] = [
+    static KEYWORD_LISTS: [KeywordLists; 9] = [
         KeywordLists {
             name: "bigquery",
             reserved: bigquery::RESERVED_KEYWORDS,
@@ -118,6 +119,12 @@ mod tests {
             reserved: redshift::RESERVED_KEYWORDS,
             strict_non_reserved: redshift::STRICT_NON_RESERVED_KEYWORDS,
             non_reserved: redshift::NON_RESERVED_KEYWORDS,
+        },
+        KeywordLists {
+            name: "singlestore",
+            reserved: singlestore::RESERVED_KEYWORDS,
+            strict_non_reserved: singlestore::STRICT_NON_RESERVED_KEYWORDS,
+            non_reserved: singlestore::NON_RESERVED_KEYWORDS,
         },
         KeywordLists {
             name: "snowflake",
@@ -186,6 +193,15 @@ mod tests {
         );
     }
 
+    fn check_not_keyword_if_absent(lists: &KeywordLists<'_>, candidate: &str) {
+        let is_any_kw = lists.reserved.contains(&candidate)
+            || lists.strict_non_reserved.contains(&candidate)
+            || lists.non_reserved.contains(&candidate);
+        if !is_any_kw {
+            assert_is_not_keyword(lists, candidate);
+        }
+    }
+
     #[test]
     fn test_is_keyword_ignore_ascii_case() {
         for lists in &KEYWORD_LISTS {
@@ -201,10 +217,8 @@ mod tests {
             for kw in lists.reserved {
                 assert_is_keyword(lists, kw, kw);
                 assert_is_keyword(lists, kw.to_ascii_lowercase().as_str(), kw);
-                let not_kw = format!("X{kw}");
-                assert_is_not_keyword(lists, &not_kw);
-                let not_kw = format!("{kw}X");
-                assert_is_not_keyword(lists, &not_kw);
+                check_not_keyword_if_absent(lists, &format!("X{kw}"));
+                check_not_keyword_if_absent(lists, &format!("{kw}X"));
                 let not_kw = format!("☃{kw}☃");
                 assert_is_not_keyword(lists, &not_kw);
             }

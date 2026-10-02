@@ -27,7 +27,7 @@ impl ColumnBuilder {
             Bigquery => Ok(Self::build_bigquery(field, type_ops)),
             Databricks | Spark => Self::build_databricks(field, type_ops),
             Redshift => Ok(Self::build_redshift(field, type_ops)),
-            Postgres | Salesforce => Self::build_postgres_like(field, type_ops),
+            Postgres | Salesforce | SingleStore => Self::build_postgres_like(field, type_ops),
             DuckDB | LakeCompute => Self::build_duckdb(field, type_ops),
             Fabric => Ok(Self::build_fabric(field, type_ops)),
             ClickHouse => Self::build_clickhouse(field, type_ops),
@@ -54,6 +54,14 @@ impl ColumnBuilder {
         match self.adapter_type {
             Postgres => Column::new(
                 Postgres,
+                name,
+                dtype,
+                char_size,
+                numeric_precision,
+                numeric_scale,
+            ),
+            SingleStore => Column::new(
+                SingleStore,
                 name,
                 dtype,
                 char_size,

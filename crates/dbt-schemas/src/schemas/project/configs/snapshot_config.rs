@@ -871,6 +871,14 @@ impl From<ProjectSnapshotConfig> for SnapshotConfig {
                 catchup: None,
                 mv_on_schema_change: None,
                 repopulate_from_mvs_on_full_refresh: None,
+
+                // SingleStore
+                storage_type: None,
+                reference: None,
+                shard_key: None,
+                sort_key: None,
+                unique_table_key: None,
+                fulltext_key: None,
             },
         }
     }

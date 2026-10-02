@@ -1671,6 +1671,30 @@ impl Adapter {
         }
     }
 
+    #[tracing::instrument(skip(self, _state), level = "trace")]
+    pub fn clean_up_limit_alias(
+        &self,
+        _state: &State,
+        args: &[Value],
+    ) -> Result<Value, minijinja::Error> {
+        match &self.inner {
+            Typed { adapter, .. } => {
+                let iter = ArgsIter::new("clean_up_limit_alias", &["sql"], args);
+                let sql = iter.next_arg::<String>()?;
+                iter.finish()?;
+
+                let result = adapter.clean_up_limit_alias(&sql);
+                Ok(Value::from(result))
+            }
+            Parse(_) => {
+                let iter = ArgsIter::new("clean_up_limit_alias", &["sql"], args);
+                let sql = iter.next_arg::<String>()?;
+                iter.finish()?;
+                Ok(Value::from(sql))
+            }
+        }
+    }
+
     /// Check if schema exists
     ///
     /// https://github.com/dbt-labs/dbt-adapters/blob/main/dbt-adapters/src/dbt/adapters/base/impl.py#L849
@@ -2564,6 +2588,7 @@ impl Adapter {
                     | AdapterType::Datafusion
                     | AdapterType::Dremio
                     | AdapterType::Oracle
+                    | AdapterType::SingleStore
                     | AdapterType::LakeCompute => Err(AdapterError::new(
                         AdapterErrorKind::NotSupported,
                         format!("has_dbr_capability is only supported by the Databricks adapter. Use the portable adapter.has_feature(\"{}\") instead.", capability_name),
@@ -2594,6 +2619,7 @@ impl Adapter {
                 | AdapterType::Datafusion
                 | AdapterType::Dremio
                 | AdapterType::Oracle
+                | AdapterType::SingleStore
                 | AdapterType::LakeCompute => Ok(Value::from(false)),
             },
         }
@@ -4048,6 +4074,7 @@ impl Adapter {
             "render_raw_columns_constraints" => self.render_raw_columns_constraints(state, args),
             // database: str
             "verify_database" => self.verify_database(state, args),
+            "clean_up_limit_alias" => self.clean_up_limit_alias(state, args),
             "commit" => self.commit(),
             // context: dict, strategy: str
             "get_incremental_strategy_macro" => self.get_incremental_strategy_macro(state, args),

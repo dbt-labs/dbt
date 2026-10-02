@@ -1,0 +1,7 @@
+kind: Features
+body: Add native SingleStore adapter support with ADBC driver, static analysis types, and embedded macros
+time: 2026-09-25T10:31:03.452074983+02:00
+custom:
+    author: jimvekemans
+    issue: ""
+    project: dbt-core

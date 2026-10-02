@@ -42,6 +42,7 @@ pub enum Dialect {
     Redshift,
     Databricks,
     Duckdb,
+    SingleStore,
 }
 
 impl Display for Dialect {
@@ -58,6 +59,7 @@ impl Display for Dialect {
             Dialect::Redshift => write!(f, "redshift"),
             Dialect::Databricks => write!(f, "databricks"),
             Dialect::Duckdb => write!(f, "duckdb"),
+            Dialect::SingleStore => write!(f, "singlestore"),
         }
     }
 }
@@ -80,6 +82,7 @@ impl FromStr for Dialect {
             "redshift" => Ok(Dialect::Redshift),
             "databricks" => Ok(Dialect::Databricks),
             "duckdb" => Ok(Dialect::Duckdb),
+            "singlestore" => Ok(Dialect::SingleStore),
 
             // "passthrough" adapter type is used to disable most local semantic
             // analysis, so we just map it to the default dialect.
@@ -93,7 +96,7 @@ impl FromStr for Dialect {
 // Miscellaneous dialect-specific functions
 impl Dialect {
     pub const fn max_value() -> u8 {
-        Dialect::Duckdb as u8
+        Dialect::SingleStore as u8
     }
 
     pub fn is_default(&self) -> bool {
@@ -124,7 +127,7 @@ impl Dialect {
             Dialect::Trino | Dialect::Redshift => "_sdf::col".to_string(), // this column is not seen by the user
             Dialect::Snowflake => "c".to_string(),
             Dialect::Bigquery => "_field_".to_string(),
-            Dialect::Databricks | Dialect::Duckdb => "col".to_string(),
+            Dialect::Databricks | Dialect::Duckdb | Dialect::SingleStore => "col".to_string(),
             _ => todo!("get_default_col not implemented for {self}"),
         }
     }
@@ -132,7 +135,7 @@ impl Dialect {
     pub fn get_default_col_start(&self) -> usize {
         match self {
             Dialect::Snowflake | Dialect::Trino | Dialect::Redshift => 0,
-            Dialect::Bigquery | Dialect::Databricks | Dialect::Duckdb => 1,
+            Dialect::Bigquery | Dialect::Databricks | Dialect::Duckdb | Dialect::SingleStore => 1,
             _ => todo!("get_default_col_start not implemented for {self}"),
         }
     }
@@ -157,7 +160,7 @@ impl Dialect {
     pub const fn quote_char(&self) -> char {
         match self {
             Dialect::Sdf | Dialect::Trino => '"',
-            Dialect::Bigquery | Dialect::Databricks => '`',
+            Dialect::Bigquery | Dialect::Databricks | Dialect::SingleStore => '`',
             Dialect::Snowflake => '"',
             Dialect::Redshift => '"',
             // TODO: SparkSQL, SparkLP
@@ -170,7 +173,7 @@ impl Dialect {
     pub const fn escape_char(&self) -> char {
         match self {
             Dialect::Sdf | Dialect::Trino => '"',
-            Dialect::Bigquery => '\\',
+            Dialect::Bigquery | Dialect::SingleStore => '\\',
             Dialect::Snowflake => '"',
             Dialect::Redshift => '"',
             _ => '"',
@@ -245,6 +248,7 @@ impl Dialect {
                 c != '.' && c != self.quote_char() && !c.is_whitespace() && c != '/' && c != ';'
             }
             Dialect::Redshift => c.is_alphanumeric() || c == '_',
+            Dialect::SingleStore => c.is_alphanumeric() || c == '_' || c == '$',
             _ => c.is_alphanumeric() || c == '_',
         }
     }
@@ -536,6 +540,7 @@ mod tests {
             Salesforce => Dialect::Postgresql,
             DuckDB => Dialect::Duckdb,
             Trino => Dialect::Trino,
+            SingleStore => Dialect::SingleStore,
             _ => return None,
         };
         Some(dialect)
@@ -569,5 +574,21 @@ mod tests {
                  AdapterType::to_string() for {adapter_type:?}",
             );
         }
+    }
+
+    #[test]
+    fn test_singlestore_dialect() {
+        use std::str::FromStr;
+        let d = Dialect::from_str("singlestore").unwrap();
+        assert_eq!(d, Dialect::SingleStore);
+        assert_eq!(d.to_string(), "singlestore");
+        assert_eq!(d.quote_char(), '`');
+        assert_eq!(d.escape_char(), '\\');
+        assert_eq!(d.get_default_col(), "col");
+        assert_eq!(d.get_default_col_start(), 1);
+        assert!(d.is_valid_identifier_char('a'));
+        assert!(d.is_valid_identifier_char('_'));
+        assert!(d.is_valid_identifier_char('$'));
+        assert!(!d.is_valid_identifier_char(' '));
     }
 }

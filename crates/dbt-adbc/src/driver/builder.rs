@@ -46,6 +46,10 @@ impl Builder {
 
     /// Try to load the [`Driver`] using the values provided to this builder.
     pub fn try_load(&self) -> Result<Box<dyn Driver>> {
+        if self.backend == Backend::SingleStore {
+            let driver = crate::singlestore::SingleStoreDriver::new(None);
+            return Ok(Box::new(driver));
+        }
         let adbc_driver = AdbcDriver::try_load_dynamic(
             self.backend,
             self.adbc_version.unwrap_or_default(),

@@ -166,6 +166,13 @@ mod tests {
                     .with_password(password);
                 Ok(builder)
             }
+            Backend::SingleStore => {
+                let mut builder = database::Builder::new(backend);
+                let uri = env::var("ADBC_SINGLESTORE_URI")
+                    .unwrap_or_else(|_| "singlestore://root:root@localhost:3306/test".to_owned());
+                builder.with_parse_uri(uri)?;
+                Ok(builder)
+            }
             Backend::Generic { .. } => unimplemented!("generic backend database builder in tests"),
         }?;
         if backend == Backend::Snowflake {
@@ -875,5 +882,11 @@ mod tests {
     #[test]
     fn statement_execute_exasol() -> Result<()> {
         execute_statement(Backend::Exasol)
+    }
+
+    #[test_with::env(ADBC_SINGLESTORE_URI)]
+    #[test]
+    fn statement_execute_singlestore() -> Result<()> {
+        execute_statement(Backend::SingleStore)
     }
 }

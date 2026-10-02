@@ -104,7 +104,7 @@ impl TimeRE {
             )
         })?;
         let replacement = |caps: &Captures| -> Result<String, Error> {
-            let directive = &caps.get_match().as_str()[1..];
+            let directive = &caps.get(0).unwrap().as_str()[1..];
             self.directives.get(directive).map_or(
                 Err(Error::new(
                     ErrorKind::InvalidArgument,

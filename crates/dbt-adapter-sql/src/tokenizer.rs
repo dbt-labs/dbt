@@ -14,6 +14,10 @@ pub enum Token<'source> {
     RAngle,
     Comma,
     Colon,
+    /// SingleStore cast operator: :>.
+    ColonAngle,
+    /// SingleStore try cast operator: !:>.
+    ExclamationColonAngle,
     /// Word includes keywords, identifiers, quoted identifiers, string literals,
     /// numeric literals and similar continuous pieces of source text.
     ///
@@ -35,6 +39,8 @@ impl PartialEq for Token<'_> {
             (Token::RAngle, Token::RAngle) => true,
             (Token::Comma, Token::Comma) => true,
             (Token::Colon, Token::Colon) => true,
+            (Token::ColonAngle, Token::ColonAngle) => true,
+            (Token::ExclamationColonAngle, Token::ExclamationColonAngle) => true,
             (Token::Word(a), Token::Word(b)) => a.eq_ignore_ascii_case(b),
             _ => false,
         }
@@ -52,6 +58,8 @@ impl fmt::Display for Token<'_> {
             Token::RAngle => write!(f, ">"),
             Token::Comma => write!(f, ","),
             Token::Colon => write!(f, ":"),
+            Token::ColonAngle => write!(f, ":>"),
+            Token::ExclamationColonAngle => write!(f, "!:>"),
             Token::Word(w) => write!(f, "{w}"),
         }
     }
@@ -184,6 +192,11 @@ impl<'source> Tokenizer<'source> {
             match b {
                 b'(' | b')' | b'[' | b']' | b'<' | b'>' => break,
                 b',' | b':' => break,
+                b'!' if self.input.as_bytes().get(self.position + 1) == Some(&b':')
+                    && self.input.as_bytes().get(self.position + 2) == Some(&b'>') =>
+                {
+                    break;
+                }
                 b'\'' | b'"' | b'`' => break,
                 _ if is_whitespace(b) => break,
                 _ => {
@@ -206,21 +219,31 @@ impl<'source> Tokenizer<'source> {
     pub fn next(&mut self) -> Option<Token<'source>> {
         self.skip_whitespace();
         let start = self.position;
-        let token = if let Some(b) = self._next_byte() {
-            match b {
-                b'(' => Token::LParen,
-                b')' => Token::RParen,
-                b'[' => Token::LBracket,
-                b']' => Token::RBracket,
-                b'<' => Token::LAngle,
-                b'>' => Token::RAngle,
-                b',' => Token::Comma,
-                b':' => Token::Colon,
-                b'\'' | b'"' | b'`' => self.rest_of_quoted_word(start, b),
-                _ => return self.rest_of_word(start),
+        let b = self._next_byte()?;
+        let token = match b {
+            b'(' => Token::LParen,
+            b')' => Token::RParen,
+            b'[' => Token::LBracket,
+            b']' => Token::RBracket,
+            b'<' => Token::LAngle,
+            b'>' => Token::RAngle,
+            b',' => Token::Comma,
+            b':' => {
+                if let Some(b'>') = self._peek_byte() {
+                    self.position += 1;
+                    Token::ColonAngle
+                } else {
+                    Token::Colon
+                }
             }
-        } else {
-            return None;
+            b'!' if self.input.as_bytes().get(self.position) == Some(&b':')
+                && self.input.as_bytes().get(self.position + 1) == Some(&b'>') =>
+            {
+                self.position += 2;
+                Token::ExclamationColonAngle
+            }
+            b'\'' | b'"' | b'`' => self.rest_of_quoted_word(start, b),
+            _ => return self.rest_of_word(start),
         };
         Some(token)
     }
@@ -444,5 +467,48 @@ mod tests {
                 file!()
             );
         }
+    }
+
+    #[test]
+    fn test_singlestore_cast_operators() {
+        let tokens = all_tokens("'42' :> signed");
+        assert_eq!(
+            tokens,
+            vec![
+                Token::Word("'42'"),
+                Token::ColonAngle,
+                Token::Word("signed")
+            ]
+        );
+
+        let tokens = all_tokens("'42':>signed");
+        assert_eq!(
+            tokens,
+            vec![
+                Token::Word("'42'"),
+                Token::ColonAngle,
+                Token::Word("signed")
+            ]
+        );
+
+        let tokens = all_tokens("'foo' !:> int");
+        assert_eq!(
+            tokens,
+            vec![
+                Token::Word("'foo'"),
+                Token::ExclamationColonAngle,
+                Token::Word("int")
+            ]
+        );
+
+        let tokens = all_tokens("'foo'!:>int");
+        assert_eq!(
+            tokens,
+            vec![
+                Token::Word("'foo'"),
+                Token::ExclamationColonAngle,
+                Token::Word("int")
+            ]
+        );
     }
 }
