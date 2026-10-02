@@ -13,6 +13,7 @@ use minijinja::State;
 use crate::adapter::adapter_impl::AdapterImpl;
 use crate::errors::adbc_error_to_adapter_error;
 use crate::formatter::SqlLiteralFormatter;
+use crate::metadata::athena::{athena_string_literal, relation_type_from_table_type};
 use crate::metadata::bigquery;
 use crate::metadata::bigquery::is_bigquery_not_found_error;
 use crate::metadata::databricks::describe_table::DatabricksTableMetadata;
@@ -82,7 +83,9 @@ pub fn get_relation(
             adapter, state, ctx, conn, database, schema, identifier, token,
         ),
         AdapterType::Starburst => todo!("Starburst"),
-        AdapterType::Athena => todo!("Athena"),
+        AdapterType::Athena => athena_get_relation(
+            adapter, state, ctx, conn, database, schema, identifier, token,
+        ),
         AdapterType::Trino => todo!("Trino"),
         AdapterType::Dremio => todo!("Dremio"),
         AdapterType::Oracle => todo!("Oracle"),
@@ -850,6 +853,56 @@ fn exasol_get_relation(
     };
     let relation = do_create_relation(
         AdapterType::Exasol,
+        database.to_string(),
+        schema.to_string(),
+        Some(identifier.to_string()),
+        relation_type,
+        adapter.quoting(),
+    )?;
+    Ok(Some(relation))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn athena_get_relation(
+    adapter: &AdapterImpl,
+    state: &State,
+    ctx: &QueryCtx,
+    conn: &mut dyn Connection,
+    database: &str,
+    schema: &str,
+    identifier: &str,
+    token: CancellationToken,
+) -> AdapterResult<Option<Box<dyn BaseRelation>>> {
+    // Athena (Trino over Glue) lowercases every identifier, quoted or not, so
+    // the lookup is case-insensitive on both sides. `information_schema.tables`
+    // reports `BASE TABLE` / `VIEW`; a missing schema yields zero rows rather
+    // than an error.
+    let q_schema = athena_string_literal(schema);
+    let q_ident = athena_string_literal(identifier);
+    let catalog_filter = if database.is_empty() {
+        String::new()
+    } else {
+        format!(
+            " and lower(table_catalog) = '{}'",
+            athena_string_literal(database)
+        )
+    };
+    let sql = format!(
+        "select table_type from information_schema.tables \
+         where lower(table_schema) = '{q_schema}' \
+         and lower(table_name) = '{q_ident}'{catalog_filter} limit 1"
+    );
+    let batch = adapter
+        .engine()
+        .execute(Some(state), conn, ctx, &sql, token)?;
+    if batch.num_rows() == 0 {
+        return Ok(None);
+    }
+
+    let arr = batch.column_values::<StringArray>("table_type")?;
+    let relation_type = Some(relation_type_from_table_type(arr.value(0)));
+    let relation = do_create_relation(
+        AdapterType::Athena,
         database.to_string(),
         schema.to_string(),
         Some(identifier.to_string()),
