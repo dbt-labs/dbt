@@ -1,6 +1,7 @@
 import threading
-from typing import Optional, Type, TypeVar
+from typing import AbstractSet, Optional, Type, TypeVar
 
+from dbt.adapters.base import BaseAdapter
 from dbt.artifacts.schemas.run import RunResult, RunStatus
 from dbt.contracts.graph.manifest import Manifest
 from dbt.contracts.graph.nodes import ManifestSQLNode
@@ -63,6 +64,21 @@ class CompileTask(GraphRunnableTask):
 
     def raise_on_first_error(self) -> bool:
         return True
+
+    def before_run(self, adapter: BaseAdapter, selected_uids: AbstractSet[str]) -> RunStatus:
+        # Scope relation-cache population to the schemas of the selected nodes,
+        # mirroring RunTask.before_run. The base GraphRunnableTask.before_run
+        # calls populate_adapter_cache with no required_schemas, so with
+        # cache_selected_only enabled the cache would still be built over every
+        # schema in the project. Passing required_schemas here makes
+        # --cache-selected-only effective for compile (and show / docs
+        # generate), which inherit this task.
+        with adapter.connection_named("master"):
+            self.defer_to_manifest()
+            required_schemas = self.get_model_schemas(adapter, selected_uids)
+            with self._maybe_span("metadata.setup"):
+                self.populate_adapter_cache(adapter, required_schemas)
+            return RunStatus.Success
 
     def get_node_selector(self) -> ResourceTypeSelector:
         if getattr(self.args, "inline", None):
