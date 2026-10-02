@@ -122,6 +122,7 @@ from dbt.node_types import AccessType, NodeType
 from dbt.parser.analysis import AnalysisParser
 from dbt.parser.base import Parser
 from dbt.parser.docs import DocumentationParser
+from dbt.parser.exposure_dimensions import granularity_names, resolve_exposure_dimension
 from dbt.parser.fixtures import FixtureParser
 from dbt.parser.functions import FunctionParser
 from dbt.parser.generic_test import GenericTestParser
@@ -530,6 +531,7 @@ class ManifestLoader:
             self.process_unit_tests()
             self.process_docs(self.root_project)
             self.process_metrics(self.root_project)
+            self.process_exposure_dimensions()
             self.process_saved_queries(self.root_project)
             self.process_model_inferred_primary_keys()
             self.process_functions(self.root_project.project_name)
@@ -1331,6 +1333,57 @@ class ManifestLoader:
             if exposure.created_at < self.started_at:
                 continue
             _process_metrics_for_node(self.manifest, current_project, exposure)
+
+    def process_exposure_dimensions(self) -> None:
+        exposures = [e for e in self.manifest.exposures.values() if e.dimensions]
+        if not exposures:
+            return
+
+        enabled_semantic_models = list(self.manifest.semantic_models.values())
+        disabled_semantic_models = [
+            node
+            for nodes in self.manifest.disabled.values()
+            for node in nodes
+            if isinstance(node, SemanticModel)
+        ]
+        known_entities = {
+            entity.name
+            for sm in chain(enabled_semantic_models, disabled_semantic_models)
+            for entity in sm.entities
+        }
+        granularities = granularity_names(self.manifest.nodes.values())
+
+        for exposure in exposures:
+            exposure.depends_on.nodes = [
+                unique_id
+                for unique_id in exposure.depends_on.nodes
+                if not unique_id.startswith(f"{NodeType.SemanticModel}.")
+            ]
+            for specifier in exposure.dimensions:
+                try:
+                    matches = resolve_exposure_dimension(
+                        specifier, enabled_semantic_models, granularities, known_entities
+                    )
+                    disabled_matches = (
+                        []
+                        if matches
+                        else resolve_exposure_dimension(
+                            specifier, disabled_semantic_models, granularities, known_entities
+                        )
+                    )
+                except ParsingError as exc:
+                    raise ParsingError(exc.msg, node=exposure) from exc
+                if matches:
+                    for semantic_model in matches:
+                        exposure.depends_on.add_node(semantic_model.unique_id)
+                    continue
+                exposure.config.enabled = False
+                invalid_target_fail_unless_test(
+                    node=exposure,
+                    target_name=specifier,
+                    target_kind="dimension",
+                    disabled=bool(disabled_matches),
+                )
 
     def process_saved_queries(self, config: RuntimeConfig):
         """Processes SavedQuery nodes to populate their `depends_on`."""
