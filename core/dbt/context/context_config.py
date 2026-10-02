@@ -59,9 +59,8 @@ class UnrenderedConfig(ConfigSource):
             model_configs = unrendered.get("exposures")
         elif resource_type == NodeType.Unit:
             model_configs = unrendered.get("unit_tests")
-        elif resource_type == NodeType.Analysis and getattr(
-            get_flags(), "require_corrected_analysis_fqns", False
-        ):
+        elif resource_type == NodeType.Analysis:
+            # Always use analyses: — reading models: wrongly disables package analyses (#15415).
             model_configs = unrendered.get("analyses")
         else:
             model_configs = unrendered.get("models")
@@ -94,9 +93,8 @@ class RenderedConfig(ConfigSource):
             model_configs = self.project.exposures
         elif resource_type == NodeType.Unit:
             model_configs = self.project.unit_tests
-        elif resource_type == NodeType.Analysis and getattr(
-            get_flags(), "require_corrected_analysis_fqns", False
-        ):
+        elif resource_type == NodeType.Analysis:
+            # Same as UnrenderedConfig: analyses read from analyses:, not models:.
             model_configs = self.project.analyses
         elif resource_type == NodeType.Function:
             model_configs = self.project.functions
