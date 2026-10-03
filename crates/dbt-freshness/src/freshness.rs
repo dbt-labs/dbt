@@ -440,33 +440,18 @@ async fn calculate_freshness_common(
     }
 
     // A user provided query/field has to have a timestamp type of any precision
-    // and we convert it to nanoseconds later.
-    let max_loaded_at_column = validate_and_extract_timestamp_column(
+    // and we convert it to nanoseconds.
+    let max_loaded_at = load_timestamp_nanos(
         &batch,
         MAX_LOADED_AT_COLUMN,
-        node,
-        error_message,
-        io_args,
-    )?;
-
-    let snapshotted_at = validate_and_extract_timestamp_column(
-        &batch,
-        SNAPSHOTTED_AT_COLUMN,
-        node,
-        error_message,
-        io_args,
-    )?;
-
-    let max_loaded_at = extract_non_null_nanos(
-        max_loaded_at_column.as_ref(),
         "max_loaded_at",
         node,
         error_message,
         io_args,
     )?;
-
-    let snapshotted_at = extract_non_null_nanos(
-        snapshotted_at.as_ref(),
+    let snapshotted_at = load_timestamp_nanos(
+        &batch,
+        SNAPSHOTTED_AT_COLUMN,
         "snapshotted_at",
         node,
         error_message,
@@ -1033,6 +1018,21 @@ fn collect_relations(
     all_relations.retain(|r| seen.insert(r.semantic_fqn()));
 
     Ok((all_relations, name_map))
+}
+
+/// Validates that `column_index` of the one-row freshness `batch` is a timestamp and
+/// returns its value in nanoseconds (UTC), failing if it is NULL.
+fn load_timestamp_nanos(
+    batch: &arrow::record_batch::RecordBatch,
+    column_index: usize,
+    column_name: &str,
+    node: &dyn FreshnessNodeRef,
+    error_message: &str,
+    io_args: &IoArgs,
+) -> FsResult<i64> {
+    let column =
+        validate_and_extract_timestamp_column(batch, column_index, node, error_message, io_args)?;
+    extract_non_null_nanos(column.as_ref(), column_name, node, error_message, io_args)
 }
 
 /// Casts a one-row timestamp column to nanoseconds (UTC) and returns its value.
