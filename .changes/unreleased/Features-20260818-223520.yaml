@@ -1,0 +1,7 @@
+kind: Features
+body: Improve delineation of one invocation ending.
+time: 2026-08-18T22:35:20.558981+09:00
+custom:
+    author: shon0526
+    issue: "15108"
+    project: dbt-core
