@@ -3,6 +3,7 @@ use std::{path::PathBuf, sync::Arc};
 use dbt_yaml::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+use crate::terminal_hyperlinks::wrap_file_hyperlink;
 use crate::utils;
 
 use super::preprocessor_location;
@@ -217,6 +218,26 @@ impl CodeLocationWithFile {
     pub fn expanded(&self) -> Option<&CodeLocationWithFile> {
         self.expanded.as_deref()
     }
+
+    #[cfg(test)]
+    pub(crate) fn with_expanded_location(self, expanded: CodeLocationWithFile) -> Self {
+        CodeLocationWithFile {
+            expanded: Some(Box::new(expanded)),
+            ..self
+        }
+    }
+
+    /// Formats this location as `path`, `path:line`, or `path:line:col`.
+    fn displayed_span(&self) -> String {
+        let relative_path = self.relative_path();
+        if !self.has_position() {
+            relative_path.display().to_string()
+        } else if self.col == 0 {
+            format!("{}:{}", relative_path.display(), self.line)
+        } else {
+            format!("{}:{}:{}", relative_path.display(), self.line, self.col)
+        }
+    }
 }
 
 impl From<PathBuf> for CodeLocationWithFile {
@@ -263,15 +284,11 @@ impl From<MiniJinjaErrorWrapper> for CodeLocationWithFile {
 
 impl std::fmt::Display for CodeLocationWithFile {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let relative_path = self.relative_path();
-
-        if !self.has_position() {
-            write!(f, "{}", relative_path.display())?;
-        } else if self.col == 0 {
-            write!(f, "{}:{}", relative_path.display(), self.line)?;
-        } else {
-            write!(f, "{}:{}:{}", relative_path.display(), self.line, self.col)?;
-        }
+        write!(
+            f,
+            "{}",
+            wrap_file_hyperlink(self.file.as_ref(), &self.displayed_span())
+        )?;
         if let Some(expanded) = &self.expanded {
             write!(f, " ({expanded})")?;
         }
@@ -399,5 +416,69 @@ impl AbstractSpan for dbt_frontend_common::span::Span {
             start: self.start.with_arc_file(file),
             stop: self.stop,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::terminal_hyperlinks::{strip_osc8_hyperlinks, with_terminal_hyperlinks};
+
+    #[test]
+    fn display_is_plain_without_hyperlinks() {
+        let loc = CodeLocationWithFile::new(43, 9, 100, "models/foo.sql");
+        assert_eq!(loc.to_string(), loc.displayed_span());
+        with_terminal_hyperlinks(false, || {
+            assert_eq!(loc.to_string(), loc.displayed_span());
+        });
+    }
+
+    #[test]
+    fn display_wraps_path_in_osc8_when_enabled() {
+        let loc = CodeLocationWithFile::new(43, 9, 100, "models/foo.sql");
+        let plain = loc.displayed_span();
+        with_terminal_hyperlinks(true, || {
+            let rendered = loc.to_string();
+            assert!(
+                rendered.contains("\x1b]8;;file://"),
+                "expected OSC 8 file URI, got {rendered:?}"
+            );
+            assert!(rendered.contains(&plain));
+            assert_eq!(strip_osc8_hyperlinks(&rendered).as_ref(), plain);
+        });
+    }
+
+    #[test]
+    fn display_hyperlinks_expanded_location_separately() {
+        let loc = CodeLocationWithFile::new(43, 9, 100, "models/foo.sql").with_expanded_location(
+            CodeLocationWithFile::new(44, 19, 0, "target/compiled/models/foo.sql"),
+        );
+        let expected_plain = format!(
+            "{} ({})",
+            CodeLocationWithFile::new(43, 9, 100, "models/foo.sql").displayed_span(),
+            CodeLocationWithFile::new(44, 19, 0, "target/compiled/models/foo.sql").displayed_span()
+        );
+        with_terminal_hyperlinks(true, || {
+            let rendered = loc.to_string();
+            let file_uri_count = rendered.matches("\x1b]8;;file://").count();
+            assert_eq!(
+                file_uri_count, 2,
+                "source and expanded locations should each be hyperlinked, got {rendered:?}"
+            );
+            assert_eq!(strip_osc8_hyperlinks(&rendered).as_ref(), expected_plain);
+        });
+    }
+
+    #[test]
+    fn display_omits_column_when_zero() {
+        let loc = CodeLocationWithFile::new(12, 0, 0, "models/foo.sql");
+        with_terminal_hyperlinks(false, || {
+            assert_eq!(loc.to_string(), loc.displayed_span());
+            assert!(
+                !loc.displayed_span().contains(":12:"),
+                "column 0 should be omitted, got {}",
+                loc.displayed_span()
+            );
+        });
     }
 }

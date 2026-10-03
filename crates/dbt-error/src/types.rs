@@ -1716,6 +1716,34 @@ mod tests {
             "expected rendered error to include at least one appended source, got: {rendered}"
         );
     }
+
+    #[test]
+    fn pretty_includes_hyperlinked_location_when_enabled() {
+        use crate::with_terminal_hyperlinks;
+
+        let err = FsError::new_no_backtrace(ErrorCode::Generic, "Ambiguous column")
+            .with_location(CodeLocationWithFile::new(43, 9, 100, "models/foo.sql"));
+
+        with_terminal_hyperlinks(false, || {
+            let pretty = err.pretty();
+            assert!(
+                pretty.starts_with("[Generic (dbt1000)]: Ambiguous column"),
+                "{pretty}"
+            );
+            assert!(pretty.contains(" --> "));
+            assert!(pretty.contains("foo.sql"));
+            assert!(!pretty.contains("\x1b]8;;"));
+        });
+        with_terminal_hyperlinks(true, || {
+            let pretty = err.pretty();
+            assert!(pretty.contains("\x1b]8;;file://"));
+            assert!(pretty.contains("foo.sql"));
+            let stripped = crate::strip_osc8_hyperlinks(&pretty);
+            assert!(stripped.starts_with("[Generic (dbt1000)]: Ambiguous column"));
+            assert!(stripped.contains(" --> "));
+            assert!(!stripped.contains("\x1b"));
+        });
+    }
 }
 
 mod private {
