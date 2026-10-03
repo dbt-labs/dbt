@@ -1,0 +1,7 @@
+kind: Features
+body: Support running DuckDB Python models on MotherDuck Flights
+time: 2026-10-02T10:25:47.108545-07:00
+custom:
+    author: colin-k-rogers
+    issue: ""
+    project: dbt-core

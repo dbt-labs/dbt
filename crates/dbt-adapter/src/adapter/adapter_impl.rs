@@ -1084,6 +1084,7 @@ impl AdapterImpl {
     ///
     /// BaseAdapter https://github.com/dbt-labs/dbt-adapters/blob/0efd8d3d1081e1ab43e38797d5104f7b424a6284/dbt-adapters/src/dbt/adapters/base/impl.py#L1727
     /// SnowflakeAdapter https://github.com/dbt-labs/dbt-adapters/blob/0efd8d3d1081e1ab43e38797d5104f7b424a6284/dbt-snowflake/src/dbt/adapters/snowflake/impl.py#L417
+    /// DuckDBAdapter https://github.com/duckdb/dbt-duckdb/blob/cb8b1c59e4595a3a42bedf33f400c053e4adc393/dbt/adapters/duckdb/impl.py#L342-L360
     pub fn submit_python_job(
         &self,
         ctx: &QueryCtx,
@@ -1140,19 +1141,28 @@ impl AdapterImpl {
             Impl(Databricks, _) => {
                 python::databricks::submit_python_job(self, ctx, conn, state, model, compiled_code)
             }
-            Replay(Bigquery | Databricks, replay) => {
+            Impl(DuckDB, _) => python::duckdb::submit_python_job(
+                self,
+                ctx,
+                conn,
+                state,
+                model,
+                compiled_code,
+                token,
+            ),
+            Replay(Bigquery | Databricks | DuckDB, replay) => {
                 replay.replay_submit_python_job(ctx, conn, state, model, compiled_code)
             }
             Replay(
-                adapter_type @ (Postgres | Redshift | Salesforce | DuckDB | LakeCompute | Spark
-                | Fabric | ClickHouse | Exasol | Starburst | Athena | Trino
-                | Datafusion | Dremio | Oracle),
+                adapter_type @ (Postgres | Redshift | Salesforce | LakeCompute | Spark | Fabric
+                | ClickHouse | Exasol | Starburst | Athena | Trino | Datafusion
+                | Dremio | Oracle),
                 _,
             )
             | Impl(
-                adapter_type @ (Postgres | Redshift | Salesforce | DuckDB | LakeCompute | Spark
-                | Fabric | ClickHouse | Exasol | Starburst | Athena | Trino
-                | Datafusion | Dremio | Oracle),
+                adapter_type @ (Postgres | Redshift | Salesforce | LakeCompute | Spark | Fabric
+                | ClickHouse | Exasol | Starburst | Athena | Trino | Datafusion
+                | Dremio | Oracle),
                 _,
             ) => Err(AdapterError::new(
                 AdapterErrorKind::Internal,
