@@ -1,0 +1,7 @@
+kind: Fixes
+body: 'Propagate Databricks `query_id` from ADBC into Fusion RecordBatch metadata so `run_results.json` includes `adapter_response.query_id`.'
+time: 2026-08-06T00:00:00.000000+05:30
+custom:
+    author: nikhildhamdhere
+    issue: '15627'
+    project: dbt-core
