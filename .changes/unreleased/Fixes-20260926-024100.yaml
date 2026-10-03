@@ -1,0 +1,8 @@
+kind: Fixes
+body: Decide the `version:none` selector from a model's parsed version instead of
+  a `_v1`/`_v2` suffix on its file name
+time: 2026-09-26T02:41:00.000000+05:30
+custom:
+    author: feiiiiii5
+    issue: "16466"
+    project: dbt-core
