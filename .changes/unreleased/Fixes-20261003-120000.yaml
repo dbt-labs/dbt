@@ -1,0 +1,7 @@
+kind: Fixes
+body: Report an explicit error instead of a bogus ~56-year staleness when the freshness query returns NULL (e.g. an empty source table)
+time: 2026-10-03T12:00:00.000000+09:00
+custom:
+    author: kiwamizamurai
+    issue: "16489"
+    project: dbt-core
