@@ -38,7 +38,7 @@ jobs:
           fi
 
       - name: Post comment
-        if: ${{ env.outside_holiday == 'false' && contains(github.event.issue.labels.*.name, 'bug') }}
+        if: ${{ env.outside_holiday == 'false' && contains(github.event.issue.labels.*.name, 'type:bug') }}
         run: |
           gh issue comment ${{ github.event.issue.number }} --repo ${{ github.repository }} --body "Thank you for your bug report! Our team is will be out of the office for [Christmas and our Global Week of Rest](https://handbook.getdbt.com/docs/time_off#2024-us-holidays), from December 25, 2024, through January 3, 2025.
 
