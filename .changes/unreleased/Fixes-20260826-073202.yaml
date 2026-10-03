@@ -1,0 +1,7 @@
+kind: Fixes
+body: Support Iceberg snapshots by preserving table format metadata and Snowflake-compatible timestamp precision
+time: 2026-08-26T07:32:02.392968+10:00
+custom:
+    author: mattevans
+    issue: "15776"
+    project: dbt-core
