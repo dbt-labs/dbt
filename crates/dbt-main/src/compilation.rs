@@ -67,7 +67,9 @@ use dbt_common::{
     },
     io_utils::{checkpoint_error_count_maybe_exit, checkpoint_maybe_exit},
     path::DbtPath,
-    tracing::dbt_emit::{emit_info_log_message, emit_warn_log_message},
+    tracing::dbt_emit::{
+        emit_error_log_from_fs_error, emit_info_log_message, emit_warn_log_message,
+    },
     tracing::emit::emit_info_event,
 };
 use dbt_common::{
@@ -2209,43 +2211,64 @@ impl DbtProjectCompilation {
             // owned handle. `Nodes` is maps of `Arc`s, so the clone below is shallow.
             let resolved_state = Arc::new(resolved_state);
 
+            // Clap guarantees exactly one of <MACRO> or --sql is set.
+            let macro_name = arg.macro_name.as_deref();
+
+            // Chosen up front so a failure reports under the same id as a success.
+            let (unique_id, show_label) = if let Some(macro_name) = macro_name {
+                (macro_name.to_string(), "Macro result")
+            } else {
+                (
+                    format!(
+                        "sql_operation.{}.{INLINE_SQL_NAME}",
+                        resolved_state.root_project_name
+                    ),
+                    "Inline SQL rendered",
+                )
+            };
+
             // Macro path returns the macro author's `return` value (any `Value`,
             // stringified for display); inline-SQL path returns the Phase 1 rendered
             // SQL string.
-            let (display_text, show_label, stat_name) =
-                if let Some(inline_sql) = arg.macro_sql.as_deref() {
-                    let rendered = run_operation_inline_sql(
-                        inline_sql,
-                        &resolved_state,
-                        &jinja_env,
-                        &base_context,
-                        &arg.io,
-                    )
-                    .await?;
-                    let unique_id = format!(
-                        "sql_operation.{}.{INLINE_SQL_NAME}",
-                        resolved_state.root_project_name
-                    );
-                    (rendered, "Inline SQL rendered", unique_id)
-                } else {
-                    // Clap guarantees exactly one of <MACRO> or --sql is set.
-                    let macro_name = arg.macro_name.as_deref().expect(
-                        "run-operation requires <MACRO> when --sql is absent (enforced by clap)",
-                    );
-                    let result = run_operation(
-                        macro_name,
-                        &arg.macro_args,
-                        &resolved_state,
-                        &jinja_env,
-                        &base_context,
-                    )
-                    .await?;
-                    (result.to_string(), "Macro result", macro_name.to_string())
-                };
+            let rendered = if let Some(macro_name) = macro_name {
+                run_operation(
+                    macro_name,
+                    &arg.macro_args,
+                    &resolved_state,
+                    &jinja_env,
+                    &base_context,
+                )
+                .await
+                .map(|result| result.to_string())
+            } else {
+                let inline_sql = arg.macro_sql.as_deref().expect(
+                    "run-operation requires --sql when <MACRO> is absent (enforced by clap)",
+                );
+                run_operation_inline_sql(
+                    inline_sql,
+                    &resolved_state,
+                    &jinja_env,
+                    &base_context,
+                    &arg.io,
+                )
+                .await
+            };
 
-            let stat = Stat::new(stat_name, start, None, NodeStatus::Succeeded, None, 1);
+            // Log and record the failure here. Returning it would skip this result,
+            // and the caller would then mark every selected node as a compilation error.
+            let (display_text, status) = match rendered {
+                Ok(display_text) => (Some(display_text), NodeStatus::Succeeded),
+                Err(err) => {
+                    emit_error_log_from_fs_error(*err);
+                    (None, NodeStatus::Errored)
+                }
+            };
 
-            if arg.io.should_show(ShowOptions::Data) {
+            let stat = Stat::new(unique_id, start, None, status, None, 1);
+
+            if let Some(display_text) = display_text
+                && arg.io.should_show(ShowOptions::Data)
+            {
                 emit_info_event(ShowResult::new_text(display_text, "data", show_label), None);
             }
 

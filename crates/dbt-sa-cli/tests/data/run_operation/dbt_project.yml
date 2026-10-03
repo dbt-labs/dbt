@@ -1,0 +1,11 @@
+name: 'run_operation'
+
+config-version: 2
+version: '0.1'
+
+profile: 'run_operation'
+
+model-paths: ["models"]
+macro-paths: ["macros"]
+clean-targets:
+  - "target"
