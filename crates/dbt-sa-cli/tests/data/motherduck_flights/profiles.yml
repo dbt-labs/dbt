@@ -1,0 +1,12 @@
+motherduck_flights:
+  target: motherduck
+  outputs:
+    motherduck:
+      type: duckdb
+      path: "md:{{ env_var('DBT_TEST_MOTHERDUCK_DATABASE', 'my_db') }}"
+      schema: "{{ env_var('DBT_TEST_MOTHERDUCK_SCHEMA') }}"
+      threads: 1
+      flights:
+        timeout_sec: 300
+        poll_interval_sec: 1
+        log_lines: 20

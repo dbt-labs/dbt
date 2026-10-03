@@ -1120,6 +1120,47 @@ pub struct LakeComputeConfig {
     pub threads: Option<StringOrInteger>,
 }
 
+/// MotherDuck Flights configuration for remote Python model execution.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, DbtSchema)]
+#[serde(rename_all = "snake_case", default)]
+pub struct DuckDbFlightsConfig {
+    /// Submit Python models to MotherDuck Flights unless the model opts out.
+    pub enabled_by_default: bool,
+    /// Name of the MotherDuck access token injected into the Flight runtime.
+    pub access_token_name: Option<String>,
+    /// Per-run timeout enforced by MotherDuck. Zero disables the timeout; omitted
+    /// values use the plan default for new Flights and preserve it on updates.
+    pub max_runtime_sec: Option<i64>,
+    /// How long dbt waits for a Flight run before cancelling it.
+    pub timeout_sec: i64,
+    /// How often dbt polls a Flight run.
+    pub poll_interval_sec: f64,
+    /// Number of failed-run log lines to include in the dbt error.
+    pub log_lines: i64,
+    /// Override for the URL displayed for a failed Flight run.
+    pub log_url_template: Option<String>,
+    /// Requirements added to every Flight.
+    pub requirements: Option<Vec<String>>,
+    /// DuckDB Python package version installed in the Flight.
+    pub duckdb_version: Option<String>,
+}
+
+impl Default for DuckDbFlightsConfig {
+    fn default() -> Self {
+        Self {
+            enabled_by_default: false,
+            access_token_name: None,
+            max_runtime_sec: None,
+            timeout_sec: 3600,
+            poll_interval_sec: 2.0,
+            log_lines: 0,
+            log_url_template: None,
+            requirements: None,
+            duckdb_version: None,
+        }
+    }
+}
+
 /// DuckDB adapter configuration
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default, DbtSchema, Merge)]
 #[merge(strategy = merge_strategies_extend::overwrite_option)]
@@ -1162,6 +1203,9 @@ pub struct DuckDbConfig {
     /// Root path for external materializations (defaults to ".")
     #[serde(skip_serializing_if = "Option::is_none")]
     pub external_root: Option<String>,
+    /// MotherDuck Flights configuration for remote Python model execution.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub flights: Option<DuckDbFlightsConfig>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub base_url: Option<String>,
@@ -2396,6 +2440,36 @@ query_tags:
         assert_eq!(
             config.get_adapter_unique_id(),
             Some("f7935d72c5941a25cc019e2fb05ae050".to_string())
+        );
+    }
+
+    #[test]
+    fn test_duckdb_flights_config_parsing_and_defaults() {
+        let config: DbConfig = dbt_yaml::from_str(
+            r#"
+type: duckdb
+path: md:analytics
+flights:
+  enabled_by_default: true
+  access_token_name: analytics-token
+  requirements: [pandas==2.2.3]
+"#,
+        )
+        .unwrap();
+        let DbConfig::DuckDB(config) = config else {
+            panic!("expected DuckDB config");
+        };
+        let flights = config.flights.expect("flights config should be parsed");
+        assert!(flights.enabled_by_default);
+        assert_eq!(
+            flights.access_token_name.as_deref(),
+            Some("analytics-token")
+        );
+        assert_eq!(flights.timeout_sec, 3600);
+        assert_eq!(flights.poll_interval_sec, 2.0);
+        assert_eq!(
+            flights.requirements,
+            Some(vec!["pandas==2.2.3".to_string()])
         );
     }
 
