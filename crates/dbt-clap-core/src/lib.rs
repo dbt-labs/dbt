@@ -1879,15 +1879,13 @@ pub struct CommonArgs {
     pub ai_provider: Option<Vec<String>>,
 
     /// Select nodes to run
-    // has no ENV_VAR
-    #[arg(global = true, long, short = 's', value_parser = check_selector, num_args(1..), value_delimiter = ' ', group = "selector_or_select", help_heading = help_headings::SELECTION, hide_short_help = true)]
+    #[arg(global = true, long, short = 's', env = "DBT_ENGINE_SELECT", value_parser = check_selector, num_args(1..), value_delimiter = ' ', group = "selector_or_select", help_heading = help_headings::SELECTION, hide_short_help = true)]
     // This is a deprecated legacy alias for '--select'. It is not visible in the help and should be removed (eventually).
     #[clap(alias("models"), short_alias('m'))]
     pub select: Option<Vec<String>>,
 
     /// Select nodes to exclude
-    // has no ENV_VAR
-    #[arg(global = true, long, value_parser = check_selector, num_args(1..), value_delimiter = ' ', help_heading = help_headings::SELECTION, hide_short_help = true)]
+    #[arg(global = true, long, env = "DBT_ENGINE_EXCLUDE", value_parser = check_selector, num_args(1..), value_delimiter = ' ', help_heading = help_headings::SELECTION, hide_short_help = true)]
     pub exclude: Option<Vec<String>>,
 
     /// The name of the yml defined selector to use
