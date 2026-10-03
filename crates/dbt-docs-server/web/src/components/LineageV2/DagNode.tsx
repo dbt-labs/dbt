@@ -6,6 +6,7 @@ import { iconForType } from '../../lib/resourceType';
 import { isCardCompact, useLineageStore } from '../../stores/lineageStore';
 import { Tooltip } from '../ui/Tooltip';
 import { lensBadgeFor } from './lensBadges';
+import type { ResourceType } from './ResourceTypes';
 
 /** Registered node type. Nodes must carry `type: DAG_NODE_TYPE` to render as this. */
 export const DAG_NODE_TYPE = 'dagNode';
@@ -18,7 +19,7 @@ export const DAG_NODE_HEIGHT = 108;
 export type DagNodeData = {
   /** Display name — the resource's own name, not its unique_id. */
   name: string;
-  resourceType: string;
+  resourceType: ResourceType;
   /** Column count for the column-lineage chip. The chip is hidden when this is
    *  null or undefined, which is the no-column-lineage state. */
   columnCount?: number | null;

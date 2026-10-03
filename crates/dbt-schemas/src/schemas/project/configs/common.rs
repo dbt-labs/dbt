@@ -175,6 +175,9 @@ pub struct WarehouseSpecificNodeConfig {
     pub enable_list_inference: Option<bool>,
     #[warehouse(valid(Model))]
     pub storage_uri: Option<String>,
+    #[serde(default, deserialize_with = "bool_or_string_bool")]
+    #[warehouse(valid(Model, Seed, Snapshot))]
+    pub enable_change_history: Option<bool>,
 
     // Used by both Databricks and Bigquery
     #[warehouse(valid(all_nodes))]
@@ -601,6 +604,7 @@ pub fn same_warehouse_config(
         self_wh.require_partition_filter == other_wh.require_partition_filter;
     let partition_expiration_days_eq =
         self_wh.partition_expiration_days == other_wh.partition_expiration_days;
+    let enable_change_history_eq = self_wh.enable_change_history == other_wh.enable_change_history;
     let grant_access_to_eq = self_wh.grant_access_to == other_wh.grant_access_to;
     let partitions_eq = self_wh.partitions == other_wh.partitions;
     let enable_refresh_eq = self_wh.enable_refresh == other_wh.enable_refresh;
@@ -712,6 +716,7 @@ pub fn same_warehouse_config(
         && kms_key_name_eq
         && require_partition_filter_eq
         && partition_expiration_days_eq
+        && enable_change_history_eq
         && grant_access_to_eq
         && partitions_eq
         && enable_refresh_eq
@@ -885,6 +890,14 @@ pub fn same_warehouse_config(
                     Some((
                         format!("{:?}", &self_wh.partition_expiration_days),
                         format!("{:?}", &other_wh.partition_expiration_days),
+                    )),
+                ),
+                (
+                    "enable_change_history",
+                    enable_change_history_eq,
+                    Some((
+                        format!("{:?}", &self_wh.enable_change_history),
+                        format!("{:?}", &other_wh.enable_change_history),
                     )),
                 ),
                 (

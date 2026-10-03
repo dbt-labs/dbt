@@ -185,7 +185,9 @@ pub(crate) fn get_table_options_value(
             );
         }
 
-        opts.extend(iceberg_table_options(&catalog_relation)?);
+        if catalog_relation.table_format.is_iceberg() {
+            opts.extend(iceberg_table_options(&catalog_relation)?);
+        }
     }
 
     // Partition expiration applies only to the final table.
@@ -197,43 +199,54 @@ pub(crate) fn get_table_options_value(
         opts.insert("partition_expiration_days".to_string(), Value::from(days));
     }
 
+    if !temporary && let Some(enabled) = config.__warehouse_specific_config__.enable_change_history
+    {
+        opts.insert("enable_change_history".to_string(), Value::from(enabled));
+    }
+
     Ok(opts)
 }
 
+/// Precondition: table format is iceberg. `lakehouse_catalog` is None-overloaded
+/// and can misrepresent mismatched adapter type as real semantics otherwise.
 fn iceberg_table_options(
     catalog_relation: &CatalogRelation,
 ) -> AdapterResult<IndexMap<String, Value>> {
     let mut opts = IndexMap::new();
-    if catalog_relation.table_format.is_iceberg() && catalog_relation.lakehouse_catalog.is_none() {
-        opts.insert(
-            "table_format".to_string(),
-            Value::from(format!("'{}'", catalog_relation.table_format.as_str())),
-        );
 
-        let file_format = catalog_relation.file_format.as_deref().ok_or_else(|| {
-            AdapterError::new(
-                AdapterErrorKind::Internal,
-                "file_format is not set in catalog",
-            )
-        })?;
-        opts.insert(
-            "file_format".to_string(),
-            Value::from(format!("'{file_format}'")),
-        );
+    match catalog_relation.lakehouse_catalog() {
+        Some(_) => {}
+        None => {
+            opts.insert(
+                "table_format".to_string(),
+                Value::from(format!("'{}'", catalog_relation.table_format.as_str())),
+            );
 
-        let storage_uri = catalog_relation
-            .adapter_properties
-            .get("storage_uri")
-            .ok_or_else(|| {
+            let file_format = catalog_relation.file_format.as_deref().ok_or_else(|| {
                 AdapterError::new(
                     AdapterErrorKind::Internal,
-                    "storage_uri is not set in catalog",
+                    "file_format is not set in catalog",
                 )
             })?;
-        opts.insert(
-            "storage_uri".to_string(),
-            Value::from(format!("'{storage_uri}'")),
-        );
+            opts.insert(
+                "file_format".to_string(),
+                Value::from(format!("'{file_format}'")),
+            );
+
+            let storage_uri = catalog_relation
+                .adapter_properties
+                .get("storage_uri")
+                .ok_or_else(|| {
+                    AdapterError::new(
+                        AdapterErrorKind::Internal,
+                        "storage_uri is not set in catalog",
+                    )
+                })?;
+            opts.insert(
+                "storage_uri".to_string(),
+                Value::from(format!("'{storage_uri}'")),
+            );
+        }
     }
 
     Ok(opts)
@@ -242,7 +255,7 @@ fn iceberg_table_options(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use dbt_schemas::schemas::dbt_catalogs_v2::CatalogType;
+    use dbt_schemas::schemas::dbt_catalogs::CatalogType;
     use dbt_schemas::schemas::relations::base::TableFormat;
     use dbt_schemas::schemas::serde::StringOrInteger;
     use std::collections::BTreeMap;
@@ -332,13 +345,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn iceberg_options_empty_for_non_iceberg_catalog() {
-        let mut catalog_relation = biglake_catalog_relation();
-        catalog_relation.table_format = TableFormat::Default;
-        assert!(iceberg_table_options(&catalog_relation).unwrap().is_empty());
-    }
-
     fn table_options_with_partition_expiration(temporary: bool) -> IndexMap<String, Value> {
         let env = minijinja::Environment::new();
         let state = env.empty_state();
@@ -369,6 +375,29 @@ mod tests {
                 "TIMESTAMP_ADD(CURRENT_TIMESTAMP(), INTERVAL 12 hour)"
             ))
         );
+    }
+
+    #[test]
+    fn enable_change_history_is_emitted_only_for_final_tables() {
+        let env = minijinja::Environment::new();
+        let state = env.empty_state();
+        let node = InternalDbtNodeWrapper::Model(Box::default());
+        let options = |enabled: bool, temporary: bool| {
+            let mut config = ModelConfig::default();
+            config.__warehouse_specific_config__.enable_change_history = Some(enabled);
+            get_table_options_value(&state, config, &node, temporary, AdapterType::Bigquery)
+                .unwrap()
+        };
+
+        assert_eq!(
+            options(true, false).get("enable_change_history"),
+            Some(&Value::from(true))
+        );
+        assert_eq!(
+            options(false, false).get("enable_change_history"),
+            Some(&Value::from(false))
+        );
+        assert_eq!(options(true, true).get("enable_change_history"), None);
     }
 
     #[test]

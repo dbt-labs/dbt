@@ -7,8 +7,8 @@ use dbt_jinja_utils::serde::value_from_file;
 use dbt_schemas::schemas::{
     manifest::DbtSelector,
     selectors::{
-        AtomExpr, CompositeExpr, MethodAtomExpr, SelectorDefaultSpec, SelectorDefinitionValue,
-        SelectorEntry, SelectorExpr, SelectorFile, SelectorMethodValue,
+        AtomExpr, CompositeExpr, MethodAtomExpr, SelectorDefinitionValue, SelectorEntry,
+        SelectorExpr, SelectorFile, SelectorMethodValue,
     },
 };
 use dbt_selector_parser::{ResolvedSelector, SelectorParser};
@@ -25,7 +25,7 @@ pub fn resolve_selectors_from_yaml(
     jinja_env: &JinjaEnv,
 ) -> FsResult<HashMap<String, SelectorEntry>> {
     match load_and_parse_selectors_file(arg, root_package_name, jinja_env)? {
-        Some(yaml) => resolve_selector_definitions(yaml, arg, jinja_env, root_package_name),
+        Some(yaml) => resolve_selector_definitions(yaml),
         None => Ok(HashMap::new()), // No selectors.yml file found
     }
 }
@@ -192,12 +192,7 @@ fn load_and_parse_selectors_file(
 
 /// Parses and resolves selector definitions from a YAML file.
 /// Returns a map of selector names to their resolved entries.
-fn resolve_selector_definitions(
-    yaml: SelectorFile,
-    arg: &ResolveArgs,
-    jinja_env: &JinjaEnv,
-    root_package_name: &str,
-) -> FsResult<HashMap<String, SelectorEntry>> {
+fn resolve_selector_definitions(yaml: SelectorFile) -> FsResult<HashMap<String, SelectorEntry>> {
     let defs = yaml
         .selectors
         .iter()
@@ -206,21 +201,9 @@ fn resolve_selector_definitions(
     let parser = SelectorParser::new(defs);
     let mut resolved_selectors = HashMap::new();
 
-    // The selector `default:` expression is only consulted when the user
-    // did not supply a CLI selection. Skipping Jinja rendering in that
-    // case mirrors dbt-core and keeps unused selectors from failing a
-    // run with broken Jinja (see `SelectorDefinition::default` docs).
-    let default_needed = arg.selector.is_none() && arg.select.is_none() && arg.exclude.is_none();
-
     for def in yaml.selectors {
         let resolved = parser.parse_definition(&def.definition)?;
-        let is_default = match def.default.0 {
-            Some(SelectorDefaultSpec::Bool(b)) => b,
-            Some(SelectorDefaultSpec::Template(tmpl)) if default_needed => {
-                render_default_template(&tmpl, jinja_env, root_package_name)?
-            }
-            _ => false,
-        };
+        let is_default = def.default.unwrap_or(false);
         resolved_selectors.insert(
             def.name.clone(),
             SelectorEntry {
@@ -233,42 +216,6 @@ fn resolve_selector_definitions(
     }
 
     Ok(resolved_selectors)
-}
-
-/// Render a selector `default:` Jinja template against the resolve
-/// context and coerce the result to a bool using dbt's `as_bool`-style
-/// truthiness rules.
-fn render_default_template(
-    template: &str,
-    jinja_env: &JinjaEnv,
-    root_package_name: &str,
-) -> FsResult<bool> {
-    let namespace_keys: Vec<String> = jinja_env
-        .env
-        .get_macro_namespace_registry()
-        .map(|r| r.keys().map(|k| k.to_string()).collect())
-        .unwrap_or_default();
-    let context = build_resolve_context(
-        root_package_name,
-        root_package_name,
-        &BTreeMap::new(),
-        DISPATCH_CONFIG.get().unwrap().read().unwrap().clone(),
-        namespace_keys,
-        None,
-    );
-    let rendered = jinja_env.render_str(template, &context, &[]).map_err(|e| {
-        fs_err!(
-            ErrorCode::SelectorError,
-            "Error parsing selectors.yml: failed to evaluate `default` expression: {}",
-            e
-        )
-    })?;
-    let trimmed = rendered.trim();
-    Ok(match trimmed.to_ascii_lowercase().as_str() {
-        "" | "false" | "0" | "none" => false,
-        "true" | "1" => true,
-        _ => !trimmed.is_empty(),
-    })
 }
 
 fn selector_definition_to_yaml(def: &SelectorDefinitionValue) -> FsResult<YmlValue> {
@@ -366,7 +313,7 @@ fn selector_atom_to_yaml(atom: &AtomExpr) -> FsResult<YmlValue> {
 fn method_atom_to_yaml(expr: &MethodAtomExpr) -> YmlValue {
     let mut value = method_value_to_yaml(&expr.method, selector_value_to_yaml(&expr.value));
     if let YmlValue::Mapping(map, _) = &mut value {
-        if expr.parents.as_bool() || expr.parents_depth.is_some() {
+        if expr.parents || expr.parents_depth.is_some() {
             map.insert(
                 YmlValue::String("parents".to_string(), Default::default()),
                 YmlValue::Bool(true, Default::default()),
@@ -378,7 +325,7 @@ fn method_atom_to_yaml(expr: &MethodAtomExpr) -> YmlValue {
                 YmlValue::String(depth.to_string(), Default::default()),
             );
         }
-        if expr.children.as_bool() || expr.children_depth.is_some() {
+        if expr.children || expr.children_depth.is_some() {
             map.insert(
                 YmlValue::String("children".to_string(), Default::default()),
                 YmlValue::Bool(true, Default::default()),
@@ -390,7 +337,7 @@ fn method_atom_to_yaml(expr: &MethodAtomExpr) -> YmlValue {
                 YmlValue::String(depth.to_string(), Default::default()),
             );
         }
-        if expr.childrens_parents.as_bool() {
+        if expr.childrens_parents {
             map.insert(
                 YmlValue::String("childrens_parents".to_string(), Default::default()),
                 YmlValue::Bool(true, Default::default()),
@@ -554,8 +501,8 @@ mod tests {
     use super::*;
     use dbt_common::node_selector::{MethodName, SelectionCriteria};
     use dbt_schemas::schemas::selectors::{
-        AtomExpr, CompositeExpr, ExcludeAtomExpr, MethodAtomExpr, SelectorDefaultSpec,
-        SelectorDefinitionValue, SelectorExpr, SelectorValue,
+        AtomExpr, CompositeExpr, ExcludeAtomExpr, MethodAtomExpr, SelectorDefinitionValue,
+        SelectorExpr, SelectorValue,
     };
 
     fn atom(method: MethodName, value: &str) -> SelectExpression {
@@ -740,9 +687,9 @@ selectors:
             SelectorDefinitionValue::Full(SelectorExpr::Atom(AtomExpr::Method(MethodAtomExpr {
                 method: "config.materialized".to_string(),
                 value: SelectorValue::from("table").into(),
-                childrens_parents: SelectorDefaultSpec::from(false),
-                parents: SelectorDefaultSpec::from(false),
-                children: SelectorDefaultSpec::from(false),
+                childrens_parents: false,
+                parents: false,
+                children: false,
                 parents_depth: None,
                 children_depth: None,
                 indirect_selection: Some(dbt_common::node_selector::IndirectSelection::default()),

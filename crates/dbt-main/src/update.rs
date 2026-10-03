@@ -30,7 +30,7 @@ use futures::StreamExt;
 use dbt_common::FsResult;
 use dbt_dist::version::{VersionsHttpClient, cdn_base_url, resolve_target_version};
 use std::future::Future;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 // ---------------------------------------------------------------------------
 // Retry policy for CDN fetches
@@ -141,10 +141,118 @@ pub trait UpdateHttpClient: VersionsHttpClient {
 /// Production implementation backed by `reqwest`.
 pub struct ReqwestUpdateClient;
 
+fn validate_versions_manifest(text: &str) -> Result<(), dbt_artifact_download::DownloadError> {
+    use dbt_artifact_download::DownloadError;
+    let manifest: serde_json::Map<String, serde_json::Value> =
+        serde_json::from_str(text).map_err(|_| DownloadError("invalid_manifest"))?;
+    if !manifest.contains_key("latest") {
+        return Err(DownloadError("invalid_manifest"));
+    }
+    for release in manifest.values() {
+        let tag = release
+            .get("tag")
+            .and_then(|tag| tag.as_str())
+            .ok_or(DownloadError("invalid_manifest"))?
+            .trim_start_matches('v');
+        // A tag must stay within the artifact filename, including for aliases.
+        if !tag.starts_with(|c: char| c.is_ascii_digit())
+            || !tag
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b".+-".contains(&b))
+        {
+            return Err(DownloadError("invalid_manifest"));
+        }
+    }
+    Ok(())
+}
+
 #[async_trait]
 impl VersionsHttpClient for ReqwestUpdateClient {
     async fn get_text(&self, url: &str) -> FsResult<String> {
-        fetch_with_retries(
+        let private = dbt_artifact_download::fetch(url).await;
+        let from_s3 = private.is_some();
+        let text = if let Some(result) = private {
+            let bytes = result.map_err(|error| fs_err!(ErrorCode::IoError, "{error}"))?;
+            String::from_utf8(bytes).map_err(|_| {
+                let error = dbt_artifact_download::DownloadError("invalid_text");
+                tracing::warn!(
+                    source = "s3",
+                    reason = error.0,
+                    "artifact_validation_failed source=s3 reason={:?}",
+                    error.0
+                );
+                fs_err!(ErrorCode::IoError, "{error}")
+            })?
+        } else {
+            self.get_public_text(url).await?
+        };
+        if url.ends_with("/versions.json") {
+            validate_versions_manifest(&text).map_err(|error| {
+                let source = if from_s3 { "s3" } else { "cloudfront" };
+                tracing::warn!(
+                    source,
+                    reason = error.0,
+                    "artifact_validation_failed source={source} reason={:?}",
+                    error.0
+                );
+                if from_s3 {
+                    fs_err!(ErrorCode::IoError, "{error}")
+                } else {
+                    fs_err!(ErrorCode::IoError, "Invalid versions manifest: {}", error.0)
+                }
+            })?;
+        }
+        Ok(text)
+    }
+}
+
+#[async_trait]
+impl UpdateHttpClient for ReqwestUpdateClient {
+    async fn get_bytes(&self, url: &str) -> FsResult<Vec<u8>> {
+        let private = dbt_artifact_download::fetch(url).await;
+        let from_s3 = private.is_some();
+        let bytes = match private {
+            Some(result) => result.map_err(|error| fs_err!(ErrorCode::IoError, "{error}"))?,
+            None => self.get_public_bytes(url).await?,
+        };
+        if url.ends_with(".tar.gz") {
+            let checksum = self
+                .get_text(&format!("{url}.sha256"))
+                .await
+                .map_err(|error| {
+                    // Only a missing archive means the runner is unavailable.
+                    fs_err!(
+                        ErrorCode::IoError,
+                        "Failed to fetch archive checksum: {error}"
+                    )
+                })?;
+            dbt_artifact_download::verify_checksum(&bytes, &checksum).map_err(|error| {
+                let source = if from_s3 { "s3" } else { "cloudfront" };
+                tracing::warn!(
+                    source,
+                    reason = error.0,
+                    "artifact_validation_failed source={source} reason={:?}",
+                    error.0
+                );
+                if from_s3 {
+                    fs_err!(ErrorCode::IoError, "{error}")
+                } else {
+                    fs_err!(
+                        ErrorCode::IoError,
+                        "Archive verification failed: {}",
+                        error.0
+                    )
+                }
+            })?;
+        }
+        Ok(bytes)
+    }
+}
+
+impl ReqwestUpdateClient {
+    async fn get_public_text(&self, url: &str) -> FsResult<String> {
+        let started = Instant::now();
+        let result = fetch_with_retries(
             url,
             CDN_MAX_ATTEMPTS,
             CDN_BACKOFF_INITIAL,
@@ -174,14 +282,20 @@ impl VersionsHttpClient for ReqwestUpdateClient {
                 })
             },
         )
-        .await
+        .await;
+        dbt_artifact_download::record_download(
+            url,
+            "cloudfront",
+            started.elapsed(),
+            result.as_ref().map_or(0, |text| text.len()),
+            result.as_ref().err().map(|_| "http"),
+        );
+        result
     }
-}
 
-#[async_trait]
-impl UpdateHttpClient for ReqwestUpdateClient {
-    async fn get_bytes(&self, url: &str) -> FsResult<Vec<u8>> {
-        fetch_with_retries(
+    async fn get_public_bytes(&self, url: &str) -> FsResult<Vec<u8>> {
+        let started = Instant::now();
+        let result = fetch_with_retries(
             url,
             CDN_MAX_ATTEMPTS,
             CDN_BACKOFF_INITIAL,
@@ -211,7 +325,15 @@ impl UpdateHttpClient for ReqwestUpdateClient {
                 })
             },
         )
-        .await
+        .await;
+        dbt_artifact_download::record_download(
+            url,
+            "cloudfront",
+            started.elapsed(),
+            result.as_ref().map_or(0, |bytes| bytes.len()),
+            result.as_ref().err().map(|_| "http"),
+        );
+        result
     }
 }
 
@@ -489,6 +611,7 @@ pub async fn exec_update_native(
 
     if install_dbt {
         let runner_path = dest_dir.join("dbt-db-runner");
+        let mut remove_unavailable_runner = false;
         if (package == "all" || runner_path.exists())
             && let Err(error) =
                 update_package_if_needed("dbt-db-runner", &target_version, target, dest_dir, client)
@@ -497,20 +620,21 @@ pub async fn exec_update_native(
             if error.code != ErrorCode::FileNotFound {
                 return Err(error);
             }
-            if runner_path.exists() {
-                std::fs::remove_file(&runner_path).map_err(|remove_error| {
-                    fs_err!(
-                        ErrorCode::IoError,
-                        "Failed to remove unavailable dbt-db-runner at {}: {remove_error}",
-                        runner_path.display()
-                    )
-                })?;
-            }
+            remove_unavailable_runner = runner_path.exists();
             println(format!(
                 "dbt-db-runner is not available for version {target_version}; installing dbt without it."
             ));
         }
         update_package_if_needed("dbt", &target_version, target, dest_dir, client).await?;
+        if remove_unavailable_runner {
+            std::fs::remove_file(&runner_path).map_err(|remove_error| {
+                fs_err!(
+                    ErrorCode::IoError,
+                    "Failed to remove unavailable dbt-db-runner at {}: {remove_error}",
+                    runner_path.display()
+                )
+            })?;
+        }
     }
 
     Ok(())
@@ -803,6 +927,107 @@ mod tests {
     use dbt_common::{ErrorCode, FsResult, err};
     use std::collections::HashMap;
     use std::sync::Mutex;
+
+    #[test]
+    fn versions_manifest_validation_is_shared() {
+        for manifest in [
+            "invalid json",
+            "[]",
+            "{}",
+            r#"{"latest":{"tag":""}}"#,
+            r#"{"latest":{"tag":"v2.0.5"},"canary":{"tag":42}}"#,
+            r#"{"latest":{"tag":"v2.0.5/../../other"}}"#,
+        ] {
+            let error = validate_versions_manifest(manifest).unwrap_err();
+            assert_eq!(error.0, "invalid_manifest");
+            assert!(error.to_string().starts_with("DBT_ARTIFACT_SOURCE_FAILED:"));
+        }
+        let manifest = r#"{"latest":{"tag":"v2.0.5"},"canary":{"tag":"v2.0.6-dev.1+build"}}"#;
+        assert!(validate_versions_manifest(manifest).is_ok());
+    }
+
+    #[dbt_runtime::test]
+    async fn public_versions_manifest_uses_shared_validation() {
+        use std::io::{Read, Write};
+
+        let server = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/versions.json", server.local_addr().unwrap());
+        let serving = std::thread::spawn(move || {
+            let (mut stream, _) = server.accept().unwrap();
+            stream.set_read_timeout(Some(TEST_TIMEOUT)).unwrap();
+            let mut request = [0; 4096];
+            let size = stream.read(&mut request).unwrap();
+            assert!(
+                std::str::from_utf8(&request[..size])
+                    .unwrap()
+                    .starts_with("GET /versions.json HTTP/1.1\r\n")
+            );
+            let body = r#"{"latest":{"tag":"v2.0.5/../../other"}}"#;
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            )
+            .unwrap();
+        });
+
+        let error = ReqwestUpdateClient.get_text(&url).await.unwrap_err();
+        serving.join().unwrap();
+        assert_eq!(error.code, ErrorCode::IoError);
+        assert!(error.to_string().contains("Invalid versions manifest"));
+        assert!(!error.to_string().contains("DBT_ARTIFACT_SOURCE_FAILED"));
+    }
+
+    #[dbt_runtime::test]
+    async fn missing_archive_and_checksum_have_distinct_errors() {
+        use std::io::{Read, Write};
+
+        for archive_missing in [false, true] {
+            let server = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let url = format!("http://{}/runner.tar.gz", server.local_addr().unwrap());
+            let serving = std::thread::spawn(move || {
+                let responses = if archive_missing {
+                    vec![("/runner.tar.gz", "404 Not Found", "")]
+                } else {
+                    vec![
+                        ("/runner.tar.gz", "200 OK", "archive"),
+                        ("/runner.tar.gz.sha256", "404 Not Found", ""),
+                    ]
+                };
+                for (path, status, body) in responses {
+                    let (mut stream, _) = server.accept().unwrap();
+                    stream.set_read_timeout(Some(TEST_TIMEOUT)).unwrap();
+                    let mut request = [0; 4096];
+                    let size = stream.read(&mut request).unwrap();
+                    assert!(
+                        std::str::from_utf8(&request[..size])
+                            .unwrap()
+                            .starts_with(&format!("GET {path} HTTP/1.1\r\n"))
+                    );
+                    write!(
+                        stream,
+                        "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    )
+                    .unwrap();
+                }
+            });
+
+            let error = ReqwestUpdateClient.get_bytes(&url).await.unwrap_err();
+            serving.join().unwrap();
+            if archive_missing {
+                assert_eq!(error.code, ErrorCode::FileNotFound);
+            } else {
+                assert_eq!(error.code, ErrorCode::IoError);
+                assert!(
+                    error
+                        .to_string()
+                        .contains("Failed to fetch archive checksum")
+                );
+                assert!(error.to_string().contains("runner.tar.gz.sha256"));
+            }
+        }
+    }
 
     struct MockHttpClient {
         responses: HashMap<String, Vec<u8>>,
@@ -1120,6 +1345,39 @@ mod tests {
 
         assert!(result.is_err());
         assert_eq!(std::fs::read(runner_path).unwrap(), b"existing-runner");
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[dbt_runtime::test]
+    async fn test_native_update_preserves_runner_when_dbt_is_unavailable() {
+        let version = "2.0.0-preview.194";
+        let target = current_target_triple().unwrap();
+        let base = cdn_base_url();
+        let versions_url = format!("{base}/versions.json");
+        let runner_url = format!("{base}/cli/fs-db-runner-v{version}-{target}.tar.gz");
+        let dbt_url = format!("{base}/cli/fs-v{version}-{target}.tar.gz");
+        let manifest = serde_json::to_string(&test_versions_json()).unwrap();
+
+        let client = MockHttpClient::new()
+            .with_text(&versions_url, &manifest)
+            .with_error(&runner_url, ErrorCode::FileNotFound)
+            .with_error(&dbt_url, ErrorCode::FileNotFound);
+
+        let tmp = tempfile::tempdir().unwrap();
+        let runner_path = tmp.path().join("dbt-db-runner");
+        let dbt_path = tmp.path().join("dbt");
+        std::fs::write(&runner_path, b"existing-runner").unwrap();
+        std::fs::write(&dbt_path, b"existing-dbt").unwrap();
+
+        let result = exec_update_native(Some(version), Some("dbt"), tmp.path(), &client).await;
+
+        assert!(result.is_err());
+        assert_eq!(std::fs::read(runner_path).unwrap(), b"existing-runner");
+        assert_eq!(std::fs::read(dbt_path).unwrap(), b"existing-dbt");
+        assert_eq!(
+            client.requested_urls(),
+            vec![versions_url, runner_url, dbt_url]
+        );
     }
 
     fn dist_info_for_test(

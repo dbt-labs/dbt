@@ -85,6 +85,11 @@ impl TimeMachine {
 pub struct ReplayCallError {
     pub message: String,
     pub recorded_error: Option<String>,
+    /// True when this error is specifically a recorded-vs-requested method name
+    /// mismatch (strict-mode metadata replay), as opposed to any other replay
+    /// failure. Callers use this to identify recordings made before an event was
+    /// split or renamed, without depending on `message`'s wording.
+    pub is_method_mismatch: bool,
 }
 
 impl std::fmt::Display for ReplayCallError {
@@ -198,6 +203,7 @@ impl EventReplayer {
                                 call_category, method, node_id
                             ),
                             recorded_error: None,
+                            is_method_mismatch: false,
                         })?
                 } else {
                     self.get_result_strict(node_id, method, &serialized_args, call_category)?
@@ -255,6 +261,7 @@ impl EventReplayer {
                     method, node_id, event.seq, mismatch,
                 ),
                 recorded_error: None,
+                is_method_mismatch: false,
             }),
         }
     }
@@ -275,6 +282,7 @@ impl EventReplayer {
                     call_category, node_id
                 ),
                 recorded_error: None,
+                is_method_mismatch: false,
             });
         }
 
@@ -311,6 +319,7 @@ impl EventReplayer {
                         call_category, method, node_id, context
                     ),
                     recorded_error: None,
+                    is_method_mismatch: false,
                 }
             })
     }
@@ -321,6 +330,7 @@ impl EventReplayer {
             return Err(ReplayCallError {
                 message: "Recorded call failed".to_string(),
                 recorded_error: event.error.clone(),
+                is_method_mismatch: false,
             });
         }
 
@@ -411,6 +421,7 @@ impl EventReplayer {
                     caller_id, event.method, method, event.seq
                 ),
                 recorded_error: None,
+                is_method_mismatch: true,
             }));
         }
 
@@ -458,6 +469,7 @@ impl EventReplayer {
                         category, method, caller_id, context
                     ),
                     recorded_error: None,
+                    is_method_mismatch: false,
                 }))
             }
         }
@@ -472,6 +484,7 @@ impl EventReplayer {
             return Some(Err(ReplayCallError {
                 message: "Recorded metadata call failed".to_string(),
                 recorded_error: event.error.clone(),
+                is_method_mismatch: false,
             }));
         }
 
@@ -534,6 +547,7 @@ impl EventReplayer {
                     event.error.as_deref().unwrap_or("unknown error")
                 ),
                 recorded_error: event.error.clone(),
+                is_method_mismatch: false,
             }));
         }
 
@@ -543,6 +557,7 @@ impl EventReplayer {
                 message: "Failed to decode recorded Arrow IPC data for run_remote_adhoc"
                     .to_string(),
                 recorded_error: None,
+                is_method_mismatch: false,
             })),
         }
     }

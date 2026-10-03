@@ -3,7 +3,7 @@ use dbt_common::{ErrorCode, FsError, FsResult, fs_err};
 use dbt_schemas::dbt_types::RelationType;
 use dbt_schemas::filter::RunFilter;
 use dbt_schemas::schemas::common::{DbtQuoting, ResolvedQuoting};
-use dbt_schemas::schemas::dbt_catalogs_v2::CatalogType;
+use dbt_schemas::schemas::dbt_catalogs::CatalogType;
 use dbt_schemas::schemas::relations::base::BaseRelation;
 use dbt_schemas::schemas::serde::minijinja_value_to_typed_struct;
 use dbt_schemas::schemas::{DbtSource, InternalDbtNodeAttributes, InternalDbtNodeWrapper};
@@ -726,7 +726,7 @@ fn duckdb_local_filesystem_root(source: &DbtSource) -> Option<String> {
         .catalog_name
         .as_deref()?;
     let catalogs = crate::load_catalogs::fetch_catalogs()?;
-    let view = catalogs.view_v2().ok()?;
+    let view = catalogs.view().ok()?;
     let catalog = view
         .catalogs
         .iter()

@@ -4,6 +4,7 @@ import {
   applyNodeChanges,
   type Edge,
   type Node as ReactFlowNode,
+  type NodeChange,
   type OnConnect,
   type OnEdgesChange,
   type OnNodesChange,
@@ -12,6 +13,12 @@ import { create } from 'zustand';
 import { devtools } from 'zustand/middleware';
 import { useShallow } from 'zustand/react/shallow';
 
+import type { DagNodeData } from '../components/LineageV2/DagNode';
+import {
+  alwaysVisibleResourceTypes,
+  DEFAULT_VISIBLE_RESOURCE_TYPES,
+  type ResourceType,
+} from '../components/LineageV2/ResourceTypes';
 import {
   allMeasured,
   applyDagreLayout,
@@ -85,8 +92,11 @@ export type LineageState = {
   status: LineageStatus;
   error: Error | null;
 
-  /** Ids of the selected nodes, maintained by `onNodesChange`. Subscribe to this
-   *  instead of filtering `nodes` — see the note above. */
+  /** Ids of the nodes the DAG shows; every other node in the graph is `hidden`. Starts
+   *  as every node the resource-type filter lets through, and follows the filter from
+   *  there. Any change to it lays the graph out again, and BaseDag re-fits the viewport
+   *  to it. Not React Flow's click selection -- that stays on each node's `selected`
+   *  flag. Subscribe to this instead of filtering `nodes` — see the note above. */
   selectedNodeIds: string[];
 
   /** Level-of-detail: true below the zoom threshold, where individual node cards
@@ -102,6 +112,11 @@ export type LineageState = {
    *  badge. See lib/lensBadges for the label→badge mapping. */
   activeLens: string;
 
+  /** Which resource types the resource-type menu has switched on. Replaced, never
+   *  mutated, by `setResourceTypesVisible`. Always includes models and the root's own
+   *  type (`alwaysVisibleResourceTypes`), whatever the menu asks for. */
+  visibleResourceTypes: Set<ResourceType>;
+
   // ---- React Flow handlers, wired straight into <ReactFlow> ----
   onNodesChange: OnNodesChange;
   onEdgesChange: OnEdgesChange;
@@ -112,6 +127,13 @@ export type LineageState = {
   setEdges: (edges: Edge[]) => void;
   setCompact: (isCompact: boolean) => void;
   setActiveLens: (lens: string) => void;
+  /** Show exactly `resourceTypes` -- plus models and the root's own type, which can't
+   *  be switched off -- and hide every other type, by narrowing or widening
+   *  `selectedNodeIds` to the nodes of those types. */
+  setResourceTypesVisible: (resourceTypes: Set<ResourceType>) => void;
+  /** Show exactly the nodes in `ids` and hide the rest, laying the graph out again
+   *  around them. A no-op when `ids` already is the selection, in any order. */
+  setSelectedNodeIds: (ids: string[]) => void;
   /** Mark a fetch as in flight, and record the root and hop depths it is for.
    *  Clears the graph when the root changes, so a stale graph never shows under a
    *  new root; a depth change keeps it, since a different hop count is still a view
@@ -150,19 +172,114 @@ const initialState = {
   selectedNodeIds: EMPTY_SELECTION,
   isCompact: false,
   activeLens: 'Default',
+  visibleResourceTypes: new Set(DEFAULT_VISIBLE_RESOURCE_TYPES),
 };
 
+/** Same ids, in any order -- the selection is a set, the array is just how it's held. */
 function sameIds(a: string[], b: string[]): boolean {
-  return a.length === b.length && a.every((id, i) => id === b[i]);
+  if (a.length !== b.length) return false;
+  const ids = new Set(a);
+  return b.every((id) => ids.has(id));
 }
 
-/** Recompute the selection, reusing the previous array when it hasn't changed. A new
- *  array on every drag frame would defeat the point of holding selection separately —
- *  `useShallow` compares members, but a subscriber to `selectedNodeIds` alone compares
- *  by reference. */
-function nextSelection(nodes: ReactFlowNode[], previous: string[]): string[] {
-  const ids = nodes.filter((n) => n.selected).map((n) => n.id);
-  return sameIds(previous, ids) ? previous : ids;
+/** `types` with models and the root's own type switched on, reusing `types` itself
+ *  when they already are. */
+function withAlwaysVisible(
+  types: Set<ResourceType>,
+  rootUniqueId: string | null,
+): Set<ResourceType> {
+  const always = alwaysVisibleResourceTypes(rootUniqueId);
+  return always.isSubsetOf(types) ? types : types.union(always);
+}
+
+/** True when the node has a resource type and it isn't one of the visible ones. */
+function isResourceTypeHidden(
+  node: ReactFlowNode,
+  visibleResourceTypes: Set<ResourceType>,
+): boolean {
+  const { resourceType } = node.data as Partial<DagNodeData>;
+  return resourceType != null && !visibleResourceTypes.has(resourceType);
+}
+
+/** The ids of the nodes the resource-type filter lets through, in graph order. */
+function selectionFor(
+  nodes: ReactFlowNode[],
+  visibleResourceTypes: Set<ResourceType>,
+): string[] {
+  return nodes
+    .filter((node) => !isResourceTypeHidden(node, visibleResourceTypes))
+    .map((node) => node.id);
+}
+
+/**
+ * Show exactly the selected nodes: set React Flow's `hidden` on every other node, clear
+ * it on the selected ones, and hide the edges that lose an end. The edges are hidden
+ * explicitly rather than left to React Flow, which only drops an edge once its hidden
+ * end has lost its handle bounds. A node it hides is deselected on the canvas too, so
+ * zoom-to-selection never frames a card that isn't there.
+ *
+ * Only for a graph that is already laid out: a `hidden` node is never measured, so
+ * hiding one before the layout would stall it (see `hideForMeasurement`).
+ */
+function showOnly(
+  nodes: ReactFlowNode[],
+  edges: Edge[],
+  selectedNodeIds: string[],
+): { nodes: ReactFlowNode[]; edges: Edge[] } {
+  const selected = new Set(selectedNodeIds);
+  return {
+    nodes: nodes.map((node) => {
+      const hidden = !selected.has(node.id);
+      if ((node.hidden ?? false) === hidden) return node;
+      return hidden ? { ...node, hidden, selected: false } : { ...node, hidden };
+    }),
+    edges: edges.map((edge) => {
+      const hidden = !selected.has(edge.source) || !selected.has(edge.target);
+      return (edge.hidden ?? false) === hidden ? edge : { ...edge, hidden };
+    }),
+  };
+}
+
+/**
+ * The state change that makes `ids` the selection: every other node hidden, and the
+ * graph laid out again so the rest close up over the gaps. `null` when `ids` already
+ * is the selection, so `selectedNodeIds` keeps its identity and nothing subscribed to
+ * it wakes. Every change to the selection of a graph already in the store comes
+ * through here, which is what keeps the canvas showing exactly the selection.
+ *
+ * Before the layout this only records `ids`: the cards are still being measured, and
+ * `layoutMeasured` applies the selection once they have been. A hidden card keeps the
+ * size it was measured at, so selecting it again can lay it out straight away.
+ */
+function selectionChange(
+  state: LineageState,
+  ids: string[],
+): Partial<LineageState> | null {
+  if (sameIds(state.selectedNodeIds, ids)) return null;
+  if (!state.isLaidOut) return { selectedNodeIds: ids };
+  const shown = showOnly(state.nodes, state.edges, ids);
+  return {
+    selectedNodeIds: ids,
+    nodes: applyDagreLayout(shown.nodes, shown.edges, state.layout, state.rootUniqueId),
+    edges: shown.edges,
+  };
+}
+
+/**
+ * Drop the sizes React Flow measures off cards collapsed to their badge. `measured` is
+ * what dagre lays the graph out on, and the layout is for the full card -- the badge
+ * expands back into one as soon as the viewport zooms in, so a graph spaced for badges
+ * comes back with its cards on top of each other. Every card is measured full size
+ * before the first layout (`isCardCompact` is false until then) and keeps that size
+ * here until it is drawn full size again. The selected card never collapses (see
+ * DagNode), so its measurements always count.
+ */
+function withoutBadgeSizes(changes: NodeChange[], state: LineageState): NodeChange[] {
+  if (!isCardCompact(state)) return changes;
+  const selected = new Set(state.nodes.filter((n) => n.selected).map((n) => n.id));
+  return changes.filter(
+    (change) => change.type !== 'dimensions' || selected.has(change.id),
+  );
 }
 
 /**
@@ -183,9 +300,10 @@ export const useLineageStore = create<LineageState>()(
       ...initialState,
 
       onNodesChange: (changes) => {
-        const nodes = applyNodeChanges(changes, get().nodes);
+        // Clicks, drags and measurements only. None of them changes which nodes the
+        // DAG shows, so `selectedNodeIds` is left alone.
         set(
-          { nodes, selectedNodeIds: nextSelection(nodes, get().selectedNodeIds) },
+          { nodes: applyNodeChanges(withoutBadgeSizes(changes, get()), get().nodes) },
           false,
           'lineage/onNodesChange',
         );
@@ -204,11 +322,7 @@ export const useLineageStore = create<LineageState>()(
       },
 
       setNodes: (nodes) => {
-        set(
-          { nodes, selectedNodeIds: nextSelection(nodes, get().selectedNodeIds) },
-          false,
-          'lineage/setNodes',
-        );
+        set({ nodes }, false, 'lineage/setNodes');
       },
 
       setEdges: (edges) => {
@@ -228,11 +342,44 @@ export const useLineageStore = create<LineageState>()(
         set({ activeLens: lens }, false, 'lineage/setActiveLens');
       },
 
+      setResourceTypesVisible: (resourceTypes) => {
+        const visible = withAlwaysVisible(new Set(resourceTypes), get().rootUniqueId);
+        const current = get().visibleResourceTypes;
+        // if selected resource types are identical, move on
+        if (
+          visible.size == current.size &&
+          current.intersection(visible).size == current.size
+        )
+          return;
+
+        set(
+          {
+            visibleResourceTypes: visible,
+            // The filter drives the selection. When the nodes it lets through are
+            // the ones already selected -- a type this graph has none of -- nothing
+            // else changes and nothing is laid out again.
+            ...selectionChange(get(), selectionFor(get().nodes, visible)),
+          },
+          false,
+          'lineage/setResourceTypesVisible',
+        );
+      },
+
+      setSelectedNodeIds: (ids) => {
+        const change = selectionChange(get(), ids);
+        if (change) set(change, false, 'lineage/setSelectedNodeIds');
+      },
+
       startHydration: (rootUniqueId, upstreamDepth, downstreamDepth) => {
         const isSameRoot = get().rootUniqueId === rootUniqueId;
         set(
           {
             rootUniqueId,
+            // A new root's own type is switched on with it.
+            visibleResourceTypes: withAlwaysVisible(
+              get().visibleResourceTypes,
+              rootUniqueId,
+            ),
             // The depths describe the fetch, not the graph below, so they land now
             // rather than at `hydrate`. Everything else here still keys off the root
             // alone: a hop change is a wider or narrower view of lineage that is
@@ -258,9 +405,14 @@ export const useLineageStore = create<LineageState>()(
       },
 
       hydrate: ({ rootUniqueId, upstreamDepth, downstreamDepth, nodes, edges }) => {
+        const visibleResourceTypes = withAlwaysVisible(
+          get().visibleResourceTypes,
+          rootUniqueId,
+        );
         set(
           {
             rootUniqueId,
+            visibleResourceTypes,
             upstreamDepth,
             downstreamDepth,
             // Hidden and stacked wherever they came in. There is nothing to lay out
@@ -271,7 +423,9 @@ export const useLineageStore = create<LineageState>()(
             edges,
             status: 'ready',
             error: null,
-            selectedNodeIds: EMPTY_SELECTION,
+            // A new graph starts out selecting whatever the filter lets through.
+            // Recorded now, applied by `layoutMeasured` once every card is measured.
+            selectedNodeIds: selectionFor(nodes, visibleResourceTypes),
             isLaidOut: false,
           },
           false,
@@ -280,11 +434,18 @@ export const useLineageStore = create<LineageState>()(
       },
 
       layoutMeasured: () => {
-        const { nodes, edges, layout, isLaidOut, rootUniqueId } = get();
+        const { nodes, edges, layout, isLaidOut, rootUniqueId, selectedNodeIds } =
+          get();
         if (isLaidOut || !allMeasured(nodes)) return;
+        // Every card has been measured, unselected ones included, so they can be
+        // hidden now and still have a real size if they're selected again later.
+        const shown = showOnly(nodes, edges, selectedNodeIds);
         set(
           {
-            nodes: reveal(applyDagreLayout(nodes, edges, layout, rootUniqueId)),
+            nodes: reveal(
+              applyDagreLayout(shown.nodes, shown.edges, layout, rootUniqueId),
+            ),
+            edges: shown.edges,
             isLaidOut: true,
           },
           false,

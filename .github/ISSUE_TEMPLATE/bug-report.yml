@@ -1,7 +1,7 @@
 name: 🐞 Bug (dbt 1.x)
 description: Report a bug or issue you've found in dbt Core 1.x
 title: "[1.x Bug] <title>"
-labels: ["bug", "triage", "v1", "type:bug", "status:triage", "engine:v1"]
+labels: ["bug", "v1", "type:bug", "status:triage", "engine:v1"]
 body:
   - type: markdown
     attributes:

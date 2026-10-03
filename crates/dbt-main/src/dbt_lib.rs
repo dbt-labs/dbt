@@ -217,10 +217,10 @@ pub async fn setup_and_execute_fs(
         FsError::exit_with_status(1)
     })?;
 
-    // --dirty without --select: synthesize a `seed_id+ seed_id+ ...` selector so the
+    // --dirty without --select: synthesize a `seed_id+ path:<added_file>+ ...` selector so the
     // scheduler runs only the dirty nodes and their descendants — ancestors are loaded
-    // for dep closure but not scheduled.  Falls back to select=None (run all) when the
-    // cache doesn't exist yet or nothing is dirty.
+    // for dep closure but not scheduled. With no cache or nothing dirty, select stays None: the
+    // fast path loads (so runs) nothing, a full parse (e.g. a non-SQL file added) runs everything.
     if cli.common_args().dirty && eval_arg.select.is_none() {
         use dbt_metadata::partial_parse::dirty_select_expression;
         if let Some(expr) = dirty_select_expression(&eval_arg.io) {
@@ -1145,15 +1145,25 @@ impl<'a> AllPhasesExecutor<'a> {
 
         let retry_schedule = self.prepare_for_potential_retry()?;
 
-        // Implied index for `build`/`run`/`check` is EvalArgs-only (`Cli.to_eval_args`).
-        // `dbt retry` reconstructs `command` but keeps the `EvalArgs` produced from
-        // `Retry`, which did not get that default. Without it the parse-time check gate
-        // reads the previous invocation's index. Honor `--no-write-index` the same way
-        // the default does. Do not set `Cli.common_args.write_index`: that turns partial
-        // parse/load on, and a warm `dbt check --select <model>` unique_id-filters checks
-        // out of `ResolverState` (empty success).
+        // Gives a retried `build`/`check` the same default index a fresh invocation would get,
+        // when no metadata/index/catalog flag was passed explicitly. `dbt retry` reconstructs
+        // `command` but keeps the `EvalArgs` produced from `Retry`, which never went through
+        // `Cli::to_eval_args` and so never got that default. Honor `--no-write-index` the same
+        // way the default does. Do not set `Cli.common_args.write_index`: that turns partial
+        // parse/load on, and a warm `dbt check --select <model>` unique_id-filters checks out
+        // of `ResolverState` (empty success).
+        //
+        // Read `common_args.write_catalog`/`write_metadata` (raw flags), not `self.arg`'s
+        // (derived: `arg.write_metadata` folds in `effective_write_index()` and
+        // `generate_info_schema`, so it can already be `true` with neither flag passed
+        // explicitly). Mirrors `Cli::to_eval_args`, which skips this same default when
+        // `--write-catalog`/`--write-metadata` is explicit: the implied-index path sets
+        // `write_index_implied = true`, which gates the catalog fetch off below, so treating
+        // an explicit `--write-catalog` as implied here silently drops `catalog.json`.
         if matches!(self.arg.command, FsCommand::Build | FsCommand::Check)
             && !self.arg.write_index
+            && !self.cli.common_args.write_catalog
+            && !self.cli.common_args.write_metadata
             && !self.cli.common_args.no_write_index
         {
             let arg = self.arg.to_mut();

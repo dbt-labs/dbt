@@ -48,7 +48,6 @@ export const DagToolbar = ({ toolbarItems }: DagToolbarProps): JSX.Element | nul
           )}
           text={toolbarItem.label}
           size={'icon-sm'}
-          //   isDisabled={toolbarItem.isDisabled}
           onClick={toolbarItem.action}
           testId={toolbarItem.testId}
           aria-label={toolbarItem.label || toolbarItem.tooltip}

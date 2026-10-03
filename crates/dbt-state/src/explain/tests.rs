@@ -20,7 +20,9 @@ use crate::proto::query_cache::{
 use crate::service_client::{RunCacheServiceClient, RunCacheServiceError};
 use crate::service_config::{DEFAULT_LOG_PREFIX, RunCacheServiceConfig};
 use std::path::PathBuf;
-use std::sync::Mutex;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 #[test]
 fn read_explain_records_parses_jsonl() {
@@ -998,8 +1000,62 @@ async fn service_explain_response_with_client_batches_decision_ids() {
     let requests = client.requests.into_inner().unwrap();
 
     assert_eq!(requests.len(), 2);
-    assert_eq!(requests[0].len(), EXPLAIN_MAX_BATCH_SIZE);
-    assert_eq!(requests[1], ["decision-1000"]);
+    let (full_batch, partial_batch) = if requests[0].len() == EXPLAIN_MAX_BATCH_SIZE {
+        (&requests[0], &requests[1])
+    } else {
+        (&requests[1], &requests[0])
+    };
+    assert_eq!(full_batch.len(), EXPLAIN_MAX_BATCH_SIZE);
+    assert_eq!(partial_batch.len(), 1);
+    assert_eq!(
+        partial_batch[0],
+        format!("decision-{EXPLAIN_MAX_BATCH_SIZE}")
+    );
+}
+
+#[dbt_runtime::test]
+async fn service_explain_response_enforces_concurrency_limit() {
+    const WORKER_LIMIT: usize = 4;
+    const TOTAL_BATCHES: usize = 12;
+
+    let records: Vec<_> = (0..(TOTAL_BATCHES * EXPLAIN_MAX_BATCH_SIZE))
+        .map(|idx| StateExplainRecord {
+            version: STATE_EXPLAIN_RECORD_VERSION,
+            node_unique_id: format!("model.pkg.model_{idx}"),
+            execution_decision_id: Some(format!("decision-{idx}")),
+            status: StateExplainStatus::Hit,
+            reason: "ok".to_string(),
+            details: Vec::new(),
+        })
+        .collect();
+
+    let concurrent = Arc::new(AtomicUsize::new(0));
+    let max_concurrent = Arc::new(AtomicUsize::new(0));
+
+    let client = DelayedMockExplainClient {
+        response: GetExplainMessagesResponse {
+            messages: Vec::new(),
+        },
+        delay: Duration::from_millis(50),
+        concurrent: concurrent.clone(),
+        max_concurrent: max_concurrent.clone(),
+    };
+
+    service_explain_response_with_client(&client, &records)
+        .await
+        .unwrap();
+
+    let peak = max_concurrent.load(Ordering::SeqCst);
+
+    assert!(
+        peak > 1,
+        "expected concurrent requests, but peak was {peak}"
+    );
+
+    assert!(
+        peak <= WORKER_LIMIT,
+        "observed {peak} concurrent requests, expected at most {WORKER_LIMIT}"
+    );
 }
 
 fn sample_records() -> Vec<StateExplainRecord> {
@@ -1116,6 +1172,60 @@ impl RunCacheServiceClient for MockExplainClient {
             .lock()
             .unwrap()
             .push(request.execution_decision_ids);
+        Ok(self.response.clone())
+    }
+}
+
+struct DelayedMockExplainClient {
+    response: GetExplainMessagesResponse,
+    delay: Duration,
+    concurrent: Arc<AtomicUsize>,
+    max_concurrent: Arc<AtomicUsize>,
+}
+
+#[async_trait::async_trait]
+impl RunCacheServiceClient for DelayedMockExplainClient {
+    async fn validate_client_version(
+        &self,
+    ) -> Result<crate::service_client::ClientVersionStatus, RunCacheServiceError> {
+        Err(RunCacheServiceError::Disabled)
+    }
+
+    async fn submit_enriched_sql(
+        &self,
+        _request: crate::proto::query_cache::SubmitEnrichedSqlRequest,
+    ) -> Result<crate::proto::query_cache::SubmitSqlResponse, RunCacheServiceError> {
+        Err(RunCacheServiceError::Disabled)
+    }
+
+    async fn submit_values(
+        &self,
+        _request: crate::proto::query_cache::SubmitValuesRequest,
+    ) -> Result<crate::proto::query_cache::SubmitSqlResponse, RunCacheServiceError> {
+        Err(RunCacheServiceError::Disabled)
+    }
+
+    async fn confirm_execution(
+        &self,
+        _request: crate::proto::query_cache::ConfirmExecutionRequest,
+    ) -> Result<crate::proto::query_cache::ConfirmExecutionResponse, RunCacheServiceError> {
+        Err(RunCacheServiceError::Disabled)
+    }
+
+    async fn get_explain_messages(
+        &self,
+        _request: GetExplainMessagesRequest,
+    ) -> Result<GetExplainMessagesResponse, RunCacheServiceError> {
+        // Track concurrent requests
+        let now = self.concurrent.fetch_add(1, Ordering::SeqCst) + 1;
+        self.max_concurrent.fetch_max(now, Ordering::SeqCst);
+
+        // Delay to keep request in-flight
+        tokio::time::sleep(self.delay).await;
+
+        // Release counter
+        self.concurrent.fetch_sub(1, Ordering::SeqCst);
+
         Ok(self.response.clone())
     }
 }
