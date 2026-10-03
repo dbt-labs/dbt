@@ -283,6 +283,15 @@ pub fn format_invocation_summary(
         }
     }
 
+    // Close the block with a matching delimiter so one invocation's end is
+    // distinguishable from the next one's start in scrollback.
+    lines.push(format_delimiter(
+        " End of Execution ",
+        max_line_width,
+        colorize,
+    ));
+    lines.push(String::new());
+
     let autofix_line = if summary.metrics.autofix > 0 {
         Some(format_autofix_line(colorize))
     } else {
@@ -585,6 +594,19 @@ mod tests {
         );
         assert_eq!(
             lines[0].len(),
+            format_delimiter(" Execution Summary ", WIDTH, false).len()
+        );
+    }
+
+    #[test]
+    fn end_of_execution_footer_matches_execution_summary_shape() {
+        let footer = format_delimiter(" End of Execution ", WIDTH, false);
+        assert_eq!(
+            footer,
+            "===================== End of Execution ====================="
+        );
+        assert_eq!(
+            footer.len(),
             format_delimiter(" Execution Summary ", WIDTH, false).len()
         );
     }
