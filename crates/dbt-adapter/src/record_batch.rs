@@ -97,12 +97,26 @@ impl RecordBatchExt for RecordBatch {
         // types). Normalize down to `Utf8` first so callers expecting
         // `StringArray` keep working regardless of which string
         // representation produced the result.
-        let normalized: ArrayRef = if std::any::TypeId::of::<T>()
-            == std::any::TypeId::of::<StringArray>()
-            && matches!(column.data_type(), DataType::Utf8View | DataType::LargeUtf8)
-        {
+        let wants_string_array =
+            std::any::TypeId::of::<T>() == std::any::TypeId::of::<StringArray>();
+        let is_widened_utf8 =
+            matches!(column.data_type(), DataType::Utf8View | DataType::LargeUtf8);
+        let is_all_null_of_wrong_type =
+            !matches!(column.data_type(), DataType::Utf8) && column.null_count() == column.len();
+
+        let normalized: ArrayRef = if wants_string_array && is_widened_utf8 {
             cast_with_options(column.as_ref(), &DataType::Utf8, &CastOptions::default())
                 .map_err(|e| AdapterError::new(AdapterErrorKind::Internal, e.to_string()))?
+        } else if wants_string_array && is_all_null_of_wrong_type {
+            // Some driver/engine reports a non-string Arrow type for a column
+            // that is intentionally always NULL -- e.g. DuckDB's ADBC driver
+            // reports `Int32` for a query column defined as
+            // `cast(null as varchar)` (see #14647). Every value is null, so
+            // there is no real data that could be misinterpreted by treating
+            // it as an all-null string column instead of erroring; a column
+            // with any non-null value of the wrong type still falls through
+            // to the error path below.
+            Arc::new(StringArray::new_null(column.len())) as ArrayRef
         } else {
             column.clone()
         };
@@ -589,6 +603,66 @@ mod tests {
         assert!(error.message().contains(
             "arrow_array::array::primitive_array::PrimitiveArray<arrow_array::types::Int32Type>"
         ));
+    }
+
+    /// Regression test for https://github.com/dbt-labs/dbt-core/issues/14647:
+    /// DuckDB's ADBC driver reports an all-NULL `cast(null as varchar)`
+    /// column as `Int32` rather than `Utf8`, which used to make
+    /// `dbt compile --write-catalog` fail with a `dbt9002` internal error
+    /// while building the DuckDB catalog's `table_owner` column. Since every
+    /// value is null, there's no real data to lose by accepting it as a
+    /// string column instead of erroring.
+    #[test]
+    fn column_values_accepts_all_null_column_of_wrong_type_as_string() {
+        let batch = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new(
+                "table_owner",
+                DataType::Int32,
+                true,
+            )])),
+            vec![Arc::new(Int32Array::from(vec![None, None, None]))],
+        )
+        .unwrap();
+        let result: AdapterResult<StringArray> = batch.column_values("table_owner");
+        let owners = result.expect("all-null Int32 column should be accepted as StringArray");
+        assert_eq!(owners.len(), 3);
+        assert!(owners.iter().all(|v| v.is_none()));
+    }
+
+    /// A column of the wrong type that has *any* real (non-null) value must
+    /// still error -- the all-null fallback above must not mask genuine type
+    /// mismatches on columns that actually carry data.
+    #[test]
+    fn column_values_still_errors_on_wrong_type_with_some_non_null_values() {
+        let batch = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new(
+                "table_owner",
+                DataType::Int32,
+                true,
+            )])),
+            vec![Arc::new(Int32Array::from(vec![None, Some(1), None]))],
+        )
+        .unwrap();
+        let result: AdapterResult<StringArray> = batch.column_values("table_owner");
+        assert!(result.is_err());
+        assert_contains!(result.unwrap_err().message(), "expected column of type");
+    }
+
+    /// An empty (zero-row) column of the wrong type is vacuously all-null
+    /// and should likewise be accepted rather than erroring.
+    #[test]
+    fn column_values_accepts_empty_column_of_wrong_type_as_string() {
+        let batch = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new(
+                "table_owner",
+                DataType::Int32,
+                true,
+            )])),
+            vec![Arc::new(Int32Array::from(Vec::<i32>::new()))],
+        )
+        .unwrap();
+        let result: AdapterResult<StringArray> = batch.column_values("table_owner");
+        assert_eq!(result.unwrap().len(), 0);
     }
 
     fn string_struct() -> StructArray {
