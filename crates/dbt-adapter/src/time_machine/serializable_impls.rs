@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use dbt_schemas::dbt_types::RelationType;
-use dbt_schemas::schemas::dbt_catalogs_v2::CatalogType;
+use dbt_schemas::schemas::dbt_catalogs::CatalogType;
 use dbt_schemas::schemas::relations::base::TableFormat;
 
 use crate::relation::{RelationConfig, RelationObject, do_create_relation};

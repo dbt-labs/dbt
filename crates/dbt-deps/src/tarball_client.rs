@@ -12,7 +12,6 @@ use dbt_common::cancellation::CancellationToken;
 use dbt_common::tracing::dbt_emit::emit_info_log_message;
 use dbt_common::{ErrorCode, FsResult, err, fs_err};
 use futures::StreamExt;
-use reqwest::StatusCode;
 use reqwest_middleware::ClientWithMiddleware;
 use sha1::Digest;
 use std::io;
@@ -72,8 +71,7 @@ impl TarballClient {
         let res = req.send().await.map_err(|e| {
             fs_err!(
                 ErrorCode::RuntimeError,
-                "Failed to get tarball from {download_url}; status: {}",
-                e.status().unwrap_or(StatusCode::INTERNAL_SERVER_ERROR)
+                "Failed to get tarball from {download_url}: {e:#}"
             )
         })?;
 

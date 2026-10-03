@@ -15,8 +15,8 @@ use dbt_adbc::{Connection, QueryCtx};
 use dbt_common::cancellation::Cancellable;
 use dbt_common::cancellation::CancellationToken;
 use dbt_schemas::dbt_types::RelationType;
-use dbt_schemas::schemas::dbt_catalogs_v2::{
-    CatalogSpecV2View, CatalogType, DbtCatalogsV2View, PhysicalFormatResolver,
+use dbt_schemas::schemas::dbt_catalogs::{
+    CatalogSpecView, CatalogType, DbtCatalogsView, PhysicalFormatResolver,
 };
 use dbt_schemas::schemas::{
     common::ResolvedQuoting,
@@ -359,7 +359,7 @@ pub fn list_relations(
     // DESCRIBE-based get_relation path only when the *target* catalog is one of
     // them. A regular DuckDB catalog is still listed even while Iceberg catalogs
     // are attached — see the catalog scoping below.
-    if is_duckdb_v2_external_iceberg_catalog_database(&db_schema.resolved_catalog) {
+    if is_duckdb_external_iceberg_catalog_database(&db_schema.resolved_catalog) {
         return Err(AdapterError::new(
             AdapterErrorKind::NotSupported,
             format!(
@@ -430,7 +430,7 @@ pub(crate) fn attaches_via_iceberg_rest(catalog_type: CatalogType) -> bool {
     )
 }
 
-/// DuckDB-specific classification of a single v2 catalog spec.
+/// DuckDB-specific classification of a single catalog spec.
 pub(crate) trait CatalogSpecDuckDbExt {
     /// `Some(..)` iff this catalog is an external Iceberg REST-attached catalog
     /// (IcebergRest/Horizon/Unity/Glue with `table_format: iceberg` and a `duckdb`
@@ -440,7 +440,7 @@ pub(crate) trait CatalogSpecDuckDbExt {
     fn resolved_attach_alias(&self) -> Option<String>;
 }
 
-impl CatalogSpecDuckDbExt for CatalogSpecV2View<'_> {
+impl CatalogSpecDuckDbExt for CatalogSpecView<'_> {
     fn external_iceberg_attach(&self) -> Option<ExternalIcebergAttach> {
         // DuckDB exposes these catalogs through Iceberg REST-style attachments.
         // Their information_schema coverage is incomplete, so schema-wide listing
@@ -484,7 +484,7 @@ trait CatalogsViewDuckDbExt {
     fn table_format_for_database(&self, database: &str) -> Option<&'static str>;
 }
 
-impl CatalogsViewDuckDbExt for DbtCatalogsV2View<'_> {
+impl CatalogsViewDuckDbExt for DbtCatalogsView<'_> {
     fn external_iceberg_attach_for_database(
         &self,
         database: &str,
@@ -512,21 +512,19 @@ impl CatalogsViewDuckDbExt for DbtCatalogsV2View<'_> {
     }
 }
 
-/// Load the active v2 catalogs view and run `f`, returning `None` when
-/// catalogs.yml v2 is not in use. One gate replaces the scattered
-/// fetch-use / fetch / view_v2 guard boilerplate.
-fn with_duckdb_v2_catalogs_view<R>(
-    f: impl FnOnce(&DbtCatalogsV2View<'_>) -> Option<R>,
-) -> Option<R> {
+/// Load the active catalogs view and run `f`, returning `None` when
+/// catalogs.yml is not in use. One gate replaces the scattered
+/// fetch-use / fetch / view guard boilerplate.
+fn with_duckdb_catalogs_view<R>(f: impl FnOnce(&DbtCatalogsView<'_>) -> Option<R>) -> Option<R> {
     if !load_catalogs::fetch_use_catalogs_v2() {
         return None;
     }
     let catalogs = load_catalogs::fetch_catalogs()?;
-    let view = catalogs.view_v2().ok()?;
+    let view = catalogs.view().ok()?;
     f(&view)
 }
 
-/// The external Iceberg attach DuckDB uses for `database`, when catalogs.yml v2
+/// The external Iceberg attach DuckDB uses for `database`, when catalogs.yml
 /// routes it to one.
 pub(crate) fn duckdb_external_iceberg_attach_for_database(
     database: &str,
@@ -534,23 +532,23 @@ pub(crate) fn duckdb_external_iceberg_attach_for_database(
     if database.is_empty() {
         return None;
     }
-    with_duckdb_v2_catalogs_view(|view| view.external_iceberg_attach_for_database(database))
+    with_duckdb_catalogs_view(|view| view.external_iceberg_attach_for_database(database))
 }
 
 /// Whether `database` resolves to a DuckDB external Iceberg REST catalog. Thin
 /// boolean view over [`duckdb_external_iceberg_attach_for_database`] for the
 /// schema-listing / get_relation decision points.
-pub(crate) fn is_duckdb_v2_external_iceberg_catalog_database(database: &str) -> bool {
+pub(crate) fn is_duckdb_external_iceberg_catalog_database(database: &str) -> bool {
     duckdb_external_iceberg_attach_for_database(database).is_some()
 }
 
-/// The egress table format string for a DuckDB attached-database alias from catalogs.yml v2.
+/// The egress table format string for a DuckDB attached-database alias from catalogs.yml.
 /// Used by `adapter.table_format(relation)` when a Jinja relation only gives
 /// us its database/catalog: the attached alias is the bridge back to
 /// catalogs.yml, which tells macros whether DuckDB needs Iceberg/DuckLake DDL
 /// behavior for that relation.
 pub(crate) fn duckdb_table_format_for_database(database: &str) -> Option<&'static str> {
-    with_duckdb_v2_catalogs_view(|view| view.table_format_for_database(database))
+    with_duckdb_catalogs_view(|view| view.table_format_for_database(database))
 }
 
 /// Resolve one profile-level `attach:` entry to its `(alias, format_str)`, or
@@ -645,7 +643,7 @@ fn build_schema_from_duckdb_describe(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use dbt_schemas::schemas::dbt_catalogs::DbtCatalogs;
+    use dbt_schemas::schemas::dbt_catalogs_deprecated::DbtCatalogs;
 
     fn catalog_and_schema(catalog: &str, schema: &str) -> CatalogAndSchema {
         CatalogAndSchema {
@@ -719,19 +717,19 @@ mod tests {
         assert!(!sql.contains(" AND "));
     }
 
-    fn with_v2_view(yaml: &str, test: impl FnOnce(&DbtCatalogsV2View<'_>)) {
+    fn with_view(yaml: &str, test: impl FnOnce(&DbtCatalogsView<'_>)) {
         let parsed: dbt_yaml::Value = dbt_yaml::from_str(yaml).expect("valid YAML");
         let dbt_yaml::Value::Mapping(repr, span) = parsed else {
             panic!("expected YAML mapping");
         };
         let catalogs = DbtCatalogs::new(repr, span);
-        let view = catalogs.view_v2().expect("valid catalogs v2 view");
+        let view = catalogs.view().expect("valid catalogs v2 view");
         test(&view);
     }
 
     #[test]
-    fn duckdb_v2_external_iceberg_catalogs_disable_schema_listing() {
-        with_v2_view(
+    fn duckdb_external_iceberg_catalogs_disable_schema_listing() {
+        with_view(
             r#"
 catalogs:
   - name: lakekeeper
@@ -795,7 +793,7 @@ catalogs:
 
     #[test]
     fn table_format_for_database_resolves_aliases() {
-        with_v2_view(
+        with_view(
             r#"
 catalogs:
   - name: lake

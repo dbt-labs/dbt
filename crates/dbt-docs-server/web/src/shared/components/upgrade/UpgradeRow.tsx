@@ -17,7 +17,7 @@ import {
  * the user upgraded. The row label describes the absent field; the CTA
  * comes from the `(kind, userState)` registry.
  */
-interface Props {
+interface UpgradeRowProps {
   /** Label for the absent field — e.g. "Consumption queries (excludes builds)". */
   label: string;
   kind: UpgradeHookKind;
@@ -34,7 +34,7 @@ interface Props {
   className?: string;
 }
 
-export const UpgradeRow: FC<Props> = ({
+export const UpgradeRow: FC<UpgradeRowProps> = ({
   label,
   kind,
   userState,

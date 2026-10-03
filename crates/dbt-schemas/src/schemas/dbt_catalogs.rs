@@ -1,452 +1,457 @@
-//! dbt_catalogs.yml schema: typed, borrowed view + validation (no IO).
+//! catalogs.yml — table-driven validation and JSON schema generation.
 //!
-//! Top-level YAML shape (strict keys):
-//!   catalogs:
-//!     - name|catalog_name: <string, non-empty>
-//!       active_write_integration: <string, non-empty>
-//!
-//!       ## ==== Snowflake
-//!       write_integrations:
-//!         - name|integration_name: <string, non-empty>
-//!           // TODO: catalog type info schema and DDL
-//!           catalog_type: built_in | snowflake | rest | iceberg_rest  // case-insensitive
-//!           table_format: iceberg                                     // default; case-insensitive
-//!           external_volume: <string>                                 // required & non-empty for built_in; forbidden for REST write-support
-//!           adapter_properties:                                       // variant-specific; strict keys
-//!             // built_in:
-//!             base_location_root: <string>                            // optional; if present, non-empty
-//!             base_location_subpath: <string>                         // model config only; optional; if present, non-empty
-//!             change_tracking: <bool>
-//!             data_retention_time_in_days: <u32 in 0..=90>
-//!             max_data_extension_time_in_days: <u32 in 0..=90>
-//!             storage_serialization_policy: COMPATIBLE|OPTIMIZED      // case-insensitive
-//!             // REST:
-//!             auto_refresh: <bool>
-//!             catalog_linked_database: <string, if present non-empty> // REST write-support gate
-//!             catalog_linked_database_type: <string, if present non-empty> // "glue" for AWS Glue
-//!             max_data_extension_time_in_days: <u32 in 0..=90>
-//!             target_file_size: 'AUTO'|'16MB'|'32MB'|'64MB'|'128MB'   // case-insensitive
-//!
-//!       ## ==== Databricks
-//!       write_integrations:                                           // used as a stronger answer to DatabricksRelation::is_hive_metastore()
-//!         - name: <non-empty>
-//!           catalog_type: hive_metastore
-//!           table_format: default
-//!           file_format: delta|hudi|parquet
-//!
-//!       write_integrations:
-//!         - name: <non-empty>
-//!           catalog_type: unity
-//!           table_format: iceberg
-//!           file_format: delta                                        // required with table_format=iceberg
-//!           adapter_properties:
-//!             location: <string>                                      // optional; if present, non-empty -- will be external_volume under the hood
-//!
-//!       ## ==== Bigquery
-//!       write_integrations:
-//!         - name: <non-empty>
-//!           external_volume: <string>                                 // required & non-empty; used to generate storage_uri
-//!           table_format: iceberg
-//!           file_format: parquet
-//!           catalog_type: biglake_metastore
-//!           adapter_properties:
-//!             base_location_root: <string>                            // optional; if present, non-empty
-//!             base_location_subpath: <string>                         // model config only; optional; if present, non-empty
-//!             storage_uri: <string>                                   // model config only; optional; if present, non-empty
-//!             connection_id: <string>                                 // optional; if present, non-empty
-//!
+//! ```yaml
+//! catalogs:
+//!   - name: <string>
+//!     type: <catalog type>
+//!     table_format: <iceberg|default>
+//!     config:
+//!       <platform>:
+//!         # per-platform fields — see CATALOG_SCHEMAS + FieldSpec arrays below,
+//!         # or run `dbt man --schema catalog` for the canonical JSON schema.
+//! ```
 
 use std::collections::HashSet;
 use std::path::Path;
-use std::sync::OnceLock;
 
-use super::dbt_catalogs_v2::{
-    CatalogType, PhysicalFormatResolver, PhysicalTableFormat, TableFormat,
-};
-use dbt_adapter_core::AdapterType;
+pub use super::dbt_catalogs_deprecated::DbtCatalogs;
+use dbt_common::serde_utils::try_get_bool;
 use dbt_common::{ErrorCode, FsResult, err, fs_err};
 use dbt_yaml::{self as yml};
+use url::{ParseError, Url};
 
-#[derive(Clone, Copy)]
-pub enum LoadedCatalogs<'a> {
-    None,
-    V1(&'a DbtCatalogs),
-    V2(&'a DbtCatalogs),
-}
-
-impl<'a> LoadedCatalogs<'a> {
-    pub fn catalog_names(&self) -> FsResult<Option<&'a [String]>> {
-        match self {
-            LoadedCatalogs::None => Ok(None),
-            LoadedCatalogs::V1(c) => Ok(Some(c.v1_catalog_names()?)),
-            LoadedCatalogs::V2(c) => Ok(Some(c.v2_catalog_names()?)),
-        }
-    }
-
-    pub fn has_catalog_name(&self, name: &str) -> FsResult<bool> {
-        Ok(self
-            .catalog_names()?
-            .is_some_and(|names| names.iter().any(|n| n == name)))
-    }
-
-    /// Whether a named v2 catalog requires Snowflake destination handling for a Lake Compute node.
-    pub fn catalog_requires_snowflake_propagation(&self, name: Option<&str>) -> FsResult<bool> {
-        match (self, name) {
-            (LoadedCatalogs::V2(catalogs), Some(name)) => Ok(catalogs
-                .v2_catalog_type(name)?
-                .is_some_and(|catalog_type| catalog_type.requires_snowflake_propagation())),
-            _ => Ok(false),
-        }
-    }
-}
-
-const CATALOG_DATABASE_PLATFORMS: &[AdapterType] = &[
-    AdapterType::DuckDB,
-    AdapterType::Snowflake,
-    AdapterType::Databricks,
-    AdapterType::Bigquery,
+const ALL_PLATFORMS: &[&str] = &[
+    "snowflake",
+    "databricks",
+    "bigquery",
+    "duckdb",
+    "lakecompute",
 ];
 
-#[derive(Debug, Clone)]
-pub struct CatalogPlatformEntry<'a> {
-    pub adapter_type: AdapterType,
-    pub catalog_name: &'a str,
-    pub catalog_database: Option<&'a str>,
+const TARGET_FILE_SIZES: &[&str] = &["AUTO", "16MB", "32MB", "64MB", "128MB"];
+const STORAGE_SERIALIZATION_POLICIES: &[&str] = &["COMPATIBLE", "OPTIMIZED"];
+const DUCKDB_ENDPOINT_TYPES: &[&str] = &["GLUE", "S3_TABLES"];
+const DUCKDB_AUTHORIZATION_TYPES: &[&str] = &["OAUTH2", "SIGV4", "NONE"];
+const DUCKDB_ACCESS_DELEGATION_MODES: &[&str] = &["VENDED_CREDENTIALS", "NONE"];
+const LOCAL_FS_FILE_FORMATS: &[&str] = &["parquet", "csv", "json"];
+// unity only supports delta (with UniForm) or parquet; `hudi` is rejected for
+// unity by `validate_unity_semantics`, so it is excluded here and from the
+// published JSON schema. hive_metastore does accept hudi (separate const).
+const UNITY_DATABRICKS_FILE_FORMATS: &[&str] = &["delta", "parquet"];
+const HIVE_METASTORE_FILE_FORMATS: &[&str] = &["delta", "parquet", "hudi"];
+const BIGLAKE_FILE_FORMATS: &[&str] = &["parquet"];
+
+fn matches_enum_ci(v: &str, allowed: &[&str]) -> bool {
+    allowed.iter().any(|a| v.eq_ignore_ascii_case(a))
 }
 
-/// A validated catalogs.yml mapping.
-/// - Holds the raw YAML Mapping so external consumers can copy as needed.
-/// - Provides a borrowed, zero-copy typed view on demand.
-#[derive(Debug, Clone)]
-pub struct DbtCatalogs {
-    pub repr: yml::Mapping,
-    pub span: yml::Span,
-    v1_catalog_names: OnceLock<Vec<String>>,
-    v2_catalog_names: OnceLock<Vec<String>>,
-    v2_catalog_databases: OnceLock<Vec<String>>,
+// FIXME(@VersusFacit): Redo this so we have a normalize type/generic function
+// that splits on adapter type.
+/// Normalize and validate an AWS Databricks workspace host for Unity reads.
+pub fn normalize_databricks_host(raw: &str) -> Result<String, String> {
+    if raw.is_empty() {
+        return Err("host must be a Databricks workspace URL".to_string());
+    }
+
+    let url = match Url::parse(raw) {
+        Ok(url) => url,
+        Err(ParseError::RelativeUrlWithoutBase) => {
+            let candidate = format!("https://{raw}");
+            Url::parse(&candidate).map_err(|error| {
+                format!("host must be a valid Databricks workspace URL: {error}")
+            })?
+        }
+        Err(error) => {
+            return Err(format!(
+                "host must be a valid Databricks workspace URL: {error}"
+            ));
+        }
+    };
+
+    if !url.scheme().eq_ignore_ascii_case("https") {
+        return Err("host must use the https scheme".to_string());
+    }
+    if url.username() != ""
+        || url.password().is_some()
+        || url.port().is_some()
+        || url.query().is_some()
+        || url.fragment().is_some()
+        || (!url.path().is_empty() && url.path() != "/")
+    {
+        return Err(
+            "host must be a Databricks workspace hostname with no non-default port, path, query, fragment, or userinfo"
+                .to_string(),
+        );
+    }
+
+    let Some(hostname) = url.host_str() else {
+        return Err("host must be a Databricks workspace URL".to_string());
+    };
+    let hostname = hostname.to_ascii_lowercase();
+    if !hostname.ends_with(".cloud.databricks.com") || hostname.ends_with(".gcp.databricks.com") {
+        return Err(
+            "host must be an AWS Databricks workspace hostname ending in '.cloud.databricks.com'"
+                .to_string(),
+        );
+    }
+    Ok(format!("https://{hostname}"))
 }
 
-impl DbtCatalogs {
-    pub fn new(repr: yml::Mapping, span: yml::Span) -> Self {
+#[derive(Debug, Clone, Copy)]
+enum FieldKind {
+    Str,
+    Bool,
+    U32 { max: Option<u32> },
+    Enum(&'static [&'static str]),
+}
+
+#[derive(Debug, Clone, Copy)]
+struct FieldSpec {
+    name: &'static str,
+    kind: FieldKind,
+    required: bool,
+    non_empty: bool,
+    forbidden: bool,
+    doc: &'static str,
+}
+
+impl FieldSpec {
+    const fn new(name: &'static str, kind: FieldKind) -> Self {
         Self {
-            repr,
-            span,
-            v1_catalog_names: OnceLock::new(),
-            v2_catalog_names: OnceLock::new(),
-            v2_catalog_databases: OnceLock::new(),
+            name,
+            kind,
+            required: false,
+            non_empty: false,
+            forbidden: false,
+            doc: "",
         }
     }
-
-    /// Borrow the validated raw mapping.
-    pub fn mapping(&self) -> &yml::Mapping {
-        &self.repr
+    const fn string(name: &'static str) -> Self {
+        Self::new(name, FieldKind::Str)
     }
-
-    /// Move out the validated raw mapping (for out-of-crate consumers to copy from).
-    pub fn into_mapping(self) -> yml::Mapping {
-        self.repr
+    const fn boolean(name: &'static str) -> Self {
+        Self::new(name, FieldKind::Bool)
     }
-
-    /// Borrowed, zero-copy typed view (validated shape).
-    pub fn view(&self) -> FsResult<DbtCatalogsView<'_>> {
-        DbtCatalogsView::from_mapping(&self.repr, self.span.clone())
+    const fn u32_plain(name: &'static str) -> Self {
+        Self::new(name, FieldKind::U32 { max: None })
     }
-
-    /// Ergonomic helper: return the `catalogs` sequence (validated presence).
-    pub fn catalogs_seq(&self) -> FsResult<&yml::Sequence> {
-        self.repr
-            .get(yml::Value::from("catalogs"))
-            .and_then(|yaml_value| yaml_value.as_sequence())
-            .ok_or_else(|| fs_err!(ErrorCode::InvalidConfig, "Missing 'catalogs'"))
+    const fn u32_max(name: &'static str, max: u32) -> Self {
+        Self::new(name, FieldKind::U32 { max: Some(max) })
     }
-
-    pub fn is_v2_catalog(&self, name: &str) -> FsResult<bool> {
-        Ok(self.v2_catalog_names()?.iter().any(|n| n == name))
+    const fn enumerated(name: &'static str, allowed: &'static [&'static str]) -> Self {
+        Self::new(name, FieldKind::Enum(allowed))
     }
-
-    pub fn v1_catalog_names(&self) -> FsResult<&[String]> {
-        if let Some(names) = self.v1_catalog_names.get() {
-            return Ok(names);
-        }
-        self.populate_v1_cache()?;
-        Ok(self.v1_catalog_names.get().unwrap())
+    const fn required(mut self) -> Self {
+        self.required = true;
+        self
     }
-
-    pub fn v2_catalog_names(&self) -> FsResult<&[String]> {
-        if let Some(names) = self.v2_catalog_names.get() {
-            return Ok(names);
-        }
-        self.populate_v2_caches()?;
-        Ok(self.v2_catalog_names.get().unwrap())
+    const fn non_empty(mut self) -> Self {
+        self.non_empty = true;
+        self
     }
-
-    pub fn platform_entries(&self) -> FsResult<impl Iterator<Item = CatalogPlatformEntry<'_>>> {
-        let view = self.view_v2()?;
-        Ok(view.catalogs.into_iter().flat_map(|catalog| {
-            CATALOG_DATABASE_PLATFORMS
-                .iter()
-                .filter_map(move |&adapter_type| {
-                    let block = catalog.config_block(adapter_type.as_ref())?;
-                    let catalog_database = block
-                        .get(yml::Value::from("catalog_database"))
-                        .and_then(|v| v.as_str())
-                        .map(str::trim)
-                        .filter(|s| !s.is_empty());
-                    Some(CatalogPlatformEntry {
-                        adapter_type,
-                        catalog_name: catalog.name,
-                        catalog_database,
-                    })
-                })
-        }))
+    const fn forbidden(mut self) -> Self {
+        self.forbidden = true;
+        self
     }
-
-    pub fn catalogs_matching_database(
-        &self,
-        database: &str,
-        adapter_type: AdapterType,
-    ) -> FsResult<Vec<String>> {
-        debug_assert!(!database.trim().is_empty());
-        let names: Vec<&str> = self
-            .platform_entries()?
-            .filter(|entry| entry.adapter_type == adapter_type)
-            .filter_map(|entry| {
-                let alias = match adapter_type {
-                    AdapterType::DuckDB => entry.catalog_database.unwrap_or(entry.catalog_name),
-                    _ => entry.catalog_database?,
-                };
-                alias
-                    .eq_ignore_ascii_case(database)
-                    .then_some(entry.catalog_name)
-            })
-            .collect();
-
-        let view = self.view_v2()?;
-        Ok(view
-            .catalogs
-            .iter()
-            .filter(|catalog| {
-                names.contains(&catalog.name)
-                    && catalog.physical_table_format() != PhysicalTableFormat::Default
-            })
-            .map(|catalog| catalog.name.to_string())
-            .collect())
-    }
-
-    pub fn is_v2_catalog_database(&self, db: &str) -> FsResult<bool> {
-        if let Some(cds) = self.v2_catalog_databases.get() {
-            return Ok(cds.iter().any(|d| d == db));
-        }
-        self.populate_v2_caches()?;
-        Ok(self
-            .v2_catalog_databases
-            .get()
-            .unwrap()
-            .iter()
-            .any(|d| d == db))
-    }
-
-    /// The v2 catalog type behind a `catalog_name`, if that name is a v2 catalog.
-    ///
-    /// Callers use this to ask capability questions about storage — which engines
-    /// can read it, and whose credentials reaching it requires. Both are properties
-    /// of the catalog *type*, not of anything a project declares.
-    pub fn v2_catalog_type(&self, name: &str) -> FsResult<Option<CatalogType>> {
-        Ok(self
-            .view_v2()?
-            .catalogs
-            .iter()
-            .find(|catalog| catalog.name == name)
-            .map(|catalog| catalog.catalog_type))
-    }
-
-    /// Returns `(catalog_name, catalog_database)` for every v2 `iceberg_rest`
-    /// catalog that declares a Snowflake `catalog_database` (the linked
-    /// database write support is gated on).
-    pub fn iceberg_rest_catalog_databases(&self) -> FsResult<Vec<(String, String)>> {
-        use super::dbt_catalogs_v2::CatalogType;
-
-        let view = self.view_v2()?;
-        Ok(view
-            .catalogs
-            .iter()
-            .filter(|c| c.catalog_type == CatalogType::IcebergRest)
-            .filter_map(|c| {
-                let db = c
-                    .config_block("snowflake")?
-                    .get(yml::Value::from("catalog_database"))?
-                    .as_str()?
-                    .trim();
-                (!db.is_empty()).then(|| (c.name.to_owned(), db.to_owned()))
-            })
-            .collect())
-    }
-
-    fn populate_v1_cache(&self) -> FsResult<()> {
-        let view = self.view()?;
-        let names: Vec<String> = view
-            .catalogs
-            .iter()
-            .map(|catalog| catalog.catalog_name.0.to_owned())
-            .collect();
-        self.v1_catalog_names.get_or_init(|| names);
-        Ok(())
-    }
-
-    // Both is_v2_catalog and is_v2_catalog_database share a single
-    // view_v2() parse so that whichever fires first pays the cost once for
-    // both caches. This couples their initialization but avoids a redundant
-    // parse for callers that use both (the common case).
-    //
-    // Pre:  self.repr holds a validated v2 catalogs.yml mapping.
-    // Post: v2_catalog_names and v2_catalog_databases are populated.
-    fn populate_v2_caches(&self) -> FsResult<()> {
-        let view = self.view_v2()?;
-        let mut names = Vec::with_capacity(view.catalogs.len());
-        let mut cds = Vec::new();
-        for catalog in &view.catalogs {
-            names.push(catalog.name.to_owned());
-            if let Some(snowflake) = catalog.config_block("snowflake") {
-                if let Some(db) = snowflake
-                    .get(yml::Value::from("catalog_database"))
-                    .and_then(|val| val.as_str())
-                    .map(|name| name.trim())
-                    .filter(|name| !name.is_empty())
-                {
-                    cds.push(db.to_owned());
-                }
-            }
-        }
-        self.v2_catalog_names.get_or_init(|| names);
-        self.v2_catalog_databases.get_or_init(|| cds);
-        Ok(())
+    const fn doc(mut self, doc: &'static str) -> Self {
+        self.doc = doc;
+        self
     }
 }
 
-const V1_CATALOG_TYPES: [(&str, CatalogType); 7] = [
-    ("built_in", CatalogType::SnowflakeBuiltIn),
-    ("snowflake", CatalogType::SnowflakeBuiltIn),
-    ("rest", CatalogType::IcebergRest),
-    ("iceberg_rest", CatalogType::IcebergRest),
-    ("hive_metastore", CatalogType::HiveMetastore),
-    ("unity", CatalogType::Unity),
-    ("biglake_metastore", CatalogType::BiglakeMetastore),
+const HORIZON_SNOWFLAKE_FIELDS: &[FieldSpec] = &[
+    FieldSpec::string("external_volume")
+        .required()
+        .non_empty()
+        .doc("Non-empty external volume name registered in Snowflake."),
+    FieldSpec::string("catalog_database")
+        .non_empty()
+        .doc("Snowflake database where models using this catalog should land. When set, takes precedence over model database config and target.database."),
+    FieldSpec::boolean("change_tracking"),
+    FieldSpec::u32_max("data_retention_time_in_days", 90)
+        .doc("Days to retain table data after deletion. Range 0–90."),
+    FieldSpec::u32_max("max_data_extension_time_in_days", 90)
+        .doc("Days beyond the retention period to extend data availability. Range 0–90."),
+    FieldSpec::enumerated("storage_serialization_policy", STORAGE_SERIALIZATION_POLICIES),
+    FieldSpec::u32_plain("iceberg_version").doc("Iceberg spec version, e.g. 3 for Iceberg V3."),
+    FieldSpec::string("base_location_root")
+        .non_empty()
+        .doc("Catalog-wide storage path prefix for all Iceberg tables."),
+    FieldSpec::string("base_location_subpath")
+        .forbidden()
+        .doc("Catalog '{}' horizon/snowflake base_location_subpath is model-config only and may not be specified in catalogs.yml"),
 ];
 
-const V1_CATALOG_TYPE_OPTS: &str =
-    "built_in|snowflake|rest|iceberg_rest|unity|hive_metastore|biglake_metastore";
+const HORIZON_DATABRICKS_FIELDS: &[FieldSpec] = &[FieldSpec::string("catalog_database")
+    .required()
+    .non_empty()
+    .doc("Name of the Databricks database linked to the external Horizon catalog.")];
 
-#[derive(Debug, PartialEq)]
-pub enum FileFormat {
-    Delta,
-    Hudi,
-    Parquet,
+const LINKED_SNOWFLAKE_FIELDS: &[FieldSpec] = &[
+    FieldSpec::string("catalog_database")
+        .required()
+        .non_empty()
+        .doc("Name of the Snowflake database linked to the external catalog."),
+    FieldSpec::boolean("auto_refresh"),
+    FieldSpec::u32_max("max_data_extension_time_in_days", 90)
+        .doc("Days beyond the retention period to extend data availability. Range 0–90."),
+    FieldSpec::enumerated("target_file_size", TARGET_FILE_SIZES),
+    FieldSpec::u32_plain("iceberg_version").doc("Iceberg spec version, e.g. 3 for Iceberg V3."),
+];
+
+// Direct AWS creds for the lake compute backend, which signs Glue's
+// Iceberg REST endpoint itself (SigV4) server-side rather than attaching via
+// a local DuckDB secret -- so it needs the raw credential fields, not a
+// `secret`/`endpoint_type` reference like DUCKDB_ICEBERG_FIELDS.
+const GLUE_LAKE_COMPUTE_FIELDS: &[FieldSpec] = &[
+    FieldSpec::string("catalog_id")
+        .required()
+        .non_empty()
+        .doc("Glue catalog identifier passed to ATTACH. Accepted forms: a 12-digit AWS account ID, ':' for the caller's own account, 'catalog1/catalog2', or '<account_id>:catalog1/catalog2'."),
+    FieldSpec::string("region")
+        .required()
+        .non_empty()
+        .doc("AWS region of the Glue catalog. Determines the REST endpoint and SigV4 signing region."),
+    FieldSpec::string("access_key_id")
+        .required()
+        .non_empty()
+        .doc("AWS access key ID."),
+    FieldSpec::string("secret_access_key")
+        .required()
+        .non_empty()
+        .doc("AWS secret access key."),
+    FieldSpec::string("session_token")
+        .non_empty()
+        .doc("AWS session token; only for temporary/STS credentials."),
+];
+
+const DUCKDB_ICEBERG_FIELDS: &[FieldSpec] = &[
+    FieldSpec::string("endpoint")
+        .non_empty()
+        .doc("Full REST catalog URL. Mutually exclusive with endpoint_type."),
+    FieldSpec::enumerated("endpoint_type", DUCKDB_ENDPOINT_TYPES)
+        .doc("Managed AWS endpoint type. DuckDB derives the endpoint URL and SigV4 authorization from it, so it's mutually exclusive with both endpoint and authorization_type."),
+    FieldSpec::string("warehouse")
+        .non_empty()
+        .doc("Warehouse identifier used as the ATTACH source: the S3 Tables bucket ARN (required when endpoint_type is S3_TABLES), or the Glue catalog path (defaults to ':', the current account's default catalog)."),
+    FieldSpec::string("secret")
+        .non_empty()
+        .doc("Name of a DuckDB secret from profiles.yml to use for authentication."),
+    FieldSpec::string("catalog_database").non_empty(),
+    FieldSpec::string("default_region").non_empty(),
+    FieldSpec::string("default_schema").non_empty(),
+    FieldSpec::string("max_table_staleness").non_empty(),
+    FieldSpec::enumerated("authorization_type", DUCKDB_AUTHORIZATION_TYPES),
+    FieldSpec::enumerated("access_delegation_mode", DUCKDB_ACCESS_DELEGATION_MODES),
+    FieldSpec::boolean("support_nested_namespaces"),
+    FieldSpec::boolean("support_stage_create"),
+    FieldSpec::boolean("purge_requested"),
+    FieldSpec::boolean("encode_entire_prefix"),
+    FieldSpec::boolean("read_only")
+        .doc("Attach the catalog read-only. Read-write (read_only: false) on Horizon/Unity requires DuckDB 1.5.4 / duckdb-iceberg#1017."),
+    // Write-compat ATTACH options for managed-storage Iceberg REST (Horizon/Unity);
+    // these require DuckDB 1.5.4 / duckdb-iceberg#1017.
+    FieldSpec::boolean("stage_create_tables")
+        .doc("Opt into staged CREATE TABLE AS SELECT writes (direct CTAS into the target catalog)."),
+    FieldSpec::boolean("disable_multi_table_commit")
+        .doc("Disable multi-table commits (Unity write-compat default)."),
+    FieldSpec::boolean("skip_create_table_metadata_updates")
+        .doc("Skip metadata updates on CREATE TABLE (write-compat)."),
+    FieldSpec::boolean("remove_files_on_delete")
+        .doc("Remove underlying data files when a table is dropped (write-compat)."),
+];
+
+const UNITY_DATABRICKS_FIELDS: &[FieldSpec] = &[
+    FieldSpec::string("catalog_database")
+        .non_empty()
+        .doc("Name of the Databricks Unity Catalog to use as the database for models. When set, takes precedence over catalog name for database routing."),
+    FieldSpec::enumerated("file_format", UNITY_DATABRICKS_FILE_FORMATS).required(),
+    FieldSpec::string("location_root").non_empty(),
+    FieldSpec::boolean("use_uniform")
+        .doc("UniForm mode. true requires file_format: delta; false (default) requires parquet."),
+];
+
+const UNITY_LAKE_COMPUTE_FIELDS: &[FieldSpec] = &[
+    FieldSpec::string("catalog_database")
+        .required()
+        .non_empty()
+        .doc("Name of the Databricks Unity Catalog to attach for lake compute reads."),
+    FieldSpec::string("region")
+        .required()
+        .non_empty()
+        .doc("AWS region containing the Unity Catalog table storage."),
+    FieldSpec::string("host")
+        .non_empty()
+        .doc("Databricks workspace hostname; defaults to the Databricks profile connection."),
+];
+
+const HIVE_METASTORE_DATABRICKS_FIELDS: &[FieldSpec] =
+    &[FieldSpec::enumerated("file_format", HIVE_METASTORE_FILE_FORMATS).required()];
+
+const BIGLAKE_BIGQUERY_FIELDS: &[FieldSpec] = &[
+    FieldSpec::string("external_volume")
+        .required()
+        .non_empty()
+        .doc("Cloud Storage bucket path (gs://<bucket_name>)."),
+    FieldSpec::enumerated("file_format", BIGLAKE_FILE_FORMATS).required(),
+    FieldSpec::string("catalog_database")
+        .non_empty()
+        .doc("GCP project where models using this catalog should land. When set, takes precedence over model database config and target.database."),
+    FieldSpec::string("lakehouse_catalog")
+        .non_empty()
+        .doc("Lakehouse Runtime Catalog (LRC) catalog name. When set, models using this catalog render a 4-part BigQuery FQN (project.lakehouse_catalog.namespace.table) instead of the standard 3-part project.dataset.table."),
+    FieldSpec::string("base_location_root").non_empty(),
+    FieldSpec::string("connection_id").non_empty(),
+];
+
+const DUCKLAKE_DUCKDB_FIELDS: &[FieldSpec] = &[
+    FieldSpec::string("metadata_path").required().non_empty(),
+    FieldSpec::string("data_path").non_empty(),
+    FieldSpec::string("catalog_database").non_empty(),
+    FieldSpec::string("metadata_schema").non_empty(),
+    FieldSpec::string("metadata_catalog").non_empty(),
+    FieldSpec::u32_plain("data_inlining_row_limit")
+        .doc("Inline row groups smaller than this many rows into the metadata catalog."),
+    FieldSpec::boolean("create_if_not_exists"),
+    FieldSpec::boolean("read_only"),
+    FieldSpec::boolean("encrypted"),
+    FieldSpec::boolean("automatic_migration"),
+    FieldSpec::boolean("override_data_path"),
+];
+
+const LOCAL_FILESYSTEM_DUCKDB_FIELDS: &[FieldSpec] = &[
+    FieldSpec::string("root_path").required().non_empty(),
+    FieldSpec::enumerated("file_format", LOCAL_FS_FILE_FORMATS)
+        .doc("Local file extension / DuckDB COPY format. Defaults to parquet."),
+];
+
+#[derive(Debug, Clone, Copy)]
+struct PlatformBlock {
+    key: &'static str,
+    fields: &'static [FieldSpec],
 }
 
-impl FileFormat {
-    fn parse_file_format(s: &str, catalog_type: CatalogType) -> FsResult<FileFormat> {
-        match catalog_type {
-            CatalogType::HiveMetastore | CatalogType::Unity => {
-                if s.eq_ignore_ascii_case("delta") {
-                    Ok(FileFormat::Delta)
-                } else if s.eq_ignore_ascii_case("hudi") {
-                    Ok(FileFormat::Hudi)
-                } else if s.eq_ignore_ascii_case("parquet") {
-                    Ok(FileFormat::Parquet)
-                } else {
-                    err!(
-                        ErrorCode::InvalidConfig,
-                        "file_format '{}' invalid. choose one of (delta|hudi|parquet)",
-                        s
-                    )
-                }
-            }
-            CatalogType::BiglakeMetastore => {
-                if s.eq_ignore_ascii_case("parquet") {
-                    Ok(FileFormat::Delta)
-                } else {
-                    err!(
-                        ErrorCode::InvalidConfig,
-                        "file_format '{}' invalid. choose one of (parquet)",
-                        s
-                    )
-                }
-            }
-            CatalogType::SnowflakeBuiltIn | CatalogType::IcebergRest => err!(
-                ErrorCode::InvalidConfig,
-                "'file_format' is not supported for catalog type '{}'",
-                catalog_type.as_str()
-            ),
-            _ => unreachable!("V1_CATALOG_TYPES never maps a raw type string onto this variant"),
-        }
+impl PlatformBlock {
+    const fn new(key: &'static str, fields: &'static [FieldSpec]) -> Self {
+        Self { key, fields }
     }
 }
 
-// Snowflake Properties
-
-#[derive(Debug, Default)]
-pub struct SnowflakeBuiltInPropsView<'a> {
-    pub base_location_root: Option<&'a str>,
-    pub change_tracking: Option<bool>,
-    pub data_retention_time_in_days: Option<u32>,
-    pub max_data_extension_time_in_days: Option<u32>,
-    pub storage_serialization_policy: Option<SerializationPolicy>,
-    pub iceberg_version: Option<u32>,
+#[derive(Debug, Clone, Copy)]
+enum ConfigPresence {
+    AllRequired,
+    AtLeastOne,
 }
 
-#[derive(Debug, Default)]
-pub struct SnowflakeRestPropsView<'a> {
-    pub auto_refresh: Option<bool>,
-    pub catalog_linked_database: Option<&'a str>,
-    pub catalog_linked_database_type: Option<&'a str>,
-    pub max_data_extension_time_in_days: Option<u32>,
-    pub target_file_size: Option<TargetFileSize>,
-    pub iceberg_version: Option<u32>,
+#[derive(Debug, Clone, Copy)]
+struct CatalogTypeSchema {
+    catalog_type: CatalogType,
+    table_format: &'static str,
+    description: &'static str,
+    presence: ConfigPresence,
+    platforms: &'static [PlatformBlock],
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SerializationPolicy {
-    COMPATIBLE,
-    OPTIMIZED,
+const CATALOG_SCHEMAS: &[CatalogTypeSchema] = &[
+    CatalogTypeSchema {
+        catalog_type: CatalogType::Horizon,
+        table_format: "iceberg",
+        description: "Snowflake-managed Iceberg catalog (Horizon). Supports snowflake (native), databricks, and/or duckdb (read-only attach) connection blocks.",
+        presence: ConfigPresence::AtLeastOne,
+        platforms: &[
+            PlatformBlock::new("snowflake", HORIZON_SNOWFLAKE_FIELDS),
+            PlatformBlock::new("databricks", HORIZON_DATABRICKS_FIELDS),
+            PlatformBlock::new("duckdb", DUCKDB_ICEBERG_FIELDS),
+            PlatformBlock::new("lakecompute", DUCKDB_ICEBERG_FIELDS),
+        ],
+    },
+    CatalogTypeSchema {
+        catalog_type: CatalogType::Glue,
+        table_format: "iceberg",
+        description: "AWS Glue catalog. Supports snowflake and/or duckdb connection blocks.",
+        presence: ConfigPresence::AtLeastOne,
+        platforms: &[
+            PlatformBlock::new("snowflake", LINKED_SNOWFLAKE_FIELDS),
+            PlatformBlock::new("duckdb", DUCKDB_ICEBERG_FIELDS),
+            PlatformBlock::new("lakecompute", GLUE_LAKE_COMPUTE_FIELDS),
+        ],
+    },
+    CatalogTypeSchema {
+        catalog_type: CatalogType::IcebergRest,
+        table_format: "iceberg",
+        description: "Iceberg REST catalog. Supports snowflake and/or duckdb connection blocks.",
+        presence: ConfigPresence::AtLeastOne,
+        platforms: &[
+            PlatformBlock::new("snowflake", LINKED_SNOWFLAKE_FIELDS),
+            PlatformBlock::new("duckdb", DUCKDB_ICEBERG_FIELDS),
+            PlatformBlock::new("lakecompute", DUCKDB_ICEBERG_FIELDS),
+        ],
+    },
+    CatalogTypeSchema {
+        catalog_type: CatalogType::Unity,
+        table_format: "iceberg",
+        description: "Databricks Unity catalog. Supports snowflake, databricks, lakecompute, and/or duckdb connection blocks. Lake Compute access is read-only.",
+        presence: ConfigPresence::AtLeastOne,
+        platforms: &[
+            PlatformBlock::new("snowflake", LINKED_SNOWFLAKE_FIELDS),
+            PlatformBlock::new("databricks", UNITY_DATABRICKS_FIELDS),
+            PlatformBlock::new("duckdb", DUCKDB_ICEBERG_FIELDS),
+            PlatformBlock::new("lakecompute", UNITY_LAKE_COMPUTE_FIELDS),
+        ],
+    },
+    CatalogTypeSchema {
+        catalog_type: CatalogType::HiveMetastore,
+        table_format: "default",
+        description: "Databricks Hive Metastore catalog. Databricks platform only.",
+        presence: ConfigPresence::AllRequired,
+        platforms: &[PlatformBlock::new(
+            "databricks",
+            HIVE_METASTORE_DATABRICKS_FIELDS,
+        )],
+    },
+    CatalogTypeSchema {
+        catalog_type: CatalogType::BiglakeMetastore,
+        table_format: "iceberg",
+        description: "BigLake Metastore catalog. BigQuery platform only.",
+        presence: ConfigPresence::AllRequired,
+        platforms: &[PlatformBlock::new("bigquery", BIGLAKE_BIGQUERY_FIELDS)],
+    },
+    CatalogTypeSchema {
+        catalog_type: CatalogType::DuckLake,
+        table_format: "default",
+        description: "DuckLake metadata store catalog. Supports duckdb and/or lakecompute connection blocks.",
+        presence: ConfigPresence::AtLeastOne,
+        platforms: &[
+            PlatformBlock::new("duckdb", DUCKLAKE_DUCKDB_FIELDS),
+            PlatformBlock::new("lakecompute", DUCKLAKE_DUCKDB_FIELDS),
+        ],
+    },
+    CatalogTypeSchema {
+        catalog_type: CatalogType::LocalFilesystem,
+        table_format: "default",
+        description: "Local filesystem catalog. DuckDB platform only.",
+        presence: ConfigPresence::AllRequired,
+        platforms: &[PlatformBlock::new("duckdb", LOCAL_FILESYSTEM_DUCKDB_FIELDS)],
+    },
+];
+
+// ===== YAML helpers =====
+
+trait StrExt {
+    fn is_empty_or_whitespace(&self) -> bool;
 }
 
-/// 'AUTO' | '16MB' | '32MB' | '64MB' | '128MB'
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TargetFileSize {
-    AUTO,
-    _16MB,
-    _32MB,
-    _64MB,
-    _128MB,
+impl StrExt for str {
+    #[inline]
+    fn is_empty_or_whitespace(&self) -> bool {
+        self.trim().is_empty()
+    }
 }
 
-// Bigquery Properties
-#[derive(Debug)]
-pub struct BigqueryBuiltInPropsView<'a> {
-    pub base_location_root: Option<&'a str>,
-    pub connection_id: Option<&'a str>,
-}
-
-// Databricks Properties
-#[derive(Debug)]
-pub struct DatabricksUnityPropsView<'a> {
-    pub location_root: Option<&'a str>,
-}
-
-#[derive(Debug)]
-pub enum AdapterPropsView<'a> {
-    SnowflakeBuiltIn(SnowflakeBuiltInPropsView<'a>),
-    SnowflakeRest(SnowflakeRestPropsView<'a>),
-    BigqueryBuiltIn(BigqueryBuiltInPropsView<'a>),
-    DatabricksUnity(DatabricksUnityPropsView<'a>),
-    Empty,
-}
-
-#[inline]
-fn get_str<'a>(m: &'a yml::Mapping, k: &str) -> FsResult<Option<(&'a str, yml::Span)>> {
+fn get_str<'a>(m: &'a yml::Mapping, k: &str) -> FsResult<Option<&'a str>> {
     match m.get(yml::Value::from(k)) {
         Some(v) => match v {
-            yml::Value::String(s, span) => Ok(Some((s.trim(), span.clone()))),
+            yml::Value::String(s, _) => Ok(Some(s.trim())),
             _ => Err(fs_err!(
                 code => ErrorCode::InvalidConfig,
                 hacky_yml_loc => Some(v.span().clone()),
@@ -458,11 +463,10 @@ fn get_str<'a>(m: &'a yml::Mapping, k: &str) -> FsResult<Option<(&'a str, yml::S
     }
 }
 
-#[inline]
-fn get_map<'a>(m: &'a yml::Mapping, k: &str) -> FsResult<Option<(&'a yml::Mapping, yml::Span)>> {
+fn get_map<'a>(m: &'a yml::Mapping, k: &str) -> FsResult<Option<&'a yml::Mapping>> {
     match m.get(yml::Value::from(k)) {
         Some(v) => match v {
-            yml::Value::Mapping(map, span) => Ok(Some((map, span.clone()))),
+            yml::Value::Mapping(map, _) => Ok(Some(map)),
             _ => Err(fs_err!(
                 code => ErrorCode::InvalidConfig,
                 hacky_yml_loc => Some(v.span().clone()),
@@ -474,11 +478,25 @@ fn get_map<'a>(m: &'a yml::Mapping, k: &str) -> FsResult<Option<(&'a yml::Mappin
     }
 }
 
-#[inline]
-fn get_seq<'a>(m: &'a yml::Mapping, k: &str) -> FsResult<Option<(&'a yml::Sequence, yml::Span)>> {
+/// Validates the catalog-level `meta:` field.
+fn validate_meta_shape(m: &yml::Mapping, k: &str) -> FsResult<()> {
+    if let Some(map) = get_map(m, k)?
+        && let Some(key) = map.keys().find(|key| key.as_str().is_none())
+    {
+        return err!(
+            code => ErrorCode::InvalidConfig,
+            hacky_yml_loc => Some(key.span().clone()),
+            "Non-string key in '{}' mapping",
+            k
+        );
+    }
+    Ok(())
+}
+
+fn get_seq<'a>(m: &'a yml::Mapping, k: &str) -> FsResult<Option<&'a yml::Sequence>> {
     match m.get(yml::Value::from(k)) {
         Some(v) => match v {
-            yml::Value::Sequence(seq, span) => Ok(Some((seq, span.clone()))),
+            yml::Value::Sequence(seq, _) => Ok(Some(seq)),
             _ => Err(fs_err!(
                 code => ErrorCode::InvalidConfig,
                 hacky_yml_loc => Some(v.span().clone()),
@@ -490,29 +508,12 @@ fn get_seq<'a>(m: &'a yml::Mapping, k: &str) -> FsResult<Option<(&'a yml::Sequen
     }
 }
 
-#[inline]
-fn get_bool(m: &yml::Mapping, k: &str) -> FsResult<Option<(bool, yml::Span)>> {
-    m.get(yml::Value::from(k))
-        .map(|v| match v {
-            yml::Value::Bool(b, span) => Ok((*b, span.clone())),
-            _ => Err(fs_err!(
-                code => ErrorCode::InvalidConfig,
-                hacky_yml_loc => Some(v.span().clone()),
-                "Key '{}' must be a boolean",
-                k
-            )),
-        })
-        .transpose()
-}
-
-#[inline]
-fn get_u32(m: &yml::Mapping, k: &str) -> FsResult<Option<(u32, yml::Span)>> {
+fn get_u32(m: &yml::Mapping, k: &str) -> FsResult<Option<u32>> {
     m.get(yml::Value::from(k))
         .map(|v| match v {
             yml::Value::Number(n, span) => n
                 .as_i64()
                 .and_then(|i| u32::try_from(i).ok())
-                .map(|u| (u, span.clone()))
                 .ok_or_else(|| {
                     fs_err!(
                         code => ErrorCode::InvalidConfig,
@@ -531,81 +532,790 @@ fn get_u32(m: &yml::Mapping, k: &str) -> FsResult<Option<(u32, yml::Span)>> {
         .transpose()
 }
 
-#[inline]
-fn key_err(key: &str, err_span: Option<yml::Span>) -> Box<dbt_common::FsError> {
-    fs_err!(
-        code => ErrorCode::InvalidConfig,
-        hacky_yml_loc => err_span,
-        "Missing required key '{}' in catalogs.yml",
-        key
-    )
-}
-
-#[inline]
-fn is_blank(s: &str) -> bool {
-    s.trim().is_empty()
+fn field_span<'a>(m: &'a yml::Mapping, k: &str) -> Option<&'a yml::Span> {
+    m.get(yml::Value::from(k)).map(|v| v.span())
 }
 
 fn check_unknown_keys(m: &yml::Mapping, allowed: &[&str], ctx: &str) -> FsResult<()> {
     for k in m.keys() {
         let span = k.span();
         let Some(ks) = k.as_str() else {
-            return err!(code => ErrorCode::InvalidConfig, hacky_yml_loc => Some(span.clone()), "Non-string key in {}", ctx);
+            return err!(
+                code => ErrorCode::InvalidConfig,
+                hacky_yml_loc => Some(span.clone()),
+                "Non-string key in {}",
+                ctx
+            );
         };
         if !allowed.iter().any(|a| a == &ks) {
-            return err!(code => ErrorCode::InvalidConfig, hacky_yml_loc => Some(span.clone()), "Unknown key '{}' in {}", ks, ctx);
+            return err!(
+                code => ErrorCode::InvalidConfig,
+                hacky_yml_loc => Some(span.clone()),
+                "Unknown key '{}' in {}",
+                ks,
+                ctx
+            );
         }
     }
     Ok(())
 }
 
-#[derive(Debug)]
-pub struct WriteIntegrationView<'a> {
-    pub integration_name: &'a str, // alias: name
-    pub catalog_type: CatalogType,
-    // defaults to iceberg; core reconciles with extra info_schema
-    // concept we do not have
-    pub table_format: TableFormat,
-    pub external_volume: Option<&'a str>,
+fn key_err(key: &str, err_span: Option<&yml::Span>) -> Box<dbt_common::FsError> {
+    fs_err!(
+        code => ErrorCode::InvalidConfig,
+        hacky_yml_loc => err_span.cloned(),
+        "Missing required key '{}' in catalogs.yml",
+        key
+    )
+}
 
-    // == Databricks and Bigquery (top-level)
-    pub file_format: Option<FileFormat>,
+fn require_mapping<'a>(value: &'a yml::Value, ctx: &str) -> FsResult<&'a yml::Mapping> {
+    value.as_mapping().ok_or_else(|| {
+        fs_err!(
+            code => ErrorCode::InvalidConfig,
+            hacky_yml_loc => Some(value.span().clone()),
+            "{} must be a mapping",
+            ctx
+        )
+    })
+}
 
-    pub adapter_properties: Option<AdapterPropsView<'a>>,
+// ===== Loader Handoff =====
+
+impl DbtCatalogs {
+    /// Rebuild a zero-copy typed view over the raw YAML mapping.
+    pub fn view(&self) -> FsResult<DbtCatalogsView<'_>> {
+        DbtCatalogsView::from_mapping(&self.repr, &self.span)
+    }
+}
+
+// ===== Phase 1: Shape Validation =====
+// Preconditions:
+// - YAML has been loaded and parsed by the caller.
+// Postconditions:
+// - Document matches the strict v2 envelope: only known top-level and
+//   per-entry keys, all required keys present, no duplicate names,
+//   config and platform blocks are mappings.
+pub fn validate_catalogs_shape(map: &yml::Mapping, span: &yml::Span) -> FsResult<()> {
+    if map.get(yml::Value::from("iceberg_catalogs")).is_some() {
+        return err!(
+            code => ErrorCode::InvalidConfig,
+            hacky_yml_loc => Some(span.clone()),
+            "catalogs.yml v2 uses the key 'catalogs:', not 'iceberg_catalogs:'"
+        );
+    }
+
+    check_unknown_keys(map, &["catalogs"], "top-level catalogs.yml(v2)").map_err(|_| {
+        fs_err!(
+            code => ErrorCode::InvalidConfig,
+            hacky_yml_loc => Some(span.clone()),
+            "catalogs.yml v2 accepts only a top-level 'catalogs:' key"
+        )
+    })?;
+
+    let catalogs = get_seq(map, "catalogs")?.ok_or_else(|| fs_err!(
+        code => ErrorCode::InvalidConfig,
+        hacky_yml_loc => Some(span.clone()),
+        "catalogs.yml requires a 'catalogs:' list, e.g.:\n  catalogs:\n    - name: my_catalog\n      type: horizon\n      table_format: iceberg\n      config:\n        snowflake: {{ ... }}"
+    ))?;
+    let mut seen_catalog_names = HashSet::new();
+
+    for (idx, item) in catalogs.iter().enumerate() {
+        let item_span = item.span();
+        let catalog = require_mapping(item, &format!("catalogs[{idx}]"))
+            .map_err(|_| fs_err!(
+                code => ErrorCode::InvalidConfig,
+                hacky_yml_loc => Some(item_span.clone()),
+                "Each entry under 'catalogs:' must be a mapping with name, type, table_format, and config"
+            ))?;
+
+        check_unknown_keys(
+            catalog,
+            &[
+                "name",
+                "type",
+                "table_format",
+                "config",
+                "description",
+                "owner",
+                "meta",
+            ],
+            "catalog entry",
+        )?;
+
+        for required in ["name", "type", "table_format", "config"] {
+            if !catalog.contains_key(yml::Value::from(required)) {
+                return err!(
+                    code => ErrorCode::InvalidConfig,
+                    hacky_yml_loc => Some(item_span.clone()),
+                    "Catalog entry is missing '{}'. Each entry requires: name, type, table_format, config",
+                    required
+                );
+            }
+        }
+
+        let name = get_str(catalog, "name")?.ok_or_else(|| key_err("name", Some(item_span)))?;
+        if name.is_empty_or_whitespace() {
+            return err!(
+                code => ErrorCode::InvalidConfig,
+                hacky_yml_loc => field_span(catalog, "name").cloned(),
+                "Catalog name must be a non-empty string"
+            );
+        }
+        if let Some(description) = get_str(catalog, "description")?
+            && description.is_empty_or_whitespace()
+        {
+            return err!(
+                code => ErrorCode::InvalidConfig,
+                hacky_yml_loc => field_span(catalog, "description").cloned(),
+                "Supply a value for the 'description' field in catalog '{}' or consider removing it",
+                name
+            );
+        }
+        if let Some(owner) = get_str(catalog, "owner")?
+            && owner.is_empty_or_whitespace()
+        {
+            return err!(
+                code => ErrorCode::InvalidConfig,
+                hacky_yml_loc => field_span(catalog, "owner").cloned(),
+                "Supply a value for the 'owner' field in catalog '{}' or consider removing it",
+                name
+            );
+        }
+        validate_meta_shape(catalog, "meta")?;
+        if !seen_catalog_names.insert(name) {
+            return err!(
+                code => ErrorCode::InvalidConfig,
+                hacky_yml_loc => field_span(catalog, "name").cloned(),
+                "Duplicate catalog name '{}', each catalog must have a unique name",
+                name
+            );
+        }
+
+        if let Some(value) = catalog.get(yml::Value::from("config")) {
+            let config = require_mapping(value, &format!("catalogs[{idx}].config"))
+                .map_err(|_| fs_err!(
+                    code => ErrorCode::InvalidConfig,
+                    hacky_yml_loc => Some(value.span().clone()),
+                    "Catalog '{}' config must be a mapping of platform blocks (e.g. snowflake:, duckdb:, databricks:, bigquery:)",
+                    name
+                ))?;
+            for &platform in ALL_PLATFORMS {
+                if let Some(platform_value) = config.get(yml::Value::from(platform)) {
+                    require_mapping(platform_value, platform)
+                        .map_err(|_| fs_err!(
+                            code => ErrorCode::InvalidConfig,
+                            hacky_yml_loc => Some(platform_value.span().clone()),
+                            "Catalog '{}' config.{} must be a mapping of key-value configuration fields",
+                            name, platform
+                        ))?;
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
+// ===== Phases 2+3: Structural + Semantic Validation =====
+// Preconditions:
+// - Phase 1 shape validation has passed.
+// - Raw YAML envelope is well-formed: required keys present, config/platform
+//   blocks are mappings, no duplicate names.
+// Phase 2 (structural): table_format matches type, platform keys are known and
+//   allowed for this type, platform presence (AllRequired/AtLeastOne), per-field
+//   type checking, requiredness, non-empty, enum membership, forbidden fields.
+// Phase 3 (semantic): cross-field constraints that span multiple fields within
+//   a platform block.
+// Postconditions:
+// - Every catalog entry is fully valid for its type and platform mix.
+
+// Two planes render CatalogType, in different casings. The legacy Jinja/
+// relation-config plane string-compares a few types (Iceberg-on-Snowflake,
+// BigQuery/Snowflake INFO_SCHEMA) against exact uppercase literals inherited
+// from pre-v2 code. Everywhere else, YAML config, diagnostics, logs, spells
+// types lowercase. Diagnostic/log call sites should to_lowercase() on egress
+// so they don't leak the Jinja plane's casing into user-facing output.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CatalogType {
+    Horizon,
+    Glue,
+    IcebergRest,
+    HiveMetastore,
+    Unity,
+    BiglakeMetastore,
+    DuckLake,
+    LocalFilesystem,
+
+    // Has no explicit v2 catalog.
+    SnowflakeBuiltIn, // superceded by Horizon above
+    // native == default platform storage
+    SnowflakeNative,
+    BigqueryNative,
+    DuckdbNative,
+}
+
+impl CatalogType {
+    fn parse(raw: &str, span: &yml::Span) -> FsResult<Self> {
+        if raw.eq_ignore_ascii_case("horizon") {
+            Ok(Self::Horizon)
+        } else if raw.eq_ignore_ascii_case("glue") {
+            Ok(Self::Glue)
+        } else if raw.eq_ignore_ascii_case("iceberg_rest") {
+            Ok(Self::IcebergRest)
+        } else if raw.eq_ignore_ascii_case("hive_metastore") {
+            Ok(Self::HiveMetastore)
+        } else if raw.eq_ignore_ascii_case("unity") {
+            Ok(Self::Unity)
+        } else if raw.eq_ignore_ascii_case("biglake_metastore") {
+            Ok(Self::BiglakeMetastore)
+        } else if raw.eq_ignore_ascii_case("ducklake") {
+            Ok(Self::DuckLake)
+        } else if raw.eq_ignore_ascii_case("local_filesystem") {
+            Ok(Self::LocalFilesystem)
+        } else {
+            err!(
+                code => ErrorCode::InvalidConfig,
+                hacky_yml_loc => Some(span.clone()),
+                "type '{}' invalid. choose one of (horizon|glue|iceberg_rest|unity|hive_metastore|biglake_metastore|ducklake|local_filesystem)",
+                raw
+            )
+        }
+    }
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Horizon => "horizon",
+            Self::Glue => "glue",
+            Self::IcebergRest => "ICEBERG_REST", // required by legacy dbt core v1 Jinja macros
+            Self::HiveMetastore => "hive_metastore",
+            Self::Unity => "unity",
+            Self::BiglakeMetastore => "biglake_metastore",
+            Self::DuckLake => "ducklake",
+            Self::LocalFilesystem => "local_filesystem",
+            Self::SnowflakeBuiltIn => "BUILT_IN",
+            Self::SnowflakeNative => "INFO_SCHEMA",
+            Self::BigqueryNative => "INFO_SCHEMA",
+            Self::DuckdbNative => "duckdb",
+        }
+    }
+
+    /// Whether this catalog type requires Snowflake destination handling when it is used by
+    /// a Lake Compute node.
+    pub fn requires_snowflake_propagation(&self) -> bool {
+        matches!(self, Self::IcebergRest)
+    }
+
+    /// Whether `lakecompute` can read a catalog of this type.
+    ///
+    /// A capability of `lakecompute`, expressed here in code: it is a property of the
+    /// storage, not of anything a project declares. Requiring a catalog to carry a
+    /// `lakecompute` connection block would reject readable data over a missing
+    /// declaration.
+    ///
+    /// Matched exhaustively on purpose, so adding a `CatalogType` forces the
+    /// question to be answered rather than defaulting either way.
+    pub fn lake_compute_can_read(&self) -> bool {
+        match self {
+            // Open table formats `lakecompute` can attach.
+            Self::Horizon | Self::Glue | Self::IcebergRest | Self::Unity => true,
+            // Snowflake-managed Iceberg under its older spelling; Horizon supersedes it.
+            Self::SnowflakeBuiltIn => true,
+            // Engine-owned catalogs `lakecompute` does not support today.
+            Self::DuckLake
+            | Self::LocalFilesystem
+            | Self::BiglakeMetastore
+            | Self::HiveMetastore => false,
+            // Native platform storage is not readable by an external engine at all --
+            // this is the warehouse-native case the check exists to catch.
+            Self::SnowflakeNative | Self::BigqueryNative | Self::DuckdbNative => false,
+        }
+    }
+
+    /// Whether this catalog type represents a customer-owned catalog outside the
+    /// warehouse's own storage, as opposed to the warehouse's native/managed storage.
+    ///
+    /// Matched exhaustively on purpose, so adding a `CatalogType` forces the
+    /// question to be answered rather than defaulting either way.
+    pub fn is_catalog_linked(&self) -> bool {
+        match self {
+            Self::Glue
+            | Self::IcebergRest
+            | Self::HiveMetastore
+            | Self::Unity
+            | Self::BiglakeMetastore
+            | Self::DuckLake
+            | Self::LocalFilesystem => true,
+            // Snowflake-managed Iceberg, current (Horizon) and superseded
+            // (SnowflakeBuiltIn) spellings -- see lake_compute_can_read's comment on
+            // the same pairing -- plus non-Iceberg native storage.
+            Self::Horizon
+            | Self::SnowflakeBuiltIn
+            | Self::SnowflakeNative
+            | Self::BigqueryNative
+            | Self::DuckdbNative => false,
+        }
+    }
+
+    pub fn parse_from_str(raw: &str, adapter_type: dbt_adapter_core::AdapterType) -> Self {
+        match raw {
+            "horizon" => Self::Horizon,
+            "glue" => Self::Glue,
+            // "ICEBERG_REST" only exists on the Jinja plane. Model configs should
+            // be lowercase to obscure the internal uppercase as much as possible.
+            "iceberg_rest" => Self::IcebergRest,
+            "hive_metastore" => Self::HiveMetastore,
+            "unity" => Self::Unity,
+            "biglake_metastore" => Self::BiglakeMetastore,
+            "ducklake" => Self::DuckLake,
+            "local_filesystem" => Self::LocalFilesystem,
+            "BUILT_IN" => Self::SnowflakeBuiltIn,
+            "duckdb" => Self::DuckdbNative,
+            "INFO_SCHEMA" => match adapter_type {
+                dbt_adapter_core::AdapterType::Bigquery => Self::BigqueryNative,
+                dbt_adapter_core::AdapterType::Snowflake => Self::SnowflakeNative,
+                _ => unreachable!("only Snowflake/Bigquery ever egress INFO_SCHEMA"),
+            },
+            _ => unreachable!("not a CatalogType::as_str() output"),
+        }
+    }
+}
+
+impl serde::Serialize for CatalogType {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.as_str())
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TableFormat {
+    Default,
+    Iceberg,
+}
+
+impl TableFormat {
+    pub(crate) fn parse_from_yaml(raw: &str, span: &yml::Span) -> FsResult<Self> {
+        if raw.eq_ignore_ascii_case("default") {
+            Ok(Self::Default)
+        } else if raw.eq_ignore_ascii_case("iceberg") {
+            Ok(Self::Iceberg)
+        } else {
+            err!(
+                code => ErrorCode::InvalidConfig,
+                hacky_yml_loc => Some(span.clone()),
+                "table_format '{}' invalid. choose one of ({})",
+                raw,
+                Self::opts_display()
+            )
+        }
+    }
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Default => "default",
+            Self::Iceberg => "iceberg",
+        }
+    }
+
+    pub fn opts_display() -> String {
+        [Self::Default, Self::Iceberg]
+            .iter()
+            .map(Self::as_str)
+            .collect::<Vec<_>>()
+            .join("|")
+    }
+
+    pub fn is_iceberg(&self) -> bool {
+        matches!(self, Self::Iceberg)
+    }
+
+    pub fn parse(value: Option<&str>) -> FsResult<Self> {
+        match value {
+            Some(s) if s.eq_ignore_ascii_case("iceberg") => Ok(Self::Iceberg),
+            Some(s) if s.eq_ignore_ascii_case("default") => Ok(Self::Default),
+            Some(other) => err!(
+                ErrorCode::InvalidConfig,
+                "Unsupported table_format '{}'. Must be one of ({})",
+                other,
+                Self::opts_display()
+            ),
+            None => Ok(Self::Default),
+        }
+    }
+}
+
+/// The format used to describe the table format at the materialization layer.
+///
+/// Often corresponds to predicates used in DDL or the storage format.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PhysicalTableFormat {
+    Default,
+    Iceberg,
+    DuckLake,
+}
+
+/// Implementors know how to resolve a table format and catalog_type to the physical table format
+pub trait PhysicalFormatResolver {
+    fn table_format(&self) -> TableFormat;
+    fn catalog_type(&self) -> CatalogType;
+
+    fn physical_table_format(&self) -> PhysicalTableFormat {
+        match self.table_format() {
+            TableFormat::Default => match self.catalog_type() {
+                CatalogType::Horizon
+                | CatalogType::Glue
+                | CatalogType::IcebergRest
+                | CatalogType::HiveMetastore
+                | CatalogType::Unity
+                | CatalogType::BiglakeMetastore
+                | CatalogType::LocalFilesystem
+                | CatalogType::SnowflakeBuiltIn
+                | CatalogType::SnowflakeNative
+                | CatalogType::BigqueryNative
+                | CatalogType::DuckdbNative => PhysicalTableFormat::Default,
+                CatalogType::DuckLake => PhysicalTableFormat::DuckLake,
+            },
+            TableFormat::Iceberg => match self.catalog_type() {
+                CatalogType::Horizon
+                | CatalogType::Glue
+                | CatalogType::IcebergRest
+                | CatalogType::HiveMetastore
+                | CatalogType::Unity
+                | CatalogType::BiglakeMetastore
+                | CatalogType::LocalFilesystem
+                | CatalogType::SnowflakeBuiltIn
+                | CatalogType::SnowflakeNative
+                | CatalogType::BigqueryNative
+                | CatalogType::DuckdbNative => PhysicalTableFormat::Iceberg,
+                CatalogType::DuckLake => PhysicalTableFormat::DuckLake,
+            },
+        }
+    }
+}
+
+impl PhysicalFormatResolver for CatalogSpecView<'_> {
+    fn table_format(&self) -> TableFormat {
+        self.table_format
+    }
+
+    fn catalog_type(&self) -> CatalogType {
+        self.catalog_type
+    }
+}
+
+impl PhysicalTableFormat {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Default => "default",
+            Self::Iceberg => "iceberg",
+            Self::DuckLake => "ducklake",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FileFormat {
+    Delta,
+    Parquet,
+    Hudi,
+}
+
+impl FileFormat {
+    pub fn parse(raw: &str, span: Option<yml::Span>) -> FsResult<Self> {
+        if raw.eq_ignore_ascii_case("delta") {
+            Ok(Self::Delta)
+        } else if raw.eq_ignore_ascii_case("parquet") {
+            Ok(Self::Parquet)
+        } else if raw.eq_ignore_ascii_case("hudi") {
+            Ok(Self::Hudi)
+        } else {
+            err!(
+                code => ErrorCode::InvalidConfig,
+                hacky_yml_loc => span,
+                "file_format '{}' invalid. choose one of (delta|parquet|hudi)",
+                raw
+            )
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UniformMode {
+    Enabled,
+    Disabled,
+}
+
+impl UniformMode {
+    pub fn from_bool(b: bool) -> Self {
+        if b { Self::Enabled } else { Self::Disabled }
+    }
+
+    pub fn is_enabled(self) -> bool {
+        matches!(self, Self::Enabled)
+    }
 }
 
 #[derive(Debug)]
 pub struct CatalogSpecView<'a> {
-    pub span: yml::Span,
-    pub catalog_name: (&'a str, yml::Span), // alias: name
-    pub active_write_integration: (&'a str, yml::Span),
-    pub write_integrations: (Vec<WriteIntegrationView<'a>>, yml::Span),
+    repr: &'a yml::Mapping,
+    pub name: &'a str,
+    pub catalog_type: CatalogType,
+    pub table_format: TableFormat,
+    config: &'a yml::Mapping,
 }
 
 #[derive(Debug)]
 pub struct DbtCatalogsView<'a> {
-    pub span: yml::Span,
     pub catalogs: Vec<CatalogSpecView<'a>>,
 }
 
+impl<'a> CatalogSpecView<'a> {
+    fn from_mapping(map: &'a yml::Mapping, span: &yml::Span) -> FsResult<Self> {
+        let name = get_str(map, "name")?.ok_or_else(|| key_err("name", Some(span)))?;
+        let raw_type = get_str(map, "type")?.ok_or_else(|| key_err("type", Some(span)))?;
+        let raw_table_format =
+            get_str(map, "table_format")?.ok_or_else(|| key_err("table_format", Some(span)))?;
+        let type_span = field_span(map, "type").ok_or_else(|| key_err("type", Some(span)))?;
+        let table_format_span =
+            field_span(map, "table_format").ok_or_else(|| key_err("table_format", Some(span)))?;
+        let catalog_type = CatalogType::parse(raw_type, type_span)?;
+        let table_format = TableFormat::parse_from_yaml(raw_table_format, table_format_span)?;
+        let config_map = get_map(map, "config")?.ok_or_else(|| key_err("config", Some(span)))?;
+
+        Ok(Self {
+            name,
+            repr: map,
+            catalog_type,
+            table_format,
+            config: config_map,
+        })
+    }
+
+    fn field_span(&self, key: &str) -> Option<&'a yml::Span> {
+        field_span(self.repr, key)
+    }
+
+    pub fn config_block(&self, platform: &str) -> Option<&'a yml::Mapping> {
+        self.config
+            .get(yml::Value::from(platform))
+            .and_then(|v| v.as_mapping())
+    }
+
+    // ===== Post-hoc semantic validators =====
+    // Called from CatalogRegistry::validate_semantic after structural validation passes.
+
+    fn validate_duckdb_semantics(&self, duckdb: &yml::Mapping, type_name: &str) -> FsResult<()> {
+        match self.catalog_type {
+            CatalogType::Glue
+            | CatalogType::IcebergRest
+            | CatalogType::Horizon
+            | CatalogType::Unity => {
+                let has_endpoint = get_str(duckdb, "endpoint")?;
+                let has_endpoint_type = get_str(duckdb, "endpoint_type")?;
+
+                match (has_endpoint, has_endpoint_type) {
+                    (None, None) => {
+                        return err!(
+                            code => ErrorCode::InvalidConfig,
+                            hacky_yml_loc => self.field_span("type").cloned(),
+                            "Catalog '{}' {}/duckdb config requires 'endpoint' or 'endpoint_type'",
+                            self.name, type_name
+                        );
+                    }
+                    (Some(ep), Some(_)) if !ep.is_empty_or_whitespace() => {
+                        return err!(
+                            code => ErrorCode::InvalidConfig,
+                            hacky_yml_loc => field_span(duckdb, "endpoint_type").cloned(),
+                            "Catalog '{}' {}/duckdb 'endpoint' and 'endpoint_type' are mutually exclusive",
+                            self.name, type_name
+                        );
+                    }
+                    (Some(ep), _) if ep.is_empty_or_whitespace() => {
+                        return err!(
+                            code => ErrorCode::InvalidConfig,
+                            hacky_yml_loc => field_span(duckdb, "endpoint").cloned(),
+                            "Catalog '{}' {}/duckdb 'endpoint' must be non-empty",
+                            self.name, type_name
+                        );
+                    }
+                    (_, Some(et)) => {
+                        let val = et.trim();
+                        if !matches_enum_ci(val, DUCKDB_ENDPOINT_TYPES) {
+                            return err!(
+                                code => ErrorCode::InvalidConfig,
+                                hacky_yml_loc => field_span(duckdb, "endpoint_type").cloned(),
+                                "Catalog '{}' {}/duckdb 'endpoint_type' must be 'GLUE' or 'S3_TABLES'",
+                                self.name, type_name
+                            );
+                        }
+                        if val.eq_ignore_ascii_case("S3_TABLES") {
+                            let Some(warehouse) = get_str(duckdb, "warehouse")? else {
+                                return err!(
+                                    code => ErrorCode::InvalidConfig,
+                                    hacky_yml_loc => field_span(duckdb, "endpoint_type").cloned(),
+                                    "Catalog '{}' {}/duckdb endpoint_type='S3_TABLES' requires 'warehouse'",
+                                    self.name, type_name
+                                );
+                            };
+                            if warehouse.is_empty_or_whitespace() {
+                                return err!(
+                                    code => ErrorCode::InvalidConfig,
+                                    hacky_yml_loc => field_span(duckdb, "warehouse").cloned(),
+                                    "Catalog '{}' {}/duckdb 'warehouse' must be non-empty",
+                                    self.name, type_name
+                                );
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+
+                if let Some(_auth_type) = get_str(duckdb, "authorization_type")? {
+                    if has_endpoint_type.is_some() {
+                        return err!(
+                            code => ErrorCode::InvalidConfig,
+                            hacky_yml_loc => field_span(duckdb, "authorization_type").cloned(),
+                            "Catalog '{}' {}/duckdb 'authorization_type' cannot be combined with 'endpoint_type'",
+                            self.name, type_name
+                        );
+                    }
+                }
+            }
+            CatalogType::DuckLake => {}
+            _ => debug_assert!(
+                false,
+                "validate_duckdb_semantics called for unsupported catalog type: {:?}",
+                self.catalog_type
+            ),
+        }
+
+        if let Some(catalog_database) = get_str(duckdb, "catalog_database")?
+            && !catalog_database
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'_')
+        {
+            return err!(
+                code => ErrorCode::InvalidConfig,
+                hacky_yml_loc => field_span(duckdb, "catalog_database").cloned(),
+                "Catalog '{}' {}/duckdb 'catalog_database' must contain only ASCII letters, digits, and underscores",
+                self.name, type_name
+            );
+        }
+
+        Ok(())
+    }
+
+    // FIXME: validation is currently organized per-platform (validate_duckdb_semantics etc.)
+    // but some constraints are catalog-type × platform cross products. As these accumulate,
+    // consider a validation schema that can express per-(catalog-type, platform) rules
+    // without one-off functions. For now, catalog-type-specific validators like this one
+    // compose the shared platform validator as a quick unblock.
+    fn validate_horizon_duckdb_semantics(&self, duckdb: &yml::Mapping) -> FsResult<()> {
+        // Horizon attached via DuckDB needs the Snowflake warehouse name.
+        if get_str(duckdb, "warehouse")?.is_none() {
+            return err!(
+                code => ErrorCode::InvalidConfig,
+                hacky_yml_loc => self.field_span("type").cloned(),
+                "Catalog '{}' horizon/duckdb config requires 'warehouse'",
+                self.name
+            );
+        }
+        Ok(())
+    }
+
+    fn validate_unity_semantics(&self, databricks: &yml::Mapping) -> FsResult<()> {
+        let file_format_str = get_str(databricks, "file_format")?
+            .expect("structural validation ensures file_format is present");
+        let file_format_span = field_span(databricks, "file_format").cloned();
+        let file_format = FileFormat::parse(file_format_str, file_format_span.clone())?;
+        let use_uniform =
+            UniformMode::from_bool(try_get_bool(databricks, "use_uniform")?.unwrap_or(false));
+
+        match (file_format, use_uniform) {
+            (FileFormat::Delta, UniformMode::Enabled)
+            | (FileFormat::Parquet, UniformMode::Disabled) => Ok(()),
+            (FileFormat::Delta, UniformMode::Disabled) => err!(
+                code => ErrorCode::InvalidConfig,
+                hacky_yml_loc => file_format_span,
+                "Catalog '{}' unity/databricks use_uniform: false (or unset) requires file_format: parquet",
+                self.name
+            ),
+            (FileFormat::Parquet, UniformMode::Enabled) => err!(
+                code => ErrorCode::InvalidConfig,
+                hacky_yml_loc => file_format_span,
+                "Catalog '{}' unity/databricks use_uniform: true requires file_format: delta",
+                self.name
+            ),
+            (FileFormat::Hudi, _) => err!(
+                code => ErrorCode::InvalidConfig,
+                hacky_yml_loc => file_format_span,
+                "Catalog '{}' unity/databricks file_format 'hudi' is not valid for unity (use delta or parquet)",
+                self.name
+            ),
+        }
+    }
+
+    fn validate_unity_lake_compute_semantics(&self, lakecompute: &yml::Mapping) -> FsResult<()> {
+        if let Some(host) = get_str(lakecompute, "host")? {
+            if let Err(message) = normalize_databricks_host(host) {
+                return err!(
+                    code => ErrorCode::InvalidConfig,
+                    hacky_yml_loc => field_span(lakecompute, "host").cloned(),
+                    "Catalog '{}' unity/lakecompute 'host' is invalid: {}",
+                    self.name, message
+                );
+            }
+        }
+        if let Some(region) = get_str(lakecompute, "region")?
+            && (region != region.to_ascii_lowercase()
+                || !region
+                    .bytes()
+                    .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+                || !region.bytes().any(|byte| byte == b'-'))
+        {
+            return err!(
+                code => ErrorCode::InvalidConfig,
+                hacky_yml_loc => field_span(lakecompute, "region").cloned(),
+                "Catalog '{}' unity/lakecompute 'region' must be a lowercase AWS region token",
+                self.name
+            );
+        }
+        Ok(())
+    }
+
+    fn validate_biglake_semantics(&self, bigquery: &yml::Mapping) -> FsResult<()> {
+        let external_volume = get_str(bigquery, "external_volume")?
+            .expect("structural validation ensures external_volume is present");
+        if !external_volume.starts_with("gs://") {
+            return err!(
+                code => ErrorCode::InvalidConfig,
+                hacky_yml_loc => field_span(bigquery, "external_volume").cloned(),
+                "Catalog '{}' biglake_metastore/bigquery 'external_volume' must be a GCS path starting with gs://",
+                self.name
+            );
+        }
+        Ok(())
+    }
+}
+
 impl<'a> DbtCatalogsView<'a> {
-    pub fn from_mapping(map: &'a yml::Mapping, span: yml::Span) -> FsResult<Self> {
-        check_unknown_keys(map, &["catalogs"], "top-level catalogs.yml")?;
-        let catalog_entries = match get_seq(map, "catalogs")? {
-            Some(entries) => entries,
-            None => return Err(key_err("catalogs", Some(span))),
-        };
+    /// Runs Phase 1 shape validation, then constructs zero-copy typed views.
+    pub fn from_mapping(map: &'a yml::Mapping, span: &yml::Span) -> FsResult<Self> {
+        validate_catalogs_shape(map, span)?;
 
-        let mut catalogs = Vec::with_capacity(catalog_entries.0.len());
+        let catalog_entries =
+            get_seq(map, "catalogs")?.ok_or_else(|| key_err("catalogs", Some(span)))?;
 
-        for (idx, item) in catalog_entries.0.iter().enumerate() {
-            let item_span = item.span().clone();
+        let mut catalogs = Vec::with_capacity(catalog_entries.len());
+        for (idx, item) in catalog_entries.iter().enumerate() {
+            let item_span = item.span();
             let m = match item.as_mapping() {
                 Some(m) => m,
                 None => {
                     return err!(
                         code => ErrorCode::InvalidConfig,
-                        hacky_yml_loc => Some(item_span),
+                        hacky_yml_loc => Some(item_span.clone()),
                         "catalogs[{idx}] must be a mapping"
                     );
                 }
@@ -613,898 +1323,462 @@ impl<'a> DbtCatalogsView<'a> {
             catalogs.push(CatalogSpecView::from_mapping(m, item_span)?);
         }
 
-        Ok(Self { catalogs, span })
+        Ok(Self { catalogs })
     }
 }
 
-impl<'a> CatalogSpecView<'a> {
-    pub fn from_mapping(map: &'a yml::Mapping, span: yml::Span) -> FsResult<Self> {
-        check_unknown_keys(
-            map,
-            &[
-                "catalog_name",
-                "name",
-                "active_write_integration",
-                "write_integrations",
-            ],
-            "catalog specification",
-        )?;
+// ===== CatalogRegistry =====
 
-        // Favor "catalog_name"
-        if let (Some((_, _span1)), Some((_, span2))) =
-            (get_str(map, "catalog_name")?, get_str(map, "name")?)
-        {
-            return err!(
-                code => ErrorCode::InvalidConfig,
-                hacky_yml_loc => Some(span2),
-                "Both 'catalog_name' and 'name' provided in catalog specification; provide exactly one"
-            );
-        }
-
-        let catalog_name = match get_str(map, "catalog_name")? {
-            Some(val) => val,
-            None => get_str(map, "name")?
-                .ok_or_else(|| key_err("catalog_name|name", Some(span.clone())))?,
-        };
-
-        let active = get_str(map, "active_write_integration")?
-            .ok_or_else(|| key_err("active_write_integration", Some(span.clone())))?;
-
-        let write_integration_entries = get_seq(map, "write_integrations")?
-            .ok_or_else(|| key_err("write_integrations", Some(span.clone())))?;
-
-        let mut write_integrations = Vec::with_capacity(write_integration_entries.0.len());
-        for (idx, item) in write_integration_entries.0.iter().enumerate() {
-            let item_span = item.span();
-            let write_integration_mapping = item.as_mapping().ok_or_else(|| {
-                fs_err!(
-                    code => ErrorCode::InvalidConfig,
-                    hacky_yml_loc => Some(item_span.clone()),
-                    "write_integrations[{idx}] must be a mapping"
-                )
-            })?;
-            write_integrations.push(WriteIntegrationView::from_mapping(
-                write_integration_mapping,
-            )?);
-        }
-        Ok(Self {
-            span,
-            catalog_name,
-            active_write_integration: active,
-            write_integrations: (write_integrations, write_integration_entries.1),
-        })
-    }
+struct CatalogRegistry {
+    schemas: &'static [CatalogTypeSchema],
 }
 
-impl<'a> WriteIntegrationView<'a> {
-    pub fn from_mapping(map: &'a yml::Mapping) -> FsResult<Self> {
-        if let (Some(_), Some((_, span2))) =
-            (get_str(map, "integration_name")?, get_str(map, "name")?)
-        {
-            return err!(
-                code => ErrorCode::InvalidConfig,
-                hacky_yml_loc => Some(span2),
-                "Both 'integration_name' and 'name' provided in write_integration; provide exactly one"
-            );
+impl CatalogRegistry {
+    fn new() -> Self {
+        Self {
+            schemas: CATALOG_SCHEMAS,
         }
+    }
 
-        let integration_name = match get_str(map, "integration_name")? {
-            Some(val) => val,
-            None => get_str(map, "name")?.ok_or_else(|| key_err("integration_name|name", None))?,
-        };
-
-        let catalog_type_raw =
-            get_str(map, "catalog_type")?.ok_or_else(|| key_err("catalog_type", None))?;
-        let catalog_type = V1_CATALOG_TYPES
+    fn type_schema(&self, ct: CatalogType) -> FsResult<&'static CatalogTypeSchema> {
+        self.schemas
             .iter()
-            .find_map(|(name, v)| catalog_type_raw.0.eq_ignore_ascii_case(name).then_some(*v))
+            .find(|s| s.catalog_type == ct)
             .ok_or_else(|| {
                 fs_err!(
-                    code => ErrorCode::InvalidConfig,
-                    hacky_yml_loc => Some(catalog_type_raw.1),
-                    "catalog_type '{}' invalid. choose one of ({})",
-                    catalog_type_raw.0,
-                    V1_CATALOG_TYPE_OPTS
+                    ErrorCode::InvalidConfig,
+                    "Unknown catalog type '{}'",
+                    ct.as_str()
                 )
-            })?;
-
-        match catalog_type {
-            CatalogType::SnowflakeBuiltIn => Self::from_snowflake_built_in(map, integration_name.0),
-            CatalogType::IcebergRest => Self::from_snowflake_iceberg_rest(map, integration_name.0),
-            CatalogType::Unity => Self::from_databricks_unity(map, integration_name.0),
-            CatalogType::HiveMetastore => Self::from_databricks_hms(map, integration_name.0),
-            CatalogType::BiglakeMetastore => Self::from_bigquery_built_in(map, integration_name.0),
-            _ => unreachable!("V1_CATALOG_TYPES never maps a raw type string onto this variant"),
-        }
-    }
-
-    // Snowflake BUILT_IN
-    fn from_snowflake_built_in(map: &'a yml::Mapping, integration_name: &'a str) -> FsResult<Self> {
-        check_unknown_keys(
-            map,
-            &[
-                "integration_name",
-                "name",
-                "catalog_type",
-                "table_format",
-                "external_volume",
-                "adapter_properties",
-                // These keys are adapter properties, allowed only to throw an explicit error message
-                "base_location_root",
-                "base_location_subpath",
-            ],
-            "write_integration(Snowflake built_in)",
-        )?;
-
-        let (table_format, table_format_span) = match get_str(map, "table_format")? {
-            Some((s, span)) => (TableFormat::parse_from_yaml(s, &span)?, span),
-            None => return Err(key_err("table_format", None)),
-        };
-        if table_format != TableFormat::Iceberg {
-            return err!(
-                code => ErrorCode::InvalidConfig,
-                hacky_yml_loc => Some(table_format_span),
-                "integration '{}': Snowflake built_in requires table_format=iceberg",
-                integration_name
-            );
-        }
-
-        let external_volume = {
-            Some(match get_str(map, "external_volume")? {
-                None => {
-                    return err!(
-                        code => ErrorCode::InvalidConfig,
-                        hacky_yml_loc => None::<yml::Span>,
-                        "integration '{}': 'external_volume' is required for BUILT_IN catalogs.",
-                        integration_name
-                    );
-                }
-                Some(("", span)) => {
-                    return err!(
-                        code => ErrorCode::InvalidConfig,
-                        hacky_yml_loc => Some(span),
-                        "integration '{}': 'external_volume' is required for BUILT_IN catalogs and cannot be blank.",
-                        integration_name
-                    );
-                }
-                Some((s, _)) => s,
             })
-        };
-
-        // Intentional deviation from Core: Explicitly disallow base_location_{root, subpath}
-        // TODO(anna): These are good candidates to add to the autofix script.
-        // If we do, we should print warnings instead of throwing one error at a time.
-        if let Some((_, span)) = get_str(map, "base_location_root")? {
-            return err!(
-                code => ErrorCode::InvalidConfig,
-                hacky_yml_loc => Some(span),
-                "integration '{}': 'base_location_root' must be set under 'adapter_properties', not at the top level.",
-                integration_name
-            );
-        }
-        if let Some((_, span)) = get_str(map, "base_location_subpath")? {
-            return err!(
-                code => ErrorCode::InvalidConfig,
-                hacky_yml_loc => Some(span),
-                "integration '{}': 'base_location_subpath' must be set under 'adapter_properties' in model configs.",
-                integration_name
-            );
-        }
-
-        let adapter_properties = {
-            if let Some((props, _span)) = get_map(map, "adapter_properties")? {
-                Some(parse_adapter_properties(
-                    props,
-                    CatalogType::SnowflakeBuiltIn,
-                )?)
-            } else {
-                None
-            }
-        };
-
-        Ok(Self {
-            integration_name,
-            catalog_type: CatalogType::SnowflakeBuiltIn,
-            table_format,
-            external_volume,
-            file_format: None,
-            adapter_properties,
-        })
     }
 
-    fn from_snowflake_iceberg_rest(
-        map: &'a yml::Mapping,
-        integration_name: &'a str,
-    ) -> FsResult<Self> {
-        check_unknown_keys(
-            map,
-            &[
-                "integration_name",
-                "name",
-                "catalog_type",
-                "table_format",
-                "adapter_properties",
-            ],
-            "write_integration(Snowflake iceberg_rest)",
-        )?;
+    fn validate_structural(&self, catalog: &CatalogSpecView<'_>) -> FsResult<()> {
+        let schema = self.type_schema(catalog.catalog_type)?;
 
-        let (table_format, table_format_span) = match get_str(map, "table_format")? {
-            Some((s, span)) => (TableFormat::parse_from_yaml(s, &span)?, span),
-            None => return Err(key_err("table_format", None)),
-        };
-        if table_format != TableFormat::Iceberg {
+        if catalog.table_format.as_str() != schema.table_format {
             return err!(
                 code => ErrorCode::InvalidConfig,
-                hacky_yml_loc => Some(table_format_span),
-                "integration '{}': Snowflake iceberg_rest requires table_format=iceberg",
-                integration_name
+                hacky_yml_loc => catalog.field_span("table_format").cloned(),
+                "Catalog '{}' type '{}' requires table_format='{}'",
+                catalog.name, schema.catalog_type.as_str().to_lowercase(), schema.table_format
             );
         }
 
-        let adapter_properties = {
-            if let Some((props, _span)) = get_map(map, "adapter_properties")? {
-                Some(parse_adapter_properties(props, CatalogType::IcebergRest)?)
-            } else {
-                None
-            }
-        };
-
-        Ok(Self {
-            integration_name,
-            catalog_type: CatalogType::IcebergRest,
-            table_format,
-            external_volume: None,
-            file_format: None,
-            adapter_properties,
-        })
-    }
-
-    fn from_databricks_unity(map: &'a yml::Mapping, integration_name: &'a str) -> FsResult<Self> {
-        check_unknown_keys(
-            map,
-            &[
-                "integration_name",
-                "name",
-                "catalog_type",
-                "table_format",
-                "file_format",
-                "adapter_properties",
-            ],
-            "write_integration(Databricks unity)",
-        )?;
-
-        let (table_format, table_format_span) = {
-            let (raw, span) = match get_str(map, "table_format")? {
-                Some((s, span)) => (s, span),
-                None => return Err(key_err("table_format", None)),
-            };
-            (TableFormat::parse_from_yaml(raw, &span)?, span)
-        };
-        if table_format != TableFormat::Iceberg {
+        if let Some(k) = catalog
+            .config
+            .keys()
+            .find(|k| k.as_str().is_none_or(|s| !ALL_PLATFORMS.contains(&s)))
+        {
             return err!(
                 code => ErrorCode::InvalidConfig,
-                hacky_yml_loc => Some(table_format_span),
-                "integration '{}': Databricks 'unity' requires table_format=iceberg",
-                integration_name
+                hacky_yml_loc => Some(k.span().clone()),
+                "Unknown key '{}' in catalogs[].config",
+                k.as_str().unwrap_or("<non-string>")
             );
         }
 
-        let file_format = {
-            let parsed = match get_str(map, "file_format")? {
-                Some((s, span)) => FileFormat::parse_file_format(s, CatalogType::Unity)
-                    .map_err(|e| e.with_hacky_yml_location(Some(span.clone())))?,
-                None => {
+        if let Some(&platform) = ALL_PLATFORMS.iter().find(|&&p| {
+            catalog.config_block(p).is_some() && !schema.platforms.iter().any(|s| s.key == p)
+        }) {
+            return err!(
+                code => ErrorCode::InvalidConfig,
+                hacky_yml_loc => catalog.field_span("type").cloned(),
+                "dbt does not support {} on the {} 'type'",
+                platform, schema.catalog_type.as_str().to_lowercase()
+            );
+        }
+
+        match schema.presence {
+            ConfigPresence::AllRequired => {
+                if let Some(missing) = schema
+                    .platforms
+                    .iter()
+                    .find(|p| catalog.config_block(p.key).is_none())
+                {
                     return err!(
                         code => ErrorCode::InvalidConfig,
-                        hacky_yml_loc => None::<yml::Span>,
-                        "integration '{}': Databricks 'unity' requires file_format (must be 'delta')",
-                        integration_name
-                    );
-                }
-            };
-            match parsed {
-                FileFormat::Delta => Some(parsed),
-                _ => {
-                    return err!(
-                        code => ErrorCode::InvalidConfig,
-                        hacky_yml_loc => Some(table_format_span),
-                        "integration '{}': when table_format=iceberg, file_format must be 'delta'",
-                        integration_name
+                        hacky_yml_loc => catalog.field_span("type").cloned(),
+                        "Catalog '{}' type '{}' requires config.{}",
+                        catalog.name, schema.catalog_type.as_str().to_lowercase(), missing.key
                     );
                 }
             }
-        };
-
-        let adapter_properties = {
-            if let Some((props, _span)) = get_map(map, "adapter_properties")? {
-                Some(parse_adapter_properties(props, CatalogType::Unity)?)
-            } else {
-                None
-            }
-        };
-
-        Ok(Self {
-            integration_name,
-            catalog_type: CatalogType::Unity,
-            table_format,
-            external_volume: None,
-            file_format,
-            adapter_properties,
-        })
-    }
-
-    fn from_databricks_hms(map: &'a yml::Mapping, integration_name: &'a str) -> FsResult<Self> {
-        check_unknown_keys(
-            map,
-            &[
-                "integration_name",
-                "name",
-                "catalog_type",
-                "table_format",
-                "file_format",
-            ],
-            "write_integration(Databricks hive_metastore)",
-        )?;
-
-        let (table_format, table_format_span) = match get_str(map, "table_format")? {
-            Some((s, span)) => (TableFormat::parse_from_yaml(s, &span)?, span),
-            None => return Err(key_err("table_format", None)),
-        };
-        if table_format != TableFormat::Default {
-            return err!(
-                code => ErrorCode::InvalidConfig,
-                hacky_yml_loc => Some(table_format_span),
-                "integration '{}': Databricks 'hive_metastore' requires table_format=DEFAULT",
-                integration_name
-            );
-        }
-
-        let file_format = match get_str(map, "file_format")? {
-            Some((s, span)) => Some(
-                FileFormat::parse_file_format(s, CatalogType::HiveMetastore)
-                    .map_err(|e| e.with_hacky_yml_location(Some(span)))?,
-            ),
-            None => {
-                return err!(
-                    code => ErrorCode::InvalidConfig,
-                    hacky_yml_loc => None::<yml::Span>,
-                    "integration '{}': file_format required for Databricks hive_metastore and must be one of (delta|parquet|hudi)",
-                    integration_name
-                );
-            }
-        };
-
-        let adapter_properties = {
-            if let Some((props, _span)) = get_map(map, "adapter_properties")? {
-                Some(parse_adapter_properties(props, CatalogType::HiveMetastore)?)
-            } else {
-                None
-            }
-        };
-
-        Ok(Self {
-            integration_name,
-            catalog_type: CatalogType::HiveMetastore,
-            table_format,
-            external_volume: None,
-            file_format,
-            adapter_properties,
-        })
-    }
-
-    fn from_bigquery_built_in(map: &'a yml::Mapping, integration_name: &'a str) -> FsResult<Self> {
-        check_unknown_keys(
-            map,
-            &[
-                "integration_name",
-                "name",
-                "catalog_type",
-                "table_format",
-                "file_format",
-                "external_volume",
-                "adapter_properties",
-                // These keys are adapter properties, allowed only to throw an explicit error message
-                "base_location_root",
-                "base_location_subpath",
-            ],
-            "write_integration(Bigquery biglake_metastore)",
-        )?;
-
-        let (table_format, table_format_span) = match get_str(map, "table_format")? {
-            Some((s, span)) => (TableFormat::parse_from_yaml(s, &span)?, span),
-            None => {
-                return err!(
-                    code => ErrorCode::InvalidConfig,
-                    hacky_yml_loc => None::<yml::Span>,
-                    "integration '{}': table_format required for Bigquery biglake_metastore (must be iceberg)",
-                    integration_name
-                );
-            }
-        };
-        if table_format != TableFormat::Iceberg {
-            return err!(
-                code => ErrorCode::InvalidConfig,
-                hacky_yml_loc => Some(table_format_span),
-                "integration '{}': Bigquery biglake_metastore requires table_format=iceberg",
-                integration_name
-            );
-        }
-
-        let file_format = match get_str(map, "file_format")? {
-            Some((s, span)) => Some(
-                FileFormat::parse_file_format(s, CatalogType::BiglakeMetastore)
-                    .map_err(|e| e.with_hacky_yml_location(Some(span.clone())))?,
-            ),
-            None => {
-                return err!(
-                    code => ErrorCode::InvalidConfig,
-                    hacky_yml_loc => None::<yml::Span>,
-                    "integration '{}': file_format required for Bigquery biglake_metastore (must be parquet)",
-                    integration_name
-                );
-            }
-        };
-
-        let external_volume = {
-            Some(match get_str(map, "external_volume")? {
-                None => {
+            ConfigPresence::AtLeastOne => {
+                if !schema
+                    .platforms
+                    .iter()
+                    .any(|p| catalog.config_block(p.key).is_some())
+                {
+                    let keys: Vec<&str> = schema.platforms.iter().map(|p| p.key).collect();
                     return err!(
                         code => ErrorCode::InvalidConfig,
-                        hacky_yml_loc => None::<yml::Span>,
-                        "integration '{}': 'external_volume' is required for biglake_metastore catalogs.",
-                        integration_name
+                        hacky_yml_loc => catalog.field_span("type").cloned(),
+                        "Catalog '{}' of type '{}' requires at least one config block: {}",
+                        catalog.name, schema.catalog_type.as_str().to_lowercase(), keys.join(" or ")
                     );
                 }
-                Some(("", span)) => {
-                    return err!(
-                        code => ErrorCode::InvalidConfig,
-                        hacky_yml_loc => Some(span),
-                        "integration '{}': 'external_volume' is required for biglake_metastore catalogs and cannot be blank.",
-                        integration_name
-                    );
-                }
-                Some((s, span)) => {
-                    if !s.starts_with("gs://") {
+            }
+        }
+
+        for platform in schema.platforms {
+            if let Some(block) = catalog.config_block(platform.key) {
+                if catalog.catalog_type == CatalogType::Unity && platform.key == "lakecompute" {
+                    if let Some(key) = block.keys().find_map(|key| {
+                        key.as_str().filter(|key| {
+                            DUCKDB_ICEBERG_FIELDS.iter().any(|field| field.name == *key)
+                                && !UNITY_LAKE_COMPUTE_FIELDS
+                                    .iter()
+                                    .any(|field| field.name == *key)
+                        })
+                    }) {
                         return err!(
                             code => ErrorCode::InvalidConfig,
-                            hacky_yml_loc => Some(span),
-                            "integration '{}': 'external_volume' is required for biglake_metastore catalogs \
-                             and must be a path to a Cloud Storage bucket (gs://<bucket_name>).",
-                            integration_name
+                            hacky_yml_loc => field_span(block, key).cloned(),
+                            "Catalog '{}' unity/lakecompute key '{}' belongs to the local attach configuration; move it to config.duckdb",
+                            catalog.name, key
                         );
                     }
-                    s
                 }
-            })
-        };
-
-        // Intentional deviation from Core: Explicitly disallow base_location_{root, subpath}
-        // TODO(anna): These are good candidates to add to the autofix script.
-        // If we do, we should print warnings instead of throwing one error at a time.
-        if let Some((_, span)) = get_str(map, "base_location_root")? {
-            return err!(
-                code => ErrorCode::InvalidConfig,
-                hacky_yml_loc => Some(span),
-                "integration '{}': 'base_location_root' must be set under 'adapter_properties', not at the top level.",
-                integration_name
-            );
-        }
-        if let Some((_, span)) = get_str(map, "base_location_subpath")? {
-            return err!(
-                code => ErrorCode::InvalidConfig,
-                hacky_yml_loc => Some(span),
-                "integration '{}': 'base_location_subpath' must be set under 'adapter_properties' in model configs.",
-                integration_name
-            );
-        }
-
-        let adapter_properties = {
-            if let Some((props, _span)) = get_map(map, "adapter_properties")? {
-                Some(parse_adapter_properties(
-                    props,
-                    CatalogType::BiglakeMetastore,
-                )?)
-            } else {
-                None
+                Self::validate_fields(
+                    block,
+                    platform.fields,
+                    &format!(
+                        "config.{} of catalog '{}' of type '{}'",
+                        platform.key,
+                        catalog.name,
+                        schema.catalog_type.as_str().to_lowercase()
+                    ),
+                    catalog.name,
+                )?;
             }
-        };
+        }
 
-        Ok(Self {
-            integration_name,
-            catalog_type: CatalogType::BiglakeMetastore,
-            table_format,
-            external_volume,
-            file_format,
-            adapter_properties,
-        })
+        Ok(())
     }
-}
 
-// TODO: I think this should take in the table format - what if some adapter properties are only supported for certain table formats?
-fn parse_adapter_properties<'a>(
-    properties: &'a yml::Mapping,
-    catalog_type: CatalogType,
-) -> FsResult<AdapterPropsView<'a>> {
-    match catalog_type {
-        CatalogType::SnowflakeBuiltIn => {
-            check_unknown_keys(
-                properties,
-                &[
-                    "change_tracking",
-                    "data_retention_time_in_days",
-                    "max_data_extension_time_in_days",
-                    "storage_serialization_policy",
-                    "iceberg_version",
-                    "base_location_root",
-                    "base_location_subpath",
-                ],
-                "adapter_properties(built_in)",
-            )?;
-            // Throw explicit error for model-config-only key 'base_location_subpath'
-            if let Some((_, span)) = get_str(properties, "base_location_subpath")? {
-                return err!(
-                    code => ErrorCode::InvalidConfig,
-                    hacky_yml_loc => Some(span),
-                    "'base_location_subpath' must be set under 'adapter_properties' in a model config, not in the write integration config."
-                );
+    fn validate_semantic(&self, catalog: &CatalogSpecView<'_>) -> FsResult<()> {
+        match catalog.catalog_type {
+            CatalogType::Glue => {
+                if let Some(duckdb) = catalog.config_block("duckdb") {
+                    catalog.validate_duckdb_semantics(duckdb, "glue")?;
+                }
             }
-            if let Some((loc, span)) = get_str(properties, "base_location_root")?
-                && loc.trim().is_empty()
-            {
-                return err!(
-                    code => ErrorCode::InvalidConfig,
-                    hacky_yml_loc => Some(span),
-                    "adapter_properties.base_location_root cannot be blank"
-                );
+            CatalogType::IcebergRest => {
+                if let Some(duckdb) = catalog.config_block("duckdb") {
+                    catalog.validate_duckdb_semantics(duckdb, "iceberg_rest")?;
+                }
             }
-            Ok(AdapterPropsView::SnowflakeBuiltIn(
-                SnowflakeBuiltInPropsView {
-                    base_location_root: get_str(properties, "base_location_root")?
-                        .filter(|(s, _)| !s.trim().is_empty())
-                        .map(|(s, _)| s),
-                    storage_serialization_policy: get_str(
-                        properties,
-                        "storage_serialization_policy",
-                    )?
-                    .filter(|(s, _)| !s.is_empty())
-                    .map(|(s, span)| {
-                        if s.eq_ignore_ascii_case("compatible") {
-                            Ok(SerializationPolicy::COMPATIBLE)
-                        } else if s.eq_ignore_ascii_case("optimized") {
-                            Ok(SerializationPolicy::OPTIMIZED)
-                        } else {
-                            err!(
-                                code => ErrorCode::InvalidConfig,
-                                hacky_yml_loc => Some(span),
-                                "storage_serialization_policy '{}' invalid (COMPATIBLE|OPTIMIZED)",
-                                s
-                            )
-                        }
-                    })
-                    .transpose()?,
-                    max_data_extension_time_in_days: get_u32(
-                        properties,
-                        "max_data_extension_time_in_days",
-                    )?
-                    .map(|(v, _)| v),
-                    data_retention_time_in_days: get_u32(
-                        properties,
-                        "data_retention_time_in_days",
-                    )?
-                    .map(|(v, _)| v),
-                    change_tracking: get_bool(properties, "change_tracking")?.map(|(v, _)| v),
-                    iceberg_version: get_u32(properties, "iceberg_version")?.map(|(v, _)| v),
-                },
-            ))
-        }
-        CatalogType::IcebergRest => {
-            check_unknown_keys(
-                properties,
-                &[
-                    "auto_refresh",
-                    "catalog_linked_database",
-                    "catalog_linked_database_type",
-                    "max_data_extension_time_in_days",
-                    "target_file_size",
-                    "iceberg_version",
-                ],
-                "adapter_properties(iceberg_rest)",
-            )?;
-            Ok(AdapterPropsView::SnowflakeRest(SnowflakeRestPropsView {
-                target_file_size: target_file_size(get_str(properties, "target_file_size")?)?,
-                auto_refresh: get_bool(properties, "auto_refresh")?.map(|(v, _)| v),
-                max_data_extension_time_in_days: get_u32(
-                    properties,
-                    "max_data_extension_time_in_days",
-                )?
-                .map(|(v, _)| v),
-                catalog_linked_database: get_str(properties, "catalog_linked_database")?
-                    .map(|(s, _)| s),
-                catalog_linked_database_type: get_str(properties, "catalog_linked_database_type")?
-                    .map(|(s, _)| s),
-                iceberg_version: get_u32(properties, "iceberg_version")?.map(|(v, _)| v),
-            }))
-        }
-        CatalogType::BiglakeMetastore => {
-            check_unknown_keys(
-                properties,
-                &[
-                    "base_location_root",
-                    "base_location_subpath",
-                    "storage_uri",
-                    "connection_id",
-                ],
-                "adapter_properties(biglake_metastore)",
-            )?;
-            // Throw explicit errors for model-config-only keys 'base_location_subpath' and 'storage_uri'
-            if let Some((_, span)) = get_str(properties, "base_location_subpath")? {
-                return err!(
-                    code => ErrorCode::InvalidConfig,
-                    hacky_yml_loc => Some(span),
-                    "'base_location_subpath' must be set under 'adapter_properties' in a model config, not in the write integration config."
-                );
+            CatalogType::Horizon => {
+                if let Some(duckdb) = catalog.config_block("duckdb") {
+                    catalog.validate_duckdb_semantics(duckdb, "horizon")?;
+                    catalog.validate_horizon_duckdb_semantics(duckdb)?;
+                }
             }
-            if let Some((_, span)) = get_str(properties, "storage_uri")? {
-                return err!(
-                    code => ErrorCode::InvalidConfig,
-                    hacky_yml_loc => Some(span),
-                    "'storage_uri' must be set under 'adapter_properties' in a model config, not in the write integration config."
-                );
+            CatalogType::Unity => {
+                if let Some(lakecompute) = catalog.config_block("lakecompute") {
+                    catalog.validate_unity_lake_compute_semantics(lakecompute)?;
+                }
+                if let Some(databricks) = catalog.config_block("databricks") {
+                    catalog.validate_unity_semantics(databricks)?;
+                }
+                if let Some(duckdb) = catalog.config_block("duckdb") {
+                    catalog.validate_duckdb_semantics(duckdb, "unity")?;
+                }
             }
-            if let Some((loc, span)) = get_str(properties, "base_location_root")?
-                && loc.trim().is_empty()
-            {
-                return err!(
-                    code => ErrorCode::InvalidConfig,
-                    hacky_yml_loc => Some(span),
-                    "adapter_properties.base_location_root cannot be blank"
-                );
+            CatalogType::BiglakeMetastore => {
+                if let Some(bigquery) = catalog.config_block("bigquery") {
+                    catalog.validate_biglake_semantics(bigquery)?;
+                }
             }
-            if let Some((loc, span)) = get_str(properties, "connection_id")?
-                && loc.trim().is_empty()
-            {
-                return err!(
-                    code => ErrorCode::InvalidConfig,
-                    hacky_yml_loc => Some(span),
-                    "adapter_properties.connection_id cannot be blank"
-                );
+            CatalogType::DuckLake => {
+                if let Some(duckdb) = catalog.config_block("duckdb") {
+                    catalog.validate_duckdb_semantics(duckdb, "ducklake")?;
+                }
             }
-            Ok(AdapterPropsView::BigqueryBuiltIn(
-                BigqueryBuiltInPropsView {
-                    base_location_root: get_str(properties, "base_location_root")?
-                        .filter(|(s, _)| !s.trim().is_empty())
-                        .map(|(s, _)| s),
-                    connection_id: get_str(properties, "connection_id")?
-                        .filter(|(s, _)| !s.trim().is_empty())
-                        .map(|(s, _)| s),
-                },
-            ))
-        }
-        CatalogType::Unity => {
-            check_unknown_keys(properties, &["location_root"], "adapter_properties(unity)")?;
-            if let Some((loc, span)) = get_str(properties, "location_root")?
-                && loc.trim().is_empty()
-            {
-                return err!(
-                    code => ErrorCode::InvalidConfig,
-                    hacky_yml_loc => Some(span),
-                    "adapter_properties.location_root cannot be blank"
-                );
-            }
-            Ok(AdapterPropsView::DatabricksUnity(
-                DatabricksUnityPropsView {
-                    location_root: get_str(properties, "location_root")?
-                        .filter(|(s, _)| !s.trim().is_empty())
-                        .map(|(s, _)| s),
-                },
-            ))
-        }
-        CatalogType::HiveMetastore => {
-            if !properties.is_empty() {
-                let first_key_span = properties.keys().next().map(|k| k.span().clone());
-                return err!(
-                    code => ErrorCode::InvalidConfig,
-                    hacky_yml_loc => first_key_span,
-                    "adapter_properties not allowed for {}", catalog_type.as_str()
-                );
-            }
-            // unreachable in practice because caller only invokes this if adapter_properties exists
-            Ok(AdapterPropsView::Empty)
-        }
-        _ => unreachable!("V1_CATALOG_TYPES never maps a raw type string onto this variant"),
-    }
-}
-
-fn target_file_size(
-    maybe_target_file_size: Option<(&str, yml::Span)>,
-) -> FsResult<Option<TargetFileSize>> {
-    maybe_target_file_size
-        .map(|(v, span)| (v.trim(), span))
-        .filter(|(v, _)| !v.is_empty())
-        .map(|(v, span)| {
-            if v.eq_ignore_ascii_case("AUTO") {
-                Ok(TargetFileSize::AUTO)
-            } else if v.eq_ignore_ascii_case("16MB") {
-                Ok(TargetFileSize::_16MB)
-            } else if v.eq_ignore_ascii_case("32MB") {
-                Ok(TargetFileSize::_32MB)
-            } else if v.eq_ignore_ascii_case("64MB") {
-                Ok(TargetFileSize::_64MB)
-            } else if v.eq_ignore_ascii_case("128MB") {
-                Ok(TargetFileSize::_128MB)
-            } else {
-                err!(
-                    code => ErrorCode::InvalidConfig,
-                    hacky_yml_loc => Some(span),
-                    "target_file_size '{}' invalid (AUTO|16MB|32MB|64MB|128MB)",
-                    v
+            CatalogType::HiveMetastore | CatalogType::LocalFilesystem => {}
+            // These are not supported as explicit catalog types in catalogs.yml's `type` field.
+            CatalogType::SnowflakeBuiltIn
+            | CatalogType::SnowflakeNative
+            | CatalogType::BigqueryNative
+            | CatalogType::DuckdbNative => {
+                unreachable!(
+                    "catalogs.yml has no support for an explicit catalog type of {}",
+                    catalog.catalog_type.as_str()
                 )
             }
-        })
-        .transpose()
-}
-
-// Structurally recursive down the struct of a catalog entry and validate
-pub fn validate_catalogs(spec: &DbtCatalogsView<'_>, _path: &Path) -> FsResult<()> {
-    // === 1. Ensure no duplicate-name catalogs, ensure no blanks. One pass.
-    let mut seen_catalogs = HashSet::new();
-    for catalog in &spec.catalogs {
-        if is_blank(catalog.catalog_name.0) {
-            return err!(
-                code => ErrorCode::InvalidConfig,
-                hacky_yml_loc => Some(catalog.catalog_name.1.clone()),
-                "Catalog field 'name' or 'catalog_name' must be non-empty"
-            );
         }
-        if !seen_catalogs.insert(catalog.catalog_name.0) {
-            return err!(
-                code => ErrorCode::InvalidConfig,
-                hacky_yml_loc => Some(catalog.catalog_name.1.clone()),
-                "Duplicate catalog name '{}'", catalog.catalog_name.0
-            );
-        }
+        Ok(())
     }
 
-    for catalog in &spec.catalogs {
-        // === 2. Every catalog requires an active write integration
-        if is_blank(catalog.active_write_integration.0) {
-            return err!(
-                code => ErrorCode::InvalidConfig,
-                hacky_yml_loc => Some(catalog.active_write_integration.1.clone()),
-                "In catalog '{}', 'active_write_integration' must be non-empty",
-                catalog.catalog_name.0
-            );
-        }
-
-        // === 3. Avoid duplicate write integrations
-        let mut seen = HashSet::new();
-        catalog
-            .write_integrations
-            .0
+    pub fn json_schema(&self) -> serde_json::Value {
+        let entries: Vec<serde_json::Value> = self
+            .schemas
             .iter()
-            .try_for_each(|write_integration| {
-                seen.insert(write_integration.integration_name)
-                    .then_some(())
-                    .ok_or_else(|| {
-                        fs_err!(
-                            code => ErrorCode::InvalidConfig,
-                            hacky_yml_loc => Some(catalog.write_integrations.1.clone()),
-                            "Duplicate write_integration name '{}' in catalog '{}'",
-                            write_integration.integration_name, catalog.catalog_name.0
-                        )
-                    })
-            })?;
-
-        // === 4. Ensure named write integration actually exists
-        if catalog
-            .write_integrations
-            .0
-            .iter()
-            .all(|w| w.integration_name != catalog.active_write_integration.0)
-        {
-            let choices = if catalog.write_integrations.0.is_empty() {
-                "<none>".to_string()
-            } else {
-                catalog
-                    .write_integrations
-                    .0
+            .map(|cts| {
+                let config_props: serde_json::Map<String, serde_json::Value> = cts
+                    .platforms
                     .iter()
-                    .map(|w| w.integration_name)
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            };
-            return err!(
-                code => ErrorCode::InvalidConfig,
-                hacky_yml_loc => Some(catalog.active_write_integration.1.clone()),
-                "In catalog '{}', active_write_integration '{}' not found. Available: {}",
-                catalog.catalog_name.0, catalog.active_write_integration.0, choices
-            );
-        }
+                    .map(|p| (p.key.to_string(), Self::fields_schema(p.fields)))
+                    .collect();
+                let mut config_required = Vec::new();
+                let mut config = serde_json::json!({
+                    "type": "object",
+                    "properties": config_props,
+                    "additionalProperties": false,
+                });
+                match cts.presence {
+                    ConfigPresence::AllRequired => {
+                        config_required.extend(cts.platforms.iter().map(|p| p.key));
+                        config["required"] = serde_json::json!(config_required);
+                    }
+                    ConfigPresence::AtLeastOne => {
+                        config["minProperties"] = serde_json::json!(1);
+                    }
+                }
+                serde_json::json!({
+                    "type": "object",
+                    "description": cts.description,
+                    "required": ["name", "type", "table_format", "config"],
+                    "additionalProperties": false,
+                    "properties": {
+                        "name": {
+                            "type": "string",
+                            "minLength": 1,
+                            "description": "Unique catalog name within this project.",
+                        },
+                        // as_str() is uppercase for the legacy Snowflake variants (Jinja egress); lowercase to get the YAML-facing type name.
+                        "type": { "const": cts.catalog_type.as_str().to_lowercase() },
+                        "table_format": { "const": cts.table_format },
+                        "description": {
+                            "type": "string",
+                            "description": "Optional human-readable description of this catalog's purpose.",
+                        },
+                        "config": config,
+                        "owner": {
+                            "type": "string",
+                            "description": "Optional dedicated ownership field (team name or email).",
+                        },
+                        "meta": {
+                            "type": "object",
+                            "additionalProperties": true,
+                            "description": "Optional free-form metadata map, following the dbt sources/models `meta:` convention.",
+                        },
+                    },
+                })
+            })
+            .collect();
 
-        // === 5. Validate write integration entries
-        for write_integration in &catalog.write_integrations.0 {
-            // must have a name
-            if is_blank(write_integration.integration_name) {
+        serde_json::json!({
+            "$schema": "http://json-schema.org/draft-07/schema#",
+            "title": "DbtCatalogsFile",
+            "description": "Top-level `catalogs.yml` (v2) schema.",
+            "type": "object",
+            "required": ["catalogs"],
+            "additionalProperties": false,
+            "properties": {
+                "catalogs": {
+                    "type": "array",
+                    "items": { "oneOf": entries },
+                },
+            },
+        })
+    }
+
+    fn fields_schema(fields: &[FieldSpec]) -> serde_json::Value {
+        let mut props = serde_json::Map::new();
+        let mut required = Vec::new();
+        for f in fields.iter().filter(|f| !f.forbidden) {
+            let mut schema = match f.kind {
+                FieldKind::Str => serde_json::json!({ "type": "string" }),
+                FieldKind::Bool => serde_json::json!({ "type": "boolean" }),
+                FieldKind::U32 { max } => {
+                    let mut num = serde_json::json!({ "type": "integer", "minimum": 0 });
+                    if let Some(m) = max {
+                        num["maximum"] = serde_json::json!(m);
+                    }
+                    num
+                }
+                FieldKind::Enum(allowed) => {
+                    serde_json::json!({ "type": "string", "enum": allowed })
+                }
+            };
+            if f.non_empty && matches!(f.kind, FieldKind::Str) {
+                schema["minLength"] = serde_json::json!(1);
+            }
+            if !f.doc.is_empty() {
+                schema["description"] = serde_json::json!(f.doc);
+            }
+            props.insert(f.name.to_string(), schema);
+            if f.required {
+                required.push(f.name);
+            }
+        }
+        let mut obj = serde_json::json!({
+            "type": "object",
+            "properties": props,
+            "additionalProperties": false,
+        });
+        if !required.is_empty() {
+            obj["required"] = serde_json::json!(required);
+        }
+        obj
+    }
+
+    fn validate_fields(
+        map: &yml::Mapping,
+        fields: &[FieldSpec],
+        ctx: &str,
+        catalog_name: &str,
+    ) -> FsResult<()> {
+        for k in map.keys() {
+            let span = k.span();
+            let Some(ks) = k.as_str() else {
                 return err!(
                     code => ErrorCode::InvalidConfig,
-                    hacky_yml_loc => Some(catalog.write_integrations.1.clone()),
-                    "Catalog '{}' integration has no field 'name' or 'integration_name'",
-                    catalog.catalog_name.0
+                    hacky_yml_loc => Some(span.clone()),
+                    "Non-string key in {}",
+                    ctx
+                );
+            };
+            if !fields.iter().any(|f| f.name == ks) {
+                return err!(
+                    code => ErrorCode::InvalidConfig,
+                    hacky_yml_loc => Some(span.clone()),
+                    "Unknown key '{}' in {}",
+                    ks, ctx
                 );
             }
+        }
 
-            // === 6. Validate other write integration fields modulo catalog type
-            match write_integration.catalog_type {
-                // === 6a. built in catalog type
-                CatalogType::SnowflakeBuiltIn => { /* no non-structural constraints */ }
+        if let Some(f) = fields
+            .iter()
+            .filter(|f| f.forbidden)
+            .find(|f| field_span(map, f.name).is_some())
+        {
+            return err!(
+                code => ErrorCode::InvalidConfig,
+                hacky_yml_loc => field_span(map, f.name).cloned(),
+                "{}",
+                f.doc.replace("{}", catalog_name)
+            );
+        }
 
-                // === 6b. iceberg rest catalog type
-                CatalogType::IcebergRest => match &write_integration.adapter_properties {
-                    Some(AdapterPropsView::SnowflakeRest(rest)) => {
-                        match rest.catalog_linked_database {
-                            Some(name) if !name.is_empty() => {}
-                            _ => {
+        for f in fields.iter().filter(|f| !f.forbidden) {
+            match f.kind {
+                FieldKind::Str => {
+                    let val = get_str(map, f.name)?;
+                    if f.required && val.is_none() {
+                        return err!(
+                            code => ErrorCode::InvalidConfig,
+                            hacky_yml_loc => field_span(map, f.name).cloned(),
+                            "Catalog '{}' {} requires '{}'",
+                            catalog_name, ctx, f.name
+                        );
+                    }
+                    if f.non_empty {
+                        if let Some(v) = val {
+                            if v.is_empty_or_whitespace() {
                                 return err!(
                                     code => ErrorCode::InvalidConfig,
-                                    hacky_yml_loc => Some(catalog.write_integrations.1.clone()),
-                                    "integration '{}': 'catalog_linked_database' is required and cannot be blank for Iceberg REST",
-                                    write_integration.integration_name
+                                    hacky_yml_loc => field_span(map, f.name).cloned(),
+                                    "Catalog '{}' {} '{}' must be non-empty",
+                                    catalog_name, ctx, f.name
                                 );
                             }
                         }
                     }
-                    _ => {
+                }
+                FieldKind::Bool => {
+                    let val = match try_get_bool(map, f.name) {
+                        Ok(v) => v,
+                        Err(_) if map.get(yml::Value::from(f.name)).is_some() => {
+                            return Err(fs_err!(
+                                code => ErrorCode::InvalidConfig,
+                                hacky_yml_loc => field_span(map, f.name).cloned(),
+                                "Key '{}' must be a boolean",
+                                f.name
+                            ));
+                        }
+                        Err(e) => return Err(e),
+                    };
+                    if f.required && val.is_none() {
                         return err!(
                             code => ErrorCode::InvalidConfig,
-                            hacky_yml_loc => Some(catalog.write_integrations.1.clone()),
-                            "integration '{}': only REST adapter_properties are valid for Iceberg REST",
-                            write_integration.integration_name
+                            hacky_yml_loc => field_span(map, f.name).cloned(),
+                            "Catalog '{}' {} requires '{}'",
+                            catalog_name, ctx, f.name
                         );
                     }
-                },
-                CatalogType::Unity => {
-                    if let Some(AdapterPropsView::DatabricksUnity(properties)) =
-                        &write_integration.adapter_properties
-                    {
-                        if let Some(loc) = properties.location_root
-                            && loc.trim().is_empty()
-                        {
-                            return err!(code => ErrorCode::InvalidConfig, hacky_yml_loc => Some(catalog.write_integrations.1.clone()),
-                                    "integration '{}': adapter_properties.location_root cannot be blank",
-                                    write_integration.integration_name);
+                }
+                FieldKind::U32 { max } => {
+                    let val = get_u32(map, f.name)?;
+                    if f.required && val.is_none() {
+                        return err!(
+                            code => ErrorCode::InvalidConfig,
+                            hacky_yml_loc => field_span(map, f.name).cloned(),
+                            "Catalog '{}' {} requires '{}'",
+                            catalog_name, ctx, f.name
+                        );
+                    }
+                    if let Some(v) = val {
+                        if let Some(m) = max {
+                            if v > m {
+                                return err!(
+                                    code => ErrorCode::InvalidConfig,
+                                    hacky_yml_loc => field_span(map, f.name).cloned(),
+                                    "Key '{}' must be in 0..={}",
+                                    f.name, m
+                                );
+                            }
                         }
-                    } else if write_integration.adapter_properties.is_some() {
-                        return err!(code => ErrorCode::InvalidConfig, hacky_yml_loc => Some(catalog.write_integrations.1.clone()),
-                            "integration '{}': only adapter_properties.location_root is allowed for unity",
-                            write_integration.integration_name);
-                    }
-
-                    if let Some(file_format) = &write_integration.file_format
-                        && *file_format != FileFormat::Delta
-                    {
-                        return err!(code => ErrorCode::InvalidConfig, hacky_yml_loc => Some(catalog.write_integrations.1.clone()),
-                                "integration '{}': when table_format=iceberg, file_format must be 'delta'",
-                                write_integration.integration_name);
                     }
                 }
-
-                CatalogType::HiveMetastore => {
-                    if write_integration.adapter_properties.is_some() {
-                        return err!(code => ErrorCode::InvalidConfig, hacky_yml_loc => Some(catalog.write_integrations.1.clone()),
-                            "integration '{}': adapter_properties not allowed for hive_metastore",
-                            write_integration.integration_name);
+                FieldKind::Enum(allowed) => {
+                    let val = get_str(map, f.name)?;
+                    if f.required && val.is_none() {
+                        return err!(
+                            code => ErrorCode::InvalidConfig,
+                            hacky_yml_loc => field_span(map, f.name).cloned(),
+                            "Catalog '{}' {} requires '{}'",
+                            catalog_name, ctx, f.name
+                        );
                     }
-                }
-
-                CatalogType::BiglakeMetastore => { /* no non-structural constraints */ }
-                _ => {
-                    unreachable!("V1_CATALOG_TYPES never maps a raw type string onto this variant")
+                    if let Some(v) = val {
+                        if !matches_enum_ci(v, allowed) {
+                            let choices = allowed.join("|");
+                            return err!(
+                                code => ErrorCode::InvalidConfig,
+                                hacky_yml_loc => field_span(map, f.name).cloned(),
+                                "{} '{}' invalid ({})",
+                                f.name, v, choices
+                            );
+                        }
+                    }
                 }
             }
         }
+        Ok(())
     }
+}
 
+pub fn validate_catalogs(spec: &DbtCatalogsView<'_>, _path: &Path) -> FsResult<()> {
+    let registry = CatalogRegistry::new();
+    for catalog in &spec.catalogs {
+        registry.validate_structural(catalog)?;
+        registry.validate_semantic(catalog)?;
+    }
     Ok(())
+}
+
+/// Build the draft-07 JSON schema for `catalogs.yml` (v2), used by
+/// `dbt man --schema catalog`. The schema is generated from the same
+/// `CATALOG_SCHEMAS` / `FieldSpec` descriptor tables that drive validation, so
+/// it cannot drift from the parser. Each catalog `type` becomes a `oneOf`
+/// branch discriminated by a `const` `type`, so editors narrow `config` field
+/// completions to those valid for the selected catalog type.
+pub fn catalogs_json_schema() -> serde_json::Value {
+    CatalogRegistry::new().json_schema()
 }
 
 #[cfg(test)]
@@ -1513,1644 +1787,1778 @@ mod tests {
     use dbt_yaml as yml;
     use std::path::Path;
 
-    fn parse_view_and_validate(yaml: &str) -> FsResult<()> {
-        let v: yml::Value = yml::from_str(yaml).unwrap();
+    fn parse_and_validate_with<F: FnOnce(&DbtCatalogsView<'_>)>(
+        yaml: &str,
+        inspect: F,
+    ) -> FsResult<()> {
+        let v: yml::Value = yml::from_str(yaml)?;
         let v_span = v.span();
         let m = v.as_mapping().expect("top-level YAML must be a mapping");
-        let view = DbtCatalogsView::from_mapping(m, v_span.clone())?;
-        validate_catalogs(&view, Path::new("<test>"))
+        validate_catalogs_shape(m, v_span)?;
+        let view = DbtCatalogsView::from_mapping(m, v_span)?;
+        inspect(&view);
+        validate_catalogs(&view, Path::new("<test>"))?;
+        Ok(())
     }
 
-    fn assert_err_contains(yaml: &str, needle: &str) {
-        let res = parse_view_and_validate(yaml);
-        let msg = format!("{res:?}");
-        assert!(res.is_err(), "expected error but got Ok(())");
-        assert!(
-            msg.contains(needle),
-            "error did not contain '{needle}', got: {msg}"
+    fn parse_and_validate(yaml: &str) -> FsResult<()> {
+        parse_and_validate_with(yaml, |_| {})
+    }
+
+    #[test]
+    fn catalog_type_as_str_matches_snowflake_jinja_macros() {
+        // crates/dbt-loader/src/dbt_macro_assets/dbt-snowflake/macros/relations/table/create.sql
+        // string-compares catalog_relation.catalog_type against these exact uppercase literals.
+        assert_eq!(CatalogType::SnowflakeNative.as_str(), "INFO_SCHEMA");
+        assert_eq!(CatalogType::SnowflakeBuiltIn.as_str(), "BUILT_IN");
+        assert_eq!(CatalogType::IcebergRest.as_str(), "ICEBERG_REST");
+    }
+
+    fn parse_unity_lakecompute(extra: &str) -> FsResult<()> {
+        let yaml = format!(
+            "catalogs:\n  - name: dbx_raw\n    type: unity\n    table_format: iceberg\n    config:\n      lakecompute:\n        catalog_database: raw\n        region: us-east-1\n        {extra}\n"
         );
+        parse_and_validate(&yaml)
     }
 
     #[test]
-    fn master_full_catalog_valid() {
+    fn unity_lakecompute_read_fields_validate() {
         let yaml = r#"
 catalogs:
-  - catalog_name: sf_native
-    active_write_integration: sf_native_int
-    write_integrations:
-      - name: sf_native_int
-        catalog_type: built_in
-        table_format: iceberg
-        external_volume: dbt_external_volume
-        adapter_properties:
-          base_location_root: analytics/iceberg/dbt
-          storage_serialization_policy: COMPATIBLE
-          data_retention_time_in_days: 1
-          max_data_extension_time_in_days: 14
-          change_tracking: false
-  - name: polaris
-    active_write_integration: polaris_int
-    write_integrations:
-      - name: polaris_int
-        catalog_type: iceberg_rest
-        table_format: iceberg
-        adapter_properties:
-          target_file_size: AUTO
-          auto_refresh: true
-          max_data_extension_time_in_days: 14
-          catalog_linked_database: "CAT_NS/SCHEMA_NS"
-"#;
-        let res = parse_view_and_validate(yaml);
-        assert!(
-            res.is_ok(),
-            "expected master full catalog to validate, got: {:?}",
-            res.err()
-        );
-    }
-
-    #[test]
-    fn happy_built_in_minimal() {
-        let yaml = r#"
-catalogs:
-  - catalog_name: sf_native
-    active_write_integration: sf_native_int
-    write_integrations:
-      - name: sf_native_int
-        catalog_type: built_in
-        external_volume: dbt_external_volume
-        table_format: iceberg
-"#;
-        let res = parse_view_and_validate(yaml);
-        assert!(
-            res.is_ok(),
-            "built_in minimal should validate: {:?}",
-            res.err()
-        );
-    }
-
-    #[test]
-    fn happy_rest_minimal_without_ext_vol() {
-        let yaml = r#"
-catalogs:
-  - name: polaris
-    active_write_integration: polaris_int
-    write_integrations:
-      - name: polaris_int
-        catalog_type: iceberg_rest
-        table_format: iceberg
-        adapter_properties:
-          catalog_linked_database: another_db
-          auto_refresh: true
-"#;
-        let res = parse_view_and_validate(yaml);
-        assert!(
-            res.is_ok(),
-            "rest minimal (no external_volume) should validate: {:?}",
-            res.err()
-        );
-    }
-
-    #[test]
-    fn accepts_name_alias_for_catalog() {
-        let yaml = r#"
-catalogs:
-  - name: c1
-    active_write_integration: i1
-    write_integrations:
-      - name: i1
-        catalog_type: iceberg_rest
-        table_format: iceberg
-        adapter_properties:
-            catalog_linked_database: cld
-"#;
-        let yml_val: yml::Value = yml::from_str(yaml).unwrap();
-        let yml_span = yml_val.span().clone();
-        let m = yml_val
-            .as_mapping()
-            .expect("top-level YAML must be a mapping");
-        let v = DbtCatalogsView::from_mapping(m, yml_span);
-        assert!(
-            v.is_ok(),
-            "alias `name` for catalog should parse: {:?}",
-            v.err()
-        );
-        let v = v.unwrap();
-        assert_eq!(v.catalogs.len(), 1);
-        assert_eq!(v.catalogs[0].catalog_name.0, "c1");
-        let res = validate_catalogs(&v, Path::new("<test>"));
-        assert!(res.is_ok(), "alias case should validate: {:?}", res.err());
-    }
-
-    #[test]
-    fn write_integrations_must_be_mapping() {
-        let yaml = r#"
-catalogs:
-  - name: c1
-    active_write_integration: i1
-    write_integrations: [42]
-"#;
-        let yml_val: yml::Value = yml::from_str(yaml).unwrap();
-        let yml_span = yml_val.span().clone();
-        let m = yml_val
-            .as_mapping()
-            .expect("top-level YAML must be a mapping");
-        let v = DbtCatalogsView::from_mapping(m, yml_span);
-        assert!(
-            v.is_err(),
-            "non-mapping write_integration element must fail"
-        );
-    }
-
-    #[test]
-    fn missing_catalogs_key() {
-        let yaml = r#"
-not_catalogs: []
-"#;
-        let yml_val: yml::Value = yml::from_str(yaml).unwrap();
-        let yml_span = yml_val.span().clone();
-        let m = yml_val
-            .as_mapping()
-            .expect("top-level YAML must be a mapping");
-        let v = DbtCatalogsView::from_mapping(m, yml_span);
-        assert!(v.is_err(), "missing top-level 'catalogs' must fail");
-    }
-
-    #[test]
-    fn missing_active_write_integration() {
-        let yaml = r#"
-    catalogs:
-      - name: c1
-        write_integrations:
-          - name: i1
-            catalog_type: built_in
-            external_volume: ev
-    "#;
-        let yml_val: yml::Value = yml::from_str(yaml).unwrap();
-        let yml_span = yml_val.span().clone();
-        let m = yml_val
-            .as_mapping()
-            .expect("top-level YAML must be a mapping");
-        let v = DbtCatalogsView::from_mapping(m, yml_span);
-        assert!(v.is_err(), "missing required key should fail parse");
-    }
-
-    #[test]
-    fn invalid_catalog_type() {
-        let yaml = r#"
-catalogs:
-  - name: c1
-    active_write_integration: i1
-    write_integrations:
-      - name: i1
-        catalog_type: mango
-"#;
-        let yml_val: yml::Value = yml::from_str(yaml).unwrap();
-        let yml_span = yml_val.span().clone();
-        let m = yml_val
-            .as_mapping()
-            .expect("top-level YAML must be a mapping");
-        let v = DbtCatalogsView::from_mapping(m, yml_span);
-        assert!(v.is_err(), "invalid catalog_type must fail parse");
-    }
-
-    #[test]
-    fn invalid_table_format() {
-        let yaml = r#"
-catalogs:
-  - name: c1
-    active_write_integration: i1
-    write_integrations:
-      - name: i1
-        catalog_type: built_in
-        table_format: delta
-        external_volume: ev
-"#;
-        let yml_val: yml::Value = yml::from_str(yaml).unwrap();
-        let yml_span = yml_val.span().clone();
-        let m = yml_val
-            .as_mapping()
-            .expect("top-level YAML must be a mapping");
-        let v = DbtCatalogsView::from_mapping(m, yml_span);
-        assert!(v.is_err(), "invalid table_format must fail parse");
-    }
-
-    #[test]
-    fn invalid_storage_serialization_policy() {
-        let yaml = r#"
-catalogs:
-  - name: c1
-    active_write_integration: i1
-    write_integrations:
-      - name: i1
-        catalog_type: built_in
-        external_volume: ev
-        adapter_properties:
-          storage_serialization_policy: FASTEST
-"#;
-        let yml_val: yml::Value = yml::from_str(yaml).unwrap();
-        let yml_span = yml_val.span().clone();
-        let m = yml_val
-            .as_mapping()
-            .expect("top-level YAML must be a mapping");
-        let v = DbtCatalogsView::from_mapping(m, yml_span);
-        assert!(
-            v.is_err(),
-            "invalid storage_serialization_policy must fail parse"
-        );
-    }
-
-    #[test]
-    fn invalid_target_file_size_value() {
-        let yaml = r#"
-catalogs:
-  - name: c1
-    active_write_integration: i1
-    write_integrations:
-      - name: i1
-        catalog_type: iceberg_rest
-        adapter_properties:
-          target_file_size: "1MB"
-"#;
-        let yml_val: yml::Value = yml::from_str(yaml).unwrap();
-        let yml_span = yml_val.span().clone();
-        let m = yml_val
-            .as_mapping()
-            .expect("top-level YAML must be a mapping");
-        let v = DbtCatalogsView::from_mapping(m, yml_span);
-        assert!(v.is_err(), "invalid target_file_size must fail parse");
-    }
-
-    #[test]
-    fn built_in_requires_external_volume() {
-        let yaml = r#"
-catalogs:
-  - name: c1
-    active_write_integration: i1
-    write_integrations:
-      - name: i1
-        catalog_type: built_in
-        # external_volume: missing
-        table_format: iceberg
-"#;
-        let yml_val: yml::Value = yml::from_str(yaml).unwrap();
-        let yml_span = yml_val.span().clone();
-        let m = yml_val
-            .as_mapping()
-            .expect("top-level YAML must be a mapping");
-        let res = DbtCatalogsView::from_mapping(m, yml_span);
-        assert!(
-            res.is_err(),
-            "built_in without external_volume must fail validation"
-        );
-    }
-
-    #[test]
-    fn rest_forbids_base_location_fields() {
-        let yaml = r#"
-catalogs:
-  - name: c1
-    active_write_integration: i1
-    write_integrations:
-      - name: i1
-        catalog_type: iceberg_rest
-        base_location_root: some/root
-        table_format: iceberg
-"#;
-        let yml_val: yml::Value = yml::from_str(yaml).unwrap();
-        let yml_span = yml_val.span().clone();
-        let m = yml_val
-            .as_mapping()
-            .expect("top-level YAML must be a mapping");
-        let v = DbtCatalogsView::from_mapping(m, yml_span);
-        assert!(
-            v.is_err(),
-            "Unknown key 'base_location_root' in write_integration(Snowflake iceberg_rest)"
-        );
-    }
-
-    #[test]
-    fn built_in_rejects_base_location_keys_at_top_level() {
-        let yaml = r#"
-catalogs:
-  - catalog_name: sf_native
-    active_write_integration: sf_native_int
-    write_integrations:
-      - name: sf_native_int
-        catalog_type: built_in
-        external_volume: dbt_external_volume
-        table_format: iceberg
-        base_location_root: invalid
-"#;
-        assert_err_contains(yaml, "must be set under 'adapter_properties'");
-        let yaml = r#"
-catalogs:
-  - catalog_name: sf_native
-    active_write_integration: sf_native_int
-    write_integrations:
-      - name: sf_native_int
-        catalog_type: built_in
-        external_volume: dbt_external_volume
-        table_format: iceberg
-        base_location_subpath: invalid
-"#;
-        assert_err_contains(yaml, "must be set under 'adapter_properties'");
-    }
-
-    #[test]
-    fn built_in_rejects_base_location_subpath_adapter_property() {
-        let yaml = r#"
-catalogs:
-  - catalog_name: sf_native
-    active_write_integration: sf_native_int
-    write_integrations:
-      - name: sf_native_int
-        catalog_type: built_in
-        external_volume: dbt_external_volume
-        table_format: iceberg
-        adapter_properties:
-          base_location_root: analytics/iceberg/dbt
-          base_location_subpath: invalid
-"#;
-        assert_err_contains(
-            yaml,
-            "must be set under 'adapter_properties' in a model config",
-        );
-    }
-
-    #[test]
-    fn active_write_integration_must_exist() {
-        let yaml = r#"
-catalogs:
-  - name: c1
-    active_write_integration: does_not_exist
-    write_integrations:
-      - name: i1
-        catalog_type: iceberg_rest
-        table_format: iceberg
-"#;
-        let yml_val: yml::Value = yml::from_str(yaml).unwrap();
-        let yml_span = yml_val.span().clone();
-        let m = yml_val
-            .as_mapping()
-            .expect("top-level YAML must be a mapping");
-        let v = DbtCatalogsView::from_mapping(m, yml_span).unwrap();
-        let res = validate_catalogs(&v, Path::new("<test>"));
-        assert!(
-            res.is_err(),
-            "active write integration must exist among write_integrations"
-        );
-    }
-
-    #[test]
-    fn case_insensitive_enums_parse() {
-        let yaml = r#"
-catalogs:
-  - name: C
-    active_write_integration: I
-    write_integrations:
-      - name: I
-        catalog_type: BUILT_IN
-        table_format: ICEBERG
-        external_volume: EV
-        adapter_properties:
-          storage_serialization_policy: compatible
-"#;
-        let res = parse_view_and_validate(yaml);
-        assert!(
-            res.is_ok(),
-            "case-insensitive enums should validate: {:?}",
-            res.err()
-        );
-    }
-
-    #[test]
-    fn blank_catalog_name_fails() {
-        let yaml = r#"
-catalogs:
-  - catalog_name: "   "
-    active_write_integration: i1
-    write_integrations:
-      - name: i1
-        catalog_type: iceberg_rest
-"#;
-        let res = parse_view_and_validate(yaml);
-        assert!(res.is_err(), "blank catalog_name must fail validation");
-    }
-
-    #[test]
-    fn blank_integration_name_or_active_fails() {
-        let yaml = r#"
-catalogs:
-  - name: c1
-    active_write_integration: " "
-    write_integrations:
-      - name: "   "
-        catalog_type: iceberg_rest
-"#;
-        let res = parse_view_and_validate(yaml);
-        assert!(
-            res.is_err(),
-            "blank integration name / active_write_integration must fail"
-        );
-    }
-
-    #[test]
-    fn blank_base_location_fields_fail() {
-        let yaml = r#"
-catalogs:
-  - name: c1
-    active_write_integration: i1
-    write_integrations:
-      - name: i1
-        catalog_type: built_in
-        external_volume: ev
-        base_location_root: " "
-        base_location_subpath: "   "
-"#;
-        let res = parse_view_and_validate(yaml);
-        assert!(res.is_err(), "blank base_location_* must fail for built_in");
-    }
-
-    #[test]
-    fn blank_catalog_linked_database_fails() {
-        let yaml = r#"
-catalogs:
-  - name: c1
-    active_write_integration: i1
-    write_integrations:
-      - name: i1
-        catalog_type: iceberg_rest
-        adapter_properties:
-          catalog_linked_database: "  "
-"#;
-        let res = parse_view_and_validate(yaml);
-        assert!(res.is_err(), "blank catalog_linked_database must fail");
-    }
-
-    #[test]
-    fn rest_linked_db_requires_external_volume() {
-        let yaml = r#"
-catalogs:
-  - name: c1
-    active_write_integration: i1
-    write_integrations:
-      - name: i1
-        catalog_type: iceberg_rest
-        catalog_linked_database: my_db
-"#;
-        let res = parse_view_and_validate(yaml);
-        assert!(
-            res.is_err(),
-            "linked DB true without external_volume must fail"
-        );
-    }
-
-    #[test]
-    fn rest_write_prop_requires_external_volume_ext_volen_without_linked_db() {
-        let yaml = r#"
-catalogs:
-  - name: c1
-    active_write_integration: i1
-    write_integrations:
-      - name: i1
-        catalog_type: iceberg_rest
-        adapter_properties:
-          max_data_extension_time_in_days: 1
-"#;
-        let res = parse_view_and_validate(yaml);
-        assert!(
-            res.is_err(),
-            "write-support prop without external_volume must fail"
-        );
-    }
-
-    #[test]
-    fn rest_linked_db_false_conflicts_with_write_prop() {
-        let yaml = r#"
-catalogs:
-  - name: c1
-    active_write_integration: i1
-    write_integrations:
-      - name: i1
-        catalog_type: iceberg_rest
-        catalog_linked_database: false
-        adapter_properties:
-          max_data_extension_time_in_days: 1
-"#;
-        let res = parse_view_and_validate(yaml);
-        assert!(
-            res.is_err(),
-            "write-support properties not allowed when no linked database"
-        );
-    }
-
-    #[test]
-    fn rest_linked_db_write_ok_with_external_volume() {
-        let yaml = r#"
-catalogs:
-  - name: c1
-    active_write_integration: i1
-    write_integrations:
-      - name: i1
-        catalog_type: iceberg_rest
-        table_format: iceberg
-        adapter_properties:
-          catalog_linked_database: more_more_databases
-          max_data_extension_time_in_days: 1
-"#;
-        let res = parse_view_and_validate(yaml);
-        assert!(
-            res.is_ok(),
-            "linked DB write-support should pass when external_volume present"
-        );
-    }
-
-    #[test]
-    fn strict_unknown_key_built_in_fails() {
-        let yaml = r#"
-catalogs:
-  - name: c1
-    active_write_integration: i
-    write_integrations:
-      - name: i
-        catalog_type: built_in
-        external_volume: ev
-        adapter_properties:
-          storage_serialisation_policy: COMPATIBLE   # typo (s/z)
-"#;
-        let yml_val: yml::Value = yml::from_str(yaml).unwrap();
-        let yml_span = yml_val.span().clone();
-        let m = yml_val
-            .as_mapping()
-            .expect("top-level YAML must be a mapping");
-        let v = DbtCatalogsView::from_mapping(m, yml_span);
-        assert!(
-            v.is_err(),
-            "unknown key in built_in adapter_properties must fail parse/validation"
-        );
-    }
-
-    #[test]
-    fn strict_unknown_key_rest_fails() {
-        let yaml = r#"
-catalogs:
-  - name: c1
-    active_write_integration: i
-    write_integrations:
-      - name: i
-        catalog_type: iceberg_rest
-        adapter_properties:
-          foo: 1
-"#;
-        let v = parse_view_and_validate(yaml);
-        assert!(
-            v.is_err(),
-            "unknown key in rest adapter_properties must fail"
-        );
-    }
-
-    #[test]
-    fn non_string_key_in_adapter_properities_fails() {
-        let yaml = r#"
-catalogs:
-  - name: c1
-    active_write_integration: i
-    write_integrations:
-      - name: i
-        catalog_type: built_in
-        external_volume: ev
-        adapter_properties: { 123: "bad" }
-"#;
-        let v = parse_view_and_validate(yaml);
-        assert!(v.is_err(), "non-string key in adapter_properties must fail");
-    }
-
-    #[test]
-    fn top_level_unknown_key_fails() {
-        let yaml = r#"
-    catalogs:
-      - name: c1
-        active_write_integration: i1
-        write_integrations:
-          - name: i1
-            catalog_type: iceberg_rest
-    extra_top_level: true
-    "#;
-        let yml_val: yml::Value = yml::from_str(yaml).unwrap();
-        let yml_span = yml_val.span().clone();
-        let m = yml_val
-            .as_mapping()
-            .expect("top-level YAML must be a mapping");
-        let v = DbtCatalogsView::from_mapping(m, yml_span);
-        assert!(v.is_err(), "unknown key at top-level must fail parse");
-    }
-
-    #[test]
-    fn catalog_spec_unknown_key_fails() {
-        let yaml = r#"
-    catalogs:
-      - name: c1
-        active_write_integration: i1
-        write_integrations: []
-        unexpected: 42
-    "#;
-        let yml_val: yml::Value = yml::from_str(yaml).unwrap();
-        let yml_span = yml_val.span().clone();
-        let m = yml_val
-            .as_mapping()
-            .expect("top-level YAML must be a mapping");
-        let v = DbtCatalogsView::from_mapping(m, yml_span);
-        assert!(v.is_err(), "unknown key in catalog spec must fail parse");
-    }
-
-    #[test]
-    fn write_integration_unknown_key_fails() {
-        let yaml = r#"
-    catalogs:
-      - name: c1
-        active_write_integration: i1
-        write_integrations:
-          - name: i1
-            catalog_type: iceberg_rest
-            oops: true
-    "#;
-        let yml_val: yml::Value = yml::from_str(yaml).unwrap();
-        let yml_span = yml_val.span().clone();
-        let m = yml_val
-            .as_mapping()
-            .expect("top-level YAML must be a mapping");
-        let v = DbtCatalogsView::from_mapping(m, yml_span);
-        assert!(
-            v.is_err(),
-            "unknown key in write_integration must fail parse"
-        );
-    }
-
-    #[test]
-    fn catalog_alias_collision_fails() {
-        let yaml = r#"
-    catalogs:
-      - catalog_name: c1
-        name: also_c1
-        active_write_integration: i1
-        write_integrations:
-          - name: i1
-            catalog_type: iceberg_rest
-    "#;
-        let yml_val: yml::Value = yml::from_str(yaml).unwrap();
-        let yml_span = yml_val.span().clone();
-        let m = yml_val
-            .as_mapping()
-            .expect("top-level YAML must be a mapping");
-        let v = DbtCatalogsView::from_mapping(m, yml_span);
-        assert!(
-            v.is_err(),
-            "providing both catalog_name and name must fail parse"
-        );
-    }
-
-    #[test]
-    fn integration_alias_collision_fails() {
-        let yaml = r#"
-    catalogs:
-      - name: c1
-        active_write_integration: i1
-        write_integrations:
-          - integration_name: i1
-            name: also_i1
-            catalog_type: iceberg_rest
-    "#;
-        let yml_val: yml::Value = yml::from_str(yaml).unwrap();
-        let yml_span = yml_val.span().clone();
-        let m = yml_val
-            .as_mapping()
-            .expect("top-level YAML must be a mapping");
-        let v = DbtCatalogsView::from_mapping(m, yml_span);
-        assert!(
-            v.is_err(),
-            "providing both integration_name and name must fail parse"
-        );
-    }
-
-    #[test]
-    fn built_in_blank_external_volume_fails() {
-        let yaml = r#"
-catalogs:
-  - name: c
-    active_write_integration: i
-    write_integrations:
-      - name: i
-        catalog_type: built_in
-        external_volume: "  "
-        table_format: iceberg
-"#;
-        let yml_val: yml::Value = yml::from_str(yaml).unwrap();
-        let yml_span = yml_val.span().clone();
-        let m = yml_val
-            .as_mapping()
-            .expect("top-level YAML must be a mapping");
-        let res = DbtCatalogsView::from_mapping(m, yml_span);
-        assert!(
-            res.is_err(),
-            "'external_volume' is required for BUILT_IN catalogs"
-        );
-    }
-
-    #[test]
-    fn rest_forbids_base_location_subpath() {
-        let yaml = r#"
-catalogs:
-  - name: c
-    active_write_integration: i
-    write_integrations:
-      - name: i
-        catalog_type: iceberg_rest
-        base_location_subpath: foo/bar
-        table_format: iceberg
-"#;
-        let yml_val: yml::Value = yml::from_str(yaml).unwrap();
-        let yml_span = yml_val.span().clone();
-        let m = yml_val
-            .as_mapping()
-            .expect("top-level YAML must be a mapping");
-        let v = DbtCatalogsView::from_mapping(m, yml_span);
-        assert!(v.is_err());
-    }
-
-    #[test]
-    fn negative_u32_fails_when_present() {
-        let yaml = r#"
-catalogs:
-  - name: c
-    active_write_integration: i
-    write_integrations:
-      - name: i
-        catalog_type: built_in
-        external_volume: ev
-        adapter_properties:
-          data_retention_time_in_days: -1
-"#;
-        let yml_val: yml::Value = yml::from_str(yaml).unwrap();
-        let yml_span = yml_val.span().clone();
-        let m = yml_val
-            .as_mapping()
-            .expect("top-level YAML must be a mapping");
-        let v = DbtCatalogsView::from_mapping(m, yml_span);
-        assert!(v.is_err(), "negative u32 must fail parse");
-    }
-
-    #[test]
-    fn non_bool_change_tracking_fails() {
-        let yaml = r#"
-catalogs:
-  - name: c
-    active_write_integration: i
-    write_integrations:
-      - name: i
-        catalog_type: built_in
-        external_volume: ev
-        adapter_properties:
-          change_tracking: "yes"
-"#;
-        let yml_val: yml::Value = yml::from_str(yaml).unwrap();
-        let yml_span = yml_val.span().clone();
-        let m = yml_val
-            .as_mapping()
-            .expect("top-level YAML must be a mapping");
-        let v = DbtCatalogsView::from_mapping(m, yml_span);
-        assert!(v.is_err(), "non-bool change_tracking must fail");
-    }
-
-    #[test]
-    fn adapter_properties_wrong_type_fails() {
-        let yaml = r#"
-catalogs:
-  - name: c
-    active_write_integration: i
-    write_integrations:
-      - name: i
-        catalog_type: iceberg_rest
-        adapter_properties: []
-"#;
-        let yml_val: yml::Value = yml::from_str(yaml).unwrap();
-        let yml_span = yml_val.span().clone();
-        let m = yml_val
-            .as_mapping()
-            .expect("top-level YAML must be a mapping");
-        let v = DbtCatalogsView::from_mapping(m, yml_span);
-        assert!(v.is_err(), "adapter_properties must be a mapping");
-    }
-
-    #[test]
-    fn rest_target_file_size_requires_ext_vol() {
-        let yaml = r#"
-catalogs:
-  - name: c
-    active_write_integration: i
-    write_integrations:
-      - name: i
-        catalog_type: iceberg_rest
-        adapter_properties:
-          target_file_size: "64MB"
-"#;
-        let res = parse_view_and_validate(yaml);
-        assert!(res.is_err(), "REST writer prop requires external_volume");
-    }
-
-    #[test]
-    fn rest_linked_db_false_conflicts_with_target_file_size() {
-        let yaml = r#"
-catalogs:
-  - name: c
-    active_write_integration: i
-    write_integrations:
-      - name: i
-        catalog_type: iceberg_rest
-        catalog_linked_database: false
-        external_volume: ev
-        adapter_properties:
-          target_file_size: AUTO
-"#;
-        let res = parse_view_and_validate(yaml);
-        assert!(
-            res.is_err(),
-            "writer properties not allowed when linked_db=false"
-        );
-    }
-
-    #[test]
-    fn duplicate_integration_names_fail() {
-        let yaml = r#"
-catalogs:
-  - name: c
-    active_write_integration: i1
-    write_integrations:
-      - name: i1
-        table_format: iceberg
-        catalog_type: iceberg_rest
-        adapter_properties:
-            catalog_linked_database: cld
-      - name: i1
-        catalog_type: built_in
-        table_format: iceberg
-        external_volume: ev
-"#;
-        let yml_val: yml::Value = yml::from_str(yaml).unwrap();
-        let yml_span = yml_val.span().clone();
-        let m = yml_val
-            .as_mapping()
-            .expect("top-level YAML must be a mapping");
-        let v = DbtCatalogsView::from_mapping(m, yml_span).unwrap();
-        let res = validate_catalogs(&v, Path::new("<test>"));
-        assert!(res.is_err(), "duplicate integration names must fail");
-    }
-
-    #[test]
-    fn duplicate_catalog_names_fail() {
-        let yaml = r#"
-catalogs:
-  - name: c
-    active_write_integration: i1
-    write_integrations: [{ name: i1, catalog_type: iceberg_rest, table_format: iceberg}]
-  - catalog_name: c
-    active_write_integration: j1
-    write_integrations: [{ name: j1, catalog_type: built_in, external_volume: ev, table_format: iceberg}]
-"#;
-        let yml_val: yml::Value = yml::from_str(yaml).unwrap();
-        let yml_span = yml_val.span().clone();
-        let m = yml_val
-            .as_mapping()
-            .expect("top-level YAML must be a mapping");
-        let v = DbtCatalogsView::from_mapping(m, yml_span).unwrap();
-        let res = validate_catalogs(&v, Path::new("<test>"));
-        assert!(res.is_err(), "duplicate catalog names must fail");
-    }
-
-    // === Databricks: UNITY
-
-    #[test]
-    fn databricks_unity_min_valid_with_location_root() {
-        let yaml = r#"
-catalogs:
-  - name: uc
-    active_write_integration: i
-    write_integrations:
-      - name: i
-        catalog_type: unity
-        table_format: iceberg
-        file_format: delta
-        adapter_properties:
-          location_root: /Volumes/org/area/lake
-"#;
-        let res = parse_view_and_validate(yaml);
-        assert!(res.is_ok(), "unity(min) should validate: {:?}", res.err());
-    }
-
-    #[test]
-    fn databricks_unity_min_valid_without_location_root() {
-        let yaml = r#"
-catalogs:
-  - name: uc
-    active_write_integration: i
-    write_integrations:
-      - name: i
-        catalog_type: unity
-        table_format: iceberg
-        file_format: delta
-"#;
-        let res = parse_view_and_validate(yaml);
-        assert!(
-            res.is_ok(),
-            "unity(no adapter_props) should validate: {:?}",
-            res.err()
-        );
-    }
-
-    #[test]
-    fn databricks_unity_rejects_non_delta_in_iceberg_mode() {
-        let yaml = r#"
-catalogs:
-  - name: uc
-    active_write_integration: i
-    write_integrations:
-      - name: i
-        catalog_type: unity
-        table_format: iceberg
-        file_format: parquet
-"#;
-        assert_err_contains(
-            yaml,
-            "when table_format=iceberg, file_format must be 'delta'",
-        );
-    }
-
-    #[test]
-    fn databricks_unity_rejects_external_volume() {
-        let yaml = r#"
-catalogs:
-  - name: uc
-    active_write_integration: i
-    write_integrations:
-      - name: i
-        catalog_type: unity
-        table_format: iceberg
-        file_format: delta
-        external_volume: some_volume
-"#;
-        assert_err_contains(
-            yaml,
-            "Unknown key 'external_volume' in write_integration(Databricks unity)",
-        );
-    }
-
-    #[test]
-    fn databricks_unity_rejects_unknown_adapter_property_keys() {
-        let yaml = r#"
-catalogs:
-  - name: uc
-    active_write_integration: i
-    write_integrations:
-      - name: i
-        catalog_type: unity
-        table_format: iceberg
-        file_format: delta
-        adapter_properties:
-          location_root: /Volumes/x
-          extra_key: nope
-"#;
-        assert_err_contains(yaml, "Unknown key 'extra_key' in adapter_properties(unity)");
-    }
-
-    #[test]
-    fn databricks_unity_rejects_blank_location_root() {
-        let yaml = r#"
-catalogs:
-  - name: uc
-    active_write_integration: i
-    write_integrations:
-      - name: i
-        catalog_type: unity
-        table_format: iceberg
-        file_format: delta
-        adapter_properties:
-          location_root: "   "
-"#;
-        assert_err_contains(yaml, "adapter_properties.location_root cannot be blank");
-    }
-
-    // === Databricks: HIVE_METASTORE
-
-    #[test]
-    fn databricks_hms_hudi_format() {
-        let yaml = r#"
-catalogs:
-  - name: hms
-    active_write_integration: i
-    write_integrations:
-      - name: i
-        catalog_type: hive_metastore
-        table_format: default
-        file_format: hudi
-"#;
-        assert!(parse_view_and_validate(yaml).is_ok());
-    }
-
-    #[test]
-    fn databricks_hms_rejects_iceberg_format() {
-        let yaml = r#"
-catalogs:
-  - name: hms
-    active_write_integration: i
-    write_integrations:
-      - name: i
-        catalog_type: hive_metastore
-        table_format: iceberg
-        file_format: hudi
-"#;
-        assert_err_contains(
-            yaml,
-            "Databricks 'hive_metastore' requires table_format=DEFAULT",
-        );
-    }
-
-    #[test]
-    fn databricks_hms_rejects_adapter_properties_entirely() {
-        let yaml = r#"
-catalogs:
-  - name: hms
-    active_write_integration: i
-    write_integrations:
-      - name: i
-        catalog_type: hive_metastore
-        table_format: iceberg
-        file_format: delta
-        adapter_properties:
-          location_root: /mnt/should_not_be_here
-"#;
-        assert_err_contains(
-            yaml,
-            "Unknown key 'adapter_properties' in write_integration",
-        );
-    }
-
-    #[test]
-    fn databricks_hms_rejects_external_volume() {
-        let yaml = r#"
-catalogs:
-  - name: hms
-    active_write_integration: i
-    write_integrations:
-      - name: i
-        catalog_type: hive_metastore
-        table_format: iceberg
-        file_format: delta
-        external_volume: anything
-"#;
-        // External volume error may trigger first depending on parse order; check for either.
-        let res = parse_view_and_validate(yaml);
-        let msg = format!("{res:?}");
-        assert!(res.is_err(), "expected error but got Ok");
-        assert!(
-            msg.contains(
-                "Unknown key 'external_volume' in write_integration(Databricks hive_metastore)"
-            ),
-            "unexpected error: {msg}"
-        );
-    }
-
-    // === Bigquery: BIGLAKE_METASTORE
-
-    #[test]
-    fn bigquery_builtin_min_valid() {
-        let yaml = r#"
-catalogs:
-  - name: bq
-    active_write_integration: biglake
-    write_integrations:
-      - name: biglake
-        external_volume: "gs://bucket"
-        table_format: iceberg
-        file_format: parquet
-        catalog_type: biglake_metastore
-"#;
-        let res = parse_view_and_validate(yaml);
-        assert!(
-            res.is_ok(),
-            "biglake_metastore(min) should validate: {:?}",
-            res.err()
-        );
-    }
-
-    #[test]
-    fn bigquery_builtin_with_base_location_root_adapter_property() {
-        let yaml = r#"
-catalogs:
-  - name: bq
-    active_write_integration: biglake
-    write_integrations:
-      - name: biglake
-        external_volume: "gs://bucket"
-        table_format: iceberg
-        file_format: parquet
-        catalog_type: biglake_metastore
-        adapter_properties:
-            base_location_root: _not_dbt
-"#;
-        let res = parse_view_and_validate(yaml);
-        assert!(
-            res.is_ok(),
-            "biglake_metastore(min) should validate: {:?}",
-            res.err()
-        );
-    }
-
-    #[test]
-    fn bigquery_builtin_rejects_blank_base_location_root() {
-        let yaml = r#"
-catalogs:
-  - name: bq
-    active_write_integration: biglake
-    write_integrations:
-      - name: biglake
-        external_volume: "gs://bucket"
-        table_format: iceberg
-        file_format: parquet
-        catalog_type: biglake_metastore
-        adapter_properties:
-            base_location_root: ""
-"#;
-        let res = parse_view_and_validate(yaml);
-        let msg = format!("{res:?}");
-        assert!(res.is_err(), "expected error but got OK");
-        assert!(msg.contains("cannot be blank"), "unexpected error: {msg}");
-    }
-
-    #[test]
-    fn bigquery_builtin_rejects_base_location_root_at_top_level() {
-        let yaml = r#"
-catalogs:
-  - name: bq
-    active_write_integration: biglake
-    write_integrations:
-      - name: biglake
-        external_volume: "gs://bucket"
-        table_format: iceberg
-        file_format: parquet
-        base_location_root: _not_dbt
-        catalog_type: biglake_metastore
-"#;
-        let res = parse_view_and_validate(yaml);
-        let msg = format!("{res:?}");
-        assert!(res.is_err(), "expected error but got OK");
-        assert!(
-            msg.contains(
-                "'base_location_root' must be set under 'adapter_properties', not at the top level."
-            ),
-            "unexpected error: {msg}"
-        );
-    }
-
-    #[test]
-    fn bigquery_builtin_rejects_base_location_subpath_at_top_level() {
-        let yaml = r#"
-catalogs:
-  - name: bq
-    active_write_integration: biglake
-    write_integrations:
-      - name: biglake
-        external_volume: "gs://bucket"
-        table_format: iceberg
-        file_format: parquet
-        base_location_subpath: sub/path
-        catalog_type: biglake_metastore
-"#;
-        let res = parse_view_and_validate(yaml);
-        let msg = format!("{res:?}");
-        assert!(res.is_err(), "expected error but got OK");
-        assert!(
-            msg.contains("'base_location_subpath' must be set under 'adapter_properties'"),
-            "unexpected error: {msg}"
-        );
-    }
-
-    #[test]
-    fn bigquery_builtin_rejects_base_location_subpath_adapter_property() {
-        let yaml = r#"
-catalogs:
-  - name: bq
-    active_write_integration: biglake
-    write_integrations:
-      - name: biglake
-        external_volume: "gs://bucket"
-        table_format: iceberg
-        file_format: parquet
-        catalog_type: biglake_metastore
-        adapter_properties:
-            base_location_root: _not_dbt
-            base_location_subpath: sub/path
-"#;
-        let res = parse_view_and_validate(yaml);
-        let msg = format!("{res:?}");
-        assert!(res.is_err(), "expected error but got OK");
-        assert!(
-            msg.contains(
-                "'base_location_subpath' must be set under 'adapter_properties' in a model config"
-            ),
-            "unexpected error: {msg}"
-        );
-    }
-
-    #[test]
-    fn bigquery_builtin_rejects_storage_uri_adapter_property() {
-        let yaml = r#"
-catalogs:
-  - name: bq
-    active_write_integration: biglake
-    write_integrations:
-      - name: biglake
-        external_volume: "gs://bucket"
-        table_format: iceberg
-        file_format: parquet
-        catalog_type: biglake_metastore
-        adapter_properties:
-            storage_uri: "gs://bucket/cool/path"
-"#;
-        let res = parse_view_and_validate(yaml);
-        let msg = format!("{res:?}");
-        assert!(res.is_err(), "expected error but got OK");
-        assert!(
-            msg.contains("'storage_uri' must be set under 'adapter_properties' in a model config"),
-            "unexpected error: {msg}"
-        );
-    }
-
-    #[test]
-    fn bigquery_builtin_rejects_blank_external_volume() {
-        let yaml = r#"
-catalogs:
-  - name: bq
-    active_write_integration: biglake
-    write_integrations:
-      - name: biglake
-        external_volume: ""
-        table_format: iceberg
-        file_format: parquet
-        catalog_type: biglake_metastore
-"#;
-        let res = parse_view_and_validate(yaml);
-        let msg = format!("{res:?}");
-        assert!(res.is_err(), "expected error but got OK");
-        assert!(
-            msg.contains(
-                "'external_volume' is required for biglake_metastore catalogs and cannot be blank."
-            ),
-            "unexpected error: {msg}"
-        );
-    }
-
-    #[test]
-    fn bigquery_builtin_rejects_invalid_gs_path() {
-        let yaml = r#"
-catalogs:
-  - name: bq
-    active_write_integration: biglake
-    write_integrations:
-      - name: biglake
-        external_volume: "bucket"
-        table_format: iceberg
-        file_format: parquet
-        catalog_type: biglake_metastore
-"#;
-        let res = parse_view_and_validate(yaml);
-        let msg = format!("{res:?}");
-        assert!(res.is_err(), "expected error but got OK");
-        assert!(
-            msg.contains("must be a path to a Cloud Storage bucket"),
-            "unexpected error: {msg}"
-        );
-    }
-
-    #[test]
-    fn bigquery_builtin_rejects_unknown_adapter_property_keys() {
-        let yaml = r#"
-catalogs:
-  - name: bq
-    active_write_integration: biglake
-    write_integrations:
-      - name: biglake
-        external_volume: "gs://bucket"
-        table_format: iceberg
-        file_format: parquet
-        catalog_type: biglake_metastore
-        adapter_properties:
-          auto_refresh: true
-"#;
-        assert_err_contains(
-            yaml,
-            "Unknown key 'auto_refresh' in adapter_properties(biglake_metastore)",
-        );
-    }
-
-    #[test]
-    fn bigquery_builtin_missing_file_format_fails() {
-        let yaml = r#"
-catalogs:
-  - name: bq
-    active_write_integration: biglake
-    write_integrations:
-      - name: biglake
-        external_volume: "gs://bucket"
-        table_format: iceberg
-        catalog_type: biglake_metastore
-"#;
-        assert_err_contains(
-            yaml,
-            "file_format required for Bigquery biglake_metastore (must be parquet)",
-        );
-    }
-
-    #[test]
-    fn bigquery_builtin_unsupported_file_format_fails() {
-        let yaml = r#"
-catalogs:
-  - name: bq
-    active_write_integration: biglake
-    write_integrations:
-      - name: biglake
-        external_volume: "gs://bucket"
-        table_format: iceberg
-        file_format: delta
-        catalog_type: biglake_metastore
-"#;
-        assert_err_contains(yaml, "file_format 'delta' invalid. choose one of (parquet)");
-    }
-
-    #[test]
-    fn bigquery_builtin_missing_table_format_fails() {
-        let yaml = r#"
-catalogs:
-  - name: bq
-    active_write_integration: biglake
-    write_integrations:
-      - name: biglake
-        external_volume: "gs://bucket"
-        file_format: parquet
-        catalog_type: biglake_metastore
-"#;
-        assert_err_contains(
-            yaml,
-            "table_format required for Bigquery biglake_metastore (must be iceberg)",
-        );
-    }
-
-    #[test]
-    fn bigquery_builtin_invalid_table_format_fails() {
-        let yaml = r#"
-catalogs:
-  - name: bq
-    active_write_integration: biglake
-    write_integrations:
-      - name: biglake
-        external_volume: "gs://bucket"
-        table_format: default
-        file_format: parquet
-        catalog_type: biglake_metastore
-"#;
-        assert_err_contains(
-            yaml,
-            "Bigquery biglake_metastore requires table_format=iceberg",
-        );
-    }
-
-    // === v2 cache methods ===
-
-    fn make_v2_catalogs(yaml: &str) -> DbtCatalogs {
-        let v: yml::Value = yml::from_str(yaml).unwrap();
-        let (repr, span) = match v {
-            yml::Value::Mapping(m, s) => (m, s),
-            _ => panic!("expected mapping"),
-        };
-        DbtCatalogs::new(repr, span)
-    }
-
-    #[test]
-    fn is_v2_catalog_finds_all_names() {
-        let c = make_v2_catalogs(
-            r#"
-catalogs:
-  - name: glue_cat
-    type: glue
+  - name: dbx_raw
+    type: unity
     table_format: iceberg
     config:
-      snowflake:
-        catalog_database: "GLUE_DB"
-  - name: horizon_cat
-    type: horizon
-    table_format: iceberg
-    config:
-      snowflake:
-        external_volume: ev
-"#,
-        );
-        assert!(c.is_v2_catalog("glue_cat").unwrap());
-        assert!(c.is_v2_catalog("horizon_cat").unwrap());
-        assert!(!c.is_v2_catalog("nonexistent").unwrap());
+      lakecompute:
+        catalog_database: raw
+        region: us-east-1
+        host: dbc-example.cloud.databricks.com
+"#;
+        parse_and_validate(yaml).expect("Unity lakecompute read fields should validate");
     }
 
     #[test]
-    fn v1_catalog_names_finds_all_names() {
-        let yaml = r#"
-catalogs:
-  - catalog_name: sf_native
-    active_write_integration: sf_native_int
-    write_integrations:
-      - name: sf_native_int
-        catalog_type: built_in
-        table_format: iceberg
-        external_volume: dbt_external_volume
-  - name: polaris
-    active_write_integration: polaris_int
-    write_integrations:
-      - name: polaris_int
-        catalog_type: iceberg_rest
-        table_format: iceberg
-"#;
-        let v: yml::Value = yml::from_str(yaml).unwrap();
-        let (repr, span) = match v {
-            yml::Value::Mapping(m, s) => (m, s),
-            _ => panic!("expected mapping"),
-        };
-        let c = DbtCatalogs::new(repr, span);
+    fn unity_lakecompute_rejects_credentials_in_catalogs_yml() {
+        for credential in [
+            "host: dbc-example.cloud.databricks.com\n        pat: token",
+            "host: dbc-example.cloud.databricks.com\n        client_id: client\n        client_secret: secret",
+        ] {
+            let error = parse_unity_lakecompute(credential).unwrap_err();
+            assert!(
+                error.to_string().contains("Unknown key")
+                    || error.to_string().contains("credential"),
+                "unexpected error: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn unity_lakecompute_rejects_old_attach_fields_with_migration() {
+        let error = parse_unity_lakecompute("endpoint: https://catalog.example").unwrap_err();
+        assert!(error.to_string().contains("config.duckdb"));
+    }
+
+    #[test]
+    fn unity_lakecompute_capability_is_readable() {
+        assert!(CatalogType::Unity.lake_compute_can_read());
+    }
+
+    #[test]
+    fn unity_lakecompute_host_policy_normalizes_trailing_slash() {
         assert_eq!(
-            c.v1_catalog_names().unwrap(),
-            &["sf_native".to_string(), "polaris".to_string()]
+            normalize_databricks_host("dbc-example.cloud.databricks.com/"),
+            Ok("https://dbc-example.cloud.databricks.com".to_string())
         );
+        assert_eq!(
+            normalize_databricks_host("HTTPS://DBC-EXAMPLE.CLOUD.DATABRICKS.COM/"),
+            Ok("https://dbc-example.cloud.databricks.com".to_string())
+        );
+        let error =
+            normalize_databricks_host("https://dbc-example.cloud.databricks.com:abc").unwrap_err();
+        assert!(error.contains("invalid port"), "{error}");
+        assert_eq!(
+            normalize_databricks_host("https://dbc-example.cloud.databricks.com:443"),
+            Ok("https://dbc-example.cloud.databricks.com".to_string())
+        );
+        for host in [
+            "http://dbc-example.cloud.databricks.com",
+            "https://dbc-example.gcp.databricks.com",
+            "https://evil.example.com",
+            "https://dbc-example.cloud.databricks.com:8443",
+            "https://dbc-example.cloud.databricks.com/path",
+            "https://user@dbc-example.cloud.databricks.com",
+        ] {
+            assert!(normalize_databricks_host(host).is_err(), "{host}");
+        }
     }
 
     #[test]
-    fn loaded_catalogs_none_has_no_catalog_names() {
-        let state = LoadedCatalogs::None;
-        assert_eq!(state.catalog_names().unwrap(), None);
-        assert!(!state.has_catalog_name("anything").unwrap());
-    }
-
-    #[test]
-    fn is_v2_catalog_database_collects_snowflake_catalog_databases() {
-        let c = make_v2_catalogs(
-            r#"
+    fn unity_lakecompute_rejects_uppercase_region() {
+        let yaml = r#"
 catalogs:
-  - name: glue_cat
-    type: glue
+  - name: dbx_raw
+    type: unity
     table_format: iceberg
     config:
-      snowflake:
-        catalog_database: "GLUE_DB"
-  - name: unity_cat
+      lakecompute:
+        catalog_database: raw
+        region: US-EAST-1
+        host: dbc-example.cloud.databricks.com
+"#;
+        let error = parse_and_validate(yaml).unwrap_err();
+        assert!(error.to_string().contains("region"));
+    }
+
+    #[test]
+    fn unity_multiplatform_valid() {
+        let yaml = r#"
+catalogs:
+  - name: linked_catalog
     type: unity
     table_format: iceberg
     config:
       snowflake:
-        catalog_database: "UNITY_DB"
+        catalog_database: "MY_DB"
+        auto_refresh: true
       databricks:
         file_format: delta
-  - name: horizon_cat
+        location_root: "s3://bucket/path"
+        use_uniform: true
+"#;
+        parse_and_validate(yaml).expect("v2 should validate");
+    }
+
+    #[test]
+    fn unity_databricks_parquet_managed_iceberg_valid() {
+        let yaml = r#"
+catalogs:
+  - name: linked_catalog
+    type: unity
+    table_format: iceberg
+    config:
+      databricks:
+        file_format: parquet
+        use_uniform: false
+"#;
+        parse_and_validate(yaml).expect("parquet + use_uniform=false should validate");
+    }
+
+    #[test]
+    fn unity_databricks_parquet_use_uniform_unset_valid() {
+        let yaml = r#"
+catalogs:
+  - name: linked_catalog
+    type: unity
+    table_format: iceberg
+    config:
+      databricks:
+        file_format: parquet
+"#;
+        parse_and_validate(yaml).expect("parquet with use_uniform unset should validate");
+    }
+
+    #[test]
+    fn horizon_valid() {
+        let yaml = r#"
+catalogs:
+  - name: sf_native
     type: horizon
     table_format: iceberg
     config:
       snowflake:
-        external_volume: ev
-"#,
-        );
-        assert!(c.is_v2_catalog_database("GLUE_DB").unwrap());
-        assert!(c.is_v2_catalog_database("UNITY_DB").unwrap());
-        assert!(!c.is_v2_catalog_database("horizon_cat").unwrap());
+        external_volume: my_external_volume
+        base_location_root: analytics/iceberg/dbt
+        storage_serialization_policy: COMPATIBLE
+        data_retention_time_in_days: 1
+        max_data_extension_time_in_days: 14
+        change_tracking: false
+"#;
+        parse_and_validate(yaml).expect("v2 horizon should validate");
     }
 
     #[test]
-    fn is_v2_catalog_database_false_when_no_snowflake_blocks() {
-        let c = make_v2_catalogs(
-            r#"
+    fn glue_valid() {
+        let yaml = r#"
+catalogs:
+  - name: glue_cat
+    type: glue
+    table_format: iceberg
+    config:
+      snowflake:
+        catalog_database: "MY_CLD"
+        auto_refresh: true
+        target_file_size: AUTO
+"#;
+        parse_and_validate(yaml).expect("v2 glue should validate");
+    }
+
+    #[test]
+    fn iceberg_rest_valid() {
+        let yaml = r#"
+catalogs:
+  - name: rest_cat
+    type: iceberg_rest
+    table_format: iceberg
+    config:
+      snowflake:
+        catalog_database: "MY_REST_CLD"
+        auto_refresh: true
+        max_data_extension_time_in_days: 1
+        target_file_size: AUTO
+"#;
+        parse_and_validate(yaml).expect("v2 iceberg_rest should validate");
+    }
+
+    #[test]
+    fn iceberg_rest_rejects_databricks_block() {
+        let yaml = r#"
+catalogs:
+  - name: rest_cat
+    type: iceberg_rest
+    table_format: iceberg
+    config:
+      snowflake:
+        catalog_database: "MY_REST_CLD"
+      databricks:
+        file_format: delta
+"#;
+        let res = parse_and_validate(yaml);
+        assert!(res.is_err(), "expected error");
+        assert!(
+            format!("{res:?}").contains("does not support databricks on the iceberg_rest"),
+            "unexpected error: {res:?}"
+        );
+    }
+
+    #[test]
+    fn hive_metastore_valid() {
+        let yaml = r#"
 catalogs:
   - name: hive
     type: hive_metastore
     table_format: default
     config:
       databricks:
-        file_format: delta
-"#,
-        );
-        assert!(!c.is_v2_catalog_database("anything").unwrap());
+        file_format: hudi
+"#;
+        parse_and_validate(yaml).expect("v2 hive_metastore should validate");
     }
 
     #[test]
-    fn is_v2_catalog_database_false_for_horizon() {
-        let c = make_v2_catalogs(
-            r#"
+    fn biglake_metastore_valid() {
+        let yaml = r#"
+catalogs:
+  - name: cat1
+    type: biglake_metastore
+    table_format: iceberg
+    config:
+      bigquery:
+        external_volume: "gs://bucket"
+        file_format: parquet
+        base_location_root: "root1"
+"#;
+        parse_and_validate(yaml).expect("v2 bigquery should validate");
+    }
+
+    #[test]
+    fn biglake_accepts_connection_id() {
+        let yaml = r#"
+catalogs:
+  - name: cat1
+    type: biglake_metastore
+    table_format: iceberg
+    config:
+      bigquery:
+        external_volume: "gs://bucket"
+        file_format: parquet
+        base_location_root: "root1"
+        connection_id: "cool_connection"
+"#;
+        parse_and_validate(yaml).expect("v2 bigquery should validate");
+    }
+
+    #[test]
+    fn biglake_accepts_lakehouse_catalog() {
+        let yaml = r#"
+catalogs:
+  - name: cat1
+    type: biglake_metastore
+    table_format: iceberg
+    config:
+      bigquery:
+        external_volume: "gs://bucket"
+        file_format: parquet
+        lakehouse_catalog: "sales_catalog"
+"#;
+        parse_and_validate_with(yaml, |view| {
+            let bigquery_config = view.catalogs[0]
+                .config_block("bigquery")
+                .expect("bigquery config block");
+            assert_eq!(
+                get_str(bigquery_config, "external_volume").unwrap(),
+                Some("gs://bucket")
+            );
+            assert_eq!(
+                get_str(bigquery_config, "file_format").unwrap(),
+                Some("parquet")
+            );
+            assert_eq!(
+                get_str(bigquery_config, "lakehouse_catalog").unwrap(),
+                Some("sales_catalog")
+            );
+        })
+        .expect("v2 bigquery LRC catalog should validate");
+    }
+
+    #[test]
+    fn biglake_rejects_blank_lakehouse_catalog() {
+        let yaml = r#"
+catalogs:
+  - name: cat1
+    type: biglake_metastore
+    table_format: iceberg
+    config:
+      bigquery:
+        external_volume: "gs://bucket"
+        file_format: parquet
+        lakehouse_catalog: ""
+"#;
+        let res = parse_and_validate(yaml);
+        assert!(res.is_err(), "expected error but got Ok");
+    }
+
+    #[test]
+    fn rejects_legacy_iceberg_catalogs_key() {
+        let yaml = r#"
+iceberg_catalogs:
+  - name: linked_catalog
+    type: unity
+    table_format: iceberg
+    config: {}
+"#;
+        let res = parse_and_validate(yaml);
+        let msg = format!("{res:?}");
+        assert!(res.is_err(), "expected error but got Ok");
+        assert!(
+            msg.contains("not 'iceberg_catalogs:'"),
+            "unexpected error: {msg}"
+        );
+    }
+
+    #[test]
+    fn unity_rejects_bigquery_block_in_config() {
+        let yaml = r#"
+catalogs:
+  - name: linked_catalog
+    type: unity
+    table_format: iceberg
+    config:
+      snowflake:
+        catalog_database: "MY_DB"
+      bigquery:
+        external_volume: "gs://bucket"
+        file_format: parquet
+"#;
+        let res = parse_and_validate(yaml);
+        let msg = format!("{res:?}");
+        assert!(res.is_err(), "expected error but got Ok");
+        assert!(
+            msg.contains("does not support bigquery on the unity"),
+            "unexpected error: {msg}"
+        );
+    }
+
+    #[test]
+    fn horizon_rejects_bigquery_platform_block() {
+        let yaml = r#"
+catalogs:
+  - name: my_catalog
+    type: horizon
+    table_format: iceberg
+    config:
+      bigquery:
+        external_volume: "gs://bucket"
+        file_format: parquet
+"#;
+        let res = parse_and_validate(yaml);
+        let msg = format!("{res:?}");
+        assert!(res.is_err(), "expected error but got Ok");
+        assert!(
+            msg.contains("does not support bigquery on the horizon"),
+            "unexpected error: {msg}"
+        );
+    }
+
+    #[test]
+    fn horizon_rejects_unity_only_snowflake_fields() {
+        let yaml = r#"
 catalogs:
   - name: sf_native
     type: horizon
     table_format: iceberg
     config:
       snowflake:
-        external_volume: ev
-"#,
+        external_volume: my_external_volume
+        auto_refresh: true
+"#;
+        let res = parse_and_validate(yaml);
+        let msg = format!("{res:?}");
+        assert!(res.is_err(), "expected error but got Ok");
+        assert!(
+            msg.contains("Unknown key 'auto_refresh'"),
+            "unexpected error: {msg}"
         );
-        assert!(!c.is_v2_catalog_database("sf_native").unwrap());
     }
 
     #[test]
-    fn v2_caches_populated_together_on_first_call() {
-        let c = make_v2_catalogs(
-            r#"
+    fn horizon_rejects_catalog_base_location_subpath() {
+        let yaml = r#"
 catalogs:
-  - name: uc
-    type: unity
+  - name: sf_native
+    type: horizon
     table_format: iceberg
     config:
       snowflake:
-        catalog_database: "CD"
-"#,
+        external_volume: my_external_volume
+        base_location_subpath: model_only
+"#;
+        let res = parse_and_validate(yaml);
+        let msg = format!("{res:?}");
+        assert!(res.is_err(), "expected error but got Ok");
+        assert!(
+            msg.contains("base_location_subpath is model-config only"),
+            "unexpected error: {msg}"
         );
-        assert!(c.is_v2_catalog("uc").unwrap());
-        assert!(c.is_v2_catalog_database("CD").unwrap());
     }
 
     #[test]
-    fn iceberg_rest_catalog_databases_collects_only_iceberg_rest() {
-        let c = make_v2_catalogs(
-            r#"
+    fn glue_rejects_horizon_only_snowflake_fields() {
+        let yaml = r#"
 catalogs:
-  - name: mdls_horizon
-    type: iceberg_rest
-    table_format: iceberg
-    config:
-      snowflake:
-        catalog_database: "DBT_COMPUTE_STAGING"
   - name: glue_cat
     type: glue
     table_format: iceberg
     config:
       snowflake:
-        catalog_database: "GLUE_DB"
-"#,
-        );
-        let dbs = c.iceberg_rest_catalog_databases().unwrap();
-        assert_eq!(
-            dbs,
-            vec![(
-                "mdls_horizon".to_string(),
-                "DBT_COMPUTE_STAGING".to_string()
-            )]
+        catalog_database: "MY_CLD"
+        external_volume: should_not_be_here
+"#;
+        let res = parse_and_validate(yaml);
+        let msg = format!("{res:?}");
+        assert!(res.is_err(), "expected error but got Ok");
+        assert!(
+            msg.contains("Unknown key 'external_volume'"),
+            "unexpected error: {msg}"
         );
     }
 
     #[test]
-    fn iceberg_rest_catalog_databases_empty_when_no_snowflake_block() {
-        let c = make_v2_catalogs(
-            r#"
+    fn unity_rejects_horizon_only_snowflake_fields() {
+        let yaml = r#"
 catalogs:
-  - name: mdls_horizon
+  - name: linked_catalog
+    type: unity
+    table_format: iceberg
+    config:
+      snowflake:
+        catalog_database: "MY_DB"
+        external_volume: should_not_be_here
+"#;
+        let res = parse_and_validate(yaml);
+        let msg = format!("{res:?}");
+        assert!(res.is_err(), "expected error but got Ok");
+        assert!(
+            msg.contains("Unknown key 'external_volume'"),
+            "unexpected error: {msg}"
+        );
+    }
+
+    #[test]
+    fn iceberg_rest_snowflake_only_still_valid() {
+        let yaml = r#"
+catalogs:
+  - name: rest_sf
     type: iceberg_rest
     table_format: iceberg
-    config: {}
-"#,
-        );
-        assert!(c.iceberg_rest_catalog_databases().unwrap().is_empty());
+    config:
+      snowflake:
+        catalog_database: "MY_DB"
+        auto_refresh: true
+"#;
+        parse_and_validate(yaml).expect("iceberg_rest + snowflake should validate");
     }
 
     #[test]
-    fn iceberg_rest_catalog_databases_empty_when_no_rest_catalogs() {
-        let c = make_v2_catalogs(
-            r#"
+    fn unity_databricks_parquet_with_use_uniform_is_rejected() {
+        let yaml = r#"
 catalogs:
-  - name: sf_native
+  - name: linked_catalog
+    type: unity
+    table_format: iceberg
+    config:
+      databricks:
+        use_uniform: true
+        file_format: parquet
+"#;
+        let res = parse_and_validate(yaml);
+        let msg = format!("{res:?}");
+        assert!(res.is_err(), "expected error but got Ok");
+        assert!(
+            msg.contains("use_uniform: true requires file_format: delta"),
+            "unexpected error: {msg}"
+        );
+    }
+
+    #[test]
+    fn unity_databricks_delta_without_use_uniform_is_rejected() {
+        let yaml = r#"
+catalogs:
+  - name: linked_catalog
+    type: unity
+    table_format: iceberg
+    config:
+      databricks:
+        file_format: delta
+"#;
+        let res = parse_and_validate(yaml);
+        let msg = format!("{res:?}");
+        assert!(res.is_err(), "expected error but got Ok");
+        assert!(
+            msg.contains("use_uniform: false (or unset) requires file_format: parquet"),
+            "unexpected error: {msg}"
+        );
+    }
+
+    #[test]
+    fn unity_databricks_delta_with_use_uniform_false_is_rejected() {
+        let yaml = r#"
+catalogs:
+  - name: linked_catalog
+    type: unity
+    table_format: iceberg
+    config:
+      databricks:
+        file_format: delta
+        use_uniform: false
+"#;
+        let res = parse_and_validate(yaml);
+        let msg = format!("{res:?}");
+        assert!(res.is_err(), "expected error but got Ok");
+        assert!(
+            msg.contains("use_uniform: false (or unset) requires file_format: parquet"),
+            "unexpected error: {msg}"
+        );
+    }
+
+    #[test]
+    fn unity_databricks_unknown_file_format_is_rejected() {
+        let yaml = r#"
+catalogs:
+  - name: linked_catalog
+    type: unity
+    table_format: iceberg
+    config:
+      databricks:
+        file_format: iceberg
+"#;
+        let res = parse_and_validate(yaml);
+        let msg = format!("{res:?}");
+        assert!(res.is_err(), "expected error but got Ok");
+        assert!(
+            msg.contains("file_format") && msg.contains("invalid") && msg.contains("delta"),
+            "unexpected error: {msg}"
+        );
+    }
+
+    #[test]
+    fn top_level_platform_specific_keys_are_rejected() {
+        let yaml = r#"
+catalogs:
+  - name: linked_catalog
+    type: unity
+    table_format: iceberg
+    file_format: parquet
+    config:
+      databricks: {}
+"#;
+        let res = parse_and_validate(yaml);
+        let msg = format!("{res:?}");
+        assert!(res.is_err(), "expected error but got Ok");
+        assert!(
+            msg.contains("Unknown key 'file_format' in catalog entry"),
+            "unexpected error: {msg}"
+        );
+    }
+
+    // ===== DuckDB + IcebergRest tests =====
+
+    #[test]
+    fn glue_duckdb_valid() {
+        let yaml = r#"
+catalogs:
+  - name: glue_duck
+    type: glue
+    table_format: iceberg
+    config:
+      duckdb:
+        endpoint: "https://glue.us-east-1.amazonaws.com"
+"#;
+        parse_and_validate(yaml).expect("glue + duckdb should validate");
+    }
+
+    #[test]
+    fn iceberg_rest_duckdb_valid() {
+        let yaml = r#"
+catalogs:
+  - name: rest_duck
+    type: iceberg_rest
+    table_format: iceberg
+    config:
+      duckdb:
+        endpoint: "https://my-iceberg-rest.example.com"
+        secret: "my_secret"
+        catalog_database: "my_catalog"
+"#;
+        parse_and_validate(yaml).expect("iceberg_rest + duckdb should validate");
+    }
+
+    #[test]
+    fn iceberg_rest_duckdb_and_snowflake_valid() {
+        let yaml = r#"
+catalogs:
+  - name: rest_mixed
+    type: iceberg_rest
+    table_format: iceberg
+    config:
+      snowflake:
+        catalog_database: "MY_DB"
+      duckdb:
+        endpoint: "https://my-iceberg-rest.example.com"
+"#;
+        parse_and_validate(yaml).expect("iceberg_rest + snowflake + duckdb should validate");
+    }
+
+    #[test]
+    fn glue_snowflake_only_still_valid() {
+        let yaml = r#"
+catalogs:
+  - name: glue_sf
+    type: glue
+    table_format: iceberg
+    config:
+      snowflake:
+        catalog_database: "MY_CLD"
+        auto_refresh: true
+"#;
+        parse_and_validate(yaml).expect("glue + snowflake should still validate");
+    }
+
+    #[test]
+    fn iceberg_rest_duckdb_missing_endpoint() {
+        let yaml = r#"
+catalogs:
+  - name: rest_duck
+    type: iceberg_rest
+    table_format: iceberg
+    config:
+      duckdb:
+        secret: "my_secret"
+"#;
+        let res = parse_and_validate(yaml);
+        let msg = format!("{res:?}");
+        assert!(res.is_err(), "expected error but got Ok");
+        assert!(msg.contains("'endpoint'"), "unexpected error: {msg}");
+    }
+
+    #[test]
+    fn iceberg_rest_duckdb_blank_endpoint() {
+        let yaml = r#"
+catalogs:
+  - name: rest_duck
+    type: iceberg_rest
+    table_format: iceberg
+    config:
+      duckdb:
+        endpoint: "   "
+"#;
+        let res = parse_and_validate(yaml);
+        let msg = format!("{res:?}");
+        assert!(res.is_err(), "expected error but got Ok");
+        assert!(
+            msg.contains("'endpoint' must be non-empty"),
+            "unexpected error: {msg}"
+        );
+    }
+
+    #[test]
+    fn iceberg_rest_duckdb_blank_secret() {
+        let yaml = r#"
+catalogs:
+  - name: rest_duck
+    type: iceberg_rest
+    table_format: iceberg
+    config:
+      duckdb:
+        endpoint: "https://my-rest.example.com"
+        secret: ""
+"#;
+        let res = parse_and_validate(yaml);
+        let msg = format!("{res:?}");
+        assert!(res.is_err(), "expected error but got Ok");
+        assert!(
+            msg.contains("'secret' must be non-empty"),
+            "unexpected error: {msg}"
+        );
+    }
+
+    #[test]
+    fn iceberg_rest_duckdb_blank_catalog_database() {
+        let yaml = r#"
+catalogs:
+  - name: rest_duck
+    type: iceberg_rest
+    table_format: iceberg
+    config:
+      duckdb:
+        endpoint: "https://my-rest.example.com"
+        catalog_database: ""
+"#;
+        let res = parse_and_validate(yaml);
+        let msg = format!("{res:?}");
+        assert!(res.is_err(), "expected error but got Ok");
+        assert!(
+            msg.contains("'catalog_database' must be non-empty"),
+            "unexpected error: {msg}"
+        );
+    }
+
+    #[test]
+    fn snowflake_catalog_database_dashes_allowed() {
+        // The ascii-identifier check only applies to duckdb's `catalog_database`
+        // (which becomes a sanitized ATTACH alias); Snowflake's is never
+        // sanitized, so dashes are fine there.
+        let yaml = r#"
+catalogs:
+  - name: rest_sf
+    type: iceberg_rest
+    table_format: iceberg
+    config:
+      snowflake:
+        catalog_database: "my-linked-db"
+        auto_refresh: true
+"#;
+        parse_and_validate(yaml).expect("dashes in snowflake catalog_database should validate");
+    }
+
+    #[test]
+    fn ducklake_duckdb_non_ascii_identifier_catalog_database_rejected() {
+        let yaml = r#"
+catalogs:
+  - name: my_lake
+    type: ducklake
+    table_format: default
+    config:
+      duckdb:
+        metadata_path: "metadata.ducklake"
+        catalog_database: "my-lake"
+"#;
+        let res = parse_and_validate(yaml);
+        let msg = format!("{res:?}");
+        assert!(res.is_err(), "expected error but got Ok");
+        assert!(
+            msg.contains("must contain only ASCII letters, digits, and underscores"),
+            "unexpected error: {msg}"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // DuckDB config: endpoint_type
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn duckdb_endpoint_type_glue_valid() {
+        let yaml = r#"
+catalogs:
+  - name: glue_cat
+    type: glue
+    table_format: iceberg
+    config:
+      duckdb:
+        endpoint_type: GLUE
+"#;
+        parse_and_validate(yaml).expect("endpoint_type=GLUE should validate");
+    }
+
+    #[test]
+    fn duckdb_endpoint_type_s3_tables_valid() {
+        let yaml = r#"
+catalogs:
+  - name: s3t_cat
+    type: glue
+    table_format: iceberg
+    config:
+      duckdb:
+        endpoint_type: S3_TABLES
+        warehouse: "arn:aws:s3tables:us-east-1:123456789012:bucket/example"
+"#;
+        parse_and_validate(yaml).expect("endpoint_type=S3_TABLES should validate");
+    }
+
+    #[test]
+    fn duckdb_endpoint_type_invalid_value() {
+        let yaml = r#"
+catalogs:
+  - name: bad_cat
+    type: glue
+    table_format: iceberg
+    config:
+      duckdb:
+        endpoint_type: INVALID
+"#;
+        let res = parse_and_validate(yaml);
+        assert!(res.is_err(), "expected error");
+        assert!(
+            format!("{res:?}").contains("endpoint_type") && format!("{res:?}").contains("invalid"),
+            "unexpected: {res:?}"
+        );
+    }
+
+    #[test]
+    fn duckdb_endpoint_and_endpoint_type_mutual_exclusion() {
+        let yaml = r#"
+catalogs:
+  - name: both_cat
+    type: glue
+    table_format: iceberg
+    config:
+      duckdb:
+        endpoint: "https://example.com"
+        endpoint_type: GLUE
+"#;
+        let res = parse_and_validate(yaml);
+        assert!(res.is_err(), "expected error");
+        assert!(
+            format!("{res:?}").contains("mutually exclusive"),
+            "unexpected: {res:?}"
+        );
+    }
+
+    #[test]
+    fn duckdb_s3_tables_endpoint_type_requires_warehouse() {
+        let yaml = r#"
+catalogs:
+  - name: s3t_cat
+    type: glue
+    table_format: iceberg
+    config:
+      duckdb:
+        endpoint_type: S3_TABLES
+"#;
+        let res = parse_and_validate(yaml);
+        assert!(res.is_err(), "expected error");
+        assert!(
+            format!("{res:?}").contains("requires 'warehouse'"),
+            "unexpected: {res:?}"
+        );
+    }
+
+    #[test]
+    fn duckdb_neither_endpoint_nor_endpoint_type() {
+        let yaml = r#"
+catalogs:
+  - name: empty_cat
+    type: glue
+    table_format: iceberg
+    config:
+      duckdb:
+        secret: "my_secret"
+"#;
+        let res = parse_and_validate(yaml);
+        assert!(res.is_err(), "expected error");
+        assert!(
+            format!("{res:?}").contains("'endpoint' or 'endpoint_type'"),
+            "unexpected: {res:?}"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // DuckDB config: authorization_type, access_delegation_mode
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn duckdb_authorization_type_valid() {
+        for auth_type in ["OAUTH2", "SIGV4", "NONE"] {
+            let yaml = format!(
+                r#"
+catalogs:
+  - name: auth_cat
+    type: iceberg_rest
+    table_format: iceberg
+    config:
+      duckdb:
+        endpoint: "https://example.com"
+        authorization_type: {auth_type}
+"#
+            );
+            parse_and_validate(&yaml)
+                .unwrap_or_else(|e| panic!("authorization_type={auth_type} should validate: {e}"));
+        }
+    }
+
+    #[test]
+    fn duckdb_authorization_type_invalid() {
+        let yaml = r#"
+catalogs:
+  - name: auth_cat
+    type: iceberg_rest
+    table_format: iceberg
+    config:
+      duckdb:
+        endpoint: "https://example.com"
+        authorization_type: BEARER
+"#;
+        let res = parse_and_validate(yaml);
+        assert!(res.is_err(), "expected error");
+        assert!(
+            format!("{res:?}").contains("authorization_type")
+                && format!("{res:?}").contains("invalid"),
+            "unexpected: {res:?}"
+        );
+    }
+
+    #[test]
+    fn duckdb_authorization_type_cannot_combine_with_endpoint_type() {
+        let yaml = r#"
+catalogs:
+  - name: auth_cat
+    type: glue
+    table_format: iceberg
+    config:
+      duckdb:
+        endpoint_type: GLUE
+        authorization_type: SIGV4
+"#;
+        let res = parse_and_validate(yaml);
+        assert!(res.is_err(), "expected error");
+        assert!(
+            format!("{res:?}").contains("cannot be combined with 'endpoint_type'"),
+            "unexpected: {res:?}"
+        );
+    }
+
+    #[test]
+    fn duckdb_access_delegation_mode_valid() {
+        for mode in ["VENDED_CREDENTIALS", "NONE"] {
+            let yaml = format!(
+                r#"
+catalogs:
+  - name: deleg_cat
+    type: iceberg_rest
+    table_format: iceberg
+    config:
+      duckdb:
+        endpoint: "https://example.com"
+        access_delegation_mode: {mode}
+"#
+            );
+            parse_and_validate(&yaml)
+                .unwrap_or_else(|e| panic!("access_delegation_mode={mode} should validate: {e}"));
+        }
+    }
+
+    #[test]
+    fn duckdb_access_delegation_mode_invalid() {
+        let yaml = r#"
+catalogs:
+  - name: deleg_cat
+    type: iceberg_rest
+    table_format: iceberg
+    config:
+      duckdb:
+        endpoint: "https://example.com"
+        access_delegation_mode: REMOTE
+"#;
+        let res = parse_and_validate(yaml);
+        assert!(res.is_err(), "expected error");
+        assert!(
+            format!("{res:?}").contains("access_delegation_mode")
+                && format!("{res:?}").contains("invalid"),
+            "unexpected: {res:?}"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // DuckDB config: full config with all optional keys
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn duckdb_full_config_all_optional_keys() {
+        let yaml = r#"
+catalogs:
+  - name: full_cat
+    type: iceberg_rest
+    table_format: iceberg
+    config:
+      duckdb:
+        endpoint: "https://my-catalog.example.com"
+        warehouse: "warehouse_name"
+        secret: "my_secret"
+        catalog_database: "my_db"
+        default_region: "us-east-1"
+        default_schema: "demo"
+        max_table_staleness: "10 minutes"
+        authorization_type: OAUTH2
+        access_delegation_mode: VENDED_CREDENTIALS
+        support_nested_namespaces: true
+        support_stage_create: false
+        purge_requested: true
+        encode_entire_prefix: true
+"#;
+        parse_and_validate(yaml).expect("full config should validate");
+    }
+
+    #[test]
+    fn duckdb_credential_values_belong_in_profile_secrets() {
+        let yaml = r#"
+catalogs:
+  - name: rest_duck
+    type: iceberg_rest
+    table_format: iceberg
+    config:
+      duckdb:
+        endpoint: "https://example.com"
+        client_secret: "actual-secret-value"
+"#;
+        let res = parse_and_validate(yaml);
+        assert!(res.is_err(), "expected error for credential-bearing key");
+        assert!(
+            format!("{res:?}").contains("client_secret"),
+            "unexpected: {res:?}"
+        );
+    }
+
+    #[test]
+    fn duckdb_boolean_attach_options_validate_type() {
+        let yaml = r#"
+catalogs:
+  - name: rest_duck
+    type: iceberg_rest
+    table_format: iceberg
+    config:
+      duckdb:
+        endpoint: "https://example.com"
+        support_stage_create: "yes"
+"#;
+        let res = parse_and_validate(yaml);
+        assert!(res.is_err(), "expected error for non-boolean attach option");
+        assert!(
+            format!("{res:?}").contains("support_stage_create"),
+            "unexpected: {res:?}"
+        );
+    }
+
+    #[test]
+    fn duckdb_unknown_key_rejected() {
+        let yaml = r#"
+catalogs:
+  - name: unk_cat
+    type: iceberg_rest
+    table_format: iceberg
+    config:
+      duckdb:
+        endpoint: "https://example.com"
+        bogus_key: "value"
+"#;
+        let res = parse_and_validate(yaml);
+        assert!(res.is_err(), "expected error for unknown key");
+        assert!(
+            format!("{res:?}").contains("bogus_key"),
+            "unexpected: {res:?}"
+        );
+    }
+
+    #[test]
+    fn duckdb_blank_warehouse_invalid() {
+        let yaml = r#"
+catalogs:
+  - name: bad_cat
+    type: iceberg_rest
+    table_format: iceberg
+    config:
+      duckdb:
+        endpoint: "https://example.com"
+        warehouse: "   "
+"#;
+        let res = parse_and_validate(yaml);
+        assert!(res.is_err(), "expected error");
+        assert!(
+            format!("{res:?}").contains("'warehouse' must be non-empty"),
+            "unexpected: {res:?}"
+        );
+    }
+
+    // ===== DuckLake tests =====
+
+    #[test]
+    fn ducklake_duckdb_valid() {
+        let yaml = r#"
+catalogs:
+  - name: my_lake
+    type: ducklake
+    table_format: default
+    config:
+      duckdb:
+        metadata_path: "metadata.ducklake"
+"#;
+        parse_and_validate(yaml).expect("ducklake minimal config should validate");
+    }
+
+    #[test]
+    fn ducklake_duckdb_all_options() {
+        let yaml = r#"
+catalogs:
+  - name: my_lake
+    type: ducklake
+    table_format: default
+    config:
+      duckdb:
+        metadata_path: "metadata.ducklake"
+        data_path: "data/"
+        catalog_database: "lake"
+        metadata_schema: "my_schema"
+        metadata_catalog: "lake_db"
+        data_inlining_row_limit: 100
+        create_if_not_exists: true
+        read_only: false
+        encrypted: false
+        automatic_migration: true
+        override_data_path: true
+"#;
+        parse_and_validate(yaml).expect("ducklake full config should validate");
+    }
+
+    #[test]
+    fn ducklake_missing_metadata_path() {
+        let yaml = r#"
+catalogs:
+  - name: my_lake
+    type: ducklake
+    table_format: default
+    config:
+      duckdb:
+        data_path: "data/"
+"#;
+        let res = parse_and_validate(yaml);
+        let msg = format!("{res:?}");
+        assert!(res.is_err(), "expected error but got Ok");
+        assert!(msg.contains("'metadata_path'"), "unexpected error: {msg}");
+    }
+
+    #[test]
+    fn ducklake_wrong_table_format() {
+        let yaml = r#"
+catalogs:
+  - name: my_lake
+    type: ducklake
+    table_format: iceberg
+    config:
+      duckdb:
+        metadata_path: "metadata.ducklake"
+"#;
+        let res = parse_and_validate(yaml);
+        let msg = format!("{res:?}");
+        assert!(res.is_err(), "expected error but got Ok");
+        assert!(
+            msg.contains("requires table_format='default'"),
+            "unexpected error: {msg}"
+        );
+    }
+
+    #[test]
+    fn ducklake_snowflake_block_rejected() {
+        let yaml = r#"
+catalogs:
+  - name: my_lake
+    type: ducklake
+    table_format: default
+    config:
+      snowflake:
+        external_volume: "EV"
+"#;
+        let res = parse_and_validate(yaml);
+        let msg = format!("{res:?}");
+        assert!(res.is_err(), "expected error but got Ok");
+        assert!(
+            msg.contains("does not support snowflake on the ducklake"),
+            "unexpected error: {msg}"
+        );
+    }
+
+    // ===== Local filesystem tests =====
+
+    #[test]
+    fn local_filesystem_duckdb_valid() {
+        let yaml = r#"
+catalogs:
+  - name: local_files
+    type: local_filesystem
+    table_format: default
+    config:
+      duckdb:
+        root_path: "data/local_files"
+        file_format: parquet
+"#;
+        parse_and_validate(yaml).expect("local filesystem config should validate");
+    }
+
+    #[test]
+    fn local_filesystem_missing_root_path() {
+        let yaml = r#"
+catalogs:
+  - name: local_files
+    type: local_filesystem
+    table_format: default
+    config:
+      duckdb:
+        file_format: parquet
+"#;
+        let res = parse_and_validate(yaml);
+        let msg = format!("{res:?}");
+        assert!(res.is_err(), "expected error but got Ok");
+        assert!(msg.contains("'root_path'"), "unexpected error: {msg}");
+    }
+
+    #[test]
+    fn local_filesystem_wrong_table_format() {
+        let yaml = r#"
+catalogs:
+  - name: local_files
+    type: local_filesystem
+    table_format: iceberg
+    config:
+      duckdb:
+        root_path: "data/local_files"
+"#;
+        let res = parse_and_validate(yaml);
+        let msg = format!("{res:?}");
+        assert!(res.is_err(), "expected error but got Ok");
+        assert!(
+            msg.contains("requires table_format='default'"),
+            "unexpected error: {msg}"
+        );
+    }
+
+    #[test]
+    fn json_schema_round_trips_and_covers_all_types() {
+        let schema = CatalogRegistry::new().json_schema();
+        let pretty = serde_json::to_string_pretty(&schema).unwrap();
+        let reparsed: serde_json::Value = serde_json::from_str(&pretty).unwrap();
+        assert_eq!(schema, reparsed, "schema must round-trip through JSON");
+
+        let items = schema["properties"]["catalogs"]["items"]["oneOf"]
+            .as_array()
+            .expect("oneOf array");
+        let type_names: Vec<&str> = items
+            .iter()
+            .filter_map(|i| i["properties"]["type"]["const"].as_str())
+            .collect();
+        for cts in CATALOG_SCHEMAS {
+            let type_name = cts.catalog_type.as_str().to_lowercase();
+            assert!(
+                type_names.contains(&type_name.as_str()),
+                "missing {type_name}"
+            );
+        }
+    }
+
+    /// Drift guard: the schema's accepted config fields for every
+    /// `(type, platform)` block must match the descriptor tables the validators
+    /// use, modulo `forbidden` fields (which are model-config only and excluded
+    /// from the published schema). Adding or renaming a `FieldSpec` updates both
+    /// the accepted-key set and the published schema together.
+    #[test]
+    fn schema_config_fields_match_descriptor_tables() {
+        let schema = catalogs_json_schema();
+        let branches = schema["properties"]["catalogs"]["items"]["oneOf"]
+            .as_array()
+            .expect("oneOf array");
+        for cts in CATALOG_SCHEMAS {
+            let type_name = cts.catalog_type.as_str().to_lowercase();
+            let branch = branches
+                .iter()
+                .find(|b| b["properties"]["type"]["const"] == serde_json::json!(type_name))
+                .unwrap_or_else(|| panic!("missing schema branch for {type_name}"));
+            let config_props = branch["properties"]["config"]["properties"]
+                .as_object()
+                .expect("config properties");
+
+            let mut schema_platforms: Vec<&str> = config_props.keys().map(String::as_str).collect();
+            schema_platforms.sort_unstable();
+            let mut table_platforms: Vec<&str> = cts.platforms.iter().map(|p| p.key).collect();
+            table_platforms.sort_unstable();
+            assert_eq!(
+                schema_platforms, table_platforms,
+                "platform blocks for {type_name} diverge"
+            );
+
+            for platform in cts.platforms {
+                let mut schema_fields: Vec<&str> = config_props[platform.key]["properties"]
+                    .as_object()
+                    .expect("platform field properties")
+                    .keys()
+                    .map(String::as_str)
+                    .collect();
+                schema_fields.sort_unstable();
+                let mut table_fields: Vec<&str> = platform
+                    .fields
+                    .iter()
+                    .filter(|f| !f.forbidden)
+                    .map(|f| f.name)
+                    .collect();
+                table_fields.sort_unstable();
+                assert_eq!(
+                    schema_fields, table_fields,
+                    "schema fields for {type_name}/{} diverge from the descriptor table",
+                    platform.key
+                );
+            }
+        }
+    }
+
+    // ===== Catalog federation tests =====
+
+    #[test]
+    fn horizon_databricks_only_valid() {
+        let yaml = r#"
+catalogs:
+  - name: dbx_horizon
+    type: horizon
+    table_format: iceberg
+    config:
+      databricks:
+        catalog_database: "MY_FOREIGN_CATALOG"
+"#;
+        parse_and_validate(yaml).expect("horizon with databricks-only block should validate");
+    }
+
+    #[test]
+    fn horizon_snowflake_and_databricks_valid() {
+        let yaml = r#"
+catalogs:
+  - name: horizon_both
     type: horizon
     table_format: iceberg
     config:
       snowflake:
-        external_volume: ev
-"#,
-        );
-        assert!(c.iceberg_rest_catalog_databases().unwrap().is_empty());
+        external_volume: my_external_volume
+      databricks:
+        catalog_database: "MY_FOREIGN_CATALOG"
+"#;
+        parse_and_validate(yaml).expect("horizon with both platform blocks should validate");
     }
 
     #[test]
-    fn catalogs_matching_database_default_table_format_is_excluded() {
-        let c = make_v2_catalogs(
-            r#"
+    fn horizon_requires_at_least_one_platform_block() {
+        let yaml = r#"
 catalogs:
-  - name: horizon_plain
+  - name: horizon_empty
     type: horizon
-    table_format: default
+    table_format: iceberg
+    config: {}
+"#;
+        let res = parse_and_validate(yaml);
+        let msg = format!("{res:?}");
+        assert!(res.is_err(), "expected error but got Ok");
+        assert!(
+            msg.contains("requires at least one config block"),
+            "unexpected error: {msg}"
+        );
+    }
+
+    #[test]
+    fn horizon_databricks_requires_catalog_database() {
+        let yaml = r#"
+catalogs:
+  - name: dbx_horizon
+    type: horizon
+    table_format: iceberg
+    config:
+      databricks: {}
+"#;
+        let res = parse_and_validate(yaml);
+        let msg = format!("{res:?}");
+        assert!(res.is_err(), "expected error but got Ok");
+        assert!(
+            msg.contains("requires 'catalog_database'"),
+            "unexpected error: {msg}"
+        );
+    }
+
+    #[test]
+    fn horizon_databricks_rejects_empty_catalog_database() {
+        let yaml = r#"
+catalogs:
+  - name: dbx_horizon
+    type: horizon
+    table_format: iceberg
+    config:
+      databricks:
+        catalog_database: "   "
+"#;
+        let res = parse_and_validate(yaml);
+        let msg = format!("{res:?}");
+        assert!(res.is_err(), "expected error but got Ok");
+        assert!(
+            msg.contains("'catalog_database' must be non-empty"),
+            "unexpected error: {msg}"
+        );
+    }
+
+    #[test]
+    fn horizon_databricks_rejects_unknown_key() {
+        let yaml = r#"
+catalogs:
+  - name: dbx_horizon
+    type: horizon
+    table_format: iceberg
+    config:
+      databricks:
+        catalog_database: "MY_CATALOG"
+        file_format: delta
+"#;
+        let res = parse_and_validate(yaml);
+        let msg = format!("{res:?}");
+        assert!(res.is_err(), "expected error but got Ok");
+        assert!(
+            msg.contains("Unknown key 'file_format'"),
+            "unexpected error: {msg}"
+        );
+    }
+
+    #[test]
+    fn horizon_duckdb_valid() {
+        let yaml = r#"
+catalogs:
+  - name: horizon_demo
+    type: horizon
+    table_format: iceberg
     config:
       duckdb:
-        endpoint: "https://horizon.example.com"
-        catalog_database: "horizon_db"
-"#,
+        warehouse: "horizon_wh"
+        endpoint: "https://horizon.example.com/catalog"
+        secret: "horizon_secret"
+        default_schema: "demo"
+"#;
+        parse_and_validate(yaml).expect("read-only horizon + duckdb should validate");
+    }
+
+    #[test]
+    fn unity_duckdb_valid() {
+        let yaml = r#"
+catalogs:
+  - name: unity_demo
+    type: unity
+    table_format: iceberg
+    config:
+      duckdb:
+        warehouse: "unity_wh"
+        endpoint: "https://dbc.example.com/api/2.1/unity-catalog/iceberg"
+"#;
+        parse_and_validate(yaml).expect("read-only unity + duckdb should validate");
+    }
+
+    #[test]
+    fn horizon_duckdb_requires_warehouse() {
+        let yaml = r#"
+catalogs:
+  - name: horizon_demo
+    type: horizon
+    table_format: iceberg
+    config:
+      duckdb:
+        endpoint: "https://horizon.example.com/catalog"
+"#;
+        let res = parse_and_validate(yaml);
+        let msg = format!("{res:?}");
+        assert!(res.is_err(), "expected error but got Ok");
+        assert!(msg.contains("'warehouse'"), "unexpected error: {msg}");
+    }
+
+    #[test]
+    fn horizon_duckdb_allows_writes() {
+        // read_only: false + the #1017 write-compat options validate now.
+        let yaml = r#"
+catalogs:
+  - name: horizon_demo
+    type: horizon
+    table_format: iceberg
+    config:
+      duckdb:
+        warehouse: "horizon_wh"
+        endpoint: "https://horizon.example.com/catalog"
+        read_only: false
+        stage_create_tables: false
+        disable_multi_table_commit: true
+"#;
+        parse_and_validate(yaml)
+            .expect("read-write horizon + write-compat options should validate");
+    }
+
+    #[test]
+    fn unity_duckdb_allows_writes() {
+        let yaml = r#"
+catalogs:
+  - name: unity_demo
+    type: unity
+    table_format: iceberg
+    config:
+      duckdb:
+        warehouse: "unity_wh"
+        endpoint: "https://dbc.example.com/api/2.1/unity-catalog/iceberg"
+        read_only: false
+        disable_multi_table_commit: true
+"#;
+        parse_and_validate(yaml)
+            .expect("read-write unity + disable_multi_table_commit should validate");
+    }
+
+    #[test]
+    fn duckdb_blank_default_region_invalid() {
+        let yaml = r#"
+catalogs:
+  - name: bad_cat
+    type: iceberg_rest
+    table_format: iceberg
+    config:
+      duckdb:
+        endpoint: "https://example.com"
+        default_region: ""
+"#;
+        let res = parse_and_validate(yaml);
+        assert!(res.is_err(), "expected error");
+        assert!(
+            format!("{res:?}").contains("default_region"),
+            "unexpected: {res:?}"
         );
-        let matches = c
-            .catalogs_matching_database("horizon_db", AdapterType::DuckDB)
-            .unwrap();
-        assert!(matches.is_empty(), "matches was: {matches:?}");
+    }
+    // ===== description field (optional, free-text) =====
+
+    #[test]
+    fn catalog_with_description_is_valid() {
+        let yaml = r#"
+catalogs:
+  - name: sf_native
+    type: horizon
+    table_format: iceberg
+    description: "Primary Snowflake-managed Iceberg catalog for analytics."
+    config:
+      snowflake:
+        external_volume: my_external_volume
+"#;
+        parse_and_validate(yaml).expect("description should be accepted");
+    }
+
+    #[test]
+    fn empty_description_is_rejected() {
+        let yaml = r#"
+catalogs:
+  - name: sf_native
+    type: horizon
+    table_format: iceberg
+    description: "   "
+    config:
+      snowflake:
+        external_volume: my_external_volume
+"#;
+        let res = parse_and_validate(yaml);
+        assert!(res.is_err(), "expected error but got Ok");
+        assert!(
+            format!("{res:?}").contains("Supply a value for the 'description' field"),
+            "unexpected error: {res:?}"
+        );
+    }
+
+    #[test]
+    fn description_appears_in_json_schema() {
+        let schema = catalogs_json_schema();
+        let branches = schema["properties"]["catalogs"]["items"]["oneOf"]
+            .as_array()
+            .expect("oneOf array");
+        for branch in branches {
+            assert_eq!(
+                branch["properties"]["description"]["type"],
+                serde_json::json!("string"),
+                "every catalog type branch should publish an optional string `description`"
+            );
+            // description is optional: it must not appear in the required list.
+            let required = branch["required"].as_array().expect("required array");
+            assert!(
+                !required
+                    .iter()
+                    .any(|r| r == &serde_json::json!("description")),
+                "description must be optional"
+            );
+        }
+    }
+
+    // ===== owner / meta fields (optional) =====
+
+    #[test]
+    fn unity_catalog_schema_description_identifies_lake_compute_read_only() {
+        let schema = catalogs_json_schema();
+        let unity = schema["properties"]["catalogs"]["items"]["oneOf"]
+            .as_array()
+            .expect("oneOf array")
+            .iter()
+            .find(|branch| branch["properties"]["type"]["const"] == "unity")
+            .expect("unity catalog schema branch");
+
+        assert_eq!(
+            unity["description"],
+            "Databricks Unity catalog. Supports snowflake, databricks, lakecompute, and/or duckdb connection blocks. Lake Compute access is read-only."
+        );
+    }
+
+    #[test]
+    fn owner_and_meta_appear_in_json_schema() {
+        let schema = catalogs_json_schema();
+        let branches = schema["properties"]["catalogs"]["items"]["oneOf"]
+            .as_array()
+            .expect("oneOf array");
+        for branch in branches {
+            assert_eq!(
+                branch["properties"]["owner"]["type"],
+                serde_json::json!("string"),
+                "every catalog type branch should publish an optional string `owner`"
+            );
+            assert_eq!(
+                branch["properties"]["meta"]["type"],
+                serde_json::json!("object"),
+                "every catalog type branch should publish an optional object `meta`"
+            );
+            let required = branch["required"].as_array().expect("required array");
+            assert!(
+                !required
+                    .iter()
+                    .any(|r| r == &serde_json::json!("owner") || r == &serde_json::json!("meta")),
+                "owner and meta must be optional"
+            );
+        }
+    }
+
+    #[test]
+    fn catalog_with_owner_is_valid() {
+        let yaml = r#"
+catalogs:
+  - name: local
+    type: local_filesystem
+    table_format: default
+    owner: "data-platform@example.com"
+    config:
+      duckdb:
+        root_path: /tmp/catalog
+"#;
+        parse_and_validate(yaml).expect("owner should validate");
+    }
+
+    #[test]
+    fn empty_owner_rejected() {
+        let yaml = r#"
+catalogs:
+  - name: local
+    type: local_filesystem
+    table_format: default
+    owner: "  "
+    config:
+      duckdb:
+        root_path: /tmp/catalog
+"#;
+        let res = parse_and_validate(yaml);
+        assert!(res.is_err(), "empty owner should be rejected");
+        assert!(format!("{res:?}").contains("owner"));
+    }
+
+    #[test]
+    fn owner_non_string_rejected() {
+        let yaml = r#"
+catalogs:
+  - name: local
+    type: local_filesystem
+    table_format: default
+    owner: 123
+    config:
+      duckdb:
+        root_path: /tmp/catalog
+"#;
+        let res = parse_and_validate(yaml);
+        let msg = format!("{res:?}");
+        assert!(res.is_err(), "expected error but got Ok");
+        assert!(
+            msg.contains("Key 'owner' must be a string"),
+            "unexpected error: {msg}"
+        );
+    }
+
+    #[test]
+    fn catalog_with_meta_is_valid() {
+        let yaml = r##"
+catalogs:
+  - name: local
+    type: local_filesystem
+    table_format: default
+    meta:
+      slack: "#data-platform"
+      sla_hours: 24
+      domain: analytics
+      nested:
+        pagerduty: data-platform-oncall
+    config:
+      duckdb:
+        root_path: /tmp/catalog
+"##;
+        parse_and_validate(yaml).expect("meta should validate");
+    }
+
+    #[test]
+    fn meta_non_string_key_rejected() {
+        let yaml = "
+catalogs:
+  - name: local
+    type: local_filesystem
+    table_format: default
+    meta:
+      42: not-a-string-key
+    config:
+      duckdb:
+        root_path: /tmp/catalog
+";
+        let res = parse_and_validate(yaml);
+        let msg = format!("{res:?}");
+        assert!(res.is_err(), "expected error but got Ok");
+        assert!(
+            msg.contains("Non-string key in 'meta' mapping"),
+            "unexpected error: {msg}"
+        );
+    }
+
+    #[test]
+    fn meta_non_mapping_rejected() {
+        let yaml = r#"
+catalogs:
+  - name: local
+    type: local_filesystem
+    table_format: default
+    meta: "not-a-map"
+    config:
+      duckdb:
+        root_path: /tmp/catalog
+"#;
+        let res = parse_and_validate(yaml);
+        let msg = format!("{res:?}");
+        assert!(res.is_err(), "expected error but got Ok");
+        assert!(
+            msg.contains("Key 'meta' must be a mapping"),
+            "unexpected error: {msg}"
+        );
     }
 }

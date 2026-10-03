@@ -294,6 +294,35 @@ path_1:
     }
 
     #[test]
+    fn unquoted_boolean_resource_path_suggests_quoting() {
+        // YAML 1.1 reads an unquoted `off` as `false`, so the folder name is lost.
+        let yml = r#"
+my_project:
+  +materialized: view
+  off:
+    +static_analysis: off
+"#;
+        for disallow_plus_prefix in [false, true] {
+            let (result, errors, warnings) = init_project_config_from_yaml::<
+                ModelConfig,
+                ProjectModelConfig,
+            >(yml, disallow_plus_prefix);
+            assert!(result.is_ok());
+            assert!(warnings.is_empty());
+            assert_eq!(errors.len(), 1);
+            let (_, msg) = &errors[0];
+            assert!(
+                msg.contains(
+                    "Invalid model definition `my_project`: A key under `my_project` reads as \
+                     the boolean `false`"
+                ),
+                "{msg}"
+            );
+            assert!(msg.contains("e.g. `'off':`"), "{msg}");
+        }
+    }
+
+    #[test]
     fn repro_emits_error_at_key() {
         // https://github.com/dbt-labs/dbt-core/issues/14433
         let yml = r#"

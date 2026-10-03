@@ -16,16 +16,17 @@ pub mod schemas {
     pub mod common;
     pub mod data_tests;
     pub mod dbt_catalogs;
-    pub mod dbt_catalogs_v2;
+    pub mod dbt_catalogs_deprecated;
     pub mod dbt_column;
     pub mod serialization_utils;
 
-    pub use dbt_catalogs::{
-        AdapterPropsView, CatalogSpecView, DatabricksUnityPropsView, DbtCatalogsView, FileFormat,
-        SerializationPolicy, SnowflakeBuiltInPropsView, SnowflakeRestPropsView, TargetFileSize,
-        WriteIntegrationView, validate_catalogs,
+    pub use dbt_catalogs::TableFormat;
+    pub use dbt_catalogs_deprecated::{
+        DeprecatedAdapterPropsView, DeprecatedCatalogSpecView, DeprecatedDatabricksUnityPropsView,
+        DeprecatedDbtCatalogsView, DeprecatedFileFormat, DeprecatedSerializationPolicy,
+        DeprecatedSnowflakeBuiltInPropsView, DeprecatedSnowflakeRestPropsView,
+        DeprecatedTargetFileSize, DeprecatedWriteIntegrationView, deprecated_validate_catalogs,
     };
-    pub use dbt_catalogs_v2::TableFormat;
     pub mod macros;
     pub mod packages;
     mod prev_state;

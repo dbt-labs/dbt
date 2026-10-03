@@ -5,6 +5,7 @@ import { cn } from '../../lib/utils';
 import { Button } from '../ui/Button';
 import { type Segment, SegmentedButton } from '../ui/SegmentedButton';
 import { DagLensesDropdown } from './DagLensesDropdown';
+import { DagResourceFilterDropdown } from './DagResourceFilterDropdown';
 import { DagZoomControl } from './DagZoomControl';
 import { GLASS_PANEL_CLASSES } from './glassPanel';
 
@@ -33,7 +34,10 @@ export function DagBottomBar({
         GLASS_PANEL_CLASSES,
       )}
     >
-      <DagLensesDropdown />
+      <div className="flex flex-none items-center gap-2">
+        <DagResourceFilterDropdown />
+        <DagLensesDropdown />
+      </div>
 
       <div className="flex flex-none items-center gap-3">
         <SegmentedButton

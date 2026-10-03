@@ -392,7 +392,7 @@ impl<'source> CompiledTemplate<'source> {
         name: &'source str,
         source: &'source str,
         config: &TemplateConfig,
-        filename: Option<String>,
+        filename: Option<&'source str>,
         profile: CodeGenerationProfile,
     ) -> Result<CompiledTemplate<'source>, Error> {
         Self::_new_impl(name, source, config, filename, profile, &[], None)
@@ -407,7 +407,7 @@ impl<'source> CompiledTemplate<'source> {
         name: &'source str,
         source: &'source str,
         config: &TemplateConfig,
-        filename: Option<String>,
+        filename: Option<&'source str>,
         profile: CodeGenerationProfile,
         source_listeners: &[Rc<dyn TokenizerEventListener>],
         ast_visitor: Option<&mut dyn FnMut(&ast::Stmt<'_>)>,
@@ -428,7 +428,7 @@ impl<'source> CompiledTemplate<'source> {
         name: &'source str,
         source: &'source str,
         config: &TemplateConfig,
-        filename: Option<String>,
+        filename: Option<&'source str>,
         profile: CodeGenerationProfile,
         source_listeners: &[Rc<dyn TokenizerEventListener>],
         ast_visitor: Option<&mut dyn FnMut(&ast::Stmt<'_>)>,
@@ -436,9 +436,10 @@ impl<'source> CompiledTemplate<'source> {
         // the parser/compiler combination can create constants in which case
         // we can probably benefit from the value optimization a bit.
         let _guard = value::value_optimization();
+        let source_name = filename.unwrap_or(name);
         let ast = ok!(parse_with_listeners(
             source,
-            name,
+            source_name,
             config.syntax_config.clone(),
             config.ws_config,
             source_listeners,
@@ -446,7 +447,8 @@ impl<'source> CompiledTemplate<'source> {
         if let Some(visitor) = ast_visitor {
             visitor(&ast);
         }
-        let mut gen = CodeGenerator::new_with_filename(name, source, filename, profile);
+        let mut gen =
+            CodeGenerator::new_with_filename(name, source, filename.map(String::from), profile);
         gen.compile_stmt(&ast)?;
         let buffer_size_hint = gen.buffer_size_hint();
         let (instructions, blocks) = gen.finish();

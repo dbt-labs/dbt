@@ -29,7 +29,7 @@ use dbt_common::cancellation::{CancellationToken, never_cancels};
 use dbt_common::{AdapterError, AdapterErrorKind, FsResult};
 use dbt_schemas::schemas::InternalDbtNodeWrapper;
 use dbt_schemas::schemas::common::{ClusterConfig, DbtQuoting, PartitionConfig};
-use dbt_schemas::schemas::dbt_catalogs::DbtCatalogs;
+use dbt_schemas::schemas::dbt_catalogs_deprecated::DbtCatalogs;
 use dbt_schemas::schemas::dbt_column::DbtColumn;
 use dbt_schemas::schemas::manifest::{BigqueryPartitionConfig, GrantAccessToTarget};
 use dbt_schemas::schemas::project::ModelConfig;
@@ -377,11 +377,11 @@ impl Adapter {
             .map_err(into_fs_error)
             .map(|r| {
                 r.into_iter()
-                    .filter_map(|(k, v)| {
-                        if let Ok(relations) = v {
-                            Some((k, relations))
-                        } else {
-                            // XXX: Warnings are not shown right now since this is purely for performance
+                    .filter_map(|(k, v)| match v {
+                        Ok(relations) => Some((k, relations)),
+                        Err(e) => {
+                            // Left uncached, so callers do a per-relation lookup instead.
+                            tracing::warn!("relation_cache: listing schema {k} failed: {e}");
                             None
                         }
                     })
@@ -1460,7 +1460,7 @@ impl Adapter {
                         // catalogs on each call.
                         let skip_schema_listing = match adapter.adapter_type() {
                             AdapterType::DuckDB => {
-                                duckdb::is_duckdb_v2_external_iceberg_catalog_database(
+                                duckdb::is_duckdb_external_iceberg_catalog_database(
                                     &resolved_catalog,
                                 )
                             }

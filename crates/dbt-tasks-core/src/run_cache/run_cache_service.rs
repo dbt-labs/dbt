@@ -4143,17 +4143,13 @@ async fn refresh_planned_last_modified_misses(
     overrides: &BTreeMap<String, FreshnessOverride>,
     adapter_type: AdapterType,
 ) -> FsResult<()> {
-    let plan = plan_last_modified_miss_refresh(adapter_type, misses, overrides);
+    let plan = plan_last_modified_miss_refresh(adapter_type, misses);
     if !plan.unaddressable_relations.is_empty() {
         let cache = &ctx.inner.run_cache_ctx.run_cache_metadata;
         cache_unknown_last_modified_epochs(cache, &plan.unaddressable_relations).await;
     }
     if !plan.targeted_relations.is_empty() {
         refresh_last_modified_epochs(ctx, &plan.targeted_relations, overrides).await?;
-    }
-    if !plan.schema_prefetch_relations.is_empty() {
-        bulk_prefetch_last_modified_by_schema(ctx, &plan.schema_prefetch_relations, overrides)
-            .await?;
     }
     Ok(())
 }
@@ -4162,41 +4158,25 @@ async fn refresh_planned_last_modified_misses(
 /// they should use.
 struct LastModifiedMissRefreshPlan {
     targeted_relations: BTreeMap<String, Arc<dyn BaseRelation>>,
-    schema_prefetch_relations: BTreeMap<String, Arc<dyn BaseRelation>>,
     /// Relations with no valid metadata address; cached as unknown (`None`)
     /// rather than dropped, so they don't re-trigger a miss on every lookup.
     unaddressable_relations: BTreeMap<String, Arc<dyn BaseRelation>>,
 }
 
-/// BigQuery normal misses use the schema prefetch path to avoid high fanout
-/// per-table `__TABLES__` queries. A singleton miss can still trigger one
-/// schema scan; that is an intentional fix-forward tradeoff for correctness.
-/// Overrides stay targeted because their freshness comes from custom
-/// `loaded_at_*` logic.
+/// Classifies addressable misses for targeted lookup; BigQuery requests are
+/// coalesced by schema in `refresh_last_modified_epochs`.
 fn plan_last_modified_miss_refresh(
     adapter_type: AdapterType,
     misses: &BTreeMap<String, Arc<dyn BaseRelation>>,
-    overrides: &BTreeMap<String, FreshnessOverride>,
 ) -> LastModifiedMissRefreshPlan {
-    let (addressable, unaddressable_relations): (BTreeMap<_, _>, BTreeMap<_, _>) = misses
+    let (targeted_relations, unaddressable_relations): (BTreeMap<_, _>, BTreeMap<_, _>) = misses
         .iter()
         .map(|(name, relation)| (name.clone(), Arc::clone(relation)))
         .partition(|(_, relation)| has_metadata_address(adapter_type, relation.as_ref()));
 
-    if matches!(adapter_type, AdapterType::Bigquery) {
-        let (targeted_relations, schema_prefetch_relations) =
-            split_relations_by_override(&addressable, overrides);
-        LastModifiedMissRefreshPlan {
-            targeted_relations,
-            schema_prefetch_relations,
-            unaddressable_relations,
-        }
-    } else {
-        LastModifiedMissRefreshPlan {
-            targeted_relations: addressable,
-            schema_prefetch_relations: BTreeMap::new(),
-            unaddressable_relations,
-        }
+    LastModifiedMissRefreshPlan {
+        targeted_relations,
+        unaddressable_relations,
     }
 }
 
@@ -4230,15 +4210,11 @@ async fn refresh_last_modified_epochs(
         return Ok(());
     };
 
-    for grouped_relations in group_relations_by_database_and_schema(relations).into_values() {
+    for ((database, schema), grouped_relations) in group_relations_by_database_and_schema(relations)
+    {
         let prefetch_guards = begin_last_modified_prefetches(cache, &grouped_relations).await;
 
-        // A concurrent caller may have already resolved some of these
-        // relations while this call waited on the per-relation locks above
-        // (each lock is held until its holder finishes writing). Re-check the
-        // cache now that every lock is acquired so this call neither
-        // re-queries the warehouse nor clobbers an already-cached value with
-        // `None` on its own failure.
+        // Another caller may have filled the cache while we waited.
         let grouped_relations: BTreeMap<String, Arc<dyn BaseRelation>> = grouped_relations
             .into_iter()
             .filter(|(name, _)| cache.last_modified_epoch(name).is_none())
@@ -4247,80 +4223,269 @@ async fn refresh_last_modified_epochs(
             continue;
         }
 
-        let grouped_names = grouped_relations.keys().collect::<BTreeSet<_>>();
-        let grouped_overrides = overrides
-            .iter()
-            .filter(|(name, _)| grouped_names.contains(name))
-            .map(|(name, override_)| (name.clone(), override_.clone()))
-            .collect::<BTreeMap<_, _>>();
-        let semantic_to_name = grouped_relations
-            .iter()
-            .map(|(name, relation)| (relation.semantic_fqn(), name.clone()))
-            .collect::<BTreeMap<_, _>>();
-        let relation_values = grouped_relations.values().cloned().collect::<Vec<_>>();
-        let metadata_options = run_cache_metadata_query_options(ctx);
-        let freshness = match metadata_adapter
-            .freshness_with_overrides_and_options(
-                &relation_values,
-                &grouped_overrides,
-                &metadata_options,
-                adapter.cancellation_token(),
+        // Keep caller-specific freshness overrides out of shared batches.
+        if adapter.adapter_type() == AdapterType::Bigquery {
+            let (override_relations, bulk_relations) =
+                split_relations_by_override(&grouped_relations, overrides);
+
+            if !override_relations.is_empty() {
+                refresh_last_modified_epochs_group(
+                    ctx,
+                    metadata_adapter.as_ref(),
+                    adapter.cancellation_token(),
+                    &override_relations,
+                    overrides,
+                    &prefetch_guards,
+                )
+                .await?;
+            }
+            if !bulk_relations.is_empty() {
+                refresh_last_modified_epochs_bigquery_coalesced(
+                    ctx,
+                    cache,
+                    metadata_adapter.as_ref(),
+                    adapter.cancellation_token(),
+                    &database.unwrap_or_default(),
+                    &schema.unwrap_or_default(),
+                    &bulk_relations,
+                )
+                .await?;
+            }
+            continue;
+        }
+
+        refresh_last_modified_epochs_group(
+            ctx,
+            metadata_adapter.as_ref(),
+            adapter.cancellation_token(),
+            &grouped_relations,
+            overrides,
+            &prefetch_guards,
+        )
+        .await?;
+    }
+    Ok(())
+}
+
+/// Try current freshness APIs, then legacy replay events.
+enum FreshnessQueryError {
+    Cancelled(Box<FsError>),
+    Error(Box<FsError>),
+}
+
+impl FreshnessQueryError {
+    fn into_error(self) -> Box<FsError> {
+        match self {
+            Self::Cancelled(err) | Self::Error(err) => err,
+        }
+    }
+}
+
+async fn freshness_with_replay_fallback(
+    metadata_adapter: &dyn MetadataAdapter,
+    relation_values: &[Arc<dyn BaseRelation>],
+    overrides: Option<&BTreeMap<String, FreshnessOverride>>,
+    metadata_options: &MetadataQueryOptions,
+    token: CancellationToken,
+    fail_open: Option<(&str, &str, usize)>,
+) -> Result<BTreeMap<String, MetadataFreshness>, FreshnessQueryError> {
+    let empty_overrides = BTreeMap::new();
+    let result = metadata_adapter
+        .freshness_with_overrides_and_options(
+            relation_values,
+            overrides.unwrap_or(&empty_overrides),
+            metadata_options,
+            token.clone(),
+        )
+        .await;
+    let result = match result {
+        Err(Cancellable::Error(err)) if err.kind() == AdapterErrorKind::ReplayDataMissing => {
+            legacy_freshness(
+                metadata_adapter,
+                relation_values,
+                overrides,
+                metadata_options,
+                token,
             )
             .await
+        }
+        Err(Cancellable::Error(err))
+            if fail_open.is_some()
+                && dbt_adapter::time_machine::global_replayer().is_some()
+                && err.kind() == AdapterErrorKind::ReplayMethodMismatch =>
         {
-            Ok(freshness) => freshness,
-            Err(Cancellable::Error(err)) if err.kind() == AdapterErrorKind::ReplayDataMissing => {
-                // Older recordings do not contain this override-prefetch event;
-                // replay the legacy per-table freshness event instead.
-                legacy_freshness(
-                    metadata_adapter.as_ref(),
-                    &relation_values,
-                    Some(&grouped_overrides),
-                    &metadata_options,
-                    adapter.cancellation_token(),
+            let (database, schema, _) = fail_open.unwrap();
+            match metadata_adapter
+                .freshness_all_in_schema(
+                    database,
+                    schema,
+                    relation_values,
+                    metadata_options,
+                    token.clone(),
                 )
                 .await
-                .map_err(into_fs_error)?
+            {
+                Err(Cancellable::Error(err))
+                    if err.kind() == AdapterErrorKind::ReplayDataMissing =>
+                {
+                    legacy_freshness(
+                        metadata_adapter,
+                        relation_values,
+                        overrides,
+                        metadata_options,
+                        token,
+                    )
+                    .await
+                }
+                result => result,
             }
-            Err(err) => return Err(into_fs_error(err)),
-        };
+        }
+        other => other,
+    };
+    match result {
+        Ok(freshness) => Ok(freshness),
+        Err(Cancellable::Cancelled) => Err(FreshnessQueryError::Cancelled(into_fs_error(
+            Cancellable::Cancelled,
+        ))),
+        Err(Cancellable::Error(err)) if err.kind() == AdapterErrorKind::Cancelled => Err(
+            FreshnessQueryError::Cancelled(into_fs_error(Cancellable::Error(err))),
+        ),
+        Err(Cancellable::Error(err)) => match fail_open {
+            Some((database, schema, relation_count)) => {
+                emit_warn_log_message(
+                    ErrorCode::StateServiceWarn,
+                    format!(
+                        "dbt State coalesced freshness query failed for {database}.{schema}: \
+                         {err}; caching unknown freshness for {relation_count} relations"
+                    ),
+                );
+                Ok(BTreeMap::new())
+            }
+            None => Err(FreshnessQueryError::Error(into_fs_error(
+                Cancellable::Error(err),
+            ))),
+        },
+    }
+}
 
-        for (semantic_fqn, name) in semantic_to_name {
-            let epoch = freshness
-                .get(&semantic_fqn)
-                .map(|metadata| metadata.last_altered.timestamp_millis());
-            if let Some(guard) = prefetch_guards.get(&name) {
-                guard.insert_last_modified_epoch(&name, epoch);
-            }
+/// Run a non-coalesced freshness query for one schema group.
+async fn refresh_last_modified_epochs_group<'g>(
+    ctx: &TaskRunnerCtx,
+    metadata_adapter: &dyn MetadataAdapter,
+    token: CancellationToken,
+    grouped_relations: &BTreeMap<String, Arc<dyn BaseRelation>>,
+    overrides: &BTreeMap<String, FreshnessOverride>,
+    prefetch_guards: &BTreeMap<String, MetadataPrefetchGuard<'g>>,
+) -> FsResult<()> {
+    let grouped_names = grouped_relations.keys().collect::<BTreeSet<_>>();
+    let grouped_overrides = overrides
+        .iter()
+        .filter(|(name, _)| grouped_names.contains(name))
+        .map(|(name, override_)| (name.clone(), override_.clone()))
+        .collect::<BTreeMap<_, _>>();
+    let semantic_to_name = grouped_relations
+        .iter()
+        .map(|(name, relation)| (relation.semantic_fqn(), name.clone()))
+        .collect::<BTreeMap<_, _>>();
+    let relation_values = grouped_relations.values().cloned().collect::<Vec<_>>();
+    let metadata_options = run_cache_metadata_query_options(ctx);
+    let freshness = freshness_with_replay_fallback(
+        metadata_adapter,
+        &relation_values,
+        Some(&grouped_overrides),
+        &metadata_options,
+        token,
+        None,
+    )
+    .await
+    .map_err(FreshnessQueryError::into_error)?;
+
+    for (semantic_fqn, name) in semantic_to_name {
+        let epoch = freshness
+            .get(&semantic_fqn)
+            .map(|metadata| metadata.last_altered.timestamp_millis());
+        if let Some(guard) = prefetch_guards.get(&name) {
+            guard.insert_last_modified_epoch(&name, epoch);
         }
     }
     Ok(())
 }
 
-/// Groups relations by `(database, schema)` using each relation's *resolved*
-/// (normalized-if-unquoted) database/schema string, not the raw
-/// `dbt_project.yml` casing.
-///
-/// This matters because the resulting keys are threaded through
-/// `bulk_prefetch_last_modified_by_schema` into
-/// `MetadataAdapter::freshness_all_in_schema`, which builds a literal
-/// `WHERE table_schema = '{schema}'` clause. On Snowflake, unquoted
-/// identifiers are stored uppercase in `INFORMATION_SCHEMA.TABLES`, so a
-/// lowercase schema name from the project would silently fail to match and
-/// fall back to the slower per-relation path. Resolving here — once, at the
-/// grouping step — makes every downstream schema-dump query correct by
-/// construction, without needing a case-insensitive comparison at the SQL
-/// layer.
-///
-/// This mirrors the dbt-core plugin's `prefetch_last_modified_epochs`
-/// (`clients/dbt_state/src/dbt_state/adapters/snowflake.py`), which calls
-/// `self._to_fqn(raw_fqn)` — sqlglot's dialect-aware
-/// `normalize_identifiers()` + `quote_identifiers()` — before grouping
-/// schemas into `schemas_by_catalog`, so the `INFORMATION_SCHEMA.TABLES`
-/// filter built in `_fetch_last_modified_epochs_from_schemas_in_catalog`
-/// never sees an unresolved schema name. `schema_as_resolved_str()` /
-/// `database_as_resolved_str()` (`dbt-schemas/src/schemas/relations/base.rs`)
-/// are Fusion's native equivalent of that normalize-then-quote step.
+/// Merge and query one BigQuery schema batch. Override relations are excluded.
+async fn refresh_last_modified_epochs_bigquery_coalesced(
+    ctx: &TaskRunnerCtx,
+    cache: &RunCacheMetadataCache,
+    metadata_adapter: &dyn MetadataAdapter,
+    token: CancellationToken,
+    database: &str,
+    schema: &str,
+    grouped_relations: &BTreeMap<String, Arc<dyn BaseRelation>>,
+) -> FsResult<()> {
+    let guard = cache
+        .join_schema_fetch(database, schema, grouped_relations)
+        .await;
+    let drained = guard.drain().await;
+    if drained.is_empty() {
+        return Ok(());
+    }
+
+    let semantic_to_name = drained
+        .iter()
+        .map(|(name, (relation, version_at_join))| {
+            (relation.semantic_fqn(), (name.clone(), *version_at_join))
+        })
+        .collect::<BTreeMap<_, _>>();
+    let relation_values = drained
+        .values()
+        .map(|(relation, _)| Arc::clone(relation))
+        .collect::<Vec<_>>();
+    let metadata_options = run_cache_metadata_query_options(ctx);
+
+    // Fail open for the full batch so merged callers aren't left uncached.
+    let freshness = match freshness_with_replay_fallback(
+        metadata_adapter,
+        &relation_values,
+        None,
+        &metadata_options,
+        token,
+        Some((database, schema, drained.len())),
+    )
+    .await
+    {
+        Ok(freshness) => freshness,
+        Err(FreshnessQueryError::Cancelled(err)) => {
+            // Let a waiter retry with its own token.
+            guard.restore(drained).await;
+            return Err(err);
+        }
+        Err(FreshnessQueryError::Error(err)) => {
+            // Cache unknowns for every relation in the batch.
+            for (name, (_, version_at_join)) in &drained {
+                guard.insert_last_modified_epoch_if_fresh(
+                    cache,
+                    name.clone(),
+                    None,
+                    *version_at_join,
+                );
+            }
+            return Err(err);
+        }
+    };
+
+    if guard.is_stale(cache) {
+        return Ok(());
+    }
+
+    for (semantic_fqn, (name, version_at_join)) in semantic_to_name {
+        let epoch = freshness
+            .get(&semantic_fqn)
+            .map(|metadata| metadata.last_altered.timestamp_millis());
+        guard.insert_last_modified_epoch_if_fresh(cache, name, epoch, version_at_join);
+    }
+    Ok(())
+}
+
+/// Group relations by resolved database and schema names.
 fn group_relations_by_database_and_schema(
     relations: &BTreeMap<String, Arc<dyn BaseRelation>>,
 ) -> BTreeMap<(Option<String>, Option<String>), BTreeMap<String, Arc<dyn BaseRelation>>> {
@@ -5042,6 +5207,10 @@ fn record_submit_skipped(node: &dyn InternalDbtNodeAttributes, reason: &'static 
 mod tests {
     use super::*;
     use dbt_adapter::metadata::CatalogAndSchema;
+    use dbt_adapter::time_machine::{
+        EventReplayer, args_freshness_with_overrides, get_or_init_recording, get_or_init_replayer,
+        reset_time_machine_globals, with_time_machine_metadata_wrapper,
+    };
     use dbt_adapter::{Adapter, AdapterBuilder, AdapterImpl, AdapterStore};
     use dbt_common::path::DbtPath;
     use dbt_schemas::state::ProfileAdapter;
@@ -5057,8 +5226,14 @@ mod tests {
     use crate::context::{ExtendedCtx, RunCacheCtx, TaskRunnerCtxInner};
     use arrow::array::RecordBatch;
     use arrow_schema::{DataType, Field, Schema, SchemaRef};
+    use chrono::TimeZone;
+    use dbt_adapter::metadata::{RelationSchemaPair, RelationVec};
+
+    static TIME_MACHINE_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
     use dbt_adapter::sql_types::DefaultTypeOps;
     use dbt_adapter::stmt_splitter::DefaultStmtSplitter;
+    use dbt_adapter_core::ExecutionPhase;
+    use dbt_common::AsyncAdapterResult;
     use dbt_common::cancellation::never_cancels;
     use dbt_common::collections::DashMap;
     use dbt_common::io_args::RunCacheMode;
@@ -5076,10 +5251,12 @@ mod tests {
     use dbt_schema_store::mock_store::{MockDataStore, MockSchemaStore};
     use dbt_schemas::schemas::Nodes;
     use dbt_schemas::schemas::common::{FreshnessPeriod, ResolvedQuoting, UpdatesOn};
+    use dbt_schemas::schemas::legacy_catalog::{CatalogTable, ColumnMetadata};
     use dbt_schemas::schemas::macros::DbtMacro;
     use dbt_schemas::schemas::profiles::{Execute, SnowflakeDbConfig};
     use dbt_schemas::schemas::properties::{DataTestState, ModelFreshness, ModelState};
     use dbt_schemas::schemas::relations::DEFAULT_RESOLVED_QUOTING;
+    use dbt_schemas::schemas::relations::base::RelationPattern;
     use dbt_schemas::state::{
         DbtProfile, DbtRuntimeConfig, DummyNodeResolverTracker, Macros, Operations, RenderResults,
         ResolverState,
@@ -8676,7 +8853,8 @@ mod tests {
     }
 
     #[test]
-    fn bigquery_submit_time_misses_plan_schema_prefetch_except_overrides() {
+    fn submit_time_misses_plan_targeted_for_all_adapters() {
+        // BigQuery uses the targeted path; coalescing happens during refresh.
         let bulk_relation: Arc<dyn BaseRelation> = create_relation(
             AdapterType::Bigquery,
             "db".to_string(),
@@ -8703,29 +8881,17 @@ mod tests {
             (bulk_name.clone(), bulk_relation),
             (override_name.clone(), override_relation),
         ]);
-        let overrides = BTreeMap::from([(
-            override_name.clone(),
-            FreshnessOverride::Field("loaded_at".to_string()),
-        )]);
 
-        let bigquery_plan =
-            plan_last_modified_miss_refresh(AdapterType::Bigquery, &relations, &overrides);
-        assert_eq!(bigquery_plan.schema_prefetch_relations.len(), 1);
-        assert!(
-            bigquery_plan
-                .schema_prefetch_relations
-                .contains_key(&bulk_name)
-        );
-        assert_eq!(bigquery_plan.targeted_relations.len(), 1);
+        let bigquery_plan = plan_last_modified_miss_refresh(AdapterType::Bigquery, &relations);
+        assert_eq!(bigquery_plan.targeted_relations.len(), 2);
+        assert!(bigquery_plan.targeted_relations.contains_key(&bulk_name));
         assert!(
             bigquery_plan
                 .targeted_relations
                 .contains_key(&override_name)
         );
 
-        let snowflake_plan =
-            plan_last_modified_miss_refresh(AdapterType::Snowflake, &relations, &overrides);
-        assert!(snowflake_plan.schema_prefetch_relations.is_empty());
+        let snowflake_plan = plan_last_modified_miss_refresh(AdapterType::Snowflake, &relations);
         assert_eq!(snowflake_plan.targeted_relations.len(), 2);
         assert!(snowflake_plan.targeted_relations.contains_key(&bulk_name));
         assert!(
@@ -8751,15 +8917,14 @@ mod tests {
         let plan = plan_last_modified_miss_refresh(
             AdapterType::Bigquery,
             &BTreeMap::from([(name, relation)]),
-            &BTreeMap::new(),
         );
 
         assert!(plan.targeted_relations.is_empty());
-        assert!(plan.schema_prefetch_relations.is_empty());
+        assert!(!plan.unaddressable_relations.is_empty());
     }
 
     #[test]
-    fn final_refresh_uses_bigquery_schema_prefetch_plan() {
+    fn final_refresh_targets_bigquery_relations_like_other_adapters() {
         let relation: Arc<dyn BaseRelation> = create_relation(
             AdapterType::Bigquery,
             "db".to_string(),
@@ -8772,16 +8937,11 @@ mod tests {
         .into();
         let name = relation.semantic_fqn();
         let relations = BTreeMap::from([(name.clone(), relation)]);
-        let overrides = BTreeMap::new();
 
-        let bigquery_plan =
-            plan_last_modified_miss_refresh(AdapterType::Bigquery, &relations, &overrides);
-        assert!(bigquery_plan.targeted_relations.is_empty());
-        assert!(bigquery_plan.schema_prefetch_relations.contains_key(&name));
+        let bigquery_plan = plan_last_modified_miss_refresh(AdapterType::Bigquery, &relations);
+        assert!(bigquery_plan.targeted_relations.contains_key(&name));
 
-        let snowflake_plan =
-            plan_last_modified_miss_refresh(AdapterType::Snowflake, &relations, &overrides);
-        assert!(snowflake_plan.schema_prefetch_relations.is_empty());
+        let snowflake_plan = plan_last_modified_miss_refresh(AdapterType::Snowflake, &relations);
         assert!(snowflake_plan.targeted_relations.contains_key(&name));
     }
 
@@ -9610,5 +9770,406 @@ mod tests {
         base.alias = alias.to_string();
         base.materialized = materialized;
         base.quoting = ResolvedQuoting::trues();
+    }
+
+    /// Rebuilds freshness values from cloneable `(FQN, timestamp)` pairs.
+    #[derive(Clone)]
+    enum MockFreshnessResponse {
+        Ok(Vec<(String, i64)>),
+        Err(AdapterErrorKind),
+        Cancelled,
+    }
+
+    fn mock_freshness_result(
+        response: MockFreshnessResponse,
+    ) -> Result<BTreeMap<String, MetadataFreshness>, Cancellable<AdapterError>> {
+        match response {
+            MockFreshnessResponse::Ok(entries) => Ok(entries
+                .into_iter()
+                .map(|(fqn, epoch_millis)| {
+                    (
+                        fqn,
+                        MetadataFreshness {
+                            last_altered: Utc.timestamp_millis_opt(epoch_millis).unwrap(),
+                            is_view: false,
+                        },
+                    )
+                })
+                .collect()),
+            MockFreshnessResponse::Err(kind) => Err(Cancellable::Error(AdapterError::new(
+                kind,
+                "mock freshness failure",
+            ))),
+            MockFreshnessResponse::Cancelled => Err(Cancellable::Cancelled),
+        }
+    }
+
+    /// Test double for freshness results and override-call recording.
+    struct MockMetadataAdapter {
+        response: Mutex<MockFreshnessResponse>,
+        calls: Mutex<Vec<BTreeMap<String, FreshnessOverride>>>,
+    }
+
+    impl MockMetadataAdapter {
+        fn with_response(response: MockFreshnessResponse) -> Self {
+            Self {
+                response: Mutex::new(response),
+                calls: Mutex::new(Vec::new()),
+            }
+        }
+
+        fn recorded_override_maps(&self) -> Vec<BTreeMap<String, FreshnessOverride>> {
+            self.calls.lock().unwrap().clone()
+        }
+    }
+
+    impl MetadataAdapter for MockMetadataAdapter {
+        fn adapter_type(&self) -> AdapterType {
+            AdapterType::Bigquery
+        }
+
+        fn build_schemas_from_stats_sql(
+            &self,
+            _: Arc<RecordBatch>,
+        ) -> AdapterResult<BTreeMap<String, CatalogTable>> {
+            Ok(BTreeMap::new())
+        }
+
+        fn build_columns_from_get_columns(
+            &self,
+            _: Arc<RecordBatch>,
+        ) -> AdapterResult<BTreeMap<String, BTreeMap<String, ColumnMetadata>>> {
+            Ok(BTreeMap::new())
+        }
+
+        fn create_schemas_if_not_exists(
+            &self,
+            _: &minijinja::State<'_, '_>,
+            _: Vec<(String, String, String)>,
+        ) -> AdapterResult<Vec<(String, String, String, AdapterResult<()>)>> {
+            Ok(Vec::new())
+        }
+
+        fn list_relations_schemas_inner(
+            &self,
+            _: Option<String>,
+            _: Option<ExecutionPhase>,
+            _: &[Arc<dyn BaseRelation>],
+            _: Option<&str>,
+            _: CancellationToken,
+        ) -> AsyncAdapterResult<'_, HashMap<String, AdapterResult<Arc<Schema>>>> {
+            Box::pin(async { Ok(HashMap::new()) })
+        }
+
+        fn list_relations_schemas_by_patterns_inner(
+            &self,
+            _: &[RelationPattern],
+            _: CancellationToken,
+        ) -> AsyncAdapterResult<'_, Vec<(String, AdapterResult<RelationSchemaPair>)>> {
+            Box::pin(async { Ok(Vec::new()) })
+        }
+
+        fn freshness_inner(
+            &self,
+            _: &[Arc<dyn BaseRelation>],
+            _: CancellationToken,
+        ) -> AsyncAdapterResult<'_, BTreeMap<String, MetadataFreshness>> {
+            Box::pin(async { Ok(BTreeMap::new()) })
+        }
+
+        fn freshness_all_in_schema_inner<'a>(
+            &'a self,
+            _: &'a str,
+            _: &'a str,
+            _: &'a [Arc<dyn BaseRelation>],
+            _: &'a MetadataQueryOptions,
+            _: CancellationToken,
+        ) -> AsyncAdapterResult<'a, BTreeMap<String, MetadataFreshness>> {
+            let response = self.response.lock().unwrap().clone();
+            Box::pin(async move { mock_freshness_result(response) })
+        }
+
+        fn list_relations_in_parallel_inner(
+            &self,
+            _: &[CatalogAndSchema],
+            _: CancellationToken,
+            _: bool,
+        ) -> AsyncAdapterResult<'_, BTreeMap<CatalogAndSchema, AdapterResult<RelationVec>>>
+        {
+            Box::pin(async { Ok(BTreeMap::new()) })
+        }
+
+        fn freshness_with_overrides_and_options<'a>(
+            &'a self,
+            relations: &'a [Arc<dyn BaseRelation>],
+            overrides: &'a BTreeMap<String, FreshnessOverride>,
+            _options: &'a MetadataQueryOptions,
+            _token: CancellationToken,
+        ) -> AsyncAdapterResult<'a, BTreeMap<String, MetadataFreshness>> {
+            self.calls.lock().unwrap().push(overrides.clone());
+            let response = self.response.lock().unwrap().clone();
+            with_time_machine_metadata_wrapper(
+                "global",
+                "freshness_with_overrides",
+                args_freshness_with_overrides(
+                    relations.iter().map(|r| r.semantic_fqn()),
+                    overrides,
+                    None,
+                ),
+                async move { mock_freshness_result(response) },
+            )
+        }
+    }
+
+    fn bigquery_test_relation(schema: &str, table: &str) -> (String, Arc<dyn BaseRelation>) {
+        let relation: Arc<dyn BaseRelation> = create_relation(
+            AdapterType::Bigquery,
+            "db".to_string(),
+            schema.to_string(),
+            Some(table.to_string()),
+            None,
+            ResolvedQuoting::default(),
+        )
+        .unwrap()
+        .into();
+        let name = relation.semantic_fqn();
+        (name, relation)
+    }
+
+    #[dbt_runtime::test]
+    async fn coalesced_refresh_caches_matched_and_unmatched_relations() {
+        let ctx = test_task_runner_ctx(None);
+        let cache = &ctx.inner.run_cache_ctx.run_cache_metadata;
+        let (matched_name, matched_relation) = bigquery_test_relation("analytics", "orders");
+        let (unmatched_name, unmatched_relation) = bigquery_test_relation("analytics", "customers");
+        let relations = BTreeMap::from([
+            (matched_name.clone(), matched_relation),
+            (unmatched_name.clone(), unmatched_relation),
+        ]);
+        let adapter = MockMetadataAdapter::with_response(MockFreshnessResponse::Ok(vec![(
+            matched_name.clone(),
+            1_234_000,
+        )]));
+
+        refresh_last_modified_epochs_bigquery_coalesced(
+            &ctx,
+            cache,
+            &adapter,
+            never_cancels(),
+            "db",
+            "analytics",
+            &relations,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            cache.last_modified_epoch(&matched_name),
+            Some(Some(1_234_000))
+        );
+        assert_eq!(cache.last_modified_epoch(&unmatched_name), Some(None));
+    }
+
+    #[dbt_runtime::test]
+    async fn coalesced_refresh_fails_open_for_whole_batch_on_generic_error() {
+        // Cache unknown for every relation in a failed batch.
+        let ctx = test_task_runner_ctx(None);
+        let cache = &ctx.inner.run_cache_ctx.run_cache_metadata;
+        let (first_name, first_relation) = bigquery_test_relation("analytics", "orders");
+        let (second_name, second_relation) = bigquery_test_relation("analytics", "customers");
+        let relations = BTreeMap::from([
+            (first_name.clone(), first_relation),
+            (second_name.clone(), second_relation),
+        ]);
+        let adapter =
+            MockMetadataAdapter::with_response(MockFreshnessResponse::Err(AdapterErrorKind::Io));
+
+        refresh_last_modified_epochs_bigquery_coalesced(
+            &ctx,
+            cache,
+            &adapter,
+            never_cancels(),
+            "db",
+            "analytics",
+            &relations,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(cache.last_modified_epoch(&first_name), Some(None));
+        assert_eq!(cache.last_modified_epoch(&second_name), Some(None));
+    }
+
+    #[dbt_runtime::test]
+    async fn coalesced_refresh_replays_legacy_schema_recording() {
+        let _guard = TIME_MACHINE_TEST_LOCK.lock().await;
+        reset_time_machine_globals().await.unwrap();
+
+        let dir = tempfile::tempdir().unwrap();
+        let (name, relation) = bigquery_test_relation("analytics", "orders");
+        let relations = vec![Arc::clone(&relation)];
+        let adapter = MockMetadataAdapter::with_response(MockFreshnessResponse::Ok(vec![(
+            name.clone(),
+            2_345_000,
+        )]));
+        let handle = get_or_init_recording(
+            dir.path(),
+            "bigquery",
+            "legacy-submit-time",
+            None,
+            never_cancels(),
+        );
+        adapter
+            .freshness_all_in_schema(
+                "db",
+                "analytics",
+                &relations,
+                &MetadataQueryOptions::default(),
+                never_cancels(),
+            )
+            .await
+            .unwrap();
+        handle.shutdown().await.unwrap();
+
+        reset_time_machine_globals().await.unwrap();
+        get_or_init_replayer(|| Ok(Arc::new(EventReplayer::load(dir.path())?))).unwrap();
+
+        let ctx = test_task_runner_ctx(None);
+        let cache = &ctx.inner.run_cache_ctx.run_cache_metadata;
+        refresh_last_modified_epochs_bigquery_coalesced(
+            &ctx,
+            cache,
+            &adapter,
+            never_cancels(),
+            "db",
+            "analytics",
+            &BTreeMap::from([(name.clone(), relation)]),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(cache.last_modified_epoch(&name), Some(Some(2_345_000)));
+        reset_time_machine_globals().await.unwrap();
+    }
+
+    #[dbt_runtime::test]
+    async fn coalesced_refresh_propagates_cancellation_and_retries_for_waiters() {
+        let ctx = test_task_runner_ctx(None);
+        let cache = &ctx.inner.run_cache_ctx.run_cache_metadata;
+        let (first_name, first_relation) = bigquery_test_relation("analytics", "orders");
+        let (second_name, second_relation) = bigquery_test_relation("analytics", "customers");
+        let adapter = Arc::new(MockMetadataAdapter::with_response(
+            MockFreshnessResponse::Cancelled,
+        ));
+
+        let holder = cache
+            .join_schema_fetch("db", "analytics", &BTreeMap::new())
+            .await;
+        let relation_sets = vec![
+            BTreeMap::from([(first_name.clone(), first_relation)]),
+            BTreeMap::from([(second_name.clone(), second_relation)]),
+        ];
+        let mut callers = Vec::new();
+        for relations in &relation_sets {
+            let mut caller = Box::pin(refresh_last_modified_epochs_bigquery_coalesced(
+                &ctx,
+                cache,
+                adapter.as_ref(),
+                never_cancels(),
+                "db",
+                "analytics",
+                relations,
+            ));
+            assert!(futures::poll!(caller.as_mut()).is_pending());
+            callers.push(caller);
+        }
+        drop(holder);
+
+        for caller in callers {
+            assert!(caller.await.is_err());
+        }
+        assert_eq!(adapter.recorded_override_maps().len(), 2);
+        assert_eq!(cache.last_modified_epoch(&first_name), None);
+        assert_eq!(cache.last_modified_epoch(&second_name), None);
+    }
+
+    #[dbt_runtime::test]
+    async fn concurrent_schema_refreshes_share_one_query() {
+        let ctx = test_task_runner_ctx(None);
+        let cache = &ctx.inner.run_cache_ctx.run_cache_metadata;
+        let (first_name, first_relation) = bigquery_test_relation("analytics", "orders");
+        let (second_name, second_relation) = bigquery_test_relation("analytics", "customers");
+        let (third_name, third_relation) = bigquery_test_relation("analytics", "payments");
+        let adapter = Arc::new(MockMetadataAdapter::with_response(
+            MockFreshnessResponse::Ok(vec![]),
+        ));
+
+        // Hold the gate until all three callers have joined.
+        let holder = cache
+            .join_schema_fetch("db", "analytics", &BTreeMap::new())
+            .await;
+        let relation_sets = vec![
+            BTreeMap::from([(first_name.clone(), first_relation)]),
+            BTreeMap::from([(second_name.clone(), second_relation)]),
+            BTreeMap::from([(third_name.clone(), third_relation)]),
+        ];
+        let mut callers = Vec::new();
+        for relations in &relation_sets {
+            let mut caller = Box::pin(refresh_last_modified_epochs_bigquery_coalesced(
+                &ctx,
+                cache,
+                adapter.as_ref(),
+                never_cancels(),
+                "db",
+                "analytics",
+                relations,
+            ));
+            // Ensure this request joins before releasing the holder.
+            assert!(futures::poll!(caller.as_mut()).is_pending());
+            callers.push(caller);
+        }
+
+        drop(holder);
+        for caller in callers {
+            caller.await.unwrap();
+        }
+        assert_eq!(adapter.recorded_override_maps().len(), 1);
+        assert_eq!(cache.last_modified_epoch(&first_name), Some(None));
+        assert_eq!(cache.last_modified_epoch(&second_name), Some(None));
+        assert_eq!(cache.last_modified_epoch(&third_name), Some(None));
+    }
+
+    #[dbt_runtime::test]
+    async fn group_refresh_threads_overrides_to_the_adapter() {
+        // Override relations must bypass coalescing and retain their config.
+        let ctx = test_task_runner_ctx(None);
+        let cache = &ctx.inner.run_cache_ctx.run_cache_metadata;
+        let (name, relation) = bigquery_test_relation("analytics", "source_events");
+        let relations = BTreeMap::from([(name.clone(), relation)]);
+        let overrides = BTreeMap::from([(
+            name.clone(),
+            FreshnessOverride::Field("loaded_at".to_string()),
+        )]);
+        let adapter = MockMetadataAdapter::with_response(MockFreshnessResponse::Ok(Vec::new()));
+        let prefetch_guards = begin_last_modified_prefetches(cache, &relations).await;
+
+        refresh_last_modified_epochs_group(
+            &ctx,
+            &adapter,
+            never_cancels(),
+            &relations,
+            &overrides,
+            &prefetch_guards,
+        )
+        .await
+        .unwrap();
+
+        let recorded = adapter.recorded_override_maps();
+        assert_eq!(recorded.len(), 1);
+        assert_eq!(recorded[0].len(), 1);
+        match recorded[0].get(&name) {
+            Some(FreshnessOverride::Field(field)) => assert_eq!(field, "loaded_at"),
+            other => panic!("expected a Field override for {name}, got {other:?}"),
+        }
     }
 }

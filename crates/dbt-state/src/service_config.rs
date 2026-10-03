@@ -22,7 +22,6 @@ pub const DEFAULT_DEFER_LOG_LEVEL: &str = "off";
 pub const DEFAULT_LOG_FILE_LIMIT: i64 = 20;
 pub const DEFAULT_LOG_PREFIX: &str = "responses_";
 pub const DEFAULT_METADATA_CACHE_TTL_SECONDS: i64 = 0;
-pub const DEFAULT_COMPARE_UNRENDERED_CODE: bool = true;
 const STATE_MANAGE_ENV: &str = "DBT_ENGINE_MANAGE_STATE";
 const STATE_OAUTH_CLIENT_ID_ENV: &str = "DBT_ENGINE_STATE_OAUTH_CLIENT_ID";
 const STATE_OAUTH_CLIENT_SECRET_ENV: &str = "DBT_ENV_SECRET_STATE_OAUTH_CLIENT_SECRET";
@@ -210,7 +209,7 @@ impl RunCacheServiceConfig {
         };
         let compare_unrendered_code = match config_value(&mut get_env, "COMPARE_UNRENDERED_CODE") {
             Some(value) => parse_bool("COMPARE_UNRENDERED_CODE", &value)?,
-            None => DEFAULT_COMPARE_UNRENDERED_CODE,
+            None => false,
         };
         let ignore_external_modifications =
             match config_value(&mut get_env, "IGNORE_EXTERNAL_MODIFICATIONS") {
@@ -305,7 +304,7 @@ impl RunCacheServiceConfig {
             clone_time_travel_limit_seconds: None,
             metadata_cache_ttl_seconds: DEFAULT_METADATA_CACHE_TTL_SECONDS,
             run_hooks_on_no_op: false,
-            compare_unrendered_code: DEFAULT_COMPARE_UNRENDERED_CODE,
+            compare_unrendered_code: false,
             ignore_external_modifications: false,
             snowflake_get_view_ddl_override: None,
             snowflake_metadata_warehouse: None,
@@ -722,10 +721,7 @@ mod tests {
         assert_eq!(config.clone_time_travel_limit_seconds, None);
         assert_eq!(config.metadata_cache_ttl_seconds, 0);
         assert!(!config.run_hooks_on_no_op);
-        assert_eq!(
-            config.compare_unrendered_code,
-            DEFAULT_COMPARE_UNRENDERED_CODE
-        );
+        assert!(!config.compare_unrendered_code);
         assert!(!config.ignore_external_modifications);
         assert_eq!(config.snowflake_get_view_ddl_override, None);
         assert_eq!(config.snowflake_metadata_warehouse, None);

@@ -954,6 +954,7 @@ pub enum ClapResourceType {
     Metric,
     SavedQuery,
     Check,
+    Exposure,
 }
 
 impl Display for ClapResourceType {
@@ -971,6 +972,7 @@ impl Display for ClapResourceType {
             ClapResourceType::Metric => "metric",
             ClapResourceType::SavedQuery => "saved_query",
             ClapResourceType::Check => "check",
+            ClapResourceType::Exposure => "exposure",
         };
         write!(f, "{s}")
     }
@@ -991,6 +993,7 @@ impl From<&ClapResourceType> for NodeType {
             ClapResourceType::Metric => NodeType::Metric,
             ClapResourceType::SavedQuery => NodeType::SavedQuery,
             ClapResourceType::Check => NodeType::Check,
+            ClapResourceType::Exposure => NodeType::Exposure,
         }
     }
 }
@@ -1369,7 +1372,6 @@ pub enum Runtime {
     ValueEnum,
     Display,
     Serialize,
-    Deserialize,
     JsonSchema,
 )]
 #[serde(rename_all = "lowercase")]
@@ -1377,14 +1379,59 @@ pub enum Runtime {
 pub enum StaticAnalysisKind {
     #[value(hide = true)]
     Unsafe,
-    #[serde(alias = "False", alias = "false", alias = "FALSE")]
     Off,
     Strict,
     #[default]
     Baseline,
     #[value(hide = true)]
-    #[serde(alias = "True", alias = "true", alias = "TRUE")]
     On,
+}
+
+/// Accepts a boolean alongside the mode names, since YAML 1.1 resolves an unquoted `on`/`off`
+/// to `true`/`false`. The boolean spellings are also accepted as strings to accommodate
+/// dbt-core, which writes them (e.g. `"False"`) rather than `"on"`/`"off"` into manifests.
+impl<'de> Deserialize<'de> for StaticAnalysisKind {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        struct StaticAnalysisKindVisitor;
+
+        impl serde::de::Visitor<'_> for StaticAnalysisKindVisitor {
+            type Value = StaticAnalysisKind;
+
+            fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str("a static analysis mode or a boolean")
+            }
+
+            fn visit_bool<E>(self, v: bool) -> Result<Self::Value, E> {
+                Ok(if v {
+                    StaticAnalysisKind::On
+                } else {
+                    StaticAnalysisKind::Off
+                })
+            }
+
+            fn visit_str<E>(self, v: &str) -> Result<Self::Value, E>
+            where
+                E: serde::de::Error,
+            {
+                match v {
+                    "unsafe" => Ok(StaticAnalysisKind::Unsafe),
+                    "off" | "False" | "false" | "FALSE" => Ok(StaticAnalysisKind::Off),
+                    "strict" => Ok(StaticAnalysisKind::Strict),
+                    "baseline" => Ok(StaticAnalysisKind::Baseline),
+                    "on" | "True" | "true" | "TRUE" => Ok(StaticAnalysisKind::On),
+                    _ => Err(E::unknown_variant(
+                        v,
+                        &["unsafe", "off", "strict", "baseline", "on"],
+                    )),
+                }
+            }
+        }
+
+        deserializer.deserialize_any(StaticAnalysisKindVisitor)
+    }
 }
 
 #[derive(
@@ -1926,6 +1973,15 @@ mod tests {
     use super::*;
 
     #[test]
+    fn clap_resource_type_exposure_maps_to_node_type() {
+        assert_eq!(ClapResourceType::Exposure.to_string(), "exposure");
+        assert_eq!(
+            NodeType::from(&ClapResourceType::Exposure),
+            NodeType::Exposure
+        );
+    }
+
+    #[test]
     fn local_execution_backend_support_matrix() {
         let cases: &[(LocalExecutionBackendKind, &[AdapterType])] = &[
             (
@@ -2405,6 +2461,36 @@ mod tests {
             dbt_yaml::from_str::<StaticAnalysisKind>("\"True\"").unwrap(),
             StaticAnalysisKind::On
         );
+    }
+
+    /// YAML 1.1 resolves an unquoted `on`/`off` to a boolean, which must still select the mode,
+    /// both when deserialized from text and from an already-parsed `Value`.
+    #[test]
+    fn test_static_analysis_deserializes_yaml_11_bool_tokens() {
+        for (token, expected) in [
+            ("off", StaticAnalysisKind::Off),
+            ("on", StaticAnalysisKind::On),
+            ("false", StaticAnalysisKind::Off),
+            ("true", StaticAnalysisKind::On),
+            ("'off'", StaticAnalysisKind::Off),
+            ("strict", StaticAnalysisKind::Strict),
+        ] {
+            assert_eq!(
+                dbt_yaml::from_str::<StaticAnalysisKind>(token).unwrap(),
+                expected,
+                "from_str: {token}"
+            );
+            let value: Value = dbt_yaml::from_str(token).unwrap();
+            assert_eq!(
+                value
+                    .into_typed::<StaticAnalysisKind, _, _>(|_, _, _| {}, |_| Ok(None))
+                    .unwrap(),
+                expected,
+                "into_typed: {token}"
+            );
+        }
+
+        assert!(dbt_yaml::from_str::<StaticAnalysisKind>("maybe").is_err());
     }
 
     #[test]

@@ -13,16 +13,16 @@ mod tests {
 
     use crate::{AdapterConfig, Auth, snowflake::SnowflakeAuth};
 
-    /// Execute a statement through the "flock" driver.
+    /// Execute a statement through the "bridge" driver.
     ///
     /// Requires:
-    /// - `FLOCK_DRIVER_TESTS` env var set
+    /// - `BRIDGE_DRIVER_TESTS` env var set
     /// - `~/.dbt/dbt_cloud.yml` with valid cloud credentials
-    #[test_with::env(FLOCK_DRIVER_TESTS)]
+    #[test_with::env(BRIDGE_DRIVER_TESTS)]
     #[test]
-    fn statement_execute_flock() -> Result<()> {
+    fn statement_execute_bridge() -> Result<()> {
         let backend = Backend::Snowflake;
-        // Load the flock driver via the Remote strategy.
+        // Load the bridge driver via the Remote strategy.
         let mut driver = driver::Builder::new(backend, driver::LoadStrategy::Remote)
             .with_adbc_version(AdbcVersion::V110)
             .try_load()?;
@@ -68,21 +68,21 @@ mod tests {
         Ok(())
     }
 
-    /// Compares connection/execute/fetch latency between the "flock" driver
-    /// and a direct (non-flock) ADBC connection to Snowflake.
+    /// Compares connection/execute/fetch latency between the "bridge" driver
+    /// and a direct (non-bridge) ADBC connection to Snowflake.
     ///
     /// This is a manual benchmark, not a correctness test: no assertions are
     /// made on the timing numbers themselves, they are just printed.
     ///
     /// Requires:
-    /// - `FLOCK_DRIVER_TESTS` env var set
-    /// - `~/.dbt/dbt_cloud.yml` with valid cloud credentials (for the flock path)
+    /// - `BRIDGE_DRIVER_TESTS` env var set
+    /// - `~/.dbt/dbt_cloud.yml` with valid cloud credentials (for the bridge path)
     /// - `~/.dbt/profiles.yml` with a `fusion_tests` profile whose `snowflake`
     ///   output has real (non-dummy) credentials, as set up by
     ///   `cargo xtask init-creds` (for the raw ADBC path)
-    #[test_with::env(FLOCK_DRIVER_TESTS)]
+    #[test_with::env(BRIDGE_DRIVER_TESTS)]
     #[test]
-    fn latency_flock_vs_raw_snowflake() -> Result<()> {
+    fn latency_bridge_vs_raw_snowflake() -> Result<()> {
         const QUERY: &str = "SELECT 21 + 21";
 
         struct Timings {
@@ -92,8 +92,8 @@ mod tests {
             total: std::time::Duration,
         }
 
-        // --- flock path -----------------------------------------------------
-        let flock_timings = {
+        // --- bridge path -----------------------------------------------------
+        let bridge_timings = {
             let total_start = std::time::Instant::now();
 
             let backend = Backend::Snowflake;
@@ -228,30 +228,30 @@ mod tests {
             }
         };
 
-        println!("=== Flock vs raw Snowflake latency ===");
-        println!("{:<12}{:<13}{:<13}", "", "flock", "snowflake");
+        println!("=== Bridge vs raw Snowflake latency ===");
+        println!("{:<12}{:<13}{:<13}", "", "bridge", "snowflake");
         println!(
             "{:<12}{:<13}{:<13}",
             "connect",
-            format!("{:.2?}", flock_timings.connect),
+            format!("{:.2?}", bridge_timings.connect),
             format!("{:.2?}", snowflake_timings.connect)
         );
         println!(
             "{:<12}{:<13}{:<13}",
             "execute",
-            format!("{:.2?}", flock_timings.execute),
+            format!("{:.2?}", bridge_timings.execute),
             format!("{:.2?}", snowflake_timings.execute)
         );
         println!(
             "{:<12}{:<13}{:<13}",
             "fetch",
-            format!("{:.2?}", flock_timings.fetch),
+            format!("{:.2?}", bridge_timings.fetch),
             format!("{:.2?}", snowflake_timings.fetch)
         );
         println!(
             "{:<12}{:<13}{:<13}",
             "total",
-            format!("{:.2?}", flock_timings.total),
+            format!("{:.2?}", bridge_timings.total),
             format!("{:.2?}", snowflake_timings.total)
         );
 

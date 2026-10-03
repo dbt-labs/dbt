@@ -1129,14 +1129,14 @@ fn resolve_catalog_type(catalog_name: Option<&str>) -> Option<String> {
     // v2 catalogs.yml declares `type` directly on each catalog (no write
     // integrations); v1 nests `catalog_type` under the active write integration.
     if dbt_adapter::load_catalogs::fetch_use_catalogs_v2() {
-        let view = catalogs.view_v2().ok()?;
+        let view = catalogs.view().ok()?;
         let catalog = view
             .catalogs
             .iter()
             .find(|catalog| catalog.name == catalog_name)?;
         return Some(catalog.catalog_type.as_str().to_lowercase());
     }
-    let view = catalogs.view().ok()?;
+    let view = catalogs.deprecated_view().ok()?;
     let catalog = view
         .catalogs
         .iter()
