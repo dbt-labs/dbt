@@ -919,7 +919,8 @@ pub struct ShowArgs {
 
     /// Query a dbt information schema view (e.g. `models`, `dag_nodes`) instead of
     /// the warehouse. Equivalent to `--inline "select * from {{ info_schema('<view>') }}"`.
-    /// Requires a prior `dbt parse|compile|run|build --generate-info-schema`.
+    /// Needs metadata from a prior `dbt build|run|check`, or
+    /// `dbt parse|compile --generate-info-schema`.
     #[arg(long, value_name = "VIEW", conflicts_with_all = ["inline", "adapter", "query_id"])]
     pub info: Option<String>,
 
@@ -2215,11 +2216,11 @@ pub struct CommonArgs {
 
     #[arg(global = true, long, default_value_t = false, action = ArgAction::SetTrue, env = "DBT_PARTIAL_LOAD", value_parser = BoolishValueParser::new(), hide = true)]
     pub partial_load: bool,
-    #[arg(global = true, long, default_value_t = false, action = ArgAction::SetTrue, env = "DBT_PARTIAL_LOAD", value_parser = BoolishValueParser::new(), hide = true)]
+    #[arg(global = true, long, default_value_t = false, action = ArgAction::SetTrue, value_parser = BoolishValueParser::new(), hide = true)]
     pub no_partial_load: bool,
 
-    /// Select only nodes whose source files have changed since the last --partial-parse run,
-    /// plus all their downstream dependents. Implies --partial-parse.
+    /// Select only nodes whose source files have changed or been added since the last
+    /// --partial-parse run, plus all their downstream dependents. Implies --partial-parse.
     /// Use with --partial-load for full speed: --partial-load --dirty
     #[arg(global = true, long, default_value_t = false, action = ArgAction::SetTrue, env = "DBT_DIRTY", value_parser = BoolishValueParser::new(), help_heading = help_headings::EXECUTION, hide_short_help = true)]
     pub dirty: bool,
@@ -2724,21 +2725,26 @@ impl CommonArgs {
 
     /// `--verify-partial-load` implies `--partial-load`. `--write-metadata` implies both.
     /// `--write-index` and `--generate-info-schema` imply `--write-metadata`, hence both.
+    ///
+    /// `--no-partial-load` cancels the fast path whatever turned it on here, so a caller keeps
+    /// the index without it (`--no-write-index` drops both). `--dirty` is cancelled at the
+    /// fast-path call site.
     pub fn effective_partial_load(&self) -> bool {
-        self.write_metadata
-            || self.effective_write_index()
-            || self.generate_info_schema
-            || self.partial_load
-            || self.verify_partial_load
+        !self.no_partial_load
+            && (self.write_metadata
+                || self.effective_write_index()
+                || self.generate_info_schema
+                || self.partial_load
+                || self.verify_partial_load)
     }
 
     /// `--write-index` after `--no-write-index` cancels it.
     ///
     /// Both `effective_partial_*` gates go through this rather than reading `write_index`
     /// directly, because those implications exist only to serve the index. Cancelling the index
-    /// without cancelling them would leave the caller with no index *and* the partial-load fast
-    /// path, which cannot see files it has not already recorded — the worst of both. An explicit
-    /// `--write-metadata` still implies both on its own; `--no-write-index` only cancels the index.
+    /// without cancelling them would leave the caller with no index but still on the
+    /// partial-load fast path. An explicit `--write-metadata` still implies both on its own;
+    /// `--no-write-index` only cancels the index.
     /// (`--generate-info-schema` implies `--write-metadata` independently, so it stays in the gates
     /// above regardless of `--no-write-index`.)
     pub fn effective_write_index(&self) -> bool {
@@ -3242,6 +3248,36 @@ mod tests {
         assert!(!args.effective_write_index());
         assert!(!args.effective_partial_parse());
         assert!(!args.effective_partial_load());
+    }
+
+    #[test]
+    fn no_partial_load_cancels_the_fast_path_but_keeps_the_index() {
+        // `--write-index --no-partial-load`: the caller keeps the index and opts out of the
+        // fast path. Before this, `--no-write-index` was the only way out and dropped both.
+        let args = CommonArgs {
+            write_index: true,
+            no_partial_load: true,
+            ..Default::default()
+        };
+        assert!(!args.effective_partial_load());
+        assert!(args.effective_write_index());
+        assert!(args.effective_partial_parse());
+    }
+
+    /// `effective_partial_load()` negates `no_partial_load`, so sharing `DBT_PARTIAL_LOAD` with
+    /// `partial_load` would make `DBT_PARTIAL_LOAD=1` turn the fast path off.
+    #[test]
+    fn no_partial_load_flag_is_not_populated_from_env() {
+        let reads_env = <CommonArgs as clap::Args>::augment_args(clap::Command::new("t"))
+            .get_arguments()
+            .find(|arg| arg.get_id() == "no_partial_load")
+            .map(|arg| arg.get_env().is_some());
+
+        assert_eq!(
+            reads_env,
+            Some(false),
+            "--no-partial-load must not read DBT_PARTIAL_LOAD via clap"
+        );
     }
 
     #[test]
@@ -3784,6 +3820,23 @@ mod tests {
             eval_args.exclude_resource_types,
             vec![ClapResourceType::Model]
         );
+    }
+
+    #[test]
+    fn list_command_supports_exposure_resource_type() {
+        let cmd = parse_core_command(&["list", "--resource-type", "exposure"]);
+
+        let CoreCommand::List(args) = &cmd else {
+            panic!("expected CoreCommand::List, got {cmd:?}");
+        };
+        assert_eq!(args.resource_type, Some(vec![ClapResourceType::Exposure]));
+
+        let eval_args = args.to_eval_args(
+            test_system_args(FsCommand::List),
+            Path::new("/tmp/in"),
+            Path::new("/tmp/out"),
+        );
+        assert_eq!(eval_args.resource_types, vec![ClapResourceType::Exposure]);
     }
 
     #[test]

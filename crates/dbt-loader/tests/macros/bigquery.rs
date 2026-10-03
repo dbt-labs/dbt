@@ -18,6 +18,50 @@ fn build_harness() -> MacroTestHarness {
         .expect("harness should build")
 }
 
+#[test]
+fn snapshot_check_cols_matches_existing_column_case_insensitively() {
+    let harness = MacroTestHarness::for_adapter(AdapterType::Bigquery)
+        .load_all_macros()
+        .with_macro(
+            "dbt_bigquery",
+            "bigquery__get_columns_in_query",
+            "{% macro bigquery__get_columns_in_query(select_sql) %}{{ return(['dice_change_hash']) }}{% endmacro %}",
+        )
+        .build()
+        .expect("harness should build");
+
+    harness
+        .mock()
+        .on("get_relation", |_| Ok(Value::from("snapshot_target")));
+    harness.mock().on("get_columns_in_relation", |_| {
+        Ok(Value::from_serialize(vec![BTreeMap::from([(
+            "name",
+            "DICE_CHANGE_HASH",
+        )])]))
+    });
+    harness.mock().on("quote", |args| {
+        Ok(Value::from(format!(
+            "`{}`",
+            args[0].as_str().expect("column name")
+        )))
+    });
+
+    let node = BTreeMap::from([
+        ("database", "test-db"),
+        ("schema", "test_schema"),
+        ("alias", "member_snapshot"),
+        ("compiled_code", "select DICE_CHANGE_HASH from source"),
+    ]);
+    let rendered = harness
+        .render(
+            "{% set added, cols = snapshot_check_all_get_existing_columns(node, true, ['dice_change_hash']) %}{{ 'added' if added else 'existing' }}|{{ cols | join(',') }}",
+            BTreeMap::from([("node", Value::from_serialize(node))]),
+        )
+        .expect("snapshot check should render");
+
+    assert_eq!(rendered.trim(), "existing|`dice_change_hash`");
+}
+
 fn base_relation_ctx(harness: &MacroTestHarness) -> BTreeMap<String, Value> {
     let relation = harness.relation(
         "test-db",

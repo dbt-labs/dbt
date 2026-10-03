@@ -252,7 +252,7 @@ pub mod arg_utils;
 mod loader;
 
 #[cfg(feature = "loader")]
-pub use loader::path_loader;
+pub use loader::{path_loader, LoadedTemplateSource};
 
 pub use self::defaults::{default_auto_escape_callback, escape_formatter};
 pub use self::environment::Environment;

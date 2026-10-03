@@ -12,12 +12,16 @@
 use std::{
     collections::{HashMap, HashSet},
     fs,
-    path::Path,
+    path::{Path, PathBuf},
+};
+
+use dbt_common::{
+    path::{DbtPath, resource_extension},
+    stdfs,
 };
 
 use parquet::arrow::{ProjectionMask, arrow_reader::ParquetRecordBatchReaderBuilder};
 
-use dbt_common::path::resource_extension;
 use dbt_schemas::state::ResourcePathKind;
 
 use crate::parse_state::{
@@ -181,7 +185,8 @@ pub fn resolve_unique_ids_from_index(
 /// Used to synthesize a `SelectExpression` for `--dirty` so the scheduler applies
 /// `seed+` semantics rather than running the pre-expanded ancestor closure.
 /// Returns `None` when the cache directory does not exist.
-pub fn dirty_seed_ids_from_index(out_dir: &Path) -> Option<HashSet<String>> {
+/// Also returns the `.sql` files added since the last parse, which have no index row yet.
+pub fn dirty_seed_ids_from_index(out_dir: &Path) -> Option<(HashSet<String>, Vec<String>)> {
     let dir = cache_dir(out_dir);
     if !dir.exists() {
         return None;
@@ -202,7 +207,7 @@ pub fn dirty_seed_ids_from_index(out_dir: &Path) -> Option<HashSet<String>> {
         .filter(|row| touched.contains(&(row.package_name.clone(), row.original_path.clone())))
         .map(|row| row.unique_id.clone())
         .collect();
-    Some(seed_ids)
+    Some((seed_ids, detect_added_dirty_files(&packages)))
 }
 
 /// Resolve unique_ids for `state:dirty` — nodes whose source file mtime changed.
@@ -411,6 +416,49 @@ fn detect_dirty_files(packages: &[PackageSnapshot]) -> HashSet<(String, String)>
         }
     }
     touched
+}
+
+/// Added `.sql` files under model/analysis paths - the ones `detect_dirty_files` would flag had
+/// they been recorded.
+fn detect_added_dirty_files(packages: &[PackageSnapshot]) -> Vec<String> {
+    let Some(root_pkg) = packages.first() else {
+        return Vec::new();
+    };
+    let root_dir = Path::new(&root_pkg.package_root_path);
+    let mut added = Vec::new();
+    for pkg in packages {
+        let pkg_root = Path::new(&pkg.package_root_path);
+        let paths = &pkg.manifest_path_config;
+        let roots: Vec<String> = paths
+            .model_paths
+            .iter()
+            .chain(&paths.analysis_paths)
+            .cloned()
+            .collect();
+        let recorded: HashSet<PathBuf> = pkg
+            .all_paths
+            .values()
+            .flatten()
+            .map(|(p, _)| DbtPath::from(Path::new(p)).to_path_buf())
+            .collect();
+        let files = crate::partial_parse::unrecorded_files(pkg_root, &roots, &recorded);
+        added.extend(
+            files
+                .into_iter()
+                .filter(|rel_path| {
+                    resource_extension(rel_path).is_some_and(|e| e.eq_ignore_ascii_case("sql"))
+                })
+                .map(|rel_path| {
+                    // Root-relative, as the parser computes a node's `original_file_path`.
+                    let path =
+                        stdfs::diff_paths(pkg_root.join(&rel_path), root_dir).unwrap_or(rel_path);
+                    DbtPath::from(path).to_string()
+                }),
+        );
+    }
+    added.sort();
+    added.dedup();
+    added
 }
 
 fn fqn_contains(fqn: &[String], value: &str) -> bool {
@@ -641,5 +689,58 @@ mod tests {
             "models/staging/orders.sql",
             "payments.sql"
         ));
+    }
+
+    /// A package at `pkg_root` whose `recorded` model files all have a saved mtime of 0.
+    fn pkg(name: &str, pkg_root: &Path, recorded: &[&str]) -> PackageSnapshot {
+        PackageSnapshot {
+            package_root_path: pkg_root.to_string_lossy().into_owned(),
+            package_name: name.to_string(),
+            manifest_path_config: dbt_schemas::state::ManifestPathConfig {
+                model_paths: vec!["models".to_string()],
+                analysis_paths: vec!["analyses".to_string()],
+                snapshot_paths: vec!["snapshots".to_string()],
+                ..Default::default()
+            },
+            all_paths: HashMap::from([(
+                ResourcePathKind::ModelPaths,
+                recorded.iter().map(|p| (p.to_string(), 0)).collect(),
+            )]),
+            dependencies: Default::default(),
+            is_local_dep: false,
+        }
+    }
+
+    #[test]
+    fn detect_added_dirty_files_keeps_only_new_sql_under_model_and_analysis_paths() {
+        let data = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data/dirty_files");
+        let root = data.join("proj");
+        // Root first, so walk order differs from the sorted output.
+        let packages = [
+            pkg("root", &root, &["models/a.sql", "models/edited.sql.j2"]),
+            pkg("dep", &root.join("local_dep"), &[]),
+            pkg("x", &data.join("x"), &[]),
+        ];
+        assert_eq!(
+            detect_added_dirty_files(&packages),
+            vec![
+                "../x/models/d.sql".to_string(),
+                "analyses/an.sql".to_string(),
+                "local_dep/models/c.sql".to_string(),
+                "models/new.sql".to_string(),
+                "models/new_j2.sql.j2".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn detect_dirty_files_flags_an_edited_jinja_templated_model() {
+        let data = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data/dirty_files");
+        // A saved mtime of 0 never matches a checked-in file's real mtime.
+        let packages = [pkg("root", &data.join("proj"), &["models/edited.sql.j2"])];
+        assert!(
+            detect_dirty_files(&packages)
+                .contains(&("root".to_string(), "models/edited.sql.j2".to_string()))
+        );
     }
 }

@@ -2341,4 +2341,287 @@ mod tests {
         assert_eq!(source.schema.as_deref(), Some("raw\n"));
         assert_eq!(source.database.as_deref(), Some("analytics\n"));
     }
+
+    /// Resolves `children:` on a YAML selector atom through the real parse-time Jinja pass,
+    /// with `walk` bound in the render context, and reports the flag serde ends up with.
+    fn selector_children_flag(children_yaml: &str, walk: Value) -> Result<bool, String> {
+        use dbt_schemas::schemas::selectors::{
+            AtomExpr, SelectorDefinitionValue, SelectorExpr, SelectorFile,
+        };
+        let yaml = format!(
+            r#"
+            selectors:
+              - name: s
+                definition:
+                  method: fqn
+                  value: a
+                  children: {children_yaml}
+            "#
+        );
+        let val: dbt_yaml::Value = dbt_yaml::from_str(&yaml).unwrap();
+        let (env, _sql_resources, _init_cfg) = setup_test_env();
+        let mut ctx: BTreeMap<String, Value> = BTreeMap::new();
+        ctx.insert("walk".to_string(), walk);
+        let listeners: Vec<Rc<dyn minijinja::listener::RenderingEventListener>> = Vec::new();
+
+        let file: SelectorFile = dbt_jinja_utils::serde::into_typed_with_jinja(
+            val, false, &env, &ctx, &listeners, None, false,
+        )
+        .map_err(|e| e.to_string())?;
+
+        match &file.selectors[0].definition {
+            SelectorDefinitionValue::Full(SelectorExpr::Atom(AtomExpr::Method(m))) => {
+                Ok(m.children)
+            }
+            other => Err(format!("selector atom took an unexpected shape: {other:?}")),
+        }
+    }
+
+    /// A graph-walk flag authored as Jinja must end up with the boolean the expression means,
+    /// whichever of the two rendering paths it takes.
+    ///
+    /// `render_jinja_str` splits on the shape of the source: a lone `{{ ... }}` is compiled as
+    /// an expression and yields a *typed* value, so `"{{ true }}"` arrives at serde as a real
+    /// `Bool`. Anything else — a `{% if %}` block, or `{{ x }}` where `x` is itself a string —
+    /// is rendered as text and arrives as a `String`. Both paths have to resolve, which is why
+    /// the flags read through `yaml_11_bool_null_as_false` rather than a type that can only
+    /// hold the first: the string forms used to land in an enum variant answering `false` no
+    /// matter what the template said, silently skipping the walk.
+    ///
+    /// dbt-core, verified 2026-09-17 with `cargo mantle ls --selector ...` against
+    /// `dbt_conformance_regressions/selector_graph_flag_jinja`, agrees on every row here except
+    /// the two that render to the string `"false"`, where it walks the children anyway. Core
+    /// renders with `native=True` and then coerces with `bool(...)`
+    /// (`core/dbt/config/renderer.py:38-48`, `core/dbt/graph/selector_spec.py:131-134`), and
+    /// `bool("false")` is `True` in Python. Its treatment of a literal `"{{ false }}"` is
+    /// stranger still, and is why that row is *not* asserted here: Jinja constant-folds a
+    /// wholly-literal template into a string at compile time, so `quoted_native_concat` sees a
+    /// plain `str` rather than a `NativeMarker`, skips `literal_eval`, and hands `bool()` the
+    /// truthy string `"False"`. Route the same `false` through a variable and the fold cannot
+    /// happen, so core answers `false` — `"{{ false }}"` and `"{{ var('walk') }}"` with
+    /// `walk: false` disagree in core. Fusion answers `false` for both, which is consistent and
+    /// is plainly what the author wrote.
+    #[test]
+    fn test_jinja_authored_graph_walk_flag_resolves() {
+        // Single-expression path: a typed bool reaches serde. Works today.
+        assert_eq!(
+            selector_children_flag(r#""{{ true }}""#, Value::from(true)),
+            Ok(true)
+        );
+        assert_eq!(
+            selector_children_flag(r#""{{ false }}""#, Value::from(true)),
+            Ok(false)
+        );
+        assert_eq!(
+            selector_children_flag(r#""{{ walk }}""#, Value::from(true)),
+            Ok(true)
+        );
+        assert_eq!(
+            selector_children_flag(r#""{{ walk }}""#, Value::from(false)),
+            Ok(false)
+        );
+
+        // Mixed-template path: renders to the *string* "true"/"false".
+        assert_eq!(
+            selector_children_flag(r#""{% if true %}true{% endif %}""#, Value::from(true)),
+            Ok(true)
+        );
+        // Core walks the children here (`bool("false")`); deliberately not reproduced.
+        assert_eq!(
+            selector_children_flag(
+                r#""{% if false %}true{% else %}false{% endif %}""#,
+                Value::from(true)
+            ),
+            Ok(false)
+        );
+        // Text around the word survives the render, as it does in any block laid out over
+        // several lines. Core walks here too: `bool(" true ")` is `True`.
+        assert_eq!(
+            selector_children_flag(r#""{% if walk %} true {% endif %}""#, Value::from(true)),
+            Ok(true)
+        );
+
+        // Single-expression path, but the expression evaluates to a string — e.g. a var set on
+        // the CLI, which arrives as text. Also the string path.
+        assert_eq!(
+            selector_children_flag(r#""{{ walk }}""#, Value::from("true")),
+            Ok(true)
+        );
+        // Core walks the children here too, for the same reason.
+        assert_eq!(
+            selector_children_flag(r#""{{ walk }}""#, Value::from("false")),
+            Ok(false)
+        );
+
+        // No Jinja at all, but YAML 1.1: PyYAML resolves this to `True` before dbt-core ever
+        // renders it, so core walks the children; dbt-yaml's `yaml_11` feature does the same.
+        assert_eq!(selector_children_flag("yes", Value::from(true)), Ok(true));
+    }
+
+    /// A `children:` value that is neither a bool nor a bool-ish string does not fail here at
+    /// all, and this is a *separate* defect from the coercion covered above — tightening the
+    /// coercion cannot fix it.
+    ///
+    /// When `MethodAtomExpr` rejects the value, the untagged `AtomExpr` falls through to its
+    /// `MethodKey(BTreeMap<String, SelectorMethodValue>)` variant, which accepts *any* keys. So
+    /// the atom silently changes shape and the flag disappears rather than the parse failing.
+    /// The failure surfaces only if the selector is actually used, and then as `MethodKey must
+    /// have exactly one key-value pair` (`dbt-selector-parser/src/parser.rs:178-183`) — an
+    /// error naming neither `children` nor the offending value.
+    ///
+    /// Asserted as-is so that whoever tightens the fallback sees this test go red and updates
+    /// it deliberately.
+    #[test]
+    fn test_non_boolean_graph_walk_flag_falls_through_to_method_key() {
+        let err = selector_children_flag(r#""{{ 1 }}""#, Value::from(true))
+            .expect_err("a numeric `children` must not resolve to a graph-walk flag");
+        assert_contains!(&err, "MethodKey");
+    }
+
+    /// What a selector's `default:` resolves to by the time the parse-time Jinja pass is done.
+    #[derive(Debug, PartialEq)]
+    enum ResolvedDefault {
+        /// A boolean, or `None` for an absent or explicitly-null key.
+        Resolved(Option<bool>),
+        /// The value was rejected — either by the render or by the reader.
+        Rejected,
+    }
+
+    /// Resolves `default:` on a YAML selector through the real parse-time Jinja pass, with `d`
+    /// bound in the render context, and reports what the field ends up holding.
+    fn selector_default(default_yaml: &str, d: Value) -> ResolvedDefault {
+        use dbt_schemas::schemas::selectors::SelectorFile;
+        let yaml = format!(
+            r#"
+            selectors:
+              - name: s
+                default: {default_yaml}
+                definition: 'fqn:a'
+            "#
+        );
+        let val: dbt_yaml::Value = dbt_yaml::from_str(&yaml).unwrap();
+        let (env, _sql_resources, _init_cfg) = setup_test_env();
+        let mut ctx: BTreeMap<String, Value> = BTreeMap::new();
+        ctx.insert("d".to_string(), d);
+        let listeners: Vec<Rc<dyn minijinja::listener::RenderingEventListener>> = Vec::new();
+
+        let file: SelectorFile = match dbt_jinja_utils::serde::into_typed_with_jinja(
+            val, false, &env, &ctx, &listeners, None, false,
+        ) {
+            Err(_) => return ResolvedDefault::Rejected,
+            Ok(file) => file,
+        };
+
+        ResolvedDefault::Resolved(file.selectors[0].default)
+    }
+
+    /// A selector `default:` authored as Jinja must resolve, at parse time, to the boolean the
+    /// expression means — whichever of the two rendering paths the template takes, and
+    /// including failing the parse when it does not denote a boolean at all.
+    ///
+    /// This is the `default` half of what `test_jinja_authored_graph_walk_flag_resolves` covers
+    /// for the graph-walk flags, and the split between the paths is the same: a lone
+    /// `{{ ... }}` is compiled as an expression and yields a typed value, anything else renders
+    /// as text. `default` used to differ, being [`dbt_yaml::Verbatim`]: the render did not
+    /// happen here at all, the template was carried to `resolve_selector_definitions`, rendered
+    /// only if no CLI selection was given, and then coerced by a truthiness map that treated
+    /// any non-empty string as true.
+    ///
+    /// dbt-core resolves all of this while it loads selectors.yml, before it knows which
+    /// selector the run will use, so its answers are the eager ones. Verified 2026-09-17
+    /// (dbt-state v2.47.0) with `cargo mantle ls`. Core rejects the four rows below that render
+    /// to a *string* — it validates `default` against a JSON-schema boolean, and a rendered
+    /// template is a string even when it spells a boolean. Fusion resolves them instead,
+    /// deliberately: core's strictness there is an artifact of Jinja constant-folding a
+    /// wholly-literal template into a `str`, which is why core rejects even `"{{ true }}"`, and
+    /// rejecting it here would break selectors that work today for no gain.
+    #[test]
+    fn test_jinja_authored_selector_default_resolves() {
+        use ResolvedDefault::*;
+
+        // Single-expression path: a typed bool reaches serde.
+        assert_eq!(
+            selector_default(r#""{{ true }}""#, Value::from(true)),
+            Resolved(Some(true))
+        );
+        assert_eq!(
+            selector_default(r#""{{ false }}""#, Value::from(true)),
+            Resolved(Some(false))
+        );
+        assert_eq!(
+            selector_default(r#""{{ d }}""#, Value::from(true)),
+            Resolved(Some(true))
+        );
+        assert_eq!(
+            selector_default(r#""{{ d }}""#, Value::from(false)),
+            Resolved(Some(false))
+        );
+
+        // Single-expression path where the expression is itself a string — e.g. a var set on
+        // the CLI, which arrives as text — and the mixed-template path. Both yield strings.
+        assert_eq!(
+            selector_default(r#""{{ d }}""#, Value::from("true")),
+            Resolved(Some(true))
+        );
+        assert_eq!(
+            selector_default(r#""{{ d }}""#, Value::from("false")),
+            Resolved(Some(false))
+        );
+        assert_eq!(
+            selector_default(r#""{{ 'yes' }}""#, Value::from(true)),
+            Resolved(Some(true))
+        );
+        assert_eq!(
+            selector_default(r#""{% if true %}true{% endif %}""#, Value::from(true)),
+            Resolved(Some(true))
+        );
+        assert_eq!(
+            selector_default(r#""{% if d %} no {% endif %}""#, Value::from(true)),
+            Resolved(Some(false))
+        );
+
+        // No Jinja at all, but YAML 1.1. The render pass leaves it alone, and dbt-yaml's
+        // `yaml_11` feature resolves it, as it does for the graph-walk flags.
+        assert_eq!(
+            selector_default("yes", Value::from(true)),
+            Resolved(Some(true))
+        );
+        assert_eq!(
+            selector_default("no", Value::from(true)),
+            Resolved(Some(false))
+        );
+
+        // Renders to something that is not a boolean in any spelling: an error, not a value
+        // whose meaning is settled later by string truthiness.
+        assert_eq!(
+            selector_default(r#""{{ 0 }}""#, Value::from(true)),
+            Rejected
+        );
+        assert_eq!(
+            selector_default(r#""{{ 1 }}""#, Value::from(true)),
+            Rejected
+        );
+        assert_eq!(
+            selector_default(r#""{{ 'maybe' }}""#, Value::from(true)),
+            Rejected
+        );
+    }
+
+    /// Jinja in `default:` that cannot render must fail the parse, even when the selector is
+    /// never used — the same eager treatment every other field in selectors.yml gets.
+    ///
+    /// dbt-core renders `default` while loading selectors.yml, so it errors here too; verified
+    /// 2026-09-17 with `cargo mantle ls --select fqn:model_a` on
+    /// `dbt_conformance_regressions/selector_default_jinja_unrenderable`, which failed with
+    /// `Could not render {{ 1 + 'a' }}: unsupported operand type(s) for +: 'int' and 'str'`
+    /// despite the explicit `--select`. Fusion used to defer the render and reach it only when
+    /// no CLI selection was given, so the same project parsed clean under `--select` and the
+    /// broken expression was never reported.
+    #[test]
+    fn test_unrenderable_selector_default_fails_the_parse() {
+        assert_eq!(
+            selector_default(r#""{{ 1 + 'a' }}""#, Value::from(true)),
+            ResolvedDefault::Rejected
+        );
+    }
 }

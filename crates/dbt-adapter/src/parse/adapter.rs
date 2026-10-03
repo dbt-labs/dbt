@@ -6,7 +6,7 @@ use crate::value::empty_mutable_vec_value;
 use dashmap::{DashMap, DashSet};
 use dbt_adapter_core::AdapterType;
 use dbt_common::FsError;
-use dbt_schemas::schemas::dbt_catalogs::DbtCatalogs;
+use dbt_schemas::schemas::dbt_catalogs_deprecated::DbtCatalogs;
 use dbt_schemas::schemas::relations::base::{BaseRelation, RelationPattern};
 use minijinja::constants::TARGET_UNIQUE_ID;
 use minijinja::{State, Value};

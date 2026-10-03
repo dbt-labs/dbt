@@ -1282,8 +1282,8 @@ fn discover_given_relations(
         given_relations.push((fqn_string, relation));
     }
 
-    // Static-analysis-off incremental tests normally hydrate the existing model
-    // relation. An `is_incremental: false` override instead uses compiled SQL.
+    // Incremental tests read the existing model relation's schema; fetch it if uncached.
+    // An `is_incremental: false` override instead uses compiled SQL.
     let model_unique_id = get_unique_id(
         &ut.__unit_test_attr__.model,
         &ut.__common_attr__.package_name,
@@ -1295,21 +1295,24 @@ fn discover_given_relations(
     );
     let resolver_state = ctx.resolver_state();
     let use_compiled_schema_for_incremental = use_compiled_schema_for_incremental(ctx, ut)?;
-    let should_fetch_expected_schema =
-        resolver_state
-            .nodes
-            .get_node(&model_unique_id)
-            .is_some_and(|node| {
-                node.materialized() == DbtMaterialization::Incremental
-                    && is_static_analysis_off_or_baseline(node.static_analysis().into_inner())
-                    && !use_compiled_schema_for_incremental
-            });
+    let tested_model = resolver_state.nodes.get_node(&model_unique_id);
+    let should_fetch_expected_schema = tested_model.is_some_and(|node| {
+        node.materialized() == DbtMaterialization::Incremental
+            && !use_compiled_schema_for_incremental
+    });
+    let model_static_analysis_off = tested_model.is_some_and(|node| {
+        is_static_analysis_off_or_baseline(node.static_analysis().into_inner())
+    });
 
     if should_fetch_expected_schema
         && let Some(expect_relation) = ctx.try_get_relation_from_node(&model_unique_id)
     {
-        let schema_relation =
-            check_defer_relation(&model_unique_id, ctx).unwrap_or_else(|| expect_relation.clone());
+        // Must match the relation `render_unit_test` reads for this mode.
+        let schema_relation = if model_static_analysis_off {
+            check_defer_relation(&model_unique_id, ctx).unwrap_or_else(|| expect_relation.clone())
+        } else {
+            expect_relation
+        };
         let canonical_fqn = schema_relation.get_canonical_fqn()?;
         if force_refetch || !ctx.schema_cache.exists(&canonical_fqn) {
             relations_to_fetch.push(RelationToFetch {
@@ -1975,14 +1978,17 @@ fn yml_sequence_to_sql_literal(
 
     let child_literals = value
         .into_iter()
-        .map(|v| {
-            let literal =
-                yml_value_to_sql_literal(adapter_type, type_ops, v, element_field.data_type())?;
+        .map(|v| match adapter_type {
+            AdapterType::Bigquery => bigquery::typed_sql_literal(type_ops, v, element_field),
+            _ => {
+                let literal =
+                    yml_value_to_sql_literal(adapter_type, type_ops, v, element_field.data_type())?;
 
-            if supports_hlist || element_field.data_type().is_nested() {
-                Ok(literal)
-            } else {
-                Ok(format!("CAST({} AS {})", literal, element_type_literal))
+                if supports_hlist || element_field.data_type().is_nested() {
+                    Ok(literal)
+                } else {
+                    Ok(format!("CAST({} AS {})", literal, element_type_literal))
+                }
             }
         })
         .collect::<FsResult<Vec<_>>>()?;
@@ -2033,12 +2039,17 @@ fn yml_mapping_to_sql_literal(
                         .get(field_name)
                         .cloned()
                         .unwrap_or_else(YmlValue::null);
-                    let value_literal = yml_value_to_sql_literal(
-                        adapter_type,
-                        type_ops,
-                        field_value,
-                        field.data_type(),
-                    )?;
+                    let value_literal = match adapter_type {
+                        AdapterType::Bigquery => {
+                            bigquery::typed_sql_literal(type_ops, field_value, field)?
+                        }
+                        _ => yml_value_to_sql_literal(
+                            adapter_type,
+                            type_ops,
+                            field_value,
+                            field.data_type(),
+                        )?,
+                    };
                     let name_literal = type_ops.format_ident(field_name);
                     Ok(format!("{value_literal} AS {name_literal}"))
                 })
@@ -2048,14 +2059,37 @@ fn yml_mapping_to_sql_literal(
     }
 }
 
-/// BigQuery has no `STRING -> JSON` cast, so `PARSE_JSON` is the only constructor, and its
-/// result is already typed - callers must not wrap it (dbt-labs/dbt-core#15708).
-fn is_bigquery_json_literal(
-    adapter_type: AdapterType,
-    data_type: &DataType,
-    value: &YmlValue,
-) -> bool {
-    adapter_type == AdapterType::Bigquery && BigqueryTyping::is_json(data_type) && !value.is_null()
+mod bigquery {
+    use super::*;
+
+    /// BigQuery has no `STRING -> JSON` cast, so `PARSE_JSON` is the only constructor, and its
+    /// result is already typed - callers must not wrap it (dbt-labs/dbt-core#15708).
+    pub(super) fn is_json_literal(data_type: &DataType, value: &YmlValue) -> bool {
+        BigqueryTyping::is_json(data_type) && !value.is_null()
+    }
+
+    pub(super) fn typed_sql_literal(
+        type_ops: &dyn TypeOps,
+        value: YmlValue,
+        field: &Field,
+    ) -> FsResult<String> {
+        let data_type = field.data_type();
+        let already_typed = is_json_literal(data_type, &value);
+        let literal = yml_value_to_sql_literal(AdapterType::Bigquery, type_ops, value, data_type)?;
+        if already_typed {
+            return Ok(literal);
+        }
+
+        let formatted_type = type_ops
+            .get_original_sql_type_from_field(field)
+            .map_err(|e| {
+                fs_err!(
+                    ErrorCode::InvalidConfig,
+                    "Failed to format nested BigQuery fixture type {data_type:?}: {e}"
+                )
+            })?;
+        Ok(format!("CAST({literal} AS {formatted_type})"))
+    }
 }
 
 /// Converts a yaml value to a String literal for the given adapter type
@@ -2067,23 +2101,26 @@ fn yml_value_to_sql_literal(
 ) -> FsResult<String> {
     let literal_formatter = SqlLiteralFormatter::new(adapter_type);
 
-    if is_bigquery_json_literal(adapter_type, data_type, &value) {
-        // A string fixture is the JSON document itself; anything else is serialized to JSON.
-        let json_str = match &value {
-            YmlValue::String(s, _) => s.clone(),
-            _ => serde_json::to_string(&value).map_err(|_| {
-                fs_err!(
-                    ErrorCode::InvalidArgument,
-                    "Unable to serialize JSON fixture value"
-                )
-            })?,
-        };
-        // `format_str` does not escape backslashes for BigQuery; JSON text is full of them.
-        let json_str = json_str.replace('\\', "\\\\");
-        return Ok(format!(
-            "PARSE_JSON({})",
-            literal_formatter.format_str(&json_str)
-        ));
+    match adapter_type {
+        AdapterType::Bigquery if bigquery::is_json_literal(data_type, &value) => {
+            // A string fixture is the JSON document itself; anything else is serialized to JSON.
+            let json_str = match &value {
+                YmlValue::String(s, _) => s.clone(),
+                _ => serde_json::to_string(&value).map_err(|_| {
+                    fs_err!(
+                        ErrorCode::InvalidArgument,
+                        "Unable to serialize JSON fixture value"
+                    )
+                })?,
+            };
+            // `format_str` does not escape backslashes for BigQuery; JSON text is full of them.
+            let json_str = json_str.replace('\\', "\\\\");
+            return Ok(format!(
+                "PARSE_JSON({})",
+                literal_formatter.format_str(&json_str)
+            ));
+        }
+        _ => {}
     }
 
     match value {
@@ -2572,8 +2609,7 @@ fn create_bigquery_relation_to_select_from(
                     })?;
 
                     let data_type = schema.field(i).data_type();
-                    let skip_cast =
-                        is_bigquery_json_literal(AdapterType::Bigquery, data_type, &value);
+                    let skip_cast = bigquery::is_json_literal(data_type, &value);
 
                     // Complex-type handling (verbatim SQL-expression injection
                     // for STRUCT/GEOGRAPHY, STRUCT(...) for mappings, arrays for
@@ -2672,7 +2708,7 @@ fn parse_csv_rows(data: &[u8]) -> FsResult<Vec<BTreeMap<String, YmlValue>>> {
         let mut row = BTreeMap::new();
         for (i, header) in headers.iter().enumerate() {
             let value = match record.get(i) {
-                None => YmlValue::null(),
+                None | Some("") => YmlValue::null(),
                 Some(field) => YmlValue::string(field.to_string()),
             };
             row.insert(header.to_string(), value);
@@ -2785,9 +2821,10 @@ mod tests {
         }
     }
     #[test]
-    fn test_parse_csv_rows_preserves_scalar_text() {
-        let rows = parse_csv_rows(b"id,code,enabled,ratio,empty\n1,000001,true,1.5,\n")
-            .expect("present CSV cells should preserve DictReader string semantics");
+    fn test_parse_csv_rows_preserves_non_empty_scalar_text_and_nulls_empty_cells() {
+        let rows =
+            parse_csv_rows(b"id,code,enabled,ratio,empty,quoted_empty\n1,000001,true,1.5,,\"\"\n")
+                .expect("non-empty CSV cells should remain text and empty cells should be null");
 
         assert_eq!(rows.len(), 1);
         for (column, expected) in [
@@ -2795,13 +2832,14 @@ mod tests {
             ("code", "000001"),
             ("enabled", "true"),
             ("ratio", "1.5"),
-            ("empty", ""),
         ] {
             assert_eq!(
                 rows[0].get(column),
                 Some(&YmlValue::string(expected.to_string()))
             );
         }
+        assert_eq!(rows[0].get("empty"), Some(&YmlValue::null()));
+        assert_eq!(rows[0].get("quoted_empty"), Some(&YmlValue::null()));
     }
 
     #[test]
@@ -3249,6 +3287,96 @@ mod tests {
             result,
             r#"PARSE_JSON('{"segmentCode":"HORECA"}') AS payload"#
         );
+    }
+
+    #[test]
+    fn test_create_values_bigquery_preserves_decimal_and_nested_types() {
+        let type_ops = DefaultTypeOps::new(AdapterType::Bigquery);
+        let fields = [
+            ("amount", "NUMERIC"),
+            ("wide_amount", "BIGNUMERIC(30, 20)"),
+            (
+                "records",
+                "ARRAY<STRUCT<item_value TIMESTAMP, amount BIGNUMERIC(30, 20)>>",
+            ),
+            ("nested", "STRUCT<items ARRAY<TIMESTAMP>>"),
+        ]
+        .into_iter()
+        .map(|(name, sql_type)| {
+            make_arrow_field(&type_ops, name.to_string(), sql_type, None, None).unwrap()
+        })
+        .collect::<Vec<_>>();
+        let schema = Arc::new(Schema::new(fields));
+
+        let mut record = dbt_yaml::mapping::Mapping::new();
+        record.insert(
+            YmlValue::string("item_value".to_string()),
+            YmlValue::string("2026-01-01 00:00:00+00".to_string()),
+        );
+        record.insert(
+            YmlValue::string("amount".to_string()),
+            YmlValue::string("2.12345678901234567890".to_string()),
+        );
+        let mut nested = dbt_yaml::mapping::Mapping::new();
+        nested.insert(
+            YmlValue::string("items".to_string()),
+            YmlValue::Sequence(vec![], Default::default()),
+        );
+        let rows = vec![BTreeMap::from([
+            (
+                "amount".to_string(),
+                YmlValue::string("123456789.123456789".to_string()),
+            ),
+            (
+                "wide_amount".to_string(),
+                YmlValue::string("1.12345678901234567890".to_string()),
+            ),
+            (
+                "records".to_string(),
+                YmlValue::Sequence(
+                    vec![YmlValue::Mapping(record, Default::default())],
+                    Default::default(),
+                ),
+            ),
+            (
+                "nested".to_string(),
+                YmlValue::Mapping(nested, Default::default()),
+            ),
+        ])];
+
+        // `allow_pseudocolumns` is the only rendering difference between
+        // `given` and `expect` fixtures.
+        for allow_pseudocolumns in [true, false] {
+            let result = create_values(
+                &schema,
+                &rows,
+                AdapterType::Bigquery,
+                &type_ops,
+                None,
+                "fixture_input",
+                allow_pseudocolumns,
+            )
+            .unwrap();
+
+            assert_contains!(result, "CAST('123456789.123456789' AS NUMERIC) AS amount");
+            assert_contains!(
+                result,
+                "CAST('1.12345678901234567890' AS BIGNUMERIC) AS wide_amount"
+            );
+            assert_contains!(
+                result,
+                "CAST('2026-01-01 00:00:00+00' AS TIMESTAMP) AS item_value"
+            );
+            assert_contains!(
+                result,
+                "CAST('2.12345678901234567890' AS BIGNUMERIC(30, 20)) AS amount"
+            );
+            assert_contains!(
+                result,
+                "AS ARRAY<STRUCT<item_value TIMESTAMP, amount BIGNUMERIC>>) AS records"
+            );
+            assert_contains!(result, "CAST([] AS ARRAY<TIMESTAMP>) AS items");
+        }
     }
 
     #[test]
@@ -3777,21 +3905,19 @@ mod tests {
         )
         .unwrap();
 
-        // DefaultTypeOpsImpl maps Decimal128(38,9) to float64 and Utf8 to string (lowercase);
-        // the proprietary TypeOpsImpl would produce NUMERIC and STRING for BigQuery.
         assert_contains!(
             result,
-            "STRUCT(CAST(NULL AS float64) AS numeric_col",
+            "STRUCT(CAST(NULL AS NUMERIC) AS numeric_col",
             "numeric_col should be NULL cast"
         );
         assert_contains!(
             result,
-            "CAST(STRUCT('bar' AS foo) AS STRUCT<foo string>) AS object_col",
+            "CAST(STRUCT(CAST('bar' AS string) AS foo) AS STRUCT<foo string>) AS object_col",
             "object_col should use typed STRUCT with AS aliases"
         );
         assert_contains!(
             result,
-            "CAST([CAST(4 AS float64), CAST(2 AS float64)] AS ARRAY<float64>) AS array_col",
+            "CAST([CAST(4 AS NUMERIC), CAST(2 AS NUMERIC)] AS ARRAY<NUMERIC>) AS array_col",
             "array_col should have typed elements and ARRAY<T> type parameter"
         );
     }
@@ -3838,7 +3964,7 @@ mod tests {
 
         assert_contains!(
             result,
-            "STRUCT('A' AS field1, 1 AS field2)",
+            "STRUCT(CAST('A' AS string) AS field1, CAST(1 AS int64) AS field2)",
             "a mapping fixture must render as STRUCT(...) with typed fields"
         );
     }
@@ -3946,12 +4072,12 @@ mod tests {
         );
         assert_contains!(
             result,
-            "ST_GEOGPOINT(101, -38) AS nested_point",
+            "CAST(ST_GEOGPOINT(101, -38) AS GEOGRAPHY) AS nested_point",
             "nested GEOGRAPHY expression should stay raw inside STRUCT"
         );
         assert_contains!(
             result,
-            "ST_GEOGPOINT(102, -39)",
+            "CAST(ST_GEOGPOINT(102, -39) AS GEOGRAPHY)",
             "array GEOGRAPHY expression should stay raw inside ARRAY"
         );
         assert!(

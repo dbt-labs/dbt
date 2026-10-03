@@ -4454,6 +4454,23 @@ impl Nodes {
             || self.saved_queries.contains_key(unique_id)
     }
 
+    /// Number of nodes yielded by [`Self::iter`].
+    pub fn node_count(&self) -> usize {
+        self.models.len()
+            + self.seeds.len()
+            + self.tests.len()
+            + self.unit_tests.len()
+            + self.sources.len()
+            + self.snapshots.len()
+            + self.analyses.len()
+            + self.exposures.len()
+            + self.functions.len()
+            + self.checks.len()
+            + self.semantic_models.len()
+            + self.metrics.len()
+            + self.saved_queries.len()
+    }
+
     pub fn iter(&self) -> impl Iterator<Item = (&String, &dyn InternalDbtNodeAttributes)> + '_ {
         self.models
             .iter()

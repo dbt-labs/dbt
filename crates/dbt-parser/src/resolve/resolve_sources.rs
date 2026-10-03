@@ -22,7 +22,7 @@ use dbt_schemas::schemas::common::{
     DbtChecksum, DbtMaterialization, DbtQuoting, FreshnessDefinition, FreshnessRules,
     NodeDependsOn, normalize_quoting,
 };
-use dbt_schemas::schemas::dbt_catalogs::LoadedCatalogs;
+use dbt_schemas::schemas::dbt_catalogs_deprecated::LoadedCatalogs;
 use dbt_schemas::schemas::dbt_column::process_columns;
 use dbt_schemas::schemas::project::{ResolvableConfig, SourceConfig, Tags, WarningEmission};
 use dbt_schemas::schemas::properties::{SourceProperties, Tables, TablesConfig};
@@ -268,8 +268,8 @@ pub async fn resolve_sources(
     let catalogs = load_catalogs::fetch_catalogs();
     let use_catalogs_v2 = load_catalogs::fetch_use_catalogs_v2();
     let catalogs_state = match catalogs.as_deref() {
-        Some(c) if use_catalogs_v2 => LoadedCatalogs::V2(c),
-        Some(c) => LoadedCatalogs::V1(c),
+        Some(c) if use_catalogs_v2 => LoadedCatalogs::Active(c),
+        Some(c) => LoadedCatalogs::Deprecated(c),
         None => LoadedCatalogs::None,
     };
 

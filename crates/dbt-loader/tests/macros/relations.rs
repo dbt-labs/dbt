@@ -4,7 +4,7 @@ use dbt_adapter::catalog_relation::CatalogRelation;
 use dbt_adapter::relation::RelationObject;
 use dbt_adapter_core::AdapterType;
 use dbt_schemas::dbt_types::RelationType;
-use dbt_schemas::schemas::dbt_catalogs_v2::CatalogType;
+use dbt_schemas::schemas::dbt_catalogs::CatalogType;
 use dbt_schemas::schemas::project::{ModelConfig, ProjectModelConfig};
 use dbt_schemas::schemas::relations::base::TableFormat;
 use indexmap::IndexMap;

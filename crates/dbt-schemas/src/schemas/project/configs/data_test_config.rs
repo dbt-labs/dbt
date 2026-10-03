@@ -578,6 +578,7 @@ impl From<ProjectDataTestConfig> for DataTestConfig {
                 enable_list_inference: None,
                 intermediate_format: None,
                 storage_uri: None,
+                enable_change_history: None,
 
                 file_format: config.file_format,
                 catalog_name: config.catalog_name,
