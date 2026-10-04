@@ -99,7 +99,7 @@ class TestStaticallyParseUnrenderedConfig:
                 "{{ config(materialized='view', enabled=True) }}",
                 {
                     "materialized": "view",
-                    "enabled": "True",
+                    "enabled": True,
                 },
             ),
             # macro call — string args keep repr() quoting
@@ -125,22 +125,22 @@ class TestStaticallyParseUnrenderedConfig:
             # integer constant
             (
                 "{{ config(hours_to_expiration=24) }}",
-                {"hours_to_expiration": "24"},
+                {"hours_to_expiration": 24},
             ),
             # None / Jinja2 `none`
             (
                 "{{ config(full_refresh=none) }}",
-                {"full_refresh": "None"},
+                {"full_refresh": None},
             ),
             # list literal
             (
                 "{{ config(tags=['t1', 't2']) }}",
-                {"tags": "['t1', 't2']"},
+                {"tags": ["t1", "t2"]},
             ),
             # dict literal
             (
                 "{{ config(meta={'owner': 'alice'}) }}",
-                {"meta": "{'owner': 'alice'}"},
+                {"meta": {"owner": "alice"}},
             ),
             # attribute access
             (
@@ -175,17 +175,17 @@ class TestStaticallyParseUnrenderedConfig:
             # False boolean
             (
                 "{{ config(enabled=false) }}",
-                {"enabled": "False"},
+                {"enabled": False},
             ),
             # float constant
             (
                 "{{ config(some_ratio=0.5) }}",
-                {"some_ratio": "0.5"},
+                {"some_ratio": 0.5},
             ),
             # negative number (Neg node)
             (
                 "{{ config(hours_to_expiration=-1) }}",
-                {"hours_to_expiration": "-1"},
+                {"hours_to_expiration": -1},
             ),
             # != comparison
             (
@@ -210,12 +210,22 @@ class TestStaticallyParseUnrenderedConfig:
             # list of dicts (BigQuery grants pattern)
             (
                 "{{ config(grant_access_to=[{'project': 'p', 'dataset': 'd'}]) }}",
-                {"grant_access_to": "[{'project': 'p', 'dataset': 'd'}]"},
+                {"grant_access_to": [{"project": "p", "dataset": "d"}]},
             ),
             # getitem access
             (
                 "{{ config(alias=var('aliases')['my_model']) }}",
                 {"alias": "var('aliases')['my_model']"},
+            ),
+            # list with a Jinja call — items evaluate independently
+            (
+                "{{ config(cluster_by=[var('col')]) }}",
+                {"cluster_by": ["var('col')"]},
+            ),
+            # mixed list — literal items stay native, calls become strings
+            (
+                "{{ config(tags=['t1', var('t2')]) }}",
+                {"tags": ["t1", "var('t2')"]},
             ),
         ],
     )
