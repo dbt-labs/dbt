@@ -936,7 +936,18 @@ impl EvalArgs {
 // Enums
 
 #[derive(
-    Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Default, ValueEnum, Serialize, Deserialize,
+    Debug,
+    Copy,
+    Clone,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Default,
+    ValueEnum,
+    Serialize,
+    Deserialize,
+    EnumIter,
 )]
 #[serde(rename_all = "snake_case")]
 #[clap(rename_all = "snake_case")]
@@ -955,6 +966,32 @@ pub enum ClapResourceType {
     SavedQuery,
     Check,
     Exposure,
+    /// CLI-only sentinels (see `resolve`).
+    All,
+    Default,
+}
+
+impl ClapResourceType {
+    /// Every concrete resource type (excludes the All/Default sentinels).
+    pub fn all_concrete() -> Vec<ClapResourceType> {
+        use strum::IntoEnumIterator;
+        Self::iter()
+            .filter(|t| !matches!(t, ClapResourceType::All | ClapResourceType::Default))
+            .collect()
+    }
+
+    /// Resolve user-supplied values (`All`/`Default` expand to `all_concrete()`/`defaults`).
+    pub fn resolve(requested: &[ClapResourceType], defaults: &[ClapResourceType]) -> Vec<Self> {
+        let mut out = Vec::new();
+        for t in requested {
+            match t {
+                ClapResourceType::All => out.extend(Self::all_concrete()),
+                ClapResourceType::Default => out.extend_from_slice(defaults),
+                other => out.push(*other),
+            }
+        }
+        out
+    }
 }
 
 impl Display for ClapResourceType {
@@ -973,6 +1010,8 @@ impl Display for ClapResourceType {
             ClapResourceType::SavedQuery => "saved_query",
             ClapResourceType::Check => "check",
             ClapResourceType::Exposure => "exposure",
+            ClapResourceType::All => "all",
+            ClapResourceType::Default => "default",
         };
         write!(f, "{s}")
     }
@@ -994,6 +1033,9 @@ impl From<&ClapResourceType> for NodeType {
             ClapResourceType::SavedQuery => NodeType::SavedQuery,
             ClapResourceType::Check => NodeType::Check,
             ClapResourceType::Exposure => NodeType::Exposure,
+            // Sentinels are expanded by `resolve` first; this arm is defensive
+            // only (`Unspecified` matches no real node).
+            ClapResourceType::All | ClapResourceType::Default => NodeType::Unspecified,
         }
     }
 }
