@@ -1,9 +1,11 @@
 pub mod key_format;
 
 use crate::{AdapterConfig, Auth, AuthError, AuthWarningPrinter};
+use adbc_core::constants::{ADBC_OPTION_PASSWORD, ADBC_OPTION_URI, ADBC_OPTION_USERNAME};
 use database::Builder as DatabaseBuilder;
 use dbt_adbc::database::LogLevel;
 use dbt_adbc::{Backend, database, snowflake};
+use dbt_yaml::Value as YmlValue;
 
 use std::fs;
 use std::sync::Once;
@@ -24,6 +26,24 @@ const CONNECTION_PARAMS_STR: [&str; 9] = [
 ];
 
 const CONNECTION_PARAMS: [&str; 2] = ["port", "client_session_keep_alive"];
+
+/// Credentials are read only from their dedicated profile fields;
+/// they cannot be set through `session_parameters`.
+const CREDENTIAL_PARAMS: [&str; 7] = [
+    "user",
+    "password",
+    "private_key",
+    "private_key_passphrase",
+    "oauth_client_secret",
+    "token",
+    "jwt_token",
+];
+
+/// Option keys the ADBC driver consumes itself instead of forwarding them to
+/// Snowflake as session parameters. The driver has no prefix for session parameters,
+/// so `session_parameters` keys are passed as-is and these (and `adbc.*`) are rejected.
+/// For example, `username: other` would change the login user instead.
+const DRIVER_OPTION_KEYS: [&str; 3] = [ADBC_OPTION_URI, ADBC_OPTION_USERNAME, ADBC_OPTION_PASSWORD];
 
 const ACCEPTED_WORKLOAD_IDENTITY_PROVIDERS: [&str; 4] = ["OIDC", "AZURE", "GCP", "AWS"];
 
@@ -646,6 +666,81 @@ fn parse_auth<'a>(
     }
 }
 
+fn validate_session_parameter_key(key: &str) -> Result<(), AuthError> {
+    if let Some(field) = CONNECTION_PARAMS_STR
+        .iter()
+        .chain(CONNECTION_PARAMS.iter())
+        .chain(CREDENTIAL_PARAMS.iter())
+        .find(|field| field.eq_ignore_ascii_case(key))
+    {
+        return Err(AuthError::config(format!(
+            "'{key}' cannot be set in 'session_parameters'; use the '{field}' field instead"
+        )));
+    }
+    if key.starts_with("adbc.")
+        || DRIVER_OPTION_KEYS
+            .iter()
+            .any(|option| option.eq_ignore_ascii_case(key))
+    {
+        return Err(AuthError::config(format!(
+            "'{key}' is not a Snowflake session parameter and cannot be set in 'session_parameters'"
+        )));
+    }
+    Ok(())
+}
+
+// The Snowflake ADBC driver forwards unrecognized option keys as session parameters:
+// https://github.com/dbt-labs/arrow-adbc/blob/ed195fd96e9003dc9deb34d0140ddab41de37c29/go/adbc/driver/snowflake/snowflake_database.go#L574-L575
+fn apply_session_parameters(
+    config: &AdapterConfig,
+    builder: &mut DatabaseBuilder,
+) -> Result<(), AuthError> {
+    let Some(params) = config.get("session_parameters") else {
+        return Ok(());
+    };
+    let YmlValue::Mapping(params, _) = params else {
+        return Err(AuthError::config("'session_parameters' must be a mapping"));
+    };
+
+    // Snowflake parameter names are case-insensitive, and the driver upper-cases
+    // keys, so `TIMEZONE` and `timezone` would silently overwrite each other.
+    // Any case is accepted; a linear scan is enough for the few keys set here.
+    let mut seen_keys: Vec<&str> = Vec::new();
+    for (key, value) in params {
+        let YmlValue::String(key, _) = key else {
+            return Err(AuthError::config(
+                "'session_parameters' key must be a string",
+            ));
+        };
+
+        validate_session_parameter_key(key)?;
+        if let Some(previous) = seen_keys
+            .iter()
+            .find(|previous| previous.eq_ignore_ascii_case(key))
+        {
+            return Err(AuthError::config(format!(
+                "'{previous}' and '{key}' are the same session parameter; \
+                 set it only once in 'session_parameters'"
+            )));
+        }
+        seen_keys.push(key);
+
+        if value.is_null() {
+            return Err(AuthError::config(format!(
+                "'session_parameters' value for '{key}' must not be null"
+            )));
+        }
+        let Some(value) = value.as_scalar_string() else {
+            return Err(AuthError::config(format!(
+                "'session_parameters' value for '{key}' must be a scalar"
+            )));
+        };
+
+        builder.with_named_option(key, value)?;
+    }
+    Ok(())
+}
+
 fn apply_connection_args(
     config: &AdapterConfig,
     mut builder: DatabaseBuilder,
@@ -683,6 +778,9 @@ fn apply_connection_args(
             }?;
         }
     }
+
+    apply_session_parameters(config, &mut builder)?;
+
     let application_name = config.get_str("application_name").unwrap_or(APP_NAME);
     builder.with_named_option(snowflake::APPLICATION_NAME, application_name)?;
 
@@ -1900,6 +1998,161 @@ mod tests {
             (snowflake::REQUEST_TIMEOUT, DEFAULT_REQUEST_TIMEOUT),
         ];
         run_config_test(config, &expected);
+    }
+
+    fn assert_configure_config_error(config: Mapping, expected_msg: &str) {
+        let auth = SnowflakeAuth {
+            warning_printer: Box::new(NoopAuthWarningPrinter),
+        };
+        match auth.configure(&AdapterConfig::new(config)) {
+            Err(AuthError::Config(msg)) => assert_eq!(msg, expected_msg),
+            Err(other) => panic!("Expected AuthError::Config({expected_msg:?}), got {other:?}"),
+            Ok(_) => panic!("Expected AuthError::Config({expected_msg:?}), got Ok"),
+        }
+    }
+
+    fn config_with_session_parameters(params: YmlValue) -> Mapping {
+        let mut config = base_config();
+        config.insert("session_parameters".into(), params);
+        config
+    }
+
+    #[test]
+    fn test_session_parameters() {
+        let config = config_with_session_parameters(
+            Mapping::from_iter([
+                (
+                    "STATEMENT_TIMEOUT_IN_SECONDS".into(),
+                    YmlValue::number(3600i64.into()),
+                ),
+                ("TIMEZONE".into(), "Asia/Seoul".into()),
+                ("ABORT_DETACHED_QUERY".into(), YmlValue::bool(true)),
+            ])
+            .into(),
+        );
+        let expected = [
+            ("user", "U"),
+            ("password", "P"),
+            (snowflake::ACCOUNT, "A"),
+            (snowflake::ROLE, "role"),
+            (snowflake::WAREHOUSE, "warehouse"),
+            (snowflake::APPLICATION_NAME, APP_NAME),
+            ("STATEMENT_TIMEOUT_IN_SECONDS", "3600"),
+            ("TIMEZONE", "Asia/Seoul"),
+            ("ABORT_DETACHED_QUERY", "true"),
+            (snowflake::LOG_TRACING, "fatal"),
+            (snowflake::REQUEST_TIMEOUT, DEFAULT_REQUEST_TIMEOUT),
+        ];
+        run_config_test(config, &expected);
+    }
+
+    #[test]
+    fn test_session_parameters_must_be_mapping() {
+        assert_configure_config_error(
+            config_with_session_parameters("STATEMENT_TIMEOUT_IN_SECONDS=3600".into()),
+            "'session_parameters' must be a mapping",
+        );
+    }
+
+    // Profile parsing already rejects non-string keys (`SnowflakeDbConfig` uses `String` keys);
+    // this covers `AdapterConfig`s built without going through it.
+    #[test]
+    fn test_session_parameters_key_must_be_string() {
+        assert_configure_config_error(
+            config_with_session_parameters(
+                Mapping::from_iter([(YmlValue::number(123i64.into()), "value".into())]).into(),
+            ),
+            "'session_parameters' key must be a string",
+        );
+    }
+
+    #[test]
+    fn test_session_parameters_value_must_be_scalar() {
+        assert_configure_config_error(
+            config_with_session_parameters(
+                Mapping::from_iter([(
+                    "TIMEZONE".into(),
+                    Mapping::from_iter([("nested".into(), "value".into())]).into(),
+                )])
+                .into(),
+            ),
+            "'session_parameters' value for 'TIMEZONE' must be a scalar",
+        );
+    }
+
+    #[test]
+    fn test_session_parameters_value_must_not_be_null() {
+        assert_configure_config_error(
+            config_with_session_parameters(
+                Mapping::from_iter([("TIMEZONE".into(), YmlValue::null())]).into(),
+            ),
+            "'session_parameters' value for 'TIMEZONE' must not be null",
+        );
+    }
+
+    #[test]
+    fn test_session_parameters_reject_case_insensitive_duplicates() {
+        assert_configure_config_error(
+            config_with_session_parameters(
+                Mapping::from_iter([
+                    ("TIMEZONE".into(), "Asia/Seoul".into()),
+                    ("timezone".into(), "UTC".into()),
+                ])
+                .into(),
+            ),
+            "'TIMEZONE' and 'timezone' are the same session parameter; set it only once in 'session_parameters'",
+        );
+    }
+
+    #[test]
+    fn test_session_parameters_reject_dedicated_fields() {
+        for (key, field) in [
+            ("QUERY_TAG", snowflake::QUERY_TAG_PARAM_KEY),
+            ("query_tag", snowflake::QUERY_TAG_PARAM_KEY),
+            (
+                "S3_STAGE_VPCE_DNS_NAME",
+                snowflake::S3_STAGE_VPCE_DNS_NAME_PARAM_KEY,
+            ),
+            ("account", "account"),
+            ("DATABASE", "database"),
+            ("port", "port"),
+            ("CLIENT_SESSION_KEEP_ALIVE", "client_session_keep_alive"),
+            ("user", "user"),
+            ("PASSWORD", "password"),
+            ("PRIVATE_KEY", "private_key"),
+            ("private_key_passphrase", "private_key_passphrase"),
+            ("OAUTH_CLIENT_SECRET", "oauth_client_secret"),
+            ("token", "token"),
+            ("Jwt_Token", "jwt_token"),
+        ] {
+            assert_configure_config_error(
+                config_with_session_parameters(
+                    Mapping::from_iter([(key.into(), "value".into())]).into(),
+                ),
+                &format!(
+                    "'{key}' cannot be set in 'session_parameters'; use the '{field}' field instead"
+                ),
+            );
+        }
+    }
+
+    #[test]
+    fn test_session_parameters_reject_driver_options() {
+        for key in [
+            snowflake::ACCOUNT,
+            "adbc.snowflake.sql.uri.host",
+            "username",
+            "URI",
+        ] {
+            assert_configure_config_error(
+                config_with_session_parameters(
+                    Mapping::from_iter([(key.into(), "value".into())]).into(),
+                ),
+                &format!(
+                    "'{key}' is not a Snowflake session parameter and cannot be set in 'session_parameters'"
+                ),
+            );
+        }
     }
 
     #[test]
