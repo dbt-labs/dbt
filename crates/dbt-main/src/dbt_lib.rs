@@ -217,10 +217,10 @@ pub async fn setup_and_execute_fs(
         FsError::exit_with_status(1)
     })?;
 
-    // --dirty without --select: synthesize a `seed_id+ seed_id+ ...` selector so the
+    // --dirty without --select: synthesize a `seed_id+ path:<added_file>+ ...` selector so the
     // scheduler runs only the dirty nodes and their descendants — ancestors are loaded
-    // for dep closure but not scheduled.  Falls back to select=None (run all) when the
-    // cache doesn't exist yet or nothing is dirty.
+    // for dep closure but not scheduled. With no cache or nothing dirty, select stays None: the
+    // fast path loads (so runs) nothing, a full parse (e.g. a non-SQL file added) runs everything.
     if cli.common_args().dirty && eval_arg.select.is_none() {
         use dbt_metadata::partial_parse::dirty_select_expression;
         if let Some(expr) = dirty_select_expression(&eval_arg.io) {
