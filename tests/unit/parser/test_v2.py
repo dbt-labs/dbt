@@ -851,16 +851,28 @@ class TestRediscoverAdapterMacros:
             ("dbt_postgres", fake_project),
         ]
 
+        reparsed_stale_macro = self._make_macro("macro.dbt_postgres.stale", "dbt_postgres")
+
+        def _parse_file_side_effect(block):
+            # Simulates a real reparse from disk finding the macro's .sql file
+            # and re-inserting it under the same unique_id.
+            manifest.macros["macro.dbt_postgres.stale"] = reparsed_stale_macro
+
         p_load, p_names, p_include, MockMacroParser, p_source = self._patch_adapter_deps(
             mock.MagicMock()
         )
-        with p_load, p_names, p_include, MockMacroParser as MockParser, p_source:
+        with p_load, p_names, p_include, MockMacroParser as MockParser, p_source, mock.patch(
+            "dbt.parser.manifest.get_adapter", return_value=mock.MagicMock()
+        ):
             mock_parser_instance = MockParser.return_value
             mock_parser_instance.get_paths.return_value = [mock.MagicMock()]
+            mock_parser_instance.parse_file.side_effect = _parse_file_side_effect
 
             rediscover_adapter_macros(manifest, runtime_config)
 
-        assert "macro.dbt_postgres.stale" not in manifest.macros
+        # The evicted macro is replaced by the freshly reparsed object, not left
+        # missing or restored to its stale (fusion-bundled) version.
+        assert manifest.macros["macro.dbt_postgres.stale"] is reparsed_stale_macro
         assert "macro.my_project.custom" in manifest.macros
         assert manifest._macros_by_name is None
         assert manifest._macros_by_package is None
@@ -943,6 +955,41 @@ class TestRediscoverAdapterMacros:
 
         assert "macro.dbt.test_not_null" in manifest.macros
         MockGenericTestParser.return_value.parse_file.assert_called_once()
+
+    def test_keeps_adapter_macro_with_no_disk_source(self):
+        """A fusion-bundled adapter macro that has no .sql file on disk (e.g. a
+        dispatch target like snowflake__date_spine) must not be evicted without
+        replacement -- otherwise depends_on.macros references to it dangle and
+        state:modified selection KeyErrors."""
+        dispatch_target = self._make_macro(
+            "macro.dbt_postgres.postgres__date_spine", "dbt_postgres"
+        )
+        dispatch_target.depends_on.macros = []
+
+        manifest = mock.MagicMock()
+        manifest.macros = {"macro.dbt_postgres.postgres__date_spine": dispatch_target}
+
+        fake_project = mock.MagicMock()
+        fake_project.project_name = "dbt_postgres"
+
+        runtime_config = mock.MagicMock()
+        runtime_config.credentials.type = "postgres"
+        runtime_config.load_projects.return_value = [("dbt_postgres", fake_project)]
+
+        # get_paths() returns no files, so MacroParser never recreates the macro.
+        p_load, p_names, p_include, MockMacroParser, p_source = self._patch_adapter_deps(
+            mock.MagicMock()
+        )
+        with p_load, p_names, p_include, MockMacroParser as MockParser, p_source, mock.patch(
+            "dbt.parser.search.filesystem_search", return_value=[]
+        ), mock.patch("dbt.parser.generic_test.GenericTestParser"):
+            mock_parser_instance = MockParser.return_value
+            mock_parser_instance.get_paths.return_value = []
+
+            rediscover_adapter_macros(manifest, runtime_config)
+
+        assert manifest.macros["macro.dbt_postgres.postgres__date_spine"] is dispatch_target
+        assert dispatch_target.depends_on.macros == []
 
     def test_populates_depends_on_for_reparsed_macros(self):
         """A re-parsed adapter macro that calls another macro should get
