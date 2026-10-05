@@ -1,12 +1,9 @@
 from unittest import mock
 
-import pytest
-
-from dbt.artifacts.resources.v1.source_definition import ExternalTable
+from dbt.artifacts.resources import ExternalTable, Quoting, SourceConfig
 from dbt.contracts.files import SchemaSourceFile
 from dbt.contracts.graph.nodes import SourceDefinition
 from dbt.node_types import NodeType
-from dbt.artifacts.resources import Quoting, SourceConfig
 
 
 def make_source(external):
@@ -76,6 +73,21 @@ def test_falls_back_to_rendered_location_without_unrendered_value():
     new = make_source(ExternalTable(location="@prod/data/"))
     assert compare(old, new, flag=True) is False
     assert compare(old, make_source(ExternalTable(location="@dev/data/")), flag=True) is True
+
+
+def test_one_side_missing_unrendered_value_compares_rendered_locations():
+    # e.g. state manifest written before unrendered_location existed
+    old = make_source(ExternalTable(location="@dev/data/"))
+    same = make_source(ExternalTable(location="@dev/data/", unrendered_location=UNRENDERED))
+    different = make_source(ExternalTable(location="@prod/data/", unrendered_location=UNRENDERED))
+    assert compare(old, same, flag=True) is True
+    assert compare(old, different, flag=True) is False
+
+
+def test_unrendered_location_does_not_affect_legacy_equality():
+    old = make_source(ExternalTable(location="@dev/data/"))
+    new = make_source(ExternalTable(location="@dev/data/", unrendered_location=UNRENDERED))
+    assert compare(old, new, flag=False) is True
 
 
 def test_external_added_or_removed_is_a_change_with_flag():
