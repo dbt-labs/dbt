@@ -5538,26 +5538,29 @@ enum AdapterImplInner {
 }
 
 impl AdapterImpl {
+    fn from_inner(
+        inner: AdapterImplInner,
+        schema_store: Option<Arc<dyn SchemaStoreTrait>>,
+    ) -> Self {
+        Self {
+            inner,
+            schema_store,
+            python_job_ids: Arc::new(Mutex::new(None)),
+        }
+    }
+
     pub fn new(
         engine: Arc<dyn AdapterEngine>,
         schema_store: Option<Arc<dyn SchemaStoreTrait>>,
     ) -> Self {
-        Self {
-            inner: AdapterImplInner::Impl(engine),
-            schema_store,
-            python_job_ids: Arc::new(Mutex::new(None)),
-        }
+        Self::from_inner(AdapterImplInner::Impl(engine), schema_store)
     }
 
     pub fn new_replay(
         replay: Arc<dyn Replayer>,
         schema_store: Option<Arc<dyn SchemaStoreTrait>>,
     ) -> Self {
-        Self {
-            inner: AdapterImplInner::Replay(replay),
-            schema_store,
-            python_job_ids: Arc::new(Mutex::new(None)),
-        }
+        Self::from_inner(AdapterImplInner::Replay(replay), schema_store)
     }
 
     pub fn new_mock(
@@ -5600,15 +5603,14 @@ impl AdapterImpl {
             ],
             &BTreeMap::new(),
         ));
-        Self {
-            inner: AdapterImplInner::Mock(MockState {
+        Self::from_inner(
+            AdapterImplInner::Mock(MockState {
                 engine,
                 flags,
                 behavior,
             }),
-            schema_store: None,
-            python_job_ids: Arc::new(Mutex::new(None)),
-        }
+            None,
+        )
     }
 
     pub(crate) fn python_job_id_cache(&self) -> PythonJobIdCache {

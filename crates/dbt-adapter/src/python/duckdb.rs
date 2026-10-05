@@ -233,44 +233,13 @@ fn cached_flight_id(
 }
 
 fn validate_flight_target(adapter: &AdapterImpl, model: &Value) -> AdapterResult<()> {
-    let path = adapter.get_db_config("path");
-    let path_info = DuckDBPathInfo::parse_path(path.as_deref());
-    let mut databases = Vec::new();
-    if matches!(path_info.location, DuckDBLocation::Motherduck { .. }) {
-        let configured_name = adapter
-            .get_db_config("database")
-            .map(|value| value.into_owned())
-            .unwrap_or_else(|| path_info.database.to_string());
-        if configured_name == path_info.database {
-            databases.push(path_info.database.to_string());
-        }
-    }
-
-    if let Some(YmlValue::Sequence(attachments, _)) = adapter.get_db_config_value("attach") {
-        for attachment in attachments {
-            let YmlValue::Mapping(mapping, _) = attachment else {
-                continue;
-            };
-            let Some(path) = mapping.get("path").and_then(YmlValue::as_str) else {
-                continue;
-            };
-            let info = DuckDBPathInfo::parse_path(Some(path));
-            if !matches!(info.location, DuckDBLocation::Motherduck { .. }) {
-                continue;
-            }
-            let alias = mapping.get("alias").and_then(YmlValue::as_str);
-            if alias.is_none_or(|alias| alias == info.database) {
-                databases.push(info.database.to_string());
-            }
-        }
-    }
-
+    let databases = reachable_flight_databases(adapter);
     let database = model
         .get_attr("database")
         .ok()
         .and_then(|value| value.as_str().map(str::to_owned))
         .unwrap_or_default();
-    if databases.iter().any(|candidate| candidate == &database) {
+    if databases.contains(&database) {
         return Ok(());
     }
 
@@ -286,6 +255,44 @@ fn validate_flight_target(adapter: &AdapterImpl, model: &Value) -> AdapterResult
         )
     };
     Err(AdapterError::new(AdapterErrorKind::Configuration, message))
+}
+
+fn reachable_flight_databases(adapter: &AdapterImpl) -> Vec<String> {
+    let path = adapter.get_db_config("path");
+    let configured_name = adapter
+        .get_db_config("database")
+        .map(|value| value.into_owned());
+    let mut databases = Vec::new();
+    if let Some(database) = reachable_flight_database(path.as_deref(), configured_name.as_deref()) {
+        databases.push(database);
+    }
+
+    if let Some(YmlValue::Sequence(attachments, _)) = adapter.get_db_config_value("attach") {
+        for attachment in attachments {
+            let YmlValue::Mapping(mapping, _) = attachment else {
+                continue;
+            };
+            let Some(path) = mapping.get("path").and_then(YmlValue::as_str) else {
+                continue;
+            };
+            let alias = mapping.get("alias").and_then(YmlValue::as_str);
+            if let Some(database) = reachable_flight_database(Some(path), alias) {
+                databases.push(database);
+            }
+        }
+    }
+    databases
+}
+
+fn reachable_flight_database(path: Option<&str>, configured_name: Option<&str>) -> Option<String> {
+    let info = DuckDBPathInfo::parse_path(path);
+    if !matches!(info.location, DuckDBLocation::Motherduck { .. }) {
+        return None;
+    }
+    configured_name
+        .unwrap_or(info.database)
+        .eq(info.database)
+        .then(|| info.database.to_string())
 }
 
 fn profile_settings(adapter: &AdapterImpl) -> Option<&dbt_yaml::Mapping> {
@@ -486,6 +493,13 @@ struct FlightRunner<'a> {
     state: &'a State<'a, 'a>,
     token: CancellationToken,
     config: DuckDbFlightsConfig,
+}
+
+#[derive(Clone, Copy)]
+struct FlightRunRef<'a> {
+    flight_id: &'a str,
+    run_number: i64,
+    name: &'a str,
 }
 
 impl FlightRunner<'_> {
@@ -718,6 +732,11 @@ impl FlightRunner<'_> {
         run_number: i64,
         name: &str,
     ) -> AdapterResult<(String, Option<i64>)> {
+        let run = FlightRunRef {
+            flight_id,
+            run_number,
+            name,
+        };
         let deadline = Instant::now()
             .checked_add(Duration::from_secs(self.config.timeout_sec as u64))
             .ok_or_else(|| {
@@ -726,49 +745,55 @@ impl FlightRunner<'_> {
                     "`flights.timeout_sec` is too large",
                 )
             })?;
+        let mut last_status = "unknown".to_string();
         loop {
-            if self.token.is_cancelled() {
-                self.cancel_run(flight_id, run_number);
-                self.token.check_cancellation().map_err(|_| {
-                    AdapterError::new(AdapterErrorKind::Cancelled, "operation cancelled")
-                })?;
-            }
+            self.ensure_not_cancelled(run)?;
             if Instant::now() >= deadline {
-                return Err(self.timeout_error(flight_id, run_number, name, "unknown"));
+                return Err(self.timeout_error(run, &last_status));
             }
-            let sql = format!(
-                "SELECT status, exit_code FROM MD_GET_FLIGHT_RUN(\
-                 flight_id := '{}', run_number := {run_number});",
-                sql_string(flight_id)
-            );
-            let batch = match self.query(&sql) {
-                Ok(batch) => batch,
+            let (status, exit_code) = match self.run_status(run) {
+                Ok(result) => result,
                 Err(err) => {
-                    self.cancel_run(flight_id, run_number);
-                    return Err(err);
-                }
-            };
-            let status = match required_string(&batch, "status", 0) {
-                Ok(status) => status,
-                Err(err) => {
-                    self.cancel_run(flight_id, run_number);
+                    self.cancel_run(run.flight_id, run.run_number);
                     return Err(err);
                 }
             };
             if TERMINAL_STATUSES.contains(&status.as_str()) {
-                return Ok((status, optional_i64(&batch, "exit_code", 0)?));
+                return Ok((status, exit_code));
             }
-            if Instant::now() >= deadline {
-                return Err(self.timeout_error(flight_id, run_number, name, &status));
-            }
-            self.wait_for_next_poll(flight_id, run_number, deadline)?;
+            last_status = status;
+            self.wait_for_next_poll(run, deadline)?;
         }
+    }
+
+    fn ensure_not_cancelled(&mut self, run: FlightRunRef<'_>) -> AdapterResult<()> {
+        if !self.token.is_cancelled() {
+            return Ok(());
+        }
+        self.cancel_run(run.flight_id, run.run_number);
+        Err(AdapterError::new(
+            AdapterErrorKind::Cancelled,
+            "operation cancelled",
+        ))
+    }
+
+    fn run_status(&mut self, run: FlightRunRef<'_>) -> AdapterResult<(String, Option<i64>)> {
+        let sql = format!(
+            "SELECT status, exit_code FROM MD_GET_FLIGHT_RUN(\
+             flight_id := '{}', run_number := {});",
+            sql_string(run.flight_id),
+            run.run_number
+        );
+        let batch = self.query(&sql)?;
+        Ok((
+            required_string(&batch, "status", 0)?,
+            optional_i64(&batch, "exit_code", 0)?,
+        ))
     }
 
     fn wait_for_next_poll(
         &mut self,
-        flight_id: &str,
-        run_number: i64,
+        run: FlightRunRef<'_>,
         run_deadline: Instant,
     ) -> AdapterResult<()> {
         let poll_deadline = Instant::now()
@@ -781,7 +806,7 @@ impl FlightRunner<'_> {
             })?;
         while Instant::now() < poll_deadline && Instant::now() < run_deadline {
             if self.token.is_cancelled() {
-                self.cancel_run(flight_id, run_number);
+                self.cancel_run(run.flight_id, run.run_number);
                 return Err(AdapterError::new(
                     AdapterErrorKind::Cancelled,
                     "operation cancelled",
@@ -796,21 +821,17 @@ impl FlightRunner<'_> {
         Ok(())
     }
 
-    fn timeout_error(
-        &mut self,
-        flight_id: &str,
-        run_number: i64,
-        name: &str,
-        status: &str,
-    ) -> AdapterError {
-        let cancelled = self.cancel_run(flight_id, run_number);
-        let logs = self.log_pointer(flight_id, run_number);
+    fn timeout_error(&mut self, run: FlightRunRef<'_>, status: &str) -> AdapterError {
+        let cancelled = self.cancel_run(run.flight_id, run.run_number);
+        let logs = self.log_pointer(run.flight_id, run.run_number);
         AdapterError::new(
             AdapterErrorKind::Driver,
             format!(
-                "Timed out after {}s waiting for MotherDuck Flight '{name}' run {run_number} \
+                "Timed out after {}s waiting for MotherDuck Flight '{}' run {} \
                  (last status: {status}). {}\n{logs}",
                 self.config.timeout_sec,
+                run.name,
+                run.run_number,
                 if cancelled {
                     "The run was cancelled."
                 } else {

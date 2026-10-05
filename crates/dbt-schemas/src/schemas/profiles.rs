@@ -2460,16 +2460,16 @@ flights:
             panic!("expected DuckDB config");
         };
         let flights = config.flights.expect("flights config should be parsed");
-        assert!(flights.enabled_by_default);
         assert_eq!(
-            flights.access_token_name.as_deref(),
-            Some("analytics-token")
-        );
-        assert_eq!(flights.timeout_sec, 3600);
-        assert_eq!(flights.poll_interval_sec, 2.0);
-        assert_eq!(
-            flights.requirements,
-            Some(vec!["pandas==2.2.3".to_string()])
+            flights,
+            DuckDbFlightsConfig {
+                enabled_by_default: true,
+                access_token_name: Some("analytics-token".to_string()),
+                timeout_sec: 3600,
+                poll_interval_sec: 2.0,
+                requirements: Some(vec!["pandas==2.2.3".to_string()]),
+                ..Default::default()
+            }
         );
     }
 
