@@ -76,6 +76,19 @@ def _cross_propagate_engine_env_vars(env_dict: Dict[str, str]) -> None:
                 env_dict[env_var.old_name] = env_dict[env_var.name]
 
 
+def _setup_event_logger_or_exit(flags: Flags, callbacks) -> None:
+    """Set up logging, reporting setup failures (e.g. an unwritable log directory) cleanly.
+
+    This lives outside preflight so the error is shown for every command, regardless of
+    whether postflight wraps preflight.
+    """
+    try:
+        setup_event_logger(flags=flags, callbacks=callbacks)
+    except DbtRuntimeError as e:
+        fire_event(MainEncounteredError(exc=str(e)))
+        raise ExceptionExit(e)
+
+
 def preflight(func):
     def wrapper(*args, **kwargs):
         ctx = args[0]
@@ -109,13 +122,7 @@ def preflight(func):
 
         # Logging
         callbacks = ctx.obj.get("callbacks", [])
-        try:
-            setup_event_logger(flags=flags, callbacks=callbacks)
-        except DbtRuntimeError as e:
-            # Report setup failures (e.g. an unwritable log directory) here, so they are
-            # shown cleanly for every command regardless of whether postflight wraps preflight.
-            fire_event(MainEncounteredError(exc=str(e)))
-            raise ExceptionExit(e)
+        _setup_event_logger_or_exit(flags, callbacks)
         get_event_manager().allow_deferral = flags.enable_grouped_warn_error_parser_logs
 
         # Tracking
