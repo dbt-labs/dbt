@@ -37,6 +37,7 @@ from dbt.artifacts.resources import (
     CompiledResource,
     DependsOn,
     Docs,
+    ExternalTable,
 )
 from dbt.artifacts.resources import Documentation as DocumentationResource
 from dbt.artifacts.resources import Exposure as ExposureResource
@@ -1454,17 +1455,19 @@ class SourceDefinition(
         # so env_var()/jinja that resolves differently between runs is not a change.
         # If either side has no unrendered value (e.g. a manifest written before this
         # field existed, or a source patched via overrides), compare rendered locations.
-        mine, theirs = self.external.location, other.external.location
-        if self.external.unrendered_location and other.external.unrendered_location:
-            mine = self.external.unrendered_location
-            theirs = other.external.unrendered_location
-        return (
-            mine == theirs
-            and self.external.file_format == other.external.file_format
-            and self.external.row_format == other.external.row_format
-            and self.external.tbl_properties == other.external.tbl_properties
-            and self.external.partitions == other.external.partitions
+        use_unrendered = bool(
+            self.external.unrendered_location and other.external.unrendered_location
         )
+
+        def comparable(external: ExternalTable) -> Dict[str, Any]:
+            # Everything except the location pair, including additional properties
+            dct = external.to_dict(omit_none=True)
+            dct.pop("location", None)
+            dct.pop("unrendered_location", None)
+            location = external.unrendered_location if use_unrendered else external.location
+            return {**dct, "location": location}
+
+        return comparable(self.external) == comparable(other.external)
 
     def same_config(self, old: "SourceDefinition") -> bool:
         return self.config.same_contents(
