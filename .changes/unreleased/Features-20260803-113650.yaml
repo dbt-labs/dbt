@@ -1,0 +1,6 @@
+kind: Features
+body: "Add `sql_full_refresh` context variable exposing the full-refresh compiled SQL for incremental models with `on_schema_change: full_refresh`"
+time: 2026-08-03T11:36:50.002721+02:00
+custom:
+    Author: b-per
+    Issue: "11383"
