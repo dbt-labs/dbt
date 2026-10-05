@@ -5,11 +5,12 @@
 
 {% macro databricks__get_replace_sql(existing_relation, target_relation, sql) %}
   {# /* if safe_relation_replace, prefer renaming */ #}
-  {% if target_relation.type == 'table' %}
+  {% if target_relation.type == "table" %}
     {{ exceptions.raise_not_implemented('get_replace_sql not implemented for target of table') }}
   {% endif %}
 
-  {% if existing_relation.is_metric_view and target_relation.is_metric_view %}
+  {#- CREATE OR REPLACE VIEW WITH METRICS is same-type only; UC lists metric views as METRIC_VIEW. -#}
+  {% if target_relation.is_metric_view and existing_relation.is_metric_view %}
     {{ return(get_replace_metric_view_sql(target_relation, sql)) }}
   {% endif %}
 
