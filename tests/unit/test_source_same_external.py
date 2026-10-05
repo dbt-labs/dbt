@@ -105,3 +105,14 @@ def test_schema_source_file_unrendered_external_location_roundtrip():
     file.add_unrendered_external_location("sources", "src", "tbl", UNRENDERED)
     assert file.get_unrendered_external_location("sources", "src", "tbl") == UNRENDERED
     assert file.get_unrendered_external_location("sources", "src", "other") is None
+
+
+def test_additional_external_properties_are_still_compared_with_flag():
+    def external(location, custom):
+        return ExternalTable.from_dict(
+            {"location": location, "unrendered_location": UNRENDERED, "custom_prop": custom}
+        )
+
+    old = make_source(external("@dev/data/", "a"))
+    assert compare(old, make_source(external("@dev/data/", "b")), flag=True) is False
+    assert compare(old, make_source(external("@prod/data/", "a")), flag=True) is True
