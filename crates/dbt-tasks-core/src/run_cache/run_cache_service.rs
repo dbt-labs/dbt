@@ -4551,6 +4551,13 @@ fn config_derived_table_type(
                 .__warehouse_specific_config__
                 .transient,
         )
+    } else if let Some(seed) = node.as_any().downcast_ref::<DbtSeed>() {
+        (
+            seed.base().materialized.clone(),
+            seed.deprecated_config
+                .__warehouse_specific_config__
+                .transient,
+        )
     } else {
         return None;
     };
@@ -5279,6 +5286,13 @@ mod tests {
         model
     }
 
+    /// Seeds resolve with materialized: Table (see resolve_seeds.rs).
+    fn make_seed() -> DbtSeed {
+        let mut seed = DbtSeed::default();
+        seed.__base_attr__.materialized = DbtMaterialization::Table;
+        seed
+    }
+
     #[test]
     fn state_explain_node_info_identifies_incremental_model() {
         let model = state_explain_model(DbtMaterialization::Incremental);
@@ -5711,6 +5725,27 @@ mod tests {
         assert_eq!(
             config_derived_table_type(model.as_ref(), AdapterType::Snowflake),
             Some("INTERACTIVE TABLE".to_string())
+        );
+    }
+
+    #[test]
+    fn config_derived_table_type_seed_defaults_to_transient_on_snowflake() {
+        let seed = make_seed();
+        assert_eq!(
+            config_derived_table_type(&seed, AdapterType::Snowflake),
+            Some("TRANSIENT TABLE".to_string())
+        );
+    }
+
+    #[test]
+    fn config_derived_table_type_seed_honors_transient_false() {
+        let mut seed = make_seed();
+        seed.deprecated_config
+            .__warehouse_specific_config__
+            .transient = Some(false);
+        assert_eq!(
+            config_derived_table_type(&seed, AdapterType::Snowflake),
+            Some("TABLE".to_string())
         );
     }
 
