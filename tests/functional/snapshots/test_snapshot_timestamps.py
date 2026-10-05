@@ -70,4 +70,4 @@ class TestSnapshotConfig:
         run_dbt(["run"])
         results, log_output = run_dbt_and_capture(["snapshot"])
         assert len(results) == 1
-        assert "Override the 'snapshot_get_time' macro" in log_output
+        assert "Override the '<adapter>__snapshot_get_time' macro" in log_output
