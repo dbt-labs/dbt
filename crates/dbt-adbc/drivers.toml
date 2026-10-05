@@ -24,6 +24,7 @@ drivers = [
   "bigquery_foundry-0.21.0.dev+dbt0.1.5",
   "bigquery_foundry-0.21.0.dev+dbt0.1.6",
   "bigquery_foundry-0.21.0.dev+dbt0.1.7",
+  "bigquery_foundry-0.21.0.dev+dbt0.1.8",
   "databricks-0.21.0+dbt0.21.6",
   "databricks-0.21.0+dbt0.21.7",
   "databricks-0.21.0.dev+dbt0.21.10",
