@@ -1452,9 +1452,12 @@ class SourceDefinition(
 
         # Compare the configured (unrendered) location rather than the rendered one,
         # so env_var()/jinja that resolves differently between runs is not a change.
-        # Fall back to the rendered location when no unrendered value was captured.
-        mine = self.external.unrendered_location or self.external.location
-        theirs = other.external.unrendered_location or other.external.location
+        # If either side has no unrendered value (e.g. a manifest written before this
+        # field existed, or a source patched via overrides), compare rendered locations.
+        mine, theirs = self.external.location, other.external.location
+        if self.external.unrendered_location and other.external.unrendered_location:
+            mine = self.external.unrendered_location
+            theirs = other.external.unrendered_location
         return (
             mine == theirs
             and self.external.file_format == other.external.file_format
