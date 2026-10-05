@@ -438,6 +438,11 @@ def _set_unrendered_external_location(yaml_file: Any, source_name: str, table: A
         table.external.unrendered_location = unrendered_location
 
 
+def _set_patch_unrendered_external_locations(yaml_file: Any, patch: Any) -> None:
+    for patch_table in patch.tables or []:
+        _set_unrendered_external_location(yaml_file, patch.name, patch_table)
+
+
 class YamlReader(metaclass=ABCMeta):
     def __init__(self, schema_parser: SchemaParser, yaml: YamlBlock, key: str) -> None:
         self.schema_parser: SchemaParser = schema_parser
@@ -585,8 +590,7 @@ class SourceParser(YamlReader):
                 source_file = self.yaml.file
                 # A patch's external replaces the table's external, so keep the
                 # unrendered location of the override itself
-                for patch_table in patch.tables or []:
-                    _set_unrendered_external_location(source_file, patch.name, patch_table)
+                _set_patch_unrendered_external_locations(source_file, patch)
                 # source patches must be unique
                 key = (patch.overrides, patch.name)
                 if key in self.manifest.source_patches:
