@@ -556,6 +556,15 @@ class SourceParser(YamlReader):
                 patch = self._target_from_dict(SourcePatch, data)
                 assert isinstance(self.yaml.file, SchemaSourceFile)
                 source_file = self.yaml.file
+                # A patch's external replaces the table's external, so keep the
+                # unrendered location of the override itself
+                for patch_table in patch.tables or []:
+                    if patch_table.external:
+                        unrendered_location = source_file.get_unrendered_external_location(
+                            "sources", patch.name, patch_table.name
+                        )
+                        if unrendered_location:
+                            patch_table.external.unrendered_location = unrendered_location
                 # source patches must be unique
                 key = (patch.overrides, patch.name)
                 if key in self.manifest.source_patches:
