@@ -51,9 +51,4 @@
   {% call statement() %}
     alter table {{ this.render() }} set {{ bigquery_table_options(config, model) }}
   {% endcall %}
-
-  {% if config.persist_relation_docs() and model.description %}
-
-  	{{ adapter.update_table_description(model['database'], model['schema'], model['alias'], model['description']) }}
-  {% endif %}
 {% endmacro %}
