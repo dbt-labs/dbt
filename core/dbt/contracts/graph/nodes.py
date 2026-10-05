@@ -1410,6 +1410,16 @@ class UnpatchedSourceDefinition(BaseNode):
             return self.table.tests
 
 
+def _comparable_external(external: ExternalTable, use_unrendered: bool) -> Dict[str, Any]:
+    """Everything in external (including additional properties), with only the location
+    normalized to either the unrendered or the rendered value."""
+    dct = external.to_dict(omit_none=True)
+    dct.pop("location", None)
+    dct.pop("unrendered_location", None)
+    location = external.unrendered_location if use_unrendered else external.location
+    return {**dct, "location": location}
+
+
 @dataclass
 class SourceDefinition(
     NodeInfoMixin,
@@ -1458,16 +1468,9 @@ class SourceDefinition(
         use_unrendered = bool(
             self.external.unrendered_location and other.external.unrendered_location
         )
-
-        def comparable(external: ExternalTable) -> Dict[str, Any]:
-            # Everything except the location pair, including additional properties
-            dct = external.to_dict(omit_none=True)
-            dct.pop("location", None)
-            dct.pop("unrendered_location", None)
-            location = external.unrendered_location if use_unrendered else external.location
-            return {**dct, "location": location}
-
-        return comparable(self.external) == comparable(other.external)
+        return _comparable_external(self.external, use_unrendered) == _comparable_external(
+            other.external, use_unrendered
+        )
 
     def same_config(self, old: "SourceDefinition") -> bool:
         return self.config.same_contents(
