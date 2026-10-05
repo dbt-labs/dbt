@@ -1,4 +1,5 @@
-use std::sync::LazyLock;
+use std::collections::HashMap;
+use std::sync::{LazyLock, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -180,6 +181,16 @@ fn validate_config(config: &DuckDbFlightsConfig) -> AdapterResult<()> {
             "`flights.poll_interval_sec` must be a finite number greater than zero",
         ));
     }
+    poll_interval(config.poll_interval_sec)?;
+    if Instant::now()
+        .checked_add(Duration::from_secs(config.timeout_sec as u64))
+        .is_none()
+    {
+        return Err(AdapterError::new(
+            AdapterErrorKind::Configuration,
+            "`flights.timeout_sec` is too large",
+        ));
+    }
     if config.log_lines < 0 {
         return Err(AdapterError::new(
             AdapterErrorKind::Configuration,
@@ -193,6 +204,32 @@ fn validate_config(config: &DuckDbFlightsConfig) -> AdapterResult<()> {
         ));
     }
     Ok(())
+}
+
+fn poll_interval(seconds: f64) -> AdapterResult<Duration> {
+    Duration::try_from_secs_f64(seconds).map_err(|_| {
+        AdapterError::new(
+            AdapterErrorKind::Configuration,
+            "`flights.poll_interval_sec` is too large",
+        )
+    })
+}
+
+fn cached_flight_id(
+    cache: &Mutex<Option<HashMap<String, String>>>,
+    name: &str,
+    load: impl FnOnce() -> AdapterResult<HashMap<String, String>>,
+) -> AdapterResult<Option<String>> {
+    let mut ids = cache.lock().map_err(|_| {
+        AdapterError::new(
+            AdapterErrorKind::Internal,
+            "Python job ID cache lock is poisoned",
+        )
+    })?;
+    if ids.is_none() {
+        *ids = Some(load()?);
+    }
+    Ok(ids.as_ref().and_then(|ids| ids.get(name).cloned()))
 }
 
 fn validate_flight_target(adapter: &AdapterImpl, model: &Value) -> AdapterResult<()> {
@@ -258,22 +295,55 @@ fn profile_settings(adapter: &AdapterImpl) -> Option<&dbt_yaml::Mapping> {
     }
 }
 
-fn settings_statements(settings: Option<&dbt_yaml::Mapping>) -> Vec<String> {
-    settings
-        .into_iter()
-        .flatten()
-        .filter_map(|(key, value)| {
-            let key = key.as_str()?;
-            if key.eq_ignore_ascii_case("motherduck_token") {
-                return None;
-            }
-            let key = sanitize_identifier(key, AdapterType::DuckDB);
-            if key.is_empty() {
-                return None;
-            }
-            Some(format!("SET {key} = {}", yaml_sql_literal(value)))
-        })
-        .collect()
+fn settings_statements(settings: Option<&dbt_yaml::Mapping>) -> AdapterResult<Vec<String>> {
+    let mut statements = Vec::new();
+    for (key, value) in settings.into_iter().flatten() {
+        let Some(key) = key.as_str() else {
+            continue;
+        };
+        if key.eq_ignore_ascii_case("motherduck_token") {
+            continue;
+        }
+        if !is_safe_flight_setting(key) {
+            return Err(AdapterError::new(
+                AdapterErrorKind::Configuration,
+                format!(
+                    "DuckDB setting '{key}' is not safe to embed in MotherDuck Flight source \
+                     code. Configure credential access in MotherDuck or use a scoped Flight \
+                     access token instead."
+                ),
+            ));
+        }
+        let key = sanitize_identifier(key, AdapterType::DuckDB);
+        if !key.is_empty() {
+            statements.push(format!("SET {key} = {}", yaml_sql_literal(value)));
+        }
+    }
+    Ok(statements)
+}
+
+fn is_safe_flight_setting(key: &str) -> bool {
+    let key = key.to_ascii_lowercase().replace(['.', '-'], "_");
+    const SAFE_SETTINGS: &[&str] = &[
+        "calendar",
+        "default_collation",
+        "default_null_order",
+        "default_order",
+        "enable_progress_bar",
+        "errors_as_json",
+        "ieee_floating_point_ops",
+        "integer_division",
+        "max_memory",
+        "memory_limit",
+        "preserve_identifier_case",
+        "preserve_insertion_order",
+        "progress_bar_time",
+        "scalar_subquery_error_on_multiple_rows",
+        "threads",
+        "timezone",
+        "worker_threads",
+    ];
+    SAFE_SETTINGS.contains(&key.as_str())
 }
 
 fn yaml_sql_literal(value: &YmlValue) -> String {
@@ -298,7 +368,7 @@ fn build_source(
     compiled_code: &str,
     settings: Option<&dbt_yaml::Mapping>,
 ) -> AdapterResult<String> {
-    let settings = serde_json::to_string(&settings_statements(settings)).map_err(|err| {
+    let settings = serde_json::to_string(&settings_statements(settings)?).map_err(|err| {
         AdapterError::new(
             AdapterErrorKind::Internal,
             format!("Could not serialize DuckDB settings for a Flight: {err}"),
@@ -485,7 +555,7 @@ impl FlightRunner<'_> {
         let sql = format!(
             "SELECT flight_id FROM MD_UPDATE_FLIGHT(flight_id := '{}', source_code := '{}', \
              requirements_txt := '{}'{});",
-            sql_string(&flight_id),
+            sql_string(flight_id),
             sql_string(source),
             sql_string(requirements),
             self.optional_args()
@@ -509,9 +579,13 @@ impl FlightRunner<'_> {
             self.optional_args()
         );
         match self.query(&sql) {
-            Ok(batch) => required_string(&batch, "flight_id", 0),
+            Ok(batch) => {
+                let flight_id = required_string(&batch, "flight_id", 0)?;
+                self.remember_flight(name, &flight_id)?;
+                Ok(flight_id)
+            }
             Err(err) if err.to_string().contains("already exists") => {
-                let Some(flight_id) = self.find_flight(name)? else {
+                let Some(flight_id) = self.refresh_flights()?.get(name).cloned() else {
                     return Err(AdapterError::new(
                         AdapterErrorKind::Configuration,
                         format!(
@@ -546,6 +620,38 @@ impl FlightRunner<'_> {
     }
 
     fn find_flight(&mut self, name: &str) -> AdapterResult<Option<String>> {
+        let cache = self.adapter.python_job_id_cache();
+        cached_flight_id(&cache, name, || self.list_flights())
+    }
+
+    fn refresh_flights(&mut self) -> AdapterResult<HashMap<String, String>> {
+        let cache = self.adapter.python_job_id_cache();
+        let mut cached = cache.lock().map_err(|_| {
+            AdapterError::new(
+                AdapterErrorKind::Internal,
+                "Python job ID cache lock is poisoned",
+            )
+        })?;
+        let ids = self.list_flights()?;
+        *cached = Some(ids.clone());
+        Ok(ids)
+    }
+
+    fn remember_flight(&self, name: &str, flight_id: &str) -> AdapterResult<()> {
+        let cache = self.adapter.python_job_id_cache();
+        let mut ids = cache.lock().map_err(|_| {
+            AdapterError::new(
+                AdapterErrorKind::Internal,
+                "Python job ID cache lock is poisoned",
+            )
+        })?;
+        ids.get_or_insert_with(HashMap::new)
+            .insert(name.to_string(), flight_id.to_string());
+        Ok(())
+    }
+
+    fn list_flights(&mut self) -> AdapterResult<HashMap<String, String>> {
+        let mut flights = HashMap::new();
         let mut offset = 0;
         const PAGE_SIZE: i64 = 200;
         loop {
@@ -557,12 +663,12 @@ impl FlightRunner<'_> {
             let ids = string_column(&batch, "flight_id")?;
             let names = string_column(&batch, "flight_name")?;
             for row in 0..batch.num_rows() {
-                if !names.is_null(row) && names.value(row) == name && !ids.is_null(row) {
-                    return Ok(Some(ids.value(row).to_string()));
+                if !names.is_null(row) && !ids.is_null(row) {
+                    flights.insert(names.value(row).to_string(), ids.value(row).to_string());
                 }
             }
             if batch.num_rows() < PAGE_SIZE as usize {
-                return Ok(None);
+                return Ok(flights);
             }
             offset += PAGE_SIZE;
         }
@@ -612,7 +718,14 @@ impl FlightRunner<'_> {
         run_number: i64,
         name: &str,
     ) -> AdapterResult<(String, Option<i64>)> {
-        let deadline = Instant::now() + Duration::from_secs(self.config.timeout_sec as u64);
+        let deadline = Instant::now()
+            .checked_add(Duration::from_secs(self.config.timeout_sec as u64))
+            .ok_or_else(|| {
+                AdapterError::new(
+                    AdapterErrorKind::Configuration,
+                    "`flights.timeout_sec` is too large",
+                )
+            })?;
         loop {
             if self.token.is_cancelled() {
                 self.cancel_run(flight_id, run_number);
@@ -658,7 +771,14 @@ impl FlightRunner<'_> {
         run_number: i64,
         run_deadline: Instant,
     ) -> AdapterResult<()> {
-        let poll_deadline = Instant::now() + Duration::from_secs_f64(self.config.poll_interval_sec);
+        let poll_deadline = Instant::now()
+            .checked_add(poll_interval(self.config.poll_interval_sec)?)
+            .ok_or_else(|| {
+                AdapterError::new(
+                    AdapterErrorKind::Configuration,
+                    "`flights.poll_interval_sec` is too large",
+                )
+            })?;
         while Instant::now() < poll_deadline && Instant::now() < run_deadline {
             if self.token.is_cancelled() {
                 self.cancel_run(flight_id, run_number);
@@ -955,6 +1075,42 @@ mod tests {
     }
 
     #[test]
+    fn source_only_accepts_safe_settings() {
+        let settings: dbt_yaml::Mapping =
+            dbt_yaml::from_str("s3_secret_access_key: secret\n").unwrap();
+        let err = build_source(
+            "def model(dbt, session):\n    return None\n",
+            Some(&settings),
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("s3_secret_access_key"));
+        assert!(!is_safe_flight_setting("azure_storage_connection_string"));
+        assert!(!is_safe_flight_setting("http_proxy"));
+        assert!(!is_safe_flight_setting("extension_defined_setting"));
+        assert!(is_safe_flight_setting("TimeZone"));
+        assert!(is_safe_flight_setting("memory-limit"));
+    }
+
+    #[test]
+    fn flight_id_cache_loads_once() {
+        let cache = Mutex::new(None);
+        let first = cached_flight_id(&cache, "model", || {
+            Ok(HashMap::from([(
+                "model".to_string(),
+                "flight-id".to_string(),
+            )]))
+        })
+        .unwrap();
+        let second = cached_flight_id(&cache, "model", || {
+            panic!("an initialized cache must not reload")
+        })
+        .unwrap();
+
+        assert_eq!(first.as_deref(), Some("flight-id"));
+        assert_eq!(second, first);
+    }
+
+    #[test]
     fn validates_flight_config_ranges() {
         assert!(validate_config(&DuckDbFlightsConfig::default()).is_ok());
         assert!(
@@ -967,6 +1123,20 @@ mod tests {
         assert!(
             validate_config(&DuckDbFlightsConfig {
                 log_lines: -1,
+                ..Default::default()
+            })
+            .is_err()
+        );
+        assert!(
+            validate_config(&DuckDbFlightsConfig {
+                poll_interval_sec: f64::MAX,
+                ..Default::default()
+            })
+            .is_err()
+        );
+        assert!(
+            validate_config(&DuckDbFlightsConfig {
+                timeout_sec: i64::MAX,
                 ..Default::default()
             })
             .is_err()

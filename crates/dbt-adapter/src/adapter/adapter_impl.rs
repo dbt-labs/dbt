@@ -94,7 +94,7 @@ use std::borrow::Cow;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt;
 use std::str::FromStr;
-use std::sync::{Arc, LazyLock};
+use std::sync::{Arc, LazyLock, Mutex};
 
 use AdapterType::*;
 use InnerAdapter::*;
@@ -5514,10 +5514,13 @@ pub(crate) fn adapter_specific_behavior_flags(adapter_type: AdapterType) -> Vec<
 }
 
 /// The adapter implementation. All adapter methods live here.
+type PythonJobIdCache = Arc<Mutex<Option<HashMap<String, String>>>>;
+
 #[derive(Clone)]
 pub struct AdapterImpl {
     inner: AdapterImplInner,
     schema_store: Option<Arc<dyn SchemaStoreTrait>>,
+    python_job_ids: PythonJobIdCache,
 }
 
 #[derive(Clone)]
@@ -5542,6 +5545,7 @@ impl AdapterImpl {
         Self {
             inner: AdapterImplInner::Impl(engine),
             schema_store,
+            python_job_ids: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -5552,6 +5556,7 @@ impl AdapterImpl {
         Self {
             inner: AdapterImplInner::Replay(replay),
             schema_store,
+            python_job_ids: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -5602,7 +5607,12 @@ impl AdapterImpl {
                 behavior,
             }),
             schema_store: None,
+            python_job_ids: Arc::new(Mutex::new(None)),
         }
+    }
+
+    pub(crate) fn python_job_id_cache(&self) -> PythonJobIdCache {
+        Arc::clone(&self.python_job_ids)
     }
 
     pub fn get_schema_from_cache(
