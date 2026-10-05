@@ -1,5 +1,4 @@
 import os
-import sys
 from typing import List
 
 import requests
@@ -19,7 +18,9 @@ def main():
 
 def _package_metadata(package_name: str, github_token: str) -> requests.Response:
     url = f"https://api.github.com/orgs/dbt-labs/packages/container/{package_name}/versions"
-    return requests.get(url, auth=("", github_token))
+    response = requests.get(url, auth=("", github_token))
+    response.raise_for_status()
+    return response
 
 
 def _published_versions(response: requests.Response) -> List[Version]:
@@ -59,13 +60,6 @@ def _register_tags(tags: List[str], package_name: str) -> None:
     github_output = os.environ.get("GITHUB_OUTPUT")
     with open(github_output, "at", encoding="utf-8") as gh_output:
         gh_output.write(f"fully_qualified_tags={fully_qualified_tags}")
-
-
-def _validate_response(response: requests.Response) -> None:
-    message = response["message"]
-    if response.status_code != 200:
-        print(f"Call to GitHub API failed: {response.status_code} - {message}")
-        sys.exit(1)
 
 
 if __name__ == "__main__":
