@@ -454,6 +454,16 @@ sources:
               - unique
 """
 
+SOURCE_WITH_JINJA_EXTERNAL_LOCATION = """
+sources:
+  - name: my_source
+    tables:
+      - name: my_table
+        external:
+          location: "@{{ 'dev' ~ '_stage' }}/my_data/"
+      - name: other_table
+"""
+
 SOURCE_CUSTOM_FRESHNESS_AT_SOURCE = """
 sources:
   - name: my_source
@@ -576,6 +586,20 @@ class SchemaParserSourceTest(SchemaParserTest):
         self.assertEqual(source_values[0].table.name, "my_table")
         self.assertEqual(source_values[0].table.description, "")
         self.assertEqual(len(source_values[0].table.columns), 0)
+
+    def test_source_external_location_keeps_unrendered_value(self):
+        block = self.file_block_for(SOURCE_WITH_JINJA_EXTERNAL_LOCATION, "test_one.yml")
+        dct = yaml_from_file(block.file, validate=True)
+        self.parser.parse_file(block, dct)
+
+        with_external = self.parser.manifest.sources["source.snowplow.my_source.my_table"]
+        assert with_external.table.external.location == "@dev_stage/my_data/"
+        assert (
+            with_external.table.external.unrendered_location
+            == "@{{ 'dev' ~ '_stage' }}/my_data/"
+        )
+        without_external = self.parser.manifest.sources["source.snowplow.my_source.other_table"]
+        assert without_external.table.external is None
 
     @mock.patch("dbt.parser.sources.get_adapter")
     def test_parse_source_custom_freshness_at_source(self, _):
