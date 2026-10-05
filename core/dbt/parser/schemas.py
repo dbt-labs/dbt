@@ -405,6 +405,28 @@ class ParseResult:
 # abstract base class (ABCMeta)
 # Many subclasses: MetricParser, ExposureParser, GroupParser, SourceParser,
 # PatchParser, SemanticModelParser, SavedQueryParser, UnitTestParser
+def _unrendered_external_locations(entry: Dict[str, Any]) -> Dict[str, str]:
+    """Map each table name in a source entry to its unrendered external.location."""
+    locations: Dict[str, str] = {}
+    for table in entry.get("tables") or []:
+        external = table.get("external") if isinstance(table, dict) else None
+        location = external.get("location") if isinstance(external, dict) else None
+        if isinstance(location, str):
+            locations[table.get("name", "")] = location
+    return locations
+
+
+def _set_unrendered_external_location(yaml_file: Any, source_name: str, table: Any) -> None:
+    """Copy the unrendered external.location captured at YAML read time onto the table."""
+    if not isinstance(yaml_file, SchemaSourceFile) or not table.external:
+        return
+    unrendered_location = yaml_file.get_unrendered_external_location(
+        "sources", source_name, table.name
+    )
+    if unrendered_location:
+        table.external.unrendered_location = unrendered_location
+
+
 class YamlReader(metaclass=ABCMeta):
     def __init__(self, schema_parser: SchemaParser, yaml: YamlBlock, key: str) -> None:
         self.schema_parser: SchemaParser = schema_parser
@@ -473,12 +495,9 @@ class YamlReader(metaclass=ABCMeta):
             # For sources
             unrendered_database = entry.get("database", None)
             unrendered_schema = entry.get("schema", None)
-            unrendered_external_locations: Dict[str, str] = {}
-            if self.key == "sources":
-                for table in entry.get("tables") or []:
-                    external = table.get("external") if isinstance(table, dict) else None
-                    if isinstance(external, dict) and isinstance(external.get("location"), str):
-                        unrendered_external_locations[table.get("name", "")] = external["location"]
+            unrendered_external_locations = (
+                _unrendered_external_locations(entry) if self.key == "sources" else {}
+            )
 
             # Render the data (except for tests, data_tests and descriptions).
             # See the SchemaYamlRenderer
@@ -559,12 +578,7 @@ class SourceParser(YamlReader):
                 # A patch's external replaces the table's external, so keep the
                 # unrendered location of the override itself
                 for patch_table in patch.tables or []:
-                    if patch_table.external:
-                        unrendered_location = source_file.get_unrendered_external_location(
-                            "sources", patch.name, patch_table.name
-                        )
-                        if unrendered_location:
-                            patch_table.external.unrendered_location = unrendered_location
+                    _set_unrendered_external_location(source_file, patch.name, patch_table)
                 # source patches must be unique
                 key = (patch.overrides, patch.name)
                 if key in self.manifest.source_patches:
@@ -597,12 +611,7 @@ class SourceParser(YamlReader):
             fqn.extend([source.name, table.name])
 
             # Store unrendered external.location for state:modified comparisons
-            if isinstance(self.yaml.file, SchemaSourceFile) and table.external:
-                unrendered_location = self.yaml.file.get_unrendered_external_location(
-                    "sources", source.name, table.name
-                )
-                if unrendered_location:
-                    table.external.unrendered_location = unrendered_location
+            _set_unrendered_external_location(self.yaml.file, source.name, table)
 
             source_def = UnpatchedSourceDefinition(
                 source=source,
