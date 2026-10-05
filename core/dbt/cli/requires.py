@@ -35,7 +35,7 @@ from dbt.events.types import (
     MainTrackingUserState,
     ResourceReport,
 )
-from dbt.exceptions import DbtProjectError, FailFastError
+from dbt.exceptions import DbtProjectError, DbtRuntimeError, FailFastError
 from dbt.flags import get_flag_dict, get_flags, set_flags
 from dbt.mp_context import get_mp_context
 from dbt.parser.manifest import parse_manifest
@@ -109,7 +109,13 @@ def preflight(func):
 
         # Logging
         callbacks = ctx.obj.get("callbacks", [])
-        setup_event_logger(flags=flags, callbacks=callbacks)
+        try:
+            setup_event_logger(flags=flags, callbacks=callbacks)
+        except DbtRuntimeError as e:
+            # Report setup failures (e.g. an unwritable log directory) here, so they are
+            # shown cleanly for every command regardless of whether postflight wraps preflight.
+            fire_event(MainEncounteredError(exc=str(e)))
+            raise ExceptionExit(e)
         get_event_manager().allow_deferral = flags.enable_grouped_warn_error_parser_logs
 
         # Tracking
