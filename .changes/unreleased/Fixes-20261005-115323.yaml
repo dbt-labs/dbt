@@ -1,0 +1,6 @@
+kind: Fixes
+body: Fix a 'str' object has no attribute 'year' crash when running a microbatch incremental model with --use-v2-parser and a begin config provided as a string (e.g. via config(begin='2024-01-01')), by coercing it to a datetime after the v2 parser loads the manifest, the same way the native parser already does
+time: 2026-10-05T11:53:23.071479+05:30
+custom:
+    Author: photkar
+    Issue: "16582"

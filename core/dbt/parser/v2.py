@@ -54,6 +54,7 @@ def parse_with_v2(
     from dbt.parser.manifest import (
         assert_no_get_nodes_plugins,
         enrich_manifest_with_plugin_artifacts,
+        validate_and_coerce_microbatch_configs,
         write_manifest,
     )
 
@@ -125,6 +126,16 @@ def parse_with_v2(
     # the v2 path bypasses that loader, so populate flat_graph here to
     # power the `graph` context variable (graph.nodes, graph.sources, ...).
     manifest.build_flat_graph()
+
+    # ManifestLoader.check_valid_microbatch_config (which also coerces a string
+    # `begin` config to a datetime -- see its docstring) is normally called by
+    # ManifestLoader.load() after native parsing. The v2 path bypasses
+    # ManifestLoader entirely, so it must be called here instead: without it, a
+    # microbatch model's `begin` config loaded straight off the v2 parser's
+    # manifest.json stays a plain `str`, and the first run (or any
+    # `--full-refresh`) crashes with `'str' object has no attribute 'year'`
+    # (dbt-labs/dbt#16582).
+    validate_and_coerce_microbatch_configs(manifest, project_name)
 
     _delete_stale_partial_parse(project_target_path)
 
