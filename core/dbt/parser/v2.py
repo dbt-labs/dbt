@@ -54,9 +54,9 @@ def parse_with_v2(
     from dbt.parser.manifest import (
         assert_no_get_nodes_plugins,
         enrich_manifest_with_plugin_artifacts,
-        validate_and_coerce_microbatch_configs,
         write_manifest,
     )
+    from dbt.parser.microbatch_config import validate_and_coerce_microbatch_configs
 
     assert_no_get_nodes_plugins(runtime_config.project_name)
 
