@@ -36,8 +36,8 @@ def _validate_event_time(node: ManifestNode) -> None:
         )
 
 
-def _coerce_and_validate_begin(node: ManifestNode) -> None:
-    """Validate the `begin` config, coercing a string value to `datetime` in place.
+def _coerce_begin_string_to_datetime(node: ManifestNode) -> None:
+    """If the `begin` config is a plain string, coerce it to `datetime` in place.
 
     A `begin` config is only guaranteed to already be a native `datetime` when it
     is provided as an unquoted YAML timestamp (e.g. in a `.yml` properties file or
@@ -48,21 +48,27 @@ def _coerce_and_validate_begin(node: ManifestNode) -> None:
     is typed `Any` and gets no automatic coercion from mashumaro.
     """
     begin: Any = node.config.begin
+    if not isinstance(begin, str):
+        return
+
+    # Try to cast begin to a datetime using same format as mashumaro for consistency with other yaml-provided datetimes
+    # Mashumaro default: https://github.com/Fatal1ty/mashumaro/blob/4ac16fd060a6c651053475597b58b48f958e8c5c/README.md?plain=1#L1186
+    try:
+        node.config.begin = datetime.fromisoformat(begin)
+    except Exception:
+        raise dbt.exceptions.ParsingError(
+            f"Microbatch model '{node.name}' must provide a 'begin' config of valid datetime (ISO format), but got: {begin}."
+        )
+
+
+def _validate_begin(node: ManifestNode) -> None:
+    """Validate that `begin` is present and -- after `_coerce_begin_string_to_datetime`
+    has had a chance to run -- a `datetime`."""
+    begin = node.config.begin
     if begin is None:
         raise dbt.exceptions.ParsingError(
             f"Microbatch model '{node.name}' must provide a 'begin' (datetime) config that indicates the earliest timestamp the microbatch model should be built from."
         )
-
-    # Try to cast begin to a datetime using same format as mashumaro for consistency with other yaml-provided datetimes
-    # Mashumaro default: https://github.com/Fatal1ty/mashumaro/blob/4ac16fd060a6c651053475597b58b48f958e8c5c/README.md?plain=1#L1186
-    if isinstance(begin, str):
-        try:
-            begin = datetime.fromisoformat(begin)
-            node.config.begin = begin
-        except Exception:
-            raise dbt.exceptions.ParsingError(
-                f"Microbatch model '{node.name}' must provide a 'begin' config of valid datetime (ISO format), but got: {begin}."
-            )
 
     if not isinstance(begin, datetime):
         raise dbt.exceptions.ParsingError(
@@ -114,7 +120,8 @@ def validate_and_coerce_microbatch_configs(manifest: Manifest, project_name: str
             continue
 
         _validate_event_time(node)
-        _coerce_and_validate_begin(node)
+        _coerce_begin_string_to_datetime(node)
+        _validate_begin(node)
         _validate_batch_size(node)
         _validate_lookback(node)
         _validate_concurrent_batches(node)

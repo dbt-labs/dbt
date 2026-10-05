@@ -30,6 +30,7 @@ from dbt.contracts.graph.manifest import Manifest
 from dbt.events.types import V2ParserEnd, V2ParserStart
 from dbt.exceptions import V2ParserError, V2ParserSchemaError, V2ParserVersionError
 from dbt.flags import get_flags
+from dbt.parser.microbatch_config import validate_and_coerce_microbatch_configs
 from dbt_common import ui
 from dbt_common.events.base_types import EventLevel
 from dbt_common.events.functions import fire_event, get_invocation_id
@@ -56,7 +57,6 @@ def parse_with_v2(
         enrich_manifest_with_plugin_artifacts,
         write_manifest,
     )
-    from dbt.parser.microbatch_config import validate_and_coerce_microbatch_configs
 
     assert_no_get_nodes_plugins(runtime_config.project_name)
 

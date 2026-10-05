@@ -7,6 +7,7 @@ parsing path end-to-end.
 """
 
 import json
+from contextlib import ExitStack
 from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -139,21 +140,42 @@ class TestParseWithV2MicrobatchConfigValidation:
     def _runtime_config(self, target_path: Path):
         return SimpleNamespace(project_target_path=str(target_path), project_name="test")
 
+    def _manifest_with_microbatch_model(self, mocker, begin):
+        """Build a (model, manifest) pair with a single microbatch node whose
+        `begin` config is `begin`, and a manifest that reports
+        `use_microbatch_batches() == True`."""
+        model = _microbatch_model(begin=begin)
+        manifest = Manifest(nodes={model.unique_id: model})
+        mocker.patch.object(manifest, "use_microbatch_batches", return_value=True)
+        return model, manifest
+
+    def _patch_v2_parser_to_return(self, manifest) -> ExitStack:
+        """Patch the v2 parser subprocess + manifest loading so that
+        `parse_with_v2` behaves as if the v2 parser produced `manifest`.
+
+        Returns an `ExitStack` (itself a context manager) bundling the three
+        patches that both tests below need, so they don't have to repeat them."""
+        stack = ExitStack()
+        stack.enter_context(
+            mock.patch(
+                "dbt.parser.v2.subprocess.Popen",
+                side_effect=_fake_parser(json.dumps({"metadata": {}})),
+            )
+        )
+        stack.enter_context(
+            mock.patch("dbt.parser.v2._load_writable_manifest", return_value=mock.MagicMock())
+        )
+        stack.enter_context(
+            mock.patch("dbt.parser.v2.Manifest.from_writable_manifest", return_value=manifest)
+        )
+        return stack
+
     def test_parse_with_v2_coerces_string_begin(
         self, tmp_path: Path, _patch_v2_deps, mocker  # noqa: F811
     ):
-        model = _microbatch_model(begin="2024-01-01")
-        manifest = Manifest(nodes={model.unique_id: model})
-        mocker.patch.object(manifest, "use_microbatch_batches", return_value=True)
+        model, manifest = self._manifest_with_microbatch_model(mocker, begin="2024-01-01")
 
-        with mock.patch(
-            "dbt.parser.v2.subprocess.Popen",
-            side_effect=_fake_parser(json.dumps({"metadata": {}})),
-        ), mock.patch(
-            "dbt.parser.v2._load_writable_manifest", return_value=mock.MagicMock()
-        ), mock.patch(
-            "dbt.parser.v2.Manifest.from_writable_manifest", return_value=manifest
-        ):
+        with self._patch_v2_parser_to_return(manifest):
             result = parse_with_v2(self._runtime_config(tmp_path), write=False, write_json=False)
 
         assert result is manifest
@@ -162,17 +184,8 @@ class TestParseWithV2MicrobatchConfigValidation:
     def test_parse_with_v2_raises_parsing_error_for_invalid_begin(
         self, tmp_path: Path, _patch_v2_deps, mocker  # noqa: F811
     ):
-        model = _microbatch_model(begin="not-a-date")
-        manifest = Manifest(nodes={model.unique_id: model})
-        mocker.patch.object(manifest, "use_microbatch_batches", return_value=True)
+        _model, manifest = self._manifest_with_microbatch_model(mocker, begin="not-a-date")
 
-        with mock.patch(
-            "dbt.parser.v2.subprocess.Popen",
-            side_effect=_fake_parser(json.dumps({"metadata": {}})),
-        ), mock.patch(
-            "dbt.parser.v2._load_writable_manifest", return_value=mock.MagicMock()
-        ), mock.patch(
-            "dbt.parser.v2.Manifest.from_writable_manifest", return_value=manifest
-        ):
+        with self._patch_v2_parser_to_return(manifest):
             with pytest.raises(ParsingError, match="valid datetime"):
                 parse_with_v2(self._runtime_config(tmp_path), write=False, write_json=False)
