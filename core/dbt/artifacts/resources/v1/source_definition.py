@@ -51,7 +51,8 @@ class ExternalTable(AdditionalPropertiesAllowed, Mergeable):
     row_format: Optional[str] = None
     tbl_properties: Optional[str] = None
     partitions: Optional[List[Union[ExternalPartition, str]]] = None
-    unrendered_location: Optional[str] = None
+    # Not part of equality so the legacy (flag off) comparison is unaffected by it.
+    unrendered_location: Optional[str] = field(default=None, compare=False)
 
     def __bool__(self):
         return self.location is not None
