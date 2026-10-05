@@ -63,6 +63,69 @@ impl TypedConstraint {
         }
     }
 
+    /// Deterministic name for a primary or foreign key; `None` for other constraint types.
+    ///
+    /// Must hash the same input as the unnamed-key branches of `get_constraint_sql` in
+    /// `relations/constraints.sql`, so created keys and the incremental diff agree.
+    ///
+    /// Reference: https://github.com/databricks/dbt-databricks/blob/fdc4ac22f4494c701d8f7d6e5b380e5f0d1fe9ff/dbt/adapters/databricks/constraints.py#L171-L190
+    pub fn synthesized_name(&self, relation_identifier: &str) -> Option<String> {
+        let hash_input = match self {
+            TypedConstraint::PrimaryKey {
+                columns,
+                expression,
+                ..
+            } => {
+                let mut input = format!(
+                    "primary_key;{relation_identifier};{};",
+                    python_list_repr(columns)
+                );
+                if let Some(expression) = expression.as_deref().filter(|e| !e.is_empty()) {
+                    input.push_str(&format!("{expression};"));
+                }
+                input
+            }
+            TypedConstraint::ForeignKey {
+                columns,
+                to,
+                to_columns,
+                expression,
+                ..
+            } => match expression.as_deref().filter(|e| !e.is_empty()) {
+                Some(expression) => format!(
+                    "foreign_key;{relation_identifier};{};{expression};",
+                    python_list_repr(columns)
+                ),
+                None => {
+                    let to = to.as_deref().unwrap_or("None");
+                    let mut input = format!(
+                        "foreign_key;{relation_identifier};{};{to};",
+                        python_list_repr(columns)
+                    );
+                    if let Some(to_columns) = to_columns.as_deref().filter(|c| !c.is_empty()) {
+                        input.push_str(&format!("{};", python_list_repr(to_columns)));
+                    }
+                    input
+                }
+            },
+            TypedConstraint::Check { .. } | TypedConstraint::Custom { .. } => return None,
+        };
+        Some(format!("{:x}", md5::compute(hash_input.as_bytes())))
+    }
+
+    /// Replace the name when `new_name` is set.
+    pub fn with_name(mut self, new_name: Option<String>) -> Self {
+        if new_name.is_some() {
+            match &mut self {
+                TypedConstraint::Check { name, .. }
+                | TypedConstraint::PrimaryKey { name, .. }
+                | TypedConstraint::ForeignKey { name, .. }
+                | TypedConstraint::Custom { name, .. } => *name = new_name,
+            }
+        }
+        self
+    }
+
     /// Validates constraint configuration and returns errors for invalid states
     ///
     /// Reference: https://github.com/databricks/dbt-databricks/blob/24325a3195171d36972804e545b2ccf967ab575d/dbt/adapters/databricks/constraints.py#L85-L138
@@ -181,6 +244,37 @@ impl TypedConstraint {
             TypedConstraint::Custom { expression, .. } => expression.clone(),
         }
     }
+}
+
+/// Python `repr()` of a list of strings, e.g. `['a', 'b']`, which v1 folds into key-name hashes.
+fn python_list_repr(items: &[String]) -> String {
+    let quoted = items
+        .iter()
+        .map(|item| {
+            let quote = if item.contains('\'') && !item.contains('"') {
+                '"'
+            } else {
+                '\''
+            };
+            let mut repr = String::from(quote);
+            for c in item.chars() {
+                match c {
+                    '\\' => repr.push_str("\\\\"),
+                    '\n' => repr.push_str("\\n"),
+                    '\r' => repr.push_str("\\r"),
+                    '\t' => repr.push_str("\\t"),
+                    c if c == quote => {
+                        repr.push('\\');
+                        repr.push(c);
+                    }
+                    c => repr.push(c),
+                }
+            }
+            repr.push(quote);
+            repr
+        })
+        .collect::<Vec<_>>();
+    format!("[{}]", quoted.join(", "))
 }
 
 /// Expose `TypedConstraint` fields and `render()` to Jinja templates as a proper Object.
@@ -735,6 +829,89 @@ mod tests {
             custom.render(),
             "CONSTRAINT my_custom VALIDATE(column_a, column_b)"
         );
+    }
+
+    #[test]
+    fn test_synthesized_name_matches_v1_hash_input() {
+        let md5 = |input: &str| Some(format!("{:x}", md5::compute(input)));
+        let strings = |items: &[&str]| items.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let foreign_key =
+            |columns: &[&str], to: Option<&str>, to_columns, expression: Option<&str>| {
+                TypedConstraint::ForeignKey {
+                    name: None,
+                    columns: strings(columns),
+                    to: to.map(str::to_string),
+                    to_columns,
+                    expression: expression.map(str::to_string),
+                }
+            };
+        let primary_key =
+            |columns: &[&str], expression: Option<&str>| TypedConstraint::PrimaryKey {
+                name: None,
+                columns: strings(columns),
+                expression: expression.map(str::to_string),
+            };
+
+        // Inputs mirror dbt-databricks tests/unit/test_constraints.py::TestSynthesizeConstraintName.
+        let cases = [
+            (
+                // A name a live v1 run emitted through dbt's `local_md5`.
+                foreign_key(
+                    &["parent_b"],
+                    Some("`main`.`test17823128660395867514_test_constraints`.`multi_fk_parent`"),
+                    None,
+                    None,
+                ),
+                "multi_fk_child",
+                Some("f945e062b14a8f9a207b7900720295f0".to_string()),
+            ),
+            (
+                foreign_key(
+                    &["a", "b"],
+                    Some("`c`.`s`.`p`"),
+                    Some(strings(&["x", "y"])),
+                    None,
+                ),
+                "child",
+                md5("foreign_key;child;['a', 'b'];`c`.`s`.`p`;['x', 'y'];"),
+            ),
+            (
+                foreign_key(&["n"], None, None, Some("(n) REFERENCES `c`.`s`.`p`")),
+                "child",
+                md5("foreign_key;child;['n'];(n) REFERENCES `c`.`s`.`p`;"),
+            ),
+            (
+                primary_key(&["n"], None),
+                "child",
+                md5("primary_key;child;['n'];"),
+            ),
+            (
+                primary_key(&["n"], Some("RELY")),
+                "child",
+                md5("primary_key;child;['n'];RELY;"),
+            ),
+            (
+                primary_key(&["it's"], None),
+                "child",
+                md5("primary_key;child;[\"it's\"];"),
+            ),
+            (
+                TypedConstraint::Check {
+                    name: None,
+                    expression: "id > 0".to_string(),
+                    columns: None,
+                },
+                "child",
+                None,
+            ),
+        ];
+        for (constraint, identifier, expected) in cases {
+            assert_eq!(
+                constraint.synthesized_name(identifier),
+                expected,
+                "{constraint:?}"
+            );
+        }
     }
 
     #[test]

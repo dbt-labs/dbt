@@ -347,7 +347,19 @@ impl Constraints {
             return Self::default();
         };
 
-        let constraints_set: IndexSet<_> = other_constraints.into_iter().collect();
+        // Name unnamed keys as at create time so they match the server's names instead of churning.
+        // Reference: https://github.com/databricks/dbt-databricks/blob/fdc4ac22f4494c701d8f7d6e5b380e5f0d1fe9ff/dbt/adapters/databricks/relation_configs/constraints.py#L255-L259
+        let identifier = relation_config.alias();
+        let constraints_set: IndexSet<_> = other_constraints
+            .into_iter()
+            .map(|constraint| {
+                let synthesized_name = match constraint.name() {
+                    None => constraint.synthesized_name(&identifier),
+                    Some(_) => None,
+                };
+                constraint.with_name(synthesized_name)
+            })
+            .collect();
 
         // FIXME(serramatutu): make `parse_constraints` return `IndexSet` directly once old code
         // that relies on `BTreeSet` is deleted
@@ -517,6 +529,7 @@ mod tests {
         properties::ModelConstraint,
     };
     use dbt_test_primitives::assert_contains;
+    use dbt_yaml::Spanned;
     use indexmap::{IndexMap, IndexSet};
     use std::io;
     use std::sync::Arc;
@@ -878,6 +891,57 @@ fk_composite,parent_type,main,default,parents,type
 
         assert!(config.set_non_nulls.is_empty());
         assert!(config.set_constraints.is_empty());
+    }
+
+    #[test]
+    fn test_from_local_config_unnamed_keys_match_server_names() {
+        // The server holds the create-time names; two unnamed FKs to one parent must not churn.
+        let foreign_key = || Constraint {
+            type_: ConstraintType::ForeignKey,
+            to: Some(Spanned::new("`main`.`default`.`parents`".to_string())),
+            to_columns: Some(vec!["id".to_string()]),
+            ..Default::default()
+        };
+        let mock_node = create_mock_dbt_model_with_constraints(IndexMap::from_iter([
+            (
+                "id",
+                vec![Constraint {
+                    type_: ConstraintType::PrimaryKey,
+                    ..Default::default()
+                }],
+            ),
+            ("parent_a", vec![foreign_key()]),
+            ("parent_b", vec![foreign_key()]),
+        ]));
+        let local = Constraints::from_local_config(&mock_node);
+
+        let md5 = |input: &str| format!("{:x}", md5::compute(input));
+        let server_fk = |column: &str| TypedConstraint::ForeignKey {
+            name: Some(md5(&format!(
+                "foreign_key;test_table;['{column}'];`main`.`default`.`parents`;['id'];"
+            ))),
+            columns: vec![column.to_string()],
+            to: Some("`main`.`default`.`parents`".to_string()),
+            to_columns: Some(vec!["id".to_string()]),
+            expression: None,
+        };
+        let remote = Constraints::new(
+            IndexSet::new(),
+            IndexSet::new(),
+            IndexSet::from([
+                TypedConstraint::PrimaryKey {
+                    name: Some(md5("primary_key;test_table;['id'];")),
+                    columns: vec!["id".to_string()],
+                    expression: None,
+                },
+                server_fk("parent_a"),
+                server_fk("parent_b"),
+            ]),
+            IndexSet::new(),
+        );
+
+        let diff = Constraints::diff_from(&local, Some(&remote));
+        assert!(diff.is_none(), "unnamed keys should not churn: {diff:?}");
     }
 
     #[test]

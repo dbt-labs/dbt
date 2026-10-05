@@ -1,0 +1,7 @@
+kind: Fixes
+body: Name unnamed Databricks primary and foreign keys deterministically so safer replace and incremental runs keep stable key names
+time: 2026-10-05T14:29:57.453923+05:30
+custom:
+    author: sd-db
+    issue: ""
+    project: dbt-core
