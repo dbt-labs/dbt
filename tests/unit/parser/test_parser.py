@@ -605,8 +605,7 @@ class SchemaParserSourceTest(SchemaParserTest):
         with_external = self.parser.manifest.sources["source.snowplow.my_source.my_table"]
         assert with_external.table.external.location == "@dev_stage/my_data/"
         assert (
-            with_external.table.external.unrendered_location
-            == "@{{ 'dev' ~ '_stage' }}/my_data/"
+            with_external.table.external.unrendered_location == "@{{ 'dev' ~ '_stage' }}/my_data/"
         )
         without_external = self.parser.manifest.sources["source.snowplow.my_source.other_table"]
         assert without_external.table.external is None
