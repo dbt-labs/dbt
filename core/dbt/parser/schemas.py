@@ -405,15 +405,26 @@ class ParseResult:
 # abstract base class (ABCMeta)
 # Many subclasses: MetricParser, ExposureParser, GroupParser, SourceParser,
 # PatchParser, SemanticModelParser, SavedQueryParser, UnitTestParser
-def _unrendered_external_locations(entry: Dict[str, Any]) -> Dict[str, str]:
+def _unrendered_external_locations(key: str, entry: Dict[str, Any]) -> Dict[str, str]:
     """Map each table name in a source entry to its unrendered external.location."""
     locations: Dict[str, str] = {}
+    if key != "sources":
+        return locations
     for table in entry.get("tables") or []:
         external = table.get("external") if isinstance(table, dict) else None
         location = external.get("location") if isinstance(external, dict) else None
         if isinstance(location, str):
             locations[table.get("name", "")] = location
     return locations
+
+
+def _add_unrendered_external_locations(
+    schema_file: SchemaSourceFile, key: str, source_name: str, locations: Dict[str, str]
+) -> None:
+    for table_name, unrendered_location in locations.items():
+        schema_file.add_unrendered_external_location(
+            key, source_name, table_name, unrendered_location
+        )
 
 
 def _set_unrendered_external_location(yaml_file: Any, source_name: str, table: Any) -> None:
@@ -495,9 +506,7 @@ class YamlReader(metaclass=ABCMeta):
             # For sources
             unrendered_database = entry.get("database", None)
             unrendered_schema = entry.get("schema", None)
-            unrendered_external_locations = (
-                _unrendered_external_locations(entry) if self.key == "sources" else {}
-            )
+            unrendered_external_locations = _unrendered_external_locations(self.key, entry)
 
             # Render the data (except for tests, data_tests and descriptions).
             # See the SchemaYamlRenderer
@@ -518,10 +527,9 @@ class YamlReader(metaclass=ABCMeta):
                 schema_file.add_unrendered_database(self.key, entry["name"], unrendered_database)
             if unrendered_schema:
                 schema_file.add_unrendered_schema(self.key, entry["name"], unrendered_schema)
-            for table_name, unrendered_location in unrendered_external_locations.items():
-                schema_file.add_unrendered_external_location(
-                    self.key, entry["name"], table_name, unrendered_location
-                )
+            _add_unrendered_external_locations(
+                schema_file, self.key, entry["name"], unrendered_external_locations
+            )
 
             if self.schema_yaml_vars.env_vars:
                 self.schema_parser.manifest.env_vars.update(self.schema_yaml_vars.env_vars)
