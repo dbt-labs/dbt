@@ -1443,7 +1443,25 @@ class SourceDefinition(
         )
 
     def same_external(self, other: "SourceDefinition") -> bool:
-        return self.external == other.external
+        # preserve legacy behaviour -- compare the potentially rendered location
+        if get_flags().state_modified_compare_more_unrendered_values is False:
+            return self.external == other.external
+
+        if self.external is None or other.external is None:
+            return self.external == other.external
+
+        # Compare the configured (unrendered) location rather than the rendered one,
+        # so env_var()/jinja that resolves differently between runs is not a change.
+        # Fall back to the rendered location when no unrendered value was captured.
+        mine = self.external.unrendered_location or self.external.location
+        theirs = other.external.unrendered_location or other.external.location
+        return (
+            mine == theirs
+            and self.external.file_format == other.external.file_format
+            and self.external.row_format == other.external.row_format
+            and self.external.tbl_properties == other.external.tbl_properties
+            and self.external.partitions == other.external.partitions
+        )
 
     def same_config(self, old: "SourceDefinition") -> bool:
         return self.config.same_contents(
