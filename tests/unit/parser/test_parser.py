@@ -464,6 +464,16 @@ sources:
       - name: other_table
 """
 
+SOURCE_OVERRIDE_WITH_JINJA_EXTERNAL_LOCATION = """
+sources:
+  - name: my_source
+    overrides: snowplow
+    tables:
+      - name: my_table
+        external:
+          location: "@{{ 'dev' ~ '_stage' }}/my_data/"
+"""
+
 SOURCE_CUSTOM_FRESHNESS_AT_SOURCE = """
 sources:
   - name: my_source
@@ -600,6 +610,16 @@ class SchemaParserSourceTest(SchemaParserTest):
         )
         without_external = self.parser.manifest.sources["source.snowplow.my_source.other_table"]
         assert without_external.table.external is None
+
+    def test_source_override_external_location_keeps_unrendered_value(self):
+        block = self.file_block_for(SOURCE_OVERRIDE_WITH_JINJA_EXTERNAL_LOCATION, "test_one.yml")
+        dct = yaml_from_file(block.file, validate=True)
+        self.parser.parse_file(block, dct)
+
+        patch = self.parser.manifest.source_patches[("snowplow", "my_source")]
+        external = patch.tables[0].external
+        assert external.location == "@dev_stage/my_data/"
+        assert external.unrendered_location == "@{{ 'dev' ~ '_stage' }}/my_data/"
 
     @mock.patch("dbt.parser.sources.get_adapter")
     def test_parse_source_custom_freshness_at_source(self, _):
