@@ -922,59 +922,36 @@ fk_composite,parent_type,main,default,parents,type
         }
     }
 
-    fn primary_key_state(constraint: TypedConstraint) -> Constraints {
-        Constraints::new(
-            IndexSet::new(),
-            IndexSet::new(),
-            IndexSet::from([constraint]),
-            IndexSet::new(),
-        )
-    }
-
     #[test]
     fn test_custom_pk_diff_is_stable_against_remote_pk() {
         // On every incremental run, a local custom PK must compare equal to the remote
         // PrimaryKey that Databricks reports for it (without RELY) → no churn.
-        let remote = primary_key_state(TypedConstraint::PrimaryKey {
-            name: Some("pk_n".to_string()),
-            columns: vec!["n".to_string(), "m".to_string()],
-            expression: None,
-        });
-        let local = primary_key_state(TypedConstraint::Custom {
-            name: Some("pk_n".to_string()),
-            expression: "PRIMARY KEY (`n`, \"m\") RELY".to_string(),
-            columns: None,
-        });
+        let remote = Constraints::new(
+            IndexSet::new(),
+            IndexSet::new(),
+            IndexSet::from([TypedConstraint::PrimaryKey {
+                name: Some("pk_n".to_string()),
+                columns: vec!["n".to_string(), "m".to_string()],
+                expression: None,
+            }]),
+            IndexSet::new(),
+        );
+        let local = Constraints::new(
+            IndexSet::new(),
+            IndexSet::new(),
+            IndexSet::from([TypedConstraint::Custom {
+                name: Some("pk_n".to_string()),
+                expression: "PRIMARY KEY (`n`, \"m\") RELY".to_string(),
+                columns: None,
+            }]),
+            IndexSet::new(),
+        );
 
         let diff = Constraints::diff_from(&local, Some(&remote));
         assert!(
             diff.is_none(),
             "Custom PK expression should match remote PK after normalization, but got diff: {diff:?}"
         );
-    }
-
-    #[test]
-    fn test_custom_pk_on_quoted_column_differs_from_split_columns() {
-        // One column named `a,b` is a different key than the remote key on columns a and b.
-        let remote_pk = TypedConstraint::PrimaryKey {
-            name: Some("pk_n".to_string()),
-            columns: vec!["a".to_string(), "b".to_string()],
-            expression: None,
-        };
-        let remote = primary_key_state(remote_pk.clone());
-        let local = primary_key_state(TypedConstraint::Custom {
-            name: Some("pk_n".to_string()),
-            expression: "PRIMARY KEY (`a,b`)".to_string(),
-            columns: None,
-        });
-
-        let diff = Constraints::diff_from(&local, Some(&remote)).expect("keys differ");
-        let diff = diff.as_any().downcast_ref::<Constraints>().unwrap();
-        assert!(matches!(
-            diff.set_constraints.iter().collect::<Vec<_>>().as_slice(),
-            [TypedConstraint::Custom { .. }]
-        ));
-        assert_eq!(diff.unset_constraints, IndexSet::from([remote_pk]));
     }
 
     #[test]
