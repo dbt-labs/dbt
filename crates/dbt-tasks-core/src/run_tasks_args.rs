@@ -77,6 +77,8 @@ pub struct RunTasksArgs {
 
     /// Whether to favor state over current environment
     pub favor_state: bool,
+    /// False when --no-defer is explicitly passed
+    pub defer: bool,
     /// The mode to use for the run cache
     pub run_cache_mode: RunCacheMode,
     /// The url to use for the run cache
@@ -168,6 +170,7 @@ impl RunTasksArgs {
             skip_unreferenced_table_check: arg.skip_unreferenced_table_check,
             task_cache_url: arg.task_cache_url.clone(),
             favor_state: arg.favor_state,
+            defer: arg.defer,
             run_cache_mode: arg.run_cache_mode.clone(),
             sample_renaming: arg.sample_renaming.clone(),
             select: arg.select.clone(),
@@ -246,6 +249,7 @@ impl fmt::Debug for RunTasksArgs {
             .field("limit", &self.limit)
             .field("run_cache_url", &self.task_cache_url)
             .field("run_cache_mode", &self.run_cache_mode)
+            .field("defer", &self.defer)
             .finish()
     }
 }

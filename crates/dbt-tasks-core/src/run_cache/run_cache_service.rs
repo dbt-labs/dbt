@@ -2973,6 +2973,13 @@ async fn prepare_write_only_execution_record(
             build_snapshot_sql_request(snapshot, context.request, create_macro_resolver(ctx))?,
         )))
     } else if let Some(seed) = node.as_any().downcast_ref::<DbtSeed>() {
+        let is_defer_to_profile = ctx
+            .inner
+            .run_cache_ctx
+            .run_cache_service_config
+            .as_ref()
+            .is_some_and(|config| config.is_defer_to_target(ctx.dbt_profile()));
+        let defer_enabled = ctx.inner.arg.defer;
         let request = build_seed_values_request(
             seed,
             SeedRunCacheRequestContext {
@@ -2981,7 +2988,15 @@ async fn prepare_write_only_execution_record(
                 last_modified_epoch: None,
                 clone_time_travel_limit: None,
                 clone_table_properties: None,
-                clone_chain_depth_limit: clone_chain_depth_limit_for_seed(ctx, seed),
+                clone_chain_depth_limit: clone_chain_depth_limit_for_seed(
+                    ctx,
+                    seed,
+                    is_defer_to_profile,
+                    defer_enabled,
+                ),
+                allow_clones: Some(ctx.dbt_profile().allow_clones),
+                is_defer_to_profile,
+                defer_enabled,
                 dbt_project_info: DbtProjectInfo::from(ctx),
             },
             create_macro_resolver(ctx),
@@ -3053,6 +3068,13 @@ async fn submit_seed(
         .run_cache_service_config
         .as_ref()
         .and_then(|config| config.clone_time_travel_limit_seconds);
+    let is_defer_to_profile = ctx
+        .inner
+        .run_cache_ctx
+        .run_cache_service_config
+        .as_ref()
+        .is_some_and(|config| config.is_defer_to_target(ctx.dbt_profile()));
+    let defer_enabled = ctx.inner.arg.defer;
     let request = build_seed_values_request(
         seed,
         SeedRunCacheRequestContext {
@@ -3061,7 +3083,15 @@ async fn submit_seed(
             last_modified_epoch,
             clone_time_travel_limit,
             clone_table_properties: None,
-            clone_chain_depth_limit: clone_chain_depth_limit_for_seed(ctx, seed),
+            clone_chain_depth_limit: clone_chain_depth_limit_for_seed(
+                ctx,
+                seed,
+                is_defer_to_profile,
+                defer_enabled,
+            ),
+            allow_clones: Some(ctx.dbt_profile().allow_clones),
+            is_defer_to_profile,
+            defer_enabled,
             dbt_project_info: DbtProjectInfo::from(ctx),
         },
         create_macro_resolver(ctx),
@@ -3193,10 +3223,12 @@ async fn build_sql_context(
     let stale_upstream_policy = stale_upstream_policy_for_node(node);
 
     let active_profile = ctx.dbt_profile();
-    let is_targeting_prod = config.is_defer_to_target(active_profile);
+    let is_defer_to_profile = config.is_defer_to_target(active_profile);
+    let defer_enabled = ctx.inner.arg.defer;
     let clone_chain_depth_limit = clone_chain_depth_limit_for_adapter(
         node.node_adapter(),
-        is_targeting_prod,
+        is_defer_to_profile,
+        defer_enabled,
         active_profile.allow_clones,
     );
 
@@ -3229,6 +3261,9 @@ async fn build_sql_context(
             clone_time_travel_limit: config.clone_time_travel_limit_seconds,
             clone_table_properties: None,
             clone_chain_depth_limit,
+            allow_clones: Some(active_profile.allow_clones),
+            is_defer_to_profile,
+            defer_enabled,
             default_schema: node.schema(),
             stale_upstream_policy,
             // Populated by the model submit paths for microbatch models; other
@@ -3443,24 +3478,24 @@ fn stale_upstream_policy_for_node(
 }
 
 /// Seeds skip `build_sql_context`, so derive the limit the way it does.
-fn clone_chain_depth_limit_for_seed(ctx: &TaskRunnerCtx, seed: &DbtSeed) -> Option<i64> {
-    let is_targeting_prod = ctx
-        .inner
-        .run_cache_ctx
-        .run_cache_service_config
-        .as_ref()
-        .map(|config| config.is_defer_to_target(ctx.dbt_profile()))
-        .unwrap_or(false);
+fn clone_chain_depth_limit_for_seed(
+    ctx: &TaskRunnerCtx,
+    seed: &DbtSeed,
+    is_defer_to_profile: bool,
+    defer_enabled: bool,
+) -> Option<i64> {
     clone_chain_depth_limit_for_adapter(
         seed.node_adapter(),
-        is_targeting_prod,
+        is_defer_to_profile,
+        defer_enabled,
         ctx.dbt_profile().allow_clones,
     )
 }
 
 pub(crate) fn clone_chain_depth_limit_for_adapter(
     adapter_type: AdapterType,
-    is_targeting_prod: bool,
+    is_defer_to_profile: bool,
+    defer_enabled: bool,
     allow_clones: bool,
 ) -> Option<i64> {
     // if cloning is disabled by the active target's config, send a limit of 0 to
@@ -3477,7 +3512,7 @@ pub(crate) fn clone_chain_depth_limit_for_adapter(
         _ => None,
     }
     .map(|default_limit: i64| {
-        if is_targeting_prod {
+        if is_defer_to_profile && defer_enabled {
             // for prod, we send a limit of n-1 so there is always room for 1 more dev clone
             // note: if the default limits ever get adjusted (or new ones added)
             // make sure that this does not return a negative number
@@ -4551,6 +4586,13 @@ fn config_derived_table_type(
                 .__warehouse_specific_config__
                 .transient,
         )
+    } else if let Some(seed) = node.as_any().downcast_ref::<DbtSeed>() {
+        (
+            seed.base().materialized.clone(),
+            seed.deprecated_config
+                .__warehouse_specific_config__
+                .transient,
+        )
     } else {
         return None;
     };
@@ -5279,6 +5321,13 @@ mod tests {
         model
     }
 
+    /// Seeds resolve with materialized: Table (see resolve_seeds.rs).
+    fn make_seed() -> DbtSeed {
+        let mut seed = DbtSeed::default();
+        seed.__base_attr__.materialized = DbtMaterialization::Table;
+        seed
+    }
+
     #[test]
     fn state_explain_node_info_identifies_incremental_model() {
         let model = state_explain_model(DbtMaterialization::Incremental);
@@ -5711,6 +5760,27 @@ mod tests {
         assert_eq!(
             config_derived_table_type(model.as_ref(), AdapterType::Snowflake),
             Some("INTERACTIVE TABLE".to_string())
+        );
+    }
+
+    #[test]
+    fn config_derived_table_type_seed_defaults_to_transient_on_snowflake() {
+        let seed = make_seed();
+        assert_eq!(
+            config_derived_table_type(&seed, AdapterType::Snowflake),
+            Some("TRANSIENT TABLE".to_string())
+        );
+    }
+
+    #[test]
+    fn config_derived_table_type_seed_honors_transient_false() {
+        let mut seed = make_seed();
+        seed.deprecated_config
+            .__warehouse_specific_config__
+            .transient = Some(false);
+        assert_eq!(
+            config_derived_table_type(&seed, AdapterType::Snowflake),
+            Some("TABLE".to_string())
         );
     }
 
@@ -9551,11 +9621,11 @@ mod tests {
     #[test]
     fn clone_chain_depth_limit_for_adapter_returns_n_minus_1_for_prod() {
         assert_eq!(
-            clone_chain_depth_limit_for_adapter(AdapterType::Databricks, true, true),
+            clone_chain_depth_limit_for_adapter(AdapterType::Databricks, true, true, true),
             Some(0)
         );
         assert_eq!(
-            clone_chain_depth_limit_for_adapter(AdapterType::Bigquery, true, true),
+            clone_chain_depth_limit_for_adapter(AdapterType::Bigquery, true, true, true),
             Some(2)
         );
     }
@@ -9563,11 +9633,11 @@ mod tests {
     #[test]
     fn clone_chain_depth_limit_for_adapter_returns_default_for_non_prod() {
         assert_eq!(
-            clone_chain_depth_limit_for_adapter(AdapterType::Databricks, false, true),
+            clone_chain_depth_limit_for_adapter(AdapterType::Databricks, false, true, true),
             Some(1)
         );
         assert_eq!(
-            clone_chain_depth_limit_for_adapter(AdapterType::Bigquery, false, true),
+            clone_chain_depth_limit_for_adapter(AdapterType::Bigquery, false, true, true),
             Some(3)
         );
     }
@@ -9575,11 +9645,11 @@ mod tests {
     #[test]
     fn clone_chain_depth_limit_for_adapter_none_for_adapters_with_no_limits() {
         assert_eq!(
-            clone_chain_depth_limit_for_adapter(AdapterType::Snowflake, true, true),
+            clone_chain_depth_limit_for_adapter(AdapterType::Snowflake, true, true, true),
             None
         );
         assert_eq!(
-            clone_chain_depth_limit_for_adapter(AdapterType::Snowflake, false, true),
+            clone_chain_depth_limit_for_adapter(AdapterType::Snowflake, false, true, true),
             None
         );
     }
@@ -9589,20 +9659,33 @@ mod tests {
         // allow_clones=false overrides to 0 regardless of adapter or prod/dev direction,
         // including adapters that otherwise have no default limit at all.
         assert_eq!(
-            clone_chain_depth_limit_for_adapter(AdapterType::Databricks, true, false),
+            clone_chain_depth_limit_for_adapter(AdapterType::Databricks, true, true, false),
             Some(0)
         );
         assert_eq!(
-            clone_chain_depth_limit_for_adapter(AdapterType::Bigquery, false, false),
+            clone_chain_depth_limit_for_adapter(AdapterType::Bigquery, false, true, false),
             Some(0)
         );
         assert_eq!(
-            clone_chain_depth_limit_for_adapter(AdapterType::Snowflake, true, false),
+            clone_chain_depth_limit_for_adapter(AdapterType::Snowflake, true, true, false),
             Some(0)
         );
         assert_eq!(
-            clone_chain_depth_limit_for_adapter(AdapterType::Snowflake, false, false),
+            clone_chain_depth_limit_for_adapter(AdapterType::Snowflake, false, true, false),
             Some(0)
+        );
+    }
+
+    #[test]
+    fn clone_chain_depth_limit_for_adapter_default_limit_when_defer_disabled() {
+        // targeting the defer profile without --defer is not n-1
+        assert_eq!(
+            clone_chain_depth_limit_for_adapter(AdapterType::Databricks, true, false, true),
+            Some(1)
+        );
+        assert_eq!(
+            clone_chain_depth_limit_for_adapter(AdapterType::Bigquery, true, false, true),
+            Some(3)
         );
     }
 
@@ -9626,6 +9709,24 @@ mod tests {
             .expect("sole owner of args right after construction")
             .io
             .in_dir = project_root.to_path_buf();
+    }
+
+    fn set_defer(ctx: &mut TaskRunnerCtx, defer: bool) {
+        let inner =
+            Arc::get_mut(&mut ctx.inner).expect("sole owner of inner right after construction");
+        Arc::get_mut(&mut inner.arg)
+            .expect("sole owner of args right after construction")
+            .defer = defer;
+    }
+
+    fn set_on_defer_to_target(ctx: &mut TaskRunnerCtx) {
+        let profile = ctx.dbt_profile().clone();
+        Arc::get_mut(&mut ctx.inner)
+            .expect("sole owner of inner right after construction")
+            .dbt_profile = Arc::new(DbtProfile {
+            defer_to_target: Some(profile.target.clone()),
+            ..profile
+        });
     }
 
     fn test_seed_on_adapter(adapter: AdapterType) -> DbtSeed {
@@ -9657,11 +9758,21 @@ mod tests {
         }
     }
 
-    async fn seed_write_only_request(allow_clones: bool) -> SubmitValuesRequest {
+    async fn seed_write_only_request_with(
+        allow_clones: bool,
+        adapter: AdapterType,
+        defer: bool,
+        on_defer_to_target: bool,
+    ) -> SubmitValuesRequest {
         let project_root = tempfile::tempdir().unwrap();
-        let seed = seed_with_csv(project_root.path());
+        let mut seed = seed_with_csv(project_root.path());
+        seed.__base_attr__.adapter = adapter;
         let mut ctx = test_task_runner_ctx_with_allow_clones(allow_clones);
         set_project_root(&mut ctx, project_root.path());
+        set_defer(&mut ctx, defer);
+        if on_defer_to_target {
+            set_on_defer_to_target(&mut ctx);
+        }
 
         let record =
             prepare_write_only_execution_record(&ctx, &seed, &task_result_with_sql(""), None)
@@ -9671,6 +9782,42 @@ mod tests {
         values_request(record)
     }
 
+    async fn seed_write_only_request(allow_clones: bool) -> SubmitValuesRequest {
+        seed_write_only_request_with(allow_clones, AdapterType::Snowflake, false, false).await
+    }
+
+    async fn model_submit_request_with(
+        defer: bool,
+        on_defer_to_target: bool,
+    ) -> SubmitEnrichedSqlRequest {
+        let client = Arc::new(RecordingRunCacheClient::default());
+        let mut ctx = test_task_runner_ctx(Some(
+            client.clone() as dbt_state::service_client::SharedRunCacheServiceClient
+        ));
+        set_defer(&mut ctx, defer);
+        if on_defer_to_target {
+            set_on_defer_to_target(&mut ctx);
+        }
+        let mut model = DbtModel::clone(&make_model(
+            "model.test.orders",
+            "db",
+            "dbt_test",
+            "orders",
+            DbtMaterialization::Table,
+        ));
+        model.__base_attr__.adapter = AdapterType::Databricks;
+        run_cache_service_before_execution(&ctx, &model, &task_result_with_sql("select 1"), None)
+            .await;
+
+        let mut submitted = client.submitted.lock().unwrap();
+        assert_eq!(
+            submitted.len(),
+            1,
+            "model should submit exactly one request"
+        );
+        submitted.remove(0)
+    }
+
     #[dbt_runtime::test]
     async fn seed_request_sends_zero_clone_chain_depth_limit_when_clones_disallowed() {
         // Regression test for https://github.com/dbt-labs/dbt-core/issues/16136.
@@ -9678,10 +9825,9 @@ mod tests {
         // was that seeds hardcoded `clone_chain_depth_limit: None`, so a test of
         // the helper alone stays green through a revert. On Snowflake (no adapter
         // default) `Some(0)` can only come from `allow_clones: false`.
-        assert_eq!(
-            seed_write_only_request(false).await.clone_chain_depth_limit,
-            Some(0)
-        );
+        let request = seed_write_only_request(false).await;
+        assert_eq!(request.clone_chain_depth_limit, Some(0));
+        assert_eq!(request.allow_clones, Some(false));
     }
 
     #[dbt_runtime::test]
@@ -9698,7 +9844,10 @@ mod tests {
         // the node's own adapter decides, not `ctx.default_adapter_type()`.
         let ctx = test_task_runner_ctx_with_allow_clones(true);
         let seed = test_seed_on_adapter(AdapterType::Databricks);
-        assert_eq!(clone_chain_depth_limit_for_seed(&ctx, &seed), Some(1));
+        assert_eq!(
+            clone_chain_depth_limit_for_seed(&ctx, &seed, false, false),
+            Some(1)
+        );
     }
 
     #[test]
@@ -9730,6 +9879,45 @@ mod tests {
             drop_stale_view_sql(DbtMaterialization::View, true, "dev.model_a"),
             None
         );
+    }
+
+    #[dbt_runtime::test]
+    async fn seed_request_respects_reduced_clone_chain_limit_against_prod() {
+        // Databricks' default limit is 1; prod with deferral enabled sends n-1.
+        let request = seed_write_only_request_with(true, AdapterType::Databricks, true, true).await;
+        assert_eq!(request.clone_chain_depth_limit, Some(0));
+        assert_eq!(request.allow_clones, Some(true));
+        assert!(request.is_defer_to_profile);
+        assert!(request.defer_enabled);
+    }
+
+    #[dbt_runtime::test]
+    async fn seed_request_uses_full_clone_chain_depth_limit_on_dev_target() {
+        let request =
+            seed_write_only_request_with(true, AdapterType::Databricks, true, false).await;
+        assert_eq!(request.clone_chain_depth_limit, Some(1));
+        assert!(!request.is_defer_to_profile);
+        assert!(request.defer_enabled);
+    }
+
+    #[dbt_runtime::test]
+    async fn model_request_respects_reduced_clone_chain_limit_against_prod() {
+        // Databricks' default limit is 1; prod with deferral enabled sends n-1.
+        let request = model_submit_request_with(true, true).await;
+        assert_eq!(request.clone_chain_depth_limit, Some(0));
+        assert_eq!(request.allow_clones, Some(true));
+        assert!(request.is_defer_to_profile);
+        assert!(request.defer_enabled);
+    }
+
+    #[dbt_runtime::test]
+    async fn model_request_uses_full_clone_chain_depth_limit_against_prod_with_no_defer() {
+        // `--no-defer` on prod skips the n-1 reservation
+        let request = model_submit_request_with(false, true).await;
+        assert_eq!(request.clone_chain_depth_limit, Some(1));
+        assert_eq!(request.allow_clones, Some(true));
+        assert!(request.is_defer_to_profile);
+        assert!(!request.defer_enabled);
     }
 
     fn state_explain_model(materialized: DbtMaterialization) -> DbtModel {

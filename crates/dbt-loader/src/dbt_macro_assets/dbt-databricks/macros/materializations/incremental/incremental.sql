@@ -8,15 +8,15 @@
   {%- set _ = dbt_databricks_validate_get_file_format(catalog_relation.file_format) -%}
   {#-- DIVERGENCE END #}
 
-  {%- set existing_relation = load_relation_with_metadata(this) %}
-  {%- set target_relation = this.incorporate(type='table') -%}
-  {%- set incremental_strategy = get_incremental_strategy(catalog_relation.file_format) -%}
-  {%- set grant_config = config.get('grants') -%}
-  {%- set full_refresh = should_full_refresh() %}
-  {%- set partition_by = config.get('partition_by', none) -%}
-  {%- set language = model['language'] -%}
-  {%- set on_schema_change = incremental_validate_on_schema_change(config.get('on_schema_change'), default='ignore') -%}
-  {%- set is_delta = (catalog_relation.file_format == 'delta' and existing_relation.is_delta) -%}
+  {% set existing_relation = load_relation_with_metadata(this) %}
+  {% set target_relation = this.incorporate(type='table') %}
+  {% set incremental_strategy = get_incremental_strategy(catalog_relation.file_format) %}
+  {% set grant_config = config.get('grants') %}
+  {% set full_refresh = should_full_refresh() %}
+  {% set partition_by = config.get('partition_by') %}
+  {% set language = model['language'] %}
+  {% set on_schema_change = incremental_validate_on_schema_change(config.get('on_schema_change'), default='ignore') %}
+  {% set is_delta = (catalog_relation.file_format == 'delta' and existing_relation.is_delta) %}
   {% set is_iceberg = (catalog_relation.file_format == 'iceberg' and existing_relation.is_iceberg) %}
   {% set is_replaceable_format = is_delta or is_iceberg %}
   {% set compiled_code = adapter.clean_sql(model['compiled_code']) %}
@@ -102,8 +102,8 @@
     {%- set tblproperties = config.get('tblproperties') -%}
     {%- set tags = config.get('databricks_tags') -%}
     {% set temp_relation = make_temp_relation(target_relation) %}
-    {%- set incremental_predicates = config.get('predicates', default=none) or config.get('incremental_predicates', default=none) -%}
-    {%- set unique_key = config.get('unique_key', none) -%}
+    {% set incremental_predicates = config.get('predicates') or config.get('incremental_predicates') %}
+    {%- set unique_key = config.get('unique_key') -%}
 
     {#-- Run pre-hooks --#}
     {{ run_hooks(pre_hooks) }}
@@ -197,7 +197,7 @@
         {% set liquid_clustering = _configuration_changes.changes.get("liquid_clustering") %}
         {% set row_filter = _configuration_changes.changes.get("row_filter") %}
         {% set constraints = _configuration_changes.changes.get("constraints") %}
-        {% set column_tags = _configuration_changes.changes.get("column_tags", None) %}
+        {% set column_tags = _configuration_changes.changes.get("column_tags") %}
         {% if tags is not none %}
           {% do apply_tags(target_relation, tags.set_tags) %}
         {%- endif -%}
@@ -243,7 +243,7 @@
       set spark.sql.sources.partitionOverwriteMode = {{ value }}
     {%- endcall -%}
   {% else %}
-    {{ exceptions.warn("INSERT OVERWRITE is only properly supported on all-purpose clusters.  On SQL Warehouses, this strategy would be equivalent to using the table materialization.") }}
+    {{ exceptions.warn("insert_overwrite is supported on SQL warehouses with DBR 17.1+. On older DBR versions, this strategy would be equivalent to using the table materialization.") }}
   {% endif %}
 {% endmacro %}
 
@@ -257,7 +257,7 @@
           'unique_key': unique_key,
           'dest_columns': none,
           'incremental_predicates': incremental_predicates}) -%}
-  {{ strategy_sql_macro_func(strategy_arg_dict) }}
+  {% do return(strategy_sql_macro_func(strategy_arg_dict)) %}
 {% endmacro %}
 
 {% macro process_config_changes(target_relation, existing_relation=none) %}

@@ -42,10 +42,10 @@ pub enum LoadStrategy {
     SystemThenCdnCache,
     /// Load the driver from the sibling lib/ folder.
     Bundled,
-    /// Load the `flock` driver that proxies all ADBC calls to a service multiplexing
+    /// Load the `bridge` driver that proxies all ADBC calls to a service multiplexing
     /// different ADBC drivers.
     ///
-    /// In this strategy, we load the "adbc_driver_flock" driver and configure it
+    /// In this strategy, we load the "adbc_driver_bridge" driver and configure it
     /// to make calls to the server that loads the actual drivers.
     Remote,
 }
@@ -429,7 +429,7 @@ impl AdbcDriver {
             (load_strategy @ System(_), _) => load_strategy,
             // Bundled strategy doesn't change for any backend.
             (Bundled, _) => Bundled,
-            // Remote drivers are used via the "adbc_driver_flock" library
+            // Remote drivers are used via the "adbc_driver_bridge" library
             (
                 load_strategy @ Remote,
                 Snowflake | BigQuery | Postgres | Databricks | Redshift | Spark | DuckDB
@@ -566,7 +566,7 @@ Second error:\n\
                 | LOAD_FLAG_ALLOW_RELATIVE_PATHS;
             return ManagedAdbcDriver::load_from_name(
                 backend,
-                "adbc_driver_flock",
+                "adbc_driver_bridge",
                 None, // entrypoint
                 adbc_version,
                 load_flags,
@@ -575,7 +575,7 @@ Second error:\n\
         }
 
         Err(Error::with_message_and_status(
-            "Remote driver strategy requires the `adbc_driver_flock` driver to be \
+            "Remote driver strategy requires the `adbc_driver_bridge` driver to be \
 located in a `lib/` directory next to the executable, but no such directory could \
 be found."
                 .to_string(),
@@ -773,9 +773,9 @@ mod tests {
         Ok(())
     }
 
-    #[test_with::env(FLOCK_DRIVER_TESTS)]
+    #[test_with::env(BRIDGE_DRIVER_TESTS)]
     #[test]
-    fn load_flock_driver() -> Result<()> {
+    fn load_bridge_driver() -> Result<()> {
         for backend in [
             Backend::Snowflake,
             Backend::BigQuery,
