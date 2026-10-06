@@ -8,12 +8,12 @@ import type { Project } from '../shared';
 import { asCellRenderer, FilterDropdown, TruncatedCell, useFacets } from '../shared';
 import { GenericFilterView } from './GenericFilterView';
 
-interface Props {
+interface MacroFilterViewProps {
   project: Project;
   onPeek(uniqueId: string): void;
 }
 
-export function MacroFilterView({ project, onPeek }: Props) {
+export function MacroFilterView({ project, onPeek }: MacroFilterViewProps) {
   const [pkg, setPkg] = useState('');
   const { data: facets } = useFacets('macro');
   const packageOptions = facetOptions(facets?.packages);

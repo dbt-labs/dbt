@@ -1,0 +1,7 @@
+kind: Fixes
+body: Emit only changed Databricks column-tag keys in ALTER COLUMN SET TAGS diffs
+time: 2026-09-08T19:52:11.390613+05:30
+custom:
+    author: sd-db
+    issue: "16272"
+    project: dbt-core

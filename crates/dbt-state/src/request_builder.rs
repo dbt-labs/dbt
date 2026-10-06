@@ -222,6 +222,9 @@ pub struct SubmitEnrichedSqlRequestInput {
     pub compare_unrendered_code: bool,
     pub table_namespace: Option<String>,
     pub ignore_external_modifications: bool,
+    pub allow_clones: Option<bool>,
+    pub is_defer_to_profile: bool,
+    pub defer_enabled: bool,
 }
 
 impl SubmitEnrichedSqlRequestInput {
@@ -248,6 +251,9 @@ impl SubmitEnrichedSqlRequestInput {
             compare_unrendered_code: self.compare_unrendered_code,
             table_namespace: self.table_namespace,
             ignore_external_modifications: self.ignore_external_modifications,
+            allow_clones: self.allow_clones,
+            is_defer_to_profile: self.is_defer_to_profile,
+            defer_enabled: self.defer_enabled,
         }
     }
 }
@@ -266,6 +272,9 @@ pub struct SubmitValuesRequestInput {
     pub clone_chain_depth_limit: Option<i64>,
     pub dbt_node_state: Option<DbtNodeState>,
     pub table_namespace: Option<String>,
+    pub allow_clones: Option<bool>,
+    pub is_defer_to_profile: bool,
+    pub defer_enabled: bool,
 }
 
 impl SubmitValuesRequestInput {
@@ -283,6 +292,9 @@ impl SubmitValuesRequestInput {
             clone_chain_depth_limit: self.clone_chain_depth_limit,
             dbt_node_state: self.dbt_node_state,
             table_namespace: self.table_namespace,
+            allow_clones: self.allow_clones,
+            is_defer_to_profile: self.is_defer_to_profile,
+            defer_enabled: self.defer_enabled,
         }
     }
 }
@@ -888,6 +900,9 @@ mod tests {
             compare_unrendered_code: true,
             table_namespace: None,
             ignore_external_modifications: true,
+            allow_clones: Some(true),
+            is_defer_to_profile: true,
+            defer_enabled: true,
         }
         .into_proto();
 
@@ -925,7 +940,10 @@ mod tests {
                 node_contract_hash: Some("node_contract_hash".to_string()),
                 node_database_representation: None
             })
-        )
+        );
+        assert_eq!(request.allow_clones, Some(true));
+        assert!(request.is_defer_to_profile);
+        assert!(request.defer_enabled);
     }
 
     #[test]
@@ -959,6 +977,9 @@ mod tests {
                 node_database_representation: None,
             }),
             table_namespace: Some("foo".to_string()),
+            allow_clones: Some(true),
+            is_defer_to_profile: true,
+            defer_enabled: true,
         }
         .into_proto();
 
@@ -987,7 +1008,10 @@ mod tests {
                 node_database_representation: None
             })
         );
-        assert_eq!(request.table_namespace(), "foo")
+        assert_eq!(request.table_namespace(), "foo");
+        assert_eq!(request.allow_clones, Some(true));
+        assert!(request.is_defer_to_profile);
+        assert!(request.defer_enabled);
     }
 
     #[test]
@@ -1017,6 +1041,9 @@ mod tests {
             compare_unrendered_code: false,
             table_namespace: None,
             ignore_external_modifications: false,
+            allow_clones: Some(true),
+            is_defer_to_profile: false,
+            defer_enabled: true,
         }
         .into_proto();
 
@@ -1057,6 +1084,9 @@ mod tests {
             clone_chain_depth_limit: None,
             dbt_node_state: None,
             table_namespace: None,
+            allow_clones: Some(true),
+            is_defer_to_profile: false,
+            defer_enabled: true,
         }
         .into_proto();
 

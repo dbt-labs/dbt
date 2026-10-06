@@ -327,8 +327,11 @@ impl AdbcEngine {
         let mut all_stmts = dbt_auth::generate_duckdb_init_sql(config)
             .map_err(crate::errors::auth_error_to_adapter_error)?;
 
-        // Append catalog-driven ATTACH statements for DuckDB REST catalogs
-        all_stmts.extend(self.generate_catalog_attach_stmts()?);
+        // Append catalog-driven ATTACH statements for DuckDB REST catalogs, unless the
+        // config opts out: a database that runs untrusted SQL must not see them.
+        if config.get_bool("attach_catalogs") != Some(false) {
+            all_stmts.extend(self.generate_catalog_attach_stmts()?);
+        }
 
         if all_stmts.is_empty() {
             return Ok(());
