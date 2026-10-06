@@ -25,6 +25,7 @@ from typing import TYPE_CHECKING, Dict, List, Optional, Tuple
 
 from dbt.artifacts.exceptions import IncompatibleSchemaError
 from dbt.artifacts.schemas.manifest import WritableManifest
+from dbt.constants import SEMANTIC_MANIFEST_FILE_NAME
 from dbt.contracts.files import ParseFileType
 from dbt.contracts.graph.manifest import Manifest
 from dbt.events.types import V2ParserEnd, V2ParserStart
@@ -87,9 +88,11 @@ def parse_with_v2(
                 # macro rediscovery below doesn't affect semantic models, so
                 # semantic_manifest.json needs no correction pass.
                 project_target_path.mkdir(parents=True, exist_ok=True)
-                semantic_manifest_path = handoff / "semantic_manifest.json"
+                semantic_manifest_path = handoff / SEMANTIC_MANIFEST_FILE_NAME
                 if semantic_manifest_path.exists():
-                    target_semantic_manifest_path = project_target_path / "semantic_manifest.json"
+                    target_semantic_manifest_path = (
+                        project_target_path / SEMANTIC_MANIFEST_FILE_NAME
+                    )
                     shutil.copyfile(semantic_manifest_path, target_semantic_manifest_path)
                     add_artifact_produced(str(target_semantic_manifest_path))
     except (
