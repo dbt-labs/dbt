@@ -1,4 +1,3 @@
-use std::collections::BTreeMap;
 use std::future::Future;
 use std::path::PathBuf;
 use std::pin::Pin;
@@ -57,6 +56,17 @@ where
 {
     let query = base_query_provider(ctx)?;
     let limit = ctx.inner.arg.limit.filter(|limit| *limit > 0);
+    let adapter_type = ctx
+        .nodes()
+        .get_node(unique_id)
+        .map(|node| node.node_adapter())
+        .or_else(|| {
+            ctx.env
+                .get_adapter_ref()
+                .map(|adapter| adapter.adapter_type())
+        })
+        .unwrap_or_else(|| ctx.default_adapter_type());
+    let jinja_env = ctx.jinja_env_for_adapter(adapter_type)?;
 
     // `--query-id` always goes through the adhoc_runner path (RemoteAdhocRunner
     // is the only one that knows how to fetch an existing query's result
@@ -66,7 +76,7 @@ where
         && matches!(ctx.inner.execute, Execute::Sidecar | Execute::Service)
         && ctx.is_sidecar();
 
-    let mut compile_ctx = make_show_compile_context(ctx)?;
+    let mut compile_ctx = ctx.base_context_for_adapter(adapter_type)?;
     compile_ctx.insert(
         "compiled_code".to_string(),
         MinijinjaValue::from(query.as_str()),
@@ -93,7 +103,7 @@ where
             // which dispatches to adapter-specific limit syntax (e.g. FETCH FIRST n ROWS ONLY for Fabric).
             "{{ get_show_sql(compiled_code, none, show_limit) }}".to_owned()
         };
-        let env = Arc::clone(&ctx.env);
+        let env = Arc::clone(&jinja_env);
         let listener_factory = Arc::clone(&ctx.rendering_listener_factory);
         let filename = filename.clone();
         TaskOp::Blocking(Box::new(move || {
@@ -144,6 +154,8 @@ where
                 &Instruction::Sql(sql_instruction),
                 &final_rendered_sql,
                 Some(unique_id),
+                jinja_env,
+                adapter_type,
                 &mut None,
             )
             .await
@@ -260,10 +272,6 @@ pub(super) fn rendered_sql_for(
     })?;
 
     Ok(rendered_node_info.sql.clone())
-}
-
-fn make_show_compile_context(ctx: &TaskRunnerCtx) -> FsResult<BTreeMap<String, MinijinjaValue>> {
-    Ok(ctx.inner.base_context.clone())
 }
 
 /// A task that shows the compiled SQL results for a node

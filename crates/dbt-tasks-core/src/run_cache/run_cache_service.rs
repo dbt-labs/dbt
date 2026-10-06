@@ -8270,6 +8270,8 @@ mod tests {
             _instruction: &'a dbt_scheduler::instructions::Instruction,
             _rendered_sql: &'a str,
             _unique_id: Option<&'a str>,
+            _jinja_env: Arc<dbt_jinja_utils::jinja_environment::JinjaEnv>,
+            _adapter_type: AdapterType,
             _connection: &'a mut Option<Box<dyn dbt_adbc::Connection>>,
         ) -> Pin<Box<dyn Future<Output = FsResult<(Vec<RecordBatch>, SchemaRef)>> + Send + 'a>>
         {
