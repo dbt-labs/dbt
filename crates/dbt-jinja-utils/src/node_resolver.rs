@@ -327,6 +327,19 @@ impl NodeResolver {
                 "Cannot resolve cross-adapter ref '{unique_id}' because catalogs.yml v2 is unavailable"
             ));
         };
+        catalogs
+            .validate_adapter_bridge(
+                &catalog_ref.catalog_name,
+                catalog_ref.producer_adapter,
+                consumer_adapter,
+            )
+            .map_err(|error| {
+                fs_err!(
+                    ErrorCode::InvalidConfig,
+                    "Cannot resolve cross-adapter ref '{unique_id}' through catalog '{}': {error}",
+                    catalog_ref.catalog_name
+                )
+            })?;
         let database = dbt_adapter::catalog_relation::resolve_catalog_database(
             catalogs,
             &catalog_ref.catalog_name,
@@ -1751,6 +1764,65 @@ catalogs:
         let rendered = relation.to_string();
         assert!(rendered.contains("duck_shared"), "{rendered}");
         assert!(!rendered.contains("SNOWFLAKE_SHARED"), "{rendered}");
+    }
+
+    #[test]
+    fn deferred_catalog_ref_revalidates_the_inferred_adapter_bridge() {
+        let yaml: dbt_yaml::Value = dbt_yaml::from_str(
+            r#"
+catalogs:
+  - name: shared
+    type: glue
+    table_format: iceberg
+    config:
+      snowflake:
+        catalog_database: SNOWFLAKE_SHARED
+      duckdb:
+        endpoint_type: GLUE
+        catalog_database: duck_shared
+"#,
+        )
+        .unwrap();
+        let catalogs = DbtCatalogs::new(yaml.as_mapping().unwrap().clone(), yaml.span().clone());
+        let mut resolver = NodeResolver {
+            catalogs: Some(Arc::new(catalogs)),
+            ..Default::default()
+        };
+        let mut model = DbtModel {
+            __common_attr__: CommonAttributes {
+                unique_id: "model.test.orders".to_string(),
+                name: "orders".to_string(),
+                package_name: "test".to_string(),
+                ..Default::default()
+            },
+            __base_attr__: NodeBaseAttributes {
+                adapter: AdapterType::DuckDB,
+                database: "duck_shared".to_string(),
+                schema: "analytics".to_string(),
+                alias: "orders".to_string(),
+                materialized: DbtMaterialization::Table,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        model.__model_attr__.catalog_name = Some("shared".to_string());
+        resolver
+            .insert_ref(&model, AdapterType::DuckDB, ModelStatus::Enabled, false)
+            .unwrap();
+        resolver
+            .update_ref_with_deferral(&model, AdapterType::Snowflake, true)
+            .unwrap();
+
+        let error = resolver
+            .lookup_ref_for_adapter(
+                &None,
+                "orders",
+                &None,
+                &Some("test".to_string()),
+                AdapterType::DuckDB,
+            )
+            .unwrap_err();
+        assert!(error.to_string().contains("type 'glue'"), "{error}");
     }
 
     #[test]
