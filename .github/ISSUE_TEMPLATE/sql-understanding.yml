@@ -1,7 +1,7 @@
 name: 🧠 SQL understanding issue
 description: dbt Fusion doesn't recognize a function, flags valid SQL as an error, infers the wrong column type, or produces incorrect lineage
 title: "[SQL] <title>"
-labels: ["bug", "SQL_understanding", "v2", "type:bug", "status:triage", "area:static-analysis", "engine:v2"]
+labels: ["SQL_understanding", "v2", "type:bug", "status:triage", "area:static-analysis", "engine:v2"]
 body:
   - type: markdown
     attributes:

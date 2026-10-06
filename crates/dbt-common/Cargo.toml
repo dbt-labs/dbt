@@ -15,6 +15,7 @@ workspace = true
 [dependencies]
 dbt-adapter-core = { workspace = true }
 dbt-error = { workspace = true }
+dbt-flags = { workspace = true }
 dbt-frontend-common = { workspace = true }
 dbt-telemetry = { workspace = true }
 dbt-tracing = { workspace = true }

@@ -381,8 +381,6 @@ impl OAuthInteractiveResolver {
             }
         };
 
-        let redirect_uri = format!("http://localhost:{}/", self.redirect_port);
-
         // If a session already exists for this client, include its scopes in the new
         // request so that a re-auth never silently drops previously-granted scopes.
         let effective_scopes = {
@@ -404,6 +402,11 @@ impl OAuthInteractiveResolver {
             .map_err(|e| {
                 AuthError::Interactive(format!("loopback port {} in use: {e}", self.redirect_port))
             })?;
+        let redirect_port = listener
+            .local_addr()
+            .map_err(|e| AuthError::Interactive(format!("cannot determine loopback port: {e}")))?
+            .port();
+        let redirect_uri = format!("http://localhost:{redirect_port}/");
 
         let pkce = generate_pkce();
         let state = generate_state();
@@ -556,6 +559,7 @@ impl OAuthInteractiveResolverBuilder {
         self
     }
 
+    /// Callback listener port. Use `0` to let the OS assign an available port.
     pub fn redirect_port(mut self, v: u16) -> Self {
         self.redirect_port = Some(v);
         self
@@ -2252,20 +2256,22 @@ mod tests {
         })
         .to_string();
         let (token_addr, token_request) = mock_token_server_with_request(200, token_response).await;
-        let redirect_port = std::net::TcpListener::bind("127.0.0.1:0")
-            .unwrap()
-            .local_addr()
-            .unwrap()
-            .port();
-        let redirect_addr: std::net::SocketAddr = ([127, 0, 0, 1], redirect_port).into();
         let cache_dir = tempfile::tempdir().unwrap();
 
         let opened = std::sync::Arc::new(std::sync::Mutex::new(None::<String>));
         let opener: Opener = {
             let opened = opened.clone();
             Box::new(move |url: &str| {
-                let state = Url::parse(url)
+                let parsed = Url::parse(url).unwrap();
+                let redirect_uri = parsed
+                    .query_pairs()
+                    .find(|(k, _)| k == "redirect_uri")
                     .unwrap()
+                    .1
+                    .into_owned();
+                let redirect_port = Url::parse(&redirect_uri).unwrap().port().unwrap();
+                let redirect_addr: std::net::SocketAddr = ([127, 0, 0, 1], redirect_port).into();
+                let state = parsed
                     .query_pairs()
                     .find(|(k, _)| k == "state")
                     .unwrap()
@@ -2281,7 +2287,7 @@ mod tests {
         let credential = OAuthInteractiveResolver::builder("client")
             .login_host(format!("http://{token_addr}"))
             .login_account_id("42")
-            .redirect_port(redirect_port)
+            .redirect_port(/*v*/ 0)
             .cache_path(cache_dir.path().join("oauth_sessions.json"))
             .opener(opener)
             .build()
@@ -2291,6 +2297,14 @@ mod tests {
 
         let opened = opened.lock().unwrap().clone().unwrap();
         assert!(opened.starts_with(&format!("http://{token_addr}/oauth/authorize?")));
+        let redirect_uri = Url::parse(&opened)
+            .unwrap()
+            .query_pairs()
+            .find(|(k, _)| k == "redirect_uri")
+            .unwrap()
+            .1
+            .into_owned();
+        assert_ne!(Url::parse(&redirect_uri).unwrap().port(), Some(0));
 
         let (request_line, body) = token_request.await.unwrap();
         assert!(request_line.starts_with("POST /oauth/token?account_id=42 "));
@@ -2299,7 +2313,7 @@ mod tests {
             .collect();
         assert_eq!(
             form.get("redirect_uri").map(String::as_str),
-            Some(format!("http://localhost:{redirect_port}/").as_str())
+            Some(redirect_uri.as_str())
         );
         assert_eq!(form.get("code").map(String::as_str), Some("auth-code"));
         assert_eq!(credential.account_host(), "ab123.cloud.example.com");
