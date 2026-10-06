@@ -451,7 +451,8 @@ async fn prepare_dev_clone_request(
         table_properties: candidate.table_properties(),
         clone_chain_depth_limit: clone_chain_depth_limit_for_adapter(
             ctx.default_adapter_type(),
-            false,
+            false, // dev clone target is never the prod/defer target
+            ctx.inner.arg.defer,
             ctx.dbt_profile().allow_clones,
         ),
         table_namespace: project_info.table_namespace,
