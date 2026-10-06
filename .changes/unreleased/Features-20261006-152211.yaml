@@ -1,0 +1,7 @@
+kind: Features
+body: Support per-node adapter execution and consumer-aware ref and source routing across shared catalogs.
+time: 2026-10-06T15:22:11.351667-07:00
+custom:
+    author: colin-k-rogers
+    issue: ""
+    project: dbt-core
