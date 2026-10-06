@@ -17,7 +17,7 @@ use dbt_common::node_selector::{MethodName, selectors_require_manifest};
 use dbt_common::static_analysis::is_strict_static_analysis;
 use dbt_common::tracing::dbt_emit::{emit_trace_log_message, emit_warn_log_message};
 use dbt_common::tracing::span_info::SpanStatusRecorder as _;
-use dbt_common::{ErrorCode, FsResult};
+use dbt_common::{ErrorCode, FsResult, fs_err};
 use dbt_dag::schedule::Schedule;
 use dbt_jinja_utils::jinja_environment::JinjaEnv;
 use dbt_scheduler::node_selector::filter_select_criteria;
@@ -657,7 +657,7 @@ fn should_defer_base_attr(node: &dyn InternalDbtNodeAttributes, is_frontier: boo
 fn infer_deferred_producer_adapter(
     local_adapter: AdapterType,
     deferred_node: &dyn InternalDbtNodeAttributes,
-) -> AdapterType {
+) -> FsResult<AdapterType> {
     let catalogs = load_catalogs::fetch_catalogs();
     infer_deferred_producer_adapter_with_catalogs(local_adapter, deferred_node, catalogs.as_deref())
 }
@@ -666,7 +666,7 @@ fn infer_deferred_producer_adapter_with_catalogs(
     local_adapter: AdapterType,
     deferred_node: &dyn InternalDbtNodeAttributes,
     catalogs: Option<&DbtCatalogs>,
-) -> AdapterType {
+) -> FsResult<AdapterType> {
     let catalog_name = if let Some(model) = deferred_node.as_any().downcast_ref::<DbtModel>() {
         model.__model_attr__.catalog_name.as_deref()
     } else if let Some(seed) = deferred_node.as_any().downcast_ref::<DbtSeed>() {
@@ -675,13 +675,13 @@ fn infer_deferred_producer_adapter_with_catalogs(
         None
     };
     let Some(catalog_name) = catalog_name else {
-        return local_adapter;
+        return Ok(local_adapter);
     };
     let Some(catalogs) = catalogs else {
-        return local_adapter;
+        return Ok(local_adapter);
     };
     if catalogs.view().is_err() {
-        return local_adapter;
+        return Ok(local_adapter);
     }
 
     let state_database = deferred_node.database();
@@ -698,24 +698,64 @@ fn infer_deferred_producer_adapter_with_catalogs(
     })
     .collect();
 
-    unique_matching_adapter(&resolved_databases, |database| database == state_database)
-        .or_else(|| {
-            unique_matching_adapter(&resolved_databases, |database| {
-                database.eq_ignore_ascii_case(&state_database)
-            })
-        })
-        .unwrap_or(local_adapter)
+    infer_adapter_from_catalog_databases(
+        local_adapter,
+        &state_database,
+        deferred_node.quoting().database,
+        &resolved_databases,
+    )
+}
+
+fn infer_adapter_from_catalog_databases(
+    local_adapter: AdapterType,
+    state_database: &str,
+    database_is_quoted: bool,
+    resolved_databases: &[(AdapterType, String)],
+) -> FsResult<AdapterType> {
+    if let Some(adapter) = unique_matching_adapter(
+        resolved_databases,
+        |database| database == state_database,
+        state_database,
+        "exact",
+    )? {
+        return Ok(adapter);
+    }
+    if database_is_quoted {
+        return Ok(local_adapter);
+    }
+    Ok(unique_matching_adapter(
+        resolved_databases,
+        |database| database.eq_ignore_ascii_case(state_database),
+        state_database,
+        "case-insensitive",
+    )?
+    .unwrap_or(local_adapter))
 }
 
 fn unique_matching_adapter(
     resolved_databases: &[(AdapterType, String)],
     matches: impl Fn(&str) -> bool,
-) -> Option<AdapterType> {
-    let mut adapters = resolved_databases
+    state_database: &str,
+    match_kind: &str,
+) -> FsResult<Option<AdapterType>> {
+    let adapters: Vec<_> = resolved_databases
         .iter()
-        .filter_map(|(adapter, database)| matches(database).then_some(*adapter));
-    let adapter = adapters.next()?;
-    adapters.next().is_none().then_some(adapter)
+        .filter_map(|(adapter, database)| matches(database).then_some(*adapter))
+        .collect();
+    match adapters.as_slice() {
+        [] => Ok(None),
+        [adapter] => Ok(Some(*adapter)),
+        _ => Err(fs_err!(
+            ErrorCode::InvalidConfig,
+            "Cannot infer the producer adapter for deferred catalog database '{state_database}': \
+             it has multiple {match_kind} adapter matches ({})",
+            adapters
+                .iter()
+                .map(AdapterType::as_ref)
+                .collect::<Vec<_>>()
+                .join(", ")
+        )),
+    }
 }
 
 /// Apply deferral to a single node: rewrite Jinja `ref()` to render the
@@ -741,14 +781,13 @@ fn apply_deferral_to_node<N>(
 where
     N: InternalDbtNode + InternalDbtNodeAttributes + Clone,
 {
-    // Manifests do not persist a per-node adapter. Prefer an unambiguous
-    // adapter encoded by the deferred catalog database; otherwise the matching
-    // local node is the best available signal.
-    let producer_adapter = local_nodes
-        .get(unique_id)
-        .map(|node| node.node_adapter())
-        .map(|local_adapter| infer_deferred_producer_adapter(local_adapter, deferred_node))
-        .unwrap_or(adapter_type);
+    // Manifests do not persist a per-node adapter. Prefer an adapter encoded by
+    // the deferred catalog database; reject ambiguous catalog namespaces, and
+    // use the matching local node only for genuinely unmatched legacy state.
+    let producer_adapter = match local_nodes.get(unique_id) {
+        Some(node) => infer_deferred_producer_adapter(node.node_adapter(), deferred_node)?,
+        None => adapter_type,
+    };
     node_resolver.update_ref_with_deferral(deferred_node, producer_adapter, is_frontier)?;
     if should_defer_base_attr(deferred_node, is_frontier)
         && let Some(node) = local_nodes.get_mut(unique_id)
@@ -1082,41 +1121,45 @@ pub async fn update_ref_lookups_from_state(
 
     for (uid, node) in &defer_nodes.models {
         if to_defer.contains(uid) {
-            let producer_adapter = producer_adapters
-                .get(uid)
-                .copied()
-                .map(|local_adapter| infer_deferred_producer_adapter(local_adapter, node.as_ref()))
-                .unwrap_or(adapter_type);
+            let producer_adapter = match producer_adapters.get(uid).copied() {
+                Some(local_adapter) => {
+                    infer_deferred_producer_adapter(local_adapter, node.as_ref())?
+                }
+                None => adapter_type,
+            };
             node_resolver.update_ref_with_deferral(node.as_ref(), producer_adapter, true)?;
         }
     }
     for (uid, node) in &defer_nodes.seeds {
         if to_defer.contains(uid) {
-            let producer_adapter = producer_adapters
-                .get(uid)
-                .copied()
-                .map(|local_adapter| infer_deferred_producer_adapter(local_adapter, node.as_ref()))
-                .unwrap_or(adapter_type);
+            let producer_adapter = match producer_adapters.get(uid).copied() {
+                Some(local_adapter) => {
+                    infer_deferred_producer_adapter(local_adapter, node.as_ref())?
+                }
+                None => adapter_type,
+            };
             node_resolver.update_ref_with_deferral(node.as_ref(), producer_adapter, true)?;
         }
     }
     for (uid, node) in &defer_nodes.snapshots {
         if to_defer.contains(uid) {
-            let producer_adapter = producer_adapters
-                .get(uid)
-                .copied()
-                .map(|local_adapter| infer_deferred_producer_adapter(local_adapter, node.as_ref()))
-                .unwrap_or(adapter_type);
+            let producer_adapter = match producer_adapters.get(uid).copied() {
+                Some(local_adapter) => {
+                    infer_deferred_producer_adapter(local_adapter, node.as_ref())?
+                }
+                None => adapter_type,
+            };
             node_resolver.update_ref_with_deferral(node.as_ref(), producer_adapter, true)?;
         }
     }
     for (uid, node) in &defer_nodes.functions {
         if to_defer.contains(uid) {
-            let producer_adapter = producer_adapters
-                .get(uid)
-                .copied()
-                .map(|local_adapter| infer_deferred_producer_adapter(local_adapter, node.as_ref()))
-                .unwrap_or(adapter_type);
+            let producer_adapter = match producer_adapters.get(uid).copied() {
+                Some(local_adapter) => {
+                    infer_deferred_producer_adapter(local_adapter, node.as_ref())?
+                }
+                None => adapter_type,
+            };
             node_resolver.update_ref_with_deferral(node.as_ref(), producer_adapter, true)?;
         }
     }
@@ -1324,96 +1367,93 @@ mod tests {
 
     #[test]
     fn deferral_infers_changed_adapters_from_state_catalog_databases() {
-        let yaml: dbt_yaml::Value = dbt_yaml::from_str(
-            r#"
-catalogs:
-  - name: shared
-    type: iceberg_rest
-    table_format: iceberg
-    config:
-      snowflake:
-        catalog_database: SNOWFLAKE_SHARED
-      duckdb:
-        endpoint: https://example.com/catalog
-        warehouse: shared
-        catalog_database: duck_shared
-"#,
-        )
-        .unwrap();
-        let catalogs = DbtCatalogs::new(yaml.as_mapping().unwrap().clone(), yaml.span().clone());
-        let mut deferred_node =
-            (*make_underlying_model("model.test.orders", "orders", "analytics")).clone();
-        deferred_node.__base_attr__.database = "SNOWFLAKE_SHARED".to_string();
-        deferred_node.__base_attr__.adapter = AdapterType::DuckDB;
-        deferred_node.__model_attr__.catalog_name = Some("shared".to_string());
-
         assert_eq!(
-            infer_deferred_producer_adapter_with_catalogs(
+            infer_adapter_from_catalog_databases(
                 AdapterType::DuckDB,
-                &deferred_node,
-                Some(&catalogs),
-            ),
-            AdapterType::Snowflake
-        );
-
-        let mut deferred_seed = DbtSeed {
-            __common_attr__: create_common_attr("seed.test.orders"),
-            __base_attr__: create_base_attr("orders"),
-            ..Default::default()
-        };
-        deferred_seed.__base_attr__.database = "SNOWFLAKE_SHARED".to_string();
-        deferred_seed.__seed_attr__.catalog_name = Some("shared".to_string());
-        assert_eq!(
-            infer_deferred_producer_adapter_with_catalogs(
-                AdapterType::DuckDB,
-                &deferred_seed,
-                Some(&catalogs),
-            ),
+                "SNOWFLAKE_SHARED",
+                false,
+                &[
+                    (AdapterType::DuckDB, "duck_shared".to_string()),
+                    (AdapterType::Snowflake, "SNOWFLAKE_SHARED".to_string()),
+                ],
+            )
+            .unwrap(),
             AdapterType::Snowflake
         );
     }
 
     #[test]
     fn deferral_prefers_exact_catalog_database_matches_before_case_folding() {
-        let yaml: dbt_yaml::Value = dbt_yaml::from_str(
-            r#"
-catalogs:
-  - name: shared
-    type: iceberg_rest
-    table_format: iceberg
-    config:
-      snowflake:
-        catalog_database: SHARED
-      duckdb:
-        endpoint: https://example.com/catalog
-        warehouse: shared
-        catalog_database: shared
-"#,
-        )
-        .unwrap();
-        let catalogs = DbtCatalogs::new(yaml.as_mapping().unwrap().clone(), yaml.span().clone());
-        let mut deferred_node =
-            (*make_underlying_model("model.test.orders", "orders", "analytics")).clone();
-        deferred_node.__model_attr__.catalog_name = Some("shared".to_string());
-
-        deferred_node.__base_attr__.database = "SHARED".to_string();
+        let databases = [
+            (AdapterType::Snowflake, "SHARED".to_string()),
+            (AdapterType::DuckDB, "shared".to_string()),
+        ];
         assert_eq!(
-            infer_deferred_producer_adapter_with_catalogs(
-                AdapterType::DuckDB,
-                &deferred_node,
-                Some(&catalogs),
-            ),
+            infer_adapter_from_catalog_databases(AdapterType::DuckDB, "SHARED", false, &databases,)
+                .unwrap(),
             AdapterType::Snowflake
         );
-
-        deferred_node.__base_attr__.database = "shared".to_string();
         assert_eq!(
-            infer_deferred_producer_adapter_with_catalogs(
+            infer_adapter_from_catalog_databases(
                 AdapterType::Snowflake,
-                &deferred_node,
-                Some(&catalogs),
-            ),
+                "shared",
+                false,
+                &databases,
+            )
+            .unwrap(),
             AdapterType::DuckDB
+        );
+    }
+
+    #[test]
+    fn deferral_rejects_ambiguous_exact_catalog_database_matches() {
+        let error = infer_adapter_from_catalog_databases(
+            AdapterType::DuckDB,
+            "shared",
+            false,
+            &[
+                (AdapterType::DuckDB, "shared".to_string()),
+                (AdapterType::Snowflake, "shared".to_string()),
+            ],
+        )
+        .unwrap_err();
+
+        assert!(error.to_string().contains("multiple exact"), "{error}");
+    }
+
+    #[test]
+    fn deferral_rejects_ambiguous_case_folded_catalog_database_matches() {
+        let error = infer_adapter_from_catalog_databases(
+            AdapterType::Databricks,
+            "ShArEd",
+            false,
+            &[
+                (AdapterType::DuckDB, "shared".to_string()),
+                (AdapterType::Snowflake, "SHARED".to_string()),
+            ],
+        )
+        .unwrap_err();
+
+        assert!(
+            error.to_string().contains("multiple case-insensitive"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn deferral_does_not_case_fold_quoted_catalog_databases() {
+        assert_eq!(
+            infer_adapter_from_catalog_databases(
+                AdapterType::Databricks,
+                "ShArEd",
+                true,
+                &[
+                    (AdapterType::DuckDB, "shared".to_string()),
+                    (AdapterType::Snowflake, "SHARED".to_string()),
+                ],
+            )
+            .unwrap(),
+            AdapterType::Databricks
         );
     }
 
