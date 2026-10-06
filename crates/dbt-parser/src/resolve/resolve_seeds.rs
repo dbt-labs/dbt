@@ -21,6 +21,7 @@ use dbt_common::{ErrorCode, FsResult, fs_err, stdfs};
 use dbt_frontend_common::Dialect;
 use dbt_jinja_utils::jinja_environment::JinjaEnv;
 use dbt_jinja_utils::node_resolver::NodeResolver;
+use dbt_jinja_utils::phases::build_adapter_target_context;
 use dbt_jinja_utils::serde::into_typed_with_jinja;
 use dbt_jinja_utils::utils::dependency_package_name_from_ctx;
 use dbt_schemas::dbt_utils::resolve_package_quoting;
@@ -33,7 +34,7 @@ use dbt_schemas::schemas::properties::SeedProperties;
 use dbt_schemas::schemas::telemetry::NodeType;
 use dbt_schemas::schemas::{CommonAttributes, DbtSeed, DbtSeedAttr, NodeBaseAttributes};
 use dbt_schemas::state::resolve_effective_propagation_target;
-use dbt_schemas::state::{DbtPackage, GenericTestAsset};
+use dbt_schemas::state::{DbtPackage, DbtProfile, GenericTestAsset};
 use dbt_schemas::state::{ModelStatus, NodeResolverTracker};
 use indexmap::IndexMap;
 use minijinja::value::Value as MinijinjaValue;
@@ -58,9 +59,8 @@ pub async fn resolve_seeds(
     adapter_quoting: &IndexMap<AdapterType, DbtQuoting>,
     root_package: &DbtPackage,
     root_project_configs: &RootProjectConfigs,
-    database: &str,
-    schema: &str,
     default_adapter: AdapterType,
+    profile: &DbtProfile,
     package_name: &str,
     jinja_env: &JinjaEnv,
     base_ctx: &BTreeMap<String, MinijinjaValue>,
@@ -71,6 +71,7 @@ pub async fn resolve_seeds(
 ) -> FsResult<(HashMap<String, Arc<DbtSeed>>, HashMap<String, Arc<DbtSeed>>)> {
     let mut seeds: HashMap<String, Arc<DbtSeed>> = HashMap::new();
     let mut disabled_seeds: HashMap<String, Arc<DbtSeed>> = HashMap::new();
+    let mut adapter_relation_contexts = HashMap::new();
     let io_args = &arg.io;
     let catalogs = load_catalogs::fetch_catalogs();
     let use_catalogs_v2 = load_catalogs::fetch_use_catalogs_v2();
@@ -361,6 +362,15 @@ pub async fn resolve_seeds(
             .map(Into::into)
             .unwrap_or_default();
         let selected_adapter = resolved_node_adapter.unwrap_or(default_adapter);
+        if !adapter_relation_contexts.contains_key(&selected_adapter) {
+            adapter_relation_contexts.insert(
+                selected_adapter,
+                build_adapter_target_context(profile, selected_adapter, base_ctx)?,
+            );
+        }
+        let relation_context = adapter_relation_contexts
+            .get(&selected_adapter)
+            .expect("selected adapter relation context was inserted");
         let catalog_requires_snowflake = catalogs_state
             .catalog_requires_snowflake_propagation(properties_config.catalog_name.as_deref())?;
         let effective_propagation_target = (selected_adapter == AdapterType::LakeCompute)
@@ -417,10 +427,10 @@ pub async fn resolve_seeds(
                 adapter: selected_adapter,
                 propagate: selected_propagate,
                 effective_propagation_target,
-                database: database.to_string(), // will be updated below
-                schema: schema.to_string(),     // will be updated below
-                alias: "".to_owned(),           // will be updated below
-                relation_name: None,            // will be updated below
+                database: relation_context.database.clone(), // will be updated below
+                schema: relation_context.schema.clone(),     // will be updated below
+                alias: "".to_owned(),                        // will be updated below
+                relation_name: None,                         // will be updated below
                 columns,
                 depends_on: NodeDependsOn::default(),
                 quoting: properties_config
@@ -458,9 +468,9 @@ pub async fn resolve_seeds(
             jinja_env,
             &root_package.dbt_project.name,
             package_name,
-            base_ctx,
+            &relation_context.base_context,
             &components,
-            default_adapter,
+            selected_adapter,
         )?;
 
         let status = if is_enabled {
@@ -469,7 +479,7 @@ pub async fn resolve_seeds(
             ModelStatus::Disabled
         };
 
-        match node_resolver.insert_ref(&dbt_seed, default_adapter, status, false) {
+        match node_resolver.insert_ref(&dbt_seed, selected_adapter, status, false) {
             Ok(_) => (),
             Err(e) => {
                 let err_with_loc = e.with_location(path.clone());
