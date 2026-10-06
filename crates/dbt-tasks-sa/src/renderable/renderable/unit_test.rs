@@ -588,13 +588,15 @@ fn infer_unit_test_expected_schema(
     task_hooks: &dyn RenderTaskHooks,
 ) -> FsResult<SchemaRef> {
     let adapter = ctx.adapter_store().get(unit_test.node_adapter())?;
+    let jinja_env = ctx.jinja_env_for_adapter(unit_test.node_adapter())?;
+    let base_context = ctx.base_context_for_adapter(unit_test.node_adapter())?;
 
     let (mut run_context, _result_store) = build_run_node_context(
         unit_test,
         &unit_test.deprecated_config,
         unit_test.node_adapter(),
         None,
-        &ctx.inner.base_context,
+        &base_context,
         &ctx.inner.arg.io,
         TelemetryExecutionPhase::Render,
         None,
@@ -616,7 +618,7 @@ fn infer_unit_test_expected_schema(
     );
 
     if let Some(overrides) = &unit_test.__unit_test_attr__.overrides {
-        apply_unit_test_overrides(&mut run_context, overrides, ctx);
+        apply_unit_test_overrides(&mut run_context, overrides, ctx, &jinja_env);
     }
 
     // This is a small part of the dbt-core unit test materialization logic that infers
@@ -769,7 +771,7 @@ fn infer_unit_test_expected_schema(
             return Ok(schema);
         }
 
-        let template = ctx.env.template_from_str(materialization).map_err(|e| {
+        let template = jinja_env.template_from_str(materialization).map_err(|e| {
             fs_err!(
                 ErrorCode::JinjaError,
                 "Internal error while compiling macro to infer schema for unit test {}: {}",
@@ -847,9 +849,10 @@ fn infer_schema_from_compiled_sql(
     options: ExpectedSchemaInferenceOptions,
     task_hooks: &dyn RenderTaskHooks,
 ) -> FsResult<SchemaRef> {
+    let jinja_env = ctx.jinja_env_for_adapter(unit_test.node_adapter())?;
     let compiled_model_sql = render_sql(
         raw_model_sql,
-        &ctx.env,
+        &jinja_env,
         compile_context,
         ctx.rendering_listener_factory.as_ref(),
         original_file_path,
@@ -926,10 +929,11 @@ pub fn apply_unit_test_overrides(
     compile_context: &mut BTreeMap<String, MinijinjaValue>,
     overrides: &UnitTestOverrides,
     ctx: &TaskRunnerCtx,
+    jinja_env: &JinjaEnv,
 ) {
     // Override for Macros
     if let Some(macros) = overrides.macros.as_ref() {
-        bind_override_macros(macros, compile_context, &ctx.env);
+        bind_override_macros(macros, compile_context, jinja_env);
     }
 
     // Override for Environment Variables
@@ -1193,6 +1197,7 @@ fn discover_given_relations(
     ut: &DbtUnitTest,
     ctx: &mut TaskRunnerCtx,
 ) -> FsResult<DiscoveredGivenRelations> {
+    let jinja_env = ctx.jinja_env_for_adapter(ut.node_adapter())?;
     let mut base_context = ctx.base_context_for_adapter(ut.node_adapter())?;
     add_task_context(&mut base_context, ut.common(), &ctx.thread_id);
 
@@ -1217,14 +1222,13 @@ fn discover_given_relations(
     // rebuilt with different column types between invocations.
     let force_refetch = ut.node_adapter() == AdapterType::ClickHouse;
     let refresh_persisted_given_schemas = !is_replay_active(ctx)
-        && ctx
-            .env
+        && jinja_env
             .get_base_adapter()
             .is_some_and(|adapter| !adapter.engine().is_mock());
 
     for given in &ut.__unit_test_attr__.given {
         let given_relation = {
-            ctx.env
+            jinja_env
                 .compile_expression(&given.input)?
                 .eval(compile_context.clone(), &listeners)?
         };
@@ -1368,6 +1372,7 @@ fn render_unit_test(
         given_relation_ids,
         ..
     } = given_relations;
+    let jinja_env = ctx.jinja_env_for_adapter(node.node_adapter())?;
     let mut base_context = ctx.base_context_for_adapter(node.node_adapter())?;
 
     add_task_context(&mut base_context, node.common(), &ctx.thread_id);
@@ -1447,7 +1452,7 @@ fn render_unit_test(
 
     // Apply overrides to the compile context
     if let Some(overrides) = &node.__unit_test_attr__.overrides {
-        apply_unit_test_overrides(&mut compile_context, overrides, ctx);
+        apply_unit_test_overrides(&mut compile_context, overrides, ctx, &jinja_env);
     }
 
     let resolver_state = ctx.resolver_state();
@@ -1799,7 +1804,7 @@ WITH
 
     let rendered_sql = render_sql(
         &query_str,
-        &ctx.env,
+        &jinja_env,
         &compile_context,
         ctx.rendering_listener_factory.as_ref(),
         original_file_path,

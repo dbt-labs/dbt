@@ -447,11 +447,15 @@ pub async fn run_operation_on_run_with_ctx(
     database_schemas: &Option<Vec<(String, String)>>,
     results: &Option<Vec<ContextRunResult>>,
 ) -> FsResult<String> {
+    let adapter_type = operation.node_adapter();
+    let base_context = ctx.base_context_for_adapter(adapter_type)?;
+    let jinja_env = ctx.jinja_env_for_adapter(adapter_type)?;
+
     // Build operation-specific context with static_analysis=unsafe
     // This ensures refs/sources in operations use deferred relations
     let (mut operation_ctx, _) = ctx.build_compile_node_context(
         &**operation,
-        &ctx.inner.base_context,
+        &base_context,
         DependencyValidationConfig::new_unvalidated(),
     )?;
 
@@ -485,7 +489,7 @@ pub async fn run_operation_on_run_with_ctx(
         &schemas,
         &database_schemas,
         Some(Arc::clone(&ctx.rendering_listener_factory)),
-        &ctx.env,
+        &jinja_env,
         &operation_ctx,
         results_value,
     )
