@@ -88,13 +88,7 @@ def parse_with_v2(
                 # macro rediscovery below doesn't affect semantic models, so
                 # semantic_manifest.json needs no correction pass.
                 project_target_path.mkdir(parents=True, exist_ok=True)
-                semantic_manifest_path = handoff / SEMANTIC_MANIFEST_FILE_NAME
-                if semantic_manifest_path.exists():
-                    target_semantic_manifest_path = (
-                        project_target_path / SEMANTIC_MANIFEST_FILE_NAME
-                    )
-                    shutil.copyfile(semantic_manifest_path, target_semantic_manifest_path)
-                    add_artifact_produced(str(target_semantic_manifest_path))
+                _copy_semantic_manifest(handoff, project_target_path)
     except (
         V2ParserVersionError,
         V2ParserSchemaError,
@@ -719,6 +713,16 @@ def _serialize_vars(cli_vars) -> str:
     if isinstance(cli_vars, str):
         return cli_vars
     return yaml.safe_dump(cli_vars, default_flow_style=True).strip()
+
+
+def _copy_semantic_manifest(handoff: Path, target_path: Path) -> None:
+    """Copy the v2 parser's semantic_manifest.json into target/ and register it for upload."""
+    source = handoff / SEMANTIC_MANIFEST_FILE_NAME
+    if not source.exists():
+        return
+    destination = target_path / SEMANTIC_MANIFEST_FILE_NAME
+    shutil.copyfile(source, destination)
+    add_artifact_produced(str(destination))
 
 
 def _delete_stale_partial_parse(target_path: Path) -> None:
