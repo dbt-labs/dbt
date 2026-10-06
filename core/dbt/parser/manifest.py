@@ -47,7 +47,7 @@ from dbt.artifacts.resources import (
     NodeRelation,
     NodeVersion,
 )
-from dbt.artifacts.resources.types import BatchSize, FunctionLanguage, FunctionType
+from dbt.artifacts.resources.types import FunctionLanguage, FunctionType
 from dbt.artifacts.schemas.base import Writable
 from dbt.clients.jinja import MacroStack, get_rendered
 from dbt.clients.jinja_static import statically_extract_macro_calls
@@ -127,6 +127,7 @@ from dbt.parser.functions import FunctionParser
 from dbt.parser.generic_test import GenericTestParser
 from dbt.parser.hooks import HookParser
 from dbt.parser.macros import MacroParser
+from dbt.parser.microbatch_config import validate_and_coerce_microbatch_configs
 from dbt.parser.models import ModelParser
 from dbt.parser.osi import load_osi_into_manifest
 from dbt.parser.partial import PartialParsing, special_override_macros
@@ -1587,65 +1588,7 @@ class ManifestLoader:
             node.config.final_validate()
 
     def check_valid_microbatch_config(self):
-        if self.manifest.use_microbatch_batches(project_name=self.root_project.project_name):
-            for node in self.manifest.nodes.values():
-                if (
-                    node.config.materialized == "incremental"
-                    and node.config.incremental_strategy == "microbatch"
-                ):
-                    # Required configs: event_time, batch_size, begin
-                    event_time = node.config.event_time
-                    if event_time is None:
-                        raise dbt.exceptions.ParsingError(
-                            f"Microbatch model '{node.name}' must provide an 'event_time' (string) config that indicates the name of the event time column."
-                        )
-                    if not isinstance(event_time, str):
-                        raise dbt.exceptions.ParsingError(
-                            f"Microbatch model '{node.name}' must provide an 'event_time' config of type string, but got: {type(event_time)}."
-                        )
-
-                    begin = node.config.begin
-                    if begin is None:
-                        raise dbt.exceptions.ParsingError(
-                            f"Microbatch model '{node.name}' must provide a 'begin' (datetime) config that indicates the earliest timestamp the microbatch model should be built from."
-                        )
-
-                    # Try to cast begin to a datetime using same format as mashumaro for consistency with other yaml-provided datetimes
-                    # Mashumaro default: https://github.com/Fatal1ty/mashumaro/blob/4ac16fd060a6c651053475597b58b48f958e8c5c/README.md?plain=1#L1186
-                    if isinstance(begin, str):
-                        try:
-                            begin = datetime.fromisoformat(begin)
-                            node.config.begin = begin
-                        except Exception:
-                            raise dbt.exceptions.ParsingError(
-                                f"Microbatch model '{node.name}' must provide a 'begin' config of valid datetime (ISO format), but got: {begin}."
-                            )
-
-                    if not isinstance(begin, datetime):
-                        raise dbt.exceptions.ParsingError(
-                            f"Microbatch model '{node.name}' must provide a 'begin' config of type datetime, but got: {type(begin)}."
-                        )
-
-                    batch_size = node.config.batch_size
-                    valid_batch_sizes = [size.value for size in BatchSize]
-                    if batch_size not in valid_batch_sizes:
-                        raise dbt.exceptions.ParsingError(
-                            f"Microbatch model '{node.name}' must provide a 'batch_size' config that is one of {valid_batch_sizes}, but got: {batch_size}."
-                        )
-
-                    # Optional config: lookback (int)
-                    lookback = node.config.lookback
-                    if not isinstance(lookback, int) and lookback is not None:
-                        raise dbt.exceptions.ParsingError(
-                            f"Microbatch model '{node.name}' must provide the optional 'lookback' config as type int, but got: {type(lookback)})."
-                        )
-
-                    # optional config: concurrent_batches (bool)
-                    concurrent_batches = node.config.concurrent_batches
-                    if not isinstance(concurrent_batches, bool) and concurrent_batches is not None:
-                        raise dbt.exceptions.ParsingError(
-                            f"Microbatch model '{node.name}' optional 'concurrent_batches' config must be of type `bool` if specified, but got: {type(concurrent_batches)})."
-                        )
+        validate_and_coerce_microbatch_configs(self.manifest, self.root_project.project_name)
 
     def check_forcing_batch_concurrency(self) -> None:
         if self.manifest.use_microbatch_batches(project_name=self.root_project.project_name):
