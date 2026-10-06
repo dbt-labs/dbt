@@ -7,7 +7,7 @@
 //! `operations.go`). The payload and the response are the AWS API JSON shapes, so
 //! the composition below follows `impl.py` field for field.
 
-use super::{TableType, is_s3_tables_database, parse_s3_path};
+use super::{TableType, is_s3_tables_database, parse_s3_path, unquote_catalog};
 use crate::AdapterEngine;
 use crate::adapter::Adapter;
 use crate::errors::{AdapterError, AdapterErrorKind, AdapterResult};
@@ -276,7 +276,7 @@ impl<'a, 't, 'e> AthenaOps<'a, 't, 'e> {
     /// Glue catalogs whose id derives from the account id; anything else is looked up as
     /// an Athena data catalog.
     pub(super) fn data_catalog(&self, database: Option<&str>) -> AdapterResult<DataCatalog> {
-        let Some(database) = database.filter(|d| !d.is_empty()) else {
+        let Some(database) = database.map(unquote_catalog).filter(|d| !d.is_empty()) else {
             return Ok(DataCatalog::Glue(None));
         };
         if database.eq_ignore_ascii_case("awsdatacatalog") {

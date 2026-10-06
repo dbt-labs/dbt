@@ -106,6 +106,11 @@ impl TableType {
     }
 }
 
+/// A catalog name reaches the adapter bare or already quoted, depending on the call path.
+pub fn unquote_catalog(database: &str) -> &str {
+    database.trim_matches('"')
+}
+
 pub fn is_s3_tables_database(database: Option<&str>) -> bool {
     database.is_some_and(|d| {
         d.to_ascii_lowercase().starts_with(&format!(
@@ -532,5 +537,16 @@ mod tests {
         assert!(is_s3_tables_database(Some("S3TablesCatalog/my-bucket")));
         assert!(!is_s3_tables_database(Some("awsdatacatalog")));
         assert!(!is_s3_tables_database(None));
+    }
+
+    #[test]
+    fn catalog_names_are_unquoted() {
+        assert_eq!(unquote_catalog("awsdatacatalog"), "awsdatacatalog");
+        assert_eq!(unquote_catalog("\"awsdatacatalog\""), "awsdatacatalog");
+        assert_eq!(
+            unquote_catalog("\"s3tablescatalog/my-bucket\""),
+            "s3tablescatalog/my-bucket"
+        );
+        assert_eq!(unquote_catalog("\"\""), "");
     }
 }
