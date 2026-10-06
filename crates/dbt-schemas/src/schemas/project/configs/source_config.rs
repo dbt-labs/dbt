@@ -418,6 +418,7 @@ impl From<ProjectSourceConfig> for SourceConfig {
                 enable_list_inference: None,
                 intermediate_format: None,
                 storage_uri: None,
+                enable_change_history: None,
                 incremental_apply_config_changes: None,
                 persist_constraints: None,
                 use_safer_relation_operations: None,

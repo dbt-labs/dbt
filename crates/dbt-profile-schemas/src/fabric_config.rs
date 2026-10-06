@@ -241,7 +241,7 @@ pub fn default_fabric_config() -> FabricDbConfig {
     }
 }
 
-pub fn setup_fabric_profile(
+pub(crate) fn setup_fabric_profile(
     existing_config: Option<&FabricDbConfig>,
 ) -> FsResult<Box<FabricDbConfig>> {
     let default_config = default_fabric_config();

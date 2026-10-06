@@ -5,6 +5,7 @@
 //! metadata lookups are deliberately not cached so callers can fail open and
 //! retry later in the same invocation.
 
+use std::collections::BTreeMap;
 use std::fmt::Display;
 use std::future::Future;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
@@ -12,6 +13,7 @@ use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{Duration, Instant};
 
 use dashmap::DashMap;
+use dbt_schemas::schemas::relations::base::BaseRelation;
 use tokio::sync::{Mutex, OwnedMutexGuard};
 
 #[derive(Debug, Default)]
@@ -21,15 +23,138 @@ pub struct RunCacheMetadataCache {
     last_modified_epochs: DashMap<String, TimedEntry<Option<i64>>>,
     lookup_errors: DashMap<String, TimedEntry<String>>,
     in_flight: DashMap<String, Arc<FlightState>>,
+    /// Per-key version counters, kept separate from `in_flight` so a version
+    /// survives the refcounted `FlightState` entry being dropped and recreated
+    /// while nobody is in flight for that key. See `bump_version`.
+    versions: DashMap<String, Arc<AtomicU64>>,
     generation: AtomicU64,
     write_lock: StdMutex<()>,
+    /// Coalesces BigQuery freshness lookups by database and schema.
+    schema_fetch_coalescers: DashMap<(String, String), Arc<SchemaFetchCoalescer>>,
+    /// Protects coalescer-map refcounts independently of cache writes.
+    coalescer_lock: StdMutex<()>,
+}
+
+trait RefCounted {
+    fn users(&self) -> &AtomicUsize;
 }
 
 #[derive(Debug, Default)]
 struct FlightState {
     lock: Arc<Mutex<()>>,
-    version: AtomicU64,
     users: AtomicUsize,
+}
+
+impl RefCounted for FlightState {
+    fn users(&self) -> &AtomicUsize {
+        &self.users
+    }
+}
+
+/// A relation and its cache version when added to a pending batch.
+type PendingRelation = (Arc<dyn BaseRelation>, u64);
+
+/// Merges concurrent BigQuery freshness misses for the same schema.
+/// Refcounting removes idle entries from the process-wide cache.
+#[derive(Debug, Default)]
+struct SchemaFetchCoalescer {
+    pending: Mutex<BTreeMap<String, PendingRelation>>,
+    query_gate: Arc<Mutex<()>>,
+    users: AtomicUsize,
+}
+
+impl RefCounted for SchemaFetchCoalescer {
+    fn users(&self) -> &AtomicUsize {
+        &self.users
+    }
+}
+
+/// Holds a schema coalescer reservation while the query gate is held.
+struct SchemaFetchReservation<'a> {
+    cache: &'a RunCacheMetadataCache,
+    key: (String, String),
+    coalescer: Arc<SchemaFetchCoalescer>,
+}
+
+impl Drop for SchemaFetchReservation<'_> {
+    fn drop(&mut self) {
+        release_refcounted(
+            &self.cache.schema_fetch_coalescers,
+            &self.cache.coalescer_lock,
+            &self.key,
+            &self.coalescer,
+        );
+    }
+}
+
+pub struct SchemaFetchGuard<'a> {
+    reservation: SchemaFetchReservation<'a>,
+    generation_at_join: u64,
+    // Drop unlocks the gate before the reservation releases its refcount.
+    gate_guard: Option<OwnedMutexGuard<()>>,
+}
+
+impl SchemaFetchGuard<'_> {
+    /// Take pending relations and their cache versions for this query.
+    pub async fn drain(&self) -> BTreeMap<String, PendingRelation> {
+        let mut pending = self.reservation.coalescer.pending.lock().await;
+        std::mem::take(&mut *pending)
+    }
+
+    /// Requeue a cancelled batch for another waiter to retry.
+    pub async fn restore(&self, drained: BTreeMap<String, PendingRelation>) {
+        let mut pending = self.reservation.coalescer.pending.lock().await;
+        for (name, relation) in drained {
+            pending.entry(name).or_insert(relation);
+        }
+    }
+
+    /// Whether the cache was cleared after this guard joined.
+    pub fn is_stale(&self, cache: &RunCacheMetadataCache) -> bool {
+        cache.generation.load(Ordering::Relaxed) != self.generation_at_join
+    }
+
+    /// Whether the relation's cache version still matches its join snapshot.
+    pub fn is_relation_fresh(
+        &self,
+        cache: &RunCacheMetadataCache,
+        relation: &str,
+        version_at_join: u64,
+    ) -> bool {
+        cache.last_modified_flight_version(relation) == version_at_join
+    }
+
+    /// Atomically cache a result if the cache and relation versions are unchanged.
+    pub fn insert_last_modified_epoch_if_fresh(
+        &self,
+        cache: &RunCacheMetadataCache,
+        relation: impl Into<String>,
+        epoch: Option<i64>,
+        version_at_join: u64,
+    ) -> bool {
+        let relation = relation.into();
+        let _write_guard = lock_write(&cache.write_lock);
+        if cache.generation.load(Ordering::Relaxed) != self.generation_at_join
+            || cache.last_modified_flight_version(&relation) != version_at_join
+        {
+            return false;
+        }
+        commit_value(
+            &cache.last_modified_epochs,
+            &cache.lookup_errors,
+            &lookup_error_key("last_modified_epoch", &relation),
+            relation,
+            epoch,
+        );
+        true
+    }
+}
+
+impl Drop for SchemaFetchGuard<'_> {
+    fn drop(&mut self) {
+        // Unlock before releasing the reservation so new joins reuse this gate.
+        self.gate_guard.take();
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -173,6 +298,42 @@ impl RunCacheMetadataCache {
         MetadataPrefetchGuard::new(self, lookup_error_key("last_modified_epoch", relation))
     }
 
+    /// Merge relations into the schema batch and wait for its query gate.
+    pub async fn join_schema_fetch(
+        &self,
+        database: &str,
+        schema: &str,
+        relations: &BTreeMap<String, Arc<dyn BaseRelation>>,
+    ) -> SchemaFetchGuard<'_> {
+        let key = (database.to_owned(), schema.to_owned());
+        let coalescer = acquire_refcounted(
+            &self.schema_fetch_coalescers,
+            &self.coalescer_lock,
+            key.clone(),
+        );
+        let reservation = SchemaFetchReservation {
+            cache: self,
+            key,
+            coalescer,
+        };
+        {
+            let mut pending = reservation.coalescer.pending.lock().await;
+            for (name, relation) in relations {
+                let version = self.last_modified_flight_version(name);
+                pending.insert(name.clone(), (Arc::clone(relation), version));
+            }
+        }
+        let generation_at_join = self.generation.load(Ordering::Relaxed);
+        let gate_guard = Arc::clone(&reservation.coalescer.query_gate)
+            .lock_owned()
+            .await;
+        SchemaFetchGuard {
+            reservation,
+            generation_at_join,
+            gate_guard: Some(gate_guard),
+        }
+    }
+
     pub async fn get_or_try_insert_last_modified_epoch<E, F, Fut>(
         &self,
         relation: &str,
@@ -195,10 +356,26 @@ impl RunCacheMetadataCache {
         .await
     }
 
+    /// Bump a key's version even when nothing is in flight. Counters survive
+    /// `clear()`; the generation check rejects writes started before a clear.
     fn bump_version(&self, key: &str) {
-        if let Some(state) = self.in_flight.get(key) {
-            state.version.fetch_add(1, Ordering::Relaxed);
-        }
+        self.versions
+            .entry(key.to_string())
+            .or_default()
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Current version for an arbitrary (already-namespaced) key.
+    fn version_for_key(&self, key: &str) -> u64 {
+        self.versions
+            .get(key)
+            .map(|version| version.load(Ordering::Relaxed))
+            .unwrap_or(0)
+    }
+
+    /// Cache version captured when a relation joins the schema batch.
+    fn last_modified_flight_version(&self, relation: &str) -> u64 {
+        self.version_for_key(&lookup_error_key("last_modified_epoch", relation))
     }
 
     fn insert_value<T>(
@@ -253,7 +430,7 @@ where
             return Ok(value);
         }
 
-        let version_at_fetch = state.version.load(Ordering::Relaxed);
+        let version_at_fetch = cache.version_for_key(&flight_guard.key);
         let generation_at_fetch = cache.generation.load(Ordering::Relaxed);
         let result = fetch().await;
 
@@ -262,7 +439,7 @@ where
         // insert, allowing a stale result to repopulate the cache.
         let _write_guard = lock_write(&cache.write_lock);
         let unchanged = cache.generation.load(Ordering::Relaxed) == generation_at_fetch
-            && state.version.load(Ordering::Relaxed) == version_at_fetch;
+            && cache.version_for_key(&flight_guard.key) == version_at_fetch;
         if !unchanged {
             // Invalidation or clear raced this fetch. Do not expose its stale
             // result; the reusable fetch is retried under the new generation.
@@ -295,12 +472,12 @@ pub struct MetadataPrefetchGuard<'a> {
 
 impl<'a> MetadataPrefetchGuard<'a> {
     fn new(cache: &'a RunCacheMetadataCache, key: String) -> Self {
-        let state = acquire_flight(&cache.in_flight, &cache.write_lock, &key);
+        let state = acquire_refcounted(&cache.in_flight, &cache.write_lock, key.clone());
         Self {
+            generation: cache.generation.load(Ordering::Relaxed),
+            version: cache.version_for_key(&key),
             cache,
             key,
-            generation: cache.generation.load(Ordering::Relaxed),
-            version: state.version.load(Ordering::Relaxed),
             state,
             lock_guard: None,
         }
@@ -314,7 +491,7 @@ impl<'a> MetadataPrefetchGuard<'a> {
     pub fn insert_last_modified_epoch(&self, relation: impl Into<String>, epoch: Option<i64>) {
         let _write_guard = lock_write(&self.cache.write_lock);
         if self.cache.generation.load(Ordering::Relaxed) != self.generation
-            || self.state.version.load(Ordering::Relaxed) != self.version
+            || self.cache.version_for_key(&self.key) != self.version
         {
             // The cache was invalidated while this fetch was in flight; the
             // result is stale and must not be committed. The caller's miss
@@ -338,7 +515,7 @@ impl<'a> MetadataPrefetchGuard<'a> {
 
 impl Drop for MetadataPrefetchGuard<'_> {
     fn drop(&mut self) {
-        release_flight(
+        release_refcounted(
             &self.cache.in_flight,
             &self.cache.write_lock,
             &self.key,
@@ -362,33 +539,29 @@ fn lock_write(lock: &StdMutex<()>) -> std::sync::MutexGuard<'_, ()> {
     lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
-fn acquire_flight(
-    in_flight: &DashMap<String, Arc<FlightState>>,
-    write_lock: &StdMutex<()>,
-    key: &str,
-) -> Arc<FlightState> {
-    let _write_guard = write_lock
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let state = in_flight
-        .entry(key.to_owned())
-        .or_insert_with(|| Arc::new(FlightState::default()))
+/// Get or create an entry and increment its refcount under `lock`.
+fn acquire_refcounted<K, V>(map: &DashMap<K, Arc<V>>, lock: &StdMutex<()>, key: K) -> Arc<V>
+where
+    K: std::hash::Hash + Eq,
+    V: Default + RefCounted,
+{
+    let _guard = lock_write(lock);
+    let value = map
+        .entry(key)
+        .or_insert_with(|| Arc::new(V::default()))
         .clone();
-    state.users.fetch_add(1, Ordering::Relaxed);
-    state
+    value.users().fetch_add(1, Ordering::Relaxed);
+    value
 }
 
-fn release_flight(
-    in_flight: &DashMap<String, Arc<FlightState>>,
-    write_lock: &StdMutex<()>,
-    key: &str,
-    state: &Arc<FlightState>,
-) {
-    let _write_guard = write_lock
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    if state.users.fetch_sub(1, Ordering::Relaxed) == 1 {
-        in_flight.remove_if(key, |_, current| Arc::ptr_eq(current, state));
+fn release_refcounted<K, V>(map: &DashMap<K, Arc<V>>, lock: &StdMutex<()>, key: &K, value: &Arc<V>)
+where
+    K: std::hash::Hash + Eq,
+    V: RefCounted,
+{
+    let _guard = lock_write(lock);
+    if value.users().fetch_sub(1, Ordering::Relaxed) == 1 {
+        map.remove_if(key, |_, current| Arc::ptr_eq(current, value));
     }
 }
 
@@ -422,6 +595,25 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use tokio::sync::Notify;
     use tokio::time::{Duration as TokioDuration, sleep, timeout};
+
+    use dbt_adapter::relation::create_relation;
+    use dbt_adapter_core::AdapterType;
+    use dbt_schemas::schemas::common::ResolvedQuoting;
+
+    fn test_relation(schema: &str, table: &str) -> (String, Arc<dyn BaseRelation>) {
+        let relation: Arc<dyn BaseRelation> = create_relation(
+            AdapterType::Bigquery,
+            "db".to_string(),
+            schema.to_string(),
+            Some(table.to_string()),
+            None,
+            ResolvedQuoting::default(),
+        )
+        .unwrap()
+        .into();
+        let name = relation.semantic_fqn();
+        (name, relation)
+    }
 
     #[dbt_runtime::test]
     async fn relation_exists_lookup_caches_success() {
@@ -841,5 +1033,209 @@ mod tests {
             cache.lookup_error("last_modified_epoch:analytics.orders"),
             None
         );
+    }
+
+    #[tokio::test]
+    async fn concurrent_schema_fetch_joins_merge_into_holders_drain() {
+        let cache = Arc::new(RunCacheMetadataCache::new());
+        let (first_name, first_relation) = test_relation("analytics", "orders");
+        let (second_name, second_relation) = test_relation("analytics", "customers");
+
+        let holder = cache
+            .join_schema_fetch("db", "analytics", &BTreeMap::new())
+            .await;
+        let relation_sets = vec![
+            BTreeMap::from([(first_name.clone(), first_relation)]),
+            BTreeMap::from([(second_name.clone(), second_relation)]),
+        ];
+        let mut joins = Vec::new();
+        for relations in &relation_sets {
+            let mut join = Box::pin(async {
+                let guard = cache.join_schema_fetch("db", "analytics", relations).await;
+                guard.drain().await.is_empty()
+            });
+            assert!(
+                std::future::poll_fn(|cx| {
+                    std::task::Poll::Ready(join.as_mut().poll(cx).is_pending())
+                })
+                .await
+            );
+            joins.push(join);
+        }
+
+        let drained = holder.drain().await;
+        assert_eq!(drained.len(), 2);
+        assert!(drained.contains_key(&first_name));
+        assert!(drained.contains_key(&second_name));
+        drop(holder);
+
+        for join in joins {
+            assert!(join.await);
+        }
+    }
+
+    #[tokio::test]
+    async fn cancelled_schema_fetch_join_releases_its_reservation() {
+        use std::future::Future;
+
+        let cache = RunCacheMetadataCache::new();
+        let key = ("db".to_string(), "analytics".to_string());
+        let holder = cache
+            .join_schema_fetch("db", "analytics", &BTreeMap::new())
+            .await;
+
+        // Cancel once while waiting for the pending-set lock.
+        let pending_lock = holder.reservation.coalescer.pending.lock().await;
+        let empty = BTreeMap::new();
+        let mut pending_waiter = Box::pin(cache.join_schema_fetch("db", "analytics", &empty));
+        assert!(
+            std::future::poll_fn(|cx| {
+                std::task::Poll::Ready(pending_waiter.as_mut().poll(cx).is_pending())
+            })
+            .await
+        );
+        drop(pending_waiter);
+        assert_eq!(
+            cache
+                .schema_fetch_coalescers
+                .get(&key)
+                .unwrap()
+                .users
+                .load(Ordering::Relaxed),
+            1
+        );
+        drop(pending_lock);
+
+        // Cancel again after merging, while waiting for the query gate.
+        let mut gate_waiter = Box::pin(cache.join_schema_fetch("db", "analytics", &empty));
+        assert!(
+            std::future::poll_fn(|cx| {
+                std::task::Poll::Ready(gate_waiter.as_mut().poll(cx).is_pending())
+            })
+            .await
+        );
+        drop(gate_waiter);
+        assert_eq!(
+            cache
+                .schema_fetch_coalescers
+                .get(&key)
+                .unwrap()
+                .users
+                .load(Ordering::Relaxed),
+            1
+        );
+
+        drop(holder);
+        assert!(!cache.schema_fetch_coalescers.contains_key(&key));
+    }
+
+    #[tokio::test]
+    async fn schema_fetch_guard_is_stale_after_cache_clear() {
+        let cache = RunCacheMetadataCache::new();
+        let guard = cache
+            .join_schema_fetch("db", "analytics", &BTreeMap::new())
+            .await;
+        assert!(!guard.is_stale(&cache));
+
+        cache.clear();
+        assert!(guard.is_stale(&cache));
+    }
+
+    #[tokio::test]
+    async fn schema_fetch_guard_detects_per_relation_invalidation() {
+        // Per-relation invalidation must stale this relation without clearing the cache.
+        let cache = RunCacheMetadataCache::new();
+        let (name, relation) = test_relation("analytics", "orders");
+
+        // Match production order: acquire the relation guard before joining.
+        let _prefetch_guard = cache.begin_last_modified_prefetch(&name);
+
+        let guard = cache
+            .join_schema_fetch(
+                "db",
+                "analytics",
+                &BTreeMap::from([(name.clone(), relation)]),
+            )
+            .await;
+        let drained = guard.drain().await;
+        let (_, version_at_join) = *drained.get(&name).unwrap();
+        assert!(guard.is_relation_fresh(&cache, &name, version_at_join));
+
+        // Simulate invalidation while the query is in flight.
+        cache.invalidate_relation_metadata(&name);
+
+        assert!(!guard.is_relation_fresh(&cache, &name, version_at_join));
+        assert!(!guard.is_stale(&cache));
+    }
+
+    #[tokio::test]
+    async fn dropped_prefetch_guard_does_not_reset_relation_version() {
+        let cache = RunCacheMetadataCache::new();
+        let (name, relation) = test_relation("analytics", "orders");
+        let prefetch = cache.begin_last_modified_prefetch(&name);
+        let guard = cache
+            .join_schema_fetch(
+                "db",
+                "analytics",
+                &BTreeMap::from([(name.clone(), relation)]),
+            )
+            .await;
+        let drained = guard.drain().await;
+        let (_, version_at_join) = *drained.get(&name).unwrap();
+
+        drop(prefetch);
+        cache.invalidate_relation_metadata(&name);
+        let _recreated = cache.begin_last_modified_prefetch(&name);
+
+        assert!(!guard.insert_last_modified_epoch_if_fresh(
+            &cache,
+            name.clone(),
+            Some(1),
+            version_at_join,
+        ));
+        assert_eq!(cache.last_modified_epoch(&name), None);
+    }
+
+    #[tokio::test]
+    async fn insert_last_modified_epoch_if_fresh_skips_invalidated_relation() {
+        // Check and commit atomically to avoid stale writes.
+        let cache = RunCacheMetadataCache::new();
+        let (fresh_name, fresh_relation) = test_relation("analytics", "orders");
+        let (stale_name, stale_relation) = test_relation("analytics", "customers");
+        let _fresh_guard = cache.begin_last_modified_prefetch(&fresh_name);
+        let _stale_guard = cache.begin_last_modified_prefetch(&stale_name);
+
+        let guard = cache
+            .join_schema_fetch(
+                "db",
+                "analytics",
+                &BTreeMap::from([
+                    (fresh_name.clone(), fresh_relation),
+                    (stale_name.clone(), stale_relation),
+                ]),
+            )
+            .await;
+        let drained = guard.drain().await;
+        let (_, fresh_version) = *drained.get(&fresh_name).unwrap();
+        let (_, stale_version) = *drained.get(&stale_name).unwrap();
+
+        // Simulate one relation rebuilding during the query.
+        cache.invalidate_relation_metadata(&stale_name);
+
+        assert!(guard.insert_last_modified_epoch_if_fresh(
+            &cache,
+            fresh_name.clone(),
+            Some(100),
+            fresh_version
+        ));
+        assert!(!guard.insert_last_modified_epoch_if_fresh(
+            &cache,
+            stale_name.clone(),
+            Some(200),
+            stale_version
+        ));
+
+        assert_eq!(cache.last_modified_epoch(&fresh_name), Some(Some(100)));
+        assert_eq!(cache.last_modified_epoch(&stale_name), None);
     }
 }

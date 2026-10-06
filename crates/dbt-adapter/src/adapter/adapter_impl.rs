@@ -72,7 +72,7 @@ use dbt_schemas::schemas::common::DbtMaterialization;
 use dbt_schemas::schemas::common::ResolvedQuoting;
 use dbt_schemas::schemas::common::{ClusterConfig, Constraint, ConstraintSupport, PartitionConfig};
 use dbt_schemas::schemas::common::{ConstraintType, normalize_quote};
-use dbt_schemas::schemas::dbt_catalogs_v2::CatalogType;
+use dbt_schemas::schemas::dbt_catalogs::CatalogType;
 use dbt_schemas::schemas::dbt_column::{DbtColumn, DbtColumnRef};
 use dbt_schemas::schemas::manifest::BigqueryPartitionConfig;
 use dbt_schemas::schemas::profiles::DuckDBPathInfo;
@@ -2121,12 +2121,18 @@ impl AdapterImpl {
                     }
                 }
 
-                execute_macro_with_package(
+                let result = execute_macro_with_package(
                     state,
                     &[RelationObject::new(relation.to_owned()).into_value()],
                     "get_columns_comments",
                     "dbt_databricks",
-                )
+                );
+                match result {
+                    Err(ref e) if e.message().contains("[TABLE_OR_VIEW_NOT_FOUND]") => {
+                        return Ok(Vec::new());
+                    }
+                    _ => result,
+                }
             }
             // NOTE: This is the default behavior. If said adapter type does not
             // have a get_columns_in_relation() macro, it will fail with a
@@ -2148,7 +2154,6 @@ impl AdapterImpl {
                 // See https://github.com/dbt-labs/fs/pull/4267#discussion_r2182835729
                 let ignored_error = match self.adapter_type() {
                     Snowflake => Some("does not exist or not authorized"),
-                    Databricks => Some("[TABLE_OR_VIEW_NOT_FOUND]"),
                     _ => None,
                 };
 
@@ -4024,14 +4029,26 @@ impl AdapterImpl {
         common_attr: &CommonAttributes,
     ) -> AdapterResult<IndexMap<String, Value>> {
         match self.adapter_type() {
-            Bigquery => Ok(
-                metadata::bigquery::object_options::get_common_table_options_value(
-                    state,
-                    config,
-                    common_attr,
-                    false,
-                ),
-            ),
+            Bigquery => {
+                if config
+                    .__warehouse_specific_config__
+                    .enable_change_history
+                    .unwrap_or(false)
+                {
+                    return Err(AdapterError::new(
+                        AdapterErrorKind::Configuration,
+                        "`enable_change_history` is not supported for views on BigQuery.",
+                    ));
+                }
+                Ok(
+                    metadata::bigquery::object_options::get_common_table_options_value(
+                        state,
+                        config,
+                        common_attr,
+                        false,
+                    ),
+                )
+            }
             Postgres | Snowflake | Databricks | Redshift | Salesforce | Spark | DuckDB
             | LakeCompute | Fabric | ClickHouse | Exasol | Starburst | Athena | Trino
             | Datafusion | Dremio | Oracle => {
@@ -8244,5 +8261,27 @@ mod tests {
             .redact_credentials("copy into target_table WITH (credential ('KEY' = 'V'))")
             .expect_err("non-Databricks adapters must reject this");
         assert_eq!(err.kind(), AdapterErrorKind::NotSupported);
+    }
+
+    #[test]
+    fn bigquery_view_options_reject_enable_change_history() {
+        let adapter = AdapterImpl::new(engine(Bigquery), None);
+        let env = Environment::new();
+        let state = State::new_for_env(&env);
+        let common_attr = CommonAttributes::default();
+
+        let mut config = ModelConfig::default();
+        config.__warehouse_specific_config__.enable_change_history = Some(true);
+        let err = adapter
+            .get_view_options(&state, config.clone(), &common_attr)
+            .expect_err("views must reject enable_change_history: true");
+        assert_eq!(err.kind(), AdapterErrorKind::Configuration);
+
+        config.__warehouse_specific_config__.enable_change_history = Some(false);
+        assert!(
+            adapter
+                .get_view_options(&state, config, &common_attr)
+                .is_ok()
+        );
     }
 }

@@ -66,7 +66,7 @@ use dbt_schemas::schemas::common::NodeDependsOn;
 use dbt_schemas::schemas::common::OnSchemaChange;
 use dbt_schemas::schemas::common::Versions;
 use dbt_schemas::schemas::common::normalize_sql;
-use dbt_schemas::schemas::dbt_catalogs::{DbtCatalogs, LoadedCatalogs};
+use dbt_schemas::schemas::dbt_catalogs_deprecated::{DbtCatalogs, LoadedCatalogs};
 use dbt_schemas::schemas::dbt_column::ColumnInheritanceRules;
 use dbt_schemas::schemas::dbt_column::ColumnProperties;
 use dbt_schemas::schemas::dbt_column::DbtColumnRef;
@@ -533,8 +533,8 @@ async fn build_model_nodes(
     let catalogs = load_catalogs::fetch_catalogs();
     let use_catalogs_v2 = load_catalogs::fetch_use_catalogs_v2();
     let catalogs_state = match catalogs.as_deref() {
-        Some(c) if use_catalogs_v2 => LoadedCatalogs::V2(c),
-        Some(c) => LoadedCatalogs::V1(c),
+        Some(c) if use_catalogs_v2 => LoadedCatalogs::Active(c),
+        Some(c) => LoadedCatalogs::Deprecated(c),
         None => LoadedCatalogs::None,
     };
 
@@ -1984,7 +1984,7 @@ mod tests {
     use dbt_schemas::schemas::common::{
         DbtMaterialization, FreshnessPeriod, FreshnessRules, ModelFreshnessRules,
     };
-    use dbt_schemas::schemas::dbt_catalogs::DbtCatalogs;
+    use dbt_schemas::schemas::dbt_catalogs_deprecated::DbtCatalogs;
     use dbt_schemas::schemas::properties::ModelFreshness;
     use dbt_schemas::schemas::serde::NodeVersion;
     use std::path::Path;

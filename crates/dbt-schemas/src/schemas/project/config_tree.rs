@@ -105,7 +105,20 @@ impl<T: ResolvableConfig<T>> DbtProjectConfig<T> {
                         .rsplit("::")
                         .next()
                         .unwrap_or_default();
-                    let detail = if err_msg.contains(&format!("expected struct {self_type}")) {
+                    // YAML reads an unquoted `on`/`off`/`yes`/`no` key as a boolean, which
+                    // fails as a field identifier. The spelling is lost, so name the rule.
+                    let bool_key = variant
+                        .as_ref_raw()
+                        .filter(|_| err_msg.contains("expected field identifier"))
+                        .and_then(|raw| raw.as_mapping())
+                        .and_then(|mapping| mapping.keys().find_map(|k| k.as_bool()));
+                    let detail = if let Some(bool_key) = bool_key {
+                        format!(
+                            "A key under `{key_path}` reads as the boolean `{bool_key}`, because \
+                             YAML treats unquoted `on`, `off`, `yes`, `no`, `true` and `false` as \
+                             booleans. If it names a folder, quote it, e.g. `'off':`."
+                        )
+                    } else if err_msg.contains(&format!("expected struct {self_type}")) {
                         format!("Unrecognized key `{key_path}`. Custom keys must go under `+meta`.")
                     } else {
                         err_msg.to_string()

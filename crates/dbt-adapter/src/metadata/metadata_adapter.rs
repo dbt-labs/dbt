@@ -23,6 +23,7 @@ use dbt_schemas::schemas::{
 use dbt_schemas::state::ResolverState;
 use dbt_schemas::stats::Stats;
 use dbt_telemetry::NodeType;
+use futures::StreamExt;
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
@@ -189,6 +190,19 @@ pub trait MetadataAdapter: Send + Sync {
         token: CancellationToken,
     ) -> AsyncAdapterResult<'_, HashMap<String, AdapterResult<Arc<Schema>>>>;
 
+    /// Add adapter-provided semantics to schemas fetched from the warehouse.
+    ///
+    /// Implementations should encode relation-local semantics in Arrow metadata so
+    /// they survive schema caching, replay, scans, and relation aliases.
+    fn enrich_relation_schemas<'a>(
+        &'a self,
+        _relations: &'a [Arc<dyn BaseRelation>],
+        schemas: HashMap<String, AdapterResult<Arc<Schema>>>,
+        _token: CancellationToken,
+    ) -> AsyncAdapterResult<'a, HashMap<String, AdapterResult<Arc<Schema>>>> {
+        Box::pin(async move { Ok(schemas) })
+    }
+
     /// List relations and their schemas.
     ///
     /// This is a provided method that wraps `list_relations_schemas_inner`
@@ -202,21 +216,30 @@ pub trait MetadataAdapter: Send + Sync {
         token: CancellationToken,
     ) -> AsyncAdapterResult<'a, HashMap<String, AdapterResult<Arc<Schema>>>> {
         let caller_id = unique_id.clone().unwrap_or_else(|| "global".to_string());
+        let inner_unique_id = unique_id.clone();
+        let inner_token = token.clone();
+        let future = async move {
+            let schemas = self
+                .list_relations_schemas_inner(
+                    inner_unique_id,
+                    phase,
+                    relations,
+                    item_span_operation_id,
+                    inner_token,
+                )
+                .await?;
+            self.enrich_relation_schemas(relations, schemas, token)
+                .await
+        };
         with_time_machine_metadata_wrapper(
             caller_id,
             "list_relations_schemas",
             args_list_relations_schemas(
-                unique_id.clone(),
+                unique_id,
                 phase.map(|p| p.as_str().to_string()),
                 relations.iter().map(|r| r.semantic_fqn()),
             ),
-            self.list_relations_schemas_inner(
-                unique_id,
-                phase,
-                relations,
-                item_span_operation_id,
-                token,
-            ),
+            future,
         )
     }
 
@@ -444,18 +467,9 @@ pub trait MetadataAdapter: Send + Sync {
                     .await;
             }
 
-            let mut groups: BTreeMap<(String, String), Vec<Arc<dyn BaseRelation>>> =
-                BTreeMap::new();
-            for relation in relations {
-                let database = relation.database_as_resolved_str().unwrap_or_default();
-                let schema = relation.schema_as_resolved_str().unwrap_or_default();
-                groups
-                    .entry((database, schema))
-                    .or_default()
-                    .push(Arc::clone(relation));
-            }
+            let groups = group_relations_by_resolved_database_schema(relations);
 
-            let mut result: BTreeMap<String, MetadataFreshness> = BTreeMap::new();
+            let mut result = BTreeMap::new();
             for ((database, schema), group) in groups {
                 result.extend(
                     freshness_group_dump(self, &database, &schema, &group, options, token.clone())
@@ -632,6 +646,50 @@ pub trait MetadataAdapter: Send + Sync {
     ) -> AsyncAdapterResult<'a, Vec<ParentChildPair>> {
         Box::pin(async { Ok(Vec::new()) })
     }
+}
+
+/// Fallback concurrency when the engine doesn't expose a thread count.
+pub(crate) const DEFAULT_SCHEMA_PREFETCH_FANOUT: usize = 4;
+
+pub(crate) fn group_relations_by_resolved_database_schema(
+    relations: &[Arc<dyn BaseRelation>],
+) -> BTreeMap<(String, String), Vec<Arc<dyn BaseRelation>>> {
+    let mut groups: BTreeMap<(String, String), Vec<Arc<dyn BaseRelation>>> = BTreeMap::new();
+    for relation in relations {
+        let database = relation.database_as_resolved_str().unwrap_or_default();
+        let schema = relation.schema_as_resolved_str().unwrap_or_default();
+        groups
+            .entry((database, schema))
+            .or_default()
+            .push(Arc::clone(relation));
+    }
+    groups
+}
+
+pub(crate) async fn freshness_by_schema_fanout<A: MetadataAdapter + ?Sized>(
+    adapter: &A,
+    groups: BTreeMap<(String, String), Vec<Arc<dyn BaseRelation>>>,
+    options: &MetadataQueryOptions,
+    token: CancellationToken,
+    fan_out: usize,
+) -> Result<BTreeMap<String, MetadataFreshness>, Cancellable<AdapterError>> {
+    let mut group_futures = Vec::with_capacity(groups.len());
+    for ((database, schema), relations) in &groups {
+        group_futures.push(freshness_group_dump(
+            adapter,
+            database,
+            schema,
+            relations,
+            options,
+            token.clone(),
+        ));
+    }
+    let mut group_stream = futures::stream::iter(group_futures).buffer_unordered(fan_out.max(1));
+    let mut result = BTreeMap::new();
+    while let Some(group_result) = group_stream.next().await {
+        result.extend(group_result?);
+    }
+    Ok(result)
 }
 
 /// Fetch freshness for one already-grouped `(database, schema)` set of relations
@@ -889,6 +947,62 @@ mod tests {
             Err(Cancellable::Error(error))
                 if error.kind() == AdapterErrorKind::ReplayDataMissing
         ));
+    }
+
+    #[dbt_runtime::test]
+    async fn strict_replay_method_mismatch_has_distinct_error_kind() {
+        let _guard = TIME_MACHINE_TEST_LOCK.lock().await;
+        reset_time_machine_globals().await.unwrap();
+
+        let dir = tempfile::tempdir().unwrap();
+        let handle = get_or_init_recording(
+            dir.path(),
+            "snowflake",
+            "method-mismatch",
+            None,
+            CancellationToken::never_cancels(),
+        );
+        let adapter = MockMetadataAdapter::new();
+        let relation: Arc<dyn BaseRelation> = create_relation(
+            AdapterType::Snowflake,
+            "db".to_string(),
+            "schema".to_string(),
+            Some("table".to_string()),
+            None,
+            ResolvedQuoting::default(),
+        )
+        .unwrap()
+        .into();
+        let relations = [relation];
+        adapter
+            .freshness_all_in_schema(
+                "db",
+                "schema",
+                &relations,
+                &MetadataQueryOptions::default(),
+                CancellationToken::never_cancels(),
+            )
+            .await
+            .unwrap();
+        handle.shutdown().await.unwrap();
+
+        reset_time_machine_globals().await.unwrap();
+        get_or_init_replayer(|| Ok(Arc::new(EventReplayer::load(dir.path())?))).unwrap();
+
+        let result = adapter
+            .freshness(&relations, CancellationToken::never_cancels())
+            .await;
+        assert!(matches!(
+            result,
+            Err(Cancellable::Error(error))
+                if error.kind() == AdapterErrorKind::ReplayMethodMismatch
+        ));
+        assert_eq!(
+            ErrorCode::from(AdapterErrorKind::ReplayMethodMismatch),
+            ErrorCode::ReplayDataInvalid
+        );
+
+        reset_time_machine_globals().await.unwrap();
     }
 
     #[dbt_runtime::test]

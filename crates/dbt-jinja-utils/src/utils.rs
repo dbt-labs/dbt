@@ -571,6 +571,17 @@ pub fn get_catalog_by_relations(
     Ok(result)
 }
 
+fn template_exists(env: &JinjaEnv, name: &str) -> FsResult<bool> {
+    match env.env.get_template(name) {
+        Ok(_) => Ok(true),
+        Err(error) if error.kind() == ErrorKind::TemplateNotFound => Ok(false),
+        Err(error) => Err(Box::new(FsError::from_jinja_err(
+            error,
+            "Failed to load template",
+        ))),
+    }
+}
+
 /// Find the template for a given macro
 pub fn find_macro_template(
     env: &JinjaEnv,
@@ -597,7 +608,7 @@ pub fn find_macro_template(
     }
     // First try - check the current project
     let template_name = format!("{current_project_name}.{macro_name}");
-    if env.has_template(&template_name) {
+    if template_exists(env, &template_name)? {
         // Cache and return
         if let Ok(mut cache) = TEMPLATE_CACHE.lock() {
             cache.insert(cache_key, template_name.clone());
@@ -607,7 +618,7 @@ pub fn find_macro_template(
 
     // Second try - check the root project
     let template_name = format!("{root_project_name}.{macro_name}");
-    if env.has_template(&template_name) {
+    if template_exists(env, &template_name)? {
         // Cache and return
         if let Ok(mut cache) = TEMPLATE_CACHE.lock() {
             cache.insert(cache_key, template_name.clone());
@@ -619,7 +630,7 @@ pub fn find_macro_template(
     let dbt_and_adapters = env.get_dbt_and_adapters_namespace(&dialect);
     if let Some(package) = dbt_and_adapters.get(&Value::from(macro_name)) {
         let template_name = format!("{package}.{macro_name}");
-        if env.has_template(&template_name) {
+        if template_exists(env, &template_name)? {
             // Cache and return
             if let Ok(mut cache) = TEMPLATE_CACHE.lock() {
                 cache.insert(cache_key, template_name.clone());
@@ -899,9 +910,25 @@ mod tests {
     use crate::listener::DefaultRenderingEventListener;
 
     use super::{
-        inject_ctes_into_existing_with, raw_source_spans_to_macro_span_vec,
+        find_macro_template, inject_ctes_into_existing_with, raw_source_spans_to_macro_span_vec,
         shift_macro_spans_after_insertion,
     };
+    use crate::jinja_environment::JinjaEnv;
+
+    #[test]
+    fn malformed_macro_does_not_fall_back_to_another_package() {
+        let mut env = Environment::new();
+        env.set_loader(|name| match name {
+            "current.bad_macro" => Ok(Some(("{{".to_string(), Some("current.sql".into())))),
+            "root.bad_macro" => Ok(Some(("valid".to_string(), Some("root.sql".into())))),
+            _ => Ok(None),
+        });
+        let env = JinjaEnv::new(env);
+        super::clear_template_cache();
+
+        assert!(find_macro_template(&env, "bad_macro", "root", "current").is_err());
+        super::clear_template_cache();
+    }
 
     #[test]
     fn injects_ctes_into_existing_with_chain() {
