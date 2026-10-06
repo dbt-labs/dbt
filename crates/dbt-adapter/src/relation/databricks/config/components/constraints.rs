@@ -16,10 +16,18 @@ use dbt_schemas::schemas::InternalDbtNodeAttributes;
 use indexmap::{IndexMap, IndexSet};
 use minijinja::Value;
 use minijinja::value::{Enumerator, Object};
+use regex::Regex;
 use serde::Serialize;
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 
 pub(crate) const TYPE_NAME: &str = "constraints";
+
+static CUSTOM_PRIMARY_KEY: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?i)^\s*primary\s+key\s*\(([^)]*)\)").unwrap());
+// TIMESERIES marks a key column; information_schema reports only the column name.
+static KEY_COLUMN: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#"(?i)^\s*(?:`([^`]+)`|"([^"]+)"|([^\s`",()]+))(?:\s+timeseries)?\s*$"#).unwrap()
+});
 
 #[derive(Debug, Default, Clone, Serialize)]
 pub struct Constraints {
@@ -89,43 +97,37 @@ impl Constraints {
             },
             TypedConstraint::Custom {
                 name, expression, ..
-            } => {
-                let normalized = Self::normalize_expression(expression);
-                Self::try_parse_custom_as_pk(name.clone(), &normalized).unwrap_or_else(|| {
-                    TypedConstraint::Custom {
-                        name: name.clone(),
-                        expression: normalized,
-                        columns: None,
-                    }
-                })
-            }
+            } => Self::try_parse_custom_as_pk(name.clone(), expression).unwrap_or_else(|| {
+                TypedConstraint::Custom {
+                    name: name.clone(),
+                    expression: Self::normalize_expression(expression),
+                    columns: None,
+                }
+            }),
             _ => constraint.clone(),
         }
     }
 
-    /// Attempt to reinterpret a normalized custom expression as a PrimaryKey constraint.
+    /// Attempt to reinterpret a custom expression as a PrimaryKey constraint.
     ///
     /// Databricks stores `primary key (\`id\`) rely` as a native PK visible in
     /// `information_schema.key_column_usage`, so normalizing Custom→PrimaryKey lets the
     /// diff treat them as equal and avoids a spurious DROP + re-ADD on every incremental run.
-    fn try_parse_custom_as_pk(
-        name: Option<String>,
-        normalized_expr: &str,
-    ) -> Option<TypedConstraint> {
-        let rest = normalized_expr.strip_prefix("primary key")?.trim();
-        if !rest.starts_with('(') {
-            return None;
-        }
-        let paren_end = rest.find(')')?;
-        let cols_str = &rest[1..paren_end];
-        let columns: Vec<String> = cols_str
+    /// Each key column must be a single plain or quoted identifier; anything else stays custom.
+    ///
+    /// Reference: https://github.com/databricks/dbt-databricks/blob/269be43222a628362adda8d3b6c2237deb99dcb8/dbt/adapters/databricks/relation_configs/constraints.py#L88-L103
+    fn try_parse_custom_as_pk(name: Option<String>, expression: &str) -> Option<TypedConstraint> {
+        let key_columns = CUSTOM_PRIMARY_KEY.captures(expression)?.get(1)?.as_str();
+        let columns = key_columns
             .split(',')
-            .map(|s| s.trim().trim_matches('`').trim_matches('"').to_string())
-            .filter(|s| !s.is_empty())
-            .collect();
-        if columns.is_empty() {
-            return None;
-        }
+            .map(|part| {
+                KEY_COLUMN
+                    .captures(part)?
+                    .iter()
+                    .skip(1)
+                    .find_map(|group| group.map(|name| name.as_str().to_string()))
+            })
+            .collect::<Option<Vec<_>>>()?;
         Some(TypedConstraint::PrimaryKey {
             name,
             columns,
@@ -881,52 +883,98 @@ fk_composite,parent_type,main,default,parents,type
     }
 
     #[test]
-    fn test_custom_pk_normalizes_to_primary_key() {
-        // A custom constraint like `primary key (\`id\`) rely` must normalize to PrimaryKey
-        // because Databricks stores it as a native PK in information_schema.
-        let custom_pk = TypedConstraint::Custom {
-            name: Some("pk_id".to_string()),
-            expression: "primary key (`id`) rely".to_string(),
-            columns: None,
-        };
-        let normalized = Constraints::normalize_constraint(&custom_pk);
-        assert!(
-            matches!(normalized, TypedConstraint::PrimaryKey { ref name, ref columns, .. }
-                if name.as_deref() == Some("pk_id") && columns == &["id"]),
-            "Expected PrimaryKey, got {normalized:?}"
-        );
+    fn test_custom_pk_columns() {
+        // A custom PK normalizes to the native PrimaryKey that information_schema reports.
+        let cases: &[(&str, Option<&[&str]>)] = &[
+            ("PRIMARY KEY (`n`, \"m\") RELY", Some(&["n", "m"])),
+            ("primary key(a,b)", Some(&["a", "b"])),
+            (
+                "PRIMARY KEY (`id`, `ts` TIMESERIES) RELY",
+                Some(&["id", "ts"]),
+            ),
+            ("PRIMARY KEY (OrderId) RELY", Some(&["OrderId"])),
+            ("PRIMARY KEY (`my col`)", Some(&["my col"])),
+            ("PRIMARY KEY (`a,b`)", None),
+            ("PRIMARY KEY (`a)b`)", None),
+            ("PRIMARY KEY (`a``b`)", None),
+            ("CHECK (n > 0)", None),
+            ("PRIMARY KEY ()", None),
+            ("PRIMARY KEY (`a)", None),
+            ("PRIMARY KEY (a b)", None),
+        ];
+        for (expression, expected) in cases {
+            let custom = TypedConstraint::Custom {
+                name: Some("pk_n".to_string()),
+                expression: expression.to_string(),
+                columns: None,
+            };
+            let columns = match Constraints::normalize_constraint(&custom) {
+                TypedConstraint::PrimaryKey {
+                    name,
+                    columns,
+                    expression: None,
+                } if name.as_deref() == Some("pk_n") => Some(columns),
+                TypedConstraint::Custom { .. } => None,
+                other => panic!("unexpected normalization of {expression}: {other:?}"),
+            };
+            let expected = expected.map(|c| c.iter().map(|s| s.to_string()).collect::<Vec<_>>());
+            assert_eq!(columns, expected, "{expression}");
+        }
+    }
+
+    fn primary_key_state(constraint: TypedConstraint) -> Constraints {
+        Constraints::new(
+            IndexSet::new(),
+            IndexSet::new(),
+            IndexSet::from([constraint]),
+            IndexSet::new(),
+        )
     }
 
     #[test]
     fn test_custom_pk_diff_is_stable_against_remote_pk() {
-        // Bug 2: on every incremental run, local Custom("primary key (`id`) rely") should
-        // compare equal to remote PrimaryKey{pk_id, [id]} after normalization → no churn.
-        let remote = Constraints::new(
-            IndexSet::new(),
-            IndexSet::new(),
-            IndexSet::from([TypedConstraint::PrimaryKey {
-                name: Some("pk_id".to_string()),
-                columns: vec!["id".to_string()],
-                expression: None,
-            }]),
-            IndexSet::new(),
-        );
-        let local = Constraints::new(
-            IndexSet::new(),
-            IndexSet::new(),
-            IndexSet::from([TypedConstraint::Custom {
-                name: Some("pk_id".to_string()),
-                expression: "primary key (`id`) rely".to_string(),
-                columns: None,
-            }]),
-            IndexSet::new(),
-        );
+        // On every incremental run, a local custom PK must compare equal to the remote
+        // PrimaryKey that Databricks reports for it (without RELY) → no churn.
+        let remote = primary_key_state(TypedConstraint::PrimaryKey {
+            name: Some("pk_n".to_string()),
+            columns: vec!["n".to_string(), "m".to_string()],
+            expression: None,
+        });
+        let local = primary_key_state(TypedConstraint::Custom {
+            name: Some("pk_n".to_string()),
+            expression: "PRIMARY KEY (`n`, \"m\") RELY".to_string(),
+            columns: None,
+        });
 
         let diff = Constraints::diff_from(&local, Some(&remote));
         assert!(
             diff.is_none(),
             "Custom PK expression should match remote PK after normalization, but got diff: {diff:?}"
         );
+    }
+
+    #[test]
+    fn test_custom_pk_on_quoted_column_differs_from_split_columns() {
+        // One column named `a,b` is a different key than the remote key on columns a and b.
+        let remote_pk = TypedConstraint::PrimaryKey {
+            name: Some("pk_n".to_string()),
+            columns: vec!["a".to_string(), "b".to_string()],
+            expression: None,
+        };
+        let remote = primary_key_state(remote_pk.clone());
+        let local = primary_key_state(TypedConstraint::Custom {
+            name: Some("pk_n".to_string()),
+            expression: "PRIMARY KEY (`a,b`)".to_string(),
+            columns: None,
+        });
+
+        let diff = Constraints::diff_from(&local, Some(&remote)).expect("keys differ");
+        let diff = diff.as_any().downcast_ref::<Constraints>().unwrap();
+        assert!(matches!(
+            diff.set_constraints.iter().collect::<Vec<_>>().as_slice(),
+            [TypedConstraint::Custom { .. }]
+        ));
+        assert_eq!(diff.unset_constraints, IndexSet::from([remote_pk]));
     }
 
     #[test]
