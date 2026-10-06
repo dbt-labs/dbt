@@ -723,9 +723,8 @@ class TestParseWithV2:
         corrected_manifest.write.assert_called_once_with(str(target / "manifest.json"))
 
     def test_copied_semantic_manifest_registered_for_upload(self, tmp_path: Path, _patch_v2_deps):
-        """write_manifest() skips write_semantic_manifest() under USE_V2_PARSER,
-        so the semantic_manifest.json copied from the handoff dir must be
-        registered for artifact upload here instead."""
+        """Under USE_V2_PARSER, write_manifest skips the semantic manifest, so
+        parse_with_v2 must register it."""
         target = tmp_path / "target"
         fake_parser = _fake_parser(json.dumps({"metadata": {}}))
 
@@ -744,7 +743,7 @@ class TestParseWithV2:
                 "dbt.parser.v2.Manifest.from_writable_manifest",
                 return_value=mock.MagicMock(),
             ), mock.patch(
-                "dbt.parser.manifest.write_manifest"
+                "dbt.parser.manifest.get_flags", return_value=_flags(USE_V2_PARSER=True)
             ):
                 parse_with_v2(self._runtime_config(target), write=True, write_json=True)
             assert (target / "semantic_manifest.json").exists()
