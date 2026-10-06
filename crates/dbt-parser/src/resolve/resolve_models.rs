@@ -43,7 +43,7 @@ use dbt_common::tracing::event_info::store_event_attributes;
 use dbt_jinja_utils::jinja_environment::JinjaEnv;
 use dbt_jinja_utils::listener::JinjaTypeCheckingEventListenerFactory;
 use dbt_jinja_utils::node_resolver::NodeResolver;
-use dbt_jinja_utils::phases::build_target_context_map;
+use dbt_jinja_utils::phases::build_adapter_target_context;
 use dbt_jinja_utils::utils::dependency_package_name_from_ctx;
 use dbt_schemas::dbt_utils::resolve_package_quoting;
 use dbt_schemas::schemas::CommonAttributes;
@@ -75,7 +75,6 @@ use dbt_schemas::schemas::dbt_column::VersionColumnProperties;
 use dbt_schemas::schemas::dbt_column::process_columns;
 use dbt_schemas::schemas::manifest::semantic_model::NodeRelation;
 use dbt_schemas::schemas::nodes::AdapterAttr;
-use dbt_schemas::schemas::profiles::TargetContext;
 use dbt_schemas::schemas::project::DbtProject;
 use dbt_schemas::schemas::project::ModelConfig;
 use dbt_schemas::schemas::project::ResolvedModelConfig;
@@ -162,55 +161,6 @@ fn parse_source_from_constraint(to: &str) -> Option<(String, String)> {
     let src = parts.next()?.trim().trim_matches(|c| c == '\'' || c == '"');
     let tbl = parts.next()?.trim().trim_matches(|c| c == '\'' || c == '"');
     Some((src.to_string(), tbl.to_string()))
-}
-
-struct AdapterRelationContext {
-    database: String,
-    schema: String,
-    base_ctx: BTreeMap<String, minijinja::Value>,
-}
-
-fn adapter_relation_context(
-    profile: &DbtProfile,
-    adapter_type: AdapterType,
-    base_ctx: &BTreeMap<String, minijinja::Value>,
-) -> FsResult<AdapterRelationContext> {
-    let config = profile.adapter(adapter_type).ok_or_else(|| {
-        fs_err!(
-            ErrorCode::InvalidConfig,
-            "no profile connection is configured for adapter '{adapter_type}'"
-        )
-    })?;
-    let target_context = TargetContext::try_from(config.clone())
-        .map_err(|e| fs_err!(ErrorCode::InvalidConfig, "{e}"))?;
-    let target_context = Arc::new(build_target_context_map(
-        &profile.profile,
-        &profile.target,
-        target_context,
-    ));
-    let mut adapter_base_ctx = base_ctx.clone();
-    adapter_base_ctx.insert(
-        "target".to_string(),
-        minijinja::Value::from_serialize(Arc::clone(&target_context)),
-    );
-    adapter_base_ctx.insert(
-        "env".to_string(),
-        minijinja::Value::from_serialize(target_context),
-    );
-    adapter_base_ctx.insert(
-        "database".to_string(),
-        minijinja::Value::from(config.get_database().cloned()),
-    );
-    adapter_base_ctx.insert(
-        "schema".to_string(),
-        minijinja::Value::from(config.get_schema().cloned()),
-    );
-
-    Ok(AdapterRelationContext {
-        database: config.get_database_or_default(),
-        schema: config.get_schema().cloned().unwrap_or_default(),
-        base_ctx: adapter_base_ctx,
-    })
 }
 
 #[allow(
@@ -1012,7 +962,7 @@ async fn build_model_nodes(
         if !adapter_relation_contexts.contains_key(&selected_adapter) {
             adapter_relation_contexts.insert(
                 selected_adapter,
-                adapter_relation_context(profile, selected_adapter, base_ctx)?,
+                build_adapter_target_context(profile, selected_adapter, base_ctx)?,
             );
         }
         let relation_context = adapter_relation_contexts
@@ -1236,7 +1186,7 @@ async fn build_model_nodes(
             env,
             &root_package.dbt_project.name,
             package_name,
-            &relation_context.base_ctx,
+            &relation_context.base_context,
             &components,
             selected_adapter,
         )?;
@@ -2041,7 +1991,7 @@ fn apply_model_freshness_loaded_at_override(
 #[cfg(test)]
 mod tests {
     use super::{
-        adapter_relation_context, apply_model_freshness_loaded_at_override,
+        apply_model_freshness_loaded_at_override, build_adapter_target_context,
         parse_ref_from_constraint, parse_source_from_constraint, validate_database_not_catalog,
         validate_model_freshness_sla,
     };
@@ -2107,11 +2057,12 @@ mod tests {
             ])),
         )]);
 
-        let context = adapter_relation_context(&profile, AdapterType::DuckDB, &base_ctx).unwrap();
+        let context =
+            build_adapter_target_context(&profile, AdapterType::DuckDB, &base_ctx).unwrap();
 
         assert_eq!(context.database, "dbt_multi_adapter");
         assert_eq!(context.schema, "analytics");
-        let target = context.base_ctx.get("target").unwrap();
+        let target = context.base_context.get("target").unwrap();
         assert_eq!(
             target.get_attr("database").unwrap().as_str(),
             Some("dbt_multi_adapter")
