@@ -151,7 +151,8 @@ impl CliParser {
 
     /// Build the [clap::Command] for the CLI application.
     fn app(&self) -> clap::Command {
-        let app = clap::Command::new(self.command_name);
+        // Match dbt Core: a repeated single-value flag keeps the last value.
+        let app = clap::Command::new(self.command_name).args_override_self(true);
 
         // -- Augment arguments
         let app = app.group(clap::ArgGroup::new("Cli").multiple(true).args({
@@ -3872,6 +3873,51 @@ mod tests {
         assert_eq!(
             eval_args.select.as_ref().map(|s| s.to_string()),
             Some("resource_type:source".to_string())
+        );
+    }
+
+    #[test]
+    fn repeated_target_flag_keeps_last_value() {
+        let cmd = parse_core_command(&["compile", "--target", "dev", "--target", "prod"]);
+        let CoreCommand::Compile(args) = &cmd else {
+            panic!("expected CoreCommand::Compile, got {cmd:?}");
+        };
+        assert_eq!(args.common_args.target, Some("prod".to_string()));
+
+        let cmd = parse_core_command(&["compile", "-t", "dev", "-t", "prod"]);
+        let CoreCommand::Compile(args) = &cmd else {
+            panic!("expected CoreCommand::Compile, got {cmd:?}");
+        };
+        assert_eq!(args.common_args.target, Some("prod".to_string()));
+    }
+
+    #[test]
+    fn repeated_debug_flag_parses() {
+        let cmd = parse_core_command(&["build", "--debug", "--debug"]);
+        let CoreCommand::Build(args) = &cmd else {
+            panic!("expected CoreCommand::Build, got {cmd:?}");
+        };
+        assert!(args.common_args.debug);
+    }
+
+    #[test]
+    fn repeated_local_set_arg_keeps_last_value() {
+        let cmd = parse_core_command(&["compile", "--limit", "1", "--limit", "4"]);
+        let CoreCommand::Compile(args) = &cmd else {
+            panic!("expected CoreCommand::Compile, got {cmd:?}");
+        };
+        assert_eq!(args.limit.value(), Some(4));
+    }
+
+    #[test]
+    fn repeated_select_flag_still_unions() {
+        let cmd = parse_core_command(&["ls", "--select", "a", "--select", "b"]);
+        let CoreCommand::Ls(args) = &cmd else {
+            panic!("expected CoreCommand::Ls, got {cmd:?}");
+        };
+        assert_eq!(
+            args.common_args.select.as_deref(),
+            Some(["a".to_string(), "b".to_string()].as_slice())
         );
     }
 
