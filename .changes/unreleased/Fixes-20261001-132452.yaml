@@ -1,5 +1,5 @@
 kind: Fixes
-body: Include `semantic_manifest.json` in the artifact set uploaded by `--upload-artifacts`, matching other run artifacts
+body: Include `semantic_manifest.json` in the artifact set uploaded by `--upload-to-artifacts-ingest-api`, matching other run artifacts
 time: 2026-10-01T13:24:52.506937-07:00
 custom:
     Author: ayshukla
