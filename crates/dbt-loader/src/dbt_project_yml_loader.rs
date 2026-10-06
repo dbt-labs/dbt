@@ -50,6 +50,25 @@ fn strip_deprecated_warehouse_keys(raw_yml: &mut YmlValue, dependency_package_na
     }
 }
 
+/// Drops a package's `flags:` block before it is typed or rendered.
+///
+/// Project flags, including behavior change flags and adapter behavior flags, are global and
+/// come from the root project only, as in dbt-core. A package cannot opt in to or out of a
+/// behavior change, so its `flags:` must never reach `DbtProject::flags`. The raw YAML returned
+/// alongside the typed project is left untouched.
+fn strip_package_flags(yml: &mut YmlValue, dependency_package_name: Option<&str>) {
+    let Some(package_name) = dependency_package_name else {
+        return;
+    };
+    if let Some(mapping) = yml.as_mapping_mut()
+        && mapping.shift_remove("flags").is_some()
+    {
+        tracing::debug!(
+            "Ignoring `flags:` in package '{package_name}': project flags only apply from the root project"
+        );
+    }
+}
+
 /// Validates one section's package/folder tree.
 fn strip_deprecated_warehouse_keys_in_scope(scope: &mut YmlValue, path: &str, resource: NodeType) {
     let Some(mapping) = scope.as_mapping_mut() else {
@@ -370,6 +389,7 @@ pub fn load_project_yml(
     // Keep the returned raw YAML unchanged for unrendered config and state comparison.
     let mut yml_to_type = raw_yml.clone();
     strip_deprecated_warehouse_keys(&mut yml_to_type, dependency_package_name);
+    strip_package_flags(&mut yml_to_type, dependency_package_name);
 
     // Parse the template without vars using Jinja
     let mut dbt_project: DbtProject = into_typed_with_jinja(
@@ -540,6 +560,29 @@ mod tests {
             dbt_yaml::Value::Number(n, _) => assert_eq!(n.as_i64(), Some(3)),
             other => panic!("expected number in +meta.demo, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn package_flags_are_stripped_but_root_flags_are_kept() {
+        let yaml = r#"
+        name: some_package
+        flags:
+          require_ref_searches_node_package_before_root: false
+          use_materialization_v2: true
+        "#;
+        let original: dbt_yaml::Value = dbt_yaml::from_str(yaml).unwrap();
+
+        let mut package = original.clone();
+        strip_package_flags(&mut package, Some("some_package"));
+        assert!(
+            package.get("flags").is_none(),
+            "a package's flags must be dropped"
+        );
+        assert!(package.get("name").is_some(), "other keys must survive");
+
+        let mut root = original.clone();
+        strip_package_flags(&mut root, None);
+        assert_eq!(root, original, "the root project's flags must be kept");
     }
 
     #[test]

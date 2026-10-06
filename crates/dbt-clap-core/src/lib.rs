@@ -73,6 +73,7 @@ pub mod help_headings {
     pub const EVENT_TIME: &str = "Microbatch Event Time";
     pub const SAMPLE: &str = "Sample";
     pub const ADVANCED: &str = "Advanced";
+    pub const UNSTABLE: &str = "Unstable";
 }
 const MANAGE_STATE_ENV: &str = "DBT_ENGINE_MANAGE_STATE";
 const USER_SETTINGS_YML: &str = ".dbt/user_settings.yml";
@@ -2251,6 +2252,19 @@ pub struct CommonArgs {
     /// When this option is passed, dbt will output low-level timing stats to the specified file. Example: `--record-timing-info output.profile`
     #[arg(global = true, long, short = 'r', hide = true)]
     pub record_timing_info: Option<PathBuf>,
+
+    /// Turn on a feature flag (`NAME`) or set it (`NAME=true|false`). Repeatable; also read
+    /// from DBT_ENGINE_FEATURES as a comma-separated list. Unstable: features may change or be
+    /// removed between releases.
+    #[arg(
+        global = true,
+        long = "feature",
+        value_name = "NAME[=VALUE]",
+        action = ArgAction::Append,
+        help_heading = help_headings::UNSTABLE,
+        hide_short_help = true
+    )]
+    pub features: Vec<String>,
 
     // Send anonymous usage stats to dbt Labs.
     #[arg(global = true, long, default_value_t=true, action = ArgAction::SetTrue, env = "DBT_SEND_ANONYMOUS_USAGE_STATS", value_parser = BoolishValueParser::new(), help_heading = help_headings::ADVANCED, hide_short_help = true)]

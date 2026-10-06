@@ -1239,7 +1239,8 @@ pub struct DbtRuntimeConfigInner {
 
     // Project flags
     /// When true, `latest_version_pointer` is enabled by default for all versioned models
-    /// (can be overridden per-model with `latest_version_pointer: {enabled: false}`)
+    /// (can be overridden per-model with `latest_version_pointer: {enabled: false}`).
+    /// Resolved from the root project's `flags:`, so it is the same for every package.
     #[serde(default = "default_true")]
     pub latest_version_pointer_enabled_by_default: bool,
 }
@@ -1255,9 +1256,12 @@ impl DbtRuntimeConfig {
             .insert(package_name.to_string(), Arc::new(self_clone));
     }
 
+    /// `root_project_flags` is the root project's `flags:` block: project flags are global and
+    /// never come from `package` unless it is the root.
     pub fn new(
         in_dir: &Path,
         package: &DbtPackage,
+        root_project_flags: Option<&dbt_yaml::Value>,
         profile: &DbtProfile,
         dependency_lookup: &BTreeMap<String, Arc<DbtRuntimeConfig>>,
         vars: &IndexMap<String, DbtVars>,
@@ -1339,9 +1343,7 @@ impl DbtRuntimeConfig {
             invoked_at: Utc::now(),
             args: InvocationArgs::default(),
             latest_version_pointer_enabled_by_default:
-                resolve_latest_version_pointer_enabled_by_default(
-                    package.dbt_project.flags.as_ref(),
-                ),
+                resolve_latest_version_pointer_enabled_by_default(root_project_flags),
         };
 
         // TODO(anna): Look into whether this should also be Index map
