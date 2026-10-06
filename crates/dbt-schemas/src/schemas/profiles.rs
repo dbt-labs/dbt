@@ -450,7 +450,7 @@ impl DbConfig {
             DbConfig::Exasol(config) => config.database.as_ref(),
             DbConfig::ClickHouse(config) => config.database.as_ref(),
             DbConfig::LakeCompute(config) => config.database.as_ref(),
-            DbConfig::SingleStore(config) => config.database.as_ref(),
+            DbConfig::SingleStore(config) => config.database.as_ref().filter(|s| !s.trim().is_empty()),
         }
     }
 
@@ -491,7 +491,11 @@ impl DbConfig {
             DbConfig::Fabric(config) => config.schema.as_ref(),
             DbConfig::Exasol(config) => config.schema.as_ref(),
             DbConfig::ClickHouse(config) => config.schema.as_ref(),
-            DbConfig::SingleStore(config) => config.schema.as_ref().or(config.database.as_ref()),
+            DbConfig::SingleStore(config) => config
+                .schema
+                .as_ref()
+                .filter(|s| !s.trim().is_empty())
+                .or_else(|| config.database.as_ref().filter(|s| !s.trim().is_empty())),
         }
     }
 
@@ -2328,8 +2332,12 @@ fn try_from_singlestore_config(
     let missing = |field: &str| format!("Missing required field in singlestore profile: {field}");
     let database = config
         .database
+        .filter(|s| !s.trim().is_empty())
         .ok_or_else(|| missing("database or dbname"))?;
-    let schema = config.schema.unwrap_or_else(|| database.clone());
+    let schema = config
+        .schema
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| database.clone());
     Ok(SingleStoreTargetEnv {
         host: config.host.ok_or_else(|| missing("host"))?,
         user: config.user.ok_or_else(|| missing("user"))?,
@@ -2353,6 +2361,21 @@ fn try_from_singlestore_config(
 mod tests {
 
     use super::*;
+
+    #[test]
+    fn test_singlestore_empty_schema_falls_back_to_database() {
+        let yaml = r#"
+            type: singlestore
+            host: localhost
+            user: root
+            password: password
+            database: my_db
+            schema: ''
+        "#;
+        let config: DbConfig = dbt_yaml::from_str(yaml).unwrap();
+        assert_eq!(config.get_database(), Some(&"my_db".to_string()));
+        assert_eq!(config.get_schema(), Some(&"my_db".to_string()));
+    }
 
     /// `DbConfig` is `#[serde(tag = "type", rename_all = "lowercase")]`, so the
     /// tag is the variant identifier lowercased. `dbt-profile` hard-codes the

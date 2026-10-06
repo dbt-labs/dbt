@@ -322,14 +322,28 @@ impl Relation {
         schema: impl Into<Option<String>>,
         identifier: impl Into<Option<String>>,
     ) -> Self {
+        let db_opt = database.into();
+        let sch_opt = schema.into();
         let path = RelationPath {
             database: match adapter_type {
                 // ClickHouse adapter does not normalize empty strings to None
                 // https://github.com/ClickHouse/dbt-clickhouse/blob/main/dbt/adapters/clickhouse/relation.py
                 AdapterType::ClickHouse => Some(String::new()),
-                _ => database.into().filter(|s| !s.is_empty()),
+                AdapterType::SingleStore => {
+                    let db = db_opt.as_ref().filter(|s| !s.trim().is_empty()).cloned();
+                    let sch = sch_opt.as_ref().filter(|s| !s.trim().is_empty()).cloned();
+                    db.or(sch)
+                }
+                _ => db_opt.as_ref().filter(|s| !s.is_empty()).cloned(),
             },
-            schema: schema.into(),
+            schema: match adapter_type {
+                AdapterType::SingleStore => {
+                    let sch = sch_opt.as_ref().filter(|s| !s.trim().is_empty()).cloned();
+                    let db = db_opt.as_ref().filter(|s| !s.trim().is_empty()).cloned();
+                    sch.or(db)
+                }
+                _ => sch_opt,
+            },
             identifier: identifier.into(),
         };
         let include_policy = include_policy(adapter_type, &path);

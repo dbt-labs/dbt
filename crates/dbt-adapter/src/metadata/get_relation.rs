@@ -1137,10 +1137,15 @@ fn singlestore_get_relation(
     identifier: &str,
     token: CancellationToken,
 ) -> AdapterResult<Option<Box<dyn BaseRelation>>> {
-    let query_schema = if adapter.quoting().schema {
-        schema.to_string()
+    let raw_schema = if !schema.is_empty() {
+        schema
     } else {
-        schema.to_lowercase()
+        database
+    };
+    let query_schema = if adapter.quoting().schema {
+        raw_schema.to_string()
+    } else {
+        raw_schema.to_lowercase()
     };
 
     let query_identifier = if adapter.quoting().identifier {

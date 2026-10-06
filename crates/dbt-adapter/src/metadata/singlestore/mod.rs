@@ -54,10 +54,16 @@ pub fn list_relations(
     conn: &mut dyn Connection,
     db_schema: &CatalogAndSchema,
 ) -> AdapterResult<Vec<Arc<dyn BaseRelation>>> {
-    let schema = if ctx.engine.quoting().schema {
-        db_schema.resolved_schema.clone()
+    let raw_schema = if !db_schema.resolved_schema.is_empty() {
+        &db_schema.resolved_schema
     } else {
-        db_schema.resolved_schema.to_lowercase()
+        &db_schema.resolved_catalog
+    };
+
+    let schema = if ctx.engine.quoting().schema {
+        raw_schema.clone()
+    } else {
+        raw_schema.to_lowercase()
     };
 
     let sql = format!(
@@ -267,6 +273,10 @@ impl SingleStoreMetadataAdapter {
 impl MetadataAdapter for SingleStoreMetadataAdapter {
     fn adapter_type(&self) -> AdapterType {
         self.adapter.adapter_type()
+    }
+
+    fn is_permission_error(&self, e: &AdapterError) -> bool {
+        e.vendor_code() == Some(1044) || e.vendor_code() == Some(1045) || e.vendor_code() == Some(1227)
     }
 
     fn build_schemas_from_stats_sql(

@@ -191,7 +191,7 @@
 
 {% macro singlestore__list_schemas(database) -%}
   {% call statement('list_schemas', fetch_result=True) -%}
-    show databases
+    select distinct schema_name from information_schema.schemata
   {%- endcall %}
   {{ return(load_result('list_schemas').table) }}
 {%- endmacro %}
