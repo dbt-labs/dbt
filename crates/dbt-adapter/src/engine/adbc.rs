@@ -631,8 +631,11 @@ impl AdapterEngine for AdbcEngine {
                 adbc_core::options::OptionValue::String("true".to_string()),
             );
         }
-        if self.adapter_type == AdapterType::DuckDB {
-            self.apply_duckdb_connection_init_sql(conn.as_mut(), config)?;
+        match self.adapter_type {
+            AdapterType::DuckDB => {
+                self.apply_duckdb_connection_init_sql(conn.as_mut(), config)?;
+            }
+            _ => {}
         }
         // Tag the connection with its config fingerprint and cache it on the
         // engine, so the pool reuses a connection only among engines with an
