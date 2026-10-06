@@ -9,6 +9,7 @@ use dbt_common::serde_utils::convert_yml_to_dash_map;
 use dbt_common::stats::NodeStatus;
 use dbt_common::tracing::emit::emit_debug_event;
 use dbt_common::{FsResult, MacroSpansOnly, stdfs};
+use dbt_jinja_utils::jinja_environment::JinjaEnv;
 use dbt_jinja_utils::phases::compile::DependencyValidationConfig;
 use dbt_jinja_utils::utils::{
     add_task_context, inject_and_persist_ephemeral_models, macro_spans_to_macro_span_vec,
@@ -83,6 +84,7 @@ fn render_default(
     }
 
     let mut base_context = ctx.base_context_for_adapter(node.node_adapter())?;
+    let jinja_env = ctx.jinja_env_for_adapter(node.node_adapter())?;
 
     add_task_context(&mut base_context, node.common(), &ctx.thread_id);
 
@@ -102,7 +104,7 @@ fn render_default(
 
     // Python models skip Jinja rendering and use raw Python code + py_script_postfix
     if node.common().language.as_deref() == Some("python") {
-        return render_python_model(node, ctx, &raw_sql, &base_context);
+        return render_python_model(node, ctx, &raw_sql, &base_context, &jinja_env);
     }
 
     let (mut compile_context, config_map) = ctx.build_compile_node_context(
@@ -112,7 +114,7 @@ fn render_default(
     )?;
 
     if let Some(overrides) = local_exec_unit_test_overrides {
-        unit_test::apply_unit_test_overrides(&mut compile_context, overrides, ctx);
+        unit_test::apply_unit_test_overrides(&mut compile_context, overrides, ctx, &jinja_env);
     }
 
     let render_file_path = node
@@ -125,7 +127,7 @@ fn render_default(
 
     let rendered_sql = render_sql(
         &raw_sql,
-        &ctx.env,
+        &jinja_env,
         &compile_context,
         ctx.rendering_listener_factory.as_ref(),
         &render_file_path,
@@ -222,6 +224,7 @@ fn render_python_model(
     ctx: &mut TaskRunnerCtx,
     raw_python: &str,
     base_context: &BTreeMap<String, MinijinjaValue>,
+    jinja_env: &JinjaEnv,
 ) -> FsResult<(SqlInstruction, Arc<DashMap<String, MinijinjaValue>>)> {
     let (compile_context, config_map) = ctx.build_compile_node_context(
         node.as_ref(),
@@ -232,7 +235,7 @@ fn render_python_model(
     let postfix_template = "{{ py_script_postfix(model) }}";
     let rendered_postfix = render_sql(
         postfix_template,
-        &ctx.env,
+        jinja_env,
         &compile_context,
         ctx.rendering_listener_factory.as_ref(),
         &PathBuf::from("py_script_postfix"),

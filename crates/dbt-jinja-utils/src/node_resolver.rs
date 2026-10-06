@@ -67,7 +67,7 @@ struct CatalogRef {
     schema: String,
     identifier: String,
     relation_type: RelationType,
-    quoting: ResolvedQuoting,
+    user_quoting: Option<DbtQuoting>,
     event_time: Option<String>,
 }
 
@@ -327,19 +327,19 @@ impl NodeResolver {
                 "Cannot resolve cross-adapter ref '{unique_id}' because catalogs.yml v2 is unavailable"
             ));
         };
-        catalogs
-            .validate_adapter_bridge(
-                &catalog_ref.catalog_name,
-                catalog_ref.producer_adapter,
-                consumer_adapter,
+        dbt_adapter::catalog_relation::validate_adapter_bridge(
+            catalogs,
+            &catalog_ref.catalog_name,
+            catalog_ref.producer_adapter,
+            consumer_adapter,
+        )
+        .map_err(|error| {
+            fs_err!(
+                ErrorCode::InvalidConfig,
+                "Cannot resolve cross-adapter ref '{unique_id}' through catalog '{}': {error}",
+                catalog_ref.catalog_name
             )
-            .map_err(|error| {
-                fs_err!(
-                    ErrorCode::InvalidConfig,
-                    "Cannot resolve cross-adapter ref '{unique_id}' through catalog '{}': {error}",
-                    catalog_ref.catalog_name
-                )
-            })?;
+        })?;
         let database = dbt_adapter::catalog_relation::resolve_catalog_database(
             catalogs,
             &catalog_ref.catalog_name,
@@ -352,13 +352,15 @@ impl NodeResolver {
                 catalog_ref.catalog_name
             )
         })?;
+        let mut quoting = catalog_ref.user_quoting.unwrap_or_default();
+        quoting.default_to(&default_dbt_quoting_for(consumer_adapter));
         let relation = create_relation(
             consumer_adapter,
             database,
             catalog_ref.schema.clone(),
             Some(catalog_ref.identifier.clone()),
             Some(catalog_ref.relation_type),
-            catalog_ref.quoting,
+            quoting.try_into()?,
         )?;
         Ok(RelationObject::new_with_filter(
             relation.into(),
@@ -374,13 +376,18 @@ impl NodeResolver {
     ) -> Option<CatalogRef> {
         let model = node.as_any().downcast_ref::<DbtModel>()?;
         let catalog_name = model.__model_attr__.catalog_name.as_deref()?;
+        let user_quoting = node
+            .base()
+            .unrendered_config
+            .get("quoting")
+            .and_then(|value| dbt_yaml::from_value(value.clone()).ok());
         Some(CatalogRef {
             catalog_name: catalog_name.to_string(),
             producer_adapter: adapter_type,
             schema: node.schema(),
             identifier: node.alias(),
             relation_type: RelationType::from(node.materialized()),
-            quoting: node.quoting(),
+            user_quoting,
             event_time: node.event_time(),
         })
     }
@@ -1740,9 +1747,10 @@ catalogs:
             __base_attr__: NodeBaseAttributes {
                 adapter: AdapterType::Snowflake,
                 database: "SNOWFLAKE_SHARED".to_string(),
-                schema: "analytics".to_string(),
-                alias: "orders".to_string(),
+                schema: "MixedSchema".to_string(),
+                alias: "select".to_string(),
                 materialized: DbtMaterialization::Table,
+                unrendered_config: dbt_yaml::from_str("quoting:\n  database: false\n").unwrap(),
                 ..Default::default()
             },
             ..Default::default()
@@ -1762,8 +1770,71 @@ catalogs:
             )
             .unwrap();
         let rendered = relation.to_string();
-        assert!(rendered.contains("duck_shared"), "{rendered}");
-        assert!(!rendered.contains("SNOWFLAKE_SHARED"), "{rendered}");
+        assert_eq!(rendered, r#"duck_shared."MixedSchema"."select""#);
+    }
+
+    #[test]
+    fn catalog_ref_does_not_reuse_duckdb_default_quoting_for_snowflake() {
+        let yaml: dbt_yaml::Value = dbt_yaml::from_str(
+            r#"
+catalogs:
+  - name: shared
+    type: iceberg_rest
+    table_format: iceberg
+    config:
+      snowflake:
+        catalog_database: SNOWFLAKE_SHARED
+      duckdb:
+        endpoint: https://example.com/catalog
+        warehouse: shared
+        catalog_database: duck_shared
+"#,
+        )
+        .unwrap();
+        let catalogs = DbtCatalogs::new(yaml.as_mapping().unwrap().clone(), yaml.span().clone());
+        let mut resolver = NodeResolver {
+            catalogs: Some(Arc::new(catalogs)),
+            ..Default::default()
+        };
+        let mut model = DbtModel {
+            __common_attr__: CommonAttributes {
+                unique_id: "model.test.orders".to_string(),
+                name: "orders".to_string(),
+                package_name: "test".to_string(),
+                ..Default::default()
+            },
+            __base_attr__: NodeBaseAttributes {
+                adapter: AdapterType::DuckDB,
+                database: "duck_shared".to_string(),
+                schema: "MixedSchema".to_string(),
+                alias: "select".to_string(),
+                materialized: DbtMaterialization::Table,
+                unrendered_config: dbt_yaml::from_str(
+                    "quoting:\n  schema: true\n  identifier: true\n",
+                )
+                .unwrap(),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        model.__model_attr__.catalog_name = Some("shared".to_string());
+        resolver
+            .insert_ref(&model, AdapterType::DuckDB, ModelStatus::Enabled, false)
+            .unwrap();
+
+        let (_, relation, _, _) = resolver
+            .lookup_ref_for_adapter(
+                &None,
+                "orders",
+                &None,
+                &Some("test".to_string()),
+                AdapterType::Snowflake,
+            )
+            .unwrap();
+        assert_eq!(
+            relation.to_string(),
+            r#"SNOWFLAKE_SHARED."MixedSchema"."select""#
+        );
     }
 
     #[test]

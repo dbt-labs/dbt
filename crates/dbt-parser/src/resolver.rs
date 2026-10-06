@@ -892,9 +892,8 @@ pub async fn resolve_inner(
         &root_project_configs.adapter_quoting,
         dbt_state.root_package(),
         root_project_configs,
-        database,
-        schema,
         adapter_type,
+        &dbt_state.dbt_profile,
         package_name,
         &jinja_env,
         &base_ctx,
@@ -923,6 +922,7 @@ pub async fn resolve_inner(
         schema,
         adapter_type,
         &root_project_configs.adapter_quoting,
+        &dbt_state.dbt_profile,
         jinja_env.clone(),
         &base_ctx,
         runtime_config.clone(),
@@ -1137,6 +1137,7 @@ pub async fn resolve_inner(
             database,
             schema,
             adapter_type,
+            &dbt_state.dbt_profile,
             jinja_env.clone(),
             &base_ctx,
             runtime_config.clone(),
@@ -1616,7 +1617,12 @@ fn validate_multi_adapter_dependencies(
                 catalog_name
             ));
         };
-        catalogs.validate_adapter_bridge(catalog_name, producer_adapter, consumer_adapter)?;
+        dbt_adapter::catalog_relation::validate_adapter_bridge(
+            catalogs,
+            catalog_name,
+            producer_adapter,
+            consumer_adapter,
+        )?;
     }
 
     Ok(())
@@ -2765,13 +2771,13 @@ catalogs:
         let span = yaml.span().clone();
         let catalogs = DbtCatalogs::new(yaml.as_mapping().unwrap().clone(), span);
 
-        let err = catalogs
-            .validate_adapter_bridge(
-                "lake_formation",
-                AdapterType::Snowflake,
-                AdapterType::DuckDB,
-            )
-            .unwrap_err();
+        let err = dbt_adapter::catalog_relation::validate_adapter_bridge(
+            &catalogs,
+            "lake_formation",
+            AdapterType::Snowflake,
+            AdapterType::DuckDB,
+        )
+        .unwrap_err();
         let message = err.to_string();
         assert!(message.contains("Lake Formation"));
         assert!(message.contains("iceberg_rest"));
