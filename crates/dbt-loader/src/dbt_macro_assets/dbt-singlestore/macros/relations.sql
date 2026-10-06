@@ -197,6 +197,10 @@
 {%- endmacro %}
 
 {% macro singlestore__list_relations_without_caching(schema_relation) -%}
+  {%- set target_schema = schema_relation.schema | default(schema_relation.database, true) | trim -%}
+  {%- if not target_schema -%}
+    {%- set target_schema = schema_relation.database | trim -%}
+  {%- endif -%}
   {% call statement('list_relations_without_caching', fetch_result=True) -%}
     select
       table_schema as `database`,
@@ -206,12 +210,16 @@
            else 'table'
       end as `type`
     from information_schema.tables
-    where table_schema = '{{ schema_relation.schema }}'
+    where table_schema = '{{ target_schema }}'
   {%- endcall %}
   {{ return(load_result('list_relations_without_caching').table) }}
 {%- endmacro %}
 
 {% macro singlestore__get_columns_in_relation(relation) -%}
+  {%- set target_schema = relation.schema | default(relation.database, true) | trim -%}
+  {%- if not target_schema -%}
+    {%- set target_schema = relation.database | trim -%}
+  {%- endif -%}
   {% call statement('get_columns_in_relation', fetch_result=True) %}
     select
       column_name,
@@ -221,8 +229,8 @@
       numeric_scale
     from information_schema.columns
     where table_name = '{{ relation.identifier }}'
-      {% if relation.schema %}
-      and table_schema = '{{ relation.schema }}'
+      {% if target_schema %}
+      and table_schema = '{{ target_schema }}'
       {% endif %}
     order by ordinal_position
   {% endcall %}

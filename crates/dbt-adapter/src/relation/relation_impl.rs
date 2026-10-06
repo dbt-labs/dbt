@@ -48,7 +48,8 @@ fn include_policy(adapter_type: AdapterType, path: &RelationPath) -> Policy {
             true,
             true,
         ),
-        AdapterType::ClickHouse | AdapterType::Exasol | AdapterType::SingleStore => {
+        AdapterType::SingleStore => Policy::new(true, false, true),
+        AdapterType::ClickHouse | AdapterType::Exasol => {
             Policy::new(false, true, true)
         }
         AdapterType::Salesforce => Policy::new(false, false, true),
@@ -338,9 +339,9 @@ impl Relation {
             },
             schema: match adapter_type {
                 AdapterType::SingleStore => {
-                    let sch = sch_opt.as_ref().filter(|s| !s.trim().is_empty()).cloned();
                     let db = db_opt.as_ref().filter(|s| !s.trim().is_empty()).cloned();
-                    sch.or(db)
+                    let sch = sch_opt.as_ref().filter(|s| !s.trim().is_empty()).cloned();
+                    db.or(sch)
                 }
                 _ => sch_opt,
             },
