@@ -284,50 +284,6 @@ pub async fn resolve_seeds(
             dependency_package_name,
         );
 
-        // XXX: normalize column_types to uppercase if it is snowflake
-        if matches!(default_adapter, AdapterType::Snowflake)
-            && let Some(column_types) = &properties_config.column_types
-        {
-            let column_types = column_types
-                .iter()
-                .map(|(k, v)| {
-                    // Normalize column names for Snowflake case folding.
-                    // If the key is not a valid unquoted identifier (e.g. contains
-                    // spaces), auto-wrap it in double-quotes before parsing so it
-                    // is treated as a quoted (case-preserving) identifier instead
-                    // of being rejected. This matches Mantle behavior.
-                    // Normalize column names for Snowflake case folding.
-                    // If the key is not a valid unquoted identifier (e.g. it
-                    // contains spaces), auto-wrap it in SQL double-quotes so it
-                    // is treated as a case-preserving quoted identifier instead
-                    // of being rejected. This matches Mantle behavior.
-                    let key = k.as_str();
-                    let sql;
-                    let sql_str = if Dialect::Snowflake.parse_identifier(key).is_ok() {
-                        key
-                    } else {
-                        sql = format!("\"{}\"", key.replace('"', "\"\""));
-                        sql.as_str()
-                    };
-                    Ok((
-                        Dialect::Snowflake
-                            .parse_identifier(sql_str)
-                            .map_err(|e| {
-                                fs_err!(
-                                    code => ErrorCode::InvalidColumnReference,
-                                    loc => k.span().clone(),
-                                    "Invalid identifier: {e}",
-                                )
-                            })?
-                            .to_value()
-                            .into(),
-                        v.to_owned(),
-                    ))
-                })
-                .collect::<FsResult<_>>()?;
-
-            properties_config.column_types = Some(column_types);
-        }
         let is_enabled = properties_config.enabled;
 
         let columns = process_columns(
@@ -362,6 +318,44 @@ pub async fn resolve_seeds(
             .map(Into::into)
             .unwrap_or_default();
         let selected_adapter = resolved_node_adapter.unwrap_or(default_adapter);
+        // Normalize seed column names according to the adapter that will load
+        // this seed, not the project's default adapter.
+        if selected_adapter == AdapterType::Snowflake
+            && let Some(column_types) = &properties_config.column_types
+        {
+            let column_types = column_types
+                .iter()
+                .map(|(key, data_type)| {
+                    // If the key is not a valid unquoted identifier (for
+                    // example, it contains spaces), quote it before parsing so
+                    // Snowflake preserves its case, matching dbt-core.
+                    let raw_key = key.as_str();
+                    let quoted_key;
+                    let sql_identifier = if Dialect::Snowflake.parse_identifier(raw_key).is_ok() {
+                        raw_key
+                    } else {
+                        quoted_key = format!("\"{}\"", raw_key.replace('"', "\"\""));
+                        quoted_key.as_str()
+                    };
+                    Ok((
+                        Dialect::Snowflake
+                            .parse_identifier(sql_identifier)
+                            .map_err(|error| {
+                                fs_err!(
+                                    code => ErrorCode::InvalidColumnReference,
+                                    loc => key.span().clone(),
+                                    "Invalid identifier: {error}",
+                                )
+                            })?
+                            .to_value()
+                            .into(),
+                        data_type.to_owned(),
+                    ))
+                })
+                .collect::<FsResult<_>>()?;
+
+            properties_config.column_types = Some(column_types);
+        }
         if !adapter_relation_contexts.contains_key(&selected_adapter) {
             adapter_relation_contexts.insert(
                 selected_adapter,

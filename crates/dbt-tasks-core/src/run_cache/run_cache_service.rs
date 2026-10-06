@@ -2984,7 +2984,7 @@ async fn prepare_write_only_execution_record(
             seed,
             SeedRunCacheRequestContext {
                 adapter_type: seed.node_adapter(),
-                dialect: run_cache_dialect(ctx),
+                dialect: run_cache_dialect(ctx, seed.node_adapter()),
                 last_modified_epoch: None,
                 clone_time_travel_limit: None,
                 clone_table_properties: None,
@@ -3079,7 +3079,7 @@ async fn submit_seed(
         seed,
         SeedRunCacheRequestContext {
             adapter_type: seed.node_adapter(),
-            dialect: run_cache_dialect(ctx),
+            dialect: run_cache_dialect(ctx, seed.node_adapter()),
             last_modified_epoch,
             clone_time_travel_limit,
             clone_table_properties: None,
@@ -3235,7 +3235,7 @@ async fn build_sql_context(
     Ok(BuiltSqlRunCacheContext {
         request: SqlRunCacheRequestContext {
             adapter_type: node.node_adapter(),
-            dialect: run_cache_dialect(ctx),
+            dialect: run_cache_dialect(ctx, node.node_adapter()),
             sql,
             tables: tables.tables,
             query_dependencies: query_dependencies.dependencies,
@@ -4975,8 +4975,7 @@ fn quoting_for_upstream(
 const REDSHIFT_CASE_SENSITIVE_NORMALIZATION_DIALECT: &str =
     "redshift, normalization_strategy = lowercase";
 
-pub fn run_cache_dialect(ctx: &TaskRunnerCtx) -> String {
-    let adapter_type = ctx.default_adapter_type();
+pub fn run_cache_dialect(ctx: &TaskRunnerCtx, adapter_type: AdapterType) -> String {
     let redshift_case_sensitivity_enabled = ctx
         .inner
         .run_cache_ctx
@@ -8536,13 +8535,20 @@ mod tests {
     #[dbt_runtime::test]
     async fn run_cache_dialect_sets_plain_dialect_for_default_redshift() {
         let ctx = test_task_runner_ctx_with_adapter_type(AdapterType::Redshift);
-        assert_eq!(run_cache_dialect(&ctx), "redshift");
+        assert_eq!(run_cache_dialect(&ctx, AdapterType::Redshift), "redshift");
     }
 
     #[dbt_runtime::test]
     async fn run_cache_dialect_sets_plain_dialect_for_non_redshift_adapter() {
         let ctx = test_task_runner_ctx(None);
-        assert_eq!(run_cache_dialect(&ctx), "snowflake");
+        assert_eq!(run_cache_dialect(&ctx, AdapterType::Snowflake), "snowflake");
+    }
+
+    #[dbt_runtime::test]
+    async fn run_cache_dialect_uses_the_node_adapter() {
+        let ctx = test_task_runner_ctx(None);
+        assert_eq!(ctx.default_adapter_type(), AdapterType::Snowflake);
+        assert_eq!(run_cache_dialect(&ctx, AdapterType::DuckDB), "duckdb");
     }
 
     #[dbt_runtime::test]
@@ -8555,7 +8561,7 @@ mod tests {
             .expect("cell already initialized");
 
         assert_eq!(
-            run_cache_dialect(&ctx),
+            run_cache_dialect(&ctx, AdapterType::Redshift),
             REDSHIFT_CASE_SENSITIVE_NORMALIZATION_DIALECT
         );
     }
@@ -8570,7 +8576,7 @@ mod tests {
             .set(true)
             .expect("cell should be empty");
 
-        assert_eq!(run_cache_dialect(&ctx), "snowflake");
+        assert_eq!(run_cache_dialect(&ctx, AdapterType::Snowflake), "snowflake");
     }
 
     #[dbt_runtime::test]
