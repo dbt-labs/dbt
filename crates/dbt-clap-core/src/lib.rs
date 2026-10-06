@@ -73,6 +73,7 @@ pub mod help_headings {
     pub const EVENT_TIME: &str = "Microbatch Event Time";
     pub const SAMPLE: &str = "Sample";
     pub const ADVANCED: &str = "Advanced";
+    pub const UNSTABLE: &str = "Unstable";
 }
 const MANAGE_STATE_ENV: &str = "DBT_ENGINE_MANAGE_STATE";
 const USER_SETTINGS_YML: &str = ".dbt/user_settings.yml";
@@ -151,7 +152,8 @@ impl CliParser {
 
     /// Build the [clap::Command] for the CLI application.
     fn app(&self) -> clap::Command {
-        let app = clap::Command::new(self.command_name);
+        // Match dbt Core: a repeated single-value flag keeps the last value.
+        let app = clap::Command::new(self.command_name).args_override_self(true);
 
         // -- Augment arguments
         let app = app.group(clap::ArgGroup::new("Cli").multiple(true).args({
@@ -919,7 +921,8 @@ pub struct ShowArgs {
 
     /// Query a dbt information schema view (e.g. `models`, `dag_nodes`) instead of
     /// the warehouse. Equivalent to `--inline "select * from {{ info_schema('<view>') }}"`.
-    /// Requires a prior `dbt parse|compile|run|build --generate-info-schema`.
+    /// Needs metadata from a prior `dbt build|run|check`, or
+    /// `dbt parse|compile --generate-info-schema`.
     #[arg(long, value_name = "VIEW", conflicts_with_all = ["inline", "adapter", "query_id"])]
     pub info: Option<String>,
 
@@ -2215,11 +2218,11 @@ pub struct CommonArgs {
 
     #[arg(global = true, long, default_value_t = false, action = ArgAction::SetTrue, env = "DBT_PARTIAL_LOAD", value_parser = BoolishValueParser::new(), hide = true)]
     pub partial_load: bool,
-    #[arg(global = true, long, default_value_t = false, action = ArgAction::SetTrue, env = "DBT_PARTIAL_LOAD", value_parser = BoolishValueParser::new(), hide = true)]
+    #[arg(global = true, long, default_value_t = false, action = ArgAction::SetTrue, value_parser = BoolishValueParser::new(), hide = true)]
     pub no_partial_load: bool,
 
-    /// Select only nodes whose source files have changed since the last --partial-parse run,
-    /// plus all their downstream dependents. Implies --partial-parse.
+    /// Select only nodes whose source files have changed or been added since the last
+    /// --partial-parse run, plus all their downstream dependents. Implies --partial-parse.
     /// Use with --partial-load for full speed: --partial-load --dirty
     #[arg(global = true, long, default_value_t = false, action = ArgAction::SetTrue, env = "DBT_DIRTY", value_parser = BoolishValueParser::new(), help_heading = help_headings::EXECUTION, hide_short_help = true)]
     pub dirty: bool,
@@ -2249,6 +2252,19 @@ pub struct CommonArgs {
     /// When this option is passed, dbt will output low-level timing stats to the specified file. Example: `--record-timing-info output.profile`
     #[arg(global = true, long, short = 'r', hide = true)]
     pub record_timing_info: Option<PathBuf>,
+
+    /// Turn on a feature flag (`NAME`) or set it (`NAME=true|false`). Repeatable; also read
+    /// from DBT_ENGINE_FEATURES as a comma-separated list. Unstable: features may change or be
+    /// removed between releases.
+    #[arg(
+        global = true,
+        long = "feature",
+        value_name = "NAME[=VALUE]",
+        action = ArgAction::Append,
+        help_heading = help_headings::UNSTABLE,
+        hide_short_help = true
+    )]
+    pub features: Vec<String>,
 
     // Send anonymous usage stats to dbt Labs.
     #[arg(global = true, long, default_value_t=true, action = ArgAction::SetTrue, env = "DBT_SEND_ANONYMOUS_USAGE_STATS", value_parser = BoolishValueParser::new(), help_heading = help_headings::ADVANCED, hide_short_help = true)]
@@ -2724,21 +2740,26 @@ impl CommonArgs {
 
     /// `--verify-partial-load` implies `--partial-load`. `--write-metadata` implies both.
     /// `--write-index` and `--generate-info-schema` imply `--write-metadata`, hence both.
+    ///
+    /// `--no-partial-load` cancels the fast path whatever turned it on here, so a caller keeps
+    /// the index without it (`--no-write-index` drops both). `--dirty` is cancelled at the
+    /// fast-path call site.
     pub fn effective_partial_load(&self) -> bool {
-        self.write_metadata
-            || self.effective_write_index()
-            || self.generate_info_schema
-            || self.partial_load
-            || self.verify_partial_load
+        !self.no_partial_load
+            && (self.write_metadata
+                || self.effective_write_index()
+                || self.generate_info_schema
+                || self.partial_load
+                || self.verify_partial_load)
     }
 
     /// `--write-index` after `--no-write-index` cancels it.
     ///
     /// Both `effective_partial_*` gates go through this rather than reading `write_index`
     /// directly, because those implications exist only to serve the index. Cancelling the index
-    /// without cancelling them would leave the caller with no index *and* the partial-load fast
-    /// path, which cannot see files it has not already recorded — the worst of both. An explicit
-    /// `--write-metadata` still implies both on its own; `--no-write-index` only cancels the index.
+    /// without cancelling them would leave the caller with no index but still on the
+    /// partial-load fast path. An explicit `--write-metadata` still implies both on its own;
+    /// `--no-write-index` only cancels the index.
     /// (`--generate-info-schema` implies `--write-metadata` independently, so it stays in the gates
     /// above regardless of `--no-write-index`.)
     pub fn effective_write_index(&self) -> bool {
@@ -3242,6 +3263,36 @@ mod tests {
         assert!(!args.effective_write_index());
         assert!(!args.effective_partial_parse());
         assert!(!args.effective_partial_load());
+    }
+
+    #[test]
+    fn no_partial_load_cancels_the_fast_path_but_keeps_the_index() {
+        // `--write-index --no-partial-load`: the caller keeps the index and opts out of the
+        // fast path. Before this, `--no-write-index` was the only way out and dropped both.
+        let args = CommonArgs {
+            write_index: true,
+            no_partial_load: true,
+            ..Default::default()
+        };
+        assert!(!args.effective_partial_load());
+        assert!(args.effective_write_index());
+        assert!(args.effective_partial_parse());
+    }
+
+    /// `effective_partial_load()` negates `no_partial_load`, so sharing `DBT_PARTIAL_LOAD` with
+    /// `partial_load` would make `DBT_PARTIAL_LOAD=1` turn the fast path off.
+    #[test]
+    fn no_partial_load_flag_is_not_populated_from_env() {
+        let reads_env = <CommonArgs as clap::Args>::augment_args(clap::Command::new("t"))
+            .get_arguments()
+            .find(|arg| arg.get_id() == "no_partial_load")
+            .map(|arg| arg.get_env().is_some());
+
+        assert_eq!(
+            reads_env,
+            Some(false),
+            "--no-partial-load must not read DBT_PARTIAL_LOAD via clap"
+        );
     }
 
     #[test]
@@ -3836,6 +3887,51 @@ mod tests {
         assert_eq!(
             eval_args.select.as_ref().map(|s| s.to_string()),
             Some("resource_type:source".to_string())
+        );
+    }
+
+    #[test]
+    fn repeated_target_flag_keeps_last_value() {
+        let cmd = parse_core_command(&["compile", "--target", "dev", "--target", "prod"]);
+        let CoreCommand::Compile(args) = &cmd else {
+            panic!("expected CoreCommand::Compile, got {cmd:?}");
+        };
+        assert_eq!(args.common_args.target, Some("prod".to_string()));
+
+        let cmd = parse_core_command(&["compile", "-t", "dev", "-t", "prod"]);
+        let CoreCommand::Compile(args) = &cmd else {
+            panic!("expected CoreCommand::Compile, got {cmd:?}");
+        };
+        assert_eq!(args.common_args.target, Some("prod".to_string()));
+    }
+
+    #[test]
+    fn repeated_debug_flag_parses() {
+        let cmd = parse_core_command(&["build", "--debug", "--debug"]);
+        let CoreCommand::Build(args) = &cmd else {
+            panic!("expected CoreCommand::Build, got {cmd:?}");
+        };
+        assert!(args.common_args.debug);
+    }
+
+    #[test]
+    fn repeated_local_set_arg_keeps_last_value() {
+        let cmd = parse_core_command(&["compile", "--limit", "1", "--limit", "4"]);
+        let CoreCommand::Compile(args) = &cmd else {
+            panic!("expected CoreCommand::Compile, got {cmd:?}");
+        };
+        assert_eq!(args.limit.value(), Some(4));
+    }
+
+    #[test]
+    fn repeated_select_flag_still_unions() {
+        let cmd = parse_core_command(&["ls", "--select", "a", "--select", "b"]);
+        let CoreCommand::Ls(args) = &cmd else {
+            panic!("expected CoreCommand::Ls, got {cmd:?}");
+        };
+        assert_eq!(
+            args.common_args.select.as_deref(),
+            Some(["a".to_string(), "b".to_string()].as_slice())
         );
     }
 

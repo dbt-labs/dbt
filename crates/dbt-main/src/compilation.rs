@@ -1069,9 +1069,10 @@ impl DbtProjectCompilation {
             (None, false)
         };
 
-        // partial-load fast path (also fires for state:dirty): if no file mtimes changed,
-        // skip WalkDir entirely and return prev as-is. Skip when --inline is set since the
-        // inline SQL node must be injected during load().
+        // Partial-load fast path (partial load or `--dirty`, unless `--no-partial-load`): if no
+        // recorded file changed or was deleted and none was added, reuse the loaded previous state
+        // without the loader's file walk or a parse. Skip when --inline is set since the inline
+        // SQL node must be injected during load().
         //
         // Also skip it when a `parse` was asked to write artifacts. `parse`'s metadata epochs
         // and information schema are written from `maybe_write_json_and_exit`, which returning
@@ -1096,7 +1097,12 @@ impl DbtProjectCompilation {
         // leaves it false and keeps the fast path.
         let parse_artifacts_requested =
             arg.command == FsCommand::Parse && (arg.write_metadata || arg.generate_info_schema);
-        if use_lazy_filter && !has_inline && !parse_artifacts_requested {
+        // --dirty sets use_lazy_filter on its own, so --no-partial-load is checked here too.
+        if use_lazy_filter
+            && !cli.common_args.no_partial_load
+            && !has_inline
+            && !parse_artifacts_requested
+        {
             // Skip the fast path when the --static-analysis level has changed since the
             // previous compilation. The fast path reuses nodes whose `base().static_analysis`
             // was stamped by the prior run; if the CLI arg changed (e.g. baseline→strict),
