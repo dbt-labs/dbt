@@ -1082,6 +1082,7 @@ impl BaseRelation for Relation {
             (Snowflake, Some(Table) | Some(View) | Some(DynamicTable) | Some(InteractiveTable)) => {
                 true
             }
+            (Databricks, Some(MaterializedView)) => true,
             (_, Some(Table) | Some(View)) => true,
             (_, _) => false,
         }
@@ -1940,6 +1941,27 @@ mod tests {
             relation.add_constraint(pk_constraint);
             assert_eq!(relation.alter_constraints.len(), 1);
             assert_eq!(relation.create_constraints.len(), 1);
+        }
+
+        #[test]
+        fn test_can_be_replaced() {
+            use RelationType::*;
+
+            for (relation_type, expected) in [
+                (Table, true),
+                (View, true),
+                (MaterializedView, true),
+                (StreamingTable, false),
+            ] {
+                let relation = Relation::new(
+                    AdapterType::Databricks,
+                    "d".to_string(),
+                    "s".to_string(),
+                    "i".to_string(),
+                )
+                .with_relation_type(Some(relation_type));
+                assert_eq!(relation.can_be_replaced(), expected, "{relation_type:?}");
+            }
         }
     }
 
