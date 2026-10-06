@@ -2239,6 +2239,7 @@ impl DbtProjectCompilation {
                         &resolved_state,
                         &jinja_env,
                         &base_context,
+                        adapter.adapter_type(),
                     )
                     .await?;
                     (result.to_string(), "Macro result", macro_name.to_string())
