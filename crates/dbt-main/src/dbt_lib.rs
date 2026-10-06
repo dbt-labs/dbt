@@ -51,13 +51,10 @@ use dbt_dag::schedule::Schedule;
 use dbt_dist::command::execute_get_distribution_info;
 use dbt_docs_server::providers::Backend;
 use dbt_features::feature_stack::FeatureStack;
-use dbt_features::index::write_metadata_parquet;
 use dbt_index_core::backend::DuckDbInfoSchemaBackend;
 use dbt_index_core::ingest::ingest_state::IngestState;
-use dbt_index_core::ingest::metadata_to_parquet::{
-    apply_delta_direct, has_persisted_state, ingest_from_metadata_direct,
-};
-use dbt_index_core::{WriteSource, save_artifact_meta, write_info_schema};
+use dbt_index_core::ingest::metadata_to_parquet::{apply_delta_direct, has_persisted_state};
+use dbt_index_core::write_info_schema;
 use dbt_init::init;
 use dbt_jinja_utils::{
     jinja_environment::JinjaEnv, listener::JinjaTypeCheckingEventListenerFactory,
@@ -111,7 +108,7 @@ use crate::{
         DbtRunTasksResult, DbtScheduleDescription, show_queries_info_schema, update_manifest,
     },
     retry::{RETRIABLE_COMMANDS, RetryState},
-    utils::{InvocationContext, write_catalog_stats_parquet, write_runtime_results_parquet},
+    utils::{InvocationContext, write_runtime_results_parquet},
     vars::{
         validate_engine_env_vars, warn_if_legacy_run_cache_mode_flag_used,
         warn_unused_engine_env_vars,
@@ -217,10 +214,10 @@ pub async fn setup_and_execute_fs(
         FsError::exit_with_status(1)
     })?;
 
-    // --dirty without --select: synthesize a `seed_id+ seed_id+ ...` selector so the
+    // --dirty without --select: synthesize a `seed_id+ path:<added_file>+ ...` selector so the
     // scheduler runs only the dirty nodes and their descendants — ancestors are loaded
-    // for dep closure but not scheduled.  Falls back to select=None (run all) when the
-    // cache doesn't exist yet or nothing is dirty.
+    // for dep closure but not scheduled. With no cache or nothing dirty, select stays None: the
+    // fast path loads (so runs) nothing, a full parse (e.g. a non-SQL file added) runs everything.
     if cli.common_args().dirty && eval_arg.select.is_none() {
         use dbt_metadata::partial_parse::dirty_select_expression;
         if let Some(expr) = dirty_select_expression(&eval_arg.io) {
@@ -346,6 +343,7 @@ async fn do_execute_fs(
 
     warn_unused_engine_env_vars();
     warn_if_legacy_run_cache_mode_flag_used();
+    install_feature_flags(&cli.common_args().features);
 
     // Current versions of rustls require us to explicitly install a default provider.
     // The default provider can only be installed once per process, so
@@ -614,6 +612,15 @@ pub async fn execute_setup_and_all_phases(
     *artifacts_sink = executor.captured_artifacts;
 
     result
+}
+
+/// Resolves this invocation's feature flags and makes them current.
+fn install_feature_flags(cli_features: &[String]) {
+    let snapshot = dbt_flags::FlagSnapshot::builder().cli(cli_features).build();
+    for warning in snapshot.warnings(dbt_flags::ALL) {
+        emit_warn_log_message(ErrorCode::InvalidConfig, warning);
+    }
+    dbt_flags::install(snapshot);
 }
 
 /// Emits version information as a progress message.
@@ -1859,243 +1866,24 @@ impl<'a> AllPhasesExecutor<'a> {
             None
         };
 
-        // Produce parquet metadata epoch files (compile/nodes, compile/columns, cll, etc.).
-        // Must happen before the manifest is consumed below.
         if self.arg.write_metadata && self.arg.command != FsCommand::Show {
-            // Catalog epochs fire whenever catalog_data is Some — catalog_data is non-None
-            // only when write_metadata && (write_catalog || write_index) && Run|Build,
-            // so the if-let is sufficient; catalog.json is separately gated below.
-            if let Some(ref catalog) = catalog_data {
-                write_catalog_stats_parquet(catalog, self.arg.as_ref()).await;
-                write_catalog_columns_epoch(catalog, self.arg.as_ref());
-            }
-
             let schema_store =
                 Arc::clone(&compilation_cache_state.schema_store) as Arc<dyn SchemaStoreTrait>;
+            crate::metadata::write_metadata(
+                self.arg.as_ref(),
+                self.captured_artifacts
+                    .manifest
+                    .as_ref()
+                    .expect("Unconditionally set earlier"),
+                resolved_state.as_ref(),
+                schema_store.as_ref(),
+                &run_task_results,
+                catalog_data.as_ref(),
+                self.feature_stack.index.hooks.as_ref(),
+            )
+            .await?;
 
-            let grain_infos = self
-                .feature_stack
-                .index
-                .hooks
-                .lineage_grain_infos(&run_task_results)
-                .await?;
-
-            // Classifier propagation results (proprietary hook; empty in OSS).
-            // Merged with manifest-declared classifiers inside write_metadata_parquet.
-            let (node_classifiers, column_classifiers) = self
-                .feature_stack
-                .index
-                .hooks
-                .classifier_results(&run_task_results)
-                .await?;
-
-            let recomputed_targets: HashSet<String> = if self.arg.command.compiles_project() {
-                run_task_results
-                    .stats
-                    .compile
-                    .stats
-                    .iter()
-                    .map(|s| s.unique_id.clone())
-                    .collect()
-            } else {
-                HashSet::new()
-            };
-
-            if recomputed_targets.is_empty() {
-                write_metadata_parquet(
-                    self.arg.as_ref(),
-                    self.captured_artifacts
-                        .manifest
-                        .as_ref()
-                        .expect("Unconditionally set earlier"),
-                    Some(resolved_state.as_ref()),
-                    Some(schema_store.as_ref()),
-                    None,
-                    &recomputed_targets,
-                    &grain_infos,
-                    &node_classifiers,
-                    &column_classifiers,
-                );
-            } else if !self.arg.write_lineage {
-                write_metadata_parquet(
-                    self.arg.as_ref(),
-                    self.captured_artifacts
-                        .manifest
-                        .as_ref()
-                        .expect("Unconditionally set earlier"),
-                    Some(resolved_state.as_ref()),
-                    Some(schema_store.as_ref()),
-                    Some(&[]),
-                    &recomputed_targets,
-                    &grain_infos,
-                    &node_classifiers,
-                    &column_classifiers,
-                );
-            } else {
-                let t_ble = {
-                    let timing = std::env::var_os("DBT_LINEAGE_TIMING").is_some();
-                    if timing {
-                        eprintln!("[lineage] column_lineage hook start");
-                    }
-                    Instant::now()
-                };
-                match self
-                    .feature_stack
-                    .index
-                    .hooks
-                    .column_lineage(resolved_state.as_ref(), &run_task_results)
-                    .await
-                {
-                    Ok(column_lineage) => {
-                        if std::env::var_os("DBT_LINEAGE_TIMING").is_some() {
-                            eprintln!(
-                                "[lineage] {:>8.1}ms  cll_edges_from_lineage_results ({})",
-                                t_ble.elapsed().as_secs_f64() * 1000.0,
-                                column_lineage.len()
-                            );
-                        }
-                        if column_lineage.is_empty() {
-                            emit_warn_log_message(
-                                ErrorCode::Generic,
-                                "column-level lineage requires --static-analysis strict; no column lineage written.",
-                            );
-                        }
-                        write_metadata_parquet(
-                            self.arg.as_ref(),
-                            self.captured_artifacts
-                                .manifest
-                                .as_ref()
-                                .expect("Unconditionally set earlier"),
-                            Some(resolved_state.as_ref()),
-                            Some(schema_store.as_ref()),
-                            Some(&column_lineage),
-                            &recomputed_targets,
-                            &grain_infos,
-                            &node_classifiers,
-                            &column_classifiers,
-                        );
-                    }
-                    Err(e) => {
-                        emit_warn_log_message(
-                            ErrorCode::Generic,
-                            format!("dbt-index: column_lineage: {e}"),
-                        );
-                        let empty_targets: HashSet<String> = HashSet::new();
-                        write_metadata_parquet(
-                            self.arg.as_ref(),
-                            self.captured_artifacts
-                                .manifest
-                                .as_ref()
-                                .expect("Unconditionally set earlier"),
-                            Some(resolved_state.as_ref()),
-                            Some(schema_store.as_ref()),
-                            Some(&[]),
-                            &empty_targets,
-                            &grain_infos,
-                            &node_classifiers,
-                            &column_classifiers,
-                        );
-                    }
-                }
-            }
-
-            // Write catalog.json from pre-fetched catalog — no second warehouse query.
-            // Epochs already written unconditionally above; this block is catalog.json only.
-            // Only for Run/Build: need executed nodes to populate relations.
-            if self.arg.write_catalog
-                && matches!(self.arg.command, FsCommand::Run | FsCommand::Build)
-            {
-                if let Some(ref catalog) = catalog_data {
-                    match write_artifact_to_file(
-                        catalog,
-                        ArtifactType::Catalog,
-                        &self.arg.io.out_dir,
-                        DBT_CATALOG_JSON,
-                        &self.arg.io.in_dir,
-                    ) {
-                        Ok(()) => {
-                            emit_info_log_message("Successfully wrote catalog.json");
-                        }
-                        Err(e) => {
-                            emit_warn_log_message(ErrorCode::Generic, format!("catalog: {e}"));
-                        }
-                    }
-                }
-            }
-
-            // Save catalog
             self.captured_artifacts.catalog = catalog_data;
-
-            // When --write-index is active, convert metadata epochs → snapshot index parquet.
-            if self.arg.write_index {
-                let metadata_dir = self.arg.metadata_dir();
-                let index_dir = self.arg.index_dir();
-                let mut state = IngestState::default();
-                match ingest_from_metadata_direct(&metadata_dir, &index_dir, &mut state) {
-                    Ok(_) => {
-                        if let Err(e) = save_artifact_meta(
-                            &index_dir,
-                            &self.arg.io.out_dir,
-                            WriteSource::DirectWrite,
-                            None,
-                        ) {
-                            emit_warn_log_message(
-                                ErrorCode::IndexWriteFailed,
-                                format!("dbt-index: save_artifact_meta: {e}"),
-                            );
-                        }
-                    }
-                    Err(e) => emit_warn_log_message(
-                        ErrorCode::IndexWriteFailed,
-                        format!("dbt-index: write-index: {e}"),
-                    ),
-                }
-
-                // Post-index hook: ingest the classifier registry and run the
-                // classifier "checks" gate. No-op in OSS.
-                //
-                // Recorded rather than propagated: a failing index write should not
-                // abort a build whose models already succeeded.
-                if let Err(e) = self
-                    .feature_stack
-                    .index
-                    .hooks
-                    .did_write_index(
-                        self.arg.as_ref(),
-                        &index_dir,
-                        &run_task_results,
-                        resolved_state.as_ref(),
-                    )
-                    .await
-                {
-                    emit_error_log_from_fs_error(*e);
-                }
-            }
-
-            // The information schema is written independently of the index:
-            // either, neither, or both may be requested. Its intermediate is the
-            // flat index at `target/private/index` when one is present — the same ingest
-            // builds both, so an index written by the block just above (or by a
-            // prior run) is reused via the delta path rather than re-ingested. With
-            // no index to reuse — e.g. `--no-write-index` — it stages privately, so
-            // requesting the information schema never materialises an index the
-            // caller opted out of.
-            if self.arg.generate_info_schema {
-                let metadata_dir = self.arg.metadata_dir();
-                let info_schema_dir = self.arg.info_schema_dir();
-                let index_dir = self.arg.index_dir();
-                let staging_dir = if has_persisted_state(&index_dir) {
-                    index_dir
-                } else {
-                    self.arg.info_schema_staging_dir()
-                };
-                if let Err(e) = write_info_schema(&metadata_dir, &info_schema_dir, &staging_dir) {
-                    emit_warn_log_message(
-                        ErrorCode::InfoSchemaWriteFailed,
-                        format!("dbt: generate-info-schema: {e}"),
-                    );
-                }
-            }
         }
 
         let map_compiled_sql = self
@@ -3211,36 +2999,5 @@ fn report_selection_override_reconciliation(
         emit_info_log_message(message);
     } else {
         emit_warn_log_message(ErrorCode::SelectionOverrideDivergence, message);
-    }
-}
-
-fn write_catalog_columns_epoch(catalog: &DbtCatalog, arg: &EvalArgs) {
-    use chrono::Utc;
-    use dbt_metadata_parquet::catalog_columns::CatalogColumnRow;
-
-    let ingested_at = Utc::now().timestamp_micros();
-    let mut rows = Vec::new();
-
-    for (unique_id, table) in catalog.nodes.iter().chain(catalog.sources.iter()) {
-        for (idx, (_col_name, col)) in table.columns.iter().enumerate() {
-            rows.push(CatalogColumnRow {
-                unique_id: unique_id.clone(),
-                column_name: col.name.clone(),
-                column_index: idx as i32,
-                catalog_type: Some(col.data_type.clone()),
-                catalog_comment: col.comment.clone(),
-                ingested_at,
-            });
-        }
-    }
-
-    let dir = arg.metadata_dir().join("catalog").join("columns");
-    if let Err(e) =
-        dbt_metadata_parquet::catalog_columns::write_catalog_columns(&dir, rows, None, None, None)
-    {
-        emit_warn_log_message(
-            ErrorCode::Generic,
-            format!("metadata: catalog_columns: {e}"),
-        );
     }
 }

@@ -23,24 +23,6 @@ use dbt_common::{ErrorCode, FsResult, fs_err, tokiofs};
 use reqwest_middleware::ClientWithMiddleware;
 use traits::GitHostClient as _;
 
-/// Whether host-specific fast paths (GitHub archive + GraphQL) are enabled.
-///
-/// Tri-state: the env var, when set, *overrides* the in-code default
-/// (`FAST_PATH_DEFAULT`). `1`/`true` force-on, `0`/`false` force-off,
-/// anything else (or unset) falls through to the default. This shape is
-/// in prep for an A/B flag (LaunchDarkly) flipping `FAST_PATH_DEFAULT`:
-/// the env var stays as a manual override for tests and ops without
-/// fighting the rollout.
-const FAST_PATH_DEFAULT: bool = false;
-
-fn fast_path_enabled() -> bool {
-    match std::env::var("DBT_DEPS_GIT_FAST_PATH").ok().as_deref() {
-        Some(v) if v == "1" || v.eq_ignore_ascii_case("true") => true,
-        Some(v) if v == "0" || v.eq_ignore_ascii_case("false") => false,
-        _ => FAST_PATH_DEFAULT,
-    }
-}
-
 use crate::context::DepsOperationContext;
 use crate::network_client::retrying_http_client;
 use crate::tarball_client::TarballClient;
@@ -461,7 +443,7 @@ impl traits::GitHostClient for HostClient<'_> {
 
 /// Pick `(primary, fallback)` for `parsed`.
 ///
-/// When `DBT_DEPS_GIT_FAST_PATH` is on, each fast-path candidate is asked
+/// When the `git_deps_fast_path` flag is on, each fast-path candidate is asked
 /// (in priority order) whether it can handle the URL via `can_handle`; the
 /// first match becomes `primary`, with the generic client as `fallback`.
 /// Otherwise — fast path off, or no candidate claims the URL — the generic
@@ -474,7 +456,7 @@ fn pick_clients<'a>(
     &'a dyn traits::GitHostClient,
     Option<&'a dyn traits::GitHostClient>,
 ) {
-    if fast_path_enabled() {
+    if dbt_flags::GIT_DEPS_FAST_PATH.enabled() {
         let candidates: [&dyn traits::GitHostClient; 1] = [&context.github_client];
         if let Some(primary) = candidates.into_iter().find(|c| c.can_handle(parsed)) {
             return (primary, Some(&context.generic_client));

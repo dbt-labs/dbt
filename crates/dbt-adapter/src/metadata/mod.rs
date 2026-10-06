@@ -16,7 +16,7 @@ use dbt_adapter_engine::{ConnectionFactory, MapReduce};
 use dbt_adbc::Connection;
 use dbt_common::AsyncAdapterResult;
 use dbt_common::cancellation::{Cancellable, CancellationToken};
-use dbt_schemas::schemas::relations::base::BaseRelation;
+use dbt_schemas::schemas::{dbt_catalogs::DbtCatalogsView, relations::base::BaseRelation};
 use dbt_tracing::emit::create_debug_span;
 use dbt_tracing::span_info::SpanStatusRecorder as _;
 use minijinja::State;
@@ -149,6 +149,23 @@ pub use view_definition::{ViewDefinition, ViewDefinitionFetchResult};
 /// The canonical list of BigQuery pseudocolumns (queryable columns absent from
 /// `INFORMATION_SCHEMA`). Re-exported so other crates can share the source of truth.
 pub use bigquery::BIGQUERY_PSEUDOCOLUMNS;
+
+pub fn routed_source_databases(
+    adapter_type: AdapterType,
+    catalogs: &DbtCatalogsView<'_>,
+) -> HashMap<String, String> {
+    if adapter_type != AdapterType::DuckDB {
+        return HashMap::new();
+    }
+    catalogs
+        .catalogs
+        .iter()
+        .filter_map(|catalog| {
+            duckdb::duckdb_catalog_attached_database(catalog)
+                .map(|database| (catalog.name.to_owned(), database))
+        })
+        .collect()
+}
 
 /// Implementation of the `get_relation` function for all adapters.
 pub(crate) mod get_relation;
