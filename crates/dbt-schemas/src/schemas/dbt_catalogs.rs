@@ -662,34 +662,40 @@ impl DbtCatalogs {
                     consumer.as_ref()
                 ));
             };
-            if adapter_type != AdapterType::DuckDB
-                && block
+            match adapter_type {
+                AdapterType::DuckDB => {}
+                _ if block
                     .get(yml::Value::from("catalog_database"))
                     .and_then(|value| value.as_str())
                     .map(str::trim)
-                    .is_none_or(str::is_empty)
-            {
-                return Err(fs_err!(
-                    ErrorCode::InvalidConfig,
-                    "Catalog '{name}' must declare a non-empty config.{}.catalog_database to \
-                     provide a stable cross-adapter namespace",
-                    adapter_type.as_ref()
-                ));
+                    .is_none_or(str::is_empty) =>
+                {
+                    return Err(fs_err!(
+                        ErrorCode::InvalidConfig,
+                        "Catalog '{name}' must declare a non-empty config.{}.catalog_database to \
+                         provide a stable cross-adapter namespace",
+                        adapter_type.as_ref()
+                    ));
+                }
+                _ => {}
             }
         }
 
-        if producer == AdapterType::DuckDB {
-            let duckdb = catalog
-                .config_block(AdapterType::DuckDB.as_ref())
-                .expect("DuckDB config block checked above");
-            if try_get_bool(duckdb, "read_only")?.unwrap_or(false) {
-                return Err(fs_err!(
-                    ErrorCode::InvalidConfig,
-                    "Catalog '{name}' is read-only for DuckDB, so it cannot carry output from \
-                     DuckDB to '{}'",
-                    consumer.as_ref()
-                ));
+        match producer {
+            AdapterType::DuckDB => {
+                let duckdb = catalog
+                    .config_block(AdapterType::DuckDB.as_ref())
+                    .expect("DuckDB config block checked above");
+                if try_get_bool(duckdb, "read_only")?.unwrap_or(false) {
+                    return Err(fs_err!(
+                        ErrorCode::InvalidConfig,
+                        "Catalog '{name}' is read-only for DuckDB, so it cannot carry output from \
+                         DuckDB to '{}'",
+                        consumer.as_ref()
+                    ));
+                }
             }
+            _ => {}
         }
 
         Ok(())
