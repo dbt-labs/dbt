@@ -27,13 +27,12 @@ use dbt_jinja_utils::phases::compile::{
     DependencyValidationConfig, build_compile_node_context_inner,
 };
 use dbt_jinja_utils::phases::{
-    build_target_context_map, configure_compile_and_run_jinja_environment,
+    build_adapter_target_context, configure_compile_and_run_jinja_environment,
 };
 use dbt_schema_store::{DataStoreTrait, SchemaStoreTrait};
 use dbt_schemas::materialization_resolver::MaterializationResolver;
 use dbt_schemas::schemas::common::UpdatesOn;
 use dbt_schemas::schemas::nodes::TestMetadata;
-use dbt_schemas::schemas::profiles::TargetContext;
 use dbt_schemas::schemas::relations::base::BaseRelation;
 use dbt_schemas::schemas::{BatchResults, InternalDbtNode, InternalDbtNodeAttributes, Nodes};
 use dbt_schemas::state::{DbtProfile, DbtRuntimeConfig, NodeResolverTracker, ResolverState};
@@ -524,34 +523,12 @@ impl TaskRunnerCtx {
             return Ok(self.inner.base_context.clone());
         }
 
-        let config = self.dbt_profile().adapter(adapter_type).ok_or_else(|| {
-            fs_err!(
-                ErrorCode::InvalidConfig,
-                "no profile connection is configured for adapter '{adapter_type}'"
-            )
-        })?;
-        let target_context = TargetContext::try_from(config.clone())
-            .map_err(|e| fs_err!(ErrorCode::InvalidConfig, "{e}"))?;
-        let target_context = Arc::new(build_target_context_map(
-            &self.dbt_profile().profile,
-            &self.dbt_profile().target,
-            target_context,
-        ));
-        let mut base_context = self.inner.base_context.clone();
-        base_context.insert(
-            "target".to_string(),
-            Value::from_serialize(Arc::clone(&target_context)),
-        );
-        base_context.insert("env".to_string(), Value::from_serialize(target_context));
-        base_context.insert(
-            "database".to_string(),
-            Value::from(config.get_database().cloned()),
-        );
-        base_context.insert(
-            "schema".to_string(),
-            Value::from(config.get_schema().cloned()),
-        );
-        Ok(base_context)
+        Ok(build_adapter_target_context(
+            self.dbt_profile(),
+            adapter_type,
+            &self.inner.base_context,
+        )?
+        .base_context)
     }
 
     pub fn extended_ctx<T: ExtendedCtx + 'static>(&self) -> Option<&T> {

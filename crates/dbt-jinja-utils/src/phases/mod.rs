@@ -10,4 +10,4 @@ pub use compile_and_run_context::{
     bind_resolution_functions, build_compile_base_ctx, build_operation_context,
     build_operation_context_btreemap, configure_compile_and_run_jinja_environment,
 };
-pub use utils::build_target_context_map;
+pub use utils::{AdapterTargetContext, build_adapter_target_context, build_target_context_map};
