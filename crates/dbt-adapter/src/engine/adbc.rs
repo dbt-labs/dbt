@@ -363,12 +363,9 @@ impl AdbcEngine {
         conn: &mut dyn Connection,
         config: &AdapterConfig,
     ) -> AdapterResult<()> {
-        let all_stmts = dbt_auth::generate_duckdb_init_sql(config)
+        let all_stmts = dbt_auth::generate_duckdb_connection_init_sql(config)
             .map_err(crate::errors::auth_error_to_adapter_error)?;
-        for sql in all_stmts
-            .iter()
-            .filter(|sql| is_duckdb_connection_init_sql(sql))
-        {
+        for sql in &all_stmts {
             let mut stmt = conn.new_statement().map_err(adbc_error_to_adapter_error)?;
             stmt.set_sql_query(sql)
                 .map_err(adbc_error_to_adapter_error)?;
@@ -682,15 +679,6 @@ impl AdapterEngine for AdbcEngine {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-fn is_duckdb_connection_init_sql(sql: &str) -> bool {
-    (sql.starts_with("SET ") && !sql.starts_with("SET motherduck_token "))
-        || sql.starts_with("USE ")
-}
-
 /// Enrich connection errors with adapter-specific hints where possible.
 fn enrich_connection_error(
     adapter_type: AdapterType,
@@ -805,22 +793,6 @@ mod tests {
             Cow::Borrowed(_) => {
                 panic!("expected an overridden config with the compute override applied")
             }
-        }
-    }
-
-    #[test]
-    fn duckdb_connection_init_replays_only_connection_scoped_statements() {
-        for sql in ["SET unsafe_enable_version_guessing = true", "USE analytics"] {
-            assert!(is_duckdb_connection_init_sql(sql), "{sql}");
-        }
-        for sql in [
-            "SET motherduck_token = 'secret'",
-            "INSTALL iceberg",
-            "LOAD iceberg",
-            "CREATE OR REPLACE SECRET unity_token (TYPE iceberg)",
-            "ATTACH IF NOT EXISTS 'workspace' AS duck_shared",
-        ] {
-            assert!(!is_duckdb_connection_init_sql(sql), "{sql}");
         }
     }
 }

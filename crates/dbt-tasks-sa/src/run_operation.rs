@@ -499,6 +499,7 @@ pub async fn run_operation(
     resolver_state: &ResolverState,
     jinja_env: &Arc<JinjaEnv>,
     base_context: &BTreeMap<String, Value>,
+    adapter_type: AdapterType,
 ) -> FsResult<Value> {
     // Convert macro arguments from yaml to jinja values
     let macro_args = input_macro_args
@@ -525,7 +526,7 @@ pub async fn run_operation(
                 m
             } else if let Some(m) = search_resolved_macro(
                 resolver_state,
-                &format!("dbt_{}", &resolver_state.adapter_type),
+                &format!("dbt_{adapter_type}"),
                 input_macro_name,
             ) {
                 m
@@ -557,7 +558,8 @@ pub async fn run_operation(
             }
         }
     };
-    let mut run_operation_context = base_context.clone();
+    let mut run_operation_context =
+        bind_operation_resolution_context(base_context, adapter_type, "operation.run_operation");
     run_operation_context.insert(
         TARGET_PACKAGE_NAME.to_string(),
         Value::from(
