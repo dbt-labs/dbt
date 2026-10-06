@@ -973,6 +973,23 @@ schema_yml_v2_cumulative_metric_missing_input_metric = """
         period_agg: first
 """
 
+schema_yml_v2_cumulative_metric_with_window = """
+    metrics:
+      - name: simple_metric
+        description: This is our first simple metric.
+        label: Simple Metric
+        type: simple
+        agg: count
+        expr: id
+      - name: cumulative_metric_with_window
+        description: This is our cumulative metric with a window.
+        label: Cumulative Metric With Window
+        type: cumulative
+        window: 7 days
+        period_agg: first
+        input_metric: simple_metric
+"""
+
 schema_yml_v2_conversion_metric_missing_base_metric = """
     metrics:
       - name: simple_metric_2

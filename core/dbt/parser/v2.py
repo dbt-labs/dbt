@@ -54,6 +54,7 @@ def parse_with_v2(
     from dbt.parser.manifest import (
         assert_no_get_nodes_plugins,
         enrich_manifest_with_plugin_artifacts,
+        write_manifest,
     )
 
     assert_no_get_nodes_plugins(runtime_config.project_name)
@@ -130,13 +131,10 @@ def parse_with_v2(
     if write and write_json:
         # Written from the corrected manifest so the on-disk artifact reflects
         # rediscovered adapter macros rather than the v2 parser's bundled ones.
-        # write_manifest() isn't reusable here: it no-ops under USE_V2_PARSER
-        # and would also rewrite the semantic_manifest.json copied above.
-        from dbt.utils.artifact_upload import add_artifact_produced
-
-        manifest_out_path = str(project_target_path / "manifest.json")
-        manifest.write(manifest_out_path)
-        add_artifact_produced(manifest_out_path)
+        # write_manifest() skips write_semantic_manifest() under USE_V2_PARSER,
+        # so it's safe to reuse here without clobbering the semantic_manifest.json
+        # copied above.
+        write_manifest(manifest, str(project_target_path))
         enrich_manifest_with_plugin_artifacts(manifest, runtime_config.project_name)
 
     return manifest

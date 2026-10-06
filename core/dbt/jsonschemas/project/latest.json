@@ -3570,6 +3570,21 @@
             }
           ]
         },
+        "+enable_change_history": {
+          "anyOf": [
+            {
+              "default": null,
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            {
+              "type": "string",
+              "pattern": "^\\{.*\\}$"
+            }
+          ]
+        },
         "+enable_list_inference": {
           "anyOf": [
             {
@@ -5258,6 +5273,20 @@
             }
           ]
         },
+        "+enable_change_history": {
+          "anyOf": [
+            {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            {
+              "type": "string",
+              "pattern": "^\\{.*\\}$"
+            }
+          ]
+        },
         "+enable_refresh": {
           "anyOf": [
             {
@@ -6226,6 +6255,21 @@
             },
             {
               "type": "null"
+            }
+          ]
+        },
+        "+enable_change_history": {
+          "anyOf": [
+            {
+              "default": null,
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            {
+              "type": "string",
+              "pattern": "^\\{.*\\}$"
             }
           ]
         },
