@@ -1617,7 +1617,12 @@ fn validate_multi_adapter_dependencies(
                 catalog_name
             ));
         };
-        catalogs.validate_adapter_bridge(catalog_name, producer_adapter, consumer_adapter)?;
+        dbt_adapter::catalog_relation::validate_adapter_bridge(
+            catalogs,
+            catalog_name,
+            producer_adapter,
+            consumer_adapter,
+        )?;
     }
 
     Ok(())
@@ -2766,13 +2771,13 @@ catalogs:
         let span = yaml.span().clone();
         let catalogs = DbtCatalogs::new(yaml.as_mapping().unwrap().clone(), span);
 
-        let err = catalogs
-            .validate_adapter_bridge(
-                "lake_formation",
-                AdapterType::Snowflake,
-                AdapterType::DuckDB,
-            )
-            .unwrap_err();
+        let err = dbt_adapter::catalog_relation::validate_adapter_bridge(
+            &catalogs,
+            "lake_formation",
+            AdapterType::Snowflake,
+            AdapterType::DuckDB,
+        )
+        .unwrap_err();
         let message = err.to_string();
         assert!(message.contains("Lake Formation"));
         assert!(message.contains("iceberg_rest"));
