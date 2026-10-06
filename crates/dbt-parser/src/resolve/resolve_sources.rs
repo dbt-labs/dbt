@@ -9,6 +9,7 @@ use crate::utils::{extract_resource_config_from_raw_project, get_node_fqn};
 use crate::validation::check_node_static_analysis;
 
 use dbt_adapter::load_catalogs;
+use dbt_adapter::metadata::routed_source_databases;
 use dbt_adapter_core::AdapterType;
 use dbt_common::io_args::{StaticAnalysisKind, StaticAnalysisOffReason};
 use dbt_common::path::DbtPath;
@@ -273,6 +274,12 @@ pub async fn resolve_sources(
         None => LoadedCatalogs::None,
     };
 
+    let catalog_routed_databases = if let LoadedCatalogs::Active(c) = catalogs_state {
+        routed_source_databases(adapter_type, &c.view()?)
+    } else {
+        HashMap::new()
+    };
+
     let config_resolver = ProjectConfigResolver::build(
         root_project_configs.sources.clone(),
         is_dependency,
@@ -447,6 +454,13 @@ pub async fn resolve_sources(
             continue;
         }
 
+        let routed_database = source_config
+            .__warehouse_specific_config__
+            .catalog_name
+            .as_deref()
+            .and_then(|catalog_name| catalog_routed_databases.get(catalog_name))
+            .map(String::as_str);
+
         // `user_quoting` is the raw source+table YAML merge (no defaults). It is
         // serialized as `ManifestSource.quoting` and matches dbt-core's
         // `source.quoting.merged(table.quoting)`. The resolved `table_quoting`
@@ -458,7 +472,7 @@ pub async fn resolve_sources(
         let quoting_ignore_case = table_quoting.snowflake_ignore_case.unwrap_or(false);
 
         let (database, schema, raw_identifier) =
-            resolve_relation_parts(&source, &table, &table_name, database);
+            resolve_relation_parts(&source, &table, &table_name, database, routed_database);
         let (database, schema, identifier, quoting) = normalize_quoting(
             &table_quoting.try_into()?,
             adapter_type,
@@ -736,10 +750,11 @@ fn resolve_relation_parts(
     table: &Tables,
     table_name: &str,
     default_database: &str,
+    catalog_database: Option<&str>,
 ) -> (String, String, String) {
-    let database: String = source
-        .database
-        .clone()
+    let database: String = catalog_database
+        .map(ToOwned::to_owned)
+        .or_else(|| source.database.clone())
         .unwrap_or_else(|| default_database.to_owned());
     let schema = source
         .schema
@@ -963,7 +978,7 @@ mod tests {
     fn test_resolve_relation_parts_schema_omitted_defaults_to_source_name() {
         let source = source_with("dummy_src", None);
         let table = table_with("src", None);
-        let (_, schema, _) = resolve_relation_parts(&source, &table, "src", "default_db");
+        let (_, schema, _) = resolve_relation_parts(&source, &table, "src", "default_db", None);
         assert_eq!(schema, "dummy_src");
     }
 
@@ -971,7 +986,7 @@ mod tests {
     fn test_resolve_relation_parts_schema_explicit_empty_defaults_to_source_name() {
         let source = source_with("dummy_src", Some(""));
         let table = table_with("src", None);
-        let (_, schema, _) = resolve_relation_parts(&source, &table, "src", "default_db");
+        let (_, schema, _) = resolve_relation_parts(&source, &table, "src", "default_db", None);
         assert_eq!(schema, "dummy_src");
     }
 
@@ -979,7 +994,7 @@ mod tests {
     fn test_resolve_relation_parts_schema_explicit_non_empty_is_kept() {
         let source = source_with("dummy_src", Some("custom_schema"));
         let table = table_with("src", None);
-        let (_, schema, _) = resolve_relation_parts(&source, &table, "src", "default_db");
+        let (_, schema, _) = resolve_relation_parts(&source, &table, "src", "default_db", None);
         assert_eq!(schema, "custom_schema");
     }
 
@@ -987,7 +1002,7 @@ mod tests {
     fn test_resolve_relation_parts_identifier_omitted_defaults_to_table_name() {
         let source = source_with("dummy_src", None);
         let table = table_with("src", None);
-        let (_, _, identifier) = resolve_relation_parts(&source, &table, "src", "default_db");
+        let (_, _, identifier) = resolve_relation_parts(&source, &table, "src", "default_db", None);
         assert_eq!(identifier, "src");
     }
 
@@ -995,7 +1010,7 @@ mod tests {
     fn test_resolve_relation_parts_identifier_explicit_empty_defaults_to_table_name() {
         let source = source_with("dummy_src", None);
         let table = table_with("src", Some(""));
-        let (_, _, identifier) = resolve_relation_parts(&source, &table, "src", "default_db");
+        let (_, _, identifier) = resolve_relation_parts(&source, &table, "src", "default_db", None);
         assert_eq!(identifier, "src");
     }
 
@@ -1003,7 +1018,7 @@ mod tests {
     fn test_resolve_relation_parts_identifier_explicit_non_empty_is_kept() {
         let source = source_with("dummy_src", None);
         let table = table_with("src", Some("custom_identifier"));
-        let (_, _, identifier) = resolve_relation_parts(&source, &table, "src", "default_db");
+        let (_, _, identifier) = resolve_relation_parts(&source, &table, "src", "default_db", None);
         assert_eq!(identifier, "custom_identifier");
     }
 
@@ -1011,8 +1026,51 @@ mod tests {
     fn test_resolve_relation_parts_database_omitted_defaults_to_default_database() {
         let source = source_with("dummy_src", None);
         let table = table_with("src", None);
-        let (database, _, _) = resolve_relation_parts(&source, &table, "src", "default_db");
+        let (database, _, _) = resolve_relation_parts(&source, &table, "src", "default_db", None);
         assert_eq!(database, "default_db");
+    }
+
+    #[test]
+    fn test_resolve_relation_parts_database_from_catalog_when_source_omits_it() {
+        let source = source_with("dummy_src", None);
+        let table = table_with("src", None);
+        let (database, _, _) =
+            resolve_relation_parts(&source, &table, "src", "default_db", Some("rest_attached"));
+        assert_eq!(database, "rest_attached");
+    }
+
+    #[test]
+    fn test_resolve_relation_parts_catalog_wins_over_explicit_database() {
+        // `catalog_database` takes precedence over model/target database config
+        // for every other catalog type that defines it (Horizon, Unity, BigLake);
+        // DuckDB routing matches that same contract here.
+        let mut source = source_with("dummy_src", None);
+        source.database = Some("explicit_db".to_string());
+        let table = table_with("src", None);
+        let (database, _, _) =
+            resolve_relation_parts(&source, &table, "src", "default_db", Some("rest_attached"));
+        assert_eq!(database, "rest_attached");
+    }
+
+    #[test]
+    fn test_resolve_relation_parts_catalog_wins_over_explicit_empty_database() {
+        let mut source = source_with("dummy_src", None);
+        source.database = Some(String::new());
+        let table = table_with("src", None);
+        let (database, _, _) =
+            resolve_relation_parts(&source, &table, "src", "default_db", Some("rest_attached"));
+        assert_eq!(database, "rest_attached");
+    }
+
+    #[test]
+    fn test_resolve_relation_parts_catalog_does_not_affect_schema() {
+        // Routing is database-only: schema keeps `source.schema or source.name`,
+        // matching dbt v1, which never derives a source's schema from a catalog.
+        let source = source_with("dummy_src", None);
+        let table = table_with("src", None);
+        let (_, schema, _) =
+            resolve_relation_parts(&source, &table, "src", "default_db", Some("rest_attached"));
+        assert_eq!(schema, "dummy_src");
     }
 
     #[test]
@@ -1020,7 +1078,7 @@ mod tests {
         let mut source = source_with("dummy_src", None);
         source.database = Some(String::new());
         let table = table_with("src", None);
-        let (database, _, _) = resolve_relation_parts(&source, &table, "src", "default_db");
+        let (database, _, _) = resolve_relation_parts(&source, &table, "src", "default_db", None);
         assert_eq!(database, "");
     }
 

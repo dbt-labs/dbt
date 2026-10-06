@@ -1,6 +1,7 @@
 import type { Edge, Node as ReactFlowNode } from '@xyflow/react';
 import { beforeEach, describe, expect, it } from 'vitest';
 
+import { ResourceType } from '../components/LineageV2/ResourceTypes';
 import { isCardCompact, useLineageStore } from './lineageStore';
 
 const ROOT = 'model.jaffle_shop.customers';
@@ -253,6 +254,38 @@ describe('lineageStore', () => {
     expect(isCardCompact(useLineageStore.getState())).toBe(true);
   });
 
+  it('keeps the full card size while the cards are collapsed to badges', () => {
+    const store = useLineageStore.getState();
+    store.hydrate({
+      rootUniqueId: ROOT,
+      upstreamDepth: 1,
+      downstreamDepth: 1,
+      ...graph(),
+    });
+    measure(SAME_SIZES);
+    store.layoutMeasured();
+
+    // Zoomed out past the LOD threshold, React Flow re-measures every card as the
+    // badge it collapsed to. Keeping that would have the next layout -- after a filter
+    // change, say -- space the graph for badges, and the cards would land on each
+    // other as soon as they expand back.
+    store.setCompact(true);
+    measure({ a: { width: 90, height: 24 }, b: { width: 90, height: 24 } });
+    expect(useLineageStore.getState().nodes.map((n) => n.measured)).toEqual([
+      SAME_SIZES.a,
+      SAME_SIZES.b,
+    ]);
+
+    // The selected card stays full size when the rest collapse, so a new size for it
+    // is a real one.
+    store.onNodesChange([{ id: 'a', type: 'select', selected: true }]);
+    measure({ a: { width: 300, height: 108 } });
+    expect(useLineageStore.getState().nodes[0].measured).toEqual({
+      width: 300,
+      height: 108,
+    });
+  });
+
   it('tracks selection separately from nodes, without churning its identity', () => {
     const store = useLineageStore.getState();
     store.hydrate({
@@ -261,22 +294,23 @@ describe('lineageStore', () => {
       downstreamDepth: 3,
       ...graph(),
     });
-
-    store.onNodesChange([{ id: 'a', type: 'select', selected: true }]);
-    expect(useLineageStore.getState().selectedNodeIds).toEqual(['a']);
-
-    // The point of holding selection as its own field: a drag republishes `nodes` but
-    // must leave `selectedNodeIds` referentially identical, so subscribers stay put.
+    measure(SAME_SIZES);
+    store.layoutMeasured();
+    // Neither node has a resource type, so the filter lets both through.
     const before = useLineageStore.getState().selectedNodeIds;
+    expect(before).toEqual(['a', 'b']);
+
+    // The point of holding selection as its own field: a click or a drag republishes
+    // `nodes` but must leave `selectedNodeIds` referentially identical, so subscribers
+    // -- the canvas re-fitting to it, for one -- stay put.
+    store.onNodesChange([{ id: 'a', type: 'select', selected: true }]);
     store.onNodesChange([
       { id: 'a', type: 'position', position: { x: 10, y: 10 }, dragging: true },
     ]);
     const after = useLineageStore.getState();
     expect(after.nodes[0].position).toEqual({ x: 10, y: 10 });
+    expect(after.nodes[0].selected).toBe(true);
     expect(after.selectedNodeIds).toBe(before);
-
-    store.onNodesChange([{ id: 'a', type: 'select', selected: false }]);
-    expect(useLineageStore.getState().selectedNodeIds).toEqual([]);
   });
 
   it('records fetch failures and unsupported sources', () => {
@@ -311,5 +345,225 @@ describe('lineageStore', () => {
     expect(tb[0].y).toBeLessThan(tb[1].y);
     // The cards are already measured, so flipping direction must not blank the canvas.
     for (const node of nodes) expect(node.style?.visibility).toBe('visible');
+  });
+
+  describe('selectedNodeIds', () => {
+    // Seed and source feed the model, and a test hangs off it. The test is the one
+    // type here that isn't visible by default.
+    function typedGraph(): { nodes: ReactFlowNode[]; edges: Edge[] } {
+      return {
+        nodes: [
+          { id: 'm', position: { x: 0, y: 0 }, data: { resourceType: 'model' } },
+          { id: 's', position: { x: 0, y: 0 }, data: { resourceType: 'source' } },
+          { id: 't', position: { x: 0, y: 0 }, data: { resourceType: 'test' } },
+          { id: 'x', position: { x: 0, y: 0 }, data: { resourceType: 'seed' } },
+        ],
+        edges: [
+          { id: 's-m', source: 's', target: 'm' },
+          { id: 'x-m', source: 'x', target: 'm' },
+          { id: 'm-t', source: 'm', target: 't' },
+        ],
+      };
+    }
+
+    const TYPED_SIZES = {
+      m: { width: 245, height: 108 },
+      s: { width: 245, height: 108 },
+      t: { width: 245, height: 108 },
+      x: { width: 245, height: 108 },
+    };
+
+    function hydrateTyped() {
+      useLineageStore.getState().hydrate({
+        rootUniqueId: ROOT,
+        upstreamDepth: 3,
+        downstreamDepth: 3,
+        ...typedGraph(),
+      });
+    }
+
+    function layOutTyped() {
+      hydrateTyped();
+      measure(TYPED_SIZES);
+      useLineageStore.getState().layoutMeasured();
+    }
+
+    const hiddenNodeIds = () =>
+      useLineageStore
+        .getState()
+        .nodes.filter((n) => n.hidden)
+        .map((n) => n.id);
+    const hiddenEdgeIds = () =>
+      useLineageStore
+        .getState()
+        .edges.filter((e) => e.hidden)
+        .map((e) => e.id);
+    const positionOf = (id: string) =>
+      useLineageStore.getState().nodes.find((n) => n.id === id)!.position;
+
+    it('starts as the nodes the filter lets through, shown once laid out', () => {
+      hydrateTyped();
+      expect(useLineageStore.getState().selectedNodeIds).toEqual(['m', 's', 'x']);
+      // A `hidden` node is never measured, so while the cards are being measured
+      // every one of them has to stay in the DOM -- the unselected test included.
+      expect(hiddenNodeIds()).toEqual([]);
+
+      measure(TYPED_SIZES);
+      useLineageStore.getState().layoutMeasured();
+      expect(useLineageStore.getState().isLaidOut).toBe(true);
+      expect(hiddenNodeIds()).toEqual(['t']);
+      expect(hiddenEdgeIds()).toEqual(['m-t']);
+    });
+
+    it('shows exactly the nodes it is set to, and lays them out again', () => {
+      layOutTyped();
+      const modelBefore = positionOf('m');
+
+      useLineageStore.getState().setSelectedNodeIds(['m', 't']);
+      expect(useLineageStore.getState().selectedNodeIds).toEqual(['m', 't']);
+      expect(hiddenNodeIds()).toEqual(['s', 'x']);
+      expect(hiddenEdgeIds()).toEqual(['s-m', 'x-m']);
+      // With its upstream hidden the model moves up into the first rank, rather than
+      // leaving a gap where the source and seed were...
+      expect(positionOf('m').x).toBeLessThan(modelBefore.x);
+      // ...and the test, never laid out while it was hidden, is placed downstream.
+      expect(positionOf('t').x).toBeGreaterThan(positionOf('m').x);
+      for (const node of useLineageStore.getState().nodes) {
+        expect(node.style?.visibility).toBe('visible');
+      }
+    });
+
+    it('ignores the same selection in another order', () => {
+      layOutTyped();
+      const before = useLineageStore.getState();
+      before.setSelectedNodeIds(['x', 's', 'm']);
+      const after = useLineageStore.getState();
+      // Same identity, so nothing subscribed to the selection re-fits for nothing.
+      expect(after.selectedNodeIds).toBe(before.selectedNodeIds);
+      expect(after.nodes).toBe(before.nodes);
+    });
+
+    it('holds a selection set mid-measurement until the layout applies it', () => {
+      hydrateTyped();
+      useLineageStore.getState().setSelectedNodeIds(['m']);
+      expect(hiddenNodeIds()).toEqual([]);
+
+      measure(TYPED_SIZES);
+      useLineageStore.getState().layoutMeasured();
+      expect(hiddenNodeIds()).toEqual(['s', 't', 'x']);
+    });
+
+    it('deselects the nodes it hides on the canvas', () => {
+      layOutTyped();
+      useLineageStore.getState().onNodesChange(
+        ['m', 's', 'x'].map((id) => ({
+          id,
+          type: 'select' as const,
+          selected: true,
+        })),
+      );
+      useLineageStore.getState().setSelectedNodeIds(['m', 't']);
+      const clicked = useLineageStore
+        .getState()
+        .nodes.filter((n) => n.selected)
+        .map((n) => n.id);
+      expect(clicked).toEqual(['m']);
+    });
+
+    describe('setResourceTypesVisible', () => {
+      it('shows exactly the given types, without mutating the registry it replaces', () => {
+        const before = useLineageStore.getState().visibleResourceTypes;
+        expect(before).toEqual(
+          new Set<ResourceType>(['model', 'exposure', 'source', 'seed']),
+        );
+        useLineageStore.getState().setResourceTypesVisible(new Set(['model', 'test']));
+
+        expect(useLineageStore.getState().visibleResourceTypes).toEqual(
+          new Set<ResourceType>(['model', 'test']),
+        );
+        expect(useLineageStore.getState().visibleResourceTypes).not.toBe(before);
+        expect(before.has('source')).toBe(true);
+        expect(before.has('test')).toBe(false);
+
+        // `reset` restores the defaults, which only holds if the initial registry was
+        // never written to.
+        useLineageStore.getState().reset();
+        expect(useLineageStore.getState().visibleResourceTypes).toEqual(
+          new Set<ResourceType>(['model', 'exposure', 'source', 'seed']),
+        );
+      });
+
+      it('selects the nodes of the visible types, and lays them out again', () => {
+        layOutTyped();
+        const modelBefore = positionOf('m');
+
+        useLineageStore.getState().setResourceTypesVisible(new Set(['model', 'test']));
+        expect(useLineageStore.getState().selectedNodeIds).toEqual(['m', 't']);
+        expect(hiddenNodeIds()).toEqual(['s', 'x']);
+        expect(positionOf('m').x).toBeLessThan(modelBefore.x);
+      });
+
+      it('holds a filter set mid-measurement until the layout applies it', () => {
+        hydrateTyped();
+        useLineageStore.getState().setResourceTypesVisible(new Set(['model']));
+        expect(useLineageStore.getState().selectedNodeIds).toEqual(['m']);
+        expect(hiddenNodeIds()).toEqual([]);
+
+        measure(TYPED_SIZES);
+        useLineageStore.getState().layoutMeasured();
+        expect(hiddenNodeIds()).toEqual(['s', 't', 'x']);
+      });
+
+      it('leaves the selection alone when the filter lets the same nodes through', () => {
+        layOutTyped();
+        const { nodes, edges, selectedNodeIds } = useLineageStore.getState();
+        // This graph has no macros, so turning them on selects nothing new.
+        useLineageStore
+          .getState()
+          .setResourceTypesVisible(
+            new Set(['model', 'exposure', 'source', 'seed', 'macro']),
+          );
+
+        expect(useLineageStore.getState().visibleResourceTypes.has('macro')).toBe(true);
+        // Same identity: no relayout, and the viewport doesn't re-fit either.
+        expect(useLineageStore.getState().selectedNodeIds).toBe(selectedNodeIds);
+        expect(useLineageStore.getState().nodes).toBe(nodes);
+        expect(useLineageStore.getState().edges).toBe(edges);
+      });
+
+      it("keeps models and the root's own type on, whatever it is handed", () => {
+        // A test is off by default, but this graph is about one.
+        const testRoot = 'test.jaffle_shop.not_null_id';
+        useLineageStore.getState().hydrate({
+          rootUniqueId: testRoot,
+          upstreamDepth: 1,
+          downstreamDepth: 1,
+          nodes: [
+            { id: 'm', position: { x: 0, y: 0 }, data: { resourceType: 'model' } },
+            { id: testRoot, position: { x: 0, y: 0 }, data: { resourceType: 'test' } },
+          ],
+          edges: [{ id: 'm-t', source: 'm', target: testRoot }],
+        });
+        expect(useLineageStore.getState().selectedNodeIds).toEqual(['m', testRoot]);
+
+        useLineageStore.getState().setResourceTypesVisible(new Set(['source']));
+        expect(useLineageStore.getState().visibleResourceTypes).toEqual(
+          new Set<ResourceType>(['source', 'model', 'test']),
+        );
+      });
+
+      it('leaves the store alone when the types do not change', () => {
+        layOutTyped();
+        const before = useLineageStore.getState();
+        // Same as the defaults.
+        before.setResourceTypesVisible(
+          new Set(['model', 'exposure', 'source', 'seed']),
+        );
+        const after = useLineageStore.getState();
+        expect(after.visibleResourceTypes).toBe(before.visibleResourceTypes);
+        expect(after.nodes).toBe(before.nodes);
+        expect(after.selectedNodeIds).toBe(before.selectedNodeIds);
+      });
+    });
   });
 });

@@ -36,6 +36,9 @@ message SubmitEnrichedSQLRequest {
   bool compare_unrendered_code = 21;
   optional string table_namespace = 22;
   bool ignore_external_modifications = 23;
+  optional bool allow_clones = 24;
+  bool is_defer_to_profile = 25;
+  bool defer_enabled = 26;
 }
 
 message SubmitValuesRequest {
@@ -51,6 +54,9 @@ message SubmitValuesRequest {
   optional int64 clone_chain_depth_limit = 10;
   optional DbtNodeState dbt_node_state = 11;
   optional string table_namespace = 22;
+  optional bool allow_clones = 23;
+  bool is_defer_to_profile = 24;
+  bool defer_enabled = 25;
 }
 
 message SubmitSQLResponse {
