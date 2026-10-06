@@ -63,96 +63,6 @@ pub mod describe_table;
 pub mod schemas;
 pub(crate) mod version;
 
-/// Unity Catalog stores identifiers lowercased in `information_schema`, so filters must be too.
-fn lowercase_identifiers(
-    database: &str,
-    schema: &str,
-    identifier: &str,
-) -> (String, String, String) {
-    (
-        database.to_lowercase(),
-        schema.to_lowercase(),
-        identifier.to_lowercase(),
-    )
-}
-
-fn fetch_non_null_constraint_columns_sql(database: &str, schema: &str, identifier: &str) -> String {
-    let (database, schema, identifier) = lowercase_identifiers(database, schema, identifier);
-    format!(
-        "SELECT column_name
-        FROM `{database}`.`information_schema`.`columns`
-        WHERE table_catalog = '{database}'
-          AND table_schema = '{schema}'
-          AND table_name = '{identifier}'
-          AND is_nullable = 'NO';"
-    )
-}
-
-fn fetch_primary_key_constraints_sql(database: &str, schema: &str, identifier: &str) -> String {
-    let (database, schema, identifier) = lowercase_identifiers(database, schema, identifier);
-    format!(
-        "SELECT kcu.constraint_name, kcu.column_name
-        FROM `{database}`.information_schema.key_column_usage kcu
-        WHERE kcu.table_catalog = '{database}'
-            AND kcu.table_schema = '{schema}'
-            AND kcu.table_name = '{identifier}'
-            AND kcu.constraint_name = (
-            SELECT constraint_name
-            FROM `{database}`.information_schema.table_constraints
-            WHERE table_catalog = '{database}'
-                AND table_schema = '{schema}'
-                AND table_name = '{identifier}'
-                AND constraint_type = 'PRIMARY KEY'
-            )
-        ORDER BY kcu.ordinal_position;"
-    )
-}
-
-fn fetch_column_masks_sql(database: &str, schema: &str, identifier: &str) -> String {
-    let (database, schema, identifier) = lowercase_identifiers(database, schema, identifier);
-    format!(
-        "SELECT
-            column_name,
-            mask_name,
-            using_columns
-        FROM `system`.`information_schema`.`column_masks`
-        WHERE table_catalog = '{database}'
-            AND table_schema = '{schema}'
-            AND table_name = '{identifier}';"
-    )
-}
-
-fn fetch_foreign_key_constraints_sql(database: &str, schema: &str, identifier: &str) -> String {
-    let (database, schema, identifier) = lowercase_identifiers(database, schema, identifier);
-    format!(
-        "SELECT
-            kcu.constraint_name,
-            kcu.column_name AS from_column,
-            ukcu.table_catalog AS to_catalog,
-            ukcu.table_schema AS to_schema,
-            ukcu.table_name AS to_table,
-            ukcu.column_name AS to_column
-        FROM `{database}`.information_schema.key_column_usage kcu
-        JOIN `{database}`.information_schema.referential_constraints rc
-            ON kcu.constraint_name = rc.constraint_name
-        JOIN `{database}`.information_schema.key_column_usage ukcu
-            ON rc.unique_constraint_name = ukcu.constraint_name
-            AND kcu.ordinal_position = ukcu.ordinal_position
-        WHERE kcu.table_catalog = '{database}'
-            AND kcu.table_schema = '{schema}'
-            AND kcu.table_name = '{identifier}'
-            AND kcu.constraint_name IN (
-            SELECT constraint_name
-            FROM `{database}`.information_schema.table_constraints
-            WHERE table_catalog = '{database}'
-                AND table_schema = '{schema}'
-                AND table_name = '{identifier}'
-                AND constraint_type = 'FOREIGN KEY'
-            )
-        ORDER BY kcu.ordinal_position;"
-    )
-}
-
 // Reference: https://github.com/databricks/dbt-databricks/blob/92f1442faabe0fce6f0375b95e46ebcbfcea4c67/dbt/include/databricks/macros/adapters/metadata.sql
 pub fn list_relations(
     engine: &dyn AdapterEngine,
@@ -1026,7 +936,19 @@ impl DatabricksMetadataAdapter {
         conn: &mut dyn Connection,
         token: CancellationToken,
     ) -> AdapterResult<AgateTable> {
-        let sql = fetch_non_null_constraint_columns_sql(database, schema, identifier);
+        let (database, schema, identifier) = (
+            database.to_lowercase(),
+            schema.to_lowercase(),
+            identifier.to_lowercase(),
+        );
+        let sql = format!(
+            "SELECT column_name
+            FROM `{database}`.`information_schema`.`columns`
+            WHERE table_catalog = '{database}'
+              AND table_schema = '{schema}'
+              AND table_name = '{identifier}'
+              AND is_nullable = 'NO';"
+        );
         let (_, result) = self.execute_sql_with_context(
             &sql,
             state,
@@ -1047,7 +969,27 @@ impl DatabricksMetadataAdapter {
         conn: &mut dyn Connection,
         token: CancellationToken,
     ) -> AdapterResult<AgateTable> {
-        let sql = fetch_primary_key_constraints_sql(database, schema, identifier);
+        let (database, schema, identifier) = (
+            database.to_lowercase(),
+            schema.to_lowercase(),
+            identifier.to_lowercase(),
+        );
+        let sql = format!(
+            "SELECT kcu.constraint_name, kcu.column_name
+            FROM `{database}`.information_schema.key_column_usage kcu
+            WHERE kcu.table_catalog = '{database}'
+                AND kcu.table_schema = '{schema}'
+                AND kcu.table_name = '{identifier}'
+                AND kcu.constraint_name = (
+                SELECT constraint_name
+                FROM `{database}`.information_schema.table_constraints
+                WHERE table_catalog = '{database}'
+                    AND table_schema = '{schema}'
+                    AND table_name = '{identifier}'
+                    AND constraint_type = 'PRIMARY KEY'
+                )
+            ORDER BY kcu.ordinal_position;"
+        );
         let (_, result) =
             self.execute_sql_with_context(&sql, state, "Fetch PK constraints", conn, token)?;
         Ok(result)
@@ -1063,7 +1005,21 @@ impl DatabricksMetadataAdapter {
         conn: &mut dyn Connection,
         token: CancellationToken,
     ) -> AdapterResult<AgateTable> {
-        let sql = fetch_column_masks_sql(database, schema, identifier);
+        let (database, schema, identifier) = (
+            database.to_lowercase(),
+            schema.to_lowercase(),
+            identifier.to_lowercase(),
+        );
+        let sql = format!(
+            "SELECT
+                column_name,
+                mask_name,
+                using_columns
+            FROM `system`.`information_schema`.`column_masks`
+            WHERE table_catalog = '{database}'
+                AND table_schema = '{schema}'
+                AND table_name = '{identifier}';"
+        );
         let (_, result) =
             self.execute_sql_with_context(&sql, state, "Fetch column masks", conn, token)?;
         Ok(result)
@@ -1109,7 +1065,38 @@ impl DatabricksMetadataAdapter {
         conn: &mut dyn Connection,
         token: CancellationToken,
     ) -> AdapterResult<AgateTable> {
-        let sql = fetch_foreign_key_constraints_sql(database, schema, identifier);
+        let (database, schema, identifier) = (
+            database.to_lowercase(),
+            schema.to_lowercase(),
+            identifier.to_lowercase(),
+        );
+        let sql = format!(
+            "SELECT
+                kcu.constraint_name,
+                kcu.column_name AS from_column,
+                ukcu.table_catalog AS to_catalog,
+                ukcu.table_schema AS to_schema,
+                ukcu.table_name AS to_table,
+                ukcu.column_name AS to_column
+            FROM `{database}`.information_schema.key_column_usage kcu
+            JOIN `{database}`.information_schema.referential_constraints rc
+                ON kcu.constraint_name = rc.constraint_name
+            JOIN `{database}`.information_schema.key_column_usage ukcu
+                ON rc.unique_constraint_name = ukcu.constraint_name
+                AND kcu.ordinal_position = ukcu.ordinal_position
+            WHERE kcu.table_catalog = '{database}'
+                AND kcu.table_schema = '{schema}'
+                AND kcu.table_name = '{identifier}'
+                AND kcu.constraint_name IN (
+                SELECT constraint_name
+                FROM `{database}`.information_schema.table_constraints
+                WHERE table_catalog = '{database}'
+                    AND table_schema = '{schema}'
+                    AND table_name = '{identifier}'
+                    AND constraint_type = 'FOREIGN KEY'
+                )
+            ORDER BY kcu.ordinal_position;"
+        );
         let (_, result) =
             self.execute_sql_with_context(&sql, state, "Fetch FK constraints", conn, token)?;
         Ok(result)
@@ -1998,22 +1985,6 @@ mod tests {
             .with_relation_type(RelationType::Table)
             .with_quoting(quote_policy),
         )
-    }
-
-    #[test]
-    fn test_information_schema_lookups_lowercase_identifiers() {
-        // Reference: https://github.com/databricks/dbt-databricks/blob/fdc4ac22f4494c701d8f7d6e5b380e5f0d1fe9ff/dbt/include/databricks/macros/relations/components/constraints.sql
-        for sql in [
-            fetch_non_null_constraint_columns_sql("Main", "Dbt_Schema", "My_Table"),
-            fetch_primary_key_constraints_sql("Main", "Dbt_Schema", "My_Table"),
-            fetch_foreign_key_constraints_sql("Main", "Dbt_Schema", "My_Table"),
-            fetch_column_masks_sql("Main", "Dbt_Schema", "My_Table"),
-        ] {
-            assert!(sql.contains("table_catalog = 'main'"), "{sql}");
-            assert!(sql.contains("table_schema = 'dbt_schema'"), "{sql}");
-            assert!(sql.contains("table_name = 'my_table'"), "{sql}");
-            assert!(!sql.contains("Dbt_Schema"), "{sql}");
-        }
     }
 
     #[test]

@@ -79,7 +79,7 @@ impl Constraints {
     /// - Does not expose PK/FK RELY/NORELY options
     /// - Does not persist FK `to`/`to_columns` on expression-form FKs
     ///
-    /// Reference: https://github.com/databricks/dbt-databricks/blob/fdc4ac22f4494c701d8f7d6e5b380e5f0d1fe9ff/dbt/adapters/databricks/relation_configs/constraints.py#L39-L72
+    /// Reference: https://github.com/databricks/dbt-databricks/blob/b479512df0a3be374cbfb58c465d65d786a9b212/dbt/adapters/databricks/relation_configs/constraints.py#L39-L73
     fn normalize_constraint(constraint: &TypedConstraint) -> TypedConstraint {
         match constraint {
             TypedConstraint::Check {
@@ -134,6 +134,39 @@ impl Constraints {
             .filter(|(key, _)| !b.contains_key(*key))
             .map(|(_, original)| (*original).clone())
             .collect()
+    }
+
+    /// Same-name FKs whose target changed. Expression-form FKs are skipped: their target lives in
+    /// `expression`, which the catalog does not round-trip.
+    fn repointed_foreign_keys<'a>(
+        next_by_key: &'a IndexMap<TypedConstraint, &'a TypedConstraint>,
+        prev_by_key: &'a IndexMap<TypedConstraint, &'a TypedConstraint>,
+    ) -> impl Iterator<Item = (&'a TypedConstraint, &'a TypedConstraint)> {
+        next_by_key.iter().filter_map(|(key, next)| {
+            let prev = *prev_by_key.get(key)?;
+            match (*next, prev) {
+                (
+                    TypedConstraint::ForeignKey {
+                        to: Some(to),
+                        to_columns,
+                        ..
+                    },
+                    TypedConstraint::ForeignKey {
+                        to: prev_to,
+                        to_columns: prev_to_columns,
+                        ..
+                    },
+                ) if (Some(to), to_columns.as_deref().unwrap_or_default())
+                    != (
+                        prev_to.as_ref(),
+                        prev_to_columns.as_deref().unwrap_or_default(),
+                    ) =>
+                {
+                    Some((*next, prev))
+                }
+                _ => None,
+            }
+        })
     }
 
     /// Attempt to reinterpret a normalized custom expression as a PrimaryKey constraint.
@@ -429,7 +462,7 @@ impl ComponentConfig for Constraints {
     /// Diffs on normalized keys but emits the original constraints, so ADD/DROP SQL keeps the
     /// model's full definition and the catalog's name.
     ///
-    /// Reference: https://github.com/databricks/dbt-databricks/blob/fdc4ac22f4494c701d8f7d6e5b380e5f0d1fe9ff/dbt/adapters/databricks/relation_configs/constraints.py#L74-L118
+    /// Reference: https://github.com/databricks/dbt-databricks/blob/b479512df0a3be374cbfb58c465d65d786a9b212/dbt/adapters/databricks/relation_configs/constraints.py#L75-L115
     fn diff_from(
         &self,
         current_state: Option<&dyn ComponentConfig>,
@@ -450,33 +483,9 @@ impl ComponentConfig for Constraints {
         let mut set_constraints = Self::originals_only_in(&next_by_key, &prev_by_key);
         let set_non_nulls = &self.set_non_nulls - &current_state.set_non_nulls;
 
-        // Reconcile same-name FKs whose target changed. Expression-form FKs are skipped: their
-        // target lives in `expression`, which the catalog does not round-trip.
-        for (key, next) in &next_by_key {
-            let Some(prev) = prev_by_key.get(key) else {
-                continue;
-            };
-            if let (
-                TypedConstraint::ForeignKey {
-                    to: Some(to),
-                    to_columns,
-                    ..
-                },
-                TypedConstraint::ForeignKey {
-                    to: prev_to,
-                    to_columns: prev_to_columns,
-                    ..
-                },
-            ) = (next, prev)
-                && (Some(to), to_columns.as_deref().unwrap_or_default())
-                    != (
-                        prev_to.as_ref(),
-                        prev_to_columns.as_deref().unwrap_or_default(),
-                    )
-            {
-                set_constraints.insert((*next).clone());
-                constraints_to_unset.insert((*prev).clone());
-            }
+        for (next, prev) in Self::repointed_foreign_keys(&next_by_key, &prev_by_key) {
+            set_constraints.insert(next.clone());
+            constraints_to_unset.insert(prev.clone());
         }
 
         if !set_constraints.is_empty()
@@ -1170,7 +1179,7 @@ fk_composite,parent_type,main,default,parents,type
         }
     }
 
-    // Reference: https://github.com/databricks/dbt-databricks/blob/fdc4ac22f4494c701d8f7d6e5b380e5f0d1fe9ff/tests/unit/relation_configs/test_constraint.py#L419-L515
+    // Reference: https://github.com/databricks/dbt-databricks/blob/b479512df0a3be374cbfb58c465d65d786a9b212/tests/unit/relation_configs/test_constraint.py#L382-L478
     #[test]
     fn test_diff_ignores_unpersisted_pk_fk_fields() {
         let catalog_pk = TypedConstraint::PrimaryKey {
