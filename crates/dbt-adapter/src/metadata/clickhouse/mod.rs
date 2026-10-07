@@ -26,6 +26,7 @@ use indexmap::IndexMap;
 use minijinja::State;
 use minijinja::Value;
 use minijinja::value::ValueKind;
+use std::borrow::Cow;
 use std::collections::btree_map::Entry;
 
 use std::collections::{BTreeMap, HashMap};
@@ -78,10 +79,9 @@ static CONNECTION_INFO: std::sync::RwLock<ClickHouseConnectionInfo> =
         database_engine: String::new(),
     });
 
-/// A ClickHouse engine was built: publish its [`ClickHouseConnectionInfo`] and drop the
-/// previous engine's [`ClickHouseCapabilities`] probe. Runs before any macro renders, so each
-/// invocation of a long-lived process sees its own profile and probes its own server;
-/// concurrent invocations with different ClickHouse profiles would still share both.
+/// A ClickHouse engine was built: publish its [`ClickHouseConnectionInfo`]. Runs before any
+/// macro renders, so each invocation of a long-lived process sees its own profile; concurrent
+/// invocations with different ClickHouse profiles would still share it.
 pub fn register_engine(cluster: Option<String>, database_engine: Option<String>) {
     *CONNECTION_INFO
         .write()
@@ -89,7 +89,6 @@ pub fn register_engine(cluster: Option<String>, database_engine: Option<String>)
         cluster: cluster.filter(|c| !c.trim().is_empty()),
         database_engine: database_engine.unwrap_or_default(),
     };
-    CLICKHOUSE_CAPABILITIES.reset();
 }
 
 /// relation.py `ClickHouseRelation.get_on_cluster`.
@@ -978,86 +977,40 @@ pub(crate) fn query_settings_clause(query_settings: Option<&Value>) -> String {
     }
 }
 
-/// The current engine's probe result. The probe runs under `probe_lock` only, never under
-/// `slot`: the probe's own statements read `slot` through [`statement_options`], so holding it
-/// while probing would self-deadlock. Concurrent first callers still wait for the one probe.
-struct CapabilitiesCache {
-    probe_lock: std::sync::Mutex<()>,
-    slot: std::sync::RwLock<Option<Arc<ClickHouseCapabilities>>>,
-}
-
-impl CapabilitiesCache {
-    const fn new() -> Self {
-        Self {
-            probe_lock: std::sync::Mutex::new(()),
-            slot: std::sync::RwLock::new(None),
-        }
-    }
-
-    fn get_or_probe(
-        &self,
-        probe: impl FnOnce() -> ClickHouseCapabilities,
-    ) -> Arc<ClickHouseCapabilities> {
-        if let Some(caps) = self.probed() {
-            return caps;
-        }
-        let _probing = self
-            .probe_lock
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if let Some(caps) = self.probed() {
-            return caps;
-        }
-        let caps = Arc::new(probe());
-        *self
-            .slot
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Arc::clone(&caps));
-        caps
-    }
-
-    /// The probe result, or None — for callers that must not trigger the probe themselves.
-    fn probed(&self) -> Option<Arc<ClickHouseCapabilities>> {
-        self.slot
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone()
-    }
-
-    fn reset(&self) {
-        *self
-            .slot
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+/// The engine's capabilities, probed on the first call (concurrent callers block until it
+/// completes; the probe's own statements read the slot through [`statement_options`], which a
+/// `OnceLock` answers with `None` while initializing). An engine without a slot is probed on
+/// every call.
+fn cached_or_probed<'a>(
+    engine: &'a dyn AdapterEngine,
+    run: impl FnMut(&str) -> Option<RecordBatch>,
+) -> Cow<'a, ClickHouseCapabilities> {
+    match engine.clickhouse_capabilities() {
+        Some(slot) => Cow::Borrowed(slot.get_or_init(|| probe_capabilities(engine, run))),
+        None => Cow::Owned(probe_capabilities(engine, run)),
     }
 }
 
-static CLICKHOUSE_CAPABILITIES: CapabilitiesCache = CapabilitiesCache::new();
-
-pub fn server_capabilities(
-    adapter: &AdapterImpl,
+pub fn server_capabilities<'a>(
+    adapter: &'a AdapterImpl,
     state: &State,
     token: CancellationToken,
-) -> Arc<ClickHouseCapabilities> {
-    CLICKHOUSE_CAPABILITIES.get_or_probe(|| {
-        probe_capabilities(adapter.engine().as_ref(), |sql| {
-            probe_query(adapter, state, sql, token.clone())
-        })
+) -> Cow<'a, ClickHouseCapabilities> {
+    cached_or_probed(adapter.engine().as_ref(), |sql| {
+        probe_query(adapter, state, sql, token.clone())
     })
 }
 
 /// [`server_capabilities`] for the catalog paths, which already hold a connection and
 /// have no Jinja `State`.
-pub fn server_capabilities_over_connection(
-    engine: &dyn AdapterEngine,
+pub fn server_capabilities_over_connection<'a>(
+    engine: &'a dyn AdapterEngine,
     ctx: &QueryCtx,
     conn: &mut dyn Connection,
     token: CancellationToken,
-) -> Arc<ClickHouseCapabilities> {
-    CLICKHOUSE_CAPABILITIES.get_or_probe(|| {
-        probe_capabilities(engine, |sql| {
-            engine.execute(None, conn, ctx, sql, token.clone()).ok()
-        })
+) -> Cow<'a, ClickHouseCapabilities> {
+    cached_or_probed(engine, |sql| {
+        engine.execute(None, conn, ctx, sql, token.clone()).ok()
     })
 }
 
@@ -1085,9 +1038,12 @@ fn probe_capabilities(
 /// dbclient.py parity: after the lightweight-deletes probe finds
 /// `ND_MUTATION_SETTING` disabled but overridable, every statement carries it
 /// as a driver setting (Python adds it to the per-request `_conn_settings`).
-pub(crate) fn statement_options() -> Option<(String, adbc_core::options::OptionValue)> {
-    CLICKHOUSE_CAPABILITIES
-        .probed()
+pub(crate) fn statement_options(
+    engine: &(impl AdapterEngine + ?Sized),
+) -> Option<(String, adbc_core::options::OptionValue)> {
+    engine
+        .clickhouse_capabilities()?
+        .get()
         .filter(|caps| caps.nd_mutation_override)
         .map(|_| {
             (
@@ -2075,37 +2031,28 @@ mod tests {
         assert!(!get_on_cluster("my_cluster", "replicated('/db','s','r')"));
     }
 
-    /// One probe per engine: repeated calls reuse it, a reset (new engine) probes again.
+    /// Each engine owns its probe result; `statement_options` reads it without probing, also
+    /// while the probe's own statements run.
     #[test]
-    fn capabilities_cache_probes_once_until_reset() {
-        let cache = CapabilitiesCache::new();
-        let probes = std::sync::atomic::AtomicUsize::new(0);
-        let probe = |nd_mutation_override| {
-            probes.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    fn capabilities_are_scoped_to_the_engine() {
+        let probed = make_metadata_adapter().adapter;
+        let fresh = make_metadata_adapter().adapter;
+        let slot = probed.engine().clickhouse_capabilities().unwrap();
+        slot.get_or_init(|| {
+            assert!(statement_options(probed.engine().as_ref()).is_none());
             ClickHouseCapabilities {
                 server_version: "26.3.1.1".to_string(),
                 atomic_exchange: true,
                 has_lw_deletes: true,
                 use_lw_deletes: false,
-                nd_mutation_override,
+                nd_mutation_override: true,
             }
-        };
-
-        assert!(cache.probed().is_none());
-        let first = cache.get_or_probe(|| {
-            // `statement_options` reads the cache while the probe's own statements run.
-            assert!(cache.probed().is_none());
-            probe(true)
         });
-        let again = cache.get_or_probe(|| probe(false));
-        assert!(Arc::ptr_eq(&first, &again));
-        assert!(cache.probed().is_some_and(|caps| caps.nd_mutation_override));
-        assert_eq!(probes.load(std::sync::atomic::Ordering::SeqCst), 1);
 
-        cache.reset();
-        assert!(cache.probed().is_none());
-        assert!(!cache.get_or_probe(|| probe(false)).nd_mutation_override);
-        assert_eq!(probes.load(std::sync::atomic::Ordering::SeqCst), 2);
+        assert!(statement_options(probed.engine().as_ref()).is_some());
+        let untouched = fresh.engine().clickhouse_capabilities().unwrap();
+        assert!(untouched.get().is_none());
+        assert!(statement_options(fresh.engine().as_ref()).is_none());
     }
 
     /// impl.py cluster getters
