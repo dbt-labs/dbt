@@ -88,54 +88,111 @@ impl StaticBaseRelation for RelationStatic {
     }
 
     fn create(&self, args: &[Value]) -> Result<Value, minijinja::Error> {
-        let iter = ArgsIter::new("Relation.create", &[], args);
-        let database = iter.next_kwarg::<Option<String>>("database")?;
-        let schema = iter.next_kwarg::<Option<String>>("schema")?;
-        let identifier = iter.next_kwarg::<Option<String>>("identifier")?;
-        let relation_type = iter
-            .next_kwarg::<Option<String>>("type")?
-            .map(|s| RelationType::from(s.as_str()));
-        let quoting = iter
-            .next_kwarg::<Option<Value>>("quote_policy")?
-            .and_then(|v| DbtQuoting::deserialize(v).ok())
-            .map(|v| ResolvedQuoting {
-                database: v.database.unwrap_or_default(),
-                identifier: v.identifier.unwrap_or_default(),
-                schema: v.schema.unwrap_or_default(),
-            })
-            .unwrap_or(self.quoting);
-        let relation = Relation::new(self.adapter_type, database, schema, identifier)
-            .with_relation_type(relation_type)
-            .with_quoting(quoting);
-
-        let relation = match self.adapter_type {
+        match self.adapter_type {
             AdapterType::Snowflake => {
-                let table_format = iter.next_kwarg::<Option<String>>("table_format")?;
+                let iter = ArgsIter::new("Relation.create", &[], args);
+                let database: Option<String> = iter.next_kwarg::<Option<String>>("database")?;
+                let schema: Option<String> = iter.next_kwarg::<Option<String>>("schema")?;
+                let identifier: Option<String> = iter.next_kwarg::<Option<String>>("identifier")?;
+                let relation_type: Option<String> = iter.next_kwarg::<Option<String>>("type")?;
+                let custom_quoting: Option<Value> =
+                    iter.next_kwarg::<Option<Value>>("quote_policy")?;
+                let table_format: Option<String> =
+                    iter.next_kwarg::<Option<String>>("table_format")?;
                 let _ = iter.trailing_kwargs()?;
+
+                let custom_quoting = custom_quoting
+                    .and_then(|v| DbtQuoting::deserialize(v).ok())
+                    .map(|v| ResolvedQuoting {
+                        database: v.database.unwrap_or_default(),
+                        identifier: v.identifier.unwrap_or_default(),
+                        schema: v.schema.unwrap_or_default(),
+                    })
+                    .unwrap_or(self.quoting);
+
                 let table_format = match table_format.as_deref() {
                     Some(s) if s.eq_ignore_ascii_case("iceberg") => TableFormat::Iceberg,
                     _ => TableFormat::Default,
                 };
-                relation.with_table_format(table_format)
+
+                let relation = Relation::new(AdapterType::Snowflake, database, schema, identifier)
+                    .with_relation_type(relation_type.map(|s| RelationType::from(s.as_str())))
+                    .with_quoting(custom_quoting)
+                    .with_table_format(table_format)
+                    .validate()?;
+                let rel = RelationObject::new(Arc::new(relation));
+                Ok(Value::from_object(rel))
             }
             AdapterType::ClickHouse => {
+                let iter = ArgsIter::new("Relation.create", &[], args);
+                let database = iter.next_kwarg::<Option<String>>("database")?;
+                let schema = iter.next_kwarg::<Option<String>>("schema")?;
+                let identifier = iter.next_kwarg::<Option<String>>("identifier")?;
+                let relation_type = iter.next_kwarg::<Option<Value>>("type")?;
+                let custom_quoting = iter.next_kwarg::<Option<Value>>("quote_policy")?;
                 let temporary = iter.next_kwarg::<Option<bool>>("temporary")?;
                 // ClickHouseRelation.create extras, stamped by clickhouse__get_or_create_relation
                 let can_exchange = iter.next_kwarg::<Option<bool>>("can_exchange")?;
                 let can_on_cluster = iter.next_kwarg::<Option<bool>>("can_on_cluster")?;
                 iter.finish()?;
-                relation
+
+                let custom_quoting = custom_quoting
+                    .and_then(|v| DbtQuoting::deserialize(v).ok())
+                    .map(|v| ResolvedQuoting {
+                        database: v.database.unwrap_or_default(),
+                        identifier: v.identifier.unwrap_or_default(),
+                        schema: v.schema.unwrap_or_default(),
+                    });
+
+                let relation = Relation::new(AdapterType::ClickHouse, database, schema, identifier)
+                    .with_relation_type(relation_type.and_then(|v: Value| {
+                        if v.is_none() || v.is_undefined() {
+                            None
+                        } else {
+                            Some(RelationType::from(v.as_str().unwrap_or_default()))
+                        }
+                    }))
+                    .with_quoting(custom_quoting.unwrap_or(self.quoting))
                     .with_temporary(temporary.unwrap_or(false))
                     .with_can_exchange(can_exchange.unwrap_or(false))
                     .with_can_on_cluster(can_on_cluster)
+                    .validate()?;
+                Ok(RelationObject::new(Arc::new(relation)).into_value())
             }
             _ => {
+                let iter = ArgsIter::new("Relation.create", &[], args);
+                let database = iter.next_kwarg::<Option<String>>("database")?;
+                let schema = iter.next_kwarg::<Option<String>>("schema")?;
+                let identifier = iter.next_kwarg::<Option<String>>("identifier")?;
+                let relation_type = iter.next_kwarg::<Option<Value>>("type")?;
+                let custom_quoting = iter.next_kwarg::<Option<Value>>("quote_policy")?;
                 let temporary = iter.next_kwarg::<Option<bool>>("temporary")?;
                 iter.finish()?;
-                relation.with_temporary(temporary.unwrap_or(false))
+
+                let custom_quoting = custom_quoting
+                    .and_then(|v| DbtQuoting::deserialize(v).ok())
+                    .map(|v| ResolvedQuoting {
+                        database: v.database.unwrap_or_default(),
+                        identifier: v.identifier.unwrap_or_default(),
+                        schema: v.schema.unwrap_or_default(),
+                    });
+
+                self.try_new(
+                    database,
+                    schema,
+                    identifier,
+                    relation_type.and_then(|v: Value| {
+                        if v.is_none() || v.is_undefined() {
+                            None
+                        } else {
+                            Some(RelationType::from(v.as_str().unwrap_or_default()))
+                        }
+                    }),
+                    custom_quoting,
+                    temporary,
+                )
             }
-        };
-        Ok(RelationObject::new(Arc::new(relation.validate()?)).into_value())
+        }
     }
 }
 
