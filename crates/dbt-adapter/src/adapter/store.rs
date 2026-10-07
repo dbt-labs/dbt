@@ -84,6 +84,7 @@ impl AdapterStore {
                     .join(", ")
             ));
         }
+        dbt_adapter_core::set_active_adapter_type(default_adapter);
         Ok(Self {
             default_adapter,
             declared,

@@ -359,6 +359,70 @@ fn with_progress_field(line: String, progress: Option<String>) -> String {
     }
 }
 
+/// Prepares the qualifier (schema or database) and alias for displaying a node in terminal output.
+/// For SingleStore, objects are displayed as `{node.database}.{node.schema}(_)?{node.alias}`.
+fn prepare_qualifier_and_alias_parts(
+    database: Option<&str>,
+    schema: Option<&str>,
+    identifier: Option<&str>,
+    name: &str,
+    source_name: Option<&str>,
+    node_type: NodeType,
+) -> (String, String) {
+    let mut qualifier = schema.unwrap_or_default().to_string();
+    let mut alias = get_node_display_alias(node_type, identifier, name);
+
+    if node_type == NodeType::Source {
+        if let Some(source_name) = source_name {
+            qualifier = source_name.to_string();
+        }
+        return (qualifier, alias);
+    }
+
+    if node_type == NodeType::UnitTest {
+        qualifier = format!("{}{}", qualifier, UNIT_TEST_SCHEMA_SUFFIX);
+        return (qualifier, alias);
+    }
+
+    if dbt_adapter_core::get_active_adapter_type() == Some(dbt_adapter_core::AdapterType::SingleStore) {
+        let target_info = dbt_adapter_core::get_active_target_info();
+        let default_db = target_info.as_ref().and_then(|i| i.default_database.as_deref());
+        let default_schema = target_info.as_ref().and_then(|i| i.default_schema.as_deref());
+
+        // For SingleStore, the object resides in database (container).
+        if let Some(db) = database.filter(|s| !s.trim().is_empty()) {
+            qualifier = db.to_string();
+        } else if let Some(def_db) = default_db.filter(|s| !s.trim().is_empty()) {
+            qualifier = def_db.to_string();
+        }
+
+        // Schema handling: if a custom schema is present that does not match
+        // the target database or default schema, prefix it to alias if not already prefixed.
+        if let Some(schema) = schema.filter(|s| !s.trim().is_empty()) {
+            let is_default_or_db = schema == qualifier
+                || default_db.is_some_and(|d| schema == d)
+                || default_schema.is_some_and(|d| schema == d);
+
+            if !is_default_or_db && !alias.starts_with(&format!("{schema}_")) {
+                alias = format!("{schema}_{alias}");
+            }
+        }
+    }
+
+    (qualifier, alias)
+}
+
+fn prepare_qualifier_and_alias(node: &NodeProcessed, node_type: NodeType) -> (String, String) {
+    prepare_qualifier_and_alias_parts(
+        node.database.as_deref(),
+        node.schema.as_deref(),
+        node.identifier.as_deref(),
+        &node.name,
+        node.source_name.as_deref(),
+        node_type,
+    )
+}
+
 /// Format a NodeProcessed event for the start of processing (no duration)
 ///
 /// Returns formatted string in the pattern:
@@ -366,21 +430,7 @@ fn with_progress_field(line: String, progress: Option<String>) -> String {
 pub fn format_node_processed_start(node: &NodeProcessed, colorize: bool) -> String {
     let node_type = node.node_type();
 
-    // Prepare qualifier (schema for all nodes except sources) and alias
-    let mut qualifier = node.schema.clone().unwrap_or_default();
-    let alias = get_node_display_alias(node_type, node.identifier.as_deref(), &node.name);
-
-    if node_type == NodeType::Source {
-        // For sources we show source_name.identifier to match dbt-core output.
-        if let Some(source_name) = node.source_name.as_ref() {
-            qualifier = source_name.clone();
-        }
-    }
-
-    // Special handling for unit tests: display test schema suffix
-    if node_type == NodeType::UnitTest {
-        qualifier = format!("{}{}", qualifier, UNIT_TEST_SCHEMA_SUFFIX);
-    }
+    let (qualifier, alias) = prepare_qualifier_and_alias(node, node_type);
 
     // Format components
     let qualifier_alias = format_qualifier_alias(&qualifier, &alias, colorize);
@@ -418,21 +468,7 @@ pub fn format_node_processed_end(
         Some(duration)
     };
 
-    // Prepare qualifier (schema for all nodes except sources) and alias
-    let mut qualifier = node.schema.clone().unwrap_or_default();
-    let alias = get_node_display_alias(node_type, node.identifier.as_deref(), &node.name);
-
-    if node_type == NodeType::Source {
-        // For sources we show source_name.identifier to match dbt-core output.
-        if let Some(source_name) = node.source_name.as_ref() {
-            qualifier = source_name.clone();
-        }
-    }
-
-    // Special handling for unit tests: display test schema suffix
-    if node_type == NodeType::UnitTest {
-        qualifier = format!("{}{}", qualifier, UNIT_TEST_SCHEMA_SUFFIX);
-    }
+    let (mut qualifier, alias) = prepare_qualifier_and_alias(node, node_type);
 
     // For data tests, only show the schema qualifier when store_failures is enabled.
     // Without store_failures, dbt-core shows just the test name (no schema prefix).
@@ -504,11 +540,17 @@ pub fn format_node_evaluated_start(node: &NodeEvaluated, colorize: bool) -> Stri
     let phase_action = get_phase_action(phase);
 
     // Prepare relation schema and alias
-    let relation_schema = node.schema.clone().unwrap_or_default();
-    let alias = get_node_display_alias(node_type, node.identifier.as_deref(), &node.name);
+    let (qualifier, alias) = prepare_qualifier_and_alias_parts(
+        node.database.as_deref(),
+        node.schema.as_deref(),
+        node.identifier.as_deref(),
+        &node.name,
+        None,
+        node_type,
+    );
 
     // Format components
-    let qualifier_alias = format_qualifier_alias(&relation_schema, &alias, colorize);
+    let qualifier_alias = format_qualifier_alias(&qualifier, &alias, colorize);
     let node_type_formatted = node_type.pretty();
 
     format!(
@@ -585,11 +627,17 @@ pub fn format_node_evaluated_end(
     let phase_action = get_phase_action(phase);
 
     // Prepare relation schema and alias
-    let relation_schema = node.schema.clone().unwrap_or_default();
-    let alias = get_node_display_alias(node_type, node.identifier.as_deref(), &node.name);
+    let (qualifier, alias) = prepare_qualifier_and_alias_parts(
+        node.database.as_deref(),
+        node.schema.as_deref(),
+        node.identifier.as_deref(),
+        &node.name,
+        None,
+        node_type,
+    );
 
     // Format components
-    let qualifier_alias = format_qualifier_alias(&relation_schema, &alias, colorize);
+    let qualifier_alias = format_qualifier_alias(&qualifier, &alias, colorize);
     let node_type_formatted = node_type.pretty();
     let active_duration = duration.saturating_sub(std::time::Duration::from_millis(
         node.idle_time_ms.unwrap_or_default(),
@@ -1417,5 +1465,69 @@ mod tests {
         assert!(output.contains("Finished running"));
         assert!(output.contains("[-------]"));
         assert!(output.contains("[warn]"));
+    }
+
+    #[test]
+    fn singlestore_progress_formatting() {
+        use dbt_adapter_core::{ActiveTargetInfo, AdapterType, set_active_target_info, clear_active_target_info};
+
+        struct Cleanup;
+        impl Drop for Cleanup {
+            fn drop(&mut self) {
+                clear_active_target_info();
+            }
+        }
+        let _cleanup = Cleanup;
+
+        set_active_target_info(ActiveTargetInfo {
+            adapter_type: AdapterType::SingleStore,
+            default_database: Some("edw_dv_rdv".to_string()),
+            default_schema: Some("edw_dv_rdv".to_string()),
+        });
+
+        // 1. Model in configured database edw_ldm, default schema edw_dv_rdv, alias attest_hb
+        let mut node = NodeProcessed::default();
+        node.set_node_type(NodeType::Model);
+        node.name = "attest_hb".to_string();
+        node.database = Some("edw_ldm".to_string());
+        node.schema = Some("edw_dv_rdv".to_string());
+        node.identifier = Some("attest_hb".to_string());
+
+        let start_msg = format_node_processed_start(&node, false);
+        assert_eq!(start_msg, "Started model edw_ldm.attest_hb");
+
+        let end_msg = format_node_processed_end(&node, std::time::Duration::from_millis(2070), false);
+        assert!(end_msg.contains("edw_ldm.attest_hb"), "{}", end_msg);
+
+        // 2. Model with custom schema pujvekema2
+        let mut custom_node = NodeProcessed::default();
+        custom_node.set_node_type(NodeType::Model);
+        custom_node.name = "attest_hb".to_string();
+        custom_node.database = Some("edw_ldm".to_string());
+        custom_node.schema = Some("pujvekema2".to_string());
+        custom_node.identifier = Some("attest_hb".to_string());
+
+        let custom_start = format_node_processed_start(&custom_node, false);
+        assert_eq!(custom_start, "Started model edw_ldm.pujvekema2_attest_hb");
+
+        // 3. Model with custom schema where identifier already has prefix
+        custom_node.identifier = Some("pujvekema2_attest_hb".to_string());
+        let custom_start2 = format_node_processed_start(&custom_node, false);
+        assert_eq!(custom_start2, "Started model edw_ldm.pujvekema2_attest_hb");
+
+        // 4. NodeEvaluated start and end
+        let mut eval_node = NodeEvaluated::default();
+        eval_node.set_node_type(NodeType::Model);
+        eval_node.set_phase(ExecutionPhase::Render);
+        eval_node.name = "attest_hb".to_string();
+        eval_node.database = Some("edw_ldm".to_string());
+        eval_node.schema = Some("edw_dv_rdv".to_string());
+        eval_node.identifier = Some("attest_hb".to_string());
+
+        let eval_start = format_node_evaluated_start(&eval_node, false);
+        assert_eq!(eval_start, "Started rendering model edw_ldm.attest_hb");
+
+        let eval_end = format_node_evaluated_end(&eval_node, std::time::Duration::from_millis(100), false);
+        assert!(eval_end.contains("edw_ldm.attest_hb"), "{}", eval_end);
     }
 }

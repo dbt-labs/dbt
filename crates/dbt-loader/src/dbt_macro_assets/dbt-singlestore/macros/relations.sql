@@ -139,6 +139,17 @@
     {{ singlestore__strip_db_limit_aliases(sql) }}
 {%- endmacro %}
 
+{% macro singlestore__alter_view_as(relation, sql) -%}
+  {%- set sql_header = config.get('sql_header', none) -%}
+  {{ sql_header if sql_header is not none }}
+  {%- set contract_config = config.get('contract') -%}
+  {%- if contract_config and contract_config.enforced -%}
+    {{ get_assert_columns_equivalent(sql) }}
+  {%- endif -%}
+  alter view {{ relation.render() }} as
+    {{ singlestore__strip_db_limit_aliases(sql) }}
+{%- endmacro %}
+
 {% macro singlestore__strip_db_limit_aliases(sql) -%}
   {%- if adapter.clean_up_limit_alias is defined -%}
     {{ return(adapter.clean_up_limit_alias(sql)) }}
