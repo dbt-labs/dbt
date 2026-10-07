@@ -400,7 +400,7 @@ dbt-artifact-download = { path = "crates/dbt-artifact-download" }
 dbt-tracked-stmt = { path = "crates/dbt-tracked-stmt" }
 
 # antlr for frontend
-dbt-antlr4 = { version = "2.0.2", features = [
+dbt-antlr4 = { version = "2.0.3", features = [
   "arena-allocation-limit",
   "recursion-limit",
   "stacker",
