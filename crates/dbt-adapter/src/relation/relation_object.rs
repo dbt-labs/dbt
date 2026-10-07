@@ -418,13 +418,13 @@ impl Object for RelationObject {
             // ClickHouse
             Some("can_exchange") => Some(Value::from(self.can_exchange())),
             Some("can_on_cluster") => Some(Value::from(self.can_on_cluster())),
-            // relation.py `should_on_cluster`: databases (no identifier) always go ON CLUSTER.
-            // `without_identifier()` only clears the path here (dbt-core also flips the include
-            // policy), so check both.
+            // No adapter at hand in an attribute getter, so an unstamped relation reads `false`
+            // here; `on_cluster_clause` asks `adapter.should_on_cluster(relation=…)` instead.
             Some("should_on_cluster") => Some(Value::from(
-                self.identifier().is_none()
-                    || !self.include_policy().identifier
-                    || self.can_on_cluster(),
+                crate::metadata::clickhouse::relation_should_on_cluster(
+                    self.relation.as_ref(),
+                    false,
+                ),
             )),
             Some("mvs_pointing_to_it") => Some(Value::from_serialize(self.mvs_pointing_to_it())),
             Some("is_refreshable") => Some(Value::from(self.is_refreshable())),
