@@ -18,6 +18,7 @@ use minijinja::State;
 
 use crate::cache::RelationCache;
 use crate::engine::query_comment::QueryCommentConfig;
+use crate::engine::retry::QueryRetryPolicy;
 use crate::sql_types::TypeOps;
 use crate::stmt_splitter::StmtSplitter;
 
@@ -119,6 +120,10 @@ impl AdapterEngine for RecordReplayEngine {
 
     fn get_config(&self) -> &AdapterConfig {
         self.inner.get_config()
+    }
+
+    fn query_retry_policy(&self) -> &QueryRetryPolicy {
+        self.inner.query_retry_policy()
     }
 
     fn relation_cache(&self) -> &Arc<RelationCache> {
