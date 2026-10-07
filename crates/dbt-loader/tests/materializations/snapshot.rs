@@ -15,6 +15,7 @@ const SNAPSHOT_SQL: &str = "SELECT 1 AS id, current_timestamp() AS updated_at";
 fn snapshot_macro_name(adapter_type: AdapterType) -> &'static str {
     match adapter_type {
         AdapterType::Bigquery => "materialization_snapshot_default",
+        AdapterType::Spark => "materialization_snapshot_spark",
         other => panic!("unsupported adapter for snapshot materialization test: {other:?}"),
     }
 }
@@ -36,9 +37,10 @@ fn snapshot_model() -> Value {
     ]))
 }
 
-fn snapshot_config() -> Arc<MockJinjaObject> {
+fn snapshot_config(unique_key: Value) -> Arc<MockJinjaObject> {
     let mock = default_mock_config();
-    mock.on("get", |args| {
+    mock.set_attr("materialized", Value::from("snapshot"));
+    mock.on("get", move |args| {
         let key = args.first().and_then(|v| v.as_str());
         let default = args.get(1).cloned().unwrap_or(Value::UNDEFINED);
         match key {
@@ -47,8 +49,9 @@ fn snapshot_config() -> Arc<MockJinjaObject> {
                 Value::from(false),
             )]))),
             Some("strategy") => Ok(Value::from("timestamp")),
-            Some("unique_key") => Ok(Value::from("id")),
+            Some("unique_key") => Ok(unique_key.clone()),
             Some("updated_at") => Ok(Value::from("updated_at")),
+            Some("file_format") => Ok(Value::from("delta")),
             _ => Ok(default),
         }
     });
@@ -86,16 +89,16 @@ fn build_harness(adapter_type: AdapterType) -> MacroTestHarness {
     harness
 }
 
-/// Renders the snapshot materialization for a target the relation cache does
-/// not know about and returns the DDL that built it.
-fn render_first_build(adapter_type: AdapterType) -> String {
-    let harness = build_harness(adapter_type);
-    harness.mock().on("get_relation", |_| Ok(Value::from(())));
-
+fn render_snapshot(
+    harness: &MacroTestHarness,
+    adapter_type: AdapterType,
+    unique_key: Value,
+    case: &str,
+) {
     let ctx = harness
         .materialization_context("my_snapshot", SNAPSHOT_SQL)
         .relation_type(RelationType::Table)
-        .config(Value::from_dyn_object(snapshot_config()))
+        .config(Value::from_dyn_object(snapshot_config(unique_key)))
         // `strategy_dispatch` looks the strategy macro up through `context`.
         .with(
             "context",
@@ -111,7 +114,15 @@ fn render_first_build(adapter_type: AdapterType) -> String {
     let call = format!("{{{{ {}() }}}}", snapshot_macro_name(adapter_type));
     harness
         .render(&call, ctx)
-        .unwrap_or_else(|e| panic!("{adapter_type:?} snapshot materialization failed: {e:?}"));
+        .unwrap_or_else(|e| panic!("{adapter_type:?}, {case}: snapshot failed: {e:?}"));
+}
+
+/// Renders the snapshot materialization for a target the relation cache does
+/// not know about and returns the DDL that built it.
+fn render_first_build(adapter_type: AdapterType) -> String {
+    let harness = build_harness(adapter_type);
+    harness.mock().on("get_relation", |_| Ok(Value::from(())));
+    render_snapshot(&harness, adapter_type, Value::from("id"), "first build");
 
     executed_sql(harness.mock())
         .into_iter()
@@ -175,16 +186,32 @@ mod bigquery {
 mod spark {
     use super::*;
 
-    fn helper_columns(helpers: &[&str], uppercase: bool) -> Value {
-        let mut names = vec!["new_column".to_string(), "dbt_change_type".to_string()];
-        names.extend(helpers.iter().map(|name| (*name).to_string()));
-        if uppercase {
-            names = names.into_iter().map(|name| name.to_uppercase()).collect();
-        }
+    const SOURCE_COLUMNS: &[&str] = &[
+        "id",
+        "tenant_id",
+        "updated_at",
+        "new_column",
+        "dbt_unique_key_business",
+        "dbt_scd_id",
+        "dbt_updated_at",
+        "dbt_valid_from",
+        "dbt_valid_to",
+    ];
+
+    fn staging_columns(columns: &[&str], helpers: &[&str], uppercase: bool) -> Value {
         Value::from_serialize(
-            names
+            columns
                 .iter()
-                .map(|name| BTreeMap::from([("name", name.as_str()), ("data_type", "string")]))
+                .chain(helpers)
+                .chain(["dbt_change_type"].iter())
+                .map(|name| {
+                    let name = if uppercase {
+                        name.to_uppercase()
+                    } else {
+                        name.to_string()
+                    };
+                    BTreeMap::from([("name", name), ("data_type", "string".to_string())])
+                })
                 .collect::<Vec<_>>(),
         )
     }
@@ -197,37 +224,38 @@ mod spark {
                 "test_project",
                 "spark_build_snapshot_staging_table",
                 r#"{% macro spark_build_snapshot_staging_table(strategy, sql, target_relation) %}
-                            {{ return('snapshot_staging') }}
-                        {% endmacro %}"#,
-            )
-            .with_macro(
-                "test_project",
-                "spark__snapshot_merge_sql",
-                r#"{% macro spark__snapshot_merge_sql(target, source, insert_cols) %}
-                            {% do adapter.record_insert_columns(insert_cols) %}
-                            select 1
-                        {% endmacro %}"#,
+                    {{ return('snapshot_staging') }}
+                {% endmacro %}"#,
             )
             .build()
             .expect("harness should build");
 
-        let columns = helper_columns(helpers, uppercase);
-        let missing_columns = columns.clone();
+        let columns = staging_columns(SOURCE_COLUMNS, helpers, uppercase);
+        let missing_columns = staging_columns(
+            &["new_column", "dbt_unique_key_business"],
+            helpers,
+            uppercase,
+        );
+        let mut existing = harness.relation(
+            "TEST_DB",
+            "TEST_SCHEMA",
+            "my_snapshot",
+            Some(RelationType::Table),
+        );
+        Arc::get_mut(&mut existing)
+            .expect("relation should not be shared")
+            .set_is_delta(Some(true));
         let mock = harness.mock();
         mock.on("get_missing_columns", move |_| Ok(missing_columns.clone()));
         mock.on("get_columns_in_relation", move |_| Ok(columns.clone()));
-        mock.on("get_relation", |_| {
-            Ok(Value::from_serialize(BTreeMap::from([
-                ("is_table", true),
-                ("is_delta", true),
-            ])))
+        mock.on("get_relation", move |_| {
+            Ok(RelationObject::new(Arc::clone(&existing)).into_value())
         });
         mock.on("check_schema_exists", |_| Ok(Value::from(true)));
         mock.on("get_hard_deletes_behavior", |_| Ok(Value::from("ignore")));
         for method in [
             "valid_snapshot_target",
             "expand_target_column_types",
-            "record_insert_columns",
             "drop_relation",
             "commit",
         ] {
@@ -235,37 +263,6 @@ mod spark {
         }
         mock.on("quote", |args| Ok(Value::from(format!("`{}`", args[0]))));
         harness
-    }
-
-    fn render_snapshot(harness: &MacroTestHarness, unique_key: Value) {
-        let config = snapshot_config();
-        config.set_attr("materialized", Value::from("snapshot"));
-        config.on("get", move |args| {
-            match args.first().and_then(|value| value.as_str()) {
-                Some("strategy") => Ok(Value::from("timestamp")),
-                Some("unique_key") => Ok(unique_key.clone()),
-                Some("updated_at") => Ok(Value::from("updated_at")),
-                Some("file_format") => Ok(Value::from("delta")),
-                _ => Ok(args.get(1).cloned().unwrap_or(Value::UNDEFINED)),
-            }
-        });
-        let ctx = harness
-            .materialization_context("my_snapshot", SNAPSHOT_SQL)
-            .relation_type(RelationType::Table)
-            .config(Value::from_dyn_object(config))
-            .with("model", snapshot_model())
-            .with(
-                "context",
-                Value::from_object(MacroLookupContext::new(
-                    "test_project".to_string(),
-                    None,
-                    BTreeSet::from(["test_project".to_string()]),
-                )),
-            )
-            .build();
-        harness
-            .render("{{ materialization_snapshot_spark() }}", ctx)
-            .expect("Spark snapshot should render");
     }
 
     #[test]
@@ -279,24 +276,27 @@ mod spark {
             ),
         ] {
             for uppercase in [false, true] {
+                let case = format!("unique_key={unique_key}, uppercase={uppercase}");
                 let harness = build_harness(&helpers, uppercase);
-                render_snapshot(&harness, unique_key.clone());
+                render_snapshot(&harness, AdapterType::Spark, unique_key.clone(), &case);
                 let mock = harness.mock();
                 let sql = executed_sql(mock).join("\n").to_lowercase();
-                assert!(sql.contains("add columns"), "{sql}");
-                assert!(sql.contains("`new_column` string"), "{sql}");
-                assert!(!sql.contains("dbt_unique_key"), "{sql}");
-                assert!(!sql.contains("dbt_change_type"), "{sql}");
-
-                let calls = mock.observed_calls();
-                let insert_calls = calls.to("record_insert_columns").collect::<Vec<_>>();
-                assert_eq!(insert_calls.len(), 1);
-                let insert_columns = insert_calls[0].args[0]
-                    .try_iter()
-                    .expect("insert columns should be a list")
-                    .map(|value| value.to_string().to_lowercase())
+                let normalized_sql = sql.split_whitespace().collect::<Vec<_>>().join(" ");
+                assert!(
+                    normalized_sql.contains(
+                        "alter table `test_db`.`test_schema`.`my_snapshot` add columns ( `new_column` string, `dbt_unique_key_business` string );"
+                    ),
+                    "{case}: unexpected schema alteration: {sql}"
+                );
+                let source_columns = mock
+                    .observed_calls()
+                    .to("quote")
+                    .map(|call| call.args[0].to_string().to_lowercase())
                     .collect::<Vec<_>>();
-                assert_eq!(insert_columns, vec!["`new_column`"]);
+                assert_eq!(
+                    source_columns, SOURCE_COLUMNS,
+                    "{case}: unexpected merge columns"
+                );
             }
         }
     }
