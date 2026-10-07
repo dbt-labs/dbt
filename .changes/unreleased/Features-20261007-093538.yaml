@@ -1,0 +1,7 @@
+kind: Features
+body: Add Databricks skip_merge_on_empty_source to skip safe SQL incremental work when the source is empty.
+time: 2026-10-07T09:35:38.642447+05:30
+custom:
+    author: sd-db
+    issue: "16638"
+    project: dbt-core

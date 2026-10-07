@@ -238,6 +238,88 @@ mod databricks {
     }
 
     #[test]
+    fn test_skip_empty_source_boundaries() {
+        let mut render_failures = Vec::new();
+        for (strategy, schema_change, delete_unmatched, language, enabled, should_skip) in [
+            ("merge", "ignore", false, "sql", true, true),
+            ("append", "ignore", false, "sql", true, true),
+            ("delete+insert", "ignore", false, "sql", true, true),
+            ("merge", "ignore", true, "sql", true, false),
+            ("insert_overwrite", "ignore", false, "sql", true, false),
+            ("replace_where", "ignore", false, "sql", true, false),
+            ("microbatch", "ignore", false, "sql", true, false),
+            ("merge", "fail", false, "sql", true, false),
+            ("merge", "append_new_columns", false, "sql", true, false),
+            ("merge", "sync_all_columns", false, "sql", true, false),
+            ("merge", "ignore", false, "python", true, false),
+            ("merge", "ignore", false, "sql", false, false),
+        ] {
+            let mut harness = build_harness();
+            harness
+                .env_mut()
+                .env
+                .add_function("log", |_msg: Value, _kwargs: minijinja::value::Kwargs| {
+                    Ok(Value::UNDEFINED)
+                });
+            let config = default_mock_config();
+            config.on("get", move |args| {
+                let default = args.get(1).cloned().unwrap_or(Value::UNDEFINED);
+                Ok(match args.first().and_then(Value::as_str) {
+                    Some("skip_merge_on_empty_source") => Value::from(enabled),
+                    Some("not_matched_by_source_action") if delete_unmatched => {
+                        Value::from("delete")
+                    }
+                    _ => default,
+                })
+            });
+            let relation = RelationObject::new(harness.relation(
+                "TEST_DB",
+                "TEST_SCHEMA",
+                "my_incr",
+                Some(RelationType::Table),
+            ))
+            .into_value();
+            let ctx = harness
+                .materialization_context("my_incr", "select 1 -- trailing comment")
+                .config(Value::from_dyn_object(config))
+                .with(
+                    "model",
+                    Value::from_serialize(BTreeMap::from([("language", language)])),
+                )
+                .with("strategy", Value::from(strategy))
+                .with("schema_change", Value::from(schema_change))
+                .with("target_relation", relation.clone())
+                .with("existing_relation", relation)
+                .build();
+            if let Err(error) = harness.render(
+                "{% do skip_merge_on_empty_source(strategy, schema_change, 'select 1 -- trailing comment', target_relation, existing_relation) %}",
+                ctx,
+            ) {
+                render_failures.push(format!(
+                    "{strategy}/{schema_change}/{language}/enabled={enabled}/delete_unmatched={delete_unmatched}: {error:?}"
+                ));
+                continue;
+            }
+            let sqls = executed_sql(harness.mock());
+            if should_skip {
+                assert_eq!(sqls.len(), 2, "probe followed by no-op: {sqls:?}");
+                assert!(sqls[0].contains("-- trailing comment\n"), "{sqls:?}");
+                assert!(sqls[0].contains("limit 1"), "{sqls:?}");
+                assert_eq!(sqls[1].trim(), "select 1 where false");
+            } else {
+                assert!(
+                    sqls.is_empty(),
+                    "ineligible source must not be probed or skipped: {sqls:?}"
+                );
+            }
+        }
+        assert!(
+            render_failures.is_empty(),
+            "skip helper failed to render: {render_failures:#?}"
+        );
+    }
+
+    #[test]
     fn no_existing_relation_creates_table() {
         let harness = build_harness();
         harness.mock().on("get_relation", |_| Ok(Value::from(())));

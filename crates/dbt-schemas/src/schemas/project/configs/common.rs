@@ -207,6 +207,9 @@ pub struct WarehouseSpecificNodeConfig {
     #[serde(default, deserialize_with = "bool_or_string_bool")]
     #[warehouse(valid(Model))]
     pub skip_optimize: Option<bool>,
+    #[serde(default, deserialize_with = "bool_or_string_bool")]
+    #[warehouse(valid(Model))]
+    pub skip_merge_on_empty_source: Option<bool>,
     #[warehouse(valid(all_nodes))]
     pub clustered_by: Option<StringOrArrayOfStrings>,
     #[warehouse(valid(all_nodes))]
@@ -621,6 +624,8 @@ pub fn same_warehouse_config(
     let auto_liquid_cluster_eq = self_wh.auto_liquid_cluster == other_wh.auto_liquid_cluster;
     let zorder_eq = self_wh.zorder == other_wh.zorder;
     let skip_optimize_eq = self_wh.skip_optimize == other_wh.skip_optimize;
+    let skip_merge_on_empty_source_eq =
+        self_wh.skip_merge_on_empty_source == other_wh.skip_merge_on_empty_source;
     let clustered_by_eq = self_wh.clustered_by == other_wh.clustered_by;
     let buckets_eq = self_wh.buckets == other_wh.buckets;
     let catalog_eq = self_wh.catalog == other_wh.catalog;
@@ -731,6 +736,7 @@ pub fn same_warehouse_config(
         && auto_liquid_cluster_eq
         && zorder_eq
         && skip_optimize_eq
+        && skip_merge_on_empty_source_eq
         && clustered_by_eq
         && buckets_eq
         && catalog_eq
@@ -1010,6 +1016,14 @@ pub fn same_warehouse_config(
                     Some((
                         format!("{:?}", &self_wh.skip_optimize),
                         format!("{:?}", &other_wh.skip_optimize),
+                    )),
+                ),
+                (
+                    "skip_merge_on_empty_source",
+                    skip_merge_on_empty_source_eq,
+                    Some((
+                        format!("{:?}", &self_wh.skip_merge_on_empty_source),
+                        format!("{:?}", &other_wh.skip_merge_on_empty_source),
                     )),
                 ),
                 (

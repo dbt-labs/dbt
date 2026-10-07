@@ -15,6 +15,86 @@ use crate::macro_test_harness::{MacroTestHarness, default_mock_config};
 mod databricks {
     use super::*;
 
+    #[test]
+    fn alter_macros_render_table_type_with_fusion_relations() {
+        for (template, expected_prefix) in [
+            (
+                "{{ alter_set_tags(relation, {'team': 'data'}) }}",
+                "ALTER TABLE",
+            ),
+            (
+                "{{ alter_set_column_tags(relation, 'id', {'team': 'data'}) }}",
+                "ALTER TABLE",
+            ),
+            (
+                "{{ alter_drop_column_mask(relation, 'id') }}",
+                "ALTER TABLE",
+            ),
+            (
+                "{{ alter_set_column_mask(relation, 'id', {'function': 'mask_id'}) }}",
+                "ALTER TABLE",
+            ),
+            ("{{ alter_drop_row_filter(relation) }}", "ALTER TABLE"),
+            (
+                "{{ alter_set_non_null_constraint(relation, 'id') }}",
+                "ALTER TABLE",
+            ),
+            (
+                "{{ alter_unset_non_null_constraint(relation, 'id') }}",
+                "ALTER TABLE",
+            ),
+            (
+                "{{ alter_unset_constraint(relation, {'type': 'check', 'name': 'check_id'}) }}",
+                "ALTER TABLE",
+            ),
+            (
+                "{{ alter_relation_comment_sql(relation, 'docs') }}",
+                "COMMENT ON TABLE",
+            ),
+            (
+                "{% do apply_tblproperties(relation, {'retention': '7'}) %}",
+                "ALTER TABLE",
+            ),
+            (
+                "{% do apply_liquid_clustered_cols(relation, {'cluster_by': ['id'], 'auto_cluster': false}) %}",
+                "ALTER TABLE",
+            ),
+        ] {
+            let harness = MacroTestHarness::for_adapter(AdapterType::Databricks)
+                .load_all_macros()
+                .with_stub_functions()
+                .build()
+                .expect("relation type harness should build");
+            harness.mock().on("is_uniform", |_| Ok(Value::from(false)));
+            harness.mock().on("quote", |args| {
+                let name = args.first().and_then(Value::as_str).unwrap();
+                Ok(Value::from(format!("`{name}`")))
+            });
+            let relation = RelationObject::new(harness.relation(
+                "TEST_DB",
+                "TEST_SCHEMA",
+                "my_table",
+                Some(RelationType::Table),
+            ))
+            .into_value();
+            let ctx = harness
+                .materialization_context("my_table", "select 1")
+                .config(Value::from_dyn_object(default_mock_config()))
+                .with("relation", relation)
+                .build();
+            let rendered = harness
+                .render(template, ctx)
+                .unwrap_or_else(|e| panic!("relation type boundary failed for {template}: {e:?}"));
+            let sqls = crate::macro_test_harness::executed_sql(harness.mock());
+            let sql = sqls.first().map(String::as_str).unwrap_or(&rendered);
+            let sql = sql.split_whitespace().collect::<Vec<_>>().join(" ");
+            assert!(
+                sql.starts_with(&format!("{expected_prefix} ")),
+                "{template}: {sql}"
+            );
+        }
+    }
+
     fn render_primary_key_constraint(expression: Option<&str>) -> String {
         let harness = MacroTestHarness::for_adapter(AdapterType::Databricks)
             .load_all_macros()
