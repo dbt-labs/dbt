@@ -35,6 +35,7 @@ use dbt_adbc::QueryCtx;
 use dbt_common::adapter::dialect_of;
 use dbt_common::cancellation::CancellationToken;
 use dbt_common::io_args::RunCacheMode;
+use dbt_common::sources_extractor::SourcesExtractor;
 use dbt_common::stats::NodeStatus;
 use dbt_common::tracing::dbt_emit::{
     emit_debug_log_message, emit_trace_log_message, emit_warn_log_message,
@@ -43,7 +44,6 @@ use dbt_common::tracing::span_info::find_and_update_span_attrs;
 use dbt_common::{ErrorCode, FsError, FsResult, fs_err};
 use dbt_frontend_common::ident::FullyQualifiedName;
 use dbt_frontend_common::named_reference::NamedReference;
-use dbt_frontend_common::sources_extractor::SourcesExtractor;
 use dbt_jinja_utils::jinja_environment::JinjaEnv;
 use dbt_schemas::dbt_types::RelationType;
 use dbt_schemas::materialization_resolver::MaterializationResolver;
@@ -598,7 +598,7 @@ pub fn insert_compiled_view_definition(
     // produces quoted-lowercase synthetic relations downstream that don't
     // resolve in the warehouse — see `test_transitive_dependencies_tracked`.
     let fqn = relation.semantic_fqn();
-    let (default_catalog, default_schema) = match dialect.parse_fqn(&fqn) {
+    let (default_catalog, default_schema) = match FullyQualifiedName::parse(&fqn, dialect) {
         Ok(parsed) => (
             parsed.catalog().name().to_string(),
             parsed.schema().name().to_string(),
@@ -5276,6 +5276,7 @@ mod tests {
     use dbt_common::cancellation::never_cancels;
     use dbt_common::collections::DashMap;
     use dbt_common::io_args::RunCacheMode;
+    use dbt_common::sources_extractor::SourcesExtractor;
     use dbt_common::{CompiledSpans, MacroSpan};
     use dbt_dag::schedule::Schedule;
     use dbt_frontend_common::FullyQualifiedName;
@@ -5283,7 +5284,6 @@ mod tests {
         CodeLocation, ErrorCode as FrontendErrorCode, FrontendError, FrontendResult,
     };
     use dbt_frontend_common::named_reference::NamedReference;
-    use dbt_frontend_common::sources_extractor::SourcesExtractor;
     use dbt_frontend_common::span::ReclassifySpan;
     use dbt_jinja_utils::jinja_environment::JinjaEnv;
     use dbt_jinja_utils::listener::DefaultRenderingEventListenerFactory;
