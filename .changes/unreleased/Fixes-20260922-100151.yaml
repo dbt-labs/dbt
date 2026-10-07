@@ -1,0 +1,7 @@
+kind: Fixes
+body: Fix dbt clone for Snowflake Iceberg tables by emitting CREATE ICEBERG TABLE syntax when the clone source is an Iceberg table
+time: 2026-09-22T10:01:51.502752-04:00
+custom:
+    author: jecolvin
+    issue: ""
+    project: dbt-core
