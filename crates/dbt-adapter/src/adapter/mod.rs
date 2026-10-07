@@ -4350,13 +4350,26 @@ impl Adapter {
                 }
             }
             "should_on_cluster" => {
-                // materialized: str = '', engine: str = '' -> bool (both args ignored, as in impl.py)
-                let iter = ArgsIter::new("should_on_cluster", &["materialized", "engine"], args);
+                // materialized: str = '', engine: str = '', relation: BaseRelation = None -> bool
+                // (materialized/engine ignored, as in impl.py; `relation` is v2's on_cluster_clause
+                // asking for relation.py's `should_on_cluster` with the profile at hand)
+                let iter = ArgsIter::new(
+                    "should_on_cluster",
+                    &["materialized", "engine", "relation"],
+                    args,
+                );
                 iter.next_arg::<Option<&Value>>()?;
                 iter.next_arg::<Option<&Value>>()?;
+                let relation = iter.next_arg::<Option<&Value>>()?;
                 iter.finish()?;
+                let relation = relation
+                    .filter(|v| !v.is_none() && !v.is_undefined())
+                    .map(downcast_value_to_dyn_base_relation)
+                    .transpose()?;
                 match &self.inner {
-                    Typed { adapter, .. } => Ok(Value::from(adapter.should_on_cluster())),
+                    Typed { adapter, .. } => {
+                        Ok(Value::from(adapter.should_on_cluster(relation.as_deref())))
+                    }
                     Parse(_) => Ok(Value::from(false)),
                 }
             }

@@ -2489,14 +2489,21 @@ impl AdapterImpl {
     }
 
     /// ClickHouse `adapter.should_on_cluster(materialized, engine)` (impl.py ignores both
-    /// arguments) — see [`metadata::clickhouse::get_on_cluster`].
-    pub fn should_on_cluster(&self) -> bool {
-        metadata::clickhouse::get_on_cluster(
+    /// arguments) — see [`metadata::clickhouse::get_on_cluster`]. With `relation` (v2's
+    /// `on_cluster_clause`), [`metadata::clickhouse::relation_should_on_cluster`].
+    pub fn should_on_cluster(&self, relation: Option<&dyn BaseRelation>) -> bool {
+        let profile_default = metadata::clickhouse::get_on_cluster(
             self.get_db_config("cluster").as_deref().unwrap_or(""),
             self.get_db_config("database_engine")
                 .as_deref()
                 .unwrap_or(""),
-        )
+        );
+        match relation {
+            Some(relation) => {
+                metadata::clickhouse::relation_should_on_cluster(relation, profile_default)
+            }
+            None => profile_default,
+        }
     }
 
     /// ClickHouse `adapter.can_exchange(schema, rel_type)` — see [`metadata::clickhouse::can_exchange`].

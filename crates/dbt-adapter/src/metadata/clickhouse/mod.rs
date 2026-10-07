@@ -65,45 +65,25 @@ fn refreshable_marker_columns(col: &str, agg: &str) -> String {
     )
 }
 
-/// Profile keys relations need at creation time (relation.py `create_from` reads them off the
-/// credentials). Published by [`register_engine`].
-#[derive(Debug, Clone, Default)]
-pub struct ClickHouseConnectionInfo {
-    pub cluster: Option<String>,
-    pub database_engine: String,
-}
-
-static CONNECTION_INFO: std::sync::RwLock<ClickHouseConnectionInfo> =
-    std::sync::RwLock::new(ClickHouseConnectionInfo {
-        cluster: None,
-        database_engine: String::new(),
-    });
-
-/// A ClickHouse engine was built: publish its [`ClickHouseConnectionInfo`]. Runs before any
-/// macro renders, so each invocation of a long-lived process sees its own profile; concurrent
-/// invocations with different ClickHouse profiles would still share it.
-pub fn register_engine(cluster: Option<String>, database_engine: Option<String>) {
-    *CONNECTION_INFO
-        .write()
-        .unwrap_or_else(std::sync::PoisonError::into_inner) = ClickHouseConnectionInfo {
-        cluster: cluster.filter(|c| !c.trim().is_empty()),
-        database_engine: database_engine.unwrap_or_default(),
-    };
-}
-
 /// relation.py `ClickHouseRelation.get_on_cluster`.
 pub fn get_on_cluster(cluster: &str, database_engine: &str) -> bool {
     !cluster.trim().is_empty() && !database_engine.to_lowercase().contains("replicated")
 }
 
-/// `can_on_cluster` for relations built outside the catalog paths (relation.py `create_from`).
-pub fn default_can_on_cluster() -> bool {
-    let info = CONNECTION_INFO
-        .read()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    info.cluster
-        .as_deref()
-        .is_some_and(|cluster| get_on_cluster(cluster, &info.database_engine))
+/// relation.py `should_on_cluster`, evaluated where the profile is at hand (the adapter) rather
+/// than stamped at construction: databases (identifier not included) always go `ON CLUSTER`; a
+/// relation stamped by the catalog, an `api.Relation.create` kwarg or `disable_on_cluster` keeps
+/// its value; one built from a node (`this`, `ref()`, `source()`) takes `profile_default`, which
+/// `create_from` would have read off the credentials.
+pub fn relation_should_on_cluster(relation: &dyn BaseRelation, profile_default: bool) -> bool {
+    if relation.identifier().is_none() || !relation.include_policy().identifier {
+        return true;
+    }
+    relation
+        .as_any()
+        .downcast_ref::<Relation>()
+        .and_then(|inner| inner.can_on_cluster)
+        .unwrap_or(profile_default)
 }
 
 /// impl.py `get_clickhouse_cluster_name`: the profile `cluster`, double-quoted for DDL.
@@ -2029,6 +2009,30 @@ mod tests {
         assert!(!get_on_cluster("   ", "Atomic"));
         assert!(!get_on_cluster("my_cluster", "Replicated"));
         assert!(!get_on_cluster("my_cluster", "replicated('/db','s','r')"));
+    }
+
+    /// relation.py `should_on_cluster`: stamped relations keep their value, node-built ones take
+    /// the profile default, databases always go on cluster.
+    #[test]
+    fn relation_should_on_cluster_mirrors_python() {
+        let table = Relation::new(
+            AdapterType::ClickHouse,
+            String::new(),
+            "analytics".to_string(),
+            "events".to_string(),
+        );
+        assert!(relation_should_on_cluster(&table, true));
+        assert!(!relation_should_on_cluster(&table, false));
+        assert!(!relation_should_on_cluster(
+            &table.clone().with_can_on_cluster(Some(false)),
+            true
+        ));
+        assert!(relation_should_on_cluster(
+            &table.clone().with_can_on_cluster(Some(true)),
+            false
+        ));
+        let database = table.without_identifier().unwrap();
+        assert!(relation_should_on_cluster(database.as_ref(), false));
     }
 
     /// Each engine owns its probe result; `statement_options` reads it without probing, also

@@ -155,7 +155,7 @@ impl StaticBaseRelation for RelationStatic {
                     .with_quoting(custom_quoting.unwrap_or(self.quoting))
                     .with_temporary(temporary.unwrap_or(false))
                     .with_can_exchange(can_exchange.unwrap_or(false))
-                    .with_can_on_cluster(can_on_cluster)
+                    .with_can_on_cluster(Some(can_on_cluster.unwrap_or(false)))
                     .validate()?;
                 Ok(RelationObject::new(Arc::new(relation)).into_value())
             }
@@ -241,8 +241,9 @@ pub struct Relation {
     pub temporary: bool,
     /// ClickHouse catalog state; see [`BaseRelation::can_exchange`] and siblings.
     pub can_exchange: bool,
-    /// None = not stamped (catalog/kwargs/`disable_on_cluster`): resolved from the profile
-    /// when read, since relations are built before the adapter registers its connection info.
+    /// `None` = built from a node and not stamped by the catalog, an `api.Relation.create` kwarg
+    /// or `disable_on_cluster`; `on_cluster_clause` resolves it through the adapter
+    /// (`metadata::clickhouse::relation_should_on_cluster`). Reads as `false`, relation.py's default.
     pub can_on_cluster: Option<bool>,
     pub mvs_pointing_to_it: Vec<BTreeMap<String, String>>,
     pub is_refreshable: bool,
@@ -876,10 +877,7 @@ impl BaseRelation for Relation {
     }
 
     fn can_on_cluster(&self) -> bool {
-        self.can_on_cluster.unwrap_or_else(|| {
-            self.adapter_type == AdapterType::ClickHouse
-                && crate::metadata::clickhouse::default_can_on_cluster()
-        })
+        self.can_on_cluster.unwrap_or(false)
     }
 
     fn mvs_pointing_to_it(&self) -> &[BTreeMap<String, String>] {

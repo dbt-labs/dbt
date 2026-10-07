@@ -112,9 +112,6 @@ impl AdbcEngine {
     ) -> Self {
         let behavior = make_behavior(adapter_type, &behavior_flag_overrides);
         let query_retry_policy = QueryRetryPolicy::new(adapter_type, &config);
-        if adapter_type == AdapterType::ClickHouse {
-            super::clickhouse::register_engine(&config);
-        }
         Self {
             adapter_type,
             auth,
