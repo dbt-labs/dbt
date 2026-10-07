@@ -272,6 +272,7 @@ pub async fn resolve(
             let runtime_config = Arc::new(DbtRuntimeConfig::new(
                 &arg.io.in_dir,
                 package,
+                dbt_state.root_project().flags.as_ref(),
                 &dbt_state.dbt_profile,
                 &configs,
                 vars,

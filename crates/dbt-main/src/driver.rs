@@ -2,16 +2,23 @@ use std::sync::Arc;
 use std::time::SystemTime;
 
 use dbt_clap_core::Cli;
-use dbt_common::{FsResult, cancellation::CancellationToken, io_args::EvalArgs};
+use dbt_common::{
+    FsResult,
+    cancellation::CancellationToken,
+    io_args::{EvalArgs, FsCommand},
+};
 use dbt_compilation::schedule::DbtProjectCompilationCacheChanges;
 use dbt_compilation::traits::{CompilationCache, CompilationDriver, CompiledProject};
-use dbt_compilation::traits::{RunTasksResult, TaskExecutionDriver};
+use dbt_compilation::traits::{
+    MetadataOutputFamily, MetadataWriteReport, RunTasksResult, TaskExecutionDriver,
+};
 use dbt_dag::schedule::Schedule;
 use dbt_features::feature_stack::FeatureStack;
 use dbt_jinja_utils::{
     jinja_environment::JinjaEnv, listener::JinjaTypeCheckingEventListenerFactory,
 };
 use dbt_schemas::schemas::DbtCommandExecutionArtifacts;
+use dbt_schemas::schemas::manifest::build_manifest;
 
 use dbt_tasks_core::task_runner_hooks::TaskRunnerHooksFactory;
 
@@ -119,6 +126,80 @@ impl TaskExecutionDriver for DbtTaskExecutionDriver {
         let (run_task_args, run_task_results, _jinja_env, _adapter, cache_state) = result;
 
         let cache: Arc<dyn CompilationCache> = cache_state;
+
         Ok((run_task_args, run_task_results, cache))
+    }
+
+    async fn write_metadata(
+        &self,
+        arg: &EvalArgs,
+        run_task_results: &dbt_tasks_core::RunTaskResults,
+        compilation_cache_state: &dyn CompilationCache,
+    ) -> FsResult<()> {
+        if !arg.write_metadata || arg.command == FsCommand::Show {
+            return Ok(());
+        }
+
+        let manifest = build_manifest(
+            &arg.io.invocation_id.to_string(),
+            run_task_results.resolved_state.as_ref(),
+        );
+        let schema_store = compilation_cache_state.schema_store();
+
+        crate::metadata::write_metadata(
+            arg,
+            &manifest,
+            run_task_results.resolved_state.as_ref(),
+            schema_store.as_ref(),
+            run_task_results,
+            None,
+            self.feature_stack.index.hooks.as_ref(),
+        )
+        .await
+    }
+
+    async fn write_metadata_with_report(
+        &self,
+        arg: &EvalArgs,
+        run_task_results: &dbt_tasks_core::RunTaskResults,
+        compilation_cache_state: &dyn CompilationCache,
+    ) -> FsResult<Option<MetadataWriteReport>> {
+        if !arg.write_metadata || arg.command == FsCommand::Show {
+            return Ok(None);
+        }
+
+        let manifest = build_manifest(
+            &arg.io.invocation_id.to_string(),
+            run_task_results.resolved_state.as_ref(),
+        );
+        let schema_store = compilation_cache_state.schema_store();
+        let mut report = MetadataWriteReport::new();
+
+        if arg.write_metadata {
+            report.mark_written(MetadataOutputFamily::Metadata, arg.metadata_dir());
+        }
+        if arg.write_index {
+            report.mark_written(MetadataOutputFamily::Index, arg.index_dir());
+        }
+        if arg.generate_info_schema {
+            report.mark_written(
+                MetadataOutputFamily::InfoSchema,
+                dbt_index_core::info_schema::versioned_dir(&arg.info_schema_dir()),
+            );
+        }
+
+        crate::metadata::write_metadata_with_report(
+            arg,
+            &manifest,
+            run_task_results.resolved_state.as_ref(),
+            schema_store.as_ref(),
+            run_task_results,
+            None,
+            self.feature_stack.index.hooks.as_ref(),
+            &mut report,
+        )
+        .await?;
+
+        Ok(Some(report))
     }
 }

@@ -48,7 +48,7 @@ function isSnoozeActive(dismissedAt: number | undefined): boolean {
   return Date.now() - dismissedAt < SNOOZE_MS;
 }
 
-interface Props {
+interface UpgradeRailStackProps {
   /** Ordered list of upgrade hook kinds to consider. Each is filtered
    *  through the copy registry against `userState`; cells that resolve to
    *  `{hidden: true}` are dropped. Defaults to the full pool. */
@@ -85,7 +85,7 @@ export function UpgradeRailStack({
   location,
   decorateOutboundHref,
   className,
-}: Props) {
+}: UpgradeRailStackProps) {
   const [dismissed, setDismissed] = useLocalStorage<DismissedMap>(
     dismissedStorageKey,
     validateDismissed,

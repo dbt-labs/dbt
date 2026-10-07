@@ -1696,31 +1696,21 @@ pub const LATEST_VERSION_POINTER_ENABLED_BY_DEFAULT_ENV: &str =
     "DBT_LATEST_VERSION_POINTER_ENABLED_BY_DEFAULT";
 
 pub fn resolve_latest_version_pointer_enabled_by_default(project_flags: Option<&Value>) -> bool {
-    resolve_latest_version_pointer_enabled_by_default_with_env_lookup(project_flags, |name| {
-        std::env::var_os(name)
-    })
+    dbt_flags::LATEST_VERSION_POINTER_ENABLED_BY_DEFAULT
+        .resolve_with_project(&project_flag_bool(project_flags))
+        .value
 }
 
+#[cfg(test)]
 fn resolve_latest_version_pointer_enabled_by_default_with_env_lookup(
     project_flags: Option<&Value>,
     get_env: impl Fn(&str) -> Option<OsString>,
 ) -> bool {
-    if let Some(value) = get_env(LATEST_VERSION_POINTER_ENABLED_BY_DEFAULT_ENV) {
-        if let Some(resolved) = parse_boolish_env(value.as_ref()) {
-            return resolved;
-        }
-    }
-
-    if let Some(enabled) = project_flags
-        .and_then(|flags| {
-            project_flags_get_value(flags, "latest_version_pointer_enabled_by_default")
-        })
-        .and_then(Value::as_bool)
-    {
-        return enabled;
-    }
-
-    true
+    resolve_flag_with_env_lookup(
+        &dbt_flags::LATEST_VERSION_POINTER_ENABLED_BY_DEFAULT,
+        project_flags,
+        get_env,
+    )
 }
 
 pub const REQUIRE_REF_SEARCHES_NODE_PACKAGE_BEFORE_ROOT_ENV: &str =
@@ -1734,31 +1724,56 @@ pub const REQUIRE_REF_SEARCHES_NODE_PACKAGE_BEFORE_ROOT_ENV: &str =
 pub fn resolve_require_ref_searches_node_package_before_root(
     project_flags: Option<&Value>,
 ) -> bool {
-    resolve_require_ref_searches_node_package_before_root_with_env_lookup(project_flags, |name| {
-        std::env::var_os(name)
-    })
+    dbt_flags::REQUIRE_REF_SEARCHES_NODE_PACKAGE_BEFORE_ROOT
+        .resolve_with_project(&project_flag_bool(project_flags))
+        .value
 }
 
+#[cfg(test)]
 fn resolve_require_ref_searches_node_package_before_root_with_env_lookup(
     project_flags: Option<&Value>,
     get_env: impl Fn(&str) -> Option<OsString>,
 ) -> bool {
-    if let Some(value) = get_env(REQUIRE_REF_SEARCHES_NODE_PACKAGE_BEFORE_ROOT_ENV) {
-        if let Some(resolved) = parse_boolish_env(value.as_ref()) {
-            return resolved;
-        }
-    }
+    resolve_flag_with_env_lookup(
+        &dbt_flags::REQUIRE_REF_SEARCHES_NODE_PACKAGE_BEFORE_ROOT,
+        project_flags,
+        get_env,
+    )
+}
 
-    if let Some(enabled) = project_flags
-        .and_then(|flags| {
-            project_flags_get_value(flags, "require_ref_searches_node_package_before_root")
+/// Reads a boolean from the root project's `flags:` block, for
+/// [`dbt_flags::FlagDef::resolve_with_project`].
+pub fn project_flag_bool(project_flags: Option<&Value>) -> impl Fn(&str) -> Option<bool> + '_ {
+    move |name| {
+        project_flags
+            .and_then(|flags| project_flags_get_value(flags, name))
+            .and_then(Value::as_bool)
+    }
+}
+
+/// Resolves `def` against `project_flags` with env layers read through `get_env`
+/// instead of the process environment.
+#[cfg(test)]
+fn resolve_flag_with_env_lookup(
+    def: &dbt_flags::FlagDef,
+    project_flags: Option<&Value>,
+    get_env: impl Fn(&str) -> Option<OsString>,
+) -> bool {
+    let env: Vec<(&str, OsString)> = def
+        .legacy_env
+        .iter()
+        .copied()
+        .chain([dbt_flags::FEATURES_ENV])
+        .filter_map(|name| get_env(name).map(|value| (name, value)))
+        .collect();
+    dbt_flags::FlagSnapshot::builder()
+        .env_lookup(move |name| {
+            env.iter()
+                .find_map(|(key, value)| (*key == name).then(|| value.clone()))
         })
-        .and_then(Value::as_bool)
-    {
-        return enabled;
-    }
-
-    true
+        .build()
+        .resolve(def, &project_flag_bool(project_flags))
+        .value
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, ValueEnum, EnumIter)]
@@ -2063,6 +2078,36 @@ mod tests {
                     .find_map(|(key, value)| (*key == name).then(|| OsString::from(*value)))
             },
         )
+    }
+
+    #[test]
+    fn behavior_flag_env_vars_are_registered_as_legacy_env() {
+        assert_eq!(
+            dbt_flags::REQUIRE_REF_SEARCHES_NODE_PACKAGE_BEFORE_ROOT.legacy_env,
+            [REQUIRE_REF_SEARCHES_NODE_PACKAGE_BEFORE_ROOT_ENV]
+        );
+        assert_eq!(
+            dbt_flags::LATEST_VERSION_POINTER_ENABLED_BY_DEFAULT.legacy_env,
+            [LATEST_VERSION_POINTER_ENABLED_BY_DEFAULT_ENV]
+        );
+    }
+
+    #[test]
+    fn behavior_flags_can_be_set_through_the_features_env() {
+        assert!(!require_ref_searches_node_package_before_root_with_env(
+            None,
+            &[(
+                dbt_flags::FEATURES_ENV,
+                "require_ref_searches_node_package_before_root=false"
+            )]
+        ));
+        assert!(latest_version_pointer_with_env(
+            Some("latest_version_pointer_enabled_by_default: false\n"),
+            &[(
+                dbt_flags::FEATURES_ENV,
+                "latest_version_pointer_enabled_by_default"
+            )]
+        ));
     }
 
     #[test]

@@ -2121,12 +2121,18 @@ impl AdapterImpl {
                     }
                 }
 
-                execute_macro_with_package(
+                let result = execute_macro_with_package(
                     state,
                     &[RelationObject::new(relation.to_owned()).into_value()],
                     "get_columns_comments",
                     "dbt_databricks",
-                )
+                );
+                match result {
+                    Err(ref e) if e.message().contains("[TABLE_OR_VIEW_NOT_FOUND]") => {
+                        return Ok(Vec::new());
+                    }
+                    _ => result,
+                }
             }
             // NOTE: This is the default behavior. If said adapter type does not
             // have a get_columns_in_relation() macro, it will fail with a
@@ -2148,7 +2154,6 @@ impl AdapterImpl {
                 // See https://github.com/dbt-labs/fs/pull/4267#discussion_r2182835729
                 let ignored_error = match self.adapter_type() {
                     Snowflake => Some("does not exist or not authorized"),
-                    Databricks => Some("[TABLE_OR_VIEW_NOT_FOUND]"),
                     _ => None,
                 };
 

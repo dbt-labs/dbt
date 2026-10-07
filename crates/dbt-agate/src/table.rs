@@ -1416,7 +1416,10 @@ mod tests {
     use arrow::csv::reader::ReaderBuilder;
     use arrow::datatypes::{DataType, Field, Int32Type, Schema};
     use arrow::record_batch::RecordBatch;
-    use arrow_array::{Array, ListArray, RecordBatchOptions, UInt64Array};
+    use arrow_array::{
+        Array, FixedSizeListArray, Float32Array, ListArray, RecordBatchOptions, UInt64Array,
+        builder::{FixedSizeListBuilder, Float32Builder},
+    };
     use arrow_schema::Fields;
     use minijinja::value::Kwargs;
     use minijinja::value::ValueMap;
@@ -1439,6 +1442,78 @@ mod tests {
         ]));
         let batch = RecordBatch::try_new(schema, vec![id_array, country_array]).unwrap();
         Arc::new(batch)
+    }
+
+    /// End-to-end regression test for dbt-labs/fs#15412.
+    ///
+    /// This is the path from the bug report: a Snowflake `VECTOR(FLOAT, n)` column arrives
+    /// as Arrow `FixedSizeList(Float32, n)` and is read into an [AgateTable]. The flattener
+    /// forwards `FixedSizeList` as a flat column, so it reaches converter construction
+    /// inside [AgateTable::new] -- which unwraps, and therefore used to panic with
+    /// `CastError("Casting from FixedSizeList(..) to Utf8 not supported")`.
+    #[test]
+    fn agate_table_reads_snowflake_vector_column() {
+        // select 'a' as id, [1.0, 2.0, 3.0]::vector(float, 3) as embedding
+        let mut builder = FixedSizeListBuilder::new(Float32Builder::new(), 3);
+        builder.values().append_slice(&[1.0, 2.0, 3.0]);
+        builder.append(true);
+        builder.values().append_slice(&[4.0, 5.0, 6.0]);
+        builder.append(true);
+        let embedding: ArrayRef = Arc::new(builder.finish());
+
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Utf8, true),
+            Field::new("embedding", embedding.data_type().clone(), true),
+        ]));
+        let id: ArrayRef = Arc::new(StringArray::from(vec![Some("a"), Some("b")]));
+        let batch = Arc::new(RecordBatch::try_new(schema, vec![id, embedding]).unwrap());
+
+        // Must not panic.
+        let table = AgateTable::from_record_batch(batch);
+
+        assert_eq!(table.num_rows(), 2);
+        assert_eq!(table.num_columns(), 2);
+
+        // The vector renders as a Jinja sequence, not a stringified blob.
+        assert_eq!(
+            table.cell(0, 1).unwrap(),
+            Value::from(vec![
+                Value::from(1.0f32),
+                Value::from(2.0f32),
+                Value::from(3.0f32)
+            ])
+        );
+        assert_eq!(
+            table.cell(1, 1).unwrap(),
+            Value::from(vec![
+                Value::from(4.0f32),
+                Value::from(5.0f32),
+                Value::from(6.0f32)
+            ])
+        );
+    }
+
+    /// A `FixedSizeList` column must not be expanded into one column per element by the
+    /// flattener -- it stays a single column whose cells are sequences.
+    #[test]
+    fn agate_table_keeps_fixed_size_list_as_single_column() {
+        let values = Float32Array::from(vec![1.0, 2.0, 3.0, 4.0]);
+        let field = Arc::new(Field::new("element", DataType::Float32, false));
+        let embedding: ArrayRef =
+            Arc::new(FixedSizeListArray::new(field, 2, Arc::new(values), None));
+
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "embedding",
+            embedding.data_type().clone(),
+            true,
+        )]));
+        let batch = Arc::new(RecordBatch::try_new(schema, vec![embedding]).unwrap());
+
+        let table = AgateTable::from_record_batch(batch);
+
+        assert_eq!(table.num_columns(), 1);
+        assert_eq!(table.num_rows(), 2);
+        assert_eq!(table.column_name(0).unwrap(), "embedding");
     }
 
     #[test]
