@@ -2229,6 +2229,7 @@ def write_semantic_manifest(manifest: Manifest, target_path: str) -> None:
     path = os.path.join(target_path, SEMANTIC_MANIFEST_FILE_NAME)
     semantic_manifest = SemanticManifest(manifest)
     semantic_manifest.write_json_to_file(path)
+    add_artifact_produced(path)
 
 
 def write_manifest(manifest: Manifest, target_path: str, which: Optional[str] = None):
