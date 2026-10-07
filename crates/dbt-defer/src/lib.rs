@@ -639,6 +639,7 @@ where
         let base = mut_node.base_mut();
         base.database = deferred_base.database.clone();
         base.schema = deferred_base.schema.clone();
+        base.alias = deferred_base.alias.clone();
     }
     Ok(())
 }

@@ -491,11 +491,15 @@ impl DbConfig {
             DbConfig::Fabric(config) => config.schema.as_ref(),
             DbConfig::Exasol(config) => config.schema.as_ref(),
             DbConfig::ClickHouse(config) => config.schema.as_ref(),
-            DbConfig::SingleStore(config) => config
-                .schema
-                .as_ref()
-                .filter(|s| !s.trim().is_empty())
-                .or_else(|| config.database.as_ref().filter(|s| !s.trim().is_empty())),
+            DbConfig::SingleStore(config) => match &config.schema {
+                Some(s) if !s.trim().is_empty() && !s.trim().eq_ignore_ascii_case("none") => {
+                    Some(s)
+                }
+                _ => {
+                    static EMPTY: String = String::new();
+                    Some(&EMPTY)
+                }
+            },
         }
     }
 
@@ -2334,10 +2338,10 @@ fn try_from_singlestore_config(
         .database
         .filter(|s| !s.trim().is_empty())
         .ok_or_else(|| missing("database or dbname"))?;
-    let schema = config
-        .schema
-        .filter(|s| !s.trim().is_empty())
-        .unwrap_or_else(|| database.clone());
+    let schema = match config.schema {
+        Some(s) if !s.trim().is_empty() && !s.trim().eq_ignore_ascii_case("none") => s,
+        _ => String::new(),
+    };
     Ok(SingleStoreTargetEnv {
         host: config.host.ok_or_else(|| missing("host"))?,
         user: config.user.ok_or_else(|| missing("user"))?,
@@ -2363,7 +2367,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_singlestore_empty_schema_falls_back_to_database() {
+    fn test_singlestore_empty_schema_is_empty() {
         let yaml = r#"
             type: singlestore
             host: localhost
@@ -2374,7 +2378,37 @@ mod tests {
         "#;
         let config: DbConfig = dbt_yaml::from_str(yaml).unwrap();
         assert_eq!(config.get_database(), Some(&"my_db".to_string()));
-        assert_eq!(config.get_schema(), Some(&"my_db".to_string()));
+        assert_eq!(config.get_schema(), Some(&"".to_string()));
+    }
+
+    #[test]
+    fn test_singlestore_none_schema_is_empty() {
+        let yaml = r#"
+            type: singlestore
+            host: localhost
+            user: root
+            password: password
+            database: my_db
+            schema: none
+        "#;
+        let config: DbConfig = dbt_yaml::from_str(yaml).unwrap();
+        assert_eq!(config.get_database(), Some(&"my_db".to_string()));
+        assert_eq!(config.get_schema(), Some(&"".to_string()));
+    }
+
+    #[test]
+    fn test_singlestore_custom_schema_is_preserved() {
+        let yaml = r#"
+            type: singlestore
+            host: localhost
+            user: root
+            password: password
+            database: my_db
+            schema: testuser
+        "#;
+        let config: DbConfig = dbt_yaml::from_str(yaml).unwrap();
+        assert_eq!(config.get_database(), Some(&"my_db".to_string()));
+        assert_eq!(config.get_schema(), Some(&"testuser".to_string()));
     }
 
     /// `DbConfig` is `#[serde(tag = "type", rename_all = "lowercase")]`, so the
