@@ -1536,10 +1536,13 @@ impl<'a> AllPhasesExecutor<'a> {
                                 batch_results: Default::default(),
                                 compiled_code: Default::default(),
                             };
+                            let project_state = compilation.dbt_state();
                             let mut artifact = build_run_results_artifact(
                                 &empty,
                                 &HashMap::new(),
                                 self.arg.as_ref(),
+                                project_state.warn_error,
+                                &project_state.warn_error_options,
                             );
                             artifact.results = std::mem::take(&mut check_result_rows);
                             // The graph never runs, so nothing else reports itself. Record what it
@@ -1675,11 +1678,14 @@ impl<'a> AllPhasesExecutor<'a> {
                             };
 
                             // Prepare artifact
+                            let project_state = compilation.dbt_state();
                             let run_results_artifact = build_run_results_artifact(
                                 &error_stats,
                                 // Adapter responses not available since we errored at compilation
                                 &HashMap::new(),
                                 self.arg.as_ref(),
+                                project_state.warn_error,
+                                &project_state.warn_error_options,
                             );
 
                             write_run_results_json_or_warn(
@@ -1720,10 +1726,13 @@ impl<'a> AllPhasesExecutor<'a> {
         let resolved_state = Arc::clone(&run_task_results.resolved_state);
 
         // Prepare artifact
+        let project_state = compilation.dbt_state();
         let run_results_artifact = build_run_results_artifact(
             &run_task_results.stats.run,
             &run_task_results.adapter_responses,
             self.arg.as_ref(),
+            project_state.warn_error,
+            &project_state.warn_error_options,
         );
 
         // Write run_results.json eagerly from real stats so that it persists
