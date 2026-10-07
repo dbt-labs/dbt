@@ -3,12 +3,13 @@ mod token_service;
 use crate::{AdapterConfig, Auth, AuthError, AuthWarningPrinter, auth_configure_pipeline};
 use database::Builder as DatabaseBuilder;
 
-use crate::redshift::token_service::{TokenEndpoint, create_token_service_client};
+use crate::redshift::token_service::TokenEndpoint;
 use adbc_core::constants::ADBC_OPTION_USERNAME;
 use dbt_adbc::redshift::{
     AUTH_IDC_CLIENT_DISPLAY_NAME, AUTH_IDC_REGION, AUTH_IDP_LISTEN_PORT, AUTH_IDP_RESPONSE_TIMEOUT,
-    AUTH_ISSUER_URL, AUTH_PROVIDER, AUTH_PROVIDER_BROWSER_IDC, AUTH_PROVIDER_IDP_TOKEN, AUTH_TOKEN,
-    AUTH_TOKEN_TYPE,
+    AUTH_ISSUER_URL, AUTH_PROVIDER, AUTH_PROVIDER_BROWSER_IDC, AUTH_PROVIDER_IDP_TOKEN,
+    AUTH_TOKEN_ENDPOINT_REQUEST_DATA, AUTH_TOKEN_ENDPOINT_REQUEST_HEADERS,
+    AUTH_TOKEN_ENDPOINT_REQUEST_URL,
 };
 use dbt_adbc::{
     Backend, database,
@@ -200,23 +201,24 @@ impl<'a> RedshiftAuthIR<'a> {
                 database,
             } => {
                 builder.with_named_option(AUTH_PROVIDER, AUTH_PROVIDER_IDP_TOKEN)?;
+                builder.with_named_option(
+                    AUTH_TOKEN_ENDPOINT_REQUEST_URL,
+                    token_endpoint.request_url.clone(),
+                )?;
+                builder.with_named_option(
+                    AUTH_TOKEN_ENDPOINT_REQUEST_DATA,
+                    token_endpoint.request_data.clone(),
+                )?;
 
-                let client = create_token_service_client(token_endpoint).map_err(|e| {
-                    AuthError::config(format!("Failed to create token service: {e}"))
+                let headers =
+                    token_service::token_endpoint_headers(&token_endpoint).map_err(|e| {
+                        AuthError::config(format!("Failed to build token headers: {e}"))
+                    })?;
+                let headers_json = serde_json::to_string(&headers).map_err(|e| {
+                    AuthError::config(format!("Failed to serialize token endpoint headers: {e}"))
                 })?;
-                let access_token = client.handle_request().map_err(|e| match e {
-                    token_service::TokenServiceError::MissingToken => AuthError::config(
-                        "access_token missing from IdP token request. \
-Please confirm correct configuration of the token_endpoint \
-field in profiles.yml and that your IdP can use a refresh token \
-to obtain an OIDC-compliant access token.",
-                    ),
-                    e => AuthError::config(format!(
-                        "Failed to fetch token service access token: {e}"
-                    )),
-                })?;
-                builder.with_named_option(AUTH_TOKEN, access_token)?;
-                builder.with_named_option(AUTH_TOKEN_TYPE, "EXT_JWT")?;
+
+                builder.with_named_option(AUTH_TOKEN_ENDPOINT_REQUEST_HEADERS, headers_json)?;
 
                 let connection_str = build_connection_uri(host, &port, database, None);
                 builder.with_parse_uri(connection_str)?;

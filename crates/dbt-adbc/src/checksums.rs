@@ -11,7 +11,7 @@ pub static SORTED_CDN_DRIVER_CHECKSUMS: [(
         &str, // version
     ),
     &str, // checksum
-); 415] = [
+); 420] = [
     (
         ("bigquery", "apple-darwin", "aarch64", "0.21.0.dev+dbt0.21.10"),
         "07c3a53a87d2304f37bcb5dedb9596432c5fed8e7f3403dfa9f1d5912e523aa8",
@@ -1185,6 +1185,10 @@ pub static SORTED_CDN_DRIVER_CHECKSUMS: [(
         "06577fa0d7049dbac38ad50c91c13c636f188d3278a2a3abc5ba563eb83d51f2",
     ),
     (
+        ("redshift", "apple-darwin", "aarch64", "0.21.0.dev+dbt0.18.10"),
+        "86d05424fb5d5f5dce6119c1ca08c80825d23b1e48eea875a167055afafe34df",
+    ),
+    (
         ("redshift", "apple-darwin", "aarch64", "0.21.0.dev+dbt0.18.5"),
         "2543764be8c60f100a9a5252ea38839c8bb6c9a1bc4abd14ace05c83797fe77e",
     ),
@@ -1215,6 +1219,10 @@ pub static SORTED_CDN_DRIVER_CHECKSUMS: [(
     (
         ("redshift", "apple-darwin", "x86_64", "0.18.0+dbt0.18.4"),
         "33f49abc1eaebead97d0e3edcfdfa37fb1c92b779bcfa5fee1022bb75ce1c9d4",
+    ),
+    (
+        ("redshift", "apple-darwin", "x86_64", "0.21.0.dev+dbt0.18.10"),
+        "f89481803cddf7e62f01883a3aa18f342108cf91f61e96850c70bf0a8dfb5142",
     ),
     (
         ("redshift", "apple-darwin", "x86_64", "0.21.0.dev+dbt0.18.5"),
@@ -1249,6 +1257,10 @@ pub static SORTED_CDN_DRIVER_CHECKSUMS: [(
         "4044e6e1f37ef4d5696c56b7de7303f8a56d64678609f2694413baf493cf9560",
     ),
     (
+        ("redshift", "manylinux_2_17-linux-gnu", "aarch64", "0.21.0.dev+dbt0.18.10"),
+        "0deefbd29e941130f7f14c033ec24705fcf10c7ff6ba8d1a14ef3dbdd23de96f",
+    ),
+    (
         ("redshift", "manylinux_2_17-linux-gnu", "aarch64", "0.21.0.dev+dbt0.18.5"),
         "564194a3e7766ef2ac67c51325861399367aef1471d8741982f1a665f0080961",
     ),
@@ -1281,6 +1293,10 @@ pub static SORTED_CDN_DRIVER_CHECKSUMS: [(
         "5a2600f85b0f9c8d34d91d8d0ae13cab266947238f97df07efe0351b53af3af9",
     ),
     (
+        ("redshift", "manylinux_2_17-linux-gnu", "x86_64", "0.21.0.dev+dbt0.18.10"),
+        "3556433ab480b1a55aee482a156d9047bacd7cc1de48a46ccff68944e7ba9357",
+    ),
+    (
         ("redshift", "manylinux_2_17-linux-gnu", "x86_64", "0.21.0.dev+dbt0.18.5"),
         "0cc48ea7f6f39491750f47f4611ee3debfe8d2a7ed548dad10b6865bd4cfdb75",
     ),
@@ -1311,6 +1327,10 @@ pub static SORTED_CDN_DRIVER_CHECKSUMS: [(
     (
         ("redshift", "pc-windows-msvc", "x86_64", "0.18.0+dbt0.18.4"),
         "566dc019803edae2b29a58dace76034a793fd2ace289a54da35438834231e388",
+    ),
+    (
+        ("redshift", "pc-windows-msvc", "x86_64", "0.21.0.dev+dbt0.18.10"),
+        "0ae9fe985ba93f9996bf0d96f7bf88a45eaec02733c60332c63736294007a8a4",
     ),
     (
         ("redshift", "pc-windows-msvc", "x86_64", "0.21.0.dev+dbt0.18.5"),
