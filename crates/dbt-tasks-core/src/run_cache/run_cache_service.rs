@@ -20,7 +20,7 @@ use arrow::array::{Array, BooleanArray, RecordBatch};
 use tokio::sync::mpsc;
 
 use crate::context::TaskRunnerCtx;
-use crate::task::{TaskOp, TaskResult};
+use crate::task::{TaskResult, run_blocking_task_operation};
 use dbt_adapter::AdapterResult;
 use dbt_adapter::cache::hydrate_relation_cache_if_not_already_cached;
 use dbt_adapter::errors::{AdapterError, AdapterErrorKind, Cancellable, into_fs_error};
@@ -670,15 +670,14 @@ async fn warehouse_now_ms(ctx: &TaskRunnerCtx) -> Option<i64> {
         _ => return None,
     };
     let ctx_inner = ctx.clone();
-    TaskOp::Blocking(Box::new(move || -> Option<i64> {
+    run_blocking_task_operation(move || -> Option<i64> {
         let adapter = ctx_inner.env.get_adapter_ref()?;
         let query_ctx = QueryCtx::default().with_desc("dbt State run clock");
         let (_, table) = adapter
             .execute_without_state(Some(&query_ctx), sql, true, None)
             .ok()?;
         table.original_record_batch().first_value_as_i64()
-    }))
-    .run()
+    })
     .await
     .ok()
     .flatten()
@@ -723,7 +722,7 @@ async fn check_redshift_case_sensitivity(ctx: &TaskRunnerCtx) -> bool {
     let sql: &str =
         "SELECT CURRENT_SETTING('enable_case_sensitive_identifier')::boolean AS case_sensitive";
     let ctx_inner = ctx.clone();
-    TaskOp::Blocking(Box::new(move || -> Option<bool> {
+    run_blocking_task_operation(move || -> Option<bool> {
         let adapter = ctx_inner.env.get_adapter_ref()?;
 
         let query_ctx = QueryCtx::default().with_desc("Redshift case-sensitivity setting check");
@@ -731,8 +730,7 @@ async fn check_redshift_case_sensitivity(ctx: &TaskRunnerCtx) -> bool {
             .execute_without_state(Some(&query_ctx), sql, true, None)
             .ok()?;
         parse_case_sensitivity_result(&table.original_record_batch())
-    }))
-    .run()
+    })
     .await
     .ok()
     .flatten()
@@ -1977,7 +1975,7 @@ pub async fn execute_run_cache_service_clone(
         relation_from_rendered_name(node, &clone.clone_target)
             .map_err(RunCacheCloneError::Fatal)?;
     let drop_target_relation = target_relation.clone();
-    let clone_result = TaskOp::Blocking(Box::new(move || {
+    let clone_result = run_blocking_task_operation(move || {
         if let Some(hook_executor) = &hook_executor {
             hook_executor(&ctx_inner, RunCacheReuseHookPhase::Pre)
                 .map_err(RunCacheCloneError::Fatal)?;
@@ -2003,8 +2001,7 @@ pub async fn execute_run_cache_service_clone(
                 .map_err(RunCacheCloneError::Fatal)?;
         }
         Ok(())
-    }))
-    .run()
+    })
     .await
     .map_err(RunCacheCloneError::Recoverable)?;
     clone_result?;

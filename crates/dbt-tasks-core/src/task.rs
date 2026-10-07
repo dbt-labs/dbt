@@ -68,43 +68,13 @@ impl From<TP> for ExecutionPhase {
     }
 }
 
-/// Awaitable scheduling dispatch for a single unit of work.
-///
-/// Each variant handles its own thread pool dispatch (spawn_blocking, async).
-/// Use this to build purely functional pipelines where each step's output feeds the next:
-///
-/// ```ignore
-/// let relations = TaskOp::blocking(|| discover(ctx)).run().await??;
-/// TaskOp::r#async(fetch(relations, ctx)).run().await??;
-/// let result = TaskOp::blocking(|| render(ctx, relations)).run().await??;
-/// ```
-pub enum TaskOp<T: Send + 'static> {
-    /// CPU-bound work, dispatched to `dbt_runtime::spawn_blocking`. A
-    /// connection the closure borrows stays in that worker's thread-local slot
-    /// for whatever runs there next.
-    Blocking(Box<dyn FnOnce() -> T + Send>),
-}
-
-impl<T: Send + 'static> TaskOp<T> {
-    /// Marker: wraps an async future for pipeline visibility.
-    /// Just awaits the future — no thread pool dispatch.
-    pub async fn r#async<F: Future<Output = T>>(fut: F) -> T {
-        fut.await
-    }
-    /// Marker: runs a sync closure inline on the current async task.
-    /// No thread pool dispatch — use for lightweight sync work that
-    /// doesn't justify a `spawn_blocking` thread.
-    pub fn inline_blocking(f: impl FnOnce() -> T) -> T {
-        f()
-    }
-    /// Execute this operation on the appropriate thread pool.
-    pub async fn run(self) -> FsResult<T> {
-        match self {
-            TaskOp::Blocking(f) => dbt_runtime::spawn_blocking(f)
-                .await
-                .map_err(|e| fs_err!(ErrorCode::Generic, "spawn_blocking join error: {}", e)),
-        }
-    }
+/// Run blocking task work on the runtime pool, mapping join failures to task errors.
+pub async fn run_blocking_task_operation<T: Send + 'static>(
+    f: impl FnOnce() -> T + Send + 'static,
+) -> FsResult<T> {
+    dbt_runtime::spawn_blocking(f)
+        .await
+        .map_err(|e| fs_err!(ErrorCode::Generic, "spawn_blocking join error: {}", e))
 }
 
 /// Identity of a set of dbt nodes that share a single query.

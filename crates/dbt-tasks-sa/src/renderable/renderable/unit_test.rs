@@ -217,20 +217,19 @@ pub(crate) async fn run_unit_test_render(
     result_sender: Option<std::sync::mpsc::SyncSender<TaskResult>>,
     task_hooks: Arc<dyn RenderTaskHooks>,
 ) -> FsResult<NodeStatus> {
-    use dbt_tasks_core::task::TaskOp;
+    use dbt_tasks_core::task::run_blocking_task_operation;
 
     // Phase 1 — Discover
     let ut = node.clone();
     let mut discover_ctx = ctx.clone();
-    let discover_outcome = TaskOp::Blocking(Box::new(move || {
+    let discover_outcome = run_blocking_task_operation(move || {
         // Downcast to DbtUnitTest for access to unit test fields
         let ut_ref = ut
             .as_any()
             .downcast_ref::<DbtUnitTest>()
             .expect("run_unit_test_render called on non-DbtUnitTest");
         discover_given_relations(ut_ref, &mut discover_ctx)
-    }))
-    .run()
+    })
     .await
     .and_then(|inner| inner);
     let given_relations = match discover_outcome {
@@ -248,12 +247,12 @@ pub(crate) async fn run_unit_test_render(
 
     // Phase 2 — Fetch
     if !given_relations.relations_to_fetch.is_empty() {
-        let fetch_outcome = TaskOp::r#async(fetch_missing_schemas(
+        let fetch_outcome = fetch_missing_schemas(
             &given_relations.relations_to_fetch,
             &node.common().unique_id,
             &mut ctx,
             Arc::clone(&task_hooks),
-        ))
+        )
         .await;
         if let Err(e) = fetch_outcome {
             return handle_render_result(
@@ -267,7 +266,7 @@ pub(crate) async fn run_unit_test_render(
     }
 
     // Phase 3 — Render (uses cached schemas + discovered relations)
-    TaskOp::Blocking(Box::new(move || {
+    run_blocking_task_operation(move || {
         let mut ctx = ctx;
         let ut_ref = node
             .as_any()
@@ -281,8 +280,7 @@ pub(crate) async fn run_unit_test_render(
             &mut ctx,
             &result_sender,
         )
-    }))
-    .run()
+    })
     .await?
 }
 
