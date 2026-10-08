@@ -18,7 +18,7 @@ use arrow_array::{Array, StringViewArray, UInt64Array};
 use arrow_schema::{ArrowError, Schema};
 use minijinja::arg_utils::ArgsIter;
 use minijinja::listener::RenderingEventListener;
-use minijinja::value::{Enumerator, Kwargs, Object, ValueMap, mutable_map::MutableMap};
+use minijinja::value::{DynObject, Enumerator, Kwargs, Object, ValueMap, mutable_map::MutableMap};
 use minijinja::{Error, ErrorKind, State, Value};
 use std::cmp::Ordering;
 use std::collections::HashSet;
@@ -1042,6 +1042,18 @@ impl Object for AgateTable {
         Enumerator::Seq(self.num_rows())
     }
 
+    /// Compare tables by identity
+    ///
+    /// `agate.Table` defines no `__eq__`, so Python falls back to
+    /// `object.__eq__` and two tables holding identical data are never equal.
+    /// Note, `agate.Row`/`Column` do define value equality, which makes the
+    /// table case unintuitive
+    fn custom_cmp(self: &Arc<Self>, other: &DynObject) -> Option<Ordering> {
+        let this: *const AgateTable = Arc::as_ptr(self);
+        let other: *const AgateTable = other.downcast_ref::<AgateTable>()?;
+        Some(this.cmp(&other))
+    }
+
     fn call_method(
         self: &Arc<Self>,
         _state: &State,
@@ -1398,6 +1410,8 @@ impl Object for AgateTable {
                 })?;
                 Ok(Value::from_object(result))
             }
+            "__eq__" | "__ne__" => Err(Error::from(ErrorKind::UnknownMethod)),
+            // TODO: add handling for `__[lt | le | gt | ge]__`
             other => unimplemented!("AgateTable::{}", other),
         }
     }
@@ -1547,6 +1561,70 @@ mod tests {
                 "{name}",
             );
         }
+    }
+
+    #[test]
+    fn table_identity_same_object_is_equal() {
+        let a = Value::from_object(main_table(&[1, 2], &["a", "b"], &[None, Some(1)]));
+        let out = Environment::new()
+            .render_str("{{ a == a }} {{ a != a }}", context! { a => a }, &[])
+            .unwrap();
+        assert_eq!(out, "True False");
+    }
+
+    #[test]
+    fn table_identity_equal_data_is_not_equal() {
+        let a = Value::from_object(main_table(&[1, 2], &["a", "b"], &[None, Some(1)]));
+        let b = Value::from_object(main_table(&[1, 2], &["a", "b"], &[None, Some(1)]));
+        let out = Environment::new()
+            .render_str(
+                "{{ a == b }} {{ a != b }}",
+                context! { a => a, b => b },
+                &[],
+            )
+            .unwrap();
+        assert_eq!(out, "False True");
+    }
+
+    #[test]
+    fn table_identity_empty_tables_are_not_equal() {
+        let a = Value::from_object(main_table(&[], &[], &[]));
+        let b = Value::from_object(main_table(&[], &[], &[]));
+        let out = Environment::new()
+            .render_str(
+                "{{ a == b }} {{ a != b }}",
+                context! { a => a, b => b },
+                &[],
+            )
+            .unwrap();
+        assert_eq!(out, "False True");
+    }
+
+    #[test]
+    fn table_identity_holds_inside_containers() {
+        let a = Value::from_object(main_table(&[1, 2], &["a", "b"], &[None, Some(1)]));
+        let b = Value::from_object(main_table(&[1, 2], &["a", "b"], &[None, Some(1)]));
+        let out = Environment::new()
+            .render_str(
+                "{{ [a] == [b] }} {{ a in [b] }} {{ a in [a] }}",
+                context! { a => a, b => b },
+                &[],
+            )
+            .unwrap();
+        assert_eq!(out, "False False True");
+    }
+
+    #[test]
+    fn table_identity_non_table_operand_is_not_equal() {
+        let a = Value::from_object(main_table(&[1, 2], &["a", "b"], &[None, Some(1)]));
+        let out = Environment::new()
+            .render_str(
+                "{{ a == 1 }} {{ a != 1 }} {{ 1 == a }} {{ 1 != a }}",
+                context! { a => a },
+                &[],
+            )
+            .unwrap();
+        assert_eq!(out, "False True False True");
     }
 
     #[test]

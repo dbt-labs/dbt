@@ -39,7 +39,7 @@ use dbt_jinja_utils::jinja_arg_format::format_value_for_jinja;
 use dbt_jinja_utils::jinja_environment::JinjaEnv;
 use dbt_jinja_utils::listener::JinjaTypeCheckingEventListenerFactory;
 use dbt_jinja_utils::node_resolver::NodeResolver;
-use dbt_jinja_utils::phases::build_adapter_target_context;
+use dbt_jinja_utils::phases::AdapterTargetContextCache;
 use dbt_jinja_utils::utils::dependency_package_name_from_ctx;
 use dbt_schemas::dbt_utils::resolve_package_quoting;
 use dbt_schemas::schemas::DbtTestAttr;
@@ -383,7 +383,7 @@ pub async fn resolve_data_tests(
     let mut nodes: HashMap<String, Arc<DbtTest>> = HashMap::new();
     let mut nodes_with_execute: HashMap<String, DbtTest> = HashMap::new();
     let mut disabled_tests: HashMap<String, Arc<DbtTest>> = HashMap::new();
-    let mut adapter_relation_contexts = HashMap::new();
+    let mut adapter_relation_contexts = AdapterTargetContextCache::default();
     let package_name = package.dbt_project.name.as_str();
     let dependency_package_name = dependency_package_name_from_ctx(&env, base_ctx);
 
@@ -639,15 +639,13 @@ pub async fn resolve_data_tests(
         // See `resolve_models`: both remaining quoting layers depend on which
         // adapter the node runs on, which is only known after the config merge.
         let selected_adapter = resolved_node_adapter.unwrap_or(default_adapter);
-        if !adapter_relation_contexts.contains_key(&selected_adapter) {
-            adapter_relation_contexts.insert(
-                selected_adapter,
-                build_adapter_target_context(profile, selected_adapter, base_ctx)?,
-            );
-        }
-        let relation_context = adapter_relation_contexts
-            .get(&selected_adapter)
-            .expect("selected adapter relation context was inserted");
+        let relation_context = adapter_relation_contexts.get_for_node(
+            profile,
+            selected_adapter,
+            default_adapter,
+            status,
+            base_ctx,
+        )?;
         test_config.quoting = resolve_package_quoting(
             Some(match adapter_quoting.get(&selected_adapter) {
                 Some(authored) => test_config.quoting.filled_from(authored),

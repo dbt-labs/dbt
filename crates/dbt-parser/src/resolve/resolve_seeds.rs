@@ -21,7 +21,7 @@ use dbt_common::{ErrorCode, FsResult, fs_err, stdfs};
 use dbt_frontend_common::Dialect;
 use dbt_jinja_utils::jinja_environment::JinjaEnv;
 use dbt_jinja_utils::node_resolver::NodeResolver;
-use dbt_jinja_utils::phases::build_adapter_target_context;
+use dbt_jinja_utils::phases::AdapterTargetContextCache;
 use dbt_jinja_utils::serde::into_typed_with_jinja;
 use dbt_jinja_utils::utils::dependency_package_name_from_ctx;
 use dbt_schemas::dbt_utils::resolve_package_quoting;
@@ -71,7 +71,7 @@ pub async fn resolve_seeds(
 ) -> FsResult<(HashMap<String, Arc<DbtSeed>>, HashMap<String, Arc<DbtSeed>>)> {
     let mut seeds: HashMap<String, Arc<DbtSeed>> = HashMap::new();
     let mut disabled_seeds: HashMap<String, Arc<DbtSeed>> = HashMap::new();
-    let mut adapter_relation_contexts = HashMap::new();
+    let mut adapter_relation_contexts = AdapterTargetContextCache::default();
     let io_args = &arg.io;
     let catalogs = load_catalogs::fetch_catalogs();
     let use_catalogs_v2 = load_catalogs::fetch_use_catalogs_v2();
@@ -318,6 +318,11 @@ pub async fn resolve_seeds(
             .map(Into::into)
             .unwrap_or_default();
         let selected_adapter = resolved_node_adapter.unwrap_or(default_adapter);
+        let status = if is_enabled {
+            ModelStatus::Enabled
+        } else {
+            ModelStatus::Disabled
+        };
         // Normalize seed column names according to the adapter that will load
         // this seed, not the project's default adapter.
         if selected_adapter == AdapterType::Snowflake
@@ -356,15 +361,13 @@ pub async fn resolve_seeds(
 
             properties_config.column_types = Some(column_types);
         }
-        if !adapter_relation_contexts.contains_key(&selected_adapter) {
-            adapter_relation_contexts.insert(
-                selected_adapter,
-                build_adapter_target_context(profile, selected_adapter, base_ctx)?,
-            );
-        }
-        let relation_context = adapter_relation_contexts
-            .get(&selected_adapter)
-            .expect("selected adapter relation context was inserted");
+        let relation_context = adapter_relation_contexts.get_for_node(
+            profile,
+            selected_adapter,
+            default_adapter,
+            status,
+            base_ctx,
+        )?;
         let catalog_requires_snowflake = catalogs_state
             .catalog_requires_snowflake_propagation(properties_config.catalog_name.as_deref())?;
         let effective_propagation_target = (selected_adapter == AdapterType::LakeCompute)
@@ -466,12 +469,6 @@ pub async fn resolve_seeds(
             &components,
             selected_adapter,
         )?;
-
-        let status = if is_enabled {
-            ModelStatus::Enabled
-        } else {
-            ModelStatus::Disabled
-        };
 
         match node_resolver.insert_ref(&dbt_seed, selected_adapter, status, false) {
             Ok(_) => (),
