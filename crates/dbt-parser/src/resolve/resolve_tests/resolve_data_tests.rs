@@ -8,6 +8,7 @@ use crate::renderer::RenderCtxInner;
 use crate::renderer::SqlFileRenderResult;
 use crate::renderer::collect_adapter_identifiers_detect_unsafe;
 use crate::renderer::render_unresolved_sql_files;
+use crate::renderer::rerender_sql_file_for_selected_adapter;
 use crate::renderer::strip_deprecated_warehouse_keys_from_properties;
 use crate::resolve::resolve_properties::MinimalPropertiesEntry;
 use crate::resolve::resolve_tests::persist_generic_data_tests::format_node_unique_id;
@@ -505,15 +506,16 @@ pub async fn resolve_data_tests(
 
     for SqlFileRenderResult {
         asset: dbt_asset,
-        sql_file_info,
+        mut sql_file_info,
         config: mut test_config,
         rendered_sql: _,
         macro_spans: _macro_spans,
         properties: maybe_properties,
         mut status,
-        render_error_deferred,
+        mut render_error_deferred,
         patch_path: _,
-        raw_config_call_dict: rendered_raw_config_call_dict,
+        raw_config_call_dict: mut rendered_raw_config_call_dict,
+        parse_adapter,
         ..
     } in test_sql_resources_map.into_iter()
     {
@@ -672,6 +674,50 @@ pub async fn resolve_data_tests(
                 ],
                 discovered_adapter,
             );
+        let selected_resolver = adapter_config_resolvers
+            .get(&discovered_adapter)
+            .expect("selected adapter config resolver was inserted")
+            .clone();
+        let replay = rerender_sql_file_for_selected_adapter(
+            &render_ctx,
+            profile,
+            discovered_adapter,
+            default_adapter,
+            selected_resolver,
+            relation_context,
+            adapter_quoting
+                .get(&discovered_adapter)
+                .cloned()
+                .unwrap_or_default(),
+            SqlFileRenderResult {
+                asset: dbt_asset.clone(),
+                status,
+                render_error_deferred,
+                sql_file_info,
+                config: test_config,
+                raw_code: String::new(),
+                rendered_sql: String::new(),
+                macro_spans: Default::default(),
+                properties: maybe_properties.clone(),
+                patch_path: None,
+                macro_dependencies: macro_depends_on,
+                raw_config_call_dict: rendered_raw_config_call_dict,
+                parse_adapter,
+            },
+            adapter_properties_config.as_ref(),
+            token,
+            jinja_type_checking_event_listener_factory.clone(),
+        )
+        .await?;
+        sql_file_info = replay.sql_file_info;
+        test_config = replay.config;
+        render_error_deferred = replay.render_error_deferred;
+        rendered_raw_config_call_dict = replay.raw_config_call_dict;
+        macro_depends_on = replay.macro_dependencies;
+        filter_core_builtin_test_macro_dependencies(
+            test_path_to_test_asset.get(&dbt_asset.path).copied(),
+            &mut macro_depends_on,
+        );
         let selected_adapter = arg
             .adapter_override
             .or(test_config.adapter)

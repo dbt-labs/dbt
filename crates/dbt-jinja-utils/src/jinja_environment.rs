@@ -133,6 +133,9 @@ pub struct JinjaEnv {
     /// typechecking, and shared (via the `Arc<RwLock<_>>`) with every clone
     /// of this `JinjaEnv`; empty (and inert) outside `JinjaRenderMode::Symbolic`.
     pub introspective_macros: Arc<RwLock<HashSet<String>>>,
+    /// Invocation-wide parse adapter that receives side effects from
+    /// adapter-specific forks.
+    parse_adapter_sink: Option<Arc<Adapter>>,
 }
 
 impl AsRef<JinjaEnv> for JinjaEnv {
@@ -168,6 +171,7 @@ impl JinjaEnv {
             env,
             jinja_function_registry: Arc::new(BTreeMap::new()),
             introspective_macros: Arc::new(RwLock::new(HashSet::new())),
+            parse_adapter_sink: None,
         }
     }
 
@@ -260,6 +264,65 @@ impl JinjaEnv {
         self.env
             .add_global("dialect", Value::from(adapter.adapter_type().to_string()));
         self.env.add_global("adapter", adapter.as_value());
+    }
+
+    /// Clone this environment and bind the clone to another parse-phase
+    /// adapter while preserving registered macros and globals.
+    pub fn fork_with_adapter(&self, adapter: Arc<Adapter>) -> Self {
+        let mut env = self.clone();
+        env.parse_adapter_sink = self
+            .parse_adapter_sink
+            .clone()
+            .or_else(|| self.get_adapter());
+        env.set_adapter(adapter);
+        env
+    }
+
+    /// Clone this environment with a fresh recorder for one parse render.
+    pub fn fork_with_fresh_parse_adapter(&self) -> Self {
+        let Some(adapter) = self
+            .get_adapter()
+            .and_then(|adapter| adapter.fork_parse_phase_adapter())
+        else {
+            return self.clone();
+        };
+        self.fork_with_adapter(Arc::new(adapter))
+    }
+
+    /// Merge this fork's parse-time relation requests into the invocation-wide
+    /// adapter state consumed by the resolver.
+    pub fn merge_parse_adapter_state_into_sink(&self) {
+        let Some(source) = self.get_adapter() else {
+            return;
+        };
+        let Some(sink) = self.parse_adapter_sink.as_ref() else {
+            return;
+        };
+        let (Some(source), Some(sink)) = (source.parse_adapter_state(), sink.parse_adapter_state())
+        else {
+            return;
+        };
+        sink.merge_from(source);
+    }
+
+    /// Replace a discovery render's state in the invocation-wide sink with
+    /// this environment's authoritative replay state.
+    pub fn replace_parse_adapter_state_in_sink(&self, previous: Option<&Adapter>) {
+        let Some(source) = self.get_adapter() else {
+            return;
+        };
+        let Some(sink) = self.parse_adapter_sink.as_ref() else {
+            return;
+        };
+        let (Some(source), Some(sink)) = (source.parse_adapter_state(), sink.parse_adapter_state())
+        else {
+            return;
+        };
+        if let Some(previous) = previous.and_then(Adapter::parse_adapter_state) {
+            sink.replace_from(previous, source);
+        } else {
+            sink.merge_from(source);
+        }
     }
 
     /// Get the adapter from the environment

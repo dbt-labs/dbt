@@ -6,7 +6,8 @@ use crate::dbt_project_config::{
 };
 use crate::renderer::{
     RenderCtx, RenderCtxInner, SqlFileRenderResult, collect_adapter_identifiers_detect_unsafe,
-    render_unresolved_sql_files, strip_deprecated_warehouse_keys_from_properties,
+    render_unresolved_sql_files, rerender_sql_file_for_selected_adapter,
+    strip_deprecated_warehouse_keys_from_properties,
 };
 use crate::resolve::resolve_tests::persist_generic_data_tests::TestableNodeTrait;
 use crate::resolve::resolve_tests::persist_generic_data_tests::{
@@ -367,20 +368,18 @@ pub async fn resolve_snapshots(
             .then(a.asset.path.cmp(&b.asset.path))
     });
 
-    let all_depends_on = jinja_type_checking_event_listener_factory
-        .depends_on()
-        .clone();
-
     for SqlFileRenderResult {
         asset: dbt_asset,
-        sql_file_info,
+        mut sql_file_info,
         config: mut snapshot_config,
-        raw_code,
+        mut raw_code,
         macro_spans: _macro_spans,
         properties: maybe_properties,
         mut status,
-        render_error_deferred,
+        mut render_error_deferred,
         patch_path,
+        macro_dependencies: mut render_macro_dependencies,
+        parse_adapter,
         ..
     } in snapshot_sql_resources_map.into_iter()
     {
@@ -390,18 +389,6 @@ pub async fn resolve_snapshots(
             if snapshot_name.contains(' ') {
                 return Err(err_resource_name_has_spaces(snapshot_name, error_path));
             }
-
-            // Recalculate checksum from original snapshot file.
-            // Without doing this, the checksum will be different from the one from mantle since fusion
-            // creates a new file for the snapshot that only contains a function call
-            // to the original macro instead of the original macro itself.
-            let recalculated_checksum =
-                if let Some(original_path) = snapshot_original_paths.get(&dbt_asset.path) {
-                    recalculate_snapshot_checksum(arg, original_path, &sql_file_info).await
-                } else {
-                    // Not a macro-based snapshot, use the checksum from sql_file_info
-                    sql_file_info.checksum.clone()
-                };
 
             let properties = if let Some(properties) = maybe_properties {
                 properties
@@ -487,6 +474,54 @@ pub async fn resolve_snapshots(
                     ],
                     discovered_adapter,
                 );
+            let selected_resolver = adapter_config_resolvers
+                .get(&discovered_adapter)
+                .expect("selected adapter config resolver was inserted")
+                .clone();
+            let replay = rerender_sql_file_for_selected_adapter(
+                &render_ctx,
+                profile,
+                discovered_adapter,
+                default_adapter,
+                selected_resolver,
+                relation_context,
+                adapter_quoting
+                    .get(&discovered_adapter)
+                    .cloned()
+                    .unwrap_or_default(),
+                SqlFileRenderResult {
+                    asset: dbt_asset.clone(),
+                    status,
+                    render_error_deferred,
+                    sql_file_info,
+                    config: snapshot_config,
+                    raw_code,
+                    rendered_sql: String::new(),
+                    macro_spans: Default::default(),
+                    properties: Some(properties.clone()),
+                    patch_path: patch_path.clone(),
+                    macro_dependencies: render_macro_dependencies,
+                    raw_config_call_dict: None,
+                    parse_adapter,
+                },
+                adapter_properties_config.as_ref(),
+                token,
+                jinja_type_checking_event_listener_factory.clone(),
+            )
+            .await?;
+            sql_file_info = replay.sql_file_info;
+            snapshot_config = replay.config;
+            raw_code = replay.raw_code;
+            render_error_deferred = replay.render_error_deferred;
+            render_macro_dependencies = replay.macro_dependencies;
+            // Fusion renders block-style snapshots from a generated stub, but
+            // state comparison hashes the original snapshot body.
+            let recalculated_checksum =
+                if let Some(original_path) = snapshot_original_paths.get(&dbt_asset.path) {
+                    recalculate_snapshot_checksum(arg, original_path, &sql_file_info).await
+                } else {
+                    sql_file_info.checksum.clone()
+                };
             let selected_adapter = arg
                 .adapter_override
                 .or(snapshot_config.adapter)
@@ -551,10 +586,7 @@ pub async fn resolve_snapshots(
                 })?;
             }
 
-            let macro_depends_on = all_depends_on
-                .get(&format!("{package_name}.{snapshot_name}"))
-                .cloned()
-                .unwrap_or_default()
+            let macro_depends_on = render_macro_dependencies
                 .into_iter()
                 .filter(|uid| !synthetic_snapshot_macro_uids.contains(uid.as_str()))
                 .collect();

@@ -12,6 +12,7 @@ use crate::renderer::RenderCtxInner;
 use crate::renderer::SqlFileRenderResult;
 use crate::renderer::collect_adapter_identifiers_detect_unsafe;
 use crate::renderer::render_unresolved_sql_files;
+use crate::renderer::rerender_sql_file_for_selected_adapter;
 use crate::renderer::strip_deprecated_warehouse_keys_from_properties;
 use crate::resolve::resolve_utils::build_unrendered_config;
 use crate::resolve::resolve_utils::err_resource_name_has_spaces;
@@ -382,6 +383,8 @@ pub async fn resolve_models(
         &raw_schema_yml_configs,
         &raw_test_configs,
         &config_resolver,
+        &render_ctx,
+        token,
         model_sql_resources_map,
         database,
         schema,
@@ -518,6 +521,8 @@ async fn build_model_nodes(
     raw_schema_yml_configs: &BTreeMap<String, BTreeMap<String, dbt_yaml::Value>>,
     raw_test_configs: &BTreeMap<String, TestUnrenderedConfigs>,
     config_resolver: &ProjectConfigResolver<ModelConfig>,
+    render_ctx: &RenderCtx<ModelConfig>,
+    token: &CancellationToken,
     model_sql_resources_map: Vec<SqlFileRenderResult<ModelConfig, ModelProperties>>,
     database: &str,
     schema: &str,
@@ -549,28 +554,16 @@ async fn build_model_nodes(
         None => LoadedCatalogs::None,
     };
 
-    for SqlFileRenderResult {
-        asset: dbt_asset,
-        sql_file_info,
-        config: model_config_resolved,
-        raw_code,
-        rendered_sql,
-        macro_spans,
-        properties: maybe_properties,
-        mut status,
-        render_error_deferred,
-        patch_path,
-        macro_dependencies,
-        raw_config_call_dict,
-    } in model_sql_resources_map.into_iter()
-    {
+    for mut render_result in model_sql_resources_map {
+        let dbt_asset = render_result.asset.clone();
         let ref_name = node_name_from_path(&dbt_asset.path).unwrap();
 
         if ref_name.contains(' ') {
             return Err(err_resource_name_has_spaces(ref_name, &dbt_asset.path));
         }
 
-        let mut model_config = model_config_resolved;
+        let mut model_config = render_result.config.clone();
+        let mut status = render_result.status;
         let is_python_model = resource_extension(&dbt_asset.path)
             .is_some_and(|extension| extension.eq_ignore_ascii_case("py"));
         let python_config_access = is_python_model.then(|| {
@@ -638,11 +631,10 @@ async fn build_model_nodes(
             package.dbt_project.model_paths.as_ref().unwrap_or(&vec![]),
         );
 
-        let properties = if let Some(properties) = maybe_properties {
-            properties
-        } else {
-            ModelProperties::empty(model_name.to_owned())
-        };
+        let properties = render_result
+            .properties
+            .clone()
+            .unwrap_or_else(|| ModelProperties::empty(model_name.to_owned()));
 
         // The first render discovers the node adapter. Re-render the raw
         // schema.yml config and merge all config layers again using that
@@ -699,7 +691,7 @@ async fn build_model_nodes(
                 &fqn,
                 &[
                     adapter_properties_config.as_ref(),
-                    sql_file_info.explicit_config.as_deref(),
+                    render_result.sql_file_info.explicit_config.as_deref(),
                 ],
                 discovered_adapter,
             );
@@ -711,6 +703,33 @@ async fn build_model_nodes(
             model_config.config_keys_defaults = config_keys_defaults;
             model_config.meta_keys_used = meta_keys_used;
             model_config.meta_keys_defaults = meta_keys_defaults;
+        }
+        if !is_python_model {
+            // Preserve the adapter-aware project/schema/inline merge when no
+            // replay is needed (for example, for the default adapter).
+            render_result.config = model_config.clone();
+            let selected_resolver = adapter_config_resolvers
+                .get(&discovered_adapter)
+                .expect("selected adapter config resolver was inserted")
+                .clone();
+            render_result = rerender_sql_file_for_selected_adapter(
+                render_ctx,
+                profile,
+                discovered_adapter,
+                default_adapter,
+                selected_resolver,
+                relation_context,
+                adapter_quoting
+                    .get(&discovered_adapter)
+                    .cloned()
+                    .unwrap_or_default(),
+                render_result,
+                adapter_properties_config.as_ref(),
+                token,
+                jinja_type_checking_event_listener_factory.clone(),
+            )
+            .await?;
+            model_config = render_result.config.clone();
         }
         let selected_adapter = arg
             .adapter_override
@@ -732,6 +751,19 @@ async fn build_model_nodes(
         if is_inline_file {
             model_config.materialized = DbtMaterialization::Inline;
         }
+
+        let SqlFileRenderResult {
+            sql_file_info,
+            raw_code,
+            rendered_sql,
+            macro_spans,
+            properties: _,
+            render_error_deferred,
+            patch_path,
+            macro_dependencies,
+            raw_config_call_dict,
+            ..
+        } = render_result;
 
         // Keep track of duplicates (often happens with versioned models)
         if (models.contains_key(&unique_id) || models_with_execute.contains_key(&unique_id))
@@ -1832,6 +1864,7 @@ fn process_python_models(
             macro_dependencies: Vec::new(),
             // Python models have no Jinja `{{ config(...) }}` call to extract.
             raw_config_call_dict: None,
+            parse_adapter: None,
         };
 
         results.push(python_result);

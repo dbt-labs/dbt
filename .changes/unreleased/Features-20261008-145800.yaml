@@ -1,0 +1,7 @@
+kind: Features
+body: Render inline config and hooks using each node's selected adapter.
+time: 2026-10-08T14:58:00.481121-07:00
+custom:
+    author: colin-k-rogers
+    issue: ""
+    project: dbt-core

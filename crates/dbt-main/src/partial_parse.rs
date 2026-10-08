@@ -231,15 +231,9 @@ pub fn try_load_prev_compilation(
         cloud_config: dbt_state.cloud_config.clone(),
         render_results: Default::default(),
         node_resolver,
-        get_relation_calls: reconstruct_relation_calls(
-            &state.get_relation_calls,
-            adapter_type,
-            root_project_quoting,
-        ),
+        get_relation_calls: reconstruct_relation_calls(&state.get_relation_calls),
         get_columns_in_relation_calls: reconstruct_relation_calls(
             &state.get_columns_in_relation_calls,
-            adapter_type,
-            root_project_quoting,
         ),
         patterned_dangling_sources: state.patterned_dangling_sources.clone(),
         run_started_at: chrono::Utc::now().with_timezone(&chrono_tz::UTC),
