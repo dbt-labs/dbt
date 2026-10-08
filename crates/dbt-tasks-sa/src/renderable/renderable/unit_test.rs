@@ -32,7 +32,7 @@ use dbt_jinja_utils::serde::single_expression_body;
 use dbt_jinja_utils::utils::add_task_context;
 use dbt_jinja_utils::utils::macro_spans_to_macro_span_vec;
 use dbt_jinja_utils::utils::render_sql;
-use dbt_jinja_utils::{Var, env_var};
+use dbt_jinja_utils::{ConfiguredVar, Var, env_var};
 use dbt_scheduler::instructions::SqlInstruction;
 use dbt_schemas::schemas;
 use dbt_schemas::schemas::InternalDbtNode;
@@ -974,14 +974,23 @@ pub fn apply_unit_test_overrides(
         );
     }
 
-    // Override for Variables
+    // Override for Variables: layer the overrides on the package-aware `var`, so project
+    // and package vars stay reachable (dbt-core adds the overrides to the CLI vars).
     if let Some(vars) = &overrides.vars {
-        let base_vars = ctx.inner.arg.vars.clone();
-        let overrides_map = Some(vars.clone());
-        compile_context.insert(
-            "var".to_string(),
-            MinijinjaValue::from_object(Var::with_overrides(base_vars, overrides_map)),
-        );
+        let var = match ctx
+            .env
+            .get_global("var")
+            .and_then(|var| var.downcast_object::<ConfiguredVar>())
+        {
+            Some(configured_var) => {
+                MinijinjaValue::from_object(configured_var.with_overrides(vars))
+            }
+            None => MinijinjaValue::from_object(Var::with_overrides(
+                ctx.inner.arg.vars.clone(),
+                Some(vars.clone()),
+            )),
+        };
+        compile_context.insert("var".to_string(), var);
     }
 }
 

@@ -1,0 +1,7 @@
+kind: Fixes
+body: Keep project and package vars available in unit tests that set overrides.vars, matching dbt-core
+time: 2026-09-26T20:51:04.376997-03:00
+custom:
+    author: luc-pimentel
+    issue: "16448"
+    project: dbt-core
