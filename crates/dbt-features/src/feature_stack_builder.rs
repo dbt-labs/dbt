@@ -6,8 +6,8 @@ use dbt_adapter::adapter::DefaultAdapterFactory;
 use dbt_adapter::sql_types::DefaultTypeOpsFactory;
 use dbt_common::FsError;
 use dbt_common::collections::DashMap;
+use dbt_common::sources_extractor::SourcesExtractor;
 use dbt_dag::schedule::Schedule;
-use dbt_frontend_common::sources_extractor::SourcesExtractor;
 use dbt_jinja_utils::jinja_environment::JinjaEnv;
 use dbt_jinja_utils::listener::{
     DefaultRenderingEventListenerFactory, RenderingEventListenerFactory,

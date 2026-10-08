@@ -150,7 +150,7 @@ fn from_local_config(
         .base()
         .persist_docs
         .as_ref()
-        .map(|pd| pd.relation.unwrap_or(false))
+        .map(|pd| pd.columns.unwrap_or(false))
         .unwrap_or(false);
 
     let mut comments = IndexMap::new();
@@ -225,7 +225,7 @@ email,string,\n\
         AgateTable::from_record_batch(Arc::new(batch))
     }
 
-    fn create_mock_dbt_model(comments: IndexMap<&str, &str>, persist_relation: bool) -> DbtModel {
+    fn create_mock_dbt_model(comments: IndexMap<&str, &str>, persist_columns: bool) -> DbtModel {
         let cfg = test_helpers::TestModelConfig {
             columns: comments
                 .into_iter()
@@ -235,8 +235,8 @@ email,string,\n\
                     ..Default::default()
                 })
                 .collect(),
-            persist_relation_comments: persist_relation,
-            persist_column_comments: false,
+            persist_relation_comments: false,
+            persist_column_comments: persist_columns,
             ..Default::default()
         };
         test_helpers::create_mock_dbt_model(cfg)

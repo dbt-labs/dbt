@@ -20,7 +20,7 @@ use arrow::array::{Array, BooleanArray, RecordBatch};
 use tokio::sync::mpsc;
 
 use crate::context::TaskRunnerCtx;
-use crate::task::{TaskOp, TaskResult};
+use crate::task::{TaskResult, run_blocking_task_operation};
 use dbt_adapter::AdapterResult;
 use dbt_adapter::cache::hydrate_relation_cache_if_not_already_cached;
 use dbt_adapter::errors::{AdapterError, AdapterErrorKind, Cancellable, into_fs_error};
@@ -35,6 +35,7 @@ use dbt_adbc::QueryCtx;
 use dbt_common::adapter::dialect_of;
 use dbt_common::cancellation::CancellationToken;
 use dbt_common::io_args::RunCacheMode;
+use dbt_common::sources_extractor::SourcesExtractor;
 use dbt_common::stats::NodeStatus;
 use dbt_common::tracing::dbt_emit::{
     emit_debug_log_message, emit_trace_log_message, emit_warn_log_message,
@@ -43,7 +44,6 @@ use dbt_common::tracing::span_info::find_and_update_span_attrs;
 use dbt_common::{ErrorCode, FsError, FsResult, fs_err};
 use dbt_frontend_common::ident::FullyQualifiedName;
 use dbt_frontend_common::named_reference::NamedReference;
-use dbt_frontend_common::sources_extractor::SourcesExtractor;
 use dbt_jinja_utils::jinja_environment::JinjaEnv;
 use dbt_schemas::dbt_types::RelationType;
 use dbt_schemas::materialization_resolver::MaterializationResolver;
@@ -56,7 +56,8 @@ use dbt_schemas::schemas::{
     DbtModel, DbtSeed, DbtSnapshot, DbtSource, DbtTest, InternalDbtNode, InternalDbtNodeAttributes,
 };
 use dbt_state::explain::{
-    StateExplainLogRecord, StateExplainNode, StateExplainNodeInfo, append_state_explain_log_record,
+    StateExplainExecutionConfirmed, StateExplainLogRecord, StateExplainNode, StateExplainNodeInfo,
+    append_state_explain_log_record,
 };
 use dbt_state::materialization;
 use dbt_state::metadata_cache::{MetadataPrefetchGuard, RunCacheMetadataCache};
@@ -598,7 +599,7 @@ pub fn insert_compiled_view_definition(
     // produces quoted-lowercase synthetic relations downstream that don't
     // resolve in the warehouse — see `test_transitive_dependencies_tracked`.
     let fqn = relation.semantic_fqn();
-    let (default_catalog, default_schema) = match dialect.parse_fqn(&fqn) {
+    let (default_catalog, default_schema) = match FullyQualifiedName::parse(&fqn, dialect) {
         Ok(parsed) => (
             parsed.catalog().name().to_string(),
             parsed.schema().name().to_string(),
@@ -670,15 +671,14 @@ async fn warehouse_now_ms(ctx: &TaskRunnerCtx) -> Option<i64> {
         _ => return None,
     };
     let ctx_inner = ctx.clone();
-    TaskOp::Blocking(Box::new(move || -> Option<i64> {
+    run_blocking_task_operation(move || -> Option<i64> {
         let adapter = ctx_inner.env.get_adapter_ref()?;
         let query_ctx = QueryCtx::default().with_desc("dbt State run clock");
         let (_, table) = adapter
             .execute_without_state(Some(&query_ctx), sql, true, None)
             .ok()?;
         table.original_record_batch().first_value_as_i64()
-    }))
-    .run()
+    })
     .await
     .ok()
     .flatten()
@@ -723,7 +723,7 @@ async fn check_redshift_case_sensitivity(ctx: &TaskRunnerCtx) -> bool {
     let sql: &str =
         "SELECT CURRENT_SETTING('enable_case_sensitive_identifier')::boolean AS case_sensitive";
     let ctx_inner = ctx.clone();
-    TaskOp::Blocking(Box::new(move || -> Option<bool> {
+    run_blocking_task_operation(move || -> Option<bool> {
         let adapter = ctx_inner.env.get_adapter_ref()?;
 
         let query_ctx = QueryCtx::default().with_desc("Redshift case-sensitivity setting check");
@@ -731,8 +731,7 @@ async fn check_redshift_case_sensitivity(ctx: &TaskRunnerCtx) -> bool {
             .execute_without_state(Some(&query_ctx), sql, true, None)
             .ok()?;
         parse_case_sensitivity_result(&table.original_record_batch())
-    }))
-    .run()
+    })
     .await
     .ok()
     .flatten()
@@ -1641,11 +1640,32 @@ fn write_state_explain_node(
         node_name: node.name(),
         node_info: state_explain_node_info(ctx, node),
         execution_decision_id,
+        execution_id: None,
     });
     if let Err(err) = append_state_explain_log_record(path, &record) {
         emit_warn_log_message(
             ErrorCode::StateServiceWarn,
             format!("Failed to write dbt State explain node record: {err}"),
+        );
+    }
+}
+
+fn write_state_explain_execution_confirmed(
+    ctx: &TaskRunnerCtx,
+    node: &dyn InternalDbtNodeAttributes,
+    execution_id: String,
+) {
+    let Some(path) = ctx.inner.run_cache_ctx.state_explain_log_path.as_ref() else {
+        return;
+    };
+    let record = StateExplainLogRecord::ExecutionConfirmed(StateExplainExecutionConfirmed {
+        node_unique_id: node.unique_id(),
+        execution_id,
+    });
+    if let Err(err) = append_state_explain_log_record(path, &record) {
+        emit_warn_log_message(
+            ErrorCode::StateServiceWarn,
+            format!("Failed to write dbt State explain execution record: {err}"),
         );
     }
 }
@@ -1839,33 +1859,46 @@ pub async fn confirm_run_cache_service_execution(
     };
 
     let request_id = request.request_id.clone();
-    if let Err(err) = client.confirm_execution(request).await {
-        let unique_id = node.unique_id();
-        match err {
-            RunCacheServiceError::Disabled => {}
-            err if err.is_transient_transport_rpc() => {
+    match client.confirm_execution(request).await {
+        Err(err) => {
+            let unique_id = node.unique_id();
+            match err {
+                RunCacheServiceError::Disabled => {}
+                err if err.is_transient_transport_rpc() => {
+                    emit_trace_log_message(|| {
+                        format!(
+                            "dbt State service confirmation transport failed for node {unique_id} (request_id {request_id}): {err}; command remains successful"
+                        )
+                    });
+                }
+                err => {
+                    emit_warn_log_message(
+                        ErrorCode::StateServiceWarn,
+                        format!(
+                            "dbt State service confirmation failed for node {unique_id} (request_id {request_id}): {err}; command remains successful"
+                        ),
+                    );
+                }
+            }
+        }
+        Ok(response) => {
+            let unique_id = node.unique_id();
+            if response.success {
                 emit_trace_log_message(|| {
                     format!(
-                        "dbt State service confirmation transport failed for node {unique_id} (request_id {request_id}): {err}; command remains successful"
+                        "dbt State service execution confirmed for node {unique_id} (request_id {request_id})"
+                    )
+                });
+                // The response request_id is the execution id, which differs from request_id for clones.
+                write_state_explain_execution_confirmed(ctx, node, response.request_id);
+            } else {
+                emit_trace_log_message(|| {
+                    format!(
+                        "dbt State service execution confirmation failed for node {unique_id} (request_id {request_id})"
                     )
                 });
             }
-            err => {
-                emit_warn_log_message(
-                    ErrorCode::StateServiceWarn,
-                    format!(
-                        "dbt State service confirmation failed for node {unique_id} (request_id {request_id}): {err}; command remains successful"
-                    ),
-                );
-            }
         }
-    } else {
-        let unique_id = node.unique_id();
-        emit_trace_log_message(|| {
-            format!(
-                "dbt State service execution confirmed for node {unique_id} (request_id {request_id})"
-            )
-        });
     }
 }
 
@@ -1977,7 +2010,7 @@ pub async fn execute_run_cache_service_clone(
         relation_from_rendered_name(node, &clone.clone_target)
             .map_err(RunCacheCloneError::Fatal)?;
     let drop_target_relation = target_relation.clone();
-    let clone_result = TaskOp::Blocking(Box::new(move || {
+    let clone_result = run_blocking_task_operation(move || {
         if let Some(hook_executor) = &hook_executor {
             hook_executor(&ctx_inner, RunCacheReuseHookPhase::Pre)
                 .map_err(RunCacheCloneError::Fatal)?;
@@ -2003,8 +2036,7 @@ pub async fn execute_run_cache_service_clone(
                 .map_err(RunCacheCloneError::Fatal)?;
         }
         Ok(())
-    }))
-    .run()
+    })
     .await
     .map_err(RunCacheCloneError::Recoverable)?;
     clone_result?;
@@ -5279,6 +5311,7 @@ mod tests {
     use dbt_common::cancellation::never_cancels;
     use dbt_common::collections::DashMap;
     use dbt_common::io_args::RunCacheMode;
+    use dbt_common::sources_extractor::SourcesExtractor;
     use dbt_common::{CompiledSpans, MacroSpan};
     use dbt_dag::schedule::Schedule;
     use dbt_frontend_common::FullyQualifiedName;
@@ -5286,7 +5319,6 @@ mod tests {
         CodeLocation, ErrorCode as FrontendErrorCode, FrontendError, FrontendResult,
     };
     use dbt_frontend_common::named_reference::NamedReference;
-    use dbt_frontend_common::sources_extractor::SourcesExtractor;
     use dbt_frontend_common::span::ReclassifySpan;
     use dbt_jinja_utils::jinja_environment::JinjaEnv;
     use dbt_jinja_utils::listener::DefaultRenderingEventListenerFactory;

@@ -52,7 +52,7 @@ let (schema, records_read, missing) = format
 ```
 
 **Matching behavior:**
-- Column names are matched **case-insensitively** using `dbt-ident`
+- Column names are matched **case-insensitively** using `dbt-sql-base`
 - This differs from Core, which does case-sensitive matching because it preserves the user's original casing from the YAML file
 - In Fusion, `DbtSeed` normalizes `column_types` keys based on warehouse semantics during the resolve phase (e.g., Snowflake uppercases unquoted identifiers), so case-insensitive matching is needed to match normalized keys against original CSV headers
 - Columns not found in CSV headers are returned in `missing` for warning/logging
