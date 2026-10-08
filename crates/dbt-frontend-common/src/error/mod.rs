@@ -608,6 +608,18 @@ impl From<String> for Box<InternalError> {
     }
 }
 
+impl From<dbt_sql_base::ParseError> for InternalError {
+    fn from(e: dbt_sql_base::ParseError) -> Self {
+        e.to_string().into()
+    }
+}
+
+impl From<dbt_sql_base::ParseError> for Box<InternalError> {
+    fn from(e: dbt_sql_base::ParseError) -> Self {
+        Box::new(e.into())
+    }
+}
+
 impl From<Box<FrontendError>> for InternalError {
     fn from(e: Box<FrontendError>) -> Self {
         let location = Some(e.location);

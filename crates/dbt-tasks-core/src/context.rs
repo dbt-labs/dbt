@@ -19,9 +19,9 @@ use dbt_common::FsResult;
 use dbt_common::collections::{DashMap, SccHashMap};
 use dbt_common::io_args::OptimizeTestsOptions;
 use dbt_common::path::DbtPath;
+use dbt_common::sources_extractor::SourcesExtractor;
 use dbt_common::stats::{NodeStatus, Stat};
 use dbt_dag::schedule::Schedule;
-use dbt_frontend_common::sources_extractor::SourcesExtractor;
 use dbt_jinja_utils::jinja_environment::{JinjaEnv, adapter_api_value};
 use dbt_jinja_utils::phases::compile::{
     DependencyValidationConfig, build_compile_node_context_inner,
