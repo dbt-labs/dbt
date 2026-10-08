@@ -1,12 +1,21 @@
-use crate::ident::{
-    ColumnRef, FullyQualifiedName, LOWERCASE_DRAFT_SUFFIX, QualifiedName, UPPERCASE_DRAFT_SUFFIX,
-};
-
-use super::error::{InternalError, InternalResult, internal_err};
-use super::ident::Identifier;
-use crate::make_internal_err;
+use crate::error::ParseError;
+use crate::ident::Identifier;
 use serde::{Deserialize, Serialize};
 use std::{fmt::Display, str::FromStr};
+
+macro_rules! parse_err {
+    ($($arg:tt)*) => {
+        Err(ParseError::new(format!($($arg)*)))
+    }
+}
+
+// unfolded constants.rs from sdf.cli
+pub const UPPERCASE_DRAFT_SUFFIX: &str = "___DRAFT";
+pub const LOWERCASE_DRAFT_SUFFIX: &str = "___draft";
+pub const QUOTED_UPPERCASE_DRAFT_SUFFIX: &str = "___DRAFT\"";
+pub const QUOTED_LOWERCASE_DRAFT_SUFFIX: &str = "___draft\"";
+pub const DRAFT_SUFFIX_LEN: usize = LOWERCASE_DRAFT_SUFFIX.len();
+pub const QUOTED_DRAFT_SUFFIX_LEN: usize = QUOTED_LOWERCASE_DRAFT_SUFFIX.len();
 
 /// Represents a SQL dialect.
 ///
@@ -28,19 +37,31 @@ use std::{fmt::Display, str::FromStr};
     enum_map::Enum,
     strum_macros::EnumIter,
 )]
+// Serializes as the PascalCase variant name. The lowercase aliases accept the
+// spelling used by the `dialect:` field of the table and function YAML assets.
 pub enum Dialect {
+    #[serde(alias = "sdf")]
     Sdf,
     #[default]
-    #[serde(alias = "Presto")]
+    #[serde(alias = "trino", alias = "presto", alias = "Presto")]
     Trino,
+    #[serde(alias = "snowflake")]
     Snowflake,
+    #[serde(alias = "postgresql")]
     Postgresql,
+    #[serde(alias = "bigquery")]
     Bigquery,
+    #[serde(alias = "datafusion")]
     DataFusion,
+    #[serde(alias = "sparksql")]
     SparkSql,
+    #[serde(alias = "sparklp")]
     SparkLp,
+    #[serde(alias = "redshift")]
     Redshift,
+    #[serde(alias = "databricks")]
     Databricks,
+    #[serde(alias = "duckdb")]
     Duckdb,
 }
 
@@ -63,7 +84,7 @@ impl Display for Dialect {
 }
 
 impl FromStr for Dialect {
-    type Err = Box<InternalError>;
+    type Err = ParseError;
 
     fn from_str(input: &str) -> Result<Dialect, Self::Err> {
         match input.to_ascii_lowercase().as_str() {
@@ -85,7 +106,7 @@ impl FromStr for Dialect {
             // analysis, so we just map it to the default dialect.
             "passthrough" => Ok(Default::default()),
 
-            _ => internal_err!("Invalid dialect value: '{}'", input),
+            _ => parse_err!("Invalid dialect value: '{}'", input),
         }
     }
 }
@@ -100,15 +121,7 @@ impl Dialect {
         matches!(self, Dialect::Trino)
     }
 
-    /// The default file extension for this dialect.
-    pub fn extension(&self) -> String {
-        match self {
-            Dialect::SparkLp => "json".to_owned(),
-            _ => "sql".to_owned(),
-        }
-    }
-
-    pub fn draft_suffix(&self) -> &str {
+    pub fn draft_suffix(&self) -> &'static str {
         match self {
             Dialect::Snowflake => UPPERCASE_DRAFT_SUFFIX,
             _ => LOWERCASE_DRAFT_SUFFIX,
@@ -138,19 +151,7 @@ impl Dialect {
     }
 }
 
-impl From<&Dialect> for Dialect {
-    fn from(value: &Dialect) -> Self {
-        *value
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TypeFormattingContext {
-    Production,
-    Slt,
-}
-
-// Parsing: this implements a fast identifier/fqn parser that doesn't rely on
+// Parsing: this implements a fast identifier parser that doesn't rely on
 // Antlr. O(n) time with guaranteed O(1) allocations.
 impl Dialect {
     /// The character used to quote identifiers in this dialect.
@@ -252,7 +253,7 @@ impl Dialect {
     fn parse_identifier_partial<'input>(
         &self,
         sql: &'input str,
-    ) -> InternalResult<(Identifier, &'input str)> {
+    ) -> Result<(Identifier, &'input str), ParseError> {
         let (id, rest) = parse_identifier(
             sql,
             self.quote_char(),
@@ -277,12 +278,10 @@ impl Dialect {
     }
 
     /// Parse the given string as a single identifier.
-    pub fn parse_identifier(&self, sql: &str) -> InternalResult<Identifier> {
+    pub fn parse_identifier(&self, sql: &str) -> Result<Identifier, ParseError> {
         let (id, rest) = self.parse_identifier_partial(sql)?;
         if !rest.is_empty() {
-            return internal_err!(
-                "Failed to parse {sql}: unexpected input after identifier {rest}"
-            );
+            return parse_err!("Failed to parse {sql}: unexpected input after identifier {rest}");
         }
         Ok(id)
     }
@@ -294,10 +293,10 @@ impl Dialect {
     /// contains dots and a colon separates it from the project id
     /// (e.g. "domain.co.uk:project-id"). For other dialects, delegates
     /// to `parse_identifier_partial`.
-    fn parse_catalog_identifier_partial<'input>(
+    pub fn parse_catalog_identifier_partial<'input>(
         &self,
         sql: &'input str,
-    ) -> InternalResult<(Identifier, &'input str)> {
+    ) -> Result<(Identifier, &'input str), ParseError> {
         if !matches!(self, Dialect::Bigquery) || sql.starts_with(self.quote_char()) {
             return self.parse_identifier_partial(sql);
         }
@@ -309,7 +308,7 @@ impl Dialect {
             let domain_str = &sql[..colon_pos];
             let domain_parts = self
                 .parse_dot_separated_identifiers(domain_str)
-                .map_err(|e| make_internal_err!("Failed to parse domain in {sql}: {e}"))?;
+                .map_err(|e| ParseError::new(format!("Failed to parse domain in {sql}: {e}")))?;
 
             let after_colon = &sql[colon_pos + 1..];
             let (project_id, rest) = self.parse_identifier_partial(after_colon)?;
@@ -331,7 +330,7 @@ impl Dialect {
     fn parse_dot_separated_identifiers_partial<'input>(
         &self,
         sql: &'input str,
-    ) -> InternalResult<(Vec<Identifier>, &'input str)> {
+    ) -> Result<(Vec<Identifier>, &'input str), ParseError> {
         let mut idents = vec![];
         let mut rest = sql;
         loop {
@@ -345,70 +344,15 @@ impl Dialect {
     }
 
     /// Parse the given string as a sequence of dot-separated identifiers.
-    pub fn parse_dot_separated_identifiers(&self, sql: &str) -> InternalResult<Vec<Identifier>> {
+    pub fn parse_dot_separated_identifiers(
+        &self,
+        sql: &str,
+    ) -> Result<Vec<Identifier>, ParseError> {
         let (idents, rest) = self.parse_dot_separated_identifiers_partial(sql)?;
         if !rest.is_empty() {
-            return internal_err!(
-                "Failed to parse {sql}: unexpected input after identifier {rest}"
-            );
+            return parse_err!("Failed to parse {sql}: unexpected input after identifier {rest}");
         }
         Ok(idents)
-    }
-
-    /// Parse the given string as a qualified name.
-    pub fn parse_qualified_name(&self, sql: &str) -> InternalResult<QualifiedName> {
-        let (first, rest) = self
-            .parse_catalog_identifier_partial(sql)
-            .map_err(|e| make_internal_err!("Failed to parse {sql} as qualified name: {e}"))?;
-
-        let mut idents = vec![first];
-
-        if !rest.is_empty() {
-            let rest_after_dot = parse_dot(rest)
-                .map_err(|e| make_internal_err!("Failed to parse {sql} as qualified name: {e}"))?;
-            let remaining = self
-                .parse_dot_separated_identifiers(rest_after_dot)
-                .map_err(|e| make_internal_err!("Failed to parse {sql} as qualified name: {e}"))?;
-            idents.extend(remaining);
-        }
-
-        // BigQuery INFORMATION_SCHEMA queries can be region-qualified, producing
-        // 4 idents: [catalog, region, "information_schema", table]. Collapse the
-        // region into the catalog so we get 3.
-        if matches!(self, Dialect::Bigquery)
-            && idents.len() == 4
-            && idents[2].matches("information_schema")
-        {
-            let database = format!("{}.{}", idents[0].to_value(), idents[1].to_value());
-            idents = vec![
-                Identifier::new(database),
-                idents[2].clone(),
-                idents[3].clone(),
-            ];
-        }
-
-        QualifiedName::try_from(idents)
-    }
-
-    /// Parse the given string as a fully qualified name.
-    pub fn parse_fqn(&self, sql: &str) -> InternalResult<FullyQualifiedName> {
-        let qn = self.parse_qualified_name(sql)?;
-        qn.try_into()
-    }
-
-    /// Parse the given string as a column reference.
-    pub fn parse_column_ref(&self, sql: &str) -> InternalResult<ColumnRef> {
-        let idvec = self
-            .parse_dot_separated_identifiers(sql)
-            .map_err(|e| make_internal_err!("Failed to parse {sql} as column reference: {e}"))?;
-        if idvec.len() != 4 {
-            return internal_err!(
-                "Failed to parse {sql} as column reference:
-                 expecting exactly 4 dot-separated components but got {}",
-                idvec.len()
-            );
-        }
-        ColumnRef::try_from(idvec)
     }
 }
 
@@ -423,7 +367,7 @@ fn parse_identifier<P, Q, R>(
     is_valid_identifier_char: P,
     is_escape_special_char: Q,
     unescaper: R,
-) -> InternalResult<(String, &str)>
+) -> Result<(String, &str), ParseError>
 where
     P: Fn(char) -> bool,
     Q: Fn(char) -> bool,
@@ -440,7 +384,7 @@ where
 
     let Some((_, c)) = chars.peek() else {
         // Empty string is not a syntactically valid identifier
-        return internal_err!("Expecting identifier but got end of input");
+        return parse_err!("Expecting identifier but got end of input");
     };
 
     let is_quoted = *c == quote_char;
@@ -472,7 +416,7 @@ where
             if is_valid_identifier_char(c) {
                 res.push(c);
             } else if res.is_empty() {
-                return internal_err!("Expecting identifier but got {c:?}");
+                return parse_err!("Expecting identifier but got {c:?}");
             } else {
                 return Ok((res, &sql[i..]));
             }
@@ -480,7 +424,7 @@ where
     }
 
     if is_quoted {
-        internal_err!("Unterminated quoted identifier")
+        parse_err!("Unterminated quoted identifier")
     } else {
         Ok((res, ""))
     }
@@ -489,7 +433,7 @@ where
 /// Consumes a dot character (along with any surrounding whitespaces) from the
 /// start of the given SQL string. If successful, returns a slice of any
 /// remaining unparsed input. Otherwise, returns an error.
-fn parse_dot(sql: &str) -> InternalResult<&str> {
+pub fn parse_dot(sql: &str) -> Result<&str, ParseError> {
     let mut chars = sql.char_indices().peekable();
     let consume_whitespaces = |chars: &mut std::iter::Peekable<std::str::CharIndices>| loop {
         match chars.peek() {
@@ -502,7 +446,7 @@ fn parse_dot(sql: &str) -> InternalResult<&str> {
 
     consume_whitespaces(&mut chars);
     let Some((_, c)) = chars.next() else {
-        return internal_err!("expecting '.' but got end of input");
+        return parse_err!("expecting '.' but got end of input");
     };
 
     if c == '.' {
@@ -513,61 +457,96 @@ fn parse_dot(sql: &str) -> InternalResult<&str> {
             Ok("")
         }
     } else {
-        internal_err!("expecting '.' but got {c}")
+        parse_err!("expecting '.' but got {c}")
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use dbt_adapter_core::AdapterType;
+    use serde::de::IntoDeserializer;
+    use serde::de::value::{Error as DeError, StrDeserializer};
     use strum::IntoEnumIterator;
 
-    /// Replicates the `dialect_of()` mapping from `dbt-common` so we can
-    /// test the invariant without a circular dependency.
-    fn dialect_of(adapter_type: AdapterType) -> Option<Dialect> {
-        use AdapterType::*;
-        let dialect = match adapter_type {
-            Postgres => Dialect::Postgresql,
-            Snowflake => Dialect::Snowflake,
-            Bigquery => Dialect::Bigquery,
-            Databricks | Spark => Dialect::Databricks,
-            Redshift => Dialect::Redshift,
-            Salesforce => Dialect::Postgresql,
-            DuckDB => Dialect::Duckdb,
-            Trino => Dialect::Trino,
-            _ => return None,
-        };
-        Some(dialect)
-    }
+    /// Every variant with its `Display` form and its lowercase serde alias.
+    const VARIANTS: [(Dialect, &str, &str); 11] = [
+        (Dialect::Sdf, "sdf", "sdf"),
+        (Dialect::Trino, "trino", "trino"),
+        (Dialect::Snowflake, "snowflake", "snowflake"),
+        (Dialect::Postgresql, "postgresql", "postgresql"),
+        (Dialect::Bigquery, "bigquery", "bigquery"),
+        (Dialect::DataFusion, "datafusion", "datafusion"),
+        (Dialect::SparkSql, "sparksql", "sparksql"),
+        (Dialect::SparkLp, "spark-lp", "sparklp"),
+        (Dialect::Redshift, "redshift", "redshift"),
+        (Dialect::Databricks, "databricks", "databricks"),
+        (Dialect::Duckdb, "duckdb", "duckdb"),
+    ];
 
-    fn adapter_type_to_string_via_dialect(adapter_type: AdapterType) -> String {
-        dialect_of(adapter_type)
-            .map(|dialect| dialect.to_string())
-            .unwrap_or_else(|| adapter_type.to_string())
+    fn deserialize(s: &str) -> Result<Dialect, DeError> {
+        let deserializer: StrDeserializer<'_, DeError> = s.into_deserializer();
+        Dialect::deserialize(deserializer)
     }
 
     #[test]
-    fn adapter_type_to_string_via_dialect_matches_to_string() {
-        for adapter_type in AdapterType::iter() {
-            if adapter_type == AdapterType::Spark {
-                // no good dialect mapping for Spark, so we skip the invariant check for it
-                continue;
-            }
-            if matches!(
-                adapter_type,
-                AdapterType::Postgres | AdapterType::Salesforce
-            ) {
-                // Postgres serializes as "postgres" but its dialect as "postgresql";
-                // Salesforce maps to Dialect::Postgresql so it diverges by design.
-                continue;
-            }
-            assert_eq!(
-                adapter_type_to_string_via_dialect(adapter_type),
-                adapter_type.to_string(),
-                "adapter_type_to_string_via_dialect() diverges from \
-                 AdapterType::to_string() for {adapter_type:?}",
-            );
+    fn variants_table_is_exhaustive() {
+        let listed: Vec<Dialect> = VARIANTS.iter().map(|(d, _, _)| *d).collect();
+        assert_eq!(listed, Dialect::iter().collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn display_is_pinned() {
+        // `Display` names asset directories in `sdf-compiler-assets` and the
+        // output directories of `sdf-make-sql-functions`.
+        for (dialect, display, _) in VARIANTS {
+            assert_eq!(dialect.to_string(), display);
+        }
+    }
+
+    #[test]
+    fn deserializes_pascal_case_and_lowercase() {
+        for (dialect, _, lowercase) in VARIANTS {
+            assert_eq!(deserialize(&format!("{dialect:?}")).unwrap(), dialect);
+            assert_eq!(deserialize(lowercase).unwrap(), dialect);
+        }
+        assert_eq!(deserialize("Presto").unwrap(), Dialect::Trino);
+        assert_eq!(deserialize("presto").unwrap(), Dialect::Trino);
+        assert!(deserialize("SNOWFLAKE").is_err());
+        assert!(deserialize("spark-lp").is_err());
+    }
+
+    #[test]
+    fn from_str_accepts_both_former_enums_strings() {
+        let accepted = [
+            ("sdf", Dialect::Sdf),
+            ("trino", Dialect::Trino),
+            ("presto", Dialect::Trino),
+            ("passthrough", Dialect::Trino),
+            ("snowflake", Dialect::Snowflake),
+            ("postgresql", Dialect::Postgresql),
+            ("postgres", Dialect::Postgresql),
+            ("salesforce", Dialect::Postgresql),
+            ("bigquery", Dialect::Bigquery),
+            ("datafusion", Dialect::DataFusion),
+            ("sparksql", Dialect::SparkSql),
+            ("sparklp", Dialect::SparkLp),
+            ("spark-lp", Dialect::SparkLp),
+            ("redshift", Dialect::Redshift),
+            ("databricks", Dialect::Databricks),
+            ("duckdb", Dialect::Duckdb),
+        ];
+        for (input, dialect) in accepted {
+            assert_eq!(input.parse::<Dialect>().unwrap(), dialect, "{input}");
+            let upper = input.to_ascii_uppercase();
+            assert_eq!(upper.parse::<Dialect>().unwrap(), dialect, "{upper}");
+        }
+        assert!("mysql".parse::<Dialect>().is_err());
+    }
+
+    #[test]
+    fn from_str_round_trips_display() {
+        for dialect in Dialect::iter() {
+            assert_eq!(dialect.to_string().parse::<Dialect>().unwrap(), dialect);
         }
     }
 }

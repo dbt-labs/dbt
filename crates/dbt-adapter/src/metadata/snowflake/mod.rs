@@ -28,8 +28,8 @@ use dbt_common::ErrorCode;
 use dbt_common::cancellation::Cancellable;
 use dbt_common::cancellation::CancellationToken;
 use dbt_common::tracing::dbt_emit::{emit_debug_log_message, emit_warn_log_message};
-use dbt_frontend_common::Dialect;
 use dbt_frontend_common::column_resolution::IdentifierCaseSensitivity;
+use dbt_frontend_common::{Dialect, FullyQualifiedName};
 use dbt_schemas::dbt_types::RelationType;
 use dbt_schemas::schemas::common::ResolvedQuoting;
 use dbt_schemas::schemas::legacy_catalog::*;
@@ -387,7 +387,7 @@ fn accumulate_view_definition_fetch_result(
             continue;
         }
 
-        let parsed = match Dialect::Snowflake.parse_fqn(&fqn) {
+        let parsed = match FullyQualifiedName::parse(&fqn, Dialect::Snowflake) {
             Ok(p) => p,
             Err(_) => continue, // unparseable — skip
         };

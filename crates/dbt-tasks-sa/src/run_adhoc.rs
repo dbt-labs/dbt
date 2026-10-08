@@ -15,7 +15,7 @@ use dbt_jinja_utils::jinja_environment::JinjaEnv;
 use dbt_scheduler::instructions::Instruction;
 use dbt_schemas::schemas::telemetry::{QueryExecuted, QueryOutcome};
 use dbt_tasks_core::AdhocRunner;
-use dbt_tasks_core::task::TaskOp;
+use dbt_tasks_core::task::run_blocking_task_operation;
 
 /// Runs queries remotely against the warehouse via an adapter connection.
 pub struct RemoteAdhocRunner {
@@ -90,11 +90,10 @@ async fn fetch_query_result_with_connection(
     let env = Arc::clone(env);
     let query_id = query_id.to_owned();
     let mut conn = conn_box.take();
-    let (conn, result) = TaskOp::Blocking(Box::new(move || {
+    let (conn, result) = run_blocking_task_operation(move || {
         let result = fetch_query_result_blocking(&query_id, &env, &mut conn);
         (conn, result)
-    }))
-    .run()
+    })
     .await?;
     *conn_box = conn;
     result
@@ -147,7 +146,7 @@ async fn run_remote_adhoc_with_connection(
     // on a `dbt_runtime` worker instead of on this async thread. The connection
     // travels with the closure and comes back with the result, so a subsequent
     // adhoc query on the same `conn_box` still reuses it.
-    let (conn, result) = TaskOp::Blocking(Box::new(move || {
+    let (conn, result) = run_blocking_task_operation(move || {
         let result = run_remote_adhoc_blocking(
             &rendered_sql,
             &env,
@@ -157,8 +156,7 @@ async fn run_remote_adhoc_with_connection(
             &mut conn,
         );
         (conn, result)
-    }))
-    .run()
+    })
     .await?;
     *conn_box = conn;
     result

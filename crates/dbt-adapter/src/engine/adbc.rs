@@ -453,7 +453,7 @@ fn off_pool_connection_bug() -> ! {
          that is:\n\
          \n\
          - production code in an `async fn`: move the call into \
-         `dbt_runtime::spawn_blocking(..)` (or `TaskOp::Blocking`) and await it\n\
+         `dbt_runtime::spawn_blocking(..)` and await it\n\
          - a synchronous `#[test]`: use `#[dbt_runtime::worker_test]`\n\
          - an `async` test: keep `#[dbt_runtime::test]` and dispatch the adapter \
          call with `dbt_runtime::spawn_blocking(..).await`\n\
