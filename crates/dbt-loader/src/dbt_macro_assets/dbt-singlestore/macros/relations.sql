@@ -284,11 +284,12 @@
 
     {%- set is_int_match = (sql_type in ['int', 'integer', 'int(11)']) and (yaml_base in ['int', 'integer', 'int(11)']) -%}
     {%- set is_bigint_match = (sql_type in ['bigint', 'bigint(20)']) and (yaml_base in ['bigint', 'bigint(20)']) -%}
-    {%- set is_text_match = (sql_type in ['text', 'varchar', 'string', 'char', 'longtext', 'mediumtext']) and (yaml_base in ['text', 'varchar', 'string', 'char', 'longtext', 'mediumtext', 'date']) -%}
+    {%- set is_text_match = (sql_type in ['text', 'varchar', 'string', 'char', 'longtext', 'mediumtext']) and (yaml_base in ['text', 'varchar', 'string', 'char', 'longtext', 'mediumtext']) -%}
     {%- set is_date_match = (sql_type in ['date', 'datetime', 'timestamp']) and (yaml_base in ['date', 'datetime', 'timestamp']) -%}
+    {%- set is_decimal_match = (sql_type in ['decimal', 'numeric']) and (yaml_base in ['decimal', 'numeric']) -%}
     {%- set is_exact_match = (sql_type == yaml_base or sql_type == yaml_type) -%}
 
-    {%- if not (is_exact_match or is_int_match or is_bigint_match or is_text_match or is_date_match) -%}
+    {%- if not (is_exact_match or is_int_match or is_bigint_match or is_text_match or is_date_match or is_decimal_match) -%}
       {%- do exceptions.raise_contract_error(yaml_columns, sql_columns) -%}
     {%- endif -%}
   {%- endfor -%}

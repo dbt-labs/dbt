@@ -1921,4 +1921,24 @@ fn test_singlestore_types() {
         col.sql_type.pick_best_arrow_type(SingleStore),
         DataType::FixedSizeList(Arc::new(Field::new("item", DataType::Float32, false)), 1536)
     );
+
+    // Vector roundtrip SQL write
+    let (ty, _) = SqlType::parse(SingleStore, "VECTOR(1536, F32)").unwrap();
+    let mut out = String::new();
+    ty.write(SingleStore, &mut out).unwrap();
+    assert_eq!(out, "VECTOR(1536, F32)");
+
+    let (ty, _) = SqlType::parse(SingleStore, "VECTOR(768, F64)").unwrap();
+    let mut out = String::new();
+    ty.write(SingleStore, &mut out).unwrap();
+    assert_eq!(out, "VECTOR(768, F64)");
+
+    let (ty, _) = SqlType::parse(SingleStore, "VECTOR(128, I8)").unwrap();
+    let mut out = String::new();
+    ty.write(SingleStore, &mut out).unwrap();
+    assert_eq!(out, "VECTOR(128, I8)");
+
+    // UINT8
+    let (ty, _) = SqlType::parse(SingleStore, "UINT8").unwrap();
+    assert_eq!(ty.pick_best_arrow_type(SingleStore), DataType::UInt8);
 }

@@ -792,23 +792,6 @@ impl AdapterImpl {
         borrow_tlocal_connection(self.engine().as_ref(), state, node_id)
     }
 
-    fn normalize_statement_for_adapter(s: &str, adapter_type: AdapterType) -> Cow<'_, str> {
-        if adapter_type == SingleStore {
-            Cow::Owned(
-                s.replace(
-                    "--EPHEMERAL-SELECT-WRAPPER-START",
-                    "-- EPHEMERAL-SELECT-WRAPPER-START",
-                )
-                .replace(
-                    "--EPHEMERAL-SELECT-WRAPPER-END",
-                    "-- EPHEMERAL-SELECT-WRAPPER-END",
-                ),
-            )
-        } else {
-            Cow::Borrowed(s)
-        }
-    }
-
     /// Helper method for execute
     #[allow(clippy::too_many_arguments)]
     #[inline(always)]
@@ -843,7 +826,7 @@ impl AdapterImpl {
         let statements = all_stmts
             .into_iter()
             .filter(|stmt| !splitter.is_empty(stmt, adapter_type))
-            .map(|s| Self::normalize_statement_for_adapter(s, adapter_type))
+            .map(|s| dbt_adapter_sql::statements::normalize_statement(s, adapter_type))
             .collect::<Vec<_>>();
         if statements.is_empty() {
             return Ok((AdapterResponse::default(), AgateTable::default()));
@@ -3896,51 +3879,8 @@ impl AdapterImpl {
         }
     }
 
-    /// SingleStoreAdapter clean_up_limit_alias to sanitize duplicate aliases caused by --empty subqueries
     pub fn clean_up_limit_alias(&self, sql: &str) -> String {
-        static RE: LazyLock<regex::Regex> = LazyLock::new(|| {
-            regex::Regex::new(r"(?i)(\s+)(_dbt_limit_subq_\w+)(\s+)(as\s+)?([A-Za-z0-9_]+|`[^`]+`)")
-                .unwrap()
-        });
-
-        static KEYWORDS: LazyLock<HashSet<&'static str>> = LazyLock::new(|| {
-            [
-                "join",
-                "left",
-                "right",
-                "inner",
-                "outer",
-                "cross",
-                "natural",
-                "where",
-                "group",
-                "order",
-                "having",
-                "limit",
-                "union",
-                "except",
-                "intersect",
-                "on",
-                "using",
-                "window",
-                "straight_join",
-            ]
-            .into_iter()
-            .collect()
-        });
-
-        RE.replace_all(sql, |caps: &regex::Captures| {
-            let whitespace = &caps[1];
-            let optional_as = caps.get(4).map(|m| m.as_str()).unwrap_or("");
-            let next_token = &caps[5];
-
-            if KEYWORDS.contains(next_token.to_lowercase().as_str()) {
-                caps[0].to_string()
-            } else {
-                format!("{whitespace}{optional_as}{next_token}")
-            }
-        })
-        .to_string()
+        dbt_adapter_sql::statements::clean_up_limit_alias(sql, self.adapter_type())
     }
 
     /// Check if a given partition and clustering column spec for a table

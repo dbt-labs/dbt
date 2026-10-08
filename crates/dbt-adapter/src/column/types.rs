@@ -282,6 +282,10 @@ impl ColumnStatic {
             // ClickHouseColumn.string_type ignores the size: always plain String,
             // never FixedString (would break contract comparisons and ALTERs).
             AdapterType::ClickHouse => "String".to_string(),
+            AdapterType::SingleStore => match size {
+                Some(size) => format!("varchar({size})"),
+                _ => "text".to_string(),
+            },
             _ => match size {
                 Some(size) => format!("character varying({size})"),
                 _ => "character varying".to_string(),
@@ -906,6 +910,10 @@ impl Column {
                 matches!(self.core_dtype.to_lowercase().as_str(), "int64")
             }
             AdapterType::Snowflake => false,
+            AdapterType::SingleStore => matches!(
+                self.core_dtype.to_lowercase().as_str(),
+                "tinyint" | "smallint" | "mediumint" | "int" | "integer" | "bigint"
+            ),
             _ => {
                 matches!(
                     self.core_dtype.to_lowercase().as_str(),

@@ -867,9 +867,20 @@ impl SqlType {
             (SingleStore, Geography(_)) => write!(out, "GEOGRAPHY"),
             (SingleStore, Vector(dim, None)) => write!(out, "VECTOR({dim})"),
             (SingleStore, Vector(dim, Some(elem))) => {
-                write!(out, "VECTOR({dim}, ")?;
-                elem.write(backend, out)?;
-                write!(out, ")")
+                let elem_str = match elem.as_ref() {
+                    Real | Float(_) => "F32",
+                    Double => "F64",
+                    TinyInt => "I8",
+                    SmallInt => "I16",
+                    Integer => "I32",
+                    BigInt => "I64",
+                    _ => {
+                        write!(out, "VECTOR({dim}, ")?;
+                        elem.write(backend, out)?;
+                        return write!(out, ")");
+                    }
+                };
+                write!(out, "VECTOR({dim}, {elem_str})")
             }
             // }}}
 
@@ -2676,11 +2687,7 @@ impl<'source> Parser<'source> {
         } else if eqi(w, "HUGEINT") || eqi(w, "INT128") {
             SqlType::HugeInt
         } else if eqi(w, "UINT8") {
-            if backend == ClickHouse {
-                SqlType::UTinyInt
-            } else {
-                SqlType::UBigInt
-            }
+            SqlType::UTinyInt
         } else if eqi(w, "UINT16") && backend == ClickHouse {
             SqlType::USmallInt
         } else if eqi(w, "UINT32") && backend == ClickHouse {

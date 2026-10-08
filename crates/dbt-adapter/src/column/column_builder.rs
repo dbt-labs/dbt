@@ -27,7 +27,8 @@ impl ColumnBuilder {
             Bigquery => Ok(Self::build_bigquery(field, type_ops)),
             Databricks | Spark => Self::build_databricks(field, type_ops),
             Redshift => Ok(Self::build_redshift(field, type_ops)),
-            Postgres | Salesforce | SingleStore => Self::build_postgres_like(field, type_ops),
+            SingleStore => Self::build_postgres_like(SingleStore, field, type_ops),
+            Postgres | Salesforce => Self::build_postgres_like(Postgres, field, type_ops),
             DuckDB | LakeCompute => Self::build_duckdb(field, type_ops),
             Fabric => Ok(Self::build_fabric(field, type_ops)),
             ClickHouse => Self::build_clickhouse(field, type_ops),
@@ -421,14 +422,20 @@ impl ColumnBuilder {
         ))
     }
 
-    fn build_postgres_like(field: &FieldRef, type_ops: &dyn TypeOps) -> AdapterResult<Column> {
+    fn build_postgres_like(
+        adapter_type: AdapterType,
+        field: &FieldRef,
+        type_ops: &dyn TypeOps,
+    ) -> AdapterResult<Column> {
         let data_type_ref = field.data_type();
         let mut rendered_type = String::new();
-        match data_type_ref {
+        match (adapter_type, data_type_ref) {
             // Mimic broken conversion that was here before just in case
             // something depends on it.
             // TODO: remove this broken formatting behavior
-            DataType::Timestamp(_, _) | DataType::Time64(_) => rendered_type.push_str("datetime"),
+            (AdapterType::Postgres, DataType::Timestamp(_, _) | DataType::Time64(_)) => {
+                rendered_type.push_str("datetime")
+            }
             _ => {
                 type_ops.format_arrow_type_as_sql(
                     data_type_ref,
@@ -443,7 +450,7 @@ impl ColumnBuilder {
 
         let (numeric_precision, numeric_scale) = {
             let precision_scale =
-                sql_types::numeric_precision_scale(AdapterType::Postgres, data_type_ref)
+                sql_types::numeric_precision_scale(adapter_type, data_type_ref)
                     .ok()
                     .flatten();
             match precision_scale {
@@ -452,11 +459,12 @@ impl ColumnBuilder {
                 None => (None, None),
             }
         };
+        let char_size = sql_types::var_size(adapter_type, data_type_ref).map(|s| s as u32);
         Ok(Column::new(
-            AdapterType::Postgres,
+            adapter_type,
             field.name().to_string(),
             rendered_type,
-            None, // char_size
+            char_size,
             numeric_precision,
             // If it is an integer, the scale is 0, otherwise it is the scale of the number.
             numeric_scale,

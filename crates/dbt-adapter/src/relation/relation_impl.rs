@@ -341,7 +341,7 @@ impl Relation {
                 AdapterType::SingleStore => {
                     let db = db_opt.as_ref().filter(|s| !s.trim().is_empty()).cloned();
                     let sch = sch_opt.as_ref().filter(|s| !s.trim().is_empty()).cloned();
-                    db.or(sch)
+                    sch.or(db)
                 }
                 _ => sch_opt,
             },

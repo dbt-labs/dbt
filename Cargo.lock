@@ -2702,6 +2702,7 @@ dependencies = [
  "dbt-adapter-core",
  "dbt-fusion-workspace-hack",
  "dbt-sql-keywords",
+ "regex",
 ]
 
 [[package]]

@@ -22,7 +22,8 @@ use crate::metadata::*;
 use crate::record_batch::RecordBatchExt;
 use crate::relation::do_create_relation;
 use arrow_array::{
-    Array, Decimal128Array, Int64Array, RecordBatch, StringArray, TimestampSecondArray,
+    Array, Decimal128Array, Int32Array, Int64Array, RecordBatch, StringArray,
+    TimestampSecondArray, UInt32Array, UInt64Array,
 };
 use arrow_schema::Schema;
 use dbt_adapter_core::{AdapterType, ExecutionPhase};
@@ -176,6 +177,22 @@ fn extract_timestamp_secs(col: &dyn Array, row: usize) -> Option<i64> {
         return Some(ts_col.value(row));
     }
     None
+}
+
+fn extract_column_index(col: &dyn Array, row: usize) -> i128 {
+    if let Some(arr) = col.as_any().downcast_ref::<UInt64Array>() {
+        arr.value(row) as i128
+    } else if let Some(arr) = col.as_any().downcast_ref::<Int64Array>() {
+        arr.value(row) as i128
+    } else if let Some(arr) = col.as_any().downcast_ref::<UInt32Array>() {
+        arr.value(row) as i128
+    } else if let Some(arr) = col.as_any().downcast_ref::<Int32Array>() {
+        arr.value(row) as i128
+    } else if let Some(arr) = col.as_any().downcast_ref::<Decimal128Array>() {
+        arr.value(row)
+    } else {
+        row as i128
+    }
 }
 
 fn parse_freshness_batch(
@@ -345,7 +362,7 @@ impl MetadataAdapter for SingleStoreMetadataAdapter {
         let table_names = stats_sql_result.column_values::<StringArray>("table_name")?;
 
         let column_names = stats_sql_result.column_values::<StringArray>("column_name")?;
-        let column_indices = stats_sql_result.column_values::<Decimal128Array>("column_index")?;
+        let column_indices_col = stats_sql_result.column_by_name("column_index");
         let column_types = stats_sql_result.column_values::<StringArray>("column_type")?;
         let column_comments = stats_sql_result.column_values::<StringArray>("column_comment")?;
 
@@ -361,9 +378,13 @@ impl MetadataAdapter for SingleStoreMetadataAdapter {
             .to_lowercase();
 
             let column_name = column_names.value(i);
+            let column_index = match column_indices_col {
+                Some(col) => extract_column_index(col.as_ref(), i),
+                None => i as i128,
+            };
             let column = create_column_metadata(
                 column_name,
-                column_indices.value(i),
+                column_index,
                 column_types.value(i),
                 column_comments.value(i),
             );

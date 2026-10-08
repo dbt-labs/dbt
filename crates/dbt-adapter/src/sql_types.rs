@@ -340,7 +340,7 @@ impl DefaultTypeOps {
                 _,
             ) => match adapter_type {
                 Bigquery => "int64",
-                Databricks | SingleStore => "bigint",
+                Databricks => "bigint",
                 _ => "integer",
             },
 
@@ -351,7 +351,6 @@ impl DefaultTypeOps {
                 Fabric => "real",
                 // Exasol float type is DOUBLE PRECISION (no float8 alias).
                 Exasol => "DOUBLE PRECISION",
-                SingleStore => "float",
                 _ => "float8",
             },
 
@@ -365,7 +364,6 @@ impl DefaultTypeOps {
                 Fabric => "float",
                 // Exasol float type is DOUBLE PRECISION (no float8 alias).
                 Exasol => "DOUBLE PRECISION",
-                SingleStore => "double",
                 _ => "float8",
             },
 
@@ -384,8 +382,6 @@ impl DefaultTypeOps {
                 (Fabric, _) => "float",
                 (Databricks, 1..) => "double",
                 (Databricks, ..=0) => "bigint",
-                (SingleStore, 1..) => "double",
-                (SingleStore, ..=0) => "bigint",
                 // Exasol: fractional -> DOUBLE PRECISION; zero/negative scale
                 // falls through to "integer" (a valid DECIMAL(18,0) alias).
                 (Exasol, 1..) => "DOUBLE PRECISION",
@@ -410,7 +406,6 @@ impl DefaultTypeOps {
                 Databricks => "timestamp",
                 Fabric => "datetime2(6)",
                 Exasol => "timestamp",
-                SingleStore => "datetime(6)",
                 _ => "timestamp without time zone",
             },
 
