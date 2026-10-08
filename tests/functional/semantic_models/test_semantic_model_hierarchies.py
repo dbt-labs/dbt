@@ -58,6 +58,7 @@ semantic_models:
         create_metric: true
     hierarchies:
       - name: sales_geography
+        label: Sales geography
         levels: [store__country, store__sales_region, store__city]
       - name: reporting_line
         levels:
@@ -117,6 +118,7 @@ class TestSemanticModelHierarchies:
         assert semantic_model.hierarchies == [
             DimensionHierarchy(
                 name="sales_geography",
+                label="Sales geography",
                 levels=[
                     DimensionHierarchyLevel(dimension="store__country"),
                     DimensionHierarchyLevel(dimension="store__sales_region"),
@@ -137,6 +139,7 @@ class TestSemanticModelHierarchies:
         assert employees["hierarchies"] == [
             {
                 "name": "sales_geography",
+                "label": "Sales geography",
                 "levels": [
                     {"dimension": "store__country", "parent": None},
                     {"dimension": "store__sales_region", "parent": None},
@@ -145,6 +148,7 @@ class TestSemanticModelHierarchies:
             },
             {
                 "name": "reporting_line",
+                "label": None,
                 "levels": [{"dimension": "employee_code", "parent": "manager_code"}],
             },
         ]

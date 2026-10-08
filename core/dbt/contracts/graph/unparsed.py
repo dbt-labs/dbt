@@ -183,6 +183,7 @@ class UnparsedDimensionHierarchyLevel(dbtClassMixin):
 class UnparsedDimensionHierarchy(dbtClassMixin):
     name: str
     levels: List[Union[UnparsedDimensionHierarchyLevel, str]]
+    label: Optional[str] = None
 
 
 @dataclass

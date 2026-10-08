@@ -785,6 +785,7 @@ class SemanticModelParser(YamlReader):
         return [
             DimensionHierarchy(
                 name=unparsed.name,
+                label=unparsed.label,
                 levels=[
                     (
                         DimensionHierarchyLevel(dimension=level)

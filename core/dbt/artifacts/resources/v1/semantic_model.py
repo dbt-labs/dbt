@@ -125,6 +125,7 @@ class DimensionHierarchyLevel(dbtClassMixin):
 @dataclass
 class DimensionHierarchy(dbtClassMixin):
     name: str
+    label: Optional[str] = None
     levels: Sequence[DimensionHierarchyLevel] = field(default_factory=list)
 
 

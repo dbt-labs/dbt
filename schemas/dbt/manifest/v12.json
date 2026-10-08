@@ -29532,6 +29532,17 @@
                           "name": {
                             "type": "string"
                           },
+                          "label": {
+                            "anyOf": [
+                              {
+                                "type": "string"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ],
+                            "default": null
+                          },
                           "levels": {
                             "type": "array",
                             "items": {
@@ -31240,6 +31251,17 @@
               "properties": {
                 "name": {
                   "type": "string"
+                },
+                "label": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null
                 },
                 "levels": {
                   "type": "array",
