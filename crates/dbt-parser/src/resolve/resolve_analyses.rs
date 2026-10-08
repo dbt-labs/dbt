@@ -14,6 +14,7 @@ use dbt_jinja_utils::utils::dependency_package_name_from_ctx;
 use dbt_schemas::schemas::common::{DbtMaterialization, DbtQuoting, ResolvedQuoting};
 use dbt_schemas::schemas::dbt_column::process_columns;
 use dbt_schemas::schemas::project::AnalysesConfig;
+use dbt_schemas::schemas::telemetry::NodeType;
 use dbt_schemas::state::ModelStatus;
 use dbt_schemas::{
     schemas::{
@@ -102,7 +103,7 @@ pub async fn resolve_analyses(
                 .as_ref()
                 .unwrap_or(&vec![])
                 .clone(),
-            resource_type: None,
+            resource_type: Some(NodeType::Analysis),
         }),
         jinja_env: env.clone(),
         runtime_config: runtime_config.clone(),
