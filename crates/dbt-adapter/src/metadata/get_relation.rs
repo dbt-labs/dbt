@@ -81,15 +81,10 @@ pub fn get_relation(
         AdapterType::Exasol => exasol_get_relation(
             adapter, state, ctx, conn, database, schema, identifier, token,
         ),
-        AdapterType::Starburst => todo!("Starburst"),
-        AdapterType::Athena => todo!("Athena"),
-        AdapterType::Trino => todo!("Trino"),
-        AdapterType::Dremio => todo!("Dremio"),
-        AdapterType::Oracle => todo!("Oracle"),
-        AdapterType::Datafusion => todo!("Datafusion"),
         AdapterType::SingleStore => singlestore_get_relation(
             adapter, state, ctx, conn, database, schema, identifier, token,
         ),
+        _ => todo!("{}", adapter.adapter_type()),
     }
 }
 

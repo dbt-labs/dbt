@@ -325,26 +325,20 @@ impl Relation {
     ) -> Self {
         let db_opt = database.into();
         let sch_opt = schema.into();
+        let (database, schema) = match adapter_type {
+            // ClickHouse adapter does not normalize empty strings to None
+            // https://github.com/ClickHouse/dbt-clickhouse/blob/main/dbt/adapters/clickhouse/relation.py
+            AdapterType::ClickHouse => (Some(String::new()), sch_opt),
+            AdapterType::SingleStore => {
+                let db = db_opt.filter(|s| !s.trim().is_empty());
+                let sch = sch_opt.filter(|s| !s.trim().is_empty());
+                (db.clone().or_else(|| sch.clone()), sch.or(db))
+            }
+            _ => (db_opt.filter(|s| !s.is_empty()), sch_opt),
+        };
         let path = RelationPath {
-            database: match adapter_type {
-                // ClickHouse adapter does not normalize empty strings to None
-                // https://github.com/ClickHouse/dbt-clickhouse/blob/main/dbt/adapters/clickhouse/relation.py
-                AdapterType::ClickHouse => Some(String::new()),
-                AdapterType::SingleStore => {
-                    let db = db_opt.as_ref().filter(|s| !s.trim().is_empty()).cloned();
-                    let sch = sch_opt.as_ref().filter(|s| !s.trim().is_empty()).cloned();
-                    db.or(sch)
-                }
-                _ => db_opt.as_ref().filter(|s| !s.is_empty()).cloned(),
-            },
-            schema: match adapter_type {
-                AdapterType::SingleStore => {
-                    let db = db_opt.as_ref().filter(|s| !s.trim().is_empty()).cloned();
-                    let sch = sch_opt.as_ref().filter(|s| !s.trim().is_empty()).cloned();
-                    sch.or(db)
-                }
-                _ => sch_opt,
-            },
+            database,
+            schema,
             identifier: identifier.into(),
         };
         let include_policy = include_policy(adapter_type, &path);

@@ -370,7 +370,7 @@ fn prepare_qualifier_and_alias_parts(
     node_type: NodeType,
 ) -> (String, String) {
     let mut qualifier = schema.unwrap_or_default().to_string();
-    let mut alias = get_node_display_alias(node_type, identifier, name);
+    let alias = get_node_display_alias(node_type, identifier, name);
 
     if node_type == NodeType::Source {
         if let Some(source_name) = source_name {
@@ -385,27 +385,35 @@ fn prepare_qualifier_and_alias_parts(
     }
 
     if dbt_adapter_core::get_active_adapter_type() == Some(dbt_adapter_core::AdapterType::SingleStore) {
-        let target_info = dbt_adapter_core::get_active_target_info();
-        let default_db = target_info.as_ref().and_then(|i| i.default_database.as_deref());
-        let default_schema = target_info.as_ref().and_then(|i| i.default_schema.as_deref());
+        return prepare_singlestore_qualifier_alias(database, schema, qualifier, alias);
+    }
 
-        // For SingleStore, the object resides in database (container).
-        if let Some(db) = database.filter(|s| !s.trim().is_empty()) {
-            qualifier = db.to_string();
-        } else if let Some(def_db) = default_db.filter(|s| !s.trim().is_empty()) {
-            qualifier = def_db.to_string();
-        }
+    (qualifier, alias)
+}
 
-        // Schema handling: if a custom schema is present that does not match
-        // the target database or default schema, prefix it to alias if not already prefixed.
-        if let Some(schema) = schema.filter(|s| !s.trim().is_empty()) {
-            let is_default_or_db = schema == qualifier
-                || default_db.is_some_and(|d| schema == d)
-                || default_schema.is_some_and(|d| schema == d);
+fn prepare_singlestore_qualifier_alias(
+    database: Option<&str>,
+    schema: Option<&str>,
+    mut qualifier: String,
+    mut alias: String,
+) -> (String, String) {
+    let target_info = dbt_adapter_core::get_active_target_info();
+    let default_db = target_info.as_ref().and_then(|i| i.default_database.as_deref());
+    let default_schema = target_info.as_ref().and_then(|i| i.default_schema.as_deref());
 
-            if !is_default_or_db && !alias.starts_with(&format!("{schema}_")) {
-                alias = format!("{schema}_{alias}");
-            }
+    if let Some(db) = database.filter(|s| !s.trim().is_empty()) {
+        qualifier = db.to_string();
+    } else if let Some(def_db) = default_db.filter(|s| !s.trim().is_empty()) {
+        qualifier = def_db.to_string();
+    }
+
+    if let Some(schema) = schema.filter(|s| !s.trim().is_empty()) {
+        let is_default_or_db = schema == qualifier
+            || default_db.is_some_and(|d| schema == d)
+            || default_schema.is_some_and(|d| schema == d);
+
+        if !is_default_or_db && !alias.starts_with(&format!("{schema}_")) {
+            alias = format!("{schema}_{alias}");
         }
     }
 

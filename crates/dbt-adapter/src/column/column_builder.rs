@@ -33,12 +33,7 @@ impl ColumnBuilder {
             Fabric => Ok(Self::build_fabric(field, type_ops)),
             ClickHouse => Self::build_clickhouse(field, type_ops),
             Exasol => Ok(Self::build_exasol(field, type_ops)),
-            Starburst => todo!("Starburst"),
-            Athena => todo!("Athena"),
-            Trino => todo!("Trino"),
-            Dremio => todo!("Dremio"),
-            Oracle => todo!("Oracle"),
-            Datafusion => todo!("Datafusion"),
+            _ => todo!("{}", self.adapter_type),
         }
     }
 
