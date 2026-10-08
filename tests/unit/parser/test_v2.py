@@ -16,6 +16,7 @@ from dbt.parser.v2 import (
     parse_with_v2,
     rediscover_adapter_macros,
 )
+from dbt.utils.artifact_upload import PRODUCED_ARTIFACTS_PATHS
 from dbt_common import ui
 from dbt_common.events.base_types import EventLevel
 from dbt_common.events.types import Note
@@ -718,6 +719,35 @@ class TestParseWithV2:
         ):
             parse_with_v2(self._runtime_config(target), write=True, write_json=True)
         corrected_manifest.write.assert_called_once_with(str(target / "manifest.json"))
+
+    def test_copied_semantic_manifest_registered_for_upload(self, tmp_path: Path, _patch_v2_deps):
+        """Under USE_V2_PARSER, write_manifest skips the semantic manifest, so
+        parse_with_v2 must register it."""
+        target = tmp_path / "target"
+        fake_parser = _fake_parser(json.dumps({"metadata": {}}))
+
+        def _popen(argv, *args, **kwargs):
+            handoff = Path(argv[argv.index("--target-path") + 1])
+            handoff.mkdir(parents=True, exist_ok=True)
+            (handoff / "semantic_manifest.json").write_text("{}")
+            return fake_parser(argv, *args, **kwargs)
+
+        PRODUCED_ARTIFACTS_PATHS.clear()
+        try:
+            with mock.patch("dbt.parser.v2.subprocess.Popen", side_effect=_popen), mock.patch(
+                "dbt.parser.v2._load_writable_manifest",
+                return_value=mock.MagicMock(),
+            ), mock.patch(
+                "dbt.parser.v2.Manifest.from_writable_manifest",
+                return_value=mock.MagicMock(),
+            ), mock.patch(
+                "dbt.parser.manifest.get_flags", return_value=_flags(USE_V2_PARSER=True)
+            ):
+                parse_with_v2(self._runtime_config(target), write=True, write_json=True)
+            assert (target / "semantic_manifest.json").exists()
+            assert str(target / "semantic_manifest.json") in PRODUCED_ARTIFACTS_PATHS
+        finally:
+            PRODUCED_ARTIFACTS_PATHS.clear()
 
 
 class TestParseWithV2Telemetry:
