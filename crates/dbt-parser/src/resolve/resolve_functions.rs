@@ -10,6 +10,7 @@ use dbt_common::static_analysis::{
 use dbt_common::tracing::dbt_emit::emit_error_log_from_fs_error;
 use dbt_common::{ErrorCode, FsResult, error::AbstractLocation, fs_err};
 use dbt_jinja_utils::listener::DefaultJinjaTypeCheckEventListenerFactory;
+use dbt_jinja_utils::phases::AdapterTargetContextCache;
 use dbt_jinja_utils::utils::dependency_package_name_from_ctx;
 use dbt_jinja_utils::{jinja_environment::JinjaEnv, node_resolver::NodeResolver};
 use dbt_schemas::dbt_utils::resolve_package_quoting;
@@ -28,7 +29,7 @@ use dbt_schemas::{
         },
         ref_and_source::{DbtRef, DbtSourceWrapper},
     },
-    state::{DbtPackage, DbtRuntimeConfig, NodeResolverTracker},
+    state::{DbtPackage, DbtProfile, DbtRuntimeConfig, NodeResolverTracker},
 };
 use indexmap::IndexMap;
 use minijinja::MacroSpans;
@@ -78,6 +79,7 @@ pub async fn resolve_functions(
     schema: &str,
     default_adapter: AdapterType,
     adapter_quoting: &IndexMap<AdapterType, DbtQuoting>,
+    profile: &DbtProfile,
     package_name: &str,
     env: Arc<JinjaEnv>,
     base_ctx: &BTreeMap<String, minijinja::Value>,
@@ -91,6 +93,7 @@ pub async fn resolve_functions(
 )> {
     let mut functions: HashMap<String, Arc<DbtFunction>> = HashMap::new();
     let mut rendering_results: HashMap<String, (String, MacroSpans)> = HashMap::new();
+    let mut adapter_relation_contexts = AdapterTargetContextCache::default();
     let dependency_package_name = dependency_package_name_from_ctx(&env, base_ctx);
 
     let config_resolver = ProjectConfigResolver::build(
@@ -310,6 +313,13 @@ pub async fn resolve_functions(
         // See `resolve_models`: both remaining quoting layers depend on which
         // adapter the node runs on, which is only known after the config merge.
         let selected_adapter = resolved_node_adapter.unwrap_or(default_adapter);
+        let relation_context = adapter_relation_contexts.get_for_node(
+            profile,
+            selected_adapter,
+            default_adapter,
+            status,
+            base_ctx,
+        )?;
         model_config.quoting = resolve_package_quoting(
             Some(match adapter_quoting.get(&selected_adapter) {
                 Some(authored) => model_config.quoting.filled_from(authored),
@@ -407,10 +417,10 @@ pub async fn resolve_functions(
                 // platform's catalog: no `+propagate` config exists for this node type.
                 propagate: Vec::new(),
                 effective_propagation_target: None,
-                database: database.to_string(), // will be updated below
-                schema: schema.to_string(),     // will be updated below
-                alias: "".to_owned(),           // will be updated below
-                relation_name: None,            // will be updated below
+                database: relation_context.database.clone(), // will be updated below
+                schema: relation_context.schema.clone(),     // will be updated below
+                alias: "".to_owned(),                        // will be updated below
+                relation_name: None,                         // will be updated below
                 materialized: DbtMaterialization::Function,
                 static_analysis,
                 static_analysis_off_reason: None,
@@ -513,12 +523,12 @@ pub async fn resolve_functions(
             &env,
             &root_package.dbt_project.name,
             package_name,
-            base_ctx,
+            &relation_context.base_context,
             &components,
-            default_adapter,
+            selected_adapter,
         )?;
 
-        match node_resolver.insert_function(&function, default_adapter, status) {
+        match node_resolver.insert_function(&function, selected_adapter, status) {
             Ok(_) => (),
             Err(e) => {
                 let err_with_loc = e.with_location(dbt_asset.path.clone());
