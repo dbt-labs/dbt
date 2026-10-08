@@ -154,14 +154,16 @@ class TestSemanticModelHierarchies:
         ]
 
 
-class TestSemanticModelHierarchyWithUnresolvableLevel:
+class BaseUnresolvableLevel:
+    semantic_models_yml: str
+
     @pytest.fixture(scope="class")
     def models(self):
         return {
             "employees.sql": employees_sql,
             "stores.sql": stores_sql,
             "metricflow_time_spine.sql": simple_metricflow_time_spine_sql,
-            "semantic_models.yml": semantic_model_hierarchies_yml.replace(
+            "semantic_models.yml": self.semantic_models_yml.replace(
                 "store__sales_region", "store__state"
             ),
         }
@@ -179,33 +181,21 @@ class TestSemanticModelHierarchyWithUnresolvableLevel:
         )
 
 
-class TestSemanticModelHierarchyWithUnresolvableLevelWithoutMetrics:
-    @pytest.fixture(scope="class")
-    def models(self):
-        return {
-            "employees.sql": employees_sql,
-            "stores.sql": stores_sql,
-            "metricflow_time_spine.sql": simple_metricflow_time_spine_sql,
-            "semantic_models.yml": semantic_model_hierarchies_without_metrics_yml.replace(
-                "store__sales_region", "store__state"
-            ),
-        }
-
-    def test_unresolvable_level_fails_parse(self, project):
-        assert "create_metric: true" not in semantic_model_hierarchies_without_metrics_yml
-        events: List[BaseEvent] = []
-        runner = dbtTestRunner(callbacks=[events.append])
-        result = runner.invoke(["parse"])
-        assert not result.success
-
-        validation_errors = [e for e in events if e.info.name == "SemanticValidationFailure"]
-        assert any(
-            "Level `store__state` in hierarchy `sales_geography` does not resolve" in e.info.msg
-            for e in validation_errors
-        )
+class TestSemanticModelHierarchyWithUnresolvableLevel(BaseUnresolvableLevel):
+    semantic_models_yml = semantic_model_hierarchies_yml
 
 
-class TestSemanticModelsWithoutHierarchiesMetricsOrTimeSpine:
+class TestSemanticModelHierarchyWithUnresolvableLevelWithoutMetrics(BaseUnresolvableLevel):
+    semantic_models_yml = semantic_model_hierarchies_without_metrics_yml
+
+
+class BaseParseWithoutMetricsOrTimeSpine:
+    def test_parse_without_writing_artifacts(self, project):
+        result = dbtTestRunner().invoke(["--no-write-json", "parse"])
+        assert result.success
+
+
+class TestSemanticModelsWithoutHierarchiesMetricsOrTimeSpine(BaseParseWithoutMetricsOrTimeSpine):
     @pytest.fixture(scope="class")
     def models(self):
         return {
@@ -213,12 +203,8 @@ class TestSemanticModelsWithoutHierarchiesMetricsOrTimeSpine:
             "semantic_models.yml": people_without_hierarchies_yml,
         }
 
-    def test_parse_without_writing_artifacts(self, project):
-        result = dbtTestRunner().invoke(["--no-write-json", "parse"])
-        assert result.success
 
-
-class TestSemanticModelHierarchiesWithoutMetricsOrTimeSpine:
+class TestSemanticModelHierarchiesWithoutMetricsOrTimeSpine(BaseParseWithoutMetricsOrTimeSpine):
     @pytest.fixture(scope="class")
     def models(self):
         return {
@@ -226,7 +212,3 @@ class TestSemanticModelHierarchiesWithoutMetricsOrTimeSpine:
             "stores.sql": stores_sql,
             "semantic_models.yml": semantic_model_hierarchies_without_metrics_yml,
         }
-
-    def test_parse_without_writing_artifacts(self, project):
-        result = dbtTestRunner().invoke(["--no-write-json", "parse"])
-        assert result.success
