@@ -47,7 +47,7 @@
     
     {{ run_post_hooks() }}
   {% else %}
-    {{ run_hooks(pre_hooks) }}
+    {{ run_pre_hooks() }}
     -- setup: if the target relation already exists, drop it
     -- in case if the existing and future table is delta or iceberg, we want to do a
     -- create or replace table instead of dropping, so we don't have the table unavailable
@@ -82,7 +82,7 @@
 
     {% do optimize(target_relation) %}
 
-    {{ run_hooks(post_hooks) }}
+    {{ run_post_hooks() }}
 
   {% endif %}
   {{ return({'relations': [target_relation]})}}
