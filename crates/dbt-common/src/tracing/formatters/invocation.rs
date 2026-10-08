@@ -506,11 +506,15 @@ fn colored_count(
 fn format_autofix_line(colorize: bool) -> String {
     let suggestion_label = maybe_apply_color(&BLUE, "suggestion:", colorize);
     let command = maybe_apply_color(&YELLOW, "dbt deps", colorize);
-    let url = maybe_apply_color(&BLUE, "https://github.com/dbt-labs/dbt-autofix", colorize);
+    let autofix_url = maybe_apply_color(&BLUE, "https://github.com/dbt-labs/dbt-autofix", colorize);
+    let upgrade_guide_url = maybe_apply_color(
+        &BLUE,
+        "https://docs.getdbt.com/docs/dbt-versions/dbt-upgrade/upgrading-to-v2",
+        colorize,
+    );
 
     format!(
-        "{suggestion_label} Run '{}' to see the latest fusion compatible packages. For compatibility errors, try the autofix script: {url}",
-        command
+        "{suggestion_label} Run '{command}' to see the latest dbt v2 compatible packages. For compatibility errors, try the autofix script: {autofix_url}. Upgrading to dbt v2 requires updates to your project -- work with your team and follow our upgrade guide: {upgrade_guide_url}"
     )
 }
 

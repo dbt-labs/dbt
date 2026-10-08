@@ -418,16 +418,28 @@ pub(crate) struct ExternalIcebergAttach {
     pub(crate) attach_alias: String,
 }
 
-/// Catalog types DuckDB reaches through an Iceberg REST `ATTACH ... (TYPE
-/// ICEBERG)`. Horizon, Unity, and Glue are Iceberg REST services under the
-/// hood. Single answer to "is this an Iceberg REST-style attachment?" so the
-/// ATTACH composer (`engine::duckdb_attach`) and the metadata routing below
-/// can never disagree about which catalogs need REST-attachment treatment.
-pub(crate) fn attaches_via_iceberg_rest(catalog_type: CatalogType) -> bool {
-    matches!(
-        catalog_type,
-        CatalogType::IcebergRest | CatalogType::Horizon | CatalogType::Unity | CatalogType::Glue
-    )
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DuckDbAttachKind {
+    /// Horizon, Unity, and Glue are Iceberg REST services under the hood.
+    IcebergRest,
+    DuckLake,
+}
+
+pub(crate) fn duckdb_attaches_via(catalog_type: CatalogType) -> Option<DuckDbAttachKind> {
+    match catalog_type {
+        CatalogType::IcebergRest
+        | CatalogType::Horizon
+        | CatalogType::Unity
+        | CatalogType::Glue => Some(DuckDbAttachKind::IcebergRest),
+        CatalogType::DuckLake => Some(DuckDbAttachKind::DuckLake),
+        CatalogType::LocalFilesystem
+        | CatalogType::HiveMetastore
+        | CatalogType::BiglakeMetastore
+        | CatalogType::SnowflakeBuiltIn
+        | CatalogType::SnowflakeNative
+        | CatalogType::BigqueryNative
+        | CatalogType::DuckdbNative => None,
+    }
 }
 
 /// DuckDB-specific classification of a single catalog spec.
@@ -445,8 +457,9 @@ impl CatalogSpecDuckDbExt for CatalogSpecView<'_> {
         // DuckDB exposes these catalogs through Iceberg REST-style attachments.
         // Their information_schema coverage is incomplete, so schema-wide listing
         // is avoided while targeted DESCRIBE-based get_relation remains available.
-        let is_external_iceberg =
-            attaches_via_iceberg_rest(self.catalog_type) && self.table_format.is_iceberg();
+        let is_external_iceberg = duckdb_attaches_via(self.catalog_type)
+            == Some(DuckDbAttachKind::IcebergRest)
+            && self.table_format.is_iceberg();
         if !is_external_iceberg {
             return None;
         }
@@ -470,6 +483,16 @@ impl CatalogSpecDuckDbExt for CatalogSpecView<'_> {
             alias,
             AdapterType::DuckDB,
         ))
+    }
+}
+
+pub(crate) fn duckdb_catalog_attached_database(catalog: &CatalogSpecView<'_>) -> Option<String> {
+    if duckdb_attaches_via(catalog.catalog_type).is_some() {
+        catalog
+            .resolved_attach_alias()
+            .filter(|alias| !alias.is_empty())
+    } else {
+        None
     }
 }
 
@@ -868,5 +891,139 @@ catalogs:
             classify_attach_entry(&parse("path: /data/warehouse.duckdb\ntype: iceberg")),
             Some((alias, "iceberg")) if !alias.is_empty()
         ));
+    }
+
+    /// Every catalog type DuckDB can attach, plus one it cannot.
+    const ROUTING_CATALOGS: &str = r#"
+catalogs:
+  - name: rest_demo
+    type: iceberg_rest
+    table_format: iceberg
+    config:
+      duckdb:
+        endpoint: http://localhost:8181/catalog
+        warehouse: demo
+        catalog_database: rest_attached
+  - name: rest_no_alias
+    type: iceberg_rest
+    table_format: iceberg
+    config:
+      duckdb:
+        endpoint: http://localhost:8181/catalog
+        warehouse: demo
+  - name: horizon_demo
+    type: horizon
+    table_format: iceberg
+    config:
+      duckdb:
+        endpoint: https://horizon.example.com/catalog
+        warehouse: horizon_wh
+  - name: unity_demo
+    type: unity
+    table_format: iceberg
+    config:
+      duckdb:
+        endpoint: https://dbc.example.com/api/2.1/unity-catalog/iceberg
+        catalog_database: unity_db
+  - name: my_lake
+    type: ducklake
+    table_format: default
+    config:
+      duckdb:
+        metadata_path: "metadata.ducklake"
+  - name: files
+    type: local_filesystem
+    table_format: default
+    config:
+      duckdb:
+        root_path: local_files
+        file_format: csv
+"#;
+
+    fn routed(view: &DbtCatalogsView<'_>, name: &str) -> Option<String> {
+        let catalog = view
+            .catalogs
+            .iter()
+            .find(|catalog| catalog.name == name)
+            .unwrap_or_else(|| panic!("catalog '{name}' missing from fixture"));
+        duckdb_catalog_attached_database(catalog)
+    }
+
+    #[test]
+    fn duckdb_catalog_attached_database_uses_catalog_database_then_name() {
+        with_view(ROUTING_CATALOGS, |view| {
+            // Explicit `catalog_database` is the alias...
+            assert_eq!(routed(view, "rest_demo").as_deref(), Some("rest_attached"));
+            assert_eq!(routed(view, "unity_demo").as_deref(), Some("unity_db"));
+            // ...and the catalog name is the fallback.
+            assert_eq!(
+                routed(view, "rest_no_alias").as_deref(),
+                Some("rest_no_alias")
+            );
+            assert_eq!(
+                routed(view, "horizon_demo").as_deref(),
+                Some("horizon_demo")
+            );
+            // DuckLake attaches too, so it routes.
+            assert_eq!(routed(view, "my_lake").as_deref(), Some("my_lake"));
+        });
+    }
+
+    #[test]
+    fn duckdb_catalog_attached_database_skips_local_filesystem() {
+        // `local_filesystem` emits no ATTACH, so there is no database to route to
+        // routing its name would name a database that does not exist.
+        with_view(ROUTING_CATALOGS, |view| {
+            assert_eq!(routed(view, "files"), None);
+        });
+    }
+
+    #[test]
+    fn duckdb_catalog_attached_database_rejects_alias_that_sanitizes_away() {
+        with_view(
+            r#"
+catalogs:
+  - name: punctuation
+    type: iceberg_rest
+    table_format: iceberg
+    config:
+      duckdb:
+        endpoint: http://localhost:8181/catalog
+        warehouse: demo
+        catalog_database: "---"
+"#,
+            |view| {
+                // Better no routing than `database: ""`; the ATTACH composer
+                // reports the unusable alias as a configuration error.
+                assert_eq!(routed(view, "punctuation"), None);
+            },
+        );
+    }
+
+    #[test]
+    fn duckdb_catalog_attached_database_agrees_with_composed_attach_alias() {
+        with_view(ROUTING_CATALOGS, |view| {
+            let stmts = crate::engine::duckdb_attach::compose_catalog_attach_stmts(view, "duckdb")
+                .expect("fixture composes");
+
+            for catalog in &view.catalogs {
+                match duckdb_catalog_attached_database(catalog) {
+                    Some(alias) => assert!(
+                        stmts
+                            .iter()
+                            .any(|stmt| stmt.contains(&format!(" AS {alias}"))),
+                        "routed alias '{alias}' for catalog '{}' has no matching ATTACH in {stmts:?}",
+                        catalog.name
+                    ),
+                    None => assert!(
+                        !stmts
+                            .iter()
+                            .any(|stmt| stmt.contains(&format!(" AS {}", catalog.name))),
+                        "catalog '{}' is not routed but was attached",
+                        catalog.name
+                    ),
+                }
+            }
+        });
     }
 }

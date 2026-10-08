@@ -106,13 +106,13 @@ fn legacy_path_returns_ordered_delete_then_insert_statements() {
         .find("insert into target by name")
         .expect("INSERT statement");
     assert!(delete < insert, "DELETE must precede INSERT: {sql}");
+    // Composite unique keys use a correlated EXISTS predicate on the whole tuple
+    // (Delta rejects row-valued IN via DELTA_UNSUPPORTED_MULTI_COL_IN_PREDICATE).
     assert!(
-        lower.contains("target.`id` in (select `id` from source)"),
-        "id key must be quoted: {sql}"
-    );
-    assert!(
-        lower.contains("target.`region` in (select `region` from source)"),
-        "region key must be quoted: {sql}"
+        lower.contains(
+            "exists (select 1 from source where target.`id` <=> source.`id` and target.`region` <=> source.`region`)"
+        ),
+        "composite unique keys must use correlated EXISTS: {sql}"
     );
     assert!(lower.contains("and id >= 2"));
 }

@@ -169,7 +169,8 @@ fn is_replay_active(ctx: &TaskRunnerCtx) -> bool {
         .is_some_and(|adapter| adapter.as_replay().is_some())
 }
 
-/// Small utility for merging objects
+/// Small utility for merging objects: a key resolves in the first object that
+/// defines it.
 #[derive(Debug, Clone)]
 struct ObjectOverlay(pub Vec<Value>);
 
@@ -177,9 +178,26 @@ impl Object for ObjectOverlay {
     fn get_value(self: &Arc<Self>, key: &Value) -> Option<Value> {
         self.0
             .iter()
-            // Err if undefined
+            // `get_item` returns `Ok(UNDEFINED)` for a missing key, so skip
+            // undefined values or the first object answers every key.
             .filter_map(|o| o.get_item(key).ok())
-            .next()
+            .find(|v| !v.is_undefined())
+    }
+
+    // Package namespaces (`DbtNamespace`) resolve their macros here rather than
+    // in `get_value`, because the lookup needs the render state.
+    fn get_property(
+        self: &Arc<Self>,
+        state: &State<'_, '_>,
+        name: &str,
+        listeners: &[Rc<dyn RenderingEventListener>],
+    ) -> Result<Value, minijinja::Error> {
+        Ok(self
+            .0
+            .iter()
+            .filter_map(|o| o.as_object()?.get_property(state, name, listeners).ok())
+            .find(|v| !v.is_undefined())
+            .unwrap_or(Value::UNDEFINED))
     }
 }
 
@@ -199,20 +217,19 @@ pub(crate) async fn run_unit_test_render(
     result_sender: Option<std::sync::mpsc::SyncSender<TaskResult>>,
     task_hooks: Arc<dyn RenderTaskHooks>,
 ) -> FsResult<NodeStatus> {
-    use dbt_tasks_core::task::TaskOp;
+    use dbt_tasks_core::task::run_blocking_task_operation;
 
     // Phase 1 — Discover
     let ut = node.clone();
     let mut discover_ctx = ctx.clone();
-    let discover_outcome = TaskOp::Blocking(Box::new(move || {
+    let discover_outcome = run_blocking_task_operation(move || {
         // Downcast to DbtUnitTest for access to unit test fields
         let ut_ref = ut
             .as_any()
             .downcast_ref::<DbtUnitTest>()
             .expect("run_unit_test_render called on non-DbtUnitTest");
         discover_given_relations(ut_ref, &mut discover_ctx)
-    }))
-    .run()
+    })
     .await
     .and_then(|inner| inner);
     let given_relations = match discover_outcome {
@@ -230,12 +247,12 @@ pub(crate) async fn run_unit_test_render(
 
     // Phase 2 — Fetch
     if !given_relations.relations_to_fetch.is_empty() {
-        let fetch_outcome = TaskOp::r#async(fetch_missing_schemas(
+        let fetch_outcome = fetch_missing_schemas(
             &given_relations.relations_to_fetch,
             &node.common().unique_id,
             &mut ctx,
             Arc::clone(&task_hooks),
-        ))
+        )
         .await;
         if let Err(e) = fetch_outcome {
             return handle_render_result(
@@ -249,7 +266,7 @@ pub(crate) async fn run_unit_test_render(
     }
 
     // Phase 3 — Render (uses cached schemas + discovered relations)
-    TaskOp::Blocking(Box::new(move || {
+    run_blocking_task_operation(move || {
         let mut ctx = ctx;
         let ut_ref = node
             .as_any()
@@ -263,8 +280,7 @@ pub(crate) async fn run_unit_test_render(
             &mut ctx,
             &result_sender,
         )
-    }))
-    .run()
+    })
     .await?
 }
 
@@ -2740,6 +2756,7 @@ mod tests {
     use dbt_common::io_args::ComputeArg;
     use dbt_schemas::schemas::profiles::Execute;
     use dbt_test_primitives::assert_contains;
+    use minijinja::dispatch_object::DispatchObject;
 
     type YmlValue = dbt_yaml::Value;
 
@@ -2893,6 +2910,84 @@ mod tests {
         let rendered =
             render_run_started_at_override(YmlValue::number(12345.into()), "{{ run_started_at }}");
         assert_eq!(rendered, "12345");
+    }
+
+    /// A package namespace that, like `DbtNamespace`, resolves macros only in
+    /// `get_property` and dispatches to the `<package>.<macro>` template.
+    #[derive(Debug)]
+    struct PackageNamespace(&'static str);
+
+    impl Object for PackageNamespace {
+        fn get_property(
+            self: &Arc<Self>,
+            state: &State<'_, '_>,
+            name: &str,
+            _listeners: &[Rc<dyn RenderingEventListener>],
+        ) -> Result<Value, minijinja::Error> {
+            let template = format!("{}.{name}", self.0);
+            if state.env().get_template(&template).is_err() {
+                return Ok(Value::UNDEFINED);
+            }
+            Ok(Value::from_object(DispatchObject {
+                macro_name: name.to_string(),
+                package_name: Some(self.0.to_string()),
+                strict: true,
+                auto_execute: false,
+                context: None,
+            }))
+        }
+    }
+
+    /// Binds one `overrides.macros` entry over a `my_project` package and renders
+    /// `{{ my_project.pick_label() }}`, where `pick_label` calls `my_project.is_ci()`.
+    fn render_package_macro_override(macro_name: &str, value: YmlValue) -> String {
+        let mut raw_env = minijinja::Environment::new();
+        let pick_label = "{% macro pick_label() %}{% if my_project.is_ci() %}{{ return('ci') }}\
+                          {% else %}{{ return('local') }}{% endif %}{% endmacro %}";
+        for (name, source) in [
+            (
+                "my_project.is_ci",
+                "{% macro is_ci() %}{{ return(false) }}{% endmacro %}",
+            ),
+            ("my_project.pick_label", pick_label),
+            (
+                "my_project.unused_macro",
+                "{% macro unused_macro() %}{{ return('unused') }}{% endmacro %}",
+            ),
+        ] {
+            raw_env
+                .add_template(name, source)
+                .expect("macro template should parse");
+        }
+        let env = JinjaEnv::new(raw_env);
+
+        let macros = BTreeMap::from([(macro_name.to_string(), value)]);
+        let mut compile_context = BTreeMap::from([(
+            "my_project".to_string(),
+            Value::from_object(PackageNamespace("my_project")),
+        )]);
+        bind_override_macros(&macros, &mut compile_context, &env);
+
+        env.render_str("{{ my_project.pick_label() }}", &compile_context, &[])
+            .expect("the package's other macros should stay callable")
+    }
+
+    /// Regression test for https://github.com/dbt-labs/dbt/issues/16477: overriding
+    /// one package macro must keep the package's other macros callable, and they
+    /// must see the override, as in dbt-core.
+    #[test]
+    fn test_package_macro_override_is_seen_by_other_package_macros() {
+        let rendered = render_package_macro_override("my_project.is_ci", YmlValue::bool(true));
+        assert_eq!(rendered, "ci");
+    }
+
+    #[test]
+    fn test_package_macro_override_keeps_unrelated_package_macros() {
+        let rendered = render_package_macro_override(
+            "my_project.unused_macro",
+            YmlValue::string("stub".to_string()),
+        );
+        assert_eq!(rendered, "local");
     }
 
     #[test]

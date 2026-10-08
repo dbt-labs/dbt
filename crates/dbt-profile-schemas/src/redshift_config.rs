@@ -175,7 +175,7 @@ impl InteractiveSetup for RedshiftDbConfig {
     }
 }
 
-pub fn setup_redshift_profile(
+pub(crate) fn setup_redshift_profile(
     existing_config: Option<&RedshiftDbConfig>,
 ) -> FsResult<Box<RedshiftDbConfig>> {
     let default_config = RedshiftDbConfig {
