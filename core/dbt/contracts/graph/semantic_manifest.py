@@ -136,9 +136,14 @@ class SemanticManifest:
         validator = SemanticManifestValidator[PydanticSemanticManifest](
             [SemanticModelHierarchiesRule[PydanticSemanticManifest]()]
         )
-        validation_results = validator.validate_semantic_manifest(
-            self._get_pydantic_semantic_manifest()
+        semantic_manifest = PydanticSemanticManifest(
+            metrics=[],
+            semantic_models=self._get_pydantic_semantic_models(),
+            project_configuration=PydanticProjectConfiguration(
+                time_spine_table_configurations=[], time_spines=[]
+            ),
         )
+        validation_results = validator.validate_semantic_manifest(semantic_manifest)
         return self._report_validation_results(validation_results, validation_results.errors)
 
     def _report_validation_results(
@@ -199,6 +204,12 @@ class SemanticManifest:
         write_file(file_path, result.output.to_osi_json())
         fire_event(ArtifactWritten(artifact_type="OsiDocument", artifact_path=file_path))
 
+    def _get_pydantic_semantic_models(self) -> List[PydanticSemanticModel]:
+        return [
+            PydanticSemanticModel.parse_obj(semantic_model.to_dict())
+            for semantic_model in self.manifest.semantic_models.values()
+        ]
+
     def write_json_to_file(self, file_path: str):
         semantic_manifest = self._get_pydantic_semantic_manifest()
         json = semantic_manifest.json()
@@ -258,13 +269,10 @@ class SemanticManifest:
             time_spine_table_configurations=[], time_spines=pydantic_time_spines
         )
         pydantic_semantic_manifest = PydanticSemanticManifest(
-            metrics=[], semantic_models=[], project_configuration=project_config
+            metrics=[],
+            semantic_models=self._get_pydantic_semantic_models(),
+            project_configuration=project_config,
         )
-
-        for semantic_model in self.manifest.semantic_models.values():
-            pydantic_semantic_manifest.semantic_models.append(
-                PydanticSemanticModel.parse_obj(semantic_model.to_dict())
-            )
 
         for metric in self.manifest.metrics.values():
             pydantic_semantic_manifest.metrics.append(PydanticMetric.parse_obj(metric.to_dict()))

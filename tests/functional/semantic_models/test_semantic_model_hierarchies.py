@@ -212,3 +212,17 @@ class TestSemanticModelsWithoutHierarchiesMetricsOrTimeSpine:
     def test_parse_without_writing_artifacts(self, project):
         result = dbtTestRunner().invoke(["--no-write-json", "parse"])
         assert result.success
+
+
+class TestSemanticModelHierarchiesWithoutMetricsOrTimeSpine:
+    @pytest.fixture(scope="class")
+    def models(self):
+        return {
+            "employees.sql": employees_sql,
+            "stores.sql": stores_sql,
+            "semantic_models.yml": semantic_model_hierarchies_without_metrics_yml,
+        }
+
+    def test_parse_without_writing_artifacts(self, project):
+        result = dbtTestRunner().invoke(["--no-write-json", "parse"])
+        assert result.success
