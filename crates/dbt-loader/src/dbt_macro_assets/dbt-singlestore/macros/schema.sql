@@ -1,20 +1,22 @@
 {% macro singlestore__generate_schema_name(custom_schema_name, node) -%}
-    {# In SingleStore, databases and schemas are synonymous. All objects reside within target database unless database is configured. #}
-    {%- set default_schema = target.schema | default(target.database, true) | trim -%}
-    {%- if not default_schema -%}
-        {%- set default_schema = target.database | trim -%}
+    {# In SingleStore, databases are physical containers, while schemas act as table prefixes
+       for developer and logical namespace isolation. #}
+    {%- set target_schema = target.schema | default('', true) | trim -%}
+    {%- set target_db = target.database | default('', true) | trim -%}
+    {# If target.schema matches target.database, treat as no prefix (legacy profile compatibility) #}
+    {%- if target_schema == target_db -%}
+        {%- set default_prefix = "" -%}
+    {%- else -%}
+        {%- set default_prefix = target_schema -%}
     {%- endif -%}
-    {%- if node is not none -%}
-        {%- if node.unrendered_config is defined and node.unrendered_config.get('database') -%}
-            {%- set default_schema = node.unrendered_config.get('database') | trim -%}
-        {%- elif node.config is defined and node.config.get('database') -%}
-            {%- set default_schema = node.config.get('database') | trim -%}
-        {%- endif -%}
+
+    {%- if custom_schema_name is none or custom_schema_name | trim | length == 0 -%}
+        {{ default_prefix }}
+    {%- elif default_prefix | length > 0 -%}
+        {{ default_prefix }}_{{ custom_schema_name | trim }}
+    {%- else -%}
+        {{ custom_schema_name | trim }}
     {%- endif -%}
-    {%- if custom_schema_name is not none and custom_schema_name | trim | length > 0 and custom_schema_name | trim != default_schema and node is not none -%}
-        {{ log("SingleStore: custom schema '" ~ custom_schema_name ~ "' for model '" ~ node.name ~ "' mapped to table prefix within database '" ~ default_schema ~ "'.", info=False) }}
-    {%- endif -%}
-    {{ default_schema }}
 {%- endmacro %}
 
 {% macro singlestore__generate_alias_name(custom_alias_name=none, node=none) -%}
@@ -28,39 +30,18 @@
         {%- set base_alias = "" -%}
     {%- endif -%}
 
-    {%- set default_db = target.schema | default(target.database, true) | trim -%}
-    {%- if not default_db -%}
-        {%- set default_db = target.database | trim -%}
-    {%- endif -%}
-    {%- if node is not none -%}
-        {%- if node.unrendered_config is defined and node.unrendered_config.get('database') -%}
-            {%- set configured_db = node.unrendered_config.get('database') | trim -%}
-        {%- elif node.config is defined and node.config.get('database') -%}
-            {%- set configured_db = node.config.get('database') | trim -%}
-        {%- else -%}
-            {%- set configured_db = default_db -%}
-        {%- endif -%}
-    {%- else -%}
-        {%- set configured_db = default_db -%}
-    {%- endif -%}
-
-    {%- set custom_schema = none -%}
-    {%- if node is not none -%}
-        {%- if node.unrendered_config is defined and node.unrendered_config.get('schema') -%}
-            {%- set raw_schema = node.unrendered_config.get('schema') | trim -%}
-            {%- if raw_schema | length > 0 and raw_schema != configured_db and raw_schema != default_db and raw_schema != target.database and raw_schema != target.schema -%}
-                {%- set custom_schema = raw_schema -%}
-            {%- endif -%}
-        {%- elif node.config is defined and node.config.get('schema') -%}
-            {%- set raw_schema = node.config.get('schema') | trim -%}
-            {%- if raw_schema | length > 0 and raw_schema != configured_db and raw_schema != default_db and raw_schema != target.database and raw_schema != target.schema -%}
-                {%- set custom_schema = raw_schema -%}
-            {%- endif -%}
+    {%- set schema_prefix = "" -%}
+    {%- if node is not none and node.schema is defined and node.schema -%}
+        {%- set raw_schema = node.schema | trim -%}
+        {%- set node_db = node.database | default('', true) | trim -%}
+        {# Do not prefix if schema matches database name (legacy guardrail) #}
+        {%- if raw_schema | length > 0 and raw_schema != node_db -%}
+            {%- set schema_prefix = raw_schema -%}
         {%- endif -%}
     {%- endif -%}
 
-    {%- if custom_schema and custom_schema | length > 0 -%}
-        {{ custom_schema }}_{{ base_alias }}
+    {%- if schema_prefix | length > 0 -%}
+        {{ schema_prefix }}_{{ base_alias }}
     {%- else -%}
         {{ base_alias }}
     {%- endif -%}
