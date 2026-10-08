@@ -1,0 +1,7 @@
+kind: Under the Hood
+body: Add async MetricFlow sidecar manager crate for compiling metric queries via the MetricFlow Nuitka sidecar
+time: 2026-07-31T14:53:16.647770-05:00
+custom:
+    author: QMalcolm
+    issue: ""
+    project: dbt-fusion
