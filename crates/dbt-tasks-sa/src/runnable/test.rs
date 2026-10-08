@@ -24,7 +24,9 @@ use dbt_pretty_table::{make_column_names, pretty_data_table};
 use dbt_scheduler::instructions::SqlInstruction;
 use dbt_schemas::schemas::DbtTest;
 use dbt_schemas::schemas::common::Severity;
-use dbt_schemas::schemas::project::{DEFAULT_DATA_TEST_ERROR_IF, DEFAULT_DATA_TEST_WARN_IF};
+use dbt_schemas::schemas::project::{
+    DEFAULT_DATA_TEST_ERROR_IF, DEFAULT_DATA_TEST_WARN_IF, DataTestConfig,
+};
 use dbt_schemas::schemas::{InternalDbtNode, InternalDbtNodeAttributes, NodePathKind};
 use dbt_tasks_core::context::{BlockingTaskCtx, TaskRunnerCtx};
 use dbt_tasks_core::pretty_table::from_pretty_table_error;
@@ -146,9 +148,16 @@ fn test_result_message(
     failures: usize,
     verdict: TestExecutionStatus,
     status: TestExecutionStatus,
-    error_if: &str,
-    warn_if: &str,
+    config: &DataTestConfig,
 ) -> Option<String> {
+    let error_if = config
+        .error_if
+        .as_deref()
+        .unwrap_or(DEFAULT_DATA_TEST_ERROR_IF);
+    let warn_if = config
+        .warn_if
+        .as_deref()
+        .unwrap_or(DEFAULT_DATA_TEST_WARN_IF);
     let (action, threshold) = match (verdict, status) {
         (TestExecutionStatus::Failed, _) => ("fail", error_if),
         (TestExecutionStatus::Warned, TestExecutionStatus::Failed) => ("fail", warn_if),
@@ -171,9 +180,7 @@ pub fn insert_test_run_stat(
     ctx: &BlockingTaskCtx,
     unique_id: String,
     start: SystemTime,
-    failures: usize,
-    status: TestExecutionStatus,
-    message: Option<String>,
+    result: &TestReportedResult,
 ) {
     let thread_id = ctx.thread_id;
     ctx.inner.run_stats.insert(
@@ -181,9 +188,9 @@ pub fn insert_test_run_stat(
         Stat::new(
             unique_id,
             start,
-            Some(failures),
-            status.node_status(),
-            message,
+            Some(result.failures),
+            result.node_status(),
+            result.message.clone(),
             thread_id,
         ),
     );
@@ -315,14 +322,18 @@ impl AggregatedTestRunRemoteTask {
         test_results: &[crate::materialize::TestResult],
         warn_error_options: &WarnErrorOptions,
     ) -> (Vec<(String, TestReportedResult)>, TestExecutionStatus) {
-        let mut column_results = HashMap::new();
-        for result in test_results {
-            if let Some(column_name) = &result.column_name {
+        let column_results: HashMap<_, _> = test_results
+            .iter()
+            .filter_map(|result| {
+                let column_name = result.column_name.as_deref()?;
                 let normalized =
                     dbt_tasks_core::test_aggregation::normalize_column_name(column_name);
-                column_results.insert(normalized, result);
-            }
-        }
+                Some((normalized, result))
+            })
+            .collect();
+
+        // Only tests with the default thresholds are aggregated.
+        let config = DataTestConfig::default();
 
         // Ordered like `self.group.tests` so member result lines are emitted deterministically.
         let mut member_results = Vec::with_capacity(self.group.tests.len());
@@ -333,12 +344,11 @@ impl AggregatedTestRunRemoteTask {
                 dbt_tasks_core::test_aggregation::normalize_column_name(&test.column_name);
             let column_result = column_results.get(&column_name).copied();
 
-            let verdict = match column_result {
-                Some(result) => {
+            let verdict = column_result
+                .map(|result| {
                     reported_test_verdict_from_materialize_result(test.severity.as_ref(), result)
-                }
-                None => TestExecutionStatus::Passed,
-            };
+                })
+                .unwrap_or(TestExecutionStatus::Passed);
             let status = status_with_warn_error_overrides(verdict, warn_error_options);
             worst_status = worst_status.max(status);
 
@@ -351,14 +361,7 @@ impl AggregatedTestRunRemoteTask {
                 TestReportedResult {
                     failures,
                     status,
-                    // Only tests with the default thresholds are aggregated.
-                    message: test_result_message(
-                        failures,
-                        verdict,
-                        status,
-                        DEFAULT_DATA_TEST_ERROR_IF,
-                        DEFAULT_DATA_TEST_WARN_IF,
-                    ),
+                    message: test_result_message(failures, verdict, status, &config),
                     diff: None,
                     execution_result: Some(CachedTestExecutionResult {
                         failures: failures as i64,
@@ -379,7 +382,6 @@ impl AggregatedTestRunRemoteTask {
     async fn run_task_inner(
         &self,
         ctx: &mut TaskRunnerCtx,
-        start: SystemTime,
         span_by_id: &mut HashMap<String, (Arc<DbtTest>, tracing::Span)>,
     ) -> FsResult<NodeStatus> {
         if let Some(reporter) = ctx.inner.arg.io.status_reporter.as_ref() {
@@ -461,7 +463,8 @@ impl AggregatedTestRunRemoteTask {
             member_results.len() as u64,
         );
 
-        for (unique_id, result) in &member_results {
+        for mut member_result in member_results {
+            let (unique_id, result) = &mut member_result;
             // Members share the aggregated query, so they share its main response.
             if let Some(main_response) = &main_response {
                 ctx.inner
@@ -469,10 +472,10 @@ impl AggregatedTestRunRemoteTask {
                     .insert(unique_id.clone(), main_response.clone());
             }
             let (_, span) = span_by_id
-                .remove(unique_id)
+                .remove(unique_id.as_str())
                 .expect("span should exist for unique_id");
-            self.report_member_result(ctx, span, start, unique_id, result, diff_output.as_ref())
-                .await?;
+            result.diff = result.diff.take().or_else(|| diff_output.clone());
+            self.report_member_result(ctx, span, member_result).await?;
         }
 
         Ok(worst_status.node_status())
@@ -482,13 +485,13 @@ impl AggregatedTestRunRemoteTask {
         &self,
         ctx: &TaskRunnerCtx,
         span: tracing::Span,
-        _start: SystemTime,
-        unique_id: &str,
-        result: &TestReportedResult,
-        diff_output: Option<&String>,
+        member_result: (String, TestReportedResult),
     ) -> FsResult<()> {
-        let diff = result.diff.clone().or_else(|| diff_output.cloned());
+        let (unique_id, mut result) = member_result;
+        let diff = result.diff.take();
         let group_unique_id = self.group.unique_id.clone();
+        let test_outcome = result.test_outcome();
+        let failures = result.failures.min(i32::MAX as usize) as i32;
         record_test_metric(result.status);
 
         record_span_status_from_attrs(&span, move |attrs| {
@@ -496,8 +499,8 @@ impl AggregatedTestRunRemoteTask {
                 ev.set_node_outcome(NodeOutcome::Success);
                 ev.node_outcome_detail = Some(NodeOutcomeDetail::NodeTestDetail(
                     TestEvaluationDetail::new(
-                        result.test_outcome(),
-                        result.failures.min(i32::MAX as usize) as i32,
+                        test_outcome,
+                        failures,
                         diff,
                         None,
                         None,
@@ -509,16 +512,14 @@ impl AggregatedTestRunRemoteTask {
 
         insert_test_run_stat(
             &ctx.blocking_ctx(),
-            unique_id.to_string(),
+            unique_id.clone(),
             SystemTime::now(),
-            result.failures,
-            result.status,
-            result.message.clone(),
+            &result,
         );
         if let Some(execution_result) = result.execution_result {
             ctx.inner
                 .data_test_execution_results
-                .insert(unique_id.to_string(), execution_result);
+                .insert(unique_id, execution_result);
         }
 
         ctx.inner
@@ -535,7 +536,6 @@ impl Task for AggregatedTestRunRemoteTask {
         ctx: &'a mut TaskRunnerCtx,
     ) -> Pin<Box<dyn Future<Output = FsResult<NodeStatus>> + Send + 'a>> {
         Box::pin(async move {
-            let start = SystemTime::now();
             let mut spans_by_id: HashMap<_, _> = self
                 .member_tests
                 .iter()
@@ -552,7 +552,7 @@ impl Task for AggregatedTestRunRemoteTask {
                 })
                 .collect::<FsResult<_>>()?;
 
-            let status = self.run_task_inner(ctx, start, &mut spans_by_id).await;
+            let status = self.run_task_inner(ctx, &mut spans_by_id).await;
 
             if status.is_err() {
                 for (_, span) in spans_by_id.into_values() {
@@ -698,7 +698,6 @@ fn execute_test_remote_inner(
 
     let reported_status =
         status_with_warn_error_overrides(status, &ctx.inner.arg.warn_error_options);
-    let config = &test.deprecated_config;
     Ok(TestReportedResult {
         failures: test_result.failures as usize,
         status: reported_status,
@@ -706,14 +705,7 @@ fn execute_test_remote_inner(
             test_result.failures as usize,
             status,
             reported_status,
-            config
-                .error_if
-                .as_deref()
-                .unwrap_or(DEFAULT_DATA_TEST_ERROR_IF),
-            config
-                .warn_if
-                .as_deref()
-                .unwrap_or(DEFAULT_DATA_TEST_WARN_IF),
+            &test.deprecated_config,
         ),
         diff,
         execution_result: Some(CachedTestExecutionResult {
@@ -738,14 +730,7 @@ pub fn process_test_result(
 
     record_test_span_with_detail(&result, None, test.deprecated_config.store_failures, None);
 
-    insert_test_run_stat(
-        ctx,
-        unique_id.clone(),
-        start,
-        result.failures,
-        result.status,
-        result.message.clone(),
-    );
+    insert_test_run_stat(ctx, unique_id.clone(), start, &result);
     if let Some(execution_result) = result.execution_result {
         ctx.inner
             .data_test_execution_results
@@ -799,8 +784,11 @@ mod tests {
             2,
             TestExecutionStatus::Failed,
             TestExecutionStatus::Failed,
-            "!= 0",
-            "> 5",
+            &DataTestConfig {
+                error_if: Some("!= 0".to_string()),
+                warn_if: Some("> 5".to_string()),
+                ..Default::default()
+            },
         );
         assert_eq!(
             message.as_deref(),
@@ -814,8 +802,11 @@ mod tests {
             1,
             TestExecutionStatus::Warned,
             TestExecutionStatus::Warned,
-            "> 5",
-            "!= 0",
+            &DataTestConfig {
+                error_if: Some("> 5".to_string()),
+                warn_if: Some("!= 0".to_string()),
+                ..Default::default()
+            },
         );
         assert_eq!(
             message.as_deref(),
@@ -829,8 +820,11 @@ mod tests {
             3,
             TestExecutionStatus::Warned,
             TestExecutionStatus::Failed,
-            "> 5",
-            "> 1",
+            &DataTestConfig {
+                error_if: Some("> 5".to_string()),
+                warn_if: Some("> 1".to_string()),
+                ..Default::default()
+            },
         );
         assert_eq!(
             message.as_deref(),
@@ -845,9 +839,34 @@ mod tests {
             (TestExecutionStatus::Warned, TestExecutionStatus::Passed),
         ] {
             assert_eq!(
-                test_result_message(0, verdict, status, "!= 0", "!= 0"),
+                test_result_message(0, verdict, status, &DataTestConfig::default()),
                 None
             );
         }
+    }
+
+    #[test]
+    fn missing_thresholds_use_the_data_test_defaults() {
+        let config = DataTestConfig::default();
+        assert_eq!(
+            test_result_message(
+                1,
+                TestExecutionStatus::Failed,
+                TestExecutionStatus::Failed,
+                &config,
+            )
+            .as_deref(),
+            Some("Got 1 result, configured to fail if != 0")
+        );
+        assert_eq!(
+            test_result_message(
+                1,
+                TestExecutionStatus::Warned,
+                TestExecutionStatus::Warned,
+                &config,
+            )
+            .as_deref(),
+            Some("Got 1 result, configured to warn if != 0")
+        );
     }
 }
