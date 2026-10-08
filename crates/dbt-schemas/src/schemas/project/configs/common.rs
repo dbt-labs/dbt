@@ -647,17 +647,13 @@ pub fn same_warehouse_config(
     let source_alias_eq = self_wh.source_alias == other_wh.source_alias;
     let matched_condition_eq = self_wh.matched_condition == other_wh.matched_condition;
     let not_matched_condition_eq = self_wh.not_matched_condition == other_wh.not_matched_condition;
-    let not_matched_by_source_condition_eq =
-        self_wh.not_matched_by_source_condition == other_wh.not_matched_by_source_condition;
-    let not_matched_by_source_action_eq =
-        self_wh.not_matched_by_source_action == other_wh.not_matched_by_source_action;
-    let merge_with_schema_evolution_eq =
-        self_wh.merge_with_schema_evolution == other_wh.merge_with_schema_evolution;
+    let not_matched_by_source_condition_eq = self_wh.not_matched_by_source_condition == other_wh.not_matched_by_source_condition;
+    let not_matched_by_source_action_eq = self_wh.not_matched_by_source_action == other_wh.not_matched_by_source_action;
+    let merge_with_schema_evolution_eq = self_wh.merge_with_schema_evolution == other_wh.merge_with_schema_evolution;
     let skip_matched_step_eq = self_wh.skip_matched_step == other_wh.skip_matched_step;
     let skip_not_matched_step_eq = self_wh.skip_not_matched_step == other_wh.skip_not_matched_step;
     let persist_constraints_eq = self_wh.persist_constraints == other_wh.persist_constraints;
-    let unique_tmp_table_suffix_eq =
-        self_wh.unique_tmp_table_suffix == other_wh.unique_tmp_table_suffix;
+    let unique_tmp_table_suffix_eq = self_wh.unique_tmp_table_suffix == other_wh.unique_tmp_table_suffix;
     let schedule_eq = self_wh.schedule == other_wh.schedule;
     let adapter_properties_eq = self_wh.adapter_properties == other_wh.adapter_properties;
     let table_tag_eq = self_wh.table_tag == other_wh.table_tag;
@@ -699,10 +695,8 @@ pub fn same_warehouse_config(
     let query_settings_eq = opt_yml_map_eq(&self_wh.query_settings, &other_wh.query_settings);
     let projections_eq = opt_yml_vec_eq(&self_wh.projections, &other_wh.projections);
     let inserts_only_eq = self_wh.inserts_only == other_wh.inserts_only;
-    let connection_overrides_eq = opt_yml_map_eq(
-        &self_wh.connection_overrides,
-        &other_wh.connection_overrides,
-    );
+    let connection_overrides_eq =
+        opt_yml_map_eq(&self_wh.connection_overrides, &other_wh.connection_overrides);
     let fields_eq = opt_yml_vec_eq(&self_wh.fields, &other_wh.fields);
     let source_type_eq = self_wh.source_type == other_wh.source_type;
     let url_eq = self_wh.url == other_wh.url;
@@ -718,8 +712,7 @@ pub fn same_warehouse_config(
     let refreshable_eq = self_wh.refreshable == other_wh.refreshable;
     let catchup_eq = self_wh.catchup == other_wh.catchup;
     let mv_on_schema_change_eq = self_wh.mv_on_schema_change == other_wh.mv_on_schema_change;
-    let repopulate_from_mvs_on_full_refresh_eq =
-        self_wh.repopulate_from_mvs_on_full_refresh == other_wh.repopulate_from_mvs_on_full_refresh;
+    let repopulate_from_mvs_on_full_refresh_eq = self_wh.repopulate_from_mvs_on_full_refresh == other_wh.repopulate_from_mvs_on_full_refresh;
     let (singlestore_eq, singlestore_diffs) = singlestore_config_diff(self_wh, other_wh);
 
     let result = partition_by_eq

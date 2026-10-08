@@ -431,6 +431,20 @@ fn prepare_qualifier_and_alias(node: &NodeProcessed, node_type: NodeType) -> (St
     )
 }
 
+fn prepare_qualifier_and_alias_for_evaluated(
+    node: &NodeEvaluated,
+    node_type: NodeType,
+) -> (String, String) {
+    prepare_qualifier_and_alias_parts(
+        node.database.as_deref(),
+        node.schema.as_deref(),
+        node.identifier.as_deref(),
+        &node.name,
+        None,
+        node_type,
+    )
+}
+
 /// Format a NodeProcessed event for the start of processing (no duration)
 ///
 /// Returns formatted string in the pattern:
@@ -548,14 +562,7 @@ pub fn format_node_evaluated_start(node: &NodeEvaluated, colorize: bool) -> Stri
     let phase_action = get_phase_action(phase);
 
     // Prepare relation schema and alias
-    let (qualifier, alias) = prepare_qualifier_and_alias_parts(
-        node.database.as_deref(),
-        node.schema.as_deref(),
-        node.identifier.as_deref(),
-        &node.name,
-        None,
-        node_type,
-    );
+    let (qualifier, alias) = prepare_qualifier_and_alias_for_evaluated(node, node_type);
 
     // Format components
     let qualifier_alias = format_qualifier_alias(&qualifier, &alias, colorize);
@@ -635,14 +642,7 @@ pub fn format_node_evaluated_end(
     let phase_action = get_phase_action(phase);
 
     // Prepare relation schema and alias
-    let (qualifier, alias) = prepare_qualifier_and_alias_parts(
-        node.database.as_deref(),
-        node.schema.as_deref(),
-        node.identifier.as_deref(),
-        &node.name,
-        None,
-        node_type,
-    );
+    let (qualifier, alias) = prepare_qualifier_and_alias_for_evaluated(node, node_type);
 
     // Format components
     let qualifier_alias = format_qualifier_alias(&qualifier, &alias, colorize);

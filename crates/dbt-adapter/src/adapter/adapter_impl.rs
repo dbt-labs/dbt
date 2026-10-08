@@ -838,24 +838,7 @@ impl AdapterImpl {
         }
 
         // Configure warehouse specific options
-        #[allow(clippy::single_match)]
-        match self.adapter_type() {
-            Salesforce => {
-                if let Some(timeout) = engine.config("data_transform_run_timeout") {
-                    let timeout = timeout.parse::<i64>().map_err(|e| {
-                        AdapterError::new(
-                            AdapterErrorKind::Configuration,
-                            format!("data_transform_run_timeout must be an integer string: {e}",),
-                        )
-                    })?;
-                    options.push((
-                        DATA_TRANSFORM_RUN_TIMEOUT.to_string(),
-                        OptionValue::Int(timeout),
-                    ));
-                }
-            }
-            _ => {}
-        }
+        configure_warehouse_execute_options(self.adapter_type(), engine.as_ref(), &mut options)?;
 
         let mut last_batch = None;
         for sql in &statements {
@@ -900,6 +883,35 @@ impl AdapterImpl {
 
         Ok((response, table))
     }
+}
+
+fn configure_warehouse_execute_options(
+    adapter_type: AdapterType,
+    engine: &dyn AdapterEngine,
+    options: &mut Vec<(String, OptionValue)>,
+) -> AdapterResult<()> {
+    #[allow(clippy::single_match)]
+    match adapter_type {
+        Salesforce => {
+            if let Some(timeout) = engine.config("data_transform_run_timeout") {
+                let timeout = timeout.parse::<i64>().map_err(|e| {
+                    AdapterError::new(
+                        AdapterErrorKind::Configuration,
+                        format!("data_transform_run_timeout must be an integer string: {e}"),
+                    )
+                })?;
+                options.push((
+                    DATA_TRANSFORM_RUN_TIMEOUT.to_string(),
+                    OptionValue::Int(timeout),
+                ));
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+impl AdapterImpl {
 
     /// BaseAdapter https://github.com/dbt-labs/dbt-adapters/blob/0efd8d3d1081e1ab43e38797d5104f7b424a6284/dbt-adapters/src/dbt/adapters/base/impl.py#L453
     #[allow(clippy::too_many_arguments)]
