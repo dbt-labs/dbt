@@ -78,9 +78,7 @@ class SemanticManifest:
             return True
 
         if not self.manifest.metrics:
-            if any(sm.hierarchies for sm in self.manifest.semantic_models.values()):
-                return self._validate_hierarchies()
-            return True
+            return self._validate_hierarchies()
 
         semantic_manifest = self._get_pydantic_semantic_manifest()
         validator = SemanticManifestValidator[PydanticSemanticManifest]()
