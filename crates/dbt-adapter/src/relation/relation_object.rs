@@ -615,6 +615,7 @@ pub fn create_relation_from_node(
             node.schema(),
             node.base().alias.clone(), // all identifiers are consolidated to alias in InternalDbtNode
             node.quoting(),
+            None,
             source,
         );
     }
@@ -1022,6 +1023,7 @@ mod tests {
                 "raw".to_string(),
                 long_identifier,
                 DEFAULT_RESOLVED_QUOTING,
+                None,
                 &source,
             )
             .is_ok()
@@ -1157,6 +1159,7 @@ mod tests {
             "raw".to_string(),
             "orders".to_string(),
             DEFAULT_RESOLVED_QUOTING,
+            None,
             &source,
         )
         .unwrap();
