@@ -62,7 +62,7 @@ members = [
   "crates/dbt-adapter",
   "crates/dbt-adapter-engine",
   "crates/dbt-adapter-sql",
-  "crates/dbt-ident",
+  "crates/dbt-sql-base",
   "crates/dbt-jinja-utils",
   "crates/dbt-main",
   "crates/dbt-dist",
@@ -80,6 +80,7 @@ members = [
   "crates/proto-rust",
   "crates/proto-rust-macros",
   "crates/dbt-env",
+  "crates/dbt-flags",
   "crates/dbt-test-utils",
   "crates/dbt-tui-progress",
   "crates/dbt-metricflow",
@@ -267,11 +268,11 @@ dbt-feature-fingerprint = { path = "crates/dbt-feature-fingerprint" }
 dbt-feature-gating = { path = "crates/dbt-feature-gating" }
 dbt-features = { path = "crates/dbt-features" }
 dbt-file-security = { path = "crates/dbt-file-security" }
+dbt-flags = { path = "crates/dbt-flags" }
 dbt-freshness = { path = "crates/dbt-freshness" }
 dbt-frontend-common = { path = "crates/dbt-frontend-common" }
 dbt-goldie = { path = "crates/dbt-goldie" }
 dbt-handles = { path = "crates/dbt-handles" }
-dbt-ident = { path = "crates/dbt-ident" }
 dbt-index-core = { path = "crates/dbt-index-core" }
 dbt-init = { path = "crates/dbt-init" }
 dbt-jinja-ctx = { path = "crates/dbt-jinja-ctx" }
@@ -323,6 +324,7 @@ dbt-lexer-duckdb = { path = "crates/dbt-sql/dbt-lexer-duckdb" }
 dbt-lexer-redshift = { path = "crates/dbt-sql/dbt-lexer-redshift" }
 dbt-lexer-snowflake = { path = "crates/dbt-sql/dbt-lexer-snowflake" }
 dbt-lexer-trino = { path = "crates/dbt-sql/dbt-lexer-trino" }
+dbt-sql-base = { path = "crates/dbt-sql-base" }
 dbt-sql-keywords = { path = "crates/dbt-sql-keywords" }
 dbt-sql-utils = { path = "crates/dbt-sql/dbt-sql-utils" }
 
@@ -398,7 +400,7 @@ dbt-artifact-download = { path = "crates/dbt-artifact-download" }
 dbt-tracked-stmt = { path = "crates/dbt-tracked-stmt" }
 
 # antlr for frontend
-dbt-antlr4 = { version = "2.0.2", features = [
+dbt-antlr4 = { version = "2.0.3", features = [
   "arena-allocation-limit",
   "recursion-limit",
   "stacker",

@@ -429,13 +429,15 @@ pub fn construct_internal_packages(
                     package_dir_name
                 )
             })?;
-        let parsed: DbtProject = dbt_yaml::from_str(&yml_content).map_err(|e| {
+        let mut parsed: DbtProject = dbt_yaml::from_str(&yml_content).map_err(|e| {
             fs_err!(
                 ErrorCode::InvalidConfig,
                 "Failed to parse internal dbt_project.yml: {}",
                 e
             )
         })?;
+        // Project flags only apply from the root project.
+        parsed.flags = None;
         let dbt_project = build_internal_dbt_project(parsed)?;
         let project_name = dbt_project.name.clone();
 

@@ -1,0 +1,7 @@
+kind: Fixes
+body: A unit test that overrides one package macro (my_package.my_macro in overrides.macros) no longer makes the package's other macros undefined, matching dbt-core
+time: 2026-09-28T08:55:30.016498-03:00
+custom:
+    author: luc-pimentel
+    issue: "16477"
+    project: dbt-core

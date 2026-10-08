@@ -745,43 +745,62 @@ struct RunWorkflowResponse {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Write;
-    use std::net::TcpListener;
+    use std::collections::VecDeque;
     use std::sync::{Arc, Mutex};
+    use ureq::SendBody;
+    use ureq::middleware::{Middleware, MiddlewareNext};
 
-    /// Serves `responses` in order (one per request) and records "METHOD path" lines.
+    /// Answers `responses` in order and records "METHOD path" lines.
+    ///
+    /// The handler returns the body itself and does not continue the ureq chain, so the
+    /// client never resolves a host or opens a socket.
+    struct ScriptedApi {
+        responses: Mutex<VecDeque<(u16, &'static str)>>,
+        requests: Arc<Mutex<Vec<String>>>,
+    }
+
+    impl Middleware for ScriptedApi {
+        fn handle(
+            &self,
+            request: http::Request<SendBody>,
+            _next: MiddlewareNext,
+        ) -> Result<http::Response<Body>, UreqError> {
+            let method = request.method();
+            let path = request.uri().path();
+            self.requests
+                .lock()
+                .unwrap()
+                .push(format!("{method} {path}"));
+
+            let (status, body) = self
+                .responses
+                .lock()
+                .unwrap()
+                .pop_front()
+                .expect("scripted Databricks API ran out of responses");
+
+            Ok(http::Response::builder()
+                .status(status)
+                .body(Body::builder().data(body))
+                .expect("scripted response"))
+        }
+    }
+
     fn fake_databricks(
         responses: Vec<(u16, &'static str)>,
     ) -> (DatabricksApiClient, Arc<Mutex<Vec<String>>>) {
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let base_url = format!("http://{}", listener.local_addr().unwrap());
         let requests = Arc::new(Mutex::new(Vec::new()));
-        let seen = requests.clone();
-        thread::spawn(move || {
-            for ((status, body), stream) in responses.into_iter().zip(listener.incoming()) {
-                let mut stream = stream.unwrap();
-                let mut buf = [0u8; 4096];
-                let n = stream.read(&mut buf).unwrap();
-                let request_line = String::from_utf8_lossy(&buf[..n]);
-                let request_line = request_line.lines().next().unwrap_or_default();
-                let mut parts = request_line.split(' ');
-                let (method, path) = (parts.next().unwrap(), parts.next().unwrap());
-                let path = path.split('?').next().unwrap();
-                seen.lock().unwrap().push(format!("{method} {path}"));
-                write!(
-                    stream,
-                    "HTTP/1.1 {status} X\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-                    body.len()
-                )
-                .unwrap();
-            }
-        });
+        let agent = Agent::config_builder()
+            .http_status_as_error(false)
+            .middleware(ScriptedApi {
+                responses: Mutex::new(responses.into()),
+                requests: requests.clone(),
+            })
+            .build()
+            .into();
         let client = DatabricksApiClient {
-            agent: Agent::config_builder()
-                .http_status_as_error(false)
-                .build()
-                .into(),
-            base_url,
+            agent,
+            base_url: "http://databricks.invalid".to_string(),
             auth_header: "Bearer test".to_string(),
             use_user_folder: false,
             cached_user: RefCell::new(None),
