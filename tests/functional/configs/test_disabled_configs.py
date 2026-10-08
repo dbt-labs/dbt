@@ -15,7 +15,7 @@ class TestDisabledConfigs(BaseConfigProject):
                         # make sure you can do this and get an int out
                         "threads": "{{ (1 + 3) | as_number }}",
                         "host": "localhost",
-                        "port": "{{ (5400 + 32) | as_number }}",
+                        "port": "{{ env_var('POSTGRES_TEST_PORT', '5432') | as_number }}",
                         "user": "root",
                         "pass": "password",
                         "dbname": "dbt",
@@ -26,7 +26,7 @@ class TestDisabledConfigs(BaseConfigProject):
                         # make sure you can do this and get an int out
                         "threads": "{{ (1 + 3) | as_number }}",
                         "host": "localhost",
-                        "port": "{{ (5400 + 32) | as_number }}",
+                        "port": "{{ env_var('POSTGRES_TEST_PORT', '5432') | as_number }}",
                         "user": "root",
                         "pass": "password",
                         "dbname": "dbt",
