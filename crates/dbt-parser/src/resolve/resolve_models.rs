@@ -76,8 +76,8 @@ use dbt_schemas::schemas::dbt_column::process_columns;
 use dbt_schemas::schemas::manifest::semantic_model::NodeRelation;
 use dbt_schemas::schemas::nodes::AdapterAttr;
 use dbt_schemas::schemas::project::DbtProject;
-use dbt_schemas::schemas::project::ModelConfig;
 use dbt_schemas::schemas::project::ResolvedModelConfig;
+use dbt_schemas::schemas::project::{ModelConfig, ProjectModelConfig};
 use dbt_schemas::schemas::properties::ModelConstraint;
 use dbt_schemas::schemas::properties::ModelFreshness;
 use dbt_schemas::schemas::properties::ModelProperties;
@@ -104,7 +104,9 @@ use super::resolve_tests::persist_generic_data_tests::TestableNodeTrait;
 use super::resolve_tests::persist_generic_data_tests::{
     TestUnrenderedConfigs, extract_test_unrendered_configs,
 };
-use super::resolve_utils::{validate_compute, validate_node_adapter};
+use super::resolve_utils::{
+    render_config_map, render_project_config_resolver, validate_compute, validate_node_adapter,
+};
 use super::validate_models::validate_model;
 
 /// Parses `ref('name')`, `ref('pkg', 'name')`, `ref('name', version=N)`, or
@@ -350,7 +352,7 @@ pub async fn resolve_models(
         base_ctx,
         package_name,
         &package.dbt_project,
-        config_resolver,
+        config_resolver.clone(),
         python_files,
         &mut models_properties_sans_semantics,
         default_adapter,
@@ -379,6 +381,7 @@ pub async fn resolve_models(
         raw_root_project_models_cfg.as_ref(),
         &raw_schema_yml_configs,
         &raw_test_configs,
+        &config_resolver,
         model_sql_resources_map,
         database,
         schema,
@@ -514,6 +517,7 @@ async fn build_model_nodes(
     raw_root_project_models_cfg: Option<&RawProjectConfig>,
     raw_schema_yml_configs: &BTreeMap<String, BTreeMap<String, dbt_yaml::Value>>,
     raw_test_configs: &BTreeMap<String, TestUnrenderedConfigs>,
+    config_resolver: &ProjectConfigResolver<ModelConfig>,
     model_sql_resources_map: Vec<SqlFileRenderResult<ModelConfig, ModelProperties>>,
     database: &str,
     schema: &str,
@@ -536,6 +540,7 @@ async fn build_model_nodes(
 ) -> FsResult<()> {
     let mut node_names = HashSet::new();
     let mut adapter_relation_contexts = AdapterTargetContextCache::default();
+    let mut adapter_config_resolvers = HashMap::from([(default_adapter, config_resolver.clone())]);
     let catalogs = load_catalogs::fetch_catalogs();
     let use_catalogs_v2 = load_catalogs::fetch_use_catalogs_v2();
     let catalogs_state = match catalogs.as_deref() {
@@ -552,7 +557,7 @@ async fn build_model_nodes(
         rendered_sql,
         macro_spans,
         properties: maybe_properties,
-        status,
+        mut status,
         render_error_deferred,
         patch_path,
         macro_dependencies,
@@ -566,13 +571,19 @@ async fn build_model_nodes(
         }
 
         let mut model_config = model_config_resolved;
+        let is_python_model = resource_extension(&dbt_asset.path)
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("py"));
+        let python_config_access = is_python_model.then(|| {
+            (
+                model_config.config_keys_used.clone(),
+                model_config.config_keys_defaults.clone(),
+                model_config.meta_keys_used.clone(),
+                model_config.meta_keys_defaults.clone(),
+            )
+        });
 
         // A model is an ad-hoc inline model iff it lives in the dedicated "" package.
         let is_inline_file = package_name.is_empty();
-        if is_inline_file {
-            model_config.materialized = DbtMaterialization::Inline;
-        }
-
         let mut model_name = models_properties_sans_semantics
             .get(ref_name)
             .map(|mpe| mpe.name.clone())
@@ -605,30 +616,6 @@ async fn build_model_nodes(
 
         let unique_id = get_unique_id(&model_name, package_name, maybe_version.clone(), "model");
 
-        if let Some(state) = &model_config.state {
-            ModelFreshnessRules::validate(state.lag_tolerance.as_ref()).map_err(|e| {
-                fs_err!(
-                    code => ErrorCode::InvalidConfig,
-                    loc => dbt_asset.path.clone(),
-                    "{}",
-                    e
-                )
-            })?;
-        }
-
-        // Keep track of duplicates (often happens with versioned models)
-        if (models.contains_key(&unique_id) || models_with_execute.contains_key(&unique_id))
-            && !(status == ModelStatus::Disabled)
-        {
-            duplicates.push((
-                unique_id.clone(),
-                model_name.clone(),
-                maybe_version.clone(),
-                dbt_asset.path.clone(),
-            ));
-            continue;
-        }
-
         let original_file_path =
             get_original_file_path(&dbt_asset.base_path, &arg.io.in_dir, &dbt_asset.path);
 
@@ -641,6 +628,12 @@ async fn build_model_nodes(
         let fqn = get_node_fqn(
             package_name,
             dbt_asset.path.to_owned(),
+            fqn_components.clone(),
+            package.dbt_project.model_paths.as_ref().unwrap_or(&vec![]),
+        );
+        let original_fqn = get_node_fqn(
+            package_name,
+            dbt_asset.original_path.to_owned(),
             fqn_components,
             package.dbt_project.model_paths.as_ref().unwrap_or(&vec![]),
         );
@@ -650,6 +643,119 @@ async fn build_model_nodes(
         } else {
             ModelProperties::empty(model_name.to_owned())
         };
+
+        // The first render discovers the node adapter. Re-render the raw
+        // schema.yml config and merge all config layers again using that
+        // adapter's target context and alias rules.
+        let discovered_adapter = arg
+            .adapter_override
+            .or(model_config.adapter)
+            .unwrap_or(default_adapter);
+        let relation_context = adapter_relation_contexts.get_for_node(
+            profile,
+            discovered_adapter,
+            default_adapter,
+            status,
+            base_ctx,
+        )?;
+        let mut adapter_properties_config: Option<ModelConfig> = render_config_map(
+            raw_schema_yml_configs.get(ref_name),
+            env,
+            &relation_context.base_context,
+            dependency_package_name,
+        )?;
+        if is_python_model {
+            let properties_config = adapter_properties_config.get_or_insert_default();
+            if properties_config.materialized.is_none() {
+                properties_config.materialized = Some(DbtMaterialization::Table);
+            }
+        }
+        if !adapter_config_resolvers.contains_key(&discovered_adapter) {
+            let selected_resolver =
+                render_project_config_resolver::<ModelConfig, ProjectModelConfig>(
+                    &package.raw_project_yml,
+                    &root_package.raw_project_yml,
+                    "models",
+                    "models",
+                    DbtQuoting::default(),
+                    (
+                        arg.static_analysis.unwrap_or_default(),
+                        root_package.dbt_project.sync.clone(),
+                        Some(discovered_adapter),
+                    ),
+                    env,
+                    &relation_context.base_context,
+                    dependency_package_name,
+                    disallow_plus_prefix_from_flags(root_package.dbt_project.flags.as_ref()),
+                    discovered_adapter,
+                )?;
+            adapter_config_resolvers.insert(discovered_adapter, selected_resolver);
+        }
+        model_config = adapter_config_resolvers
+            .get(&discovered_adapter)
+            .expect("selected adapter config resolver was inserted")
+            .resolve_with_configs_for_adapter(
+                &original_fqn,
+                &fqn,
+                &[
+                    adapter_properties_config.as_ref(),
+                    sql_file_info.explicit_config.as_deref(),
+                ],
+                discovered_adapter,
+            );
+        if let Some((config_keys_used, config_keys_defaults, meta_keys_used, meta_keys_defaults)) =
+            python_config_access
+        {
+            model_config.static_analysis = StaticAnalysisKind::Off.into();
+            model_config.config_keys_used = config_keys_used;
+            model_config.config_keys_defaults = config_keys_defaults;
+            model_config.meta_keys_used = meta_keys_used;
+            model_config.meta_keys_defaults = meta_keys_defaults;
+        }
+        let selected_adapter = arg
+            .adapter_override
+            .or(model_config.adapter)
+            .unwrap_or(default_adapter);
+        if selected_adapter != discovered_adapter {
+            return Err(fs_err!(
+                code => ErrorCode::InvalidConfig,
+                loc => dbt_asset.path.clone(),
+                "Node adapter changed from '{discovered_adapter}' to '{selected_adapter}' while \
+                 rendering adapter-specific config"
+            ));
+        }
+        status = if model_config.enabled {
+            ModelStatus::Enabled
+        } else {
+            ModelStatus::Disabled
+        };
+        if is_inline_file {
+            model_config.materialized = DbtMaterialization::Inline;
+        }
+
+        // Keep track of duplicates (often happens with versioned models)
+        if (models.contains_key(&unique_id) || models_with_execute.contains_key(&unique_id))
+            && status != ModelStatus::Disabled
+        {
+            duplicates.push((
+                unique_id.clone(),
+                model_name.clone(),
+                maybe_version.clone(),
+                dbt_asset.path.clone(),
+            ));
+            continue;
+        }
+
+        if let Some(state) = &model_config.state {
+            ModelFreshnessRules::validate(state.lag_tolerance.as_ref()).map_err(|e| {
+                fs_err!(
+                    code => ErrorCode::InvalidConfig,
+                    loc => dbt_asset.path.clone(),
+                    "{}",
+                    e
+                )
+            })?;
+        }
 
         // Validate model properties (versions, time spine, etc.)
         match validate_model(&properties) {
@@ -945,7 +1051,6 @@ async fn build_model_nodes(
             .clone()
             .map(Into::into)
             .unwrap_or_default();
-        let selected_adapter = resolved_node_adapter.unwrap_or(default_adapter);
         let catalog_requires_snowflake = catalogs_state
             .catalog_requires_snowflake_propagation(model_config.catalog_name.as_deref())?;
         let effective_propagation_target = (selected_adapter == AdapterType::LakeCompute)
@@ -959,13 +1064,6 @@ async fn build_model_nodes(
                 })
             })
             .flatten();
-        let relation_context = adapter_relation_contexts.get_for_node(
-            profile,
-            selected_adapter,
-            default_adapter,
-            status,
-            base_ctx,
-        )?;
         model_config.quoting = resolve_package_quoting(
             Some(match adapter_quoting.get(&selected_adapter) {
                 Some(authored) => model_config.quoting.filled_from(authored),
@@ -1713,7 +1811,7 @@ fn process_python_models(
                 refs: python_file_info.refs,
                 this: false,
                 metrics: vec![],
-                explicit_config: None,
+                explicit_config: Some(python_file_info.config),
                 tests: vec![],
                 macros: vec![],
                 materializations: vec![],
@@ -1990,17 +2088,23 @@ fn apply_model_freshness_loaded_at_override(
 mod tests {
     use super::{
         apply_model_freshness_loaded_at_override, parse_ref_from_constraint,
-        parse_source_from_constraint, validate_database_not_catalog, validate_model_freshness_sla,
+        parse_source_from_constraint, render_config_map, validate_database_not_catalog,
+        validate_model_freshness_sla,
     };
+    use crate::resolve::resolve_utils::render_project_config;
     use dbt_adapter_core::AdapterType;
     use dbt_common::{ErrorCode, FsResult};
+    use dbt_jinja_utils::jinja_environment::JinjaEnv;
     use dbt_jinja_utils::phases::{AdapterTargetContextCache, build_adapter_target_context};
     use dbt_schemas::schemas::common::{
-        DbtMaterialization, FreshnessPeriod, FreshnessRules, ModelFreshnessRules,
+        DbtMaterialization, DbtQuoting, FreshnessPeriod, FreshnessRules, ModelFreshnessRules,
     };
     use dbt_schemas::schemas::dbt_catalogs_deprecated::DbtCatalogs;
     use dbt_schemas::schemas::profiles::{
         DbConfig, DuckDbConfig, SalesforceDbConfig, SnowflakeDbConfig,
+    };
+    use dbt_schemas::schemas::project::{
+        DbtProjectConfig, ModelConfig, ProjectConfigResolver, ProjectModelConfig,
     };
     use dbt_schemas::schemas::properties::ModelFreshness;
     use dbt_schemas::schemas::serde::NodeVersion;
@@ -2085,6 +2189,96 @@ mod tests {
             target.get_attr("schema").unwrap().as_str(),
             Some("duckdb_schema")
         );
+    }
+
+    #[test]
+    fn selected_adapter_renders_and_merges_schema_config_with_its_target() {
+        let snowflake = SnowflakeDbConfig {
+            account: Some("test_account".to_string()),
+            database: Some("snowflake_db".to_string()),
+            schema: Some("snowflake_schema".to_string()),
+            ..Default::default()
+        };
+        let duckdb = DuckDbConfig {
+            path: Some("md:dbt_multi_adapter".to_string()),
+            schema: Some("duckdb_schema".to_string()),
+            ..Default::default()
+        };
+        let profile = DbtProfile {
+            profile: "multi_adapter".to_string(),
+            target: "dev".to_string(),
+            defer_to_target: None,
+            allow_clones: true,
+            adapters: IndexMap::from([
+                (
+                    AdapterType::Snowflake,
+                    ProfileAdapter::single(snowflake.into()),
+                ),
+                (AdapterType::DuckDB, ProfileAdapter::single(duckdb.into())),
+            ]),
+            default_adapter: AdapterType::Snowflake,
+            schema: "snowflake_schema".to_string(),
+            database: "snowflake_db".to_string(),
+            relative_profile_path: PathBuf::new(),
+            threads: None,
+        };
+        let adapter_context =
+            build_adapter_target_context(&profile, AdapterType::DuckDB, &BTreeMap::new()).unwrap();
+        let raw: dbt_yaml::Value =
+            dbt_yaml::from_str("config:\n  adapter: duckdb\n  schema: \"{{ target.schema }}\"\n")
+                .unwrap();
+        let raw_config = super::extract_config_map(&raw).unwrap();
+        let rendered: ModelConfig = render_config_map(
+            Some(&raw_config),
+            &JinjaEnv::new(minijinja::Environment::new()),
+            &adapter_context.base_context,
+            None,
+        )
+        .unwrap()
+        .unwrap();
+        let resolver = ProjectConfigResolver::for_root(
+            DbtProjectConfig {
+                config: ModelConfig::default(),
+                children: IndexMap::new(),
+            },
+            AdapterType::Snowflake,
+        );
+
+        let merged = resolver.with_configs_for_adapter(
+            &["project".to_string(), "model".to_string()],
+            &[Some(&rendered)],
+            AdapterType::DuckDB,
+        );
+
+        assert_eq!(
+            merged.schema.into_inner().flatten(),
+            Some("duckdb_schema".to_string())
+        );
+        assert_eq!(merged.adapter, Some(AdapterType::DuckDB));
+
+        let raw_project: dbt_yaml::Value = dbt_yaml::from_str(
+            "models:\n  project:\n    +adapter: duckdb\n    +schema: \"{{ target.schema }}\"\n",
+        )
+        .unwrap();
+        let project_tree = render_project_config::<ModelConfig, ProjectModelConfig>(
+            &raw_project,
+            "models",
+            DbtQuoting::default(),
+            &JinjaEnv::new(minijinja::Environment::new()),
+            &adapter_context.base_context,
+            None,
+            false,
+            AdapterType::DuckDB,
+        )
+        .unwrap();
+        let project_merged = ProjectConfigResolver::for_root(project_tree, AdapterType::DuckDB)
+            .with_configs(&["project".to_string(), "model".to_string()], &[]);
+
+        assert_eq!(
+            project_merged.schema.into_inner().flatten(),
+            Some("duckdb_schema".to_string())
+        );
+        assert_eq!(project_merged.adapter, Some(AdapterType::DuckDB));
     }
 
     #[test]
