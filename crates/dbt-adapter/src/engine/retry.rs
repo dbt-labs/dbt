@@ -4,6 +4,7 @@ use dbt_adapter_core::AdapterType;
 use dbt_adbc::Connection;
 use dbt_adbc::duration::parse_duration;
 use dbt_auth::AdapterConfig;
+use dbt_common::Cancellable;
 
 #[derive(Debug)]
 pub(crate) enum BackoffStrategy {
@@ -12,6 +13,8 @@ pub(crate) enum BackoffStrategy {
     /// Matches dbt-snowflake (Python)'s `exponential_backoff(attempt) = attempt * attempt`
     /// (the Python name is misleading; the formula is quadratic).
     Quadratic,
+    /// Doubling backoff capped at 60s: 1, 2, 4, 8, 16, 32, 60, 60, ...
+    Exponential,
 }
 
 impl BackoffStrategy {
@@ -23,6 +26,35 @@ impl BackoffStrategy {
             BackoffStrategy::Quadratic => {
                 let attempt = u64::from(attempt);
                 Duration::from_secs(attempt.saturating_mul(attempt))
+            }
+            BackoffStrategy::Exponential => {
+                let seconds = 2u64.saturating_pow(attempt.saturating_sub(1));
+                Duration::from_secs(seconds.min(60))
+            }
+        }
+    }
+}
+
+/// Shared retry-loop skeleton for [`ConnectionRetryPolicy`] and [`QueryRetryPolicy`].
+fn retry_loop<T, E>(
+    max_retries: u32,
+    mut attempt_fn: impl FnMut() -> Result<T, E>,
+    is_retryable: impl Fn(&E) -> bool,
+    delay_for: impl Fn(u32) -> Duration,
+) -> Result<T, E> {
+    let mut attempt: u32 = 0;
+    loop {
+        match attempt_fn() {
+            Ok(v) => return Ok(v),
+            Err(err) => {
+                if attempt >= max_retries || !is_retryable(&err) {
+                    return Err(err);
+                }
+                let delay = delay_for(attempt + 1);
+                if !delay.is_zero() {
+                    std::thread::sleep(delay);
+                }
+                attempt += 1;
             }
         }
     }
@@ -109,28 +141,18 @@ impl ConnectionRetryPolicy {
     pub fn execute(
         &self,
         config: &AdapterConfig,
-        mut connect_fn: impl FnMut() -> adbc_core::error::Result<Box<dyn Connection>>,
+        connect_fn: impl FnMut() -> adbc_core::error::Result<Box<dyn Connection>>,
     ) -> adbc_core::error::Result<Box<dyn Connection>> {
-        let mut attempt: u32 = 0;
-        loop {
-            match connect_fn() {
-                Ok(conn) => return Ok(conn),
-                Err(err) => {
-                    if attempt >= self.max_retries || !self.is_retryable(config, &err) {
-                        return Err(err);
-                    }
-                    // XXX: consider printing the error as a warning before hanging on the user
-                    let delay = match self.retry_sleep {
-                        Some(t) => t,
-                        None => self.backoff.delay_before_next_attempt(attempt + 1),
-                    };
-                    if !delay.is_zero() {
-                        std::thread::sleep(delay);
-                    }
-                    attempt += 1;
-                }
-            }
-        }
+        // XXX: consider printing the error as a warning before hanging on the user
+        retry_loop(
+            self.max_retries,
+            connect_fn,
+            |err| self.is_retryable(config, err),
+            |attempt| match self.retry_sleep {
+                Some(t) => t,
+                None => self.backoff.delay_before_next_attempt(attempt),
+            },
+        )
     }
 
     /// Per-adapter default for the `connect_retries` profile field.
@@ -179,6 +201,75 @@ fn matches_go_net_transient(msg_lowercase: &str) -> bool {
     GO_NET_TRANSIENT_PATTERNS
         .iter()
         .any(|p| msg_lowercase.contains(p))
+}
+
+/// Retries a transient query-*execution* failure (as opposed to
+/// [`ConnectionRetryPolicy`], which retries connection-open). Redshift-only.
+///
+/// Retries on the same connection: Fusion runs Redshift autocommit-only, so
+/// there's no aborted transaction to clear, and the driver re-`Prepare`s
+/// fresh on every call -- enough to recover from a stale-OID or
+/// missing-relation catalog race.
+#[derive(Debug, Clone)]
+pub struct QueryRetryPolicy {
+    adapter_type: AdapterType,
+    max_retries: u32,
+    retry_all: bool,
+}
+
+impl QueryRetryPolicy {
+    /// Reads Redshift's actual profile field names (`retries`, not `connect_retries`).
+    pub fn new(adapter_type: AdapterType, config: &AdapterConfig) -> QueryRetryPolicy {
+        let max_retries = config
+            .get_string("retries")
+            .and_then(|v| v.parse::<u32>().ok())
+            .unwrap_or(1);
+        let retry_all = config.get_bool("retry_all").unwrap_or(false);
+        QueryRetryPolicy {
+            adapter_type,
+            max_retries,
+            retry_all,
+        }
+    }
+
+    /// Cancellation is never retried.
+    pub fn execute<T>(
+        &self,
+        mut query_fn: impl FnMut() -> Result<T, Cancellable<adbc_core::error::Error>>,
+    ) -> Result<T, Cancellable<adbc_core::error::Error>> {
+        if self.adapter_type != AdapterType::Redshift {
+            return query_fn();
+        }
+        retry_loop(
+            self.max_retries,
+            query_fn,
+            |err| match err {
+                Cancellable::Cancelled => false,
+                Cancellable::Error(e) => self.is_retryable(e),
+            },
+            |attempt| BackoffStrategy::Exponential.delay_before_next_attempt(attempt),
+        )
+    }
+
+    fn is_retryable(&self, err: &adbc_core::error::Error) -> bool {
+        is_retryable_redshift_query_error(self.retry_all, &err.message)
+    }
+}
+
+/// Substring heuristics for known-transient Redshift errors, not proof that
+/// every match is actually transient. `retry_all` widens to any error.
+fn is_retryable_redshift_query_error(retry_all: bool, message: &str) -> bool {
+    if retry_all {
+        return true;
+    }
+
+    let msg = message.to_lowercase();
+    // Catalog race after a concurrent DROP/CREATE.
+    msg.contains("could not open relation with oid")
+        // MVCC serialization conflict.
+        || msg.contains("conflict with concurrent transaction")
+        // Schema catalog race (can also be a genuine permanent error).
+        || (msg.contains("schema") && msg.contains("does not exist"))
 }
 
 /// Mirrors the Python dbt-snowflake retryable exception list:
@@ -829,5 +920,200 @@ mod tests {
                 "expected NO retry for msg {msg:?}"
             );
         }
+    }
+
+    // -- Exponential backoff --------------------------------------------
+
+    #[test]
+    fn exponential_backoff_matches_python_recurrence() {
+        use BackoffStrategy::Exponential;
+        // Python: backoff starts at 1, then `min(max(backoff * 2, 2), 60)` each retry:
+        // 1, 2, 4, 8, 16, 32, 64->60, 60, ...
+        assert_eq!(
+            Exponential.delay_before_next_attempt(1),
+            Duration::from_secs(1)
+        );
+        assert_eq!(
+            Exponential.delay_before_next_attempt(2),
+            Duration::from_secs(2)
+        );
+        assert_eq!(
+            Exponential.delay_before_next_attempt(3),
+            Duration::from_secs(4)
+        );
+        assert_eq!(
+            Exponential.delay_before_next_attempt(6),
+            Duration::from_secs(32)
+        );
+        assert_eq!(
+            Exponential.delay_before_next_attempt(7),
+            Duration::from_secs(60)
+        );
+        assert_eq!(
+            Exponential.delay_before_next_attempt(20),
+            Duration::from_secs(60)
+        );
+    }
+
+    // -- QueryRetryPolicy ------------------------------------------------------
+
+    #[test]
+    fn query_retry_policy_default_retries_is_one() {
+        let cfg = AdapterConfig::new(dbt_yaml::Mapping::new());
+        assert_eq!(
+            QueryRetryPolicy::new(AdapterType::Redshift, &cfg).max_retries,
+            1
+        );
+    }
+
+    #[test]
+    fn query_retry_policy_reads_retries_field() {
+        let mapping = dbt_yaml::Mapping::from_iter([("retries".into(), 3.into())]);
+        let cfg = AdapterConfig::new(mapping);
+        assert_eq!(
+            QueryRetryPolicy::new(AdapterType::Redshift, &cfg).max_retries,
+            3
+        );
+    }
+
+    #[test]
+    fn query_retry_policy_retries_on_oid_race_then_succeeds() {
+        let cfg = AdapterConfig::new(dbt_yaml::Mapping::new());
+        let policy = QueryRetryPolicy::new(AdapterType::Redshift, &cfg);
+        let mut calls = 0;
+        let result: Result<i32, Cancellable<AdbcError>> = policy.execute(|| {
+            calls += 1;
+            if calls < 2 {
+                Err(Cancellable::Error(adbc_err(
+                    Status::Internal,
+                    "ERROR: could not open relation with OID 12345",
+                )))
+            } else {
+                Ok(calls)
+            }
+        });
+        assert_eq!(result.unwrap(), 2);
+    }
+
+    #[test]
+    fn query_retry_policy_retries_on_concurrent_transaction_conflict() {
+        let cfg = AdapterConfig::new(dbt_yaml::Mapping::new());
+        let policy = QueryRetryPolicy::new(AdapterType::Redshift, &cfg);
+        let mut calls = 0;
+        let result: Result<i32, Cancellable<AdbcError>> = policy.execute(|| {
+            calls += 1;
+            if calls < 2 {
+                Err(Cancellable::Error(adbc_err(
+                    Status::Internal,
+                    "ERROR: conflict with concurrent transaction",
+                )))
+            } else {
+                Ok(calls)
+            }
+        });
+        assert_eq!(result.unwrap(), 2);
+    }
+
+    #[test]
+    fn query_retry_policy_retries_on_missing_schema_race() {
+        let cfg = AdapterConfig::new(dbt_yaml::Mapping::new());
+        let policy = QueryRetryPolicy::new(AdapterType::Redshift, &cfg);
+        let mut calls = 0;
+        let result: Result<i32, Cancellable<AdbcError>> = policy.execute(|| {
+            calls += 1;
+            if calls < 2 {
+                Err(Cancellable::Error(adbc_err(
+                    Status::Internal,
+                    "ERROR: schema \"analytics_scratch\" does not exist",
+                )))
+            } else {
+                Ok(calls)
+            }
+        });
+        assert_eq!(result.unwrap(), 2);
+    }
+
+    #[test]
+    fn query_retry_policy_does_not_retry_unrelated_errors() {
+        let cfg = AdapterConfig::new(dbt_yaml::Mapping::new());
+        let policy = QueryRetryPolicy::new(AdapterType::Redshift, &cfg);
+        let mut calls = 0;
+        let result: Result<i32, Cancellable<AdbcError>> = policy.execute(|| {
+            calls += 1;
+            Err(Cancellable::Error(adbc_err(
+                Status::InvalidArguments,
+                "syntax error at or near \"selct\"",
+            )))
+        });
+        assert!(result.is_err());
+        assert_eq!(calls, 1);
+    }
+
+    #[test]
+    fn query_retry_policy_respects_retry_all_flag() {
+        let mapping = dbt_yaml::Mapping::from_iter([("retry_all".into(), true.into())]);
+        let cfg = AdapterConfig::new(mapping);
+        let policy = QueryRetryPolicy::new(AdapterType::Redshift, &cfg);
+        let mut calls = 0;
+        let result: Result<i32, Cancellable<AdbcError>> = policy.execute(|| {
+            calls += 1;
+            if calls < 2 {
+                Err(Cancellable::Error(adbc_err(
+                    Status::InvalidArguments,
+                    "some otherwise-unretryable error",
+                )))
+            } else {
+                Ok(calls)
+            }
+        });
+        assert_eq!(result.unwrap(), 2);
+    }
+
+    #[test]
+    fn query_retry_policy_exhausts_retries_and_returns_last_error() {
+        let mapping = dbt_yaml::Mapping::from_iter([("retries".into(), 2.into())]);
+        let cfg = AdapterConfig::new(mapping);
+        let policy = QueryRetryPolicy::new(AdapterType::Redshift, &cfg);
+        let mut calls = 0;
+        let result: Result<i32, Cancellable<AdbcError>> = policy.execute(|| {
+            calls += 1;
+            Err(Cancellable::Error(adbc_err(
+                Status::Internal,
+                "ERROR: conflict with concurrent transaction",
+            )))
+        });
+        assert!(result.is_err());
+        // 1 initial attempt + 2 retries = 3 total calls.
+        assert_eq!(calls, 3);
+    }
+
+    #[test]
+    fn query_retry_policy_never_retries_cancellation() {
+        let cfg = AdapterConfig::new(dbt_yaml::Mapping::new());
+        let policy = QueryRetryPolicy::new(AdapterType::Redshift, &cfg);
+        let mut calls = 0;
+        let result: Result<i32, Cancellable<AdbcError>> = policy.execute(|| {
+            calls += 1;
+            Err(Cancellable::Cancelled)
+        });
+        assert!(matches!(result, Err(Cancellable::Cancelled)));
+        assert_eq!(calls, 1);
+    }
+
+    #[test]
+    fn query_retry_policy_is_a_no_op_for_non_redshift_adapters() {
+        let mapping = dbt_yaml::Mapping::from_iter([("retries".into(), 3.into())]);
+        let cfg = AdapterConfig::new(mapping);
+        let policy = QueryRetryPolicy::new(AdapterType::Snowflake, &cfg);
+        let mut calls = 0;
+        let result: Result<i32, Cancellable<AdbcError>> = policy.execute(|| {
+            calls += 1;
+            Err(Cancellable::Error(adbc_err(
+                Status::Internal,
+                "ERROR: could not open relation with OID 12345",
+            )))
+        });
+        assert!(result.is_err());
+        assert_eq!(calls, 1);
     }
 }

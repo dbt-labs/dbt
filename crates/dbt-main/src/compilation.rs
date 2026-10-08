@@ -593,6 +593,7 @@ impl<'a> CompilationPhasesExecutor<'a> {
                         compiled_code: Default::default(),
                     };
                     if self.arg.write_json {
+                        let project_state = loaded_project.dbt_state();
                         write_run_results_json_or_warn(
                             // TODO: should also be captured by the caller?
                             &build_run_results_artifact(
@@ -600,6 +601,8 @@ impl<'a> CompilationPhasesExecutor<'a> {
                                 // Adapter responses are not available during parse phase.
                                 &HashMap::new(),
                                 self.arg.as_ref(),
+                                project_state.warn_error,
+                                &project_state.warn_error_options,
                             ),
                             self.arg.as_ref(),
                         );
@@ -810,7 +813,7 @@ use dbt_state::selector::RunCacheStateSelectorArgs;
 use dbt_state::telemetry::SharedEventOrder;
 
 impl DbtProjectCompilation {
-    fn dbt_state(&self) -> Arc<DbtState> {
+    pub(crate) fn dbt_state(&self) -> Arc<DbtState> {
         self.loaded_project.dbt_state()
     }
 
@@ -2259,6 +2262,7 @@ impl DbtProjectCompilation {
                 compiled_code: Default::default(),
             };
             if arg.write_json {
+                let project_state = self.dbt_state();
                 // TODO: should also be captured by the caller?
                 write_run_results_json(
                     &build_run_results_artifact(
@@ -2268,6 +2272,8 @@ impl DbtProjectCompilation {
                         // execution and add them here. We just have to wire it up.
                         &HashMap::new(),
                         arg,
+                        project_state.warn_error,
+                        &project_state.warn_error_options,
                     ),
                     arg,
                 )?;

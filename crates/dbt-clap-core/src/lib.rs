@@ -1626,8 +1626,9 @@ pub enum StateSubcommand {
 
 #[derive(Parser, Debug, Default, Clone, Serialize, Deserialize)]
 pub struct StateExplainArgs {
-    #[arg(short, long)]
-    pub verbose: bool,
+    /// Enable more detailed output. Pass twice (-vv) to also include all upstream dependency changes
+    #[arg(short, long, action = ArgAction::Count)]
+    pub verbose: u8,
 
     #[arg(short = 'l', long = "log-file")]
     pub log_file: Option<PathBuf>,

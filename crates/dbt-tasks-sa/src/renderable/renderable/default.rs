@@ -20,7 +20,7 @@ use dbt_schemas::schemas::common::DbtMaterialization;
 use dbt_schemas::schemas::properties::UnitTestOverrides;
 use dbt_schemas::schemas::{InternalDbtNodeAttributes, NodePathKind};
 use dbt_tasks_core::context::TaskRunnerCtx;
-use dbt_tasks_core::task::TaskOp;
+use dbt_tasks_core::task::run_blocking_task_operation;
 use dbt_telemetry::{CompiledCode, NodeType};
 use minijinja::Value as MinijinjaValue;
 
@@ -46,7 +46,7 @@ pub async fn run_default_render(
             &result_sender,
         )
     });
-    TaskOp::Blocking(render_step).run().await?
+    run_blocking_task_operation(render_step).await?
 }
 
 fn render_default(
