@@ -116,6 +116,62 @@ pub fn convert_yml_to_value_map(yml: YmlValue) -> IndexMap<String, minijinja::Va
     }
 }
 
+/// A minijinja `Object` that mimics a Python `StrEnum` member.
+///
+/// In dbt 1.x (Python), `NodeType` is a `StrEnum` whose members behave as
+/// plain strings but also expose a `.name` property returning the member name
+/// (e.g. `"Model"`) and a `.value` property returning the member value (e.g.
+/// `"model"`). Many user macros rely on `node.resource_type.name` to get the
+/// capitalized form.
+///
+/// In dbt v2 (Rust), enum values are serialized as plain strings, so `.name`
+/// silently resolves to empty via minijinja's undefined handling. This wrapper
+/// restores the `.name` / `.value` attributes while still rendering as the
+/// plain string value.
+///
+/// See: <https://github.com/dbt-labs/dbt-core/issues/16426>
+#[derive(Debug, Clone)]
+pub struct StrEnumValue {
+    /// The enum member name, e.g. `"Model"`, `"Seed"`, `"Snapshot"`.
+    name: &'static str,
+    /// The enum member value (lowercase), e.g. `"model"`, `"seed"`, `"snapshot"`.
+    value: &'static str,
+}
+
+impl StrEnumValue {
+    /// Create a new `StrEnumValue` from its member name and value.
+    pub fn new(name: &'static str, value: &'static str) -> Self {
+        Self { name, value }
+    }
+
+    /// Create a minijinja `Value` wrapping this enum member.
+    pub fn into_value(self) -> minijinja::Value {
+        minijinja::Value::from_object(self)
+    }
+}
+
+/// Create a [`StrEnumValue`] minijinja `Value` for a [`NodeType`], preserving
+/// the `.name` / `.value` attributes that dbt 1.x Python `StrEnum` exposed.
+pub fn node_type_to_str_enum_value(
+    node_type: dbt_telemetry::NodeType,
+) -> minijinja::Value {
+    StrEnumValue::new(node_type.enum_name(), node_type.as_static_ref()).into_value()
+}
+
+impl minijinja::value::Object for StrEnumValue {
+    fn get_value(self: &std::sync::Arc<Self>, key: &minijinja::Value) -> Option<minijinja::Value> {
+        match key.as_str()? {
+            "name" => Some(minijinja::Value::from(self.name)),
+            "value" => Some(minijinja::Value::from(self.value)),
+            _ => None,
+        }
+    }
+
+    fn render(self: &std::sync::Arc<Self>, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.value)
+    }
+}
+
 /// A wrapper around a value that can be either present or omitted.
 ///
 /// This is a counterpart to the `Option` type, intended for use in
@@ -608,5 +664,46 @@ properties:
         let m: dbt_yaml::Mapping = dbt_yaml::from_str("k: 42").unwrap();
         let err = try_get_bool(&m, "k").unwrap_err();
         assert!(err.to_string().contains("must be a boolean"));
+    }
+
+    #[test]
+    fn str_enum_value_renders_as_value() {
+        let sev = super::StrEnumValue::new("Model", "model");
+        let val = sev.into_value();
+        // When used as a plain string (e.g. {{ node.resource_type }}), renders as the value
+        assert_eq!(val.to_string(), "model");
+    }
+
+    #[test]
+    fn str_enum_value_name_returns_member_name() {
+        let sev = super::StrEnumValue::new("Model", "model");
+        let val = sev.into_value();
+        // {{ node.resource_type.name }} returns the capitalized member name
+        let name = val.get_attr("name").unwrap();
+        assert_eq!(name.to_string(), "Model");
+    }
+
+    #[test]
+    fn str_enum_value_value_returns_member_value() {
+        let sev = super::StrEnumValue::new("Seed", "seed");
+        let val = sev.into_value();
+        // {{ node.resource_type.value }} returns the lowercase value
+        let value = val.get_attr("value").unwrap();
+        assert_eq!(value.to_string(), "seed");
+    }
+
+    #[test]
+    fn node_type_to_str_enum_value_model() {
+        let val = super::node_type_to_str_enum_value(dbt_telemetry::NodeType::Model);
+        assert_eq!(val.to_string(), "model");
+        assert_eq!(val.get_attr("name").unwrap().to_string(), "Model");
+        assert_eq!(val.get_attr("value").unwrap().to_string(), "model");
+    }
+
+    #[test]
+    fn node_type_to_str_enum_value_snapshot() {
+        let val = super::node_type_to_str_enum_value(dbt_telemetry::NodeType::Snapshot);
+        assert_eq!(val.to_string(), "snapshot");
+        assert_eq!(val.get_attr("name").unwrap().to_string(), "Snapshot");
     }
 }

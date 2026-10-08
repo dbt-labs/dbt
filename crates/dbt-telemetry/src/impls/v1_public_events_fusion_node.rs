@@ -44,6 +44,36 @@ impl NodeType {
             Self::Check => "check",
         }
     }
+
+    /// Returns the Python `StrEnum` member name for this node type.
+    ///
+    /// In dbt 1.x, `NodeType` is a `StrEnum` and `.name` returns the variant
+    /// name (e.g. `"Model"`, `"Seed"`). This method provides the same value
+    /// for backwards compatibility with user macros that access
+    /// `node.resource_type.name`.
+    ///
+    /// See: <https://github.com/dbt-labs/dbt-core/issues/16426>
+    pub const fn enum_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "Unspecified",
+            Self::Model => "Model",
+            Self::Seed => "Seed",
+            Self::Snapshot => "Snapshot",
+            Self::Source => "Source",
+            Self::Test => "Test",
+            Self::UnitTest => "UnitTest",
+            Self::Macro => "Macro",
+            Self::DocsMacro => "DocsMacro",
+            Self::Analysis => "Analysis",
+            Self::Operation => "Operation",
+            Self::Exposure => "Exposure",
+            Self::Metric => "Metric",
+            Self::SavedQuery => "SavedQuery",
+            Self::SemanticModel => "SemanticModel",
+            Self::Function => "Function",
+            Self::Check => "Check",
+        }
+    }
 }
 
 impl NodeType {

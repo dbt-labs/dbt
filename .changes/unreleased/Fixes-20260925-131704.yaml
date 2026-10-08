@@ -1,0 +1,7 @@
+kind: Fixes
+body: Wrap node.resource_type as a StrEnumValue so that .name returns the capitalized enum member name (e.g. Model), matching dbt 1.x StrEnum behavior
+time: 2026-09-25T13:17:04.190287+05:30
+custom:
+    author: ""
+    issue: "16426"
+    project: dbt-core
