@@ -1,7 +1,7 @@
 use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use arrow_array::RecordBatch;
 use arrow_schema::Schema;
@@ -21,6 +21,7 @@ use parking_lot::RwLock;
 use crate::cache::RelationCache;
 use crate::engine::query_comment::QueryCommentConfig;
 use crate::errors::{AdapterError, adbc_error_to_adapter_error};
+use crate::metadata::clickhouse::ClickHouseCapabilities;
 use crate::sql_types::TypeOps;
 use crate::stmt_splitter::StmtSplitter;
 
@@ -89,6 +90,8 @@ pub struct AdbcEngine {
     /// `ResolvedCloudConfig::project_id`, forwarded as the `dbt_cloud.project_id`
     /// flock-adbc driver option alongside whichever credential is resolved.
     dbt_cloud_project_id: Option<String>,
+    /// See [`AdapterEngine::clickhouse_capabilities`].
+    clickhouse_capabilities: OnceLock<ClickHouseCapabilities>,
 }
 
 impl AdbcEngine {
@@ -126,6 +129,7 @@ impl AdbcEngine {
             threads,
             connection_fingerprint: std::sync::atomic::AtomicU64::new(0),
             dbt_cloud_project_id,
+            clickhouse_capabilities: OnceLock::new(),
         }
     }
 
@@ -517,6 +521,10 @@ impl AdapterEngine for AdbcEngine {
 
     fn relation_cache(&self) -> &Arc<RelationCache> {
         &self.relation_cache
+    }
+
+    fn clickhouse_capabilities(&self) -> Option<&OnceLock<ClickHouseCapabilities>> {
+        Some(&self.clickhouse_capabilities)
     }
 
     fn new_connection(

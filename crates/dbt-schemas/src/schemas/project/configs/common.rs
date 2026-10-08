@@ -384,6 +384,12 @@ pub struct WarehouseSpecificNodeConfig {
     pub query_settings: Option<BTreeMap<String, YmlValue>>,
     #[warehouse(valid(Model, Snapshot))]
     pub projections: Option<Vec<YmlValue>>,
+    // distributed materializations
+    #[warehouse(valid(Model))]
+    pub sharding_key: Option<String>,
+    #[serde(default, deserialize_with = "bool_or_string_bool")]
+    #[warehouse(valid(Model))]
+    pub disable_on_cluster: Option<bool>,
     // incremental materialization
     #[serde(default, deserialize_with = "bool_or_string_bool")]
     #[warehouse(valid(Model))]
@@ -683,6 +689,8 @@ pub fn same_warehouse_config(
     let settings_eq = opt_yml_map_eq(&self_wh.settings, &other_wh.settings);
     let query_settings_eq = opt_yml_map_eq(&self_wh.query_settings, &other_wh.query_settings);
     let projections_eq = opt_yml_vec_eq(&self_wh.projections, &other_wh.projections);
+    let sharding_key_eq = self_wh.sharding_key == other_wh.sharding_key;
+    let disable_on_cluster_eq = self_wh.disable_on_cluster == other_wh.disable_on_cluster;
     let inserts_only_eq = self_wh.inserts_only == other_wh.inserts_only;
     let connection_overrides_eq = opt_yml_map_eq(
         &self_wh.connection_overrides,
@@ -788,6 +796,8 @@ pub fn same_warehouse_config(
         && settings_eq
         && query_settings_eq
         && projections_eq
+        && sharding_key_eq
+        && disable_on_cluster_eq
         && inserts_only_eq
         && connection_overrides_eq
         && fields_eq
@@ -1466,6 +1476,22 @@ pub fn same_warehouse_config(
                     Some((
                         format!("{:?}", &self_wh.projections),
                         format!("{:?}", &other_wh.projections),
+                    )),
+                ),
+                (
+                    "sharding_key",
+                    sharding_key_eq,
+                    Some((
+                        format!("{:?}", &self_wh.sharding_key),
+                        format!("{:?}", &other_wh.sharding_key),
+                    )),
+                ),
+                (
+                    "disable_on_cluster",
+                    disable_on_cluster_eq,
+                    Some((
+                        format!("{:?}", &self_wh.disable_on_cluster),
+                        format!("{:?}", &other_wh.disable_on_cluster),
                     )),
                 ),
                 (

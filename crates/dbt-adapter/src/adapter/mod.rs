@@ -4279,20 +4279,30 @@ impl Adapter {
             "external_write_options" => self.external_write_options(state, args),
             "external_read_location" => self.external_read_location(state, args),
             "location_exists" => self.location_exists(state, args),
-            // ---- ClickHouse adapter method stubs (MVP) ----
-            // These methods are called from ClickHouse Jinja macros. They are
-            // registered for all adapters (they only run when the dispatch
-            // hits a ClickHouse macro), but they return conservative defaults
-            // so behavior matches "no cluster, no special engine, current
-            // server version, cannot exchange tables atomically".
-            "clickhouse_db_engine_clause" => {
-                // (no args) -> "" (skip "ENGINE = ..." in CREATE DATABASE)
-                Ok(Value::from(""))
-            }
-            "get_clickhouse_cluster_name" => {
-                // (no args) -> None (no ON CLUSTER usage)
-                Ok(Value::from(()))
-            }
+            // ---- ClickHouse adapter methods ----
+            "clickhouse_db_engine_clause" => match &self.inner {
+                // (no args) -> "ENGINE <database_engine>" | "" (CREATE DATABASE clause)
+                Typed { adapter, .. } => Ok(Value::from(adapter.clickhouse_db_engine_clause())),
+                Parse(_) => Ok(empty_string_value()),
+            },
+            "get_clickhouse_cluster_name" => match &self.inner {
+                // (no args) -> '"<cluster>"' | None
+                Typed { adapter, .. } => Ok(adapter
+                    .get_clickhouse_cluster_name()
+                    .map(Value::from)
+                    .unwrap_or_else(none_value)),
+                Parse(_) => Ok(none_value()),
+            },
+            "get_clickhouse_local_suffix" => match &self.inner {
+                // (no args) -> str (default "_local")
+                Typed { adapter, .. } => Ok(Value::from(adapter.get_clickhouse_local_suffix())),
+                Parse(_) => Ok(empty_string_value()),
+            },
+            "get_clickhouse_local_db_prefix" => match &self.inner {
+                // (no args) -> str (default "")
+                Typed { adapter, .. } => Ok(Value::from(adapter.get_clickhouse_local_db_prefix())),
+                Parse(_) => Ok(empty_string_value()),
+            },
             "get_model_settings" => {
                 // model: dict, engine: str = "MergeTree" -> SETTINGS section of CREATE DDL
                 self.get_model_settings(state, args)
@@ -4324,12 +4334,44 @@ impl Adapter {
                 Ok(clickhouse::format_columns(columns))
             }
             "can_exchange" => {
-                // schema: str, type: str -> false (don't use EXCHANGE TABLES)
-                Ok(Value::from(false))
+                // schema: str, rel_type: str -> bool (EXCHANGE TABLES usable for this relation)
+                let iter = ArgsIter::new("can_exchange", &["schema", "rel_type"], args);
+                let schema = iter.next_arg::<&str>()?;
+                let rel_type = iter.next_arg::<&str>()?;
+                iter.finish()?;
+                match &self.inner {
+                    Typed { adapter, .. } => Ok(Value::from(adapter.can_exchange(
+                        state,
+                        schema,
+                        rel_type,
+                        self.cancellation_token.clone(),
+                    ))),
+                    Parse(_) => Ok(Value::from(false)),
+                }
             }
             "should_on_cluster" => {
-                // materialized: str, engine_clause: str -> false
-                Ok(Value::from(false))
+                // materialized: str = '', engine: str = '', relation: BaseRelation = None -> bool
+                // (materialized/engine ignored, as in impl.py; `relation` is v2's on_cluster_clause
+                // asking for relation.py's `should_on_cluster` with the profile at hand)
+                let iter = ArgsIter::new(
+                    "should_on_cluster",
+                    &["materialized", "engine", "relation"],
+                    args,
+                );
+                iter.next_arg::<Option<&Value>>()?;
+                iter.next_arg::<Option<&Value>>()?;
+                let relation = iter.next_arg::<Option<&Value>>()?;
+                iter.finish()?;
+                let relation = relation
+                    .filter(|v| !v.is_none() && !v.is_undefined())
+                    .map(downcast_value_to_dyn_base_relation)
+                    .transpose()?;
+                match &self.inner {
+                    Typed { adapter, .. } => {
+                        Ok(Value::from(adapter.should_on_cluster(relation.as_deref())))
+                    }
+                    Parse(_) => Ok(Value::from(false)),
+                }
             }
             "calculate_incremental_strategy" => {
                 // strategy: str -> str (''/'default' resolves to delete_insert or legacy; '+' -> '_')
