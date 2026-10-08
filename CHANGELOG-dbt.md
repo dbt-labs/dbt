@@ -65,7 +65,6 @@ Released September 25, 2026
 - [fusion] Fix duplicate semantic-layer label insertion when the resolved dbt platform host already contains the label, which produced an unresolvable MetricFlow Server hostname
 - [dbt-index] Treat successful dbt stderr and recoverable result errors as neutral validation diagnostics while preserving real failures.
 - [fusion] Find user-installed dbt executables and Windows virtual environments reliably.
-- [fusion] Include the embedded docs UI in Python wheels so docs generate can write a site.
 - [dbt-core] Replace `DBT_AI_PROVIDER` with `DBT_ENGINE_AI_PROVIDER` ([#16312](https://github.com/dbt-labs/dbt-core/issues/16312))
 - [dbt-index] Protect Windows process environment variables from project .env overrides.
 - [dbt-index] Make dbt-index coordination and system updates reliable on Windows.
@@ -76,7 +75,6 @@ Released September 25, 2026
 - [fusion] Dev-clone's stale-view check now checks the relation cache before querying the warehouse, and warms the cache from the result, avoiding redundant metadata queries when multiple models clone into the same schema in a run (#14569)
 - [fusion] Fix Preview CTE producing malformed SQL for CTEs that use Jinja whitespace control
 - [fusion] Support credential-independent profile metadata and scoped environment values while preserving secret access rules.
-- [fusion] Restore OTel telemetry parquet output to the public `target/metadata/` path.
 - [dbt-core] Populate complete query tags for Databricks seeds; fix materialization type for seeds to be `seed` rather than `table` ([#15931](https://github.com/dbt-labs/dbt-core/issues/15931))
 - [fusion] Translate BigQuery IS_INF and IS_NAN for DuckDB local compute.
 - [fusion] Translate BigQuery reciprocal trigonometric functions for local execution.
@@ -85,7 +83,6 @@ Released September 25, 2026
 - [fusion] Translate Snowflake SHA1_HEX and SHA1_BINARY for DuckDB local compute.
 - [dbt-core] Apply the BigQuery connection `priority` and `maximum_bytes_billed` settings to submitted query jobs instead of ignoring them ([#16298](https://github.com/dbt-labs/dbt-core/issues/16298))
 - [dbt-core] BigQuery unit tests no longer leak partition pseudocolumns into expected results ([#15357](https://github.com/dbt-labs/dbt-core/issues/15357))
-- [dbt-core] Both Legacy/Foundry BigQuery drivers now continue on ADBC.GetObjects 404/403. This fixes a possible usage of "REPLACE TABLE" instead of "MERGE" for incremental tables ([#16331](https://github.com/dbt-labs/dbt-core/issues/16331))
 - [fusion] Translate Snowflake bitmap position helpers and GETBIT for DuckDB local execution.
 - [fusion] Translate Snowflake date-name and ISO week-year functions for DuckDB local execution.
 - [fusion] Translate BigQuery epoch conversion functions for DuckDB local execution.
@@ -120,8 +117,6 @@ Released September 25, 2026
 - [fusion] Support Snowflake FILTER and TRANSFORM with structured array inputs
 - [fusion] Fixed invalid Snowflake syntax for VALUES from passing
 - [fusion] Correct how dbt State classifies model materializations: materialized views submit as VIEW, adapter-specific materializations such as dynamic tables and metric views submit as DBT_CUSTOM (and are therefore no longer eligible as clone candidates), semantic views are no longer submitted, and full-refreshed snapshots submit as FULL
-- [fusion] Skip dangling sources whose schema was not collected instead of panicking during static analysis hydration.
-- [fusion] Fix spurious TableNotFound errors during analyze caused by MapReduce silently dropping a key claimed by a worker whose connection report the driver had not yet observed
 - [dbt-core] Databricks: include all models in catalog.json for schemas with more than 50 relations ([#15795](https://github.com/dbt-labs/dbt-core/issues/15795))
 - [internal] Replace deprecated DuckDB single-arrow lambdas with Python-style lambda syntax.
 - [fusion] Improve local execution support for Snowflake scalar bitwise functions
@@ -153,7 +148,6 @@ Released September 25, 2026
 - [fusion] Fixes the service identifier presented by flock-service to platform in its auth metadata.
 - [fusion] Add SLT test coverage for sdf-linter's rendered/symbolic Jinja render mode via a new synthetic-JinjaEnv-backed `rendered_lint_rows` entry point and a `render-mode` SLT pragma
 - [dbt-core] Add PyPI banner for dbt-oss mirroring the existing dbt-core banner, without the dbt-core namespace deprecation notice
-- [fusion] Update PyPI README for the `dbt` package with standard overview copy and the v2 distribution banner (dbt vs dbt-oss)
 - [fusion] Add a per-resource-type applicability table for adapter-specific config keys, replacing the shared WarehouseSpecificNodeConfig field list with per-(resource type, key) status. A key set on a resource type that does not support it now emits a DeprecatedConfigKey warning. On schema.yml and inline config() the key is still applied, so behavior is unchanged; in dbt_project.yml, where the key has no field to deserialize into and already warned, it is dropped.
 - [fusion] Avoid a duplicate AST parse when extracting unrendered `config()` call kwargs for models, functions, and singular data tests; reuse the AST already produced while compiling the file's Jinja instead of parsing it a second time (#10365)
 - [fusion] Log a warning naming the relation when no schema is returned for a dangling source during static analysis hydration, instead of skipping it silently.
@@ -200,7 +194,7 @@ Released September 25, 2026
 - [@r-jais](https://github.com/r-jais)
 - [@ragesh-g](https://github.com/ragesh-g) ([#14646](https://github.com/dbt-labs/dbt-core/issues/14646), [#16298](https://github.com/dbt-labs/dbt-core/issues/16298), [#16350](https://github.com/dbt-labs/dbt-core/issues/16350))
 - [@sd-db](https://github.com/sd-db) ([#16246](https://github.com/dbt-labs/dbt-core/issues/16246), [#16248](https://github.com/dbt-labs/dbt-core/issues/16248))
-- [@serramatutu](https://github.com/serramatutu) ([#15357](https://github.com/dbt-labs/dbt-core/issues/15357), [#16331](https://github.com/dbt-labs/dbt-core/issues/16331))
+- [@serramatutu](https://github.com/serramatutu) ([#15357](https://github.com/dbt-labs/dbt-core/issues/15357))
 - [@srchilukoori](https://github.com/srchilukoori) ([#15508](https://github.com/dbt-labs/dbt-core/issues/15508))
 - [@tauhidanjum](https://github.com/tauhidanjum)
 - [@toriwei](https://github.com/toriwei)
@@ -208,6 +202,63 @@ Released September 25, 2026
 - [@vchan](https://github.com/vchan)
 - [@vrongmeal](https://github.com/vrongmeal) ([#16283](https://github.com/dbt-labs/dbt-core/issues/16283), [#16053](https://github.com/dbt-labs/dbt-core/issues/16053))
 - [@will-sargent-dbtlabs](https://github.com/will-sargent-dbtlabs)
+
+
+## 2.0.6
+
+Released September 19, 2026
+
+### Fixes
+
+- [fusion] Skip dangling sources whose schema was not collected instead of panicking during static analysis hydration.
+- [fusion] Fix spurious TableNotFound errors during analyze caused by MapReduce silently dropping a key claimed by a worker whose connection report the driver had not yet observed
+
+### Contributors
+- [@HannanNaeem](https://github.com/HannanNaeem)
+
+
+## 2.0.5
+
+Released September 17, 2026
+
+### Fixes
+
+- [dbt-core] Both Legacy/Foundry BigQuery drivers now continue on ADBC.GetObjects 404/403. This fixes a possible usage of "REPLACE TABLE" instead of "MERGE" for incremental tables ([#16331](https://github.com/dbt-labs/dbt-core/issues/16331))
+
+### Contributors
+- [@serramatutu](https://github.com/serramatutu) ([#16331](https://github.com/dbt-labs/dbt-core/issues/16331))
+
+
+## 2.0.4
+
+Released September 16, 2026
+
+### Fixes
+
+- [fusion] Restore OTel telemetry parquet output to the public `target/metadata/` path.
+
+
+
+## 2.0.3
+
+Released September 16, 2026
+
+### Under the Hood
+
+- [fusion] Update PyPI README for the `dbt` package with standard overview copy and the v2 distribution banner (dbt vs dbt-oss)
+
+### Contributors
+- [@tauhidanjum](https://github.com/tauhidanjum)
+
+
+## 2.0.2
+
+Released September 15, 2026
+
+### Fixes
+
+- [fusion] Include the embedded docs UI in Python wheels so docs generate can write a site.
+
 
 
 ## 2.0.1

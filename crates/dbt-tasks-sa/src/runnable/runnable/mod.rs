@@ -33,7 +33,7 @@ use dbt_schemas::schemas::{
 use dbt_tasks_core::context::TaskRunnerCtx;
 use dbt_tasks_core::run_task_hooks::RunTaskHooks;
 use dbt_tasks_core::task::TaskResult;
-use dbt_tasks_core::task::{TP, Task, TaskOp};
+use dbt_tasks_core::task::{TP, Task, run_blocking_task_operation};
 use dbt_telemetry::{NodeEvaluated, NodeSkipReason, NodeType};
 
 use tokio::task::JoinSet;
@@ -264,12 +264,13 @@ impl Task for RunTask {
                         )
                         .await
                     } else if cache_enabled {
-                        TaskOp::r#async(self.task_hooks.check_sao_cache(
-                            ctx,
-                            Arc::clone(&self.node),
-                            &task_result.sql_instruction.sql,
-                        ))
-                        .await?
+                        self.task_hooks
+                            .check_sao_cache(
+                                ctx,
+                                Arc::clone(&self.node),
+                                &task_result.sql_instruction.sql,
+                            )
+                            .await?
                     } else {
                         RunCacheServiceDecision::Disabled
                     };
@@ -412,10 +413,9 @@ impl Task for RunTask {
                                         .into_iter()
                                         .map(|task| {
                                             let ctx = ctx.clone();
-                                            TaskOp::Blocking(Box::new(move || {
+                                            run_blocking_task_operation(move || {
                                                 execute_microbatch_batch(task, &ctx)
-                                            }))
-                                            .run()
+                                            })
                                             .instrument(batch_span.clone())
                                         })
                                         .collect::<JoinSet<_>>();
@@ -448,7 +448,7 @@ impl Task for RunTask {
                                         ctx.jinja_env_for_adapter(model.node_adapter())?;
                                     let model_clone = model.clone();
                                     let ctx_clone = ctx.clone();
-                                    TaskOp::Blocking(Box::new(move || {
+                                    run_blocking_task_operation(move || {
                                         let relations_map = materialize_latest_version_pointer(
                                             &model_clone,
                                             model_clone.node_adapter(),
@@ -463,8 +463,7 @@ impl Task for RunTask {
                                             &relations_map,
                                         );
                                         Ok::<(), Box<dbt_common::FsError>>(())
-                                    }))
-                                    .run()
+                                    })
                                     .await??;
                                 }
 
@@ -487,7 +486,7 @@ impl Task for RunTask {
                                 let ctx_inner = ctx.clone();
                                 let task_result_inner = task_result.clone();
                                 let node_inner = self.node.clone();
-                                let (status, result) = TaskOp::Blocking(Box::new(move || {
+                                let (status, result) = run_blocking_task_operation(move || {
                                     let unit_test =
                                         node_inner.as_any().downcast_ref::<DbtUnitTest>().unwrap();
                                     execute_unit_test_remote(
@@ -495,8 +494,7 @@ impl Task for RunTask {
                                         &ctx_inner,
                                         &task_result_inner,
                                     )
-                                }))
-                                .run()
+                                })
                                 .await??;
                                 if let Some(result) = result {
                                     self.task_hooks
@@ -516,14 +514,13 @@ impl Task for RunTask {
                                 let ctx_inner = ctx.clone();
                                 let task_result_inner = task_result.clone();
                                 let node = self.node.clone();
-                                let res = TaskOp::Blocking(Box::new(move || {
+                                let res = run_blocking_task_operation(move || {
                                     execute_remote_node(
                                         node.as_ref(),
                                         &ctx_inner,
                                         &task_result_inner,
                                     )
-                                }))
-                                .run()
+                                })
                                 .await?;
                                 maybe_resolve_remote_seed_column_hint(res, self.node.as_ref(), ctx)
                                     .await
@@ -724,11 +721,10 @@ async fn execute_hooks_for_run_cache_skip_reuse(
     };
     let hook_executor = build_reuse_hook_executor(task_result, hook_node);
     let ctx_inner = ctx.clone();
-    TaskOp::Blocking(Box::new(move || {
+    run_blocking_task_operation(move || {
         hook_executor(&ctx_inner, RunCacheReuseHookPhase::Pre)?;
         hook_executor(&ctx_inner, RunCacheReuseHookPhase::Post)
-    }))
-    .run()
+    })
     .await??;
     Ok(())
 }

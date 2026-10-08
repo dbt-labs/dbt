@@ -43,7 +43,7 @@ use dbt_common::tracing::event_info::store_event_attributes;
 use dbt_jinja_utils::jinja_environment::JinjaEnv;
 use dbt_jinja_utils::listener::JinjaTypeCheckingEventListenerFactory;
 use dbt_jinja_utils::node_resolver::NodeResolver;
-use dbt_jinja_utils::phases::build_adapter_target_context;
+use dbt_jinja_utils::phases::AdapterTargetContextCache;
 use dbt_jinja_utils::utils::dependency_package_name_from_ctx;
 use dbt_schemas::dbt_utils::resolve_package_quoting;
 use dbt_schemas::schemas::CommonAttributes;
@@ -535,7 +535,7 @@ async fn build_model_nodes(
     duplicates: &mut Vec<(String, String, Option<String>, PathBuf)>,
 ) -> FsResult<()> {
     let mut node_names = HashSet::new();
-    let mut adapter_relation_contexts = HashMap::new();
+    let mut adapter_relation_contexts = AdapterTargetContextCache::default();
     let catalogs = load_catalogs::fetch_catalogs();
     let use_catalogs_v2 = load_catalogs::fetch_use_catalogs_v2();
     let catalogs_state = match catalogs.as_deref() {
@@ -959,15 +959,13 @@ async fn build_model_nodes(
                 })
             })
             .flatten();
-        if !adapter_relation_contexts.contains_key(&selected_adapter) {
-            adapter_relation_contexts.insert(
-                selected_adapter,
-                build_adapter_target_context(profile, selected_adapter, base_ctx)?,
-            );
-        }
-        let relation_context = adapter_relation_contexts
-            .get(&selected_adapter)
-            .expect("selected adapter relation context was inserted");
+        let relation_context = adapter_relation_contexts.get_for_node(
+            profile,
+            selected_adapter,
+            default_adapter,
+            status,
+            base_ctx,
+        )?;
         model_config.quoting = resolve_package_quoting(
             Some(match adapter_quoting.get(&selected_adapter) {
                 Some(authored) => model_config.quoting.filled_from(authored),
@@ -1991,20 +1989,22 @@ fn apply_model_freshness_loaded_at_override(
 #[cfg(test)]
 mod tests {
     use super::{
-        apply_model_freshness_loaded_at_override, build_adapter_target_context,
-        parse_ref_from_constraint, parse_source_from_constraint, validate_database_not_catalog,
-        validate_model_freshness_sla,
+        apply_model_freshness_loaded_at_override, parse_ref_from_constraint,
+        parse_source_from_constraint, validate_database_not_catalog, validate_model_freshness_sla,
     };
     use dbt_adapter_core::AdapterType;
     use dbt_common::{ErrorCode, FsResult};
+    use dbt_jinja_utils::phases::{AdapterTargetContextCache, build_adapter_target_context};
     use dbt_schemas::schemas::common::{
         DbtMaterialization, FreshnessPeriod, FreshnessRules, ModelFreshnessRules,
     };
     use dbt_schemas::schemas::dbt_catalogs_deprecated::DbtCatalogs;
-    use dbt_schemas::schemas::profiles::DuckDbConfig;
+    use dbt_schemas::schemas::profiles::{
+        DbConfig, DuckDbConfig, SalesforceDbConfig, SnowflakeDbConfig,
+    };
     use dbt_schemas::schemas::properties::ModelFreshness;
     use dbt_schemas::schemas::serde::NodeVersion;
-    use dbt_schemas::state::{DbtProfile, ProfileAdapter};
+    use dbt_schemas::state::{DbtProfile, ModelStatus, ProfileAdapter};
     use indexmap::IndexMap;
     use minijinja::Value;
     use std::collections::BTreeMap;
@@ -2028,10 +2028,16 @@ mod tests {
     }
 
     #[test]
-    fn non_default_adapter_uses_its_profile_namespace() {
+    fn multi_adapter_profile_uses_each_adapters_namespace() {
+        let snowflake = SnowflakeDbConfig {
+            account: Some("test_account".to_string()),
+            database: Some("snowflake_db".to_string()),
+            schema: Some("snowflake_schema".to_string()),
+            ..Default::default()
+        };
         let duckdb = DuckDbConfig {
             path: Some("md:dbt_multi_adapter".to_string()),
-            schema: Some("analytics".to_string()),
+            schema: Some("duckdb_schema".to_string()),
             ..Default::default()
         };
         let profile = DbtProfile {
@@ -2039,13 +2045,16 @@ mod tests {
             target: "dev".to_string(),
             defer_to_target: None,
             allow_clones: true,
-            adapters: IndexMap::from([(
-                AdapterType::DuckDB,
-                ProfileAdapter::single(duckdb.into()),
-            )]),
-            default_adapter: AdapterType::DuckDB,
-            schema: "analytics".to_string(),
-            database: "dbt_multi_adapter".to_string(),
+            adapters: IndexMap::from([
+                (
+                    AdapterType::Snowflake,
+                    ProfileAdapter::single(snowflake.into()),
+                ),
+                (AdapterType::DuckDB, ProfileAdapter::single(duckdb.into())),
+            ]),
+            default_adapter: AdapterType::Snowflake,
+            schema: "snowflake_schema".to_string(),
+            database: "snowflake_db".to_string(),
             relative_profile_path: PathBuf::new(),
             threads: None,
         };
@@ -2057,20 +2066,110 @@ mod tests {
             ])),
         )]);
 
-        let context =
+        let default_context =
+            build_adapter_target_context(&profile, AdapterType::Snowflake, &base_ctx).unwrap();
+        assert_eq!(default_context.database, "snowflake_db");
+        assert_eq!(default_context.schema, "snowflake_schema");
+
+        let duckdb_context =
             build_adapter_target_context(&profile, AdapterType::DuckDB, &base_ctx).unwrap();
 
-        assert_eq!(context.database, "dbt_multi_adapter");
-        assert_eq!(context.schema, "analytics");
-        let target = context.base_context.get("target").unwrap();
+        assert_eq!(duckdb_context.database, "dbt_multi_adapter");
+        assert_eq!(duckdb_context.schema, "duckdb_schema");
+        let target = duckdb_context.base_context.get("target").unwrap();
         assert_eq!(
             target.get_attr("database").unwrap().as_str(),
             Some("dbt_multi_adapter")
         );
         assert_eq!(
             target.get_attr("schema").unwrap().as_str(),
-            Some("analytics")
+            Some("duckdb_schema")
         );
+    }
+
+    #[test]
+    fn default_adapter_without_schema_preserves_public_fallback() {
+        let salesforce = SalesforceDbConfig {
+            method: None,
+            database: Some("salesforce_db".to_string()),
+            client_id: None,
+            private_key: None,
+            private_key_path: None,
+            login_url: None,
+            username: None,
+            data_transform_run_timeout: None,
+        };
+        let profile = DbtProfile {
+            profile: "salesforce".to_string(),
+            target: "dev".to_string(),
+            defer_to_target: None,
+            allow_clones: true,
+            adapters: IndexMap::from([(
+                AdapterType::Salesforce,
+                ProfileAdapter::single(DbConfig::Salesforce(Box::new(salesforce))),
+            )]),
+            default_adapter: AdapterType::Salesforce,
+            schema: "public".to_string(),
+            database: "salesforce_db".to_string(),
+            relative_profile_path: PathBuf::new(),
+            threads: None,
+        };
+
+        let context =
+            build_adapter_target_context(&profile, AdapterType::Salesforce, &BTreeMap::new())
+                .unwrap();
+
+        assert_eq!(context.schema, "public");
+        assert_eq!(
+            context.base_context.get("schema").and_then(Value::as_str),
+            Some("public")
+        );
+        assert_eq!(
+            context
+                .base_context
+                .get("target")
+                .unwrap()
+                .get_attr("schema")
+                .unwrap()
+                .as_str(),
+            Some("public")
+        );
+    }
+
+    #[test]
+    fn disabled_node_does_not_require_selected_adapter_connection() {
+        let duckdb = DuckDbConfig {
+            schema: Some("analytics".to_string()),
+            ..Default::default()
+        };
+        let profile = DbtProfile {
+            profile: "duckdb".to_string(),
+            target: "dev".to_string(),
+            defer_to_target: None,
+            allow_clones: true,
+            adapters: IndexMap::from([(
+                AdapterType::DuckDB,
+                ProfileAdapter::single(duckdb.into()),
+            )]),
+            default_adapter: AdapterType::DuckDB,
+            schema: "analytics".to_string(),
+            database: "memory".to_string(),
+            relative_profile_path: PathBuf::new(),
+            threads: None,
+        };
+        let mut contexts = AdapterTargetContextCache::default();
+
+        let context = contexts
+            .get_for_node(
+                &profile,
+                AdapterType::Snowflake,
+                AdapterType::DuckDB,
+                ModelStatus::Disabled,
+                &BTreeMap::new(),
+            )
+            .unwrap();
+
+        assert_eq!(context.schema, "analytics");
     }
 
     #[test]

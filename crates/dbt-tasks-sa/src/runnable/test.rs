@@ -30,7 +30,7 @@ use dbt_tasks_core::pretty_table::from_pretty_table_error;
 use dbt_tasks_core::run_cache::run_cache_service::CachedTestExecutionResult;
 use dbt_tasks_core::span_manager::SpanTreeRequest;
 use dbt_tasks_core::task::TaskResult;
-use dbt_tasks_core::task::{AggregatedNodeGroup, TP, Task, TaskOp};
+use dbt_tasks_core::task::{AggregatedNodeGroup, TP, Task, run_blocking_task_operation};
 use dbt_tasks_core::task_spans::create_task_span_for_node;
 use dbt_tasks_core::test_aggregation::GenericTestGroup;
 use dbt_tasks_core::visitor::SkipReason;
@@ -377,7 +377,7 @@ impl AggregatedTestRunRemoteTask {
         let ctx_inner = ctx.clone();
 
         let (test_results, failing_rows_opt, main_response) =
-            TaskOp::Blocking(Box::new(move || {
+            run_blocking_task_operation(move || {
                 materialize_test(
                     &sql_instruction.sql,
                     &test,
@@ -389,8 +389,7 @@ impl AggregatedTestRunRemoteTask {
                     &base_context,
                     &ctx_inner.inner.arg.io,
                 )
-            }))
-            .run()
+            })
             .await??;
 
         let (member_results, worst_status) =

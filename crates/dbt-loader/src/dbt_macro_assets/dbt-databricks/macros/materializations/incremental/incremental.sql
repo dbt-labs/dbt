@@ -44,6 +44,7 @@
     {%- if existing_relation is none -%}
       {{ log("No existing relation found") }}
       {{ create_table_at(target_relation, intermediate_relation, compiled_code) }}
+      {% do persist_docs(target_relation, model, for_relation=language=='python') %}
     {%- elif should_replace -%}
       {{ log("Existing relation found that requires replacement") }}
       {% if safe_create and existing_relation.can_be_renamed %}
@@ -58,6 +59,7 @@
         {{ log("Replacing target relation") }}
         {{ create_table_at(target_relation, intermediate_relation, compiled_code) }}
       {% endif %}
+      {% do persist_docs(target_relation, model, for_relation=language=='python') %}
     {%- else -%}
       {{ log("Existing relation found, proceeding with incremental work")}}
       {#-- Set Overwrite Mode to DYNAMIC for subsequent incremental operations --#}
