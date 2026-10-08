@@ -20,8 +20,8 @@ use dbt_schemas::schemas::{InternalDbtNodeAttributes, Nodes};
 use dbt_tasks_core::context::TaskRunnerCtx;
 use dbt_tasks_core::pretty_table::from_pretty_table_error;
 use dbt_tasks_core::show_task_hooks::ShowTaskHooks;
-use dbt_tasks_core::task::TaskOp;
 use dbt_tasks_core::task::TaskResult;
+use dbt_tasks_core::task::run_blocking_task_operation;
 use dbt_tasks_core::task::{TP, Task};
 use dbt_telemetry::{ShowDataOutput, ShowDataOutputFormat};
 
@@ -106,10 +106,9 @@ where
         let env = Arc::clone(&jinja_env);
         let listener_factory = Arc::clone(&ctx.rendering_listener_factory);
         let filename = filename.clone();
-        TaskOp::Blocking(Box::new(move || {
+        run_blocking_task_operation(move || {
             render_sql(&template, &env, &compile_ctx, &*listener_factory, &filename)
-        }))
-        .run()
+        })
         .await??
     };
     let macro_spans = ctx.rendering_listener_factory.drain_macro_spans(&filename);

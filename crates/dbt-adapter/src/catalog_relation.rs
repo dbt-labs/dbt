@@ -313,7 +313,7 @@ pub struct CatalogRelation {
     pub lakehouse_catalog: Option<String>,
 
     // === Snowflake
-    // built_in only: synthesized base_location_root and base_location_subpath model attributes
+    // Synthesized from base_location_root and base_location_subpath
     pub base_location: Option<String>,
 
     // === Databricks and Bigquery
@@ -1567,8 +1567,6 @@ fn reject_unsupported_snowflake_linked_model_fields(
 
     for field in [
         FIELD_EXTERNAL_VOLUME,
-        FIELD_BASE_LOCATION_ROOT,
-        FIELD_BASE_LOCATION_SUBPATH,
         FIELD_CHANGE_TRACKING,
         FIELD_DATA_RETENTION_TIME_IN_DAYS,
         FIELD_STORAGE_SERIALIZATION_POLICY,
@@ -1780,6 +1778,30 @@ impl CatalogRelation {
             adapter_properties.insert(FIELD_ICEBERG_VERSION.to_string(), iceberg_version);
         }
 
+        let base_location_root =
+            Self::get_model_config_value(model, FIELD_BASE_LOCATION_ROOT, AdapterType::Snowflake)
+                .or_else(|| {
+                    get_yaml_str(snowflake, FIELD_BASE_LOCATION_ROOT).map(|s| s.to_string())
+                });
+        let base_location = base_location_root.as_ref().map(|_| {
+            let base_location_subpath = Self::get_model_config_value(
+                model,
+                FIELD_BASE_LOCATION_SUBPATH,
+                AdapterType::Snowflake,
+            );
+            let schema = Self::get_model_config_value(model, "schema", AdapterType::Snowflake);
+            let identifier = Self::get_model_config_value(model, "alias", AdapterType::Snowflake)
+                .or_else(|| {
+                    Self::get_model_config_value(model, "identifier", AdapterType::Snowflake)
+                });
+            Self::build_base_location(
+                &base_location_root,
+                &base_location_subpath,
+                &schema,
+                &identifier,
+            )
+        });
+
         Ok(CatalogRelation {
             adapter_type: AdapterType::Snowflake,
             catalog_name: Some(catalog_name.to_string()),
@@ -1789,7 +1811,7 @@ impl CatalogRelation {
             external_volume: None,
             catalog_database: Some(catalog_database),
             lakehouse_catalog: None,
-            base_location: None,
+            base_location,
             adapter_properties,
             is_transient: Some(false),
             file_format: None,

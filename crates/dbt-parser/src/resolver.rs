@@ -1035,6 +1035,7 @@ pub async fn resolve_inner(
         schema,
         adapter_type,
         &root_project_configs.adapter_quoting,
+        &dbt_state.dbt_profile,
         package_name,
         jinja_env.clone(),
         &base_ctx,

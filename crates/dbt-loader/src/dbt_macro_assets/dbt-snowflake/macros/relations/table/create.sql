@@ -327,6 +327,12 @@ create iceberg table {{ glue_relation }} (
     {% endfor -%}
 )
 {% if partition_by_string -%} partition by ({{ partition_by_string }}) {%- endif %}
+{# DIVERGENCE BEGIN: emit BASE_LOCATION on v2 catalog-linked databases; required for vended
+   credentials. Upstream IcebergRestCatalogRelation has no base_location. #}
+{%- if dbt_version.startswith('2.') and adapter.behavior.use_catalogs_v2.no_warn and catalog_relation.has_catalog_linked_database() %}
+{{ optional('base_location', catalog_relation.base_location, "'") }}
+{%- endif %}
+{# DIVERGENCE END #}
 {{ optional('external_volume', catalog_relation.external_volume, "'") }}
 {{ optional('iceberg_version', catalog_relation.iceberg_version)}}
 {{ optional('target_file_size', catalog_relation.target_file_size, "'") }}
@@ -428,15 +434,19 @@ insert into {{ glue_relation }}
            Accessing it under dbt-core (e.g. the v2-parser handoff) raises a CompilationError
            that `is defined` does not catch. Fusion is dbt 2.x and dbt-core is 1.x, so gate
            the access on `dbt_version.startswith('2.')`. See dbt-labs/fs#10659. #}
-        {%- if not (
-            (dbt_version.startswith('2.') and adapter.behavior.use_catalogs_v2.no_warn and catalog_relation|attr('catalog_database'))
-            or catalog_relation|attr('catalog_linked_database')
-        ) -%}
+        {%- set is_v2_cld = dbt_version.startswith('2.') and adapter.behavior.use_catalogs_v2.no_warn and catalog_relation.has_catalog_linked_database() -%}
+        {%- if not (is_v2_cld or catalog_relation|attr('catalog_linked_database')) -%}
         {# DIVERGENCE END #}
         {{ optional('external_volume', catalog_relation.external_volume, "'") }}
         catalog = '{{ catalog_relation.catalog_name }}'  -- external REST catalog name
         {{ optional('base_location', catalog_relation.base_location, "'") }}
         {%- endif %}
+        {# DIVERGENCE BEGIN: emit BASE_LOCATION on v2 catalog-linked databases; required for vended
+           credentials. Upstream IcebergRestCatalogRelation has no base_location. #}
+        {%- if is_v2_cld %}
+        {{ optional('base_location', catalog_relation.base_location, "'") }}
+        {%- endif %}
+        {# DIVERGENCE END #}
         {% if partition_by_string -%} partition by ({{ partition_by_string }}) {%- endif %}
         {{ optional('iceberg_version', catalog_relation.iceberg_version)}}
         {{ optional('target_file_size', catalog_relation.target_file_size, "'") }}
