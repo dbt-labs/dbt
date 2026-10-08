@@ -826,6 +826,7 @@ impl From<ProjectSnapshotConfig> for SnapshotConfig {
                 schedule: config.schedule,
                 row_filter: None,
                 incremental_apply_config_changes: None,
+                use_materialization_v2: None,
                 use_safer_relation_operations: None,
                 view_update_via_alter: None,
 
