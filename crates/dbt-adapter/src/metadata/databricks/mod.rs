@@ -487,8 +487,8 @@ impl DatabricksMetadataAdapter {
 
         // IMPORTANT (Mantle replay): query ordering is observable in replay.
         // Match dbt-databricks v1 `_describe_relation` query order:
-        //   MV:          DESCRIBE EXTENDED → optional tags → view SQL → row filters → TBLPROPERTIES
-        //   ST:          DESCRIBE EXTENDED → optional tags → TBLPROPERTIES → row filters
+        //   MV:          DESCRIBE EXTENDED → optional tags → optional column tags → view SQL → row filters → TBLPROPERTIES
+        //   ST:          DESCRIBE EXTENDED → optional tags → optional column tags → TBLPROPERTIES → row filters
         //   View:        optional tags → optional column tags → view SQL → TBLPROPERTIES → DESCRIBE EXTENDED
         //   MetricView:  TBLPROPERTIES → optional tags → DESCRIBE EXTENDED
         //   Table:       UC information_schema (if not HMS) → TBLPROPERTIES → DESCRIBE EXTENDED
@@ -541,6 +541,19 @@ impl DatabricksMetadataAdapter {
                     metadata.insert(
                         DatabricksRelationMetadataKey::InfoSchemaRelationTags,
                         self.fetch_tags(
+                            &database,
+                            &schema,
+                            &identifier,
+                            state,
+                            &mut *conn,
+                            token.clone(),
+                        )?,
+                    );
+                }
+                if fetch_column_tags {
+                    metadata.insert(
+                        DatabricksRelationMetadataKey::InfoSchemaColumnTags,
+                        self.fetch_column_tags(
                             &database,
                             &schema,
                             &identifier,
@@ -661,6 +674,19 @@ impl DatabricksMetadataAdapter {
                     metadata.insert(
                         DatabricksRelationMetadataKey::InfoSchemaRelationTags,
                         self.fetch_tags(
+                            &database,
+                            &schema,
+                            &identifier,
+                            state,
+                            &mut *conn,
+                            token.clone(),
+                        )?,
+                    );
+                }
+                if fetch_column_tags {
+                    metadata.insert(
+                        DatabricksRelationMetadataKey::InfoSchemaColumnTags,
+                        self.fetch_column_tags(
                             &database,
                             &schema,
                             &identifier,

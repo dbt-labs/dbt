@@ -1,5 +1,6 @@
 //! https://github.com/databricks/dbt-databricks/blob/main/dbt/adapters/databricks/relation_configs/column_tags.py
 
+use super::relation_tags::tag_value_to_string;
 use crate::errors::AdapterResult;
 use crate::relation::config_v2::{
     ComponentConfig, ComponentConfigLoader, RelationConfig, SimpleComponentConfigImpl, impl_loader,
@@ -9,7 +10,6 @@ use crate::relation::databricks::config::{
 };
 use dbt_schemas::schemas::DbtModel;
 use dbt_schemas::schemas::InternalDbtNodeAttributes;
-use dbt_yaml::Value as YmlValue;
 use indexmap::IndexMap;
 use minijinja::value::{Value, ValueMap};
 
@@ -105,15 +105,7 @@ fn from_local_config(relation_config: &dyn InternalDbtNodeAttributes) -> Adapter
             if let Some(column_databricks_tags) = &column.databricks_tags {
                 let mut column_tag_map = IndexMap::new();
                 for (tag_name, tag_value) in column_databricks_tags {
-                    let value_str = match tag_value {
-                        YmlValue::String(s, _) => s.clone(),
-                        // A bare date/datetime scalar resolves to a Timestamp; render
-                        // its canonical form, as it was a plain string before YAML 1.1
-                        // timestamp resolution.
-                        YmlValue::Timestamp(t, _) => t.to_string(),
-                        _ => continue,
-                    };
-                    column_tag_map.insert(tag_name.clone(), value_str);
+                    column_tag_map.insert(tag_name.clone(), tag_value_to_string(tag_value));
                 }
                 if !column_tag_map.is_empty() {
                     column_tags.insert(column.name.clone(), column_tag_map);

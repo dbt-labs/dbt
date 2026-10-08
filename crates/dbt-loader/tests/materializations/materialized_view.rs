@@ -182,7 +182,7 @@ mod databricks {
         let changes = config_changes_mock(
             true,
             BTreeMap::from([
-                ("partition_by", Value::from(true)),
+                ("partitioned_by", Value::from(true)),
                 ("tags", Value::UNDEFINED),
             ]),
         );

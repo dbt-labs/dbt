@@ -35,13 +35,11 @@
 
 {% macro alter_set_column_tags(relation, column, tags) -%}
   {# ALTER VIEW does not support setting column tags, but ALTER TABLE works for views #}
-  {%- if relation.type == 'view' -%}
+  {%- if relation.type == 'view' %}
     ALTER TABLE {{ relation.render() }}
-  {%- else -%}
-    {#- DIVERGENCE BEGIN: upstream uses relation.type.render(); we use render_type() Jinja macro instead -#}
+  {%- else %}
     ALTER {{ render_type(relation.type) }} {{ relation.render() }}
-    {#- DIVERGENCE END -#}
-  {%- endif -%}
+  {%- endif %}
   ALTER COLUMN `{{ column }}`
   SET TAGS (
     {%- for tag_name, tag_value in tags.items() -%}
@@ -76,7 +74,7 @@
 
 {% macro alter_unset_column_tags(relation, column, tag_names) -%}
   {# Only reached from the DROP COLUMNS path, which never runs on views. #}
-  ALTER {{ relation.type.render() }} {{ relation.render() }}
+  ALTER {{ render_type(relation.type) }} {{ relation.render() }}
   ALTER COLUMN `{{ column }}`
   UNSET TAGS (
     {%- for tag_name in tag_names -%}
@@ -93,5 +91,3 @@
   {% endfor %}
   {{ return(false) }}
 {% endmacro %}
-
- 

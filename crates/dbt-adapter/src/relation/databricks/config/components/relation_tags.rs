@@ -32,6 +32,49 @@ fn set_only_diff(
     if diff.is_empty() { None } else { Some(diff) }
 }
 
+pub(super) fn tag_value_to_string(value: &YmlValue) -> String {
+    match value {
+        YmlValue::Null(_) => String::new(),
+        YmlValue::Timestamp(timestamp, _) => timestamp.to_string(),
+        YmlValue::Number(number, _) if number.is_f64() => float_tag_value_to_string(number),
+        _ => Value::from_serialize(value).to_string(),
+    }
+}
+
+fn float_tag_value_to_string(number: &dbt_yaml::Number) -> String {
+    // YAML's shortest formatter preserves ties-to-even; Python differs at 10^-5 and exponents.
+    let value = number.to_string();
+    match value.as_str() {
+        ".nan" => return "nan".to_string(),
+        ".inf" => return "inf".to_string(),
+        "-.inf" => return "-inf".to_string(),
+        _ => {}
+    }
+    let (sign, unsigned) = match value.strip_prefix('-') {
+        Some(unsigned) => ("-", unsigned),
+        None => ("", value.as_str()),
+    };
+    if let Some(digits) = unsigned.strip_prefix("0.0000") {
+        let (first, rest) = digits.split_at(1);
+        let mantissa = if rest.is_empty() {
+            first.to_string()
+        } else {
+            format!("{first}.{rest}")
+        };
+        return format!("{sign}{mantissa}e-05");
+    }
+    match value.split_once('e') {
+        Some((mantissa, exponent)) => {
+            let (sign, digits) = match exponent.strip_prefix('-') {
+                Some(digits) => ("-", digits),
+                None => ("+", exponent),
+            };
+            format!("{mantissa}e{sign}{digits:0>2}")
+        }
+        None => value,
+    }
+}
+
 fn to_jinja(v: &IndexMap<String, String>) -> Value {
     Value::from(ValueMap::from([(
         Value::from("set_tags"),
@@ -82,15 +125,7 @@ fn from_local_config(
         && let Some(tags_map) = &databricks_attr.databricks_tags
     {
         for (key, value) in tags_map {
-            let value_str = match value {
-                YmlValue::String(s, _) => s.clone(),
-                // A bare date/datetime scalar resolves to a Timestamp; render its
-                // canonical form, as it was a plain string before YAML 1.1
-                // timestamp resolution.
-                YmlValue::Timestamp(t, _) => t.to_string(),
-                _ => continue,
-            };
-            tags.insert(key.clone(), value_str);
+            tags.insert(key.clone(), tag_value_to_string(value));
         }
     }
 
@@ -192,5 +227,18 @@ mod tests {
         ]));
 
         assert!(RelationTags::diff_from(&desired, Some(&existing)).is_none());
+    }
+
+    #[test]
+    fn test_tag_value_to_string() {
+        for (input, expected) in [
+            ("null", ""),
+            ("0", "0"),
+            ("false", "False"),
+            ("value", "value"),
+        ] {
+            let value: YmlValue = dbt_yaml::from_str(input).unwrap();
+            assert_eq!(tag_value_to_string(&value), expected, "{input}");
+        }
     }
 }
