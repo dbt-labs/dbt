@@ -111,6 +111,24 @@ class Dimension(dbtClassMixin):
 
 
 # ====================================
+# Hierarchy objects
+# Hierarchy protocols: https://github.com/dbt-labs/metricflow/blob/main/metricflow_semantic_interfaces/protocols/hierarchy.py
+# ====================================
+
+
+@dataclass
+class DimensionHierarchyLevel(dbtClassMixin):
+    dimension: str
+    parent: Optional[str] = None
+
+
+@dataclass
+class DimensionHierarchy(dbtClassMixin):
+    name: str
+    levels: Sequence[DimensionHierarchyLevel] = field(default_factory=list)
+
+
+# ====================================
 # Entity objects
 # Entity protocols: https://github.com/dbt-labs/metricflow/blob/main/metricflow_semantic_interfaces/protocols/entity.py
 # ====================================
@@ -187,6 +205,7 @@ class SemanticModel(GraphResource):
     entities: Sequence[Entity] = field(default_factory=list)
     measures: Sequence[Measure] = field(default_factory=list)
     dimensions: Sequence[Dimension] = field(default_factory=list)
+    hierarchies: Sequence[DimensionHierarchy] = field(default_factory=list)
     metadata: Optional[SourceFileMetadata] = None
     depends_on: DependsOn = field(default_factory=DependsOn)
     refs: List[RefArgs] = field(default_factory=list)

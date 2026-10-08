@@ -1,4 +1,4 @@
-from typing import List, Optional, Set
+from typing import List, Optional, Sequence, Set
 
 from metricflow_semantic_interfaces.implementations.metric import PydanticMetric
 from metricflow_semantic_interfaces.implementations.node_relation import (
@@ -25,11 +25,15 @@ from metricflow_semantic_interfaces.implementations.time_spine_table_configurati
     PydanticTimeSpineTableConfiguration as LegacyTimeSpine,
 )
 from metricflow_semantic_interfaces.type_enums import TimeGranularity
+from metricflow_semantic_interfaces.validations.hierarchies import (
+    SemanticModelHierarchiesRule,
+)
 from metricflow_semantic_interfaces.validations.semantic_manifest_validator import (
     SemanticManifestValidator,
 )
 from metricflow_semantic_interfaces.validations.validator_helpers import (
     FileContext,
+    SemanticManifestValidationResults,
     ValidationError,
     ValidationIssueContext,
 )
@@ -70,7 +74,12 @@ class SemanticManifest:
         #    )
         #    return False
 
-        if not self.manifest.metrics or not self.manifest.semantic_models:
+        if not self.manifest.semantic_models:
+            return True
+
+        if not self.manifest.metrics:
+            if any(sm.hierarchies for sm in self.manifest.semantic_models.values()):
+                return self._validate_hierarchies()
             return True
 
         semantic_manifest = self._get_pydantic_semantic_manifest()
@@ -121,6 +130,22 @@ class SemanticManifest:
                 "mf-timespine-without-yaml-configuration",
             )
 
+        return self._report_validation_results(validation_results, validation_result_errors)
+
+    def _validate_hierarchies(self) -> bool:
+        validator = SemanticManifestValidator[PydanticSemanticManifest](
+            [SemanticModelHierarchiesRule[PydanticSemanticManifest]()]
+        )
+        validation_results = validator.validate_semantic_manifest(
+            self._get_pydantic_semantic_manifest()
+        )
+        return self._report_validation_results(validation_results, validation_results.errors)
+
+    def _report_validation_results(
+        self,
+        validation_results: SemanticManifestValidationResults,
+        validation_result_errors: Sequence[ValidationError],
+    ) -> bool:
         for warning in validation_results.warnings:
             fire_event(SemanticValidationFailure(msg=warning.message))
 
