@@ -608,6 +608,18 @@ pub fn create_relation_from_node(
     node: &dyn InternalDbtNodeAttributes,
     _sample_config: Option<RunFilter>,
 ) -> FsResult<Box<dyn BaseRelation>> {
+    // Build sources like Jinja's `source()`: untyped (as in dbt Core, so no length check).
+    if let Some(source) = node.as_any().downcast_ref::<DbtSource>() {
+        return create_relation_from_source(
+            adapter_type,
+            node.database(),
+            node.schema(),
+            node.base().alias.clone(), // all identifiers are consolidated to alias in InternalDbtNode
+            node.quoting(),
+            source,
+        );
+    }
+
     create_relation(
         adapter_type,
         node.database(),
@@ -972,6 +984,7 @@ mod tests {
     use crate::relation::factory::create_static_relation;
 
     use super::*;
+    use dbt_schemas::schemas::common::DbtMaterialization;
     use dbt_schemas::schemas::relations::DEFAULT_RESOLVED_QUOTING;
     use minijinja_contrib::testing::jinja_assert;
 
@@ -989,6 +1002,56 @@ mod tests {
         source.__source_attr__.identifier = "orders".to_string();
         source.__source_attr__.source_name = "raw".to_string();
         source
+    }
+
+    /// Sources over the adapter's identifier length limit must not be rejected.
+    /// dbt-redshift/dbt-postgres only check relations with a `type`, and Core
+    /// builds source relations without one.
+    #[test]
+    fn redshift_source_with_long_identifier_is_not_length_validated() {
+        let long_identifier = "x".repeat(130);
+        let mut source = source_with_meta_location("ignored");
+        source.__base_attr__.alias = long_identifier.clone();
+        source.__source_attr__.identifier = long_identifier.clone();
+        // Mirrors what resolve_sources assigns to every source
+        source.__base_attr__.materialized = DbtMaterialization::External;
+
+        assert!(
+            create_relation_from_source(
+                AdapterType::Redshift,
+                "main".to_string(),
+                "raw".to_string(),
+                long_identifier,
+                DEFAULT_RESOLVED_QUOTING,
+                &source,
+            )
+            .is_ok()
+        );
+
+        // Used for sources by e.g. local_schema_builder, source freshness, and
+        // try_get_relation_from_node
+        let from_node = create_relation_from_node(AdapterType::Redshift, &source, None);
+        assert!(from_node.is_ok(), "{:?}", from_node.err());
+        assert_eq!(from_node.unwrap().relation_type(), None);
+    }
+
+    /// Non-source nodes still carry a `type`, so the length check must stay
+    /// enforced for them -- this isn't an excuse to drop it for models too.
+    #[test]
+    fn redshift_model_with_long_identifier_is_still_length_validated() {
+        let long_identifier = "x".repeat(130);
+        let mut model = dbt_schemas::schemas::DbtModel::default();
+        model.__base_attr__.database = "main".to_string();
+        model.__base_attr__.schema = "raw".to_string();
+        model.__base_attr__.alias = long_identifier;
+        model.__base_attr__.quoting = DEFAULT_RESOLVED_QUOTING;
+        model.__base_attr__.materialized = DbtMaterialization::Table;
+
+        let err = create_relation_from_node(AdapterType::Redshift, &model, None).unwrap_err();
+        assert!(
+            err.to_string().contains("is longer than 127 characters"),
+            "{err}"
+        );
     }
 
     #[test]
@@ -1076,6 +1139,34 @@ mod tests {
         assert_eq!(
             relation.render_self_as_str(),
             "\"GLUE_SOURCE\".\"raw\".\"orders\""
+        );
+    }
+
+    /// `create_relation_from_node` must honor `catalog_name` for sources, so
+    /// freshness, defer, and the run cache use the same FQN that `source()` renders.
+    #[test]
+    fn source_catalog_name_overrides_database_via_node() {
+        let mut source = source_with_meta_location("ignored/{name}.csv");
+        source.__source_attr__.catalog_name = Some("GLUE_SOURCE".to_string());
+
+        let from_source = create_relation_from_source(
+            AdapterType::Snowflake,
+            "main".to_string(),
+            "raw".to_string(),
+            "orders".to_string(),
+            DEFAULT_RESOLVED_QUOTING,
+            &source,
+        )
+        .unwrap();
+        let from_node = create_relation_from_node(AdapterType::Snowflake, &source, None).unwrap();
+
+        assert_eq!(
+            from_node.render_self_as_str(),
+            "\"GLUE_SOURCE\".\"raw\".\"orders\""
+        );
+        assert_eq!(
+            from_node.render_self_as_str(),
+            from_source.render_self_as_str()
         );
     }
 
