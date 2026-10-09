@@ -1,0 +1,7 @@
+kind: Fixes
+body: A failed dbt run-operation now writes a single error result for the operation in run_results.json instead of one error result per model in the project
+time: 2026-10-01T13:21:50.71062+02:00
+custom:
+    author: larspettermadsstuen
+    issue: "16546"
+    project: dbt-core
