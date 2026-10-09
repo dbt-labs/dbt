@@ -23,7 +23,7 @@ use dbt_schemas::dbt_types::RelationType;
 use dbt_schemas::schemas::legacy_catalog::{
     CatalogNodeStats, CatalogTable, ColumnMetadata, TableMetadata,
 };
-use dbt_schemas::schemas::relations::base::{BaseRelation, RelationPattern};
+use dbt_schemas::schemas::relations::base::{BaseRelation, RelationPattern, TableFormat};
 use indexmap::IndexMap;
 use minijinja::value::Object;
 use minijinja::{State, Value};
@@ -125,6 +125,11 @@ WHERE table_catalog = '{}'
         let catalog = catalogs.value(i);
         let table_type = table_types.value(i).to_uppercase();
         let is_delta = file_formats.value(i) == "delta";
+        let table_format = if file_formats.value(i) == "iceberg" {
+            TableFormat::Iceberg
+        } else {
+            TableFormat::Default
+        };
         let is_shallow_clone = !databricks_table_types.is_null(i)
             && is_shallow_clone_type(databricks_table_types.value(i));
 
@@ -141,6 +146,7 @@ WHERE table_catalog = '{}'
             ))
             .with_quoting(engine.quoting())
             .with_is_delta(is_delta)
+            .with_table_format(table_format)
             .with_is_shallow_clone(is_shallow_clone),
         ) as Arc<dyn BaseRelation>;
         relations.push(relation);

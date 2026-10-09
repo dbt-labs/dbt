@@ -4520,14 +4520,14 @@ impl AdapterImpl {
                         )
                     })?;
 
-                    // TODO(versusfacit): support snapshot
                     if materialized != DbtMaterialization::Incremental
                         && materialized != DbtMaterialization::Table
                         && materialized != DbtMaterialization::Seed
+                        && materialized != DbtMaterialization::Snapshot
                     {
                         return Err(AdapterError::new(
                             AdapterErrorKind::Configuration,
-                            "When table_format is 'iceberg', materialized must be 'incremental', 'table', or 'seed'.",
+                            "When table_format is 'iceberg', materialized must be 'incremental', 'table', 'seed', or 'snapshot'.",
                         ));
                     }
 
@@ -4613,14 +4613,14 @@ impl AdapterImpl {
                     )
                 })?;
 
-                // TODO(versusfacit): support snapshot
                 if materialized != DbtMaterialization::Incremental
                     && materialized != DbtMaterialization::Table
                     && materialized != DbtMaterialization::Seed
+                    && materialized != DbtMaterialization::Snapshot
                 {
                     return Err(AdapterError::new(
                         AdapterErrorKind::Configuration,
-                        "When table_format is 'iceberg', materialized must be 'incremental', 'table', or 'seed'.",
+                        "When table_format is 'iceberg', materialized must be 'incremental', 'table', 'seed', or 'snapshot'.",
                     ));
                 }
 
