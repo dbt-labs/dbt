@@ -4,8 +4,8 @@ use crate::dbt_project_config::{
 };
 use crate::renderer::strip_warehouse_keys_in_config_block;
 use crate::resolve::resolve_utils::{
-    build_unrendered_config, err_resource_name_has_spaces, extract_config_map,
-    validate_node_adapter,
+    build_unrendered_config, err_resource_name_has_spaces, extract_config_map, render_config_map,
+    render_project_config_resolver, validate_node_adapter,
 };
 use crate::utils::{
     RelationComponents, extract_resource_config_from_raw_project, get_node_fqn,
@@ -21,6 +21,7 @@ use dbt_common::{ErrorCode, FsResult, fs_err, stdfs};
 use dbt_frontend_common::Dialect;
 use dbt_jinja_utils::jinja_environment::JinjaEnv;
 use dbt_jinja_utils::node_resolver::NodeResolver;
+use dbt_jinja_utils::phases::AdapterTargetContextCache;
 use dbt_jinja_utils::serde::into_typed_with_jinja;
 use dbt_jinja_utils::utils::dependency_package_name_from_ctx;
 use dbt_schemas::dbt_utils::resolve_package_quoting;
@@ -28,12 +29,12 @@ use dbt_schemas::dbt_utils::validate_delimiter;
 use dbt_schemas::schemas::common::{DbtChecksum, DbtMaterialization, DbtQuoting, NodeDependsOn};
 use dbt_schemas::schemas::dbt_catalogs_deprecated::LoadedCatalogs;
 use dbt_schemas::schemas::dbt_column::process_columns;
-use dbt_schemas::schemas::project::WarningEmission;
+use dbt_schemas::schemas::project::{ProjectSeedConfig, SeedConfig, WarningEmission};
 use dbt_schemas::schemas::properties::SeedProperties;
 use dbt_schemas::schemas::telemetry::NodeType;
 use dbt_schemas::schemas::{CommonAttributes, DbtSeed, DbtSeedAttr, NodeBaseAttributes};
 use dbt_schemas::state::resolve_effective_propagation_target;
-use dbt_schemas::state::{DbtPackage, GenericTestAsset};
+use dbt_schemas::state::{DbtPackage, DbtProfile, GenericTestAsset};
 use dbt_schemas::state::{ModelStatus, NodeResolverTracker};
 use indexmap::IndexMap;
 use minijinja::value::Value as MinijinjaValue;
@@ -58,9 +59,8 @@ pub async fn resolve_seeds(
     adapter_quoting: &IndexMap<AdapterType, DbtQuoting>,
     root_package: &DbtPackage,
     root_project_configs: &RootProjectConfigs,
-    database: &str,
-    schema: &str,
     default_adapter: AdapterType,
+    profile: &DbtProfile,
     package_name: &str,
     jinja_env: &JinjaEnv,
     base_ctx: &BTreeMap<String, MinijinjaValue>,
@@ -71,6 +71,7 @@ pub async fn resolve_seeds(
 ) -> FsResult<(HashMap<String, Arc<DbtSeed>>, HashMap<String, Arc<DbtSeed>>)> {
     let mut seeds: HashMap<String, Arc<DbtSeed>> = HashMap::new();
     let mut disabled_seeds: HashMap<String, Arc<DbtSeed>> = HashMap::new();
+    let mut adapter_relation_contexts = AdapterTargetContextCache::default();
     let io_args = &arg.io;
     let catalogs = load_catalogs::fetch_catalogs();
     let use_catalogs_v2 = load_catalogs::fetch_use_catalogs_v2();
@@ -150,6 +151,7 @@ pub async fn resolve_seeds(
         default_adapter,
     )?
     .with_resolve_defaults(arg.static_analysis.unwrap_or_default());
+    let mut adapter_config_resolvers = HashMap::from([(default_adapter, config_resolver.clone())]);
 
     // TODO: update this to be relative of the root project
     let mut duplicate_errors = Vec::new();
@@ -275,6 +277,68 @@ pub async fn resolve_seeds(
 
         let mut properties_config =
             config_resolver.resolve_with_properties(&fqn, seed.config.as_ref());
+
+        // See `resolve_models`: the flag overrides the config.
+        validate_node_adapter(properties_config.adapter, &path)?;
+        let discovered_adapter = arg
+            .adapter_override
+            .or(properties_config.adapter)
+            .unwrap_or(default_adapter);
+        let initial_status = if properties_config.enabled {
+            ModelStatus::Enabled
+        } else {
+            ModelStatus::Disabled
+        };
+        let relation_context = adapter_relation_contexts.get_for_node(
+            profile,
+            discovered_adapter,
+            default_adapter,
+            initial_status,
+            base_ctx,
+        )?;
+        let adapter_properties_config: Option<SeedConfig> = render_config_map(
+            raw_schema_yml_configs.get(seed_name),
+            jinja_env,
+            &relation_context.base_context,
+            dependency_package_name,
+        )?;
+        if !adapter_config_resolvers.contains_key(&discovered_adapter) {
+            let selected_resolver = render_project_config_resolver::<SeedConfig, ProjectSeedConfig>(
+                &package.raw_project_yml,
+                &root_package.raw_project_yml,
+                "seeds",
+                "seeds",
+                DbtQuoting::default(),
+                arg.static_analysis.unwrap_or_default(),
+                jinja_env,
+                &relation_context.base_context,
+                dependency_package_name,
+                disallow_plus_prefix_from_flags(root_package.dbt_project.flags.as_ref()),
+                discovered_adapter,
+            )?;
+            adapter_config_resolvers.insert(discovered_adapter, selected_resolver);
+        }
+        properties_config = adapter_config_resolvers
+            .get(&discovered_adapter)
+            .expect("selected adapter config resolver was inserted")
+            .resolve_with_configs_for_adapter(
+                &fqn,
+                &fqn,
+                &[adapter_properties_config.as_ref()],
+                discovered_adapter,
+            );
+        let selected_adapter = arg
+            .adapter_override
+            .or(properties_config.adapter)
+            .unwrap_or(default_adapter);
+        if selected_adapter != discovered_adapter {
+            return Err(fs_err!(
+                code => ErrorCode::InvalidConfig,
+                loc => path.clone(),
+                "Node adapter changed from '{discovered_adapter}' to '{selected_adapter}' while \
+                 rendering adapter-specific config"
+            ));
+        }
         let static_analysis = properties_config.static_analysis.clone();
         check_node_static_analysis(
             &properties_config,
@@ -283,50 +347,6 @@ pub async fn resolve_seeds(
             dependency_package_name,
         );
 
-        // XXX: normalize column_types to uppercase if it is snowflake
-        if matches!(default_adapter, AdapterType::Snowflake)
-            && let Some(column_types) = &properties_config.column_types
-        {
-            let column_types = column_types
-                .iter()
-                .map(|(k, v)| {
-                    // Normalize column names for Snowflake case folding.
-                    // If the key is not a valid unquoted identifier (e.g. contains
-                    // spaces), auto-wrap it in double-quotes before parsing so it
-                    // is treated as a quoted (case-preserving) identifier instead
-                    // of being rejected. This matches Mantle behavior.
-                    // Normalize column names for Snowflake case folding.
-                    // If the key is not a valid unquoted identifier (e.g. it
-                    // contains spaces), auto-wrap it in SQL double-quotes so it
-                    // is treated as a case-preserving quoted identifier instead
-                    // of being rejected. This matches Mantle behavior.
-                    let key = k.as_str();
-                    let sql;
-                    let sql_str = if Dialect::Snowflake.parse_identifier(key).is_ok() {
-                        key
-                    } else {
-                        sql = format!("\"{}\"", key.replace('"', "\"\""));
-                        sql.as_str()
-                    };
-                    Ok((
-                        Dialect::Snowflake
-                            .parse_identifier(sql_str)
-                            .map_err(|e| {
-                                fs_err!(
-                                    code => ErrorCode::InvalidColumnReference,
-                                    loc => k.span().clone(),
-                                    "Invalid identifier: {e}",
-                                )
-                            })?
-                            .to_value()
-                            .into(),
-                        v.to_owned(),
-                    ))
-                })
-                .collect::<FsResult<_>>()?;
-
-            properties_config.column_types = Some(column_types);
-        }
         let is_enabled = properties_config.enabled;
 
         let columns = process_columns(
@@ -339,10 +359,6 @@ pub async fn resolve_seeds(
         )?;
 
         validate_delimiter(&properties_config.delimiter)?;
-
-        // See `resolve_models`: the flag overrides the config.
-        validate_node_adapter(properties_config.adapter, &path)?;
-        let resolved_node_adapter = arg.adapter_override.or(properties_config.adapter);
 
         // Calculate original file path first so we can use it for the checksum
         // if necessary for large seeds
@@ -360,7 +376,49 @@ pub async fn resolve_seeds(
             .clone()
             .map(Into::into)
             .unwrap_or_default();
-        let selected_adapter = resolved_node_adapter.unwrap_or(default_adapter);
+        let status = if is_enabled {
+            ModelStatus::Enabled
+        } else {
+            ModelStatus::Disabled
+        };
+        // Normalize seed column names according to the adapter that will load
+        // this seed, not the project's default adapter.
+        if selected_adapter == AdapterType::Snowflake
+            && let Some(column_types) = &properties_config.column_types
+        {
+            let column_types = column_types
+                .iter()
+                .map(|(key, data_type)| {
+                    // If the key is not a valid unquoted identifier (for
+                    // example, it contains spaces), quote it before parsing so
+                    // Snowflake preserves its case, matching dbt-core.
+                    let raw_key = key.as_str();
+                    let quoted_key;
+                    let sql_identifier = if Dialect::Snowflake.parse_identifier(raw_key).is_ok() {
+                        raw_key
+                    } else {
+                        quoted_key = format!("\"{}\"", raw_key.replace('"', "\"\""));
+                        quoted_key.as_str()
+                    };
+                    Ok((
+                        Dialect::Snowflake
+                            .parse_identifier(sql_identifier)
+                            .map_err(|error| {
+                                fs_err!(
+                                    code => ErrorCode::InvalidColumnReference,
+                                    loc => key.span().clone(),
+                                    "Invalid identifier: {error}",
+                                )
+                            })?
+                            .to_value()
+                            .into(),
+                        data_type.to_owned(),
+                    ))
+                })
+                .collect::<FsResult<_>>()?;
+
+            properties_config.column_types = Some(column_types);
+        }
         let catalog_requires_snowflake = catalogs_state
             .catalog_requires_snowflake_propagation(properties_config.catalog_name.as_deref())?;
         let effective_propagation_target = (selected_adapter == AdapterType::LakeCompute)
@@ -379,7 +437,7 @@ pub async fn resolve_seeds(
                 Some(authored) => properties_config.quoting.filled_from(authored),
                 None => properties_config.quoting,
             }),
-            resolved_node_adapter.unwrap_or(default_adapter),
+            selected_adapter,
         );
 
         // Create initial seed with default values
@@ -417,10 +475,10 @@ pub async fn resolve_seeds(
                 adapter: selected_adapter,
                 propagate: selected_propagate,
                 effective_propagation_target,
-                database: database.to_string(), // will be updated below
-                schema: schema.to_string(),     // will be updated below
-                alias: "".to_owned(),           // will be updated below
-                relation_name: None,            // will be updated below
+                database: relation_context.database.clone(), // will be updated below
+                schema: relation_context.schema.clone(),     // will be updated below
+                alias: "".to_owned(),                        // will be updated below
+                relation_name: None,                         // will be updated below
                 columns,
                 depends_on: NodeDependsOn::default(),
                 quoting: properties_config
@@ -458,18 +516,12 @@ pub async fn resolve_seeds(
             jinja_env,
             &root_package.dbt_project.name,
             package_name,
-            base_ctx,
+            &relation_context.base_context,
             &components,
-            default_adapter,
+            selected_adapter,
         )?;
 
-        let status = if is_enabled {
-            ModelStatus::Enabled
-        } else {
-            ModelStatus::Disabled
-        };
-
-        match node_resolver.insert_ref(&dbt_seed, default_adapter, status, false) {
+        match node_resolver.insert_ref(&dbt_seed, selected_adapter, status, false) {
             Ok(_) => (),
             Err(e) => {
                 let err_with_loc = e.with_location(path.clone());

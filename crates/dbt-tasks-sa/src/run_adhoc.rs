@@ -20,7 +20,6 @@ use dbt_tasks_core::task::run_blocking_task_operation;
 /// Runs queries remotely against the warehouse via an adapter connection.
 pub struct RemoteAdhocRunner {
     pub env: Arc<JinjaEnv>,
-    pub adapter_type: AdapterType,
     /// `show --query-id <id>`: when set, `run_adhoc` ignores `instruction`/
     /// `rendered_sql` entirely and fetches this already-completed LakeCompute
     /// query's result directly instead. See `EvalArgs::query_id`.
@@ -33,6 +32,8 @@ impl AdhocRunner for RemoteAdhocRunner {
         instruction: &'a Instruction,
         rendered_sql: &'a str,
         _unique_id: Option<&'a str>,
+        jinja_env: Arc<JinjaEnv>,
+        adapter_type: AdapterType,
         connection: &'a mut Option<Box<dyn Connection>>,
     ) -> Pin<Box<dyn Future<Output = FsResult<(Vec<RecordBatch>, SchemaRef)>> + Send + 'a>> {
         Box::pin(async move {
@@ -42,8 +43,8 @@ impl AdhocRunner for RemoteAdhocRunner {
             run_remote_adhoc_with_connection(
                 instruction,
                 rendered_sql,
-                &self.env,
-                self.adapter_type,
+                &jinja_env,
+                adapter_type,
                 connection,
             )
             .await

@@ -10,12 +10,13 @@ use dbt_common::static_analysis::{
 use dbt_common::tracing::dbt_emit::emit_error_log_from_fs_error;
 use dbt_common::{ErrorCode, FsResult, error::AbstractLocation, fs_err};
 use dbt_jinja_utils::listener::DefaultJinjaTypeCheckEventListenerFactory;
+use dbt_jinja_utils::phases::AdapterTargetContextCache;
 use dbt_jinja_utils::utils::dependency_package_name_from_ctx;
 use dbt_jinja_utils::{jinja_environment::JinjaEnv, node_resolver::NodeResolver};
 use dbt_schemas::dbt_utils::resolve_package_quoting;
 use dbt_schemas::schemas::common::{Access, DbtMaterialization, DbtQuoting};
-use dbt_schemas::schemas::project::FunctionConfig;
 use dbt_schemas::schemas::project::ResolvedConfig;
+use dbt_schemas::schemas::project::{FunctionConfig, ProjectFunctionConfig};
 use dbt_schemas::schemas::telemetry::NodeType;
 use dbt_schemas::schemas::{AbsorbedOverload, DbtFunctionAttr};
 use dbt_schemas::{
@@ -28,7 +29,7 @@ use dbt_schemas::{
         },
         ref_and_source::{DbtRef, DbtSourceWrapper},
     },
-    state::{DbtPackage, DbtRuntimeConfig, NodeResolverTracker},
+    state::{DbtPackage, DbtProfile, DbtRuntimeConfig, NodeResolverTracker},
 };
 use indexmap::IndexMap;
 use minijinja::MacroSpans;
@@ -38,7 +39,8 @@ use crate::dbt_project_config::{
 };
 use crate::renderer::{RenderCtx, RenderCtxInner};
 use crate::resolve::resolve_utils::{
-    build_unrendered_config, extract_config_map, validate_node_adapter,
+    build_unrendered_config, extract_config_map, render_config_map, render_project_config_resolver,
+    validate_node_adapter,
 };
 use crate::utils::{
     RelationComponents, extract_resource_config_from_raw_project, update_node_relation_components,
@@ -78,6 +80,7 @@ pub async fn resolve_functions(
     schema: &str,
     default_adapter: AdapterType,
     adapter_quoting: &IndexMap<AdapterType, DbtQuoting>,
+    profile: &DbtProfile,
     package_name: &str,
     env: Arc<JinjaEnv>,
     base_ctx: &BTreeMap<String, minijinja::Value>,
@@ -91,6 +94,7 @@ pub async fn resolve_functions(
 )> {
     let mut functions: HashMap<String, Arc<DbtFunction>> = HashMap::new();
     let mut rendering_results: HashMap<String, (String, MacroSpans)> = HashMap::new();
+    let mut adapter_relation_contexts = AdapterTargetContextCache::default();
     let dependency_package_name = dependency_package_name_from_ctx(&env, base_ctx);
 
     let config_resolver = ProjectConfigResolver::build(
@@ -108,12 +112,13 @@ pub async fn resolve_functions(
         default_adapter,
     )?
     .with_resolve_defaults(arg.static_analysis.unwrap_or_default());
+    let mut adapter_config_resolvers = HashMap::from([(default_adapter, config_resolver.clone())]);
 
     let render_ctx = RenderCtx {
         inner: Arc::new(RenderCtxInner {
             args: arg.clone(),
             root_project_name: root_package.dbt_project.name.clone(),
-            config_resolver,
+            config_resolver: config_resolver.clone(),
             package_quoting,
             uses_snapshot_fqn: false,
             defer_render_errors_to_compile: false,
@@ -241,7 +246,7 @@ pub async fn resolve_functions(
         rendered_sql,
         macro_spans,
         properties: maybe_properties,
-        status,
+        mut status,
         patch_path,
         raw_config_call_dict,
         ..
@@ -303,13 +308,83 @@ pub async fn resolve_functions(
             get_original_file_path(&dbt_asset.base_path, &arg.io.in_dir, &dbt_asset.path);
 
         let unique_id = get_unique_id(function_name, package_name, None, "function");
-        // See `resolve_models`: the flag overrides the config. A function selects
-        // explicitly; it has no attached node to inherit from.
+        let fqn = get_node_fqn(
+            package_name,
+            dbt_asset.path.to_owned(),
+            vec![function_name.to_owned()],
+            package
+                .dbt_project
+                .function_paths
+                .as_ref()
+                .unwrap_or(&vec![]),
+        );
+
+        // See `resolve_models`: discover the adapter, then re-render the raw
+        // schema.yml config and merge all layers with that adapter's rules.
         validate_node_adapter(model_config.adapter, &dbt_asset.path)?;
-        let resolved_node_adapter = arg.adapter_override.or(model_config.adapter);
-        // See `resolve_models`: both remaining quoting layers depend on which
-        // adapter the node runs on, which is only known after the config merge.
-        let selected_adapter = resolved_node_adapter.unwrap_or(default_adapter);
+        let discovered_adapter = arg
+            .adapter_override
+            .or(model_config.adapter)
+            .unwrap_or(default_adapter);
+        let relation_context = adapter_relation_contexts.get_for_node(
+            profile,
+            discovered_adapter,
+            default_adapter,
+            status,
+            base_ctx,
+        )?;
+        let adapter_properties_config: Option<FunctionConfig> = render_config_map(
+            raw_schema_yml_configs.get(function_name),
+            &env,
+            &relation_context.base_context,
+            dependency_package_name,
+        )?;
+        if !adapter_config_resolvers.contains_key(&discovered_adapter) {
+            let selected_resolver =
+                render_project_config_resolver::<FunctionConfig, ProjectFunctionConfig>(
+                    &package.raw_project_yml,
+                    &root_package.raw_project_yml,
+                    "functions",
+                    "functions",
+                    DbtQuoting::default(),
+                    arg.static_analysis.unwrap_or_default(),
+                    &env,
+                    &relation_context.base_context,
+                    dependency_package_name,
+                    disallow_plus_prefix_from_flags(root_package.dbt_project.flags.as_ref()),
+                    discovered_adapter,
+                )?;
+            adapter_config_resolvers.insert(discovered_adapter, selected_resolver);
+        }
+        model_config = adapter_config_resolvers
+            .get(&discovered_adapter)
+            .expect("selected adapter config resolver was inserted")
+            .resolve_with_configs_for_adapter(
+                &fqn,
+                &fqn,
+                &[
+                    adapter_properties_config.as_ref(),
+                    sql_file_info.explicit_config.as_deref(),
+                ],
+                discovered_adapter,
+            );
+        let selected_adapter = arg
+            .adapter_override
+            .or(model_config.adapter)
+            .unwrap_or(default_adapter);
+        if selected_adapter != discovered_adapter {
+            return Err(fs_err!(
+                code => ErrorCode::InvalidConfig,
+                loc => dbt_asset.path.clone(),
+                "Node adapter changed from '{discovered_adapter}' to '{selected_adapter}' while \
+                 rendering adapter-specific config"
+            ));
+        }
+        status = if model_config.enabled {
+            dbt_schemas::state::ModelStatus::Enabled
+        } else {
+            dbt_schemas::state::ModelStatus::Disabled
+        };
         model_config.quoting = resolve_package_quoting(
             Some(match adapter_quoting.get(&selected_adapter) {
                 Some(authored) => model_config.quoting.filled_from(authored),
@@ -333,17 +408,6 @@ pub async fn resolve_functions(
                 }
             }
         }
-
-        let fqn = get_node_fqn(
-            package_name,
-            dbt_asset.path.to_owned(),
-            vec![function_name.to_owned()],
-            package
-                .dbt_project
-                .function_paths
-                .as_ref()
-                .unwrap_or(&vec![]),
-        );
 
         // Merge the four raw sources (project < root < schema.yml < inline) into the node's
         // `unrendered_config`. Functions do not support pre_hook/post_hook, so hook-name
@@ -407,10 +471,10 @@ pub async fn resolve_functions(
                 // platform's catalog: no `+propagate` config exists for this node type.
                 propagate: Vec::new(),
                 effective_propagation_target: None,
-                database: database.to_string(), // will be updated below
-                schema: schema.to_string(),     // will be updated below
-                alias: "".to_owned(),           // will be updated below
-                relation_name: None,            // will be updated below
+                database: relation_context.database.clone(), // will be updated below
+                schema: relation_context.schema.clone(),     // will be updated below
+                alias: "".to_owned(),                        // will be updated below
+                relation_name: None,                         // will be updated below
                 materialized: DbtMaterialization::Function,
                 static_analysis,
                 static_analysis_off_reason: None,
@@ -513,12 +577,12 @@ pub async fn resolve_functions(
             &env,
             &root_package.dbt_project.name,
             package_name,
-            base_ctx,
+            &relation_context.base_context,
             &components,
-            default_adapter,
+            selected_adapter,
         )?;
 
-        match node_resolver.insert_function(&function, default_adapter, status) {
+        match node_resolver.insert_function(&function, selected_adapter, status) {
             Ok(_) => (),
             Err(e) => {
                 let err_with_loc = e.with_location(dbt_asset.path.clone());
