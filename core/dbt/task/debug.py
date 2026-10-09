@@ -16,6 +16,7 @@ from dbt.artifacts.schemas.results import RunStatus
 from dbt.cli.flags import Flags
 from dbt.clients.yaml_helper import load_yaml_text
 from dbt.config import PartialProject, Profile, Project
+from dbt.config.project import vars_data_from_root
 from dbt.config.renderer import DbtProjectYamlRenderer, ProfileRenderer
 from dbt.events.types import DebugCmdOut, DebugCmdResult, OpenCommand
 from dbt.links import ProfileConfigDocs
@@ -243,11 +244,14 @@ class DebugTask(BaseTask):
         project_profile: Optional[str] = None
         if os.path.exists(self.project_path):
             try:
+                project_root = os.path.dirname(self.project_path)
                 partial = PartialProject.from_project_root(
-                    os.path.dirname(self.project_path),
+                    project_root,
                     verify_version=bool(self.args.VERSION_CHECK),
                 )
-                renderer = DbtProjectYamlRenderer(None, self.cli_vars)
+                vars_from_file = vars_data_from_root(project_root)
+                merged_vars = {**vars_from_file, **self.cli_vars}
+                renderer = DbtProjectYamlRenderer(None, merged_vars)
                 project_profile = partial.render_profile_name(renderer)
             except dbt.exceptions.DbtProjectError:
                 pass
@@ -330,13 +334,17 @@ class DebugTask(BaseTask):
                 ),
             )
 
-        renderer = DbtProjectYamlRenderer(self.profile, self.cli_vars)
+        project_root = str(self.project_dir)
+        vars_from_file = vars_data_from_root(project_root)
+        merged_vars = {**vars_from_file, **self.cli_vars}
+        renderer = DbtProjectYamlRenderer(self.profile, merged_vars)
 
         try:
             self.project = Project.from_project_root(
-                str(self.project_dir),
+                project_root,
                 renderer,
                 verify_version=self.args.VERSION_CHECK,
+                vars_from_file=vars_from_file,
             )
         except dbt_common.exceptions.DbtConfigError as exc:
             return SubtaskStatus(
