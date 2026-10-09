@@ -70,7 +70,6 @@ tracing-subscriber = { workspace = true }
 dbt-fusion-workspace-hack = { version = "0.1" }
 
 [target.'cfg(windows)'.dependencies]
-dunce = "1.0.5"
 powershell_script = "1.1.0"
 
 [dev-dependencies]
