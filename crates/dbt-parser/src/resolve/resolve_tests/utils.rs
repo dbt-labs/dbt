@@ -50,7 +50,7 @@ pub fn column_tests_inner(
         );
     }
     if let Some(columns) = columns {
-        let column_tests = columns
+        let entries = columns
             .iter()
             .filter_map(|col| {
                 // Check for both tests and data_tests, and handle them appropriately
@@ -77,8 +77,20 @@ pub fn column_tests_inner(
                             },
                         )
                     })
-            })
-            .collect();
+            });
+
+        // A column may be declared twice; dbt-core keeps both sets of tests.
+        let mut column_tests: BTreeMap<String, ColumnTestEntry> = BTreeMap::new();
+        for (name, entry) in entries {
+            if let Some(existing) = column_tests.get_mut(&name) {
+                existing.tests.extend(entry.tests);
+                existing.quote = entry.quote;
+                existing.tags = entry.tags;
+                existing.legacy_syntax_handling = entry.legacy_syntax_handling;
+            } else {
+                column_tests.insert(name, entry);
+            }
+        }
         Ok(Some(column_tests))
     } else {
         Ok(None) // Return an empty map if there are no columns
