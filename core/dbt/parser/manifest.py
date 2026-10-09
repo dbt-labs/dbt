@@ -93,7 +93,6 @@ from dbt.events.types import (
     InvalidConcurrentBatchesConfig,
     InvalidDisabledTargetInTestNode,
     MicrobatchModelNoEventTimeInputs,
-    NodeNotFoundOrDisabled,
     PackageNodeDependsOnRootProjectNode,
     ParsedFileLoadFailed,
     ParsePerfInfoPath,
@@ -1747,18 +1746,13 @@ def invalid_target_fail_unless_test(
 
             fire_event(event, EventLevel.WARN if should_warn_if_disabled else None)
         else:
-            fire_or_defer_event(
-                NodeNotFoundOrDisabled(
-                    original_file_path=node.original_file_path,
-                    unique_id=node.unique_id,
-                    resource_type_title=node.resource_type.title(),
-                    target_name=target_name,
-                    target_kind=target_kind,
-                    target_package=target_package if target_package else "",
-                    disabled=str(disabled),
-                ),
-                force_warn_or_error_handling=True,
-                event_group_type=EventGroupType.PARSE,
+            raise TargetNotFoundError(
+                node=node,
+                target_name=target_name,
+                target_kind=target_kind,
+                target_package=target_package,
+                target_version=target_version,
+                disabled=disabled,
             )
     else:
         raise TargetNotFoundError(
