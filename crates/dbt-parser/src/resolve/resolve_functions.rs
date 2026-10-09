@@ -10,12 +10,13 @@ use dbt_common::static_analysis::{
 use dbt_common::tracing::dbt_emit::emit_error_log_from_fs_error;
 use dbt_common::{ErrorCode, FsResult, error::AbstractLocation, fs_err};
 use dbt_jinja_utils::listener::DefaultJinjaTypeCheckEventListenerFactory;
+use dbt_jinja_utils::phases::AdapterTargetContextCache;
 use dbt_jinja_utils::utils::dependency_package_name_from_ctx;
 use dbt_jinja_utils::{jinja_environment::JinjaEnv, node_resolver::NodeResolver};
 use dbt_schemas::dbt_utils::resolve_package_quoting;
 use dbt_schemas::schemas::common::{Access, DbtMaterialization, DbtQuoting};
-use dbt_schemas::schemas::project::FunctionConfig;
 use dbt_schemas::schemas::project::ResolvedConfig;
+use dbt_schemas::schemas::project::{FunctionConfig, ProjectFunctionConfig};
 use dbt_schemas::schemas::telemetry::NodeType;
 use dbt_schemas::schemas::{AbsorbedOverload, DbtFunctionAttr};
 use dbt_schemas::{
@@ -28,7 +29,7 @@ use dbt_schemas::{
         },
         ref_and_source::{DbtRef, DbtSourceWrapper},
     },
-    state::{DbtPackage, DbtRuntimeConfig, NodeResolverTracker},
+    state::{DbtPackage, DbtProfile, DbtRuntimeConfig, NodeResolverTracker},
 };
 use indexmap::IndexMap;
 use minijinja::MacroSpans;
@@ -38,7 +39,8 @@ use crate::dbt_project_config::{
 };
 use crate::renderer::{RenderCtx, RenderCtxInner};
 use crate::resolve::resolve_utils::{
-    build_unrendered_config, extract_config_map, validate_node_adapter,
+    build_unrendered_config, extract_config_map, render_config_map, render_project_config_resolver,
+    validate_node_adapter,
 };
 use crate::utils::{
     RelationComponents, extract_resource_config_from_raw_project, update_node_relation_components,
@@ -46,7 +48,7 @@ use crate::utils::{
 use crate::{
     args::ResolveArgs,
     renderer::{
-        SqlFileRenderResult, render_unresolved_sql_files,
+        SqlFileRenderResult, render_unresolved_sql_files, rerender_sql_file_for_selected_adapter,
         strip_deprecated_warehouse_keys_from_properties,
     },
     utils::{get_node_fqn, get_original_file_path, get_unique_id},
@@ -61,6 +63,7 @@ use super::resolve_properties::MinimalPropertiesEntry;
 struct CapturedOverload {
     raw_body: String,
     compiled_body: String,
+    macros: Vec<String>,
     refs: Vec<DbtRef>,
     functions: Vec<DbtRef>,
     sources: Vec<DbtSourceWrapper>,
@@ -78,6 +81,7 @@ pub async fn resolve_functions(
     schema: &str,
     default_adapter: AdapterType,
     adapter_quoting: &IndexMap<AdapterType, DbtQuoting>,
+    profile: &DbtProfile,
     package_name: &str,
     env: Arc<JinjaEnv>,
     base_ctx: &BTreeMap<String, minijinja::Value>,
@@ -91,6 +95,7 @@ pub async fn resolve_functions(
 )> {
     let mut functions: HashMap<String, Arc<DbtFunction>> = HashMap::new();
     let mut rendering_results: HashMap<String, (String, MacroSpans)> = HashMap::new();
+    let mut adapter_relation_contexts = AdapterTargetContextCache::default();
     let dependency_package_name = dependency_package_name_from_ctx(&env, base_ctx);
 
     let config_resolver = ProjectConfigResolver::build(
@@ -108,12 +113,13 @@ pub async fn resolve_functions(
         default_adapter,
     )?
     .with_resolve_defaults(arg.static_analysis.unwrap_or_default());
+    let mut adapter_config_resolvers = HashMap::from([(default_adapter, config_resolver.clone())]);
 
     let render_ctx = RenderCtx {
         inner: Arc::new(RenderCtxInner {
             args: arg.clone(),
             root_project_name: root_package.dbt_project.name.clone(),
-            config_resolver,
+            config_resolver: config_resolver.clone(),
             package_quoting,
             uses_snapshot_fqn: false,
             defer_render_errors_to_compile: false,
@@ -204,6 +210,7 @@ pub async fn resolve_functions(
     // (incorrectly) claim themselves, so the self-reference validation still fires.
     let mut overload_stems: HashSet<String> = HashSet::new();
     let mut root_stems: HashSet<String> = HashSet::new();
+    let mut overload_owners: HashMap<String, String> = HashMap::new();
     for render_result in &function_sql_resources_map {
         let Some(overloads) = render_result
             .properties
@@ -215,49 +222,194 @@ pub async fn resolve_functions(
         if overloads.is_empty() {
             continue;
         }
-        overload_stems.extend(overloads.iter().map(|o| o.defined_in.clone()));
         if let Some(stem) = render_result
             .asset
             .path
             .file_stem()
             .and_then(|s| s.to_str())
         {
+            for overload in overloads {
+                overload_stems.insert(overload.defined_in.clone());
+                overload_owners
+                    .entry(overload.defined_in.clone())
+                    .or_insert_with(|| stem.to_string());
+            }
             root_stems.insert(stem.to_string());
             let root_uid = get_unique_id(stem, package_name, None, "function");
             pending_overloads.push((root_uid, overloads.clone()));
         }
     }
+    function_sql_resources_map.sort_by_key(|render_result| {
+        let stem = render_result
+            .asset
+            .path
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .unwrap_or_default();
+        overload_stems.contains(stem) && !root_stems.contains(stem)
+    });
 
     // Rendered bodies + dependencies of overload files, keyed by file stem,
     // captured during the build loop and absorbed into their root function
     // afterwards.
     let mut overload_bodies: HashMap<String, CapturedOverload> = HashMap::new();
+    let mut resolved_function_adapters: HashMap<String, AdapterType> = HashMap::new();
 
     for SqlFileRenderResult {
         asset: dbt_asset,
-        sql_file_info,
+        mut sql_file_info,
         config: mut model_config,
-        raw_code,
-        rendered_sql,
-        macro_spans,
+        mut raw_code,
+        mut rendered_sql,
+        mut macro_spans,
+        macro_dependencies: mut render_macro_dependencies,
         properties: maybe_properties,
-        status,
+        mut status,
         patch_path,
-        raw_config_call_dict,
+        mut raw_config_call_dict,
+        parse_adapter,
         ..
     } in function_sql_resources_map.into_iter()
     {
         let function_name = dbt_asset.path.file_stem().unwrap().to_str().unwrap();
+        let inherited_overload_adapter = overload_owners
+            .get(function_name)
+            .and_then(|owner| resolved_function_adapters.get(owner))
+            .copied();
+
+        let original_file_path =
+            get_original_file_path(&dbt_asset.base_path, &arg.io.in_dir, &dbt_asset.path);
+
+        let unique_id = get_unique_id(function_name, package_name, None, "function");
+        let fqn = get_node_fqn(
+            package_name,
+            dbt_asset.path.to_owned(),
+            vec![function_name.to_owned()],
+            package
+                .dbt_project
+                .function_paths
+                .as_ref()
+                .unwrap_or(&vec![]),
+        );
+
+        // See `resolve_models`: discover the adapter, then re-render the raw
+        // schema.yml config and merge all layers with that adapter's rules.
+        validate_node_adapter(model_config.adapter, &dbt_asset.path)?;
+        let discovered_adapter = arg
+            .adapter_override
+            .or(inherited_overload_adapter)
+            .or(model_config.adapter)
+            .unwrap_or(default_adapter);
+        let relation_context = adapter_relation_contexts.get_for_node(
+            profile,
+            discovered_adapter,
+            default_adapter,
+            status,
+            base_ctx,
+        )?;
+        let adapter_properties_config: Option<FunctionConfig> = render_config_map(
+            raw_schema_yml_configs.get(function_name),
+            &env,
+            &relation_context.base_context,
+            dependency_package_name,
+        )?;
+        if !adapter_config_resolvers.contains_key(&discovered_adapter) {
+            let selected_resolver =
+                render_project_config_resolver::<FunctionConfig, ProjectFunctionConfig>(
+                    &package.raw_project_yml,
+                    &root_package.raw_project_yml,
+                    "functions",
+                    "functions",
+                    DbtQuoting::default(),
+                    arg.static_analysis.unwrap_or_default(),
+                    &env,
+                    &relation_context.base_context,
+                    dependency_package_name,
+                    disallow_plus_prefix_from_flags(root_package.dbt_project.flags.as_ref()),
+                    discovered_adapter,
+                )?;
+            adapter_config_resolvers.insert(discovered_adapter, selected_resolver);
+        }
+        model_config = adapter_config_resolvers
+            .get(&discovered_adapter)
+            .expect("selected adapter config resolver was inserted")
+            .resolve_with_configs_for_adapter(
+                &fqn,
+                &fqn,
+                &[
+                    adapter_properties_config.as_ref(),
+                    sql_file_info.explicit_config.as_deref(),
+                ],
+                discovered_adapter,
+            );
+        let selected_resolver = adapter_config_resolvers
+            .get(&discovered_adapter)
+            .expect("selected adapter config resolver was inserted")
+            .clone();
+        let replay = rerender_sql_file_for_selected_adapter(
+            &render_ctx,
+            profile,
+            discovered_adapter,
+            default_adapter,
+            selected_resolver,
+            relation_context,
+            adapter_quoting
+                .get(&discovered_adapter)
+                .cloned()
+                .unwrap_or_default(),
+            SqlFileRenderResult {
+                asset: dbt_asset.clone(),
+                status,
+                render_error_deferred: false,
+                sql_file_info,
+                config: model_config,
+                raw_code,
+                rendered_sql,
+                macro_spans,
+                properties: maybe_properties.clone(),
+                patch_path: patch_path.clone(),
+                macro_dependencies: render_macro_dependencies,
+                raw_config_call_dict,
+                parse_adapter,
+            },
+            adapter_properties_config.as_ref(),
+            token,
+            Arc::new(DefaultJinjaTypeCheckEventListenerFactory::default()),
+        )
+        .await?;
+        sql_file_info = replay.sql_file_info;
+        model_config = replay.config;
+        raw_code = replay.raw_code;
+        rendered_sql = replay.rendered_sql;
+        macro_spans = replay.macro_spans;
+        render_macro_dependencies = replay.macro_dependencies;
+        raw_config_call_dict = replay.raw_config_call_dict;
+        let selected_adapter = arg
+            .adapter_override
+            .or(inherited_overload_adapter)
+            .or(model_config.adapter)
+            .unwrap_or(default_adapter);
+        if selected_adapter != discovered_adapter {
+            return Err(fs_err!(
+                code => ErrorCode::InvalidConfig,
+                loc => dbt_asset.path.clone(),
+                "Node adapter changed from '{discovered_adapter}' to '{selected_adapter}' while \
+                 rendering adapter-specific config"
+            ));
+        }
+        status = if model_config.enabled {
+            dbt_schemas::state::ModelStatus::Enabled
+        } else {
+            dbt_schemas::state::ModelStatus::Disabled
+        };
+        if !overload_stems.contains(function_name) || root_stems.contains(function_name) {
+            resolved_function_adapters.insert(function_name.to_string(), selected_adapter);
+        }
 
         // Overload-only SQL files are absorbed into their root function below;
-        // they must never become standalone nodes in the manifest or node
-        // resolver. Capture the rendered body for absorption and skip node
-        // construction. Files that are themselves roots (even self-referencing
-        // ones) are still built so absorption validations can run.
+        // replay them first so their body and dependencies use the selected
+        // adapter, then skip standalone node construction.
         if overload_stems.contains(function_name) && !root_stems.contains(function_name) {
-            // Overload SQL may contain its own ref()/source()/function() calls.
-            // Capture those dependencies (built the same way as for a standalone
-            // node) so they can be merged onto the root function during absorption.
             let refs = sql_file_info
                 .refs
                 .iter()
@@ -274,7 +426,7 @@ pub async fn resolve_functions(
                 .map(|(name, package, location)| DbtRef {
                     name: name.to_owned(),
                     package: package.to_owned(),
-                    version: None, // Functions don't have versions
+                    version: None,
                     location: Some(location.with_file(&dbt_asset.path)),
                 })
                 .collect();
@@ -291,6 +443,7 @@ pub async fn resolve_functions(
                 CapturedOverload {
                     raw_body: raw_code,
                     compiled_body: rendered_sql,
+                    macros: render_macro_dependencies,
                     refs,
                     functions: function_refs,
                     sources,
@@ -299,17 +452,6 @@ pub async fn resolve_functions(
             continue;
         }
 
-        let original_file_path =
-            get_original_file_path(&dbt_asset.base_path, &arg.io.in_dir, &dbt_asset.path);
-
-        let unique_id = get_unique_id(function_name, package_name, None, "function");
-        // See `resolve_models`: the flag overrides the config. A function selects
-        // explicitly; it has no attached node to inherit from.
-        validate_node_adapter(model_config.adapter, &dbt_asset.path)?;
-        let resolved_node_adapter = arg.adapter_override.or(model_config.adapter);
-        // See `resolve_models`: both remaining quoting layers depend on which
-        // adapter the node runs on, which is only known after the config merge.
-        let selected_adapter = resolved_node_adapter.unwrap_or(default_adapter);
         model_config.quoting = resolve_package_quoting(
             Some(match adapter_quoting.get(&selected_adapter) {
                 Some(authored) => model_config.quoting.filled_from(authored),
@@ -334,17 +476,6 @@ pub async fn resolve_functions(
             }
         }
 
-        let fqn = get_node_fqn(
-            package_name,
-            dbt_asset.path.to_owned(),
-            vec![function_name.to_owned()],
-            package
-                .dbt_project
-                .function_paths
-                .as_ref()
-                .unwrap_or(&vec![]),
-        );
-
         // Merge the four raw sources (project < root < schema.yml < inline) into the node's
         // `unrendered_config`. Functions do not support pre_hook/post_hook, so hook-name
         // normalization is disabled.
@@ -365,7 +496,7 @@ pub async fn resolve_functions(
         };
 
         let depends_on = NodeDependsOn {
-            macros: vec![],
+            macros: render_macro_dependencies,
             nodes: vec![],
             nodes_with_ref_location: vec![],
         };
@@ -407,10 +538,10 @@ pub async fn resolve_functions(
                 // platform's catalog: no `+propagate` config exists for this node type.
                 propagate: Vec::new(),
                 effective_propagation_target: None,
-                database: database.to_string(), // will be updated below
-                schema: schema.to_string(),     // will be updated below
-                alias: "".to_owned(),           // will be updated below
-                relation_name: None,            // will be updated below
+                database: relation_context.database.clone(), // will be updated below
+                schema: relation_context.schema.clone(),     // will be updated below
+                alias: "".to_owned(),                        // will be updated below
+                relation_name: None,                         // will be updated below
                 materialized: DbtMaterialization::Function,
                 static_analysis,
                 static_analysis_off_reason: None,
@@ -513,12 +644,12 @@ pub async fn resolve_functions(
             &env,
             &root_package.dbt_project.name,
             package_name,
-            base_ctx,
+            &relation_context.base_context,
             &components,
-            default_adapter,
+            selected_adapter,
         )?;
 
-        match node_resolver.insert_function(&function, default_adapter, status) {
+        match node_resolver.insert_function(&function, selected_adapter, status) {
             Ok(_) => (),
             Err(e) => {
                 let err_with_loc = e.with_location(dbt_asset.path.clone());
@@ -536,6 +667,7 @@ pub async fn resolve_functions(
         let mut merged_refs: Vec<DbtRef> = Vec::new();
         let mut merged_functions: Vec<DbtRef> = Vec::new();
         let mut merged_sources: Vec<DbtSourceWrapper> = Vec::new();
+        let mut merged_macros: Vec<String> = Vec::new();
         let root_name = functions
             .get(&root_uid)
             .map(|f| f.__common_attr__.name.clone())
@@ -592,6 +724,7 @@ pub async fn resolve_functions(
             merged_refs.extend(captured.refs.iter().cloned());
             merged_functions.extend(captured.functions.iter().cloned());
             merged_sources.extend(captured.sources.iter().cloned());
+            merged_macros.extend(captured.macros.iter().cloned());
 
             absorbed.push(AbsorbedOverload {
                 defined_in: overload_def.defined_in.clone(),
@@ -612,6 +745,13 @@ pub async fn resolve_functions(
         root_mut.__base_attr__.refs.extend(merged_refs);
         root_mut.__base_attr__.functions.extend(merged_functions);
         root_mut.__base_attr__.sources.extend(merged_sources);
+        root_mut
+            .__base_attr__
+            .depends_on
+            .macros
+            .extend(merged_macros);
+        root_mut.__base_attr__.depends_on.macros.sort();
+        root_mut.__base_attr__.depends_on.macros.dedup();
     }
 
     Ok((functions, rendering_results))

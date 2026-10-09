@@ -11,9 +11,16 @@ use dbt_common::io_args::{
     multi_adapter_enabled,
 };
 use dbt_common::tracing::dbt_emit::emit_warn_log_message;
-use dbt_schemas::schemas::project::AdapterProjectConfig;
+use dbt_jinja_utils::jinja_environment::JinjaEnv;
+use dbt_jinja_utils::serde::into_typed_with_jinja;
+use dbt_schemas::schemas::project::{
+    AdapterProjectConfig, DbtProjectConfig, ProjectConfigResolver, ResolvableConfig,
+    TypedRecursiveConfig,
+};
 use dbt_schemas::state::ProfileAdapter;
 use indexmap::IndexMap;
+use minijinja::Value as MinijinjaValue;
+use serde::de::DeserializeOwned;
 
 /// Validate the root project's `adapters:` block. Called once per run.
 ///
@@ -81,6 +88,124 @@ pub(crate) fn extract_config_map(
                 .filter_map(|(k, v)| k.as_str().map(|k| (k.to_string(), v.clone())))
                 .collect()
         })
+}
+
+/// Render a raw schema.yml `config:` mapping against an adapter-specific
+/// context, preserving the raw mapping separately for state comparison.
+pub(crate) fn render_config_map<T: DeserializeOwned>(
+    config: Option<&BTreeMap<String, dbt_yaml::Value>>,
+    env: &JinjaEnv,
+    base_ctx: &BTreeMap<String, MinijinjaValue>,
+    dependency_package_name: Option<&str>,
+) -> FsResult<Option<T>> {
+    config
+        .map(|config| {
+            let value = dbt_yaml::to_value(config)
+                .map_err(|error| fs_err!(ErrorCode::SerializationError, "{error}"))?;
+            into_typed_with_jinja(
+                value,
+                false,
+                env,
+                base_ctx,
+                &[],
+                dependency_package_name,
+                true,
+            )
+        })
+        .transpose()
+}
+
+/// Re-render one recursive `dbt_project.yml` resource subtree against an
+/// adapter-specific target, then build its inherited config tree.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn render_project_config<T, S>(
+    raw_project: &dbt_yaml::Value,
+    resource_type: &str,
+    package_defaults: T::PackageDefaults,
+    env: &JinjaEnv,
+    base_ctx: &BTreeMap<String, MinijinjaValue>,
+    dependency_package_name: Option<&str>,
+    disallow_plus_prefix: bool,
+    adapter_type: AdapterType,
+) -> FsResult<DbtProjectConfig<T>>
+where
+    T: ResolvableConfig<T> + PartialEq,
+    S: TypedRecursiveConfig + Into<T> + DeserializeOwned,
+{
+    let configs: Option<S> = raw_project
+        .get(resource_type)
+        .cloned()
+        .map(|value| {
+            into_typed_with_jinja(
+                value,
+                false,
+                env,
+                base_ctx,
+                &[],
+                dependency_package_name,
+                false,
+            )
+        })
+        .transpose()?;
+
+    crate::dbt_project_config::init_project_config(
+        &configs,
+        package_defaults,
+        dependency_package_name,
+        disallow_plus_prefix,
+        adapter_type,
+    )
+}
+
+/// Build a project config resolver whose local and root trees were both
+/// rendered and canonicalized for one selected adapter.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn render_project_config_resolver<T, S>(
+    raw_local_project: &dbt_yaml::Value,
+    raw_root_project: &dbt_yaml::Value,
+    local_resource_type: &str,
+    root_resource_type: &str,
+    package_defaults: T::PackageDefaults,
+    resolve_defaults: T::ResolveDefaults,
+    env: &JinjaEnv,
+    base_ctx: &BTreeMap<String, MinijinjaValue>,
+    dependency_package_name: Option<&str>,
+    disallow_plus_prefix: bool,
+    adapter_type: AdapterType,
+) -> FsResult<ProjectConfigResolver<T>>
+where
+    T: ResolvableConfig<T> + PartialEq,
+    T::PackageDefaults: Clone,
+    S: TypedRecursiveConfig + Into<T> + DeserializeOwned,
+{
+    let root_config = render_project_config::<T, S>(
+        raw_root_project,
+        root_resource_type,
+        package_defaults.clone(),
+        env,
+        base_ctx,
+        None,
+        disallow_plus_prefix,
+        adapter_type,
+    )?;
+    ProjectConfigResolver::build(
+        root_config,
+        dependency_package_name.is_some(),
+        || {
+            render_project_config::<T, S>(
+                raw_local_project,
+                local_resource_type,
+                package_defaults,
+                env,
+                base_ctx,
+                dependency_package_name,
+                disallow_plus_prefix,
+                adapter_type,
+            )
+        },
+        adapter_type,
+    )
+    .map(|resolver| resolver.with_resolve_defaults(resolve_defaults))
 }
 
 /// Coerces a hook config value into its flat list of entries: a sequence's items as-is, or a

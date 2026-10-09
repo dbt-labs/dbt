@@ -2,17 +2,23 @@
 mod tests {
     use crate::args::ResolveArgs;
     use crate::dbt_project_config::{DbtProjectConfig, ProjectConfigResolver};
-    use crate::renderer::{RenderCtx, RenderCtxInner, render_unresolved_sql_files};
+    use crate::renderer::{
+        RenderCtx, RenderCtxInner, render_unresolved_sql_files,
+        rerender_sql_file_for_selected_adapter,
+    };
+    use dbt_adapter::{Adapter, sql_types::DefaultTypeOps};
     use dbt_adapter_core::AdapterType;
     use dbt_common::io_args::{FsCommand, IoArgs};
     use dbt_common::serde_utils::Omissible;
     use dbt_jinja_utils::jinja_environment::JinjaEnv;
     use dbt_jinja_utils::listener::DefaultJinjaTypeCheckEventListenerFactory;
+    use dbt_jinja_utils::phases::build_adapter_target_context;
     use dbt_schemas::filter::RunFilter;
     use dbt_schemas::schemas::common::DbtQuoting;
+    use dbt_schemas::schemas::profiles::{DbConfig, DuckDbConfig, PostgresDbConfig};
     use dbt_schemas::schemas::project::ModelConfig;
     use dbt_schemas::schemas::properties::ModelProperties;
-    use dbt_schemas::state::{DbtAsset, DbtRuntimeConfig};
+    use dbt_schemas::state::{DbtAsset, DbtProfile, DbtRuntimeConfig, ProfileAdapter};
     use indexmap::IndexMap;
     use minijinja::Environment;
     use std::collections::BTreeMap;
@@ -207,6 +213,184 @@ mod tests {
         assert_eq!(
             seq_schema, par_schema,
             "Sequential and parallel should produce the same schema"
+        );
+    }
+
+    #[dbt_runtime::test]
+    async fn selected_adapter_replay_renders_inline_config_and_hooks_with_selected_target() {
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let base_path = temp_dir.path().to_path_buf();
+        let models_dir = base_path.join("models");
+        std::fs::create_dir_all(&models_dir).unwrap();
+        let path = PathBuf::from("models/replayed.sql");
+        std::fs::write(
+            base_path.join(&path),
+            r#"{{ config(
+                schema=target.schema,
+                post_hook="select '" ~ target.schema ~ "' as hook_schema"
+            ) }}
+            select '{{ target.schema }}' as model_schema,
+                   '{{ adapter.type() }}' as adapter_type"#,
+        )
+        .unwrap();
+        let asset = DbtAsset {
+            base_path: base_path.clone(),
+            original_path: path.clone(),
+            path,
+            package_name: "test_package".to_string(),
+        };
+        let quoting = DbtQuoting {
+            database: Some(true),
+            schema: Some(true),
+            identifier: Some(true),
+            snowflake_ignore_case: Some(false),
+        };
+        let project_config = DbtProjectConfig::<ModelConfig> {
+            config: ModelConfig {
+                enabled: Some(true),
+                quoting: Some(quoting),
+                ..Default::default()
+            },
+            children: IndexMap::new(),
+        };
+        let args = ResolveArgs {
+            io: IoArgs {
+                in_dir: base_path.clone(),
+                out_dir: base_path,
+                ..Default::default()
+            },
+            no_parallel: true,
+            command: FsCommand::Test,
+            static_analysis: Some(dbt_common::io_args::StaticAnalysisKind::Strict),
+            maximum_seed_size_mib: 1,
+            sample_config: RunFilter::default(),
+            ..Default::default()
+        };
+        let target = |schema: &str| {
+            minijinja::Value::from_serialize(BTreeMap::from([(
+                "schema".to_string(),
+                schema.to_string(),
+            )]))
+        };
+        let default_parse_adapter = Arc::new(Adapter::new_parse_phase_adapter(
+            AdapterType::Postgres,
+            dbt_yaml::Mapping::default(),
+            quoting,
+            Arc::new(DefaultTypeOps::new(AdapterType::Postgres)),
+            None,
+        ));
+        let jinja_env = JinjaEnv::new(Environment::new()).fork_with_adapter(default_parse_adapter);
+        let render_ctx = RenderCtx {
+            inner: Arc::new(RenderCtxInner {
+                args,
+                base_ctx: BTreeMap::from([("target".to_string(), target("default_schema"))]),
+                root_project_name: "test_package".to_string(),
+                package_name: "test_package".to_string(),
+                adapter_type: AdapterType::Postgres,
+                database: "default_db".to_string(),
+                schema: "default_schema".to_string(),
+                config_resolver: ProjectConfigResolver::for_root(
+                    project_config.clone(),
+                    AdapterType::Postgres,
+                ),
+                resource_paths: vec!["models".to_string()],
+                package_quoting: quoting,
+                uses_snapshot_fqn: false,
+                defer_render_errors_to_compile: false,
+                resource_type: None,
+            }),
+            jinja_env: Arc::new(jinja_env),
+            runtime_config: Arc::new(DbtRuntimeConfig::default()),
+            root_runtime_config: Arc::new(DbtRuntimeConfig::default()),
+        };
+        let token = dbt_common::cancellation::CancellationToken::never_cancels();
+        let listener_factory = Arc::new(DefaultJinjaTypeCheckEventListenerFactory::default());
+        let mut properties = BTreeMap::new();
+        let initial = render_unresolved_sql_files::<ModelConfig, ModelProperties>(
+            &render_ctx,
+            std::slice::from_ref(&asset),
+            &mut properties,
+            &token,
+            listener_factory.clone(),
+        )
+        .await
+        .unwrap()
+        .pop()
+        .unwrap();
+
+        assert_eq!(
+            initial
+                .config
+                .schema
+                .clone()
+                .into_inner()
+                .flatten()
+                .as_deref(),
+            Some("default_schema")
+        );
+
+        let profile = DbtProfile {
+            profile: "test_profile".to_string(),
+            target: "test_target".to_string(),
+            defer_to_target: None,
+            allow_clones: true,
+            adapters: IndexMap::from([
+                (
+                    AdapterType::Postgres,
+                    ProfileAdapter::single(DbConfig::Postgres(Box::new(
+                        PostgresDbConfig::default(),
+                    ))),
+                ),
+                (
+                    AdapterType::DuckDB,
+                    ProfileAdapter::single(DbConfig::DuckDB(Box::new(DuckDbConfig {
+                        database: Some("duck_db".to_string()),
+                        schema: Some("duck_schema".to_string()),
+                        ..Default::default()
+                    }))),
+                ),
+            ]),
+            default_adapter: AdapterType::Postgres,
+            schema: "default_schema".to_string(),
+            database: "default_db".to_string(),
+            relative_profile_path: PathBuf::new(),
+            threads: None,
+        };
+        let selected_target_context =
+            build_adapter_target_context(&profile, AdapterType::DuckDB, &render_ctx.inner.base_ctx)
+                .unwrap();
+        let replayed = rerender_sql_file_for_selected_adapter(
+            &render_ctx,
+            &profile,
+            AdapterType::DuckDB,
+            AdapterType::Postgres,
+            ProjectConfigResolver::for_root(project_config, AdapterType::DuckDB),
+            &selected_target_context,
+            quoting,
+            initial,
+            None,
+            &token,
+            listener_factory,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            replayed
+                .config
+                .schema
+                .clone()
+                .into_inner()
+                .flatten()
+                .as_deref(),
+            Some("duck_schema")
+        );
+        assert!(replayed.rendered_sql.contains("duck_schema"));
+        assert!(replayed.rendered_sql.contains("duckdb"));
+        assert!(
+            serde_json::to_string(&replayed.config.post_hook)
+                .unwrap()
+                .contains("duck_schema")
         );
     }
 

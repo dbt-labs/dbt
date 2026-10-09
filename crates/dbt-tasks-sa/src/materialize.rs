@@ -731,6 +731,13 @@ pub fn materialize_model(
             model.__common_attr__.unique_id
         )
     })?;
+    debug!(
+        node = model.__common_attr__.unique_id,
+        node_adapter = %model.node_adapter(),
+        environment_adapter = %adapter.adapter_type(),
+        materialization_macro = macro_name,
+        "Executing model materialization"
+    );
 
     let sql = body_for_materialization(
         sql,

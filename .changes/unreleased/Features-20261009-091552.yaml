@@ -1,0 +1,7 @@
+kind: Features
+body: Support catalog-backed SQL incremental models on non-DuckDB adapters as cross-adapter producers.
+time: 2026-10-09T09:15:52.838423-07:00
+custom:
+    author: colin-k-rogers
+    issue: ""
+    project: dbt-core
