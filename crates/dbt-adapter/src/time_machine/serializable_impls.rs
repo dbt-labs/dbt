@@ -147,6 +147,7 @@ impl TimeMachineSerializable for RelationObject {
             "is_streaming_table": self.is_streaming_table(),
             "is_metric_view": self.is_metric_view(),
             "is_delta": self.is_delta(),
+            "is_iceberg_format": self.is_iceberg_format(),
             "is_shallow_clone": self.is_shallow_clone(),
             "quote_policy": {
                 "database": quote_policy.database,
@@ -230,6 +231,9 @@ impl TimeMachineSerializable for RelationObject {
 
         relation.set_is_delta(Some(ext.bool_or("is_delta", false)));
         relation.set_is_shallow_clone(Some(ext.bool_or("is_shallow_clone", false)));
+        if ext.bool_or("is_iceberg_format", false) {
+            relation.set_table_format(Some(TableFormat::Iceberg));
+        }
 
         Some(RelationObject::new(relation.into()).into_value())
     }
@@ -784,6 +788,46 @@ mod tests {
             restored.is_delta(),
             "restored relation must preserve is_delta=true"
         );
+    }
+
+    #[test]
+    fn test_databricks_relation_roundtrip_preserves_is_iceberg_format() {
+        use dbt_schemas::dbt_types::RelationType;
+        use dbt_schemas::schemas::relations::base::TableFormat;
+
+        let custom_quoting = ResolvedQuoting {
+            database: false,
+            schema: false,
+            identifier: false,
+        };
+
+        let mut relation = do_create_relation(
+            AdapterType::Databricks,
+            "my_catalog".to_string(),
+            "my_schema".to_string(),
+            Some("my_table".to_string()),
+            Some(RelationType::Table),
+            custom_quoting,
+        )
+        .unwrap();
+        relation.set_table_format(Some(TableFormat::Iceberg));
+
+        let original = RelationObject::from(relation);
+        assert!(original.is_iceberg_format());
+
+        let json = original.to_time_machine_json();
+        assert_eq!(json["is_iceberg_format"], true);
+
+        let databricks_ctx: ReplayCallContext = ReplayContext {
+            adapter_type: AdapterType::Databricks,
+            quoting: custom_quoting,
+        }
+        .into();
+
+        let value = RelationObject::from_time_machine_json(&json, &databricks_ctx).unwrap();
+        let restored = value.downcast_object::<RelationObject>().unwrap();
+        assert!(restored.is_iceberg_format());
+        assert!(!restored.is_delta());
     }
 
     #[test]

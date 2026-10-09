@@ -1,0 +1,7 @@
+kind: Fixes
+body: Drop and recreate Databricks tables when switching between managed Iceberg and Delta instead of CREATE OR REPLACE across providers
+time: 2026-10-09T07:30:00+05:30
+custom:
+    author: TensorDevLJ
+    issue: "16668"
+    project: dbt-core

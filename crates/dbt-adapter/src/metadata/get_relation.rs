@@ -15,6 +15,7 @@ use crate::errors::adbc_error_to_adapter_error;
 use crate::formatter::SqlLiteralFormatter;
 use crate::metadata::bigquery;
 use crate::metadata::bigquery::is_bigquery_not_found_error;
+use crate::metadata::databricks::databricks_flags_from_provider;
 use crate::metadata::databricks::describe_table::DatabricksTableMetadata;
 use crate::metadata::{snowflake, try_canonicalize_bool_column_field};
 use crate::record_batch::RecordBatchExt;
@@ -444,7 +445,9 @@ fn parse_describe_table_extended(
         Some(t) => RelationType::from_adapter_type(adapter_type, t),
         None => RelationType::Table,
     };
-    let is_delta = provider_str.as_deref() == Some("delta");
+    let is_delta = provider_str
+        .as_deref()
+        .is_some_and(|p| p.eq_ignore_ascii_case("delta"));
     let is_shallow_clone = type_str.as_deref().is_some_and(is_shallow_clone_type);
 
     Ok((relation_type, is_delta, is_shallow_clone, metadata_map))
@@ -590,19 +593,27 @@ fn databricks_get_relation(
         return Ok(None);
     }
 
-    let (relation_type, is_delta, is_shallow_clone, metadata) = if as_json_unsupported {
-        let (relation_type, is_delta, is_shallow_clone, metadata_map) =
+    let (relation_type, is_delta, table_format, is_shallow_clone, metadata) = if as_json_unsupported
+    {
+        let (relation_type, _is_delta, is_shallow_clone, metadata_map) =
             parse_describe_table_extended(adapter.adapter_type(), &batch)?;
+        let provider = metadata_map
+            .get("Provider")
+            .map(|s| s.as_str())
+            .unwrap_or("");
+        let (is_delta, table_format) = databricks_flags_from_provider(provider);
         (
             Some(relation_type),
             is_delta,
+            table_format,
             is_shallow_clone,
             Some(metadata_map),
         )
     } else {
         debug_assert_eq!(batch.num_rows(), 1);
         let json_metadata = DatabricksTableMetadata::from_record_batch(Arc::new(batch))?;
-        let is_delta = json_metadata.provider.as_deref() == Some("delta");
+        let (is_delta, table_format) =
+            databricks_flags_from_provider(json_metadata.provider.as_deref().unwrap_or(""));
         let is_shallow_clone = is_shallow_clone_type(&json_metadata.type_);
         let relation_type = Some(RelationType::from_adapter_type(
             adapter.adapter_type(),
@@ -611,6 +622,7 @@ fn databricks_get_relation(
         (
             relation_type,
             is_delta,
+            table_format,
             is_shallow_clone,
             Some(json_metadata.into_metadata()),
         )
@@ -633,6 +645,7 @@ fn databricks_get_relation(
         .with_quoting(adapter.quoting())
         .with_metadata(metadata)
         .with_is_delta(is_delta)
+        .with_table_format(table_format)
         .with_is_shallow_clone(is_shallow_clone),
     )))
 }
@@ -1199,6 +1212,28 @@ mod tests {
         assert_eq!(relation_type, RelationType::Table);
         assert!(is_delta);
         assert!(is_shallow_clone);
+    }
+
+    #[test]
+    fn databricks_describe_classifies_managed_iceberg() {
+        let batch = describe_batch(&[
+            ("id", "int"),
+            ("", ""),
+            ("Type", "MANAGED"),
+            ("Provider", "iceberg"),
+        ]);
+        let (relation_type, is_delta, is_shallow_clone, metadata) =
+            parse_describe_table_extended(AdapterType::Databricks, &batch).unwrap();
+        assert_eq!(relation_type, RelationType::Table);
+        assert!(!is_delta);
+        assert!(!is_shallow_clone);
+        assert_eq!(
+            metadata.get("Provider").map(String::as_str),
+            Some("iceberg")
+        );
+        let (is_delta, table_format) = databricks_flags_from_provider("iceberg");
+        assert!(!is_delta);
+        assert_eq!(table_format, TableFormat::Iceberg);
     }
 
     fn mock_bigquery_adapter() -> AdapterImpl {

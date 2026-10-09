@@ -386,7 +386,9 @@ impl Object for RelationObject {
             Some("is_streaming_table") => Some(Value::from(self.is_streaming_table())),
             Some("is_dynamic_table") => Some(Value::from(self.is_dynamic_table())),
             Some("is_interactive_table") => Some(Value::from(self.is_interactive_table())),
-            Some("is_iceberg_format") => Some(Value::from(self.is_iceberg_format())),
+            Some("is_iceberg_format") | Some("is_iceberg") => {
+                Some(Value::from(self.is_iceberg_format()))
+            }
             Some("is_cte") => Some(Value::from(self.is_cte())),
             Some("is_pointer") => Some(Value::from(self.is_pointer())),
             Some("temporary") => Some(Value::from(self.is_temporary())),
@@ -1242,6 +1244,27 @@ mod tests {
             RelationObject::new(Arc::new(relation)),
             "{{ obj.is_metric_view }} | {{ obj.type }}",
             "True | metric_view",
+        );
+    }
+
+    #[test]
+    fn databricks_relation_exposes_iceberg_format_to_jinja() {
+        use dbt_schemas::schemas::relations::base::TableFormat;
+
+        let relation = Relation::new(
+            AdapterType::Databricks,
+            "main".to_string(),
+            "default".to_string(),
+            "iceberg_model".to_string(),
+        )
+        .with_relation_type(RelationType::Table)
+        .with_quoting(DEFAULT_RESOLVED_QUOTING)
+        .with_table_format(TableFormat::Iceberg);
+
+        jinja_assert(
+            RelationObject::new(Arc::new(relation)),
+            "{{ obj.is_iceberg_format }} | {{ obj.is_iceberg }} | {{ obj.is_delta }}",
+            "True | True | False",
         );
     }
 
