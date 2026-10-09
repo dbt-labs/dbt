@@ -505,8 +505,11 @@ diffy = { version = "0.4.2" }
 dirs = "6.0.0"
 dotenvy = "0.15"
 flate2 = "1.0.28"
-gix = { version = "0.72.1", default-features = false, features = ["revision"] }
-gix-discover = "0.40.1"
+gix = { version = "0.84.0", default-features = false, features = [
+  "revision",
+  "sha1",
+] }
+gix-discover = "0.52.0"
 glob = "0.3.2"
 ignore = "0.4.23"
 num_cpus = "1.16.0"
