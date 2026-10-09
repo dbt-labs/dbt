@@ -2004,6 +2004,7 @@ impl<'a> AllPhasesExecutor<'a> {
                     &compilation.dbt_cloud_config().cloned(),
                     &self.arg.io,
                     self.arg.write_catalog,
+                    !resolved_state.semantic_layer_spec_is_legacy,
                 )
                 .await?;
             }
