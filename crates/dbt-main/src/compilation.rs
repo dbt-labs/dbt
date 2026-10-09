@@ -1722,7 +1722,9 @@ impl DbtProjectCompilation {
                 }
 
                 // Format the selection expression for the warning
-                if let Some(select_expr) = &schedule.select {
+                if let Some(select_expr) = &schedule.select
+                    && !selects_nothing_by_construction(select_expr)
+                {
                     emit_warn_log_message(
                         ErrorCode::NoNodesForSelectionCriteria,
                         format!(
@@ -2802,6 +2804,17 @@ async fn write_catalog(
     .await
 }
 
+/// True when `expr` can match no node regardless of the project (e.g. an empty `Or`).
+/// An empty `Or` comes from an empty retry set or from a selectors.yml definition.
+fn selects_nothing_by_construction(expr: &dbt_common::node_selector::SelectExpression) -> bool {
+    use dbt_common::node_selector::SelectExpression;
+    match expr {
+        SelectExpression::Or(terms) => terms.iter().all(selects_nothing_by_construction),
+        SelectExpression::And(terms) => terms.iter().any(selects_nothing_by_construction),
+        SelectExpression::Atom(_) | SelectExpression::Exclude(_) => false,
+    }
+}
+
 /// Check if a select expression matches any macro's file path.
 /// Returns the matched selector value if a macro was matched.
 fn select_matches_macro(
@@ -3102,5 +3115,36 @@ mod tests {
             &FsCommand::Freshness,
             &schedule
         ));
+    }
+
+    #[test]
+    fn selects_nothing_by_construction_detects_empty_or() {
+        use dbt_common::node_selector::{SelectExpression, parse_model_specifiers};
+        let atom = || parse_model_specifiers(&["my_model".to_string()]).unwrap();
+        assert!(matches!(atom(), SelectExpression::Atom(_)));
+
+        assert!(selects_nothing_by_construction(&SelectExpression::Or(
+            vec![]
+        )));
+        // The shape a `default: true` selector produces when ANDed with an empty retry set.
+        let default_and_empty = SelectExpression::And(vec![SelectExpression::Or(vec![]), atom()]);
+        assert!(selects_nothing_by_construction(&default_and_empty));
+        assert!(!selects_nothing_by_construction(&atom()));
+        assert!(!selects_nothing_by_construction(&SelectExpression::Or(
+            vec![atom()]
+        )));
+        // A selectors.yml union of only excludes; deliberately treated as selecting nothing.
+        let exclude_only_union = SelectExpression::And(vec![
+            SelectExpression::Or(vec![]),
+            SelectExpression::Exclude(Box::new(atom())),
+        ]);
+        assert!(selects_nothing_by_construction(&exclude_only_union));
+        // Excluding nothing, or an empty intersection, selects everything.
+        assert!(!selects_nothing_by_construction(
+            &SelectExpression::Exclude(Box::new(SelectExpression::Or(vec![])))
+        ));
+        assert!(!selects_nothing_by_construction(&SelectExpression::And(
+            vec![]
+        )));
     }
 }
