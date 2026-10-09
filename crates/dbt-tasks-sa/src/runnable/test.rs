@@ -30,7 +30,9 @@ use dbt_tasks_core::pretty_table::from_pretty_table_error;
 use dbt_tasks_core::run_cache::run_cache_service::CachedTestExecutionResult;
 use dbt_tasks_core::span_manager::SpanTreeRequest;
 use dbt_tasks_core::task::TaskResult;
-use dbt_tasks_core::task::{AggregatedNodeGroup, TP, Task, run_blocking_task_operation};
+use dbt_tasks_core::task::{
+    AggregatedNodeGroup, TP, Task, run_blocking_task_operation_with_wait_parents,
+};
 use dbt_tasks_core::task_spans::create_task_span_for_node;
 use dbt_tasks_core::test_aggregation::GenericTestGroup;
 use dbt_tasks_core::visitor::SkipReason;
@@ -370,21 +372,28 @@ impl AggregatedTestRunRemoteTask {
         let adapter_type = self.group.aggregated_test.node_adapter();
         let test = self.group.aggregated_test.clone();
         let ctx_inner = ctx.clone();
+        let wait_parents = span_by_id
+            .values()
+            .filter_map(|(_, span)| span.id())
+            .collect();
 
         let (test_results, failing_rows_opt, main_response) =
-            run_blocking_task_operation(move || {
-                materialize_test(
-                    &sql_instruction.sql,
-                    &test,
-                    ctx_inner.generic_test_relationships(),
-                    adapter_type,
-                    ctx_inner.runtime_config(),
-                    &ctx_inner.inner.materialization_resolver,
-                    ctx_inner.env.clone(),
-                    &base_context,
-                    &ctx_inner.inner.arg.io,
-                )
-            })
+            run_blocking_task_operation_with_wait_parents(
+                move || {
+                    materialize_test(
+                        &sql_instruction.sql,
+                        &test,
+                        ctx_inner.generic_test_relationships(),
+                        adapter_type,
+                        ctx_inner.runtime_config(),
+                        &ctx_inner.inner.materialization_resolver,
+                        ctx_inner.env.clone(),
+                        &base_context,
+                        &ctx_inner.inner.arg.io,
+                    )
+                },
+                Some(wait_parents),
+            )
             .await??;
 
         let (member_results, worst_status) =

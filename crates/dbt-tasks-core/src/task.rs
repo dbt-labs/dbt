@@ -3,11 +3,13 @@ use std::future::Future;
 use std::path::Path;
 use std::pin::Pin;
 use std::sync::Arc;
+use std::time::Duration;
 
 use dbt_common::stats::NodeStatus;
-use dbt_common::{ErrorCode, FsResult, fs_err};
+use dbt_common::{ErrorCode, FsResult, create_debug_span_with_parent, fs_err};
 use dbt_schemas::schemas::InternalDbtNodeAttributes;
 use dbt_schemas::schemas::telemetry::{ExecutionPhase, NodeType};
+use dbt_telemetry::ConnectionLimitWait;
 
 use crate::context::TaskRunnerCtx;
 use crate::span_manager::{SpanLevel, SpanTreeRequest};
@@ -69,12 +71,46 @@ impl From<TP> for ExecutionPhase {
 }
 
 /// Run blocking task work on the runtime pool, mapping join failures to task errors.
+///
+/// Also manages the `ConnectionLimitWait` span that accounts for time spent
+/// waiting on runtime pool contention, used by downstream consumers for node
+/// runtime calculations and display.
 pub async fn run_blocking_task_operation<T: Send + 'static>(
     f: impl FnOnce() -> T + Send + 'static,
 ) -> FsResult<T> {
-    dbt_runtime::spawn_blocking(f)
-        .await
-        .map_err(|e| fs_err!(ErrorCode::Generic, "spawn_blocking join error: {}", e))
+    run_blocking_task_operation_with_wait_parents(f, None).await
+}
+
+/// Like [`run_blocking_task_operation`], but accounts the pool wait to each of
+/// `wait_parents` when one operation is shared by several node spans.
+///
+/// `None` accounts the wait to the current span.
+pub async fn run_blocking_task_operation_with_wait_parents<T: Send + 'static>(
+    f: impl FnOnce() -> T + Send + 'static,
+    wait_parents: Option<Vec<tracing::span::Id>>,
+) -> FsResult<T> {
+    let wait_parents: Vec<Option<tracing::span::Id>> = match wait_parents {
+        Some(parents) => {
+            debug_assert!(
+                !parents.is_empty(),
+                "explicit wait parents must not be empty"
+            );
+            parents.into_iter().map(Some).collect()
+        }
+        None => vec![tracing::Span::current().id()],
+    };
+    dbt_runtime::spawn_blocking_with_wait_guard(
+        Duration::from_millis(50),
+        move || {
+            wait_parents
+                .into_iter()
+                .map(|parent| create_debug_span_with_parent(parent, ConnectionLimitWait::default()))
+                .collect::<Vec<_>>()
+        },
+        f,
+    )
+    .await
+    .map_err(|e| fs_err!(ErrorCode::Generic, "spawn_blocking join error: {}", e))
 }
 
 /// Identity of a set of dbt nodes that share a single query.
