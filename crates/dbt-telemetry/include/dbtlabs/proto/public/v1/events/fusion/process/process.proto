@@ -17,3 +17,10 @@ message Process {
   // Host architecture, e.g. "x86_64", "aarch64".
   string host_arch = 6;
 }
+
+// Time some work spent queued for a worker of a bounded thread pool, e.g. a
+// node evaluation waiting to run. The work makes no progress during this time.
+// It may occur multiple times for the same work, and short waits below an
+// internal threshold are not reported. When emitted within a `NodeEvaluated`
+// span, the time counts toward its `idle_time_ms`.
+message ThreadPoolWait {}

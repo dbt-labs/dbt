@@ -19,7 +19,8 @@ use crate::{
         DepsAllPackagesInstalled, DepsPackageInstalled, GenericOpExecuted, GenericOpItemProcessed,
         HookProcessed, Invocation, ListItemOutput, LogMessage, NodeEvaluated, NodeProcessed,
         OnboardingScreenShown, PackageUpdate, PhaseExecuted, Process, ProgressMessage,
-        QueryExecuted, ShowDataOutput, ShowResult, StateModifiedDiff, Unknown, UserLogMessage,
+        QueryExecuted, ShowDataOutput, ShowResult, StateModifiedDiff, ThreadPoolWait, Unknown,
+        UserLogMessage,
     },
     serialize::arrow::ArrowAttributes as DbtTelemetryArrowAttributes,
 };
@@ -199,6 +200,13 @@ static PUBLIC_TELEMETRY_EVENT_REGISTRY: LazyLock<TelemetryEventTypeRegistry> = L
             json_deserialize_for_type::<Process>,
             #[cfg(any(test, feature = "test-utils"))]
             faker_for_type::<Process>,
+        );
+        registry.register(
+            ThreadPoolWait::FULL_NAME,
+            arrow_deserialize_for_type::<ThreadPoolWait>,
+            json_deserialize_for_type::<ThreadPoolWait>,
+            #[cfg(any(test, feature = "test-utils"))]
+            faker_for_type::<ThreadPoolWait>,
         );
         registry.register(
             PhaseExecuted::FULL_NAME,

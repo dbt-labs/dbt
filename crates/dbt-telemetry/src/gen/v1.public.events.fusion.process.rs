@@ -31,3 +31,26 @@ impl ::prost::Name for Process {
         "/v1.public.events.fusion.process.Process".into()
     }
 }
+/// Time some work spent queued for a worker of a bounded thread pool, e.g. a
+/// node evaluation waiting to run. The work makes no progress during this time.
+/// It may occur multiple times for the same work, and short waits below an
+/// internal threshold are not reported. When emitted within a `NodeEvaluated`
+/// span, the time counts toward its `idle_time_ms`.
+#[cfg_attr(any(test, feature = "test-utils"), derive(::fake::Dummy))]
+#[derive(crate::macros::ProtoNew)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ThreadPoolWait {}
+impl ::dbt_tracing::StaticName for ThreadPoolWait {
+    const FULL_NAME: &'static str = "v1.public.events.fusion.process.ThreadPoolWait";
+    const TYPE_URL: &'static str = "/v1.public.events.fusion.process.ThreadPoolWait";
+}
+impl ::prost::Name for ThreadPoolWait {
+    const NAME: &'static str = "ThreadPoolWait";
+    const PACKAGE: &'static str = "v1.public.events.fusion.process";
+    fn full_name() -> ::prost::alloc::string::String {
+        "v1.public.events.fusion.process.ThreadPoolWait".into()
+    }
+    fn type_url() -> ::prost::alloc::string::String {
+        "/v1.public.events.fusion.process.ThreadPoolWait".into()
+    }
+}

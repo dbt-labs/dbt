@@ -5,7 +5,7 @@ use dbt_tracing::{
 };
 use prost::Name;
 
-pub use crate::proto::v1::public::events::fusion::process::Process;
+pub use crate::proto::v1::public::events::fusion::process::{Process, ThreadPoolWait};
 
 /// Creates a new instance of `Process` with the current process information.
 pub fn create_process_event_data(package: &str) -> Process {
@@ -63,5 +63,29 @@ impl ArrowSerializableTelemetryEvent for Process {
                 e
             )
         })
+    }
+}
+
+impl StaticTelemetryEvent for ThreadPoolWait {
+    const RECORD_CATEGORY: TelemetryEventRecType = TelemetryEventRecType::Span;
+    const OUTPUT_FLAGS: TelemetryOutputFlags = TelemetryOutputFlags::ALL;
+
+    fn event_display_name(&self) -> String {
+        "Thread pool wait".to_string()
+    }
+
+    fn has_sensitive_data(&self) -> bool {
+        false
+    }
+}
+
+impl ArrowSerializableTelemetryEvent for ThreadPoolWait {
+    type ArrowRecord<'a> = ArrowAttributes<'a>;
+    fn to_arrow_record(&self) -> ArrowAttributes<'_> {
+        ArrowAttributes::default()
+    }
+
+    fn from_arrow_record(_record: &ArrowAttributes) -> Result<Self, String> {
+        Ok(Self {})
     }
 }
