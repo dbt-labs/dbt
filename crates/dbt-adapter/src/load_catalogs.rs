@@ -30,6 +30,18 @@ pub fn fetch_use_catalogs_v2() -> bool {
     }
 }
 
+/// Clear catalogs from a prior invocation before loading the current project.
+///
+/// Programmatic callers may run multiple invocations in one process; without
+/// this reset, a project with no catalogs.yml can inherit the previous
+/// project's catalog registry.
+pub fn clear_catalogs() {
+    *match CATALOGS.write() {
+        Ok(g) => g,
+        Err(p) => p.into_inner(),
+    } = None;
+}
+
 /// Record whether the `use_catalogs_v2` behavior flag is set. Must run even when
 /// there is no catalogs.yml, so callers can distinguish "flag set but no catalogs
 /// defined" from "flag not set" (otherwise both look the same and yield a
