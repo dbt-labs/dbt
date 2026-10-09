@@ -18,7 +18,8 @@ use dbt_jinja_utils::invocation_args::InvocationArgs;
 use dbt_jinja_utils::invocation_graph::reset_invocation_graph;
 use dbt_jinja_utils::listener::JinjaTypeCheckingEventListenerFactory;
 use dbt_jinja_utils::node_resolver::{
-    NodeResolver, PackageSearchOrder, check_for_model_deprecations, resolve_dependencies,
+    NodeResolver, PackageSearchOrder, check_for_model_deprecations,
+    ensure_cross_adapter_catalog_producer_supported, resolve_dependencies,
 };
 use dbt_jinja_utils::phases::parse::{
     build_docs_jinja_environment, build_docs_resolve_context, build_resolve_context,
@@ -1466,8 +1467,9 @@ pub fn check_compute_platform_upstreams(
 /// Validate physical model refs that cross between DuckDB and another adapter.
 ///
 /// Native relations remain valid until an adapter boundary actually consumes
-/// them. At that boundary, the producer must be a table in a named v2 catalog
-/// that declares access for both adapters.
+/// them. At that boundary, the producer must be a SQL table, or an incremental
+/// model on the non-DuckDB adapter, in a named v2 catalog that declares access
+/// for both adapters.
 pub fn check_multi_adapter_catalog_edges(
     nodes: &Nodes,
     catalogs: Option<&DbtCatalogs>,
@@ -1566,7 +1568,8 @@ fn validate_multi_adapter_dependencies(
             return Err(fs_err!(
                 ErrorCode::InvalidConfig,
                 "Cross-adapter ref from '{}' ({}) to '{}' ({}) is not supported for producer \
-                 resource type '{:?}'; the initial DuckDB bridge supports SQL table models only",
+                 resource type '{:?}'; the initial DuckDB bridge supports SQL table and \
+                 incremental models only",
                 producer_id,
                 producer_adapter.as_ref(),
                 consumer_id,
@@ -1575,23 +1578,19 @@ fn validate_multi_adapter_dependencies(
             ));
         };
 
-        if producer_model.__base_attr__.materialized != DbtMaterialization::Table
-            || producer_model.__common_attr__.language.as_deref() == Some("python")
-        {
+        if let Err(reason) = ensure_cross_adapter_catalog_producer_supported(
+            &producer_model.__base_attr__.materialized,
+            producer_model.__common_attr__.language.as_deref(),
+            producer_adapter,
+        ) {
             return Err(fs_err!(
                 ErrorCode::InvalidConfig,
-                "Cross-adapter ref from '{}' ({}) to '{}' ({}) requires the producer to be a \
-                 SQL table; found materialization '{}' with language '{}'",
+                "Cross-adapter ref from '{}' ({}) to '{}' ({}) has an unsupported producer: \
+                 {reason}",
                 producer_id,
                 producer_adapter.as_ref(),
                 consumer_id,
                 consumer_adapter.as_ref(),
-                producer_model.__base_attr__.materialized,
-                producer_model
-                    .__common_attr__
-                    .language
-                    .as_deref()
-                    .unwrap_or("sql")
             ));
         }
 
@@ -2574,12 +2573,19 @@ mod tests {
                 model.__model_attr__.catalog_name = catalog_name.map(str::to_string);
                 model
             };
-        let run = |producer_adapter, consumer_adapter, catalog_name, catalogs| {
+        let run = |producer_adapter,
+                   consumer_adapter,
+                   materialized,
+                   language: &str,
+                   catalog_name,
+                   catalogs| {
             let mut nodes = Nodes::default();
-            nodes.models.insert(
-                producer_id.to_string(),
-                Arc::new(model(producer_id, producer_adapter, catalog_name, &[])),
-            );
+            let mut producer = model(producer_id, producer_adapter, catalog_name, &[]);
+            producer.__base_attr__.materialized = materialized;
+            producer.__common_attr__.language = Some(language.to_string());
+            nodes
+                .models
+                .insert(producer_id.to_string(), Arc::new(producer));
             nodes.models.insert(
                 consumer_id.to_string(),
                 Arc::new(model(consumer_id, consumer_adapter, None, &[producer_id])),
@@ -2588,11 +2594,27 @@ mod tests {
         };
 
         assert!(
-            run(AdapterType::Snowflake, AdapterType::Snowflake, None, None).is_ok(),
+            run(
+                AdapterType::Snowflake,
+                AdapterType::Snowflake,
+                DbtMaterialization::Table,
+                "sql",
+                None,
+                None
+            )
+            .is_ok(),
             "same-adapter native refs do not need a bridge"
         );
         assert!(
-            run(AdapterType::Snowflake, AdapterType::DuckDB, None, None).is_err(),
+            run(
+                AdapterType::Snowflake,
+                AdapterType::DuckDB,
+                DbtMaterialization::Table,
+                "sql",
+                None,
+                None
+            )
+            .is_err(),
             "toggling only the consumer to DuckDB creates a bridge requirement"
         );
 
@@ -2618,11 +2640,61 @@ catalogs:
             run(
                 AdapterType::Snowflake,
                 AdapterType::DuckDB,
+                DbtMaterialization::Table,
+                "sql",
                 Some("shared"),
                 Some(&catalogs)
             )
             .is_ok(),
             "a declared Iceberg REST catalog carries the toggled edge"
+        );
+        assert!(
+            run(
+                AdapterType::Snowflake,
+                AdapterType::DuckDB,
+                DbtMaterialization::Incremental,
+                "sql",
+                Some("shared"),
+                Some(&catalogs)
+            )
+            .is_ok(),
+            "a catalog-backed SQL incremental producer exposes the same physical table"
+        );
+        assert!(
+            run(
+                AdapterType::DuckDB,
+                AdapterType::Snowflake,
+                DbtMaterialization::Incremental,
+                "sql",
+                Some("shared"),
+                Some(&catalogs)
+            )
+            .is_err(),
+            "DuckDB incremental full refresh cannot rename tables in an Iceberg REST catalog"
+        );
+        assert!(
+            run(
+                AdapterType::Snowflake,
+                AdapterType::DuckDB,
+                DbtMaterialization::Incremental,
+                "python",
+                Some("shared"),
+                Some(&catalogs)
+            )
+            .is_err(),
+            "a Python incremental producer remains outside the initial bridge"
+        );
+        assert!(
+            run(
+                AdapterType::Snowflake,
+                AdapterType::DuckDB,
+                DbtMaterialization::View,
+                "sql",
+                Some("shared"),
+                Some(&catalogs)
+            )
+            .is_err(),
+            "an adapter-local view is not a portable catalog producer"
         );
     }
 

@@ -64,11 +64,34 @@ fn create_ref_relation(
 struct CatalogRef {
     catalog_name: String,
     producer_adapter: AdapterType,
+    materialized: DbtMaterialization,
+    language: Option<String>,
     schema: String,
     identifier: String,
     relation_type: RelationType,
     user_quoting: Option<DbtQuoting>,
     event_time: Option<String>,
+}
+
+/// Validate that a catalog-backed producer can be resolved across a DuckDB boundary.
+pub fn ensure_cross_adapter_catalog_producer_supported(
+    materialized: &DbtMaterialization,
+    language: Option<&str>,
+    producer_adapter: AdapterType,
+) -> FsResult<()> {
+    let supported_materialization = materialized == &DbtMaterialization::Table
+        || (materialized == &DbtMaterialization::Incremental
+            && producer_adapter != AdapterType::DuckDB);
+    if supported_materialization && language != Some("python") {
+        Ok(())
+    } else {
+        Err(fs_err!(
+            ErrorCode::InvalidConfig,
+            "catalog producer must be a SQL table or a non-DuckDB SQL incremental model; \
+             found materialization '{materialized}' with language '{}'",
+            language.unwrap_or("sql"),
+        ))
+    }
 }
 
 fn downgraded_node_dependency_warning(
@@ -317,6 +340,17 @@ impl NodeResolver {
         {
             return Ok(relation);
         }
+        ensure_cross_adapter_catalog_producer_supported(
+            &catalog_ref.materialized,
+            catalog_ref.language.as_deref(),
+            catalog_ref.producer_adapter,
+        )
+        .map_err(|error| {
+            fs_err!(
+                ErrorCode::InvalidConfig,
+                "Cross-adapter ref '{unique_id}' has an unsupported catalog producer: {error}"
+            )
+        })?;
         let catalogs = self
             .catalogs
             .clone()
@@ -384,6 +418,8 @@ impl NodeResolver {
         Some(CatalogRef {
             catalog_name: catalog_name.to_string(),
             producer_adapter: adapter_type,
+            materialized: node.materialized(),
+            language: node.common().language.clone(),
             schema: node.schema(),
             identifier: node.alias(),
             relation_type: RelationType::from(node.materialized()),
@@ -1978,6 +2014,46 @@ catalogs:
             .to_string();
         assert!(rendered.contains("SNOWFLAKE_SHARED"), "{rendered}");
         assert!(!rendered.contains("duck_shared"), "{rendered}");
+
+        for (materialized, language, producer_adapter, consumer_adapter) in [
+            (
+                DbtMaterialization::View,
+                "sql",
+                AdapterType::DuckDB,
+                AdapterType::Snowflake,
+            ),
+            (
+                DbtMaterialization::Incremental,
+                "sql",
+                AdapterType::DuckDB,
+                AdapterType::Snowflake,
+            ),
+            (
+                DbtMaterialization::Incremental,
+                "python",
+                AdapterType::Snowflake,
+                AdapterType::DuckDB,
+            ),
+        ] {
+            state_model.__base_attr__.materialized = materialized;
+            state_model.__common_attr__.language = Some(language.to_string());
+            resolver
+                .update_ref_with_deferral(&state_model, producer_adapter, true)
+                .unwrap();
+            let error = resolver
+                .lookup_ref_for_adapter(
+                    &None,
+                    "orders",
+                    &None,
+                    &Some("test".to_string()),
+                    consumer_adapter,
+                )
+                .unwrap_err();
+            assert!(
+                error.to_string().contains("unsupported catalog producer"),
+                "{error}"
+            );
+        }
     }
 
     #[test]
