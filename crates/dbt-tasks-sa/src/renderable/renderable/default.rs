@@ -113,7 +113,7 @@ fn render_default(
     )?;
 
     if let Some(overrides) = local_exec_unit_test_overrides {
-        unit_test::apply_unit_test_overrides(&mut compile_context, overrides, ctx);
+        unit_test::apply_unit_test_overrides(&mut compile_context, overrides, ctx)?;
     }
 
     let render_file_path = node

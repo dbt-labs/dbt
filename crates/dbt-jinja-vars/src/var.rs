@@ -157,29 +157,17 @@ pub trait VarFunction: Object {
     }
 }
 
-/// A struct that returns a variable from a map of variables (with optional overrides)
+/// A struct that returns a variable from a map of variables
 /// https://github.com/dbt-labs/dbt-core/blob/31881d2a3bea030e700e9df126a3445298385698/core/dbt/context/base.py#L139
 #[derive(Debug)]
 pub struct Var {
     vars: BTreeMap<String, dbt_yaml::Value>,
-    overrides: Option<BTreeMap<String, dbt_yaml::Value>>,
 }
 
 impl Var {
     /// Make a new Var struct
     pub fn new(vars: BTreeMap<String, dbt_yaml::Value>) -> Self {
-        Self {
-            vars,
-            overrides: None,
-        }
-    }
-
-    /// Make a new Var struct with override values
-    pub fn with_overrides(
-        vars: BTreeMap<String, dbt_yaml::Value>,
-        overrides: Option<BTreeMap<String, dbt_yaml::Value>>,
-    ) -> Self {
-        Self { vars, overrides }
+        Self { vars }
     }
 }
 
@@ -201,11 +189,7 @@ impl VarFunction for Var {
         var_name: String,
         default_value: Option<Value>,
     ) -> Result<Value, Error> {
-        if let Some(overrides) = &self.overrides
-            && let Some(value) = overrides.get(&var_name)
-        {
-            Ok(yml_value_to_minijinja(value))
-        } else if let Some(value) = self.vars.get(&var_name) {
+        if let Some(value) = self.vars.get(&var_name) {
             Ok(yml_value_to_minijinja(value))
         } else if let Some(default) = default_value {
             Ok(default)

@@ -32,7 +32,7 @@ use dbt_jinja_utils::serde::single_expression_body;
 use dbt_jinja_utils::utils::add_task_context;
 use dbt_jinja_utils::utils::macro_spans_to_macro_span_vec;
 use dbt_jinja_utils::utils::render_sql;
-use dbt_jinja_utils::{Var, env_var};
+use dbt_jinja_utils::{ConfiguredVar, env_var};
 use dbt_scheduler::instructions::SqlInstruction;
 use dbt_schemas::schemas;
 use dbt_schemas::schemas::InternalDbtNode;
@@ -635,7 +635,7 @@ fn infer_unit_test_expected_schema(
     );
 
     if let Some(overrides) = &unit_test.__unit_test_attr__.overrides {
-        apply_unit_test_overrides(&mut run_context, overrides, ctx);
+        apply_unit_test_overrides(&mut run_context, overrides, ctx)?;
     }
 
     // This is a small part of the dbt-core unit test materialization logic that infers
@@ -945,7 +945,7 @@ pub fn apply_unit_test_overrides(
     compile_context: &mut BTreeMap<String, MinijinjaValue>,
     overrides: &UnitTestOverrides,
     ctx: &TaskRunnerCtx,
-) {
+) -> FsResult<()> {
     // Override for Macros
     if let Some(macros) = overrides.macros.as_ref() {
         bind_override_macros(macros, compile_context, &ctx.env);
@@ -976,13 +976,23 @@ pub fn apply_unit_test_overrides(
 
     // Override for Variables
     if let Some(vars) = &overrides.vars {
-        let base_vars = ctx.inner.arg.vars.clone();
-        let overrides_map = Some(vars.clone());
+        // Layer overrides over the CLI vars so project vars stay visible, like Core's UnitTestVar.
+        let configured = ctx
+            .env
+            .get_global("var")
+            .and_then(|var| var.downcast_object::<ConfiguredVar>())
+            .ok_or_else(|| {
+                fs_err!(
+                    ErrorCode::InvalidConfig,
+                    "unit test environment `var` global is not a ConfiguredVar"
+                )
+            })?;
         compile_context.insert(
             "var".to_string(),
-            MinijinjaValue::from_object(Var::with_overrides(base_vars, overrides_map)),
+            MinijinjaValue::from_object(configured.with_cli_overrides(vars)),
         );
     }
+    Ok(())
 }
 
 fn create_cte_name_from_fqn(
@@ -1465,7 +1475,7 @@ fn render_unit_test(
 
     // Apply overrides to the compile context
     if let Some(overrides) = &node.__unit_test_attr__.overrides {
-        apply_unit_test_overrides(&mut compile_context, overrides, ctx);
+        apply_unit_test_overrides(&mut compile_context, overrides, ctx)?;
     }
 
     let resolver_state = ctx.resolver_state();
