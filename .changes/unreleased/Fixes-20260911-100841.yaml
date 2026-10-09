@@ -1,0 +1,6 @@
+kind: Fixes
+body: 'Preserve Fusion-bundled adapter macros that have no on-disk source (for example dispatch targets like `snowflake__date_spine`) during `rediscover_adapter_macros`, instead of silently evicting them and leaving dangling `depends_on.macros` references.'
+time: 2026-09-11T10:08:41.000000+03:00
+custom:
+    Author: vmaasalo
+    Issue: "N/A"
