@@ -1,0 +1,7 @@
+kind: Fixes
+body: Replace existing Databricks materialized views with CREATE OR REPLACE on full refresh instead of dropping them first
+time: 2026-10-06T10:00:00.000000+05:30
+custom:
+    author: sd-db
+    issue: "16345"
+    project: dbt-core
