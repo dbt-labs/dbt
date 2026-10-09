@@ -200,15 +200,21 @@ async fn checkout_revision(
         .await;
     }
 
-    run_git(&["fetch", "--depth=1", repo, revision], Some(clone_dir))
-        .await
-        .map_err(|e| match e {
-            GitErr::Io(e) => fs_err!(ErrorCode::GitError, "Error fetching: {e}"),
-            GitErr::Failed { stderr } => {
-                let (code, msg) = parse_git_clone_error(&stderr, repo, Some(revision));
-                fs_err!(code, "{}", msg)
-            }
-        })?;
+    // `--` terminates option parsing so a repo string that starts with `-`
+    // (e.g. `--upload-pack=...`) is treated as a repository argument, not a
+    // git option the shell would execute.
+    run_git(
+        &["fetch", "--depth=1", "--", repo, revision],
+        Some(clone_dir),
+    )
+    .await
+    .map_err(|e| match e {
+        GitErr::Io(e) => fs_err!(ErrorCode::GitError, "Error fetching: {e}"),
+        GitErr::Failed { stderr } => {
+            let (code, msg) = parse_git_clone_error(&stderr, repo, Some(revision));
+            fs_err!(code, "{}", msg)
+        }
+    })?;
 
     run_git(&["checkout", "FETCH_HEAD"], Some(clone_dir))
         .await
@@ -239,7 +245,7 @@ async fn checkout_revision(
 /// Resolve a ref to its 40-char SHA via `git ls-remote`. No rate limit.
 async fn ls_remote_resolve(repo_url: &str, revision: &str) -> FsResult<String> {
     let sanitized = crate::utils::sanitize_git_url(repo_url);
-    let stdout = run_git(&["ls-remote", repo_url, revision], None)
+    let stdout = run_git(&["ls-remote", "--", repo_url, revision], None)
         .await
         .map_err(|e| match e {
             GitErr::Io(e) => fs_err!(ErrorCode::GitError, "git ls-remote failed: {e}"),
@@ -261,4 +267,59 @@ async fn ls_remote_resolve(repo_url: &str, revision: &str) -> FsResult<String> {
         ErrorCode::PackageDownloadFailed,
         "Could not resolve ref '{revision}' via ls-remote"
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn expect_git_success(result: Result<Vec<u8>, GitErr>) {
+        match result {
+            Ok(_) => {}
+            Err(GitErr::Io(e)) => panic!("git command failed: {e}"),
+            Err(GitErr::Failed { stderr }) => panic!("git command failed: {stderr}"),
+        }
+    }
+
+    /// A repo string that starts with `-` must be treated as a repository
+    /// argument (the `--` separator), never as a git option whose value the
+    /// shell would execute. `git` rejects the resulting pathname instead of
+    /// running the payload.
+    #[tokio::test]
+    async fn ls_remote_rejects_option_like_repo_url() {
+        let marker = std::env::temp_dir().join("wb001-option-injection-marker");
+        let _ = std::fs::remove_file(&marker);
+
+        let repo = format!("--upload-pack=touch {}", marker.display());
+        let result = ls_remote_resolve(&repo, "HEAD").await;
+
+        assert!(result.is_err(), "option-like repo URL must not resolve");
+        assert!(
+            !marker.exists(),
+            "git must not execute the injected --upload-pack command"
+        );
+    }
+
+    /// A normal repository URL still resolves through the same `git ls-remote`
+    /// path after the `--` separator is added. Uses a local `file://` repo so
+    /// the test does not depend on network access.
+    #[tokio::test]
+    async fn ls_remote_resolves_valid_repo_url() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let repo = dir.path();
+        expect_git_success(run_git(&["init", repo.to_str().unwrap()], None).await);
+        expect_git_success(
+            run_git(&["config", "user.email", "test@example.com"], Some(repo)).await,
+        );
+        expect_git_success(run_git(&["config", "user.name", "test"], Some(repo)).await);
+        tokiofs::write(repo.join("f.txt"), "hi")
+            .await
+            .expect("write file");
+        expect_git_success(run_git(&["add", "f.txt"], Some(repo)).await);
+        expect_git_success(run_git(&["commit", "-m", "init"], Some(repo)).await);
+
+        let url = format!("file://{}", repo.display());
+        let result = ls_remote_resolve(&url, "HEAD").await;
+        assert!(result.is_ok(), "valid repo URL should resolve: {result:?}");
+    }
 }
