@@ -936,6 +936,11 @@ impl DatabricksMetadataAdapter {
         conn: &mut dyn Connection,
         token: CancellationToken,
     ) -> AdapterResult<AgateTable> {
+        let (database, schema, identifier) = (
+            database.to_lowercase(),
+            schema.to_lowercase(),
+            identifier.to_lowercase(),
+        );
         let sql = format!(
             "SELECT column_name
             FROM `{database}`.`information_schema`.`columns`
@@ -964,6 +969,11 @@ impl DatabricksMetadataAdapter {
         conn: &mut dyn Connection,
         token: CancellationToken,
     ) -> AdapterResult<AgateTable> {
+        let (database, schema, identifier) = (
+            database.to_lowercase(),
+            schema.to_lowercase(),
+            identifier.to_lowercase(),
+        );
         let sql = format!(
             "SELECT kcu.constraint_name, kcu.column_name
             FROM `{database}`.information_schema.key_column_usage kcu
@@ -995,6 +1005,11 @@ impl DatabricksMetadataAdapter {
         conn: &mut dyn Connection,
         token: CancellationToken,
     ) -> AdapterResult<AgateTable> {
+        let (database, schema, identifier) = (
+            database.to_lowercase(),
+            schema.to_lowercase(),
+            identifier.to_lowercase(),
+        );
         let sql = format!(
             "SELECT
                 column_name,
@@ -1050,6 +1065,11 @@ impl DatabricksMetadataAdapter {
         conn: &mut dyn Connection,
         token: CancellationToken,
     ) -> AdapterResult<AgateTable> {
+        let (database, schema, identifier) = (
+            database.to_lowercase(),
+            schema.to_lowercase(),
+            identifier.to_lowercase(),
+        );
         let sql = format!(
             "SELECT
                 kcu.constraint_name,
