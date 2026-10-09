@@ -1,0 +1,5 @@
+kind: Fixes
+body: Coerce integer keys in `meta` config to strings when loading partial_parse.msgpack instead of failing silently
+custom:
+  Author: shnhdan
+  Issue: "12578"
