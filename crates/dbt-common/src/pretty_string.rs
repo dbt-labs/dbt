@@ -1,5 +1,7 @@
 use console::Style;
+use dbt_error::strip_osc8_hyperlinks;
 use regex::Regex;
+use std::borrow::Cow;
 use std::error::Error;
 use std::fmt::Display;
 use std::sync::LazyLock;
@@ -278,6 +280,19 @@ pub fn remove_ansi_codes(input: &str) -> String {
     RE.replace_all(input, "").to_string()
 }
 
+/// Strips CSI color codes and OSC 8 hyperlinks from log text.
+///
+/// `console::strip_ansi_codes` does not remove OSC 8 (`ESC ] 8 ; ; …`), so file
+/// and JSON sinks must run this instead when diagnostic locations may be
+/// hyperlinked.
+pub fn strip_ansi_codes_and_hyperlinks(s: &str) -> Cow<'_, str> {
+    let after_ansi = console::strip_ansi_codes(s);
+    match strip_osc8_hyperlinks(after_ansi.as_ref()) {
+        Cow::Borrowed(_) => after_ansi,
+        Cow::Owned(stripped) => Cow::Owned(stripped),
+    }
+}
+
 pub fn make_title(title: &str, description: &str) -> String {
     format!("{} {}", BLUE.apply_to(title), BOLD.apply_to(description))
 }
@@ -287,4 +302,32 @@ pub fn make_error_title(title: &str, description: &str) -> String {
         return format!("{}", RED.apply_to(title));
     }
     format!("{} {}", RED.apply_to(title), BOLD.apply_to(description))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use dbt_error::with_terminal_hyperlinks;
+
+    #[test]
+    fn strip_ansi_codes_and_hyperlinks_removes_osc8() {
+        let hyperlinked = with_terminal_hyperlinks(true, || {
+            dbt_error::CodeLocationWithFile::new(43, 9, 0, "models/foo.sql").to_string()
+        });
+        assert!(hyperlinked.contains("\x1b]8;;"));
+        let stripped = strip_ansi_codes_and_hyperlinks(&hyperlinked);
+        assert!(stripped.contains("foo.sql"));
+        assert!(!stripped.contains('\x1b'));
+    }
+
+    #[test]
+    fn strip_ansi_codes_and_hyperlinks_removes_csi_and_osc8() {
+        let hyperlinked = with_terminal_hyperlinks(true, || {
+            dbt_error::CodeLocationWithFile::new(1, 1, 0, "models/foo.sql").to_string()
+        });
+        let colored = format!("\x1b[31m{hyperlinked}\x1b[0m");
+        let stripped = strip_ansi_codes_and_hyperlinks(&colored);
+        assert!(stripped.contains("foo.sql"));
+        assert!(!stripped.contains('\x1b'));
+    }
 }

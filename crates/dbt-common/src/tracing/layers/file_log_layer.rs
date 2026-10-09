@@ -55,6 +55,8 @@ use super::super::{
     fs_error_log::get_log_message,
 };
 
+use crate::pretty_string::strip_ansi_codes_and_hyperlinks;
+
 const HEADER_SEPARATOR: &str = "====================";
 
 /// Build file log layer with a background writer. This is preferred for writing to
@@ -454,9 +456,9 @@ impl FileLogLayer {
                 .code
                 .and_then(|c| u16::try_from(c).ok())
                 .and_then(|c| ErrorCode::try_from(c).ok()),
-            // Unfortunately, we do not currently enforce log body to not contain ANSI codes,
-            // so we need to make sure to strip them
-            console::strip_ansi_codes(log_record.body.as_str()),
+            // Unfortunately, we do not currently enforce log body to not contain ANSI codes
+            // or OSC 8 hyperlinks, so we need to make sure to strip them
+            strip_ansi_codes_and_hyperlinks(log_record.body.as_str()),
             log_record.severity_number,
             false,
             false, // Don't include level prefix, we add it via write_log_lines
@@ -506,7 +508,7 @@ impl FileLogLayer {
         // Write title and content to file log (without color codes for file output)
         let lines = vec![
             show_result.title.clone(),
-            console::strip_ansi_codes(show_result.content.as_str()).to_string(),
+            strip_ansi_codes_and_hyperlinks(show_result.content.as_str()).into_owned(),
         ];
         self.write_log_lines(
             log_record.time_unix_nano,
