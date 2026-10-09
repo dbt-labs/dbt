@@ -5,7 +5,7 @@ use crate::cloud_http_client::{
 use dbt_cloud_config::ResolvedCloudConfig;
 use dbt_common::constants::{
     DBT_CATALOG_JSON, DBT_DEFAULT_LOG_FILE_NAME, DBT_LOG_DIR_NAME, DBT_MANIFEST_JSON,
-    DBT_SOURCES_JSON,
+    DBT_SEMANTIC_MANIFEST_JSON, DBT_SOURCES_JSON,
 };
 use dbt_common::io_args::IoArgs;
 use dbt_common::tracing::dbt_emit::{
@@ -45,6 +45,7 @@ impl UploadConfig {
 struct ArtifactPaths {
     manifest_path: PathBuf,
     run_results_path: PathBuf,
+    semantic_manifest_path: Option<PathBuf>,
     sources_path: Option<PathBuf>,
     catalog_path: Option<PathBuf>,
     publication_path: Option<PathBuf>,
@@ -60,6 +61,7 @@ pub async fn upload_artifacts_ingest_if_enabled(
     dbt_cloud_config: &Option<ResolvedCloudConfig>,
     io: &IoArgs,
     write_catalog: bool,
+    semantic_manifest_written: bool,
 ) -> FsResult<()> {
     if !should_upload_artifacts() {
         return Ok(());
@@ -73,20 +75,13 @@ pub async fn upload_artifacts_ingest_if_enabled(
         config.tenant_hostname, config.account_id, config.environment_id
     ));
 
-    let Some(artifact_paths) = resolve_artifact_paths(io, write_catalog).await else {
+    let Some(artifact_paths) =
+        resolve_artifact_paths(io, write_catalog, semantic_manifest_written).await
+    else {
         return Ok(());
     };
 
-    let zip_bytes = match build_artifact_zip(
-        &artifact_paths.manifest_path,
-        &artifact_paths.run_results_path,
-        artifact_paths.sources_path.as_deref(),
-        artifact_paths.catalog_path.as_deref(),
-        artifact_paths.publication_path.as_deref(),
-        artifact_paths.log_path.as_deref(),
-    )
-    .await
-    {
+    let zip_bytes = match build_artifact_zip(&artifact_paths).await {
         Ok(bytes) => bytes,
         Err(err) => {
             emit_skip_warning(
@@ -229,7 +224,11 @@ fn required_value(
     value
 }
 
-async fn resolve_artifact_paths(io: &IoArgs, write_catalog: bool) -> Option<ArtifactPaths> {
+async fn resolve_artifact_paths(
+    io: &IoArgs,
+    write_catalog: bool,
+    semantic_manifest_written: bool,
+) -> Option<ArtifactPaths> {
     let manifest_path = io.out_dir.join(DBT_MANIFEST_JSON);
     let run_results_path = io.out_dir.join(RUN_RESULTS_JSON);
     if tokiofs::metadata(&manifest_path).await.is_err()
@@ -249,6 +248,13 @@ async fn resolve_artifact_paths(io: &IoArgs, write_catalog: bool) -> Option<Arti
     Some(ArtifactPaths {
         manifest_path,
         run_results_path,
+        // Only include semantic_manifest.json if this invocation wrote it, so a stale
+        // copy left in the target directory is never uploaded
+        semantic_manifest_path: if semantic_manifest_written {
+            resolve_optional_artifact_path(io, DBT_SEMANTIC_MANIFEST_JSON).await
+        } else {
+            None
+        },
         sources_path: resolve_optional_artifact_path(io, DBT_SOURCES_JSON).await,
         // Only include catalog.json if the write-catalog arg was set
         catalog_path: if write_catalog {
@@ -462,14 +468,16 @@ async fn resolve_publication_path(io: &IoArgs) -> Option<PathBuf> {
     }
 }
 
-async fn build_artifact_zip(
-    manifest_path: &Path,
-    run_results_path: &Path,
-    sources_path: Option<&Path>,
-    catalog_path: Option<&Path>,
-    publication_path: Option<&Path>,
-    log_path: Option<&Path>,
-) -> FsResult<Vec<u8>> {
+async fn build_artifact_zip(paths: &ArtifactPaths) -> FsResult<Vec<u8>> {
+    let ArtifactPaths {
+        manifest_path,
+        run_results_path,
+        semantic_manifest_path,
+        sources_path,
+        catalog_path,
+        publication_path,
+        log_path,
+    } = paths;
     let options = SimpleFileOptions::default()
         .compression_method(CompressionMethod::Deflated)
         .unix_permissions(0o644);
@@ -479,6 +487,15 @@ async fn build_artifact_zip(
 
     add_file_to_zip(&mut zip, manifest_path, DBT_MANIFEST_JSON, options).await?;
     add_file_to_zip(&mut zip, run_results_path, RUN_RESULTS_JSON, options).await?;
+    if let Some(semantic_manifest_path) = semantic_manifest_path {
+        add_file_to_zip(
+            &mut zip,
+            semantic_manifest_path,
+            DBT_SEMANTIC_MANIFEST_JSON,
+            options,
+        )
+        .await?;
+    }
     if let Some(sources_path) = sources_path {
         add_file_to_zip(&mut zip, sources_path, DBT_SOURCES_JSON, options).await?;
     }
@@ -594,6 +611,18 @@ mod tests {
     use tempfile::tempdir;
     use zip::ZipArchive;
 
+    fn artifact_paths(dir: &Path) -> ArtifactPaths {
+        ArtifactPaths {
+            manifest_path: dir.join(DBT_MANIFEST_JSON),
+            run_results_path: dir.join(RUN_RESULTS_JSON),
+            semantic_manifest_path: None,
+            sources_path: None,
+            catalog_path: None,
+            publication_path: None,
+            log_path: None,
+        }
+    }
+
     fn sample_upload_cloud_config() -> Option<ResolvedCloudConfig> {
         Some(ResolvedCloudConfig {
             credentials: Some(CloudCredentials {
@@ -633,6 +662,7 @@ mod tests {
         let temp_dir = tempdir().unwrap();
         let manifest_path = temp_dir.path().join(DBT_MANIFEST_JSON);
         let run_results_path = temp_dir.path().join(RUN_RESULTS_JSON);
+        let semantic_manifest_path = temp_dir.path().join(DBT_SEMANTIC_MANIFEST_JSON);
         let sources_path = temp_dir.path().join(DBT_SOURCES_JSON);
         let catalog_path = temp_dir.path().join(DBT_CATALOG_JSON);
         let publication_path = temp_dir.path().join(PUBLICATION_JSON);
@@ -640,25 +670,27 @@ mod tests {
 
         std::fs::write(&manifest_path, "{\"manifest\":true}").unwrap();
         std::fs::write(&run_results_path, "{\"run_results\":true}").unwrap();
+        std::fs::write(&semantic_manifest_path, "{\"semantic_manifest\":true}").unwrap();
         std::fs::write(&sources_path, "{\"sources\":true}").unwrap();
         std::fs::write(&catalog_path, "{\"catalog\":true}").unwrap();
         std::fs::write(&publication_path, "{\"publication\":true}").unwrap();
         std::fs::write(&log_path, "some log content").unwrap();
 
-        let zip_bytes = build_artifact_zip(
-            &manifest_path,
-            &run_results_path,
-            Some(sources_path.as_path()),
-            Some(catalog_path.as_path()),
-            Some(publication_path.as_path()),
-            Some(log_path.as_path()),
-        )
+        let zip_bytes = build_artifact_zip(&ArtifactPaths {
+            semantic_manifest_path: Some(semantic_manifest_path),
+            sources_path: Some(sources_path),
+            catalog_path: Some(catalog_path),
+            publication_path: Some(publication_path),
+            log_path: Some(log_path),
+            ..artifact_paths(temp_dir.path())
+        })
         .await
         .unwrap();
 
         let mut archive = ZipArchive::new(Cursor::new(zip_bytes)).unwrap();
         assert!(archive.by_name(DBT_MANIFEST_JSON).is_ok());
         assert!(archive.by_name(RUN_RESULTS_JSON).is_ok());
+        assert!(archive.by_name(DBT_SEMANTIC_MANIFEST_JSON).is_ok());
         assert!(archive.by_name(DBT_SOURCES_JSON).is_ok());
         assert!(archive.by_name(DBT_CATALOG_JSON).is_ok());
         assert!(archive.by_name(PUBLICATION_JSON).is_ok());
@@ -676,14 +708,10 @@ mod tests {
         std::fs::write(&run_results_path, "{\"run_results\":true}").unwrap();
         std::fs::write(&log_path, "some log content").unwrap();
 
-        let zip_bytes = build_artifact_zip(
-            &manifest_path,
-            &run_results_path,
-            None,
-            None,
-            None,
-            Some(log_path.as_path()),
-        )
+        let zip_bytes = build_artifact_zip(&ArtifactPaths {
+            log_path: Some(log_path),
+            ..artifact_paths(temp_dir.path())
+        })
         .await
         .unwrap();
 
@@ -702,10 +730,9 @@ mod tests {
         std::fs::write(&manifest_path, "{\"manifest\":true}").unwrap();
         std::fs::write(&run_results_path, "{\"run_results\":true}").unwrap();
 
-        let zip_bytes =
-            build_artifact_zip(&manifest_path, &run_results_path, None, None, None, None)
-                .await
-                .unwrap();
+        let zip_bytes = build_artifact_zip(&artifact_paths(temp_dir.path()))
+            .await
+            .unwrap();
 
         let mut archive = ZipArchive::new(Cursor::new(zip_bytes)).unwrap();
         assert!(archive.by_name(DBT_MANIFEST_JSON).is_ok());
@@ -770,13 +797,33 @@ mod tests {
         std::fs::write(temp_dir.path().join(DBT_SOURCES_JSON), "{\"sources\":true}").unwrap();
 
         // With write_catalog=false, catalog should be excluded even though the file exists
-        let paths = resolve_artifact_paths(&io, false).await.unwrap();
+        let paths = resolve_artifact_paths(&io, false, false).await.unwrap();
         assert!(paths.catalog_path.is_none());
         assert!(paths.sources_path.is_some());
 
         // With write_catalog=true, catalog should be included
-        let paths = resolve_artifact_paths(&io, true).await.unwrap();
+        let paths = resolve_artifact_paths(&io, true, false).await.unwrap();
         assert!(paths.catalog_path.is_some());
+    }
+
+    #[dbt_runtime::test]
+    async fn test_resolve_artifact_paths_includes_semantic_manifest_only_when_written() {
+        let temp_dir = tempdir().unwrap();
+        let io = IoArgs {
+            out_dir: temp_dir.path().to_path_buf(),
+            ..Default::default()
+        };
+        std::fs::write(temp_dir.path().join(DBT_MANIFEST_JSON), "{}").unwrap();
+        std::fs::write(temp_dir.path().join(RUN_RESULTS_JSON), "{}").unwrap();
+        let semantic_manifest_path = temp_dir.path().join(DBT_SEMANTIC_MANIFEST_JSON);
+        std::fs::write(&semantic_manifest_path, "{\"semantic_manifest\":true}").unwrap();
+
+        // A file this invocation did not write is stale and must not be uploaded
+        let paths = resolve_artifact_paths(&io, false, false).await.unwrap();
+        assert!(paths.semantic_manifest_path.is_none());
+
+        let paths = resolve_artifact_paths(&io, false, true).await.unwrap();
+        assert_eq!(paths.semantic_manifest_path, Some(semantic_manifest_path));
     }
 
     #[dbt_runtime::test]
@@ -790,14 +837,10 @@ mod tests {
         std::fs::write(&run_results_path, "{\"run_results\":true}").unwrap();
         std::fs::write(&sources_path, "{\"sources\":true}").unwrap();
 
-        let zip_bytes = build_artifact_zip(
-            &manifest_path,
-            &run_results_path,
-            Some(sources_path.as_path()),
-            None,
-            None,
-            None,
-        )
+        let zip_bytes = build_artifact_zip(&ArtifactPaths {
+            sources_path: Some(sources_path),
+            ..artifact_paths(temp_dir.path())
+        })
         .await
         .unwrap();
 
@@ -893,14 +936,10 @@ mod tests {
         std::fs::write(&manifest_path, "{\"manifest\":true}").unwrap();
         std::fs::write(&run_results_path, "{\"run_results\":true}").unwrap();
 
-        let zip_bytes = build_artifact_zip(
-            &manifest_path,
-            &run_results_path,
-            None,
-            None,
-            None,
-            Some(otel_file.as_path()),
-        )
+        let zip_bytes = build_artifact_zip(&ArtifactPaths {
+            log_path: Some(otel_file),
+            ..artifact_paths(temp_dir.path())
+        })
         .await
         .unwrap();
 
