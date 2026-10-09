@@ -71,12 +71,15 @@ impl StaticBaseRelation for RelationStatic {
         custom_quoting: Option<ResolvedQuoting>,
         temporary: Option<bool>,
     ) -> Result<Value, minijinja::Error> {
-        Relation::new(self.adapter_type, database, schema, identifier)
-            .with_relation_type(relation_type)
-            .with_quoting(custom_quoting.unwrap_or(self.quoting))
-            .with_temporary(temporary.unwrap_or(false))
-            .validate()
-            .map(|r| RelationObject::new(Arc::new(r)).into_value())
+        self.new_relation(
+            database,
+            schema,
+            identifier,
+            relation_type,
+            custom_quoting,
+            temporary,
+        )
+        .map(|r| RelationObject::new(Arc::new(r)).into_value())
     }
 
     fn get_adapter_type(&self) -> String {
@@ -131,6 +134,10 @@ impl StaticBaseRelation for RelationStatic {
                 let relation_type = iter.next_kwarg::<Option<Value>>("type")?;
                 let custom_quoting = iter.next_kwarg::<Option<Value>>("quote_policy")?;
                 let temporary = iter.next_kwarg::<Option<bool>>("temporary")?;
+                let is_staging = match self.adapter_type {
+                    AdapterType::Databricks => iter.next_kwarg::<Option<bool>>("is_staging")?,
+                    _ => None,
+                };
                 iter.finish()?;
 
                 let custom_quoting = custom_quoting
@@ -141,7 +148,7 @@ impl StaticBaseRelation for RelationStatic {
                         schema: v.schema.unwrap_or_default(),
                     });
 
-                self.try_new(
+                self.new_relation(
                     database,
                     schema,
                     identifier,
@@ -155,8 +162,28 @@ impl StaticBaseRelation for RelationStatic {
                     custom_quoting,
                     temporary,
                 )
+                .map(|r| r.with_is_staging(is_staging.unwrap_or(false)))
+                .map(|r| RelationObject::new(Arc::new(r)).into_value())
             }
         }
+    }
+}
+
+impl RelationStatic {
+    fn new_relation(
+        &self,
+        database: Option<String>,
+        schema: Option<String>,
+        identifier: Option<String>,
+        relation_type: Option<RelationType>,
+        custom_quoting: Option<ResolvedQuoting>,
+        temporary: Option<bool>,
+    ) -> Result<Relation, minijinja::Error> {
+        Relation::new(self.adapter_type, database, schema, identifier)
+            .with_relation_type(relation_type)
+            .with_quoting(custom_quoting.unwrap_or(self.quoting))
+            .with_temporary(temporary.unwrap_or(false))
+            .validate()
     }
 }
 
@@ -197,6 +224,9 @@ pub struct Relation {
     pub is_delta: bool,
     /// Whether the relation is a Databricks shallow clone
     pub is_shallow_clone: bool,
+    /// Whether this is a Databricks safer-replace staging relation, whose keys are always
+    /// given staging names and renamed after the swap
+    pub is_staging: bool,
     /// Constraints to be created with the table
     pub create_constraints: Vec<databricks::typed_constraint::TypedConstraint>,
     /// Constraints to be applied during ALTER operations
@@ -363,6 +393,7 @@ impl Relation {
             metadata: None,
             is_delta: false,
             is_shallow_clone: false,
+            is_staging: false,
             create_constraints: Vec::new(),
             alter_constraints: Vec::new(),
             temporary: false,
@@ -407,6 +438,11 @@ impl Relation {
 
     pub fn with_is_shallow_clone(mut self, is_shallow_clone: bool) -> Self {
         self.is_shallow_clone = is_shallow_clone;
+        self
+    }
+
+    pub fn with_is_staging(mut self, is_staging: bool) -> Self {
+        self.is_staging = is_staging;
         self
     }
 
@@ -490,6 +526,7 @@ impl Relation {
             metadata: None,
             is_delta: false,
             is_shallow_clone: false,
+            is_staging: false,
             create_constraints: Vec::default(),
             alter_constraints: Vec::default(),
             temporary: false,
@@ -538,6 +575,8 @@ impl Relation {
     }
 
     /// Add a constraint, routing to create_constraints or alter_constraints based on type
+    ///
+    /// Reference: https://github.com/databricks/dbt-databricks/blob/fdc4ac22f4494c701d8f7d6e5b380e5f0d1fe9ff/dbt/adapters/databricks/relation.py#L259-L272
     pub fn add_constraint(&mut self, constraint: databricks::typed_constraint::TypedConstraint) {
         use dbt_schemas::schemas::common::ConstraintType;
 
@@ -546,7 +585,18 @@ impl Relation {
                 self.alter_constraints.push(constraint);
             }
             _ => {
-                self.create_constraints.push(constraint);
+                // Materialized views have no constraint diff, so they keep server-assigned names.
+                let synthesized_name = match self.path.identifier.as_deref() {
+                    Some(identifier)
+                        if (constraint.name().is_none() || self.is_staging)
+                            && !self.is_materialized_view() =>
+                    {
+                        constraint.synthesized_name(identifier)
+                    }
+                    _ => None,
+                };
+                self.create_constraints
+                    .push(constraint.with_name(synthesized_name));
             }
         }
     }
@@ -746,6 +796,7 @@ impl BaseRelation for Relation {
         .with_metadata(self.metadata.clone())
         .with_is_delta(self.is_delta)
         .with_is_shallow_clone(self.is_shallow_clone)
+        .with_is_staging(self.is_staging)
         .with_temporary(self.temporary)
         .with_can_exchange(self.can_exchange)
         .with_mvs_pointing_to_it(self.mvs_pointing_to_it.clone())
@@ -776,6 +827,7 @@ impl BaseRelation for Relation {
         .with_metadata(self.metadata.clone())
         .with_is_delta(self.is_delta)
         .with_is_shallow_clone(self.is_shallow_clone)
+        .with_is_staging(self.is_staging)
         .with_temporary(self.temporary)
         .with_can_exchange(self.can_exchange)
         .with_mvs_pointing_to_it(self.mvs_pointing_to_it.clone())
@@ -1282,6 +1334,7 @@ impl BaseRelation for Relation {
             .with_metadata(self.metadata.clone())
             .with_is_delta(self.is_delta)
             .with_is_shallow_clone(self.is_shallow_clone)
+            .with_is_staging(self.is_staging)
             .with_temporary(self.temporary)
             .with_table_format(self.table_format)
             .with_can_exchange(self.can_exchange)
@@ -1940,6 +1993,73 @@ mod tests {
             relation.add_constraint(pk_constraint);
             assert_eq!(relation.alter_constraints.len(), 1);
             assert_eq!(relation.create_constraints.len(), 1);
+        }
+
+        #[test]
+        fn test_enrich_names_keys_for_relation_kind() {
+            use crate::relation::databricks::typed_constraint::TypedConstraint;
+
+            let unnamed_pk = TypedConstraint::PrimaryKey {
+                name: None,
+                columns: vec!["id".to_string()],
+                expression: None,
+            };
+            let named_fk = TypedConstraint::ForeignKey {
+                name: Some("fk_named".to_string()),
+                columns: vec!["parent_id".to_string()],
+                to: Some("p".to_string()),
+                to_columns: Some(vec!["id".to_string()]),
+                expression: None,
+            };
+            let check = TypedConstraint::Check {
+                name: None,
+                expression: "id > 0".to_string(),
+                columns: None,
+            };
+            let relation = |identifier: &str, relation_type| {
+                Relation::new(
+                    AdapterType::Databricks,
+                    "c".to_string(),
+                    "s".to_string(),
+                    identifier.to_string(),
+                )
+                .with_relation_type(relation_type)
+                .with_quoting(DEFAULT_RESOLVED_QUOTING)
+            };
+            let key_names = |relation: &Relation| {
+                let enriched =
+                    relation.enrich(&[unnamed_pk.clone(), named_fk.clone(), check.clone()]);
+                assert_eq!(enriched.alter_constraints, vec![check.clone()]);
+                enriched
+                    .create_constraints
+                    .iter()
+                    .map(|c| c.name().map(str::to_string))
+                    .collect::<Vec<_>>()
+            };
+            let staging = relation("m__dbt_stg", RelationType::Table)
+                .with_is_staging(true)
+                .incorporate(None, Some(RelationType::Table), None)
+                .unwrap();
+            let staging = staging.as_any().downcast_ref::<Relation>().unwrap();
+
+            assert_eq!(
+                key_names(&relation("m", RelationType::Table)),
+                vec![
+                    unnamed_pk.synthesized_name("m"),
+                    Some("fk_named".to_string())
+                ]
+            );
+            assert_eq!(
+                key_names(staging),
+                vec![
+                    unnamed_pk.synthesized_name("m__dbt_stg"),
+                    named_fk.synthesized_name("m__dbt_stg"),
+                ]
+            );
+            assert_eq!(
+                key_names(&relation("m", RelationType::MaterializedView)),
+                vec![None, Some("fk_named".to_string())]
+            );
         }
     }
 
