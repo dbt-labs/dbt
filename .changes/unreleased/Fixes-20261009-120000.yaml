@@ -1,0 +1,6 @@
+kind: Fixes
+body: Validate that tarball package download locations stay within the dbt downloads directory
+time: 2026-10-09T12:00:00.000000-05:00
+custom:
+    Author: ashish-shukla
+    Issue: ""

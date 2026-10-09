@@ -32,8 +32,20 @@ class TarballPinnedPackage(TarballPackageMixin, PinnedPackage):
         super().__init__(tarball, tarball_unrendered)
         self.package = package
         self.version = "tarball"
-        self.tar_path = os.path.join(Path(get_downloads_path()), self.package)
+        downloads_path = get_downloads_path()
+        self.tar_path = os.path.join(Path(downloads_path), self.package)
+        self._validate_tar_path(downloads_path)
         self.untarred_path = f"{self.tar_path}_untarred"
+
+    def _validate_tar_path(self, downloads_path: str) -> None:
+        """Ensure the download location stays inside the downloads directory."""
+        root = os.path.realpath(downloads_path)
+        resolved = os.path.realpath(self.tar_path)
+        if resolved == root or os.path.commonpath([root, resolved]) != root:
+            raise DependencyError(
+                f"Invalid package name '{self.package}': resolves outside of the "
+                "downloads directory"
+            )
 
     @property
     def name(self):
