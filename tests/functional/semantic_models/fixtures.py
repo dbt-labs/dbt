@@ -878,6 +878,19 @@ schema_yml_v2_simple_metric_on_model_1 = """
         conversion_metric: simple_metric_2
 """
 
+schema_yml_v2_metric_with_config_tags = """
+    metrics:
+      - name: simple_metric_with_tag
+        description: A simple V2 metric with config.tags.
+        label: Simple Metric With Tag
+        type: simple
+        agg: count
+        expr: id
+        config:
+          tags:
+            - v2_yaml_tag
+"""
+
 schema_yml_v2_metrics_with_hidden = """
     metrics:
       - name: public_metric
