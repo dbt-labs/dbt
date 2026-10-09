@@ -55,10 +55,10 @@ pub fn list_relations(
     conn: &mut dyn Connection,
     db_schema: &CatalogAndSchema,
 ) -> AdapterResult<Vec<Arc<dyn BaseRelation>>> {
-    let raw_schema = if !db_schema.resolved_schema.is_empty() {
-        &db_schema.resolved_schema
-    } else {
+    let raw_schema = if !db_schema.resolved_catalog.is_empty() {
         &db_schema.resolved_catalog
+    } else {
+        &db_schema.resolved_schema
     };
 
     let schema = if ctx.engine.quoting().schema {
