@@ -124,7 +124,14 @@ class TestTarballPackage(unittest.TestCase):
     @mock.patch("dbt.deps.tarball.get_downloads_path")
     def test_tarball_package_name_must_stay_in_downloads_dir(self, mock_get_downloads_path):
         mock_get_downloads_path.return_value = "downloads_path"
-        for bad_name in ["/tmp/escaped", "../escaped", "a/../../escaped", "."]:
+        bad_names = [
+            "/tmp/escaped",
+            "../escaped",
+            "a/../../escaped",
+            "../../a/downloads_path/package_name",
+            ".",
+        ]
+        for bad_name in bad_names:
             contract = TarballPackage.from_dict(
                 {"tarball": "http://example.com/package.tar.gz", "name": bad_name}
             )
