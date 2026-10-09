@@ -236,6 +236,25 @@ class TestLoadOsiIntoManifest:
         with pytest.raises(ParsingError, match="unsupported version"):
             load_osi_into_manifest(str(tmp_path), PKG, manifest, OSI_PATHS)
 
+    def test_database_less_source_binds_by_schema_and_alias(self, tmp_path):
+        (tmp_path / "OSI").mkdir()
+        (tmp_path / "OSI" / "orders.json").write_text(_osi_json("orders", "dbt_schema.orders"))
+        manifest = make_manifest(nodes=[_orders_model()])
+        load_osi_into_manifest(str(tmp_path), PKG, manifest, OSI_PATHS)
+        sm = manifest.semantic_models[f"semantic_model.{PKG}.orders"]
+        assert sm.model == "ref('orders')"
+
+    def test_database_less_source_ambiguous_across_databases_raises(self, tmp_path):
+        (tmp_path / "OSI").mkdir()
+        (tmp_path / "OSI" / "orders.json").write_text(_osi_json("orders", "dbt_schema.orders"))
+        model_a = _orders_model()
+        model_b = make_model(PKG, "orders_other_db", "select 1", alias=model_a.alias)
+        model_b.schema = model_a.schema
+        model_b.database = "another_db"
+        manifest = make_manifest(nodes=[model_a, model_b])
+        with pytest.raises(ParsingError, match="matches models in multiple databases"):
+            load_osi_into_manifest(str(tmp_path), PKG, manifest, OSI_PATHS)
+
     def test_no_matching_model_raises_parsing_error(self, tmp_path):
         (tmp_path / "OSI").mkdir()
         # Source references a table that has no corresponding model node

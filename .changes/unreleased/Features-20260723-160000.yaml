@@ -1,0 +1,8 @@
+kind: Features
+body: Allow database-less OSI dataset sources (`schema.table`) to bind to models
+  by schema and alias, so one OSI document works across environments whose only
+  difference is the database
+time: 2026-07-23T16:00:00.000000+09:00
+custom:
+    Author: ota2000
+    Issue: "15649"
