@@ -430,6 +430,111 @@ class TestUnrenderedConfigSame(BaseModifiedState):
         }
 
 
+nested_grants_model_sql = "select 1 as id"
+
+
+class TestModifiedInheritedGrantsConfig(BaseModifiedState):
+    # state:modified compares unrendered_config, which used to keep only the
+    # innermost scope's value for merge-behavior fields like grants. Changes
+    # to grants inherited from outer project directories were silently
+    # missed even when they changed the node's effective config.
+
+    @pytest.fixture(scope="class")
+    def models(self):
+        return {
+            "layer_1": {
+                "layer_2": {
+                    "layer_3": {
+                        "grants_model.sql": nested_grants_model_sql,
+                    }
+                }
+            }
+        }
+
+    @pytest.fixture(scope="class")
+    def macros(self):
+        return {}
+
+    @pytest.fixture(scope="class")
+    def seeds(self):
+        return {}
+
+    def project_grants(self, layer_1_select, layer_2_grants, layer_3_grants):
+        return {
+            "models": {
+                "test": {
+                    "layer_1": {
+                        "+grants": {"select": layer_1_select},
+                        "layer_2": {
+                            "+grants": layer_2_grants,
+                            "layer_3": {"+grants": layer_3_grants},
+                        },
+                    },
+                }
+            }
+        }
+
+    def parse_and_save_state(self):
+        run_dbt(["parse"])
+        self.copy_state()
+
+    def ls_state_modified(self):
+        return run_dbt(
+            [
+                "ls",
+                "--resource-type",
+                "model",
+                "--select",
+                "state:modified",
+                "--state",
+                "./state",
+            ],
+            expect_pass=True,
+        )
+
+    def test_inherited_grants_change_state(self, project):
+        update_config_file(
+            self.project_grants(["role_a"], {"select": ["role_b"]}, {"+select": "role_c"}),
+            "dbt_project.yml",
+        )
+        self.parse_and_save_state()
+        assert len(self.ls_state_modified()) == 0
+
+        # the reported bug: layer_2 switches from replace to additive grants.
+        # effective grants change role_b -> role_a + role_b, so the model must
+        # show up as modified
+        update_config_file(
+            self.project_grants(["role_a"], {"+select": ["role_b"]}, {"+select": "role_c"}),
+            "dbt_project.yml",
+        )
+        results = self.ls_state_modified()
+        assert len(results) == 1
+        assert results[0] == "test.layer_1.layer_2.layer_3.grants_model"
+
+        # a plain inherited value change is caught too (same class of miss)
+        update_config_file(
+            self.project_grants(["role_a"], {"+select": ["role_z"]}, {"+select": "role_c"}),
+            "dbt_project.yml",
+        )
+        results = self.ls_state_modified()
+        assert len(results) == 1
+        assert results[0] == "test.layer_1.layer_2.layer_3.grants_model"
+        self.parse_and_save_state()
+
+        # but a shadowed outer change that leaves effective grants untouched
+        # must NOT flag the model (layer_2 replace clobbers layer_1 here)
+        update_config_file(
+            self.project_grants(["role_z"], {"select": ["role_b"]}, {"+select": "role_c"}),
+            "dbt_project.yml",
+        )
+        self.parse_and_save_state()
+        update_config_file(
+            self.project_grants(["role_y"], {"select": ["role_b"]}, {"+select": "role_c"}),
+            "dbt_project.yml",
+        )
+        assert len(self.ls_state_modified()) == 0
+
+
 class TestChangedModelContents(BaseModifiedState):
     def test_changed_model_contents(self, project):
         self.run_and_save_state()
