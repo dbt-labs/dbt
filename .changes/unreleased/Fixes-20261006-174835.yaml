@@ -1,0 +1,7 @@
+kind: Fixes
+body: Stop dropping Databricks custom PRIMARY KEY constraints with TIMESERIES or mixed-case columns, and the foreign keys that reference them, on every incremental run
+time: 2026-10-06T17:48:35.000000+05:30
+custom:
+    author: sd-db
+    issue: "16625"
+    project: dbt-core
