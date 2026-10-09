@@ -56,6 +56,7 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     sync::Arc,
 };
+use tracing::Instrument;
 
 #[derive(Debug, Clone)]
 pub struct FreshnessResult {
@@ -831,6 +832,10 @@ async fn run_freshness_with_spans(
     let sla_models_as_query_nodes = sla_models.iter().map(|node| *node as &dyn FreshnessNodeRef);
     let query_based_nodes = sources_as_query_nodes.chain(sla_models_as_query_nodes);
     for node in query_based_nodes {
+        let node_span = node_spans
+            .get(node.common().unique_id.as_str())
+            .cloned()
+            .unwrap_or_else(tracing::Span::current);
         match measure_query_based_freshness(
             node,
             resolver_state.adapter_type,
@@ -839,6 +844,7 @@ async fn run_freshness_with_spans(
             io_args,
             dependencies.clone(),
         )
+        .instrument(node_span)
         .await
         {
             Ok(Some(result)) => {
