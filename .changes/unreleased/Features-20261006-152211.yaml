@@ -1,0 +1,7 @@
+kind: Features
+body: Resolve model, seed, snapshot, test, and function relations using each node's selected adapter.
+time: 2026-10-06T15:22:11.351667-07:00
+custom:
+    author: colin-k-rogers
+    issue: ""
+    project: dbt-core
