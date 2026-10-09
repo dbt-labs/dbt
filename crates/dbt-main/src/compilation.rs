@@ -2056,6 +2056,7 @@ impl DbtProjectCompilation {
             DeferState::load(
                 arg,
                 adapter.clone(),
+                adapter_store.clone(),
                 &schedule,
                 &mut resolved_state,
                 &jinja_env,
@@ -2223,6 +2224,7 @@ impl DbtProjectCompilation {
                         &jinja_env,
                         &base_context,
                         &arg.io,
+                        adapter.adapter_type(),
                     )
                     .await?;
                     let unique_id = format!(
@@ -2241,6 +2243,7 @@ impl DbtProjectCompilation {
                         &resolved_state,
                         &jinja_env,
                         &base_context,
+                        adapter.adapter_type(),
                     )
                     .await?;
                     (result.to_string(), "Macro result", macro_name.to_string())

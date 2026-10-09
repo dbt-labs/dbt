@@ -8,6 +8,7 @@ use crate::utils::{
     extract_unrendered_config_from_ast, get_node_fqn, get_snapshot_fqn, parse_unrendered_config,
     register_duplicate_resource, trigger_duplicate_errors,
 };
+use dbt_adapter::{Adapter, load_catalogs, sql_types::DefaultTypeOps};
 use dbt_adapter_core::AdapterType;
 use dbt_common::cancellation::CancellationToken;
 use dbt_common::constants::{DBT_SNAPSHOTS_DIR_NAME, DBT_TARGET_DIR_NAME, PARSING};
@@ -25,11 +26,11 @@ use dbt_jinja_utils::listener::{
     JinjaTypeCheckingEventListenerFactory, RenderingEventListenerFactory,
 };
 use dbt_jinja_utils::node_resolver::NodeResolver;
-use dbt_jinja_utils::phases::build_operation_context_btreemap;
 use dbt_jinja_utils::phases::compile::{
     DependencyValidationConfig, build_compile_node_context_inner,
 };
 use dbt_jinja_utils::phases::parse::build_resolve_model_context;
+use dbt_jinja_utils::phases::{AdapterTargetContext, build_operation_context_btreemap};
 use dbt_jinja_utils::serde::into_typed_with_jinja_error_context;
 use dbt_jinja_utils::silence_base_context;
 use dbt_jinja_utils::utils::{render_sql, render_sql_with_listeners};
@@ -41,7 +42,7 @@ use dbt_schemas::schemas::project::{
 use dbt_schemas::schemas::properties::GetConfig;
 use dbt_schemas::schemas::telemetry::NodeType;
 use dbt_schemas::schemas::{InternalDbtNodeAttributes, IntrospectionKind, Nodes};
-use dbt_schemas::state::{DbtAsset, DbtRuntimeConfig, ModelStatus};
+use dbt_schemas::state::{DbtAsset, DbtProfile, DbtRuntimeConfig, ModelStatus};
 use dbt_telemetry::AssetParsed;
 use std::cell::RefCell;
 use std::fmt::Debug;
@@ -91,6 +92,8 @@ pub struct SqlFileRenderResult<T: ResolvableConfig<T>, S> {
     /// `None` for sources that were never rendered from their own file's raw text (e.g. the
     /// rewritten block-style snapshot stub, whose caller re-derives this from the original file).
     pub raw_config_call_dict: Option<BTreeMap<String, dbt_yaml::Value>>,
+    /// Isolated parse adapter containing side effects from this render.
+    pub parse_adapter: Option<Arc<Adapter>>,
 }
 
 /// Whether `command` is one of the commands that defer a render error to
@@ -291,8 +294,9 @@ where
         None,
     ));
 
-    render_sql_file_inner(
-        render_ctx,
+    let isolated_render_ctx = render_ctx.with_fresh_parse_adapter();
+    let result = render_sql_file_inner(
+        &isolated_render_ctx,
         dbt_asset,
         node_properties,
         duplicate_errors,
@@ -304,7 +308,11 @@ where
     )
     .instrument(span.clone())
     .await
-    .record_status(&span)
+    .record_status(&span);
+    isolated_render_ctx
+        .jinja_env
+        .merge_parse_adapter_state_into_sink();
+    result
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -312,6 +320,82 @@ async fn render_sql_file_inner<T, S>(
     render_ctx: &RenderCtx<T>,
     dbt_asset: &DbtAsset,
     node_properties: &mut BTreeMap<String, MinimalPropertiesEntry>,
+    duplicate_errors: &mut Vec<FsError>,
+    token: &CancellationToken,
+    jinja_type_checking_event_listener_factory: Arc<dyn JinjaTypeCheckingEventListenerFactory>,
+    display_path: PathBuf,
+    display_path_str: String,
+    ref_name: &str,
+) -> FsResult<Option<SqlFileRenderResult<T, S>>>
+where
+    T: ResolvableConfig<T> + 'static,
+    S: GetConfig<T> + Debug,
+{
+    let RenderCtx {
+        inner, jinja_env, ..
+    } = render_ctx;
+
+    let RenderCtxInner {
+        base_ctx,
+        root_project_name,
+        package_name,
+        ..
+    } = &**inner;
+
+    token.check_cancellation()?;
+
+    let dependency_package_name = if package_name != root_project_name {
+        Some(package_name.as_str())
+    } else {
+        None
+    };
+
+    let has_duplicate_paths = node_properties
+        .get(ref_name)
+        .map(|mpe| !mpe.duplicate_paths.is_empty())
+        .unwrap_or(false);
+
+    let maybe_model = {
+        if let Some(mpe) = node_properties.get_mut(ref_name) {
+            extract_model_config::<T, S>(mpe, jinja_env, base_ctx, dependency_package_name)
+                .map_err(|e| *e)?
+        } else {
+            None::<S>
+        }
+    };
+
+    let patch_path = node_properties
+        .get(ref_name)
+        .map(|mpe| mpe.relative_path.clone());
+    let duplicate_entry = node_properties.get(ref_name);
+
+    render_sql_file_with_properties(
+        render_ctx,
+        dbt_asset,
+        maybe_model,
+        None,
+        patch_path,
+        has_duplicate_paths,
+        duplicate_entry,
+        duplicate_errors,
+        token,
+        jinja_type_checking_event_listener_factory,
+        display_path,
+        display_path_str,
+        ref_name,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn render_sql_file_with_properties<T, S>(
+    render_ctx: &RenderCtx<T>,
+    dbt_asset: &DbtAsset,
+    maybe_model: Option<S>,
+    properties_config_override: Option<&T>,
+    patch_path: Option<PathBuf>,
+    has_duplicate_paths: bool,
+    duplicate_entry: Option<&MinimalPropertiesEntry>,
     duplicate_errors: &mut Vec<FsError>,
     token: &CancellationToken,
     jinja_type_checking_event_listener_factory: Arc<dyn JinjaTypeCheckingEventListenerFactory>,
@@ -348,26 +432,6 @@ where
 
     token.check_cancellation()?;
 
-    let dependency_package_name = if package_name != root_project_name {
-        Some(package_name.as_str())
-    } else {
-        None
-    };
-
-    let has_duplicate_paths = node_properties
-        .get(ref_name)
-        .map(|mpe| !mpe.duplicate_paths.is_empty())
-        .unwrap_or(false);
-
-    let maybe_model = {
-        if let Some(mpe) = node_properties.get_mut(ref_name) {
-            extract_model_config::<T, S>(mpe, jinja_env, base_ctx, dependency_package_name)
-                .map_err(|e| *e)?
-        } else {
-            None::<S>
-        }
-    };
-
     let model_name = ref_name.to_string();
 
     let (fqn, original_fqn) = if *uses_snapshot_fqn {
@@ -398,7 +462,8 @@ where
         )
     };
 
-    let model_properties_config = maybe_model.as_ref().and_then(|m| m.get_config());
+    let model_properties_config =
+        properties_config_override.or_else(|| maybe_model.as_ref().and_then(|m| m.get_config()));
     let properties_configs: &[Option<&T>] = &[model_properties_config];
     let properties_config = config_resolver.with_configs(&original_fqn, properties_configs);
 
@@ -421,11 +486,10 @@ where
             properties: maybe_model,
             status: ModelStatus::Disabled,
             render_error_deferred: false,
-            patch_path: node_properties
-                .get(ref_name)
-                .map(|mpe| mpe.relative_path.clone()),
+            patch_path,
             macro_dependencies: Vec::new(),
             raw_config_call_dict,
+            parse_adapter: jinja_env.get_adapter(),
         }));
     }
 
@@ -697,12 +761,9 @@ where
     let raw_config_call_dict = raw_config_call_dict_cell.into_inner();
 
     // Only check for duplicate resource definitions for enabled models to match dbt-core behavior.
-    if status == ModelStatus::Enabled
-        && has_duplicate_paths
-        && node_properties.get(ref_name).is_some()
-    {
+    if status == ModelStatus::Enabled && has_duplicate_paths && duplicate_entry.is_some() {
         register_duplicate_resource(
-            node_properties.get(ref_name).unwrap(),
+            duplicate_entry.expect("duplicate entry checked above"),
             ref_name,
             "model",
             duplicate_errors,
@@ -722,12 +783,119 @@ where
         properties: maybe_model,
         status,
         render_error_deferred,
-        patch_path: node_properties
-            .get(ref_name)
-            .map(|mpe| mpe.relative_path.clone()),
+        patch_path,
         macro_dependencies,
         raw_config_call_dict,
+        parse_adapter: jinja_env.get_adapter(),
     }))
+}
+
+/// Re-render a previously parsed SQL asset using an adapter-specific context.
+///
+/// Properties have already been consumed from the schema entry by the discovery
+/// render, so the caller supplies the selected-adapter properties config
+/// separately. The returned render is authoritative for inline config, hooks,
+/// dependencies, macro spans, and rendered SQL.
+pub async fn rerender_sql_file_for_adapter<T, S>(
+    render_ctx: &RenderCtx<T>,
+    previous: SqlFileRenderResult<T, S>,
+    properties_config: Option<&T>,
+    token: &CancellationToken,
+    jinja_type_checking_event_listener_factory: Arc<dyn JinjaTypeCheckingEventListenerFactory>,
+) -> FsResult<SqlFileRenderResult<T, S>>
+where
+    T: ResolvableConfig<T> + 'static,
+    S: GetConfig<T> + Debug,
+{
+    let SqlFileRenderResult {
+        asset,
+        properties,
+        patch_path,
+        parse_adapter: previous_parse_adapter,
+        ..
+    } = previous;
+    let args = &render_ctx.inner.args;
+    let ref_name = node_name_from_path(&asset.path).unwrap();
+    let display_path =
+        if asset.base_path == args.io.out_dir && asset.path.starts_with(DBT_SNAPSHOTS_DIR_NAME) {
+            asset.original_path.clone()
+        } else if asset.base_path == args.io.out_dir {
+            PathBuf::from(DBT_TARGET_DIR_NAME).join(asset.to_display_path(&args.io.out_dir))
+        } else {
+            asset.to_display_path(&args.io.in_dir)
+        };
+    let display_path_str = display_path.display().to_string();
+    let mut duplicate_errors = Vec::new();
+
+    let result = render_sql_file_with_properties(
+        render_ctx,
+        &asset,
+        properties,
+        properties_config,
+        patch_path,
+        false,
+        None,
+        &mut duplicate_errors,
+        token,
+        jinja_type_checking_event_listener_factory,
+        display_path,
+        display_path_str,
+        ref_name,
+    )
+    .await?;
+    render_ctx
+        .jinja_env
+        .replace_parse_adapter_state_in_sink(previous_parse_adapter.as_deref());
+    result.ok_or_else(|| {
+        fs_err!(
+            code => ErrorCode::InvalidConfig,
+            loc => asset.path.clone(),
+            "adapter-specific SQL render unexpectedly produced no node"
+        )
+    })
+}
+
+/// Re-render when a node selected a configured non-default adapter; otherwise
+/// preserve the discovery render unchanged.
+#[allow(clippy::too_many_arguments)]
+pub async fn rerender_sql_file_for_selected_adapter<T, S>(
+    base_render_ctx: &RenderCtx<T>,
+    profile: &DbtProfile,
+    selected_adapter: AdapterType,
+    default_adapter: AdapterType,
+    config_resolver: ProjectConfigResolver<T>,
+    target_context: &AdapterTargetContext,
+    package_quoting: DbtQuoting,
+    previous: SqlFileRenderResult<T, S>,
+    properties_config: Option<&T>,
+    token: &CancellationToken,
+    jinja_type_checking_event_listener_factory: Arc<dyn JinjaTypeCheckingEventListenerFactory>,
+) -> FsResult<SqlFileRenderResult<T, S>>
+where
+    T: ResolvableConfig<T> + 'static,
+    S: GetConfig<T> + Debug,
+{
+    if selected_adapter == default_adapter || profile.adapter(selected_adapter).is_none() {
+        return Ok(previous);
+    }
+
+    let render_ctx = base_render_ctx.for_adapter(
+        profile,
+        selected_adapter,
+        config_resolver,
+        target_context.base_context.clone(),
+        target_context.database.clone(),
+        target_context.schema.clone(),
+        package_quoting,
+    )?;
+    rerender_sql_file_for_adapter(
+        &render_ctx,
+        previous,
+        properties_config,
+        token,
+        jinja_type_checking_event_listener_factory,
+    )
+    .await
 }
 
 /// Inner context for rendering sql files
@@ -781,6 +949,61 @@ pub struct RenderCtx<T: ResolvableConfig<T>> {
     /// `.config`, matching dbt Core's `self.root_project`. See
     /// [`build_resolve_model_context`]'s doc comment.
     pub root_runtime_config: Arc<DbtRuntimeConfig>,
+}
+
+impl<T: ResolvableConfig<T>> RenderCtx<T> {
+    fn with_fresh_parse_adapter(&self) -> Self {
+        Self {
+            inner: self.inner.clone(),
+            jinja_env: Arc::new(self.jinja_env.fork_with_fresh_parse_adapter()),
+            runtime_config: self.runtime_config.clone(),
+            root_runtime_config: self.root_runtime_config.clone(),
+        }
+    }
+
+    /// Clone this render context for one selected node adapter.
+    pub fn for_adapter(
+        &self,
+        profile: &DbtProfile,
+        adapter_type: AdapterType,
+        config_resolver: ProjectConfigResolver<T>,
+        base_ctx: BTreeMap<String, MinijinjaValue>,
+        database: String,
+        schema: String,
+        package_quoting: DbtQuoting,
+    ) -> FsResult<Self> {
+        let db_config = profile.adapter(adapter_type).ok_or_else(|| {
+            fs_err!(
+                ErrorCode::InvalidConfig,
+                "no profile connection is configured for adapter '{adapter_type}'"
+            )
+        })?;
+        let adapter_config = db_config
+            .to_mapping()
+            .map_err(|error| fs_err!(ErrorCode::SerializationError, "{error}"))?;
+        let adapter = Arc::new(Adapter::new_parse_phase_adapter(
+            adapter_type,
+            adapter_config,
+            package_quoting,
+            Arc::new(DefaultTypeOps::new(adapter_type)),
+            load_catalogs::fetch_catalogs(),
+        ));
+        let jinja_env = Arc::new(self.jinja_env.fork_with_adapter(adapter));
+        let mut inner = (*self.inner).clone();
+        inner.adapter_type = adapter_type;
+        inner.config_resolver = config_resolver;
+        inner.base_ctx = base_ctx;
+        inner.database = database;
+        inner.schema = schema;
+        inner.package_quoting = package_quoting;
+
+        Ok(Self {
+            inner: Arc::new(inner),
+            jinja_env,
+            runtime_config: self.runtime_config.clone(),
+            root_runtime_config: self.root_runtime_config.clone(),
+        })
+    }
 }
 
 /// Iterate over all the sql files passed in, generate the local config, initialize the sql render env, and render the sql
@@ -957,7 +1180,7 @@ async fn process_model_chunk_for_unsafe_detection<T: InternalDbtNodeAttributes +
     package_name: String,
     root_project_name: String,
     runtime_config: Arc<DbtRuntimeConfig>,
-    parse_adapter: Arc<dbt_adapter::Adapter>,
+    parse_adapter: Arc<Adapter>,
     token: &CancellationToken,
 ) -> FsResult<Vec<(T, bool)>> {
     let mut nodes = Vec::new();

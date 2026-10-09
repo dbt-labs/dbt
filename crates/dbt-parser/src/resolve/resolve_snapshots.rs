@@ -6,15 +6,16 @@ use crate::dbt_project_config::{
 };
 use crate::renderer::{
     RenderCtx, RenderCtxInner, SqlFileRenderResult, collect_adapter_identifiers_detect_unsafe,
-    render_unresolved_sql_files, strip_deprecated_warehouse_keys_from_properties,
+    render_unresolved_sql_files, rerender_sql_file_for_selected_adapter,
+    strip_deprecated_warehouse_keys_from_properties,
 };
 use crate::resolve::resolve_tests::persist_generic_data_tests::TestableNodeTrait;
 use crate::resolve::resolve_tests::persist_generic_data_tests::{
     TestUnrenderedConfigs, extract_test_unrendered_configs,
 };
 use crate::resolve::resolve_utils::{
-    build_unrendered_config, err_resource_name_has_spaces, extract_config_map, validate_compute,
-    validate_node_adapter,
+    build_unrendered_config, err_resource_name_has_spaces, extract_config_map, render_config_map,
+    render_project_config_resolver, validate_compute, validate_node_adapter,
 };
 use crate::resolve::yaml_field_utils;
 use crate::sql_file_info::SqlFileInfo;
@@ -35,6 +36,7 @@ use dbt_common::{ErrorCode, FsResult, fs_err, stdfs, unexpected_fs_err};
 use dbt_jinja_utils::jinja_environment::JinjaEnv;
 use dbt_jinja_utils::listener::DefaultJinjaTypeCheckEventListenerFactory;
 use dbt_jinja_utils::node_resolver::NodeResolver;
+use dbt_jinja_utils::phases::AdapterTargetContextCache;
 use dbt_jinja_utils::serde::into_typed_with_jinja;
 use dbt_schemas::dbt_utils::resolve_package_quoting;
 use dbt_schemas::schemas::common::{
@@ -44,7 +46,7 @@ use dbt_schemas::schemas::common::{
 use dbt_schemas::schemas::dbt_column::process_columns;
 use dbt_schemas::schemas::macros::DbtMacro;
 use dbt_schemas::schemas::nodes::AdapterAttr;
-use dbt_schemas::schemas::project::SnapshotConfig;
+use dbt_schemas::schemas::project::{ProjectSnapshotConfig, SnapshotConfig};
 use dbt_schemas::schemas::properties::SnapshotProperties;
 use dbt_schemas::schemas::ref_and_source::{DbtRef, DbtSourceWrapper};
 use dbt_schemas::schemas::telemetry::NodeType;
@@ -53,7 +55,8 @@ use dbt_schemas::schemas::{
     NodeBaseAttributes, NodePathKind,
 };
 use dbt_schemas::state::{
-    DbtAsset, DbtPackage, DbtRuntimeConfig, GenericTestAsset, ModelStatus, NodeResolverTracker,
+    DbtAsset, DbtPackage, DbtProfile, DbtRuntimeConfig, GenericTestAsset, ModelStatus,
+    NodeResolverTracker,
 };
 use indexmap::IndexMap;
 use minijinja::Value as MinijinjaValue;
@@ -76,6 +79,7 @@ pub async fn resolve_snapshots(
     schema: &str,
     default_adapter: AdapterType,
     adapter_quoting: &IndexMap<AdapterType, DbtQuoting>,
+    profile: &DbtProfile,
     jinja_env: Arc<JinjaEnv>,
     base_ctx: &BTreeMap<String, MinijinjaValue>,
     runtime_config: Arc<DbtRuntimeConfig>,
@@ -91,6 +95,7 @@ pub async fn resolve_snapshots(
 )> {
     let mut snapshots: HashMap<String, Arc<DbtSnapshot>> = HashMap::new();
     let mut disabled_snapshots: HashMap<String, Arc<DbtSnapshot>> = HashMap::new();
+    let mut adapter_relation_contexts = AdapterTargetContextCache::default();
     let jinja_type_checking_event_listener_factory =
         Arc::new(DefaultJinjaTypeCheckEventListenerFactory::default());
     let mut snapshots_with_execute: HashMap<String, DbtSnapshot> = HashMap::new();
@@ -313,12 +318,13 @@ pub async fn resolve_snapshots(
         arg.static_analysis.unwrap_or_default(),
         root_package.dbt_project.sync.clone(),
     ));
+    let mut adapter_config_resolvers = HashMap::from([(default_adapter, config_resolver.clone())]);
 
     let render_ctx = RenderCtx {
         inner: Arc::new(RenderCtxInner {
             args: arg.clone(),
             root_project_name: root_package.dbt_project.name.clone(),
-            config_resolver,
+            config_resolver: config_resolver.clone(),
             package_quoting,
             uses_snapshot_fqn: true,
             defer_render_errors_to_compile: true,
@@ -362,20 +368,18 @@ pub async fn resolve_snapshots(
             .then(a.asset.path.cmp(&b.asset.path))
     });
 
-    let all_depends_on = jinja_type_checking_event_listener_factory
-        .depends_on()
-        .clone();
-
     for SqlFileRenderResult {
         asset: dbt_asset,
-        sql_file_info,
+        mut sql_file_info,
         config: mut snapshot_config,
-        raw_code,
+        mut raw_code,
         macro_spans: _macro_spans,
         properties: maybe_properties,
-        status,
-        render_error_deferred,
+        mut status,
+        mut render_error_deferred,
         patch_path,
+        macro_dependencies: mut render_macro_dependencies,
+        parse_adapter,
         ..
     } in snapshot_sql_resources_map.into_iter()
     {
@@ -385,18 +389,6 @@ pub async fn resolve_snapshots(
             if snapshot_name.contains(' ') {
                 return Err(err_resource_name_has_spaces(snapshot_name, error_path));
             }
-
-            // Recalculate checksum from original snapshot file.
-            // Without doing this, the checksum will be different from the one from mantle since fusion
-            // creates a new file for the snapshot that only contains a function call
-            // to the original macro instead of the original macro itself.
-            let recalculated_checksum =
-                if let Some(original_path) = snapshot_original_paths.get(&dbt_asset.path) {
-                    recalculate_snapshot_checksum(arg, original_path, &sql_file_info).await
-                } else {
-                    // Not a macro-based snapshot, use the checksum from sql_file_info
-                    sql_file_info.checksum.clone()
-                };
 
             let properties = if let Some(properties) = maybe_properties {
                 properties
@@ -417,11 +409,6 @@ pub async fn resolve_snapshots(
 
             let unique_id = format!("snapshot.{package_name}.{snapshot_name}");
 
-            let columns = process_columns(
-                properties.columns.as_ref(),
-                snapshot_config.tags.inner().clone().map(|tags| tags.into()),
-            )?;
-
             // Mirror dbt-core's per-definition-style snapshot fqn so that
             // `state:modified` comparisons against a dbt-core-produced manifest
             // don't see a spurious fqn difference. See `get_snapshot_fqn`.
@@ -438,6 +425,126 @@ pub async fn resolve_snapshots(
                 snapshot_paths,
             );
 
+            let discovered_adapter = arg
+                .adapter_override
+                .or(snapshot_config.adapter)
+                .unwrap_or(default_adapter);
+            let relation_context = adapter_relation_contexts.get_for_node(
+                profile,
+                discovered_adapter,
+                default_adapter,
+                status,
+                base_ctx,
+            )?;
+            let adapter_properties_config: Option<SnapshotConfig> = render_config_map(
+                raw_schema_yml_configs.get(snapshot_name),
+                &jinja_env,
+                &relation_context.base_context,
+                dependency_package_name,
+            )?;
+            if !adapter_config_resolvers.contains_key(&discovered_adapter) {
+                let selected_resolver =
+                    render_project_config_resolver::<SnapshotConfig, ProjectSnapshotConfig>(
+                        &package.raw_project_yml,
+                        &root_package.raw_project_yml,
+                        "snapshots",
+                        "snapshots",
+                        DbtQuoting::default(),
+                        (
+                            arg.static_analysis.unwrap_or_default(),
+                            root_package.dbt_project.sync.clone(),
+                        ),
+                        &jinja_env,
+                        &relation_context.base_context,
+                        dependency_package_name,
+                        disallow_plus_prefix_from_flags(root_package.dbt_project.flags.as_ref()),
+                        discovered_adapter,
+                    )?;
+                adapter_config_resolvers.insert(discovered_adapter, selected_resolver);
+            }
+            snapshot_config = adapter_config_resolvers
+                .get(&discovered_adapter)
+                .expect("selected adapter config resolver was inserted")
+                .resolve_with_configs_for_adapter(
+                    &fqn,
+                    &fqn,
+                    &[
+                        adapter_properties_config.as_ref(),
+                        sql_file_info.explicit_config.as_deref(),
+                    ],
+                    discovered_adapter,
+                );
+            let selected_resolver = adapter_config_resolvers
+                .get(&discovered_adapter)
+                .expect("selected adapter config resolver was inserted")
+                .clone();
+            let replay = rerender_sql_file_for_selected_adapter(
+                &render_ctx,
+                profile,
+                discovered_adapter,
+                default_adapter,
+                selected_resolver,
+                relation_context,
+                adapter_quoting
+                    .get(&discovered_adapter)
+                    .cloned()
+                    .unwrap_or_default(),
+                SqlFileRenderResult {
+                    asset: dbt_asset.clone(),
+                    status,
+                    render_error_deferred,
+                    sql_file_info,
+                    config: snapshot_config,
+                    raw_code,
+                    rendered_sql: String::new(),
+                    macro_spans: Default::default(),
+                    properties: Some(properties.clone()),
+                    patch_path: patch_path.clone(),
+                    macro_dependencies: render_macro_dependencies,
+                    raw_config_call_dict: None,
+                    parse_adapter,
+                },
+                adapter_properties_config.as_ref(),
+                token,
+                jinja_type_checking_event_listener_factory.clone(),
+            )
+            .await?;
+            sql_file_info = replay.sql_file_info;
+            snapshot_config = replay.config;
+            raw_code = replay.raw_code;
+            render_error_deferred = replay.render_error_deferred;
+            render_macro_dependencies = replay.macro_dependencies;
+            // Fusion renders block-style snapshots from a generated stub, but
+            // state comparison hashes the original snapshot body.
+            let recalculated_checksum =
+                if let Some(original_path) = snapshot_original_paths.get(&dbt_asset.path) {
+                    recalculate_snapshot_checksum(arg, original_path, &sql_file_info).await
+                } else {
+                    sql_file_info.checksum.clone()
+                };
+            let selected_adapter = arg
+                .adapter_override
+                .or(snapshot_config.adapter)
+                .unwrap_or(default_adapter);
+            if selected_adapter != discovered_adapter {
+                return Err(fs_err!(
+                    code => ErrorCode::InvalidConfig,
+                    loc => error_path.clone(),
+                    "Node adapter changed from '{discovered_adapter}' to '{selected_adapter}' \
+                     while rendering adapter-specific config"
+                ));
+            }
+            status = if snapshot_config.enabled {
+                ModelStatus::Enabled
+            } else {
+                ModelStatus::Disabled
+            };
+
+            let columns = process_columns(
+                properties.columns.as_ref(),
+                snapshot_config.tags.inner().clone().map(|tags| tags.into()),
+            )?;
+
             let static_analysis = snapshot_config.static_analysis.clone();
             check_node_static_analysis(
                 &snapshot_config,
@@ -449,7 +556,6 @@ pub async fn resolve_snapshots(
             // See `resolve_models`: the flag overrides the config. A snapshot
             // selects explicitly -- it has no attached node to inherit from.
             validate_node_adapter(snapshot_config.adapter, error_path)?;
-            let resolved_node_adapter = arg.adapter_override.or(snapshot_config.adapter);
 
             // See `resolve_models`: both remaining quoting layers depend on which
             // adapter the node runs on, which is only known after the config merge.
@@ -461,7 +567,6 @@ pub async fn resolve_snapshots(
                 .clone()
                 .map(Into::into)
                 .unwrap_or_default();
-            let selected_adapter = resolved_node_adapter.unwrap_or(default_adapter);
             snapshot_config.quoting = resolve_package_quoting(
                 Some(match adapter_quoting.get(&selected_adapter) {
                     Some(authored) => snapshot_config.quoting.filled_from(authored),
@@ -481,10 +586,7 @@ pub async fn resolve_snapshots(
                 })?;
             }
 
-            let macro_depends_on = all_depends_on
-                .get(&format!("{package_name}.{snapshot_name}"))
-                .cloned()
-                .unwrap_or_default()
+            let macro_depends_on = render_macro_dependencies
                 .into_iter()
                 .filter(|uid| !synthetic_snapshot_macro_uids.contains(uid.as_str()))
                 .collect();
@@ -621,7 +723,7 @@ pub async fn resolve_snapshots(
                 },
                 __adapter_attr__: AdapterAttr::from_config_and_dialect(
                     &snapshot_config.__warehouse_specific_config__,
-                    default_adapter,
+                    selected_adapter,
                 ),
                 deprecated_config: snapshot_config.clone().into(),
                 compiled: None,
@@ -665,12 +767,12 @@ pub async fn resolve_snapshots(
                 &jinja_env,
                 &root_package.dbt_project.name,
                 &package_name,
-                base_ctx,
+                &relation_context.base_context,
                 &components,
-                default_adapter,
+                selected_adapter,
             )?;
 
-            match node_resolver.insert_ref(&dbt_snapshot, default_adapter, status, false) {
+            match node_resolver.insert_ref(&dbt_snapshot, selected_adapter, status, false) {
                 Ok(_) => (),
                 Err(e) => {
                     let err_with_loc = e.with_location(error_path.clone());

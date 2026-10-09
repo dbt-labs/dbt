@@ -128,6 +128,19 @@ pub fn try_load_prev_compilation(
         return (PrevCompilationResult::None, use_lazy_filter);
     }
 
+    if state
+        .nodes
+        .models
+        .values()
+        .any(|model| model.__model_attr__.catalog_name.is_some())
+    {
+        tracing::debug!(
+            "Partial parse: catalog-backed models require catalogs.yml relation routing; \
+             falling back to full parse"
+        );
+        return (PrevCompilationResult::FullParse, use_lazy_filter);
+    }
+
     if let Some(reason) = state.needs_full_parse() {
         tracing::debug!("Partial parse: {reason}, falling back to full parse");
         return (PrevCompilationResult::FullParse, use_lazy_filter);
@@ -218,15 +231,9 @@ pub fn try_load_prev_compilation(
         cloud_config: dbt_state.cloud_config.clone(),
         render_results: Default::default(),
         node_resolver,
-        get_relation_calls: reconstruct_relation_calls(
-            &state.get_relation_calls,
-            adapter_type,
-            root_project_quoting,
-        ),
+        get_relation_calls: reconstruct_relation_calls(&state.get_relation_calls),
         get_columns_in_relation_calls: reconstruct_relation_calls(
             &state.get_columns_in_relation_calls,
-            adapter_type,
-            root_project_quoting,
         ),
         patterned_dangling_sources: state.patterned_dangling_sources.clone(),
         run_started_at: chrono::Utc::now().with_timezone(&chrono_tz::UTC),

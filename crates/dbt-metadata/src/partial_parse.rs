@@ -87,7 +87,7 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-const INCREMENTAL_STATE_VERSION: u32 = 5;
+const INCREMENTAL_STATE_VERSION: u32 = 6;
 
 pub struct IncrementalState {
     pub version: u32,
@@ -118,12 +118,28 @@ pub struct IncrementalState {
     /// Env vars observed during Jinja rendering (name → value at parse time).
     /// On reload, any value that differs from the current environment invalidates the cache.
     pub env_vars: HashMap<String, String>,
-    /// adapter.get_relation() calls recorded during Jinja rendering: unique_id →
-    /// [(database, schema, identifier)]. Reconstructed into Arc<dyn BaseRelation>
-    /// on load for classify_introspection_kinds.
-    pub get_relation_calls: BTreeMap<String, Vec<(String, String, String)>>,
+    /// adapter.get_relation() calls recorded during Jinja rendering.
+    pub get_relation_calls: BTreeMap<
+        String,
+        Vec<(
+            dbt_adapter_core::AdapterType,
+            ResolvedQuoting,
+            String,
+            String,
+            String,
+        )>,
+    >,
     /// adapter.get_columns_in_relation() calls recorded during Jinja rendering.
-    pub get_columns_in_relation_calls: BTreeMap<String, Vec<(String, String, String)>>,
+    pub get_columns_in_relation_calls: BTreeMap<
+        String,
+        Vec<(
+            dbt_adapter_core::AdapterType,
+            ResolvedQuoting,
+            String,
+            String,
+            String,
+        )>,
+    >,
     /// Patterned dangling sources recorded during Jinja rendering.
     pub patterned_dangling_sources: BTreeMap<String, Vec<RelationPattern>>,
     /// True when any node (or macro) in the project accesses the Jinja `graph` variable.
@@ -388,14 +404,30 @@ fn snapshot_packages(dbt_state: &DbtState) -> Vec<PackageSnapshot> {
 
 fn snapshot_relation_calls(
     calls: &GetRelationCalls,
-) -> BTreeMap<String, Vec<(String, String, String)>> {
+) -> BTreeMap<
+    String,
+    Vec<(
+        dbt_adapter_core::AdapterType,
+        ResolvedQuoting,
+        String,
+        String,
+        String,
+    )>,
+> {
     calls
         .iter()
         .map(|(uid, relations)| {
             let coords = relations
                 .iter()
                 .map(|r| {
+                    let quote_policy = r.quote_policy();
                     (
+                        r.adapter_type(),
+                        ResolvedQuoting {
+                            database: quote_policy.database,
+                            schema: quote_policy.schema,
+                            identifier: quote_policy.identifier,
+                        },
                         r.database().unwrap_or_default().to_string(),
                         r.schema().unwrap_or_default().to_string(),
                         r.identifier().unwrap_or_default().to_string(),
@@ -409,9 +441,16 @@ fn snapshot_relation_calls(
 
 /// Reconstruct GetRelationCalls / GetColumnsInRelationCalls from serialized coordinates.
 pub fn reconstruct_relation_calls(
-    serialized: &BTreeMap<String, Vec<(String, String, String)>>,
-    adapter_type: dbt_adapter_core::AdapterType,
-    quoting: ResolvedQuoting,
+    serialized: &BTreeMap<
+        String,
+        Vec<(
+            dbt_adapter_core::AdapterType,
+            ResolvedQuoting,
+            String,
+            String,
+            String,
+        )>,
+    >,
 ) -> GetRelationCalls {
     use dbt_schemas::schemas::relations::base::BaseRelation;
     use std::sync::Arc;
@@ -420,14 +459,14 @@ pub fn reconstruct_relation_calls(
         .filter_map(|(uid, coords)| {
             let relations: Vec<_> = coords
                 .iter()
-                .filter_map(|(db, schema, id)| {
+                .filter_map(|(adapter_type, quoting, db, schema, id)| {
                     do_create_relation(
-                        adapter_type,
+                        *adapter_type,
                         db.clone(),
                         schema.clone(),
                         Some(id.clone()),
                         None,
-                        quoting,
+                        *quoting,
                     )
                     .ok()
                     .map(|r| Arc::from(r) as Arc<dyn BaseRelation>)
@@ -922,9 +961,9 @@ pub fn load_parse_state_filtered_with_unique_ids(
         serde_json::from_str(&loaded.vars_json).unwrap_or_default();
     let env_vars: HashMap<String, String> =
         serde_json::from_str(&loaded.env_vars_json).unwrap_or_default();
-    let get_relation_calls: BTreeMap<String, Vec<(String, String, String)>> =
+    let get_relation_calls =
         serde_json::from_str(&loaded.get_relation_calls_json).unwrap_or_default();
-    let get_columns_in_relation_calls: BTreeMap<String, Vec<(String, String, String)>> =
+    let get_columns_in_relation_calls =
         serde_json::from_str(&loaded.get_columns_in_relation_calls_json).unwrap_or_default();
     let patterned_dangling_sources: BTreeMap<String, Vec<RelationPattern>> =
         serde_json::from_str(&loaded.patterned_dangling_sources_json).unwrap_or_default();
@@ -1295,7 +1334,13 @@ mod tests {
             ]),
             get_relation_calls: BTreeMap::from([(
                 "model.my_project.incremental_model".into(),
-                vec![("testdb".into(), "pub".into(), "ext_table".into())],
+                vec![(
+                    dbt_adapter_core::AdapterType::Postgres,
+                    ResolvedQuoting::default(),
+                    "testdb".into(),
+                    "pub".into(),
+                    "ext_table".into(),
+                )],
             )]),
             get_columns_in_relation_calls: Default::default(),
             patterned_dangling_sources: Default::default(),
@@ -1306,6 +1351,47 @@ mod tests {
             git_branch: String::new(),
             git_is_dirty: false,
         }
+    }
+
+    #[test]
+    fn relation_call_round_trip_preserves_adapter_identity() {
+        let quoting = ResolvedQuoting {
+            database: true,
+            schema: true,
+            identifier: false,
+        };
+        let serialized = BTreeMap::from([(
+            "model.project.consumer".to_string(),
+            vec![
+                (
+                    dbt_adapter_core::AdapterType::Snowflake,
+                    quoting,
+                    "snow_db".to_string(),
+                    "analytics".to_string(),
+                    "orders".to_string(),
+                ),
+                (
+                    dbt_adapter_core::AdapterType::DuckDB,
+                    quoting,
+                    "duck_shared".to_string(),
+                    "analytics".to_string(),
+                    "orders".to_string(),
+                ),
+            ],
+        )]);
+
+        let reconstructed = reconstruct_relation_calls(&serialized);
+        let adapters: Vec<_> = reconstructed["model.project.consumer"]
+            .iter()
+            .map(|relation| relation.adapter_type())
+            .collect();
+        assert_eq!(
+            adapters,
+            vec![
+                dbt_adapter_core::AdapterType::Snowflake,
+                dbt_adapter_core::AdapterType::DuckDB,
+            ]
+        );
     }
 
     #[test]
