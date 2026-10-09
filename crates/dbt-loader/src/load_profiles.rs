@@ -92,6 +92,7 @@ pub fn load_profiles(
     // `resolved` further down.
     let mut credentials = resolved.credentials.clone();
     canonicalize_bigquery_region_alias(&mut credentials);
+    rewrite_fabricspark_alias(&mut credentials);
     let credentials_value = dbt_yaml::Value::Mapping(credentials, Span::default());
     let db_config: DbConfig = dbt_yaml::from_value(credentials_value).map_err(|e| {
         fs_err!(
@@ -120,6 +121,7 @@ pub fn load_profiles(
             } else {
                 let mut credentials = connection.credentials.clone();
                 canonicalize_bigquery_region_alias(&mut credentials);
+                rewrite_fabricspark_alias(&mut credentials);
                 let value = dbt_yaml::Value::Mapping(credentials, Span::default());
                 let config: DbConfig = dbt_yaml::from_value(value).map_err(|e| {
                     fs_err!(
@@ -209,6 +211,23 @@ pub fn load_profiles(
         relative_profile_path,
         threads: arg.threads,
     })
+}
+
+/// `type: fabricspark` (the v1 dbt-fabricspark adapter's profile type) is an
+/// alias for the "fabric" platform flavor of the spark adapter: rewrite it to
+/// `type: spark` before typed parsing so v1 profiles work unchanged. The
+/// fabric fields themselves identify the target as a Fabric Lakehouse.
+fn rewrite_fabricspark_alias(credentials: &mut dbt_yaml::Mapping) {
+    let is_fabricspark = matches!(
+        credentials.get("type"),
+        Some(dbt_yaml::Value::String(t, _)) if t == "fabricspark"
+    );
+    if !is_fabricspark {
+        return;
+    }
+    if let Some(adapter_type) = credentials.get_mut("type") {
+        *adapter_type = dbt_yaml::Value::String("spark".to_string(), Span::default());
+    }
 }
 
 fn profile_defer_to_target(credentials: &dbt_yaml::Mapping) -> Option<String> {
@@ -309,6 +328,40 @@ mod tests {
             msg.contains("DBT_ALLOW_EXPERIMENTAL_ADAPTERS=true"),
             "expected env-var hint, got: {msg}"
         );
+    }
+
+    #[test]
+    fn fabricspark_type_is_rewritten_to_spark() {
+        let mut creds = dbt_yaml::Mapping::from_iter([
+            (
+                dbt_yaml::Value::String("type".to_string(), Span::default()),
+                dbt_yaml::Value::String("fabricspark".to_string(), Span::default()),
+            ),
+            (
+                dbt_yaml::Value::String("workspaceid".to_string(), Span::default()),
+                dbt_yaml::Value::String("00000000-0000-0000-0000-000000000000".to_string(), Span::default()),
+            ),
+        ]);
+        rewrite_fabricspark_alias(&mut creds);
+        assert!(matches!(
+            creds.get("type"),
+            Some(dbt_yaml::Value::String(t, _)) if t == "spark"
+        ));
+    }
+
+    #[test]
+    fn spark_and_other_types_are_untouched() {
+        for type_name in ["spark", "snowflake"] {
+            let mut creds = dbt_yaml::Mapping::from_iter([(
+                dbt_yaml::Value::String("type".to_string(), Span::default()),
+                dbt_yaml::Value::String(type_name.to_string(), Span::default()),
+            )]);
+            rewrite_fabricspark_alias(&mut creds);
+            assert!(matches!(
+                creds.get("type"),
+                Some(dbt_yaml::Value::String(t, _)) if t == type_name
+            ));
+        }
     }
 
     #[test]

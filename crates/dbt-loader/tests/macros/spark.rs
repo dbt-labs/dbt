@@ -43,3 +43,26 @@ fn drop_schema_accepts_string_argument() {
 
     assert_executed_contains(harness.mock(), "drop schema if exists func cascade");
 }
+
+fn render_target_platform(target: BTreeMap<&str, &str>) -> String {
+    let harness = build_harness();
+    let ctx = BTreeMap::from([("target".to_string(), Value::from_serialize(target))]);
+
+    harness
+        .render("{{ spark__target_platform() }}", ctx)
+        .expect("target_platform should render")
+}
+
+#[test]
+fn target_platform_is_fabric_for_lakehouse_target() {
+    let target = BTreeMap::from([("lakehouseid", "lh-guid")]);
+
+    assert_eq!(render_target_platform(target), "fabric");
+}
+
+#[test]
+fn target_platform_is_vanilla_otherwise() {
+    let target = BTreeMap::from([("host", "spark.example.com")]);
+
+    assert_eq!(render_target_platform(target), "vanilla");
+}
