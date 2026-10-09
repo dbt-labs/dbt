@@ -2596,12 +2596,11 @@ impl AdapterImpl {
         }
     }
 
-    /// This was update_columns method from bigquery-adapter where googleapi is used to
-    /// update/merge columns in general
+    /// Update BigQuery column descriptions and policy tags, including nested fields,
+    /// through the ADBC driver's REST API support.
+    /// BigQuery's [`ALTER COLUMN SET OPTIONS`] cannot modify nested-field descriptions.
     ///
-    /// But since internally this is is only used to update columns descriptions, by
-    /// bigquery__alter_column_comment macro and due to limitation of bigquery, we cannot update
-    /// nested columns using SQL the implementation here only supports columns descriptions update
+    /// [`ALTER COLUMN SET OPTIONS`]: https://cloud.google.com/bigquery/docs/reference/standard-sql/data-definition-language#alter_column_set_options_statement
     pub fn update_columns_descriptions(
         &self,
         state: &State,
@@ -2619,9 +2618,7 @@ impl AdapterImpl {
                 let table = relation.identifier_as_str()?;
                 let schema = relation.schema_as_str()?;
 
-                let nested_columns = self.do_nest_column_data_types(columns, None)?;
-
-                let column_to_description = nested_columns
+                let column_to_description = columns
                     .iter()
                     .filter_map(|(name, col)| {
                         col.description
@@ -2634,7 +2631,7 @@ impl AdapterImpl {
                 // If a column's tags are all mapping-valued, omit it entirely rather than
                 // sending an empty list, which BigQuery would interpret as clearing any
                 // existing policy tags on that column.
-                let column_to_policy_tags = nested_columns
+                let column_to_policy_tags = columns
                     .iter()
                     .filter_map(|(name, col)| {
                         col.policy_tags.as_ref().and_then(|tags| {
@@ -6170,6 +6167,8 @@ pub trait Replayer: fmt::Debug + Send + Sync {
 
 #[cfg(test)]
 mod tests {
+    mod update_columns;
+
     use super::*;
     use crate::adapter::adapter_factory::backend_of;
     use crate::cache::RelationCache;
