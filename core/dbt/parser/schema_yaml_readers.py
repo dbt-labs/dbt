@@ -87,11 +87,14 @@ from dbt.contracts.graph.unparsed import (
     UnparsedSemanticModelConfig,
     UnparsedSemanticResourceConfig,
 )
+from dbt.events.types import InvalidValueForField
 from dbt.exceptions import JSONValidationError, YamlParseDictError
 from dbt.node_types import NodeType
 from dbt.parser.common import YamlBlock
 from dbt.parser.schemas import ParseResult, SchemaParser, YamlReader
 from dbt_common.dataclass_schema import ValidationError
+from dbt_common.events.base_types import EventGroupType
+from dbt_common.events.functions import fire_or_defer_event
 from dbt_common.exceptions import DbtInternalError
 
 
@@ -175,8 +178,22 @@ class ExposureParser(YamlReader):
             self.schema_parser.manifest,
             package_name,
         )
-        depends_on_jinja = "\n".join("{{ " + line + "}}" for line in unparsed.depends_on)
-        get_rendered(depends_on_jinja, ctx, parsed, capture_macros=True)
+        for line in unparsed.depends_on:
+            before = len(parsed.refs) + len(parsed.sources) + len(parsed.metrics)
+            get_rendered("{{ " + line + "}}", ctx, parsed, capture_macros=True)
+            # Only ref(), source() and metric() register a dependency. Anything else renders
+            # to nothing and would leave the exposure silently without that parent.
+            if len(parsed.refs) + len(parsed.sources) + len(parsed.metrics) == before:
+                fire_or_defer_event(
+                    InvalidValueForField(
+                        field_value=line,
+                        field_name=f"depends_on of exposure '{unparsed.name}' "
+                        f"in {self.yaml.path.original_file_path}, which must call "
+                        f"ref(), source() or metric()",
+                    ),
+                    force_warn_or_error_handling=True,
+                    event_group_type=EventGroupType.PARSE,
+                )
         # parsed now has a populated refs/sources/metrics
 
         assert isinstance(self.yaml.file, SchemaSourceFile)
