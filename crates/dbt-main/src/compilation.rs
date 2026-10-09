@@ -581,6 +581,7 @@ impl<'a> CompilationPhasesExecutor<'a> {
                                 unique_id: uid.clone(),
                                 num_rows: None,
                                 rows_affected: None,
+                                idle_time_ms: None,
                                 start_time: now,
                                 end_time: now,
                                 status: NodeStatus::Errored,
