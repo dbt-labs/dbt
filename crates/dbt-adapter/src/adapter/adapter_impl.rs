@@ -3795,8 +3795,11 @@ impl AdapterImpl {
     ) -> AdapterResult<Vec<Column>> {
         match self.inner_adapter() {
             Replay(_, replay) => replay.replay_get_columns_in_select_sql(state),
-            Impl(Bigquery, _) => {
-                self.get_column_schema_from_query(state, conn, ctx, sql, None, token)
+            // Unlike get_column_schema_from_query, dbt-bigquery does not flatten here: the
+            // result feeds CREATE TABLE column DDL, where STRUCTs must stay whole.
+            Impl(Bigquery, engine) => {
+                let batch = engine.execute(Some(state), conn, ctx, sql, token)?;
+                self.schema_to_columns(None, &batch.schema())
             }
             Impl(_, _) => unimplemented!("only available with BigQuery adapter"),
         }
@@ -6459,6 +6462,29 @@ mod tests {
     fn test_quote_for_bigquery() {
         let adapter = AdapterImpl::new(engine(Bigquery), None);
         assert_eq!(adapter.quote("abc"), "`abc`");
+    }
+
+    /// `get_columns_in_select_sql` feeds CREATE TABLE column DDL, so a STRUCT must stay
+    /// a single column carrying its full nested type rather than flattened leaves.
+    #[test]
+    fn test_schema_to_columns_keeps_bigquery_struct_whole() {
+        let adapter = AdapterImpl::new(engine(Bigquery), None);
+        let struct_fields = vec![
+            Field::new("a", DataType::Int64, true),
+            Field::new("b", DataType::Utf8, true),
+        ];
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "s",
+            DataType::Struct(struct_fields.into()),
+            true,
+        )]));
+
+        let columns = adapter.schema_to_columns(None, &schema).unwrap();
+
+        assert_eq!(columns.len(), 1);
+        assert_eq!(columns[0].name(), "s");
+        assert_eq!(columns[0].data_type(), "STRUCT<`a` INT64, `b` STRING>");
+        assert_eq!(columns[0].flatten().len(), 2);
     }
 
     fn clickhouse_adapter(config: Mapping) -> AdapterImpl {
