@@ -27,7 +27,12 @@
 ) %}
     -- apply a full refresh immediately if needed
     {% if configuration_changes.requires_full_refresh %}
-        {% do return(get_replace_sql(existing_relation, relation,  sql)) %}
+        {%- set replace_sql = get_replace_sql(existing_relation, relation, sql) -%}
+        {%- set return_statements = [replace_sql] if replace_sql is string else replace_sql | list -%}
+        {%- set tags = config.get('databricks_tags') -%}
+        {%- set column_tags = adapter.get_column_tags_from_model(config.model) -%}
+        {%- do return_statements.extend(get_set_tag_statements(relation, tags, column_tags)) -%}
+        {% do return(return_statements) %}
 
     -- otherwise apply individual changes as needed
     {% else %}
@@ -40,10 +45,10 @@
         {%- if alter_statement -%}
             {{ return_statements.append(alter_statement) }}
         {%- endif -%}
-        {%- set tags = configuration_changes.changes["tags"] -%}
-        {%- if tags and tags.set_tags and tags.set_tags != [] -%}
-            {{ return_statements.append(alter_set_tags(relation, tags.set_tags)) }}
-        {%- endif -%}
+        {%- set tags = configuration_changes.changes.get("tags") -%}
+        {%- set column_tags = configuration_changes.changes.get("column_tags") -%}
+        {%- set set_tags = tags.set_tags if tags else none -%}
+        {%- do return_statements.extend(get_set_tag_statements(relation, set_tags, column_tags)) -%}
 
         {#- Row filter handling - append SQL to list, don't execute -#}
         {#- is_change guard prevents false alters from `diff or value` fallback in streaming_table.py:56 -#}
@@ -68,6 +73,7 @@
     {% if partition_by -%}
         {{ get_create_sql_partition_by(partition_by) }}
     {%- endif %}
+    {{ liquid_clustered_cols() }}
     {% if comment -%}
         {{ get_create_sql_comment(comment) }}
     {%- endif %}

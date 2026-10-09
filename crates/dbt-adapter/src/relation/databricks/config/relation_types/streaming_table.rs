@@ -15,21 +15,21 @@ fn complete_changeset_key(component_type_name: &'static str) -> Option<&'static 
         components::partition_by::TYPE_NAME => Some("partition_by"),
         components::relation_comment::TYPE_NAME
         | components::tbl_properties::TYPE_NAME
-        | components::refresh::TYPE_NAME
-        | components::relation_tags::TYPE_NAME => Some(component_type_name),
+        | components::refresh::TYPE_NAME => Some(component_type_name),
         _ => None,
     }
 }
 
 /// Create a `RelationConfigLoader` for Databricks streaming tables
 pub(crate) fn new_loader() -> RelationConfigLoader<'static, DatabricksRelationMetadata> {
-    let loaders: [Box<dyn ComponentConfigLoader<DatabricksRelationMetadata>>; 8] = [
+    let loaders: [Box<dyn ComponentConfigLoader<DatabricksRelationMetadata>>; 9] = [
         Box::new(components::LiquidClusteringLoader),
         Box::new(components::PartitionByLoader),
         Box::new(components::RelationCommentLoader),
         Box::new(components::TblPropertiesLoader),
         Box::new(components::RefreshLoader),
         Box::new(components::RelationTagsLoader),
+        Box::new(components::ColumnTagsLoader),
         Box::new(components::RowFilterLoader),
         Box::new(components::ColumnMasksLoader),
     ];
@@ -105,13 +105,6 @@ mod tests {
         True
     </is_altered>
 </refresh>
-<tags>
-    <set_tags>
-        <a_tag>
-            new
-        </a_tag>
-    </set_tags>
-</tags>
 <liquid_clustering>
     <auto_cluster>
         False
@@ -120,6 +113,13 @@ mod tests {
         cluster_by_new
     </cluster_by>
 </liquid_clustering>
+<tags>
+    <set_tags>
+        <a_tag>
+            new
+        </a_tag>
+    </set_tags>
+</tags>
 <row_filter>
     <function>
         None
@@ -179,10 +179,6 @@ mod tests {
         False
     </is_altered>
 </refresh>
-<tags>
-    <set_tags>
-    </set_tags>
-</tags>
                     "#;
 
     fn component_change_current_state() -> TestModelConfig {
@@ -340,12 +336,6 @@ mod tests {
                         ),
                     ),
                 ),
-                (
-                    components::RelationTagsLoader.type_name(),
-                    ComponentConfigChange::Some(
-                        components::RelationTagsLoader::new_component_type_erased(IndexMap::new()),
-                    ),
-                ),
             ],
             true,
         )
@@ -415,14 +405,8 @@ mod tests {
 
         assert_eq!(
             changeset.iter().map(|(name, _)| *name).collect::<Vec<_>>(),
-            vec![
-                "partition_by",
-                "comment",
-                "tblproperties",
-                "refresh",
-                "tags",
-            ],
-            "a partial streaming-table change must carry every supported component consumed by the v1 ALTER renderer",
+            vec!["partition_by", "comment", "tblproperties", "refresh",],
+            "a partial streaming-table change carries stable create components but omits unchanged tags",
         );
         let ComponentConfigChange::Some(properties) = changeset.get("tblproperties") else {
             panic!("changeset must carry stable tblproperties");

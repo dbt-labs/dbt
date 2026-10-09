@@ -1,0 +1,7 @@
+kind: Fixes
+body: Reconcile table and column tags on Databricks materialized views and streaming tables, applying only changed tag assignments for in-place updates.
+time: 2026-10-08T18:47:51.40258+05:30
+custom:
+    author: sd-db
+    issue: "16666"
+    project: dbt-core
