@@ -41,10 +41,14 @@ class TarballPinnedPackage(TarballPackageMixin, PinnedPackage):
         """Ensure the download location stays inside the downloads directory."""
         root = os.path.realpath(downloads_path)
         resolved = os.path.realpath(self.tar_path)
-        if resolved == root or os.path.commonpath([root, resolved]) != root:
+        try:
+            is_contained = resolved != root and os.path.commonpath([root, resolved]) == root
+        except ValueError:
+            is_contained = False
+        if not is_contained:
             raise DependencyError(
                 f"Invalid package name '{self.package}': resolves outside of the "
-                "downloads directory"
+                "temporary downloads directory"
             )
 
     @property
