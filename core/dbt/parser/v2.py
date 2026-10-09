@@ -25,11 +25,13 @@ from typing import TYPE_CHECKING, Dict, List, Optional, Tuple
 
 from dbt.artifacts.exceptions import IncompatibleSchemaError
 from dbt.artifacts.schemas.manifest import WritableManifest
+from dbt.constants import SEMANTIC_MANIFEST_FILE_NAME
 from dbt.contracts.files import ParseFileType
 from dbt.contracts.graph.manifest import Manifest
 from dbt.events.types import V2ParserEnd, V2ParserStart
 from dbt.exceptions import V2ParserError, V2ParserSchemaError, V2ParserVersionError
 from dbt.flags import get_flags
+from dbt.utils.artifact_upload import add_artifact_produced
 from dbt_common import ui
 from dbt_common.events.base_types import EventLevel
 from dbt_common.events.functions import fire_event, get_invocation_id
@@ -86,11 +88,7 @@ def parse_with_v2(
                 # macro rediscovery below doesn't affect semantic models, so
                 # semantic_manifest.json needs no correction pass.
                 project_target_path.mkdir(parents=True, exist_ok=True)
-                semantic_manifest_path = handoff / "semantic_manifest.json"
-                if semantic_manifest_path.exists():
-                    shutil.copyfile(
-                        semantic_manifest_path, project_target_path / "semantic_manifest.json"
-                    )
+                _copy_semantic_manifest(handoff, project_target_path)
     except (
         V2ParserVersionError,
         V2ParserSchemaError,
@@ -715,6 +713,16 @@ def _serialize_vars(cli_vars) -> str:
     if isinstance(cli_vars, str):
         return cli_vars
     return yaml.safe_dump(cli_vars, default_flow_style=True).strip()
+
+
+def _copy_semantic_manifest(handoff: Path, target_path: Path) -> None:
+    """Copy the v2 parser's semantic_manifest.json into target/ and register it for upload."""
+    source = handoff / SEMANTIC_MANIFEST_FILE_NAME
+    if not source.exists():
+        return
+    destination = target_path / SEMANTIC_MANIFEST_FILE_NAME
+    shutil.copyfile(source, destination)
+    add_artifact_produced(str(destination))
 
 
 def _delete_stale_partial_parse(target_path: Path) -> None:
