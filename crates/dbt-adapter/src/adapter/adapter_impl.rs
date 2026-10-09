@@ -94,7 +94,7 @@ use std::borrow::Cow;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt;
 use std::str::FromStr;
-use std::sync::{Arc, LazyLock};
+use std::sync::{Arc, LazyLock, Mutex};
 
 use AdapterType::*;
 use InnerAdapter::*;
@@ -1084,6 +1084,7 @@ impl AdapterImpl {
     ///
     /// BaseAdapter https://github.com/dbt-labs/dbt-adapters/blob/0efd8d3d1081e1ab43e38797d5104f7b424a6284/dbt-adapters/src/dbt/adapters/base/impl.py#L1727
     /// SnowflakeAdapter https://github.com/dbt-labs/dbt-adapters/blob/0efd8d3d1081e1ab43e38797d5104f7b424a6284/dbt-snowflake/src/dbt/adapters/snowflake/impl.py#L417
+    /// DuckDBAdapter https://github.com/duckdb/dbt-duckdb/blob/cb8b1c59e4595a3a42bedf33f400c053e4adc393/dbt/adapters/duckdb/impl.py#L342-L360
     pub fn submit_python_job(
         &self,
         ctx: &QueryCtx,
@@ -1140,19 +1141,28 @@ impl AdapterImpl {
             Impl(Databricks, _) => {
                 python::databricks::submit_python_job(self, ctx, conn, state, model, compiled_code)
             }
-            Replay(Bigquery | Databricks, replay) => {
+            Impl(DuckDB, _) => python::duckdb::submit_python_job(
+                self,
+                ctx,
+                conn,
+                state,
+                model,
+                compiled_code,
+                token,
+            ),
+            Replay(Bigquery | Databricks | DuckDB, replay) => {
                 replay.replay_submit_python_job(ctx, conn, state, model, compiled_code)
             }
             Replay(
-                adapter_type @ (Postgres | Redshift | Salesforce | DuckDB | LakeCompute | Spark
-                | Fabric | ClickHouse | Exasol | Starburst | Athena | Trino
-                | Datafusion | Dremio | Oracle),
+                adapter_type @ (Postgres | Redshift | Salesforce | LakeCompute | Spark | Fabric
+                | ClickHouse | Exasol | Starburst | Athena | Trino | Datafusion
+                | Dremio | Oracle),
                 _,
             )
             | Impl(
-                adapter_type @ (Postgres | Redshift | Salesforce | DuckDB | LakeCompute | Spark
-                | Fabric | ClickHouse | Exasol | Starburst | Athena | Trino
-                | Datafusion | Dremio | Oracle),
+                adapter_type @ (Postgres | Redshift | Salesforce | LakeCompute | Spark | Fabric
+                | ClickHouse | Exasol | Starburst | Athena | Trino | Datafusion
+                | Dremio | Oracle),
                 _,
             ) => Err(AdapterError::new(
                 AdapterErrorKind::Internal,
@@ -5523,10 +5533,13 @@ pub(crate) fn adapter_specific_behavior_flags(adapter_type: AdapterType) -> Vec<
 }
 
 /// The adapter implementation. All adapter methods live here.
+type PythonJobIdCache = Arc<Mutex<Option<HashMap<String, String>>>>;
+
 #[derive(Clone)]
 pub struct AdapterImpl {
     inner: AdapterImplInner,
     schema_store: Option<Arc<dyn SchemaStoreTrait>>,
+    python_job_ids: PythonJobIdCache,
 }
 
 #[derive(Clone)]
@@ -5544,24 +5557,29 @@ enum AdapterImplInner {
 }
 
 impl AdapterImpl {
+    fn from_inner(
+        inner: AdapterImplInner,
+        schema_store: Option<Arc<dyn SchemaStoreTrait>>,
+    ) -> Self {
+        Self {
+            inner,
+            schema_store,
+            python_job_ids: Arc::new(Mutex::new(None)),
+        }
+    }
+
     pub fn new(
         engine: Arc<dyn AdapterEngine>,
         schema_store: Option<Arc<dyn SchemaStoreTrait>>,
     ) -> Self {
-        Self {
-            inner: AdapterImplInner::Impl(engine),
-            schema_store,
-        }
+        Self::from_inner(AdapterImplInner::Impl(engine), schema_store)
     }
 
     pub fn new_replay(
         replay: Arc<dyn Replayer>,
         schema_store: Option<Arc<dyn SchemaStoreTrait>>,
     ) -> Self {
-        Self {
-            inner: AdapterImplInner::Replay(replay),
-            schema_store,
-        }
+        Self::from_inner(AdapterImplInner::Replay(replay), schema_store)
     }
 
     pub fn new_mock(
@@ -5604,14 +5622,18 @@ impl AdapterImpl {
             ],
             &BTreeMap::new(),
         ));
-        Self {
-            inner: AdapterImplInner::Mock(MockState {
+        Self::from_inner(
+            AdapterImplInner::Mock(MockState {
                 engine,
                 flags,
                 behavior,
             }),
-            schema_store: None,
-        }
+            None,
+        )
+    }
+
+    pub(crate) fn python_job_id_cache(&self) -> PythonJobIdCache {
+        Arc::clone(&self.python_job_ids)
     }
 
     pub fn get_schema_from_cache(

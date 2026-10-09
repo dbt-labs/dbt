@@ -179,6 +179,23 @@ fn create_table_as_quotes_only_columns_marked_quote_true() {
 }
 
 #[test]
+fn flight_name_includes_model_identity() {
+    let harness = build_harness("iceberg_demo", "ducklake_demo");
+    let ctx = harness
+        .materialization_context("orders", "select 1")
+        .build();
+
+    let rendered = harness
+        .render(
+            "{{ duckdb__flight_name({'package_name': 'analytics', 'database': 'prod', 'schema': 'marts', 'alias': 'orders'}) }}",
+            ctx,
+        )
+        .expect("flight name should render");
+
+    assert_eq!(rendered.trim(), "dbt-analytics-prod-marts-orders");
+}
+
+#[test]
 fn get_columns_in_relation_uses_describe_for_iceberg_relations() {
     let harness = build_harness("iceberg_demo", "ducklake_demo");
     let relation = harness.relation("iceberg_demo", "main", "orders", Some(RelationType::Table));
