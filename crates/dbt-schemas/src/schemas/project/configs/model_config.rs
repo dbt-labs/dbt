@@ -511,6 +511,12 @@ pub struct ProjectModelConfig {
         deserialize_with = "bool_or_string_bool"
     )]
     pub skip_optimize: Option<bool>,
+    #[serde(
+        default,
+        rename = "+skip_merge_on_empty_source",
+        deserialize_with = "bool_or_string_bool"
+    )]
+    pub skip_merge_on_empty_source: Option<bool>,
     #[serde(default, rename = "+secure", deserialize_with = "bool_or_string_bool")]
     pub secure: Option<bool>,
     #[serde(rename = "+sort")]
@@ -808,6 +814,7 @@ impl TypedRecursiveConfig for ProjectModelConfig {
             || self.skip_matched_step.is_some()
             || self.skip_not_matched_step.is_some()
             || self.skip_optimize.is_some()
+            || self.skip_merge_on_empty_source.is_some()
             || self.secure.is_some()
             || self.sort.is_some()
             || self.sort_type.is_some()
@@ -1128,6 +1135,7 @@ impl From<ProjectModelConfig> for ModelConfig {
                 skip_matched_step: config.skip_matched_step,
                 skip_not_matched_step: config.skip_not_matched_step,
                 skip_optimize: config.skip_optimize,
+                skip_merge_on_empty_source: config.skip_merge_on_empty_source,
                 unique_tmp_table_suffix: config.unique_tmp_table_suffix,
                 schedule: config.schedule,
                 row_filter: config.row_filter,
@@ -1356,6 +1364,9 @@ impl From<ModelConfig> for ProjectModelConfig {
             skip_matched_step: config.__warehouse_specific_config__.skip_matched_step,
             skip_not_matched_step: config.__warehouse_specific_config__.skip_not_matched_step,
             skip_optimize: config.__warehouse_specific_config__.skip_optimize,
+            skip_merge_on_empty_source: config
+                .__warehouse_specific_config__
+                .skip_merge_on_empty_source,
             storage_serialization_policy: config
                 .__warehouse_specific_config__
                 .storage_serialization_policy,
@@ -1927,6 +1938,7 @@ impl ConfigKeys for ModelConfig {
         field_names.insert("dataset".to_string()); // alias for schema
         field_names.insert("post-hook".to_string()); // might be serialized as post_hook
         field_names.insert("pre-hook".to_string()); // might be serialized as pre_hook
+        field_names.insert("skip_merge_on_empty_source".to_string());
 
         field_names
     }

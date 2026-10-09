@@ -62,6 +62,10 @@
       {% do persist_docs(target_relation, model, for_relation=language=='python') %}
     {%- else -%}
       {{ log("Existing relation found, proceeding with incremental work")}}
+      {%- if skip_merge_on_empty_source(incremental_strategy, on_schema_change, 'select * from ' ~ intermediate_relation, target_relation, existing_relation) -%}
+        {{ run_post_hooks() }}
+        {{ return({'relations': [target_relation]}) }}
+      {%- endif -%}
       {#-- Set Overwrite Mode to DYNAMIC for subsequent incremental operations --#}
       {%- if incremental_strategy == 'insert_overwrite' and partition_by -%}
         {{ set_overwrite_mode('DYNAMIC') }}
@@ -145,6 +149,10 @@
       {% endif %}
       {% do persist_docs(target_relation, model, for_relation=language=='python') %}
     {%- else -%}
+      {%- if skip_merge_on_empty_source(incremental_strategy, on_schema_change, compiled_code, target_relation, existing_relation) -%}
+        {{ run_hooks(post_hooks) }}
+        {{ return({'relations': [target_relation]}) }}
+      {%- endif -%}
       {#-- Set Overwrite Mode to DYNAMIC for subsequent incremental operations --#}
       {%- if incremental_strategy == 'insert_overwrite' and partition_by -%}
         {{ set_overwrite_mode('DYNAMIC') }}
