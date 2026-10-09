@@ -738,7 +738,7 @@ impl CompileArgs {
         eval_args.full_refresh = self.full_refresh;
         eval_args.format = self.output.unwrap_or(DEFAULT_FORMAT);
         if let Some(resource_type) = &self.resource_type {
-            eval_args.resource_types = resource_type.clone();
+            eval_args.resource_types = ClapResourceType::resolve(resource_type, &[]);
         }
         if let Some(exclude_resource_type) = &self.exclude_resource_type {
             eval_args.exclude_resource_types = exclude_resource_type.clone();
@@ -901,7 +901,7 @@ impl FreshnessArgs {
         let mut eval_args = self.common_args.to_eval_args(arg, in_dir, out_dir);
         eval_args.phase = Phases::Freshness;
         if let Some(resource_type) = &self.resource_type {
-            eval_args.resource_types = resource_type.clone();
+            eval_args.resource_types = ClapResourceType::resolve(resource_type, &[]);
         }
         if let Some(exclude_resource_type) = &self.exclude_resource_type {
             eval_args.exclude_resource_types = exclude_resource_type.clone();
@@ -990,7 +990,17 @@ impl ShowArgs {
         eval_args.adapter_override = self.adapter.clone();
         eval_args.query_id = self.query_id.clone();
         if let Some(resource_type) = &self.resource_type {
-            eval_args.resource_types = resource_type.clone();
+            eval_args.resource_types = ClapResourceType::resolve(
+                resource_type,
+                &[
+                    ClapResourceType::Model,
+                    ClapResourceType::Snapshot,
+                    ClapResourceType::Seed,
+                    ClapResourceType::Source,
+                    ClapResourceType::Analysis,
+                    ClapResourceType::Test,
+                ],
+            );
         } else {
             eval_args.resource_types = vec![
                 ClapResourceType::Model,
@@ -1130,7 +1140,10 @@ impl TestArgs {
                 .insert(OptimizeTestsOptions::TestAggregation);
         }
         if let Some(resource_type) = &self.resource_type {
-            eval_args.resource_types = resource_type.clone();
+            eval_args.resource_types = ClapResourceType::resolve(
+                resource_type,
+                &[ClapResourceType::Test, ClapResourceType::UnitTest],
+            );
         } else {
             eval_args.resource_types = vec![ClapResourceType::Test, ClapResourceType::UnitTest];
         }
@@ -1238,21 +1251,23 @@ impl BuildArgs {
         }
         eval_args.phase = Phases::All;
         // Enable task cache
+        let mut default_resource_types = vec![
+            ClapResourceType::Model,
+            ClapResourceType::Seed,
+            ClapResourceType::Snapshot,
+            ClapResourceType::Test,
+            ClapResourceType::UnitTest,
+            ClapResourceType::Function,
+            ClapResourceType::Check,
+        ];
+        if eval_args.export_saved_queries {
+            default_resource_types.push(ClapResourceType::SavedQuery);
+        }
         if let Some(resource_type) = &self.resource_type {
-            eval_args.resource_types = resource_type.clone();
+            eval_args.resource_types =
+                ClapResourceType::resolve(resource_type, &default_resource_types);
         } else {
-            eval_args.resource_types = vec![
-                ClapResourceType::Model,
-                ClapResourceType::Seed,
-                ClapResourceType::Snapshot,
-                ClapResourceType::Test,
-                ClapResourceType::UnitTest,
-                ClapResourceType::Function,
-                ClapResourceType::Check,
-            ];
-            if eval_args.export_saved_queries {
-                eval_args.resource_types.push(ClapResourceType::SavedQuery);
-            }
+            eval_args.resource_types = default_resource_types.clone();
         }
         if let Some(exclude_resource_type) = &self.exclude_resource_type {
             eval_args.exclude_resource_types = exclude_resource_type.clone();
@@ -1308,7 +1323,7 @@ impl ListArgs {
         eval_args.io.show.insert(ShowOptions::Nodes);
         eval_args.output_keys = self.output_keys.clone();
         if let Some(resource_type) = &self.resource_type {
-            eval_args.resource_types = resource_type.clone();
+            eval_args.resource_types = ClapResourceType::resolve(resource_type, &[]);
         }
         if let Some(exclude_resource_type) = &self.exclude_resource_type {
             eval_args.exclude_resource_types = exclude_resource_type.clone();
@@ -3853,6 +3868,26 @@ mod tests {
             Path::new("/tmp/out"),
         );
         assert_eq!(eval_args.resource_types, vec![ClapResourceType::Exposure]);
+    }
+
+    #[test]
+    fn list_command_supports_all_and_default_resource_type() {
+        let eval = |flag: &str| {
+            let cmd = parse_core_command(&["list", "--resource-type", flag]);
+            let CoreCommand::List(args) = &cmd else {
+                panic!("expected CoreCommand::List, got {cmd:?}");
+            };
+            args.to_eval_args(
+                test_system_args(FsCommand::List),
+                Path::new("/tmp/in"),
+                Path::new("/tmp/out"),
+            )
+        };
+        // `list` has no default set, so `default` == omitted flag (no filter).
+        let all = ClapResourceType::all_concrete();
+        assert!(all.contains(&ClapResourceType::Exposure));
+        assert_eq!(eval("all").resource_types, all);
+        assert!(eval("default").resource_types.is_empty());
     }
 
     #[test]

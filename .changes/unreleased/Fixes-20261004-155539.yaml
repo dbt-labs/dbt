@@ -1,0 +1,7 @@
+kind: Fixes
+body: Accept `--resource-type all` and `--resource-type default` on v2 commands
+time: 2026-10-04T14:55:39.872566+00:00
+custom:
+    author: AnnasMazhar
+    issue: "16589"
+    project: dbt-core
