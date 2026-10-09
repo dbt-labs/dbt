@@ -67,7 +67,7 @@ cargo ci pypi publish --environment prod --version X.Y.Z      # uploads wheels
 
 # Publish the download-at-install sdist pointing at the release's wheel host
 # (one --target per published wheel). For dbt-core / dbt-oss add
-# `--python-tag cp311 --abi-tag abi3 --runtime-metadata-from crates/dbt-python`,
+# `--python-tag cp310 --abi-tag abi3 --runtime-metadata-from crates/dbt-python`,
 # since those reference the maturin extension wheels:
 cargo ci pypi publish --environment prod --version X.Y.Z \
   --download-base-url https://github.com/dbt-labs/dbt-core/releases/download/vX.Y.Z \
