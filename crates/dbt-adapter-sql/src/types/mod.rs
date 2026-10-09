@@ -456,6 +456,8 @@ pub enum SqlType {
     Variant,
     /// VOID
     Void,
+    /// SingleStore VECTOR(dimension, element_type)
+    Vector(usize, Option<Box<SqlType>>),
     /// Other SQL types that are not explicitly defined.
     ///
     /// This is useful in situations where we can treat the SQL type as an
@@ -816,6 +818,72 @@ impl SqlType {
             }
             // }}}
 
+            // SingleStore {{{
+            (SingleStore, Boolean) => write!(out, "BOOLEAN"),
+            (SingleStore, TinyInt) => write!(out, "TINYINT"),
+            (SingleStore, SmallInt) => write!(out, "SMALLINT"),
+            (SingleStore, Integer) => write!(out, "INT"),
+            (SingleStore, BigInt) => write!(out, "BIGINT"),
+            (SingleStore, UTinyInt) => write!(out, "TINYINT UNSIGNED"),
+            (SingleStore, USmallInt) => write!(out, "SMALLINT UNSIGNED"),
+            (SingleStore, UInteger) => write!(out, "INT UNSIGNED"),
+            (SingleStore, UBigInt) => write!(out, "BIGINT UNSIGNED"),
+            (SingleStore, Real | Float(_)) => write!(out, "FLOAT"),
+            (SingleStore, Double) => write!(out, "DOUBLE"),
+            (SingleStore, Char(None)) => write!(out, "CHAR"),
+            (SingleStore, Char(Some(n))) => write!(out, "CHAR({n})"),
+            (SingleStore, Varchar(None, _)) => write!(out, "TEXT"),
+            (SingleStore, Varchar(Some(n), _)) => write!(out, "VARCHAR({n})"),
+            (SingleStore, Text | Clob) => write!(out, "TEXT"),
+            (SingleStore, Blob | Binary(None)) => write!(out, "BLOB"),
+            (SingleStore, Binary(Some(n))) => write!(out, "VARBINARY({n})"),
+            (SingleStore, Date(_)) => write!(out, "DATE"),
+            (SingleStore, DateTime) => write!(out, "DATETIME(6)"),
+            (
+                SingleStore,
+                Timestamp {
+                    precision: Some(p), ..
+                },
+            ) => write!(out, "TIMESTAMP({p})"),
+            (
+                SingleStore,
+                Timestamp {
+                    precision: None, ..
+                },
+            ) => write!(out, "TIMESTAMP(6)"),
+            (
+                SingleStore,
+                Time {
+                    precision: Some(p), ..
+                },
+            ) => write!(out, "TIME({p})"),
+            (
+                SingleStore,
+                Time {
+                    precision: None, ..
+                },
+            ) => write!(out, "TIME(6)"),
+            (SingleStore, Json | Jsonb) => write!(out, "JSON"),
+            (SingleStore, Geography(_)) => write!(out, "GEOGRAPHY"),
+            (SingleStore, Vector(dim, None)) => write!(out, "VECTOR({dim})"),
+            (SingleStore, Vector(dim, Some(elem))) => {
+                let elem_str = match elem.as_ref() {
+                    Real | Float(_) => "F32",
+                    Double => "F64",
+                    TinyInt => "I8",
+                    SmallInt => "I16",
+                    Integer => "I32",
+                    BigInt => "I64",
+                    _ => {
+                        write!(out, "VECTOR({dim}, ")?;
+                        elem.write(backend, out)?;
+                        return write!(out, ")");
+                    }
+                };
+                write!(out, "VECTOR({dim}, {elem_str})")
+            }
+            // }}}
+
             // Generic SQL / Fallback logic {{{
             (_, Boolean) => write!(out, "BOOLEAN"),
             (_, TinyInt) => write!(out, "TINYINT"),
@@ -1045,6 +1113,12 @@ impl SqlType {
             (ClickHouse, Variant) => write!(out, "Dynamic"),
             (_, Variant) => write!(out, "VARIANT"),
             (_, Void) => write!(out, "VOID"),
+            (_, Vector(dim, None)) => write!(out, "VECTOR({dim})"),
+            (_, Vector(dim, Some(elem))) => {
+                write!(out, "VECTOR({dim}, ")?;
+                elem.write(backend, out)?;
+                write!(out, ")")
+            }
             (_, Other(s)) => write!(out, "{s}"),
             // }}}
         }
@@ -1204,6 +1278,10 @@ impl SqlType {
             | DataType::LargeList(_)
             | DataType::ListView(_)
             | DataType::LargeListView(_) => SqlType::Array(None), // XXX
+            DataType::FixedSizeList(field, size) if backend == AdapterType::SingleStore => {
+                let inner = Self::from_arrow_type(backend, field.data_type());
+                SqlType::Vector(*size as usize, Some(Box::new(inner)))
+            }
             DataType::FixedSizeList(_, _) => SqlType::Other("ARRAY".to_string()),
             DataType::Struct(fields) => {
                 let mut sql_fields = Vec::with_capacity(fields.len());
@@ -1415,6 +1493,11 @@ impl SqlType {
             (Bigquery, Geography(_)) => {
                 DataType::FixedSizeList(Arc::new(Field::new("geography", DataType::Utf8, true)), 1)
             }
+            // }}}
+
+            // SingleStore {{{
+            (SingleStore, Numeric(None) | BigNumeric(None)) => DataType::Decimal128(10, 0),
+            (SingleStore, DateTime) => DataType::Timestamp(TimeUnit::Microsecond, None),
             // }}}
 
             // Databricks {{{
@@ -1790,6 +1873,14 @@ impl SqlType {
                 DataType::List(Arc::new(inner_field))
             }
             (_, Array(None)) => DataType::List(Arc::new(Field::new("item", DataType::Utf8, true))),
+            (_, Vector(dim, elem)) => {
+                let inner_ty = elem
+                    .as_ref()
+                    .map(|inner| inner.pick_best_arrow_type(backend))
+                    .unwrap_or(DataType::Float32);
+                let inner_field = Field::new("item", inner_ty, false);
+                DataType::FixedSizeList(Arc::new(inner_field), *dim as i32)
+            }
             (_, Struct(fields)) => {
                 let arrow_fields = match fields {
                     Some(struct_fields) => {
@@ -1898,6 +1989,7 @@ const BIGQUERY_KEYS: [&str; 2] = ["BIGQUERY:type", "type_text"];
 const DATABRICKS_KEYS: [&str; 2] = ["DBX:type", "type_text"];
 const REDSHIFT_KEYS: [&str; 2] = ["REDSHIFT:type", "type_text"];
 const DUCKDB_KEYS: [&str; 2] = ["DUCKDB:type", "type_text"];
+const SINGLESTORE_KEYS: [&str; 2] = ["SINGLESTORE:type", "type_text"];
 const CLICKHOUSE_KEYS: [&str; 2] = ["CLICKHOUSE:type", "type_text"];
 const EXASOL_KEYS: [&str; 2] = ["EXASOL:type", "type_text"];
 const SPARK_KEYS: [&str; 2] = ["SPARK:type", "type_text"];
@@ -1916,6 +2008,7 @@ fn metadata_type_candidate_keys(backend: AdapterType) -> &'static [&'static str]
         AdapterType::Spark => &SPARK_KEYS,
         AdapterType::Redshift => &REDSHIFT_KEYS,
         AdapterType::DuckDB | AdapterType::LakeCompute => &DUCKDB_KEYS,
+        AdapterType::SingleStore => &SINGLESTORE_KEYS,
         AdapterType::Fabric => &SQLSERVER_KEYS,
         AdapterType::ClickHouse => &CLICKHOUSE_KEYS,
         AdapterType::Athena => &ATHENA_KEYS,
@@ -2528,6 +2621,384 @@ impl<'source> Parser<'source> {
         Ok(sql_type)
     }
 
+    fn parse_int_signedness(
+        &mut self,
+        signed: SqlType,
+        unsigned: SqlType,
+    ) -> Result<SqlType, ParseError<'source>> {
+        let _ = self.precision::<usize>()?;
+        if self.match_word("UNSIGNED") {
+            Ok(unsigned)
+        } else {
+            Ok(signed)
+        }
+    }
+
+    fn parse_vector(&mut self, backend: AdapterType) -> Result<SqlType, ParseError<'source>> {
+        self.expect(Token::LParen)?;
+        let dim = self.next_int::<usize>()?;
+        let elem = if self.match_(Token::Comma) {
+            let inner = self.parse_inner(backend)?;
+            Some(Box::new(inner))
+        } else {
+            None
+        };
+        self.expect(Token::RParen)?;
+        Ok(SqlType::Vector(dim, elem))
+    }
+
+    fn parse_integer_word(
+        &mut self,
+        w: &str,
+        backend: AdapterType,
+    ) -> Result<Option<SqlType>, ParseError<'source>> {
+        use AdapterType::*;
+        let t = if eqi(w, "SIGNED") {
+            let _ = self.match_word("INTEGER") || self.match_word("INT");
+            SqlType::BigInt
+        } else if eqi(w, "UNSIGNED") {
+            let _ = self.match_word("INTEGER") || self.match_word("INT");
+            SqlType::UBigInt
+        } else if eqi(w, "BOOLEAN") || eqi(w, "BOOL") {
+            SqlType::Boolean
+        } else if eqi(w, "TINYINT") || eqi(w, "BYTEINT") || eqi(w, "INT1") {
+            self.parse_int_signedness(SqlType::TinyInt, SqlType::UTinyInt)?
+        } else if eqi(w, "SMALLINT")
+            || (eqi(w, "INT2") || eqi(w, "SMALLSERIAL") || eqi(w, "SERIAL2"))
+        {
+            self.parse_int_signedness(SqlType::SmallInt, SqlType::USmallInt)?
+        } else if eqi(w, "MEDIUMINT") || eqi(w, "MIDDLEINT") || eqi(w, "INT3") {
+            self.parse_int_signedness(SqlType::Integer, SqlType::UInteger)?
+        } else if eqi(w, "INTEGER")
+            || eqi(w, "INT")
+            || eqi(w, "INT4")
+            || eqi(w, "SERIAL")
+            || eqi(w, "SERIAL4")
+        {
+            self.parse_int_signedness(SqlType::Integer, SqlType::UInteger)?
+        } else if eqi(w, "INT8") {
+            if backend == ClickHouse {
+                SqlType::TinyInt
+            } else {
+                self.parse_int_signedness(SqlType::BigInt, SqlType::UBigInt)?
+            }
+        } else if eqi(w, "BIGINT") || eqi(w, "INT64") || eqi(w, "BIGSERIAL") || eqi(w, "SERIAL8") {
+            self.parse_int_signedness(SqlType::BigInt, SqlType::UBigInt)?
+        } else if eqi(w, "HUGEINT") || eqi(w, "INT128") {
+            SqlType::HugeInt
+        } else if eqi(w, "UINT8") {
+            SqlType::UTinyInt
+        } else if eqi(w, "UINT16") && backend == ClickHouse {
+            SqlType::USmallInt
+        } else if eqi(w, "UINT32") && backend == ClickHouse {
+            SqlType::UInteger
+        } else if eqi(w, "UINT64") && backend == ClickHouse {
+            SqlType::UBigInt
+        } else if eqi(w, "UINT128") && backend == ClickHouse {
+            SqlType::UHugeInt
+        } else if eqi(w, "UINT256") {
+            SqlType::UInt256
+        } else if eqi(w, "UTINYINT") || eqi(w, "UINT1") {
+            SqlType::UTinyInt
+        } else if eqi(w, "USMALLINT") || eqi(w, "UINT2") {
+            SqlType::USmallInt
+        } else if eqi(w, "UINTEGER") || eqi(w, "UINT4") || eqi(w, "UINT") {
+            SqlType::UInteger
+        } else if eqi(w, "UBIGINT") || eqi(w, "UINT64") {
+            SqlType::UBigInt
+        } else if eqi(w, "UHUGEINT") || eqi(w, "UINT128") {
+            SqlType::UHugeInt
+        } else if eqi(w, "INT16") && backend == ClickHouse {
+            SqlType::SmallInt
+        } else if eqi(w, "INT32") && backend == ClickHouse {
+            SqlType::Integer
+        } else if eqi(w, "INT256") {
+            SqlType::Int256
+        } else if eqi(w, "BIT") {
+            SqlType::TinyInt
+        } else {
+            return Ok(None);
+        };
+        Ok(Some(t))
+    }
+
+    fn parse_float_or_numeric_word(
+        &mut self,
+        w: &str,
+        backend: AdapterType,
+    ) -> Result<Option<SqlType>, ParseError<'source>> {
+        use AdapterType::*;
+        let t = if eqi(w, "REAL") {
+            SqlType::Real
+        } else if eqi(w, "FLOAT") {
+            let precision = self.precision()?;
+            SqlType::Float(precision)
+        } else if eqi(w, "FLOAT4") {
+            if matches!(backend, Postgres | Redshift) {
+                SqlType::Real
+            } else {
+                SqlType::Float(None)
+            }
+        } else if eqi(w, "FLOAT32") || eqi(w, "F32") {
+            SqlType::Real
+        } else if (eqi(w, "FLOAT64") && backend == ClickHouse) || eqi(w, "F64") {
+            SqlType::Double
+        } else if eqi(w, "I8") {
+            SqlType::TinyInt
+        } else if eqi(w, "I16") {
+            SqlType::SmallInt
+        } else if eqi(w, "I32") {
+            SqlType::Integer
+        } else if eqi(w, "I64") {
+            SqlType::BigInt
+        } else if eqi(w, "BFLOAT16") || eqi(w, "FLOAT16") {
+            SqlType::HalfFloat
+        } else if eqi(w, "FLOAT8") || eqi(w, "FLOAT64") {
+            SqlType::Double
+        } else if eqi(w, "DOUBLE") {
+            let _ = self.match_word("PRECISION");
+            SqlType::Double
+        } else if eqi(w, "DECIMAL")
+            || eqi(w, "NUMERIC")
+            || eqi(w, "NUMBER")
+            || eqi(w, "DEC")
+            || eqi(w, "FIXED")
+        {
+            let precision_and_scale = self.precision_and_scale()?;
+            SqlType::Numeric(precision_and_scale)
+        } else if eqi(w, "BIGDECIMAL") || eqi(w, "BIGNUMERIC") {
+            let precision_and_scale = self.precision_and_scale()?;
+            SqlType::BigNumeric(precision_and_scale)
+        } else {
+            return Ok(None);
+        };
+        Ok(Some(t))
+    }
+
+    fn parse_string_or_blob_word(
+        &mut self,
+        w: &str,
+        backend: AdapterType,
+    ) -> Result<Option<SqlType>, ParseError<'source>> {
+        let t = if eqi(w, "CHAR") || eqi(w, "CHARACTER") || eqi(w, "NCHAR") {
+            if self.match_word("LARGE") {
+                self.expect(Token::Word("OBJECT"))?;
+                SqlType::Clob
+            } else {
+                let varying = self.match_word("VARYING");
+                let len = self.precision()?;
+                if varying {
+                    let attrs = self.string_attrs(backend)?;
+                    SqlType::Varchar(len, attrs)
+                } else {
+                    SqlType::Char(len)
+                }
+            }
+        } else if eqi(w, "VARCHAR") || eqi(w, "NVARCHAR") {
+            let len = self.precision()?;
+            let attrs = self.string_attrs(backend)?;
+            SqlType::Varchar(len, attrs)
+        } else if eqi(w, "NATIONAL") {
+            self.expect(Token::Word("CHAR"))?;
+            let varying = self.match_word("VARYING");
+            let len = self.precision()?;
+            if varying {
+                let attrs = self.string_attrs(backend)?;
+                SqlType::Varchar(len, attrs)
+            } else {
+                SqlType::Char(len)
+            }
+        } else if eqi(w, "STRING") {
+            let attrs = self.string_attrs(backend)?;
+            SqlType::Varchar(None, attrs)
+        } else if eqi(w, "FIXEDSTRING") {
+            let len = self.precision()?;
+            SqlType::Char(len)
+        } else if eqi(w, "TEXT") || eqi(w, "TINYTEXT") || eqi(w, "MEDIUMTEXT") || eqi(w, "LONGTEXT")
+        {
+            SqlType::Text
+        } else if eqi(w, "CLOB") {
+            SqlType::Clob
+        } else if eqi(w, "BLOB") || eqi(w, "TINYBLOB") || eqi(w, "MEDIUMBLOB") || eqi(w, "LONGBLOB")
+        {
+            SqlType::Blob
+        } else if eqi(w, "BINARY") {
+            if self.match_word("LARGE") {
+                self.expect(Token::Word("OBJECT"))?;
+                SqlType::Blob
+            } else {
+                let _ = self.match_word("VARYING");
+                let len = self.precision()?;
+                SqlType::Binary(len)
+            }
+        } else if eqi(w, "VARBINARY") || eqi(w, "BYTES") || eqi(w, "BYTEA") || eqi(w, "VARBYTE") {
+            let len = self.precision()?;
+            SqlType::Binary(len)
+        } else {
+            return Ok(None);
+        };
+        Ok(Some(t))
+    }
+
+    fn parse_temporal_word(
+        &mut self,
+        w: &str,
+        backend: AdapterType,
+    ) -> Result<Option<SqlType>, ParseError<'source>> {
+        use AdapterType::*;
+        let t = if eqi(w, "DATE") {
+            let bit_width = match backend {
+                ClickHouse => Some(16),
+                _ => None,
+            };
+            SqlType::Date(bit_width)
+        } else if eqi(w, "DATE32") {
+            SqlType::Date(Some(32))
+        } else if eqi(w, "YEAR") {
+            let _ = self.precision::<usize>()?;
+            SqlType::SmallInt
+        } else if eqi(w, "TIME") {
+            let precision = self.precision()?;
+            let time_zone_spec = self.time_zone_spec()?;
+            SqlType::Time {
+                precision,
+                time_zone_spec: if let TimeZoneSpec::Unspecified = time_zone_spec {
+                    TimeZoneSpec::Without
+                } else {
+                    time_zone_spec
+                },
+            }
+        } else if eqi(w, "TIMETZ") {
+            SqlType::Time {
+                precision: None,
+                time_zone_spec: TimeZoneSpec::With,
+            }
+        } else if eqi(w, "TIMESTAMP") {
+            let precision = self.precision()?;
+            let time_zone_spec = self.time_zone_spec()?;
+            SqlType::Timestamp {
+                precision,
+                time_zone_spec,
+            }
+        } else if eqi(w, "TIMESTAMPTZ") {
+            SqlType::Timestamp {
+                precision: None,
+                time_zone_spec: TimeZoneSpec::With,
+            }
+        } else if eqi(w, "TIMESTAMP_LTZ") {
+            let precision = self.precision()?;
+            SqlType::Timestamp {
+                precision,
+                time_zone_spec: TimeZoneSpec::Local,
+            }
+        } else if eqi(w, "TIMESTAMP_NTZ") {
+            let precision = self.precision()?;
+            SqlType::Timestamp {
+                precision,
+                time_zone_spec: TimeZoneSpec::Without,
+            }
+        } else if eqi(w, "DATETIME") {
+            let (precision, time_zone_spec) = if backend == ClickHouse && self.match_(Token::LParen)
+            {
+                let tz_tok = self.next()?;
+                if let Token::Word(tz_str) = tz_tok {
+                    let tz_name = tz_str.trim_matches('\'').to_string();
+                    self.expect(Token::RParen)?;
+                    (None, TimeZoneSpec::Fixed(TimeZone::Named(tz_name)))
+                } else {
+                    return Err(ParseError::Unexpected(tz_tok));
+                }
+            } else {
+                (self.precision()?, TimeZoneSpec::Without)
+            };
+
+            if backend == Snowflake {
+                SqlType::Timestamp {
+                    precision,
+                    time_zone_spec: TimeZoneSpec::Without,
+                }
+            } else if backend == ClickHouse {
+                SqlType::Timestamp {
+                    precision,
+                    time_zone_spec,
+                }
+            } else {
+                SqlType::DateTime
+            }
+        } else if eqi(w, "DATETIME2") {
+            SqlType::DateTime
+        } else if eqi(w, "DATETIME64") {
+            if !self.match_(Token::LParen) {
+                SqlType::Timestamp {
+                    precision: None,
+                    time_zone_spec: TimeZoneSpec::Without,
+                }
+            } else {
+                let precision = Some(self.next_int::<u8>()?);
+                let time_zone_spec = if self.match_(Token::Comma) {
+                    let tz_tok = self.next()?;
+                    if let Token::Word(tz_str) = tz_tok {
+                        let tz_name = tz_str.trim_matches('\'').to_string();
+                        self.expect(Token::RParen)?;
+                        TimeZoneSpec::Fixed(TimeZone::Named(tz_name))
+                    } else {
+                        return Err(ParseError::Unexpected(tz_tok));
+                    }
+                } else {
+                    self.expect(Token::RParen)?;
+                    TimeZoneSpec::Without
+                };
+                SqlType::Timestamp {
+                    precision,
+                    time_zone_spec,
+                }
+            }
+        } else if eqi(w, "TIME64") {
+            let precision = self.precision()?;
+            SqlType::Time {
+                precision,
+                time_zone_spec: TimeZoneSpec::Without,
+            }
+        } else if eqi(w, "TIMESTAMP_TZ") {
+            let precision = self.precision()?;
+            SqlType::Timestamp {
+                precision,
+                time_zone_spec: TimeZoneSpec::With,
+            }
+        } else if eqi(w, "INTERVAL") {
+            let qualifier = match self.interval_qualifier()? {
+                Some((start, None)) => {
+                    if matches!(start, DateTimeField::Second) {
+                        self.precision()?
+                            .map(DateTimeField::from_precision)
+                            .map(|unit| (unit, None))
+                            .or(Some((start, None)))
+                    } else {
+                        Some((start, None))
+                    }
+                }
+                Some((start, Some(end))) => {
+                    if matches!(end, DateTimeField::Second) {
+                        self.precision()?
+                            .map(DateTimeField::from_precision)
+                            .map(|unit| (start, Some(unit)))
+                            .or(Some((start, Some(end))))
+                    } else {
+                        Some((start, Some(end)))
+                    }
+                }
+                None => self
+                    .precision()?
+                    .map(DateTimeField::from_precision)
+                    .map(|unit| (unit, None)),
+            };
+            SqlType::Interval(qualifier)
+        } else {
+            return Ok(None);
+        };
+        Ok(Some(t))
+    }
+
     /// Parse the SQL type string without consuming the entire string.
     ///
     /// The goal of this function is to create the `SqlType` instance that better represents
@@ -2567,359 +3038,20 @@ impl<'source> Parser<'source> {
             | Token::LAngle
             | Token::RAngle
             | Token::Comma
-            | Token::Colon => {
+            | Token::Colon
+            | Token::ColonAngle
+            | Token::ExclamationColonAngle => {
                 return Err(ParseError::Unexpected(tok));
             }
             Token::Word(w) => {
-                if eqi(w, "BOOLEAN") || eqi(w, "BOOL") {
-                    SqlType::Boolean
-                } else if eqi(w, "TINYINT") || eqi(w, "BYTEINT") {
-                    SqlType::TinyInt
-                } else if eqi(w, "SMALLINT")
-                    || (eqi(w, "INT2") || eqi(w, "SMALLSERIAL") || eqi(w, "SERIAL2"))
-                {
-                    SqlType::SmallInt
-                } else if eqi(w, "INTEGER")
-                    || eqi(w, "INT")
-                    || eqi(w, "INT4")
-                    || eqi(w, "SERIAL")
-                    || eqi(w, "SERIAL4")
-                {
-                    SqlType::Integer
-                } else if eqi(w, "INT8") {
-                    if backend == ClickHouse {
-                        SqlType::TinyInt // ClickHouse: Int8 = 8-bits
-                    } else {
-                        // In standard SQL, INT8 = 8 bytes (64 bits)
-                        SqlType::BigInt
-                    }
-                } else if eqi(w, "BIGINT")
-                    || eqi(w, "INT64") // DuckDB, ClickHouse...
-                    || eqi(w, "BIGSERIAL")
-                    || eqi(w, "SERIAL8")
-                {
-                    SqlType::BigInt // 64 bits
-                } else if eqi(w, "HUGEINT") || eqi(w, "INT128") {
-                    SqlType::HugeInt // DuckDB: 128-bit signed integer
-                } else if eqi(w, "UINT8") {
-                    if backend == ClickHouse {
-                        SqlType::UTinyInt // ClickHouse: UInt8 = 8-bits
-                    } else {
-                        SqlType::UBigInt // DuckDB: UINT8 = 8 bytes (64 bits)
-                    }
-                } else if eqi(w, "UINT16") && backend == ClickHouse {
-                    SqlType::USmallInt // ClickHouse: UInt16 (16-bit unsigned integer)
-                } else if eqi(w, "UINT32") && backend == ClickHouse {
-                    SqlType::UInteger // ClickHouse: UInt32 (32-bit unsigned integer)
-                } else if eqi(w, "UINT64") && backend == ClickHouse {
-                    SqlType::UBigInt // ClickHouse: UInt64 (64-bit unsigned integer)
-                } else if eqi(w, "UINT128") && backend == ClickHouse {
-                    SqlType::UHugeInt // ClickHouse: UInt128 (128-bit unsigned integer)
-                } else if eqi(w, "UINT256") {
-                    SqlType::UInt256
-                } else if eqi(w, "UTINYINT") || eqi(w, "UINT1") {
-                    SqlType::UTinyInt // DuckDB: unsigned 8-bit integer
-                } else if eqi(w, "USMALLINT") || eqi(w, "UINT2") {
-                    SqlType::USmallInt // DuckDB: unsigned 16-bit integer
-                } else if eqi(w, "UINTEGER") || eqi(w, "UINT4") || eqi(w, "UINT") {
-                    SqlType::UInteger // DuckDB: unsigned 32-bit integer
-                } else if eqi(w, "UBIGINT") || eqi(w, "UINT64") {
-                    // UINT8 handled before
-                    SqlType::UBigInt // DuckDB: unsigned 64-bit integer
-                } else if eqi(w, "UHUGEINT") || eqi(w, "UINT128") {
-                    // DuckDB: unsigned 128-bit integer
-                    SqlType::UHugeInt
-                } else if eqi(w, "INT16") && backend == ClickHouse {
-                    // ClickHouse: Int16 (16-bit signed integer)
-                    SqlType::SmallInt
-                } else if eqi(w, "INT32") && backend == ClickHouse {
-                    // ClickHouse: Int32 (32-bit signed integer)
-                    SqlType::Integer
-                } else if eqi(w, "INT256") {
-                    SqlType::Int256
-                } else if eqi(w, "REAL") {
-                    SqlType::Real
-                } else if eqi(w, "FLOAT") {
-                    let precision = self.precision()?;
-                    SqlType::Float(precision)
-                } else if eqi(w, "FLOAT4") {
-                    // Snowflake also has FLOAT4, and FLOAT8. The names FLOAT, FLOAT4, and FLOAT8
-                    // are for compatibility with other systems. Snowflake treats all three as
-                    // 64-bit floating-point numbers.
-                    //
-                    // Postgres has FLOAT4 as an alias for REAL.
-                    if matches!(backend, Postgres | Redshift) {
-                        SqlType::Real
-                    } else {
-                        SqlType::Float(None)
-                    }
-                } else if eqi(w, "FLOAT32") {
-                    // ClickHouse: Float32 (32-bit IEEE 754 floating-point)
-                    SqlType::Real
-                } else if eqi(w, "FLOAT64") && backend == ClickHouse {
-                    // ClickHouse: Float64 (64-bit IEEE 754 floating-point)
-                    SqlType::Double
-                } else if eqi(w, "BFLOAT16") || eqi(w, "FLOAT16") {
-                    SqlType::HalfFloat
-                } else if eqi(w, "FLOAT8") || eqi(w, "FLOAT64") {
-                    // Postgres has FLOAT8 as an alias for DOUBLE PRECISION.
-                    // Bigquery uses FLOAT64 as an alias for DOUBLE PRECISION.
-                    SqlType::Double
-                } else if eqi(w, "DOUBLE") {
-                    let _ = self.match_word("PRECISION");
-                    SqlType::Double
-                } else if eqi(w, "DECIMAL")
-                    || eqi(w, "NUMERIC")
-                    // Snowflake uses NUMBER as an alias for DECIMAL and NUMERIC
-                    || eqi(w, "NUMBER")
-                    // Snowflake and Databricks support DEC
-                    || eqi(w, "DEC")
-                {
-                    let precision_and_scale = self.precision_and_scale()?;
-                    SqlType::Numeric(precision_and_scale)
-                } else if eqi(w, "BIGDECIMAL") || eqi(w, "BIGNUMERIC") {
-                    // Bigquery has BIGNUMERIC and BIGDECIMAL
-                    let precision_and_scale = self.precision_and_scale()?;
-                    SqlType::BigNumeric(precision_and_scale)
-                } else if eqi(w, "CHAR") || eqi(w, "CHARACTER") || eqi(w, "NCHAR") {
-                    if self.match_word("LARGE") {
-                        self.expect(Token::Word("OBJECT"))?;
-                        SqlType::Clob // CHARACTER LARGE OBJECT
-                    } else {
-                        let varying = self.match_word("VARYING");
-                        let len = self.precision()?;
-                        if varying {
-                            let attrs = self.string_attrs(backend)?;
-                            SqlType::Varchar(len, attrs)
-                        } else {
-                            SqlType::Char(len)
-                        }
-                    }
-                } else if eqi(w, "VARCHAR") || eqi(w, "NVARCHAR") {
-                    let len = self.precision()?;
-                    let attrs = self.string_attrs(backend)?;
-                    SqlType::Varchar(len, attrs)
-                } else if eqi(w, "NATIONAL") {
-                    self.expect(Token::Word("CHAR"))?;
-                    let varying = self.match_word("VARYING");
-                    let len = self.precision()?;
-                    if varying {
-                        let attrs = self.string_attrs(backend)?;
-                        SqlType::Varchar(len, attrs)
-                    } else {
-                        SqlType::Char(len)
-                    }
-                } else if eqi(w, "STRING") {
-                    // Bigquery uses STRING as an alias for VARCHAR
-                    let attrs = self.string_attrs(backend)?;
-                    SqlType::Varchar(None, attrs)
-                } else if eqi(w, "FIXEDSTRING") {
-                    // ClickHouse: FixedString(N) - fixed-length string
-                    let len = self.precision()?;
-                    SqlType::Char(len)
-                } else if eqi(w, "TEXT") {
-                    SqlType::Text
-                } else if eqi(w, "CLOB") {
-                    SqlType::Clob
-                } else if eqi(w, "BLOB") {
-                    SqlType::Blob
-                } else if eqi(w, "BINARY") {
-                    if self.match_word("LARGE") {
-                        self.expect(Token::Word("OBJECT"))?;
-                        SqlType::Blob // BINARY LARGE OBJECT
-                    } else if self.match_word("VARYING") {
-                        // BINARY VARYING (Redshift)
-                        let len = self.precision()?;
-                        SqlType::Binary(len)
-                    } else {
-                        let len = self.precision()?;
-                        SqlType::Binary(len)
-                    }
-                } else if eqi(w, "VARBINARY")
-                    // Bigquery uses BYTES
-                    || eqi(w, "BYTES")
-                    // PostgreSQL uses BYTEA
-                    || eqi(w, "BYTEA")
-                    // Redshift also uses VARBYTE and VARBINARY
-                    || eqi(w, "VARBYTE")
-                {
-                    let len = self.precision()?;
-                    SqlType::Binary(len)
-                } else if eqi(w, "DATE") {
-                    let bit_width = match backend {
-                        ClickHouse => Some(16),
-                        _ => None,
-                    };
-                    SqlType::Date(bit_width)
-                } else if eqi(w, "DATE32") {
-                    SqlType::Date(Some(32)) // ClickHouse: Date32
-                } else if eqi(w, "TIME") {
-                    let precision = self.precision()?;
-                    let time_zone_spec = self.time_zone_spec()?;
-                    SqlType::Time {
-                        precision,
-                        time_zone_spec:
-                            // For the TIME type, it's fair to assume that if the time zone
-                            // is not specified, then it is WITHOUT time zone. TIMESTAMP is
-                            // more complicated because of the different defaults in different
-                            // SQL dialects.
-                            if let TimeZoneSpec::Unspecified = time_zone_spec {
-                                TimeZoneSpec::Without
-                            } else {
-                                time_zone_spec
-                            }
-                    }
-                } else if eqi(w, "TIMETZ") {
-                    SqlType::Time {
-                        precision: None,
-                        time_zone_spec: TimeZoneSpec::With,
-                    }
-                } else if eqi(w, "TIMESTAMP") {
-                    let precision = self.precision()?;
-                    let time_zone_spec = self.time_zone_spec()?;
-                    SqlType::Timestamp {
-                        precision,
-                        time_zone_spec,
-                    }
-                } else if eqi(w, "TIMESTAMPTZ") {
-                    SqlType::Timestamp {
-                        precision: None,
-                        time_zone_spec: TimeZoneSpec::With,
-                    }
-                } else if eqi(w, "TIMESTAMP_LTZ") {
-                    let precision = self.precision()?;
-                    SqlType::Timestamp {
-                        precision,
-                        time_zone_spec: TimeZoneSpec::Local,
-                    }
-                } else if eqi(w, "TIMESTAMP_NTZ") {
-                    let precision = self.precision()?;
-                    SqlType::Timestamp {
-                        precision,
-                        time_zone_spec: TimeZoneSpec::Without,
-                    }
-                } else if eqi(w, "DATETIME") {
-                    // In Snowflake DATETIME is an alias for TIMESTAMP_NTZ,
-                    // but in Bigquery it's not the same as the TIMESTAMP type.
-                    // In ClickHouse, DateTime can have a timezone parameter: DateTime('Europe/Berlin')
-                    let (precision, time_zone_spec) =
-                        if backend == ClickHouse && self.match_(Token::LParen) {
-                            let tz_tok = self.next()?;
-                            if let Token::Word(tz_str) = tz_tok {
-                                let tz_name = tz_str.trim_matches('\'').to_string();
-                                self.expect(Token::RParen)?;
-                                (None, TimeZoneSpec::Fixed(TimeZone::Named(tz_name)))
-                            } else {
-                                return Err(ParseError::Unexpected(tz_tok));
-                            }
-                        } else {
-                            (self.precision()?, TimeZoneSpec::Without)
-                        };
-
-                    if backend == Snowflake {
-                        SqlType::Timestamp {
-                            precision,
-                            time_zone_spec: TimeZoneSpec::Without,
-                        }
-                    } else if backend == ClickHouse {
-                        SqlType::Timestamp {
-                            precision,
-                            time_zone_spec,
-                        }
-                    } else {
-                        SqlType::DateTime
-                    }
-                } else if eqi(w, "DATETIME2") {
-                    SqlType::DateTime
-                } else if eqi(w, "DATETIME64") {
-                    // ClickHouse: DateTime64(precision) or DateTime64(precision, 'timezone')
-                    // Note: We need to manually parse precision and timezone because
-                    // the timezone comes after a comma inside the same parentheses
-                    if !self.match_(Token::LParen) {
-                        // DATETIME64 without precision or timezone is invalid,
-                        // but we'll allow it and return no precision
-                        SqlType::Timestamp {
-                            precision: None,
-                            time_zone_spec: TimeZoneSpec::Without,
-                        }
-                    } else {
-                        // Parse precision
-                        let precision = Some(self.next_int::<u8>()?);
-                        // Check for timezone after comma
-                        let time_zone_spec = if self.match_(Token::Comma) {
-                            let tz_tok = self.next()?;
-                            if let Token::Word(tz_str) = tz_tok {
-                                let tz_name = tz_str.trim_matches('\'').to_string();
-                                self.expect(Token::RParen)?;
-                                TimeZoneSpec::Fixed(TimeZone::Named(tz_name))
-                            } else {
-                                return Err(ParseError::Unexpected(tz_tok));
-                            }
-                        } else {
-                            self.expect(Token::RParen)?;
-                            TimeZoneSpec::Without
-                        };
-                        SqlType::Timestamp {
-                            precision,
-                            time_zone_spec,
-                        }
-                    }
-                } else if eqi(w, "TIME64") {
-                    // ClickHouse: Time64(precision) - high-precision time
-                    let precision = self.precision()?;
-                    SqlType::Time {
-                        precision,
-                        time_zone_spec: TimeZoneSpec::Without,
-                    }
-                } else if eqi(w, "BIT") {
-                    SqlType::TinyInt
-                } else if eqi(w, "TIMESTAMP_TZ") {
-                    let precision = self.precision()?;
-                    SqlType::Timestamp {
-                        precision,
-                        time_zone_spec: TimeZoneSpec::With,
-                    }
-                } else if eqi(w, "INTERVAL") {
-                    // Some backends (like PostgreSQL) support a precision for the sub-second part
-                    // instead of having the time unit spelled out. Examples of equivalents:
-                    //
-                    //     INTERVAL / INTERVAL SECOND
-                    //     INTERVAL (3) / INTERVAL MILLISECOND
-                    //     INTERVAL MINUTE
-                    //     INTERVAL SECOND(3) / INTERVAL MILLISECOND
-                    //     INTERVAL DAY TO SECOND(6) / INTERVAL DAY TO MICROSECOND
-                    //
-                    // PostgreSQL treats the YEAR, MONTH TO DAY, etc., in an interval type
-                    // declaration as decorative metadata, not an actual constraint. But this
-                    // parser will preserve that metadata so that it can be used when rendering
-                    // the type as a string.
-                    let qualifier = match self.interval_qualifier()? {
-                        Some((start, None)) => {
-                            if matches!(start, DateTimeField::Second) {
-                                self.precision()?
-                                    .map(DateTimeField::from_precision)
-                                    .map(|unit| (unit, None))
-                                    .or(Some((start, None)))
-                            } else {
-                                Some((start, None))
-                            }
-                        }
-                        Some((start, Some(end))) => {
-                            if matches!(end, DateTimeField::Second) {
-                                self.precision()?
-                                    .map(DateTimeField::from_precision)
-                                    .map(|unit| (start, Some(unit)))
-                                    .or(Some((start, Some(end))))
-                            } else {
-                                Some((start, Some(end)))
-                            }
-                        }
-                        None => self
-                            .precision()?
-                            .map(DateTimeField::from_precision)
-                            .map(|unit| (unit, None)),
-                    };
-                    SqlType::Interval(qualifier)
+                if let Some(t) = self.parse_integer_word(w, backend)? {
+                    t
+                } else if let Some(t) = self.parse_float_or_numeric_word(w, backend)? {
+                    t
+                } else if let Some(t) = self.parse_string_or_blob_word(w, backend)? {
+                    t
+                } else if let Some(t) = self.parse_temporal_word(w, backend)? {
+                    t
                 } else if eqi(w, "JSON") {
                     SqlType::Json
                 } else if eqi(w, "JSONB") {
@@ -2945,9 +3077,11 @@ impl<'source> Parser<'source> {
                 } else if eqi(w, "GEOMETRY") {
                     let srid = self.srid()?;
                     SqlType::Geometry(srid.map(str::to_string))
-                } else if eqi(w, "GEOGRAPHY") {
+                } else if eqi(w, "GEOGRAPHY") || eqi(w, "GEOGRAPHYPOINT") {
                     let srid = self.srid()?;
                     SqlType::Geography(srid.map(str::to_string))
+                } else if eqi(w, "VECTOR") {
+                    self.parse_vector(backend)?
                 } else if eqi(w, "ARRAY") {
                     let (left, right) = match backend {
                         Snowflake | ClickHouse => (Token::LParen, Token::RParen),

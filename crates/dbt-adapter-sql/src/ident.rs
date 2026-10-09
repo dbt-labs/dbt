@@ -121,7 +121,8 @@ pub fn max_identifier_length(adapter_type: AdapterType) -> Option<NonZero<usize>
             Some(unsafe { NonZero::new_unchecked(127) })
         }
         Snowflake | Bigquery | Databricks | Spark | DuckDB | Salesforce | Fabric | ClickHouse
-        | Exasol | Athena | Starburst | Trino | Datafusion | Dremio | Oracle | LakeCompute => None,
+        | Exasol | Athena | Starburst | Trino | Datafusion | Dremio | Oracle | LakeCompute
+        | SingleStore => None,
     }
 }
 
@@ -139,7 +140,7 @@ pub fn max_identifier_length(adapter_type: AdapterType) -> Option<NonZero<usize>
 pub const fn canonical_quote(backend: AdapterType) -> QuotingStyle {
     use AdapterType::*;
     match backend {
-        Bigquery | Databricks | Spark | Athena => QuotingStyle::Backtick,
+        Bigquery | Databricks | Spark | Athena | SingleStore => QuotingStyle::Backtick,
         ClickHouse | Exasol | Snowflake | Redshift | Postgres | Salesforce | DuckDB => {
             QuotingStyle::Double
         }
@@ -177,7 +178,8 @@ pub fn is_valid_ident_char(c: char, backend: AdapterType) -> bool {
             | Dremio
             | Oracle
             | LakeCompute
-            | Exasol => c.is_alphanumeric() || c == '_',
+            | Exasol
+            | SingleStore => c.is_alphanumeric() || c == '_',
     }
 }
 

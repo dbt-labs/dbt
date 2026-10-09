@@ -20,9 +20,9 @@ use crate::schemas::project::configs::common::WarehouseSpecificNodeConfig;
 use crate::schemas::project::configs::config_merge::{Tags, TblProperties};
 use crate::schemas::project::{ResolvableConfig, TypedRecursiveConfig};
 use crate::schemas::serde::{
-    IndexesConfig, PartitionsConfig, PrimaryKeyConfig, StringOrArrayOfStrings, StringOrInteger,
-    bool_or_string_bool, event_time_or_map_to_string, f64_or_string_f64,
-    hours_to_expiration_or_string_omissible, u64_or_string_u64,
+    IndexesConfig, PartitionsConfig, StringOrArrayOfStrings, StringOrInteger, bool_or_string_bool,
+    event_time_or_map_to_string, f64_or_string_f64, hours_to_expiration_or_string_omissible,
+    u64_or_string_u64,
 };
 use dbt_proc_macros::DefaultTo;
 
@@ -466,35 +466,7 @@ impl From<ProjectSourceConfig> for SourceConfig {
 
                 indexes: config.indexes,
                 unlogged: config.unlogged,
-
-                // sources doesn't need this field
-                primary_key: PrimaryKeyConfig::default(),
-                category: None,
-
-                engine: None,
-                order_by: None,
-                ttl: None,
-                settings: None,
-                query_settings: None,
-                projections: None,
-                inserts_only: None,
-                connection_overrides: None,
-                fields: None,
-                source_type: None,
-                url: None,
-                format: None,
-                layout: None,
-                lifetime: None,
-                range: None,
-                table: None,
-                update_field: None,
-                update_lag: None,
-                definer: None,
-                sql_security: None,
-                refreshable: None,
-                catchup: None,
-                mv_on_schema_change: None,
-                repopulate_from_mvs_on_full_refresh: None,
+                ..Default::default()
             },
         }
     }

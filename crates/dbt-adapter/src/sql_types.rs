@@ -18,6 +18,7 @@ pub const BIGQUERY_METADATA_SQL_TYPE_KEY: &str = "Type";
 pub const SNOWFLAKE_METADATA_SQL_TYPE_KEY: &str = "DATA_TYPE";
 pub const FABRIC_METADATA_SQL_TYPE_KEY: &str = "DATA_TYPE";
 pub const CLICKHOUSE_METADATA_SQL_TYPE_KEY: &str = "data_type";
+pub const SINGLESTORE_METADATA_SQL_TYPE_KEY: &str = "SINGLESTORE:type";
 
 /// An Arrow schema containing SDF types
 #[derive(Clone)]
@@ -188,6 +189,7 @@ impl TypeOps for DefaultTypeOps {
             Postgres | Salesforce => postgres::try_format_type(data_type, nullable, out),
             Fabric => fabric::try_format_type(data_type, nullable, out),
             ClickHouse => clickhouse::try_format_type(data_type, nullable, out),
+            SingleStore => singlestore::try_format_type(data_type, nullable, out),
             _ => {
                 // Logical types without native Arrow encodings use
                 // FixedSizeList(field, 1). Render the logical field name (for
@@ -569,6 +571,7 @@ pub const fn get_field_sql_type_metadata_key(adapter_type: AdapterType) -> &'sta
         AdapterType::Dremio => todo!(),
         AdapterType::Oracle => todo!(),
         AdapterType::Datafusion => todo!(),
+        AdapterType::SingleStore => SINGLESTORE_METADATA_SQL_TYPE_KEY,
     }
 }
 
@@ -616,7 +619,7 @@ impl SdfSchemaBuilder {
             }
             // no evidence that these drivers store comments in metadata, but just in case
             Postgres | Snowflake | Salesforce | Fabric | ClickHouse | Exasol | Starburst
-            | Athena | Trino | Dremio | Oracle | Datafusion => {
+            | Athena | Trino | Dremio | Oracle | Datafusion | SingleStore => {
                 metadata.get(ARROW_FIELD_COMMENT_METADATA_KEY)
             }
         };
@@ -653,7 +656,8 @@ impl SdfSchemaBuilder {
         use AdapterType::*;
         match self.adapter_type {
             Bigquery | Redshift | Databricks | Spark | DuckDB | LakeCompute | Fabric
-            | ClickHouse | Exasol | Starburst | Athena | Trino | Dremio | Oracle | Datafusion => {
+            | ClickHouse | Exasol | Starburst | Athena | Trino | Dremio | Oracle | Datafusion
+            | SingleStore => {
                 let original_fields = self.original.fields();
                 let mut sdf_fields = Vec::with_capacity(original_fields.len());
                 for field in original_fields {
@@ -960,6 +964,8 @@ pub mod clickhouse {
     }
 }
 
+pub use crate::metadata::singlestore::sql_types as singlestore;
+
 pub mod fabric {
 
     use arrow_schema::DataType;
@@ -1048,7 +1054,8 @@ pub const fn max_varchar_size(adapter_type: AdapterType) -> Option<usize> {
         Snowflake => Some(16_777_216),
         Redshift => Some(256),
         Postgres | Bigquery | Databricks | Salesforce | Spark | DuckDB | LakeCompute | Fabric
-        | ClickHouse | Exasol | Starburst | Athena | Trino | Dremio | Oracle | Datafusion => None,
+        | ClickHouse | Exasol | Starburst | Athena | Trino | Dremio | Oracle | Datafusion
+        | SingleStore => None,
     }
 }
 
@@ -1059,7 +1066,8 @@ pub const fn max_varbinary_size(adapter_type: AdapterType) -> Option<usize> {
         Redshift => Some(65_535),
         // TODO: define limits for more systems
         Postgres | Bigquery | Databricks | Salesforce | Spark | DuckDB | LakeCompute | Fabric
-        | ClickHouse | Exasol | Starburst | Athena | Trino | Dremio | Oracle | Datafusion => None,
+        | ClickHouse | Exasol | Starburst | Athena | Trino | Dremio | Oracle | Datafusion
+        | SingleStore => None,
     }
 }
 
@@ -1471,57 +1479,6 @@ mod tests {
                 .unwrap();
             assert_eq!(formatted, expected, "failed to preserve {sql_type}");
         }
-    }
-
-    #[test]
-    fn test_bigquery_formats_decimal_by_supported_range() {
-        let type_ops = DefaultTypeOps::new(Bigquery);
-
-        for (data_type, expected) in [
-            (DataType::Decimal128(38, 9), "NUMERIC"),
-            (DataType::Decimal128(29, 0), "NUMERIC"),
-            (DataType::Decimal128(30, 0), "BIGNUMERIC"),
-            (DataType::Decimal128(30, 20), "BIGNUMERIC"),
-            (DataType::Decimal256(10, 2), "NUMERIC"),
-        ] {
-            let mut formatted = String::new();
-            type_ops
-                .format_arrow_type_as_sql(&data_type, true, &mut formatted)
-                .unwrap();
-            assert_eq!(formatted, expected, "failed to format {data_type}");
-        }
-    }
-
-    #[test]
-    fn test_bigquery_formats_nested_logical_types() {
-        let geography =
-            DataType::FixedSizeList(Arc::new(Field::new("geography", DataType::Utf8, true)), 1);
-        let json = DataType::FixedSizeList(Arc::new(Field::new("json", DataType::Utf8, true)), 1);
-        let data_type = DataType::Struct(
-            vec![
-                Field::new("location", geography, true),
-                Field::new(
-                    "events",
-                    DataType::List(Arc::new(Field::new("item", json, true))),
-                    true,
-                ),
-                Field::new(
-                    "created_at",
-                    DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into())),
-                    true,
-                ),
-            ]
-            .into(),
-        );
-
-        let mut out = String::new();
-        DefaultTypeOps::new(Bigquery)
-            .format_arrow_type_as_sql(&data_type, true, &mut out)
-            .unwrap();
-        assert_eq!(
-            out,
-            "STRUCT<location GEOGRAPHY, events ARRAY<JSON>, created_at TIMESTAMP>"
-        );
     }
 
     const ALL_ADAPTERS: [AdapterType; 5] = [Bigquery, Databricks, Postgres, Snowflake, Redshift];

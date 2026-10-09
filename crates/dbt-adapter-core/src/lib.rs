@@ -11,6 +11,7 @@ pub const NON_EXPERIMENTAL_ADAPTERS: &[AdapterType] = &[
     AdapterType::DuckDB,
     AdapterType::Salesforce,
     AdapterType::ClickHouse,
+    AdapterType::SingleStore,
 ];
 
 pub const STATIC_ANALYSIS_SUPPORTED_ADAPTERS: &[AdapterType] = &[
@@ -20,6 +21,7 @@ pub const STATIC_ANALYSIS_SUPPORTED_ADAPTERS: &[AdapterType] = &[
     AdapterType::Databricks,
     AdapterType::Spark,
     AdapterType::DuckDB,
+    AdapterType::SingleStore,
 ];
 
 /// Adapters that support concurrent execution of microbatch models.
@@ -91,6 +93,8 @@ pub enum AdapterType {
     /// `lake_compute`, its names before its two renames, are not accepted on
     /// input; see `test_retired_names_are_not_accepted_on_input`.
     LakeCompute,
+    /// SingleStore
+    SingleStore,
 }
 
 impl AdapterType {
@@ -134,7 +138,7 @@ pub fn quote_char(adapter_type: AdapterType) -> char {
         Athena | Trino | Starburst => '"',
         Datafusion => '"',
         // https://clickhouse.com/docs/sql-reference/syntax#identifiers
-        ClickHouse => '`',
+        ClickHouse | SingleStore => '`',
         // Exasol is PostgreSQL-compatible, so it uses double quotes for identifiers.
         Exasol => '"',
         Dremio => todo!("Dremio"),
@@ -169,6 +173,50 @@ impl ExecutionPhase {
     }
 }
 
+/// Active target information used for UI formatting and adapter-specific display logic.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ActiveTargetInfo {
+    pub adapter_type: AdapterType,
+    pub default_database: Option<String>,
+    pub default_schema: Option<String>,
+}
+
+static ACTIVE_TARGET_INFO: std::sync::RwLock<Option<ActiveTargetInfo>> = std::sync::RwLock::new(None);
+
+pub fn set_active_target_info(info: ActiveTargetInfo) {
+    if let Ok(mut lock) = ACTIVE_TARGET_INFO.write() {
+        *lock = Some(info);
+    }
+}
+
+pub fn set_active_adapter_type(adapter_type: AdapterType) {
+    if let Ok(mut lock) = ACTIVE_TARGET_INFO.write() {
+        if let Some(existing) = lock.as_mut() {
+            existing.adapter_type = adapter_type;
+        } else {
+            *lock = Some(ActiveTargetInfo {
+                adapter_type,
+                default_database: None,
+                default_schema: None,
+            });
+        }
+    }
+}
+
+pub fn get_active_target_info() -> Option<ActiveTargetInfo> {
+    ACTIVE_TARGET_INFO.read().ok().and_then(|lock| lock.clone())
+}
+
+pub fn get_active_adapter_type() -> Option<AdapterType> {
+    ACTIVE_TARGET_INFO.read().ok().and_then(|lock| lock.as_ref().map(|info| info.adapter_type))
+}
+
+pub fn clear_active_target_info() {
+    if let Ok(mut lock) = ACTIVE_TARGET_INFO.write() {
+        *lock = None;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -192,6 +240,7 @@ mod tests {
             ("tRino", AdapterType::Trino),
             ("dAtafusion", AdapterType::Datafusion),
             ("lAkecompute", AdapterType::LakeCompute),
+            ("sInglestore", AdapterType::SingleStore),
         ];
         for (input, expected) in cases {
             let res = input.parse::<AdapterType>();
@@ -285,6 +334,7 @@ mod tests {
                 (AdapterType::Dremio, "dremio"),
                 (AdapterType::Oracle, "oracle"),
                 (AdapterType::LakeCompute, "lakecompute"),
+                (AdapterType::SingleStore, "singlestore"),
             ]
         );
     }
@@ -295,6 +345,8 @@ mod tests {
             AdapterType::Bigquery,
             AdapterType::Databricks,
             AdapterType::Spark,
+            AdapterType::ClickHouse,
+            AdapterType::SingleStore,
         ] {
             assert_eq!(quote_char(adapter_type), '`', "{adapter_type:?}");
         }
@@ -315,11 +367,6 @@ mod tests {
         ] {
             assert_eq!(quote_char(adapter_type), '"', "{adapter_type:?}");
         }
-        assert_eq!(
-            quote_char(AdapterType::ClickHouse),
-            '`',
-            "ClickHouse uses backtick quoting"
-        );
     }
 
     #[test]

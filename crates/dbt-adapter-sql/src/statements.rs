@@ -1,3 +1,7 @@
+use std::borrow::Cow;
+use std::collections::HashSet;
+use std::sync::LazyLock;
+
 use dbt_adapter_core::AdapterType;
 
 use crate::tokenizer::{Token, Tokenizer};
@@ -7,6 +11,73 @@ pub fn clean_sql(sql: &str, adapter_type: AdapterType) -> String {
         AdapterType::Databricks => {
             let sql = sql.trim();
             sql.strip_suffix(';').unwrap_or(sql).to_string()
+        }
+        _ => sql.to_string(),
+    }
+}
+
+pub fn normalize_statement(s: &str, adapter_type: AdapterType) -> Cow<'_, str> {
+    match adapter_type {
+        AdapterType::SingleStore => Cow::Owned(
+            s.replace(
+                "--EPHEMERAL-SELECT-WRAPPER-START",
+                "-- EPHEMERAL-SELECT-WRAPPER-START",
+            )
+            .replace(
+                "--EPHEMERAL-SELECT-WRAPPER-END",
+                "-- EPHEMERAL-SELECT-WRAPPER-END",
+            ),
+        ),
+        _ => Cow::Borrowed(s),
+    }
+}
+
+pub fn clean_up_limit_alias(sql: &str, adapter_type: AdapterType) -> String {
+    match adapter_type {
+        AdapterType::SingleStore => {
+            static RE: LazyLock<regex::Regex> = LazyLock::new(|| {
+                regex::Regex::new(r"(?i)(\s+)(_dbt_limit_subq_\w+)(\s+)(as\s+)?([A-Za-z0-9_]+|`[^`]+`)")
+                    .unwrap()
+            });
+
+            static KEYWORDS: LazyLock<HashSet<&'static str>> = LazyLock::new(|| {
+                [
+                    "join",
+                    "left",
+                    "right",
+                    "inner",
+                    "outer",
+                    "cross",
+                    "natural",
+                    "where",
+                    "group",
+                    "order",
+                    "having",
+                    "limit",
+                    "union",
+                    "except",
+                    "intersect",
+                    "on",
+                    "using",
+                    "window",
+                    "straight_join",
+                ]
+                .into_iter()
+                .collect()
+            });
+
+            RE.replace_all(sql, |caps: &regex::Captures| {
+                let whitespace = &caps[1];
+                let optional_as = caps.get(4).map(|m| m.as_str()).unwrap_or("");
+                let next_token = &caps[5];
+
+                if KEYWORDS.contains(next_token.to_lowercase().as_str()) {
+                    caps[0].to_string()
+                } else {
+                    format!("{whitespace}{optional_as}{next_token}")
+                }
+            })
+            .to_string()
         }
         _ => sql.to_string(),
     }
@@ -82,7 +153,8 @@ pub fn is_update_statement(sql: &str, adapter_type: AdapterType) -> bool {
         | AdapterType::Datafusion
         | AdapterType::Dremio
         | AdapterType::Oracle
-        | AdapterType::LakeCompute => false,
+        | AdapterType::LakeCompute
+        | AdapterType::SingleStore => false,
     }
 }
 
@@ -234,5 +306,28 @@ mod tests {
                 adapter_type
             ));
         }
+    }
+
+    #[test]
+    fn singlestore_statement_normalization() {
+        let sql = "SELECT 1; --EPHEMERAL-SELECT-WRAPPER-START\nSELECT 2; --EPHEMERAL-SELECT-WRAPPER-END";
+        let normalized = super::normalize_statement(sql, AdapterType::SingleStore);
+        assert_eq!(
+            normalized,
+            "SELECT 1; -- EPHEMERAL-SELECT-WRAPPER-START\nSELECT 2; -- EPHEMERAL-SELECT-WRAPPER-END"
+        );
+        let unchanged = super::normalize_statement(sql, AdapterType::Postgres);
+        assert_eq!(unchanged, sql);
+    }
+
+    #[test]
+    fn singlestore_clean_up_limit_alias() {
+        let sql = "SELECT * FROM (SELECT 1) _dbt_limit_subq_123 as my_alias";
+        let cleaned = super::clean_up_limit_alias(sql, AdapterType::SingleStore);
+        assert_eq!(cleaned, "SELECT * FROM (SELECT 1) as my_alias");
+
+        let keyword_sql = "SELECT * FROM (SELECT 1) _dbt_limit_subq_123 WHERE id = 1";
+        let preserved = super::clean_up_limit_alias(keyword_sql, AdapterType::SingleStore);
+        assert_eq!(preserved, keyword_sql);
     }
 }

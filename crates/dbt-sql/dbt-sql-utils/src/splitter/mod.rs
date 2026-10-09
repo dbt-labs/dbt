@@ -46,16 +46,25 @@ fn do_sql_find_statement_delimiters<'input, 'arena>(
         Dialect::Redshift => dialect_dispatch!(dbt_lexer_redshift, redshiftlexer),
         Dialect::Snowflake => dialect_dispatch!(dbt_lexer_snowflake, snowflakelexer),
         Dialect::Databricks => dialect_dispatch!(dbt_lexer_databricks, databrickslexer),
+        Dialect::SingleStore => dialect_dispatch!(dbt_lexer_singlestore, singlestorelexer),
         _ => dialect_dispatch!(dbt_lexer_trino, trinolexer),
     };
 
+    tokens_to_statement_spans(token_stream, semi_colon, unpaired_token)
+}
+
+fn tokens_to_statement_spans<'a, T: Token + ?Sized + 'a>(
+    token_stream: impl IntoIterator<Item = &'a T>,
+    semi_colon: i32,
+    unpaired_token: i32,
+) -> Vec<Span> {
     let mut result = vec![];
     let mut start_token = None;
     let mut last_token = None;
     let mut unpaired_token_found = false;
     for token in token_stream {
         if start_token.is_none() {
-            start_token = Some(token.clone());
+            start_token = Some(token);
         }
         if !unpaired_token_found {
             if token.get_channel() == 0 && token.get_token_type() == semi_colon {
@@ -374,6 +383,7 @@ pub fn is_empty_or_comment_only(statement: &str, dialect: Dialect) -> bool {
         Redshift => dialect_dispatch!(dbt_lexer_redshift, redshiftlexer),
         Snowflake => dialect_dispatch!(dbt_lexer_snowflake, snowflakelexer),
         Databricks => dialect_dispatch!(dbt_lexer_databricks, databrickslexer),
+        SingleStore => dialect_dispatch!(dbt_lexer_singlestore, singlestorelexer),
         Trino => dialect_dispatch!(dbt_lexer_trino, trinolexer),
         _ => {
             // Fallback to Trino (in release builds) lexer for not fully supported dialects.

@@ -1,0 +1,7 @@
+kind: Fixes
+body: Add contract enforcement, zero-row schema introspection fallback, and static analysis enablement for the SingleStore adapter
+time: 2026-10-02T10:41:00.000000000+02:00
+custom:
+    author: jimvekemans
+    issue: ""
+    project: dbt-core

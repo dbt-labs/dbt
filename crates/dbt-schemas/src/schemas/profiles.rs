@@ -45,8 +45,7 @@ pub enum DbConfig {
     Bigquery(Box<BigqueryDbConfig>),
     Trino(Box<TrinoDbConfig>),
     Datafusion(Box<DatafusionDbConfig>),
-    // SqlServer,
-    // SingleStore,
+    SingleStore(Box<SingleStoreDbConfig>),
     Spark(Box<SparkDbConfig>),
     Databricks(Box<DatabricksDbConfig>),
     Salesforce(Box<SalesforceDbConfig>),
@@ -109,6 +108,7 @@ impl_from_db_config!(DuckDB, DuckDbConfig);
 impl_from_db_config!(Fabric, FabricDbConfig);
 impl_from_db_config!(Exasol, ExasolDbConfig);
 impl_from_db_config!(ClickHouse, ClickHouseDbConfig);
+impl_from_db_config!(SingleStore, SingleStoreDbConfig);
 
 /// Resolves BigQuery's `compute_region` / legacy `dataproc_region` alias in a raw profiles.yml
 /// mapping, before it's parsed into a typed `DbConfig`.
@@ -164,6 +164,7 @@ impl DbConfig {
             DbConfig::Fabric(config) => config.host.as_deref(),
             DbConfig::Exasol(config) => config.host.as_deref(),
             DbConfig::ClickHouse(config) => config.host.as_deref(),
+            DbConfig::SingleStore(config) => config.host.as_deref(),
         }
     }
 
@@ -373,6 +374,7 @@ impl DbConfig {
                 "sync_request_timeout",
                 "compress_block_size",
             ],
+            AdapterType::SingleStore => &["host", "port", "user", "database", "schema", "threads"],
         }
     }
 
@@ -408,6 +410,7 @@ impl DbConfig {
             DbConfig::LakeCompute(config) => dbt_yaml::to_value(config),
             DbConfig::Exasol(config) => dbt_yaml::to_value(config),
             DbConfig::ClickHouse(config) => dbt_yaml::to_value(config),
+            DbConfig::SingleStore(config) => dbt_yaml::to_value(config),
         }
     }
 
@@ -427,6 +430,7 @@ impl DbConfig {
             DbConfig::Exasol(..) => AdapterType::Exasol,
             DbConfig::ClickHouse(..) => AdapterType::ClickHouse,
             DbConfig::LakeCompute(..) => AdapterType::LakeCompute,
+            DbConfig::SingleStore(..) => AdapterType::SingleStore,
         }
     }
 
@@ -446,6 +450,7 @@ impl DbConfig {
             DbConfig::Exasol(config) => config.database.as_ref(),
             DbConfig::ClickHouse(config) => config.database.as_ref(),
             DbConfig::LakeCompute(config) => config.database.as_ref(),
+            DbConfig::SingleStore(config) => config.database.as_ref().filter(|s| !s.trim().is_empty()),
         }
     }
 
@@ -486,6 +491,15 @@ impl DbConfig {
             DbConfig::Fabric(config) => config.schema.as_ref(),
             DbConfig::Exasol(config) => config.schema.as_ref(),
             DbConfig::ClickHouse(config) => config.schema.as_ref(),
+            DbConfig::SingleStore(config) => match &config.schema {
+                Some(s) if !s.trim().is_empty() && !s.trim().eq_ignore_ascii_case("none") => {
+                    Some(s)
+                }
+                _ => {
+                    static EMPTY: String = String::new();
+                    Some(&EMPTY)
+                }
+            },
         }
     }
 
@@ -505,6 +519,7 @@ impl DbConfig {
             DbConfig::Exasol(config) => config.threads.as_ref(),
             DbConfig::ClickHouse(config) => config.threads.as_ref(),
             DbConfig::LakeCompute(config) => config.threads.as_ref(),
+            DbConfig::SingleStore(config) => config.threads.as_ref(),
         }
     }
 
@@ -524,6 +539,7 @@ impl DbConfig {
             DbConfig::Exasol(config) => config.threads = threads,
             DbConfig::ClickHouse(config) => config.threads = threads,
             DbConfig::LakeCompute(config) => config.threads = threads,
+            DbConfig::SingleStore(config) => config.threads = threads,
         }
     }
 
@@ -1605,6 +1621,39 @@ fn default_clickhouse_compress_block_size() -> Option<i64> {
     Some(1_048_576)
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default, DbtSchema, Merge)]
+#[merge(strategy = merge_strategies_extend::overwrite_option)]
+#[serde(rename_all = "snake_case")]
+pub struct SingleStoreDbConfig {
+    pub host: Option<String>,
+    pub port: Option<StringOrInteger>,
+    pub user: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub password: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(alias = "dbname")]
+    pub database: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub schema: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub threads: Option<StringOrInteger>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub retries: Option<StringOrInteger>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(alias = "sslmode")]
+    pub ssl_mode: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(alias = "sslrootcert")]
+    pub ssl_ca: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ssl_cert: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ssl_key: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(alias = "cleartext_plugin")]
+    pub allow_cleartext_plugin: Option<bool>,
+}
+
 #[derive(Serialize, DbtSchema)]
 #[serde(untagged)]
 #[serde(rename_all = "snake_case")]
@@ -1623,6 +1672,7 @@ pub enum TargetContext {
     Fabric(FabricTargetEnv),
     Exasol(ExasolTargetEnv),
     ClickHouse(ClickHouseTargetEnv),
+    SingleStore(SingleStoreTargetEnv),
     // Add other variants as needed
 }
 
@@ -1834,6 +1884,25 @@ pub struct ClickHouseTargetEnv {
     pub __common__: CommonTargetContext,
 }
 
+#[derive(Serialize, DbtSchema)]
+#[serde(rename_all = "snake_case")]
+pub struct SingleStoreTargetEnv {
+    pub host: String,
+    pub user: String,
+    pub port: StringOrInteger,
+    pub database: String,
+    pub schema: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ssl_mode: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ssl_ca: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ssl_cert: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ssl_key: Option<String>,
+    pub __common__: CommonTargetContext,
+}
+
 /// The location type of a DuckDB database path.
 #[derive(Debug, Clone, PartialEq)]
 pub enum DuckDBLocation<'a> {
@@ -1959,15 +2028,7 @@ impl TryFrom<DbConfig> for TargetContext {
                         database,
                         schema: config.schema.ok_or_else(|| missing("schema"))?,
                         type_: adapter_type,
-                        threads: match config.threads {
-                            Some(StringOrInteger::String(threads)) => {
-                                Some(threads.parse::<u16>().map_err(|_| {
-                                    "threads must be a positive integer".to_string()
-                                })?)
-                            }
-                            Some(StringOrInteger::Integer(threads)) => Some(threads as u16),
-                            None => None,
-                        },
+                        threads: parse_threads_config(config.threads.as_ref())?,
                     },
                     proxy_host: None,
                     proxy_port: None,
@@ -1983,15 +2044,7 @@ impl TryFrom<DbConfig> for TargetContext {
                         database,
                         schema: config.schema.ok_or_else(|| missing("schema"))?,
                         type_: adapter_type,
-                        threads: match config.threads {
-                            Some(StringOrInteger::String(threads)) => {
-                                Some(threads.parse::<u16>().map_err(|_| {
-                                    "threads must be a positive integer".to_string()
-                                })?)
-                            }
-                            Some(StringOrInteger::Integer(threads)) => Some(threads as u16),
-                            None => None,
-                        },
+                        threads: parse_threads_config(config.threads.as_ref())?,
                     },
                 }))
             }
@@ -2138,53 +2191,21 @@ impl TryFrom<DbConfig> for TargetContext {
                 },
             })),
 
-            DbConfig::DuckDB(config) => Ok(TargetContext::DuckDB(DuckDbTargetEnv {
-                path: config.path.clone(),
-                __common__: CommonTargetContext {
-                    // Derive database name from path if not explicitly set (same logic as get_database())
-                    database: config.database.clone().unwrap_or_else(|| {
-                        DuckDBPathInfo::parse_path(config.path.as_deref())
-                            .database
-                            .to_owned()
-                    }),
-                    schema: config.schema.unwrap_or_else(|| "main".to_string()),
-                    type_: adapter_type,
-                    threads: match config.threads {
-                        Some(StringOrInteger::String(threads)) => Some(
-                            threads
-                                .parse::<u16>()
-                                .map_err(|_| "threads must be a positive integer".to_string())?,
-                        ),
-                        Some(StringOrInteger::Integer(threads)) => Some(threads as u16),
-                        None => None,
-                    },
-                },
-            })),
+            DbConfig::DuckDB(config) => Ok(TargetContext::DuckDB(build_duckdb_target_env(
+                config.path,
+                config.database,
+                config.schema,
+                config.threads,
+                adapter_type,
+            )?)),
 
-            DbConfig::LakeCompute(config) => {
-                Ok(TargetContext::DuckDB(DuckDbTargetEnv {
-                    path: config.path.clone(),
-                    __common__: CommonTargetContext {
-                        // Derive database name from path if not explicitly set (same logic as get_database())
-                        database: config.database.clone().unwrap_or_else(|| {
-                            DuckDBPathInfo::parse_path(config.path.as_deref())
-                                .database
-                                .to_owned()
-                        }),
-                        schema: config.schema.unwrap_or_else(|| "main".to_string()),
-                        type_: adapter_type,
-                        threads: match config.threads {
-                            Some(StringOrInteger::String(threads)) => {
-                                Some(threads.parse::<u16>().map_err(|_| {
-                                    "threads must be a positive integer".to_string()
-                                })?)
-                            }
-                            Some(StringOrInteger::Integer(threads)) => Some(threads as u16),
-                            None => None,
-                        },
-                    },
-                }))
-            }
+            DbConfig::LakeCompute(config) => Ok(TargetContext::DuckDB(build_duckdb_target_env(
+                config.path,
+                config.database,
+                config.schema,
+                config.threads,
+                adapter_type,
+            )?)),
 
             DbConfig::Spark(config) => Ok(TargetContext::Spark(SparkTargetEnv {
                 method: config.method.ok_or_else(|| missing("method"))?,
@@ -2259,25 +2280,136 @@ impl TryFrom<DbConfig> for TargetContext {
                     database: String::new(),
                     schema: config.schema.clone().ok_or_else(|| missing("schema"))?,
                     type_: adapter_type,
-                    threads: match config.threads {
-                        Some(StringOrInteger::String(threads)) => Some(
-                            threads
-                                .parse::<u16>()
-                                .map_err(|_| "threads must be a positive integer".to_string())?,
-                        ),
-                        Some(StringOrInteger::Integer(threads)) => Some(threads as u16),
-                        None => None,
-                    },
+                    threads: parse_threads_config(config.threads.as_ref())?,
                 },
             })),
+
+            DbConfig::SingleStore(config) => Ok(TargetContext::SingleStore(
+                try_from_singlestore_config(*config, adapter_type)?,
+            )),
         }
     }
+}
+
+fn parse_threads_config(threads: Option<&StringOrInteger>) -> Result<Option<u16>, String> {
+    match threads {
+        Some(StringOrInteger::String(threads)) => Some(
+            threads
+                .parse::<u16>()
+                .map_err(|_| "threads must be a positive integer".to_string()),
+        )
+        .transpose(),
+        Some(StringOrInteger::Integer(threads)) => Some(
+            u16::try_from(*threads).map_err(|_| "threads must be a positive integer".to_string()),
+        )
+        .transpose(),
+        None => Ok(None),
+    }
+}
+
+fn build_duckdb_target_env(
+    path: Option<String>,
+    database: Option<String>,
+    schema: Option<String>,
+    threads: Option<StringOrInteger>,
+    adapter_type: String,
+) -> Result<DuckDbTargetEnv, String> {
+    Ok(DuckDbTargetEnv {
+        path: path.clone(),
+        __common__: CommonTargetContext {
+            database: database.unwrap_or_else(|| {
+                DuckDBPathInfo::parse_path(path.as_deref())
+                    .database
+                    .to_owned()
+            }),
+            schema: schema.unwrap_or_else(|| "main".to_string()),
+            type_: adapter_type,
+            threads: parse_threads_config(threads.as_ref())?,
+        },
+    })
+}
+
+fn try_from_singlestore_config(
+    config: SingleStoreDbConfig,
+    adapter_type: String,
+) -> Result<SingleStoreTargetEnv, String> {
+    let missing = |field: &str| format!("Missing required field in singlestore profile: {field}");
+    let database = config
+        .database
+        .filter(|s| !s.trim().is_empty())
+        .ok_or_else(|| missing("database or dbname"))?;
+    let schema = match config.schema {
+        Some(s) if !s.trim().is_empty() && !s.trim().eq_ignore_ascii_case("none") => s,
+        _ => String::new(),
+    };
+    Ok(SingleStoreTargetEnv {
+        host: config.host.ok_or_else(|| missing("host"))?,
+        user: config.user.ok_or_else(|| missing("user"))?,
+        port: config.port.unwrap_or(StringOrInteger::Integer(3306)),
+        database: database.clone(),
+        schema: schema.clone(),
+        ssl_mode: config.ssl_mode,
+        ssl_ca: config.ssl_ca,
+        ssl_cert: config.ssl_cert,
+        ssl_key: config.ssl_key,
+        __common__: CommonTargetContext {
+            database,
+            schema,
+            type_: adapter_type,
+            threads: parse_threads_config(config.threads.as_ref())?,
+        },
+    })
 }
 
 #[cfg(test)]
 mod tests {
 
     use super::*;
+
+    #[test]
+    fn test_singlestore_empty_schema_is_empty() {
+        let yaml = r#"
+            type: singlestore
+            host: localhost
+            user: root
+            password: password
+            database: my_db
+            schema: ''
+        "#;
+        let config: DbConfig = dbt_yaml::from_str(yaml).unwrap();
+        assert_eq!(config.get_database(), Some(&"my_db".to_string()));
+        assert_eq!(config.get_schema(), Some(&"".to_string()));
+    }
+
+    #[test]
+    fn test_singlestore_none_schema_is_empty() {
+        let yaml = r#"
+            type: singlestore
+            host: localhost
+            user: root
+            password: password
+            database: my_db
+            schema: none
+        "#;
+        let config: DbConfig = dbt_yaml::from_str(yaml).unwrap();
+        assert_eq!(config.get_database(), Some(&"my_db".to_string()));
+        assert_eq!(config.get_schema(), Some(&"".to_string()));
+    }
+
+    #[test]
+    fn test_singlestore_custom_schema_is_preserved() {
+        let yaml = r#"
+            type: singlestore
+            host: localhost
+            user: root
+            password: password
+            database: my_db
+            schema: testuser
+        "#;
+        let config: DbConfig = dbt_yaml::from_str(yaml).unwrap();
+        assert_eq!(config.get_database(), Some(&"my_db".to_string()));
+        assert_eq!(config.get_schema(), Some(&"testuser".to_string()));
+    }
 
     /// `DbConfig` is `#[serde(tag = "type", rename_all = "lowercase")]`, so the
     /// tag is the variant identifier lowercased. `dbt-profile` hard-codes the

@@ -81,12 +81,10 @@ pub fn get_relation(
         AdapterType::Exasol => exasol_get_relation(
             adapter, state, ctx, conn, database, schema, identifier, token,
         ),
-        AdapterType::Starburst => todo!("Starburst"),
-        AdapterType::Athena => todo!("Athena"),
-        AdapterType::Trino => todo!("Trino"),
-        AdapterType::Dremio => todo!("Dremio"),
-        AdapterType::Oracle => todo!("Oracle"),
-        AdapterType::Datafusion => todo!("Datafusion"),
+        AdapterType::SingleStore => crate::metadata::singlestore::get_relation(
+            adapter, state, ctx, conn, database, schema, identifier, token,
+        ),
+        _ => todo!("{}", adapter.adapter_type()),
     }
 }
 
@@ -1122,6 +1120,7 @@ fn clickhouse_get_relation(
     let relation = with_catalog_state(relation, caps, &batch, 0)?;
     Ok(Some(Box::new(relation) as Box<dyn BaseRelation>))
 }
+
 
 #[cfg(test)]
 mod tests {

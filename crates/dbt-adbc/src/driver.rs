@@ -83,6 +83,8 @@ pub enum Backend {
     ClickHouse,
     /// Exasol driver implementation (ADBC).
     Exasol,
+    /// SingleStore driver implementation (native sqlx-based).
+    SingleStore,
     /// Generic ADBC driver implementation.
     ///
     /// This variant is fully dynamic and experimental. Features might not work reliably and fail
@@ -115,6 +117,7 @@ impl fmt::Display for Backend {
             Backend::Athena => write!(f, "Athena"),
             Backend::ClickHouse => write!(f, "ClickHouse"),
             Backend::Exasol => write!(f, "Exasol"),
+            Backend::SingleStore => write!(f, "SingleStore"),
             Backend::Generic { library_name, .. } => write!(f, "Generic({library_name})"),
         }
     }
@@ -136,6 +139,7 @@ impl Backend {
             Backend::Athena => Some("adbc_driver_athena"),
             Backend::ClickHouse => Some("adbc_clickhouse"),
             Backend::Exasol => Some("adbc_driver_exasol"),
+            Backend::SingleStore => None,
             Backend::Generic { library_name, .. } => Some(library_name),
         }
     }
@@ -381,11 +385,10 @@ impl AdbcDriver {
         driver
     }
 
-    fn try_load_driver_internal(
-        backend: Backend,
-        adbc_version: AdbcVersion,
+    fn resolve_final_load_strategy(
         load_strategy: LoadStrategy,
-    ) -> Result<ManagedAdbcDriver> {
+        backend: Backend,
+    ) -> Result<LoadStrategy> {
         use Backend::*;
         use LoadStrategy::*;
         let final_strategy = match (load_strategy, backend) {
@@ -420,7 +423,7 @@ impl AdbcDriver {
                 }
             }
             // CDN strategy for non-CDN drivers: just fall back to the system strategy.
-            (CdnCache | SystemThenCdnCache | Remote, Athena | Exasol) => System(None),
+            (CdnCache | SystemThenCdnCache | Remote, Athena | Exasol | SingleStore) => System(None),
             // Generic drivers can only be loaded from a file, so fallback to the System strategy.
             (CdnCache | SystemThenCdnCache | Remote, Generic { library_name, .. }) => {
                 System(Some(library_name.to_string()))
@@ -436,6 +439,22 @@ impl AdbcDriver {
                 | DuckDBExtended | LakeCompute | Salesforce | SQLServer | ClickHouse,
             ) => load_strategy,
         };
+        Ok(final_strategy)
+    }
+
+    fn try_load_driver_internal(
+        backend: Backend,
+        adbc_version: AdbcVersion,
+        load_strategy: LoadStrategy,
+    ) -> Result<ManagedAdbcDriver> {
+        if backend == Backend::SingleStore {
+            return Err(Error::with_message_and_status(
+                "SingleStore uses native driver, not ADBC",
+                Status::NotImplemented,
+            ));
+        }
+        use LoadStrategy::*;
+        let final_strategy = Self::resolve_final_load_strategy(load_strategy, backend)?;
 
         match final_strategy {
             CdnCache => Self::try_load_driver_through_cdn_cache(backend, adbc_version),

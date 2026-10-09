@@ -48,7 +48,10 @@ fn include_policy(adapter_type: AdapterType, path: &RelationPath) -> Policy {
             true,
             true,
         ),
-        AdapterType::ClickHouse | AdapterType::Exasol => Policy::new(false, true, true),
+        AdapterType::SingleStore => Policy::new(true, false, true),
+        AdapterType::ClickHouse | AdapterType::Exasol => {
+            Policy::new(false, true, true)
+        }
         AdapterType::Salesforce => Policy::new(false, false, true),
         _ => Policy::trues(),
     }
@@ -313,6 +316,24 @@ impl BaseRelationProperties for Relation {
     }
 }
 
+fn resolve_relation_path_components(
+    adapter_type: AdapterType,
+    database: Option<String>,
+    schema: Option<String>,
+) -> (Option<String>, Option<String>) {
+    match adapter_type {
+        // ClickHouse adapter does not normalize empty strings to None
+        // https://github.com/ClickHouse/dbt-clickhouse/blob/main/dbt/adapters/clickhouse/relation.py
+        AdapterType::ClickHouse => (Some(String::new()), schema),
+        AdapterType::SingleStore => {
+            let db = database.filter(|s| !s.trim().is_empty());
+            let sch = schema.filter(|s| !s.trim().is_empty());
+            (db.clone().or_else(|| sch.clone()), sch.or(db))
+        }
+        _ => (database.filter(|s| !s.is_empty()), schema),
+    }
+}
+
 impl Relation {
     pub fn new(
         adapter_type: AdapterType,
@@ -320,14 +341,11 @@ impl Relation {
         schema: impl Into<Option<String>>,
         identifier: impl Into<Option<String>>,
     ) -> Self {
+        let (database, schema) =
+            resolve_relation_path_components(adapter_type, database.into(), schema.into());
         let path = RelationPath {
-            database: match adapter_type {
-                // ClickHouse adapter does not normalize empty strings to None
-                // https://github.com/ClickHouse/dbt-clickhouse/blob/main/dbt/adapters/clickhouse/relation.py
-                AdapterType::ClickHouse => Some(String::new()),
-                _ => database.into().filter(|s| !s.is_empty()),
-            },
-            schema: schema.into(),
+            database,
+            schema,
             identifier: identifier.into(),
         };
         let include_policy = include_policy(adapter_type, &path);

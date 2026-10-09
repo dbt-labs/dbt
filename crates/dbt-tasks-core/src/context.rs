@@ -258,6 +258,12 @@ impl TaskRunnerCtxInner {
         let infer_schema_registry =
             Arc::new(dbt_common::infer_schema_registry::InferSchemaRegistry::new());
 
+        dbt_adapter_core::set_active_target_info(dbt_adapter_core::ActiveTargetInfo {
+            adapter_type: adapter_store.default_adapter_type(),
+            default_database: Some(resolver_state.dbt_profile.database.clone()),
+            default_schema: Some(resolver_state.dbt_profile.schema.clone()),
+        });
+
         TaskRunnerCtxInner {
             arg,
             worker_id,

@@ -26,6 +26,7 @@ dbt-lexer-databricks = { workspace = true }
 dbt-lexer-redshift = { workspace = true }
 dbt-lexer-snowflake = { workspace = true }
 dbt-lexer-trino = { workspace = true }
+dbt-lexer-singlestore = { workspace = true }
 
 [dev-dependencies]
 strum = { workspace = true }
