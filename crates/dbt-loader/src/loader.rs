@@ -682,6 +682,7 @@ pub async fn load_catalogs(
     ]);
     // Record the use_catalogs_v2 flag whether or not catalogs.yml exists, so
     // downstream checks can tell "flag set but no catalogs.yml" from "flag unset".
+    load_catalogs::clear_catalogs();
     load_catalogs::set_use_catalogs_v2_from_flags(project_flags);
 
     let catalogs_yml_path = arg.io.in_dir.join(DBT_CATALOGS_YML);

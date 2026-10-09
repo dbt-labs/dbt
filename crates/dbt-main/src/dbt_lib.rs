@@ -84,6 +84,7 @@ use dbt_schemas::{
 use dbt_state::explain::{StateExplainOptions, execute_state_explain};
 use dbt_tasks_core::{
     RunTaskResults,
+    context::TaskRunnerCtx,
     task_runner_hooks::TaskRunnerHooksFactory,
     utils::{build_run_results_artifact, write_run_results_json_or_warn},
 };
@@ -1104,8 +1105,9 @@ impl<'a> AllPhasesExecutor<'a> {
             // Returned, not discarded: this is the only fetch on the --write-catalog
             // without --write-metadata path, so a library caller has no other source.
             return Ok(Some(
-                write_catalog_json(
+                write_catalog_json_by_adapter(
                     adapter,
+                    run_task_results.task_runner_ctx.as_ref(),
                     resolved_state,
                     relations,
                     jinja_env,
@@ -2604,8 +2606,9 @@ async fn try_fetch_catalog(
         return None;
     }
     let base_context = build_base_context(resolved_state, jinja_env);
-    match fetch_catalog_data(
+    match fetch_catalog_data_by_adapter(
         adapter,
+        run_task_results.task_runner_ctx.as_ref(),
         resolved_state,
         relations,
         jinja_env,
@@ -2637,6 +2640,82 @@ async fn try_fetch_catalog(
 ///
 /// Extracted from `write_catalog_json` so both the JSON path and the parquet
 /// metadata epoch path can share the same warehouse query logic.
+#[allow(clippy::too_many_arguments)]
+async fn fetch_catalog_data_by_adapter(
+    default_adapter: &Arc<Adapter>,
+    task_ctx: Option<&TaskRunnerCtx>,
+    resolved_state: &ResolverState,
+    relations: Vec<Arc<dyn BaseRelation>>,
+    default_jinja_env: &JinjaEnv,
+    project_name: &str,
+    default_context: &BTreeMap<String, Value>,
+    arg: &EvalArgs,
+    batches: usize,
+) -> FsResult<DbtCatalog> {
+    let mut relations_by_adapter: HashMap<AdapterType, Vec<Arc<dyn BaseRelation>>> = HashMap::new();
+    for relation in relations {
+        relations_by_adapter
+            .entry(relation.adapter_type())
+            .or_default()
+            .push(relation);
+    }
+    let mut relations_by_adapter: Vec<_> = relations_by_adapter.into_iter().collect();
+    relations_by_adapter.sort_by(|(left, _), (right, _)| left.as_ref().cmp(right.as_ref()));
+
+    let mut merged_catalog: Option<DbtCatalog> = None;
+    for (adapter_type, relations) in relations_by_adapter {
+        let (adapter, jinja_env, context) = if let Some(task_ctx) = task_ctx {
+            (
+                task_ctx.adapter_store().get(adapter_type)?,
+                task_ctx
+                    .jinja_env_for_adapter(adapter_type)?
+                    .as_ref()
+                    .clone(),
+                task_ctx.base_context_for_adapter(adapter_type)?,
+            )
+        } else if adapter_type == default_adapter.adapter_type() {
+            (
+                Arc::clone(default_adapter),
+                default_jinja_env.clone(),
+                default_context.clone(),
+            )
+        } else {
+            return Err(fs_err!(
+                ErrorCode::Unexpected,
+                "Catalog generation requires runtime context for non-default adapter '{adapter_type}'"
+            ));
+        };
+        let catalog = fetch_catalog_data(
+            &adapter,
+            resolved_state,
+            relations,
+            &jinja_env,
+            project_name,
+            &context,
+            arg,
+            batches,
+        )
+        .await?;
+
+        if let Some(merged) = &mut merged_catalog {
+            merged.nodes.extend(catalog.nodes);
+            merged.sources.extend(catalog.sources);
+            if let Some(errors) = catalog.errors {
+                merged.errors.get_or_insert_with(Vec::new).extend(errors);
+            }
+        } else {
+            merged_catalog = Some(catalog);
+        }
+    }
+
+    merged_catalog.ok_or_else(|| {
+        fs_err!(
+            ErrorCode::Unexpected,
+            "Catalog generation received no relations"
+        )
+    })
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn fetch_catalog_data(
     adapter: &Arc<Adapter>,
@@ -2715,7 +2794,7 @@ async fn fetch_catalog_data(
         let relations_map_clone = relations_map.clone();
         // Clone the JinjaEnv for each worker to create isolated execution environment
         let jinja_env_clone = jinja_env.clone();
-        let adapter_type = resolved_state.adapter_type;
+        let adapter_type = adapter.adapter_type();
         let maybe_region_clone = maybe_region.clone();
         let project_name_owned = project_name.to_string();
         // Clone the base context - we'll create fresh ResultStore for each schema iteration
@@ -2924,6 +3003,46 @@ async fn fetch_catalog_data(
     Ok(catalog)
 }
 
+#[allow(clippy::too_many_arguments)]
+async fn write_catalog_json_by_adapter(
+    default_adapter: &Arc<Adapter>,
+    task_ctx: Option<&TaskRunnerCtx>,
+    resolved_state: &ResolverState,
+    relations: Vec<Arc<dyn BaseRelation>>,
+    default_jinja_env: &JinjaEnv,
+    project_name: &str,
+    default_context: &BTreeMap<String, Value>,
+    arg: &EvalArgs,
+    batches: usize,
+) -> FsResult<DbtCatalog> {
+    let catalog = fetch_catalog_data_by_adapter(
+        default_adapter,
+        task_ctx,
+        resolved_state,
+        relations,
+        default_jinja_env,
+        project_name,
+        default_context,
+        arg,
+        batches,
+    )
+    .await?;
+    write_catalog_artifact(&catalog, arg)?;
+    Ok(catalog)
+}
+
+fn write_catalog_artifact(catalog: &DbtCatalog, arg: &EvalArgs) -> FsResult<()> {
+    write_artifact_to_file(
+        catalog,
+        ArtifactType::Catalog,
+        &arg.io.out_dir,
+        DBT_CATALOG_JSON,
+        &arg.io.in_dir,
+    )?;
+    emit_info_log_message("Successfully wrote catalog.json");
+    Ok(())
+}
+
 /// Fetches catalog data from the warehouse and writes `catalog.json`.
 #[allow(clippy::too_many_arguments)]
 pub async fn write_catalog_json(
@@ -2947,14 +3066,7 @@ pub async fn write_catalog_json(
         batches,
     )
     .await?;
-    write_artifact_to_file(
-        &catalog,
-        ArtifactType::Catalog,
-        &arg.io.out_dir,
-        DBT_CATALOG_JSON,
-        &arg.io.in_dir,
-    )?;
-    emit_info_log_message("Successfully wrote catalog.json");
+    write_catalog_artifact(&catalog, arg)?;
     Ok(catalog)
 }
 

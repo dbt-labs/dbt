@@ -552,6 +552,29 @@ pub fn generate_duckdb_init_sql(config: &AdapterConfig) -> Result<Vec<String>, A
     }
 }
 
+/// Generate DuckDB statements that must be replayed for every new connection.
+///
+/// Extensions, secrets, tokens, and attachments are initialized on the shared
+/// database. Profile settings and the active catalog are connection-scoped.
+pub fn generate_duckdb_connection_init_sql(
+    config: &AdapterConfig,
+) -> Result<Vec<String>, AuthError> {
+    let target = DuckDbTarget::from_config(config)?;
+    let mut out = Settings::from_config(config)?.render();
+    match target {
+        DuckDbTarget::MotherDuck {
+            database_name: alias,
+            ..
+        }
+        | DuckDbTarget::MotherDuckWithToken {
+            database_name: alias,
+            ..
+        } => out.push(format!("USE {alias}")),
+        DuckDbTarget::Plain { .. } => {}
+    }
+    Ok(out)
+}
+
 // ---------------------------------------------------------------------------
 // SQL literal helpers
 // ---------------------------------------------------------------------------
@@ -618,6 +641,45 @@ mod tests {
         let config = AdapterConfig::default();
         let stmts = generate_duckdb_init_sql(&config).unwrap();
         assert!(stmts.is_empty());
+    }
+
+    #[test]
+    fn test_connection_init_contains_only_connection_scoped_statements() {
+        let config = config_from_yaml(
+            r#"
+path: "md:analytics?motherduck_token=secret"
+extensions: [iceberg]
+settings:
+  unsafe_enable_version_guessing: true
+secrets:
+  - type: s3
+    name: warehouse
+attach:
+  - path: other.db
+    alias: other
+"#,
+        );
+
+        assert_eq!(
+            generate_duckdb_connection_init_sql(&config).unwrap(),
+            vec!["SET unsafe_enable_version_guessing = true", "USE analytics",]
+        );
+    }
+
+    #[test]
+    fn test_plain_connection_init_has_no_use_statement() {
+        let config = config_from_yaml(
+            r#"
+path: local.duckdb
+settings:
+  preserve_identifier_case: false
+"#,
+        );
+
+        assert_eq!(
+            generate_duckdb_connection_init_sql(&config).unwrap(),
+            vec!["SET preserve_identifier_case = false"]
+        );
     }
 
     #[test]
