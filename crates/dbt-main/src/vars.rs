@@ -125,6 +125,7 @@ const USED_ENGINE_ENV_VARS: &[&str] = &[
     BATCH_TESTS_ENV,
     "DBT_ENGINE_BETA_PACKAGE_PARSING",
     "DBT_ENGINE_BETA_PARSING",
+    "DBT_ENGINE_EXCLUDE",
     "DBT_ENGINE_EXPERIMENTAL_LIST_UDFS",
     LOCAL_UNIT_TESTS_ENV,
     MULTI_ADAPTER_ENV,
@@ -142,6 +143,7 @@ const USED_ENGINE_ENV_VARS: &[&str] = &[
     "DBT_ENGINE_RECORDER_ROW_LIMIT",
     "DBT_ENGINE_RECORDER_TYPES",
     REQUIRE_REF_SEARCHES_NODE_PACKAGE_BEFORE_ROOT_ENV,
+    "DBT_ENGINE_SELECT",
     SKIP_REDUNDANT_TESTS_ENV,
     "DBT_ENGINE_STATE_API_URL",
     "DBT_ENGINE_STATE_AUTH_URL",
@@ -366,7 +368,7 @@ mod tests {
     }
 
     #[test]
-    fn validate_engine_env_vars_allows_selection_override_vars() {
+    fn validate_engine_env_vars_allows_selection_vars() {
         // Regression: these are read straight from the environment, which is invisible to the
         // reserved-prefix check. Setting them must not be rejected as user-authored.
         let _lock = ENV_MUTEX.lock().unwrap();
@@ -374,6 +376,8 @@ mod tests {
             ("DBT_ENGINE_MANTLE_ARTIFACTS", "/tmp/mantle"),
             ("DBT_ENGINE_OVERRIDE_SELECTION_FROM_RUN_RESULTS", "1"),
             ("DBT_ENGINE_OVERRIDE_SELECTION_FROM_RECORDING", "1"),
+            ("DBT_ENGINE_SELECT", "my_model"),
+            ("DBT_ENGINE_EXCLUDE", "tag:nightly"),
         ];
         for (key, value) in vars {
             unsafe {
@@ -390,7 +394,7 @@ mod tests {
         }
         assert!(
             result.is_ok(),
-            "selection-override vars should be known engine env vars: {result:?}"
+            "selection vars should be known engine env vars: {result:?}"
         );
     }
 
