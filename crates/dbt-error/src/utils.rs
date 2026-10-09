@@ -80,9 +80,8 @@ pub fn is_sdf_debug() -> bool {
         > 0
 }
 
-/// Wrapper around [`std::fs::canonicalize`] that returns a useful error in case of failure.
-/// This is the same as dbt_common::stdfs::canonicalize inlined in this crate
-/// to avoid a dependency on dbt_common.
+/// Wrapper around [`std::fs::canonicalize`] that avoids verbatim paths on Windows.
+/// `dbt_common::stdfs::canonicalize` delegates here and adds error context.
 pub fn canonicalize<P: AsRef<Path>>(path: P) -> Result<PathBuf, std::io::Error> {
     let path = path.as_ref();
     #[cfg(not(target_os = "windows"))]
@@ -93,6 +92,20 @@ pub fn canonicalize<P: AsRef<Path>>(path: P) -> Result<PathBuf, std::io::Error> 
     }
     #[cfg(target_os = "windows")]
     {
-        dunce::canonicalize(path)
+        dunce::canonicalize(path).map(simplify_verbatim_unc)
+    }
+}
+
+/// `\\?\UNC\server\share\x` -> `\\server\share\x` when both resolve to the same path.
+/// dunce only simplifies `\\?\C:\`, and `DbtPath` cannot represent verbatim prefixes.
+#[cfg(target_os = "windows")]
+fn simplify_verbatim_unc(path: PathBuf) -> PathBuf {
+    let Some(rest) = path.to_str().and_then(|s| s.strip_prefix(r"\\?\UNC\")) else {
+        return path;
+    };
+    let unc = PathBuf::from(format!(r"\\{rest}"));
+    match dunce::canonicalize(&unc) {
+        Ok(resolved) if resolved == path => unc,
+        _ => path,
     }
 }

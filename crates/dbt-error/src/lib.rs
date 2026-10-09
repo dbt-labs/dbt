@@ -23,6 +23,7 @@ pub use types::{
     ContextableResult, ErrContext, FsError, FsResult, GenericNameError, LiftableResult,
     MAX_DISPLAY_TOKENS, NameError, WrappedError,
 };
+pub use utils::canonicalize;
 
 // Re-export Cancellable from dbt-cancel for convenience
 pub use dbt_base::Cancellable;
