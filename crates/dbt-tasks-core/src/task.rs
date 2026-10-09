@@ -9,7 +9,7 @@ use dbt_common::stats::NodeStatus;
 use dbt_common::{ErrorCode, FsResult, create_debug_span_with_parent, fs_err};
 use dbt_schemas::schemas::InternalDbtNodeAttributes;
 use dbt_schemas::schemas::telemetry::{ExecutionPhase, NodeType};
-use dbt_telemetry::ConnectionLimitWait;
+use dbt_telemetry::ThreadPoolWait;
 
 use crate::context::TaskRunnerCtx;
 use crate::span_manager::{SpanLevel, SpanTreeRequest};
@@ -72,7 +72,7 @@ impl From<TP> for ExecutionPhase {
 
 /// Run blocking task work on the runtime pool, mapping join failures to task errors.
 ///
-/// Also manages the `ConnectionLimitWait` span that accounts for time spent
+/// Also manages the `ThreadPoolWait` span that accounts for time spent
 /// waiting on runtime pool contention, used by downstream consumers for node
 /// runtime calculations and display.
 pub async fn run_blocking_task_operation<T: Send + 'static>(
@@ -104,7 +104,7 @@ pub async fn run_blocking_task_operation_with_wait_parents<T: Send + 'static>(
         move || {
             wait_parents
                 .into_iter()
-                .map(|parent| create_debug_span_with_parent(parent, ConnectionLimitWait::default()))
+                .map(|parent| create_debug_span_with_parent(parent, ThreadPoolWait::default()))
                 .collect::<Vec<_>>()
         },
         f,
