@@ -1,0 +1,7 @@
+kind: Fixes
+body: Tag on-run-start/on-run-end operation nodes with their hook type, matching dbt-core, so tag:on-run-start selects them
+time: 2026-09-15T17:18:18.05715+01:00
+custom:
+    author: CallumFriend-MP
+    issue: "16315"
+    project: dbt-core
