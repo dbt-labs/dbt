@@ -9,15 +9,16 @@ import pytest
 
 import dbt.config
 import dbt.exceptions
+from dbt import deprecations
 from dbt.adapters.contracts.connection import DEFAULT_QUERY_COMMENT, QueryComment
 from dbt.adapters.factory import load_plugin
-from dbt.config.project import Project, _get_required_version
+from dbt.config.project import Project, _get_required_version, read_project_flags
 from dbt.constants import DEPENDENCIES_FILE_NAME
-from dbt.contracts.project import GitPackage, LocalPackage, PackageConfig
+from dbt.contracts.project import GitPackage, LocalPackage, PackageConfig, ProjectFlags
 from dbt.deprecations import (
     GenericJSONSchemaValidationDeprecation as GenericJSONSchemaValidationDeprecationCore,
 )
-from dbt.events.types import GenericJSONSchemaValidationDeprecation
+from dbt.events.types import GenericJSONSchemaValidationDeprecation, LogDbtProjectError
 from dbt.flags import set_from_args
 from dbt.jsonschemas.jsonschemas import project_schema
 from dbt.node_types import NodeType
@@ -568,6 +569,52 @@ class TestMultipleProjectFlags(BaseConfigTest):
     def test_setting_multiple_flags(self):
         with pytest.raises(dbt.exceptions.DbtProjectError):
             set_from_args(self.args, None)
+
+
+class TestReadProjectFlags:
+    @pytest.fixture(autouse=True)
+    def buffered_deprecations(self):
+        deprecations.buffered_deprecations.clear()
+        yield deprecations.buffered_deprecations
+        deprecations.buffered_deprecations.clear()
+
+    def read_flags(self, tmp_path, project_flags):
+        (tmp_path / "dbt_project.yml").write_text(
+            "name: test\nversion: 1.0\nconfig-version: 2\nprofile: test\n" + project_flags
+        )
+        return read_project_flags(str(tmp_path), str(tmp_path))
+
+    def test_valid_flags(self, tmp_path, buffered_deprecations):
+        project_flags = self.read_flags(tmp_path, "flags:\n  fail_fast: true\n")
+
+        assert project_flags.fail_fast is True
+        assert buffered_deprecations == []
+
+    def test_invalid_flag_is_logged_once_logger_is_ready(self, tmp_path, buffered_deprecations):
+        project_flags = self.read_flags(
+            tmp_path,
+            "flags:\n  fail_fast: true\n  require_yaml_configuration_for_mf_time_spines: bad\n",
+        )
+        catcher = EventCatcher(event_to_catch=LogDbtProjectError)
+        get_event_manager().add_callback(catcher.catch)
+
+        deprecations.fire_buffered_deprecations()
+
+        assert project_flags == ProjectFlags()
+        assert len(catcher.caught_events) == 1
+        msg = catcher.caught_events[0].info.msg
+        assert (
+            "Invalid project flag 'require_yaml_configuration_for_mf_time_spines': "
+            "'bad' is not of type 'boolean'"
+        ) in msg
+        assert "All project flags were ignored." in msg
+
+    @pytest.mark.parametrize(
+        "project_flags",
+        ["flags: [bad]\n", "flags: null\n", "flags:\n  warn_error_options: [bad]\n"],
+    )
+    def test_malformed_flags_do_not_crash(self, tmp_path, project_flags):
+        assert self.read_flags(tmp_path, project_flags) == ProjectFlags()
 
 
 class TestGetRequiredVersion:

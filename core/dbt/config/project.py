@@ -27,6 +27,7 @@ from dbt.constants import (
 from dbt.contracts.project import PackageConfig
 from dbt.contracts.project import Project as ProjectContract
 from dbt.contracts.project import ProjectFlags, ProjectPackageMetadata, SemverString
+from dbt.events.types import LogDbtProjectError
 from dbt.exceptions import (
     DbtExclusivePropertyUseError,
     DbtProjectError,
@@ -41,6 +42,7 @@ from dbt.utils import MultiDict, coerce_dict_str, md5
 from dbt.version import get_installed_version
 from dbt_common.clients.system import load_file_contents, path_exists
 from dbt_common.dataclass_schema import ValidationError
+from dbt_common.events.functions import fire_event
 from dbt_common.exceptions import SemverError
 from dbt_common.helper_types import NoValue
 from dbt_common.semver import VersionSpecifier, versions_compatible
@@ -896,8 +898,8 @@ def read_project_flags(project_dir: str, profiles_dir: str) -> ProjectFlags:
         if path_exists(project_yaml_filepath):
             try:
                 project_dict = load_raw_project(project_root)
-                if "flags" in project_dict:
-                    project_flags = project_dict.pop("flags")
+                if isinstance(project_dict.get("flags"), dict):
+                    project_flags = project_dict["flags"]
             except Exception:
                 # This is probably a yaml load error.The error will be reported
                 # later, when the project loads.
@@ -926,7 +928,8 @@ def read_project_flags(project_dir: str, profiles_dir: str) -> ProjectFlags:
             # handle collapsing `include` and `error` as well as collapsing `exclude` and `warn`
             # for warn_error_options
             warn_error_options = project_flags.get("warn_error_options", {})
-            normalize_warn_error_options(warn_error_options)
+            if isinstance(warn_error_options, dict):
+                normalize_warn_error_options(warn_error_options)
 
             ProjectFlags.validate(project_flags)
             return ProjectFlags.from_dict(project_flags)
@@ -934,6 +937,11 @@ def read_project_flags(project_dir: str, profiles_dir: str) -> ProjectFlags:
         # We don't want to eat the DbtProjectError for UserConfig to ProjectFlags or
         # DbtConfigError for warn_error_options munging
         raise exc
-    except (DbtRuntimeError, ValidationError):
+    except ValidationError as exc:
+        # Like the deprecation above, this is buffered because the event logger isn't set up yet.
+        flag = ".".join(str(part) for part in exc.path)
+        msg = f"Invalid project flag '{flag}': {exc.message}. All project flags were ignored."
+        deprecations.buffered_deprecations.append(lambda: fire_event(LogDbtProjectError(exc=msg)))
+    except DbtRuntimeError:
         pass
     return ProjectFlags()
