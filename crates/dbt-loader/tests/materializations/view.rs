@@ -78,7 +78,10 @@ fn full_refresh_mock_config() -> Arc<MockJinjaObject> {
     mock
 }
 
-fn v2_update_via_alter_config(full_refresh: bool) -> Arc<MockJinjaObject> {
+fn update_via_alter_config(
+    full_refresh: bool,
+    use_materialization_v2: Option<bool>,
+) -> Arc<MockJinjaObject> {
     let mock = default_mock_config();
     mock.on("get", move |args| {
         let key = args.first().and_then(|v| v.as_str());
@@ -90,6 +93,9 @@ fn v2_update_via_alter_config(full_refresh: bool) -> Arc<MockJinjaObject> {
             )]))),
             Some("full_refresh") => Ok(Value::from(full_refresh)),
             Some("view_update_via_alter") => Ok(Value::from(true)),
+            Some("use_materialization_v2") => {
+                Ok(use_materialization_v2.map(Value::from).unwrap_or(default))
+            }
             _ => Ok(default),
         }
     });
@@ -263,8 +269,7 @@ mod databricks {
         assert_executed_contains(harness.mock(), "create");
     }
 
-    #[test]
-    fn v2_full_refresh_replaces_view_when_update_via_alter_is_enabled() {
+    fn existing_view_alter_harness(project_flag: bool) -> MacroTestHarness {
         let mut harness = build_view_harness(ADAPTER);
         harness
             .env_mut()
@@ -272,7 +277,7 @@ mod databricks {
             .add_function("store_raw_result", |_kwargs: minijinja::value::Kwargs| {
                 Ok(Value::UNDEFINED)
             });
-        harness.set_behavior_flags([("use_materialization_v2", true)]);
+        harness.set_behavior_flags([("use_materialization_v2", project_flag)]);
         let existing = harness.relation(
             "TEST_DB",
             "TEST_SCHEMA",
@@ -290,10 +295,16 @@ mod databricks {
         harness.mock().on("get_config_from_model", move |_| {
             Ok(Value::from_dyn_object(Arc::clone(&model_config)))
         });
+        harness
+    }
+
+    #[test]
+    fn v2_full_refresh_replaces_view_when_update_via_alter_is_enabled() {
+        let harness = existing_view_alter_harness(true);
 
         let ctx = harness
             .materialization_context("my_view", "SELECT id, name FROM source_table")
-            .config(Value::from_dyn_object(v2_update_via_alter_config(true)))
+            .config(Value::from_dyn_object(update_via_alter_config(true, None)))
             .build();
         render_view(&harness, ADAPTER, ctx).expect("v2 full refresh should replace the view");
 
@@ -316,7 +327,7 @@ mod databricks {
 
         let ctx = harness
             .materialization_context("my_view", "SELECT id, name FROM source_table")
-            .config(Value::from_dyn_object(v2_update_via_alter_config(false)))
+            .config(Value::from_dyn_object(update_via_alter_config(false, None)))
             .build();
         let error = render_view(&harness, ADAPTER, ctx)
             .expect_err("Hive Metastore views must reject update-via-alter");
@@ -347,13 +358,49 @@ mod databricks {
 
         let ctx = harness
             .materialization_context("my_view", "SELECT id, name FROM source_table")
-            .config(Value::from_dyn_object(v2_update_via_alter_config(false)))
+            .config(Value::from_dyn_object(update_via_alter_config(false, None)))
             .build();
         render_view(&harness, ADAPTER, ctx)
             .expect("metric_view to view must replace instead of ALTER");
 
         // A recreate proves replacement; a broken gate would ALTER and skip it.
         assert_executed_contains(harness.mock(), "create or replace view");
+    }
+
+    // -- model-level use_materialization_v2 overrides the project flag ------
+
+    fn render_existing_view_with_model_setting(
+        project_flag: bool,
+        model_setting: bool,
+    ) -> MacroTestHarness {
+        let harness = existing_view_alter_harness(project_flag);
+        let ctx = harness
+            .materialization_context("my_view", "SELECT id, name FROM source_table")
+            .config(Value::from_dyn_object(update_via_alter_config(
+                false,
+                Some(model_setting),
+            )))
+            .build();
+        render_view(&harness, ADAPTER, ctx).expect("view materialization should succeed");
+        harness
+    }
+
+    #[test]
+    fn model_setting_opts_into_v2_when_project_flag_is_off() {
+        let h = render_existing_view_with_model_setting(false, true);
+        // Only the v2 path diffs model config against the existing view.
+        h.mock()
+            .observed_calls()
+            .assert_called("get_config_from_model");
+    }
+
+    #[test]
+    fn model_setting_opts_out_of_v2_when_project_flag_is_on() {
+        let h = render_existing_view_with_model_setting(true, false);
+        h.mock()
+            .observed_calls()
+            .assert_not_called("get_config_from_model");
+        assert_executed_contains(h.mock(), "create or replace view");
     }
 }
 
