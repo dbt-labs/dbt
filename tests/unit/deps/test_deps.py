@@ -122,6 +122,24 @@ class TestTarballPackage(unittest.TestCase):
                     a_pinned.fetch_metadata("", DbtProjectYamlRenderer())
 
     @mock.patch("dbt.deps.tarball.get_downloads_path")
+    def test_tarball_package_name_must_stay_in_downloads_dir(self, mock_get_downloads_path):
+        mock_get_downloads_path.return_value = "downloads_path"
+        bad_names = [
+            "/tmp/escaped",
+            "../escaped",
+            "a/../../escaped",
+            "../../a/downloads_path/package_name",
+            ".",
+        ]
+        for bad_name in bad_names:
+            contract = TarballPackage.from_dict(
+                {"tarball": "http://example.com/package.tar.gz", "name": bad_name}
+            )
+            unpinned = TarballUnpinnedPackage.from_contract(contract)
+            with self.assertRaises(dbt.exceptions.DependencyError):
+                unpinned.resolved()
+
+    @mock.patch("dbt.deps.tarball.get_downloads_path")
     def test_tarball_package_contract(self, mock_get_downloads_path):
         dict_well_formed_contract = {
             "tarball": "http://example.com/invalid_url@/package.tar.gz",
