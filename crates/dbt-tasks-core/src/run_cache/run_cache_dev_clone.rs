@@ -370,10 +370,10 @@ async fn prepare_dev_clone_request(
     candidate: &DevCloneCandidate,
     policy: CloneIncrementalInDev,
 ) -> FsResult<Option<PreparedDevClone>> {
-    let target_relation =
-        create_relation_from_node(ctx.default_adapter_type(), candidate.local(), None)?;
+    let adapter_type = candidate.local().node_adapter();
+    let target_relation = create_relation_from_node(adapter_type, candidate.local(), None)?;
     let target_relation: Arc<dyn BaseRelation> = target_relation.into();
-    if !has_metadata_address(ctx.default_adapter_type(), target_relation.as_ref()) {
+    if !has_metadata_address(adapter_type, target_relation.as_ref()) {
         return Ok(None);
     }
     let target_table = target_relation.semantic_fqn();
@@ -404,10 +404,9 @@ async fn prepare_dev_clone_request(
         }
     }
 
-    let source_relation =
-        create_relation_from_node(ctx.default_adapter_type(), candidate.deferred(), None)?;
+    let source_relation = create_relation_from_node(adapter_type, candidate.deferred(), None)?;
     let source_relation: Arc<dyn BaseRelation> = source_relation.into();
-    if !has_metadata_address(ctx.default_adapter_type(), source_relation.as_ref()) {
+    if !has_metadata_address(adapter_type, source_relation.as_ref()) {
         return Ok(None);
     }
     let clone_source_table = source_relation.semantic_fqn();
@@ -441,16 +440,16 @@ async fn prepare_dev_clone_request(
 
     let request = CloneRequestInput {
         target_table: target_table.clone(),
-        dialect: run_cache_dialect(ctx),
+        dialect: run_cache_dialect(ctx, adapter_type),
         default_catalog: candidate.local().database(),
         execution_type: candidate.execution_type(&ctx.inner.materialization_resolver)?,
         clone_source_table: clone_source_table.clone(),
         clone_source_last_modified_epoch: source_last_modified_epoch,
         labels: node_identity(candidate.local()).labels(),
-        clone_source_table_type: candidate.clone_source_table_type(ctx.default_adapter_type()),
+        clone_source_table_type: candidate.clone_source_table_type(adapter_type),
         table_properties: candidate.table_properties(),
         clone_chain_depth_limit: clone_chain_depth_limit_for_adapter(
-            ctx.default_adapter_type(),
+            adapter_type,
             false, // dev clone target is never the prod/defer target
             ctx.inner.arg.defer,
             ctx.dbt_profile().allow_clones,
@@ -471,7 +470,7 @@ async fn relation_exists(
     name: &str,
     relation: Arc<dyn BaseRelation>,
 ) -> Option<bool> {
-    if !has_metadata_address(ctx.default_adapter_type(), relation.as_ref()) {
+    if !has_metadata_address(relation.adapter_type(), relation.as_ref()) {
         return None;
     }
     if let Some(exists) = ctx
@@ -490,10 +489,11 @@ async fn fetch_relation_exists(
     name: &str,
     relation: Arc<dyn BaseRelation>,
 ) -> Option<bool> {
-    if !has_metadata_address(ctx.default_adapter_type(), relation.as_ref()) {
+    let adapter_type = relation.adapter_type();
+    if !has_metadata_address(adapter_type, relation.as_ref()) {
         return None;
     }
-    let adapter = ctx.env.get_adapter_ref()?;
+    let adapter = ctx.adapter_store().get(adapter_type).ok()?;
     let metadata_adapter: Arc<dyn MetadataAdapter> = Arc::from(adapter.metadata_adapter()?);
     let semantic_fqn = relation.semantic_fqn();
     let metadata_options = run_cache_metadata_query_options(ctx);
@@ -549,7 +549,8 @@ async fn last_modified_epoch(
     name: &str,
     relation: Arc<dyn BaseRelation>,
 ) -> Option<i64> {
-    if !has_metadata_address(ctx.default_adapter_type(), relation.as_ref()) {
+    let adapter_type = relation.adapter_type();
+    if !has_metadata_address(adapter_type, relation.as_ref()) {
         return None;
     }
     if let Some(epoch) = ctx
@@ -561,7 +562,7 @@ async fn last_modified_epoch(
         return epoch;
     }
 
-    let adapter = ctx.env.get_adapter_ref()?;
+    let adapter = ctx.adapter_store().get(adapter_type).ok()?;
     let metadata_adapter: Arc<dyn MetadataAdapter> = Arc::from(adapter.metadata_adapter()?);
     let semantic_fqn = relation.semantic_fqn();
     let metadata_options = run_cache_metadata_query_options(ctx);

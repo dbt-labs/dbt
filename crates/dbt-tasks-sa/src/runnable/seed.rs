@@ -148,7 +148,9 @@ pub async fn maybe_resolve_remote_seed_column_hint(
     let Ok(cols) = serde_json::from_str::<Vec<String>>(json) else {
         return Err(Box::new((*err).with_chained_errors(marker)));
     };
-    enrich_seed_error_with_column_hint(err.as_mut(), seed, &cols, &ctx.env).await;
+    if let Ok(jinja_env) = ctx.jinja_env_for_adapter(seed.node_adapter()) {
+        enrich_seed_error_with_column_hint(err.as_mut(), seed, &cols, &jinja_env).await;
+    }
     Err(err)
 }
 
@@ -180,7 +182,7 @@ fn sorted_lowercase_columns(agate_table: &AgateTable) -> Vec<String> {
 }
 
 pub fn execute_seed_remote(seed: &DbtSeed, ctx: &TaskRunnerCtx) -> FsResult<NodeStatus> {
-    let mut base_context = ctx.inner.base_context.clone();
+    let mut base_context = ctx.base_context_for_adapter(seed.node_adapter())?;
 
     add_task_context(&mut base_context, seed.common(), &ctx.thread_id);
 
@@ -210,6 +212,7 @@ pub fn execute_seed_remote(seed: &DbtSeed, ctx: &TaskRunnerCtx) -> FsResult<Node
 
     let is_full_refresh =
         ctx.inner.arg.full_refresh || seed.deprecated_config.full_refresh.unwrap_or(false);
+    let jinja_env = ctx.jinja_env_for_adapter(seed.node_adapter())?;
     // Capture the CSV columns now so we can still reference them after `materialize_seed`
     // takes ownership of `agate_table`, in case we need to enrich a downstream error.
     let new_cols_sorted = sorted_lowercase_columns(&agate_table);
@@ -219,7 +222,7 @@ pub fn execute_seed_remote(seed: &DbtSeed, ctx: &TaskRunnerCtx) -> FsResult<Node
         seed.node_adapter(),
         ctx.runtime_config(),
         &ctx.inner.materialization_resolver,
-        ctx.env.clone(),
+        jinja_env.clone(),
         &base_context,
         agate_table,
         &ctx.inner.arg.io,
@@ -238,7 +241,7 @@ pub fn execute_seed_remote(seed: &DbtSeed, ctx: &TaskRunnerCtx) -> FsResult<Node
             .main_adapter_responses
             .insert(seed.__common_attr__.unique_id.clone(), main_response);
     }
-    let _ = cache_materialization_return_value(ctx.env.clone(), &relations_map);
+    let _ = cache_materialization_return_value(jinja_env, &relations_map);
 
     if had_warning {
         Ok(NodeStatus::SucceededWithWarning)
