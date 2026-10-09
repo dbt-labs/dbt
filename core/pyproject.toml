@@ -34,7 +34,7 @@ dependencies = [
     # Pin to the patch or minor version, and bump in each new minor version of dbt-core.
     "agate>=1.7.0,<1.15",
     "Jinja2>=3.1.3,<4",
-    "mashumaro[msgpack]>=3.9,<3.18",
+    "mashumaro[msgpack]>=3.9,<3.23",
     # ----
     # dbt-core uses these packages in standard ways. Pin to the major version, and check compatibility
     # with major versions in each new minor version of dbt-core.
@@ -55,7 +55,7 @@ dependencies = [
     "dbt-extractor>=0.5.0,<=0.6",
     "metricflow>=0.213.0,<1.0",
     # Minor versions for these are expected to be backwards-compatible
-    "dbt-common>=1.37.5,<2.0",
+    "dbt-common>=1.38,<2.0",
     "dbt-adapters>=1.24.5,<2.0",
     "dbt-protos>=1.0.514,<2.0",
     "dbt-core-experimental-parser>=2.0.0b1,<3",
