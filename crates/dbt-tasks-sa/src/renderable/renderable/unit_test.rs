@@ -2762,7 +2762,12 @@ mod tests {
     use super::*;
     use std::collections::HashMap;
 
+    use arrow::array::{Array, RecordBatch, StringArray};
     use arrow::datatypes::{DataType, Field, Schema, TimeUnit};
+    use dbt_adbc::connection::Builder as AdbcConnectionBuilder;
+    use dbt_adbc::database::Builder as AdbcDatabaseBuilder;
+    use dbt_adbc::driver::Builder as AdbcDriverBuilder;
+    use dbt_adbc::{Backend, LoadStrategy};
     use dbt_common::io_args::ComputeArg;
     use dbt_schemas::schemas::profiles::Execute;
     use dbt_test_primitives::assert_contains;
@@ -4411,5 +4416,143 @@ mod tests {
         ]));
         let result = strip_pseudocolumns(&schema, AdapterType::Snowflake);
         assert!(Arc::ptr_eq(&schema, &result));
+    }
+
+    /// Fixture SQL for a nullable Float32 column holding the YAML literal 0.1.
+    fn float32_value_fixture_sql(adapter_type: AdapterType) -> String {
+        let type_ops = DefaultTypeOps::new(adapter_type);
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "value",
+            DataType::Float32,
+            true,
+        )]));
+        let rows = vec![BTreeMap::from([(
+            "value".to_string(),
+            YmlValue::number(0.1.into()),
+        )])];
+        create_values(
+            &schema,
+            &rows,
+            adapter_type,
+            &type_ops,
+            None,
+            "real_tenth",
+            false,
+        )
+        .expect("float32 fixture sql")
+    }
+
+    #[test]
+    fn redshift_real_fixture_casts_point_one_as_real() {
+        // A model `CAST(0.1 AS REAL)` and a fixture of the same decimal must
+        // share binary32. Casting the fixture as float8 widens it, and the
+        // unit-test UNION then compares 0.10000000149011612 with 0.1.
+        let sql = float32_value_fixture_sql(AdapterType::Redshift);
+        assert_contains!(sql, "CAST(0.1 AS real) AS value");
+        assert!(
+            !sql.to_ascii_lowercase().contains("float8"),
+            "redshift REAL fixture must not widen to float8: {sql}"
+        );
+    }
+
+    fn strip_jinja_raw(sql: &str) -> String {
+        sql.replace("{% raw %}", "").replace("{% endraw %}", "")
+    }
+
+    fn union_expected_fixture_with_actual(expected_select: &str, actual_expr: &str) -> String {
+        format!(
+            "SELECT 'expected' AS actual_or_expected, value FROM ({expected_select}) AS expected_fixture \
+             UNION ALL \
+             SELECT 'actual' AS actual_or_expected, {actual_expr} AS value"
+        )
+    }
+
+    fn execute_duckdb(sql: &str) -> RecordBatch {
+        let mut driver = AdbcDriverBuilder::new(Backend::DuckDB, LoadStrategy::CdnCache)
+            .try_load()
+            .expect("cached duckdb adbc driver");
+        let mut database_builder = AdbcDatabaseBuilder::new(Backend::DuckDB);
+        database_builder
+            .with_named_option("path", ":memory:")
+            .expect("duckdb path option");
+        let mut database = database_builder
+            .build(&mut driver)
+            .expect("duckdb database");
+        let mut connection = AdbcConnectionBuilder::default()
+            .build(&mut database)
+            .expect("duckdb connection");
+        let mut statement = connection.new_statement().expect("duckdb statement");
+        statement.set_sql_query(sql).expect("set duckdb sql");
+        let reader = statement.execute().expect("execute duckdb sql");
+        let batches = reader
+            .map(|batch| batch.expect("record batch"))
+            .collect::<Vec<_>>();
+        assert!(!batches.is_empty(), "duckdb returned no batches for: {sql}");
+        let schema = batches[0].schema();
+        let batch = arrow::compute::concat_batches(&schema, &batches).unwrap_or_else(|err| {
+            let rows = batches
+                .iter()
+                .map(|batch| batch.num_rows())
+                .collect::<Vec<_>>();
+            panic!("concat batches {rows:?}: {err}");
+        });
+        assert_eq!(
+            batch.num_rows(),
+            2,
+            "expected one expected row and one actual row, got {} from {} batches for {sql}",
+            batch.num_rows(),
+            batches.len()
+        );
+        batch
+    }
+
+    fn float_diff_cell(result: &crate::materialize::CompareRecordBatchResult) -> String {
+        result
+            .diff_batch
+            .column_by_name("value")
+            .expect("value diff column")
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .expect("utf8 diff")
+            .value(0)
+            .to_string()
+    }
+
+    #[test]
+    fn duckdb_float32_fixture_survives_union_promotion() {
+        let fixture = strip_jinja_raw(&float32_value_fixture_sql(AdapterType::DuckDB));
+        assert_contains!(fixture, "CAST(0.1 AS float) AS value");
+        assert!(
+            !fixture.to_ascii_lowercase().contains("float8"),
+            "duckdb FLOAT fixture must stay float: {fixture}"
+        );
+
+        let matched = execute_duckdb(&union_expected_fixture_with_actual(
+            &fixture,
+            "CAST(0.1 AS FLOAT)",
+        ));
+        assert_eq!(
+            matched
+                .column_by_name("value")
+                .expect("value column")
+                .data_type(),
+            &DataType::Float32,
+            "FLOAT UNION FLOAT must stay binary32"
+        );
+        let matched = crate::materialize::compare_record_batches(&matched)
+            .expect("compare matching float fixtures");
+        assert!(!matched.has_differences);
+
+        // The fixture formatter used to emit float8. That cast parses 0.1 as
+        // binary64, while the model value widens from binary32.
+        let widened_fixture = fixture.replace("AS float)", "AS float8)");
+        let widened = execute_duckdb(&union_expected_fixture_with_actual(
+            &widened_fixture,
+            "CAST(0.1 AS FLOAT)",
+        ));
+        let widened = crate::materialize::compare_record_batches(&widened)
+            .expect("compare widened float8 fixture");
+        assert!(widened.has_differences);
+        assert_eq!(float_diff_cell(&widened), "0.1 -> 0.10000000149011612");
     }
 }

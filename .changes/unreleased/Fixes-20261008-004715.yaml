@@ -1,0 +1,7 @@
+kind: Fixes
+body: Fix unit test float comparison so differences smaller than 0.1 no longer pass
+time: 2026-10-08T00:47:15.204826096Z
+custom:
+    author: yu-iskw
+    issue: "16651"
+    project: dbt-core

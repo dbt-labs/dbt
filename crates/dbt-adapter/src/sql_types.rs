@@ -342,6 +342,11 @@ impl DefaultTypeOps {
                 _ => "integer",
             },
 
+            // Redshift REAL/FLOAT4 is binary32. Bare FLOAT and FLOAT8 are
+            // binary64, so the fixture cast must say real. DuckDB's "float"
+            // spelling is 32-bit only on DuckDB.
+            (SqlType::Real, Redshift) => "real",
+
             // ## convert_number_type() - Float32
             (SqlType::Real | SqlType::HalfFloat, _) => match adapter_type {
                 Bigquery => "float64",
@@ -349,6 +354,10 @@ impl DefaultTypeOps {
                 Fabric => "real",
                 // Exasol float type is DOUBLE PRECISION (no float8 alias).
                 Exasol => "DOUBLE PRECISION",
+                // DuckDB FLOAT/REAL is 32-bit. float8 widens the fixture, and
+                // the unit-test UNION then promotes the model value to a
+                // different f64. LakeCompute speaks the DuckDB dialect.
+                DuckDB | LakeCompute => "float",
                 _ => "float8",
             },
 
@@ -1392,6 +1401,25 @@ mod tests {
         let err = clickhouse::try_format_type(&DataType::Struct(fields), true, &mut out)
             .expect_err("structs must not silently format as String");
         assert_eq!(err.kind(), AdapterErrorKind::UnsupportedType);
+    }
+
+    #[test]
+    fn duckdb_real_formats_as_float_not_float8() {
+        assert_eq!(convert_type(&DataType::Float32, DuckDB), "float");
+        assert_eq!(convert_type(&DataType::Float64, DuckDB), "float8");
+        assert_eq!(convert_type(&DataType::Float32, LakeCompute), "float");
+        assert_eq!(convert_type(&DataType::Float64, LakeCompute), "float8");
+    }
+
+    #[test]
+    fn redshift_real_formats_as_real_not_float8() {
+        // REAL/FLOAT4 is binary32. Bare FLOAT and FLOAT8 are binary64, so a
+        // fixture cast of a Float32 column must say real.
+        assert_eq!(convert_type(&DataType::Float32, Redshift), "real");
+        assert_eq!(convert_type(&DataType::Float64, Redshift), "float8");
+        // Snowflake treats FLOAT, FLOAT4, and FLOAT8 as 64-bit.
+        assert_eq!(convert_type(&DataType::Float32, Snowflake), "float8");
+        assert_eq!(convert_type(&DataType::Float64, Snowflake), "float8");
     }
 
     #[test]
