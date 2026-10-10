@@ -49,11 +49,26 @@ pub static LATEST_VERSION_POINTER_ENABLED_BY_DEFAULT: FlagDef = FlagDef {
     docs_url: None,
 };
 
+/// Load the SQL frontend from a dynamic library instead of the built-in one.
+pub static FRONTEND_LIBRARY: FlagDef = FlagDef {
+    name: "frontend_library",
+    description: "Load the SQL frontend from a dynamic library instead of the built-in one.",
+    stage: Stage::Internal,
+    default: false,
+    remote: Remote::Never,
+    aliases: &[],
+    legacy_env: &[],
+    tracking: None,
+    remove_by: None,
+    docs_url: None,
+};
+
 /// Every flag declared in this crate.
 pub static ALL: &[&FlagDef] = &[
     &GIT_DEPS_FAST_PATH,
     &REQUIRE_REF_SEARCHES_NODE_PACKAGE_BEFORE_ROOT,
     &LATEST_VERSION_POINTER_ENABLED_BY_DEFAULT,
+    &FRONTEND_LIBRARY,
 ];
 
 #[cfg(test)]

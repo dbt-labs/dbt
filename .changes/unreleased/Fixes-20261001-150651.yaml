@@ -1,0 +1,7 @@
+kind: Fixes
+body: Fix a panic when the project directory is on a Windows network share (UNC path or mapped network drive)
+time: 2026-10-01T15:06:51.15242-05:00
+custom:
+    author: HannanNaeem
+    issue: "16428"
+    project: dbt-core

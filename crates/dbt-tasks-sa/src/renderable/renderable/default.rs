@@ -19,7 +19,7 @@ use dbt_schemas::schemas::common::DbtMaterialization;
 use dbt_schemas::schemas::properties::UnitTestOverrides;
 use dbt_schemas::schemas::{InternalDbtNodeAttributes, NodePathKind};
 use dbt_tasks_core::context::TaskRunnerCtx;
-use dbt_tasks_core::task::run_blocking_task_operation;
+use dbt_tasks_core::task::run_blocking_task_operation_with_wait_parents;
 use dbt_telemetry::{CompiledCode, NodeType};
 use minijinja::Value as MinijinjaValue;
 
@@ -33,6 +33,7 @@ pub async fn run_default_render(
     ctx: TaskRunnerCtx,
     result_sender: Option<std::sync::mpsc::SyncSender<TaskResult>>,
     local_exec_unit_test_overrides: Option<UnitTestOverrides>,
+    wait_parents: Option<Vec<tracing::span::Id>>,
 ) -> FsResult<NodeStatus> {
     let render_step = Box::new(move || {
         let mut ctx = ctx;
@@ -45,7 +46,7 @@ pub async fn run_default_render(
             &result_sender,
         )
     });
-    run_blocking_task_operation(render_step).await?
+    run_blocking_task_operation_with_wait_parents(render_step, wait_parents).await?
 }
 
 fn render_default(
@@ -112,7 +113,7 @@ fn render_default(
     )?;
 
     if let Some(overrides) = local_exec_unit_test_overrides {
-        unit_test::apply_unit_test_overrides(&mut compile_context, overrides, ctx);
+        unit_test::apply_unit_test_overrides(&mut compile_context, overrides, ctx)?;
     }
 
     let render_file_path = node

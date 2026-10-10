@@ -787,6 +787,7 @@ impl<'a> AllPhasesExecutor<'a> {
             // model to scope to, and every check reported `skipped`, so retry exited 0 on a project
             // whose check still fails. Split them: check ids become names to re-run, everything else
             // becomes the schedule.
+            let nothing_to_retry = retry_state.retryable_node_ids.is_empty();
             let (retry_check_ids, retry_node_ids): (Vec<String>, Vec<String>) = retry_state
                 .retryable_node_ids
                 .into_iter()
@@ -820,6 +821,10 @@ impl<'a> AllPhasesExecutor<'a> {
             // a check-blocked `dbt build`. Empty means "run every check" (a model-only
             // failure, or a legacy artifact whose ids did not decode).
             self.arg.to_mut().check_names = failed_check_names;
+            // Empty `check_names` would run every check, so a no-op retry skips the gate instead.
+            if nothing_to_retry {
+                self.arg.to_mut().skip_checks = true;
+            }
             Ok(custom_schedule)
         } else {
             Ok(None)
@@ -1999,6 +2004,7 @@ impl<'a> AllPhasesExecutor<'a> {
                     &compilation.dbt_cloud_config().cloned(),
                     &self.arg.io,
                     self.arg.write_catalog,
+                    !resolved_state.semantic_layer_spec_is_legacy,
                 )
                 .await?;
             }

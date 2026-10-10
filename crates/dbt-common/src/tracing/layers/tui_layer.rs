@@ -9,12 +9,11 @@ use std::{
 use crate::collections::HashSet;
 use console::Term;
 use dbt_telemetry::{
-    AssetParsed, CompiledCode, CompiledCodeInline, ConnectionLimitWait, DepsAddPackage,
-    DepsAllPackagesInstalled, DepsPackageInstalled, ExecutionPhase, GenericOpExecuted,
-    GenericOpItemProcessed, HookProcessed, Invocation, ListItemOutput, LogMessage, NodeEvaluated,
-    NodeOutcome, NodeProcessed, NodeSkipReason, NodeType, PhaseExecuted, ProgressMessage,
-    QueryExecuted, ShowDataOutput, ShowResult, StateModifiedDiff, TestOutcome, UserLogMessage,
-    get_test_outcome,
+    AssetParsed, CompiledCode, CompiledCodeInline, DepsAddPackage, DepsAllPackagesInstalled,
+    DepsPackageInstalled, ExecutionPhase, GenericOpExecuted, GenericOpItemProcessed, HookProcessed,
+    Invocation, ListItemOutput, LogMessage, NodeEvaluated, NodeOutcome, NodeProcessed,
+    NodeSkipReason, NodeType, PhaseExecuted, ProgressMessage, QueryExecuted, ShowDataOutput,
+    ShowResult, StateModifiedDiff, TestOutcome, ThreadPoolWait, UserLogMessage, get_test_outcome,
 };
 use dbt_tracing::{
     AnyTelemetryEvent, LogRecordInfo, SeverityNumber, SpanEndInfo, SpanStartInfo, SpanStatus,
@@ -36,9 +35,6 @@ use crate::{
         formatters::{
             asset::format_asset_parsed_start,
             color::BLUE,
-            connection_limit_wait::{
-                format_connection_limit_wait_end, format_connection_limit_wait_start,
-            },
             constants::SELECTED_NODES_TITLE,
             deps::{
                 INSTALLING_ACTION, format_package_add_end, format_package_add_start,
@@ -63,6 +59,7 @@ use crate::{
             progress::format_progress_message,
             state_mod_diff::format_state_modified_diff_lines,
             test_result::format_test_failure,
+            thread_pool_wait::{format_thread_pool_wait_end, format_thread_pool_wait_start},
         },
         fs_error_log::get_log_message,
         layer::{ConsumerLayer, TelemetryConsumer},
@@ -483,7 +480,7 @@ impl TelemetryConsumer for TuiLayer {
             // in the handler based on the verbosity level.
             && (span.attributes.is::<NodeEvaluated>()
                 || span.attributes.is::<NodeProcessed>()
-                || span.attributes.is::<ConnectionLimitWait>()
+                || span.attributes.is::<ThreadPoolWait>()
                 || span.attributes.is::<HookProcessed>()
                 || span.attributes.is::<GenericOpExecuted>()
                 || span.attributes.is::<GenericOpItemProcessed>()
@@ -543,8 +540,8 @@ impl TelemetryConsumer for TuiLayer {
             return;
         }
 
-        if let Some(wait) = span.attributes.downcast_ref::<ConnectionLimitWait>() {
-            self.handle_connection_limit_wait_start(span, wait, data_provider);
+        if span.attributes.is::<ThreadPoolWait>() {
+            self.handle_thread_pool_wait_start(span, data_provider);
             return;
         }
 
@@ -592,8 +589,8 @@ impl TelemetryConsumer for TuiLayer {
             return;
         }
 
-        if let Some(wait) = span.attributes.downcast_ref::<ConnectionLimitWait>() {
-            self.handle_connection_limit_wait_end(span, wait, data_provider);
+        if span.attributes.is::<ThreadPoolWait>() {
+            self.handle_thread_pool_wait_end(span, data_provider);
             return;
         }
 
@@ -989,10 +986,9 @@ impl TuiLayer {
         }
     }
 
-    fn handle_connection_limit_wait_start(
+    fn handle_thread_pool_wait_start(
         &self,
         span: &SpanStartInfo,
-        wait: &ConnectionLimitWait,
         data_provider: &DataProvider<'_>,
     ) {
         self.set_node_context_idle_state(data_provider, true);
@@ -1003,7 +999,7 @@ impl TuiLayer {
             return;
         }
 
-        let formatted = format_connection_limit_wait_start(wait);
+        let formatted = format_thread_pool_wait_start();
         self.write_suspended(|| {
             io::stdout()
                 .lock()
@@ -1012,12 +1008,7 @@ impl TuiLayer {
         });
     }
 
-    fn handle_connection_limit_wait_end(
-        &self,
-        span: &SpanEndInfo,
-        wait: &ConnectionLimitWait,
-        data_provider: &DataProvider<'_>,
-    ) {
+    fn handle_thread_pool_wait_end(&self, span: &SpanEndInfo, data_provider: &DataProvider<'_>) {
         self.set_node_context_idle_state(data_provider, false);
 
         // In interactive mode, waiting is represented by the progress context
@@ -1030,7 +1021,7 @@ impl TuiLayer {
             .end_time_unix_nano
             .duration_since(span.start_time_unix_nano)
             .unwrap_or_default();
-        let formatted = format_connection_limit_wait_end(wait, duration);
+        let formatted = format_thread_pool_wait_end(duration);
         self.write_suspended(|| {
             io::stdout()
                 .lock()

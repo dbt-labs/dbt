@@ -59,6 +59,7 @@ message QueryExecuted {
 }
 
 // Time spent waiting for connection concurrency limits to allow a node to proceed.
+// Superseded by `v1.public.events.fusion.process.ThreadPoolWait` and no longer emitted.
 message ConnectionLimitWait {
   // Number of active nodes in task runner. Empty unless trace log level is set.
   optional uint32 active_nodes = 1;
