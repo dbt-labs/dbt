@@ -2647,6 +2647,29 @@ fn set_eval_args_threads_and_target(arg: &EvalArgs, dbt_state: &DbtState) -> Eva
         .build()
 }
 
+/// Resolve the effective thread count for this invocation.
+///
+/// The `--threads` flag (falling back to the profile's `threads`) wins, with
+/// `--no-parallel` pinning it to 1, `--threads 0` meaning "as many as
+/// possible", and otherwise the adapter default (ensured non-zero).
+fn resolve_effective_threads(
+    no_parallel: bool,
+    num_threads: Option<usize>,
+    adapter_default_threads: usize,
+) -> usize {
+    if no_parallel {
+        1
+    } else {
+        match num_threads {
+            // `--threads 0` asks for as many as possible.
+            Some(0) => dbt_runtime::builder::DEFAULT_MAX_BLOCKING_THREADS,
+            Some(threads) => threads,
+            // select a default based on the adapter type (ensure non-zero).
+            None => adapter_default_threads.max(1),
+        }
+    }
+}
+
 /// Reconcile the `dbt_runtime` pool with the `threads` of this invocation.
 ///
 /// The pool is built in `main_impl` before any profile is loaded, so it starts
@@ -2657,21 +2680,34 @@ fn set_eval_args_threads_and_target(arg: &EvalArgs, dbt_state: &DbtState) -> Eva
 /// `--no-parallel` already pins the pool to a single thread, and `--threads 0`
 /// means "as many as possible"; in both cases the cap set by `main_impl` stands.
 fn set_runtime_max_parallelism(arg: &EvalArgs, dbt_state: &DbtState) {
-    let threads = if arg.no_parallel {
-        1
-    } else {
-        match arg.num_threads {
-            // `--threads 0` asks for as many as possible.
-            Some(0) => dbt_runtime::builder::DEFAULT_MAX_BLOCKING_THREADS,
-            Some(threads) => threads,
-            // select a default based on the adapter type (ensure non-zero).
-            None => {
-                let adapter_type = dbt_state.dbt_profile.default_db_config().adapter_type();
-                adapter_type.default_max_threads().max(1)
-            }
-        }
-    };
+    let adapter_type = dbt_state.dbt_profile.default_db_config().adapter_type();
+    let threads = resolve_effective_threads(
+        arg.no_parallel,
+        arg.num_threads,
+        adapter_type.default_max_threads(),
+    );
     dbt_runtime::Handle::current().set_max_parallelism(NonZeroUsize::new(threads).unwrap());
+    // Log the effective thread count once per invocation, in the same format
+    // dbt 1.x used, so run logs record which value was actually used (flag,
+    // profile, or adapter default). Scoped to runnable commands, matching dbt
+    // 1.x. See https://github.com/dbt-labs/dbt/issues/16682.
+    if is_runnable_command(arg.command) {
+        let target = arg.target.as_deref().unwrap_or("unknown");
+        emit_info_log_message(format!("Concurrency: {threads} threads (target='{target}')"));
+    }
+}
+
+/// Commands that execute nodes against the warehouse, where the thread count
+/// governs concurrency. This is the same set `RunTasksArgs::is_runnable` uses.
+const fn is_runnable_command(command: FsCommand) -> bool {
+    matches!(
+        command,
+        FsCommand::Run
+            | FsCommand::Test
+            | FsCommand::Build
+            | FsCommand::Seed
+            | FsCommand::Snapshot
+    )
 }
 
 fn send_vortex_telemetry_if_possible(
@@ -3068,6 +3104,59 @@ fn write_parse_artifacts(arg: &EvalArgs) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn effective_threads_flag_wins_over_adapter_default() {
+        assert_eq!(resolve_effective_threads(false, Some(4), 8), 4);
+    }
+
+    #[test]
+    fn effective_threads_zero_flag_means_as_many_as_possible() {
+        assert_eq!(
+            resolve_effective_threads(false, Some(0), 8),
+            dbt_runtime::builder::DEFAULT_MAX_BLOCKING_THREADS
+        );
+    }
+
+    #[test]
+    fn effective_threads_falls_back_to_adapter_default() {
+        assert_eq!(resolve_effective_threads(false, None, 8), 8);
+    }
+
+    #[test]
+    fn effective_threads_adapter_default_is_never_zero() {
+        assert_eq!(resolve_effective_threads(false, None, 0), 1);
+    }
+
+    #[test]
+    fn effective_threads_no_parallel_pins_to_one() {
+        assert_eq!(resolve_effective_threads(true, Some(4), 8), 1);
+    }
+
+    #[test]
+    fn concurrency_line_commands_match_runnable_set() {
+        for command in [
+            FsCommand::Run,
+            FsCommand::Test,
+            FsCommand::Build,
+            FsCommand::Seed,
+            FsCommand::Snapshot,
+        ] {
+            assert!(is_runnable_command(command), "{command:?} should log threads");
+        }
+        for command in [
+            FsCommand::Parse,
+            FsCommand::Compile,
+            FsCommand::List,
+            FsCommand::Docs,
+            FsCommand::Deps,
+        ] {
+            assert!(
+                !is_runnable_command(command),
+                "{command:?} should not log threads"
+            );
+        }
+    }
 
     #[test]
     fn skips_tasks_for_empty_selection_on_runnable_commands() {
