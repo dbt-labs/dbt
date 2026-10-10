@@ -1,0 +1,7 @@
+kind: Fixes
+body: run_results.json reports why a data test failed or warned ("Got 2 results, configured to fail if != 0") instead of just Error or Warn, matching dbt-core
+time: 2026-09-28T11:49:33.894005-03:00
+custom:
+    author: luc-pimentel
+    issue: "16408"
+    project: dbt-core
