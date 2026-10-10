@@ -2693,7 +2693,9 @@ fn set_runtime_max_parallelism(arg: &EvalArgs, dbt_state: &DbtState) {
     // 1.x. See https://github.com/dbt-labs/dbt/issues/16682.
     if is_runnable_command(arg.command) {
         let target = arg.target.as_deref().unwrap_or("unknown");
-        emit_info_log_message(format!("Concurrency: {threads} threads (target='{target}')"));
+        emit_info_log_message(format!(
+            "Concurrency: {threads} threads (target='{target}')"
+        ));
     }
 }
 
@@ -2702,11 +2704,7 @@ fn set_runtime_max_parallelism(arg: &EvalArgs, dbt_state: &DbtState) {
 const fn is_runnable_command(command: FsCommand) -> bool {
     matches!(
         command,
-        FsCommand::Run
-            | FsCommand::Test
-            | FsCommand::Build
-            | FsCommand::Seed
-            | FsCommand::Snapshot
+        FsCommand::Run | FsCommand::Test | FsCommand::Build | FsCommand::Seed | FsCommand::Snapshot
     )
 }
 
@@ -3142,7 +3140,10 @@ mod tests {
             FsCommand::Seed,
             FsCommand::Snapshot,
         ] {
-            assert!(is_runnable_command(command), "{command:?} should log threads");
+            assert!(
+                is_runnable_command(command),
+                "{command:?} should log threads"
+            );
         }
         for command in [
             FsCommand::Parse,
