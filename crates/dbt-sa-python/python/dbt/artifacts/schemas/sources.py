@@ -12,10 +12,9 @@ from dbt.artifacts.schemas.base import ArtifactBase, BaseArtifactMetadata, Timin
 
 
 class FreshnessStatus(str, Enum):
-    # Capitalised, unlike run_results: the Rust enum has no rename_all.
-    PASS = "Pass"
-    WARN = "Warn"
-    ERROR = "Error"
+    PASS = "pass"
+    WARN = "warn"
+    ERROR = "error"
 
 
 class FreshnessPeriod(str, Enum):
