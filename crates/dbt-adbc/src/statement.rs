@@ -3,6 +3,7 @@
 //!
 
 use std::fmt;
+use std::sync::Arc;
 
 use crate::driver_manager::ManagedStatement as ManagedAdbcStatement;
 use adbc_core::{
@@ -11,7 +12,7 @@ use adbc_core::{
     options::{OptionStatement, OptionValue},
 };
 use arrow_array::{RecordBatch, RecordBatchReader};
-use arrow_schema::Schema;
+use arrow_schema::{Schema, SchemaRef};
 
 use crate::Backend;
 
@@ -145,6 +146,42 @@ impl fmt::Debug for dyn Statement {
 #[allow(dead_code)]
 pub(crate) struct AdbcStatement(pub(crate) Backend, pub(crate) ManagedAdbcStatement);
 
+struct QueryIdRecordBatchReader {
+    inner: Box<dyn RecordBatchReader + Send>,
+    schema: SchemaRef,
+}
+
+impl QueryIdRecordBatchReader {
+    fn new(inner: Box<dyn RecordBatchReader + Send>, schema: SchemaRef) -> Self {
+        Self { inner, schema }
+    }
+}
+
+impl RecordBatchReader for QueryIdRecordBatchReader {
+    fn schema(&self) -> SchemaRef {
+        self.schema.clone()
+    }
+
+    fn next(&mut self) -> Option<Result<RecordBatch>> {
+        let batch = self.inner.next()?;
+        Some(batch.and_then(|batch| {
+            if batch.schema().metadata().get("DATABRICKS_QUERY_ID").is_some() {
+                Ok(batch)
+            } else {
+                let mut metadata = batch.schema().metadata().clone();
+                for (key, value) in self.schema.metadata().iter() {
+                    metadata.entry(key.clone()).or_insert_with(|| value.clone());
+                }
+                let new_schema = Arc::new(Schema::new_with_metadata(
+                    batch.schema().fields().clone(),
+                    metadata,
+                ));
+                RecordBatch::try_new(new_schema, batch.columns().to_vec())
+            }
+        }))
+    }
+}
+
 impl Statement for AdbcStatement {
     fn bind(&mut self, batch: RecordBatch) -> Result<()> {
         self.1.bind(batch)
@@ -157,6 +194,22 @@ impl Statement for AdbcStatement {
     fn execute<'a>(&'a mut self) -> Result<Box<dyn RecordBatchReader + Send + 'a>> {
         let reader = self.1.execute()?;
         let reader = Box::new(reader);
+
+        if self.0 == Backend::Databricks {
+            if let Some(query_id) = self.query_id_from_statement_options()? {
+                let schema = reader.schema();
+                if schema.metadata().get("DATABRICKS_QUERY_ID").is_none() {
+                    let mut metadata = schema.metadata().clone();
+                    metadata.insert("DATABRICKS_QUERY_ID".to_string(), query_id);
+                    let schema = Arc::new(Schema::new_with_metadata(
+                        schema.fields().clone(),
+                        metadata,
+                    ));
+                    return Ok(Box::new(QueryIdRecordBatchReader::new(reader, schema)));
+                }
+            }
+        }
+
         Ok(reader)
     }
 
@@ -217,7 +270,7 @@ impl Statement for AdbcStatement {
                 "dbt-specific option '{}' is not queryable from AdbcStatement",
                 name
             );
-            Error::with_message_and_status(message, Status::NotFound);
+            return Err(Error::with_message_and_status(message, Status::NotFound));
         }
         self.1.get_option_string(key)
     }
@@ -236,5 +289,38 @@ impl Statement for AdbcStatement {
 
     fn debug_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         std::write!(f, "AdbcStatement")
+    }
+}
+
+impl AdbcStatement {
+    fn query_id_from_statement_options(&self) -> Result<Option<String>> {
+        for key in [
+            "DATABRICKS_QUERY_ID",
+            "databricks_query_id",
+            "databricks.query_id",
+            "adbc.databricks.query_id",
+            "adbc.statement.id",
+            "statement_id",
+            "query_id",
+        ] {
+            let option = OptionStatement::Other(key.to_string());
+            match self.get_option_string(option) {
+                Ok(value) if !value.is_empty() => return Ok(Some(value)),
+                _ => continue,
+            }
+        }
+        Ok(None)
+    }
+
+    fn backend_query_id_option_keys() -> [&'static str; 7] {
+        [
+            "DATABRICKS_QUERY_ID",
+            "databricks_query_id",
+            "databricks.query_id",
+            "adbc.databricks.query_id",
+            "adbc.statement.id",
+            "statement_id",
+            "query_id",
+        ]
     }
 }
