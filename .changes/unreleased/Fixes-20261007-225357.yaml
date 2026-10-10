@@ -1,0 +1,7 @@
+kind: Fixes
+body: Exclude numbered unique-key staging helpers from Spark snapshot schema evolution and merge columns.
+time: 2026-10-07T22:53:57.41727+02:00
+custom:
+    author: giacus
+    issue: "16652"
+    project: dbt-core
