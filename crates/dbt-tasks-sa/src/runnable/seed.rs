@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use crate::materialize::materialize_seed;
@@ -15,6 +16,7 @@ use dbt_schemas::schemas::InternalDbtNode;
 use dbt_schemas::schemas::relations::base::BaseRelation;
 use dbt_schemas::schemas::{DbtSeed, InternalDbtNodeAttributes};
 use dbt_tasks_core::context::TaskRunnerCtx;
+use dbt_yaml::Spanned;
 
 use arrow::array::RecordBatch;
 use arrow::compute::concat_batches;
@@ -166,6 +168,38 @@ async fn enrich_seed_error_with_column_hint(
     }
 }
 
+/// Renames the `column_types` keys that match a seed column only up to case to that column's name.
+///
+/// The columns reach the materialization already renamed by the adapter's
+/// `InferColumnNameStrategy` (lower-cased on Postgres, Redshift, DuckDB, ...), while the seed
+/// macros look `column_types` up by exact name. Returns `None` when no key needs renaming.
+fn align_column_types_keys(
+    column_types: &BTreeMap<Spanned<String>, String>,
+    column_names: &[String],
+) -> Option<BTreeMap<Spanned<String>, String>> {
+    let mut renamed = false;
+    let aligned = column_types
+        .iter()
+        .map(|(key, data_type)| {
+            let name: &str = key.as_ref();
+            let exact = column_names.iter().any(|column| column == name);
+            let mut matches = column_names
+                .iter()
+                .filter(|column| column.to_lowercase() == name.to_lowercase());
+            match (exact, matches.next(), matches.next()) {
+                (false, Some(column), None)
+                    if !column_types.contains_key(&Spanned::new(column.clone())) =>
+                {
+                    renamed = true;
+                    (key.clone().map(|_| column.clone()), data_type.clone())
+                }
+                _ => (key.clone(), data_type.clone()),
+            }
+        })
+        .collect();
+    renamed.then_some(aligned)
+}
+
 /// Lowercased, sorted column names — cheap enough to compute up-front so we can hand
 /// `agate_table` off to `materialize_seed` (which consumes it) and still recover the
 /// CSV's columns later if we need to enrich an error.
@@ -206,6 +240,32 @@ pub fn execute_seed_remote(seed: &DbtSeed, ctx: &TaskRunnerCtx) -> FsResult<Node
         })?
     } else {
         agate_table
+    };
+
+    let column_names: Vec<String> = agate_table.column_names();
+    let aligned_seed;
+    let seed = match (
+        seed.deprecated_config
+            .column_types
+            .as_ref()
+            .and_then(|types| align_column_types_keys(types, &column_names)),
+        seed.__seed_attr__
+            .column_types
+            .as_ref()
+            .and_then(|types| align_column_types_keys(types, &column_names)),
+    ) {
+        (None, None) => seed,
+        (config_types, attr_types) => {
+            let mut aligned = seed.clone();
+            if let Some(types) = config_types {
+                aligned.deprecated_config.column_types = Some(types);
+            }
+            if let Some(types) = attr_types {
+                aligned.__seed_attr__.column_types = Some(types);
+            }
+            aligned_seed = aligned;
+            &aligned_seed
+        }
     };
 
     let is_full_refresh =
@@ -266,4 +326,60 @@ pub fn read_parquet_to_agate_table(path: &std::path::Path) -> FsResult<AgateTabl
         RecordBatch::new_empty(schema)
     };
     Ok(AgateTable::from_record_batch(Arc::new(batch)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn types(entries: &[(&str, &str)]) -> BTreeMap<Spanned<String>, String> {
+        entries
+            .iter()
+            .map(|(k, v)| (Spanned::new(k.to_string()), v.to_string()))
+            .collect()
+    }
+
+    fn columns(names: &[&str]) -> Vec<String> {
+        names.iter().map(|n| n.to_string()).collect()
+    }
+
+    #[test]
+    fn renames_key_that_differs_only_by_case() {
+        let aligned = align_column_types_keys(
+            &types(&[("EVENT_DATE", "date")]),
+            &columns(&["event_id", "event_date"]),
+        );
+        assert_eq!(aligned, Some(types(&[("event_date", "date")])));
+    }
+
+    #[test]
+    fn leaves_exact_keys_untouched() {
+        let aligned = align_column_types_keys(
+            &types(&[("event_date", "date")]),
+            &columns(&["event_id", "event_date"]),
+        );
+        assert_eq!(aligned, None);
+    }
+
+    #[test]
+    fn leaves_unknown_keys_untouched() {
+        let aligned =
+            align_column_types_keys(&types(&[("MISSING", "date")]), &columns(&["event_date"]));
+        assert_eq!(aligned, None);
+    }
+
+    #[test]
+    fn does_not_rename_when_several_columns_match() {
+        let aligned = align_column_types_keys(&types(&[("ID", "bigint")]), &columns(&["id", "Id"]));
+        assert_eq!(aligned, None);
+    }
+
+    #[test]
+    fn keeps_the_exact_key_when_both_spellings_are_given() {
+        let aligned = align_column_types_keys(
+            &types(&[("EVENT_DATE", "varchar"), ("event_date", "date")]),
+            &columns(&["event_date"]),
+        );
+        assert_eq!(aligned, None);
+    }
 }
