@@ -1,0 +1,7 @@
+kind: Fixes
+body: Inherit source config tags on source data tests.
+time: 2026-09-24T11:30:51.446631-04:00
+custom:
+    author: akashmalbari
+    issue: "16347"
+    project: dbt-core
