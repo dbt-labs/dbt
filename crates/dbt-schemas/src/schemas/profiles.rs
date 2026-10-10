@@ -8,6 +8,7 @@ use dbt_common::ErrorCode;
 use dbt_common::tracing::dbt_emit::emit_warn_log_message;
 use dbt_yaml::DbtSchema;
 use dbt_yaml::UntaggedEnumDeserialize;
+use indexmap::IndexMap;
 use merge::Merge;
 use serde_derive::Deserialize;
 use serde_derive::Serialize;
@@ -780,6 +781,8 @@ pub struct SnowflakeDbConfig {
     pub workload_identity_entra_resource: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub s3_stage_vpce_dns_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session_parameters: Option<IndexMap<String, YmlValue>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub host: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -2307,6 +2310,43 @@ mod tests {
                 "type: lake_compute\nbase_url: https://example.invalid\n"
             )
             .is_err(),
+        );
+    }
+
+    #[test]
+    fn test_snowflake_session_parameters_keep_yaml_order() {
+        let config: DbConfig = dbt_yaml::from_str(
+            r#"
+type: snowflake
+session_parameters:
+  WEEK_START: 1
+  TIMEZONE: Asia/Seoul
+  STATEMENT_TIMEOUT_IN_SECONDS: 3600
+  ABORT_DETACHED_QUERY: true
+  LOCK_TIMEOUT: 60
+"#,
+        )
+        .unwrap();
+        let DbConfig::Snowflake(config) = config else {
+            panic!("Expected Snowflake config");
+        };
+
+        let keys: Vec<&str> = config
+            .session_parameters
+            .as_ref()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
+        assert_eq!(
+            keys,
+            [
+                "WEEK_START",
+                "TIMEZONE",
+                "STATEMENT_TIMEOUT_IN_SECONDS",
+                "ABORT_DETACHED_QUERY",
+                "LOCK_TIMEOUT",
+            ]
         );
     }
 
