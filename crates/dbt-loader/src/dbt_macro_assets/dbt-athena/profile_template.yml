@@ -1,0 +1,23 @@
+fixed:
+  type: athena
+prompts:
+  s3_staging_dir:
+    hint: S3 location to store Athena query results and metadata, e.g. s3://athena_query_result/prefix/
+
+  s3_data_dir:
+    hint: S3 location where to store data/tables, e.g. s3://bucket_name/prefix/
+
+  region_name:
+    hint: AWS region of your Athena instance
+
+  schema:
+    hint: Specify the schema (Athena database) to build models into (lowercase only)
+
+  database:
+    hint: Specify the database (Data catalog) to build models into (lowercase only)
+    default: awsdatacatalog
+
+  threads:
+    hint: '1 or more'
+    type: 'int'
+    default: 1
