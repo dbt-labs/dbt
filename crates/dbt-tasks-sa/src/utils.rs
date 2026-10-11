@@ -596,6 +596,12 @@ pub fn filter_missing_schemas(
         .fold(0, |acc, (_, schemas)| acc + schemas.len());
     let mut missing_catalog_schemas = Vec::with_capacity(catalog_schema_count);
     for (catalog, schemas) in catalog_schemas {
+        if adapter.checks_required_schemas_only() {
+            missing_catalog_schemas.extend(schemas_not_found(catalog, schemas, |schema| {
+                adapter.check_schema_exists_typed(state, catalog, schema)
+            }));
+            continue;
+        }
         let quoted_catalog = quote_component(
             adapter.adapter_type(),
             &adapter.engine().quoting(),
@@ -635,6 +641,20 @@ pub fn filter_missing_schemas(
     }
 
     Ok(missing_catalog_schemas)
+}
+
+/// Schemas of `catalog` that `exists` does not confirm. A failed check counts
+/// as missing, like a failed listing in [`filter_missing_schemas`].
+fn schemas_not_found<E>(
+    catalog: &str,
+    schemas: &BTreeMap<String, String>,
+    exists: impl Fn(&str) -> Result<bool, E>,
+) -> Vec<(String, String, String)> {
+    schemas
+        .iter()
+        .filter(|(schema, _)| !matches!(exists(schema), Ok(true)))
+        .map(|(schema, unique_id)| (catalog.to_string(), schema.clone(), unique_id.clone()))
+        .collect()
 }
 
 pub fn typecheck_macros(
@@ -876,6 +896,46 @@ mod catalog_schema_group_tests {
                 (
                     AdapterType::DuckDB,
                     map(&[("db", "main", "model.p.a_duck")])
+                ),
+            ]
+        );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn schemas(names: &[&str]) -> BTreeMap<String, String> {
+        names
+            .iter()
+            .map(|name| (name.to_string(), format!("model.pkg.{name}")))
+            .collect()
+    }
+
+    #[test]
+    fn schemas_not_found_keeps_only_unconfirmed_schemas() {
+        let found = schemas_not_found(
+            "awsdatacatalog",
+            &schemas(&["analytics", "failing", "staging"]),
+            |schema| match schema {
+                "analytics" => Ok(true),
+                "staging" => Ok(false),
+                _ => Err("AccessDeniedException"),
+            },
+        );
+        assert_eq!(
+            found,
+            vec![
+                (
+                    "awsdatacatalog".to_string(),
+                    "failing".to_string(),
+                    "model.pkg.failing".to_string()
+                ),
+                (
+                    "awsdatacatalog".to_string(),
+                    "staging".to_string(),
+                    "model.pkg.staging".to_string()
                 ),
             ]
         );
