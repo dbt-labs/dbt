@@ -1,0 +1,7 @@
+kind: Fixes
+body: '`dbt compile --write-catalog` no longer crashes with a `dbt9002` internal error against DuckDB, whose ADBC driver reports the always-NULL `table_owner` column as `Int32` instead of `Utf8`; an all-NULL column is now accepted regardless of its reported Arrow type when a string is expected'
+time: 2026-09-04T06:45:00.000000+00:00
+custom:
+    author: DipakMandlik
+    issue: "14647"
+    project: dbt-fusion
