@@ -591,17 +591,21 @@ pub fn filter_missing_schemas(
     state: &State,
     catalog_schemas: &BTreeMap<String, BTreeMap<String, String>>,
 ) -> AdapterResult<Vec<(String, String, String)>> {
+    if adapter.checks_required_schemas_only() {
+        return Ok(catalog_schemas
+            .iter()
+            .flat_map(|(catalog, schemas)| {
+                schemas_not_found(catalog, schemas, |schema| {
+                    adapter.check_schema_exists_typed(state, catalog, schema)
+                })
+            })
+            .collect());
+    }
     let catalog_schema_count = catalog_schemas
         .iter()
         .fold(0, |acc, (_, schemas)| acc + schemas.len());
     let mut missing_catalog_schemas = Vec::with_capacity(catalog_schema_count);
     for (catalog, schemas) in catalog_schemas {
-        if adapter.checks_required_schemas_only() {
-            missing_catalog_schemas.extend(schemas_not_found(catalog, schemas, |schema| {
-                adapter.check_schema_exists_typed(state, catalog, schema)
-            }));
-            continue;
-        }
         let quoted_catalog = quote_component(
             adapter.adapter_type(),
             &adapter.engine().quoting(),
