@@ -1,4 +1,6 @@
 use std::borrow::Cow;
+use std::collections::hash_map::RandomState;
+use std::hash::{BuildHasher, Hasher};
 use std::time::{Duration, Instant};
 
 use dbt_adapter_core::AdapterType;
@@ -25,6 +27,11 @@ pub enum BackoffStrategy {
     Quadratic,
     /// Doubling backoff capped at 60s: 1, 2, 4, 8, 16, 32, 60, 60, ...
     Exponential,
+    /// A uniformly random wait below 1, 2, 4, ... seconds, the bound capped at 100s.
+    ///
+    /// Matches dbt-athena (Python)'s `wait_random_exponential(max=100)`. The
+    /// randomness keeps writers that conflicted together from retrying together.
+    RandomExponential,
 }
 
 impl BackoffStrategy {
@@ -41,8 +48,22 @@ impl BackoffStrategy {
                 let seconds = 2u64.saturating_pow(attempt.saturating_sub(1));
                 Duration::from_secs(seconds.min(60))
             }
+            BackoffStrategy::RandomExponential => {
+                let bound = 2f64
+                    .powi(attempt.saturating_sub(1).min(31) as i32)
+                    .min(100.0);
+                Duration::from_secs_f64(bound * random_fraction())
+            }
         }
     }
+}
+
+/// A uniformly random number in `[0, 1)`, from the top 53 bits of a hash keyed by
+/// std's `RandomState`: its keys are seeded from the OS once per thread and change
+/// on every call, so concurrent writers draw different waits without a new dependency.
+fn random_fraction() -> f64 {
+    let bits = RandomState::new().build_hasher().finish() >> 11;
+    bits as f64 / (1u64 << 53) as f64
 }
 
 /// Policy for retrying a connection-establishment failure.
@@ -236,6 +257,10 @@ pub(crate) fn matches_go_net_transient(msg_lowercase: &str) -> bool {
 /// Retries a transient query-*execution* failure (as opposed to
 /// [`ConnectionRetryPolicy`], which retries connection-open).
 ///
+/// Athena: reruns a query that fails with `ICEBERG_COMMIT_ERROR`, a commit
+/// conflict with a concurrent Iceberg write, up to `num_iceberg_retries` times
+/// (default 3), as dbt-athena does. A rerun is a new query execution.
+///
 /// Retries on the same connection: Fusion runs Redshift autocommit-only, so
 /// there's no aborted transaction to clear, and the driver re-`Prepare`s
 /// fresh on every call -- enough to recover from a stale-OID or
@@ -249,15 +274,23 @@ pub struct QueryRetryPolicy {
 }
 
 impl QueryRetryPolicy {
-    /// Reads Redshift's actual profile field names (`retries`, not `connect_retries`).
+    /// Reads Redshift's actual profile field names (`retries`, not `connect_retries`),
+    /// and Athena's `num_iceberg_retries`.
     pub fn new(adapter_type: AdapterType, config: &AdapterConfig) -> QueryRetryPolicy {
-        let retries = match adapter_type {
-            AdapterType::Bigquery => config
-                .get_string("job_retries")
-                .or_else(|| config.get_string("retries")),
-            _ => config.get_string("retries"),
+        let (retries, default_retries) = match adapter_type {
+            AdapterType::Bigquery => (
+                config
+                    .get_string("job_retries")
+                    .or_else(|| config.get_string("retries")),
+                1,
+            ),
+            // https://github.com/dbt-labs/dbt-adapters/blob/33ffe6a81140a7304929b43af47e514753107789/dbt-athena/src/dbt/adapters/athena/connections.py#L261-L272
+            AdapterType::Athena => (config.get_string("num_iceberg_retries"), 3),
+            _ => (config.get_string("retries"), 1),
         };
-        let max_retries = retries.and_then(|v| v.parse::<u32>().ok()).unwrap_or(1);
+        let max_retries = retries
+            .and_then(|v| v.parse::<u32>().ok())
+            .unwrap_or(default_retries);
         let retry_all = config.get_bool("retry_all").unwrap_or(false);
         let retry_deadline = match adapter_type {
             AdapterType::Bigquery => config
@@ -280,10 +313,11 @@ impl QueryRetryPolicy {
         &self,
         mut query_fn: impl FnMut() -> Result<T, Cancellable<adbc_core::error::Error>>,
     ) -> Result<T, Cancellable<adbc_core::error::Error>> {
-        match self.adapter_type {
-            AdapterType::Redshift | AdapterType::Bigquery => {}
+        let backoff = match self.adapter_type {
+            AdapterType::Redshift | AdapterType::Bigquery => BackoffStrategy::Exponential,
+            AdapterType::Athena => BackoffStrategy::RandomExponential,
             _ => return query_fn(),
-        }
+        };
         retry_loop(
             self.max_retries,
             self.retry_deadline,
@@ -292,7 +326,7 @@ impl QueryRetryPolicy {
                 Cancellable::Cancelled => false,
                 Cancellable::Error(e) => self.is_retryable(e),
             },
-            |attempt| BackoffStrategy::Exponential.delay_before_next_attempt(attempt),
+            |attempt| backoff.delay_before_next_attempt(attempt),
             |_, _, _| {},
         )
     }
@@ -331,6 +365,7 @@ impl QueryRetryPolicy {
                         )
                 })
             }),
+            AdapterType::Athena => err.message.contains("ICEBERG_COMMIT_ERROR"),
             _ => false,
         }
     }
@@ -780,6 +815,129 @@ mod tests {
             Exponential.delay_before_next_attempt(20),
             Duration::from_secs(60)
         );
+    }
+
+    // -- QueryRetryPolicy: Athena ---------------------------------------------
+
+    fn athena_policy(fields: &[(&str, dbt_yaml::Value)]) -> QueryRetryPolicy {
+        let mapping =
+            dbt_yaml::Mapping::from_iter(fields.iter().map(|(k, v)| ((*k).into(), v.clone())));
+        QueryRetryPolicy::new(AdapterType::Athena, &AdapterConfig::new(mapping))
+    }
+
+    /// Calls `policy` with a query that fails with `message` the first `failures`
+    /// times; returns the result and the number of calls.
+    fn run_failing(
+        policy: &QueryRetryPolicy,
+        failures: u32,
+        message: &str,
+    ) -> (Result<u32, Cancellable<AdbcError>>, u32) {
+        let mut calls = 0;
+        let result = policy.execute(|| {
+            calls += 1;
+            if calls <= failures {
+                Err(Cancellable::Error(adbc_err(Status::IO, message)))
+            } else {
+                Ok(calls)
+            }
+        });
+        (result, calls)
+    }
+
+    const ICEBERG_COMMIT_ERROR: &str =
+        "[athena] query failed: ICEBERG_COMMIT_ERROR: Failed to commit Iceberg update to table";
+
+    #[test]
+    fn random_exponential_backoff_stays_below_its_bound_and_varies() {
+        for (attempt, bound) in [
+            (1, 1.0),
+            (2, 2.0),
+            (3, 4.0),
+            (7, 64.0),
+            (8, 100.0),
+            (40, 100.0),
+        ] {
+            let delays: Vec<f64> = (0..50)
+                .map(|_| {
+                    BackoffStrategy::RandomExponential
+                        .delay_before_next_attempt(attempt)
+                        .as_secs_f64()
+                })
+                .collect();
+            assert!(
+                delays.iter().all(|d| (0.0..bound).contains(d)),
+                "attempt {attempt}: {delays:?} not all below {bound}s"
+            );
+            assert!(
+                delays.iter().any(|d| *d != delays[0]),
+                "attempt {attempt}: no jitter"
+            );
+        }
+    }
+
+    #[test]
+    fn athena_query_retry_policy_reads_num_iceberg_retries() {
+        assert_eq!(athena_policy(&[]).max_retries, 3, "dbt-athena's default");
+        assert_eq!(
+            athena_policy(&[("num_iceberg_retries", 5.into())]).max_retries,
+            5
+        );
+        assert_eq!(
+            athena_policy(&[("retries", 7.into())]).max_retries,
+            3,
+            "Redshift's field does not apply"
+        );
+    }
+
+    #[test]
+    fn athena_reruns_an_iceberg_commit_conflict_then_succeeds() {
+        let policy = athena_policy(&[("num_iceberg_retries", 1.into())]);
+        let (result, calls) = run_failing(&policy, 1, ICEBERG_COMMIT_ERROR);
+        assert_eq!(result.unwrap(), 2);
+        assert_eq!(calls, 2);
+    }
+
+    #[test]
+    fn athena_stops_after_num_iceberg_retries_reruns() {
+        let policy = athena_policy(&[("num_iceberg_retries", 2.into())]);
+        let (result, calls) = run_failing(&policy, u32::MAX, ICEBERG_COMMIT_ERROR);
+        assert!(result.is_err());
+        // 1 initial attempt + 2 reruns.
+        assert_eq!(calls, 3);
+    }
+
+    #[test]
+    fn athena_with_zero_num_iceberg_retries_does_not_rerun() {
+        let policy = athena_policy(&[("num_iceberg_retries", 0.into())]);
+        let (result, calls) = run_failing(&policy, 1, ICEBERG_COMMIT_ERROR);
+        assert!(result.is_err());
+        assert_eq!(calls, 1);
+    }
+
+    #[test]
+    fn athena_does_not_rerun_other_errors() {
+        let policy = athena_policy(&[("retry_all", true.into())]);
+        for message in [
+            "[athena] query failed: TABLE_NOT_FOUND: line 1:15: Table 'x' does not exist",
+            // Retryable on Redshift, not on Athena.
+            "ERROR: conflict with concurrent transaction",
+        ] {
+            let (result, calls) = run_failing(&policy, 1, message);
+            assert!(result.is_err(), "{message}");
+            assert_eq!(calls, 1, "{message}");
+        }
+    }
+
+    #[test]
+    fn athena_never_reruns_cancellation() {
+        let policy = athena_policy(&[]);
+        let mut calls = 0;
+        let result: Result<i32, Cancellable<AdbcError>> = policy.execute(|| {
+            calls += 1;
+            Err(Cancellable::Cancelled)
+        });
+        assert!(matches!(result, Err(Cancellable::Cancelled)));
+        assert_eq!(calls, 1);
     }
 
     // -- QueryRetryPolicy ------------------------------------------------------
