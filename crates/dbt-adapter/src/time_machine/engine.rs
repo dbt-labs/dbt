@@ -138,6 +138,11 @@ impl EventReplayer {
         Ok(Self::new(recording))
     }
 
+    /// Adapter type parsed from the recording header.
+    pub(crate) fn adapter_type(&self) -> AdapterType {
+        self.replay_ctx.adapter_type
+    }
+
     /// Set the replay ordering mode.
     ///
     /// - `Strict`: Events must match in exact sequence order (default)

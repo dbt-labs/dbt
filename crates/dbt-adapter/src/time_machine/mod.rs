@@ -78,6 +78,11 @@ pub(crate) mod serializable_impls;
 pub(crate) mod validation;
 pub mod writer;
 
+/// Serializes tests that touch the global recorder/replayer.
+#[cfg(test)]
+pub(crate) static TIME_MACHINE_TEST_LOCK: tokio::sync::Mutex<()> =
+    tokio::sync::Mutex::const_new(());
+
 // Re-export commonly used types
 pub use engine::{EventReplayer, ReplayCallError, ReplayerStats, TimeMachine};
 pub use event::{
