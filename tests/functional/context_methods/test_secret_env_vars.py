@@ -113,7 +113,7 @@ class TestAllowSecretProfilePackage(FirstDependencyProject):
             "type": "postgres",
             "threads": 1,
             "host": "localhost",
-            "port": 5432,
+            "port": int(os.getenv("POSTGRES_TEST_PORT", 5432)),
             # root/password
             "user": "{{ env_var('DBT_ENV_SECRET_USER') }}",
             "pass": "{{ env_var('DBT_ENV_SECRET_PASS') }}",
