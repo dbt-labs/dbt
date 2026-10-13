@@ -615,8 +615,15 @@ impl DbConfig {
             ])
         });
 
-        static NON_CREDENTIAL_KEYS: LazyLock<HashSet<&'static str>> =
-            LazyLock::new(|| HashSet::from(["token_uri", "access_key_id", "client_cert_key"]));
+        static NON_CREDENTIAL_KEYS: LazyLock<HashSet<&'static str>> = LazyLock::new(|| {
+            HashSet::from([
+                "token_uri",
+                "access_key_id",
+                // dbt-athena's `_connection_keys`: the key ID, not the secret key.
+                "aws_access_key_id",
+                "client_cert_key",
+            ])
+        });
 
         let mut stack = vec![root];
         while let Some(value) = stack.pop() {
