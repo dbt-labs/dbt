@@ -64,8 +64,8 @@ pub const OPERATION_PAYLOAD: &str = "athena.operation.payload";
 
 /// Keys of the query statistics the driver puts in the result schema metadata.
 pub mod schema_metadata {
-    pub const QUERY_ID: &str = "ATHENA:query_id";
-    pub const DATA_SCANNED_IN_BYTES: &str = "ATHENA:Statistics:DataScannedInBytes";
-    /// Rows written by a CTAS, INSERT, MERGE or DELETE; absent for DDL.
-    pub const UPDATE_COUNT: &str = "ATHENA:UpdateCount";
+    pub const QUERY_ID: &str = "ATHENA:query_execution_id";
+    pub const DATA_SCANNED_IN_BYTES: &str = "ATHENA:data_scanned_in_bytes";
+    /// Rows written by a CTAS, INSERT, MERGE or DELETE; 0 for a SELECT, absent for DDL.
+    pub const UPDATE_COUNT: &str = "ATHENA:update_count";
 }
