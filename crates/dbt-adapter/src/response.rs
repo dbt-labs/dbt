@@ -727,7 +727,7 @@ mod from_record_batch_tests {
             ("SNOWFLAKE_QUERY_ID", "snowflake-id"),
             ("BIGQUERY:query_id", "bigquery-id"),
             ("DATABRICKS_QUERY_ID", "databricks-id"),
-            ("ATHENA:query_id", "athena-id"),
+            ("ATHENA:query_execution_id", "athena-id"),
         ];
         let batch = select_batch(1, &metadata);
         for (adapter_type, expected) in [
@@ -890,8 +890,8 @@ mod from_record_batch_tests {
         let ctas = select_batch(
             0,
             &[
-                ("ATHENA:UpdateCount", "99"),
-                ("ATHENA:Statistics:DataScannedInBytes", "931"),
+                ("ATHENA:update_count", "99"),
+                ("ATHENA:data_scanned_in_bytes", "931"),
             ],
         );
         let response = AdapterResponse::from_record_batch(&ctas, AdapterType::Athena);
@@ -901,7 +901,7 @@ mod from_record_batch_tests {
         assert_eq!(response.data_scanned_in_bytes(), Some(931));
 
         // A SELECT reports UpdateCount 0; its fetched rows are the count.
-        let select = select_batch(3, &[("ATHENA:UpdateCount", "0")]);
+        let select = select_batch(3, &[("ATHENA:update_count", "0")]);
         let response = AdapterResponse::from_record_batch(&select, AdapterType::Athena);
         assert_eq!(response.message(), "OK 3");
         assert_eq!(response.data_scanned_in_bytes(), Some(0));
