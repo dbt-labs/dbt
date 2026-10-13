@@ -8,7 +8,6 @@ const DEFAULT_WORK_GROUP: &str = "primary";
 const DEFAULT_ROLE_SESSION_NAME: &str = "dbt-athena";
 const DEFAULT_ROLE_DURATION_SECONDS: u32 = 3600;
 const DEFAULT_NUM_RETRIES: u32 = 5;
-const DEFAULT_NUM_ICEBERG_RETRIES: u32 = 3;
 
 #[derive(Debug)]
 enum AthenaAuthIR<'a> {
@@ -191,7 +190,8 @@ fn apply_connection_args(
     }
 
     if let Some(endpoint_url) = config.get_str("endpoint_url") {
-        builder.with_named_option(athena::ENDPOINT_URL, endpoint_url)?;
+        // dbt-athena points only its Athena client at `endpoint_url`.
+        builder.with_named_option(athena::ATHENA_ENDPOINT_URL, endpoint_url)?;
     }
 
     if let Some(poll_interval) = config.get_string("poll_interval") {
@@ -208,16 +208,16 @@ fn apply_connection_args(
     }
 
     // `AthenaCredentials.effective_num_retries` (`num_boto3_retries or num_retries`)
-    // counts retries, as botocore's `max_attempts` does; the driver counts attempts.
+    // counts retries, as botocore's `max_attempts` and the driver's option do.
     let retries = match get_count(config, "num_boto3_retries")? {
         Some(retries) if retries > 0 => retries,
         _ => get_count(config, "num_retries")?.unwrap_or(DEFAULT_NUM_RETRIES),
     };
-    builder.with_named_option(athena::MAX_ATTEMPTS, (retries + 1).to_string())?;
+    builder.with_named_option(athena::MAX_API_RETRIES, retries.to_string())?;
 
-    let iceberg_retries =
-        get_count(config, "num_iceberg_retries")?.unwrap_or(DEFAULT_NUM_ICEBERG_RETRIES);
-    builder.with_named_option(athena::ICEBERG_COMMIT_RETRIES, iceberg_retries.to_string())?;
+    // Read by the engine's query retry policy, which reruns a query that fails with
+    // ICEBERG_COMMIT_ERROR; validated here so a bad value fails at connection time.
+    get_count(config, "num_iceberg_retries")?;
 
     Ok(builder)
 }
@@ -569,21 +569,17 @@ mod tests {
 
         // num_retries: 5 retries on top of the first attempt.
         assert_eq!(
-            other_option_value(&builder, athena::MAX_ATTEMPTS),
-            Some("6")
-        );
-        assert_eq!(
-            other_option_value(&builder, athena::ICEBERG_COMMIT_RETRIES),
-            Some("3")
+            other_option_value(&builder, athena::MAX_API_RETRIES),
+            Some("5")
         );
         assert!(other_option_value(&builder, athena::POLL_INTERVAL).is_none());
-        assert!(other_option_value(&builder, athena::ENDPOINT_URL).is_none());
+        assert!(other_option_value(&builder, athena::ATHENA_ENDPOINT_URL).is_none());
         assert!(other_option_value(&builder, athena::ROLE_ARN).is_none());
     }
 
     #[test]
     fn test_num_boto3_retries_wins_over_num_retries_unless_zero() {
-        for (boto3_retries, want) in [(2i64, "3"), (0, "8")] {
+        for (boto3_retries, want) in [(2i64, "2"), (0, "7")] {
             let mut config = base_required();
             config.insert("num_retries".into(), "7".into());
             config.insert(
@@ -595,7 +591,7 @@ mod tests {
                 .configure(&AdapterConfig::new(config))
                 .expect("configure");
             assert_eq!(
-                other_option_value(&builder, athena::MAX_ATTEMPTS),
+                other_option_value(&builder, athena::MAX_API_RETRIES),
                 Some(want)
             );
         }
@@ -621,17 +617,15 @@ mod tests {
             .expect("configure");
 
         assert_eq!(
-            other_option_value(&builder, athena::ENDPOINT_URL),
+            other_option_value(&builder, athena::ATHENA_ENDPOINT_URL),
             Some("https://vpce-123.athena.us-east-1.vpce.amazonaws.com")
         );
         assert_eq!(
             other_option_value(&builder, athena::POLL_INTERVAL),
             Some("0.5s")
         );
-        assert_eq!(
-            other_option_value(&builder, athena::ICEBERG_COMMIT_RETRIES),
-            Some("0")
-        );
+        // Not a driver option: the engine reruns ICEBERG_COMMIT_ERROR.
+        assert!(other_option_value(&builder, "athena.iceberg_commit_retries").is_none());
     }
 
     #[test]
