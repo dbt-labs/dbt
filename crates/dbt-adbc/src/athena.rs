@@ -51,19 +51,16 @@ pub const ROLE_SESSION_NAME: &str = "athena.aws.role_session_name";
 /// (`"3600s"`). Maps to `assume_role_duration_seconds`.
 pub const ROLE_DURATION: &str = "athena.aws.role_duration";
 
-/// ADBC option key for the attempts per AWS API request, the first one included.
-pub const MAX_ATTEMPTS: &str = "athena.aws.max_attempts";
+/// ADBC option key for the retries of a failed AWS API request, the first attempt
+/// not included.
+pub const MAX_API_RETRIES: &str = "athena.aws.max_api_retries";
 
 /// ADBC option key for the Athena API endpoint (`endpoint_url`).
-pub const ENDPOINT_URL: &str = "athena.endpoint_url";
+pub const ATHENA_ENDPOINT_URL: &str = "athena.aws.athena_endpoint_url";
 
 /// ADBC option key for the interval between query status checks, as a Go
 /// duration (`"1s"`). Maps to `poll_interval`.
 pub const POLL_INTERVAL: &str = "athena.poll_interval";
-
-/// ADBC option key for the reruns of a query that fails with
-/// `ICEBERG_COMMIT_ERROR` (`num_iceberg_retries`).
-pub const ICEBERG_COMMIT_RETRIES: &str = "athena.iceberg_commit_retries";
 
 /// ADBC option key for the AWS access key ID.
 /// Only used when [`AUTH_TYPE`] = [`auth_type::ACCESS_KEY`].
