@@ -805,6 +805,145 @@ __additional_properties__: {}
             "enforced contract must apply constraints, got: {rendered}"
         );
     }
+
+    // Reference: https://github.com/databricks/dbt-databricks/pull/1698
+    mod apply_constraints_order {
+        use dbt_adapter::relation::databricks::typed_constraint::TypedConstraint;
+
+        use crate::macro_test_harness::executed_sql;
+
+        use super::*;
+
+        const NAMES: [&str; 6] = ["f", "c", "a", "e", "b", "d"];
+
+        fn foreign_key(name: &str) -> Value {
+            Value::from_object(TypedConstraint::ForeignKey {
+                name: Some(format!("fk_{name}")),
+                columns: vec![format!("col_{name}")],
+                to: Some("`cat`.`sch`.`parent`".to_string()),
+                to_columns: Some(vec!["id".to_string()]),
+                expression: None,
+            })
+        }
+
+        fn sorted_names() -> Vec<String> {
+            let mut names = NAMES.map(String::from).to_vec();
+            names.sort();
+            names
+        }
+
+        fn prefixed(prefix: &str) -> Vec<Value> {
+            NAMES
+                .iter()
+                .map(|name| Value::from(format!("{prefix}_{name}")))
+                .collect()
+        }
+
+        fn apply_constraints(constraints: BTreeMap<&str, Vec<Value>>) -> Vec<String> {
+            let mut harness = MacroTestHarness::for_adapter(AdapterType::Databricks)
+                .load_all_macros()
+                .with_stub_functions()
+                .build()
+                .expect("constraint harness should build");
+            harness
+                .env_mut()
+                .env
+                .add_global("execute", Value::from(true));
+            harness.mock().on("quote", |args| {
+                let identifier = args
+                    .first()
+                    .and_then(Value::as_str)
+                    .expect("quote expects a string identifier");
+                Ok(Value::from(format!("`{identifier}`")))
+            });
+            let relation = harness.relation(
+                "TEST_DB",
+                "TEST_SCHEMA",
+                "constrained_model",
+                Some(RelationType::Table),
+            );
+            let ctx = BTreeMap::from([
+                (
+                    "relation".to_string(),
+                    RelationObject::new(relation).into_value(),
+                ),
+                ("constraints".to_string(), Value::from(constraints)),
+                (
+                    "model".to_string(),
+                    Value::from_serialize(BTreeMap::from([(
+                        "unique_id",
+                        "model.test.constrained_model",
+                    )])),
+                ),
+            ]);
+            harness
+                .render("{{ apply_constraints(relation, constraints) }}", ctx)
+                .expect("apply_constraints should render");
+            executed_sql(harness.mock())
+                .iter()
+                .map(|sql| {
+                    sql.split_whitespace()
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                        .to_lowercase()
+                })
+                .collect()
+        }
+
+        fn suffixes_after(statements: &[String], marker: &str) -> Vec<String> {
+            statements
+                .iter()
+                .filter_map(|sql| sql.split_once(marker))
+                .map(|(_, rest)| {
+                    rest.chars()
+                        .take_while(char::is_ascii_alphanumeric)
+                        .collect()
+                })
+                .collect()
+        }
+
+        #[test]
+        fn statements_are_sorted_within_each_group() {
+            let statements = apply_constraints(BTreeMap::from([
+                ("set_constraints", NAMES.map(foreign_key).to_vec()),
+                ("unset_constraints", NAMES.map(foreign_key).to_vec()),
+                ("set_non_nulls", prefixed("set")),
+                ("unset_non_nulls", prefixed("unset")),
+            ]));
+
+            for marker in [
+                "drop constraint if exists fk_",
+                "alter column `unset_",
+                "alter column `set_",
+                "add constraint fk_",
+            ] {
+                assert_eq!(
+                    suffixes_after(&statements, marker),
+                    sorted_names(),
+                    "{marker}: {statements:#?}"
+                );
+            }
+        }
+
+        #[test]
+        fn unnamed_constraints_are_sorted_by_statement() {
+            let customs = NAMES.map(|name| {
+                Value::from_object(TypedConstraint::Custom {
+                    name: None,
+                    expression: format!("check (col_{name} > 0)"),
+                    columns: None,
+                })
+            });
+            let statements =
+                apply_constraints(BTreeMap::from([("set_constraints", customs.to_vec())]));
+
+            assert_eq!(
+                suffixes_after(&statements, "add check (col_"),
+                sorted_names(),
+                "{statements:#?}"
+            );
+        }
+    }
 }
 
 /// Isolated tests for `relations/interactive_table/*.sql`.

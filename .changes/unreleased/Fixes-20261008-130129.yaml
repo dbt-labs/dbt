@@ -1,0 +1,7 @@
+kind: Fixes
+body: dbt retry reports 'Nothing to do' and exits 0 when the previous run has no retryable nodes, matching dbt-core
+time: 2026-10-08T13:01:29.829622-05:00
+custom:
+    author: HannanNaeem
+    issue: ""
+    project: dbt-core

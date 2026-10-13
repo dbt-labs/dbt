@@ -149,7 +149,7 @@ pub async fn resolve_seeds(
         },
         default_adapter,
     )?
-    .with_resolve_defaults(arg.static_analysis.unwrap_or_default());
+    .with_resolve_defaults(arg.unconfigured_static_analysis());
 
     // TODO: update this to be relative of the root project
     let mut duplicate_errors = Vec::new();

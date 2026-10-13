@@ -109,6 +109,9 @@ pub struct SqlRunCacheRequestContext {
     pub clone_time_travel_limit: Option<i64>,
     pub clone_table_properties: Option<TableProperties>,
     pub clone_chain_depth_limit: Option<i64>,
+    pub allow_clones: Option<bool>,
+    pub is_defer_to_profile: bool,
+    pub defer_enabled: bool,
     pub default_schema: String,
     /// How the service should aggregate per-dependency freshness checks for
     /// this request. Derived from the model's
@@ -133,6 +136,9 @@ pub struct SeedRunCacheRequestContext {
     pub clone_time_travel_limit: Option<i64>,
     pub clone_table_properties: Option<TableProperties>,
     pub clone_chain_depth_limit: Option<i64>,
+    pub allow_clones: Option<bool>,
+    pub is_defer_to_profile: bool,
+    pub defer_enabled: bool,
     pub dbt_project_info: DbtProjectInfo,
 }
 
@@ -344,6 +350,9 @@ pub fn build_seed_values_request<'a>(
         clone_chain_depth_limit: context.clone_chain_depth_limit,
         dbt_node_state: Some(node_state),
         table_namespace: context.dbt_project_info.table_namespace,
+        allow_clones: context.allow_clones,
+        is_defer_to_profile: context.is_defer_to_profile,
+        defer_enabled: context.defer_enabled,
     }
     .into_proto())
 }
@@ -552,6 +561,9 @@ fn build_sql_request_input(
         compare_unrendered_code: context.compare_unrendered_code,
         table_namespace: context.dbt_project_info.table_namespace,
         ignore_external_modifications: context.ignore_external_modifications,
+        allow_clones: context.allow_clones,
+        is_defer_to_profile: context.is_defer_to_profile,
+        defer_enabled: context.defer_enabled,
     })
 }
 
@@ -1034,6 +1046,9 @@ mod tests {
             stale_upstream_policy: StaleUpstreamPolicy::Any,
             microbatch_window: None,
             dbt_project_info: make_project_info(),
+            allow_clones: Some(true),
+            is_defer_to_profile: false,
+            defer_enabled: false,
         }
     }
 
@@ -1492,6 +1507,9 @@ mod tests {
                 clone_table_properties: None,
                 clone_chain_depth_limit: Some(1),
                 dbt_project_info: project_info,
+                allow_clones: Some(true),
+                is_defer_to_profile: false,
+                defer_enabled: true,
             },
             |_| None,
         )
@@ -1556,6 +1574,9 @@ mod tests {
                     clone_table_properties: None,
                     clone_chain_depth_limit: None,
                     dbt_project_info: project_info,
+                    allow_clones: Some(true),
+                    is_defer_to_profile: false,
+                    defer_enabled: true,
                 },
                 |_| None,
             )

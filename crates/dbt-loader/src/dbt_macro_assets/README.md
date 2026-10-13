@@ -5,6 +5,9 @@ All adapter macros are currently maintained in:
 
 ## Changelog
 
+### [2026-10-06]
+  - dbt-databricks: emit constraint ALTER statements in a stable order from PR #1698
+
 ### [2026-09-24]
   - dbt-databricks: gate view/metric_view ALTER on matching relation type from PR #1687
 

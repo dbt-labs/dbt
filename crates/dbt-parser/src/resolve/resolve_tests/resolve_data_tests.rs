@@ -445,7 +445,7 @@ pub async fn resolve_data_tests(
         },
         default_adapter,
     )?
-    .with_resolve_defaults((arg.static_analysis.unwrap_or_default(), arg.store_failures));
+    .with_resolve_defaults((arg.unconfigured_static_analysis(), arg.store_failures));
 
     let render_ctx = RenderCtx {
         inner: Arc::new(RenderCtxInner {

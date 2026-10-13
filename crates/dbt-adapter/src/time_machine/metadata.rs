@@ -722,7 +722,7 @@ pub fn args_freshness_with_overrides(
             .map(|(relation, override_)| {
                 let kind = match override_ {
                     FreshnessOverride::Query(_) => "query",
-                    FreshnessOverride::Field(_) => "field",
+                    FreshnessOverride::Field { .. } => "field",
                 };
                 (relation.clone(), kind.to_string())
             })

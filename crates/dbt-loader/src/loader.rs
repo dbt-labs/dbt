@@ -16,6 +16,7 @@ use dbt_common::tracing::TracingConfigProvider;
 use dbt_common::tracing::dbt_emit::{
     emit_error_log_message, emit_warn_log_from_fs_error, emit_warn_log_message,
 };
+use dbt_common::tracing::invocation::record_resolved_warn_error_options;
 use dbt_common::tracing::span_info::SpanStatusRecorder;
 use dbt_common::warn_error_options::{
     WarnErrorOptions, project_flags_get_value, resolve_warn_error_options,
@@ -32,7 +33,6 @@ use dbt_yaml;
 use fs_deps::get_or_install_packages;
 use fs_deps::private_package::PrivatePackageResolver;
 use indexmap::IndexMap;
-use pathdiff::diff_paths;
 use serde::Deserialize;
 use std::borrow::Cow;
 use std::collections::BTreeSet;
@@ -52,7 +52,7 @@ use dbt_common::constants::{
 use dbt_common::error::LiftableResult;
 use project::DbtProject;
 
-use dbt_common::stdfs::last_modified;
+use dbt_common::stdfs::{diff_paths, last_modified};
 use dbt_common::{ErrorCode, create_debug_span, ectx, err, tokiofs};
 use dbt_common::{FsResult, fs_err};
 use dbt_jinja_vars::DbtVars;
@@ -174,6 +174,7 @@ pub(crate) fn resolve_and_reload_weo_from_project(
     if let Some(tracing_handle) = tracing_features {
         tracing_handle.set_warn_error_options(warn_error_options.clone());
     }
+    record_resolved_warn_error_options(warn_error, &warn_error_options);
 
     Ok(ResolvedWarnErrorOptions {
         warn_error,
@@ -953,7 +954,7 @@ pub async fn load_inner(
     // make all paths relative to the project directory
     for (_, files) in all_files.iter_mut() {
         for (path, _) in files.iter_mut() {
-            *path = DbtPath::from(diff_paths(&path, package_path).unwrap());
+            *path = DbtPath::from(diff_paths(&path, package_path)?);
         }
         //
         // make deterministic: Sort files based on their relative paths

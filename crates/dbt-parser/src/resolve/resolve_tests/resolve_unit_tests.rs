@@ -102,7 +102,7 @@ pub fn resolve_unit_tests(
         },
         adapter_type,
     )?
-    .with_resolve_defaults(arg.static_analysis.unwrap_or_default());
+    .with_resolve_defaults(arg.unconfigured_static_analysis());
 
     for (unit_test_name, mut mpe) in unit_test_properties.into_iter() {
         // Capture YAML span of the unit-test `name:` declaration for error reporting.
@@ -202,9 +202,15 @@ pub fn resolve_unit_tests(
         );
         validate_unit_test_compute(properties_config.compute, &mpe.relative_path)?;
         // Sidecar needs a bound LP. Upgrade baseline to strict like the CLI
-        // does for non-remote --compute. Can disable via explicit off.
+        // does for non-remote --compute. Can disable via explicit off, which
+        // an off from `--default-static-analysis` is not.
         if properties_config.compute == Some(ComputeArg::Sidecar)
-            && *properties_config.static_analysis != StaticAnalysisKind::Off
+            && (*properties_config.static_analysis != StaticAnalysisKind::Off
+                || (arg.static_analysis.is_none()
+                    && config_resolver
+                        .with_configs_and_root_overlay(&fqn, &[unit_test.config.as_ref()])
+                        .static_analysis
+                        .is_none()))
         {
             properties_config.static_analysis = StaticAnalysisKind::Strict.into();
         }

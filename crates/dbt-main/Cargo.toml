@@ -34,6 +34,7 @@ dbt-dist = { workspace = true }
 dbt-docs-server = { workspace = true }
 dbt-error = { workspace = true }
 dbt-features = { workspace = true }
+dbt-flags = { workspace = true }
 dbt-freshness = { workspace = true }
 dbt-fusion-workspace-hack = { version = "0.1" }
 dbt-index-core = { workspace = true }

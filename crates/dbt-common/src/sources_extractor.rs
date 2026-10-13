@@ -2,10 +2,9 @@
 //! table references it depends on.
 
 use dbt_adapter_core::AdapterType;
-
-use crate::FullyQualifiedName;
-use crate::error::FrontendResult;
-use crate::named_reference::NamedReference;
+use dbt_frontend_common::{
+    FullyQualifiedName, error::FrontendResult, named_reference::NamedReference,
+};
 
 pub trait SourcesExtractor: Send + Sync {
     /// Parse `sql` and return the upstream table references, qualified

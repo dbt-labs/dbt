@@ -565,3 +565,91 @@ message DbtWizardAppMessageSent {
   string anonymous_id = 3;
   v1.public.common.vortex_telemetry_contexts.VortexTelemetryCommonContext common_context = 4;
 }
+
+// Emitted when the Wizard desktop app begins onboarding as the anonymous
+// behavioral counterpart of the WizardOnboardingStarted Amplitude event;
+// distinct from the CLI onboarding telemetry in DbtWizardOnboarding.
+message DbtWizardAppOnboardingStarted {
+  option (v1.public.common.vortex_namespace) = VORTEX_ICEBERG_NAMESPACE_TELEMETRY;
+  option (v1.public.common.vortex_enabled) = true;
+
+  v1.events.vortex.VortexMessageEnrichment enrichment = 1;
+  string event_id = 2;
+  string anonymous_id = 3;
+  v1.public.common.vortex_telemetry_contexts.VortexTelemetryCommonContext common_context = 4;
+}
+
+// Emitted when the Wizard desktop app views an onboarding step as the
+// anonymous behavioral counterpart of the WizardOnboardingStepViewed
+// Amplitude event; distinct from the CLI onboarding telemetry in
+// DbtWizardOnboarding.
+message DbtWizardAppOnboardingStepViewed {
+  option (v1.public.common.vortex_namespace) = VORTEX_ICEBERG_NAMESPACE_TELEMETRY;
+  option (v1.public.common.vortex_enabled) = true;
+
+  v1.events.vortex.VortexMessageEnrichment enrichment = 1;
+  string event_id = 2;
+  string anonymous_id = 3;
+  string step = 4;
+  v1.public.common.vortex_telemetry_contexts.VortexTelemetryCommonContext common_context = 5;
+}
+
+// Emitted when the Wizard desktop app completes an onboarding step as the
+// anonymous behavioral counterpart of the WizardOnboardingStepCompleted
+// Amplitude event; distinct from the CLI onboarding telemetry in
+// DbtWizardOnboarding.
+message DbtWizardAppOnboardingStepCompleted {
+  option (v1.public.common.vortex_namespace) = VORTEX_ICEBERG_NAMESPACE_TELEMETRY;
+  option (v1.public.common.vortex_enabled) = true;
+
+  v1.events.vortex.VortexMessageEnrichment enrichment = 1;
+  string event_id = 2;
+  string anonymous_id = 3;
+  string step = 4;
+  string action = 5;
+  v1.public.common.vortex_telemetry_contexts.VortexTelemetryCommonContext common_context = 6;
+}
+
+// Emitted after the Wizard desktop app adds a project during onboarding as
+// the anonymous behavioral counterpart of the WizardOnboardingProjectAdded
+// Amplitude event; distinct from the CLI onboarding telemetry in
+// DbtWizardOnboarding.
+message DbtWizardAppOnboardingProjectAdded {
+  option (v1.public.common.vortex_namespace) = VORTEX_ICEBERG_NAMESPACE_TELEMETRY;
+  option (v1.public.common.vortex_enabled) = true;
+
+  v1.events.vortex.VortexMessageEnrichment enrichment = 1;
+  string event_id = 2;
+  string anonymous_id = 3;
+  string source = 4;
+  v1.public.common.vortex_telemetry_contexts.VortexTelemetryCommonContext common_context = 5;
+}
+
+// Emitted after the Wizard desktop app configures a model provider during
+// onboarding as the anonymous behavioral counterpart of the
+// WizardOnboardingProviderConfigured Amplitude event; distinct from the CLI
+// onboarding telemetry in DbtWizardOnboarding.
+message DbtWizardAppOnboardingProviderConfigured {
+  option (v1.public.common.vortex_namespace) = VORTEX_ICEBERG_NAMESPACE_TELEMETRY;
+  option (v1.public.common.vortex_enabled) = true;
+
+  v1.events.vortex.VortexMessageEnrichment enrichment = 1;
+  string event_id = 2;
+  string anonymous_id = 3;
+  string provider = 4;
+  v1.public.common.vortex_telemetry_contexts.VortexTelemetryCommonContext common_context = 5;
+}
+
+// Emitted when the Wizard desktop app completes onboarding as the anonymous
+// behavioral counterpart of the WizardOnboardingCompleted Amplitude event;
+// distinct from the CLI onboarding telemetry in DbtWizardOnboarding.
+message DbtWizardAppOnboardingCompleted {
+  option (v1.public.common.vortex_namespace) = VORTEX_ICEBERG_NAMESPACE_TELEMETRY;
+  option (v1.public.common.vortex_enabled) = true;
+
+  v1.events.vortex.VortexMessageEnrichment enrichment = 1;
+  string event_id = 2;
+  string anonymous_id = 3;
+  string exit = 4;
+  v1.public.common.vortex_telemetry_contexts.VortexTelemetryCommonContext common_context = 5;
+}

@@ -226,3 +226,237 @@ fn alter_relation_comment_uses_iceberg_syntax_after_incorporate() {
         "must not fall back to plain COMMENT ON TABLE for an Iceberg relation, got:\n{rendered}"
     );
 }
+
+mod cld_base_location {
+    use super::*;
+
+    const V2_BASE_LOCATION: &str = "s3://bucket/warehouse/TEST_SCHEMA/orders";
+    const V1_BASE_LOCATION: &str = "_dbt/TEST_SCHEMA/orders";
+
+    #[derive(Clone, Copy)]
+    enum CldMacro {
+        Rest,
+        Glue,
+    }
+
+    struct Runtime {
+        dbt_version: &'static str,
+        use_catalogs_v2: Option<bool>,
+    }
+
+    const V2: Runtime = Runtime {
+        dbt_version: "2.0.0",
+        use_catalogs_v2: Some(true),
+    };
+    const FUSION_V1: Runtime = Runtime {
+        dbt_version: "2.0.0",
+        use_catalogs_v2: Some(false),
+    };
+    const CORE_1X: Runtime = Runtime {
+        dbt_version: "1.10.0",
+        use_catalogs_v2: None,
+    };
+
+    fn catalog_relation(
+        catalog_database: Value,
+        catalog_linked_database: Value,
+        external_volume: Value,
+        base_location: Value,
+    ) -> Value {
+        let linked_catalog_provider = Arc::new(MockJinjaObject::new());
+        linked_catalog_provider.set_attr("is_glue", Value::from(false));
+
+        let is_cld = !catalog_linked_database.is_none() || !catalog_database.is_undefined();
+        let relation = Arc::new(MockJinjaObject::new());
+        relation.set_attr(
+            "linked_catalog_provider",
+            Value::from_dyn_object(linked_catalog_provider),
+        );
+        relation.on("has_catalog_linked_database", move |_| {
+            Ok(Value::from(is_cld))
+        });
+        relation.set_attr("catalog_name", Value::from("REST"));
+        relation.set_attr("catalog_database", catalog_database);
+        relation.set_attr("catalog_linked_database", catalog_linked_database);
+        relation.set_attr(
+            "catalog_linked_database_type",
+            if is_cld {
+                Value::from("unity")
+            } else {
+                Value::from(())
+            },
+        );
+        relation.set_attr("external_volume", external_volume);
+        relation.set_attr("base_location", base_location);
+        for attr in [
+            "iceberg_version",
+            "target_file_size",
+            "auto_refresh",
+            "max_data_extension_time_in_days",
+        ] {
+            relation.set_attr(attr, Value::from(()));
+        }
+        Value::from_dyn_object(relation)
+    }
+
+    fn v2_cld(base_location: Value) -> Value {
+        catalog_relation(
+            Value::from("MY_CLD"),
+            Value::from(()),
+            Value::from(()),
+            base_location,
+        )
+    }
+
+    fn fusion_v1_cld() -> Value {
+        catalog_relation(
+            Value::UNDEFINED,
+            Value::from("MY_CLD"),
+            Value::from(()),
+            Value::from(V1_BASE_LOCATION),
+        )
+    }
+
+    fn render(cld_macro: CldMacro, runtime: Runtime, catalog_relation: Value) -> String {
+        let harness = MacroTestHarness::for_adapter(AdapterType::Snowflake)
+            .load_all_macros()
+            .with_macro(
+                "test_project",
+                "make_glue_compatible_relation",
+                "{% macro make_glue_compatible_relation(relation) %}{{ return(relation) }}{% endmacro %}",
+            )
+            .with_macro(
+                "test_project",
+                "get_partition_by_keys",
+                "{% macro get_partition_by_keys(config) %}{{ return([]) }}{% endmacro %}",
+            )
+            .build()
+            .expect("harness should build");
+        if let Some(use_catalogs_v2) = runtime.use_catalogs_v2 {
+            harness.mock().set_attr(
+                "behavior",
+                Value::from_serialize(BTreeMap::from([(
+                    "use_catalogs_v2",
+                    BTreeMap::from([("no_warn", use_catalogs_v2)]),
+                )])),
+            );
+        }
+        harness.mock().on("get_relation", |_| Ok(Value::from(())));
+        harness.mock().on("get_column_schema_from_query", |_| {
+            Ok(Value::from_serialize(vec![BTreeMap::from([
+                ("name", "ID"),
+                ("data_type", "NUMBER"),
+            ])]))
+        });
+        harness.mock().on("quote", |args| {
+            Ok(Value::from(format!(
+                "\"{}\"",
+                args.first().and_then(Value::as_str).unwrap_or_default()
+            )))
+        });
+        let relation = catalog_relation.clone();
+        harness
+            .mock()
+            .on("build_catalog_relation", move |_| Ok(relation.clone()));
+
+        let ctx = harness
+            .materialization_context("orders", "select 1 as id")
+            .with("dbt_version", Value::from(runtime.dbt_version))
+            .with("catalog_relation", catalog_relation)
+            .build();
+        let template = match cld_macro {
+            CldMacro::Rest => "{{ snowflake__create_table_iceberg_rest_sql(this, compiled_code) }}",
+            CldMacro::Glue => {
+                "{{ snowflake__create_table_iceberg_rest_with_glue(this, compiled_code, catalog_relation) }}"
+            }
+        };
+        harness
+            .render(template, ctx)
+            .expect("CLD macro should render")
+    }
+
+    #[test]
+    fn v2_cld_renders_configured_base_location() {
+        let clause = format!("base_location = '{V2_BASE_LOCATION}'");
+        for cld_macro in [CldMacro::Rest, CldMacro::Glue] {
+            let rendered = render(cld_macro, V2, v2_cld(Value::from(V2_BASE_LOCATION)));
+            assert!(
+                rendered.lines().any(|line| line.trim() == clause),
+                "expected BASE_LOCATION on its own line in v2 CLD DDL, got:\n{rendered}"
+            );
+            assert!(
+                !rendered.contains("external_volume") && !rendered.contains("catalog ="),
+                "a CLD must never emit EXTERNAL_VOLUME or CATALOG, got:\n{rendered}"
+            );
+        }
+    }
+
+    #[test]
+    fn v2_cld_without_base_location_omits_clause() {
+        for cld_macro in [CldMacro::Rest, CldMacro::Glue] {
+            let rendered = render(cld_macro, V2, v2_cld(Value::from(())));
+            assert!(
+                !rendered.contains("base_location"),
+                "unexpected DDL:\n{rendered}"
+            );
+        }
+    }
+
+    #[test]
+    fn fusion_v1_cld_does_not_render_synthesized_base_location() {
+        for cld_macro in [CldMacro::Rest, CldMacro::Glue] {
+            let rendered = render(cld_macro, FUSION_V1, fusion_v1_cld());
+            assert!(
+                !rendered.contains("base_location"),
+                "a v1 CLD must keep its existing DDL, got:\n{rendered}"
+            );
+        }
+    }
+
+    #[test]
+    fn core_1x_cld_does_not_read_base_location() {
+        let core_cld = catalog_relation(
+            Value::UNDEFINED,
+            Value::from("MY_CLD"),
+            Value::from(()),
+            Value::UNDEFINED,
+        );
+        for cld_macro in [CldMacro::Rest, CldMacro::Glue] {
+            let rendered = render(cld_macro, CORE_1X, core_cld.clone());
+            assert!(
+                !rendered.contains("base_location")
+                    && !rendered.to_lowercase().contains("undefined"),
+                "unexpected DDL:\n{rendered}"
+            );
+        }
+    }
+
+    #[test]
+    fn v1_rest_catalog_without_cld_keeps_existing_clauses() {
+        let rest = catalog_relation(
+            Value::UNDEFINED,
+            Value::from(()),
+            Value::from("MY_VOLUME"),
+            Value::from(V1_BASE_LOCATION),
+        );
+        let rendered = render(CldMacro::Rest, FUSION_V1, rest);
+        for clause in [
+            "external_volume = 'MY_VOLUME'".to_string(),
+            format!("base_location = '{V1_BASE_LOCATION}'"),
+        ] {
+            assert!(
+                rendered.lines().any(|line| line.trim() == clause),
+                "expected `{clause}` on its own line, got:\n{rendered}"
+            );
+        }
+        assert!(
+            rendered.contains("catalog = 'REST'"),
+            "expected `catalog = 'REST'`, got:\n{rendered}"
+        );
+        assert_eq!(
+            rendered.matches("base_location").count(),
+            1,
+            "BASE_LOCATION must render exactly once, got:\n{rendered}"
+        );
+    }
+}

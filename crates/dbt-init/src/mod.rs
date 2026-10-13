@@ -1,4 +1,3 @@
-pub mod adapter_config;
 pub mod dbt_cloud_client;
 pub mod init;
 pub mod profile_setup;

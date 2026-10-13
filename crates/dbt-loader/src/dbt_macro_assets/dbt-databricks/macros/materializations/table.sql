@@ -39,6 +39,8 @@
     {{ apply_grants(target_relation, grant_config, should_revoke) }}
     {% do optimize(target_relation) %}
 
+    {% do persist_docs(target_relation, model, for_relation=language=='python') %}
+
     {% if language == 'python' %}
       {{ drop_relation_if_exists(intermediate_relation) }}
     {% endif %}

@@ -16,7 +16,7 @@ use dbt_schemas::schemas::dbt_catalogs::{CatalogSpecView, CatalogType, DbtCatalo
 use dbt_adapter_sql::ident::escape_string_literal;
 
 use crate::errors::{AdapterError, AdapterErrorKind};
-use crate::metadata::duckdb::{CatalogSpecDuckDbExt, attaches_via_iceberg_rest};
+use crate::metadata::duckdb::{CatalogSpecDuckDbExt, DuckDbAttachKind, duckdb_attaches_via};
 
 /// Pure: compose the DuckDB catalog ATTACH statements for a parsed
 /// `DbtCatalogsView`. Returns the statements in emission order, with a
@@ -36,28 +36,23 @@ pub fn compose_catalog_attach_stmts(
     let mut stmts: Vec<String> = Vec::new();
     let mut seen_aliases: HashMap<String, String> = HashMap::new();
 
-    for (catalog, duckdb) in view
-        .catalogs
-        .iter()
-        .filter(|catalog| {
-            matches!(catalog.catalog_type, CatalogType::DuckLake)
-                || attaches_via_iceberg_rest(catalog.catalog_type)
-        })
-        .filter_map(|catalog| {
-            // Prefer the caller's platform block (e.g. `lake_compute` for the compute
-            // engine), falling back to the `duckdb` block.
-            catalog
-                .config_block(platform)
-                .or_else(|| catalog.config_block("duckdb"))
-                .map(|duckdb| (catalog, duckdb))
-        })
-    {
-        let (alias, stmt) = match catalog.catalog_type {
-            CatalogType::DuckLake => {
+    for (catalog, duckdb, kind) in view.catalogs.iter().filter_map(|catalog| {
+        let kind = duckdb_attaches_via(catalog.catalog_type)?;
+        // Prefer the caller's platform block (e.g. `lake_compute` for the compute
+        // engine), falling back to the `duckdb` block.
+        let duckdb = catalog
+            .config_block(platform)
+            .or_else(|| catalog.config_block("duckdb"))?;
+        Some((catalog, duckdb, kind))
+    }) {
+        let (alias, stmt) = match kind {
+            DuckDbAttachKind::DuckLake => {
                 needs_ducklake = true;
                 build_duckdb_ducklake_attach_stmt(catalog, duckdb)?
             }
-            _ => build_duckdb_catalog_attach_stmt(catalog, duckdb)?,
+            DuckDbAttachKind::IcebergRest => {
+                build_duckdb_iceberg_rest_attach_stmt(catalog, duckdb)?
+            }
         };
         if let Some(prior) = seen_aliases.get(&alias) {
             return Err(AdapterError::new(
@@ -165,7 +160,7 @@ fn build_duckdb_ducklake_attach_stmt(
     Ok((alias, stmt))
 }
 
-fn build_duckdb_catalog_attach_stmt(
+fn build_duckdb_iceberg_rest_attach_stmt(
     catalog: &CatalogSpecView<'_>,
     duckdb: &dbt_yaml::Mapping,
 ) -> AdapterResult<(String, String)> {

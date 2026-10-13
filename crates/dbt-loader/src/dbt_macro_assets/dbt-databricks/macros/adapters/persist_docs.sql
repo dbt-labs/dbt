@@ -60,6 +60,15 @@
   {% endif %}
 {% endmacro %}
 
+{#-- Validate V2 column docs post-build, without re-persisting them. --#}
+{% macro validate_persist_doc_columns(relation, model) -%}
+  {% if config.persist_column_docs() and model.columns %}
+    {%- set existing_columns = adapter.get_columns_in_relation(relation) -%}
+    {%- set existing_column_names = existing_columns | map(attribute='name') | list -%}
+    {%- do validate_doc_columns(relation, model.columns, existing_column_names, case_insensitive=true) -%}
+  {% endif %}
+{%- endmacro %}
+
 {% macro alter_relation_comment_sql(relation, description) %}
 {#- DIVERGENCE BEGIN: upstream uses relation.type.render(); we use render_type() Jinja macro instead -#}
 COMMENT ON {{ render_type(relation.type) }} {{ relation.render() }} IS '{{ description | replace("'", "\\'") }}'

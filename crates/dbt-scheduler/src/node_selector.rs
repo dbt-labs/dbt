@@ -9,11 +9,11 @@ use dbt_common::{
     node_selector::{MethodName, SelectExpression, SelectionCriteria, SelectionValue},
     tracing::dbt_emit::emit_warn_log_message,
 };
-use dbt_frontend_common::Dialect;
 use dbt_schemas::schemas::{
     CommonAttributes, DbtSource, DbtTest, InternalDbtNode, InternalDbtNodeAttributes,
     ModificationType, Nodes, StateArtifacts, common::Access, telemetry::NodeType,
 };
+use dbt_sql_base::Dialect;
 use glob::Pattern;
 use std::{
     collections::{BTreeMap, BTreeSet},

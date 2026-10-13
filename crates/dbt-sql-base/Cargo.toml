@@ -1,5 +1,5 @@
 [package]
-name = "dbt-ident"
+name = "dbt-sql-base"
 version.workspace = true
 homepage.workspace = true
 repository.workspace = true
@@ -14,5 +14,8 @@ workspace = true
 
 [dependencies]
 dbt-fusion-workspace-hack = { version = "0.1" }
+enum-map = { workspace = true }
 serde = { workspace = true }
+strum = { workspace = true }
+strum_macros = { workspace = true }
 ustr = { workspace = true }

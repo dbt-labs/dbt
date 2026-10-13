@@ -197,6 +197,9 @@ const LINKED_SNOWFLAKE_FIELDS: &[FieldSpec] = &[
         .doc("Days beyond the retention period to extend data availability. Range 0–90."),
     FieldSpec::enumerated("target_file_size", TARGET_FILE_SIZES),
     FieldSpec::u32_plain("iceberg_version").doc("Iceberg spec version, e.g. 3 for Iceberg V3."),
+    FieldSpec::string("base_location_root")
+        .non_empty()
+        .doc("Storage path prefix for Iceberg tables in the linked database. Must be an absolute path (e.g. s3://bucket/prefix) when the linked catalog integration vends credentials."),
 ];
 
 // Direct AWS creds for the lake compute backend, which signs Glue's

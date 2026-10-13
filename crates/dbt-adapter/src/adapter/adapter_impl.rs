@@ -2121,12 +2121,18 @@ impl AdapterImpl {
                     }
                 }
 
-                execute_macro_with_package(
+                let result = execute_macro_with_package(
                     state,
                     &[RelationObject::new(relation.to_owned()).into_value()],
                     "get_columns_comments",
                     "dbt_databricks",
-                )
+                );
+                match result {
+                    Err(ref e) if e.message().contains("[TABLE_OR_VIEW_NOT_FOUND]") => {
+                        return Ok(Vec::new());
+                    }
+                    _ => result,
+                }
             }
             // NOTE: This is the default behavior. If said adapter type does not
             // have a get_columns_in_relation() macro, it will fail with a
@@ -2148,7 +2154,6 @@ impl AdapterImpl {
                 // See https://github.com/dbt-labs/fs/pull/4267#discussion_r2182835729
                 let ignored_error = match self.adapter_type() {
                     Snowflake => Some("does not exist or not authorized"),
-                    Databricks => Some("[TABLE_OR_VIEW_NOT_FOUND]"),
                     _ => None,
                 };
 
@@ -4575,6 +4580,20 @@ impl AdapterImpl {
                     return Ok(false);
                 }
 
+                let use_catalogs_v2 = load_catalogs::fetch_use_catalogs_v2();
+
+                // DIVERGENCE: upstream raises for any non-table iceberg relation, but a v2
+                // model can't override its catalog's table_format.
+                // Upstream: https://github.com/databricks/dbt-databricks/blob/2f11abb306a400cde32b27891b766bf41a11fb1f/dbt/adapters/databricks/impl.py#L274
+                // Issue: https://github.com/dbt-labs/dbt/issues/16474
+                let is_non_storage_view = matches!(
+                    config.materialized,
+                    Some(DbtMaterialization::View | DbtMaterialization::MetricView)
+                );
+                if use_catalogs_v2 && is_non_storage_view {
+                    return Ok(false);
+                }
+
                 if self
                     .compare_dbr_version(state, conn, 14, 3, token)?
                     .as_i64()
@@ -4606,7 +4625,7 @@ impl AdapterImpl {
                 }
 
                 // v2: use_uniform from catalog spec is authoritative
-                if load_catalogs::fetch_use_catalogs_v2() {
+                if use_catalogs_v2 {
                     return Ok(catalog_relation
                         .adapter_properties
                         .get("use_uniform")
@@ -6171,6 +6190,63 @@ mod tests {
     use dbt_yaml::Mapping;
 
     use minijinja::{Environment, State, Value};
+
+    /// `is_uniform` for an iceberg Databricks model. Reads `use_catalogs_v2` from process
+    /// state -- safe because nextest runs each test in its own process.
+    fn databricks_is_uniform_for_iceberg(
+        materialized: DbtMaterialization,
+        use_catalogs_v2: bool,
+    ) -> AdapterResult<bool> {
+        use crate::engine::NoopConnection;
+        use crate::relation::databricks::config::test_helpers::{
+            TestModelConfig, create_mock_dbt_model,
+        };
+        use dbt_common::cancellation::never_cancels;
+
+        let flags: dbt_yaml::Value =
+            dbt_yaml::from_str(&format!("use_catalogs_v2: {use_catalogs_v2}\n"))
+                .expect("valid project flags");
+        load_catalogs::set_use_catalogs_v2_from_flags(Some(&flags));
+
+        let adapter = AdapterImpl::new(engine(Databricks), None);
+        let env = Environment::new();
+        let state = State::new_for_env(&env);
+        let mut model = create_mock_dbt_model(TestModelConfig::default());
+        // The catalog lookup reads the resolved model attribute, not the raw config.
+        model.__model_attr__.table_format = Some("iceberg".to_string());
+        let node = InternalDbtNodeWrapper::Model(Box::new(model));
+        let config = ModelConfig {
+            materialized: Some(materialized),
+            ..Default::default()
+        };
+
+        adapter.is_uniform(&state, &mut NoopConnection, config, &node, never_cancels())
+    }
+
+    #[test]
+    fn test_databricks_is_uniform_iceberg_non_storage_views_catalogs_v2_are_plain() {
+        // v2 can't override the catalog's table_format per model, so non-storage views must
+        // not error -- and must return before the DBR version probe needs a connection.
+        for materialized in [DbtMaterialization::View, DbtMaterialization::MetricView] {
+            assert!(
+                !databricks_is_uniform_for_iceberg(materialized.clone(), true)
+                    .unwrap_or_else(|e| panic!("{materialized:?} must not error in v2: {e}"))
+            );
+        }
+    }
+
+    #[test]
+    fn test_databricks_is_uniform_iceberg_view_catalogs_v1_keeps_upstream_checks() {
+        // v1 lets the model override table_format, so the bypass must not apply.
+        assert!(databricks_is_uniform_for_iceberg(DbtMaterialization::View, false).is_err());
+    }
+
+    #[test]
+    fn test_databricks_is_uniform_iceberg_table_catalogs_v2_keeps_uniform_checks() {
+        // Tables have a storage format, so v2 must still run the UniForm checks (which
+        // need a connection, hence the error here).
+        assert!(databricks_is_uniform_for_iceberg(DbtMaterialization::Table, true).is_err());
+    }
 
     #[test]
     fn test_databricks_describe_as_json_behavior_flag_registered_and_off_by_default() {

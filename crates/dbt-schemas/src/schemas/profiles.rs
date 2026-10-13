@@ -12,10 +12,11 @@ use merge::Merge;
 use serde_derive::Deserialize;
 use serde_derive::Serialize;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::convert::TryFrom;
 use std::fmt::{self, Debug, Display};
 use std::path::PathBuf;
+use std::sync::LazyLock;
 
 type YmlValue = dbt_yaml::Value;
 
@@ -527,6 +528,78 @@ impl DbConfig {
         }
     }
 
+    /// Redacts credentials nested inside a connection value, in place.
+    ///
+    /// Top-level secret keys never get here: `connection_keys_for` omits them.
+    /// This handles secrets inside keys at any depth, including
+    /// credential-looking query parameters from strings (e.g. DuckDB's
+    /// `md:my_db?motherduck_token=...`).
+    fn redact_nested_credentials(root: &mut dbt_yaml::Value) {
+        /// Key segments (split on `_`) marking a key as a credential, so
+        /// `motherduck_token` and `client_secret` are caught as well as bare `token` /
+        /// `secret`. `secrets` is DuckDB's credential block. `key` catches `private_key`,
+        /// `api_key` and the like.
+        static CREDENTIAL_SEGMENTS: LazyLock<HashSet<&'static str>> = LazyLock::new(|| {
+            HashSet::from([
+                "password",
+                "token",
+                "secret",
+                "secrets",
+                "passphrase",
+                "key",
+                "keyfile",
+                "credential",
+                "credentials",
+            ])
+        });
+
+        static NON_CREDENTIAL_KEYS: LazyLock<HashSet<&'static str>> =
+            LazyLock::new(|| HashSet::from(["token_uri", "access_key_id", "client_cert_key"]));
+
+        let mut stack = vec![root];
+        while let Some(value) = stack.pop() {
+            match value {
+                dbt_yaml::Value::Mapping(map, _) => {
+                    map.retain(|key, _| {
+                        let Some(key) = key.as_str() else {
+                            return true;
+                        };
+                        let key = key.to_ascii_lowercase();
+                        NON_CREDENTIAL_KEYS.contains(key.as_str())
+                            || !(key.split('_').any(|seg| CREDENTIAL_SEGMENTS.contains(seg)))
+                    });
+                    stack.extend(map.iter_mut().map(|(_, nested)| nested));
+                }
+                dbt_yaml::Value::Sequence(items, _) => stack.extend(items.iter_mut()),
+                dbt_yaml::Value::String(s, _) => {
+                    let redacted = s.split_once('?').and_then(|(base, query)| {
+                        let kept = query.split('&').filter(|param| {
+                            let name = param
+                                .split_once('=')
+                                .map_or(*param, |(name, _)| name)
+                                .to_ascii_lowercase();
+                            NON_CREDENTIAL_KEYS.contains(name.as_str())
+                                || !name.split('_').any(|seg| CREDENTIAL_SEGMENTS.contains(seg))
+                        });
+                        // Only collect and join when something was dropped.
+                        (kept.clone().count() != query.split('&').count()).then(|| {
+                            let kept: Vec<&str> = kept.collect();
+                            if kept.is_empty() {
+                                base.to_string()
+                            } else {
+                                format!("{base}?{}", kept.join("&"))
+                            }
+                        })
+                    });
+                    if let Some(redacted) = redacted {
+                        *s = redacted;
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
     pub fn to_connection_mapping(&self) -> Result<dbt_yaml::Mapping, dbt_yaml::Error> {
         let connection_keys = self.get_connection_keys();
         let mapping = self.to_mapping()?;
@@ -536,6 +609,12 @@ impl DbConfig {
                 key.as_str()
                     .map(|s| connection_keys.contains(&s))
                     .unwrap_or(false)
+            })
+            .map(|(key, mut value)| {
+                // A displayable key can still nest a credential, e.g. DuckDB's
+                // `settings: {motherduck_token: ...}` or `path: md:db?motherduck_token=...`.
+                Self::redact_nested_credentials(&mut value);
+                (key, value)
             })
             .collect();
         Ok(filtered)
@@ -2752,44 +2831,119 @@ extensions:
 
     /// `get_connection_keys` decides what `dbt debug` prints as a connection's
     /// details. Since `dbt debug` checks every declared adapter, a credential named
-    /// here leaks for every adapter in a multi-adapter target, not just the default.
-    /// This walks every variant so a newly added adapter cannot reintroduce one.
+    /// here leaks for every adapter in a multi-adapter target.
     #[test]
     fn connection_keys_never_expose_a_credential() {
-        // Substrings, so `motherduck_token` and `client_secret` are caught as well
-        // as bare `token` / `secret`. `token_uri` is an OAuth endpoint URL rather
-        // than a credential, and `secrets` is DuckDB's credential block.
-        const CREDENTIAL_MARKERS: &[&str] = &[
-            "password",
-            "token",
-            "secret",
-            "private_key",
-            "passphrase",
-            "keyfile",
-            "api_key",
-            "credential",
-        ];
-        const ALLOWED: &[&str] = &["token_uri"];
-
         // Driven off `AdapterType::iter()` so a newly supported adapter is audited
         // the moment it exists, without this test needing a constructible config.
         use strum::IntoEnumIterator;
 
         for adapter_type in AdapterType::iter() {
             for key in DbConfig::connection_keys_for(adapter_type) {
-                if ALLOWED.contains(key) {
-                    continue;
-                }
-                for marker in CREDENTIAL_MARKERS {
-                    assert!(
-                        !key.contains(marker),
-                        "`{adapter_type}` lists connection key `{key}`, which looks like a \
-                         credential (matched `{marker}`). `dbt debug` prints these, so remove \
-                         it or add it to ALLOWED if it is genuinely not secret."
-                    );
-                }
+                let mut value = dbt_yaml::Value::from(dbt_yaml::Mapping::from_iter([(
+                    dbt_yaml::Value::from(*key),
+                    dbt_yaml::Value::from("x"),
+                )]));
+                DbConfig::redact_nested_credentials(&mut value);
+                assert!(
+                    value.as_mapping().is_some_and(|m| m.len() == 1),
+                    "`{adapter_type}` lists connection key `{key}`, which looks like a \
+                     credential. `dbt debug` prints these, so remove it or add it to \
+                     NON_CREDENTIAL_KEYS if it is genuinely not secret."
+                );
             }
         }
+    }
+
+    /// A displayable key can nest a credential: DuckDB's `settings` carries
+    /// `motherduck_token`. Only the credential is dropped.
+    #[test]
+    fn connection_mapping_strips_nested_credentials() {
+        let config: DbConfig = dbt_yaml::from_str(
+            "type: duckdb\n\
+             path: md:my_db\n\
+             settings:\n  \
+               motherduck_token: super-secret\n  \
+               MOTHERDUCK_TOKEN: super-secret\n  \
+               s3_secret_access_key: super-secret\n  \
+               threads: 4\n\
+             attach:\n  \
+               - path: md:other_db\n    \
+                 alias: other",
+        )
+        .unwrap();
+        let mapping = config.to_connection_mapping().unwrap();
+
+        let rendered = dbt_yaml::to_string(&mapping).unwrap();
+        assert!(
+            !rendered.contains("super-secret"),
+            "nested credential leaked into connection mapping:\n{rendered}"
+        );
+
+        let settings = mapping
+            .get(dbt_yaml::Value::from("settings"))
+            .and_then(|v| v.as_mapping())
+            .expect("settings should survive with its non-secret keys");
+        assert_eq!(settings.len(), 1);
+        assert!(settings.contains_key(dbt_yaml::Value::from("threads")));
+        assert!(mapping.contains_key(dbt_yaml::Value::from("attach")));
+    }
+
+    /// A token can also ride in a path's query string, e.g. a MotherDuck
+    /// `md:` path. Only that parameter should be dropped.
+    #[test]
+    fn connection_mapping_strips_credential_query_params() {
+        let config: DbConfig = dbt_yaml::from_str(
+            "type: duckdb\n\
+             path: md:my_db?motherduck_token=super-secret&saas_mode=true\n\
+             attach:\n  \
+               - path: md:other_db?MOTHERDUCK_TOKEN=super-secret\n    \
+                 alias: other",
+        )
+        .unwrap();
+        let mapping = config.to_connection_mapping().unwrap();
+
+        let rendered = dbt_yaml::to_string(&mapping).unwrap();
+        assert!(
+            !rendered.contains("super-secret"),
+            "credential query param leaked into connection mapping:\n{rendered}"
+        );
+        assert_eq!(
+            mapping
+                .get(dbt_yaml::Value::from("path"))
+                .and_then(|v| v.as_str()),
+            Some("md:my_db?saas_mode=true")
+        );
+        assert!(rendered.contains("md:other_db"));
+        assert!(!rendered.contains("md:other_db?"));
+    }
+
+    /// The DFS must reach credentials at any depth, through both mappings and
+    /// sequences, and only drop the credential itself.
+    #[test]
+    fn redact_nested_credentials_reaches_three_levels_deep() {
+        let mut value: dbt_yaml::Value = dbt_yaml::from_str(
+            "level1:\n  \
+               level2:\n    \
+                 level3:\n      \
+                   api_key: super-secret\n      \
+                   keep: ok\n      \
+                   url: md:db?motherduck_token=super-secret&saas_mode=true\n  \
+               list:\n    \
+                 - inner:\n        \
+                     - client_secret: super-secret\n          \
+                       keep: ok\n",
+        )
+        .unwrap();
+        DbConfig::redact_nested_credentials(&mut value);
+
+        let rendered = dbt_yaml::to_string(&value).unwrap();
+        assert!(
+            !rendered.contains("super-secret"),
+            "nested credential leaked:\n{rendered}"
+        );
+        assert_eq!(rendered.matches("keep: ok").count(), 2, "{rendered}");
+        assert!(rendered.contains("md:db?saas_mode=true"), "{rendered}");
     }
 
     #[test]

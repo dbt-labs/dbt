@@ -236,7 +236,7 @@ pub async fn resolve_models(
         default_adapter,
     )?
     .with_resolve_defaults((
-        arg.static_analysis.unwrap_or_default(),
+        arg.unconfigured_static_analysis(),
         root_package.dbt_project.sync.clone(),
         Some(default_adapter),
     ));

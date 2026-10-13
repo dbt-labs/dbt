@@ -18,6 +18,7 @@ pub mod info_schema;
 
 /// Module for functions implementations for the dbt jinja context
 mod functions;
+pub use functions::ConfiguredVar;
 pub use functions::Var;
 pub use functions::env_var;
 pub use functions::register_base_functions;

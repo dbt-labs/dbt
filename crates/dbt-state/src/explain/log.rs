@@ -1,4 +1,5 @@
 use std::{
+    collections::HashMap,
     io::Write,
     path::Path,
     sync::{LazyLock, Mutex},
@@ -57,6 +58,7 @@ pub fn read_explain_records(path: &Path) -> FsResult<Vec<StateExplainRecord>> {
 /// Read a Fusion-native dbt State explain log from a JSONL file.
 pub fn read_state_explain_log(path: &Path) -> FsResult<StateExplainLog> {
     let mut output = StateExplainLog::default();
+    let mut execution_ids = HashMap::new();
     for (idx, line) in std::fs::read_to_string(path)
         .map_err(|err| {
             fs_err!(
@@ -80,7 +82,15 @@ pub fn read_state_explain_log(path: &Path) -> FsResult<StateExplainLog> {
         match record {
             StateExplainLogRecord::RunStart(run_start) => output.run_start = Some(run_start),
             StateExplainLogRecord::Node(node) => output.nodes.push(node),
+            // Applied after reading: a confirmation can precede its node (e.g. dev clones).
+            // The last one wins, so an execution confirmed after a clone takes precedence.
+            StateExplainLogRecord::ExecutionConfirmed(confirmed) => {
+                execution_ids.insert(confirmed.node_unique_id, confirmed.execution_id);
+            }
         }
+    }
+    for node in &mut output.nodes {
+        node.execution_id = execution_ids.get(&node.node_unique_id).cloned();
     }
     Ok(output)
 }

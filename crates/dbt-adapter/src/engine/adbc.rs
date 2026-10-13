@@ -28,7 +28,7 @@ use super::adapter_engine::*;
 use super::databricks;
 use super::make_behavior;
 use super::noop_connection::NoopConnection;
-use super::retry::ConnectionRetryPolicy;
+use super::retry::{ConnectionRetryPolicy, QueryRetryPolicy};
 
 #[derive(Default)]
 pub struct DatabaseMap {
@@ -64,6 +64,8 @@ pub struct AdbcEngine {
     quoting: ResolvedQuoting,
     /// Query comment config
     query_comment: QueryCommentConfig,
+    /// Retry policy for transient query-execution errors (Redshift-only).
+    query_retry_policy: QueryRetryPolicy,
     /// Type operations (e.g. parsing, formatting) for the dialect this engine is for
     pub type_ops: Arc<dyn TypeOps>,
     /// Statement splitter
@@ -106,6 +108,7 @@ impl AdbcEngine {
         dbt_cloud_project_id: Option<String>,
     ) -> Self {
         let behavior = make_behavior(adapter_type, &behavior_flag_overrides);
+        let query_retry_policy = QueryRetryPolicy::new(adapter_type, &config);
         Self {
             adapter_type,
             auth,
@@ -115,6 +118,7 @@ impl AdbcEngine {
             type_ops,
             splitter,
             query_comment,
+            query_retry_policy,
             relation_cache,
             behavior_flag_overrides,
             behavior,
@@ -327,8 +331,11 @@ impl AdbcEngine {
         let mut all_stmts = dbt_auth::generate_duckdb_init_sql(config)
             .map_err(crate::errors::auth_error_to_adapter_error)?;
 
-        // Append catalog-driven ATTACH statements for DuckDB REST catalogs
-        all_stmts.extend(self.generate_catalog_attach_stmts()?);
+        // Append catalog-driven ATTACH statements for DuckDB REST catalogs, unless the
+        // config opts out: a database that runs untrusted SQL must not see them.
+        if config.get_bool("attach_catalogs") != Some(false) {
+            all_stmts.extend(self.generate_catalog_attach_stmts()?);
+        }
 
         if all_stmts.is_empty() {
             return Ok(());
@@ -442,7 +449,7 @@ fn off_pool_connection_bug() -> ! {
          that is:\n\
          \n\
          - production code in an `async fn`: move the call into \
-         `dbt_runtime::spawn_blocking(..)` (or `TaskOp::Blocking`) and await it\n\
+         `dbt_runtime::spawn_blocking(..)` and await it\n\
          - a synchronous `#[test]`: use `#[dbt_runtime::worker_test]`\n\
          - an `async` test: keep `#[dbt_runtime::test]` and dispatch the adapter \
          call with `dbt_runtime::spawn_blocking(..).await`\n\
@@ -502,6 +509,10 @@ impl AdapterEngine for AdbcEngine {
 
     fn get_config(&self) -> &AdapterConfig {
         &self.config
+    }
+
+    fn query_retry_policy(&self) -> &QueryRetryPolicy {
+        &self.query_retry_policy
     }
 
     fn relation_cache(&self) -> &Arc<RelationCache> {

@@ -14,6 +14,7 @@ use dbt_jinja_utils::{
     phases::parse::{build_resolve_model_context, sql_resource::SqlResource},
     utils::render_sql,
 };
+use dbt_schemas::schemas::telemetry::NodeType;
 use dbt_schemas::{
     schemas::{
         CommonAttributes, NodeBaseAttributes,
@@ -196,7 +197,7 @@ fn new_operation(
                 &operation.__common_attr__.original_file_path,
                 &PathBuf::new(),
                 global_static_analysis,
-                None,
+                Some(NodeType::Operation),
             ));
 
             // Set TARGET_PACKAGE_NAME for var lookups

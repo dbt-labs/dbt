@@ -1,10 +1,3 @@
-use crate::adapter_config::{
-    setup_bigquery_profile, setup_clickhouse_profile, setup_databricks_profile,
-    setup_exasol_profile, setup_fabric_profile, setup_postgres_profile, setup_redshift_profile,
-    setup_snowflake_profile,
-};
-// Re-exported so `crate::profile_setup::{ProfileTarget, Profiles}` keeps resolving.
-pub use crate::adapter_config::{ProfileTarget, Profiles};
 use crate::dbt_cloud_client::{CloudProject, DbtCloudClient, DbtCloudYml};
 use crate::yaml_utils::{
     has_top_level_key_parsed_file, list_top_level_keys_from_file, remove_top_level_key_from_str,
@@ -17,6 +10,7 @@ use dbt_common::{ErrorCode, FsResult, fs_err, io_args::IoArgs};
 use dbt_jinja_utils::phases::load::init::initialize_load_profile_jinja_environment;
 use dbt_jinja_utils::serde::{into_typed_with_jinja, value_from_file};
 use dbt_loader::{args::LoadArgs, load_profiles};
+use dbt_profile_schemas::profile::ProfileTarget;
 use dbt_schemas::schemas::profiles::DbConfig;
 use dbt_schemas::schemas::project::DbtProjectSimplified;
 
@@ -318,104 +312,8 @@ impl ProfileSetup {
         _profile_name: &str,
         existing_config: Option<&DbConfig>,
     ) -> FsResult<ProfileTarget> {
-        let db_config = match adapter {
-            AdapterType::Snowflake => {
-                let snowflake_config = match existing_config {
-                    Some(DbConfig::Snowflake(config)) => Some(config),
-                    _ => None,
-                };
-                DbConfig::Snowflake(setup_snowflake_profile(snowflake_config.map(Box::as_ref))?)
-            }
-            AdapterType::Bigquery => {
-                let bigquery_config = match existing_config {
-                    Some(DbConfig::Bigquery(config)) => Some(config),
-                    _ => None,
-                };
-                DbConfig::Bigquery(setup_bigquery_profile(bigquery_config.map(Box::as_ref))?)
-            }
-            AdapterType::Databricks => {
-                let databricks_config = match existing_config {
-                    Some(DbConfig::Databricks(config)) => Some(config),
-                    _ => None,
-                };
-                DbConfig::Databricks(setup_databricks_profile(
-                    databricks_config.map(Box::as_ref),
-                )?)
-            }
-            AdapterType::Postgres => {
-                let postgres_config = match existing_config {
-                    Some(DbConfig::Postgres(config)) => Some(config),
-                    _ => None,
-                };
-                DbConfig::Postgres(setup_postgres_profile(postgres_config.map(Box::as_ref))?)
-            }
-            AdapterType::Redshift => {
-                let redshift_config = match existing_config {
-                    Some(DbConfig::Redshift(config)) => Some(config),
-                    _ => None,
-                };
-                DbConfig::Redshift(setup_redshift_profile(redshift_config.map(Box::as_ref))?)
-            }
-            AdapterType::Spark => {
-                let _salesforce_config = match existing_config {
-                    Some(DbConfig::Spark(config)) => Some(config),
-                    _ => None,
-                };
-                todo!("setup_spark_profile")
-            }
-            AdapterType::Salesforce => {
-                let _salesforce_config = match existing_config {
-                    Some(DbConfig::Salesforce(config)) => Some(config),
-                    _ => None,
-                };
-                todo!("setup_salesforce_profile")
-            }
-            AdapterType::Fabric => {
-                let fabric_config = match existing_config {
-                    Some(DbConfig::Fabric(config)) => Some(config),
-                    _ => None,
-                };
-                DbConfig::Fabric(setup_fabric_profile(fabric_config.map(Box::as_ref))?)
-            }
-
-            AdapterType::DuckDB => {
-                // DuckDB doesn't require credentials for local file-based operations
-                // TODO: Create proper DuckDB profile setup
-                return Err(fs_err!(
-                    ErrorCode::Generic,
-                    "DuckDB profile setup not yet implemented. DuckDB runs locally without credentials."
-                ));
-            }
-            AdapterType::LakeCompute => {
-                // TODO: Create proper lake compute profile setup
-                return Err(fs_err!(
-                    ErrorCode::Generic,
-                    "lake_compute profile setup not yet implemented."
-                ));
-            }
-            AdapterType::ClickHouse => {
-                let clickhouse_config = match existing_config {
-                    Some(DbConfig::ClickHouse(config)) => Some(config),
-                    _ => None,
-                };
-                DbConfig::ClickHouse(setup_clickhouse_profile(
-                    clickhouse_config.map(Box::as_ref),
-                )?)
-            }
-            AdapterType::Exasol => {
-                let exasol_config = match existing_config {
-                    Some(DbConfig::Exasol(config)) => Some(config),
-                    _ => None,
-                };
-                DbConfig::Exasol(setup_exasol_profile(exasol_config.map(Box::as_ref))?)
-            }
-            AdapterType::Starburst => todo!("Starburst"),
-            AdapterType::Athena => todo!("Athena"),
-            AdapterType::Trino => todo!("Trino"),
-            AdapterType::Datafusion => todo!("Datafusion"),
-            AdapterType::Dremio => todo!("Dremio"),
-            AdapterType::Oracle => todo!("Oracle"),
-        };
+        let profile_setup = dbt_profile_schemas::ProfileSetup::new(adapter);
+        let db_config = profile_setup.setup(existing_config)?;
 
         let mut outputs = HashMap::new();
         outputs.insert("dev".to_string(), db_config);

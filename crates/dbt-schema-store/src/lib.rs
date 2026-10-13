@@ -33,7 +33,7 @@ use std::path::PathBuf;
 
 use arrow::array::RecordBatch;
 use arrow_schema::{ArrowError, SchemaRef};
-use dbt_ident::Ident;
+use dbt_sql_base::Ident;
 
 /// A local schema entry containing the fully qualified name, unique ID, and Arrow schema.
 ///

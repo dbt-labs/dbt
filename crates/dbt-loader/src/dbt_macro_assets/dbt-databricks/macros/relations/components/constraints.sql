@@ -87,32 +87,38 @@
   {%- if constraints and relation.is_hive_metastore() -%}
     {{ exceptions.raise_compiler_error("Constraints are only supported for Unity Catalog") }}
   {%- endif -%}
-  {# Order matters here because key constraints depend on non-null constraints #} 
+  {# Order matters here because key constraints depend on non-null constraints #}
+  {#- The diff holds unordered sets; sort so the emitted statement order is stable across runs. -#}
   {%- if constraints.unset_constraints %}
-    {%- for constraint in constraints.unset_constraints -%}
+    {%- for constraint in constraints.unset_constraints | sort(attribute='name') -%}
       {%- call statement('main') -%}
         {{ alter_unset_constraint(relation, constraint) }}
       {%- endcall -%}
     {%- endfor -%}
   {%- endif %}
   {%- if constraints.unset_non_nulls %}
-    {%- for column in constraints.unset_non_nulls -%}
+    {%- for column in constraints.unset_non_nulls | sort -%}
       {%- call statement('main') -%}
         {{ alter_unset_non_null_constraint(relation, column) }}
       {%- endcall -%}
     {%- endfor -%}
   {%- endif %}
   {%- if constraints.set_non_nulls %}
-    {%- for column in constraints.set_non_nulls -%}
+    {%- for column in constraints.set_non_nulls | sort -%}
       {%- call statement('main') -%}
         {{ alter_set_non_null_constraint(relation, column) }}
       {%- endcall -%}
     {%- endfor -%}
   {%- endif %}
   {%- if constraints.set_constraints %}
+    {#- Model constraints may be unnamed, so sort by the rendered statement instead of by name. -#}
+    {%- set set_constraint_statements = [] -%}
     {%- for constraint in constraints.set_constraints -%}
+      {%- do set_constraint_statements.append(alter_set_constraint(relation, constraint)) -%}
+    {%- endfor -%}
+    {%- for set_constraint_statement in set_constraint_statements | sort -%}
       {%- call statement('main') -%}
-        {{ alter_set_constraint(relation, constraint) }}
+        {{ set_constraint_statement }}
       {%- endcall -%}
     {%- endfor -%}
   {%- endif %}

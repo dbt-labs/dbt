@@ -107,7 +107,7 @@ pub async fn resolve_functions(
         },
         default_adapter,
     )?
-    .with_resolve_defaults(arg.static_analysis.unwrap_or_default());
+    .with_resolve_defaults(arg.unconfigured_static_analysis());
 
     let render_ctx = RenderCtx {
         inner: Arc::new(RenderCtxInner {

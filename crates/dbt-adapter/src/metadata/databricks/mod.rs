@@ -18,7 +18,7 @@ use dbt_common::ErrorCode;
 use dbt_common::cancellation::Cancellable;
 use dbt_common::cancellation::CancellationToken;
 use dbt_common::tracing::dbt_emit::emit_warn_log_message;
-use dbt_frontend_common::Dialect;
+use dbt_frontend_common::{Dialect, FullyQualifiedName};
 use dbt_schemas::dbt_types::RelationType;
 use dbt_schemas::schemas::legacy_catalog::{
     CatalogNodeStats, CatalogTable, ColumnMetadata, TableMetadata,
@@ -1873,7 +1873,7 @@ fn parse_view_catalog_and_namespace(value: Option<&str>, fqn: &str) -> Option<(S
         }
     }
 
-    let parsed = Dialect::Databricks.parse_fqn(fqn).ok()?;
+    let parsed = FullyQualifiedName::parse(fqn, Dialect::Databricks).ok()?;
     Some((
         parsed.catalog().name().to_string(),
         parsed.schema().name().to_string(),
@@ -2504,12 +2504,20 @@ mod tests {
         let fqn = r.semantic_fqn();
         let relations = vec![r];
         let mut overrides = BTreeMap::new();
-        overrides.insert(fqn.clone(), FreshnessOverride::Field("updated_at".into()));
+        overrides.insert(
+            fqn.clone(),
+            FreshnessOverride::Field {
+                field: "updated_at".into(),
+                filter: None,
+            },
+        );
         let (bulk, targets) = partition_override_relations(&relations, &overrides);
         assert!(bulk.is_empty());
         assert_eq!(targets.len(), 1);
         assert_eq!(targets[0].0.semantic_fqn(), fqn);
-        assert!(matches!(&targets[0].1, FreshnessOverride::Field(f) if f == "updated_at"));
+        assert!(
+            matches!(&targets[0].1, FreshnessOverride::Field { field, .. } if field == "updated_at")
+        );
     }
 
     #[test]

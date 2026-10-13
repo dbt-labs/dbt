@@ -1,6 +1,5 @@
 pub mod asset;
 pub mod color;
-pub mod connection_limit_wait;
 pub mod constants;
 pub mod deps;
 pub mod duration;
@@ -16,3 +15,4 @@ pub mod progress;
 pub mod query_log;
 pub mod state_mod_diff;
 pub mod test_result;
+pub mod thread_pool_wait;

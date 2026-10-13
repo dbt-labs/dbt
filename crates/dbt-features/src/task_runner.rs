@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
+use dbt_common::sources_extractor::SourcesExtractor;
 use dbt_compilation::schema_hydration::SchemaHydratorFactory;
-use dbt_frontend_common::sources_extractor::SourcesExtractor;
 use dbt_jinja_utils::listener::RenderingEventListenerFactory;
 use dbt_tasks_core::context_factory::TaskRunnerCtxFactory;
 use dbt_tasks_core::task_runner_hooks::TaskRunnerHooksFactory;

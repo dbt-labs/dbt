@@ -95,15 +95,10 @@ async fn try_load_from_deprecated_dbt_packages_lock(
         }) => {
             emit_warn_log_message(
                 ErrorCode::FmtError,
-                "Old format package-lock.yml file found. Please provide package definitions.",
+                "package-lock.yml was written by an older dbt version and has no package names. Run `dbt deps` to regenerate it.",
             );
 
             if !dbt_packages_dir.exists() {
-                emit_warn_log_message(
-                    ErrorCode::FmtError,
-                    "Attempted to infer package name from package-lock.yml, but no packages directory found, skipping...",
-                );
-
                 return Ok(None);
             }
 
@@ -152,15 +147,6 @@ async fn try_load_from_deprecated_dbt_packages_lock(
                                 version,
                             }));
                         } else {
-                            emit_warn_log_message(
-                                ErrorCode::FmtError,
-                                format!(
-                                    "Attempted to infer package name from package-lock.yml, but package {} not found in '{}', skipping...",
-                                    package,
-                                    dbt_packages_dir.display()
-                                ),
-                            );
-
                             return Ok(None);
                         }
                     }
@@ -183,15 +169,6 @@ async fn try_load_from_deprecated_dbt_packages_lock(
                                 __unrendered__: unrendered,
                             }));
                         } else {
-                            emit_warn_log_message(
-                                ErrorCode::FmtError,
-                                format!(
-                                    "Attempted to infer package name from package-lock.yml, but package {} not found in '{}', skipping...",
-                                    git,
-                                    dbt_packages_dir.display()
-                                ),
-                            );
-
                             return Ok(None);
                         }
                     }
@@ -250,15 +227,6 @@ async fn try_load_from_deprecated_dbt_packages_lock(
                                 __unrendered__: unrendered,
                             }));
                         } else {
-                            emit_warn_log_message(
-                                ErrorCode::FmtError,
-                                format!(
-                                    "Attempted to infer package name from package-lock.yml, but package {} not found in '{}', skipping...",
-                                    private,
-                                    dbt_packages_dir.display()
-                                ),
-                            );
-
                             return Ok(None);
                         }
                     }
@@ -287,15 +255,6 @@ async fn try_load_from_deprecated_dbt_packages_lock(
                                 __unrendered__: unrendered,
                             }));
                         } else {
-                            emit_warn_log_message(
-                                ErrorCode::FmtError,
-                                format!(
-                                    "Attempted to infer package name from package-lock.yml, but package {} not found in '{}', skipping...",
-                                    tarball,
-                                    dbt_packages_dir.display()
-                                ),
-                            );
-
                             return Ok(None);
                         }
                     }

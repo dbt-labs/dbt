@@ -1,8 +1,8 @@
 //! Retry command implementation for re-running failed nodes from previous executions.
 
 use dbt_clap_core::*;
+use dbt_common::FsResult;
 use dbt_common::io_args::StaticAnalysisKind;
-use dbt_common::{ErrorCode, FsResult, err};
 use dbt_schemas::schemas::{BatchResults, RunResultsArtifact};
 use std::collections::HashMap;
 use std::path::Path;
@@ -62,8 +62,8 @@ impl RetryState {
     ///   off the retry invocation's own `--warn-error` flag.
     ///
     /// # Returns
-    /// * `Ok(RetryState)` - If the file was parsed and contains retryable nodes
-    /// * `Err` - If the file doesn't exist, is invalid, or has no failed nodes
+    /// * `Ok(RetryState)` - If the file was parsed (`retryable_node_ids` may be empty)
+    /// * `Err` - If the file doesn't exist or is invalid
     pub fn from_run_results(path: &Path, warn_error: bool) -> FsResult<Self> {
         let artifact = RunResultsArtifact::from_file(path)?;
 
@@ -105,13 +105,6 @@ impl RetryState {
             })
             .map(|r| r.unique_id.clone())
             .collect();
-
-        if retryable_node_ids.is_empty() {
-            return err!(
-                ErrorCode::Generic,
-                "No failed nodes found in run_results.json - nothing to retry"
-            );
-        }
 
         let previous_batch_results: HashMap<String, BatchResults> = artifact
             .results
@@ -525,7 +518,7 @@ expected_sa: {expected_sa:?}",
     }
 
     #[test]
-    fn test_from_run_results_all_success_errors() {
+    fn test_from_run_results_all_success_has_nothing_to_retry() {
         let file = create_run_results_json(
             &[
                 ("model.my_project.model_a", "success"),
@@ -534,10 +527,9 @@ expected_sa: {expected_sa:?}",
             "run",
         );
 
-        let result = RetryState::from_run_results(file.path(), false);
-        assert!(result.is_err());
-        let err = result.unwrap_err();
-        assert!(err.to_string().contains("No failed nodes"));
+        let state = RetryState::from_run_results(file.path(), false).unwrap();
+        assert!(state.retryable_node_ids.is_empty());
+        assert_eq!(state.original_command, "run");
     }
 
     #[test]
@@ -573,7 +565,10 @@ expected_sa: {expected_sa:?}",
         // Without --warn-error, `warn` is NOT retryable -> nothing to retry.
         let file = make();
         assert!(
-            RetryState::from_run_results(file.path(), false).is_err(),
+            RetryState::from_run_results(file.path(), false)
+                .unwrap()
+                .retryable_node_ids
+                .is_empty(),
             "warn-only run must have nothing to retry without --warn-error"
         );
 

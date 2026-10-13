@@ -36,5 +36,6 @@ Paths in this file and in `.agents/` are relative to the directory containing th
   - `dbt-adbc`
 - When working on telemetry/tracing: `.agents/telemetry-tracing.md`
 - When working on dbt-docs-server (static site + DuckDB-WASM in the browser): `.agents/dbt-docs-server.md`
+- When adding, graduating, or removing a feature flag or behavior flag, or reading one at a call site: declare it in `crates/dbt-flags/src/catalog.rs`; precedence and stages are documented in `crates/dbt-flags/src/lib.rs`. Do not add new `std::env::var` toggles or `project_flags_get_value` lookups for this.
 - Always check for nested `AGENTS.md` files in subdirectories you modify
 - If context is not enough, try reading repo overview / architecture as last resort: `README.md`

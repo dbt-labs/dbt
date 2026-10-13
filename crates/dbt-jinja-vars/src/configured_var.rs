@@ -47,6 +47,17 @@ impl ConfiguredVar {
         }
     }
 
+    /// Returns a copy whose CLI vars are extended by `overrides`; override keys win.
+    pub fn with_cli_overrides(&self, overrides: &BTreeMap<String, dbt_yaml::Value>) -> Self {
+        let mut var = self.clone();
+        var.cli_vars.extend(
+            overrides
+                .iter()
+                .map(|(key, val)| (key.clone(), yml_value_to_minijinja(val))),
+        );
+        var
+    }
+
     fn package_name(&self, state: &State<'_, '_>, var_name: &str) -> Result<String, Error> {
         self.package_name
             .clone()
@@ -68,6 +79,9 @@ impl ConfiguredVar {
 
 impl VarFunction for ConfiguredVar {
     fn contains_var(&self, state: &State<'_, '_>, var_name: &str) -> Result<bool, Error> {
+        if self.cli_vars.contains_key(var_name) {
+            return Ok(true);
+        }
         let package_name = self.package_name(state, var_name)?;
         let vars_lookup = self.vars.get(&package_name).ok_or_else(|| {
             Error::new(
@@ -267,6 +281,33 @@ mod tests {
 
         let rendered = template.render(minijinja::context!(), &[]).unwrap();
         assert_eq!(rendered, "False");
+    }
+
+    #[test]
+    fn var_has_var_sees_package_cli_and_override_vars() {
+        let mut vars: BTreeMap<String, IndexMap<String, DbtVars>> = BTreeMap::new();
+        vars.insert(
+            "my_new_project".to_string(),
+            dbt_yaml::from_str("p: 1\n").unwrap(),
+        );
+        let cli_vars: BTreeMap<String, dbt_yaml::Value> = dbt_yaml::from_str("c: 2\n").unwrap();
+        let overrides: BTreeMap<String, dbt_yaml::Value> = dbt_yaml::from_str("o: 3\n").unwrap();
+
+        let mut env = make_env_with_var();
+        env.add_global(
+            "var",
+            MinijinjaValue::from_object(
+                ConfiguredVar::new(vars, cli_vars).with_cli_overrides(&overrides),
+            ),
+        );
+
+        let template = env
+            .template_from_str(
+                "{{ var.has_var('p') }}{{ var.has_var('c') }}{{ var.has_var('o') }}{{ var.has_var('missing') }}",
+            )
+            .unwrap();
+        let rendered = template.render(minijinja::context!(), &[]).unwrap();
+        assert_eq!(rendered, "TrueTrueTrueFalse");
     }
 
     /// Build an environment where the project vars are parsed directly from a

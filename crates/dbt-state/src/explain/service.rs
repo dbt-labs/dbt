@@ -1,10 +1,13 @@
-use std::sync::Arc;
+use std::{collections::HashMap, future::Future, sync::Arc};
 
 use futures::stream::{FuturesUnordered, StreamExt};
 use tokio::sync::Semaphore;
 
 use crate::{
-    proto::query_cache::{GetExplainMessagesRequest, GetExplainMessagesResponse},
+    proto::query_cache::{
+        ExplainLine, GetExplainMessagesRequest, GetExplainMessagesResponse,
+        GetUpstreamDependencyChangesRequest,
+    },
     service_client::{RunCacheServiceClient, RunCacheServiceError},
 };
 
@@ -27,6 +30,52 @@ pub(super) async fn service_explain_response_for_ids<C>(
 where
     C: RunCacheServiceClient + ?Sized,
 {
+    let messages = fetch_batched(execution_decision_ids, |batch| async move {
+        client
+            .get_explain_messages(GetExplainMessagesRequest {
+                execution_decision_ids: batch,
+            })
+            .await
+            .map(|response| response.messages)
+    })
+    .await?;
+
+    Ok(GetExplainMessagesResponse { messages })
+}
+
+/// Fetch upstream dependency changes for the given execution ids, keyed by execution id.
+pub(super) async fn upstream_dependency_changes_for_ids<C>(
+    client: &C,
+    execution_ids: &[String],
+) -> Result<HashMap<String, Vec<ExplainLine>>, RunCacheServiceError>
+where
+    C: RunCacheServiceClient + ?Sized,
+{
+    let changes = fetch_batched(execution_ids, |batch| async move {
+        client
+            .get_upstream_dependency_changes(GetUpstreamDependencyChangesRequest {
+                execution_ids: batch,
+            })
+            .await
+            .map(|response| response.dependency_changes)
+    })
+    .await?;
+
+    Ok(changes
+        .into_iter()
+        .map(|change| (change.execution_id, change.lines))
+        .collect())
+}
+
+/// Issue one request per batch of ids with bounded concurrency and flatten the results.
+async fn fetch_batched<F, Fut, T>(
+    ids: &[String],
+    make_request: F,
+) -> Result<Vec<T>, RunCacheServiceError>
+where
+    F: Fn(Vec<String>) -> Fut,
+    Fut: Future<Output = Result<Vec<T>, RunCacheServiceError>>,
+{
     // Calculate max_workers similar to Python: min(available_cpus, 4)
     // available_cpus = max(1, (cpu_count or 4) - 1)
     let cpu_count = std::thread::available_parallelism()
@@ -38,9 +87,10 @@ where
     let semaphore = Arc::new(Semaphore::new(max_workers));
     let mut futures = FuturesUnordered::new();
 
-    for batch in execution_decision_ids.chunks(EXPLAIN_MAX_BATCH_SIZE) {
+    for batch in ids.chunks(EXPLAIN_MAX_BATCH_SIZE) {
         let batch = batch.to_vec();
         let semaphore = semaphore.clone();
+        let request = make_request(batch);
 
         futures.push(async move {
             // Acquire permit to limit concurrent requests
@@ -49,20 +99,24 @@ where
                 .await
                 .expect("semaphore should not be closed");
 
-            client
-                .get_explain_messages(GetExplainMessagesRequest {
-                    execution_decision_ids: batch,
-                })
-                .await
+            request.await
         });
     }
 
-    let mut messages = Vec::new();
+    let mut results = Vec::new();
     while let Some(response) = futures.next().await {
-        messages.extend(response?.messages);
+        results.extend(response?);
     }
 
-    Ok(GetExplainMessagesResponse { messages })
+    Ok(results)
+}
+
+/// Extract service-side execution ids from state explain records.
+pub(super) fn execution_ids(records: &[StateExplainRecord]) -> Vec<String> {
+    records
+        .iter()
+        .filter_map(|record| record.execution_id.clone())
+        .collect()
 }
 
 /// Extract service-side execution decision ids from state explain records.

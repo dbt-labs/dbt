@@ -1,9 +1,9 @@
 use dbt_error::ErrorCode;
 use dbt_telemetry::{
-    AssetParsed, CompiledCode, CompiledCodeInline, ConnectionLimitWait, DepsAddPackage,
-    DepsAllPackagesInstalled, DepsPackageInstalled, GenericOpExecuted, GenericOpItemProcessed,
-    Invocation, ListItemOutput, LogMessage, NodeEvaluated, NodeOutcome, NodeProcessed, NodeType,
-    PhaseExecuted, ProgressMessage, QueryExecuted, ShowDataOutput, ShowResult, StateModifiedDiff,
+    AssetParsed, CompiledCode, CompiledCodeInline, DepsAddPackage, DepsAllPackagesInstalled,
+    DepsPackageInstalled, GenericOpExecuted, GenericOpItemProcessed, Invocation, ListItemOutput,
+    LogMessage, NodeEvaluated, NodeOutcome, NodeProcessed, NodeType, PhaseExecuted,
+    ProgressMessage, QueryExecuted, ShowDataOutput, ShowResult, StateModifiedDiff, ThreadPoolWait,
     UserLogMessage,
 };
 use std::{
@@ -25,9 +25,6 @@ use super::super::{
     event_classifiers::is_exit_with_status_log,
     formatters::{
         asset::format_asset_parsed_end,
-        connection_limit_wait::{
-            format_connection_limit_wait_end, format_connection_limit_wait_start,
-        },
         constants::SELECTED_NODES_TITLE,
         deps::{
             format_package_add_end, format_package_add_start, format_package_install_end,
@@ -51,6 +48,7 @@ use super::super::{
         progress::format_progress_message,
         state_mod_diff::format_state_modified_diff_lines,
         test_result::format_test_failure,
+        thread_pool_wait::{format_thread_pool_wait_end, format_thread_pool_wait_start},
     },
     fs_error_log::get_log_message,
 };
@@ -154,8 +152,8 @@ impl TelemetryConsumer for FileLogLayer {
             return;
         }
 
-        if let Some(wait) = span.attributes.downcast_ref::<ConnectionLimitWait>() {
-            self.handle_connection_limit_wait_start(span, wait);
+        if span.attributes.is::<ThreadPoolWait>() {
+            self.handle_thread_pool_wait_start(span);
             return;
         }
 
@@ -196,8 +194,8 @@ impl TelemetryConsumer for FileLogLayer {
             return;
         }
 
-        if let Some(wait) = span.attributes.downcast_ref::<ConnectionLimitWait>() {
-            self.handle_connection_limit_wait_end(span, wait);
+        if span.attributes.is::<ThreadPoolWait>() {
+            self.handle_thread_pool_wait_end(span);
             return;
         }
 
@@ -336,8 +334,8 @@ impl FileLogLayer {
         );
     }
 
-    fn handle_connection_limit_wait_start(&self, span: &SpanStartInfo, wait: &ConnectionLimitWait) {
-        let formatted = format_connection_limit_wait_start(wait);
+    fn handle_thread_pool_wait_start(&self, span: &SpanStartInfo) {
+        let formatted = format_thread_pool_wait_start();
         self.write_log_lines(
             span.start_time_unix_nano,
             span.severity_number,
@@ -345,12 +343,12 @@ impl FileLogLayer {
         );
     }
 
-    fn handle_connection_limit_wait_end(&self, span: &SpanEndInfo, wait: &ConnectionLimitWait) {
+    fn handle_thread_pool_wait_end(&self, span: &SpanEndInfo) {
         let duration = span
             .end_time_unix_nano
             .duration_since(span.start_time_unix_nano)
             .unwrap_or_default();
-        let formatted = format_connection_limit_wait_end(wait, duration);
+        let formatted = format_thread_pool_wait_end(duration);
         self.write_log_lines(span.end_time_unix_nano, span.severity_number, &[formatted]);
     }
 

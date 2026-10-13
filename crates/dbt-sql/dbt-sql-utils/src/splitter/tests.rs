@@ -2,7 +2,7 @@ use super::*;
 
 use strum::IntoEnumIterator;
 
-use dbt_frontend_common::dialect::Dialect;
+use dbt_frontend_common::Dialect;
 
 use crate::SUPPORTED_DIALECTS;
 

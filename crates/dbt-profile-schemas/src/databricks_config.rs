@@ -105,7 +105,7 @@ impl InteractiveSetup for DatabricksDbConfig {
     }
 }
 
-pub fn setup_databricks_profile(
+pub(crate) fn setup_databricks_profile(
     existing_config: Option<&DatabricksDbConfig>,
 ) -> FsResult<Box<DatabricksDbConfig>> {
     let default_config = DatabricksDbConfig {

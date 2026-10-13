@@ -137,7 +137,7 @@ pub fn write_metadata_parquet(
     node_classifiers: &HashMap<String, Vec<String>>,
     column_classifiers: &HashMap<String, HashMap<String, Vec<String>>>,
 ) {
-    write_metadata_parquet_impl(
+    let _ = write_metadata_parquet_with_errors(
         arg,
         manifest,
         resolved_state,
@@ -148,6 +148,37 @@ pub fn write_metadata_parquet(
         node_classifiers,
         column_classifiers,
     );
+}
+
+/// Like [`write_metadata_parquet`], but returns the non-fatal write errors so a
+/// caller that needs publication status can observe them.
+#[allow(clippy::too_many_arguments)]
+pub fn write_metadata_parquet_with_errors(
+    arg: &EvalArgs,
+    manifest: &DbtManifest,
+    resolved_state: Option<&ResolverState>,
+    schema_store: Option<&dyn SchemaStoreTrait>,
+    column_lineage: Option<&[CllEdge]>,
+    recomputed_column_lineage_targets: &HashSet<String>,
+    grain_infos: &HashMap<String, PlanGrainInfo>,
+    node_classifiers: &HashMap<String, Vec<String>>,
+    column_classifiers: &HashMap<String, HashMap<String, Vec<String>>>,
+) -> Vec<String> {
+    let errors = write_metadata_parquet_impl(
+        arg,
+        manifest,
+        resolved_state,
+        schema_store,
+        column_lineage,
+        recomputed_column_lineage_targets,
+        grain_infos,
+        node_classifiers,
+        column_classifiers,
+    );
+    for error in &errors {
+        emit_warn_log_message(ErrorCode::Generic, error);
+    }
+    errors
 }
 
 /// Merge declared (YAML) classifier labels with propagated labels into a
@@ -192,7 +223,7 @@ fn write_metadata_parquet_impl(
     grain_infos: &HashMap<String, PlanGrainInfo>,
     node_classifiers: &HashMap<String, Vec<String>>,
     column_classifiers: &HashMap<String, HashMap<String, Vec<String>>>,
-) {
+) -> Vec<String> {
     use dbt_common::static_analysis::is_strict_static_analysis;
     use dbt_index_core::hash_str;
 
@@ -540,7 +571,5 @@ fn write_metadata_parquet_impl(
         );
     }
 
-    for e in errors {
-        emit_warn_log_message(ErrorCode::Generic, e);
-    }
+    errors
 }

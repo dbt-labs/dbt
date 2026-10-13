@@ -819,7 +819,7 @@ impl NodeResolverTracker for NodeResolver {
                     )
                 } else {
                     err!(
-                        ErrorCode::InvalidConfig,
+                        ErrorCode::DependencyNotFound,
                         "Function '{}' not found in project. Searched for '{}'",
                         function_name,
                         search_function_names.join(", ")
@@ -1130,11 +1130,23 @@ pub fn resolve_dependencies(
                         .push((dependency_id, location));
                 }
                 Err(e) => {
-                    // Check if this is a disabled dependency error for tests or exposures
-                    if (is_test || is_exposure) && e.code == ErrorCode::DisabledDependency {
+                    // A test whose function target is merely disabled is excluded silently:
+                    // dbt-core reports this at debug level only.
+                    if is_test && e.code == ErrorCode::DisabledDependency {
                         has_disabled_or_missing_dependency = true;
-                        let err_with_loc = e.with_location(location);
-                        emit_warn_log_from_fs_error(err_with_loc);
+                        emit_debug_log_message(format!("{node_unique_id} ({location}): {e}"));
+                    } else if is_test
+                        && let Some((warning, disable)) =
+                            downgraded_node_dependency_warning(&e, location.clone())
+                    {
+                        // A missing target stays a user-visible warning, and the node is
+                        // still excluded.
+                        has_disabled_or_missing_dependency = disable;
+                        emit_warn_log_from_fs_error(warning);
+                    } else if is_exposure && e.code == ErrorCode::DisabledDependency {
+                        // An exposure is only excluded for a disabled target; a missing one errors.
+                        has_disabled_or_missing_dependency = true;
+                        emit_warn_log_from_fs_error(e.with_location(location));
                     } else {
                         // Track this node as having an error (unresolved function)
                         nodes_with_errors.insert(node_unique_id.clone());
@@ -1424,7 +1436,7 @@ mod tests {
         DbtManifest, DbtNode, ManifestMetadata, ManifestModel, nodes_from_dbt_manifest,
     };
     use dbt_schemas::schemas::nodes::{
-        CommonAttributes, DbtModel, DbtModelAttr, NodeBaseAttributes,
+        CommonAttributes, DbtExposure, DbtModel, DbtModelAttr, DbtTest, NodeBaseAttributes,
     };
     use dbt_schemas::state::Operations;
     use std::sync::Arc;
@@ -1789,6 +1801,145 @@ mod tests {
         );
     }
 
+    /// An `--inline` node lives in an empty-named package, so its function candidates must still
+    /// fall through to the root package and the bare name. Nothing else pins this.
+    #[test]
+    fn function_dependency_resolves_from_empty_node_package() {
+        let mut node_resolver = NodeResolver {
+            root_package_name: "root_project".to_string(),
+            ..Default::default()
+        };
+        insert_test_function(&mut node_resolver, "root_project", ROOT_FUNCTION_ID);
+
+        let mut model = make_model("model..inline_query", "inline_query", "", None, vec![]);
+        let base = &mut Arc::make_mut(&mut model).__base_attr__;
+        base.enabled = true;
+        base.functions = vec![DbtRef {
+            name: "shared".to_string(),
+            package: None,
+            version: None,
+            location: None,
+        }];
+
+        let model_id = model.__common_attr__.unique_id.clone();
+        let mut nodes = Nodes::default();
+        nodes.models.insert(model_id.clone(), model);
+        let mut disabled_nodes = Nodes::default();
+        let mut operations = Operations::default();
+
+        let errors = resolve_dependencies(
+            &mut nodes,
+            &mut disabled_nodes,
+            &mut operations,
+            &node_resolver,
+        );
+
+        assert!(errors.is_empty());
+        assert_eq!(
+            nodes.models[&model_id].__base_attr__.depends_on.nodes,
+            vec![ROOT_FUNCTION_ID.to_string()]
+        );
+    }
+
+    /// A missing `function()` is a warning that disables a data test in place, but stays a hard
+    /// error for a model - dbt-core's `invalid_target_fail_unless_test` draws the same line.
+    #[test]
+    fn missing_function_errors_for_models_but_disables_tests() {
+        let node_resolver = NodeResolver {
+            root_package_name: "root_project".to_string(),
+            ..Default::default()
+        };
+        let missing_function = vec![DbtRef {
+            name: "not_exist".to_string(),
+            package: None,
+            version: None,
+            location: None,
+        }];
+
+        let model_id = "model.root_project.consumer";
+        let mut model = make_model(model_id, "consumer", "root_project", None, vec![]);
+        let base = &mut Arc::make_mut(&mut model).__base_attr__;
+        base.enabled = true;
+        base.functions = missing_function.clone();
+
+        let test_id = "test.root_project.singular";
+        let test = Arc::new(DbtTest {
+            __common_attr__: CommonAttributes {
+                unique_id: test_id.to_string(),
+                name: "singular".to_string(),
+                package_name: "root_project".to_string(),
+                ..Default::default()
+            },
+            __base_attr__: NodeBaseAttributes {
+                enabled: true,
+                functions: missing_function,
+                ..Default::default()
+            },
+            ..Default::default()
+        });
+
+        let mut nodes = Nodes::default();
+        nodes.models.insert(model_id.to_string(), model);
+        nodes.tests.insert(test_id.to_string(), test);
+        let mut disabled_nodes = Nodes::default();
+        let mut operations = Operations::default();
+
+        let errors = resolve_dependencies(
+            &mut nodes,
+            &mut disabled_nodes,
+            &mut operations,
+            &node_resolver,
+        );
+
+        assert_eq!(errors, HashSet::from([model_id.to_string()]));
+        assert!(!nodes.tests[test_id].__base_attr__.enabled);
+    }
+
+    /// Unlike a data test, an exposure with a missing `function()` stays a hard error.
+    #[test]
+    fn missing_function_errors_for_exposures() {
+        let node_resolver = NodeResolver {
+            root_package_name: "root_project".to_string(),
+            ..Default::default()
+        };
+
+        let exposure_id = "exposure.root_project.dashboard";
+        let exposure = Arc::new(DbtExposure {
+            __common_attr__: CommonAttributes {
+                unique_id: exposure_id.to_string(),
+                name: "dashboard".to_string(),
+                package_name: "root_project".to_string(),
+                ..Default::default()
+            },
+            __base_attr__: NodeBaseAttributes {
+                enabled: true,
+                functions: vec![DbtRef {
+                    name: "not_exist".to_string(),
+                    package: None,
+                    version: None,
+                    location: None,
+                }],
+                ..Default::default()
+            },
+            ..Default::default()
+        });
+
+        let mut nodes = Nodes::default();
+        nodes.exposures.insert(exposure_id.to_string(), exposure);
+        let mut disabled_nodes = Nodes::default();
+        let mut operations = Operations::default();
+
+        let errors = resolve_dependencies(
+            &mut nodes,
+            &mut disabled_nodes,
+            &mut operations,
+            &node_resolver,
+        );
+
+        assert_eq!(errors, HashSet::from([exposure_id.to_string()]));
+        assert!(nodes.exposures.contains_key(exposure_id));
+    }
+
     #[test]
     fn search_packages_mirrors_dbt_core_candidate_order() {
         let mut node_resolver = NodeResolver {
@@ -1883,6 +2034,19 @@ mod tests {
             &FsError::new(
                 ErrorCode::InvalidConfig,
                 "Found ambiguous ref('x') pointing to multiple nodes: ['a', 'b']",
+            ),
+            CodeLocationWithFile::default(),
+        );
+
+        assert!(warning.is_none());
+    }
+
+    #[test]
+    fn downgraded_warning_does_not_map_ambiguous_function_errors() {
+        let warning = downgraded_node_dependency_warning(
+            &FsError::new(
+                ErrorCode::InvalidConfig,
+                "Found ambiguous function('x') pointing to multiple nodes: ['a', 'b']",
             ),
             CodeLocationWithFile::default(),
         );

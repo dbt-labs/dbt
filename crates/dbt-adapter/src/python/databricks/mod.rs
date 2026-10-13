@@ -498,7 +498,11 @@ fn extract_string_list(config: &Value, attr: &str) -> Vec<String> {
 }
 
 fn extract_timeout(config: &Value) -> u64 {
-    let Some(value) = config.get_attr("timeout").ok() else {
+    let Some(value) = config
+        .get_attr("timeout")
+        .ok()
+        .filter(|v| !v.is_undefined() && !v.is_none())
+    else {
         return 0;
     };
 
@@ -852,7 +856,29 @@ fn create_or_update_workflow(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use minijinja::value::Value as MjValue;
     use serde_json::json;
+
+    #[test]
+    fn extract_timeout_defaults_to_zero_when_unset() {
+        assert_eq!(extract_timeout(&MjValue::from_serialize(json!({}))), 0);
+        assert_eq!(
+            extract_timeout(&MjValue::from_serialize(json!({ "timeout": null }))),
+            0
+        );
+    }
+
+    #[test]
+    fn extract_timeout_parses_int_and_string() {
+        assert_eq!(
+            extract_timeout(&MjValue::from_serialize(json!({ "timeout": 120 }))),
+            120
+        );
+        assert_eq!(
+            extract_timeout(&MjValue::from_serialize(json!({ "timeout": "45" }))),
+            45
+        );
+    }
 
     fn payload_for(spec: PythonEnvironmentSpec) -> serde_json::Value {
         let task = build_notebook_task(

@@ -1,0 +1,9 @@
+[graph]
+exclude = ["dbt-fusion-workspace-hack"]
+
+[bans]
+multiple-versions = "allow"
+deny = [
+  { crate = "dbt-adapter-core", reason = "dbt-frontend-common models SQL dialects, not warehouse adapters" },
+  { crate = "dbt-common", reason = "dbt-frontend-common sits below dbt-common; the dependency goes the other way" },
+]

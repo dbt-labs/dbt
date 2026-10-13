@@ -13,7 +13,7 @@ fn render_constraint_ref_field(
     base_context: &BTreeMap<String, MinijinjaValue>,
 ) -> FsResult<String> {
     if to_ref.contains("ref(") || to_ref.contains("source(") {
-        let wrapped_ref = format!("{{{{{to_ref}}}}}");
+        let wrapped_ref = format!("{{{{ ({to_ref}).render() }}}}");
 
         jinja_env
             .render_str(&wrapped_ref, base_context, &[])

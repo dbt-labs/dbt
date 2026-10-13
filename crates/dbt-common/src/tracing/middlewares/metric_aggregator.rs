@@ -1,6 +1,6 @@
 use dbt_telemetry::{
-    ConnectionLimitWait, HookProcessed, Invocation, InvocationMetrics, NodeEvaluated, NodeEvent,
-    NodeOutcome, NodeProcessed, NodeSkipReason, SourceFreshnessOutcome, has_node_warning,
+    HookProcessed, Invocation, InvocationMetrics, NodeEvaluated, NodeEvent, NodeOutcome,
+    NodeProcessed, NodeSkipReason, SourceFreshnessOutcome, ThreadPoolWait, has_node_warning,
     node_processed::NodeOutcomeDetail,
 };
 use dbt_tracing::{LogRecordInfo, SeverityNumber, SpanEndInfo};
@@ -175,7 +175,7 @@ impl TelemetryMiddleware for TelemetryMetricAggregator {
             });
         }
 
-        if span.attributes.is::<ConnectionLimitWait>() {
+        if span.attributes.is::<ThreadPoolWait>() {
             let wait_ms = span
                 .end_time_unix_nano
                 .duration_since(span.start_time_unix_nano)

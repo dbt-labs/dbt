@@ -15,6 +15,7 @@ use minijinja::State;
 
 use crate::cache::RelationCache;
 use crate::engine::query_comment::QueryCommentConfig;
+use crate::engine::retry::QueryRetryPolicy;
 use crate::sql_types::TypeOps;
 use crate::stmt_splitter::StmtSplitter;
 
@@ -39,6 +40,7 @@ pub struct SidecarEngine {
     stmt_splitter: Arc<dyn StmtSplitter>,
     query_comment: Arc<QueryCommentConfig>,
     /// Unused for sidecar adapters - required for API compatibility
+    query_retry_policy: QueryRetryPolicy,
     relation_cache: Arc<RelationCache>,
     /// Resolved behavior object
     behavior: Arc<Behavior>,
@@ -58,6 +60,7 @@ impl SidecarEngine {
         relation_cache: Arc<RelationCache>,
     ) -> Self {
         let behavior = make_behavior(adapter_type, &BTreeMap::new());
+        let query_retry_policy = QueryRetryPolicy::new(adapter_type, &config);
         Self {
             adapter_type,
             execution_backend,
@@ -67,6 +70,7 @@ impl SidecarEngine {
             type_ops,
             stmt_splitter,
             query_comment: Arc::new(query_comment),
+            query_retry_policy,
             relation_cache,
             behavior,
         }
@@ -104,6 +108,10 @@ impl AdapterEngine for SidecarEngine {
 
     fn get_config(&self) -> &AdapterConfig {
         &self.config
+    }
+
+    fn query_retry_policy(&self) -> &QueryRetryPolicy {
+        &self.query_retry_policy
     }
 
     fn relation_cache(&self) -> &Arc<RelationCache> {

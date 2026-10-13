@@ -119,6 +119,16 @@ pub struct InvocationEvalArgs {
     /// in dbt_project.yml / user settings.
     #[prost(bool, optional, tag = "25")]
     pub manage_state: ::core::option::Option<bool>,
+    /// Whether all warnings are upgraded to errors, resolved from --warn-error,
+    /// DBT_WARN_ERROR, or `flags.warn_error` in dbt_project.yml. Unset if the
+    /// invocation ends before the project is loaded.
+    #[prost(bool, optional, tag = "26")]
+    pub warn_error: ::core::option::Option<bool>,
+    /// Resolved --warn-error-options, DBT_WARN_ERROR_OPTIONS, or
+    /// `flags.warn_error_options` in dbt_project.yml. Unset if the invocation ends
+    /// before the project is loaded.
+    #[prost(message, optional, tag = "27")]
+    pub warn_error_options: ::core::option::Option<InvocationWarnErrorOptions>,
 }
 impl ::dbt_tracing::StaticName for InvocationEvalArgs {
     const FULL_NAME: &'static str = "v1.public.events.fusion.invocation.InvocationEvalArgs";
@@ -132,6 +142,36 @@ impl ::prost::Name for InvocationEvalArgs {
     }
     fn type_url() -> ::prost::alloc::string::String {
         "/v1.public.events.fusion.invocation.InvocationEvalArgs".into()
+    }
+}
+/// Resolved warn-error options. Entries use the canonical config spelling
+/// (e.g. `all`, `Deprecations`, event names); `*` and `ALL` normalize to `all`.
+#[cfg_attr(any(test, feature = "test-utils"), derive(::fake::Dummy))]
+#[derive(crate::macros::ProtoNew)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct InvocationWarnErrorOptions {
+    /// Events or groups upgraded to errors
+    #[prost(string, repeated, tag = "1")]
+    pub error: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
+    /// Events or groups kept as warnings
+    #[prost(string, repeated, tag = "2")]
+    pub warn: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
+    /// Events or groups silenced
+    #[prost(string, repeated, tag = "3")]
+    pub silence: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
+}
+impl ::dbt_tracing::StaticName for InvocationWarnErrorOptions {
+    const FULL_NAME: &'static str = "v1.public.events.fusion.invocation.InvocationWarnErrorOptions";
+    const TYPE_URL: &'static str = "/v1.public.events.fusion.invocation.InvocationWarnErrorOptions";
+}
+impl ::prost::Name for InvocationWarnErrorOptions {
+    const NAME: &'static str = "InvocationWarnErrorOptions";
+    const PACKAGE: &'static str = "v1.public.events.fusion.invocation";
+    fn full_name() -> ::prost::alloc::string::String {
+        "v1.public.events.fusion.invocation.InvocationWarnErrorOptions".into()
+    }
+    fn type_url() -> ::prost::alloc::string::String {
+        "/v1.public.events.fusion.invocation.InvocationWarnErrorOptions".into()
     }
 }
 /// Invocation event holding identifying info and flattened attributes.

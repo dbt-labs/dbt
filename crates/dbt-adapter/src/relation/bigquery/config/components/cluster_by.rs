@@ -30,13 +30,19 @@ fn diff_cluster_by(desired: &Vec<String>, current: &Vec<String>) -> Option<Vec<S
         return Some(desired.clone());
     }
 
-    let mut desired_sorted = desired.iter().collect::<Vec<&String>>();
-    let mut current_sorted = current.iter().collect::<Vec<&String>>();
+    // BigQuery reports clustering fields unquoted and column names are case-insensitive,
+    // so a config of `` `Group` `` names the stored `group`. A false mismatch here makes
+    // the table materialization drop the table before rebuilding it.
+    fn normalize(fields: &[String]) -> Vec<String> {
+        let mut keys = fields
+            .iter()
+            .map(|f| f.trim_matches('`').to_ascii_lowercase())
+            .collect::<Vec<String>>();
+        keys.sort_unstable();
+        keys
+    }
 
-    desired_sorted.sort_unstable();
-    current_sorted.sort_unstable();
-
-    (desired_sorted != current_sorted).then(|| desired.clone())
+    (normalize(desired) != normalize(current)).then(|| desired.clone())
 }
 
 fn new_component(columns: Vec<String>) -> ClusterBy {
@@ -159,6 +165,27 @@ mod tests {
     fn different_fields_detected_as_change() {
         let desired = vec!["id".to_string(), "value".to_string()];
         let current = vec!["id".to_string(), "name".to_string()];
+        assert!(diff_cluster_by(&desired, &current).is_some());
+    }
+
+    #[test]
+    fn backtick_quoted_field_matches_unquoted_stored_field() {
+        let desired = vec!["event_type".to_string(), "`group`".to_string()];
+        let current = vec!["event_type".to_string(), "group".to_string()];
+        assert!(diff_cluster_by(&desired, &current).is_none());
+    }
+
+    #[test]
+    fn case_only_difference_no_change() {
+        let desired = vec!["ExternalCustomerId".to_string()];
+        let current = vec!["externalcustomerid".to_string()];
+        assert!(diff_cluster_by(&desired, &current).is_none());
+    }
+
+    #[test]
+    fn quoted_field_with_different_name_detected_as_change() {
+        let desired = vec!["`group`".to_string()];
+        let current = vec!["grp".to_string()];
         assert!(diff_cluster_by(&desired, &current).is_some());
     }
 
