@@ -22,6 +22,7 @@ use dbt_jinja_utils::phases::{MicrobatchRefContext, RefFunction, SourceFunction}
 use dbt_jinja_utils::utils::inject_and_persist_ephemeral_models;
 use dbt_schemas::schemas::{DbtModel, InternalDbtNode};
 use dbt_schemas::state::{DbtRuntimeConfig, NodeResolverTracker};
+use dbt_tasks_core::task::run_blocking_task_operation;
 use minijinja::Value;
 use minijinja::value::ValueMap;
 use minijinja::value::mutable_map::MutableMap;
@@ -343,7 +344,7 @@ pub async fn is_incremental(
     // `get_relation` asks the warehouse whether the target already exists, so
     // it opens a connection and has to run on a `dbt-runtime` worker. The
     // `State` is built there too: it borrows the environment and is not `Send`.
-    let existing_table = dbt_runtime::spawn_blocking(move || {
+    let existing_table = run_blocking_task_operation(move || {
         let Some(adapter) = jinja_env.get_base_adapter() else {
             return false;
         };

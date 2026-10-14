@@ -153,8 +153,20 @@ impl serde::Serialize for ThreadPoolWait {
         S: serde::Serializer,
     {
         use serde::ser::SerializeStruct;
-        let len = 0;
-        let struct_ser = serializer.serialize_struct("v1.public.events.fusion.process.ThreadPoolWait", len)?;
+        let mut len = 0;
+        if self.unique_id.is_some() {
+            len += 1;
+        }
+        if self.batch_id.is_some() {
+            len += 1;
+        }
+        let mut struct_ser = serializer.serialize_struct("v1.public.events.fusion.process.ThreadPoolWait", len)?;
+        if let Some(v) = self.unique_id.as_ref() {
+            struct_ser.serialize_field("unique_id", v)?;
+        }
+        if let Some(v) = self.batch_id.as_ref() {
+            struct_ser.serialize_field("batch_id", v)?;
+        }
         struct_ser.end()
     }
 }
@@ -165,10 +177,16 @@ impl<'de> serde::Deserialize<'de> for ThreadPoolWait {
         D: serde::Deserializer<'de>,
     {
         const FIELDS: &[&str] = &[
+            "unique_id",
+            "uniqueId",
+            "batch_id",
+            "batchId",
         ];
 
         #[allow(clippy::enum_variant_names)]
         enum GeneratedField {
+            UniqueId,
+            BatchId,
             __SkipField__,
         }
         impl<'de> serde::Deserialize<'de> for GeneratedField {
@@ -190,7 +208,11 @@ impl<'de> serde::Deserialize<'de> for ThreadPoolWait {
                     where
                         E: serde::de::Error,
                     {
-                            Ok(GeneratedField::__SkipField__)
+                        match value {
+                            "uniqueId" | "unique_id" => Ok(GeneratedField::UniqueId),
+                            "batchId" | "batch_id" => Ok(GeneratedField::BatchId),
+                            _ => Ok(GeneratedField::__SkipField__),
+                        }
                     }
                 }
                 deserializer.deserialize_identifier(GeneratedVisitor)
@@ -208,10 +230,30 @@ impl<'de> serde::Deserialize<'de> for ThreadPoolWait {
                 where
                     V: serde::de::MapAccess<'de>,
             {
-                while map_.next_key::<GeneratedField>()?.is_some() {
-                    let _ = map_.next_value::<serde::de::IgnoredAny>()?;
+                let mut unique_id__ = None;
+                let mut batch_id__ = None;
+                while let Some(k) = map_.next_key()? {
+                    match k {
+                        GeneratedField::UniqueId => {
+                            if unique_id__.is_some() {
+                                return Err(serde::de::Error::duplicate_field("uniqueId"));
+                            }
+                            unique_id__ = map_.next_value()?;
+                        }
+                        GeneratedField::BatchId => {
+                            if batch_id__.is_some() {
+                                return Err(serde::de::Error::duplicate_field("batchId"));
+                            }
+                            batch_id__ = map_.next_value()?;
+                        }
+                        GeneratedField::__SkipField__ => {
+                            let _ = map_.next_value::<serde::de::IgnoredAny>()?;
+                        }
+                    }
                 }
                 Ok(ThreadPoolWait {
+                    unique_id: unique_id__,
+                    batch_id: batch_id__,
                 })
             }
         }

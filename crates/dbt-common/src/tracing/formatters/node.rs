@@ -1,10 +1,10 @@
 use console::Style;
 use dbt_telemetry::{
-    AnyNodeOutcomeDetail, CompiledCode, CompiledCodeInline, ExecutionPhase, NodeEvaluated,
-    NodeEvent, NodeMaterialization, NodeOutcome, NodeProcessed, NodeSkipReason, NodeType,
-    SourceFreshnessOutcome, TestOutcome, get_cache_detail, get_freshness_detail,
-    get_node_outcome_detail, get_test_outcome, has_node_warning, is_batched_test,
-    is_statically_checked_test,
+    AnyNodeOutcomeDetail, CompiledCode, CompiledCodeInline, ExecutionPhase, MicrobatchBatchSize,
+    MicrobatchEvaluated, NodeEvaluated, NodeEvent, NodeMaterialization, NodeOutcome, NodeProcessed,
+    NodeSkipReason, NodeType, SourceFreshnessOutcome, TestOutcome, get_cache_detail,
+    get_freshness_detail, get_node_outcome_detail, get_test_outcome, has_node_warning,
+    is_batched_test, is_statically_checked_test,
 };
 
 use crate::io_args::FsCommand;
@@ -618,6 +618,81 @@ pub fn format_node_evaluated_end(
     )
 }
 
+/// Format the start of a microbatch window as of its batch size, e.g. `2026-01-02`
+/// for a daily batch.
+fn format_microbatch_window(batch: &MicrobatchEvaluated) -> String {
+    let format = match batch.batch_size() {
+        MicrobatchBatchSize::Hour => "%Y-%m-%dT%H",
+        MicrobatchBatchSize::Day => "%Y-%m-%d",
+        MicrobatchBatchSize::Month => "%Y-%m",
+        MicrobatchBatchSize::Year => "%Y",
+        MicrobatchBatchSize::Unspecified => return batch.batch_id.clone(),
+    };
+    chrono::DateTime::parse_from_rfc3339(&batch.event_time_start)
+        .map(|start| start.format(format).to_string())
+        .unwrap_or_else(|_| batch.batch_id.clone())
+}
+
+/// Describe a microbatch like dbt-core does.
+///
+/// Returns formatted string in the pattern:
+/// `batch {window} of {schema}.{alias}`
+pub fn format_microbatch_description(batch: &MicrobatchEvaluated, colorize: bool) -> String {
+    format!(
+        "batch {} of {}",
+        format_microbatch_window(batch),
+        format_qualifier_alias(&batch.schema, &batch.identifier, colorize)
+    )
+}
+
+/// Time a microbatch spent executing: its span's wall time minus its idle time.
+pub fn microbatch_active_duration(
+    batch: &MicrobatchEvaluated,
+    duration: std::time::Duration,
+) -> std::time::Duration {
+    duration.saturating_sub(std::time::Duration::from_millis(batch.idle_time_ms))
+}
+
+/// Format a MicrobatchEvaluated event for the start of evaluation (no duration)
+///
+/// Returns formatted string in the pattern:
+/// `Started batch {window} of {schema}.{alias} [{index} of {total}]`
+pub fn format_microbatch_evaluated_start(batch: &MicrobatchEvaluated, colorize: bool) -> String {
+    with_progress_field(
+        format!(
+            "{} {}",
+            right_align_static_action("Started"),
+            format_microbatch_description(batch, colorize)
+        ),
+        format_progress_field(Some(batch.batch_index), Some(batch.total_batches), None),
+    )
+}
+
+/// Format a MicrobatchEvaluated event for the end of evaluation (with duration and outcome)
+///
+/// Returns formatted string in the pattern:
+/// `{action} batch {window} of {schema}.{alias} [{index} of {total} in {duration}]`
+pub fn format_microbatch_evaluated_end(
+    batch: &MicrobatchEvaluated,
+    duration: std::time::Duration,
+    colorize: bool,
+) -> String {
+    let action_formatted =
+        format_node_action(batch.node_outcome(), None, None, None, false, colorize);
+    with_progress_field(
+        format!(
+            "{} {}",
+            action_formatted,
+            format_microbatch_description(batch, colorize)
+        ),
+        format_progress_field(
+            Some(batch.batch_index),
+            Some(batch.total_batches),
+            Some(microbatch_active_duration(batch, duration)),
+        ),
+    )
+}
+
 /// Format a skipped test group summary line
 ///
 /// Returns formatted string in the pattern:
@@ -771,6 +846,36 @@ pub fn format_aggregated_test_group_member(
         format_node_type_fixed_width(node.node_type().as_static_ref(), colorize),
         format_qualifier_alias("", &node.name, colorize),
         format_materialization_suffix(None, desc.as_deref())
+    )
+}
+
+/// Format one microbatch of a model as a tree branch under the model's result line.
+/// `is_last` picks the terminating connector.
+///
+/// Returns formatted string in the pattern:
+/// `{indent}{connector} {action} batch {window} [{index} of {total} in {duration}]`
+pub fn format_microbatch_member(
+    batch: &MicrobatchEvaluated,
+    duration: std::time::Duration,
+    is_last: bool,
+    colorize: bool,
+) -> String {
+    let connector = if is_last { "└─" } else { "├─" };
+    let (action_label, action_style) =
+        node_action_parts(batch.node_outcome(), None, None, None, false);
+    with_progress_field(
+        format!(
+            "{}{} {} batch {}",
+            " ".repeat(MEMBER_TREE_INDENT),
+            connector,
+            maybe_apply_color(action_style, action_label, colorize),
+            format_microbatch_window(batch)
+        ),
+        format_progress_field(
+            Some(batch.batch_index),
+            Some(batch.total_batches),
+            Some(microbatch_active_duration(batch, duration)),
+        ),
     )
 }
 

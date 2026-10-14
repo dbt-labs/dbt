@@ -1,7 +1,7 @@
 use dbt_telemetry::{
-    HookProcessed, Invocation, InvocationMetrics, NodeEvaluated, NodeEvent, NodeOutcome,
-    NodeProcessed, NodeSkipReason, SourceFreshnessOutcome, ThreadPoolWait, has_node_warning,
-    node_processed::NodeOutcomeDetail,
+    HookProcessed, Invocation, InvocationMetrics, MicrobatchEvaluated, NodeEvaluated, NodeEvent,
+    NodeOutcome, NodeProcessed, NodeSkipReason, SourceFreshnessOutcome, ThreadPoolWait,
+    has_node_warning, node_processed::NodeOutcomeDetail,
 };
 use dbt_tracing::{LogRecordInfo, SeverityNumber, SpanEndInfo};
 
@@ -175,21 +175,28 @@ impl TelemetryMiddleware for TelemetryMetricAggregator {
             });
         }
 
-        if span.attributes.is::<ThreadPoolWait>() {
+        if let Some(wait) = span.attributes.downcast_ref::<ThreadPoolWait>() {
             let wait_ms = span
                 .end_time_unix_nano
                 .duration_since(span.start_time_unix_nano)
                 .unwrap_or_default()
                 .as_millis()
                 .min(u64::MAX as u128) as u64;
-
-            data_provider.with_ancestor_attrs_mut::<NodeEvaluated>(|node| {
-                node.idle_time_ms = Some(
-                    node.idle_time_ms
-                        .unwrap_or_default()
-                        .saturating_add(wait_ms),
-                );
-            });
+            // A batch wait belongs to its batch only. Concurrent batch waits may
+            // overlap, so the model evaluation accounts its own waits instead.
+            if wait.batch_id.is_some() {
+                data_provider.with_ancestor_attrs_mut::<MicrobatchEvaluated>(|batch| {
+                    batch.idle_time_ms = batch.idle_time_ms.saturating_add(wait_ms);
+                });
+            } else {
+                data_provider.with_ancestor_attrs_mut::<NodeEvaluated>(|node| {
+                    node.idle_time_ms = Some(
+                        node.idle_time_ms
+                            .unwrap_or_default()
+                            .saturating_add(wait_ms),
+                    );
+                });
+            }
         }
 
         // Count node processed spans

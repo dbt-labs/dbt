@@ -5,9 +5,9 @@ use dbt_error::ErrorCode;
 use dbt_telemetry::{
     ArtifactType, ArtifactWritten, CompiledCode, CompiledCodeInline, DepsAddPackage,
     DepsPackageInstalled, ExecutionPhase, HookProcessed, HookType, Invocation, ListItemOutput,
-    LogMessage, NodeEvaluated, NodeEvent, NodeOutcome, NodeProcessed, NodeSkipReason, NodeType,
-    ProgressMessage, QueryExecuted, ShowDataOutput, ShowResult, TestOutcome, UserLogMessage,
-    get_freshness_detail, get_test_outcome, has_node_warning,
+    LogMessage, MicrobatchEvaluated, NodeEvaluated, NodeEvent, NodeOutcome, NodeProcessed,
+    NodeSkipReason, NodeType, ProgressMessage, QueryExecuted, ShowDataOutput, ShowResult,
+    TestOutcome, UserLogMessage, get_freshness_detail, get_test_outcome, has_node_warning,
 };
 
 use serde_json::json;
@@ -32,9 +32,10 @@ use super::super::{
         invocation::format_invocation_summary,
         log_message::format_log_message,
         node::{
-            format_compiled_inline_code, format_node_evaluated_start,
-            format_node_outcome_as_status, format_node_processed_end, format_node_processed_start,
-            get_num_failures,
+            format_compiled_inline_code, format_microbatch_description,
+            format_microbatch_evaluated_end, format_microbatch_evaluated_start,
+            format_node_evaluated_start, format_node_outcome_as_status, format_node_processed_end,
+            format_node_processed_start, get_num_failures, microbatch_active_duration,
         },
         progress::format_progress_message,
         query_log::format_query_log,
@@ -783,6 +784,95 @@ impl JsonCompatLayer {
         self.writer.writeln(value.as_str());
     }
 
+    fn emit_microbatch_evaluated_start(
+        &self,
+        batch: &MicrobatchEvaluated,
+        span: &SpanStartInfo,
+        data_provider: &DataProvider<'_>,
+    ) {
+        let mut node_info = None;
+        data_provider.with_ancestor_attrs::<NodeEvaluated>(|node| {
+            node_info = Some(build_node_info_json(
+                node.into(),
+                "started",
+                span.start_time_unix_nano,
+                None,
+            ));
+        });
+        let Some(node_info) = node_info else { return };
+        let info = self.build_core_event_info(
+            batch.dbt_core_event_code.as_deref(),
+            Some("LogStartBatch"),
+            "info",
+            format_microbatch_evaluated_start(batch, false),
+        );
+        let value = json!({
+            "info": info,
+            "data": {
+                "node_info": node_info,
+                "description": format_microbatch_description(batch, false),
+                "batch_index": batch.batch_index,
+                "total_batches": batch.total_batches,
+            }
+        })
+        .to_string();
+        self.writer.writeln(value.as_str());
+    }
+
+    fn emit_microbatch_evaluated_end(
+        &self,
+        batch: &MicrobatchEvaluated,
+        span: &SpanEndInfo,
+        data_provider: &DataProvider<'_>,
+    ) {
+        let (node_status, level) = match batch.node_outcome() {
+            NodeOutcome::Success => ("success", "info"),
+            NodeOutcome::Error => ("error", "error"),
+            NodeOutcome::Canceled => ("cancelled", "error"),
+            NodeOutcome::Skipped => ("skipped", "info"),
+            NodeOutcome::Unspecified => ("started", "info"),
+        };
+        let mut node_info = None;
+        data_provider.with_ancestor_attrs::<NodeEvaluated>(|node| {
+            node_info = Some(build_node_info_json(
+                node.into(),
+                node_status,
+                span.start_time_unix_nano,
+                Some(span.end_time_unix_nano),
+            ));
+        });
+        let Some(node_info) = node_info else { return };
+        // dbt core reports the adapter response message, e.g. `OK`, for a
+        // successful batch and the run status otherwise.
+        let status = match batch.node_outcome() {
+            NodeOutcome::Success => "OK",
+            _ => node_status,
+        };
+        let duration = span
+            .end_time_unix_nano
+            .duration_since(span.start_time_unix_nano)
+            .unwrap_or_default();
+        let info = self.build_core_event_info(
+            batch.dbt_core_event_code.as_deref(),
+            Some("LogBatchResult"),
+            level,
+            format_microbatch_evaluated_end(batch, duration, false),
+        );
+        let value = json!({
+            "info": info,
+            "data": {
+                "node_info": node_info,
+                "description": format_microbatch_description(batch, false),
+                "batch_index": batch.batch_index,
+                "total_batches": batch.total_batches,
+                "status": status,
+                "execution_time": microbatch_active_duration(batch, duration).as_secs_f64(),
+            }
+        })
+        .to_string();
+        self.writer.writeln(value.as_str());
+    }
+
     /// Handle NodeProcessed span start events
     /// Generates NodeStart (Q024) and LogStartLine (Q011)
     fn emit_node_processed_start(&self, node: &NodeProcessed, span: &SpanStartInfo) {
@@ -1292,7 +1382,7 @@ impl TelemetryConsumer for JsonCompatLayer {
             && !is_exit_with_status_log(log_record)
     }
 
-    fn on_span_start(&self, span: &SpanStartInfo, _data_provider: &mut DataProvider<'_>) {
+    fn on_span_start(&self, span: &SpanStartInfo, data_provider: &mut DataProvider<'_>) {
         // Emit MainReportVersion and MainReportArgs events once when invocation span is matched
         if let Some(invocation) = span.attributes.downcast_ref::<Invocation>() {
             self.emit_main_report_version();
@@ -1303,6 +1393,11 @@ impl TelemetryConsumer for JsonCompatLayer {
         // Dispatch to NodeEvaluated handler
         if let Some(node_evaluated) = span.attributes.downcast_ref::<NodeEvaluated>() {
             self.emit_node_evaluated_start(node_evaluated, span);
+            return;
+        }
+
+        if let Some(batch) = span.attributes.downcast_ref::<MicrobatchEvaluated>() {
+            self.emit_microbatch_evaluated_start(batch, span, data_provider);
             return;
         }
 
@@ -1340,6 +1435,11 @@ impl TelemetryConsumer for JsonCompatLayer {
         // Dispatch to NodeProcessed handler
         if let Some(node_processed) = span.attributes.downcast_ref::<NodeProcessed>() {
             self.emit_node_processed_end(node_processed, span);
+            return;
+        }
+
+        if let Some(batch) = span.attributes.downcast_ref::<MicrobatchEvaluated>() {
+            self.emit_microbatch_evaluated_end(batch, span, data_provider);
             return;
         }
 

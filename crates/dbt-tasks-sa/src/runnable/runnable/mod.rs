@@ -33,10 +33,9 @@ use dbt_schemas::schemas::{
 use dbt_tasks_core::context::TaskRunnerCtx;
 use dbt_tasks_core::run_task_hooks::RunTaskHooks;
 use dbt_tasks_core::task::TaskResult;
-use dbt_tasks_core::task::{TP, Task, run_blocking_task_operation};
+use dbt_tasks_core::task::{TP, Task, run_blocking_task_operation, run_concurrent_task_operations};
 use dbt_telemetry::{NodeEvaluated, NodeSkipReason, NodeType};
 
-use tokio::task::JoinSet;
 use tracing::Instrument;
 use vortex_events::run_model_event;
 
@@ -45,8 +44,8 @@ use crate::materialize::{
 };
 use crate::runnable::cache::cache_materialization_return_value;
 use crate::runnable::model::{
-    execute_microbatch_batch, execute_model_remote, prepare_microbatch_batches,
-    resolve_microbatch_window, try_get_microbatch_model,
+    create_microbatch_span, execute_microbatch_batch, execute_model_remote,
+    prepare_microbatch_batches, resolve_microbatch_window, try_get_microbatch_model,
 };
 use crate::runnable::seed::{execute_seed_remote, maybe_resolve_remote_seed_column_hint};
 use crate::runnable::unit_test::execute_unit_test_remote;
@@ -415,21 +414,13 @@ impl Task for RunTask {
                                 // pointer view when at least one batch executed.
                                 let had_batches = !batch_groups.is_empty();
                                 for group in batch_groups {
-                                    let batch_span = tracing::Span::current();
-                                    let mut batch_tasks = group
-                                        .into_iter()
-                                        .map(|task| {
-                                            let ctx = ctx.clone();
-                                            run_blocking_task_operation(move || {
-                                                execute_microbatch_batch(task, &ctx)
-                                            })
-                                            .instrument(batch_span.clone())
+                                    run_concurrent_task_operations(group.into_iter().map(|task| {
+                                        let ctx = ctx.clone();
+                                        (create_microbatch_span(&task), move |canceled| {
+                                            execute_microbatch_batch(task, &ctx, canceled)
                                         })
-                                        .collect::<JoinSet<_>>();
-
-                                    while let Some(res) = batch_tasks.join_next().await {
-                                        res.map_err(Into::into).flatten()??;
-                                    }
+                                    }))
+                                    .await?;
                                 }
 
                                 // After all microbatch batches succeed, create the latest
