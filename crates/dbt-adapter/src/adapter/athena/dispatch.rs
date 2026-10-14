@@ -551,7 +551,7 @@ impl Adapter {
         match self.execute(state, None, sql, false, false, None, None) {
             Ok((response, _)) => Ok(Value::from(format!(
                 r#"{{"rowcount":{},"data_scanned_in_bytes":{}}}"#,
-                response.rows_affected_i64(),
+                response.known_rows_affected().unwrap_or(-1),
                 response.data_scanned_in_bytes().unwrap_or(0)
             ))),
             Err(e) if e.message().contains("TOO_MANY_OPEN_PARTITIONS") => {
