@@ -292,9 +292,17 @@ impl AdapterResponse {
             Err(_) => (-1, 0),
         };
         let message = format!("{} {rows}", self.code());
-        self.with_message(message)
-            .with_rows_affected(rows)
-            .with(KEY_DATA_SCANNED_IN_BYTES, data_scanned)
+        let mut response = self
+            .with_message(message)
+            .with(KEY_DATA_SCANNED_IN_BYTES, data_scanned);
+        // -1 is dbt-athena's unknown count: unset, as for the other adapters, rather
+        // than the row the reporting SELECT itself returned.
+        if rows >= 0 {
+            response = response.with_rows_affected(rows);
+        } else {
+            response.0.shift_remove(&Value::from(KEY_ROWS_AFFECTED));
+        }
+        response
     }
 
     /// Add the parts of the response that describe the connection rather than the
@@ -394,13 +402,15 @@ fn code_and_rows(adapter_type: AdapterType, batch: &RecordBatch) -> (String, Opt
                 _ => fallback(),
             }
         }
-        // dbt-athena reports `OK <rows>`, the rows being what Athena says a CTAS,
-        // INSERT, MERGE or DELETE wrote; a query that returns rows counts them.
+        // dbt-athena reports `OK <rows>`: the rows a query returns, or else what Athena
+        // says a CTAS, INSERT, MERGE or DELETE wrote; unknown for DDL, which reports none.
         AdapterType::Athena => {
-            let written = batch
-                .meta_i64(adbc::athena::schema_metadata::UPDATE_COUNT)
-                .filter(|_| batch_rows == 0);
-            ("OK".to_string(), written.unwrap_or(batch_rows))
+            let rows = if batch_rows > 0 {
+                Some(batch_rows)
+            } else {
+                batch.meta_i64(adbc::athena::schema_metadata::UPDATE_COUNT)
+            };
+            ("OK".to_string(), rows)
         }
         _ => fallback(),
     }
@@ -897,14 +907,26 @@ mod from_record_batch_tests {
         let response = AdapterResponse::from_record_batch(&ctas, AdapterType::Athena);
         assert_eq!(response.message(), "OK 99");
         assert_eq!(response.code(), "OK");
-        assert_eq!(response.rows_affected_i64(), 99);
+        assert_eq!(response.known_rows_affected(), Some(99));
         assert_eq!(response.data_scanned_in_bytes(), Some(931));
 
         // A SELECT reports UpdateCount 0; its fetched rows are the count.
         let select = select_batch(3, &[("ATHENA:update_count", "0")]);
         let response = AdapterResponse::from_record_batch(&select, AdapterType::Athena);
         assert_eq!(response.message(), "OK 3");
+        assert_eq!(response.known_rows_affected(), Some(3));
         assert_eq!(response.data_scanned_in_bytes(), Some(0));
+
+        // A SELECT that returns no rows: Athena's update count of 0.
+        let empty = select_batch(0, &[("ATHENA:update_count", "0")]);
+        let response = AdapterResponse::from_record_batch(&empty, AdapterType::Athena);
+        assert_eq!(response.known_rows_affected(), Some(0));
+
+        // DDL: Athena reports no update count, so the count is unknown.
+        let ddl = select_batch(0, &[]);
+        let response = AdapterResponse::from_record_batch(&ddl, AdapterType::Athena);
+        assert_eq!(response.message(), "OK 0");
+        assert_eq!(response.known_rows_affected(), None);
     }
 
     #[test]
@@ -914,7 +936,7 @@ mod from_record_batch_tests {
                 "-- /* {\"app\": \"dbt\"} */\nSELECT '{\"rowcount\":99,\"data_scanned_in_bytes\":1552}'",
             );
         assert_eq!(reporting.message(), "OK 99");
-        assert_eq!(reporting.rows_affected_i64(), 99);
+        assert_eq!(reporting.known_rows_affected(), Some(99));
         assert_eq!(reporting.data_scanned_in_bytes(), Some(1552));
 
         let other = AdapterResponse::from_record_batch(&select_batch(2, &[]), AdapterType::Athena)
@@ -924,7 +946,7 @@ mod from_record_batch_tests {
         let malformed =
             AdapterResponse::from_record_batch(&select_batch(1, &[]), AdapterType::Athena)
                 .with_athena_query_stats("select '{rowcount: data_scanned_in_bytes}'");
-        assert_eq!(malformed.rows_affected_i64(), -1);
+        assert_eq!(malformed.known_rows_affected(), None);
         assert_eq!(malformed.data_scanned_in_bytes(), Some(0));
     }
 
