@@ -1,7 +1,0 @@
-kind: Fixes
-body: Fix spurious TableNotFound errors during analyze caused by MapReduce silently dropping a key claimed by a worker whose connection report the driver had not yet observed
-time: 2026-09-18T20:00:27.829647-05:00
-custom:
-    author: HannanNaeem
-    issue: ""
-    project: fusion

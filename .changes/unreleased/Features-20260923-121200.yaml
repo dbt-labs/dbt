@@ -1,7 +1,0 @@
-kind: Features
-body: Lower the minimum supported Python version for the dbt and dbt-oss PyPI wheels to 3.10
-time: 2026-09-23T12:12:00.573394+05:30
-custom:
-    author: ash2shukla
-    issue: ""
-    project: fusion

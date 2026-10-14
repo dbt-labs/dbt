@@ -1,7 +1,0 @@
-kind: Under the Hood
-body: Add ProjectEnv::empty, ProjectBuilder::baseline and TaskSeq::from_builder test helpers for programmatic integration test projects
-time: 2026-09-28T10:28:28.43652734-07:00
-custom:
-    author: mishamsk
-    issue: ""
-    project: internal

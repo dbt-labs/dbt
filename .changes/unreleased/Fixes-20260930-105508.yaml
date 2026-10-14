@@ -1,7 +1,0 @@
-kind: Fixes
-body: "`dbt build --write-catalog` writes `catalog.json` again; since the preview that shipped #13328 (first observed in 2.0.0-preview.218) the implied index default for build/check overrode the explicit flag and the catalog was silently skipped."
-time: 2026-09-30T10:55:08.000000000-00:00
-custom:
-    author: eddowh
-    issue: ""
-    project: fusion
