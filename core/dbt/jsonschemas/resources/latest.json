@@ -1381,6 +1381,20 @@
             "null"
           ]
         },
+        "disable_on_cluster": {
+          "anyOf": [
+            {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            {
+              "type": "string",
+              "pattern": "^\\{.*\\}$"
+            }
+          ]
+        },
         "dist": {
           "anyOf": [
             {
@@ -2107,6 +2121,12 @@
             {
               "type": "null"
             }
+          ]
+        },
+        "sharding_key": {
+          "type": [
+            "string",
+            "null"
           ]
         },
         "skip_matched_step": {
@@ -3830,6 +3850,20 @@
             "null"
           ]
         },
+        "disable_on_cluster": {
+          "anyOf": [
+            {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            {
+              "type": "string",
+              "pattern": "^\\{.*\\}$"
+            }
+          ]
+        },
         "dist": {
           "anyOf": [
             {
@@ -4557,6 +4591,12 @@
           "additionalProperties": {
             "$ref": "#/definitions/AnyValue"
           }
+        },
+        "sharding_key": {
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "skip_matched_step": {
           "anyOf": [
@@ -6282,6 +6322,20 @@
             "null"
           ]
         },
+        "disable_on_cluster": {
+          "anyOf": [
+            {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            {
+              "type": "string",
+              "pattern": "^\\{.*\\}$"
+            }
+          ]
+        },
         "dist": {
           "anyOf": [
             {
@@ -7255,6 +7309,12 @@
           "additionalProperties": {
             "$ref": "#/definitions/AnyValue"
           }
+        },
+        "sharding_key": {
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "skip_matched_step": {
           "anyOf": [
@@ -9017,6 +9077,20 @@
             "null"
           ]
         },
+        "disable_on_cluster": {
+          "anyOf": [
+            {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            {
+              "type": "string",
+              "pattern": "^\\{.*\\}$"
+            }
+          ]
+        },
         "dist": {
           "anyOf": [
             {
@@ -9787,6 +9861,12 @@
             "$ref": "#/definitions/AnyValue"
           }
         },
+        "sharding_key": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "skip_matched_step": {
           "anyOf": [
             {
@@ -10541,6 +10621,20 @@
           "type": [
             "string",
             "null"
+          ]
+        },
+        "disable_on_cluster": {
+          "anyOf": [
+            {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            {
+              "type": "string",
+              "pattern": "^\\{.*\\}$"
+            }
           ]
         },
         "dist": {
@@ -11339,6 +11433,12 @@
             "$ref": "#/definitions/AnyValue"
           }
         },
+        "sharding_key": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "skip_matched_step": {
           "anyOf": [
             {
@@ -12117,6 +12217,20 @@
             "null"
           ]
         },
+        "disable_on_cluster": {
+          "anyOf": [
+            {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            {
+              "type": "string",
+              "pattern": "^\\{.*\\}$"
+            }
+          ]
+        },
         "dist": {
           "anyOf": [
             {
@@ -12813,6 +12927,12 @@
           "additionalProperties": {
             "$ref": "#/definitions/AnyValue"
           }
+        },
+        "sharding_key": {
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "skip_matched_step": {
           "anyOf": [
@@ -13864,6 +13984,20 @@
             "null"
           ]
         },
+        "disable_on_cluster": {
+          "anyOf": [
+            {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            {
+              "type": "string",
+              "pattern": "^\\{.*\\}$"
+            }
+          ]
+        },
         "dist": {
           "anyOf": [
             {
@@ -14506,6 +14640,12 @@
           "additionalProperties": {
             "$ref": "#/definitions/AnyValue"
           }
+        },
+        "sharding_key": {
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "skip_matched_step": {
           "anyOf": [
