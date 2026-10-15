@@ -579,6 +579,7 @@ pub fn create_relation_from_source(
     schema: String,
     identifier: String,
     custom_quoting: ResolvedQuoting,
+    catalog_database: Option<String>,
     source: &DbtSource,
 ) -> FsResult<Box<dyn BaseRelation>> {
     // A source's `catalog_name` (when configured) names the `catalogs.yml`
@@ -586,10 +587,8 @@ pub fn create_relation_from_source(
     // catalog for dbt Compute. It takes over as the relation's leading
     // identifier so `database` can stay a descriptive label instead of
     // having to spell the catalog's own name (the old, implicit coupling).
-    let database = source
-        .__source_attr__
-        .catalog_name
-        .clone()
+    let database = catalog_database
+        .or_else(|| source.__source_attr__.catalog_name.clone())
         .unwrap_or(database);
 
     if adapter_type == AdapterType::DuckDB
@@ -625,6 +624,7 @@ pub fn create_relation_from_node(
             node.schema(),
             node.base().alias.clone(), // all identifiers are consolidated to alias in InternalDbtNode
             node.quoting(),
+            None,
             source,
         );
     }
@@ -1058,6 +1058,7 @@ mod tests {
                 "raw".to_string(),
                 long_identifier,
                 DEFAULT_RESOLVED_QUOTING,
+                None,
                 &source,
             )
             .is_ok()
@@ -1131,6 +1132,7 @@ mod tests {
             "raw".to_string(),
             "orders".to_string(),
             DEFAULT_RESOLVED_QUOTING,
+            None,
             &source,
         )
         .unwrap();
@@ -1149,6 +1151,7 @@ mod tests {
             "raw".to_string(),
             "orders".to_string(),
             DEFAULT_RESOLVED_QUOTING,
+            None,
             &source,
         )
         .unwrap();
@@ -1167,6 +1170,7 @@ mod tests {
             "raw".to_string(),
             "orders".to_string(),
             DEFAULT_RESOLVED_QUOTING,
+            None,
             &source,
         )
         .unwrap();
@@ -1190,6 +1194,7 @@ mod tests {
             "raw".to_string(),
             "orders".to_string(),
             DEFAULT_RESOLVED_QUOTING,
+            None,
             &source,
         )
         .unwrap();
@@ -1206,6 +1211,29 @@ mod tests {
     }
 
     #[test]
+    fn resolved_source_catalog_database_overrides_logical_catalog_name() {
+        let mut source = source_with_meta_location("ignored/{name}.csv");
+        source.__common_attr__.meta.clear();
+        source.__source_attr__.catalog_name = Some("shared".to_string());
+
+        let relation = create_relation_from_source(
+            AdapterType::DuckDB,
+            "main".to_string(),
+            "raw".to_string(),
+            "orders".to_string(),
+            DEFAULT_RESOLVED_QUOTING,
+            Some("duck_shared".to_string()),
+            &source,
+        )
+        .unwrap();
+
+        assert_eq!(
+            relation.render_self_as_str(),
+            "\"duck_shared\".\"raw\".\"orders\""
+        );
+    }
+
+    #[test]
     fn source_without_catalog_name_keeps_database() {
         let source = source_with_meta_location("ignored/{name}.csv");
 
@@ -1215,6 +1243,7 @@ mod tests {
             "raw".to_string(),
             "orders".to_string(),
             DEFAULT_RESOLVED_QUOTING,
+            None,
             &source,
         )
         .unwrap();
