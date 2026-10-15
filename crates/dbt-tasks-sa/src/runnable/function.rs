@@ -16,10 +16,11 @@ pub fn execute_function_remote(
         return Ok(NodeStatus::NoOp);
     }
 
-    let mut base_context = ctx.inner.base_context.clone();
+    let mut base_context = ctx.base_context_for_adapter(function.node_adapter())?;
     add_task_context(&mut base_context, function.common(), &ctx.thread_id);
 
     let sql_instruction = &task_result.sql_instruction;
+    let jinja_env = ctx.jinja_env_for_adapter(function.node_adapter())?;
 
     // Execute the root function materialization
     materialize_function(
@@ -28,7 +29,7 @@ pub fn execute_function_remote(
         function.node_adapter(),
         ctx.runtime_config(),
         &ctx.inner.materialization_resolver,
-        ctx.env.clone(),
+        jinja_env.clone(),
         &base_context,
         &ctx.inner.arg.io,
     )?;
@@ -100,7 +101,7 @@ pub fn execute_function_remote(
             overload_function.node_adapter(),
             ctx.runtime_config(),
             &ctx.inner.materialization_resolver,
-            ctx.env.clone(),
+            jinja_env.clone(),
             &base_context,
             &ctx.inner.arg.io,
         ) {
