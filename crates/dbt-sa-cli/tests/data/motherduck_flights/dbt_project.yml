@@ -1,0 +1,10 @@
+name: motherduck_flights
+version: "1.0"
+config-version: 2
+
+profile: motherduck_flights
+model-paths: ["models"]
+test-paths: ["tests"]
+macro-paths: ["macros"]
+
+require-dbt-version: [">=2.0.0"]

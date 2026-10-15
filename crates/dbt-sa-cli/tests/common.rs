@@ -7,7 +7,7 @@ use dbt_features::feature_stack_builder::FeatureStackBuilder;
 use dbt_features::tracing::TracingFeature;
 use dbt_test_utils::task::utils::exec_fs;
 use dbt_test_utils::task::{
-    CommandFn, ExecuteAndCompare, G_DBT_TEST_UTILS_FEATURE_STACK, TaskSeq, fs_cmd_vec,
+    CommandFn, ExecuteAndCompare, ExecuteOnly, G_DBT_TEST_UTILS_FEATURE_STACK, TaskSeq, fs_cmd_vec,
 };
 
 fn make_fs_command_fn() -> Arc<CommandFn> {
@@ -51,6 +51,7 @@ fn make_fs_cmd_vec(command: impl AsRef<str>) -> Vec<String> {
 
 pub trait TaskSeqExt {
     fn fs_sa(&mut self, command: impl AsRef<str>) -> &mut Self;
+    fn fs_sa_execute_only(&mut self, command: impl AsRef<str>) -> Arc<ExecuteOnly>;
 }
 
 impl TaskSeqExt for TaskSeq {
@@ -61,5 +62,16 @@ impl TaskSeqExt for TaskSeq {
             make_fs_command_fn(),
             false,
         )))
+    }
+
+    fn fs_sa_execute_only(&mut self, command: impl AsRef<str>) -> Arc<ExecuteOnly> {
+        let task = Arc::new(ExecuteOnly::new(
+            self.name().to_owned(),
+            make_fs_cmd_vec(command),
+            make_fs_command_fn(),
+            true,
+        ));
+        self.task(Box::new(Arc::clone(&task)));
+        task
     }
 }
