@@ -663,6 +663,7 @@ class MicrobatchBatchRunner(ModelRunner):
             jinja_context = MicrobatchBuilder.build_jinja_context_for_batch(
                 model=model,
                 incremental_batch=self.incremental_batch,
+                adapter=self.adapter,
             )
             context.update(jinja_context)
 
