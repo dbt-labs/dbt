@@ -15,7 +15,7 @@ use dbt_common::{
     constants::{ERROR, PANIC},
     pretty_string::{GREEN, RED},
 };
-use dbt_error::FsError;
+use dbt_error::{FsError, init_terminal_hyperlinks_from_stderr};
 use dbt_features::feature_stack::FeatureStack;
 
 use crate::ctrl_c::run_future_with_ctrlc_support;
@@ -117,6 +117,9 @@ pub fn prepare_cli_or_exit(cli_parser: &CliParser) -> Box<Cli> {
 }
 
 pub fn run_cli(cli: Box<Cli>, arg: SystemArgs, feature_stack: Arc<FeatureStack>) -> ExitCode {
+    // Display of diagnostic locations does not know which stream it writes to.
+    // Enable OSC 8 only when stderr is a TTY so piped/CI output stays plain.
+    init_terminal_hyperlinks_from_stderr();
     ExitCode::from(run_cli_with_code(cli, arg, feature_stack))
 }
 

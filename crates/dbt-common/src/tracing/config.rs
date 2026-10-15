@@ -29,6 +29,7 @@ use crate::{
     },
     io_args::{FsCommand, IoArgs, LogFormat, ShowOptions},
     io_utils::determine_project_dir,
+    pretty_string::strip_ansi_codes_and_hyperlinks,
     tracing::middlewares::parse_error_filter::TelemetryParsingErrorFilter,
     warn_error_options::WarnErrorOptions,
 };
@@ -407,7 +408,7 @@ fn dbt_log_preprocessor_hook(record: &LogRecordInfo) -> Cow<'_, LogRecordInfo> {
         return Cow::Borrowed(record);
     }
 
-    match console::strip_ansi_codes(record.body.as_str()) {
+    match strip_ansi_codes_and_hyperlinks(record.body.as_str()) {
         Cow::Owned(stripped) => Cow::Owned(LogRecordInfo {
             body: stripped,
             ..record.clone()

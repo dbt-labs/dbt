@@ -44,6 +44,7 @@ use super::super::{
 };
 
 use crate::io_args::FsCommand;
+use crate::pretty_string::strip_ansi_codes_and_hyperlinks;
 use proto_rust::v1::public::fields::core_types::CoreEventInfo;
 
 /// Build a JSON compatibility layer. This will write directly to the writer.
@@ -451,9 +452,7 @@ impl JsonCompatLayer {
                 .code
                 .and_then(|c| u16::try_from(c).ok())
                 .and_then(|c| ErrorCode::try_from(c).ok()),
-            // Unfortunately, we do not currently enforce log body to not contain ANSI codes,
-            // so we need to make sure to strip them
-            console::strip_ansi_codes(log_record.body.as_str()),
+            strip_ansi_codes_and_hyperlinks(log_record.body.as_str()),
             log_record.severity_number,
             false,
             true,
@@ -603,7 +602,7 @@ impl JsonCompatLayer {
             format!(
                 "{}\n{}",
                 show_result.title,
-                console::strip_ansi_codes(show_result.content.as_str())
+                strip_ansi_codes_and_hyperlinks(show_result.content.as_str())
             ),
         ))
         .expect("Failed to serialize core event info to JSON");
