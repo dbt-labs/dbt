@@ -1,0 +1,7 @@
+kind: Fixes
+body: 'Stop failing Databricks hooks configured with `transaction: false` on a literal COMMIT; they are skipped unless the new `use_non_transactional_hooks` behavior flag is enabled'
+time: 2026-09-30T18:40:49.811623+05:30
+custom:
+    author: sd-db
+    issue: ""
+    project: dbt-core

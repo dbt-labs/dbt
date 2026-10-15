@@ -108,7 +108,7 @@
     {%- set unique_key = config.get('unique_key') -%}
 
     {#-- Run pre-hooks --#}
-    {{ run_hooks(pre_hooks) }}
+    {{ run_pre_hooks() }}
     {#-- Incremental run logic --#}
     {%- if existing_relation is none -%}
       {#-- Relation must be created --#}
@@ -228,7 +228,7 @@
     {% do apply_grants(target_relation, grant_config, should_revoke) %}
     {% do optimize(target_relation) %}
 
-    {{ run_hooks(post_hooks) }}
+    {{ run_post_hooks() }}
   {%- endif -%}
 
   {%- if incremental_strategy == 'insert_overwrite' and not full_refresh -%}

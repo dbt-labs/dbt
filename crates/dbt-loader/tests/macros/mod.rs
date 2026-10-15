@@ -2,6 +2,7 @@ mod aggregated_tests;
 mod bigquery;
 mod contract_wrappers;
 mod databricks_catalog;
+mod databricks_hooks;
 mod databricks_metadata;
 mod delete_insert;
 mod duckdb;
