@@ -27,7 +27,10 @@ mod sqlserver;
 mod test_options;
 
 pub use config::AdapterConfig;
-pub use duckdb::init::{DuckDbTarget, generate_duckdb_init_sql, motherduck_saas_mode_query};
+pub use duckdb::init::{
+    DuckDbTarget, generate_duckdb_connection_init_sql, generate_duckdb_init_sql,
+    motherduck_saas_mode_query,
+};
 
 pub trait AuthWarningPrinter: Send + Sync {
     fn warn(&self, message: &str);

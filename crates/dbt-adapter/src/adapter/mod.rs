@@ -173,6 +173,21 @@ impl Adapter {
         }
     }
 
+    /// Create an empty parse-phase adapter that shares this adapter's engine
+    /// configuration but records render side effects independently.
+    pub fn fork_parse_phase_adapter(&self) -> Option<Adapter> {
+        let state = self.parse_adapter_state()?;
+        Some(Adapter {
+            inner: Parse(Box::new(ParseAdapterState::new(
+                state.adapter_type,
+                state.engine.clone(),
+                state.catalogs.clone(),
+            ))),
+            time_machine: None,
+            cancellation_token: never_cancels(),
+        })
+    }
+
     pub(crate) fn make_parse_adapter_state(
         adapter_type: AdapterType,
         config: dbt_yaml::Mapping,
@@ -907,14 +922,14 @@ impl Adapter {
 
                 if state.is_execute() {
                     if let Some(unique_id) = state.lookup(TARGET_UNIQUE_ID, &[]) {
-                        parse_state.unsafe_nodes.insert(
+                        parse_state.record_unsafe_node(
                             unique_id
                                 .as_str()
                                 .expect("unique_id must be a string")
                                 .to_string(),
                         );
                     }
-                    parse_state.execute_sqls.insert(sql.to_string());
+                    parse_state.record_execute_sql(sql.to_string());
                 }
 
                 Ok((response, table))

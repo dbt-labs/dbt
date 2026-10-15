@@ -38,8 +38,10 @@ pub struct ParseAdapterState {
     patterned_dangling_sources: DashMap<String, Vec<RelationPattern>>,
     /// A list of unsafe nodes detected during parse (unsafe nodes are nodes that have introspection qualities that make them non-deterministic / stateful)
     pub unsafe_nodes: DashSet<String>,
+    unsafe_node_counts: DashMap<String, usize>,
     /// SQLs that are found passed in to adapter.execute in the hidden Parse phase
     pub execute_sqls: DashSet<String>,
+    execute_sql_counts: DashMap<String, usize>,
     /// catalogs.yml stored when found and loaded
     pub catalogs: Option<Arc<DbtCatalogs>>,
 }
@@ -57,7 +59,9 @@ impl ParseAdapterState {
             call_get_columns_in_relation: DashMap::new(),
             patterned_dangling_sources: DashMap::new(),
             unsafe_nodes: DashSet::new(),
+            unsafe_node_counts: DashMap::new(),
             execute_sqls: DashSet::new(),
+            execute_sql_counts: DashMap::new(),
             catalogs,
         }
     }
@@ -78,6 +82,111 @@ impl ParseAdapterState {
             .field("execute_sqls", &self.execute_sqls)
             .field("quoting", &self.engine.quoting())
             .finish()
+    }
+
+    /// Merge parse-time adapter side effects from another render context.
+    ///
+    /// Adapter-specific node renders use a dedicated parse adapter for dispatch
+    /// and relation construction, but the resolver drains one invocation-wide
+    /// state. Preserve every relation fetch and safety signal in that sink.
+    pub fn merge_from(&self, other: &Self) {
+        for entry in other.call_get_relation.iter() {
+            self.call_get_relation
+                .entry(entry.key().clone())
+                .or_default()
+                .extend(entry.value().iter().cloned());
+        }
+        for entry in other.call_get_columns_in_relation.iter() {
+            self.call_get_columns_in_relation
+                .entry(entry.key().clone())
+                .or_default()
+                .extend(entry.value().iter().cloned());
+        }
+        for entry in other.patterned_dangling_sources.iter() {
+            self.patterned_dangling_sources
+                .entry(entry.key().clone())
+                .or_default()
+                .extend(entry.value().iter().cloned());
+        }
+        for entry in other.unsafe_nodes.iter() {
+            let key = entry.key().clone();
+            *self.unsafe_node_counts.entry(key.clone()).or_default() += 1;
+            self.unsafe_nodes.insert(key);
+        }
+        for entry in other.execute_sqls.iter() {
+            let key = entry.key().clone();
+            *self.execute_sql_counts.entry(key.clone()).or_default() += 1;
+            self.execute_sqls.insert(key);
+        }
+    }
+
+    /// Replace one render's recorded relation requests with an authoritative
+    /// replay while preserving contributions from other renders sharing a key.
+    pub fn replace_from(&self, previous: &Self, current: &Self) {
+        for entry in previous.call_get_relation.iter() {
+            if let Some(mut values) = self.call_get_relation.get_mut(entry.key()) {
+                for previous_value in entry.value() {
+                    if let Some(index) = values.iter().position(|value| value == previous_value) {
+                        values.remove(index);
+                    }
+                }
+            }
+        }
+        for entry in previous.call_get_columns_in_relation.iter() {
+            if let Some(mut values) = self.call_get_columns_in_relation.get_mut(entry.key()) {
+                for previous_value in entry.value() {
+                    if let Some(index) = values.iter().position(|value| value == previous_value) {
+                        values.remove(index);
+                    }
+                }
+            }
+        }
+        for entry in previous.patterned_dangling_sources.iter() {
+            if let Some(mut values) = self.patterned_dangling_sources.get_mut(entry.key()) {
+                for previous_value in entry.value() {
+                    if let Some(index) = values.iter().position(|value| value == previous_value) {
+                        values.remove(index);
+                    }
+                }
+            }
+        }
+        for entry in previous.unsafe_nodes.iter() {
+            let key = entry.key();
+            let should_remove = self
+                .unsafe_node_counts
+                .get_mut(key)
+                .is_some_and(|mut count| {
+                    if *count > 1 {
+                        *count -= 1;
+                        false
+                    } else {
+                        true
+                    }
+                });
+            if should_remove {
+                self.unsafe_node_counts.remove(key);
+                self.unsafe_nodes.remove(entry.key());
+            }
+        }
+        for entry in previous.execute_sqls.iter() {
+            let key = entry.key();
+            let should_remove = self
+                .execute_sql_counts
+                .get_mut(key)
+                .is_some_and(|mut count| {
+                    if *count > 1 {
+                        *count -= 1;
+                        false
+                    } else {
+                        true
+                    }
+                });
+            if should_remove {
+                self.execute_sql_counts.remove(key);
+                self.execute_sqls.remove(key);
+            }
+        }
+        self.merge_from(current);
     }
 
     pub fn record_get_relation_call(
@@ -108,6 +217,19 @@ impl ParseAdapterState {
             }
         }
         Ok(())
+    }
+
+    pub(crate) fn record_unsafe_node(&self, unique_id: String) {
+        *self
+            .unsafe_node_counts
+            .entry(unique_id.clone())
+            .or_default() += 1;
+        self.unsafe_nodes.insert(unique_id);
+    }
+
+    pub(crate) fn record_execute_sql(&self, sql: String) {
+        *self.execute_sql_counts.entry(sql.clone()).or_default() += 1;
+        self.execute_sqls.insert(sql);
     }
 
     pub fn record_get_columns_in_relation_call(
@@ -228,5 +350,103 @@ impl ParseAdapterState {
 
     pub fn unsafe_nodes(&self) -> &DashSet<String> {
         &self.unsafe_nodes
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{Adapter, sql_types::DefaultTypeOps};
+    use dbt_schemas::schemas::common::{DbtQuoting, ResolvedQuoting};
+
+    fn parse_adapter() -> Adapter {
+        Adapter::new_parse_phase_adapter(
+            AdapterType::Postgres,
+            dbt_yaml::Mapping::default(),
+            DbtQuoting {
+                database: Some(true),
+                schema: Some(true),
+                identifier: Some(true),
+                snowflake_ignore_case: Some(false),
+            },
+            Arc::new(DefaultTypeOps::new(AdapterType::Postgres)),
+            None,
+        )
+    }
+
+    fn relation_value(database: &str) -> Value {
+        RelationObject::new(Arc::from(
+            do_create_relation(
+                AdapterType::Postgres,
+                database.to_string(),
+                "analytics".to_string(),
+                Some("orders".to_string()),
+                None,
+                ResolvedQuoting {
+                    database: true,
+                    schema: true,
+                    identifier: true,
+                },
+            )
+            .unwrap(),
+        ))
+        .into_value()
+    }
+
+    #[test]
+    fn replace_from_preserves_other_contributions_for_the_same_node() {
+        let sink_adapter = parse_adapter();
+        let previous_adapter = parse_adapter();
+        let current_adapter = parse_adapter();
+        let other_adapter = parse_adapter();
+        let sink = sink_adapter.parse_adapter_state().unwrap();
+        let previous = previous_adapter.parse_adapter_state().unwrap();
+        let current = current_adapter.parse_adapter_state().unwrap();
+        let other = other_adapter.parse_adapter_state().unwrap();
+        let node = "model.project.orders".to_string();
+        let only_previous_node = "model.project.discovery_only".to_string();
+        let shared_sql = "select 'shared'".to_string();
+        let only_previous_sql = "select 'discovery'".to_string();
+        let discovery = relation_value("discovery");
+
+        previous
+            .call_get_relation
+            .insert(node.clone(), vec![discovery]);
+        previous.unsafe_nodes.insert(node.clone());
+        previous.unsafe_nodes.insert(only_previous_node.clone());
+        previous.execute_sqls.insert(shared_sql.clone());
+        previous.execute_sqls.insert(only_previous_sql.clone());
+        other.unsafe_nodes.insert(node.clone());
+        other.execute_sqls.insert(shared_sql.clone());
+        sink.merge_from(other);
+        sink.merge_from(previous);
+        sink.call_get_relation
+            .get_mut(&node)
+            .unwrap()
+            .insert(0, relation_value("other"));
+        current
+            .call_get_relation
+            .insert(node.clone(), vec![relation_value("authoritative")]);
+
+        sink.replace_from(previous, current);
+
+        let databases: Vec<_> = sink
+            .call_get_relation
+            .get(&node)
+            .unwrap()
+            .iter()
+            .map(|value| {
+                downcast_value_to_dyn_base_relation(value)
+                    .unwrap()
+                    .database()
+                    .unwrap()
+                    .to_string()
+            })
+            .collect();
+        assert_eq!(databases, ["other", "authoritative"]);
+        assert!(sink.unsafe_nodes.contains(&node));
+        assert!(!sink.unsafe_nodes.contains(&only_previous_node));
+        assert!(sink.execute_sqls.contains(&shared_sql));
+        assert!(!sink.execute_sqls.contains(&only_previous_sql));
     }
 }

@@ -436,15 +436,11 @@ pub trait ResolvableConfig<T>:
     /// `test_dbname_in_project_yml_is_unrecognized_key` (`dbt-parser/src/dbt_project_config.rs`)
     /// for the pinned, `#[ignore]`d gap.
     ///
-    /// `default_adapter` is the *target's default* adapter, not the adapter this node runs on: a
-    /// node's own `+adapter:` override is a mergeable field, so it is only readable once every
-    /// layer has merged -- which is after this hook, by construction. `apply_resolve_defaults`
-    /// below is the seam that can read it (`ModelConfig` does exactly that, as
-    /// `self.adapter.or(default_adapter)`), but canonicalizing there would destroy the per-layer
-    /// precedence this hook exists for. Pinned by
-    /// `test_databricks_catalog_alias_not_canonicalized_for_adapter_overridden_node`
-    /// (`dbt-parser/src/tests.rs`, `#[ignore]`d).
-    fn canonicalize_adapter_aliases(&mut self, _default_adapter: AdapterType) {}
+    /// The parser first merges with the target's default adapter to discover a
+    /// node-level `+adapter`, then re-renders the project and schema layers and
+    /// calls this hook with the selected adapter. Inline `config()` values are
+    /// handled separately by the SQL renderer.
+    fn canonicalize_adapter_aliases(&mut self, _adapter_type: AdapterType) {}
 
     /// Called after all config layers (project, properties, inline) are merged and the root
     /// overlay is applied, but before `finalize()`. Use this to fill in fields that must always
