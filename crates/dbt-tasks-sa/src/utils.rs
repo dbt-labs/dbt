@@ -536,18 +536,17 @@ pub fn register_catalog_schemas_remote(
 pub fn get_catalog_schemas_and_ids(
     nodes: &Nodes,
     schedule: &Schedule<String>,
-) -> BTreeMap<String, BTreeMap<String, String>> {
-    let mut catalog_schemas = BTreeMap::new();
+) -> HashMap<AdapterType, BTreeMap<String, BTreeMap<String, String>>> {
+    let mut catalog_schemas: HashMap<AdapterType, BTreeMap<String, BTreeMap<String, String>>> =
+        HashMap::new();
     for unique_id in schedule.selected_nodes.iter() {
         let Some(node) = nodes.get_node(unique_id) else {
             continue;
         };
 
         let base = node.base();
-        if base.relation_name.is_none() {
-            continue;
-        }
         if node.resource_type() == NodeType::SavedQuery {
+            let adapter_schemas = catalog_schemas.entry(node.node_adapter()).or_default();
             let saved_query = &nodes
                 .saved_queries
                 .get(&node.common().unique_id)
@@ -563,15 +562,19 @@ pub fn get_catalog_schemas_and_ids(
                     .schema_name
                     .clone()
                     .expect("Schema should be populated in resolved_saved_queries");
-                catalog_schemas
+                adapter_schemas
                     .entry(database)
                     .or_insert_with(BTreeMap::new)
                     .insert(schema, unique_id.clone());
             }
         } else {
+            if base.relation_name.is_none() {
+                continue;
+            }
+            let adapter_schemas = catalog_schemas.entry(node.node_adapter()).or_default();
             let catalog = base.database.clone();
             let schema = base.schema.clone();
-            catalog_schemas
+            adapter_schemas
                 .entry(catalog)
                 .or_insert_with(BTreeMap::new)
                 .insert(schema, unique_id.clone());
@@ -779,4 +782,83 @@ pub fn write_decompiled_sql(out_dir: &Path, relative_path: &Path, sql: &str) {
         let _ = std::fs::create_dir_all(parent);
     }
     let _ = std::fs::write(&decompiled_path, sql);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use dbt_schemas::schemas::DbtModel;
+    use dbt_schemas::schemas::manifest::saved_query::{
+        DbtSavedQuery, SavedQueryExport, SavedQueryExportConfig,
+    };
+
+    #[test]
+    fn schema_registration_is_grouped_by_node_adapter() {
+        let mut nodes = Nodes::default();
+        let mut schedule = Schedule::<String>::default();
+        for (unique_id, adapter, database) in [
+            (
+                "model.test.databricks_model",
+                AdapterType::Databricks,
+                "workspace",
+            ),
+            (
+                "model.test.duckdb_model",
+                AdapterType::DuckDB,
+                "dbt_multi_adapter",
+            ),
+        ] {
+            let mut model = DbtModel::default();
+            model.__common_attr__.unique_id = unique_id.to_string();
+            model.__base_attr__.adapter = adapter;
+            model.__base_attr__.database = database.to_string();
+            model.__base_attr__.schema = "analytics".to_string();
+            model.__base_attr__.relation_name = Some(format!("{database}.analytics.model"));
+            nodes.models.insert(unique_id.to_string(), Arc::new(model));
+            schedule.selected_nodes.insert(unique_id.to_string());
+        }
+
+        let schemas = get_catalog_schemas_and_ids(&nodes, &schedule);
+
+        assert_eq!(
+            schemas[&AdapterType::Databricks]["workspace"]["analytics"],
+            "model.test.databricks_model"
+        );
+        assert_eq!(
+            schemas[&AdapterType::DuckDB]["dbt_multi_adapter"]["analytics"],
+            "model.test.duckdb_model"
+        );
+    }
+
+    #[test]
+    fn schema_registration_includes_saved_query_exports_without_relations() {
+        let unique_id = "saved_query.test.orders";
+        let mut saved_query = DbtSavedQuery::default();
+        saved_query.__common_attr__.unique_id = unique_id.to_string();
+        saved_query.__base_attr__.adapter = AdapterType::Databricks;
+        saved_query.__base_attr__.relation_name = None;
+        saved_query.__saved_query_attr__.exports = vec![SavedQueryExport {
+            name: "orders_export".to_string(),
+            config: SavedQueryExportConfig {
+                database: Some("workspace".to_string()),
+                schema_name: Some("exports".to_string()),
+                ..Default::default()
+            },
+            ..Default::default()
+        }];
+
+        let mut nodes = Nodes::default();
+        nodes
+            .saved_queries
+            .insert(unique_id.to_string(), Arc::new(saved_query));
+        let mut schedule = Schedule::<String>::default();
+        schedule.selected_nodes.insert(unique_id.to_string());
+
+        let schemas = get_catalog_schemas_and_ids(&nodes, &schedule);
+
+        assert_eq!(
+            schemas[&AdapterType::Databricks]["workspace"]["exports"],
+            unique_id
+        );
+    }
 }

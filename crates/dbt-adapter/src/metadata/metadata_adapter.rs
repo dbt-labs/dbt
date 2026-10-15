@@ -99,8 +99,6 @@ pub trait MetadataAdapter: Send + Sync {
             NodeType::Snapshot,
             NodeType::Seed,
         ];
-        let adapter_type = resolved_state.adapter_type;
-
         // Collect executed nodes and their direct source dependencies
         let mut relevant_ids = BTreeSet::new();
         for stat in &run_stats.stats {
@@ -123,7 +121,7 @@ pub trait MetadataAdapter: Send + Sync {
             .filter_map(|uid| resolved_state.nodes.get_node(uid))
             .map(|node| {
                 create_relation(
-                    adapter_type,
+                    node.node_adapter(),
                     node.database(),
                     node.schema(),
                     Some(node.alias()),

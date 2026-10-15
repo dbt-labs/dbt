@@ -15,6 +15,7 @@ use std::collections::HashSet;
 use std::path::Path;
 
 pub use super::dbt_catalogs_deprecated::DbtCatalogs;
+use dbt_adapter_core::AdapterType;
 use dbt_common::serde_utils::try_get_bool;
 use dbt_common::{ErrorCode, FsResult, err, fs_err};
 use dbt_yaml::{self as yml};
@@ -860,7 +861,7 @@ impl CatalogType {
         }
     }
 
-    pub fn parse_from_str(raw: &str, adapter_type: dbt_adapter_core::AdapterType) -> Self {
+    pub fn parse_from_str(raw: &str, adapter_type: AdapterType) -> Self {
         match raw {
             "horizon" => Self::Horizon,
             "glue" => Self::Glue,
@@ -875,8 +876,8 @@ impl CatalogType {
             "BUILT_IN" => Self::SnowflakeBuiltIn,
             "duckdb" => Self::DuckdbNative,
             "INFO_SCHEMA" => match adapter_type {
-                dbt_adapter_core::AdapterType::Bigquery => Self::BigqueryNative,
-                dbt_adapter_core::AdapterType::Snowflake => Self::SnowflakeNative,
+                AdapterType::Bigquery => Self::BigqueryNative,
+                AdapterType::Snowflake => Self::SnowflakeNative,
                 _ => unreachable!("only Snowflake/Bigquery ever egress INFO_SCHEMA"),
             },
             _ => unreachable!("not a CatalogType::as_str() output"),
