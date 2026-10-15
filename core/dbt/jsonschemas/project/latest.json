@@ -3539,6 +3539,21 @@
             "null"
           ]
         },
+        "+disable_on_cluster": {
+          "anyOf": [
+            {
+              "default": null,
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            {
+              "type": "string",
+              "pattern": "^\\{.*\\}$"
+            }
+          ]
+        },
         "+dist": {
           "anyOf": [
             {
@@ -4545,6 +4560,12 @@
           "additionalProperties": {
             "$ref": "#/definitions/AnyValue"
           }
+        },
+        "+sharding_key": {
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "+skip_matched_step": {
           "anyOf": [
@@ -6376,6 +6397,23 @@
             }
           ]
         },
+        "+iceberg_version": {
+          "anyOf": [
+            {
+              "default": null,
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint64",
+              "minimum": 0.0
+            },
+            {
+              "type": "string",
+              "pattern": "^\\{.*\\}$"
+            }
+          ]
+        },
         "+immutable_where": {
           "type": [
             "string",
@@ -6896,6 +6934,12 @@
             {
               "type": "null"
             }
+          ]
+        },
+        "+table_format": {
+          "type": [
+            "string",
+            "null"
           ]
         },
         "+table_tag": {
