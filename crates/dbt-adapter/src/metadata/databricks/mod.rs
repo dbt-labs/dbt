@@ -1058,7 +1058,7 @@ impl DatabricksMetadataAdapter {
         Ok(result)
     }
 
-    // https://github.com/databricks/dbt-databricks/blob/9e2566fdb56318cb7a59a4492f96c7aaa7af73b0/dbt/include/databricks/macros/relations/components/constraints.sql#L47
+    // https://github.com/databricks/dbt-databricks/blob/0f7f1396711cc4ff19092dfdb26c7a8afad946cf/dbt/include/databricks/macros/relations/components/constraints.sql#L47
     fn fetch_foreign_key_constraints(
         &self,
         database: &str,
@@ -1083,9 +1083,13 @@ impl DatabricksMetadataAdapter {
                 ukcu.column_name AS to_column
             FROM `{database}`.information_schema.key_column_usage kcu
             JOIN `{database}`.information_schema.referential_constraints rc
-                ON kcu.constraint_name = rc.constraint_name
+                ON kcu.constraint_catalog = rc.constraint_catalog
+                AND kcu.constraint_schema = rc.constraint_schema
+                AND kcu.constraint_name = rc.constraint_name
             JOIN `{database}`.information_schema.key_column_usage ukcu
-                ON rc.unique_constraint_name = ukcu.constraint_name
+                ON rc.unique_constraint_catalog = ukcu.constraint_catalog
+                AND rc.unique_constraint_schema = ukcu.constraint_schema
+                AND rc.unique_constraint_name = ukcu.constraint_name
                 AND kcu.ordinal_position = ukcu.ordinal_position
             WHERE kcu.table_catalog = '{database}'
                 AND kcu.table_schema = '{schema}'
