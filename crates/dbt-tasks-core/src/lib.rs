@@ -38,6 +38,7 @@ pub use generate_run_results::generate_run_results;
 pub use run_tasks_args::RunTasksArgs;
 
 use dbt_adapter::response::AdapterResponse;
+use dbt_adapter_core::AdapterType;
 use dbt_common::cancellation::CancellationToken;
 use dbt_common::io_args::{EvalArgs, IoArgs};
 use dbt_common::stats::NodeStatus;
@@ -116,6 +117,8 @@ pub trait AdhocRunner: Send + Sync {
         instruction: &'a dbt_scheduler::instructions::Instruction,
         rendered_sql: &'a str,
         unique_id: Option<&'a str>,
+        jinja_env: Arc<JinjaEnv>,
+        adapter_type: AdapterType,
         connection: &'a mut Option<Box<dyn dbt_adbc::Connection>>,
     ) -> Pin<
         Box<

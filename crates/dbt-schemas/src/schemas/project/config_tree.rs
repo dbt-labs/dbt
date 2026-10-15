@@ -271,9 +271,20 @@ impl<T: ResolvableConfig<T>> ProjectConfigResolver<T> {
 
     /// Applies the root project config overlay for dependency packages.
     fn apply_root_overlay(&self, config: &mut T, fqn: &[String]) {
+        self.apply_root_overlay_for_adapter(config, fqn, self.default_adapter);
+    }
+
+    /// Applies the root project config overlay using the adapter selected by a
+    /// node after the initial config merge.
+    fn apply_root_overlay_for_adapter(
+        &self,
+        config: &mut T,
+        fqn: &[String],
+        adapter_type: AdapterType,
+    ) {
         if let Some(root) = &self.root {
             let mut root_config = root.get_config_for_fqn(fqn).clone();
-            root_config.canonicalize_adapter_aliases(self.default_adapter);
+            root_config.canonicalize_adapter_aliases(adapter_type);
             root_config.default_to(config);
             *config = root_config;
         }
@@ -283,10 +294,22 @@ impl<T: ResolvableConfig<T>> ProjectConfigResolver<T> {
     /// overlay or calling `finalize`. Use this when the intermediate result is needed as the
     /// Jinja render context before inline `{{ config(...) }}` calls are processed.
     pub fn with_configs(&self, fqn: &[String], configs: &[Option<&T>]) -> T {
+        self.with_configs_for_adapter(fqn, configs, self.default_adapter)
+    }
+
+    /// Like [`Self::with_configs`], but canonicalizes adapter-specific aliases
+    /// for the adapter selected by the node.
+    pub fn with_configs_for_adapter(
+        &self,
+        fqn: &[String],
+        configs: &[Option<&T>],
+        adapter_type: AdapterType,
+    ) -> T {
         let mut config = self.local.get_config_for_fqn(fqn).clone();
+        config.canonicalize_adapter_aliases(adapter_type);
         for c in configs.iter().flatten() {
             let mut c = (*c).clone();
-            c.canonicalize_adapter_aliases(self.default_adapter);
+            c.canonicalize_adapter_aliases(adapter_type);
             c.default_to(&config);
             config = c;
         }
@@ -317,6 +340,18 @@ impl<T: ResolvableConfig<T>> ProjectConfigResolver<T> {
         self.resolve_with_overrides(original_fqn, fqn, configs, |_| {})
     }
 
+    /// Like [`Self::resolve_with_configs`], but uses the adapter selected by the
+    /// node for alias canonicalization.
+    pub fn resolve_with_configs_for_adapter(
+        &self,
+        original_fqn: &[String],
+        fqn: &[String],
+        configs: &[Option<&T>],
+        adapter_type: AdapterType,
+    ) -> T::Resolved {
+        self.resolve_with_overrides_for_adapter(original_fqn, fqn, configs, adapter_type, |_| {})
+    }
+
     /// Like `resolve_with_configs` but applies `override_fn` to the merged config after all layers
     /// (including the root overlay and resolve defaults) are applied, just before `finalize`.
     /// Use this when a caller needs to unconditionally force a field value regardless of what the
@@ -328,8 +363,27 @@ impl<T: ResolvableConfig<T>> ProjectConfigResolver<T> {
         configs: &[Option<&T>],
         override_fn: impl FnOnce(&mut T),
     ) -> T::Resolved {
-        let mut config = self.with_configs(original_fqn, configs);
-        self.apply_root_overlay(&mut config, fqn);
+        self.resolve_with_overrides_for_adapter(
+            original_fqn,
+            fqn,
+            configs,
+            self.default_adapter,
+            override_fn,
+        )
+    }
+
+    /// Like [`Self::resolve_with_overrides`], but uses the adapter selected by
+    /// the node for alias canonicalization.
+    fn resolve_with_overrides_for_adapter(
+        &self,
+        original_fqn: &[String],
+        fqn: &[String],
+        configs: &[Option<&T>],
+        adapter_type: AdapterType,
+        override_fn: impl FnOnce(&mut T),
+    ) -> T::Resolved {
+        let mut config = self.with_configs_for_adapter(original_fqn, configs, adapter_type);
+        self.apply_root_overlay_for_adapter(&mut config, fqn, adapter_type);
         config.apply_resolve_defaults(self.resolve_defaults.clone());
         override_fn(&mut config);
         config.finalize()

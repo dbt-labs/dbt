@@ -21,7 +21,8 @@ pub struct SqlFileInfo<T: ResolvableConfig<T>> {
     pub this: bool,
     /// e.g. metric('a', 'b')
     pub metrics: Vec<(String, Option<String>)>,
-    /// Merged config values from explicit SQL `{{ config(...) }}` calls only.
+    /// Merged config values authored in the resource itself: SQL
+    /// `{{ config(...) }}` calls or Python `dbt.config(...)` calls.
     ///
     /// This intentionally excludes the initial project/properties config.
     /// Used to detect which values were explicitly overridden inline in SQL.
@@ -69,8 +70,9 @@ impl<T: ResolvableConfig<T>> SqlFileInfo<T> {
     /// Collects rendering artifacts from a list of SqlResources.
     ///
     /// `ConfigCall` items (from inline `{{ config(...) }}` calls) are merged into
-    /// `explicit_config`. No project/properties config merging or `finalize()` happens here;
-    /// call `ProjectConfigResolver::resolve_with_configs` after this to obtain the final config.
+    /// `explicit_config`. Python callers populate that field directly from `dbt.config(...)`.
+    /// No project/properties config merging or `finalize()` happens here; call
+    /// `ProjectConfigResolver::resolve_with_configs` afterward to obtain the final config.
     pub fn from_sql_resources(
         resources: Vec<SqlResource<T>>,
         checksum: DbtChecksum,

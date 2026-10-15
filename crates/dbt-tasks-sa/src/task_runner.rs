@@ -263,21 +263,38 @@ impl TaskRunner {
         &self,
         schedule: &Schedule<String>,
         base_context: BTreeMap<String, minijinja::Value>,
+        ctx: &TaskRunnerCtx,
     ) -> FsResult<()> {
         // Walking the schedule is pure in-memory work; only the adapter calls
         // below talk to the warehouse and need the blocking pool.
         let selected_catalog_schemas =
             get_catalog_schemas_and_ids(&self.resolved_state.nodes, schedule);
 
-        let jinja_env = Arc::clone(&self.jinja_env);
-        let adapter = Arc::clone(&self.adapter);
+        let registrations = selected_catalog_schemas
+            .into_iter()
+            .map(|(adapter_type, catalog_schemas)| {
+                Ok((
+                    self.adapter_store.get(adapter_type)?,
+                    ctx.jinja_env_for_adapter(adapter_type)?,
+                    if adapter_type == ctx.default_adapter_type() {
+                        base_context.clone()
+                    } else {
+                        ctx.base_context_for_adapter(adapter_type)?
+                    },
+                    catalog_schemas,
+                ))
+            })
+            .collect::<FsResult<Vec<_>>>()?;
         dbt_runtime::spawn_blocking(move || {
-            let state = jinja_env.new_state_with_context(base_context);
+            for (adapter, jinja_env, adapter_base_context, catalog_schemas) in registrations {
+                let state = jinja_env.new_state_with_context(adapter_base_context);
 
-            let catalog_schemas_to_register =
-                filter_missing_schemas(&adapter, &state, &selected_catalog_schemas)?;
+                let catalog_schemas_to_register =
+                    filter_missing_schemas(&adapter, &state, &catalog_schemas)?;
 
-            register_catalog_schemas_remote(&adapter, &state, catalog_schemas_to_register)
+                register_catalog_schemas_remote(&adapter, &state, catalog_schemas_to_register)?;
+            }
+            Ok(())
         })
         .await?
     }
@@ -298,7 +315,7 @@ impl TaskRunner {
 
         let registered_schemas = if self.should_register_schemas(run_task_args.as_ref(), &schedule)
         {
-            self.register_schemas(&schedule, base_context).await?;
+            self.register_schemas(&schedule, base_context, &ctx).await?;
             true
         } else {
             false
