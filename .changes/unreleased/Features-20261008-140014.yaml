@@ -1,0 +1,7 @@
+kind: Features
+body: Render project and schema configs using each node's selected adapter.
+time: 2026-10-08T14:00:14.938079-07:00
+custom:
+    author: colin-k-rogers
+    issue: ""
+    project: dbt-core

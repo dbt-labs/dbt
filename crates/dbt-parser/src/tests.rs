@@ -1631,24 +1631,10 @@ mod tests {
         );
     }
 
-    /// Residual (fs#13424 phase 2): `canonicalize_adapter_aliases` runs with the *target's
-    /// default* adapter, threaded once per `resolve_*.rs` call, before a node's own `+adapter:`
-    /// override (a real, mergeable `ModelConfig.adapter` field -- Fusion's multi-adapter/mesh
-    /// dispatch, `resolve_utils.rs::validate_node_adapter`) is known. That override can only be
-    /// read *from* the merged config, so canonicalizing per-layer before merging (required for
-    /// D3's mixed-spelling precedence above) and keying it to the node's own resolved adapter
-    /// are in tension -- resolving both needs a two-pass merge (discover `.adapter`, then
-    /// re-merge with the right alias table), which this phase does not attempt. Pre-existing:
-    /// the five deleted `RelationComponents.database` special cases and phase 1's
-    /// `build_unrendered_config` gate on the exact same target-default `adapter_type`, so a
-    /// `+adapter:`-overridden node was never correctly handled either; this residual just
-    /// documents it rather than fixing it. `#[ignore]`d because it pins the gap, not the
-    /// desired behavior.
+    /// A first merge discovers the node's adapter; the second merge applies the
+    /// selected adapter's aliases to every higher-precedence config layer.
     #[test]
-    #[ignore = "fs#13424 phase 2 residual: canonicalize_adapter_aliases is keyed to the \
-                target's default adapter, not a node's own +adapter: override (see \
-                ResolvableConfig::canonicalize_adapter_aliases)"]
-    fn test_databricks_catalog_alias_not_canonicalized_for_adapter_overridden_node() {
+    fn test_databricks_catalog_alias_is_canonicalized_for_adapter_overridden_node() {
         use crate::dbt_project_config::{DbtProjectConfig, ProjectConfigResolver};
 
         let root = DbtProjectConfig::<ModelConfig> {
@@ -1667,16 +1653,17 @@ mod tests {
             .catalog = Some("my_catalog".to_string());
 
         let fqn = vec!["my_model".to_string()];
-        let resolved = resolver.with_configs(&fqn, &[Some(&model_level_databricks_override)]);
+        let resolved = resolver.with_configs_for_adapter(
+            &fqn,
+            &[Some(&model_level_databricks_override)],
+            AdapterType::Databricks,
+        );
 
-        // Desired (not delivered): `database == Some("my_catalog")`, since the node actually
-        // runs on Databricks. Actual: canonicalization ran keyed to Snowflake (a no-op), so
-        // `database` stays unset and `catalog` stays an un-canonicalized extra key.
-        assert_eq!(resolved.database.into_inner().flatten(), None);
         assert_eq!(
-            resolved.__warehouse_specific_config__.catalog,
+            resolved.database.into_inner().flatten(),
             Some("my_catalog".to_string())
         );
+        assert_eq!(resolved.__warehouse_specific_config__.catalog, None);
     }
 
     /// Residual (fs#13424): the `+dataset` / `+project` / `+data_space` serde aliases on
