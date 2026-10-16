@@ -300,7 +300,18 @@ class UnrenderedConfigGenerator(BaseContextConfigGenerator[Dict[str, Any]]):
         validate: bool = False,
     ) -> Dict[str, Any]:
         translated = self._active_project.credentials.translate_aliases(partial)
-        result.update(translated)
+        if get_flags().state_modified_compare_more_unrendered_values is False:
+            # legacy behaviour: keep only the innermost scope's value for
+            # merge-behavior fields
+            result.update(translated)
+        else:
+            # Merge (rather than flat-update) so configs inherited from every
+            # level of the project hierarchy survive in the unrendered config.
+            # A plain update() keeps only the innermost scope's value for
+            # merge-behavior fields (grants, meta, tags, hooks, ...), which
+            # makes state:modified blind to inherited changes that do alter
+            # the effective config.
+            merge_config_dicts(result, translated)
         return result
 
 
