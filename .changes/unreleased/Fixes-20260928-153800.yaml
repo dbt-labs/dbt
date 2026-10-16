@@ -1,0 +1,7 @@
+kind: Fixes
+body: Respect indirect_selection set in dbt_project.yml flags
+time: 2026-09-28T15:38:00.52347+01:00
+custom:
+    author: aidanradford
+    issue: <16496>
+    project: dbt-core
