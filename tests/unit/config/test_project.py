@@ -694,3 +694,33 @@ class TestDeprecations:
             event = event_catcher.caught_events[0]
 
         assert "'name' is a required property at top level" in event.info.msg
+
+
+class TestV2OnlyProjectKeys:
+    V2_PROJECT_YML = (
+        "name: p\nversion: '1.0'\nprofile: p\ninfo_schema:\n  version: 1\n"
+        "check-paths: [checks]\nchecks:\n  +severity: warn\n"
+    )
+
+    def test_load_raw_project_drops_v2_only_keys_silently(self, tmp_path):
+        (tmp_path / "dbt_project.yml").write_text(self.V2_PROJECT_YML)
+        event_catcher = EventCatcher(Note)
+        get_event_manager().add_callback(event_catcher.catch)
+
+        project_dict = dbt.config.project.load_raw_project(str(tmp_path))
+
+        for key in ("info_schema", "check-paths", "checks"):
+            assert key not in project_dict
+        assert not any("dbt v2 engine" in e.info.msg for e in event_catcher.caught_events)
+
+    def test_project_from_project_root_notes_v2_only_keys(self, tmp_path):
+        (tmp_path / "dbt_project.yml").write_text(self.V2_PROJECT_YML)
+        event_catcher = EventCatcher(Note)
+        get_event_manager().add_callback(event_catcher.catch)
+
+        project = dbt.config.Project.from_project_root(str(tmp_path), empty_project_renderer())
+
+        assert project.project_name == "p"
+        msgs = [e.info.msg for e in event_catcher.caught_events]
+        for key in ("info_schema", "check-paths", "checks"):
+            assert sum(m.startswith(f"{key} in project 'p' is not being used") for m in msgs) == 1
