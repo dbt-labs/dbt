@@ -82,6 +82,9 @@ pub fn get_relation(
             adapter, state, ctx, conn, database, schema, identifier, token,
         ),
         AdapterType::Starburst => todo!("Starburst"),
+        // Execution layer: needs an `athena_get_relation` that queries Trino's
+        // information_schema over a live connection. Out of scope for the
+        // parse-only profile work; parse never reaches this arm.
         AdapterType::Athena => todo!("Athena"),
         AdapterType::Trino => todo!("Trino"),
         AdapterType::Dremio => todo!("Dremio"),

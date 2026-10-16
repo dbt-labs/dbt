@@ -33,6 +33,8 @@ pub fn config_aliases(adapter_type: AdapterType) -> &'static [(&'static str, &'s
         AdapterType::Postgres => &[("dbname", "database"), ("pass", "password")],
         // dbt-redshift 1.9.0 and 1.9.5 (identical), `dbt/adapters/redshift/connections.py:156`.
         AdapterType::Redshift => &[("dbname", "database"), ("pass", "password")],
+        // dbt-athena 1.11.0, `dbt/adapters/athena/connections_legacy.py:78`.
+        AdapterType::Athena => &[("catalog", "database")],
         // Verified: these adapters' `Credentials` declare no `_ALIASES`.
         AdapterType::Snowflake | AdapterType::Spark | AdapterType::DuckDB => &[],
         // TODO(fs#13424): `_ALIASES` not transcribed for this adapter -- its Python package was
@@ -41,7 +43,6 @@ pub fn config_aliases(adapter_type: AdapterType) -> &'static [(&'static str, &'s
         | AdapterType::Fabric
         | AdapterType::ClickHouse
         | AdapterType::Exasol
-        | AdapterType::Athena
         | AdapterType::Starburst
         | AdapterType::Trino
         | AdapterType::Datafusion
