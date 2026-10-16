@@ -1,0 +1,7 @@
+kind: Features
+body: '[Athena] Accept `partitioned_by`, `table_properties` and `force_batch` as model configs, at model level and as `+` keys in `dbt_project.yml`'
+time: 2026-09-18T12:25:02.600863-07:00
+custom:
+    author: aoelvp94
+    issue: "16252"
+    project: dbt-core
