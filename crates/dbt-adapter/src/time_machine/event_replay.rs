@@ -205,6 +205,7 @@ pub(crate) fn adapter_args_match_for_type(
 /// "what kind of thing is this", as opposed to "which thing is this".
 const RELATION_TYPE_FLAG_KEYS: &[&str] = &[
     "is_delta",
+    "is_iceberg_format",
     "is_dynamic_table",
     "is_interactive_table",
     "is_materialized_view",

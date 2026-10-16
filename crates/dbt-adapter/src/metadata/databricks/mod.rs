@@ -23,7 +23,7 @@ use dbt_schemas::dbt_types::RelationType;
 use dbt_schemas::schemas::legacy_catalog::{
     CatalogNodeStats, CatalogTable, ColumnMetadata, TableMetadata,
 };
-use dbt_schemas::schemas::relations::base::{BaseRelation, RelationPattern};
+use dbt_schemas::schemas::relations::base::{BaseRelation, RelationPattern, TableFormat};
 use indexmap::IndexMap;
 use minijinja::value::Object;
 use minijinja::{State, Value};
@@ -63,6 +63,51 @@ pub mod describe_json;
 pub mod describe_table;
 pub mod schemas;
 pub(crate) mod version;
+
+/// Map Databricks `provider` / `information_schema.data_source_format` onto relation flags.
+///
+/// UniForm tables report `delta` (Iceberg is only a table property). Managed Iceberg reports
+/// `iceberg`. Comparison is case-insensitive because `information_schema` is lowercased while
+/// `DESCRIBE … AS JSON` may not be.
+pub(crate) fn databricks_flags_from_provider(provider: &str) -> (bool, TableFormat) {
+    match provider.trim().to_ascii_lowercase().as_str() {
+        "iceberg" => (false, TableFormat::Iceberg),
+        "delta" => (true, TableFormat::Default),
+        _ => (false, TableFormat::Default),
+    }
+}
+
+fn optional_utf8(column: &StringArray, i: usize) -> Option<&str> {
+    (!column.is_null(i)).then(|| column.value(i))
+}
+
+fn relation_from_information_schema_row(
+    engine: &dyn AdapterEngine,
+    catalog: &str,
+    schema: &str,
+    name: &str,
+    table_type: &str,
+    file_format: &str,
+    databricks_table_type: Option<&str>,
+) -> Arc<dyn BaseRelation> {
+    let (is_delta, table_format) = databricks_flags_from_provider(file_format);
+    Arc::new(
+        Relation::new(
+            engine.adapter_type(),
+            catalog.to_string(),
+            schema.to_string(),
+            name.to_string(),
+        )
+        .with_relation_type(RelationType::from_adapter_type(
+            AdapterType::Databricks,
+            table_type,
+        ))
+        .with_quoting(engine.quoting())
+        .with_is_delta(is_delta)
+        .with_table_format(table_format)
+        .with_is_shallow_clone(databricks_table_type.is_some_and(is_shallow_clone_type)),
+    ) as Arc<dyn BaseRelation>
+}
 
 // Reference: https://github.com/databricks/dbt-databricks/blob/92f1442faabe0fce6f0375b95e46ebcbfcea4c67/dbt/include/databricks/macros/adapters/metadata.sql
 pub fn list_relations(
@@ -1962,6 +2007,21 @@ mod tests {
     use dbt_schemas::schemas::common::ResolvedQuoting;
     use dbt_schemas::schemas::relations::base::BaseRelation;
     use std::sync::Arc;
+
+    #[test]
+    fn databricks_flags_from_provider_classifies_formats() {
+        // UniForm reports `delta`; Iceberg is only a table property.
+        for (provider, expected) in [
+            ("iceberg", (false, TableFormat::Iceberg)),
+            ("ICEBERG", (false, TableFormat::Iceberg)),
+            ("delta", (true, TableFormat::Default)),
+            ("DELTA", (true, TableFormat::Default)),
+            ("parquet", (false, TableFormat::Default)),
+            ("", (false, TableFormat::Default)),
+        ] {
+            assert_eq!(databricks_flags_from_provider(provider), expected);
+        }
+    }
 
     // Helper function to create a test relation with specific quoting policies
     fn create_test_relation(

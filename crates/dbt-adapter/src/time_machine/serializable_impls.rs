@@ -5,13 +5,64 @@ use std::sync::Arc;
 use dbt_common::ErrorCode;
 use dbt_common::tracing::dbt_emit::emit_warn_log_message;
 use dbt_schemas::dbt_types::RelationType;
+use dbt_schemas::schemas::common::ResolvedQuoting;
 use dbt_schemas::schemas::dbt_catalogs::CatalogType;
-use dbt_schemas::schemas::relations::base::TableFormat;
+use dbt_schemas::schemas::relations::base::{BaseRelation, TableFormat};
+use dbt_schemas::schemas::relations::{DEFAULT_RESOLVED_QUOTING, SNOWFLAKE_RESOLVED_QUOTING};
 
 use crate::relation::{RelationConfig, RelationObject, do_create_relation};
 
 use super::serde::ReplayCallContext;
 use super::serializable::{JsonExtractor, TimeMachineSerializable};
+
+fn quote_policy_from_serialized(
+    ext: &JsonExtractor<'_>,
+    adapter_type: AdapterType,
+) -> ResolvedQuoting {
+    let default_quoting = match adapter_type {
+        AdapterType::Snowflake => SNOWFLAKE_RESOLVED_QUOTING,
+        _ => DEFAULT_RESOLVED_QUOTING,
+    };
+    ext.opt_object("quote_policy")
+        .map(|qp| ResolvedQuoting {
+            database: qp
+                .get("database")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(default_quoting.database),
+            schema: qp
+                .get("schema")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(default_quoting.schema),
+            identifier: qp
+                .get("identifier")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(default_quoting.identifier),
+        })
+        .unwrap_or(default_quoting)
+}
+
+fn relation_type_from_serialized(ext: &JsonExtractor<'_>) -> Option<RelationType> {
+    [
+        ("is_view", RelationType::View),
+        ("is_table", RelationType::Table),
+        ("is_materialized_view", RelationType::MaterializedView),
+        ("is_cte", RelationType::CTE),
+        ("is_dynamic_table", RelationType::DynamicTable),
+        ("is_interactive_table", RelationType::InteractiveTable),
+        ("is_streaming_table", RelationType::StreamingTable),
+        ("is_metric_view", RelationType::MetricView),
+    ]
+    .into_iter()
+    .find_map(|(key, ty)| ext.bool_or(key, false).then_some(ty))
+}
+
+fn apply_serialized_relation_flags(relation: &mut dyn BaseRelation, ext: &JsonExtractor<'_>) {
+    relation.set_is_delta(Some(ext.bool_or("is_delta", false)));
+    relation.set_is_shallow_clone(Some(ext.bool_or("is_shallow_clone", false)));
+    if ext.bool_or("is_iceberg_format", false) {
+        relation.set_table_format(Some(TableFormat::Iceberg));
+    }
+}
 
 /// Defensively strip `__type__` field before passing to serde deserializer.
 fn strip_type_field(json: &serde_json::Value) -> serde_json::Value {
@@ -149,6 +200,7 @@ impl TimeMachineSerializable for RelationObject {
             "is_streaming_table": self.is_streaming_table(),
             "is_metric_view": self.is_metric_view(),
             "is_delta": self.is_delta(),
+            "is_iceberg_format": self.is_iceberg_format(),
             "is_shallow_clone": self.is_shallow_clone(),
             "quote_policy": {
                 "database": quote_policy.database,
@@ -162,77 +214,21 @@ impl TimeMachineSerializable for RelationObject {
         json: &serde_json::Value,
         ctx: &ReplayCallContext,
     ) -> Option<minijinja::Value> {
-        use dbt_adapter_core::AdapterType;
-        use dbt_schemas::schemas::common::ResolvedQuoting;
-        use dbt_schemas::schemas::relations::{
-            DEFAULT_RESOLVED_QUOTING, SNOWFLAKE_RESOLVED_QUOTING,
-        };
-
         let ext = JsonExtractor::new(json)?;
-
-        // Get adapter type from serialized data, falling back to context
         let adapter_type = ext
             .opt_str("adapter_type")
             .and_then(|s| s.parse::<AdapterType>().ok())
             .unwrap_or_else(|| ctx.replay_context().adapter_type);
-
-        // Get quote_policy from serialized data, falling back to adapter-specific defaults.
-        let default_quoting = match adapter_type {
-            AdapterType::Snowflake => SNOWFLAKE_RESOLVED_QUOTING,
-            _ => DEFAULT_RESOLVED_QUOTING,
-        };
-
-        let quote_policy = ext
-            .opt_object("quote_policy")
-            .map(|qp| ResolvedQuoting {
-                database: qp
-                    .get("database")
-                    .and_then(|v| v.as_bool())
-                    .unwrap_or(default_quoting.database),
-                schema: qp
-                    .get("schema")
-                    .and_then(|v| v.as_bool())
-                    .unwrap_or(default_quoting.schema),
-                identifier: qp
-                    .get("identifier")
-                    .and_then(|v| v.as_bool())
-                    .unwrap_or(default_quoting.identifier),
-            })
-            .unwrap_or(default_quoting);
-
-        let relation_type = if ext.bool_or("is_view", false) {
-            Some(RelationType::View)
-        } else if ext.bool_or("is_table", false) {
-            Some(RelationType::Table)
-        } else if ext.bool_or("is_materialized_view", false) {
-            Some(RelationType::MaterializedView)
-        } else if ext.bool_or("is_cte", false) {
-            Some(RelationType::CTE)
-        } else if ext.bool_or("is_dynamic_table", false) {
-            Some(RelationType::DynamicTable)
-        } else if ext.bool_or("is_interactive_table", false) {
-            Some(RelationType::InteractiveTable)
-        } else if ext.bool_or("is_streaming_table", false) {
-            Some(RelationType::StreamingTable)
-        } else if ext.bool_or("is_metric_view", false) {
-            Some(RelationType::MetricView)
-        } else {
-            None
-        };
-
         let mut relation = do_create_relation(
             adapter_type,
             ext.str_or("database", ""),
             ext.str_or("schema", ""),
             ext.opt_str("identifier"),
-            relation_type,
-            quote_policy,
+            relation_type_from_serialized(&ext),
+            quote_policy_from_serialized(&ext, adapter_type),
         )
         .ok()?;
-
-        relation.set_is_delta(Some(ext.bool_or("is_delta", false)));
-        relation.set_is_shallow_clone(Some(ext.bool_or("is_shallow_clone", false)));
-
+        apply_serialized_relation_flags(relation.as_mut(), &ext);
         Some(RelationObject::new(relation.into()).into_value())
     }
 }
@@ -341,7 +337,7 @@ impl TimeMachineSerializable for crate::column::Column {
         // Feeding `dtype` instead would collapse the type to "STRUCT" and break
         // same-version replay. See `test_column_reserialization_fixed_point_bigquery_repeated_struct`.
         let sql_str = match adapter_type {
-            dbt_adapter_core::AdapterType::Bigquery => ext
+            AdapterType::Bigquery => ext
                 .opt_str("data_type")
                 .unwrap_or_else(|| ext.str_or("dtype", "")),
             _ => ext.str_or("dtype", ""),
@@ -415,7 +411,7 @@ impl TimeMachineSerializable for RelationConfig {
         ctx: &ReplayCallContext,
     ) -> Option<minijinja::Value> {
         match ctx.replay_context().adapter_type {
-            dbt_adapter_core::AdapterType::Databricks => {
+            AdapterType::Databricks => {
                 let relation_type = ctx.relation_type()?;
                 let config = crate::relation::databricks::config::relation_types::relation_config_from_recorded(
                     ctx.replay_context().adapter_type,
@@ -939,6 +935,46 @@ mod tests {
     }
 
     #[test]
+    fn test_databricks_relation_roundtrip_preserves_is_iceberg_format() {
+        use dbt_schemas::dbt_types::RelationType;
+        use dbt_schemas::schemas::relations::base::TableFormat;
+
+        let custom_quoting = ResolvedQuoting {
+            database: false,
+            schema: false,
+            identifier: false,
+        };
+
+        let mut relation = do_create_relation(
+            AdapterType::Databricks,
+            "my_catalog".to_string(),
+            "my_schema".to_string(),
+            Some("my_table".to_string()),
+            Some(RelationType::Table),
+            custom_quoting,
+        )
+        .unwrap();
+        relation.set_table_format(Some(TableFormat::Iceberg));
+
+        let original = RelationObject::from(relation);
+        assert!(original.is_iceberg_format());
+
+        let json = original.to_time_machine_json();
+        assert_eq!(json["is_iceberg_format"], true);
+
+        let databricks_ctx: ReplayCallContext = ReplayContext {
+            adapter_type: AdapterType::Databricks,
+            quoting: custom_quoting,
+        }
+        .into();
+
+        let value = RelationObject::from_time_machine_json(&json, &databricks_ctx).unwrap();
+        let restored = value.downcast_object::<RelationObject>().unwrap();
+        assert!(restored.is_iceberg_format());
+        assert!(!restored.is_delta());
+    }
+
+    #[test]
     fn test_databricks_relation_backward_compat_missing_is_delta() {
         // Old recordings won't have is_delta in the JSON — should default to false
         let old_format_json = serde_json::json!({
@@ -1149,7 +1185,7 @@ mod tests {
             "MY_SCHEMA".to_string(),
             Some("my_table".to_string()),
             Some(RelationType::Table),
-            dbt_schemas::schemas::relations::SNOWFLAKE_RESOLVED_QUOTING,
+            SNOWFLAKE_RESOLVED_QUOTING,
         )
         .unwrap();
         let original = RelationObject::from(relation);
@@ -1169,7 +1205,7 @@ mod tests {
             "MY_SCHEMA".to_string(),
             Some("my_dynamic_table".to_string()),
             Some(RelationType::DynamicTable),
-            dbt_schemas::schemas::relations::SNOWFLAKE_RESOLVED_QUOTING,
+            SNOWFLAKE_RESOLVED_QUOTING,
         )
         .unwrap();
         let original = RelationObject::from(relation);

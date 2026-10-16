@@ -25,9 +25,10 @@
       {% if safe_create and existing_relation.can_be_renamed %}
         {{ safe_relation_replace(existing_relation, staging_relation, intermediate_relation, compiled_code) }}
       {% else %}
-        {# DIVERGENCE BEGIN: upstream uses relation.type != 'table'. No
-       dbt_version guard needed: v1 BaseRelation also exposes the `is_table` property. #}
-        {% if existing_relation and (existing_relation.is_shallow_clone or not existing_relation.is_table or not (existing_relation.can_be_replaced and adapter.resolve_file_format(config) in ('delta', 'iceberg'))) -%}
+        {# DIVERGENCE BEGIN: upstream uses relation.type != 'table'. Also drop when the
+       existing warehouse format (iceberg vs delta) does not match the configured format;
+       Databricks rejects CREATE OR REPLACE across providers. #}
+        {% if databricks_should_drop_before_replace(existing_relation) -%}
         {# DIVERGENCE END #}
           {{ adapter.drop_relation(existing_relation) }}
         {%- endif %}
@@ -51,9 +52,9 @@
     -- setup: if the target relation already exists, drop it
     -- in case if the existing and future table is delta or iceberg, we want to do a
     -- create or replace table instead of dropping, so we don't have the table unavailable
-    {# DIVERGENCE BEGIN: upstream uses existing_relation.type != 'table'. No
-       dbt_version guard needed: v1 BaseRelation also exposes the `is_table` property. #}
-    {% if existing_relation and (existing_relation.is_shallow_clone or not existing_relation.is_table or not (existing_relation.can_be_replaced and adapter.resolve_file_format(config) in ('delta', 'iceberg'))) -%}
+    {# DIVERGENCE BEGIN: upstream uses existing_relation.type != 'table'. Also drop when
+       the existing warehouse format (iceberg vs delta) does not match the configured format. #}
+    {% if databricks_should_drop_before_replace(existing_relation) -%}
     {# DIVERGENCE END #}
       {{ adapter.drop_relation(existing_relation) }}
     {%- endif %}

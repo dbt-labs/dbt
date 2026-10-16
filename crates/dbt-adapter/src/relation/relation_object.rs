@@ -387,7 +387,9 @@ impl Object for RelationObject {
             Some("is_streaming_table") => Some(Value::from(self.is_streaming_table())),
             Some("is_dynamic_table") => Some(Value::from(self.is_dynamic_table())),
             Some("is_interactive_table") => Some(Value::from(self.is_interactive_table())),
-            Some("is_iceberg_format") => Some(Value::from(self.is_iceberg_format())),
+            Some("is_iceberg_format") | Some("is_iceberg") => {
+                Some(Value::from(self.is_iceberg_format()))
+            }
             Some("is_cte") => Some(Value::from(self.is_cte())),
             Some("is_pointer") => Some(Value::from(self.is_pointer())),
             Some("temporary") => Some(Value::from(self.is_temporary())),

@@ -16,8 +16,12 @@
   {% set partition_by = config.get('partition_by') %}
   {% set language = model['language'] %}
   {% set on_schema_change = incremental_validate_on_schema_change(config.get('on_schema_change'), default='ignore') %}
-  {% set is_delta = (catalog_relation.file_format == 'delta' and existing_relation.is_delta) %}
-  {% set is_iceberg = (catalog_relation.file_format == 'iceberg' and existing_relation.is_iceberg) %}
+  {# DIVERGENCE BEGIN: catalog_relation.file_format is parquet for managed Iceberg; compare
+     the resolved USING format. Jinja exposes is_iceberg_format (alias is_iceberg). #}
+  {% set configured_format = databricks_configured_storage_format(catalog_relation) %}
+  {% set is_delta = (configured_format == 'delta' and existing_relation.is_delta) %}
+  {% set is_iceberg = (configured_format == 'iceberg' and existing_relation.is_iceberg_format) %}
+  {# DIVERGENCE END #}
   {% set is_replaceable_format = is_delta or is_iceberg %}
   {% set compiled_code = adapter.clean_sql(model['compiled_code']) %}
 

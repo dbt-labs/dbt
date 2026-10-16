@@ -1,7 +1,8 @@
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 use dbt_adapter::catalog_relation::CatalogRelation;
-use dbt_adapter::relation::RelationObject;
+use dbt_adapter::relation::{Relation, RelationObject};
 use dbt_adapter_core::AdapterType;
 use dbt_schemas::dbt_types::RelationType;
 use dbt_schemas::schemas::dbt_catalogs::CatalogType;
@@ -735,6 +736,182 @@ __additional_properties__: {}
         assert!(
             lower.contains("using iceberg") && !lower.contains("using delta"),
             "table_format=iceberg with use_catalogs_v2=true but no catalogs.yml must still default to managed Iceberg (`using iceberg`), got:\n{rendered}"
+        );
+    }
+
+    fn warehouse_table(is_delta: bool, table_format: TableFormat) -> Relation {
+        Relation::new(
+            AdapterType::Databricks,
+            "d".to_string(),
+            "s".to_string(),
+            "t".to_string(),
+        )
+        .with_relation_type(Some(RelationType::Table))
+        .with_is_delta(is_delta)
+        .with_table_format(table_format)
+    }
+
+    fn iceberg_catalog(use_uniform: bool) -> CatalogRelation {
+        CatalogRelation::default_catalog_relation_databricks()
+            .with_table_format(TableFormat::Iceberg)
+            .with_file_format(if use_uniform { "delta" } else { "parquet" })
+            .with_adapter_property("use_uniform", use_uniform.to_string())
+    }
+
+    fn build_storage_format_harness() -> MacroTestHarness {
+        MacroTestHarness::for_adapter(AdapterType::Databricks)
+            .load_all_macros()
+            .with_stub_functions()
+            .build()
+            .expect("storage format harness should build")
+    }
+
+    fn render_drop_before_replace(existing: Option<Relation>, catalog: CatalogRelation) -> String {
+        let harness = build_storage_format_harness();
+        enable_catalogs_v2();
+        harness.mock().set_attr(
+            "behavior",
+            Value::from_serialize(serde_json::json!({
+                "use_catalogs_v2": { "no_warn": true },
+                "use_managed_iceberg": true,
+            })),
+        );
+
+        let mut ctx = BTreeMap::from([
+            ("dbt_version".to_string(), Value::from("2.0.0")),
+            ("catalog".to_string(), Value::from_object(catalog)),
+        ]);
+        let template = if let Some(relation) = existing {
+            ctx.insert(
+                "existing".to_string(),
+                RelationObject::new(Arc::new(relation)).into_value(),
+            );
+            "{{ databricks_should_drop_before_replace(existing, catalog) }}"
+        } else {
+            "{{ databricks_should_drop_before_replace(none, catalog) }}"
+        };
+
+        harness
+            .render(template, ctx)
+            .expect("drop-before-replace should render")
+            .trim()
+            .to_string()
+    }
+
+    fn render_storage_format_from_relation(relation: Relation) -> String {
+        let harness = build_storage_format_harness();
+        let ctx = BTreeMap::from([(
+            "existing".to_string(),
+            RelationObject::new(Arc::new(relation)).into_value(),
+        )]);
+        harness
+            .render(
+                "{{ databricks_storage_format_from_relation(existing) }}",
+                ctx,
+            )
+            .expect("storage format should render")
+            .trim()
+            .to_string()
+    }
+
+    fn render_configured_storage_format(catalog: CatalogRelation) -> String {
+        let harness = build_storage_format_harness();
+        enable_catalogs_v2();
+        harness.mock().set_attr(
+            "behavior",
+            Value::from_serialize(serde_json::json!({
+                "use_catalogs_v2": { "no_warn": true },
+                "use_managed_iceberg": true,
+            })),
+        );
+        let ctx = BTreeMap::from([
+            ("dbt_version".to_string(), Value::from("2.0.0")),
+            ("catalog".to_string(), Value::from_object(catalog)),
+        ]);
+        harness
+            .render("{{ databricks_configured_storage_format(catalog) }}", ctx)
+            .expect("configured storage format should render")
+            .trim()
+            .to_string()
+    }
+
+    #[test]
+    fn storage_format_from_relation_classifies_iceberg_and_delta() {
+        assert_eq!(
+            render_storage_format_from_relation(warehouse_table(false, TableFormat::Iceberg)),
+            "iceberg"
+        );
+        assert_eq!(
+            render_storage_format_from_relation(warehouse_table(true, TableFormat::Default)),
+            "delta"
+        );
+        let view = Relation::new(
+            AdapterType::Databricks,
+            "d".to_string(),
+            "s".to_string(),
+            "v".to_string(),
+        )
+        .with_relation_type(Some(RelationType::View));
+        assert_eq!(render_storage_format_from_relation(view), "None");
+    }
+
+    #[test]
+    fn configured_storage_format_maps_iceberg_uniform_and_delta() {
+        assert_eq!(
+            render_configured_storage_format(iceberg_catalog(false)),
+            "iceberg"
+        );
+        assert_eq!(
+            render_configured_storage_format(iceberg_catalog(true)),
+            "delta"
+        );
+        assert_eq!(
+            render_configured_storage_format(CatalogRelation::default_catalog_relation_databricks()),
+            "delta"
+        );
+    }
+
+    #[test]
+    fn should_drop_when_switching_between_iceberg_and_delta() {
+        let iceberg = warehouse_table(false, TableFormat::Iceberg);
+        let delta = warehouse_table(true, TableFormat::Default);
+
+        assert_eq!(
+            render_drop_before_replace(Some(iceberg.clone()), iceberg_catalog(false)),
+            "False"
+        );
+        assert_eq!(
+            render_drop_before_replace(
+                Some(delta.clone()),
+                CatalogRelation::default_catalog_relation_databricks()
+            ),
+            "False"
+        );
+        assert_eq!(
+            render_drop_before_replace(Some(delta.clone()), iceberg_catalog(true)),
+            "False"
+        );
+        assert_eq!(
+            render_drop_before_replace(
+                Some(iceberg.clone()),
+                CatalogRelation::default_catalog_relation_databricks()
+            ),
+            "True"
+        );
+        assert_eq!(
+            render_drop_before_replace(Some(delta), iceberg_catalog(false)),
+            "True"
+        );
+        assert_eq!(
+            render_drop_before_replace(Some(iceberg), iceberg_catalog(true)),
+            "True"
+        );
+        assert_eq!(
+            render_drop_before_replace(
+                None,
+                CatalogRelation::default_catalog_relation_databricks()
+            ),
+            "False"
         );
     }
 
