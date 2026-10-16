@@ -2,6 +2,7 @@ use std::collections::BTreeMap;
 
 use dbt_adapter::catalog_relation::CatalogRelation;
 use dbt_adapter::relation::RelationObject;
+use dbt_adapter::relation::databricks::typed_constraint::TypedConstraint;
 use dbt_adapter_core::AdapterType;
 use dbt_schemas::dbt_types::RelationType;
 use dbt_schemas::schemas::dbt_catalogs::CatalogType;
@@ -10,7 +11,7 @@ use dbt_schemas::schemas::relations::base::TableFormat;
 use indexmap::IndexMap;
 use minijinja::Value;
 
-use crate::macro_test_harness::{MacroTestHarness, default_mock_config};
+use crate::macro_test_harness::{MacroTestHarness, default_mock_config, executed_sql};
 
 mod databricks {
     use super::*;
@@ -91,6 +92,202 @@ mod databricks {
             generated_constraint_name(&with_expression),
             "c5a2df3443aff7d5b8c474aea39c6265",
             "the generated name must match the current-v1 hash input"
+        );
+    }
+
+    fn strings(items: &[&str]) -> Vec<String> {
+        items.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn unnamed_key_macro_names_match_synthesized_names() {
+        let harness = MacroTestHarness::for_adapter(AdapterType::Databricks)
+            .load_all_macros()
+            .with_stub_functions()
+            .build()
+            .expect("constraint harness should build");
+        harness.mock().on("quote", |args| {
+            Ok(Value::from(format!(
+                "`{}`",
+                args.first().and_then(Value::as_str).unwrap_or_default()
+            )))
+        });
+        let relation =
+            RelationObject::new(harness.relation("c", "s", "child", Some(RelationType::Table)))
+                .into_value();
+        let model = Value::from_serialize(BTreeMap::from([(
+            "columns",
+            BTreeMap::from(["a", "b", "n"].map(|c| (c, BTreeMap::from([("name", c)])))),
+        )]));
+
+        let foreign_key = |columns: &[&str],
+                           to: Option<&str>,
+                           to_columns: Option<&[&str]>,
+                           expression: Option<&str>| {
+            TypedConstraint::ForeignKey {
+                name: None,
+                columns: strings(columns),
+                to: to.map(str::to_string),
+                to_columns: to_columns.map(strings),
+                expression: expression.map(str::to_string),
+            }
+        };
+        let primary_key =
+            |columns: &[&str], expression: Option<&str>| TypedConstraint::PrimaryKey {
+                name: None,
+                columns: strings(columns),
+                expression: expression.map(str::to_string),
+            };
+        // (macro constraint, column-level column name, the equivalent typed constraint)
+        let cases = [
+            (
+                serde_json::json!({"type": "foreign_key", "columns": ["a", "b"], "to": "`c`.`s`.`p`", "to_columns": ["x", "y"]}),
+                None,
+                foreign_key(&["a", "b"], Some("`c`.`s`.`p`"), Some(&["x", "y"]), None),
+            ),
+            (
+                serde_json::json!({"type": "foreign_key", "columns": ["a"], "to": "p", "to_columns": ["x"]}),
+                None,
+                foreign_key(&["a"], Some("p"), Some(&["x"]), None),
+            ),
+            (
+                serde_json::json!({"type": "foreign_key", "columns": ["n"], "expression": "(n) references p (id)"}),
+                None,
+                foreign_key(&["n"], None, None, Some("(n) references p (id)")),
+            ),
+            (
+                serde_json::json!({"type": "foreign_key", "expression": "(n) references p (id)"}),
+                Some("n"),
+                foreign_key(&["n"], None, None, Some("(n) references p (id)")),
+            ),
+            (
+                serde_json::json!({"type": "primary_key", "columns": ["a", "b"]}),
+                None,
+                primary_key(&["a", "b"], None),
+            ),
+            (
+                serde_json::json!({"type": "primary_key", "columns": ["n"], "expression": "rely"}),
+                None,
+                primary_key(&["n"], Some("rely")),
+            ),
+        ];
+        for (constraint, column, typed) in cases {
+            let column = column
+                .map(|name| Value::from_serialize(BTreeMap::from([("name", name)])))
+                .unwrap_or_else(|| Value::from_serialize(BTreeMap::<String, String>::new()));
+            let ctx = BTreeMap::from([
+                ("relation", relation.clone()),
+                ("constraint", Value::from_serialize(&constraint)),
+                ("model", model.clone()),
+                ("column", column),
+            ]);
+            let sql = harness
+                .render(
+                    "{{ get_constraint_sql(relation, constraint, model, column) | join('\\n') }}",
+                    ctx,
+                )
+                .expect("key constraint should render");
+            let name = sql
+                .split_once("add constraint ")
+                .and_then(|(_, rest)| rest.split_once(' '))
+                .map(|(name, _)| name.to_string());
+            assert_eq!(name, typed.synthesized_name("child"), "{constraint}: {sql}");
+        }
+    }
+
+    #[test]
+    fn safer_replace_renames_staged_keys_after_swap() {
+        let harness = MacroTestHarness::for_adapter(AdapterType::Databricks)
+            .load_all_macros()
+            .with_stub_functions()
+            .build()
+            .expect("safer replace harness should build");
+        let pk = TypedConstraint::PrimaryKey {
+            name: None,
+            columns: strings(&["id"]),
+            expression: None,
+        };
+        let self_fk = TypedConstraint::ForeignKey {
+            name: None,
+            columns: strings(&["parent_id"]),
+            to: Some("p".to_string()),
+            to_columns: Some(strings(&["id"])),
+            expression: None,
+        };
+        let named_fk = TypedConstraint::ForeignKey {
+            name: Some("fk_named".to_string()),
+            columns: strings(&["other_id"]),
+            to: Some("o".to_string()),
+            to_columns: Some(strings(&["id"])),
+            expression: None,
+        };
+        let parsed = Value::from(vec![
+            Value::from(Vec::<Value>::new()),
+            Value::from_iter(
+                [pk.clone(), self_fk.clone(), named_fk.clone()]
+                    .into_iter()
+                    .map(Value::from_object),
+            ),
+        ]);
+        harness
+            .mock()
+            .on("parse_columns_and_constraints", move |_| Ok(parsed.clone()));
+        let config = default_mock_config();
+        config.on("get", |args| match args.first().and_then(Value::as_str) {
+            Some("contract") => Ok(Value::from_serialize(BTreeMap::from([("enforced", true)]))),
+            _ => Ok(args.get(1).cloned().unwrap_or(Value::UNDEFINED)),
+        });
+        let this = harness.relation("c", "s", "my_model", Some(RelationType::Table));
+        let ctx = BTreeMap::from([
+            ("execute", Value::from(true)),
+            ("this", RelationObject::new(this).into_value()),
+            ("config", Value::from_dyn_object(config)),
+            (
+                "model",
+                Value::from_serialize(BTreeMap::from([("name", "my_model")])),
+            ),
+        ]);
+
+        harness
+            .render(
+                "{% do rename_staged_key_constraints(make_staging_relation(this)) %}",
+                ctx,
+            )
+            .expect("staged key rename should render");
+
+        let name = |c: &TypedConstraint, identifier| c.synthesized_name(identifier).unwrap();
+        let target = "ALTER TABLE `c`.`s`.`my_model`";
+        let statements: Vec<String> = executed_sql(harness.mock())
+            .iter()
+            .map(|sql| sql.split_whitespace().collect::<Vec<_>>().join(" "))
+            .collect();
+        assert_eq!(
+            statements,
+            vec![
+                format!(
+                    "{target} DROP CONSTRAINT IF EXISTS {}",
+                    name(&self_fk, "my_model__dbt_stg")
+                ),
+                format!(
+                    "{target} DROP CONSTRAINT IF EXISTS {}",
+                    name(&named_fk, "my_model__dbt_stg")
+                ),
+                format!(
+                    "{target} DROP CONSTRAINT IF EXISTS {}",
+                    name(&pk, "my_model__dbt_stg")
+                ),
+                format!(
+                    "{target} ADD CONSTRAINT {} PRIMARY KEY (id)",
+                    name(&pk, "my_model")
+                ),
+                format!(
+                    "{target} ADD CONSTRAINT {} FOREIGN KEY (parent_id) REFERENCES p (id)",
+                    name(&self_fk, "my_model")
+                ),
+                format!(
+                    "{target} ADD CONSTRAINT fk_named FOREIGN KEY (other_id) REFERENCES o (id)"
+                ),
+            ]
         );
     }
 
