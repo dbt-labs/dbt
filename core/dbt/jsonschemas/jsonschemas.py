@@ -42,6 +42,7 @@ _ADAPTER_TO_EXTRA_KEYS = {
     # databricks/dbt-databricks#1540, #1302
     "databricks": [
         "query_tags",
+        "row_filter",  # databricks/dbt-databricks#1294
         "zorder",
         "options",
         "unique_tmp_table_suffix",
