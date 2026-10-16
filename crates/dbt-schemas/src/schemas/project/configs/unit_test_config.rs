@@ -472,6 +472,7 @@ impl From<ProjectUnitTestConfig> for UnitTestConfig {
                 auto_liquid_cluster: config.auto_liquid_cluster,
                 zorder: None,
                 skip_optimize: None,
+                skip_merge_on_empty_source: None,
                 clustered_by: config.clustered_by,
                 buckets: config.buckets,
                 catalog: config.catalog,
