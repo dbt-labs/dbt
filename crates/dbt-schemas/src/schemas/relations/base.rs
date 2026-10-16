@@ -420,11 +420,12 @@ pub trait BaseRelation: BaseRelationProperties + Any + Send + Sync + fmt::Debug 
     /// Implement [BaseRelation::normalize_relation_component] to complete the functionality
     /// ```
     fn semantic_fqn(&self) -> String {
+        let folds_quoted = self.folds_quoted_identifiers();
         let mut parts = vec![];
 
         if let Ok(database) = self.database_as_str() {
             if !database.is_empty() {
-                if self.quote_policy().database {
+                if self.quote_policy().database && !folds_quoted {
                     parts.push(self.quoted(&database));
                 } else {
                     parts.push(self.quoted(&self.normalize_component(&database)));
@@ -433,7 +434,7 @@ pub trait BaseRelation: BaseRelationProperties + Any + Send + Sync + fmt::Debug 
         }
 
         if let Ok(schema) = self.schema_as_str() {
-            if self.quote_policy().schema {
+            if self.quote_policy().schema && !folds_quoted {
                 parts.push(self.quoted(&schema));
             } else {
                 parts.push(self.quoted(&self.normalize_component(&schema)));
@@ -441,7 +442,7 @@ pub trait BaseRelation: BaseRelationProperties + Any + Send + Sync + fmt::Debug 
         }
 
         if let Ok(identifier) = self.identifier_as_str() {
-            if self.quote_policy().identifier {
+            if self.quote_policy().identifier && !folds_quoted {
                 parts.push(self.quoted(&identifier));
             } else {
                 parts.push(self.quoted(&self.normalize_component(&identifier)));
@@ -449,6 +450,15 @@ pub trait BaseRelation: BaseRelationProperties + Any + Send + Sync + fmt::Debug 
         }
 
         parts.join(".")
+    }
+
+    /// Whether the platform folds identifier case even when quoted, so a quoted
+    /// component must still be normalized to compare equal to the name the catalog
+    /// reports. Athena (Trino over Glue) lowercases every identifier, quoted or not:
+    /// a model named `my_MixedCaseModel` exists as `my_mixedcasemodel`
+    /// and must still hit the relation cache.
+    fn folds_quoted_identifiers(&self) -> bool {
+        false
     }
 
     /// Helper for
