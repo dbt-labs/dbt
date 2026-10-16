@@ -434,7 +434,6 @@ pub fn generate_relation_components(
         normalize_quoting(&node.quoting(), adapter_type, &database, &schema, &alias);
 
     // Only generate relation_name if not ephemeral
-    let parse_adapter = env.get_adapter().expect("Failed to get parse adapter");
     let database_name = if !matches!(node.materialized(), DbtMaterialization::Ephemeral) {
         database.as_str()
     } else {
@@ -451,7 +450,7 @@ pub fn generate_relation_components(
         &format!("{alias}_ephemeral")
     };
     let relation_name = generate_relation_name_with_target(
-        parse_adapter,
+        adapter_type,
         database_name,
         schema_name,
         alias_name,
@@ -550,7 +549,6 @@ fn generate_alias_and_relation_name(
     let (_, _, alias, _) = normalize_quoting(&quoting, adapter_type, database, schema, &alias);
 
     // Generate relation_name
-    let parse_adapter = env.get_adapter().expect("Failed to get parse adapter");
     let database_name = if !matches!(node.materialized(), DbtMaterialization::Ephemeral) {
         database
     } else {
@@ -567,7 +565,7 @@ fn generate_alias_and_relation_name(
         &format!("{alias}_ephemeral")
     };
     let relation_name = generate_relation_name_with_target(
-        parse_adapter,
+        adapter_type,
         database_name,
         schema_name,
         alias_name,
