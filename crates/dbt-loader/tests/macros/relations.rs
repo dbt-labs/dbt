@@ -429,6 +429,22 @@ __additional_properties__: {}
     }
 
     #[test]
+    fn optimize_macro_skips_auto_liquid_clustering() {
+        for skip_optimize in [None, Some(false)] {
+            let mut config =
+                BTreeMap::from([("auto_liquid_cluster".to_string(), Value::from(true))]);
+            if let Some(skip_optimize) = skip_optimize {
+                config.insert("skip_optimize".to_string(), Value::from(skip_optimize));
+            }
+            let rendered = render_optimize(config, BTreeMap::new());
+            assert!(
+                rendered.trim().is_empty(),
+                "automatic clustering alone must not submit OPTIMIZE, got: {rendered:?}"
+            );
+        }
+    }
+
+    #[test]
     fn optimize_macro_skips_configured_clustering() {
         for (cluster_key, cluster_value) in [
             ("zorder", Value::from("id")),
@@ -473,6 +489,32 @@ __additional_properties__: {}
             rendered.to_lowercase().contains("optimize"),
             "false skip_optimize must preserve optimize, got: {rendered:?}"
         );
+
+        assert!(rendered.contains("zorder by (id)"));
+
+        for (config, expected_clause) in [
+            (
+                BTreeMap::from([(
+                    "zorder".to_string(),
+                    Value::from_serialize(vec!["id", "label"]),
+                )]),
+                "zorderby(id,label)",
+            ),
+            (
+                BTreeMap::from([(
+                    "liquid_clustered_by".to_string(),
+                    Value::from_serialize(vec!["id"]),
+                )]),
+                "optimize",
+            ),
+        ] {
+            let rendered = render_optimize(config, BTreeMap::new());
+            let compact = rendered.split_whitespace().collect::<String>();
+            assert!(
+                compact.contains(expected_clause),
+                "explicit clustering must preserve {expected_clause}, got: {rendered:?}"
+            );
+        }
 
         for variable in ["DATABRICKS_SKIP_OPTIMIZE", "databricks_skip_optimize"] {
             let rendered = render_optimize(
