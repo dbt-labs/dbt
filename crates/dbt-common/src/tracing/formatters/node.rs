@@ -1,4 +1,6 @@
 use console::Style;
+use std::borrow::Cow;
+
 use dbt_telemetry::{
     AnyNodeOutcomeDetail, CompiledCode, CompiledCodeInline, ExecutionPhase, MicrobatchBatchSize,
     MicrobatchEvaluated, NodeEvaluated, NodeEvent, NodeMaterialization, NodeOutcome, NodeProcessed,
@@ -17,7 +19,7 @@ use super::{
         UNIT_TEST_SCHEMA_SUFFIX,
     },
     duration::format_duration_fixed_width,
-    layout::right_align_static_action,
+    layout::{right_align_action, right_align_static_action},
     phase::get_phase_action,
 };
 
@@ -298,6 +300,7 @@ pub fn format_node_action(
     test_outcome: Option<TestOutcome>,
     freshness_outcome: Option<SourceFreshnessOutcome>,
     has_warn: bool,
+    num_failures: Option<i32>,
     colorize: bool,
 ) -> String {
     let (action, color) = node_action_parts(
@@ -308,13 +311,22 @@ pub fn format_node_action(
         has_warn,
     );
 
+    // dbt-core parity: warned/failed tests report their failure count
+    // (`WARN 528` / `FAIL 528`). "Warned {n}" / "Failed {n}" keep the
+    // fixed-width action column aligned for typical counts; longer counts
+    // fall back to the unpadded text via `right_align_action`.
+    let action: Cow<'_, str> = match (num_failures, action) {
+        (Some(n), "Warned" | "Failed") if n > 0 => Cow::Owned(format!("{action} {n}")),
+        _ => Cow::Borrowed(action),
+    };
+
     // Right align action, so it shares a column with every other progress message.
-    let action = right_align_static_action(action);
+    let action = right_align_action(action);
 
     if colorize {
         color.apply_to(action).to_string()
     } else {
-        action
+        action.into_owned()
     }
 }
 
@@ -396,6 +408,24 @@ pub fn format_node_processed_start(node: &NodeProcessed, colorize: bool) -> Stri
     let qualifier_alias = format_qualifier_alias(&qualifier, &alias, colorize);
 
     format!("Started {} {}", node_type.pretty(), qualifier_alias)
+}
+
+/// Failure count for a test's result line.
+///
+/// dbt-core parity: a warned/failed test's result line carries its failing-row
+/// count (e.g. `Warned 528`). Only tests report one, and only when a positive
+/// count was recorded; every other node keeps the plain action label.
+fn test_failure_count(node: &NodeProcessed) -> Option<i32> {
+    if !matches!(node.node_type(), NodeType::Test | NodeType::UnitTest) {
+        return None;
+    }
+    if !matches!(
+        get_test_outcome(node.into()),
+        Some(TestOutcome::Warned) | Some(TestOutcome::Failed)
+    ) {
+        return None;
+    }
+    get_num_failures(node.into()).filter(|&n| n > 0)
 }
 
 /// Format a complete NodeProcessed event into a single output line
@@ -495,6 +525,7 @@ pub fn format_node_processed_end(
         get_test_outcome(node.into()),
         None, // freshness_outcome - not applicable for non-freshness nodes
         has_node_warning(node.into()),
+        test_failure_count(node),
         colorize,
     );
 
@@ -567,7 +598,7 @@ pub fn format_node_evaluated_start_legacy(node: &NodeEvaluated, command: FsComma
         NodeType::Test | NodeType::UnitTest | NodeType::Snapshot
     ) && is_yaml_defined_node
     {
-        let display_path: std::borrow::Cow<str> = if let Some(line) = node.defined_at_line {
+        let display_path: Cow<str> = if let Some(line) = node.defined_at_line {
             if let Some(col) = node.defined_at_col {
                 format!("{}:{}:{}", node.relative_path, line, col).into()
             } else {
@@ -691,7 +722,7 @@ pub fn format_microbatch_evaluated_end(
     colorize: bool,
 ) -> String {
     let action_formatted =
-        format_node_action(batch.node_outcome(), None, None, None, false, colorize);
+        format_node_action(batch.node_outcome(), None, None, None, false, None, colorize);
     with_progress_field(
         format!(
             "{} {}",
@@ -768,6 +799,7 @@ pub fn format_skipped_test_group(
         None,  // test_outcome
         None,  // freshness_outcome
         false, // has_warn - skipped nodes never have warn detail
+        None,  // num_failures - skipped tests report no count
         colorize,
     );
 
@@ -804,6 +836,7 @@ pub fn format_aggregated_test_group_header(
         Some(worst_outcome),
         None,  // freshness_outcome
         false, // has_warn - the group's verdict comes from its members
+        None,  // num_failures - the header covers many members, no single count
         colorize,
     );
     // The header covers every member of the group, so it has no single index of its own;
@@ -974,6 +1007,7 @@ pub fn format_freshness_result(
         None, // test_outcome
         freshness_outcome,
         false, // has_warn - freshness nodes use freshness_outcome instead
+        None,  // num_failures - freshness checks report no failure count
         colorize,
     );
 
@@ -1185,6 +1219,80 @@ mod tests {
         assert!(output.contains("[0.25s]"), "{output}");
         assert!(!output.contains("Statically checked"));
         assert!(!output.contains("Batched"));
+    }
+
+    /// dbt-core parity (issue #16753): a warned test reports its failure count
+    /// on the result line, e.g. `Warned 528`.
+    #[test]
+    fn warned_test_processed_shows_failure_count() {
+        let output = format_node_processed_end(
+            &test_processed(TestOutcome::Warned, 528, None, None),
+            std::time::Duration::from_millis(250),
+            false,
+        );
+
+        assert!(output.contains("Warned 528"), "{output}");
+        assert!(output.contains("[0.25s]"), "{output}");
+    }
+
+    /// Same for failed tests: `Failed 3`.
+    #[test]
+    fn failed_test_processed_shows_failure_count() {
+        let output = format_node_processed_end(
+            &test_processed(TestOutcome::Failed, 3, None, None),
+            std::time::Duration::from_millis(250),
+            false,
+        );
+
+        assert!(output.contains("Failed 3"), "{output}");
+    }
+
+    /// A warned test with no recorded failures keeps the plain action label.
+    #[test]
+    fn warned_test_with_zero_failures_shows_no_count() {
+        let output = format_node_processed_end(
+            &test_processed(TestOutcome::Warned, 0, None, None),
+            std::time::Duration::from_millis(250),
+            false,
+        );
+
+        assert!(output.contains("Warned"), "{output}");
+        assert!(!output.contains("Warned 0"), "{output}");
+    }
+
+    /// Passed tests never show a count, and non-test nodes are unaffected.
+    #[test]
+    fn passed_test_processed_shows_no_failure_count() {
+        let output = format_node_processed_end(
+            &test_processed(TestOutcome::Passed, 0, None, None),
+            std::time::Duration::from_millis(250),
+            false,
+        );
+
+        assert!(output.contains("Passed"), "{output}");
+        assert!(!output.contains("Passed 0"), "{output}");
+    }
+
+    /// The failure count stays in the fixed-width action column so the
+    /// node-type column does not shift.
+    #[test]
+    fn warned_test_failure_count_keeps_action_column_aligned() {
+        let warned = format_node_processed_end(
+            &test_processed(TestOutcome::Warned, 528, None, None),
+            std::time::Duration::from_millis(250),
+            false,
+        );
+        let passed = format_node_processed_end(
+            &test_processed(TestOutcome::Passed, 0, None, None),
+            std::time::Duration::from_millis(250),
+            false,
+        );
+
+        assert_eq!(
+            column_of(&warned, "test "),
+            column_of(&passed, "test "),
+            "{warned} vs {passed}"
+        );
     }
 
     /// `duration_ms` counts whole milliseconds, so a node that really did run can measure

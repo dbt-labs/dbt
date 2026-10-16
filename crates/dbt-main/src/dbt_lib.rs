@@ -1456,6 +1456,7 @@ impl<'a> AllPhasesExecutor<'a> {
                                 test_outcome,
                                 None,
                                 false,
+                                None, // num_failures - check results report no failure count
                                 true
                             ),
                             format_duration_fixed_width(Duration::from_secs_f64(r.execution_time)),

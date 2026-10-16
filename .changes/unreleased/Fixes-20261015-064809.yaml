@@ -1,0 +1,7 @@
+kind: Fixes
+body: Show test failure counts on build/test result lines (e.g. Warned 528) instead of omitting them
+time: 2026-10-15T06:48:09.881611607Z
+custom:
+    author: akshatshahh
+    issue: "16753"
+    project: dbt-core
