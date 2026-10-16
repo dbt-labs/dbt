@@ -15,10 +15,10 @@ models:
         description: Customers' full name.
       - name: count_lifetime_orders
         description: Total number of orders a customer has ever placed.
-      - name: first_ordered_at
-        description: The timestamp when a customer placed their first order.
-      - name: last_ordered_at
-        description: The timestamp of a customer's most recent order.
+      - name: first_order_date
+        description: The date of a customer's first order.
+      - name: last_order_date
+        description: The date of a customer's most recent order.
       - name: lifetime_spend_pretax
         description: The sum of all the pre-tax subtotals of every order a customer has placed.
       - name: lifetime_tax_paid
