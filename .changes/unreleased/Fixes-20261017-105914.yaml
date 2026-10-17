@@ -1,0 +1,7 @@
+kind: Fixes
+body: Recognize Databricks type names such as string, int, tinyint and decimal(p,s) in the Column is_string, is_number, is_integer, is_float and is_numeric checks, and never widen Databricks string columns during snapshot column expansion
+time: 2026-10-17T10:59:14.702849+05:30
+custom:
+    author: sd-db
+    issue: "16791"
+    project: dbt-core
