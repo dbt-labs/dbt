@@ -195,25 +195,17 @@ fn reject_name_collisions(skills: &[DiscoveredSkill]) -> FsResult<()> {
     Ok(())
 }
 
-/// Remove every skill dbt previously installed, across the destinations the
-/// configured providers read from. Used by `dbt clean`.
+/// Remove every skill dbt previously installed, across every known provider
+/// destination. Used by `dbt clean`.
 ///
-/// Reads only files on disk — no packages need be installed. Returns
-/// `Ok(None)` when no `ai_provider` is configured (nothing dbt could have
-/// installed, so nothing to prune). Skills dbt does not manage are never
-/// touched.
+/// Reads only files on disk — no packages need be installed. Skills dbt does
+/// not manage are never touched.
 pub fn prune_installed_skills(
     project_root: &Path,
-    root_project: &DbtProject,
-    ai_provider: Option<&[String]>,
+    _root_project: &DbtProject,
+    _ai_provider: Option<&[String]>,
 ) -> FsResult<Option<Vec<InstallReport>>> {
-    let Some(raw_providers) = resolve_ai_provider(ai_provider, root_project.flags.as_ref()) else {
-        return Ok(None);
-    };
-    let destinations = resolve_destinations(&parse_providers(&raw_providers));
-    if destinations.is_empty() {
-        return Ok(None);
-    }
+    let destinations = resolve_destinations(&AiProvider::ALL);
     Ok(Some(prune_all(project_root, &destinations)?))
 }
 
@@ -375,6 +367,25 @@ mod tests {
             .unwrap()
             .unwrap();
         assert!(root.join(".claude/skills/alpha").join(SKILL_FILE).is_file());
+    }
+
+    #[test]
+    fn clean_prunes_skills_from_previously_configured_providers() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+        write_skill(root, "skills/alpha", "alpha");
+        let project = root_project("root_project");
+
+        install_package_skills(root, &project, &[], Some(&["claude".to_string()]))
+            .unwrap()
+            .unwrap();
+        assert!(root.join(CLAUDE_SKILLS_DIR).join("alpha").is_dir());
+
+        prune_installed_skills(root, &project, Some(&["wizard".to_string()]))
+            .unwrap()
+            .unwrap();
+
+        assert!(!root.join(CLAUDE_SKILLS_DIR).join("alpha").exists());
     }
 
     #[test]
