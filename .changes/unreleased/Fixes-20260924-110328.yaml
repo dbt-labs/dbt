@@ -1,0 +1,7 @@
+kind: Fixes
+body: Fix source freshness artifact statuses to match the declared sources/v3 schema.
+time: 2026-09-24T11:03:28.304386-04:00
+custom:
+    author: akashmalbari
+    issue: "16400"
+    project: dbt-core
