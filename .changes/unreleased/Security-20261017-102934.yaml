@@ -1,0 +1,7 @@
+kind: Security
+body: Sanitize embedded HTML in model, semantic, and overview descriptions in `dbt docs` so scripts and frames in a package description cannot run on the docs site.
+time: 2026-10-17T10:29:34.098034+09:00
+custom:
+    author: yu-iskw
+    issue: "16605"
+    project: dbt

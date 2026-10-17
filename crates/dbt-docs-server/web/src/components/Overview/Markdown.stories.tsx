@@ -1,4 +1,5 @@
 import type { Meta, StoryObj } from '@storybook/react-vite';
+import { expect, within } from 'storybook/test';
 
 import { Markdown } from './Markdown';
 
@@ -97,9 +98,8 @@ export const Links: Story = {
 };
 
 /**
- * `rehypeRaw` is on, so authored HTML renders as HTML. This is a deliberate
- * divergence from docs v1, which escaped it — and it is why HTML comments in the
- * bundled default overview are invisible rather than printed.
+ * `rehype-raw` parses authored HTML and `rehype-sanitize` keeps the default
+ * allow-list. Formatting tags render, and HTML comments stay out of the page.
  */
 export const RawHtml: Story = {
   args: {
@@ -110,6 +110,18 @@ export const RawHtml: Story = {
       '',
       '<div style="padding: 8px; border: 1px solid currentColor">An authored div.</div>',
     ].join('\n'),
+  },
+};
+
+/** Untrusted inline HTML that loads a frame or runs a script must not reach the DOM. */
+export const ScriptPayload: Story = {
+  args: {
+    children: `<iframe srcdoc="&lt;script&gt;parent.document.documentElement.dataset.dbtPoc='executed'&lt;/script&gt;"></iframe>`,
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(canvasElement.querySelector('iframe')).toBeNull();
+    void canvas;
   },
 };
 
