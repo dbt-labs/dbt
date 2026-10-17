@@ -57,6 +57,7 @@ use arrow_schema::{DataType, Field, Schema};
 use dashmap::DashMap;
 use dbt_adapter_core::AdapterType;
 use dbt_adapter_sql::is_keyword_ignore_ascii_case;
+use dbt_adapter_sql::types::SqlType;
 use dbt_adbc::bigquery::*;
 use dbt_adbc::salesforce::DATA_TRANSFORM_RUN_TIMEOUT;
 use dbt_adbc::{Connection, QueryCtx};
@@ -3840,6 +3841,100 @@ impl AdapterImpl {
                 unimplemented!("only available with BigQuery adapter")
             }
         }
+    }
+
+    /// BigQueryAdapter https://github.com/dbt-labs/dbt-adapters/blob/614bc63d3f1c248a79d1cee973031b7b69671247/dbt-bigquery/src/dbt/adapters/bigquery/impl.py#L922
+    ///
+    /// BigQuery DDL can't add fields inside a STRUCT, so the driver adds the ones missing in
+    /// `target` with a single `tables.patch`. Returns the schema changes recomputed against the
+    /// patched `target`, or none when no STRUCT column changed.
+    pub fn sync_struct_columns(
+        &self,
+        state: &State,
+        on_schema_change: &str,
+        source: &Arc<dyn BaseRelation>,
+        target: &Arc<dyn BaseRelation>,
+        new_target_types: &[String],
+        token: CancellationToken,
+    ) -> AdapterResult<Value> {
+        match self.adapter_type() {
+            Bigquery => {
+                if let Replay(..) = self.inner_adapter() {
+                    return Ok(none_value());
+                }
+                let syncs_columns =
+                    matches!(on_schema_change, "append_new_columns" | "sync_all_columns");
+                let struct_changed = new_target_types.iter().any(|new_type| {
+                    match SqlType::parse(Bigquery, new_type) {
+                        Ok((SqlType::Struct(_), _)) => true,
+                        Ok((SqlType::Array(Some(inner)), _)) => {
+                            matches!(*inner, SqlType::Struct(_))
+                        }
+                        _ => false,
+                    }
+                });
+                if !syncs_columns || !struct_changed {
+                    return Ok(none_value());
+                }
+
+                self.add_nested_fields(state, source, target, token)?;
+                let args = [
+                    RelationObject::new(Arc::clone(source)).into_value(),
+                    RelationObject::new(Arc::clone(target)).into_value(),
+                ];
+                execute_macro(state, &args, "check_for_schema_changes")
+            }
+            Postgres | Snowflake | Databricks | Redshift | Salesforce | Spark | DuckDB
+            | LakeCompute | Fabric | ClickHouse | Exasol | Starburst | Athena | Trino
+            | Datafusion | Dremio | Oracle => {
+                unimplemented!("only available with BigQuery adapter")
+            }
+        }
+    }
+
+    /// Adds the fields of `source` missing inside the STRUCT columns of `target` through the
+    /// driver, which does it with a single `tables.patch`.
+    fn add_nested_fields(
+        &self,
+        state: &State,
+        source: &Arc<dyn BaseRelation>,
+        target: &Arc<dyn BaseRelation>,
+        token: CancellationToken,
+    ) -> AdapterResult<()> {
+        let table_name = |relation: &Arc<dyn BaseRelation>| -> AdapterResult<String> {
+            Ok(format!(
+                "{}.{}.{}",
+                relation.database_as_str()?,
+                relation.schema_as_str()?,
+                relation.identifier_as_str()?
+            ))
+        };
+        let target_name = table_name(target)?;
+        let mut options = self.get_adbc_execute_options(state);
+        options.extend([
+            (
+                QUERY_DESTINATION_TABLE.to_string(),
+                OptionValue::String(target_name.clone()),
+            ),
+            (
+                ADD_NESTED_FIELDS_FROM.to_string(),
+                OptionValue::String(table_name(source)?),
+            ),
+        ]);
+        let ctx = query_ctx_from_state(state)?.with_desc("sync_struct_columns adapter call");
+        let sql =
+            format!("-- adapter.sync_struct_columns via BigQuery REST API on `{target_name}`");
+        let mut conn = self.borrow_tlocal_connection(Some(state), node_id_from_state(state))?;
+        self.engine().execute_with_options(
+            Some(state),
+            &ctx,
+            conn.as_mut(),
+            &sql,
+            options,
+            false,
+            token,
+        )?;
+        Ok(())
     }
 
     /// Convert an Arrow [Schema] to a [Vec] of [Column]s.
