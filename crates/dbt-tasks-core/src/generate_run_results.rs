@@ -40,7 +40,7 @@ pub fn generate_run_results(
     adapter_responses: &HashMap<String, AdapterResponse>,
 ) -> ContextRunResult {
     let status = stat.result_status_string();
-    let execution_time = stat.get_duration().as_secs_f64();
+    let execution_time = stat.get_execution_duration().as_secs_f64();
     let started_at: DateTime<Utc> = DateTime::from(stat.start_time);
     let completed_at: DateTime<Utc> = DateTime::from(stat.end_time);
 
