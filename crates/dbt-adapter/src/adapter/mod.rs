@@ -1166,6 +1166,31 @@ impl Adapter {
         }
     }
 
+    /// Whether the run should check each schema it needs with
+    /// [`Adapter::check_schema_exists_typed`] instead of listing every schema
+    /// of the catalog. Listing a large Glue catalog takes tens of seconds.
+    /// See: https://github.com/dbt-labs/dbt/issues/12461
+    pub fn checks_required_schemas_only(&self) -> bool {
+        matches!(self.adapter_type(), AdapterType::Athena)
+    }
+
+    /// Typed variant of [`Adapter::check_schema_exists`] for callers outside Jinja.
+    #[tracing::instrument(skip(self, state), level = "trace")]
+    pub fn check_schema_exists_typed(
+        &self,
+        state: &State,
+        database: &str,
+        schema: &str,
+    ) -> Result<bool, minijinja::Error> {
+        match &self.inner {
+            Typed { adapter, .. } => Ok(adapter
+                .check_schema_exists(state, database, schema)?
+                .is_true()),
+            // Like `list_schemas_typed`, which finds no schema at parse time.
+            Parse(_) => Ok(false),
+        }
+    }
+
     /// https://github.com/dbt-labs/dbt-adapters/blob/main/dbt-adapters/src/dbt/adapters/sql/impl.py#L161
     #[tracing::instrument(skip(self, state), level = "trace")]
     pub fn create_schema(&self, state: &State, args: &[Value]) -> Result<Value, minijinja::Error> {
