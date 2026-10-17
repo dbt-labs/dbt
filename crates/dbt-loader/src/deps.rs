@@ -22,6 +22,7 @@ use crate::args::LoadArgs;
 use crate::loader::{
     get_packages_install_path, resolve_and_reload_weo_from_project, resolve_bool_project_flag,
 };
+use crate::require_dbt_version::warn_require_dbt_version;
 
 /// Execute `dbt deps` without loading a profile.
 ///
@@ -48,6 +49,10 @@ pub async fn execute_deps_command(
         cli_warn_error_options.as_ref(),
         tracing_features,
     )?;
+    warn_require_dbt_version(
+        simplified_dbt_project.require_dbt_version.as_ref(),
+        load_args.version_check,
+    );
 
     // Parse dbt_cloud.yml (if it exists)
     let dbt_cloud_yml = match dbt_cloud_config::get_cloud_project_path() {

@@ -1,0 +1,10 @@
+name: 'require_dbt_version'
+
+config-version: 2
+version: '0.1'
+
+profile: 'require_dbt_version'
+
+model-paths: ["models"]
+
+require-dbt-version: '>=99.0.0'

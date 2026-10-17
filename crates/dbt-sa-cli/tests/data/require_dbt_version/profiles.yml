@@ -1,0 +1,8 @@
+require_dbt_version:
+  target: duckdb
+  outputs:
+    duckdb:
+      type: duckdb
+      path: ":memory:"
+      schema: main
+      threads: 1

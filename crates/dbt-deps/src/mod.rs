@@ -12,6 +12,7 @@ pub mod package_listing;
 mod package_resolver;
 
 pub mod private_package;
+pub mod require_dbt_version;
 pub mod semver;
 mod tarball_client;
 pub mod types;

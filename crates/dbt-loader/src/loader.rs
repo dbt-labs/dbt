@@ -62,6 +62,7 @@ use dbt_schemas::state::{DbtAsset, DbtPackage, DbtState, ResourcePathKind};
 use crate::args::LoadArgs;
 use crate::dbt_project_yml_loader::load_project_yml;
 use crate::loader_hooks::LoaderHooks;
+use crate::require_dbt_version::warn_require_dbt_version;
 use crate::utils::{collect_file_info, identify_package_dependencies};
 use crate::{
     construct_internal_packages, load_internal_packages, load_packages, load_profiles, load_vars,
@@ -278,6 +279,10 @@ pub async fn load(
         arg.cli_warn_error_options.as_ref(),
         tracing_features,
     )?;
+    warn_require_dbt_version(
+        simplified_dbt_project.require_dbt_version.as_ref(),
+        arg.version_check,
+    );
     let mut iarg = iarg;
     if iarg.warn_error != resolved_warn_error_options.warn_error
         || iarg.warn_error_options != resolved_warn_error_options.warn_error_options
@@ -650,6 +655,10 @@ pub async fn load_for_clean(arg: &LoadArgs) -> FsResult<DbtState> {
         arg.cli_warn_error_options.as_ref(),
         None,
     )?;
+    warn_require_dbt_version(
+        simplified_dbt_project.require_dbt_version.as_ref(),
+        arg.version_check,
+    );
 
     let env = initialize_load_profile_jinja_environment();
     load_catalogs(&arg, &env, simplified_dbt_project.flags.as_ref()).await?;
