@@ -87,6 +87,7 @@ class RunOperationTask(ConfiguredTask):
         with adapter.connection_named("inline_query"):
             adapter.clear_transaction()
             response, _ = adapter.execute(sql, auto_begin=True, fetch=False)
+            adapter.commit_if_has_connection()
 
         return response
 

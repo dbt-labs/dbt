@@ -1,0 +1,6 @@
+kind: Fixes
+body: Commit successful run-operation --sql transactions before releasing the connection, preventing inline writes from being silently rolled back on transaction-capable adapters.
+time: 2026-10-16T17:26:38-07:00
+custom:
+  Author: pradeepsrikakolapu
+  Issue: "16784"
