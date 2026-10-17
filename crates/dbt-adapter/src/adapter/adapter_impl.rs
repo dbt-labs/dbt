@@ -4035,6 +4035,15 @@ impl AdapterImpl {
         }
     }
 
+    /// A dropped relation is replaceable. Core does `except NotFound: return True`.
+    fn replaceable_when_schema_lookup_fails(err: AdapterError) -> AdapterResult<bool> {
+        if is_bigquery_not_found_error(&err) {
+            Ok(true)
+        } else {
+            Err(err)
+        }
+    }
+
     /// Check if a given partition and clustering column spec for a table
     /// can replace an existing relation in the database. BigQuery does not
     /// allow tables to be replaced with another table that has a different
@@ -4086,13 +4095,7 @@ impl AdapterImpl {
 
                         Ok(is_partition_match && is_cluster_match)
                     }
-                    Err(e) => {
-                        if e.kind() == AdapterErrorKind::NotFound {
-                            Ok(true)
-                        } else {
-                            Err(e)
-                        }
-                    }
+                    Err(e) => Self::replaceable_when_schema_lookup_fails(e),
                 }
             }
             adapter_type @ (Postgres | Snowflake | Databricks | Redshift | Salesforce | Spark
@@ -8578,6 +8581,34 @@ mod tests {
             adapter
                 .get_view_options(&state, config, &common_attr)
                 .is_ok()
+        );
+    }
+
+    #[test]
+    fn replaceable_when_schema_lookup_fails_treats_missing_bigquery_table_as_replaceable() {
+        let missing = AdapterError::new(
+            AdapterErrorKind::Driver,
+            "[BigQuery] googleapi: Error 404: Not found: Table proj:dataset.tbl, notFound",
+        );
+        let result = AdapterImpl::replaceable_when_schema_lookup_fails(missing);
+        assert!(
+            result.as_ref().is_ok_and(|ok| *ok),
+            "a missing table is replaceable, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn replaceable_when_schema_lookup_fails_returns_access_denied() {
+        let denied = AdapterError::new(
+            AdapterErrorKind::Driver,
+            "googleapi: Error 403: Access Denied, accessDenied",
+        );
+        let err = AdapterImpl::replaceable_when_schema_lookup_fails(denied)
+            .expect_err("access denied must still fail the replaceable check");
+        assert_eq!(err.kind(), AdapterErrorKind::Driver);
+        assert_eq!(
+            err.message(),
+            "googleapi: Error 403: Access Denied, accessDenied"
         );
     }
 }
