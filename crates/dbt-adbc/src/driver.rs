@@ -40,14 +40,14 @@ pub enum LoadStrategy {
     System(Option<String>),
     /// Try loading from system paths first; if not found, fall back to CDN cache.
     SystemThenCdnCache,
-    /// Load the driver from the sibling lib/ folder.
+    /// Load the driver from the sibling lib/dbt/ folder.
     Bundled,
     /// Load the `bridge` driver that proxies all ADBC calls to a service multiplexing
     /// different ADBC drivers.
     ///
     /// In this strategy, we load the "adbc_driver_bridge" driver and configure it
     /// to make calls to the server that loads the actual drivers.
-    Remote,
+    Bridge,
 }
 
 #[derive(Copy, Clone, Debug, Hash, PartialEq, Eq)]
@@ -284,7 +284,11 @@ fn find_bundled_drivers_cache_dir() -> Option<PathBuf> {
 static BUNDLED_DRIVERS_CACHE_DIR: LazyLock<Option<PathBuf>> =
     LazyLock::new(find_bundled_drivers_cache_dir);
 
-/// Climb up the directory tree and returns the first lib/ directory found.
+/// Climb up the directory tree and returns the first lib/dbt/ directory found.
+///
+/// This is the `~/.local/lib/dbt/` layout adopted by the installer that bundles
+/// drivers with the dbt distribution. We assume that the dbt/ subdir exists and
+/// let loading fail in case it doesn't.
 fn find_adbc_libs_directory() -> Option<PathBuf> {
     // No. of dirs to walk is chosen for `dbt` to operate when the invoked dbt project is:
     // * a subdir of the fusion root but not past the crate level
@@ -320,7 +324,11 @@ fn find_adbc_libs_directory() -> Option<PathBuf> {
         }
     }
 
-    find_upward_dir_from_exe(Path::new("lib"), LIB_HEIGHT_MAX)
+    find_upward_dir_from_exe(Path::new("lib"), LIB_HEIGHT_MAX).map(|lib_dir| {
+        let mut dbt_dir = lib_dir;
+        dbt_dir.push("dbt");
+        dbt_dir
+    })
 }
 
 /// Directory used by [`AdbcDriver::load_dynamic_from_name`].
@@ -399,7 +407,7 @@ impl AdbcDriver {
                 {
                     // This option is only used during development of ADBC drivers to make sure
                     // the drivers are not downloaded from the CDN and are instead loaded from
-                    // either the repo root lib/ directory or an arrow-adbc repo whose root is
+                    // either the repo root lib/dbt/ directory or an arrow-adbc repo whose root is
                     // a sibling to this fs repo.
                     let disable_cdn_driver_cache =
                         env_var_bool("DISABLE_CDN_DRIVER_CACHE")?.unwrap_or(false);
@@ -420,9 +428,9 @@ impl AdbcDriver {
                 }
             }
             // CDN strategy for non-CDN drivers: just fall back to the system strategy.
-            (CdnCache | SystemThenCdnCache | Remote, Athena | Exasol) => System(None),
+            (CdnCache | SystemThenCdnCache | Bridge, Athena | Exasol) => System(None),
             // Generic drivers can only be loaded from a file, so fallback to the System strategy.
-            (CdnCache | SystemThenCdnCache | Remote, Generic { library_name, .. }) => {
+            (CdnCache | SystemThenCdnCache | Bridge, Generic { library_name, .. }) => {
                 System(Some(library_name.to_string()))
             }
             // System strategy: load from a provided library name (e.g. "adbc_driver_snowflake").
@@ -431,7 +439,7 @@ impl AdbcDriver {
             (Bundled, _) => Bundled,
             // Remote drivers are used via the "adbc_driver_bridge" library
             (
-                load_strategy @ Remote,
+                load_strategy @ Bridge,
                 Snowflake | BigQuery | Postgres | Databricks | Redshift | Spark | DuckDB
                 | DuckDBExtended | LakeCompute | Salesforce | SQLServer | ClickHouse,
             ) => load_strategy,
@@ -468,11 +476,11 @@ Second error:\n\
                             })
                     })
             }
-            Remote => Self::prepare_for_remote_driver(backend, adbc_version),
+            Bridge => Self::prepare_for_bridge_driver(backend, adbc_version),
             Bundled => {
                 let name = backend.adbc_library_name().unwrap();
                 // don't search system paths, only the provided
-                // additional paths (e.g. sibling lib/ directory)
+                // additional paths (e.g. sibling lib/dbt/ directory)
                 let load_flags = 0;
                 Self::try_load_driver_from_name(backend, name, load_flags, adbc_version)
             }
@@ -488,7 +496,7 @@ Second error:\n\
     ) -> Result<ManagedAdbcDriver> {
         let entrypoint = backend.adbc_driver_entrypoint();
         let mut additional_search_paths: Vec<PathBuf> = Vec::new();
-        // Climb up the directory tree and choose the first lib/ directory we can
+        // Climb up the directory tree and choose the first lib/dbt/ directory we can
         // find. The result of that search is cached in LIBS_DIRECTORY. We use as
         // as an additional search path for the driver library.
         if let Some(libs_dir) = ADBC_LIBS_DIRECTORY.as_ref() {
@@ -553,7 +561,7 @@ Second error:\n\
     }
 
     /// Load the driver virtually using the [LoadStrategy::Remote] strategy.
-    fn prepare_for_remote_driver(
+    fn prepare_for_bridge_driver(
         backend: Backend,
         adbc_version: AdbcVersion,
     ) -> Result<ManagedAdbcDriver> {
@@ -576,7 +584,7 @@ Second error:\n\
 
         Err(Error::with_message_and_status(
             "Remote driver strategy requires the `adbc_driver_bridge` driver to be \
-located in a `lib/` directory next to the executable, but no such directory could \
+located in a `lib/dbt/` directory next to the executable, but no such directory could \
 be found."
                 .to_string(),
             Status::Internal,
@@ -787,7 +795,7 @@ mod tests {
             Backend::Salesforce,
             Backend::SQLServer,
         ] {
-            AdbcDriver::try_load_dynamic(backend, AdbcVersion::default(), LoadStrategy::Remote)?;
+            AdbcDriver::try_load_dynamic(backend, AdbcVersion::default(), LoadStrategy::Bridge)?;
         }
         Ok(())
     }

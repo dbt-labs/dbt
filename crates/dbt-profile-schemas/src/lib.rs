@@ -5,6 +5,7 @@ use dbt_schemas::schemas::profiles::DbConfig;
 mod bigquery_config;
 mod clickhouse_config;
 mod databricks_config;
+mod duckdb_config;
 mod exasol_config;
 mod fabric_config;
 mod postgres_config;
@@ -74,13 +75,9 @@ impl ProfileSetup {
                 todo!("setup_spark_profile")
             }
             DuckDB => {
-                let _c0 = unwrap_db_config!(DuckDB);
-                // DuckDB doesn't require credentials for local file-based operations
-                // TODO: Create proper DuckDB profile setup
-                Err(fs_err!(
-                    ErrorCode::Generic,
-                    "DuckDB profile setup not yet implemented. DuckDB runs locally without credentials."
-                ))
+                let c0 = unwrap_db_config!(DuckDB);
+                let c1 = duckdb_config::setup_duckdb_profile(c0.map(Box::as_ref))?;
+                Ok(DbConfig::DuckDB(c1))
             }
             Postgres => {
                 let c0 = unwrap_db_config!(Postgres);

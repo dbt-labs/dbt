@@ -804,7 +804,8 @@ pub async fn resolve_inner(
         &base_ctx,
         token,
         adapter_type,
-    )?;
+    )
+    .await?;
 
     let package_name = package.dbt_project.name.as_str();
 
@@ -1166,7 +1167,8 @@ pub async fn resolve_inner(
         &dbt_state.packages,
         adapter_type,
         &node_resolver,
-    )?;
+    )
+    .await?;
 
     nodes.unit_tests.extend(unit_tests);
     disabled_nodes.unit_tests.extend(disabled_unit_tests);

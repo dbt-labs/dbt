@@ -222,16 +222,10 @@ pub(crate) async fn run_unit_test_render(
     // Phase 1 — Discover
     let ut = node.clone();
     let mut discover_ctx = ctx.clone();
-    let discover_outcome = run_blocking_task_operation(move || {
-        // Downcast to DbtUnitTest for access to unit test fields
-        let ut_ref = ut
-            .as_any()
-            .downcast_ref::<DbtUnitTest>()
-            .expect("run_unit_test_render called on non-DbtUnitTest");
-        discover_given_relations(ut_ref, &mut discover_ctx)
-    })
-    .await
-    .and_then(|inner| inner);
+    let discover_outcome =
+        run_blocking_task_operation(move || discover_given_relations(&ut, &mut discover_ctx))
+            .await
+            .and_then(|inner| inner);
     let given_relations = match discover_outcome {
         Ok(r) => r,
         Err(e) => {
@@ -268,11 +262,7 @@ pub(crate) async fn run_unit_test_render(
     // Phase 3 — Render (uses cached schemas + discovered relations)
     run_blocking_task_operation(move || {
         let mut ctx = ctx;
-        let ut_ref = node
-            .as_any()
-            .downcast_ref::<DbtUnitTest>()
-            .expect("run_unit_test_render called on non-DbtUnitTest");
-        let res = render_unit_test(ut_ref, &mut ctx, given_relations, task_hooks.as_ref());
+        let res = render_unit_test(&node, &mut ctx, given_relations, task_hooks.as_ref());
         handle_render_result(
             res,
             &node.unique_id(),
@@ -523,6 +513,15 @@ async fn fetch_schema_for_unit_test_relation(
     Ok(schema)
 }
 
+/// Prefer the original SQL type unless it is a bare NUMBER. `ColumnBuilder` stores
+/// its precision and scale separately; [`Column::data_type`] restores them.
+fn column_sql_type(column: &Column) -> Cow<'_, str> {
+    match column.original_sql_str() {
+        Some(sql_type) if !sql_type.eq_ignore_ascii_case("NUMBER") => Cow::Borrowed(sql_type),
+        _ => Cow::Owned(column.data_type()),
+    }
+}
+
 fn columns_to_schema(
     type_ops: &dyn TypeOps,
     columns: Vec<Column>,
@@ -531,10 +530,7 @@ fn columns_to_schema(
     let mut fields = Vec::with_capacity(columns.len());
 
     for column in columns {
-        let sql_type_str: Cow<str> = column
-            .original_sql_str()
-            .map(Cow::from)
-            .unwrap_or_else(|| column.data_type().into());
+        let sql_type_str = column_sql_type(&column);
 
         let field = make_arrow_field(
             type_ops,
@@ -1218,14 +1214,18 @@ fn extract_expect_values<'a>(
 /// Step 0 (blocking): Eval Jinja for each `given` input to discover relations.
 /// Returns the resolved relations and any that need async schema fetching.
 fn discover_given_relations(
-    ut: &DbtUnitTest,
+    node: &Arc<dyn InternalDbtNodeAttributes>,
     ctx: &mut TaskRunnerCtx,
 ) -> FsResult<DiscoveredGivenRelations> {
+    let ut = node
+        .as_any()
+        .downcast_ref::<DbtUnitTest>()
+        .expect("run_unit_test_render called on non-DbtUnitTest");
     let mut base_context = ctx.inner.base_context.clone();
     add_task_context(&mut base_context, ut.common(), &ctx.thread_id);
 
     let (compile_context, _config_map) = ctx.build_compile_node_context(
-        ut,
+        node.clone(),
         &base_context,
         DependencyValidationConfig::new_unvalidated(),
     )?;
@@ -1386,11 +1386,15 @@ fn check_defer_relation(
 }
 
 fn render_unit_test(
-    node: &DbtUnitTest,
+    unit_test: &Arc<dyn InternalDbtNodeAttributes>,
     ctx: &mut TaskRunnerCtx,
     given_relations: DiscoveredGivenRelations,
     task_hooks: &dyn RenderTaskHooks,
 ) -> FsResult<(SqlInstruction, Arc<DashMap<String, MinijinjaValue>>)> {
+    let node = unit_test
+        .as_any()
+        .downcast_ref::<DbtUnitTest>()
+        .expect("run_unit_test_render called on non-DbtUnitTest");
     let DiscoveredGivenRelations {
         given_relations,
         given_relation_ids,
@@ -1465,7 +1469,7 @@ fn render_unit_test(
 
     // Build compile context first so we can use it for rendering given_fqn
     let (mut compile_context, config_map) = ctx.build_compile_node_context(
-        node,
+        unit_test.clone(),
         &base_context,
         DependencyValidationConfig::new_for_node(node)
             .validate()
@@ -2864,6 +2868,10 @@ mod tests {
     /// Binds `value` as the `run_started_at` override and renders `template`,
     /// exercising the same path unit tests use.
     fn render_run_started_at_override(value: YmlValue, template: &str) -> String {
+        assert!(
+            dbt_runtime::is_pool_worker(),
+            "Jinja must render on a dbt-runtime worker"
+        );
         let mut raw_env = minijinja::Environment::new();
         minijinja_contrib::add_to_environment(&mut raw_env);
         let env = JinjaEnv::new(raw_env);
@@ -2882,7 +2890,7 @@ mod tests {
     /// dbt-core lets `overrides.macros` freeze `run_started_at`, but unlike a
     /// real macro override it's accessed without `()`, so wrapping it as a
     /// callable stub broke `.strftime()`/`.astimezone()`.
-    #[test]
+    #[dbt_runtime::worker_test]
     fn test_run_started_at_override_binds_a_real_value_not_a_callable_stub() {
         let rendered = render_run_started_at_override(
             YmlValue::string(
@@ -2897,7 +2905,7 @@ mod tests {
     // Unhappy paths: a non-datetime override must still bind as a plain value,
     // never a callable stub, so bare interpolation renders it. `.strftime()` on
     // these would error the same as it does in dbt-core.
-    #[test]
+    #[dbt_runtime::worker_test]
     fn test_run_started_at_override_plain_string_binds_as_value() {
         let rendered = render_run_started_at_override(
             YmlValue::string("2025-09-04 20:00:00".to_string()),
@@ -2906,7 +2914,7 @@ mod tests {
         assert_eq!(rendered, "2025-09-04 20:00:00");
     }
 
-    #[test]
+    #[dbt_runtime::worker_test]
     fn test_run_started_at_override_non_datetime_expression_evaluates() {
         let rendered = render_run_started_at_override(
             YmlValue::string("{{ 'hello' }}".to_string()),
@@ -2915,7 +2923,7 @@ mod tests {
         assert_eq!(rendered, "hello");
     }
 
-    #[test]
+    #[dbt_runtime::worker_test]
     fn test_run_started_at_override_non_string_binds_as_value() {
         let rendered =
             render_run_started_at_override(YmlValue::number(12345.into()), "{{ run_started_at }}");
@@ -2951,6 +2959,10 @@ mod tests {
     /// Binds one `overrides.macros` entry over a `my_project` package and renders
     /// `{{ my_project.pick_label() }}`, where `pick_label` calls `my_project.is_ci()`.
     fn render_package_macro_override(macro_name: &str, value: YmlValue) -> String {
+        assert!(
+            dbt_runtime::is_pool_worker(),
+            "Jinja must render on a dbt-runtime worker"
+        );
         let mut raw_env = minijinja::Environment::new();
         let pick_label = "{% macro pick_label() %}{% if my_project.is_ci() %}{{ return('ci') }}\
                           {% else %}{{ return('local') }}{% endif %}{% endmacro %}";
@@ -2985,13 +2997,13 @@ mod tests {
     /// Regression test for https://github.com/dbt-labs/dbt/issues/16477: overriding
     /// one package macro must keep the package's other macros callable, and they
     /// must see the override, as in dbt-core.
-    #[test]
+    #[dbt_runtime::worker_test]
     fn test_package_macro_override_is_seen_by_other_package_macros() {
         let rendered = render_package_macro_override("my_project.is_ci", YmlValue::bool(true));
         assert_eq!(rendered, "ci");
     }
 
-    #[test]
+    #[dbt_runtime::worker_test]
     fn test_package_macro_override_keeps_unrelated_package_macros() {
         let rendered = render_package_macro_override(
             "my_project.unused_macro",
@@ -4411,5 +4423,72 @@ mod tests {
         ]));
         let result = strip_pseudocolumns(&schema, AdapterType::Snowflake);
         assert!(Arc::ptr_eq(&schema, &result));
+    }
+
+    #[test]
+    fn column_sql_type_keeps_snowflake_number_precision_and_scale() {
+        let column = Column::new(
+            AdapterType::Snowflake,
+            "HALF_OF_ONE".to_string(),
+            "NUMBER".to_string(),
+            None,
+            Some(11),
+            Some(4),
+        );
+        assert_eq!(column_sql_type(&column), "NUMBER(11,4)");
+
+        let no_precision = Column::new(
+            AdapterType::Snowflake,
+            "ID".to_string(),
+            "NUMBER".to_string(),
+            None,
+            None,
+            None,
+        );
+        assert_eq!(column_sql_type(&no_precision), "NUMBER");
+    }
+
+    #[test]
+    fn columns_to_schema_preserves_snowflake_decimal_round_trip() {
+        let type_ops = DefaultTypeOps::new(AdapterType::Snowflake);
+        let builder = dbt_adapter::column::ColumnBuilder::new(AdapterType::Snowflake);
+
+        for (precision, scale) in [(11, 4), (38, 0), (38, 37), (4, 4)] {
+            let data_type = DataType::Decimal128(precision, scale);
+            let field = Arc::new(Field::new("AMOUNT", data_type.clone(), true));
+            let column = builder.build(&field, &type_ops).unwrap();
+            assert_eq!(column.original_sql_str(), Some("NUMBER"));
+            assert_eq!(column.data_type(), format!("NUMBER({precision},{scale})"));
+
+            let schema = columns_to_schema(&type_ops, vec![column], "unit_test.decimal").unwrap();
+            assert_eq!(schema.field(0).data_type(), &data_type);
+            assert_eq!(
+                type_ops
+                    .get_original_sql_type_from_field(schema.field(0))
+                    .unwrap(),
+                format!("NUMBER({precision},{scale})")
+            );
+        }
+    }
+
+    #[test]
+    fn column_sql_type_preserves_explicit_types_and_missing_metadata() {
+        for (sql_type, precision, scale) in [
+            ("NUMBER(9,2)", Some(11), Some(4)),
+            ("VARCHAR(40)", None, None),
+            ("TIMESTAMP_NTZ(6)", Some(6), None),
+            ("NUMBER", Some(11), None),
+            ("NUMBER", None, Some(4)),
+        ] {
+            let column = Column::new(
+                AdapterType::Snowflake,
+                "VALUE".to_string(),
+                sql_type.to_string(),
+                None,
+                precision,
+                scale,
+            );
+            assert_eq!(column_sql_type(&column), sql_type);
+        }
     }
 }

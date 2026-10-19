@@ -1,6 +1,6 @@
-use crate::serialize::arrow::ArrowAttributes;
+use crate::{attributes::DbtTelemetryContext, serialize::arrow::ArrowAttributes};
 use dbt_tracing::{
-    ArrowSerializableTelemetryEvent, StaticTelemetryEvent, TelemetryEventRecType,
+    ArrowSerializableTelemetryEvent, StaticTelemetryEvent, TelemetryContext, TelemetryEventRecType,
     TelemetryOutputFlags,
 };
 use prost::Name;
@@ -77,15 +77,65 @@ impl StaticTelemetryEvent for ThreadPoolWait {
     fn has_sensitive_data(&self) -> bool {
         false
     }
+
+    fn with_context(&mut self, context: &TelemetryContext) {
+        let Some(context) = context.downcast_ref::<DbtTelemetryContext>() else {
+            return;
+        };
+
+        // Attribute the wait to the closest node or batch evaluation, unless
+        // the caller attributed it explicitly.
+        if self.unique_id.is_none() && self.batch_id.is_none() {
+            self.unique_id = context.unique_id.clone();
+            self.batch_id = context.batch_id.clone();
+        }
+    }
+}
+
+/// Wait fields stored outside well-known Arrow columns.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct ThreadPoolWaitJsonPayload {
+    batch_id: String,
 }
 
 impl ArrowSerializableTelemetryEvent for ThreadPoolWait {
     type ArrowRecord<'a> = ArrowAttributes<'a>;
     fn to_arrow_record(&self) -> ArrowAttributes<'_> {
-        ArrowAttributes::default()
+        ArrowAttributes {
+            unique_id: self.unique_id.as_deref().map(Into::into),
+            json_payload: self.batch_id.as_ref().map(|batch_id| {
+                serde_json::to_string(&ThreadPoolWaitJsonPayload {
+                    batch_id: batch_id.clone(),
+                })
+                .unwrap_or_else(|_| {
+                    panic!(
+                        "Failed to serialize json payload for event type \"{}\" to JSON",
+                        Self::full_name()
+                    )
+                })
+            }),
+            ..Default::default()
+        }
     }
 
-    fn from_arrow_record(_record: &ArrowAttributes) -> Result<Self, String> {
-        Ok(Self {})
+    fn from_arrow_record(record: &ArrowAttributes) -> Result<Self, String> {
+        let batch_id = record
+            .json_payload
+            .as_deref()
+            .map(|payload| {
+                serde_json::from_str::<ThreadPoolWaitJsonPayload>(payload)
+                    .map(|payload| payload.batch_id)
+                    .map_err(|error| {
+                        format!(
+                            "Failed to deserialize event type \"{}\": {error}",
+                            Self::full_name()
+                        )
+                    })
+            })
+            .transpose()?;
+        Ok(Self {
+            unique_id: record.unique_id.as_deref().map(str::to_string),
+            batch_id,
+        })
     }
 }

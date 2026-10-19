@@ -82,6 +82,7 @@ pub const QUERY_LINK_FAILED_JOB: &str = "adbc.bigquery.sql.query.link_failed_job
 // name and type) instead of issuing one tables.get per table. Constraints are not
 // returned. Depths that include columns are unaffected.
 pub const GET_OBJECTS_SKIP_TABLE_METADATA: &str = "bigquery.get_objects.skip_table_metadata"; // bool
+pub const GET_OBJECTS_DISABLE_WILDCARDS: &str = "bigquery.get_objects.disable_wildcards"; // bool
 
 // values
 pub const DEFAULT_QUERY_RESULT_BUFFER_SIZE: i64 = 200;

@@ -1,0 +1,26 @@
+test.store_failures.not_null_one_id.fe01050880:
+- sequence: 0
+  type: execute
+  sql: |-
+    select
+    count(*) as failures,
+    count(*) != 0 as should_warn,
+    count(*) != 0 as should_error
+    from (
+    
+    
+    
+    
+    
+    
+    
+    
+    select id
+    from `adapters_clickhouse_store_failures`.`one`
+    where id is null
+    
+    
+    
+    
+    
+    ) dbt_internal_test

@@ -961,3 +961,14 @@ fn resolve_warehouse_items(items: Vec<Ident>, groups: &HashMap<String, Vec<Ident
     }
     out
 }
+
+mod jinja_node_fields;
+
+/// Generate field-level YAML access using the node's serde field attributes.
+#[proc_macro_derive(JinjaNodeFields, attributes(serde))]
+pub fn derive_jinja_node_fields(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
+    let input = syn::parse_macro_input!(input as syn::DeriveInput);
+    jinja_node_fields::derive(input)
+        .unwrap_or_else(|err| err.to_compile_error())
+        .into()
+}

@@ -509,6 +509,8 @@ pub struct ManifestSnapshotConfig {
     pub sync: Option<SyncConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub state: Option<ModelState>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub table_format: Option<String>,
     pub __warehouse_specific_config__: WarehouseSpecificNodeConfig,
 }
 
@@ -554,6 +556,7 @@ impl From<SnapshotConfig> for ManifestSnapshotConfig {
             docs: config.docs,
             sync: config.sync,
             state: config.state,
+            table_format: config.table_format,
             __warehouse_specific_config__: config.__warehouse_specific_config__,
         }
     }
@@ -603,6 +606,7 @@ impl From<ManifestSnapshotConfig> for SnapshotConfig {
             docs: config.docs,
             sync: config.sync,
             state: config.state,
+            table_format: config.table_format,
             __warehouse_specific_config__: config.__warehouse_specific_config__,
         }
     }
@@ -2368,14 +2372,31 @@ mod node_adapter_manifest_round_trip_tests {
     fn snapshot_config_adapter_round_trips_through_manifest_snapshot_config() {
         let snapshot_config = SnapshotConfig {
             adapter: Some(AdapterType::Bigquery),
+            table_format: Some("iceberg".to_string()),
+            __warehouse_specific_config__: super::WarehouseSpecificNodeConfig {
+                iceberg_version: Some(2),
+                ..Default::default()
+            },
             ..Default::default()
         };
 
         let manifest_config: ManifestSnapshotConfig = snapshot_config.into();
         assert_eq!(manifest_config.adapter, Some(AdapterType::Bigquery));
+        assert_eq!(manifest_config.table_format.as_deref(), Some("iceberg"));
+        assert_eq!(
+            manifest_config
+                .__warehouse_specific_config__
+                .iceberg_version,
+            Some(2)
+        );
 
         let round_tripped: SnapshotConfig = manifest_config.into();
         assert_eq!(round_tripped.adapter, Some(AdapterType::Bigquery));
+        assert_eq!(round_tripped.table_format.as_deref(), Some("iceberg"));
+        assert_eq!(
+            round_tripped.__warehouse_specific_config__.iceberg_version,
+            Some(2)
+        );
     }
 
     #[test]

@@ -411,6 +411,46 @@ my_project:
         );
     }
 
+    #[test]
+    fn use_materialization_v2_is_valid_and_inherits_with_nested_override() {
+        let yml = r#"
+my_project:
+  governed:
+    +use_materialization_v2: true
+    atomic:
+      +use_materialization_v2: "false"
+  unset:
+    +enabled: true
+"#;
+
+        let (result, errors, warnings) =
+            init_project_config_from_yaml::<ModelConfig, ProjectModelConfig>(yml, false);
+        assert!(errors.is_empty(), "unexpected errors: {errors:?}");
+        assert!(warnings.is_empty(), "unexpected warnings: {warnings:?}");
+
+        let config = result.unwrap();
+        let use_materialization_v2 = |path: &[&str]| {
+            let fqn: Vec<String> = path.iter().map(|s| s.to_string()).collect();
+            config
+                .get_config_for_fqn(&fqn)
+                .__warehouse_specific_config__
+                .use_materialization_v2
+        };
+        assert_eq!(
+            use_materialization_v2(&["my_project", "governed", "model"]),
+            Some(true)
+        );
+        assert_eq!(
+            use_materialization_v2(&["my_project", "governed", "atomic", "model"]),
+            Some(false)
+        );
+        // Unset must stay `None` so the adapter falls back to the project behavior flag.
+        assert_eq!(
+            use_materialization_v2(&["my_project", "unset", "model"]),
+            None
+        );
+    }
+
     /// Residual (fs#13424): Databricks' `target_catalog` -> `target_database`
     /// alias has no dedicated field the way `catalog` -> `database` does (there is no
     /// `target_catalog` field on `SnapshotConfig`/`ProjectSnapshotConfig` to canonicalize),

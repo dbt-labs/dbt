@@ -6,7 +6,9 @@ use std::{any::Any, collections::BTreeMap, fmt::Display, path::PathBuf, sync::Ar
 
 use dbt_adapter_core::{AdapterType, MICROBATCH_SUPPORTED_ADAPTERS};
 use dbt_common::constants::{DBT_COMPILED_DIR_NAME, DBT_RUN_DIR_NAME};
-use dbt_common::io_args::{ComputeArg, StaticAnalysisKind, StaticAnalysisOffReason};
+use dbt_common::io_args::{
+    ComputeArg, StaticAnalysisKind, StaticAnalysisOffReason, multi_adapter_enabled,
+};
 use dbt_common::path::{DbtPath, get_snapshot_write_path, get_target_write_path};
 use dbt_common::tracing::dbt_emit::{emit_error_log_message, emit_warn_log_message};
 use dbt_common::{ErrorCode, FsResult, Span, err};
@@ -209,7 +211,15 @@ impl From<ExecutionPhase> for NodePathKind {
     }
 }
 
-pub trait InternalDbtNode: Any + Send + Sync + fmt::Debug {
+pub trait InternalDbtNode:
+    Any + Send + Sync + fmt::Debug + crate::jinja_node::JinjaNodeFields
+{
+    /// Deep-copies this node behind the trait object.
+    ///
+    /// This copies every field, so use it sparingly and generally avoid it:
+    /// prefer passing an owned node or an existing `Arc` instead.
+    fn clone_node(&self) -> Box<dyn InternalDbtNode>;
+    fn into_jinja_fields(self: Arc<Self>) -> Arc<dyn crate::jinja_node::JinjaNodeFields>;
     fn common(&self) -> &CommonAttributes;
     fn base(&self) -> &NodeBaseAttributes;
     fn base_mut(&mut self) -> &mut NodeBaseAttributes;
@@ -589,7 +599,7 @@ pub trait InternalDbtNode: Any + Send + Sync + fmt::Debug {
 
         let node_checksum = common.checksum.to_checksum_string();
 
-        NodeProcessed::start(
+        let mut event = NodeProcessed::start(
             common.unique_id.clone(),
             self.original_name().unwrap_or(&common.name).to_string(),
             Some(database),
@@ -605,7 +615,12 @@ pub trait InternalDbtNode: Any + Send + Sync + fmt::Debug {
             node_checksum,
             in_selection,
             self.get_group(),
-        )
+        );
+        // Only worth reporting when nodes can run on different adapters.
+        if multi_adapter_enabled() {
+            event.adapter = Some(base.adapter.as_ref().to_string());
+        }
+        event
     }
 }
 
@@ -1247,6 +1262,13 @@ fn same_database_representation_snapshot(
 }
 
 impl InternalDbtNode for DbtModel {
+    fn into_jinja_fields(self: Arc<Self>) -> Arc<dyn crate::jinja_node::JinjaNodeFields> {
+        self
+    }
+    fn clone_node(&self) -> Box<dyn InternalDbtNode> {
+        Box::new(Clone::clone(self))
+    }
+
     fn common(&self) -> &CommonAttributes {
         &self.__common_attr__
     }
@@ -1740,6 +1762,13 @@ pub(crate) fn test_alias_config_equal(
 }
 
 impl InternalDbtNode for DbtSeed {
+    fn into_jinja_fields(self: Arc<Self>) -> Arc<dyn crate::jinja_node::JinjaNodeFields> {
+        self
+    }
+    fn clone_node(&self) -> Box<dyn InternalDbtNode> {
+        Box::new(Clone::clone(self))
+    }
+
     fn resource_type(&self) -> NodeType {
         NodeType::Seed
     }
@@ -1893,6 +1922,13 @@ impl InternalDbtNodeAttributes for DbtSeed {
 }
 
 impl InternalDbtNode for DbtTest {
+    fn into_jinja_fields(self: Arc<Self>) -> Arc<dyn crate::jinja_node::JinjaNodeFields> {
+        self
+    }
+    fn clone_node(&self) -> Box<dyn InternalDbtNode> {
+        Box::new(Clone::clone(self))
+    }
+
     fn common(&self) -> &CommonAttributes {
         &self.__common_attr__
     }
@@ -2125,6 +2161,13 @@ impl InternalDbtNodeAttributes for DbtTest {
 }
 
 impl InternalDbtNode for DbtUnitTest {
+    fn into_jinja_fields(self: Arc<Self>) -> Arc<dyn crate::jinja_node::JinjaNodeFields> {
+        self
+    }
+    fn clone_node(&self) -> Box<dyn InternalDbtNode> {
+        Box::new(Clone::clone(self))
+    }
+
     fn common(&self) -> &CommonAttributes {
         &self.__common_attr__
     }
@@ -2265,6 +2308,13 @@ impl InternalDbtNodeAttributes for DbtUnitTest {
 }
 
 impl InternalDbtNode for DbtSource {
+    fn into_jinja_fields(self: Arc<Self>) -> Arc<dyn crate::jinja_node::JinjaNodeFields> {
+        self
+    }
+    fn clone_node(&self) -> Box<dyn InternalDbtNode> {
+        Box::new(Clone::clone(self))
+    }
+
     fn common(&self) -> &CommonAttributes {
         &self.__common_attr__
     }
@@ -2556,6 +2606,13 @@ impl InternalDbtNodeAttributes for DbtSource {
 }
 
 impl InternalDbtNode for DbtSnapshot {
+    fn into_jinja_fields(self: Arc<Self>) -> Arc<dyn crate::jinja_node::JinjaNodeFields> {
+        self
+    }
+    fn clone_node(&self) -> Box<dyn InternalDbtNode> {
+        Box::new(Clone::clone(self))
+    }
+
     fn common(&self) -> &CommonAttributes {
         &self.__common_attr__
     }
@@ -2661,6 +2718,7 @@ impl InternalDbtNode for DbtSnapshot {
                 self_config.invalidate_hard_deletes == other_config.invalidate_hard_deletes;
             // dbt State configs (mirror `ModelConfig::same_config`).
             let state_eq = self_config.state == other_config.state;
+            let table_format_eq = self_config.table_format == other_config.table_format;
 
             // Adapter specific configs
             let warehouse_config_eq = same_warehouse_config(
@@ -2691,6 +2749,7 @@ impl InternalDbtNode for DbtSnapshot {
                 && quote_columns_eq
                 && invalidate_hard_deletes_eq
                 && state_eq
+                && table_format_eq
                 // Adapter specific configs
                 && warehouse_config_eq;
 
@@ -2868,6 +2927,14 @@ impl InternalDbtNode for DbtSnapshot {
                                 format!("{:?}", &other_config.state),
                             )),
                         ),
+                        (
+                            "table_format",
+                            table_format_eq,
+                            Some((
+                                format!("{:?}", &self_config.table_format),
+                                format!("{:?}", &other_config.table_format),
+                            )),
+                        ),
                         ("warehouse_config", warehouse_config_eq, None),
                     ],
                 );
@@ -3019,6 +3086,13 @@ impl InternalDbtNodeAttributes for DbtSnapshot {
 }
 
 impl InternalDbtNode for DbtExposure {
+    fn into_jinja_fields(self: Arc<Self>) -> Arc<dyn crate::jinja_node::JinjaNodeFields> {
+        self
+    }
+    fn clone_node(&self) -> Box<dyn InternalDbtNode> {
+        Box::new(Clone::clone(self))
+    }
+
     fn common(&self) -> &CommonAttributes {
         &self.__common_attr__
     }
@@ -3156,6 +3230,13 @@ impl InternalDbtNode for DbtExposure {
 }
 
 impl InternalDbtNode for DbtCheck {
+    fn into_jinja_fields(self: Arc<Self>) -> Arc<dyn crate::jinja_node::JinjaNodeFields> {
+        self
+    }
+    fn clone_node(&self) -> Box<dyn InternalDbtNode> {
+        Box::new(Clone::clone(self))
+    }
+
     fn common(&self) -> &CommonAttributes {
         &self.__common_attr__
     }
@@ -3376,6 +3457,13 @@ impl InternalDbtNodeAttributes for DbtExposure {
 }
 
 impl InternalDbtNode for DbtSemanticModel {
+    fn into_jinja_fields(self: Arc<Self>) -> Arc<dyn crate::jinja_node::JinjaNodeFields> {
+        self
+    }
+    fn clone_node(&self) -> Box<dyn InternalDbtNode> {
+        Box::new(Clone::clone(self))
+    }
+
     fn common(&self) -> &CommonAttributes {
         &self.__common_attr__
     }
@@ -3552,6 +3640,13 @@ impl InternalDbtNodeAttributes for DbtSemanticModel {
 }
 
 impl InternalDbtNode for DbtMetric {
+    fn into_jinja_fields(self: Arc<Self>) -> Arc<dyn crate::jinja_node::JinjaNodeFields> {
+        self
+    }
+    fn clone_node(&self) -> Box<dyn InternalDbtNode> {
+        Box::new(Clone::clone(self))
+    }
+
     fn common(&self) -> &CommonAttributes {
         &self.__common_attr__
     }
@@ -3699,6 +3794,13 @@ impl InternalDbtNodeAttributes for DbtMetric {
 }
 
 impl InternalDbtNode for DbtSavedQuery {
+    fn into_jinja_fields(self: Arc<Self>) -> Arc<dyn crate::jinja_node::JinjaNodeFields> {
+        self
+    }
+    fn clone_node(&self) -> Box<dyn InternalDbtNode> {
+        Box::new(Clone::clone(self))
+    }
+
     fn common(&self) -> &CommonAttributes {
         &self.__common_attr__
     }
@@ -3917,6 +4019,13 @@ impl InternalDbtNodeAttributes for DbtSavedQuery {
 }
 
 impl InternalDbtNode for DbtFunction {
+    fn into_jinja_fields(self: Arc<Self>) -> Arc<dyn crate::jinja_node::JinjaNodeFields> {
+        self
+    }
+    fn clone_node(&self) -> Box<dyn InternalDbtNode> {
+        Box::new(Clone::clone(self))
+    }
+
     fn common(&self) -> &CommonAttributes {
         &self.__common_attr__
     }
@@ -4066,6 +4175,13 @@ impl InternalDbtNodeAttributes for DbtFunction {
 // macros live in a separate `Nodes.macros` map and are never iterated as
 // `&dyn InternalDbtNode` into the runnable/event APIs, so those paths are unreachable.
 impl InternalDbtNode for DbtMacro {
+    fn into_jinja_fields(self: Arc<Self>) -> Arc<dyn crate::jinja_node::JinjaNodeFields> {
+        self
+    }
+    fn clone_node(&self) -> Box<dyn InternalDbtNode> {
+        Box::new(Clone::clone(self))
+    }
+
     fn common(&self) -> &CommonAttributes {
         unimplemented!("macro common attributes access")
     }
@@ -4959,6 +5075,7 @@ where
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
+#[derive(dbt_proc_macros::JinjaNodeFields)]
 pub struct CommonAttributes {
     // Identifiers
     pub unique_id: String,
@@ -5005,6 +5122,7 @@ pub struct CommonAttributes {
 #[skip_serializing_none]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[derive(dbt_proc_macros::JinjaNodeFields)]
 pub struct NodeBaseAttributes {
     // Identifiers
     #[serde(default)]
@@ -5131,6 +5249,7 @@ impl Default for NodeBaseAttributes {
 #[skip_serializing_none]
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
+#[derive(dbt_proc_macros::JinjaNodeFields)]
 pub struct DbtSeed {
     pub __common_attr__: CommonAttributes,
 
@@ -5162,6 +5281,7 @@ impl DbtSeed {
 #[skip_serializing_none]
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
+#[derive(dbt_proc_macros::JinjaNodeFields)]
 pub struct DbtSeedAttr {
     #[serde(default, skip_serializing_if = "is_false")]
     pub quote_columns: bool,
@@ -5178,6 +5298,7 @@ fn is_false(b: &bool) -> bool {
 #[skip_serializing_none]
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
+#[derive(dbt_proc_macros::JinjaNodeFields)]
 pub struct DbtExposure {
     pub __common_attr__: CommonAttributes,
 
@@ -5205,6 +5326,7 @@ pub enum ExposureType {
 #[skip_serializing_none]
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
+#[derive(dbt_proc_macros::JinjaNodeFields)]
 pub struct DbtExposureAttr {
     pub owner: DbtOwner,
     pub label: Option<String>,
@@ -5224,6 +5346,7 @@ pub struct DbtExposureAttr {
 #[skip_serializing_none]
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
+#[derive(dbt_proc_macros::JinjaNodeFields)]
 pub struct DbtCheck {
     pub __common_attr__: CommonAttributes,
 
@@ -5239,6 +5362,7 @@ pub struct DbtCheck {
 #[skip_serializing_none]
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
+#[derive(dbt_proc_macros::JinjaNodeFields)]
 pub struct DbtCheckAttr {
     /// The check's Jinja-rendered SQL, carried from parse to execution.
     ///
@@ -5272,6 +5396,7 @@ pub struct DbtGroupAttr {
 #[skip_serializing_none]
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
+#[derive(dbt_proc_macros::JinjaNodeFields)]
 pub struct DbtUnitTest {
     pub __common_attr__: CommonAttributes,
 
@@ -5308,7 +5433,7 @@ impl DbtUnitTest {
 #[skip_serializing_none]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-#[derive(Default)]
+#[derive(Default, dbt_proc_macros::JinjaNodeFields)]
 pub struct DbtUnitTestAttr {
     pub model: String,
     /// The adapter of the model under test, so the unit test runs where its
@@ -5323,6 +5448,7 @@ pub struct DbtUnitTestAttr {
 #[skip_serializing_none]
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
+#[derive(dbt_proc_macros::JinjaNodeFields)]
 pub struct DbtTest {
     pub __common_attr__: CommonAttributes,
     pub __base_attr__: NodeBaseAttributes,
@@ -5374,6 +5500,7 @@ impl DbtTest {
 #[skip_serializing_none]
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
+#[derive(dbt_proc_macros::JinjaNodeFields)]
 pub struct DbtTestAttr {
     /// The column this test is attached to, from its position in the schema file. `None`
     /// for a model-level test; a `column_name` macro kwarg lives in `test_metadata.kwargs`.
@@ -5407,6 +5534,7 @@ pub struct TestMetadata {
 #[skip_serializing_none]
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
+#[derive(dbt_proc_macros::JinjaNodeFields)]
 pub struct DbtSnapshot {
     pub __common_attr__: CommonAttributes,
     pub __base_attr__: NodeBaseAttributes,
@@ -5427,6 +5555,7 @@ pub struct DbtSnapshot {
 #[skip_serializing_none]
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
+#[derive(dbt_proc_macros::JinjaNodeFields)]
 pub struct DbtSnapshotAttr {
     pub snapshot_meta_column_names: SnapshotMetaColumnNames,
     #[serde(skip_serializing, default = "default_introspection")]
@@ -5434,11 +5563,16 @@ pub struct DbtSnapshotAttr {
     pub sync: Option<SyncConfig>,
     /// dbt State configs, read by the run-cache at run time.
     pub state: Option<crate::schemas::properties::ModelState>,
+    // Exposed top-level on the node (like DbtModelAttr) so catalog resolution
+    // can classify snapshot targets such as Snowflake-managed Iceberg.
+    pub catalog_name: Option<String>,
+    pub table_format: Option<String>,
 }
 
 #[skip_serializing_none]
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
+#[derive(dbt_proc_macros::JinjaNodeFields)]
 pub struct DbtSource {
     pub __common_attr__: CommonAttributes,
 
@@ -5469,6 +5603,7 @@ impl DbtSource {
 #[skip_serializing_none]
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
+#[derive(dbt_proc_macros::JinjaNodeFields)]
 pub struct DbtSourceAttr {
     pub identifier: String,
     pub source_name: String,
@@ -5583,6 +5718,7 @@ impl DbtSource {
 #[skip_serializing_none]
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
+#[derive(dbt_proc_macros::JinjaNodeFields)]
 pub struct DbtModel {
     pub __common_attr__: CommonAttributes,
 
@@ -6039,6 +6175,7 @@ impl DbtModel {
 #[skip_serializing_none]
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
+#[derive(dbt_proc_macros::JinjaNodeFields)]
 pub struct AdapterAttr {
     pub snowflake_attr: Option<Box<SnowflakeAttr>>,
     pub databricks_attr: Option<Box<DatabricksAttr>>,
@@ -6306,7 +6443,7 @@ impl AdapterAttr {
 
 /// A resolved Snowflake configuration
 #[skip_serializing_none]
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, dbt_proc_macros::JinjaNodeFields)]
 pub struct SnowflakeAttr {
     pub adapter_properties: Option<BTreeMap<String, YmlValue>>,
     pub partition_by: Option<PartitionConfig>,
@@ -6341,7 +6478,7 @@ pub struct SnowflakeAttr {
 
 /// A resolved Databricks configuration
 #[skip_serializing_none]
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, dbt_proc_macros::JinjaNodeFields)]
 pub struct DatabricksAttr {
     pub adapter_properties: Option<BTreeMap<String, YmlValue>>,
     pub partition_by: Option<PartitionConfig>,
@@ -6377,7 +6514,7 @@ pub struct DatabricksAttr {
 
 /// A resolved BigQuery configuration
 #[skip_serializing_none]
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, dbt_proc_macros::JinjaNodeFields)]
 pub struct BigQueryAttr {
     pub description: Option<String>,
     pub adapter_properties: Option<BTreeMap<String, YmlValue>>,
@@ -6408,7 +6545,7 @@ pub struct BigQueryAttr {
 
 /// A resolved Redshift configuration
 #[skip_serializing_none]
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, dbt_proc_macros::JinjaNodeFields)]
 pub struct RedshiftAttr {
     pub auto_refresh: Option<bool>,
     pub backup: Option<bool>,
@@ -6418,7 +6555,7 @@ pub struct RedshiftAttr {
     pub sort_type: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, dbt_proc_macros::JinjaNodeFields)]
 pub struct DbtModelAttr {
     pub access: Access,
     pub group: Option<String>,
@@ -6451,6 +6588,7 @@ pub struct DbtModelAttr {
 #[skip_serializing_none]
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
+#[derive(dbt_proc_macros::JinjaNodeFields)]
 pub struct DbtFunction {
     pub __common_attr__: CommonAttributes,
 
@@ -6480,6 +6618,7 @@ pub struct AbsorbedOverload {
 #[skip_serializing_none]
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
+#[derive(dbt_proc_macros::JinjaNodeFields)]
 pub struct DbtFunctionAttr {
     pub access: Access,
     pub group: Option<String>,
@@ -7865,6 +8004,7 @@ mod tests {
 #[skip_serializing_none]
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
+#[derive(dbt_proc_macros::JinjaNodeFields)]
 pub struct DbtAnalysis {
     pub __common_attr__: CommonAttributes,
 
@@ -7882,12 +8022,20 @@ pub struct DbtAnalysis {
 #[skip_serializing_none]
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
+#[derive(dbt_proc_macros::JinjaNodeFields)]
 pub struct DbtAnalysisAttr {
     // Analysis nodes have minimal attributes since they're for ad-hoc querying
     // Most functionality comes from the base attributes and config
 }
 
 impl InternalDbtNode for DbtAnalysis {
+    fn into_jinja_fields(self: Arc<Self>) -> Arc<dyn crate::jinja_node::JinjaNodeFields> {
+        self
+    }
+    fn clone_node(&self) -> Box<dyn InternalDbtNode> {
+        Box::new(Clone::clone(self))
+    }
+
     fn common(&self) -> &CommonAttributes {
         &self.__common_attr__
     }

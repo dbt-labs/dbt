@@ -107,7 +107,7 @@ fn render_default(
     }
 
     let (mut compile_context, config_map) = ctx.build_compile_node_context(
-        node.as_ref(),
+        node.clone(),
         &base_context,
         DependencyValidationConfig::new_validated(),
     )?;
@@ -225,7 +225,7 @@ fn render_python_model(
     base_context: &BTreeMap<String, MinijinjaValue>,
 ) -> FsResult<(SqlInstruction, Arc<DashMap<String, MinijinjaValue>>)> {
     let (compile_context, config_map) = ctx.build_compile_node_context(
-        node.as_ref(),
+        node.clone(),
         base_context,
         DependencyValidationConfig::new_validated(),
     )?;

@@ -453,8 +453,8 @@ pub async fn resolve_seeds(
             store_failures: None,
         };
 
-        update_node_relation_components(
-            &mut dbt_seed,
+        dbt_seed = update_node_relation_components(
+            dbt_seed,
             jinja_env,
             &root_package.dbt_project.name,
             package_name,

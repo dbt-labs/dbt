@@ -746,6 +746,8 @@ struct RunWorkflowResponse {
 mod tests {
     use super::*;
     use std::collections::VecDeque;
+    use std::io::{BufRead, BufReader, Write};
+    use std::net::{TcpListener, TcpStream};
     use std::sync::{Arc, Mutex};
     use ureq::SendBody;
     use ureq::middleware::{Middleware, MiddlewareNext};
@@ -786,7 +788,7 @@ mod tests {
         }
     }
 
-    fn fake_databricks(
+    fn fake_databricks_scripted(
         responses: Vec<(u16, &'static str)>,
     ) -> (DatabricksApiClient, Arc<Mutex<Vec<String>>>) {
         let requests = Arc::new(Mutex::new(Vec::new()));
@@ -809,8 +811,95 @@ mod tests {
         (client, requests)
     }
 
+    fn fake_databricks(
+        responses: Vec<(u16, &'static str)>,
+    ) -> (DatabricksApiClient, Arc<Mutex<Vec<String>>>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let base_url = format!("http://{}", listener.local_addr().unwrap());
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let seen = requests.clone();
+        thread::spawn(move || {
+            for ((status, body), stream) in responses.into_iter().zip(listener.incoming()) {
+                let mut stream = stream.unwrap();
+                let mut reader = BufReader::new(&stream);
+                let mut request_line = String::new();
+                reader.read_line(&mut request_line).unwrap();
+                let mut content_length = 0;
+                loop {
+                    let mut header = String::new();
+                    reader.read_line(&mut header).unwrap();
+                    let header = header.trim_end();
+                    if header.is_empty() {
+                        break;
+                    }
+                    if let Some((name, value)) = header.split_once(':')
+                        && name.eq_ignore_ascii_case("content-length")
+                    {
+                        content_length = value.trim().parse().unwrap();
+                    }
+                }
+                reader.read_exact(&mut vec![0; content_length]).unwrap();
+                let mut parts = request_line.split(' ');
+                let (method, path) = (parts.next().unwrap(), parts.next().unwrap());
+                let path = path.split('?').next().unwrap();
+                seen.lock().unwrap().push(format!("{method} {path}"));
+                write!(
+                    stream,
+                    "HTTP/1.1 {status} X\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                )
+                .unwrap();
+            }
+        });
+        let client = DatabricksApiClient {
+            agent: Agent::config_builder()
+                .http_status_as_error(false)
+                .build()
+                .into(),
+            base_url,
+            auth_header: "Bearer test".to_string(),
+            use_user_folder: false,
+            cached_user: RefCell::new(None),
+            cluster_poll_interval: Duration::from_millis(1),
+        };
+        (client, requests)
+    }
+
     const GET: &str = "GET /api/2.0/clusters/get";
     const START: &str = "POST /api/2.0/clusters/start";
+
+    #[test]
+    fn fake_databricks_responds_only_after_the_full_request_body() {
+        let (client, requests) = fake_databricks(vec![(200, "{}")]);
+        let address = client.base_url.strip_prefix("http://").unwrap();
+        let mut stream = TcpStream::connect(address).unwrap();
+        let body = r#"{"cluster_id":"c1"}"#;
+        write!(
+            stream,
+            "POST /api/2.0/clusters/start HTTP/1.1\r\nContent-Length: {}\r\n\r\n",
+            body.len()
+        )
+        .unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_millis(200)))
+            .unwrap();
+        let mut early = [0u8; 1];
+        let early_read = stream.read(&mut early);
+        assert!(
+            early_read.is_err(),
+            "responded before the request body arrived: {early_read:?}"
+        );
+
+        stream.write_all(body.as_bytes()).unwrap();
+        stream.set_read_timeout(None).unwrap();
+        let mut response = String::new();
+        stream.read_to_string(&mut response).unwrap();
+        assert_eq!(
+            response,
+            "HTTP/1.1 200 X\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}"
+        );
+        assert_eq!(*requests.lock().unwrap(), [START]);
+    }
 
     #[test]
     fn terminated_cluster_is_started_and_awaited() {
@@ -839,7 +928,7 @@ mod tests {
 
     #[test]
     fn cluster_error_state_fails_fast() {
-        let (client, _) = fake_databricks(vec![
+        let (client, _) = fake_databricks_scripted(vec![
             (200, r#"{"state":"PENDING"}"#),
             (200, r#"{"state":"ERROR"}"#),
         ]);

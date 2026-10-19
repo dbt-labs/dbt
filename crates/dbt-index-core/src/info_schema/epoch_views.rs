@@ -809,6 +809,8 @@ fn own_sql(
                     ("COALESCE(column_name, '')", "column_name", "VARCHAR"),
                     ("declared_type", "declared_type", "VARCHAR"),
                     ("description", "description", "VARCHAR"),
+                    ("constraints", "constraints", "VARCHAR"),
+                    ("meta", "meta", "VARCHAR"),
                     ("COALESCE(tags, [])", "tags", "VARCHAR[]"),
                     ("ingested_at", "ingested_at", "TIMESTAMP WITH TIME ZONE"),
                 ],
@@ -872,15 +874,16 @@ fn own_sql(
                     ("description", format!("{BASE}.description")),
                     ("tags", format!("{BASE}.tags")),
                     ("classifiers", format!("{BASE}.classifiers")),
+                    ("constraints", format!("{BASE}.constraints")),
+                    ("meta", format!("{BASE}.meta")),
                     ("comment", format!("{BASE}.catalog_comment")),
                     ("ingested_at", format!("{BASE}.ingested_at")),
                 ],
             )?;
             let list: Vec<&str> = cols.iter().map(String::as_str).collect();
-            // `label`, `expression`, `quote`, `granularity`, `meta`, `constraints`
-            // and `tests` are left to `cast_cols`' typed nulls. `parse/columns`
-            // carries `meta`, `constraints` and `granularity`, but
-            // `write_parse_columns` does not read them.
+            // `label`, `expression`, `quote`, `granularity` and `tests` are left
+            // to `cast_cols`' typed nulls. `parse/columns` carries `granularity`,
+            // but `write_parse_columns` does not read it.
             let sql = format!(
                 "{}FROM (\n\
                  \x20 SELECT\n\
@@ -894,6 +897,8 @@ fn own_sql(
                  \x20        WHEN k.catalog_type IS NOT NULL THEN k.catalog_type\n\
                  \x20        ELSE m.inferred_type END AS data_type,\n\
                  \x20   m.description AS description,\n\
+                 \x20   COALESCE(m.constraints, '[]') AS constraints,\n\
+                 \x20   COALESCE(m.meta, '{{}}') AS meta,\n\
                  \x20   COALESCE(m.tags, []) AS tags,\n\
                  \x20   COALESCE(m.classifiers, []) AS classifiers,\n\
                  \x20   k.catalog_comment AS catalog_comment,\n\
@@ -906,6 +911,8 @@ fn own_sql(
                  \x20     p.declared_type AS declared_type,\n\
                  \x20     c.inferred_type AS inferred_type,\n\
                  \x20     COALESCE(c.description, p.description) AS description,\n\
+                 \x20     p.constraints AS constraints,\n\
+                 \x20     p.meta AS meta,\n\
                  \x20     COALESCE(p.tags, []) AS tags,\n\
                  \x20     COALESCE(c.classifiers, []) AS classifiers,\n\
                  \x20     COALESCE(p.ingested_at, c.ingested_at) AS ingested_at\n\

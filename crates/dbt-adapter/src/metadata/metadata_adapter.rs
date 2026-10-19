@@ -798,16 +798,14 @@ pub fn flatten_catalog_schemas(
 mod tests {
     use super::*;
     use crate::time_machine::{
-        EventReplayer, MetadataCallArgs, RecordedEvent, get_or_init_recording,
-        get_or_init_replayer, reset_time_machine_globals,
+        EventReplayer, MetadataCallArgs, RecordedEvent, TIME_MACHINE_TEST_LOCK,
+        get_or_init_recording, get_or_init_replayer, reset_time_machine_globals,
     };
     use chrono::{TimeZone, Utc};
     use dbt_schemas::schemas::common::ResolvedQuoting;
     use flate2::read::GzDecoder;
     use std::io::{BufRead, BufReader};
     use std::sync::atomic::{AtomicUsize, Ordering};
-
-    static TIME_MACHINE_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
     struct MockMetadataAdapter {
         freshness_all_in_schema_calls: AtomicUsize,

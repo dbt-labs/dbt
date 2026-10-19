@@ -435,58 +435,46 @@ fn update_run_cache_defer_nodes(
         .unwrap_or("public")
         .to_string();
 
-    for (unique_id, model) in defer_nodes.models.iter_mut() {
-        if !should_update_defer_node(unique_id, exclude_unique_ids) {
-            continue;
-        }
+    update_defer_nodes_of(&mut defer_nodes.models, exclude_unique_ids, |node| {
         update_run_cache_defer_model(
-            Arc::make_mut(model),
+            node,
             jinja_env,
             base_context,
             resolved_state,
             &default_database,
             &default_schema,
-        )?;
-    }
-    for (unique_id, seed) in defer_nodes.seeds.iter_mut() {
-        if !should_update_defer_node(unique_id, exclude_unique_ids) {
-            continue;
-        }
+        )
+    })?;
+    update_defer_nodes_of(&mut defer_nodes.seeds, exclude_unique_ids, |node| {
         update_run_cache_defer_seed(
-            Arc::make_mut(seed),
+            node,
             jinja_env,
             base_context,
             resolved_state,
             &default_database,
             &default_schema,
-        )?;
-    }
-    for (unique_id, snapshot) in defer_nodes.snapshots.iter_mut() {
-        if !should_update_defer_node(unique_id, exclude_unique_ids) {
-            continue;
-        }
+        )
+    })?;
+    update_defer_nodes_of(&mut defer_nodes.snapshots, exclude_unique_ids, |node| {
         update_run_cache_defer_snapshot(
-            Arc::make_mut(snapshot),
+            node,
             jinja_env,
             base_context,
             resolved_state,
             &default_database,
             &default_schema,
-        )?;
-    }
-    for (unique_id, function) in defer_nodes.functions.iter_mut() {
-        if !should_update_defer_node(unique_id, exclude_unique_ids) {
-            continue;
-        }
+        )
+    })?;
+    update_defer_nodes_of(&mut defer_nodes.functions, exclude_unique_ids, |node| {
         update_run_cache_defer_function(
-            Arc::make_mut(function),
+            node,
             jinja_env,
             base_context,
             resolved_state,
             &default_database,
             &default_schema,
-        )?;
-    }
+        )
+    })?;
 
     defer_nodes.models.retain(|_, model| {
         model.__base_attr__.materialized != DbtMaterialization::Ephemeral
@@ -495,15 +483,47 @@ fn update_run_cache_defer_nodes(
     Ok(())
 }
 
+/// Applies `update` to the nodes in `nodes` that should be updated, keeping
+/// the rest as they are.
+fn update_defer_nodes_of<T>(
+    nodes: &mut BTreeMap<String, Arc<T>>,
+    exclude_unique_ids: Option<&BTreeSet<String>>,
+    mut update: impl FnMut(T) -> FsResult<T>,
+) -> FsResult<()> {
+    *nodes = std::mem::take(nodes)
+        .into_iter()
+        .map(|(unique_id, node)| {
+            if !should_update_defer_node(&unique_id, exclude_unique_ids) {
+                return Ok((unique_id, node));
+            }
+            // TODO: run cache mutation should be reworked to avoid usage of `Nodes` type,
+            // which is wasteful and instead just create a selective array of normal, owned
+            // modified nodes that are then merged/overlayed onto full set of resolved nodes.
+            //
+            // As of today `defer_nodes` is a deep clone of the project nodes and is only mutated in
+            // place, so the implicit contract - nothing else holds a reference to its nodes.
+            let node = Arc::into_inner(node).ok_or_else(|| {
+                fs_err!(
+                    ErrorCode::Unexpected,
+                    "Run-cache defer node '{}' is shared; expected a deep-cloned, unshared node",
+                    unique_id
+                )
+            })?;
+            Ok((unique_id, Arc::new(update(node)?)))
+        })
+        .collect::<FsResult<_>>()?;
+    Ok(())
+}
+
 fn update_run_cache_defer_model(
-    model: &mut DbtModel,
+    mut model: DbtModel,
     jinja_env: &JinjaEnv,
     base_context: &BTreeMap<String, Value>,
     resolved_state: &ResolverState,
     default_database: &str,
     default_schema: &str,
-) -> FsResult<()> {
-    set_run_cache_default_relation_target(model, default_database, default_schema);
+) -> FsResult<DbtModel> {
+    set_run_cache_default_relation_target(&mut model, default_database, default_schema);
     let components = RelationComponents {
         database: model
             .deprecated_config
@@ -533,14 +553,14 @@ fn update_run_cache_defer_model(
 }
 
 fn update_run_cache_defer_seed(
-    seed: &mut DbtSeed,
+    mut seed: DbtSeed,
     jinja_env: &JinjaEnv,
     base_context: &BTreeMap<String, Value>,
     resolved_state: &ResolverState,
     default_database: &str,
     default_schema: &str,
-) -> FsResult<()> {
-    set_run_cache_default_relation_target(seed, default_database, default_schema);
+) -> FsResult<DbtSeed> {
+    set_run_cache_default_relation_target(&mut seed, default_database, default_schema);
     let components = RelationComponents {
         database: seed.deprecated_config.database.clone(),
         schema: seed.deprecated_config.schema.clone(),
@@ -560,14 +580,14 @@ fn update_run_cache_defer_seed(
 }
 
 fn update_run_cache_defer_snapshot(
-    snapshot: &mut DbtSnapshot,
+    mut snapshot: DbtSnapshot,
     jinja_env: &JinjaEnv,
     base_context: &BTreeMap<String, Value>,
     resolved_state: &ResolverState,
     default_database: &str,
     default_schema: &str,
-) -> FsResult<()> {
-    set_run_cache_default_relation_target(snapshot, default_database, default_schema);
+) -> FsResult<DbtSnapshot> {
+    set_run_cache_default_relation_target(&mut snapshot, default_database, default_schema);
     let components = RelationComponents {
         database: snapshot
             .deprecated_config
@@ -595,14 +615,14 @@ fn update_run_cache_defer_snapshot(
 }
 
 fn update_run_cache_defer_function(
-    function: &mut DbtFunction,
+    mut function: DbtFunction,
     jinja_env: &JinjaEnv,
     base_context: &BTreeMap<String, Value>,
     resolved_state: &ResolverState,
     default_database: &str,
     default_schema: &str,
-) -> FsResult<()> {
-    set_run_cache_default_relation_target(function, default_database, default_schema);
+) -> FsResult<DbtFunction> {
+    set_run_cache_default_relation_target(&mut function, default_database, default_schema);
     let components = RelationComponents {
         database: function
             .deprecated_config

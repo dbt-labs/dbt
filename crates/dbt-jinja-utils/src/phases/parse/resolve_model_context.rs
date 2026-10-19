@@ -12,9 +12,7 @@ use std::{
 use chrono::TimeZone;
 use chrono_tz::{Europe::London, Tz};
 use dbt_adapter::{cast_util::THIS_RELATION_KEY, load_store::ResultStore};
-use dbt_common::{
-    io_args::StaticAnalysisKind, path::DbtPath, serde_utils::convert_yml_to_value_map,
-};
+use dbt_common::{io_args::StaticAnalysisKind, path::DbtPath};
 use dbt_frontend_common::error::CodeLocation;
 use dbt_schemas::schemas::{
     InternalDbtNode,
@@ -50,9 +48,7 @@ use minijinja::{
 use minijinja_contrib::modules::{py_datetime::datetime::PyDateTime, pytz::PytzTimezone};
 use serde::Serialize;
 
-use dbt_jinja_ctx::{
-    JinjaObject, ParseExecute, ResolveModelCtx, to_jinja_btreemap, to_model_context_map,
-};
+use dbt_jinja_ctx::{JinjaObject, ParseExecute, ResolveModelCtx, to_jinja_btreemap};
 
 use crate::{
     invocation_graph::invocation_graph, phases::MacroLookupContext, serde::into_typed_with_error,
@@ -203,44 +199,49 @@ pub fn build_resolve_model_context<T: ResolvableConfig<T> + Serialize + 'static>
         ..Default::default()
     };
 
-    let node_yml = match resource_type {
-        Some(NodeType::Snapshot) => InternalDbtNode::serialize(&DbtSnapshot {
+    let node: Arc<dyn InternalDbtNode> = match resource_type {
+        Some(NodeType::Snapshot) => Arc::new(DbtSnapshot {
             __common_attr__: common_attr,
             __base_attr__: base_attr,
             ..Default::default()
         }),
-        Some(NodeType::Test) => InternalDbtNode::serialize(&DbtTest {
+        Some(NodeType::Test) => Arc::new(DbtTest {
             __common_attr__: common_attr,
             __base_attr__: base_attr,
             ..Default::default()
         }),
-        Some(NodeType::Analysis) => InternalDbtNode::serialize(&DbtAnalysis {
+        Some(NodeType::Analysis) => Arc::new(DbtAnalysis {
             __common_attr__: common_attr,
             __base_attr__: base_attr,
             ..Default::default()
         }),
-        Some(NodeType::Function) => InternalDbtNode::serialize(&DbtFunction {
+        Some(NodeType::Function) => Arc::new(DbtFunction {
             __common_attr__: common_attr,
             __base_attr__: base_attr,
             ..Default::default()
         }),
-        Some(NodeType::Check) => InternalDbtNode::serialize(&DbtCheck {
+        Some(NodeType::Check) => Arc::new(DbtCheck {
             __common_attr__: common_attr,
             __base_attr__: base_attr,
             ..Default::default()
         }),
-        Some(NodeType::Operation) => InternalDbtNode::serialize(&DbtOperation {
+        Some(NodeType::Operation) => Arc::new(DbtOperation {
             __common_attr__: common_attr,
             __base_attr__: base_attr,
             ..Default::default()
         }),
-        _ => InternalDbtNode::serialize(&DbtModel {
+        _ => Arc::new(DbtModel {
             __common_attr__: common_attr,
             __base_attr__: base_attr,
             ..Default::default()
         }),
     };
-    let mut model_map = convert_yml_to_value_map(node_yml);
+    let model_map = dbt_schemas::jinja_node::LazyNodeContext::from_node(
+        node,
+        dbt_schemas::schemas::serialization_utils::SerializationMode::OmitNone,
+    )
+    // TODO(LazyNodeContext): See `with_eager_nested_maps`.
+    .with_eager_nested_maps();
     // Each stub uses its respective `<Resource>Config::default()` for `config` in YAML
     // serialization. At parse time, kwargs to `config(...)` (e.g. `post_hook=my_macro(model)`)
     // are evaluated while rendering; macros must see the merged node config
@@ -252,9 +253,12 @@ pub fn build_resolve_model_context<T: ResolvableConfig<T> + Serialize + 'static>
     // (`get_view_options`, `get_config_from_model`, …) round-trips correctly.
     let config_yml = dbt_yaml::to_value(config)
         .expect("Failed to serialize merged node config to dbt_yaml::Value for parse model.config");
-    model_map.insert("config".to_owned(), yml_value_to_minijinja(&config_yml));
     model_map.insert(
-        "batch".to_owned(),
+        MinijinjaValue::from("config"),
+        yml_value_to_minijinja(&config_yml),
+    );
+    model_map.insert(
+        MinijinjaValue::from("batch"),
         MinijinjaValue::from_object(init_batch_context()),
     );
 
@@ -275,7 +279,7 @@ pub fn build_resolve_model_context<T: ResolvableConfig<T> + Serialize + 'static>
         function: function_value,
         metric: metric_value,
         config: config_value,
-        model: MinijinjaValue::from_dyn_object(to_model_context_map(model_map)),
+        model: MinijinjaValue::from_object(model_map),
         builtins: MinijinjaValue::from_object(builtins),
         // The invocation-wide `graph` mapping, empty at this point — matching
         // dbt-core, where parse-time `graph` is `manifest.flat_graph` before

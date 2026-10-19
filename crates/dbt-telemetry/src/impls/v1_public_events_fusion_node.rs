@@ -1,9 +1,9 @@
 use crate::proto::v1::public::events::fusion::{
     node::{
-        NodeCacheDetail, NodeEvaluated, NodeEvaluationDetail, NodeMaterialization, NodeOutcome,
-        NodeProcessed, NodeSkipReason, NodeSkipUpstreamDetail, NodeType, NodeWarningOutcome,
-        SourceFreshnessDetail, SourceFreshnessOutcome, TestEvaluationDetail, TestOutcome,
-        node_evaluated, node_processed,
+        MicrobatchBatchSize, MicrobatchEvaluated, NodeCacheDetail, NodeEvaluated,
+        NodeEvaluationDetail, NodeMaterialization, NodeOutcome, NodeProcessed, NodeSkipReason,
+        NodeSkipUpstreamDetail, NodeType, NodeWarningOutcome, SourceFreshnessDetail,
+        SourceFreshnessOutcome, TestEvaluationDetail, TestOutcome, node_evaluated, node_processed,
     },
     phase::ExecutionPhase,
 };
@@ -417,6 +417,51 @@ impl NodeEvaluated {
     }
 }
 
+impl MicrobatchEvaluated {
+    /// Creates a new `MicrobatchEvaluated` event indicating start of a batch evaluation.
+    ///
+    /// This is thin wrapper around `new` that avoids the need to pass
+    /// fields that are only known at the end of the evaluation.
+    ///
+    /// # Arguments
+    /// * `unique_id` - Unique id of the model owning this batch.
+    /// * `schema` - Schema of the owning model's relation.
+    /// * `identifier` - Identifier of the owning model's relation.
+    /// * `batch_id` - Stable batch id: YYYY, YYYYMM, YYYYMMDD, or YYYYMMDDHH.
+    /// * `batch_size` - Time grain of the event-time window.
+    /// * `batch_index` - 1-based index within this execution window.
+    /// * `total_batches` - Number of batches in this execution window.
+    /// * `event_time_start` - Inclusive start of the event-time window, in UTC RFC 3339.
+    /// * `event_time_end` - Exclusive end of the event-time window, in UTC RFC 3339.
+    #[allow(clippy::too_many_arguments)]
+    pub fn start(
+        unique_id: String,
+        schema: String,
+        identifier: String,
+        batch_id: String,
+        batch_size: MicrobatchBatchSize,
+        batch_index: u32,
+        total_batches: u32,
+        event_time_start: String,
+        event_time_end: String,
+    ) -> Self {
+        Self::new(
+            unique_id,
+            schema,
+            identifier,
+            batch_id,
+            batch_size,
+            batch_index,
+            total_batches,
+            event_time_start,
+            event_time_end,
+            NodeOutcome::Unspecified,
+            0, // idle_time_ms
+            Some("Q045".to_string()),
+        )
+    }
+}
+
 impl NodeProcessed {
     /// Creates a new `NodeProcessed` event indicating start of node processing across all phases.
     ///
@@ -486,6 +531,7 @@ impl NodeProcessed {
             None, // idle_time_ms
             None, // node_index assigned by the span builder at start of processing
             None, // node_count_total assigned by the span builder at start of processing
+            None, // adapter
             None, // node_outcome_detail
         )
     }

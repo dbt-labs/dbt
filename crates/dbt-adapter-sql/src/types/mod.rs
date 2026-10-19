@@ -891,6 +891,28 @@ impl SqlType {
                 time_zone_spec.write_with_leading_space(backend, out)
             }
             (_, DateTime) => write!(out, "DATETIME"),
+            // DuckDB's TIMESTAMPTZ takes no precision.
+            (
+                DuckDB,
+                Timestamp {
+                    time_zone_spec: TimeZoneSpec::With,
+                    ..
+                },
+            ) => write!(out, "TIMESTAMP WITH TIME ZONE"),
+            // DuckDB spells the second, millisecond and nanosecond precisions as their own
+            // types; `TIMESTAMP(p)` also parses, but only as an alias for these.
+            (
+                DuckDB,
+                Timestamp {
+                    precision,
+                    time_zone_spec: TimeZoneSpec::Without | TimeZoneSpec::Unspecified,
+                },
+            ) => match precision {
+                Some(0) => write!(out, "TIMESTAMP_S"),
+                Some(3) => write!(out, "TIMESTAMP_MS"),
+                Some(9) => write!(out, "TIMESTAMP_NS"),
+                _ => write!(out, "TIMESTAMP"),
+            },
             (
                 _,
                 Timestamp {
@@ -1114,7 +1136,13 @@ impl SqlType {
                 }
             }
             DataType::Timestamp(TimeUnit::Second, tz) => SqlType::Timestamp {
-                precision: None,
+                // `None` is the backend's default precision, microseconds on DuckDB, so
+                // seconds are spelled `Some(0)` there.
+                precision: if backend == AdapterType::DuckDB {
+                    Some(0)
+                } else {
+                    None
+                },
                 time_zone_spec: if tz.is_some() {
                     TimeZoneSpec::With
                 } else {

@@ -1,0 +1,17 @@
+   dbt-oss 
+   Loading profiles.yml
+debug:warning=static analysis for adapter: ClickHouse is disabled
+   Parsing models/a.sql
+   Parsing models/c.sql
+clickhouse
+adapters_clickhouse_load_relation
+   Started downloading referenced relations (1 items)
+  Finished [duration] downloading referenced relations (1 items)
+ Rendering models/c.sql
+clickhouse
+adapters_clickhouse_load_relation
+ Rendering models/a.sql
+==================== Execution Summary =====================
+Finished 'compile' successfully for target 'clickhouse' [duration]
+Processed: 2 models
+Summary: 2 total | 2 success

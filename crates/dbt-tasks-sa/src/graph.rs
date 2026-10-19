@@ -252,6 +252,7 @@ impl GraphBuilder {
 
         let mut first_upstream_nodes_per_phase: BTreeMap<TP, BTreeMap<String, BTreeSet<String>>> =
             BTreeMap::new();
+        let overlapping_seeds = overlapping_source_to_seed(schedule, nodes);
 
         // Add dependency edges for each phase
         for unique_id in schedule.sorted_nodes.iter() {
@@ -285,6 +286,21 @@ impl GraphBuilder {
                                                 }
                                             }
                                         });
+                                        // Render after the tested model's parents have run,
+                                        // like dbt-core's `BuildTask`; schema inference may
+                                        // read those relations.
+                                        for parent in unit_test_render_parent_runs(
+                                            unique_id,
+                                            nodes,
+                                            schedule,
+                                            &overlapping_seeds,
+                                        ) {
+                                            if let Some(&from_idx) =
+                                                node_indices.get(&(TP::Run, parent))
+                                            {
+                                                graph.update_edge(from_idx, to_idx, ());
+                                            }
+                                        }
                                         continue;
                                     }
                                     // If the current node is a unit test and the current phase is
@@ -373,7 +389,6 @@ impl GraphBuilder {
         drop(first_upstream_nodes_per_phase);
 
         // Add edges reflecting child render -> parent run / analyze for dynamic or none nodes
-        let overlapping_seeds = overlapping_source_to_seed(schedule, nodes);
         for (unique_id, _) in phase_to_nodes.get(&TP::Render).unwrap().iter() {
             // Unit tests are handled above for all of their dependncies, so skip here
             if unique_id.starts_with("unit_test.") {
@@ -834,6 +849,43 @@ fn overlapping_source_to_seed(
             Some((source_uid.clone(), (*seed_uid).clone()))
         })
         .collect()
+}
+
+/// Nodes whose Run must finish before `unit_test_id`'s Render: the tested model's nearest
+/// non-ephemeral parents, looking through inlined ephemerals (an overlapping source stands in as
+/// its seed). dbt-core's `BuildTask` (`call_model_and_unit_tests_runner`) runs a unit test after
+/// those parents too, and schema inference may read their relations.
+fn unit_test_render_parent_runs(
+    unit_test_id: &str,
+    nodes: &Nodes,
+    schedule: &Schedule<String>,
+    overlapping_seeds: &BTreeMap<String, String>,
+) -> BTreeSet<String> {
+    let Some(unit_test) = nodes.unit_tests.get(unit_test_id) else {
+        return BTreeSet::new();
+    };
+    // `None` means the tested model did not resolve, which disables the unit test.
+    let Some(tested_id) = unit_test.tested_node_unique_id.as_ref() else {
+        return BTreeSet::new();
+    };
+
+    let mut parents = BTreeSet::new();
+    let mut visited = HashSet::new();
+    let mut stack: Vec<&String> = schedule.deps.get(tested_id).into_iter().flatten().collect();
+    while let Some(parent) = stack.pop() {
+        if !visited.insert(parent) {
+            continue;
+        }
+        let is_ephemeral = nodes
+            .get_node(parent)
+            .is_some_and(|node| node.materialized() == DbtMaterialization::Ephemeral);
+        if is_ephemeral {
+            stack.extend(schedule.deps.get(parent).into_iter().flatten());
+        } else {
+            parents.insert(overlapping_seeds.get(parent).unwrap_or(parent).clone());
+        }
+    }
+    parents
 }
 
 /// A frontier node's render exists only to feed a selected unit test and it has no analyze of

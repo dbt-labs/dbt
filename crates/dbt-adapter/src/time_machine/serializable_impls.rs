@@ -2,6 +2,8 @@
 
 use std::sync::Arc;
 
+use dbt_common::ErrorCode;
+use dbt_common::tracing::dbt_emit::emit_warn_log_message;
 use dbt_schemas::dbt_types::RelationType;
 use dbt_schemas::schemas::dbt_catalogs::CatalogType;
 use dbt_schemas::schemas::relations::base::TableFormat;
@@ -291,6 +293,22 @@ impl TimeMachineSerializable for crate::catalog_relation::CatalogRelation {
     }
 }
 
+/// Rebuild the raw Snowflake type string (`NUMBER(38,6)`, `TIMESTAMP_LTZ(6)`,
+/// `VARCHAR(16777216)`) that `try_from_snowflake_raw_data_type` split into
+/// `dtype` + `char_size` / `numeric_precision` + `numeric_scale`.
+fn snowflake_raw_data_type(
+    dtype: &str,
+    char_size: Option<u32>,
+    numeric_precision: Option<u64>,
+    numeric_scale: Option<u64>,
+) -> String {
+    match (numeric_precision, numeric_scale, char_size) {
+        (Some(precision), Some(scale), _) => format!("{dtype}({precision},{scale})"),
+        (_, _, Some(size)) => format!("{dtype}({size})"),
+        (_, _, None) => dtype.to_string(),
+    }
+}
+
 impl TimeMachineSerializable for crate::column::Column {
     const TYPE_ID: &'static str = "Column";
 
@@ -329,14 +347,49 @@ impl TimeMachineSerializable for crate::column::Column {
             _ => ext.str_or("dtype", ""),
         };
 
-        let column = crate::column::Column::new(
-            adapter_type,
-            ext.opt_str("name")?,
-            sql_str,
-            ext.opt_u32("char_size"),
-            ext.opt_u64("numeric_precision"),
-            ext.opt_u64("numeric_scale"),
-        )
+        let name = ext.opt_str("name")?;
+        let char_size = ext.opt_u32("char_size");
+        let numeric_precision = ext.opt_u64("numeric_precision");
+        let numeric_scale = ext.opt_u64("numeric_scale");
+
+        let column = match adapter_type {
+            // Live Snowflake columns come from `try_from_snowflake_raw_data_type`, so
+            // `original_sql_str` carries the type parameters (e.g. "NUMBER(38,6)"). The
+            // recording keeps them only as split fields, so rebuild the raw type and
+            // parse it again. Otherwise `original_sql_str` collapses to the bare `dtype`
+            // and unit-test fixture SQL loses precision/scale.
+            dbt_adapter_core::AdapterType::Snowflake => {
+                let raw =
+                    snowflake_raw_data_type(&sql_str, char_size, numeric_precision, numeric_scale);
+                match crate::column::Column::try_from_snowflake_raw_data_type(&name, &raw) {
+                    Ok(column) => column,
+                    Err(e) => {
+                        emit_warn_log_message(
+                            ErrorCode::ReplayDataInvalid,
+                            format!(
+                                "Replayed Snowflake column '{name}' has unparseable type '{raw}' ({e}); falling back to Column::new"
+                            ),
+                        );
+                        crate::column::Column::new(
+                            adapter_type,
+                            name,
+                            sql_str,
+                            char_size,
+                            numeric_precision,
+                            numeric_scale,
+                        )
+                    }
+                }
+            }
+            _ => crate::column::Column::new(
+                adapter_type,
+                name,
+                sql_str,
+                char_size,
+                numeric_precision,
+                numeric_scale,
+            ),
+        }
         .with_comment(comment);
         Some(minijinja::Value::from_object(column))
     }
@@ -593,7 +646,10 @@ mod tests {
             .downcast_object::<crate::response::AdapterResponse>()
             .unwrap();
         assert_eq!(response.message(), original.message());
-        assert_eq!(response.rows_affected(), original.rows_affected());
+        assert_eq!(
+            response.known_rows_affected(),
+            original.known_rows_affected()
+        );
     }
 
     #[test]
@@ -650,6 +706,102 @@ mod tests {
         assert_eq!(column.name(), original.name());
         assert_eq!(column.dtype(), original.dtype());
         assert_eq!(column.comment(), original.comment());
+    }
+
+    /// Live Snowflake column -> record -> replay keeps every field the live
+    /// constructor set, including `original_sql_str` (used by unit-test fixture SQL).
+    #[test]
+    fn test_column_snowflake_replay_matches_live() {
+        for raw in [
+            "NUMBER(38,6)",
+            "NUMBER(36,6)",
+            "NUMBER(38,12)",
+            "NUMBER(18,0)",
+            "TIMESTAMP_LTZ(6)",
+            "TIMESTAMP_NTZ(9)",
+            "VARCHAR(16777216)",
+            "FLOAT",
+            "BOOLEAN",
+            "ARRAY(NUMBER(38,0))",
+            "VECTOR(FLOAT, 256)",
+            "OBJECT",
+            "NUMBER(18)",
+        ] {
+            let live = crate::column::Column::try_from_snowflake_raw_data_type("c", raw).unwrap();
+            let json = live.to_time_machine_json();
+            let value = crate::column::Column::from_time_machine_json(&json, &ctx()).unwrap();
+            let replayed = value.downcast_object::<crate::column::Column>().unwrap();
+
+            assert_eq!(
+                replayed.original_sql_str(),
+                live.original_sql_str(),
+                "{raw}"
+            );
+            assert_eq!(replayed.data_type(), live.data_type(), "{raw}");
+            assert_eq!(replayed.dtype(), live.dtype(), "{raw}");
+            assert_eq!(
+                replayed.numeric_precision(),
+                live.numeric_precision(),
+                "{raw}"
+            );
+            assert_eq!(replayed.numeric_scale(), live.numeric_scale(), "{raw}");
+            assert_eq!(replayed.char_size(), live.char_size(), "{raw}");
+        }
+    }
+
+    /// Shape of 2.0.6 recordings (no `original_sql_str`), from a real snapshot.
+    #[test]
+    fn test_column_snowflake_replay_of_recorded_json_without_original_sql_str() {
+        let replay = |json: serde_json::Value| {
+            crate::column::Column::from_time_machine_json(&json, &ctx())
+                .unwrap()
+                .downcast_object::<crate::column::Column>()
+                .unwrap()
+        };
+
+        let number = replay(serde_json::json!({
+            "name": "CURRENT_OBJECT_SIZE_IN_GIGABYTES",
+            "dtype": "NUMBER",
+            "data_type": "NUMBER(38,6)",
+            "char_size": null,
+            "numeric_precision": 38,
+            "numeric_scale": 6,
+            "comment": null,
+        }));
+        assert_eq!(number.original_sql_str(), Some("NUMBER(38,6)"));
+        assert_eq!(number.data_type(), "NUMBER(38,6)");
+
+        let timestamp = replay(serde_json::json!({
+            "name": "LATEST_RUN_AT",
+            "dtype": "TIMESTAMP_LTZ",
+            "data_type": "TIMESTAMP_LTZ",
+            "char_size": 6,
+            "numeric_precision": null,
+            "numeric_scale": null,
+            "comment": null,
+        }));
+        assert_eq!(timestamp.original_sql_str(), Some("TIMESTAMP_LTZ(6)"));
+        assert_eq!(timestamp.dtype(), "TIMESTAMP_LTZ");
+    }
+
+    /// A recorded Snowflake type that doesn't parse (empty `dtype`) still replays
+    /// as a `Column` via `Column::new`, as before the param-preserving rebuild.
+    #[test]
+    fn test_column_snowflake_replay_of_unparseable_type_falls_back_to_column_new() {
+        let json = serde_json::json!({
+            "name": "C",
+            "dtype": "",
+            "data_type": null,
+            "char_size": null,
+            "numeric_precision": null,
+            "numeric_scale": null,
+            "comment": null,
+        });
+        let value = crate::column::Column::from_time_machine_json(&json, &ctx()).unwrap();
+        let column = value.downcast_object::<crate::column::Column>().unwrap();
+        assert_eq!(column.name(), "C");
+        assert_eq!(column.original_sql_str(), Some(""));
+        assert_eq!(column.dtype(), "");
     }
 
     #[test]

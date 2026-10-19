@@ -16,7 +16,6 @@ use crate::resolve::resolve_utils::{
 };
 use crate::utils::RelationComponents;
 use crate::utils::extract_resource_config_from_raw_project;
-use crate::utils::generate_relation_components;
 use crate::utils::get_node_fqn;
 use crate::utils::get_original_file_contents;
 use crate::utils::get_original_file_path;
@@ -860,8 +859,8 @@ pub async fn resolve_data_tests(
         };
 
         // Update with relation components
-        update_node_relation_components(
-            &mut dbt_test,
+        dbt_test = update_node_relation_components(
+            dbt_test,
             &env,
             &root_package.dbt_project.name,
             package_name,

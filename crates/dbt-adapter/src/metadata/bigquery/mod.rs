@@ -1,5 +1,5 @@
 use crate::adapter::adapter_impl::AdapterImpl;
-use crate::connection::AdapterConnectionFactory;
+use crate::connection::{AdapterConnectionFactory, ConnectionGuard};
 use crate::errors::*;
 use crate::metadata::CatalogAndSchema;
 use crate::metadata::freshness_overrides::{
@@ -55,7 +55,7 @@ pub const BIGQUERY_PSEUDOCOLUMNS: [&str; 7] = [
 pub fn list_relations(
     engine: &dyn AdapterEngine,
     ctx: &QueryCtx,
-    conn: &'_ mut dyn Connection,
+    conn: &mut ConnectionGuard<'_>,
     db_schema: &CatalogAndSchema,
     token: CancellationToken,
 ) -> AdapterResult<Vec<Arc<dyn BaseRelation>>> {
@@ -77,7 +77,7 @@ pub fn list_relations(
 fn list_relations_via_information_schema(
     engine: &dyn AdapterEngine,
     ctx: &QueryCtx,
-    conn: &'_ mut dyn Connection,
+    conn: &mut ConnectionGuard<'_>,
     db_schema: &CatalogAndSchema,
     token: CancellationToken,
 ) -> AdapterResult<Vec<Arc<dyn BaseRelation>>> {
@@ -91,7 +91,7 @@ FROM
     {db_schema}.INFORMATION_SCHEMA.TABLES"
     );
 
-    let batch = engine.execute(None, conn, ctx, &sql, token)?;
+    let batch = engine.execute(None, conn.as_mut(), ctx, &sql, token)?;
     let table_names = batch.column_values::<StringArray>("table_name")?;
     let table_schemas = batch.column_values::<StringArray>("table_schema")?;
     let table_catalogs = batch.column_values::<StringArray>("table_catalog")?;
@@ -122,7 +122,7 @@ FROM
 pub fn list_routines(
     engine: &dyn AdapterEngine,
     ctx: &QueryCtx,
-    conn: &'_ mut dyn Connection,
+    conn: &mut ConnectionGuard<'_>,
     db_schema: &CatalogAndSchema,
     token: CancellationToken,
 ) -> AdapterResult<Vec<Arc<dyn BaseRelation>>> {
@@ -138,7 +138,7 @@ WHERE
     routine_type != 'PROCEDURE'"
     );
 
-    let batch = engine.execute(None, conn, ctx, &sql, token)?;
+    let batch = engine.execute(None, conn.as_mut(), ctx, &sql, token)?;
     let table_names = batch.column_values::<StringArray>("table_name")?;
     let table_schemas = batch.column_values::<StringArray>("table_schema")?;
     let table_catalogs = batch.column_values::<StringArray>("table_catalog")?;
@@ -193,7 +193,7 @@ where
 
 fn list_relations_via_adbc(
     engine: &dyn AdapterEngine,
-    conn: &'_ mut dyn Connection,
+    conn: &mut ConnectionGuard<'_>,
     db_schema: &CatalogAndSchema,
 ) -> AdapterResult<Vec<Arc<dyn BaseRelation>>> {
     // The driver expects unquoted values, so regardless of the adapter's config
@@ -780,7 +780,7 @@ fn build_external_table_freshness_query(
 
 fn query_tables_freshness(
     adapter: &AdapterImpl,
-    conn: &mut dyn Connection,
+    conn: &mut ConnectionGuard<'_>,
     database: &str,
     where_clauses: &[String],
     token: CancellationToken,
@@ -822,7 +822,7 @@ fn accumulate_tables_freshness_from_batch(
 
 fn run_bulk_tables_freshness(
     adapter: &AdapterImpl,
-    conn: &mut dyn Connection,
+    conn: &mut ConnectionGuard<'_>,
     relations: &[Arc<dyn BaseRelation>],
     token: CancellationToken,
 ) -> AdapterResult<BTreeMap<String, MetadataFreshness>> {
@@ -858,7 +858,7 @@ fn bulk_freshness_tasks_from_relations(
 
 fn run_freshness_task(
     adapter: &AdapterImpl,
-    conn: &mut dyn Connection,
+    conn: &mut ConnectionGuard<'_>,
     task: &FreshnessTask,
     token: CancellationToken,
 ) -> AdapterResult<FreshnessTaskResult> {
@@ -920,7 +920,7 @@ impl BigqueryMetadataAdapter {
         let factory = Box::new(AdapterConnectionFactory::new(self.adapter.engine().clone()));
         let adapter_for_map = self.adapter.clone();
         let token_clone = token.clone();
-        let map_f = move |conn: &mut dyn Connection, task: &FreshnessTask| {
+        let map_f = move |conn: &mut ConnectionGuard<'_>, task: &FreshnessTask| {
             run_freshness_task(&adapter_for_map, conn, task, token_clone.clone())
         };
         let reduce_f = move |acc: &mut Acc,
@@ -1294,7 +1294,7 @@ impl MetadataAdapter for BigqueryMetadataAdapter {
 
         let adapter = self.adapter.clone();
         let token_clone = token.clone();
-        let map_f = move |conn: &'_ mut dyn Connection,
+        let map_f = move |conn: &mut ConnectionGuard<'_>,
                           relation: &Arc<dyn BaseRelation>|
               -> AdapterResult<Arc<Schema>> {
             let project = relation.database_as_resolved_str()?;
@@ -1446,7 +1446,7 @@ impl MetadataAdapter for BigqueryMetadataAdapter {
         let adapter = self.adapter.clone();
         let token_clone = token.clone();
 
-        let map_f = move |conn: &'_ mut dyn Connection,
+        let map_f = move |conn: &mut ConnectionGuard<'_>,
                           db_schema: &CatalogAndSchema|
               -> AdapterResult<Vec<Arc<dyn BaseRelation>>> {
             // Deviation from core: we cannot use `list_tables` as this is not supported from ADBC
@@ -1549,7 +1549,7 @@ impl MetadataAdapter for BigqueryMetadataAdapter {
 
         let adapter = self.adapter.clone();
         let token_clone = token.clone();
-        let map_f = move |conn: &'_ mut dyn Connection,
+        let map_f = move |conn: &mut ConnectionGuard<'_>,
                           key: &((String, String), Vec<String>)|
               -> AdapterResult<Arc<RecordBatch>> {
             let ((project, dataset), identifiers) = key;
@@ -1692,7 +1692,9 @@ impl MetadataAdapter for BigqueryMetadataAdapter {
         type Acc = BTreeMap<String, MetadataFreshness>;
 
         let token_clone = token.clone();
-        let map_f = move |conn: &mut dyn Connection, _: &()| -> AdapterResult<Arc<RecordBatch>> {
+        let map_f = move |conn: &mut ConnectionGuard<'_>,
+                          _: &()|
+              -> AdapterResult<Arc<RecordBatch>> {
             let ctx = QueryCtx::default().with_desc("Extracting freshness from information schema");
             let (_, agate) = adapter.query(&ctx, &mut *conn, &sql, None, token_clone.clone())?;
             Ok(agate.original_record_batch())
@@ -1803,7 +1805,7 @@ fn classify_listing_failure(e: &AdapterError) -> ListingFailure {
 pub fn get_relation_routine_fallback(
     adapter: &AdapterImpl,
     state: &State,
-    conn: &'_ mut dyn Connection,
+    conn: &mut ConnectionGuard<'_>,
     database: &str,
     schema: &str,
     identifier: &str,
@@ -1838,9 +1840,13 @@ pub fn get_relation_routine_fallback(
     );
 
     let ctx = query_ctx_from_state(state)?.with_desc("get_relation routines fallback");
-    let result = adapter
-        .engine()
-        .execute(Some(state), conn, &ctx, &routines_sql, token.clone());
+    let result = adapter.engine().execute(
+        Some(state),
+        conn.as_mut(),
+        &ctx,
+        &routines_sql,
+        token.clone(),
+    );
     let batch = match result {
         Ok(batch) => batch,
         Err(err)
@@ -1858,7 +1864,7 @@ pub fn get_relation_routine_fallback(
     };
 
     // BigQuery-only metadata not covered by the generic fallback.
-    let location = adapter.get_dataset_location(state, conn, &relation, token)?;
+    let location = adapter.get_dataset_location(state, conn.as_mut(), &relation, token)?;
     relation.location = location;
     Ok(Some(Box::new(relation)))
 }

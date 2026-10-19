@@ -25,6 +25,7 @@ pub mod run_adhoc;
 pub mod run_operation;
 pub mod runnable;
 pub mod schema_hydrator;
+pub mod seed_io;
 pub mod show_info;
 pub mod showable;
 pub mod sources_extractor;

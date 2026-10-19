@@ -18,14 +18,12 @@ dbt-frontend-common = { workspace = true }
 dbt-proc-macros = { workspace = true }
 
 # Cancellation error conversion
-dbt-base = { workspace = true }
+dbt-cancel = { workspace = true }
 dbt-runtime = { workspace = true }
 dbt-tracing = { workspace = true }
 
 # Core dependencies needed by error types
 arrow = { workspace = true }
-datafusion-common = { workspace = true }
-datafusion-expr = { workspace = true }
 minijinja = { workspace = true }
 parquet = { workspace = true }
 reqwest = { workspace = true }

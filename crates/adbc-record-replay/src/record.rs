@@ -1,5 +1,5 @@
 use adbc_core::error::{Error as AdbcError, Result as AdbcResult, Status as AdbcStatus};
-use adbc_core::options::{OptionStatement, OptionValue};
+use adbc_core::options::{OptionConnection, OptionStatement, OptionValue};
 use arrow::array::{RecordBatch, RecordBatchIterator, RecordBatchReader};
 use arrow_schema::{ArrowError, Schema};
 use dbt_adbc::{Connection, Statement};
@@ -103,6 +103,10 @@ impl Connection for RecordConnection {
 
     fn rollback(&mut self) -> AdbcResult<()> {
         self.inner.rollback()
+    }
+
+    fn set_option(&mut self, key: OptionConnection, value: OptionValue) -> AdbcResult<()> {
+        self.inner.set_option(key, value)
     }
 
     fn get_objects<'a>(

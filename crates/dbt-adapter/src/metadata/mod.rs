@@ -4,6 +4,7 @@ use std::{
     sync::Arc,
 };
 
+use crate::connection::{ConnectionGuard, DynConnectionFactory};
 use crate::{
     AdapterResult, AdapterType,
     errors::{AdapterError, AdapterErrorKind},
@@ -12,8 +13,7 @@ use crate::{
 use arrow::array::RecordBatch;
 use arrow_schema::{DataType, Field, Schema};
 use chrono::{DateTime, Utc};
-use dbt_adapter_engine::{ConnectionFactory, MapReduce};
-use dbt_adbc::Connection;
+use dbt_adapter_engine::MapReduce;
 use dbt_common::AsyncAdapterResult;
 use dbt_common::cancellation::{Cancellable, CancellationToken};
 use dbt_schemas::schemas::{dbt_catalogs::DbtCatalogsView, relations::base::BaseRelation};
@@ -90,10 +90,10 @@ impl SchemaCacheKey for (String, String) {
 
 #[allow(clippy::type_complexity)]
 fn run_schema_cache_map_reduce<K>(
-    factory: Box<dyn ConnectionFactory<Error = Cancellable<AdapterError>>>,
+    factory: Box<DynConnectionFactory>,
     keys: Vec<K>,
     item_span_operation_id: Option<&str>,
-    map_f: impl Fn(&mut dyn Connection, &K) -> AdapterResult<Arc<Schema>> + Send + Sync + 'static,
+    map_f: impl Fn(&mut ConnectionGuard<'_>, &K) -> AdapterResult<Arc<Schema>> + Send + Sync + 'static,
     reduce_f: impl Fn(
         &mut HashMap<String, AdapterResult<Arc<Schema>>>,
         K,
@@ -111,17 +111,18 @@ where
     // Callers that don't own a parent `GenericOpExecuted` span (item_span_operation_id ==
     // None) get no item span at all, rather than being silently attributed to the schema
     // hydration bar's operation_id.
-    let map_f: Box<dyn Fn(&mut dyn Connection, &K) -> AdapterResult<Arc<Schema>> + Send + Sync> =
-        match item_span_operation_id {
-            Some(operation_id) => {
-                let operation_id = operation_id.to_string();
-                Box::new(move |conn: &mut dyn Connection, key: &K| {
-                    let target = key.schema_cache_target();
-                    with_schema_cache_item_span(&operation_id, &target, || map_f(conn, key))
-                })
-            }
-            None => Box::new(map_f),
-        };
+    let map_f: Box<
+        dyn Fn(&mut ConnectionGuard<'_>, &K) -> AdapterResult<Arc<Schema>> + Send + Sync,
+    > = match item_span_operation_id {
+        Some(operation_id) => {
+            let operation_id = operation_id.to_string();
+            Box::new(move |conn: &mut ConnectionGuard<'_>, key: &K| {
+                let target = key.schema_cache_target();
+                with_schema_cache_item_span(&operation_id, &target, || map_f(conn, key))
+            })
+        }
+        None => Box::new(map_f),
+    };
     MapReduce::new(factory, map_f, Box::new(reduce_f), node_id).run(Arc::new(keys), token)
 }
 

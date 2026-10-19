@@ -1,6 +1,6 @@
 //! Tasks for io.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
 use std::fs;
 use std::sync::Arc;
 use std::{
@@ -666,14 +666,14 @@ fn dump_sqlite_recordings_to_yaml(db_path: &Path, yaml_path: &Path) -> TestResul
         return Ok(());
     }
 
-    // Query all recordings, ordered by unique_id for consistency
+    // Query all recordings; ordered below by (base id, numeric call index)
     let mut stmt = conn.prepare(&format!(
         "SELECT unique_id, record_type, sql, data_base64, error, {options}
-         FROM recordings ORDER BY unique_id",
+         FROM recordings",
         options = options_column_expr(&conn)?
     ))?;
 
-    let recordings: Vec<RecordingRow> = stmt
+    let mut recordings: Vec<RecordingRow> = stmt
         .query_map([], |row| {
             Ok((
                 row.get(0)?,
@@ -685,25 +685,15 @@ fn dump_sqlite_recordings_to_yaml(db_path: &Path, yaml_path: &Path) -> TestResul
             ))
         })?
         .collect::<Result<Vec<_>, _>>()?;
-
-    // Track sequence numbers per base unique_id
-    let mut sequence_counters = HashMap::new();
+    // A string sort puts "-10" before "-2"; sort the call index as a number.
+    recordings.sort_by_cached_key(|r| split_call_index(&r.0));
 
     // Group operations by base unique_id (using BTreeMap for sorted output)
     let mut operations_by_model = BTreeMap::new();
 
     for (unique_id, record_type, sql, _, error, options_json) in recordings {
-        // Extract base unique_id by removing sequence suffix (e.g., "model.hello_world.hello-0" -> "model.hello_world.hello")
-        let base_unique_id = if let Some(pos) = unique_id.rfind('-') {
-            // Check if what follows the last '-' is a digit (sequence number)
-            debug_assert!(unique_id[(pos + 1)..].chars().all(|c| c.is_ascii_digit()));
-            unique_id[..pos].to_string()
-        } else {
-            unique_id.clone()
-        };
-
-        let sequence = *sequence_counters.entry(base_unique_id.clone()).or_insert(0);
-        sequence_counters.insert(base_unique_id.clone(), sequence + 1);
+        let (base_unique_id, index) = split_call_index(&unique_id);
+        let sequence = index.unwrap_or(0) as usize;
 
         let operation = match record_type.as_str() {
             "execute" => {
@@ -765,6 +755,17 @@ fn dump_sqlite_recordings_to_yaml(db_path: &Path, yaml_path: &Path) -> TestResul
     stdfs::write(yaml_path, yaml_str)?;
 
     Ok(())
+}
+
+/// "model.p.orders-10" -> ("model.p.orders", Some(10)); ids without a numeric
+/// `-N` suffix -> (id, None).
+fn split_call_index(unique_id: &str) -> (String, Option<u64>) {
+    match unique_id.rsplit_once('-') {
+        Some((base, n)) if !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()) => {
+            (base.to_string(), n.parse().ok())
+        }
+        _ => (unique_id.to_string(), None),
+    }
 }
 
 /// Convert inline multiline strings to YAML block scalar format (|-) for better readability
@@ -910,6 +911,58 @@ mod tests {
     use arrow::buffer::OffsetBuffer;
     use arrow::datatypes::{Field, Fields};
     use std::sync::Arc;
+
+    #[test]
+    fn yaml_sidecar_is_in_call_order() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("recordings.db");
+        let conn = Connection::open(&db).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE recordings (unique_id TEXT NOT NULL, record_type TEXT NOT NULL,
+                 sql TEXT, data_base64 TEXT, error TEXT, options_json TEXT,
+                 PRIMARY KEY (unique_id, record_type))",
+        )
+        .unwrap();
+        for i in 0..12 {
+            conn.execute(
+                "INSERT INTO recordings VALUES (?1, 'execute', ?2, NULL, NULL, NULL)",
+                params![format!("model.p.m-{i}"), format!("select {i}")],
+            )
+            .unwrap();
+        }
+        drop(conn);
+        let yaml = dir.path().join("recordings.yaml");
+        dump_sqlite_recordings_to_yaml(&db, &yaml).unwrap();
+        let text = fs::read_to_string(&yaml).unwrap();
+        let pos: Vec<usize> = (0..12)
+            .map(|i| text.find(&format!("select {i}\n")).unwrap())
+            .collect();
+        assert!(pos.windows(2).all(|w| w[0] < w[1]), "{text}");
+    }
+
+    #[test]
+    #[ignore = "one-off: regenerate committed recordings.yaml"]
+    fn regenerate_committed_yaml_sidecars() {
+        let root = std::process::Command::new("git")
+            .args(["rev-parse", "--show-toplevel"])
+            .output()
+            .unwrap()
+            .stdout;
+        let root = PathBuf::from(String::from_utf8(root).unwrap().trim());
+        let files = std::process::Command::new("git")
+            .current_dir(&root)
+            .args(["ls-files", "*recordings.yaml"])
+            .output()
+            .unwrap()
+            .stdout;
+        for yaml in String::from_utf8(files).unwrap().lines() {
+            let yaml = root.join(yaml);
+            let db = yaml.with_file_name("recordings.db");
+            if db.exists() {
+                dump_sqlite_recordings_to_yaml(&db, &yaml).unwrap();
+            }
+        }
+    }
 
     #[test]
     fn rebuild_rewrites_strings_nested_in_list() {

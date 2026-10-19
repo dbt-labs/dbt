@@ -444,6 +444,23 @@ pub struct RunModel {
     /// where the node was executed. one of "remote", "local", or "lake_compute".
     #[prost(string, tag = "25")]
     pub compute_mode: ::prost::alloc::string::String,
+    /// number of rows affected by the model's main statement. Unset when unknown
+    /// (distinct from 0).
+    #[prost(int64, optional, tag = "26")]
+    pub rows_affected: ::core::option::Option<i64>,
+    /// the snapshot config strategy (ex. "timestamp", "check"). empty string for
+    /// non-snapshot nodes.
+    #[prost(string, tag = "27")]
+    pub snapshot_strategy: ::prost::alloc::string::String,
+    /// bytes processed, per the BigQuery adapter response. Unset for other adapters.
+    #[prost(int64, optional, tag = "28")]
+    pub bytes_processed: ::core::option::Option<i64>,
+    /// bytes billed, per the BigQuery adapter response. Unset for other adapters.
+    #[prost(int64, optional, tag = "29")]
+    pub bytes_billed: ::core::option::Option<i64>,
+    /// slot milliseconds used, per the BigQuery adapter response. Unset for other adapters.
+    #[prost(int64, optional, tag = "30")]
+    pub slot_ms: ::core::option::Option<i64>,
 }
 impl ::prost::Name for RunModel {
     const NAME: &'static str = "RunModel";

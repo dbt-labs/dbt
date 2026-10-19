@@ -10,8 +10,6 @@
 //! As such, type aliases for the [MaybeStableHasher] variants of `DashMap` and
 //! `scc::HashMap` are in the `dbt-common` crate instead.
 
-pub mod cancel;
-
 pub mod hasher;
 
 pub mod hashmap {
@@ -40,11 +38,6 @@ pub mod hashset {
         HashSet::with_hasher(crate::hasher::MaybeStableHasherBuilder::default())
     }
 }
-
-#[doc(inline)]
-pub use cancel::Cancellable;
-#[doc(inline)]
-pub use cancel::{CancellationToken, CancellationTokenSource, CancelledError};
 
 #[doc(inline)]
 pub use hasher::{MaybeStableHasher, MaybeStableHasherBuilder};

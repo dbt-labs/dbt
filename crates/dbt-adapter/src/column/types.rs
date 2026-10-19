@@ -693,7 +693,10 @@ impl Column {
     }
 
     /// Parse a Snowflake raw data type into a tuple of (data_type, char_size, numeric_precision, numeric_scale)
-    fn try_from_snowflake_raw_data_type(name: &str, raw_data_type: &str) -> Result<Column, String> {
+    pub(crate) fn try_from_snowflake_raw_data_type(
+        name: &str,
+        raw_data_type: &str,
+    ) -> Result<Column, String> {
         // Extract and strip any COLLATE clause before further parsing.
         // e.g. "VARCHAR(10) COLLATE 'en-ci'" → collation = Some("en-ci"), type_without_collation = "VARCHAR(10)"
         let collation = COLLATION_RE.captures(raw_data_type).map(|c| {

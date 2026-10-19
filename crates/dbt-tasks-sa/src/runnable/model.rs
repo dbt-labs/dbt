@@ -11,16 +11,21 @@ use chrono::{DateTime, Utc};
 use dbt_adapter_core::AdapterType;
 use dbt_common::FsResult;
 use dbt_common::stats::NodeStatus;
-use dbt_common::tracing::span_info::find_and_update_span_attrs;
-use dbt_common::{ErrorCode, fs_err};
-use dbt_jinja_utils::phases::run::{build_run_node_context, reset_result_store};
+use dbt_common::tracing::span_info::{
+    find_and_record_span_status_from_attrs, find_and_update_span_attrs,
+};
+use dbt_common::{ErrorCode, create_info_span, fs_err};
+use dbt_jinja_utils::phases::run::{build_run_node_context_from_arc, reset_result_store};
 use dbt_jinja_utils::utils::add_task_context;
 use dbt_schemas::filter::RunFilter;
 use dbt_schemas::schemas::DbtModel;
-use dbt_schemas::schemas::common::{DbtIncrementalStrategy, DbtMaterialization};
+use dbt_schemas::schemas::common::{DbtBatchSize, DbtIncrementalStrategy, DbtMaterialization};
 use dbt_schemas::schemas::{InternalDbtNode, InternalDbtNodeAttributes};
-use dbt_tasks_core::context::TaskRunnerCtx;
-use dbt_telemetry::{ExecutionPhase, NodeEvaluated, NodeEvent, has_node_warning};
+use dbt_tasks_core::context::{TaskRunnerCtx, record_microbatch_metrics};
+use dbt_telemetry::{
+    ExecutionPhase, MicrobatchBatchSize, MicrobatchEvaluated, NodeEvaluated, NodeEvent,
+    NodeOutcome, has_node_warning,
+};
 
 use minijinja::Value;
 use tracing::debug;
@@ -126,8 +131,8 @@ pub async fn prepare_microbatch_batches(
     let event_time_mapping = Arc::new(build_event_time_mapping(model, ctx.nodes()));
 
     let run_node_context = Arc::new(
-        build_run_node_context(
-            model,
+        build_run_node_context_from_arc(
+            node.clone(),
             &model.deprecated_config,
             model.node_adapter(),
             None,
@@ -259,8 +264,78 @@ fn clamp_to_sample(
     (start_time, end_time)
 }
 
-/// Execute a single microbatch task.
-pub fn execute_microbatch_batch(mb_unit: MicrobatchExecUnit, ctx: &TaskRunnerCtx) -> FsResult<()> {
+/// Create the `MicrobatchEvaluated` span of one batch under the current span.
+pub fn create_microbatch_span(mb_unit: &MicrobatchExecUnit) -> tracing::Span {
+    let model = mb_unit
+        .node
+        .as_any()
+        .downcast_ref::<DbtModel>()
+        .expect("MicrobatchTask node must be a DbtModel");
+    let batch_size = match model.deprecated_config.batch_size {
+        Some(DbtBatchSize::Hour) => MicrobatchBatchSize::Hour,
+        Some(DbtBatchSize::Day) => MicrobatchBatchSize::Day,
+        Some(DbtBatchSize::Month) => MicrobatchBatchSize::Month,
+        Some(DbtBatchSize::Year) => MicrobatchBatchSize::Year,
+        None => MicrobatchBatchSize::Unspecified,
+    };
+    let batch = &mb_unit.batch_ctx;
+    create_info_span(MicrobatchEvaluated::start(
+        mb_unit.node.unique_id(),
+        mb_unit.node.schema(),
+        mb_unit.node.alias(),
+        batch.id.clone(),
+        batch_size,
+        batch.batch_index as u32 + 1,
+        batch.total_batches as u32,
+        batch
+            .event_time_start
+            .to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+        batch
+            .event_time_end
+            .to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+    ))
+}
+
+/// Execute a single microbatch task within its `MicrobatchEvaluated` span and
+/// record its outcome there.
+///
+/// A `canceled` batch, e.g. one not yet started when another batch failed,
+/// skips execution and records a canceled outcome.
+pub fn execute_microbatch_batch(
+    mb_unit: MicrobatchExecUnit,
+    ctx: &TaskRunnerCtx,
+    canceled: bool,
+) -> FsResult<()> {
+    let result = if canceled {
+        Err(fs_err!(
+            ErrorCode::OperationCanceled,
+            "Batch {} canceled after another batch failed",
+            mb_unit.batch_ctx.id
+        ))
+    } else {
+        materialize_microbatch_batch(mb_unit, ctx)
+    };
+
+    // Runs within the batch span, which the worker entered on submission.
+    find_and_record_span_status_from_attrs(|batch: &mut MicrobatchEvaluated| {
+        batch.set_node_outcome(match &result {
+            Ok(()) => NodeOutcome::Success,
+            Err(error)
+                if matches!(
+                    error.code,
+                    ErrorCode::OperationCanceled | ErrorCode::TaskCancelled
+                ) =>
+            {
+                NodeOutcome::Canceled
+            }
+            Err(_) => NodeOutcome::Error,
+        });
+        batch.dbt_core_event_code = Some("Q046".to_string());
+    });
+    result
+}
+
+fn materialize_microbatch_batch(mb_unit: MicrobatchExecUnit, ctx: &TaskRunnerCtx) -> FsResult<()> {
     let model = mb_unit
         .node
         .as_any()
@@ -302,7 +377,13 @@ pub fn execute_microbatch_batch(mb_unit: MicrobatchExecUnit, ctx: &TaskRunnerCtx
         &ctx.inner.arg.io,
     ) {
         Ok(relations_map) => {
-            if let Some(main_response) = result_store.main_adapter_response() {
+            let main_response = result_store.main_adapter_response();
+            record_microbatch_metrics(
+                &ctx.inner.microbatch_execution_metrics,
+                &model.__common_attr__.unique_id,
+                main_response.as_ref(),
+            );
+            if let Some(main_response) = main_response {
                 ctx.inner
                     .main_adapter_responses
                     .insert(model.__common_attr__.unique_id.clone(), main_response);
@@ -338,7 +419,9 @@ pub fn execute_model_remote(
     // Traditional warehouse execution via Jinja materialization macros
     match materialize_model(
         &task_result.sql_instruction.sql,
-        model,
+        ctx.nodes()
+            .get_node_owned(&model.common().unique_id)
+            .expect("model must be present in the node graph"),
         model.node_adapter(),
         ctx.runtime_config(),
         &ctx.inner.materialization_resolver,

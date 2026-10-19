@@ -1,6 +1,6 @@
 use crate::AdapterEngine;
 use crate::adapter::adapter_impl::AdapterImpl;
-use crate::connection::AdapterConnectionFactory;
+use crate::connection::{AdapterConnectionFactory, ConnectionGuard};
 use crate::load_catalogs;
 use crate::relation::do_create_relation;
 use crate::sql_types::{TypeOps, make_arrow_field_v2};
@@ -9,9 +9,9 @@ use arrow_schema::Schema;
 
 use arrow_array::{Array, Int32Array, RecordBatch, StringArray};
 
-use dbt_adapter_core::ExecutionPhase;
+use dbt_adapter_core::{AdapterType, ExecutionPhase};
 use dbt_adapter_engine::MapReduce;
-use dbt_adbc::{Connection, QueryCtx};
+use dbt_adbc::QueryCtx;
 use dbt_common::cancellation::Cancellable;
 use dbt_common::cancellation::CancellationToken;
 use dbt_schemas::dbt_types::RelationType;
@@ -179,7 +179,7 @@ impl MetadataAdapter for DuckDBMetadataAdapter {
 
         let adapter = self.adapter.clone();
         let token_clone = token.clone();
-        let map_f = move |conn: &'_ mut dyn Connection,
+        let map_f = move |conn: &mut ConnectionGuard<'_>,
                           key: &(String, String)|
               -> AdapterResult<Arc<Schema>> {
             let (_, rendered) = key;
@@ -256,7 +256,7 @@ impl MetadataAdapter for DuckDBMetadataAdapter {
 
         let adapter = self.adapter.clone();
         let token_clone = token.clone();
-        let map_f = move |conn: &'_ mut dyn Connection,
+        let map_f = move |conn: &mut ConnectionGuard<'_>,
                           db_schema: &CatalogAndSchema|
               -> AdapterResult<Vec<Arc<dyn BaseRelation>>> {
             let ctx = QueryCtx::default().with_desc("list_relations_in_parallel");
@@ -350,7 +350,7 @@ fn list_relations_sql(quoting: ResolvedQuoting, db_schema: &CatalogAndSchema) ->
 pub fn list_relations(
     engine: &dyn AdapterEngine,
     ctx: &QueryCtx,
-    conn: &'_ mut dyn Connection,
+    conn: &mut ConnectionGuard<'_>,
     db_schema: &CatalogAndSchema,
     token: CancellationToken,
 ) -> AdapterResult<Vec<Arc<dyn BaseRelation>>> {
@@ -371,7 +371,7 @@ pub fn list_relations(
 
     let sql = list_relations_sql(engine.quoting(), db_schema);
 
-    let batch = engine.execute(None, conn, ctx, &sql, token)?;
+    let batch = engine.execute(None, conn.as_mut(), ctx, &sql, token)?;
 
     if batch.num_rows() == 0 {
         return Ok(Vec::new());
@@ -612,6 +612,51 @@ pub(crate) fn classify_attach_entry(item: &dbt_yaml::Value) -> Option<(String, &
     Some((alias, format))
 }
 
+/// Whether `get_relation` must skip warming the relation cache with a schema-wide
+/// listing, and use the targeted per-relation probe instead.
+///
+/// External Iceberg REST catalogs report incomplete `information_schema`
+/// coverage. Lake compute's service folds `D.S.T` table *references* but not the
+/// `table_schema = '...'` string literals a listing filters on, so the listing
+/// comes back empty; that empty result would then be cached as "relation absent"
+/// and the probe would never run.
+pub(crate) fn skips_schema_wide_listing(adapter_type: AdapterType, resolved_catalog: &str) -> bool {
+    match adapter_type {
+        AdapterType::DuckDB => is_duckdb_external_iceberg_catalog_database(resolved_catalog),
+        AdapterType::LakeCompute => true,
+        _ => false,
+    }
+}
+
+/// The schema and identifier text to put in the probe. Lake compute builds the
+/// folded name from the reference text, so it gets the parts as given, the way
+/// builds render them. DuckDB catalogs match case-insensitively, so they get the
+/// lowercased `query_*` forms.
+pub(crate) fn probe_relation_parts<'a>(
+    adapter_type: AdapterType,
+    (schema, identifier): (&'a str, &'a str),
+    (query_schema, query_identifier): (&'a str, &'a str),
+) -> (&'a str, &'a str) {
+    if adapter_type == AdapterType::LakeCompute {
+        (schema, identifier)
+    } else {
+        (query_schema, query_identifier)
+    }
+}
+
+/// Whether an error from the targeted probe means "relation absent" for this adapter.
+pub(crate) fn is_probe_missing_relation_error(
+    adapter_type: AdapterType,
+    err: &AdapterError,
+    database: &str,
+) -> bool {
+    if adapter_type == AdapterType::LakeCompute {
+        is_lake_compute_missing_relation_error(err, database)
+    } else {
+        is_missing_relation_error(err)
+    }
+}
+
 /// Whether a DuckDB error from the targeted DESCRIBE probe means "relation absent"
 /// (so `get_relation` can report `None`) rather than a real failure.
 pub(crate) fn is_missing_relation_error(err: &AdapterError) -> bool {
@@ -629,6 +674,24 @@ pub(crate) fn is_missing_relation_error(err: &AdapterError) -> bool {
         || msg.contains("namespace")
         || msg.contains("catalog entry");
     missing && relationish
+}
+
+/// Like [`is_missing_relation_error`], for the lake compute probe.
+///
+/// The service folds `D.S.T` into its own namespace and, when that misses, falls
+/// back to a catalog named `D` -- so a relation that was never created is
+/// reported as `Catalog "D" does not exist`, indistinguishable from an
+/// unattached database. Only the probe's own database counts: any other catalog
+/// in the message is a real failure.
+pub(crate) fn is_lake_compute_missing_relation_error(err: &AdapterError, database: &str) -> bool {
+    if is_missing_relation_error(err) {
+        return true;
+    }
+    let msg = err.to_string().to_lowercase();
+    msg.contains(&format!(
+        "catalog \"{}\" does not exist",
+        database.to_lowercase()
+    ))
 }
 
 /// Build an Arrow Schema from DuckDB's DESCRIBE output.
@@ -675,6 +738,110 @@ mod tests {
             resolved_catalog: catalog.to_string(),
             resolved_schema: schema.to_string(),
         }
+    }
+
+    #[test]
+    fn lake_compute_skips_schema_wide_listing() {
+        // The service folds `D.S.T` references but not the `information_schema`
+        // string literals a schema-wide listing filters on, so the listing comes
+        // back empty and would be cached as "relation absent", short-circuiting
+        // the per-relation probe.
+        assert!(skips_schema_wide_listing(
+            AdapterType::LakeCompute,
+            "PKG_TEST"
+        ));
+        // Plain DuckDB still lists a regular catalog (see the catalog scoping above).
+        assert!(!skips_schema_wide_listing(AdapterType::DuckDB, "memory"));
+        assert!(!skips_schema_wide_listing(
+            AdapterType::Snowflake,
+            "PKG_TEST"
+        ));
+    }
+
+    #[test]
+    fn probe_relation_parts_keeps_lake_compute_case() {
+        let given = ("Analytics", "Customers");
+        let lowered = ("analytics", "customers");
+        assert_eq!(
+            probe_relation_parts(AdapterType::LakeCompute, given, lowered),
+            given
+        );
+        assert_eq!(
+            probe_relation_parts(AdapterType::DuckDB, given, lowered),
+            lowered
+        );
+    }
+
+    #[test]
+    fn probe_missing_relation_error_is_per_adapter() {
+        let err = AdapterError::new(
+            AdapterErrorKind::Internal,
+            "Binder Error: Catalog \"PKG_TEST\" does not exist!".to_string(),
+        );
+        assert!(is_probe_missing_relation_error(
+            AdapterType::LakeCompute,
+            &err,
+            "PKG_TEST"
+        ));
+        // Only lake compute reads an unresolved catalog as a missing table.
+        assert!(!is_probe_missing_relation_error(
+            AdapterType::DuckDB,
+            &err,
+            "PKG_TEST"
+        ));
+        let missing = AdapterError::new(
+            AdapterErrorKind::Internal,
+            "Table with name foo does not exist".to_string(),
+        );
+        assert!(is_probe_missing_relation_error(
+            AdapterType::DuckDB,
+            &missing,
+            "PKG_TEST"
+        ));
+        // "permission denied" is a real error for both.
+        let other = AdapterError::new(AdapterErrorKind::Internal, "permission denied".to_string());
+        assert!(!is_probe_missing_relation_error(
+            AdapterType::LakeCompute,
+            &other,
+            "PKG_TEST"
+        ));
+        assert!(!is_probe_missing_relation_error(
+            AdapterType::DuckDB,
+            &other,
+            "PKG_TEST"
+        ));
+    }
+
+    #[test]
+    fn lake_compute_probe_treats_unresolved_catalog_as_missing_relation() {
+        let mk = |m: &str| AdapterError::new(AdapterErrorKind::Internal, m.to_string());
+        // The service folds `D.S.T` and, on a miss, falls back to catalog `D`, so a
+        // table that was never created surfaces as an unknown *catalog*.
+        assert!(is_lake_compute_missing_relation_error(
+            &mk(
+                "[BinderException] Binder Error: Catalog \"PKG_TEST\" does not exist! (query dbt-compute-query-1)"
+            ),
+            "PKG_TEST",
+        ));
+        // Case-insensitive, like Snowflake database names.
+        assert!(is_lake_compute_missing_relation_error(
+            &mk("Binder Error: Catalog \"pkg_test\" does not exist!"),
+            "PKG_TEST",
+        ));
+        // The usual DuckDB wording still counts.
+        assert!(is_lake_compute_missing_relation_error(
+            &mk("Table with name foo does not exist"),
+            "PKG_TEST",
+        ));
+        // A different catalog, or an unrelated failure, is a real error.
+        assert!(!is_lake_compute_missing_relation_error(
+            &mk("Binder Error: Catalog \"OTHER\" does not exist!"),
+            "PKG_TEST",
+        ));
+        assert!(!is_lake_compute_missing_relation_error(
+            &mk("permission denied"),
+            "PKG_TEST",
+        ));
     }
 
     #[test]

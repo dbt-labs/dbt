@@ -209,6 +209,9 @@ pub async fn load(
     loader_hooks: Arc<dyn LoaderHooks>,
     private_package_resolver: Arc<dyn PrivatePackageResolver>,
 ) -> FsResult<DbtState> {
+    // Must run before any project Jinja is rendered.
+    dbt_adapter::time_machine::prepare_replay(iarg.replay.as_ref())?;
+
     let (simplified_dbt_project, mut dbt_profile, vars_from_file) =
         load_simplified_project_and_profiles(arg).await?;
 

@@ -1772,3 +1772,34 @@ fn test_parse_column_description() {
     assert_eq!(col.name.unwrap().as_ref(), "price");
     assert!(matches!(col.sql_type, Numeric(Some((10, Some(2))))));
 }
+
+#[test]
+fn duckdb_renders_arrow_timestamp_units_as_its_own_types() {
+    use arrow_schema::{DataType, TimeUnit};
+
+    let render =
+        |data_type: DataType| SqlType::from_arrow_type(DuckDB, &data_type).to_string(DuckDB);
+    assert_eq!(
+        render(DataType::Timestamp(TimeUnit::Second, None)),
+        "TIMESTAMP_S"
+    );
+    assert_eq!(
+        render(DataType::Timestamp(TimeUnit::Millisecond, None)),
+        "TIMESTAMP_MS"
+    );
+    assert_eq!(
+        render(DataType::Timestamp(TimeUnit::Microsecond, None)),
+        "TIMESTAMP"
+    );
+    assert_eq!(
+        render(DataType::Timestamp(TimeUnit::Nanosecond, None)),
+        "TIMESTAMP_NS"
+    );
+    assert_eq!(
+        render(DataType::Timestamp(
+            TimeUnit::Microsecond,
+            Some("UTC".into())
+        )),
+        "TIMESTAMP WITH TIME ZONE"
+    );
+}

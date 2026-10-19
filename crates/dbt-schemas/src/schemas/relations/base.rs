@@ -898,6 +898,11 @@ pub trait BaseRelation: BaseRelationProperties + Any + Send + Sync + fmt::Debug 
         false
     }
 
+    /// `ClickHouseRelation.can_on_cluster`: whether DDL for this relation carries `ON CLUSTER`.
+    fn can_on_cluster(&self) -> bool {
+        false
+    }
+
     /// dbt-managed MVs writing into this relation, `{schema, name, sql}` entries
     /// (`ClickHouseRelation.mvs_pointing_to_it`).
     fn mvs_pointing_to_it(&self) -> &[BTreeMap<String, String>] {

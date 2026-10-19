@@ -7,6 +7,32 @@ Paths in this file are relative to the directory containing `AGENTS.md`.
 Read this file first for tracing or telemetry work. Then read the README or
 AGENTS file for the layer you are changing.
 
+## Rules
+
+Never call `tracing` event macros or print macros directly, including in
+debug-only or internal code. Use the emit helpers: they capture the call-site
+location with `#[track_caller]`, pass telemetry attributes through thread-local
+storage, and export to OTEL. Prefer a structured event (`LogMessage`,
+`ProgressMessage`, ...) when one fits.
+
+| Instead of | Use (`dbt_common::tracing::dbt_emit`) |
+| --- | --- |
+| `tracing::error!` | `emit_error_log_message` |
+| `tracing::warn!` | `emit_warn_log_message` |
+| `tracing::info!` | `emit_info_log_message` |
+| `tracing::debug!` | `emit_debug_log_message` |
+| `tracing::trace!` | `emit_trace_log_message` |
+| `tracing::event!` | `dbt_tracing::emit::emit_{error,warn,info,debug,trace}_event` |
+| `eprintln!` / `eprint!` | `print_err` (CLI only, no trace) |
+| `println!` / `print!` | `println` / `print` (CLI only, no trace) |
+| `tracing::span!` and level variants | `dbt_tracing::emit::create_info_span` / `create_debug_span` |
+
+`#[tracing::instrument]`, `tracing::Instrument` and `Span::current()` are fine.
+
+Exceptions to the print ban: `build.rs` (cargo directives), tests, and
+`xtask`/dev tooling.
+Crates that cannot depend on `dbt-common` use `dbt_tracing::emit` directly.
+
 ## Decision Tree
 
 - Generic tracing infrastructure: read

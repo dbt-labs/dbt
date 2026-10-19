@@ -27,6 +27,7 @@ mod adbc;
 pub(crate) mod clickhouse;
 mod databricks;
 pub mod duckdb_attach;
+pub(crate) mod duckdb_seed;
 pub use adbc::AdbcEngine;
 pub(crate) use adbc::resolve_connection_config;
 

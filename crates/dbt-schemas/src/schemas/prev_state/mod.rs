@@ -2564,6 +2564,11 @@ mod tests {
                     })
                 }),
             ),
+            (
+                "table_format",
+                ExcludeKind::Relevant,
+                Box::new(|n| n.deprecated_config.table_format = Some("iceberg".to_string())),
+            ),
             // --- parity-excludes: dbt-core's `CompareBehavior.Exclude` on `NodeAndTestConfig` ---
             (
                 "tags",

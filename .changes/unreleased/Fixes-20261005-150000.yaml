@@ -1,0 +1,7 @@
+kind: Fixes
+body: Lowercase Databricks catalog, schema, and table names in information_schema constraint and column mask lookups so mixed-case schemas find existing constraints
+time: 2026-10-05T15:00:00.000000+05:30
+custom:
+    author: sd-db
+    issue: "16611"
+    project: dbt-core

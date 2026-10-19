@@ -110,6 +110,7 @@ struct FieldSpec {
     name: &'static str,
     kind: FieldKind,
     required: bool,
+    json_schema_required_unless: Option<&'static str>,
     non_empty: bool,
     forbidden: bool,
     doc: &'static str,
@@ -121,6 +122,7 @@ impl FieldSpec {
             name,
             kind,
             required: false,
+            json_schema_required_unless: None,
             non_empty: false,
             forbidden: false,
             doc: "",
@@ -143,6 +145,10 @@ impl FieldSpec {
     }
     const fn required(mut self) -> Self {
         self.required = true;
+        self
+    }
+    const fn json_schema_required_unless(mut self, sibling: &'static str) -> Self {
+        self.json_schema_required_unless = Some(sibling);
         self
     }
     const fn non_empty(mut self) -> Self {
@@ -293,10 +299,12 @@ const HIVE_METASTORE_DATABRICKS_FIELDS: &[FieldSpec] =
 
 const BIGLAKE_BIGQUERY_FIELDS: &[FieldSpec] = &[
     FieldSpec::string("external_volume")
-        .required()
+        .json_schema_required_unless("lakehouse_catalog")
         .non_empty()
-        .doc("Cloud Storage bucket path (gs://<bucket_name>)."),
-    FieldSpec::enumerated("file_format", BIGLAKE_FILE_FORMATS).required(),
+        .doc("Cloud Storage bucket path (gs://<bucket_name>). Required unless lakehouse_catalog is set."),
+    FieldSpec::enumerated("file_format", BIGLAKE_FILE_FORMATS)
+        .json_schema_required_unless("lakehouse_catalog")
+        .doc("Data file format written to the external volume. Required unless lakehouse_catalog is set."),
     FieldSpec::string("catalog_database")
         .non_empty()
         .doc("GCP project where models using this catalog should land. When set, takes precedence over model database config and target.database."),
@@ -1288,16 +1296,39 @@ impl<'a> CatalogSpecView<'a> {
     }
 
     fn validate_biglake_semantics(&self, bigquery: &yml::Mapping) -> FsResult<()> {
-        let external_volume = get_str(bigquery, "external_volume")?
-            .expect("structural validation ensures external_volume is present");
-        if !external_volume.starts_with("gs://") {
+        let is_lrc = get_str(bigquery, "lakehouse_catalog")?.is_some();
+
+        match get_str(bigquery, "external_volume")? {
+            Some(external_volume) => {
+                if !external_volume.starts_with("gs://") {
+                    return err!(
+                        code => ErrorCode::InvalidConfig,
+                        hacky_yml_loc => field_span(bigquery, "external_volume").cloned(),
+                        "Catalog '{}' biglake_metastore/bigquery 'external_volume' must be a GCS path starting with gs://",
+                        self.name
+                    );
+                }
+            }
+            None if is_lrc => {}
+            None => {
+                return err!(
+                    code => ErrorCode::InvalidConfig,
+                    hacky_yml_loc => field_span(bigquery, "external_volume").cloned(),
+                    "Catalog '{}' biglake_metastore/bigquery requires 'external_volume'",
+                    self.name
+                );
+            }
+        }
+
+        if get_str(bigquery, "file_format")?.is_none() && !is_lrc {
             return err!(
                 code => ErrorCode::InvalidConfig,
-                hacky_yml_loc => field_span(bigquery, "external_volume").cloned(),
-                "Catalog '{}' biglake_metastore/bigquery 'external_volume' must be a GCS path starting with gs://",
+                hacky_yml_loc => field_span(bigquery, "file_format").cloned(),
+                "Catalog '{}' biglake_metastore/bigquery requires 'file_format'",
                 self.name
             );
         }
+
         Ok(())
     }
 }
@@ -1591,6 +1622,7 @@ impl CatalogRegistry {
     fn fields_schema(fields: &[FieldSpec]) -> serde_json::Value {
         let mut props = serde_json::Map::new();
         let mut required = Vec::new();
+        let mut conditional: Vec<(&'static str, Vec<&'static str>)> = Vec::new();
         for f in fields.iter().filter(|f| !f.forbidden) {
             let mut schema = match f.kind {
                 FieldKind::Str => serde_json::json!({ "type": "string" }),
@@ -1615,6 +1647,11 @@ impl CatalogRegistry {
             props.insert(f.name.to_string(), schema);
             if f.required {
                 required.push(f.name);
+            } else if let Some(sibling) = f.json_schema_required_unless {
+                match conditional.iter_mut().find(|(s, _)| *s == sibling) {
+                    Some((_, names)) => names.push(f.name),
+                    None => conditional.push((sibling, vec![f.name])),
+                }
             }
         }
         let mut obj = serde_json::json!({
@@ -1624,6 +1661,17 @@ impl CatalogRegistry {
         });
         if !required.is_empty() {
             obj["required"] = serde_json::json!(required);
+        }
+        if !conditional.is_empty() {
+            obj["allOf"] = serde_json::json!(
+                conditional
+                    .into_iter()
+                    .map(|(sibling, names)| serde_json::json!({
+                        "if": { "not": { "required": [sibling] } },
+                        "then": { "required": names },
+                    }))
+                    .collect::<Vec<_>>()
+            );
         }
         obj
     }
@@ -2128,6 +2176,60 @@ catalogs:
 "#;
         let res = parse_and_validate(yaml);
         assert!(res.is_err(), "expected error but got Ok");
+    }
+
+    // dbt-labs/fs: docs/build/iceberg/adapters/bigquery-iceberg-support.md's own LRC
+    // example omits external_volume/file_format entirely ("An LRC catalog doesn't
+    // need external_volume or file_format"). Confirm that config actually validates.
+    #[test]
+    fn biglake_lrc_without_external_volume_or_file_format_validates() {
+        let yaml = r#"
+catalogs:
+  - name: cat1
+    type: biglake_metastore
+    table_format: iceberg
+    config:
+      bigquery:
+        lakehouse_catalog: "sales_catalog"
+"#;
+        parse_and_validate(yaml)
+            .expect("bigquery LRC catalog without external_volume/file_format should validate");
+    }
+
+    #[test]
+    fn biglake_without_lakehouse_catalog_still_requires_external_volume() {
+        let yaml = r#"
+catalogs:
+  - name: cat1
+    type: biglake_metastore
+    table_format: iceberg
+    config:
+      bigquery:
+        file_format: parquet
+"#;
+        let error = parse_and_validate(yaml).unwrap_err();
+        assert!(
+            error.to_string().contains("requires 'external_volume'"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn biglake_without_lakehouse_catalog_still_requires_file_format() {
+        let yaml = r#"
+catalogs:
+  - name: cat1
+    type: biglake_metastore
+    table_format: iceberg
+    config:
+      bigquery:
+        external_volume: "gs://bucket"
+"#;
+        let error = parse_and_validate(yaml).unwrap_err();
+        assert!(
+            error.to_string().contains("requires 'file_format'"),
+            "unexpected error: {error}"
+        );
     }
 
     #[test]
@@ -3419,6 +3521,31 @@ catalogs:
         assert_eq!(
             unity["description"],
             "Databricks Unity catalog. Supports snowflake, databricks, lakecompute, and/or duckdb connection blocks. Lake Compute access is read-only."
+        );
+    }
+
+    #[test]
+    fn biglake_json_schema_requires_volume_and_format_only_without_lrc() {
+        let schema = catalogs_json_schema();
+        let bigquery = schema["properties"]["catalogs"]["items"]["oneOf"]
+            .as_array()
+            .expect("oneOf array")
+            .iter()
+            .find(|branch| branch["properties"]["type"]["const"] == "biglake_metastore")
+            .expect("biglake_metastore catalog schema branch")["properties"]["config"]["properties"]
+            ["bigquery"]
+            .clone();
+
+        assert!(
+            bigquery["required"].is_null(),
+            "external_volume/file_format must not be unconditionally required: {bigquery}"
+        );
+        assert_eq!(
+            bigquery["allOf"],
+            serde_json::json!([{
+                "if": { "not": { "required": ["lakehouse_catalog"] } },
+                "then": { "required": ["external_volume", "file_format"] },
+            }])
         );
     }
 

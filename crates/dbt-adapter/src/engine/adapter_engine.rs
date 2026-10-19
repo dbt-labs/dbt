@@ -1,6 +1,6 @@
 use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use adbc_core::options::{OptionStatement, OptionValue};
 use arrow_array::RecordBatch;
@@ -31,6 +31,7 @@ use crate::engine::query_comment::QueryCommentConfig;
 use crate::engine::retry::QueryRetryPolicy;
 use crate::engine::sidecar_client::SidecarClient;
 use crate::errors::adbc_error_to_adapter_error;
+use crate::metadata::clickhouse::ClickHouseCapabilities;
 use crate::record_batch::{ROWS_AFFECTED_META, RecordBatchExt, SchemaExt};
 use crate::response::query_id_from_record_batch;
 use crate::sql::normalize::strip_sql_comments;
@@ -220,6 +221,12 @@ pub trait AdapterEngine: Send + Sync {
         None
     }
 
+    /// Per-engine cache for [`crate::metadata::clickhouse::server_capabilities`], if this
+    /// engine keeps one.
+    fn clickhouse_capabilities(&self) -> Option<&OnceLock<ClickHouseCapabilities>> {
+        None
+    }
+
     /// Execute the given SQL query or statement (convenience wrapper).
     fn execute(
         &self,
@@ -278,7 +285,7 @@ pub(crate) fn adbc_execute_with_options(
             options.extend(query_tags_from_state(state)?.into_statement_options())
         }
         (_, AdapterType::ClickHouse) => {
-            options.extend(crate::metadata::clickhouse::statement_options())
+            options.extend(crate::metadata::clickhouse::statement_options(engine))
         }
         (Some(state), AdapterType::Bigquery) => {
             let mut job_labels =

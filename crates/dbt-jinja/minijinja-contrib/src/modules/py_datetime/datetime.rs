@@ -5,8 +5,7 @@ use std::sync::Arc;
 use chrono::{
     format::{Fixed, Item, StrftimeItems},
     offset::Offset,
-    DateTime, Datelike, Duration, NaiveDate, NaiveDateTime, NaiveTime, TimeZone, Timelike, Utc,
-    Weekday,
+    DateTime, Datelike, Duration, NaiveDate, NaiveDateTime, NaiveTime, TimeZone, Timelike, Weekday,
 };
 use chrono_tz::Tz;
 use minijinja::arg_utils::ArgsIter;
@@ -19,6 +18,7 @@ use crate::modules::py_datetime::strptime;
 use crate::modules::py_datetime::time::PyTime;
 use crate::modules::py_datetime::timedelta::PyTimeDelta;
 use crate::modules::py_datetime::tzinfo::PyFixedTimezone;
+use crate::modules::py_datetime::{now_local, now_utc};
 use crate::modules::pytz::PytzTimezone;
 
 /// An enum storing either a naive datetime or an aware datetime with a known timezone.
@@ -142,7 +142,7 @@ impl PyDateTimeClass {
         let mut parser = ArgParser::new(args, None);
         let tz_val = parser.get_optional::<Value>("tz");
 
-        let local_now = chrono::Local::now(); // DateTime<Local>
+        let local_now = now_local(); // DateTime<Local>
 
         #[expect(clippy::unnecessary_unwrap)] // TODO fix this
         if tz_val.is_none() || (tz_val.is_some() && tz_val.as_ref().unwrap().is_none()) {
@@ -188,7 +188,7 @@ impl PyDateTimeClass {
     //   naive UTC
     // ------------------------------------------------------------------
     fn utcnow(_args: &[Value]) -> Result<PyDateTime, Error> {
-        let now_utc = Utc::now();
+        let now_utc = now_utc();
         let py_dt = PyDateTime {
             state: DateTimeState::Naive(now_utc.naive_utc()),
             tzinfo: None,
@@ -201,7 +201,7 @@ impl PyDateTimeClass {
     //   naive local, at midnight
     // ------------------------------------------------------------------
     fn today(_args: &[Value]) -> Result<PyDateTime, Error> {
-        let local_now = chrono::Local::now(); // DateTime<Local>
+        let local_now = now_local(); // DateTime<Local>
         let naive_local = local_now.naive_local();
         let py_dt = PyDateTime {
             state: DateTimeState::Naive(naive_local.date().and_hms_opt(0, 0, 0).unwrap()),

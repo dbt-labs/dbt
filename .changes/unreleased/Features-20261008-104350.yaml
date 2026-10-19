@@ -1,0 +1,7 @@
+kind: Features
+body: Accept Databricks use_materialization_v2 as a model config so a project or individual model can choose its materialization path
+time: 2026-10-08T10:43:50.397525+05:30
+custom:
+    author: sd-db
+    issue: ""
+    project: dbt-core

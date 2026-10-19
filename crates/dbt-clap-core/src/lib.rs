@@ -768,6 +768,10 @@ pub struct CheckArgs {
     /// Flag to enable or disable SQL analysis, or to run SQL in unsafe mode, enabled by default
     #[arg(global = true, long, env = "DBT_STATIC_ANALYSIS")]
     pub static_analysis: Option<StaticAnalysisKind>,
+
+    /// Limiting number of shown rows per check. Run with --limit -1 to remove limit [default: 10]
+    #[arg(long, default_value=DEFAULT_LIMIT, allow_hyphen_values = true)]
+    pub limit: RowLimit,
 }
 
 impl CheckArgs {
@@ -778,6 +782,7 @@ impl CheckArgs {
         // v1 is parse-time only. Do not force static analysis off the way
         // warehouse-introspecting commands do.
         eval_args.static_analysis = self.static_analysis;
+        eval_args.limit = self.limit.into();
         // Implied index is set on `EvalArgs` in `Cli::to_eval_args` (same as
         // `build` / `run`), not here: setting `write_index` on this struct
         // before that function's lineage block would turn on `write_lineage`,

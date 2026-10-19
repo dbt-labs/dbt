@@ -28,7 +28,6 @@ itertools = { workspace = true }
 
 arrow = { workspace = true }
 chrono = { workspace = true }
-datafusion-common = { workspace = true }
 futures = { workspace = true }
 humantime = { workspace = true }
 minijinja = { workspace = true }

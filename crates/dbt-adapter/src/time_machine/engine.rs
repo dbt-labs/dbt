@@ -143,6 +143,11 @@ impl EventReplayer {
         Ok(Self::new(recording))
     }
 
+    /// Adapter type parsed from the recording header.
+    pub(crate) fn adapter_type(&self) -> AdapterType {
+        self.replay_ctx.adapter_type
+    }
+
     /// Set the replay ordering mode.
     ///
     /// - `Strict`: Events must match in exact sequence order (default)
@@ -307,16 +312,30 @@ impl EventReplayer {
         self.recording
             .take_semantic_match(node_id, method, args, call_category)
             .ok_or_else(|| {
-                let context = if call_category.is_mutating() {
-                    "Write operations must match the next write barrier in sequence."
+                // Read-only SQL run through `execute` is matched as a read (see
+                // `take_semantic_match`), so a miss there is not a write-barrier miss.
+                let (kind, context) = if is_read_only_execute_call(method, args) {
+                    (
+                        "read-only".to_string(),
+                        "No recorded read with identical SQL in the current segment. \
+                         The same read can be matched multiple times, but at least one must exist.",
+                    )
+                } else if call_category.is_mutating() {
+                    (
+                        call_category.to_string(),
+                        "Write operations must match the next write barrier in sequence.",
+                    )
                 } else {
-                    "No matching read found in current segment. \
-                     The same read can be matched multiple times, but at least one must exist."
+                    (
+                        call_category.to_string(),
+                        "No matching read found in current segment. \
+                         The same read can be matched multiple times, but at least one must exist.",
+                    )
                 };
                 ReplayCallError {
                     message: format!(
                         "No recorded event for {} call '{}' on node '{}'. {}",
-                        call_category, method, node_id, context
+                        kind, method, node_id, context
                     ),
                     recorded_error: None,
                     is_method_mismatch: false,
@@ -635,4 +654,66 @@ pub struct ReplayerStats {
     pub sao_events: usize,
     pub node_count: usize,
     pub metadata_caller_count: usize,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Load a semantic-mode replayer over one recorded `execute` call on node `n`.
+    fn replayer_with_recorded_execute(sql: &str) -> (tempfile::TempDir, EventReplayer) {
+        let dir = tempfile::tempdir().unwrap();
+        let header = serde_json::json!({
+            "format_version": 1,
+            "fusion_version": "test",
+            "adapter_type": "databricks",
+            "recorded_at": "2026-10-09T00:00:24Z",
+            "invocation_id": "test-123",
+        });
+        std::fs::write(dir.path().join("header.json"), header.to_string()).unwrap();
+        let event = serde_json::json!({
+            "source": "AdapterCall",
+            "node_id": "n",
+            "seq": 0,
+            "method": "execute",
+            "semantic_category": "write",
+            "args": [sql],
+            "result": null,
+            "success": true,
+            "timestamp_ns": 0,
+        });
+        std::fs::write(dir.path().join("events.ndjson"), format!("{event}\n")).unwrap();
+        let replayer = EventReplayer::load(dir.path())
+            .unwrap()
+            .with_replay_mode(ReplayMode::Semantic);
+        (dir, replayer)
+    }
+
+    #[test]
+    fn test_semantic_read_only_sql_miss_is_not_reported_as_write_barrier() {
+        let (_dir, replayer) = replayer_with_recorded_execute("select count(*) from t");
+
+        let err = replayer
+            .get_result("n", "execute", &[Value::from("select count(*) from other")])
+            .unwrap_err();
+
+        assert!(err.message.contains("read-only call 'execute'"), "{err}");
+        assert!(!err.message.contains("write barrier"), "{err}");
+    }
+
+    #[test]
+    fn test_semantic_write_miss_is_still_reported_as_write_barrier() {
+        let (_dir, replayer) = replayer_with_recorded_execute("create table t (id int)");
+
+        let err = replayer
+            .get_result("n", "execute", &[Value::from("create table t (id int)")])
+            .and_then(|_| {
+                // The only recorded write is consumed; a second write has no event left.
+                replayer.get_result("n", "execute", &[Value::from("drop table t")])
+            })
+            .unwrap_err();
+
+        assert!(err.message.contains("write call 'execute'"), "{err}");
+        assert!(err.message.contains("next write barrier"), "{err}");
+    }
 }

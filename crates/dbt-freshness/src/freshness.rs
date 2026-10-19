@@ -1,10 +1,10 @@
-use arrow::compute::cast_with_options;
+use arrow::compute::{CastOptions, cast_with_options};
 use arrow::{
     self,
-    datatypes::{DataType, TimeUnit},
+    array::AsArray,
+    datatypes::{DataType, TimeUnit, TimestampNanosecondType},
 };
 use chrono::{DateTime, Utc};
-use datafusion_common::{cast::as_timestamp_nanosecond_array, format::DEFAULT_CAST_OPTIONS};
 use dbt_adapter::{
     Adapter,
     errors::into_fs_error,
@@ -127,6 +127,12 @@ pub fn calculate_seconds(freshness: &FreshnessRules) -> FsResult<i64> {
 
 const MAX_LOADED_AT_COLUMN: usize = 0;
 const SNAPSHOTTED_AT_COLUMN: usize = 1;
+
+/// Fail on a value that does not cast rather than turning it into null.
+const STRICT_CAST: CastOptions<'static> = CastOptions {
+    safe: false,
+    format_options: arrow::util::display::FormatOptions::new(),
+};
 
 /// `dbt source freshness` keeps its own wording verbatim: the message is
 /// user-visible and predates the unified command, so only the new spelling
@@ -505,18 +511,20 @@ async fn calculate_freshness_common(
         warnings,
     )?;
 
-    let max_loaded_at = as_timestamp_nanosecond_array(&cast_with_options(
+    let max_loaded_at = cast_with_options(
         max_loaded_at_column.as_ref(),
         &DataType::Timestamp(TimeUnit::Nanosecond, Some("UTC".into())),
-        &DEFAULT_CAST_OPTIONS,
-    )?)?
+        &STRICT_CAST,
+    )?
+    .as_primitive::<TimestampNanosecondType>()
     .value(0);
 
-    let snapshotted_at = as_timestamp_nanosecond_array(&cast_with_options(
+    let snapshotted_at = cast_with_options(
         snapshotted_at.as_ref(),
         &DataType::Timestamp(TimeUnit::Nanosecond, Some("UTC".into())),
-        &DEFAULT_CAST_OPTIONS,
-    )?)?
+        &STRICT_CAST,
+    )?
+    .as_primitive::<TimestampNanosecondType>()
     .value(0);
 
     let age = (snapshotted_at - max_loaded_at) / 1_000_000_000;

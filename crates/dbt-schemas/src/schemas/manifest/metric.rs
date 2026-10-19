@@ -22,6 +22,7 @@ use crate::schemas::{
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
+#[derive(dbt_proc_macros::JinjaNodeFields)]
 pub struct DbtMetric {
     pub __common_attr__: CommonAttributes,
     pub __base_attr__: NodeBaseAttributes,
@@ -33,7 +34,7 @@ pub struct DbtMetric {
     pub __other__: BTreeMap<String, YmlValue>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, dbt_proc_macros::JinjaNodeFields)]
 pub struct DbtMetricAttr {
     pub label: Option<String>,
     pub metric_type: MetricType,

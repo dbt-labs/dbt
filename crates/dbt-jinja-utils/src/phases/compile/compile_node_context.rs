@@ -5,7 +5,7 @@ use chrono_tz::{Europe::London, Tz};
 use dbt_adapter::{AdapterType, load_store::ResultStore};
 use dbt_common::io_args::StaticAnalysisKind;
 use dbt_common::serde_utils::convert_yml_to_dash_map;
-use dbt_common::{FsResult, dashmap::DashMap, serde_utils::convert_yml_to_value_map};
+use dbt_common::{FsResult, dashmap::DashMap};
 use dbt_schemas::schemas::InternalDbtNode;
 use dbt_schemas::{
     schemas::{InternalDbtNodeAttributes, common::DbtMaterialization, telemetry::NodeType},
@@ -19,9 +19,7 @@ use std::{
     sync::Arc,
 };
 
-use dbt_jinja_ctx::{
-    CompileNodeCtx, JinjaObject, MacroLookupContext, to_jinja_btreemap, to_model_context_map,
-};
+use dbt_jinja_ctx::{CompileNodeCtx, JinjaObject, MacroLookupContext, to_jinja_btreemap};
 
 use crate::phases::compile_and_run_context::{FunctionFunction, SourceFunction};
 use dbt_schemas::schemas::project::ConfigKeys;
@@ -127,7 +125,7 @@ impl Default for DependencyValidationConfig {
 /// Build a compile model context (wrapper for build_compile_node_context_inner)
 #[allow(clippy::type_complexity, clippy::too_many_arguments)]
 pub fn build_compile_node_context<T>(
-    model: &T,
+    model: Arc<T>,
     resolver_state: &ResolverState,
     base_context: &BTreeMap<String, MinijinjaValue>,
     ref_validation_config: DependencyValidationConfig,
@@ -153,7 +151,7 @@ where
 /// Returns a context and the current relation
 #[allow(clippy::type_complexity, clippy::too_many_arguments)]
 pub fn build_compile_node_context_inner<T>(
-    model: &T,
+    model: Arc<T>,
     adapter_type: AdapterType,
     base_context: &BTreeMap<String, MinijinjaValue>,
     root_project_name: &str,
@@ -329,7 +327,12 @@ where
     let source_value = MinijinjaValue::from_object(source_function);
     base_builtins.insert("source".to_string(), source_value.clone());
 
-    let mut model_map = convert_yml_to_value_map(model.serialize());
+    let model_map = dbt_schemas::jinja_node::LazyNodeContext::from_node(
+        model.clone(),
+        dbt_schemas::schemas::serialization_utils::SerializationMode::OmitNone,
+    )
+    // TODO(LazyNodeContext): See `with_eager_nested_maps`.
+    .with_eager_nested_maps();
     // dbt-core exposes `model.path` relative to the resource root (e.g.
     // `staging/orders.sql`), not package-relative (`models/staging/orders.sql`).
     // Fusion stores the package-relative form on the node (it is used for file
@@ -339,12 +342,12 @@ where
         let model_paths = model_paths_for_package(&runtime_config, &model.common().package_name);
         let jinja_path = dbt_common::path::strip_resource_paths(&model.common().path, &model_paths);
         model_map.insert(
-            "path".to_owned(),
+            MinijinjaValue::from("path"),
             MinijinjaValue::from(jinja_path.to_string_lossy().into_owned()),
         );
     }
     model_map.insert(
-        "batch".to_owned(),
+        MinijinjaValue::from("batch"),
         MinijinjaValue::from_object(init_batch_context()),
     );
 
@@ -374,7 +377,7 @@ where
         source: source_value,
         function: function_value,
         builtins: MinijinjaValue::from_object(base_builtins),
-        model: MinijinjaValue::from_dyn_object(to_model_context_map(model_map)),
+        model: MinijinjaValue::from_object(model_map),
         store_result: MinijinjaValue::from_function(result_store.store_result()),
         load_result: MinijinjaValue::from_function(result_store.load_result()),
         store_raw_result: MinijinjaValue::from_function(result_store.store_raw_result()),
@@ -516,7 +519,7 @@ mod tests {
         node_resolver: NodeResolver,
     ) -> FsResult<BTreeMap<String, MinijinjaValue>> {
         build_compile_node_context_inner(
-            model,
+            Arc::new(model.clone()),
             ADAPTER_TYPE,
             &BTreeMap::new(),
             "my_new_project",

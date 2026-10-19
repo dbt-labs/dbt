@@ -67,7 +67,10 @@ use dbt_common::{
     },
     io_utils::{checkpoint_error_count_maybe_exit, checkpoint_maybe_exit},
     path::DbtPath,
-    tracing::dbt_emit::{emit_info_log_message, emit_warn_log_message},
+    tracing::dbt_emit::{
+        emit_info_log_message, emit_info_progress_message, emit_warn_log_from_fs_error,
+        emit_warn_log_message,
+    },
     tracing::emit::emit_info_event,
 };
 use dbt_common::{
@@ -92,7 +95,7 @@ use dbt_tasks_sa::{
     base_context::build_base_context,
     compilation_pipeline::{
         self, schedule as build_schedule_from_resolved, schedule_with_cache_state,
-        schedule_with_select, schedule_with_unique_ids,
+        schedule_with_select, schedule_with_unique_ids, selection_reads_previous_state,
     },
 };
 use dbt_tasks_sa::{compiled_sql_cache::CompiledSqlCacheImpl, task_runner::TaskRunner};
@@ -101,7 +104,7 @@ use dbt_tasks_sa::{
     run_operation::{INLINE_SQL_NAME, run_operation, run_operation_inline_sql},
 };
 use dbt_tasks_sa::{graph::GraphBuilder, utils::typecheck_macros};
-use dbt_telemetry::{ExecutionPhase, NodeType, PhaseExecuted, ShowResult};
+use dbt_telemetry::{ExecutionPhase, NodeType, PhaseExecuted, ProgressMessage, ShowResult};
 
 use std::{
     borrow::Cow,
@@ -427,7 +430,7 @@ impl<'a> CompilationPhasesExecutor<'a> {
             && !resolved_state.nodes.checks.is_empty()
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments, clippy::cognitive_complexity)]
     async fn maybe_write_json_and_exit(
         &mut self,
         feature_stack: &Arc<FeatureStack>,
@@ -570,49 +573,70 @@ impl<'a> CompilationPhasesExecutor<'a> {
                 if (self.arg.write_json || self.arg.write_metadata)
                     && self.arg.command != FsCommand::Parse
                 {
-                    // Write run_results with error status for nodes that had
-                    // resolution errors so that `dbt retry` and `dbt agent` can pick them up.
-                    let now = SystemTime::now();
-                    let error_stats = Stats {
-                        stats: resolved_state
-                            .nodes_with_resolution_errors
-                            .iter()
-                            .map(|uid| Stat {
-                                unique_id: uid.clone(),
-                                num_rows: None,
-                                rows_affected: None,
-                                start_time: now,
-                                end_time: now,
-                                status: NodeStatus::Errored,
-                                thread_id: "main".to_string(),
-                                message: Some("Compilation Error".to_string()),
-                            })
-                            .collect(),
-                        nodes: Some(resolved_state.nodes.clone()),
-                        batch_results: Default::default(),
-                        compiled_code: Default::default(),
+                    // Record only selected nodes, and none if the selection is unavailable.
+                    // `None` skips the run_results writes so a failing retry keeps its input.
+                    let recorded_ids = if self.arg.command_entrypoint == FsCommand::Retry {
+                        None
+                    } else if resolved_state.nodes_with_resolution_errors.is_empty() {
+                        Some(vec![])
+                    } else {
+                        let selected = self.selected_resolution_errors(resolved_state).await;
+                        Some(selected.unwrap_or_else(|err| {
+                            if err.code != ErrorCode::OperationCanceled {
+                                emit_warn_log_message(
+                                    err.code,
+                                    format!(
+                                        "run_results.json records no nodes after the parse error: {err}"
+                                    ),
+                                );
+                            }
+                            vec![]
+                        }))
                     };
-                    if self.arg.write_json {
-                        let project_state = loaded_project.dbt_state();
-                        write_run_results_json_or_warn(
-                            // TODO: should also be captured by the caller?
-                            &build_run_results_artifact(
+                    if let Some(ids) = &recorded_ids {
+                        // Write run_results with error status for nodes that had
+                        // resolution errors so that `dbt retry` and `dbt agent` can pick them up.
+                        let now = SystemTime::now();
+                        let error_stats = Stats {
+                            stats: ids
+                                .iter()
+                                .map(|uid| Stat {
+                                    unique_id: uid.clone(),
+                                    num_rows: None,
+                                    rows_affected: None,
+                                    start_time: now,
+                                    end_time: now,
+                                    status: NodeStatus::Errored,
+                                    thread_id: "main".to_string(),
+                                    message: Some("Compilation Error".to_string()),
+                                })
+                                .collect(),
+                            nodes: Some(resolved_state.nodes.clone()),
+                            batch_results: Default::default(),
+                            compiled_code: Default::default(),
+                        };
+                        if self.arg.write_json {
+                            let project_state = loaded_project.dbt_state();
+                            write_run_results_json_or_warn(
+                                // TODO: should also be captured by the caller?
+                                &build_run_results_artifact(
+                                    &error_stats,
+                                    // Adapter responses are not available during parse phase.
+                                    &HashMap::new(),
+                                    self.arg.as_ref(),
+                                    project_state.warn_error,
+                                    &project_state.warn_error_options,
+                                ),
+                                self.arg.as_ref(),
+                            );
+                        }
+                        if self.arg.write_metadata {
+                            crate::utils::write_runtime_results_parquet(
                                 &error_stats,
-                                // Adapter responses are not available during parse phase.
                                 &HashMap::new(),
                                 self.arg.as_ref(),
-                                project_state.warn_error,
-                                &project_state.warn_error_options,
-                            ),
-                            self.arg.as_ref(),
-                        );
-                    }
-                    if self.arg.write_metadata {
-                        crate::utils::write_runtime_results_parquet(
-                            &error_stats,
-                            &HashMap::new(),
-                            self.arg.as_ref(),
-                        );
+                            );
+                        }
                     }
 
                     let dbt_manifest = self.memoized_manifest(invocation_id, resolved_state);
@@ -628,6 +652,56 @@ impl<'a> CompilationPhasesExecutor<'a> {
             return Err(err); // exit with a status as before
         }
         Ok(())
+    }
+
+    /// Selected nodes that failed dependency resolution.
+    async fn selected_resolution_errors(
+        &self,
+        resolved_state: &ResolverState,
+    ) -> FsResult<Vec<String>> {
+        // Only --state / --defer-state are loaded here, not run-cache or cloud defer state.
+        let previous_state = if selection_reads_previous_state(&resolved_state.resolved_selectors) {
+            let loaded = self
+                .try_load_previous_state(resolved_state.root_project_quoting, None, &None)
+                .await
+                .unwrap_or_else(|err| {
+                    emit_warn_log_from_fs_error(*err);
+                    None
+                });
+            let Some(previous_state) = loaded else {
+                emit_warn_log_message(
+                    ErrorCode::SelectorError,
+                    "run_results.json records no nodes after the parse error because the \
+                     selection reads previous state; re-run the original command instead of \
+                     `dbt retry`",
+                );
+                return Ok(vec![]);
+            };
+            previous_state.set_test_name_truncations(&resolved_state.test_name_truncations);
+            Some(previous_state)
+        } else {
+            None
+        };
+        let scheduler_args =
+            SchedulerArgs::from_eval_args_with_exclude_unique_ids_and_selection_override(
+                &self.arg,
+                Default::default(),
+                resolve_selection_override(&self.arg)?,
+            );
+        let schedule = build_schedule_from_resolved(
+            resolved_state,
+            scheduler_args,
+            previous_state.as_deref(),
+            None,
+            self.arg.local_execution_backend,
+            &self.token,
+        )
+        .await?;
+        Ok(schedule
+            .selected_nodes
+            .into_iter()
+            .filter(|uid| resolved_state.nodes_with_resolution_errors.contains(uid))
+            .collect())
     }
 
     /// Load previous state (priority: --state > --defer-state > auto-downloaded manifest)
@@ -2671,6 +2745,14 @@ fn set_runtime_max_parallelism(arg: &EvalArgs, dbt_state: &DbtState) {
             }
         }
     };
+    emit_info_progress_message(ProgressMessage::new_with_description(
+        "Using".to_string(),
+        format!(
+            "{threads} {}",
+            if threads == 1 { "thread" } else { "threads" }
+        ),
+        format!("target: {}", dbt_state.dbt_profile.target),
+    ));
     dbt_runtime::Handle::current().set_max_parallelism(NonZeroUsize::new(threads).unwrap());
 }
 

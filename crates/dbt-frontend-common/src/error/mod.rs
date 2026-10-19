@@ -37,7 +37,7 @@ mod code_location;
 mod codes;
 mod name_candidate;
 
-use std::{backtrace::Backtrace, sync::Arc};
+use std::backtrace::Backtrace;
 
 pub use code_location::CodeLocation;
 pub use codes::ErrorCode;
@@ -404,16 +404,28 @@ impl FrontendError {
     }
 }
 
-use datafusion_common::DFSchema;
-use datafusion_common::error::DataFusionError;
-use datafusion_expr::expr::Expr;
 use dbt_antlr4::errors::ANTLRError;
+
+/// A column a name might have meant, for the candidates an error lists: the
+/// column's name and the name parts of the relation it belongs to (empty
+/// when it has none).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CandidateColumn {
+    pub qualifier: Vec<String>,
+    pub name: String,
+}
+
+impl From<&CandidateColumn> for NameCandidate {
+    fn from(column: &CandidateColumn) -> Self {
+        NameCandidate::new(column.name.clone(), column.qualifier.clone())
+    }
+}
 
 #[derive(Debug)]
 pub struct SchemaError {
     context: String,
     target: String,
-    schemas: Vec<Arc<DFSchema>>,
+    columns: Vec<CandidateColumn>,
     /// Path to the parquet file this schema was loaded from, if any.
     pub parquet_path: Option<String>,
 }
@@ -422,12 +434,12 @@ impl SchemaError {
     pub fn new(
         context: impl Into<String>,
         target: impl Into<String>,
-        schemas: impl Into<Vec<Arc<DFSchema>>>,
+        columns: impl Into<Vec<CandidateColumn>>,
     ) -> Self {
         SchemaError {
             context: context.into(),
             target: target.into(),
-            schemas: schemas.into(),
+            columns: columns.into(),
             parquet_path: None,
         }
     }
@@ -445,22 +457,9 @@ impl SchemaError {
         &self.target
     }
 
-    pub fn schemas(&self) -> &[Arc<DFSchema>] {
-        &self.schemas
-    }
-
-    pub fn fields(&self) -> Vec<String> {
-        self.schemas.iter().flat_map(|s| s.field_names()).collect()
-    }
-
-    /// If the Arrow schema backing `schema` carries a
-    /// [`DBT_CACHED_PARQUET_PATH_KEY`] metadata entry, records that path on
-    /// this error so the display layer can emit a more actionable message.
-    pub fn with_parquet_path_from_schema(mut self, schema: &Arc<DFSchema>) -> Self {
-        if let Some(path) = schema.as_ref().metadata().get(DBT_CACHED_PARQUET_PATH_KEY) {
-            self.parquet_path = Some(path.clone());
-        }
-        self
+    /// The columns in the schemas the name was looked up in.
+    pub fn columns(&self) -> &[CandidateColumn] {
+        &self.columns
     }
 }
 
@@ -474,15 +473,19 @@ impl std::fmt::Display for SchemaError {
 pub struct AliasedExprsError {
     context: String,
     target: String,
-    items: Vec<Expr>,
+    aliases: Vec<String>,
 }
 
 impl AliasedExprsError {
-    pub fn new(context: impl Into<String>, target: impl Into<String>, items: Vec<Expr>) -> Self {
+    pub fn new(
+        context: impl Into<String>,
+        target: impl Into<String>,
+        aliases: Vec<String>,
+    ) -> Self {
         AliasedExprsError {
             context: context.into(),
             target: target.into(),
-            items,
+            aliases,
         }
     }
 
@@ -494,12 +497,9 @@ impl AliasedExprsError {
         &self.target
     }
 
-    pub fn items(&self) -> &[Expr] {
-        &self.items
-    }
-
-    pub fn fields(&self) -> Vec<String> {
-        self.items.iter().map(|e| e.to_string()).collect()
+    /// The aliases of the expressions the name was looked up in.
+    pub fn aliases(&self) -> &[String] {
+        &self.aliases
     }
 }
 
@@ -509,13 +509,45 @@ impl std::fmt::Display for AliasedExprsError {
     }
 }
 
+/// An error from DataFusion, kept whole so that it can be recovered, with
+/// the message to show for it.
+#[derive(Debug)]
+pub struct DatafusionError {
+    message: String,
+    error: Box<dyn std::error::Error + Send + Sync>,
+}
+
+impl DatafusionError {
+    pub fn new(
+        message: impl Into<String>,
+        error: impl Into<Box<dyn std::error::Error + Send + Sync>>,
+    ) -> Self {
+        DatafusionError {
+            message: message.into(),
+            error: error.into(),
+        }
+    }
+
+    pub fn message(&self) -> &str {
+        &self.message
+    }
+
+    pub fn error(&self) -> &(dyn std::error::Error + Send + Sync + 'static) {
+        self.error.as_ref()
+    }
+
+    pub fn into_error(self) -> Box<dyn std::error::Error + Send + Sync> {
+        self.error
+    }
+}
+
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum WrappedError {
     Frontend(FrontendError),
     Antlr(ANTLRError),
     Arrow(Box<arrow::error::ArrowError>),
-    Datafusion(DataFusionError),
+    Datafusion(DatafusionError),
     ParseFloat(std::num::ParseFloatError),
     ParseInt(std::num::ParseIntError),
     SerdeJson(serde_json::Error),
@@ -528,12 +560,7 @@ impl std::fmt::Display for WrappedError {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         match self {
             WrappedError::Antlr(e) => write!(f, "{e}"),
-            WrappedError::Datafusion(e) => match e {
-                DataFusionError::Plan(e) => write!(f, "{e}"),
-                DataFusionError::SchemaError(e, _) => write!(f, "{e}"),
-                DataFusionError::ArrowError(e, _) => write!(f, "{e}"),
-                _ => write!(f, "{e}"),
-            },
+            WrappedError::Datafusion(e) => write!(f, "{}", e.message()),
             WrappedError::Generic(e) => write!(f, "{e}"),
             WrappedError::Arrow(e) => write!(f, "{e}"),
             WrappedError::ParseFloat(e) => write!(f, "{e}"),
@@ -550,7 +577,7 @@ impl std::error::Error for WrappedError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             WrappedError::Frontend(e) => Some(e),
-            WrappedError::Datafusion(e) => Some(e),
+            WrappedError::Datafusion(e) => Some(e.error()),
             WrappedError::Arrow(e) => Some(e),
             WrappedError::ParseFloat(e) => Some(e),
             WrappedError::ParseInt(e) => Some(e),
@@ -574,7 +601,7 @@ impl std::fmt::Display for InternalError {
         match &self.error {
             WrappedError::Frontend(e) => write!(f, "{e}"),
             WrappedError::Antlr(e) => write!(f, "ANTLR error: {e}"),
-            WrappedError::Datafusion(e) => write!(f, "DataFusion error: {e}"),
+            WrappedError::Datafusion(e) => write!(f, "DataFusion error: {}", e.error()),
             WrappedError::Generic(e) => write!(f, "{e}"),
             WrappedError::Arrow(e) => write!(f, "Arrow error: {e}"),
             WrappedError::ParseFloat(e) => write!(f, "ParseFloat error: {e}"),
@@ -749,8 +776,8 @@ impl From<serde_json::Error> for Box<InternalError> {
     }
 }
 
-impl From<DataFusionError> for InternalError {
-    fn from(e: DataFusionError) -> Self {
+impl From<DatafusionError> for InternalError {
+    fn from(e: DatafusionError) -> Self {
         InternalError {
             error: WrappedError::Datafusion(e),
             location: None,
@@ -759,8 +786,8 @@ impl From<DataFusionError> for InternalError {
     }
 }
 
-impl From<DataFusionError> for Box<InternalError> {
-    fn from(e: DataFusionError) -> Self {
+impl From<DatafusionError> for Box<InternalError> {
+    fn from(e: DatafusionError) -> Self {
         Box::new(e.into())
     }
 }

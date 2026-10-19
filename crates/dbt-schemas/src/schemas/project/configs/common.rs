@@ -252,6 +252,9 @@ pub struct WarehouseSpecificNodeConfig {
     pub persist_constraints: Option<bool>,
     #[serde(default, deserialize_with = "bool_or_string_bool")]
     #[warehouse(valid(Model))]
+    pub use_materialization_v2: Option<bool>,
+    #[serde(default, deserialize_with = "bool_or_string_bool")]
+    #[warehouse(valid(Model))]
     pub use_safer_relation_operations: Option<bool>,
     #[serde(default, deserialize_with = "bool_or_string_bool")]
     #[warehouse(valid(Model))]
@@ -384,6 +387,12 @@ pub struct WarehouseSpecificNodeConfig {
     pub query_settings: Option<BTreeMap<String, YmlValue>>,
     #[warehouse(valid(Model, Snapshot))]
     pub projections: Option<Vec<YmlValue>>,
+    // distributed materializations
+    #[warehouse(valid(Model))]
+    pub sharding_key: Option<String>,
+    #[serde(default, deserialize_with = "bool_or_string_bool")]
+    #[warehouse(valid(Model))]
+    pub disable_on_cluster: Option<bool>,
     // incremental materialization
     #[serde(default, deserialize_with = "bool_or_string_bool")]
     #[warehouse(valid(Model))]
@@ -641,6 +650,8 @@ pub fn same_warehouse_config(
     let skip_matched_step_eq = self_wh.skip_matched_step == other_wh.skip_matched_step;
     let skip_not_matched_step_eq = self_wh.skip_not_matched_step == other_wh.skip_not_matched_step;
     let persist_constraints_eq = self_wh.persist_constraints == other_wh.persist_constraints;
+    let use_materialization_v2_eq =
+        self_wh.use_materialization_v2 == other_wh.use_materialization_v2;
     let unique_tmp_table_suffix_eq =
         self_wh.unique_tmp_table_suffix == other_wh.unique_tmp_table_suffix;
     let schedule_eq = self_wh.schedule == other_wh.schedule;
@@ -683,6 +694,8 @@ pub fn same_warehouse_config(
     let settings_eq = opt_yml_map_eq(&self_wh.settings, &other_wh.settings);
     let query_settings_eq = opt_yml_map_eq(&self_wh.query_settings, &other_wh.query_settings);
     let projections_eq = opt_yml_vec_eq(&self_wh.projections, &other_wh.projections);
+    let sharding_key_eq = self_wh.sharding_key == other_wh.sharding_key;
+    let disable_on_cluster_eq = self_wh.disable_on_cluster == other_wh.disable_on_cluster;
     let inserts_only_eq = self_wh.inserts_only == other_wh.inserts_only;
     let connection_overrides_eq = opt_yml_map_eq(
         &self_wh.connection_overrides,
@@ -748,6 +761,7 @@ pub fn same_warehouse_config(
         && skip_matched_step_eq
         && skip_not_matched_step_eq
         && persist_constraints_eq
+        && use_materialization_v2_eq
         && unique_tmp_table_suffix_eq
         && schedule_eq
         && adapter_properties_eq
@@ -788,6 +802,8 @@ pub fn same_warehouse_config(
         && settings_eq
         && query_settings_eq
         && projections_eq
+        && sharding_key_eq
+        && disable_on_cluster_eq
         && inserts_only_eq
         && connection_overrides_eq
         && fields_eq
@@ -1141,6 +1157,14 @@ pub fn same_warehouse_config(
                     )),
                 ),
                 (
+                    "use_materialization_v2",
+                    use_materialization_v2_eq,
+                    Some((
+                        format!("{:?}", &self_wh.use_materialization_v2),
+                        format!("{:?}", &other_wh.use_materialization_v2),
+                    )),
+                ),
+                (
                     "unique_tmp_table_suffix",
                     unique_tmp_table_suffix_eq,
                     Some((
@@ -1466,6 +1490,22 @@ pub fn same_warehouse_config(
                     Some((
                         format!("{:?}", &self_wh.projections),
                         format!("{:?}", &other_wh.projections),
+                    )),
+                ),
+                (
+                    "sharding_key",
+                    sharding_key_eq,
+                    Some((
+                        format!("{:?}", &self_wh.sharding_key),
+                        format!("{:?}", &other_wh.sharding_key),
+                    )),
+                ),
+                (
+                    "disable_on_cluster",
+                    disable_on_cluster_eq,
+                    Some((
+                        format!("{:?}", &self_wh.disable_on_cluster),
+                        format!("{:?}", &other_wh.disable_on_cluster),
                     )),
                 ),
                 (

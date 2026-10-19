@@ -47,7 +47,7 @@ pub fn execute_function_remote(
         .map(|br| br.successful.iter().map(|(name, _)| name.clone()).collect())
         .unwrap_or_default();
 
-    // LazyModelWrapper reads model.compiled_code from disk. All overloads share
+    // The run-phase model reads model.compiled_code from disk. All overloads share
     // the root's compiled file path, so we pre-write each overload's SQL before
     // its materialization and restore the root's SQL after the loop.
     let compiled_path = get_target_write_path(
@@ -85,7 +85,7 @@ pub fn execute_function_remote(
         }
         overload_function.__common_attr__.raw_code = Some(overload_sql.to_string());
 
-        // LazyModelWrapper reads the compiled SQL from disk, so this pre-write is
+        // The run-phase model reads the compiled SQL from disk, so this pre-write is
         // load-bearing for the materialization below. A failure here means the
         // overload can't be created correctly — record it as a failed overload
         // and continue with the rest (continue-on-failure semantics).

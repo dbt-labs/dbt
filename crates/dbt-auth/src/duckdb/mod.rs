@@ -34,13 +34,40 @@ impl Auth for DuckDbAuth {
         // The path option from profiles.yml specifies where to store the database file
         if config.get_string("path").is_some() {
             let path = match &target {
-                init::DuckDbTarget::MotherDuck { .. }
-                | init::DuckDbTarget::MotherDuckWithToken { .. } => ":memory:",
-                init::DuckDbTarget::Plain { path } => path,
+                init::DuckDbTarget::Plain { path } => *path,
+                init::DuckDbTarget::MotherduckBrowserLogin { path, .. }
+                | init::DuckDbTarget::MotherduckTokenAuth { path, .. }
+                | init::DuckDbTarget::MotherduckSaasBrowserLogin { path, .. }
+                | init::DuckDbTarget::MotherduckSaasTokenAuth { path, .. } => path.as_str(),
             };
             builder
                 .with_named_option("path", path)
                 .map_err(|e| AuthError::Config(e.to_string()))?;
+        }
+
+        match &target {
+            init::DuckDbTarget::Plain { .. }
+            | init::DuckDbTarget::MotherduckBrowserLogin { .. } => {}
+            init::DuckDbTarget::MotherduckTokenAuth { token, .. } => {
+                builder
+                    .with_named_option("motherduck_token", token.clone())
+                    .map_err(|e| AuthError::Config(e.to_string()))?;
+            }
+            init::DuckDbTarget::MotherduckSaasBrowserLogin { .. } => {
+                // this would normally be a SET GLOBAL
+                builder
+                    .with_named_option("motherduck_saas_mode", "true")
+                    .map_err(|e| AuthError::Config(e.to_string()))?;
+            }
+            init::DuckDbTarget::MotherduckSaasTokenAuth { token, .. } => {
+                builder
+                    .with_named_option("motherduck_token", token.clone())
+                    .map_err(|e| AuthError::Config(e.to_string()))?;
+                // this would normally be a SET GLOBAL
+                builder
+                    .with_named_option("motherduck_saas_mode", "true")
+                    .map_err(|e| AuthError::Config(e.to_string()))?;
+            }
         }
 
         Ok(builder)
@@ -93,7 +120,7 @@ path: "md:stocks_dev"
                 (
                     OptionDatabase::Other(option_name),
                     OptionValue::String(option_value)
-                ) if option_name == "path" && option_value == ":memory:"
+                ) if option_name == "path" && option_value == "md:stocks_dev"
             )
         }));
         assert!(!builder.other.iter().any(|(name, _)| {

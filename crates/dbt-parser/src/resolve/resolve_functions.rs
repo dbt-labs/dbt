@@ -508,8 +508,8 @@ pub async fn resolve_functions(
         };
 
         // update model components using the generate_relation_components function
-        update_node_relation_components(
-            &mut function,
+        function = update_node_relation_components(
+            function,
             &env,
             &root_package.dbt_project.name,
             package_name,

@@ -917,7 +917,7 @@ pub fn hydrate_user_defined_schema_registry(
             ),
         };
         let relation =
-            datafusion_common::TableReference::full(database, schema, alias).to_quoted_string();
+            dbt_common::user_defined_schema_registry::relation_key(&database, &schema, &alias);
         for column in &base.columns {
             let name = match adapter_type {
                 AdapterType::Snowflake => column.name.to_uppercase(),
@@ -1142,6 +1142,32 @@ fn global_runtime_configs() -> &'static SharedRuntimeConfigMap {
 pub fn register_global_runtime_config(package_name: String, cfg: Arc<DbtRuntimeConfig>) {
     let mut map = global_runtime_configs().write().expect("poisoned lock");
     map.insert(package_name, cfg);
+}
+
+/// Canonical absolute `seed-paths` of every registered package (the root project
+/// included), each prefixed with that package's project root. Directories that
+/// don't exist are skipped.
+pub fn canonical_seed_dirs() -> Vec<String> {
+    let Some(configs) = snapshot_global_runtime_configs() else {
+        return Vec::new();
+    };
+    let mut dirs: Vec<String> = configs
+        .values()
+        .flat_map(|config| {
+            let inner = &config.inner;
+            inner
+                .seed_paths
+                .iter()
+                .filter_map(|path| {
+                    dbt_common::stdfs::canonicalize(inner.project_root.join(path)).ok()
+                })
+                .filter_map(|dir| dir.to_str().map(str::to_owned))
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    dirs.sort();
+    dirs.dedup();
+    dirs
 }
 
 fn snapshot_global_runtime_configs() -> Option<RuntimeConfigMap> {
@@ -1737,8 +1763,7 @@ mod user_defined_schema_registry_tests {
             ..Default::default()
         };
         let registry = hydrate_user_defined_schema_registry(&nodes, AdapterType::Snowflake);
-        let relation =
-            datafusion_common::TableReference::full("DB", "SCH", "TBL").to_quoted_string();
+        let relation = dbt_common::user_defined_schema_registry::relation_key("DB", "SCH", "TBL");
         assert!(registry.columns_for(&relation).unwrap().contains("COL"));
     }
 
@@ -1754,8 +1779,7 @@ mod user_defined_schema_registry_tests {
             ..Default::default()
         };
         let registry = hydrate_user_defined_schema_registry(&nodes, AdapterType::DuckDB);
-        let relation =
-            datafusion_common::TableReference::full("db", "sch", "tbl").to_quoted_string();
+        let relation = dbt_common::user_defined_schema_registry::relation_key("db", "sch", "tbl");
         assert!(registry.columns_for(&relation).unwrap().contains("col"));
     }
 
@@ -1771,8 +1795,7 @@ mod user_defined_schema_registry_tests {
             ..Default::default()
         };
         let registry = hydrate_user_defined_schema_registry(&nodes, AdapterType::Snowflake);
-        let relation =
-            datafusion_common::TableReference::full("DB", "SCH", "TBL").to_quoted_string();
+        let relation = dbt_common::user_defined_schema_registry::relation_key("DB", "SCH", "TBL");
         assert!(registry.columns_for(&relation).is_none());
     }
 
@@ -1826,7 +1849,7 @@ mod user_defined_schema_registry_tests {
         let registry = hydrate_user_defined_schema_registry(&nodes, AdapterType::DuckDB);
 
         let source_relation =
-            datafusion_common::TableReference::full("db", "sch", "src_tbl").to_quoted_string();
+            dbt_common::user_defined_schema_registry::relation_key("db", "sch", "src_tbl");
         assert!(
             registry
                 .columns_for(&source_relation)
@@ -1835,7 +1858,7 @@ mod user_defined_schema_registry_tests {
         );
 
         let seed_relation =
-            datafusion_common::TableReference::full("db", "sch", "seed_tbl").to_quoted_string();
+            dbt_common::user_defined_schema_registry::relation_key("db", "sch", "seed_tbl");
         assert!(
             registry
                 .columns_for(&seed_relation)
@@ -1844,7 +1867,7 @@ mod user_defined_schema_registry_tests {
         );
 
         let snapshot_relation =
-            datafusion_common::TableReference::full("db", "sch", "snap_tbl").to_quoted_string();
+            dbt_common::user_defined_schema_registry::relation_key("db", "sch", "snap_tbl");
         assert!(
             registry
                 .columns_for(&snapshot_relation)

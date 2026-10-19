@@ -372,6 +372,23 @@ message RunModel {
 
   // where the node was executed. one of "remote", "local", or "lake_compute".
   string compute_mode = 25;
+
+  // number of rows affected by the model's main statement. Unset when unknown
+  // (distinct from 0).
+  optional int64 rows_affected = 26;
+
+  // the snapshot config strategy (ex. "timestamp", "check"). empty string for
+  // non-snapshot nodes.
+  string snapshot_strategy = 27;
+
+  // bytes processed, per the BigQuery adapter response. Unset for other adapters.
+  optional int64 bytes_processed = 28;
+
+  // bytes billed, per the BigQuery adapter response. Unset for other adapters.
+  optional int64 bytes_billed = 29;
+
+  // slot milliseconds used, per the BigQuery adapter response. Unset for other adapters.
+  optional int64 slot_ms = 30;
 }
 
 message Onboarding {

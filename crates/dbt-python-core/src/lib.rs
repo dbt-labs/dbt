@@ -352,7 +352,7 @@ where
         .apply_configuration(&cli.common_args());
 
     // Ctrl+C is Python's job; the engine gets a never-cancel token.
-    let token = dbt_base::cancel::never_cancels();
+    let token = dbt_cancel::never_cancels();
 
     let dbt_rt = dbt_runtime::builder::Builder::new()
         .max_blocking_threads(48)

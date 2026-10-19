@@ -1,5 +1,5 @@
 use adbc_core::error::{Error as AdbcError, Result as AdbcResult, Status as AdbcStatus};
-use adbc_core::options::{OptionStatement, OptionValue};
+use adbc_core::options::{OptionConnection, OptionStatement, OptionValue};
 use arrow::array::{RecordBatch, RecordBatchReader};
 use arrow::record_batch::RecordBatchIterator;
 use arrow_schema::{ArrowError, Schema};
@@ -64,6 +64,10 @@ impl Connection for ReplayConnection {
 
     fn rollback(&mut self) -> AdbcResult<()> {
         unimplemented!("ADBC connection rollback in replay engine")
+    }
+
+    fn set_option(&mut self, _key: OptionConnection, _value: OptionValue) -> AdbcResult<()> {
+        Ok(())
     }
 
     #[allow(deprecated)]

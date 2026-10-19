@@ -281,7 +281,7 @@ fn parquet_to_jsonl(
 }
 
 /// Reads parquet bytes and deserializes each record batch into telemetry records.
-fn read_parquet_to_records(
+pub fn read_parquet_to_records(
     parquet_bytes: Vec<u8>,
     deserializer: TelemetryArrowDeserializer,
 ) -> FsResult<Vec<TelemetryRecord>> {

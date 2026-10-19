@@ -21,6 +21,15 @@ message Process {
 // Time some work spent queued for a worker of a bounded thread pool, e.g. a
 // node evaluation waiting to run. The work makes no progress during this time.
 // It may occur multiple times for the same work, and short waits below an
-// internal threshold are not reported. When emitted within a `NodeEvaluated`
-// span, the time counts toward its `idle_time_ms`.
-message ThreadPoolWait {}
+// internal threshold are not reported.
+//
+// Each span is a single pool wait of the operation it is nested under. Waits
+// of the same operation never overlap, so how the operation accounts them,
+// e.g. as idle time, is defined by the operation's own event.
+message ThreadPoolWait {
+  // Unique id of the node whose work is waiting, if attributable to one.
+  optional string unique_id = 1;
+  // Id of the microbatch whose work is waiting. Unset for waits of a node
+  // evaluation as a whole.
+  optional string batch_id = 2;
+}

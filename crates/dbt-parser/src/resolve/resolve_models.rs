@@ -1166,8 +1166,8 @@ async fn build_model_nodes(
         };
 
         // update model components using the generate_relation_components function
-        update_node_relation_components(
-            &mut dbt_model,
+        dbt_model = update_node_relation_components(
+            dbt_model,
             env,
             &root_package.dbt_project.name,
             package_name,

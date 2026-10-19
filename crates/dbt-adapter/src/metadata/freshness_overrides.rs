@@ -4,6 +4,7 @@
 //! standard SQL plus timestamp parsing — only the bulk INFORMATION_SCHEMA-style
 //! query differs across adapters. This module owns the parts that don't.
 
+use crate::connection::ConnectionGuard;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
@@ -11,7 +12,7 @@ use arrow_array::{
     Array, TimestampMicrosecondArray, TimestampMillisecondArray, TimestampNanosecondArray,
     TimestampSecondArray,
 };
-use dbt_adbc::{Connection, QueryCtx};
+use dbt_adbc::QueryCtx;
 use dbt_common::cancellation::CancellationToken;
 use dbt_schemas::schemas::relations::base::BaseRelation;
 
@@ -96,7 +97,7 @@ pub(crate) fn freshness_override_sql(
 
 pub(crate) fn run_override_sql(
     adapter: &AdapterImpl,
-    conn: &mut dyn Connection,
+    conn: &mut ConnectionGuard<'_>,
     semantic_fqn: String,
     sql: &str,
     token: CancellationToken,
@@ -133,7 +134,7 @@ pub(crate) fn run_override_sql(
 
 pub(crate) fn run_override_query(
     adapter: &AdapterImpl,
-    conn: &mut dyn Connection,
+    conn: &mut ConnectionGuard<'_>,
     relation: &Arc<dyn BaseRelation>,
     ovr: &FreshnessOverride,
     token: CancellationToken,

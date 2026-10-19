@@ -1,8 +1,8 @@
 use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, OnceLock};
 
 use adbc_record_replay::{RecordConnection, RecordingContext, ReplayConnection};
 use arrow_array::RecordBatch;
@@ -19,6 +19,7 @@ use minijinja::State;
 use crate::cache::RelationCache;
 use crate::engine::query_comment::QueryCommentConfig;
 use crate::engine::retry::QueryRetryPolicy;
+use crate::metadata::clickhouse::ClickHouseCapabilities;
 use crate::sql_types::TypeOps;
 use crate::stmt_splitter::StmtSplitter;
 
@@ -136,6 +137,10 @@ impl AdapterEngine for RecordReplayEngine {
 
     fn behavior_flag_overrides(&self) -> &BTreeMap<String, bool> {
         self.inner.behavior_flag_overrides()
+    }
+
+    fn clickhouse_capabilities(&self) -> Option<&OnceLock<ClickHouseCapabilities>> {
+        self.inner.clickhouse_capabilities()
     }
 
     fn is_replay(&self) -> bool {

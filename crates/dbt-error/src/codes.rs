@@ -186,6 +186,8 @@ pub enum ErrorCode {
     RateLimited = 1202,
     HttpError = 1203,
     DbtPlatformApiError = 1204,
+    /// `REQUESTS_CA_BUNDLE` or `CURL_CA_BUNDLE` names a CA bundle that can't be used, so its certificates aren't trusted.
+    CaBundleUnusable = 1205,
 
     // Auth/credentials [1250–1279]
     AuthFailed = 1250,

@@ -440,3 +440,108 @@ fn table_materialization_ctas_in_place_for_staged_create_opt_in() {
         "staged-create opt-in should not create-then-insert, got: {executed}"
     );
 }
+
+const SEED_FILE_PATH: &str = "/tmp/jobs/run/seeds/raw_orders.csv";
+
+fn render_load_csv_rows(dbt_version: &str) -> (MacroTestHarness, String) {
+    let harness = build_harness("iceberg_demo", "ducklake_demo");
+    harness
+        .mock()
+        .on("get_seed_file_path", |_| Ok(Value::from(SEED_FILE_PATH)));
+    harness
+        .mock()
+        .on("load_dataframe", |_| Ok(Value::UNDEFINED));
+    harness.mock().on("add_query", |_| Ok(Value::UNDEFINED));
+
+    let model = Value::from_serialize(BTreeMap::from([
+        ("database", "md_db"),
+        ("schema", "main"),
+        ("alias", "raw_orders"),
+    ]));
+    let agate_table = Value::from_serialize(BTreeMap::from([
+        ("column_names", Value::from_serialize(["id", "status"])),
+        (
+            "rows",
+            Value::from_serialize(vec![
+                vec![Value::from(1), Value::from("placed")],
+                vec![Value::from(2), Value::from("shipped")],
+            ]),
+        ),
+    ]));
+    let config = Arc::new(MockJinjaObject::new());
+    config.on("get", |args| {
+        let key = args.first().and_then(|v| v.as_str());
+        let default = args.get(1).cloned().unwrap_or(Value::UNDEFINED);
+        match key {
+            Some("column_types") => Ok(Value::from_serialize(BTreeMap::from([
+                ("id", "varchar"),
+                ("amount", "decimal(10,2)"),
+            ]))),
+            _ => Ok(default),
+        }
+    });
+
+    let ctx = harness
+        .materialization_context("raw_orders", "")
+        .relation_type(RelationType::Table)
+        .config(Value::from_dyn_object(config))
+        .with("model", model)
+        .with("agate_table", agate_table)
+        .with("dbt_version", Value::from(dbt_version))
+        .build();
+
+    let rendered = harness
+        .render("{{ duckdb__load_csv_rows(model, agate_table) }}", ctx)
+        .expect("render should succeed");
+    (harness, rendered)
+}
+
+#[test]
+fn load_csv_rows_fast_path_calls_load_dataframe() {
+    // The seed CSV lives on the dbt host's disk; a remote/sandboxed database
+    // (MotherDuck with saas_mode) can't `COPY ... FROM` it, so Fusion hands the
+    // parsed rows to `adapter.load_dataframe`. The Rust side binds these
+    // arguments by position, so this test pins the whole positional contract.
+    // The rows and the ingest itself are covered by the Rust tests in
+    // `dbt-adapter` (`seed::tests`, `duckdb_seed_ingest_*`).
+    let (harness, rendered) = render_load_csv_rows("2.0.0");
+
+    let calls = harness.mock().observed_calls();
+    let load = calls
+        .to("load_dataframe")
+        .next()
+        .expect("fast seed load should call adapter.load_dataframe");
+    assert_eq!(load.args.len(), 7, "load_dataframe takes 7 positional args");
+    let arg = |i: usize| load.args[i].to_string();
+    assert_eq!(arg(0), "md_db", "database");
+    assert_eq!(arg(1), "main", "schema");
+    assert_eq!(arg(2), "raw_orders", "table_name");
+    assert_eq!(arg(3), SEED_FILE_PATH, "file_path");
+    // args[4] is the agate table; its rows are checked by the Rust ingest tests.
+    let column_types = &load.args[5];
+    for (column, dtype) in [("id", "varchar"), ("amount", "decimal(10,2)")] {
+        let got = column_types
+            .get_item(&Value::from(column))
+            .expect("column_types should be a mapping");
+        assert_eq!(got.as_str(), Some(dtype), "column_types[{column}]");
+    }
+    assert_eq!(arg(6), ",", "field_delimiter");
+    calls.assert_not_called("add_query");
+    assert!(
+        !rendered.contains(SEED_FILE_PATH),
+        "Fusion must not reference the local seed file in generated SQL, got: {rendered}"
+    );
+}
+
+#[test]
+fn load_csv_rows_fast_path_keeps_copy_outside_fusion() {
+    let (harness, rendered) = render_load_csv_rows("1.10.0");
+
+    let calls = harness.mock().observed_calls();
+    calls.assert_not_called("load_dataframe");
+    calls.assert_called("add_query");
+    assert!(
+        rendered.contains("COPY") && rendered.contains(SEED_FILE_PATH),
+        "Python dbt-core should keep upstream's COPY, got: {rendered}"
+    );
+}

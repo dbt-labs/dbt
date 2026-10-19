@@ -1784,58 +1784,70 @@ impl CatalogRelation {
     ) -> AdapterResult<CatalogRelation> {
         let bigquery = require_platform_block(catalog, catalog_name, "bigquery")?;
 
-        let external_volume = Self::get_model_config_value(
-            model,
-            FIELD_EXTERNAL_VOLUME,
-            AdapterType::Bigquery,
-        )
-        .or_else(|| get_yaml_str(bigquery, FIELD_EXTERNAL_VOLUME).map(|s| s.to_string()))
-        .ok_or_else(|| {
-            AdapterError::new(
-                AdapterErrorKind::Configuration,
-                format!(
-                    "Catalog '{catalog_name}' biglake_metastore/bigquery requires external_volume"
-                ),
-            )
-        })?;
-        if external_volume.trim().is_empty() {
-            return Err(AdapterError::new(
-                AdapterErrorKind::Configuration,
-                format!(
-                    "Catalog '{catalog_name}' biglake_metastore/bigquery external_volume cannot be blank"
-                ),
-            ));
-        }
-        if !external_volume.starts_with("gs://") {
-            return Err(AdapterError::new(
-                AdapterErrorKind::Configuration,
-                format!(
-                    "Catalog '{catalog_name}' biglake_metastore/bigquery external_volume must start with gs://"
-                ),
-            ));
-        }
+        let lakehouse_catalog =
+            get_yaml_str(bigquery, FIELD_LAKEHOUSE_CATALOG).map(|s| s.to_string());
+        let is_lrc = lakehouse_catalog.is_some();
 
-        let mut file_format = Self::get_model_config_value(
-            model,
-            FIELD_FILE_FORMAT,
-            AdapterType::Bigquery,
-        )
-        .or_else(|| get_yaml_str(bigquery, FIELD_FILE_FORMAT).map(|s| s.to_string()))
-        .ok_or_else(|| {
-            AdapterError::new(
-                AdapterErrorKind::Configuration,
-                format!("Catalog '{catalog_name}' biglake_metastore/bigquery requires file_format"),
-            )
-        })?;
-        file_format.make_ascii_lowercase();
-        if !file_format.eq_ignore_ascii_case("parquet") {
-            return Err(AdapterError::new(
-                AdapterErrorKind::Configuration,
-                format!(
-                    "Catalog '{catalog_name}' biglake_metastore/bigquery file_format must be parquet"
-                ),
-            ));
-        }
+        let external_volume =
+            Self::get_model_config_value(model, FIELD_EXTERNAL_VOLUME, AdapterType::Bigquery)
+                .or_else(|| get_yaml_str(bigquery, FIELD_EXTERNAL_VOLUME).map(|s| s.to_string()));
+        let external_volume = match external_volume {
+            Some(external_volume) => {
+                if external_volume.trim().is_empty() {
+                    return Err(AdapterError::new(
+                        AdapterErrorKind::Configuration,
+                        format!(
+                            "Catalog '{catalog_name}' biglake_metastore/bigquery external_volume cannot be blank"
+                        ),
+                    ));
+                }
+                if !external_volume.starts_with("gs://") {
+                    return Err(AdapterError::new(
+                        AdapterErrorKind::Configuration,
+                        format!(
+                            "Catalog '{catalog_name}' biglake_metastore/bigquery external_volume must start with gs://"
+                        ),
+                    ));
+                }
+                Some(external_volume)
+            }
+            None if is_lrc => None,
+            None => {
+                return Err(AdapterError::new(
+                    AdapterErrorKind::Configuration,
+                    format!(
+                        "Catalog '{catalog_name}' biglake_metastore/bigquery requires external_volume"
+                    ),
+                ));
+            }
+        };
+
+        let file_format =
+            Self::get_model_config_value(model, FIELD_FILE_FORMAT, AdapterType::Bigquery)
+                .or_else(|| get_yaml_str(bigquery, FIELD_FILE_FORMAT).map(|s| s.to_string()));
+        let file_format = match file_format {
+            Some(mut file_format) => {
+                file_format.make_ascii_lowercase();
+                if !file_format.eq_ignore_ascii_case("parquet") {
+                    return Err(AdapterError::new(
+                        AdapterErrorKind::Configuration,
+                        format!(
+                            "Catalog '{catalog_name}' biglake_metastore/bigquery file_format must be parquet"
+                        ),
+                    ));
+                }
+                Some(file_format)
+            }
+            None if is_lrc => None,
+            None => {
+                return Err(AdapterError::new(
+                    AdapterErrorKind::Configuration,
+                    format!(
+                        "Catalog '{catalog_name}' biglake_metastore/bigquery requires file_format"
+                    ),
+                ));
+            }
+        };
 
         let base_location_root =
             Self::get_model_config_value(model, FIELD_BASE_LOCATION_ROOT, AdapterType::Bigquery)
@@ -1867,21 +1879,29 @@ impl CatalogRelation {
             Self::get_model_config_value(model, FIELD_CONNECTION_ID, AdapterType::Bigquery)
                 .or_else(|| get_yaml_str(bigquery, FIELD_CONNECTION_ID).map(|s| s.to_string()));
 
-        let storage_uri =
-            Self::get_model_config_value(model, FIELD_STORAGE_URI, AdapterType::Bigquery)
-                .unwrap_or_else(|| format!("{external_volume}/{base_location}"));
+        let storage_uri = if is_lrc {
+            None
+        } else {
+            Self::get_model_config_value(model, FIELD_STORAGE_URI, AdapterType::Bigquery).or_else(
+                || {
+                    external_volume
+                        .as_deref()
+                        .map(|v| format!("{v}/{base_location}"))
+                },
+            )
+        };
 
         let catalog_database =
             get_yaml_str(bigquery, FIELD_CATALOG_DATABASE).map(|s| s.to_string());
-        let lakehouse_catalog =
-            get_yaml_str(bigquery, FIELD_LAKEHOUSE_CATALOG).map(|s| s.to_string());
 
         let mut adapter_properties = BTreeMap::new();
 
         if let Some(connection_id) = connection_id {
             adapter_properties.insert(FIELD_CONNECTION_ID.to_string(), connection_id);
         }
-        adapter_properties.insert(FIELD_STORAGE_URI.to_string(), storage_uri);
+        if let Some(storage_uri) = storage_uri {
+            adapter_properties.insert(FIELD_STORAGE_URI.to_string(), storage_uri);
+        }
 
         Ok(CatalogRelation {
             adapter_type: AdapterType::Bigquery,
@@ -1895,7 +1915,7 @@ impl CatalogRelation {
             catalog_database,
             lakehouse_catalog,
             base_location: None,
-            file_format: Some(file_format),
+            file_format,
         })
     }
 
@@ -2660,6 +2680,75 @@ catalogs:
             assert_eq!(r.lakehouse_catalog.as_deref(), Some("sales_catalog"));
             assert!(r.catalog_database.is_none());
         }
+    }
+
+    // dbt-labs/fs: docs/build/iceberg/adapters/bigquery-iceberg-support.md's own LRC
+    // example omits external_volume/file_format ("An LRC catalog doesn't need
+    // external_volume or file_format"). Confirm that config actually parses.
+    #[test]
+    fn bigquery_lrc_without_external_volume_or_file_format() {
+        let catalogs = load_catalogs_yaml(
+            r#"
+catalogs:
+  - name: my_lrc_catalog
+    type: biglake_metastore
+    table_format: iceberg
+    config:
+      bigquery:
+        lakehouse_catalog: sales_catalog
+"#,
+        );
+        let conf = json!({
+            "catalog_name": "my_lrc_catalog",
+            "schema": "analytics",
+            "alias": "events"
+        });
+        let ms = [
+            model(AdapterType::Bigquery, conf.clone()),
+            model_deprecated_config(conf),
+        ];
+
+        for m in ms {
+            let r = from_model_config_and_catalogs_default(
+                AdapterType::Bigquery,
+                &m,
+                Arc::new(catalogs.clone()),
+            )
+            .unwrap();
+
+            assert_eq!(r.lakehouse_catalog.as_deref(), Some("sales_catalog"));
+            assert_eq!(r.file_format, None);
+            assert!(!r.adapter_properties.contains_key("storage_uri"));
+        }
+    }
+
+    #[test]
+    fn bigquery_lrc_ignores_model_storage_uri() {
+        let catalogs = load_catalogs_yaml(
+            r#"
+catalogs:
+  - name: my_lrc_catalog
+    type: biglake_metastore
+    table_format: iceberg
+    config:
+      bigquery:
+        lakehouse_catalog: sales_catalog
+"#,
+        );
+        let m = model(
+            AdapterType::Bigquery,
+            json!({
+                "catalog_name": "my_lrc_catalog",
+                "schema": "analytics",
+                "alias": "events",
+                "storage_uri": "gs://my-bucket/manual"
+            }),
+        );
+
+        let r =
+            from_model_config_and_catalogs_default(AdapterType::Bigquery, &m, Arc::new(catalogs))
+                .expect("a model-level storage_uri must not fail an LRC catalog");
+        assert!(!r.adapter_properties.contains_key("storage_uri"));
     }
 
     #[test]
@@ -3709,6 +3798,9 @@ mod has_catalog_linked_database_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use dbt_common::serde_utils::convert_yml_to_value_map;
+    use dbt_schemas::schemas::project::SnapshotConfig;
+    use dbt_schemas::schemas::{DbtSnapshot, InternalDbtNode};
     use minijinja::Value as JVal;
     use serde_json::json;
 
@@ -3774,6 +3866,21 @@ mod tests {
         } else {
             panic!("Config is not a JSON object");
         }
+    }
+
+    fn snapshot(config: SnapshotConfig) -> JVal {
+        let mut snapshot = DbtSnapshot {
+            deprecated_config: config,
+            ..Default::default()
+        };
+        snapshot.__snapshot_attr__.catalog_name = snapshot
+            .deprecated_config
+            .__warehouse_specific_config__
+            .catalog_name
+            .clone();
+        snapshot.__snapshot_attr__.table_format = snapshot.deprecated_config.table_format.clone();
+
+        JVal::from_object(convert_yml_to_value_map(snapshot.serialize()))
     }
 
     fn s(s: &str) -> YmlValue {
@@ -3943,6 +4050,37 @@ mod tests {
             assert!(r.external_volume.is_none());
             assert!(r.base_location.is_none());
         }
+    }
+
+    #[test]
+    fn snapshot_config_selects_snowflake_iceberg_relation() {
+        let mut config = SnapshotConfig {
+            schema: Some("SCH".to_string()),
+            alias: Some("SNAPSHOT".to_string()),
+            table_format: Some("iceberg".to_string()),
+            ..Default::default()
+        };
+        config.__warehouse_specific_config__.external_volume = Some("EV".to_string());
+        config.__warehouse_specific_config__.iceberg_version = Some(2);
+        let snapshot = snapshot(config);
+
+        let relation = CatalogRelation::from_model_config_and_catalogs(
+            AdapterType::Snowflake,
+            &snapshot,
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(relation.catalog_type, CatalogType::SnowflakeBuiltIn);
+        assert_eq!(relation.table_format, TableFormat::Iceberg);
+        assert_eq!(relation.external_volume.as_deref(), Some("EV"));
+        assert_eq!(
+            relation
+                .adapter_properties
+                .get("iceberg_version")
+                .map(String::as_str),
+            Some("2")
+        );
     }
 
     #[test]
@@ -4771,6 +4909,35 @@ mod tests {
             );
             assert!(r.is_transient.is_none());
         }
+    }
+
+    #[test]
+    fn snapshot_config_selects_databricks_iceberg_relation() {
+        let cats = catalogs_yaml_one(
+            "UC",
+            "WIN",
+            "unity",
+            "ICEBERG",
+            &[("file_format", s("delta"))],
+        );
+        let mut config = SnapshotConfig {
+            table_format: Some("iceberg".to_string()),
+            ..Default::default()
+        };
+        config.__warehouse_specific_config__.catalog_name = Some("UC".to_string());
+        let snapshot = snapshot(config);
+
+        let relation = CatalogRelation::from_model_config_and_catalogs(
+            AdapterType::Databricks,
+            &snapshot,
+            Some(Arc::new(DbtCatalogs::new(cats, Default::default()))),
+        )
+        .unwrap();
+
+        assert_eq!(relation.catalog_name.as_deref(), Some("UC"));
+        assert_eq!(relation.catalog_type, CatalogType::Unity);
+        assert_eq!(relation.table_format, TableFormat::Iceberg);
+        assert_eq!(relation.file_format.as_deref(), Some("delta"));
     }
 
     #[test]

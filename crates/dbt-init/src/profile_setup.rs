@@ -172,6 +172,7 @@ impl ProfileSetup {
             AdapterType::Databricks,
             AdapterType::Bigquery,
             AdapterType::ClickHouse,
+            AdapterType::DuckDB,
             AdapterType::Exasol,
             AdapterType::Postgres,
             AdapterType::Redshift,

@@ -53,7 +53,6 @@ use dbt_yaml::Verbatim;
 use minijinja::Value;
 use minijinja::constants::TARGET_UNIQUE_ID;
 use minijinja::listener::RenderingEventListener;
-use minijinja::value::mutable_map::MutableMap;
 use tracing::debug;
 
 /// Macro to handle NULL values in Arrow arrays
@@ -700,7 +699,7 @@ fn body_for_materialization<'a>(
 #[allow(clippy::too_many_arguments)]
 pub fn materialize_model(
     sql: &str,
-    model: &DbtModel,
+    node: Arc<dyn InternalDbtNode>,
     adapter_type: AdapterType,
     runtime_config: &DbtRuntimeConfig,
     materialization_resolver: &Arc<MaterializationResolver>,
@@ -709,9 +708,13 @@ pub fn materialize_model(
     io_args: &IoArgs,
     sql_header: Option<Value>,
 ) -> FsResult<(Value, Option<AdapterResponse>)> {
+    let model = node
+        .as_any()
+        .downcast_ref::<DbtModel>()
+        .expect("model materialization requires a model node");
     // get materialization
-    let (mut context, result_store) = build_run_node_context(
-        model,
+    let (mut context, result_store) = dbt_jinja_utils::phases::run::build_run_node_context_from_arc(
+        node.clone(),
         &model.deprecated_config,
         adapter_type,
         None,
@@ -1119,11 +1122,11 @@ pub fn materialize_microbatch_model(
     // Databricks incremental materialization reads `model['compiled_code']`.
     let batch_model = run_node_context
         .get("model")
-        .and_then(|model| model.downcast_object_ref::<MutableMap>())
+        .and_then(|model| model.downcast_object_ref::<dbt_schemas::jinja_node::LazyNodeContext>())
         .ok_or_else(|| {
             unexpected_fs_err!(
                 "No batch-local model context for microbatch model {}",
-                batch_ctx.id,
+                batch_ctx.id
             )
         })?;
     batch_model.insert(Value::from("compiled_code"), batch_sql.clone());

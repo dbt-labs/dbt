@@ -1,5 +1,5 @@
 use crate::adapter::adapter_impl::*;
-use crate::connection::AdapterConnectionFactory;
+use crate::connection::{AdapterConnectionFactory, ConnectionGuard};
 use crate::metadata::{
     CatalogAndSchema, MetadataAdapter, MetadataFreshness, RELATION_CACHE_OP_ID, RelationSchemaPair,
     RelationVec, create_schemas_if_not_exists, run_schema_cache_map_reduce,
@@ -13,7 +13,7 @@ use arrow_array::{Array, Int32Array, RecordBatch, StringArray};
 use arrow_schema::Schema;
 use dbt_adapter_core::ExecutionPhase;
 use dbt_adapter_engine::MapReduce;
-use dbt_adbc::{Connection, QueryCtx};
+use dbt_adbc::QueryCtx;
 use dbt_common::cancellation::CancellationToken;
 use dbt_common::{AdapterError, Cancellable};
 use dbt_common::{AdapterResult, AsyncAdapterResult};
@@ -30,7 +30,7 @@ use std::{collections::BTreeMap, sync::Arc};
 pub fn list_relations(
     engine: &dyn AdapterEngine,
     ctx: &QueryCtx,
-    conn: &'_ mut dyn Connection,
+    conn: &mut ConnectionGuard<'_>,
     db_schema: &CatalogAndSchema,
     token: CancellationToken,
 ) -> AdapterResult<Vec<Arc<dyn BaseRelation>>> {
@@ -39,7 +39,7 @@ pub fn list_relations(
         db_schema.resolved_catalog, db_schema.resolved_schema,
     );
 
-    let batch = engine.execute(None, conn, ctx, &sql, token)?;
+    let batch = engine.execute(None, conn.as_mut(), ctx, &sql, token)?;
 
     if batch.num_rows() == 0 {
         return Ok(Vec::new());
@@ -216,7 +216,7 @@ impl MetadataAdapter for FabricMetadataAdapter {
 
         let adapter = self.adapter.clone();
         let token_clone = token.clone();
-        let map_f = move |conn: &'_ mut dyn Connection,
+        let map_f = move |conn: &mut ConnectionGuard<'_>,
                           relation: &Arc<dyn BaseRelation>|
               -> AdapterResult<Arc<Schema>> {
             let sql = format!(
@@ -292,7 +292,7 @@ impl MetadataAdapter for FabricMetadataAdapter {
 
         let adapter = self.adapter.clone();
         let token_clone = token.clone();
-        let map_f = move |conn: &'_ mut dyn Connection,
+        let map_f = move |conn: &mut ConnectionGuard<'_>,
                           db_schema: &CatalogAndSchema|
               -> AdapterResult<Vec<Arc<dyn BaseRelation>>> {
             let query_ctx = QueryCtx::default().with_desc("list_relations_in_parallel");

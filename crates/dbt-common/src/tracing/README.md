@@ -140,7 +140,7 @@ emit_error_log_from_fs_error(error);
 ```
 
 `dbt_emit.rs` also contains helpers for package-scoped messages, strict parse
-errors, progress messages, and stdout/stderr-oriented messages. Prefer these
+errors, progress messages, and stdout/stderr-oriented messages. Always use these
 helpers when emitting user-facing dbt logs so locations, error codes, and
 middleware expectations stay consistent. Error and warning helpers that receive
 an `FsError` retain a borrowed-only error view for in-process consumers while

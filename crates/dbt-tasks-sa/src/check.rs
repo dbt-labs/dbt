@@ -494,8 +494,9 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["unique_id", "name", "message"],
         );
-        let table = render_rows(&rows, eval.violations).expect("a table");
+        let table = render_rows(&rows, eval.violations, Some(5), true).expect("a table");
         assert!(table.contains("no description"), "{table}");
+        assert!(!table.contains("--limit"), "nothing was cut: {table}");
         assert!(table.contains("unique_id"), "header row missing: {table}");
     }
 
@@ -514,8 +515,22 @@ mod tests {
         assert_eq!(eval.violations, 2, "b and d are in scope");
         let rows = eval.preview_rows.expect("a violation row");
         assert_eq!(rows.num_rows(), 1, "capped at max_rows, not at violations");
-        let table = render_rows(&rows, eval.violations).expect("a table");
+        let table = render_rows(&rows, eval.violations, Some(1), true).expect("a table");
         assert!(table.contains("model.p.b"), "{table}");
+        assert!(
+            table.contains("2 rows, showing only 1 rows") && table.contains("--limit -1"),
+            "a cut table must say how to see the rest: {table}"
+        );
+        let quiet = render_rows(&rows, eval.violations, Some(1), false).expect("a table");
+        let exact = render_rows(&rows, 1, Some(1), true).expect("a table");
+        assert!(
+            !exact.contains("--limit"),
+            "nothing cut when rows == limit: {exact}"
+        );
+        assert!(
+            !quiet.contains("--limit"),
+            "no hint for commands without the flag: {quiet}"
+        );
         assert!(
             !table.contains("model.p.a") && !table.contains("model.p.c"),
             "out-of-scope rows must not appear: {table}"
@@ -578,10 +593,16 @@ impl CheckResult {
 /// is capped at the preview limit, and the width footer would otherwise report
 /// the cap as if it were the result size.
 ///
-/// No title, and no row-count footer: the log line above the table already names
-/// the check and counts the violations, and the footer's advice (`--limit -1`) is
-/// about `dbt show`, not about checks.
-fn render_rows(batch: &arrow::record_batch::RecordBatch, total: u64) -> Option<String> {
+/// No title. The footer appears only when rows were cut and `hint_limit` is set, so a
+/// reader who sees fewer rows than the log line counts is told how to see the rest.
+/// Callers whose command does not take `--limit` leave it off.
+fn render_rows(
+    batch: &arrow::record_batch::RecordBatch,
+    total: u64,
+    limit: Option<usize>,
+    hint_limit: bool,
+) -> Option<String> {
+    let truncated = hint_limit && limit.is_some_and(|l| total > l as u64);
     let names = dbt_pretty_table::make_column_names(batch.schema_ref());
     dbt_pretty_table::pretty_data_table(
         "",
@@ -589,7 +610,9 @@ fn render_rows(batch: &arrow::record_batch::RecordBatch, total: u64) -> Option<S
         &names,
         std::slice::from_ref(batch),
         dbt_pretty_table::DisplayFormat::Table,
-        None,
+        // The batch is already capped; the renderer prints its truncation footer
+        // whenever it is given a limit, so give it one only when rows were cut.
+        limit.filter(|_| truncated),
         false,
         Some(total as usize),
     )
@@ -616,7 +639,8 @@ pub fn run_parse_time_checks(
     checks: &[Arc<dbt_schemas::schemas::DbtCheck>],
     metadata_dir: &Path,
     selection: Option<&BTreeSet<String>>,
-    max_preview_rows: usize,
+    row_limit: Option<usize>,
+    hint_limit: bool,
 ) -> CheckRunOutcome {
     let mut outcome = CheckRunOutcome::default();
     if checks.is_empty() {
@@ -676,8 +700,14 @@ pub fn run_parse_time_checks(
         };
 
         let started = std::time::Instant::now();
-        let evaluated = crate::check_adapter::query_index(&adapter, sql)
-            .and_then(|batches| evaluate_batches(&batches, &filter, selection, max_preview_rows));
+        let evaluated = crate::check_adapter::query_index(&adapter, sql).and_then(|batches| {
+            evaluate_batches(
+                &batches,
+                &filter,
+                selection,
+                row_limit.unwrap_or(usize::MAX),
+            )
+        });
         let execution_time = started.elapsed().as_secs_f64();
 
         match evaluated {
@@ -724,7 +754,7 @@ pub fn run_parse_time_checks(
                 let rows = eval
                     .preview_rows
                     .as_ref()
-                    .and_then(|b| render_rows(b, violations));
+                    .and_then(|b| render_rows(b, violations, row_limit, hint_limit));
                 let hard = severity == dbt_schemas::schemas::common::Severity::Error;
                 if hard {
                     outcome.failed += 1;

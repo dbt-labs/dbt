@@ -21,6 +21,9 @@ pub const REQUEST_TIMEOUT: &str = "adbc.snowflake.sql.client_option.request_time
 pub const JWT_EXPIRE_TIMEOUT: &str = "adbc.snowflake.sql.client_option.jwt_expire_timeout";
 pub const CLIENT_TIMEOUT: &str = "adbc.snowflake.sql.client_option.client_timeout";
 pub const AUTH_CLIENT_TIMEOUT: &str = "adbc.snowflake.sql.client_option.auth_client_timeout";
+/// Max retries per HTTP request
+/// Retrying also stops when [REQUEST_TIMEOUT] (non-login requests) / [LOGIN_TIMEOUT] runs out
+pub const MAX_RETRY_COUNT: &str = "adbc.snowflake.sql.client_option.max_retry_count";
 pub const USE_HIGH_PRECISION: &str = "adbc.snowflake.sql.client_option.use_high_precision";
 pub const APPLICATION_NAME: &str = "adbc.snowflake.sql.client_option.app_name";
 pub const SSL_SKIP_VERIFY: &str = "adbc.snowflake.sql.client_option.tls_skip_verify";

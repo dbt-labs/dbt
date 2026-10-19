@@ -157,14 +157,8 @@ impl ConnectionRetryPolicy {
 
     /// Per-adapter default for the `connect_retries` profile field.
     ///
-    /// Snowflake intentionally diverges from `dbt-snowflake`'s upstream
-    /// default of `1`: with `LOGIN_TIMEOUT=60s` in `dbt-auth`, each outer
-    /// attempt has up to 60s for gosnowflake to do its own internal HTTP
-    /// retries (capped at `MaxRetryCount=7` with 1s/128s exponential backoff
-    /// — see `snowflakedb/gosnowflake::retry.go`). 7 outer retries gives 8
-    /// total outer attempts × ≤60s ≈ Python's 8-HTTP-attempt total budget
-    /// (`DEFAULT_AUTH_CLASS_TIMEOUT × (MAX_CON_RETRY_ATTEMPTS+1) ×
-    /// dbt-adapter connect_retries+1 = 120 × 2 × 2 = 480s`).
+    /// Snowflake intentionally diverges from dbt 1.X's `dbt-snowflake`
+    /// default of `1` overall, but it is more tolerant; see `UNCAPPED_MAX_RETRY_COUNT`.
     fn default_connect_retries(adapter_type: AdapterType) -> u32 {
         use AdapterType::*;
         match adapter_type {
@@ -466,9 +460,6 @@ mod tests {
     fn connect_retry_policy_snowflake_defaults() {
         let cfg = AdapterConfig::new(dbt_yaml::Mapping::new());
         let policy = ConnectionRetryPolicy::new(AdapterType::Snowflake, &cfg);
-        // Snowflake intentionally diverges from upstream Python's 1: with
-        // LOGIN_TIMEOUT=60s in dbt-auth + gosnowflake's internal retries,
-        // 8 outer attempts × 60s ≈ Python's 8-HTTP-attempt total budget.
         assert_eq!(policy.max_retries, 0);
         // Quadratic backoff: attempt=1 → 1s, attempt=2 → 4s.
         assert_eq!(

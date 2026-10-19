@@ -368,117 +368,26 @@ pub fn trigger_duplicate_errors(duplicate_errors: &mut Vec<FsError>) -> FsResult
     Ok(())
 }
 
-/// Generate relation components (database, schema, alias) and relation name
-/// Returns components that can be used to update a node
-/// https://github.com/dbt-labs/dbt-core/blob/a1958c119399f765ad43e49b8b12c88cf3ec1245/core/dbt/parser/base.py#L287
-pub fn generate_relation_components(
-    env: &JinjaEnv,
-    root_project_name: &str,
-    current_project_name: &str,
-    base_ctx: &BTreeMap<String, minijinja::Value>,
-    components: &RelationComponents,
-    node: &dyn InternalDbtNodeAttributes,
-    adapter_type: AdapterType,
-) -> FsResult<(String, String, String, String, ResolvedQuoting)> {
-    // Get default values from the node
-    let (default_database, default_schema) = (node.database(), node.schema());
-    // Generate database name
-    let database = if node.skip_generate_database_name_macro() {
-        components.database.clone().unwrap_or(default_database)
-    } else {
-        generate_component_name(
-            env,
-            "database",
-            root_project_name,
-            current_project_name,
-            base_ctx,
-            components.database.clone(),
-            Some(node),
-        )?
-    };
-
-    // Generate schema name
-    let schema = if node.skip_generate_schema_name_macro() {
-        components.schema.clone().unwrap_or(default_schema)
-    } else {
-        generate_component_name(
-            env,
-            "schema",
-            root_project_name,
-            current_project_name,
-            base_ctx,
-            components.schema.clone(),
-            Some(node),
-        )?
-    };
-
-    // Generate alias
-    let alias = generate_component_name(
-        env,
-        "alias",
-        root_project_name,
-        current_project_name,
-        base_ctx,
-        components.alias.clone(),
-        Some(node),
-    )?;
-
-    // Ensure alias is never empty - use node name as ultimate fallback
-    let alias = if alias.is_empty() {
-        node.common().name.clone()
-    } else {
-        alias
-    };
-
-    let (database, schema, alias, quoting) =
-        normalize_quoting(&node.quoting(), adapter_type, &database, &schema, &alias);
-
-    // Only generate relation_name if not ephemeral
-    let parse_adapter = env.get_adapter().expect("Failed to get parse adapter");
-    let database_name = if !matches!(node.materialized(), DbtMaterialization::Ephemeral) {
-        database.as_str()
-    } else {
-        &format!("{database}_ephemeral")
-    };
-    let schema_name = if !matches!(node.materialized(), DbtMaterialization::Ephemeral) {
-        schema.as_str()
-    } else {
-        &format!("{schema}_ephemeral")
-    };
-    let alias_name = if !matches!(node.materialized(), DbtMaterialization::Ephemeral) {
-        alias.as_str()
-    } else {
-        &format!("{alias}_ephemeral")
-    };
-    let relation_name = generate_relation_name_with_target(
-        parse_adapter,
-        database_name,
-        schema_name,
-        alias_name,
-        quoting,
-        node.base().effective_propagation_target,
-    )?;
-
-    Ok((database, schema, alias, relation_name, quoting))
-}
-
 /// Generate only database and schema components.
 /// This is the first step in a two-phase generation process that allows
 /// generate_alias_name to access the computed schema via node.schema.
-fn generate_database_and_schema(
+fn generate_database_and_schema<T: InternalDbtNodeAttributes + Clone>(
     env: &JinjaEnv,
     root_project_name: &str,
     current_project_name: &str,
     base_ctx: &BTreeMap<String, minijinja::Value>,
     components: &RelationComponents,
-    node: &dyn InternalDbtNodeAttributes,
+    node: T,
     adapter_type: AdapterType,
-) -> FsResult<(String, String, ResolvedQuoting)> {
+) -> FsResult<(String, String, ResolvedQuoting, T)> {
     let (default_database, default_schema) = (node.database(), node.schema());
 
     // Generate database name
-    let database = if node.skip_generate_database_name_macro() {
-        components.database.clone().unwrap_or(default_database)
+    let (database, node) = if node.skip_generate_database_name_macro() {
+        (
+            components.database.clone().unwrap_or(default_database),
+            node,
+        )
     } else {
         generate_component_name(
             env,
@@ -487,13 +396,13 @@ fn generate_database_and_schema(
             current_project_name,
             base_ctx,
             components.database.clone(),
-            Some(node),
+            node,
         )?
     };
 
     // Generate schema name
-    let schema = if node.skip_generate_schema_name_macro() {
-        components.schema.clone().unwrap_or(default_schema)
+    let (schema, node) = if node.skip_generate_schema_name_macro() {
+        (components.schema.clone().unwrap_or(default_schema), node)
     } else {
         generate_component_name(
             env,
@@ -502,7 +411,7 @@ fn generate_database_and_schema(
             current_project_name,
             base_ctx,
             components.schema.clone(),
-            Some(node),
+            node,
         )?
     };
 
@@ -510,33 +419,33 @@ fn generate_database_and_schema(
     let (database, schema, _, quoting) =
         normalize_quoting(&node.quoting(), adapter_type, &database, &schema, "");
 
-    Ok((database, schema, quoting))
+    Ok((database, schema, quoting, node))
 }
 
 /// Generate alias and relation_name after database and schema have been set on the node.
 /// This is the second step in a two-phase generation process.
 #[allow(clippy::too_many_arguments)]
-fn generate_alias_and_relation_name(
+fn generate_alias_and_relation_name<T: InternalDbtNodeAttributes + Clone>(
     env: &JinjaEnv,
     root_project_name: &str,
     current_project_name: &str,
     base_ctx: &BTreeMap<String, minijinja::Value>,
     components: &RelationComponents,
-    node: &dyn InternalDbtNodeAttributes,
+    node: T,
     adapter_type: AdapterType,
     database: &str,
     schema: &str,
     quoting: ResolvedQuoting,
-) -> FsResult<(String, String)> {
+) -> FsResult<(String, String, T)> {
     // Generate alias - node.schema is now set to the computed schema
-    let alias = generate_component_name(
+    let (alias, node) = generate_component_name(
         env,
         "alias",
         root_project_name,
         current_project_name,
         base_ctx,
         components.alias.clone(),
-        Some(node),
+        node,
     )?;
 
     // Ensure alias is never empty
@@ -575,7 +484,7 @@ fn generate_alias_and_relation_name(
         node.base().effective_propagation_target,
     )?;
 
-    Ok((alias, relation_name))
+    Ok((alias, relation_name, node))
 }
 
 /// Relation components for a node
@@ -598,24 +507,24 @@ pub struct RelationComponents {
 /// Note: We generate and update database/schema BEFORE generating alias, so that
 /// generate_alias_name macro can access the computed schema via node.schema.
 /// This matches dbt-core behavior where custom alias macros can reference node.schema.
-pub fn update_node_relation_components(
-    node: &mut dyn InternalDbtNodeAttributes,
+pub fn update_node_relation_components<T: InternalDbtNodeAttributes + Clone>(
+    node: T,
     jinja_env: &JinjaEnv,
     root_project_name: &str,
     package_name: &str,
     base_ctx: &BTreeMap<String, minijinja::Value>,
     components: &RelationComponents,
     adapter_type: AdapterType,
-) -> FsResult<()> {
+) -> FsResult<T> {
     // Source and unit test nodes do not have relation components
     if [NodeType::Source, NodeType::UnitTest].contains(&node.resource_type()) {
-        return Ok(());
+        return Ok(node);
     }
 
     // Step 1: Generate database and schema first, then update the node.
     // This ensures that when generate_alias_name is called, node.schema reflects
     // the computed schema (not the default profile schema).
-    let (database, schema, quoting) = generate_database_and_schema(
+    let (database, schema, quoting, mut node) = generate_database_and_schema(
         jinja_env,
         root_project_name,
         package_name,
@@ -634,7 +543,7 @@ pub fn update_node_relation_components(
     }
 
     // Step 2: Now generate alias with the updated node (node.schema is now correct)
-    let (alias, relation_name) = generate_alias_and_relation_name(
+    let (alias, relation_name, mut node) = generate_alias_and_relation_name(
         jinja_env,
         root_project_name,
         package_name,
@@ -668,7 +577,7 @@ pub fn update_node_relation_components(
 
     let base_attr = node.base_mut();
     base_attr.alias = alias;
-    Ok(())
+    Ok(node)
 }
 
 /// Extracts a resource type subtree from a raw `dbt_project.yml` into a RawProjectConfig struct for building unrendered configs.

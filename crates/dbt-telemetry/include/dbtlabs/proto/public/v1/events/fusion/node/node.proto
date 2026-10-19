@@ -204,6 +204,44 @@ message NodeEvaluationDetail {
   NodeWarningOutcome node_warning_outcome = 1;
 }
 
+// Time grain of a microbatch model's batches.
+enum MicrobatchBatchSize {
+  MICROBATCH_BATCH_SIZE_UNSPECIFIED = 0;
+  MICROBATCH_BATCH_SIZE_HOUR = 1;
+  MICROBATCH_BATCH_SIZE_DAY = 2;
+  MICROBATCH_BATCH_SIZE_MONTH = 3;
+  MICROBATCH_BATCH_SIZE_YEAR = 4;
+}
+
+// Evaluation of one time window within a microbatch model's run phase.
+// Maps to dbt-core's LogStartBatch (Q045) and LogBatchResult (Q046).
+message MicrobatchEvaluated {
+  // Unique id of the model owning this batch.
+  string unique_id = 1;
+  // Schema and identifier of the owning model's relation.
+  string schema = 2;
+  string identifier = 3;
+
+  // Stable batch id: YYYY, YYYYMM, YYYYMMDD, or YYYYMMDDHH.
+  string batch_id = 4;
+  // Time grain of the event-time window.
+  MicrobatchBatchSize batch_size = 5;
+  // 1-based index within this execution window.
+  uint32 batch_index = 6;
+  uint32 total_batches = 7;
+  // Inclusive start and exclusive end of the event-time window, in UTC RFC 3339.
+  string event_time_start = 8;
+  string event_time_end = 9;
+
+  NodeOutcome node_outcome = 10;
+  // Total time in milliseconds this batch evaluation spent idle: the summed
+  // duration of `ThreadPoolWait` spans with this `batch_id`. It does not count
+  // toward the owning `NodeEvaluated.idle_time_ms`.
+  uint64 idle_time_ms = 11;
+  // Optional legacy dbt core event code (Q045 at start, Q046 at completion).
+  optional string dbt_core_event_code = 12;
+}
+
 message NodeEvaluated {
   // unique_id is the globally unique identifier for this node.
   string unique_id = 1;
@@ -295,7 +333,10 @@ message NodeEvaluated {
   optional uint64 rows_affected = 41;
 
   // Total time in milliseconds this node evaluation spent idle.
-  // This includes time spent waiting on internal backpressure.
+  // This includes time spent waiting on internal backpressure: the summed
+  // duration of `ThreadPoolWait` spans of this node without a `batch_id`.
+  // When the evaluation runs work concurrently, e.g. microbatches, those waits
+  // cover only the time when all of that work is queued and none of it runs.
   optional uint64 idle_time_ms = 42;
 
   // Identifier of the dbt State execution decision that governed this node's
@@ -424,4 +465,8 @@ message NodeProcessed {
   // Total number of nodes in the selection set, the denominator of `node_index`.
   // Mirrors dbt core's `num_nodes`.
   optional uint32 node_count_total = 47;
+
+  // Adapter type this node runs on (e.g. "snowflake"). Only set when the
+  // project can run nodes on more than one adapter.
+  optional string adapter = 48;
 }

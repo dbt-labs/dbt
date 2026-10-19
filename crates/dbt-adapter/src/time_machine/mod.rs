@@ -60,9 +60,12 @@
 //! - `Cache`: internal bookkeeping (no DB I/O)
 //! - `Pure`: local computation (no I/O at all)
 
+use std::path::Path;
 use std::{io, sync::Arc};
 
 use dbt_common::cancellation::CancellationToken;
+use dbt_common::io_args::{ReplayMode as InvocationReplayMode, TimeMachineMode};
+use dbt_common::{ErrorCode, FsResult, fs_err};
 use parking_lot::Mutex;
 use tokio::task::JoinHandle;
 
@@ -77,6 +80,11 @@ pub mod serializable;
 pub(crate) mod serializable_impls;
 pub(crate) mod validation;
 pub mod writer;
+
+/// Serializes tests that touch the global recorder/replayer.
+#[cfg(test)]
+pub(crate) static TIME_MACHINE_TEST_LOCK: tokio::sync::Mutex<()> =
+    tokio::sync::Mutex::const_new(());
 
 // Re-export commonly used types
 pub use engine::{EventReplayer, ReplayCallError, ReplayerStats, TimeMachine};
@@ -232,6 +240,36 @@ pub fn global_replayer() -> Option<Arc<EventReplayer>> {
 
 pub fn is_replaying() -> bool {
     GLOBAL_REPLAYER.lock().is_some()
+}
+
+/// Pin the Jinja `modules.datetime` clock to the recording's start time when replaying, so
+/// wall-clock-derived SQL renders as it did at record time. No-op for any other mode.
+///
+/// Call before any project Jinja is rendered.
+pub fn prepare_replay(replay: Option<&InvocationReplayMode>) -> FsResult<()> {
+    let Some(InvocationReplayMode::FsTimeMachine(TimeMachineMode::Replay(config))) = replay else {
+        return Ok(());
+    };
+    freeze_jinja_clock(&config.artifact_path).map_err(|e| {
+        fs_err!(
+            ErrorCode::Generic,
+            "Failed to load time machine recording from '{}': {}",
+            config.artifact_path.display(),
+            e
+        )
+    })
+}
+
+fn freeze_jinja_clock(recording_dir: &Path) -> Result<(), ReplayError> {
+    let header = event_replay::read_recording_header(recording_dir)?;
+    let recorded_at = header.recorded_at_utc().map_err(|e| {
+        ReplayError::InvalidFormat(format!(
+            "header.json recorded_at '{}' is not RFC 3339: {}",
+            header.recorded_at, e
+        ))
+    })?;
+    minijinja_contrib::modules::py_datetime::freeze_now(Some(recorded_at));
+    Ok(())
 }
 
 /// Handle for the global replay session.

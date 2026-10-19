@@ -1599,6 +1599,22 @@ pub mod mutable_map {
         // individually tainted without the map itself reporting tainted,
         // silently hiding unknowable data from a later `{{ map }}`/hash/etc.
         tainted: std::sync::atomic::AtomicBool,
+        // When set, `{% set x = map %}` binds `x` to a shallow copy of this map, not to the
+        // map itself. Later writes such as `x.update(...)` then do not reach the original.
+        //
+        // Why: `{% set %}` already copies read-only `ValueMap`s into a new `MutableMap` (see
+        // `Instruction::StoreLocal`), because a read-only map has to become mutable once it
+        // has a name. Some data used to reach templates as read-only maps and now arrives as
+        // `MutableMap`s, so it can also be updated in place. Without this flag, `{% set %}`
+        // would stop copying that data. Templates that wrote to the `set` variable expecting
+        // the original to stay unchanged would then change it. The owner of that data sets
+        // the flag to keep the copy.
+        //
+        // Ordinary maps never set it, and `clone()` (which is itself a copy) does not inherit it.
+        //
+        // TODO(LazyNodeContext): Remove once no data relies on it. Python, and so dbt-core, binds the name to the
+        // same dict without copying, so writes through it are visible in the original.
+        copy_on_store: std::sync::atomic::AtomicBool,
     }
 
     impl Clone for MutableMap {
@@ -1608,6 +1624,7 @@ pub mod mutable_map {
                 tainted: std::sync::atomic::AtomicBool::new(
                     self.tainted.load(std::sync::atomic::Ordering::Relaxed),
                 ),
+                copy_on_store: std::sync::atomic::AtomicBool::new(false),
             }
         }
     }
@@ -1618,6 +1635,7 @@ pub mod mutable_map {
             MutableMap {
                 inner: RwLock::new(ValueMap::new()),
                 tainted: std::sync::atomic::AtomicBool::new(false),
+                copy_on_store: std::sync::atomic::AtomicBool::new(false),
             }
         }
 
@@ -1626,6 +1644,7 @@ pub mod mutable_map {
             MutableMap {
                 inner: RwLock::new(value_map_with_capacity(capacity)),
                 tainted: std::sync::atomic::AtomicBool::new(false),
+                copy_on_store: std::sync::atomic::AtomicBool::new(false),
             }
         }
 
@@ -1680,6 +1699,20 @@ pub mod mutable_map {
         /// Clear all key-value pairs from the map.
         pub fn clear(&self) {
             lock_write!(self).clear();
+        }
+
+        /// Make `{% set x = map %}` bind `x` to a shallow copy of this map, as it does for a
+        /// read-only `ValueMap`, instead of to this map. See the `copy_on_store` field for why
+        /// this exists.
+        pub fn set_copy_on_store(&self) {
+            self.copy_on_store
+                .store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+
+        /// Whether `{% set %}` stores a copy of this map.
+        pub fn copies_on_store(&self) -> bool {
+            self.copy_on_store
+                .load(std::sync::atomic::Ordering::Relaxed)
         }
     }
 
@@ -1782,6 +1815,7 @@ pub mod mutable_map {
             MutableMap {
                 inner: RwLock::new(val),
                 tainted: std::sync::atomic::AtomicBool::new(tainted),
+                copy_on_store: std::sync::atomic::AtomicBool::new(false),
             }
         }
     }

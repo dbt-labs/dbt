@@ -6,10 +6,7 @@ use std::path::Path;
 
 use crate::COUNTERS;
 
-pub fn cleanup_schema_name(input: &str) -> String {
-    let re = Regex::new(r"___.*?___").unwrap();
-    re.replace_all(input, "").to_string()
-}
+pub use dbt_test_primitives::cleanup_schema_name;
 
 /// Strips real wall-clock content embedded in SQL that has no node context
 /// to hash against instead (`checksum8` is the only key such a statement

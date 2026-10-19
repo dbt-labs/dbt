@@ -6,7 +6,7 @@
   {% set tags = config.get('databricks_tags') %}
   {% set sql = adapter.clean_sql(sql) %}
 
-  {% if adapter.behavior.use_materialization_v2 %}
+  {% if use_materialization_v2() %}
     {{ run_pre_hooks() }}
     {% if existing_relation %}
       {% if relation_should_be_altered(existing_relation, target_relation) %}

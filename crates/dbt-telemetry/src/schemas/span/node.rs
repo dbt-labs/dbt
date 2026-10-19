@@ -1,4 +1,4 @@
-use crate::{attributes::DbtTelemetryContext, serialize::arrow::ArrowAttributes};
+use crate::{ExecutionPhase, attributes::DbtTelemetryContext, serialize::arrow::ArrowAttributes};
 use dbt_tracing::{
     AnyTelemetryEvent, ArrowSerializableTelemetryEvent, SpanStatus, StaticTelemetryEvent,
     TelemetryContext, TelemetryEventRecType, TelemetryOutputFlags,
@@ -15,11 +15,11 @@ pub use crate::impls::node::{
     set_node_warning_outcome_warned, update_dbt_core_event_code_for_node_processed_end,
 };
 pub use crate::proto::v1::public::events::fusion::node::{
-    NodeCacheDetail, NodeCacheReason, NodeCancelReason, NodeErrorType, NodeEvaluated,
-    NodeEvaluationDetail, NodeMaterialization, NodeOutcome, NodeProcessed, NodeSkipReason,
-    NodeSkipUpstreamDetail, NodeType, NodeWarningOutcome, SourceFreshnessDetail,
-    SourceFreshnessOutcome, TestEvaluationDetail, TestOutcome, node_evaluated::NodeOutcomeDetail,
-    node_processed,
+    MicrobatchBatchSize, MicrobatchEvaluated, NodeCacheDetail, NodeCacheReason, NodeCancelReason,
+    NodeErrorType, NodeEvaluated, NodeEvaluationDetail, NodeMaterialization, NodeOutcome,
+    NodeProcessed, NodeSkipReason, NodeSkipUpstreamDetail, NodeType, NodeWarningOutcome,
+    SourceFreshnessDetail, SourceFreshnessOutcome, TestEvaluationDetail, TestOutcome,
+    node_evaluated::NodeOutcomeDetail, node_processed,
 };
 
 impl StaticTelemetryEvent for NodeEvaluated {
@@ -68,6 +68,7 @@ impl StaticTelemetryEvent for NodeEvaluated {
             DbtTelemetryContext {
                 phase: Some(self.phase()),
                 unique_id: Some(self.unique_id.clone()),
+                batch_id: None,
             }
             .into(),
         )
@@ -104,6 +105,8 @@ struct NodeProcessedJsonPayload {
     pub node_index: Option<u32>,
     /// Total number of nodes in the selection set.
     pub node_count_total: Option<u32>,
+    /// Adapter type the node runs on.
+    pub adapter: Option<String>,
 }
 
 fn deserialize_node_evaluated_json_payload(
@@ -267,6 +270,138 @@ impl ArrowSerializableTelemetryEvent for NodeEvaluated {
     }
 }
 
+impl StaticTelemetryEvent for MicrobatchEvaluated {
+    const RECORD_CATEGORY: TelemetryEventRecType = TelemetryEventRecType::Span;
+    const OUTPUT_FLAGS: TelemetryOutputFlags = TelemetryOutputFlags::ALL;
+
+    fn event_display_name(&self) -> String {
+        format!(
+            "Microbatch evaluated ({}: {})",
+            self.unique_id, self.batch_id
+        )
+    }
+
+    fn get_span_status(&self) -> Option<SpanStatus> {
+        match self.node_outcome() {
+            NodeOutcome::Success | NodeOutcome::Skipped => Some(SpanStatus::succeeded()),
+            NodeOutcome::Error => Some(SpanStatus::failed("error")),
+            NodeOutcome::Canceled => Some(SpanStatus::failed("canceled")),
+            NodeOutcome::Unspecified => None,
+        }
+    }
+
+    fn context(&self) -> Option<TelemetryContext> {
+        Some(
+            DbtTelemetryContext {
+                phase: Some(ExecutionPhase::Run),
+                unique_id: Some(self.unique_id.clone()),
+                batch_id: Some(self.batch_id.clone()),
+            }
+            .into(),
+        )
+    }
+
+    fn has_sensitive_data(&self) -> bool {
+        // Like node identifiers, batch identity and timing require no scrubbing.
+        false
+    }
+}
+
+/// Internal struct used for serializing/deserializing subset of
+/// MicrobatchEvaluated fields as JSON payload in ArrowAttributes.
+#[skip_serializing_none]
+#[derive(serde::Serialize, serde::Deserialize, Clone, PartialEq, Debug)]
+struct MicrobatchEvaluatedJsonPayload<'a> {
+    batch_id: Cow<'a, str>,
+    batch_size: MicrobatchBatchSize,
+    batch_index: u32,
+    total_batches: u32,
+    event_time_start: Cow<'a, str>,
+    event_time_end: Cow<'a, str>,
+    idle_time_ms: u64,
+}
+
+impl ArrowSerializableTelemetryEvent for MicrobatchEvaluated {
+    type ArrowRecord<'a> = ArrowAttributes<'a>;
+
+    fn to_arrow_record(&self) -> ArrowAttributes<'_> {
+        ArrowAttributes {
+            phase: Some(ExecutionPhase::Run),
+            unique_id: Some(Cow::Borrowed(self.unique_id.as_str())),
+            schema: Some(Cow::Borrowed(self.schema.as_str())),
+            identifier: Some(Cow::Borrowed(self.identifier.as_str())),
+            node_outcome: Some(self.node_outcome()),
+            dbt_core_event_code: self.dbt_core_event_code.as_deref().map(Cow::Borrowed),
+            json_payload: Some(
+                serde_json::to_string(&MicrobatchEvaluatedJsonPayload {
+                    batch_id: Cow::Borrowed(self.batch_id.as_str()),
+                    batch_size: self.batch_size(),
+                    batch_index: self.batch_index,
+                    total_batches: self.total_batches,
+                    event_time_start: Cow::Borrowed(self.event_time_start.as_str()),
+                    event_time_end: Cow::Borrowed(self.event_time_end.as_str()),
+                    idle_time_ms: self.idle_time_ms,
+                })
+                .unwrap_or_else(|_| {
+                    panic!(
+                        "Failed to serialize data in event type \"{}\" to JSON",
+                        Self::full_name()
+                    )
+                }),
+            ),
+            ..Default::default()
+        }
+    }
+
+    fn from_arrow_record(record: &ArrowAttributes) -> Result<Self, String> {
+        let json_payload: MicrobatchEvaluatedJsonPayload = record
+            .json_payload
+            .as_ref()
+            .ok_or_else(|| {
+                format!(
+                    "Missing json payload for event type \"{}\"",
+                    Self::full_name()
+                )
+            })
+            .and_then(|s| {
+                serde_json::from_str(s).map_err(|e| {
+                    format!(
+                        "Failed to deserialize event type \"{}\" from JSON: {e}",
+                        Self::full_name(),
+                    )
+                })
+            })?;
+        let required = |value: &Option<Cow<'_, str>>, field: &str| {
+            value.as_deref().map(str::to_string).ok_or_else(|| {
+                format!("Missing `{field}` for event type \"{}\"", Self::full_name())
+            })
+        };
+
+        Ok(Self {
+            unique_id: required(&record.unique_id, "unique_id")?,
+            schema: required(&record.schema, "schema")?,
+            identifier: required(&record.identifier, "identifier")?,
+            batch_id: json_payload.batch_id.into_owned(),
+            batch_size: json_payload.batch_size as i32,
+            batch_index: json_payload.batch_index,
+            total_batches: json_payload.total_batches,
+            event_time_start: json_payload.event_time_start.into_owned(),
+            event_time_end: json_payload.event_time_end.into_owned(),
+            node_outcome: record
+                .node_outcome
+                .map(|value| value as i32)
+                .ok_or_else(|| {
+                    format!(
+                        "Missing `node_outcome` for event type \"{}\"",
+                        Self::full_name()
+                    )
+                })?,
+            idle_time_ms: json_payload.idle_time_ms,
+            dbt_core_event_code: record.dbt_core_event_code.as_deref().map(str::to_string),
+        })
+    }
+}
+
 impl StaticTelemetryEvent for NodeProcessed {
     const RECORD_CATEGORY: TelemetryEventRecType = TelemetryEventRecType::Span;
     const OUTPUT_FLAGS: TelemetryOutputFlags = TelemetryOutputFlags::ALL;
@@ -315,6 +450,7 @@ impl StaticTelemetryEvent for NodeProcessed {
                 // This span cuts across multiple phases, so we don't set a single phase here
                 phase: None,
                 unique_id: Some(self.unique_id.clone()),
+                batch_id: None,
             }
             .into(),
         )
@@ -354,6 +490,7 @@ impl ArrowSerializableTelemetryEvent for NodeProcessed {
                 source_name: self.source_name.clone(),
                 node_index: self.node_index,
                 node_count_total: self.node_count_total,
+                adapter: self.adapter.clone(),
             })
             .unwrap_or_else(|_| {
                 panic!(
@@ -465,6 +602,7 @@ impl ArrowSerializableTelemetryEvent for NodeProcessed {
             idle_time_ms: json_payload.idle_time_ms,
             node_index: json_payload.node_index,
             node_count_total: json_payload.node_count_total,
+            adapter: json_payload.adapter,
         })
     }
 }

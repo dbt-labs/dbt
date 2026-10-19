@@ -20,7 +20,7 @@ use dbt_common::collections::{DashMap, SccHashMap};
 use dbt_common::io_args::OptimizeTestsOptions;
 use dbt_common::path::DbtPath;
 use dbt_common::sources_extractor::SourcesExtractor;
-use dbt_common::stats::{NodeStatus, Stat};
+use dbt_common::stats::{ExecutionMetrics, NodeStatus, Stat};
 use dbt_dag::schedule::Schedule;
 use dbt_jinja_utils::jinja_environment::{JinjaEnv, adapter_api_value};
 use dbt_jinja_utils::phases::compile::{
@@ -174,6 +174,7 @@ pub struct TaskRunnerCtxInner {
     pub data_test_execution_results: DashMap<String, CachedTestExecutionResult>,
     pub batch_results_map: DashMap<String, BatchResults>,
     pub main_adapter_responses: DashMap<String, AdapterResponse>,
+    pub microbatch_execution_metrics: SccHashMap<String, ExecutionMetrics>,
     pub node_hashes: DashMap<String, String>,
     pub rendered_sql: DashMap<String, RenderedNodeInfo>,
     pub freshness_seconds: SccHashMap<String, i64>,
@@ -269,6 +270,7 @@ impl TaskRunnerCtxInner {
             data_test_execution_results: DashMap::default(),
             batch_results_map,
             main_adapter_responses: DashMap::default(),
+            microbatch_execution_metrics: SccHashMap::default(),
             node_hashes,
             rendered_sql: DashMap::default(),
             freshness_seconds: SccHashMap::default(),
@@ -542,7 +544,7 @@ impl TaskRunnerCtx {
     #[allow(clippy::type_complexity, clippy::too_many_arguments)]
     pub fn build_compile_node_context<T>(
         &self,
-        model: &T,
+        model: Arc<T>,
         base_context: &BTreeMap<String, Value>,
         ref_validation_config: DependencyValidationConfig,
     ) -> FsResult<(BTreeMap<String, Value>, Arc<DashMap<String, Value>>)>
@@ -592,5 +594,123 @@ impl TaskRunnerCtx {
 
     pub fn is_sidecar(&self) -> bool {
         self.inner.extended_ctx.is_sidecar()
+    }
+}
+
+/// Adds one batch's main-response metrics to the model's total; a batch with no response unsets it.
+pub fn record_microbatch_metrics(
+    totals: &SccHashMap<String, ExecutionMetrics>,
+    unique_id: &str,
+    response: Option<&AdapterResponse>,
+) {
+    let metrics = response
+        .map(|response| response.execution_metrics())
+        .unwrap_or_default();
+    totals
+        .entry_sync(unique_id.to_string())
+        .and_modify(|total| total.accumulate(metrics))
+        .or_insert(metrics);
+}
+
+/// RunModel metrics: the batch total for microbatch models, else the main response.
+pub fn node_execution_metrics(
+    is_microbatch: bool,
+    unique_id: &str,
+    microbatch_totals: &SccHashMap<String, ExecutionMetrics>,
+    main_responses: &DashMap<String, AdapterResponse>,
+) -> Option<ExecutionMetrics> {
+    if is_microbatch {
+        Some(
+            microbatch_totals
+                .read_sync(unique_id, |_, total| *total)
+                .unwrap_or_default(),
+        )
+    } else {
+        main_responses
+            .get(unique_id)
+            .map(|response| response.execution_metrics())
+    }
+}
+
+#[cfg(test)]
+mod execution_metrics_tests {
+    use super::*;
+
+    fn response(rows: i64, bytes_processed: i64) -> AdapterResponse {
+        AdapterResponse::new()
+            .with_rows_affected(rows)
+            .with("bytes_processed", bytes_processed)
+            .with("bytes_billed", bytes_processed * 2)
+            .with("slot_ms", 7_i64)
+    }
+
+    #[test]
+    fn microbatch_batches_sum() {
+        let totals = SccHashMap::default();
+        record_microbatch_metrics(&totals, "model.a", Some(&response(10, 100)));
+        record_microbatch_metrics(&totals, "model.a", Some(&response(5, 300)));
+
+        assert_eq!(
+            totals.read_sync("model.a", |_, v| *v).unwrap(),
+            ExecutionMetrics {
+                rows_affected: Some(15),
+                bytes_processed: Some(400),
+                bytes_billed: Some(800),
+                slot_ms: Some(14),
+            }
+        );
+    }
+
+    #[test]
+    fn microbatch_first_batch_without_response_leaves_total_unset() {
+        let totals = SccHashMap::default();
+        record_microbatch_metrics(&totals, "model.a", None);
+        record_microbatch_metrics(&totals, "model.a", Some(&response(10, 100)));
+
+        assert_eq!(
+            totals.read_sync("model.a", |_, v| *v).unwrap(),
+            ExecutionMetrics::default()
+        );
+    }
+
+    #[test]
+    fn microbatch_models_are_tracked_separately() {
+        let totals = SccHashMap::default();
+        record_microbatch_metrics(&totals, "model.a", Some(&response(10, 100)));
+        record_microbatch_metrics(&totals, "model.b", Some(&response(1, 1)));
+
+        assert_eq!(
+            totals.read_sync("model.a", |_, v| v.rows_affected).unwrap(),
+            Some(10)
+        );
+        assert_eq!(
+            totals.read_sync("model.b", |_, v| v.rows_affected).unwrap(),
+            Some(1)
+        );
+    }
+
+    #[test]
+    fn node_metrics_selects_source_by_materialization() {
+        let totals = SccHashMap::default();
+        let main = DashMap::default();
+        record_microbatch_metrics(&totals, "model.mb", Some(&response(10, 100)));
+        record_microbatch_metrics(&totals, "model.mb", Some(&response(5, 300)));
+        main.insert("model.mb".to_string(), response(99, 99));
+        main.insert("model.t".to_string(), response(3, 30));
+
+        let microbatch = node_execution_metrics(true, "model.mb", &totals, &main).unwrap();
+        assert_eq!(microbatch.rows_affected, Some(15));
+
+        let table = node_execution_metrics(false, "model.t", &totals, &main).unwrap();
+        assert_eq!(table.rows_affected, Some(3));
+
+        assert_eq!(
+            node_execution_metrics(false, "model.x", &totals, &main),
+            None
+        );
+        assert_eq!(
+            node_execution_metrics(true, "model.none", &totals, &main),
+            Some(ExecutionMetrics::default())
+        );
     }
 }

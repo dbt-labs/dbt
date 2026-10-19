@@ -305,8 +305,8 @@ pub async fn resolve_analyses(
         };
 
         // update model components using the generate_relation_components function
-        update_node_relation_components(
-            &mut dbt_analysis,
+        dbt_analysis = update_node_relation_components(
+            dbt_analysis,
             &env,
             &root_package.dbt_project.name,
             package_name,

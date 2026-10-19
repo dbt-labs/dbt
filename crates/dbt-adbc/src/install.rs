@@ -1,4 +1,3 @@
-use std::borrow::Cow;
 use std::ffi::OsString;
 use std::io::{Read as _, Write as _};
 use std::path::{Path, PathBuf};
@@ -224,10 +223,12 @@ impl InstallError {
 
 /// The CDN drivers are downloaded from, resolved once per process.
 ///
-/// `DBT_ADBC_USE_STAGING_CDN=1` switches debug builds to the staging mirror
-/// (written by `release.adbc.yml` on a `dry_run`) to exercise a driver before
-/// it is promoted from `main`. Release builds ignore it, so a shipped binary
-/// can't be pointed at pre-release artifacts.
+/// Drivers may be written to a staging mirror by running `release.adbc.yml`
+/// with `dry_run=true`. These uploads may be exercised when running a
+/// debug binary: Configure the env var `DBT_ADBC_USE_STAGING_CDN=1`.
+/// Drivers tested in staging may then be promoted to the production cdn.
+/// Release builds ignore this flag, so a shipped binary can't use
+/// pre-release artifacts.
 ///
 /// This also moves `adbc-sync`, which hashes whatever it downloads.
 pub fn cdn_host() -> &'static str {
@@ -276,12 +277,12 @@ pub fn format_driver_url(backend_name: &str, triplet: DriverTriplet) -> String {
 ///
 /// Linux
 ///
-/// ${XDG_CACHE_HOME}/com.getdbt/adbc/x86_64-unknown-linux-musl/libadbc_driver_snowflake-0.17.0+dbt0.0.1.so
-/// or ${HOME}/.cache/com.getdbt/adbc/x86_64-unknown-linux-musl/libadbc_driver_snowflake-0.17.0+dbt0.0.1.so
+/// ${XDG_CACHE_HOME}/com.getdbt/adbc/x86_64-manylinux_2_17-linux-gnu/libadbc_driver_snowflake-0.17.0+dbt0.0.1.so
+/// or ${HOME}/.cache/com.getdbt/adbc/x86_64-manylinux_2_17-linux-gnu/libadbc_driver_snowflake-0.17.0+dbt0.0.1.so
 ///
 /// macOS
 ///
-/// ${HOME}/Library/Caches/com.getdbt/adbc/aarch64-macos/libadbc_driver_snowflake-0.17.0+dbt0.0.1.dylib
+/// ${HOME}/Library/Caches/com.getdbt/adbc/aarch64-apple-darwin/libadbc_driver_snowflake-0.17.0+dbt0.0.1.dylib
 ///
 /// Windows
 ///
@@ -300,19 +301,26 @@ pub fn format_driver_path_in(
     triplet: DriverTriplet,
 ) -> Result<PathBuf, InstallError> {
     const APP_ID: &str = "com.getdbt";
-    let cache_dir = match cache_dir {
-        Some(dir) => Cow::Borrowed(dir),
-        None => dirs::cache_dir()
-            .map(Cow::Owned)
-            .ok_or(InstallError::DetermineCacheDir)?,
-    };
+
+    // Allocate a single PathBuf to act as the out value; reserve additional
+    let cache_dir = cache_dir
+        .map(PathBuf::from)
+        .or_else(dirs::cache_dir)
+        .ok_or(InstallError::DetermineCacheDir)?;
+
     let driver_relpath = format!(
         "{}-{}/{}",
         triplet.arch,
         triplet.os,
         DriverFilenameDisplay { name, triplet }
     );
-    Ok(cache_dir.join(APP_ID).join("adbc").join(driver_relpath))
+
+    let mut driver_path = cache_dir;
+    driver_path.push(APP_ID);
+    driver_path.push("adbc");
+    driver_path.push(driver_relpath);
+
+    Ok(driver_path)
 }
 
 /// ADBC users can call this function to pre-install the driver for the given backend.
@@ -323,7 +331,7 @@ pub fn pre_install_driver(
     backend: Backend,
     cache_dir: Option<&Path>,
 ) -> Result<(), InstallError> {
-    if !is_installable_driver(backend) {
+    if !is_installable_driver(backend, cdn_driver_cache_disabled()) {
         return Ok(());
     }
     let (backend_name, triplet) = driver_parameters(backend);
@@ -347,16 +355,28 @@ pub fn pre_install_all_drivers(cache_dir: Option<&Path>) -> Result<(), InstallEr
     Ok(())
 }
 
-pub fn is_installable_driver(backend: Backend) -> bool {
-    // NOTE(serramatutu): Allow us to debug drivers locally without needing them to be installable via CDN.
+/// Determines installation of drivers for debug builds.
+///
+/// Lets us work with drivers locally that may not live in the CDN yet.
+///
+/// Note(versusfacit): Env vars accessors are worth being a separate semantic
+/// unit so tests never have to touch the process environment.
+fn cdn_driver_cache_disabled() -> bool {
     #[cfg(debug_assertions)]
     {
-        if env_var::env_var_bool("DISABLE_CDN_DRIVER_CACHE")
+        env_var::env_var_bool("DISABLE_CDN_DRIVER_CACHE")
             .unwrap()
             .unwrap_or(false)
-        {
-            return true;
-        }
+    }
+    #[cfg(not(debug_assertions))]
+    {
+        false
+    }
+}
+
+fn is_installable_driver(backend: Backend, cdn_driver_cache_disabled: bool) -> bool {
+    if cdn_driver_cache_disabled {
+        return true; // All drivers are installable locally
     }
 
     INSTALLABLE_DRIVERS.contains(&backend)
@@ -366,7 +386,7 @@ pub fn is_installable_driver(backend: Backend) -> bool {
 ///
 /// Pre-condition: is_installable_driver(backend)
 pub fn backend_name_and_version(backend: Backend) -> (&'static str, &'static str) {
-    debug_assert!(is_installable_driver(backend));
+    debug_assert!(is_installable_driver(backend, cdn_driver_cache_disabled()));
     // Logged because the channel is otherwise invisible: both drivers report
     // the same `Backend`, so this is the only place that says which one a run
     // actually resolved.
@@ -379,7 +399,10 @@ pub fn backend_name_and_version(backend: Backend) -> (&'static str, &'static str
     (name, version)
 }
 
-/// The canonical driver for `backend`, ignoring any opted-in channel.
+/// The canonical driver and current version for a given `backend`.
+///
+/// Foundry drivers have their own canonical version. See FOUNDRY_DRIVERS
+/// for canonical name and version for them.
 fn canonical_name_and_version(backend: Backend) -> (&'static str, &'static str) {
     match backend {
         Backend::Snowflake => ("snowflake", SNOWFLAKE_DRIVER_VERSION),
@@ -579,7 +602,7 @@ pub fn download_zst_driver_file(
 
     // Download and Zstandard decompression buffers
     const DECOMPRESSION_FACTOR: usize = 4;
-    let mut zstd_insize_hint = zstd_safe::DCtx::in_size(); // ~200KB
+    let mut zstd_insize_hint = zstd_safe::DCtx::in_size(); // ~128 Kib + 3 for header
     let mut download_buffer = Vec::with_capacity(zstd_insize_hint);
     let write_buffer_capacity = (DECOMPRESSION_FACTOR * download_buffer.capacity()).max(64 * 1024);
     let mut inner_write_buffer = ZstdWriteBuffer::with_fixed_capacity(write_buffer_capacity);
@@ -736,7 +759,6 @@ fn finalize_install(tmp_path: &Path, destination: &Path) -> Result<(), InstallEr
 mod tests {
     use super::*;
     use std::path::PathBuf;
-    use std::sync::Mutex;
 
     #[test]
     fn finalize_install_tolerates_concurrent_install() {
@@ -761,18 +783,6 @@ mod tests {
         assert!(!tmp.exists());
 
         std::fs::remove_dir_all(&dir).unwrap();
-    }
-
-    static ENV_LOCK: Mutex<()> = Mutex::new(());
-
-    fn remove_test_var(name: &str) {
-        #[allow(
-            clippy::disallowed_methods,
-            reason = "installability tests serialize env-var mutations with ENV_LOCK"
-        )]
-        unsafe {
-            env::remove_var(name);
-        }
     }
 
     #[test]
@@ -806,11 +816,50 @@ mod tests {
         assert_eq!(path, expected);
 
         let custom =
-            format_driver_path_in(Some(Path::new("/opt/cache")), "snowflake", triplet).unwrap();
+            format_driver_path_in(Some(Path::new("/opt/cache/")), "snowflake", triplet).unwrap();
         assert_eq!(
             custom,
             Path::new("/opt/cache/com.getdbt/adbc/x86_64-manylinux_2_17-linux-gnu")
                 .join("libadbc_driver_snowflake-0.17.0+dbt0.2.0.so")
+        );
+
+        let macos = DriverTriplet {
+            os: MACOS_TARGET_OS,
+            arch: "aarch64",
+            version: "1",
+        };
+        let custom =
+            format_driver_path_in(Some(Path::new("/opt/cache")), "snowflake", macos).unwrap();
+        assert_eq!(
+            custom,
+            Path::new("/opt/cache/com.getdbt/adbc/aarch64-apple-darwin")
+                .join("libadbc_driver_snowflake-1.dylib")
+        );
+
+        let windows = DriverTriplet {
+            os: WINDOWS_TARGET_OS,
+            arch: "x86_64",
+            version: "1",
+        };
+        let custom =
+            format_driver_path_in(Some(Path::new("/opt/cache")), "snowflake", windows).unwrap();
+        assert_eq!(
+            custom,
+            Path::new("/opt/cache/com.getdbt/adbc/x86_64-pc-windows-msvc")
+                .join("adbc_driver_snowflake-1.dll")
+        );
+
+        let unversioned = DriverTriplet {
+            os: "manylinux_2_28-linux-gnu",
+            arch: "aarch64",
+            version: "",
+        };
+        let custom =
+            format_driver_path_in(Some(Path::new("/opt/cache")), "dbt", unversioned).unwrap();
+        assert_eq!(
+            custom,
+            Path::new("/opt/cache/com.getdbt/adbc/aarch64-manylinux_2_28-linux-gnu")
+                .join("libadbc_driver_dbt.so")
         );
     }
 
@@ -872,8 +921,8 @@ mod tests {
 
     #[test]
     fn installable_driver_set_matches_cdn_backends_by_default() {
-        let _guard = ENV_LOCK.lock().unwrap();
-        remove_test_var("DISABLE_CDN_DRIVER_CACHE");
+        // Scenario: `DISABLE_CDN_DRIVER_CACHE` unset -> use the default CDN configuration
+        const DRIVER_CACHE_DISABLED: bool = false;
 
         for backend in [
             Backend::Snowflake,
@@ -889,7 +938,7 @@ mod tests {
             Backend::ClickHouse,
         ] {
             assert!(
-                is_installable_driver(backend),
+                is_installable_driver(backend, DRIVER_CACHE_DISABLED),
                 "{backend:?} should be CDN-installable"
             );
         }
@@ -903,7 +952,7 @@ mod tests {
             },
         ] {
             assert!(
-                !is_installable_driver(backend),
+                !is_installable_driver(backend, DRIVER_CACHE_DISABLED),
                 "{backend:?} should use system/manual loading"
             );
         }
@@ -1018,15 +1067,18 @@ mod tests {
         assert!(checksum.message.contains("got actual"));
     }
 
-    /// Check that the expected SHA-256 checksum is found for each backend, version, target_os and
-    /// arch combinations.
+    /// Check that the expected SHA-256 checksum is found for each pinned canonical
+    /// and Foundry version of each backend, target_os and arch combination.
     ///
     /// IMPORTANT: If this is failing, it probably means you need to run
-    /// `./scripts/gen_cdn_driver_checksums.sh` and try again.
+    /// `./scripts/gen_cdn_driver_checksums.sh` to incorporate newest uploads.
     ///
-    /// This test also guarantees that the driver exists on the CDN because the
-    /// `gen_cdn_driver_checksums.sh` script can only generate checksums for the drivers it can
-    /// download.
+    /// This test verifies that at the time of running `gen_cdn_driver_checksums.sh` for
+    /// the current checksums.rs, the driver version existed on the CDN. The script only
+    /// writes a checksum for a driver it could download, so a checksum here means that
+    /// driver existed on the CDN when the script last ran.
+    ///
+    /// Note: It may have been removed since the last update.
     #[test]
     fn test_all_checksums_are_listed() {
         let target_os_and_archs = [

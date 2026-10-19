@@ -23,7 +23,7 @@ mod tests {
     fn statement_execute_bridge() -> Result<()> {
         let backend = Backend::Snowflake;
         // Load the bridge driver via the Remote strategy.
-        let mut driver = driver::Builder::new(backend, driver::LoadStrategy::Remote)
+        let mut driver = driver::Builder::new(backend, driver::LoadStrategy::Bridge)
             .with_adbc_version(AdbcVersion::V110)
             .try_load()?;
 
@@ -97,7 +97,7 @@ mod tests {
             let total_start = std::time::Instant::now();
 
             let backend = Backend::Snowflake;
-            let mut driver = driver::Builder::new(backend, driver::LoadStrategy::Remote)
+            let mut driver = driver::Builder::new(backend, driver::LoadStrategy::Bridge)
                 .with_adbc_version(AdbcVersion::V110)
                 .try_load()?;
 

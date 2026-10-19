@@ -65,8 +65,21 @@ use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::AtomicBool;
 
+pub(crate) fn unit_test_jinja_join_error(
+    error: dbt_runtime::JoinError,
+) -> Box<dbt_common::FsError> {
+    fs_err!(
+        if error.is_cancelled() {
+            ErrorCode::TaskCancelled
+        } else {
+            ErrorCode::Unexpected
+        },
+        "Unit test Jinja task failed: {error}"
+    )
+}
+
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
-pub fn resolve_unit_tests(
+pub async fn resolve_unit_tests(
     arg: &ResolveArgs,
     unit_test_properties: BTreeMap<String, MinimalPropertiesEntry>,
     package: &DbtPackage,
@@ -74,7 +87,7 @@ pub fn resolve_unit_tests(
     package_quoting: DbtQuoting,
     root_project_configs: &RootProjectConfigs,
     package_name: &str,
-    jinja_env: &JinjaEnv,
+    jinja_env: &Arc<JinjaEnv>,
     base_ctx: &BTreeMap<String, minijinja::Value>,
     model_properties: &BTreeMap<String, MinimalPropertiesEntry>,
     models: &BTreeMap<String, Arc<DbtModel>>,
@@ -125,15 +138,22 @@ pub fn resolve_unit_tests(
             WarningEmission::Emit,
         );
 
-        let unit_test = into_typed_with_jinja::<UnitTestProperties, _>(
-            mpe.schema_value,
-            false,
-            jinja_env,
-            base_ctx,
-            &[],
-            dependency_package_name,
-            true,
-        )?;
+        let env = Arc::clone(jinja_env);
+        let context = base_ctx.clone();
+        let render_dependency_package = dependency_package_name.map(str::to_owned);
+        let unit_test = dbt_runtime::spawn_blocking(move || {
+            into_typed_with_jinja::<UnitTestProperties, _>(
+                mpe.schema_value,
+                false,
+                &env,
+                &context,
+                &[],
+                render_dependency_package.as_deref(),
+                true,
+            )
+        })
+        .await
+        .map_err(unit_test_jinja_join_error)??;
         // todo: Unit test should have a database and schema,
         //    derived from the underlying model, correct?
         // - if so, we should get it and still store it so that it is available,
@@ -300,7 +320,8 @@ pub fn resolve_unit_tests(
                         &mpe.relative_path,
                         arg.static_analysis,
                         node_resolver,
-                    )?;
+                    )
+                    .await?;
                     Some(Rows::List(load_implicit_seed_rows(
                         packages,
                         &seed_unique_id,
@@ -589,8 +610,8 @@ fn read_fixture_rows(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn resolve_given_seed(
-    jinja_env: &JinjaEnv,
+async fn resolve_given_seed(
+    jinja_env: &Arc<JinjaEnv>,
     base_ctx: &BTreeMap<String, minijinja::Value>,
     input: &Spanned<String>,
     adapter_type: AdapterType,
@@ -629,12 +650,19 @@ fn resolve_given_seed(
         None,
     ));
 
-    match render_extract_ref_or_source_expr(
-        jinja_env,
-        &resolve_model_context,
-        sql_resources,
-        input,
-    )? {
+    let env = Arc::clone(jinja_env);
+    let render_input = input.clone();
+    let resource = dbt_runtime::spawn_blocking(move || {
+        render_extract_ref_or_source_expr(
+            &env,
+            &resolve_model_context,
+            sql_resources,
+            &render_input,
+        )
+    })
+    .await
+    .map_err(unit_test_jinja_join_error)??;
+    match resource {
         SqlResource::Ref((name, package, version, _)) => {
             let (unique_id, _, _, _) = node_resolver.lookup_ref(
                 &package,
@@ -805,6 +833,117 @@ fn should_include_version_for_unit_test(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use dbt_jinja_utils::node_resolver::NodeResolver;
+    use std::sync::atomic::AtomicUsize;
+    use std::sync::atomic::Ordering;
+
+    fn runtime_probe_env() -> (Arc<JinjaEnv>, Arc<AtomicUsize>) {
+        let runtime_id = tokio::runtime::Handle::current().id();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let probe_calls = Arc::clone(&calls);
+        let mut env = minijinja::Environment::new();
+        env.add_function("runtime_probe", move || {
+            assert!(
+                dbt_runtime::is_pool_worker(),
+                "unit test Jinja ran off the dbt-runtime pool"
+            );
+            assert_eq!(tokio::runtime::Handle::current().id(), runtime_id);
+            probe_calls.fetch_add(1, Ordering::SeqCst);
+            true
+        });
+        (Arc::new(JinjaEnv::new(env)), calls)
+    }
+
+    #[dbt_runtime::test]
+    async fn unit_test_properties_jinja_uses_runtime_worker() -> FsResult<()> {
+        assert!(!dbt_runtime::is_pool_worker());
+        let (env, calls) = runtime_probe_env();
+        let properties = dbt_yaml::from_str(
+            "name: runtime_test\nmodel: my_model\nconfig:\n  enabled: '{{ runtime_probe() }}'\ngiven: []\nexpect:\n  rows: []\n",
+        )?;
+        let package = DbtPackage::default();
+        let root_configs = crate::dbt_project_config::build_root_project_configs(
+            &package.dbt_project,
+            &Default::default(),
+            AdapterType::DuckDB,
+        )?;
+        let entry = MinimalPropertiesEntry {
+            name: "runtime_test".to_string(),
+            name_span: Default::default(),
+            relative_path: "models/unit_tests.yml".into(),
+            schema_value: properties,
+            table_value: None,
+            version_info: None,
+            duplicate_paths: vec![],
+        };
+        let (enabled, disabled) = resolve_unit_tests(
+            &ResolveArgs::default(),
+            BTreeMap::from([("runtime_test".to_string(), entry)]),
+            &package,
+            &package,
+            dbt_schemas::schemas::relations::DEFAULT_DBT_QUOTING,
+            &root_configs,
+            "root",
+            &env,
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            &[],
+            AdapterType::DuckDB,
+            &NodeResolver::default(),
+        )
+        .await?;
+        assert!(enabled.is_empty());
+        assert_eq!(disabled.len(), 1, "the tested model is deliberately absent");
+        assert!(calls.load(Ordering::SeqCst) > 0);
+        Ok(())
+    }
+
+    #[dbt_runtime::test]
+    async fn unit_test_discovery_jinja_uses_runtime_worker() -> FsResult<()> {
+        let (env, calls) = runtime_probe_env();
+        let properties = dbt_yaml::from_str(
+            "unit_tests:\n  - name: 'runtime_{{ runtime_probe() }}'\n    model: my_model\n    given: []\n    expect:\n      rows: []\n",
+        )?;
+        let mut minimal = crate::resolve::resolve_properties::MinimalProperties::default();
+        minimal
+            .extend_from_minimal_properties_file(
+                properties,
+                &env,
+                std::path::Path::new("models/unit_tests.yml"),
+                &BTreeMap::new(),
+            )
+            .await?;
+        assert_eq!(minimal.unit_tests.len(), 1);
+        assert!(calls.load(Ordering::SeqCst) > 0);
+        Ok(())
+    }
+
+    #[dbt_runtime::test]
+    async fn unit_test_seed_input_jinja_uses_runtime_worker() {
+        assert!(!dbt_runtime::is_pool_worker());
+        let (env, calls) = runtime_probe_env();
+        let input = Spanned::new("ref('seed_input' if runtime_probe() else 'wrong')".to_string());
+        let error = resolve_given_seed(
+            &env,
+            &BTreeMap::new(),
+            &input,
+            AdapterType::DuckDB,
+            "db",
+            "schema",
+            "model",
+            &["root".to_string(), "model".to_string()],
+            "root",
+            "root",
+            dbt_schemas::schemas::relations::DEFAULT_DBT_QUOTING,
+            std::path::Path::new("models/unit_tests.yml"),
+            None,
+            &NodeResolver::default(),
+        )
+        .await
+        .expect_err("the probe seed is deliberately absent");
+        assert!(calls.load(Ordering::SeqCst) > 0, "{error}");
+    }
 
     #[test]
     fn test_parse_implicit_seed_rows_preserves_strings_and_trailing_nulls() {

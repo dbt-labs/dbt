@@ -26,4 +26,4 @@ pub use types::{
 pub use utils::canonicalize;
 
 // Re-export Cancellable from dbt-cancel for convenience
-pub use dbt_base::Cancellable;
+pub use dbt_cancel::Cancellable;

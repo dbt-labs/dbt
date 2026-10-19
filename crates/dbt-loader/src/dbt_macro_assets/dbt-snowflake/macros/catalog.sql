@@ -117,18 +117,36 @@
 {%- endmacro %}
 
 
+{#
+    DIVERGENCE: compare against the name as Snowflake stores it (verbatim when quoted, upper-cased
+    otherwise) with a plain `=`. Snowflake only narrows an INFORMATION_SCHEMA scan to the matching
+    schema for an equality against a literal; the `ilike` / `upper()` form scans the metadata of
+    every schema in the database. Falls back to `snowflake__catalog_equals` for relations without
+    a quote policy.
+#}
+-- funcsign: (string, string, optional[bool]) -> string
+{% macro snowflake__catalog_relation_equals(field, value, quoted) %}
+    {%- if quoted is none -%}
+        {{ snowflake__catalog_equals(field, value) }}
+    {%- else -%}
+        "{{ field }}" = '{{ value if quoted else value | upper }}'
+    {%- endif -%}
+{% endmacro %}
+
+
 -- funcsign: (list[relation]) -> string
 {% macro snowflake__get_catalog_relations_where_clause_sql(relations) -%}
     where (
         {%- for relation in relations -%}
+            {% set quote_policy = relation.quote_policy %}
             {% if relation.schema and relation.identifier %}
                 (
-                    {{ snowflake__catalog_equals('table_schema', relation.schema) }}
-                    and {{ snowflake__catalog_equals('table_name', relation.identifier) }}
+                    {{ snowflake__catalog_relation_equals('table_schema', relation.schema, quote_policy.schema if quote_policy else none) }}
+                    and {{ snowflake__catalog_relation_equals('table_name', relation.identifier, quote_policy.identifier if quote_policy else none) }}
                 )
             {% elif relation.schema %}
                 (
-                    {{ snowflake__catalog_equals('table_schema', relation.schema) }}
+                    {{ snowflake__catalog_relation_equals('table_schema', relation.schema, quote_policy.schema if quote_policy else none) }}
                 )
             {% else %}
                 {% do exceptions.raise_compiler_error(

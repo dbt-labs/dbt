@@ -10,7 +10,7 @@
 //! * Parse phase (PR 5): `ParseExecute`, `MacroLookupContext`,
 //!   `DbtNamespace` (dispatch-side).
 //! * Compile phase: `DummyConfig`.
-//! * Run phase: `HookConfig`, `LazyModelWrapper`.
+//! * Run phase: `HookConfig`.
 //!
 //! Pending later PRs:
 //! * `ParseMetricReference`, `ParseConfigValue` — bundle with `ParseConfig`
@@ -36,4 +36,4 @@ pub mod run;
 pub use compile::DummyConfig;
 pub use lookup::{DbtNamespace, MacroLookupContext};
 pub use parse::ParseExecute;
-pub use run::{HookConfig, LazyModelWrapper};
+pub use run::HookConfig;
