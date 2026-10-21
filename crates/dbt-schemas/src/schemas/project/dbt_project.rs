@@ -1,5 +1,5 @@
-use std::collections::HashMap;
 use std::collections::btree_map::Iter;
+use std::collections::{BTreeMap, HashMap};
 use std::fmt::Debug;
 
 use indexmap::IndexMap;
@@ -152,6 +152,10 @@ pub struct DbtProject {
     pub docs_paths: Option<Vec<String>>,
     #[serde(rename = "skill-paths")]
     pub skill_paths: Option<Vec<String>>,
+    /// Directories whose files belong to a plugin, by plugin type. There is no default: a plugin
+    /// reads only the paths a project names for it.
+    #[serde(rename = "plugin-paths")]
+    pub plugin_paths: Option<BTreeMap<String, Vec<String>>>,
     #[serde(rename = "target-path")]
     pub target_path: Option<TargetPath>,
     #[serde(rename = "log-path")]
@@ -191,7 +195,7 @@ pub struct DbtProject {
     /// `AdapterType` has no `JsonSchema` impl -- it lives in `dbt-adapter-core`,
     /// which has no `schemars` dependency and must not gain one -- so the schema
     /// describes the key as the string it is in YAML.
-    #[schemars(with = "Option<std::collections::BTreeMap<String, AdapterProjectConfig>>")]
+    #[schemars(with = "Option<BTreeMap<String, AdapterProjectConfig>>")]
     pub adapters: Option<IndexMap<AdapterType, AdapterProjectConfig>>,
     pub dispatch: Option<Vec<_Dispatch>>,
     pub flags: Option<YmlValue>,
@@ -227,6 +231,7 @@ impl Default for DbtProject {
             check_paths: None,
             docs_paths: None,
             skill_paths: None,
+            plugin_paths: None,
             target_path: None,
             log_path: None,
             packages_install_path: None,
@@ -294,6 +299,17 @@ impl DbtProject {
         .flatten()
         .cloned()
         .collect()
+    }
+
+    /// Every directory dbt itself reads files from: the resource paths, `check-paths`,
+    /// `docs-paths`, `asset-paths` and `skill-paths`.
+    pub fn all_dbt_paths(&self) -> Vec<String> {
+        let mut paths = self.all_source_paths();
+        for configured in [&self.check_paths, &self.docs_paths, &self.asset_paths] {
+            paths.extend(configured.iter().flatten().cloned());
+        }
+        paths.extend(self.skill_paths_or_default());
+        paths
     }
 
     /// `skill-paths`, falling back to the default of `skills/`.
@@ -495,6 +511,7 @@ mod tests {
             check_paths: Some(vec![]),
             docs_paths: Some(vec![]),
             skill_paths: Some(vec![]),
+            plugin_paths: None,
             target_path: Some(TargetPath::Target),
             log_path: Some(LogPath::Logs),
             packages_install_path: Some("packages".to_string()),

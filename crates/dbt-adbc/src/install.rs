@@ -463,7 +463,7 @@ pub fn driver_parameters(backend: Backend) -> (&'static str, DriverTriplet<'stat
 
 /// Find the expected SHA-256 checksum for the compressed driver file.
 pub fn find_expected_checksum(backend_name: &str, triplet: DriverTriplet) -> Option<&'static str> {
-    let checksums = checksums::SORTED_CDN_DRIVER_CHECKSUMS.as_ref();
+    let checksums = checksums::SORTED_CDN_DRIVER_CHECKSUMS;
     #[cfg(debug_assertions)]
     for i in 0..checksums.len() - 1 {
         debug_assert!(

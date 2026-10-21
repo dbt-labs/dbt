@@ -883,7 +883,6 @@ pub async fn collect_adapter_identifiers_detect_unsafe<
     node_map: HashMap<String, T>,
     node_resolver: &NodeResolver,
     jinja_env: Arc<JinjaEnv>,
-    adapter_type: AdapterType,
     package_name: &str,
     root_project_name: &str,
     runtime_config: Arc<DbtRuntimeConfig>,
@@ -925,7 +924,6 @@ pub async fn collect_adapter_identifiers_detect_unsafe<
                     arg,
                     node_resolver,
                     &jinja_env,
-                    adapter_type,
                     package_name,
                     root_project_name,
                     runtime_config,
@@ -957,7 +955,6 @@ async fn process_model_chunk_for_unsafe_detection<
     arg: Arc<ResolveArgs>,
     node_resolver: Arc<NodeResolver>,
     jinja_env: &JinjaEnv,
-    adapter_type: AdapterType,
     package_name: String,
     root_project_name: String,
     runtime_config: Arc<DbtRuntimeConfig>,
@@ -1004,7 +1001,7 @@ async fn process_model_chunk_for_unsafe_detection<
         let model = Arc::new(model);
         let (mut render_resolved_context, _) = build_compile_node_context_inner(
             model.clone(),
-            adapter_type,
+            model.node_adapter(),
             &render_base_context,
             &root_project_name,
             node_resolver.clone(),

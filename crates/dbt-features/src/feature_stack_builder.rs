@@ -31,6 +31,7 @@ use crate::index::{IndexFeature, NoOpIndexHooks};
 use crate::loader::LoaderFeature;
 use crate::login::LoginFeature;
 use crate::metricflow::MetricflowFeature;
+use crate::plugin::PluginFeature;
 use crate::resolver::ResolverFeature;
 use crate::sidecar::SidecarFeature;
 use crate::task_runner::TaskRunnerFeature;
@@ -173,6 +174,7 @@ impl FeatureStackBuilder {
             metricflow,
             task_runner,
             resolver,
+            plugins: PluginFeature::default(),
             loader,
             jinja,
             lake_compute,

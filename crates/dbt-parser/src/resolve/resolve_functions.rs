@@ -12,7 +12,6 @@ use dbt_common::{ErrorCode, FsResult, error::AbstractLocation, fs_err};
 use dbt_jinja_utils::listener::DefaultJinjaTypeCheckEventListenerFactory;
 use dbt_jinja_utils::utils::dependency_package_name_from_ctx;
 use dbt_jinja_utils::{jinja_environment::JinjaEnv, node_resolver::NodeResolver};
-use dbt_schemas::dbt_utils::resolve_package_quoting;
 use dbt_schemas::schemas::common::{Access, DbtMaterialization, DbtQuoting};
 use dbt_schemas::schemas::project::FunctionConfig;
 use dbt_schemas::schemas::project::ResolvedConfig;
@@ -38,7 +37,7 @@ use crate::dbt_project_config::{
 };
 use crate::renderer::{RenderCtx, RenderCtxInner};
 use crate::resolve::resolve_utils::{
-    build_unrendered_config, extract_config_map, validate_node_adapter,
+    build_unrendered_config, extract_config_map, resolve_node_quoting, select_node_adapter,
 };
 use crate::utils::{
     RelationComponents, extract_resource_config_from_raw_project, update_node_relation_components,
@@ -305,18 +304,17 @@ pub async fn resolve_functions(
         let unique_id = get_unique_id(function_name, package_name, None, "function");
         // See `resolve_models`: the flag overrides the config. A function selects
         // explicitly; it has no attached node to inherit from.
-        validate_node_adapter(model_config.adapter, &dbt_asset.path)?;
-        let resolved_node_adapter = arg.adapter_override.or(model_config.adapter);
+        let selected_adapter = select_node_adapter(
+            arg,
+            model_config.adapter,
+            None,
+            default_adapter,
+            &dbt_asset.path,
+        )?;
         // See `resolve_models`: both remaining quoting layers depend on which
         // adapter the node runs on, which is only known after the config merge.
-        let selected_adapter = resolved_node_adapter.unwrap_or(default_adapter);
-        model_config.quoting = resolve_package_quoting(
-            Some(match adapter_quoting.get(&selected_adapter) {
-                Some(authored) => model_config.quoting.filled_from(authored),
-                None => model_config.quoting,
-            }),
-            selected_adapter,
-        );
+        model_config.quoting =
+            resolve_node_quoting(model_config.quoting, adapter_quoting, selected_adapter);
         let static_analysis = model_config.static_analysis.clone();
         if let Some(spanned) = model_config.get_static_analysis() {
             let kind = spanned.into_inner();
@@ -518,7 +516,7 @@ pub async fn resolve_functions(
             default_adapter,
         )?;
 
-        match node_resolver.insert_function(&function, default_adapter, status) {
+        match node_resolver.insert_function(&function, status) {
             Ok(_) => (),
             Err(e) => {
                 let err_with_loc = e.with_location(dbt_asset.path.clone());

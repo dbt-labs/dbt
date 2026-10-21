@@ -13,8 +13,8 @@ use crate::resolve::resolve_tests::persist_generic_data_tests::{
     TestUnrenderedConfigs, extract_test_unrendered_configs,
 };
 use crate::resolve::resolve_utils::{
-    build_unrendered_config, err_resource_name_has_spaces, extract_config_map, validate_compute,
-    validate_node_adapter,
+    build_unrendered_config, err_resource_name_has_spaces, extract_config_map,
+    resolve_node_quoting, select_node_adapter, validate_compute,
 };
 use crate::resolve::yaml_field_utils;
 use crate::sql_file_info::SqlFileInfo;
@@ -36,7 +36,6 @@ use dbt_jinja_utils::jinja_environment::JinjaEnv;
 use dbt_jinja_utils::listener::DefaultJinjaTypeCheckEventListenerFactory;
 use dbt_jinja_utils::node_resolver::NodeResolver;
 use dbt_jinja_utils::serde::into_typed_with_jinja;
-use dbt_schemas::dbt_utils::resolve_package_quoting;
 use dbt_schemas::schemas::common::{
     DbtChecksum, DbtQuoting, ModelFreshnessRules, NodeDependsOn,
     conform_normalized_snapshot_raw_code_to_mantle_format, normalize_sql,
@@ -448,8 +447,13 @@ pub async fn resolve_snapshots(
             validate_compute(snapshot_config.compute, error_path)?;
             // See `resolve_models`: the flag overrides the config. A snapshot
             // selects explicitly -- it has no attached node to inherit from.
-            validate_node_adapter(snapshot_config.adapter, error_path)?;
-            let resolved_node_adapter = arg.adapter_override.or(snapshot_config.adapter);
+            let selected_adapter = select_node_adapter(
+                arg,
+                snapshot_config.adapter,
+                None,
+                default_adapter,
+                error_path,
+            )?;
 
             // See `resolve_models`: both remaining quoting layers depend on which
             // adapter the node runs on, which is only known after the config merge.
@@ -461,14 +465,8 @@ pub async fn resolve_snapshots(
                 .clone()
                 .map(Into::into)
                 .unwrap_or_default();
-            let selected_adapter = resolved_node_adapter.unwrap_or(default_adapter);
-            snapshot_config.quoting = resolve_package_quoting(
-                Some(match adapter_quoting.get(&selected_adapter) {
-                    Some(authored) => snapshot_config.quoting.filled_from(authored),
-                    None => snapshot_config.quoting,
-                }),
-                selected_adapter,
-            );
+            snapshot_config.quoting =
+                resolve_node_quoting(snapshot_config.quoting, adapter_quoting, selected_adapter);
 
             if let Some(state) = &snapshot_config.state {
                 ModelFreshnessRules::validate(state.lag_tolerance.as_ref()).map_err(|e| {
@@ -626,7 +624,7 @@ pub async fn resolve_snapshots(
                 },
                 __adapter_attr__: AdapterAttr::from_config_and_dialect(
                     &snapshot_config.__warehouse_specific_config__,
-                    default_adapter,
+                    selected_adapter,
                 ),
                 deprecated_config: snapshot_config.clone().into(),
                 compiled: None,
@@ -675,7 +673,7 @@ pub async fn resolve_snapshots(
                 default_adapter,
             )?;
 
-            match node_resolver.insert_ref(&dbt_snapshot, default_adapter, status, false) {
+            match node_resolver.insert_ref(&dbt_snapshot, status, false) {
                 Ok(_) => (),
                 Err(e) => {
                     let err_with_loc = e.with_location(error_path.clone());
@@ -771,7 +769,6 @@ pub async fn resolve_snapshots(
         snapshots_with_execute,
         node_resolver,
         jinja_env,
-        default_adapter,
         package.dbt_project.name.as_str(),
         &root_package.dbt_project.name,
         runtime_config,

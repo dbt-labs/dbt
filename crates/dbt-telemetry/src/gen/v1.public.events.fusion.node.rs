@@ -515,6 +515,10 @@ pub struct NodeProcessed {
     /// project can run nodes on more than one adapter.
     #[prost(string, optional, tag = "48")]
     pub adapter: ::core::option::Option<::prost::alloc::string::String>,
+    /// If node_type == NODE_TYPE_PLUGIN, the kind of node the plugin added
+    /// (e.g. "widget").
+    #[prost(string, optional, tag = "49")]
+    pub plugin_type: ::core::option::Option<::prost::alloc::string::String>,
     /// Node type specific details (e.g. test fail counts, cache use reasons).
     #[prost(oneof = "node_processed::NodeOutcomeDetail", tags = "30, 31, 32, 33, 34")]
     pub node_outcome_detail: ::core::option::Option<node_processed::NodeOutcomeDetail>,
@@ -586,6 +590,9 @@ pub enum NodeType {
     SemanticModel = 14,
     Function = 15,
     Check = 16,
+    /// A node a plugin adds to the project. Its kind is in `plugin_type`. Numbered apart from the
+    /// core node types; node types must fit in a byte (node-count metric keys pack them).
+    Plugin = 100,
 }
 impl NodeType {
     /// String value of the enum field names used in the ProtoBuf definition.
@@ -611,6 +618,7 @@ impl NodeType {
             Self::SemanticModel => "NODE_TYPE_SEMANTIC_MODEL",
             Self::Function => "NODE_TYPE_FUNCTION",
             Self::Check => "NODE_TYPE_CHECK",
+            Self::Plugin => "NODE_TYPE_PLUGIN",
         }
     }
     /// Creates an enum from field names used in the ProtoBuf definition.
@@ -633,6 +641,7 @@ impl NodeType {
             "NODE_TYPE_SEMANTIC_MODEL" => Some(Self::SemanticModel),
             "NODE_TYPE_FUNCTION" => Some(Self::Function),
             "NODE_TYPE_CHECK" => Some(Self::Check),
+            "NODE_TYPE_PLUGIN" => Some(Self::Plugin),
             _ => None,
         }
     }

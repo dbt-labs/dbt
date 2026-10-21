@@ -37,6 +37,9 @@ pub const JWT_PRIVATE_KEY_PKCS8_VALUE: &str =
 pub const JWT_PRIVATE_KEY_PKCS8_PASSWORD: &str =
     "adbc.snowflake.sql.client_option.jwt_private_key_pkcs8_password";
 pub const DISABLE_TELEMETRY: &str = "adbc.snowflake.sql.client_option.disable_telemetry";
+/// When enabled, a prefetch slot is held until the consumer drains the chunk's
+/// channel, so at most `prefetch_concurrency` chunks are in flight at once.
+pub const BOUNDED_PREFETCH: &str = "adbc.snowflake.sql.client_option.bounded_prefetch";
 pub const LOG_TRACING: &str = "adbc.snowflake.sql.client_option.tracing";
 pub const CLIENT_CONFIG_FILE: &str = "adbc.snowflake.sql.client_option.config_file";
 

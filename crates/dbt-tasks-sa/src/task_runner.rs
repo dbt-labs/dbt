@@ -511,6 +511,7 @@ impl TaskRunner {
                                 status: NodeStatus::SkippedUpstreamFailed,
                                 thread_id: "main".to_string(),
                                 message: None,
+                                assertion: false,
                             });
                             continue;
                         }
@@ -575,6 +576,7 @@ impl TaskRunner {
                             status,
                             thread_id: "main".to_string(),
                             message: error_message,
+                            assertion: false,
                         });
 
                         if let Err(e) = result {

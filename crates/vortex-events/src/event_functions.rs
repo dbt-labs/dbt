@@ -1,5 +1,6 @@
 use dbt_common::collections::DashMap;
 use dbt_common::io_args::StaticAnalysisKind;
+use dbt_common::telemetry_command::TelemetryCommand;
 use dbt_common::{
     DiscreteEventEmitter, FsResult,
     stats::{ExecutionMetrics, NodeStatus, Stat},
@@ -50,7 +51,7 @@ impl DiscreteEventEmitter for NoopEventEmitter {
         _invocation_id: &Uuid,
         _root_project_name: &str,
         _profile_path: Option<&Path>,
-        _command: String,
+        _command: TelemetryCommand,
     ) {
         // No-op implementation
     }
@@ -86,7 +87,7 @@ impl DiscreteEventEmitter for DefaultEventEmitter {
         invocation_id: &Uuid,
         root_project_name: &str,
         profile_path: Option<&Path>,
-        command: String,
+        command: TelemetryCommand,
     ) {
         match self.enabled {
             Some(explicitly_enabled) => {
@@ -123,8 +124,9 @@ impl DiscreteEventEmitter for DefaultEventEmitter {
             project_id,
             //  user_id - UUID generated to identify a unique user (~/.dbt/.user.yml)
             user_id: profile_path.map(get_user_id).unwrap_or_default(),
-            //  command - full string of the command that was run
-            command,
+            //  command - subcommand name (dbt-core: `flags.WHICH`). Extension commands
+            //  append their arguments, with path values hashed.
+            command: command.event_value().to_string(),
             //  result_type - ok/error.
             //  only provided on invocation_end
             result_type: "".to_string(),

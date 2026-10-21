@@ -11,6 +11,7 @@
 //! adapter relation rendering, warehouse metadata lookups, and skip policy.
 //! Stable service DTO construction lives in `dbt-state::request_builder`.
 
+use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
@@ -63,6 +64,7 @@ use dbt_state::explain::{
 use dbt_state::materialization;
 use dbt_state::metadata_cache::{MetadataPrefetchGuard, RunCacheMetadataCache};
 use dbt_state::node_session::ExecutionGuard;
+use dbt_state::node_state_config::resolve_compare_unrendered_code;
 use dbt_state::proto::query_cache::{
     ClientTelemetryEvent, ConfirmExecutionRequest, ExplainedDecision, NodeFuncMapping,
     QueryDependency, RecordExecutionsRequest, SkipExecutionResponse, Struct,
@@ -3035,6 +3037,14 @@ async fn prepare_write_only_execution_record(
                 allow_clones: Some(ctx.dbt_profile().allow_clones),
                 is_defer_to_profile,
                 defer_enabled,
+                compare_unrendered_code: resolve_compare_unrendered_code(
+                    seed,
+                    ctx.inner
+                        .run_cache_ctx
+                        .run_cache_service_config
+                        .as_ref()
+                        .is_some_and(|config| config.compare_unrendered_code),
+                ),
                 dbt_project_info: DbtProjectInfo::from(ctx),
             },
             create_macro_resolver(ctx),
@@ -3130,6 +3140,14 @@ async fn submit_seed(
             allow_clones: Some(ctx.dbt_profile().allow_clones),
             is_defer_to_profile,
             defer_enabled,
+            compare_unrendered_code: resolve_compare_unrendered_code(
+                seed,
+                ctx.inner
+                    .run_cache_ctx
+                    .run_cache_service_config
+                    .as_ref()
+                    .is_some_and(|config| config.compare_unrendered_code),
+            ),
             dbt_project_info: DbtProjectInfo::from(ctx),
         },
         create_macro_resolver(ctx),
@@ -3351,44 +3369,6 @@ fn evaluate_volatile_sql_for_node(node: &dyn InternalDbtNodeAttributes) -> Optio
         .downcast_ref::<DbtTest>()
         .and_then(|test| test.__test_attr__.state.as_ref())
         .and_then(|state| state.evaluate_volatile_sql)
-}
-
-/// `compare_unrendered_code`, honored by models and snapshots (via `ModelState`) and data tests
-/// (via `DataTestState`).
-fn compare_unrendered_code_for_node(node: &dyn InternalDbtNodeAttributes) -> Option<bool> {
-    if let Some(state) = model_state_for_node(node) {
-        return state.compare_unrendered_code;
-    }
-    node.as_any()
-        .downcast_ref::<DbtTest>()
-        .and_then(|test| test.__test_attr__.state.as_ref())
-        .and_then(|state| state.compare_unrendered_code)
-}
-
-/// Per-node override for the service's `compare_unrendered_code` wire flag. Unlike
-/// `tolerate_nondeterminism` there is no inversion and no legacy `meta` form: the node config
-/// wins over the service default, otherwise the default stands.
-fn resolve_compare_unrendered_code(
-    node: &dyn InternalDbtNodeAttributes,
-    service_default: bool,
-) -> bool {
-    let node_override = compare_unrendered_code_for_node(node);
-    let resolved = node_override.unwrap_or(service_default);
-
-    // Logs the override separately from the result so a surprising `false` distinguishes
-    // "the node never set it" from "the service default lost to an explicit node value".
-    emit_trace_log_message(|| {
-        format!(
-            "dbt State compare_unrendered_code={resolved} for node {} (node config {}, service default {service_default})",
-            node.unique_id(),
-            match node_override {
-                Some(v) => v.to_string(),
-                None => "unset".to_owned(),
-            },
-        )
-    });
-
-    resolved
 }
 
 /// Per-model override for ignoring external / out of band changes.
@@ -4566,8 +4546,11 @@ fn group_relations_by_database_and_schema(
     for (name, relation) in relations {
         grouped
             .entry((
-                relation.database_as_resolved_str().ok(),
-                relation.schema_as_resolved_str().ok(),
+                relation
+                    .database_as_resolved_str()
+                    .ok()
+                    .map(Cow::into_owned),
+                relation.schema_as_resolved_str().ok().map(Cow::into_owned),
             ))
             .or_insert_with(BTreeMap::new)
             .insert(name.clone(), Arc::clone(relation));

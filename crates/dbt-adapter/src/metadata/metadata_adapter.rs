@@ -659,7 +659,7 @@ pub(crate) fn group_relations_by_resolved_database_schema(
         let database = relation.database_as_resolved_str().unwrap_or_default();
         let schema = relation.schema_as_resolved_str().unwrap_or_default();
         groups
-            .entry((database, schema))
+            .entry((database.into_owned(), schema.into_owned()))
             .or_default()
             .push(Arc::clone(relation));
     }

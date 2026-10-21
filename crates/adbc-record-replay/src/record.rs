@@ -587,8 +587,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "do not match")]
-    fn replay_execute_update_panics_on_sql_mismatch() {
+    fn replay_execute_update_errors_on_sql_mismatch() {
         let dir = tempfile::tempdir().unwrap();
         SqliteHandler::new(dir.path())
             .write_execute(
@@ -608,6 +607,7 @@ mod tests {
         replayer
             .set_sql_query("SELECT * FROM x.non_existing_dest")
             .unwrap();
-        let _ = replayer.execute_update();
+        let err = replayer.execute_update().unwrap_err();
+        assert!(err.message.contains("do not match"), "{}", err.message);
     }
 }

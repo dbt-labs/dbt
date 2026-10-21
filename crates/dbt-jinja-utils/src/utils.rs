@@ -1,6 +1,5 @@
 use dbt_adapter::Adapter;
 use dbt_adapter::relation::render_effective_relation;
-use dbt_adapter_core::AdapterType;
 use dbt_common::{ErrorCode, FsError, fs_err};
 use dbt_common::{FsResult, constants::DBT_CTE_PREFIX, error::MacroSpan, stdfs};
 use dbt_frontend_common::{error::CodeLocation, span::Span};
@@ -739,32 +738,13 @@ pub fn generate_relation_name(
     identifier: &str,
     quote_config: ResolvedQuoting,
 ) -> FsResult<String> {
-    generate_relation_name_with_target(
-        parse_adapter,
-        database,
-        schema,
-        identifier,
-        quote_config,
-        None,
-    )
-}
-
-/// Generate a relation name using a node's resolved destination.
-pub fn generate_relation_name_with_target(
-    parse_adapter: Arc<Adapter>,
-    database: &str,
-    schema: &str,
-    identifier: &str,
-    quote_config: ResolvedQuoting,
-    target: Option<AdapterType>,
-) -> FsResult<String> {
     render_effective_relation(
         parse_adapter.adapter_type(),
         database,
         schema,
         identifier,
         quote_config,
-        target,
+        None,
     )
 }
 

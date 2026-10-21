@@ -17,6 +17,7 @@ dbt-adapter = { workspace = true }
 dbt-adapter-core = { workspace = true }
 dbt-common = { workspace = true }
 dbt-dag = { workspace = true }
+dbt-flags = { workspace = true }
 dbt-frontend-common = { workspace = true }
 dbt-jinja-utils = { workspace = true }
 dbt-runtime = { workspace = true }

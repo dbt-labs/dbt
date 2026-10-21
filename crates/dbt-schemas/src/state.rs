@@ -575,14 +575,12 @@ pub trait NodeResolverTracker: fmt::Debug + Send + Sync {
     fn insert_ref(
         &mut self,
         node: &dyn InternalDbtNodeAttributes,
-        adapter_type: AdapterType,
         model_status: ModelStatus,
         overwrite: bool,
     ) -> FsResult<()>;
     fn insert_function(
         &mut self,
         node: &dyn InternalDbtNodeAttributes,
-        adapter_type: AdapterType,
         model_status: ModelStatus,
     ) -> FsResult<()>;
     fn insert_source(
@@ -663,7 +661,6 @@ impl NodeResolverTracker for DummyNodeResolverTracker {
     fn insert_ref(
         &mut self,
         _node: &dyn InternalDbtNodeAttributes,
-        _adapter_type: AdapterType,
         _model_status: ModelStatus,
         _overwrite: bool,
     ) -> FsResult<()> {
@@ -674,7 +671,6 @@ impl NodeResolverTracker for DummyNodeResolverTracker {
     fn insert_function(
         &mut self,
         _node: &dyn InternalDbtNodeAttributes,
-        _adapter_type: AdapterType,
         _model_status: ModelStatus,
     ) -> FsResult<()> {
         // No-op for dummy

@@ -53,10 +53,11 @@ pub mod schemas {
     pub use nodes::{
         AbsorbedOverload, AdapterAttr, CommonAttributes, DbtAnalysis, DbtAnalysisAttr, DbtCheck,
         DbtCheckAttr, DbtExposure, DbtExposureAttr, DbtFunction, DbtFunctionAttr, DbtModel,
-        DbtModelAttr, DbtSeed, DbtSeedAttr, DbtSnapshot, DbtSnapshotAttr, DbtSource, DbtSourceAttr,
-        DbtTest, DbtTestAttr, DbtUnitTest, DbtUnitTestAttr, ExposureType, InternalDbtNode,
-        InternalDbtNodeAttributes, InternalDbtNodeWrapper, IntrospectionKind, NodeBaseAttributes,
-        NodePathKind, Nodes, TestMetadata, TimeSpine, TimeSpinePrimaryColumn,
+        DbtModelAttr, DbtPluginNode, DbtPluginNodeAttr, DbtSeed, DbtSeedAttr, DbtSnapshot,
+        DbtSnapshotAttr, DbtSource, DbtSourceAttr, DbtTest, DbtTestAttr, DbtUnitTest,
+        DbtUnitTestAttr, ExposureType, InternalDbtNode, InternalDbtNodeAttributes,
+        InternalDbtNodeWrapper, IntrospectionKind, NodeBaseAttributes, NodePathKind, Nodes,
+        PluginData, TestMetadata, TimeSpine, TimeSpinePrimaryColumn,
         deserialize_empty_string_as_none, serialize_none_as_empty_string,
     };
 
@@ -149,6 +150,7 @@ pub mod schemas {
             pub mod function_config;
             pub mod metric_config;
             pub mod model_config;
+            pub mod plugin_node_config;
             pub mod saved_query_config;
             pub mod seed_config;
             pub mod semantic_model_config;
@@ -192,6 +194,7 @@ pub mod schemas {
         pub use configs::model_config::{
             LatestVersionPointer, ModelConfig, ProjectModelConfig, ResolvedModelConfig,
         };
+        pub use configs::plugin_node_config::{PluginNodeConfig, ResolvedPluginNodeConfig};
         pub use configs::saved_query_config::{
             ExportConfigExportAs, ResolvedSavedQueryConfig, SavedQueryCache, SavedQueryConfig,
         };
@@ -226,6 +229,7 @@ pub mod schemas {
         mod function_properties;
         pub mod metrics_properties;
         pub mod model_properties;
+        mod plugin_node_properties;
         #[allow(clippy::module_inception)]
         mod properties;
         mod saved_queries_properties;
@@ -250,12 +254,13 @@ pub mod schemas {
         pub use model_properties::ModelProperties;
         pub use model_properties::ModelState;
         pub use model_properties::StatePreClone;
+        pub use plugin_node_properties::PluginNodeProperties;
         pub use properties::GroupConfig;
         pub use properties::GroupProperties;
         pub use properties::MacrosProperties;
         pub use properties::{
-            DbtPropertiesFile, DbtPropertiesFileValues, GetConfig, MinimalSchemaValue,
-            MinimalTableValue, MinimalUnitTestValue,
+            DbtPropertiesFile, DbtPropertiesFileValues, GetConfig, MinimalPluginEntryValue,
+            MinimalSchemaValue, MinimalTableValue, MinimalUnitTestValue,
         };
         pub use saved_queries_properties::SavedQueriesProperties;
         pub use seed_properties::SeedProperties;

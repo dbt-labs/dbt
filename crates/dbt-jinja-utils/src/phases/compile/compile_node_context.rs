@@ -501,14 +501,14 @@ mod tests {
         };
 
         node_resolver
-            .insert_ref(&snapshot, ADAPTER_TYPE, ModelStatus::Enabled, false)
+            .insert_ref(&snapshot, ModelStatus::Enabled, false)
             .expect("insert snapshot ref");
     }
 
     fn resolver_with_collision(model: &DbtModel) -> NodeResolver {
         let mut node_resolver = NodeResolver::default();
         node_resolver
-            .insert_ref(model, ADAPTER_TYPE, ModelStatus::Enabled, false)
+            .insert_ref(model, ModelStatus::Enabled, false)
             .expect("insert model ref");
         insert_colliding_snapshot(&mut node_resolver);
         node_resolver
@@ -570,7 +570,7 @@ mod tests {
         let model = colliding_model();
         let mut node_resolver = NodeResolver::default();
         node_resolver
-            .insert_ref(&model, ADAPTER_TYPE, ModelStatus::Disabled, false)
+            .insert_ref(&model, ModelStatus::Disabled, false)
             .expect("insert disabled model ref");
 
         let err = build_ctx(&model, node_resolver).expect_err("a disabled node must not resolve");
@@ -583,7 +583,7 @@ mod tests {
         let model = colliding_model();
         let mut node_resolver = NodeResolver::default();
         node_resolver
-            .insert_ref(&model, ADAPTER_TYPE, ModelStatus::Disabled, false)
+            .insert_ref(&model, ModelStatus::Disabled, false)
             .expect("insert disabled model ref");
         insert_colliding_snapshot(&mut node_resolver);
 

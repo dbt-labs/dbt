@@ -969,6 +969,8 @@ pub enum ClapResourceType {
     SavedQuery,
     Check,
     Exposure,
+    /// Nodes added by plugins.
+    Plugin,
     /// CLI-only sentinels (see `resolve`).
     All,
     Default,
@@ -1013,6 +1015,7 @@ impl Display for ClapResourceType {
             ClapResourceType::SavedQuery => "saved_query",
             ClapResourceType::Check => "check",
             ClapResourceType::Exposure => "exposure",
+            ClapResourceType::Plugin => "plugin",
             ClapResourceType::All => "all",
             ClapResourceType::Default => "default",
         };
@@ -1036,6 +1039,7 @@ impl From<&ClapResourceType> for NodeType {
             ClapResourceType::SavedQuery => NodeType::SavedQuery,
             ClapResourceType::Check => NodeType::Check,
             ClapResourceType::Exposure => NodeType::Exposure,
+            ClapResourceType::Plugin => NodeType::Plugin,
             // Sentinels are expanded by `resolve` first; this arm is defensive
             // only (`Unspecified` matches no real node).
             ClapResourceType::All | ClapResourceType::Default => NodeType::Unspecified,

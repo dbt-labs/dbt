@@ -11,6 +11,7 @@ use arrow_array::{Array, Int32Array, RecordBatch, StringArray};
 
 use dbt_adapter_core::{AdapterType, ExecutionPhase};
 use dbt_adapter_engine::MapReduce;
+use dbt_adapter_engine::cow::uppercase;
 use dbt_adbc::QueryCtx;
 use dbt_common::cancellation::Cancellable;
 use dbt_common::cancellation::CancellationToken;
@@ -709,7 +710,7 @@ fn build_schema_from_duckdb_describe(
     for i in 0..describe_result.num_rows() {
         let name = column_names.value(i);
         // DuckDB returns "YES" or "NO" for nullability
-        let nullable = nullability.value(i).to_uppercase() == "YES";
+        let nullable = uppercase(nullability.value(i).into()) == "YES";
         let text_data_type = data_types.value(i);
 
         let field = make_arrow_field_v2(

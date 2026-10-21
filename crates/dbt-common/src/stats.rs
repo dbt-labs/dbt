@@ -112,6 +112,9 @@ pub struct Stat {
     pub status: NodeStatus,
     pub thread_id: String,
     pub message: Option<String>,
+    /// Whether the node's result is an assertion, reported as `pass`/`fail` by its row count.
+    /// Tests, unit tests and checks always are; see [`Stat::is_assertion_node`].
+    pub assertion: bool,
 }
 
 impl Stat {
@@ -135,7 +138,14 @@ impl Stat {
             status,
             thread_id: format!("Thread-{} (worker)", thread_id),
             message,
+            assertion: false,
         }
+    }
+
+    /// Reports this result as an assertion: `pass` with no rows, `fail` with some.
+    pub fn as_assertion(mut self) -> Self {
+        self.assertion = true;
+        self
     }
 
     pub fn get_duration(&self) -> Duration {
@@ -169,7 +179,8 @@ impl Stat {
     /// of `success`/`error`, and the row count decides which. Checks belong here for the same reason
     /// tests do — "3 rows came back" is a failed assertion, not a failed build.
     fn is_assertion_node(&self) -> bool {
-        self.unique_id.starts_with("test.")
+        self.assertion
+            || self.unique_id.starts_with("test.")
             || self.unique_id.starts_with("unit_test.")
             || self.unique_id.starts_with("check.")
     }
@@ -208,6 +219,23 @@ impl Stat {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn assertions_report_pass_or_fail_by_row_count() {
+        let stat = |rows| {
+            Stat::new(
+                "widget.p.w".to_string(),
+                SystemTime::now(),
+                Some(rows),
+                NodeStatus::Succeeded,
+                None,
+                1,
+            )
+        };
+        assert_eq!(stat(0).result_status_string(), "success");
+        assert_eq!(stat(0).as_assertion().result_status_string(), "pass");
+        assert_eq!(stat(2).as_assertion().result_status_string(), "fail");
+    }
 
     #[test]
     fn test_thread_id_format() {

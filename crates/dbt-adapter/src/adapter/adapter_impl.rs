@@ -56,6 +56,7 @@ use arrow_ipc::writer::StreamWriter;
 use arrow_schema::{DataType, Field, Schema};
 use dashmap::DashMap;
 use dbt_adapter_core::AdapterType;
+use dbt_adapter_engine::cow::lowercase;
 use dbt_adapter_sql::is_keyword_ignore_ascii_case;
 use dbt_adbc::bigquery::*;
 use dbt_adbc::salesforce::DATA_TRANSFORM_RUN_TIMEOUT;
@@ -3071,14 +3072,15 @@ impl AdapterImpl {
         let mut result = IndexMap::new();
 
         // Case-insensitive lookup for model columns (matches upstream behavior).
-        let mut model_columns_lower: HashMap<String, &DbtColumnRef> = HashMap::new();
-        for (name, col) in &model_columns {
-            model_columns_lower.insert(name.to_lowercase(), col);
+        let mut model_columns_lower: HashMap<String, Arc<DbtColumn>> = HashMap::new();
+        for (name, col) in model_columns.into_iter() {
+            let lowercase_name = lowercase(Cow::Owned(name)).into_owned();
+            model_columns_lower.insert(lowercase_name, col);
         }
 
         for existing_col in existing_columns {
-            let Some(model_col) = model_columns_lower.get(&existing_col.name().to_lowercase())
-            else {
+            let lowercase_col = lowercase(Cow::Borrowed(existing_col.name()));
+            let Some(model_col) = model_columns_lower.get(lowercase_col.as_ref()) else {
                 continue;
             };
 
@@ -3086,7 +3088,13 @@ impl AdapterImpl {
             let existing = existing_col.comment().unwrap_or("");
 
             if desired != existing {
-                result.insert(existing_col.name().to_string(), (*model_col).clone());
+                let name = Cow::Borrowed(existing_col.name());
+                let key: String = if name == lowercase_col {
+                    lowercase_col.into_owned() // no allocation needed
+                } else {
+                    name.into_owned() // allocation needed
+                };
+                result.insert(key, Arc::clone(model_col));
             }
         }
 
@@ -4378,9 +4386,12 @@ impl AdapterImpl {
             Impl(Fabric, engine) => {
                 fabric::list_relations(engine.as_ref(), query_ctx, conn, db_schema, token)
             }
+            Impl(ClickHouse, engine) => {
+                clickhouse::list_relations(engine.as_ref(), query_ctx, conn, db_schema, token)
+            }
             Impl(
-                adapter_type @ (Postgres | Salesforce | ClickHouse | Exasol | Starburst | Athena
-                | Trino | Datafusion | Dremio | Oracle),
+                adapter_type @ (Postgres | Salesforce | Exasol | Starburst | Athena | Trino
+                | Datafusion | Dremio | Oracle),
                 _,
             ) => {
                 let err = AdapterError::new(

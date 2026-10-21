@@ -31,6 +31,8 @@ pub mod dbt_project_config {
 }
 /// Parallel dispatch utilities
 pub mod parallel;
+/// Plugins that add their own kind of node to a project
+pub mod plugin;
 /// Python AST parsing utilities
 pub mod python_ast;
 /// Python file information collection

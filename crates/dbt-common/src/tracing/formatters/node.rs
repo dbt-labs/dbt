@@ -35,9 +35,11 @@ pub const COMPILED_INLINE_NODE_TITLE: &str = "Compiled inline node is:";
 pub fn get_node_display_alias(node_type: NodeType, identifier: Option<&str>, name: &str) -> String {
     match node_type {
         // Tests and unit tests always use `name` for display (contains original untruncated name).
-        // Checks likewise: they have no relation, so `identifier` is empty and would display as
-        // nothing at all.
-        NodeType::Test | NodeType::UnitTest | NodeType::Check => name.to_string(),
+        // Checks and plugin nodes likewise: they have no relation, so `identifier` is empty and
+        // would display as nothing at all.
+        NodeType::Test | NodeType::UnitTest | NodeType::Check | NodeType::Plugin => {
+            name.to_string()
+        }
         // Other nodes prefer `identifier` (database alias) with `name` as fallback
         _ => identifier
             .map(|s| s.to_string())
@@ -392,10 +394,28 @@ pub fn format_node_processed_start(node: &NodeProcessed, colorize: bool) -> Stri
         qualifier = format!("{}{}", qualifier, UNIT_TEST_SCHEMA_SUFFIX);
     }
 
+    // Plugin nodes write no relation, so their name stands alone.
+    if node_type == NodeType::Plugin {
+        qualifier = String::new();
+    }
+
     // Format components
     let qualifier_alias = format_qualifier_alias(&qualifier, &alias, colorize);
 
-    format!("Started {} {}", node_type.pretty(), qualifier_alias)
+    format!(
+        "Started {} {}",
+        node_type_label(node, true),
+        qualifier_alias
+    )
+}
+
+/// The node type a node's line shows: a plugin node's own kind, else its node type.
+fn node_type_label(node: &NodeProcessed, pretty: bool) -> &str {
+    match node.plugin_type.as_deref() {
+        Some(kind) if node.node_type() == NodeType::Plugin => kind,
+        _ if pretty => node.node_type().pretty(),
+        _ => node.node_type().as_static_ref(),
+    }
 }
 
 /// Format a complete NodeProcessed event into a single output line
@@ -461,13 +481,18 @@ pub fn format_node_processed_end(
         }
     }
 
+    // Plugin nodes write no relation, so their name stands alone.
+    if node_type == NodeType::Plugin {
+        qualifier = String::new();
+    }
+
     // Determine description based on outcome
     let desc = format_node_description(node);
 
     // Get materialization string - use custom_materialization if materialization is Custom.
-    // Checks materialize nothing, so they get no suffix — reporting one (they carry `analysis`
-    // internally) would claim a relation that is never written.
-    let materialization_str = if node_type == NodeType::Check {
+    // Checks and plugin nodes materialize nothing, so they get no suffix — reporting one would
+    // claim a relation that is never written.
+    let materialization_str = if matches!(node_type, NodeType::Check | NodeType::Plugin) {
         None
     } else if node.materialization.is_some() {
         let mat = node.materialization();
@@ -482,7 +507,7 @@ pub fn format_node_processed_end(
 
     // Format components
     let qualifier_alias = format_qualifier_alias(&qualifier, &alias, colorize);
-    let node_type_formatted = format_node_type_fixed_width(node_type.as_static_ref(), colorize);
+    let node_type_formatted = format_node_type_fixed_width(node_type_label(node, false), colorize);
     let materialization_suffix = format_materialization_suffix(
         materialization_str.as_deref(),
         node.adapter.as_deref(),
@@ -1024,6 +1049,40 @@ mod tests {
             },
         ));
         node
+    }
+
+    /// A plugin node's lines name its own kind and show no schema or materialization.
+    #[test]
+    fn plugin_node_lines_use_its_own_kind() {
+        let mut node = NodeProcessed::start(
+            "widget.project.orders_widget".to_string(),
+            "orders_widget".to_string(),
+            None,
+            Some("analytics".to_string()),
+            None,
+            Some(NodeMaterialization::Analysis),
+            None,
+            NodeType::Plugin,
+            Some(ExecutionPhase::Run),
+            "models/widgets.yml".to_string(),
+            None,
+            None,
+            "checksum".to_string(),
+            true,
+            None,
+        );
+        node.plugin_type = Some("widget".to_string());
+        assert_eq!(
+            format_node_processed_start(&node, false),
+            "Started widget orders_widget"
+        );
+
+        node.set_node_outcome(NodeOutcome::Success);
+        let line = format_node_processed_end(&node, std::time::Duration::from_secs(1), false);
+        assert!(line.contains("widget orders_widget"), "got {line}");
+        assert!(!line.contains("plugin"), "got {line}");
+        assert!(!line.contains("analytics"), "got {line}");
+        assert!(!line.contains("(analysis)"), "got {line}");
     }
 
     /// A model has no source name, so the schema qualifies it — the same qualifier its

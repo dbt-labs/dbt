@@ -1,6 +1,7 @@
 //! Utility functions for the resolver
 use crate::dbt_project_config::strip_resource_paths_from_ref_path;
 use crate::resolve::resolve_properties::MinimalPropertiesEntry;
+use dbt_adapter::relation::render_effective_relation;
 use dbt_adapter_core::AdapterType;
 use dbt_common::constants::DBT_SNAPSHOTS_DIR_NAME;
 use dbt_common::io_args::IoArgs;
@@ -10,7 +11,7 @@ use dbt_common::{ErrorCode, FsError, FsResult, fs_err, stdfs};
 use dbt_jinja_utils::jinja_environment::JinjaEnv;
 use dbt_jinja_utils::malformed_block_name::MalformedBlockNameListener;
 use dbt_jinja_utils::phases::parse::sql_resource::SqlResource;
-use dbt_jinja_utils::utils::{generate_component_name, generate_relation_name_with_target};
+use dbt_jinja_utils::utils::generate_component_name;
 use dbt_schemas::schemas::InternalDbtNodeAttributes;
 use dbt_schemas::schemas::common::{DbtMaterialization, ResolvedQuoting, normalize_quoting};
 use dbt_schemas::schemas::project::{ResolvableConfig, ResolvedConfig};
@@ -459,7 +460,6 @@ fn generate_alias_and_relation_name<T: InternalDbtNodeAttributes + Clone>(
     let (_, _, alias, _) = normalize_quoting(&quoting, adapter_type, database, schema, &alias);
 
     // Generate relation_name
-    let parse_adapter = env.get_adapter().expect("Failed to get parse adapter");
     let database_name = if !matches!(node.materialized(), DbtMaterialization::Ephemeral) {
         database
     } else {
@@ -475,8 +475,8 @@ fn generate_alias_and_relation_name<T: InternalDbtNodeAttributes + Clone>(
     } else {
         &format!("{alias}_ephemeral")
     };
-    let relation_name = generate_relation_name_with_target(
-        parse_adapter,
+    let relation_name = render_effective_relation(
+        adapter_type,
         database_name,
         schema_name,
         alias_name,
@@ -1041,5 +1041,104 @@ select 1
     #[test]
     fn no_config_call_returns_none() {
         assert!(parse_unrendered_config("select 1", false).is_none());
+    }
+}
+
+#[cfg(test)]
+mod relation_components_tests {
+    use super::{RelationComponents, update_node_relation_components};
+    use dbt_adapter_core::AdapterType;
+    use dbt_common::io_args::IoArgs;
+    use dbt_jinja_utils::invocation_args::InvocationArgs;
+    use dbt_jinja_utils::jinja_environment::JinjaEnv;
+    use dbt_jinja_utils::phases::parse::init::initialize_parse_jinja_environment;
+    use dbt_schemas::schemas::profiles::SnowflakeDbConfig;
+    use dbt_schemas::schemas::relations::DEFAULT_DBT_QUOTING;
+    use dbt_schemas::schemas::{CommonAttributes, DbtModel};
+    use minijinja::machinery::Span;
+    use minijinja::macro_unit::{MacroInfo, MacroUnit};
+    use std::collections::{BTreeMap, BTreeSet};
+    use std::path::PathBuf;
+
+    fn naming_macro(component: &str, value: &str) -> MacroUnit {
+        let name = format!("generate_{component}_name");
+        MacroUnit {
+            sql: format!("{{% macro {name}(custom_name, node) %}}{value}{{% endmacro %}}"),
+            info: MacroInfo {
+                name,
+                path: PathBuf::from("test"),
+                span: Span::default(),
+                funcsign: None,
+                args: vec![],
+                unique_id: "test".to_string(),
+                name_span: Span::default(),
+            },
+        }
+    }
+
+    fn snowflake_parse_env() -> JinjaEnv {
+        let macros = vec![
+            naming_macro("database", "db"),
+            naming_macro("schema", "sch"),
+            naming_macro("alias", "orders"),
+        ];
+        initialize_parse_jinja_environment(
+            "common",
+            "profile",
+            "target",
+            AdapterType::Snowflake,
+            SnowflakeDbConfig {
+                account: Some("acct".to_string()),
+                database: Some("db".to_string()),
+                schema: Some("sch".to_string()),
+                ..Default::default()
+            }
+            .into(),
+            vec![AdapterType::Snowflake],
+            DEFAULT_DBT_QUOTING,
+            BTreeMap::from([("common".to_string(), macros)]),
+            BTreeMap::new(),
+            BTreeMap::new(),
+            BTreeMap::new(),
+            chrono::Utc::now().with_timezone(&chrono_tz::Tz::UTC),
+            &InvocationArgs::default(),
+            BTreeSet::from(["common".to_string()]),
+            IoArgs::default(),
+            None,
+        )
+        .unwrap()
+    }
+
+    /// The relation name follows the adapter type passed in, not the parse adapter's.
+    #[test]
+    fn relation_name_follows_the_given_adapter_type() {
+        let env = snowflake_parse_env();
+        let model = DbtModel {
+            __common_attr__: CommonAttributes {
+                name: "orders".to_string(),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let components = RelationComponents {
+            database: None,
+            schema: None,
+            alias: None,
+            store_failures: None,
+        };
+        let model = update_node_relation_components(
+            model,
+            &env,
+            "common",
+            "common",
+            &BTreeMap::new(),
+            &components,
+            AdapterType::Bigquery,
+        )
+        .unwrap();
+        assert_eq!(
+            model.__base_attr__.relation_name.as_deref(),
+            Some("`db`.`sch`.`orders`")
+        );
     }
 }

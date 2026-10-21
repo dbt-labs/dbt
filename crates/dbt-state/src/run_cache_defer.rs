@@ -428,12 +428,7 @@ fn update_run_cache_defer_nodes(
     db_config: &DbConfig,
     exclude_unique_ids: Option<&BTreeSet<String>>,
 ) -> FsResult<()> {
-    let default_database = db_config.get_database_or_default();
-    let default_schema = db_config
-        .get_schema()
-        .map(String::as_str)
-        .unwrap_or("public")
-        .to_string();
+    let (default_database, default_schema) = db_config.profile_database_and_schema();
 
     update_defer_nodes_of(&mut defer_nodes.models, exclude_unique_ids, |node| {
         update_run_cache_defer_model(
@@ -541,6 +536,7 @@ fn update_run_cache_defer_model(
         store_failures: None,
     };
     let package_name = model.__common_attr__.package_name.clone();
+    let node_adapter = model.node_adapter();
     update_node_relation_components(
         model,
         jinja_env,
@@ -548,7 +544,7 @@ fn update_run_cache_defer_model(
         &package_name,
         base_context,
         &components,
-        resolved_state.adapter_type,
+        node_adapter,
     )
 }
 
@@ -568,6 +564,7 @@ fn update_run_cache_defer_seed(
         store_failures: None,
     };
     let package_name = seed.__common_attr__.package_name.clone();
+    let node_adapter = seed.node_adapter();
     update_node_relation_components(
         seed,
         jinja_env,
@@ -575,7 +572,7 @@ fn update_run_cache_defer_seed(
         &package_name,
         base_context,
         &components,
-        resolved_state.adapter_type,
+        node_adapter,
     )
 }
 
@@ -603,6 +600,7 @@ fn update_run_cache_defer_snapshot(
         store_failures: None,
     };
     let package_name = snapshot.__common_attr__.package_name.clone();
+    let node_adapter = snapshot.node_adapter();
     update_node_relation_components(
         snapshot,
         jinja_env,
@@ -610,7 +608,7 @@ fn update_run_cache_defer_snapshot(
         &package_name,
         base_context,
         &components,
-        resolved_state.adapter_type,
+        node_adapter,
     )
 }
 
@@ -640,6 +638,7 @@ fn update_run_cache_defer_function(
         store_failures: None,
     };
     let package_name = function.__common_attr__.package_name.clone();
+    let node_adapter = function.node_adapter();
     update_node_relation_components(
         function,
         jinja_env,
@@ -647,7 +646,7 @@ fn update_run_cache_defer_function(
         &package_name,
         base_context,
         &components,
-        resolved_state.adapter_type,
+        node_adapter,
     )
 }
 

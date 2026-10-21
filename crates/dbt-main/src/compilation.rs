@@ -87,7 +87,10 @@ use dbt_schemas::{
     state::{CacheState, DbtPackage, DbtState, Macros, ModelStatus, ResolverState},
     stats::Stats,
 };
+use dbt_tasks_core::task::TP;
 use dbt_tasks_core::task_runner_hooks::TaskRunnerHooksFactory;
+use dbt_tasks_sa::graph::command_phases;
+use dbt_tasks_sa::plugin::PluginRuns;
 use dbt_tasks_sa::utils::{
     update_columns_from_schemas, update_resolved_states_manifest_with_schemas_and_compiled_sql,
 };
@@ -131,6 +134,7 @@ use std::{sync::Arc, time::SystemTime};
 
 use crate::utils::update_manifest_with_macro_depends_on;
 use dbt_common::io_args::LocalExecutionBackendKind;
+use dbt_common::telemetry_command::TelemetryCommand;
 use dbt_schemas::state::NodeResolverTracker;
 use serde_json::to_string_pretty;
 
@@ -609,6 +613,7 @@ impl<'a> CompilationPhasesExecutor<'a> {
                                     status: NodeStatus::Errored,
                                     thread_id: "main".to_string(),
                                     message: Some("Compilation Error".to_string()),
+                                    assertion: false,
                                 })
                                 .collect(),
                             nodes: Some(resolved_state.nodes.clone()),
@@ -1467,6 +1472,7 @@ impl DbtProjectCompilation {
                     token,
                     jinja_type_checking_event_listener_factory.clone(),
                     feature_stack.resolver.hooks.clone(),
+                    feature_stack.plugins.plugins.resolve_plugins(),
                 )
                 .await?
         };
@@ -2371,11 +2377,25 @@ impl DbtProjectCompilation {
         let tasks_for_node_factory = Arc::clone(&feature_stack.task_runner.tasks_for_node_factory);
         let compare_task_graph_builder =
             feature_stack.task_runner.compare_task_graph_builder.clone();
+        // Start the plugins with selected nodes before the graph is built, so one that can't run
+        // stops the invocation before any node runs.
+        let plugins = feature_stack.plugins.plugins.clone();
+        let runs_nodes = command_phases(run_task_args.command, &plugins)
+            .is_some_and(|phases| phases.contains(&TP::Run));
+        let plugin_runs = PluginRuns::start(
+            &plugins,
+            &run_task_args,
+            &resolved_state.nodes,
+            &schedule,
+            runs_nodes,
+        )?;
         let graph_builder = GraphBuilder::new(
             Arc::clone(&run_task_args),
             Arc::clone(&static_analysis_buckets),
             tasks_for_node_factory,
             compare_task_graph_builder,
+            plugins,
+            plugin_runs.clone(),
         );
 
         // Increment counters used in final run reporting.
@@ -2387,13 +2407,20 @@ impl DbtProjectCompilation {
         let count_checks = !arg.skip_checks
             && dbt_tasks_sa::check::metadata_unavailable_reason(&arg.metadata_dir()).is_none();
         schedule.selected_nodes.iter().for_each(|unique_id| {
-            let node_type = self
+            let node = self
                 .resolved_state
                 .nodes
                 .get_node(unique_id)
-                .expect("Node must exist")
-                .resource_type();
+                .expect("Node must exist");
+            let node_type = node.resource_type();
             if node_type == NodeType::Check && !count_checks {
+                return;
+            }
+            // A plugin node is graph work only while its plugin runs.
+            if node
+                .plugin_type()
+                .is_some_and(|plugin_type| !plugin_runs.is_running(plugin_type))
+            {
                 return;
             }
             increment_metric(FusionMetricKey::NodeCounts(node_type), 1);
@@ -2487,6 +2514,9 @@ impl DbtProjectCompilation {
                         token.clone(),
                     )
                     .await;
+                // Plugin runs finish whatever the graph's outcome. A run that fails to finish is
+                // reported without discarding the results.
+                plugin_runs.finish();
                 if run_result.is_err() {
                     run_cache_service_after_run_failed(
                         &run_cache_ctx_on_error,
@@ -2773,7 +2803,7 @@ fn send_vortex_telemetry_if_possible(
                 &arg.io.invocation_id,
                 root_project_name,
                 Some(&dbt_state.dbt_profile.relative_profile_path),
-                arg.command.as_str().to_string(),
+                TelemetryCommand::bare(arg.command),
             );
         }
         adapter_info_event(
@@ -3075,6 +3105,8 @@ async fn create_run_cache_state_selector_args(
         project_id,
         macros: resolved_state.macros.macros.clone(),
         project_root: DbtPath::from(project_root),
+        compare_unrendered_code: lifecycle.compare_unrendered_code_default(),
+        runtime_config: resolved_state.runtime_config.clone(),
         shared_event_order: SharedEventOrder::new(),
     }))
 }

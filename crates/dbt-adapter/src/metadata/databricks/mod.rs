@@ -12,6 +12,7 @@ use arrow_schema::{Field, Schema};
 use dbt_adapter_core::AdapterType;
 use dbt_adapter_core::ExecutionPhase;
 use dbt_adapter_engine::MapReduce;
+use dbt_adapter_engine::cow::uppercase;
 use dbt_adbc::QueryCtx;
 use dbt_agate::AgateTable;
 use dbt_common::ErrorCode;
@@ -125,7 +126,7 @@ WHERE table_catalog = '{}'
         let name = names.value(i);
         let schema = schemas.value(i);
         let catalog = catalogs.value(i);
-        let table_type = table_types.value(i).to_uppercase();
+        let table_type = uppercase(table_types.value(i).into());
         let is_delta = file_formats.value(i) == "delta";
         let table_format = table_format_from_provider(Some(file_formats.value(i)));
         let is_shallow_clone = !databricks_table_types.is_null(i)
@@ -140,7 +141,7 @@ WHERE table_catalog = '{}'
             )
             .with_relation_type(RelationType::from_adapter_type(
                 AdapterType::Databricks,
-                table_type.as_str(),
+                table_type.as_ref(),
             ))
             .with_quoting(engine.quoting())
             .with_is_delta(is_delta)

@@ -132,7 +132,7 @@ pub fn run_cli_with_code(cli: Box<Cli>, arg: SystemArgs, feature_stack: Arc<Feat
             &arg.io.invocation_id,
             "",   // root project name is not known at this point
             None, // profile path is not known at this point
-            cli.command.to_string(),
+            cli.command.telemetry_command(),
         );
     }
 

@@ -715,7 +715,7 @@ fn eval_selector(
 
                 // "foo+" — downstream: reverse the graph once, then BFS
                 if let Some(depth) = criteria.children_depth {
-                    let rev_deps = reverse(deps);
+                    let rev_deps = selection_children(deps, nodes);
                     expanded.extend(multi_source_bfs(&rev_deps, &selected, depth));
                 }
 
@@ -723,7 +723,7 @@ fn eval_selector(
             } else if criteria.childrens_parents {
                 // collect all lowest level descendants of the selected nodes
                 // then get all their anscestors
-                selected = collect_childrens_parents(deps, &selected);
+                selected = collect_childrens_parents(deps, nodes, &selected);
             }
 
             // 3️⃣ indirect selection
@@ -821,12 +821,12 @@ fn eval_selector_method(
             expanded.extend(multi_source_bfs(deps, &selected, depth));
         }
         if let Some(depth) = criteria.children_depth {
-            let rev_deps = reverse(deps);
+            let rev_deps = selection_children(deps, nodes);
             expanded.extend(multi_source_bfs(&rev_deps, &selected, depth));
         }
         selected = expanded;
     } else if criteria.childrens_parents {
-        selected = collect_childrens_parents(deps, &selected);
+        selected = collect_childrens_parents(deps, nodes, &selected);
     }
 
     // Indirect selection
@@ -1341,6 +1341,24 @@ fn incorporate_indirect_nodes(
     selected
 }
 
+/// `deps` reversed, mapping each node to its children, for graph operators to walk down.
+///
+/// Plugin nodes are left out, so graph operators never step into one: a plugin node is only
+/// selected when it is selected directly. Walking up from a selected plugin node uses `deps`,
+/// so `+<plugin node>` still selects its ancestors.
+fn selection_children(
+    deps: &BTreeMap<String, BTreeSet<String>>,
+    nodes: &Nodes,
+) -> BTreeMap<String, BTreeSet<String>> {
+    let mut children = reverse(deps);
+    if !nodes.plugins.is_empty() {
+        for kids in children.values_mut() {
+            kids.retain(|id| !nodes.plugins.contains_key(id));
+        }
+    }
+    children
+}
+
 /// The `@` operator: every descendant of `selected_nodes`, plus every ancestor of those
 /// descendants.
 ///
@@ -1349,10 +1367,11 @@ fn incorporate_indirect_nodes(
 /// walk per leaf, which made `--select @model` take minutes (dbt-labs/fs#11359).
 fn collect_childrens_parents(
     deps: &BTreeMap<String, BTreeSet<String>>,
+    nodes: &Nodes,
     selected_nodes: &BTreeSet<String>,
 ) -> BTreeSet<String> {
     // `deps` maps a node to its parents; reverse it once to walk downwards.
-    let children = reverse(deps);
+    let children = selection_children(deps, nodes);
 
     // 1. Every descendant of the selection. `multi_source_bfs` includes its seeds, so a
     //    selected node with no children is retained rather than dropped (see #15280).
@@ -1883,7 +1902,7 @@ mod tests {
 
         // `@c` on the leaf `c` -> the leaf plus all of its ancestors.
         let selected = BTreeSet::from(["c".to_string()]);
-        let result = collect_childrens_parents(&deps, &selected);
+        let result = collect_childrens_parents(&deps, &Nodes::default(), &selected);
         assert_eq!(
             result,
             BTreeSet::from(["a".to_string(), "b".to_string(), "c".to_string()])
@@ -1892,7 +1911,7 @@ mod tests {
         // An isolated node (leaf with no ancestors) -> just itself.
         let deps = BTreeMap::from([("a".to_string(), BTreeSet::new())]);
         let selected = BTreeSet::from(["a".to_string()]);
-        let result = collect_childrens_parents(&deps, &selected);
+        let result = collect_childrens_parents(&deps, &Nodes::default(), &selected);
         assert_eq!(result, BTreeSet::from(["a".to_string()]));
     }
 
@@ -1916,7 +1935,11 @@ mod tests {
 
         // `@top` -> descendants are everything; the only leaf is `bottom`; its ancestors
         // are the rest.
-        let result = collect_childrens_parents(&deps, &BTreeSet::from(["top".to_string()]));
+        let result = collect_childrens_parents(
+            &deps,
+            &Nodes::default(),
+            &BTreeSet::from(["top".to_string()]),
+        );
         assert_eq!(
             result,
             BTreeSet::from([
@@ -1929,7 +1952,11 @@ mod tests {
 
         // `@left` -> descendants {left, bottom}; leaf `bottom`; its ancestors pull in
         // `right` and `top`, which is the whole point of the `@` operator.
-        let result = collect_childrens_parents(&deps, &BTreeSet::from(["left".to_string()]));
+        let result = collect_childrens_parents(
+            &deps,
+            &Nodes::default(),
+            &BTreeSet::from(["left".to_string()]),
+        );
         assert_eq!(
             result,
             BTreeSet::from([
@@ -1972,7 +1999,11 @@ mod tests {
         }
 
         let started = std::time::Instant::now();
-        let result = collect_childrens_parents(&deps, &BTreeSet::from(["root".to_string()]));
+        let result = collect_childrens_parents(
+            &deps,
+            &Nodes::default(),
+            &BTreeSet::from(["root".to_string()]),
+        );
         let elapsed = started.elapsed();
 
         // Everything is both a descendant of `root` and an ancestor of a bottom leaf.
@@ -5433,5 +5464,112 @@ mod sidecar_compute_boundary {
                 ("model.c", &["model.b"]),
             ]),
         );
+    }
+}
+
+#[cfg(test)]
+mod plugin_selection_tests {
+    use super::tests::{TestGraphBuilder, create_select_expression};
+    use super::*;
+    use dbt_adapter_core::AdapterType;
+    use dbt_common::io_args::FsCommand;
+    use dbt_schemas::schemas::{CommonAttributes, DbtPluginNode, DbtPluginNodeAttr};
+    use std::sync::Arc;
+
+    const WIDGET: &str = "widget.package.w";
+
+    /// Models `a` → `b`, and a plugin node `w` that depends on `b`.
+    fn deps_and_nodes() -> (BTreeMap<String, BTreeSet<String>>, Nodes) {
+        let mut nodes = TestGraphBuilder::new().add_edge("a", "b").build_nodes();
+        let mut widget = DbtPluginNode {
+            __common_attr__: CommonAttributes {
+                unique_id: WIDGET.to_string(),
+                name: "w".to_string(),
+                package_name: "package".to_string(),
+                fqn: vec!["package".to_string(), "w".to_string()],
+                ..Default::default()
+            },
+            __plugin_attr__: DbtPluginNodeAttr {
+                plugin_type: "widget".to_string(),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        widget.__base_attr__.depends_on.nodes = vec!["b".to_string()];
+        nodes.plugins.insert(WIDGET.to_string(), Arc::new(widget));
+
+        let deps = BTreeMap::from([
+            ("a".to_string(), BTreeSet::new()),
+            ("b".to_string(), BTreeSet::from(["a".to_string()])),
+            (WIDGET.to_string(), BTreeSet::from(["b".to_string()])),
+        ]);
+        (deps, nodes)
+    }
+
+    /// The nodes `select` schedules, frontier nodes left out.
+    fn select(select: Option<&str>, state: Option<&StateSelectorResults>) -> Vec<String> {
+        let (deps, nodes) = deps_and_nodes();
+        let resolved_selectors = ResolvedSelector {
+            include: select.map(create_select_expression),
+            ..Default::default()
+        };
+        let args = SchedulerArgs {
+            command: FsCommand::Build,
+            io: Default::default(),
+            resource_types: vec![],
+            exclude_resource_types: vec![],
+            exclude_unique_ids: Default::default(),
+            selection_override: None,
+        };
+        let (schedule, _) = schedule_graph(
+            &deps,
+            &nodes,
+            None,
+            &resolved_selectors,
+            state,
+            &args,
+            AdapterType::Postgres,
+        )
+        .expect("schedule");
+        schedule
+            .sorted_nodes
+            .iter()
+            .filter(|node| !schedule.frontier_nodes.contains(*node))
+            .cloned()
+            .collect()
+    }
+
+    #[test]
+    fn plugin_nodes_are_not_selected_by_default() {
+        assert_eq!(select(None, None), vec!["a", "b"]);
+    }
+
+    /// Graph operators never step into a plugin node, and `@` doesn't treat it as a leaf.
+    #[test]
+    fn graph_operators_do_not_reach_plugin_nodes() {
+        assert_eq!(select(Some("a+"), None), vec!["a", "b"]);
+        assert_eq!(select(Some("b+"), None), vec!["b"]);
+        assert_eq!(select(Some("@b"), None), vec!["a", "b"]);
+    }
+
+    #[test]
+    fn plugin_nodes_are_selected_directly() {
+        assert_eq!(select(Some("w"), None), vec![WIDGET]);
+        assert_eq!(select(Some("resource_type:plugin"), None), vec![WIDGET]);
+        assert_eq!(select(Some("resource_type:widget"), None), vec![WIDGET]);
+        // Upstream of a selected plugin node is still reachable.
+        assert_eq!(select(Some("+w"), None), vec!["a", "b", WIDGET]);
+        assert_eq!(select(Some("@w"), None), vec!["a", "b", WIDGET]);
+    }
+
+    /// A plugin node is never in the previous manifest, so it would always look new.
+    #[test]
+    fn state_methods_do_not_select_plugin_nodes() {
+        let state = StateSelectorResults::from([(
+            "modified".to_string(),
+            BTreeSet::from(["b".to_string(), WIDGET.to_string()]),
+        )]);
+        assert_eq!(select(Some("state:modified"), Some(&state)), vec!["b"]);
+        assert_eq!(select(Some("state:modified+"), Some(&state)), vec!["b"]);
     }
 }

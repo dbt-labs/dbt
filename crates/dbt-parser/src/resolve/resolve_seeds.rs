@@ -5,7 +5,7 @@ use crate::dbt_project_config::{
 use crate::renderer::strip_warehouse_keys_in_config_block;
 use crate::resolve::resolve_utils::{
     build_unrendered_config, err_resource_name_has_spaces, extract_config_map,
-    validate_node_adapter,
+    resolve_node_quoting, select_node_adapter,
 };
 use crate::utils::{
     RelationComponents, extract_resource_config_from_raw_project, get_node_fqn,
@@ -23,7 +23,6 @@ use dbt_jinja_utils::jinja_environment::JinjaEnv;
 use dbt_jinja_utils::node_resolver::NodeResolver;
 use dbt_jinja_utils::serde::into_typed_with_jinja;
 use dbt_jinja_utils::utils::dependency_package_name_from_ctx;
-use dbt_schemas::dbt_utils::resolve_package_quoting;
 use dbt_schemas::dbt_utils::validate_delimiter;
 use dbt_schemas::schemas::common::{DbtChecksum, DbtMaterialization, DbtQuoting, NodeDependsOn};
 use dbt_schemas::schemas::dbt_catalogs_deprecated::LoadedCatalogs;
@@ -341,8 +340,8 @@ pub async fn resolve_seeds(
         validate_delimiter(&properties_config.delimiter)?;
 
         // See `resolve_models`: the flag overrides the config.
-        validate_node_adapter(properties_config.adapter, &path)?;
-        let resolved_node_adapter = arg.adapter_override.or(properties_config.adapter);
+        let selected_adapter =
+            select_node_adapter(arg, properties_config.adapter, None, default_adapter, &path)?;
 
         // Calculate original file path first so we can use it for the checksum
         // if necessary for large seeds
@@ -360,7 +359,6 @@ pub async fn resolve_seeds(
             .clone()
             .map(Into::into)
             .unwrap_or_default();
-        let selected_adapter = resolved_node_adapter.unwrap_or(default_adapter);
         let catalog_requires_snowflake = catalogs_state
             .catalog_requires_snowflake_propagation(properties_config.catalog_name.as_deref())?;
         let effective_propagation_target = (selected_adapter == AdapterType::LakeCompute)
@@ -374,13 +372,8 @@ pub async fn resolve_seeds(
                 })
             })
             .flatten();
-        properties_config.quoting = resolve_package_quoting(
-            Some(match adapter_quoting.get(&selected_adapter) {
-                Some(authored) => properties_config.quoting.filled_from(authored),
-                None => properties_config.quoting,
-            }),
-            resolved_node_adapter.unwrap_or(default_adapter),
-        );
+        properties_config.quoting =
+            resolve_node_quoting(properties_config.quoting, adapter_quoting, selected_adapter);
 
         // Create initial seed with default values
         let mut dbt_seed = DbtSeed {
@@ -469,7 +462,7 @@ pub async fn resolve_seeds(
             ModelStatus::Disabled
         };
 
-        match node_resolver.insert_ref(&dbt_seed, default_adapter, status, false) {
+        match node_resolver.insert_ref(&dbt_seed, status, false) {
             Ok(_) => (),
             Err(e) => {
                 let err_with_loc = e.with_location(path.clone());

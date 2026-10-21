@@ -45,6 +45,7 @@ const fn node_type_to_order(node_type: NodeType) -> u8 {
         NodeType::Macro => 15,
         NodeType::DocsMacro => 16,
         NodeType::Unspecified => 17,
+        NodeType::Plugin => u8::MAX,
     }
 }
 
@@ -68,6 +69,7 @@ pub fn node_type_plural(node: NodeType) -> &'static str {
         NodeType::SemanticModel => "semantic models",
         NodeType::Function => "functions",
         NodeType::Check => "checks",
+        NodeType::Plugin => "plugin nodes",
     }
 }
 

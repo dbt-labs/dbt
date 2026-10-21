@@ -80,6 +80,7 @@ dbt-telemetry = { workspace = true, features = ["test-utils"] }
 dbt-test-primitives = { workspace = true }
 dbt-tracing = { workspace = true, features = ["test-utils"] }
 indoc = { workspace = true }
+similar = { workspace = true }
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 

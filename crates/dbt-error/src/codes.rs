@@ -364,6 +364,22 @@ pub enum ErrorCode {
     SkillPathEscapesProject = 1806,
 
     // --------------------------------------------------------------------------------------------
+    // Plugins
+    /// An error a plugin reported. Plugins never report under any other code.
+    PluginError = 1900,
+    /// A warning a plugin reported. Plugins never report under any other code.
+    PluginWarning = 1901,
+    /// A project gives entries or paths to a reserved plugin type whose plugin is off, or that
+    /// this dbt doesn't have. dbt ignores them.
+    PluginNotEnabled = 1902,
+    /// A project gives entries or paths to a plugin type no one reserved. dbt ignores them.
+    UnknownPlugin = 1903,
+    /// A `plugin-paths` entry overlaps a directory dbt reads, or another plugin's.
+    PluginPathOverlap = 1904,
+    /// A `plugin-paths` entry resolves outside the project that declared it. dbt skips it.
+    PluginPathEscapesProject = 1905,
+
+    // --------------------------------------------------------------------------------------------
     // Local execution
     SessionError = 2000,
     UnsupportedLocalExecutionDialect = 2001,

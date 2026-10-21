@@ -15,6 +15,7 @@ pub mod static_analysis;
 pub mod stats;
 pub mod stdfs;
 pub mod string_utils;
+pub mod telemetry_command;
 pub mod tokiofs;
 #[macro_use]
 pub extern crate dbt_error as error;

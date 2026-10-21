@@ -37,6 +37,7 @@ use dbt_metadata::parse_cache::{
     determine_cache_state_from_previous_previous_resolved_nodes, drop_all_unchanged_nodes,
 };
 use dbt_parser::args::ResolveArgs;
+use dbt_parser::plugin::ResolvePlugins;
 use dbt_parser::resolver_hooks::ResolverHooks;
 use dbt_schema_store::SchemaStoreTrait;
 use dbt_schemas::{
@@ -127,6 +128,7 @@ async fn resolve_phase(
     token: &CancellationToken,
     jinja_type_checking_event_listener_factory: Arc<dyn JinjaTypeCheckingEventListenerFactory>,
     resolver_hooks: Arc<dyn ResolverHooks>,
+    plugins: ResolvePlugins,
 ) -> FsResult<(ResolverState, Arc<JinjaEnv>)> {
     use dbt_parser::resolver::resolve;
     use dbt_schemas::state::ResolvedNodes;
@@ -187,6 +189,7 @@ async fn resolve_phase(
         token,
         jinja_type_checking_event_listener_factory,
         resolver_hooks,
+        plugins,
         loaded_project.jinja_factory.clone(),
     )
     .await?;
@@ -581,6 +584,7 @@ impl DbtLoadedProject {
         token: &CancellationToken,
         jinja_type_checking_event_listener_factory: Arc<dyn JinjaTypeCheckingEventListenerFactory>,
         resolver_hooks: Arc<dyn ResolverHooks>,
+        plugins: ResolvePlugins,
     ) -> FsResult<(ResolverState, Arc<JinjaEnv>)> {
         resolve_phase(
             self,
@@ -590,6 +594,7 @@ impl DbtLoadedProject {
             token,
             jinja_type_checking_event_listener_factory,
             resolver_hooks,
+            plugins,
         )
         .await
     }
@@ -654,28 +659,7 @@ impl DbtLoadedProject {
                     )
                 })?
                 .1;
-            // `lake_compute`, when configured as a secondary (non-default) adapter,
-            // inherits `database`/`schema` from the default adapter instead of
-            // requiring its own. `threads` is already shared across every adapter
-            // via the `threads` parameter passed to `build_adapter` below, so it
-            // needs no handling here. See fs#13653.
-            let resolved_config = if let DbConfig::LakeCompute(lake_compute) = matched_config {
-                let mut lake_compute = lake_compute.clone();
-                if lake_compute.database.is_none() || lake_compute.schema.is_none() {
-                    let default_config = configs
-                        .iter()
-                        .find(|(t, _)| *t == default_adapter)
-                        .map(|(_, c)| c);
-                    if lake_compute.database.is_none() {
-                        lake_compute.database =
-                            default_config.and_then(|c| c.get_database().cloned());
-                    }
-                    if lake_compute.schema.is_none() {
-                        lake_compute.schema = default_config.and_then(|c| c.get_schema().cloned());
-                    }
-                }
-                DbConfig::LakeCompute(lake_compute)
-            } else if let DbConfig::Snowflake(snowflake) = matched_config {
+            let resolved_config = if let DbConfig::Snowflake(snowflake) = matched_config {
                 // dbt-auth has no notion of self_signed_jwt; the connection
                 // it builds is identical to keypair's either way.
                 let mut snowflake = snowflake.clone();

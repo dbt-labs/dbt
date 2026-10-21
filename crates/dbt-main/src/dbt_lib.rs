@@ -1683,6 +1683,7 @@ impl<'a> AllPhasesExecutor<'a> {
                                         status: dbt_common::stats::NodeStatus::Errored,
                                         thread_id: "main".to_string(),
                                         message: Some("Compilation Error".to_string()),
+                                        assertion: false,
                                     })
                                     .collect(),
                                 nodes: Some(compilation.nodes().clone()),

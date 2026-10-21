@@ -653,3 +653,59 @@ message DbtWizardAppOnboardingCompleted {
   string exit = 4;
   v1.public.common.vortex_telemetry_contexts.VortexTelemetryCommonContext common_context = 5;
 }
+
+// Emitted when the Wizard desktop app shows a turn-error banner as the
+// anonymous behavioral counterpart of the WizardTurnErrorBannerShown
+// Amplitude event.
+message DbtWizardAppTurnErrorBannerShown {
+  option (v1.public.common.vortex_namespace) = VORTEX_ICEBERG_NAMESPACE_TELEMETRY;
+  option (v1.public.common.vortex_enabled) = true;
+
+  v1.events.vortex.VortexMessageEnrichment enrichment = 1;
+  string event_id = 2;
+  string anonymous_id = 3;
+  string category = 4;
+  v1.public.common.vortex_telemetry_contexts.VortexTelemetryCommonContext common_context = 5;
+}
+
+// Emitted when the Wizard desktop app activates a turn-error banner action as
+// the anonymous behavioral counterpart of the
+// WizardTurnErrorBannerActionClicked Amplitude event.
+message DbtWizardAppTurnErrorBannerActionClicked {
+  option (v1.public.common.vortex_namespace) = VORTEX_ICEBERG_NAMESPACE_TELEMETRY;
+  option (v1.public.common.vortex_enabled) = true;
+
+  v1.events.vortex.VortexMessageEnrichment enrichment = 1;
+  string event_id = 2;
+  string anonymous_id = 3;
+  string category = 4;
+  string target = 5;
+  v1.public.common.vortex_telemetry_contexts.VortexTelemetryCommonContext common_context = 6;
+}
+
+// Emitted when the Wizard desktop app finishes an update check as the
+// anonymous behavioral counterpart of the WizardUpdateChecked Amplitude event.
+message DbtWizardAppUpdateChecked {
+  option (v1.public.common.vortex_namespace) = VORTEX_ICEBERG_NAMESPACE_TELEMETRY;
+  option (v1.public.common.vortex_enabled) = true;
+
+  v1.events.vortex.VortexMessageEnrichment enrichment = 1;
+  string event_id = 2;
+  string anonymous_id = 3;
+  string source = 4;
+  string outcome = 5;
+  v1.public.common.vortex_telemetry_contexts.VortexTelemetryCommonContext common_context = 6;
+}
+
+// Emitted when the Wizard desktop app starts installing an update as the
+// anonymous behavioral counterpart of the WizardUpdateInstallStarted Amplitude
+// event.
+message DbtWizardAppUpdateInstallStarted {
+  option (v1.public.common.vortex_namespace) = VORTEX_ICEBERG_NAMESPACE_TELEMETRY;
+  option (v1.public.common.vortex_enabled) = true;
+
+  v1.events.vortex.VortexMessageEnrichment enrichment = 1;
+  string event_id = 2;
+  string anonymous_id = 3;
+  v1.public.common.vortex_telemetry_contexts.VortexTelemetryCommonContext common_context = 4;
+}

@@ -14,6 +14,7 @@ use crate::relation::{RelationObject, StaticBaseRelation};
 use crate::value::none_value;
 
 use dbt_adapter_core::AdapterType;
+use dbt_adapter_engine::cow::{lowercase, uppercase};
 use dbt_adapter_sql::ident::max_identifier_length;
 use dbt_common::{ErrorCode, FsResult, constants::DBT_CTE_PREFIX, fs_err};
 use dbt_frontend_common::ident::Identifier;
@@ -34,6 +35,7 @@ use minijinja::arg_utils::ArgsIter;
 use serde::Deserialize;
 
 use std::any::Any;
+use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
@@ -1220,12 +1222,12 @@ impl BaseRelation for Relation {
         }
     }
 
-    fn normalize_component(&self, component: &str) -> String {
+    fn normalize_component<'a>(&self, component: &'a str) -> Cow<'a, str> {
         use AdapterType::*;
         match self.adapter_type {
-            Salesforce | Bigquery | ClickHouse => component.to_string(),
-            Snowflake => component.to_uppercase(),
-            _ => component.to_lowercase(),
+            Salesforce | Bigquery | ClickHouse => Cow::Borrowed(component),
+            Snowflake => uppercase(component.into()),
+            _ => lowercase(component.into()),
         }
     }
 

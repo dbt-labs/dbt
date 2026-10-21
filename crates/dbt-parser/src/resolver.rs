@@ -40,6 +40,7 @@ use dbt_schemas::schemas::dbt_catalogs_deprecated::DbtCatalogs;
 
 use crate::args::ResolveArgs;
 use crate::dbt_project_config::{RootProjectConfigs, build_root_project_configs};
+use crate::plugin::{ActivePlugins, ResolvePlugins};
 use crate::resolve::resolve_groups::resolve_groups;
 use crate::resolve::resolve_operations::resolve_operations;
 use crate::resolve::resolve_query_comment::resolve_query_comment;
@@ -70,6 +71,9 @@ use crate::resolve::resolve_macros::resolve_macros;
 use crate::resolve::resolve_macros::typecheck_macros;
 use crate::resolve::resolve_metrics::resolve_metrics;
 use crate::resolve::resolve_models::resolve_models;
+use crate::resolve::resolve_plugins::{
+    PluginNodeContext, ResolvedPluginNodes, resolve_plugin_entries, resolve_plugin_paths,
+};
 use crate::resolve::resolve_properties;
 use crate::resolve::resolve_properties::resolve_minimal_properties;
 use crate::resolve::resolve_saved_queries::resolve_saved_queries;
@@ -138,6 +142,7 @@ pub async fn resolve(
     token: &CancellationToken,
     jinja_type_checking_event_listener_factory: Arc<dyn JinjaTypeCheckingEventListenerFactory>,
     resolver_hooks: Arc<dyn ResolverHooks>,
+    plugins: ResolvePlugins,
     jinja_factory: Arc<dyn JinjaFactory>,
 ) -> FsResult<(ResolverState, Arc<JinjaEnv>)> {
     // Hand this invocation a fresh `graph` mapping before any Jinja renders.
@@ -319,6 +324,7 @@ pub async fn resolve(
         root_runtime_config.clone(),
         token,
         jinja_type_checking_event_listener_factory.clone(),
+        Arc::new(plugins.turned_on(dbt_state.root_project().flags.as_ref())),
     )
     .await?;
     nodes.extend(resolved_nodes);
@@ -759,6 +765,7 @@ pub async fn resolve_inner(
     seen_generic_test_paths: &mut HashMap<PathBuf, String>,
     token: &CancellationToken,
     jinja_type_checking_event_listener_factory: Arc<dyn JinjaTypeCheckingEventListenerFactory>,
+    plugins: &ActivePlugins,
 ) -> FsResult<(
     Nodes,
     Nodes,
@@ -804,6 +811,7 @@ pub async fn resolve_inner(
         &base_ctx,
         token,
         adapter_type,
+        plugins,
     )
     .await?;
 
@@ -1054,6 +1062,26 @@ pub async fn resolve_inner(
     .await?;
     nodes.exposures.extend(exposures);
     disabled_nodes.exposures.extend(disabled_exposures);
+
+    let plugin_ctx = PluginNodeContext {
+        args: arg,
+        package,
+        root_package: dbt_state.root_package(),
+        database,
+        schema,
+        adapter_type,
+        env: &jinja_env,
+        base_ctx: &base_ctx,
+    };
+    let mut plugin_nodes = ResolvedPluginNodes::default();
+    for plugin in &plugins.on {
+        if let Some(entries) = min_properties.plugins.get_mut(plugin.plugin_type()) {
+            resolve_plugin_entries(&plugin_ctx, plugin.as_ref(), entries, &mut plugin_nodes)?;
+        }
+    }
+    resolve_plugin_paths(&plugin_ctx, plugins, &mut plugin_nodes)?;
+    nodes.plugins.extend(plugin_nodes.enabled);
+    disabled_nodes.plugins.extend(plugin_nodes.disabled);
 
     if !semantic_layer_spec_is_legacy {
         let (semantic_models, disabled_semantic_models) = resolve_semantic_models(
@@ -1502,6 +1530,7 @@ async fn resolve_package(
     root_runtime_config: Arc<DbtRuntimeConfig>,
     token: &CancellationToken,
     jinja_type_checking_event_listener_factory: Arc<dyn JinjaTypeCheckingEventListenerFactory>,
+    plugins: &ActivePlugins,
 ) -> FsResult<(
     String,
     Nodes,
@@ -1556,6 +1585,7 @@ async fn resolve_package(
         &mut seen_generic_test_paths,
         token,
         jinja_type_checking_event_listener_factory.clone(),
+        plugins,
     )
     .await?;
 
@@ -1588,6 +1618,7 @@ async fn resolve_package_waves(
     root_runtime_config: Arc<DbtRuntimeConfig>,
     token: &CancellationToken,
     jinja_type_checking_event_listener_factory: Arc<dyn JinjaTypeCheckingEventListenerFactory>,
+    plugins: Arc<ActivePlugins>,
 ) -> FsResult<(
     Nodes,
     Nodes,
@@ -1631,6 +1662,7 @@ async fn resolve_package_waves(
         let token = token.clone();
         let jinja_type_checking_event_listener_factory =
             jinja_type_checking_event_listener_factory.clone();
+        let plugins = plugins.clone();
 
         let results = crate::parallel::dispatch_maybe_parallel(
             package_wave,
@@ -1648,6 +1680,7 @@ async fn resolve_package_waves(
                 let token = token.clone();
                 let jinja_type_checking_event_listener_factory =
                     jinja_type_checking_event_listener_factory.clone();
+                let plugins = plugins.clone();
 
                 async move {
                     resolve_package(
@@ -1664,6 +1697,7 @@ async fn resolve_package_waves(
                         root_runtime_config,
                         &token,
                         jinja_type_checking_event_listener_factory,
+                        &plugins,
                     )
                     .await
                 }

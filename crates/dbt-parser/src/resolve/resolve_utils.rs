@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
+use crate::args::ResolveArgs;
 use dbt_adapter_core::AdapterType;
 use dbt_common::ErrorCode;
 use dbt_common::FsResult;
@@ -11,6 +12,8 @@ use dbt_common::io_args::{
     multi_adapter_enabled,
 };
 use dbt_common::tracing::dbt_emit::emit_warn_log_message;
+use dbt_schemas::dbt_utils::resolve_package_quoting;
+use dbt_schemas::schemas::common::DbtQuoting;
 use dbt_schemas::schemas::project::AdapterProjectConfig;
 use dbt_schemas::state::ProfileAdapter;
 use indexmap::IndexMap;
@@ -310,6 +313,36 @@ pub(crate) fn validate_node_adapter(adapter: Option<AdapterType>, path: &Path) -
              production use.",
         )),
     }
+}
+
+/// The adapter a node runs on: `--adapter`, then the gated `authored` `+adapter`, then
+/// `inherited` (a data test's attached node), then the target default.
+pub(crate) fn select_node_adapter(
+    arg: &ResolveArgs,
+    authored: Option<AdapterType>,
+    inherited: Option<AdapterType>,
+    default_adapter: AdapterType,
+    path: &Path,
+) -> FsResult<AdapterType> {
+    validate_node_adapter(authored, path)?;
+    Ok(arg
+        .adapter_override
+        .or(authored)
+        .or(inherited)
+        .unwrap_or(default_adapter))
+}
+
+/// Fills a node's `quoting` from `adapter`'s `adapters:` entry, then from `adapter`'s default.
+pub(crate) fn resolve_node_quoting(
+    quoting: DbtQuoting,
+    adapter_quoting: &IndexMap<AdapterType, DbtQuoting>,
+    adapter: AdapterType,
+) -> DbtQuoting {
+    let quoting = match adapter_quoting.get(&adapter) {
+        Some(authored) => quoting.filled_from(authored),
+        None => quoting,
+    };
+    resolve_package_quoting(Some(quoting), adapter)
 }
 
 #[cfg(test)]

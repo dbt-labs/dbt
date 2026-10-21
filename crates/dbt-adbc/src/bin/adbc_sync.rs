@@ -171,7 +171,7 @@ fn main() {
     writeln!(out).unwrap();
     writeln!(out, "#[allow(clippy::type_complexity)]").unwrap();
     writeln!(out, "#[rustfmt::skip]").unwrap();
-    writeln!(out, "pub static SORTED_CDN_DRIVER_CHECKSUMS: [(").unwrap();
+    writeln!(out, "pub static SORTED_CDN_DRIVER_CHECKSUMS: &[(").unwrap();
     writeln!(out, "    (").unwrap();
     writeln!(out, "        &str, // backend").unwrap();
     writeln!(out, "        &str, // target_os").unwrap();
@@ -179,7 +179,7 @@ fn main() {
     writeln!(out, "        &str, // version").unwrap();
     writeln!(out, "    ),").unwrap();
     writeln!(out, "    &str, // checksum").unwrap();
-    writeln!(out, "); {}] = [", checksums.len()).unwrap();
+    writeln!(out, ")] = &[").unwrap();
     for (backend, triplet, checksum) in &checksums {
         writeln!(out, "    (").unwrap();
         writeln!(
