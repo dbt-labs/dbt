@@ -58,6 +58,8 @@ pub enum Backend {
     BigQuery,
     /// PostgreSQL driver implementation (ADBC).
     Postgres,
+    /// MotherDuck driver implementation (ADBC).
+    MotherDuck,
     /// Databricks driver implementation (ADBC).
     Databricks,
     /// Redshift driver implementation (ADBC).
@@ -105,6 +107,7 @@ impl fmt::Display for Backend {
             Backend::Snowflake => write!(f, "Snowflake"),
             Backend::BigQuery => write!(f, "BigQuery"),
             Backend::Postgres => write!(f, "PostgreSQL"),
+            Backend::MotherDuck => write!(f, "MotherDuck"),
             Backend::Databricks => write!(f, "Databricks"),
             Backend::Redshift => write!(f, "Redshift"),
             Backend::DuckDB | Backend::DuckDBExtended => write!(f, "DuckDB"),
@@ -126,6 +129,7 @@ impl Backend {
             Backend::Snowflake => Some("adbc_driver_snowflake"),
             Backend::BigQuery => Some("adbc_driver_bigquery"),
             Backend::Postgres => Some("adbc_driver_postgresql"),
+            Backend::MotherDuck => Some("adbc_driver_motherduck"),
             Backend::Databricks => Some("adbc_driver_databricks"),
             Backend::Salesforce => Some("adbc_driver_salesforce"),
             Backend::Spark => Some("adbc_driver_spark"),
@@ -428,7 +432,7 @@ impl AdbcDriver {
                 }
             }
             // CDN strategy for non-CDN drivers: just fall back to the system strategy.
-            (CdnCache | SystemThenCdnCache | Bridge, Athena | Exasol) => System(None),
+            (CdnCache | SystemThenCdnCache | Bridge, MotherDuck | Athena | Exasol) => System(None),
             // Generic drivers can only be loaded from a file, so fallback to the System strategy.
             (CdnCache | SystemThenCdnCache | Bridge, Generic { library_name, .. }) => {
                 System(Some(library_name.to_string()))
@@ -631,6 +635,11 @@ mod tests {
             Backend::Postgres.adbc_library_name(),
             Some("adbc_driver_postgresql")
         );
+        assert_eq!(
+            Backend::MotherDuck.adbc_library_name(),
+            Some("adbc_driver_motherduck")
+        );
+        assert_eq!(Backend::MotherDuck.to_string(), "MotherDuck");
         assert_eq!(Backend::DuckDBExtended.adbc_library_name(), Some("duckdb"));
         assert_eq!(
             Backend::ClickHouse.adbc_library_name(),
@@ -659,6 +668,7 @@ mod tests {
             Some(&b"duckdb_adbc_init"[..])
         );
         assert_eq!(Backend::Postgres.adbc_driver_entrypoint(), None);
+        assert_eq!(Backend::MotherDuck.adbc_driver_entrypoint(), None);
         assert_eq!(
             generic.adbc_driver_entrypoint(),
             Some(&b"SqliteDriverInit"[..])

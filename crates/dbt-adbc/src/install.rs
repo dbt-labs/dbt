@@ -417,7 +417,7 @@ fn canonical_name_and_version(backend: Backend) -> (&'static str, &'static str) 
         Backend::LakeCompute => ("dbt", LAKE_COMPUTE_DRIVER_VERSION),
         Backend::SQLServer => ("mssql", MSSQLSERVER_DRIVER_VERSION),
         Backend::ClickHouse => ("clickhouse", CLICKHOUSE_DRIVER_VERSION),
-        Backend::Athena | Backend::Exasol | Backend::Generic { .. } => {
+        Backend::MotherDuck | Backend::Athena | Backend::Exasol | Backend::Generic { .. } => {
             unreachable!("driver_parameters() called with backend={:?}", backend)
         }
     }
@@ -944,6 +944,7 @@ mod tests {
         }
 
         for backend in [
+            Backend::MotherDuck,
             Backend::Athena,
             Backend::Exasol,
             Backend::Generic {

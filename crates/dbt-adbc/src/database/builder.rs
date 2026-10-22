@@ -343,7 +343,7 @@ impl IntoIterator for Builder {
 
     fn into_iter(self) -> Self::IntoIter {
         let fixed = match self.backend {
-            Backend::Redshift | Backend::Postgres => {
+            Backend::Redshift | Backend::Postgres | Backend::MotherDuck => {
                 // take username/password options and put them in the URI sent to the driver
                 // https://www.postgresql.org/docs/current/libpq-connect.html#LIBPQ-CONNSTRING
                 let mut uri = self
@@ -445,22 +445,24 @@ mod tests {
 
     #[test]
     fn postgres_like_backends_fold_credentials_into_uri_options() {
-        let mut builder = Builder::new(Backend::Postgres);
-        builder
-            .with_parse_uri("postgres://db.example/app")
-            .unwrap()
-            .with_username("alice")
-            .with_password("secret");
+        for backend in [Backend::Postgres, Backend::MotherDuck, Backend::Redshift] {
+            let mut builder = Builder::new(backend);
+            builder
+                .with_parse_uri("postgres://db.example/app")
+                .unwrap()
+                .with_username("alice")
+                .with_password("secret");
 
-        let options = builder.into_iter().collect::<Vec<_>>();
-        assert_eq!(options.len(), 1);
+            let options = builder.into_iter().collect::<Vec<_>>();
+            assert_eq!(options.len(), 1, "{backend}");
 
-        let (name, value) = &options[0];
-        assert_eq!(name, &OptionDatabase::Uri);
-        let uri = option_string(value);
-        assert!(uri.starts_with("postgres://db.example/app?"));
-        assert!(uri.contains("user=alice"));
-        assert!(uri.contains("password=secret"));
+            let (name, value) = &options[0];
+            assert_eq!(name, &OptionDatabase::Uri, "{backend}");
+            let uri = option_string(value);
+            assert!(uri.starts_with("postgres://db.example/app?"), "{backend}");
+            assert!(uri.contains("user=alice"), "{backend}");
+            assert!(uri.contains("password=secret"), "{backend}");
+        }
     }
 
     #[test]

@@ -1,0 +1,7 @@
+kind: Under the Hood
+body: Register the system-loaded MotherDuck ADBC backend.
+time: 2026-10-21T17:08:49.994414-07:00
+custom:
+    author: colin-k-rogers
+    issue: "16817"
+    project: dbt-core
