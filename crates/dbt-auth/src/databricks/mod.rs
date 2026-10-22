@@ -293,6 +293,7 @@ fn discover_azure_tenant_id(host: &str) -> Result<String, AuthError> {
     // The tenant is in the 3xx Location header; do not follow the redirect, and
     // treat a 3xx as a normal response rather than an error.
     let config = ureq::Agent::config_builder()
+        .tls_config(dbt_adbc::install::build_tls_config())
         .http_status_as_error(false)
         .max_redirects(0)
         .max_redirects_will_error(false)

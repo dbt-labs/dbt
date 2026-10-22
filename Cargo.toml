@@ -456,13 +456,14 @@ redis = { version = "0.31.0", features = [
 ] }
 rustls = { version = "0.23.27" }
 rustls-platform-verifier = { version = "0.6", default-features = false }
-# replace default-tls in default features with rustls-tls
+# replace default-tls in default features with rustls, trusting the OS
+# certificate store instead of bundled webpki roots
 reqwest = { version = "0.12.9", default-features = false, features = [
   "charset",
   "gzip",
   "http2",
   "json",
-  "rustls-tls",
+  "rustls-tls-native-roots",
   "macos-system-configuration",
 ] }
 # latest version depended on by the version of reqwest-retry in use
@@ -476,10 +477,15 @@ reqwest-retry = { version = "0.7.0" }
 reqwest-sse = { version = "0.1.0" }
 rmcp = { version = "1.4", features = ["server", "macros", "transport-io"] }
 token-source = "1.0.0"
+# rustls without the bundled webpki roots: every agent must verify against the
+# OS certificate store via RootCerts::PlatformVerifier, and an agent left on
+# ureq's default RootCerts::WebPki panics instead of trusting bundled roots.
+# `_ring` is the crypto provider that the `rustls` feature would enable.
 ureq = { version = "3.0.11", default-features = false, features = [
   "gzip",
   "json",
-  "rustls",
+  "rustls-no-provider",
+  "_ring",
   "platform-verifier",
 ] }
 
