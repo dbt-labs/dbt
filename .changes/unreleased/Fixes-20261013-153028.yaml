@@ -1,0 +1,7 @@
+kind: Fixes
+body: Report a mismatch in unit tests when nanosecond-precision TIMESTAMP values differ only below one second
+time: 2026-10-13T15:30:28.000000-05:00
+custom:
+    author: raams95
+    issue: "16727"
+    project: dbt-core
