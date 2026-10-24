@@ -3,10 +3,11 @@
 
 use std::fmt::Write;
 use std::path::Path;
+use std::rc::Rc;
 
 use crate::compiler::tokens::Token;
 use crate::layout::JinjaLayoutEventKind;
-use crate::output_tracker::OutputTracker;
+use crate::output_tracker::{OutputTracker, OutputTrackerLocation};
 use crate::value::Value;
 use crate::{machinery::Span, CodeLocation};
 
@@ -24,6 +25,12 @@ pub trait RenderingEventListener: std::fmt::Debug {
     fn create_output_tracker<'a>(&self, _w: &'a mut (dyn Write + 'a)) -> Option<OutputTracker<'a>> {
         None
     }
+
+    /// Observes the tracker selected for the top-level rendered output.
+    ///
+    /// A listener can retain this location without replacing another listener's
+    /// tracker. Nested macro output buffers do not trigger this callback.
+    fn on_output_tracker(&self, _location: Rc<OutputTrackerLocation>) {}
 
     /// Called when a macro start is encountered.
     /// The expanded location can be obtained from the output_tracker_location if needed.
