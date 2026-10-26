@@ -22,12 +22,13 @@ dbt-compilation = { workspace = true }
 dbt-csv = { workspace = true }
 dbt-dag = { workspace = true }
 dbt-defer = { workspace = true }
-dbt-df-providers = { workspace = true }
+dbt-flags = { workspace = true }
 dbt-frontend-common = { workspace = true }
 dbt-fusion-workspace-hack = { version = "0.1" }
 dbt-index-core = { workspace = true }
 dbt-jinja-utils = { workspace = true }
 dbt-loader = { workspace = true }
+dbt-parser = { workspace = true }
 dbt-pretty-table = { workspace = true }
 dbt-runtime = { workspace = true }
 dbt-scheduler = { workspace = true }
@@ -40,23 +41,24 @@ dbt-yaml = { workspace = true }
 vortex-events = { workspace = true }
 
 adbc-core = { workspace = true }
-arrow = { workspace = true }
+arrow = { workspace = true, features = ["json"] }
 arrow-schema = { workspace = true }
 async-trait = { workspace = true }
 chrono = { workspace = true }
 chrono-tz = { workspace = true }
 csv = { workspace = true }
-datafusion-expr = { workspace = true }
+futures = { workspace = true }
 itertools = { workspace = true }
 minijinja = { workspace = true }
 minijinja-contrib = { workspace = true }
 num_cpus = { workspace = true }
 parking_lot = { workspace = true }
+parquet = { workspace = true, features = ["async"] }
 petgraph = { workspace = true }
 regex = { workspace = true }
 serde = { workspace = true }
-serde_json = { workspace = true }
-sqlparser = { workspace = true }
+serde_json = { workspace = true, features = ["raw_value"] }
+sqlparser = { workspace = true, features = ["visitor"] }
 tokio = { workspace = true }
 tracing = { workspace = true }
 

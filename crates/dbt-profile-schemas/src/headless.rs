@@ -9,12 +9,13 @@ use std::collections::HashMap;
 use dbt_adapter_core::AdapterType;
 use dbt_common::{ErrorCode, FsResult, fs_err};
 use dbt_schemas::schemas::profiles::{
-    BigqueryDbConfig, ClickHouseDbConfig, DatabricksDbConfig, DbConfig, ExasolDbConfig,
-    FabricDbConfig, PostgresDbConfig, RedshiftDbConfig, SnowflakeDbConfig,
+    BigqueryDbConfig, ClickHouseDbConfig, DatabricksDbConfig, DbConfig, DuckDbConfig,
+    ExasolDbConfig, FabricDbConfig, PostgresDbConfig, RedshiftDbConfig, SnowflakeDbConfig,
 };
 use dbt_schemas::schemas::serde::StringOrInteger;
 
 use crate::common::{ConfigField, ConfigProcessor, FieldValue, InteractiveSetup};
+use crate::duckdb_config::DUCKDB_DEFAULT_THREADS;
 use crate::fabric_config::default_fabric_config;
 use crate::profile::ProfileTarget;
 
@@ -27,6 +28,7 @@ pub fn supported_adapters() -> Vec<AdapterType> {
         AdapterType::Databricks,
         AdapterType::Bigquery,
         AdapterType::ClickHouse,
+        AdapterType::DuckDB,
         AdapterType::Exasol,
         AdapterType::Postgres,
         AdapterType::Redshift,
@@ -41,6 +43,7 @@ pub fn adapter_fields(adapter: AdapterType) -> FsResult<Vec<ConfigField>> {
         AdapterType::Databricks => DatabricksDbConfig::get_fields(),
         AdapterType::Bigquery => BigqueryDbConfig::get_fields(),
         AdapterType::ClickHouse => ClickHouseDbConfig::get_fields(),
+        AdapterType::DuckDB => DuckDbConfig::get_fields(),
         AdapterType::Exasol => ExasolDbConfig::get_fields(),
         AdapterType::Postgres => PostgresDbConfig::get_fields(),
         AdapterType::Redshift => RedshiftDbConfig::get_fields(),
@@ -122,6 +125,7 @@ pub fn build_profile_target(
                 session_properties: None,
                 connection_parameters: None,
                 auth_type: None,
+                oidc_token_filepath: None,
                 compute: None,
                 connect_retries: None,
                 connect_timeout: None,
@@ -186,6 +190,13 @@ pub fn build_profile_target(
                 config.threads = Some(StringOrInteger::Integer(16));
             }
             DbConfig::ClickHouse(Box::new(config))
+        }
+        AdapterType::DuckDB => {
+            let mut config = apply_values(&DuckDbConfig::default(), values)?;
+            if config.threads.is_none() {
+                config.threads = Some(StringOrInteger::Integer(DUCKDB_DEFAULT_THREADS));
+            }
+            DbConfig::DuckDB(Box::new(config))
         }
         AdapterType::Exasol => {
             let mut config = apply_values(&ExasolDbConfig::default(), values)?;
@@ -263,4 +274,35 @@ pub fn build_profile_target(
         target: target.to_string(),
         outputs,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn duckdb_is_a_supported_adapter() {
+        assert!(supported_adapters().contains(&AdapterType::DuckDB));
+        let names: Vec<String> = adapter_fields(AdapterType::DuckDB)
+            .unwrap()
+            .into_iter()
+            .map(|f| f.name)
+            .collect();
+        assert_eq!(names, ["path", "schema"]);
+    }
+
+    #[test]
+    fn builds_duckdb_profile_target_with_default_threads() {
+        let values = HashMap::from([
+            ("path".to_string(), FieldValue::String("dev.duckdb".into())),
+            ("schema".to_string(), FieldValue::String("main".into())),
+        ]);
+        let profile = build_profile_target(AdapterType::DuckDB, "dev", &values).unwrap();
+        let Some(DbConfig::DuckDB(config)) = profile.outputs.get("dev") else {
+            panic!("expected a DuckDB config");
+        };
+        assert_eq!(config.path.as_deref(), Some("dev.duckdb"));
+        assert_eq!(config.schema.as_deref(), Some("main"));
+        assert_eq!(config.threads, Some(StringOrInteger::Integer(4)));
+    }
 }

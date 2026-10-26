@@ -77,6 +77,8 @@ mod warehouse_names_match_tests {
 
 pub(crate) mod cluster_by;
 pub(crate) use cluster_by::ClusterByLoader;
+pub(crate) mod copy_grants;
+pub(crate) use copy_grants::CopyGrantsLoader;
 pub(crate) mod immutable_where;
 pub(crate) use immutable_where::ImmutableWhereLoader;
 pub(crate) mod initialize;

@@ -1171,7 +1171,7 @@ fn build_parent_and_child_maps(
     (parent_map, child_map)
 }
 
-pub fn nodes_from_dbt_manifest(manifest: DbtManifest, dbt_quoting: DbtQuoting) -> Nodes {
+pub fn nodes_from_dbt_manifest(mut manifest: DbtManifest, dbt_quoting: DbtQuoting) -> Nodes {
     let mut nodes = Nodes::default();
 
     let adapter_type =
@@ -1199,7 +1199,7 @@ pub fn nodes_from_dbt_manifest(manifest: DbtManifest, dbt_quoting: DbtQuoting) -
     };
 
     // Do not put disabled nodes into the nodes, because all things in Nodes object should be enabled.
-    for (unique_id, node) in manifest.nodes.clone() {
+    for (unique_id, node) in std::mem::take(&mut manifest.nodes) {
         match node {
             DbtNode::Model(model) => {
                 nodes.models.insert(
@@ -1258,6 +1258,7 @@ pub fn nodes_from_dbt_manifest(manifest: DbtManifest, dbt_quoting: DbtQuoting) -
                             // read back from one has no selection to recover -- the same reason
                             // `adapter` falls back to the manifest's global `adapter_type` here.
                             propagate: Vec::new(),
+                            effective_propagation_target: None,
                             database: test.__common_attr__.database,
                             schema: test.__common_attr__.schema,
                             alias: test.__base_attr__.alias,
@@ -1293,6 +1294,7 @@ pub fn nodes_from_dbt_manifest(manifest: DbtManifest, dbt_quoting: DbtQuoting) -
                         __test_attr__: DbtTestAttr {
                             column_name: test.column_name,
                             attached_node: test.attached_node,
+                            test_subject_unique_id: None,
                             test_metadata: test.test_metadata,
                             file_key_name: test.file_key_name,
                             introspection: IntrospectionKind::None,
@@ -1355,6 +1357,7 @@ pub fn nodes_from_dbt_manifest(manifest: DbtManifest, dbt_quoting: DbtQuoting) -
                         __base_attr__: NodeBaseAttributes {
                             adapter: adapter_type,
                             propagate: Vec::new(),
+                            effective_propagation_target: None,
                             database: snapshot.__common_attr__.database,
                             schema: snapshot.__common_attr__.schema,
                             alias: snapshot.__base_attr__.alias,
@@ -1400,6 +1403,12 @@ pub fn nodes_from_dbt_manifest(manifest: DbtManifest, dbt_quoting: DbtQuoting) -
                             introspection: IntrospectionKind::None,
                             sync: snapshot.config.sync.clone(),
                             state: snapshot.config.state.clone(),
+                            catalog_name: snapshot
+                                .config
+                                .__warehouse_specific_config__
+                                .catalog_name
+                                .clone(),
+                            table_format: snapshot.config.table_format.clone(),
                         },
                         __adapter_attr__: AdapterAttr::from_config_and_dialect(
                             &snapshot.config.__warehouse_specific_config__,
@@ -1414,6 +1423,11 @@ pub fn nodes_from_dbt_manifest(manifest: DbtManifest, dbt_quoting: DbtQuoting) -
                 );
             }
             DbtNode::Seed(seed) => {
+                let canonical_relation_adapter = seed.__base_attr__.canonical_relation_adapter;
+                let adapter = canonical_relation_adapter
+                    .filter(|adapter| *adapter == AdapterType::Databricks)
+                    .map(|_| AdapterType::LakeCompute)
+                    .unwrap_or(adapter_type);
                 nodes.seeds.insert(
                     unique_id,
                     Arc::new(DbtSeed {
@@ -1435,8 +1449,10 @@ pub fn nodes_from_dbt_manifest(manifest: DbtManifest, dbt_quoting: DbtQuoting) -
                             meta: seed.config.meta.clone().unwrap_or_default(),
                         },
                         __base_attr__: NodeBaseAttributes {
-                            adapter: adapter_type,
+                            adapter,
                             propagate: Vec::new(),
+                            effective_propagation_target: canonical_relation_adapter
+                                .filter(|adapter| *adapter == AdapterType::Databricks),
                             database: seed.__common_attr__.database,
                             schema: seed.__common_attr__.schema,
                             alias: seed.__base_attr__.alias,
@@ -1535,6 +1551,7 @@ pub fn nodes_from_dbt_manifest(manifest: DbtManifest, dbt_quoting: DbtQuoting) -
                         __base_attr__: NodeBaseAttributes {
                             adapter: adapter_type,
                             propagate: Vec::new(),
+                            effective_propagation_target: None,
                             database: analysis.__common_attr__.database,
                             schema: analysis.__common_attr__.schema,
                             alias: analysis.__base_attr__.alias,
@@ -1613,6 +1630,7 @@ pub fn nodes_from_dbt_manifest(manifest: DbtManifest, dbt_quoting: DbtQuoting) -
                         __base_attr__: NodeBaseAttributes {
                             adapter: adapter_type,
                             propagate: Vec::new(),
+                            effective_propagation_target: None,
                             // A check has no relation, so these stay as written (empty) rather
                             // than being defaulted from the target.
                             database: check.__common_attr__.database,
@@ -1681,6 +1699,7 @@ pub fn nodes_from_dbt_manifest(manifest: DbtManifest, dbt_quoting: DbtQuoting) -
                 __base_attr__: NodeBaseAttributes {
                     adapter: adapter_type,
                     propagate: Vec::new(),
+                    effective_propagation_target: None,
                     database: source.__common_attr__.database,
                     schema: source.__common_attr__.schema,
                     alias: source.identifier.clone(),
@@ -1759,6 +1778,7 @@ pub fn nodes_from_dbt_manifest(manifest: DbtManifest, dbt_quoting: DbtQuoting) -
                 __base_attr__: NodeBaseAttributes {
                     adapter: adapter_type,
                     propagate: Vec::new(),
+                    effective_propagation_target: None,
                     database: "".to_string(),
                     schema: "".to_string(),
                     alias: "".to_string(),
@@ -1825,6 +1845,7 @@ pub fn nodes_from_dbt_manifest(manifest: DbtManifest, dbt_quoting: DbtQuoting) -
                 __base_attr__: NodeBaseAttributes {
                     adapter: adapter_type,
                     propagate: Vec::new(),
+                    effective_propagation_target: None,
                     database: unit_test.__common_attr__.database,
                     schema: unit_test.__common_attr__.schema,
                     alias: unit_test.__base_attr__.alias,
@@ -1915,6 +1936,7 @@ pub fn nodes_from_dbt_manifest(manifest: DbtManifest, dbt_quoting: DbtQuoting) -
                 __base_attr__: NodeBaseAttributes {
                     adapter: adapter_type,
                     propagate: Vec::new(),
+                    effective_propagation_target: None,
                     database: "".to_string(),
                     schema: "".to_string(),
                     alias: "".to_string(),
@@ -1977,6 +1999,7 @@ pub fn nodes_from_dbt_manifest(manifest: DbtManifest, dbt_quoting: DbtQuoting) -
                 __base_attr__: NodeBaseAttributes {
                     adapter: adapter_type,
                     propagate: Vec::new(),
+                    effective_propagation_target: None,
                     database: "".to_string(),
                     schema: "".to_string(),
                     alias: "".to_string(),
@@ -2030,7 +2053,8 @@ pub fn manifest_model_to_dbt_model(
     dbt_quoting: DbtQuoting,
 ) -> DbtModel {
     // A manifest records no per-node adapter, so a loaded node runs where the run
-    // that produced the manifest ran.
+    // that produced the manifest ran. The Databricks canonical-relation marker is
+    // only written for Lake Compute nodes, so it restores that adapter explicitly.
     let adapter_type =
         AdapterType::from_str(&manifest.metadata.adapter_type).unwrap_or_else(|_| {
             panic!(
@@ -2038,6 +2062,11 @@ pub fn manifest_model_to_dbt_model(
                 &manifest.metadata.adapter_type
             )
         });
+    let canonical_relation_adapter = model.__base_attr__.canonical_relation_adapter;
+    let adapter = canonical_relation_adapter
+        .filter(|adapter| *adapter == AdapterType::Databricks)
+        .map(|_| AdapterType::LakeCompute)
+        .unwrap_or(adapter_type);
     let database = model.__common_attr__.database;
     let schema = model.__common_attr__.schema;
     let alias = model.__base_attr__.alias;
@@ -2094,8 +2123,10 @@ pub fn manifest_model_to_dbt_model(
             meta: model.config.meta.clone().unwrap_or_default(),
         },
         __base_attr__: NodeBaseAttributes {
-            adapter: adapter_type,
+            adapter,
             propagate: Vec::new(),
+            effective_propagation_target: canonical_relation_adapter
+                .filter(|adapter| *adapter == AdapterType::Databricks),
             database,
             schema,
             alias,
@@ -2152,7 +2183,9 @@ pub fn manifest_model_to_dbt_model(
             version: model.version,
             latest_version: model.latest_version,
             constraints: model.constraints.unwrap_or_default(),
-            deprecation_date: model.deprecation_date,
+            deprecation_date: model
+                .deprecation_date
+                .and_then(|raw| dbt_yaml::Timestamp::parse(&raw)),
             primary_key: model.primary_key.unwrap_or_default(),
             time_spine,
             event_time: model.config.event_time.clone(),
@@ -2217,6 +2250,7 @@ pub fn manifest_function_to_dbt_function(
         __base_attr__: NodeBaseAttributes {
             adapter: adapter_type,
             propagate: Vec::new(),
+            effective_propagation_target: None,
             database: function.__common_attr__.database,
             schema: function.__common_attr__.schema,
             alias: function.__base_attr__.alias,
@@ -2317,6 +2351,7 @@ mod tests {
             functions: BTreeMap::new(),
             checks: BTreeMap::new(),
             macros: BTreeMap::new(),
+            plugins: BTreeMap::new(),
             project_name: None,
         }
     }
@@ -2408,6 +2443,67 @@ mod tests {
 
         // Neither: dbt-core's `protected` default.
         assert_eq!(to_dbt_model(ManifestModel::default()), Access::Protected);
+    }
+
+    #[test]
+    fn databricks_manifest_relation_policy_tests() {
+        let manifest = DbtManifest {
+            metadata: ManifestMetadata {
+                adapter_type: "snowflake".to_string(),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let quoting = DbtQuoting {
+            database: Some(false),
+            identifier: Some(false),
+            schema: Some(false),
+            snowflake_ignore_case: Some(false),
+        };
+
+        let mut canonical = ManifestModel::default();
+        canonical.__base_attr__.canonical_relation_adapter = Some(AdapterType::Databricks);
+        let rehydrated = manifest_model_to_dbt_model(canonical, &manifest, quoting);
+        assert_eq!(rehydrated.__base_attr__.adapter, AdapterType::LakeCompute);
+        assert_eq!(
+            rehydrated.__base_attr__.effective_propagation_target,
+            Some(AdapterType::Databricks)
+        );
+
+        let mut seed = ManifestSeed {
+            __common_attr__: Default::default(),
+            __base_attr__: Default::default(),
+            config: Default::default(),
+            root_path: None,
+            __other__: Default::default(),
+        };
+        seed.__base_attr__.canonical_relation_adapter = Some(AdapterType::Databricks);
+        let seed_manifest = DbtManifest {
+            metadata: ManifestMetadata {
+                adapter_type: "snowflake".to_string(),
+                ..Default::default()
+            },
+            nodes: [("seed.root_project.orders".to_string(), DbtNode::Seed(seed))]
+                .into_iter()
+                .collect(),
+            ..Default::default()
+        };
+        let seed = nodes_from_dbt_manifest(seed_manifest, quoting)
+            .seeds
+            .into_iter()
+            .next()
+            .map(|(_, seed)| seed)
+            .expect("manifest seed should be rehydrated");
+        assert_eq!(seed.__base_attr__.adapter, AdapterType::LakeCompute);
+        assert_eq!(
+            seed.__base_attr__.effective_propagation_target,
+            Some(AdapterType::Databricks)
+        );
+
+        let legacy = ManifestModel::default();
+        let legacy = manifest_model_to_dbt_model(legacy, &manifest, quoting);
+        assert_eq!(legacy.__base_attr__.adapter, AdapterType::Snowflake);
+        assert_eq!(legacy.__base_attr__.effective_propagation_target, None);
     }
 
     /// A previous manifest is data this run did not write, so a node carrying both an alias and

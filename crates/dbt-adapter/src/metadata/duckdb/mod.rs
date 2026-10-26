@@ -1,6 +1,6 @@
 use crate::AdapterEngine;
 use crate::adapter::adapter_impl::AdapterImpl;
-use crate::connection::AdapterConnectionFactory;
+use crate::connection::{AdapterConnectionFactory, ConnectionGuard};
 use crate::load_catalogs;
 use crate::relation::do_create_relation;
 use crate::sql_types::{TypeOps, make_arrow_field_v2};
@@ -9,14 +9,15 @@ use arrow_schema::Schema;
 
 use arrow_array::{Array, Int32Array, RecordBatch, StringArray};
 
-use dbt_adapter_core::ExecutionPhase;
+use dbt_adapter_core::{AdapterType, ExecutionPhase};
 use dbt_adapter_engine::MapReduce;
-use dbt_adbc::{Connection, QueryCtx};
+use dbt_adapter_engine::cow::uppercase;
+use dbt_adbc::QueryCtx;
 use dbt_common::cancellation::Cancellable;
 use dbt_common::cancellation::CancellationToken;
 use dbt_schemas::dbt_types::RelationType;
-use dbt_schemas::schemas::dbt_catalogs_v2::{
-    CatalogSpecV2View, CatalogType, DbtCatalogsV2View, PhysicalFormatResolver,
+use dbt_schemas::schemas::dbt_catalogs::{
+    CatalogSpecView, CatalogType, DbtCatalogsView, PhysicalFormatResolver,
 };
 use dbt_schemas::schemas::{
     common::ResolvedQuoting,
@@ -179,7 +180,7 @@ impl MetadataAdapter for DuckDBMetadataAdapter {
 
         let adapter = self.adapter.clone();
         let token_clone = token.clone();
-        let map_f = move |conn: &'_ mut dyn Connection,
+        let map_f = move |conn: &mut ConnectionGuard<'_>,
                           key: &(String, String)|
               -> AdapterResult<Arc<Schema>> {
             let (_, rendered) = key;
@@ -248,6 +249,7 @@ impl MetadataAdapter for DuckDBMetadataAdapter {
         &self,
         db_schemas: &[CatalogAndSchema],
         token: CancellationToken,
+        report_progress: bool,
     ) -> AsyncAdapterResult<'_, BTreeMap<CatalogAndSchema, AdapterResult<RelationVec>>> {
         type Acc = BTreeMap<CatalogAndSchema, AdapterResult<RelationVec>>;
 
@@ -255,16 +257,22 @@ impl MetadataAdapter for DuckDBMetadataAdapter {
 
         let adapter = self.adapter.clone();
         let token_clone = token.clone();
-        let map_f = move |conn: &'_ mut dyn Connection,
+        let map_f = move |conn: &mut ConnectionGuard<'_>,
                           db_schema: &CatalogAndSchema|
               -> AdapterResult<Vec<Arc<dyn BaseRelation>>> {
             let ctx = QueryCtx::default().with_desc("list_relations_in_parallel");
-            list_relations(
-                adapter.engine().as_ref(),
-                &ctx,
-                conn,
-                db_schema,
-                token_clone.clone(),
+            with_relation_list_item_span(
+                report_progress.then_some(RELATION_CACHE_OP_ID),
+                &db_schema.to_string(),
+                || {
+                    list_relations(
+                        adapter.engine().as_ref(),
+                        &ctx,
+                        conn,
+                        db_schema,
+                        token_clone.clone(),
+                    )
+                },
             )
         };
 
@@ -343,7 +351,7 @@ fn list_relations_sql(quoting: ResolvedQuoting, db_schema: &CatalogAndSchema) ->
 pub fn list_relations(
     engine: &dyn AdapterEngine,
     ctx: &QueryCtx,
-    conn: &'_ mut dyn Connection,
+    conn: &mut ConnectionGuard<'_>,
     db_schema: &CatalogAndSchema,
     token: CancellationToken,
 ) -> AdapterResult<Vec<Arc<dyn BaseRelation>>> {
@@ -352,7 +360,7 @@ pub fn list_relations(
     // DESCRIBE-based get_relation path only when the *target* catalog is one of
     // them. A regular DuckDB catalog is still listed even while Iceberg catalogs
     // are attached — see the catalog scoping below.
-    if is_duckdb_v2_external_iceberg_catalog_database(&db_schema.resolved_catalog) {
+    if is_duckdb_external_iceberg_catalog_database(&db_schema.resolved_catalog) {
         return Err(AdapterError::new(
             AdapterErrorKind::NotSupported,
             format!(
@@ -364,7 +372,7 @@ pub fn list_relations(
 
     let sql = list_relations_sql(engine.quoting(), db_schema);
 
-    let batch = engine.execute(None, conn, ctx, &sql, token)?;
+    let batch = engine.execute(None, conn.as_mut(), ctx, &sql, token)?;
 
     if batch.num_rows() == 0 {
         return Ok(Vec::new());
@@ -411,19 +419,31 @@ pub(crate) struct ExternalIcebergAttach {
     pub(crate) attach_alias: String,
 }
 
-/// Catalog types DuckDB reaches through an Iceberg REST `ATTACH ... (TYPE
-/// ICEBERG)`. Horizon, Unity, and Glue are Iceberg REST services under the
-/// hood. Single answer to "is this an Iceberg REST-style attachment?" so the
-/// ATTACH composer (`engine::duckdb_attach`) and the metadata routing below
-/// can never disagree about which catalogs need REST-attachment treatment.
-pub(crate) fn attaches_via_iceberg_rest(catalog_type: CatalogType) -> bool {
-    matches!(
-        catalog_type,
-        CatalogType::IcebergRest | CatalogType::Horizon | CatalogType::Unity | CatalogType::Glue
-    )
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DuckDbAttachKind {
+    /// Horizon, Unity, and Glue are Iceberg REST services under the hood.
+    IcebergRest,
+    DuckLake,
 }
 
-/// DuckDB-specific classification of a single v2 catalog spec.
+pub(crate) fn duckdb_attaches_via(catalog_type: CatalogType) -> Option<DuckDbAttachKind> {
+    match catalog_type {
+        CatalogType::IcebergRest
+        | CatalogType::Horizon
+        | CatalogType::Unity
+        | CatalogType::Glue => Some(DuckDbAttachKind::IcebergRest),
+        CatalogType::DuckLake => Some(DuckDbAttachKind::DuckLake),
+        CatalogType::LocalFilesystem
+        | CatalogType::HiveMetastore
+        | CatalogType::BiglakeMetastore
+        | CatalogType::SnowflakeBuiltIn
+        | CatalogType::SnowflakeNative
+        | CatalogType::BigqueryNative
+        | CatalogType::DuckdbNative => None,
+    }
+}
+
+/// DuckDB-specific classification of a single catalog spec.
 pub(crate) trait CatalogSpecDuckDbExt {
     /// `Some(..)` iff this catalog is an external Iceberg REST-attached catalog
     /// (IcebergRest/Horizon/Unity/Glue with `table_format: iceberg` and a `duckdb`
@@ -433,13 +453,14 @@ pub(crate) trait CatalogSpecDuckDbExt {
     fn resolved_attach_alias(&self) -> Option<String>;
 }
 
-impl CatalogSpecDuckDbExt for CatalogSpecV2View<'_> {
+impl CatalogSpecDuckDbExt for CatalogSpecView<'_> {
     fn external_iceberg_attach(&self) -> Option<ExternalIcebergAttach> {
         // DuckDB exposes these catalogs through Iceberg REST-style attachments.
         // Their information_schema coverage is incomplete, so schema-wide listing
         // is avoided while targeted DESCRIBE-based get_relation remains available.
-        let is_external_iceberg =
-            attaches_via_iceberg_rest(self.catalog_type) && self.table_format.is_iceberg();
+        let is_external_iceberg = duckdb_attaches_via(self.catalog_type)
+            == Some(DuckDbAttachKind::IcebergRest)
+            && self.table_format.is_iceberg();
         if !is_external_iceberg {
             return None;
         }
@@ -466,6 +487,16 @@ impl CatalogSpecDuckDbExt for CatalogSpecV2View<'_> {
     }
 }
 
+pub(crate) fn duckdb_catalog_attached_database(catalog: &CatalogSpecView<'_>) -> Option<String> {
+    if duckdb_attaches_via(catalog.catalog_type).is_some() {
+        catalog
+            .resolved_attach_alias()
+            .filter(|alias| !alias.is_empty())
+    } else {
+        None
+    }
+}
+
 /// DuckDB-specific lookups over the whole v2 catalogs view.
 trait CatalogsViewDuckDbExt {
     /// The external Iceberg attach whose sanitized alias matches `database`, if any.
@@ -477,7 +508,7 @@ trait CatalogsViewDuckDbExt {
     fn table_format_for_database(&self, database: &str) -> Option<&'static str>;
 }
 
-impl CatalogsViewDuckDbExt for DbtCatalogsV2View<'_> {
+impl CatalogsViewDuckDbExt for DbtCatalogsView<'_> {
     fn external_iceberg_attach_for_database(
         &self,
         database: &str,
@@ -505,21 +536,19 @@ impl CatalogsViewDuckDbExt for DbtCatalogsV2View<'_> {
     }
 }
 
-/// Load the active v2 catalogs view and run `f`, returning `None` when
-/// catalogs.yml v2 is not in use. One gate replaces the scattered
-/// fetch-use / fetch / view_v2 guard boilerplate.
-fn with_duckdb_v2_catalogs_view<R>(
-    f: impl FnOnce(&DbtCatalogsV2View<'_>) -> Option<R>,
-) -> Option<R> {
+/// Load the active catalogs view and run `f`, returning `None` when
+/// catalogs.yml is not in use. One gate replaces the scattered
+/// fetch-use / fetch / view guard boilerplate.
+fn with_duckdb_catalogs_view<R>(f: impl FnOnce(&DbtCatalogsView<'_>) -> Option<R>) -> Option<R> {
     if !load_catalogs::fetch_use_catalogs_v2() {
         return None;
     }
     let catalogs = load_catalogs::fetch_catalogs()?;
-    let view = catalogs.view_v2().ok()?;
+    let view = catalogs.view().ok()?;
     f(&view)
 }
 
-/// The external Iceberg attach DuckDB uses for `database`, when catalogs.yml v2
+/// The external Iceberg attach DuckDB uses for `database`, when catalogs.yml
 /// routes it to one.
 pub(crate) fn duckdb_external_iceberg_attach_for_database(
     database: &str,
@@ -527,23 +556,23 @@ pub(crate) fn duckdb_external_iceberg_attach_for_database(
     if database.is_empty() {
         return None;
     }
-    with_duckdb_v2_catalogs_view(|view| view.external_iceberg_attach_for_database(database))
+    with_duckdb_catalogs_view(|view| view.external_iceberg_attach_for_database(database))
 }
 
 /// Whether `database` resolves to a DuckDB external Iceberg REST catalog. Thin
 /// boolean view over [`duckdb_external_iceberg_attach_for_database`] for the
 /// schema-listing / get_relation decision points.
-pub(crate) fn is_duckdb_v2_external_iceberg_catalog_database(database: &str) -> bool {
+pub(crate) fn is_duckdb_external_iceberg_catalog_database(database: &str) -> bool {
     duckdb_external_iceberg_attach_for_database(database).is_some()
 }
 
-/// The egress table format string for a DuckDB attached-database alias from catalogs.yml v2.
+/// The egress table format string for a DuckDB attached-database alias from catalogs.yml.
 /// Used by `adapter.table_format(relation)` when a Jinja relation only gives
 /// us its database/catalog: the attached alias is the bridge back to
 /// catalogs.yml, which tells macros whether DuckDB needs Iceberg/DuckLake DDL
 /// behavior for that relation.
 pub(crate) fn duckdb_table_format_for_database(database: &str) -> Option<&'static str> {
-    with_duckdb_v2_catalogs_view(|view| view.table_format_for_database(database))
+    with_duckdb_catalogs_view(|view| view.table_format_for_database(database))
 }
 
 /// Resolve one profile-level `attach:` entry to its `(alias, format_str)`, or
@@ -584,6 +613,51 @@ pub(crate) fn classify_attach_entry(item: &dbt_yaml::Value) -> Option<(String, &
     Some((alias, format))
 }
 
+/// Whether `get_relation` must skip warming the relation cache with a schema-wide
+/// listing, and use the targeted per-relation probe instead.
+///
+/// External Iceberg REST catalogs report incomplete `information_schema`
+/// coverage. Lake compute's service folds `D.S.T` table *references* but not the
+/// `table_schema = '...'` string literals a listing filters on, so the listing
+/// comes back empty; that empty result would then be cached as "relation absent"
+/// and the probe would never run.
+pub(crate) fn skips_schema_wide_listing(adapter_type: AdapterType, resolved_catalog: &str) -> bool {
+    match adapter_type {
+        AdapterType::DuckDB => is_duckdb_external_iceberg_catalog_database(resolved_catalog),
+        AdapterType::LakeCompute => true,
+        _ => false,
+    }
+}
+
+/// The schema and identifier text to put in the probe. Lake compute builds the
+/// folded name from the reference text, so it gets the parts as given, the way
+/// builds render them. DuckDB catalogs match case-insensitively, so they get the
+/// lowercased `query_*` forms.
+pub(crate) fn probe_relation_parts<'a>(
+    adapter_type: AdapterType,
+    (schema, identifier): (&'a str, &'a str),
+    (query_schema, query_identifier): (&'a str, &'a str),
+) -> (&'a str, &'a str) {
+    if adapter_type == AdapterType::LakeCompute {
+        (schema, identifier)
+    } else {
+        (query_schema, query_identifier)
+    }
+}
+
+/// Whether an error from the targeted probe means "relation absent" for this adapter.
+pub(crate) fn is_probe_missing_relation_error(
+    adapter_type: AdapterType,
+    err: &AdapterError,
+    database: &str,
+) -> bool {
+    if adapter_type == AdapterType::LakeCompute {
+        is_lake_compute_missing_relation_error(err, database)
+    } else {
+        is_missing_relation_error(err)
+    }
+}
+
 /// Whether a DuckDB error from the targeted DESCRIBE probe means "relation absent"
 /// (so `get_relation` can report `None`) rather than a real failure.
 pub(crate) fn is_missing_relation_error(err: &AdapterError) -> bool {
@@ -603,6 +677,24 @@ pub(crate) fn is_missing_relation_error(err: &AdapterError) -> bool {
     missing && relationish
 }
 
+/// Like [`is_missing_relation_error`], for the lake compute probe.
+///
+/// The service folds `D.S.T` into its own namespace and, when that misses, falls
+/// back to a catalog named `D` -- so a relation that was never created is
+/// reported as `Catalog "D" does not exist`, indistinguishable from an
+/// unattached database. Only the probe's own database counts: any other catalog
+/// in the message is a real failure.
+pub(crate) fn is_lake_compute_missing_relation_error(err: &AdapterError, database: &str) -> bool {
+    if is_missing_relation_error(err) {
+        return true;
+    }
+    let msg = err.to_string().to_lowercase();
+    msg.contains(&format!(
+        "catalog \"{}\" does not exist",
+        database.to_lowercase()
+    ))
+}
+
 /// Build an Arrow Schema from DuckDB's DESCRIBE output.
 ///
 /// DuckDB's DESCRIBE returns columns: column_name, column_type, null, key, default, extra
@@ -618,7 +710,7 @@ fn build_schema_from_duckdb_describe(
     for i in 0..describe_result.num_rows() {
         let name = column_names.value(i);
         // DuckDB returns "YES" or "NO" for nullability
-        let nullable = nullability.value(i).to_uppercase() == "YES";
+        let nullable = uppercase(nullability.value(i).into()) == "YES";
         let text_data_type = data_types.value(i);
 
         let field = make_arrow_field_v2(
@@ -638,7 +730,7 @@ fn build_schema_from_duckdb_describe(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use dbt_schemas::schemas::dbt_catalogs::DbtCatalogs;
+    use dbt_schemas::schemas::dbt_catalogs_deprecated::DbtCatalogs;
 
     fn catalog_and_schema(catalog: &str, schema: &str) -> CatalogAndSchema {
         CatalogAndSchema {
@@ -647,6 +739,110 @@ mod tests {
             resolved_catalog: catalog.to_string(),
             resolved_schema: schema.to_string(),
         }
+    }
+
+    #[test]
+    fn lake_compute_skips_schema_wide_listing() {
+        // The service folds `D.S.T` references but not the `information_schema`
+        // string literals a schema-wide listing filters on, so the listing comes
+        // back empty and would be cached as "relation absent", short-circuiting
+        // the per-relation probe.
+        assert!(skips_schema_wide_listing(
+            AdapterType::LakeCompute,
+            "PKG_TEST"
+        ));
+        // Plain DuckDB still lists a regular catalog (see the catalog scoping above).
+        assert!(!skips_schema_wide_listing(AdapterType::DuckDB, "memory"));
+        assert!(!skips_schema_wide_listing(
+            AdapterType::Snowflake,
+            "PKG_TEST"
+        ));
+    }
+
+    #[test]
+    fn probe_relation_parts_keeps_lake_compute_case() {
+        let given = ("Analytics", "Customers");
+        let lowered = ("analytics", "customers");
+        assert_eq!(
+            probe_relation_parts(AdapterType::LakeCompute, given, lowered),
+            given
+        );
+        assert_eq!(
+            probe_relation_parts(AdapterType::DuckDB, given, lowered),
+            lowered
+        );
+    }
+
+    #[test]
+    fn probe_missing_relation_error_is_per_adapter() {
+        let err = AdapterError::new(
+            AdapterErrorKind::Internal,
+            "Binder Error: Catalog \"PKG_TEST\" does not exist!".to_string(),
+        );
+        assert!(is_probe_missing_relation_error(
+            AdapterType::LakeCompute,
+            &err,
+            "PKG_TEST"
+        ));
+        // Only lake compute reads an unresolved catalog as a missing table.
+        assert!(!is_probe_missing_relation_error(
+            AdapterType::DuckDB,
+            &err,
+            "PKG_TEST"
+        ));
+        let missing = AdapterError::new(
+            AdapterErrorKind::Internal,
+            "Table with name foo does not exist".to_string(),
+        );
+        assert!(is_probe_missing_relation_error(
+            AdapterType::DuckDB,
+            &missing,
+            "PKG_TEST"
+        ));
+        // "permission denied" is a real error for both.
+        let other = AdapterError::new(AdapterErrorKind::Internal, "permission denied".to_string());
+        assert!(!is_probe_missing_relation_error(
+            AdapterType::LakeCompute,
+            &other,
+            "PKG_TEST"
+        ));
+        assert!(!is_probe_missing_relation_error(
+            AdapterType::DuckDB,
+            &other,
+            "PKG_TEST"
+        ));
+    }
+
+    #[test]
+    fn lake_compute_probe_treats_unresolved_catalog_as_missing_relation() {
+        let mk = |m: &str| AdapterError::new(AdapterErrorKind::Internal, m.to_string());
+        // The service folds `D.S.T` and, on a miss, falls back to catalog `D`, so a
+        // table that was never created surfaces as an unknown *catalog*.
+        assert!(is_lake_compute_missing_relation_error(
+            &mk(
+                "[BinderException] Binder Error: Catalog \"PKG_TEST\" does not exist! (query dbt-compute-query-1)"
+            ),
+            "PKG_TEST",
+        ));
+        // Case-insensitive, like Snowflake database names.
+        assert!(is_lake_compute_missing_relation_error(
+            &mk("Binder Error: Catalog \"pkg_test\" does not exist!"),
+            "PKG_TEST",
+        ));
+        // The usual DuckDB wording still counts.
+        assert!(is_lake_compute_missing_relation_error(
+            &mk("Table with name foo does not exist"),
+            "PKG_TEST",
+        ));
+        // A different catalog, or an unrelated failure, is a real error.
+        assert!(!is_lake_compute_missing_relation_error(
+            &mk("Binder Error: Catalog \"OTHER\" does not exist!"),
+            "PKG_TEST",
+        ));
+        assert!(!is_lake_compute_missing_relation_error(
+            &mk("permission denied"),
+            "PKG_TEST",
+        ));
     }
 
     #[test]
@@ -712,19 +908,19 @@ mod tests {
         assert!(!sql.contains(" AND "));
     }
 
-    fn with_v2_view(yaml: &str, test: impl FnOnce(&DbtCatalogsV2View<'_>)) {
+    fn with_view(yaml: &str, test: impl FnOnce(&DbtCatalogsView<'_>)) {
         let parsed: dbt_yaml::Value = dbt_yaml::from_str(yaml).expect("valid YAML");
         let dbt_yaml::Value::Mapping(repr, span) = parsed else {
             panic!("expected YAML mapping");
         };
         let catalogs = DbtCatalogs::new(repr, span);
-        let view = catalogs.view_v2().expect("valid catalogs v2 view");
+        let view = catalogs.view().expect("valid catalogs v2 view");
         test(&view);
     }
 
     #[test]
-    fn duckdb_v2_external_iceberg_catalogs_disable_schema_listing() {
-        with_v2_view(
+    fn duckdb_external_iceberg_catalogs_disable_schema_listing() {
+        with_view(
             r#"
 catalogs:
   - name: lakekeeper
@@ -788,7 +984,7 @@ catalogs:
 
     #[test]
     fn table_format_for_database_resolves_aliases() {
-        with_v2_view(
+        with_view(
             r#"
 catalogs:
   - name: lake
@@ -863,5 +1059,139 @@ catalogs:
             classify_attach_entry(&parse("path: /data/warehouse.duckdb\ntype: iceberg")),
             Some((alias, "iceberg")) if !alias.is_empty()
         ));
+    }
+
+    /// Every catalog type DuckDB can attach, plus one it cannot.
+    const ROUTING_CATALOGS: &str = r#"
+catalogs:
+  - name: rest_demo
+    type: iceberg_rest
+    table_format: iceberg
+    config:
+      duckdb:
+        endpoint: http://localhost:8181/catalog
+        warehouse: demo
+        catalog_database: rest_attached
+  - name: rest_no_alias
+    type: iceberg_rest
+    table_format: iceberg
+    config:
+      duckdb:
+        endpoint: http://localhost:8181/catalog
+        warehouse: demo
+  - name: horizon_demo
+    type: horizon
+    table_format: iceberg
+    config:
+      duckdb:
+        endpoint: https://horizon.example.com/catalog
+        warehouse: horizon_wh
+  - name: unity_demo
+    type: unity
+    table_format: iceberg
+    config:
+      duckdb:
+        endpoint: https://dbc.example.com/api/2.1/unity-catalog/iceberg
+        catalog_database: unity_db
+  - name: my_lake
+    type: ducklake
+    table_format: default
+    config:
+      duckdb:
+        metadata_path: "metadata.ducklake"
+  - name: files
+    type: local_filesystem
+    table_format: default
+    config:
+      duckdb:
+        root_path: local_files
+        file_format: csv
+"#;
+
+    fn routed(view: &DbtCatalogsView<'_>, name: &str) -> Option<String> {
+        let catalog = view
+            .catalogs
+            .iter()
+            .find(|catalog| catalog.name == name)
+            .unwrap_or_else(|| panic!("catalog '{name}' missing from fixture"));
+        duckdb_catalog_attached_database(catalog)
+    }
+
+    #[test]
+    fn duckdb_catalog_attached_database_uses_catalog_database_then_name() {
+        with_view(ROUTING_CATALOGS, |view| {
+            // Explicit `catalog_database` is the alias...
+            assert_eq!(routed(view, "rest_demo").as_deref(), Some("rest_attached"));
+            assert_eq!(routed(view, "unity_demo").as_deref(), Some("unity_db"));
+            // ...and the catalog name is the fallback.
+            assert_eq!(
+                routed(view, "rest_no_alias").as_deref(),
+                Some("rest_no_alias")
+            );
+            assert_eq!(
+                routed(view, "horizon_demo").as_deref(),
+                Some("horizon_demo")
+            );
+            // DuckLake attaches too, so it routes.
+            assert_eq!(routed(view, "my_lake").as_deref(), Some("my_lake"));
+        });
+    }
+
+    #[test]
+    fn duckdb_catalog_attached_database_skips_local_filesystem() {
+        // `local_filesystem` emits no ATTACH, so there is no database to route to
+        // routing its name would name a database that does not exist.
+        with_view(ROUTING_CATALOGS, |view| {
+            assert_eq!(routed(view, "files"), None);
+        });
+    }
+
+    #[test]
+    fn duckdb_catalog_attached_database_rejects_alias_that_sanitizes_away() {
+        with_view(
+            r#"
+catalogs:
+  - name: punctuation
+    type: iceberg_rest
+    table_format: iceberg
+    config:
+      duckdb:
+        endpoint: http://localhost:8181/catalog
+        warehouse: demo
+        catalog_database: "---"
+"#,
+            |view| {
+                // Better no routing than `database: ""`; the ATTACH composer
+                // reports the unusable alias as a configuration error.
+                assert_eq!(routed(view, "punctuation"), None);
+            },
+        );
+    }
+
+    #[test]
+    fn duckdb_catalog_attached_database_agrees_with_composed_attach_alias() {
+        with_view(ROUTING_CATALOGS, |view| {
+            let stmts = crate::engine::duckdb_attach::compose_catalog_attach_stmts(view, "duckdb")
+                .expect("fixture composes");
+
+            for catalog in &view.catalogs {
+                match duckdb_catalog_attached_database(catalog) {
+                    Some(alias) => assert!(
+                        stmts
+                            .iter()
+                            .any(|stmt| stmt.contains(&format!(" AS {alias}"))),
+                        "routed alias '{alias}' for catalog '{}' has no matching ATTACH in {stmts:?}",
+                        catalog.name
+                    ),
+                    None => assert!(
+                        !stmts
+                            .iter()
+                            .any(|stmt| stmt.contains(&format!(" AS {}", catalog.name))),
+                        "catalog '{}' is not routed but was attached",
+                        catalog.name
+                    ),
+                }
+            }
+        });
     }
 }

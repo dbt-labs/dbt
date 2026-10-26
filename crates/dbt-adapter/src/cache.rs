@@ -2,9 +2,9 @@ use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use dashmap::DashMap;
+use dbt_common::collections::SccHashMap;
 use dbt_common::tracing::span_info::SpanStatusRecorder as _;
-use dbt_common::{FsResult, create_debug_span};
+use dbt_common::{FsResult, create_info_span};
 use dbt_schemas::schemas::relations::base::BaseRelation;
 use dbt_telemetry::GenericOpExecuted;
 use parking_lot::RwLock;
@@ -12,7 +12,7 @@ use tracing::Instrument as _;
 
 use crate::Adapter;
 use crate::{
-    metadata::{CatalogAndSchema, RelationVec},
+    metadata::{CatalogAndSchema, RELATION_CACHE_OP_ID, RelationVec},
     relation::BaseRelationConfig,
 };
 
@@ -49,7 +49,7 @@ impl RelationCacheEntry {
 
 #[derive(Debug, Clone, Default)]
 struct SchemaEntry {
-    relations: DashMap<RelationCacheKey, RelationCacheEntry>,
+    relations: SccHashMap<RelationCacheKey, RelationCacheEntry>,
     // Tracks whether or not we have complete knowledge of this schema
     is_complete: bool,
 }
@@ -80,7 +80,7 @@ pub struct RelationCache {
     //               Relation Key -> Cache Entry (Relation + Relation Config)
     // The inner key is a unique key generated from a relation's fully qualified name
     // We also differentiate using [SchemaEntry] to see what information we actually know about that schema
-    schemas_and_relations: DashMap<String, SchemaEntry>,
+    schemas_and_relations: SccHashMap<String, SchemaEntry>,
     /// Per-node set of dependents: `parent_to_children[k]` is the set of relations
     /// that would be cascade-dropped if `k` were dropped. Lifted out of
     /// `RelationCacheEntry` so the cache entry stays Clone-via-derive and
@@ -108,14 +108,11 @@ impl RelationCache {
     /// Retrieves a cached entry by relation
     pub fn get_relation(&self, relation: &dyn BaseRelation) -> Option<RelationCacheEntry> {
         let (schema_key, relation_key) = Self::get_relation_cache_keys(relation);
-        if let Some(schema) = self.schemas_and_relations.get(&schema_key) {
-            schema
-                .relations
-                .get(&relation_key)
-                .map(|r| r.value().clone())
-        } else {
-            None
-        }
+        self.schemas_and_relations
+            .read_sync(&schema_key, |_, schema| {
+                schema.relations.read_sync(&relation_key, |_, r| r.clone())
+            })
+            .flatten()
     }
 
     /// Inserts a relation of [Arc<dyn BaseRelation] along with an optional <Arc<dyn BaseRelationConfig>> if applicable
@@ -127,25 +124,21 @@ impl RelationCache {
         let (schema_key, relation_key) = Self::get_relation_cache_keys(relation.as_ref());
         let entry = RelationCacheEntry::new(relation, relation_config);
         self.schemas_and_relations
-            .entry(schema_key)
+            .entry_sync(schema_key)
             .or_default()
             .relations
-            .insert(relation_key, entry)
+            .upsert_sync(relation_key, entry)
     }
 
     /// Removes and returns a cached entry by key
     fn evict(&self, schema_key: &str, key: &str) -> Option<RelationCacheEntry> {
-        // Schema Read Guard -> Inner Delete
-        // We do not need to lock reads to the schema as the read guard is sufficient
-        if let Some(relations) = self.schemas_and_relations.get(schema_key) {
-            relations
-                .value()
-                .relations
-                .remove(key)
-                .map(|(_key, value)| value)
-        } else {
-            None
-        }
+        // Schema read -> inner delete. The outer bucket is only read-locked, which is
+        // sufficient to remove from the inner map.
+        self.schemas_and_relations
+            .read_sync(schema_key, |_, schema| {
+                schema.relations.remove_sync(key).map(|(_key, value)| value)
+            })
+            .flatten()
     }
 
     /// Removes and returns a cached entry by relation
@@ -157,7 +150,7 @@ impl RelationCache {
     /// Inserts a schema and its relations into the cache
     pub fn insert_schema(&self, schema: CatalogAndSchema, relations: RelationVec) {
         let schema_key = schema.to_string();
-        let cached_relations: DashMap<_, _> = relations
+        let cached_relations: SccHashMap<_, _> = relations
             .iter()
             .map(|r| {
                 let key = Self::normalize_relation_key(&schema_key, r.as_ref());
@@ -165,7 +158,7 @@ impl RelationCache {
             })
             .collect();
 
-        self.schemas_and_relations.insert(
+        self.schemas_and_relations.upsert_sync(
             schema_key,
             SchemaEntry {
                 relations: cached_relations,
@@ -197,7 +190,7 @@ impl RelationCache {
 
     pub fn evict_schema_for_relation(&self, relation: &dyn BaseRelation) {
         let schema_key = Self::get_schema_cache_key_from_relation(relation);
-        self.schemas_and_relations.remove(&schema_key);
+        self.schemas_and_relations.remove_sync(&schema_key);
     }
 
     /// Checks if the entire schema was cached
@@ -206,25 +199,26 @@ impl RelationCache {
     /// this function will always return false
     pub fn contains_full_schema_for_relation(&self, relation: &dyn BaseRelation) -> bool {
         self.schemas_and_relations
-            .get(&Self::get_schema_cache_key_from_relation(relation))
-            .map(|entry| entry.is_complete)
+            .read_sync(
+                &Self::get_schema_cache_key_from_relation(relation),
+                |_, entry| entry.is_complete,
+            )
             .unwrap_or(false)
     }
 
     pub fn contains_full_schema(&self, schema: &CatalogAndSchema) -> bool {
         self.schemas_and_relations
-            .get(&schema.to_string())
-            .map(|entry| entry.is_complete)
+            .read_sync(&schema.to_string(), |_, entry| entry.is_complete)
             .unwrap_or(false)
     }
 
     pub fn contains_relation(&self, relation: &dyn BaseRelation) -> bool {
         let (schema_key, relation_key) = Self::get_relation_cache_keys(relation);
-        if let Some(relation_cache) = self.schemas_and_relations.get(&schema_key) {
-            relation_cache.value().relations.contains_key(&relation_key)
-        } else {
-            false
-        }
+        self.schemas_and_relations
+            .read_sync(&schema_key, |_, schema| {
+                schema.relations.contains_sync(&relation_key)
+            })
+            .unwrap_or(false)
     }
 
     /// Rename, preserving the renamed entry's incoming-dependency set and
@@ -263,10 +257,10 @@ impl RelationCache {
         }
 
         self.schemas_and_relations
-            .entry(new_dep_key.0)
+            .entry_sync(new_dep_key.0)
             .or_default()
             .relations
-            .insert(new_dep_key.1, new_entry.clone());
+            .upsert_sync(new_dep_key.1, new_entry.clone());
 
         Some(new_entry)
     }
@@ -277,7 +271,7 @@ impl RelationCache {
     pub fn add_link(&self, referenced: &dyn BaseRelation, dependent: &dyn BaseRelation) {
         let (ref_schema_key, ref_relation_key) = Self::get_relation_cache_keys(referenced);
 
-        if !self.schemas_and_relations.contains_key(&ref_schema_key) {
+        if !self.schemas_and_relations.contains_sync(&ref_schema_key) {
             return;
         }
 
@@ -323,14 +317,17 @@ impl RelationCache {
     }
 
     fn get_entry_by_dep_key(&self, key: &DepKey) -> Option<RelationCacheEntry> {
-        let schema_entry = self.schemas_and_relations.get(&key.0)?;
-        Some(schema_entry.relations.get(&key.1)?.value().clone())
+        self.schemas_and_relations
+            .read_sync(&key.0, |_, schema| {
+                schema.relations.read_sync(&key.1, |_, r| r.clone())
+            })
+            .flatten()
     }
 
     fn contains_dep_key(&self, key: &DepKey) -> bool {
         self.schemas_and_relations
-            .get(&key.0)
-            .is_some_and(|s| s.relations.contains_key(&key.1))
+            .read_sync(&key.0, |_, schema| schema.relations.contains_sync(&key.1))
+            .unwrap_or(false)
     }
 
     #[cfg(test)]
@@ -346,23 +343,29 @@ impl RelationCache {
 
     /// Removes all entries from the cache
     pub fn clear(&self) {
-        self.schemas_and_relations.clear();
+        self.schemas_and_relations.clear_sync();
     }
 
     /// Number of total relations cached
     pub fn num_relations(&self) -> usize {
-        self.schemas_and_relations
-            .iter()
-            .map(|entry| entry.value().relations.len())
-            .sum()
+        let mut total = 0;
+        self.schemas_and_relations.iter_sync(|_, entry| {
+            total += entry.relations.len();
+            true
+        });
+        total
     }
 
     /// Number of total schemas cached
     pub fn num_schemas(&self) -> usize {
-        self.schemas_and_relations
-            .iter()
-            .filter(|entry| entry.value().is_complete)
-            .count()
+        let mut total = 0;
+        self.schemas_and_relations.iter_sync(|_, entry| {
+            if entry.is_complete {
+                total += 1;
+            }
+            true
+        });
+        total
     }
 
     /// Helper: Generates cache key pairs from a [BaseRelation]
@@ -410,10 +413,14 @@ impl RelationCache {
 /// The [Adapter] must support [MetadataAdapter] as well
 ///
 /// Takes in an input of placeholder relations from which to hydrate schemas for
-/// if they are not already cached
+/// if they are not already cached.
+///
+/// `display_action` names this call's progress indicator; each caller uses a
+/// distinct label.
 pub async fn hydrate_relation_cache_if_not_already_cached(
     dummy_relations: &[Arc<dyn BaseRelation>],
     adapter: &Arc<Adapter>,
+    display_action: &str,
 ) -> FsResult<()> {
     if adapter.metadata_adapter().is_none() {
         return Ok(());
@@ -439,10 +446,18 @@ pub async fn hydrate_relation_cache_if_not_already_cached(
         return Ok(());
     }
 
-    let span = create_debug_span(GenericOpExecuted::new(
-        "hydrate_relation_cache".to_string(),
-        "downloading relations".to_string(),
-        Some(cache_misses.len() as u64),
+    // Adapters whose `supports_relation_progress()` is `false` (unimplemented stubs)
+    // never emit per-item spans; advertising a count for them would leave the bar
+    // stuck at 0/N.
+    let item_count_total = adapter
+        .metadata_adapter()
+        .is_some_and(|m| m.supports_relation_progress())
+        .then_some(cache_misses.len() as u64);
+
+    let span = create_info_span(GenericOpExecuted::new(
+        RELATION_CACHE_OP_ID.to_string(),
+        display_action.to_string(),
+        item_count_total,
     ));
 
     adapter

@@ -458,6 +458,7 @@ impl From<ProjectUnitTestConfig> for UnitTestConfig {
                 enable_list_inference: None,
                 intermediate_format: None,
                 storage_uri: None,
+                enable_change_history: None,
 
                 file_format: config.file_format,
                 catalog_name: config.catalog_name,
@@ -489,6 +490,7 @@ impl From<ProjectUnitTestConfig> for UnitTestConfig {
                 row_filter: None,
                 incremental_apply_config_changes: None,
                 persist_constraints: None,
+                use_materialization_v2: None,
                 use_safer_relation_operations: None,
                 view_update_via_alter: None,
 
@@ -515,6 +517,8 @@ impl From<ProjectUnitTestConfig> for UnitTestConfig {
                 settings: None,
                 query_settings: None,
                 projections: None,
+                sharding_key: None,
+                disable_on_cluster: None,
                 inserts_only: None,
                 connection_overrides: None,
                 fields: None,
@@ -684,6 +688,10 @@ impl ResolvableConfig<UnitTestConfig> for UnitTestConfig {
 impl ConfigKeys for UnitTestConfig {
     // The default implementation from the trait will handle
     // extracting field names via serialization automatically
+}
+
+impl crate::schemas::project::configs::warehouse_scope::WarehouseConfigResource for UnitTestConfig {
+    const NODE_TYPE: dbt_telemetry::NodeType = dbt_telemetry::NodeType::UnitTest;
 }
 
 #[cfg(test)]

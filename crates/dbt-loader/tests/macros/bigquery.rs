@@ -8,7 +8,7 @@ use dbt_jinja_utils::mock_object::MockJinjaObject;
 use dbt_schemas::dbt_types::RelationType;
 use minijinja::Value;
 
-use crate::macro_test_harness::MacroTestHarness;
+use crate::macro_test_harness::{MacroTestHarness, default_mock_config};
 
 fn build_harness() -> MacroTestHarness {
     MacroTestHarness::for_adapter(AdapterType::Bigquery)
@@ -16,6 +16,50 @@ fn build_harness() -> MacroTestHarness {
         .with_stub_functions()
         .build()
         .expect("harness should build")
+}
+
+#[test]
+fn snapshot_check_cols_matches_existing_column_case_insensitively() {
+    let harness = MacroTestHarness::for_adapter(AdapterType::Bigquery)
+        .load_all_macros()
+        .with_macro(
+            "dbt_bigquery",
+            "bigquery__get_columns_in_query",
+            "{% macro bigquery__get_columns_in_query(select_sql) %}{{ return(['dice_change_hash']) }}{% endmacro %}",
+        )
+        .build()
+        .expect("harness should build");
+
+    harness
+        .mock()
+        .on("get_relation", |_| Ok(Value::from("snapshot_target")));
+    harness.mock().on("get_columns_in_relation", |_| {
+        Ok(Value::from_serialize(vec![BTreeMap::from([(
+            "name",
+            "DICE_CHANGE_HASH",
+        )])]))
+    });
+    harness.mock().on("quote", |args| {
+        Ok(Value::from(format!(
+            "`{}`",
+            args[0].as_str().expect("column name")
+        )))
+    });
+
+    let node = BTreeMap::from([
+        ("database", "test-db"),
+        ("schema", "test_schema"),
+        ("alias", "member_snapshot"),
+        ("compiled_code", "select DICE_CHANGE_HASH from source"),
+    ]);
+    let rendered = harness
+        .render(
+            "{% set added, cols = snapshot_check_all_get_existing_columns(node, true, ['dice_change_hash']) %}{{ 'added' if added else 'existing' }}|{{ cols | join(',') }}",
+            BTreeMap::from([("node", Value::from_serialize(node))]),
+        )
+        .expect("snapshot check should render");
+
+    assert_eq!(rendered.trim(), "existing|`dice_change_hash`");
 }
 
 fn base_relation_ctx(harness: &MacroTestHarness) -> BTreeMap<String, Value> {
@@ -207,5 +251,49 @@ fn generate_schema_name_composes_on_a_projects_own_default() {
             .expect("render should succeed")
             .trim(),
         "sales_catalog.custom_staging"
+    );
+}
+
+#[test]
+fn load_csv_rows_forwards_seed_path_from_adapter() {
+    const SEED_PATH: &str = "/workspace/seeds/countries.csv";
+
+    let harness = build_harness();
+    harness
+        .mock()
+        .on("get_seed_file_path", |_| Ok(Value::from(SEED_PATH)))
+        .on("load_dataframe", |_| Ok(Value::UNDEFINED));
+
+    let model = Value::from_serialize(BTreeMap::from([
+        ("database", Value::from("test-db")),
+        ("schema", Value::from("test_schema")),
+        ("alias", Value::from("countries")),
+        (
+            "config",
+            Value::from_serialize(BTreeMap::<String, Value>::new()),
+        ),
+    ]));
+    let ctx = BTreeMap::from([
+        ("model".to_string(), model),
+        ("agate_table".to_string(), Value::from("agate table")),
+        ("dbt_version".to_string(), Value::from("2.0.0")),
+        (
+            "config".to_string(),
+            Value::from_dyn_object(default_mock_config()),
+        ),
+    ]);
+
+    harness
+        .render("{{ bigquery__load_csv_rows(model, agate_table) }}", ctx)
+        .expect("seed load macro should render");
+
+    let calls = harness.mock().observed_calls();
+    let load_call = calls
+        .to("load_dataframe")
+        .next()
+        .expect("load_dataframe should be called");
+    assert_eq!(
+        load_call.args.get(3).and_then(Value::as_str),
+        Some(SEED_PATH)
     );
 }

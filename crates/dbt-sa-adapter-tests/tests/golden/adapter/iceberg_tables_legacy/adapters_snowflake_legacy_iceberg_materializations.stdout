@@ -1,0 +1,28 @@
+   dbt-oss 
+   Loading profiles.yml
+   Parsing models/b.sql
+   Parsing models/basic_iceberg_dynamic_table.sql
+   Parsing models/basic_iceberg_dynamic_table_v3.sql
+   Parsing models/basic_iceberg_table.sql
+   Parsing models/simple_incremental.sql
+   Started downloading referenced relations (1 items)
+  Finished [duration] downloading referenced relations (1 items)
+ Rendering models/simple_incremental.sql
+   Running models/simple_incremental.sql
+ Succeeded model adapters_snowflake_legacy_iceberg_materializations.simple_incremental (incremental) [1 of 5 in duration]
+ Rendering models/basic_iceberg_table.sql
+   Running models/basic_iceberg_table.sql
+ Succeeded model adapters_snowflake_legacy_iceberg_materializations.basic_iceberg_table (table) [2 of 5 in duration]
+ Rendering models/basic_iceberg_dynamic_table_v3.sql
+ Rendering models/basic_iceberg_dynamic_table.sql
+ Rendering models/b.sql
+   Running models/basic_iceberg_dynamic_table_v3.sql
+ Succeeded model adapters_snowflake_legacy_iceberg_materializations.basic_iceberg_dynamic_table_v3 (dynamic_table) [3 of 5 in duration]
+   Running models/basic_iceberg_dynamic_table.sql
+ Succeeded model adapters_snowflake_legacy_iceberg_materializations.basic_iceberg_dynamic_table (dynamic_table) [4 of 5 in duration]
+   Running models/b.sql
+ Succeeded model adapters_snowflake_legacy_iceberg_materializations.b (table) [5 of 5 in duration]
+==================== Execution Summary =====================
+Finished 'run' successfully for target 'snowflake' [duration]
+Processed: 5 models
+Summary: 5 total | 5 success

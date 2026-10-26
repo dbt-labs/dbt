@@ -12,6 +12,7 @@ use std::path::Path;
 use std::str::FromStr;
 use std::sync::LazyLock;
 
+use dbt_adapter_engine::cow::uppercase;
 use flate2::read::GzDecoder;
 use parking_lot::RwLock;
 use regex::Regex;
@@ -92,13 +93,13 @@ pub(crate) fn is_read_only_execute_call(method: &str, args: &serde_json::Value) 
 /// recorded event when replaying.
 fn metadata_args_match(recorded: &MetadataCallArgs, actual: &MetadataCallArgs) -> bool {
     fn relations_match(recorded_relations: &[String], actual_relations: &[String]) -> bool {
-        let recorded_set: HashSet<String> = recorded_relations
+        let recorded_set: HashSet<Cow<'_, str>> = recorded_relations
             .iter()
-            .map(|r| r.to_ascii_uppercase())
+            .map(|r| uppercase(Cow::Borrowed(r.as_str())))
             .collect();
         actual_relations
             .iter()
-            .all(|rel| recorded_set.contains(&rel.to_ascii_uppercase()))
+            .all(|rel| recorded_set.contains(&uppercase(rel.into())))
     }
 
     match (recorded, actual) {
@@ -329,7 +330,7 @@ fn python_job_args_match(recorded: &serde_json::Value, actual: &serde_json::Valu
                     let is_model = obj
                         .get("__type__")
                         .and_then(serde_json::Value::as_str)
-                        .is_some_and(|type_name| type_name.ends_with("LazyModelWrapper"));
+                        .is_some_and(super::serde::is_node_context_type);
                     if is_model || inside_model && obj.contains_key("adapter") {
                         obj.remove("raw_code");
                         obj.remove("adapter");
@@ -524,6 +525,14 @@ impl std::fmt::Display for ReplayMode {
     }
 }
 
+/// Read `header.json` from a recording directory.
+pub(crate) fn read_recording_header(recording_dir: &Path) -> Result<RecordingHeader, ReplayError> {
+    let header_path = recording_dir.join("header.json");
+    let header_content = std::fs::read_to_string(&header_path)
+        .map_err(|e| ReplayError::InvalidFormat(format!("Failed to read header.json: {}", e)))?;
+    Ok(serde_json::from_str(&header_content)?)
+}
+
 /// Errors that can occur during replay.
 #[derive(Debug)]
 pub enum ReplayError {
@@ -664,12 +673,7 @@ impl Recording {
             return Err(ReplayError::NotFound(path.display().to_string()));
         }
 
-        // Load header
-        let header_path = path.join("header.json");
-        let header_content = std::fs::read_to_string(&header_path).map_err(|e| {
-            ReplayError::InvalidFormat(format!("Failed to read header.json: {}", e))
-        })?;
-        let header: RecordingHeader = serde_json::from_str(&header_content)?;
+        let header = read_recording_header(path)?;
 
         // Load events
         let events_path = path.join("events.ndjson.gz");
@@ -2464,7 +2468,7 @@ mod tests {
             "import pandas as pd\n\ndef model(dbt, session):\n    return None\n"
         ]);
         let actual = serde_json::json!([
-            { "__type__": "LazyModelWrapper", "alias": "m", "raw_code": "import pandas as pd\n\ndef model(dbt, session):\n    return None" },
+            { "__type__": "dbt_schemas::jinja_node::LazyNodeContext", "alias": "m", "raw_code": "import pandas as pd\n\ndef model(dbt, session):\n    return None" },
             "import pandas as pd\n\ndef model(dbt, session):\n    return None\n"
         ]);
 

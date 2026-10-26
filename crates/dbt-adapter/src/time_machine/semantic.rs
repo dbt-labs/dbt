@@ -64,6 +64,7 @@ impl SemanticCategory {
             | "get_missing_columns"
             | "is_replaceable"
             | "location_exists"
+            | "can_exchange"
             | "check_incremental_schema_changes" => SemanticCategory::MetadataRead,
 
             // Mutate database state (DDL/DML)
@@ -115,7 +116,6 @@ impl SemanticCategory {
             | "generate_unique_temporary_table_suffix"
             | "parse_columns_and_constraints"
             | "clean_sql"
-            | "yaml_quote_backtick_values"
             | "get_common_options"
             | "get_table_options"
             | "get_view_options"
@@ -145,7 +145,6 @@ impl SemanticCategory {
             | "is_at_or_after_version"
             | "format_columns"
             | "supports_atomic_exchange"
-            | "can_exchange"
             | "should_on_cluster"
             | "calculate_incremental_strategy"
             | "validate_incremental_strategy"
@@ -157,6 +156,7 @@ impl SemanticCategory {
             | "s3source_clause"
             | "get_csv_data"
             | "table_format"
+            | "warn_once"
             | "strip_trailing_statement_terminator" => SemanticCategory::Pure,
 
             _ => {

@@ -64,6 +64,7 @@ impl ::prost::Name for QueryExecuted {
     }
 }
 /// Time spent waiting for connection concurrency limits to allow a node to proceed.
+/// Superseded by `v1.public.events.fusion.process.ThreadPoolWait` and no longer emitted.
 #[cfg_attr(any(test, feature = "test-utils"), derive(::fake::Dummy))]
 #[derive(crate::macros::ProtoNew)]
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]

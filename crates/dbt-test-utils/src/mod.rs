@@ -2,6 +2,7 @@ use std::path::PathBuf;
 
 use dbt_test_primitives::is_update_golden_files_mode;
 
+pub mod adapter_record_replay;
 pub mod profiles;
 pub mod task;
 pub mod test_env_guard;

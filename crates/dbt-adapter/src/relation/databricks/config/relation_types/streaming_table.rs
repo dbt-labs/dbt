@@ -89,6 +89,18 @@ mod tests {
     <time_zone_value>
         UTC
     </time_zone_value>
+    <every>
+        None
+    </every>
+    <on_update>
+        False
+    </on_update>
+    <at_most_every>
+        None
+    </at_most_every>
+    <auto_refreshed>
+        False
+    </auto_refreshed>
     <is_altered>
         True
     </is_altered>
@@ -98,9 +110,6 @@ mod tests {
         <a_tag>
             new
         </a_tag>
-        <b_tag>
-            old
-        </b_tag>
     </set_tags>
 </tags>
 <liquid_clustering>
@@ -154,6 +163,18 @@ mod tests {
     <time_zone_value>
         None
     </time_zone_value>
+    <every>
+        None
+    </every>
+    <on_update>
+        False
+    </on_update>
+    <at_most_every>
+        None
+    </at_most_every>
+    <auto_refreshed>
+        False
+    </auto_refreshed>
     <is_altered>
         False
     </is_altered>
@@ -253,6 +274,9 @@ mod tests {
                         components::RefreshLoader::new_component_type_erased(
                             Some("*/60 * * * *".to_string()),
                             Some("UTC".to_string()),
+                            None,
+                            false,
+                            None,
                         ),
                     ),
                 ),
@@ -260,10 +284,7 @@ mod tests {
                     components::RelationTagsLoader.type_name(),
                     ComponentConfigChange::Some(
                         components::RelationTagsLoader::new_component_type_erased(
-                            IndexMap::from_iter([
-                                ("a_tag".to_string(), "new".to_string()),
-                                ("b_tag".to_string(), "old".to_string()),
-                            ]),
+                            IndexMap::from_iter([("a_tag".to_string(), "new".to_string())]),
                         ),
                     ),
                 ),
@@ -314,7 +335,9 @@ mod tests {
                 (
                     components::RefreshLoader.type_name(),
                     ComponentConfigChange::Some(
-                        components::RefreshLoader::new_component_type_erased(None, None),
+                        components::RefreshLoader::new_component_type_erased(
+                            None, None, None, false, None,
+                        ),
                     ),
                 ),
                 (

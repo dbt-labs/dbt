@@ -1,0 +1,20 @@
+name: "test"
+version: "1.0"
+
+profile: fusion_tests
+
+config-version: 2
+quoting:
+  database: false
+  schema: true
+  identifier: true
+
+macro-paths: ["macros"]
+
+flags:
+  use_catalogs_v2: true
+
+models:
+  test:
+    +materialized: table
+    +catalog_name: my_iceberg_builtin_catalog

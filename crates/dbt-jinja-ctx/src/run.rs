@@ -14,10 +14,10 @@
 //! `__minijinja_current_path`, `__minijinja_current_span`).
 //!
 //! Object-typed slots stay `MinijinjaValue` for the same reasons as
-//! [`crate::CompileNodeCtx`]: their concrete impls (`RunConfig`,
-//! `LazyModelWrapper`, `WriteConfig`, `HookConfig`, `RelationObject`) live
-//! in `dbt-jinja-utils` / `dbt-adapter` and need a follow-up move to tighten
-//! to `JinjaObject<T>`.
+//! [`crate::CompileNodeCtx`]: their concrete impls (`RunConfig`, the lazy
+//! node context, `WriteConfig`, `HookConfig`, `RelationObject`) live in
+//! `dbt-jinja-utils` / `dbt-schemas` / `dbt-adapter` and need a follow-up
+//! move to tighten to `JinjaObject<T>`.
 
 use minijinja::Value as MinijinjaValue;
 use schemars::JsonSchema;
@@ -25,7 +25,7 @@ use serde::Serialize;
 
 use crate::JinjaObject;
 use crate::compile::CompileBaseCtx;
-use crate::objects::{LazyModelWrapper, MacroLookupContext};
+use crate::objects::MacroLookupContext;
 
 /// Per-node run-time overlay layered onto [`crate::CompileBaseCtx`] for each
 /// node materialization. Today's `build_run_node_context<S>` populates this
@@ -81,15 +81,17 @@ pub struct RunNodeCtx {
     #[schemars(with = "serde_json::Value")]
     pub config: MinijinjaValue,
 
-    /// `{{ model.* }}` — `LazyModelWrapper` Object that lazy-loads
-    /// `compiled_code` from the on-disk compiled SQL on first attribute
-    /// access. Shadows the base.
-    pub model: JinjaObject<LazyModelWrapper>,
+    /// `{{ model.* }}` — node-backed Object that reads `compiled_code` from
+    /// the on-disk compiled SQL. Shadows the base.
+    #[schemars(with = "serde_json::Value")]
+    pub model: MinijinjaValue,
 
-    /// `{{ node.* }}` — same `LazyModelWrapper` content as `model` (run
-    /// phase aliases them; compile-node does not). Shadows
+    /// `{{ node.* }}` — a separate Object that shares `model`'s data, so
+    /// writes through either are visible through both but `node is sameas
+    /// model` is false (compile-node does not set it). Shadows
     /// [`crate::CompileBaseCtx::node`] (`Value::NONE`).
-    pub node: JinjaObject<LazyModelWrapper>,
+    #[schemars(with = "serde_json::Value")]
+    pub node: MinijinjaValue,
 
     /// `{{ connection_name }}` — empty string at run scope (overlays).
     pub connection_name: String,

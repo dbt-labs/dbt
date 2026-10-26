@@ -891,6 +891,28 @@ impl SqlType {
                 time_zone_spec.write_with_leading_space(backend, out)
             }
             (_, DateTime) => write!(out, "DATETIME"),
+            // DuckDB's TIMESTAMPTZ takes no precision.
+            (
+                DuckDB,
+                Timestamp {
+                    time_zone_spec: TimeZoneSpec::With,
+                    ..
+                },
+            ) => write!(out, "TIMESTAMP WITH TIME ZONE"),
+            // DuckDB spells the second, millisecond and nanosecond precisions as their own
+            // types; `TIMESTAMP(p)` also parses, but only as an alias for these.
+            (
+                DuckDB,
+                Timestamp {
+                    precision,
+                    time_zone_spec: TimeZoneSpec::Without | TimeZoneSpec::Unspecified,
+                },
+            ) => match precision {
+                Some(0) => write!(out, "TIMESTAMP_S"),
+                Some(3) => write!(out, "TIMESTAMP_MS"),
+                Some(9) => write!(out, "TIMESTAMP_NS"),
+                _ => write!(out, "TIMESTAMP"),
+            },
             (
                 _,
                 Timestamp {
@@ -1104,8 +1126,23 @@ impl SqlType {
             DataType::Time32(_) | DataType::Time64(_) => {
                 unreachable!("unexpected time unit in Arrow data type: {data_type:?}")
             }
+            // BigQuery TIMESTAMP represents an absolute instant without a
+            // time-zone suffix in its SQL spelling. Arrow's time zone marks
+            // that distinction from BigQuery DATETIME.
+            DataType::Timestamp(_, Some(_)) if backend == AdapterType::Bigquery => {
+                SqlType::Timestamp {
+                    precision: None,
+                    time_zone_spec: TimeZoneSpec::Unspecified,
+                }
+            }
             DataType::Timestamp(TimeUnit::Second, tz) => SqlType::Timestamp {
-                precision: None,
+                // `None` is the backend's default precision, microseconds on DuckDB, so
+                // seconds are spelled `Some(0)` there.
+                precision: if backend == AdapterType::DuckDB {
+                    Some(0)
+                } else {
+                    None
+                },
                 time_zone_spec: if tz.is_some() {
                     TimeZoneSpec::With
                 } else {
@@ -1395,6 +1432,17 @@ impl SqlType {
             // Bigquery floats are 64-bit
             // https://cloud.google.com/bigquery/docs/reference/standard-sql/data-types#floating_point_types
             (Bigquery, Real | Float(_) | Double) => DataType::Float64,
+
+            // Arrow has no native JSON or GEOGRAPHY types. Preserve their
+            // BigQuery identity using the distinct-type encoding understood by
+            // the adapter and fixture-rendering layers instead of collapsing
+            // both to Utf8.
+            (Bigquery, Json) => {
+                DataType::FixedSizeList(Arc::new(Field::new("json", DataType::Utf8, true)), 1)
+            }
+            (Bigquery, Geography(_)) => {
+                DataType::FixedSizeList(Arc::new(Field::new("geography", DataType::Utf8, true)), 1)
+            }
             // }}}
 
             // Databricks {{{

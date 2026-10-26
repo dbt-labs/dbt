@@ -13,7 +13,7 @@ use dbt_jinja_utils::register_base_functions;
 use dbt_profile::{
     ProfileEnvironment, ProfileError, ResolvedProfile, find_profiles_path, resolve_with_env,
 };
-use dbt_schemas::schemas::profiles::DbConfig;
+use dbt_schemas::schemas::profiles::{DbConfig, canonicalize_bigquery_region_alias};
 use dbt_schemas::schemas::serde::yaml_to_fs_error;
 use dbt_schemas::state::{ProfileAdapter, ProfileConnection};
 
@@ -90,7 +90,10 @@ pub fn load_profiles(
     // Convert the rendered credentials mapping into a typed DbConfig. Cloned
     // rather than moved because the non-default adapters are read from
     // `resolved` further down.
-    let credentials_value = dbt_yaml::Value::Mapping(resolved.credentials.clone(), Span::default());
+    let mut credentials = resolved.credentials.clone();
+    canonicalize_bigquery_region_alias(&mut credentials);
+    rewrite_fabricspark_alias(&mut credentials);
+    let credentials_value = dbt_yaml::Value::Mapping(credentials, Span::default());
     let db_config: DbConfig = dbt_yaml::from_value(credentials_value).map_err(|e| {
         fs_err!(
             ErrorCode::InvalidConfig,
@@ -116,8 +119,10 @@ pub fn load_profiles(
             let config = if connection.is_default {
                 db_config.clone()
             } else {
-                let value =
-                    dbt_yaml::Value::Mapping(connection.credentials.clone(), Span::default());
+                let mut credentials = connection.credentials.clone();
+                canonicalize_bigquery_region_alias(&mut credentials);
+                rewrite_fabricspark_alias(&mut credentials);
+                let value = dbt_yaml::Value::Mapping(credentials, Span::default());
                 let config: DbConfig = dbt_yaml::from_value(value).map_err(|e| {
                     fs_err!(
                         ErrorCode::InvalidConfig,
@@ -177,6 +182,7 @@ pub fn load_profiles(
         );
     }
     let default_adapter = db_config.adapter_type();
+    inherit_lake_compute_connection_fields(&mut adapters, &db_config);
 
     if db_config.has_removed_execute_field() {
         emit_warn_log_message(
@@ -187,12 +193,7 @@ pub fn load_profiles(
         );
     }
 
-    let database = db_config.get_database_or_default();
-    let schema = db_config
-        .get_schema()
-        .map(String::as_str)
-        .unwrap_or("public")
-        .to_string();
+    let (database, schema) = db_config.profile_database_and_schema();
 
     Ok(DbtProfile {
         database,
@@ -206,6 +207,42 @@ pub fn load_profiles(
         relative_profile_path,
         threads: arg.threads,
     })
+}
+
+/// `type: fabricspark` (the v1 dbt-fabricspark adapter's profile type) is an
+/// alias for the "fabric" platform flavor of the spark adapter: rewrite it to
+/// `type: spark` before typed parsing.
+fn rewrite_fabricspark_alias(credentials: &mut dbt_yaml::Mapping) {
+    let is_fabricspark = matches!(
+        credentials.get("type"),
+        Some(dbt_yaml::Value::String(t, _)) if t == "fabricspark"
+    );
+    if !is_fabricspark {
+        return;
+    }
+    if let Some(adapter_type) = credentials.get_mut("type") {
+        *adapter_type = dbt_yaml::Value::String("spark".to_string(), Span::default());
+    }
+}
+
+/// The lake compute connection takes an unset `database`/`schema` from the default
+/// connection (fs#13653); a no-op when lake compute is itself the default.
+fn inherit_lake_compute_connection_fields(
+    adapters: &mut IndexMap<AdapterType, ProfileAdapter>,
+    default: &DbConfig,
+) {
+    let Some(DbConfig::LakeCompute(lake_compute)) = adapters
+        .get_mut(&AdapterType::LakeCompute)
+        .map(ProfileAdapter::config_mut)
+    else {
+        return;
+    };
+    if lake_compute.database.is_none() {
+        lake_compute.database = default.get_database().cloned();
+    }
+    if lake_compute.schema.is_none() {
+        lake_compute.schema = default.get_schema().cloned();
+    }
 }
 
 fn profile_defer_to_target(credentials: &dbt_yaml::Mapping) -> Option<String> {
@@ -286,10 +323,71 @@ fn get_profile_with_span(
 mod tests {
     use super::*;
 
-    use dbt_common::io_args::MULTI_ADAPTER_ENV;
     use dbt_common::warn_error_options::WarnErrorOptions;
     use dbt_jinja_utils::register_base_functions;
     use dbt_profile::ProfileEnvironment;
+    use dbt_schemas::schemas::profiles::{LakeComputeConfig, SnowflakeDbConfig};
+
+    fn snowflake_with(database: &str, schema: &str) -> DbConfig {
+        DbConfig::Snowflake(Box::new(SnowflakeDbConfig {
+            database: Some(database.to_string()),
+            schema: Some(schema.to_string()),
+            ..Default::default()
+        }))
+    }
+
+    fn lake_compute_with(database: Option<&str>, schema: Option<&str>) -> DbConfig {
+        DbConfig::LakeCompute(Box::new(LakeComputeConfig {
+            database: database.map(str::to_string),
+            schema: schema.map(str::to_string),
+            ..Default::default()
+        }))
+    }
+
+    #[test]
+    fn only_a_lake_compute_secondary_inherits_unset_fields() {
+        let sf = snowflake_with("DB", "SCH");
+        // (default, secondary, the secondary's (database, schema) afterwards)
+        let cases = [
+            (
+                sf.clone(),
+                lake_compute_with(None, None),
+                (Some("DB"), Some("SCH")),
+            ),
+            (
+                sf.clone(),
+                lake_compute_with(Some("lc_db"), None),
+                (Some("lc_db"), Some("SCH")),
+            ),
+            (
+                sf.clone(),
+                lake_compute_with(None, Some("lc_sch")),
+                (Some("DB"), Some("lc_sch")),
+            ),
+            (
+                sf.clone(),
+                lake_compute_with(Some("lc_db"), Some("lc_sch")),
+                (Some("lc_db"), Some("lc_sch")),
+            ),
+            (sf.clone(), DbConfig::DuckDB(Box::default()), (None, None)),
+            (lake_compute_with(None, None), sf, (Some("DB"), Some("SCH"))),
+        ];
+        for (i, (default, secondary, expected)) in cases.into_iter().enumerate() {
+            let (default_type, secondary_type) = (default.adapter_type(), secondary.adapter_type());
+            let mut adapters: IndexMap<_, _> = [default.clone(), secondary]
+                .into_iter()
+                .map(|config| (config.adapter_type(), ProfileAdapter::single(config)))
+                .collect();
+            inherit_lake_compute_connection_fields(&mut adapters, &default);
+            let config = adapters[&secondary_type].config();
+            let actual = (
+                config.get_database().map(String::as_str),
+                config.get_schema().map(String::as_str),
+            );
+            assert_eq!(actual, expected, "case {i}");
+            assert_eq!(adapters[&default_type].config(), &default, "case {i}");
+        }
+    }
 
     #[test]
     fn enforce_adapter_gating_rejects_unsupported_adapter() {
@@ -309,50 +407,41 @@ mod tests {
         );
     }
 
-    /// Lake compute answers to `DBT_ENGINE_EXPERIMENTAL_MULTI_ADAPTER` and to nothing else.
-    ///
-    /// The two halves pin the two ways that could go wrong, and the arguments are chosen to
-    /// be the opposite of what each assertion needs:
-    ///
-    /// - `allow_experimental_adapters = true` with the gate unset must still be refused --
-    ///   otherwise `DBT_ALLOW_EXPERIMENTAL_ADAPTERS=true`, or simply a debug build (where
-    ///   `experimental_adapters_allowed` defaults to `true`), silently bypasses the gate.
-    /// - `allow_experimental_adapters = false` with the gate set must be admitted --
-    ///   otherwise the variable named in the refusal is not, on its own, enough to lift it.
     #[test]
-    fn enforce_adapter_gating_rejects_lake_compute_even_when_experimental_is_allowed() {
-        let restore = std::env::var(MULTI_ADAPTER_ENV).ok();
-        unsafe {
-            #[allow(clippy::disallowed_methods)]
-            std::env::set_var(MULTI_ADAPTER_ENV, "false");
-        }
-        let refused = enforce_adapter_gating(AdapterType::LakeCompute, true);
-        unsafe {
-            #[allow(clippy::disallowed_methods)]
-            std::env::set_var(MULTI_ADAPTER_ENV, "true");
-        }
-        let allowed = enforce_adapter_gating(AdapterType::LakeCompute, false);
-        unsafe {
-            #[allow(clippy::disallowed_methods)]
-            match restore {
-                Some(previous) => std::env::set_var(MULTI_ADAPTER_ENV, previous),
-                None => std::env::remove_var(MULTI_ADAPTER_ENV),
-            }
-        }
+    fn fabricspark_type_is_rewritten_to_spark() {
+        let mut creds = dbt_yaml::Mapping::from_iter([
+            (
+                dbt_yaml::Value::String("type".to_string(), Span::default()),
+                dbt_yaml::Value::String("fabricspark".to_string(), Span::default()),
+            ),
+            (
+                dbt_yaml::Value::String("workspaceid".to_string(), Span::default()),
+                dbt_yaml::Value::String(
+                    "00000000-0000-0000-0000-000000000000".to_string(),
+                    Span::default(),
+                ),
+            ),
+        ]);
+        rewrite_fabricspark_alias(&mut creds);
+        assert!(matches!(
+            creds.get("type"),
+            Some(dbt_yaml::Value::String(t, _)) if t == "spark"
+        ));
+    }
 
-        let err = refused.unwrap_err();
-        let msg = err.message();
-        assert!(
-            msg.contains(&format!("{MULTI_ADAPTER_ENV}=true")),
-            "expected the lake compute env-var hint, got: {msg}"
-        );
-        assert!(
-            !msg.contains("DBT_ALLOW_EXPERIMENTAL_ADAPTERS"),
-            "the shared experimental hint would be misleading here, got: {msg}"
-        );
-        // ...and the gate is the *only* thing standing in the way: with it set, lake compute
-        // passes without `allow_experimental_adapters`.
-        assert!(allowed.is_ok(), "gate set should admit lake compute");
+    #[test]
+    fn spark_and_other_types_are_untouched() {
+        for type_name in ["spark", "snowflake"] {
+            let mut creds = dbt_yaml::Mapping::from_iter([(
+                dbt_yaml::Value::String("type".to_string(), Span::default()),
+                dbt_yaml::Value::String(type_name.to_string(), Span::default()),
+            )]);
+            rewrite_fabricspark_alias(&mut creds);
+            assert!(matches!(
+                creds.get("type"),
+                Some(dbt_yaml::Value::String(t, _)) if t == type_name
+            ));
+        }
     }
 
     #[test]

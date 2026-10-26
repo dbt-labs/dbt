@@ -37,7 +37,7 @@ import {
 import { DagGeneralView } from './DagGeneralView';
 import { DagResourceBadge } from './DagResourceBadge';
 
-interface Props {
+interface DagNodePanelProps {
   uniqueId: string | null;
   onClose: () => void;
   collapsed: boolean;
@@ -56,7 +56,7 @@ export function DagNodePanel({
   onClose,
   collapsed,
   onToggleCollapse,
-}: Props) {
+}: DagNodePanelProps) {
   const isOpen = Boolean(uniqueId);
   // Freeze last-shown id so close animates with the prior content still rendered.
   const [frozenId, setFrozenId] = useState<string | null>(uniqueId);

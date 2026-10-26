@@ -1,0 +1,13 @@
+version: 2
+models:
+  - name: row_filter_table
+    config:
+      row_filter:
+        function: user_filter
+        columns: [user_id]
+
+  - name: row_filter_incremental
+    config:
+      row_filter:
+        function: region_filter
+        columns: [region]

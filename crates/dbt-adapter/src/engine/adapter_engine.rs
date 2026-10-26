@@ -1,6 +1,6 @@
 use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use adbc_core::options::{OptionStatement, OptionValue};
 use arrow_array::RecordBatch;
@@ -28,8 +28,10 @@ use crate::cache::RelationCache;
 use crate::engine::concat_batches::concat_batches_widened;
 use crate::engine::databricks_query_tags::query_tags_from_state;
 use crate::engine::query_comment::QueryCommentConfig;
+use crate::engine::retry::QueryRetryPolicy;
 use crate::engine::sidecar_client::SidecarClient;
 use crate::errors::adbc_error_to_adapter_error;
+use crate::metadata::clickhouse::ClickHouseCapabilities;
 use crate::record_batch::{ROWS_AFFECTED_META, RecordBatchExt, SchemaExt};
 use crate::response::query_id_from_record_batch;
 use crate::sql::normalize::strip_sql_comments;
@@ -98,6 +100,9 @@ pub trait AdapterEngine: Send + Sync {
 
     /// Get the full config object
     fn get_config(&self) -> &AdapterConfig;
+
+    /// Get the retry policy for transient query-execution errors (Redshift-only).
+    fn query_retry_policy(&self) -> &QueryRetryPolicy;
 
     /// Get a reference to the relation cache
     fn relation_cache(&self) -> &Arc<RelationCache>;
@@ -216,6 +221,12 @@ pub trait AdapterEngine: Send + Sync {
         None
     }
 
+    /// Per-engine cache for [`crate::metadata::clickhouse::server_capabilities`], if this
+    /// engine keeps one.
+    fn clickhouse_capabilities(&self) -> Option<&OnceLock<ClickHouseCapabilities>> {
+        None
+    }
+
     /// Execute the given SQL query or statement (convenience wrapper).
     fn execute(
         &self,
@@ -274,7 +285,7 @@ pub(crate) fn adbc_execute_with_options(
             options.extend(query_tags_from_state(state)?.into_statement_options())
         }
         (_, AdapterType::ClickHouse) => {
-            options.extend(crate::metadata::clickhouse::statement_options())
+            options.extend(crate::metadata::clickhouse::statement_options(engine))
         }
         (Some(state), AdapterType::Bigquery) => {
             let mut job_labels =
@@ -371,7 +382,8 @@ pub(crate) fn adbc_execute_with_options(
             )?;
         }
         options
-            .into_iter()
+            .iter()
+            .cloned()
             .try_for_each(|(key, value)| stmt.set_option(OptionStatement::Other(key), value))?;
         stmt.set_sql_query(sql.as_ref())?;
 
@@ -534,7 +546,8 @@ pub(crate) fn adbc_execute_with_options(
     log_step_duration("create_debug_span(...).entered()", t_span_create.elapsed());
 
     let t_do_execute = std::time::Instant::now();
-    let (schema, batches, rows_affected) = match do_execute(conn) {
+    let do_execute_result = engine.query_retry_policy().execute(|| do_execute(conn));
+    let (schema, batches, rows_affected) = match do_execute_result {
         Ok(res) => res,
         Err(err @ (Cancellable::Cancelled | Cancellable::Error(_))) => {
             let cancelled = || {

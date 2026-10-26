@@ -22,6 +22,7 @@ use crate::Adapter;
 use crate::AdapterEngine;
 use crate::cache::RelationCache;
 use crate::engine::AdbcEngine;
+use crate::engine::RecordReplayEngine;
 use crate::engine::query_comment::QueryCommentConfig;
 use crate::relation::do_create_relation;
 use crate::sql_types::TypeOpsFactory;
@@ -91,6 +92,7 @@ impl DefaultAdapterFactory {
         adapter_type: AdapterType,
         adapter_config: AdapterConfig,
         type_ops_factory: Arc<dyn TypeOpsFactory>,
+        replay_mode: Option<&ReplayMode>,
         quoting: ResolvedQuoting,
         query_comment: Option<QueryComment>,
         behavior_flag_overrides: BTreeMap<String, bool>,
@@ -102,12 +104,26 @@ impl DefaultAdapterFactory {
         let stmt_splitter = self.stmt_splitter();
         let type_ops = type_ops_factory.create(adapter_type);
         let relation_cache = Arc::new(RelationCache::default());
-
-        let query_comment =
-            QueryCommentConfig::from_query_comment(query_comment, adapter_type, true, cloud_config);
         let dbt_cloud_project_id = cloud_config.and_then(|c| c.project_id.clone());
 
-        let engine = Arc::new(AdbcEngine::new(
+        let query_comment = match replay_mode {
+            Some(ReplayMode::FsReplay(_) | ReplayMode::FsRecord(_)) => {
+                QueryCommentConfig::from_query_comment(
+                    query_comment,
+                    adapter_type,
+                    false,
+                    cloud_config,
+                )
+            }
+            _ => QueryCommentConfig::from_query_comment(
+                query_comment,
+                adapter_type,
+                true,
+                cloud_config,
+            ),
+        };
+
+        let inner = Arc::new(AdbcEngine::new(
             adapter_type,
             auth,
             adapter_config,
@@ -120,6 +136,16 @@ impl DefaultAdapterFactory {
             threads,
             dbt_cloud_project_id,
         ));
+
+        let engine: Arc<dyn AdapterEngine> = match replay_mode {
+            Some(ReplayMode::FsReplay(path)) => {
+                Arc::new(RecordReplayEngine::replay(inner, path.clone(), None))
+            }
+            Some(ReplayMode::FsRecord(path)) => {
+                Arc::new(RecordReplayEngine::record(inner, path.clone()))
+            }
+            _ => inner,
+        };
         Ok(engine)
     }
 }
@@ -130,7 +156,7 @@ impl AdapterFactory for DefaultAdapterFactory {
         adapter_type: AdapterType,
         config: dbt_yaml::Mapping,
         type_ops_factory: Arc<dyn TypeOpsFactory>,
-        _replay_mode: Option<ReplayMode>,
+        replay_mode: Option<ReplayMode>,
         flags: BTreeMap<String, Value>,
         schema_cache: Option<Arc<dyn SchemaStoreTrait>>,
         quoting: ResolvedQuoting,
@@ -159,6 +185,7 @@ impl AdapterFactory for DefaultAdapterFactory {
             adapter_type,
             AdapterConfig::new(adapter_config.repr().clone()),
             type_ops_factory,
+            replay_mode.as_ref(),
             quoting,
             query_comment,
             behavior_flag_overrides,

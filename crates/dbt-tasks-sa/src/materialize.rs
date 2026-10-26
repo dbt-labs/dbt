@@ -53,7 +53,7 @@ use dbt_yaml::Verbatim;
 use minijinja::Value;
 use minijinja::constants::TARGET_UNIQUE_ID;
 use minijinja::listener::RenderingEventListener;
-use minijinja::value::mutable_map::MutableMap;
+use serde_json::value::RawValue;
 use tracing::debug;
 
 /// Macro to handle NULL values in Arrow arrays
@@ -700,7 +700,7 @@ fn body_for_materialization<'a>(
 #[allow(clippy::too_many_arguments)]
 pub fn materialize_model(
     sql: &str,
-    model: &DbtModel,
+    node: Arc<dyn InternalDbtNode>,
     adapter_type: AdapterType,
     runtime_config: &DbtRuntimeConfig,
     materialization_resolver: &Arc<MaterializationResolver>,
@@ -709,9 +709,13 @@ pub fn materialize_model(
     io_args: &IoArgs,
     sql_header: Option<Value>,
 ) -> FsResult<(Value, Option<AdapterResponse>)> {
+    let model = node
+        .as_any()
+        .downcast_ref::<DbtModel>()
+        .expect("model materialization requires a model node");
     // get materialization
-    let (mut context, result_store) = build_run_node_context(
-        model,
+    let (mut context, result_store) = dbt_jinja_utils::phases::run::build_run_node_context_from_arc(
+        node.clone(),
         &model.deprecated_config,
         adapter_type,
         None,
@@ -1119,11 +1123,11 @@ pub fn materialize_microbatch_model(
     // Databricks incremental materialization reads `model['compiled_code']`.
     let batch_model = run_node_context
         .get("model")
-        .and_then(|model| model.downcast_object_ref::<MutableMap>())
+        .and_then(|model| model.downcast_object_ref::<dbt_schemas::jinja_node::LazyNodeContext>())
         .ok_or_else(|| {
             unexpected_fs_err!(
                 "No batch-local model context for microbatch model {}",
-                batch_ctx.id,
+                batch_ctx.id
             )
         })?;
     batch_model.insert(Value::from("compiled_code"), batch_sql.clone());
@@ -1731,6 +1735,37 @@ fn normalize_to_utf8(batch: &RecordBatch) -> arrow::error::Result<RecordBatch> {
 pub fn compare_record_batches(
     batch: &RecordBatch,
 ) -> arrow::error::Result<CompareRecordBatchResult> {
+    compare_record_batches_with_json_columns(batch, &[])
+}
+
+// Preserve scalar encodings so sorting keys cannot round high-precision numbers.
+fn canonicalize_json_object_keys(value: &RawValue) -> serde_json::Result<Box<RawValue>> {
+    match value.get().as_bytes().first() {
+        Some(b'{') => {
+            let object: BTreeMap<String, &RawValue> = serde_json::from_str(value.get())?;
+            let object = object
+                .into_iter()
+                .map(|(key, value)| Ok((key, canonicalize_json_object_keys(value)?)))
+                .collect::<serde_json::Result<BTreeMap<_, _>>>()?;
+            serde_json::value::to_raw_value(&object)
+        }
+        Some(b'[') => {
+            let array: Vec<&RawValue> = serde_json::from_str(value.get())?;
+            let array = array
+                .into_iter()
+                .map(canonicalize_json_object_keys)
+                .collect::<serde_json::Result<Vec<_>>>()?;
+            serde_json::value::to_raw_value(&array)
+        }
+        _ => Ok(value.to_owned()),
+    }
+}
+
+/// Compare selected JSON columns independently of object key order.
+pub fn compare_record_batches_with_json_columns(
+    batch: &RecordBatch,
+    json_columns: &[usize],
+) -> arrow::error::Result<CompareRecordBatchResult> {
     let batch = normalize_to_utf8(batch)?;
     let batch = &batch;
     let schema = batch.schema();
@@ -1799,6 +1834,39 @@ pub fn compare_record_batches(
         }
     }
 
+    // JSON spellings can sort differently in SQL. Align rows after normalizing
+    // object keys, retaining duplicate rows and the order of array elements.
+    let comparison_rows = if json_columns.is_empty() {
+        None
+    } else {
+        let rows = (0..batch.num_rows())
+            .map(|row| {
+                batch
+                    .columns()
+                    .iter()
+                    .enumerate()
+                    .map(|(index, column)| {
+                        if index == label_col_index || column.is_null(row) {
+                            return None;
+                        }
+                        let value = value_as_string(column, row, schema.field(index).data_type());
+                        Some(if json_columns.contains(&index) {
+                            serde_json::from_str::<&RawValue>(&value)
+                                .and_then(canonicalize_json_object_keys)
+                                .map(|value| value.get().to_owned())
+                                .unwrap_or(value)
+                        } else {
+                            value
+                        })
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>();
+        actual_rows.sort_by(|a, b| rows[*a].cmp(&rows[*b]));
+        expected_rows.sort_by(|a, b| rows[*a].cmp(&rows[*b]));
+        Some(rows)
+    };
+
     // Prepare new columns - include all data columns in output
     let mut new_columns: Vec<ArrayRef> = vec![];
     let mut new_fields: Vec<Field> = vec![];
@@ -1811,6 +1879,13 @@ pub fn compare_record_batches(
 
         let col = batch.column(col_index);
         let data_type = field.data_type();
+        let compare_json = json_columns.contains(&col_index);
+        if compare_json && *data_type != DataType::Utf8 {
+            return Err(arrow::error::ArrowError::SchemaError(format!(
+                "JSON comparison column '{}' must be Utf8, found {data_type}",
+                field.name()
+            )));
+        }
 
         let diffs: Vec<String> = actual_rows
             .iter()
@@ -1820,7 +1895,11 @@ pub fn compare_record_batches(
                     let actual_val = value_as_string(col, *a, data_type);
                     let expected_val = value_as_string(col, *e, data_type);
 
-                    if actual_val == expected_val {
+                    let equal = match &comparison_rows {
+                        Some(rows) => rows[*a][col_index] == rows[*e][col_index],
+                        None => actual_val == expected_val,
+                    };
+                    if equal {
                         expected_val
                     } else {
                         has_differences = true;
@@ -1945,10 +2024,130 @@ fn value_as_string(array: &ArrayRef, index: usize, data_type: &DataType) -> Stri
 
 #[cfg(test)]
 mod compare_record_batches_tests {
-    use super::compare_record_batches;
+    use super::{compare_record_batches, compare_record_batches_with_json_columns};
     use arrow::array::{BinaryArray, Int32Array, Int64Array, StringViewArray};
     use arrow::datatypes::{DataType, Field, Schema};
     use std::sync::Arc;
+
+    fn json_batch(expected: Option<&str>, actual: Option<&str>) -> arrow::array::RecordBatch {
+        json_rows_batch(&[expected], &[actual])
+    }
+
+    fn json_rows_batch(
+        expected: &[Option<&str>],
+        actual: &[Option<&str>],
+    ) -> arrow::array::RecordBatch {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("actual_or_expected", DataType::Utf8View, false),
+            Field::new("value", DataType::Utf8View, true),
+        ]));
+        arrow::array::RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(StringViewArray::from(
+                    std::iter::repeat_n("expected", expected.len())
+                        .chain(std::iter::repeat_n("actual", actual.len()))
+                        .collect::<Vec<_>>(),
+                )),
+                Arc::new(StringViewArray::from(
+                    expected.iter().chain(actual).copied().collect::<Vec<_>>(),
+                )),
+            ],
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn json_comparison_ignores_nested_object_key_order() {
+        let batch = json_batch(
+            Some(r#"{"z":0.1,"nested":[{"b":2,"a":1},3],"a":null}"#),
+            Some(r#"{ "a": null, "nested": [{"a":1,"b":2},3], "z": 0.1 }"#),
+        );
+        let result = compare_record_batches_with_json_columns(&batch, &[1]).unwrap();
+        assert!(!result.has_differences);
+        assert_eq!((result.actual_rows, result.expected_rows), (1, 1));
+    }
+
+    #[test]
+    fn json_comparison_preserves_values_arrays_and_nulls() {
+        for (expected, actual) in [
+            (Some(r#"{"a":1}"#), Some(r#"{"a":2}"#)),
+            (Some(r#"{"a":[1,2]}"#), Some(r#"{"a":[2,1]}"#)),
+            (Some(r#"{"a":true}"#), Some(r#"{"a":"true"}"#)),
+            (Some("null"), Some(r#""null""#)),
+            (None, Some("null")),
+        ] {
+            let batch = json_batch(expected, actual);
+            let result = compare_record_batches_with_json_columns(&batch, &[1]).unwrap();
+            assert!(
+                result.has_differences,
+                "{expected:?} must differ from {actual:?}"
+            );
+        }
+        let result =
+            compare_record_batches_with_json_columns(&json_batch(None, None), &[1]).unwrap();
+        assert!(!result.has_differences);
+    }
+
+    #[test]
+    fn json_comparison_preserves_high_precision_numbers() {
+        for (expected, actual) in [
+            (
+                r#"{"n":18446744073709551616}"#,
+                r#"{"n":18446744073709551617}"#,
+            ),
+            (
+                r#"{"n":12345678901234567890.1234567890}"#,
+                r#"{"n":12345678901234567890.1234567891}"#,
+            ),
+        ] {
+            let batch = json_batch(Some(expected), Some(actual));
+            let result = compare_record_batches_with_json_columns(&batch, &[1]).unwrap();
+            assert!(
+                result.has_differences,
+                "numeric precision must be preserved"
+            );
+        }
+    }
+
+    #[test]
+    fn json_comparison_keeps_plain_strings_byte_exact() {
+        let batch = json_batch(Some(r#"{"b":2,"a":1}"#), Some(r#"{"a":1,"b":2}"#));
+        let result = compare_record_batches(&batch).unwrap();
+        assert!(result.has_differences);
+    }
+
+    #[test]
+    fn json_comparison_aligns_rows_and_preserves_duplicate_counts() {
+        let expected = [
+            Some(r#"{"a":2,"z":0}"#),
+            Some(r#"{"z":0,"a":1}"#),
+            Some(r#"{"a":1,"z":0}"#),
+        ];
+        for (actual, has_differences) in [
+            (
+                [
+                    Some(r#"{"a":1,"z":0}"#),
+                    Some(r#"{"z":0,"a":2}"#),
+                    Some(r#"{"z":0,"a":1}"#),
+                ],
+                false,
+            ),
+            (
+                [
+                    Some(r#"{"a":1,"z":0}"#),
+                    Some(r#"{"z":0,"a":2}"#),
+                    Some(r#"{"z":0,"a":2}"#),
+                ],
+                true,
+            ),
+        ] {
+            let batch = json_rows_batch(&expected, &actual);
+            let result = compare_record_batches_with_json_columns(&batch, &[1]).unwrap();
+            assert_eq!(result.has_differences, has_differences);
+            assert_eq!((result.actual_rows, result.expected_rows), (3, 3));
+        }
+    }
 
     // Query results are normalized to Utf8View/LargeUtf8 at the adapter boundary
     // (dbt-adapter's concat_batches::to_view_types), so AgateTable's batches carry

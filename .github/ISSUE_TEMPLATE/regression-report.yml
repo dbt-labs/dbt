@@ -1,7 +1,7 @@
 name: ☣️ Regression
 description: Report a regression you've observed in a newer version of dbt
 title: "[Regression] <title>"
-labels: ["bug", "regression", "triage", "type:bug", "status:triage"]
+labels: ["regression", "type:bug", "status:triage"]
 body:
   - type: markdown
     attributes:

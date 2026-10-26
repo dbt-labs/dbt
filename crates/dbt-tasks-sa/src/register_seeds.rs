@@ -4,6 +4,10 @@ use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::Arc;
 
+use crate::seed_io::{
+    TableFormat, adapt_schema, infer_seed_column_name_strategy, read_json_seed,
+    read_parquet_seed_view,
+};
 use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use dbt_adapter::column::ColumnStatic;
 use dbt_adapter::relation::create_relation_from_node;
@@ -12,10 +16,6 @@ use dbt_adapter_core::AdapterType;
 use dbt_common::tracing::{dbt_emit::emit_warn_log_message, spawn_traced};
 use dbt_common::{ErrorCode, FsResult, fs_err};
 use dbt_csv::{CustomCsvOptions, read_to_arrow_records};
-use dbt_df_providers::seed_io::{
-    TableFormat, adapt_schema, infer_seed_column_name_strategy, read_json_seed,
-    read_parquet_seed_view,
-};
 
 use dbt_frontend_common::Dialect;
 use dbt_schema_store::{CanonicalFqn, DataStoreTrait, SchemaStoreTrait};
@@ -39,10 +39,7 @@ struct SeedRegistrationCtx {
 }
 
 pub fn resolve_seed_path(in_dir: &Path, seed: &DbtSeed) -> PathBuf {
-    seed.__seed_attr__
-        .root_path
-        .as_ref()
-        .map(|root| root.join(&seed.__common_attr__.path))
+    seed.file_path_from_root()
         .unwrap_or_else(|| in_dir.join(&seed.__common_attr__.original_file_path))
 }
 

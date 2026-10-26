@@ -181,9 +181,18 @@ replace on ({{ replace_on_expr }})
   
   {#-- Build WHERE clause for DELETE statement --#}
   {%- set delete_conditions = [] -%}
-  {%- for key in unique_keys -%}
+  {%- if unique_keys | length > 1 -%}
+    {#-- a row-valued IN raises DELTA_UNSUPPORTED_MULTI_COL_IN_PREDICATE; correlate on
+         the whole tuple instead so unmatched key combinations are not deleted (issue #1611) --#}
+    {%- set correlation_conditions = [] -%}
+    {%- for key in unique_keys -%}
+      {%- do correlation_conditions.append(target_relation ~ '.' ~ adapter.quote(key) ~ ' <=> ' ~ source_relation ~ '.' ~ adapter.quote(key)) -%}
+    {%- endfor -%}
+    {%- do delete_conditions.append('EXISTS (SELECT 1 FROM ' ~ source_relation ~ ' WHERE ' ~ correlation_conditions | join(' AND ') ~ ')') -%}
+  {%- else -%}
+    {%- set key = unique_keys[0] -%}
     {%- do delete_conditions.append(target_relation ~ '.' ~ adapter.quote(key) ~ ' IN (SELECT ' ~ adapter.quote(key) ~ ' FROM ' ~ source_relation ~ ')') -%}
-  {%- endfor -%}
+  {%- endif -%}
   
   {#-- Add incremental predicates to DELETE if specified --#}
   {%- if incremental_predicates is sequence and incremental_predicates is not string -%}

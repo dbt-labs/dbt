@@ -7,6 +7,7 @@ pub mod constants;
 pub mod dbt_types;
 pub mod dbt_utils;
 pub mod filter;
+pub mod jinja_node;
 pub mod man;
 pub mod materialization_resolver;
 pub mod state;
@@ -16,16 +17,17 @@ pub mod schemas {
     pub mod common;
     pub mod data_tests;
     pub mod dbt_catalogs;
-    pub mod dbt_catalogs_v2;
+    pub mod dbt_catalogs_deprecated;
     pub mod dbt_column;
     pub mod serialization_utils;
 
-    pub use dbt_catalogs::{
-        AdapterPropsView, CatalogSpecView, DatabricksUnityPropsView, DbtCatalogsView, FileFormat,
-        SerializationPolicy, SnowflakeBuiltInPropsView, SnowflakeRestPropsView, TargetFileSize,
-        WriteIntegrationView, validate_catalogs,
+    pub use dbt_catalogs::TableFormat;
+    pub use dbt_catalogs_deprecated::{
+        DeprecatedAdapterPropsView, DeprecatedCatalogSpecView, DeprecatedDatabricksUnityPropsView,
+        DeprecatedDbtCatalogsView, DeprecatedFileFormat, DeprecatedSerializationPolicy,
+        DeprecatedSnowflakeBuiltInPropsView, DeprecatedSnowflakeRestPropsView,
+        DeprecatedTargetFileSize, DeprecatedWriteIntegrationView, deprecated_validate_catalogs,
     };
-    pub use dbt_catalogs_v2::TableFormat;
     pub mod macros;
     pub mod packages;
     mod prev_state;
@@ -51,10 +53,11 @@ pub mod schemas {
     pub use nodes::{
         AbsorbedOverload, AdapterAttr, CommonAttributes, DbtAnalysis, DbtAnalysisAttr, DbtCheck,
         DbtCheckAttr, DbtExposure, DbtExposureAttr, DbtFunction, DbtFunctionAttr, DbtModel,
-        DbtModelAttr, DbtSeed, DbtSeedAttr, DbtSnapshot, DbtSnapshotAttr, DbtSource, DbtSourceAttr,
-        DbtTest, DbtTestAttr, DbtUnitTest, DbtUnitTestAttr, ExposureType, InternalDbtNode,
-        InternalDbtNodeAttributes, InternalDbtNodeWrapper, IntrospectionKind, NodeBaseAttributes,
-        NodePathKind, Nodes, TestMetadata, TimeSpine, TimeSpinePrimaryColumn,
+        DbtModelAttr, DbtPluginNode, DbtPluginNodeAttr, DbtSeed, DbtSeedAttr, DbtSnapshot,
+        DbtSnapshotAttr, DbtSource, DbtSourceAttr, DbtTest, DbtTestAttr, DbtUnitTest,
+        DbtUnitTestAttr, ExposureType, InternalDbtNode, InternalDbtNodeAttributes,
+        InternalDbtNodeWrapper, IntrospectionKind, NodeBaseAttributes, NodePathKind, Nodes,
+        PluginData, TestMetadata, TimeSpine, TimeSpinePrimaryColumn,
         deserialize_empty_string_as_none, serialize_none_as_empty_string,
     };
 
@@ -147,6 +150,7 @@ pub mod schemas {
             pub mod function_config;
             pub mod metric_config;
             pub mod model_config;
+            pub mod plugin_node_config;
             pub mod saved_query_config;
             pub mod seed_config;
             pub mod semantic_model_config;
@@ -154,6 +158,7 @@ pub mod schemas {
             pub mod snapshot_config;
             pub mod source_config;
             pub mod unit_test_config;
+            pub mod warehouse_scope;
         }
 
         pub use config_tree::{
@@ -189,6 +194,7 @@ pub mod schemas {
         pub use configs::model_config::{
             LatestVersionPointer, ModelConfig, ProjectModelConfig, ResolvedModelConfig,
         };
+        pub use configs::plugin_node_config::{PluginNodeConfig, ResolvedPluginNodeConfig};
         pub use configs::saved_query_config::{
             ExportConfigExportAs, ResolvedSavedQueryConfig, SavedQueryCache, SavedQueryConfig,
         };
@@ -203,6 +209,10 @@ pub mod schemas {
         pub use configs::source_config::{ProjectSourceConfig, ResolvedSourceConfig, SourceConfig};
         pub use configs::unit_test_config::{
             ProjectUnitTestConfig, ResolvedUnitTestConfig, UnitTestConfig,
+        };
+        pub use configs::warehouse_scope::{
+            KeyStatus, WarningEmission, project_surface_key_status, resolved_surface_key_status,
+            warn_and_strip_deprecated_warehouse_keys,
         };
         pub use dbt_project::{
             AdapterProjectConfig, DEFAULT_SKILL_PATH, DbtProject, DbtProjectNameOnly,
@@ -247,8 +257,8 @@ pub mod schemas {
         pub use properties::GroupProperties;
         pub use properties::MacrosProperties;
         pub use properties::{
-            DbtPropertiesFile, DbtPropertiesFileValues, GetConfig, MinimalSchemaValue,
-            MinimalTableValue, MinimalUnitTestValue,
+            DbtPropertiesFile, DbtPropertiesFileValues, GetConfig, MinimalPluginEntryValue,
+            MinimalSchemaValue, MinimalTableValue, MinimalUnitTestValue,
         };
         pub use saved_queries_properties::SavedQueriesProperties;
         pub use seed_properties::SeedProperties;

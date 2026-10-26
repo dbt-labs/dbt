@@ -76,8 +76,7 @@ impl ResultStore {
 
             // Record rows_affected on the NodeEvaluated span if non-negative.
             // dbt-core uses -1 to indicate unknown rows affected. Telemetry uses `None` for unknown.
-            let rows_affected = response.rows_affected_i64();
-            if rows_affected >= 0 {
+            if let Some(rows_affected) = response.known_rows_affected() {
                 find_and_update_span_attrs::<_, NodeEvaluated>(|attrs| {
                     attrs.rows_affected = Some(rows_affected as u64);
                 });
@@ -146,28 +145,23 @@ impl ResultStore {
                 iter.next_kwarg::<Option<String>>("rows_affected")?;
             let agate_table: Option<Value> = iter.next_kwarg::<Option<Value>>("agate_table")?;
 
-            // Parse rows_affected only if string value is present and valid
-            let rows_affected = if let Some(rows_affected) = rows_affected
+            let mut response = AdapterResponse::new()
+                .with_message(message.unwrap_or_default())
+                .with_code(code.unwrap_or_default());
+
+            // Parse rows_affected only if string value is present and valid. Otherwise
+            // leave it unset, as dbt-core does (`rows_affected=None`).
+            if let Some(rows_affected) = rows_affected
                 && let Some(rows) = rows_affected.parse::<i64>().ok()
             {
-                // Record rows_affected on the NodeEvaluated span only if value was present and non-negative.
-                // dbt-core uses -1 to indicate unknown rows affected. Telemetry uses `None` for unknown.
-                if rows >= 0 {
-                    find_and_update_span_attrs::<_, NodeEvaluated>(|attrs| {
-                        attrs.rows_affected = Some(rows as u64);
-                    });
-                };
-
-                rows
-            } else {
-                0
-            };
-
-            // Create adapter response (keep original semantics: default to 0 if not present)
-            let response = AdapterResponse::new()
-                .with_message(message.unwrap_or_default())
-                .with_code(code.unwrap_or_default())
-                .with_rows_affected(rows_affected);
+                response = response.with_rows_affected(rows);
+            }
+            // dbt-core uses -1 to indicate unknown rows affected. Telemetry uses `None` for unknown.
+            if let Some(rows) = response.known_rows_affected() {
+                find_and_update_span_attrs::<_, NodeEvaluated>(|attrs| {
+                    attrs.rows_affected = Some(rows as u64);
+                });
+            }
             let mut results = store.results.lock().unwrap();
             let value = Value::from_object(ResultObject::new(
                 response,

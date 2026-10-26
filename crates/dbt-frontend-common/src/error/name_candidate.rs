@@ -5,7 +5,7 @@ use crate::{
 use counter::Counter;
 use itertools::Itertools;
 use regex::Regex;
-use std::sync::{Arc, LazyLock};
+use std::sync::LazyLock;
 
 /// Represents a candidate name in a reference context. Used to format error
 /// messages.
@@ -21,28 +21,6 @@ impl NameCandidate {
             name: name.into(),
             qualifier: QualifiedName::try_from(strip_internal_components(qualifier)).ok(),
         }
-    }
-}
-
-impl
-    From<(
-        Option<&datafusion_common::TableReference>,
-        &Arc<arrow_schema::Field>,
-    )> for NameCandidate
-{
-    fn from(
-        (qualifier, field): (
-            Option<&datafusion_common::TableReference>,
-            &Arc<arrow_schema::Field>,
-        ),
-    ) -> Self {
-        NameCandidate::new(
-            field.name().to_string(),
-            qualifier
-                .into_iter()
-                .flat_map(|q| q.to_vec())
-                .collect::<Vec<_>>(),
-        )
     }
 }
 

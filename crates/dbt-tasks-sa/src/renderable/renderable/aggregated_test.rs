@@ -62,8 +62,6 @@ impl AggregatedTestRenderTask {
 }
 
 impl Task for AggregatedTestRenderTask {
-    // The inner `RenderTask` acquires the connection gate itself and declines
-    // the default outer guard, so this wrapper must decline it too.
     fn run_task<'a>(
         &'a self,
         ctx: &'a mut TaskRunnerCtx,
@@ -84,7 +82,11 @@ impl Task for AggregatedTestRenderTask {
                 .collect::<FsResult<Vec<_>>>()?;
             // TODO(pc): the task will show notification via the LSP due to show_progress and leaks
             // error stats.
-            let result = self.aggregated_task.run_task(ctx).await;
+            let wait_parents = spans.iter().filter_map(tracing::Span::id).collect();
+            let result = self
+                .aggregated_task
+                .run_with_wait_parents(ctx, Some(wait_parents))
+                .await;
             for span in spans {
                 ctx.inner.span_manager().handle_task_finished(span, &result);
             }

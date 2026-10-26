@@ -1,0 +1,20 @@
+model.test.b:
+- sequence: 0
+  type: execute
+  sql: CREATE DATABASE IF NOT EXISTS `adapters_clickhouse_get_columns_in_relation`
+- sequence: 1
+  type: execute
+  sql: CREATE TABLE `adapters_clickhouse_get_columns_in_relation`.`c` (number_col Int32, text_col String, text_col2 String) ENGINE = MergeTree() ORDER BY tuple()
+- sequence: 2
+  type: execute
+  sql: CREATE TABLE `adapters_clickhouse_get_columns_in_relation`.`c_2` (val Int32) ENGINE = MergeTree() ORDER BY tuple()
+- sequence: 3
+  type: execute
+  sql: |-
+    select name, type from system.columns where table = 'c'
+    
+    
+    and database = 'adapters_clickhouse_get_columns_in_relation'
+    
+    
+    order by position

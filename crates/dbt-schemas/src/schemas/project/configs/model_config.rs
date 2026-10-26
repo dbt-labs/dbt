@@ -107,7 +107,7 @@ pub struct ProjectModelConfig {
     #[serde(rename = "+batch_size")]
     pub batch_size: Option<DbtBatchSize>,
     #[serde(rename = "+begin")]
-    pub begin: Option<String>,
+    pub begin: Option<dbt_yaml::Timestamp>,
     #[serde(default, rename = "+bind", deserialize_with = "bool_or_string_bool")]
     pub bind: Option<bool>,
     #[serde(rename = "+buckets")]
@@ -204,6 +204,12 @@ pub struct ProjectModelConfig {
         deserialize_with = "bool_or_string_bool"
     )]
     pub persist_constraints: Option<bool>,
+    #[serde(
+        default,
+        rename = "+use_materialization_v2",
+        deserialize_with = "bool_or_string_bool"
+    )]
+    pub use_materialization_v2: Option<bool>,
     #[serde(
         default,
         rename = "+use_safer_relation_operations",
@@ -372,6 +378,12 @@ pub struct ProjectModelConfig {
     pub intermediate_format: Option<String>,
     #[serde(rename = "+storage_uri")]
     pub storage_uri: Option<String>,
+    #[serde(
+        default,
+        rename = "+enable_change_history",
+        deserialize_with = "bool_or_string_bool"
+    )]
+    pub enable_change_history: Option<bool>,
     #[serde(rename = "+merge_exclude_columns")]
     pub merge_exclude_columns: Option<StringOrArrayOfStrings>,
     #[serde(rename = "+merge_update_columns")]
@@ -599,6 +611,15 @@ pub struct ProjectModelConfig {
     // list of `{name, query}` maps rendered as `ADD PROJECTION` by table.sql
     #[serde(rename = "+projections")]
     pub projections: Option<Vec<YmlValue>>,
+    // distributed materializations
+    #[serde(rename = "+sharding_key")]
+    pub sharding_key: Option<String>,
+    #[serde(
+        default,
+        rename = "+disable_on_cluster",
+        deserialize_with = "bool_or_string_bool"
+    )]
+    pub disable_on_cluster: Option<bool>,
     // incremental materialization
     #[serde(
         default,
@@ -717,6 +738,7 @@ impl TypedRecursiveConfig for ProjectModelConfig {
             || self.environment_dependencies.is_some()
             || self.incremental_apply_config_changes.is_some()
             || self.persist_constraints.is_some()
+            || self.use_materialization_v2.is_some()
             || self.use_safer_relation_operations.is_some()
             || self.view_update_via_alter.is_some()
             || self.description.is_some()
@@ -763,6 +785,7 @@ impl TypedRecursiveConfig for ProjectModelConfig {
             || self.enable_list_inference.is_some()
             || self.intermediate_format.is_some()
             || self.storage_uri.is_some()
+            || self.enable_change_history.is_some()
             || self.merge_exclude_columns.is_some()
             || self.merge_update_columns.is_some()
             || self.merge_with_schema_evolution.is_some()
@@ -879,7 +902,7 @@ pub struct ModelConfig {
     pub batch_size: Option<DbtBatchSize>,
     #[resolved(promote, default = 1)]
     pub lookback: Option<i32>,
-    pub begin: Option<String>,
+    pub begin: Option<dbt_yaml::Timestamp>,
     pub persist_docs: Option<PersistDocsConfig>,
     #[serde(alias = "post-hook")]
     pub post_hook: Verbatim<Option<Hooks>>,
@@ -1090,8 +1113,10 @@ impl From<ProjectModelConfig> for ModelConfig {
                 enable_list_inference: config.enable_list_inference,
                 intermediate_format: config.intermediate_format,
                 storage_uri: config.storage_uri,
+                enable_change_history: config.enable_change_history,
                 incremental_apply_config_changes: config.incremental_apply_config_changes,
                 persist_constraints: config.persist_constraints,
+                use_materialization_v2: config.use_materialization_v2,
                 use_safer_relation_operations: config.use_safer_relation_operations,
                 view_update_via_alter: config.view_update_via_alter,
 
@@ -1146,6 +1171,8 @@ impl From<ProjectModelConfig> for ModelConfig {
                 settings: config.settings,
                 query_settings: config.query_settings,
                 projections: config.projections,
+                sharding_key: config.sharding_key,
+                disable_on_cluster: config.disable_on_cluster,
                 inserts_only: config.inserts_only,
                 connection_overrides: config.connection_overrides,
                 fields: config.fields,
@@ -1279,6 +1306,7 @@ impl From<ModelConfig> for ProjectModelConfig {
             enable_list_inference: config.__warehouse_specific_config__.enable_list_inference,
             intermediate_format: config.__warehouse_specific_config__.intermediate_format,
             storage_uri: config.__warehouse_specific_config__.storage_uri,
+            enable_change_history: config.__warehouse_specific_config__.enable_change_history,
             copy_grants: config.__warehouse_specific_config__.copy_grants,
             copy_tags: config.__warehouse_specific_config__.copy_tags,
             secure: config.__warehouse_specific_config__.secure,
@@ -1361,6 +1389,7 @@ impl From<ModelConfig> for ProjectModelConfig {
                 .__warehouse_specific_config__
                 .incremental_apply_config_changes,
             persist_constraints: config.__warehouse_specific_config__.persist_constraints,
+            use_materialization_v2: config.__warehouse_specific_config__.use_materialization_v2,
             use_safer_relation_operations: config
                 .__warehouse_specific_config__
                 .use_safer_relation_operations,
@@ -1375,6 +1404,8 @@ impl From<ModelConfig> for ProjectModelConfig {
             settings: config.__warehouse_specific_config__.settings,
             query_settings: config.__warehouse_specific_config__.query_settings,
             projections: config.__warehouse_specific_config__.projections,
+            sharding_key: config.__warehouse_specific_config__.sharding_key,
+            disable_on_cluster: config.__warehouse_specific_config__.disable_on_cluster,
             inserts_only: config.__warehouse_specific_config__.inserts_only,
             connection_overrides: config.__warehouse_specific_config__.connection_overrides,
             fields: config.__warehouse_specific_config__.fields,
@@ -1923,6 +1954,10 @@ impl ConfigKeys for ModelConfig {
     }
 }
 
+impl crate::schemas::project::configs::warehouse_scope::WarehouseConfigResource for ModelConfig {
+    const NODE_TYPE: dbt_telemetry::NodeType = dbt_telemetry::NodeType::Model;
+}
+
 // Helper function to compare on_schema_change fields, treating None and default OnSchemaChange as equivalent
 fn on_schema_change_eq(a: &Option<OnSchemaChange>, b: &Option<OnSchemaChange>) -> bool {
     use crate::schemas::common::OnSchemaChange;
@@ -2372,6 +2407,7 @@ state:
   evaluate_volatile_sql: true
   pre_clone: if_missing
   execute_hooks_on_any_reuse: true
+  ignore_external_modifications: true
 __warehouse_specific_config__: {}
 "#,
         )
@@ -2385,6 +2421,7 @@ __warehouse_specific_config__: {}
         assert_eq!(state.evaluate_volatile_sql, Some(true));
         assert_eq!(state.pre_clone, Some(StatePreClone::IfMissing));
         assert_eq!(state.execute_hooks_on_any_reuse, Some(true));
+        assert_eq!(state.ignore_external_modifications, Some(true));
     }
 
     /// Regression for #16135: `state:` keys merge key by key, so a model that sets
@@ -2406,6 +2443,7 @@ __warehouse_specific_config__: {}
                 pre_clone: Some(StatePreClone::Always),
                 execute_hooks_on_any_reuse: None,
                 compare_unrendered_code: None,
+                ignore_external_modifications: Some(true),
             }),
             ..Default::default()
         };
@@ -2417,6 +2455,7 @@ __warehouse_specific_config__: {}
                 pre_clone: None,
                 execute_hooks_on_any_reuse: None,
                 compare_unrendered_code: None,
+                ignore_external_modifications: None,
             }),
             ..Default::default()
         };
@@ -2430,6 +2469,7 @@ __warehouse_specific_config__: {}
         assert_eq!(lag_tolerance.period, Some(FreshnessPeriod::minute));
         assert_eq!(state.require_fresh_data_from, Some(UpdatesOn::All));
         assert_eq!(state.pre_clone, Some(StatePreClone::Always));
+        assert_eq!(state.ignore_external_modifications, Some(true));
     }
 
     /// Regression for fs#13343: Core accepts a sequence-valued `column_types` entry

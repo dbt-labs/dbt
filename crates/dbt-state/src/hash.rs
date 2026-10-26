@@ -3,12 +3,14 @@ use dbt_schemas::schemas::{
     DbtModel, DbtSeed, DbtTest, InternalDbtNode, InternalDbtNodeAttributes,
     common::DbtMaterialization, config_excluded_keys, macros::DbtMacro,
 };
+use dbt_schemas::state::{DbtRuntimeConfig, DbtVars};
 use md5;
 use serde::Serialize;
 use serde_json::{Value as JsonValue, ser::Formatter, to_string};
 use sha2::{Digest, Sha256};
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    borrow::Cow,
+    collections::{BTreeMap, BTreeSet, HashSet},
     fs::File,
 };
 use std::{io, io::BufReader, io::Write};
@@ -36,6 +38,7 @@ pub fn node_state_hashes<'a>(
     node: &'a dyn InternalDbtNodeAttributes,
     project_root: &DbtPath,
     macro_resolver: impl Fn(&str) -> Option<&'a DbtMacro>,
+    runtime_vars: Option<&DbtRuntimeConfig>,
 ) -> Result<NodeStateHashes, NodeHashError> {
     let type_erased_node = node.as_any();
 
@@ -43,10 +46,10 @@ pub fn node_state_hashes<'a>(
         || Ok(node_body_hash(node)),
         |s| seed_node_body_hash(s, project_root).map(Some),
     )?;
-    let node_configs_hash = node_configs_hash(node)?;
+    let node_configs_hash = node_configs_hash(node, runtime_vars, &macro_resolver)?;
     let node_persisted_descriptions_hash = node_persisted_docs_hash(node)?;
 
-    let node_macros_hash = node_macros_hash(node, macro_resolver);
+    let node_macros_hash = node_macros_hash(node, &macro_resolver);
     let mut node_contract_hash = None;
     let node_fqn = Some(node.selector_string());
 
@@ -109,7 +112,333 @@ fn node_body_hash(node: &dyn InternalDbtNode) -> Option<String> {
         .map(|rc| hash_parts(&[Some(rc)]))
 }
 
-fn node_configs_hash(node: &dyn InternalDbtNode) -> Result<Option<String>, NodeHashError> {
+/// Reserved key under which the resolved `var()` / `env_var()` values are folded into the
+/// configs hash.
+const RUNTIME_VARS_KEY: &str = "__runtime_vars__";
+
+type RuntimeVarValues = BTreeMap<&'static str, BTreeMap<String, JsonValue>>;
+
+fn project_var_value(value: &DbtVars) -> dbt_yaml::Value {
+    match value {
+        DbtVars::Null => dbt_yaml::Value::null(),
+        DbtVars::Value(value) => value.clone(),
+        DbtVars::Vars(values) => dbt_yaml::Value::mapping(
+            values
+                .iter()
+                .map(|(key, value)| {
+                    (
+                        dbt_yaml::Value::string(key.clone()),
+                        project_var_value(value),
+                    )
+                })
+                .collect(),
+        ),
+    }
+}
+
+// JSON collapses timestamps into strings, non-finite numbers into null, and
+// non-string map keys into strings. Keep a separate typed representation for
+// those values; ordinary JSON-compatible values retain their existing hash bytes.
+fn requires_yaml_types(value: &dbt_yaml::Value) -> bool {
+    use dbt_yaml::Value;
+    match value {
+        Value::Timestamp(..) | Value::Tagged(..) => true,
+        Value::Number(number, _) => number.as_f64().is_some_and(|value| !value.is_finite()),
+        Value::Sequence(values, _) => values.iter().any(requires_yaml_types),
+        Value::Mapping(values, _) => values
+            .iter()
+            .any(|(key, value)| !key.is_string() || requires_yaml_types(value)),
+        _ => false,
+    }
+}
+
+fn typed_yaml_value(value: &dbt_yaml::Value) -> JsonValue {
+    use dbt_yaml::Value;
+    use serde_json::json;
+    match value {
+        Value::Null(_) => json!(["null"]),
+        Value::Bool(value, _) => json!(["bool", value]),
+        Value::String(value, _) => json!(["string", value]),
+        Value::Number(value, _) => json!(["number", value.to_string()]),
+        Value::Timestamp(value, _) => json!(["timestamp", value.to_string()]),
+        Value::Tagged(value, _) => {
+            json!(["tag", value.tag.to_string(), typed_yaml_value(&value.value)])
+        }
+        Value::Sequence(values, _) => json!([
+            "sequence",
+            values.iter().map(typed_yaml_value).collect::<Vec<_>>()
+        ]),
+        Value::Mapping(values, _) => {
+            let mut entries = values
+                .iter()
+                .map(|(key, value)| (typed_yaml_value(key), typed_yaml_value(value)))
+                .collect::<Vec<_>>();
+            entries.sort_by_cached_key(|(key, _)| key.to_string());
+            json!(["mapping", entries])
+        }
+    }
+}
+
+fn collect_config_strings<'a>(value: &'a dbt_yaml::Value, sources: &mut Vec<&'a str>) {
+    if let Some(source) = value.as_str() {
+        sources.push(source);
+    } else if let Some(sequence) = value.as_sequence() {
+        for item in sequence {
+            collect_config_strings(item, sources);
+        }
+    } else if let Some(mapping) = value.as_mapping() {
+        for (_, item) in mapping.iter() {
+            collect_config_strings(item, sources);
+        }
+    }
+}
+
+/// Use the renderer's test-argument rules so nested calls inside `ref` and `source`
+/// expressions are discovered as well.
+fn as_template_source(source: &str) -> Cow<'_, str> {
+    if dbt_jinja_utils::jinja_arg_format::is_renderable_test_arg(source) {
+        Cow::Owned(format!("{{{{ {source} }}}}"))
+    } else {
+        Cow::Borrowed(source)
+    }
+}
+
+/// Finds a package's config anywhere in the dependency tree (each package lists only its direct
+/// dependencies), checking direct entries first.
+fn find_package_config<'c>(
+    cfg: &'c DbtRuntimeConfig,
+    package: &str,
+) -> Option<&'c DbtRuntimeConfig> {
+    fn walk<'c>(
+        cfg: &'c DbtRuntimeConfig,
+        package: &str,
+        visited: &mut HashSet<&'c str>,
+    ) -> Option<&'c DbtRuntimeConfig> {
+        if let Some(found) = cfg.dependencies.get(package) {
+            return Some(found);
+        }
+        for (name, dep) in &cfg.dependencies {
+            if visited.insert(name.as_str())
+                && let Some(found) = walk(dep, package, visited)
+            {
+                return Some(found);
+            }
+        }
+        None
+    }
+    walk(cfg, package, &mut HashSet::new()).map(|c| c as &DbtRuntimeConfig)
+}
+
+/// Parses `src` and records the literal names of its `var()` / `env_var()` calls. A name is
+/// pushed onto `worklist` (as `(is_var, name)`) only the first time it is inserted into its set,
+/// which also stops cycles.
+#[derive(Default)]
+struct RuntimeVarReferences {
+    var_names: BTreeSet<String>,
+    env_var_names: BTreeSet<String>,
+    worklist: Vec<(bool, String)>,
+    dynamic_calls: HashSet<String>,
+}
+
+impl RuntimeVarReferences {
+    fn add(&mut self, is_var: bool, name: String) {
+        let names = if is_var {
+            &mut self.var_names
+        } else {
+            &mut self.env_var_names
+        };
+        if names.insert(name.clone()) {
+            self.worklist.push((is_var, name));
+        }
+    }
+
+    fn scan(&mut self, src: &str) {
+        use minijinja::compiler::meta::find_runtime_value_calls;
+        use minijinja::compiler::parser::parse;
+        use minijinja::machinery::WhitespaceConfig;
+        use minijinja::syntax::SyntaxConfig;
+
+        let Ok(ast) = parse(
+            src,
+            "<node>",
+            SyntaxConfig::default(),
+            WhitespaceConfig::default(),
+        ) else {
+            return;
+        };
+        let calls = find_runtime_value_calls(&ast, &["var", "env_var"]);
+        self.dynamic_calls.extend(calls.dynamic_calls);
+        for call in calls.calls {
+            let Some(name) = call.args.into_iter().next() else {
+                continue;
+            };
+            self.add(call.name == "var", name);
+        }
+    }
+}
+
+trait RuntimeEnvironment {
+    fn get(&self, name: &str) -> Option<String>;
+    fn names(&self) -> Vec<String>;
+}
+
+struct ProcessEnvironment;
+impl RuntimeEnvironment for ProcessEnvironment {
+    fn get(&self, name: &str) -> Option<String> {
+        std::env::var(name).ok()
+    }
+    fn names(&self) -> Vec<String> {
+        std::env::vars_os()
+            .filter_map(|(name, _)| name.into_string().ok())
+            .collect()
+    }
+}
+
+impl RuntimeEnvironment for BTreeMap<String, String> {
+    fn get(&self, name: &str) -> Option<String> {
+        BTreeMap::get(self, name).cloned()
+    }
+    fn names(&self) -> Vec<String> {
+        self.keys().cloned().collect()
+    }
+}
+
+/// Statically collects the literal names of `var()` / `env_var()` calls in the node's raw code,
+/// in every string value of its unrendered config (nested mappings and sequences included) and in
+/// the macros it depends on (and, for generic tests, in the `test_metadata` kwargs), and resolves their values: vars from
+/// the CLI vars over the node package's vars (undefined vars are omitted), env vars from the
+/// process env (unset becomes `null`). Resolved string values containing Jinja are scanned
+/// recursively for further calls. Returns `None` if no call is found.
+fn node_runtime_vars<'a>(
+    node: &'a dyn InternalDbtNode,
+    cfg: &DbtRuntimeConfig,
+    macro_resolver: impl Fn(&str) -> Option<&'a DbtMacro>,
+    env: &impl RuntimeEnvironment,
+) -> Option<RuntimeVarValues> {
+    let mut sources: Vec<Cow<str>> = Vec::new();
+    if let Some(raw_code) = node
+        .common()
+        .raw_code
+        .as_deref()
+        .filter(|rc| !rc.is_empty())
+    {
+        sources.push(Cow::Borrowed(raw_code));
+    }
+    let mut config_strings = Vec::new();
+    for value in node.base().unrendered_config.values() {
+        collect_config_strings(value, &mut config_strings);
+    }
+    sources.extend(config_strings.into_iter().map(Cow::Borrowed));
+    // The authored arguments of a generic test live only in its kwargs, not in the synthesized raw code.
+    if let Some(metadata) = node
+        .as_any()
+        .downcast_ref::<DbtTest>()
+        .and_then(|t| t.__test_attr__.test_metadata.as_ref())
+    {
+        let mut kwarg_strings = Vec::new();
+        for value in metadata.kwargs.values() {
+            collect_config_strings(value, &mut kwarg_strings);
+        }
+        sources.extend(kwarg_strings.into_iter().map(as_template_source));
+    }
+    sources.extend(
+        resolve_macro_tree(node, macro_resolver)
+            .values()
+            .map(|m| Cow::Borrowed(m.macro_sql.as_str())),
+    );
+
+    let mut references = RuntimeVarReferences::default();
+    for src in sources {
+        references.scan(&src);
+    }
+    if references.worklist.is_empty() && references.dynamic_calls.is_empty() {
+        return None;
+    }
+
+    let pkg_vars = find_package_config(cfg, &node.common().package_name).map(|c| &c.inner.vars);
+    let mut vars = BTreeMap::new();
+    let mut var_types = BTreeMap::new();
+    let mut env_vars = BTreeMap::new();
+    let mut expanded_vars = false;
+    let mut expanded_env = false;
+    loop {
+        // A computed name can select any visible value. Include that namespace
+        // rather than silently losing its dependencies. Literal calls stay precise.
+        if !expanded_vars && references.dynamic_calls.contains("var") {
+            expanded_vars = true;
+            for name in cfg
+                .inner
+                .cli_vars
+                .keys()
+                .chain(pkg_vars.into_iter().flat_map(|vars| vars.keys()))
+            {
+                references.add(true, name.clone());
+            }
+        }
+        if !expanded_env && references.dynamic_calls.contains("env_var") {
+            expanded_env = true;
+            for name in env.names() {
+                references.add(false, name);
+            }
+        }
+        let Some((is_var, name)) = references.worklist.pop() else {
+            break;
+        };
+        let mut nested: Option<String> = None;
+        if is_var {
+            let value = cfg
+                .inner
+                .cli_vars
+                .get(&name)
+                .map(Cow::Borrowed)
+                .or_else(|| {
+                    pkg_vars
+                        .and_then(|vars| vars.get(&name))
+                        .map(|value| Cow::Owned(project_var_value(value)))
+                });
+            if let Some(value) = value {
+                if let Some(source) = value.as_str() {
+                    nested = Some(source.to_string());
+                }
+                let json = serde_json::to_value(value.as_ref());
+                if requires_yaml_types(&value) || json.is_err() {
+                    var_types.insert(name.clone(), typed_yaml_value(&value));
+                }
+                vars.insert(name, json.unwrap_or(JsonValue::Null));
+            }
+        } else {
+            let value = env.get(&name);
+            nested = value.clone();
+            env_vars.insert(name, value.map_or(JsonValue::Null, JsonValue::String));
+        }
+        if let Some(nested_source) =
+            nested.filter(|s| ["{{", "{%", "{#"].iter().any(|t| s.contains(t)))
+        {
+            references.scan(&nested_source);
+        }
+    }
+
+    let mut result = BTreeMap::from([("vars", vars), ("env_vars", env_vars)]);
+    if !var_types.is_empty() {
+        result.insert("var_types", var_types);
+    }
+    Some(result)
+}
+
+fn node_configs_hash<'a>(
+    node: &'a dyn InternalDbtNode,
+    runtime_vars: Option<&DbtRuntimeConfig>,
+    macro_resolver: impl Fn(&str) -> Option<&'a DbtMacro>,
+) -> Result<Option<String>, NodeHashError> {
+    node_configs_hash_with_env(node, runtime_vars, macro_resolver, &ProcessEnvironment)
+}
+
+fn node_configs_hash_with_env<'a>(
+    node: &'a dyn InternalDbtNode,
+    runtime_vars: Option<&DbtRuntimeConfig>,
+    macro_resolver: impl Fn(&str) -> Option<&'a DbtMacro>,
+    env: &impl RuntimeEnvironment,
+) -> Result<Option<String>, NodeHashError> {
     //ref: https://github.com/fivetran/query-cache/blob/4ab87c72f2783c230905c5c75ec19eb76314069e/clients/dbt_state/src/dbt_state/node_hash_calculator.py#L65
     let keys_to_exclude = config_excluded_keys(node.resource_type());
 
@@ -120,10 +449,26 @@ fn node_configs_hash(node: &dyn InternalDbtNode) -> Result<Option<String>, NodeH
         .filter(|(name, _)| !keys_to_exclude.contains(&name.as_str()))
         .collect::<BTreeMap<_, _>>();
 
-    if !filtered.is_empty() {
-        hash_json(&filtered).map(Some)
-    } else {
-        Ok(None)
+    let runtime = runtime_vars.and_then(|cfg| node_runtime_vars(node, cfg, macro_resolver, env));
+
+    match runtime {
+        // Without runtime vars the bytes must stay identical to the pre-existing hash.
+        None if filtered.is_empty() => Ok(None),
+        None => hash_json(&filtered).map(Some),
+        Some(mut runtime) => {
+            let mut with_runtime = filtered
+                .into_iter()
+                .map(|(k, v)| Ok((k.clone(), serde_json::to_value(v)?)))
+                .collect::<Result<BTreeMap<String, JsonValue>, serde_json::Error>>()?;
+            if let Some(config_value) = with_runtime.get(RUNTIME_VARS_KEY) {
+                runtime.insert(
+                    "unrendered_config",
+                    BTreeMap::from([(RUNTIME_VARS_KEY.to_string(), config_value.clone())]),
+                );
+            }
+            with_runtime.insert(RUNTIME_VARS_KEY.to_string(), serde_json::to_value(runtime)?);
+            hash_json(&with_runtime).map(Some)
+        }
     }
 }
 
@@ -313,8 +658,9 @@ fn model_node_ref_representation_hash(node: &DbtModel) -> Result<String, NodeHas
         JsonValue::from(
             node.__model_attr__
                 .deprecation_date
-                .as_deref()
-                .unwrap_or("None"),
+                .as_ref()
+                .map(|ts| ts.with_defaults().to_string())
+                .unwrap_or_else(|| "None".to_owned()),
         ),
     );
 
@@ -547,7 +893,7 @@ mod tests {
                 ),
                 ("enabled".to_string(), YmlValue::bool(true)),
             ]);
-            assert!(node_configs_hash(&node).unwrap().is_some());
+            assert!(node_configs_hash(&node, None, |_| None).unwrap().is_some());
         }
 
         #[test]
@@ -591,8 +937,8 @@ mod tests {
             ]);
 
             assert_eq!(
-                node_configs_hash(&with_excluded).unwrap(),
-                node_configs_hash(&without_excluded).unwrap()
+                node_configs_hash(&with_excluded, None, |_| None).unwrap(),
+                node_configs_hash(&without_excluded, None, |_| None).unwrap()
             );
         }
 
@@ -617,15 +963,15 @@ mod tests {
             )]);
 
             assert_eq!(
-                node_configs_hash(&with_excluded).unwrap(),
-                node_configs_hash(&without_excluded).unwrap()
+                node_configs_hash(&with_excluded, None, |_| None).unwrap(),
+                node_configs_hash(&without_excluded, None, |_| None).unwrap()
             );
         }
 
         #[test]
         fn node_configs_hash_none_when_unrendered_config_empty() {
             let node = test_node(&["project", "models", "test_model"]);
-            assert_eq!(node_configs_hash(&node).unwrap(), None);
+            assert_eq!(node_configs_hash(&node, None, |_| None).unwrap(), None);
         }
 
         #[test]
@@ -649,7 +995,7 @@ mod tests {
                     dbt_yaml::from_str(r#"["tag1"]"#).unwrap(),
                 ),
             ]);
-            assert_eq!(node_configs_hash(&node).unwrap(), None);
+            assert_eq!(node_configs_hash(&node, None, |_| None).unwrap(), None);
         }
     }
 
@@ -1114,7 +1460,7 @@ mod tests {
             let mut node = model_node(&["project", "models", "test_model"]);
             node.__model_attr__.latest_version = Some(StringOrInteger::Integer(2));
             node.__model_attr__.access = Access::Public;
-            node.__model_attr__.deprecation_date = Some("2025-12-31".to_string());
+            node.__model_attr__.deprecation_date = dbt_yaml::Timestamp::parse("2025-12-31");
 
             assert_eq!(model_node_ref_representation_hash(&node).unwrap().len(), 32);
         }
@@ -1153,13 +1499,14 @@ mod tests {
                 },
             )]);
 
-            let base_hash = node_state_hashes(&node, &dummy_project_root(), resolver(&macros_map))
-                .unwrap()
-                .node_hash;
+            let base_hash =
+                node_state_hashes(&node, &dummy_project_root(), resolver(&macros_map), None)
+                    .unwrap()
+                    .node_hash;
 
             node.__common_attr__.raw_code = Some("SELECT 2".to_string());
             let changed_hash =
-                node_state_hashes(&node, &dummy_project_root(), resolver(&macros_map))
+                node_state_hashes(&node, &dummy_project_root(), resolver(&macros_map), None)
                     .unwrap()
                     .node_hash;
 
@@ -1171,9 +1518,10 @@ mod tests {
     fn test_node_state_hashes_always_returns_a_valid_digest() {
         let node = test_node(&["project", "models", "test_model"]);
         let macros_map: BTreeMap<String, DbtMacro> = BTreeMap::new();
-        let node_hash = node_state_hashes(&node, &dummy_project_root(), resolver(&macros_map))
-            .unwrap()
-            .node_hash;
+        let node_hash =
+            node_state_hashes(&node, &dummy_project_root(), resolver(&macros_map), None)
+                .unwrap()
+                .node_hash;
         assert_eq!(node_hash.len(), 32);
     }
 
@@ -1183,10 +1531,10 @@ mod tests {
         let node_b = test_node(&["project", "models", "model2"]);
         let macros_map: BTreeMap<String, DbtMacro> = BTreeMap::new();
         assert_ne!(
-            node_state_hashes(&node_a, &dummy_project_root(), resolver(&macros_map))
+            node_state_hashes(&node_a, &dummy_project_root(), resolver(&macros_map), None)
                 .unwrap()
                 .node_hash,
-            node_state_hashes(&node_b, &dummy_project_root(), resolver(&macros_map))
+            node_state_hashes(&node_b, &dummy_project_root(), resolver(&macros_map), None)
                 .unwrap()
                 .node_hash
         );
@@ -1200,9 +1548,10 @@ mod tests {
         base.__model_attr__.access = Access::Public;
 
         let macros_map: BTreeMap<String, DbtMacro> = BTreeMap::new();
-        let base_hash = node_state_hashes(&base, &dummy_project_root(), resolver(&macros_map))
-            .unwrap()
-            .node_hash;
+        let base_hash =
+            node_state_hashes(&base, &dummy_project_root(), resolver(&macros_map), None)
+                .unwrap()
+                .node_hash;
 
         let mut different_contract = base.clone();
         different_contract.__model_attr__.contract = Some(DbtContract {
@@ -1214,6 +1563,7 @@ mod tests {
             &different_contract,
             &dummy_project_root(),
             resolver(&macros_map),
+            None,
         )
         .unwrap()
         .node_hash;
@@ -1221,7 +1571,7 @@ mod tests {
 
         base.__model_attr__.latest_version = Some(StringOrInteger::Integer(3));
         let different_version_hash =
-            node_state_hashes(&base, &dummy_project_root(), resolver(&macros_map))
+            node_state_hashes(&base, &dummy_project_root(), resolver(&macros_map), None)
                 .unwrap()
                 .node_hash;
         assert_ne!(base_hash, different_version_hash);
@@ -1231,9 +1581,10 @@ mod tests {
     fn model_node_state_hashes_always_returns_a_valid_digest() {
         let node = model_node(&["project", "models", "test_model"]);
         let macros_map: BTreeMap<String, DbtMacro> = BTreeMap::new();
-        let node_hash = node_state_hashes(&node, &dummy_project_root(), resolver(&macros_map))
-            .unwrap()
-            .node_hash;
+        let node_hash =
+            node_state_hashes(&node, &dummy_project_root(), resolver(&macros_map), None)
+                .unwrap()
+                .node_hash;
         assert_eq!(node_hash.len(), 32);
     }
 
@@ -1243,10 +1594,10 @@ mod tests {
         let node_b = model_node(&["project", "models", "model2"]);
         let macros_map: BTreeMap<String, DbtMacro> = BTreeMap::new();
         assert_ne!(
-            node_state_hashes(&node_a, &dummy_project_root(), resolver(&macros_map))
+            node_state_hashes(&node_a, &dummy_project_root(), resolver(&macros_map), None)
                 .unwrap()
                 .node_hash,
-            node_state_hashes(&node_b, &dummy_project_root(), resolver(&macros_map))
+            node_state_hashes(&node_b, &dummy_project_root(), resolver(&macros_map), None)
                 .unwrap()
                 .node_hash
         );
@@ -1279,10 +1630,10 @@ mod tests {
         b.__base_attr__.depends_on.macros = vec![];
 
         assert_eq!(
-            node_state_hashes(&a, &dummy_project_root(), resolver(&macros_map))
+            node_state_hashes(&a, &dummy_project_root(), resolver(&macros_map), None)
                 .unwrap()
                 .node_hash,
-            node_state_hashes(&b, &dummy_project_root(), resolver(&macros_map))
+            node_state_hashes(&b, &dummy_project_root(), resolver(&macros_map), None)
                 .unwrap()
                 .node_hash
         );
@@ -1292,9 +1643,10 @@ mod tests {
     fn generic_test_node_state_hashes_node_hash_always_returns_a_valid_digest() {
         let node = generic_test_node(&["project", "models", "test_model"]);
         let macros_map: BTreeMap<String, DbtMacro> = BTreeMap::new();
-        let node_hash = node_state_hashes(&node, &dummy_project_root(), resolver(&macros_map))
-            .unwrap()
-            .node_hash;
+        let node_hash =
+            node_state_hashes(&node, &dummy_project_root(), resolver(&macros_map), None)
+                .unwrap()
+                .node_hash;
         assert_eq!(node_hash.len(), 32);
     }
 
@@ -1312,10 +1664,10 @@ mod tests {
 
         let macros_map: BTreeMap<String, DbtMacro> = BTreeMap::new();
         assert_ne!(
-            node_state_hashes(&a, &dummy_project_root(), resolver(&macros_map))
+            node_state_hashes(&a, &dummy_project_root(), resolver(&macros_map), None)
                 .unwrap()
                 .node_hash,
-            node_state_hashes(&b, &dummy_project_root(), resolver(&macros_map))
+            node_state_hashes(&b, &dummy_project_root(), resolver(&macros_map), None)
                 .unwrap()
                 .node_hash
         );
@@ -1327,10 +1679,10 @@ mod tests {
         let b = generic_test_node(&["project", "models", "test2"]);
         let macros_map: BTreeMap<String, DbtMacro> = BTreeMap::new();
         assert_ne!(
-            node_state_hashes(&a, &dummy_project_root(), resolver(&macros_map))
+            node_state_hashes(&a, &dummy_project_root(), resolver(&macros_map), None)
                 .unwrap()
                 .node_hash,
-            node_state_hashes(&b, &dummy_project_root(), resolver(&macros_map))
+            node_state_hashes(&b, &dummy_project_root(), resolver(&macros_map), None)
                 .unwrap()
                 .node_hash
         );
@@ -1361,7 +1713,7 @@ mod tests {
         };
 
         let macros_map: BTreeMap<String, DbtMacro> = BTreeMap::new();
-        let hashes = node_state_hashes(&seed, &project_root, resolver(&macros_map)).unwrap();
+        let hashes = node_state_hashes(&seed, &project_root, resolver(&macros_map), None).unwrap();
 
         assert_eq!(hashes.node_hash, hashes.node_body_hash.unwrap());
     }
@@ -1479,6 +1831,541 @@ mod python_parity {
         assert_eq!(
             hash_json(&parts).unwrap(),
             "dd915b2a6c70d306ecf120a98e2b99ba"
+        );
+    }
+}
+
+/// `var()` / `env_var()` values folded into the configs hash under `compare_unrendered_code`.
+#[cfg(test)]
+mod runtime_vars {
+    use super::*;
+    use dbt_schemas::schemas::macros::MacroDependsOn;
+    use dbt_schemas::state::DbtVars;
+    use dbt_yaml::Value as YmlValue;
+    use std::sync::Arc;
+
+    fn model(raw_code: &str) -> DbtModel {
+        let mut m = DbtModel::default();
+        m.__common_attr__.package_name = "pkg".to_string();
+        m.__common_attr__.raw_code = Some(raw_code.to_string());
+        m.__base_attr__.unrendered_config = BTreeMap::from([(
+            "materialized".to_string(),
+            YmlValue::string("table".to_string()),
+        )]);
+        m
+    }
+
+    fn config(cli: &[(&str, bool)], project: &[(&str, bool)]) -> DbtRuntimeConfig {
+        let mut pkg = DbtRuntimeConfig::default();
+        for (k, v) in project {
+            pkg.inner
+                .vars
+                .insert(k.to_string(), DbtVars::Value(YmlValue::bool(*v)));
+        }
+        let mut cfg = DbtRuntimeConfig::default();
+        for (k, v) in cli {
+            cfg.inner.cli_vars.insert(k.to_string(), YmlValue::bool(*v));
+        }
+        cfg.dependencies.insert("pkg".to_string(), Arc::new(pkg));
+        cfg
+    }
+
+    fn hash(node: &DbtModel, cfg: Option<&DbtRuntimeConfig>, env: &[(&str, &str)]) -> String {
+        node_configs_hash_with_env(
+            node,
+            cfg,
+            |_| None,
+            &env.iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect::<BTreeMap<_, _>>(),
+        )
+        .unwrap()
+        .unwrap()
+    }
+
+    const DRY_RUN: &str = "select {{ var('dry_run', false) }}";
+
+    fn generic_test_with_kwarg(value: YmlValue) -> DbtTest {
+        let mut t = DbtTest::default();
+        t.__common_attr__.package_name = "pkg".to_string();
+        t.__base_attr__.unrendered_config =
+            BTreeMap::from([("severity".to_string(), YmlValue::string("warn".to_string()))]);
+        t.__test_attr__.test_metadata = Some(dbt_schemas::schemas::TestMetadata {
+            name: "accepted_values".to_string(),
+            kwargs: BTreeMap::from([("values".to_string(), value)]),
+            namespace: None,
+        });
+        t
+    }
+
+    fn test_hash(node: &DbtTest, cfg: Option<&DbtRuntimeConfig>, env: &[(&str, &str)]) -> String {
+        node_configs_hash_with_env(
+            node,
+            cfg,
+            |_| None,
+            &env.iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect::<BTreeMap<_, _>>(),
+        )
+        .unwrap()
+        .unwrap()
+    }
+
+    fn config_with_vars(project: &[(&str, &str)]) -> DbtRuntimeConfig {
+        let mut pkg = DbtRuntimeConfig::default();
+        for (k, v) in project {
+            pkg.inner.vars.insert(
+                k.to_string(),
+                DbtVars::Value(YmlValue::string(v.to_string())),
+            );
+        }
+        let mut cfg = DbtRuntimeConfig::default();
+        cfg.dependencies.insert("pkg".to_string(), Arc::new(pkg));
+        cfg
+    }
+
+    #[test]
+    fn env_var_inside_var_value_is_folded_in() {
+        let node = model("select {{ var('query') }}");
+        let cfg = config_with_vars(&[("query", "{{ env_var('MODE') }}")]);
+        assert_ne!(
+            hash(&node, Some(&cfg), &[("MODE", "a")]),
+            hash(&node, Some(&cfg), &[("MODE", "b")])
+        );
+        assert_eq!(
+            hash(&node, None, &[("MODE", "a")]),
+            hash(&node, None, &[("MODE", "b")])
+        );
+    }
+
+    #[test]
+    fn chained_var_values_are_followed() {
+        let node = model("select {{ var('a') }}");
+        let hash_with = |b: &str| {
+            let cfg = config_with_vars(&[("a", "{{ var('b') }}"), ("b", b)]);
+            hash(&node, Some(&cfg), &[])
+        };
+        assert_ne!(hash_with("x"), hash_with("y"));
+    }
+
+    #[test]
+    fn cyclic_var_values_terminate() {
+        let node = model("select {{ var('a') }}");
+        let cfg = config_with_vars(&[("a", "{{ var('b') }}"), ("b", "{{ var('a') }}")]);
+        assert_eq!(hash(&node, Some(&cfg), &[]), hash(&node, Some(&cfg), &[]));
+    }
+
+    #[test]
+    fn var_inside_env_var_value_is_followed() {
+        let node = model("select {{ env_var('MODE') }}");
+        let hash_with = |x: &str| {
+            let cfg = config_with_vars(&[("x", x)]);
+            hash(&node, Some(&cfg), &[("MODE", "{{ var('x') }}")])
+        };
+        assert_ne!(hash_with("x1"), hash_with("x2"));
+    }
+
+    #[test]
+    fn transitive_package_project_var_changes_hash() {
+        let build = |value: bool| {
+            let mut b = DbtRuntimeConfig::default();
+            b.inner
+                .vars
+                .insert("dry_run".to_string(), DbtVars::Value(YmlValue::bool(value)));
+            let mut a = DbtRuntimeConfig::default();
+            a.dependencies.insert("b".to_string(), Arc::new(b));
+            let mut cfg = DbtRuntimeConfig::default();
+            cfg.dependencies.insert("a".to_string(), Arc::new(a));
+            cfg
+        };
+        let mut node = model(DRY_RUN);
+        node.__common_attr__.package_name = "b".to_string();
+        let on = hash(&node, Some(&build(true)), &[]);
+        assert_ne!(on, hash(&node, Some(&build(false)), &[]));
+        assert_ne!(on, hash(&node, None, &[]));
+    }
+
+    #[test]
+    fn generic_test_kwargs_var_forms_are_picked_up() {
+        let on = config(&[("dry_run", true)], &[]);
+        let off = config(&[("dry_run", false)], &[]);
+        for kwarg in [
+            "{{ var('dry_run') }}",
+            "var('dry_run')",
+            "{{ var('dry_run') }}-bar",
+        ] {
+            let node = generic_test_with_kwarg(YmlValue::string(kwarg.to_string()));
+            assert_ne!(
+                test_hash(&node, Some(&on), &[]),
+                test_hash(&node, Some(&off), &[]),
+                "{kwarg}"
+            );
+        }
+        let nested = dbt_yaml::from_str::<YmlValue>(r#"["{{ var('dry_run') }}", "lit"]"#).unwrap();
+        let node = generic_test_with_kwarg(nested);
+        assert_ne!(
+            test_hash(&node, Some(&on), &[]),
+            test_hash(&node, Some(&off), &[])
+        );
+    }
+
+    #[test]
+    fn generic_test_kwargs_bare_env_var_is_picked_up() {
+        let node = generic_test_with_kwarg(YmlValue::string("env_var('MY_ENV')".to_string()));
+        let cfg = config(&[], &[]);
+        assert_ne!(
+            test_hash(&node, Some(&cfg), &[("MY_ENV", "1")]),
+            test_hash(&node, Some(&cfg), &[("MY_ENV", "2")])
+        );
+    }
+
+    #[test]
+    fn generic_test_kwargs_find_vars_inside_bare_resolvers() {
+        let a = config_with_vars(&[("parent", "parent_a")]);
+        let b = config_with_vars(&[("parent", "parent_b")]);
+        for argument in [
+            "ref(var('parent'))",
+            "source(var('parent'), 'table')",
+            "doc(var('parent'))",
+            "get_where_subquery(ref(var('parent')))",
+        ] {
+            let node = generic_test_with_kwarg(YmlValue::string(argument.to_string()));
+            assert_ne!(
+                test_hash(&node, Some(&a), &[]),
+                test_hash(&node, Some(&b), &[]),
+                "{argument}"
+            );
+        }
+    }
+
+    #[test]
+    fn nested_default_strings_and_autoescape_affect_hashes() {
+        let cfg = config(&[], &[]);
+        for code in [
+            r#"select '{{ var('query', "{{ env_var('MODE') }}") }}'"#,
+            r#"select '{{ env_var('QUERY', "{{ env_var('MODE') }}") }}'"#,
+        ] {
+            let node = model(code);
+            assert_ne!(
+                hash(&node, Some(&cfg), &[("MODE", "a")]),
+                hash(&node, Some(&cfg), &[("MODE", "b")]),
+                "{code}"
+            );
+        }
+        let node =
+            model("{% autoescape var('escape', false) %}select '{{ '<x>' }}'{% endautoescape %}");
+        assert_ne!(
+            hash(&node, Some(&config(&[("escape", true)], &[])), &[]),
+            hash(&node, Some(&config(&[("escape", false)], &[])), &[]),
+        );
+    }
+
+    #[test]
+    fn generic_test_kwargs_without_runtime_calls_keep_hash() {
+        let node = generic_test_with_kwarg(YmlValue::string("plain".to_string()));
+        let cfg = config(&[("dry_run", true)], &[]);
+        assert_eq!(
+            test_hash(&node, Some(&cfg), &[]),
+            test_hash(&node, None, &[])
+        );
+    }
+
+    #[test]
+    fn no_var_usage_matches_hash_without_runtime_vars() {
+        let cfg = config(&[], &[("unused", true)]);
+        for source in [
+            "select 1",
+            "select '{{ context.target.name }}'",
+            "select '{{ context.get('target').name }}'",
+        ] {
+            let node = model(source);
+            assert_eq!(hash(&node, Some(&cfg), &[]), hash(&node, None, &[]));
+        }
+    }
+
+    #[test]
+    fn flag_off_ignores_var_values_and_flag_on_does_not() {
+        let node = model(DRY_RUN);
+        let on = config(&[("dry_run", true)], &[]);
+        let off = config(&[("dry_run", false)], &[]);
+        assert_eq!(hash(&node, None, &[]), hash(&node, None, &[]));
+        assert_ne!(hash(&node, Some(&on), &[]), hash(&node, Some(&off), &[]));
+        assert_ne!(hash(&node, Some(&on), &[]), hash(&node, None, &[]));
+    }
+
+    #[test]
+    fn cli_and_project_var_with_same_value_hash_equal_and_unset_differs() {
+        let node = model(DRY_RUN);
+        let cli = config(&[("dry_run", true)], &[]);
+        let project = config(&[], &[("dry_run", true)]);
+        let unset = config(&[], &[]);
+        assert_eq!(
+            hash(&node, Some(&cli), &[]),
+            hash(&node, Some(&project), &[])
+        );
+        assert_ne!(hash(&node, Some(&cli), &[]), hash(&node, Some(&unset), &[]));
+    }
+
+    #[test]
+    fn cli_var_wins_over_project_var() {
+        let node = model(DRY_RUN);
+        let both = config(&[("dry_run", true)], &[("dry_run", false)]);
+        let cli_only = config(&[("dry_run", true)], &[]);
+        assert_eq!(
+            hash(&node, Some(&both), &[]),
+            hash(&node, Some(&cli_only), &[])
+        );
+    }
+
+    #[test]
+    fn unused_var_does_not_affect_hash() {
+        let node = model(DRY_RUN);
+        let a = config(&[("dry_run", true), ("other", true)], &[]);
+        let b = config(&[("dry_run", true), ("other", false)], &[]);
+        assert_eq!(hash(&node, Some(&a), &[]), hash(&node, Some(&b), &[]));
+    }
+
+    #[test]
+    fn computed_names_include_visible_values_and_nested_dependencies() {
+        for code in [
+            "{% set key='dry_run' %}select {{ var(key) }}",
+            "{% macro m(key) %}{{ var(key) }}{% endmacro %}{{ m('dry_run') }}",
+            "{% set lookup=var %}select {{ lookup('dry_run') }}",
+            "select {{ context['var']('dry_run') }}",
+            "select {{ context.get('var')('dry_run') }}",
+        ] {
+            let node = model(code);
+            assert_ne!(
+                hash(&node, Some(&config(&[("dry_run", true)], &[])), &[]),
+                hash(&node, Some(&config(&[("dry_run", false)], &[])), &[]),
+                "{code}",
+            );
+            assert_ne!(
+                hash(&node, Some(&config(&[], &[("dry_run", true)])), &[]),
+                hash(&node, Some(&config(&[], &[])), &[]),
+                "{code}",
+            );
+        }
+        let node = model("{{ var.has_var('dry_run') }}");
+        assert_ne!(
+            hash(&node, Some(&config(&[("dry_run", true)], &[])), &[]),
+            hash(&node, Some(&config(&[], &[])), &[])
+        );
+        let node = model("{% set key='MODE' %}select '{{ env_var(key) }}'");
+        let cfg = config(&[], &[]);
+        assert_ne!(
+            hash(&node, Some(&cfg), &[("MODE", "a")]),
+            hash(&node, Some(&cfg), &[("MODE", "b")])
+        );
+        assert_eq!(
+            hash(&node, Some(&cfg), &[("MODE", "a"), ("OTHER", "b")]),
+            hash(&node, Some(&cfg), &[("OTHER", "b"), ("MODE", "a")])
+        );
+
+        let cfg = config_with_vars(&[
+            ("query", "{% set name='key' %}{{ var(name) }}"),
+            ("key", "{{ env_var('MODE') }}"),
+        ]);
+        let node = model("select {{ var('query') }}");
+        assert_ne!(
+            hash(&node, Some(&cfg), &[("MODE", "a")]),
+            hash(&node, Some(&cfg), &[("MODE", "b")])
+        );
+    }
+
+    #[test]
+    fn yaml_types_are_preserved_in_cli_and_project_var_hashes() {
+        let node = model("select {{ var('value') }}");
+        let with_yaml = |source: &str, cli: bool| {
+            let value = dbt_yaml::from_str::<YmlValue>(source).unwrap();
+            let mut cfg = config(&[], &[]);
+            if cli {
+                cfg.inner.cli_vars.insert("value".into(), value);
+            } else {
+                Arc::make_mut(cfg.dependencies.get_mut("pkg").unwrap())
+                    .inner
+                    .vars
+                    .insert(
+                        "value".into(),
+                        dbt_yaml::from_str::<DbtVars>(source).unwrap(),
+                    );
+            }
+            hash(&node, Some(&cfg), &[])
+        };
+        for (typed, plain) in [
+            ("2026-08-03", "'2026-08-03'"),
+            ("[2026-08-03]", "['2026-08-03']"),
+            ("{date: 2026-08-03}", "{date: '2026-08-03'}"),
+            (".nan", "null"),
+            (".inf", "-.inf"),
+            ("{1: x}", "{'1': x}"),
+            ("!first x", "!second x"),
+        ] {
+            for cli in [false, true] {
+                assert_ne!(
+                    with_yaml(typed, cli),
+                    with_yaml(plain, cli),
+                    "{typed} vs {plain}, cli={cli}"
+                );
+            }
+            assert_eq!(with_yaml(typed, false), with_yaml(typed, true), "{typed}");
+        }
+        assert_eq!(
+            with_yaml("{a: 2026-08-03, b: 1}", true),
+            with_yaml("{b: 1, a: 2026-08-03}", true)
+        );
+    }
+
+    #[test]
+    fn env_var_values_are_folded_in() {
+        let node = model(r#"select '{{ env_var("MY_ENV", "x") }}'"#);
+        let cfg = config(&[], &[]);
+        assert_ne!(
+            hash(&node, Some(&cfg), &[("MY_ENV", "1")]),
+            hash(&node, Some(&cfg), &[("MY_ENV", "2")])
+        );
+        assert_eq!(
+            hash(&node, Some(&cfg), &[("MY_ENV", "1")]),
+            hash(&node, Some(&cfg), &[("MY_ENV", "1"), ("UNRELATED", "z")])
+        );
+        assert_ne!(
+            hash(&node, Some(&cfg), &[]),
+            hash(&node, Some(&cfg), &[("MY_ENV", "1")])
+        );
+    }
+
+    #[test]
+    fn var_in_unrendered_config_string_is_picked_up() {
+        let mut node = model("select 1");
+        node.__base_attr__.unrendered_config.insert(
+            "schema".to_string(),
+            YmlValue::string("{{ var('dry_run') }}".to_string()),
+        );
+        let on = config(&[("dry_run", true)], &[]);
+        let off = config(&[("dry_run", false)], &[]);
+        assert_ne!(hash(&node, Some(&on), &[]), hash(&node, Some(&off), &[]));
+    }
+
+    #[test]
+    fn var_and_env_var_in_nested_config_values_are_picked_up() {
+        let nested = r#"
+            meta:
+              owner: "{{ var('dry_run') }}"
+              tags:
+                - plain
+                - "{{ env_var('MY_ENV') }}"
+        "#;
+        let mut node = model("select 1");
+        node.__base_attr__.unrendered_config.insert(
+            "post_hook".to_string(),
+            dbt_yaml::from_str::<YmlValue>(nested).unwrap(),
+        );
+        let on = config(&[("dry_run", true)], &[]);
+        let off = config(&[("dry_run", false)], &[]);
+
+        // A var nested in a mapping value.
+        assert_ne!(hash(&node, Some(&on), &[]), hash(&node, Some(&off), &[]));
+        // An env_var nested in a sequence inside a mapping.
+        assert_ne!(
+            hash(&node, Some(&on), &[("MY_ENV", "1")]),
+            hash(&node, Some(&on), &[("MY_ENV", "2")])
+        );
+        // Flag off: nested usages do not affect the hash.
+        assert_eq!(hash(&node, None, &[]), hash(&node, None, &[]));
+    }
+
+    #[test]
+    fn unparseable_sources_without_config_give_none() {
+        let cfg = config(&[("dry_run", true)], &[]);
+        let mut node = model("select {{ var(");
+        node.__base_attr__.unrendered_config.clear();
+        assert_eq!(
+            node_configs_hash(&node, Some(&cfg), |_| None).unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn runtime_metadata_does_not_hide_an_authored_config_key() {
+        let mut node = model(DRY_RUN);
+        let cfg = config(&[("dry_run", true)], &[]);
+        node.__base_attr__
+            .unrendered_config
+            .insert(RUNTIME_VARS_KEY.into(), YmlValue::string("first".into()));
+        let first = hash(&node, Some(&cfg), &[]);
+        node.__base_attr__
+            .unrendered_config
+            .insert(RUNTIME_VARS_KEY.into(), YmlValue::string("second".into()));
+        assert_ne!(first, hash(&node, Some(&cfg), &[]));
+    }
+
+    #[test]
+    fn env_var_in_transitive_dependent_macro_is_folded_in() {
+        let mut node = model("select {{ outer_macro() }}");
+        node.__base_attr__.depends_on.macros = vec!["macro.pkg.outer_macro".to_string()];
+        let macros = BTreeMap::from([
+            (
+                "macro.pkg.outer_macro".to_string(),
+                DbtMacro {
+                    macro_sql: "{% macro outer_macro() %}{{ inner_macro() }}{% endmacro %}"
+                        .to_string(),
+                    depends_on: MacroDependsOn {
+                        macros: vec!["macro.pkg.inner_macro".to_string()],
+                    },
+                    ..Default::default()
+                },
+            ),
+            (
+                "macro.pkg.inner_macro".to_string(),
+                DbtMacro {
+                    macro_sql: "{% macro inner_macro() %}{{ env_var('MODE') }}{% endmacro %}"
+                        .to_string(),
+                    ..Default::default()
+                },
+            ),
+        ]);
+        let cfg = config(&[], &[]);
+        let hash_with = |cfg: Option<&DbtRuntimeConfig>, mode: &str| {
+            node_configs_hash_with_env(
+                &node,
+                cfg,
+                |id| macros.get(id),
+                &BTreeMap::from([("MODE".to_string(), mode.to_string())]),
+            )
+            .unwrap()
+            .unwrap()
+        };
+
+        assert_ne!(hash_with(Some(&cfg), "a"), hash_with(Some(&cfg), "b"));
+        // Flag off: the hash is unaffected by the env value.
+        assert_eq!(hash_with(None, "a"), hash_with(None, "b"));
+    }
+
+    #[test]
+    fn node_hash_changes_with_runtime_vars() {
+        let node = model(DRY_RUN);
+        let macros: BTreeMap<String, DbtMacro> = BTreeMap::new();
+        let node_hash = |cfg: Option<&DbtRuntimeConfig>| {
+            node_state_hashes(&node, &"hash-tests".into(), |id| macros.get(id), cfg)
+                .unwrap()
+                .node_hash
+        };
+        let on = config(&[("dry_run", true)], &[]);
+        let off = config(&[("dry_run", false)], &[]);
+        assert_ne!(node_hash(Some(&on)), node_hash(Some(&off)));
+        assert_eq!(node_hash(None), node_hash(None));
+    }
+
+    /// Absolute digest computed with
+    /// `json.dumps({"materialized": "table", "__runtime_vars__": {"vars": {"dry_run": True},
+    /// "env_vars": {}}}, sort_keys=True)`.
+    #[test]
+    fn matches_python_digest() {
+        let node = model(DRY_RUN);
+        let cfg = config(&[("dry_run", true)], &[]);
+        assert_eq!(
+            hash(&node, Some(&cfg), &[]),
+            "eb8e0eeb22a136d2d6297170941f1fe0"
         );
     }
 }

@@ -77,6 +77,8 @@ pub struct RunTasksArgs {
 
     /// Whether to favor state over current environment
     pub favor_state: bool,
+    /// False when --no-defer is explicitly passed
+    pub defer: bool,
     /// The mode to use for the run cache
     pub run_cache_mode: RunCacheMode,
     /// The url to use for the run cache
@@ -95,6 +97,8 @@ pub struct RunTasksArgs {
     pub long_living: bool,
     /// Whether to perform a full refresh (rebuild incremental models from scratch)
     pub full_refresh: bool,
+    /// Bind without a catalog; assume referenced tables/columns exist and infer schemas from usage.
+    pub infer_schemas_and_typeless: bool,
     /// Whether to run with `--empty` (creates relations with schema only, no data).
     pub empty: bool,
     /// If specified, the end datetime dbt uses to filter microbatch model inputs (exclusive).
@@ -166,6 +170,7 @@ impl RunTasksArgs {
             skip_unreferenced_table_check: arg.skip_unreferenced_table_check,
             task_cache_url: arg.task_cache_url.clone(),
             favor_state: arg.favor_state,
+            defer: arg.defer,
             run_cache_mode: arg.run_cache_mode.clone(),
             sample_renaming: arg.sample_renaming.clone(),
             select: arg.select.clone(),
@@ -174,6 +179,7 @@ impl RunTasksArgs {
             local_execution_backend: arg.local_execution_backend,
             long_living: arg.long_living,
             full_refresh: arg.full_refresh,
+            infer_schemas_and_typeless: arg.infer_schemas_and_typeless,
             event_time_start: arg.event_time_start.clone(),
             event_time_end: arg.event_time_end.clone(),
             sample: arg.sample.clone(),
@@ -243,6 +249,7 @@ impl fmt::Debug for RunTasksArgs {
             .field("limit", &self.limit)
             .field("run_cache_url", &self.task_cache_url)
             .field("run_cache_mode", &self.run_cache_mode)
+            .field("defer", &self.defer)
             .finish()
     }
 }

@@ -1,0 +1,7 @@
+kind: Fixes
+body: BigQuery seeds now load correctly when dbt runs outside the project root by resolving data files from each seed's package root.
+time: 2026-09-25T21:28:47.525542221+02:00
+custom:
+    author: fornwall
+    issue: "16127"
+    project: dbt-core

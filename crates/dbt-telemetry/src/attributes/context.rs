@@ -8,6 +8,8 @@ pub struct DbtTelemetryContext {
     pub phase: Option<ExecutionPhase>,
     /// Unique ID of the current node, if any.
     pub unique_id: Option<String>,
+    /// ID of the current microbatch within the node, if any.
+    pub batch_id: Option<String>,
 }
 
 impl From<DbtTelemetryContext> for TelemetryContext {

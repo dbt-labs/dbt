@@ -20,6 +20,7 @@ type YmlValue = dbt_yaml::Value;
 #[skip_serializing_none]
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
+#[derive(dbt_proc_macros::JinjaNodeFields)]
 pub struct DbtSemanticModel {
     pub __common_attr__: CommonAttributes,
     pub __base_attr__: NodeBaseAttributes,
@@ -31,7 +32,7 @@ pub struct DbtSemanticModel {
     pub __other__: BTreeMap<String, YmlValue>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, dbt_proc_macros::JinjaNodeFields)]
 pub struct DbtSemanticModelAttr {
     // Core semantic model attributes
     pub model: String,

@@ -114,8 +114,8 @@ pub struct FsTraceConfig {
 /// - `target_path`: defaults to `{project_dir}/target`
 /// - `log_path`: defaults to `{project_dir}/logs`; resolved against `project_dir` if relative
 /// - JSONL trace file: `{log_path}/{otel_file_name}`
-/// - Parquet trace file: `{target_path}/private/metadata/{otel_parquet_file_name}`
-///   (see [`crate::constants::default_metadata_dir`])
+/// - Parquet trace file: `{target_path}/metadata/{otel_parquet_file_name}`
+///   (see [`crate::constants::default_telemetry_dir`])
 #[derive(Clone, Debug)]
 pub struct FsTraceConfigBuilder {
     package: &'static str,
@@ -242,7 +242,7 @@ impl FsTraceConfigBuilder {
         self
     }
 
-    /// File name of the Parquet trace output, written to `{target_path}/private/metadata`.
+    /// File name of the Parquet trace output, written to `{target_path}/metadata`.
     /// If unset, the Parquet output layer is disabled.
     pub fn with_otel_parquet_file_name(mut self, otel_parquet_file_name: Option<&str>) -> Self {
         self.otel_parquet_file_name = otel_parquet_file_name.map(str::to_string);
@@ -360,7 +360,7 @@ impl FsTraceConfigBuilder {
                 .map(|file_name| log_dir_path.join(file_name)),
             otel_parquet_file_path: self
                 .otel_parquet_file_name
-                .map(|file_name| crate::constants::default_metadata_dir(out_dir).join(file_name)),
+                .map(|file_name| crate::constants::default_telemetry_dir(out_dir).join(file_name)),
             log_path: log_dir_path,
             log_file_name: self.log_file_name,
             log_file_max_bytes: self.log_file_max_bytes,

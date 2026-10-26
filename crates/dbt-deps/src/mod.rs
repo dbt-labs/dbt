@@ -6,6 +6,7 @@ pub(crate) mod git_client;
 mod hub_client;
 mod network_client;
 mod notices;
+mod package_checksum;
 mod package_installer;
 pub mod package_listing;
 mod package_resolver;
@@ -125,6 +126,8 @@ pub async fn get_or_install_packages(
             try_load_valid_dbt_packages_lock(
                 io,
                 packages_install_path,
+                &io.in_dir.join(package_yml_name.as_ref()),
+                package_yml_name,
                 dbt_packages,
                 env,
                 &vars,
@@ -141,13 +144,13 @@ pub async fn get_or_install_packages(
         if let Some(dbt_packages_lock) = try_cached_lock {
             emit_info_progress_message(dbt_telemetry::ProgressMessage::new_from_action_and_target(
                 "Loading".to_string(),
-                package_yml_name.to_string(),
+                package_yml_name.as_ref().to_string(),
             ));
             dbt_packages_lock
         } else {
             let fetch_span = create_info_span(GenericOpExecuted::new(
                 "deps-compute-package-lock".to_string(),
-                format!("resolving packages from {}", package_yml_name),
+                format!("resolving packages from {}", package_yml_name.as_ref()),
                 None,
             ));
             let lock_result = compute_package_lock(&deps_context, dbt_packages)

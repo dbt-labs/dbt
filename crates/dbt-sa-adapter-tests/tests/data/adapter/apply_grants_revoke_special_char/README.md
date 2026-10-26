@@ -1,0 +1,3 @@
+Regression test for dbt-core #14422: Redshift `REVOKE` must quote grantee names with special characters (e.g. `test.user`), otherwise the dot is parsed as `schema.table` and raises `syntax error at or near "."`. The fix mirrors dbt-adapters #1551 — `default__get_revoke_sql` quotes each grantee via `adapter.quote`; grants stay unquoted to preserve case-folding.
+
+`set_up` seeds grants to `dbt_test_user_1` and `test.user`; the model runs `apply_grants` with a config that omits `test.user`, so a revoke is computed from the `pg_user` path. The recorded revoke SQL (`revoke ... from "test.user"`) is the assertion — replay verifies the regenerated SQL against it, so reverting to the unquoted macro produces `from test.user` and fails.

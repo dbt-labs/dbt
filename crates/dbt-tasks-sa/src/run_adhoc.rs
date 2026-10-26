@@ -4,18 +4,16 @@ use std::sync::Arc;
 use adbc_core::options::OptionStatement;
 use arrow::array::RecordBatch;
 use arrow_schema::{Schema, SchemaRef};
-use datafusion_expr::LogicalPlan;
 use dbt_adapter_core::AdapterType;
 use dbt_adbc::Connection;
 use dbt_common::hashing::code_hash;
 use dbt_common::tracing::span_info::record_current_span_status_from_attrs;
 use dbt_common::{ErrorCode, FsError, FsResult, create_debug_span, err, fs_err};
-use dbt_df_providers::delayed_table::is_schema_compat;
 use dbt_jinja_utils::jinja_environment::JinjaEnv;
 use dbt_scheduler::instructions::Instruction;
 use dbt_schemas::schemas::telemetry::{QueryExecuted, QueryOutcome};
 use dbt_tasks_core::AdhocRunner;
-use dbt_tasks_core::task::TaskOp;
+use dbt_tasks_core::task::run_blocking_task_operation;
 
 /// Runs queries remotely against the warehouse via an adapter connection.
 pub struct RemoteAdhocRunner {
@@ -90,11 +88,10 @@ async fn fetch_query_result_with_connection(
     let env = Arc::clone(env);
     let query_id = query_id.to_owned();
     let mut conn = conn_box.take();
-    let (conn, result) = TaskOp::Blocking(Box::new(move || {
+    let (conn, result) = run_blocking_task_operation(move || {
         let result = fetch_query_result_blocking(&query_id, &env, &mut conn);
         (conn, result)
-    }))
-    .run()
+    })
     .await?;
     *conn_box = conn;
     result
@@ -147,7 +144,7 @@ async fn run_remote_adhoc_with_connection(
     // on a `dbt_runtime` worker instead of on this async thread. The connection
     // travels with the closure and comes back with the result, so a subsequent
     // adhoc query on the same `conn_box` still reuses it.
-    let (conn, result) = TaskOp::Blocking(Box::new(move || {
+    let (conn, result) = run_blocking_task_operation(move || {
         let result = run_remote_adhoc_blocking(
             &rendered_sql,
             &env,
@@ -157,8 +154,7 @@ async fn run_remote_adhoc_with_connection(
             &mut conn,
         );
         (conn, result)
-    }))
-    .run()
+    })
     .await?;
     *conn_box = conn;
     result
@@ -169,17 +165,7 @@ async fn run_remote_adhoc_with_connection(
 fn expected_schema_of(instruction: &Instruction) -> Option<SchemaRef> {
     match instruction {
         Instruction::Sql(_) => None,
-        Instruction::Lp(lp_instruction) => match &lp_instruction.plan {
-            LogicalPlan::Ddl(..)
-            | LogicalPlan::Dml(..)
-            | LogicalPlan::Copy(..)
-            | LogicalPlan::Repartition(..)
-            | LogicalPlan::Statement(..)
-            | LogicalPlan::Explain(..)
-            | LogicalPlan::Analyze(..)
-            | LogicalPlan::DescribeTable(..) => None,
-            _ => Some(Arc::new(lp_instruction.plan.schema().as_arrow().clone())),
-        },
+        Instruction::Lp(lp_instruction) => lp_instruction.plan.output_schema(),
     }
 }
 
@@ -349,6 +335,16 @@ fn attach_last_query_id(stmt: &dyn dbt_adbc::statement::Statement, schema: Schem
         query_id,
     );
     Arc::new(Schema::new_with_metadata(schema.fields().clone(), metadata))
+}
+
+/// Checks if the source schema can be safely overlaid with the target schema.
+fn is_schema_compat(source: &Schema, target: &Schema) -> bool {
+    source
+        .fields()
+        .iter()
+        .zip(target.fields())
+        .all(|(a, b)| a.name() == b.name())
+        && source.fields().len() == target.fields().len()
 }
 
 #[cfg(test)]

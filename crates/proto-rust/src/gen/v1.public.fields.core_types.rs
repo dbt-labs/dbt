@@ -142,6 +142,8 @@ pub struct RunResultMsg {
     pub adapter_response: ::core::option::Option<::pbjson_types::Struct>,
     #[prost(int32, tag = "7")]
     pub num_failures: i32,
+    #[prost(string, optional, tag = "8")]
+    pub state_decision_id: ::core::option::Option<::prost::alloc::string::String>,
 }
 impl ::prost::Name for RunResultMsg {
     const NAME: &'static str = "RunResultMsg";

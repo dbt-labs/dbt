@@ -41,29 +41,55 @@ const AUTH_PARAMS_USED_FOR_LEGACY_CONFIG: [&str; 6] = [
     "authenticator",
 ];
 
-/// Overall deadline budget that gosnowflake uses for the login retry loop
-/// (`context.WithTimeout(parent, LoginTimeout)`). Within this window, gosnowflake
-/// performs up to `MaxRetryCount` (default 7) HTTP retries with exponential
-/// backoff (1s base, 16s cap, jittered) — see `snowflakedb/gosnowflake::retry.go`
-/// and `internal/config/dsn.go`.
+/// Retry budget per non-login request
+const DEFAULT_REQUEST_TIMEOUT: &str = "900s";
+
+/// No per-request retry cap (gosnowflake defaults to 7), so `request_timeout` alone bounds
+/// query retries; gosnowflake stops at whichever limit comes first
+/// (https://github.com/dbt-labs/gosnowflake/blob/v1.17.11/retry.go#L349).
 ///
-/// 60s approximates Python's per-connector budget of 60s HTTP connect timeout ×
-/// ~2 `requests`-internal retries (see `snowflake-connector-python::auth/by_plugin.py`
-/// `DEFAULT_AUTH_CLASS_TIMEOUT = 120`). The dbt-adapter retry layer
-/// ([engine/retry.rs](../../dbt-adapter/src/engine/retry.rs)) wraps with
-/// `connect_retries=7` outer attempts to match Python's full ~480s budget.
+/// v1 parity: overall it is stricter for query retries but more tolerant for login retries.
 ///
-/// Historical note: this used to be `"1s"` to keep gosnowflake from retrying
-/// past the context deadline. That hang pathology was fixed by the cherry-pick
-/// in `dbt-labs/arrow-adbc` PR #131 (`dbt-labs/gosnowflake`@337c068), which
-/// makes gosnowflake bail on `ctx.Err() != nil` immediately — so we can safely
-/// give it a real budget now.
+/// Queries only retry inside snowflake-connector-python, with no count cap and no time limit:
+/// 1. dbt's query retry is off: `retryable_exceptions` defaults to `()` and dbt-snowflake
+///    never passes any (`connect_retries` only wraps connection open, L485-L507)
+///    - https://github.com/dbt-labs/dbt-adapters/blob/e6747c5b3195eb7ed6e0de93909df43305284167/dbt-adapters/src/dbt/adapters/sql/connections.py#L69-L98
+///    - https://github.com/dbt-labs/dbt-adapters/blob/e6747c5b3195eb7ed6e0de93909df43305284167/dbt-snowflake/src/dbt/adapters/snowflake/connections.py#L629-L714
+/// 2. `cursor.execute` gets no `timeout`, so it falls back to `network_timeout`, default `None`
+///    - https://github.com/snowflakedb/snowflake-connector-python/blob/v4.8.0/src/snowflake/connector/cursor.py#L699-L701
+///    - https://github.com/snowflakedb/snowflake-connector-python/blob/v4.8.0/src/snowflake/connector/connection.py#L261-L264
+/// 3. `None` flows cursor.py#L744 -> connection.py#L2124 -> network.py#L532 -> network.py#L799
+///    into `fetch`, which builds `RetryCtx(timeout=None)` without `max_retry_attempts`
+///    and loops until a non-`None` result
+///    - https://github.com/snowflakedb/snowflake-connector-python/blob/v4.8.0/src/snowflake/connector/network.py#L907-L922
+/// 4. A 5xx/429/... raises `RetryRequest`; the wrapper sleeps and returns `None` unless
+///    `should_retry` is false
+///    - https://github.com/snowflakedb/snowflake-connector-python/blob/v4.8.0/src/snowflake/connector/network.py#L1198-L1217
+///    - https://github.com/snowflakedb/snowflake-connector-python/blob/v4.8.0/src/snowflake/connector/network.py#L991-L1054
+/// 5. `should_retry` is always true when both limits are `None`
+///    - https://github.com/snowflakedb/snowflake-connector-python/blob/v4.8.0/src/snowflake/connector/time_util.py#L129-L144
 ///
-/// The `DBT_SNOWFLAKE_LOGIN_TIMEOUT` env var overrides this default (parallel to
-/// the existing `DBT_SNOWFLAKE_CLIENT_TIMEOUT` escape hatch below). Used by the
-/// LSP e2e test runner to restore fast-fail behavior against unreachable
-/// `snowflake.local` hosts.
-const DEFAULT_REQUEST_TIMEOUT: &str = "600s";
+/// Logins keep gosnowflake's 300s `LoginTimeout` (no option sent). With the uncapped
+/// count and doubling backoff that is 8-9 attempts (~3-5 min):
+/// - https://github.com/dbt-labs/gosnowflake/blob/v1.17.11/auth.go#L276
+/// - https://github.com/dbt-labs/gosnowflake/blob/v1.17.11/dsn.go#L28
+/// - https://github.com/dbt-labs/gosnowflake/blob/v1.17.11/retry.go#L204-L211
+///
+/// That is more tolerant than Python, which gives up on a 503 after 2 attempts (~1s) with password auth, or 11 attempts (~1 min) with key-pair:
+/// 1. A login 5xx raises `OperationalError(ER_RETRYABLE_CODE)`, not `RetryRequest`
+///    - https://github.com/snowflakedb/snowflake-connector-python/blob/v4.8.0/src/snowflake/connector/network.py#L1198-L1214
+/// 2. The authenticator's retry context allows 1 retry (10 for key-pair) within 120s
+///    - https://github.com/snowflakedb/snowflake-connector-python/blob/v4.8.0/src/snowflake/connector/auth/by_plugin.py#L40-L41
+///    - https://github.com/snowflakedb/snowflake-connector-python/blob/v4.8.0/src/snowflake/connector/auth/by_plugin.py#L70-L77
+///    - https://github.com/snowflakedb/snowflake-connector-python/blob/v4.8.0/src/snowflake/connector/auth/keypair.py#L48-L84
+/// 3. `handle_timeout` sleeps between attempts, then raises "Could not connect ... after N attempt(s)"
+///    - https://github.com/snowflakedb/snowflake-connector-python/blob/v4.8.0/src/snowflake/connector/connection.py#L2210-L2268
+///    - https://github.com/snowflakedb/snowflake-connector-python/blob/v4.8.0/src/snowflake/connector/auth/by_plugin.py#L206-L219
+/// 4. dbt doesn't retry it: `OperationalError` is a `DatabaseError`, retried only with
+///    `retry_on_database_errors`/`retry_all`
+///    - https://github.com/snowflakedb/snowflake-connector-python/blob/v4.8.0/src/snowflake/connector/errors.py#L419
+///    - https://github.com/dbt-labs/dbt-adapters/blob/e6747c5b3195eb7ed6e0de93909df43305284167/dbt-snowflake/src/dbt/adapters/snowflake/connections.py#L485-L499
+const UNCAPPED_MAX_RETRY_COUNT: i32 = i32::MAX;
 const ADBC_STUB_PASSWORD: &str = "fs_pass";
 
 /// dbt Core expects durations in seconds only so this utility appends that s
@@ -699,6 +725,11 @@ fn apply_connection_args(
         .unwrap_or_else(|| DEFAULT_REQUEST_TIMEOUT.to_string());
     builder.with_named_option(snowflake::REQUEST_TIMEOUT, request_timeout)?;
 
+    builder.with_named_option(
+        snowflake::MAX_RETRY_COUNT,
+        UNCAPPED_MAX_RETRY_COUNT.to_string(),
+    )?;
+
     if let Ok(client_timeout) = std::env::var("DBT_SNOWFLAKE_CLIENT_TIMEOUT") {
         builder.with_named_option(snowflake::CLIENT_TIMEOUT, client_timeout)?;
     }
@@ -814,7 +845,10 @@ mod tests {
                 OptionDatabase::Other(name) => name.to_owned(),
                 _ => continue,
             };
-            if key == snowflake::CLIENT_TIMEOUT || key == snowflake::LOGIN_TIMEOUT {
+            if key == snowflake::CLIENT_TIMEOUT
+                || key == snowflake::LOGIN_TIMEOUT
+                || key == snowflake::MAX_RETRY_COUNT
+            {
                 continue;
             }
             results.insert(key.into(), option_str_value(&v).into());

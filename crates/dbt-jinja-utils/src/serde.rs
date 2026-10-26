@@ -509,7 +509,7 @@ fn perform_typecheck<F>(env: &JinjaEnv, yaml_span: &dbt_yaml::Span, typecheck_fn
 where
     F: FnOnce(
         std::sync::Arc<minijinja::compiler::typecheck::FunctionRegistry>,
-        std::sync::Arc<dashmap::DashMap<String, minijinja::Type>>,
+        std::sync::Arc<minijinja::TypeRegistry>,
         Rc<dyn minijinja::TypecheckingEventListener>,
         BTreeMap<String, minijinja::Value>,
     ) -> FsResult<()>,

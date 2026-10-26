@@ -1,0 +1,10 @@
+model.test.b:
+- sequence: 0
+  type: execute
+  sql: CREATE DATABASE IF NOT EXISTS `adapters_clickhouse_check_schema_exists`
+- sequence: 1
+  type: execute
+  sql: select count(*) from system.databases where name = 'adapters_clickhouse_check_schema_exists'
+- sequence: 2
+  type: execute
+  sql: select count(*) from system.databases where name = 'nonexistent_schema'

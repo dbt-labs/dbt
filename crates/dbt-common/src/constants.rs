@@ -162,6 +162,11 @@ pub fn default_metadata_dir(out_dir: impl AsRef<std::path::Path>) -> std::path::
     default_private_dir(out_dir).join(DBT_METADATA_DIR_NAME)
 }
 
+/// `<target>/metadata/` — default OTel telemetry parquet directory (public).
+pub fn default_telemetry_dir(out_dir: impl AsRef<std::path::Path>) -> std::path::PathBuf {
+    out_dir.as_ref().join(DBT_METADATA_DIR_NAME)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -3,6 +3,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use chrono::Utc;
+use dbt_adapter::sql_types::TypeOps;
 use dbt_common::io_args::EvalArgs;
 use dbt_common::tracing::dbt_emit::emit_warn_log_message;
 use dbt_common::{ErrorCode, FsResult};
@@ -131,23 +132,58 @@ pub fn write_metadata_parquet(
     manifest: &DbtManifest,
     resolved_state: Option<&ResolverState>,
     schema_store: Option<&dyn SchemaStoreTrait>,
+    type_ops: Option<&dyn TypeOps>,
     column_lineage: Option<&[CllEdge]>,
     recomputed_column_lineage_targets: &HashSet<String>,
     grain_infos: &HashMap<String, PlanGrainInfo>,
     node_classifiers: &HashMap<String, Vec<String>>,
     column_classifiers: &HashMap<String, HashMap<String, Vec<String>>>,
 ) {
-    write_metadata_parquet_impl(
+    let _ = write_metadata_parquet_with_errors(
         arg,
         manifest,
         resolved_state,
         schema_store,
+        type_ops,
         column_lineage,
         recomputed_column_lineage_targets,
         grain_infos,
         node_classifiers,
         column_classifiers,
     );
+}
+
+/// Like [`write_metadata_parquet`], but returns the non-fatal write errors so a
+/// caller that needs publication status can observe them.
+#[allow(clippy::too_many_arguments)]
+pub fn write_metadata_parquet_with_errors(
+    arg: &EvalArgs,
+    manifest: &DbtManifest,
+    resolved_state: Option<&ResolverState>,
+    schema_store: Option<&dyn SchemaStoreTrait>,
+    type_ops: Option<&dyn TypeOps>,
+    column_lineage: Option<&[CllEdge]>,
+    recomputed_column_lineage_targets: &HashSet<String>,
+    grain_infos: &HashMap<String, PlanGrainInfo>,
+    node_classifiers: &HashMap<String, Vec<String>>,
+    column_classifiers: &HashMap<String, HashMap<String, Vec<String>>>,
+) -> Vec<String> {
+    let errors = write_metadata_parquet_impl(
+        arg,
+        manifest,
+        resolved_state,
+        schema_store,
+        type_ops,
+        column_lineage,
+        recomputed_column_lineage_targets,
+        grain_infos,
+        node_classifiers,
+        column_classifiers,
+    );
+    for error in &errors {
+        emit_warn_log_message(ErrorCode::Generic, error);
+    }
+    errors
 }
 
 /// Merge declared (YAML) classifier labels with propagated labels into a
@@ -187,12 +223,13 @@ fn write_metadata_parquet_impl(
     manifest: &DbtManifest,
     resolved_state: Option<&ResolverState>,
     schema_store: Option<&dyn SchemaStoreTrait>,
+    type_ops: Option<&dyn TypeOps>,
     column_lineage: Option<&[CllEdge]>,
     recomputed_column_lineage_targets: &HashSet<String>,
     grain_infos: &HashMap<String, PlanGrainInfo>,
     node_classifiers: &HashMap<String, Vec<String>>,
     column_classifiers: &HashMap<String, HashMap<String, Vec<String>>>,
-) {
+) -> Vec<String> {
     use dbt_common::static_analysis::is_strict_static_analysis;
     use dbt_index_core::hash_str;
 
@@ -270,11 +307,13 @@ fn write_metadata_parquet_impl(
             DbtNode::Check(x) => &x.__base_attr__,
         };
 
-        // compile/nodes requires --write-metadata --static-analysis strict.
-        // Without strict SA there is no grain_infos from LP and no schema inference;
-        // compile/nodes would only duplicate what parse/nodes already contains.
-        let write_compile_nodes =
-            arg.write_metadata && arg.static_analysis.is_some_and(is_strict_static_analysis);
+        // compile/nodes requires --write-metadata --static-analysis strict (or
+        // baseline + --write-lineage, i.e. `--infer-schemas`). Without either,
+        // there is no grain_infos from LP and no schema inference; compile/nodes
+        // would only duplicate what parse/nodes already contains.
+        let write_compile_nodes = arg.write_metadata
+            && (arg.static_analysis.is_some_and(is_strict_static_analysis)
+                || arg.infer_schemas_and_typeless);
         if write_compile_nodes {
             let grain_declared: Vec<String> = match node {
                 DbtNode::Model(m) => m.primary_key.as_ref().cloned().unwrap_or_default(),
@@ -301,6 +340,7 @@ fn write_metadata_parquet_impl(
                 grain: serde_json::to_string(&grain).unwrap_or_default(),
                 grain_declared: serde_json::to_string(&grain_declared).unwrap_or_default(),
                 grain_tested: serde_json::to_string(&grain_tested_val).unwrap_or_default(),
+                grain_inferred: serde_json::to_string(&grain_inferred).unwrap_or_default(),
                 classifiers: merge_classifiers_json(
                     node_declared_classifiers(node),
                     node_classifiers.get(uid.as_str()),
@@ -326,6 +366,7 @@ fn write_metadata_parquet_impl(
                     grain: "[]".to_string(),
                     grain_declared: "[]".to_string(),
                     grain_tested: "[]".to_string(),
+                    grain_inferred: "[]".to_string(),
                     classifiers: serde_json::to_string(&node_clf)
                         .unwrap_or_else(|_| "[]".to_string()),
                     table_role: None,
@@ -368,7 +409,12 @@ fn write_metadata_parquet_impl(
                                     unique_id: uid.to_string(),
                                     column_name: field.name().clone(),
                                     column_index: idx as i32,
-                                    column_type: Some(field.data_type().to_string()),
+                                    // The adapter's SQL type, not the Arrow type.
+                                    column_type: type_ops
+                                        .and_then(|t| {
+                                            t.get_original_sql_type_from_field(field).ok()
+                                        })
+                                        .map(|t| t.into_owned()),
                                     description: None,
                                     classifiers: merge_classifiers_vec(
                                         declared,
@@ -538,7 +584,5 @@ fn write_metadata_parquet_impl(
         );
     }
 
-    for e in errors {
-        emit_warn_log_message(ErrorCode::Generic, e);
-    }
+    errors
 }

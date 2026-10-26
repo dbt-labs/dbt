@@ -1,10 +1,10 @@
 import { CopyCommandSnippet } from '../shared';
 
-interface Props {
+interface NoLineageFallbackProps {
   modelName: string;
 }
 
-export function NoLineageFallback({ modelName }: Props) {
+export function NoLineageFallback({ modelName }: NoLineageFallbackProps) {
   const command = `dbt build --select +${modelName}+ && dbt docs generate`;
   return (
     <div className="flex flex-col gap-2 p-6">

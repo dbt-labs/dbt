@@ -28,7 +28,6 @@ dbt-fusion-workspace-hack = { version = "0.1" }
 dbt-index-core = { workspace = true }
 
 arrow-array = { workspace = true }
-arrow-schema = { workspace = true }
 axum = { workspace = true }
 chrono = { workspace = true }
 http = { workspace = true }

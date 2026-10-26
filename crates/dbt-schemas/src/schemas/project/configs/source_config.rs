@@ -418,8 +418,10 @@ impl From<ProjectSourceConfig> for SourceConfig {
                 enable_list_inference: None,
                 intermediate_format: None,
                 storage_uri: None,
+                enable_change_history: None,
                 incremental_apply_config_changes: None,
                 persist_constraints: None,
+                use_materialization_v2: None,
                 use_safer_relation_operations: None,
                 view_update_via_alter: None,
 
@@ -476,6 +478,8 @@ impl From<ProjectSourceConfig> for SourceConfig {
                 settings: None,
                 query_settings: None,
                 projections: None,
+                sharding_key: None,
+                disable_on_cluster: None,
                 inserts_only: None,
                 connection_overrides: None,
                 fields: None,
@@ -635,6 +639,10 @@ impl ResolvableConfig<SourceConfig> for SourceConfig {
 impl ConfigKeys for SourceConfig {
     // The default implementation from the trait will handle
     // extracting field names via serialization automatically
+}
+
+impl crate::schemas::project::configs::warehouse_scope::WarehouseConfigResource for SourceConfig {
+    const NODE_TYPE: dbt_telemetry::NodeType = dbt_telemetry::NodeType::Source;
 }
 
 #[cfg(test)]

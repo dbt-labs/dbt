@@ -79,8 +79,9 @@
 
 {% macro get_alter_st_internal(relation, configuration_changes) %}
   {%- set refresh = configuration_changes.changes["refresh"] -%}
-  {%- if refresh and refresh.cron -%}
+  {%- set is_scheduled = refresh and (refresh.cron or refresh.every or refresh.on_update) -%}
+  {%- if is_scheduled -%}
     ALTER STREAMING TABLE {{ relation.render() }}
-        {{ get_alter_sql_refresh_schedule(refresh.cron, refresh.time_zone_value, False) -}}
+        ADD {{ get_create_sql_refresh_schedule(refresh) -}}
   {%- endif -%}
 {% endmacro %}

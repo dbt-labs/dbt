@@ -5,7 +5,7 @@ use dbt_tracing::{
 };
 
 pub use crate::proto::v1::public::events::fusion::invocation::{
-    Invocation, InvocationEvalArgs, InvocationMetrics,
+    Invocation, InvocationEvalArgs, InvocationMetrics, InvocationWarnErrorOptions,
 };
 pub use crate::proto::v1::public::events::fusion::process::Process;
 use prost::Name;

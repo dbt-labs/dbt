@@ -183,10 +183,15 @@ impl MetadataAdapter for PostgresMetadataAdapter {
         create_schemas_if_not_exists(&self.adapter, self, state, catalog_schemas)
     }
 
+    fn supports_relation_progress(&self) -> bool {
+        false
+    }
+
     fn list_relations_in_parallel_inner(
         &self,
         _db_schemas: &[CatalogAndSchema],
         _token: CancellationToken,
+        _report_progress: bool,
     ) -> AsyncAdapterResult<'_, BTreeMap<CatalogAndSchema, AdapterResult<RelationVec>>> {
         // FIXME: Implement cache hydration
         let future = async move { Ok(BTreeMap::new()) };

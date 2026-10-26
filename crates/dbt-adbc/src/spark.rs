@@ -22,6 +22,7 @@ pub mod auth_type {
     // Livy
     pub const BASIC: &str = "basic";
     pub const AWS_SIGV4: &str = "aws_sigv4";
+    pub const AZURE_TOKEN: &str = "azure_token";
 
     // Spark Connect
     pub const NONE: &str = "none";
@@ -32,6 +33,11 @@ pub const USERNAME: &str = "username";
 pub const PASSWORD: &str = "password";
 
 pub const SESSION_CONFIG_PREFIX: &str = "spark.opt.";
+pub mod session_config {
+    pub const LIVY_SESSION_TTL: &str = "livy.server.session.ttl";
+    pub const EMR_SERVERLESS_EXECUTION_ROLE_ARN: &str = "emr-serverless.session.executionRoleArn";
+    pub const KUBERNETES_NAMESPACE: &str = "spark.kubernetes.namespace";
+}
 
 pub const KERBEROS_SERVICE_NAME: &str = "spark.kerberos.service_name";
 
@@ -44,6 +50,26 @@ pub mod livy {
     }
 
     pub const SESSION_TTL: &str = "spark.livy.session_ttl";
+
+    /// Path appended to the host to form the Livy endpoint base URL.
+    pub const BASE_URL: &str = "spark.livy.base_url";
+
+    /// Microsoft Entra ID options for [`super::auth_type::AZURE_TOKEN`].
+    /// Credentials ride in the username/password options: a service principal
+    /// is `username = "<client id>@<tenant id>"` with the client secret as the
+    /// password; a user-assigned managed identity's client ID is the username.
+    pub mod azure {
+        pub const CREDENTIAL: &str = "spark.livy.azure.credential";
+        pub mod credential {
+            pub const DEFAULT: &str = "ActiveDirectoryDefault";
+            pub const AZ_CLI: &str = "ActiveDirectoryAzCli";
+            pub const SERVICE_PRINCIPAL: &str = "ActiveDirectoryServicePrincipal";
+            pub const ENVIRONMENT: &str = "ActiveDirectoryEnvironment";
+            pub const MANAGED_IDENTITY: &str = "ActiveDirectoryManagedIdentity";
+        }
+
+        pub const TOKEN_SCOPE: &str = "spark.livy.azure.token_scope";
+    }
 
     pub mod aws {
         pub const REGION: &str = "spark.livy.aws.region";

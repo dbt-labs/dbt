@@ -1,0 +1,7 @@
+kind: Under the Hood
+body: Add PyPI banner for dbt-oss mirroring the existing dbt-core banner, without the dbt-core namespace deprecation notice
+time: 2026-09-15T16:06:18.682899-07:00
+custom:
+    author: tauhidanjum
+    issue: ""
+    project: dbt-core

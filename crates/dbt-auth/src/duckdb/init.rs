@@ -13,39 +13,33 @@
 //! move to `dbt-adapter` or a small shared crate, but that requires untangling the
 //! `dbt-index` → `dbt-adapter` dependency graph first.
 
+use std::borrow::Cow;
+
 use crate::AuthError;
 use crate::config::{AdapterConfig, YmlValue};
 
-/// Borrows a resolved `motherduck_token` just long enough to render it.
-struct MotherDuckToken<'a>(&'a str);
-
-impl MotherDuckToken<'_> {
-    fn render(&self) -> String {
-        format!("SET motherduck_token = '{}'", escape_single_quotes(self.0))
-    }
+pub enum DuckDbTarget<'a> {
+    // COPY from local files.
+    Plain { path: &'a str },
+    // COPY from local files.
+    MotherduckBrowserLogin { path: String },
+    // COPY from local files.
+    MotherduckTokenAuth { path: String, token: String },
+    // No COPY from files. Seeds load by in-memory insert. Python models disabled.
+    MotherduckSaasBrowserLogin { path: String },
+    // No COPY from files. Seeds load by in-memory insert. Python models disabled.
+    MotherduckSaasTokenAuth { path: String, token: String },
 }
 
-pub enum DuckDbTarget<'a> {
-    /// Local or in-memory database.
-    Plain {
-        /// Corresponds to `path:` in the profile, or `:memory:`.
-        path: &'a str,
-    },
-    /// MotherDuck database, no token resolved.
-    MotherDuck {
-        /// Attach path with query parameters stripped.
-        path: String,
-        /// The identifier used in `ATTACH ... AS <database_name>`.
-        database_name: String,
-    },
-    /// MotherDuck database, with a resolved `motherduck_token`.
-    MotherDuckWithToken {
-        /// Attach path with query parameters stripped.
-        path: String,
-        /// The identifier used in `ATTACH ... AS <database_name>`.
-        database_name: String,
-        token: String,
-    },
+fn is_motherduck(path: &str) -> bool {
+    path.get(..3).is_some_and(|p| p.eq_ignore_ascii_case("md:"))
+        || path
+            .get(..11)
+            .is_some_and(|p| p.eq_ignore_ascii_case("motherduck:"))
+}
+
+fn parse_query(query: &str) -> impl Iterator<Item = (Cow<'_, str>, Cow<'_, str>)> {
+    url::form_urlencoded::parse(query.as_bytes())
 }
 
 impl<'a> DuckDbTarget<'a> {
@@ -54,39 +48,52 @@ impl<'a> DuckDbTarget<'a> {
             .get("path")
             .and_then(|v| v.as_str())
             .unwrap_or_default();
+        let settings = Settings::from_config(config)?;
+        let attachments = Attachments::from_config(config)?;
+        if std::iter::once(&raw)
+            .chain(attachments.paths.iter())
+            .any(|p| is_motherduck(p))
+        {
+            let path = Self::attach_path(raw);
 
-        match raw.to_lowercase().split_once(':') {
-            Some(("md" | "motherduck", _)) => {
-                let path = Self::attach_path(raw);
-
-                let database_name = config
-                    .get("database")
-                    .and_then(|v| v.as_str())
-                    .map(sanitize_identifier)
-                    .filter(|s| !s.is_empty())
-                    .or_else(|| {
-                        let derived = sanitize_identifier(&Self::database_name(raw));
-                        (!derived.is_empty()).then_some(derived)
-                    })
-                    // https://github.com/duckdb/dbt-duckdb/blob/67b43f1f86ef6b4252b184ebeb00b750a7e9a513/dbt/adapters/duckdb/credentials.py#L339
-                    .unwrap_or_else(|| "my_db".to_owned());
-
-                Ok(match Self::resolve_token(raw, config) {
-                    Some(token) => DuckDbTarget::MotherDuckWithToken {
-                        path,
-                        database_name,
-                        token,
-                    },
-                    None => DuckDbTarget::MotherDuck {
-                        path,
-                        database_name,
-                    },
-                })
+            // https://github.com/duckdb/dbt-duckdb/blob/67b43f1f86ef6b4252b184ebeb00b750a7e9a513/dbt/adapters/duckdb/credentials.py#L339
+            let derived = match Self::database_name(raw) {
+                name if name.is_empty() => "my_db".to_owned(),
+                name => name,
+            };
+            match config.get("database").and_then(|v| v.as_str()) {
+                None | Some("") => {}
+                Some(requested) if requested == derived => {}
+                Some(_) => {
+                    return Err(AuthError::config(format!(
+                        "Inconsistency detected between 'path' and 'database' fields in profile; \
+                             the 'database' property must be set to '{derived}' to match the 'path'"
+                    )));
+                }
             }
+
+            let target = if settings.is_saas_mode() {
+                match Self::resolve_token(raw, config) {
+                    Some(token) => DuckDbTarget::MotherduckSaasTokenAuth { path, token },
+                    None => DuckDbTarget::MotherduckSaasBrowserLogin { path },
+                }
+            } else {
+                match Self::resolve_token(raw, config) {
+                    Some(token) => DuckDbTarget::MotherduckTokenAuth { path, token },
+                    None => DuckDbTarget::MotherduckBrowserLogin { path },
+                }
+            };
+            Ok(target)
+        } else {
             // Matches upstream dbt-duckdb: `database:` for a local/in-memory
             // connection must match the name DuckDB derives from `path`, else
             // it's a hard config error (no aliasing on the primary connection).
-            _ => {
+            {
+                if settings.is_saas_mode() {
+                    return Err(AuthError::config(
+                        "settings: motherduck_saas_mode requires a MotherDuck path (md: or motherduck:)",
+                    ));
+                }
                 let path = match raw {
                     "" | ":memory:" => ":memory:",
                     _ => raw,
@@ -125,6 +132,11 @@ impl<'a> DuckDbTarget<'a> {
         }
     }
 
+    // FIXME: token hierarchy is missing parts of the Python adapter (plugins/motherduck.py):
+    // - token in attachment path query strings (Python reads these for attach-only MotherDuck)
+    // - token in `plugins[].config` (Python passes MD keys from plugin config)
+    // - bare `token` / `TOKEN` keys (Python's get_md_config_settings accepts them)
+    // - `settings:` token is applied per cursor in Python; here it is set on the init connection
     fn resolve_token(path: &str, config: &AdapterConfig) -> Option<String> {
         if let Some(token) = config
             .get("settings")
@@ -140,9 +152,8 @@ impl<'a> DuckDbTarget<'a> {
         }
 
         let from_path = path.split_once('?').and_then(|(_, query)| {
-            query.split('&').find_map(|pair| {
-                let (key, value) = pair.split_once('=')?;
-                (key == "motherduck_token" && !value.is_empty()).then(|| value.to_owned())
+            parse_query(query).find_map(|(key, value)| {
+                (key == "motherduck_token" && !value.is_empty()).then(|| value.into_owned())
             })
         });
         from_path.or_else(|| std::env::var("MOTHERDUCK_TOKEN").ok())
@@ -229,7 +240,8 @@ impl<'a> Extensions<'a> {
     }
 
     /// Same as [`Self::render`], with `motherduck` auto-injected if absent.
-    fn render_with_motherduck(&self) -> Vec<String> {
+    /// `install` is false under SaaS, where file access is locked at open and only `LOAD` can run.
+    fn render_with_motherduck(&self, target: &DuckDbTarget<'_>) -> Vec<String> {
         let has_motherduck = self
             .names
             .iter()
@@ -249,7 +261,11 @@ impl<'a> Extensions<'a> {
 
         let mut out = Vec::with_capacity(names.len() * 2);
         for name in &names {
-            out.push(format!("INSTALL {name}"));
+            match target {
+                DuckDbTarget::MotherduckSaasBrowserLogin { .. }
+                | DuckDbTarget::MotherduckSaasTokenAuth { .. } => {}
+                _ => out.push(format!("INSTALL {name}")),
+            }
             out.push(format!("LOAD {name}"));
         }
         out
@@ -320,10 +336,36 @@ impl<'a> Secrets<'a> {
     }
 }
 
+/// `settings:` from the profile, rendered as `SET key = value` on the init connection.
+///
+/// Scope matters:
+/// - Plain `SET` is session-scoped. The value lives only on the init connection and
+///   is gone once it closes. Later connections will not see it.
+/// - `SET GLOBAL` writes the instance's config. Every later connection on this
+///   database sees it, until something overwrites it.
+/// - A setting can also be global-only, in which case plain `SET` writes globally.
+///   Use `SET GLOBAL` when the value must reach later connections.
+///
+/// Assumption: one dbt invocation uses one profile. MotherDuck semantics cannot
+/// safely live next to plain DuckDB semantics in the same run.
+///
 // FIXME: validate settings at parse time, like secrets.
 struct Settings<'a> {
     keys: Vec<String>,
     values: Vec<&'a YmlValue>,
+}
+
+impl Settings<'_> {
+    fn settings(&self) -> impl Iterator<Item = (&String, &&YmlValue)> {
+        self.keys.iter().zip(self.values.iter())
+    }
+
+    fn is_saas_mode(&self) -> bool {
+        self.settings().any(|(key, value)| {
+            key == "motherduck_saas_mode"
+                && (value.as_bool() == Some(true) || value.as_str() == Some("true"))
+        })
+    }
 }
 
 impl<'a> Settings<'a> {
@@ -356,36 +398,20 @@ impl<'a> Settings<'a> {
         self.keys
             .iter()
             .zip(self.values.iter())
-            .map(|(key, value)| format!("SET {key} = {}", yml_value_to_sql_literal(value)))
+            .filter(|(key, _)| !(key.as_str() == "motherduck_saas_mode" && self.is_saas_mode()))
+            .map(|(key, value)| {
+                let literal = yml_value_to_sql_literal(value);
+                format!("SET {key} = {literal}")
+            })
             .collect()
-    }
-}
-
-/// The profile's own primary catalog (`path:`/`database:`).
-struct PrimaryAttach<'a> {
-    path: &'a str,
-    alias: &'a str,
-}
-
-impl<'a> PrimaryAttach<'a> {
-    fn new(path: &'a str, alias: &'a str) -> Self {
-        Self { path, alias }
-    }
-
-    fn render(&self) -> Vec<String> {
-        vec![
-            format!(
-                "ATTACH IF NOT EXISTS '{}' AS {}",
-                escape_single_quotes(self.path),
-                self.alias
-            ),
-            format!("USE {}", self.alias),
-        ]
     }
 }
 
 const ATTACHMENT_FIELDS: &[&str] = &["path", "alias", "type", "read_only"];
 
+/// If any attachment is `md:` / `motherduck:` prefixed, the `motherduck` extension is
+/// auto-loaded and the profile is treated as a MotherDuck setup, even when the main
+/// path was not intended to be MotherDuck.
 struct Attachments<'a> {
     paths: Vec<&'a str>,
     aliases: Vec<Option<String>>,
@@ -500,6 +526,10 @@ impl<'a> Attachments<'a> {
 // Top-level entry point
 // ---------------------------------------------------------------------------
 
+pub fn motherduck_saas_mode_query() -> &'static str {
+    "select coalesce(bool_or(try_cast(value as boolean)), false) as saas_mode from duckdb_settings() where name = 'motherduck_saas_mode'"
+}
+
 /// Generate DuckDB initialization SQL statements from the adapter config.
 ///
 /// Returns an ordered list of SQL strings ready for sequential execution.
@@ -512,44 +542,15 @@ pub fn generate_duckdb_init_sql(config: &AdapterConfig) -> Result<Vec<String>, A
     let settings = Settings::from_config(config)?;
     let attachments = Attachments::from_config(config)?;
 
-    match target {
-        DuckDbTarget::MotherDuck {
-            path,
-            database_name: alias,
-        } => {
-            let mut out = Vec::new();
-            out.extend(extensions.render_with_motherduck());
-            out.extend(secrets.render());
-            out.extend(settings.render());
-            out.extend(PrimaryAttach::new(&path, &alias).render());
-            out.extend(attachments.render());
-            Ok(out)
-        }
-
-        DuckDbTarget::MotherDuckWithToken {
-            path,
-            database_name: alias,
-            token,
-        } => {
-            let mut out = Vec::new();
-            out.extend(extensions.render_with_motherduck());
-            out.extend(secrets.render());
-            out.push(MotherDuckToken(&token).render());
-            out.extend(settings.render());
-            out.extend(PrimaryAttach::new(&path, &alias).render());
-            out.extend(attachments.render());
-            Ok(out)
-        }
-
-        DuckDbTarget::Plain { .. } => {
-            let mut out = Vec::new();
-            out.extend(extensions.render());
-            out.extend(secrets.render());
-            out.extend(settings.render());
-            out.extend(attachments.render());
-            Ok(out)
-        }
-    }
+    let mut out = Vec::new();
+    out.extend(match target {
+        DuckDbTarget::Plain { .. } => extensions.render(),
+        _ => extensions.render_with_motherduck(&target),
+    });
+    out.extend(secrets.render());
+    out.extend(settings.render());
+    out.extend(attachments.render());
+    Ok(out)
 }
 
 // ---------------------------------------------------------------------------
@@ -1104,84 +1105,6 @@ extensions:
     }
 
     #[test]
-    fn test_motherduck_path_is_auto_attached() {
-        let config = config_from_yaml(
-            r#"
-path: "md:stocks_dev"
-"#,
-        );
-        let stmts = generate_duckdb_init_sql(&config).unwrap();
-        assert!(stmts.contains(&"ATTACH IF NOT EXISTS 'md:stocks_dev' AS stocks_dev".to_owned()));
-        assert!(stmts.contains(&"USE stocks_dev".to_owned()));
-    }
-
-    #[test]
-    fn test_motherduck_path_uses_explicit_database_alias() {
-        let config = config_from_yaml(
-            r#"
-path: "md:stocks_dev"
-database: "analytics"
-"#,
-        );
-        let stmts = generate_duckdb_init_sql(&config).unwrap();
-        assert!(stmts.contains(&"ATTACH IF NOT EXISTS 'md:stocks_dev' AS analytics".to_owned()));
-        assert!(stmts.contains(&"USE analytics".to_owned()));
-    }
-
-    #[test]
-    fn test_motherduck_token_set_in_init_sql() {
-        let config = config_from_yaml(
-            r#"
-path: "md:my_db"
-settings:
-  motherduck_token: "my_secret_token"
-"#,
-        );
-        let stmts = generate_duckdb_init_sql(&config).unwrap();
-        assert!(
-            stmts.contains(&"SET motherduck_token = 'my_secret_token'".to_owned()),
-            "motherduck_token should be emitted in init SQL for MotherDuck paths"
-        );
-    }
-
-    #[test]
-    fn test_motherduck_token_settings_wins_in_init_sql() {
-        let config = config_from_yaml(
-            r#"
-path: "md:my_db?motherduck_token=tok_from_path"
-settings:
-  motherduck_token: "tok_from_settings"
-"#,
-        );
-        let stmts = generate_duckdb_init_sql(&config).unwrap();
-        assert!(stmts.contains(&"SET motherduck_token = 'tok_from_settings'".to_owned()));
-    }
-
-    #[test]
-    fn test_motherduck_token_set_before_attach() {
-        let config = config_from_yaml(
-            r#"
-path: "md:my_db?motherduck_token=tok_from_path"
-"#,
-        );
-        let stmts = generate_duckdb_init_sql(&config).unwrap();
-        let token_idx = stmts
-            .iter()
-            .position(|s| s == "SET motherduck_token = 'tok_from_path'")
-            .expect("expected motherduck token SET statement");
-        let attach_idx = stmts
-            .iter()
-            .position(|s| s == "ATTACH IF NOT EXISTS 'md:my_db' AS my_db")
-            .expect("expected ATTACH statement");
-        let use_idx = stmts
-            .iter()
-            .position(|s| s == "USE my_db")
-            .expect("expected USE statement");
-        assert!(token_idx < attach_idx);
-        assert!(attach_idx < use_idx);
-    }
-
-    #[test]
     fn test_motherduck_token_not_set_for_local_path() {
         let config = config_from_yaml(
             r#"
@@ -1480,35 +1403,85 @@ secrets: my_secret
     // -----------------------------------------------------------------------
 
     #[test]
-    fn test_motherduck_database_alias_sanitizes_to_empty_falls_back_to_my_db() {
+    fn test_saas_setting_rejected_without_motherduck_path() {
         let config = config_from_yaml(
             r#"
-path: "md:my_db"
-database: "!@#$%"
+path: "/tmp/local.duckdb"
+settings:
+  motherduck_saas_mode: true
 "#,
         );
-        let stmts = generate_duckdb_init_sql(&config).unwrap();
+        let err = generate_duckdb_init_sql(&config).unwrap_err();
         assert!(
-            stmts.contains(&"ATTACH IF NOT EXISTS 'md:my_db' AS my_db".to_owned()),
-            "expected fallback alias 'my_db': {stmts:?}"
+            format!("{err:?}").contains("motherduck_saas_mode"),
+            "{err:?}"
         );
-        assert!(stmts.contains(&"USE my_db".to_owned()));
     }
 
     #[test]
-    fn test_bare_md_path_attach_alias_is_my_db() {
-        // matches upstream dbt-duckdb's own fallback:
-        // https://github.com/duckdb/dbt-duckdb/blob/67b43f1f86ef6b4252b184ebeb00b750a7e9a513/dbt/adapters/duckdb/credentials.py#L339
+    fn test_saas_setting_rejected_when_only_plain_attachments() {
         let config = config_from_yaml(
             r#"
-path: "md:"
+path: "/tmp/local.duckdb"
+attach:
+  - path: "/tmp/other.duckdb"
+settings:
+  motherduck_saas_mode: "true"
+"#,
+        );
+        assert!(generate_duckdb_init_sql(&config).is_err());
+    }
+
+    #[test]
+    fn test_saas_setting_false_accepted_without_motherduck_path() {
+        let config = config_from_yaml(
+            r#"
+path: "/tmp/local.duckdb"
+settings:
+  motherduck_saas_mode: false
+"#,
+        );
+        assert!(generate_duckdb_init_sql(&config).is_ok());
+    }
+
+    #[test]
+    fn test_saas_setting_accepted_with_motherduck_attachment() {
+        let config = config_from_yaml(
+            r#"
+path: "/tmp/local.duckdb"
+attach:
+  - path: "md:shared_db"
+settings:
+  motherduck_saas_mode: true
+"#,
+        );
+        assert!(generate_duckdb_init_sql(&config).is_ok());
+    }
+
+    #[test]
+    fn test_parse_query_cases() {
+        assert_eq!(parse_query("").count(), 0);
+
+        let encoded: Vec<_> = parse_query("motherduck_token=ab%2Bc+d%3D").collect();
+        assert_eq!(encoded.len(), 1);
+        assert_eq!(encoded[0].0, "motherduck_token");
+        assert_eq!(encoded[0].1, "ab+c d=");
+
+        let decoded: Vec<_> = parse_query("motherduck_token=abc123").collect();
+        assert_eq!(decoded.len(), 1);
+        assert_eq!(decoded[0].1, "abc123");
+        assert!(matches!(decoded[0].1, Cow::Borrowed(_)));
+    }
+
+    #[test]
+    fn test_motherduck_path_is_not_attached_in_init_sql() {
+        let config = config_from_yaml(
+            r#"
+path: "md:my_db"
 "#,
         );
         let stmts = generate_duckdb_init_sql(&config).unwrap();
-        assert!(
-            stmts.contains(&"ATTACH IF NOT EXISTS 'md:' AS my_db".to_owned()),
-            "expected alias 'my_db' for bare md: path: {stmts:?}"
-        );
-        assert!(stmts.contains(&"USE my_db".to_owned()));
+        assert!(!stmts.iter().any(|s| s.contains("md:my_db")), "{stmts:?}");
+        assert!(!stmts.iter().any(|s| s.starts_with("USE ")), "{stmts:?}");
     }
 }

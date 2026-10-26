@@ -18,8 +18,9 @@ use dbt_adapter::sql_types::{TypeOps, make_arrow_field};
 use dbt_adapter::{Adapter, Column};
 use dbt_adapter_core::{AdapterType, ExecutionPhase, quote_char};
 use dbt_common::cancellation::Cancellable;
-use dbt_common::collections::DashMap;
+use dbt_common::collections::SccHashMap;
 use dbt_common::constants::DBT_CTE_PREFIX;
+use dbt_common::io_args::{ReplayMode, TimeMachineMode};
 use dbt_common::static_analysis::is_static_analysis_off_or_baseline;
 use dbt_common::stats::NodeStatus;
 use dbt_common::stdfs;
@@ -31,7 +32,7 @@ use dbt_jinja_utils::serde::single_expression_body;
 use dbt_jinja_utils::utils::add_task_context;
 use dbt_jinja_utils::utils::macro_spans_to_macro_span_vec;
 use dbt_jinja_utils::utils::render_sql;
-use dbt_jinja_utils::{Var, env_var};
+use dbt_jinja_utils::{ConfiguredVar, env_var};
 use dbt_scheduler::instructions::SqlInstruction;
 use dbt_schemas::schemas;
 use dbt_schemas::schemas::InternalDbtNode;
@@ -42,7 +43,9 @@ use dbt_schemas::schemas::{DbtUnitTest, InternalDbtNodeAttributes, NodePathKind}
 use dbt_tasks_core::context::TaskRunnerCtx;
 use dbt_tasks_core::render_task_hooks::RenderTaskHooks;
 use dbt_tasks_core::task::TaskResult;
-use dbt_tasks_core::unit_test_schema::{UnitTestExpectedSchemaKey, UnitTestExpectedSchemaKeyInput};
+use dbt_tasks_core::unit_test_schema::{
+    FixtureSchemaCachePolicy, UnitTestExpectedSchemaKey, UnitTestExpectedSchemaKeyInput,
+};
 use dbt_telemetry::{ExecutionPhase as TelemetryExecutionPhase, NodeType};
 
 use crate::renderable::unit_test_typing::{BigqueryTyping, DatabricksTyping, SnowflakeTyping};
@@ -60,6 +63,8 @@ use regex::Regex;
 use sqlparser::tokenizer::{Token, Tokenizer, Whitespace};
 
 type YmlValue = dbt_yaml::Value;
+
+const COMPILED_INCREMENTAL_SCHEMA_MARKER: &str = ".compiled_incremental_unit_test_schema_v1";
 
 /// Identifies which unit test relation schema is being resolved for error reporting.
 #[derive(Clone, Copy)]
@@ -98,12 +103,74 @@ struct ExpectedSchemaInferenceOptions {
 fn should_use_query_schema_fallback(
     is_tested_model_ephemeral: bool,
     effective_execute: schemas::profiles::Execute,
-    is_replaying: bool,
+    replay_active: bool,
 ) -> bool {
-    is_tested_model_ephemeral || (!effective_execute.is_default() && !is_replaying)
+    // Warehouse recordings contain the temporary-table probe, not the local
+    // query-schema calls, so replay must preserve the recorded path.
+    is_tested_model_ephemeral || (!effective_execute.is_default() && !replay_active)
 }
 
-/// Small utility for merging objects
+fn has_is_incremental_false_override(unit_test: &DbtUnitTest) -> bool {
+    unit_test
+        .__unit_test_attr__
+        .overrides
+        .as_ref()
+        .and_then(|overrides| overrides.macros.as_ref().as_ref())
+        .and_then(|macros| macros.get("is_incremental"))
+        .and_then(YmlValue::as_bool)
+        == Some(false)
+}
+
+fn recording_uses_compiled_incremental_schema(ctx: &TaskRunnerCtx) -> FsResult<bool> {
+    let marker_path = match ctx.inner.arg.replay.as_ref() {
+        Some(ReplayMode::FsRecord(path)) => Some((path.clone(), true)),
+        Some(ReplayMode::FsReplay(path)) => Some((path.clone(), false)),
+        Some(ReplayMode::FsTimeMachine(TimeMachineMode::Record(config))) => Some((
+            config.output_path.join(config.invocation_id.to_string()),
+            true,
+        )),
+        Some(ReplayMode::FsTimeMachine(TimeMachineMode::Replay(config))) => {
+            Some((config.artifact_path.clone(), false))
+        }
+        Some(ReplayMode::MantleReplay(_)) => None,
+        None => return Ok(true),
+    };
+
+    let Some((recording_path, is_recording)) = marker_path else {
+        return Ok(false);
+    };
+    let marker = recording_path.join(COMPILED_INCREMENTAL_SCHEMA_MARKER);
+    if is_recording {
+        stdfs::create_dir_all(&recording_path)?;
+        stdfs::write(marker, b"1\n")?;
+        Ok(true)
+    } else {
+        Ok(marker.is_file())
+    }
+}
+
+fn use_compiled_schema_for_incremental(
+    ctx: &TaskRunnerCtx,
+    unit_test: &DbtUnitTest,
+) -> FsResult<bool> {
+    if !has_is_incremental_false_override(unit_test) {
+        return Ok(false);
+    }
+    recording_uses_compiled_incremental_schema(ctx)
+}
+
+fn is_replay_active(ctx: &TaskRunnerCtx) -> bool {
+    ctx.inner.arg.replay.as_ref().is_some_and(|mode| {
+        matches!(mode, ReplayMode::MantleReplay(_) | ReplayMode::FsReplay(_))
+            || mode.is_time_machine_replay()
+    }) || ctx
+        .env
+        .get_base_adapter()
+        .is_some_and(|adapter| adapter.as_replay().is_some())
+}
+
+/// Small utility for merging objects: a key resolves in the first object that
+/// defines it.
 #[derive(Debug, Clone)]
 struct ObjectOverlay(pub Vec<Value>);
 
@@ -111,9 +178,26 @@ impl Object for ObjectOverlay {
     fn get_value(self: &Arc<Self>, key: &Value) -> Option<Value> {
         self.0
             .iter()
-            // Err if undefined
+            // `get_item` returns `Ok(UNDEFINED)` for a missing key, so skip
+            // undefined values or the first object answers every key.
             .filter_map(|o| o.get_item(key).ok())
-            .next()
+            .find(|v| !v.is_undefined())
+    }
+
+    // Package namespaces (`DbtNamespace`) resolve their macros here rather than
+    // in `get_value`, because the lookup needs the render state.
+    fn get_property(
+        self: &Arc<Self>,
+        state: &State<'_, '_>,
+        name: &str,
+        listeners: &[Rc<dyn RenderingEventListener>],
+    ) -> Result<Value, minijinja::Error> {
+        Ok(self
+            .0
+            .iter()
+            .filter_map(|o| o.as_object()?.get_property(state, name, listeners).ok())
+            .find(|v| !v.is_undefined())
+            .unwrap_or(Value::UNDEFINED))
     }
 }
 
@@ -133,22 +217,15 @@ pub(crate) async fn run_unit_test_render(
     result_sender: Option<std::sync::mpsc::SyncSender<TaskResult>>,
     task_hooks: Arc<dyn RenderTaskHooks>,
 ) -> FsResult<NodeStatus> {
-    use dbt_tasks_core::task::TaskOp;
+    use dbt_tasks_core::task::run_blocking_task_operation;
 
     // Phase 1 — Discover
     let ut = node.clone();
     let mut discover_ctx = ctx.clone();
-    let discover_outcome = TaskOp::Blocking(Box::new(move || {
-        // Downcast to DbtUnitTest for access to unit test fields
-        let ut_ref = ut
-            .as_any()
-            .downcast_ref::<DbtUnitTest>()
-            .expect("run_unit_test_render called on non-DbtUnitTest");
-        discover_given_relations(ut_ref, &mut discover_ctx)
-    }))
-    .run()
-    .await
-    .and_then(|inner| inner);
+    let discover_outcome =
+        run_blocking_task_operation(move || discover_given_relations(&ut, &mut discover_ctx))
+            .await
+            .and_then(|inner| inner);
     let given_relations = match discover_outcome {
         Ok(r) => r,
         Err(e) => {
@@ -164,12 +241,12 @@ pub(crate) async fn run_unit_test_render(
 
     // Phase 2 — Fetch
     if !given_relations.relations_to_fetch.is_empty() {
-        let fetch_outcome = TaskOp::r#async(fetch_missing_schemas(
+        let fetch_outcome = fetch_missing_schemas(
             &given_relations.relations_to_fetch,
             &node.common().unique_id,
             &mut ctx,
             Arc::clone(&task_hooks),
-        ))
+        )
         .await;
         if let Err(e) = fetch_outcome {
             return handle_render_result(
@@ -183,13 +260,9 @@ pub(crate) async fn run_unit_test_render(
     }
 
     // Phase 3 — Render (uses cached schemas + discovered relations)
-    TaskOp::Blocking(Box::new(move || {
+    run_blocking_task_operation(move || {
         let mut ctx = ctx;
-        let ut_ref = node
-            .as_any()
-            .downcast_ref::<DbtUnitTest>()
-            .expect("run_unit_test_render called on non-DbtUnitTest");
-        let res = render_unit_test(ut_ref, &mut ctx, given_relations, task_hooks.as_ref());
+        let res = render_unit_test(&node, &mut ctx, given_relations, task_hooks.as_ref());
         handle_render_result(
             res,
             &node.unique_id(),
@@ -197,8 +270,7 @@ pub(crate) async fn run_unit_test_render(
             &mut ctx,
             &result_sender,
         )
-    }))
-    .run()
+    })
     .await?
 }
 
@@ -384,6 +456,7 @@ async fn fetch_schema_for_unit_test_relation(
     unit_test_unique_id: &str,
     fetched: &mut HashSet<String>,
     schema_target: UnitTestSchemaTarget,
+    cache_policy: FixtureSchemaCachePolicy,
     task_hooks: Arc<dyn RenderTaskHooks>,
 ) -> FsResult<SchemaRef> {
     let canonical_fqn = relation.get_canonical_fqn()?;
@@ -397,18 +470,10 @@ async fn fetch_schema_for_unit_test_relation(
         )
     })?;
 
-    let is_local_unit_test =
-        ctx.nodes()
-            .unit_tests
-            .get(unit_test_unique_id)
-            .is_some_and(|unit_test| {
-                effective_unit_test_execute(unit_test, ctx.inner.execute)
-                    == schemas::profiles::Execute::Sidecar
-            });
-    let coordinate_fetch = is_local_unit_test
-        && matches!(schema_target, UnitTestSchemaTarget::GivenUpstream)
+    let coordinate_fetch = matches!(schema_target, UnitTestSchemaTarget::GivenUpstream)
         && adapter.as_replay().is_none()
-        && !adapter.engine().is_mock();
+        && !adapter.engine().is_mock()
+        && !is_replay_active(ctx);
     if !coordinate_fetch {
         return hydrate_unit_test_relation_schema(
             ctx,
@@ -426,21 +491,35 @@ async fn fetch_schema_for_unit_test_relation(
     let schema = ctx
         .inner
         .unit_test_schema
-        .get_or_try_fetch_fixture_schema(canonical_fqn, ctx.schema_cache.as_ref(), || async move {
-            hydrate_unit_test_relation_schema(
-                ctx,
-                relation,
-                unit_test_unique_id,
-                fetched_for_fetch,
-                schema_target,
-                task_hooks,
-                &adapter,
-            )
-            .await
-        })
+        .get_or_try_fetch_fixture_schema(
+            canonical_fqn,
+            ctx.schema_cache.as_ref(),
+            cache_policy,
+            || async move {
+                hydrate_unit_test_relation_schema(
+                    ctx,
+                    relation,
+                    unit_test_unique_id,
+                    fetched_for_fetch,
+                    schema_target,
+                    task_hooks,
+                    &adapter,
+                )
+                .await
+            },
+        )
         .await?;
     fetched.insert(semantic_fqn);
     Ok(schema)
+}
+
+/// Prefer the original SQL type unless it is a bare NUMBER. `ColumnBuilder` stores
+/// its precision and scale separately; [`Column::data_type`] restores them.
+fn column_sql_type(column: &Column) -> Cow<'_, str> {
+    match column.original_sql_str() {
+        Some(sql_type) if !sql_type.eq_ignore_ascii_case("NUMBER") => Cow::Borrowed(sql_type),
+        _ => Cow::Owned(column.data_type()),
+    }
 }
 
 fn columns_to_schema(
@@ -451,10 +530,7 @@ fn columns_to_schema(
     let mut fields = Vec::with_capacity(columns.len());
 
     for column in columns {
-        let sql_type_str: Cow<str> = column
-            .original_sql_str()
-            .map(Cow::from)
-            .unwrap_or_else(|| column.data_type().into());
+        let sql_type_str = column_sql_type(&column);
 
         let field = make_arrow_field(
             type_ops,
@@ -555,7 +631,7 @@ fn infer_unit_test_expected_schema(
     );
 
     if let Some(overrides) = &unit_test.__unit_test_attr__.overrides {
-        apply_unit_test_overrides(&mut run_context, overrides, ctx);
+        apply_unit_test_overrides(&mut run_context, overrides, ctx)?;
     }
 
     // This is a small part of the dbt-core unit test materialization logic that infers
@@ -774,6 +850,37 @@ fn infer_unit_test_expected_schema(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
+fn infer_schema_from_compiled_sql(
+    ctx: &TaskRunnerCtx,
+    unit_test: &DbtUnitTest,
+    raw_model_sql: &str,
+    compile_context: &BTreeMap<String, Value>,
+    original_file_path: &Path,
+    subqueries: &[(String, String)],
+    fixture_shape_subqueries: &[(String, String)],
+    options: ExpectedSchemaInferenceOptions,
+    task_hooks: &dyn RenderTaskHooks,
+) -> FsResult<SchemaRef> {
+    let compiled_model_sql = render_sql(
+        raw_model_sql,
+        &ctx.env,
+        compile_context,
+        ctx.rendering_listener_factory.as_ref(),
+        original_file_path,
+    )?;
+
+    infer_unit_test_expected_schema(
+        ctx,
+        unit_test,
+        &compiled_model_sql,
+        subqueries,
+        fixture_shape_subqueries,
+        options,
+        task_hooks,
+    )
+}
+
 /// `run_started_at` is a plain datetime global, not a macro invoked with
 /// `()` (dbt-core lets it be frozen via `overrides.macros` anyway). Stubbing
 /// it out as a callable like other macro overrides breaks
@@ -834,7 +941,7 @@ pub fn apply_unit_test_overrides(
     compile_context: &mut BTreeMap<String, MinijinjaValue>,
     overrides: &UnitTestOverrides,
     ctx: &TaskRunnerCtx,
-) {
+) -> FsResult<()> {
     // Override for Macros
     if let Some(macros) = overrides.macros.as_ref() {
         bind_override_macros(macros, compile_context, &ctx.env);
@@ -865,13 +972,23 @@ pub fn apply_unit_test_overrides(
 
     // Override for Variables
     if let Some(vars) = &overrides.vars {
-        let base_vars = ctx.inner.arg.vars.clone();
-        let overrides_map = Some(vars.clone());
+        // Layer overrides over the CLI vars so project vars stay visible, like Core's UnitTestVar.
+        let configured = ctx
+            .env
+            .get_global("var")
+            .and_then(|var| var.downcast_object::<ConfiguredVar>())
+            .ok_or_else(|| {
+                fs_err!(
+                    ErrorCode::InvalidConfig,
+                    "unit test environment `var` global is not a ConfiguredVar"
+                )
+            })?;
         compile_context.insert(
             "var".to_string(),
-            MinijinjaValue::from_object(Var::with_overrides(base_vars, overrides_map)),
+            MinijinjaValue::from_object(configured.with_cli_overrides(vars)),
         );
     }
+    Ok(())
 }
 
 fn create_cte_name_from_fqn(
@@ -911,8 +1028,14 @@ fn replace_subquery_refs_with_cte_names(
 
 /// Per-given: (rendered FQN string, relation Arc).
 type GivenRelations = Vec<(String, Arc<dyn BaseRelation>)>;
-/// Relations needing async schema fetch (cache misses).
-type RelationsToFetch = Vec<(Arc<dyn BaseRelation>, UnitTestSchemaTarget)>;
+struct RelationToFetch {
+    relation: Arc<dyn BaseRelation>,
+    schema_target: UnitTestSchemaTarget,
+    cache_policy: FixtureSchemaCachePolicy,
+}
+
+/// Relations needing async schema fetch (cache misses or persisted entries).
+type RelationsToFetch = Vec<RelationToFetch>;
 
 #[derive(Default)]
 struct DiscoveredGivenRelations {
@@ -1091,14 +1214,18 @@ fn extract_expect_values<'a>(
 /// Step 0 (blocking): Eval Jinja for each `given` input to discover relations.
 /// Returns the resolved relations and any that need async schema fetching.
 fn discover_given_relations(
-    ut: &DbtUnitTest,
+    node: &Arc<dyn InternalDbtNodeAttributes>,
     ctx: &mut TaskRunnerCtx,
 ) -> FsResult<DiscoveredGivenRelations> {
+    let ut = node
+        .as_any()
+        .downcast_ref::<DbtUnitTest>()
+        .expect("run_unit_test_render called on non-DbtUnitTest");
     let mut base_context = ctx.inner.base_context.clone();
     add_task_context(&mut base_context, ut.common(), &ctx.thread_id);
 
     let (compile_context, _config_map) = ctx.build_compile_node_context(
-        ut,
+        node.clone(),
         &base_context,
         DependencyValidationConfig::new_unvalidated(),
     )?;
@@ -1117,6 +1244,11 @@ fn discover_given_relations(
     // has no TTL, so a cached schema goes stale when an upstream model is
     // rebuilt with different column types between invocations.
     let force_refetch = ut.node_adapter() == AdapterType::ClickHouse;
+    let refresh_persisted_given_schemas = !is_replay_active(ctx)
+        && ctx
+            .env
+            .get_base_adapter()
+            .is_some_and(|adapter| !adapter.engine().is_mock());
 
     for given in &ut.__unit_test_attr__.given {
         let given_relation = {
@@ -1137,16 +1269,29 @@ fn discover_given_relations(
         // Only check/fetch schemas for Dict and Csv formats.
         if given.format != schemas::common::Formats::Sql {
             let canonical_fqn = relation.get_canonical_fqn()?;
-            if force_refetch || !ctx.schema_cache.exists(&canonical_fqn) {
-                relations_to_fetch
-                    .push((Arc::clone(&relation), UnitTestSchemaTarget::GivenUpstream));
+            let should_refresh = force_refetch
+                || (refresh_persisted_given_schemas
+                    && ctx
+                        .schema_cache
+                        .schema_is_from_prior_invocation(&canonical_fqn));
+            if should_refresh || !ctx.schema_cache.exists(&canonical_fqn) {
+                relations_to_fetch.push(RelationToFetch {
+                    relation: Arc::clone(&relation),
+                    schema_target: UnitTestSchemaTarget::GivenUpstream,
+                    cache_policy: if should_refresh {
+                        FixtureSchemaCachePolicy::Refresh
+                    } else {
+                        FixtureSchemaCachePolicy::Reuse
+                    },
+                });
             }
         }
 
         given_relations.push((fqn_string, relation));
     }
 
-    // Check expect relation for incremental + SA-off case
+    // Incremental tests read the existing model relation's schema; fetch it if uncached.
+    // An `is_incremental: false` override instead uses compiled SQL.
     let model_unique_id = get_unique_id(
         &ut.__unit_test_attr__.model,
         &ut.__common_attr__.package_name,
@@ -1157,30 +1302,38 @@ fn discover_given_relations(
         "model",
     );
     let resolver_state = ctx.resolver_state();
-    let model_static_analysis_off = resolver_state
-        .nodes
-        .get_node(&model_unique_id)
-        .map(|node| is_static_analysis_off_or_baseline(node.static_analysis().into_inner()))
-        .unwrap_or(false);
-    let is_incremental = resolver_state
-        .nodes
-        .get_node(&model_unique_id)
-        .map(|node| node.materialized() == DbtMaterialization::Incremental)
-        .unwrap_or(false);
+    let use_compiled_schema_for_incremental = use_compiled_schema_for_incremental(ctx, ut)?;
+    let tested_model = resolver_state.nodes.get_node(&model_unique_id);
+    let should_fetch_expected_schema = tested_model.is_some_and(|node| {
+        node.materialized() == DbtMaterialization::Incremental
+            && !use_compiled_schema_for_incremental
+    });
+    let model_static_analysis_off = tested_model.is_some_and(|node| {
+        is_static_analysis_off_or_baseline(node.static_analysis().into_inner())
+    });
 
-    if model_static_analysis_off && is_incremental {
-        if let Some(expect_relation) = ctx.try_get_relation_from_node(&model_unique_id) {
-            let schema_relation = check_defer_relation(&model_unique_id, ctx)
-                .unwrap_or_else(|| expect_relation.clone());
-            let canonical_fqn = schema_relation.get_canonical_fqn()?;
-            if force_refetch || !ctx.schema_cache.exists(&canonical_fqn) {
-                relations_to_fetch.push((
-                    schema_relation,
-                    UnitTestSchemaTarget::ExpectedModel {
-                        incremental_expected_path: true,
-                    },
-                ));
-            }
+    if should_fetch_expected_schema
+        && let Some(expect_relation) = ctx.try_get_relation_from_node(&model_unique_id)
+    {
+        // Must match the relation `render_unit_test` reads for this mode.
+        let schema_relation = if model_static_analysis_off {
+            check_defer_relation(&model_unique_id, ctx).unwrap_or_else(|| expect_relation.clone())
+        } else {
+            expect_relation
+        };
+        let canonical_fqn = schema_relation.get_canonical_fqn()?;
+        if force_refetch || !ctx.schema_cache.exists(&canonical_fqn) {
+            relations_to_fetch.push(RelationToFetch {
+                relation: schema_relation,
+                schema_target: UnitTestSchemaTarget::ExpectedModel {
+                    incremental_expected_path: true,
+                },
+                cache_policy: if force_refetch {
+                    FixtureSchemaCachePolicy::Refresh
+                } else {
+                    FixtureSchemaCachePolicy::Reuse
+                },
+            });
         }
     }
 
@@ -1199,19 +1352,20 @@ fn discover_given_relations(
 
 /// Step 1 (async): Fetch missing schemas into the cache.
 async fn fetch_missing_schemas(
-    to_fetch: &[(Arc<dyn BaseRelation>, UnitTestSchemaTarget)],
+    to_fetch: &[RelationToFetch],
     unit_test_unique_id: &str,
     ctx: &mut TaskRunnerCtx,
     task_hooks: Arc<dyn RenderTaskHooks>,
 ) -> FsResult<()> {
     let mut fetched = HashSet::new();
-    for (relation, schema_target) in to_fetch {
+    for request in to_fetch {
         fetch_schema_for_unit_test_relation(
             ctx,
-            Arc::clone(relation),
+            Arc::clone(&request.relation),
             unit_test_unique_id,
             &mut fetched,
-            *schema_target,
+            request.schema_target,
+            request.cache_policy,
             task_hooks.clone(),
         )
         .await?;
@@ -1232,11 +1386,15 @@ fn check_defer_relation(
 }
 
 fn render_unit_test(
-    node: &DbtUnitTest,
+    unit_test: &Arc<dyn InternalDbtNodeAttributes>,
     ctx: &mut TaskRunnerCtx,
     given_relations: DiscoveredGivenRelations,
     task_hooks: &dyn RenderTaskHooks,
-) -> FsResult<(SqlInstruction, Arc<DashMap<String, MinijinjaValue>>)> {
+) -> FsResult<(SqlInstruction, Arc<SccHashMap<String, MinijinjaValue>>)> {
+    let node = unit_test
+        .as_any()
+        .downcast_ref::<DbtUnitTest>()
+        .expect("run_unit_test_render called on non-DbtUnitTest");
     let DiscoveredGivenRelations {
         given_relations,
         given_relation_ids,
@@ -1266,15 +1424,13 @@ fn render_unit_test(
         .map(|a| a.engine().type_ops().clone())
         .unwrap_or_else(|| Arc::new(DefaultTypeOps::new(adapter_type)) as Arc<dyn TypeOps>);
     let type_ops = type_ops_arc.as_ref();
-    let is_replaying = base_adapter
-        .as_ref()
-        .is_some_and(|adapter| adapter.as_replay().is_some());
+    let replay_active = is_replay_active(ctx);
     let is_mock = base_adapter
         .as_ref()
         .is_some_and(|adapter| adapter.engine().is_mock());
     let effective_execute = effective_unit_test_execute(node, ctx.inner.execute);
     let cache_expected_schema =
-        effective_execute == schemas::profiles::Execute::Sidecar && !is_replaying && !is_mock;
+        effective_execute == schemas::profiles::Execute::Sidecar && !replay_active && !is_mock;
 
     let model_unique_id = get_unique_id(
         &node.__unit_test_attr__.model,
@@ -1313,7 +1469,7 @@ fn render_unit_test(
 
     // Build compile context first so we can use it for rendering given_fqn
     let (mut compile_context, config_map) = ctx.build_compile_node_context(
-        node,
+        unit_test.clone(),
         &base_context,
         DependencyValidationConfig::new_for_node(node)
             .validate()
@@ -1323,7 +1479,7 @@ fn render_unit_test(
 
     // Apply overrides to the compile context
     if let Some(overrides) = &node.__unit_test_attr__.overrides {
-        apply_unit_test_overrides(&mut compile_context, overrides, ctx);
+        apply_unit_test_overrides(&mut compile_context, overrides, ctx)?;
     }
 
     let resolver_state = ctx.resolver_state();
@@ -1474,34 +1630,47 @@ fn render_unit_test(
         )
     })?;
 
-    let model_static_analysis_off = resolver_state
-        .nodes
-        .get_node(&model_unique_id)
-        .map(|node| is_static_analysis_off_or_baseline(node.static_analysis().into_inner()))
-        .unwrap_or(false);
-
-    let is_incremental = resolver_state
-        .nodes
-        .get_node(&model_unique_id)
-        .map(|node| node.materialized() == DbtMaterialization::Incremental)
-        .unwrap_or(false);
+    let tested_model = resolver_state.nodes.get_node(&model_unique_id);
+    let model_static_analysis_off = tested_model.is_some_and(|node| {
+        is_static_analysis_off_or_baseline(node.static_analysis().into_inner())
+    });
+    let model_materialization = tested_model.map(|node| node.materialized());
+    let is_incremental = model_materialization == Some(DbtMaterialization::Incremental);
+    let use_compiled_schema_for_incremental = use_compiled_schema_for_incremental(ctx, node)?;
 
     // Ephemeral models have no registered dataset, so the temp-table fallback in
     // `infer_unit_test_expected_schema` fails with "Dataset not found".
     // Force the self-contained query-schema path instead.
-    let is_tested_model_ephemeral = resolver_state
-        .nodes
-        .get_node(&model_unique_id)
-        .map(|node| node.materialized() == DbtMaterialization::Ephemeral)
-        .unwrap_or(false);
+    let is_tested_model_ephemeral = model_materialization == Some(DbtMaterialization::Ephemeral);
 
-    // If `static_analysis_off` false, it means the model being tested may have an analysis phase.
-    // It would not have it if any of upstreams have static analysis off. So we try the schema,
-    // but allow using the dbt-core approach - by creating temporary empty relation from code to
-    // infer schema.
-    // For incremental models, we either rely on analysis phase or fail, as dbt-core doesn't allow
-    // inferring incremental model schema if it doesn't alredy exist.
-    let expect_schema = match (model_static_analysis_off, is_incremental) {
+    let use_query_schema_fallback = should_use_query_schema_fallback(
+        is_tested_model_ephemeral,
+        effective_execute,
+        replay_active,
+    );
+    let schema_inference_options = ExpectedSchemaInferenceOptions {
+        use_query_schema_fallback,
+        try_structural_inference: use_query_schema_fallback,
+        cache_result: cache_expected_schema,
+    };
+    let infer_compiled_schema = || {
+        infer_schema_from_compiled_sql(
+            ctx,
+            node,
+            &raw_sql,
+            &compile_context,
+            original_file_path,
+            &subqueries,
+            &fixture_shape_subqueries,
+            schema_inference_options,
+            task_hooks,
+        )
+    };
+
+    // Keep the existing analyzed/hydrated schema paths unless an explicit
+    // override changes an incremental model into its full-refresh SQL branch.
+    let fetched_expect_schema = match (model_static_analysis_off, is_incremental) {
+        (_, true) if use_compiled_schema_for_incremental => infer_compiled_schema()?,
         // (static analysis is off) + (incremental model): use prod relation from defer
         // state if available (dev table may not exist yet during build --defer)
         (true, true) => {
@@ -1509,7 +1678,7 @@ fn render_unit_test(
                 .unwrap_or_else(|| expect_relation.clone());
             get_schema_for_unit_test_relation(
                 ctx,
-                schema_relation.clone(),
+                schema_relation,
                 UnitTestSchemaTarget::ExpectedModel {
                     incremental_expected_path: true,
                 },
@@ -1555,41 +1724,11 @@ fn render_unit_test(
             if let Some(schema) = cached_schema {
                 schema
             } else {
-                let compiled_model_sql = render_sql(
-                    &raw_sql,
-                    &ctx.env,
-                    &compile_context,
-                    ctx.rendering_listener_factory.as_ref(),
-                    original_file_path,
-                )?;
-                // `--dbt-replay` recordings come from warehouse builds, which
-                // infer non-ephemeral unit-test schemas via the temp-table
-                // probe. The query-schema path's `get_column_schema_from_query`
-                // calls have no matching records under replay, so when the
-                // active adapter is a replayer, fall back to the probe path.
-                // Ephemeral models keep the query-schema path regardless (the
-                // probe has no dataset for them — see `is_tested_model_ephemeral`).
-                let fallback_with_query_schema = should_use_query_schema_fallback(
-                    is_tested_model_ephemeral,
-                    effective_execute,
-                    is_replaying,
-                );
-                infer_unit_test_expected_schema(
-                    ctx,
-                    node,
-                    compiled_model_sql.as_str(),
-                    &subqueries,
-                    &fixture_shape_subqueries,
-                    ExpectedSchemaInferenceOptions {
-                        use_query_schema_fallback: fallback_with_query_schema,
-                        try_structural_inference: fallback_with_query_schema,
-                        cache_result: cache_expected_schema,
-                    },
-                    task_hooks,
-                )?
+                infer_compiled_schema()?
             }
         }
     };
+    let expect_schema = strip_pseudocolumns(&fetched_expect_schema, adapter_type);
 
     let mut column_names_to_field_names: BTreeMap<String, &String> = BTreeMap::new();
     let mut column_names_to_data_types: BTreeMap<String, &DataType> = BTreeMap::new();
@@ -1851,14 +1990,17 @@ fn yml_sequence_to_sql_literal(
 
     let child_literals = value
         .into_iter()
-        .map(|v| {
-            let literal =
-                yml_value_to_sql_literal(adapter_type, type_ops, v, element_field.data_type())?;
+        .map(|v| match adapter_type {
+            AdapterType::Bigquery => bigquery::typed_sql_literal(type_ops, v, element_field),
+            _ => {
+                let literal =
+                    yml_value_to_sql_literal(adapter_type, type_ops, v, element_field.data_type())?;
 
-            if supports_hlist || element_field.data_type().is_nested() {
-                Ok(literal)
-            } else {
-                Ok(format!("CAST({} AS {})", literal, element_type_literal))
+                if supports_hlist || element_field.data_type().is_nested() {
+                    Ok(literal)
+                } else {
+                    Ok(format!("CAST({} AS {})", literal, element_type_literal))
+                }
             }
         })
         .collect::<FsResult<Vec<_>>>()?;
@@ -1909,12 +2051,17 @@ fn yml_mapping_to_sql_literal(
                         .get(field_name)
                         .cloned()
                         .unwrap_or_else(YmlValue::null);
-                    let value_literal = yml_value_to_sql_literal(
-                        adapter_type,
-                        type_ops,
-                        field_value,
-                        field.data_type(),
-                    )?;
+                    let value_literal = match adapter_type {
+                        AdapterType::Bigquery => {
+                            bigquery::typed_sql_literal(type_ops, field_value, field)?
+                        }
+                        _ => yml_value_to_sql_literal(
+                            adapter_type,
+                            type_ops,
+                            field_value,
+                            field.data_type(),
+                        )?,
+                    };
                     let name_literal = type_ops.format_ident(field_name);
                     Ok(format!("{value_literal} AS {name_literal}"))
                 })
@@ -1924,14 +2071,37 @@ fn yml_mapping_to_sql_literal(
     }
 }
 
-/// BigQuery has no `STRING -> JSON` cast, so `PARSE_JSON` is the only constructor, and its
-/// result is already typed - callers must not wrap it (dbt-labs/dbt-core#15708).
-fn is_bigquery_json_literal(
-    adapter_type: AdapterType,
-    data_type: &DataType,
-    value: &YmlValue,
-) -> bool {
-    adapter_type == AdapterType::Bigquery && BigqueryTyping::is_json(data_type) && !value.is_null()
+mod bigquery {
+    use super::*;
+
+    /// BigQuery has no `STRING -> JSON` cast, so `PARSE_JSON` is the only constructor, and its
+    /// result is already typed - callers must not wrap it (dbt-labs/dbt-core#15708).
+    pub(super) fn is_json_literal(data_type: &DataType, value: &YmlValue) -> bool {
+        BigqueryTyping::is_json(data_type) && !value.is_null()
+    }
+
+    pub(super) fn typed_sql_literal(
+        type_ops: &dyn TypeOps,
+        value: YmlValue,
+        field: &Field,
+    ) -> FsResult<String> {
+        let data_type = field.data_type();
+        let already_typed = is_json_literal(data_type, &value);
+        let literal = yml_value_to_sql_literal(AdapterType::Bigquery, type_ops, value, data_type)?;
+        if already_typed {
+            return Ok(literal);
+        }
+
+        let formatted_type = type_ops
+            .get_original_sql_type_from_field(field)
+            .map_err(|e| {
+                fs_err!(
+                    ErrorCode::InvalidConfig,
+                    "Failed to format nested BigQuery fixture type {data_type:?}: {e}"
+                )
+            })?;
+        Ok(format!("CAST({literal} AS {formatted_type})"))
+    }
 }
 
 /// Converts a yaml value to a String literal for the given adapter type
@@ -1943,23 +2113,26 @@ fn yml_value_to_sql_literal(
 ) -> FsResult<String> {
     let literal_formatter = SqlLiteralFormatter::new(adapter_type);
 
-    if is_bigquery_json_literal(adapter_type, data_type, &value) {
-        // A string fixture is the JSON document itself; anything else is serialized to JSON.
-        let json_str = match &value {
-            YmlValue::String(s, _) => s.clone(),
-            _ => serde_json::to_string(&value).map_err(|_| {
-                fs_err!(
-                    ErrorCode::InvalidArgument,
-                    "Unable to serialize JSON fixture value"
-                )
-            })?,
-        };
-        // `format_str` does not escape backslashes for BigQuery; JSON text is full of them.
-        let json_str = json_str.replace('\\', "\\\\");
-        return Ok(format!(
-            "PARSE_JSON({})",
-            literal_formatter.format_str(&json_str)
-        ));
+    match adapter_type {
+        AdapterType::Bigquery if bigquery::is_json_literal(data_type, &value) => {
+            // A string fixture is the JSON document itself; anything else is serialized to JSON.
+            let json_str = match &value {
+                YmlValue::String(s, _) => s.clone(),
+                _ => serde_json::to_string(&value).map_err(|_| {
+                    fs_err!(
+                        ErrorCode::InvalidArgument,
+                        "Unable to serialize JSON fixture value"
+                    )
+                })?,
+            };
+            // `format_str` does not escape backslashes for BigQuery; JSON text is full of them.
+            let json_str = json_str.replace('\\', "\\\\");
+            return Ok(format!(
+                "PARSE_JSON({})",
+                literal_formatter.format_str(&json_str)
+            ));
+        }
+        _ => {}
     }
 
     match value {
@@ -1967,6 +2140,10 @@ fn yml_value_to_sql_literal(
         YmlValue::Null(_) => Ok(literal_formatter.none_value()),
         YmlValue::Bool(b, _) => Ok(literal_formatter.format_bool(b)),
         YmlValue::Number(n, _) => Ok(n.to_string()),
+        // A date/timestamp fixture is rendered in its canonical YAML form as a
+        // string literal; the fixture builder wraps it in a cast to the
+        // column's declared type, same as a quoted string fixture.
+        YmlValue::Timestamp(t, _) => Ok(literal_formatter.format_unit_test_str(&t.to_string())),
         // A string fixture for a type that cannot be produced by casting a
         // string literal (e.g. BigQuery STRUCT/GEOGRAPHY) is a SQL expression
         // that must be injected verbatim. See dbt-labs/dbt-core#14625.
@@ -1975,7 +2152,7 @@ fn yml_value_to_sql_literal(
         {
             Ok(s)
         }
-        YmlValue::String(s, _) => Ok(literal_formatter.format_str(&s)),
+        YmlValue::String(s, _) => Ok(literal_formatter.format_unit_test_str(&s)),
         // Mappings/sequences have per-dialect customizations
         YmlValue::Mapping(m, _) => {
             yml_mapping_to_sql_literal(adapter_type, type_ops, &literal_formatter, m, data_type)
@@ -2037,7 +2214,11 @@ fn strip_pseudocolumns(ref_schema: &SchemaRef, adapter_type: AdapterType) -> Sch
     let fields: Vec<Field> = ref_schema
         .fields()
         .iter()
-        .filter(|f| !pseudocolumns.contains(&f.name().as_str()))
+        .filter(|f| {
+            !pseudocolumns
+                .iter()
+                .any(|pseudocolumn| pseudocolumn.eq_ignore_ascii_case(f.name()))
+        })
         .map(|f| f.as_ref().clone())
         .collect();
 
@@ -2045,7 +2226,10 @@ fn strip_pseudocolumns(ref_schema: &SchemaRef, adapter_type: AdapterType) -> Sch
         return ref_schema.clone();
     }
 
-    Arc::new(Schema::new(fields))
+    Arc::new(Schema::new_with_metadata(
+        fields,
+        ref_schema.metadata().clone(),
+    ))
 }
 
 /// Return `ref_schema` extended with any recognized pseudocolumns (see
@@ -2110,7 +2294,10 @@ fn append_referenced_pseudocolumns(
         .map(|f| f.as_ref().clone())
         .collect();
     fields.extend(extra_fields);
-    Arc::new(Schema::new(fields))
+    Arc::new(Schema::new_with_metadata(
+        fields,
+        ref_schema.metadata().clone(),
+    ))
 }
 
 fn create_values_and_shape_sql(
@@ -2434,8 +2621,7 @@ fn create_bigquery_relation_to_select_from(
                     })?;
 
                     let data_type = schema.field(i).data_type();
-                    let skip_cast =
-                        is_bigquery_json_literal(AdapterType::Bigquery, data_type, &value);
+                    let skip_cast = bigquery::is_json_literal(data_type, &value);
 
                     // Complex-type handling (verbatim SQL-expression injection
                     // for STRUCT/GEOGRAPHY, STRUCT(...) for mappings, arrays for
@@ -2534,7 +2720,7 @@ fn parse_csv_rows(data: &[u8]) -> FsResult<Vec<BTreeMap<String, YmlValue>>> {
         let mut row = BTreeMap::new();
         for (i, header) in headers.iter().enumerate() {
             let value = match record.get(i) {
-                None => YmlValue::null(),
+                None | Some("") => YmlValue::null(),
                 Some(field) => YmlValue::string(field.to_string()),
             };
             row.insert(header.to_string(), value);
@@ -2578,10 +2764,13 @@ fn get_fixture_rows(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashMap;
+
     use arrow::datatypes::{DataType, Field, Schema, TimeUnit};
     use dbt_common::io_args::ComputeArg;
     use dbt_schemas::schemas::profiles::Execute;
     use dbt_test_primitives::assert_contains;
+    use minijinja::dispatch_object::DispatchObject;
 
     type YmlValue = dbt_yaml::Value;
 
@@ -2609,9 +2798,45 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_csv_rows_preserves_scalar_text() {
-        let rows = parse_csv_rows(b"id,code,enabled,ratio,empty\n1,000001,true,1.5,\n")
-            .expect("present CSV cells should preserve DictReader string semantics");
+    fn test_snowflake_unit_test_string_fixture_preserves_backslash_escapes() {
+        let value = r#"{"Data":[{"Value":"[{\\"id\\":\\"128091\\"}]"}]}"#;
+        let literal = yml_value_to_sql_literal(
+            AdapterType::Snowflake,
+            &DefaultTypeOps::new(AdapterType::Snowflake),
+            YmlValue::string(value.to_string()),
+            &DataType::Utf8,
+        )
+        .expect("Snowflake string fixture should render");
+
+        assert_eq!(literal, format!("'{value}'"));
+    }
+
+    #[test]
+    fn test_unit_test_timestamp_fixture_renders_as_string_literal() {
+        // Expected values are `Timestamp`'s canonical Display form (RFC 3339-style `T`
+        // separator); the fixture builder wraps the literal in a cast to the column type.
+        let cases = [
+            ("2020-01-01", "'2020-01-01'"),
+            ("2020-01-01 10:30:00", "'2020-01-01T10:30:00'"),
+            ("2020-01-01T10:30:00+05:00", "'2020-01-01T10:30:00+05:00'"),
+        ];
+        for (authored, expected) in cases {
+            let ts = dbt_yaml::Timestamp::parse(authored).expect("valid timestamp");
+            let literal = yml_value_to_sql_literal(
+                AdapterType::Snowflake,
+                &DefaultTypeOps::new(AdapterType::Snowflake),
+                YmlValue::timestamp(ts),
+                &DataType::Date32,
+            )
+            .expect("timestamp fixture should render as a string literal");
+            assert_eq!(literal, expected, "for authored value {authored}");
+        }
+    }
+    #[test]
+    fn test_parse_csv_rows_preserves_non_empty_scalar_text_and_nulls_empty_cells() {
+        let rows =
+            parse_csv_rows(b"id,code,enabled,ratio,empty,quoted_empty\n1,000001,true,1.5,,\"\"\n")
+                .expect("non-empty CSV cells should remain text and empty cells should be null");
 
         assert_eq!(rows.len(), 1);
         for (column, expected) in [
@@ -2619,13 +2844,14 @@ mod tests {
             ("code", "000001"),
             ("enabled", "true"),
             ("ratio", "1.5"),
-            ("empty", ""),
         ] {
             assert_eq!(
                 rows[0].get(column),
                 Some(&YmlValue::string(expected.to_string()))
             );
         }
+        assert_eq!(rows[0].get("empty"), Some(&YmlValue::null()));
+        assert_eq!(rows[0].get("quoted_empty"), Some(&YmlValue::null()));
     }
 
     #[test]
@@ -2642,6 +2868,10 @@ mod tests {
     /// Binds `value` as the `run_started_at` override and renders `template`,
     /// exercising the same path unit tests use.
     fn render_run_started_at_override(value: YmlValue, template: &str) -> String {
+        assert!(
+            dbt_runtime::is_pool_worker(),
+            "Jinja must render on a dbt-runtime worker"
+        );
         let mut raw_env = minijinja::Environment::new();
         minijinja_contrib::add_to_environment(&mut raw_env);
         let env = JinjaEnv::new(raw_env);
@@ -2660,7 +2890,7 @@ mod tests {
     /// dbt-core lets `overrides.macros` freeze `run_started_at`, but unlike a
     /// real macro override it's accessed without `()`, so wrapping it as a
     /// callable stub broke `.strftime()`/`.astimezone()`.
-    #[test]
+    #[dbt_runtime::worker_test]
     fn test_run_started_at_override_binds_a_real_value_not_a_callable_stub() {
         let rendered = render_run_started_at_override(
             YmlValue::string(
@@ -2675,7 +2905,7 @@ mod tests {
     // Unhappy paths: a non-datetime override must still bind as a plain value,
     // never a callable stub, so bare interpolation renders it. `.strftime()` on
     // these would error the same as it does in dbt-core.
-    #[test]
+    #[dbt_runtime::worker_test]
     fn test_run_started_at_override_plain_string_binds_as_value() {
         let rendered = render_run_started_at_override(
             YmlValue::string("2025-09-04 20:00:00".to_string()),
@@ -2684,7 +2914,7 @@ mod tests {
         assert_eq!(rendered, "2025-09-04 20:00:00");
     }
 
-    #[test]
+    #[dbt_runtime::worker_test]
     fn test_run_started_at_override_non_datetime_expression_evaluates() {
         let rendered = render_run_started_at_override(
             YmlValue::string("{{ 'hello' }}".to_string()),
@@ -2693,11 +2923,93 @@ mod tests {
         assert_eq!(rendered, "hello");
     }
 
-    #[test]
+    #[dbt_runtime::worker_test]
     fn test_run_started_at_override_non_string_binds_as_value() {
         let rendered =
             render_run_started_at_override(YmlValue::number(12345.into()), "{{ run_started_at }}");
         assert_eq!(rendered, "12345");
+    }
+
+    /// A package namespace that, like `DbtNamespace`, resolves macros only in
+    /// `get_property` and dispatches to the `<package>.<macro>` template.
+    #[derive(Debug)]
+    struct PackageNamespace(&'static str);
+
+    impl Object for PackageNamespace {
+        fn get_property(
+            self: &Arc<Self>,
+            state: &State<'_, '_>,
+            name: &str,
+            _listeners: &[Rc<dyn RenderingEventListener>],
+        ) -> Result<Value, minijinja::Error> {
+            let template = format!("{}.{name}", self.0);
+            if state.env().get_template(&template).is_err() {
+                return Ok(Value::UNDEFINED);
+            }
+            Ok(Value::from_object(DispatchObject {
+                macro_name: name.to_string(),
+                package_name: Some(self.0.to_string()),
+                strict: true,
+                auto_execute: false,
+                context: None,
+            }))
+        }
+    }
+
+    /// Binds one `overrides.macros` entry over a `my_project` package and renders
+    /// `{{ my_project.pick_label() }}`, where `pick_label` calls `my_project.is_ci()`.
+    fn render_package_macro_override(macro_name: &str, value: YmlValue) -> String {
+        assert!(
+            dbt_runtime::is_pool_worker(),
+            "Jinja must render on a dbt-runtime worker"
+        );
+        let mut raw_env = minijinja::Environment::new();
+        let pick_label = "{% macro pick_label() %}{% if my_project.is_ci() %}{{ return('ci') }}\
+                          {% else %}{{ return('local') }}{% endif %}{% endmacro %}";
+        for (name, source) in [
+            (
+                "my_project.is_ci",
+                "{% macro is_ci() %}{{ return(false) }}{% endmacro %}",
+            ),
+            ("my_project.pick_label", pick_label),
+            (
+                "my_project.unused_macro",
+                "{% macro unused_macro() %}{{ return('unused') }}{% endmacro %}",
+            ),
+        ] {
+            raw_env
+                .add_template(name, source)
+                .expect("macro template should parse");
+        }
+        let env = JinjaEnv::new(raw_env);
+
+        let macros = BTreeMap::from([(macro_name.to_string(), value)]);
+        let mut compile_context = BTreeMap::from([(
+            "my_project".to_string(),
+            Value::from_object(PackageNamespace("my_project")),
+        )]);
+        bind_override_macros(&macros, &mut compile_context, &env);
+
+        env.render_str("{{ my_project.pick_label() }}", &compile_context, &[])
+            .expect("the package's other macros should stay callable")
+    }
+
+    /// Regression test for https://github.com/dbt-labs/dbt/issues/16477: overriding
+    /// one package macro must keep the package's other macros callable, and they
+    /// must see the override, as in dbt-core.
+    #[dbt_runtime::worker_test]
+    fn test_package_macro_override_is_seen_by_other_package_macros() {
+        let rendered = render_package_macro_override("my_project.is_ci", YmlValue::bool(true));
+        assert_eq!(rendered, "ci");
+    }
+
+    #[dbt_runtime::worker_test]
+    fn test_package_macro_override_keeps_unrelated_package_macros() {
+        let rendered = render_package_macro_override(
+            "my_project.unused_macro",
+            YmlValue::string("stub".to_string()),
+        );
+        assert_eq!(rendered, "local");
     }
 
     #[test]
@@ -2941,6 +3253,150 @@ mod tests {
             "CAST('2023-01-01 12:00:00' AS DATETIME) AS timestamp_col"
         );
         assert_contains!(result, "CAST(3.15 AS FLOAT64) AS float_col");
+    }
+
+    #[test]
+    fn test_create_values_bigquery_preserves_inferred_logical_types() {
+        let type_ops = DefaultTypeOps::new(AdapterType::Bigquery);
+        let fields = [
+            ("location", "GEOGRAPHY"),
+            ("created_at", "TIMESTAMP"),
+            ("payload", "JSON"),
+        ]
+        .into_iter()
+        .map(|(name, sql_type)| {
+            make_arrow_field(&type_ops, name.to_string(), sql_type, None, None).unwrap()
+        })
+        .collect::<Vec<_>>();
+        let schema = Arc::new(Schema::new(fields));
+        let rows = vec![BTreeMap::from([
+            (
+                "location".to_string(),
+                YmlValue::string("ST_GEOGPOINT(100, -37)".to_string()),
+            ),
+            (
+                "created_at".to_string(),
+                YmlValue::string("2026-01-01 00:00:00+00".to_string()),
+            ),
+            (
+                "payload".to_string(),
+                YmlValue::string(r#"{"segmentCode":"HORECA"}"#.to_string()),
+            ),
+        ])];
+
+        let result = create_values(
+            &schema,
+            &rows,
+            AdapterType::Bigquery,
+            &type_ops,
+            None,
+            "fixture_types",
+            false,
+        )
+        .unwrap();
+
+        assert_contains!(
+            result,
+            "CAST(ST_GEOGPOINT(100, -37) AS GEOGRAPHY) AS location"
+        );
+        assert_contains!(
+            result,
+            "CAST('2026-01-01 00:00:00+00' AS TIMESTAMP) AS created_at"
+        );
+        assert_contains!(
+            result,
+            r#"PARSE_JSON('{"segmentCode":"HORECA"}') AS payload"#
+        );
+    }
+
+    #[test]
+    fn test_create_values_bigquery_preserves_decimal_and_nested_types() {
+        let type_ops = DefaultTypeOps::new(AdapterType::Bigquery);
+        let fields = [
+            ("amount", "NUMERIC"),
+            ("wide_amount", "BIGNUMERIC(30, 20)"),
+            (
+                "records",
+                "ARRAY<STRUCT<item_value TIMESTAMP, amount BIGNUMERIC(30, 20)>>",
+            ),
+            ("nested", "STRUCT<items ARRAY<TIMESTAMP>>"),
+        ]
+        .into_iter()
+        .map(|(name, sql_type)| {
+            make_arrow_field(&type_ops, name.to_string(), sql_type, None, None).unwrap()
+        })
+        .collect::<Vec<_>>();
+        let schema = Arc::new(Schema::new(fields));
+
+        let mut record = dbt_yaml::mapping::Mapping::new();
+        record.insert(
+            YmlValue::string("item_value".to_string()),
+            YmlValue::string("2026-01-01 00:00:00+00".to_string()),
+        );
+        record.insert(
+            YmlValue::string("amount".to_string()),
+            YmlValue::string("2.12345678901234567890".to_string()),
+        );
+        let mut nested = dbt_yaml::mapping::Mapping::new();
+        nested.insert(
+            YmlValue::string("items".to_string()),
+            YmlValue::Sequence(vec![], Default::default()),
+        );
+        let rows = vec![BTreeMap::from([
+            (
+                "amount".to_string(),
+                YmlValue::string("123456789.123456789".to_string()),
+            ),
+            (
+                "wide_amount".to_string(),
+                YmlValue::string("1.12345678901234567890".to_string()),
+            ),
+            (
+                "records".to_string(),
+                YmlValue::Sequence(
+                    vec![YmlValue::Mapping(record, Default::default())],
+                    Default::default(),
+                ),
+            ),
+            (
+                "nested".to_string(),
+                YmlValue::Mapping(nested, Default::default()),
+            ),
+        ])];
+
+        // `allow_pseudocolumns` is the only rendering difference between
+        // `given` and `expect` fixtures.
+        for allow_pseudocolumns in [true, false] {
+            let result = create_values(
+                &schema,
+                &rows,
+                AdapterType::Bigquery,
+                &type_ops,
+                None,
+                "fixture_input",
+                allow_pseudocolumns,
+            )
+            .unwrap();
+
+            assert_contains!(result, "CAST('123456789.123456789' AS NUMERIC) AS amount");
+            assert_contains!(
+                result,
+                "CAST('1.12345678901234567890' AS BIGNUMERIC) AS wide_amount"
+            );
+            assert_contains!(
+                result,
+                "CAST('2026-01-01 00:00:00+00' AS TIMESTAMP) AS item_value"
+            );
+            assert_contains!(
+                result,
+                "CAST('2.12345678901234567890' AS BIGNUMERIC(30, 20)) AS amount"
+            );
+            assert_contains!(
+                result,
+                "AS ARRAY<STRUCT<item_value TIMESTAMP, amount BIGNUMERIC>>) AS records"
+            );
+            assert_contains!(result, "CAST([] AS ARRAY<TIMESTAMP>) AS items");
+        }
     }
 
     #[test]
@@ -3469,21 +3925,19 @@ mod tests {
         )
         .unwrap();
 
-        // DefaultTypeOpsImpl maps Decimal128(38,9) to float64 and Utf8 to string (lowercase);
-        // the proprietary TypeOpsImpl would produce NUMERIC and STRING for BigQuery.
         assert_contains!(
             result,
-            "STRUCT(CAST(NULL AS float64) AS numeric_col",
+            "STRUCT(CAST(NULL AS NUMERIC) AS numeric_col",
             "numeric_col should be NULL cast"
         );
         assert_contains!(
             result,
-            "CAST(STRUCT('bar' AS foo) AS STRUCT<foo string>) AS object_col",
+            "CAST(STRUCT(CAST('bar' AS string) AS foo) AS STRUCT<foo string>) AS object_col",
             "object_col should use typed STRUCT with AS aliases"
         );
         assert_contains!(
             result,
-            "CAST([CAST(4 AS float64), CAST(2 AS float64)] AS ARRAY<float64>) AS array_col",
+            "CAST([CAST(4 AS NUMERIC), CAST(2 AS NUMERIC)] AS ARRAY<NUMERIC>) AS array_col",
             "array_col should have typed elements and ARRAY<T> type parameter"
         );
     }
@@ -3530,7 +3984,7 @@ mod tests {
 
         assert_contains!(
             result,
-            "STRUCT('A' AS field1, 1 AS field2)",
+            "STRUCT(CAST('A' AS string) AS field1, CAST(1 AS int64) AS field2)",
             "a mapping fixture must render as STRUCT(...) with typed fields"
         );
     }
@@ -3638,12 +4092,12 @@ mod tests {
         );
         assert_contains!(
             result,
-            "ST_GEOGPOINT(101, -38) AS nested_point",
+            "CAST(ST_GEOGPOINT(101, -38) AS GEOGRAPHY) AS nested_point",
             "nested GEOGRAPHY expression should stay raw inside STRUCT"
         );
         assert_contains!(
             result,
-            "ST_GEOGPOINT(102, -39)",
+            "CAST(ST_GEOGPOINT(102, -39) AS GEOGRAPHY)",
             "array GEOGRAPHY expression should stay raw inside ARRAY"
         );
         assert!(
@@ -3897,5 +4351,144 @@ mod tests {
             .filter(|f| f.name().eq_ignore_ascii_case("_FILE_NAME"))
             .count();
         assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn strip_pseudocolumns_removes_bigquery_pseudocolumns() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            Field::new(
+                "_PARTITIONTIME",
+                DataType::Timestamp(TimeUnit::Microsecond, None),
+                true,
+            ),
+            Field::new("_PARTITIONDATE", DataType::Date32, true),
+            Field::new("_FILE_NAME", DataType::Utf8, true),
+        ]));
+        let result = strip_pseudocolumns(&schema, AdapterType::Bigquery);
+        let names: Vec<&str> = result.fields().iter().map(|f| f.name().as_str()).collect();
+        assert_eq!(names, vec!["id"]);
+    }
+
+    #[test]
+    fn strip_pseudocolumns_ignores_case() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            Field::new(
+                "_partitiontime",
+                DataType::Timestamp(TimeUnit::Microsecond, None),
+                true,
+            ),
+            Field::new("_PartitionDate", DataType::Date32, true),
+        ]));
+        let result = strip_pseudocolumns(&schema, AdapterType::Bigquery);
+        let names: Vec<&str> = result.fields().iter().map(|f| f.name().as_str()).collect();
+        assert_eq!(names, vec!["id"]);
+    }
+
+    #[test]
+    fn strip_pseudocolumns_preserves_schema_metadata() {
+        let metadata = HashMap::from([("TimePartitioning.Type".to_string(), "DAY".to_string())]);
+        let schema = Arc::new(Schema::new_with_metadata(
+            vec![
+                Field::new("id", DataType::Int64, false),
+                Field::new(
+                    "_PARTITIONTIME",
+                    DataType::Timestamp(TimeUnit::Microsecond, None),
+                    true,
+                ),
+            ],
+            metadata.clone(),
+        ));
+        let result = strip_pseudocolumns(&schema, AdapterType::Bigquery);
+        assert_eq!(result.metadata(), &metadata);
+    }
+
+    #[test]
+    fn strip_pseudocolumns_reuses_schema_when_nothing_matches() {
+        let schema = schema_id_name();
+        let result = strip_pseudocolumns(&schema, AdapterType::Bigquery);
+        assert!(Arc::ptr_eq(&schema, &result));
+    }
+
+    #[test]
+    fn strip_pseudocolumns_is_a_no_op_for_other_adapters() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            Field::new(
+                "_PARTITIONTIME",
+                DataType::Timestamp(TimeUnit::Microsecond, None),
+                true,
+            ),
+        ]));
+        let result = strip_pseudocolumns(&schema, AdapterType::Snowflake);
+        assert!(Arc::ptr_eq(&schema, &result));
+    }
+
+    #[test]
+    fn column_sql_type_keeps_snowflake_number_precision_and_scale() {
+        let column = Column::new(
+            AdapterType::Snowflake,
+            "HALF_OF_ONE".to_string(),
+            "NUMBER".to_string(),
+            None,
+            Some(11),
+            Some(4),
+        );
+        assert_eq!(column_sql_type(&column), "NUMBER(11,4)");
+
+        let no_precision = Column::new(
+            AdapterType::Snowflake,
+            "ID".to_string(),
+            "NUMBER".to_string(),
+            None,
+            None,
+            None,
+        );
+        assert_eq!(column_sql_type(&no_precision), "NUMBER");
+    }
+
+    #[test]
+    fn columns_to_schema_preserves_snowflake_decimal_round_trip() {
+        let type_ops = DefaultTypeOps::new(AdapterType::Snowflake);
+        let builder = dbt_adapter::column::ColumnBuilder::new(AdapterType::Snowflake);
+
+        for (precision, scale) in [(11, 4), (38, 0), (38, 37), (4, 4)] {
+            let data_type = DataType::Decimal128(precision, scale);
+            let field = Arc::new(Field::new("AMOUNT", data_type.clone(), true));
+            let column = builder.build(&field, &type_ops).unwrap();
+            assert_eq!(column.original_sql_str(), Some("NUMBER"));
+            assert_eq!(column.data_type(), format!("NUMBER({precision},{scale})"));
+
+            let schema = columns_to_schema(&type_ops, vec![column], "unit_test.decimal").unwrap();
+            assert_eq!(schema.field(0).data_type(), &data_type);
+            assert_eq!(
+                type_ops
+                    .get_original_sql_type_from_field(schema.field(0))
+                    .unwrap(),
+                format!("NUMBER({precision},{scale})")
+            );
+        }
+    }
+
+    #[test]
+    fn column_sql_type_preserves_explicit_types_and_missing_metadata() {
+        for (sql_type, precision, scale) in [
+            ("NUMBER(9,2)", Some(11), Some(4)),
+            ("VARCHAR(40)", None, None),
+            ("TIMESTAMP_NTZ(6)", Some(6), None),
+            ("NUMBER", Some(11), None),
+            ("NUMBER", None, Some(4)),
+        ] {
+            let column = Column::new(
+                AdapterType::Snowflake,
+                "VALUE".to_string(),
+                sql_type.to_string(),
+                None,
+                precision,
+                scale,
+            );
+            assert_eq!(column_sql_type(&column), sql_type);
+        }
     }
 }

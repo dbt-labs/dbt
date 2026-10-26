@@ -1,0 +1,96 @@
+8e616f78:
+- sequence: 0
+  type: execute
+  sql: SHOW OBJECTS IN SCHEMA "DEVELOPMENT"."ADAPTERS_SNOWFLAKE_REPROS_SNOWFLAKE_INCREMENTAL_TRANSIENT" LIMIT 10000
+dbbbff64:
+- sequence: 0
+  type: execute
+  sql: |-
+    show terse schemas in database development
+    limit 10000
+model.hello_world.incremental:
+- sequence: 0
+  type: execute
+  sql: |-
+    create or replace transient table development.adapters_snowflake_repros_snowflake_incremental_transient.incremental__dbt_tmp
+    as (
+    
+    
+    
+    WITH source_data AS (SELECT * FROM development.adapters_snowflake_repros_snowflake_incremental_transient.model_a )
+    
+    
+    
+    SELECT id,
+    field1,
+    field2,
+    field3,
+    field4
+    FROM source_data WHERE id NOT IN (SELECT id from development.adapters_snowflake_repros_snowflake_incremental_transient.incremental )
+    
+    
+    )
+- sequence: 1
+  type: execute
+  sql: describe table development.adapters_snowflake_repros_snowflake_incremental_transient.incremental__dbt_tmp
+- sequence: 2
+  type: execute
+  sql: describe table development.adapters_snowflake_repros_snowflake_incremental_transient.incremental
+- sequence: 3
+  type: execute
+  sql: describe table "DEVELOPMENT"."ADAPTERS_SNOWFLAKE_REPROS_SNOWFLAKE_INCREMENTAL_TRANSIENT"."INCREMENTAL"
+- sequence: 4
+  type: execute
+  sql: |-
+    -- back compat for old kwarg name
+    
+    begin
+- sequence: 5
+  type: execute
+  sql: |-
+    merge into development.adapters_snowflake_repros_snowflake_incremental_transient.incremental as DBT_INTERNAL_DEST
+    using development.adapters_snowflake_repros_snowflake_incremental_transient.incremental__dbt_tmp as DBT_INTERNAL_SOURCE
+    on ((DBT_INTERNAL_SOURCE.id = DBT_INTERNAL_DEST.id))
+    
+    
+    when matched then update set
+    "ID" = DBT_INTERNAL_SOURCE."ID","FIELD1" = DBT_INTERNAL_SOURCE."FIELD1","FIELD2" = DBT_INTERNAL_SOURCE."FIELD2"
+    
+    
+    when not matched then insert
+    ("ID", "FIELD1", "FIELD2")
+    values
+    ("ID", "FIELD1", "FIELD2")
+- sequence: 6
+  type: execute
+  sql: |-
+    commit
+- sequence: 7
+  type: execute
+  sql: drop table if exists development.adapters_snowflake_repros_snowflake_incremental_transient.incremental__dbt_tmp cascade
+model.hello_world.model_a:
+- sequence: 0
+  type: execute
+  sql: |-
+    create or replace transient  table development.adapters_snowflake_repros_snowflake_incremental_transient.model_a
+    
+    
+    
+    
+    as (
+    
+    
+    with source_data as (
+    
+    select 1 as id, 'aaa' as field1, 'bbb' as field2, 111 as field3, 'TTT' as field4
+    union all select 2 as id, 'ccc' as field1, 'ddd' as field2, 222 as field3, 'UUU' as field4
+    )
+    
+    select id
+    ,field1
+    ,field2
+    ,field3
+    ,field4
+    
+    from source_data
+    )

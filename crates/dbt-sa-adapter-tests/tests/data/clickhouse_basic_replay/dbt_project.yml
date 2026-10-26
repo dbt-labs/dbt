@@ -1,0 +1,12 @@
+name: 'clickhouse_basic_replay'
+version: '1.0.0'
+require-dbt-version: ">=1.6.0"
+config-version: 2
+
+model-paths: ["models"]
+clean-targets: ["target", "dbt_modules", "dbt_packages"]
+
+profile: fusion_tests
+
+models:
+  +materialized: table

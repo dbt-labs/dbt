@@ -2,9 +2,11 @@ use dbt_adapter_core::AdapterType;
 use dbt_common::ErrorCode;
 use dbt_common::FsResult;
 use dbt_common::io_args::IoArgs;
-use dbt_common::path::DbtPath;
+use dbt_common::path::{DbtPath, resource_extension};
 use dbt_common::stdfs::diff_paths;
 use dbt_common::tracing::dbt_emit::{emit_warn_log_from_fs_error, emit_warn_log_message};
+use dbt_common::tracing::event_info::store_event_attributes;
+use dbt_common::tracing::span_info::record_span_status;
 use dbt_common::{err, fs_err};
 use dbt_jinja_utils::jinja_environment::JinjaEnv;
 use dbt_jinja_utils::listener::DefaultJinjaTypeCheckEventListenerFactory;
@@ -17,11 +19,11 @@ use dbt_schemas::schemas::macros::MacroConfig;
 use dbt_schemas::schemas::macros::MacroDependsOn;
 use dbt_schemas::schemas::properties::MacrosProperties;
 use dbt_schemas::state::DbtAsset;
+use dbt_telemetry::GenericOpExecuted;
 use minijinja::Value as MinijinjaValue;
 use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::collections::HashSet;
-use std::ffi::OsStr;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -118,10 +120,7 @@ pub fn resolve_macros(
             base_path,
             package_name,
         } = dbt_asset;
-        let ext = macro_file
-            .extension()
-            .and_then(OsStr::to_str)
-            .map(str::to_ascii_lowercase);
+        let ext = resource_extension(macro_file).map(str::to_ascii_lowercase);
         if ext.as_deref() == Some("jinja") || ext.as_deref() == Some("sql") {
             let macro_file_path = DbtPath::from(base_path.join(macro_file));
             let macro_sql = read_file_content(macro_file, &macro_file_path, embedded_contents)?;
@@ -559,6 +558,17 @@ pub fn apply_macro_patches(
 /// registered) and after `apply_macro_patches`. Snapshot stubs
 /// (unique_id starts with `"snapshot."`) are skipped — they have their own
 /// processing path and no meaningful Jinja body to analyse.
+#[tracing::instrument(
+    level = "debug",
+    skip_all,
+    fields(
+        _e = ?store_event_attributes(GenericOpExecuted::new(
+            "resolve.typecheck_macros".to_string(),
+            "typechecking macros".to_string(),
+            None,
+        )),
+    )
+)]
 pub fn typecheck_macros(
     io: &IoArgs,
     macros: &mut BTreeMap<String, DbtMacro>,
@@ -635,6 +645,10 @@ pub fn typecheck_macros(
         }
     }
     jinja_env.set_introspective_macros(introspective);
+
+    // `instrument` opens the span but never writes dbt's span status; this
+    // function has a single exit, so record success here.
+    record_span_status(&tracing::Span::current(), None);
 
     Ok(())
 }

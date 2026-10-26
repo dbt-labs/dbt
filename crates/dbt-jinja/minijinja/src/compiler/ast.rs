@@ -236,6 +236,8 @@ pub struct IfCond<'a> {
 pub struct WithBlock<'a> {
     pub assignments: Vec<(Expr<'a>, Expr<'a>)>,
     pub body: Vec<Stmt<'a>>,
+    pub start_tag_span: Span,
+    pub end_tag_span: Span,
 }
 
 /// A set statement.
@@ -264,6 +266,8 @@ pub struct SetBlock<'a> {
 pub struct Block<'a> {
     pub name: &'a str,
     pub body: Vec<Stmt<'a>>,
+    pub start_tag_span: Span,
+    pub end_tag_span: Span,
 }
 
 /// An extends block.
@@ -289,6 +293,8 @@ pub struct Include<'a> {
 pub struct AutoEscape<'a> {
     pub enabled: Expr<'a>,
     pub body: Vec<Stmt<'a>>,
+    pub start_tag_span: Span,
+    pub end_tag_span: Span,
 }
 
 /// Applies filters to a block.
@@ -297,6 +303,8 @@ pub struct AutoEscape<'a> {
 pub struct FilterBlock<'a> {
     pub filter: Expr<'a>,
     pub body: Vec<Stmt<'a>>,
+    pub start_tag_span: Span,
+    pub end_tag_span: Span,
 }
 
 /// Declares a macro.
@@ -309,6 +317,14 @@ pub struct Macro<'a> {
     pub args: Vec<Expr<'a>>,
     pub defaults: Vec<Expr<'a>>,
     pub body: Vec<Stmt<'a>>,
+    /// The full opening/closing tag spans (e.g. `{% macro foo(x) %}` /
+    /// `{% endmacro %}`), covering the whole tag rather than just the name
+    /// (see `name_span`). Only populated for a plain `{% macro %}` def or a
+    /// `{% call %}` block's implicit `caller()` macro — `None` for
+    /// `test`/`snapshot`/`materialization`/`docs`, dbt-specific extensions
+    /// this parser doesn't bother widening these spans for.
+    pub start_tag_span: Option<Span>,
+    pub end_tag_span: Option<Span>,
 }
 
 #[cfg_attr(feature = "internal_debug", derive(Debug))]

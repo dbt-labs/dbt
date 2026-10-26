@@ -1,7 +1,9 @@
+use dbt_adapter_engine::cow::{lowercase, uppercase};
 use dbt_adapter_sql::types::{SqlType, StructField};
 use dbt_common::current_function_name;
 use once_cell::sync::Lazy;
 use regex::Regex;
+use std::borrow::Cow;
 use std::sync::Arc;
 
 use dbt_adapter_core::*;
@@ -42,7 +44,7 @@ impl Object for ColumnStatic {
                 let dtype = iter.next_arg::<&str>()?;
                 iter.finish()?;
 
-                Ok(Value::from(self.translate_type(dtype)))
+                Ok(Value::from(self.translate_type(dtype).as_ref()))
             }
             "numeric_type" => {
                 let iter = ArgsIter::new(
@@ -194,23 +196,23 @@ impl ColumnStatic {
         }
     }
 
-    pub fn translate_type(&self, column_type: &str) -> String {
-        let translated = match self.0 {
+    pub fn translate_type<'a>(&self, column_type: &'a str) -> Cow<'a, str> {
+        let translated: &'a str = match self.0 {
             // https://github.com/dbt-labs/dbt-adapters/blob/6f2aae13e39c5df1c93e5d514678914142d71768/dbt-bigquery/src/dbt/adapters/bigquery/column.py#L16
-            AdapterType::Bigquery => match column_type.to_uppercase().as_str() {
+            AdapterType::Bigquery => match uppercase(column_type.into()).as_ref() {
                 "TEXT" => "STRING",
                 "FLOAT" => "FLOAT64",
                 "INTEGER" => "INT64",
                 _ => column_type,
             },
             AdapterType::Databricks | AdapterType::Spark => {
-                match column_type.to_uppercase().as_str() {
+                match uppercase(column_type.into()).as_ref() {
                     "LONG" => "BIGINT",
                     _ => column_type,
                 }
             }
             // https://github.com/microsoft/dbt-fabric/blob/81d9764e24b00e7c923a2235ba68fa6bd6b90ea9/dbt/adapters/fabric/fabric_column.py#L8
-            AdapterType::Fabric => match column_type.to_uppercase().as_str() {
+            AdapterType::Fabric => match uppercase(column_type.into()).as_ref() {
                 "STRING" => "VARCHAR(8000)",
                 "VARCHAR" => "VARCHAR(8000)",
                 "CHAR" => "CHAR(1)",
@@ -241,7 +243,7 @@ impl ColumnStatic {
             },
             // ClickHouseColumn.TYPE_LABELS; unmatched types pass through verbatim.
             // https://github.com/ClickHouse/dbt-clickhouse/blob/main/dbt/adapters/clickhouse/column.py#L13-L18
-            AdapterType::ClickHouse => match column_type.to_uppercase().as_str() {
+            AdapterType::ClickHouse => match uppercase(column_type.into()).as_ref() {
                 "STRING" => "String",
                 "TIMESTAMP" => "DateTime",
                 "FLOAT" => "Float32",
@@ -249,15 +251,15 @@ impl ColumnStatic {
                 _ => column_type,
             },
             // https://github.com/dbt-labs/dbt-adapters/blob/fed0e2e7a2e252175dcc9caccbdd91d354ac6a9d/dbt-adapters/src/dbt/adapters/base/column.py#L24
-            _ => match column_type.to_uppercase().as_str() {
+            _ => match uppercase(column_type.into()).as_ref() {
                 "STRING" => "TEXT",
                 _ => column_type,
             },
         };
         match self.0 {
             // https://github.com/databricks/dbt-databricks/blob/45351e11517d3f37c5ac7a736b5fcba453d3f368/dbt/adapters/databricks/column.py#L24
-            AdapterType::Databricks => translated.to_lowercase(),
-            _ => translated.to_string(),
+            AdapterType::Databricks => lowercase(Cow::Borrowed(translated)),
+            _ => Cow::Borrowed(translated),
         }
     }
 
@@ -693,7 +695,10 @@ impl Column {
     }
 
     /// Parse a Snowflake raw data type into a tuple of (data_type, char_size, numeric_precision, numeric_scale)
-    fn try_from_snowflake_raw_data_type(name: &str, raw_data_type: &str) -> Result<Column, String> {
+    pub(crate) fn try_from_snowflake_raw_data_type(
+        name: &str,
+        raw_data_type: &str,
+    ) -> Result<Column, String> {
         // Extract and strip any COLLATE clause before further parsing.
         // e.g. "VARCHAR(10) COLLATE 'en-ci'" → collation = Some("en-ci"), type_without_collation = "VARCHAR(10)"
         let collation = COLLATION_RE.captures(raw_data_type).map(|c| {

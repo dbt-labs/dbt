@@ -624,6 +624,43 @@ fn test_builtin_seq_objects() {
 }
 
 #[test]
+fn test_debug_repr_quotes_strings_with_both_quote_chars() {
+    // Regression test: a string containing both `'` and `"` must not produce a
+    // broken, unescaped literal when a tuple or dict stringifies it -- the
+    // embedded `'` needs escaping instead of just switching quote style.
+    let rv = minijinja::render!(
+        "{{ val }}",
+        val => Value::from_object(vec!["it's \"great\"", "plain"]),
+    );
+    assert_snapshot!(rv, @r#"('it\'s "great"', 'plain')"#);
+
+    let rv = minijinja::render!(
+        "{{ val }}",
+        val => Value::from_iter([("key", "it's \"great\"")]),
+    );
+    assert_snapshot!(rv, @r#"{'key': 'it\'s "great"'}"#);
+}
+
+#[test]
+fn test_debug_repr_escapes_backslashes_and_control_chars_like_python() {
+    // Regression test: Python's repr() doubles backslashes and escapes
+    // control characters (\n, \t, \x00, etc). A tuple/dict stringifying a
+    // string containing these must escape them too, or the rendered SQL/text
+    // is corrupted (fs#14245 review).
+    let rv = minijinja::render!(
+        "{{ val }}",
+        val => Value::from_object(vec!["back\\slash", "line\nbreak", "tab\ttab", "cr\rcr"]),
+    );
+    assert_snapshot!(rv, @r#"('back\\slash', 'line\nbreak', 'tab\ttab', 'cr\rcr')"#);
+
+    let rv = minijinja::render!(
+        "{{ val }}",
+        val => Value::from_object(vec!["nul\x00byte", "esc\x1bcape", "del\x7fchar"]),
+    );
+    assert_snapshot!(rv, @r#"('nul\x00byte', 'esc\x1bcape', 'del\x7fchar')"#);
+}
+
+#[test]
 fn test_value_object_interface() {
     let tuple = Value::from_object(tuple![1u32, 2, 3, 4]);
     let obj = tuple.as_object().unwrap();

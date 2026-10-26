@@ -30,7 +30,7 @@ pub fn execute_snapshot_remote(
     if let Some(main_response) = main_response {
         ctx.inner
             .main_adapter_responses
-            .insert(snapshot.__common_attr__.unique_id.clone(), main_response);
+            .upsert_sync(snapshot.__common_attr__.unique_id.clone(), main_response);
     }
     let _ = cache_materialization_return_value(ctx.env.clone(), &relations_map);
 

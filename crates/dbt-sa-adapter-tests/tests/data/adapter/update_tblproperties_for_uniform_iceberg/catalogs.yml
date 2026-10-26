@@ -1,0 +1,8 @@
+catalogs:
+  - catalog_name: e2e
+    active_write_integration: unity_iceberg_delta_managed
+    write_integrations:
+      - name: unity_iceberg_delta_managed
+        catalog_type: unity
+        table_format: iceberg
+        file_format: delta

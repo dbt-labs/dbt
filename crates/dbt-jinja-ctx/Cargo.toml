@@ -18,7 +18,6 @@ chrono-tz = { workspace = true }
 dbt-fusion-workspace-hack = { version = "0.1" }
 dbt-handles = { workspace = true }
 dbt-jinja-vars = { workspace = true }
-indexmap = { workspace = true, features = ["serde"] }
 minijinja = { workspace = true }
 minijinja-contrib = { workspace = true }
 schemars = { workspace = true }
@@ -26,6 +25,7 @@ serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 
 [dev-dependencies]
+dbt-schemas = { workspace = true }
 insta = { version = "1.38.0", features = ["json", "yaml"] }
 
 [lib]

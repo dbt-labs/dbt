@@ -1,0 +1,19 @@
+model.test.b:
+- sequence: 0
+  type: execute
+  sql: CREATE DATABASE IF NOT EXISTS `adapters_clickhouse_truncate_relation`
+- sequence: 1
+  type: execute
+  sql: CREATE TABLE `adapters_clickhouse_truncate_relation`.`a` (val Int32) ENGINE = MergeTree() ORDER BY tuple()
+- sequence: 2
+  type: execute
+  sql: INSERT INTO `adapters_clickhouse_truncate_relation`.`a` (val) VALUES (1), (2)
+- sequence: 3
+  type: execute
+  sql: select * from `adapters_clickhouse_truncate_relation`.`a`
+- sequence: 4
+  type: execute
+  sql: truncate table `adapters_clickhouse_truncate_relation`.`a`
+- sequence: 5
+  type: execute
+  sql: select * from `adapters_clickhouse_truncate_relation`.`a`

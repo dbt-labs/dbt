@@ -185,36 +185,8 @@ pub(crate) fn get_table_options_value(
             );
         }
 
-        if catalog_relation.table_format.is_iceberg()
-            && catalog_relation.lakehouse_catalog.is_none()
-        {
-            opts.insert(
-                "table_format".to_string(),
-                Value::from(format!("'{}'", catalog_relation.table_format.as_str())),
-            );
-            let file_format = catalog_relation.file_format.ok_or_else(|| {
-                AdapterError::new(
-                    AdapterErrorKind::Internal,
-                    "file_format is not set in catalog",
-                )
-            })?;
-            opts.insert(
-                "file_format".to_string(),
-                Value::from(format!("'{}'", file_format)),
-            );
-            let storage_uri = catalog_relation
-                .adapter_properties
-                .get("storage_uri")
-                .ok_or_else(|| {
-                    AdapterError::new(
-                        AdapterErrorKind::Internal,
-                        "storage_uri is not set in catalog",
-                    )
-                })?;
-            opts.insert(
-                "storage_uri".to_string(),
-                Value::from(format!("'{}'", storage_uri)),
-            );
+        if catalog_relation.table_format.is_iceberg() {
+            opts.extend(iceberg_table_options(&catalog_relation)?);
         }
     }
 
@@ -227,13 +199,66 @@ pub(crate) fn get_table_options_value(
         opts.insert("partition_expiration_days".to_string(), Value::from(days));
     }
 
+    if !temporary && let Some(enabled) = config.__warehouse_specific_config__.enable_change_history
+    {
+        opts.insert("enable_change_history".to_string(), Value::from(enabled));
+    }
+
+    Ok(opts)
+}
+
+/// Precondition: table format is iceberg. `lakehouse_catalog` is None-overloaded
+/// and can misrepresent mismatched adapter type as real semantics otherwise.
+fn iceberg_table_options(
+    catalog_relation: &CatalogRelation,
+) -> AdapterResult<IndexMap<String, Value>> {
+    let mut opts = IndexMap::new();
+
+    match catalog_relation.lakehouse_catalog() {
+        Some(_) => {}
+        None => {
+            opts.insert(
+                "table_format".to_string(),
+                Value::from(format!("'{}'", catalog_relation.table_format.as_str())),
+            );
+
+            let file_format = catalog_relation.file_format.as_deref().ok_or_else(|| {
+                AdapterError::new(
+                    AdapterErrorKind::Internal,
+                    "file_format is not set in catalog",
+                )
+            })?;
+            opts.insert(
+                "file_format".to_string(),
+                Value::from(format!("'{file_format}'")),
+            );
+
+            let storage_uri = catalog_relation
+                .adapter_properties
+                .get("storage_uri")
+                .ok_or_else(|| {
+                    AdapterError::new(
+                        AdapterErrorKind::Internal,
+                        "storage_uri is not set in catalog",
+                    )
+                })?;
+            opts.insert(
+                "storage_uri".to_string(),
+                Value::from(format!("'{storage_uri}'")),
+            );
+        }
+    }
+
     Ok(opts)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use dbt_schemas::schemas::dbt_catalogs::CatalogType;
+    use dbt_schemas::schemas::relations::base::TableFormat;
     use dbt_schemas::schemas::serde::StringOrInteger;
+    use std::collections::BTreeMap;
 
     fn expiration_for(hours: Option<StringOrInteger>, temporary: bool) -> Option<String> {
         let env = minijinja::Environment::new();
@@ -278,6 +303,48 @@ mod tests {
         );
     }
 
+    fn biglake_catalog_relation() -> CatalogRelation {
+        CatalogRelation {
+            adapter_type: AdapterType::Bigquery,
+            catalog_name: Some("BQ".to_string()),
+            integration_name: None,
+            catalog_type: CatalogType::BiglakeMetastore,
+            table_format: TableFormat::Iceberg,
+            adapter_properties: BTreeMap::from([(
+                "storage_uri".to_string(),
+                "gs://my-bucket/_dbt/analytics/events".to_string(),
+            )]),
+            is_transient: None,
+            external_volume: Some("gs://my-bucket".to_string()),
+            catalog_database: None,
+            lakehouse_catalog: None,
+            base_location: None,
+            file_format: Some("parquet".to_string()),
+        }
+    }
+
+    fn lrc_catalog_relation() -> CatalogRelation {
+        CatalogRelation {
+            lakehouse_catalog: Some("sales_catalog".to_string()),
+            ..biglake_catalog_relation()
+        }
+    }
+
+    #[test]
+    fn iceberg_options_for_plain_biglake_metastore_catalog() {
+        let opts = iceberg_table_options(&biglake_catalog_relation()).unwrap();
+        insta::assert_debug_snapshot!(opts);
+    }
+
+    #[test]
+    fn iceberg_options_empty_for_lrc_catalog() {
+        assert!(
+            iceberg_table_options(&lrc_catalog_relation())
+                .unwrap()
+                .is_empty()
+        );
+    }
+
     fn table_options_with_partition_expiration(temporary: bool) -> IndexMap<String, Value> {
         let env = minijinja::Environment::new();
         let state = env.empty_state();
@@ -308,6 +375,29 @@ mod tests {
                 "TIMESTAMP_ADD(CURRENT_TIMESTAMP(), INTERVAL 12 hour)"
             ))
         );
+    }
+
+    #[test]
+    fn enable_change_history_is_emitted_only_for_final_tables() {
+        let env = minijinja::Environment::new();
+        let state = env.empty_state();
+        let node = InternalDbtNodeWrapper::Model(Box::default());
+        let options = |enabled: bool, temporary: bool| {
+            let mut config = ModelConfig::default();
+            config.__warehouse_specific_config__.enable_change_history = Some(enabled);
+            get_table_options_value(&state, config, &node, temporary, AdapterType::Bigquery)
+                .unwrap()
+        };
+
+        assert_eq!(
+            options(true, false).get("enable_change_history"),
+            Some(&Value::from(true))
+        );
+        assert_eq!(
+            options(false, false).get("enable_change_history"),
+            Some(&Value::from(false))
+        );
+        assert_eq!(options(true, true).get("enable_change_history"), None);
     }
 
     #[test]

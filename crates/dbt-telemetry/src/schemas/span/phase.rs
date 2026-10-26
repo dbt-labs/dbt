@@ -53,6 +53,7 @@ impl StaticTelemetryEvent for PhaseExecuted {
             DbtTelemetryContext {
                 phase: Some(self.phase()),
                 unique_id: None,
+                batch_id: None,
             }
             .into(),
         )

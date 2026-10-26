@@ -1,0 +1,44 @@
+cf9de697:
+- sequence: 0
+  type: execute
+  sql: create schema if not exists development."adapters_snowflake_catalog_v2_format_change_drop"
+dbbbff64:
+- sequence: 0
+  type: execute
+  sql: |-
+    show terse schemas in database development
+    limit 10000
+model.test.format_change:
+- sequence: 0
+  type: execute
+  sql: SHOW OBJECTS IN SCHEMA "DEVELOPMENT"."adapters_snowflake_catalog_v2_format_change_drop" LIMIT 10000
+- sequence: 1
+  type: execute
+  sql: |-
+    create or replace iceberg table development."adapters_snowflake_catalog_v2_format_change_drop"."format_change"
+    external_volume = 's3_iceberg_snow'
+    
+    catalog = 'SNOWFLAKE'  -- required, and always SNOWFLAKE for built-in Iceberg tables
+    base_location = '_fusion_ci/format_change_drop/adapters_snowflake_catalog_v2_format_change_drop/format_change'
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    as (
+    
+    select
+    1 as id,
+    'test' as name,
+    cast(current_timestamp() as timestamp_ntz(6)) as created_at
+    )

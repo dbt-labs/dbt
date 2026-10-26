@@ -37,6 +37,7 @@ use dbt_metadata::parse_cache::{
     determine_cache_state_from_previous_previous_resolved_nodes, drop_all_unchanged_nodes,
 };
 use dbt_parser::args::ResolveArgs;
+use dbt_parser::plugin::ResolvePlugins;
 use dbt_parser::resolver_hooks::ResolverHooks;
 use dbt_schema_store::SchemaStoreTrait;
 use dbt_schemas::{
@@ -67,6 +68,13 @@ pub struct DbtLoadedProject {
     adapter_factory: Arc<dyn AdapterFactory>,
     dbt_state: Arc<DbtState>,
     jinja_factory: Arc<dyn JinjaFactory>,
+}
+
+/// Controls whether adapter initialization may construct an engine backed by a remote system.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AdapterConnectionMode {
+    AllowRemote,
+    Offline,
 }
 
 /// Phase 1: Load and hydrate cache with optional previous state for incremental compilation
@@ -120,6 +128,7 @@ async fn resolve_phase(
     token: &CancellationToken,
     jinja_type_checking_event_listener_factory: Arc<dyn JinjaTypeCheckingEventListenerFactory>,
     resolver_hooks: Arc<dyn ResolverHooks>,
+    plugins: ResolvePlugins,
 ) -> FsResult<(ResolverState, Arc<JinjaEnv>)> {
     use dbt_parser::resolver::resolve;
     use dbt_schemas::state::ResolvedNodes;
@@ -168,7 +177,7 @@ async fn resolve_phase(
 
     // Call the actual resolver
     let (mut resolved_state, jinja_env) = resolve(
-        &resolve_args,
+        resolve_args,
         invocation_args,
         dbt_state.clone(),
         macros,
@@ -180,6 +189,7 @@ async fn resolve_phase(
         token,
         jinja_type_checking_event_listener_factory,
         resolver_hooks,
+        plugins,
         loaded_project.jinja_factory.clone(),
     )
     .await?;
@@ -574,6 +584,7 @@ impl DbtLoadedProject {
         token: &CancellationToken,
         jinja_type_checking_event_listener_factory: Arc<dyn JinjaTypeCheckingEventListenerFactory>,
         resolver_hooks: Arc<dyn ResolverHooks>,
+        plugins: ResolvePlugins,
     ) -> FsResult<(ResolverState, Arc<JinjaEnv>)> {
         resolve_phase(
             self,
@@ -583,6 +594,7 @@ impl DbtLoadedProject {
             token,
             jinja_type_checking_event_listener_factory,
             resolver_hooks,
+            plugins,
         )
         .await
     }
@@ -603,6 +615,7 @@ impl DbtLoadedProject {
         token: &CancellationToken,
         sidecar_client: Option<Arc<dyn SidecarClient>>,
         execute: Execute,
+        connection_mode: AdapterConnectionMode,
     ) -> FsResult<Arc<AdapterStore>> {
         // Each declared adapter's `DbConfig`, cloned because the builder closure has
         // to be `'static` and so cannot hold `resolved_state`. Cloned rather than
@@ -646,28 +659,7 @@ impl DbtLoadedProject {
                     )
                 })?
                 .1;
-            // `lake_compute`, when configured as a secondary (non-default) adapter,
-            // inherits `database`/`schema` from the default adapter instead of
-            // requiring its own. `threads` is already shared across every adapter
-            // via the `threads` parameter passed to `build_adapter` below, so it
-            // needs no handling here. See fs#13653.
-            let resolved_config = if let DbConfig::LakeCompute(lake_compute) = matched_config {
-                let mut lake_compute = lake_compute.clone();
-                if lake_compute.database.is_none() || lake_compute.schema.is_none() {
-                    let default_config = configs
-                        .iter()
-                        .find(|(t, _)| *t == default_adapter)
-                        .map(|(_, c)| c);
-                    if lake_compute.database.is_none() {
-                        lake_compute.database =
-                            default_config.and_then(|c| c.get_database().cloned());
-                    }
-                    if lake_compute.schema.is_none() {
-                        lake_compute.schema = default_config.and_then(|c| c.get_schema().cloned());
-                    }
-                }
-                DbConfig::LakeCompute(lake_compute)
-            } else if let DbConfig::Snowflake(snowflake) = matched_config {
+            let resolved_config = if let DbConfig::Snowflake(snowflake) = matched_config {
                 // dbt-auth has no notion of self_signed_jwt; the connection
                 // it builds is identical to keypair's either way.
                 let mut snowflake = snowflake.clone();
@@ -698,6 +690,7 @@ impl DbtLoadedProject {
                 query_comment.clone(),
                 cloud_config.clone(),
                 threads,
+                connection_mode,
             )
         });
 
@@ -723,6 +716,7 @@ impl DbtLoadedProject {
         token: &CancellationToken,
         sidecar_client: Option<Arc<dyn SidecarClient>>,
         execute: Execute,
+        connection_mode: AdapterConnectionMode,
     ) -> FsResult<Arc<Adapter>> {
         self.init_adapter_store(
             resolved_state,
@@ -732,6 +726,7 @@ impl DbtLoadedProject {
             token,
             sidecar_client,
             execute,
+            connection_mode,
         )?
         .default_adapter()
     }
@@ -768,6 +763,7 @@ impl DbtLoadedProject {
         query_comment: Option<QueryComment>,
         cloud_config: Option<ResolvedCloudConfig>,
         threads: Option<usize>,
+        connection_mode: AdapterConnectionMode,
     ) -> FsResult<Arc<Adapter>> {
         let adapter_factory = self.adapter_factory.clone();
         let type_ops_factory = self.type_ops_factory.clone();
@@ -794,7 +790,8 @@ impl DbtLoadedProject {
         let is_mantle_replay = matches!(&replay_mode, Some(ReplayMode::MantleReplay(_)));
         let executes_locally =
             !introspect_enabled || matches!(execute, Execute::Sidecar | Execute::Service);
-        let use_local_mock_adapter = executes_locally && !is_mantle_replay;
+        let offline = connection_mode == AdapterConnectionMode::Offline;
+        let use_local_mock_adapter = offline || (executes_locally && !is_mantle_replay);
         let adapter = if matches!(adapter_type, AdapterType::DuckDB | AdapterType::LakeCompute) {
             adapter_factory
                 .create_adapter(
@@ -818,10 +815,7 @@ impl DbtLoadedProject {
                     )
                 })?
         } else if use_local_mock_adapter {
-            // Construct a MockAdapter wrapped in Adapter
-            let type_ops = type_ops_factory.create(adapter_type);
-
-            if let Some(client) = sidecar_client {
+            if !offline && let Some(client) = sidecar_client {
                 // For sidecar/service mode with a sidecar client, use AdapterImpl
                 // wrapping a SidecarEngine which routes introspection (get_columns_in_relation,
                 // list_relations, get_relation) to the sidecar client.
@@ -842,10 +836,14 @@ impl DbtLoadedProject {
                 );
                 Arc::new(Adapter::new(Arc::new(adapter_impl), None, token.clone()))
             } else {
-                // Fallback: use mock adapter
+                let type_ops = type_ops_factory.create(adapter_type);
+                let mut mock_flags = flags.project_flags();
+                if offline {
+                    mock_flags.insert("introspect".to_string(), false.into());
+                }
                 let mock = AdapterImpl::new_mock(
                     adapter_type,
-                    flags.project_flags(),
+                    mock_flags,
                     root_project_quoting,
                     type_ops,
                     adapter_factory.stmt_splitter(),
@@ -883,6 +881,7 @@ impl DbtLoadedProject {
         &self,
         adapter_type: AdapterType,
         config_as_mapping: dbt_yaml::Mapping,
+        replay_mode: Option<ReplayMode>,
         token: CancellationToken,
     ) -> FsResult<Arc<Adapter>> {
         let type_ops_factory = self.type_ops_factory.clone();
@@ -891,13 +890,13 @@ impl DbtLoadedProject {
             adapter_type,
             config_as_mapping,
             type_ops_factory,
-            None, // replay_mode
+            replay_mode,
             BTreeMap::new(),
             None,
             DEFAULT_RESOLVED_QUOTING,
             None,
             token,
-            None, // cloud_config — debug only runs `select 1`, no cloud connection needed
+            self.dbt_cloud_config(),
             None, // threads
         )
     }

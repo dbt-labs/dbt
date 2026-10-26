@@ -11,9 +11,9 @@ use std::{
 };
 
 use crate::schemas::{
-    DbtSource, InternalDbtNodeAttributes, Nodes, ResolvedCloudConfig,
+    DbtSource, InternalDbtNode, InternalDbtNodeAttributes, Nodes, ResolvedCloudConfig,
     common::{DbtQuoting, ResolvedQuoting},
-    dbt_catalogs::DbtCatalogs,
+    dbt_catalogs_deprecated::DbtCatalogs,
     macros::{DbtDocsMacro, DbtMacro},
     manifest::{DbtOperation, DbtSelector},
     profiles::DbConfig,
@@ -332,6 +332,110 @@ impl DbtProfile {
         hex::encode(&hash.as_bytes()[..16])
     }
 }
+
+/// A propagation target selection failed validation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PropagationTargetError {
+    /// More than one explicit target was configured.
+    MultipleTargets(usize),
+    /// The explicit target is not supported for Lake Compute propagation.
+    UnsupportedTarget(AdapterType),
+    /// The explicit target is not declared by the active profile.
+    TargetNotInProfile(AdapterType),
+    /// A Databricks target conflicts with a Snowflake-backed catalog.
+    DatabricksCatalogConflict,
+    /// A catalog requires Snowflake propagation, but the profile has no Snowflake adapter.
+    SnowflakeTargetRequired,
+}
+
+impl fmt::Display for PropagationTargetError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::MultipleTargets(count) => write!(
+                f,
+                "only one propagation target is supported in v1; {count} explicit targets were configured"
+            ),
+            Self::UnsupportedTarget(target) => {
+                write!(f, "'{target}' is not a supported propagation target")
+            }
+            Self::TargetNotInProfile(target) => write!(
+                f,
+                "explicit target '{target}' is not declared by the active profile"
+            ),
+            Self::DatabricksCatalogConflict => write!(
+                f,
+                "Databricks conflicts with catalog-implied Snowflake propagation"
+            ),
+            Self::SnowflakeTargetRequired => write!(
+                f,
+                "catalog requires Snowflake propagation, but the active profile has no usable Snowflake target"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for PropagationTargetError {}
+
+/// Resolve and validate the destination adapter for a Lake Compute node.
+///
+/// This is the single source of truth for explicit-target validation and implicit
+/// target selection. Parsing can use [`resolve_effective_propagation_target`] when
+/// it must preserve its existing best-effort behavior for unselected nodes;
+/// execution should use this fallible function to report configuration errors.
+pub fn resolve_propagation_target(
+    explicit: &[AdapterType],
+    profile_adapters: &[AdapterType],
+    catalog_requires_snowflake: bool,
+) -> Result<Option<AdapterType>, PropagationTargetError> {
+    if explicit.len() > 1 {
+        return Err(PropagationTargetError::MultipleTargets(explicit.len()));
+    }
+
+    if let Some(explicit) = explicit.first() {
+        if !matches!(explicit, AdapterType::Snowflake | AdapterType::Databricks) {
+            return Err(PropagationTargetError::UnsupportedTarget(*explicit));
+        }
+        if !profile_adapters.contains(explicit) {
+            return Err(PropagationTargetError::TargetNotInProfile(*explicit));
+        }
+        if catalog_requires_snowflake && *explicit == AdapterType::Databricks {
+            return Err(PropagationTargetError::DatabricksCatalogConflict);
+        }
+        return Ok(Some(*explicit));
+    }
+
+    let has_lake_compute = profile_adapters.contains(&AdapterType::LakeCompute);
+    let has_snowflake = profile_adapters.contains(&AdapterType::Snowflake);
+    let has_databricks = profile_adapters.contains(&AdapterType::Databricks);
+
+    if catalog_requires_snowflake {
+        return if has_snowflake {
+            Ok(Some(AdapterType::Snowflake))
+        } else {
+            Err(PropagationTargetError::SnowflakeTargetRequired)
+        };
+    }
+    if has_lake_compute && has_snowflake {
+        Ok(Some(AdapterType::Snowflake))
+    } else if has_lake_compute && has_databricks {
+        Ok(Some(AdapterType::Databricks))
+    } else {
+        Ok(None)
+    }
+}
+
+/// Best-effort parse-time wrapper. Invalid selections remain `None` so parsing
+/// can continue for nodes that will not be selected for execution.
+pub fn resolve_effective_propagation_target(
+    explicit: &[AdapterType],
+    profile_adapters: &[AdapterType],
+    catalog_requires_snowflake: bool,
+) -> Option<AdapterType> {
+    resolve_propagation_target(explicit, profile_adapters, catalog_requires_snowflake)
+        .ok()
+        .flatten()
+}
+
 impl fmt::Display for DbtProfile {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
@@ -472,14 +576,12 @@ pub trait NodeResolverTracker: fmt::Debug + Send + Sync {
     fn insert_ref(
         &mut self,
         node: &dyn InternalDbtNodeAttributes,
-        adapter_type: AdapterType,
         model_status: ModelStatus,
         overwrite: bool,
     ) -> FsResult<()>;
     fn insert_function(
         &mut self,
         node: &dyn InternalDbtNodeAttributes,
-        adapter_type: AdapterType,
         model_status: ModelStatus,
     ) -> FsResult<()>;
     fn insert_source(
@@ -560,7 +662,6 @@ impl NodeResolverTracker for DummyNodeResolverTracker {
     fn insert_ref(
         &mut self,
         _node: &dyn InternalDbtNodeAttributes,
-        _adapter_type: AdapterType,
         _model_status: ModelStatus,
         _overwrite: bool,
     ) -> FsResult<()> {
@@ -571,7 +672,6 @@ impl NodeResolverTracker for DummyNodeResolverTracker {
     fn insert_function(
         &mut self,
         _node: &dyn InternalDbtNodeAttributes,
-        _adapter_type: AdapterType,
         _model_status: ModelStatus,
     ) -> FsResult<()> {
         // No-op for dummy
@@ -751,7 +851,7 @@ pub struct ResolverState {
     pub operations: Operations,
     pub dbt_profile: DbtProfile,
     pub cloud_config: Option<ResolvedCloudConfig>,
-    pub render_results: RenderResults,
+    pub render_results: Arc<RenderResults>,
     pub node_resolver: Arc<dyn NodeResolverTracker>,
     pub get_relation_calls: GetRelationCalls,
     pub get_columns_in_relation_calls: GetColumnsInRelationCalls,
@@ -777,6 +877,67 @@ pub struct ResolverState {
     /// For now this is populated as empty; later we can use it (e.g. in replay mode) to reconcile
     /// naming differences between Fusion and external recordings.
     pub test_name_truncations: HashMap<String, String>,
+    /// Declared (user-authored YAML `columns:`) schema, hydrated once from
+    /// `nodes` when this `ResolverState` is built. Ground truth, not
+    /// inferred — consulted during binding via a `CatalogProviderList`
+    /// wrapper (see `dbt-tasks::declared_schema_catalog`).
+    pub user_defined_schema_registry:
+        Arc<dbt_common::user_defined_schema_registry::UserDefinedSchemaRegistry>,
+}
+
+pub fn hydrate_user_defined_schema_registry(
+    nodes: &Nodes,
+    adapter_type: AdapterType,
+) -> Arc<dbt_common::user_defined_schema_registry::UserDefinedSchemaRegistry> {
+    let registry =
+        Arc::new(dbt_common::user_defined_schema_registry::UserDefinedSchemaRegistry::new());
+
+    fn record(
+        node: &dyn InternalDbtNode,
+        registry: &dbt_common::user_defined_schema_registry::UserDefinedSchemaRegistry,
+        adapter_type: AdapterType,
+    ) {
+        let base = node.base();
+        if base.columns.is_empty() {
+            return;
+        }
+        let (database, schema, alias) = match adapter_type {
+            AdapterType::Snowflake => (
+                base.database.to_uppercase(),
+                base.schema.to_uppercase(),
+                base.alias.to_uppercase(),
+            ),
+            _ => (
+                base.database.clone(),
+                base.schema.clone(),
+                base.alias.clone(),
+            ),
+        };
+        let relation =
+            dbt_common::user_defined_schema_registry::relation_key(&database, &schema, &alias);
+        for column in &base.columns {
+            let name = match adapter_type {
+                AdapterType::Snowflake => column.name.to_uppercase(),
+                _ => column.name.clone(),
+            };
+            registry.record_column(&relation, &name);
+        }
+    }
+
+    for model in nodes.models.values() {
+        record(model.as_ref(), &registry, adapter_type);
+    }
+    for source in nodes.sources.values() {
+        record(source.as_ref(), &registry, adapter_type);
+    }
+    for seed in nodes.seeds.values() {
+        record(seed.as_ref(), &registry, adapter_type);
+    }
+    for snapshot in nodes.snapshots.values() {
+        record(snapshot.as_ref(), &registry, adapter_type);
+    }
+
+    registry
 }
 
 impl ResolverState {
@@ -980,6 +1141,32 @@ pub fn register_global_runtime_config(package_name: String, cfg: Arc<DbtRuntimeC
     map.insert(package_name, cfg);
 }
 
+/// Canonical absolute `seed-paths` of every registered package (the root project
+/// included), each prefixed with that package's project root. Directories that
+/// don't exist are skipped.
+pub fn canonical_seed_dirs() -> Vec<String> {
+    let Some(configs) = snapshot_global_runtime_configs() else {
+        return Vec::new();
+    };
+    let mut dirs: Vec<String> = configs
+        .values()
+        .flat_map(|config| {
+            let inner = &config.inner;
+            inner
+                .seed_paths
+                .iter()
+                .filter_map(|path| {
+                    dbt_common::stdfs::canonicalize(inner.project_root.join(path)).ok()
+                })
+                .filter_map(|dir| dir.to_str().map(str::to_owned))
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    dirs.sort();
+    dirs.dedup();
+    dirs
+}
+
 fn snapshot_global_runtime_configs() -> Option<RuntimeConfigMap> {
     let map = global_runtime_configs().read().ok()?;
     if map.is_empty() {
@@ -1075,7 +1262,8 @@ pub struct DbtRuntimeConfigInner {
 
     // Project flags
     /// When true, `latest_version_pointer` is enabled by default for all versioned models
-    /// (can be overridden per-model with `latest_version_pointer: {enabled: false}`)
+    /// (can be overridden per-model with `latest_version_pointer: {enabled: false}`).
+    /// Resolved from the root project's `flags:`, so it is the same for every package.
     #[serde(default = "default_true")]
     pub latest_version_pointer_enabled_by_default: bool,
 }
@@ -1091,9 +1279,12 @@ impl DbtRuntimeConfig {
             .insert(package_name.to_string(), Arc::new(self_clone));
     }
 
+    /// `root_project_flags` is the root project's `flags:` block: project flags are global and
+    /// never come from `package` unless it is the root.
     pub fn new(
         in_dir: &Path,
         package: &DbtPackage,
+        root_project_flags: Option<&dbt_yaml::Value>,
         profile: &DbtProfile,
         dependency_lookup: &BTreeMap<String, Arc<DbtRuntimeConfig>>,
         vars: &IndexMap<String, DbtVars>,
@@ -1175,9 +1366,7 @@ impl DbtRuntimeConfig {
             invoked_at: Utc::now(),
             args: InvocationArgs::default(),
             latest_version_pointer_enabled_by_default:
-                resolve_latest_version_pointer_enabled_by_default(
-                    package.dbt_project.flags.as_ref(),
-                ),
+                resolve_latest_version_pointer_enabled_by_default(root_project_flags),
         };
 
         // TODO(anna): Look into whether this should also be Index map
@@ -1314,7 +1503,9 @@ pub enum ModelStatus {
 #[cfg(test)]
 mod dbt_profile_adapter_tests {
     use super::*;
-    use crate::schemas::profiles::{DuckDbConfig, SnowflakeDbConfig};
+    use crate::schemas::profiles::{
+        DatabricksDbConfig, DuckDbConfig, LakeComputeConfig, SnowflakeDbConfig,
+    };
 
     fn profile(
         adapters: IndexMap<AdapterType, ProfileAdapter>,
@@ -1342,8 +1533,102 @@ mod dbt_profile_adapter_tests {
         DbConfig::Snowflake(Box::<SnowflakeDbConfig>::default())
     }
 
+    fn databricks() -> DbConfig {
+        DbConfig::Databricks(Box::<DatabricksDbConfig>::default())
+    }
+
+    fn lake_compute() -> DbConfig {
+        DbConfig::LakeCompute(Box::<LakeComputeConfig>::default())
+    }
+
     fn one(config: DbConfig) -> (AdapterType, ProfileAdapter) {
         (config.adapter_type(), ProfileAdapter::single(config))
+    }
+
+    #[test]
+    fn databricks_propagation_policy_tests() {
+        let cases = [
+            (
+                IndexMap::from([one(lake_compute()), one(databricks())]),
+                AdapterType::LakeCompute,
+                &[][..],
+                false,
+                Some(AdapterType::Databricks),
+            ),
+            (
+                IndexMap::from([one(lake_compute()), one(snowflake()), one(databricks())]),
+                AdapterType::LakeCompute,
+                &[][..],
+                false,
+                Some(AdapterType::Snowflake),
+            ),
+            (
+                IndexMap::from([one(lake_compute()), one(databricks())]),
+                AdapterType::LakeCompute,
+                &[AdapterType::Databricks][..],
+                false,
+                Some(AdapterType::Databricks),
+            ),
+            (
+                IndexMap::from([one(lake_compute()), one(snowflake())]),
+                AdapterType::LakeCompute,
+                &[][..],
+                true,
+                Some(AdapterType::Snowflake),
+            ),
+            (
+                IndexMap::from([one(lake_compute())]),
+                AdapterType::LakeCompute,
+                &[AdapterType::Databricks][..],
+                false,
+                None,
+            ),
+            (
+                IndexMap::from([one(lake_compute()), one(databricks())]),
+                AdapterType::LakeCompute,
+                &[AdapterType::Databricks][..],
+                true,
+                None,
+            ),
+            (
+                IndexMap::from([one(lake_compute()), one(snowflake()), one(databricks())]),
+                AdapterType::LakeCompute,
+                &[AdapterType::Snowflake, AdapterType::Databricks][..],
+                false,
+                None,
+            ),
+            (
+                IndexMap::from([one(snowflake())]),
+                AdapterType::Snowflake,
+                &[][..],
+                false,
+                None,
+            ),
+        ];
+
+        for (adapters, default_adapter, explicit, catalog_requires_snowflake, expected) in cases {
+            let profile = profile(adapters, default_adapter);
+            let profile_adapters = profile.adapter_types();
+            assert_eq!(
+                resolve_effective_propagation_target(
+                    explicit,
+                    &profile_adapters,
+                    catalog_requires_snowflake,
+                ),
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn propagation_target_resolution_reports_invalid_explicit_selection() {
+        let profile_adapters = vec![AdapterType::LakeCompute];
+        assert_eq!(
+            resolve_propagation_target(&[AdapterType::Databricks], &profile_adapters, false,),
+            Err(PropagationTargetError::TargetNotInProfile(
+                AdapterType::Databricks,
+            ))
+        );
     }
 
     /// `default_db_config()` must follow `default_adapter`, not insertion order — the
@@ -1416,5 +1701,175 @@ mod dbt_profile_adapter_tests {
                 "every connection should have threads set, got {threads:?}"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod user_defined_schema_registry_tests {
+    use super::*;
+    use crate::schemas::dbt_column::DbtColumn;
+    use crate::schemas::{
+        CommonAttributes, DbtModel, DbtModelAttr, DbtSeed, DbtSnapshot, NodeBaseAttributes,
+    };
+    use std::collections::BTreeMap;
+
+    fn base_attr(
+        database: &str,
+        schema: &str,
+        alias: &str,
+        columns: &[&str],
+    ) -> NodeBaseAttributes {
+        NodeBaseAttributes {
+            database: database.to_string(),
+            schema: schema.to_string(),
+            alias: alias.to_string(),
+            columns: columns
+                .iter()
+                .map(|name| {
+                    Arc::new(DbtColumn {
+                        name: name.to_string(),
+                        ..Default::default()
+                    })
+                })
+                .collect(),
+            ..Default::default()
+        }
+    }
+
+    fn model_with_columns(database: &str, schema: &str, alias: &str, columns: &[&str]) -> DbtModel {
+        DbtModel {
+            __common_attr__: CommonAttributes {
+                unique_id: "model.m".to_string(),
+                ..Default::default()
+            },
+            __base_attr__: base_attr(database, schema, alias, columns),
+            __model_attr__: DbtModelAttr::default(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn hydrate_from_declared_columns_uppercases_for_snowflake() {
+        let mut models = BTreeMap::new();
+        models.insert(
+            "model.m".to_string(),
+            Arc::new(model_with_columns("db", "sch", "tbl", &["col"])),
+        );
+        let nodes = Nodes {
+            models,
+            ..Default::default()
+        };
+        let registry = hydrate_user_defined_schema_registry(&nodes, AdapterType::Snowflake);
+        let relation = dbt_common::user_defined_schema_registry::relation_key("DB", "SCH", "TBL");
+        assert!(registry.columns_for(&relation).unwrap().contains("COL"));
+    }
+
+    #[test]
+    fn hydrate_from_declared_columns_keeps_case_for_non_snowflake_adapters() {
+        let mut models = BTreeMap::new();
+        models.insert(
+            "model.m".to_string(),
+            Arc::new(model_with_columns("db", "sch", "tbl", &["col"])),
+        );
+        let nodes = Nodes {
+            models,
+            ..Default::default()
+        };
+        let registry = hydrate_user_defined_schema_registry(&nodes, AdapterType::DuckDB);
+        let relation = dbt_common::user_defined_schema_registry::relation_key("db", "sch", "tbl");
+        assert!(registry.columns_for(&relation).unwrap().contains("col"));
+    }
+
+    #[test]
+    fn hydrate_from_declared_columns_skips_models_without_declared_columns() {
+        let mut models = BTreeMap::new();
+        models.insert(
+            "model.m".to_string(),
+            Arc::new(model_with_columns("db", "sch", "tbl", &[])),
+        );
+        let nodes = Nodes {
+            models,
+            ..Default::default()
+        };
+        let registry = hydrate_user_defined_schema_registry(&nodes, AdapterType::Snowflake);
+        let relation = dbt_common::user_defined_schema_registry::relation_key("DB", "SCH", "TBL");
+        assert!(registry.columns_for(&relation).is_none());
+    }
+
+    #[test]
+    fn hydrate_from_declared_columns_covers_sources_seeds_and_snapshots_too() {
+        let mut sources = BTreeMap::new();
+        sources.insert(
+            "source.s".to_string(),
+            Arc::new(DbtSource {
+                __common_attr__: CommonAttributes {
+                    unique_id: "source.s".to_string(),
+                    ..Default::default()
+                },
+                __base_attr__: base_attr("db", "sch", "src_tbl", &["scol"]),
+                ..Default::default()
+            }),
+        );
+
+        let mut seeds = BTreeMap::new();
+        seeds.insert(
+            "seed.sd".to_string(),
+            Arc::new(DbtSeed {
+                __common_attr__: CommonAttributes {
+                    unique_id: "seed.sd".to_string(),
+                    ..Default::default()
+                },
+                __base_attr__: base_attr("db", "sch", "seed_tbl", &["seedcol"]),
+                ..Default::default()
+            }),
+        );
+
+        let mut snapshots = BTreeMap::new();
+        snapshots.insert(
+            "snapshot.sn".to_string(),
+            Arc::new(DbtSnapshot {
+                __common_attr__: CommonAttributes {
+                    unique_id: "snapshot.sn".to_string(),
+                    ..Default::default()
+                },
+                __base_attr__: base_attr("db", "sch", "snap_tbl", &["snapcol"]),
+                ..Default::default()
+            }),
+        );
+
+        let nodes = Nodes {
+            sources,
+            seeds,
+            snapshots,
+            ..Default::default()
+        };
+        let registry = hydrate_user_defined_schema_registry(&nodes, AdapterType::DuckDB);
+
+        let source_relation =
+            dbt_common::user_defined_schema_registry::relation_key("db", "sch", "src_tbl");
+        assert!(
+            registry
+                .columns_for(&source_relation)
+                .unwrap()
+                .contains("scol")
+        );
+
+        let seed_relation =
+            dbt_common::user_defined_schema_registry::relation_key("db", "sch", "seed_tbl");
+        assert!(
+            registry
+                .columns_for(&seed_relation)
+                .unwrap()
+                .contains("seedcol")
+        );
+
+        let snapshot_relation =
+            dbt_common::user_defined_schema_registry::relation_key("db", "sch", "snap_tbl");
+        assert!(
+            registry
+                .columns_for(&snapshot_relation)
+                .unwrap()
+                .contains("snapcol")
+        );
     }
 }

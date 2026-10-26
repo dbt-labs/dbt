@@ -1,8 +1,8 @@
 # **what?**
 # When the core team triages, we sometimes need more information from the issue creator.  In
-# those cases we remove the `triage` label and add the `awaiting_response` label.  Once we
+# those cases we remove the `status:triage` label and add the `awaiting_response` label.  Once we
 # recieve a response in the form of a comment, we want the `awaiting_response` label removed
-# in favor of the `triage` label so we are aware that the issue needs action.
+# in favor of the `status:triage` label so we are aware that the issue needs action.
 
 # **why?**
 # To help with out team triage issue tracking
@@ -26,6 +26,6 @@ jobs:
     if: contains(github.event.issue.labels.*.name, 'awaiting_response')
     uses: dbt-labs/actions/.github/workflows/swap-labels.yml@main
     with:
-      add_label: "triage"
+      add_label: "status:triage"
       remove_label: "awaiting_response"
     secrets: inherit

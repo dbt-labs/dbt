@@ -1,0 +1,136 @@
+2cb7c46c:
+- sequence: 0
+  type: execute
+  sql: SHOW SCHEMAS FROM DATABASE "ci_alt"
+4c238121:
+- sequence: 0
+  type: execute
+  sql: create schema if not exists "ci"."adapters_redshift_cross_database_use"
+5da7d49e:
+- sequence: 0
+  type: execute
+  sql: create schema if not exists "ci_alt"."adapters_redshift_cross_database_use"
+652acd8c:
+- sequence: 0
+  type: execute
+  sql: SHOW SCHEMAS FROM DATABASE "ci"
+model.test.cross_database_model:
+- sequence: 0
+  type: execute
+  sql: USE "ci_alt"
+- sequence: 1
+  type: execute
+  sql: SHOW TABLES FROM SCHEMA "ci_alt"."adapters_redshift_cross_database_use"
+- sequence: 2
+  type: execute
+  sql: |-
+    with relation as (
+    select
+    pg_class.oid as relation_id,
+    pg_class.relname as relation_name,
+    pg_class.relnamespace as schema_id,
+    pg_namespace.nspname as schema_name
+    from pg_class
+    join pg_namespace
+    on pg_class.relnamespace = pg_namespace.oid
+    where pg_namespace.nspname != 'information_schema'
+    and pg_namespace.nspname not like 'pg\_%'
+    ),
+    dependency as (
+    select distinct
+    coalesce(pg_rewrite.ev_class, pg_depend.objid) as dep_relation_id,
+    pg_depend.refobjid as ref_relation_id
+    from pg_depend
+    left join pg_rewrite
+    on pg_depend.objid = pg_rewrite.oid
+    where coalesce(pg_rewrite.ev_class, pg_depend.objid) != pg_depend.refobjid
+    )
+    select distinct
+    dep.schema_name as dependent_schema,
+    dep.relation_name as dependent_name,
+    ref.schema_name as referenced_schema,
+    ref.relation_name as referenced_name
+    from dependency
+    join relation ref
+    on dependency.ref_relation_id = ref.relation_id
+    join relation dep
+    on dependency.dep_relation_id = dep.relation_id
+- sequence: 3
+  type: execute
+  sql: |-
+    create  table
+    "ci_alt"."adapters_redshift_cross_database_use"."cross_database_model__dbt_tmp"
+    
+    
+    
+    as (
+    
+    
+    select 1 as id
+    )
+- sequence: 4
+  type: execute
+  sql: alter table "ci_alt"."adapters_redshift_cross_database_use"."cross_database_model__dbt_tmp" rename to "cross_database_model"
+- sequence: 5
+  type: execute
+  sql: drop table if exists "ci_alt"."adapters_redshift_cross_database_use"."cross_database_model__dbt_backup" cascade
+- sequence: 6
+  type: execute
+  sql: RESET USE
+model.test.same_database_model:
+- sequence: 0
+  type: execute
+  sql: SHOW TABLES FROM SCHEMA "ci"."adapters_redshift_cross_database_use"
+- sequence: 1
+  type: execute
+  sql: |-
+    with relation as (
+    select
+    pg_class.oid as relation_id,
+    pg_class.relname as relation_name,
+    pg_class.relnamespace as schema_id,
+    pg_namespace.nspname as schema_name
+    from pg_class
+    join pg_namespace
+    on pg_class.relnamespace = pg_namespace.oid
+    where pg_namespace.nspname != 'information_schema'
+    and pg_namespace.nspname not like 'pg\_%'
+    ),
+    dependency as (
+    select distinct
+    coalesce(pg_rewrite.ev_class, pg_depend.objid) as dep_relation_id,
+    pg_depend.refobjid as ref_relation_id
+    from pg_depend
+    left join pg_rewrite
+    on pg_depend.objid = pg_rewrite.oid
+    where coalesce(pg_rewrite.ev_class, pg_depend.objid) != pg_depend.refobjid
+    )
+    select distinct
+    dep.schema_name as dependent_schema,
+    dep.relation_name as dependent_name,
+    ref.schema_name as referenced_schema,
+    ref.relation_name as referenced_name
+    from dependency
+    join relation ref
+    on dependency.ref_relation_id = ref.relation_id
+    join relation dep
+    on dependency.dep_relation_id = dep.relation_id
+- sequence: 2
+  type: execute
+  sql: |-
+    create  table
+    "ci"."adapters_redshift_cross_database_use"."same_database_model__dbt_tmp"
+    
+    
+    
+    as (
+    
+    
+    select 1 as id
+    )
+- sequence: 3
+  type: execute
+  sql: alter table "ci"."adapters_redshift_cross_database_use"."same_database_model__dbt_tmp" rename to "same_database_model"
+- sequence: 4
+  type: execute
+  sql: drop table if exists "ci"."adapters_redshift_cross_database_use"."same_database_model__dbt_backup" cascade

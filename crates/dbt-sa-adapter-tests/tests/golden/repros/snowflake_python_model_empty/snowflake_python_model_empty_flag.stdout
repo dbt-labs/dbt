@@ -1,0 +1,13 @@
+   dbt-oss 
+   Loading profiles.yml
+   Parsing models/a.sql
+ Rendering models/a.sql
+   Running models/a.sql
+ Succeeded model snowflake_python_model_empty_flag.a (table) [1 of 2 in duration]
+ Rendering models/b.py
+   Running models/b.py
+ Succeeded model snowflake_python_model_empty_flag.b (table) [2 of 2 in duration]
+==================== Execution Summary =====================
+Finished 'build' successfully for target 'snowflake' [duration]
+Processed: 2 models
+Summary: 2 total | 2 success

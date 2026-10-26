@@ -1,5 +1,5 @@
 use crate::adapter::adapter_impl::{AdapterImpl, get_bool_config, quote_ident};
-use crate::connection::AdapterConnectionFactory;
+use crate::connection::{AdapterConnectionFactory, ConnectionGuard};
 use crate::errors::*;
 use crate::metadata::*;
 use crate::record_batch::RecordBatchExt;
@@ -12,6 +12,7 @@ use arrow::datatypes::GenericStringType;
 use arrow_schema::{DataType, Field, Schema};
 use dbt_adapter_core::{AdapterType, ExecutionPhase};
 use dbt_adapter_engine::MapReduce;
+use dbt_adapter_engine::cow::uppercase;
 use dbt_adbc::*;
 use dbt_common::cancellation::Cancellable;
 use dbt_common::cancellation::CancellationToken;
@@ -112,11 +113,11 @@ fn parse_relation_dependencies(
 pub fn list_relation_dependencies(
     engine: &dyn AdapterEngine,
     ctx: &QueryCtx,
-    conn: &'_ mut dyn Connection,
+    conn: &mut ConnectionGuard<'_>,
     db_schema: &CatalogAndSchema,
     token: CancellationToken,
 ) -> AdapterResult<Vec<ParentChildPair>> {
-    let batch = engine.execute(None, conn, ctx, REDSHIFT_GET_RELATIONS_SQL, token)?;
+    let batch = engine.execute(None, conn.as_mut(), ctx, REDSHIFT_GET_RELATIONS_SQL, token)?;
     let want = db_schema.resolved_schema.to_lowercase();
     parse_relation_dependencies(
         &batch,
@@ -130,7 +131,7 @@ pub fn list_relation_dependencies(
 pub fn list_relations(
     engine: &dyn AdapterEngine,
     ctx: &QueryCtx,
-    conn: &'_ mut dyn Connection,
+    conn: &mut ConnectionGuard<'_>,
     db_schema: &CatalogAndSchema,
     token: CancellationToken,
 ) -> AdapterResult<Vec<Arc<dyn BaseRelation>>> {
@@ -158,7 +159,7 @@ fn build_redshift_relation(
 fn list_relations_via_information_schema(
     engine: &dyn AdapterEngine,
     ctx: &QueryCtx,
-    conn: &'_ mut dyn Connection,
+    conn: &mut ConnectionGuard<'_>,
     db_schema: &CatalogAndSchema,
     token: CancellationToken,
 ) -> AdapterResult<Vec<Arc<dyn BaseRelation>>> {
@@ -186,7 +187,7 @@ where table_schema ilike '{}'",
         &db_schema.resolved_schema, &db_schema.resolved_schema
     );
 
-    let batch = engine.execute(None, conn, ctx, &sql, token)?;
+    let batch = engine.execute(None, conn.as_mut(), ctx, &sql, token)?;
 
     if batch.num_rows() == 0 {
         return Ok(Vec::new());
@@ -217,7 +218,7 @@ where table_schema ilike '{}'",
 fn list_relations_via_show_tables(
     engine: &dyn AdapterEngine,
     ctx: &QueryCtx,
-    conn: &'_ mut dyn Connection,
+    conn: &mut ConnectionGuard<'_>,
     db_schema: &CatalogAndSchema,
     token: CancellationToken,
 ) -> AdapterResult<Vec<Arc<dyn BaseRelation>>> {
@@ -226,7 +227,7 @@ fn list_relations_via_show_tables(
         db_schema.rendered_catalog, db_schema.rendered_schema
     );
 
-    let batch = engine.execute(None, conn, ctx, &sql, token)?;
+    let batch = engine.execute(None, conn.as_mut(), ctx, &sql, token)?;
     parse_show_tables_batch(&batch, engine.quoting())
 }
 
@@ -255,9 +256,9 @@ fn parse_show_tables_batch(
 
     let mut relations = Vec::with_capacity(batch.num_rows());
     for i in 0..batch.num_rows() {
-        let kind = table_type.value(i).trim().to_uppercase();
-        let subtype = table_subtype.map(|arr| arr.value(i).trim().to_uppercase());
-        let relation_type = match (kind.as_str(), subtype.as_deref()) {
+        let kind = uppercase(table_type.value(i).trim().into());
+        let subtype = table_subtype.map(|arr| uppercase(arr.value(i).trim().into()));
+        let relation_type = match (kind.as_ref(), subtype.as_deref()) {
             ("VIEW", Some("MATERIALIZED VIEW")) => RelationType::MaterializedView,
             ("VIEW", _) => RelationType::View,
             _ => RelationType::Table,
@@ -494,7 +495,7 @@ impl ListRelationsSchemasStrategy for RedshiftListRelationsSchemasStrategy {
 
         let adapter = self.adapter.clone();
         let token_clone = token.clone();
-        let map_f = move |conn: &'_ mut dyn Connection,
+        let map_f = move |conn: &mut ConnectionGuard<'_>,
                           relation: &Arc<dyn BaseRelation>|
               -> AdapterResult<Arc<Schema>> {
             let catalog = relation.database_as_str()?;
@@ -687,7 +688,7 @@ impl RedshiftFreshnessStrategy {
         let adapter = self.adapter.clone();
         let token_clone = token.clone();
 
-        let map_f = move |conn: &'_ mut dyn Connection,
+        let map_f = move |conn: &mut ConnectionGuard<'_>,
                           group: &((String, String), Vec<Arc<dyn BaseRelation>>)|
               -> AdapterResult<MapResult> {
             let ((_, schema), _) = group;
@@ -833,7 +834,7 @@ impl RedshiftFreshnessStrategy {
         let adapter = self.adapter.clone();
         let token_clone = token.clone();
 
-        let map_f = move |conn: &'_ mut dyn Connection,
+        let map_f = move |conn: &mut ConnectionGuard<'_>,
                           (database, schema): &(String, String)|
               -> AdapterResult<Arc<RecordBatch>> {
             let sql = format!(
@@ -1461,7 +1462,7 @@ impl MetadataAdapter for RedshiftMetadataAdapter {
 
         // Use MapReduce with a single item to get a managed connection.
         let map_f =
-            move |conn: &'_ mut dyn Connection, _key: &()| -> AdapterResult<Arc<RecordBatch>> {
+            move |conn: &mut ConnectionGuard<'_>, _key: &()| -> AdapterResult<Arc<RecordBatch>> {
                 let ctx = QueryCtx::default().with_desc("Fetch Redshift view definitions");
                 let (_, table) = adapter.query(&ctx, conn, &sql, None, token_clone.clone())?;
                 Ok(table.original_record_batch())
@@ -1519,6 +1520,7 @@ impl MetadataAdapter for RedshiftMetadataAdapter {
         &self,
         db_schemas: &[CatalogAndSchema],
         token: CancellationToken,
+        report_progress: bool,
     ) -> AsyncAdapterResult<'_, BTreeMap<CatalogAndSchema, AdapterResult<RelationVec>>> {
         type Acc = BTreeMap<CatalogAndSchema, AdapterResult<RelationVec>>;
         let factory = Box::new(AdapterConnectionFactory::new(self.adapter.engine().clone()));
@@ -1526,11 +1528,15 @@ impl MetadataAdapter for RedshiftMetadataAdapter {
         let adapter = self.adapter.clone();
         let token_clone = token.clone();
 
-        let map_f = move |conn: &'_ mut dyn Connection,
+        let map_f = move |conn: &mut ConnectionGuard<'_>,
                           db_schema: &CatalogAndSchema|
               -> AdapterResult<Vec<Arc<dyn BaseRelation>>> {
             let query_ctx = QueryCtx::default().with_desc("list_relations_in_parallel");
-            adapter.list_relations(&query_ctx, conn, db_schema, token_clone.clone())
+            with_relation_list_item_span(
+                report_progress.then_some(RELATION_CACHE_OP_ID),
+                &db_schema.to_string(),
+                || adapter.list_relations(None, &query_ctx, conn, db_schema, token_clone.clone()),
+            )
         };
 
         let reduce_f = move |acc: &mut Acc,
@@ -1567,7 +1573,7 @@ impl MetadataAdapter for RedshiftMetadataAdapter {
         let adapter = self.adapter.clone();
         let token_clone = token.clone();
 
-        let map_f = move |conn: &'_ mut dyn Connection,
+        let map_f = move |conn: &mut ConnectionGuard<'_>,
                           job: &(String, BTreeSet<String>)|
               -> AdapterResult<Vec<ParentChildPair>> {
             let (catalog, schemas) = job;
@@ -1575,7 +1581,7 @@ impl MetadataAdapter for RedshiftMetadataAdapter {
             let engine = adapter.engine();
             let batch = engine.execute(
                 None,
-                conn,
+                conn.as_mut(),
                 &ctx,
                 REDSHIFT_GET_RELATIONS_SQL,
                 token_clone.clone(),

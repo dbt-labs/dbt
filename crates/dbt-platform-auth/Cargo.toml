@@ -33,6 +33,9 @@ tokio = { workspace = true }
 tracing = { workspace = true }
 url = { workspace = true }
 
+[target.'cfg(windows)'.dependencies]
+dbt-file-security = { workspace = true }
+
 [dev-dependencies]
 dbt-runtime = { workspace = true }
 tempfile = { workspace = true }

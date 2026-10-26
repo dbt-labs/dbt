@@ -23,9 +23,9 @@
   {% endif %}
 
   {%- if target_relation_exists -%}
-    {%- if not target_relation.is_delta and not target_relation.is_hudi -%}
+    {%- if not target_relation.is_delta and not target_relation.is_hudi and not target_relation.is_iceberg_format -%}
       {% set invalid_format_msg -%}
-        The existing table {{ model.schema }}.{{ target_table }} is in another format than 'delta' or 'hudi'
+        The existing table {{ model.schema }}.{{ target_table }} is in another format than 'delta', 'hudi', or 'iceberg'
       {%- endset %}
       {% do exceptions.raise_compiler_error(invalid_format_msg) %}
     {% endif %}

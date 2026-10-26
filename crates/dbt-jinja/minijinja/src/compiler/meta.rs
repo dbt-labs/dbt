@@ -313,7 +313,42 @@ pub struct StaticFunctionCall {
 /// a private holder carried through a hand-rolled AST walk.
 struct CallTracker<'a> {
     names: &'a [&'a str],
+    /// Lenient mode for collecting runtime values (`var`, `env_var`): a call
+    /// matches once its first argument is a string literal, and the walk also
+    /// covers macro/call-block defaults and set/filter block filters.
+    runtime_values: bool,
     out: Vec<StaticFunctionCall>,
+    dynamic_calls: HashSet<String>,
+}
+
+/// Runtime calls with literal names, and functions whose names require evaluation.
+pub struct RuntimeValueCalls {
+    pub calls: Vec<StaticFunctionCall>,
+    pub dynamic_calls: HashSet<String>,
+}
+
+fn context_field<'e>(expr: &'e ast::Expr<'_>) -> Option<Option<&'e str>> {
+    match expr {
+        ast::Expr::GetAttr(field) if matches!(&field.expr, ast::Expr::Var(var) if var.id == "context") => {
+            Some(match field.name {
+                "get" | "values" | "items" | "copy" => None,
+                name => Some(name),
+            })
+        }
+        ast::Expr::GetItem(field) if matches!(&field.expr, ast::Expr::Var(var) if var.id == "context") => {
+            Some(match &field.subscript_expr {
+                ast::Expr::Const(value) => value.value.as_str(),
+                _ => None,
+            })
+        }
+        ast::Expr::Call(call) if matches!(call.identify_call(), ast::CallType::Method(ast::Expr::Var(var), "get") if var.id == "context") => {
+            Some(match call.args.first() {
+                Some(ast::CallArg::Pos(ast::Expr::Const(value))) => value.value.as_str(),
+                _ => None,
+            })
+        }
+        _ => None,
+    }
 }
 
 /// Walks `node` and returns every function call.
@@ -325,10 +360,39 @@ struct CallTracker<'a> {
 pub fn find_string_arg_calls(node: &ast::Stmt<'_>, names: &[&str]) -> Vec<StaticFunctionCall> {
     let mut state = CallTracker {
         names,
+        runtime_values: false,
         out: Vec::new(),
+        dynamic_calls: HashSet::new(),
     };
     state.visit_stmt(node);
     state.out
+}
+
+/// Like [`find_string_arg_calls`], but a call is recorded as soon as its first
+/// positional argument is a string literal; the other arguments (e.g. a
+/// default value) may be arbitrary expressions and are ignored. `args` of the
+/// returned calls holds only that first argument. Also scans macro and
+/// call-block defaults and set/filter block filters.
+pub fn find_first_string_arg_calls(
+    node: &ast::Stmt<'_>,
+    names: &[&str],
+) -> Vec<StaticFunctionCall> {
+    find_runtime_value_calls(node, names).calls
+}
+
+/// Includes unresolved calls so callers can account for the full input namespace.
+pub fn find_runtime_value_calls(node: &ast::Stmt<'_>, names: &[&str]) -> RuntimeValueCalls {
+    let mut state = CallTracker {
+        names,
+        runtime_values: true,
+        out: Vec::new(),
+        dynamic_calls: HashSet::new(),
+    };
+    state.visit_stmt(node);
+    RuntimeValueCalls {
+        calls: state.out,
+        dynamic_calls: state.dynamic_calls,
+    }
 }
 
 impl<'a> CallTracker<'a> {
@@ -356,20 +420,63 @@ impl<'a> CallTracker<'a> {
                 self.visit_stmts(&stmt.body);
             }
             ast::Stmt::Set(stmt) => self.visit_expr(&stmt.expr),
-            ast::Stmt::SetBlock(stmt) => self.visit_stmts(&stmt.body),
-            ast::Stmt::AutoEscape(stmt) => self.visit_stmts(&stmt.body),
-            ast::Stmt::FilterBlock(stmt) => self.visit_stmts(&stmt.body),
+            ast::Stmt::SetBlock(stmt) => {
+                if self.runtime_values {
+                    self.visit_expr_opt(&stmt.filter);
+                }
+                self.visit_stmts(&stmt.body);
+            }
+            ast::Stmt::AutoEscape(stmt) => {
+                if self.runtime_values {
+                    self.visit_expr(&stmt.enabled);
+                }
+                self.visit_stmts(&stmt.body);
+            }
+            ast::Stmt::FilterBlock(stmt) => {
+                if self.runtime_values {
+                    self.visit_expr(&stmt.filter);
+                }
+                self.visit_stmts(&stmt.body);
+            }
             #[cfg(feature = "multi_template")]
             ast::Stmt::Block(stmt) => self.visit_stmts(&stmt.body),
             #[cfg(feature = "multi_template")]
-            ast::Stmt::Extends(_) | ast::Stmt::Include(_) => {}
+            ast::Stmt::Extends(stmt) => {
+                if self.runtime_values {
+                    self.visit_expr(&stmt.name);
+                }
+            }
             #[cfg(feature = "multi_template")]
-            ast::Stmt::Import(_) | ast::Stmt::FromImport(_) => {}
+            ast::Stmt::Include(stmt) => {
+                if self.runtime_values {
+                    self.visit_expr(&stmt.name);
+                }
+            }
+            #[cfg(feature = "multi_template")]
+            ast::Stmt::Import(stmt) => {
+                if self.runtime_values {
+                    self.visit_expr(&stmt.expr);
+                }
+            }
+            #[cfg(feature = "multi_template")]
+            ast::Stmt::FromImport(stmt) => {
+                if self.runtime_values {
+                    self.visit_expr(&stmt.expr);
+                }
+            }
             #[cfg(feature = "macros")]
-            ast::Stmt::Macro(stmt) => self.visit_stmts(&stmt.0.body),
+            ast::Stmt::Macro(stmt) => {
+                if self.runtime_values {
+                    self.visit_exprs(&stmt.0.defaults);
+                }
+                self.visit_stmts(&stmt.0.body);
+            }
             #[cfg(feature = "macros")]
             ast::Stmt::CallBlock(stmt) => {
                 self.visit_call(&stmt.call);
+                if self.runtime_values {
+                    self.visit_exprs(&stmt.macro_decl.defaults);
+                }
                 self.visit_stmts(&stmt.macro_decl.body);
             }
             #[cfg(feature = "loop_controls")]
@@ -379,8 +486,56 @@ impl<'a> CallTracker<'a> {
     }
 
     fn visit_expr(&mut self, expr: &ast::Expr<'_>) {
+        if self.runtime_values {
+            if let Some(field) = context_field(expr) {
+                match field {
+                    Some(name) if self.names.contains(&name) => {
+                        self.dynamic_calls.insert(name.to_string());
+                    }
+                    Some("context") | None => self
+                        .dynamic_calls
+                        .extend(self.names.iter().map(|name| name.to_string())),
+                    _ => {}
+                }
+                if let ast::Expr::GetItem(field) = expr {
+                    self.visit_expr(&field.subscript_expr);
+                } else if let ast::Expr::Call(call) = expr {
+                    self.visit_callargs(&call.args);
+                }
+                return;
+            }
+        }
         match expr {
-            ast::Expr::Var(_) | ast::Expr::Const(_) => {}
+            ast::Expr::Var(var) => {
+                if self.runtime_values {
+                    if self.names.contains(&var.id) {
+                        self.dynamic_calls.insert(var.id.to_string());
+                    } else if var.id == "context" {
+                        self.dynamic_calls
+                            .extend(self.names.iter().map(|name| name.to_string()));
+                    }
+                }
+            }
+            ast::Expr::Const(value) => {
+                // Runtime call results and defaults can contain nested templates.
+                if self.runtime_values {
+                    if let Some(source) = value.value.as_str() {
+                        if ["{{", "{%", "{#"]
+                            .iter()
+                            .any(|token| source.contains(token))
+                        {
+                            if let Ok(template) = crate::compiler::parser::parse(
+                                source,
+                                "<runtime-string>",
+                                crate::syntax::SyntaxConfig::default(),
+                                crate::compiler::lexer::WhitespaceConfig::default(),
+                            ) {
+                                self.visit_stmt(&template);
+                            }
+                        }
+                    }
+                }
+            }
             ast::Expr::UnaryOp(e) => self.visit_expr(&e.expr),
             ast::Expr::BinOp(e) => {
                 self.visit_expr(&e.left);
@@ -433,10 +588,25 @@ impl<'a> CallTracker<'a> {
     /// found, then records this call if it matches `self.names` and every
     /// positional argument is a string literal.
     fn visit_call(&mut self, call: &ast::Spanned<ast::Call<'_>>) {
-        self.visit_expr(&call.expr);
+        let fname = match call.identify_call() {
+            ast::CallType::Function(name) if self.names.contains(&name) => Some(name),
+            ast::CallType::Method(ast::Expr::Var(var), "has_var")
+                if self.runtime_values && var.id == "var" =>
+            {
+                Some("var")
+            }
+            _ if self.runtime_values => context_field(&call.expr)
+                .flatten()
+                .filter(|name| self.names.contains(name)),
+            _ => None,
+        };
+        // A callable used as a value can escape through aliases or context lookups.
+        // Direct calls already retain their precise literal-name dependency below.
+        if fname.is_none() {
+            self.visit_expr(&call.expr);
+        }
         self.visit_callargs(&call.args);
-
-        let ast::CallType::Function(fname) = call.identify_call() else {
+        let Some(fname) = fname else {
             return;
         };
         if !self.names.contains(&fname) {
@@ -444,6 +614,30 @@ impl<'a> CallTracker<'a> {
         }
 
         let mut args = Vec::new();
+        if self.runtime_values {
+            // The runtime accepts the name positionally or as a keyword
+            // (`var(name=..)`, `env_var(var=..)`).
+            let kw = if fname == "env_var" { "var" } else { "name" };
+            let first = match call.args.first() {
+                Some(ast::CallArg::Pos(e)) => Some(e),
+                _ => call.args.iter().find_map(|a| match a {
+                    ast::CallArg::Kwarg(k, e) if *k == kw => Some(e),
+                    _ => None,
+                }),
+            };
+            if let Some(ast::Expr::Const(c)) = first {
+                if let Some(s) = c.value.as_str() {
+                    self.out.push(StaticFunctionCall {
+                        name: fname.to_string(),
+                        args: vec![s.to_string()],
+                        span: call.span,
+                    });
+                    return;
+                }
+            }
+            self.dynamic_calls.insert(fname.to_string());
+            return;
+        }
         for arg in &call.args {
             match arg {
                 ast::CallArg::Pos(ast::Expr::Const(c)) => match c.value.as_str() {
@@ -479,5 +673,179 @@ impl<'a> CallTracker<'a> {
         if let Some(e) = expr {
             self.visit_expr(e);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::compiler::lexer::WhitespaceConfig;
+    use crate::compiler::parser::parse;
+    use crate::syntax::SyntaxConfig;
+
+    fn first_args(src: &str) -> Vec<(String, String)> {
+        let ast = parse(
+            src,
+            "t",
+            SyntaxConfig::default(),
+            WhitespaceConfig::default(),
+        )
+        .expect("valid jinja");
+        find_first_string_arg_calls(&ast, &["var", "env_var"])
+            .into_iter()
+            .map(|c| (c.name, c.args.into_iter().next().unwrap()))
+            .collect()
+    }
+
+    #[test]
+    fn find_first_string_arg_calls_captures_call_with_default() {
+        assert_eq!(
+            first_args("{{ var('a', false) }}"),
+            vec![("var".to_string(), "a".to_string())]
+        );
+    }
+
+    #[test]
+    fn find_first_string_arg_calls_skips_dynamic_name() {
+        assert!(first_args("{{ var(name) }}{{ var(name, 'x') }}").is_empty());
+    }
+
+    #[test]
+    fn find_first_string_arg_calls_finds_nested_calls() {
+        let src = "{% if x %}{{ var('a') }}{% endif %}\
+                   {% for i in y %}{{ var('b', 1) }}{% endfor %}\
+                   {% macro m() %}{{ env_var('C') }}{% endmacro %}";
+        let mut found = first_args(src);
+        found.sort();
+        assert_eq!(
+            found,
+            vec![
+                ("env_var".to_string(), "C".to_string()),
+                ("var".to_string(), "a".to_string()),
+                ("var".to_string(), "b".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn find_first_string_arg_calls_captures_env_var_with_kwarg_default() {
+        assert_eq!(
+            first_args("{{ env_var(\"X\", default=\"y\") }}"),
+            vec![("env_var".to_string(), "X".to_string())]
+        );
+    }
+
+    #[test]
+    fn find_first_string_arg_calls_captures_keyword_name() {
+        assert_eq!(
+            first_args("{{ var(name='a') }}{{ env_var(var='B', default='y') }}"),
+            vec![
+                ("var".to_string(), "a".to_string()),
+                ("env_var".to_string(), "B".to_string())
+            ]
+        );
+    }
+
+    #[test]
+    fn find_first_string_arg_calls_scans_macro_default() {
+        assert_eq!(
+            first_args("{% macro m(mode=env_var('MODE')) %}{{ mode }}{% endmacro %}"),
+            vec![("env_var".to_string(), "MODE".to_string())]
+        );
+    }
+
+    #[test]
+    fn find_first_string_arg_calls_scans_call_block_default() {
+        assert_eq!(
+            first_args("{% call(x=var('v')) m() %}{{ x }}{% endcall %}"),
+            vec![("var".to_string(), "v".to_string())]
+        );
+    }
+
+    #[test]
+    fn find_first_string_arg_calls_scans_set_block_filter() {
+        assert_eq!(
+            first_args("{% set x | default(var('v')) %}{% endset %}"),
+            vec![("var".to_string(), "v".to_string())]
+        );
+    }
+
+    #[test]
+    fn find_first_string_arg_calls_scans_filter_block_filter() {
+        assert_eq!(
+            first_args("{% filter replace('a', env_var('B')) %}a{% endfilter %}"),
+            vec![("env_var".to_string(), "B".to_string())]
+        );
+    }
+
+    #[test]
+    fn runtime_calls_in_nested_default_strings() {
+        for source in [
+            r#"{{ var('query', "{{ env_var('MODE') }}") }}"#,
+            r#"{{ env_var('QUERY', default="{{ env_var('MODE') }}") }}"#,
+            r#"{% macro m(query="{{ env_var('MODE') }}") %}{{ var('query', query) }}{% endmacro %}"#,
+        ] {
+            assert!(
+                first_args(source).contains(&("env_var".into(), "MODE".into())),
+                "{source}"
+            );
+        }
+    }
+
+    #[test]
+    fn runtime_calls_in_autoescape_condition() {
+        assert_eq!(
+            first_args("{% autoescape var('escape', false) %}x{% endautoescape %}"),
+            vec![("var".into(), "escape".into())],
+        );
+    }
+
+    #[test]
+    fn runtime_callables_keep_precise_calls_and_mark_escaping_values() {
+        for (source, dynamic) in [
+            ("{{ var('x') }}{{ env_var('Y') }}", vec![]),
+            ("{% set lookup=var %}{{ lookup('x') }}", vec!["var"]),
+            ("{{ var(key) }}", vec!["var"]),
+            ("{{ env_var(key) }}", vec!["env_var"]),
+            ("{{ context['env_var']('Y') }}", vec![]),
+            ("{{ context.get('var')('x') }}", vec![]),
+            ("{{ context.get('target').name }}", vec![]),
+            ("{{ context.target.name }}", vec![]),
+            (
+                "{% set lookup=context['var'] %}{{ lookup('x') }}",
+                vec!["var"],
+            ),
+            (
+                "{% set lookup=context.get('var') %}{{ lookup('x') }}",
+                vec!["var"],
+            ),
+            ("{% include var('template') %}", vec![]),
+        ] {
+            let ast = parse(
+                source,
+                "t",
+                SyntaxConfig::default(),
+                WhitespaceConfig::default(),
+            )
+            .unwrap();
+            let calls = find_runtime_value_calls(&ast, &["var", "env_var"]);
+            assert_eq!(
+                calls.dynamic_calls,
+                dynamic.into_iter().map(str::to_owned).collect(),
+                "{source}"
+            );
+        }
+    }
+
+    #[test]
+    fn find_string_arg_calls_ignores_macro_default() {
+        let ast = parse(
+            "{% macro m(s=source('a','b')) %}{% endmacro %}",
+            "t",
+            SyntaxConfig::default(),
+            WhitespaceConfig::default(),
+        )
+        .expect("valid jinja");
+        assert!(find_string_arg_calls(&ast, &["source"]).is_empty());
     }
 }

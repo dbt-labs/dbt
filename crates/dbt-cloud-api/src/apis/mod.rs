@@ -116,5 +116,6 @@ pub mod credentials_api;
 
 pub mod configuration;
 pub mod connections_api;
+pub mod projects_api;
 pub mod users_api;
 pub mod whoami_api;

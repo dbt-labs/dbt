@@ -60,12 +60,10 @@ macro_rules! node_cols {
             c("ai_context"),
             c("compiled_code"),
             c("compiled_path"),
-            c("search_text"),
             c("grain"),
             c("grain_declared"),
             c("grain_tested"),
             c("grain_inferred"),
-            r("layer_inferred", "table_role"),
             $($extra,)*
             c("ingested_at"),
         ]

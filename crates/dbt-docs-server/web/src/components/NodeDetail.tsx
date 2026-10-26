@@ -64,7 +64,7 @@ import { NoColumnMetadataFallback } from './NoColumnMetadataFallback';
 import { Button } from './ui/Button';
 import { Card } from './ui/Card';
 
-interface Props {
+interface NodeDetailProps {
   asset: Asset;
   onSelect(uniqueId: string): void;
   hasColumnLineage?: boolean;
@@ -202,7 +202,12 @@ function typeParamsToMetricView(asset: MetricAsset) {
   }
 }
 
-export function NodeDetail({ asset, onSelect, hasColumnLineage, userState }: Props) {
+export function NodeDetail({
+  asset,
+  onSelect,
+  hasColumnLineage,
+  userState,
+}: NodeDetailProps) {
   const resourceType = asset.resourceType as ResourceTypeExplorer;
   const materialization = getMaterialization(asset);
 

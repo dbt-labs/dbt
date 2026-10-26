@@ -111,6 +111,12 @@ pub struct ProjectSeedConfig {
     pub quoting: Option<DbtQuoting>,
     #[serde(rename = "+delimiter")]
     pub delimiter: Option<Spanned<String>>,
+    #[serde(
+        default,
+        rename = "+all_varchar",
+        deserialize_with = "bool_or_string_bool"
+    )]
+    pub all_varchar: Option<bool>,
     #[serde(rename = "+external_volume")]
     pub external_volume: Option<String>,
     #[serde(rename = "+adapter_properties")]
@@ -185,6 +191,12 @@ pub struct ProjectSeedConfig {
         deserialize_with = "u64_or_string_u64"
     )]
     pub partition_expiration_days: Option<u64>,
+    #[serde(
+        default,
+        rename = "+enable_change_history",
+        deserialize_with = "bool_or_string_bool"
+    )]
+    pub enable_change_history: Option<bool>,
     #[serde(rename = "+grant_access_to")]
     pub grant_access_to: Option<Vec<GrantAccessToTarget>>,
     #[serde(rename = "+partitions")]
@@ -355,6 +367,7 @@ impl TypedRecursiveConfig for ProjectSeedConfig {
             || self.transient.is_some()
             || self.quoting.is_some()
             || self.delimiter.is_some()
+            || self.all_varchar.is_some()
             || self.external_volume.is_some()
             || self.adapter_properties.is_some()
             || self.base_location_root.is_some()
@@ -379,6 +392,7 @@ impl TypedRecursiveConfig for ProjectSeedConfig {
             || self.kms_key_name.is_some()
             || self.require_partition_filter.is_some()
             || self.partition_expiration_days.is_some()
+            || self.enable_change_history.is_some()
             || self.grant_access_to.is_some()
             || self.partitions.is_some()
             || self.enable_refresh.is_some()
@@ -453,6 +467,8 @@ pub struct SeedConfig {
     #[serde(default, deserialize_with = "bool_or_string_bool")]
     pub quote_columns: Option<bool>,
     pub delimiter: Option<Spanned<String>>,
+    #[serde(default, deserialize_with = "bool_or_string_bool")]
+    pub all_varchar: Option<bool>,
     #[serde(default, deserialize_with = "event_time_or_map_to_string")]
     pub event_time: Option<String>,
     pub full_refresh: Option<bool>,
@@ -489,6 +505,7 @@ impl From<ProjectSeedConfig> for SeedConfig {
             grants: config.grants,
             quote_columns: config.quote_columns,
             delimiter: config.delimiter,
+            all_varchar: config.all_varchar,
             event_time: config.event_time,
             full_refresh: config.full_refresh,
             group: config.group,
@@ -561,6 +578,7 @@ impl From<ProjectSeedConfig> for SeedConfig {
                 enable_list_inference: None,
                 intermediate_format: None,
                 storage_uri: None,
+                enable_change_history: config.enable_change_history,
                 file_format: config.file_format,
                 catalog_name: config.catalog_name,
                 location_root: config.location_root,
@@ -591,6 +609,7 @@ impl From<ProjectSeedConfig> for SeedConfig {
                 row_filter: None,
                 incremental_apply_config_changes: None,
                 persist_constraints: None,
+                use_materialization_v2: None,
                 use_safer_relation_operations: None,
                 view_update_via_alter: None,
 
@@ -618,6 +637,8 @@ impl From<ProjectSeedConfig> for SeedConfig {
                 settings: None,
                 query_settings: None,
                 projections: None,
+                sharding_key: None,
+                disable_on_cluster: None,
                 inserts_only: None,
                 connection_overrides: None,
                 fields: None,
@@ -655,6 +676,7 @@ impl From<SeedConfig> for ProjectSeedConfig {
             grants: config.grants,
             quote_columns: config.quote_columns,
             delimiter: config.delimiter,
+            all_varchar: config.all_varchar,
             event_time: config.event_time,
             full_refresh: config.full_refresh,
             group: config.group,
@@ -707,6 +729,7 @@ impl From<SeedConfig> for ProjectSeedConfig {
             partition_expiration_days: config
                 .__warehouse_specific_config__
                 .partition_expiration_days,
+            enable_change_history: config.__warehouse_specific_config__.enable_change_history,
             grant_access_to: config.__warehouse_specific_config__.grant_access_to,
             partitions: config.__warehouse_specific_config__.partitions,
             enable_refresh: config.__warehouse_specific_config__.enable_refresh,
@@ -835,6 +858,10 @@ impl ConfigKeys for SeedConfig {
 
         field_names
     }
+}
+
+impl crate::schemas::project::configs::warehouse_scope::WarehouseConfigResource for SeedConfig {
+    const NODE_TYPE: dbt_telemetry::NodeType = dbt_telemetry::NodeType::Seed;
 }
 
 #[cfg(test)]

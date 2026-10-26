@@ -17,7 +17,6 @@ console = { workspace = true }
 counter = { workspace = true }
 dbt-fusion-workspace-hack = { version = "0.1" }
 indicatif = { workspace = true }
-itertools = { workspace = true }
 scc = { workspace = true }
 unicode-segmentation = { workspace = true }
 

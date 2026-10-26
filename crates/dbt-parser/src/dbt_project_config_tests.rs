@@ -294,6 +294,35 @@ path_1:
     }
 
     #[test]
+    fn unquoted_boolean_resource_path_suggests_quoting() {
+        // YAML 1.1 reads an unquoted `off` as `false`, so the folder name is lost.
+        let yml = r#"
+my_project:
+  +materialized: view
+  off:
+    +static_analysis: off
+"#;
+        for disallow_plus_prefix in [false, true] {
+            let (result, errors, warnings) = init_project_config_from_yaml::<
+                ModelConfig,
+                ProjectModelConfig,
+            >(yml, disallow_plus_prefix);
+            assert!(result.is_ok());
+            assert!(warnings.is_empty());
+            assert_eq!(errors.len(), 1);
+            let (_, msg) = &errors[0];
+            assert!(
+                msg.contains(
+                    "Invalid model definition `my_project`: A key under `my_project` reads as \
+                     the boolean `false`"
+                ),
+                "{msg}"
+            );
+            assert!(msg.contains("e.g. `'off':`"), "{msg}");
+        }
+    }
+
+    #[test]
     fn repro_emits_error_at_key() {
         // https://github.com/dbt-labs/dbt-core/issues/14433
         let yml = r#"
@@ -379,6 +408,46 @@ my_project:
         assert_eq!(
             disabled.__warehouse_specific_config__.persist_constraints,
             Some(false)
+        );
+    }
+
+    #[test]
+    fn use_materialization_v2_is_valid_and_inherits_with_nested_override() {
+        let yml = r#"
+my_project:
+  governed:
+    +use_materialization_v2: true
+    atomic:
+      +use_materialization_v2: "false"
+  unset:
+    +enabled: true
+"#;
+
+        let (result, errors, warnings) =
+            init_project_config_from_yaml::<ModelConfig, ProjectModelConfig>(yml, false);
+        assert!(errors.is_empty(), "unexpected errors: {errors:?}");
+        assert!(warnings.is_empty(), "unexpected warnings: {warnings:?}");
+
+        let config = result.unwrap();
+        let use_materialization_v2 = |path: &[&str]| {
+            let fqn: Vec<String> = path.iter().map(|s| s.to_string()).collect();
+            config
+                .get_config_for_fqn(&fqn)
+                .__warehouse_specific_config__
+                .use_materialization_v2
+        };
+        assert_eq!(
+            use_materialization_v2(&["my_project", "governed", "model"]),
+            Some(true)
+        );
+        assert_eq!(
+            use_materialization_v2(&["my_project", "governed", "atomic", "model"]),
+            Some(false)
+        );
+        // Unset must stay `None` so the adapter falls back to the project behavior flag.
+        assert_eq!(
+            use_materialization_v2(&["my_project", "unset", "model"]),
+            None
         );
     }
 

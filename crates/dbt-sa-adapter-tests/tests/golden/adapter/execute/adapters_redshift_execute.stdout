@@ -1,0 +1,14 @@
+   dbt-oss 
+   Loading profiles.yml
+   Parsing models/a.sql
+   Parsing models/c.sql
+{'message': '', 'code': '', 'rows_affected': None, 'query_id': None}
+{}
+ Rendering models/c.sql
+{'message': 'SUCCESS 0', 'code': 'SUCCESS', 'rows_affected': 0, 'query_id': None, '_message': 'SUCCESS 0'}
+{}
+ Rendering models/a.sql
+==================== Execution Summary =====================
+Finished 'compile' successfully for target 'redshift' [duration]
+Processed: 2 models
+Summary: 2 total | 2 success

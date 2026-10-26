@@ -1,8 +1,8 @@
 use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, OnceLock};
 
 use adbc_record_replay::{RecordConnection, RecordingContext, ReplayConnection};
 use arrow_array::RecordBatch;
@@ -18,10 +18,13 @@ use minijinja::State;
 
 use crate::cache::RelationCache;
 use crate::engine::query_comment::QueryCommentConfig;
+use crate::engine::retry::QueryRetryPolicy;
+use crate::metadata::clickhouse::ClickHouseCapabilities;
 use crate::sql_types::TypeOps;
 use crate::stmt_splitter::StmtSplitter;
 
 use super::adapter_engine::{AdapterEngine, Options};
+use super::adbc::assert_connection_on_pool_worker;
 
 static GENERATION: AtomicU64 = AtomicU64::new(1);
 
@@ -120,6 +123,10 @@ impl AdapterEngine for RecordReplayEngine {
         self.inner.get_config()
     }
 
+    fn query_retry_policy(&self) -> &QueryRetryPolicy {
+        self.inner.query_retry_policy()
+    }
+
     fn relation_cache(&self) -> &Arc<RelationCache> {
         self.inner.relation_cache()
     }
@@ -130,6 +137,10 @@ impl AdapterEngine for RecordReplayEngine {
 
     fn behavior_flag_overrides(&self) -> &BTreeMap<String, bool> {
         self.inner.behavior_flag_overrides()
+    }
+
+    fn clickhouse_capabilities(&self) -> Option<&OnceLock<ClickHouseCapabilities>> {
+        self.inner.clickhouse_capabilities()
     }
 
     fn is_replay(&self) -> bool {
@@ -145,6 +156,12 @@ impl AdapterEngine for RecordReplayEngine {
         state: Option<&State>,
         node_id: Option<String>,
     ) -> dbt_common::AdapterResult<Box<dyn Connection>> {
+        // Same contract as the live engine (`AdbcEngine::new_connection`).
+        // Checked here rather than left to the `Mode::Record` delegation below,
+        // so replayed runs -- which never reach an inner engine -- catch an
+        // off-pool caller too.
+        assert_connection_on_pool_worker();
+
         match self.mode {
             Mode::Replay => {
                 let mut conn = ReplayConnection::new(
@@ -261,6 +278,39 @@ static ALTER_USER_IDENTIFIER: std::sync::LazyLock<regex::Regex> =
 static EXCHANGE_PROBE_TABLE: std::sync::LazyLock<regex::Regex> =
     std::sync::LazyLock::new(|| regex::Regex::new(r"__dbt_exchange_test_(\d+)_\d+_\d+").unwrap());
 
+/// Matches the quoted Snowflake username in `show user programmatic access
+/// tokens for user "<user>"` (`pat_hygiene_report` in `compute_platform.rs`).
+/// Mirrors `cleanup_show_user_pat_identifier` in `adbc-record-replay`'s
+/// `naming.rs`, which does the same masking for the recording lookup key;
+/// this one is for the post-lookup text-equality check below.
+static SHOW_USER_PAT_IDENTIFIER: std::sync::LazyLock<regex::Regex> =
+    std::sync::LazyLock::new(|| {
+        regex::Regex::new(r#"(?i)(show user programmatic access tokens for user )"[^"]+""#).unwrap()
+    });
+
+/// Matches `dbt debug`'s MDLS write/read-back probe table name
+/// (`__dbt_debug_probe_<nanos>`, `debug_mdls.rs`), e.g.
+/// `__dbt_debug_probe_1789002662171033000`. A fresh wall-clock nanosecond
+/// timestamp generated on every invocation, record or replay alike, so no
+/// two runs ever emit the literal same name -- mask it out the same way as
+/// the timestamp above. Mirrors `cleanup_debug_probe_table` in
+/// `adbc-record-replay`'s `naming.rs`, which does the same masking for the
+/// recording lookup key; this one is for the post-lookup text-equality
+/// check below.
+static DEBUG_PROBE_TABLE: std::sync::LazyLock<regex::Regex> =
+    std::sync::LazyLock::new(|| regex::Regex::new(r"__dbt_debug_probe_\d+").unwrap());
+
+/// Matches `dbt debug`'s Snowflake propagation probe table name
+/// (`__dbt_debug_propagation_<nanos>`, `debug_propagation.rs`). Same
+/// reasoning as `DEBUG_PROBE_TABLE` above: a fresh wall-clock nanosecond
+/// timestamp on every invocation, record or replay alike, so no two runs
+/// ever emit the literal same name -- mask it out for comparison. Mirrors
+/// `cleanup_debug_propagation_probe_table` in `adbc-record-replay`'s
+/// `naming.rs`, which does the same masking for the recording lookup key;
+/// this one is for the post-lookup text-equality check below.
+static DEBUG_PROPAGATION_PROBE_TABLE: std::sync::LazyLock<regex::Regex> =
+    std::sync::LazyLock::new(|| regex::Regex::new(r"__dbt_debug_propagation_\d+").unwrap());
+
 impl adbc_record_replay::SqlNormalizer for DbtSqlNormalizer {
     fn normalize(&self, sql: &str) -> String {
         use crate::sql::normalize::normalize_dbt_tmp_name;
@@ -274,6 +324,15 @@ impl adbc_record_replay::SqlNormalizer for DbtSqlNormalizer {
             .into_owned();
         let collapsed = EXCHANGE_PROBE_TABLE
             .replace_all(&collapsed, "__dbt_exchange_test_${1}_[MASKED_ID]")
+            .into_owned();
+        let collapsed = SHOW_USER_PAT_IDENTIFIER
+            .replace_all(&collapsed, r#"$1"[MASKED_USER]""#)
+            .into_owned();
+        let collapsed = DEBUG_PROBE_TABLE
+            .replace_all(&collapsed, "__dbt_debug_probe_[MASKED_ID]")
+            .into_owned();
+        let collapsed = DEBUG_PROPAGATION_PROBE_TABLE
+            .replace_all(&collapsed, "__dbt_debug_propagation_[MASKED_ID]")
             .into_owned();
         collapsed
             .replace("DBT_TESTING_ALT", "[MASKED_ALT_WH]")

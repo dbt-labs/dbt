@@ -7,6 +7,7 @@ use chrono::{DateTime, Utc};
 use dbt_adapter::response::AdapterResponse;
 use dbt_common::{
     ErrorCode, FsResult, io_args::EvalArgs, stdfs::File, tracing::dbt_emit::emit_warn_log_message,
+    warn_error_options::WarnErrorOptions,
 };
 use dbt_schemas::{
     schemas::{RunResultOutput, RunResultsArgs, RunResultsArtifact, RunResultsMetadata},
@@ -16,10 +17,14 @@ use dbt_schemas::{
 use crate::generate_run_results;
 
 /// Build a `RunResultsArtifact` from run stats.
+///
+/// Pass the resolved `DbtState::warn_error`/`warn_error_options`; `EvalArgs` holds only the CLI/env value.
 pub fn build_run_results_artifact(
     stats: &Stats,
     adapter_responses: &HashMap<String, AdapterResponse>,
     arg: &EvalArgs,
+    warn_error: bool,
+    warn_error_options: &WarnErrorOptions,
 ) -> RunResultsArtifact {
     let now = SystemTime::now();
     let generated_at: DateTime<Utc> = DateTime::from(now);
@@ -64,6 +69,20 @@ pub fn build_run_results_artifact(
         "full_refresh".to_string(),
         dbt_yaml::Value::bool(arg.full_refresh),
     );
+    // Always present, matching dbt-core (`{"error": [], "warn": [], "silence": []}` when unset).
+    match dbt_yaml::to_value(warn_error_options) {
+        Ok(value) => {
+            args_map.insert("warn_error_options".to_string(), value);
+        }
+        Err(e) => emit_warn_log_message(
+            ErrorCode::SerializationError,
+            format!("Failed to serialize warn_error_options for run_results.json: {e}"),
+        ),
+    }
+    // Omitted when false, matching dbt-core.
+    if warn_error {
+        args_map.insert("warn_error".to_string(), dbt_yaml::Value::bool(true));
+    }
 
     let args = RunResultsArgs {
         command: command_str.to_string(),
@@ -112,7 +131,19 @@ pub fn write_run_results_json_or_warn(run_results_artifact: &RunResultsArtifact,
 #[cfg(test)]
 mod tests {
     use super::*;
+    use dbt_common::warn_error_options::{
+        LegacyWarnErrorGroupValue, SupportedLegacyWarnError, WarnErrorOptionValue,
+    };
     use dbt_schemas::schemas::RunResultsArtifact;
+
+    fn empty_stats() -> Stats {
+        Stats {
+            stats: vec![],
+            nodes: None,
+            batch_results: Default::default(),
+            compiled_code: Default::default(),
+        }
+    }
 
     /// The args written to run_results.json must be flat at the top level (matching
     /// dbt-core), so `dbt retry` can read them back. Guards against regressing to a raw
@@ -124,14 +155,14 @@ mod tests {
         arg.io.out_dir = tmp.path().to_path_buf();
         arg.full_refresh = true;
 
-        let stats = Stats {
-            stats: vec![],
-            nodes: None,
-            batch_results: Default::default(),
-            compiled_code: Default::default(),
-        };
         write_run_results_json(
-            &build_run_results_artifact(&stats, &HashMap::new(), &arg),
+            &build_run_results_artifact(
+                &empty_stats(),
+                &HashMap::new(),
+                &arg,
+                false,
+                &WarnErrorOptions::default(),
+            ),
             &arg,
         )
         .unwrap();
@@ -145,6 +176,103 @@ mod tests {
                 .and_then(|v| v.as_bool()),
             Some(true),
             "full_refresh must round-trip as a flat, readable arg"
+        );
+    }
+
+    /// Default (empty) `warn_error_options` must still round-trip as all three keys present
+    /// but empty, matching dbt-core. `warn_error` must be omitted entirely when false.
+    #[test]
+    fn test_run_results_args_warn_error_options_default() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut arg = EvalArgs::default();
+        arg.io.out_dir = tmp.path().to_path_buf();
+
+        write_run_results_json(
+            &build_run_results_artifact(
+                &empty_stats(),
+                &HashMap::new(),
+                &arg,
+                false,
+                &WarnErrorOptions::default(),
+            ),
+            &arg,
+        )
+        .unwrap();
+
+        let artifact = RunResultsArtifact::from_file(&tmp.path().join("run_results.json")).unwrap();
+        let weo = artifact
+            .args
+            .__other__
+            .get("warn_error_options")
+            .expect("warn_error_options must always be present");
+        assert_eq!(
+            weo.get("error").and_then(|v| v.as_sequence()),
+            Some(&vec![])
+        );
+        assert_eq!(weo.get("warn").and_then(|v| v.as_sequence()), Some(&vec![]));
+        assert_eq!(
+            weo.get("silence").and_then(|v| v.as_sequence()),
+            Some(&vec![])
+        );
+        assert!(
+            !artifact.args.__other__.contains_key("warn_error"),
+            "warn_error must be omitted when false, matching dbt-core"
+        );
+    }
+
+    /// Non-empty `warn_error_options` plus `warn_error: true` must round-trip.
+    #[test]
+    fn test_run_results_args_warn_error_options_non_empty() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut arg = EvalArgs::default();
+        arg.io.out_dir = tmp.path().to_path_buf();
+
+        let warn_error_options = WarnErrorOptions {
+            error: vec![WarnErrorOptionValue::SupportedLegacy(
+                SupportedLegacyWarnError::NoNodesForSelectionCriteria,
+            )],
+            silence: vec![WarnErrorOptionValue::LegacyGroup(
+                LegacyWarnErrorGroupValue::Deprecations,
+            )],
+            ..Default::default()
+        };
+
+        write_run_results_json(
+            &build_run_results_artifact(
+                &empty_stats(),
+                &HashMap::new(),
+                &arg,
+                true,
+                &warn_error_options,
+            ),
+            &arg,
+        )
+        .unwrap();
+
+        let artifact = RunResultsArtifact::from_file(&tmp.path().join("run_results.json")).unwrap();
+        let weo = artifact
+            .args
+            .__other__
+            .get("warn_error_options")
+            .expect("warn_error_options must always be present");
+        assert_eq!(
+            weo.get("error").and_then(|v| v.as_sequence()),
+            Some(&vec![dbt_yaml::Value::string(
+                "NoNodesForSelectionCriteria".to_string()
+            )])
+        );
+        assert_eq!(
+            weo.get("silence").and_then(|v| v.as_sequence()),
+            Some(&vec![dbt_yaml::Value::string("Deprecations".to_string())])
+        );
+        assert_eq!(
+            artifact
+                .args
+                .__other__
+                .get("warn_error")
+                .and_then(|v| v.as_bool()),
+            Some(true),
+            "warn_error must round-trip as true when set"
         );
     }
 }

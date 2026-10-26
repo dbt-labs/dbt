@@ -1,0 +1,47 @@
+a88d4415:
+- sequence: 0
+  type: execute
+  sql: create schema if not exists `dbt-test-env`.`adapters_bigquery_unit_test_ephemeral`
+model.test.stg_input:
+- sequence: 0
+  type: execute
+  sql: |-
+    create or replace view `dbt-test-env`.`adapters_bigquery_unit_test_ephemeral`.`stg_input`
+    OPTIONS()
+    as SELECT 1 AS company_id, 100 AS revenue
+    UNION ALL
+    SELECT 2 AS company_id, 200 AS revenue;
+unit_test.test.ephemeral_macro_under_test.test_ephemeral_macro_under_test:
+- sequence: 0
+  type: execute
+  sql: |-
+    WITH `dbt-test-env_adapters_bigquery_unit_test_ephemeral_stg_input` as (SELECT *  FROM UNNEST([STRUCT(CAST(10 AS int64) AS company_id, CAST(50 AS int64) AS revenue), STRUCT(CAST(20 AS int64) AS company_id, CAST(75 AS int64) AS revenue)])) select * from (
+    SELECT
+    company_id,
+    revenue * 2 AS doubled_revenue
+    FROM `dbt-test-env_adapters_bigquery_unit_test_ephemeral_stg_input`
+    ) as __dbt_sbq
+    where false and current_timestamp() = current_timestamp()
+    limit 0
+- sequence: 1
+  type: execute
+  sql: |-
+    -- Build actual result given inputs
+    WITH
+    \t`dbt-test-env_adapters_bigquery_unit_test_ephemeral_stg_input` as (SELECT *  FROM UNNEST([STRUCT(CAST(10 AS int64) AS company_id, CAST(50 AS int64) AS revenue), STRUCT(CAST(20 AS int64) AS company_id, CAST(75 AS int64) AS revenue)])),
+    \t`dbt-test-env_adapters_bigquery_unit_test_ephemeral_macros_unit_tests_ephemeral_macro_under_test_expect` as (SELECT *  FROM UNNEST([STRUCT(CAST(10 AS int64) AS company_id, CAST(100 AS int64) AS doubled_revenue), STRUCT(CAST(20 AS int64) AS company_id, CAST(150 AS int64) AS doubled_revenue)])),
+    \t`dbt-test-env_adapters_bigquery_unit_test_ephemeral_macros_unit_tests_ephemeral_macro_under_test_actual` as (SELECT
+    company_id,
+    revenue * 2 AS doubled_revenue
+    FROM `dbt-test-env_adapters_bigquery_unit_test_ephemeral_stg_input`
+    )
+    SELECT * FROM (
+    (SELECT company_id, doubled_revenue, 'actual' AS actual_or_expected FROM `dbt-test-env_adapters_bigquery_unit_test_ephemeral_macros_unit_tests_ephemeral_macro_under_test_actual`)
+    UNION ALL
+    (SELECT company_id, doubled_revenue, 'expected' AS actual_or_expected FROM `dbt-test-env_adapters_bigquery_unit_test_ephemeral_macros_unit_tests_ephemeral_macro_under_test_expect`)
+    ) unit_test_diff
+    ORDER BY company_id, doubled_revenue
+unit_test.test.ephemeral_macro_under_test.test_ephemeral_macro_under_test.get_table_schema.c46527e6:
+- sequence: 0
+  type: get_table_schema
+  table_name: c46527e6

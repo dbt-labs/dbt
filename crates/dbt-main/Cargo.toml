@@ -14,8 +14,6 @@ workspace = true
 
 
 [target.'cfg(windows)'.dependencies]
-dunce = "1.0.5"
-powershell_script = "1.1.0"
 windows = { version = "0.61", features = [
   "Win32_System_Threading",
   "Win32_Foundation",
@@ -24,6 +22,7 @@ windows = { version = "0.61", features = [
 [dependencies]
 dbt-adapter = { workspace = true }
 dbt-adapter-core = { workspace = true }
+dbt-artifact-download = { workspace = true }
 dbt-clap-core = { workspace = true }
 dbt-common = { workspace = true }
 dbt-compilation = { workspace = true }
@@ -33,6 +32,7 @@ dbt-dist = { workspace = true }
 dbt-docs-server = { workspace = true }
 dbt-error = { workspace = true }
 dbt-features = { workspace = true }
+dbt-flags = { workspace = true }
 dbt-freshness = { workspace = true }
 dbt-fusion-workspace-hack = { version = "0.1" }
 dbt-index-core = { workspace = true }

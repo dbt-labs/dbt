@@ -173,14 +173,7 @@ function baseUnion(types: ResourceType[] | undefined): string | null {
   return branches.length ? branches.join('\nUNION ALL\n') : null;
 }
 
-/**
- * The five field-match legs for one token.
- *
- * Note on `list_filter(tags, x -> …)`: newer DuckDB deprecates the `->` lambda
- * arrow in favour of `lambda x: …` and warns about it. The pinned duckdb-wasm
- * predates the new syntax and this matches the Rust handler, so `->` stays until
- * the pinned engine moves.
- */
+/** The five field-match legs for one token. */
 function tokenLegs(token: string): string {
   const q = escapeIlike(token);
   const like = (expr: string) => `${expr} ILIKE '%' || '${q}' || '%' ESCAPE '\\'`;
@@ -193,7 +186,7 @@ function tokenLegs(token: string): string {
   UNION ALL
   SELECT unique_id, 'tag', 3 FROM base
     WHERE tags IS NOT NULL
-      AND len(list_filter(tags, x -> ${like('x')})) > 0
+      AND len(list_filter(tags, lambda x: ${like('x')})) > 0
   UNION ALL
   SELECT unique_id, 'fqn', 4 FROM base
     WHERE fqn IS NOT NULL AND ${like("array_to_string(fqn, '.')")}

@@ -3,7 +3,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicI64};
+use std::sync::atomic::AtomicBool;
 use std::time::Instant;
 
 use crate::run_cache::run_cache_service::{
@@ -16,12 +16,12 @@ use dbt_adapter::relation::create_relation_from_node;
 use dbt_adapter::response::AdapterResponse;
 use dbt_adapter_core::AdapterType;
 use dbt_common::FsResult;
-use dbt_common::collections::{DashMap, SccHashMap};
+use dbt_common::collections::SccHashMap;
 use dbt_common::io_args::OptimizeTestsOptions;
 use dbt_common::path::DbtPath;
-use dbt_common::stats::{NodeStatus, Stat};
+use dbt_common::sources_extractor::SourcesExtractor;
+use dbt_common::stats::{ExecutionMetrics, NodeStatus, Stat};
 use dbt_dag::schedule::Schedule;
-use dbt_frontend_common::sources_extractor::SourcesExtractor;
 use dbt_jinja_utils::jinja_environment::{JinjaEnv, adapter_api_value};
 use dbt_jinja_utils::phases::compile::{
     DependencyValidationConfig, build_compile_node_context_inner,
@@ -37,6 +37,7 @@ use dbt_state::explain::StateExplainDevClone;
 use dbt_state::metadata_cache::RunCacheMetadataCache;
 use dbt_state::service_client::SharedRunCacheServiceClient;
 use dbt_state::service_config::RunCacheServiceConfig;
+use dbt_state::telemetry::SharedEventOrder;
 use dbt_state::view_traversal::ViewDefinitionTraverser;
 use minijinja::Value;
 
@@ -53,7 +54,7 @@ use dbt_schemas::schemas::common::DbtMaterialization;
 /// construction time from the extended-context factory.
 pub struct RunCacheCtx {
     pub run_cache_metadata: Arc<RunCacheMetadataCache>,
-    pub run_cache_dev_cloned_nodes: DashMap<String, StateExplainDevClone>,
+    pub run_cache_dev_cloned_nodes: SccHashMap<String, StateExplainDevClone>,
     pub run_cache_deferred_fqns: BTreeSet<String>,
     pub run_cache_service_requested: bool,
     pub run_cache_service_config: Option<RunCacheServiceConfig>,
@@ -68,12 +69,20 @@ pub struct RunCacheCtx {
     /// Tracks the background dependency last-modified prefetch so per-node
     /// submits can observe its progress and await it on demand.
     pub prefetch: RunCachePrefetchState,
-    pub telemetry_event_order: AtomicI64,
+    /// Shared telemetry event order counter for monotonic ordering across
+    /// state selector (compilation phase) and task execution (run phase).
+    ///
+    /// Always initialized: when a state selector creates one during
+    /// compilation, the same counter is passed here so run-phase events
+    /// continue the sequence; otherwise a fresh counter is created at run
+    /// start.
+    pub shared_event_order: SharedEventOrder,
     pub telemetry_session_start: std::sync::OnceLock<Instant>,
     pub telemetry_session_ended: AtomicBool,
     /// Background telemetry batching worker, started lazily on the first
     /// event so runs with the dbt State service disabled never spawn it.
     pub telemetry_dispatcher: std::sync::OnceLock<TelemetryDispatcher>,
+    pub redshift_case_sensitivity_enabled: tokio::sync::OnceCell<bool>,
 }
 
 /// Lifecycle handle for the background dependency last-modified prefetch.
@@ -150,7 +159,7 @@ impl RunCachePrefetchState {
 /// Information about a rendered node, used for unit test hash computation.
 #[derive(Debug, Clone)]
 pub struct RenderedNodeInfo {
-    pub sql: String,
+    pub sql: Arc<str>,
     pub materialization: DbtMaterialization,
 }
 
@@ -160,13 +169,14 @@ pub struct TaskRunnerCtxInner {
     pub schedule: Schedule<String>,
     pub runtime_deps: BTreeMap<String, BTreeSet<String>>,
     pub base_context: BTreeMap<String, Value>,
-    pub analyze_stats: DashMap<String, Stat>,
-    pub run_stats: DashMap<String, Stat>,
-    pub data_test_execution_results: DashMap<String, CachedTestExecutionResult>,
-    pub batch_results_map: DashMap<String, BatchResults>,
-    pub main_adapter_responses: DashMap<String, AdapterResponse>,
-    pub node_hashes: DashMap<String, String>,
-    pub rendered_sql: DashMap<String, RenderedNodeInfo>,
+    pub analyze_stats: SccHashMap<String, Stat>,
+    pub run_stats: SccHashMap<String, Stat>,
+    pub data_test_execution_results: SccHashMap<String, CachedTestExecutionResult>,
+    pub batch_results_map: SccHashMap<String, BatchResults>,
+    pub main_adapter_responses: SccHashMap<String, AdapterResponse>,
+    pub microbatch_execution_metrics: SccHashMap<String, ExecutionMetrics>,
+    pub node_hashes: SccHashMap<String, String>,
+    pub rendered_sql: SccHashMap<String, RenderedNodeInfo>,
     pub freshness_seconds: SccHashMap<String, i64>,
     pub updates_on: SccHashMap<String, UpdatesOn>,
     pub execute: dbt_schemas::schemas::profiles::Execute,
@@ -187,6 +197,9 @@ pub struct TaskRunnerCtxInner {
     pub dbt_profile: Arc<DbtProfile>,
     pub runtime_config: Arc<DbtRuntimeConfig>,
     pub generic_test_relationships: GenericTestRelationships,
+    /// Cross-model schema-inference state for `--infer-schemas`, shared by
+    /// every task in this run.
+    pub infer_schema_registry: Arc<dbt_common::infer_schema_registry::InferSchemaRegistry>,
     span_manager: Arc<SpanManager<FsResult<NodeStatus>, SkipReason>>,
     /// Captured show batches for the LSP preview path; set by run_show, collected after the task loop.
     pub preview_results: parking_lot::Mutex<Option<(Vec<RecordBatch>, SchemaRef)>>,
@@ -206,7 +219,7 @@ impl TaskRunnerCtxInner {
         worker_id: String,
         schedule: Schedule<String>,
         base_context: BTreeMap<String, Value>,
-        node_hashes: DashMap<String, String>,
+        node_hashes: SccHashMap<String, String>,
         extended_ctx: Box<dyn ExtendedCtx>,
         compiled_sql_cache: Arc<dyn crate::CompiledSqlCache>,
         adhoc_runner: Arc<dyn crate::AdhocRunner>,
@@ -235,13 +248,16 @@ impl TaskRunnerCtxInner {
             &resolver_state.root_project_name,
         );
 
-        let batch_results_map: DashMap<String, BatchResults> = {
-            let map = DashMap::default();
+        let batch_results_map: SccHashMap<String, BatchResults> = {
+            let map = SccHashMap::default();
             for (uid, br) in &arg.previous_batch_results {
-                map.insert(uid.clone(), br.clone());
+                map.upsert_sync(uid.clone(), br.clone());
             }
             map
         };
+
+        let infer_schema_registry =
+            Arc::new(dbt_common::infer_schema_registry::InferSchemaRegistry::new());
 
         TaskRunnerCtxInner {
             arg,
@@ -249,13 +265,14 @@ impl TaskRunnerCtxInner {
             schedule,
             runtime_deps,
             base_context,
-            analyze_stats: DashMap::default(),
-            run_stats: DashMap::default(),
-            data_test_execution_results: DashMap::default(),
+            analyze_stats: SccHashMap::default(),
+            run_stats: SccHashMap::default(),
+            data_test_execution_results: SccHashMap::default(),
             batch_results_map,
-            main_adapter_responses: DashMap::default(),
+            main_adapter_responses: SccHashMap::default(),
+            microbatch_execution_metrics: SccHashMap::default(),
             node_hashes,
-            rendered_sql: DashMap::default(),
+            rendered_sql: SccHashMap::default(),
             freshness_seconds: SccHashMap::default(),
             updates_on: SccHashMap::default(),
             execute,
@@ -270,6 +287,7 @@ impl TaskRunnerCtxInner {
             dbt_profile: Arc::new(resolver_state.dbt_profile.clone()),
             runtime_config: resolver_state.runtime_config.clone(),
             generic_test_relationships,
+            infer_schema_registry,
             span_manager,
             preview_results: parking_lot::Mutex::new(None),
             preview_error: parking_lot::Mutex::new(None),
@@ -335,6 +353,42 @@ pub trait ExtendedCtx: Send + Sync + Any {
     }
 }
 
+/// The owned slice of a [`TaskRunnerCtx`] that blocking work needs.
+///
+/// It carries four of the ctx's six `Arc`s rather than cloning the whole
+/// thing.
+///
+/// Everything shared sits behind an `Arc`, and the mutable state inside
+/// [`TaskRunnerCtxInner`] is interior-mutable, so writes through this handle
+/// are visible to the task's own ctx.
+#[derive(Clone)]
+pub struct BlockingTaskCtx {
+    pub inner: Arc<TaskRunnerCtxInner>,
+    pub env: Arc<JinjaEnv>,
+    pub data_store: Arc<dyn DataStoreTrait>,
+    pub resolver_state: Arc<ResolverState>,
+    /// Copied, not shared: see [`TaskRunnerCtx::thread_id`].
+    pub thread_id: i32,
+}
+
+impl BlockingTaskCtx {
+    pub fn adapter_store(&self) -> &Arc<AdapterStore> {
+        &self.inner.adapter_store
+    }
+
+    pub fn dbt_profile(&self) -> &DbtProfile {
+        &self.inner.dbt_profile
+    }
+
+    pub fn extended_ctx<T: ExtendedCtx + 'static>(&self) -> Option<&T> {
+        self.inner.extended_ctx.as_any().downcast_ref::<T>()
+    }
+
+    pub fn nodes(&self) -> &Nodes {
+        &self.resolver_state.nodes
+    }
+}
+
 #[derive(Clone)]
 pub struct TaskRunnerCtx {
     pub inner: Arc<TaskRunnerCtxInner>,
@@ -354,6 +408,17 @@ pub struct TaskRunnerCtx {
 }
 
 impl TaskRunnerCtx {
+    /// Takes the handles blocking work needs off this ctx.
+    pub fn blocking_ctx(&self) -> BlockingTaskCtx {
+        BlockingTaskCtx {
+            inner: Arc::clone(&self.inner),
+            env: Arc::clone(&self.env),
+            data_store: Arc::clone(&self.data_store),
+            resolver_state: Arc::clone(&self.resolver_state),
+            thread_id: self.thread_id,
+        }
+    }
+
     pub async fn is_data_test_statically_skippable(&self, unique_id: &str) -> bool {
         if !self
             .inner
@@ -479,10 +544,10 @@ impl TaskRunnerCtx {
     #[allow(clippy::type_complexity, clippy::too_many_arguments)]
     pub fn build_compile_node_context<T>(
         &self,
-        model: &T,
+        model: Arc<T>,
         base_context: &BTreeMap<String, Value>,
         ref_validation_config: DependencyValidationConfig,
-    ) -> FsResult<(BTreeMap<String, Value>, Arc<DashMap<String, Value>>)>
+    ) -> FsResult<(BTreeMap<String, Value>, Arc<SccHashMap<String, Value>>)>
     where
         T: InternalDbtNodeAttributes + ?Sized,
     {
@@ -529,5 +594,121 @@ impl TaskRunnerCtx {
 
     pub fn is_sidecar(&self) -> bool {
         self.inner.extended_ctx.is_sidecar()
+    }
+}
+
+/// Adds one batch's main-response metrics to the model's total; a batch with no response unsets it.
+pub fn record_microbatch_metrics(
+    totals: &SccHashMap<String, ExecutionMetrics>,
+    unique_id: &str,
+    response: Option<&AdapterResponse>,
+) {
+    let metrics = response
+        .map(|response| response.execution_metrics())
+        .unwrap_or_default();
+    totals
+        .entry_sync(unique_id.to_string())
+        .and_modify(|total| total.accumulate(metrics))
+        .or_insert(metrics);
+}
+
+/// RunModel metrics: the batch total for microbatch models, else the main response.
+pub fn node_execution_metrics(
+    is_microbatch: bool,
+    unique_id: &str,
+    microbatch_totals: &SccHashMap<String, ExecutionMetrics>,
+    main_responses: &SccHashMap<String, AdapterResponse>,
+) -> Option<ExecutionMetrics> {
+    if is_microbatch {
+        Some(
+            microbatch_totals
+                .read_sync(unique_id, |_, total| *total)
+                .unwrap_or_default(),
+        )
+    } else {
+        main_responses.read_sync(unique_id, |_, response| response.execution_metrics())
+    }
+}
+
+#[cfg(test)]
+mod execution_metrics_tests {
+    use super::*;
+
+    fn response(rows: i64, bytes_processed: i64) -> AdapterResponse {
+        AdapterResponse::new()
+            .with_rows_affected(rows)
+            .with("bytes_processed", bytes_processed)
+            .with("bytes_billed", bytes_processed * 2)
+            .with("slot_ms", 7_i64)
+    }
+
+    #[test]
+    fn microbatch_batches_sum() {
+        let totals = SccHashMap::default();
+        record_microbatch_metrics(&totals, "model.a", Some(&response(10, 100)));
+        record_microbatch_metrics(&totals, "model.a", Some(&response(5, 300)));
+
+        assert_eq!(
+            totals.read_sync("model.a", |_, v| *v).unwrap(),
+            ExecutionMetrics {
+                rows_affected: Some(15),
+                bytes_processed: Some(400),
+                bytes_billed: Some(800),
+                slot_ms: Some(14),
+            }
+        );
+    }
+
+    #[test]
+    fn microbatch_first_batch_without_response_leaves_total_unset() {
+        let totals = SccHashMap::default();
+        record_microbatch_metrics(&totals, "model.a", None);
+        record_microbatch_metrics(&totals, "model.a", Some(&response(10, 100)));
+
+        assert_eq!(
+            totals.read_sync("model.a", |_, v| *v).unwrap(),
+            ExecutionMetrics::default()
+        );
+    }
+
+    #[test]
+    fn microbatch_models_are_tracked_separately() {
+        let totals = SccHashMap::default();
+        record_microbatch_metrics(&totals, "model.a", Some(&response(10, 100)));
+        record_microbatch_metrics(&totals, "model.b", Some(&response(1, 1)));
+
+        assert_eq!(
+            totals.read_sync("model.a", |_, v| v.rows_affected).unwrap(),
+            Some(10)
+        );
+        assert_eq!(
+            totals.read_sync("model.b", |_, v| v.rows_affected).unwrap(),
+            Some(1)
+        );
+    }
+
+    #[test]
+    fn node_metrics_selects_source_by_materialization() {
+        let totals = SccHashMap::default();
+        let main = SccHashMap::default();
+        record_microbatch_metrics(&totals, "model.mb", Some(&response(10, 100)));
+        record_microbatch_metrics(&totals, "model.mb", Some(&response(5, 300)));
+        main.upsert_sync("model.mb".to_string(), response(99, 99));
+        main.upsert_sync("model.t".to_string(), response(3, 30));
+
+        let microbatch = node_execution_metrics(true, "model.mb", &totals, &main).unwrap();
+        assert_eq!(microbatch.rows_affected, Some(15));
+
+        let table = node_execution_metrics(false, "model.t", &totals, &main).unwrap();
+        assert_eq!(table.rows_affected, Some(3));
+
+        assert_eq!(
+            node_execution_metrics(false, "model.x", &totals, &main),
+            None
+        );
+        assert_eq!(
+            node_execution_metrics(true, "model.none", &totals, &main),
+            Some(ExecutionMetrics::default())
+        );
     }
 }

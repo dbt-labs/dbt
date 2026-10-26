@@ -6,10 +6,7 @@ use std::path::Path;
 
 use crate::COUNTERS;
 
-pub fn cleanup_schema_name(input: &str) -> String {
-    let re = Regex::new(r"___.*?___").unwrap();
-    re.replace_all(input, "").to_string()
-}
+pub use dbt_test_primitives::cleanup_schema_name;
 
 /// Strips real wall-clock content embedded in SQL that has no node context
 /// to hash against instead (`checksum8` is the only key such a statement
@@ -36,6 +33,17 @@ fn cleanup_alter_user_identifier(input: &str) -> String {
     re.replace_all(input, r#"$1"MASKED_USER""#).to_string()
 }
 
+/// Masks the quoted Snowflake username in `show user programmatic access
+/// tokens for user "<user>"` (`pat_hygiene_report` in `compute_platform.rs`),
+/// for the same reason as `cleanup_alter_user_identifier` above -- this
+/// statement has no node context either, so `checksum8` is its only
+/// recording key, and it embeds whichever real identity recorded the
+/// fixture.
+fn cleanup_show_user_pat_identifier(input: &str) -> String {
+    let re = Regex::new(r#"(?i)(show user programmatic access tokens for user )"[^"]+""#).unwrap();
+    re.replace_all(input, r#"$1"MASKED_USER""#).to_string()
+}
+
 /// Masks the volatile suffix in the temp table names of the ClickHouse
 /// `EXCHANGE TABLES` capability probe (`__dbt_exchange_test_<n>_<pid>_<nanos>`).
 /// The suffix is a process id plus a wall-clock nanosecond timestamp, so no
@@ -47,11 +55,36 @@ fn cleanup_exchange_probe_tables(input: &str) -> String {
         .to_string()
 }
 
+/// Masks the volatile suffix in `dbt debug`'s MDLS write/read-back probe
+/// table name (`__dbt_debug_probe_<nanos>`, `debug_mdls.rs`). The suffix is
+/// a fresh wall-clock nanosecond timestamp generated on every invocation --
+/// record or replay alike -- so no two runs ever emit the literal same
+/// name. Normalize it away for the same reason as the timestamp above.
+fn cleanup_debug_probe_table(input: &str) -> String {
+    let re = Regex::new(r"__dbt_debug_probe_\d+").unwrap();
+    re.replace_all(input, "__dbt_debug_probe_MASKED_ID")
+        .to_string()
+}
+
+/// Masks the volatile suffix in `dbt debug`'s Snowflake propagation probe
+/// table name (`__dbt_debug_propagation_<nanos>`, `debug_propagation.rs`).
+/// Same reasoning as `cleanup_debug_probe_table` above: a fresh wall-clock
+/// nanosecond timestamp on every invocation means no two runs ever emit the
+/// literal same name, so it must be normalized away before hashing.
+fn cleanup_debug_propagation_probe_table(input: &str) -> String {
+    let re = Regex::new(r"__dbt_debug_propagation_\d+").unwrap();
+    re.replace_all(input, "__dbt_debug_propagation_MASKED_ID")
+        .to_string()
+}
+
 fn checksum8(input: &str) -> String {
     let input = cleanup_schema_name(input);
     let input = cleanup_ephemeral_timestamps(&input);
     let input = cleanup_alter_user_identifier(&input);
+    let input = cleanup_show_user_pat_identifier(&input);
     let input = cleanup_exchange_probe_tables(&input);
+    let input = cleanup_debug_probe_table(&input);
+    let input = cleanup_debug_propagation_probe_table(&input);
     let mut hasher = DefaultHasher::new();
     input.hash(&mut hasher);
     let hash = hasher.finish();
@@ -87,8 +120,10 @@ pub fn compute_file_name(
         },
     };
 
-    let dir_counters = COUNTERS.entry(recordings_dir.to_path_buf()).or_default();
-    let mut entry = dir_counters.entry(id.clone()).or_insert(0);
+    let dir_counters = COUNTERS
+        .entry_sync(recordings_dir.to_path_buf())
+        .or_default();
+    let mut entry = dir_counters.entry_sync(id.clone()).or_insert(0);
     let file_name = format!("{}-{}", id, *entry);
     *entry += 1;
 
@@ -113,8 +148,10 @@ pub fn compute_file_name_for_table_schema(
         Some(node_id) => format!("{node_id}.get_table_schema.{hash}"),
         None => format!("get_table_schema.{hash}"),
     };
-    let dir_counters = COUNTERS.entry(recordings_dir.to_path_buf()).or_default();
-    let mut entry = dir_counters.entry(counter_key.clone()).or_insert(0);
+    let dir_counters = COUNTERS
+        .entry_sync(recordings_dir.to_path_buf())
+        .or_default();
+    let mut entry = dir_counters.entry_sync(counter_key.clone()).or_insert(0);
     let file_name = format!("{counter_key}-{}", *entry);
     *entry += 1;
     file_name
@@ -144,8 +181,10 @@ pub fn compute_file_name_for_get_objects(
         Some(node_id) => format!("{node_id}.get_objects.{hash}"),
         None => format!("get_objects.{hash}"),
     };
-    let dir_counters = COUNTERS.entry(recordings_dir.to_path_buf()).or_default();
-    let mut entry = dir_counters.entry(counter_key.clone()).or_insert(0);
+    let dir_counters = COUNTERS
+        .entry_sync(recordings_dir.to_path_buf())
+        .or_default();
+    let mut entry = dir_counters.entry_sync(counter_key.clone()).or_insert(0);
     let file_name = format!("{counter_key}-{}", *entry);
     *entry += 1;
     file_name

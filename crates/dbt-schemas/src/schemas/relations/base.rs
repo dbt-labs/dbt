@@ -2,7 +2,7 @@
 use crate::dbt_types::RelationType;
 use crate::filter::RunFilter;
 use crate::schemas::common::ResolvedQuoting;
-pub use crate::schemas::dbt_catalogs_v2::TableFormat;
+pub use crate::schemas::dbt_catalogs::TableFormat;
 
 use chrono::format::SecondsFormat;
 use dbt_adapter_core::{AdapterType, quote_char};
@@ -16,6 +16,7 @@ use strum::{Display, EnumString};
 
 use core::fmt;
 use std::any::Any;
+use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::option::Option;
 use std::sync::Arc;
@@ -156,13 +157,13 @@ pub trait BaseRelation: BaseRelationProperties + Any + Send + Sync + fmt::Debug 
     /// Get the database name as a string literal
     /// the same as how a database provider resolves and stores a database component for a relation
     /// given how it's quoted
-    fn database_as_resolved_str(&self) -> Result<String, MinijinjaError> {
+    fn database_as_resolved_str(&self) -> Result<Cow<'_, str>, MinijinjaError> {
         match self.database() {
             Some(val) => {
                 if !self.quote_policy().database {
                     Ok(self.normalize_component(val))
                 } else {
-                    Ok(val.to_string())
+                    Ok(Cow::Borrowed(val))
                 }
             }
             None => jinja_err!(
@@ -209,13 +210,13 @@ pub trait BaseRelation: BaseRelationProperties + Any + Send + Sync + fmt::Debug 
     /// Get the schema name as a string literal
     /// the same as how a database provider resolves and stores a schema component for a relation
     /// given how it's quoted
-    fn schema_as_resolved_str(&self) -> Result<String, MinijinjaError> {
+    fn schema_as_resolved_str<'a>(&'a self) -> Result<Cow<'a, str>, MinijinjaError> {
         match self.schema() {
             Some(val) => {
                 if !self.quote_policy().schema {
                     Ok(self.normalize_component(val))
                 } else {
-                    Ok(val.to_string())
+                    Ok(Cow::Borrowed(val))
                 }
             }
             None => jinja_err!(
@@ -242,13 +243,13 @@ pub trait BaseRelation: BaseRelationProperties + Any + Send + Sync + fmt::Debug 
     /// Get the identifier as a string literal
     /// the same as how a database provider resolves and stores an identifier component for a relation
     /// given how it's quoted
-    fn identifier_as_resolved_str(&self) -> Result<String, MinijinjaError> {
+    fn identifier_as_resolved_str<'a>(&'a self) -> Result<Cow<'a, str>, MinijinjaError> {
         match self.identifier() {
             Some(val) => {
                 if !self.quote_policy().identifier {
                     Ok(self.normalize_component(val))
                 } else {
-                    Ok(val.to_string())
+                    Ok(Cow::Borrowed(val))
                 }
             }
             None => jinja_err!(
@@ -266,13 +267,13 @@ pub trait BaseRelation: BaseRelationProperties + Any + Send + Sync + fmt::Debug 
         Ok(self.location().map(|s| s.to_string()))
     }
 
-    fn location_as_resolved_str(&self) -> Result<Option<String>, MinijinjaError> {
+    fn location_as_resolved_str<'a>(&'a self) -> Result<Option<Cow<'a, str>>, MinijinjaError> {
         match self.location() {
             Some(val) => {
                 if !self.quote_policy().database {
                     Ok(Some(self.normalize_component(val)))
                 } else {
-                    Ok(Some(val.to_string()))
+                    Ok(Some(Cow::Borrowed(val)))
                 }
             }
             None => Ok(None),
@@ -460,7 +461,7 @@ pub trait BaseRelation: BaseRelationProperties + Any + Send + Sync + fmt::Debug 
     ///
     /// This is how a specific database provider resolve and store an object's name if quoting is not used
     /// For example, they'll be upper case in Snowflake https://docs.snowflake.com/en/sql-reference/identifiers-syntax#unquoted-identifiers
-    fn normalize_component(&self, component: &str) -> String;
+    fn normalize_component<'a>(&self, component: &'a str) -> Cow<'a, str>;
 
     /// Render this relation as a string.
     fn render_self_as_str(&self) -> String {
@@ -895,6 +896,11 @@ pub trait BaseRelation: BaseRelationProperties + Any + Send + Sync + fmt::Debug 
     /// ClickHouse relation state, stamped from the catalog (dbt-clickhouse
     /// `ClickHouseRelation.can_exchange`).
     fn can_exchange(&self) -> bool {
+        false
+    }
+
+    /// `ClickHouseRelation.can_on_cluster`: whether DDL for this relation carries `ON CLUSTER`.
+    fn can_on_cluster(&self) -> bool {
         false
     }
 

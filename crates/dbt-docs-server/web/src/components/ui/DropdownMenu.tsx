@@ -92,3 +92,31 @@ export function DropdownMenuSeparator({
     />
   );
 }
+
+export function DropdownMenuCheckboxItem({
+  className,
+  children,
+  ...props
+}: ComponentProps<typeof DropdownMenuPrimitive.CheckboxItem>) {
+  return (
+    <DropdownMenuPrimitive.CheckboxItem
+      className={cn(
+        'flex cursor-pointer select-none items-center gap-2 rounded px-2 py-1.5 text-sm text-fgMain outline-none data-[disabled]:cursor-not-allowed data-[highlighted]:bg-bgMainHover data-[disabled]:opacity-50',
+        className,
+      )}
+      {...props}
+    >
+      <span
+        className={cn(
+          'flex size-4 shrink-0 items-center justify-center rounded border border-borderMain',
+          props.checked && 'border-bgBrand bg-bgBrand',
+        )}
+      >
+        <DropdownMenuPrimitive.ItemIndicator>
+          <Check className="size-3 text-white" />
+        </DropdownMenuPrimitive.ItemIndicator>
+      </span>
+      {children}
+    </DropdownMenuPrimitive.CheckboxItem>
+  );
+}

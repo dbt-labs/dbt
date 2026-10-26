@@ -67,6 +67,7 @@ create or replace {{ transient_keyword }}dynamic table {{ relation }}
     {{ optional('with row access policy', dynamic_table.row_access_policy, equals_char='') }}
     {{ optional('with tag', dynamic_table.table_tag, quote_char='(', equals_char='') }}
     {{ optional('cluster by', dynamic_table.cluster_by, quote_char='(', equals_char='') }}
+    {% if dynamic_table.copy_grants -%} copy grants {%- endif %}
     {{ optional('immutable where', dynamic_table.immutable_where, quote_char='(', equals_char='') }}
     as (
         {{ sql }}
@@ -112,6 +113,7 @@ create or replace dynamic iceberg table {{ relation }}
     {{ optional('row_access_policy', dynamic_table.row_access_policy) }}
     {{ optional('table_tag', dynamic_table.table_tag) }}
     {{ optional('cluster by', dynamic_table.cluster_by, quote_char='(', equals_char='') }}
+    {% if dynamic_table.copy_grants -%} copy grants {%- endif %}
     {{ optional('immutable where', dynamic_table.immutable_where, quote_char='(', equals_char='') }}
     as (
         {{ sql }}

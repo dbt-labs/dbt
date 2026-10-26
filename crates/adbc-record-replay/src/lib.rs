@@ -9,26 +9,32 @@ pub use record::RecordConnection;
 pub use replay::ReplayConnection;
 
 use adbc_core::options::OptionValue;
-use dashmap::{DashMap, DashSet};
 use once_cell::sync::Lazy;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+
+// This crate cannot depend on `dbt-common`, so it names the stable hasher from
+// `dbt-base` directly (same hasher as `dbt_common::collections::SccHashMap`).
+type SccHashMap<K, V> = scc::HashMap<K, V, dbt_base::MaybeStableHasherBuilder>;
+type SccHashSet<K> = scc::HashSet<K, dbt_base::MaybeStableHasherBuilder>;
 
 /// Per-directory sequence counters for record/replay.
 ///
 /// Keyed by recordings directory path so that multiple adapters and
 /// sequential invocations each get their own counter namespace.
-static COUNTERS: Lazy<DashMap<PathBuf, DashMap<String, usize>>> = Lazy::new(DashMap::new);
+static COUNTERS: Lazy<SccHashMap<PathBuf, SccHashMap<String, usize>>> =
+    Lazy::new(SccHashMap::default);
 
 /// Paths that should NOT have their counters reset between sequential
 /// invocations.
-static SKIP_RESET_PATHS: Lazy<DashSet<PathBuf>> = Lazy::new(DashSet::new);
+static SKIP_RESET_PATHS: Lazy<SccHashSet<PathBuf>> = Lazy::new(SccHashSet::default);
 
 /// Mark a recording path to skip counter resets between sequential
 /// invocations. Useful for multi-command tests where the same model
 /// runs in different steps with different schemas.
 pub fn skip_counter_reset(path: &Path) {
-    SKIP_RESET_PATHS.insert(path.to_path_buf());
+    // Set insert: `Err` only means the path is already present.
+    let _already_present = SKIP_RESET_PATHS.insert_sync(path.to_path_buf());
 }
 
 /// Clear sequence counters for the given recordings directory.
@@ -37,10 +43,10 @@ pub fn skip_counter_reset(path: &Path) {
 /// begins with fresh sequence numbers. Returns `true` if counters
 /// were actually cleared (i.e. the path was not in the skip set).
 pub fn reset_counters(path: &Path) -> bool {
-    if SKIP_RESET_PATHS.contains(path) {
+    if SKIP_RESET_PATHS.contains_sync(path) {
         return false;
     }
-    COUNTERS.remove(path);
+    COUNTERS.remove_sync(path);
     true
 }
 

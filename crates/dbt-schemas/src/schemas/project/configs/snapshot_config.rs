@@ -150,6 +150,14 @@ pub struct ProjectSnapshotConfig {
     pub base_location_subpath: Option<String>,
     #[serde(
         default,
+        rename = "+iceberg_version",
+        deserialize_with = "u64_or_string_u64"
+    )]
+    pub iceberg_version: Option<u64>,
+    #[serde(rename = "+table_format")]
+    pub table_format: Option<String>,
+    #[serde(
+        default,
         rename = "+copy_grants",
         deserialize_with = "bool_or_string_bool"
     )]
@@ -199,6 +207,12 @@ pub struct ProjectSnapshotConfig {
     // Adapter-specific fields (BigQuery)
     #[serde(rename = "+cluster_by")]
     pub cluster_by: Option<ClusterConfig>,
+    #[serde(
+        default,
+        rename = "+enable_change_history",
+        deserialize_with = "bool_or_string_bool"
+    )]
+    pub enable_change_history: Option<bool>,
     #[serde(
         default,
         rename = "+enable_refresh",
@@ -432,6 +446,8 @@ impl TypedRecursiveConfig for ProjectSnapshotConfig {
             || self.backup.is_some()
             || self.base_location_root.is_some()
             || self.base_location_subpath.is_some()
+            || self.iceberg_version.is_some()
+            || self.table_format.is_some()
             || self.copy_grants.is_some()
             || self.copy_tags.is_some()
             || self.external_volume.is_some()
@@ -450,6 +466,7 @@ impl TypedRecursiveConfig for ProjectSnapshotConfig {
             || self.tmp_relation_type.is_some()
             || self.transient.is_some()
             || self.cluster_by.is_some()
+            || self.enable_change_history.is_some()
             || self.enable_refresh.is_some()
             || self.grant_access_to.is_some()
             || self.hours_to_expiration.is_present()
@@ -570,6 +587,7 @@ pub struct SnapshotConfig {
     pub sync: Option<SyncConfig>,
     // dbt State configs (state-aware run-cache behavior)
     pub state: Option<ModelState>,
+    pub table_format: Option<String>,
     // Adapter specific configs
     pub __warehouse_specific_config__: WarehouseSpecificNodeConfig,
 }
@@ -726,6 +744,7 @@ impl From<ProjectSnapshotConfig> for SnapshotConfig {
             docs: config.docs,
             sync: config.sync,
             state: config.state,
+            table_format: config.table_format,
             __warehouse_specific_config__: WarehouseSpecificNodeConfig {
                 description: None, // Only for Bigquery models
                 adapter_properties: config.adapter_properties,
@@ -755,7 +774,7 @@ impl From<ProjectSnapshotConfig> for SnapshotConfig {
                 copy_tags: config.copy_tags,
                 secure: config.secure,
                 transient: config.transient,
-                iceberg_version: None,
+                iceberg_version: config.iceberg_version,
 
                 partition_by: config.partition_by,
 
@@ -787,6 +806,7 @@ impl From<ProjectSnapshotConfig> for SnapshotConfig {
                 enable_list_inference: None,
                 intermediate_format: None,
                 storage_uri: None,
+                enable_change_history: config.enable_change_history,
 
                 file_format: config.file_format,
                 catalog_name: config.catalog_name,
@@ -818,6 +838,7 @@ impl From<ProjectSnapshotConfig> for SnapshotConfig {
                 schedule: config.schedule,
                 row_filter: None,
                 incremental_apply_config_changes: None,
+                use_materialization_v2: None,
                 use_safer_relation_operations: None,
                 view_update_via_alter: None,
 
@@ -845,6 +866,8 @@ impl From<ProjectSnapshotConfig> for SnapshotConfig {
                 settings: None,
                 query_settings: None,
                 projections: None,
+                sharding_key: None,
+                disable_on_cluster: None,
                 inserts_only: None,
                 connection_overrides: None,
                 fields: None,
@@ -907,6 +930,8 @@ impl From<SnapshotConfig> for ProjectSnapshotConfig {
             external_volume: config.__warehouse_specific_config__.external_volume,
             base_location_root: config.__warehouse_specific_config__.base_location_root,
             base_location_subpath: config.__warehouse_specific_config__.base_location_subpath,
+            iceberg_version: config.__warehouse_specific_config__.iceberg_version,
+            table_format: config.table_format,
             target_lag: config.__warehouse_specific_config__.target_lag,
             snowflake_initialization_warehouse: config
                 .__warehouse_specific_config__
@@ -945,6 +970,7 @@ impl From<SnapshotConfig> for ProjectSnapshotConfig {
                 .partition_expiration_days,
             grant_access_to: config.__warehouse_specific_config__.grant_access_to,
             partitions: config.__warehouse_specific_config__.partitions,
+            enable_change_history: config.__warehouse_specific_config__.enable_change_history,
             enable_refresh: config.__warehouse_specific_config__.enable_refresh,
             refresh_interval_minutes: config
                 .__warehouse_specific_config__
@@ -1099,10 +1125,15 @@ impl ConfigKeys for SnapshotConfig {
     }
 }
 
+impl crate::schemas::project::configs::warehouse_scope::WarehouseConfigResource for SnapshotConfig {
+    const NODE_TYPE: dbt_telemetry::NodeType = dbt_telemetry::NodeType::Snapshot;
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{AdapterType, ProjectSnapshotConfig, SnapshotConfig};
+    use super::{AdapterType, ProjectSnapshotConfig, SnapshotConfig, WarehouseSpecificNodeConfig};
     use crate::schemas::common::{FreshnessPeriod, UpdatesOn};
+    use crate::schemas::project::{ResolvableConfig, TypedRecursiveConfig};
     use crate::schemas::properties::{ModelState, StatePreClone};
 
     #[test]
@@ -1120,6 +1151,51 @@ __additional_properties__: {}
             resolved.__warehouse_specific_config__.query_tags.as_deref(),
             Some(r#"{"team":"snapshot"}"#)
         );
+    }
+
+    #[test]
+    fn test_project_snapshot_iceberg_config_parses_and_round_trips() {
+        let project_config: ProjectSnapshotConfig = dbt_yaml::from_str(
+            r#"
++table_format: iceberg
++iceberg_version: "2"
+__additional_properties__: {}
+"#,
+        )
+        .unwrap();
+
+        assert!(project_config.has_set_fields());
+
+        let snapshot_config: SnapshotConfig = project_config.into();
+        assert_eq!(snapshot_config.table_format.as_deref(), Some("iceberg"));
+        assert_eq!(
+            snapshot_config
+                .__warehouse_specific_config__
+                .iceberg_version,
+            Some(2)
+        );
+
+        let round_tripped: ProjectSnapshotConfig = snapshot_config.into();
+        assert_eq!(round_tripped.table_format.as_deref(), Some("iceberg"));
+        assert_eq!(round_tripped.iceberg_version, Some(2));
+    }
+
+    #[test]
+    fn test_snapshot_iceberg_config_inherits_from_parent() {
+        let parent = SnapshotConfig {
+            table_format: Some("iceberg".to_string()),
+            __warehouse_specific_config__: WarehouseSpecificNodeConfig {
+                iceberg_version: Some(2),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let mut child = SnapshotConfig::default();
+
+        child.default_to(&parent);
+
+        assert_eq!(child.table_format.as_deref(), Some("iceberg"));
+        assert_eq!(child.__warehouse_specific_config__.iceberg_version, Some(2));
     }
 
     #[test]
@@ -1249,6 +1325,7 @@ __warehouse_specific_config__: {}
                 pre_clone: Some(StatePreClone::IfMissing),
                 execute_hooks_on_any_reuse: None,
                 compare_unrendered_code: None,
+                ignore_external_modifications: None,
             }),
             ..Default::default()
         };
@@ -1277,6 +1354,7 @@ __warehouse_specific_config__: {}
                 pre_clone: Some(StatePreClone::IfMissing),
                 execute_hooks_on_any_reuse: None,
                 compare_unrendered_code: None,
+                ignore_external_modifications: None,
             }),
             ..Default::default()
         };
@@ -1288,6 +1366,7 @@ __warehouse_specific_config__: {}
                 pre_clone: None,
                 execute_hooks_on_any_reuse: None,
                 compare_unrendered_code: None,
+                ignore_external_modifications: None,
             }),
             ..Default::default()
         };

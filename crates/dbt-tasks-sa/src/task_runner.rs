@@ -9,11 +9,13 @@ use dbt_common::FsResult;
 use dbt_common::cancellation::CancellationToken;
 use dbt_common::create_info_span;
 use dbt_common::io_args::FsCommand;
+use dbt_common::sccmap;
 use dbt_common::stats::{NodeStatus, Stat};
 use dbt_common::tracing::dbt_emit::emit_error_log_from_fs_error;
 use dbt_common::tracing::span_info::{SpanStatusRecorder, record_span_status_with_attrs};
 use dbt_dag::schedule::Schedule;
 use dbt_jinja_utils::jinja_environment::JinjaEnv;
+use dbt_jinja_utils::phases::run::reset_result_store;
 use dbt_scheduler::schedule::summarize_stats;
 use dbt_schema_store::DataStoreTrait;
 use dbt_schema_store::SchemaStoreTrait;
@@ -21,6 +23,7 @@ use dbt_schema_store::store::SchemaStore;
 use dbt_schemas::schemas::profiles::Execute;
 use dbt_schemas::state::ResolverState;
 use dbt_schemas::stats::Stats;
+use dbt_state::telemetry::SharedEventOrder;
 use dbt_tasks_core::RunTaskResults;
 use dbt_tasks_core::RunTasksArgs;
 use dbt_tasks_core::TaskRunnerStats;
@@ -59,17 +62,12 @@ pub fn summarize_task_runner_stats(
         batch_results: Default::default(),
         compiled_code: Default::default(),
     };
-    let batch_results = ctx
-        .inner
-        .batch_results_map
-        .iter()
-        .map(|entry| (entry.key().clone(), entry.value().clone()))
+    let batch_results = sccmap::to_vec_cloned(&ctx.inner.batch_results_map)
+        .into_iter()
         .collect();
-    let compiled_code = ctx
-        .inner
-        .rendered_sql
-        .iter()
-        .map(|entry| (entry.key().clone(), entry.value().sql.clone()))
+    let compiled_code = sccmap::to_vec_cloned(&ctx.inner.rendered_sql)
+        .into_iter()
+        .map(|(unique_id, info)| (unique_id, info.sql))
         .collect();
     let run = Stats {
         stats: summarize_stats(schedule, &ctx.inner.run_stats),
@@ -78,6 +76,25 @@ pub fn summarize_task_runner_stats(
         compiled_code,
     };
     TaskRunnerStats { compile, run }
+}
+
+/// `--infer-schemas` binds without a catalog and never executes against a
+/// real warehouse, so on-run-start hooks (arbitrary SQL, run for side
+/// effects on the target) have nothing meaningful to run against — skip
+/// them if there's nothing to run in the first place.
+fn should_run_on_run_start_hooks(infer_schemas_and_typeless: bool, has_hooks: bool) -> bool {
+    !infer_schemas_and_typeless && has_hooks
+}
+
+/// Same reasoning as `should_run_on_run_start_hooks`, for the post-hooks
+/// phase (on-run-end hooks plus any other post-run bookkeeping gated behind
+/// remote execution).
+fn should_run_post_hooks(
+    execute: Execute,
+    skip_post_hooks: bool,
+    infer_schemas_and_typeless: bool,
+) -> bool {
+    execute == Execute::Remote && !skip_post_hooks && !infer_schemas_and_typeless
 }
 
 pub struct TaskRunner {
@@ -184,6 +201,7 @@ impl TaskRunner {
         base_context: BTreeMap<String, minijinja::Value>,
         schedule: Schedule<String>,
         freshness_results: Option<Box<dyn PreTaskRunData>>,
+        shared_event_order: Option<SharedEventOrder>,
     ) -> Result<TaskRunnerCtx, Box<FsError>> {
         let extended_ctx_factory = self
             .hooks
@@ -209,6 +227,7 @@ impl TaskRunner {
                 Arc::clone(&self.adapter),
                 Arc::clone(&self.adapter_store),
                 self.run_cache.clone(),
+                shared_event_order,
             )
             .await
     }
@@ -249,15 +268,46 @@ impl TaskRunner {
 
         let jinja_env = Arc::clone(&self.jinja_env);
         let adapter = Arc::clone(&self.adapter);
-        dbt_runtime::spawn_blocking(move || {
-            let state = jinja_env.new_state_with_context(base_context);
-
-            let catalog_schemas_to_register =
-                filter_missing_schemas(&adapter, &state, &selected_catalog_schemas)?;
-
-            register_catalog_schemas_remote(&adapter, &state, catalog_schemas_to_register)
+        let filter_context = base_context.clone();
+        let missing_catalog_schemas = dbt_runtime::spawn_blocking(move || {
+            let state = jinja_env.new_state_with_context(filter_context);
+            filter_missing_schemas(&adapter, &state, &selected_catalog_schemas)
         })
-        .await?
+        .await??;
+
+        // Keep schema creation sequential during recording and replay because
+        // Time Machine requires writes to occur in recorded order.
+        let schema_batches = if self.adapter.time_machine().is_some() {
+            vec![missing_catalog_schemas]
+        } else {
+            missing_catalog_schemas
+                .into_iter()
+                .map(|catalog_schema| vec![catalog_schema])
+                .collect()
+        };
+        // Submit all batches before awaiting so schema creation can overlap.
+        let create_handles = schema_batches
+            .into_iter()
+            .map(|catalog_schemas| {
+                let jinja_env = Arc::clone(&self.jinja_env);
+                let adapter = Arc::clone(&self.adapter);
+                let mut base_context = base_context.clone();
+                // Cloning the context shares the result store, so concurrent creates could
+                // overwrite or consume each other's statement results.
+                reset_result_store(&mut base_context);
+                dbt_runtime::spawn_blocking(move || {
+                    let state = jinja_env.new_state_with_context(base_context);
+                    register_catalog_schemas_remote(&adapter, &state, catalog_schemas)
+                })
+            })
+            .collect::<Vec<_>>();
+        // Await every create, even after a failure, so none is still running when the run reports
+        // the error. `and` keeps the first error in submission order.
+        let mut outcome: FsResult<()> = Ok(());
+        for create in create_handles {
+            outcome = outcome.and(create.await.map_err(Into::into).flatten());
+        }
+        outcome
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -289,7 +339,10 @@ impl TaskRunner {
         let mut on_run_start_sqls = Vec::new();
 
         // Create span for on-run-start phase if there are any hooks
-        let on_run_start_span = if !self.resolved_state.operations.on_run_start.is_empty() {
+        let on_run_start_span = if should_run_on_run_start_hooks(
+            run_task_args.infer_schemas_and_typeless,
+            !self.resolved_state.operations.on_run_start.is_empty(),
+        ) {
             Some(create_info_span(PhaseExecuted::start_with_node_count(
                 ExecutionPhase::OnRunStart,
                 self.resolved_state.operations.on_run_start.len() as u64,
@@ -379,12 +432,10 @@ impl TaskRunner {
             .await?;
 
         let mut stats = summarize_task_runner_stats(&ctx, &schedule, self.resolved_state.as_ref());
-        let adapter_responses: HashMap<String, AdapterResponse> = ctx
-            .inner
-            .main_adapter_responses
-            .iter()
-            .map(|entry| (entry.key().clone(), entry.value().clone()))
-            .collect();
+        let adapter_responses: HashMap<String, AdapterResponse> =
+            sccmap::to_vec_cloned(&ctx.inner.main_adapter_responses)
+                .into_iter()
+                .collect();
         let results = stats.collect_as_results(&adapter_responses);
         let successful_relational_nodes =
             stats.collect_successful_relational_nodes(&self.resolved_state);
@@ -401,14 +452,18 @@ impl TaskRunner {
 
         let schemas_option = Some(schemas.clone());
         let database_schemas_option = Some(database_schemas);
-        let results_option = Some(results.clone());
+        let results_option = Some(results);
 
         // on-run-end hook results, recorded as `operation.<project>.<name>` nodes and
         // merged into the run stats below.
         let mut hook_stats: Vec<Stat> = Vec::new();
 
         let execute = Execute::from_compute_flag(run_task_args.local_execution_backend);
-        if execute == Execute::Remote && !run_task_args.skip_post_hooks {
+        if should_run_post_hooks(
+            execute,
+            run_task_args.skip_post_hooks,
+            run_task_args.infer_schemas_and_typeless,
+        ) {
             // Create span for on-run-end phase if there are any hooks
             let on_run_end_span = if !self.resolved_state.operations.on_run_end.is_empty() {
                 Some(create_info_span(PhaseExecuted::start_with_node_count(
@@ -450,6 +505,7 @@ impl TaskRunner {
                                 status: NodeStatus::SkippedUpstreamFailed,
                                 thread_id: "main".to_string(),
                                 message: None,
+                                assertion: false,
                             });
                             continue;
                         }
@@ -514,6 +570,7 @@ impl TaskRunner {
                             status,
                             thread_id: "main".to_string(),
                             message: error_message,
+                            assertion: false,
                         });
 
                         if let Err(e) = result {
@@ -559,5 +616,45 @@ impl TaskRunner {
             task_runner_ctx: Some(ctx),
             preview,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn on_run_start_hooks_run_when_there_are_hooks_and_infer_schemas_is_off() {
+        assert!(should_run_on_run_start_hooks(false, true));
+    }
+
+    #[test]
+    fn on_run_start_hooks_skipped_under_infer_schemas() {
+        assert!(!should_run_on_run_start_hooks(true, true));
+    }
+
+    #[test]
+    fn on_run_start_hooks_skipped_when_there_are_none() {
+        assert!(!should_run_on_run_start_hooks(false, false));
+    }
+
+    #[test]
+    fn post_hooks_run_for_remote_execution_without_infer_schemas_or_skip() {
+        assert!(should_run_post_hooks(Execute::Remote, false, false));
+    }
+
+    #[test]
+    fn post_hooks_skipped_under_infer_schemas() {
+        assert!(!should_run_post_hooks(Execute::Remote, false, true));
+    }
+
+    #[test]
+    fn post_hooks_skipped_when_explicitly_requested() {
+        assert!(!should_run_post_hooks(Execute::Remote, true, false));
+    }
+
+    #[test]
+    fn post_hooks_skipped_for_non_remote_execution() {
+        assert!(!should_run_post_hooks(Execute::Sidecar, false, false));
     }
 }

@@ -28,7 +28,7 @@ import {
 import { NoColumnMetadataFallback } from './NoColumnMetadataFallback';
 import { Button } from './ui/Button';
 
-interface Props {
+interface NodeLineagePanelProps {
   uniqueId: string | null;
   onClose: () => void;
 }
@@ -39,7 +39,7 @@ interface Props {
  * but drives content off the local manifest detail fetch rather than the
  * Discovery API.
  */
-export function NodeLineagePanel({ uniqueId, onClose }: Props) {
+export function NodeLineagePanel({ uniqueId, onClose }: NodeLineagePanelProps) {
   const isOpen = Boolean(uniqueId);
   // Freeze last-shown id so close animates with the prior content still rendered.
   const [frozenId, setFrozenId] = useState<string | null>(uniqueId);

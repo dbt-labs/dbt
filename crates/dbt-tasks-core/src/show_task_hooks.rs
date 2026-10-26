@@ -2,6 +2,7 @@ use arrow::array::RecordBatch;
 use arrow_schema::SchemaRef;
 use async_trait::async_trait;
 use dbt_common::FsResult;
+use dbt_scheduler::instructions::LpInstruction;
 
 use crate::context::TaskRunnerCtx;
 
@@ -21,7 +22,7 @@ pub trait ShowTaskHooks: Send + Sync {
     fn get_model_sidecar_sql(
         &self,
         ctx: &TaskRunnerCtx,
-        lp_plan: Option<&datafusion_expr::LogicalPlan>,
+        lp_instruction: Option<&LpInstruction>,
         model_path: &std::path::Path,
         out_dir: &std::path::Path,
         canonical_fqn: &str,
@@ -45,7 +46,7 @@ impl ShowTaskHooks for DefaultShowTaskHooks {
     fn get_model_sidecar_sql(
         &self,
         _ctx: &TaskRunnerCtx,
-        _lp_plan: Option<&datafusion_expr::LogicalPlan>,
+        _lp_instruction: Option<&LpInstruction>,
         _model_path: &std::path::Path,
         _out_dir: &std::path::Path,
         _canonical_fqn: &str,

@@ -15,7 +15,7 @@ const PAGE_SIZE = 200;
 
 type SortKey = 'az' | 'za';
 
-interface Props {
+interface AssetListViewProps {
   project: Project;
   nodes: NodeSummary[];
   query: string;
@@ -52,7 +52,7 @@ export function AssetListView({
   filters,
   previewId,
   onPeek,
-}: Props) {
+}: AssetListViewProps) {
   const [shown, setShown] = useState<number>(PAGE_SIZE);
   const [sort, setSort] = useState<SortKey>('az');
   const [widths, setWidths] = useState<Record<ColumnKey, number>>(DEFAULT_WIDTHS);

@@ -1,7 +1,7 @@
 name: 📄 Code docs
 description: Report an issue for markdown files within this repo, such as README, ARCHITECTURE, etc.
 title: "[Code docs] <title>"
-labels: ["triage", "status:triage", "type:docs"]
+labels: ["status:triage", "type:docs"]
 body:
   - type: markdown
     attributes:

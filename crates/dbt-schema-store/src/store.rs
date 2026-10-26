@@ -71,10 +71,11 @@ struct SchemaEntryWrapper {
     schema_entry: OnceLock<SchemaEntry>,
     #[allow(dead_code)]
     timestamp: u128,
+    from_prior_invocation: bool,
 }
 
 impl SchemaEntryWrapper {
-    pub fn new(schema_entry: SchemaEntry, timestamp: u128) -> Self {
+    pub fn new(schema_entry: SchemaEntry, timestamp: u128, from_prior_invocation: bool) -> Self {
         let once_lock = OnceLock::new();
         once_lock
             .set(schema_entry)
@@ -82,6 +83,7 @@ impl SchemaEntryWrapper {
         Self {
             schema_entry: once_lock,
             timestamp,
+            from_prior_invocation,
         }
     }
 
@@ -182,7 +184,7 @@ impl SchemaStoreState {
                 remote.get(&key)
             };
             if let Some(schema_entry) = maybe {
-                let wrapper = Arc::new(SchemaEntryWrapper::new(schema_entry.clone(), now_ms));
+                let wrapper = Arc::new(SchemaEntryWrapper::new(schema_entry.clone(), now_ms, true));
                 let _ = cached_schemas.upsert_sync(entry.clone(), wrapper);
             }
         }
@@ -221,7 +223,7 @@ impl SchemaStoreState {
                 .as_millis();
             let schema_entry = guard.get(&key)?.clone();
             drop(guard);
-            let wrapper = Arc::new(SchemaEntryWrapper::new(schema_entry, now_ms));
+            let wrapper = Arc::new(SchemaEntryWrapper::new(schema_entry, now_ms, true));
             let _ = self
                 .cached_entries
                 .upsert_sync(entry.clone(), wrapper.clone());
@@ -276,7 +278,7 @@ impl SchemaStoreState {
                     .duration_since(SystemTime::UNIX_EPOCH)
                     .unwrap_or(Duration::ZERO)
                     .as_millis();
-                let wrapper = Arc::new(SchemaEntryWrapper::new(existing.clone(), now_ms));
+                let wrapper = Arc::new(SchemaEntryWrapper::new(existing.clone(), now_ms, true));
                 let _ = self.cached_entries.upsert_sync(entry.clone(), wrapper);
                 return Ok(existing);
             }
@@ -301,7 +303,7 @@ impl SchemaStoreState {
             .duration_since(SystemTime::UNIX_EPOCH)
             .unwrap_or(Duration::ZERO)
             .as_millis();
-        let wrapper = Arc::new(SchemaEntryWrapper::new(schema_entry.clone(), now_ms));
+        let wrapper = Arc::new(SchemaEntryWrapper::new(schema_entry.clone(), now_ms, false));
         let _ = self.cached_entries.upsert_sync(entry.clone(), wrapper);
         Ok(schema_entry)
     }
@@ -590,7 +592,7 @@ impl SchemaStore {
             .duration_since(SystemTime::UNIX_EPOCH)
             .unwrap_or(Duration::ZERO)
             .as_millis();
-        let wrapper = Arc::new(SchemaEntryWrapper::new(schema_entry, now_ms));
+        let wrapper = Arc::new(SchemaEntryWrapper::new(schema_entry, now_ms, false));
         let _ = self
             .state
             .cached_entries
@@ -647,6 +649,16 @@ impl SchemaStoreTrait for SchemaStore {
     async fn get_schema_async(&self, cfqn: &CanonicalFqn) -> Option<SchemaEntry> {
         let entry = self.resolve_lookup_entry_by_cfqn(cfqn)?;
         self.state.get_schema_async(&entry).await
+    }
+
+    fn schema_is_from_prior_invocation(&self, cfqn: &CanonicalFqn) -> bool {
+        let Some(entry) = self.resolve_lookup_entry_by_cfqn(cfqn) else {
+            return false;
+        };
+        self.state
+            .cached_entries
+            .read_sync(&entry, |_, wrapper| wrapper.from_prior_invocation)
+            .unwrap_or(false)
     }
 
     fn get_schema_by_unique_id(&self, unique_id: &str) -> Option<SchemaEntry> {

@@ -15,11 +15,11 @@
 
 use crate::AdapterEngine;
 use crate::adapter::adapter_impl::AdapterImpl;
-use crate::connection::AdapterConnectionFactory;
+use crate::connection::{AdapterConnectionFactory, ConnectionGuard};
 use crate::errors::{AdapterError, AdapterErrorKind, AsyncAdapterResult, Cancellable};
 use crate::{AdapterResult, metadata::*, record_batch::RecordBatchExt};
 use arrow_schema::Schema;
-use dbt_adbc::{Connection, QueryCtx};
+use dbt_adbc::QueryCtx;
 use dbt_common::cancellation::CancellationToken;
 
 use arrow_array::{Array, Decimal128Array, RecordBatch, StringArray};
@@ -194,7 +194,7 @@ impl MetadataAdapter for ExasolMetadataAdapter {
 
         let adapter = self.adapter.clone();
         let token_clone = token.clone();
-        let map_f = move |conn: &'_ mut dyn Connection,
+        let map_f = move |conn: &mut ConnectionGuard<'_>,
                           key: &(String, String)|
               -> AdapterResult<Arc<Schema>> {
             let (_semantic_fqn, sql_name) = key;
@@ -262,10 +262,15 @@ impl MetadataAdapter for ExasolMetadataAdapter {
         create_schemas_if_not_exists(&self.adapter, self, state, catalog_schemas)
     }
 
+    fn supports_relation_progress(&self) -> bool {
+        false
+    }
+
     fn list_relations_in_parallel_inner(
         &self,
         _db_schemas: &[CatalogAndSchema],
         _token: CancellationToken,
+        _report_progress: bool,
     ) -> AsyncAdapterResult<'_, BTreeMap<CatalogAndSchema, AdapterResult<RelationVec>>> {
         // Cache hydration not implemented: dbt falls back to per-relation
         // `list_relations_without_caching` / `get_relation` macros.

@@ -1,0 +1,107 @@
+71f9d37c:
+- sequence: 0
+  type: execute
+  sql: create schema if not exists development.snowflake_config_warehouse
+dbbbff64:
+- sequence: 0
+  type: execute
+  sql: |-
+    show terse schemas in database development
+    limit 10000
+model.hello_world.custom_wh:
+- sequence: 0
+  type: execute
+  sql: use warehouse [MASKED_ALT_WH]
+- sequence: 1
+  type: execute
+  sql: show parameters like 'query_tag' in session
+- sequence: 2
+  type: execute
+  sql: alter session set query_tag = 'snowflake_config_warehouse_test'
+- sequence: 3
+  type: execute
+  sql: |-
+    create or replace transient  table development.snowflake_config_warehouse.custom_wh
+    
+    
+    
+    
+    as (-- Test that snowflake_warehouse config is respected
+    
+    
+    select '[MASKED_ALT_WH]' as a
+    )
+- sequence: 4
+  type: execute
+  sql: alter session unset query_tag
+- sequence: 5
+  type: execute
+  sql: use warehouse [MASKED_WH]
+model.hello_world.default_wh:
+- sequence: 0
+  type: execute
+  sql: show parameters like 'query_tag' in session
+- sequence: 1
+  type: execute
+  sql: alter session set query_tag = 'snowflake_config_warehouse_test'
+- sequence: 2
+  type: execute
+  sql: SHOW OBJECTS IN SCHEMA "DEVELOPMENT"."SNOWFLAKE_CONFIG_WAREHOUSE" LIMIT 10000
+- sequence: 3
+  type: execute
+  sql: |-
+    create or replace transient  table development.snowflake_config_warehouse.default_wh
+    
+    
+    
+    
+    as (-- this is a arbitrarily chosen warehouse found in the AD_HOC user account
+    
+    
+    select '[MASKED_WH]' as a
+    )
+- sequence: 4
+  type: execute
+  sql: alter session unset query_tag
+test.hello_world.not_null_custom_wh_a.51d94b7a63:
+- sequence: 0
+  type: execute
+  sql: use warehouse [MASKED_ALT_WH]
+- sequence: 1
+  type: execute
+  sql: show parameters like 'query_tag' in session
+- sequence: 2
+  type: execute
+  sql: alter session set query_tag = 'snowflake_config_warehouse_test'
+- sequence: 3
+  type: execute
+  sql: |-
+    select
+    count(*) as failures,
+    count(*) != 0 as should_warn,
+    count(*) != 0 as should_error
+    from (
+    
+    
+    
+    
+    
+    
+    
+    
+    select a
+    from development.snowflake_config_warehouse.custom_wh
+    where a is null
+    
+    
+    
+    
+    
+    
+    ) dbt_internal_test
+- sequence: 4
+  type: execute
+  sql: alter session unset query_tag
+- sequence: 5
+  type: execute
+  sql: use warehouse [MASKED_WH]

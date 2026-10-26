@@ -1,5 +1,4 @@
 use std::collections::{BTreeMap, HashSet};
-use std::path::PathBuf;
 use std::sync::Arc;
 
 use dbt_adapter::relation::RelationObject;
@@ -12,7 +11,6 @@ use dbt_schemas::{
     schemas::project::{ModelConfig, ProjectModelConfig, ResolvableConfig},
 };
 use minijinja::Value;
-use minijinja::value::mutable_map::MutableMap;
 
 use crate::macro_test_harness::MacroTestHarness;
 
@@ -55,8 +53,10 @@ fn omitted_policy_runtime_config() -> RunConfig {
 
     RunConfig {
         model_config,
-        model: Arc::new(MutableMap::new()),
-        model_compiled_path: PathBuf::new(),
+        model: Arc::new(dbt_schemas::jinja_node::LazyNodeContext::from_node(
+            Arc::new(dbt_schemas::schemas::DbtModel::default()),
+            dbt_schemas::schemas::serialization_utils::SerializationMode::OmitNone,
+        )),
         valid_keys: HashSet::new(),
     }
 }
@@ -131,5 +131,55 @@ fn omitted_model_config_resolves_to_apply_for_existing_relation() {
             .to_uppercase()
             .contains("CREATE OR REFRESH STREAMING TABLE"),
         "expected the apply path to render a streaming-table update, got: {result}",
+    );
+}
+
+#[test]
+fn auto_refreshed_streaming_table_no_op_does_not_issue_manual_refresh() {
+    let harness = build_harness();
+    let model_config = Arc::new(MockJinjaObject::new());
+    model_config.on("get_changeset", |_| Ok(Value::from(())));
+    model_config.set_attr(
+        "refresh",
+        Value::from_serialize(BTreeMap::from([("auto_refreshed", Value::from(true))])),
+    );
+    let model_config = Value::from_dyn_object(model_config);
+    harness
+        .mock()
+        .on("get_config_from_model", move |_| Ok(model_config.clone()));
+    harness
+        .mock()
+        .on("get_relation_config", |_| Ok(Value::UNDEFINED));
+
+    let existing = harness.relation(
+        "TEST_DB",
+        "TEST_SCHEMA",
+        "streaming_probe",
+        Some(RelationType::StreamingTable),
+    );
+    let target = harness.relation(
+        "TEST_DB",
+        "TEST_SCHEMA",
+        "streaming_probe",
+        Some(RelationType::StreamingTable),
+    );
+    let ctx = harness
+        .materialization_context("streaming_probe", "SELECT 1")
+        .relation_type(RelationType::StreamingTable)
+        .config(Value::from_object(omitted_policy_runtime_config()))
+        .with("existing", RelationObject::new(existing).into_value())
+        .with("target", RelationObject::new(target).into_value())
+        .build();
+
+    let result = harness
+        .render(
+            "{% set r = streaming_table_get_build_sql(existing, target) %}{{ r }}",
+            ctx,
+        )
+        .expect("auto-refreshed streaming table should render the no-op path");
+
+    assert!(
+        result.trim().is_empty(),
+        "expected no refresh SQL, got: {result}"
     );
 }

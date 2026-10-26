@@ -25,12 +25,14 @@ use dbt_scheduler::instructions::SqlInstruction;
 use dbt_schemas::schemas::DbtTest;
 use dbt_schemas::schemas::common::Severity;
 use dbt_schemas::schemas::{InternalDbtNode, InternalDbtNodeAttributes, NodePathKind};
-use dbt_tasks_core::context::TaskRunnerCtx;
+use dbt_tasks_core::context::{BlockingTaskCtx, TaskRunnerCtx};
 use dbt_tasks_core::pretty_table::from_pretty_table_error;
 use dbt_tasks_core::run_cache::run_cache_service::CachedTestExecutionResult;
 use dbt_tasks_core::span_manager::SpanTreeRequest;
 use dbt_tasks_core::task::TaskResult;
-use dbt_tasks_core::task::{AggregatedNodeGroup, TP, Task, TaskOp};
+use dbt_tasks_core::task::{
+    AggregatedNodeGroup, TP, Task, run_blocking_task_operation_with_wait_parents,
+};
 use dbt_tasks_core::task_spans::create_task_span_for_node;
 use dbt_tasks_core::test_aggregation::GenericTestGroup;
 use dbt_tasks_core::visitor::SkipReason;
@@ -143,14 +145,14 @@ pub fn record_test_metric(status: TestExecutionStatus) {
 }
 
 pub fn insert_test_run_stat(
-    ctx: &TaskRunnerCtx,
+    ctx: &BlockingTaskCtx,
     unique_id: String,
     start: SystemTime,
     failures: usize,
     status: TestExecutionStatus,
 ) {
     let thread_id = ctx.thread_id;
-    ctx.inner.run_stats.insert(
+    ctx.inner.run_stats.upsert_sync(
         unique_id.clone(),
         Stat::new(
             unique_id,
@@ -370,22 +372,28 @@ impl AggregatedTestRunRemoteTask {
         let adapter_type = self.group.aggregated_test.node_adapter();
         let test = self.group.aggregated_test.clone();
         let ctx_inner = ctx.clone();
+        let wait_parents = span_by_id
+            .values()
+            .filter_map(|(_, span)| span.id())
+            .collect();
 
         let (test_results, failing_rows_opt, main_response) =
-            TaskOp::Blocking(Box::new(move || {
-                materialize_test(
-                    &sql_instruction.sql,
-                    &test,
-                    ctx_inner.generic_test_relationships(),
-                    adapter_type,
-                    ctx_inner.runtime_config(),
-                    &ctx_inner.inner.materialization_resolver,
-                    ctx_inner.env.clone(),
-                    &base_context,
-                    &ctx_inner.inner.arg.io,
-                )
-            }))
-            .run()
+            run_blocking_task_operation_with_wait_parents(
+                move || {
+                    materialize_test(
+                        &sql_instruction.sql,
+                        &test,
+                        ctx_inner.generic_test_relationships(),
+                        adapter_type,
+                        ctx_inner.runtime_config(),
+                        &ctx_inner.inner.materialization_resolver,
+                        ctx_inner.env.clone(),
+                        &base_context,
+                        &ctx_inner.inner.arg.io,
+                    )
+                },
+                Some(wait_parents),
+            )
             .await??;
 
         let (member_results, worst_status) =
@@ -433,7 +441,7 @@ impl AggregatedTestRunRemoteTask {
             if let Some(main_response) = &main_response {
                 ctx.inner
                     .main_adapter_responses
-                    .insert(unique_id.clone(), main_response.clone());
+                    .upsert_sync(unique_id.clone(), main_response.clone());
             }
             let (_, span) = span_by_id
                 .remove(unique_id)
@@ -475,7 +483,7 @@ impl AggregatedTestRunRemoteTask {
         });
 
         insert_test_run_stat(
-            ctx,
+            &ctx.blocking_ctx(),
             unique_id.to_string(),
             SystemTime::now(),
             result.failures,
@@ -484,7 +492,7 @@ impl AggregatedTestRunRemoteTask {
         if let Some(execution_result) = result.execution_result {
             ctx.inner
                 .data_test_execution_results
-                .insert(unique_id.to_string(), execution_result);
+                .upsert_sync(unique_id.to_string(), execution_result);
         }
 
         ctx.inner
@@ -596,7 +604,7 @@ pub fn execute_test_remote(
     let result = execute_test_remote_inner(test, ctx, sql_instruction, &base_context)?;
 
     // Process test result (metrics, stats, telemetry)
-    process_test_result(test, ctx, start, result)
+    process_test_result(test, &ctx.blocking_ctx(), start, result)
 }
 
 /// Execute test via traditional warehouse/remote execution
@@ -625,7 +633,7 @@ fn execute_test_remote_inner(
     if let Some(main_response) = main_response {
         ctx.inner
             .main_adapter_responses
-            .insert(test.__common_attr__.unique_id.clone(), main_response);
+            .upsert_sync(test.__common_attr__.unique_id.clone(), main_response);
     }
     let test_result = test_results
         .into_iter()
@@ -677,7 +685,7 @@ fn execute_test_remote_inner(
 /// Process test execution result and record metrics/stats
 pub fn process_test_result(
     test: &DbtTest,
-    ctx: &TaskRunnerCtx,
+    ctx: &BlockingTaskCtx,
     start: SystemTime,
     result: TestReportedResult,
 ) -> FsResult<NodeStatus> {
@@ -698,7 +706,7 @@ pub fn process_test_result(
     if let Some(execution_result) = result.execution_result {
         ctx.inner
             .data_test_execution_results
-            .insert(unique_id.clone(), execution_result);
+            .upsert_sync(unique_id.clone(), execution_result);
     }
 
     Ok(node_status)
@@ -722,7 +730,7 @@ pub fn process_statically_checked_test_result(
     );
 
     let unique_id = &test.common().unique_id;
-    ctx.inner.run_stats.insert(
+    ctx.inner.run_stats.upsert_sync(
         unique_id.clone(),
         Stat::new(
             unique_id.clone(),

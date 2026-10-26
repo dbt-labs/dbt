@@ -29,7 +29,7 @@ use dbt_common::cancellation::{CancellationToken, never_cancels};
 use dbt_common::{AdapterError, AdapterErrorKind, FsResult};
 use dbt_schemas::schemas::InternalDbtNodeWrapper;
 use dbt_schemas::schemas::common::{ClusterConfig, DbtQuoting, PartitionConfig};
-use dbt_schemas::schemas::dbt_catalogs::DbtCatalogs;
+use dbt_schemas::schemas::dbt_catalogs_deprecated::DbtCatalogs;
 use dbt_schemas::schemas::dbt_column::DbtColumn;
 use dbt_schemas::schemas::manifest::{BigqueryPartitionConfig, GrantAccessToTarget};
 use dbt_schemas::schemas::project::ModelConfig;
@@ -339,7 +339,7 @@ impl Adapter {
                 let t_execute = std::time::Instant::now();
                 let result = adapter.execute(
                     None,
-                    conn.as_mut(),
+                    &mut conn,
                     ctx,
                     sql,
                     false,
@@ -370,17 +370,18 @@ impl Adapter {
         let Some(metadata_adapter) = self.metadata_adapter() else {
             return Ok(());
         };
+        // report_progress: true — relation-cache hydration drives a progress bar.
         let collected_relations = metadata_adapter
-            .list_relations_in_parallel(db_schemas, self.cancellation_token())
+            .list_relations_in_parallel(db_schemas, self.cancellation_token(), true)
             .await
             .map_err(into_fs_error)
             .map(|r| {
                 r.into_iter()
-                    .filter_map(|(k, v)| {
-                        if let Ok(relations) = v {
-                            Some((k, relations))
-                        } else {
-                            // XXX: Warnings are not shown right now since this is purely for performance
+                    .filter_map(|(k, v)| match v {
+                        Ok(relations) => Some((k, relations)),
+                        Err(e) => {
+                            // Left uncached, so callers do a per-relation lookup instead.
+                            tracing::warn!("relation_cache: listing schema {k} failed: {e}");
                             None
                         }
                     })
@@ -889,7 +890,7 @@ impl Adapter {
                     adapter.borrow_tlocal_connection(Some(state), node_id_from_state(state))?;
                 let (response, table) = adapter.execute(
                     Some(state),
-                    conn.as_mut(),
+                    &mut conn,
                     ctx,
                     sql,
                     auto_begin,
@@ -906,14 +907,15 @@ impl Adapter {
 
                 if state.is_execute() {
                     if let Some(unique_id) = state.lookup(TARGET_UNIQUE_ID, &[]) {
-                        parse_state.unsafe_nodes.insert(
+                        // Set insert: `Err` only means the node is already recorded.
+                        let _already_present = parse_state.unsafe_nodes.insert_sync(
                             unique_id
                                 .as_str()
                                 .expect("unique_id must be a string")
                                 .to_string(),
                         );
                     }
-                    parse_state.execute_sqls.insert(sql.to_string());
+                    let _already_present = parse_state.execute_sqls.insert_sync(sql.to_string());
                 }
 
                 Ok((response, table))
@@ -958,7 +960,7 @@ impl Adapter {
                     adapter.borrow_tlocal_connection(Some(state), node_id_from_state(state))?;
                 adapter.add_query(
                     state,
-                    conn.as_mut(),
+                    &mut conn,
                     sql,
                     auto_begin,
                     bindings,
@@ -999,7 +1001,7 @@ impl Adapter {
 
                 let response = adapter.submit_python_job(
                     &ctx,
-                    conn.as_mut(),
+                    &mut conn,
                     state,
                     model,
                     compiled_code,
@@ -1456,15 +1458,14 @@ impl Adapter {
                         // per-relation existence check falls back to a query over
                         // the unqualified `information_schema.tables`, which unions
                         // every attached database and fans out across all remote
-                        // catalogs on each call.
-                        let skip_schema_listing = match adapter.adapter_type() {
-                            AdapterType::DuckDB => {
-                                duckdb::is_duckdb_v2_external_iceberg_catalog_database(
-                                    &resolved_catalog,
-                                )
-                            }
-                            _ => false,
-                        };
+                        // catalogs on each call. Lake compute is skipped for a
+                        // different reason: its service folds table references but
+                        // not the `information_schema` filter literals, so the
+                        // listing would come back empty and be cached as "absent".
+                        let skip_schema_listing = duckdb::skips_schema_wide_listing(
+                            adapter.adapter_type(),
+                            &resolved_catalog,
+                        );
 
                         if has_schema && !skip_schema_listing {
                             let mut conn = adapter
@@ -1473,8 +1474,9 @@ impl Adapter {
                             let query_ctx = query_ctx_from_state(state)?
                                 .with_desc("get_relation > list_relations call");
                             let maybe_relations_list = adapter.list_relations(
+                                Some(state),
                                 &query_ctx,
-                                conn.as_mut(),
+                                &mut conn,
                                 &db_schema,
                                 self.cancellation_token.clone(),
                             );
@@ -1485,7 +1487,7 @@ impl Adapter {
                                 cache.insert_many(to_insert.into_iter());
                                 match adapter.list_relation_dependency_links(
                                     &query_ctx,
-                                    conn.as_mut(),
+                                    &mut conn,
                                     &db_schema,
                                     self.cancellation_token.clone(),
                                 ) {
@@ -1537,7 +1539,7 @@ impl Adapter {
                 let relation = adapter.get_relation(
                     state,
                     &query_ctx,
-                    conn.as_mut(),
+                    &mut conn,
                     database,
                     schema,
                     identifier,
@@ -1580,16 +1582,21 @@ impl Adapter {
     /// In Core, there are numerous derived flavors of CatalogRelation.
     /// We handle this in Fusion as a piecemeal instantiated flat object
     /// and push down validation to the DDL level.
-    #[tracing::instrument(skip(self), level = "trace")]
-    pub fn build_catalog_relation(&self, model: &Value) -> Result<Value, minijinja::Error> {
+    #[tracing::instrument(skip(self, state), level = "trace")]
+    pub fn build_catalog_relation(
+        &self,
+        state: &State,
+        model: &Value,
+    ) -> Result<Value, minijinja::Error> {
         match &self.inner {
             Typed { adapter, .. } => {
                 let relation = adapter.build_catalog_relation(model)?;
                 Ok(Value::from_object(relation))
             }
             Parse(parse_adapter_state) => {
+                // Build for the node's own adapter, as `type` answers, not the default's.
                 let relation = CatalogRelation::from_model_config_and_catalogs(
-                    parse_adapter_state.adapter_type,
+                    self.effective_adapter_type(state),
                     model,
                     parse_adapter_state.catalogs.clone(),
                 )?;
@@ -1767,7 +1774,7 @@ impl Adapter {
                     adapter.borrow_tlocal_connection(Some(state), node_id_from_state(state))?;
                 let result = adapter.get_column_schema_from_query(
                     state,
-                    conn.as_mut(),
+                    &mut conn,
                     &ctx,
                     sql,
                     query_settings,
@@ -1799,7 +1806,7 @@ impl Adapter {
                     adapter.borrow_tlocal_connection(Some(state), node_id_from_state(state))?;
                 let result = adapter.get_columns_in_select_sql(
                     state,
-                    conn.as_mut(),
+                    &mut conn,
                     &ctx,
                     sql,
                     self.cancellation_token.clone(),
@@ -2033,7 +2040,7 @@ impl Adapter {
                 let mut conn =
                     adapter.borrow_tlocal_connection(Some(state), node_id_from_state(state))?;
                 let result = adapter.is_replaceable(
-                    conn.as_mut(),
+                    &mut conn,
                     relation,
                     partition_by,
                     cluster_by,
@@ -2499,8 +2506,9 @@ impl Adapter {
                 let mut conn =
                     adapter.borrow_tlocal_connection(Some(state), node_id_from_state(state))?;
                 let result = adapter.list_relations(
+                    Some(state),
                     &query_ctx,
-                    conn.as_mut(),
+                    &mut conn,
                     &CatalogAndSchema::from(schema_relation.as_ref()),
                     self.cancellation_token.clone(),
                 )?;
@@ -2621,7 +2629,7 @@ impl Adapter {
                     adapter.borrow_tlocal_connection(Some(state), node_id_from_state(state))?;
                 let result = adapter.compare_dbr_version(
                     state,
-                    conn.as_mut(),
+                    &mut conn,
                     major,
                     minor,
                     self.cancellation_token.clone(),
@@ -2915,10 +2923,9 @@ impl Adapter {
                     _ => config
                         .__warehouse_specific_config__
                         .tblproperties
-                        .clone()
-                        .unwrap_or_default()
-                        .into_iter()
-                        .map(|(k, v)| (k, yml_value_to_minijinja(v)))
+                        .iter()
+                        .flat_map(|tp| tp.iter())
+                        .map(|(k, v)| (k.to_string(), yml_value_to_minijinja(v)))
                         .collect(),
                 };
 
@@ -2926,7 +2933,7 @@ impl Adapter {
                     adapter.borrow_tlocal_connection(Some(state), node_id_from_state(state))?;
                 adapter.update_tblproperties_for_uniform_iceberg(
                     state,
-                    conn.as_mut(),
+                    &mut conn,
                     config,
                     &node,
                     &mut tblproperties,
@@ -2982,7 +2989,7 @@ impl Adapter {
                     adapter.borrow_tlocal_connection(Some(state), node_id_from_state(state))?;
                 let result = adapter.is_uniform(
                     state,
-                    conn.as_mut(),
+                    &mut conn,
                     config,
                     &node,
                     self.cancellation_token.clone(),
@@ -3089,7 +3096,7 @@ impl Adapter {
 
                 adapter.describe_relation(
                     state,
-                    conn.as_mut(),
+                    &mut conn,
                     &relation,
                     include_transient,
                     self.cancellation_token.clone(),
@@ -3321,7 +3328,7 @@ impl Adapter {
                     adapter.borrow_tlocal_connection(Some(state), node_id_from_state(state))?;
                 let config = adapter.get_relation_config(
                     state,
-                    conn.as_mut(),
+                    &mut conn,
                     &relation,
                     model_config.as_deref(),
                     self.cancellation_token.clone(),
@@ -3614,25 +3621,15 @@ impl Adapter {
         }
     }
 
-    /// Wrap backtick-rendered SQL identifiers on metric_view `source:` lines in
-    /// YAML double quotes. Other keys are left untouched.
-    ///
-    /// Only available with Databricks adapter.
+    /// Emit the once-only warning registered for the calling macro.
     #[tracing::instrument(skip_all, level = "trace")]
-    pub fn yaml_quote_backtick_values(
-        &self,
-        _state: &State,
-        args: &[Value],
-    ) -> Result<Value, minijinja::Error> {
-        match &self.inner {
-            Typed { adapter, .. } => {
-                let iter = ArgsIter::new("yaml_quote_backtick_values", &["yaml_body"], args);
-                let yaml_body = iter.next_arg::<&str>()?;
-                iter.finish()?;
-                Ok(Value::from(adapter.yaml_quote_backtick_values(yaml_body)?))
-            }
-            Parse(_) => unimplemented!("yaml_quote_backtick_values"),
-        }
+    pub fn warn_once(&self, state: &State, args: &[Value]) -> Result<Value, minijinja::Error> {
+        let iter = ArgsIter::new("warn_once", &["msg"], args);
+        let _msg = iter.next_arg::<&str>()?;
+        iter.finish()?;
+
+        crate::warn_once::warn_once_from_macro(state.name());
+        Ok(none_value())
     }
 
     /// Used internally to attempt executing a Snowflake `use warehouse [name]` statement.
@@ -3658,7 +3655,7 @@ impl Adapter {
 
                 let mut conn = adapter.borrow_tlocal_connection(None, Some(node_id.to_string()))?;
                 let warehouse_changed = adapter.use_warehouse(
-                    conn.as_mut(),
+                    &mut conn,
                     warehouse,
                     node_id,
                     self.cancellation_token.clone(),
@@ -3685,11 +3682,7 @@ impl Adapter {
         match &self.inner {
             Typed { adapter, .. } => {
                 let mut conn = adapter.borrow_tlocal_connection(None, Some(node_id.to_string()))?;
-                adapter.restore_warehouse(
-                    conn.as_mut(),
-                    node_id,
-                    self.cancellation_token.clone(),
-                )?;
+                adapter.restore_warehouse(&mut conn, node_id, self.cancellation_token.clone())?;
                 Ok(())
             }
             Parse(_) => Ok(()),
@@ -3735,7 +3728,7 @@ impl Adapter {
                     let mut conn =
                         adapter.borrow_tlocal_connection(None, Some(node_id.to_string()))?;
                     adapter.use_database(
-                        conn.as_mut(),
+                        &mut conn,
                         database,
                         node_id,
                         self.cancellation_token.clone(),
@@ -3762,7 +3755,7 @@ impl Adapter {
         match &self.inner {
             Typed { adapter, .. } => {
                 let mut conn = adapter.borrow_tlocal_connection(None, Some(node_id.to_string()))?;
-                adapter.reset_database(conn.as_mut(), node_id, self.cancellation_token.clone())?;
+                adapter.reset_database(&mut conn, node_id, self.cancellation_token.clone())?;
                 Ok(())
             }
             Parse(_) => Ok(()),
@@ -3823,7 +3816,7 @@ impl Adapter {
                 let sql = "";
                 let result = adapter.load_dataframe(
                     &ctx,
-                    conn.as_mut(),
+                    &mut conn,
                     sql,
                     database,
                     schema,
@@ -3997,14 +3990,14 @@ impl Adapter {
                 // incremental polaris model. TODO: remove this when catalog_relation is
                 // fully engineered to no longer require runtime attribute shim-based solutions
                 if model.kind() == ValueKind::String {
-                    return self.build_catalog_relation(model);
+                    return self.build_catalog_relation(state, model);
                 }
 
                 // Case 2: caller passed a model object
                 // TODO: When we remove case 1, we can serialize this as an InternalDbtNode (and add the necessary attributes to their respective resource-type specific attribute structs)
                 // Ex: minijinja_value_to_typed_struct::<DbtModel>(model.clone()).is_ok();
 
-                self.build_catalog_relation(model)
+                self.build_catalog_relation(state, model)
             }
             "get_catalog_integration" => self.get_catalog_integration(state, args),
             "type" => Ok(Value::from(self.effective_adapter_type(state).to_string())),
@@ -4269,16 +4262,13 @@ impl Adapter {
             "strip_trailing_statement_terminator" => {
                 self.strip_trailing_statement_terminator(state, args)
             }
-            // yaml_body: str
-            "yaml_quote_backtick_values" => self.yaml_quote_backtick_values(state, args),
+            "warn_once" => self.warn_once(state, args),
             "get_seed_file_path" => {
                 // model: dict (seed node)
                 let iter = ArgsIter::new(name, &["model"], args);
                 let model = iter.next_arg::<Value>()?;
                 iter.finish()?;
 
-                // Extract seed file path from the model
-                // The seed file path is root_path + original_file_path
                 let seed =
                     minijinja_value_to_typed_struct::<dbt_schemas::schemas::nodes::DbtSeed>(model)
                         .map_err(|e| {
@@ -4288,9 +4278,9 @@ impl Adapter {
                             )
                         })?;
 
-                let root_path = seed.__seed_attr__.root_path.unwrap_or_default();
-                let original_file_path = &seed.__common_attr__.original_file_path;
-                let full_path = root_path.join(original_file_path);
+                let full_path = seed
+                    .file_path_from_root()
+                    .unwrap_or_else(|| seed.__common_attr__.original_file_path.to_path_buf());
                 Ok(Value::from(full_path.display().to_string()))
             }
             "external_root" => {
@@ -4302,20 +4292,30 @@ impl Adapter {
             "external_write_options" => self.external_write_options(state, args),
             "external_read_location" => self.external_read_location(state, args),
             "location_exists" => self.location_exists(state, args),
-            // ---- ClickHouse adapter method stubs (MVP) ----
-            // These methods are called from ClickHouse Jinja macros. They are
-            // registered for all adapters (they only run when the dispatch
-            // hits a ClickHouse macro), but they return conservative defaults
-            // so behavior matches "no cluster, no special engine, current
-            // server version, cannot exchange tables atomically".
-            "clickhouse_db_engine_clause" => {
-                // (no args) -> "" (skip "ENGINE = ..." in CREATE DATABASE)
-                Ok(Value::from(""))
-            }
-            "get_clickhouse_cluster_name" => {
-                // (no args) -> None (no ON CLUSTER usage)
-                Ok(Value::from(()))
-            }
+            // ---- ClickHouse adapter methods ----
+            "clickhouse_db_engine_clause" => match &self.inner {
+                // (no args) -> "ENGINE <database_engine>" | "" (CREATE DATABASE clause)
+                Typed { adapter, .. } => Ok(Value::from(adapter.clickhouse_db_engine_clause())),
+                Parse(_) => Ok(empty_string_value()),
+            },
+            "get_clickhouse_cluster_name" => match &self.inner {
+                // (no args) -> '"<cluster>"' | None
+                Typed { adapter, .. } => Ok(adapter
+                    .get_clickhouse_cluster_name()
+                    .map(Value::from)
+                    .unwrap_or_else(none_value)),
+                Parse(_) => Ok(none_value()),
+            },
+            "get_clickhouse_local_suffix" => match &self.inner {
+                // (no args) -> str (default "_local")
+                Typed { adapter, .. } => Ok(Value::from(adapter.get_clickhouse_local_suffix())),
+                Parse(_) => Ok(empty_string_value()),
+            },
+            "get_clickhouse_local_db_prefix" => match &self.inner {
+                // (no args) -> str (default "")
+                Typed { adapter, .. } => Ok(Value::from(adapter.get_clickhouse_local_db_prefix())),
+                Parse(_) => Ok(empty_string_value()),
+            },
             "get_model_settings" => {
                 // model: dict, engine: str = "MergeTree" -> SETTINGS section of CREATE DDL
                 self.get_model_settings(state, args)
@@ -4347,12 +4347,44 @@ impl Adapter {
                 Ok(clickhouse::format_columns(columns))
             }
             "can_exchange" => {
-                // schema: str, type: str -> false (don't use EXCHANGE TABLES)
-                Ok(Value::from(false))
+                // schema: str, rel_type: str -> bool (EXCHANGE TABLES usable for this relation)
+                let iter = ArgsIter::new("can_exchange", &["schema", "rel_type"], args);
+                let schema = iter.next_arg::<&str>()?;
+                let rel_type = iter.next_arg::<&str>()?;
+                iter.finish()?;
+                match &self.inner {
+                    Typed { adapter, .. } => Ok(Value::from(adapter.can_exchange(
+                        state,
+                        schema,
+                        rel_type,
+                        self.cancellation_token.clone(),
+                    ))),
+                    Parse(_) => Ok(Value::from(false)),
+                }
             }
             "should_on_cluster" => {
-                // materialized: str, engine_clause: str -> false
-                Ok(Value::from(false))
+                // materialized: str = '', engine: str = '', relation: BaseRelation = None -> bool
+                // (materialized/engine ignored, as in impl.py; `relation` is v2's on_cluster_clause
+                // asking for relation.py's `should_on_cluster` with the profile at hand)
+                let iter = ArgsIter::new(
+                    "should_on_cluster",
+                    &["materialized", "engine", "relation"],
+                    args,
+                );
+                iter.next_arg::<Option<&Value>>()?;
+                iter.next_arg::<Option<&Value>>()?;
+                let relation = iter.next_arg::<Option<&Value>>()?;
+                iter.finish()?;
+                let relation = relation
+                    .filter(|v| !v.is_none() && !v.is_undefined())
+                    .map(downcast_value_to_dyn_base_relation)
+                    .transpose()?;
+                match &self.inner {
+                    Typed { adapter, .. } => {
+                        Ok(Value::from(adapter.should_on_cluster(relation.as_deref())))
+                    }
+                    Parse(_) => Ok(Value::from(false)),
+                }
             }
             "calculate_incremental_strategy" => {
                 // strategy: str -> str (''/'default' resolves to delete_insert or legacy; '+' -> '_')
@@ -4699,7 +4731,7 @@ impl Adapter {
         let routines = match bigquery::list_routines(
             adapter.engine().as_ref(),
             &query_ctx,
-            conn.as_mut(),
+            &mut conn,
             &db_schema,
             self.cancellation_token.clone(),
         ) {

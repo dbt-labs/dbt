@@ -30,13 +30,12 @@ use dbt_schemas::schemas::{
     DbtFunction, DbtModel, DbtSeed, DbtSnapshot, DbtSource, DbtTest, DbtUnitTest, InternalDbtNode,
     InternalDbtNodeAttributes, NodePathKind, Nodes,
 };
-use dbt_tasks_core::context::TaskRunnerCtx;
+use dbt_tasks_core::context::{TaskRunnerCtx, node_execution_metrics};
 use dbt_tasks_core::run_task_hooks::RunTaskHooks;
 use dbt_tasks_core::task::TaskResult;
-use dbt_tasks_core::task::{TP, Task, TaskOp};
+use dbt_tasks_core::task::{TP, Task, run_blocking_task_operation, run_concurrent_task_operations};
 use dbt_telemetry::{NodeEvaluated, NodeSkipReason, NodeType};
 
-use tokio::task::JoinSet;
 use tracing::Instrument;
 use vortex_events::run_model_event;
 
@@ -45,8 +44,8 @@ use crate::materialize::{
 };
 use crate::runnable::cache::cache_materialization_return_value;
 use crate::runnable::model::{
-    execute_microbatch_batch, execute_model_remote, prepare_microbatch_batches,
-    resolve_microbatch_window, try_get_microbatch_model,
+    create_microbatch_span, execute_microbatch_batch, execute_model_remote,
+    prepare_microbatch_batches, resolve_microbatch_window, try_get_microbatch_model,
 };
 use crate::runnable::seed::{execute_seed_remote, maybe_resolve_remote_seed_column_hint};
 use crate::runnable::unit_test::execute_unit_test_remote;
@@ -65,6 +64,16 @@ pub enum RunExecutionPath {
     Remote,
     SideCar,
     LakeCompute,
+}
+
+impl RunExecutionPath {
+    fn compute_mode(self) -> &'static str {
+        match self {
+            Self::Remote => "remote",
+            Self::SideCar => "local",
+            Self::LakeCompute => "lake_compute",
+        }
+    }
 }
 
 pub struct RunTask {
@@ -205,7 +214,7 @@ impl Task for RunTask {
                             .inner
                             .run_cache_ctx
                             .run_cache_dev_cloned_nodes
-                            .contains_key(&self.node.unique_id())
+                            .contains_sync(&self.node.unique_id())
                     {
                         let status = replay_dev_clone_decision(&unique_id)
                             .map(|clone| clone.replay_status())
@@ -254,12 +263,13 @@ impl Task for RunTask {
                         )
                         .await
                     } else if cache_enabled {
-                        TaskOp::r#async(self.task_hooks.check_sao_cache(
-                            ctx,
-                            Arc::clone(&self.node),
-                            &task_result.sql_instruction.sql,
-                        ))
-                        .await?
+                        self.task_hooks
+                            .check_sao_cache(
+                                ctx,
+                                Arc::clone(&self.node),
+                                &task_result.sql_instruction.sql,
+                            )
+                            .await?
                     } else {
                         RunCacheServiceDecision::Disabled
                     };
@@ -267,7 +277,7 @@ impl Task for RunTask {
                     if let Some(node_hash) = decision.node_hash() {
                         ctx.inner
                             .node_hashes
-                            .insert(unique_id.to_string(), node_hash);
+                            .upsert_sync(unique_id.to_string(), node_hash);
                     }
 
                     if let RunCacheServiceDecision::Skip {
@@ -288,18 +298,11 @@ impl Task for RunTask {
                         ) {
                             let severity =
                                 test.deprecated_config.severity.clone().unwrap_or_default();
-                            let emit_reused_status = ctx
-                                .inner
-                                .run_cache_ctx
-                                .run_cache_service_config
-                                .as_ref()
-                                .is_some_and(|config| config.emit_reused_status);
-                            let cached_status = cached_data_test_status_with_emit_reused_status(
+                            let cached_status = cached_data_test_status(
                                 status,
                                 *cached_result,
                                 severity,
                                 &ctx.inner.arg.warn_error_options,
-                                emit_reused_status,
                             );
                             let reported_result = cached_status.reported_result();
                             record_test_metric(reported_result.status);
@@ -309,14 +312,14 @@ impl Task for RunTask {
                                 test.deprecated_config.store_failures,
                                 None,
                             );
-                            ctx.inner.run_stats.insert(
+                            ctx.inner.run_stats.upsert_sync(
                                 unique_id.clone(),
                                 Stat::new(
                                     unique_id.clone(),
                                     start_time.into(),
                                     Some(cached_status.failures),
                                     cached_status.stat_status.clone(),
-                                    Some("NO-OP - cached test result".to_string()),
+                                    Some(format!("NO-OP - {}", status.default_message())),
                                     ctx.thread_id,
                                 ),
                             );
@@ -404,22 +407,13 @@ impl Task for RunTask {
                                 // pointer view when at least one batch executed.
                                 let had_batches = !batch_groups.is_empty();
                                 for group in batch_groups {
-                                    let batch_span = tracing::Span::current();
-                                    let mut batch_tasks = group
-                                        .into_iter()
-                                        .map(|task| {
-                                            let ctx = ctx.clone();
-                                            TaskOp::Blocking(Box::new(move || {
-                                                execute_microbatch_batch(task, &ctx)
-                                            }))
-                                            .run()
-                                            .instrument(batch_span.clone())
+                                    run_concurrent_task_operations(group.into_iter().map(|task| {
+                                        let ctx = ctx.clone();
+                                        (create_microbatch_span(&task), move |canceled| {
+                                            execute_microbatch_batch(task, &ctx, canceled)
                                         })
-                                        .collect::<JoinSet<_>>();
-
-                                    while let Some(res) = batch_tasks.join_next().await {
-                                        res.map_err(Into::into).flatten()??;
-                                    }
+                                    }))
+                                    .await?;
                                 }
 
                                 // After all microbatch batches succeed, create the latest
@@ -442,7 +436,7 @@ impl Task for RunTask {
                                     );
                                     let model_clone = model.clone();
                                     let ctx_clone = ctx.clone();
-                                    TaskOp::Blocking(Box::new(move || {
+                                    run_blocking_task_operation(move || {
                                         let relations_map = materialize_latest_version_pointer(
                                             &model_clone,
                                             model_clone.node_adapter(),
@@ -457,8 +451,7 @@ impl Task for RunTask {
                                             &relations_map,
                                         );
                                         Ok::<(), Box<dbt_common::FsError>>(())
-                                    }))
-                                    .run()
+                                    })
                                     .await??;
                                 }
 
@@ -481,7 +474,7 @@ impl Task for RunTask {
                                 let ctx_inner = ctx.clone();
                                 let task_result_inner = task_result.clone();
                                 let node_inner = self.node.clone();
-                                let (status, result) = TaskOp::Blocking(Box::new(move || {
+                                let (status, result) = run_blocking_task_operation(move || {
                                     let unit_test =
                                         node_inner.as_any().downcast_ref::<DbtUnitTest>().unwrap();
                                     execute_unit_test_remote(
@@ -489,8 +482,7 @@ impl Task for RunTask {
                                         &ctx_inner,
                                         &task_result_inner,
                                     )
-                                }))
-                                .run()
+                                })
                                 .await??;
                                 if let Some(result) = result {
                                     self.task_hooks
@@ -510,14 +502,13 @@ impl Task for RunTask {
                                 let ctx_inner = ctx.clone();
                                 let task_result_inner = task_result.clone();
                                 let node = self.node.clone();
-                                let res = TaskOp::Blocking(Box::new(move || {
+                                let res = run_blocking_task_operation(move || {
                                     execute_remote_node(
                                         node.as_ref(),
                                         &ctx_inner,
                                         &task_result_inner,
                                     )
-                                }))
-                                .run()
+                                })
                                 .await?;
                                 maybe_resolve_remote_seed_column_hint(res, self.node.as_ref(), ctx)
                                     .await
@@ -560,7 +551,7 @@ impl Task for RunTask {
             // Get status and insert stats
             // Note: Inner visit_run implementations may insert their own stats on success,
             // but we need to ensure stats are inserted even when errors occur early.
-            // The DashMap will just overwrite if there's a duplicate.
+            // The SccHashMap will just overwrite if there's a duplicate.
             // Ensure stats are always inserted, even if inner visit_run had early returns
             let node_status = match result {
                 Ok(node_status) => {
@@ -575,7 +566,7 @@ impl Task for RunTask {
 
                     // Insert stats for success case if not already inserted by inner implementation
                     // This ensures stats are present even if inner code didn't insert them
-                    if !ctx.inner.run_stats.contains_key(&unique_id) {
+                    if !ctx.inner.run_stats.contains_sync(&unique_id) {
                         let mut stat = Stat::new(
                             unique_id.clone(),
                             start_time.into(),
@@ -585,7 +576,7 @@ impl Task for RunTask {
                             ctx.thread_id,
                         );
                         stat.rows_affected = span_rows_affected;
-                        ctx.inner.run_stats.insert(unique_id.clone(), stat);
+                        ctx.inner.run_stats.upsert_sync(unique_id.clone(), stat);
                     }
 
                     node_status
@@ -612,7 +603,7 @@ impl Task for RunTask {
                     }
 
                     // Insert stats for the error case so it appears in run_results.json
-                    ctx.inner.run_stats.insert(
+                    ctx.inner.run_stats.upsert_sync(
                         unique_id.clone(),
                         Stat::new(
                             unique_id.clone(),
@@ -632,14 +623,14 @@ impl Task for RunTask {
             // emission. PR #9146 broke this by emitting before stats were
             // inserted for dbt State-reused models.
             debug_assert!(
-                ctx.inner.run_stats.contains_key(&unique_id),
+                ctx.inner.run_stats.contains_sync(&unique_id),
                 "run_stats missing for {unique_id} before telemetry emission"
             );
 
             // TODO: migrate this to Vortex tracing layer
             // TODO: migrate this to structured logger
             if ctx.inner.arg.io.send_anonymous_usage_stats {
-                emit_run_usage_stats(self.node.as_ref(), ctx, self.execution_path);
+                emit_run_usage_stats(self.node.as_ref(), ctx, effective_execution_path);
             }
 
             Ok(node_status)
@@ -718,11 +709,10 @@ async fn execute_hooks_for_run_cache_skip_reuse(
     };
     let hook_executor = build_reuse_hook_executor(ctx, node, task_result, hook_node);
     let ctx_inner = ctx.clone();
-    TaskOp::Blocking(Box::new(move || {
+    run_blocking_task_operation(move || {
         hook_executor(&ctx_inner, RunCacheReuseHookPhase::Pre)?;
         hook_executor(&ctx_inner, RunCacheReuseHookPhase::Post)
-    }))
-    .run()
+    })
     .await??;
     Ok(())
 }
@@ -887,9 +877,9 @@ async fn run_cache_after_success_action(
                 if let Some(result) = ctx
                     .inner
                     .data_test_execution_results
-                    .get(node.unique_id().as_str())
+                    .read_sync(node.unique_id().as_str(), |_, result| *result)
                 {
-                    confirmation.set_test_execution_results(*result);
+                    confirmation.set_test_execution_results(result);
                 }
             }
             confirm_run_cache_service_execution(
@@ -935,28 +925,11 @@ impl CachedDataTestStatus {
 /// a passing test stat. Cached failures use the cached threshold booleans plus data test severity
 /// to report warn/error stats and increment the matching invocation metric so command status
 /// matches a normally executed test.
-#[cfg(test)]
 fn cached_data_test_status(
     reused_status: &NodeStatus,
     result: CachedTestExecutionResult,
     severity: Severity,
     warn_error_options: &WarnErrorOptions,
-) -> CachedDataTestStatus {
-    cached_data_test_status_with_emit_reused_status(
-        reused_status,
-        result,
-        severity,
-        warn_error_options,
-        true,
-    )
-}
-
-fn cached_data_test_status_with_emit_reused_status(
-    reused_status: &NodeStatus,
-    result: CachedTestExecutionResult,
-    severity: Severity,
-    warn_error_options: &WarnErrorOptions,
-    emit_reused_status: bool,
 ) -> CachedDataTestStatus {
     let failures = result.failures.max(0) as usize;
     let status = reported_test_verdict_from_components(
@@ -966,7 +939,9 @@ fn cached_data_test_status_with_emit_reused_status(
     );
     let status = status_with_warn_error_overrides(status, warn_error_options);
     let stat_status = match status.node_status() {
-        NodeStatus::TestPassed if emit_reused_status => reused_status.clone(),
+        NodeStatus::TestPassed => {
+            NodeStatus::ReusedNoChanges("No new changes on any upstreams".to_string())
+        }
         status => status,
     };
     let final_status = if stat_status == NodeStatus::TestPassed {
@@ -1105,16 +1080,33 @@ fn emit_run_usage_stats(
     // write_integration.catalog_type). See dbt-adapter's CatalogRelation builders.
     let catalog_type = resolve_catalog_type(catalog_name.as_deref());
 
+    let snapshot_strategy = node
+        .as_any()
+        .downcast_ref::<DbtSnapshot>()
+        .and_then(|snapshot| snapshot.deprecated_config.strategy.clone());
+
+    let unique_id = node.unique_id();
+    let is_microbatch = try_get_microbatch_model(node).is_some();
+    let execution_metrics = node_execution_metrics(
+        is_microbatch,
+        &unique_id,
+        &ctx.inner.microbatch_execution_metrics,
+        &ctx.inner.main_adapter_responses,
+    );
+
     run_model_event(
         ctx.inner.arg.io.invocation_id.to_string(),
         &ctx.inner.run_stats,
         node,
         maybe_incremental_strategy,
+        snapshot_strategy,
         is_contract_enforced,
         has_group,
         table_format,
         catalog_name,
         catalog_type,
+        execution_path.compute_mode().to_string(),
+        execution_metrics,
     );
 }
 
@@ -1140,14 +1132,14 @@ fn resolve_catalog_type(catalog_name: Option<&str>) -> Option<String> {
     // v2 catalogs.yml declares `type` directly on each catalog (no write
     // integrations); v1 nests `catalog_type` under the active write integration.
     if dbt_adapter::load_catalogs::fetch_use_catalogs_v2() {
-        let view = catalogs.view_v2().ok()?;
+        let view = catalogs.view().ok()?;
         let catalog = view
             .catalogs
             .iter()
             .find(|catalog| catalog.name == catalog_name)?;
         return Some(catalog.catalog_type.as_str().to_lowercase());
     }
-    let view = catalogs.view().ok()?;
+    let view = catalogs.deprecated_view().ok()?;
     let catalog = view
         .catalogs
         .iter()
@@ -1265,6 +1257,13 @@ mod tests {
     use dbt_yaml::Verbatim;
     use std::time::SystemTime;
 
+    #[test]
+    fn compute_mode_matches_execution_path() {
+        assert_eq!(RunExecutionPath::Remote.compute_mode(), "remote");
+        assert_eq!(RunExecutionPath::SideCar.compute_mode(), "local");
+        assert_eq!(RunExecutionPath::LakeCompute.compute_mode(), "lake_compute");
+    }
+
     fn model_with_pre_hook_and_reuse_hook_config(
         execute_hooks_on_any_reuse: Option<bool>,
     ) -> DbtModel {
@@ -1277,6 +1276,7 @@ mod tests {
             pre_clone: None,
             execute_hooks_on_any_reuse,
             compare_unrendered_code: None,
+            ignore_external_modifications: None,
         });
         model.deprecated_config.pre_hook =
             Verbatim::from(Some(Hooks::String("select 1".to_string())));
@@ -1443,12 +1443,9 @@ mod tests {
     }
 
     #[test]
-    fn cached_passing_data_test_keeps_pass_status_when_reuse_status_is_disabled() {
-        let reused_status =
-            NodeStatus::ReusedNoChanges("No new changes on any upstreams".to_string());
-
-        let status = cached_data_test_status_with_emit_reused_status(
-            &reused_status,
+    fn cached_passing_data_test_uses_reused_status_for_test_passed_input() {
+        let status = cached_data_test_status(
+            &NodeStatus::TestPassed,
             CachedTestExecutionResult {
                 failures: 0,
                 should_warn: false,
@@ -1456,11 +1453,13 @@ mod tests {
             },
             Severity::Error,
             &WarnErrorOptions::default(),
-            false,
         );
 
-        assert_eq!(status.stat_status, NodeStatus::TestPassed);
-        assert_eq!(status.final_status, reused_status);
+        assert_eq!(
+            status.stat_status,
+            NodeStatus::ReusedNoChanges("No new changes on any upstreams".to_string())
+        );
+        assert_eq!(status.final_status, status.stat_status);
     }
 
     #[test]

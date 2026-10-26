@@ -28,7 +28,6 @@ use crate::schemas::semantic_layer::semantic_manifest::SemanticLayerElementConfi
 use super::relations::base::ComponentName;
 use super::serde::{
     StringOrArrayOfStrings, bool_or_string_bool, bool_or_string_bool_default, i64_or_string_i64,
-    yaml_11_bool_default,
 };
 
 /// Indicates where schema metadata originates from.
@@ -772,9 +771,10 @@ impl<'de> Deserialize<'de> for DbtCheckColsSpec {
             YmlValue::Sequence(col_list, _) => {
                 let cols: Result<Vec<_>, D::Error> = col_list
                     .into_iter()
-                    .map(|v| match v {
-                        YmlValue::String(s, _) => Ok(s),
-                        _ => Err(serde::de::Error::custom("Expected array of strings")),
+                    .map(|v| {
+                        v.as_scalar_string()
+                            .map(|s| s.into_owned())
+                            .ok_or_else(|| serde::de::Error::custom("Expected array of strings"))
                     })
                     .collect();
                 match cols {
@@ -801,12 +801,9 @@ pub enum DbtBatchSize {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, DbtSchema)]
 pub struct DbtContract {
-    #[serde(
-        default = "default_alias_types",
-        deserialize_with = "yaml_11_bool_default"
-    )]
+    #[serde(default = "default_alias_types")]
     pub alias_types: bool,
-    #[serde(default, deserialize_with = "yaml_11_bool_default")]
+    #[serde(default)]
     pub enforced: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub checksum: Option<YmlValue>,
@@ -1205,7 +1202,7 @@ pub enum Rows {
 #[skip_serializing_none]
 #[derive(Deserialize, Serialize, Debug, Clone, PartialEq, Eq, DbtSchema)]
 pub struct DocsConfig {
-    #[serde(default = "default_show", deserialize_with = "yaml_11_bool_default")]
+    #[serde(default = "default_show")]
     pub show: bool,
     pub node_color: Option<String>,
 }
@@ -1237,12 +1234,15 @@ pub struct PersistDocsConfig {
 pub struct ScheduleConfig {
     pub cron: Option<String>,
     pub time_zone_value: Option<String>,
+    pub every: Option<String>,
+    pub on_update: Option<bool>,
+    pub at_most_every: Option<String>,
 }
 
 /// Schedule configuration that accepts both string and structured formats.
 /// This allows users to specify schedule as either:
 /// - A string: `schedule: "USING CRON 0,15,30,45 * * * * UTC"`
-/// - A structured config: `schedule: { cron: "0 * * * *", time_zone_value: "UTC" }`
+/// - A structured config: `schedule: { every: "2 HOURS" }`
 #[derive(UntaggedEnumDeserialize, Serialize, Debug, Clone, PartialEq, Eq, DbtSchema)]
 #[serde(untagged)]
 pub enum Schedule {
@@ -1257,6 +1257,9 @@ impl Schedule {
             Schedule::String(s) => ScheduleConfig {
                 cron: Some(s.clone()),
                 time_zone_value: None,
+                every: None,
+                on_update: None,
+                at_most_every: None,
             },
             Schedule::ScheduleConfig(config) => config.clone(),
         }
@@ -1535,60 +1538,47 @@ pub enum Severity {
     Warn,
 }
 
-/// Parses a `deprecation_date` string in any of the documented input formats
-/// (bare date, or a full datetime with or without a UTC offset -- see
-/// https://docs.getdbt.com/reference/resource-properties/deprecation_date)
-/// into a timezone-aware timestamp. An already offset-aware input keeps its
-/// original offset; a naive (offset-less) datetime is assumed to be UTC.
-pub fn parse_deprecation_date(raw: &str) -> Option<chrono::DateTime<chrono::FixedOffset>> {
-    let raw = raw.trim();
-
-    if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(raw) {
-        return Some(dt);
-    }
-    for format in ["%Y-%m-%d %H:%M:%S%.f%z", "%Y-%m-%d %H:%M:%S%z"] {
-        if let Ok(dt) = chrono::DateTime::parse_from_str(raw, format) {
-            return Some(dt);
-        }
-    }
-
-    let naive_utc_to_fixed = |naive: chrono::NaiveDateTime| {
-        chrono::DateTime::<chrono::Utc>::from_naive_utc_and_offset(naive, chrono::Utc)
-            .fixed_offset()
-    };
-    for format in [
-        "%Y-%m-%dT%H:%M:%S%.f",
-        "%Y-%m-%d %H:%M:%S%.f",
-        "%Y-%m-%dT%H:%M:%S",
-        "%Y-%m-%d %H:%M:%S",
-    ] {
-        if let Ok(naive) = chrono::NaiveDateTime::parse_from_str(raw, format) {
-            return Some(naive_utc_to_fixed(naive));
-        }
-    }
-    if let Ok(date) = chrono::NaiveDate::parse_from_str(raw, "%Y-%m-%d") {
-        let naive = date.and_hms_opt(0, 0, 0).unwrap();
-        return Some(naive_utc_to_fixed(naive));
-    }
-
-    None
+/// Converts a YAML 1.1 timestamp to a timezone-aware datetime, applying the
+/// spec's defaults of midnight for a missing time-of-day and UTC for a missing
+/// zone. An offset-aware timestamp keeps its authored offset.
+///
+/// Note: this operation is _fallible_! Yaml `Timestamp` is an unvalidated
+/// container, whereas `chrono::DateTime` is fully validated -- in the case when
+/// `ts` is an invalid `DateTime` this method returns `None`.
+pub fn timestamp_to_fixed_offset(
+    ts: &dbt_yaml::Timestamp,
+) -> Option<chrono::DateTime<chrono::FixedOffset>> {
+    use chrono::TimeZone;
+    let (year, month, day) = ts.date();
+    let date = chrono::NaiveDate::from_ymd_opt(year, u32::from(month), u32::from(day))?;
+    let tod = ts.time().unwrap_or(dbt_yaml::TimeOfDay::MIDNIGHT);
+    let time = chrono::NaiveTime::from_hms_nano_opt(
+        u32::from(tod.hour),
+        u32::from(tod.minute),
+        u32::from(tod.second),
+        tod.nanosecond,
+    )?;
+    let offset = chrono::FixedOffset::east_opt(ts.tz_minutes().unwrap_or(0) * 60)?;
+    offset.from_local_datetime(&date.and_time(time)).single()
 }
 
-/// Normalizes a raw `deprecation_date` string (as authored in YAML) to an
-/// RFC 3339 string with an explicit UTC offset, matching dbt-core's manifest
-/// output. Falls back to the original string if it doesn't match any
-/// documented format.
-pub fn normalize_deprecation_date(raw: &str) -> String {
-    parse_deprecation_date(raw)
-        .map(|dt| dt.to_rfc3339())
-        .unwrap_or_else(|| raw.to_string())
+/// Converts a YAML 1.1 timestamp to a UTC datetime, applying the spec's
+/// defaults of midnight for a missing time-of-day and UTC for a missing zone.
+///
+/// Note: this operation is _fallible_! Yaml `Timestamp` is an unvalidated
+/// container, whereas `chrono::DateTime` is fully validated -- in the case when
+/// `ts` is an invalid `DateTime` this method returns `None`.
+pub fn timestamp_to_datetime_utc(
+    ts: &dbt_yaml::Timestamp,
+) -> Option<chrono::DateTime<chrono::Utc>> {
+    timestamp_to_fixed_offset(ts).map(|dt| dt.with_timezone(&chrono::Utc))
 }
 
 #[skip_serializing_none]
 #[derive(Deserialize, Serialize, Debug, Clone, DbtSchema)]
 pub struct Versions {
     pub v: YmlValue,
-    pub deprecation_date: Option<String>,
+    pub deprecation_date: Option<dbt_yaml::Timestamp>,
     pub defined_in: Option<String>,
     pub description: Option<String>,
     pub access: Option<String>,
@@ -2646,6 +2636,40 @@ schedule:
         let schedule_config = config.schedule.to_schedule_config();
         assert_eq!(schedule_config.cron, Some("0 */6 * * *".to_string()));
         assert_eq!(schedule_config.time_zone_value, Some("UTC".to_string()));
+        assert_eq!(schedule_config.every, None);
+        assert_eq!(schedule_config.on_update, None);
+        assert_eq!(schedule_config.at_most_every, None);
+    }
+
+    #[test]
+    fn test_schedule_parses_every_and_on_update_formats() {
+        #[derive(Deserialize)]
+        struct TestConfig {
+            schedule: Schedule,
+        }
+
+        let every: TestConfig = dbt_yaml::from_str(
+            r#"
+schedule:
+  every: "2 HOURS"
+"#,
+        )
+        .unwrap();
+        let every = every.schedule.to_schedule_config();
+        assert_eq!(every.every, Some("2 HOURS".to_string()));
+        assert_eq!(every.on_update, None);
+
+        let on_update: TestConfig = dbt_yaml::from_str(
+            r#"
+schedule:
+  on_update: true
+  at_most_every: "15 MINUTES"
+"#,
+        )
+        .unwrap();
+        let on_update = on_update.schedule.to_schedule_config();
+        assert_eq!(on_update.on_update, Some(true));
+        assert_eq!(on_update.at_most_every, Some("15 MINUTES".to_string()));
     }
 
     #[test]
@@ -2995,65 +3019,11 @@ period: hour
         );
     }
 
-    // ---- deprecation_date normalization (dbt-core#14563) ----
+    // ---- timestamp conversion ----
 
-    #[test]
-    fn test_normalize_deprecation_date_bare_date() {
-        assert_eq!(
-            normalize_deprecation_date("2025-10-31"),
-            "2025-10-31T00:00:00+00:00"
-        );
-    }
-
-    #[test]
-    fn test_normalize_deprecation_date_naive_t_separator() {
-        assert_eq!(
-            normalize_deprecation_date("2025-10-31T00:00:00"),
-            "2025-10-31T00:00:00+00:00"
-        );
-    }
-
-    #[test]
-    fn test_normalize_deprecation_date_naive_space_separator() {
-        assert_eq!(
-            normalize_deprecation_date("2025-10-31 00:00:00"),
-            "2025-10-31T00:00:00+00:00"
-        );
-    }
-
-    #[test]
-    fn test_normalize_deprecation_date_z_suffix() {
-        assert_eq!(
-            normalize_deprecation_date("2025-10-31T00:00:00Z"),
-            "2025-10-31T00:00:00+00:00"
-        );
-    }
-
-    #[test]
-    fn test_normalize_deprecation_date_with_offset_preserved() {
-        assert_eq!(
-            normalize_deprecation_date("2025-10-31T00:00:00-05:00"),
-            "2025-10-31T00:00:00-05:00"
-        );
-    }
-
-    #[test]
-    fn test_normalize_deprecation_date_space_separator_with_offset_and_fraction() {
-        // Exact example from the docs page for `deprecation_date`.
-        assert_eq!(
-            normalize_deprecation_date("1999-01-01 00:00:00.00+00:00"),
-            "1999-01-01T00:00:00+00:00"
-        );
-    }
-
-    #[test]
-    fn test_normalize_deprecation_date_unparseable_passes_through() {
-        assert_eq!(normalize_deprecation_date("not-a-date"), "not-a-date");
-    }
-
-    /// PyYAML (and so dbt-core) resolves the YAML 1.1 boolean tokens that Fusion's YAML 1.2
-    /// reader hands to serde as strings. `yes` must resolve to `true`, and a token outside the
-    /// set must still error rather than silently become `false`.
+    /// Unquoted YAML 1.1 boolean tokens resolve the way PyYAML (and so dbt-core) resolves them:
+    /// `yes` must resolve to `true`, while a token outside the set, a bare `y`, or a quoted
+    /// `"no"` must error rather than silently become a boolean.
     #[test]
     fn test_dbt_contract_resolves_yaml_11_boolean_tokens() {
         for field in ["enforced", "alias_types"] {
@@ -3075,7 +3045,7 @@ period: hour
                 assert_eq!(resolved, expected, "{field}: {token}");
             }
 
-            for token in ["maybe", "1"] {
+            for token in ["maybe", "1", "y", "'no'", r#""yes""#] {
                 let result: Result<DbtContract, _> =
                     dbt_yaml::from_str(&format!("{field}: {token}\n"));
                 assert!(result.is_err(), "{field}: {token}");
@@ -3083,7 +3053,7 @@ period: hour
         }
     }
 
-    /// `docs: { show: no }` is the same YAML 1.1 boolean divergence as `contract.enforced`;
+    /// `docs: { show: no }` resolves the same YAML 1.1 boolean tokens as `contract.enforced`;
     /// `show` defaults to `true`, so a silently wrong value would be invisible.
     #[test]
     fn test_docs_config_show_resolves_yaml_11_boolean_tokens() {

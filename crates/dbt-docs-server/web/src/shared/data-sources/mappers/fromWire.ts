@@ -153,6 +153,7 @@ interface RestSourceDetail extends RestDetailBase {
   identifier?: string | null;
   source_name?: string | null;
   loader?: string | null;
+  source_description?: string | null;
   meta: Record<string, unknown> | null;
   config?: Record<string, unknown> | null;
   columns: RestNodeColumn[];
@@ -711,6 +712,7 @@ export function fromSourceDetail(d: RestSourceDetail): SourceAsset {
     sourceName: d.source_name ?? '',
     identifier: d.identifier ?? '',
     loader: d.loader ?? null,
+    sourceDescription: d.source_description ?? null,
     // REST FreshnessInfo carries status/timestamps, not warn/error thresholds.
     freshness: null,
     freshnessStatus: d.freshness?.status ?? null,

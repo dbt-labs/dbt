@@ -2,10 +2,10 @@
 
 use dbt_adapter_core::AdapterType;
 use dbt_common::adapter::dialect_of;
+use dbt_common::sources_extractor::SourcesExtractor;
 use dbt_frontend_common::FullyQualifiedName;
 use dbt_frontend_common::error::{CodeLocation, ErrorCode, FrontendError, FrontendResult};
 use dbt_frontend_common::named_reference::NamedReference;
-use dbt_frontend_common::sources_extractor::SourcesExtractor;
 
 #[derive(Default)]
 pub struct DefaultSourcesExtractor;

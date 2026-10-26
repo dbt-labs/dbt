@@ -1,0 +1,11 @@
+   dbt-oss 
+   Loading profiles.yml
+   Parsing models/schema.yml
+   Parsing models/customers.sql
+ Rendering models/customers.sql
+   Running models/customers.sql
+    Warned model adapters_databricks_pk_constraint.customers (table) [1 of 1 in duration]
+==================== Execution Summary =====================
+Finished 'run' with 1 warning for target 'databricks' [duration]
+Processed: 1 model
+Summary: 1 total | 1 warn

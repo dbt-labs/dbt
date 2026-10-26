@@ -2,12 +2,12 @@ use std::sync::Arc;
 
 use crate::materialize::materialize_seed;
 use crate::runnable::cache::cache_materialization_return_value;
+use crate::seed_io::read_parquet_seed_physical;
 use dbt_adapter::AdapterType;
 use dbt_adapter::relation::create_relation_from_node;
 use dbt_agate::AgateTable;
 use dbt_common::stats::NodeStatus;
 use dbt_common::{ErrorCode, FsError, FsResult, fs_err};
-use dbt_df_providers::seed_io::read_parquet_seed_physical;
 use dbt_jinja_utils::jinja_environment::JinjaEnv;
 use dbt_jinja_utils::utils::add_task_context;
 use dbt_schema_store::read_cached_schema_from_parquet;
@@ -236,7 +236,7 @@ pub fn execute_seed_remote(seed: &DbtSeed, ctx: &TaskRunnerCtx) -> FsResult<Node
     if let Some(main_response) = main_response {
         ctx.inner
             .main_adapter_responses
-            .insert(seed.__common_attr__.unique_id.clone(), main_response);
+            .upsert_sync(seed.__common_attr__.unique_id.clone(), main_response);
     }
     let _ = cache_materialization_return_value(ctx.env.clone(), &relations_map);
 

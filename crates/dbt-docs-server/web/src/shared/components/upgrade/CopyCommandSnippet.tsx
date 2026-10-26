@@ -8,12 +8,12 @@ import { Code } from '../../../components/ui/Code';
  *  pattern the Notion handoff specifies for the column-level-lineage row
  *  (run `dbt login` and copy). */
 
-interface Props {
+interface CopyCommandSnippetProps {
   command: string;
   className?: string;
 }
 
-export function CopyCommandSnippet({ command, className }: Props) {
+export function CopyCommandSnippet({ command, className }: CopyCommandSnippetProps) {
   const [copied, setCopied] = useState(false);
 
   const handleCopy = useCallback(() => {

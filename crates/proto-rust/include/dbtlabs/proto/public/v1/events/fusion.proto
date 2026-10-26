@@ -276,6 +276,9 @@ message ResourceCounts {
   // total count of catalogs in the project.
   int32 catalogs = 18;
   v1.public.common.vortex_telemetry_contexts.VortexTelemetryCommonContext common_context = 19;
+
+  // total count of checks (project quality checks under `checks/`) in the project.
+  int32 checks = 20;
 }
 
 // Run Model Event will be emitted when Fusion runs a model or skips a model because
@@ -369,6 +372,26 @@ message RunModel {
   // catalog label). empty string when the model does not use catalogs.yml.
   string catalog_type = 23;
   v1.public.common.vortex_telemetry_contexts.VortexTelemetryCommonContext common_context = 24;
+
+  // where the node was executed. one of "remote", "local", or "lake_compute".
+  string compute_mode = 25;
+
+  // number of rows affected by the model's main statement. Unset when unknown
+  // (distinct from 0).
+  optional int64 rows_affected = 26;
+
+  // the snapshot config strategy (ex. "timestamp", "check"). empty string for
+  // non-snapshot nodes.
+  string snapshot_strategy = 27;
+
+  // bytes processed, per the BigQuery adapter response. Unset for other adapters.
+  optional int64 bytes_processed = 28;
+
+  // bytes billed, per the BigQuery adapter response. Unset for other adapters.
+  optional int64 bytes_billed = 29;
+
+  // slot milliseconds used, per the BigQuery adapter response. Unset for other adapters.
+  optional int64 slot_ms = 30;
 }
 
 message Onboarding {
@@ -534,4 +557,69 @@ message StaticAnalysisInvocation {
   // Count of nodes with static analysis off after propagation.
   int32 off_node_count = 9;
   v1.public.common.vortex_telemetry_contexts.VortexTelemetryCommonContext common_context = 10;
+}
+
+// RunCheck is emitted once per project quality check on `dbt check`, `dbt build` and
+// `dbt retry`, including checks that did not run (`--skip-checks`, or no project
+// metadata to read), which report status "skipped". Checks run before the task graph
+// is built, so they do not produce a RunModel event. The command, Account Identifier
+// and Project Identifier can be found by joining this message on the Invocation
+// message specified in the invocation_id field.
+message RunCheck {
+  option (v1.public.common.vortex_namespace) = VORTEX_ICEBERG_NAMESPACE_TELEMETRY;
+  option (v1.public.common.vortex_enabled) = true;
+
+  // This field is a toggle to enable enrichment of the message by the Vortex service.
+  v1.events.vortex.VortexMessageEnrichment enrichment = 1;
+
+  // Unique identifier for this event (UUID). Required.
+  string event_id = 2;
+
+  // A foreign key to the Invocation message that was emitted at the
+  // start of the fusion process. Required.
+  string invocation_id = 3;
+
+  // MD5 hash of the check's unique_id. Required.
+  string check_id = 4;
+
+  // The check's verdict: "pass", "fail", "warn", "error" or "skipped". Required.
+  string status = 5;
+
+  // The check's configured severity: "error" or "warn".
+  string severity = 6;
+
+  // Number of violation rows the check returned. Unset when the check was not
+  // evaluated (status "error" or "skipped").
+  optional int64 violations = 7;
+
+  // Wall time for the check's query and evaluation, in seconds. Zero when the
+  // check never ran.
+  double execution_time = 8;
+
+  // Why the check was skipped or could not be evaluated. Empty for "pass", "fail"
+  // and "warn". The valid values for this are:
+  //
+  //  skip_checks_flag          skipped: run with --skip-checks
+  //  metadata_unavailable      skipped or error: no project metadata to read
+  //  empty_selection           skipped: the selection held no nodes the check reports on
+  //  adapter_failed            error: the project metadata could not be opened
+  //  no_compiled_sql           error: the check has no rendered SQL
+  //  query_failed              error: the check's SQL failed
+  //  selection_filter_invalid  error: a selection_filter_on column is not in the check's output
+  //  evaluation_failed         error: the check's rows could not be evaluated
+  //
+  string reason = 9;
+
+  // How a node selection (--select / --exclude) bore on the check's rows. The valid
+  // values for this are:
+  //
+  //  none     no selection, or a retry (which never scopes checks)
+  //  applied  the selection scoped the check's rows
+  //  ignored  a selection was given, but the check reports on the whole project: it
+  //           sets selection_filter_on: none, or outputs no unique_id column
+  //  unknown  a selection was given, but the check never produced rows to scope
+  //
+  string selection = 10;
+
+  v1.public.common.vortex_telemetry_contexts.VortexTelemetryCommonContext common_context = 11;
 }

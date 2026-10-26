@@ -1,0 +1,187 @@
+85f3743c:
+- sequence: 0
+  type: execute
+  sql: SHOW SCHEMAS IN `e2e`
+model.test.managed:
+- sequence: 0
+  type: execute
+  sql: DESCRIBE TABLE EXTENDED `e2e`.`adapters_databricks_iceberg_v2`.`managed` AS JSON
+- sequence: 1
+  type: execute
+  sql: |-
+    SELECT
+    table_catalog,
+    table_schema,
+    table_name,
+    filter_name,
+    target_columns
+    FROM `e2e`.`information_schema`.`row_filters`
+    WHERE table_catalog = 'e2e'
+    AND table_schema = 'adapters_databricks_iceberg_v2'
+    AND table_name = 'managed'
+- sequence: 2
+  type: execute
+  sql: |-
+    create or replace table `e2e`.`adapters_databricks_iceberg_v2`.`managed`
+    
+    
+    
+    
+    using iceberg
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    as
+    select 1 as id, 'managed' as catalog_type
+model.test.no_catalog_name:
+- sequence: 0
+  type: execute
+  sql: DESCRIBE TABLE EXTENDED `e2e`.`adapters_databricks_iceberg_v2`.`no_catalog_name` AS JSON
+- sequence: 1
+  type: execute
+  sql: |-
+    SELECT
+    table_catalog,
+    table_schema,
+    table_name,
+    filter_name,
+    target_columns
+    FROM `e2e`.`information_schema`.`row_filters`
+    WHERE table_catalog = 'e2e'
+    AND table_schema = 'adapters_databricks_iceberg_v2'
+    AND table_name = 'no_catalog_name'
+- sequence: 2
+  type: execute
+  sql: |-
+    create or replace table `e2e`.`adapters_databricks_iceberg_v2`.`no_catalog_name`
+    
+    
+    
+    
+    using iceberg
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    as
+    select 1 as id, 'no_catalog_name' as catalog_type
+model.test.no_catalog_name_explicit_uniform:
+- sequence: 0
+  type: execute
+  sql: DESCRIBE TABLE EXTENDED `e2e`.`adapters_databricks_iceberg_v2`.`no_catalog_name_explicit_uniform` AS JSON
+- sequence: 1
+  type: execute
+  sql: |-
+    SELECT
+    table_catalog,
+    table_schema,
+    table_name,
+    filter_name,
+    target_columns
+    FROM `e2e`.`information_schema`.`row_filters`
+    WHERE table_catalog = 'e2e'
+    AND table_schema = 'adapters_databricks_iceberg_v2'
+    AND table_name = 'no_catalog_name_explicit_uniform'
+- sequence: 2
+  type: execute
+  sql: |-
+    create or replace table `e2e`.`adapters_databricks_iceberg_v2`.`no_catalog_name_explicit_uniform`
+    
+    
+    
+    
+    using delta
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    tblproperties ('delta.enableIcebergCompatV2' = 'True' , 'delta.universalFormat.enabledFormats' = 'iceberg' 
+    )
+    as
+    select 1 as id, 'no_catalog_name_explicit_uniform' as catalog_type
+model.test.uniform:
+- sequence: 0
+  type: execute
+  sql: |-
+    SELECT
+    table_name,
+    if(table_type IN ('EXTERNAL', 'MANAGED', 'MANAGED_SHALLOW_CLONE', 'EXTERNAL_SHALLOW_CLONE'), 'table', lower(table_type)) AS table_type,
+    lower(data_source_format) AS file_format,
+    table_schema,
+    table_owner,
+    table_catalog,
+    if(
+    table_type IN (
+    'EXTERNAL',
+    'MANAGED',
+    'MANAGED_SHALLOW_CLONE',
+    'EXTERNAL_SHALLOW_CLONE'
+    ),
+    lower(table_type),
+    NULL
+    ) AS databricks_table_type
+    FROM `system`.`information_schema`.`tables`
+    WHERE table_catalog = 'e2e'
+    AND table_schema = 'adapters_databricks_iceberg_v2'
+- sequence: 1
+  type: execute
+  sql: DESCRIBE TABLE EXTENDED `e2e`.`adapters_databricks_iceberg_v2`.`uniform` AS JSON
+- sequence: 2
+  type: execute
+  sql: |-
+    SELECT
+    table_catalog,
+    table_schema,
+    table_name,
+    filter_name,
+    target_columns
+    FROM `e2e`.`information_schema`.`row_filters`
+    WHERE table_catalog = 'e2e'
+    AND table_schema = 'adapters_databricks_iceberg_v2'
+    AND table_name = 'uniform'
+- sequence: 3
+  type: execute
+  sql: |-
+    create or replace table `e2e`.`adapters_databricks_iceberg_v2`.`uniform`
+    
+    
+    
+    
+    using delta
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    tblproperties ('delta.enableIcebergCompatV2' = 'True' , 'delta.universalFormat.enabledFormats' = 'iceberg' 
+    )
+    as
+    select 1 as id, 'uniform' as catalog_type

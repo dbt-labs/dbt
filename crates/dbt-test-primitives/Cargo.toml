@@ -12,6 +12,8 @@ edition.workspace = true
 [lints]
 workspace = true
 
-# COPYBARA-BEGIN-PRIVATE
 [dependencies]
+regex = { workspace = true }
+
+# COPYBARA-BEGIN-PRIVATE
 dbt-fusion-workspace-hack = { version = "0.1" }

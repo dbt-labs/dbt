@@ -95,6 +95,7 @@ pub enum ErrorCode {
     FailedToLookupExistingTable = 1055,
 
     MissingTargetDirectory = 1056,
+    DeprecatedConfigKey = 1057,
     ColumnTypeMismatch = 1058,
     DuplicateConfigKey = 1059,
     UnusedConfigKey = 1060,
@@ -185,6 +186,8 @@ pub enum ErrorCode {
     RateLimited = 1202,
     HttpError = 1203,
     DbtPlatformApiError = 1204,
+    /// `REQUESTS_CA_BUNDLE` or `CURL_CA_BUNDLE` names a CA bundle that can't be used, so its certificates aren't trusted.
+    CaBundleUnusable = 1205,
 
     // Auth/credentials [1250–1279]
     AuthFailed = 1250,
@@ -359,6 +362,22 @@ pub enum ErrorCode {
     SkillDestinationOccupied = 1805,
     /// A `skill-paths` entry resolves outside the project that declared it.
     SkillPathEscapesProject = 1806,
+
+    // --------------------------------------------------------------------------------------------
+    // Plugins
+    /// An error a plugin reported. Plugins never report under any other code.
+    PluginError = 1900,
+    /// A warning a plugin reported. Plugins never report under any other code.
+    PluginWarning = 1901,
+    /// A project gives entries or paths to a reserved plugin type whose plugin is off, or that
+    /// this dbt doesn't have. dbt ignores them.
+    PluginNotEnabled = 1902,
+    /// A project gives entries or paths to a plugin type no one reserved. dbt ignores them.
+    UnknownPlugin = 1903,
+    /// A `plugin-paths` entry overlaps a directory dbt reads, or another plugin's.
+    PluginPathOverlap = 1904,
+    /// A `plugin-paths` entry resolves outside the project that declared it. dbt skips it.
+    PluginPathEscapesProject = 1905,
 
     // --------------------------------------------------------------------------------------------
     // Local execution

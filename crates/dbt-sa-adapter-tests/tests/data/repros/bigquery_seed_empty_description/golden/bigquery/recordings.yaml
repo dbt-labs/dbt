@@ -1,0 +1,14 @@
+64e12d38:
+- sequence: 0
+  type: execute
+  sql: create schema if not exists `dbt-test-env`.`bigquery_seed_empty_description`
+seed.bigquery_seed_empty_description.my_seed:
+- sequence: 0
+  type: execute
+  sql: ''
+- sequence: 1
+  type: execute
+  sql: |-
+    alter table `dbt-test-env`.`bigquery_seed_empty_description`.`my_seed` set OPTIONS(
+    description=""""""
+    )

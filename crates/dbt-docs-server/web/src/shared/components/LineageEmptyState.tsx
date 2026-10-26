@@ -8,12 +8,12 @@ export interface LineageQuickLink {
   label: string;
 }
 
-interface Props {
+interface LineageEmptyStateProps {
   description: ReactNode;
   quickLinks?: LineageQuickLink[];
 }
 
-export function LineageEmptyState({ description, quickLinks }: Props) {
+export function LineageEmptyState({ description, quickLinks }: LineageEmptyStateProps) {
   return (
     <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 space-y-2 whitespace-nowrap rounded-md border border-borderMuted bg-bgMain p-6 text-center text-sm">
       <div>

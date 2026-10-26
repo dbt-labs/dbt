@@ -205,9 +205,6 @@ impl JinjaEnvBuilder {
             .clone()
             .ok_or_else(|| unexpected_fs_err!("try_with_macros requires root package to be set"))?;
 
-        // The dialects whose internal packages this environment serves. One today;
-        // a multi-adapter target will supply several, at which point each gets its
-        // own namespace below.
         let mut dialects: Vec<String> = vec![adapter.adapter_type().as_ref().to_string()];
         for dialect in &self.extra_dialects {
             if !dialects.contains(dialect) {
@@ -228,16 +225,10 @@ impl JinjaEnvBuilder {
         let mut internal_packages_macros: BTreeMap<String, BTreeMap<String, Value>> =
             BTreeMap::new(); // package_name → {macro_name → info}
         let mut function_registry = FunctionRegistry::new(); // macro_name → DynObject
+        let mut macro_sources = BTreeMap::new();
 
         // Process all macros
-        for (package_name, macro_units) in macros.macros.clone() {
-            // Add package to namespace registry.
-            //
-            // Stored as a map keyed by macro name rather than a sequence: the hot
-            // consumer is `DbtNamespace::get_property`, which membership-tests this on
-            // every `pkg.macro_name` access. A map makes that a hash lookup instead of a
-            // scan over the whole package. Iterating a minijinja map yields its keys, so
-            // consumers that walk this for macro names are unaffected.
+        for (package_name, macro_units) in &macros.macros {
             let macro_names: ValueMap = macro_units
                 .iter()
                 .map(|m| (Value::from(m.info.name.clone()), Value::from(true)))
@@ -282,14 +273,11 @@ impl JinjaEnvBuilder {
                 let macro_name = macro_unit.info.name.clone();
                 let template_name = format!("{package_name}.{macro_name}");
 
-                // Add to environment and template registry
-                self.env
-                    .add_template_owned(
-                        template_name.clone(),
-                        macro_unit.sql.clone(),
-                        Some(filename.clone()),
-                    )
-                    .map_err(|e| FsError::from_jinja_err(e, "Failed to add template"))?;
+                // Register sources for lazy compilation. Most macros are never used by a project.
+                macro_sources.insert(
+                    template_name.clone(),
+                    (Arc::from(macro_unit.sql), Some(filename.clone())),
+                );
 
                 let funcsign = match macro_unit.info.funcsign.clone() {
                     Some(funcsign) => {
@@ -375,16 +363,17 @@ impl JinjaEnvBuilder {
             }
         }
 
+        // The loader must stay idempotent: environment clones share the loader
+        // but keep separate compiled-template caches, so the same macro source
+        // can be looked up more than once.
+        self.env
+            .set_loader(move |name| Ok(macro_sources.get(name).cloned()));
         self.function_registry = Arc::new(function_registry);
         AdapterDispatchFunction::instance().set_function_registry(self.function_registry.clone());
 
         // One `macro_name -> package` namespace per dialect, keyed by dialect.
-        //
-        // Within a dialect the packages are walked in reverse order, as dbt does,
-        // so a more specific adapter package overrides `dbt-adapters`. That
-        // layering is load-bearing and preserved. Keying by dialect is what lets
-        // two adapters that both define an unprefixed macro (`run_hooks`,
-        // `py_write_table`) coexist without one silently winning for every node.
+        // Within a dialect the packages are walked in reverse order, so a more
+        // specific adapter package overrides `dbt-adapters`
         let mut dbt_and_adapters_namespaces = ValueMap::new();
         for dialect in &dialects {
             let mut namespace = ValueMap::new();
@@ -418,12 +407,9 @@ impl JinjaEnvBuilder {
             Value::from_object(dbt_and_adapters_namespaces),
         );
 
-        // Register the dbt_classification macro package — embedded SQL
-        // shipped with `dbt-classification` for the Snowflake tag
-        // round-trip.  These macros are dialect-specific by content but
-        // are registered unconditionally; they only execute when the
-        // adapter-gated Phase 1 / Phase 3 callers in `dbt-tasks`
-        // actually look them up.  See propagation_of_snowflake_tags.md §4.2.
+        // Note: these macros are dialect-specific by content but are registered
+        // unconditionally; they only execute when the adapter-gated Phase 1 /
+        // Phase 3 callers in `dbt-tasks` actually look them up.
         for (template_name, sql) in dbt_classification_types::propagation_macro_templates() {
             self.env
                 .add_template_owned(template_name, sql, None)
@@ -443,7 +429,6 @@ impl JinjaEnvBuilder {
         // Register filters (as_bool, as_number, as_native, as_text)
         // These are used to convert values to the appropriate type that might be
         // expected by the jinja template.
-
         self.register_filters();
 
         // Register tests

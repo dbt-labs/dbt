@@ -1,0 +1,15 @@
+   dbt-oss 
+   Loading profiles.yml
+   Parsing models/my_model.sql
+   Parsing models/stg_jobs.sql
+  Finished [duration] hook  fusion_498_reprex-on-run-start-0
+ Rendering models/stg_jobs.sql
+   Running models/stg_jobs.sql
+ Succeeded model bigquery_use_direct_information_schema_views.stg_jobs (table) [1 of 2 in duration]
+ Rendering models/my_model.sql
+   Running models/my_model.sql
+ Succeeded model bigquery_use_direct_information_schema_views.my_model (table) [2 of 2 in duration]
+==================== Execution Summary =====================
+Finished 'run' successfully for target 'bigquery' [duration]
+Processed: 1 hook | 2 models
+Summary: 3 total | 3 success

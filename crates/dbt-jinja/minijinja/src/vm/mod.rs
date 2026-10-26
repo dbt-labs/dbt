@@ -602,6 +602,12 @@ impl<'env> Vm<'env> {
                     if let Some(value_map) = value.downcast_object_ref::<ValueMap>() {
                         let mutable_map = MutableMap::from(value_map.clone());
                         state.ctx.store(name, Value::from_object(mutable_map));
+                    } else if let Some(map) = value
+                        .downcast_object_ref::<MutableMap>()
+                        // TODO(LazyNodeContext): Remove with `MutableMap::set_copy_on_store`.
+                        .filter(|map| map.copies_on_store())
+                    {
+                        state.ctx.store(name, Value::from_object(map.clone()));
                     } else {
                         state.ctx.store(name, value);
                     }

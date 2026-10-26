@@ -21,10 +21,7 @@ pub struct BigqueryPartitionConfig {
     pub data_type: String,
     #[serde(flatten)]
     pub __inner__: BigqueryPartitionConfigInner,
-    #[serde(
-        default,
-        deserialize_with = "crate::schemas::serde::yaml_11_bool_default"
-    )]
+    #[serde(default)]
     pub copy_partitions: bool,
 }
 
@@ -96,10 +93,7 @@ pub struct TimeConfig {
     /// When this is true, the [`BigqueryPartitionConfig::field`] will be used as the `_PARTITIONTIME` pseudo column
     /// _PARTITIONTIME: https://cloud.google.com/bigquery/docs/partitioned-tables#ingestion_time
     /// https://docs.getdbt.com/reference/resource-configs/bigquery-configs#partitioning-by-an-ingestion-date-or-timestamp
-    #[serde(
-        default,
-        deserialize_with = "crate::schemas::serde::yaml_11_bool_default"
-    )]
+    #[serde(default)]
     pub time_ingestion_partitioning: bool,
 }
 
@@ -401,8 +395,8 @@ mod tests {
         ));
     }
 
-    /// The `partition_by` booleans hit the same YAML 1.1 divergence as `contract.enforced`, and
-    /// `time_ingestion_partitioning` fails through the untagged enum.
+    /// The `partition_by` booleans resolve the same YAML 1.1 boolean tokens as
+    /// `contract.enforced`, including `time_ingestion_partitioning` behind the untagged enum.
     #[test]
     fn test_partition_config_resolves_yaml_11_boolean_tokens() {
         for (token, expected) in [("no", false), ("off", false), ("yes", true), ("on", true)] {

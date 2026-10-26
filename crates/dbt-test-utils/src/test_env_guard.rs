@@ -31,6 +31,7 @@ impl TestEnvGuard {
 
     const EXACT_MATCH_VARS: &'static [&'static str] = &[
         "_DBT_SKIP_DEV_LICENSE",
+        "DBT_DISABLE_VERSION_CHECK",
         "DBT_SKIP_REMOTE_LICENSE",
         "ADAPTER_AUTH_CREDS",
         "ADAPTER_POSTGRES",

@@ -1,7 +1,7 @@
 name: 🐞 Bug (dbt v2.x)
 description: Report a bug or issue you've found in dbt v2.x (Core or Fusion distributions)
 title: "[v2 Bug] <title>"
-labels: ["bug", "triage", "v2", "type:bug", "status:triage", "engine:v2"]
+labels: ["v2", "type:bug", "status:triage", "engine:v2"]
 body:
   - type: markdown
     attributes:

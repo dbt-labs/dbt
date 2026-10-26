@@ -1397,6 +1397,40 @@ fn test_struct_on_databricks() {
     }
 }
 
+#[test]
+fn test_bigquery_logical_types_preserve_identity() {
+    for (sql_type, expected_name) in [(Json, "json"), (Geography(None), "geography")] {
+        assert_eq!(
+            sql_type.pick_best_arrow_type(Bigquery),
+            DataType::FixedSizeList(Arc::new(Field::new(expected_name, DataType::Utf8, true)), 1,),
+        );
+    }
+
+    let nested = Struct(Some(vec![
+        StructField::new(Ident::plain("payload"), Json, true),
+        StructField::new(Ident::plain("location"), Geography(None), true),
+    ]))
+    .pick_best_arrow_type(Bigquery);
+    let logical_type =
+        |name| DataType::FixedSizeList(Arc::new(Field::new(name, DataType::Utf8, true)), 1);
+    let field = |name: &str, data_type: DataType, sql_type: &str| {
+        Field::new(name, data_type, true).with_metadata(HashMap::from([(
+            metadata_sql_type_key(Bigquery).to_string(),
+            sql_type.to_string(),
+        )]))
+    };
+    assert_eq!(
+        nested,
+        DataType::Struct(
+            vec![
+                field("payload", logical_type("json"), "JSON"),
+                field("location", logical_type("geography"), "GEOGRAPHY"),
+            ]
+            .into(),
+        ),
+    );
+}
+
 // Athena-specific type behavior tests
 // Athena is Presto/Trino-based; see https://docs.aws.amazon.com/athena/latest/ug/data-types.html
 
@@ -1737,4 +1771,35 @@ fn test_parse_column_description() {
     let col = SqlType::parse_column_description(Snowflake, "price NUMBER(10,2)", true).unwrap();
     assert_eq!(col.name.unwrap().as_ref(), "price");
     assert!(matches!(col.sql_type, Numeric(Some((10, Some(2))))));
+}
+
+#[test]
+fn duckdb_renders_arrow_timestamp_units_as_its_own_types() {
+    use arrow_schema::{DataType, TimeUnit};
+
+    let render =
+        |data_type: DataType| SqlType::from_arrow_type(DuckDB, &data_type).to_string(DuckDB);
+    assert_eq!(
+        render(DataType::Timestamp(TimeUnit::Second, None)),
+        "TIMESTAMP_S"
+    );
+    assert_eq!(
+        render(DataType::Timestamp(TimeUnit::Millisecond, None)),
+        "TIMESTAMP_MS"
+    );
+    assert_eq!(
+        render(DataType::Timestamp(TimeUnit::Microsecond, None)),
+        "TIMESTAMP"
+    );
+    assert_eq!(
+        render(DataType::Timestamp(TimeUnit::Nanosecond, None)),
+        "TIMESTAMP_NS"
+    );
+    assert_eq!(
+        render(DataType::Timestamp(
+            TimeUnit::Microsecond,
+            Some("UTC".into())
+        )),
+        "TIMESTAMP WITH TIME ZONE"
+    );
 }

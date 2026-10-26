@@ -78,6 +78,25 @@ message InvocationEvalArgs {
   // resolved from --manage-state, DBT_ENGINE_MANAGE_STATE, or `flags.manage_state`
   // in dbt_project.yml / user settings.
   optional bool manage_state = 25;
+  // Whether all warnings are upgraded to errors, resolved from --warn-error,
+  // DBT_WARN_ERROR, or `flags.warn_error` in dbt_project.yml. Unset if the
+  // invocation ends before the project is loaded.
+  optional bool warn_error = 26;
+  // Resolved --warn-error-options, DBT_WARN_ERROR_OPTIONS, or
+  // `flags.warn_error_options` in dbt_project.yml. Unset if the invocation ends
+  // before the project is loaded.
+  optional InvocationWarnErrorOptions warn_error_options = 27;
+}
+
+// Resolved warn-error options. Entries use the canonical config spelling
+// (e.g. `all`, `Deprecations`, event names); `*` and `ALL` normalize to `all`.
+message InvocationWarnErrorOptions {
+  // Events or groups upgraded to errors
+  repeated string error = 1;
+  // Events or groups kept as warnings
+  repeated string warn = 2;
+  // Events or groups silenced
+  repeated string silence = 3;
 }
 
 // Invocation event holding identifying info and flattened attributes.

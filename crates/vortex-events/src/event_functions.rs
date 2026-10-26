@@ -1,8 +1,9 @@
-use dbt_common::collections::DashMap;
+use dbt_common::collections::SccHashMap;
 use dbt_common::io_args::StaticAnalysisKind;
+use dbt_common::telemetry_command::TelemetryCommand;
 use dbt_common::{
     DiscreteEventEmitter, FsResult,
-    stats::{NodeStatus, Stat},
+    stats::{ExecutionMetrics, NodeStatus, Stat},
 };
 use dbt_env::env::InternalEnv;
 use dbt_jinja_utils::invocation_args::InvocationArgs;
@@ -12,7 +13,7 @@ use dbt_schemas::{
 };
 use proto_rust::v1::public::events::fusion::{
     AdapterInfo, AdapterInfoV2, Invocation, InvocationEnv, Login, PackageInstall, ResourceCounts,
-    RunModel, StaticAnalysisInvocation,
+    RunCheck, RunModel, StaticAnalysisInvocation,
 };
 pub use proto_rust::v1::public::events::fusion::{LoginErrorCode, LoginType};
 use proto_rust::v1::public::fields::core_types::ObservabilityMetric;
@@ -50,7 +51,7 @@ impl DiscreteEventEmitter for NoopEventEmitter {
         _invocation_id: &Uuid,
         _root_project_name: &str,
         _profile_path: Option<&Path>,
-        _command: String,
+        _command: TelemetryCommand,
     ) {
         // No-op implementation
     }
@@ -86,7 +87,7 @@ impl DiscreteEventEmitter for DefaultEventEmitter {
         invocation_id: &Uuid,
         root_project_name: &str,
         profile_path: Option<&Path>,
-        command: String,
+        command: TelemetryCommand,
     ) {
         match self.enabled {
             Some(explicitly_enabled) => {
@@ -123,8 +124,9 @@ impl DiscreteEventEmitter for DefaultEventEmitter {
             project_id,
             //  user_id - UUID generated to identify a unique user (~/.dbt/.user.yml)
             user_id: profile_path.map(get_user_id).unwrap_or_default(),
-            //  command - full string of the command that was run
-            command,
+            //  command - subcommand name (dbt-core: `flags.WHICH`). Extension commands
+            //  append their arguments, with path values hashed.
+            command: command.event_value().to_string(),
             //  result_type - ok/error.
             //  only provided on invocation_end
             result_type: "".to_string(),
@@ -227,17 +229,20 @@ pub fn invocation_end_event(
 #[allow(clippy::too_many_arguments)]
 pub fn run_model_event(
     invocation_id: String,
-    run_stats: &DashMap<String, Stat>,
+    run_stats: &SccHashMap<String, Stat>,
     node: &dyn InternalDbtNodeAttributes,
     maybe_incremental_strategy: Option<String>,
+    snapshot_strategy: Option<String>,
     is_contract_enforced: bool,
     has_group: bool,
     table_format: Option<String>,
     catalog_name: Option<String>,
     catalog_type: Option<String>,
+    compute_mode: String,
+    execution_metrics: Option<ExecutionMetrics>,
 ) {
     let unique_id = node.unique_id();
-    if !run_stats.contains_key(&unique_id) {
+    let Some(stat) = run_stats.read_sync(&unique_id, |_, stat| stat.clone()) else {
         // Seeds are expected to not have stats. Any other node type missing
         // stats indicates a bug (see PR #9146 regression).
         debug_assert!(
@@ -245,8 +250,7 @@ pub fn run_model_event(
             "run_stats missing for non-seed node {unique_id} — telemetry will be skipped"
         );
         return;
-    }
-    let stat = run_stats.get(&unique_id).unwrap();
+    };
     let access = node
         .get_access()
         .as_ref()
@@ -351,6 +355,12 @@ pub fn run_model_event(
         catalog_name: catalog_name.unwrap_or_default(),
         catalog_type: catalog_type.unwrap_or_default(),
         common_context: None,
+        compute_mode,
+        rows_affected: execution_metrics.and_then(|m| m.rows_affected),
+        snapshot_strategy: snapshot_strategy.unwrap_or_default(),
+        bytes_processed: execution_metrics.and_then(|m| m.bytes_processed),
+        bytes_billed: execution_metrics.and_then(|m| m.bytes_billed),
+        slot_ms: execution_metrics.and_then(|m| m.slot_ms),
     };
 
     let _ = log_proto(message);
@@ -453,6 +463,7 @@ pub fn resource_counts_event(
     let group_count = resolved_state.nodes.groups.len() as i32;
     let unit_test_count = resolved_state.nodes.unit_tests.len() as i32;
     let exposure_count = resolved_state.nodes.exposures.len() as i32;
+    let check_count = resolved_state.nodes.checks.len() as i32;
 
     // to-be-implemented
     let metric_count = 0;
@@ -494,6 +505,8 @@ pub fn resource_counts_event(
         saved_queries: saved_query_count,
         // total count of catalogs in the project.
         catalogs: catalog_count,
+        // total count of checks in the project.
+        checks: check_count,
         // This field is a toggle to enable enrichment of the message by the Vortex service.
         enrichment: None,
         common_context: None,
@@ -709,6 +722,44 @@ pub fn static_analysis_propagation_event(
         strict_node_count: strict_count as i32,
         baseline_node_count: baseline_count as i32,
         off_node_count: off_count as i32,
+        common_context: None,
+    };
+
+    let _ = log_proto(message);
+}
+
+/// One project check's result, as reported to telemetry by [`run_check_event`].
+pub struct RunCheckEventArgs<'a> {
+    pub invocation_id: String,
+    pub unique_id: &'a str,
+    /// `pass` | `fail` | `warn` | `error` | `skipped`.
+    pub status: &'a str,
+    /// `error` | `warn`.
+    pub severity: &'a str,
+    /// Why the check was skipped or errored; `None` for `pass` | `fail` | `warn`.
+    pub reason: Option<&'a str>,
+    /// How the node selection bore on the check's rows: `none` | `applied` | `ignored` | `unknown`.
+    pub selection: &'a str,
+    pub violations: Option<u64>,
+    pub execution_time: f64,
+}
+
+/// Emit one `RunCheck` event for a single project check, including one that did not run.
+pub fn run_check_event(args: RunCheckEventArgs<'_>) {
+    let message = RunCheck {
+        enrichment: None,
+        event_id: Uuid::new_v4().to_string(),
+        invocation_id: args.invocation_id,
+        // MD5 hash of the unique_id, matching RunModel's `model_id`.
+        check_id: format!("{:x}", md5::compute(args.unique_id)),
+        status: args.status.to_string(),
+        severity: args.severity.to_string(),
+        violations: args
+            .violations
+            .map(|v| i64::try_from(v).unwrap_or(i64::MAX)),
+        execution_time: args.execution_time,
+        reason: args.reason.unwrap_or_default().to_string(),
+        selection: args.selection.to_string(),
         common_context: None,
     };
 

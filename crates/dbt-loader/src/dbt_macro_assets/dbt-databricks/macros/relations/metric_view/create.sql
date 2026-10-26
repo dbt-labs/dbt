@@ -3,7 +3,7 @@
 {%- endmacro %}
 
 {% macro databricks__get_create_metric_view_as_sql(relation, sql) %}
-{%- set yaml_body = adapter.yaml_quote_backtick_values(sql) -%}
+{%- set yaml_body = databricks__yaml_quote_backtick_values(sql) -%}
 create or replace view {{ relation.render() }}
 with metrics
 language yaml
