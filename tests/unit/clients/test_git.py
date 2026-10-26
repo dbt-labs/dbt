@@ -136,6 +136,19 @@ class TestCredentialsDoNotReachCommandLine:
         assert fetches[0].kwargs["env"]["DBT_GIT_CREDENTIAL_USERNAME"] == "ghp_abc123"
         assert not any("ghp_abc123" in " ".join(c.args[1]) for c in run_cmd.call_args_list)
 
+    @mock.patch("dbt.clients.git.list_tags", return_value=[])
+    @mock.patch("dbt.clients.git.run_cmd")
+    def test_reset_gets_credential_env(self, run_cmd, _list_tags):
+        # in a blobless subdirectory clone, reset fetches missing blobs from origin
+        run_cmd.return_value = (b"", b"")
+
+        git._checkout("/cwd", "https://ghp_abc123@github.com/dbt-labs/repo.git", "main")
+
+        resets = [c for c in run_cmd.call_args_list if c.args[1][:2] == ["git", "reset"]]
+        assert len(resets) == 1
+        assert resets[0].kwargs["env"]["DBT_GIT_CREDENTIAL_USERNAME"] == "ghp_abc123"
+        assert resets[0].kwargs["env"]["LC_ALL"] == "C"
+
     @mock.patch("dbt.clients.git.run_cmd")
     def test_sparse_checkout_gets_credential_env(self, run_cmd):
         run_cmd.return_value = (b"git version 2.55.0", b"")
