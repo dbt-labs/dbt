@@ -70,14 +70,14 @@ pub fn str_from_sqlstate(sqlstate: &[c_char; 5]) -> &str {
     res.unwrap_or("")
 }
 
-pub const SNOWFLAKE_DRIVER_VERSION: &str = "0.21.0.dev+dbt0.21.18";
+pub const SNOWFLAKE_DRIVER_VERSION: &str = "0.21.0.dev+dbt0.21.21";
 /// Legacy driver built from `dbt-labs/arrow-adbc` repository
-pub const BIGQUERY_DRIVER_VERSION: &str = "0.21.0.dev+dbt0.21.22";
+pub const BIGQUERY_DRIVER_VERSION: &str = "0.21.0.dev+dbt0.21.23";
 /// Built from `dbt-labs/bigquery-adbc repository
 pub const BIGQUERY_FOUNDRY_DRIVER_VERSION: &str = "0.21.0.dev+dbt0.1.10";
 pub const POSTGRES_DRIVER_VERSION: &str = "0.21.0+dbt0.21.0";
-pub const DATABRICKS_DRIVER_VERSION: &str = "0.21.0.dev+dbt0.21.13";
-pub const REDSHIFT_DRIVER_VERSION: &str = "0.21.0.dev+dbt0.18.10";
+pub const DATABRICKS_DRIVER_VERSION: &str = "0.21.0.dev+dbt0.21.15";
+pub const REDSHIFT_DRIVER_VERSION: &str = "0.21.0.dev+dbt0.18.11";
 pub const DUCKDB_DRIVER_VERSION: &str = "1.5.4";
 pub const DUCKDB_EXTENDED_DRIVER_VERSION: &str = "0.21.0.dev+dbt0.0.32";
 pub const LAKE_COMPUTE_DRIVER_VERSION: &str = "0.4.0+dbt0.1.13.g2679dc0";
