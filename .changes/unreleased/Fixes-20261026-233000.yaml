@@ -1,0 +1,8 @@
+kind: Fixes
+body: Fix `dbt deps` failing with "could not read Username" when installing a git
+  package from a `subdirectory` with credentials in the URL, by supplying credentials
+  to the checkout's `git reset --hard` as well
+time: 2026-10-26T23:30:00.000000+05:30
+custom:
+    Author: ash2shukla
+    Issue: "16861"
