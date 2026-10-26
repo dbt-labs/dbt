@@ -1,0 +1,6 @@
+kind: Fixes
+body: Ignore manifest nodes with resource types dbt-core doesn't support, such as dbt v2 checks, when loading a manifest for --state and --defer
+time: 2026-10-22T21:53:43.476637+05:30
+custom:
+    Author: aahel
+    Issue: "16849"
