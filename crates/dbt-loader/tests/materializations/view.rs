@@ -31,6 +31,7 @@ fn build_view_harness(adapter_type: AdapterType) -> MacroTestHarness {
         .load_all_macros()
         .with_stub_functions()
         .with_behavior_flag("use_materialization_v2", false)
+        .with_global("flags", flags_for("run"))
         .build()
         .expect("harness should build");
 
@@ -50,6 +51,10 @@ fn build_view_harness(adapter_type: AdapterType) -> MacroTestHarness {
     mock.on("has_dbr_capability", |_| Ok(Value::from(false)));
 
     harness
+}
+
+fn flags_for(command: &str) -> Value {
+    Value::from_serialize(BTreeMap::from([("WHICH", command)]))
 }
 
 fn render_view(
@@ -473,6 +478,23 @@ mod databricks {
         }
     }
 
+    fn render_new_view_under(
+        command: &str,
+        config: Arc<MockJinjaObject>,
+        model: Value,
+    ) -> (MacroTestHarness, dbt_common::FsResult<String>) {
+        let harness = build_view_harness(ADAPTER);
+        harness.mock().on("get_relation", |_| Ok(Value::from(())));
+        let ctx = harness
+            .materialization_context("my_view", "select * from prod_schema.my_view")
+            .config(Value::from_dyn_object(config))
+            .with("model", model)
+            .with("flags", flags_for(command))
+            .build();
+        let result = render_view(&harness, ADAPTER, ctx);
+        (harness, result)
+    }
+
     fn contract_enforced_config() -> Arc<MockJinjaObject> {
         let mock = default_mock_config();
         mock.on("get", |args| {
@@ -492,17 +514,11 @@ mod databricks {
     #[test]
     fn enforced_contract_is_not_asserted_under_clone() {
         for (command, asserted) in [("run", true), ("clone", false)] {
-            let harness = build_view_harness(ADAPTER);
-            harness.mock().on("get_relation", |_| Ok(Value::from(())));
-            let ctx = harness
-                .materialization_context("my_view", "select * from prod_schema.my_view")
-                .config(Value::from_dyn_object(contract_enforced_config()))
-                .with(
-                    "flags",
-                    Value::from_serialize(BTreeMap::from([("WHICH", command)])),
-                )
-                .build();
-            let result = render_view(&harness, ADAPTER, ctx);
+            let (harness, result) = render_new_view_under(
+                command,
+                contract_enforced_config(),
+                governed_model("view", false),
+            );
             if asserted {
                 let error = result.expect_err("run must assert the enforced contract");
                 assert!(
@@ -512,6 +528,70 @@ mod databricks {
             } else {
                 result.unwrap_or_else(|e| panic!("{command}: clone must skip the contract: {e}"));
                 assert_executed_contains(harness.mock(), "create or replace view");
+            }
+        }
+    }
+
+    fn governed_model(materialized: &str, masked: bool) -> Value {
+        let columns = if masked {
+            BTreeMap::from([(
+                "msg",
+                BTreeMap::from([("column_mask", BTreeMap::from([("function", "mask_msg")]))]),
+            )])
+        } else {
+            BTreeMap::new()
+        };
+        Value::from_serialize(BTreeMap::from([
+            ("alias", Value::from("my_view")),
+            ("unique_id", Value::from("model.test_project.my_view")),
+            ("columns", Value::from_serialize(columns)),
+            (
+                "config",
+                Value::from_serialize(BTreeMap::from([("materialized", materialized)])),
+            ),
+        ]))
+    }
+
+    #[test]
+    fn clone_skips_policy_rejection_only_for_materialized_views_and_streaming_tables() {
+        let cases = [
+            ("run", "view", true),
+            ("run", "materialized_view", true),
+            ("clone", "view", true),
+            ("clone", "materialized_view", false),
+            ("clone", "streaming_table", false),
+        ];
+        for (command, materialized, rejected) in cases {
+            for (policy, masked, message) in [
+                (
+                    "column mask",
+                    true,
+                    "Column masks are not supported for views.",
+                ),
+                (
+                    "row filter",
+                    false,
+                    "Row filters are not supported for views.",
+                ),
+            ] {
+                let config = if masked {
+                    default_mock_config()
+                } else {
+                    update_via_alter_with_row_filter_config()
+                };
+                let (harness, result) =
+                    render_new_view_under(command, config, governed_model(materialized, masked));
+                let case = format!("{command}/{materialized}/{policy}");
+                if rejected {
+                    let error = result.expect_err(&format!("{case}: must be rejected"));
+                    assert!(
+                        error.to_string().contains(message),
+                        "{case}: unexpected error {error}"
+                    );
+                } else {
+                    result.unwrap_or_else(|e| panic!("{case}: must clone as a view: {e}"));
+                    assert_executed_contains(harness.mock(), "create or replace view");
+                }
             }
         }
     }
