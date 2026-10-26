@@ -1940,6 +1940,20 @@
             }
           ]
         },
+        "use_materialization_v2": {
+          "anyOf": [
+            {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            {
+              "type": "string",
+              "pattern": "^\\{.*\\}$"
+            }
+          ]
+        },
         "use_safer_relation_operations": {
           "anyOf": [
             {
@@ -3880,6 +3894,20 @@
             },
             {
               "type": "null"
+            }
+          ]
+        },
+        "use_materialization_v2": {
+          "anyOf": [
+            {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            {
+              "type": "string",
+              "pattern": "^\\{.*\\}$"
             }
           ]
         },
@@ -6226,6 +6254,20 @@
             }
           ]
         },
+        "use_materialization_v2": {
+          "anyOf": [
+            {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            {
+              "type": "string",
+              "pattern": "^\\{.*\\}$"
+            }
+          ]
+        },
         "use_safer_relation_operations": {
           "anyOf": [
             {
@@ -8217,6 +8259,20 @@
             }
           ]
         },
+        "use_materialization_v2": {
+          "anyOf": [
+            {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            {
+              "type": "string",
+              "pattern": "^\\{.*\\}$"
+            }
+          ]
+        },
         "use_safer_relation_operations": {
           "anyOf": [
             {
@@ -9471,6 +9527,20 @@
             "null"
           ]
         },
+        "use_materialization_v2": {
+          "anyOf": [
+            {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            {
+              "type": "string",
+              "pattern": "^\\{.*\\}$"
+            }
+          ]
+        },
         "use_safer_relation_operations": {
           "anyOf": [
             {
@@ -10571,6 +10641,20 @@
           ]
         },
         "transient": {
+          "anyOf": [
+            {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            {
+              "type": "string",
+              "pattern": "^\\{.*\\}$"
+            }
+          ]
+        },
+        "use_materialization_v2": {
           "anyOf": [
             {
               "type": [
@@ -11892,6 +11976,20 @@
           ]
         },
         "transient": {
+          "anyOf": [
+            {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            {
+              "type": "string",
+              "pattern": "^\\{.*\\}$"
+            }
+          ]
+        },
+        "use_materialization_v2": {
           "anyOf": [
             {
               "type": [

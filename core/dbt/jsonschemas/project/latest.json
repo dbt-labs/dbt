@@ -3975,6 +3975,21 @@
             }
           ]
         },
+        "+use_materialization_v2": {
+          "anyOf": [
+            {
+              "default": null,
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            {
+              "type": "string",
+              "pattern": "^\\{.*\\}$"
+            }
+          ]
+        },
         "+use_safer_relation_operations": {
           "anyOf": [
             {
