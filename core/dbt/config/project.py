@@ -41,6 +41,8 @@ from dbt.utils import MultiDict, coerce_dict_str, md5
 from dbt.version import get_installed_version
 from dbt_common.clients.system import load_file_contents, path_exists
 from dbt_common.dataclass_schema import ValidationError
+from dbt_common.events.functions import fire_event
+from dbt_common.events.types import Note
 from dbt_common.exceptions import SemverError
 from dbt_common.helper_types import NoValue
 from dbt_common.semver import VersionSpecifier, versions_compatible
@@ -228,7 +230,24 @@ def value_or(value: Optional[T], default: T) -> T:
         return value
 
 
-def load_raw_project(project_root: str, validate: bool = False) -> Dict[str, Any]:
+V2_ONLY_PROJECT_KEYS = ("info_schema", "check-paths", "checks")
+
+
+def _drop_v2_only_project_keys(project_dict: Dict[str, Any], note: bool) -> Dict[str, Any]:
+    for key in V2_ONLY_PROJECT_KEYS:
+        if note and key in project_dict:
+            fire_event(
+                Note(
+                    msg=f"{key} in project '{project_dict.get('name')}' is not being used "
+                    "because it's specific to the dbt v2 engine."
+                )
+            )
+    return {k: v for k, v in project_dict.items() if k not in V2_ONLY_PROJECT_KEYS}
+
+
+def load_raw_project(
+    project_root: str, validate: bool = False, note_v2_only_keys: bool = False
+) -> Dict[str, Any]:
     project_root = os.path.normpath(project_root)
     project_yaml_filepath = os.path.join(project_root, DBT_PROJECT_FILE_NAME)
 
@@ -241,6 +260,9 @@ def load_raw_project(project_root: str, validate: bool = False) -> Dict[str, Any
         )
 
     project_dict = _load_yaml(project_yaml_filepath, validate=validate)
+
+    if isinstance(project_dict, dict):
+        project_dict = _drop_v2_only_project_keys(project_dict, note_v2_only_keys)
 
     if validate:
         from dbt.jsonschemas.jsonschemas import jsonschema_validate, project_schema
@@ -640,10 +662,17 @@ class PartialProject(RenderComponents):
 
     @classmethod
     def from_project_root(
-        cls, project_root: str, *, verify_version: bool = False, validate: bool = False
+        cls,
+        project_root: str,
+        *,
+        verify_version: bool = False,
+        validate: bool = False,
+        note_v2_only_keys: bool = False,
     ) -> "PartialProject":
         project_root = os.path.normpath(project_root)
-        project_dict = load_raw_project(project_root, validate=validate)
+        project_dict = load_raw_project(
+            project_root, validate=validate, note_v2_only_keys=note_v2_only_keys
+        )
         (
             packages_dict,
             packages_specified_path,
@@ -842,8 +871,12 @@ class Project:
         validate: bool = False,
         vars_from_file: Optional[Dict[str, Any]] = None,
     ) -> "Project":
+        # Runs once per project per invocation, after the event logger is set up.
         partial = PartialProject.from_project_root(
-            project_root, verify_version=verify_version, validate=validate
+            project_root,
+            verify_version=verify_version,
+            validate=validate,
+            note_v2_only_keys=True,
         )
 
         # Check mutual exclusivity before rendering

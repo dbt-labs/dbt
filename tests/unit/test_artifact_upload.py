@@ -4,8 +4,13 @@ import uuid
 from unittest import mock
 from unittest.mock import MagicMock, call, patch
 
-from dbt.constants import MANIFEST_FILE_NAME, RUN_RESULTS_FILE_NAME
+from dbt.constants import (
+    MANIFEST_FILE_NAME,
+    RUN_RESULTS_FILE_NAME,
+    SEMANTIC_MANIFEST_FILE_NAME,
+)
 from dbt.exceptions import DbtProjectError
+from dbt.parser.manifest import write_semantic_manifest
 from dbt.utils.artifact_upload import (
     PRODUCED_ARTIFACTS_PATHS,
     ArtifactUploadConfig,
@@ -519,6 +524,25 @@ class TestUploadArtifacts(unittest.TestCase):
         with self.assertRaises(DbtBaseException) as context:
             upload_artifacts(self.project_dir, self.target_path, self.command)
         self.assertIn("Error completing ingest", str(context.exception))
+
+
+class TestWriteSemanticManifestRegistersArtifact(unittest.TestCase):
+    def setUp(self):
+        self.target_path = "/fake/project/dir/target"
+        PRODUCED_ARTIFACTS_PATHS.clear()
+
+    def tearDown(self):
+        PRODUCED_ARTIFACTS_PATHS.clear()
+
+    @patch("dbt.parser.manifest.SemanticManifest")
+    def test_write_semantic_manifest_registers_artifact(self, mock_semantic_manifest):
+        write_semantic_manifest(manifest=MagicMock(), target_path=self.target_path)
+
+        expected_path = os.path.join(self.target_path, SEMANTIC_MANIFEST_FILE_NAME)
+        mock_semantic_manifest.return_value.write_json_to_file.assert_called_once_with(
+            expected_path
+        )
+        self.assertIn(expected_path, PRODUCED_ARTIFACTS_PATHS)
 
 
 if __name__ == "__main__":
