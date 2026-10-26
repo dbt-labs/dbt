@@ -1,7 +1,9 @@
 import os
+from unittest import mock
 
 import pytest
 
+from dbt.clients import git as git_client
 from dbt.exceptions import DbtInternalError, ParsingError
 from dbt.tests.util import read_file, run_dbt, run_dbt_and_capture
 from dbt_common.constants import SECRET_ENV_PREFIX
@@ -173,10 +175,26 @@ class TestCloneFailSecretNotRendered(TestCloneFailSecretScrubbed):
         }
 
     def test_fail_clone_with_scrubbing(self, project):
-        with pytest.raises(DbtInternalError) as excinfo:
-            _, log_output = run_dbt_and_capture(["deps"])
+        # credentials reach git through the environment now, not the clone URL,
+        # so spy on the commands to see what was actually handed over
+        with mock.patch.object(
+            git_client, "run_cmd", side_effect=git_client.run_cmd
+        ) as run_cmd_spy:
+            with pytest.raises(DbtInternalError) as excinfo:
+                run_dbt_and_capture(["deps"])
 
-        # we should not see any manipulated form of the secret value (abc123) here
-        # we should see a manipulated form of the placeholder instead
+        # the error message carries neither the secret nor the credentials
         assert "a b c 1 2 3" not in str(excinfo.value)
-        assert "D B T _ E N V _ S E C R E T _ G I T _ T O K E N" in str(excinfo.value)
+        assert "fakeuser" not in str(excinfo.value)
+
+        passwords = [
+            call.kwargs["env"]["DBT_GIT_CREDENTIAL_PASSWORD"]
+            for call in run_cmd_spy.call_args_list
+            if "DBT_GIT_CREDENTIAL_PASSWORD" in (call.kwargs.get("env") or {})
+        ]
+        assert passwords, "no git command was given credentials"
+        for password in passwords:
+            # we should not see any manipulated form of the secret value (abc123) here
+            # we should see a manipulated form of the placeholder instead
+            assert "a b c 1 2 3" not in password
+            assert "D B T _ E N V _ S E C R E T _ G I T _ T O K E N" in password
