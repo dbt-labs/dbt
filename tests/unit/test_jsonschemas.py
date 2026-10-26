@@ -178,6 +178,7 @@ class TestDatabricksConfigKeys:
         "use_safer_relation_operations": True,
         "unique_tmp_table_suffix": True,
         "skip_optimize": True,
+        "use_materialization_v2": True,
     }
 
     def test_model_config_no_warning(self):
