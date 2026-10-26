@@ -31,6 +31,7 @@ fn build_view_harness(adapter_type: AdapterType) -> MacroTestHarness {
         .load_all_macros()
         .with_stub_functions()
         .with_behavior_flag("use_materialization_v2", false)
+        .with_global("flags", flags_for("run"))
         .build()
         .expect("harness should build");
 
@@ -50,6 +51,10 @@ fn build_view_harness(adapter_type: AdapterType) -> MacroTestHarness {
     mock.on("has_dbr_capability", |_| Ok(Value::from(false)));
 
     harness
+}
+
+fn flags_for(command: &str) -> Value {
+    Value::from_serialize(BTreeMap::from([("WHICH", command)]))
 }
 
 fn render_view(

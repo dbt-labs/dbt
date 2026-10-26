@@ -1,13 +1,17 @@
 {% macro validate_view_model(sql) %}
-  {% if column_mask_exists() %}
-    {% do exceptions.raise_compiler_error("Column masks are not supported for views.") %}
-  {% endif %}
-  {% if row_filter_exists() %}
-    {% do exceptions.raise_compiler_error("Row filters are not supported for views.") %}
-  {% endif %}
+  {#-- A cloned view is select * over the deferred relation; MVs and STs keep their own policies there --#}
+  {%- set is_clone = flags.WHICH == 'clone' -%}
+  {%- if not (is_clone and model.config.materialized in ['materialized_view', 'streaming_table']) -%}
+    {%- if column_mask_exists() -%}
+      {%- do exceptions.raise_compiler_error("Column masks are not supported for views.") -%}
+    {%- endif -%}
+    {%- if row_filter_exists() -%}
+      {%- do exceptions.raise_compiler_error("Row filters are not supported for views.") -%}
+    {%- endif -%}
+  {%- endif -%}
   {%- set contract_config = config.get('contract') -%}
-  {#-- A cloned view is select * over the deferred relation, whose columns may differ from the current contract --#}
-  {%- if contract_config and contract_config.enforced and flags.WHICH != 'clone' -%}
+  {#-- The deferred relation's columns may differ from the current contract --#}
+  {%- if contract_config and contract_config.enforced and not is_clone -%}
     {%- do get_assert_columns_equivalent(sql) -%}
   {%- endif -%}
 {% endmacro %}
