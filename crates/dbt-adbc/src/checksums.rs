@@ -1221,16 +1221,32 @@ pub static SORTED_CDN_DRIVER_CHECKSUMS: [(
         "7e356f8f2f89a89b7a5c45fc255e8c5429f934b634e6071c689fad323a0f0de4",
     ),
     (
+        ("mssql", "apple-darwin", "aarch64", "1.7.1"),
+        "679b76a88a3def84819ceb1a62865bff60c8d0d91980e34672d033faaafbcae6",
+    ),
+    (
         ("mssql", "manylinux_2_17-linux-gnu", "aarch64", "1.3.1"),
         "cb3f81b8a220fb5659f1f9d3516b8cb15742326fb900df01b18cb68bb0dd0e96",
+    ),
+    (
+        ("mssql", "manylinux_2_17-linux-gnu", "aarch64", "1.7.1"),
+        "e30b63b473c0b00c5d751e2fc239f4a93f621e1ac84b641f801d3fd3bf337921",
     ),
     (
         ("mssql", "manylinux_2_17-linux-gnu", "x86_64", "1.3.1"),
         "8714af2a435e4de896192fa89336dde1461ff127fd1375b07be33a8da4e7da30",
     ),
     (
+        ("mssql", "manylinux_2_17-linux-gnu", "x86_64", "1.7.1"),
+        "19ba44e6824941b3dfd86a8a46b796d4ffd81f9c6c9940ffcd44b1bb9c59c7c1",
+    ),
+    (
         ("mssql", "pc-windows-msvc", "x86_64", "1.3.1"),
         "bcb6b0235297c0797e0cd0999fe1cf79d35c6b45e4abf33b9cae0252fc2a8cd3",
+    ),
+    (
+        ("mssql", "pc-windows-msvc", "x86_64", "1.7.1"),
+        "685359c2d25212b9be237809c9cdf89bc388709345f7a89c9ff50cfe6f25b09d",
     ),
     (
         ("postgresql", "apple-darwin", "aarch64", "0.18.0+dbt0.0.3"),

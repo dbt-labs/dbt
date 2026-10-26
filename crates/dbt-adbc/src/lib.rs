@@ -84,7 +84,7 @@ pub const LAKE_COMPUTE_DRIVER_VERSION: &str = "0.4.0+dbt0.1.13.g2679dc0";
 pub const CLICKHOUSE_DRIVER_VERSION: &str = "0.1.1";
 pub const SALESFORCE_DRIVER_VERSION: &str = "0.21.0.dev+dbt0.22.1";
 pub const SPARK_DRIVER_VERSION: &str = "0.21.0.dev+dbt0.1.4";
-pub const MSSQLSERVER_DRIVER_VERSION: &str = "1.3.1";
+pub const MSSQLSERVER_DRIVER_VERSION: &str = "1.7.1";
 pub const EXASOL_DRIVER_VERSION: &str = "0.9.0";
 
 pub use install::pre_install_all_drivers;
