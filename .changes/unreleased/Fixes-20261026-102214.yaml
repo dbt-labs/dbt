@@ -1,0 +1,7 @@
+kind: Fixes
+body: dbt clone no longer fails on Databricks views whose enforced contract changed since the deferred state
+time: 2026-10-26T10:22:14.086541+05:30
+custom:
+    author: sd-db
+    issue: "16888"
+    project: dbt-core

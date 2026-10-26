@@ -6,7 +6,8 @@
     {% do exceptions.raise_compiler_error("Row filters are not supported for views.") %}
   {% endif %}
   {%- set contract_config = config.get('contract') -%}
-  {%- if contract_config and contract_config.enforced -%}
+  {#-- A cloned view is select * over the deferred relation, whose columns may differ from the current contract --#}
+  {%- if contract_config and contract_config.enforced and flags.WHICH != 'clone' -%}
     {%- do get_assert_columns_equivalent(sql) -%}
   {%- endif -%}
 {% endmacro %}
