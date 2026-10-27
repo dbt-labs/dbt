@@ -5402,6 +5402,20 @@
             "null"
           ]
         },
+        "+fast": {
+          "anyOf": [
+            {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            {
+              "type": "string",
+              "pattern": "^\\{.*\\}$"
+            }
+          ]
+        },
         "+file_format": {
           "type": [
             "string",
