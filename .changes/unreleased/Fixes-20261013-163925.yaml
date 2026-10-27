@@ -1,0 +1,9 @@
+kind: Fixes
+body: Macro namespace resolution no longer lets an internal search_package shadow
+  adapter or root overrides. When search_package is itself an internal package
+  (e.g. dbt or dbt_postgres), the adapter override is now consistently preferred
+  over the base dbt implementation, and a root-project macro always wins.
+time: 2026-10-13T16:39:25.938064+02:00
+custom:
+    Author: piotrbator2
+    Issue: "16540"
