@@ -567,6 +567,66 @@ def test_macro_namespace_package_name_collides_with_macro(config_postgres, manif
         namespace.get_from_package("only_a_macro", "some_macro")
 
 
+def _mbp_with_adapter_override(manifest_fx):
+    """A global macro (`statement`) defined by dbt and re-defined by the adapter."""
+    mbp = manifest_fx.get_macros_by_package()
+    dbt_macro = mock_macro("statement", "dbt")
+    pg_macro = mock_macro("statement", "dbt_postgres")
+    mbp["dbt"] = {"statement": dbt_macro}
+    mbp["dbt_postgres"] = {"statement": pg_macro}
+    return mbp, dbt_macro, pg_macro
+
+
+@pytest.mark.parametrize("search_package", ["dbt", "dbt_postgres"])
+def test_macro_namespace_internal_search_package_prefers_adapter(
+    config_postgres, manifest_fx, search_package
+):
+    mbp, _, pg_macro = _mbp_with_adapter_override(manifest_fx)
+    mn = macros.MacroNamespaceBuilder(
+        "root", search_package, MacroStack(), ["dbt_postgres", "dbt"]
+    )
+
+    namespace = mn.build_namespace(mbp, {})
+
+    # internal packages are searched in adapter order, whatever the search package
+    assert namespace["statement"].macro is pg_macro
+    assert namespace["dbt"]["statement"].macro is pg_macro
+
+
+@pytest.mark.parametrize("search_package", ["dbt", "dbt_postgres"])
+def test_macro_namespace_internal_search_package_root_override_wins(
+    config_postgres, manifest_fx, search_package
+):
+    mbp, _, _ = _mbp_with_adapter_override(manifest_fx)
+    root_macro = mock_macro("statement", "root")
+    mbp["root"]["statement"] = root_macro
+    mn = macros.MacroNamespaceBuilder(
+        "root", search_package, MacroStack(), ["dbt_postgres", "dbt"]
+    )
+
+    namespace = mn.build_namespace(mbp, {})
+
+    # a root-project override of a builtin still wins inside dbt's own macros
+    assert namespace["statement"].macro is root_macro
+
+
+def test_runtime_macro_context_for_global_macro_prefers_adapter(
+    config_postgres, get_adapter, get_include_paths
+):
+    list_schemas = mock_macro("list_schemas", "dbt")
+    dbt_statement = mock_macro("statement", "dbt")
+    pg_statement = mock_macro("statement", "dbt_postgres")
+    manifest = mock_manifest(
+        config_postgres, additional_macros=[list_schemas, dbt_statement, pg_statement]
+    )
+
+    ctx = providers.generate_runtime_macro_context(
+        macro=list_schemas, config=config_postgres, manifest=manifest, package_name=None
+    )
+
+    assert ctx["statement"].macro is pg_statement
+
+
 def test_dbt_metadata_envs(
     monkeypatch, config_postgres, manifest_fx, get_adapter, get_include_paths
 ):
