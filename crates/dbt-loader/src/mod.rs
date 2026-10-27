@@ -3,6 +3,7 @@ mod deps;
 mod load_packages;
 mod load_profiles;
 mod load_vars;
+mod require_dbt_version;
 mod upload_artifact_ingest;
 
 pub mod loader;

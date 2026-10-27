@@ -179,6 +179,10 @@ pub enum ErrorCode {
     SemanticModelDeprecated = 1157,
     PackageMissingProjectFile = 1158,
     DbtYamlValidationError = 1159,
+    /// Root `dbt_project.yml` `require-dbt-version` does not include the running dbt version.
+    RequireDbtVersionMismatch = 1160,
+    /// Root `dbt_project.yml` `require-dbt-version` has a specifier this check cannot parse.
+    RequireDbtVersionUnparseable = 1161,
 
     // Network/HTTP [1200–1249]
     NetworkError = 1200,

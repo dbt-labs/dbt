@@ -1,0 +1,7 @@
+kind: Fixes
+body: dbt warns when the root project's `require-dbt-version` excludes the running dbt version. Set `--no-version-check` to skip the warning.
+time: 2026-10-17T11:29:42.801669+09:00
+custom:
+    author: yu-iskw
+    issue: "16628"
+    project: dbt-core
