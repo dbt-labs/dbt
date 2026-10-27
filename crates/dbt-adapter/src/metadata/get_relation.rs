@@ -83,6 +83,9 @@ pub fn get_relation(
         AdapterType::Exasol => exasol_get_relation(
             adapter, state, ctx, conn, database, schema, identifier, token,
         ),
+        AdapterType::MariaDB => mariadb_get_relation(
+            adapter, state, ctx, conn, database, schema, identifier, token,
+        ),
         AdapterType::Starburst => todo!("Starburst"),
         AdapterType::Athena => todo!("Athena"),
         AdapterType::Trino => todo!("Trino"),
@@ -892,6 +895,52 @@ fn exasol_get_relation(
     };
     let relation = do_create_relation(
         AdapterType::Exasol,
+        database.to_string(),
+        schema.to_string(),
+        Some(identifier.to_string()),
+        relation_type,
+        adapter.quoting(),
+    )?;
+    Ok(Some(relation))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn mariadb_get_relation(
+    adapter: &AdapterImpl,
+    state: &State,
+    ctx: &QueryCtx,
+    conn: &mut ConnectionGuard<'_>,
+    database: &str,
+    schema: &str,
+    identifier: &str,
+    token: CancellationToken,
+) -> AdapterResult<Option<Box<dyn BaseRelation>>> {
+    // MariaDB stores identifiers verbatim, so match exactly. Since 11.2 the
+    // session's TEMPORARY tables are listed too; they can shadow a real
+    // table of the same name, so keep only persistent relations.
+    let q_schema = dbt_adapter_sql::ident::escape_string_literal(schema, AdapterType::MariaDB);
+    let q_ident = dbt_adapter_sql::ident::escape_string_literal(identifier, AdapterType::MariaDB);
+
+    let sql = format!(
+        "select table_type as table_type from information_schema.tables \
+         where table_schema = '{q_schema}' and table_name = '{q_ident}' \
+         and table_type in ('BASE TABLE', 'SYSTEM VERSIONED', 'VIEW')"
+    );
+    let batch = adapter
+        .engine()
+        .execute(Some(state), conn.as_mut(), ctx, &sql, token)?;
+    if batch.num_rows() == 0 {
+        return Ok(None);
+    }
+
+    let arr = batch.column_values::<StringArray>("table_type")?;
+    let relation_type = match arr.value(0) {
+        "BASE TABLE" | "SYSTEM VERSIONED" => Some(RelationType::Table),
+        "VIEW" => Some(RelationType::View),
+        other => return invalid_value!("Unsupported relation type {}", other),
+    };
+    let relation = do_create_relation(
+        AdapterType::MariaDB,
         database.to_string(),
         schema.to_string(),
         Some(identifier.to_string()),

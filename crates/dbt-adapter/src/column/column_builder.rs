@@ -31,7 +31,7 @@ impl ColumnBuilder {
             DuckDB | LakeCompute => Self::build_duckdb(field, type_ops),
             Fabric => Ok(Self::build_fabric(field, type_ops)),
             ClickHouse => Self::build_clickhouse(field, type_ops),
-            Exasol => Ok(Self::build_exasol(field, type_ops)),
+            Exasol | MariaDB => Ok(Self::build_generic(self.adapter_type, field, type_ops)),
             Starburst => todo!("Starburst"),
             Athena => todo!("Athena"),
             Trino => todo!("Trino"),
@@ -111,8 +111,8 @@ impl ColumnBuilder {
                 numeric_precision,
                 numeric_scale,
             ),
-            Exasol => Column::new(
-                Exasol,
+            Exasol | MariaDB => Column::new(
+                self.adapter_type,
                 name,
                 dtype,
                 char_size,
@@ -557,12 +557,17 @@ impl ColumnBuilder {
         ))
     }
 
-    fn build_exasol(field: &FieldRef, type_ops: &dyn TypeOps) -> Column {
-        use AdapterType::Exasol;
+    /// Column built from the Arrow field alone: sizes from the Arrow type, SQL
+    /// type rendered by `type_ops`.
+    fn build_generic(
+        adapter_type: AdapterType,
+        field: &FieldRef,
+        type_ops: &dyn TypeOps,
+    ) -> Column {
         let data_type = field.data_type();
-        let char_size = sql_types::var_size(Exasol, data_type);
+        let char_size = sql_types::var_size(adapter_type, data_type);
         let (numeric_precision, numeric_scale) = {
-            let precision_scale = sql_types::numeric_precision_scale(Exasol, data_type)
+            let precision_scale = sql_types::numeric_precision_scale(adapter_type, data_type)
                 .ok()
                 .flatten();
             match precision_scale {
@@ -581,7 +586,7 @@ impl ColumnBuilder {
         }
 
         Column::new(
-            Exasol,
+            adapter_type,
             field.name().to_string(),
             rendered_type,
             char_size.map(|p| p as u32),

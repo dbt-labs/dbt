@@ -17,7 +17,7 @@ mod tests {
     use dbt_adbc::{
         Backend, Connection, Database, Driver, Statement, athena, bigquery, connection,
         database::{self, LogLevel},
-        driver, salesforce, snowflake,
+        driver, mysql, salesforce, snowflake,
     };
     use std::collections::HashSet;
     use std::env;
@@ -166,6 +166,20 @@ mod tests {
                     .with_password(password);
                 Ok(builder)
             }
+            Backend::MySQL => {
+                let mut builder = database::Builder::new(backend);
+                let uri = env::var("ADBC_MYSQL_URI")
+                    .unwrap_or_else(|_| "mysql://localhost:3306/?tls=preferred".to_owned());
+                let username =
+                    env::var("ADBC_MYSQL_USERNAME").unwrap_or_else(|_| "root".to_owned());
+                let password = env::var("ADBC_MYSQL_PASSWORD").unwrap_or_default();
+                builder
+                    .with_parse_uri(uri)?
+                    .with_username(username)
+                    .with_password(password)
+                    .with_named_option(mysql::VENDOR, mysql::VENDOR_MARIADB)?;
+                Ok(builder)
+            }
             Backend::Generic { .. } => unimplemented!("generic backend database builder in tests"),
         }?;
         if backend == Backend::Snowflake {
@@ -283,7 +297,8 @@ mod tests {
                 | Backend::Redshift
                 | Backend::Databricks
                 | Backend::DuckDB
-                | Backend::DuckDBExtended => {
+                | Backend::DuckDBExtended
+                | Backend::MySQL => {
                     assert_eq!(batch.column(0).as_primitive::<Int32Type>().value(0), 42);
                 }
                 Backend::ClickHouse => {
@@ -875,5 +890,11 @@ mod tests {
     #[test]
     fn statement_execute_exasol() -> Result<()> {
         execute_statement(Backend::Exasol)
+    }
+
+    #[test_with::env(ADBC_MYSQL_URI)]
+    #[test]
+    fn statement_execute_mysql() -> Result<()> {
+        execute_statement(Backend::MySQL)
     }
 }

@@ -10,7 +10,8 @@ use dbt_adapter_core::AdapterType;
 use dbt_common::{ErrorCode, FsResult, fs_err};
 use dbt_schemas::schemas::profiles::{
     BigqueryDbConfig, ClickHouseDbConfig, DatabricksDbConfig, DbConfig, DuckDbConfig,
-    ExasolDbConfig, FabricDbConfig, PostgresDbConfig, RedshiftDbConfig, SnowflakeDbConfig,
+    ExasolDbConfig, FabricDbConfig, MariaDbConfig, PostgresDbConfig, RedshiftDbConfig,
+    SnowflakeDbConfig,
 };
 use dbt_schemas::schemas::serde::StringOrInteger;
 
@@ -30,6 +31,7 @@ pub fn supported_adapters() -> Vec<AdapterType> {
         AdapterType::ClickHouse,
         AdapterType::DuckDB,
         AdapterType::Exasol,
+        AdapterType::MariaDB,
         AdapterType::Postgres,
         AdapterType::Redshift,
         AdapterType::Fabric,
@@ -45,6 +47,7 @@ pub fn adapter_fields(adapter: AdapterType) -> FsResult<Vec<ConfigField>> {
         AdapterType::ClickHouse => ClickHouseDbConfig::get_fields(),
         AdapterType::DuckDB => DuckDbConfig::get_fields(),
         AdapterType::Exasol => ExasolDbConfig::get_fields(),
+        AdapterType::MariaDB => MariaDbConfig::get_fields(),
         AdapterType::Postgres => PostgresDbConfig::get_fields(),
         AdapterType::Redshift => RedshiftDbConfig::get_fields(),
         AdapterType::Fabric => FabricDbConfig::get_fields(),
@@ -204,6 +207,13 @@ pub fn build_profile_target(
                 config.threads = Some(StringOrInteger::Integer(16));
             }
             DbConfig::Exasol(Box::new(config))
+        }
+        AdapterType::MariaDB => {
+            let mut config = apply_values(&MariaDbConfig::default(), values)?;
+            if config.threads.is_none() {
+                config.threads = Some(StringOrInteger::Integer(4));
+            }
+            DbConfig::MariaDB(Box::new(config))
         }
         AdapterType::Postgres => {
             let mut config = apply_values(&PostgresDbConfig::default(), values)?;

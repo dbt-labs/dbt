@@ -521,8 +521,16 @@ pub trait BaseRelation: BaseRelationProperties + Any + Send + Sync + fmt::Debug 
     ) -> String {
         let rendered = self.render_self_as_str();
 
+        // MariaDB requires an alias on every derived table (error 1248), which
+        // dbt-adapters' `_render_subquery_alias` adds (see the FIXME below).
+        // Reusing the identifier keeps `identifier.column` references working.
+        let subquery_alias = match (self.adapter_type(), self.identifier()) {
+            (AdapterType::MariaDB, Some(identifier)) => format!(" as {}", self.quoted(identifier)),
+            _ => String::new(),
+        };
+
         let rendered = if run_filter.empty {
-            format!("(select * from {rendered} where false limit 0)")
+            format!("(select * from {rendered} where false limit 0){subquery_alias}")
         } else {
             rendered
         };
@@ -579,19 +587,25 @@ pub trait BaseRelation: BaseRelationProperties + Any + Send + Sync + fmt::Debug 
                 }),
                 end.map(|end| format!("{event_time} < parseDateTime64BestEffort('{end}', 9)")),
             ),
-            // Exasol TIMESTAMP literals take no time-zone offset; strip the
-            // (always +00:00) offset and 'T' from the UTC rfc3339 boundary.
-            AdapterType::Exasol => {
-                let to_exasol_ts = |s: &str| {
+            // Exasol and MariaDB datetime literals take no time-zone offset; strip the
+            // (always +00:00) offset and 'T' from the UTC rfc3339 boundary. The ADBC
+            // driver sets the MariaDB session time zone to UTC:
+            // https://github.com/adbc-drivers/mysql/blob/4f13448fc0e1612c1692a97eaa139801b518b5d9/go/db_factory.go#L84-L93
+            adapter_type @ (AdapterType::Exasol | AdapterType::MariaDB) => {
+                let prefix = match adapter_type {
+                    AdapterType::Exasol => "TIMESTAMP ",
+                    _ => "",
+                };
+                let to_literal = |s: &str| {
                     let s = s
                         .trim_end_matches("+00:00")
                         .trim_end_matches('Z')
                         .replace('T', " ");
-                    format!("TIMESTAMP '{s}'")
+                    format!("{prefix}'{s}'")
                 };
                 (
-                    start.map(|start| format!("{event_time} >= {}", to_exasol_ts(&start))),
-                    end.map(|end| format!("{event_time} < {}", to_exasol_ts(&end))),
+                    start.map(|start| format!("{event_time} >= {}", to_literal(&start))),
+                    end.map(|end| format!("{event_time} < {}", to_literal(&end))),
                 )
             }
             AdapterType::Starburst => todo!("Starburst"),
@@ -612,7 +626,7 @@ pub trait BaseRelation: BaseRelationProperties + Any + Send + Sync + fmt::Debug 
 
         // FIXME: for Postgres, we need to support _render_subquery_alias for the returned result
         // reference: https://github.com/dbt-labs/dbt-adapters/blob/d2f725651c05be0de07f3152d5b4842feae8a18a/dbt-adapters/src/dbt/adapters/base/relation.py#L222
-        format!("(select * from {rendered} where {filter})")
+        format!("(select * from {rendered} where {filter}){subquery_alias}")
     }
 
     /// Relation without any identifier

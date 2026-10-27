@@ -61,6 +61,7 @@ pub enum DbConfig {
     Fabric(Box<FabricDbConfig>),
     // Dremio,
     ClickHouse(Box<ClickHouseDbConfig>),
+    MariaDB(Box<MariaDbConfig>),
     // Materialize,
     // Rockset,
     // Firebolt,
@@ -110,6 +111,7 @@ impl_from_db_config!(DuckDB, DuckDbConfig);
 impl_from_db_config!(Fabric, FabricDbConfig);
 impl_from_db_config!(Exasol, ExasolDbConfig);
 impl_from_db_config!(ClickHouse, ClickHouseDbConfig);
+impl_from_db_config!(MariaDB, MariaDbConfig);
 
 /// Resolves BigQuery's `compute_region` / legacy `dataproc_region` alias in a raw profiles.yml
 /// mapping, before it's parsed into a typed `DbConfig`.
@@ -168,6 +170,7 @@ impl DbConfig {
             DbConfig::Fabric(config) => config.host.as_deref(),
             DbConfig::Exasol(config) => config.host.as_deref(),
             DbConfig::ClickHouse(config) => config.host.as_deref(),
+            DbConfig::MariaDB(config) => config.host.as_deref(),
         }
     }
 
@@ -389,6 +392,14 @@ impl DbConfig {
                 "sync_request_timeout",
                 "compress_block_size",
             ],
+            AdapterType::MariaDB => &[
+                "host",
+                "port",
+                "user",
+                "schema",
+                "ssl_mode",
+                "connect_timeout",
+            ],
         }
     }
 
@@ -424,6 +435,7 @@ impl DbConfig {
             DbConfig::LakeCompute(config) => dbt_yaml::to_value(config),
             DbConfig::Exasol(config) => dbt_yaml::to_value(config),
             DbConfig::ClickHouse(config) => dbt_yaml::to_value(config),
+            DbConfig::MariaDB(config) => dbt_yaml::to_value(config),
         }
     }
 
@@ -442,6 +454,7 @@ impl DbConfig {
             DbConfig::Fabric(..) => AdapterType::Fabric,
             DbConfig::Exasol(..) => AdapterType::Exasol,
             DbConfig::ClickHouse(..) => AdapterType::ClickHouse,
+            DbConfig::MariaDB(..) => AdapterType::MariaDB,
             DbConfig::LakeCompute(..) => AdapterType::LakeCompute,
         }
     }
@@ -461,6 +474,8 @@ impl DbConfig {
             DbConfig::Fabric(config) => config.database.as_ref(),
             DbConfig::Exasol(config) => config.database.as_ref(),
             DbConfig::ClickHouse(config) => config.database.as_ref(),
+            // MariaDB has no catalog level, see `TargetContext::try_from`.
+            DbConfig::MariaDB(_) => None,
             DbConfig::LakeCompute(config) => config.database.as_ref(),
         }
     }
@@ -502,6 +517,7 @@ impl DbConfig {
             DbConfig::Fabric(config) => config.schema.as_ref(),
             DbConfig::Exasol(config) => config.schema.as_ref(),
             DbConfig::ClickHouse(config) => config.schema.as_ref(),
+            DbConfig::MariaDB(config) => config.schema.as_ref(),
         }
     }
 
@@ -532,6 +548,7 @@ impl DbConfig {
             DbConfig::Fabric(_) => None,
             DbConfig::Exasol(config) => config.threads.as_ref(),
             DbConfig::ClickHouse(config) => config.threads.as_ref(),
+            DbConfig::MariaDB(config) => config.threads.as_ref(),
             DbConfig::LakeCompute(config) => config.threads.as_ref(),
         }
     }
@@ -551,6 +568,7 @@ impl DbConfig {
             DbConfig::Fabric(_) => (),
             DbConfig::Exasol(config) => config.threads = threads,
             DbConfig::ClickHouse(config) => config.threads = threads,
+            DbConfig::MariaDB(config) => config.threads = threads,
             DbConfig::LakeCompute(config) => config.threads = threads,
         }
     }
@@ -1561,6 +1579,31 @@ pub struct ExasolDbConfig {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default, DbtSchema, Merge)]
 #[merge(strategy = merge_strategies_extend::overwrite_option)]
 #[serde(rename_all = "snake_case")]
+pub struct MariaDbConfig {
+    pub user: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", alias = "pass")]
+    pub password: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub host: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub port: Option<StringOrInteger>,
+    /// MariaDB has no catalog level: when set, it must equal `schema`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub database: Option<String>,
+    pub schema: Option<String>,
+    /// TLS mode: `preferred` (default), `required`, `verify_ca` or `disabled`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ssl_mode: Option<String>,
+    /// Connection timeout in seconds
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub connect_timeout: Option<StringOrInteger>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub threads: Option<StringOrInteger>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default, DbtSchema, Merge)]
+#[merge(strategy = merge_strategies_extend::overwrite_option)]
+#[serde(rename_all = "snake_case")]
 pub struct ClickHouseDbConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub database: Option<String>,
@@ -1788,6 +1831,7 @@ pub enum TargetContext {
     Fabric(FabricTargetEnv),
     Exasol(ExasolTargetEnv),
     ClickHouse(ClickHouseTargetEnv),
+    MariaDB(MariaDbTargetEnv),
     // Add other variants as needed
 }
 
@@ -1977,6 +2021,15 @@ pub struct FabricTargetEnv {
     pub __common__: CommonTargetContext,
     pub authentication: String,
     // TODO: ...
+}
+
+#[derive(Serialize, DbtSchema)]
+#[serde(rename_all = "snake_case")]
+pub struct MariaDbTargetEnv {
+    pub host: Option<String>,
+    pub port: Option<StringOrInteger>,
+    pub user: Option<String>,
+    pub __common__: CommonTargetContext,
 }
 
 #[derive(Serialize, DbtSchema)]
@@ -2476,6 +2529,36 @@ impl TryFrom<DbConfig> for TargetContext {
                     },
                 },
             })),
+            DbConfig::MariaDB(config) => {
+                let schema = config.schema.clone().ok_or_else(|| missing("schema"))?;
+                if let Some(database) = &config.database
+                    && database != &schema
+                {
+                    return Err(format!(
+                        "MariaDB has no database level: `database` ({database}) must be omitted \
+                         or equal to `schema` ({schema})"
+                    ));
+                }
+                Ok(TargetContext::MariaDB(MariaDbTargetEnv {
+                    host: config.host.clone(),
+                    port: config.port.clone(),
+                    user: config.user.clone(),
+                    __common__: CommonTargetContext {
+                        database: String::new(),
+                        schema,
+                        type_: adapter_type,
+                        threads: match config.threads {
+                            Some(StringOrInteger::String(threads)) => {
+                                Some(threads.parse::<u16>().map_err(|_| {
+                                    "threads must be a positive integer".to_string()
+                                })?)
+                            }
+                            Some(StringOrInteger::Integer(threads)) => Some(threads as u16),
+                            None => None,
+                        },
+                    },
+                }))
+            }
         }
     }
 }
@@ -3175,6 +3258,40 @@ extensions:
         };
         assert_eq!(target.__common__.database, "");
         assert_eq!(target.__common__.schema, "analytics");
+    }
+
+    #[test]
+    fn test_mariadb_schema_is_target_database() {
+        for profile in [
+            "type: mariadb\nuser: dbt\nschema: analytics\n",
+            "type: mariadb\nuser: dbt\nschema: analytics\ndatabase: analytics\n",
+        ] {
+            let config: DbConfig = dbt_yaml::from_str(profile).unwrap();
+
+            assert_eq!(config.get_database(), None);
+            let target = TargetContext::try_from(config).expect("mariadb target context");
+            let TargetContext::MariaDB(target) = target else {
+                panic!("expected mariadb target context");
+            };
+            assert_eq!(target.__common__.database, "");
+            assert_eq!(target.__common__.schema, "analytics");
+        }
+    }
+
+    #[test]
+    fn test_mariadb_database_other_than_schema_is_rejected() {
+        let config: DbConfig = dbt_yaml::from_str(
+            "type: mariadb\n\
+             user: dbt\n\
+             schema: analytics\n\
+             database: other\n",
+        )
+        .unwrap();
+
+        let Err(err) = TargetContext::try_from(config) else {
+            panic!("expected database other than schema to be rejected");
+        };
+        assert!(err.contains("MariaDB has no database level"), "{err}");
     }
 
     #[test]

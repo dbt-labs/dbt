@@ -63,6 +63,20 @@ pub trait TypeOps: Send + Sync {
         out: &mut String,
     ) -> AdapterResult<()>;
 
+    /// Picks a SQL type for a given Arrow DataType and renders it as a
+    /// `CAST(... AS <type>)` target, which some dialects restrict.
+    fn format_arrow_type_as_cast_target(
+        &self,
+        data_type: &DataType,
+        nullable: bool,
+        out: &mut String,
+    ) -> AdapterResult<()> {
+        match self.adapter_type() {
+            AdapterType::MariaDB => mariadb::try_format_cast_target(data_type, out),
+            _ => self.format_arrow_type_as_sql(data_type, nullable, out),
+        }
+    }
+
     /// Renders a given SqlType as SQL.
     ///
     /// The implementation is dialect-specific.
@@ -188,6 +202,7 @@ impl TypeOps for DefaultTypeOps {
             Postgres | Salesforce => postgres::try_format_type(data_type, nullable, out),
             Fabric => fabric::try_format_type(data_type, nullable, out),
             ClickHouse => clickhouse::try_format_type(data_type, nullable, out),
+            MariaDB => mariadb::try_format_type(data_type, out),
             _ => {
                 // Logical types without native Arrow encodings use
                 // FixedSizeList(field, 1). Render the logical field name (for
@@ -563,6 +578,12 @@ pub const fn get_field_sql_type_metadata_key(adapter_type: AdapterType) -> &'sta
         AdapterType::Fabric => FABRIC_METADATA_SQL_TYPE_KEY,
         AdapterType::ClickHouse => CLICKHOUSE_METADATA_SQL_TYPE_KEY,
         AdapterType::Exasol => "DATA_TYPE",
+        // The key the ADBC driver sets:
+        // https://github.com/adbc-drivers/mysql/blob/4f13448fc0e1612c1692a97eaa139801b518b5d9/go/mysql.go#L129
+        // `original_type_string` does not read it for MariaDB: the value is a
+        // bare type name (`DECIMAL`, `DATETIME`) without length or precision,
+        // which the Arrow type carries.
+        AdapterType::MariaDB => "sql.database_type_name",
         AdapterType::Starburst => todo!(),
         AdapterType::Athena => todo!(),
         AdapterType::Trino => todo!(),
@@ -615,8 +636,8 @@ impl SdfSchemaBuilder {
                 metadata.get(ARROW_FIELD_COMMENT_METADATA_KEY)
             }
             // no evidence that these drivers store comments in metadata, but just in case
-            Postgres | Snowflake | Salesforce | Fabric | ClickHouse | Exasol | Starburst
-            | Athena | Trino | Dremio | Oracle | Datafusion => {
+            Postgres | Snowflake | Salesforce | Fabric | ClickHouse | Exasol | MariaDB
+            | Starburst | Athena | Trino | Dremio | Oracle | Datafusion => {
                 metadata.get(ARROW_FIELD_COMMENT_METADATA_KEY)
             }
         };
@@ -653,7 +674,8 @@ impl SdfSchemaBuilder {
         use AdapterType::*;
         match self.adapter_type {
             Bigquery | Redshift | Databricks | Spark | DuckDB | LakeCompute | Fabric
-            | ClickHouse | Exasol | Starburst | Athena | Trino | Dremio | Oracle | Datafusion => {
+            | ClickHouse | Exasol | MariaDB | Starburst | Athena | Trino | Dremio | Oracle
+            | Datafusion => {
                 let original_fields = self.original.fields();
                 let mut sdf_fields = Vec::with_capacity(original_fields.len());
                 for field in original_fields {
@@ -960,6 +982,84 @@ pub mod clickhouse {
     }
 }
 
+pub mod mariadb {
+    use super::*;
+    use std::borrow::Cow;
+
+    /// Renders an Arrow type as a MariaDB column type, as used in DDL (seeds,
+    /// contracts). https://mariadb.com/kb/en/data-types/
+    ///
+    /// Integers keep their width instead of collapsing to `integer` like
+    /// upstream `convert_integer_type`: MariaDB `INT` is 32-bit, so an
+    /// `Int64` seed column needs `bigint`.
+    pub fn try_format_type(datatype: &DataType, out: &mut String) -> AdapterResult<()> {
+        let rendered: Cow<str> = match datatype {
+            DataType::Null => "text".into(),
+            DataType::Boolean => "boolean".into(),
+            DataType::Int8 => "tinyint".into(),
+            DataType::Int16 => "smallint".into(),
+            DataType::Int32 => "int".into(),
+            DataType::Int64 => "bigint".into(),
+            DataType::UInt8 => "tinyint unsigned".into(),
+            DataType::UInt16 => "smallint unsigned".into(),
+            DataType::UInt32 => "int unsigned".into(),
+            DataType::UInt64 => "bigint unsigned".into(),
+            DataType::Float16 | DataType::Float32 => "float".into(),
+            DataType::Float64 => "double".into(),
+            DataType::Decimal32(precision, scale)
+            | DataType::Decimal64(precision, scale)
+            | DataType::Decimal128(precision, scale)
+            | DataType::Decimal256(precision, scale) => {
+                // DECIMAL allows at most 65 digits and a scale of 38.
+                let scale = (*scale).clamp(0, 38);
+                let precision = (*precision).clamp(1, 65).max(scale as u8);
+                format!("decimal({precision},{scale})").into()
+            }
+            DataType::Utf8 | DataType::LargeUtf8 | DataType::Utf8View => "text".into(),
+            DataType::Binary
+            | DataType::LargeBinary
+            | DataType::BinaryView
+            | DataType::FixedSizeBinary(_) => "blob".into(),
+            DataType::Date32 | DataType::Date64 => "date".into(),
+            DataType::Timestamp(TimeUnit::Second, _) => "datetime".into(),
+            DataType::Timestamp(TimeUnit::Millisecond, _) => "datetime(3)".into(),
+            DataType::Timestamp(TimeUnit::Microsecond | TimeUnit::Nanosecond, _) => {
+                "datetime(6)".into()
+            }
+            DataType::Time32(_) | DataType::Time64(_) | DataType::Duration(_) => "time(6)".into(),
+            _ => {
+                return Err(AdapterError::new(
+                    AdapterErrorKind::UnsupportedType,
+                    format!("{datatype} is not convertible to a MariaDB sql type"),
+                ));
+            }
+        };
+        out.push_str(&rendered);
+        Ok(())
+    }
+
+    /// Renders an Arrow type as a MariaDB `CAST` target. CAST only takes a few
+    /// types (no `text`, `bigint` or `boolean`): https://mariadb.com/kb/en/cast/
+    pub fn try_format_cast_target(datatype: &DataType, out: &mut String) -> AdapterResult<()> {
+        let target = match datatype {
+            DataType::Boolean
+            | DataType::Int8
+            | DataType::Int16
+            | DataType::Int32
+            | DataType::Int64 => "signed",
+            DataType::UInt8 | DataType::UInt16 | DataType::UInt32 | DataType::UInt64 => "unsigned",
+            DataType::Null | DataType::Utf8 | DataType::LargeUtf8 | DataType::Utf8View => "char",
+            DataType::Binary
+            | DataType::LargeBinary
+            | DataType::BinaryView
+            | DataType::FixedSizeBinary(_) => "binary",
+            _ => return try_format_type(datatype, out),
+        };
+        out.push_str(target);
+        Ok(())
+    }
+}
+
 pub mod fabric {
 
     use arrow_schema::DataType;
@@ -1048,7 +1148,8 @@ pub const fn max_varchar_size(adapter_type: AdapterType) -> Option<usize> {
         Snowflake => Some(16_777_216),
         Redshift => Some(256),
         Postgres | Bigquery | Databricks | Salesforce | Spark | DuckDB | LakeCompute | Fabric
-        | ClickHouse | Exasol | Starburst | Athena | Trino | Dremio | Oracle | Datafusion => None,
+        | ClickHouse | Exasol | MariaDB | Starburst | Athena | Trino | Dremio | Oracle
+        | Datafusion => None,
     }
 }
 
@@ -1059,7 +1160,8 @@ pub const fn max_varbinary_size(adapter_type: AdapterType) -> Option<usize> {
         Redshift => Some(65_535),
         // TODO: define limits for more systems
         Postgres | Bigquery | Databricks | Salesforce | Spark | DuckDB | LakeCompute | Fabric
-        | ClickHouse | Exasol | Starburst | Athena | Trino | Dremio | Oracle | Datafusion => None,
+        | ClickHouse | Exasol | MariaDB | Starburst | Athena | Trino | Dremio | Oracle
+        | Datafusion => None,
     }
 }
 
@@ -1611,6 +1713,57 @@ mod tests {
             bigquery::field_to_string(&outer).unwrap(),
             "ARRAY<STRUCT<`inner` ARRAY<STRUCT<`point_geom` GEOGRAPHY>>>>"
         );
+    }
+
+    // Seeds, contracts and unit test fixtures on MariaDB previously got
+    // PostgreSQL types (`timestamp without time zone`, `float8`), which
+    // MariaDB rejects.
+    #[test]
+    fn test_mariadb_format_type() {
+        let format = |data_type: &DataType| {
+            let mut out = String::new();
+            DefaultTypeOps::new(MariaDB)
+                .format_arrow_type_as_sql(data_type, true, &mut out)
+                .unwrap();
+            out
+        };
+        assert_eq!(format(&DataType::Int32), "int");
+        assert_eq!(format(&DataType::Int64), "bigint");
+        assert_eq!(format(&DataType::UInt64), "bigint unsigned");
+        assert_eq!(format(&DataType::Float64), "double");
+        assert_eq!(format(&DataType::Decimal128(10, 2)), "decimal(10,2)");
+        assert_eq!(format(&DataType::Decimal256(76, 40)), "decimal(65,38)");
+        assert_eq!(format(&DataType::Boolean), "boolean");
+        assert_eq!(format(&DataType::Utf8), "text");
+        assert_eq!(format(&DataType::Date32), "date");
+        assert_eq!(
+            format(&DataType::Timestamp(TimeUnit::Microsecond, None)),
+            "datetime(6)"
+        );
+        assert_eq!(format(&DataType::Time64(TimeUnit::Microsecond)), "time(6)");
+        assert_eq!(format(&DataType::Null), "text");
+    }
+
+    #[test]
+    fn test_mariadb_cast_target() {
+        let cast_target = |data_type: DataType| {
+            let mut out = String::new();
+            mariadb::try_format_cast_target(&data_type, &mut out).unwrap();
+            out
+        };
+        assert_eq!(cast_target(DataType::Int64), "signed");
+        assert_eq!(cast_target(DataType::UInt32), "unsigned");
+        assert_eq!(cast_target(DataType::Boolean), "signed");
+        assert_eq!(cast_target(DataType::Utf8), "char");
+        assert_eq!(cast_target(DataType::Binary), "binary");
+        // Types CAST already accepts are rendered as column types.
+        assert_eq!(cast_target(DataType::Float64), "double");
+        assert_eq!(cast_target(DataType::Decimal128(10, 2)), "decimal(10,2)");
+        assert_eq!(
+            cast_target(DataType::Timestamp(TimeUnit::Microsecond, None)),
+            "datetime(6)"
+        );
+        assert_eq!(cast_target(DataType::Date32), "date");
     }
 
     // Regression tests for the Exasol seed/agate `convert_*` type mappings.

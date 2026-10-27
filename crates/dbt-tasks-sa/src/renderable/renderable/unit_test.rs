@@ -2177,7 +2177,7 @@ fn columns_to_formatted_types<'a>(
         .map(|f| {
             let mut formatted = String::new();
             type_ops
-                .format_arrow_type_as_sql(f.data_type(), f.is_nullable(), &mut formatted)
+                .format_arrow_type_as_cast_target(f.data_type(), f.is_nullable(), &mut formatted)
                 .map_err(|e| {
                     fs_err!(
                         ErrorCode::InvalidConfig,

@@ -47,6 +47,7 @@ pub mod bigquery;
 pub mod clickhouse;
 pub mod databricks;
 pub mod lake_compute;
+pub mod mysql;
 pub mod redshift;
 pub mod salesforce;
 pub mod snowflake;

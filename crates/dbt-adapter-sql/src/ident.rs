@@ -120,6 +120,11 @@ pub fn max_identifier_length(adapter_type: AdapterType) -> Option<NonZero<usize>
             // SAFETY: literal 127 is never 0
             Some(unsafe { NonZero::new_unchecked(127) })
         }
+        // https://mariadb.com/docs/server/reference/sql-structure/sql-language-structure/identifier-names
+        MariaDB => {
+            // SAFETY: literal 64 is never 0
+            Some(unsafe { NonZero::new_unchecked(64) })
+        }
         Snowflake | Bigquery | Databricks | Spark | DuckDB | Salesforce | Fabric | ClickHouse
         | Exasol | Athena | Starburst | Trino | Datafusion | Dremio | Oracle | LakeCompute => None,
     }
@@ -139,7 +144,7 @@ pub fn max_identifier_length(adapter_type: AdapterType) -> Option<NonZero<usize>
 pub const fn canonical_quote(backend: AdapterType) -> QuotingStyle {
     use AdapterType::*;
     match backend {
-        Bigquery | Databricks | Spark | Athena => QuotingStyle::Backtick,
+        Bigquery | Databricks | Spark | Athena | MariaDB => QuotingStyle::Backtick,
         ClickHouse | Exasol | Snowflake | Redshift | Postgres | Salesforce | DuckDB => {
             QuotingStyle::Double
         }
@@ -178,6 +183,7 @@ pub fn is_valid_ident_char(c: char, backend: AdapterType) -> bool {
             | Oracle
             | LakeCompute
             | Exasol => c.is_alphanumeric() || c == '_',
+        MariaDB => c.is_alphanumeric() || c == '_' || c == '$',
     }
 }
 
@@ -263,11 +269,14 @@ pub fn quote_identifier(id: &str, backend: AdapterType) -> String {
 /// value can never terminate the literal early. The literal-value member of
 /// the family next to [`sanitize_identifier`] (strip) and [`quote_identifier`]
 /// (quote), which handle identifiers.
-pub fn escape_string_literal(s: &str, _backend: AdapterType) -> String {
-    // ANSI '' doubling — correct for every currently supported backend.
-    // Dialects with different literal-escape rules (e.g. backslash-escaped
-    // strings) grow a match arm on `_backend` when they arrive.
-    s.replace('\'', "''")
+pub fn escape_string_literal(s: &str, backend: AdapterType) -> String {
+    match backend {
+        // Backslash is a string escape on MariaDB unless the
+        // NO_BACKSLASH_ESCAPES sql_mode is set.
+        AdapterType::MariaDB => s.replace('\\', "\\\\").replace('\'', "''"),
+        // ANSI '' doubling for every other supported backend.
+        _ => s.replace('\'', "''"),
+    }
 }
 
 #[cfg(test)]
@@ -298,6 +307,14 @@ mod sanitize_tests {
         let e = |s: &str| escape_string_literal(s, AdapterType::DuckDB);
         assert_eq!(e("o'brien"), "o''brien");
         assert_eq!(e("'; DROP TABLE x; --"), "''; DROP TABLE x; --");
+        assert_eq!(e("plain"), "plain");
+    }
+
+    #[test]
+    fn escape_string_literal_escapes_backslashes_on_mariadb() {
+        let e = |s: &str| escape_string_literal(s, AdapterType::MariaDB);
+        assert_eq!(e("o'brien"), "o''brien");
+        assert_eq!(e("a\\'b"), "a\\\\''b");
         assert_eq!(e("plain"), "plain");
     }
 

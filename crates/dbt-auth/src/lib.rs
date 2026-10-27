@@ -17,6 +17,7 @@ mod databricks;
 mod duckdb;
 mod exasol;
 mod lake_compute;
+mod mariadb;
 mod postgres;
 mod redshift;
 mod salesforce;
@@ -87,6 +88,7 @@ pub fn auth_for_backend_with_warnings(
         Backend::ClickHouse => Box::new(clickhouse::ClickHouseAuth::new(warning_printer)),
         Backend::Athena => Box::new(athena::AthenaAuth::new(warning_printer)),
         Backend::Exasol => Box::new(exasol::ExasolAuth::new(warning_printer)),
+        Backend::MySQL => Box::new(mariadb::MariaDbAuth::new(warning_printer)),
         Backend::Generic { .. } => unimplemented!("generic backend authentication"),
     }
 }

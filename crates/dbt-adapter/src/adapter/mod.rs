@@ -2563,6 +2563,7 @@ impl Adapter {
                     | AdapterType::Fabric
                     | AdapterType::ClickHouse
                     | AdapterType::Exasol
+                    | AdapterType::MariaDB
                     | AdapterType::Athena
                     | AdapterType::Starburst
                     | AdapterType::Trino
@@ -2593,6 +2594,7 @@ impl Adapter {
                 | AdapterType::Fabric
                 | AdapterType::ClickHouse
                 | AdapterType::Exasol
+                | AdapterType::MariaDB
                 | AdapterType::Athena
                 | AdapterType::Starburst
                 | AdapterType::Trino
