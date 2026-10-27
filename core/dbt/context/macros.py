@@ -91,6 +91,7 @@ class MacroNamespaceBuilder:
             (
                 macros_by_package[self.search_package]
                 if self.search_package in macros_by_package
+                and self.search_package not in self.internal_packages
                 else {}
             ),
             macros_by_package[self.root_package] if self.root_package in macros_by_package else {},

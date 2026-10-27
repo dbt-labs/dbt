@@ -148,7 +148,8 @@ def _checkout(cwd, repo, revision):
     else:
         spec = "origin/{}".format(revision)
 
-    out, err = run_cmd(cwd, ["git", "reset", "--hard", spec], env={"LC_ALL": "C"})
+    # in a blobless (subdirectory) clone, reset fetches missing blobs from origin
+    out, err = run_cmd(cwd, ["git", "reset", "--hard", spec], env={"LC_ALL": "C", **auth_env})
     return out, err
 
 
