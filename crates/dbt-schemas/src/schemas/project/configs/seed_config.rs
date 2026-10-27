@@ -111,6 +111,12 @@ pub struct ProjectSeedConfig {
     pub quoting: Option<DbtQuoting>,
     #[serde(rename = "+delimiter")]
     pub delimiter: Option<Spanned<String>>,
+    #[serde(
+        default,
+        rename = "+all_varchar",
+        deserialize_with = "bool_or_string_bool"
+    )]
+    pub all_varchar: Option<bool>,
     #[serde(rename = "+external_volume")]
     pub external_volume: Option<String>,
     #[serde(rename = "+adapter_properties")]
@@ -361,6 +367,7 @@ impl TypedRecursiveConfig for ProjectSeedConfig {
             || self.transient.is_some()
             || self.quoting.is_some()
             || self.delimiter.is_some()
+            || self.all_varchar.is_some()
             || self.external_volume.is_some()
             || self.adapter_properties.is_some()
             || self.base_location_root.is_some()
@@ -460,6 +467,8 @@ pub struct SeedConfig {
     #[serde(default, deserialize_with = "bool_or_string_bool")]
     pub quote_columns: Option<bool>,
     pub delimiter: Option<Spanned<String>>,
+    #[serde(default, deserialize_with = "bool_or_string_bool")]
+    pub all_varchar: Option<bool>,
     #[serde(default, deserialize_with = "event_time_or_map_to_string")]
     pub event_time: Option<String>,
     pub full_refresh: Option<bool>,
@@ -496,6 +505,7 @@ impl From<ProjectSeedConfig> for SeedConfig {
             grants: config.grants,
             quote_columns: config.quote_columns,
             delimiter: config.delimiter,
+            all_varchar: config.all_varchar,
             event_time: config.event_time,
             full_refresh: config.full_refresh,
             group: config.group,
@@ -666,6 +676,7 @@ impl From<SeedConfig> for ProjectSeedConfig {
             grants: config.grants,
             quote_columns: config.quote_columns,
             delimiter: config.delimiter,
+            all_varchar: config.all_varchar,
             event_time: config.event_time,
             full_refresh: config.full_refresh,
             group: config.group,

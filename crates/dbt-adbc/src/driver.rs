@@ -16,6 +16,7 @@ use parking_lot::RwLockUpgradableReadGuard;
 use std::hash;
 use std::{
     collections::HashMap, env, ffi::c_int, fmt, mem, path::Path, path::PathBuf, sync::LazyLock,
+    sync::OnceLock,
 };
 
 #[cfg(debug_assertions)]
@@ -259,13 +260,19 @@ fn find_upward_dir(start: &Path, subpath: &Path, max_hops: usize) -> Option<Path
     None
 }
 
-/// Like [find_upward_dir], but starting from the directory of the running executable.
+/// Like [find_upward_dir], but starting from the canonicalized executable's directory.
 fn find_upward_dir_from_exe(subpath: &Path, max_hops: usize) -> Option<PathBuf> {
     let exe_path = env::current_exe().ok().or_else(|| {
         env::var_os("DBT_DB_RUNNER_PATH")
             .filter(|path| !path.is_empty())
             .map(PathBuf::from)
     })?;
+    #[cfg(target_os = "windows")]
+    let exe_path = dunce::canonicalize(&exe_path).unwrap_or(exe_path);
+    // Disallowed only for its Windows paths.
+    #[cfg(not(target_os = "windows"))]
+    #[allow(clippy::disallowed_methods)]
+    let exe_path = std::fs::canonicalize(&exe_path).unwrap_or(exe_path);
     let starting_dir = exe_path.parent()?;
     find_upward_dir(starting_dir, subpath, max_hops)
 }
@@ -332,7 +339,32 @@ fn find_adbc_libs_directory() -> Option<PathBuf> {
 }
 
 /// Directory used by [`AdbcDriver::load_dynamic_from_name`].
-static ADBC_LIBS_DIRECTORY: LazyLock<Option<PathBuf>> = LazyLock::new(find_adbc_libs_directory);
+static ADBC_LIBS_DIRECTORY: OnceLock<Option<PathBuf>> = OnceLock::new();
+
+/// Sets the `lib/dbt/` directory, or `None` for none. Must be called before the first load.
+pub fn set_libs_directory(dir: Option<PathBuf>) {
+    let previous = ADBC_LIBS_DIRECTORY.set(dir);
+    debug_assert!(
+        previous.is_ok(),
+        "set_libs_directory called after the first driver load"
+    );
+}
+
+fn adbc_libs_directory() -> Option<&'static PathBuf> {
+    ADBC_LIBS_DIRECTORY
+        .get_or_init(find_adbc_libs_directory)
+        .as_ref()
+}
+
+/// Whether `dir` is an install's `lib/dbt/` (not an arrow-adbc checkout) holding
+/// `backend`'s driver library.
+fn has_installed_driver(dir: &Path, backend: Backend) -> bool {
+    dir.ends_with("lib/dbt")
+        && backend.adbc_library_name().is_some_and(|name| {
+            let path = dir.join(libloading::library_filename(name));
+            path.is_absolute() && path.is_file()
+        })
+}
 
 /// All loaded ADBC drivers are cached in `LOADED_ADBC_DRIVERS`, no matter the loading strategy used.
 static LOADED_ADBC_DRIVERS: LazyLock<
@@ -397,6 +429,12 @@ impl AdbcDriver {
         use Backend::*;
         use LoadStrategy::*;
         let final_strategy = match (load_strategy, backend) {
+            // Drivers installed with dbt take precedence.
+            (CdnCache | SystemThenCdnCache, _)
+                if adbc_libs_directory().is_some_and(|dir| has_installed_driver(dir, backend)) =>
+            {
+                Bundled
+            }
             // CDN strategy for drivers published to the dbt Labs CDN.
             (
                 load_strategy @ (CdnCache | SystemThenCdnCache),
@@ -415,7 +453,7 @@ impl AdbcDriver {
                         eprintln!(
                             "WARNING: {} ADBC driver is being loaded from {} in debug mode.",
                             backend,
-                            ADBC_LIBS_DIRECTORY.as_ref().unwrap().display()
+                            adbc_libs_directory().unwrap().display()
                         );
                         Bundled
                     } else {
@@ -499,7 +537,7 @@ Second error:\n\
         // Climb up the directory tree and choose the first lib/dbt/ directory we can
         // find. The result of that search is cached in LIBS_DIRECTORY. We use as
         // as an additional search path for the driver library.
-        if let Some(libs_dir) = ADBC_LIBS_DIRECTORY.as_ref() {
+        if let Some(libs_dir) = adbc_libs_directory() {
             additional_search_paths.push(libs_dir.clone());
         }
         // Add Homebrew library path on macOS (Apple Silicon).
@@ -566,7 +604,7 @@ Second error:\n\
         adbc_version: AdbcVersion,
     ) -> Result<ManagedAdbcDriver> {
         let mut additional_search_paths: Vec<PathBuf> = Vec::new();
-        if let Some(libs_dir) = ADBC_LIBS_DIRECTORY.as_ref() {
+        if let Some(libs_dir) = adbc_libs_directory() {
             additional_search_paths.push(libs_dir.clone());
             let load_flags = LOAD_FLAG_SEARCH_ENV
                 | LOAD_FLAG_SEARCH_USER
@@ -618,6 +656,23 @@ mod tests {
             .with_adbc_version(adbc_version)
             .try_load()?;
         Ok(())
+    }
+
+    #[test]
+    fn has_installed_driver_requires_the_file_in_the_directory() {
+        let root = tempfile::tempdir().unwrap();
+        let dir = root.path().join("lib").join("dbt");
+        std::fs::create_dir_all(&dir).unwrap();
+        assert!(!has_installed_driver(&dir, Backend::Postgres));
+        let filename = libloading::library_filename("adbc_driver_postgresql");
+        std::fs::write(dir.join(&filename), b"").unwrap();
+        assert!(has_installed_driver(&dir, Backend::Postgres));
+        std::fs::write(root.path().join(&filename), b"").unwrap();
+        assert!(!has_installed_driver(root.path(), Backend::Postgres));
+        assert!(!has_installed_driver(
+            Path::new("lib/dbt"),
+            Backend::Postgres
+        ));
     }
 
     #[test]

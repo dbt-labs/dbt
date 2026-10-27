@@ -545,3 +545,97 @@ fn load_csv_rows_fast_path_keeps_copy_outside_fusion() {
         "Python dbt-core should keep upstream's COPY, got: {rendered}"
     );
 }
+
+#[test]
+fn create_csv_table_types_every_column_varchar_when_all_varchar_is_set() {
+    let harness = build_harness("iceberg_demo", "ducklake_demo");
+    harness
+        .mock()
+        .on("convert_type", |_| Ok(Value::from("bigint")));
+    harness.mock().on("quote_seed_column", |args| {
+        let name = args.first().and_then(|v| v.as_str()).unwrap_or_default();
+        Ok(Value::from(format!("\"{name}\"")))
+    });
+
+    let model = Value::from_serialize(BTreeMap::from([(
+        "config",
+        BTreeMap::from([("all_varchar", true)]),
+    )]));
+    let agate_table = Value::from_serialize(BTreeMap::from([(
+        "column_names",
+        Value::from_serialize(["id", "status"]),
+    )]));
+
+    let ctx = harness
+        .materialization_context("raw_orders", "")
+        .relation_type(RelationType::Table)
+        .with("model", model)
+        .with("agate_table", agate_table)
+        .build();
+
+    let rendered = harness
+        .render("{{ duckdb__create_csv_table(model, agate_table) }}", ctx)
+        .expect("render should succeed");
+
+    assert!(
+        rendered.contains("\"id\" VARCHAR") && rendered.contains("\"status\" VARCHAR"),
+        "all_varchar should type every column VARCHAR, got: {rendered}"
+    );
+    assert!(
+        !rendered.contains("bigint"),
+        "all_varchar should replace the inferred type, got: {rendered}"
+    );
+}
+
+#[test]
+fn create_csv_table_column_types_win_over_all_varchar() {
+    let harness = build_harness("iceberg_demo", "ducklake_demo");
+    harness
+        .mock()
+        .on("convert_type", |_| Ok(Value::from("bigint")));
+    harness.mock().on("quote_seed_column", |args| {
+        let name = args.first().and_then(|v| v.as_str()).unwrap_or_default();
+        Ok(Value::from(format!("\"{name}\"")))
+    });
+
+    // `column_types` and `all_varchar` together: the listed column keeps its
+    // explicit type and the rest become VARCHAR.
+    let model = Value::from_serialize(BTreeMap::from([(
+        "config",
+        BTreeMap::from([
+            ("all_varchar", Value::from(true)),
+            (
+                "column_types",
+                Value::from_serialize(BTreeMap::from([("id", "integer")])),
+            ),
+        ]),
+    )]));
+    let agate_table = Value::from_serialize(BTreeMap::from([(
+        "column_names",
+        Value::from_serialize(["id", "status"]),
+    )]));
+
+    let ctx = harness
+        .materialization_context("raw_orders", "")
+        .relation_type(RelationType::Table)
+        .with("model", model)
+        .with("agate_table", agate_table)
+        .build();
+
+    let rendered = harness
+        .render("{{ duckdb__create_csv_table(model, agate_table) }}", ctx)
+        .expect("render should succeed");
+
+    assert!(
+        rendered.contains("\"id\" integer"),
+        "column_types should win for the column it names, got: {rendered}"
+    );
+    assert!(
+        rendered.contains("\"status\" VARCHAR"),
+        "all_varchar should type the unnamed column VARCHAR, got: {rendered}"
+    );
+    assert!(
+        !rendered.contains("bigint"),
+        "all_varchar should replace the inferred type, got: {rendered}"
+    );
+}

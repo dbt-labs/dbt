@@ -23,11 +23,10 @@ use dbt_common::tracing::dbt_emit::{emit_error_log_from_fs_error, emit_warn_log_
 use dbt_common::tracing::span_info::find_and_update_span_attrs;
 use dbt_common::warn_error_options::WarnErrorOptions;
 use dbt_common::{ErrorCode, FsResult, fs_err};
-use dbt_jinja_utils::utils::add_task_context;
 use dbt_schemas::schemas::common::Severity;
 use dbt_schemas::schemas::manifest::saved_query::DbtSavedQuery;
 use dbt_schemas::schemas::{
-    DbtFunction, DbtModel, DbtSeed, DbtSnapshot, DbtSource, DbtTest, DbtUnitTest, InternalDbtNode,
+    DbtFunction, DbtModel, DbtSeed, DbtSnapshot, DbtSource, DbtTest, DbtUnitTest,
     InternalDbtNodeAttributes, NodePathKind, Nodes,
 };
 use dbt_tasks_core::context::{TaskRunnerCtx, node_execution_metrics};
@@ -428,12 +427,7 @@ impl Task for RunTask {
                                         ctx.runtime_config(),
                                     )
                                 {
-                                    let mut base_context = ctx.inner.base_context.clone();
-                                    add_task_context(
-                                        &mut base_context,
-                                        model.common(),
-                                        &ctx.thread_id,
-                                    );
+                                    let base_context = ctx.run_base_context(model)?;
                                     let model_clone = model.clone();
                                     let ctx_clone = ctx.clone();
                                     run_blocking_task_operation(move || {
@@ -687,8 +681,10 @@ async fn execute_run_cache_service_clone_with_hooks(
     let pre_hooks_configured = hook_node
         .as_ref()
         .is_some_and(RunCacheReuseHookNode::has_pre_hooks);
-    let hook_executor =
-        hook_node.map(|hook_node| build_reuse_hook_executor(ctx, node, task_result, hook_node));
+    let hook_executor = hook_node
+        .map(|hook_node| build_reuse_hook_executor(ctx, node, task_result, hook_node))
+        .transpose()
+        .map_err(RunCacheCloneError::Fatal)?;
     execute_run_cache_service_clone(ctx, node, clone, hook_executor, pre_hooks_configured).await
 }
 
@@ -707,7 +703,7 @@ async fn execute_hooks_for_run_cache_skip_reuse(
     let Some(hook_node) = run_cache_reuse_hook_node(node, service_default) else {
         return Ok(());
     };
-    let hook_executor = build_reuse_hook_executor(ctx, node, task_result, hook_node);
+    let hook_executor = build_reuse_hook_executor(ctx, node, task_result, hook_node)?;
     let ctx_inner = ctx.clone();
     run_blocking_task_operation(move || {
         hook_executor(&ctx_inner, RunCacheReuseHookPhase::Pre)?;
@@ -767,14 +763,13 @@ fn build_reuse_hook_executor(
     node: &dyn InternalDbtNodeAttributes,
     task_result: Option<&TaskResult>,
     hook_node: RunCacheReuseHookNode,
-) -> RunCacheReuseHookExecutor {
-    let mut base_context = ctx.inner.base_context.clone();
-    add_task_context(&mut base_context, node.common(), &ctx.thread_id);
+) -> FsResult<RunCacheReuseHookExecutor> {
+    let base_context = ctx.run_base_context(node)?;
     let sql = task_result.map(|task_result| task_result.sql_instruction.sql.clone());
-    Arc::new(move |ctx, phase| {
+    Ok(Arc::new(move |ctx, phase| {
         let sql = sql.as_deref();
         execute_hook_node_blocking(&hook_node, ctx, &base_context, sql, phase)
-    })
+    }))
 }
 
 fn hooks_are_configured(hooks: &Option<dbt_schemas::schemas::common::Hooks>) -> bool {

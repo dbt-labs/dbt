@@ -785,10 +785,10 @@ fn own_sql(
         // the file it wrote), and each pass both updates matching rows and appends
         // its own unmatched ones — which is a FULL join, twice, in that order.
         //
-        // The compile join is case-insensitive on the column name and the catalog
-        // join is not, mirroring the two merges' map keys: Snowflake uppercases
-        // unquoted identifiers in the inferred schema, so a case-sensitive compile
-        // key would append a duplicate row instead of filling in the parse row.
+        // Both joins are case-insensitive on the column name, mirroring the two
+        // merges' map keys: Snowflake uppercases unquoted identifiers in the
+        // inferred schema and the catalog, so a case-sensitive key would append a
+        // duplicate row instead of filling in the parse row.
         //
         // `data_type` is set *only* where a catalog row matched, so it is null for
         // every project that has never fetched a catalog even though
@@ -866,7 +866,7 @@ fn own_sql(
                 .into_iter()
                 .chain(alive("unique_id"))
                 .collect::<Vec<_>>(),
-                Some("unique_id, column_name"),
+                Some("unique_id, lower(column_name)"),
             );
             let cols = cast_cols(
                 spec,
@@ -929,7 +929,8 @@ fn own_sql(
                  \x20    AND lower(p.column_name) = lower(c.column_name)\n\
                  \x20 ) m\n\
                  \x20 FULL JOIN ({catalog}) k\n\
-                 \x20   ON m.unique_id = k.unique_id AND m.column_name = k.column_name\n\
+                 \x20   ON m.unique_id = k.unique_id\n\
+                 \x20  AND lower(m.column_name) = lower(k.column_name)\n\
                  ) {BASE}",
                 header(&list)
             );

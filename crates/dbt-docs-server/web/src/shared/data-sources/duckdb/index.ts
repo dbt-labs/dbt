@@ -505,6 +505,8 @@ export function createDuckDbDataSource(
         resourceTypes: args.filter?.resourceTypes,
         packages: args.filter?.packages,
         tags: args.filter?.tags,
+        modelingLayers: args.filter?.modelingLayers,
+        materializations: args.filter?.materializations,
       },
       args.limit ?? SEARCH_PAGE_SIZE,
       decodeCursor(args.cursor),

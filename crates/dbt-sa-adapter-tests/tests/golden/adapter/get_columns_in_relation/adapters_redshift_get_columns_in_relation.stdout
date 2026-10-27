@@ -1,0 +1,35 @@
+   dbt-oss 
+   Loading profiles.yml
+   Parsing models/a.sql
+   Parsing models/b.sql
+redshift
+ci
+adapters_redshift_get_columns_in_relation
+text_col.can_expand_to(num_col):
+text_col.can_expand_to(text_col2):
+ Rendering models/b.sql
+redshift
+ci
+adapters_redshift_get_columns_in_relation
+text_col.can_expand_to(num_col): False
+text_col.can_expand_to(text_col2): True
+Column: number_col
+Column data_type: integer
+Column dtype: integer
+Column numeric_precision: 32
+Column numeric_scale: 0
+Column char_size: None
+Column quoted: "number_col"
+Column: text_col
+Column data_type: character varying(100)
+Column dtype: character varying
+Column numeric_precision: None
+Column numeric_scale: None
+Column char_size: 100
+Column quoted: "text_col"
+Column string_size: 100
+ Rendering models/a.sql
+==================== Execution Summary =====================
+Finished 'compile' successfully for target 'redshift' [duration]
+Processed: 2 models
+Summary: 2 total | 2 success

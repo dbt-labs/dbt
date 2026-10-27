@@ -1010,6 +1010,29 @@ impl Recording {
         None
     }
 
+    /// Find a read-only `execute` event in the current segment for diagnostics.
+    ///
+    /// This does not consume the event or look beyond the next write barrier.
+    pub(crate) fn read_only_execute_candidate(
+        &self,
+        node_id: &str,
+        method: &str,
+    ) -> Option<&AdapterCallEvent> {
+        let events = self.adapter_events_by_node.get(node_id)?;
+        let state = self.semantic_adapter_state.read();
+        let search_start = state.get(node_id).map_or(0, |state| state.segment_start);
+        let search_end = events[search_start..]
+            .iter()
+            .position(|event| {
+                event.semantic_category.is_mutating() && !is_read_only_execute_event(event)
+            })
+            .map_or(events.len(), |pos| search_start + pos);
+
+        events[search_start..search_end]
+            .iter()
+            .find(|event| event.method == method && is_read_only_execute_event(event))
+    }
+
     /// Find a matching read operation within the current segment (untracked).
     ///
     /// In semantic mode, reads are NOT tracked for consumption. The same read

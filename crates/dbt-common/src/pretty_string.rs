@@ -33,10 +33,14 @@ impl ColoredQuotes<'_> {
                     || !(msg[..index].ends_with("doesn") && msg[index + 1..].starts_with('t'))
             })
     }
-}
 
-impl Display for ColoredQuotes<'_> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    /// Displays `msg` like [`Display`], but highlights quotes irrespective of the global
+    /// auto-detected `console` setting.
+    pub(crate) fn fmt_forced(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.fmt_with(f, Style::new().yellow().force_styling(true))
+    }
+
+    fn fmt_with(&self, f: &mut std::fmt::Formatter<'_>, quoted: Style) -> std::fmt::Result {
         let msg = self.0;
         if !self.quote_positions().count().is_multiple_of(2) {
             // This gets called with various content which we can't predict-
@@ -51,7 +55,6 @@ impl Display for ColoredQuotes<'_> {
             return f.write_str(msg);
         }
 
-        let quoted = Style::new().yellow();
         let mut positions = self.quote_positions();
         let mut last = 0;
         while let (Some(open), Some(close)) = (positions.next(), positions.next()) {
@@ -65,6 +68,12 @@ impl Display for ColoredQuotes<'_> {
             last = close + 1;
         }
         write!(f, "{}", WithDoesntApostropheRemoved(&msg[last..]))
+    }
+}
+
+impl Display for ColoredQuotes<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.fmt_with(f, Style::new().yellow())
     }
 }
 

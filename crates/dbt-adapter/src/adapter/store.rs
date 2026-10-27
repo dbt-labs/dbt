@@ -1,13 +1,17 @@
 //! The adapters a run can execute on: one per adapter type the active target
 //! declares.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex};
 
 use dbt_adapter_core::AdapterType;
+use dbt_common::cancellation::never_cancels;
 use dbt_common::{ErrorCode, FsResult, fs_err};
+use dbt_schemas::schemas::relations::DEFAULT_RESOLVED_QUOTING;
 
-use crate::Adapter;
+use crate::sql_types::DefaultTypeOps;
+use crate::stmt_splitter::DefaultStmtSplitter;
+use crate::{Adapter, AdapterImpl};
 
 /// How the store builds an adapter it has not built yet.
 ///
@@ -90,6 +94,25 @@ impl AdapterStore {
             build,
             built: Mutex::new(HashMap::new()),
         })
+    }
+
+    /// A store whose adapters are mocks of each declared type.
+    pub fn new_mock(declared: Vec<AdapterType>, default_adapter: AdapterType) -> FsResult<Self> {
+        let build: AdapterBuilder = Box::new(|adapter_type| {
+            let adapter = AdapterImpl::new_mock(
+                adapter_type,
+                BTreeMap::new(),
+                DEFAULT_RESOLVED_QUOTING,
+                Arc::new(DefaultTypeOps::new(adapter_type)),
+                Arc::new(DefaultStmtSplitter),
+            );
+            Ok(Arc::new(Adapter::new(
+                Arc::new(adapter),
+                None,
+                never_cancels(),
+            )))
+        });
+        Self::new(declared, default_adapter, build)
     }
 
     /// The adapter for `adapter_type`, building it if this is its first use.

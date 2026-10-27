@@ -115,11 +115,12 @@ fn write_qualifier_alias(
     alias: &dyn fmt::Display,
     colorize: bool,
 ) -> fmt::Result {
-    if !colorize {
-        return write!(f, "{}{}", qualifier, alias);
-    }
-
-    write!(f, "{}{}", CYAN.apply_to(qualifier), BLUE.apply_to(alias))
+    write!(
+        f,
+        "{}{}",
+        MaybeColored::new(&CYAN, qualifier, colorize),
+        MaybeColored::new(&BLUE, alias, colorize)
+    )
 }
 
 /// Displays node type with minimum width for alignment.

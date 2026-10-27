@@ -1,0 +1,3 @@
+[error] [InvalidConfig (dbt1005)]: Unexpected Database Reference: Cross-db references allowed only in RA3.* node or with datasharing enabled (another_db vs ci)
+(in models/b.sql:10:27)
+  --> models/b.sql:10:27

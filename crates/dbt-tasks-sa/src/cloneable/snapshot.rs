@@ -3,8 +3,7 @@ use std::pin::Pin;
 
 use dbt_common::FsResult;
 use dbt_common::stats::NodeStatus;
-use dbt_jinja_utils::utils::add_task_context;
-use dbt_schemas::schemas::{DbtSnapshot, InternalDbtNode, InternalDbtNodeAttributes};
+use dbt_schemas::schemas::{DbtSnapshot, InternalDbtNodeAttributes};
 use dbt_tasks_core::context::TaskRunnerCtx;
 use dbt_tasks_core::task::run_blocking_task_operation;
 
@@ -18,8 +17,7 @@ impl Cloneable for DbtSnapshot {
         ctx: &'a mut TaskRunnerCtx,
     ) -> Pin<Box<dyn Future<Output = FsResult<NodeStatus>> + Send + 'a>> {
         Box::pin(async move {
-            let mut base_context = ctx.inner.base_context.clone();
-            add_task_context(&mut base_context, self.common(), &ctx.thread_id);
+            let base_context = ctx.run_base_context(self)?;
 
             let adapter_type = self.node_adapter();
             let node = self.clone();

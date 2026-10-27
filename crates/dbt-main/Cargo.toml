@@ -61,6 +61,7 @@ async-trait = { workspace = true }
 chrono = { workspace = true }
 chrono-tz = { workspace = true }
 clap = { workspace = true, features = ["derive"] }
+console = { workspace = true }
 dotenvy = { workspace = true }
 futures = { workspace = true }
 git-version = { version = "0.3.9" }

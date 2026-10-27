@@ -129,6 +129,13 @@ pub async fn clean_project(
         let mut lease_guards = vec![];
 
         for path in &paths_to_delete {
+            // Removing a parent path also removes this one. Deleting it again fails with NotFound.
+            if paths_to_delete
+                .iter()
+                .any(|parent| parent != path && path.starts_with(parent))
+            {
+                continue;
+            }
             if path.exists() {
                 if path.eq(&default_target_dir) {
                     // We have already acquired the lease for this directory at this point.

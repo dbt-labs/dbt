@@ -1,0 +1,22 @@
+   dbt-oss 
+   Loading profiles.yml
+   Parsing models/managed.sql
+   Parsing models/no_catalog_name.sql
+   Parsing models/no_catalog_name_explicit_uniform.sql
+   Parsing models/uniform.sql
+ Rendering models/uniform.sql
+   Running models/uniform.sql
+ Succeeded model adapters_databricks_iceberg_v2.uniform (table) [1 of 4 in duration]
+ Rendering models/no_catalog_name_explicit_uniform.sql
+   Running models/no_catalog_name_explicit_uniform.sql
+ Succeeded model adapters_databricks_iceberg_v2.no_catalog_name_explicit_uniform (table) [2 of 4 in duration]
+ Rendering models/no_catalog_name.sql
+   Running models/no_catalog_name.sql
+ Succeeded model adapters_databricks_iceberg_v2.no_catalog_name (table) [3 of 4 in duration]
+ Rendering models/managed.sql
+   Running models/managed.sql
+ Succeeded model adapters_databricks_iceberg_v2.managed (table) [4 of 4 in duration]
+==================== Execution Summary =====================
+Finished 'run' successfully for target 'databricks' [duration]
+Processed: 4 models
+Summary: 4 total | 4 success

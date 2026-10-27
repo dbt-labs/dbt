@@ -2,8 +2,7 @@ use crate::materialize::materialize_function;
 use dbt_common::constants::DBT_COMPILED_DIR_NAME;
 use dbt_common::path::get_target_write_path;
 use dbt_common::{FsResult, io_args::FsCommand, stats::NodeStatus, stdfs};
-use dbt_jinja_utils::utils::add_task_context;
-use dbt_schemas::schemas::{BatchResults, DbtFunction, InternalDbtNode, InternalDbtNodeAttributes};
+use dbt_schemas::schemas::{BatchResults, DbtFunction, InternalDbtNodeAttributes};
 use dbt_tasks_core::context::TaskRunnerCtx;
 use dbt_tasks_core::task::TaskResult;
 
@@ -16,8 +15,7 @@ pub fn execute_function_remote(
         return Ok(NodeStatus::NoOp);
     }
 
-    let mut base_context = ctx.inner.base_context.clone();
-    add_task_context(&mut base_context, function.common(), &ctx.thread_id);
+    let base_context = ctx.run_base_context(function)?;
 
     let sql_instruction = &task_result.sql_instruction;
 

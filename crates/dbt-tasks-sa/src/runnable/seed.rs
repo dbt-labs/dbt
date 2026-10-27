@@ -9,9 +9,7 @@ use dbt_agate::AgateTable;
 use dbt_common::stats::NodeStatus;
 use dbt_common::{ErrorCode, FsError, FsResult, fs_err};
 use dbt_jinja_utils::jinja_environment::JinjaEnv;
-use dbt_jinja_utils::utils::add_task_context;
 use dbt_schema_store::read_cached_schema_from_parquet;
-use dbt_schemas::schemas::InternalDbtNode;
 use dbt_schemas::schemas::relations::base::BaseRelation;
 use dbt_schemas::schemas::{DbtSeed, InternalDbtNodeAttributes};
 use dbt_tasks_core::context::TaskRunnerCtx;
@@ -180,9 +178,7 @@ fn sorted_lowercase_columns(agate_table: &AgateTable) -> Vec<String> {
 }
 
 pub fn execute_seed_remote(seed: &DbtSeed, ctx: &TaskRunnerCtx) -> FsResult<NodeStatus> {
-    let mut base_context = ctx.inner.base_context.clone();
-
-    add_task_context(&mut base_context, seed.common(), &ctx.thread_id);
+    let base_context = ctx.run_base_context(seed)?;
 
     let relation = create_relation_from_node(seed.node_adapter(), seed, None)?;
     let canonical_fqn = relation.get_canonical_fqn()?;

@@ -16,7 +16,6 @@ use dbt_common::tracing::span_info::{
 };
 use dbt_common::{ErrorCode, create_info_span, fs_err};
 use dbt_jinja_utils::phases::run::{build_run_node_context_from_arc, reset_result_store};
-use dbt_jinja_utils::utils::add_task_context;
 use dbt_schemas::filter::RunFilter;
 use dbt_schemas::schemas::DbtModel;
 use dbt_schemas::schemas::common::{DbtBatchSize, DbtIncrementalStrategy, DbtMaterialization};
@@ -85,9 +84,7 @@ pub async fn prepare_microbatch_batches(
     ctx: &TaskRunnerCtx,
     task_result: &TaskResult,
 ) -> FsResult<Vec<Vec<MicrobatchExecUnit>>> {
-    let mut base_context = ctx.inner.base_context.clone();
-
-    add_task_context(&mut base_context, node.common(), &ctx.thread_id);
+    let base_context = ctx.run_base_context(node.as_ref())?;
 
     let sql_header = task_result
         .config_map
@@ -399,9 +396,7 @@ pub fn execute_model_remote(
     ctx: &TaskRunnerCtx,
     task_result: &TaskResult,
 ) -> FsResult<NodeStatus> {
-    let mut base_context = ctx.inner.base_context.clone();
-
-    add_task_context(&mut base_context, model.common(), &ctx.thread_id);
+    let base_context = ctx.run_base_context(model)?;
 
     // return early if the node is a ephemeral or inline model since we don't need to execute it.
     if model.materialized() == DbtMaterialization::Ephemeral

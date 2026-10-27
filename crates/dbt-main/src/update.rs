@@ -4,12 +4,12 @@ use dbt_common::err;
 use dbt_common::fs_err;
 use dbt_common::tracing::dbt_emit::{emit_warn_log_message, println};
 use dbt_common::tracing::event_info::store_event_attributes;
+use dbt_dist::packages::InstallLocation;
 use dbt_telemetry::PackageUpdate;
 use rand::Rng as _;
 #[cfg(not(target_os = "windows"))]
 use run_script::ScriptOptions;
 use std::env;
-#[cfg(not(target_os = "windows"))]
 use std::path::Path;
 use std::process::Command;
 
@@ -412,6 +412,7 @@ async fn download_and_install(
     version: &str,
     target: &str,
     dest_dir: &Path,
+    lib_dir: Option<&Path>,
     client: &dyn UpdateHttpClient,
 ) -> FsResult<()> {
     let base_url = cdn_base_url();
@@ -480,7 +481,10 @@ async fn download_and_install(
             .and_then(|n| n.to_str())
             .unwrap_or_default();
 
-        if file_name != package {
+        if file_name != package
+            || !entry.header().entry_type().is_file()
+            || !matches!(path.parent(), Some(parent) if parent == Path::new("") || parent == Path::new("."))
+        {
             continue;
         }
 
@@ -531,14 +535,10 @@ async fn download_and_install(
         );
     }
 
-    if dest_binary.exists() {
-        std::fs::remove_file(&dest_binary).map_err(|e| {
-            fs_err!(
-                ErrorCode::IoError,
-                "Failed to remove existing binary {}: {e}",
-                dest_binary.display()
-            )
-        })?;
+    if package == "dbt"
+        && let Some(lib_dir) = lib_dir
+    {
+        install_sidecar_packages(lib_dir, &bytes).await?;
     }
 
     tmp_file.persist(&dest_binary).map_err(|e| {
@@ -557,6 +557,82 @@ async fn download_and_install(
     Ok(())
 }
 
+/// Extract the archive's `lib/dbt/` files into `root`, keeping its other files.
+#[cfg(not(target_os = "windows"))]
+async fn install_sidecar_packages(root: &Path, bytes: &[u8]) -> FsResult<()> {
+    let reader = tokio::io::BufReader::new(bytes);
+    let mut archive = tokio_tar::Archive::new(GzipDecoder::new(reader));
+    let mut entries = archive
+        .entries()
+        .map_err(|e| fs_err!(ErrorCode::IoError, "Read sidecar archive: {e}"))?;
+    let staging =
+        tempfile::tempdir().map_err(|e| fs_err!(ErrorCode::IoError, "Stage sidecars: {e}"))?;
+    let mut paths = Vec::new();
+    while let Some(entry) = entries.next().await {
+        let mut entry =
+            entry.map_err(|e| fs_err!(ErrorCode::IoError, "Read sidecar entry: {e}"))?;
+        let path = entry
+            .path()
+            .map_err(|e| fs_err!(ErrorCode::IoError, "Read sidecar path: {e}"))?
+            .into_owned();
+        let Ok(relative) = path.strip_prefix("lib/dbt") else {
+            continue;
+        };
+        if relative
+            .components()
+            .any(|part| !matches!(part, std::path::Component::Normal(_)))
+        {
+            return err!(
+                ErrorCode::IoError,
+                "Invalid sidecar path: {}",
+                path.display()
+            );
+        }
+        if entry.header().entry_type().is_dir() {
+            continue;
+        }
+        if !entry.header().entry_type().is_file() || relative.components().count() != 1 {
+            return err!(
+                ErrorCode::IoError,
+                "Invalid sidecar entry: {}",
+                path.display()
+            );
+        }
+        let staged = staging.path().join(relative);
+        std::fs::create_dir_all(staged.parent().unwrap())
+            .map_err(|e| fs_err!(ErrorCode::IoError, "Stage sidecar directory: {e}"))?;
+        let mut output = tokio::fs::File::create(&staged)
+            .await
+            .map_err(|e| fs_err!(ErrorCode::IoError, "Stage sidecar: {e}"))?;
+        tokio::io::copy(&mut entry, &mut output)
+            .await
+            .map_err(|e| fs_err!(ErrorCode::IoError, "Extract sidecar: {e}"))?;
+        paths.push(relative.to_path_buf());
+    }
+    for relative in paths {
+        let destination = root.join(&relative);
+        let parent = destination.parent().unwrap();
+        std::fs::create_dir_all(parent)
+            .map_err(|e| fs_err!(ErrorCode::IoError, "Create sidecar directory: {e}"))?;
+        let mut temp = tempfile::NamedTempFile::new_in(parent)
+            .map_err(|e| fs_err!(ErrorCode::IoError, "Stage installed sidecar: {e}"))?;
+        let mut source = std::fs::File::open(staging.path().join(relative))
+            .map_err(|e| fs_err!(ErrorCode::IoError, "Read staged sidecar: {e}"))?;
+        std::io::copy(&mut source, &mut temp)
+            .map_err(|e| fs_err!(ErrorCode::IoError, "Copy staged sidecar: {e}"))?;
+        temp.as_file()
+            .sync_all()
+            .map_err(|e| fs_err!(ErrorCode::IoError, "Sync staged sidecar: {e}"))?;
+        use std::os::unix::fs::PermissionsExt;
+        temp.as_file()
+            .set_permissions(std::fs::Permissions::from_mode(0o644))
+            .map_err(|e| fs_err!(ErrorCode::IoError, "Set sidecar permissions: {e}"))?;
+        temp.persist(&destination)
+            .map_err(|e| fs_err!(ErrorCode::IoError, "Publish sidecar: {e}"))?;
+    }
+    Ok(())
+}
+
 /// Check installed version and download if update is needed.
 #[cfg(not(target_os = "windows"))]
 async fn update_package_if_needed(
@@ -564,6 +640,7 @@ async fn update_package_if_needed(
     version: &str,
     target: &str,
     dest_dir: &Path,
+    lib_dir: Option<&Path>,
     client: &dyn UpdateHttpClient,
 ) -> FsResult<()> {
     match installed_version(&dest_dir.join(package)) {
@@ -576,7 +653,7 @@ async fn update_package_if_needed(
         Some(v) => println(format!("{package} current: {v}, updating to {version}")),
         None => {}
     }
-    download_and_install(package, version, target, dest_dir, client).await
+    download_and_install(package, version, target, dest_dir, lib_dir, client).await
 }
 
 /// Native update entry point (Unix only, gated by DBT_NATIVE_UPDATE).
@@ -590,6 +667,7 @@ pub async fn exec_update_native(
     version: Option<&str>,
     package: Option<&str>,
     dest_dir: &Path,
+    lib_dir: Option<&Path>,
     client: &dyn UpdateHttpClient,
 ) -> FsResult<()> {
     let target = current_target_triple()?;
@@ -613,9 +691,15 @@ pub async fn exec_update_native(
         let runner_path = dest_dir.join("dbt-db-runner");
         let mut remove_unavailable_runner = false;
         if (package == "all" || runner_path.exists())
-            && let Err(error) =
-                update_package_if_needed("dbt-db-runner", &target_version, target, dest_dir, client)
-                    .await
+            && let Err(error) = update_package_if_needed(
+                "dbt-db-runner",
+                &target_version,
+                target,
+                dest_dir,
+                lib_dir,
+                client,
+            )
+            .await
         {
             if error.code != ErrorCode::FileNotFound {
                 return Err(error);
@@ -625,7 +709,7 @@ pub async fn exec_update_native(
                 "dbt-db-runner is not available for version {target_version}; installing dbt without it."
             ));
         }
-        update_package_if_needed("dbt", &target_version, target, dest_dir, client).await?;
+        update_package_if_needed("dbt", &target_version, target, dest_dir, lib_dir, client).await?;
         if remove_unavailable_runner {
             std::fs::remove_file(&runner_path).map_err(|remove_error| {
                 fs_err!(
@@ -644,11 +728,48 @@ pub async fn exec_update_native(
 // Legacy update path (default -- shells out to install.sh / install.ps1)
 // ---------------------------------------------------------------------------
 
+/// Where to update the running binary: its prefix when it is in `<prefix>/bin`, with
+/// `<prefix>/lib/dbt/` created up front so an unwritable prefix fails before anything
+/// changes; otherwise its own directory, without drivers.
+fn update_location(bin_dir: &Path) -> FsResult<InstallLocation> {
+    let location = InstallLocation::for_bin_dir(bin_dir);
+    let Some(lib_dir) = location.lib_dir() else {
+        println(
+            "dbt is not in a bin directory, so this update does not install its drivers. \
+             To get them, reinstall dbt with the install script's --prefix option.",
+        );
+        return Ok(location);
+    };
+    std::fs::create_dir_all(&lib_dir).map_err(|e| {
+        fs_err!(
+            ErrorCode::IoError,
+            "Cannot create {}: {e}. dbt loads its drivers from lib/dbt beside the directory \
+             that holds the dbt executable ({}). Make it writable, or reinstall dbt with the \
+             install script's --prefix <prefix> option.",
+            lib_dir.display(),
+            bin_dir.display(),
+        )
+    })?;
+    Ok(location)
+}
+
+/// The install script option for `location`, and its path as a string.
+fn script_option(location: &InstallLocation) -> FsResult<(&'static str, &str)> {
+    let (option, path) = location.script_option();
+    let Some(path) = path.to_str() else {
+        return err!(
+            ErrorCode::IoError,
+            "Error: Failed to convert install location to string."
+        );
+    };
+    Ok((option, path))
+}
+
 #[cfg(not(target_os = "windows"))]
 async fn exec_update_legacy(
     version: Option<&str>,
     package: Option<&str>,
-    curr_path: &str,
+    location: &InstallLocation,
     client: &dyn UpdateHttpClient,
 ) -> FsResult<()> {
     let script_url = format!("{}/install/install.sh", cdn_base_url());
@@ -656,10 +777,11 @@ async fn exec_update_legacy(
 
     let options = ScriptOptions::new();
 
+    let (option, path) = script_option(location)?;
     let mut script_args = vec![
         String::from("--update"),
-        String::from("--to"),
-        curr_path.to_string(),
+        format!("--{option}"),
+        path.to_string(),
     ];
 
     if let Some(version) = version {
@@ -779,39 +901,43 @@ pub(crate) async fn exec_update_with_client(
         return err!(ErrorCode::NotSupported, "{}", message);
     }
 
-    let curr_path = match env::current_exe() {
-        Ok(exe_path) => {
-            if let Some(parent_dir) = exe_path.parent() {
-                match parent_dir.to_str() {
-                    Some(dir_str) => dir_str.to_string(),
-                    None => {
-                        return err!(
-                            ErrorCode::IoError,
-                            "Error: Failed to convert exe parent path to string."
-                        );
-                    }
-                }
-            } else {
-                return err!(
-                    ErrorCode::IoError,
-                    "Error: Failed to get parent directory of executable."
-                );
-            }
-        }
-        Err(e) => {
-            return err!(
+    // Resolve symlinks, as the driver loader does.
+    let exe_path = env::current_exe()
+        .map(|path| dbt_common::stdfs::canonicalize(&path).unwrap_or(path))
+        .map_err(|e| {
+            fs_err!(
                 ErrorCode::IoError,
                 "Error: Failed to get current exe path. {e}"
-            );
-        }
+            )
+        })?;
+    let Some(bin_dir) = exe_path.parent() else {
+        return err!(
+            ErrorCode::IoError,
+            "Error: Failed to get parent directory of executable."
+        );
     };
+    let Some(curr_path) = bin_dir.to_str() else {
+        return err!(
+            ErrorCode::IoError,
+            "Error: Failed to convert exe parent path to string."
+        );
+    };
+
+    let location = update_location(bin_dir)?;
 
     #[cfg(not(target_os = "windows"))]
     {
         if use_native_update() {
             println(format!("Using native update path ({NATIVE_UPDATE_ENV}=1)"));
-            let dest_dir = std::path::PathBuf::from(&curr_path);
-            return exec_update_native(version, package, &dest_dir, client).await;
+            let lib_dir = location.lib_dir();
+            return exec_update_native(
+                version,
+                package,
+                &location.bin_dir(),
+                lib_dir.as_deref(),
+                client,
+            )
+            .await;
         }
 
         println(format!("ANALYZING Current exe at {curr_path}/"));
@@ -832,21 +958,21 @@ pub(crate) async fn exec_update_with_client(
         #[cfg(target_os = "linux")]
         println("Updating Binary for Linux AARCH-64");
 
-        return exec_update_legacy(version, package, &curr_path, client).await;
+        return exec_update_legacy(version, package, &location, client).await;
     }
 
     #[cfg(target_os = "windows")]
     {
         println(format!("ANALYZING Current exe at {curr_path}/"));
         println("Updating Binary for Windows X86-64");
-        exec_update_windows(version, &curr_path, client).await
+        exec_update_windows(version, &location, client).await
     }
 }
 
 #[cfg(target_os = "windows")]
 async fn exec_update_windows(
     version: Option<&str>,
-    curr_path: &str,
+    location: &InstallLocation,
     client: &dyn UpdateHttpClient,
 ) -> FsResult<()> {
     let script_url = format!("{}/install/install.ps1", cdn_base_url());
@@ -884,10 +1010,11 @@ async fn exec_update_windows(
 
     println("Update process started. The dbt executable will be updated after this process exits.");
 
+    let (option, path) = script_option(location)?;
     let ps_command = format!(
-        "& '{}' -Update -To '{}'{}",
+        "& '{}' -Update -{option} '{}'{}",
         path_str.replace("\\", "\\\\"),
-        curr_path.replace("\\", "\\\\"),
+        path.replace("\\", "\\\\"),
         version.map_or(String::new(), |v| format!(" -Version '{v}'"))
     );
 
@@ -1114,6 +1241,92 @@ mod tests {
         encoder.finish().unwrap()
     }
 
+    #[test]
+    fn update_location_creates_lib_only_for_a_prefix() {
+        let root = tempfile::tempdir().unwrap();
+        let bin = root.path().join("prefix").join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        assert_eq!(
+            update_location(&bin).unwrap(),
+            InstallLocation::Prefix(root.path().join("prefix"))
+        );
+        assert!(root.path().join("prefix/lib/dbt").is_dir());
+        let other = root.path().join("opt").join("dbt");
+        std::fs::create_dir_all(&other).unwrap();
+        let location = update_location(&other).unwrap();
+        assert_eq!(location, InstallLocation::Directory(other.clone()));
+        assert!(!other.join("lib").exists());
+        assert_eq!(
+            script_option(&location).unwrap(),
+            ("to", other.to_str().unwrap())
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn update_location_fails_when_lib_cannot_be_created() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = tempfile::tempdir().unwrap();
+        let prefix = root.path().join("prefix");
+        let bin = prefix.join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        std::fs::set_permissions(&prefix, std::fs::Permissions::from_mode(0o555)).unwrap();
+        let result = update_location(&bin);
+        std::fs::set_permissions(&prefix, std::fs::Permissions::from_mode(0o755)).unwrap();
+        // Root ignores permissions.
+        if !prefix.join("lib").exists() {
+            let message = result.unwrap_err().to_string();
+            assert!(message.contains("Cannot create"), "{message}");
+            assert!(message.contains("--prefix <prefix>"), "{message}");
+        }
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[dbt_runtime::test]
+    async fn sidecar_update_preserves_unrelated_libraries_and_binary() {
+        let root = tempfile::tempdir().unwrap();
+        let unrelated = root.path().join("libadbc_driver_snowflake.so");
+        std::fs::write(&unrelated, b"adapter wheel").unwrap();
+        let archive = build_fake_tarball("lib/dbt/libadbc_driver_bridge.so", b"new bridge");
+        install_sidecar_packages(root.path(), &archive)
+            .await
+            .unwrap();
+        assert_eq!(
+            std::fs::read(root.path().join("libadbc_driver_bridge.so")).unwrap(),
+            b"new bridge"
+        );
+        assert_eq!(std::fs::read(unrelated).unwrap(), b"adapter wheel");
+        let binary_archive = build_fake_tarball("dbt", b"binary");
+        install_sidecar_packages(root.path(), &binary_archive)
+            .await
+            .unwrap();
+        assert!(!root.path().join("dbt").exists());
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[dbt_runtime::test]
+    async fn sidecar_update_rejects_symlinks_before_publishing() {
+        let root = tempfile::tempdir().unwrap();
+        let mut archive = tar::Builder::new(Vec::new());
+        let mut header = tar::Header::new_gnu();
+        header.set_entry_type(tar::EntryType::Symlink);
+        header.set_size(0);
+        header.set_mode(0o644);
+        header.set_link_name("/tmp/outside").unwrap();
+        header.set_cksum();
+        archive
+            .append_data(&mut header, "lib/dbt/library.so", std::io::empty())
+            .unwrap();
+        let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+        std::io::Write::write_all(&mut encoder, &archive.into_inner().unwrap()).unwrap();
+        assert!(
+            install_sidecar_packages(root.path(), &encoder.finish().unwrap())
+                .await
+                .is_err()
+        );
+        assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 0);
+    }
+
     #[cfg(not(target_os = "windows"))]
     fn native_update_client(
         version: &str,
@@ -1202,7 +1415,7 @@ mod tests {
         );
 
         let tmp = tempfile::tempdir().unwrap();
-        exec_update_native(None, Some("dbt"), tmp.path(), &client)
+        exec_update_native(None, Some("dbt"), tmp.path(), None, &client)
             .await
             .unwrap();
 
@@ -1227,7 +1440,7 @@ mod tests {
         let client = native_update_client(version, dbt_tarball, runner_tarball);
 
         let tmp = tempfile::tempdir().unwrap();
-        exec_update_native(Some("canary"), Some("all"), tmp.path(), &client)
+        exec_update_native(Some("canary"), Some("all"), tmp.path(), None, &client)
             .await
             .unwrap();
 
@@ -1280,7 +1493,7 @@ mod tests {
 
         let tmp = tempfile::tempdir().unwrap();
         std::fs::write(tmp.path().join("dbt-db-runner"), b"stale-runner").unwrap();
-        exec_update_native(Some(version), Some("dbt"), tmp.path(), &client)
+        exec_update_native(Some(version), Some("dbt"), tmp.path(), None, &client)
             .await
             .unwrap();
 
@@ -1312,7 +1525,7 @@ mod tests {
             .with_bytes(&dbt_url, build_fake_tarball("dbt", b"dbt-binary"));
 
         let tmp = tempfile::tempdir().unwrap();
-        exec_update_native(Some("extended"), Some("all"), tmp.path(), &client)
+        exec_update_native(Some("extended"), Some("all"), tmp.path(), None, &client)
             .await
             .unwrap();
 
@@ -1342,7 +1555,8 @@ mod tests {
         let runner_path = tmp.path().join("dbt-db-runner");
         std::fs::write(&runner_path, b"existing-runner").unwrap();
 
-        let result = exec_update_native(Some(version), Some("dbt"), tmp.path(), &client).await;
+        let result =
+            exec_update_native(Some(version), Some("dbt"), tmp.path(), None, &client).await;
 
         assert!(result.is_err());
         assert_eq!(std::fs::read(runner_path).unwrap(), b"existing-runner");
@@ -1370,7 +1584,8 @@ mod tests {
         std::fs::write(&runner_path, b"existing-runner").unwrap();
         std::fs::write(&dbt_path, b"existing-dbt").unwrap();
 
-        let result = exec_update_native(Some(version), Some("dbt"), tmp.path(), &client).await;
+        let result =
+            exec_update_native(Some(version), Some("dbt"), tmp.path(), None, &client).await;
 
         assert!(result.is_err());
         assert_eq!(std::fs::read(runner_path).unwrap(), b"existing-runner");
@@ -1465,7 +1680,7 @@ mod tests {
             MockHttpClient::new().with_text(format!("{}/versions.json", cdn_base_url()), &manifest);
 
         let tmp = tempfile::tempdir().unwrap();
-        let result = exec_update_native(None, Some("bogus"), tmp.path(), &client).await;
+        let result = exec_update_native(None, Some("bogus"), tmp.path(), None, &client).await;
         assert!(result.is_err());
     }
 
@@ -1480,7 +1695,7 @@ mod tests {
         );
 
         let tmp = tempfile::tempdir().unwrap();
-        let result = exec_update_native(None, Some("dbt"), tmp.path(), &client).await;
+        let result = exec_update_native(None, Some("dbt"), tmp.path(), None, &client).await;
         assert!(result.is_err());
         let err_msg = format!("{}", result.unwrap_err());
         assert!(
@@ -1504,7 +1719,7 @@ mod tests {
         std::fs::write(tmp.path().join("dbt"), b"old-binary").unwrap();
         std::fs::write(tmp.path().join("dbt-db-runner"), b"old-runner").unwrap();
 
-        exec_update_native(None, Some("dbt"), tmp.path(), &client)
+        exec_update_native(None, Some("dbt"), tmp.path(), None, &client)
             .await
             .unwrap();
 
@@ -1670,7 +1885,7 @@ mod tests {
             .with_bytes(&dbt_url, build_fake_tarball("dbt", b"bin"));
 
         let tmp = tempfile::tempdir().unwrap();
-        exec_update_native(None, Some("dbt"), tmp.path(), &client)
+        exec_update_native(None, Some("dbt"), tmp.path(), None, &client)
             .await
             .unwrap();
 

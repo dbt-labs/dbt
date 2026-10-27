@@ -1,0 +1,3 @@
+[error] [JinjaError (dbt1501)]: Failed to render SQL invalid argument: Called string_size() on non-string field
+(in models/b.sql:33:51)
+  --> models/b.sql:33:51

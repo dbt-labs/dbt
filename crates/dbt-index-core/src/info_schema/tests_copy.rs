@@ -728,3 +728,132 @@ fn meta_and_config_reach_exposures_unit_tests_and_node_columns() {
         );
     }
 }
+
+/// YAML-declared columns in manifest casing, and a Snowflake-style catalog that
+/// uppercases every name and also has a column the YAML never declared.
+fn write_catalog_casing_corpus(metadata_dir: &Path) {
+    let ts = DataType::Timestamp(TimeUnit::Microsecond, Some(Arc::from("UTC")));
+    let utf8 = |name: &str| Field::new(name, DataType::Utf8, true);
+
+    let columns_dir = metadata_dir.join(crate::ingest::PARSE_COLUMNS_SUBDIR);
+    std::fs::create_dir_all(&columns_dir).unwrap();
+    let columns_schema = Arc::new(Schema::new(vec![
+        Field::new("unique_id", DataType::Utf8, false),
+        Field::new("column_name", DataType::Utf8, false),
+        utf8("description"),
+        utf8("declared_type"),
+        Field::new("is_primary_key", DataType::Boolean, false),
+        utf8("constraints"),
+        utf8("meta"),
+        Field::new(
+            "tags",
+            DataType::List(Arc::new(Field::new("item", DataType::Utf8, true))),
+            false,
+        ),
+        utf8("granularity"),
+        Field::new("ingested_at", ts.clone(), false),
+    ]));
+    let parse_row = |name: &str| {
+        json!({
+            "unique_id": "model.pkg.typed",
+            "column_name": name,
+            "description": format!("the {name}"),
+            "is_primary_key": false,
+            "tags": [],
+            "ingested_at": "2026-09-08T12:00:00Z",
+        })
+    };
+    crate::parquet::write_table(
+        &columns_dir.join("v1_0.parquet"),
+        columns_schema,
+        &[parse_row("id"), parse_row("name")],
+    )
+    .unwrap();
+
+    let catalog_dir = metadata_dir.join(crate::ingest::CATALOG_COLUMNS_SUBDIR);
+    std::fs::create_dir_all(&catalog_dir).unwrap();
+    let catalog_schema = Arc::new(Schema::new(vec![
+        Field::new("unique_id", DataType::Utf8, false),
+        Field::new("column_name", DataType::Utf8, false),
+        Field::new("column_index", DataType::Int32, false),
+        utf8("catalog_type"),
+        utf8("catalog_comment"),
+        Field::new("ingested_at", ts, false),
+    ]));
+    let catalog_row = |name: &str, index: i32, ty: &str| {
+        json!({
+            "unique_id": "model.pkg.typed",
+            "column_name": name,
+            "column_index": index,
+            "catalog_type": ty,
+            "ingested_at": "2026-09-08T12:00:00Z",
+        })
+    };
+    crate::parquet::write_table(
+        &catalog_dir.join("v1_0.parquet"),
+        catalog_schema,
+        &[
+            catalog_row("ID", 0, "NUMBER"),
+            catalog_row("NAME", 1, "TEXT"),
+            catalog_row("TS", 2, "TIMESTAMP_LTZ"),
+        ],
+    )
+    .unwrap();
+}
+
+/// Catalog types reach the declared columns whatever the warehouse's casing,
+/// and undeclared catalog columns get their own row, on both materializers
+/// (dbt-labs/dbt#16514).
+#[test]
+fn catalog_types_match_declared_columns_case_insensitively() {
+    if crate::db::Db::open_memory().is_err() {
+        eprintln!("skipping: DuckDB driver unavailable");
+        return;
+    }
+    let metadata = tempfile::tempdir().unwrap();
+    write_catalog_casing_corpus(metadata.path());
+
+    for how in [super::Materializer::Arrow, super::Materializer::Copy] {
+        let root = tempfile::tempdir().unwrap();
+        let staging = tempfile::tempdir().unwrap();
+        super::write_info_schema_with(how, metadata.path(), root.path(), staging.path()).unwrap();
+        let dir = super::versioned_dir(root.path());
+
+        let mut columns: Vec<_> = super::tests::out_rows(&dir, "dbt.node_columns.parquet")
+            .into_iter()
+            .map(|r| {
+                (
+                    r["column_name"].clone(),
+                    r["data_type_actual"].clone(),
+                    r["data_type"].clone(),
+                    r["description"].clone(),
+                )
+            })
+            .collect();
+        columns.sort_by_key(|c| c.0.to_string());
+        assert_eq!(
+            columns,
+            vec![
+                (
+                    json!("TS"),
+                    json!("TIMESTAMP_LTZ"),
+                    json!("TIMESTAMP_LTZ"),
+                    Value::Null
+                ),
+                (
+                    json!("id"),
+                    json!("NUMBER"),
+                    json!("NUMBER"),
+                    json!("the id")
+                ),
+                (
+                    json!("name"),
+                    json!("TEXT"),
+                    json!("TEXT"),
+                    json!("the name")
+                ),
+            ],
+            "{how:?}: one row per column, typed from the catalog"
+        );
+    }
+}

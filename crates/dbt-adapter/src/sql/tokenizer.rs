@@ -305,6 +305,13 @@ pub(crate) fn abstract_tokenize(tokens: Vec<Token>) -> Vec<AbstractToken> {
                 }));
             }
             index += 2;
+            // Skip the derived-table alias (`as <model_name>`) that T-SQL requires.
+            if tokens
+                .get(index)
+                .is_some_and(|t| t.value.eq_ignore_ascii_case("as"))
+            {
+                index += 2;
+            }
         } else {
             abstract_tokens.push(AbstractToken::Token(token.clone()));
             index += 1;

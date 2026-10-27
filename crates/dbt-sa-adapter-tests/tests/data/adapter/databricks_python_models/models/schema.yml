@@ -1,0 +1,10 @@
+version: 2
+
+models:
+  - name: serverless_python_model
+    config:
+      materialized: table
+      submission_method: serverless_cluster
+      environment_key: dbt_serverless_env
+      environment_dependencies:
+        - requests==2.32.3

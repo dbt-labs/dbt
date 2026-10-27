@@ -4429,6 +4429,28 @@ SELECT * FROM enriched;
     }
 
     #[test]
+    fn test_compare_ephemeral_model_with_wrapper_alias() {
+        let sql1 = r#"
+create view db.schema.my_model as with __dbt__cte__base as (
+select 1 as id
+)
+--EPHEMERAL-SELECT-WRAPPER-START
+select * from (
+select id from __dbt__cte__base
+--EPHEMERAL-SELECT-WRAPPER-END
+) as my_model;
+"#;
+        let sql2 = r#"
+create view db.schema.my_model as with __dbt__cte__base as (
+select 1 as id
+)
+select id from __dbt__cte__base;
+"#;
+        let result = compare_sql(sql1, sql2, AdapterType::Snowflake);
+        assert!(result.is_ok(), "Should match: aliased wrapper");
+    }
+
+    #[test]
     fn test_databricks_temp_view_vs_persisted_view_equivalent() {
         // Mantle recordings (dbt-databricks) may emit:
         //   create or replace temporary view `sources__dbt_tmp` as ...

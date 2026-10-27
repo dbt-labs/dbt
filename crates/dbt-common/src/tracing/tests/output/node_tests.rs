@@ -15,7 +15,7 @@ use super::events::{
     aggregated_test_group, data_test, invocation, node, node_group, processed, test_detail,
     with_test_detail,
 };
-use super::support::{Case, DBT_LOG, Sink, TERMINAL, TEXT, Terminal, all_variants};
+use super::support::{Case, DBT_LOG, Sink, TERMINAL, TERMINAL_QUIET, TEXT, Terminal, all_variants};
 use crate::io_args::FsCommand;
 
 pub(super) fn cases(cases: &mut Vec<Case>) {
@@ -858,7 +858,8 @@ fn skipped_tests(cases: &mut Vec<Case>) {
                     <yellow+bold>   Skipped</> test  <cyan+bold></><blue+bold>not_null_customers_customer_id</> (models/schema.yml:12:15) [2 of 3]
                     <green+bold> Succeeded</> model <cyan+bold>analytics.</><blue+bold>orders</> (table) [3 of 3 in 0.25s]
                 "},
-            ),
+            )
+            .expect_no_output(TERMINAL_QUIET),
     );
 
     // More than three names are summarized.
@@ -1001,7 +1002,8 @@ fn aggregated_tests(cases: &mut Vec<Case>) {
                         ├─ <green+bold>Passed</> test  <cyan+bold></><blue+bold>not_null_customers_customer_id</>
                         └─ <green+bold>Passed</> test  <cyan+bold></><blue+bold>not_null_customers_first_name</>
                 "},
-            ),
+            )
+            .expect_no_output(TERMINAL_QUIET),
     );
 
     // The header shows the worst verdict; a failure's details follow at the end.

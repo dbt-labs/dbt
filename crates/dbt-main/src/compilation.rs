@@ -551,11 +551,15 @@ impl<'a> CompilationPhasesExecutor<'a> {
                 None,
                 None,
                 None,
+                None,
                 &empty_targets,
                 &empty_grain_infos,
                 &empty_node_classifiers,
                 &empty_column_classifiers,
             );
+            if let Some(catalog) = &self.catalog_artifact {
+                crate::metadata::write_catalog_epochs(catalog, self.arg.as_ref()).await;
+            }
 
             write_parse_artifacts(&self.arg);
         }
@@ -1161,7 +1165,8 @@ impl DbtProjectCompilation {
         // early here never reaches — so `dbt parse --generate-info-schema` on a project with a
         // warm parse cache exited 0 having written nothing at all, no artifact and no warning.
         // Every other command escapes this because it writes from the post-run site in
-        // `dbt_lib`, which the fast path does not bypass.
+        // `dbt_lib`, which the fast path does not bypass. The catalog is the exception:
+        // `parse`/`compile --write-catalog` fetch it there too.
         //
         // Scoped to `parse` deliberately: `write_metadata` is defaulted on for build/run/check,
         // so testing it alone would disable the fast path for them too.
@@ -1174,16 +1179,11 @@ impl DbtProjectCompilation {
             }
             _ => false,
         };
-        // For `parse`, `write_metadata` is only true when an artifact was actually requested
-        // (`--generate-info-schema` and `--write-index` both imply it); a plain `dbt parse`
-        // leaves it false and keeps the fast path.
-        let parse_artifacts_requested =
-            arg.command == FsCommand::Parse && (arg.write_metadata || arg.generate_info_schema);
         // --dirty sets use_lazy_filter on its own, so --no-partial-load is checked here too.
         if use_lazy_filter
             && !cli.common_args.no_partial_load
             && !has_inline
-            && !parse_artifacts_requested
+            && !writes_artifacts_on_load(arg)
         {
             // Skip the fast path when the --static-analysis level has changed since the
             // previous compilation. The fast path reuses nodes whose `base().static_analysis`
@@ -1274,12 +1274,10 @@ impl DbtProjectCompilation {
                     }
                     // Same reasoning as the partial-load fast path above: reusing the
                     // previous compilation returns before `maybe_write_json_and_exit`, which
-                    // is where `parse` writes its metadata epochs and information schema. A
-                    // `parse` that was asked for them has to take the full path, exactly as
-                    // it does when the static-analysis level changed.
-                    if arg.command == FsCommand::Parse
-                        && (arg.write_metadata || arg.generate_info_schema)
-                    {
+                    // is where `parse` writes its metadata epochs and information schema,
+                    // and where `--write-catalog` fetches the catalog. Those have to take the
+                    // full path, exactly as when the static-analysis level changed.
+                    if writes_artifacts_on_load(arg) {
                         tracing::debug!(
                             "Partial parse: no files changed, but parse artifacts were requested"
                         );
@@ -2813,11 +2811,18 @@ fn send_vortex_telemetry_if_possible(
                 .default_db_config()
                 .adapter_type()
                 .to_string(),
+            // `get_adapter_unique_id` hashes an adapter-specific field that
+            // identifies the warehouse (`base_url` on lake compute, `account` on
+            // Snowflake, ...). That field is optional in every profile schema, so
+            // a target that omits it -- legal for commands that never connect,
+            // such as `compile --static-analysis off` -- yields `None`. Reporting
+            // it as unknown keeps anonymous telemetry from taking the whole
+            // invocation down with it.
             dbt_state
                 .dbt_profile
                 .default_db_config()
                 .get_adapter_unique_id()
-                .unwrap(),
+                .unwrap_or_default(),
         );
     }
 }
@@ -2914,6 +2919,15 @@ async fn write_catalog(
         20,
     )
     .await
+}
+
+/// True when the invocation writes artifacts from `maybe_write_json_and_exit`, which reusing
+/// the previous compilation skips: `parse`'s metadata epochs and information schema, and the
+/// catalog `parse`/`compile --write-catalog` fetch. For `parse`, `write_metadata` is only true
+/// when an artifact was requested, so a plain `dbt parse` keeps the fast path.
+fn writes_artifacts_on_load(arg: &EvalArgs) -> bool {
+    (arg.command == FsCommand::Parse && (arg.write_metadata || arg.generate_info_schema))
+        || (matches!(arg.command, FsCommand::Parse | FsCommand::Compile) && arg.write_catalog)
 }
 
 /// True when `expr` can match no node regardless of the project (e.g. an empty `Or`).

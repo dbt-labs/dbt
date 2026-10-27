@@ -91,6 +91,7 @@ pub enum ErrorCode {
     FilterColumnWrappedInFunction = 179,
     LeadingWildcardLikePattern = 180,
     HardCodedReference = 181,
+    SelectStarForbidden = 182,
 
     /// Generic catch-all error for all errors originating from the PySpark LP
     /// binder. The PySpark LP binder is different in that its input is a

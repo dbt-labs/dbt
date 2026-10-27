@@ -240,7 +240,7 @@ pub fn inject_and_persist_ephemeral_models(
     } else {
         // Preserve the wrapper fallback for statements without a leading WITH clause.
         final_sql = format!(
-            "with {ctes}\n--EPHEMERAL-SELECT-WRAPPER-START\nselect * from (\n{final_sql}\n--EPHEMERAL-SELECT-WRAPPER-END\n)"
+            "with {ctes}\n--EPHEMERAL-SELECT-WRAPPER-START\nselect * from (\n{final_sql}\n--EPHEMERAL-SELECT-WRAPPER-END\n) as {model_name}"
         );
         let added_lines = ctes.lines().count() + 2;
         let added_offset = ctes.len() + 23;

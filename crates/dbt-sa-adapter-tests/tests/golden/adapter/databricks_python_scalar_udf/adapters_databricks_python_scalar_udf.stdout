@@ -1,0 +1,15 @@
+   dbt-oss 
+   Loading profiles.yml
+   Parsing functions/price_for_xlarge.yml
+   Parsing functions/price_for_xlarge.py
+   Parsing tests/assert_price_for_xlarge.sql
+ Rendering functions/price_for_xlarge.py
+   Running ../scratch/target/run/test/functions/price_for_xlarge.sql
+ Succeeded function adapters_databricks_python_scalar_udf.price_for_xlarge (function) [1 of 2 in duration]
+ Rendering tests/assert_price_for_xlarge.sql
+   Running ../scratch/target/run/test/tests/assert_price_for_xlarge.sql
+    Passed test  assert_price_for_xlarge [2 of 2 in duration]
+==================== Execution Summary =====================
+Finished 'build' with 2 warnings for target 'databricks' [duration]
+Processed: 1 test | 1 function
+Summary: 2 total | 2 success

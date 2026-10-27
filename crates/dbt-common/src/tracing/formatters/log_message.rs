@@ -64,7 +64,7 @@ impl fmt::Display for LogMessageLine<'_> {
         }
 
         if self.colorize {
-            write!(f, "{}", ColoredQuotes(self.message))
+            ColoredQuotes(self.message).fmt_forced(f)
         } else {
             f.write_str(self.message)
         }

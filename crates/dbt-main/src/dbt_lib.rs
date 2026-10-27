@@ -1303,12 +1303,13 @@ impl<'a> AllPhasesExecutor<'a> {
             "--write-metadata"
         };
         if advise_index_flags && !strict_static_analysis {
-            emit_warn_log_message(
-                ErrorCode::Generic,
-                format!(
-                    "{advised_flag}: column types will not be populated without `--static-analysis strict`, which also enables column-level lineage."
-                ),
-            );
+            // The catalog supplies the warehouse types; only inference needs strict.
+            let advice = if self.arg.write_catalog {
+                "inferred column types and column-level lineage are not written without `--static-analysis strict`."
+            } else {
+                "column types will not be populated without `--static-analysis strict`, which also enables column-level lineage."
+            };
+            emit_warn_log_message(ErrorCode::Generic, format!("{advised_flag}: {advice}"));
         } else if advise_index_flags && strict_static_analysis && !self.arg.write_lineage {
             emit_warn_log_message(
                 ErrorCode::Generic,
@@ -1539,12 +1540,12 @@ impl<'a> AllPhasesExecutor<'a> {
                                 test_outcome,
                                 freshness_outcome: None,
                                 has_warn: false,
-                                colorize: true,
+                                colorize: console::colors_enabled(),
                             },
                             FixedWidthDuration(Duration::from_secs_f64(r.execution_time)),
                             NodeTypeFixedWidth {
                                 node_type: "check",
-                                colorize: true,
+                                colorize: console::colors_enabled(),
                             },
                             r.name,
                         ));
@@ -1991,7 +1992,7 @@ impl<'a> AllPhasesExecutor<'a> {
         // warehouse round-trip. The information schema then carries no catalog_type and
         // `data_type` falls back to inferred_type — pass `--write-catalog` for the full
         // warehouse-backed types.
-        let catalog_data: Option<DbtCatalog> = if self.arg.write_metadata
+        let fetched_catalog: Option<DbtCatalog> = if self.arg.write_metadata
             && (self.arg.write_catalog || self.arg.write_index)
             && !self.arg.write_index_implied
             && matches!(self.arg.command, FsCommand::Run | FsCommand::Build)
@@ -2010,6 +2011,9 @@ impl<'a> AllPhasesExecutor<'a> {
         };
 
         if self.arg.write_metadata && self.arg.command != FsCommand::Show {
+            // `compile --write-catalog` fetched its catalog before compiling, for
+            // `catalog.json`. Reuse it so the epochs get the warehouse types too (#16514).
+            let catalog_data = fetched_catalog.or_else(|| self.captured_artifacts.catalog.take());
             let schema_store =
                 Arc::clone(&compilation_cache_state.schema_store) as Arc<dyn SchemaStoreTrait>;
             crate::metadata::write_metadata(
@@ -2020,6 +2024,7 @@ impl<'a> AllPhasesExecutor<'a> {
                     .expect("Unconditionally set earlier"),
                 resolved_state.as_ref(),
                 schema_store.as_ref(),
+                type_ops_factory.as_ref(),
                 &run_task_results,
                 catalog_data.as_ref(),
                 self.feature_stack.index.hooks.as_ref(),

@@ -6,7 +6,8 @@ use dbt_telemetry::{
 use indoc::{formatdoc, indoc};
 
 use super::support::{
-    Case, Clock, DBT_LOG, DBT_LOG_DEBUG, Sink, TERMINAL, TEXT, TEXT_DEBUG, Terminal, all_variants,
+    Case, Clock, DBT_LOG, DBT_LOG_DEBUG, Sink, TERMINAL, TERMINAL_QUIET, TEXT, TEXT_DEBUG,
+    Terminal, all_variants,
 };
 use crate::{
     io_args::{FsCommand, ShowOptions},
@@ -285,7 +286,8 @@ fn operation_items(cases: &mut Vec<Case>) {
                         <red+bold>    Failed</> [  0.70s] manifest.json (error: connection reset)
                         <green+bold>  Finished</> [  0.70s] downloading manifest (1 items)
                     "#},
-                ),
+                )
+                .expect_no_output(TERMINAL_QUIET),
         });
     }
 

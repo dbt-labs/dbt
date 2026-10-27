@@ -5271,7 +5271,7 @@ mod tests {
         EventReplayer, args_freshness_with_overrides, get_or_init_recording, get_or_init_replayer,
         reset_time_machine_globals, with_time_machine_metadata_wrapper,
     };
-    use dbt_adapter::{Adapter, AdapterBuilder, AdapterImpl, AdapterStore};
+    use dbt_adapter::{Adapter, AdapterStore};
     use dbt_common::path::DbtPath;
     use dbt_schemas::schemas::common::FreshnessDefinition;
     use dbt_schemas::state::ProfileAdapter;
@@ -5292,7 +5292,6 @@ mod tests {
 
     static TIME_MACHINE_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
     use dbt_adapter::sql_types::DefaultTypeOps;
-    use dbt_adapter::stmt_splitter::DefaultStmtSplitter;
     use dbt_adapter_core::ExecutionPhase;
     use dbt_common::AsyncAdapterResult;
     use dbt_common::cancellation::never_cancels;
@@ -8533,21 +8532,7 @@ mod tests {
     }
 
     fn test_adapter_store_for(adapter_type: AdapterType) -> Arc<AdapterStore> {
-        let build: AdapterBuilder = Box::new(|adapter_type| {
-            let adapter = AdapterImpl::new_mock(
-                adapter_type,
-                BTreeMap::new(),
-                DEFAULT_RESOLVED_QUOTING,
-                Arc::new(DefaultTypeOps::new(adapter_type)),
-                Arc::new(DefaultStmtSplitter),
-            );
-            Ok(Arc::new(Adapter::new(
-                Arc::new(adapter),
-                None,
-                never_cancels(),
-            )))
-        });
-        Arc::new(AdapterStore::new(vec![adapter_type], adapter_type, build).expect("valid store"))
+        Arc::new(AdapterStore::new_mock(vec![adapter_type], adapter_type).expect("valid store"))
     }
 
     #[dbt_runtime::test]

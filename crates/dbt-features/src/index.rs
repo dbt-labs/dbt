@@ -3,6 +3,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use chrono::Utc;
+use dbt_adapter::sql_types::TypeOps;
 use dbt_common::io_args::EvalArgs;
 use dbt_common::tracing::dbt_emit::emit_warn_log_message;
 use dbt_common::{ErrorCode, FsResult};
@@ -131,6 +132,7 @@ pub fn write_metadata_parquet(
     manifest: &DbtManifest,
     resolved_state: Option<&ResolverState>,
     schema_store: Option<&dyn SchemaStoreTrait>,
+    type_ops: Option<&dyn TypeOps>,
     column_lineage: Option<&[CllEdge]>,
     recomputed_column_lineage_targets: &HashSet<String>,
     grain_infos: &HashMap<String, PlanGrainInfo>,
@@ -142,6 +144,7 @@ pub fn write_metadata_parquet(
         manifest,
         resolved_state,
         schema_store,
+        type_ops,
         column_lineage,
         recomputed_column_lineage_targets,
         grain_infos,
@@ -158,6 +161,7 @@ pub fn write_metadata_parquet_with_errors(
     manifest: &DbtManifest,
     resolved_state: Option<&ResolverState>,
     schema_store: Option<&dyn SchemaStoreTrait>,
+    type_ops: Option<&dyn TypeOps>,
     column_lineage: Option<&[CllEdge]>,
     recomputed_column_lineage_targets: &HashSet<String>,
     grain_infos: &HashMap<String, PlanGrainInfo>,
@@ -169,6 +173,7 @@ pub fn write_metadata_parquet_with_errors(
         manifest,
         resolved_state,
         schema_store,
+        type_ops,
         column_lineage,
         recomputed_column_lineage_targets,
         grain_infos,
@@ -218,6 +223,7 @@ fn write_metadata_parquet_impl(
     manifest: &DbtManifest,
     resolved_state: Option<&ResolverState>,
     schema_store: Option<&dyn SchemaStoreTrait>,
+    type_ops: Option<&dyn TypeOps>,
     column_lineage: Option<&[CllEdge]>,
     recomputed_column_lineage_targets: &HashSet<String>,
     grain_infos: &HashMap<String, PlanGrainInfo>,
@@ -403,7 +409,12 @@ fn write_metadata_parquet_impl(
                                     unique_id: uid.to_string(),
                                     column_name: field.name().clone(),
                                     column_index: idx as i32,
-                                    column_type: Some(field.data_type().to_string()),
+                                    // The adapter's SQL type, not the Arrow type.
+                                    column_type: type_ops
+                                        .and_then(|t| {
+                                            t.get_original_sql_type_from_field(field).ok()
+                                        })
+                                        .map(|t| t.into_owned()),
                                     description: None,
                                     classifiers: merge_classifiers_vec(
                                         declared,

@@ -156,6 +156,7 @@ impl SemanticCategory {
             | "s3source_clause"
             | "get_csv_data"
             | "table_format"
+            | "warn_once"
             | "strip_trailing_statement_terminator" => SemanticCategory::Pure,
 
             _ => {
