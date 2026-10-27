@@ -14,7 +14,7 @@ fn requires_full_refresh(components: &IndexMap<&'static str, ComponentConfigChan
 pub(crate) fn new_loader() -> RelationConfigLoader<'static, DatabricksRelationMetadata> {
     let loaders: [Box<dyn ComponentConfigLoader<DatabricksRelationMetadata>>; 6] = [
         Box::new(components::ColumnCommentsLoader),
-        Box::new(components::QueryLoader),
+        Box::new(components::ViewQueryLoader),
         Box::new(components::RelationCommentLoader),
         Box::new(components::RelationTagsLoader),
         Box::new(components::TblPropertiesLoader),
@@ -33,10 +33,155 @@ mod tests {
     };
     use crate::relation::databricks::config::{
         DatabricksRelationMetadata, components,
-        test_helpers::{TestModelColumn, TestModelConfig, run_test_cases},
+        test_helpers::{TestModelColumn, TestModelConfig, create_mock_dbt_model, run_test_cases},
     };
     use crate::relation::test_helpers::TestCase;
     use indexmap::IndexMap;
+    use minijinja::value::Value;
+    use minijinja_contrib::testing::jinja_assert;
+    use std::collections::BTreeMap;
+
+    fn changeset_context(
+        current: TestModelConfig,
+        desired: TestModelConfig,
+    ) -> BTreeMap<String, Value> {
+        let loader = new_loader();
+        BTreeMap::from([
+            (
+                "existing".into(),
+                Value::from_object(
+                    loader
+                        .from_local_config(&create_mock_dbt_model(current))
+                        .unwrap(),
+                ),
+            ),
+            (
+                "desired".into(),
+                Value::from_object(
+                    loader
+                        .from_local_config(&create_mock_dbt_model(desired))
+                        .unwrap(),
+                ),
+            ),
+        ])
+    }
+
+    #[test]
+    fn unchanged_queries_containing_star_are_reapplied() {
+        for query in [
+            "select * from foo",
+            "select foo.* from foo",
+            "with src as (select * from foo) select id from src",
+            "select * except (secret) from foo",
+            "select count(*) from foo",
+            "select id * 2 from foo",
+            "select '*' as literal from foo",
+            "select id from foo -- *",
+        ] {
+            let mut context = changeset_context(
+                TestModelConfig {
+                    query: Some(query.into()),
+                    ..Default::default()
+                },
+                TestModelConfig {
+                    query: Some(query.into()),
+                    ..Default::default()
+                },
+            );
+            context.insert("query".into(), Value::from(query));
+            jinja_assert(
+                context,
+                "
+                {% set changeset = obj.desired.get_changeset(obj.existing) %}
+                {{ changeset is not none }}
+                {{ changeset.requires_full_refresh }}
+                {{ changeset.changes | length }}
+                {{ changeset.changes.query.query == obj.query }}
+            ",
+                "True\nFalse\n1\nTrue",
+            );
+        }
+    }
+
+    #[test]
+    fn unchanged_explicit_query_has_no_changeset() {
+        let config = || TestModelConfig {
+            query: Some("select id from foo".into()),
+            ..Default::default()
+        };
+        jinja_assert(
+            changeset_context(config(), config()),
+            "
+            {{ obj.desired.get_changeset(obj.existing) is none }}
+        ",
+            "True",
+        );
+    }
+
+    #[test]
+    fn query_refresh_preserves_configuration_changes() {
+        for (query, expected) in [
+            ("select id from foo", "False\nFalse\nnew comment\nvalue"),
+            ("select * from foo", "True\nFalse\nnew comment\nvalue"),
+        ] {
+            let config = || TestModelConfig {
+                query: Some(query.into()),
+                persist_column_comments: true,
+                columns: vec![TestModelColumn {
+                    name: "id".into(),
+                    comment: Some("old comment".into()),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            };
+            let desired = TestModelConfig {
+                columns: vec![TestModelColumn {
+                    name: "id".into(),
+                    comment: Some("new comment".into()),
+                    ..Default::default()
+                }],
+                tbl_properties: IndexMap::from([("key".into(), "value".into())]),
+                ..config()
+            };
+            jinja_assert(
+                changeset_context(config(), desired),
+                "
+                {% set changeset = obj.desired.get_changeset(obj.existing) %}
+                {{ changeset.changes.query is defined }}
+                {{ changeset.requires_full_refresh }}
+                {{ changeset.changes.column_comments.comments.id }}
+                {{ changeset.changes.tblproperties.tblproperties.key }}
+            ",
+                expected,
+            );
+        }
+    }
+
+    #[test]
+    fn description_change_still_requires_replacement() {
+        for query in ["select id from foo", "select * from foo"] {
+            let current = TestModelConfig {
+                query: Some(query.into()),
+                persist_relation_comments: true,
+                ..Default::default()
+            };
+            let desired = TestModelConfig {
+                query: Some(query.into()),
+                persist_relation_comments: true,
+                relation_comment: Some("new description".into()),
+                ..Default::default()
+            };
+            jinja_assert(
+                changeset_context(current, desired),
+                "
+                {% set changeset = obj.desired.get_changeset(obj.existing) %}
+                {{ changeset.requires_full_refresh }}
+                {{ changeset.changes.comment.comment }}
+            ",
+                "True\nnew description",
+            );
+        }
+    }
 
     fn create_test_cases() -> Vec<TestCase<DatabricksRelationMetadata, TestModelConfig>> {
         vec![
