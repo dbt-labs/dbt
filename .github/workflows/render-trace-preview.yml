@@ -14,7 +14,8 @@ permissions:
 
 concurrency:
   group: render-trace-preview-${{ github.ref }}
-  cancel-in-progress: true
+  # Keep a usable artifact from an expensive cold build when the branch moves.
+  cancel-in-progress: false
 
 jobs:
   wheel:
