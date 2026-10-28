@@ -302,4 +302,63 @@ mod tests {
         );
         assert_eq!(event.rendered_start, "select ".len());
     }
+
+    #[test]
+    fn elif_chain_emits_one_closing_tag() {
+        for choice in 0..4 {
+            let source = format!(
+                "{{% set choice = {choice} %}}{{% if choice == 0 %}}select 1\
+                 {{% elif choice == 1 %}}select 2{{% elif choice == 2 %}}select 3\
+                 {{% else %}}select 4{{% endif %}}"
+            );
+            let trace = render(&source, true);
+            assert_eq!(trace.rendered, format!("select {}", choice + 1));
+            let ends: Vec<_> = trace
+                .events
+                .iter()
+                .filter(|e| e.kind == "block_end")
+                .collect();
+            assert_eq!(ends.len(), 1, "choice {choice}");
+            assert_eq!(
+                &source[ends[0].source_start..ends[0].source_end],
+                "{% endif %}"
+            );
+        }
+    }
+
+    #[test]
+    fn elif_nested_if_keeps_its_own_closing_tag() {
+        let source = "{% if false %}unused{% elif true %}\
+                      {% if flag %}select 1{% else %}select 2{% endif %}{% endif %}";
+        for flag in [true, false] {
+            let trace = render(source, flag);
+            assert_eq!(trace.rendered, if flag { "select 1" } else { "select 2" });
+            let ends: Vec<_> = trace
+                .events
+                .iter()
+                .filter(|e| e.kind == "block_end")
+                .collect();
+            assert_eq!(ends.len(), 2);
+            assert_ne!(ends[0].source_start, ends[1].source_start);
+        }
+    }
+
+    #[test]
+    fn elif_empty_loop_iterations_keep_repeated_closing_tags() {
+        let source = "{% for unused in [1, 2] %}\
+                      {% if false %}{% elif true %}{% endif %}{% endfor %}";
+        let trace = render(source, true);
+        assert!(trace.rendered.is_empty());
+        let ends: Vec<_> = trace
+            .events
+            .iter()
+            .filter(|e| {
+                e.kind == "block_end" && &source[e.source_start..e.source_end] == "{% endif %}"
+            })
+            .collect();
+        assert_eq!(ends.len(), 2);
+        // Same byte ranges, but two genuine loop executions: never globally deduplicate.
+        assert_eq!(ends[0].source_start, ends[1].source_start);
+        assert_eq!(ends[0].rendered_start, ends[1].rendered_start);
+    }
 }

@@ -34,6 +34,15 @@ identical output strings. The initial event kinds are `literal`, `templated`,
 `macro`, `block_start`, `block_mid`, `block_end`, `block_standalone`, `variable`,
 `comment`, `loop_iteration`, and `loop_skipped`.
 
+Layout events describe source tags, not synthetic AST nodes. An if/elif chain
+emits one block_end for its shared endif per execution. Internal macro-span
+events can still enclose synthetic conditional scopes; they do not introduce
+additional Jinja layout blocks.
+
+Events can legitimately repeat when a source tag executes again in a loop,
+including with identical source and rendered offsets if the body emits no text.
+Consumers must not globally deduplicate events by their byte ranges.
+
 The `rendered` string is deliberately the Jinja result before ephemeral CTE
 injection. These offsets must not be applied directly to the final compiled SQL
 artifact. Generated snapshot inputs do not yet have a mapping back to the

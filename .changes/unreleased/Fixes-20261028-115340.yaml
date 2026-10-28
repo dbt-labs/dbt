@@ -1,0 +1,7 @@
+kind: Fixes
+body: Emit one closing layout event per executed endif in elif chains.
+time: 2026-10-28T11:53:40.9834181Z
+custom:
+    author: alanmcruickshank
+    issue: ""
+    project: dbt-core

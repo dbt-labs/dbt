@@ -959,10 +959,14 @@ impl<'source> CodeGenerator<'source> {
             }
         }
         self.end_if();
-        self.add(Instruction::JinjaLayoutEvent(
-            JinjaLayoutEventKind::BlockEnd,
-            if_cond.end_tag_span,
-        ));
+        // An elif is a synthetic nested IfCond sharing the outer endif. Only
+        // the source-level if owns that closing layout event.
+        if if_cond.start_tag_kind == JinjaLayoutEventKind::BlockStart {
+            self.add(Instruction::JinjaLayoutEvent(
+                JinjaLayoutEventKind::BlockEnd,
+                if_cond.end_tag_span,
+            ));
+        }
         self.add(Instruction::MacroStop(
             span.end_line,
             span.end_col,
