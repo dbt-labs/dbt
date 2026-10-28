@@ -1,0 +1,9 @@
+version: 2
+models:
+  - name: c
+    config:
+      grants:
+        select:
+          - user:dbt_test_user_1
+          - group:dbt_test_group_1
+          - role:tester

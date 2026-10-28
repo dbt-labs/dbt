@@ -1,0 +1,8 @@
+snapshots:
+  - name: base_snapshot
+    relation: ref("base")
+    config:
+      unique_key: id
+      strategy: check
+      check_cols: all
+      hard_deletes: new_record

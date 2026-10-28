@@ -292,6 +292,9 @@ export default function App() {
   //  - a free-text search is active: only /search/ renders `query`, so any
   //    filter tweak has to stay there or the typed text would be silently
   //    dropped.
+  //  - the Filter tab is open: its results live on /search/ for any selection,
+  //    including a single asset type. Jumping to the typed list page would flip
+  //    the pane back to Assets and drop layer/materialization narrowing.
   //  - otherwise, when the asset-type filter narrows to exactly one value,
   //    mirror it into the URL so the link is shareable; 0 or 2+ values land
   //    on /search/, which owns the multi-select narrowing.
@@ -299,6 +302,10 @@ export default function App() {
     (next: AssetFilters) => {
       setFilters(next);
       if (search.trim()) {
+        if (location.pathname !== paths.search()) navigate(paths.search());
+        return;
+      }
+      if (mode === 'filter') {
         if (location.pathname !== paths.search()) navigate(paths.search());
         return;
       }
@@ -310,7 +317,7 @@ export default function App() {
         navigate(paths.search());
       }
     },
-    [navigate, view, search, location.pathname],
+    [navigate, view, search, location.pathname, mode],
   );
 
   const onSubmitTopbarSearch = useCallback(() => {

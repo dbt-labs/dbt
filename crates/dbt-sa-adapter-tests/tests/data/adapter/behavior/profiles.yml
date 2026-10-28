@@ -1,0 +1,28 @@
+fusion_tests:
+  outputs:
+    snowflake_mock:
+      user: mock_test_user
+      password: me
+      database: magic
+      schema: public
+      warehouse: me
+      role: me
+      account: me
+      type: snowflake
+    snowflake:
+      user: user
+      password: password
+      database: db
+      schema: schema
+      warehouse: warehouse
+      role: role
+      account: account
+      type: snowflake
+    databricks:
+      type: databricks
+      host: host
+      http_path: http_path
+      database: database
+      schema: schema
+      token: token
+  target: be_explicit_and_specify_target_when_running

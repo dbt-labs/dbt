@@ -75,6 +75,18 @@ impl AdapterConfig {
         self.get(field)?.as_str()
     }
 
+    /// Get a direct reference to a string value if it exists and is a string,
+    /// and is non-empty.
+    /// This returns a borrow tied to the lifetime of the AdapterConfig itself.
+    ///
+    /// TODO: It's possible this behavior is what we just want from get_str, but
+    /// we would need to investigate this to make sure we aren't breaking anything.
+    /// Is there ever a case where we want to explicitly distinguish between
+    /// not setting an option and setting an empty string?
+    pub fn get_str_non_empty(&self, field: &str) -> Option<&str> {
+        self.get(field)?.as_str().filter(|s| !s.is_empty())
+    }
+
     /// Like `require`, but returns a borrowed string.
     pub fn require_str(&self, field: &str) -> Result<&str, dbt_yaml::Error> {
         use serde::de::Error as _;

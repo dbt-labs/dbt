@@ -10,6 +10,7 @@ use dbt_common::tracing::dbt_emit::emit_warn_log_from_fs_error;
 use dbt_common::{ErrorCode, FsResult, error::AbstractLocation, fs_err};
 use dbt_jinja_utils::jinja_environment::JinjaEnv;
 use dbt_jinja_utils::listener::DefaultJinjaTypeCheckEventListenerFactory;
+use dbt_jinja_utils::phases::parse::ParseAdapterScopes;
 use dbt_jinja_utils::utils::dependency_package_name_from_ctx;
 use dbt_schemas::schemas::common::{DbtMaterialization, DbtQuoting, ResolvedQuoting};
 use dbt_schemas::schemas::dbt_column::process_columns;
@@ -32,7 +33,9 @@ use crate::dbt_project_config::{
     ProjectConfigResolver, RootProjectConfigs, disallow_plus_prefix_from_flags, init_project_config,
 };
 use crate::renderer::{RenderCtx, RenderCtxInner};
-use crate::utils::{RelationComponents, update_node_relation_components};
+use crate::utils::{
+    RelationComponents, node_starting_database_and_schema, update_node_relation_components,
+};
 use crate::{
     args::ResolveArgs,
     renderer::{SqlFileRenderResult, render_unresolved_sql_files},
@@ -50,6 +53,7 @@ pub async fn resolve_analyses(
     analysis_properties: &mut BTreeMap<String, MinimalPropertiesEntry>,
     database: &str,
     schema: &str,
+    parse_adapter_scopes: &ParseAdapterScopes,
     // The target's default adapter.
     default_adapter: AdapterType,
     package_name: &str,
@@ -211,6 +215,14 @@ pub async fn resolve_analyses(
             .into_iter()
             .collect();
 
+        let (node_database, node_schema) = node_starting_database_and_schema(
+            Some(parse_adapter_scopes),
+            selected_adapter,
+            database,
+            schema,
+            &dbt_asset.path,
+        )?;
+
         let mut dbt_analysis = DbtAnalysis {
             __common_attr__: CommonAttributes {
                 name: analysis_name.to_owned(),
@@ -240,10 +252,10 @@ pub async fn resolve_analyses(
                 // no `+propagate` config exists for this node type.
                 propagate: Vec::new(),
                 effective_propagation_target: None,
-                database: database.to_string(), // will be updated below
-                schema: schema.to_string(),     // will be updated below
-                alias: "".to_owned(),           // will be updated below
-                relation_name: None,            // will be updated below
+                database: node_database.to_owned(), // will be updated below
+                schema: node_schema.to_owned(),     // will be updated below
+                alias: "".to_owned(),               // will be updated below
+                relation_name: None,                // will be updated below
                 enabled: is_enabled,
                 extended_model: false,
                 persist_docs: None,
@@ -314,7 +326,7 @@ pub async fn resolve_analyses(
             package_name,
             base_ctx,
             &components,
-            default_adapter,
+            Some(parse_adapter_scopes),
         )?;
 
         if status == ModelStatus::Enabled || render_error_deferred {

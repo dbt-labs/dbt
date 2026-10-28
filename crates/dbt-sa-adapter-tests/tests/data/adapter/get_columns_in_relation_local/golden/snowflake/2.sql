@@ -1,0 +1,1 @@
+CREATE OR REPLACE TABLE adapters_snowflake_get_columns_in_relation_local.a (number_col int, text_col varchar(100))

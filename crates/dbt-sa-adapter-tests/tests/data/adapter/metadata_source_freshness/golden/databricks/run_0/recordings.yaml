@@ -1,0 +1,12 @@
+100ac687:
+- sequence: 0
+  type: execute
+  sql: create schema if not exists `e2e`.`adapters_databricks_metadata_source_freshness`
+5464c0db:
+- sequence: 0
+  type: execute
+  sql: create or replace table adapters_databricks_metadata_source_freshness.a (val int)
+c517ce06:
+- sequence: 0
+  type: execute
+  sql: create table adapters_databricks_metadata_source_freshness.source (id STRING, name STRING, amount DECIMAL(10,2))

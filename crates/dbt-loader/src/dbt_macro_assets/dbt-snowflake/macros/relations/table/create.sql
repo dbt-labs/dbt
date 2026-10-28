@@ -141,6 +141,7 @@ create or replace {{ transient }} table {{ relation }}
     {%- if contract_config.enforced %}
     {{ get_table_columns_and_constraints() }}
     {%- endif %}
+    {{ optional('change_tracking', catalog_relation.change_tracking)}}
     {% if copy_grants -%} copy grants {%- endif %}
     {% if copy_tags -%} copy tags {%- endif %}
     {% if row_access_policy -%} with row access policy {{ row_access_policy }} {%- endif %}

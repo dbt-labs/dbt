@@ -1095,6 +1095,8 @@ pub struct DatabricksDbConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub auth_type: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub oidc_token_filepath: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     #[merge(strategy = merge_strategies_extend::overwrite_always)]
     pub compute: Option<HashMap<String, YmlValue>>,
     #[serde(skip_serializing_if = "Option::is_none")]

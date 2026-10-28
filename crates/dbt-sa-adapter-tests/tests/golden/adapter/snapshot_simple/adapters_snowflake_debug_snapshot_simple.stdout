@@ -1,0 +1,19 @@
+   dbt-oss 
+   Loading profiles.yml
+   Parsing snapshots/base_snapshot.yml
+   Parsing snapshots/base_snapshot.yml:2:11 (base_snapshot)
+   Parsing models/base.sql
+   Parsing models/snapshot_columns.sql
+ Rendering models/base.sql
+   Running models/base.sql
+ Succeeded model adapters_snowflake_debug_snapshot_simple.base (view) [1 of 3 in duration]
+ Rendering snapshots/base_snapshot.yml:2:11 (base_snapshot)
+   Running ../scratch/target/run/my_project/snapshots/base_snapshot.yml/base_snapshot.sql
+ Succeeded snapshot adapters_snowflake_debug_snapshot_simple.base_snapshot (snapshot) [2 of 3 in duration]
+ Rendering models/snapshot_columns.sql
+   Running models/snapshot_columns.sql
+ Succeeded model adapters_snowflake_debug_snapshot_simple.snapshot_columns (view) [3 of 3 in duration]
+==================== Execution Summary =====================
+Finished 'build' successfully for target 'snowflake' [duration]
+Processed: 2 models | 1 snapshot
+Summary: 3 total | 3 success

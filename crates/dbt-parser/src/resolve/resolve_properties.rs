@@ -62,7 +62,7 @@ pub struct MinimalProperties {
     pub saved_queries: BTreeMap<String, MinimalPropertiesEntry>,
     pub groups: BTreeMap<String, MinimalPropertiesEntry>,
     pub macros: BTreeMap<String, MinimalPropertiesEntry>,
-    /// Entries under `plugins:`, by plugin type and then name.
+    /// Entries under `plugins:`, by key (a plugin type or a definition key) and then name.
     pub plugins: BTreeMap<String, BTreeMap<String, MinimalPropertiesEntry>>,
     pub semantic_layer_spec_is_legacy: bool,
 }
@@ -78,8 +78,8 @@ impl MinimalProperties {
         properties_path: &Path,
         base_ctx: &BTreeMap<String, MinijinjaValue>,
     ) -> FsResult<()> {
-        for (plugin_type, value) in plugin_values {
-            let entries = self.plugins.entry(plugin_type.clone()).or_default();
+        for (key, value) in plugin_values {
+            let entries = self.plugins.entry(key.clone()).or_default();
             if value.is_null() {
                 continue;
             }
@@ -88,7 +88,7 @@ impl MinimalProperties {
                     code => ErrorCode::InvalidConfig,
                     loc => properties_path.to_path_buf(),
                     "`plugins: {}` must be a list",
-                    plugin_type
+                    key
                 ));
             };
             for entry_value in values {
@@ -731,7 +731,7 @@ pub async fn resolve_minimal_properties(
     )?;
 
     // Entries under `plugins:` for a plugin that is on are collected; any others are ignored.
-    let mut ignored_plugin_types: BTreeSet<String> = BTreeSet::new();
+    let mut ignored_plugin_keys: BTreeSet<String> = BTreeSet::new();
 
     for dbt_asset in package.dbt_properties.iter().dedup() {
         token.check_cancellation()?;
@@ -780,8 +780,8 @@ pub async fn resolve_minimal_properties(
                         .clone()
                         .unwrap_or_default()
                         .into_iter()
-                        .partition(|(plugin_type, _)| plugins.of_type(plugin_type).is_some());
-                    ignored_plugin_types.extend(ignored.into_iter().map(|(plugin_type, _)| plugin_type));
+                        .partition(|(key, _)| plugins.reading(key).is_some());
+                    ignored_plugin_keys.extend(ignored.into_iter().map(|(key, _)| key));
                     minimal_resolved_properties.extend_from_plugin_values(
                         plugin_values,
                         jinja_env,
@@ -830,22 +830,22 @@ pub async fn resolve_minimal_properties(
         .instrument(span.clone())
         .await?;
     }
-    for plugin_type in ignored_plugin_types {
+    for key in ignored_plugin_keys {
         let package_name = &package.dbt_project.name;
-        if plugins.is_reserved(&plugin_type) {
+        if plugins.is_reserved(&key) {
             emit_warn_log_message(
                 ErrorCode::PluginNotEnabled,
                 format!(
-                    "Ignoring `plugins: {plugin_type}` in package '{package_name}': {}",
-                    plugins.why_ignored(&plugin_type)
+                    "Ignoring `plugins: {key}` in package '{package_name}': {}",
+                    plugins.why_ignored(&key)
                 ),
             );
         } else {
             emit_warn_log_message(
                 ErrorCode::UnknownPlugin,
                 format!(
-                    "Ignoring `plugins: {plugin_type}` in package '{package_name}': there is no \
-                     `{plugin_type}` plugin"
+                    "Ignoring `plugins: {key}` in package '{package_name}': there is no \
+                     `{key}` plugin"
                 ),
             );
         }

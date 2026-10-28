@@ -541,14 +541,7 @@ impl TestWriter {
 }
 
 impl SharedWriter for TestWriter {
-    fn write(&self, data: &str) {
-        self.lines
-            .lock()
-            .expect("writer mutex poisoned")
-            .push(data.to_string());
-    }
-
-    fn writeln(&self, data: &str) {
+    fn writeln(&self, data: &dyn std::fmt::Display) {
         self.lines
             .lock()
             .expect("writer mutex poisoned")

@@ -20,7 +20,7 @@ use crate::utils::extract_resource_config_from_raw_project;
 use crate::utils::get_node_fqn;
 use crate::utils::get_original_file_contents;
 use crate::utils::get_original_file_path;
-use crate::utils::update_node_relation_components;
+use crate::utils::{node_starting_database_and_schema, update_node_relation_components};
 use crate::validation::check_node_static_analysis;
 use dbt_adapter_core::AdapterType;
 use dbt_common::ErrorCode;
@@ -39,6 +39,7 @@ use dbt_jinja_utils::jinja_arg_format::format_value_for_jinja;
 use dbt_jinja_utils::jinja_environment::JinjaEnv;
 use dbt_jinja_utils::listener::JinjaTypeCheckingEventListenerFactory;
 use dbt_jinja_utils::node_resolver::NodeResolver;
+use dbt_jinja_utils::phases::parse::ParseAdapterScopes;
 use dbt_jinja_utils::utils::dependency_package_name_from_ctx;
 use dbt_schemas::schemas::DbtTestAttr;
 use dbt_schemas::schemas::InternalDbtNodeAttributes;
@@ -362,6 +363,7 @@ pub async fn resolve_data_tests(
     test_properties: &mut BTreeMap<String, MinimalPropertiesEntry>,
     database: &str,
     schema: &str,
+    parse_adapter_scopes: &ParseAdapterScopes,
     default_adapter: AdapterType,
     env: Arc<JinjaEnv>,
     base_ctx: &BTreeMap<String, minijinja::Value>,
@@ -594,22 +596,19 @@ pub async fn resolve_data_tests(
         validate_compute(test_config.compute, &dbt_asset.path)?;
 
         let test_asset = test_path_to_test_asset.get(&dbt_asset.path);
-        // Match dbt-core's _lookup_attached_node: source tests get no attached_node;
-        // model/seed/snapshot tests get the parent's unique_id (with .v<version> for
-        // versioned models).
-        let attached_node = test_asset.and_then(|ta| {
-            if ta.resource_type == "source" {
-                None
-            } else {
-                Some(format_node_unique_id(
-                    &ta.resource_type,
-                    &ta.dbt_asset.package_name,
-                    &ta.resource_name,
-                    None,
-                    ta.version.as_deref(),
-                ))
-            }
+        let test_subject_unique_id = test_asset.map(|ta| {
+            format_node_unique_id(
+                &ta.resource_type,
+                &ta.dbt_asset.package_name,
+                &ta.resource_name,
+                ta.source_name.as_deref(),
+                ta.version.as_deref(),
+            )
         });
+        // Match dbt-core's _lookup_attached_node: source tests get no attached_node.
+        let attached_node = test_asset
+            .filter(|ta| ta.resource_type != "source")
+            .and_then(|_| test_subject_unique_id.clone());
 
         // A test runs where its subject runs, so an unset `+adapter` is inherited
         // from `attached_node` -- the same lookup the `group` inheritance below
@@ -715,6 +714,14 @@ pub async fn resolve_data_tests(
             default_adapter,
         )?;
 
+        let (node_database, node_schema) = node_starting_database_and_schema(
+            Some(parse_adapter_scopes),
+            selected_adapter,
+            database,
+            schema,
+            &dbt_asset.path,
+        )?;
+
         let mut dbt_test = DbtTest {
             defined_at,
             manifest_original_file_path: manifest_original_file_path.clone(),
@@ -749,8 +756,8 @@ pub async fn resolve_data_tests(
                 // it has nothing to publish: no `+propagate` config exists for this node type.
                 propagate: Vec::new(),
                 effective_propagation_target: None,
-                database: database.to_owned(),
-                schema: schema.to_owned(),
+                database: node_database.to_owned(),
+                schema: node_schema.to_owned(),
                 alias: "will_be_updated_below".to_owned(),
                 relation_name: None,
                 static_analysis_off_reason: (*static_analysis == StaticAnalysisKind::Off)
@@ -819,6 +826,7 @@ pub async fn resolve_data_tests(
                 DbtTestAttr {
                     column_name: test_asset.and_then(|ta| ta.column_name.clone()),
                     attached_node,
+                    test_subject_unique_id,
                     test_metadata: inferred_test_metadata.clone(),
                     file_key_name: test_asset.and_then(|ta| file_key_name_from_asset(ta)),
                     introspection: IntrospectionKind::None,
@@ -862,7 +870,7 @@ pub async fn resolve_data_tests(
             package_name,
             base_ctx,
             &components,
-            default_adapter,
+            Some(parse_adapter_scopes),
         )?;
 
         // Mirror dbt-core behavior: when the synthesized name was truncated and the user

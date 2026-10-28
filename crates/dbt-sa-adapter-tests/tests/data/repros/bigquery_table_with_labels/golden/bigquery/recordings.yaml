@@ -1,0 +1,22 @@
+ad3ab3c4:
+- sequence: 0
+  type: execute
+  sql: create schema if not exists `dbt-test-env`.`bigquery_table_with_labels`
+model.hello_world.hello:
+- sequence: 0
+  type: execute
+  sql: |-
+    create or replace table `dbt-test-env`.`bigquery_table_with_labels`.`hello`
+    
+    
+    
+    
+    
+    OPTIONS(
+    labels=[('contains_pii', 'no')]
+    )
+    as (
+    
+    
+    select 1 as id, "foo" as name
+    );

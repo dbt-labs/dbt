@@ -1,0 +1,13 @@
+   dbt-oss 
+   Loading profiles.yml
+   Parsing seeds/properties.yml
+   Running ../scratch/target/run/test/seeds/timestamps.sql
+    Warned seed  adapters_databricks_seed_datatypes.timestamps (table) [1 of 3 in duration]
+   Running ../scratch/target/run/test/seeds/mixed_dtypes_w_schema.sql
+ Succeeded seed  adapters_databricks_seed_datatypes.mixed_dtypes_w_schema (table) [2 of 3 in duration]
+   Running ../scratch/target/run/test/seeds/mixed_dtypes.sql
+ Succeeded seed  adapters_databricks_seed_datatypes.mixed_dtypes (table) [3 of 3 in duration]
+==================== Execution Summary =====================
+Finished 'seed' with 1 warning for target 'databricks' [duration]
+Processed: 3 seeds
+Summary: 3 total | 2 success | 1 warn

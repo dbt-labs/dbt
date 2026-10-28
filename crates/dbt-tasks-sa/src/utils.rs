@@ -372,14 +372,14 @@ pub fn update_node_columns(
     let type_ops = type_ops_factory.create(adapter_type);
 
     // TODO(anna): Let's revisit this and try to extract out the flattening behavior into something like `schema_to_flattened_columns`
-    let mut schema_columns = Vec::<Column>::with_capacity(columns.len());
+    let mut schema_columns = Vec::<Arc<Column>>::with_capacity(columns.len());
     let builder = ColumnBuilder::new(adapter_type);
     for field in schema.fields() {
         let column = builder.build(field, type_ops.as_ref())?;
         if adapter_type == AdapterType::Bigquery {
             schema_columns.extend(column.flatten());
         } else {
-            schema_columns.push(column);
+            schema_columns.push(Arc::new(column));
         }
     }
 

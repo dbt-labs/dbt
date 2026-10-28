@@ -1,0 +1,17 @@
+version: 2
+
+models:
+  - name: customers
+    config:
+      contract:
+        enforced: true
+    columns:
+      # Data types are intentionally uppercase to verify Databricks lowercases
+      # them when rendering DDL (see ColumnStatic::translate_type).
+      - name: id
+        data_type: INT
+        constraints:
+          - type: primary_key
+          - type: not_null
+      - name: name
+        data_type: STRING

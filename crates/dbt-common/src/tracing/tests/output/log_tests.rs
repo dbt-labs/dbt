@@ -263,6 +263,30 @@ fn log_messages(cases: &mut Vec<Case>) {
             "Couldn'<yellow>t find </>'customers",
         ),
         (
+            "doesn't is not a quote",
+            "Column 'id' doesn't exist in 'orders'",
+            "Column 'id' doesn't exist in 'orders'",
+            "Column '<yellow>id</>' does not exist in '<yellow>orders</>'",
+        ),
+        (
+            "doesn't between quotes",
+            "Model 'it doesn't matter' is unused",
+            "Model 'it doesn't matter' is unused",
+            "Model '<yellow>it does not matter</>' is unused",
+        ),
+        (
+            "doesn't with backticks",
+            "Package `dbt_utils` doesn't exist",
+            "Package `dbt_utils` doesn't exist",
+            "Package `<yellow>dbt_utils</>` does not exist",
+        ),
+        (
+            "doesn't with an unbalanced quote",
+            "Model 'customers doesn't exist",
+            "Model 'customers doesn't exist",
+            "Model 'customers doesn't exist",
+        ),
+        (
             "ansi codes in the body",
             "\x1b[31mred\x1b[0m alert",
             "red alert",
@@ -357,6 +381,22 @@ fn log_messages(cases: &mut Vec<Case>) {
                     <red+bold>[error]</>: an error
                     <yellow+bold>[warning]</>: second warning
                 "#},
+            )
+            .expect(
+                TERMINAL_QUIET,
+                indoc! {r#"
+                    info in between
+                "#},
+            )
+            .expect_stderr(
+                TERMINAL_QUIET,
+                indoc! {r#"
+
+                    <dim>=================== Errors and Warnings ====================</>
+                    <yellow+bold>[warning]</>: first warning
+                    <red+bold>[error]</>: an error
+                    <yellow+bold>[warning]</>: second warning
+                "#},
             ),
     );
 }
@@ -403,6 +443,13 @@ fn user_log_messages(cases: &mut Vec<Case>) {
                 )
                 .expect(
                     TEXT_DEBUG,
+                    indoc! {r#"
+                        Hello from 'jinja'
+                        with a second line
+                    "#},
+                )
+                .expect(
+                    TERMINAL_QUIET,
                     indoc! {r#"
                         Hello from 'jinja'
                         with a second line
@@ -532,7 +579,8 @@ fn progress_messages(cases: &mut Vec<Case>) {
                 .run(move |_| emit(SeverityNumber::Info, message.clone(), ""))
                 .expect(DBT_LOG, dbt_log)
                 .expect_or_no_output(TERMINAL, terminal)
-                .expect(TEXT_DEBUG, debug),
+                .expect(TEXT_DEBUG, debug)
+                .expect_no_output(TERMINAL_QUIET),
         );
     }
 }

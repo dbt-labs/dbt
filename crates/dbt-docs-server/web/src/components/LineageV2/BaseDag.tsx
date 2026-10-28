@@ -181,7 +181,9 @@ function BaseDagCanvas({
           nodeTypes={DAG_NODE_TYPES}
           colorMode={resolved}
           nodesConnectable={false}
-          nodesDraggable={false}
+          // Drag to untangle a busy graph. Positions live in view state only, so a
+          // re-layout (new root, depth or selector change) puts nodes back.
+          nodesDraggable
           elementsSelectable={true}
           ref={ref}
         >

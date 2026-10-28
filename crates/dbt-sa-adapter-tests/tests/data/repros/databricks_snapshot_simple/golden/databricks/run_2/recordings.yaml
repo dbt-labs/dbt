@@ -1,0 +1,310 @@
+85f3743c:
+- sequence: 0
+  type: execute
+  sql: SHOW SCHEMAS IN `e2e`
+snapshot.hello_world.orders_snapshot:
+- sequence: 0
+  type: execute
+  sql: |-
+    SELECT
+    table_name,
+    if(table_type IN ('EXTERNAL', 'MANAGED', 'MANAGED_SHALLOW_CLONE', 'EXTERNAL_SHALLOW_CLONE'), 'table', lower(table_type)) AS table_type,
+    lower(data_source_format) AS file_format,
+    table_schema,
+    table_owner,
+    table_catalog,
+    if(
+    table_type IN (
+    'EXTERNAL',
+    'MANAGED',
+    'MANAGED_SHALLOW_CLONE',
+    'EXTERNAL_SHALLOW_CLONE'
+    ),
+    lower(table_type),
+    NULL
+    ) AS databricks_table_type
+    FROM `system`.`information_schema`.`tables`
+    WHERE table_catalog = 'e2e'
+    AND table_schema = 'snapshots'
+- sequence: 1
+  type: execute
+  sql: DESCRIBE TABLE EXTENDED `e2e`.`snapshots`.`orders_snapshot` AS JSON
+- sequence: 2
+  type: execute
+  sql: DESCRIBE TABLE EXTENDED `e2e`.`snapshots`.`orders_snapshot` AS JSON
+- sequence: 3
+  type: execute
+  sql: |-
+    create or replace temporary view `orders_snapshot__dbt_tmp` as
+    
+    
+    with snapshot_query as (
+    
+    select * from `e2e`.`databricks_snapshot_simple`.`orders`
+    
+    ),
+    
+    snapshotted_data as (
+    
+    select *, 
+    
+    id as dbt_unique_key
+    
+    
+    from `e2e`.`snapshots`.`orders_snapshot`
+    where
+    
+    dbt_valid_to is null
+    
+    
+    ),
+    
+    insertions_source_data as (
+    
+    select *, 
+    
+    id as dbt_unique_key
+    
+    ,
+    updated_at as dbt_updated_at,
+    updated_at as dbt_valid_from,
+    
+    
+    coalesce(nullif(updated_at, updated_at), null)
+    as dbt_valid_to
+    ,
+    md5(coalesce(cast(id as string ), '')
+    || '|' || coalesce(cast(updated_at as string ), '')
+    ) as dbt_scd_id
+    
+    from snapshot_query
+    ),
+    
+    updates_source_data as (
+    
+    select *, 
+    
+    id as dbt_unique_key
+    
+    ,
+    updated_at as dbt_updated_at,
+    updated_at as dbt_valid_from,
+    updated_at as dbt_valid_to
+    
+    from snapshot_query
+    ),
+    
+    insertions as (
+    
+    select
+    'insert' as dbt_change_type,
+    source_data.*
+    
+    from insertions_source_data as source_data
+    left outer join snapshotted_data
+    on 
+    
+    snapshotted_data.dbt_unique_key = source_data.dbt_unique_key
+    
+    
+    where 
+    
+    snapshotted_data.dbt_unique_key is null
+    
+    
+    or (
+    
+    snapshotted_data.dbt_unique_key is not null
+    
+    and (
+    (snapshotted_data.dbt_valid_from < source_data.updated_at)
+    )
+    
+    )
+    
+    ),
+    
+    updates as (
+    
+    select
+    'update' as dbt_change_type,
+    source_data.*,
+    snapshotted_data.dbt_scd_id
+    
+    from updates_source_data as source_data
+    join snapshotted_data
+    on 
+    
+    snapshotted_data.dbt_unique_key = source_data.dbt_unique_key
+    
+    
+    where (
+    (snapshotted_data.dbt_valid_from < source_data.updated_at)
+    )
+    )
+    
+    select * from insertions
+    union all
+    select * from updates
+- sequence: 4
+  type: execute
+  sql: DESCRIBE TABLE EXTENDED `orders_snapshot__dbt_tmp` AS JSON
+- sequence: 5
+  type: execute
+  sql: DESCRIBE TABLE EXTENDED `e2e`.`snapshots`.`orders_snapshot` AS JSON
+- sequence: 6
+  type: execute
+  sql: DESCRIBE TABLE EXTENDED `orders_snapshot__dbt_tmp` AS JSON
+- sequence: 7
+  type: execute
+  sql: DESCRIBE TABLE EXTENDED `e2e`.`snapshots`.`orders_snapshot` AS JSON
+- sequence: 8
+  type: execute
+  sql: DESCRIBE TABLE EXTENDED `orders_snapshot__dbt_tmp` AS JSON
+- sequence: 9
+  type: execute
+  sql: |-
+    select * from (
+    
+    
+    with snapshot_query as (
+    
+    select * from `e2e`.`databricks_snapshot_simple`.`orders`
+    
+    ),
+    
+    snapshotted_data as (
+    
+    select *, 
+    
+    id as dbt_unique_key
+    
+    
+    from `e2e`.`snapshots`.`orders_snapshot`
+    where
+    
+    dbt_valid_to is null
+    
+    
+    ),
+    
+    insertions_source_data as (
+    
+    select *, 
+    
+    id as dbt_unique_key
+    
+    ,
+    updated_at as dbt_updated_at,
+    updated_at as dbt_valid_from,
+    
+    
+    coalesce(nullif(updated_at, updated_at), null)
+    as dbt_valid_to
+    ,
+    md5(coalesce(cast(id as string ), '')
+    || '|' || coalesce(cast(updated_at as string ), '')
+    ) as dbt_scd_id
+    
+    from snapshot_query
+    ),
+    
+    updates_source_data as (
+    
+    select *, 
+    
+    id as dbt_unique_key
+    
+    ,
+    updated_at as dbt_updated_at,
+    updated_at as dbt_valid_from,
+    updated_at as dbt_valid_to
+    
+    from snapshot_query
+    ),
+    
+    insertions as (
+    
+    select
+    'insert' as dbt_change_type,
+    source_data.*
+    
+    from insertions_source_data as source_data
+    left outer join snapshotted_data
+    on 
+    
+    snapshotted_data.dbt_unique_key = source_data.dbt_unique_key
+    
+    
+    where 
+    
+    snapshotted_data.dbt_unique_key is null
+    
+    
+    or (
+    
+    snapshotted_data.dbt_unique_key is not null
+    
+    and (
+    (snapshotted_data.dbt_valid_from < source_data.updated_at)
+    )
+    
+    )
+    
+    ),
+    
+    updates as (
+    
+    select
+    'update' as dbt_change_type,
+    source_data.*,
+    snapshotted_data.dbt_scd_id
+    
+    from updates_source_data as source_data
+    join snapshotted_data
+    on 
+    
+    snapshotted_data.dbt_unique_key = source_data.dbt_unique_key
+    
+    
+    where (
+    (snapshotted_data.dbt_valid_from < source_data.updated_at)
+    )
+    )
+    
+    select * from insertions
+    union all
+    select * from updates
+    
+    ) as __dbt_sbq
+    where false
+    limit 0
+- sequence: 10
+  type: execute
+  sql: |-
+    select * from (
+    select 
+    current_timestamp()
+    as dbt_snapshot_time
+    ) as __dbt_sbq
+    where false
+    limit 0
+- sequence: 11
+  type: execute
+  sql: |-
+    merge into `e2e`.`snapshots`.`orders_snapshot` as DBT_INTERNAL_DEST
+    using `orders_snapshot__dbt_tmp` as DBT_INTERNAL_SOURCE
+    on DBT_INTERNAL_SOURCE.`dbt_scd_id` = DBT_INTERNAL_DEST.`dbt_scd_id`
+    when matched
+    and DBT_INTERNAL_DEST.`dbt_valid_to` is null
+    and DBT_INTERNAL_SOURCE.`dbt_change_type` in ('update', 'delete')
+    then update
+    set `dbt_valid_to` = DBT_INTERNAL_SOURCE.`dbt_valid_to`
+    
+    when not matched
+    and DBT_INTERNAL_SOURCE.`dbt_change_type` = 'insert'
+    then insert (`id`, `status`, `updated_at`, `dbt_updated_at`, `dbt_valid_from`, `dbt_valid_to`, `dbt_scd_id`)
+    values (`id`, `status`, `updated_at`, `dbt_updated_at`, `dbt_valid_from`, `dbt_valid_to`, `dbt_scd_id`)
+- sequence: 12
+  type: execute
+  sql: DROP VIEW IF EXISTS `orders_snapshot__dbt_tmp`

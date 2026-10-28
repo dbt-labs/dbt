@@ -45,6 +45,7 @@ Paths in this file and in `.agents/` are relative to the directory containing th
 ## Where To Look Next (Task-Specific)
 
 - Respect author preferences (optional/local): `AGENTS.local.md`
+- When writing, running or recording adapter record/replay tests (end-to-end tests against a warehouse): `crates/dbt-sa-adapter-tests/README.md`
 - When working on Adapters: `.agents/adapters.md`. Adapters consist of the following crates:
   - `dbt-adapter`
   - `dbt-adapter-core`

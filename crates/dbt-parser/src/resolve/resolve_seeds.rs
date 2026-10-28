@@ -9,7 +9,8 @@ use crate::resolve::resolve_utils::{
 };
 use crate::utils::{
     RelationComponents, extract_resource_config_from_raw_project, get_node_fqn,
-    register_duplicate_resource, trigger_duplicate_errors, update_node_relation_components,
+    node_starting_database_and_schema, register_duplicate_resource, trigger_duplicate_errors,
+    update_node_relation_components,
 };
 use crate::validation::check_node_static_analysis;
 use dbt_adapter::load_catalogs;
@@ -21,6 +22,7 @@ use dbt_common::{ErrorCode, FsResult, fs_err, stdfs};
 use dbt_frontend_common::Dialect;
 use dbt_jinja_utils::jinja_environment::JinjaEnv;
 use dbt_jinja_utils::node_resolver::NodeResolver;
+use dbt_jinja_utils::phases::parse::ParseAdapterScopes;
 use dbt_jinja_utils::serde::into_typed_with_jinja;
 use dbt_jinja_utils::utils::dependency_package_name_from_ctx;
 use dbt_schemas::dbt_utils::validate_delimiter;
@@ -59,6 +61,7 @@ pub async fn resolve_seeds(
     root_project_configs: &RootProjectConfigs,
     database: &str,
     schema: &str,
+    parse_adapter_scopes: &ParseAdapterScopes,
     default_adapter: AdapterType,
     package_name: &str,
     jinja_env: &JinjaEnv,
@@ -282,8 +285,12 @@ pub async fn resolve_seeds(
             dependency_package_name,
         );
 
+        // See `resolve_models`: the flag overrides the config.
+        let selected_adapter =
+            select_node_adapter(arg, properties_config.adapter, None, default_adapter, &path)?;
+
         // XXX: normalize column_types to uppercase if it is snowflake
-        if matches!(default_adapter, AdapterType::Snowflake)
+        if matches!(selected_adapter, AdapterType::Snowflake)
             && let Some(column_types) = &properties_config.column_types
         {
             let column_types = column_types
@@ -339,10 +346,6 @@ pub async fn resolve_seeds(
 
         validate_delimiter(&properties_config.delimiter)?;
 
-        // See `resolve_models`: the flag overrides the config.
-        let selected_adapter =
-            select_node_adapter(arg, properties_config.adapter, None, default_adapter, &path)?;
-
         // Calculate original file path first so we can use it for the checksum
         // if necessary for large seeds
         let original_file_path =
@@ -374,6 +377,14 @@ pub async fn resolve_seeds(
             .flatten();
         properties_config.quoting =
             resolve_node_quoting(properties_config.quoting, adapter_quoting, selected_adapter);
+
+        let (node_database, node_schema) = node_starting_database_and_schema(
+            Some(parse_adapter_scopes),
+            selected_adapter,
+            database,
+            schema,
+            &path,
+        )?;
 
         // Create initial seed with default values
         let mut dbt_seed = DbtSeed {
@@ -410,10 +421,10 @@ pub async fn resolve_seeds(
                 adapter: selected_adapter,
                 propagate: selected_propagate,
                 effective_propagation_target,
-                database: database.to_string(), // will be updated below
-                schema: schema.to_string(),     // will be updated below
-                alias: "".to_owned(),           // will be updated below
-                relation_name: None,            // will be updated below
+                database: node_database.to_owned(), // will be updated below
+                schema: node_schema.to_owned(),     // will be updated below
+                alias: "".to_owned(),               // will be updated below
+                relation_name: None,                // will be updated below
                 columns,
                 depends_on: NodeDependsOn::default(),
                 quoting: properties_config
@@ -453,7 +464,7 @@ pub async fn resolve_seeds(
             package_name,
             base_ctx,
             &components,
-            default_adapter,
+            Some(parse_adapter_scopes),
         )?;
 
         let status = if is_enabled {
@@ -480,7 +491,7 @@ pub async fn resolve_seeds(
                         collected_generic_tests,
                         test_name_truncations,
                         seen_generic_test_paths,
-                        default_adapter,
+                        selected_adapter,
                         io_args,
                         patch_path.as_ref().unwrap_or(&path),
                         false,

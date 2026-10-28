@@ -1,0 +1,17 @@
+   dbt-oss 
+   Loading profiles.yml
+   Parsing models/incremental.sql
+   Parsing models/model_a.sql
+   Started downloading referenced relations (1 items)
+  Finished [duration] downloading referenced relations (1 items)
+ Rendering models/model_a.sql
+   Running models/model_a.sql
+ Succeeded model snowflake_custom_incremental.model_a (table) [1 of 2 in duration]
+ Rendering models/incremental.sql
+   Running models/incremental.sql
+ENTERING get_incremental_custom_append_sql
+ Succeeded model snowflake_custom_incremental.incremental (incremental) [2 of 2 in duration]
+==================== Execution Summary =====================
+Finished 'run' with 1 warning for target 'snowflake' [duration]
+Processed: 2 models
+Summary: 2 total | 2 success

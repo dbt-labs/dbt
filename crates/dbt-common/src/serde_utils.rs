@@ -1,6 +1,6 @@
 use std::{fmt, marker::PhantomData};
 
-use crate::dashmap::DashMap;
+use crate::collections::SccHashMap;
 use indexmap::IndexMap;
 use minijinja::value::ValueMap;
 use minijinja::value::mutable_vec::MutableVec;
@@ -38,13 +38,14 @@ fn convert_yml_value(yml: YmlValue) -> minijinja::Value {
     }
 }
 
-/// Converts a [dbt_yaml::Value] to a [DashMap<String, Value>]
-pub fn convert_yml_to_dash_map(yml: YmlValue) -> DashMap<String, minijinja::Value> {
+/// Converts a [dbt_yaml::Value] to a [SccHashMap<String, Value>]
+pub fn convert_yml_to_scc_map(yml: YmlValue) -> SccHashMap<String, minijinja::Value> {
     match yml {
         YmlValue::Mapping(map, _) => {
-            let value_map = DashMap::default();
+            let value_map = SccHashMap::default();
             for (k, v) in map {
-                value_map.insert(
+                // Last write wins if two keys stringify identically.
+                value_map.upsert_sync(
                     k.as_scalar_string()
                         .expect("mapping key is not a scalar")
                         .into_owned(),
@@ -54,8 +55,8 @@ pub fn convert_yml_to_dash_map(yml: YmlValue) -> DashMap<String, minijinja::Valu
             value_map
         }
         _ => {
-            let map = DashMap::default();
-            map.insert("value".to_string(), convert_yml_value(yml));
+            let map = SccHashMap::default();
+            map.upsert_sync("value".to_string(), convert_yml_value(yml));
             map
         }
     }

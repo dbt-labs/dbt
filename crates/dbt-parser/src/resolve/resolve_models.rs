@@ -22,7 +22,7 @@ use crate::utils::extract_resource_config_from_raw_project;
 use crate::utils::get_node_fqn;
 use crate::utils::get_original_file_path;
 use crate::utils::get_unique_id;
-use crate::utils::update_node_relation_components;
+use crate::utils::{node_starting_database_and_schema, update_node_relation_components};
 use crate::validation::check_node_static_analysis;
 
 use dbt_adapter::load_catalogs;
@@ -43,6 +43,7 @@ use dbt_common::tracing::event_info::store_event_attributes;
 use dbt_jinja_utils::jinja_environment::JinjaEnv;
 use dbt_jinja_utils::listener::JinjaTypeCheckingEventListenerFactory;
 use dbt_jinja_utils::node_resolver::NodeResolver;
+use dbt_jinja_utils::phases::parse::ParseAdapterScopes;
 use dbt_jinja_utils::utils::dependency_package_name_from_ctx;
 use dbt_schemas::schemas::CommonAttributes;
 use dbt_schemas::schemas::DbtModel;
@@ -179,6 +180,7 @@ pub async fn resolve_models(
     models_properties: &BTreeMap<String, MinimalPropertiesEntry>,
     database: &str,
     schema: &str,
+    parse_adapter_scopes: &ParseAdapterScopes,
     default_adapter: AdapterType,
     package_name: &str,
     env: Arc<JinjaEnv>,
@@ -378,6 +380,7 @@ pub async fn resolve_models(
         model_sql_resources_map,
         database,
         schema,
+        parse_adapter_scopes,
         default_adapter,
         package_name,
         dependency_package_name,
@@ -511,6 +514,7 @@ async fn build_model_nodes(
     model_sql_resources_map: Vec<SqlFileRenderResult<ModelConfig, ModelProperties>>,
     database: &str,
     schema: &str,
+    parse_adapter_scopes: &ParseAdapterScopes,
     default_adapter: AdapterType,
     package_name: &str,
     dependency_package_name: Option<&str>,
@@ -864,6 +868,14 @@ async fn build_model_nodes(
             dependency_package_name,
         );
 
+        let (node_database, node_schema) = node_starting_database_and_schema(
+            Some(parse_adapter_scopes),
+            selected_adapter,
+            database,
+            schema,
+            &dbt_asset.path,
+        )?;
+
         // Hydrate time_spine from model properties
         let mut time_spine: Option<TimeSpine> = None;
         if let Some(props_time_spine) = properties.time_spine.clone() {
@@ -882,8 +894,8 @@ async fn build_model_nodes(
 
             // Create a temporary node_relation for the time_spine
             let node_relation = NodeRelation {
-                database: Some(database.to_string()),
-                schema_name: schema.to_string(),
+                database: Some(node_database.to_owned()),
+                schema_name: node_schema.to_owned(),
                 alias: model_name.to_string(), // will be updated after relation components are resolved
                 relation_name: None,
             };
@@ -996,10 +1008,10 @@ async fn build_model_nodes(
                 adapter: selected_adapter,
                 propagate: selected_propagate,
                 effective_propagation_target,
-                database: database.to_string(), // will be updated below
-                schema: schema.to_string(),     // will be updated below
-                alias: "".to_owned(),           // will be updated below
-                relation_name: None,            // will be updated below
+                database: node_database.to_owned(), // will be updated below
+                schema: node_schema.to_owned(),     // will be updated below
+                alias: "".to_owned(),               // will be updated below
+                relation_name: None,                // will be updated below
                 enabled: model_config.enabled,
                 compute: model_config.compute,
                 extended_model: false,
@@ -1170,7 +1182,7 @@ async fn build_model_nodes(
             package_name,
             base_ctx,
             &components,
-            default_adapter,
+            Some(parse_adapter_scopes),
         )?;
 
         // Update time_spine node_relation with the resolved relation components
@@ -1215,7 +1227,7 @@ async fn build_model_nodes(
                         collected_generic_tests,
                         test_name_truncations,
                         seen_generic_test_paths,
-                        default_adapter,
+                        selected_adapter,
                         &arg.io,
                         patch_path.as_ref().unwrap_or(&dbt_asset.path),
                         false,
@@ -1232,7 +1244,7 @@ async fn build_model_nodes(
                         collected_generic_tests,
                         test_name_truncations,
                         seen_generic_test_paths,
-                        default_adapter,
+                        selected_adapter,
                         &arg.io,
                         patch_path.as_ref().unwrap_or(&dbt_asset.path),
                         true,
@@ -1252,7 +1264,7 @@ async fn build_model_nodes(
                             collected_generic_tests,
                             test_name_truncations,
                             seen_generic_test_paths,
-                            default_adapter,
+                            selected_adapter,
                             &arg.io,
                             patch_path.as_ref().unwrap_or(&dbt_asset.path),
                             false,

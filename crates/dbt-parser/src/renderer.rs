@@ -1038,7 +1038,7 @@ async fn process_model_chunk_for_unsafe_detection<
             .parse_adapter_state()
             .expect("Adapter must be configured for the parse phase")
             .unsafe_nodes()
-            .contains(&model.common().unique_id);
+            .contains_sync(&model.common().unique_id);
         // The node context holds the other reference; drop it so the node is moved out, not cloned.
         drop(render_resolved_context);
         nodes.push((Arc::unwrap_or_clone(model), is_unsafe));

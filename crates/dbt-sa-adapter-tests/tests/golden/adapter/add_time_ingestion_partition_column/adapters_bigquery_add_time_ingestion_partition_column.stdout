@@ -1,0 +1,12 @@
+   dbt-oss 
+   Loading profiles.yml
+   Parsing models/a.sql
+bigquery
+()
+ Rendering models/a.sql
+bigquery
+({'name': 'id', 'dtype': 'INT64', 'char_size': None, 'column': 'id', 'quoted': '`id`', 'numeric_precision': None, 'numeric_scale': None, 'fields': (), 'mode': 'NULLABLE'}, {'name': 'msg', 'dtype': 'STRING', 'char_size': None, 'column': 'msg', 'quoted': '`msg`', 'numeric_precision': None, 'numeric_scale': None, 'fields': (), 'mode': 'NULLABLE'}, {'name': '_PARTITIONTIME', 'dtype': 'DATE', 'char_size': None, 'column': '_PARTITIONTIME', 'quoted': '`_PARTITIONTIME`', 'numeric_precision': None, 'numeric_scale': None, 'fields': (), 'mode': 'NULLABLE'})
+==================== Execution Summary =====================
+Finished 'compile' successfully for target 'bigquery' [duration]
+Processed: 1 model
+Summary: 1 total | 1 success

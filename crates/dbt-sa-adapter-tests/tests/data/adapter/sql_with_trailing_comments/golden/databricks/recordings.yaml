@@ -1,0 +1,169 @@
+85f3743c:
+- sequence: 0
+  type: execute
+  sql: SHOW SCHEMAS IN `e2e`
+8789cebf:
+- sequence: 0
+  type: execute
+  sql: create schema if not exists `e2e`.`adapters_databricks_sql_with_trailing_comments`
+model.sql_with_trailing_comments.simple_test:
+- sequence: 0
+  type: execute
+  sql: select 1 as test_value
+- sequence: 1
+  type: execute
+  sql: select 2 as test_value
+- sequence: 2
+  type: execute
+  sql: select 3 as test_value
+- sequence: 3
+  type: execute
+  sql: select 1
+- sequence: 4
+  type: execute
+  sql: /* initial comment */ select 5 as test_value
+- sequence: 5
+  type: execute
+  sql: /* before */ select 6 as test_value /* after */
+- sequence: 6
+  type: execute
+  sql: /* start */ select 7 as first
+- sequence: 7
+  type: execute
+  sql: ' select 8 as second /* end */'
+- sequence: 8
+  type: execute
+  sql: select 1
+- sequence: 9
+  type: execute
+  sql: |-
+    SELECT
+    table_catalog,
+    table_schema,
+    table_name,
+    filter_name,
+    target_columns
+    FROM `e2e`.`information_schema`.`row_filters`
+    WHERE table_catalog = 'e2e'
+    AND table_schema = 'adapters_databricks_sql_with_trailing_comments'
+    AND table_name = 'simple_test'
+- sequence: 10
+  type: execute
+  sql: |-
+    create or replace table `e2e`.`adapters_databricks_sql_with_trailing_comments`.`simple_test`
+    
+    
+    
+    using delta
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    as
+    -- First, investigate how this dialect handles comment-only statements
+    
+    
+    -- Then reproduce the exact issue from GitHub #468
+    
+    
+    
+    
+    select 'dialect investigation completed' as status
+model.sql_with_trailing_comments.test_model:
+- sequence: 0
+  type: execute
+  sql: select 1 as num
+- sequence: 1
+  type: execute
+  sql: select 2 as num
+- sequence: 2
+  type: execute
+  sql: select 3 as num
+- sequence: 3
+  type: execute
+  sql: select 4 as num
+- sequence: 4
+  type: execute
+  sql: |-
+    select 5 as num
+    /* no semicolon, just comment */
+- sequence: 5
+  type: execute
+  sql: /* leading comment */ select 6 as num
+- sequence: 6
+  type: execute
+  sql: /* before */ select 7 as num /* after */
+- sequence: 7
+  type: execute
+  sql: select 8 as first
+- sequence: 8
+  type: execute
+  sql: ' /* middle comment */ select 88 as second'
+- sequence: 9
+  type: execute
+  sql: |-
+    SELECT
+    table_name,
+    if(table_type IN ('EXTERNAL', 'MANAGED', 'MANAGED_SHALLOW_CLONE', 'EXTERNAL_SHALLOW_CLONE'), 'table', lower(table_type)) AS table_type,
+    lower(data_source_format) AS file_format,
+    table_schema,
+    table_owner,
+    table_catalog,
+    if(
+    table_type IN (
+    'EXTERNAL',
+    'MANAGED',
+    'MANAGED_SHALLOW_CLONE',
+    'EXTERNAL_SHALLOW_CLONE'
+    ),
+    lower(table_type),
+    NULL
+    ) AS databricks_table_type
+    FROM `system`.`information_schema`.`tables`
+    WHERE table_catalog = 'e2e'
+    AND table_schema = 'adapters_databricks_sql_with_trailing_comments'
+- sequence: 10
+  type: execute
+  sql: |-
+    SELECT
+    table_catalog,
+    table_schema,
+    table_name,
+    filter_name,
+    target_columns
+    FROM `e2e`.`information_schema`.`row_filters`
+    WHERE table_catalog = 'e2e'
+    AND table_schema = 'adapters_databricks_sql_with_trailing_comments'
+    AND table_name = 'test_model'
+- sequence: 11
+  type: execute
+  sql: |-
+    create or replace table `e2e`.`adapters_databricks_sql_with_trailing_comments`.`test_model`
+    
+    
+    
+    using delta
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    as
+    -- This model tests that SQL with trailing comments compiles and runs correctly
+    
+    
+    select 
+    1 as test_id,
+    'sql_with_trailing_comments' as test_name
+    /* End of query with trailing comment */

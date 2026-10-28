@@ -12,25 +12,25 @@ use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{Duration, Instant};
 
-use dashmap::DashMap;
+use dbt_common::collections::SccHashMap;
 use dbt_schemas::schemas::relations::base::BaseRelation;
 use tokio::sync::{Mutex, OwnedMutexGuard};
 
 #[derive(Debug, Default)]
 pub struct RunCacheMetadataCache {
     ttl: Option<Duration>,
-    relation_exists: DashMap<String, TimedEntry<bool>>,
-    last_modified_epochs: DashMap<String, TimedEntry<Option<i64>>>,
-    lookup_errors: DashMap<String, TimedEntry<String>>,
-    in_flight: DashMap<String, Arc<FlightState>>,
+    relation_exists: SccHashMap<String, TimedEntry<bool>>,
+    last_modified_epochs: SccHashMap<String, TimedEntry<Option<i64>>>,
+    lookup_errors: SccHashMap<String, TimedEntry<String>>,
+    in_flight: SccHashMap<String, Arc<FlightState>>,
     /// Per-key version counters, kept separate from `in_flight` so a version
     /// survives the refcounted `FlightState` entry being dropped and recreated
     /// while nobody is in flight for that key. See `bump_version`.
-    versions: DashMap<String, Arc<AtomicU64>>,
+    versions: SccHashMap<String, Arc<AtomicU64>>,
     generation: AtomicU64,
     write_lock: StdMutex<()>,
     /// Coalesces BigQuery freshness lookups by database and schema.
-    schema_fetch_coalescers: DashMap<(String, String), Arc<SchemaFetchCoalescer>>,
+    schema_fetch_coalescers: SccHashMap<(String, String), Arc<SchemaFetchCoalescer>>,
     /// Protects coalescer-map refcounts independently of cache writes.
     coalescer_lock: StdMutex<()>,
 }
@@ -229,7 +229,7 @@ impl RunCacheMetadataCache {
     pub fn remove_last_modified_epoch(&self, relation: &str) {
         let _guard = lock_write(&self.write_lock);
         self.bump_version(&lookup_error_key("last_modified_epoch", relation));
-        self.last_modified_epochs.remove(relation);
+        self.last_modified_epochs.remove_sync(relation);
     }
 
     pub fn insert_lookup_error(&self, lookup: impl Into<String>, error: impl Into<String>) {
@@ -237,13 +237,13 @@ impl RunCacheMetadataCache {
         let _guard = lock_write(&self.write_lock);
         self.bump_version(&lookup);
         self.lookup_errors
-            .insert(lookup, TimedEntry::new(error.into()));
+            .upsert_sync(lookup, TimedEntry::new(error.into()));
     }
 
     pub fn remove_lookup_error(&self, lookup: &str) {
         let _guard = lock_write(&self.write_lock);
         self.bump_version(lookup);
-        self.lookup_errors.remove(lookup);
+        self.lookup_errors.remove_sync(lookup);
     }
 
     /// Drop a cached `relation_exists` lookup failure. Callers use this after a
@@ -264,12 +264,12 @@ impl RunCacheMetadataCache {
         for kind in ["relation_exists", "last_modified_epoch"] {
             self.bump_version(&lookup_error_key(kind, relation));
         }
-        self.relation_exists.remove(relation);
-        self.last_modified_epochs.remove(relation);
+        self.relation_exists.remove_sync(relation);
+        self.last_modified_epochs.remove_sync(relation);
         self.lookup_errors
-            .remove(&lookup_error_key("relation_exists", relation));
+            .remove_sync(&lookup_error_key("relation_exists", relation));
         self.lookup_errors
-            .remove(&lookup_error_key("last_modified_epoch", relation));
+            .remove_sync(&lookup_error_key("last_modified_epoch", relation));
     }
 
     pub async fn get_or_try_insert_relation_exists<E, F, Fut>(
@@ -360,7 +360,7 @@ impl RunCacheMetadataCache {
     /// `clear()`; the generation check rejects writes started before a clear.
     fn bump_version(&self, key: &str) {
         self.versions
-            .entry(key.to_string())
+            .entry_sync(key.to_string())
             .or_default()
             .fetch_add(1, Ordering::Relaxed);
     }
@@ -368,8 +368,7 @@ impl RunCacheMetadataCache {
     /// Current version for an arbitrary (already-namespaced) key.
     fn version_for_key(&self, key: &str) -> u64 {
         self.versions
-            .get(key)
-            .map(|version| version.load(Ordering::Relaxed))
+            .read_sync(key, |_, version| version.load(Ordering::Relaxed))
             .unwrap_or(0)
     }
 
@@ -380,7 +379,7 @@ impl RunCacheMetadataCache {
 
     fn insert_value<T>(
         &self,
-        map: &DashMap<String, TimedEntry<T>>,
+        map: &SccHashMap<String, TimedEntry<T>>,
         kind: &str,
         key: String,
         value: T,
@@ -394,16 +393,16 @@ impl RunCacheMetadataCache {
     pub fn clear(&self) {
         let _guard = lock_write(&self.write_lock);
         self.generation.fetch_add(1, Ordering::Relaxed);
-        self.relation_exists.clear();
-        self.last_modified_epochs.clear();
-        self.lookup_errors.clear();
+        self.relation_exists.clear_sync();
+        self.last_modified_epochs.clear_sync();
+        self.lookup_errors.clear_sync();
     }
 }
 
 async fn get_or_try_insert<T, E, F, Fut>(
     cache: &RunCacheMetadataCache,
-    map: &DashMap<String, TimedEntry<T>>,
-    errors: &DashMap<String, TimedEntry<String>>,
+    map: &SccHashMap<String, TimedEntry<T>>,
+    errors: &SccHashMap<String, TimedEntry<String>>,
     ttl: Option<Duration>,
     lookup_kind: &str,
     key: &str,
@@ -455,7 +454,7 @@ where
                 value.clone(),
             );
         } else if let Err(error) = &result {
-            errors.insert(flight_guard.key.clone(), TimedEntry::new(error.to_string()));
+            errors.upsert_sync(flight_guard.key.clone(), TimedEntry::new(error.to_string()));
         }
         return result;
     }
@@ -525,14 +524,14 @@ impl Drop for MetadataPrefetchGuard<'_> {
 }
 
 fn commit_value<T>(
-    map: &DashMap<String, TimedEntry<T>>,
-    errors: &DashMap<String, TimedEntry<String>>,
+    map: &SccHashMap<String, TimedEntry<T>>,
+    errors: &SccHashMap<String, TimedEntry<String>>,
     lookup: &str,
     key: String,
     value: T,
 ) {
-    errors.remove(lookup);
-    map.insert(key, TimedEntry::new(value));
+    errors.remove_sync(lookup);
+    map.upsert_sync(key, TimedEntry::new(value));
 }
 
 fn lock_write(lock: &StdMutex<()>) -> std::sync::MutexGuard<'_, ()> {
@@ -540,47 +539,55 @@ fn lock_write(lock: &StdMutex<()>) -> std::sync::MutexGuard<'_, ()> {
 }
 
 /// Get or create an entry and increment its refcount under `lock`.
-fn acquire_refcounted<K, V>(map: &DashMap<K, Arc<V>>, lock: &StdMutex<()>, key: K) -> Arc<V>
+fn acquire_refcounted<K, V>(map: &SccHashMap<K, Arc<V>>, lock: &StdMutex<()>, key: K) -> Arc<V>
 where
     K: std::hash::Hash + Eq,
     V: Default + RefCounted,
 {
     let _guard = lock_write(lock);
-    let value = map
-        .entry(key)
-        .or_insert_with(|| Arc::new(V::default()))
-        .clone();
+    let value = Arc::clone(
+        map.entry_sync(key)
+            .or_insert_with(|| Arc::new(V::default()))
+            .get(),
+    );
     value.users().fetch_add(1, Ordering::Relaxed);
     value
 }
 
-fn release_refcounted<K, V>(map: &DashMap<K, Arc<V>>, lock: &StdMutex<()>, key: &K, value: &Arc<V>)
-where
+fn release_refcounted<K, V>(
+    map: &SccHashMap<K, Arc<V>>,
+    lock: &StdMutex<()>,
+    key: &K,
+    value: &Arc<V>,
+) where
     K: std::hash::Hash + Eq,
     V: RefCounted,
 {
     let _guard = lock_write(lock);
     if value.users().fetch_sub(1, Ordering::Relaxed) == 1 {
-        map.remove_if(key, |_, current| Arc::ptr_eq(current, value));
+        map.remove_if_sync(key, |current| Arc::ptr_eq(current, value));
     }
 }
 
 fn get_cached<T: Clone>(
-    map: &DashMap<String, TimedEntry<T>>,
+    map: &SccHashMap<String, TimedEntry<T>>,
     key: &str,
     ttl: Option<Duration>,
 ) -> Option<T> {
-    if let Some(value) = map.get(key) {
-        if value.is_expired(ttl) {
-            let fetched_at = value.fetched_at;
-            drop(value);
-            map.remove_if(key, |_, value| value.fetched_at == fetched_at);
-            None
+    // Read under the bucket lock, then remove after it is released.
+    let read = map.read_sync(key, |_, entry| {
+        if entry.is_expired(ttl) {
+            Err(entry.fetched_at)
         } else {
-            Some(value.value.clone())
+            Ok(entry.value.clone())
         }
-    } else {
-        None
+    })?;
+    match read {
+        Ok(value) => Some(value),
+        Err(fetched_at) => {
+            map.remove_if_sync(key, |entry| entry.fetched_at == fetched_at);
+            None
+        }
     }
 }
 
@@ -1098,10 +1105,8 @@ mod tests {
         assert_eq!(
             cache
                 .schema_fetch_coalescers
-                .get(&key)
-                .unwrap()
-                .users
-                .load(Ordering::Relaxed),
+                .read_sync(&key, |_, coalescer| coalescer.users.load(Ordering::Relaxed))
+                .unwrap(),
             1
         );
         drop(pending_lock);
@@ -1118,15 +1123,13 @@ mod tests {
         assert_eq!(
             cache
                 .schema_fetch_coalescers
-                .get(&key)
-                .unwrap()
-                .users
-                .load(Ordering::Relaxed),
+                .read_sync(&key, |_, coalescer| coalescer.users.load(Ordering::Relaxed))
+                .unwrap(),
             1
         );
 
         drop(holder);
-        assert!(!cache.schema_fetch_coalescers.contains_key(&key));
+        assert!(!cache.schema_fetch_coalescers.contains_sync(&key));
     }
 
     #[tokio::test]

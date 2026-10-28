@@ -1,0 +1,53 @@
+version: 2
+
+models:
+  - name: model
+    config:
+      contract:
+        enforced: true
+    columns:
+      - name: id
+        data_type: int64
+        constraints:
+          - type: not_null
+      - name: array_of_structs
+        data_type: array
+        description: The array of structs
+      - name: array_of_structs.d
+        data_type: int64
+        description: The d of the struct
+      - name: array_of_structs.e
+        data_type: int64
+        description: The e of the struct
+      - name: array_of_structs.b_id
+        data_type: int64
+        description: The b_id of the struct
+        constraints:
+          - type: not_null
+      - name: array_of_structs.a_color
+        data_type: string
+        description: The a_color of the struct
+      - name: just_struct.b
+        data_type: int64
+      - name: just_struct.a
+        data_type: int64
+        constraints:
+          - type: not_null
+      - name: just_struct.array_of_structs
+        data_type: array
+      - name: just_struct.array_of_structs.d
+        data_type: int64
+        constraints:
+          - type: not_null
+      - name: just_struct.array_of_structs.c
+        data_type: int64
+      - name: nested_struct.b.b
+        data_type: int64
+      - name: nested_struct.b.a
+        data_type: int64
+        constraints:
+          - type: not_null
+      - name: nested_struct.a.d
+        data_type: int64
+      - name: nested_struct.a.c
+        data_type: int64

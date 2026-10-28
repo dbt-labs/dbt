@@ -5712,6 +5712,10 @@ pub struct DbtTestAttr {
     /// for a model-level test; a `column_name` macro kwarg lives in `test_metadata.kwargs`.
     pub column_name: Option<String>,
     pub attached_node: Option<String>,
+    /// The resource declared as a generic test's subject. Unlike `attached_node`, this is
+    /// populated for source tests and is not part of the dbt manifest contract.
+    #[serde(default, skip_serializing)]
+    pub test_subject_unique_id: Option<String>,
     pub test_metadata: Option<TestMetadata>,
     pub file_key_name: Option<String>,
     /// dbt State configs (restricted subset), read by the run-cache at run time.
@@ -6524,6 +6528,7 @@ impl AdapterAttr {
                     matched_condition: config.matched_condition.clone(),
                     not_matched_condition: config.not_matched_condition.clone(),
                     not_matched_by_source_condition: config.not_matched_by_source_condition.clone(),
+                    merge_actions_explicit: config.merge_actions_explicit.clone(),
                     not_matched_by_source_action: config.not_matched_by_source_action.clone(),
                     merge_with_schema_evolution: config.merge_with_schema_evolution,
                     skip_matched_step: config.skip_matched_step,
@@ -6634,6 +6639,7 @@ impl AdapterAttr {
                         not_matched_by_source_condition: config
                             .not_matched_by_source_condition
                             .clone(),
+                        merge_actions_explicit: config.merge_actions_explicit.clone(),
                         not_matched_by_source_action: config.not_matched_by_source_action.clone(),
                         merge_with_schema_evolution: config.merge_with_schema_evolution,
                         skip_matched_step: config.skip_matched_step,
@@ -6709,6 +6715,7 @@ pub struct DatabricksAttr {
     pub matched_condition: Option<String>,
     pub not_matched_condition: Option<String>,
     pub not_matched_by_source_condition: Option<String>,
+    pub merge_actions_explicit: Option<String>,
     pub not_matched_by_source_action: Option<String>,
     pub merge_with_schema_evolution: Option<bool>,
     pub skip_matched_step: Option<bool>,

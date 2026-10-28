@@ -536,7 +536,6 @@ fn update_run_cache_defer_model(
         store_failures: None,
     };
     let package_name = model.__common_attr__.package_name.clone();
-    let node_adapter = model.node_adapter();
     update_node_relation_components(
         model,
         jinja_env,
@@ -544,7 +543,7 @@ fn update_run_cache_defer_model(
         &package_name,
         base_context,
         &components,
-        node_adapter,
+        None,
     )
 }
 
@@ -564,7 +563,6 @@ fn update_run_cache_defer_seed(
         store_failures: None,
     };
     let package_name = seed.__common_attr__.package_name.clone();
-    let node_adapter = seed.node_adapter();
     update_node_relation_components(
         seed,
         jinja_env,
@@ -572,7 +570,7 @@ fn update_run_cache_defer_seed(
         &package_name,
         base_context,
         &components,
-        node_adapter,
+        None,
     )
 }
 
@@ -600,7 +598,6 @@ fn update_run_cache_defer_snapshot(
         store_failures: None,
     };
     let package_name = snapshot.__common_attr__.package_name.clone();
-    let node_adapter = snapshot.node_adapter();
     update_node_relation_components(
         snapshot,
         jinja_env,
@@ -608,7 +605,7 @@ fn update_run_cache_defer_snapshot(
         &package_name,
         base_context,
         &components,
-        node_adapter,
+        None,
     )
 }
 
@@ -638,7 +635,6 @@ fn update_run_cache_defer_function(
         store_failures: None,
     };
     let package_name = function.__common_attr__.package_name.clone();
-    let node_adapter = function.node_adapter();
     update_node_relation_components(
         function,
         jinja_env,
@@ -646,7 +642,7 @@ fn update_run_cache_defer_function(
         &package_name,
         base_context,
         &components,
-        node_adapter,
+        None,
     )
 }
 

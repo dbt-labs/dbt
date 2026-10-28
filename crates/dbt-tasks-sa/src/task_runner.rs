@@ -9,6 +9,7 @@ use dbt_common::FsResult;
 use dbt_common::cancellation::CancellationToken;
 use dbt_common::create_info_span;
 use dbt_common::io_args::FsCommand;
+use dbt_common::sccmap;
 use dbt_common::stats::{NodeStatus, Stat};
 use dbt_common::tracing::dbt_emit::emit_error_log_from_fs_error;
 use dbt_common::tracing::span_info::{SpanStatusRecorder, record_span_status_with_attrs};
@@ -61,17 +62,12 @@ pub fn summarize_task_runner_stats(
         batch_results: Default::default(),
         compiled_code: Default::default(),
     };
-    let batch_results = ctx
-        .inner
-        .batch_results_map
-        .iter()
-        .map(|entry| (entry.key().clone(), entry.value().clone()))
+    let batch_results = sccmap::to_vec_cloned(&ctx.inner.batch_results_map)
+        .into_iter()
         .collect();
-    let compiled_code = ctx
-        .inner
-        .rendered_sql
-        .iter()
-        .map(|entry| (entry.key().clone(), entry.value().sql.clone()))
+    let compiled_code = sccmap::to_vec_cloned(&ctx.inner.rendered_sql)
+        .into_iter()
+        .map(|(unique_id, info)| (unique_id, info.sql))
         .collect();
     let run = Stats {
         stats: summarize_stats(schedule, &ctx.inner.run_stats),
@@ -436,12 +432,10 @@ impl TaskRunner {
             .await?;
 
         let mut stats = summarize_task_runner_stats(&ctx, &schedule, self.resolved_state.as_ref());
-        let adapter_responses: HashMap<String, AdapterResponse> = ctx
-            .inner
-            .main_adapter_responses
-            .iter()
-            .map(|entry| (entry.key().clone(), entry.value().clone()))
-            .collect();
+        let adapter_responses: HashMap<String, AdapterResponse> =
+            sccmap::to_vec_cloned(&ctx.inner.main_adapter_responses)
+                .into_iter()
+                .collect();
         let results = stats.collect_as_results(&adapter_responses);
         let successful_relational_nodes =
             stats.collect_successful_relational_nodes(&self.resolved_state);
@@ -458,7 +452,7 @@ impl TaskRunner {
 
         let schemas_option = Some(schemas.clone());
         let database_schemas_option = Some(database_schemas);
-        let results_option = Some(results.clone());
+        let results_option = Some(results);
 
         // on-run-end hook results, recorded as `operation.<project>.<name>` nodes and
         // merged into the run stats below.

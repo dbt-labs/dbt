@@ -1,0 +1,18 @@
+   dbt-oss 
+   Loading profiles.yml
+   Parsing models/microbatch_guard.sql
+   Parsing models/source_events.sql
+ Rendering models/source_events.sql
+   Running models/source_events.sql
+ Succeeded model snowflake_microbatch_full_refresh_guard.source_events (table) [1 of 2 in duration]
+ Rendering models/microbatch_guard.sql
+   Running models/microbatch_guard.sql
+   Started batch 2025-01-03 of snowflake_microbatch_full_refresh_guard.microbatch_guard [1 of 2]
+ Succeeded batch 2025-01-03 of snowflake_microbatch_full_refresh_guard.microbatch_guard [1 of 2 in duration]
+   Started batch 2025-01-04 of snowflake_microbatch_full_refresh_guard.microbatch_guard [2 of 2]
+ Succeeded batch 2025-01-04 of snowflake_microbatch_full_refresh_guard.microbatch_guard [2 of 2 in duration]
+ Succeeded model snowflake_microbatch_full_refresh_guard.microbatch_guard (incremental) [2 of 2 in duration]
+==================== Execution Summary =====================
+Finished 'run' successfully for target 'snowflake' [duration]
+Processed: 2 models
+Summary: 2 total | 2 success

@@ -971,6 +971,20 @@ impl StateArtifacts {
     }
 
     fn check_body_modified(&self, current_node: &dyn InternalDbtNode) -> bool {
+        // Unit tests have no body comparison, in the same way they have no config comparison (see
+        // `check_configs_modified`). dbt-core's `UnitTestDefinition` extends `GraphNode` and
+        // defines no `same_body`, so `check_modified_factory("same_body")` takes its `hasattr`
+        // else-branch and returns False (dbt-mantle core/dbt/graph/selector_methods.py:759):
+        // `state:modified.body` never selects a unit test there.
+        //
+        // Without this guard, unit tests fall through to the default `has_same_body`, which
+        // compares `checksum`. Fusion leaves a unit test's checksum empty while dbt-core writes a
+        // sha256 over model/versions/given/expect/overrides, so every unit test looked body-modified
+        // against a state manifest written by dbt 1.x. See dbt-labs/dbt#16449.
+        if current_node.resource_type() == NodeType::UnitTest {
+            return false;
+        }
+
         // Get the previous node from the manifest (unique_id first, then test signature fallback).
         let Some(previous_node) = self.previous_node_for(current_node) else {
             // If previous node doesn't exist, consider it modified.

@@ -1,0 +1,6 @@
+[error] [JinjaError (dbt1501)]: Macro error: invalid operation: Compilation Error for model.hello_world.hello_view_implicit from models/hello_view_implicit.sql: Model must use the table materialization. Please check any model overrides.
+(in macros/check_model_is_table.sql:4)
+  --> macros/check_model_is_table.sql:4:1
+[error] [JinjaError (dbt1501)]: Macro error: invalid operation: Compilation Error for model.hello_world.hello_view from models/hello_view.sql: Model must use the table materialization. Please check any model overrides.
+(in macros/check_model_is_table.sql:4)
+  --> macros/check_model_is_table.sql:4:1

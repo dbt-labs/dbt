@@ -1,0 +1,45 @@
+c438ed86:
+- sequence: 0
+  type: execute
+  sql: create schema if not exists `dbt-test-env`.`bigquery_use_direct_information_schema_views`
+model.fusion_498_reprex.my_model:
+- sequence: 0
+  type: execute
+  sql: |-
+    create or replace table `dbt-test-env`.`bigquery_use_direct_information_schema_views`.`my_model`
+    
+    
+    
+    
+    
+    OPTIONS()
+    as (
+    
+    
+    select * from `bigquery_use_direct_information_schema_views_src`.INFORMATION_SCHEMA.TABLES LIMIT 1
+    
+    );
+model.fusion_498_reprex.stg_jobs:
+- sequence: 0
+  type: execute
+  sql: |-
+    create or replace table `dbt-test-env`.`bigquery_use_direct_information_schema_views`.`stg_jobs`
+    
+    
+    
+    
+    
+    OPTIONS()
+    as (
+    
+    
+    -- https://cloud.google.com/bigquery/docs/information-schema-jobs
+    select * from `dbt-test-env`.`region-us`.INFORMATION_SCHEMA.JOBS limit 1
+    );
+operation.fusion_498_reprex.fusion_498_reprex-on-run-start-0:
+- sequence: 0
+  type: execute
+  sql: "\n    CREATE SCHEMA IF NOT EXISTS `dbt-test-env`.`bigquery_use_direct_information_schema_views_src`\n  "
+- sequence: 1
+  type: execute
+  sql: "\n    CREATE OR REPLACE TABLE `dbt-test-env`.`bigquery_use_direct_information_schema_views_src`.`source_table` (id INT64)\n  "

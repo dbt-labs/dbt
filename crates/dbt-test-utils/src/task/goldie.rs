@@ -11,8 +11,8 @@ use super::{
 };
 use futures::FutureExt as _;
 use itertools::Itertools;
-use once_cell::sync::Lazy;
 use regex::Regex;
+use std::sync::LazyLock;
 use std::{
     env,
     fs::File,
@@ -34,8 +34,8 @@ pub(super) type TextualPatch = String;
 pub type OutputNormalizer = fn(String) -> String;
 
 // Snowflake prompt for our REPL
-static SNOWFLAKE_PROMPT: Lazy<Regex> =
-    Lazy::new(|| Regex::new(r"^\d+\(snowflake\[local\].*").unwrap());
+static SNOWFLAKE_PROMPT: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^\d+\(snowflake\[local\].*").unwrap());
 
 fn postprocess_actual(content: String, sort_output: bool) -> String {
     let res = [

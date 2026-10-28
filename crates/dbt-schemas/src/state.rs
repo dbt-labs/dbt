@@ -332,6 +332,7 @@ impl DbtProfile {
         hex::encode(&hash.as_bytes()[..16])
     }
 }
+
 /// A propagation target selection failed validation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PropagationTargetError {
@@ -850,7 +851,7 @@ pub struct ResolverState {
     pub operations: Operations,
     pub dbt_profile: DbtProfile,
     pub cloud_config: Option<ResolvedCloudConfig>,
-    pub render_results: RenderResults,
+    pub render_results: Arc<RenderResults>,
     pub node_resolver: Arc<dyn NodeResolverTracker>,
     pub get_relation_calls: GetRelationCalls,
     pub get_columns_in_relation_calls: GetColumnsInRelationCalls,

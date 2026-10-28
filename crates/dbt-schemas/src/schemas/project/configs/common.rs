@@ -232,6 +232,8 @@ pub struct WarehouseSpecificNodeConfig {
     #[warehouse(valid(all_nodes))]
     pub not_matched_by_source_condition: Option<String>,
     #[warehouse(valid(all_nodes))]
+    pub merge_actions_explicit: Option<String>,
+    #[warehouse(valid(all_nodes))]
     pub not_matched_by_source_action: Option<String>,
     #[serde(default, deserialize_with = "bool_or_string_bool")]
     #[warehouse(valid(all_nodes))]
@@ -643,6 +645,8 @@ pub fn same_warehouse_config(
     let not_matched_condition_eq = self_wh.not_matched_condition == other_wh.not_matched_condition;
     let not_matched_by_source_condition_eq =
         self_wh.not_matched_by_source_condition == other_wh.not_matched_by_source_condition;
+    let merge_actions_explicit_eq =
+        self_wh.merge_actions_explicit == other_wh.merge_actions_explicit;
     let not_matched_by_source_action_eq =
         self_wh.not_matched_by_source_action == other_wh.not_matched_by_source_action;
     let merge_with_schema_evolution_eq =
@@ -756,6 +760,7 @@ pub fn same_warehouse_config(
         && matched_condition_eq
         && not_matched_condition_eq
         && not_matched_by_source_condition_eq
+        && merge_actions_explicit_eq
         && not_matched_by_source_action_eq
         && merge_with_schema_evolution_eq
         && skip_matched_step_eq
@@ -1114,6 +1119,14 @@ pub fn same_warehouse_config(
                     Some((
                         format!("{:?}", &self_wh.not_matched_by_source_condition),
                         format!("{:?}", &other_wh.not_matched_by_source_condition),
+                    )),
+                ),
+                (
+                    "merge_actions_explicit",
+                    merge_actions_explicit_eq,
+                    Some((
+                        format!("{:?}", &self_wh.merge_actions_explicit),
+                        format!("{:?}", &other_wh.merge_actions_explicit),
                     )),
                 ),
                 (

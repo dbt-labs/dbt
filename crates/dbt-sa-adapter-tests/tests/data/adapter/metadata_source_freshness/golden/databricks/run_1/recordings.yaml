@@ -1,0 +1,4 @@
+93d4e62e:
+- sequence: 0
+  type: execute
+  sql: DESCRIBE HISTORY `e2e`.`adapters_databricks_metadata_source_freshness`.`source` LIMIT 1

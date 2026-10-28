@@ -22,7 +22,7 @@ use crate::task_spans::{
 };
 use crate::visitor::SkipReason;
 
-use dbt_common::collections::DashMap;
+use dbt_common::collections::SccHashMap;
 use dbt_scheduler::instructions::{LpInstruction, SqlInstruction};
 use minijinja::Value as MinijinjaValue;
 
@@ -30,7 +30,7 @@ use minijinja::Value as MinijinjaValue;
 #[derive(Debug, Clone)]
 pub struct TaskResult {
     pub sql_instruction: SqlInstruction,
-    pub config_map: Arc<DashMap<String, MinijinjaValue>>,
+    pub config_map: Arc<SccHashMap<String, MinijinjaValue>>,
     /// Present only when the analyze phase ran (Local/Sidecar/Service execution).
     pub lp_instruction: Option<LpInstruction>,
 }

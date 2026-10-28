@@ -12,18 +12,19 @@ use std::sync::Arc;
 
 use arrow_array::*;
 use dbt_adapter_core::AdapterType;
+use dbt_adbc::QueryCtx;
 use dbt_common::cancellation::CancellationToken;
 use dbt_schemas::dbt_types::RelationType;
 use dbt_schemas::schemas::common::ResolvedQuoting;
 use dbt_schemas::schemas::relations::base::BaseRelation;
 
 use crate::AdapterEngine;
+use crate::column::Column;
 use crate::connection::ConnectionGuard;
 use crate::errors::AdapterResult;
 use crate::metadata::CatalogAndSchema;
 use crate::record_batch::RecordBatchExt;
 use crate::relation::Relation;
-use dbt_adbc::QueryCtx;
 
 /// Extracts the value of a `Key: value` line from `SHOW TABLE EXTENDED`'s
 /// `information` column.
@@ -254,14 +255,14 @@ and correctness of the schema and catalog.";
     }
 }
 
-use crate::column::Column;
-
 /// Keep only the leading column names from a Spark `describe extended` result,
 /// discarding all columns from a separator column name (empty string or starts
 /// with `#`)
 ///
 /// Mirrors dbt-core's `SparkAdapter.parse_describe_extended` from dbt-adapters/dbt-spark
-pub(crate) fn truncate_at_describe_extended_separator(columns: Vec<Column>) -> Vec<Column> {
+pub(crate) fn truncate_at_describe_extended_separator(
+    columns: Vec<Arc<Column>>,
+) -> Vec<Arc<Column>> {
     let end = columns
         .iter()
         .position(|c| c.name().is_empty() || c.name().starts_with('#'))
@@ -277,14 +278,14 @@ mod tests {
     #[test]
     fn test_truncate_at_describe_extended_separator() {
         let mk = |name: &str| {
-            Column::new(
+            Arc::new(Column::new(
                 AdapterType::Spark,
                 name.to_string(),
                 "string".to_string(),
                 None,
                 None,
                 None,
-            )
+            ))
         };
 
         // Real columns, then the blank separator, then the extended-metadata section.

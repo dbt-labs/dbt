@@ -1,0 +1,53 @@
+45269c56:
+- sequence: 0
+  type: execute
+  sql: create schema if not exists `dbt-test-env`.`bigquery_array_docs`
+model.hello_world.model:
+- sequence: 0
+  type: execute
+  sql: |-
+    create or replace table `dbt-test-env`.`bigquery_array_docs`.`model`
+    
+    
+    
+    
+    
+    OPTIONS(
+    description="""my description\
+    with multiple\
+    lines\
+    """
+    )
+    as (
+    
+    select
+    1 as id,
+    [1,2,3] as my_array
+    );
+- sequence: 1
+  type: execute
+  sql: -- adapter.update_columns via BigQuery REST API on `dbt-test-env.bigquery_array_docs.model`
+model.hello_world.model.get_table_schema.a8b4b143:
+- sequence: 0
+  type: get_table_schema
+  table_name: a8b4b143
+model.hello_world.view:
+- sequence: 0
+  type: execute
+  sql: |-
+    create or replace view `dbt-test-env`.`bigquery_array_docs`.`view`
+    OPTIONS(
+    description="""my view description\
+    with multiple\
+    lines\
+    """
+    )
+    as 
+    select * from `dbt-test-env`.`bigquery_array_docs`.`model`;
+- sequence: 1
+  type: execute
+  sql: -- adapter.update_columns via BigQuery REST API on `dbt-test-env.bigquery_array_docs.view`
+model.hello_world.view.get_table_schema.babf0d68:
+- sequence: 0
+  type: get_table_schema
+  table_name: babf0d68

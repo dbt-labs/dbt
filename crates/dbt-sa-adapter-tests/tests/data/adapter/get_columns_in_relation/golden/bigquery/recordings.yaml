@@ -1,0 +1,11 @@
+model.test.b:
+- sequence: 0
+  type: execute
+  sql: CREATE SCHEMA IF NOT EXISTS adapters_bigquery_get_columns_in_relation
+- sequence: 1
+  type: execute
+  sql: CREATE OR REPLACE TABLE adapters_bigquery_get_columns_in_relation.c (number_col int, text_col string, text_col2 string(10));
+model.test.b.get_table_schema.c111282e:
+- sequence: 0
+  type: get_table_schema
+  table_name: c111282e

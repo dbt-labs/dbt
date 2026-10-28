@@ -32,7 +32,7 @@ use dbt_tasks_core::task::{TP, Task, run_blocking_task_operation};
 use dbt_telemetry::NodeType;
 
 pub use dbt_parser::plugin::{
-    PluginDiagnostics, PluginEntry, PluginEntryData, PluginError, PluginFile, PluginNodeDef,
+    PluginDiagnostics, PluginEntry, PluginError, PluginFile, PluginNodeDef, PluginPackage,
     ResolvePlugin, ResolvePlugins,
 };
 
@@ -238,7 +238,7 @@ impl PluginTask {
                 (NodeStatus::Errored, None, Some(message))
             }
         };
-        ctx.inner.run_stats.insert(
+        ctx.inner.run_stats.upsert_sync(
             unique_id.clone(),
             Stat::new(
                 unique_id,
@@ -283,7 +283,7 @@ impl Task for PluginTask {
     }
 }
 
-/// The plugins an invocation runs with, and every plugin type ever reserved.
+/// The plugins an invocation runs with, and every key ever reserved under `plugins:`.
 #[derive(Clone, Default)]
 pub struct Plugins {
     plugins: Vec<Arc<dyn NodePlugin>>,
@@ -291,14 +291,15 @@ pub struct Plugins {
 }
 
 impl Plugins {
-    /// `reserved` lists every plugin type ever released, registered or not. A reserved plugin type
-    /// is never released: projects may use it whether or not its plugin still exists.
+    /// `reserved` lists every key ever released under `plugins:` (plugin types and definition
+    /// keys), registered or not. A reserved key is never released: projects may use it whether or
+    /// not its plugin still exists.
     ///
     /// # Panics
     ///
-    /// If a plugin's type isn't reserved, or its flag is on by default or is a behavior flag. If a
-    /// reserved plugin type isn't a lowercase identifier, names something dbt itself uses, or is
-    /// reserved twice.
+    /// If a plugin's type or one of its definition keys isn't reserved or is claimed by another
+    /// plugin, or its flag is on by default or is a behavior flag. If a reserved key isn't a
+    /// lowercase identifier, names something dbt itself uses, or is reserved twice.
     pub fn new(plugins: Vec<Arc<dyn NodePlugin>>, reserved: &[&'static str]) -> Self {
         let mut reserved_types = BTreeSet::new();
         for plugin_type in reserved {
@@ -315,18 +316,21 @@ impl Plugins {
                 "plugin type `{plugin_type}` is reserved twice"
             );
         }
-        let mut registered = BTreeSet::new();
+        let mut claimed = BTreeSet::new();
         for plugin in &plugins {
             let plugin_type = plugin.plugin_type();
-            assert!(
-                reserved_types.contains(plugin_type),
-                "plugin type `{plugin_type}` isn't reserved"
-            );
             check_flag(plugin_type, plugin.flag());
-            assert!(
-                registered.insert(plugin_type),
-                "two plugins have the plugin type `{plugin_type}`"
-            );
+            for key in std::iter::once(plugin_type).chain(plugin.definition_keys().iter().copied())
+            {
+                assert!(
+                    reserved_types.contains(key),
+                    "plugin `{plugin_type}` reads `{key}`, which isn't reserved"
+                );
+                assert!(
+                    claimed.insert(key),
+                    "`{key}` is read by more than one plugin, or twice by `{plugin_type}`"
+                );
+            }
         }
         Self {
             plugins,
@@ -544,6 +548,44 @@ mod tests {
         fn flag(&self) -> &'static FlagDef {
             self.1
         }
+        fn resolve(
+            &self,
+            _package: &PluginPackage<'_>,
+            _diagnostics: &mut PluginDiagnostics,
+        ) -> Result<Vec<PluginNodeDef>, PluginError> {
+            Ok(vec![])
+        }
+    }
+
+    /// A `widget` plugin that also reads `keys` under `plugins:`.
+    struct WithKeys(&'static [&'static str]);
+
+    impl ResolvePlugin for WithKeys {
+        fn plugin_type(&self) -> &'static str {
+            WIDGET
+        }
+        fn definition_keys(&self) -> &'static [&'static str] {
+            self.0
+        }
+        fn flag(&self) -> &'static FlagDef {
+            &TEST_FLAG
+        }
+        fn resolve(
+            &self,
+            _package: &PluginPackage<'_>,
+            _diagnostics: &mut PluginDiagnostics,
+        ) -> Result<Vec<PluginNodeDef>, PluginError> {
+            Ok(vec![])
+        }
+    }
+
+    impl NodePlugin for WithKeys {
+        fn start(
+            &self,
+            _args: &PluginRunArgs<'_>,
+        ) -> Result<Option<Arc<dyn PluginRun>>, PluginError> {
+            Ok(None)
+        }
     }
 
     impl NodePlugin for TestPlugin {
@@ -584,6 +626,13 @@ mod tests {
         }
         fn flag(&self) -> &'static FlagDef {
             &TEST_FLAG
+        }
+        fn resolve(
+            &self,
+            _package: &PluginPackage<'_>,
+            _diagnostics: &mut PluginDiagnostics,
+        ) -> Result<Vec<PluginNodeDef>, PluginError> {
+            Ok(vec![])
         }
     }
 
@@ -772,9 +821,32 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "plugin type `widget` isn't reserved")]
+    #[should_panic(expected = "plugin `widget` reads `widget`, which isn't reserved")]
     fn a_plugin_needs_a_reserved_type() {
         Plugins::new(vec![Arc::new(TestPlugin(WIDGET, &TEST_FLAG))], &[GADGET]);
+    }
+
+    #[test]
+    fn a_plugin_reads_its_reserved_definition_keys() {
+        Plugins::new(vec![Arc::new(WithKeys(&[GIZMO]))], &[WIDGET, GIZMO]);
+    }
+
+    #[test]
+    #[should_panic(expected = "plugin `widget` reads `gizmo`, which isn't reserved")]
+    fn a_plugins_definition_keys_are_reserved() {
+        Plugins::new(vec![Arc::new(WithKeys(&[GIZMO]))], &[WIDGET]);
+    }
+
+    #[test]
+    #[should_panic(expected = "`gadget` is read by more than one plugin")]
+    fn a_key_is_read_by_one_plugin() {
+        Plugins::new(
+            vec![
+                Arc::new(WithKeys(&[GADGET])),
+                Arc::new(TestPlugin(GADGET, &TEST_FLAG)),
+            ],
+            &[WIDGET, GADGET],
+        );
     }
 
     #[test]

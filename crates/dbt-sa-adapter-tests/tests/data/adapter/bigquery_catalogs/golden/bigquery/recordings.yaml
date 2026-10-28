@@ -1,0 +1,204 @@
+beabc9cf:
+- sequence: 0
+  type: execute
+  sql: create schema if not exists `dbt-test-env`.`adapters_bigquery_catalogs`
+model.test.cat1:
+- sequence: 0
+  type: execute
+  sql: |-
+    create or replace table `dbt-test-env`.`adapters_bigquery_catalogs`.`cat1`
+    
+    
+    
+    
+    with connection default
+    OPTIONS(
+    table_format='iceberg',
+    
+    file_format='parquet',
+    
+    storage_uri='gs://dbt-ci-iceberg-test/_dbt/adapters_bigquery_catalogs/cat1'
+    )
+    as (
+    
+    
+    
+    select
+    "cool_name" as name,
+    1 as id
+    );
+model.test.cat1_incremental:
+- sequence: 0
+  type: execute
+  sql: |-
+    create table `dbt-test-env`.`adapters_bigquery_catalogs`.`cat1_incremental`
+    
+    
+    
+    
+    with connection default
+    OPTIONS(
+    table_format='iceberg',
+    
+    file_format='parquet',
+    
+    storage_uri='gs://dbt-ci-iceberg-test/_dbt/adapters_bigquery_catalogs/cat1_incremental'
+    )
+    as (
+    
+    
+    
+    select
+    name,
+    id,
+    updated_at
+    from `dbt-test-env`.`adapters_bigquery_catalogs`.`standard_table`
+    
+    
+    
+    );
+model.test.cat2_bogus_connection:
+- sequence: 0
+  type: execute
+  sql: |-
+    create or replace table `dbt-test-env`.`adapters_bigquery_catalogs`.`cat2_bogus_connection`
+    
+    
+    
+    
+    with connection `dbt-test-env.us.__default_cloudresource_connection__`
+    OPTIONS(
+    table_format='iceberg',
+    
+    file_format='parquet',
+    
+    storage_uri='gs://dbt-ci-iceberg-test/root1/adapters_bigquery_catalogs/cat2_bogus_connection'
+    )
+    as (
+    
+    
+    
+    select
+    "cool_name" as name,
+    1 as id
+    );
+model.test.cat2_override_base_location_adapter:
+- sequence: 0
+  type: execute
+  sql: |-
+    create or replace table `dbt-test-env`.`adapters_bigquery_catalogs`.`cat2_override_base_location_adapter`
+    
+    
+    
+    
+    with connection default
+    OPTIONS(
+    table_format='iceberg',
+    
+    file_format='parquet',
+    
+    storage_uri='gs://dbt-ci-iceberg-test/root3/adapters_bigquery_catalogs/cat2_override_base_location_adapter/subpath2'
+    )
+    as (
+    
+    
+    
+    select
+    "cool_name" as name,
+    1 as id
+    );
+model.test.cat2_override_base_location_legacy:
+- sequence: 0
+  type: execute
+  sql: |-
+    create or replace table `dbt-test-env`.`adapters_bigquery_catalogs`.`cat2_override_base_location_legacy`
+    
+    
+    
+    
+    with connection default
+    OPTIONS(
+    table_format='iceberg',
+    
+    file_format='parquet',
+    
+    storage_uri='gs://dbt-ci-iceberg-test/root2/adapters_bigquery_catalogs/cat2_override_base_location_legacy/subpath1'
+    )
+    as (
+    
+    
+    
+    select
+    "cool_name" as name,
+    1 as id
+    );
+model.test.cat2_override_storage_uri:
+- sequence: 0
+  type: execute
+  sql: |-
+    create or replace table `dbt-test-env`.`adapters_bigquery_catalogs`.`cat2_override_storage_uri`
+    
+    
+    
+    
+    with connection default
+    OPTIONS(
+    table_format='iceberg',
+    
+    file_format='parquet',
+    
+    storage_uri='gs://dbt-ci-iceberg-test/successful-override/adapters_bigquery_catalogs'
+    )
+    as (
+    
+    
+    
+    select
+    "cool_name" as name,
+    1 as id
+    );
+model.test.cat2_remove_base_location_root:
+- sequence: 0
+  type: execute
+  sql: |-
+    create or replace table `dbt-test-env`.`adapters_bigquery_catalogs`.`cat2_remove_base_location_root`
+    
+    
+    
+    
+    with connection default
+    OPTIONS(
+    table_format='iceberg',
+    
+    file_format='parquet',
+    
+    storage_uri='gs://dbt-ci-iceberg-test/_dbt/adapters_bigquery_catalogs/cat2_remove_base_location_root'
+    )
+    as (
+    
+    
+    
+    select
+    "cool_name" as name,
+    1 as id
+    );
+model.test.standard_table:
+- sequence: 0
+  type: execute
+  sql: |-
+    create or replace table `dbt-test-env`.`adapters_bigquery_catalogs`.`standard_table`
+    
+    
+    
+    
+    
+    OPTIONS()
+    as (
+    
+    
+    
+    select
+    "cool_name" as name,
+    1 as id,
+    current_timestamp() as updated_at
+    );

@@ -35,7 +35,10 @@ where
 const PARQUET_WRITER_BUF_SIZE: usize = 1024;
 
 /// Maximum memory usage for the ArrowWriter internal buffer.
-const PARQUET_WRITER_MEMORY_LIMIT: usize = 128 * 1024 * 1024; // 128 MB
+/// Keep it close to, but not above, the parquet dictionary page size limit, so that a row group
+/// is flushed before a column dictionary overflows into plain encoding. If the parquet defaults
+/// change, set it to the new limit.
+const PARQUET_WRITER_MEMORY_LIMIT: usize = 1024 * 1024; // 1 MB
 
 impl<W> ParquetWriter<W>
 where
@@ -48,6 +51,12 @@ where
         let writer_properties = WriterProperties::builder()
             .set_compression(Compression::SNAPPY)
             .build();
+        // A batch is dictionary encoded as one unit only if it fits in one parquet write batch
+        debug_assert!(
+            PARQUET_WRITER_MEMORY_LIMIT <= writer_properties.dictionary_page_size_limit()
+                && PARQUET_WRITER_BUF_SIZE <= writer_properties.write_batch_size(),
+            "Parquet writer limits must not exceed the parquet dictionary page size limit and write batch size"
+        );
         let arrow_schemas = TelemetryArrowSchemas::new::<R>();
 
         let parquet_writer = ArrowWriter::try_new(
@@ -488,6 +497,39 @@ mod tests {
         assert_eq!(records.len(), 2);
         assert_eq!(records[0], record1);
         assert_eq!(records[1], record2);
+    }
+
+    #[test]
+    fn test_flush_row_group_at_memory_limit() {
+        let (mock, buffer) = MockWriter::new();
+        let (layer, mut handle) =
+            TelemetryParquetWriterLayer::new::<_, MockTelemetryEventRegistry>(mock).unwrap();
+
+        // Random hex bodies do not compress, so one full batch holds about 2 MB
+        let records: Vec<_> = (0..=PARQUET_WRITER_BUF_SIZE as u64)
+            .map(|i| {
+                let mut record = get_test_log_record(i);
+                if let TelemetryRecord::LogRecord(info) = &mut record {
+                    info.body = (0..64)
+                        .map(|_| uuid::Uuid::new_v4().simple().to_string())
+                        .collect();
+                }
+                record
+            })
+            .collect();
+
+        for record in &records {
+            assert!(layer.write_record(record.clone()).is_ok());
+        }
+        assert!(handle.shutdown().is_ok());
+
+        // The full batch is flushed as its own row group, the last record goes to a second one
+        let buffer_contents = buffer.lock().unwrap();
+        let metadata = parquet::file::metadata::ParquetMetaDataReader::new()
+            .parse_and_finish(&bytes::Bytes::from_owner(buffer_contents.get_ref().clone()))
+            .unwrap();
+        assert_eq!(metadata.num_row_groups(), 2);
+        assert_eq!(deserialize_parquet(buffer_contents.get_ref()), records);
     }
 
     #[test]

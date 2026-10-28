@@ -70,6 +70,7 @@ use dbt_schemas::{
         macros::{DbtDocsMacro, DbtMacro, MacroArgument},
         manifest::{DbtMetric, DbtOperation, DbtSavedQuery, DbtSemanticModel},
         nodes::{DbtGroup, InternalDbtNodeAttributes},
+        packages::{DbtPackageLock, DbtPackagesLock},
     },
     state::{DbtPackage, Macros, ManifestPathConfig, Operations, ResourcePathKind},
 };
@@ -185,6 +186,8 @@ pub struct ResolverStateRow {
     pub pkg_kinds_json: String,
     #[serde(default)]
     pub pkg_manifest_path_configs_json: String,
+    #[serde(default)]
+    pub pkg_lock_json: String,
     pub any_uses_graph: i32,
 }
 
@@ -319,6 +322,7 @@ fn resolver_state_fields() -> Vec<FieldRef> {
         str_field("pkg_deps_json"),
         str_field("pkg_kinds_json"),
         str_field("pkg_manifest_path_configs_json"),
+        str_field("pkg_lock_json"),
         i32_field("any_uses_graph"),
     ]
 }
@@ -395,7 +399,21 @@ where
         0
     };
     let materialization = b.materialized.to_string();
-    let payload = serde_json::to_string(node).unwrap_or_else(|_| "{}".into());
+    let mut payload = serde_json::to_value(node).unwrap_or_default();
+    if let Some(subject) = node
+        .as_any()
+        .downcast_ref::<DbtTest>()
+        .and_then(|test| test.__test_attr__.test_subject_unique_id.as_ref())
+        && let Some(test_attr) = payload
+            .get_mut("__test_attr__")
+            .and_then(serde_json::Value::as_object_mut)
+    {
+        test_attr.insert(
+            "test_subject_unique_id".to_string(),
+            serde_json::Value::String(subject.clone()),
+        );
+    }
+    let payload = serde_json::to_string(&payload).unwrap_or_else(|_| "{}".into());
     let description = c.description.clone();
     let database = if b.database.is_empty() {
         None
@@ -867,6 +885,8 @@ pub struct SaveArgs<'a> {
     pub nodes_with_resolution_errors_json: &'a str,
     pub nodes_with_access_errors_json: &'a str,
     pub operations_json: &'a str,
+    /// [`pkg_lock_json`] of `package-lock.yml`.
+    pub pkg_lock_json: &'a str,
     pub packages: &'a [PackageSnapshot],
     pub nodes: &'a Nodes,
     pub disabled_nodes: &'a Nodes,
@@ -908,6 +928,7 @@ impl<'a> SaveArgs<'a> {
             nodes_with_resolution_errors_json: "[]",
             nodes_with_access_errors_json: "[]",
             operations_json: "{\"on_run_start\":[],\"on_run_end\":[]}",
+            pkg_lock_json: "{}",
             selectors_json: "",
             git_sha: "",
             git_branch: "",
@@ -1005,7 +1026,11 @@ fn collect_parse_test_metadata_rows(
                     .ok()
                     .filter(|s| s != "null"),
                 column_name: test.__test_attr__.column_name.clone(),
-                attached_node: test.__test_attr__.attached_node.clone(),
+                attached_node: test
+                    .__test_attr__
+                    .test_subject_unique_id
+                    .clone()
+                    .or_else(|| test.__test_attr__.attached_node.clone()),
                 severity,
                 warn_if: test.deprecated_config.warn_if.clone(),
                 error_if: test.deprecated_config.error_if.clone(),
@@ -1236,6 +1261,7 @@ pub fn save(args: &SaveArgs<'_>) -> Result<(), String> {
             pkg_deps_json,
             pkg_kinds_json,
             pkg_manifest_path_configs_json,
+            pkg_lock_json: args.pkg_lock_json.to_string(),
             any_uses_graph: any_uses_graph as i32,
         }],
     );
@@ -1654,6 +1680,64 @@ fn deserialize_into(
     }
 }
 
+// ── package-lock.yml ─────────────────────────────────────────────────────────
+
+/// Where one locked package comes from, named by its `dbt.packages` column.
+#[derive(Serialize, Default, Debug, PartialEq)]
+struct PackageLockDetails {
+    package_source: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    version: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    git_url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    git_revision: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    local_path: Option<String>,
+}
+
+impl From<&DbtPackageLock> for PackageLockDetails {
+    fn from(lock: &DbtPackageLock) -> Self {
+        let mut details = PackageLockDetails {
+            package_source: lock.entry_type(),
+            ..Default::default()
+        };
+        match lock {
+            DbtPackageLock::Hub(hub) => details.version = Some(hub.version.to_string()),
+            DbtPackageLock::Git(git) => {
+                details.git_url = Some(git.git.to_string());
+                details.git_revision = Some(git.revision.clone());
+            }
+            DbtPackageLock::Private(private) => {
+                details.git_revision = Some(private.revision.clone());
+            }
+            DbtPackageLock::Local(local) => {
+                details.local_path = Some(local.local.to_string_lossy().into_owned());
+            }
+            DbtPackageLock::Tarball(_) => {}
+        }
+        details
+    }
+}
+
+/// `{package_name: details}` for every entry of the `package-lock.yml` at `path`.
+///
+/// Read from disk rather than from the resolved lock: the file is written with
+/// secret env vars scrubbed from git and tarball URLs, the resolved lock is not.
+/// A missing or unreadable lock is `{}`.
+pub fn pkg_lock_json(path: &Path) -> String {
+    let lock: DbtPackagesLock = fs::read_to_string(path)
+        .ok()
+        .and_then(|s| dbt_yaml::from_str(&s).ok())
+        .unwrap_or_default();
+    let details: BTreeMap<String, PackageLockDetails> = lock
+        .packages
+        .iter()
+        .map(|p| (p.package_name(), PackageLockDetails::from(p)))
+        .collect();
+    serde_json::to_string(&details).unwrap_or_else(|_| "{}".into())
+}
+
 // ── PackageSnapshot ↔ DbtPackage ─────────────────────────────────────────────
 
 pub fn snapshot_packages(packages: &[DbtPackage]) -> Vec<PackageSnapshot> {
@@ -1716,6 +1800,7 @@ pub fn snapshot_packages(packages: &[DbtPackage]) -> Vec<PackageSnapshot> {
 mod tests {
     use super::*;
     use crate::index_resolution::resolve_dirty_unique_ids_from_index;
+    use dbt_schemas::schemas::nodes::TestMetadata;
     use dbt_schemas::state::DbtAsset;
     use minijinja::machinery::Span;
     use tempfile::TempDir;
@@ -1734,6 +1819,54 @@ mod tests {
             payload: payload.to_string(),
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn source_test_metadata_uses_the_explicit_subject_unique_id() {
+        let mut nodes = Nodes::default();
+        let mut test = DbtTest::default();
+        test.__common_attr__.unique_id = "test.pkg.not_null_raw_orders_id.abc".to_string();
+        test.__test_attr__.attached_node = None;
+        test.__test_attr__.test_subject_unique_id = Some("source.pkg.raw.orders".to_string());
+        test.__test_attr__.file_key_name = Some("sources.raw".to_string());
+        test.__test_attr__.test_metadata = Some(TestMetadata {
+            name: "not_null".to_string(),
+            kwargs: BTreeMap::new(),
+            namespace: None,
+        });
+        nodes
+            .tests
+            .insert(test.__common_attr__.unique_id.clone(), Arc::new(test));
+
+        let rows = collect_parse_test_metadata_rows(&nodes, None, 1);
+
+        assert_eq!(rows.len(), 1);
+        assert_eq!(
+            rows[0].attached_node.as_deref(),
+            Some("source.pkg.raw.orders")
+        );
+    }
+
+    #[test]
+    fn test_subject_is_metadata_only_but_survives_parse_payload() {
+        let mut test = DbtTest::default();
+        test.__test_attr__.test_subject_unique_id = Some("source.pkg.raw.orders".to_string());
+
+        let node_json = serde_json::to_value(&test).unwrap();
+        assert!(
+            node_json
+                .get("__test_attr__")
+                .and_then(|attr| attr.get("test_subject_unique_id"))
+                .is_none(),
+            "ordinary node serialization must keep the transport field private"
+        );
+
+        let row = node_row_from_trait("test.pkg.not_null", &test, "test", 0);
+        let cached: DbtTest = serde_json::from_str(&row.payload).unwrap();
+        assert_eq!(
+            cached.__test_attr__.test_subject_unique_id.as_deref(),
+            Some("source.pkg.raw.orders")
+        );
     }
 
     /// Write epoch 0 with 3 rows, then 9 delta epochs each updating row "a".
@@ -2378,5 +2511,51 @@ mod tests {
         let reconstructed = reconstruct_package_metadata(&snaps[0]).unwrap();
         assert_eq!(reconstructed.dbt_project.name, "my_project");
         assert_eq!(reconstructed.package_root_path, user.package_root_path);
+    }
+
+    /// Each lock source fills its own columns; a missing lock is no details.
+    #[test]
+    fn pkg_lock_json_maps_each_lock_source_to_its_columns() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("package-lock.yml");
+        fs::write(
+            &path,
+            "\
+packages:
+  - name: dbt_utils
+    package: dbt-labs/dbt_utils
+    version: 1.3.0
+  - name: audit
+    git: https://github.com/acme/audit.git
+    revision: 0a1b2c3
+  - name: shared
+    local: ../shared
+  - name: internal
+    private: acme/internal
+    revision: v2
+  - name: archived
+    tarball: https://example.com/archived.tar.gz
+sha1_hash: abc
+",
+        )
+        .unwrap();
+
+        let got: serde_json::Value = serde_json::from_str(&pkg_lock_json(&path)).unwrap();
+
+        assert_eq!(
+            got,
+            serde_json::json!({
+                "dbt_utils": {"package_source": "hub", "version": "1.3.0"},
+                "audit": {
+                    "package_source": "git",
+                    "git_url": "https://github.com/acme/audit.git",
+                    "git_revision": "0a1b2c3",
+                },
+                "shared": {"package_source": "local", "local_path": "../shared"},
+                "internal": {"package_source": "private", "git_revision": "v2"},
+                "archived": {"package_source": "tarball"},
+            }),
+        );
+        assert_eq!(pkg_lock_json(&tmp.path().join("missing.yml")), "{}");
     }
 }

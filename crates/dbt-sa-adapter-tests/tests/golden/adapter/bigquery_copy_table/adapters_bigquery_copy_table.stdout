@@ -1,0 +1,25 @@
+   dbt-oss 
+   Loading profiles.yml
+   Parsing models/a.sql
+bigquery
+non_existing_dest + table (write_truncate)
+||
+||
+existing_dest + table (write_append)
+||
+||
+ Rendering models/a.sql
+bigquery
+non_existing_dest + table (write_truncate)
+| id |
+| -- |
+|  1 |
+existing_dest + table (write_append)
+| id |
+| -- |
+|  1 |
+|  2 |
+==================== Execution Summary =====================
+Finished 'compile' successfully for target 'bigquery' [duration]
+Processed: 1 model
+Summary: 1 total | 1 success

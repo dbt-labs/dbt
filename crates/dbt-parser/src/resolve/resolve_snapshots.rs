@@ -35,6 +35,7 @@ use dbt_common::{ErrorCode, FsResult, fs_err, stdfs, unexpected_fs_err};
 use dbt_jinja_utils::jinja_environment::JinjaEnv;
 use dbt_jinja_utils::listener::DefaultJinjaTypeCheckEventListenerFactory;
 use dbt_jinja_utils::node_resolver::NodeResolver;
+use dbt_jinja_utils::phases::parse::ParseAdapterScopes;
 use dbt_jinja_utils::serde::into_typed_with_jinja;
 use dbt_schemas::schemas::common::{
     DbtChecksum, DbtQuoting, ModelFreshnessRules, NodeDependsOn,
@@ -73,6 +74,7 @@ pub async fn resolve_snapshots(
     macros: &BTreeMap<String, DbtMacro>,
     database: &str,
     schema: &str,
+    parse_adapter_scopes: &ParseAdapterScopes,
     default_adapter: AdapterType,
     adapter_quoting: &IndexMap<AdapterType, DbtQuoting>,
     jinja_env: Arc<JinjaEnv>,
@@ -670,7 +672,7 @@ pub async fn resolve_snapshots(
                 &package_name,
                 base_ctx,
                 &components,
-                default_adapter,
+                Some(parse_adapter_scopes),
             )?;
 
             match node_resolver.insert_ref(&dbt_snapshot, status, false) {
@@ -705,7 +707,7 @@ pub async fn resolve_snapshots(
                             collected_generic_tests,
                             test_name_truncations,
                             seen_generic_test_paths,
-                            default_adapter,
+                            selected_adapter,
                             &arg.io,
                             patch_path.as_ref().unwrap_or(&dbt_asset.path),
                             false,
@@ -730,7 +732,7 @@ pub async fn resolve_snapshots(
                                 collected_generic_tests,
                                 test_name_truncations,
                                 seen_generic_test_paths,
-                                default_adapter,
+                                selected_adapter,
                                 &arg.io,
                                 patch_path.as_ref().unwrap_or(&dbt_asset.path),
                                 false,

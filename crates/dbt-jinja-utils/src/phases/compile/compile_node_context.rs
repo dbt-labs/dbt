@@ -4,8 +4,8 @@ use chrono::TimeZone;
 use chrono_tz::{Europe::London, Tz};
 use dbt_adapter::{AdapterType, load_store::ResultStore};
 use dbt_common::io_args::StaticAnalysisKind;
-use dbt_common::serde_utils::convert_yml_to_dash_map;
-use dbt_common::{FsResult, dashmap::DashMap};
+use dbt_common::serde_utils::convert_yml_to_scc_map;
+use dbt_common::{FsResult, collections::SccHashMap};
 use dbt_schemas::schemas::InternalDbtNode;
 use dbt_schemas::{
     schemas::{InternalDbtNodeAttributes, common::DbtMaterialization, telemetry::NodeType},
@@ -131,7 +131,7 @@ pub fn build_compile_node_context<T>(
     ref_validation_config: DependencyValidationConfig,
 ) -> FsResult<(
     BTreeMap<String, MinijinjaValue>,
-    Arc<DashMap<String, MinijinjaValue>>,
+    Arc<SccHashMap<String, MinijinjaValue>>,
 )>
 where
     T: InternalDbtNodeAttributes + ?Sized,
@@ -160,7 +160,7 @@ pub fn build_compile_node_context_inner<T>(
     ref_validation_config: DependencyValidationConfig,
 ) -> FsResult<(
     BTreeMap<String, MinijinjaValue>,
-    Arc<DashMap<String, MinijinjaValue>>,
+    Arc<SccHashMap<String, MinijinjaValue>>,
 )>
 where
     T: InternalDbtNodeAttributes + ?Sized,
@@ -266,7 +266,7 @@ where
         ))
         .into_value(),
     };
-    let config_map = Arc::new(convert_yml_to_dash_map(model.serialized_config()));
+    let config_map = Arc::new(convert_yml_to_scc_map(model.serialized_config()));
 
     // Get valid config keys based on resource type
     let valid_keys = match model.resource_type() {
@@ -303,6 +303,7 @@ where
         runtime_config.clone(),
         validation_config_with_depends_on.clone(),
         model.common().unique_id.clone(),
+        adapter_type,
     );
     let ref_value = MinijinjaValue::from_object(ref_function);
     base_builtins.insert("ref".to_string(), ref_value.clone());
@@ -459,8 +460,11 @@ fn init_batch_context() -> BTreeMap<String, MinijinjaValue> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::node_resolver::NodeResolver;
+    use crate::node_resolver::{NodeResolver, PackageSearchOrder};
     use dbt_common::ErrorCode;
+    use dbt_schemas::filter::RunFilter;
+    use dbt_schemas::schemas::Nodes;
+    use dbt_schemas::schemas::common::ResolvedQuoting;
     use dbt_schemas::schemas::nodes::{
         CommonAttributes, DbtModel, DbtSnapshot, NodeBaseAttributes,
     };
@@ -643,6 +647,114 @@ mod tests {
             err.to_string()
                 .contains("Ref 'barbers' not found in project"),
             "unexpected error: {err}"
+        );
+    }
+
+    fn model_on(adapter: AdapterType, name: &str) -> DbtModel {
+        DbtModel {
+            __common_attr__: CommonAttributes {
+                unique_id: format!("model.my_new_project.{name}"),
+                name: name.to_string(),
+                package_name: "my_new_project".to_string(),
+                ..Default::default()
+            },
+            __base_attr__: NodeBaseAttributes {
+                adapter,
+                database: "Cat".to_string(),
+                schema: "Sch".to_string(),
+                alias: name.to_string(),
+                materialized: DbtMaterialization::Table,
+                quoting: ResolvedQuoting::trues(),
+                ..Default::default()
+            },
+            ..Default::default()
+        }
+    }
+
+    /// Renders `{{ ref('up') }}` from `caller`, with `prod_up` as `up`'s deferred node if given.
+    fn render_ref_to_up(up: DbtModel, prod_up: Option<DbtModel>, caller: DbtModel) -> String {
+        let caller = Arc::new(caller);
+        let mut nodes = Nodes::default();
+        nodes
+            .models
+            .insert(up.__common_attr__.unique_id.clone(), Arc::new(up));
+        nodes
+            .models
+            .insert(caller.__common_attr__.unique_id.clone(), caller.clone());
+        let mut node_resolver = NodeResolver::from_dbt_nodes(
+            &nodes,
+            AdapterType::Databricks,
+            "my_new_project".to_string(),
+            None,
+            RunFilter::default(),
+            BTreeMap::new(),
+            false,
+            PackageSearchOrder::default(),
+        )
+        .expect("build resolver");
+        if let Some(prod_up) = prod_up {
+            node_resolver
+                .update_ref_with_deferral(&prod_up, AdapterType::Databricks, false)
+                .expect("defer up");
+        }
+        let adapter_type = caller.node_adapter();
+        let (ctx, _) = build_compile_node_context_inner(
+            caller,
+            adapter_type,
+            &BTreeMap::new(),
+            "my_new_project",
+            Arc::new(node_resolver),
+            Arc::new(DbtRuntimeConfig::default()),
+            DependencyValidationConfig::new_unvalidated(),
+        )
+        .expect("build compile context");
+        minijinja::Environment::new()
+            .render_str("{{ ref('up') }}", ctx, &[])
+            .expect("render ref")
+    }
+
+    // `ref()` spells an upstream with the calling node's adapter, in the case the upstream renders.
+    #[test]
+    fn ref_renders_with_the_calling_nodes_adapter() {
+        let up = || model_on(AdapterType::Databricks, "up");
+        let lakecompute_caller = model_on(AdapterType::LakeCompute, "lc_down");
+        assert_eq!(
+            render_ref_to_up(up(), None, lakecompute_caller),
+            r#""cat"."sch"."up""#
+        );
+        let databricks_caller = model_on(AdapterType::Databricks, "dbx_down");
+        assert_eq!(
+            render_ref_to_up(up(), None, databricks_caller),
+            "`cat`.`sch`.`up`"
+        );
+    }
+
+    // A deferred upstream is spelled with the calling node's adapter too.
+    #[test]
+    fn deferred_ref_renders_with_the_calling_nodes_adapter() {
+        let mut prod_up = model_on(AdapterType::Databricks, "up");
+        prod_up.__base_attr__.database = "Prod".to_string();
+        let lakecompute_caller = model_on(AdapterType::LakeCompute, "lc_down");
+        assert_eq!(
+            render_ref_to_up(
+                model_on(AdapterType::Databricks, "up"),
+                Some(prod_up),
+                lakecompute_caller
+            ),
+            r#""prod"."sch"."up""#
+        );
+    }
+
+    // An ephemeral ref keeps its CTE name's case; Databricks never folds it.
+    #[test]
+    fn cross_adapter_ephemeral_ref_keeps_its_cte_name() {
+        let mut up = model_on(AdapterType::Databricks, "up");
+        up.__base_attr__.alias = "MyEph".to_string();
+        up.__base_attr__.materialized = DbtMaterialization::Ephemeral;
+        let lakecompute_caller = model_on(AdapterType::LakeCompute, "lc_down");
+        assert_eq!(
+            render_ref_to_up(up, None, lakecompute_caller),
+            "__dbt__cte__MyEph"
         );
     }
 }

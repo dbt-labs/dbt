@@ -1,0 +1,225 @@
+bc0f25d8:
+- sequence: 0
+  type: execute
+  sql: create schema if not exists `dbt-test-env`.`adapters_bigquery_unit_test`
+model.test.array_unit_test:
+- sequence: 0
+  type: execute
+  sql: |-
+    create or replace view `dbt-test-env`.`adapters_bigquery_unit_test`.`array_unit_test`
+    OPTIONS()
+    as SELECT 
+    user_id,
+    name,
+    hobbies,
+    ARRAY_LENGTH(hobbies) AS hobby_count,
+    test_scores,
+    ARRAY_LENGTH(test_scores) AS test_count,
+    (SELECT AVG(score) FROM UNNEST(test_scores) AS score) AS avg_test_score,
+    activity_dates,
+    ARRAY_LENGTH(activity_dates) AS activity_count,
+    (SELECT MAX(date) FROM UNNEST(activity_dates) AS date) AS latest_activity_date,
+    ARRAY_CONCAT(
+    hobbies,
+    [CONCAT("avg_score:", CAST(ROUND((SELECT AVG(score) FROM UNNEST(test_scores) AS score), 1) AS STRING))]
+    ) AS summary_info
+    FROM `dbt-test-env`.`adapters_bigquery_unit_test`.`stg_array_unit_test`;
+model.test.stg_array_unit_test:
+- sequence: 0
+  type: execute
+  sql: |-
+    create or replace view `dbt-test-env`.`adapters_bigquery_unit_test`.`stg_array_unit_test`
+    OPTIONS()
+    as SELECT 
+    1 AS user_id,
+    "Alice" AS name,
+    ["reading", "swimming", "coding"] AS hobbies,
+    [85, 92, 78, 95] AS test_scores,
+    [CAST('2024-01-15' AS DATE), CAST('2024-02-20' AS DATE), CAST('2024-03-10' AS DATE)] AS activity_dates
+    UNION ALL
+    SELECT
+    2 AS user_id,
+    "Bob" AS name,
+    ["gaming", "cooking"] AS hobbies,
+    [88, 76, 91] AS test_scores,
+    [CAST('2024-01-20' AS DATE), CAST('2024-02-25' AS DATE)] AS activity_dates
+    UNION ALL
+    SELECT
+    3 AS user_id,
+    "Charlie" AS name,
+    ["music", "sports", "travel", "photography"] AS hobbies,
+    [92, 89, 94, 87, 90] AS test_scores,
+    [CAST('2024-01-10' AS DATE), CAST('2024-02-15' AS DATE), CAST('2024-03-05' AS DATE), CAST('2024-03-20' AS DATE)] AS activity_dates;
+model.test.stg_struct_unit_test:
+- sequence: 0
+  type: execute
+  sql: |-
+    create or replace view `dbt-test-env`.`adapters_bigquery_unit_test`.`stg_struct_unit_test`
+    OPTIONS()
+    as SELECT
+    1 AS company_id,
+    CAST('2025-01-01' AS DATE) AS closing_date,
+    STRUCT(
+    100 AS revenue,
+    99 AS debt
+    ) AS financials
+    UNION ALL
+    SELECT
+    1,
+    CAST('2024-01-01' AS DATE) AS closing_date,
+    STRUCT(
+    75 AS revenue,
+    76 AS debt
+    ) AS financials;
+model.test.struct_unit_test:
+- sequence: 0
+  type: execute
+  sql: |-
+    create or replace view `dbt-test-env`.`adapters_bigquery_unit_test`.`struct_unit_test`
+    OPTIONS()
+    as SELECT company_id, STRUCT(
+    ARRAY_AGG(STRUCT(closing_date, financials.revenue AS amount)) AS revenue,
+    ARRAY_AGG(STRUCT(closing_date, financials.debt AS amount)) AS debt
+    ) AS financial_history
+    FROM `dbt-test-env`.`adapters_bigquery_unit_test`.`stg_struct_unit_test`
+    GROUP BY company_id;
+unit_test.test.array_unit_test.test_array_operations:
+- sequence: 0
+  type: execute
+  sql: |-
+    create or replace table `dbt-test-env`.`adapters_bigquery_unit_test`.`test_array_operations__dbt_tmp`
+    
+    
+    
+    
+    
+    OPTIONS(
+    expiration_timestamp=TIMESTAMP_ADD(CURRENT_TIMESTAMP(), INTERVAL 12 hour)
+    )
+    as (
+    select * from (
+    SELECT 
+    user_id,
+    name,
+    hobbies,
+    ARRAY_LENGTH(hobbies) AS hobby_count,
+    test_scores,
+    ARRAY_LENGTH(test_scores) AS test_count,
+    (SELECT AVG(score) FROM UNNEST(test_scores) AS score) AS avg_test_score,
+    activity_dates,
+    ARRAY_LENGTH(activity_dates) AS activity_count,
+    (SELECT MAX(date) FROM UNNEST(activity_dates) AS date) AS latest_activity_date,
+    ARRAY_CONCAT(
+    hobbies,
+    [CONCAT("avg_score:", CAST(ROUND((SELECT AVG(score) FROM UNNEST(test_scores) AS score), 1) AS STRING))]
+    ) AS summary_info
+    FROM `dbt-test-env`.`adapters_bigquery_unit_test`.`stg_array_unit_test`
+    ) as __dbt_sbq
+    where false and current_timestamp() = current_timestamp()
+    limit 0
+    
+    );
+- sequence: 1
+  type: execute
+  sql: |-
+    drop table if exists `dbt-test-env`.`adapters_bigquery_unit_test`.`test_array_operations__dbt_tmp`
+- sequence: 2
+  type: execute
+  sql: |-
+    -- Build actual result given inputs
+    WITH
+    \t`dbt-test-env_adapters_bigquery_unit_test_stg_array_unit_test` as (SELECT *  FROM UNNEST([STRUCT(CAST(1 AS int64) AS user_id, CAST('Alice' AS string) AS name, CAST([CAST('reading' AS STRING), CAST('swimming' AS STRING), CAST('coding' AS STRING)] AS ARRAY<string>) AS hobbies, CAST([CAST(85 AS INT64), CAST(92 AS INT64), CAST(78 AS INT64), CAST(95 AS INT64)] AS ARRAY<int64>) AS test_scores, CAST([CAST('2024-01-15' AS DATE), CAST('2024-02-20' AS DATE), CAST('2024-03-10' AS DATE)] AS ARRAY<date>) AS activity_dates), STRUCT(CAST(2 AS int64) AS user_id, CAST('Bob' AS string) AS name, CAST([CAST('gaming' AS STRING), CAST('cooking' AS STRING)] AS ARRAY<string>) AS hobbies, CAST([CAST(88 AS INT64), CAST(76 AS INT64), CAST(91 AS INT64)] AS ARRAY<int64>) AS test_scores, CAST([CAST('2024-01-20' AS DATE), CAST('2024-02-25' AS DATE)] AS ARRAY<date>) AS activity_dates)])),
+    \t`dbt-test-env_adapters_bigquery_unit_test_array_unit_test_expect` as (SELECT *  FROM UNNEST([STRUCT(CAST(1 AS int64) AS user_id, CAST('Alice' AS string) AS name, CAST([CAST('reading' AS STRING), CAST('swimming' AS STRING), CAST('coding' AS STRING)] AS ARRAY<string>) AS hobbies, CAST(3 AS int64) AS hobby_count, CAST([CAST(85 AS INT64), CAST(92 AS INT64), CAST(78 AS INT64), CAST(95 AS INT64)] AS ARRAY<int64>) AS test_scores, CAST(4 AS int64) AS test_count, CAST(87.5 AS float64) AS avg_test_score, CAST([CAST('2024-01-15' AS DATE), CAST('2024-02-20' AS DATE), CAST('2024-03-10' AS DATE)] AS ARRAY<date>) AS activity_dates, CAST(3 AS int64) AS activity_count, CAST('2024-03-10' AS date) AS latest_activity_date, CAST([CAST('reading' AS STRING), CAST('swimming' AS STRING), CAST('coding' AS STRING), CAST('avg_score:87.5' AS STRING)] AS ARRAY<string>) AS summary_info), STRUCT(CAST(2 AS int64) AS user_id, CAST('Bob' AS string) AS name, CAST([CAST('gaming' AS STRING), CAST('cooking' AS STRING)] AS ARRAY<string>) AS hobbies, CAST(2 AS int64) AS hobby_count, CAST([CAST(88 AS INT64), CAST(76 AS INT64), CAST(91 AS INT64)] AS ARRAY<int64>) AS test_scores, CAST(3 AS int64) AS test_count, CAST(85.0 AS float64) AS avg_test_score, CAST([CAST('2024-01-20' AS DATE), CAST('2024-02-25' AS DATE)] AS ARRAY<date>) AS activity_dates, CAST(2 AS int64) AS activity_count, CAST('2024-02-25' AS date) AS latest_activity_date, CAST([CAST('gaming' AS STRING), CAST('cooking' AS STRING), CAST('avg_score:85' AS STRING)] AS ARRAY<string>) AS summary_info)])),
+    \t`dbt-test-env_adapters_bigquery_unit_test_array_unit_test_actual` as (SELECT 
+    user_id,
+    name,
+    hobbies,
+    ARRAY_LENGTH(hobbies) AS hobby_count,
+    test_scores,
+    ARRAY_LENGTH(test_scores) AS test_count,
+    (SELECT AVG(score) FROM UNNEST(test_scores) AS score) AS avg_test_score,
+    activity_dates,
+    ARRAY_LENGTH(activity_dates) AS activity_count,
+    (SELECT MAX(date) FROM UNNEST(activity_dates) AS date) AS latest_activity_date,
+    ARRAY_CONCAT(
+    hobbies,
+    [CONCAT("avg_score:", CAST(ROUND((SELECT AVG(score) FROM UNNEST(test_scores) AS score), 1) AS STRING))]
+    ) AS summary_info
+    FROM `dbt-test-env_adapters_bigquery_unit_test_stg_array_unit_test`
+    )
+    SELECT * FROM (
+    (SELECT user_id, name, hobbies, hobby_count, test_scores, test_count, avg_test_score, activity_dates, activity_count, latest_activity_date, summary_info, 'actual' AS actual_or_expected FROM `dbt-test-env_adapters_bigquery_unit_test_array_unit_test_actual`)
+    UNION ALL
+    (SELECT user_id, name, hobbies, hobby_count, test_scores, test_count, avg_test_score, activity_dates, activity_count, latest_activity_date, summary_info, 'expected' AS actual_or_expected FROM `dbt-test-env_adapters_bigquery_unit_test_array_unit_test_expect`)
+    ) unit_test_diff
+    ORDER BY user_id, name, hobby_count, test_count, avg_test_score, activity_count, latest_activity_date
+unit_test.test.array_unit_test.test_array_operations.get_table_schema.8c8721d2:
+- sequence: 0
+  type: get_table_schema
+  table_name: 8c8721d2
+unit_test.test.array_unit_test.test_array_operations.get_table_schema.b8759a78:
+- sequence: 0
+  type: get_table_schema
+  table_name: b8759a78
+unit_test.test.struct_unit_test.test_financials_aggregation:
+- sequence: 0
+  type: execute
+  sql: |-
+    create or replace table `dbt-test-env`.`adapters_bigquery_unit_test`.`test_financials_aggregation__dbt_tmp`
+    
+    
+    
+    
+    
+    OPTIONS(
+    expiration_timestamp=TIMESTAMP_ADD(CURRENT_TIMESTAMP(), INTERVAL 12 hour)
+    )
+    as (
+    select * from (
+    SELECT company_id, STRUCT(
+    ARRAY_AGG(STRUCT(closing_date, financials.revenue AS amount)) AS revenue,
+    ARRAY_AGG(STRUCT(closing_date, financials.debt AS amount)) AS debt
+    ) AS financial_history
+    FROM `dbt-test-env`.`adapters_bigquery_unit_test`.`stg_struct_unit_test`
+    GROUP BY company_id
+    ) as __dbt_sbq
+    where false and current_timestamp() = current_timestamp()
+    limit 0
+    
+    );
+- sequence: 1
+  type: execute
+  sql: |-
+    drop table if exists `dbt-test-env`.`adapters_bigquery_unit_test`.`test_financials_aggregation__dbt_tmp`
+- sequence: 2
+  type: execute
+  sql: |-
+    -- Build actual result given inputs
+    WITH
+    \t`dbt-test-env_adapters_bigquery_unit_test_stg_struct_unit_test` as (SELECT 1337 AS company_id, CAST('2025-01-01' AS DATE) AS closing_date, STRUCT(40 AS revenue, 41 AS debt) AS financials
+    UNION ALL
+    SELECT 1337 AS company_id, CAST('2024-01-01' AS DATE) AS closing_date, STRUCT(75 AS revenue, 76 AS debt) AS financials
+    ),
+    \t`dbt-test-env_adapters_bigquery_unit_test_struct_unit_test_expect` as (SELECT
+    1337 AS company_id,
+    STRUCT(
+    [STRUCT(CAST('2025-01-01' AS DATE) AS closing_date, 40 AS amount), STRUCT(CAST('2024-01-01' AS DATE) AS closing_date, 75 AS amount)] AS revenue,
+    [STRUCT(CAST('2025-01-01' AS DATE) AS closing_date, 41 AS amount), STRUCT(CAST('2024-01-01' AS DATE) AS closing_date, 76 AS amount)] AS debt
+    ) AS financial_history
+    ),
+    \t`dbt-test-env_adapters_bigquery_unit_test_struct_unit_test_actual` as (SELECT company_id, STRUCT(
+    ARRAY_AGG(STRUCT(closing_date, financials.revenue AS amount)) AS revenue,
+    ARRAY_AGG(STRUCT(closing_date, financials.debt AS amount)) AS debt
+    ) AS financial_history
+    FROM `dbt-test-env_adapters_bigquery_unit_test_stg_struct_unit_test`
+    GROUP BY company_id)
+    SELECT * FROM (
+    (SELECT company_id, financial_history, 'actual' AS actual_or_expected FROM `dbt-test-env_adapters_bigquery_unit_test_struct_unit_test_actual`)
+    UNION ALL
+    (SELECT company_id, financial_history, 'expected' AS actual_or_expected FROM `dbt-test-env_adapters_bigquery_unit_test_struct_unit_test_expect`)
+    ) unit_test_diff
+    ORDER BY company_id
+unit_test.test.struct_unit_test.test_financials_aggregation.get_table_schema.c1515533:
+- sequence: 0
+  type: get_table_schema
+  table_name: c1515533

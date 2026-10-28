@@ -177,7 +177,7 @@ async fn resolve_phase(
 
     // Call the actual resolver
     let (mut resolved_state, jinja_env) = resolve(
-        &resolve_args,
+        resolve_args,
         invocation_args,
         dbt_state.clone(),
         macros,
@@ -896,7 +896,7 @@ impl DbtLoadedProject {
             DEFAULT_RESOLVED_QUOTING,
             None,
             token,
-            None, // cloud_config — debug only runs `select 1`, no cloud connection needed
+            self.dbt_cloud_config(),
             None, // threads
         )
     }

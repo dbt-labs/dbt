@@ -827,6 +827,119 @@ mod databricks_strategies {
             }
         }
     }
+
+    const MERGE_ACTIONS_EXPLICIT_WARNING: &str =
+        "merge_actions_explicit is set; ignoring conflicting merge action config(s): ";
+
+    /// Renders `get_merge_sql` with `config.get` returning `none` for unset or null keys, as the
+    /// run-phase config does, and returns the normalized SQL plus every warning.
+    fn render_merge_sql(config_values: &[(&'static str, Value)]) -> (String, Vec<String>) {
+        let (harness, exceptions) = build_harness(false);
+        harness.mock().on("get_columns_in_relation", |_| {
+            Ok(Value::from(Vec::<Value>::new()))
+        });
+
+        let config_values: BTreeMap<&str, Value> = config_values.iter().cloned().collect();
+        let config = default_mock_config();
+        config.on("get", move |args| {
+            let key = args.first().and_then(Value::as_str).unwrap_or_default();
+            let default = args.get(1).cloned().unwrap_or_else(|| Value::from(()));
+            Ok(config_values
+                .get(key)
+                .filter(|value| !value.is_none())
+                .cloned()
+                .unwrap_or(default))
+        });
+
+        let ctx = BTreeMap::from([
+            ("config", Value::from_dyn_object(config)),
+            ("target", relation_value(&harness, "target_table")),
+            ("source", relation_value(&harness, "source_table")),
+        ]);
+        let sql = harness
+            .render("{{ get_merge_sql(target, source, 'id', [], none) }}", ctx)
+            .expect("merge SQL should render");
+        let warnings = exceptions
+            .observed_calls()
+            .to("warn")
+            .filter_map(|call| call.args.first().and_then(Value::as_str).map(str::to_owned))
+            .collect();
+        (normalize_sql(&sql), warnings)
+    }
+
+    #[test]
+    fn merge_actions_explicit_replaces_generated_clauses_unless_blank() {
+        let (sql, _) = render_merge_sql(&[(
+            "merge_actions_explicit",
+            Value::from("\n  when matched then delete\n  when not matched by source then delete\n"),
+        )]);
+        assert!(
+            sql.ends_with(
+                "on dbt_internal_source.`id` <=> dbt_internal_dest.`id` when matched then delete when not matched by source then delete"
+            ),
+            "expected the explicit block to replace every generated clause, got: {sql}",
+        );
+
+        for blank in [Value::from(()), Value::from(""), Value::from(" \n\t ")] {
+            let (sql, _) = render_merge_sql(&[("merge_actions_explicit", blank.clone())]);
+            assert!(
+                sql.ends_with("when matched then update set * when not matched then insert *"),
+                "expected generated clauses for {blank:?}, got: {sql}",
+            );
+        }
+    }
+
+    #[test]
+    fn merge_actions_explicit_warns_once_listing_conflicting_configs_in_order() {
+        let explicit = (
+            "merge_actions_explicit",
+            Value::from("when matched then delete"),
+        );
+        let with_all_conflicts = vec![
+            explicit.clone(),
+            ("skip_matched_step", Value::from(true)),
+            ("skip_not_matched_step", Value::from(true)),
+            ("matched_condition", Value::from("1 = 1")),
+            ("not_matched_condition", Value::from("1 = 1")),
+            ("not_matched_by_source_action", Value::from("delete")),
+            ("not_matched_by_source_condition", Value::from("1 = 1")),
+        ];
+
+        for (config_values, expected) in [
+            (vec![explicit.clone()], vec![]),
+            (
+                vec![explicit.clone(), ("skip_matched_step", Value::from(false))],
+                vec![],
+            ),
+            (
+                vec![
+                    explicit.clone(),
+                    ("not_matched_condition", Value::from("1 = 1")),
+                ],
+                vec![format!(
+                    "{MERGE_ACTIONS_EXPLICIT_WARNING}not_matched_condition"
+                )],
+            ),
+            (
+                with_all_conflicts,
+                vec![format!(
+                    "{MERGE_ACTIONS_EXPLICIT_WARNING}skip_matched_step, skip_not_matched_step, \
+                     matched_condition, not_matched_condition, not_matched_by_source_action, \
+                     not_matched_by_source_condition"
+                )],
+            ),
+            (
+                vec![
+                    ("merge_actions_explicit", Value::from(" \n\t ")),
+                    ("matched_condition", Value::from("1 = 1")),
+                ],
+                vec![],
+            ),
+        ] {
+            let (_, warnings) = render_merge_sql(&config_values);
+            assert_eq!(warnings, expected, "for config {config_values:?}");
+        }
+    }
 }
 
 mod spark {

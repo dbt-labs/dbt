@@ -1092,7 +1092,7 @@ mod tests {
         let original = crate::column::Column::new_bigquery(
             "events".to_string(),
             "ARRAY<STRUCT<`inner` INT64>>".to_string(),
-            vec![inner],
+            vec![Arc::new(inner)],
             BigqueryColumnMode::Repeated,
         );
 
@@ -1127,7 +1127,7 @@ mod tests {
         let original = crate::column::Column::new_bigquery(
             "payload".to_string(),
             "STRUCT<`a` INT64, `b` STRING>".to_string(),
-            vec![a, b],
+            vec![Arc::new(a), Arc::new(b)],
             BigqueryColumnMode::Nullable,
         );
 

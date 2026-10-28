@@ -2353,6 +2353,7 @@ mod tests {
             __test_attr__: DbtTestAttr {
                 column_name: None,
                 attached_node: None,
+                test_subject_unique_id: None,
                 test_metadata: None,
                 file_key_name: None,
                 introspection: IntrospectionKind::None,
@@ -2387,6 +2388,7 @@ mod tests {
             __test_attr__: DbtTestAttr {
                 column_name: None,
                 attached_node: None,
+                test_subject_unique_id: None,
                 test_metadata: None,
                 file_key_name: None,
                 introspection: IntrospectionKind::None,
@@ -2666,6 +2668,7 @@ mod tests {
             __test_attr__: DbtTestAttr {
                 column_name: Some("column".to_string()),
                 attached_node: Some("model.my_project.my_model".to_string()),
+                test_subject_unique_id: Some("model.my_project.my_model".to_string()),
                 test_metadata: Some(TestMetadata {
                     name: "not_null".to_string(), // Base test name
                     kwargs: BTreeMap::new(),
@@ -2724,6 +2727,7 @@ mod tests {
             __test_attr__: DbtTestAttr {
                 column_name: None,
                 attached_node: None,
+                test_subject_unique_id: None,
                 test_metadata: None, // No test_metadata for singular tests
                 file_key_name: None,
                 introspection: IntrospectionKind::None,

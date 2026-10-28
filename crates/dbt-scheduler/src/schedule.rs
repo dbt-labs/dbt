@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use dbt_adapter::AdapterType;
 
-use dbt_common::collections::DashMap;
+use dbt_common::collections::SccHashMap;
 use dbt_common::io_args::FsCommand;
 use dbt_common::stats::Stat;
 use dbt_common::tracing::dbt_emit::{
@@ -1434,12 +1434,11 @@ fn multi_source_bfs(
 ///
 /// # Returns
 /// * `Vec<Stat>` - Statistics for scheduled nodes in execution order
-pub fn summarize_stats(schedule: &Schedule<String>, stats: &DashMap<String, Stat>) -> Vec<Stat> {
+pub fn summarize_stats(schedule: &Schedule<String>, stats: &SccHashMap<String, Stat>) -> Vec<Stat> {
     schedule
         .sorted_nodes
         .iter()
-        .filter_map(|node| stats.get(node))
-        .map(|stat| stat.clone())
+        .filter_map(|node| stats.read_sync(node, |_, stat| stat.clone()))
         .collect()
 }
 
@@ -1632,6 +1631,7 @@ mod tests {
                         __test_attr__: DbtTestAttr {
                             column_name: None,
                             attached_node: None,
+                            test_subject_unique_id: None,
                             test_metadata: None,
                             file_key_name: None,
                             introspection: IntrospectionKind::None,

@@ -1,0 +1,28 @@
+aa5c239d:
+- sequence: 0
+  type: execute
+  sql: create schema if not exists development.snowflake_binary_16_seed
+dbbbff64:
+- sequence: 0
+  type: execute
+  sql: |-
+    show terse schemas in database development
+    limit 10000
+seed.hello_world.binseed:
+- sequence: 0
+  type: execute
+  sql: SHOW OBJECTS IN SCHEMA "DEVELOPMENT"."SNOWFLAKE_BINARY_16_SEED" LIMIT 10000
+- sequence: 1
+  type: execute
+  sql: create transient table development.snowflake_binary_16_seed.binseed (CUSTOMER_PK BINARY(16),CUSTOMER_ID varchar)
+- sequence: 2
+  type: execute
+  sql: BEGIN
+- sequence: 3
+  type: execute
+  sql: |-
+    insert overwrite into development.snowflake_binary_16_seed.binseed (CUSTOMER_PK, CUSTOMER_ID) values
+    ('B8C37E33DEFDE51CF91E1E03E51657DA','1001'),('FBA9D88164F3E2D9109EE770223212A0','1002'),('AA68C75C4A77C87F97FB686B2F068676','1003'),('FED33392D3A48AA149A87A38B875BA4A','1004')
+- sequence: 4
+  type: execute
+  sql: COMMIT

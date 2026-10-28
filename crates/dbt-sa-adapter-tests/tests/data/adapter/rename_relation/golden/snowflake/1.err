@@ -1,0 +1,2 @@
+Internal: Internal: 002003 (02000): SQL compilation error:
+Schema 'DEVELOPMENT.ADAPTERS_SNOWFLAKE_RENAME_RELATION' does not exist or not authorized. (sqlstate: 00000, vendor_code: -2147483648)

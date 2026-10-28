@@ -165,8 +165,8 @@ impl NodeResolver {
         for (_, node) in nodes.iter() {
             // A node's relation is rendered with *its own* adapter, not the
             // target's default. `ref('x')` returns x's relation, and x lives in
-            // x's adapter's warehouse, so it must render with x's rules however it
-            // is referenced. Both inputs are per-node: the node carries its own
+            // x's adapter's warehouse; `RefFunction` respells it for a caller on
+            // another adapter. Both inputs are per-node: the node carries its own
             // quoting (resolved against its `+adapter` during resolve) and the
             // adapter type decides `include_policy` -- DuckDB suppresses the
             // database component for `main`/`memory` while others do not.
@@ -1154,6 +1154,12 @@ pub fn resolve_dependencies(
                 }
             };
         }
+
+        // These vectors live as long as the node. Drop the spare capacity left by
+        // growing them one element at a time.
+        node_base.refs.shrink_to_fit();
+        node_base.depends_on.nodes.shrink_to_fit();
+        node_base.depends_on.nodes_with_ref_location.shrink_to_fit();
 
         if is_test && has_disabled_or_missing_dependency {
             tests_to_disable.push(node_unique_id.clone());

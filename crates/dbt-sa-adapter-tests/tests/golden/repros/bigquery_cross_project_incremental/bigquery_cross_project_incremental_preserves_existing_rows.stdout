@@ -1,0 +1,13 @@
+   dbt-oss 
+   Loading profiles.yml
+   Parsing models/incremental_model.sql
+   Parsing tests/assert_incremental_preserves_existing_rows.sql
+   Started downloading referenced relations (1 items)
+  Finished [duration] downloading referenced relations (1 items)
+ Rendering models/incremental_model.sql
+   Running models/incremental_model.sql
+ Succeeded model bigquery_cross_project_incremental_preserves_existing_rows.incremental_model (incremental) [1 of 1 in duration]
+==================== Execution Summary =====================
+Finished 'run' successfully for target 'bigquery' [duration]
+Processed: 1 model
+Summary: 1 total | 1 success

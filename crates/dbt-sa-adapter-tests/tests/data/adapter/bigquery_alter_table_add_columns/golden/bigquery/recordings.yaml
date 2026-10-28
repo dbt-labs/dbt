@@ -1,0 +1,35 @@
+model.test.a:
+- sequence: 0
+  type: execute
+  sql: CREATE SCHEMA IF NOT EXISTS adapters_bigquery_alter_table_add_columns
+- sequence: 1
+  type: execute
+  sql: CREATE OR REPLACE TABLE adapters_bigquery_alter_table_add_columns.b (one int, two int)
+- sequence: 2
+  type: execute
+  sql: CREATE OR REPLACE TABLE adapters_bigquery_alter_table_add_columns.c (one int, two int, three int64, four string, five bool, six timestamp, seven struct<a string, b int64>, eight array<struct<a string, b int64>>, nine array<int64>)
+- sequence: 3
+  type: execute
+  sql: |-
+    ALTER TABLE `dbt-test-env`.`adapters_bigquery_alter_table_add_columns`.`b`
+    ADD COLUMN eight ARRAY<STRUCT<`a` STRING, `b` INT64>>
+    ,ADD COLUMN five BOOLEAN
+    ,ADD COLUMN four STRING
+    ,ADD COLUMN nine ARRAY<INT64>
+    ,ADD COLUMN seven STRUCT<`a` STRING, `b` INT64>
+    ,ADD COLUMN six TIMESTAMP
+    ,ADD COLUMN three INT64
+model.test.a.get_table_schema.5022a54b:
+- sequence: 0
+  type: get_table_schema
+  table_name: 5022a54b
+- sequence: 1
+  type: get_table_schema
+  table_name: 5022a54b
+- sequence: 2
+  type: get_table_schema
+  table_name: 5022a54b
+model.test.a.get_table_schema.677623cf:
+- sequence: 0
+  type: get_table_schema
+  table_name: 677623cf

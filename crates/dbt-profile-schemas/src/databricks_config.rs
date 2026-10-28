@@ -125,6 +125,7 @@ pub(crate) fn setup_databricks_profile(
         session_properties: None,
         connection_parameters: None,
         auth_type: None,
+        oidc_token_filepath: None,
         compute: None,
         connect_retries: None,
         connect_timeout: None,

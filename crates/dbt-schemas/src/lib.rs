@@ -229,7 +229,6 @@ pub mod schemas {
         mod function_properties;
         pub mod metrics_properties;
         pub mod model_properties;
-        mod plugin_node_properties;
         #[allow(clippy::module_inception)]
         mod properties;
         mod saved_queries_properties;
@@ -254,7 +253,6 @@ pub mod schemas {
         pub use model_properties::ModelProperties;
         pub use model_properties::ModelState;
         pub use model_properties::StatePreClone;
-        pub use plugin_node_properties::PluginNodeProperties;
         pub use properties::GroupConfig;
         pub use properties::GroupProperties;
         pub use properties::MacrosProperties;

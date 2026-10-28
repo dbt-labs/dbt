@@ -133,7 +133,10 @@ pub async fn debug(
     emit_info_progress_message(create_progress_msg(ACTION_DEBUGGING, &profile_display));
 
     // dbt version
-    let dbt_version_display = format!("dbt version: {}", env!("CARGO_PKG_VERSION"));
+    let dbt_version_display = format!(
+        "dbt version: {}",
+        option_env!("DBT_VERSION").unwrap_or(env!("CARGO_PKG_VERSION"))
+    );
     emit_info_progress_message(create_progress_msg(ACTION_DEBUGGING, &dbt_version_display));
 
     // platform info

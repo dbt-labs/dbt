@@ -1,0 +1,12 @@
+   dbt-oss 
+   Loading profiles.yml
+   Parsing models/a.sql
+   Parsing models/revoke_special_char.sql
+redshift
+ Rendering models/revoke_special_char.sql
+redshift
+ Rendering models/a.sql
+==================== Execution Summary =====================
+Finished 'compile' successfully for target 'redshift' [duration]
+Processed: 2 models
+Summary: 2 total | 2 success

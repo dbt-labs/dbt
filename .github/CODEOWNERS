@@ -10,9 +10,21 @@
 # https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners#example-of-a-codeowners-file
 
 # As a default for areas with no assignment,
-# the core team as a whole will be assigned
-*       @dbt-labs/core-team
+# the dbt v2 engine team will be assigned
+*       @dbt-labs/dbt-v2-engine
 
-### ARTIFACTS
+### ADAPTERS
 
-/schemas/dbt                    @dbt-labs/cloud-artifacts
+/crates/dbt-adapter/                    @dbt-labs/dbt-v2-adapters
+/crates/dbt-adapter-core/               @dbt-labs/dbt-v2-adapters
+/crates/dbt-adapter-engine/             @dbt-labs/dbt-v2-adapters
+/crates/dbt-adapter-sql/                @dbt-labs/dbt-v2-adapters
+/crates/dbt-auth/                       @dbt-labs/dbt-v2-adapters
+/crates/dbt-sql-keywords/               @dbt-labs/dbt-v2-adapters
+/crates/dbt-adbc/                       @dbt-labs/dbt-v2-adapters
+/crates/dbt-agate/                      @dbt-labs/dbt-v2-adapters
+/crates/dbt-runtime/                    @dbt-labs/dbt-v2-adapters
+/crates/dbt-runtime-macros/             @dbt-labs/dbt-v2-adapters
+/crates/adbc-record-replay/             @dbt-labs/dbt-v2-adapters
+/crates/dbt-sa-adapter-tests/           @dbt-labs/dbt-v2-adapters
+/crates/dbt-loader/src/dbt_macro_assets/ @dbt-labs/dbt-v2-adapters

@@ -1,0 +1,6 @@
+# This is not a valid profiles.yml but a segment that provides overrides to the universal one
+fusion_tests:
+  outputs:
+    bigquery:
+      type: bigquery # This is required
+      execution_project: 'foo'

@@ -20,7 +20,6 @@ dbt-runtime = { workspace = true }
 
 futures = { workspace = true }
 tokio = { workspace = true }
-tracing = { workspace = true }
 tracy-client = { workspace = true }
 
 [dev-dependencies]

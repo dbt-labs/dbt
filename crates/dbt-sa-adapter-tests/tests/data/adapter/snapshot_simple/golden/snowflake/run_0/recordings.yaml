@@ -1,0 +1,126 @@
+8ad8bad4:
+- sequence: 0
+  type: execute
+  sql: create schema if not exists development.adapters_snowflake_debug_snapshot_simple
+dbbbff64:
+- sequence: 0
+  type: execute
+  sql: |-
+    show terse schemas in database development
+    limit 10000
+model.my_project.base:
+- sequence: 0
+  type: execute
+  sql: SHOW OBJECTS IN SCHEMA "DEVELOPMENT"."ADAPTERS_SNOWFLAKE_DEBUG_SNAPSHOT_SIMPLE" LIMIT 10000
+- sequence: 1
+  type: execute
+  sql: |-
+    create or replace   view development.adapters_snowflake_debug_snapshot_simple.base
+    
+    
+    
+    
+    as (
+    select 1 as id
+    )
+model.my_project.snapshot_columns:
+- sequence: 0
+  type: execute
+  sql: describe table development.adapters_snowflake_debug_snapshot_simple.base_snapshot
+- sequence: 1
+  type: execute
+  sql: |-
+    create or replace   view development.adapters_snowflake_debug_snapshot_simple.snapshot_columns
+    
+    
+    
+    
+    as (
+    
+    
+    select
+    
+    'ID' as column_ID,
+    'NUMBER(1,0)' as column_type_ID,
+    
+    'DBT_SCD_ID' as column_DBT_SCD_ID,
+    'character varying(32)' as column_type_DBT_SCD_ID,
+    
+    'DBT_UPDATED_AT' as column_DBT_UPDATED_AT,
+    'TIMESTAMP_NTZ' as column_type_DBT_UPDATED_AT,
+    
+    'DBT_VALID_FROM' as column_DBT_VALID_FROM,
+    'TIMESTAMP_NTZ' as column_type_DBT_VALID_FROM,
+    
+    'DBT_VALID_TO' as column_DBT_VALID_TO,
+    'TIMESTAMP_NTZ' as column_type_DBT_VALID_TO,
+    
+    'DBT_IS_DELETED' as column_DBT_IS_DELETED,
+    'character varying(5)' as column_type_DBT_IS_DELETED,
+    
+    )
+snapshot.my_project.base_snapshot:
+- sequence: 0
+  type: execute
+  sql: |-
+    select * from (
+    
+    
+    
+    select *,
+    md5(coalesce(cast(id as varchar ), '')
+    || '|' || coalesce(cast(to_timestamp_ntz(convert_timezone('UTC', current_timestamp())) as varchar ), '')
+    ) as dbt_scd_id,
+    to_timestamp_ntz(convert_timezone('UTC', current_timestamp())) as dbt_updated_at,
+    to_timestamp_ntz(convert_timezone('UTC', current_timestamp())) as dbt_valid_from,
+    
+    
+    coalesce(nullif(to_timestamp_ntz(convert_timezone('UTC', current_timestamp())), to_timestamp_ntz(convert_timezone('UTC', current_timestamp()))), null)
+    as dbt_valid_to
+    , 'False' as dbt_is_deleted
+    from (
+    select * from development.adapters_snowflake_debug_snapshot_simple.base
+    ) sbq
+    
+    
+    
+    ) as __dbt_sbq
+    where false
+    limit 0
+- sequence: 1
+  type: execute
+  sql: |-
+    select * from (
+    select to_timestamp_ntz(convert_timezone('UTC', current_timestamp())) as dbt_snapshot_time
+    ) as __dbt_sbq
+    where false
+    limit 0
+- sequence: 2
+  type: execute
+  sql: |-
+    create or replace transient  table development.adapters_snowflake_debug_snapshot_simple.base_snapshot
+    
+    
+    
+    
+    as (
+    
+    
+    select *,
+    md5(coalesce(cast(id as varchar ), '')
+    || '|' || coalesce(cast(to_timestamp_ntz(convert_timezone('UTC', current_timestamp())) as varchar ), '')
+    ) as dbt_scd_id,
+    to_timestamp_ntz(convert_timezone('UTC', current_timestamp())) as dbt_updated_at,
+    to_timestamp_ntz(convert_timezone('UTC', current_timestamp())) as dbt_valid_from,
+    
+    
+    coalesce(nullif(to_timestamp_ntz(convert_timezone('UTC', current_timestamp())), to_timestamp_ntz(convert_timezone('UTC', current_timestamp()))), null)
+    as dbt_valid_to
+    , 'False' as dbt_is_deleted
+    from (
+    select * from development.adapters_snowflake_debug_snapshot_simple.base
+    ) sbq
+    
+    
+    
+    )

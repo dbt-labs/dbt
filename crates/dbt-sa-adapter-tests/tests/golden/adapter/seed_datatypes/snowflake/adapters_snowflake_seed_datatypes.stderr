@@ -1,0 +1,1 @@
+[warning] [SeedColumnTypeMismatch (dbt1081)]: Columns specified in column_types were not found in seed CSV header: ["TIMESTAMP_TEXT"]

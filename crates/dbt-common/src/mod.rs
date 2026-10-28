@@ -32,6 +32,7 @@ pub mod infer_schema_registry;
 pub mod io_args;
 pub mod lease;
 pub mod once_cell_vars;
+pub mod panic;
 pub mod path;
 pub mod row_limit;
 pub mod serde_utils;
@@ -50,23 +51,6 @@ pub use tracing::{
 mod discrete_event_emitter;
 pub use discrete_event_emitter::DiscreteEventEmitter;
 
-pub mod dashmap {
-    /// A DashMap variant that uses a stable hasher in debug builds and a
-    /// DoS-resistant hasher in release builds.
-    #[allow(clippy::disallowed_types)]
-    pub type DashMap<K, V> = dashmap::DashMap<K, V, dbt_base::MaybeStableHasherBuilder>;
-
-    /// Creates a new DashMap with the stable/DoS-resistant hasher. Saves some
-    /// typing compared with `DashMap::with_hasher(...)`.
-    #[inline]
-    pub fn new<K, V>() -> DashMap<K, V>
-    where
-        K: std::hash::Hash + Eq,
-    {
-        DashMap::with_hasher(dbt_base::MaybeStableHasherBuilder::default())
-    }
-}
-
 pub mod sccmap {
     /// A scc::HashMap variant that uses a stable hasher in debug builds and a
     /// DoS-resistant hasher in release builds.
@@ -82,6 +66,33 @@ pub mod sccmap {
     {
         HashMap::with_hasher(dbt_base::MaybeStableHasherBuilder::default())
     }
+
+    /// Clones every entry out of `map`. Stands in for the `iter()` /
+    /// `IntoIterator` that `scc::HashMap` lacks.
+    ///
+    /// Buckets are visited one at a time, so under concurrent writes this is
+    /// not a point-in-time snapshot.
+    #[allow(clippy::disallowed_types)] // generic over the hasher
+    pub fn to_vec_cloned<K, V, H>(map: &scc::HashMap<K, V, H>) -> Vec<(K, V)>
+    where
+        K: Clone + Eq + std::hash::Hash,
+        V: Clone,
+        H: std::hash::BuildHasher,
+    {
+        let mut entries = Vec::new();
+        map.iter_sync(|key, value| {
+            entries.push((key.clone(), value.clone()));
+            true
+        });
+        entries
+    }
+}
+
+pub mod sccset {
+    /// A scc::HashSet variant that uses a stable hasher in debug builds and a
+    /// DoS-resistant hasher in release builds.
+    #[allow(clippy::disallowed_types)]
+    pub type HashSet<K> = scc::HashSet<K, dbt_base::MaybeStableHasherBuilder>;
 }
 
 /// A module for re-exporting commonly used collection types in a centralized
@@ -94,7 +105,7 @@ pub mod collections {
     pub use dbt_base::HashSet;
 
     #[doc(inline)]
-    pub use crate::dashmap::DashMap;
-    #[doc(inline)]
     pub use crate::sccmap::HashMap as SccHashMap;
+    #[doc(inline)]
+    pub use crate::sccset::HashSet as SccHashSet;
 }

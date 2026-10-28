@@ -97,6 +97,9 @@ enum RedshiftAuthIR<'a> {
         idp_listen_port: String,
         idc_client_display_name: &'a str,
         idp_response_timeout: String,
+        // If this is not provided in YML, the driver will look first in the environment
+        // variables AWS_REGION and AWS_DEFAULT_REGION, then in ~/.aws/config.
+        region: &'a str,
         host: &'a str,
         port: String,
         database: &'a str,
@@ -180,6 +183,7 @@ impl<'a> RedshiftAuthIR<'a> {
                 idp_listen_port,
                 idc_client_display_name,
                 idp_response_timeout,
+                region,
                 host,
                 port,
                 database,
@@ -190,6 +194,8 @@ impl<'a> RedshiftAuthIR<'a> {
                 builder.with_named_option(AUTH_IDP_LISTEN_PORT, idp_listen_port)?;
                 builder.with_named_option(AUTH_IDC_CLIENT_DISPLAY_NAME, idc_client_display_name)?;
                 builder.with_named_option(AUTH_IDP_RESPONSE_TIMEOUT, idp_response_timeout)?;
+
+                builder.with_named_option(AWS_REGION, region)?;
 
                 let connection_str = build_connection_uri(host, &port, database, None);
                 builder.with_parse_uri(connection_str)?;
@@ -326,6 +332,7 @@ fn parse_auth<'a>(
         }
         "browser_identity_center" => {
             let idc_region = config.require_str("idc_region")?;
+            let region = config.require_str("region")?;
             let issuer_url = config.require_str("issuer_url")?;
             let idp_listen_port = config
                 .get_string("idp_listen_port")
@@ -345,6 +352,7 @@ fn parse_auth<'a>(
                 idp_listen_port,
                 idc_client_display_name,
                 idp_response_timeout,
+                region,
                 host,
                 port,
                 database,
@@ -777,6 +785,7 @@ password: secretpass
             ("port".into(), "5439".into()),
             ("database".into(), "dev".into()),
             ("idc_region".into(), "us-east-1".into()),
+            ("region".into(), "us-west-2".into()),
             ("issuer_url".into(), "https://issuer.example.com".into()),
         ]);
 
@@ -806,6 +815,7 @@ password: secretpass
             other_option_value(&builder, AUTH_IDP_RESPONSE_TIMEOUT),
             Some("60")
         );
+        assert_eq!(other_option_value(&builder, AWS_REGION), Some("us-west-2"));
         let uri = uri_value(&builder);
         assert!(
             uri.starts_with("postgresql://redshift-cluster.aws.com:5439/dev"),
@@ -822,6 +832,7 @@ host: redshift-cluster.aws.com
 port: 5439
 database: dev
 idc_region: us-east-1
+region: us-west-2
 issuer_url: https://issuer.example.com
 idp_listen_port: 8080
 idp_response_timeout: 90
@@ -839,6 +850,11 @@ idp_response_timeout: 90
             other_option_value(&builder, AUTH_IDP_RESPONSE_TIMEOUT),
             Some("90")
         );
+        assert_eq!(
+            other_option_value(&builder, AUTH_IDC_REGION),
+            Some("us-east-1")
+        );
+        assert_eq!(other_option_value(&builder, AWS_REGION), Some("us-west-2"));
     }
 
     #[test]

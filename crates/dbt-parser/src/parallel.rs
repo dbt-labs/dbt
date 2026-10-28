@@ -12,7 +12,7 @@ pub fn effective_parallelism(no_parallel: bool) -> usize {
     if no_parallel {
         1
     } else {
-        std::cmp::max(1, num_cpus::get())
+        std::thread::available_parallelism().map_or(1, |n| n.get())
     }
 }
 

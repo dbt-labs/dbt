@@ -1,0 +1,12 @@
+1c881365:
+- sequence: 0
+  type: execute
+  sql: create or replace table adapters_snowflake_metadata_source_freshness.a (val int)
+408dcda2:
+- sequence: 0
+  type: execute
+  sql: create table adapters_snowflake_metadata_source_freshness.source (id VARCHAR(255), name VARCHAR(255), amount NUMERIC(10,2))
+be15ae80:
+- sequence: 0
+  type: execute
+  sql: create schema if not exists development.adapters_snowflake_metadata_source_freshness

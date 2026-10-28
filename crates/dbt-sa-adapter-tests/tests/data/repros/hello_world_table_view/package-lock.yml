@@ -1,0 +1,4 @@
+packages:
+- local: packages/simple
+  name: simple
+sha1_hash: 811284f44159727c46af73f4346e1cd15b701d50

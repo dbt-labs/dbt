@@ -1,0 +1,11 @@
+version: 2
+
+models:
+  - name: custom_wh
+    description: Model that uses a custom warehouse
+    columns:
+      - name: a
+        data_tests:
+          - not_null:
+              config:
+                snowflake_warehouse: DBT_TESTING_ALT

@@ -1,0 +1,66 @@
+snapshot.bigquery_snapshot_new_record.snapshot_of_source:
+- sequence: 0
+  type: execute
+  sql: |-
+    select * from (
+    
+    
+    
+    select *,
+    to_hex(md5(concat(coalesce(cast(id as string), ''), '|',coalesce(cast(updated_at as string), '')))) as dbt_scd_id,
+    updated_at as dbt_updated_at,
+    updated_at as dbt_valid_from,
+    
+    
+    coalesce(nullif(updated_at, updated_at), null)
+    as dbt_valid_to
+    , 'False' as dbt_is_deleted
+    from (
+    select * from `dbt-test-env`.`adapters_bigquery_snapshot_new_record`.`source_data`
+    ) sbq
+    
+    
+    
+    ) as __dbt_sbq
+    where false and current_timestamp() = current_timestamp()
+    limit 0
+- sequence: 1
+  type: execute
+  sql: |-
+    select * from (
+    select 
+    current_timestamp()
+    as dbt_snapshot_time
+    ) as __dbt_sbq
+    where false and current_timestamp() = current_timestamp()
+    limit 0
+- sequence: 2
+  type: execute
+  sql: |-
+    create table `dbt-test-env`.`adapters_bigquery_snapshot_new_record`.`snapshot_of_source`
+    
+    
+    
+    
+    
+    OPTIONS()
+    as (
+    
+    
+    
+    select *,
+    to_hex(md5(concat(coalesce(cast(id as string), ''), '|',coalesce(cast(updated_at as string), '')))) as dbt_scd_id,
+    updated_at as dbt_updated_at,
+    updated_at as dbt_valid_from,
+    
+    
+    coalesce(nullif(updated_at, updated_at), null)
+    as dbt_valid_to
+    , 'False' as dbt_is_deleted
+    from (
+    select * from `dbt-test-env`.`adapters_bigquery_snapshot_new_record`.`source_data`
+    ) sbq
+    
+    
+    
+    );
