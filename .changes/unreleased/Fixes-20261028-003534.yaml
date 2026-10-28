@@ -3,5 +3,5 @@ body: Skip fallback constraint metadata queries for Databricks incremental model
 time: 2026-10-28T00:35:34.899106+05:30
 custom:
     author: sd-db
-    issue: ""
+    issue: "16930"
     project: dbt-core
