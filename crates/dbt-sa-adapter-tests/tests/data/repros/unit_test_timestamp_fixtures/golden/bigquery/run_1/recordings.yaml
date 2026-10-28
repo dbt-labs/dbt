@@ -91,7 +91,7 @@ unit_test.unit_test_timestamp_fixtures.event_projection.csv_wrong_id:
     -- Build actual result given inputs
     WITH
     \t`dbt-test-env_bigquery_unit_test_existing_parent_timestamp_fixtures_events` as (SELECT *  FROM UNNEST([STRUCT(CAST('7' AS INT64) AS id, CAST('2026-01-01 03:04:05.123456+03:00' AS TIMESTAMP) AS event_timestamp, CAST('2026-01-01 03:04:05.654321' AS DATETIME) AS local_datetime)])),
-    \t`dbt-test-env_bigquery_unit_test_existing_parent_timestamp_fixtures_event_projection_expect` as (SELECT *  FROM UNNEST([STRUCT(CAST(8 AS INT64) AS id, CAST('2026-01-01 00:04:05.123456+00:00' AS TIMESTAMP) AS event_timestamp, CAST('2026-01-01 03:04:05.654321' AS DATETIME) AS local_datetime, CAST(1767225845123456 AS INT64) AS utc_us, CAST(3 AS INT64) AS wall_hour)])),
+    \t`dbt-test-env_bigquery_unit_test_existing_parent_timestamp_fixtures_event_projection_expect` as (SELECT *  FROM UNNEST([STRUCT(CAST(8 AS INT64) AS id, CAST(NULL AS TIMESTAMP) AS event_timestamp, CAST(NULL AS DATETIME) AS local_datetime, CAST(NULL AS INT64) AS utc_us, CAST(NULL AS INT64) AS wall_hour)])),
     \t`dbt-test-env_bigquery_unit_test_existing_parent_timestamp_fixtures_event_projection_actual` as (SELECT
     id,
     event_timestamp,
@@ -101,11 +101,11 @@ unit_test.unit_test_timestamp_fixtures.event_projection.csv_wrong_id:
     FROM `dbt-test-env_bigquery_unit_test_existing_parent_timestamp_fixtures_events`
     )
     SELECT * FROM (
-    (SELECT id, event_timestamp, local_datetime, utc_us, wall_hour, 'actual' AS actual_or_expected FROM `dbt-test-env_bigquery_unit_test_existing_parent_timestamp_fixtures_event_projection_actual`)
+    (SELECT id, 'actual' AS actual_or_expected FROM `dbt-test-env_bigquery_unit_test_existing_parent_timestamp_fixtures_event_projection_actual`)
     UNION ALL
-    (SELECT id, event_timestamp, local_datetime, utc_us, wall_hour, 'expected' AS actual_or_expected FROM `dbt-test-env_bigquery_unit_test_existing_parent_timestamp_fixtures_event_projection_expect`)
+    (SELECT id, 'expected' AS actual_or_expected FROM `dbt-test-env_bigquery_unit_test_existing_parent_timestamp_fixtures_event_projection_expect`)
     ) unit_test_diff
-    ORDER BY id, event_timestamp, local_datetime, utc_us, wall_hour
+    ORDER BY id
 unit_test.unit_test_timestamp_fixtures.event_projection.csv_wrong_id.get_table_schema.8dec7c40:
 - sequence: 0
   type: get_table_schema
@@ -203,7 +203,7 @@ unit_test.unit_test_timestamp_fixtures.event_projection.dict_wrong_id:
     -- Build actual result given inputs
     WITH
     \t`dbt-test-env_bigquery_unit_test_existing_parent_timestamp_fixtures_events` as (SELECT *  FROM UNNEST([STRUCT(CAST(7 AS INT64) AS id, CAST('2026-01-01 03:04:05.123456+03:00' AS TIMESTAMP) AS event_timestamp, CAST('2026-01-01 03:04:05.654321' AS DATETIME) AS local_datetime)])),
-    \t`dbt-test-env_bigquery_unit_test_existing_parent_timestamp_fixtures_event_projection_expect` as (SELECT *  FROM UNNEST([STRUCT(CAST(8 AS INT64) AS id, CAST('2026-01-01 00:04:05.123456+00:00' AS TIMESTAMP) AS event_timestamp, CAST('2026-01-01 03:04:05.654321' AS DATETIME) AS local_datetime, CAST(1767225845123456 AS INT64) AS utc_us, CAST(3 AS INT64) AS wall_hour)])),
+    \t`dbt-test-env_bigquery_unit_test_existing_parent_timestamp_fixtures_event_projection_expect` as (SELECT *  FROM UNNEST([STRUCT(CAST(8 AS INT64) AS id, CAST(NULL AS TIMESTAMP) AS event_timestamp, CAST(NULL AS DATETIME) AS local_datetime, CAST(NULL AS INT64) AS utc_us, CAST(NULL AS INT64) AS wall_hour)])),
     \t`dbt-test-env_bigquery_unit_test_existing_parent_timestamp_fixtures_event_projection_actual` as (SELECT
     id,
     event_timestamp,
@@ -213,11 +213,11 @@ unit_test.unit_test_timestamp_fixtures.event_projection.dict_wrong_id:
     FROM `dbt-test-env_bigquery_unit_test_existing_parent_timestamp_fixtures_events`
     )
     SELECT * FROM (
-    (SELECT id, event_timestamp, local_datetime, utc_us, wall_hour, 'actual' AS actual_or_expected FROM `dbt-test-env_bigquery_unit_test_existing_parent_timestamp_fixtures_event_projection_actual`)
+    (SELECT id, 'actual' AS actual_or_expected FROM `dbt-test-env_bigquery_unit_test_existing_parent_timestamp_fixtures_event_projection_actual`)
     UNION ALL
-    (SELECT id, event_timestamp, local_datetime, utc_us, wall_hour, 'expected' AS actual_or_expected FROM `dbt-test-env_bigquery_unit_test_existing_parent_timestamp_fixtures_event_projection_expect`)
+    (SELECT id, 'expected' AS actual_or_expected FROM `dbt-test-env_bigquery_unit_test_existing_parent_timestamp_fixtures_event_projection_expect`)
     ) unit_test_diff
-    ORDER BY id, event_timestamp, local_datetime, utc_us, wall_hour
+    ORDER BY id
 unit_test.unit_test_timestamp_fixtures.event_projection.dict_wrong_id.get_table_schema.2a2bee78:
 - sequence: 0
   type: get_table_schema

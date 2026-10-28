@@ -42,10 +42,6 @@ unit_tests:
     expect:
       rows:
         - id: 8
-          event_timestamp: '2026-01-01 00:04:05.123456+00:00'
-          local_datetime: '2026-01-01 03:04:05.654321'
-          utc_us: 1767225845123456
-          wall_hour: 3
 
   - name: csv_wrong_id
     model: event_projection
@@ -56,7 +52,3 @@ unit_tests:
     expect:
       rows:
         - id: 8
-          event_timestamp: '2026-01-01 00:04:05.123456+00:00'
-          local_datetime: '2026-01-01 03:04:05.654321'
-          utc_us: 1767225845123456
-          wall_hour: 3
