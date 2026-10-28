@@ -99,23 +99,31 @@ jobs:
           fi
 
       - name: "[DEBUG] Print Variables"
+        env:
+          TARGET_BRANCH: ${{ inputs.target_branch }}
+          VERSION_NUMBER: ${{ inputs.version_number }}
+          TEST_RUN: ${{ inputs.test_run }}
+          NIGHTLY_RELEASE: ${{ inputs.nightly_release }}
+          ONLY_DOCKER: ${{ inputs.only_docker }}
         run: |
           echo Inputs
-          echo The branch to release from:         ${{ inputs.target_branch }}
-          echo The release version number:         ${{ inputs.version_number }}
-          echo Test run:                           ${{ inputs.test_run }}
-          echo Nightly release:                    ${{ inputs.nightly_release }}
-          echo Only Docker:                        ${{ inputs.only_docker }}
+          echo "The branch to release from:         $TARGET_BRANCH"
+          echo "The release version number:         $VERSION_NUMBER"
+          echo "Test run:                           $TEST_RUN"
+          echo "Nightly release:                    $NIGHTLY_RELEASE"
+          echo "Only Docker:                        $ONLY_DOCKER"
 
       # In version env.HATCH_VERSION we started to use hatch for build tooling.  Before that we used setuptools.
       # This needs to check if we're using hatch or setuptools based on the version being released.  We should
       # check if the version is greater than or equal to env.HATCH_VERSION.  If it is, we use hatch, otherwise we use setuptools.
       - name: "Check if using hatch"
         id: use_hatch
+        env:
+          VERSION_NUMBER: ${{ inputs.version_number }}
         run: |
           # Extract major.minor from versions like 1.11.0a1 -> 1.11
-          INPUT_MAJ_MIN=$(echo "${{ inputs.version_number }}" | sed -E 's/^([0-9]+\.[0-9]+).*/\1/')
-          HATCH_MAJ_MIN=$(echo "${{ env.MIN_HATCH_VERSION }}" | sed -E 's/^([0-9]+\.[0-9]+).*/\1/')
+          INPUT_MAJ_MIN=$(echo "$VERSION_NUMBER" | sed -E 's/^([0-9]+\.[0-9]+).*/\1/')
+          HATCH_MAJ_MIN=$(echo "$MIN_HATCH_VERSION" | sed -E 's/^([0-9]+\.[0-9]+).*/\1/')
 
           if [ $(echo "$INPUT_MAJ_MIN >= $HATCH_MAJ_MIN" | bc) -eq 1 ]; then
             echo "use_hatch=true" >> $GITHUB_OUTPUT
