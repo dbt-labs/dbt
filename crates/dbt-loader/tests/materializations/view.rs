@@ -31,6 +31,7 @@ fn build_view_harness(adapter_type: AdapterType) -> MacroTestHarness {
         .load_all_macros()
         .with_stub_functions()
         .with_behavior_flag("use_materialization_v2", false)
+        .with_global("flags", flags_for("run"))
         .build()
         .expect("harness should build");
 
@@ -50,6 +51,10 @@ fn build_view_harness(adapter_type: AdapterType) -> MacroTestHarness {
     mock.on("has_dbr_capability", |_| Ok(Value::from(false)));
 
     harness
+}
+
+fn flags_for(command: &str) -> Value {
+    Value::from_serialize(BTreeMap::from([("WHICH", command)]))
 }
 
 fn render_view(
@@ -401,6 +406,259 @@ mod databricks {
             .observed_calls()
             .assert_not_called("get_config_from_model");
         assert_executed_contains(h.mock(), "create or replace view");
+    }
+
+    // -- ALTER path validation and column comments ---------------------------
+
+    fn update_via_alter_with_row_filter_config() -> Arc<MockJinjaObject> {
+        let mock = default_mock_config();
+        mock.on("get", |args| {
+            let key = args.first().and_then(|v| v.as_str());
+            let default = args.get(1).cloned().unwrap_or(Value::UNDEFINED);
+            match key {
+                Some("contract") => Ok(Value::from_serialize(BTreeMap::from([(
+                    "enforced".to_string(),
+                    Value::from(false),
+                )]))),
+                Some("view_update_via_alter") => Ok(Value::from(true)),
+                Some("row_filter") => Ok(Value::from_serialize(BTreeMap::from([
+                    ("function", Value::from("filter_id")),
+                    ("columns", Value::from_serialize(["id"])),
+                ]))),
+                _ => Ok(default),
+            }
+        });
+        mock
+    }
+
+    fn model_with_masked_column() -> Value {
+        Value::from_serialize(BTreeMap::from([
+            ("alias", Value::from("my_view")),
+            ("unique_id", Value::from("model.test_project.my_view")),
+            (
+                "columns",
+                Value::from_serialize(BTreeMap::from([(
+                    "msg",
+                    BTreeMap::from([("column_mask", BTreeMap::from([("function", "mask_msg")]))]),
+                )])),
+            ),
+        ]))
+    }
+
+    #[test]
+    fn v2_update_via_alter_rejects_unsupported_configs_without_changes() {
+        let cases = [
+            (
+                "row filter",
+                Value::from_dyn_object(update_via_alter_with_row_filter_config()),
+                None,
+                "Row filters are not supported for views.",
+            ),
+            (
+                "column mask",
+                Value::from_dyn_object(update_via_alter_config(false, None)),
+                Some(model_with_masked_column()),
+                "Column masks are not supported for views.",
+            ),
+        ];
+        for (case, config, model, expected) in cases {
+            let harness = existing_view_alter_harness(true);
+            let mut builder = harness
+                .materialization_context("my_view", "SELECT id, msg FROM source_table")
+                .config(config);
+            if let Some(model) = model {
+                builder = builder.with("model", model);
+            }
+            let error = render_view(&harness, ADAPTER, builder.build())
+                .expect_err("an existing view with no changes must still be validated");
+            assert!(
+                error.to_string().contains(expected),
+                "{case}: unexpected error {error}"
+            );
+        }
+    }
+
+    fn render_new_view_under(
+        command: &str,
+        config: Arc<MockJinjaObject>,
+        model: Value,
+    ) -> (MacroTestHarness, dbt_common::FsResult<String>) {
+        let harness = build_view_harness(ADAPTER);
+        harness.mock().on("get_relation", |_| Ok(Value::from(())));
+        let ctx = harness
+            .materialization_context("my_view", "select * from prod_schema.my_view")
+            .config(Value::from_dyn_object(config))
+            .with("model", model)
+            .with("flags", flags_for(command))
+            .build();
+        let result = render_view(&harness, ADAPTER, ctx);
+        (harness, result)
+    }
+
+    fn contract_enforced_config() -> Arc<MockJinjaObject> {
+        let mock = default_mock_config();
+        mock.on("get", |args| {
+            let key = args.first().and_then(|v| v.as_str());
+            let default = args.get(1).cloned().unwrap_or(Value::UNDEFINED);
+            match key {
+                Some("contract") => Ok(Value::from_serialize(BTreeMap::from([(
+                    "enforced".to_string(),
+                    Value::from(true),
+                )]))),
+                _ => Ok(default),
+            }
+        });
+        mock
+    }
+
+    #[test]
+    fn enforced_contract_is_not_asserted_under_clone() {
+        for (command, asserted) in [("run", true), ("clone", false)] {
+            let (harness, result) = render_new_view_under(
+                command,
+                contract_enforced_config(),
+                governed_model("view", false),
+            );
+            if asserted {
+                let error = result.expect_err("run must assert the enforced contract");
+                assert!(
+                    error.to_string().contains("enforced contract"),
+                    "{command}: unexpected error {error}"
+                );
+            } else {
+                result.unwrap_or_else(|e| panic!("{command}: clone must skip the contract: {e}"));
+                assert_executed_contains(harness.mock(), "create or replace view");
+            }
+        }
+    }
+
+    fn governed_model(materialized: &str, masked: bool) -> Value {
+        let columns = if masked {
+            BTreeMap::from([(
+                "msg",
+                BTreeMap::from([("column_mask", BTreeMap::from([("function", "mask_msg")]))]),
+            )])
+        } else {
+            BTreeMap::new()
+        };
+        Value::from_serialize(BTreeMap::from([
+            ("alias", Value::from("my_view")),
+            ("unique_id", Value::from("model.test_project.my_view")),
+            ("columns", Value::from_serialize(columns)),
+            (
+                "config",
+                Value::from_serialize(BTreeMap::from([("materialized", materialized)])),
+            ),
+        ]))
+    }
+
+    #[test]
+    fn clone_skips_policy_rejection_only_for_materialized_views_and_streaming_tables() {
+        let cases = [
+            ("run", "view", true),
+            ("run", "materialized_view", true),
+            ("clone", "view", true),
+            ("clone", "materialized_view", false),
+            ("clone", "streaming_table", false),
+        ];
+        for (command, materialized, rejected) in cases {
+            for (policy, masked, message) in [
+                (
+                    "column mask",
+                    true,
+                    "Column masks are not supported for views.",
+                ),
+                (
+                    "row filter",
+                    false,
+                    "Row filters are not supported for views.",
+                ),
+            ] {
+                let config = if masked {
+                    default_mock_config()
+                } else {
+                    update_via_alter_with_row_filter_config()
+                };
+                let (harness, result) =
+                    render_new_view_under(command, config, governed_model(materialized, masked));
+                let case = format!("{command}/{materialized}/{policy}");
+                if rejected {
+                    let error = result.expect_err(&format!("{case}: must be rejected"));
+                    assert!(
+                        error.to_string().contains(message),
+                        "{case}: unexpected error {error}"
+                    );
+                } else {
+                    result.unwrap_or_else(|e| panic!("{case}: must clone as a view: {e}"));
+                    assert_executed_contains(harness.mock(), "create or replace view");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn alter_view_query_change_reapplies_post_alter_comments_only() {
+        let harness = build_view_harness(ADAPTER);
+        harness
+            .mock()
+            .on("resolve_file_format", |_| Ok(Value::from("parquet")));
+        harness.mock().on("has_feature", |_| Ok(Value::from(true)));
+        harness.mock().on("quote", |args| {
+            let name = args.first().and_then(|v| v.as_str()).unwrap_or_default();
+            Ok(Value::from(format!("`{name}`")))
+        });
+        harness.mock().on("get_columns_in_relation", |_| {
+            Ok(Value::from(Vec::<Value>::new()))
+        });
+        let id_column = BTreeMap::from([(
+            "id",
+            BTreeMap::from([("name", "id"), ("description", "Updated id")]),
+        )]);
+        let persisted_columns = id_column.clone();
+        harness.mock().on("get_persist_doc_columns", move |_| {
+            Ok(Value::from_serialize(&persisted_columns))
+        });
+        let config = default_mock_config();
+        config.on("persist_column_docs", |_| Ok(Value::from(true)));
+        let changes = Value::from_serialize(BTreeMap::from([
+            (
+                "query",
+                Value::from_serialize(BTreeMap::from([("query", "select 1 as id")])),
+            ),
+            (
+                "column_comments",
+                Value::from_serialize(BTreeMap::from([(
+                    "comments",
+                    BTreeMap::from([("msg", "Stale msg")]),
+                )])),
+            ),
+        ]));
+        let model = Value::from_serialize(BTreeMap::from([
+            ("alias", Value::from("my_view")),
+            ("unique_id", Value::from("model.test_project.my_view")),
+            ("columns", Value::from_serialize(&id_column)),
+        ]));
+        let ctx = harness
+            .materialization_context("my_view", "select 1 as id")
+            .config(Value::from_dyn_object(config))
+            .with("model", model)
+            .with("changes", changes)
+            .build();
+        harness
+            .render("{{ alter_view(this, changes) }}", ctx)
+            .expect("alter_view should render");
+
+        let executed = executed_sql(harness.mock());
+        assert!(
+            executed
+                .iter()
+                .any(|sql| sql.contains("COMMENT ON COLUMN") && sql.contains("Updated id")),
+            "post-ALTER comment must be written regardless of file_format: {executed:?}"
+        );
+        assert!(
+            !executed.iter().any(|sql| sql.contains("Stale msg")),
+            "the pre-ALTER comment diff must not run after a query change: {executed:?}"
+        );
     }
 }
 
