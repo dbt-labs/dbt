@@ -31,6 +31,9 @@ use crate::{
 // tests - it may stay uninitialized
 static PROCESS_SPAN: OnceLock<span::Id> = OnceLock::new();
 
+// init_tracing requires this span's ID even when caller or RUST_LOG filters disable INFO.
+const PROCESS_SPAN_FILTER_DIRECTIVE: &str = concat!(module_path!(), "=info");
+
 /// The process span for the current process. Only available after
 /// tracing has been initialized and before tracing handle is dropped.
 ///
@@ -181,7 +184,22 @@ pub fn create_tracing_subcriber_with_layer<D: Layer<BaseSubscriber> + Send + Syn
     #[cfg(not(debug_assertions))]
     let base_telemetry_filter = EnvFilter::builder().parse_lossy(max_log_verbosity.to_string());
 
-    let base_telemetry_filter = parse_filter_directives(filter_directives)?
+    create_tracing_subscriber_with_base_filter(base_telemetry_filter, data_layer, filter_directives)
+}
+
+fn create_tracing_subscriber_with_base_filter<D: Layer<BaseSubscriber> + Send + Sync + 'static>(
+    base_telemetry_filter: EnvFilter,
+    data_layer: D,
+    filter_directives: &[&str],
+) -> TracingResult<impl Subscriber + Send + Sync + 'static> {
+    let mut filter_directives = parse_filter_directives(filter_directives)?;
+    filter_directives.push(
+        PROCESS_SPAN_FILTER_DIRECTIVE
+            .parse()
+            .expect("the process span filter directive must be valid"),
+    );
+
+    let base_telemetry_filter = filter_directives
         .into_iter()
         .fold(base_telemetry_filter, |filter, directive| {
             filter.add_directive(directive)
@@ -191,4 +209,20 @@ pub fn create_tracing_subcriber_with_layer<D: Layer<BaseSubscriber> + Send + Syn
     Ok(Registry::default()
         .with(base_telemetry_filter)
         .with(data_layer))
+}
+
+#[cfg(test)]
+pub(crate) fn create_tracing_subscriber_with_layer_and_rust_log<
+    D: Layer<BaseSubscriber> + Send + Sync + 'static,
+>(
+    max_log_verbosity: LevelFilter,
+    rust_log: &str,
+    data_layer: D,
+    filter_directives: &[&str],
+) -> TracingResult<impl Subscriber + Send + Sync + 'static> {
+    let base_telemetry_filter = EnvFilter::builder()
+        .with_default_directive(max_log_verbosity.into())
+        .parse_lossy(rust_log);
+
+    create_tracing_subscriber_with_base_filter(base_telemetry_filter, data_layer, filter_directives)
 }
