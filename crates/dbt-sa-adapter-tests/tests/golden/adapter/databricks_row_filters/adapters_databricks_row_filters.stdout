@@ -1,0 +1,14 @@
+   dbt-oss 
+   Loading profiles.yml
+   Parsing models/properties.yml
+   Parsing models/row_filter_lifecycle.yml
+   Parsing functions/properties.yml
+   Parsing models/row_filter_incremental.sql
+   Parsing models/row_filter_materialized_view.sql
+   Parsing models/row_filter_safe_replace.sql
+   Parsing models/row_filter_table.sql
+   Parsing models/test_cool_and_finance.sql
+   Parsing models/test_evens.sql
+   Parsing functions/hide_cool_and_finance.sql
+==================== Execution Summary =====================
+Finished 'run-operation' successfully for target 'databricks' [duration]

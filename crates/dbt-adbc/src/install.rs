@@ -308,17 +308,11 @@ pub fn format_driver_path_in(
         .or_else(dirs::cache_dir)
         .ok_or(InstallError::DetermineCacheDir)?;
 
-    let driver_relpath = format!(
-        "{}-{}/{}",
-        triplet.arch,
-        triplet.os,
-        DriverFilenameDisplay { name, triplet }
-    );
-
     let mut driver_path = cache_dir;
     driver_path.push(APP_ID);
     driver_path.push("adbc");
-    driver_path.push(driver_relpath);
+    driver_path.push(format!("{}-{}", triplet.arch, triplet.os));
+    driver_path.push(DriverFilenameDisplay { name, triplet }.to_string());
 
     Ok(driver_path)
 }

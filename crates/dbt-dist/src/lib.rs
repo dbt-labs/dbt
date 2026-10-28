@@ -3,6 +3,7 @@
 pub mod command;
 pub mod confirm;
 pub mod dist;
+pub mod packages;
 mod proc;
 pub mod python;
 pub mod upgrade;

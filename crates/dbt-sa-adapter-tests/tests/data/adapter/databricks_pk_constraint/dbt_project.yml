@@ -1,0 +1,12 @@
+flags:
+  send_anonymous_usage_stats: false
+name: test
+profile: fusion_tests
+
+macro-paths: ["macros"]
+
+models:
+  test:
+    +static_analysis: off
+    customers:
+      +materialized: table

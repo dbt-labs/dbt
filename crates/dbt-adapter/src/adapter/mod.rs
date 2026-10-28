@@ -3621,6 +3621,17 @@ impl Adapter {
         }
     }
 
+    /// Emit the once-only warning registered for the calling macro.
+    #[tracing::instrument(skip_all, level = "trace")]
+    pub fn warn_once(&self, state: &State, args: &[Value]) -> Result<Value, minijinja::Error> {
+        let iter = ArgsIter::new("warn_once", &["msg"], args);
+        let _msg = iter.next_arg::<&str>()?;
+        iter.finish()?;
+
+        crate::warn_once::warn_once_from_macro(state.name());
+        Ok(none_value())
+    }
+
     /// Used internally to attempt executing a Snowflake `use warehouse [name]` statement.
     #[tracing::instrument(skip(self), level = "trace")]
     pub fn use_warehouse(
@@ -4250,6 +4261,20 @@ impl Adapter {
             // sql: str
             "strip_trailing_statement_terminator" => {
                 self.strip_trailing_statement_terminator(state, args)
+            }
+            "warn_once" => self.warn_once(state, args),
+            "convert_datetimes_to_strs" => {
+                let iter = ArgsIter::new(name, &["table"], args);
+                let table = iter.next_arg::<Value>()?;
+                iter.finish()?;
+                Ok(table)
+            }
+            "get_binding_char" => {
+                let iter = ArgsIter::new(name, &[], args);
+                iter.finish()?;
+                Ok(Value::from(crate::formatter::binding_char(
+                    self.adapter_type(),
+                )))
             }
             "get_seed_file_path" => {
                 // model: dict (seed node)

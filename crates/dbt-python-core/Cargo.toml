@@ -6,6 +6,7 @@ name = "dbt-python-core"
 version.workspace = true
 
 [dependencies]
+dbt-adbc = { workspace = true }
 dbt-cancel = { workspace = true }
 dbt-clap-core = { workspace = true }
 dbt-common = { workspace = true }

@@ -179,6 +179,7 @@ pub enum ErrorCode {
     SemanticModelDeprecated = 1157,
     PackageMissingProjectFile = 1158,
     DbtYamlValidationError = 1159,
+    CleanTargetOutsideProject = 1160,
 
     // Network/HTTP [1200–1249]
     NetworkError = 1200,
@@ -331,6 +332,12 @@ pub enum ErrorCode {
     IndexWriteFailed = 1659,
 
     // --------------------------------------------------------------------------------------------
+    // Schema cache
+    /// A schema cache row read from `target/` holds IPC bytes that do not deserialize. The row
+    /// is skipped, so its schema is fetched or computed again, as with a cold cache.
+    SchemaCacheEntryCorrupt = 1660,
+
+    // --------------------------------------------------------------------------------------------
     // CLI errors
     NoLongerSupportedOption = 1700,
     NotYetSupportedOption = 1701,
@@ -394,6 +401,12 @@ pub enum ErrorCode {
     // --------------------------------------------------------------------------------------------
     // Lineage
     InvalidLineageSchema = 3500,
+
+    // --------------------------------------------------------------------------------------------
+    // SQL frontend library
+    /// The SQL frontend library could not be loaded, or does not speak a
+    /// protocol this dbt does.
+    FrontendLibraryUnavailable = 3600,
 
     InvalidDialect = 8998,
     RuntimeError = 8999,

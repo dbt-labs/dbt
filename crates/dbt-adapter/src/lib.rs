@@ -33,6 +33,7 @@ pub mod sql;
 pub mod sql_types;
 pub mod statement;
 pub mod stmt_splitter;
+pub mod warn_once;
 
 /// Cross-Version Record/Replay System
 pub mod time_machine;

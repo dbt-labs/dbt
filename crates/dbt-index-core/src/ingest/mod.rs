@@ -3,7 +3,9 @@ pub mod metadata_to_parquet;
 pub mod payload;
 pub mod timings;
 
-pub use metadata_to_parquet::{apply_delta_direct, ingest_from_metadata_direct};
+pub use metadata_to_parquet::{
+    apply_delta_direct, ingest_from_metadata_direct, invocation_batches, rewrite_invocations,
+};
 
 pub use ingest_state::{
     CATALOG_COLUMNS_SUBDIR, COMPILE_CLL_SUBDIR, COMPILE_COLUMNS_SUBDIR, COMPILE_NODES_SUBDIR,

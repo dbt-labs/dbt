@@ -19,7 +19,6 @@ use dbt_common::warn_error_options::{
     SupportedLegacyWarnError, WarnErrorDecision, WarnErrorOptions,
 };
 use dbt_common::{ErrorCode, fs_err, unexpected_fs_err};
-use dbt_jinja_utils::utils::add_task_context;
 use dbt_pretty_table::{make_column_names, pretty_data_table};
 use dbt_scheduler::instructions::SqlInstruction;
 use dbt_schemas::schemas::DbtTest;
@@ -587,9 +586,7 @@ pub fn execute_test_remote(
 ) -> FsResult<NodeStatus> {
     let start = SystemTime::now();
     let unique_id = &test.common().unique_id;
-    let mut base_context = ctx.inner.base_context.clone();
-
-    add_task_context(&mut base_context, test.common(), &ctx.thread_id);
+    let base_context = ctx.run_base_context(test)?;
 
     let sql_instruction = match &task_result.lp_instruction {
         Some(_) => {

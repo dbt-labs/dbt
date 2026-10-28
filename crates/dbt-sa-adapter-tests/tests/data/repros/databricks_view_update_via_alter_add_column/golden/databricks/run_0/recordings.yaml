@@ -1,0 +1,56 @@
+27f724c9:
+- sequence: 0
+  type: execute
+  sql: create schema if not exists `e2e`.`databricks_view_update_via_alter_add_column`
+85f3743c:
+- sequence: 0
+  type: execute
+  sql: SHOW SCHEMAS IN `e2e`
+model.databricks_view_update_via_alter_add_column.foobar:
+- sequence: 0
+  type: execute
+  sql: |-
+    SELECT
+    table_name,
+    if(table_type IN ('EXTERNAL', 'MANAGED', 'MANAGED_SHALLOW_CLONE', 'EXTERNAL_SHALLOW_CLONE'), 'table', lower(table_type)) AS table_type,
+    lower(data_source_format) AS file_format,
+    table_schema,
+    table_owner,
+    table_catalog,
+    if(
+    table_type IN (
+    'EXTERNAL',
+    'MANAGED',
+    'MANAGED_SHALLOW_CLONE',
+    'EXTERNAL_SHALLOW_CLONE'
+    ),
+    lower(table_type),
+    NULL
+    ) AS databricks_table_type
+    FROM `system`.`information_schema`.`tables`
+    WHERE table_catalog = 'e2e'
+    AND table_schema = 'databricks_view_update_via_alter_add_column'
+- sequence: 1
+  type: execute
+  sql: |-
+    select * from (
+    select
+    '1' as foo_key,
+    'foo' as foo_name
+    ) as __dbt_sbq
+    where false
+    limit 0
+- sequence: 2
+  type: execute
+  sql: |-
+    create or replace view `e2e`.`databricks_view_update_via_alter_add_column`.`foobar`
+    (
+    `foo_key` comment 'Primary key',
+    \t`foo_name` comment 'Name of foo'
+    )
+    comment 'My model description'
+    as (
+    select
+    '1' as foo_key,
+    'foo' as foo_name
+    )

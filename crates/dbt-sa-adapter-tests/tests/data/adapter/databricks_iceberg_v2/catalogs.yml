@@ -1,0 +1,7 @@
+catalogs:
+  - name: e2e
+    type: unity
+    table_format: iceberg
+    config:
+      databricks:
+        file_format: parquet

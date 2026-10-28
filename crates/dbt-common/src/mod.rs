@@ -32,6 +32,7 @@ pub mod infer_schema_registry;
 pub mod io_args;
 pub mod lease;
 pub mod once_cell_vars;
+pub mod panic;
 pub mod path;
 pub mod row_limit;
 pub mod serde_utils;

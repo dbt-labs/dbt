@@ -1179,7 +1179,11 @@ fn extract_expect_values<'a>(
             "Unit test {} is invalid. Format `sql` only supports inline string rows or fixture files",
             unit_test.__common_attr__.name
         )),
-        // sql (raw fixture, or inline string)
+        // sql: the parser already read a resolved `fixture:` into `rows`, so
+        // `rows` is the normalized value and is matched first. The `fixture`
+        // arm below is a fallback for a node that reached here without that
+        // eager read; it is not where fixture-vs-rows precedence is decided.
+        // That rule lives once, in `resolve_unit_tests` (dbt-labs/fs#15487).
         (schemas::common::Formats::Sql, _, Some(Rows::String(sql))) => {
             Ok((sql.to_string(), column_names))
         }
@@ -1494,13 +1498,22 @@ fn render_unit_test(
         .enumerate()
     {
         let (given_values, fixture_shape_values) = match given.format {
-            // SQL uses the string value verbatim
+            // SQL uses the string value verbatim.
+            //
+            // `rows` is consulted before `fixture` on purpose. `resolve_unit_tests`
+            // resolves a `fixture:` name to a path, reads its content into
+            // `rows` as raw text, and applies dbt-core's fixture-always-wins
+            // rule while doing so, so `rows` is already the normalized value.
+            // Reading `fixture` first re-read the same file from disk on every
+            // `dbt test`/`dbt build` and discarded what the parser had computed
+            // (dbt-labs/fs#15487). The `fixture` branch stays as a fallback for
+            // a node that reached here without the parser's eager read.
             schemas::common::Formats::Sql => {
-                let sql = if let Some(fixture) = &given.fixture {
+                let sql = if let Some(Rows::String(sql)) = &given.rows {
+                    sql.clone()
+                } else if let Some(fixture) = &given.fixture {
                     let filename = ctx.inner.arg.io.in_dir.join(fixture.clone());
                     stdfs::read_to_string(filename)?
-                } else if let Some(Rows::String(sql)) = &given.rows {
-                    sql.clone()
                 } else {
                     return Err(fs_err!(
                         ErrorCode::InvalidConfig,

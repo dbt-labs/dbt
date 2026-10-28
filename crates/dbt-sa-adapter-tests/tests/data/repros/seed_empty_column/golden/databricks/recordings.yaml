@@ -1,0 +1,44 @@
+85f3743c:
+- sequence: 0
+  type: execute
+  sql: SHOW SCHEMAS IN `e2e`
+c3d344ce:
+- sequence: 0
+  type: execute
+  sql: create schema if not exists `e2e`.`adapters_databricks_repros_seed_empty_column`
+seed.hello_world.p:
+- sequence: 0
+  type: execute
+  sql: |-
+    SELECT
+    table_name,
+    if(table_type IN ('EXTERNAL', 'MANAGED', 'MANAGED_SHALLOW_CLONE', 'EXTERNAL_SHALLOW_CLONE'), 'table', lower(table_type)) AS table_type,
+    lower(data_source_format) AS file_format,
+    table_schema,
+    table_owner,
+    table_catalog,
+    if(
+    table_type IN (
+    'EXTERNAL',
+    'MANAGED',
+    'MANAGED_SHALLOW_CLONE',
+    'EXTERNAL_SHALLOW_CLONE'
+    ),
+    lower(table_type),
+    NULL
+    ) AS databricks_table_type
+    FROM `system`.`information_schema`.`tables`
+    WHERE table_catalog = 'e2e'
+    AND table_schema = 'adapters_databricks_repros_seed_empty_column'
+- sequence: 1
+  type: execute
+  sql: |-
+    create  table `e2e`.`adapters_databricks_repros_seed_empty_column`.`p` (`id` bigint ,`first_name` string ,`last_name` string ,`empty` bigint )
+    
+    
+    using delta
+- sequence: 2
+  type: execute
+  sql: |-
+    insert overwrite `e2e`.`adapters_databricks_repros_seed_empty_column`.`p` values
+    (2,'Arthur','last',NULL),(3,'Rachel','last',NULL)

@@ -187,6 +187,10 @@ pub fn run_cli_with_code(cli: Box<Cli>, arg: SystemArgs, feature_stack: Arc<Feat
     // set to 1, in which case we want to see the backtrace):
     if arg.exit_process_on_panic && std::env::var("RUST_BACKTRACE").unwrap_or_default() != "1" {
         std::panic::set_hook(Box::new(|info| {
+            // The caller recovers from this panic and reports it as an error.
+            if dbt_common::panic::is_catching_panic() {
+                return;
+            }
             eprintln!("{} {}", RED.apply_to(format!("{PANIC}:")), info);
             let _ = io::stdout().flush();
             let _ = io::stderr().flush();

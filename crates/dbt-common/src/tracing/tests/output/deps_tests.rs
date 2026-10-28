@@ -3,7 +3,7 @@
 use dbt_telemetry::{DepsAddPackage, DepsAllPackagesInstalled, DepsPackageInstalled, PackageType};
 use indoc::indoc;
 
-use super::support::{Case, Clock, DBT_LOG, TERMINAL, TEXT, all_variants};
+use super::support::{Case, Clock, DBT_LOG, TERMINAL, TERMINAL_QUIET, TEXT, all_variants};
 use crate::tracing::{emit::create_info_span, span_info::record_span_status};
 
 pub(super) fn cases(cases: &mut Vec<Case>) {
@@ -359,7 +359,8 @@ fn package_installed(cases: &mut Vec<Case>) {
                     <green+bold> Installed</> dbt_utils: 1.3.0
                     <green+bold> Installed</> 1 package
                 "},
-            ),
+            )
+            .expect_no_output(TERMINAL_QUIET),
     );
 }
 
@@ -503,6 +504,7 @@ fn package_added(cases: &mut Vec<Case>) {
                     <green+bold>    Adding</> dbt-labs/dbt_utils
                     <red+bold>Failed</> dbt-labs/dbt_utils: 9.9.9
                 "},
-            ),
+            )
+            .expect_no_output(TERMINAL_QUIET),
     );
 }

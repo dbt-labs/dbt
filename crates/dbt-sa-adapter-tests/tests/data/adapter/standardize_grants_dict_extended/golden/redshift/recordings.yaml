@@ -1,0 +1,24 @@
+model.test.c:
+- sequence: 0
+  type: execute
+  sql: DROP SCHEMA IF EXISTS adapters_redshift_standardize_grants_dict_extended CASCADE
+- sequence: 1
+  type: execute
+  sql: CREATE SCHEMA adapters_redshift_standardize_grants_dict_extended
+- sequence: 2
+  type: execute
+  sql: CREATE TABLE adapters_redshift_standardize_grants_dict_extended.a (one int)
+- sequence: 3
+  type: execute
+  sql: |-
+    select
+    identity_name,
+    identity_type,
+    privilege_type
+    from svv_relation_privileges
+    where namespace_name = 'adapters_redshift_standardize_grants_dict_extended'
+    and relation_name = 'a'
+    and not (identity_type = 'user' and identity_name = current_user)
+- sequence: 4
+  type: execute
+  sql: "grant select on \"ci\".\"adapters_redshift_standardize_grants_dict_extended\".\"a\" to dbt_test_user_1, GROUP dbt_test_group_1, ROLE tester\n    \n"

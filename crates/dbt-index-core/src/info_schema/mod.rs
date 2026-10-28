@@ -174,6 +174,40 @@ pub fn write_info_schema_with(
     }
 }
 
+/// Refresh `dbt_rt.invocations` on its own, after the current invocation's row
+/// has landed under `metadata/run/invocations/`.
+///
+/// [`write_info_schema`] runs while the command is still executing, and the
+/// invocation record is only appended once it has returned, so the information
+/// schema a command writes never lists the command that wrote it. Rather than
+/// pay for a second full materialization, this projects that one table straight
+/// from the epochs over the file already in the output directory. It touches
+/// neither a staging directory nor the flat index, so it behaves the same
+/// whichever [`Materializer`] produced the directory.
+///
+/// `dbt_rt.invocations` is the only table in [`INFO_SCHEMA`] fed by the
+/// `invocations` source, so refreshing it cannot leave the directory internally
+/// inconsistent.
+///
+/// A directory with no `views.sql` is one no write ever finished — the command
+/// failed, was interrupted, or never reached the write. There is nothing to
+/// refresh there, and writing the one table anyway would leave a directory
+/// holding `dbt_rt.invocations.parquet` and nothing else.
+pub fn refresh_invocations(metadata_dir: &Path, info_schema_dir: &Path) -> Result<(), IndexError> {
+    let out_dir = versioned_dir(info_schema_dir);
+    if !out_dir.join(views::VIEWS_SQL_FILE_NAME).exists() {
+        return Ok(());
+    }
+    let spec = INFO_SCHEMA
+        .iter()
+        .find(|spec| spec.ns == spec::Ns::DbtRt && spec.name == "invocations")
+        .ok_or_else(|| IndexError::Other("info schema: no dbt_rt.invocations spec".to_string()))?;
+    let out = project::out_schema(spec)?;
+    let src = crate::ingest::invocation_batches(metadata_dir)?;
+    let batches = project::project_table(spec, &src, &out)?;
+    write_output(&out_dir, spec, &out, &batches)
+}
+
 fn write_via_arrow(
     metadata_dir: &Path,
     info_schema_dir: &Path,

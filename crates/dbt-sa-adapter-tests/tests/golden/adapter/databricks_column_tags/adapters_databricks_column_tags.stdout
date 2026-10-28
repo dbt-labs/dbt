@@ -1,0 +1,23 @@
+   dbt-oss 
+   Loading profiles.yml
+   Parsing models/schema.yml
+   Parsing models/a.sql
+   Parsing models/test_materialized_view.sql
+   Parsing models/test_table.sql
+   Parsing models/test_view.sql
+ Rendering models/a.sql
+   Running models/a.sql
+ Succeeded model adapters_databricks_column_tags.a (table) [1 of 4 in duration]
+ Rendering models/test_view.sql
+ Rendering models/test_table.sql
+ Rendering models/test_materialized_view.sql
+   Running models/test_view.sql
+ Succeeded model adapters_databricks_column_tags.test_view (view) [2 of 4 in duration]
+   Running models/test_table.sql
+ Succeeded model adapters_databricks_column_tags.test_table (table) [3 of 4 in duration]
+   Running models/test_materialized_view.sql
+ Succeeded model adapters_databricks_column_tags.test_materialized_view (mat_view) [4 of 4 in duration]
+==================== Execution Summary =====================
+Finished 'run' successfully for target 'databricks' [duration]
+Processed: 4 models
+Summary: 4 total | 4 success

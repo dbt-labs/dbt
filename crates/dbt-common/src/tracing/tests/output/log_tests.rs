@@ -381,6 +381,22 @@ fn log_messages(cases: &mut Vec<Case>) {
                     <red+bold>[error]</>: an error
                     <yellow+bold>[warning]</>: second warning
                 "#},
+            )
+            .expect(
+                TERMINAL_QUIET,
+                indoc! {r#"
+                    info in between
+                "#},
+            )
+            .expect_stderr(
+                TERMINAL_QUIET,
+                indoc! {r#"
+
+                    <dim>=================== Errors and Warnings ====================</>
+                    <yellow+bold>[warning]</>: first warning
+                    <red+bold>[error]</>: an error
+                    <yellow+bold>[warning]</>: second warning
+                "#},
             ),
     );
 }
@@ -427,6 +443,13 @@ fn user_log_messages(cases: &mut Vec<Case>) {
                 )
                 .expect(
                     TEXT_DEBUG,
+                    indoc! {r#"
+                        Hello from 'jinja'
+                        with a second line
+                    "#},
+                )
+                .expect(
+                    TERMINAL_QUIET,
                     indoc! {r#"
                         Hello from 'jinja'
                         with a second line
@@ -556,7 +579,8 @@ fn progress_messages(cases: &mut Vec<Case>) {
                 .run(move |_| emit(SeverityNumber::Info, message.clone(), ""))
                 .expect(DBT_LOG, dbt_log)
                 .expect_or_no_output(TERMINAL, terminal)
-                .expect(TEXT_DEBUG, debug),
+                .expect(TEXT_DEBUG, debug)
+                .expect_no_output(TERMINAL_QUIET),
         );
     }
 }

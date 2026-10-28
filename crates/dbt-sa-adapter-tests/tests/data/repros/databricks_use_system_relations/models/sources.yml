@@ -1,0 +1,12 @@
+version: 2
+
+sources:
+  - name: information_schema
+    database: system         
+    schema: information_schema
+    description: Information schema tables.
+
+    tables:
+      - name: tables
+      - name: catalog_privileges
+      # there can be many more

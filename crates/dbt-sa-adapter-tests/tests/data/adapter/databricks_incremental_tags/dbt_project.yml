@@ -1,0 +1,14 @@
+name: test
+profile: fusion_tests
+
+macro-paths: ["macros"]
+
+models:
+  test:
+    +static_analysis: off
+
+    a:
+      +materialized: table
+
+    test_incremental_tags:
+      +materialized: incremental

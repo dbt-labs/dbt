@@ -280,6 +280,10 @@ pub async fn setup_and_execute_fs(
             Err(_) => "error",
         };
         ctx.write(status);
+        // The row for this invocation only exists now, so any index or
+        // information schema written during the command is missing it. Bring
+        // that one table up to date.
+        refresh_invocation_artifacts(&eval_arg);
     }
 
     // Shutdown must be called to ensure vortex flushes all events.
@@ -330,6 +334,53 @@ is false. This should not happen."
             error,
             artifacts: artifacts_sink,
         }),
+    }
+}
+
+/// Re-materialize the invocations table in whichever artifacts were requested,
+/// once the current invocation's record has been written.
+///
+/// `--write-index` and `--generate-info-schema` both produce their output while
+/// the command is still running, and [`InvocationContext::write`] only appends
+/// the row for that command after it returns. Without this pass the invocation
+/// that produced an artifact is the one invocation missing from it, so joining
+/// `dbt_rt.run_results` to `dbt_rt.invocations` — as `dbt_rt.dag_validity` does —
+/// silently drops the run that was just recorded.
+///
+/// The two artifacts are refreshed independently, each from the metadata
+/// epochs: the information schema does not read the index, matching the write
+/// it is catching up. Each refresh no-ops when its artifact was not actually
+/// written — a command that failed, was interrupted, or never reached the write
+/// leaves nothing to bring up to date.
+///
+/// Advisory, like the writes themselves: a failure here leaves the rest of the
+/// artifact usable and must not fail the command.
+fn refresh_invocation_artifacts(eval_arg: &EvalArgs) {
+    let metadata_dir = eval_arg.metadata_dir();
+    if !metadata_dir.exists() {
+        return;
+    }
+
+    if eval_arg.generate_info_schema
+        && let Err(err) =
+            dbt_index_core::refresh_invocations(&metadata_dir, &eval_arg.info_schema_dir())
+    {
+        emit_warn_log_message(
+            ErrorCode::InfoSchemaWriteFailed,
+            format!("dbt: generate-info-schema: refreshing dbt_rt.invocations: {err}"),
+        );
+    }
+
+    if eval_arg.write_index {
+        let index_dir = eval_arg.index_dir();
+        if has_persisted_state(&index_dir)
+            && let Err(err) = dbt_index_core::ingest::rewrite_invocations(&metadata_dir, &index_dir)
+        {
+            emit_warn_log_message(
+                ErrorCode::IndexWriteFailed,
+                format!("dbt-index: refreshing dbt_rt.invocations: {err}"),
+            );
+        }
     }
 }
 
@@ -1252,12 +1303,13 @@ impl<'a> AllPhasesExecutor<'a> {
             "--write-metadata"
         };
         if advise_index_flags && !strict_static_analysis {
-            emit_warn_log_message(
-                ErrorCode::Generic,
-                format!(
-                    "{advised_flag}: column types will not be populated without `--static-analysis strict`, which also enables column-level lineage."
-                ),
-            );
+            // The catalog supplies the warehouse types; only inference needs strict.
+            let advice = if self.arg.write_catalog {
+                "inferred column types and column-level lineage are not written without `--static-analysis strict`."
+            } else {
+                "column types will not be populated without `--static-analysis strict`, which also enables column-level lineage."
+            };
+            emit_warn_log_message(ErrorCode::Generic, format!("{advised_flag}: {advice}"));
         } else if advise_index_flags && strict_static_analysis && !self.arg.write_lineage {
             emit_warn_log_message(
                 ErrorCode::Generic,
@@ -1488,12 +1540,12 @@ impl<'a> AllPhasesExecutor<'a> {
                                 test_outcome,
                                 freshness_outcome: None,
                                 has_warn: false,
-                                colorize: true,
+                                colorize: console::colors_enabled(),
                             },
                             FixedWidthDuration(Duration::from_secs_f64(r.execution_time)),
                             NodeTypeFixedWidth {
                                 node_type: "check",
-                                colorize: true,
+                                colorize: console::colors_enabled(),
                             },
                             r.name,
                         ));
@@ -1803,6 +1855,9 @@ impl<'a> AllPhasesExecutor<'a> {
                 }
             };
 
+        // Tasks are done. Release their freed memory before the artifacts are built.
+        crate::utils::release_free_heap_memory();
+
         let resolved_state = Arc::clone(&run_task_results.resolved_state);
 
         // Prepare artifact
@@ -1940,7 +1995,7 @@ impl<'a> AllPhasesExecutor<'a> {
         // warehouse round-trip. The information schema then carries no catalog_type and
         // `data_type` falls back to inferred_type — pass `--write-catalog` for the full
         // warehouse-backed types.
-        let catalog_data: Option<DbtCatalog> = if self.arg.write_metadata
+        let fetched_catalog: Option<DbtCatalog> = if self.arg.write_metadata
             && (self.arg.write_catalog || self.arg.write_index)
             && !self.arg.write_index_implied
             && matches!(self.arg.command, FsCommand::Run | FsCommand::Build)
@@ -1959,6 +2014,9 @@ impl<'a> AllPhasesExecutor<'a> {
         };
 
         if self.arg.write_metadata && self.arg.command != FsCommand::Show {
+            // `compile --write-catalog` fetched its catalog before compiling, for
+            // `catalog.json`. Reuse it so the epochs get the warehouse types too (#16514).
+            let catalog_data = fetched_catalog.or_else(|| self.captured_artifacts.catalog.take());
             let schema_store =
                 Arc::clone(&compilation_cache_state.schema_store) as Arc<dyn SchemaStoreTrait>;
             crate::metadata::write_metadata(
@@ -1969,6 +2027,7 @@ impl<'a> AllPhasesExecutor<'a> {
                     .expect("Unconditionally set earlier"),
                 resolved_state.as_ref(),
                 schema_store.as_ref(),
+                type_ops_factory.as_ref(),
                 &run_task_results,
                 catalog_data.as_ref(),
                 self.feature_stack.index.hooks.as_ref(),

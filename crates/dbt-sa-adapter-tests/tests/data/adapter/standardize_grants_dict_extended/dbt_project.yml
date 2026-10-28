@@ -1,0 +1,5 @@
+flags:
+  send_anonymous_usage_stats: false
+  redshift_grants_extended: true
+name: test
+profile: fusion_tests

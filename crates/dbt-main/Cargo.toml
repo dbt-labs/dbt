@@ -19,6 +19,9 @@ windows = { version = "0.61", features = [
   "Win32_Foundation",
 ] }
 
+[target.'cfg(all(target_os = "linux", target_env = "gnu"))'.dependencies]
+libc = { workspace = true }
+
 [dependencies]
 dbt-adapter = { workspace = true }
 dbt-adapter-core = { workspace = true }
@@ -61,6 +64,7 @@ async-trait = { workspace = true }
 chrono = { workspace = true }
 chrono-tz = { workspace = true }
 clap = { workspace = true, features = ["derive"] }
+console = { workspace = true }
 dotenvy = { workspace = true }
 futures = { workspace = true }
 git-version = { version = "0.3.9" }

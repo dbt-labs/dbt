@@ -151,24 +151,22 @@ pub fn push_value_as_sql_literal(adapter_type: AdapterType, value: &Value, resul
     }
 }
 
-/// Splits `sql` on the dialect's binding placeholder (`?` for Fabric, `%s`
-/// otherwise) and interleaves it with `bindings`, formatted as SQL literals.
-/// The split is naive text splitting, not SQL-aware parsing: the first chunk
-/// (before any placeholder) is emitted as-is, then each subsequent chunk is
-/// preceded by the next formatted binding value.
+/// The placeholder the dialect uses for bound parameters: `?` for Fabric and
+/// DuckDB, `%s` otherwise. Backs the `get_binding_char` adapter method.
+pub fn binding_char(adapter_type: AdapterType) -> &'static str {
+    match adapter_type {
+        AdapterType::Fabric | AdapterType::DuckDB => "?",
+        _ => "%s",
+    }
+}
+
 pub fn format_sql_with_bindings(
     adapter_type: AdapterType,
     sql: &str,
     bindings: &Value,
 ) -> AdapterResult<String> {
     let mut result = String::with_capacity(sql.len());
-    // this placeholder char is seen from `get_binding_char` macro
-    let binding_char = if adapter_type == AdapterType::Fabric {
-        "?"
-    } else {
-        "%s"
-    };
-    let mut parts = sql.split(binding_char);
+    let mut parts = sql.split(binding_char(adapter_type));
     let mut binding_iter = bindings.as_object().unwrap().try_iter().unwrap();
 
     if let Some(first) = parts.next() {
@@ -251,6 +249,15 @@ mod tests {
             result.ends_with('Z'),
             "expected Z suffix for UTC, got: {result}"
         );
+    }
+
+    #[test]
+    fn format_sql_with_bindings_uses_duckdb_qmark_placeholder() {
+        let bindings = Value::from(vec![Value::from(1), Value::from("a")]);
+        let sql =
+            format_sql_with_bindings(AdapterType::DuckDB, "insert into t values (?,?)", &bindings)
+                .unwrap();
+        assert_eq!(sql, "insert into t values (1,'a')");
     }
 
     #[test]

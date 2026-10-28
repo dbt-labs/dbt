@@ -1,0 +1,10 @@
+   dbt-oss 
+   Loading profiles.yml
+   Parsing models/a.sql
+`e2e`.`adapters_databricks_api_relation_object`.`a`
+ Rendering models/a.sql
+`e2e`.`adapters_databricks_api_relation_object`.`a`
+==================== Execution Summary =====================
+Finished 'compile' successfully for target 'databricks' [duration]
+Processed: 1 model
+Summary: 1 total | 1 success

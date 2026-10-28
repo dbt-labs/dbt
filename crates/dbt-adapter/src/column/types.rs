@@ -877,10 +877,29 @@ impl Column {
         }
     }
 
+    /// Lowercased type name before any `(`, `<`, or whitespace, e.g. `decimal` for
+    /// `DECIMAL(10, 2)` or `string` for `string COLLATE UTF8_LCASE`.
+    ///
+    /// https://github.com/databricks/dbt-databricks/blob/6cc739d473043d4e1c94be9ca391850edd02e7fb/dbt/adapters/databricks/column.py#L144-L146
+    fn databricks_base_type(&self) -> String {
+        self.core_dtype
+            .trim()
+            .split(|c: char| c.is_whitespace() || c == '(' || c == '<')
+            .next()
+            .unwrap_or_default()
+            .to_lowercase()
+    }
+
     fn is_numeric(&self) -> bool {
         match self._adapter_type {
             AdapterType::Bigquery => {
                 matches!(self.core_dtype.to_lowercase().as_str(), "numeric")
+            }
+            AdapterType::Databricks => {
+                matches!(
+                    self.databricks_base_type().as_str(),
+                    "decimal" | "dec" | "numeric"
+                )
             }
             AdapterType::Snowflake => {
                 matches!(
@@ -911,6 +930,19 @@ impl Column {
                 matches!(self.core_dtype.to_lowercase().as_str(), "int64")
             }
             AdapterType::Snowflake => false,
+            AdapterType::Databricks => {
+                matches!(
+                    self.databricks_base_type().as_str(),
+                    "tinyint"
+                        | "byte"
+                        | "smallint"
+                        | "short"
+                        | "int"
+                        | "integer"
+                        | "bigint"
+                        | "long"
+                )
+            }
             _ => {
                 matches!(
                     self.core_dtype.to_lowercase().as_str(),
@@ -942,6 +974,12 @@ impl Column {
                     "float" | "float4" | "float8" | "double" | "double precision" | "real"
                 )
             }
+            AdapterType::Databricks => {
+                matches!(
+                    self.databricks_base_type().as_str(),
+                    "float" | "real" | "double"
+                )
+            }
             _ => {
                 matches!(
                     self.core_dtype.to_lowercase().as_str(),
@@ -961,6 +999,12 @@ impl Column {
                 matches!(
                     self.core_dtype.to_lowercase().as_str(),
                     "string" | "fixedstring"
+                )
+            }
+            AdapterType::Databricks => {
+                matches!(
+                    self.databricks_base_type().as_str(),
+                    "string" | "varchar" | "char"
                 )
             }
             _ => {
@@ -1033,6 +1077,10 @@ impl Column {
                 }
                 bigquery_data_type_inner(self)
             }
+            // v1 `DatabricksColumn.data_type` never renders through `string_type`, which would
+            // turn Databricks strings into `character varying(256)`.
+            // https://github.com/databricks/dbt-databricks/blob/6cc739d473043d4e1c94be9ca391850edd02e7fb/dbt/adapters/databricks/column.py#L140-L142
+            AdapterType::Databricks => self.core_dtype.clone(),
             _ => {
                 if self.is_string() {
                     self.as_static().string_type(Some(
@@ -1107,6 +1155,12 @@ impl Column {
 
     /// https://github.com/dbt-labs/dbt-adapters/blob/main/dbt-adapters/src/dbt/adapters/base/column.py#L102-L103
     pub fn can_expand_to(&self, other: &Column) -> Result<bool, minijinja::Error> {
+        // Databricks strings have no size to widen; `expand_target_column_types` would otherwise
+        // ALTER them to `character varying(256)`.
+        // https://github.com/databricks/dbt-databricks/blob/6cc739d473043d4e1c94be9ca391850edd02e7fb/dbt/adapters/databricks/column.py#L169-L172
+        if self._adapter_type == AdapterType::Databricks {
+            return Ok(false);
+        }
         Ok(self.is_string()
             && other.is_string()
             && self
@@ -1252,6 +1306,7 @@ impl Into<Value> for Column {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use minijinja_contrib::testing::jinja_assert;
 
     /// ClickHouseColumn.TYPE_LABELS mapping (the array macros build
     /// `emptyArray{type}` from it); unmatched types pass through.
@@ -1352,6 +1407,98 @@ mod tests {
                 "\"id\"",
                 "{adapter:?} should double-quote identifiers"
             );
+        }
+    }
+
+    fn databricks_column(dtype: &str) -> Column {
+        Column::new(
+            AdapterType::Databricks,
+            "col".to_string(),
+            dtype.to_string(),
+            None,
+            None,
+            None,
+        )
+    }
+
+    /// Same cases as dbt-databricks `tests/unit/test_column.py::TestTypePredicates`.
+    #[test]
+    fn databricks_type_predicates() {
+        let cases = [
+            ("string", "string"),
+            ("STRING", "string"),
+            ("string COLLATE UTF8_LCASE", "string"),
+            ("varchar(10)", "string"),
+            ("char(3)", "string"),
+            ("tinyint", "integer"),
+            ("byte", "integer"),
+            ("smallint", "integer"),
+            ("short", "integer"),
+            ("int", "integer"),
+            ("INTEGER", "integer"),
+            ("bigint", "integer"),
+            ("long", "integer"),
+            ("float", "float"),
+            ("real", "float"),
+            ("double", "float"),
+            ("decimal", "numeric"),
+            ("decimal(10,2)", "numeric"),
+            ("decimal(38, 0)", "numeric"),
+            ("DEC(5,1)", "numeric"),
+            ("numeric(10,2)", "numeric"),
+            ("boolean", "none"),
+            ("date", "none"),
+            ("timestamp", "none"),
+            ("binary", "none"),
+            ("variant", "none"),
+            ("array<string>", "none"),
+            ("map<string,int>", "none"),
+            ("struct<a:string>", "none"),
+        ];
+        for (dtype, category) in cases {
+            let column = databricks_column(dtype);
+            let actual = (
+                column.is_string(),
+                column.is_integer(),
+                column.is_float(),
+                column.is_numeric(),
+                column.is_number(),
+            );
+            let expected = (
+                category == "string",
+                category == "integer",
+                category == "float",
+                category == "numeric",
+                matches!(category, "integer" | "float" | "numeric"),
+            );
+            assert_eq!(actual, expected, "dtype {dtype:?}");
+        }
+    }
+
+    #[test]
+    fn databricks_strings_never_expand_or_render_as_character_varying() {
+        jinja_assert(
+            databricks_column("varchar(10)"),
+            "{{ obj.is_string() }}|{{ obj.string_size() }}|{{ obj.data_type }}",
+            "True|256|varchar(10)",
+        );
+        let sized = |dtype: &str, size| {
+            Column::new(
+                AdapterType::Databricks,
+                "col".to_string(),
+                dtype.to_string(),
+                Some(size),
+                None,
+                None,
+            )
+        };
+        assert!(
+            !sized("varchar(10)", 10)
+                .can_expand_to(&sized("varchar(20)", 20))
+                .unwrap()
+        );
+        for dtype in ["string", "STRING", "decimal(10,2)", "int"] {
+            assert_eq!(databricks_column(dtype).data_type(), dtype);
         }
     }
 

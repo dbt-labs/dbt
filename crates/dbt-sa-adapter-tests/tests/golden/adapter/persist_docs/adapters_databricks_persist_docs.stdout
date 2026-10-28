@@ -1,0 +1,13 @@
+   dbt-oss 
+   Loading profiles.yml
+   Parsing models/schema.yml
+   Parsing models/a.sql
+databricks
+ Rendering models/a.sql
+databricks
+   Running models/a.sql
+ Succeeded model adapters_databricks_persist_docs.a (table) [1 of 1 in duration]
+==================== Execution Summary =====================
+Finished 'run' successfully for target 'databricks' [duration]
+Processed: 1 model
+Summary: 1 total | 1 success
