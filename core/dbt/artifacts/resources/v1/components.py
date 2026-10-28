@@ -18,6 +18,7 @@ from dbt_common.contracts.constraints import ColumnLevelConstraint
 from dbt_common.contracts.util import Mergeable
 from dbt_common.dataclass_schema import ExtensibleDbtClassMixin, dbtClassMixin
 
+# Requires mashumaro>=3.15 so unquoted YAML `v: 4.1` is not truncated to 4.
 NodeVersion = Union[int, float, str]
 
 
