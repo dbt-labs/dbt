@@ -2291,6 +2291,35 @@ mod compare_record_batches_tests {
     }
 
     #[test]
+    fn json_comparison_detects_timestamp_differences() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("actual_or_expected", DataType::Utf8, false),
+            Field::new("json", DataType::Utf8, false),
+            Field::new(
+                "ts",
+                DataType::Timestamp(TimeUnit::Microsecond, None),
+                false,
+            ),
+        ]));
+        for (actual, has_differences) in [(1_000_000, false), (1_000_001, true)] {
+            let batch = arrow::array::RecordBatch::try_new(
+                schema.clone(),
+                vec![
+                    Arc::new(StringArray::from(vec!["expected", "actual"])),
+                    Arc::new(StringArray::from(vec![
+                        r#"{"b":2,"a":1}"#,
+                        r#"{"a":1,"b":2}"#,
+                    ])),
+                    Arc::new(TimestampMicrosecondArray::from(vec![1_000_000, actual])),
+                ],
+            )
+            .unwrap();
+            let result = compare_record_batches_with_json_columns(&batch, &[1]).unwrap();
+            assert_eq!(result.has_differences, has_differences);
+        }
+    }
+
+    #[test]
     fn json_comparison_aligns_rows_and_preserves_duplicate_counts() {
         let expected = [
             Some(r#"{"a":2,"z":0}"#),
