@@ -691,6 +691,27 @@ api_endpoint: definitely-not-bigquery.invalid/
     }
 
     #[test]
+    fn test_builder_from_auth_config_oauth_priority_is_not_a_connection_option() {
+        let yaml_for = |priority| {
+            format!(
+                r#"
+database: my_db
+schema: my_schema
+method: oauth
+priority: {priority}
+"#
+            )
+        };
+
+        for priority in ["batch", "interactive"] {
+            let config = dbt_yaml::from_str::<Mapping>(&yaml_for(priority)).unwrap();
+            let builder = try_configure(config)
+                .unwrap_or_else(|e| panic!("rejected {priority:?}: {}", e.msg()));
+            assert_eq!(other_option_value(&builder, bigquery::QUERY_PRIORITY), None);
+        }
+    }
+
+    #[test]
     fn test_builder_from_auth_config_oauth_secrets_temporary_token() {
         let yaml_doc = r#"
 method: oauth-secrets
