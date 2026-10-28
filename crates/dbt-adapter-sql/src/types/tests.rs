@@ -62,6 +62,18 @@ fn test_bigquery_range_arrow_roundtrip() {
 }
 
 #[test]
+fn test_range_type_is_bigquery_only() {
+    for backend in [Bigquery, Snowflake, DuckDB, Postgres] {
+        let (sql_type, nullable) = SqlType::parse(backend, "RANGE<DATE> NOT NULL").unwrap();
+        assert!(!nullable);
+        assert_eq!(matches!(sql_type, Range(_)), backend == Bigquery);
+        if backend != Bigquery {
+            assert_eq!(sql_type.to_string(backend), "RANGE < DATE >");
+        }
+    }
+}
+
+#[test]
 fn test_sql_type_completeness() {
     for (input, complete) in [
         ("RANGE", false),

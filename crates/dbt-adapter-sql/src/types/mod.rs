@@ -2625,6 +2625,36 @@ impl<'source> Parser<'source> {
         }
     }
 
+    fn range_type(
+        &mut self,
+        backend: AdapterType,
+        word: &str,
+    ) -> Result<SqlType, ParseError<'source>> {
+        match backend {
+            AdapterType::Bigquery if self.match_(Token::LAngle) => {
+                let element = self.parse_unconstrained_type(backend)?;
+                self.expect(Token::RAngle)?;
+                Ok(SqlType::Range(Box::new(element)))
+            }
+            _ => Ok(self.other_type(word)),
+        }
+    }
+
+    fn other_type(&mut self, word: &str) -> SqlType {
+        let mut other = word.to_string();
+        while let Some(tok) = self.tokenizer.peek_and_then(|t| {
+            if t == Token::Word("NOT") || t == Token::Word("NULL") {
+                None
+            } else {
+                Some(t)
+            }
+        }) {
+            use fmt::Write as _;
+            write!(&mut other, " {tok}").unwrap();
+        }
+        SqlType::Other(other)
+    }
+
     /// Parse the SQL type string without consuming the entire string.
     ///
     /// The goal of this function is to create the `SqlType` instance that better represents
@@ -3046,10 +3076,8 @@ impl<'source> Parser<'source> {
                 } else if eqi(w, "GEOGRAPHY") {
                     let srid = self.srid()?;
                     SqlType::Geography(srid.map(str::to_string))
-                } else if backend == Bigquery && eqi(w, "RANGE") && self.match_(Token::LAngle) {
-                    let element = self.parse_unconstrained_type(backend)?;
-                    self.expect(Token::RAngle)?;
-                    SqlType::Range(Box::new(element))
+                } else if eqi(w, "RANGE") {
+                    self.range_type(backend, w)?
                 } else if eqi(w, "ARRAY") {
                     self.array_type(backend)?
                 } else if eqi(w, "RECORD") {
@@ -3121,21 +3149,7 @@ impl<'source> Parser<'source> {
                 } else if eqi(w, "VOID") {
                     SqlType::Void
                 } else {
-                    // gather all tokens before "[NOT] NULL" and return Other(..)
-                    let mut other = w.to_string();
-                    while let Some(tok) = {
-                        self.tokenizer.peek_and_then(|t| {
-                            if t == Token::Word("NOT") || t == Token::Word("NULL") {
-                                None
-                            } else {
-                                Some(t)
-                            }
-                        })
-                    } {
-                        use fmt::Write as _;
-                        write!(&mut other, " {tok}").unwrap();
-                    }
-                    SqlType::Other(other)
+                    self.other_type(w)
                 }
             }
         };
